@@ -47,6 +47,12 @@ class Dictation(private val context: Context) {
 
     private val _state = MutableStateFlow(DictationState.Idle)
     val state: StateFlow<DictationState> = _state.asStateFlow()
+    private val _level = MutableStateFlow(0f)
+    val level: StateFlow<Float> = _level.asStateFlow()
+
+    init {
+        pcmRecorder.onLevel = { value -> _level.value = if (_state.value == DictationState.Recording) value else 0f }
+    }
 
     /** What has been heard so far this capture. Cleared when a capture starts. */
     private val _partial = MutableStateFlow("")
@@ -80,12 +86,22 @@ class Dictation(private val context: Context) {
         onNoTranscript: () -> Unit = {},
         onTranscript: (String) -> Unit,
     ) {
+        startScoped(retainRecording, onNoTranscript, onTranscript, null)
+    }
+
+    fun startForChat(chatSessionId: String?, onNoTranscript: () -> Unit = {}, onTranscript: (String) -> Unit) {
+        startScoped(prefs.archiveDictation.value, onNoTranscript, onTranscript, chatSessionId)
+    }
+
+    private var mediaChatSessionId: String? = null
+    private fun startScoped(retainRecording: Boolean, onNoTranscript: () -> Unit, onTranscript: (String) -> Unit, chatSessionId: String?) {
         if (_state.value != DictationState.Idle) return
         if (!available()) {
             _error.value = "This device has no speech recogniser."
             onNoTranscript()
             return
         }
+        mediaChatSessionId = chatSessionId
         onFinal = onTranscript
         onEmpty = onNoTranscript
         _partial.value = ""
@@ -146,6 +162,7 @@ class Dictation(private val context: Context) {
      * what a tap on a live mic means. Releasing a held mic means the same.
      */
     fun stop() {
+        _level.value = 0f
         if (_state.value != DictationState.Recording) return
         _state.value = DictationState.Transcribing
         if (!cloudCapture) {
@@ -153,6 +170,7 @@ class Dictation(private val context: Context) {
             return
         }
         transcriptionJob?.cancel()
+        val chatSessionId = mediaChatSessionId
         transcriptionJob = scope.launch {
             val outcome = runCatching {
                 val recording = pcmRecorder.stop()
@@ -163,7 +181,7 @@ class Dictation(private val context: Context) {
                         recording.durationMs,
                     )
                 } else null
-                val transcript = runCatching { backend.transcribe(recording.wav) }
+                val transcript = runCatching { backend.transcribe(recording.wav, chatSessionId = chatSessionId) }
                     .onFailure { error ->
                         // The audio remains a valid owner-authorized note even
                         // when STT is temporarily down; its outbox can still
@@ -191,6 +209,7 @@ class Dictation(private val context: Context) {
 
     /** Abandon the capture. Nothing is delivered and nothing is transcribed. */
     fun cancel() {
+        _level.value = 0f
         transcriptionJob?.cancel()
         transcriptionJob = null
         if (cloudCapture) pcmRecorder.cancel()
@@ -212,6 +231,7 @@ class Dictation(private val context: Context) {
     }
 
     private fun deliver(text: String?) {
+        _level.value = 0f
         val trimmed = text?.trim().orEmpty()
         val callback = onFinal
         val emptyCallback = onEmpty
@@ -244,7 +264,11 @@ class Dictation(private val context: Context) {
 
         override fun onReadyForSpeech(params: Bundle?) = Unit
         override fun onBeginningOfSpeech() = Unit
-        override fun onRmsChanged(rms: Float) = Unit
+        override fun onRmsChanged(rms: Float) {
+            if (!cloudCapture && _state.value == DictationState.Recording) {
+                _level.value = if (rms.isFinite()) (rms / 10f).coerceIn(0f, 1f) else 0f
+            }
+        }
         override fun onBufferReceived(buffer: ByteArray?) = Unit
         override fun onEndOfSpeech() {
             // The recogniser has stopped hearing speech but has not answered

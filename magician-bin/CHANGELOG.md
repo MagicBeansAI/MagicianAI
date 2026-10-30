@@ -2,30 +2,35 @@
 
 ## [Unreleased]
 
-### 2026-10-15 — 0.2.29
+- 0.2.41: Flush write-behind memory temperature counters on shutdown and CLI exit.
 
-- Routes `/work/live` and `/work/follow`; a daily job deletes failure rows older than a week.
+- Shutdown (and every CLI exit) flushes the memory temperature counters held for write-behind, bounded to 10 s.
 
-### 2026-10-15 — 0.2.28
+- 0.2.40: Register public MCP profile and owner identity routes at startup.
 
-- Start the scoped Work bridge and task service with delivery and scheduling.
+- New `magician google-project-access [--grant]` checks (and grants) each Google account's Cloud project roles for setup scripts.
 
-### 2026-10-12 — 0.2.27
+### 2026-10-24 — 0.2.39
 
-- Prewarm app authoring catalogs for default workspaces before HTTP readiness.
-- God mode: boot wires its approver and routes its settings and per-chat endpoints.
-- Release idle workspace database owners periodically; shutdown waits for this before storage teardown.
+- `make benchmark-chat-context-retrieval` runs as the opt-in `chat-context-retrieval-eval` binary (feature `retrieval-eval`) using the runtime keychain, and reports duplicate-collapse, snapshot-cache and registry-reuse timings.
+- Re-adopts background shell jobs left by a previous process at startup, installs `execution.harness_turn_idle_seconds` at boot, and registers the chat asset delete route.
 
-### 2026-10-09 — 0.2.26
+### 2026-10-23 — 0.2.38
 
-- Start attention-learning storage maintenance after HTTP readiness.
+- Registers the chat session assets route, and stops every bot (and the CLIs it forked) as soon as shutdown starts, before the supervisor's SIGKILL.
 
-### 2026-10-09 — 0.2.25
+### 2026-10-23 — 0.2.37
 
-- Retire deleted workspaces' remaining state (host files, HITL rows and tokens, then attention data in the background after readiness).
-- Faster readiness: only each principal's default workspace is admitted before HTTP readiness; others follow in the background (previously several minutes of `service_starting`).
-- The terminal-outbox projector wakes when a run is released instead of waiting for its sweep.
-- **Removed:** `seal-stateless-loop-cutover` is accepted and does nothing.
+- Publishes `outward_actions.browser_submission_guard` at boot and registers the `/browser/submission-grants` routes.
+- Starts the spend envelope at boot (feed attention notifier, debounced checkpoint, flush at shutdown) and registers the `/budgets/envelope` routes.
+
+### 2026-10-22 — 0.2.36
+
+- Mount VibeDev’s run-scoped original-folder edit broker and paged history routes.
+
+### 2026-10-20 — 0.2.35
+
+- Boot installs the memory index notice broadcaster (rebuild-required notices).
 
 ---
 

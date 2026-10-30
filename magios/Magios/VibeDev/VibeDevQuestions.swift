@@ -88,13 +88,20 @@ enum VibeDevQuestions {
 
     static func runItem(_ run: VibeDevLiveRun) -> VibeDevNeedsYouItem {
         let eyebrow = (run.lane.map { "\($0) lane · " } ?? "") + run.projectName + " · needs you"
-        return VibeDevNeedsYouItem(
-            id: "run:\(run.runId)", kind: .run, eyebrow: eyebrow, title: run.displayTitle,
-            body: run.step ?? run.summary ?? "Waiting for your review", projectID: run.projectId,
-            crew: nil, run: run, options: [
+        // A run waiting on a question or an approval has no diff: it is opened
+        // and answered there, never offered Approve. An older server sends no
+        // kind; its needs-you runs keep both options.
+        let decision = run.waitingKind == .decision
+        let options = decision
+            ? [VibeDevQuestionOption(label: "Open", style: .primary, action: .reviewRun)]
+            : [
                 VibeDevQuestionOption(label: "Review", style: .primary, action: .reviewRun),
                 VibeDevQuestionOption(label: "Approve", style: .plain, action: .approveRun),
-            ],
+            ]
+        return VibeDevNeedsYouItem(
+            id: "run:\(run.runId)", kind: .run, eyebrow: eyebrow, title: run.displayTitle,
+            body: run.step ?? run.summary ?? (decision ? "Waiting for your answer" : "Waiting for your review"),
+            projectID: run.projectId, crew: nil, run: run, options: options,
             updatedAtMs: Int64((run.updatedDate?.timeIntervalSince1970 ?? 0) * 1000))
     }
 

@@ -82,6 +82,7 @@ async fn laya_call_phases() {
                 .map(|(k, v)| (OptionId::new(k), Criteria::Str(v.into())))
                 .collect(),
         })],
+        assets: Default::default(),
     };
     for _ in 0..5 {
         model.evaluate(request.clone()).await.unwrap();

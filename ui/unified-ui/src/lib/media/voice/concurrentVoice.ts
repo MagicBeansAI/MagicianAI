@@ -79,7 +79,7 @@ function ensureCoordinator(): ConcurrentVoiceCoordinator | null {
         onStarted();
       };
       if (get(mediaProvidersStore).tts) {
-        void providerSpeakBlocks({ messageId, blocks: [{ text: request.speech_text ?? '' }], onStart: start }, finish)
+        void providerSpeakBlocks({ messageId, chatSessionId: request.parent_session_id, blocks: [{ text: request.speech_text ?? '' }], onStart: start }, finish)
           .catch(() => finish('error'));
       } else if (isBrowserTtsAvailable()) {
         const prefs = get(ttsStore).prefs;

@@ -1,6 +1,6 @@
 name: create_monitor
 description: Activate a previewed, user-confirmed monitor. Requires the preview_fingerprint from preview_monitor; refuses unreviewed contracts.
-version: "1.0.0"
+version: "1.0.1"
 guide: |
   Tool name: `create_monitor`
 
@@ -18,7 +18,7 @@ guide: |
   re-confirm. Never fabricate a fingerprint.
 
   On success the monitor is a canonical persistent task (managed under
-  /tasks?type=monitors and by the scheduler): the response carries
+  /work?type=monitors and by the scheduler): the response carries
   `task_id`, the server-owned `monitor_revision` (1), the schedule state,
   and the cadence summary — relay those to the user. The first scheduled
   run records a quiet baseline unless the user opted into

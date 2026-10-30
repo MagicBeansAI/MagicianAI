@@ -39,6 +39,11 @@ pub enum ClientError {
     Decode(String),
     #[error("decision engine speaks contract {engine}, host speaks {CONTRACT_VERSION}")]
     ContractMismatch { engine: u32 },
+    /// The host never sent the request: its policy expired, its budget was
+    /// spent or classification was switched off before dispatch. Not an
+    /// engine outage. The code is a closed, content-free token.
+    #[error("decision not dispatched: {0}")]
+    NotDispatched(&'static str),
 }
 
 #[derive(Debug, Clone)]

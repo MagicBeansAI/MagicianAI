@@ -9,7 +9,7 @@ use std::{
 use rmcp::{
     model::{
         CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
-        CancelTaskRequest, CancelledNotification, CancelledNotificationParam, ClientInfo,
+        CancelTaskRequest, CancelledNotification, CancelledNotificationParam, ClientConfig,
         ClientRequest, GetTaskParams, GetTaskRequest, Implementation, ListToolsRequest,
         PaginatedRequestParams, ProtocolVersion, RequestId, ResourceUpdatedNotificationParam,
         ServerResult, TaskStatusNotificationParams, UpdateTaskParams, UpdateTaskRequest,
@@ -69,7 +69,7 @@ struct McpRunningClientConfig {
 
 #[derive(Clone)]
 struct McpClientHandler {
-    info: ClientInfo,
+    info: ClientConfig,
     task_hints: Arc<McpTaskNotificationHints>,
     invalidations: Arc<McpInvalidationOwner>,
 }
@@ -117,7 +117,7 @@ impl ClientHandler for McpClientHandler {
         std::future::ready(())
     }
 
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         self.info.clone()
     }
 }
@@ -1000,43 +1000,69 @@ impl McpClient {
         tool: &McpToolId,
         arguments: Map<String, Value>,
     ) -> Result<McpToolCallOutcome, McpClientError> {
+        self.call_tool_reporting_dispatch(tool, arguments)
+            .await
+            .map_err(|(error, _)| error)
+    }
+
+    /// [`Self::call_tool`], reporting on failure whether the request had been handed to the
+    /// transport.
+    ///
+    /// `Err((error, false))` is a local refusal — the tool was not in the discovery snapshot,
+    /// the arguments or serialized request exceed the client limits, or no continuation slot
+    /// could be reserved. The server never saw the call, so nothing it does can have happened.
+    ///
+    /// `Err((error, true))` means the request was handed to the transport: a send/timeout
+    /// failure, or a response that was rejected after it arrived. The server may have acted on
+    /// it, so a caller performing a side effect must not treat the failure as "not done".
+    pub async fn call_tool_reporting_dispatch(
+        &self,
+        tool: &McpToolId,
+        arguments: Map<String, Value>,
+    ) -> Result<McpToolCallOutcome, (McpClientError, bool)> {
+        let not_sent = |error: McpClientError| (error, false);
+        let sent = |error: McpClientError| (error, true);
         if !self.discovered_tools.contains(tool) {
             drop_json_map_iterative(arguments);
-            return Err(McpClientError::ToolNotDiscovered);
+            return Err(not_sent(McpClientError::ToolNotDiscovered));
         }
         match validate_call_arguments(&arguments, &self.limits) {
             Ok(_) => {},
             Err(error) => {
                 drop_json_map_iterative(arguments);
-                return Err(error);
+                return Err(not_sent(error));
             },
         }
         let params =
             CallToolRequestParams::new(tool.remote_name().to_owned()).with_arguments(arguments);
         let retained_request_bytes =
-            measure_serialized_request(&params, self.limits.max_request_bytes)?;
-        let reservation =
-            self.continuations
-                .reserve(tool.clone(), params.clone(), retained_request_bytes)?;
+            measure_serialized_request(&params, self.limits.max_request_bytes).map_err(not_sent)?;
+        let reservation = self
+            .continuations
+            .reserve(tool.clone(), params.clone(), retained_request_bytes)
+            .map_err(not_sent)?;
         let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        // From here the request is the transport's: any failure below may follow a send.
         let response =
             send_request_with_timeout(self.service.peer(), request, self.request_timeout)
                 .await
-                .map_err(map_call_error)?;
-        let response = call_response_from_server_result(response)?;
+                .map_err(|error| sent(map_call_error(error)))?;
+        let response = call_response_from_server_result(response).map_err(sent)?;
         match project_call_response(
             response,
             &self.limits,
             self.mrtr_presentation_capabilities,
             self.task_lifecycle_negotiated,
-        )? {
+        )
+        .map_err(sent)?
+        {
             ValidatedCallResponse::Complete(result) => {
                 reservation.complete();
                 Ok(McpToolCallOutcome::Complete(result))
             },
             ValidatedCallResponse::Pending(pending) => {
                 let kind = pending.kind();
-                let pending = reservation.commit(pending)?;
+                let pending = reservation.commit(pending).map_err(sent)?;
                 match kind {
                     crate::McpContinuationKind::AdditionalInput => {
                         Ok(McpToolCallOutcome::InputRequired(pending))
@@ -1277,7 +1303,7 @@ where
 {
     let mut capabilities = mrtr_presentation_capabilities.sdk_client_capabilities();
     task_lifecycle_capabilities.apply_to(&mut capabilities);
-    let client_info = ClientInfo::new(
+    let client_info = ClientConfig::new(
         capabilities,
         Implementation::new("magician-mcp-client", env!("CARGO_PKG_VERSION")),
     )
@@ -1524,6 +1550,15 @@ fn stable_initialize_error(error: &rmcp::service::ClientInitializeError) -> Stri
             "client protocol preference was empty".to_owned()
         },
         ClientInitializeError::Cancelled => "initialization cancelled".to_owned(),
+        ClientInitializeError::LegacyFallbackFailed { fallback, .. } => {
+            format!(
+                "legacy MCP initialization failed: {}",
+                stable_initialize_error(fallback)
+            )
+        },
+        ClientInitializeError::UncorrelatedErrorResponse { .. } => {
+            "server returned an uncorrelated initialization error".to_owned()
+        },
         _ => "MCP initialization failed".to_owned(),
     }
 }
@@ -1549,7 +1584,7 @@ mod tests {
             ElicitResult, ElicitationAction, ElicitationSchema, ErrorCode, ErrorData,
             GetTaskResult, InputRequest, InputRequiredResult, ListRootsRequest, ListRootsResult,
             ListToolsResult, ProtocolVersion, Root, SamplingMessage, ServerCapabilities,
-            ServerInfo, ServerNotification, SubscribeRequestParams, SubscriptionFilter, Task,
+            ServerConfig, ServerNotification, SubscribeRequestParams, SubscriptionFilter, Task,
             TaskPayload, TaskStatus, TaskStatusNotification, Tool, ToolChoice,
             UnsubscribeRequestParams,
         },
@@ -1731,8 +1766,8 @@ mod tests {
     }
 
     impl ServerHandler for SubscriptionFixtureServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tool_list_changed()
@@ -1819,8 +1854,8 @@ mod tests {
     struct EndingSubscriptionFixtureServer;
 
     impl ServerHandler for EndingSubscriptionFixtureServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tool_list_changed()
@@ -1853,8 +1888,8 @@ mod tests {
 
     #[allow(deprecated)]
     impl ServerHandler for LegacySubscriptionFixtureServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_resources()
                     .enable_resources_subscribe()
@@ -1913,8 +1948,8 @@ mod tests {
     }
 
     impl ServerHandler for TaskFixtureServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tasks()
@@ -2045,8 +2080,8 @@ mod tests {
     }
 
     impl ServerHandler for FixtureServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
                 .with_server_info(Implementation::new("fixture-server", "1.0.0"))
         }
 
@@ -2098,8 +2133,8 @@ mod tests {
     }
 
     impl ServerHandler for InputRequiredServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
                 .with_server_info(Implementation::new("input-required-fixture", "1.0.0"))
         }
 
@@ -2137,7 +2172,7 @@ mod tests {
     }
 
     impl ServerHandler for RootsInputServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2177,7 +2212,7 @@ mod tests {
     }
 
     impl ServerHandler for MultiRoundInputServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2216,7 +2251,7 @@ mod tests {
     }
 
     impl ServerHandler for FailingResumeServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2258,7 +2293,7 @@ mod tests {
     }
 
     impl ServerHandler for BlockingResumeServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2297,7 +2332,7 @@ mod tests {
     }
 
     impl ServerHandler for InteractiveInputServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2338,7 +2373,7 @@ mod tests {
     }
 
     impl ServerHandler for CapabilityProbeServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::new(AtomicUsize::new(0)),
             }
@@ -2376,7 +2411,7 @@ mod tests {
     }
 
     impl ServerHandler for FixedInputServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2410,7 +2445,7 @@ mod tests {
     }
 
     impl ServerHandler for SupportedThenUnsupportedServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2453,7 +2488,7 @@ mod tests {
     }
 
     impl ServerHandler for QualifiedMultiRoundServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             InputRequiredServer {
                 calls: Arc::clone(&self.calls),
             }
@@ -2506,7 +2541,7 @@ mod tests {
     }
 
     impl ServerHandler for ConcurrentMrtrServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2552,8 +2587,8 @@ mod tests {
     }
 
     impl ServerHandler for LegacyFixtureServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
                 .with_protocol_version(ProtocolVersion::V_2025_11_25)
                 .with_server_info(Implementation::new("legacy-fixture", "1.0.0"))
         }
@@ -2578,7 +2613,7 @@ mod tests {
     struct RepeatingCursorServer;
 
     impl ServerHandler for RepeatingCursorServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2598,7 +2633,7 @@ mod tests {
     struct EndlessCursorServer;
 
     impl ServerHandler for EndlessCursorServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2622,7 +2657,7 @@ mod tests {
     struct FailingToolServer;
 
     impl ServerHandler for FailingToolServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2656,7 +2691,7 @@ mod tests {
     }
 
     impl ServerHandler for FailingRediscoveryServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2702,7 +2737,7 @@ mod tests {
     }
 
     impl ServerHandler for BlockingRediscoveryServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2746,7 +2781,7 @@ mod tests {
     }
 
     impl ServerHandler for BlockingToolServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2780,7 +2815,7 @@ mod tests {
     }
 
     impl ServerHandler for ConcurrentToolServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             FixtureServer.get_info()
         }
 
@@ -2854,6 +2889,28 @@ mod tests {
         .await
     }
 
+    // A modern discover probe does not select the server lifecycle. Closing before
+    // the first tool request is a valid stateless-session shutdown, including when
+    // local admission or tool-id validation rejects work before sending a request.
+    async fn serve_fixture<S>(server: S, server_io: tokio::io::DuplexStream) -> Result<(), String>
+    where
+        S: ServerHandler + Send + Sync + 'static,
+    {
+        match server.serve(server_io).await {
+            Ok(service) => service
+                .waiting()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            Err(rmcp::service::ServerInitializeError::ConnectionClosed(context))
+                if context == "initialize request" =>
+            {
+                Ok(())
+            },
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     async fn connect_fixture_with_capabilities<S>(
         server: S,
         limits: McpClientLimits,
@@ -2866,14 +2923,7 @@ mod tests {
         S: ServerHandler + Send + Sync + 'static,
     {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-        let server_task = tokio::spawn(async move {
-            let service = server
-                .serve(server_io)
-                .await
-                .map_err(|error| error.to_string())?;
-            service.waiting().await.map_err(|error| error.to_string())?;
-            Ok(())
-        });
+        let server_task = tokio::spawn(serve_fixture(server, server_io));
         let (client_read, client_write) = tokio::io::split(client_io);
         let transport = crate::stdio_transport::BoundedAsyncRwTransport::new(
             client_read,
@@ -2920,18 +2970,13 @@ mod tests {
 
     #[tokio::test]
     async fn failed_process_budget_admission_closes_the_connected_service() {
-        let mut limits = McpClientLimits::default();
-        limits.max_continuation_bytes =
-            crate::continuation::MAX_PROCESS_CONTINUATION_BYTES.saturating_add(1);
+        let limits = McpClientLimits {
+            max_continuation_bytes: crate::continuation::MAX_PROCESS_CONTINUATION_BYTES
+                .saturating_add(1),
+            ..McpClientLimits::default()
+        };
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-        let server_task = tokio::spawn(async move {
-            let service = FixtureServer
-                .serve(server_io)
-                .await
-                .map_err(|error| error.to_string())?;
-            service.waiting().await.map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
-        });
+        let server_task = tokio::spawn(serve_fixture(FixtureServer, server_io));
         let (client_read, client_write) = tokio::io::split(client_io);
         let transport = crate::stdio_transport::BoundedAsyncRwTransport::new(
             client_read,
@@ -3032,7 +3077,7 @@ mod tests {
         ));
         let invalidations = Arc::new(McpInvalidationOwner::new());
         let handler = McpClientHandler {
-            info: ClientInfo::new(
+            info: ClientConfig::new(
                 ClientCapabilities::default(),
                 Implementation::new("legacy-client-fixture", "1.0.0"),
             )
@@ -3227,6 +3272,15 @@ mod tests {
         assert!(!client.invalidation_state().unwrap().tools_changed());
         let error = client.call_tool(&old_id, Map::new()).await.unwrap_err();
         assert!(matches!(error, McpClientError::ToolNotDiscovered));
+        let (error, sent) = client
+            .call_tool_reporting_dispatch(&old_id, Map::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, McpClientError::ToolNotDiscovered));
+        assert!(
+            !sent,
+            "a tool outside the snapshot is refused before any request"
+        );
         client
             .call_tool(replacement[0].id(), Map::new())
             .await
@@ -4185,6 +4239,19 @@ mod tests {
             McpClientError::ContinuationCapacityExceeded
         ));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let (error, sent) = client
+            .call_tool_reporting_dispatch(tools[0].id(), Map::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            McpClientError::ContinuationCapacityExceeded
+        ));
+        assert!(
+            !sent,
+            "a refused continuation slot never reaches the server"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
 
         client.close().await.unwrap();
         server_task.await.unwrap().unwrap();
@@ -4854,6 +4921,40 @@ mod tests {
         server_task.await.unwrap().unwrap();
     }
 
+    /// A timeout is a failure after the request was handed to the transport:
+    /// the server saw the call and may have acted on it.
+    #[tokio::test]
+    async fn a_timed_out_call_reports_that_its_request_left() {
+        let started = Arc::new(Notify::new());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let server = BlockingToolServer {
+            started,
+            cancelled: Arc::clone(&cancelled),
+        };
+        let (mut client, server_task) = connect_fixture_with(
+            server,
+            McpClientLimits::default(),
+            Duration::from_millis(40),
+        )
+        .await;
+        let tools = client.discover_tools().await.unwrap();
+        let (error, sent) = client
+            .call_tool_reporting_dispatch(&tools[0].id, Map::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, McpClientError::CallTimeout));
+        assert!(sent, "a timed-out request may have been acted on");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !cancelled.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        client.close().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
     #[tokio::test]
     async fn dropping_request_future_notifies_server_cancellation() {
         let started = Arc::new(Notify::new());
@@ -5084,7 +5185,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_discover_rejection_with_another_code_still_fails() {
+    async fn http_legacy_discover_internal_error_uses_sdk_initialize_fallback() {
         let (client, discover_probes, initializes, server) =
             connect_legacy_http_server(DiscoverRejection {
                 http_status: "200 OK",
@@ -5092,9 +5193,11 @@ mod tests {
                 null_id: false,
             })
             .await;
-        assert!(client.is_err());
+        let mut client = client.expect("SDK retries a correlated legacy discover error");
         assert_eq!(discover_probes.load(Ordering::SeqCst), 1);
-        assert_eq!(initializes.load(Ordering::SeqCst), 0);
+        assert_eq!(initializes.load(Ordering::SeqCst), 1);
+        assert_eq!(client.discover_tools().await.unwrap().len(), 1);
+        client.close().await.unwrap();
         server.abort();
     }
 }

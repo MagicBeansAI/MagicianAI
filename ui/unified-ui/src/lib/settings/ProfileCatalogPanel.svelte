@@ -1,24 +1,7 @@
 <script lang="ts">
-	/**
-	 * Profile catalog — the router's profiles as a browsable list.
-	 *
-	 * Deliberately profile-centric, where `ModelRoutingPanel` is
-	 * operation-centric. That panel answers "what serves this operation?" and
-	 * shows profiles only as choices inside a per-operation dropdown, so with
-	 * ~230 of them there is no way to see what exists, what a profile actually
-	 * is, or which ones nothing uses.
-	 *
-	 * Reads the same `GET /llm/routing` overview the routing panel does — no new
-	 * endpoint, and no second source of truth for what a profile is. Usage
-	 * counts are derived here from the operations in that same payload, so a
-	 * profile's count can never disagree with the routing table beside it.
-	 *
-	 * Read-only on purpose. Profiles carry provider credentials, context budgets
-	 * and adapter settings; a mistyped edit turns into per-call failures far from
-	 * the edit that caused it. Which profile serves an operation is the operator
-	 * decision, and that already has a surface.
-	 */
+	/** One row per server-owned model, with usage aggregated across resolved assignments. */
 	import { onMount } from 'svelte';
+	import { contextLabel, thinkingLabel, selectionForRoute } from '$lib/llm/modelCatalog';
 	import {
 		fetchRoutingOverview,
 		type RoutingOverview,
@@ -37,40 +20,43 @@
 		harness: 'Harness'
 	};
 
-	/**
-	 * Operations per profile, counted on `effective_profile` rather than
-	 * `default_profile`: what matters when reading a catalog is what a profile is
-	 * serving right now, including operations pointed at it by an override or by
-	 * engine affinity.
-	 */
+	interface CatalogEntry extends RoutingProfile { label: string; controls: string; }
+	const entries = $derived<CatalogEntry[]>((overview?.models ?? []).map(model => ({ name: model.id, label: model.label, model: model.model, provider: model.provider,
+			class: model.provider === 'ollama' ? 'local' : model.provider.startsWith('harness-') ? 'harness' : 'api',
+			installed: model.installed !== false, selectable: true,
+			controls: [model.limits ? `${contextLabel(model.limits.context_window_tokens)} context` : '',
+				model.thinking.levels.length ? `Thinking: ${model.thinking.levels.map(thinkingLabel).join(' / ')}` : 'No thinking adjustment'].filter(Boolean).join(' · ')
+		})));
+
 	const usage = $derived.by(() => {
 		const counts = new Map<string, number>();
 		for (const op of overview?.operations ?? []) {
-			counts.set(op.effective_profile, (counts.get(op.effective_profile) ?? 0) + 1);
+			const key = selectionForRoute(overview?.models ?? [], overview?.profiles ?? [], op.effective_profile)?.model_id ?? op.effective_profile;
+			counts.set(key, (counts.get(key) ?? 0) + 1);
 		}
 		return counts;
 	});
 
 	const visibleProfiles = $derived.by(() => {
 		const needle = filter.trim().toLowerCase();
-		return (overview?.profiles ?? [])
+		return entries
 			.filter((p) => classFilter === 'all' || p.class === classFilter)
 			.filter((p) => !unusedOnly || (usage.get(p.name) ?? 0) === 0)
 			.filter(
 				(p) =>
 					!needle ||
-					p.name.toLowerCase().includes(needle) ||
+					p.label.toLowerCase().includes(needle) ||
 					p.model.toLowerCase().includes(needle) ||
 					p.provider.toLowerCase().includes(needle)
 			)
 			.sort(
 				(a, b) =>
-					(usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0) || a.name.localeCompare(b.name)
+					(usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0) || a.label.localeCompare(b.label)
 			);
 	});
 
 	const unusedCount = $derived(
-		(overview?.profiles ?? []).filter((p) => (usage.get(p.name) ?? 0) === 0).length
+		entries.filter((p) => (usage.get(p.name) ?? 0) === 0).length
 	);
 
 	async function refresh(): Promise<void> {
@@ -94,11 +80,10 @@
 </script>
 
 <section class="catalog">
-	<h3>Model profiles</h3>
+	<h3>Models</h3>
 	<p class="hint">
-		Every profile the router can select, with what it runs on and how many operations use it
-		right now. Editing a profile is a config change, not a settings toggle — this is the
-		catalog; switching an operation happens in Model routing above.
+		Available providers and models, their supported controls, and the operations assigned to them.
+		Use Model routing above to change an assignment.
 	</p>
 
 	{#if error}
@@ -126,34 +111,31 @@
 		</div>
 
 		<p class="count">
-			{visibleProfiles.length} of {overview.profiles.length} profiles
+			{visibleProfiles.length} of {entries.length} models
 		</p>
 
 		<div class="rows">
 			{#each visibleProfiles as profile (profile.name)}
 				<div class="row" class:unused={(usage.get(profile.name) ?? 0) === 0}>
-					<span class="name" title={profile.name}>{profile.name}</span>
+					<span class="name" title={profile.label}>{profile.label}</span>
 					<span class="chip {profile.class}">{classLabel[profile.class] ?? 'API'}</span>
 					<span class="model" title={`${profile.provider} · ${profile.model}`}>
 						{profile.provider} · {profile.model}
+						{#if profile.controls}<small>{profile.controls}</small>{/if}
 					</span>
 					<span class="usage">{usageLabel(profile)}</span>
 					{#if !profile.installed}
 						<em class="not-installed" title="CLI not on PATH">not installed</em>
-					{:else if profile.selectable === false}
-						<em class="not-selectable" title="Adaptive composite: listed for display, not settable"
-							>composite</em
-						>
 					{:else}
 						<span></span>
 					{/if}
 				</div>
 			{:else}
-				<p class="empty">No profile matches that filter.</p>
+				<p class="empty">{entries.length ? 'No model matches that filter.' : 'Model choices are unavailable.'}</p>
 			{/each}
 		</div>
 	{:else if !error}
-		<p class="hint">Loading profiles…</p>
+		<p class="hint">Loading models…</p>
 	{/if}
 </section>
 
@@ -220,31 +202,37 @@
 	}
 	.row {
 		display: grid;
-		grid-template-columns: minmax(160px, 1.4fr) auto minmax(160px, 1fr) auto auto;
+		grid-template-columns: minmax(0, 1fr) auto;
 		gap: 0.6rem;
 		align-items: center;
-		padding: 0.3rem 0.5rem;
+		padding: 0.65rem 0.75rem;
+		border: 1px solid var(--border-soft);
 		border-radius: 8px;
 	}
-	/* Unused is information, not an error: a profile can exist for a flow that is
+	/* Unused is information, not an error: a model can be available for a flow that is
 	   off today. Muted rather than coloured so it reads as "nothing points here". */
 	.row.unused {
 		opacity: 0.6;
 	}
 	.name {
-		font-family: var(--font-mono, monospace);
+		font-weight: 600;
 		font-size: 0.8rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.model {
+		grid-column: 1 / -1;
+		display: grid;
+		gap: .25rem;
 		font-size: 0.78rem;
 		opacity: 0.8;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
+		white-space: normal;
+		overflow-wrap: anywhere;
 	}
+	.model small { font-size: var(--text-2xs, .72rem); }
 	.usage {
 		font-size: 0.75rem;
 		opacity: 0.65;
@@ -271,11 +259,6 @@
 	.not-installed {
 		font-size: 0.72rem;
 		color: var(--accent-primary, #c2502a);
-		white-space: nowrap;
-	}
-	.not-selectable {
-		font-size: 0.72rem;
-		opacity: 0.6;
 		white-space: nowrap;
 	}
 	.empty {

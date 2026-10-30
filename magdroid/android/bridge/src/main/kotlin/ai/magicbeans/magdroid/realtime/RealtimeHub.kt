@@ -269,6 +269,7 @@ class RealtimeHub internal constructor(
         outputs.forEach { output ->
             when (output) {
                 is HubOutput.Deliver -> {
+                    runCatching { ai.magicbeans.magdroid.chat.TaskUsageStore.shared.ingest(output.event.root) }
                     val delivery = HubDelivery.Event(output.event)
                     targets.forEach { subscriber ->
                         val wanted = runCatching { subscriber.filter.matches(output.event) }.getOrDefault(false)

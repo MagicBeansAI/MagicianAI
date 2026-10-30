@@ -3,6 +3,7 @@ package ai.magicbeans.magdroid.push
 import ai.magicbeans.magdroid.access.MagicianAccess
 import ai.magicbeans.magdroid.attention.AttentionItem
 import ai.magicbeans.magdroid.attention.MCP_OAUTH_SOURCE
+import ai.magicbeans.magdroid.attention.OUTWARD_REVIEW_TRIGGER
 import ai.magicbeans.magdroid.attention.attentionJson
 import ai.magicbeans.magdroid.attention.isActionable
 import ai.magicbeans.magdroid.attention.openTaskId
@@ -77,7 +78,8 @@ internal data class NotificationAnswerPlan(
  *
  * The push's `answer_mode` is a hint; the fetched ask decides. Both must agree,
  * and the ask must be:
- * - confirm: a plain confirmation, not destructive, not a secret, not a grant;
+ * - confirm: a plain confirmation, not destructive, not a secret, not a grant,
+ *   not an outward-send review;
  * - choice: one pick among 1–3 options, none needing typed detail, not a secret;
  * - text: a plain typed answer — not a password / OTP, not a multi-question form.
  * A destructive ask is never offered as a one-tap answer in any mode.
@@ -92,10 +94,14 @@ internal fun notificationAnswerPlan(
     val metadata = item.metadata
     val request = item.request(metadata)
     val schema = metadata?.inputSchema ?: metadata?.hitlRequest?.inputSchema
-    val question = request.prompt.trim()
+    // A previewed approval reads by its title ("Mira wants to change …"), not the prose summary.
+    val question = request.headline.trim()
     if (question.isEmpty()) return null
     if (request.isSensitive || request.destructive || schema?.destructive == true) return null
     if (request.grantKind != null || request.source == MCP_OAUTH_SOURCE) return null
+    // A captured send is reviewed against its preview in the app: Send and
+    // Always allow both let it go out, so neither is a one-tap answer.
+    if (request.outwardReview != null || schema?.escalationTrigger?.trim() == OUTWARD_REVIEW_TRIGGER) return null
     val buttons: List<NotificationAnswerButton>
     var replyLabel: String? = null
     when (mode) {
@@ -130,10 +136,14 @@ internal fun notificationAnswerPlan(
     return NotificationAnswerPlan(
         mode = mode,
         question = question,
-        hint = request.hint?.trim()?.takeIf { it.isNotEmpty() && it != question },
+        hint = request.approvalPreview?.let { preview ->
+            listOfNotNull(preview.diff?.changeLabel, preview.warnings.firstOrNull()?.message)
+                .joinToString(" · ").takeIf { it.isNotEmpty() }
+        } ?: request.hint?.trim()?.takeIf { it.isNotEmpty() && it != question },
         source = pushSource?.trim()?.takeIf { it.isNotEmpty() } ?: request.source,
-        inputType = request.inputType,
-        executionId = request.executionId,
+        // The server's respond handle, when it sent one, names what to post.
+        inputType = request.respond?.inputType ?: request.inputType,
+        executionId = request.respond.let { handle -> if (handle != null) handle.executionId else request.executionId },
         taskId = item.openTaskId,
         buttons = buttons,
         replyLabel = replyLabel,

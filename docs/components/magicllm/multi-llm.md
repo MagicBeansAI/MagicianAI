@@ -1,5 +1,12 @@
 # magicllm: Multi-Provider Router
 
+Generation configuration is authored through the
+[model catalog](model-catalog.md). References to profiles below describe
+generated dispatch contracts. Operators declare model capabilities once rather
+than authoring model/effort/output combinations; runtime aliases are rejected. DeepSeek Low now reaches
+`output_config.effort: low`; qualified Ollama native effort models send a named
+`think` level, while binary models retain true/false.
+
 ## Purpose
 
 `magicllm` is Magician's shared LLM crate: provider-agnostic request/response
@@ -28,8 +35,8 @@ Only providers referenced by a configured profile are instantiated.
   (`make test-gpt61-sol`).
 - **Gemini 4 Argon** (`gemini-4-argon`, `GEMINI_API_KEY`): selectable
   `chat-gemini4-argon-vision-toolsauto-r{low,medium,high}` profiles and
-  `gemini4-argon-vision-toolsany-rhigh` use the existing non-streaming
-  `generateContent` adapter, vision, function calling, a shared 1,048,576-token
+  `gemini4-argon-vision-toolsany-rhigh` use the `generateContent` adapter (streamed
+  over `:streamGenerateContent?alt=sse`, plain calls included), vision, function calling, a shared 1,048,576-token
   context and a 32,768-token output cap (the limit reported by our API model
   lookup on 2026-10-15, matching [Google's non-streaming REST limit](https://ai.google.dev/gemini-api/docs/generate-content/latest-model)).
   Timeout: 900 seconds. Both GenerateContent and
@@ -65,11 +72,11 @@ Only providers referenced by a configured profile are instantiated.
   `https://api.sarvam.ai/v1/chat/completions` (`SARVAM_API_KEY` as the
   `api-subscription-key` header), in its own `SarvamProvider` (shares only
   neutral HTTP/SSE helpers). Text-only (string `content`;
-  `model_supports_vision` false; chat renders images as placeholders). Always
-  reasons into `reasoning_content`; the provider always sends `reasoning_effort`
-  (`low|medium|high`; unset/`none`/`disabled`/`minimal` → `low`, `xhigh`/`max` →
-  `high`) and `max_tokens` (reasoning counts; unset → 8192), else a short prompt
-  can spend the whole budget thinking and return nothing. Tools default to
+  `model_supports_vision` false; chat renders images as placeholders). The provider
+  sends `reasoning_effort` (`low|medium|high`, or JSON `null` for explicit Off)
+  and `max_tokens` (reasoning counts; unset → 8192). Unset effort retains Low;
+  `none`/`disabled` sends null, `minimal` maps to Low, and `xhigh`/`max` to High.
+  A bounded allowance limits the combined thinking and answer budget. Tools default to
   `tool_choice: auto`; `json_schema` works; tool-result turns need no echoed
   `reasoning_content`. Streaming maps `delta.reasoning_content` to
   `ReasoningStart/Delta/End` (closed when answer tokens begin), then a
@@ -78,6 +85,7 @@ Only providers referenced by a configured profile are instantiated.
   Sarvam 400s on unknown fields. No `store`, so app-platform processing refuses
   `sarvam`, `deepseek` and `xai` profiles. v2 hosted models are not wired.
 - **DeepSeek** (`provider: deepseek`): Anthropic-compatible transport.
+  Structured JSON output is unavailable on this transport and is rejected before dispatch.
   `deepseek-flash` (DeepSeek-V4.1-Flash) takes JPEG/PNG/GIF/WebP images (billed
   as input) and thinking (default on; `thinking.type` enabled|disabled).
 - **Harness CLI subscriptions** (`harness-claude_code`, `harness-codex`,
@@ -91,22 +99,24 @@ Only providers referenced by a configured profile are instantiated.
     clock (prompt delivery, reading, exit), 8 MiB output (exceeding fails and
     stops the child); argv prompts (grok/agy) ≤ 128 KiB, others on stdin.
   - A nonzero exit or Codex `turn.failed` fails the operation even after partial
-    text, which is never published as a completed background result.
+    text, which is never published as a completed background result (Pi 1.2+
+    exits 1 on an output-limit cut-off).
   - Pi runs ephemeral, with a neutral system prompt and no tools, extensions,
     skills, prompt templates or context files; `model: default` uses Pi's own
     model and credentials (keeps `PI_CODING_AGENT_DIR`), else `pi --model`. No
-    token usage.
-  - The profile `model` rides the CLI model flag, so **size variants are
-    profiles** (`op-harness-*-small` pin haiku, grok-4-fast or
-    gemini-3.7-flash-low); none for Pi, or for Codex (ChatGPT-account Codex
-    refuses alternate models).
-  - Shipped `operation_mapping`s map **zero** operations to harness profiles; a
-    Settings override or engine affinity may (`claude_code` →
-    `op-harness-claude`, `pi` → `op-harness-pi`, `codex_app_server` →
-    `op-harness-codex`; local-default `ollama` operations exempt).
+    token usage. A run's background operations come here only when the CLI is
+    on its own sign-in ([harness credentials](../magician/harness-auth.md)).
+  - Qualified catalog models and native thinking controls determine CLI flags;
+    Default retains the engine owner's configured model/effort. No authored
+    size/effort profile variants are required.
+  - Shipped operation mappings use local/API assignments. Settings and engine
+    affinity can select installed harness models. Affinity finds a unique
+    catalog model with the matching `harness-*` provider and physical model
+    `default`; missing or ambiguous defaults do not resolve. Operator-defined
+    catalog IDs work without a name-based compatibility table.
     `codex_app_server` is a plane engine, not a provider: its parent turn gets
     `chat.harness_model` / `execution.harness_model` directly, while secondary
-    non-local operations ride `op-harness-codex`. See
+    non-local operations use the catalog’s matching Codex harness default. See
     [LLM routing overrides](../magician/llm-routing-overrides.md#engine-affinity).
   - Harness profiles are identified by their `harness-*` provider. Dispatch
     refuses tool-less profiles for execution-native turns, so they never become
@@ -162,15 +172,23 @@ Legacy string and metadata-free selectors still work. Keep operation names
 stable across prompts, orchestration and config.
 
 ```yaml
-llm_router:
-  default_profile: default
-  profiles:
-    default: { provider: openai, model: gpt-5.6-terra, api_key_env: OPENAI_API_KEY }
-  operation_mapping:
-    query_analysis:
-      default: default
-      description: Analyze request intent and required capabilities.
-      group: Planning & execution
+# llm-router.yaml is spliced under llm.router.
+    catalog:
+      connections:
+        openai: {provider: openai, api_key_env: OPENAI_API_KEY}
+      models:
+        openai/luna:
+          connection: openai
+          model: gpt-6-luna
+          label: Luna
+          limits: {context_window_tokens: 400000, max_output_tokens: 128000}
+          thinking: {mode: effort, levels: [none, low, medium, high], default: low}
+          capabilities: {tools: true}
+    operation_mapping:
+      query_analysis:
+        default: model/openai/luna/auto
+        description: Analyze request intent and required capabilities.
+        group: Planning & execution
 ```
 
 ## Protected Physical Disclosure
@@ -193,14 +211,34 @@ The guarded path is cold and single-attempt. Server history, internal retry,
 background execution or a second endpoint each need an explicit disclosure and
 resource contract first.
 
+## Whole-Call Rules (every provider)
+
+A tool's canonical schema may carry top-level `anyOf` / `oneOf` / `allOf` /
+`not` to say which argument combinations make a valid call (a pack's
+`parameter_constraints`). The rules are an internal contract: candidate
+construction, proposal validation and dispatch read them from the canonical
+`LLMToolSpec`. Models never get them as schema. Anthropic, OpenAI Chat
+Completions and xAI answer the whole request with a 400 on a top-level
+combinator, Gemini has none, and OpenAI Responses accepts but does not enforce
+one outside strict mode (measured 2026-10-30).
+
+`tool_schema::project_whole_call_constraints()` is the one projection: it
+removes those keys from the root and restates them in the tool description as
+`Valid argument combinations (JSON Schema): {...}`. Every adapter's tool mapper
+(including both Realtime APIs) sends that projection, and so does Magician's
+plane MCP catalog (`project_schema()`), so a harness agent sees the same
+definition. The same path keeps a third-party schema with root combinators from
+failing a request. Nested combinators (inside a property) pass through.
+
 ## Tool Schema Sanitization (Gemini)
 
 Gemini 400s on schema outside its `function_declarations[].parameters` subset.
+After the whole-call projection,
 `providers/gemini.rs::sanitize_gemini_schema()` recursively strips
 `additionalProperties`, `$schema`, `$id`, `$defs`, `$ref`, `definitions`,
 `oneOf`, `anyOf`, `allOf`, `not`, `if`/`then`/`else`, `examples`, `default`,
 `patternProperties`, `unevaluatedProperties` from the clone `map_tools` sends;
-other providers get the canonical schema.
+other providers get the canonical schema minus its root rules.
 
 ## Tool Transcript Replay
 
@@ -213,6 +251,18 @@ other providers get the canonical schema.
 
 Rich OpenAI chat profiles should use `openai_api_mode: auto` (Chat for simple
 turns, Responses for tool-bearing or multimodal continuations).
+Explicit Chat mode supports text tool calls; images and Responses checkpoints
+still require Responses.
+
+**Call/result pairing.** The OpenAI Responses and Anthropic adapters answer
+every tool call exactly once per request: duplicates are dropped, and an
+unanswered call gets `providers::MISSING_TOOL_RESULT_TEXT` (after the call's
+tool items on Responses; in the next user turn on Anthropic). Responses also
+remembers (per process, bounded) each response's `function_call` ids: a
+continuation delta starts after the assistant message holding them, later
+caller-added assistant turns go in as `function_call` + output pairs, and an
+unanswered remembered call is answered first. An unknown response id keeps the
+last-assistant anchor.
 
 ## Reasoning Configuration
 
@@ -225,10 +275,13 @@ turns, Responses for tool-bearing or multimodal continuations).
 | `strategy` | Internal hint (`extended_thinking`, `deepseek_thinking`); never sent |
 | `summary` | Responses `reasoning.summary` (`auto`/`concise`/`detailed`; `auto` when on, rendering "Thought" rows); ignored elsewhere |
 
-`providers::anthropic_messages::anthropic_model_uses_adaptive_thinking` decides
-adaptive thinking (`thinking.type = adaptive` + `output_config.effort`) for
-Fable, Mythos, Opus 5.x, Sonnet 5, Opus 4.6–4.7 and Sonnet 4.6, which refuse
-`thinking.type = enabled`; Haiku 4.5 takes it. Pi uses the same rule.
+Catalogued models choose adaptive thinking (`thinking.type = adaptive` +
+`output_config.effort`) versus `enabled` + `budget_tokens`, Off support and
+sampling from catalog data (`LLMRequest.model_wire`; see
+[model catalog](model-catalog.md#request-shape-wire)). Uncatalogued Claude ids
+fall back to name rules (adaptive for Fable, Mythos, Opus 5.x, Sonnet 5,
+Haiku 5.x, Opus 4.6–4.7 and Sonnet 4.6); Pi's harness config uses that fallback
+through `anthropic_model_uses_adaptive_thinking`.
 
 **Metadata denylist.** Profile `metadata:` flows into `LLMRequest.extra`, and
 strict providers 400 on unknown fields; every provider strips
@@ -286,10 +339,15 @@ Callers set typed `LLMRequest.context_reuse`, never provider ids in `extra`;
 - **Anthropic.** Ordinary requests: stable system/user breakpoints. Rolling
   `prefix_cache` requests anchor the last tool, system, the **last completed
   turn** (`anchor_last_completed_turn`; a decision loop replaces its trailing
-  prompt each iteration), a sentinel-ending final user block (tools then defer
-  to the system anchor), and a block 16 earlier (`anchor_lookback_block`;
-  Anthropic looks back ~20 blocks), within four breakpoints. Sentinels are
-  stripped; `extra.cache_control` also opts out.
+  prompt each iteration), a sentinel-ending final user block, and a block 16
+  earlier (`anchor_lookback_block`; Anthropic looks back ~20 blocks), within
+  four breakpoints; the tools give
+  up theirs to the system anchor only when all four are taken. Sentinels are
+  stripped; `extra.cache_control` also opts out. A conversation prompt cache
+  (`PromptCacheConfig::conversation_with_ttl`, set by chat) rolls without a
+  reuse plan, so chat history is read back instead of billed in full. Chat
+  must not carry a reuse plan: it would replace the OpenAI Responses chain id
+  in `extra.openai_previous_response_id`. Other providers ignore the flag.
 - **OpenAI.** Automatic caching. On GPT-5.6+ (never 5.5 or older), a sentinel
   with a non-empty stable half, followed by text or later blocks/messages, adds
   an explicit breakpoint and `prompt_cache_options.mode: "implicit"` (OpenAI's
@@ -312,7 +370,8 @@ Callers set typed `LLMRequest.context_reuse`, never provider ids in `extra`;
 - **Sarvam.** No controls; byte-stable replay prefix;
   `prompt_tokens_details.cached_tokens` read when reported.
 - **OpenRouter.** Anthropic-family requests keep the inline system anchor
-  (rolling ones use top-level `cache_control`); others rely on upstream.
+  (rolling and conversation ones use top-level `cache_control`); others get
+  no `cache_control` and rely on upstream.
 - **MiniMax** automatic (reads normalized when reported); **Ollama / Yutori N1**
   none advertised.
 
@@ -355,7 +414,7 @@ return `0.0`, so corrective reprice skips them rather than fabricating a zero
 cost. Rates are rows in `llm_pricing.template.json` (compiled in; see
 `pricing_file`); `llm_pricing.json` layers on top at startup.
 
-Decision rows: `decision:typesafe` / `jev-1.13`
+Decision rows: `decision:typesafe` / `jev-1.13` and `jev-1.14`
 ([model card](https://docs.typesafe.ai/models)) and zero-cost
 `decision:laya-{mlx,onnx}` / `decision:kev-{mlx,onnx}`; custom System One routes
 never inherit TypeSafe pricing. Decision receipts are priced at start time, keep
@@ -364,9 +423,12 @@ separately.
 
 ## Truncation Handling
 
-Non-streaming requests get one recovery from truncation (Anthropic
+Plain (`invoke()`) requests get one recovery from truncation (Anthropic
 `finish_reason = max_tokens`, OpenAI Chat / OpenRouter `length`, Responses
 token-related `incomplete_details.reason`, Gemini `MAX_TOKENS`). It raises
 `max_output_tokens` only from the caller's explicit limit or reported completion
-usage; if rejected as excessive, one backed-off retry follows. Streaming is
-excluded (partial output is already visible).
+usage; if rejected as excessive, one backed-off retry follows. Plain calls
+stream under the hood and run this on the rebuilt body. Caller-visible streams
+(`invoke_stream`) are excluded (partial output is already visible), except
+OpenAI Responses, which retries a cut-off stream and streams the retry only when
+the first attempt showed no text.

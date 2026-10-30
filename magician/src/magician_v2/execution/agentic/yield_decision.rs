@@ -79,6 +79,11 @@ pub struct YieldDecision {
     /// `keep_browser_cdp_connection_alive`, which wins if both are set.
     #[serde(default, skip_serializing_if = "is_false")]
     pub keep_browser_window_open: bool,
+    /// `summary` is the runtime's status of each requirement, written because
+    /// the model gave no answer — not the model's own words. Never read from
+    /// or written by a model, so a yield call cannot claim it.
+    #[serde(skip)]
+    pub summary_is_runtime_status: bool,
 }
 
 fn is_false(value: &bool) -> bool {

@@ -385,9 +385,34 @@
   // that is a duplicate of the page itself, so it stays off there.
   $: isChatRoute = /^\/(?:chat|t\/[^/]+\/chat)\/?$/.test($page.url.pathname);
   $: isVibeRoute = /^\/vibe(?:\/|$)/.test($page.url.pathname);
-  $: nativeAttentionWindow = $page.url.searchParams.get('native_attention') === '1';
+  // Settings embedded by a native host (`/settings?embed=1` in the desktop,
+  // iOS or Android app) is the same kind of bounded WebView as the native
+  // Attention window: no shell, background rails, overlays or shortcuts.
+  $: embeddedSettingsWindow =
+    $page.url.searchParams.get('embed') === '1' && /^\/settings(?:\/|$)/.test($page.url.pathname);
+  $: nativeAttentionWindow = $page.url.searchParams.get('native_attention') === '1' || embeddedSettingsWindow;
   $: notchAttentionWindow = nativeAttentionWindow && $page.url.searchParams.get('notch_attention') === '1';
   $: showSidebar = !isAboutRoute && !nativeAttentionWindow;
+
+  // Embedded Settings sizes its scrolling pane from the window's real height.
+  // An Android WebView hosted at WRAP_CONTENT height (Magdroid before 0.6.13)
+  // reports every viewport unit — vh, dvh, svh — as 0, which collapsed the
+  // pane to a blank screen; innerHeight stays correct there.
+  let embeddedViewportCleanup: (() => void) | null = null;
+  $: if (browser) {
+    embeddedViewportCleanup?.();
+    embeddedViewportCleanup = null;
+    if (embeddedSettingsWindow) {
+      const root = document.documentElement;
+      const apply = () => root.style.setProperty('--embedded-viewport-h', `${window.innerHeight}px`);
+      apply();
+      window.addEventListener('resize', apply);
+      embeddedViewportCleanup = () => {
+        window.removeEventListener('resize', apply);
+        root.style.removeProperty('--embedded-viewport-h');
+      };
+    }
+  }
 
   // Global freeze status — shown on ALL pages
   $: systemFrozen = $isFrozen;
@@ -445,6 +470,7 @@
   }
 
   onDestroy(() => {
+    embeddedViewportCleanup?.();
     unsubscribe();
     if (mountedPath) {
       unmountPrestoRoute(mountedPath);
@@ -484,6 +510,7 @@
   class:with-sidebar={showSidebar}
   class:native-attention-window={nativeAttentionWindow}
   class:notch-attention-window={notchAttentionWindow}
+  class:embedded-settings-window={embeddedSettingsWindow}
   data-shell-mode="v5"
   inert={$attentionCenterState.open}
   aria-hidden={$attentionCenterState.open ? 'true' : undefined}
@@ -528,9 +555,12 @@
   {/if}
 </div>
 
-<!-- Always-mounted globals (both shells) -->
-<AttentionCenter />
-<AttentionPromptModal />
+<!-- Always-mounted globals (both shells). Embedded Settings shows Settings
+     only: the Attention list and its prompts belong to the host app. -->
+{#if !embeddedSettingsWindow}
+  <AttentionCenter />
+  <AttentionPromptModal />
+{/if}
 <ConfirmationModalHost />
 {#if !nativeAttentionWindow}
   <EventsConsole />
@@ -570,6 +600,9 @@
   .magician-layout.notch-attention-window {
     border-radius: var(--radius-lg, 16px);
     overflow: hidden;
+    /* A slightly darker edge of the panel's own ground gives the mini panel
+       definition against whatever is behind it, in every theme. */
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg-base, #ffffff) 78%, var(--text-primary, #202426) 22%);
   }
 
   .magician-layout.native-attention-window {
@@ -582,10 +615,43 @@
     overflow-y: auto;
   }
 
+  /* Embedded Settings scrolls inside the pane so its sticky category nav
+     has a scrolling ancestor to stick to. */
+  .embedded-settings-window .native-attention-pane {
+    height: 100dvh;
+    height: var(--embedded-viewport-h, 100dvh);
+    min-height: 0;
+  }
+
   .notch-attention-window .native-attention-pane {
     height: 100dvh;
     min-height: 0;
     overscroll-behavior: contain;
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    .notch-attention-window .native-attention-pane {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--accent-primary, #ff6b6b) 40%, transparent) transparent;
+    }
+  }
+
+  /* The platform's grey scrollbar, themed and thin, once more cards stack up. */
+  .notch-attention-window .native-attention-pane::-webkit-scrollbar {
+    width: 5px;
+  }
+
+  .notch-attention-window .native-attention-pane::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .notch-attention-window .native-attention-pane::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--accent-primary, #ff6b6b) 38%, transparent);
+    border-radius: 999px;
+  }
+
+  .notch-attention-window .native-attention-pane:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--accent-primary, #ff6b6b) 62%, transparent);
   }
 
   :global(body:has(.notch-attention-window) .muij-modal-backdrop) {

@@ -8,6 +8,8 @@ surface.
 tokens of the pastel themes (Sorbet, Sky, Candy and their darks), gated by the
 `chatNext` flag that `ChatPanel.svelte` reads (see [Wiring](#wiring)).
 
+File mentions such as `Pages/report.md`, in code or Markdown links, use the chat’s scoped open/reveal actions rather than browser-relative navigation; ambiguous workspace paths require a full path.
+
 ## `chatNext` flag
 
 `src/lib/magician/chat/next/chatNextFlag.ts` exports `chatNext` (a derived
@@ -89,6 +91,9 @@ and settling (`chat-turn-progress.md`).
   `STAGE_LATEST_LIMIT`); earlier fold into `+N` ("N earlier steps").
 - `Show N steps` (`aria-expanded`) opens the latest 5, then `Show all N steps` /
   `Show latest only`; collapsing resets to the latest window.
+- An expanded model-call row (`kind: 'llm'`) carries its latency, tokens, cache
+  and cost, and a context phase (`context:<phase_id>`) its timings, as a muted
+  second line (`cn-stage__detail`); other rows stay one line.
 - No running row: a `--radius-chip` label, `Waiting on your input` if a row is
   `waiting`, else `Finishing…`.
 - A hidden `aria-live="polite"` region announces the current step only.
@@ -108,6 +113,22 @@ never feeding a leaf. No leaves yet → no stage (never a premature
 `Finishing…`). Historical cards (`live` false, "What happened") stay classic.
 Test: `RequestActivityCard.component.test.ts`.
 
+**Reconnect.** Sends carry `continue_on_disconnect: true`. `chat/turnState.ts`
+keeps each turn's server state from `turn_state` (session detail, `/chat/active`,
+`/queue`) and `chat.turn.state_changed`. A `running` turn of the open session
+is the live turn (card live with steps from the start, Stop available) after a
+reload; a reply-less turn stopped by the owner shows "Stopped", a failed or
+interrupted one says so; a dropped stream whose turn still runs or answered
+shows the server transcript, not an error bubble. Test: `turnState.test.ts`.
+
+**Live in-progress steps.** An LLM call is one row from send to settle, in the
+card and in `ChatTurnProgress`: typed `LLMRequestSent` opens `Thinking…` keyed
+by `correlation.llm_call_id`, `LLMRouted` relabels it `Thinking with <model>`,
+`LLMResponseReceived` (and any chat-side `llm.*` copy with that id) settles the
+same row. Older servers keep one row per response. Running rows show elapsed
+`m:ss` off one shared 1 s clock (`chat/next/liveClock.ts`). Tests:
+`liveClock.test.ts`, `stageRows.test.ts`, `RequestActivityCard.component.test.ts`.
+
 ## Task card order
 
 Replies are stamped at turn end, task cards mid-turn, so `normalizeMessages`
@@ -125,6 +146,8 @@ A chat task is a live card that expands in place (wired in `ChatPanel.svelte`:
 `TaskProgressPanel` side panel was removed and **Inspect →** goes to the task
 drawer.
 
+Task reports and Markdown file previews share formatted Markdown/HTML, readable scrolling tables, and an info-icon disclosure for verification warnings across chat cards and the drawer's Run and Output sections.
+
 **View-model.** `liveTask.ts`: `toLiveTaskView(message, taskExecutionGroups)` →
 `LiveTaskView`, and `formatElapsed(ms)`, over `TaskStatusCard`'s inputs via the
 shared `taskStatus.ts` helpers:
@@ -133,7 +156,7 @@ shared `taskStatus.ts` helpers:
 |-------|--------|
 | `id` | `content.task_id`, else the message id |
 | `title` | `labelOrShortIdTitle(display_label, task_id)` (`tasks/taskPanelTitle.ts`, drawer's `deriveTaskTitle`: routed `slug / …` → its goal, id-shaped labels ignored), else `Task · <short id>` (`task_2679cefd…` → `Task · 2679ce`), else `Task`; never the raw id or `summary` |
-| `status` | `content.status` (the store's `ready`/`pending` wins over a lagging `planning`/`draft`, dropping the summary) → `queued` (`ready`, `pending`, `rejected`: no timer, Cancel or activity; `Not started` tag) / `running` / `waiting` (`paused`, `draft`, `waiting*`, `awaiting*`) / `completed` / `partial` / `failed` / `cancelled`; `synthesis_pending` stays `running`. `partial` = `completed` with `content.completion_kind === 'partial'` (backend `CompletionKind`, `TaskStatusUpdate.completion_kind`, `chat/models.rs`) or `partial_success` |
+| `status` | `content.status` (the store's `ready`/`pending` wins over a lagging `planning`/`draft`, dropping the summary) → `queued` (`ready`, `pending`, `rejected`: no timer, Cancel or activity; `Not started` tag) / `running` / `waiting` (`paused`, `draft`, `waiting*`, `awaiting*`) / `completed` / `partial` / `failed` / `cancelled`; `synthesis_pending` stays `running` (settles `completed` once the flag is 10 minutes old; `storeStatusForCard` holds a synthesizing terminal store status back). `partial` = `completed` with `content.completion_kind === 'partial'` (backend `CompletionKind`, `TaskStatusUpdate.completion_kind`, `chat/models.rs`) or `partial_success` |
 | `verb`, `terminal` | `taskStatusVisual`, `isTerminalTaskStatus`; partial reads `Partially completed`, terminal. `archived` is terminal (`Archived`, muted like `cancelled`, runs settle `done`), so a card whose last status update never arrived settles on the store's `archived` instead of reading `Running` forever (the iOS `LiveTaskCardModel` and `ChatViewModel` treat it the same) |
 | `reason` | `taskStatusReason(content)`: trimmed markdown `content.summary` (live line, pause, failure or completion text) |
 | `steps` | one per run group: `taskExecutionLabel` + `running` / `done` / `failed` / `waiting` |
@@ -252,6 +275,10 @@ Reveal in Finder, preview toggles, Open original) uses `.mg-chip-action`.
 
 ## Presence + composer lift
 
+Web chat saves unsent composer text in per-tab session storage, separated by
+owner, workspace, thread and chat. Reloading restores it; sending or clearing
+removes it. Uploaded files and approval-form answers are not stored as drafts.
+
 **`PresenceOrb.svelte`**: `state: 'idle' | 'thinking' | 'working' | 'needs-you'`,
 a 24 px CSS orb with `data-state`, `role="status"` and hidden text from
 `presenceLabel` (`Magician is idle` / `is thinking` / `is working` /
@@ -267,15 +294,16 @@ a 24 px CSS orb with `data-state`, `role="status"` and hidden text from
 Reduced motion: `animation: none`.
 
 **Derivation.** `presence.ts` `derivePresence({ hasPendingHitl, liveTurn,
-streaming, toolsRunning })`, precedence **needs-you > working > thinking >
-idle**. ChatPanel computes `presenceState` only under chat-next:
+streaming, toolsRunning, taskWaitingOnUser })`, precedence **needs-you >
+working > thinking > idle**. ChatPanel computes `presenceState` only under chat-next:
 
 | Signal | ChatPanel source |
 |--------|------------------|
 | `hasPendingHitl` | a visible message's turn id is in `$pendingHitlByChatTurnId` (persisted escalation cards do not count, or old clarifications would pin the orb) |
 | `liveTurn` | `liveTurnId`: in-flight send, else a correlated active task's turn, else `latestOpenUserTurnId` (`liveTurn.ts`: newest typed user turn without reply or terminal task, under 10 minutes, 30 s clock; never `voice-turn-*` / `voice-request-*` / `realtime_voice` rows) |
 | `streaming` | a visible assistant message with id prefix `streaming-` and non-empty text |
-| `toolsRunning` | `activeTaskTurnId` (a turn-spawned task still running) |
+| `toolsRunning` | `activeTaskTurnId` (a turn-spawned task still running), unless that task waits on the user |
+| `taskWaitingOnUser` | the active task is paused, waiting for input/confirmation, or a draft awaiting review (`liveTurn.ts`). `ready`, `pending` and `rejected` have no live run; returning to ready after cancellation clears presence and obsolete Cancel actions, with run identity checked before using task-store status. |
 
 **Mount.** FloatingComposer's `dock-actions` slot, after the session
 ContextPill and before the host's `composer-dock` slot, only when `$chatNext`.
@@ -383,12 +411,83 @@ Tests: `ChatPanel.chatNext.component.test.ts` (flag on vs off across cards,
 orb, empty state, Cancel, chat-started ordering); `presence.test.ts`;
 `PresenceOrb.component.test.ts`.
 
+## Answering an agent's pause in chat
+
+A delegated run that calls `need_user_input` puts an escalation card in the
+chat that started it (`chat/escalation_listener.rs`). The card's `options` hold
+one generic `Respond`; the ask's own options ride in `input_schema.options`.
+`src/lib/magician/chat/escalationReply.ts` decides both shortcuts below, and
+both post through `answerTaskAsk` → `openHitlPrompt` — the modal's own path —
+so a re-ask reopens the prompt and success runs `markEscalationResolved`.
+
+- **One click.** A pending agentic `choice` card (`escalation_type`
+  `user_input`, no `request_id`) shows the ask's options, one per id. A click
+  posts `{source: "escalation", input_type: "choice", value: {type: "choice",
+  selected_id}, channel: "web", execution_id}` to
+  `/api/magician/v2/hitl/{pause_state_id}/respond`. Approve / Deny post
+  `{type: "confirmation", confirmed}` only for the agent's own
+  `need_user_input` confirmation — an allow-list: schema `type:
+  "confirmation"`, explicit `destructive: false`, no `action_type`, not
+  `protected`, no preview or preference hold. Agentic tool-action approvals
+  (`action_type`, no destructive flag) and protected-app asks keep the modal,
+  as the push lane never offers one-tap confirm for agentic asks. A
+  change/other option (`requires_input`, or an id/label starting with
+  change/other), a secret or protected ask and every other card open the
+  modal as before. While posting the card's buttons are disabled; a failure
+  shows its reason on the card (`.chat-escalation-error`, not a live region —
+  the toast announces it) and keeps the options.
+- **Typed.** When the session's newest open card (the card's own
+  actionability test: not resolved, stale, finished or deleted) is an agentic
+  `text`, `guidance`, `choice`, `multi_choice` or allow-listed `confirmation`
+  ask, `EscalationReplyBanner` shows "Your reply will answer: <question>" over
+  the composer and Send answers the pause instead of starting a turn. A choice
+  matches an option id or label case-insensitively; unmatched words go to the
+  change/other option as `other_value`. A multi-choice tries the whole text as
+  one label before splitting on `,`/`;`/`and`. A confirmation reads yes/no or
+  its button labels. Text the ask cannot take stays in the composer and the
+  banner says "Reply with: A · B, or ✕ to send as a message" — it never starts
+  a turn silently. The banner's ✕ ("Send as a normal message instead") talks
+  past that pause. Only a typed composer send is routed: voice or auto-sent
+  turns, attachments and background sends go out as messages. A successful
+  answer resolves the card with "Answered: <text>". When the pause was already
+  gone (`alreadyClosed`, carried through `openHitlPrompt` and
+  `TaskAskOutcome`), a failed post, or a scope change mid-post, the words go
+  back into the composer; an already-gone pause also closes its card.
+- **The dock's ask.** Chat shows `hitl.requested` in the composer dock
+  (`ComposerAskDock`), not the transcript, so a pause usually has no card.
+  With no open card, typed text answers the dock's shown ask by the same rules
+  (`dockAskReplyContent`, posted via `answerTaskAsk`). Grant,
+  guidance-or-done, preference, tool-action confirmation and non-agentic asks
+  keep their own surface; an open transcript card still wins.
+- **Prompt options.** `buildPersistedChatHitlTarget` gives a choice prompt the
+  schema options, so the modal offers the same answers as the card.
+- **Details.** The card renders the escalation's `hint` with
+  `src/lib/hitl/HitlDetails.svelte`. A hint on several lines or over 200
+  characters (`isDetailedHint`, `hitl/hitlDetails.ts`) is what the ask is about
+  (a proposed goal tree, the notes about to be written), so it shows as
+  Markdown (the generative `Markdown` sanitizer) under a closed "Details"
+  toggle, scrolling past 22rem. A shorter hint stays one plain line.
+  `HitlPromptFields` uses the same component, so the composer dock and the
+  focused prompt show the same Details.
+
+Tests: `escalationReply.test.ts`, `EscalationCard.component.test.ts`,
+`ChatPanel.escalationReply.component.test.ts`, `hitl/hitlDetails.test.ts`,
+`HitlPromptFields.component.test.ts`.
+
 ## Shell around chat
 
 The floating quick-chat bubble (`routes/(app)/ChatBubble.svelte`) is not mounted
 on chat routes (`/chat`, `/t/<thread>/chat`); it stays on every other page.
 
 ## Expand / collapse keeps the card in view
+
+Generated leading “Not fully verified” notes use a themed info control beside
+the message metadata. One click opens the saved reason directly; the answer
+keeps its tables, links and numbers. Popup content renders as inert text outside
+the message layout, stays anchored during scrolling, and closes with Escape or
+an outside click. Stored text, copy and speech retain the original caveat.
+Structured replies are validated before display-only caveat extraction, so a
+warning-only plain-text projection cannot hide otherwise valid answer blocks.
 
 `keepToggledInView` (`src/lib/magician/chat/keepToggledInView.ts`), on the
 messages scroller: a click (capture phase) on a control with `aria-expanded`,
@@ -399,6 +498,8 @@ ancestor with room, else the page. Capture phase because toggles like "Show
 preview" replace themselves in their handler. New expandable cards get this by
 using one of those attributes on their toggle. `TaskPanelDrawer` uses it with
 `.act` and `.tech-details` as follow scopes.
+Controls marked `data-popover-trigger` skip this follow behavior because opening
+a popup does not resize the message.
 
 ## Date dividers + floating date
 
@@ -456,13 +557,15 @@ and segment rule match iOS (`PlanProgressModel.swift` `PlanSteps`,
 ## Usage on the live task card
 
 The status line shows `N calls · X tok · $Y` from `taskUsage`
-(`chat/next/taskUsage.ts`): live from each `llm.succeeded` the task-scoped
-`ChatTurnProgress` (with `taskId`) sees for the run and its delegated children,
-once per call id, dropping events not attributable to the task
-(`eventBelongsToTask`); plus, once per phase (planned, running, done),
-`loadTaskUsageSnapshot` from `/execution-panel` (run: `deriveTimeline` →
-`runCost`; planning: `debug.planning_timeline` `cost_usd` / `tokens`). Shown as
-run + planning (live run total preferred; tooltip splits them); survives reload.
+(`chat/next/taskUsage.ts`): stored run calls and live `llm.succeeded` /
+`LLMResponseReceived` merge by call ID, plus planning usage from
+`debug.planning_timeline`. Initial `/execution-panel` reads also load the
+content-free model-call ledger (including auxiliary/judge calls); live
+`ExecutionPanelDelta` states share the baseline. A late subscription or
+replay cannot replace it with one live call. Unreported token counts show as
+unavailable. Subscribed task cards use their explicit task ID and the full
+execution timeline for progress counts, retaining history across resumes of
+the same execution; the activity list remains the recent chat tail.
 
 The turn chip (`RequestActivityCard`) is the whole turn — own calls plus every
 task started by `create_task` / `run_task`, "N calls · X tok · $Y · incl. K
@@ -488,7 +591,7 @@ tasks" — so it is never below any of its task cards.
 
 ## Slash commands in the composer
 
-Contract: `docs/plans/2026-10-03-slash-commands-and-run-budgets.md`. A leading
+Contract: `docs/archive/plans/2026-10-03-slash-commands-and-run-budgets.md`. A leading
 `/` in a single-line draft opens a picker in the `@` picker's dock (ArrowUp/Down
 wrap, Enter/Tab or click). Commands run client-side, never sent as messages.
 
@@ -496,8 +599,9 @@ wrap, Enter/Tab or click). Commands run client-side, never sent as messages.
 |---------|---------|------|
 | `/budget` | this chat's running/paused tasks, newest first (`task_status_update` cards ∪ thread `$taskStore` rows; store status wins) → `+$25`, `+$100`, `+1M tokens`, `+50 iterations`, `Unlimited` | `POST /api/magician/v2/tasks/{task_id}/budget` with `add_cost_usd` / `add_tokens` / `add_iterations` / `unlimited` |
 | `/budget default` | harness `$50 / $100 / $250 / Unlimited`, native `$5 / $15 / $50 / Unlimited`, current from `GET /budgets/defaults` | `PUT /api/magician/v2/budgets/defaults`, both caps (only the changed one if the GET failed) |
-| `/engine` | engine × model rows from `GET /plane/engines` (browser choice marked), then "Make default everywhere…" (server default marked) | browser: `chatHarnessPreferenceStore.select`; everywhere: `PUT /plane/chat-engine` then `adoptServer` |
-| `/run-engine` | same rows, run engine marked | `PUT /plane/engine` (`setRunHarnessEngine`) |
+| `/engine` | "Now: <engine · model> (this browser) · everywhere: <server engine>", one row per installed engine (current marked, its model as detail), "Make default everywhere…". Magician/coding agent → the dropdown's catalog (`GET /chat/models?engine=`; the composer's own engine reads its panel store, another is fetched without touching it), where a model with a thinking choice opens its levels; other engines → roster `models[]` (`CLI default` first); a default-only engine is set at once. "Everywhere" lists engines only | browser: `chatHarnessPreferenceStore.select`, then for a catalog pick the panel's `chatProfileStore.ensureLoaded` + `selectModel` (what the dropdown writes); everywhere: `PUT /plane/chat-engine` then `adoptServer` (the model stays the browser's) |
+| `/run-engine` | Settings → Agentic flows: "Now: …" or "Same as Chat (…)", then "Same as Chat" and the installed engines. Magician → the `agentic_decision` models from `GET /llm/routing` (current only while runs resolve to Magician); coding agent → "Default" then `GET /chat/models?engine=pi`; others → roster `models[]`. Catalog models with a thinking choice open their levels | `PUT /plane/engine` (`setRunHarnessEngine`; the coding agent with `model_selection`, JSON `null` for "Default"); Magician: `PUT /plane/engine` to `magician` only when runs resolve elsewhere, then `PUT /llm/routing/agentic_decision {selection}` |
+| `/voice-mode` | Live (`realtime`), Dictate (`recording`), Hands-free (`hands_free`), current from `voiceModeStore` | `saveMediaPreferences({ voice_mode })`, as the voice switch (applies `voiceModeStore` at once, rolls back on failure) |
 
 - **Levels.** The draft reads `/<chosen tokens> <query>` (`slashPrefix`); every
   query word must match, label-prefix first. Deleting into a token, Backspace on
@@ -508,14 +612,38 @@ wrap, Enter/Tab or click). Commands run client-side, never sent as messages.
   arrow pick the highlighted option, so a half-typed command never goes out.
 - **Confirmation.** Success clears the composer with a `showSuccess` toast
   (e.g. `+$100 for "Research ACME"` with the effective budget
-  `Cost $98.20 of $125 · 11 of 60 iterations · resumed`); failure shows
+  `Cost $98.20 of $100 · 11 of 60 iterations · resumed`); failure shows
   `Command failed` with the server's `message` / `error`; a bare 404 on a budget
   route reads "This Magician server does not offer run budgets yet". An
   unreadable defaults GET shows a note and leaves rows pickable.
+- **Current values and models.** A level's "Now: …" line sits above its rows
+  (`SlashView.summary`); a model list shows `Loading models…`, or a
+  `Models unavailable: …` note when its GET fails. A catalog model whose
+  thinking control offers a choice opens a third level (`/engine pi <model>`;
+  `thinkingChoices`: Auto, then the control's levels), the level in force
+  marked for the model in use, else the model's default; any other model is
+  picked at once with `keepThinking` (the current level when offered, else the
+  model's default). A mode the surface cannot start is shown with "Not
+  available here" and is not pickable (`SlashItem.disabled`). Toasts:
+  `Chat engine: Coding agent · Claude Sonnet · High`,
+  `Chat engine everywhere: Codex`, `Agentic flows: Magician · GPT-6.1 Sol`,
+  `Agentic flows: Coding agent · Default`, `Voice mode: Hands-free`.
 
 Code: `composerCommands.ts` (pure triggers, levels, options),
 `slashCommandActions.ts` (budget API, runner), `SlashCommandPicker.svelte`,
 `FloatingComposer.svelte` (`slashCommandsEnabled`, `slashContext`; emits
 `slashNavigate` per level and `slashCommand`), `ChatPanel.svelte` (refreshes
-engines, defaults or tasks per level; toasts). Tests: `composerCommands.test.ts`,
+engines, model catalogs, the loop mapping, voice preference, defaults or tasks
+per level; toasts). Design: `docs/plans/2026-10-30-slash-engine-model-voice-design.md`. Tests: `composerCommands.test.ts`,
 `slashCommandActions.test.ts`, `FloatingComposer.slash.component.test.ts`.
+
+Chat composers persist scoped session model choices and snapshot routing before sends/queues. `/chat` and named chats share Settings, Files and Models tabs at the same reading width, with cumulative tokens, cache-read tokens and cost on the right. Files follows the viewed session, including archives: uploads and registered task artifacts carry task/execution/chat/date tags, search, filters, downloads, sizes and confirmed removal of chat copies; task originals remain under Work. Models shows per-provider/model calls, input/output tokens, cache reads/writes and cost from the same cached ledger, including chat-linked delegated, decision-model and voice receipts. Unknown telemetry stays explicit; embeddings use a separate ledger. Usage totals retry failed reads while idle, refresh on focus/reconnection, and pause polling while hidden. Dictation and reply speech pin the initiating chat for billing across asynchronous work and delayed playback.
+
+Quality review limits accept empty or 0 as Unlimited and show that explicitly in proposals, runs and continuation.
+
+Model catalogs and pending loads are scoped to the account, workspace and credential revision; a scope switch invalidates stale selections before dispatch.
+
+VibeDev exposes a labelled Super God control beside its presence dot; it keeps the shared confirmation, duration choices and turn-off flow.
+
+Spoken replies read findings first and end with "Some findings remain
+unverified."; checker diagnostics stay in the info disclosure.

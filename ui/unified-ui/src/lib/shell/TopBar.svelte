@@ -36,6 +36,16 @@
 	import { appNavigationTabs } from '$lib/apps/appNavigation';
 	import { appNavigationEntries } from '$lib/stores/appNavigationStore';
 	import RecordingDot from '$lib/shared/components/RecordingDot.svelte';
+	import { hudWindow, setHudWindowExpanded } from './hudWindow';
+	let compactBusy = false;
+	let compactError = '';
+	async function returnToCompact(): Promise<void> {
+		compactBusy = true;
+		compactError = '';
+		try { await setHudWindowExpanded(false); }
+		catch (error) { compactError = String(error); }
+		finally { compactBusy = false; }
+	}
 
 	const dispatch = createEventDispatcher<{
 		'open-palette': void;
@@ -84,8 +94,8 @@
 	)?.href ?? '';
 </script>
 
-<header class="topbar">
-	<div class="brand-cluster">
+<header class="topbar" data-tauri-drag-region={$hudWindow.available && $hudWindow.expanded ? '' : undefined}>
+	<div class="brand-cluster" data-tauri-drag-region={$hudWindow.available && $hudWindow.expanded ? '' : undefined}>
 		<a class="brand" href="/chat" aria-label="magican chat">
 			<span class="brand-mark-col"><span class="brand-mark"><BrandStar size={30} /></span></span>
 			<span class="brand-name">magican</span>
@@ -94,7 +104,7 @@
 		<span class="topbar__health-wrap"><BackendHealthIndicator compact /></span>
 	</div>
 
-	<nav class="primary-nav" aria-label="Primary">
+	<nav class="primary-nav" aria-label="Primary" data-tauri-drag-region={$hudWindow.available && $hudWindow.expanded ? '' : undefined}>
 		<a
 			class="tab tab--chat"
 			class:active={isActive('/chat')}
@@ -133,7 +143,7 @@
 		{/each}
 	</nav>
 
-	<div class="top-right">
+	<div class="top-right" data-tauri-drag-region={$hudWindow.available && $hudWindow.expanded ? '' : undefined}>
 		<button
 			class="cmdk"
 			type="button"
@@ -170,6 +180,12 @@
 				</span>
 			{/if}
 		</button>
+		{#if $hudWindow.available && $hudWindow.expanded}
+			{#if compactError}<span role="alert">{compactError}</span>{/if}
+			<button class="icon-btn" type="button" disabled={compactBusy} on:click={returnToCompact} aria-label="Return to compact" title="Return to Quick Chat">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M6 2v4H2m8-4v4h4M6 14v-4H2m8 4v-4h4" /></svg>
+			</button>
+		{/if}
 	</div>
 </header>
 
@@ -209,6 +225,11 @@
 		   `paint` is intentionally omitted — it would clip absolutely-positioned
 		   children that overflow downward (theme dropdown, avatar menu). */
 		contain: layout style;
+	}
+	:global(.desktop-app-window) .topbar {
+		background: var(--bg-base);
+		backdrop-filter: none;
+		-webkit-backdrop-filter: none;
 	}
 
 	.brand-cluster {
@@ -298,11 +319,16 @@
 		filter: drop-shadow(2px 2px 0 #000);
 	}
 
+	/* The running web app's version stays readable at every width: people
+	   quote it when reporting a problem. Settings → About lists the rest. */
 	.brand-ver {
-		margin-left: 4px;
+		margin-left: 6px;
 		font-family: var(--font-mono);
-		font-size: 10.5px;
-		color: var(--text-faint, #aaa);
+		font-size: 11px;
+		line-height: 1;
+		color: var(--text-secondary, #666);
+		white-space: nowrap;
+		flex-shrink: 0;
 	}
 
 	.primary-nav {
@@ -580,7 +606,8 @@
 			min-width: 0;
 		}
 		.brand-ver {
-			display: none;
+			margin-left: 4px;
+			font-size: 10px;
 		}
 	}
 

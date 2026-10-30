@@ -21,7 +21,9 @@ private struct VoiceCaptionContentHeightKey: PreferenceKey {
 /// chat (not full-screen), so the thread stays visible behind it.
 ///
 /// Renders a mic-reactive engine switch, a fixed-height rolling caption view,
-/// the mm:ss timer, and compact microphone controls alongside a red end button.
+/// the mm:ss timer, a red end button, and the mic controls: an
+/// [Open mic | Hold to talk] segmented control above a mic button shaped by
+/// the selected mode.
 /// All styling reads the shared `ThemeManager` so the card matches the active
 /// theme.
 ///
@@ -34,10 +36,11 @@ struct VoiceCallPanel: View {
     /// complete cascaded pipeline, so the Hands-free engine is not offered.
     var handsFreeAvailable: Bool = true
     var onTypeMessage: (() -> Void)? = nil
-    /// In the chat the panel sits in flow above the composer card (the
+    /// In the chat the panel takes the composer's slot (the
     /// transcript lifts; the card's queue / concurrent rows stay visible), on
     /// the card's inset and radius. Floating elsewhere.
     var inFlow = false
+    var topRows: AnyView? = nil
     @ObservedObject private var theme = ThemeManager.shared
     @ObservedObject private var audioSettings = AudioSettings.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -51,6 +54,7 @@ struct VoiceCallPanel: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            if let topRows { topRows }
             header
             if let error = viewModel.errorMessage {
                 errorRow(error)
@@ -95,7 +99,7 @@ struct VoiceCallPanel: View {
                         .font(.themedMono(11, weight: .medium))
                         .foregroundColor(theme.secondaryTextColor)
                 }
-                Text(viewModel.statusText)
+                Text(statusText)
                     .font(.themed(12))
                     .foregroundColor(theme.secondaryTextColor)
                     .lineLimit(1)
@@ -111,6 +115,25 @@ struct VoiceCallPanel: View {
             endButton
                 .offset(y: -4)
         }
+    }
+
+    /// The status line names the mic mode ("Open mic · Listening",
+    /// "Hold to talk · Ready") so the mode reads at a glance. Phases other
+    /// than ready (connecting, errors) keep the view model's wording.
+    private var statusText: String {
+        let base = viewModel.statusText
+        guard viewModel.client.phase == .ready else { return base }
+        let mode = viewModel.pttOn ? "Hold to talk" : "Open mic"
+        // In Hold to talk, muted == not held.
+        if viewModel.pttOn && !viewModel.muted { return "\(mode) · Sending" }
+        if viewModel.client.assistantWorking { return "\(mode) · \(base)" }
+        if viewModel.pttOn {
+            // Keep the address-phrase variant ("Hold, then say …").
+            return viewModel.voiceAddressPhrase == nil ? "\(mode) · Ready" : "\(mode) · \(base)"
+        }
+        if viewModel.muted { return "\(mode) · Muted" }
+        // "Listening" or "Listening for …".
+        return "\(mode) · \(base)"
     }
 
     /// Continuously pulsing, mic-reactive engine switch, drawn from the shared
@@ -368,77 +391,134 @@ struct VoiceCallPanel: View {
 
     // MARK: - Controls
 
+    /// Mic mode on top, the mode-shaped mic control centred under it, so the
+    /// active mode is always visible and the button's shape agrees with it:
+    /// a round mute toggle for Open mic, a wide hold capsule for Hold to talk.
     private var controlRow: some View {
-        HStack(spacing: 10) {
-            listeningModeControl
-            Spacer(minLength: 0)
+        VStack(spacing: 10) {
+            micModeControl
+            VoiceActivityWaveform {
+                let active = viewModel.client.phase == .ready || viewModel.client.phase == .rotating
+                return active ? max(viewModel.playbackLevel, viewModel.muted ? 0 : viewModel.level) : 0
+            }
             if viewModel.pttOn {
                 holdToTalkButton
             } else {
-                muteButton
+                openMicButton
             }
         }
+        .frame(maxWidth: .infinity)
     }
 
-    private var listeningModeControl: some View {
+    /// Translation profiles need server VAD, so Hold to talk is shown but
+    /// disabled there; Open mic always stays selectable.
+    private var holdToTalkAvailable: Bool {
         let selectedProfile = audioSettings.realtimeVoiceProfiles.first {
             $0.id == viewModel.realtimeProfile
         }
-        let holdAvailable = viewModel.voiceEngine == .handsFree
+        return viewModel.voiceEngine == .handsFree
             || selectedProfile?.isTranslation != true
-        let canToggle = viewModel.pttOn || holdAvailable
-        return Button {
-            viewModel.setHoldToTalk(!viewModel.pttOn)
-        } label: {
-            HStack(spacing: 6) {
-                Label(
-                    viewModel.pttOn ? "Hold to talk" : "Open mic",
-                    systemImage: viewModel.pttOn ? "hand.tap.fill" : "mic.fill"
-                )
-                Image(systemName: "arrow.left.arrow.right")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .font(.themed(12, weight: .medium))
-            .foregroundColor(theme.secondaryTextColor)
-            .padding(.horizontal, 12)
-            .frame(height: 36)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(theme.secondaryTextColor.opacity(0.3), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(!canToggle)
-        .opacity(canToggle ? 1 : 0.5)
-        .accessibilityLabel("Microphone mode: \(viewModel.pttOn ? "Hold to talk" : "Open mic")")
-        .accessibilityHint(viewModel.pttOn
-            ? "Switches to Open mic"
-            : "Switches to Hold to talk")
     }
 
-    /// Direct microphone state for Open mic and Hands-free sessions.
-    private var muteButton: some View {
-        Button(action: { viewModel.toggleMute() }) {
-            HStack(spacing: 6) {
-                Image(systemName: viewModel.muted ? "mic.slash.fill" : "mic.fill")
-                    .font(.system(size: 13))
-                Text(viewModel.muted ? "Muted" : "Mic on")
-                    .font(.themed(12, weight: .medium))
-            }
-            .foregroundColor(viewModel.muted ? theme.onAccentColor : theme.textColor)
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(viewModel.muted ? theme.accentFillColor : theme.surfaceColor)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(theme.secondaryTextColor.opacity(0.2), lineWidth: 1)
-            )
+    /// Two-segment mic-mode control, same vocabulary on iOS, Android and web:
+    /// [Open mic | Hold to talk]. The active segment is accent-filled; tapping
+    /// it does nothing, tapping the other one switches mode.
+    private var micModeControl: some View {
+        let holdEnabled = viewModel.pttOn || holdToTalkAvailable
+        return HStack(spacing: 2) {
+            micModeSegment(
+                "Open mic", icon: "mic.fill",
+                selected: !viewModel.pttOn, enabled: true,
+                hint: "Switches to Open mic",
+                identifier: "live-mic-mode-open"
+            ) { viewModel.setHoldToTalk(false) }
+            micModeSegment(
+                "Hold to talk", icon: "hand.tap.fill",
+                selected: viewModel.pttOn, enabled: holdEnabled,
+                hint: holdEnabled
+                    ? "Switches to Hold to talk"
+                    : "Unavailable: the selected translation voice needs Open mic",
+                identifier: "live-mic-mode-hold"
+            ) { viewModel.setHoldToTalk(true) }
+        }
+        .padding(2)
+        .frame(maxWidth: 300)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(theme.secondaryTextColor.opacity(0.3), lineWidth: 1)
+        )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: viewModel.pttOn)
+    }
+
+    private func micModeSegment(
+        _ title: String,
+        icon: String,
+        selected: Bool,
+        enabled: Bool,
+        hint: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            guard !selected else { return }
+            action()
+        } label: {
+            Label(title, systemImage: icon)
+                .font(.themed(12, weight: selected ? .semibold : .medium))
+                .lineLimit(1)
+                .foregroundColor(selected ? theme.onAccentColor : theme.secondaryTextColor)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(selected ? theme.accentFillColor : Color.clear)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(viewModel.muted ? "Unmute microphone" : "Mute microphone")
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityLabel(title)
+        .accessibilityHint(selected ? "" : hint)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier(identifier)
+    }
+
+    /// Open mic: a round mic button whose ring swells with the mic level
+    /// (flat while muted). Tap toggles mute; the caption says what a tap does.
+    private var openMicButton: some View {
+        let muted = viewModel.muted
+        let level = CGFloat(min(max(viewModel.level, 0), 1))
+        return VStack(spacing: 6) {
+            Button(action: { viewModel.toggleMute() }) {
+                ZStack {
+                    Circle()
+                        .stroke(theme.accentColor.opacity(muted ? 0 : 0.25 + Double(level) * 0.5),
+                                lineWidth: 3)
+                        .frame(width: 64, height: 64)
+                        .scaleEffect(muted ? 1 : 1 + level * 0.18)
+                        .animation(.easeOut(duration: 0.12), value: viewModel.level)
+                    Circle()
+                        .fill(muted ? theme.surfaceColor : theme.accentFillColor)
+                        .overlay(
+                            Circle().stroke(theme.secondaryTextColor.opacity(muted ? 0.3 : 0), lineWidth: 1)
+                        )
+                        .frame(width: 56, height: 56)
+                    Image(systemName: muted ? "mic.slash.fill" : "mic.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(muted ? theme.textColor : theme.onAccentColor)
+                }
+                .frame(width: 76, height: 76)
+                .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(muted ? "Unmute microphone" : "Mute microphone")
+            .accessibilityIdentifier("live-open-mic")
+            Text(muted ? "Muted · tap to unmute" : "Listening · tap to mute")
+                .font(.themed(11))
+                .foregroundColor(theme.secondaryTextColor)
+                .accessibilityHidden(true)
+        }
     }
 
     /// Hold-to-talk control. Press-and-hold opens the mic gate;
@@ -446,24 +526,28 @@ struct VoiceCallPanel: View {
     /// reliable press/release pair (an onLongPress firing only after a delay
     /// would swallow the leading edge of speech).
     private var holdToTalkButton: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 14))
-            Text(viewModel.muted ? "Hold to talk" : "Release to send")
-                .font(.themed(12, weight: .semibold))
+        // muted == not held in Hold to talk.
+        let held = !viewModel.muted
+        return HStack(spacing: 8) {
+            Image(systemName: "hand.tap.fill")
+                .font(.system(size: 15, weight: .semibold))
+            Text(held ? "Release to send" : "Hold to talk")
+                .font(.themed(14, weight: .semibold))
         }
-        .foregroundColor(viewModel.muted ? theme.textColor : theme.onAccentColor)
-        .padding(.horizontal, 14)
-        .frame(height: 36)
+        .foregroundColor(held ? theme.onAccentColor : theme.textColor)
+        .frame(maxWidth: 280)
+        .frame(height: 52)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(viewModel.muted ? theme.surfaceColor : theme.accentFillColor)
+            Capsule(style: .continuous)
+                .fill(held ? theme.accentFillColor : theme.surfaceColor)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(theme.accentColor.opacity(viewModel.muted ? 0.3 : 0), lineWidth: 1)
+            Capsule(style: .continuous)
+                .stroke(theme.accentColor.opacity(held ? 0 : 0.35), lineWidth: 1)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .scaleEffect(held && !reduceMotion ? 0.97 : 1)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: held)
+        .contentShape(Capsule(style: .continuous))
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -474,7 +558,49 @@ struct VoiceCallPanel: View {
                     viewModel.pttUp()
                 }
         )
-        .accessibilityLabel("Hold to talk")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(held ? "Release to send" : "Hold to talk")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("live-hold-to-talk")
+    }
+}
+
+/// A short history of measured audio, including speaker playback after the
+/// provider has finished generating. Silence stays flat; no simulated speech.
+struct VoiceActivityWaveform: View {
+    var level: () -> Float
+    @ObservedObject private var theme = ThemeManager.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var samples = Array(repeating: CGFloat.zero, count: 25)
+
+    var body: some View {
+        let color = theme.accentColor
+        // Read history in the body so every sample invalidates the native bars.
+        let history = samples
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(Array(history.enumerated()), id: \.offset) { _, value in
+                Capsule()
+                    .fill(LinearGradient(colors: [color.opacity(0.45), color, color.opacity(0.45)],
+                                         startPoint: .top, endPoint: .bottom))
+                    .frame(width: 3, height: 2 + min(1, max(0, value)) * 22)
+                    .shadow(color: color.opacity(0.28), radius: 3)
+            }
+        }
+        .frame(width: 148, height: 24)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: history)
+        .accessibilityHidden(true)
+        .task(id: reduceMotion) {
+            // A publisher created in this View's initializer is replaced by
+            // every microphone update and can be cancelled before its first tick.
+            // The task belongs to the view identity, not the changing level.
+            while !Task.isCancelled {
+                let value = CGFloat(min(1, max(0, level())))
+                if reduceMotion { samples = Array(repeating: value, count: 25) }
+                else { samples.removeFirst(); samples.append(value) }
+                do { try await Task.sleep(for: .milliseconds(50)) }
+                catch { return }
+            }
+        }
     }
 }
 
@@ -488,7 +614,7 @@ struct LiveCallComposerStrip: View {
             HStack(spacing: 8) {
                 Button(action: onOpen) {
                     Text(viewModel.client.phase == .ready
-                         ? "Live · \(viewModel.pttOn ? "Hold to talk" : viewModel.muted ? "Muted" : "Mic on")"
+                         ? "Live · \(viewModel.pttOn ? "Hold to talk" : viewModel.muted ? "Muted" : "Open mic")"
                          : viewModel.statusText)
                         .font(.themed(12)).lineLimit(1)
                         .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
@@ -497,7 +623,10 @@ struct LiveCallComposerStrip: View {
                     .accessibilityIdentifier("live-composer-status")
                     .accessibilityValue(viewModel.client.phase == .ready ? "Connected" : viewModel.statusText)
                 Button(action: { if viewModel.pttOn { onOpen() } else { viewModel.toggleMute() } }) {
-                    Image(systemName: viewModel.muted || viewModel.pttOn ? "mic.slash" : "mic")
+                    // The icon names the real state: Hold to talk is not "muted".
+                    Image(systemName: viewModel.pttOn
+                          ? "hand.tap.fill"
+                          : viewModel.muted ? "mic.slash.fill" : "mic.fill")
                         .frame(width: 32, height: 36)
                 }.accessibilityLabel(viewModel.pttOn ? "Open voice call controls" : viewModel.muted ? "Unmute microphone" : "Mute microphone")
                 Button(action: viewModel.hangUp) {

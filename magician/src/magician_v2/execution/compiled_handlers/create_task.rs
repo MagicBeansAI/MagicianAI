@@ -1,7 +1,7 @@
 //! `create_task` — universal agentic core: validate args, create the
 //! task via `ArtifactV2Service`, return identifiers. No chat-specific
-//! side effects (status cards, fan-out subscriptions); chat surfaces
-//! the task by following up with `subscribe_to_task_for_chat`.
+//! side effects (status cards, fan-out subscriptions); chat dispatch
+//! attaches the resulting task's progress automatically.
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock};
@@ -337,6 +337,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                         return Ok(json!({
                             "status": "deduplicated",
                             "task_id": existing_id,
+                            "task_url": crate::magician_v2::ui_links::task_href(&existing_id, None),
                             "title": existing_title,
                             "reason": "a live task with the same title already exists for this agent; returned the existing task instead of creating a duplicate",
                         }));
@@ -425,6 +426,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     let mut response = json!({
         "status": "created",
         "task_id": created.manifest.task_id,
+        "task_url": crate::magician_v2::ui_links::task_record_href(&created, None),
         "title": created.manifest.title,
         "agent_id": created.manifest.agent_id,
         "ui_thread_id": created.manifest.ui_thread_id,
@@ -439,6 +441,10 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     .await;
     match dispatch_attempt {
         DispatchAttempt::Dispatched(execution_id) => {
+            response["task_url"] = json!(crate::magician_v2::ui_links::task_record_href(
+                &created,
+                Some(&execution_id)
+            ));
             response["disposition"] = json!("dispatched");
             response["execution_id"] = json!(execution_id);
         },
@@ -539,6 +545,8 @@ mod tests {
             current_substep_title: None,
             completion_summary: None,
             completion_outcome: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             completion_artifact_names: Vec::new(),
             has_plan: false,
             latest_plan_id: None,

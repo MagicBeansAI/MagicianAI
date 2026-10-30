@@ -10,6 +10,16 @@ backend's `GET /contextual-writing/catalog` (10-minute cache; failures are
 remembered for 30 seconds so a booting backend cannot stall menu opens) and
 falls back to the local copy when the backend is unreachable or its catalog
 lacks local states. See [contextual-writing](../magician/contextual-writing.md).
+
+The watcher polls on a background worker, so it never reads this app's own
+windows: when the focused app or element belongs to this process it returns no
+target. Reading our own WebKit views' accessibility tree off the main thread
+makes WebKit terminate the process (it crashed the app when the notch Attention
+panel took focus).
+
+The window is pre-warmed with the HUD, so the first tap does not wait for a
+WebView. Its display payload carries the current target, so the menu opens on
+it, and expanding the menu again keeps its position rather than re-centring.
 Action requests forward the target's `frame_url` alongside `url` for
 iframe-grounded browser targets, and `state`/`targetTextKind` are validated
 server-side against closed vocabularies.
@@ -102,9 +112,11 @@ Besides text targets (selection, selection-in-field, writable field
 draft/empty) and the screen fallback:
 
 - **`page-context`** — from the browser extension's "Ask Magician about this
-  page" right-click item. The menu offers Summarize page (tab capture, URL as
+  page" right-click item, on `http`, `https` and `file` pages (the item is
+  hidden elsewhere). The menu offers Summarize page (tab capture, URL as
   routing context), Task and HUD. `target_text_kind` is `page_url`; session
-  continuity follows the per-site key.
+  continuity follows the per-site key, or the app key for a local file, which
+  has no host.
 - **`files`** — a Finder selection. On the hotkey path only (never the
   ambient poll, since each probe spawns osascript), a bounded AppleScript
   probe (`tell application "Finder" to get POSIX path of

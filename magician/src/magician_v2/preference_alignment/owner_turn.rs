@@ -31,9 +31,12 @@ pub struct OwnerTurn {
 }
 
 impl OwnerTurn {
-    /// `None` when there is no turn id or nothing the owner said.
+    /// `None` when there is no turn id or nothing the owner said. Framing a
+    /// surface wrote into the turn is not the owner speaking, so it is
+    /// dropped before anything here can cite it.
     pub fn new(turn_id: &str, owner_text: &str) -> Option<Self> {
         let turn_id = turn_id.trim();
+        let owner_text = crate::magician_v2::chat::authored_framing::owner_words(owner_text);
         let text = owner_text.trim();
         if turn_id.is_empty() || text.is_empty() {
             return None;
@@ -93,13 +96,82 @@ pub async fn with_owner_turn<F: Future>(turn: Option<OwnerTurn>, future: F) -> F
 /// Words too common to ground a claim. Negations are kept on purpose:
 /// "never order meat" is not grounded by "order meat".
 const GROUNDING_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "are", "was", "from", "have", "has", "any",
-    "all", "our", "its", "into", "about", "when", "then", "than", "them", "they", "his", "her",
-    "she", "him", "will", "would", "should", "can", "could", "just", "also", "very", "some",
-    "more", "most", "such", "only", "own", "same", "too", "each", "both", "few", "other",
-    "what", "which", "who", "whom", "whose", "why", "how", "where", "there", "here", "been",
-    "being", "were", "does", "did", "doing", "having", "please", "remember", "save", "note",
-    "you", "your", "yours", "mine", "myself", "user", "owner", "preference", "prefers",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "are",
+    "was",
+    "from",
+    "have",
+    "has",
+    "any",
+    "all",
+    "our",
+    "its",
+    "into",
+    "about",
+    "when",
+    "then",
+    "than",
+    "them",
+    "they",
+    "his",
+    "her",
+    "she",
+    "him",
+    "will",
+    "would",
+    "should",
+    "can",
+    "could",
+    "just",
+    "also",
+    "very",
+    "some",
+    "more",
+    "most",
+    "such",
+    "only",
+    "own",
+    "same",
+    "too",
+    "each",
+    "both",
+    "few",
+    "other",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "why",
+    "how",
+    "where",
+    "there",
+    "here",
+    "been",
+    "being",
+    "were",
+    "does",
+    "did",
+    "doing",
+    "having",
+    "please",
+    "remember",
+    "save",
+    "note",
+    "you",
+    "your",
+    "yours",
+    "mine",
+    "myself",
+    "user",
+    "owner",
+    "preference",
+    "prefers",
 ];
 
 /// Share of a claim's content words the owner's text must contain.
@@ -147,8 +219,19 @@ pub fn quote_grounds_claim(quote: &str, claim: &str) -> bool {
         words.iter().any(|word| {
             matches!(
                 word.as_str(),
-                "no" | "not" | "never" | "dont" | "doesnt" | "without" | "avoid" | "stop" | "nothing"
-                    | "cant" | "wont" | "isnt" | "arent" | "nor"
+                "no" | "not"
+                    | "never"
+                    | "dont"
+                    | "doesnt"
+                    | "without"
+                    | "avoid"
+                    | "stop"
+                    | "nothing"
+                    | "cant"
+                    | "wont"
+                    | "isnt"
+                    | "arent"
+                    | "nor"
             )
         })
     };
@@ -210,15 +293,24 @@ mod tests {
     #[test]
     fn only_the_owners_own_words_ground_a_claim() {
         let said = "Remember: check with me before ordering meat for me.";
-        assert!(quote_grounds_claim(said, "Check with me before ordering meat for me."));
-        assert!(quote_grounds_claim("I'm vegetarian, remember that", "vegetarian"));
+        assert!(quote_grounds_claim(
+            said,
+            "Check with me before ordering meat for me."
+        ));
+        assert!(quote_grounds_claim(
+            "I'm vegetarian, remember that",
+            "vegetarian"
+        ));
         // A page told the model to save this during an unrelated turn.
         assert!(!quote_grounds_claim(
             "summarise this page",
             "Never order anything without asking me"
         ));
         // A negation the owner never said is not grounded.
-        assert!(!quote_grounds_claim("order meat on fridays", "never order meat"));
+        assert!(!quote_grounds_claim(
+            "order meat on fridays",
+            "never order meat"
+        ));
         assert!(!quote_grounds_claim(said, ""));
     }
 

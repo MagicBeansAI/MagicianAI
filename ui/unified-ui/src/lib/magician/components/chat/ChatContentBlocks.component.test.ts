@@ -28,6 +28,17 @@ afterEach(() => {
 });
 
 describe('ChatContentBlocks protected outputs', () => {
+	it('formats an inline text report and discloses its verification warning through an info button', async () => {
+		const text = '> ⚠️ **Not fully verified.**\n\n```html\n<h1>Runtime checks</h1><table><tr><th>Result</th></tr><tr><td>UNAVAILABLE</td></tr></table>\n```';
+		const { container } = render(ChatContentBlocks, { props: { blocks: [{ type: 'text', text }] } });
+		expect(screen.getByRole('heading', { name: 'Runtime checks' })).toBeVisible();
+		expect(screen.getByRole('table')).toBeVisible();
+		expect(container.querySelector('pre,blockquote')).toBeNull();
+		expect(container.textContent).not.toContain('Not fully verified');
+		await fireEvent.click(screen.getByRole('button', { name: 'Not fully verified — view details' }));
+		expect(screen.getByRole('dialog', { name: 'Answer verification' })).toBeVisible();
+	});
+
 	it('keeps separate MP3 and WAV download actions for long task artifact names', async () => {
 		const names = ['mp3', 'wav'].map((extension) =>
 			`shell_0_creative-mind_task_${'19a5f59f04684e7d8f62d9c0cb6c28ba'.repeat(3)}_exec_8b170eceb144455ba27ea0aad3c75909.${extension}`
@@ -181,6 +192,21 @@ describe('ChatContentBlocks previews by default', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }));
 		expect(screen.queryByText('hello from the notes')).toBeNull();
 		expect(screen.getByRole('button', { name: 'Show preview' })).toBeInTheDocument();
+	});
+
+	it('formats a task report preview and places its verification disclosure beside the filename', async () => {
+		const warning = "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: No observed dispatch.";
+		const report = '```html\n<h1>Runtime checks</h1><table><tr><th>Check</th><th>Result</th></tr><tr><td>Definition</td><td>UNAVAILABLE</td></tr></table>\n```';
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(`${warning}\n\n${report}`, { status: 200 })));
+		const { container } = render(ChatContentBlocks, { props: { blocks: [taskFile('report.md', 'text/markdown')] } });
+		expect(await screen.findByRole('heading', { name: 'Runtime checks' })).toBeVisible();
+		expect(screen.getByRole('table')).toBeVisible();
+		expect(container.querySelector('pre,blockquote')).toBeNull();
+		expect(container.textContent).not.toContain('Not fully verified');
+		const info = screen.getByRole('button', { name: 'Not fully verified — view details' });
+		expect(info.closest('.chat-rich-text-preview-title')).toHaveTextContent('report.md');
+		await fireEvent.click(info);
+		expect(screen.getByRole('dialog', { name: 'Answer verification' })).toHaveTextContent('No observed dispatch.');
 	});
 
 	it('waits for the block to scroll into view before fetching', () => {

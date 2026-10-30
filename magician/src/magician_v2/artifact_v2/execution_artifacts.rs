@@ -1054,6 +1054,123 @@ mod tests {
             .join()
             .expect("small-stack artifact-copy thread");
     }
+
+    #[test]
+    fn summary_reference_names_cover_every_delegation_result_form() {
+        assert_eq!(
+            summary_artifact_reference_name("partial:partial_findings.md").as_deref(),
+            Some("partial_findings.md")
+        );
+        assert_eq!(
+            summary_artifact_reference_name("inline:report.md|text/markdown|# Body").as_deref(),
+            Some("report.md")
+        );
+        assert_eq!(
+            summary_artifact_reference_name("durable:notes/out/summary.json").as_deref(),
+            Some("summary.json")
+        );
+        assert_eq!(
+            summary_artifact_reference_name(
+                r#"tool_output_file:{"display_name":"rows.csv","content_type":"text/csv"}"#
+            )
+            .as_deref(),
+            Some("rows.csv")
+        );
+        assert_eq!(summary_artifact_reference_name("partial:  "), None);
+        assert_eq!(
+            summary_artifact_reference_name("terminal_decision:1:abc"),
+            None
+        );
+        assert!(!is_summary_artifact_reference("terminal_decision:1:abc"));
+    }
+
+    #[tokio::test]
+    async fn delegation_result_references_resolve_to_child_artifacts_imported_into_source() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let workspace = ArtifactV2Workspace::new(temp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("anonymous", "default");
+        workspace
+            .create_dir_all_path(workspace.task_dir(&scope.principal(), &scope.workspace(), "task"))
+            .await
+            .expect("task root");
+        let store = FilesystemExecutionArtifactIndexStore::new(workspace);
+        let mut own = record(json!({"display_name": "own.md"}));
+        own.artifact_id = "terminal_decision:0:own".to_string();
+        store
+            .upsert_artifact(&scope, "task", "exec-parent", own)
+            .await
+            .expect("parent artifact");
+        let mut older = record(json!({"display_name": "partial_findings.md", "v": 1}));
+        older.artifact_id = "terminal_decision:1:older".to_string();
+        store
+            .upsert_artifact(&scope, "task", "exec-child-a", older)
+            .await
+            .expect("older child artifact");
+        let mut newer = record(json!({"display_name": "partial_findings.md", "v": 2}));
+        newer.artifact_id = "terminal_decision:1:newer".to_string();
+        store
+            .upsert_artifact(&scope, "task", "exec-child-b", newer)
+            .await
+            .expect("newer child artifact");
+
+        let resolved = store
+            .resolve_input_artifact_references(
+                &scope,
+                "task",
+                "exec-parent",
+                &["exec-child-a".to_string(), "exec-child-b".to_string()],
+                &[
+                    "partial:partial_findings.md".to_string(),
+                    "terminal_decision:0:own".to_string(),
+                    "inline:gone.md|text/plain".to_string(),
+                ],
+            )
+            .await
+            .expect("references resolve");
+        assert_eq!(
+            resolved.artifact_ids,
+            vec![
+                "terminal_decision:1:newer".to_string(),
+                "terminal_decision:0:own".to_string()
+            ]
+        );
+        assert_eq!(
+            resolved.skipped,
+            vec!["inline:gone.md|text/plain".to_string()]
+        );
+        // The resolved ids now pass the ordinary admission check.
+        store
+            .validate_selected_artifacts(&scope, "task", "exec-parent", &resolved.artifact_ids)
+            .await
+            .expect("imported child artifact is admissible");
+        let parent = store
+            .list_artifacts(&scope, "task", "exec-parent")
+            .await
+            .expect("parent list");
+        let imported = parent
+            .iter()
+            .find(|record| record.artifact_id == "terminal_decision:1:newer")
+            .expect("imported record");
+        assert_eq!(
+            imported.source_execution_id.as_deref(),
+            Some("exec-child-b")
+        );
+        assert_eq!(imported.payload["v"], json!(2));
+
+        let missing = store
+            .resolve_input_artifact_references(
+                &scope,
+                "task",
+                "exec-parent",
+                &[],
+                &["artifact-that-never-existed".to_string()],
+            )
+            .await
+            .expect_err("a bare unknown id stays an error");
+        assert!(missing
+            .to_string()
+            .contains("was not found in source execution"));
+    }
 }
 
 fn corrupt_index(message: &str) -> ArtifactV2Error {
@@ -1546,4 +1663,237 @@ impl FilesystemExecutionArtifactIndexStore {
         discard_execution_artifact_index(source);
         Ok(())
     }
+
+    /// Resolve model-supplied delegation `input_artifact_ids` to artifact ids
+    /// present in the source execution's persisted index.
+    ///
+    /// The parent's "delegation results" prompt lists its children's summary
+    /// entries (`partial:<name>`, `inline:<name>|…`, `durable:<path>`,
+    /// `tool_output_file:{json}`), which name an artifact rather than carry its
+    /// persisted id, and the named artifact lives in the child's index, not the
+    /// parent's. An exact persisted id still resolves first; otherwise the
+    /// referenced name is looked up in the children (most recent first), then
+    /// in the source itself. A child's match is copied into the source index
+    /// (lineage stamped) so the ordinary copy-to-new-child path finds it. A
+    /// summary-form reference that names nothing persisted is skipped and
+    /// reported — its content already reached the parent through the results
+    /// block — while a bare id that matches nothing stays an error.
+    pub async fn resolve_input_artifact_references(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        source_execution_id: &str,
+        child_execution_ids: &[String],
+        references: &[String],
+    ) -> Result<ResolvedInputArtifactReferences, ArtifactV2Error> {
+        let mut resolved = ResolvedInputArtifactReferences::default();
+        if references.is_empty() {
+            return Ok(resolved);
+        }
+        if references.len() > MAX_EXECUTION_ARTIFACT_RECORDS {
+            return Err(ArtifactV2Error::InvalidRequest(
+                "selected execution artifact count exceeds its admission limit".to_string(),
+            ));
+        }
+        let source = self.load_index(scope, task_id, source_execution_id).await?;
+        let mut source_ids = source
+            .artifacts
+            .iter()
+            .map(|record| record.artifact_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let children = child_execution_ids
+            .iter()
+            .rev()
+            .filter(|child| child.as_str() != source_execution_id)
+            .take(MAX_INPUT_REFERENCE_CHILD_SCAN)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut child_indexes: Vec<Option<PersistedExecutionArtifactsIndex>> =
+            Vec::with_capacity(children.len());
+        let mut imports: Vec<(String, PersistedExecutionArtifactRecord)> = Vec::new();
+        let mut failure: Option<ArtifactV2Error> = None;
+
+        'references: for reference in references {
+            let reference = reference.trim();
+            if reference.is_empty() {
+                continue;
+            }
+            if source_ids.contains(reference) {
+                resolved.artifact_ids.push(reference.to_string());
+                continue;
+            }
+            let summary_form = is_summary_artifact_reference(reference);
+            let name = if summary_form {
+                summary_artifact_reference_name(reference)
+            } else {
+                Some(reference.to_string())
+            };
+            if let Some(name) = name.as_deref() {
+                for (position, child_id) in children.iter().enumerate() {
+                    if child_indexes.len() <= position {
+                        let loaded = match self.load_index(scope, task_id, child_id).await {
+                            Ok(index) => Some(index),
+                            Err(error) => {
+                                tracing::warn!(
+                                    child_execution_id = %child_id,
+                                    %error,
+                                    "delegation input reference lookup skipped an unreadable child artifact index"
+                                );
+                                None
+                            },
+                        };
+                        child_indexes.push(loaded);
+                    }
+                    let Some(index) = child_indexes[position].as_ref() else {
+                        continue;
+                    };
+                    let Some(record) = index
+                        .artifacts
+                        .iter()
+                        .rev()
+                        .find(|record| artifact_record_matches_name(record, name))
+                    else {
+                        continue;
+                    };
+                    let artifact_id = record.artifact_id.clone();
+                    if source_ids.insert(artifact_id.clone()) {
+                        imports.push((
+                            child_id.clone(),
+                            clone_execution_artifact_record_stack_safe(record),
+                        ));
+                    }
+                    resolved.artifact_ids.push(artifact_id);
+                    continue 'references;
+                }
+                if let Some(record) = source
+                    .artifacts
+                    .iter()
+                    .rev()
+                    .find(|record| artifact_record_matches_name(record, name))
+                {
+                    resolved.artifact_ids.push(record.artifact_id.clone());
+                    continue;
+                }
+            }
+            if summary_form {
+                resolved.skipped.push(reference.to_string());
+                continue;
+            }
+            let available = source
+                .artifacts
+                .iter()
+                .map(|record| record.artifact_id.as_str())
+                .take(8)
+                .collect::<Vec<_>>();
+            failure = Some(ArtifactV2Error::InvalidRequest(format!(
+                "persisted execution artifact '{}' was not found in source execution '{}' \
+                 (pass a persisted artifact id or a delegation-result reference; available: {})",
+                reference,
+                source_execution_id,
+                if available.is_empty() {
+                    "none".to_string()
+                } else {
+                    available.join(", ")
+                }
+            )));
+            break;
+        }
+
+        discard_execution_artifact_index(source);
+        for index in child_indexes.into_iter().flatten() {
+            discard_execution_artifact_index(index);
+        }
+        if let Some(error) = failure {
+            for (_, mut record) in imports {
+                discard_json_iteratively(std::mem::replace(&mut record.payload, Value::Null));
+            }
+            return Err(error);
+        }
+        for (child_id, record) in imports {
+            let record = prepare_copied_artifact_record(record, &child_id);
+            self.upsert_artifact(scope, task_id, source_execution_id, record)
+                .await?;
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        resolved
+            .artifact_ids
+            .retain(|artifact_id| seen.insert(artifact_id.clone()));
+        Ok(resolved)
+    }
+}
+
+/// Outcome of [`FilesystemExecutionArtifactIndexStore::resolve_input_artifact_references`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedInputArtifactReferences {
+    /// Artifact ids present in the source execution's index, in request order.
+    pub artifact_ids: Vec<String>,
+    /// Summary-form references that named no persisted artifact.
+    pub skipped: Vec<String>,
+}
+
+/// Bound on how many delegated children one reference lookup reads.
+const MAX_INPUT_REFERENCE_CHILD_SCAN: usize = 32;
+
+/// Prefixes a delegation result summary entry carries (see the executor's
+/// `delegation_summary_artifact_entry` and the partial-success terminals).
+const SUMMARY_ARTIFACT_REFERENCE_PREFIXES: [&str; 4] =
+    ["partial:", "inline:", "durable:", "tool_output_file:"];
+
+fn is_summary_artifact_reference(reference: &str) -> bool {
+    SUMMARY_ARTIFACT_REFERENCE_PREFIXES
+        .iter()
+        .any(|prefix| reference.starts_with(prefix))
+}
+
+/// The artifact name a summary-form reference points at. `pub(crate)` so the
+/// executor's tests pin it against the entries it writes.
+pub(crate) fn summary_artifact_reference_name(reference: &str) -> Option<String> {
+    let name = if let Some(rest) = reference.strip_prefix("tool_output_file:") {
+        let value: Value = serde_json::from_str(rest).ok()?;
+        let name = value
+            .get("display_name")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        discard_json_iteratively(value);
+        name?
+    } else if let Some(rest) = reference.strip_prefix("inline:") {
+        rest.split('|').next().unwrap_or_default().to_string()
+    } else if let Some(rest) = reference.strip_prefix("partial:") {
+        rest.to_string()
+    } else if let Some(rest) = reference.strip_prefix("durable:") {
+        Path::new(rest.trim())
+            .file_name()?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        return None;
+    };
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn artifact_record_matches_name(record: &PersistedExecutionArtifactRecord, name: &str) -> bool {
+    if record.artifact_id == name {
+        return true;
+    }
+    let payload = &record.payload;
+    if ["display_name", "name", "file_name"]
+        .iter()
+        .any(|key| payload.get(*key).and_then(Value::as_str) == Some(name))
+    {
+        return true;
+    }
+    [
+        "execution_absolute_path",
+        "task_absolute_path",
+        "execution_relative_path",
+        "relative_path",
+    ]
+    .iter()
+    .filter_map(|key| payload.get(*key).and_then(Value::as_str))
+    .any(|path| {
+        Path::new(path)
+            .file_name()
+            .is_some_and(|file| file.to_string_lossy() == name)
+    })
 }

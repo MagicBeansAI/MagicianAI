@@ -12,6 +12,7 @@ import type {
 import { WhatsAppClient } from "@kapso/whatsapp-cloud-api";
 import express from "express";
 
+import { ensureKapsoWebhook } from "./webhook-registration.js";
 import { verifyKapsoWebhookSignature } from "./webhook-signature.js";
 
 const WHATSAPP_TEXT_LIMIT = 4_000;
@@ -27,8 +28,18 @@ export interface KapsoAdapterOptions {
   apiKey: string;
   phoneNumberId: string;
   webhookPort: number;
-  /** Kapso dashboard webhook secret used to authenticate every POST body. */
-  webhookSecret: string;
+  /**
+   * Public URL Kapso delivers to (KAPSO_WEBHOOK_URL, else
+   * https://${MAGICIAN_WEBHOOK_HOST}/webhook). When set, startup registers it
+   * on the number and takes the signing secret from that registration.
+   */
+  webhookUrl?: string | undefined;
+  /**
+   * KAPSO_WEBHOOK_SECRET. Required only without a webhook URL; with one it is
+   * the secret a NEW registration is created with, and the fallback when the
+   * provider cannot be reached.
+   */
+  webhookSecret?: string | undefined;
   /**
    * Pre-approved WhatsApp message template used to reply when the 24-hour
    * customer-service window has closed. Outside that window Meta rejects
@@ -49,19 +60,22 @@ export class KapsoAdapter implements ChannelAdapter<string> {
   private server: Server | undefined;
   private keepaliveTimer: ReturnType<typeof setInterval> | undefined;
   private readonly client: WhatsAppClient;
+  private readonly apiKey: string;
   private readonly phoneNumberId: string;
   private readonly webhookPort: number;
-  private readonly webhookSecret: string;
+  private readonly webhookUrl: string | undefined;
+  private readonly configuredSecret: string | undefined;
+  // Unknown until startup resolves it; the receiver does not listen before.
+  private webhookSecret = "";
   private readonly fallbackTemplateName: string | undefined;
   private readonly fallbackTemplateLang: string;
 
   constructor(options: KapsoAdapterOptions) {
+    this.apiKey = options.apiKey;
     this.phoneNumberId = options.phoneNumberId;
     this.webhookPort = options.webhookPort;
-    this.webhookSecret = options.webhookSecret.trim();
-    if (!this.webhookSecret) {
-      throw new Error("Kapso webhook secret must not be empty");
-    }
+    this.webhookUrl = options.webhookUrl?.trim() || undefined;
+    this.configuredSecret = options.webhookSecret?.trim() || undefined;
     this.fallbackTemplateName = options.fallbackTemplateName?.trim() || undefined;
     this.fallbackTemplateLang = options.fallbackTemplateLang?.trim() || "en_US";
 
@@ -83,6 +97,8 @@ export class KapsoAdapter implements ChannelAdapter<string> {
 
   async start(handlers: ChannelAdapterHandlers<string>): Promise<void> {
     this.handlers = handlers;
+    // The secret must be known before the receiver accepts a single request.
+    await this.resolveWebhookSecret();
 
     this.app = express();
     this.app.post(
@@ -377,6 +393,60 @@ export class KapsoAdapter implements ChannelAdapter<string> {
     update: TaskStatusUpdateRender,
   ): Promise<void> {
     await this.sendText(target, update.text);
+  }
+
+  /* ---------- webhook registration ---------- */
+
+  /**
+   * Point the number's webhook at this machine and adopt that registration's
+   * signing secret. Fail-soft: an unreachable provider falls back to
+   * KAPSO_WEBHOOK_SECRET; with neither, startup fails and the supervisor
+   * retries with backoff. Secrets are never logged.
+   */
+  private async resolveWebhookSecret(): Promise<void> {
+    if (!this.webhookUrl) {
+      console.info(
+        "[kapso-bot] no webhook URL (MAGICIAN_WEBHOOK_HOST / KAPSO_WEBHOOK_URL unset) — skipping self-registration; " +
+          "the number's webhook must already point at <public-url>/webhook",
+      );
+    } else {
+      try {
+        const registration = await ensureKapsoWebhook({
+          apiKey: this.apiKey,
+          phoneNumberId: this.phoneNumberId,
+          url: this.webhookUrl,
+          configuredSecret: this.configuredSecret,
+        });
+        if (this.configuredSecret && this.configuredSecret !== registration.secret) {
+          console.warn(
+            "[kapso-bot] KAPSO_WEBHOOK_SECRET differs from the registered webhook's signing secret; verifying with the registration's",
+          );
+        }
+        this.webhookSecret = registration.secret;
+        console.info("[kapso-bot] webhook registered", {
+          url: this.webhookUrl,
+          webhookId: registration.webhookId,
+          created: registration.created,
+          updated: registration.updated,
+          deactivated: registration.deactivated.length,
+        });
+        return;
+      } catch (error) {
+        console.error("[kapso-bot] webhook self-register failed", {
+          url: this.webhookUrl,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (this.configuredSecret) {
+          console.warn("[kapso-bot] verifying inbound webhooks with KAPSO_WEBHOOK_SECRET instead");
+        }
+      }
+    }
+    if (!this.configuredSecret) {
+      throw new Error(
+        "Kapso webhook signing secret unknown: set MAGICIAN_WEBHOOK_HOST (or KAPSO_WEBHOOK_URL) for self-registration, or KAPSO_WEBHOOK_SECRET",
+      );
+    }
+    this.webhookSecret = this.configuredSecret;
   }
 
   /* ---------- webhook handling ---------- */

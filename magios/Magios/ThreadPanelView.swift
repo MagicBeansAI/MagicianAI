@@ -7,6 +7,12 @@ struct ThreadPanelView: View {
     @ObservedObject var chatViewModel: ChatViewModel
     @State private var showNewThreadPrompt = false
     @State private var newThreadName = ""
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var activityKey: String {
+        guard scenePhase == .active else { return "" }
+        return viewModel.visibleSessionIds.sorted().joined(separator: ",")
+    }
 
     private var currentCollectionIsEmpty: Bool {
         if viewModel.isSearchActive { return viewModel.searchResults.isEmpty }
@@ -242,10 +248,13 @@ struct ThreadPanelView: View {
                                     SessionRowView(
                                         session: session,
                                         isActive: viewModel.activeSessionId == session.id,
+                                        isWorking: viewModel.workingSessionIds.contains(session.id),
                                         themeManager: themeManager,
-                                        historyLane: nil
+                                        historyLane: nil,
+                                        isDeleting: viewModel.deletingSessionId == session.id
                                     )
                                     .onTapGesture {
+                                        guard viewModel.deletingSessionId != session.id else { return }
                                         viewModel.selectSession(session.id)
                                         chatViewModel.loadSession(session.id)
                                         withAnimation {
@@ -263,14 +272,10 @@ struct ThreadPanelView: View {
                                                     Label("Archive", systemImage: "archivebox")
                                                 }
                                             }
-                                            Button(role: .destructive, action: {
-                                                viewModel.deleteSession(session.id)
-                                                if chatViewModel.currentSessionIdValue == session.id {
-                                                    chatViewModel.startNewSession(nil)
-                                                }
-                                            }) {
+                                            Button(role: .destructive, action: { deleteSession(session.id) }) {
                                                 Label("Delete", systemImage: "trash")
                                             }
+                                            .disabled(viewModel.deletingSessionId != nil)
                                         }
                                     }
                                 }
@@ -282,37 +287,7 @@ struct ThreadPanelView: View {
                                     .padding()
                             } else {
                                 ForEach(viewModel.threads) { thread in
-                                    ThreadRowView(
-                                        thread: thread,
-                                        isActive: viewModel.activeThreadId == thread.id,
-                                        themeManager: themeManager,
-                                        historyLane: nil
-                                    )
-                                    .onTapGesture {
-                                        viewModel.openThread(thread) { sessionId in
-                                            guard let sessionId else { return }
-                                            chatViewModel.loadSession(sessionId)
-                                            withAnimation {
-                                                isPresented = false
-                                            }
-                                        }
-                                    }
-                                    .contextMenu {
-                                        if thread.id != "general" {
-                                            if thread.archived {
-                                                Button(action: { viewModel.unarchiveThread(thread.id) }) {
-                                                    Label("Restore", systemImage: "arrow.uturn.backward")
-                                                }
-                                            } else {
-                                                Button(action: { viewModel.archiveThread(thread.id) }) {
-                                                    Label("Archive", systemImage: "archivebox")
-                                                }
-                                            }
-                                            Button(role: .destructive, action: { viewModel.deleteThread(thread.id) }) {
-                                                Label("Delete", systemImage: "trash")
-                                            }
-                                        }
-                                    }
+                                    threadRow(thread, historyLane: nil)
                                 }
                             }
                         }
@@ -353,6 +328,18 @@ struct ThreadPanelView: View {
         .onAppear {
             viewModel.fetchData()
         }
+        // A turn finished in the open chat: its row's time and place moved.
+        .onChange(of: chatViewModel.serverRunning) { wasRunning, isRunning in
+            if wasRunning && !isRunning { viewModel.requestQuietRefresh() }
+        }
+        .task(id: activityKey) { @MainActor in
+            defer { viewModel.clearActivity() }
+            guard !activityKey.isEmpty else { return }
+            while !Task.isCancelled {
+                await viewModel.refreshActivity()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .alert("New Thread", isPresented: $showNewThreadPrompt) {
             TextField("Thread name", text: $newThreadName)
             Button("Cancel", role: .cancel) {}
@@ -366,16 +353,29 @@ struct ThreadPanelView: View {
         }
     }
 
+    /// The open chat moves to a new session only once the server confirmed
+    /// the delete; a failure keeps the row and shows the history error.
+    private func deleteSession(_ id: String) {
+        viewModel.deleteSession(id) { deleted in
+            if chatViewModel.currentSessionIdValue == deleted {
+                chatViewModel.startNewSession(nil)
+            }
+        }
+    }
+
     @ViewBuilder
     private func searchResultRow(_ result: HistorySearchItem) -> some View {
         if let session = result.session {
             SessionRowView(
                 session: session,
                 isActive: viewModel.activeSessionId == session.id,
+                isWorking: viewModel.workingSessionIds.contains(session.id),
                 themeManager: themeManager,
-                historyLane: result.historyLane
+                historyLane: result.historyLane,
+                isDeleting: viewModel.deletingSessionId == session.id
             )
             .onTapGesture {
+                guard viewModel.deletingSessionId != session.id else { return }
                 viewModel.selectSession(session.id)
                 chatViewModel.loadSession(session.id)
                 withAnimation { isPresented = false }
@@ -391,45 +391,54 @@ struct ThreadPanelView: View {
                             Label("Archive", systemImage: "archivebox")
                         }
                     }
-                    Button(role: .destructive, action: {
-                        viewModel.deleteSession(session.id)
-                        if chatViewModel.currentSessionIdValue == session.id {
-                            chatViewModel.startNewSession(nil)
-                        }
-                    }) {
+                    Button(role: .destructive, action: { deleteSession(session.id) }) {
                         Label("Delete", systemImage: "trash")
                     }
+                    .disabled(viewModel.deletingSessionId != nil)
                 }
             }
         } else if let thread = result.thread {
-            ThreadRowView(
-                thread: thread,
-                isActive: viewModel.activeThreadId == thread.id,
-                themeManager: themeManager,
-                historyLane: result.historyLane
-            )
-            .onTapGesture {
-                viewModel.openThread(thread) { sessionId in
-                    guard let sessionId else { return }
-                    chatViewModel.loadSession(sessionId)
-                    withAnimation { isPresented = false }
-                }
+            threadRow(thread, historyLane: result.historyLane)
+        }
+    }
+
+    /// Long names stay on one line. The full name is the tooltip and the
+    /// first line of the long-press menu. A change in flight dims the row.
+    @ViewBuilder
+    private func threadRow(_ thread: UiThreadRecord, historyLane: ChatHistoryLane?) -> some View {
+        ThreadRowView(
+            thread: thread,
+            isActive: viewModel.activeThreadId == thread.id,
+            themeManager: themeManager,
+            historyLane: historyLane,
+            mutationLabel: viewModel.mutatingThreadId == thread.id ? viewModel.mutatingThreadLabel : nil
+        )
+        .onTapGesture {
+            guard viewModel.mutatingThreadId != thread.id else { return }
+            viewModel.openThread(thread) { sessionId in
+                guard let sessionId else { return }
+                chatViewModel.loadSession(sessionId)
+                withAnimation { isPresented = false }
             }
-            .contextMenu {
-                if thread.id != "general" {
-                    if thread.archived {
-                        Button(action: { viewModel.unarchiveThread(thread.id) }) {
-                            Label("Restore", systemImage: "arrow.uturn.backward")
-                        }
-                    } else {
-                        Button(action: { viewModel.archiveThread(thread.id) }) {
-                            Label("Archive", systemImage: "archivebox")
-                        }
+        }
+        .contextMenu {
+            Text(thread.name)
+            if thread.id != "general" {
+                if thread.archived {
+                    Button(action: { viewModel.unarchiveThread(thread.id) }) {
+                        Label("Restore", systemImage: "arrow.uturn.backward")
                     }
-                    Button(role: .destructive, action: { viewModel.deleteThread(thread.id) }) {
-                        Label("Delete", systemImage: "trash")
+                    .disabled(viewModel.mutatingThreadId != nil)
+                } else {
+                    Button(action: { viewModel.archiveThread(thread.id) }) {
+                        Label("Archive", systemImage: "archivebox")
                     }
+                    .disabled(viewModel.mutatingThreadId != nil)
                 }
+                Button(role: .destructive, action: { viewModel.deleteThread(thread.id) }) {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(viewModel.mutatingThreadId != nil)
             }
         }
     }
@@ -526,16 +535,34 @@ struct TabButton: View {
 struct SessionRowView: View {
     let session: ChatSession
     let isActive: Bool
+    let isWorking: Bool
     @ObservedObject var themeManager: ThemeManager
     let historyLane: ChatHistoryLane?
+    /// The server DELETE is in flight: the row reads "Deleting…" and is inert.
+    var isDeleting: Bool = false
     
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.title ?? "Untitled session")
-                    .font(.themed(17, weight: .semibold))
-                    .foregroundColor(isActive ? themeManager.accentColor : themeManager.textColor)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(session.title ?? "Untitled session")
+                        .font(.themed(17, weight: .semibold))
+                        .foregroundColor(isActive ? themeManager.accentColor : themeManager.textColor)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isWorking {
+                        HStack(spacing: 4) {
+                            Circle().fill(themeManager.accentColor).frame(width: 5, height: 5)
+                            Text("Working").font(.themed(9, weight: .semibold))
+                        }
+                        .foregroundStyle(themeManager.accentColor)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(themeManager.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
+                        .fixedSize()
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Session is working")
+                    }
+                }
                 
                 HStack {
                     Text("#\(session.uiThreadId)")
@@ -558,9 +585,15 @@ struct SessionRowView: View {
                         )
                     }
                     
-                    Text(formatTimestamp(session.updatedAt))
-                        .font(.themed(12))
-                        .foregroundColor(themeManager.secondaryTextColor)
+                    if isDeleting {
+                        Text("Deleting…")
+                            .font(.themed(12, weight: .semibold))
+                            .foregroundColor(themeManager.secondaryTextColor)
+                    } else {
+                        Text(formatTimestamp(session.updatedAt))
+                            .font(.themed(12))
+                            .foregroundColor(themeManager.secondaryTextColor)
+                    }
                 }
             }
             
@@ -584,6 +617,9 @@ struct SessionRowView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isActive ? themeManager.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
         )
+        .opacity(isDeleting ? 0.55 : 1)
+        .allowsHitTesting(!isDeleting)
+        .accessibilityValue(isDeleting ? "Deleting" : "")
     }
     
     private func formatTimestamp(_ ts: Int) -> String {
@@ -600,6 +636,8 @@ struct ThreadRowView: View {
     let isActive: Bool
     @ObservedObject var themeManager: ThemeManager
     let historyLane: ChatHistoryLane?
+    /// "Archiving…", "Restoring…", or "Deleting…" while that change is in flight.
+    var mutationLabel: String? = nil
     
     var body: some View {
         HStack {
@@ -608,6 +646,15 @@ struct ThreadRowView: View {
                     .font(.themed(17, weight: .semibold))
                     .foregroundColor(isActive ? themeManager.accentColor : themeManager.textColor)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(thread.name)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+                if let mutationLabel {
+                    Text(mutationLabel)
+                        .font(.themed(12, weight: .semibold))
+                        .foregroundColor(themeManager.secondaryTextColor)
+                }
 
                 if let historyLane {
                     HStack(spacing: 5) {
@@ -627,6 +674,7 @@ struct ThreadRowView: View {
                         .lineLimit(2)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             
             Spacer()
 
@@ -648,5 +696,8 @@ struct ThreadRowView: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(isActive ? themeManager.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
         )
+        .opacity(mutationLabel == nil ? 1 : 0.55)
+        .allowsHitTesting(mutationLabel == nil)
+        .accessibilityValue(mutationLabel ?? "")
     }
 }

@@ -1,6 +1,6 @@
 ---
 name: zepto-mcp
-version: 0.2.0
+version: 0.2.2
 description: |
   Toolskill for Zepto's official remote MCP server for Indian quick-commerce
   shopping. Use it to authenticate with browser OAuth, list Zepto's live MCP
@@ -11,6 +11,8 @@ description: |
 metadata:
   magician:
     setup: { definition: governed-mcp-oauth }
+    browser_signin:
+      callback_mode: loopback_localhost
     skill_type: tool
     user_invocable: true
     runtime_canary:
@@ -103,9 +105,9 @@ Official sources:
 
 ## Tool Actions
 
-Use `auth_start` or `list_tools` first. If credentials are missing or expired,
-the Auth Broker opens the user's browser, receives the fixed localhost callback,
-and the SDK verifies access by listing tools. Never ask the user to share an
+Inspect credentials with `status` or discover tools with `list_tools`. If sign-in
+is needed, call `auth_start` explicitly; the Auth Broker opens the browser and
+receives the fixed callback, and the SDK verifies access by listing tools. Never ask the user to share an
 OTP, card detail, UPI PIN, or any other secret in chat.
 
 - `status`: inspect the exact scoped OAuth binding without exposing a token.
@@ -119,6 +121,11 @@ OTP, card detail, UPI PIN, or any other secret in chat.
 Before using Zepto tools, call `status` or `list_tools`. If `status` reports
 missing or expired credentials, use `auth_start`, complete browser OAuth, and
 then call `list_tools`.
+`status` only observes saved credentials; it does not contact the provider or
+open sign-in. An explicit request to retry sign-in needs one `auth_start` attempt,
+not just another status read. A registration failure occurs before a browser
+window or pending sign-in can be created; report it as an authorization blocker,
+not a blocked popup or a confirmed provider-wide outage.
 
 Search and order-history reads are low risk, but still summarize results before
 taking any cart or checkout action.
@@ -170,8 +177,10 @@ first, then search/add only after the user accepts the list.
 
 ## Failure Modes
 
-- Browser does not open: rerun `auth_start`; the product reports whether the
-  trusted browser launcher accepted the request without exposing the URL.
+- Browser does not open: first inspect the `auth_start` result. A client-registration
+  failure needs provider-supported registration; repeatedly reading status or
+  reopening a browser cannot fix it. Retry `auth_start` once when requested.
+  A successful start reports whether the trusted launcher accepted the request.
 - OAuth times out: rerun `auth_start` and complete phone/OTP login within the
   bounded callback window.
 - Redirect is rejected: confirm the local runtime API is reachable on the

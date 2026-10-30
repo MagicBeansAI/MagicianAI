@@ -7,15 +7,26 @@ import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 import { taskStore } from '$lib/stores/taskStore';
 import { clearAgents } from '$lib/stores/agentStore';
 import { v2Events } from '$lib/realtime/v2-websocket';
-import { installFetchMock, jsonResponse } from '../../test/browser';
+import { installFetchMock as installRawFetchMock, jsonResponse } from '../../test/browser';
 import { backendTask, createTaskAttentionBackend } from '../../test/taskAttentionBackend';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import WorkWorkspace from './WorkWorkspace.svelte';
+import { forgetGoalWorkspaces } from './goals';
+
+function installFetchMock(routes: Parameters<typeof installRawFetchMock>[0]) {
+	return installRawFetchMock([
+		...routes,
+		{ match: call => call.url.includes('/notes/tree'), handle: () => jsonResponse({ entries: [] }) },
+		{ match: call => call.url.includes('/notes/file'), handle: () => jsonResponse({ error: 'not_found' }, { status: 404 }) }
+	]);
+}
 
 vi.mock('$app/stores', async () => ({page:(await import('svelte/store')).writable({url:new URL('http://localhost/work'),params:{}})}));
 vi.mock('$app/navigation',()=>({goto:vi.fn(),replaceState:vi.fn()}));
 const route=page as unknown as {set(value:{url:URL;params:Record<string,string>}):void};
 beforeEach(()=>{
-	vi.clearAllMocks(); scopeIdentityStore.reset(); taskStore.reset(); clearAgents(); v2Events.disconnect(); v2Events.clear();
+	vi.clearAllMocks(); forgetGoalWorkspaces(); scopeIdentityStore.reset(); taskStore.reset(); clearAgents(); v2Events.disconnect(); v2Events.clear();
 	route.set({url:new URL('http://localhost/work'),params:{}});
 	const backend=createTaskAttentionBackend([backendTask('redirect','running',{title:'Fix onboarding redirect',has_plan:true,plan_status:'approved'})]);
 	installFetchMock([
@@ -186,10 +197,90 @@ it('dismisses specialist navigation with Escape and restores the trigger focus',
 	render(WorkWorkspace);
 	const more=screen.getByRole('button',{name:'More ▾'});
 	await fireEvent.click(more);
-	expect(screen.getByRole('button',{name:'Quality and review'})).toBeVisible();
+	expect(screen.getByRole('button',{name:'Quality checks'})).toBeVisible();
 	await fireEvent.keyDown(window,{key:'Escape'});
-	expect(screen.queryByRole('button',{name:'Quality and review'})).not.toBeInTheDocument();
+	expect(screen.queryByRole('button',{name:'Quality checks'})).not.toBeInTheDocument();
 	expect(more).toHaveFocus();
+});
+
+it('keeps More, and Apps and specialist tools in it, reachable at desktop width',async()=>{
+	const width=window.innerWidth;
+	Object.defineProperty(window,'innerWidth',{configurable:true,value:1440});
+	try {
+		render(WorkWorkspace);
+		const more=screen.getByRole('button',{name:'More ▾'});
+		expect(more).toBeVisible();
+		await fireEvent.click(more);
+		const apps=screen.getByRole('link',{name:'Apps and specialist tools →'});
+		expect(apps).toBeVisible();
+		expect(apps.getAttribute('href')).toMatch(/^\/apps/);
+	} finally {
+		Object.defineProperty(window,'innerWidth',{configurable:true,value:width});
+	}
+	// jsdom does not evaluate width media queries, so also guard the stylesheet: no width rule
+	// may hide the More trigger, its menu or the Apps entry (the views it duplicates may hide).
+	const source=readFileSync(join(process.cwd(),'src/lib/work/WorkFrame.svelte'),'utf8');
+	const style=source.slice(source.indexOf('<style>'));
+	const hidden=[...style.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+		.filter(([,,body])=>/display\s*:\s*none|visibility\s*:\s*hidden/.test(body))
+		.flatMap(([,selectors])=>selectors.split(',').map(selector=>selector.trim()));
+	expect(hidden.filter(selector=>/work-more|more-menu(?![^\s]*\s+\.more-item--(?:goals|programs|quality|operations)\b)|more-item--apps/.test(selector))).toEqual([]);
+});
+
+it('does not re-read goals when switching between Tasks, Monitors and System work',async()=>{
+	const {calls}=installFetchMock([
+		{match:call=>call.url.endsWith('/programs'),handle:()=>jsonResponse({programs:[]})},
+		{match:call=>call.url.endsWith('/agents'),handle:()=>jsonResponse({agents:[]})},
+		...createTaskAttentionBackend([]).routes()
+	]);
+	render(WorkWorkspace);
+	const listings=()=>calls.filter(call=>call.url.includes('/notes/tree?path=Workspaces')).length;
+	await waitFor(()=>expect(listings()).toBe(1));
+	route.set({url:new URL('http://localhost/work?type=monitors'),params:{}});
+	await waitFor(()=>expect(screen.getByRole('link',{name:'Monitors'})).toHaveAttribute('aria-current','page'));
+	route.set({url:new URL('http://localhost/work?type=internal'),params:{}});
+	route.set({url:new URL('http://localhost/work'),params:{}});
+	await new Promise(resolve=>setTimeout(resolve,20));
+	expect(listings()).toBe(1);
+	expect(screen.getByRole('region',{name:'Goals and Playbooks'})).toBeInTheDocument();
+});
+
+it('opens Goals from the More menu and mounts the goal workspaces',async()=>{
+	const {calls}=installFetchMock([
+		{match:call=>new URL(call.url,'http://localhost').pathname.endsWith('/notes/tree'),handle:()=>jsonResponse({error:'not_found'},{status:404})},
+		{match:call=>call.url.endsWith('/programs'),handle:()=>jsonResponse({programs:[]})},
+		{match:call=>call.url.endsWith('/agents'),handle:()=>jsonResponse({agents:[]})},
+		...createTaskAttentionBackend([]).routes()
+	]);
+	route.set({url:new URL('http://localhost/work?view=goals'),params:{}});
+	render(WorkWorkspace);
+	const goals=await screen.findByRole('region',{name:'Goals'});
+	expect(await within(goals).findByText(/No goal workspaces yet\./)).toBeInTheDocument();
+	expect(screen.queryByText('← All work')).not.toBeInTheDocument();
+	expect(screen.getByRole('link', { name: 'Goals' })).toHaveAttribute('aria-current', 'page');
+	expect(calls.some(call=>call.url.includes('/notes/tree?path=Workspaces'))).toBe(true);
+	await fireEvent.click(screen.getByRole('button',{name:'More ▾'}));
+	await fireEvent.click(screen.getByRole('button',{name:'Goals'}));
+	expect(goto).toHaveBeenCalledWith('/work?view=goals');
+});
+
+it('renders both Goals and Programs sections on the Work landing page and links to views', async () => {
+	const goalNote = (title: string) => `---\nmagician_kind: goal\nkind: main\nstatus: active\n---\n# ${title}\n`;
+	installFetchMock([
+		{ match: call => call.url.includes('/notes/tree') && call.url.includes('path=Workspaces%2Facme%2FGoals'), handle: () => jsonResponse({ entries: [{ name: 'Grow revenue.md', relative_path: 'Workspaces/acme/Goals/Grow revenue.md', kind: 'file' }] }) },
+		{ match: call => call.url.includes('/notes/tree') && call.url.includes('path=Workspaces'), handle: () => jsonResponse({ entries: [{ name: 'acme', relative_path: 'Workspaces/acme', kind: 'dir' }] }) },
+		{ match: call => call.url.includes('/notes/file') && call.url.includes('Grow%20revenue.md'), handle: () => jsonResponse({ markdown: goalNote('Grow revenue') }) },
+		{ match: call => call.url.endsWith('/programs'), handle: () => jsonResponse({ programs: [{ name: 'growth.md', title: 'Growth initiative' }] }) },
+		{ match: call => call.url.endsWith('/agents'), handle: () => jsonResponse({ agents: [] }) },
+		...createTaskAttentionBackend([]).routes()
+	]);
+	render(WorkWorkspace);
+	const strategicDeck = screen.getByRole('region', { name: 'Goals and Playbooks' });
+	expect(strategicDeck).toBeInTheDocument();
+	expect(await within(strategicDeck).findByText('Grow revenue')).toBeInTheDocument();
+	expect(within(strategicDeck).getByRole('link', { name: /Growth initiative/ })).toBeInTheDocument();
+	expect(within(strategicDeck).getByRole('link', { name: /All goals/ })).toHaveAttribute('href', '/work?view=goals');
+	expect(within(strategicDeck).getByRole('link', { name: /All playbooks/ })).toHaveAttribute('href', '/work?view=programs');
 });
 
 it('scopes the full task panel and quick composer to the thread named by the Work link',async()=>{

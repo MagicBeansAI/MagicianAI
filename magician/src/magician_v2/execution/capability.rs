@@ -1309,6 +1309,9 @@ pub enum ImplementationType {
 /// recompiling a large action family on every invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GovernedRuntimeImplementation {
+    pub(crate) mcp_bindings: Option<super::primitive_dispatch::mcp_bindings::McpBindings>,
+    /// Callback compatibility declared by this exact loaded SKILL.md.
+    pub(crate) oauth_callback_mode: Option<crate::magician_v2::mcp_oauth::OAuthCallbackMode>,
     pub package: tool_runtime_core::manifest_parser::SkillRuntimePackage,
     /// Present only for CLI packages. MCP packages obtain their action catalog
     /// from official-SDK discovery and never manufacture a fake CLI catalog.
@@ -1633,6 +1636,10 @@ pub struct CapabilityPackDefinition {
     /// Declared parameters.
     #[serde(default)]
     pub parameters: Vec<ParameterDef>,
+    /// Additional whole-call JSON Schema constraints (for example anyOf).
+    /// Shared by registry, native, flat and decision catalogs.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub parameter_constraints: serde_json::Value,
     /// Implementation strategy.
     pub implementation: ImplementationType,
     /// Declarative execution metadata (timeouts, categories, sandbox).
@@ -1943,6 +1950,31 @@ impl CapabilityPackDefinition {
         self.build_tool_definition(properties, required)
     }
 
+    /// Canonical pack-boundary schema, including cross-parameter requirements.
+    pub fn parameters_schema(&self) -> serde_json::Value {
+        let properties = self
+            .parameters
+            .iter()
+            .map(|param| (param.name.clone(), derive_param_schema_for_emission(param)))
+            .collect::<serde_json::Map<_, _>>();
+        let required = self
+            .parameters
+            .iter()
+            .filter(|param| param.required)
+            .map(|param| serde_json::Value::String(param.name.clone()))
+            .collect::<Vec<_>>();
+        self.constrain_parameters(serde_json::json!({
+            "type": "object", "properties": properties, "required": required,
+        }))
+    }
+
+    fn constrain_parameters(&self, mut schema: serde_json::Value) -> serde_json::Value {
+        if !self.parameter_constraints.is_null() {
+            schema["allOf"] = serde_json::json!([self.parameter_constraints]);
+        }
+        schema
+    }
+
     /// Common tail for [`Self::to_tool_definition`]: assemble the
     /// `inputSchema`, copy categories + execution metadata, and produce
     /// the final `ToolDefinition`. Shared between the standard parameter
@@ -1952,12 +1984,12 @@ impl CapabilityPackDefinition {
         properties: serde_json::Map<String, serde_json::Value>,
         required: Vec<serde_json::Value>,
     ) -> tool_runtime_core::registry::types::ToolDefinition {
-        let input_schema = serde_json::json!({
+        let input_schema = self.constrain_parameters(serde_json::json!({
             "type": "object",
             "properties": properties,
             "required": required,
             "additionalProperties": false,
-        });
+        }));
 
         let categories = self
             .execution
@@ -2305,7 +2337,21 @@ mod tests {
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    fn whole_call_constraints_are_shared_by_registry_and_native_catalogs() {
+        let def: CapabilityPackDefinition =
+            serde_yaml::from_str(include_str!("embedded_pack_defs/shell.yaml")).unwrap();
+        let native = def.parameters_schema();
+        let registry = def.to_tool_definition().input_schema;
+        assert_eq!(native["allOf"], registry["allOf"]);
+        assert_eq!(native["properties"], registry["properties"]);
+        assert!(!native["allOf"].is_null());
+        let old = test_def(Vec::new());
+        assert!(old.parameters_schema().get("allOf").is_none());
     }
 
     /// A pack parameter declared `param_type: array` with no explicit
@@ -3069,6 +3115,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let tool_def = def.to_tool_definition();
@@ -3129,6 +3176,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let tool_def = def.to_tool_definition();
@@ -3189,6 +3237,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let tool_def = def.to_tool_definition();
@@ -3243,6 +3292,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let tool_def = def.to_tool_definition();

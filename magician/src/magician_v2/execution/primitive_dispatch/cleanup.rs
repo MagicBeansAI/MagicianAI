@@ -23,12 +23,12 @@
 
 use std::sync::atomic::Ordering;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::browser::session::{
-    close_session_by_id_with_options, close_session_for_thread,
-    close_session_for_thread_with_options, flat_browser_session_is_cdp,
-    flat_browser_session_is_headless, flat_browser_sessions_for_thread, AgentBrowserSession,
+    close_session_by_id_with_options, flat_browser_session_ids_for_thread,
+    flat_browser_session_is_cdp, flat_browser_session_is_headless,
+    flat_browser_sessions_for_thread, AgentBrowserSession,
 };
 use crate::magician_v2::execution::agentic::{ActionExecutors, AgenticContext, AgenticOutcome};
 
@@ -40,8 +40,11 @@ pub fn outcome_terminates_browser_session(outcome: &AgenticOutcome) -> bool {
         AgenticOutcome::Success { .. }
         | AgenticOutcome::Failed { .. }
         | AgenticOutcome::CannotProceed { .. }
-        | AgenticOutcome::LoopDetected { .. }
-        | AgenticOutcome::BudgetExhausted { .. } => true,
+        | AgenticOutcome::LoopDetected { .. } => true,
+
+        // A budget or provider-failure pause the owner can continue (Retry,
+        // more budget) resumes on this window; only an unresumable stop ends it.
+        AgenticOutcome::BudgetExhausted { pause_state, .. } => pause_state.is_none(),
 
         // MaxIterationsReached: only terminal when it has NO pause state
         // to resume from. With pause_state, the orchestrator may continue
@@ -58,6 +61,18 @@ pub fn outcome_terminates_browser_session(outcome: &AgenticOutcome) -> bool {
     }
 }
 
+/// The run key a browser session lease was taken under: the same derivation
+/// as `PrimitiveExecCtx::thread_id` (execution id first).
+fn lease_run_key(ctx: &AgenticContext) -> &str {
+    ctx.execution_id
+        .as_deref()
+        .or(ctx.legacy_execution_id.as_deref())
+        .or(ctx.cycle_id.as_deref())
+        .or(ctx.goal_id.as_deref())
+        .or(ctx.agent_id.as_deref())
+        .unwrap_or("primitive")
+}
+
 /// Close the agent-browser session opened during this execution if the
 /// outcome warrants it. Best-effort; logs at WARN on failure.
 pub async fn cleanup_browser_session_if_done(
@@ -65,224 +80,326 @@ pub async fn cleanup_browser_session_if_done(
     executors: &ActionExecutors,
     outcome: &AgenticOutcome,
 ) {
-    // No-op when execution didn't open a browser session.
     if !executors.browser_run.session_used.load(Ordering::SeqCst) {
         return;
     }
-
-    // Priority 1: LLM-driven overrides. The inner-loop runner sets
-    // these flags when a terminal control call carried
-    // `keep_browser_cdp_connection_alive: true` (or legacy alias
-    // `keep_browser_session_alive`) and/or
-    // `keep_browser_window_open: true`. The agent gets the final say.
-    //
-    // Routing (after merging the static context flags below):
-    //   - cdp_alive=true                       → skip cleanup entirely
-    //                                            (daemon + CDP stay alive,
-    //                                            next execution attaches).
-    //   - window_open=true && !cdp_alive       → invoke
-    //                                            `close --keep-browser`:
-    //                                            daemon exits, Chromium
-    //                                            handed off to user.
-    //   - neither                              → fall through to outcome
-    //                                            classifier / full close.
-    //
-    // cdp_alive WINS if both are set (preserving CDP is the more
-    // conservative choice — handing off would break the contract that
-    // the next agent can attach).
+    // Pauses must preserve both the browser state and pending handoff flags.
+    if !outcome_terminates_browser_session(outcome) {
+        return;
+    }
+    let cleanup_key = super::browser::session_lease::assigned_window(lease_run_key(ctx))
+        .unwrap_or_else(|| {
+            format!(
+                "magician-{}",
+                super::browser::session::sanitize_session_id(lease_run_key(ctx))
+            )
+        });
+    let _guard = super::browser::session_lease::cleanup_guard(&cleanup_key).await;
     let cdp_alive = executors
         .browser_run
         .keep_alive_override
-        .load(Ordering::SeqCst)
+        .swap(false, Ordering::SeqCst)
         || ctx.keep_browser_cdp_connection_alive;
     let window_open = executors
         .browser_run
         .window_open_override
-        .load(Ordering::SeqCst)
+        .swap(false, Ordering::SeqCst)
         || ctx.keep_browser_window_open;
-
-    // Reset the LLM-signal atomics for safety on shared executors —
-    // a follow-up execution that reuses the same `ActionExecutors`
-    // instance should start with a clean slate regardless of which
-    // branch we take below.
-    executors
-        .browser_run
-        .keep_alive_override
-        .store(false, Ordering::SeqCst);
-    executors
-        .browser_run
-        .window_open_override
-        .store(false, Ordering::SeqCst);
-
     if cdp_alive {
-        info!(
-            target: "browser_cleanup",
-            execution_id = ?ctx.execution_id,
-            cdp_alive,
-            window_open,
-            "Browser session kept alive (keep_browser_cdp_connection_alive=true: daemon + CDP socket preserved)."
-        );
-        return;
-    }
-
-    if window_open {
-        drain_headed_hars(ctx, executors).await;
-        // Hand off to the user: invoke `close --keep-browser` so the
-        // daemon exits without killing Chrome.
-        //
-        // Use the SAME scope-aware resolver that dispatch uses
-        // (`resolve_cli_path_for_scope` with principal + workspace), not
-        // the scope-blind `resolve_cli_path`. The workspace skills layer
-        // is where `make -C skillshub install-scope` puts the binary —
-        // dispatch finds it; if cleanup used the narrower resolver, it
-        // would fail to find the same binary and leak the window.
-        let cli_path = match AgentBrowserSession::resolve_cli_path_for_scope(
-            Some(&ctx.storage_base_path),
-            ctx.principal.as_deref(),
-            ctx.workspace.as_deref(),
-        ) {
-            Ok(p) => p,
-            Err(err) => {
-                warn!(
-                    target: "browser_cleanup",
-                    error = %err,
-                    "Failed to resolve agent-browser CLI for keep-browser handoff; window will leak"
-                );
-                return;
-            },
-        };
-        let thread_id = ctx
-            .execution_id
-            .as_deref()
-            .or(ctx.legacy_execution_id.as_deref())
-            .or(ctx.cycle_id.as_deref())
-            .or(ctx.goal_id.as_deref())
-            .or(ctx.agent_id.as_deref())
-            .unwrap_or("inner-loop")
-            .to_string();
-        let main_closed = match close_session_for_thread_with_options(&thread_id, &cli_path, true)
-            .await
+        super::browser::session_lease::release_session_users(lease_run_key(ctx));
+        // An explicit transfer to a follow-up keeps the existing browser.
+        if let Some((window, true)) = super::browser::session_lease::release_run(lease_run_key(ctx))
         {
-            Ok(()) => {
-                info!(
-                    target: "browser_cleanup",
-                    execution_id = ?ctx.execution_id,
-                    thread_id = %thread_id,
-                    "Browser session handed off to user (close --keep-browser): daemon exited, Chromium remains visible."
-                );
-                true
-            },
-            Err(error) => {
-                warn!(
-                    target: "browser_cleanup",
-                    execution_id = ?ctx.execution_id,
-                    thread_id = %thread_id,
-                    error = %error,
-                    "Failed to invoke agent-browser close --keep-browser; daemon + Chromium may leak"
-                );
-                false
-            },
-        };
-        let additional_closed = close_additional_browser_sessions(
-            ctx,
-            executors,
-            &cli_path,
-            AdditionalSessionDisposition::OwnerHandoff,
-        )
-        .await;
-        if main_closed && additional_closed {
-            executors
-                .browser_run
-                .session_used
-                .store(false, Ordering::SeqCst);
+            super::browser::session_lease::finish_cleanup(&window);
         }
         return;
     }
-
-    // Priority 3: outcome classifier. Paused/resumable outcomes keep the
-    // window open so resume can land on the same tab state.
-    if !outcome_terminates_browser_session(outcome) {
-        info!(
-            target: "browser_cleanup",
-            execution_id = ?ctx.execution_id,
-            outcome = %outcome_kind(outcome),
-            "Browser session kept alive — outcome is paused/resumable."
-        );
-        return;
-    }
-
     drain_headed_hars(ctx, executors).await;
-
-    // Resolve CLI path the same way dispatch did — scope-aware, so the
-    // workspace skills layer (installed via `make -C skillshub
-    // install-scope`) is considered before falling through to extras.
-    // Using the scope-blind `resolve_cli_path` would mis-fail when the
-    // binary lives only at the workspace path, which is the normal
-    // install layout.
-    let cli_path = match AgentBrowserSession::resolve_cli_path_for_scope(
+    let cli = match AgentBrowserSession::resolve_cli_path_for_scope(
         Some(&ctx.storage_base_path),
         ctx.principal.as_deref(),
         ctx.workspace.as_deref(),
     ) {
-        Ok(p) => p,
-        Err(err) => {
-            warn!(
-                target: "browser_cleanup",
-                error = %err,
-                "Failed to resolve agent-browser CLI for cleanup; skipping"
-            );
+        Ok(cli) => cli,
+        Err(error) => {
+            warn!(%error, "Browser cleanup cannot resolve its CLI; retaining ownership");
             return;
         },
     };
-
-    // Reuse the same thread_id derivation as PrimitiveExecCtx.
-    let thread_id = ctx
-        .execution_id
-        .as_deref()
-        .or(ctx.legacy_execution_id.as_deref())
-        .or(ctx.cycle_id.as_deref())
-        .or(ctx.goal_id.as_deref())
-        .or(ctx.agent_id.as_deref())
-        .unwrap_or("inner-loop")
-        .to_string();
-
-    let main_closed = match close_session_for_thread(&thread_id, &cli_path).await {
-        Ok(()) => {
-            info!(
-                target: "browser_cleanup",
-                execution_id = ?ctx.execution_id,
-                outcome = %outcome_kind(outcome),
-                thread_id = %thread_id,
-                "Closed agent-browser session at execution end."
-            );
-            true
-        },
-        Err(err) => {
-            warn!(
-                target: "browser_cleanup",
-                execution_id = ?ctx.execution_id,
-                thread_id = %thread_id,
-                error = %err,
-                "Failed to close agent-browser session at execution end."
-            );
-            false
-        },
+    let thread = lease_run_key(ctx);
+    let base = format!(
+        "magician-{}",
+        super::browser::session::sanitize_session_id(thread)
+    );
+    let mut sessions = flat_browser_session_ids_for_thread(&base);
+    sessions.extend(super::browser::session_lease::sessions_for_run(thread));
+    sessions.extend(
+        executors
+            .browser_run
+            .additional_session_ids
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .cloned(),
+    );
+    super::browser::session_lease::release_session_users(thread);
+    let lease = super::browser::session_lease::release_run(thread);
+    if let Some((window, true)) = &lease {
+        sessions.push(window.clone());
+        sessions.extend(flat_browser_session_ids_for_thread(window));
+    }
+    if sessions.is_empty() && lease.is_none() {
+        sessions.push(base);
+    }
+    sessions.sort();
+    sessions.dedup();
+    let disposition = if window_open {
+        AdditionalSessionDisposition::OwnerHandoff
+    } else {
+        AdditionalSessionDisposition::Terminal
     };
-    let additional_closed = close_additional_browser_sessions(
-        ctx,
-        executors,
-        &cli_path,
-        AdditionalSessionDisposition::Terminal,
-    )
-    .await;
-    if main_closed && additional_closed {
-        // Reset only after every session owned by this execution has been
-        // released. Failed IDs remain tracked so a later cleanup can retry.
+    let mut all_closed = true;
+    let mut reservations = Vec::new();
+    let mut failed = Vec::new();
+    for session in sessions {
+        if !super::browser::session_lease::begin_cleanup(&session) {
+            // A sibling or another launch still owns this browser.
+            executors
+                .browser_run
+                .additional_session_ids
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&session);
+            continue;
+        }
+        reservations.push(session.clone());
+        match close_owned_session(&session, &cli, executors.browser.as_deref(), disposition).await {
+            Ok(()) => {
+                executors
+                    .browser_run
+                    .additional_session_ids
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&session);
+                info!(session, "Released terminal browser session");
+            },
+            Err(error) => {
+                all_closed = false;
+                failed.push(session.clone());
+                executors
+                    .browser_run
+                    .additional_session_ids
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(session.clone());
+                warn!(session, %error, "Browser cleanup incomplete; retaining session for retry");
+            },
+        }
+    }
+    if all_closed {
+        for session in reservations {
+            super::browser::session_lease::finish_cleanup(&session);
+        }
+        if let Some((window, true)) = lease {
+            super::browser::session_lease::finish_cleanup(&window);
+        }
         executors
             .browser_run
             .session_used
             .store(false, Ordering::SeqCst);
+    } else {
+        if let Some((window, true)) = lease {
+            reservations.push(window);
+        }
+        retry_owned_sessions(
+            failed,
+            reservations,
+            cli,
+            executors.browser.as_deref().cloned(),
+            disposition,
+            cleanup_key,
+        );
     }
+}
+
+/// Close abandoned shared sessions when terminal settlement happens outside the
+/// executor (notably cancellation while waiting for input/children).
+pub async fn cleanup_terminal_run(
+    run: &str,
+    storage: &std::path::Path,
+    principal: &str,
+    workspace: &str,
+    magicutor: &crate::magician_v2::execution::MagicutorClient,
+    include_default: bool,
+) {
+    let assigned = super::browser::session_lease::assigned_window(run);
+    let known = super::browser::session_lease::sessions_for_run(run);
+    if assigned.is_none() && known.is_empty() && !include_default {
+        return;
+    }
+    let window = assigned.clone().unwrap_or_else(|| {
+        format!(
+            "magician-{}",
+            super::browser::session::sanitize_session_id(run)
+        )
+    });
+    let _guard = super::browser::session_lease::cleanup_guard(&window).await;
+    // The executor already chose a disposition and scheduled retries. In
+    // particular, do not turn its owner handoff into destructive terminal cleanup.
+    if super::browser::session_lease::cleanup_pending(&window) {
+        return;
+    }
+    let cli = match AgentBrowserSession::resolve_cli_path_for_scope(
+        Some(storage),
+        Some(principal),
+        Some(workspace),
+    ) {
+        Ok(cli) => cli,
+        Err(error) => {
+            warn!(run, %error, "Terminal browser cleanup cannot resolve CLI");
+            return;
+        },
+    };
+    super::browser::session_lease::release_session_users(run);
+    let release = super::browser::session_lease::release_run(run);
+    if assigned.is_some() && release.is_none() {
+        return;
+    }
+    let mut sessions = flat_browser_session_ids_for_thread(&window);
+    sessions.extend(known);
+    if assigned.is_none() && sessions.is_empty() {
+        // Nothing in this process opened a browser for the run: the default
+        // id only guesses at a session a previous process may have left, so a
+        // run that never browsed must not retry or keep the id reserved.
+        close_unknown_session(run, &window, &cli, magicutor).await;
+        return;
+    }
+    if assigned.is_some() {
+        sessions.push(window.clone());
+    }
+    sessions.sort();
+    sessions.dedup();
+    let mut closed = true;
+    let mut failed = Vec::new();
+    let mut reservations = vec![window.clone()];
+    for session in sessions {
+        if !super::browser::session_lease::begin_cleanup(&session) {
+            continue;
+        }
+        reservations.push(session.clone());
+        if let Err(error) = close_owned_session(
+            &session,
+            &cli,
+            Some(magicutor),
+            AdditionalSessionDisposition::Terminal,
+        )
+        .await
+        {
+            closed = false;
+            failed.push(session.clone());
+            warn!(run, session, %error, "Terminal browser cleanup incomplete");
+        }
+    }
+    if closed {
+        for session in reservations {
+            super::browser::session_lease::finish_cleanup(&session);
+        }
+    } else {
+        retry_owned_sessions(
+            failed,
+            reservations,
+            cli,
+            Some(magicutor.clone()),
+            AdditionalSessionDisposition::Terminal,
+            window,
+        );
+    }
+}
+
+/// Best-effort close of a session this process never cached; a missing
+/// session is the expected outcome, so failures are only logged at debug.
+async fn close_unknown_session(
+    run: &str,
+    session: &str,
+    cli: &std::path::Path,
+    magicutor: &crate::magician_v2::execution::MagicutorClient,
+) {
+    if !super::browser::session_lease::begin_cleanup(session) {
+        return;
+    }
+    if let Err(error) = close_session_by_id_with_options(session, cli, true).await {
+        debug!(run, session, %error, "No agent-browser session to close");
+    }
+    if let Err(error) = magicutor.delete_session_checked(session).await {
+        debug!(run, session, %error, "No Magicutor thread to release");
+    }
+    super::browser::session_lease::finish_cleanup(session);
+}
+
+fn retry_owned_sessions(
+    mut failed: Vec<String>,
+    reservations: Vec<String>,
+    cli: std::path::PathBuf,
+    magicutor: Option<crate::magician_v2::execution::MagicutorClient>,
+    disposition: AdditionalSessionDisposition,
+    cleanup_key: String,
+) {
+    tokio::spawn(async move {
+        for delay in [2, 5, 15] {
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            let _guard = super::browser::session_lease::cleanup_guard(&cleanup_key).await;
+            let mut remaining = Vec::new();
+            for session in failed {
+                if !super::browser::session_lease::begin_cleanup(&session) {
+                    continue;
+                }
+                if let Err(error) =
+                    close_owned_session(&session, &cli, magicutor.as_ref(), disposition).await
+                {
+                    warn!(session, %error, "Retrying terminal browser cleanup failed");
+                    remaining.push(session);
+                }
+            }
+            if remaining.is_empty() {
+                for session in reservations {
+                    super::browser::session_lease::finish_cleanup(&session);
+                }
+                return;
+            }
+            failed = remaining;
+        }
+        warn!(
+            ?failed,
+            "Browser cleanup still incomplete after retries; session IDs remain reserved"
+        );
+    });
+}
+
+async fn close_owned_session(
+    session: &str,
+    cli: &std::path::Path,
+    magicutor: Option<&crate::magician_v2::execution::MagicutorClient>,
+    disposition: AdditionalSessionDisposition,
+) -> anyhow::Result<()> {
+    let cdp = flat_browser_session_is_cdp(session).unwrap_or(
+        !session.starts_with("retrieval-headed-") && !session.starts_with("retrieval-headless-"),
+    );
+    let headless = flat_browser_session_is_headless(session)
+        .unwrap_or(session.starts_with("retrieval-headless-"));
+    let keep = additional_session_keeps_browser(session, disposition, cdp, headless);
+    close_session_by_id_with_options(session, cli, keep).await?;
+    if cdp {
+        let magicutor = magicutor
+            .ok_or_else(|| anyhow::anyhow!("Magicutor client unavailable for CDP cleanup"))?;
+        if matches!(disposition, AdditionalSessionDisposition::OwnerHandoff) {
+            magicutor.handoff_session_checked(session).await?;
+        } else {
+            magicutor.delete_session_checked(session).await?;
+        }
+    }
+    crate::magician_v2::content_sources::retrieval::global_retrieval_runtime_state()
+        .revoke_handoff_session(session);
+    Ok(())
 }
 
 async fn drain_headed_hars(ctx: &AgenticContext, executors: &ActionExecutors) {
@@ -351,77 +468,13 @@ enum AdditionalSessionDisposition {
     OwnerHandoff,
 }
 
-async fn close_additional_browser_sessions(
-    ctx: &AgenticContext,
-    executors: &ActionExecutors,
-    cli_path: &std::path::Path,
-    disposition: AdditionalSessionDisposition,
-) -> bool {
-    let session_ids = executors
-        .browser_run
-        .additional_session_ids
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut all_closed = true;
-    for session_id in session_ids {
-        // Asked before the close, which forgets the cached session.
-        let cdp = flat_browser_session_is_cdp(&session_id).unwrap_or(false);
-        let headless = flat_browser_session_is_headless(&session_id).unwrap_or(false);
-        let keep_browser =
-            additional_session_keeps_browser(&session_id, disposition, cdp, headless);
-        match close_session_by_id_with_options(&session_id, cli_path, keep_browser).await {
-            Ok(()) => {
-                // The owner's Chrome: detach the debugger and close the
-                // window the automation opened (Magicutor leaves a tab the
-                // owner had open alone). Not on an owner handoff — the
-                // window was asked to stay.
-                if cdp && matches!(disposition, AdditionalSessionDisposition::Terminal) {
-                    release_cdp_thread(executors, &session_id).await;
-                }
-                crate::magician_v2::content_sources::retrieval::global_retrieval_runtime_state()
-                    .revoke_handoff_session(&session_id);
-                executors
-                    .browser_run
-                    .additional_session_ids
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&session_id);
-                info!(
-                    target: "browser_cleanup",
-                    execution_id = ?ctx.execution_id,
-                    session_id = %session_id,
-                    keep_browser,
-                    cdp,
-                    "Released browser session this run used beyond its own."
-                );
-            },
-            Err(error) => {
-                all_closed = false;
-                warn!(
-                    target: "browser_cleanup",
-                    execution_id = ?ctx.execution_id,
-                    session_id = %session_id,
-                    keep_browser,
-                    error = %error,
-                    "Failed to release browser session this run used beyond its own."
-                );
-            },
-        }
-    }
-    all_closed
-}
-
 /// Whether closing `session_id` leaves its browser running (`--keep-browser`:
 /// the daemon exits without `Browser.close`).
 ///
 /// Retrieval handoffs keep their own rule. Any other session — a chat
 /// thread's shared one — ends with the task by default: a launched browser is
 /// closed, the owner's Chrome (CDP) is never sent `Browser.close` (Magicutor
-/// detaches it and closes the automation's window instead, see
-/// [`release_cdp_thread`]), and a window is handed over only when the task was
+/// detaches it and closes only automation-created tabs), and a window is handed over only when the task was
 /// asked to keep it open — never a headless one, which has no window and would
 /// be stranded with no daemon.
 fn additional_session_keeps_browser(
@@ -436,40 +489,6 @@ fn additional_session_keeps_browser(
                 && session_id.starts_with("retrieval-headed-");
     }
     cdp || matches!(disposition, AdditionalSessionDisposition::OwnerHandoff) && !headless
-}
-
-/// Detach the owner's Chrome from a finished CDP session: Magicutor closes the
-/// window it opened for the thread and clears the extension session (the
-/// debugger detaches, and with it the "is being debugged" bar and the
-/// extension's running indicator). Best-effort, like the rest of cleanup.
-async fn release_cdp_thread(executors: &ActionExecutors, session_id: &str) {
-    let Some(magicutor) = executors.browser.as_ref() else {
-        return;
-    };
-    if let Err(error) = magicutor.delete_session(session_id).await {
-        warn!(
-            target: "browser_cleanup",
-            session_id = %session_id,
-            error = %error,
-            "Failed to release the CDP thread in Magicutor."
-        );
-    }
-}
-
-fn outcome_kind(outcome: &AgenticOutcome) -> &'static str {
-    match outcome {
-        AgenticOutcome::Success { .. } => "Success",
-        AgenticOutcome::Failed { .. } => "Failed",
-        AgenticOutcome::MaxIterationsReached { .. } => "MaxIterationsReached",
-        AgenticOutcome::LoopDetected { .. } => "LoopDetected",
-        AgenticOutcome::WaitingForUser { .. } => "WaitingForUser",
-        AgenticOutcome::WaitingForConfirmation { .. } => "WaitingForConfirmation",
-        AgenticOutcome::PausedByUser { .. } => "PausedByUser",
-        AgenticOutcome::WaitingForChildren { .. } => "WaitingForChildren",
-        AgenticOutcome::BudgetExhausted { .. } => "BudgetExhausted",
-        AgenticOutcome::CannotProceed { .. } => "CannotProceed",
-        AgenticOutcome::Sleeping { .. } => "Sleeping",
-    }
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]

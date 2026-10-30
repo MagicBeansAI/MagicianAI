@@ -133,6 +133,8 @@ enum Reply {
     Usage,
     MissingUsage,
     RateLimited,
+    Status(u16),
+    Timeout,
 }
 
 struct Provider {
@@ -162,6 +164,16 @@ impl LLMProvider for Provider {
             return Err(LLMError::RateLimited {
                 retry_after: Some(Duration::from_millis(1)),
             });
+        }
+        if let Reply::Status(status) = self.reply {
+            return Err(LLMError::ProviderStatus {
+                provider: "openai".into(),
+                status,
+                body: "rejected".into(),
+            });
+        }
+        if matches!(self.reply, Reply::Timeout) {
+            return Err(LLMError::Timeout);
         }
         Ok(LLMResponse {
             text: Some(Arc::from("bounded result")),
@@ -280,6 +292,49 @@ async fn resource_guard_missing_usage_and_rate_limits_remain_uncertain() {
         );
         assert!(!record.phases.contains(&"release"));
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    }
+}
+
+/// A provider that answered with a definitive client rejection generated
+/// nothing billable. The attempt still settles `OutcomeUncertain` for every
+/// generic consumer, but carries the typed rejection so a resource owner may
+/// release the reservation. Timeouts, 408, 429 and 5xx stay plain uncertain.
+#[tokio::test]
+async fn resource_guard_marks_only_definitive_client_rejections() {
+    for (reply, definitive) in [
+        (Reply::Status(400), true),
+        (Reply::Status(401), true),
+        (Reply::Status(403), true),
+        (Reply::Status(422), true),
+        (Reply::Status(408), false),
+        (Reply::Status(429), false),
+        (Reply::Status(500), false),
+        (Reply::Status(503), false),
+        (Reply::Timeout, false),
+        (Reply::RateLimited, false),
+        (Reply::MissingUsage, false),
+    ] {
+        let profile = profile();
+        let authority = Arc::new(Authority::new(&profile));
+        let (router, _provider) = router(profile, reply);
+        let mut request = request();
+        request
+            .metadata
+            .set_physical_resource_guard(LlmPhysicalResourceGuard::new(authority.clone()));
+        assert!(router.route(request).await.is_err());
+        let record = authority.record.lock().unwrap();
+        assert!(!record.observations.is_empty());
+        for observation in &record.observations {
+            assert_eq!(
+                observation.outcome(),
+                LlmPhysicalAttemptOutcome::OutcomeUncertain
+            );
+            assert_eq!(observation.is_definitive_rejection(), definitive);
+            assert_eq!(observation.input_tokens(), 0);
+            assert_eq!(observation.output_tokens(), 0);
+            assert_eq!(observation.cost_microusd(), 0);
+        }
+        assert!(!record.phases.contains(&"release"));
     }
 }
 

@@ -71,6 +71,7 @@ pub async fn verify_local(model: Value, adapter: &str) {
                 ("need_planner".into(), "Ask the planner".into()),
             ],
         )]),
+        assets: Default::default(),
     };
     let a = engine.decide(typed.clone()).await;
     let b = engine.decide(typed).await;

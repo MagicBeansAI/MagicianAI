@@ -8,10 +8,10 @@
 		if (target === active) return;
 		const query = (draftText || '').trim();
 		if (target === 'code') {
-			const targetUrl = query ? `/vibe?q=${encodeURIComponent(query)}` : '/vibe';
+			const targetUrl = query ? `/vibe?draft=${encodeURIComponent(query)}` : '/vibe';
 			await goto(targetUrl);
 		} else {
-			const targetUrl = query ? `/chat?q=${encodeURIComponent(query)}` : '/chat';
+			const targetUrl = query ? `/chat?draft=${encodeURIComponent(query)}` : '/chat';
 			await goto(targetUrl);
 		}
 	}

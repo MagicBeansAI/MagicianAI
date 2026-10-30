@@ -1,6 +1,5 @@
 package ai.magicbeans.magdroid.ui
 
-import ai.magicbeans.magdroid.notes.NoteDocument
 import ai.magicbeans.magdroid.notes.NoteTreeEntry
 import ai.magicbeans.magdroid.notes.NotesLibraryException
 import ai.magicbeans.magdroid.notes.NotesLibraryRepository
@@ -87,7 +86,12 @@ fun NotesScreen(
     }
     var roots by remember { mutableStateOf<List<NoteNode>>(emptyList()) }
     var selectedFolder by remember { mutableStateOf("") }
-    var document by remember { mutableStateOf<NoteDocument?>(null) }
+    // A linked note whose file the link handler already has shows on the
+    // first frame; otherwise [opening] holds its path while the file comes.
+    val linked = remember(initialPath) { initialPath.trim() }
+    val prefetched = remember(linked) { linked.takeIf(String::isNotEmpty)?.let { NotePrefetch.take(context, it) } }
+    var document by remember { mutableStateOf(prefetched?.let(NotePrefetch::ready)) }
+    var opening by remember { mutableStateOf(linked.takeIf { it.isNotEmpty() && document == null }) }
     var editing by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
@@ -134,11 +138,25 @@ fun NotesScreen(
         searching = false
     }
 
-    LaunchedEffect(initialPath) {
-        runCatching {
-            roots = repository.tree("").map { NoteNode(it) }
-            if (initialPath.isNotBlank()) document = repository.open(initialPath)
-        }.onFailure { status = (it as? NotesLibraryException)?.message ?: "Notes could not be loaded." }
+    LaunchedEffect(linked) {
+        // A linked note is fetched beside the folder list, not after it: the
+        // reader came for that note, and the tree only feeds the side panel.
+        val requested = opening
+        if (requested != null) launch {
+            // The link handler may have started this fetch already; a missing
+            // note is its answer, a dropped connection is retried here.
+            val early = runCatching { prefetched?.await() }.getOrNull()
+                ?.takeIf { it.isSuccess || it.exceptionOrNull() is NotesLibraryException }
+            runCatching { early?.getOrThrow() ?: repository.open(requested) }
+                .onSuccess { if (document == null) document = it }
+                .onFailure { status = (it as? NotesLibraryException)?.message ?: "Notes could not be loaded." }
+            opening = null
+        }
+        runCatching { roots = repository.tree("").map { NoteNode(it) } }
+            .onFailure {
+                // A failed linked note says why; the tree's own failure does not hide that.
+                if (status.isEmpty()) status = (it as? NotesLibraryException)?.message ?: "Notes could not be loaded."
+            }
     }
 
     Box(Modifier.fillMaxSize().background(Ground)) {
@@ -235,7 +253,11 @@ fun NotesScreen(
                 Text("Searching notes…", color = Muted)
             } else {
             val open = document
-            if (open == null) {
+            val pending = opening
+            if (open == null && pending != null) {
+                Text(pending, color = Muted)
+                Text("Opening note…", color = Muted, modifier = Modifier.padding(top = 12.dp))
+            } else if (open == null) {
                 Text("Your notes", color = Ink, fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
                 Text(
                     "The folders are open beside this page. Pick a note, or add one from that list.",
@@ -268,6 +290,9 @@ fun NotesScreen(
                     }
                     NotesAction("Delete") { confirmNote = true }
                 }
+                // The rendered note leaves out its YAML front matter; Edit
+                // still shows and saves the whole file.
+                val body = remember(open.markdown) { noteBody(open.markdown) }
                 if (!editing) {
                     NotesField(
                         value = find,
@@ -277,7 +302,7 @@ fun NotesScreen(
                     )
                     if (find.isNotBlank()) {
                         Text(
-                            "${noteMatchCount(open.markdown, find)} ${if (noteMatchCount(open.markdown, find) == 1) "match" else "matches"}",
+                            "${noteMatchCount(body, find)} ${if (noteMatchCount(body, find) == 1) "match" else "matches"}",
                             color = Muted,
                             fontSize = 12.sp,
                             modifier = Modifier.padding(top = 4.dp),
@@ -293,14 +318,49 @@ fun NotesScreen(
                         modifier = Modifier.padding(top = 12.dp).height(320.dp),
                     )
                 } else {
-                    MarkdownText(
-                        markdown = open.markdown,
-                        color = Ink,
-                        fontSize = 15.sp,
-                        lineHeight = 22.sp,
-                        modifier = Modifier.padding(top = 12.dp),
-                        find = find,
-                    )
+                    // A link to another note in this workspace opens here, in
+                    // place; any other link takes the app-wide route.
+                    val appUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                    val noteUriHandler = remember(appUriHandler, repository) {
+                        object : androidx.compose.ui.platform.UriHandler {
+                            override fun openUri(uri: String) {
+                                val link = NoteLinks.parse(uri)
+                                val machines = runCatching {
+                                    ai.magicbeans.magdroid.access.MagicianAccess.listProfiles(context)
+                                }.getOrDefault(emptyList())
+                                val resolution = link?.let { NoteLinks.resolve(it, machines) }
+                                if (resolution !is NoteLinkResolution.Open) {
+                                    appUriHandler.openUri(uri)
+                                    return
+                                }
+                                scope.launch {
+                                    runCatching { repository.open(resolution.path) }
+                                        .onSuccess {
+                                            document = it
+                                            editing = false
+                                            find = ""
+                                            status = ""
+                                        }
+                                        .onFailure {
+                                            document = null
+                                            status = (it as? NotesLibraryException)?.message ?: "Could not open that note."
+                                        }
+                                }
+                            }
+                        }
+                    }
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.compose.ui.platform.LocalUriHandler provides noteUriHandler,
+                    ) {
+                        MarkdownText(
+                            markdown = body,
+                            color = Ink,
+                            fontSize = 15.sp,
+                            lineHeight = 22.sp,
+                            modifier = Modifier.padding(top = 12.dp),
+                            find = find,
+                        )
+                    }
                 }
             }
             }

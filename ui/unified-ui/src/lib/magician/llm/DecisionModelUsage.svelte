@@ -5,11 +5,13 @@
 	import { parseNumericDuckDbValue } from '$lib/magician/components/generative/chartUtil';
 	export let where = 'TRUE';
 	export let rangeLabel = '7d';
+	/** Batch lane for the query (see `LiveDataSource.lane`); default lane when unset. */
+	export let lane: string | undefined = undefined;
 	let mounted = false;
 	let loading = true;
 	let error: string | null = null;
 	let rows: Record<string, any>[] = [];
-	$: source = { kind: 'llm_calls_sql' as const, sql: decisionModelSql(where) };
+	$: source = { kind: 'llm_calls_sql' as const, sql: decisionModelSql(where), lane };
 	const rewirer = createLiveRewirer((dataSource) => setupLiveDataSource({
 		dataSource,
 		onStart: () => { loading = true; },

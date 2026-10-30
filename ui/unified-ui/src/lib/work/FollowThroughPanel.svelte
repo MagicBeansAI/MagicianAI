@@ -67,12 +67,14 @@
 </section>
 
 <style>
- .follow-through { border:1px solid var(--border-soft); border-radius:var(--radius-lg); background:var(--bg-card); padding:var(--space-md); margin-bottom:var(--space-lg); color:var(--text-primary); }
- button { color:var(--text-primary); background:var(--bg-card); border:1px solid var(--border-soft); border-radius:var(--radius-md); padding:var(--space-sm); cursor:pointer; min-height:36px; }
+ .follow-through { border:1px solid var(--border-soft); border-radius:12px; background:linear-gradient(180deg, var(--bg-card) 0%, var(--bg-soft) 100%); padding:var(--space-md); margin-bottom:0; color:var(--text-primary); box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+ button { color:var(--text-primary); background:var(--bg-card); border:1px solid var(--border-soft); border-radius:var(--radius-chip, 6px); padding:0.3rem 0.65rem; cursor:pointer; min-height:28px; font-size:var(--text-xs); box-sizing:border-box; transition:all 0.15s ease; }
+ button:hover:not(:disabled) { border-color:var(--accent-primary); }
  button:focus-visible { outline:2px solid var(--accent-primary); outline-offset:2px; }
- button[aria-pressed=true] { background:var(--accent-primary-soft); }
- .panel-toggle { display:flex; align-items:center; justify-content:space-between; width:100%; border:0; font-weight:600; text-align:left; }
- .controls { display:flex; justify-content:space-between; gap:var(--space-sm); margin-top:var(--space-sm); } .controls div { display:flex; gap:var(--space-sm); }
+ button[aria-pressed=true] { background:color-mix(in srgb, var(--accent-primary) 15%, transparent); border-color:var(--accent-primary); color:var(--accent-primary); font-weight:600; }
+ .panel-toggle { display:flex; align-items:center; justify-content:space-between; width:100%; border:0; background:transparent; font-weight:600; font-size:var(--text-sm); text-align:left; padding:0; min-height:auto; }
+ .panel-toggle:hover { color:var(--accent-primary); }
+ .controls { display:flex; justify-content:space-between; gap:var(--space-sm); margin-top:var(--space-sm); } .controls div { display:flex; gap:var(--space-xs); }
  p,small { color:var(--text-secondary); font-size:var(--text-xs); } p[role=alert] { color:var(--text-primary); }
  .records { display:grid; gap:var(--space-xs); } .record { display:flex; justify-content:space-between; gap:var(--space-sm); text-align:left; } .record > span:first-child { min-width:0; } strong,small { display:block; overflow-wrap:anywhere; } .state { font-size:var(--text-xs); white-space:nowrap; }
  .detail { margin-top:var(--space-md); } pre { overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; max-height:360px; font-size:var(--text-xs); }

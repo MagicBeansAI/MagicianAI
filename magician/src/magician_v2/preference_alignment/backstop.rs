@@ -146,6 +146,8 @@ pub async fn backstop_with(
             resolver: environment.resolver,
             taste_loader: environment.taste_loader,
             taste_capture: taste_capture.as_deref(),
+            // The host boundary checks the act as it fires.
+            late_advisory_notices: true,
         },
         &request,
         action,
@@ -227,9 +229,10 @@ mod tests {
         };
         let send = ExecutableAction::Pack {
             capability_name: "email".to_string(),
-            implementation: crate::magician_v2::execution::capability::ImplementationType::Compiled {
-                provider_name: "email".to_string(),
-            },
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "email".to_string(),
+                },
             resolved_params: std::collections::HashMap::new(),
         };
         // No owner scope: there are no owner intentions to compare against.

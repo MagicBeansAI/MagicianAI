@@ -21,11 +21,21 @@ function normalizePath(pathname: string): string {
 // Work and its bounded specialist destinations can be opened from a paired
 // phone. The root session gate and scoped API permissions still apply; this
 // changes only the hostname restriction, never authentication or authority.
-const OFF_DEVICE_SURFACES = new Set(['/attention']);
+// Settings is here because the phone apps embed it (`/settings?embed=1`) over
+// the machine's UI hostname: without it the app layout sent every signed-in
+// phone to `/` the moment the page loaded.
+// Its sub-pages too: embedded Settings links to them (Model routing), and a
+// phone that followed such a link was sent to `/` instead.
+const OFF_DEVICE_SURFACES = new Set(['/attention', '/settings']);
 
 export function isOffDeviceSurface(pathname: string): boolean {
     const path = normalizePath(pathname);
-    return OFF_DEVICE_SURFACES.has(path) || isWorkPathname(path) || isWorkSpecialistPath(path);
+    return (
+        OFF_DEVICE_SURFACES.has(path) ||
+        path.startsWith('/settings/') ||
+        isWorkPathname(path) ||
+        isWorkSpecialistPath(path)
+    );
 }
 
 // Routes a phone is an expected client for, app installed or not: the

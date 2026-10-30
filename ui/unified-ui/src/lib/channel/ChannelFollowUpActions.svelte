@@ -287,6 +287,21 @@
 		);
 	}
 
+	// Entry points for hosts that list these same actions in their own menu
+	// (the Today deck's Act menu). Each runs exactly what its button runs.
+	export function startChannelAction(actionId: string): boolean {
+		const descriptor = channelActions.find((action) => action.id === actionId);
+		if (!descriptor || busy) return false;
+		onChannelAction(descriptor);
+		return true;
+	}
+
+	export function startFollowUpTask(): boolean {
+		if (busy || followUp.review_required) return false;
+		openHintDialog();
+		return true;
+	}
+
 	async function openComposeDialog(descriptor: ChannelActionDescriptor): Promise<void> {
 		const granted = requestFocus({
 			id: OVERLAY_IDS.attentionChannelChild,

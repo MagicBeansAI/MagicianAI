@@ -178,6 +178,10 @@ pub enum ArtifactV2EventType {
     InputResolved,
     InputPromotedToTaskScope,
     LlmRequested,
+    ContextRetrievalStarted,
+    ContextRetrievalCompleted,
+    /// The router chose the provider/model for an in-flight call.
+    LlmRouted,
     LlmFirstToken,
     LlmSucceeded,
     LlmFailed,
@@ -309,6 +313,9 @@ impl ArtifactV2EventType {
         Self::InputResolved,
         Self::InputPromotedToTaskScope,
         Self::LlmRequested,
+        Self::ContextRetrievalStarted,
+        Self::ContextRetrievalCompleted,
+        Self::LlmRouted,
         Self::LlmFirstToken,
         Self::LlmSucceeded,
         Self::LlmFailed,
@@ -430,6 +437,9 @@ impl ArtifactV2EventType {
             Self::InputResolved => "input.resolved",
             Self::InputPromotedToTaskScope => "input.promoted_to_task_scope",
             Self::LlmRequested => "llm.requested",
+            Self::ContextRetrievalStarted => "context.retrieval.started",
+            Self::ContextRetrievalCompleted => "context.retrieval.completed",
+            Self::LlmRouted => "llm.routed",
             Self::LlmFirstToken => "llm.first_token",
             Self::LlmSucceeded => "llm.succeeded",
             Self::LlmFailed => "llm.failed",
@@ -1424,18 +1434,57 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
             request_summary: _,
             input_tokens_estimate,
             budget_remaining,
+            correlation,
             timestamp,
             ..
         } => Some(MappedRuntimeEvent {
             execution_id: execution_id.clone(),
             event_type: ArtifactV2EventType::LlmRequested,
             payload: json!({
+                // The same call identity `llm.routed` and `llm.succeeded` /
+                // `llm.failed` carry: a surface pairs on `llm_call_id` to show
+                // the call in flight and to close exactly this row.
+                "llm_call_id": correlation.as_ref().map(|value| value.llm_call_id.as_str()),
+                "trace_id": correlation.as_ref().map(|value| value.trace_id.as_str()),
                 "plan_id": plan_id,
                 "step_id": step_id,
                 "step_index": step_index,
                 "capability": capability,
                 "input_tokens_estimate": input_tokens_estimate,
                 "budget_remaining": budget_remaining,
+                "timestamp_ms": timestamp,
+            }),
+            execution_status_hint: Some("running".to_string()),
+            task_status_hint: Some("running"),
+            current_step_id: None,
+            active_child_execution_ids: None,
+        }),
+        RuntimeTransportEvent::LLMRouted {
+            execution_id,
+            plan_id,
+            step_id,
+            step_index,
+            capability,
+            correlation,
+            provider,
+            model,
+            profile,
+            timestamp,
+            ..
+        } => Some(MappedRuntimeEvent {
+            execution_id: execution_id.clone(),
+            event_type: ArtifactV2EventType::LlmRouted,
+            payload: json!({
+                "llm_call_id": correlation.as_ref().map(|value| value.llm_call_id.as_str()),
+                "trace_id": correlation.as_ref().map(|value| value.trace_id.as_str()),
+                "provider_attempt_id": correlation.as_ref().and_then(|value| value.provider_attempt_id.as_deref()),
+                "plan_id": plan_id,
+                "step_id": step_id,
+                "step_index": step_index,
+                "capability": capability,
+                "provider": provider,
+                "model": model,
+                "profile": profile,
                 "timestamp_ms": timestamp,
             }),
             execution_status_hint: Some("running".to_string()),
@@ -1457,6 +1506,7 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
             error,
             provider,
             model,
+            usage_reported,
             input_tokens,
             output_tokens,
             reasoning_tokens,
@@ -1517,9 +1567,9 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
                 "error": error,
                 "provider": provider,
                 "model": model,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "reasoning_tokens": reasoning_tokens,
+                "input_tokens": (*usage_reported && correlation.as_ref().and_then(|c| c.usage_availability).map_or(true, |u| u.tokens)).then_some(input_tokens),
+                "output_tokens": (*usage_reported && correlation.as_ref().and_then(|c| c.usage_availability).map_or(true, |u| u.tokens)).then_some(output_tokens),
+                "reasoning_tokens": (*usage_reported && correlation.as_ref().and_then(|c| c.usage_availability).map_or(true, |u| u.tokens)).then_some(reasoning_tokens),
                 "cache_read_tokens": correlation.as_ref().and_then(|c| c.usage_availability).map_or(true, |u| u.cache_read).then_some(cache_read_tokens),
                 "cache_creation_tokens": correlation.as_ref().and_then(|c| c.usage_availability).map_or(true, |u| u.cache_write).then_some(cache_creation_tokens),
                 "ttft_ms": ttft_ms,
@@ -1534,8 +1584,11 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
                 "started_at_ms": started_at_ms,
                 "timestamp_ms": timestamp,
             }),
-            execution_status_hint: Some("running".to_string()),
-            task_status_hint: Some("running"),
+            // Late Decision Engine receipts account for work already issued;
+            // they have no authority to reopen a completed/cancelled run.
+            execution_status_hint: (response_kind.as_str() != "decision_model")
+                .then(|| "running".to_string()),
+            task_status_hint: (response_kind.as_str() != "decision_model").then_some("running"),
             current_step_id: None,
             active_child_execution_ids: None,
         }),
@@ -1655,6 +1708,39 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
             current_step_id: None,
             active_child_execution_ids: None,
         }),
+        RuntimeTransportEvent::AgenticActionStarted {
+            execution_id,
+            plan_id,
+            step_id,
+            iteration,
+            action_type,
+            target,
+            call_id,
+            tool_name,
+            timestamp,
+            ..
+        } => Some(MappedRuntimeEvent {
+            execution_id: execution_id.clone(),
+            event_type: ArtifactV2EventType::ToolStarted,
+            // `call_id` is the pairing key: this action's `tool.succeeded` /
+            // `tool.failed` carries the same value, so a surface can show the
+            // tool running and settle exactly this row.
+            payload: json!({
+                "plan_id": plan_id,
+                "step_id": step_id,
+                "iteration": iteration,
+                "call_id": call_id,
+                "action_type": action_type,
+                "target": target,
+                "tool_name": tool_name,
+                "started_at_ms": timestamp,
+                "timestamp_ms": timestamp,
+            }),
+            execution_status_hint: Some("running".to_string()),
+            task_status_hint: Some("running"),
+            current_step_id: None,
+            active_child_execution_ids: None,
+        }),
         RuntimeTransportEvent::AgenticActionExecuted {
             execution_id,
             plan_id,
@@ -1665,6 +1751,7 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
             success,
             latency_ms,
             error,
+            call_id,
             timestamp,
             ..
         } => Some(MappedRuntimeEvent {
@@ -1678,6 +1765,7 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
                 "plan_id": plan_id,
                 "step_id": step_id,
                 "iteration": iteration,
+                "call_id": call_id,
                 "action_type": action_type,
                 "target": target,
                 "latency_ms": latency_ms,
@@ -2281,6 +2369,170 @@ mod tests {
             mapped.payload["recent_actions"].as_array().unwrap().len(),
             3
         );
+    }
+
+    fn live_call_correlation() -> crate::magician_v2::realtime_events::LlmEventCorrelation {
+        crate::magician_v2::realtime_events::LlmEventCorrelation::direct(
+            "anonymous",
+            "default",
+            magicllm::LlmWorkloadClass::AutonomousTask,
+        )
+    }
+
+    #[test]
+    fn llm_request_maps_with_the_call_identity_it_opens() {
+        use crate::magician_v2::realtime_events::RuntimeTransportEvent;
+        let correlation = live_call_correlation();
+        let evt = RuntimeTransportEvent::LLMRequestSent {
+            execution_id: "exec-1".into(),
+            principal: Some("anonymous".into()),
+            workspace: Some("default".into()),
+            plan_id: "plan-1".into(),
+            step_id: Some("step-1".into()),
+            step_index: None,
+            capability: "decision".into(),
+            request_summary: "Deciding next action for iteration 1".into(),
+            input_tokens_estimate: None,
+            budget_remaining: 0.0,
+            correlation: Some(correlation.clone()),
+            timestamp: 1_700_000_000_000,
+        };
+        let mapped = map_v2_realtime_event(&evt).expect("should map");
+        assert_eq!(mapped.event_type, ArtifactV2EventType::LlmRequested);
+        assert_eq!(mapped.event_type.as_str(), "llm.requested");
+        assert_eq!(
+            mapped.payload["llm_call_id"],
+            correlation.llm_call_id.as_str()
+        );
+        assert_eq!(mapped.payload["trace_id"], correlation.trace_id.as_str());
+        assert_eq!(mapped.payload["capability"], "decision");
+
+        // A historical request with no correlation still maps; the ids are
+        // explicit nulls rather than absent keys.
+        let RuntimeTransportEvent::LLMRequestSent {
+            execution_id,
+            principal,
+            workspace,
+            plan_id,
+            step_id,
+            step_index,
+            capability,
+            request_summary,
+            input_tokens_estimate,
+            budget_remaining,
+            timestamp,
+            ..
+        } = evt
+        else {
+            unreachable!()
+        };
+        let legacy = RuntimeTransportEvent::LLMRequestSent {
+            execution_id,
+            principal,
+            workspace,
+            plan_id,
+            step_id,
+            step_index,
+            capability,
+            request_summary,
+            input_tokens_estimate,
+            budget_remaining,
+            correlation: None,
+            timestamp,
+        };
+        let mapped = map_v2_realtime_event(&legacy).expect("should map");
+        assert!(mapped.payload["llm_call_id"].is_null());
+    }
+
+    #[test]
+    fn llm_routed_maps_to_its_own_v3_type_with_route_and_identity() {
+        use crate::magician_v2::realtime_events::RuntimeTransportEvent;
+        let correlation = live_call_correlation();
+        let evt = RuntimeTransportEvent::LLMRouted {
+            execution_id: "exec-1".into(),
+            principal: Some("anonymous".into()),
+            workspace: Some("default".into()),
+            plan_id: "plan-1".into(),
+            step_id: Some("step-1".into()),
+            step_index: None,
+            capability: "decision".into(),
+            correlation: Some(correlation.clone()),
+            provider: "anthropic".into(),
+            model: "claude-test".into(),
+            profile: Some("default".into()),
+            timestamp: 1_700_000_000_000,
+        };
+        let mapped = map_v2_realtime_event(&evt).expect("should map");
+        assert_eq!(mapped.event_type, ArtifactV2EventType::LlmRouted);
+        assert_eq!(mapped.event_type.as_str(), "llm.routed");
+        assert!(ArtifactV2EventType::ALL.contains(&ArtifactV2EventType::LlmRouted));
+        assert_eq!(mapped.execution_id, "exec-1");
+        assert_eq!(
+            mapped.payload["llm_call_id"],
+            correlation.llm_call_id.as_str()
+        );
+        assert_eq!(mapped.payload["trace_id"], correlation.trace_id.as_str());
+        assert_eq!(mapped.payload["capability"], "decision");
+        assert_eq!(mapped.payload["provider"], "anthropic");
+        assert_eq!(mapped.payload["model"], "claude-test");
+        assert_eq!(mapped.payload["profile"], "default");
+    }
+
+    #[test]
+    fn action_started_maps_to_tool_started_sharing_call_id_with_its_settlement() {
+        use crate::magician_v2::realtime_events::RuntimeTransportEvent;
+        let started = RuntimeTransportEvent::AgenticActionStarted {
+            execution_id: "exec-1".into(),
+            principal: Some("anonymous".into()),
+            workspace: Some("default".into()),
+            plan_id: "plan-1".into(),
+            step_id: "step-1".into(),
+            iteration: 3,
+            action_type: "pack".into(),
+            target: "web_search(query=rust)".into(),
+            call_id: "call-abc".into(),
+            detail: None,
+            tool_name: Some("web_search".into()),
+            timestamp: 1_700_000_000_000,
+        };
+        let mapped = map_v2_realtime_event(&started).expect("tool start is a runtime fact");
+        assert_eq!(mapped.event_type, ArtifactV2EventType::ToolStarted);
+        assert_eq!(mapped.event_type.as_str(), "tool.started");
+        assert_eq!(mapped.payload["call_id"], "call-abc");
+        assert_eq!(mapped.payload["target"], "web_search(query=rust)");
+        assert_eq!(mapped.payload["tool_name"], "web_search");
+        assert_eq!(mapped.payload["action_type"], "pack");
+        assert_eq!(mapped.payload["started_at_ms"], 1_700_000_000_000_i64);
+        assert_eq!(mapped.execution_status_hint.as_deref(), Some("running"));
+
+        for success in [true, false] {
+            let executed = RuntimeTransportEvent::AgenticActionExecuted {
+                execution_id: "exec-1".into(),
+                principal: Some("anonymous".into()),
+                workspace: Some("default".into()),
+                plan_id: "plan-1".into(),
+                step_id: "step-1".into(),
+                iteration: 3,
+                action_type: "pack".into(),
+                target: "web_search(query=rust)".into(),
+                success,
+                latency_ms: 42,
+                error: (!success).then(|| "boom".to_string()),
+                call_id: Some("call-abc".into()),
+                detail: None,
+                timestamp: 1_700_000_000_042,
+            };
+            let settled = map_v2_realtime_event(&executed).expect("should map");
+            assert_eq!(
+                settled.event_type.as_str(),
+                if success {
+                    "tool.succeeded"
+                } else {
+                    "tool.failed"
+                }
+            );
+            assert_eq!(settled.payload["call_id"], mapped.payload["call_id"]);
+        }
     }
 
     #[test]

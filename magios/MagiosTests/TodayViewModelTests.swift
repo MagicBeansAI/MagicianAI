@@ -22,6 +22,48 @@ final class TodayViewModelTests: XCTestCase {
         super.tearDown()
     }
 
+    @MainActor
+    func testReadingRoomPublishesBeforeSlowAnalyticsFinish() {
+        let fixture = initialHandler(today: todayPayload(), followUps: ["items": [["annotation_id": "ready", "provider": "gmail"]], "total": 1])
+        var pending: [() -> Void] = []
+        var releaseAnalytics = false
+        DeferredMockURLProtocol.handler = { request, completion in
+            let respond = {
+                do { completion(.success(try fixture(request))) }
+                catch { completion(.failure(error)) }
+            }
+            if request.url!.path.contains("/analytics/") {
+                DispatchQueue.main.async {
+                    if releaseAnalytics { respond() } else { pending.append(respond) }
+                }
+            } else { respond() }
+        }
+        let session = makeDeferredMockSession()
+        sessions.append(session)
+        let sut = TodayViewModel(networkSession: session, baseURL: URL(string: "https://example.com")!, principal: "person-1", workspace: "space-1", refreshesAfterActions: false)
+        let readingRoomReady = expectation(description: "Reading Room available before analytics")
+        let operationsReady = expectation(description: "Task counts available before analytics")
+        sut.$pulse.compactMap { $0 }.filter { $0.availableSlices.contains("tasks") }.prefix(1)
+            .sink { _ in operationsReady.fulfill() }.store(in: &cancellables)
+        sut.$settledSections.filter { $0.contains("message_followups") && $0.contains("today") }.prefix(1)
+            .sink { _ in readingRoomReady.fulfill() }.store(in: &cancellables)
+        sut.fetch()
+        wait(for: [readingRoomReady, operationsReady], timeout: 3)
+        XCTAssertNotNil(sut.payload)
+        XCTAssertEqual(sut.messageFollowUps.map(\.annotationID), ["ready"])
+        XCTAssertFalse(sut.initiallyLoading("message_followups"))
+        XCTAssertTrue(sut.initiallyLoading("pulse"))
+        XCTAssertTrue(sut.pulse?.pendingSlices.contains("llm") == true)
+        XCTAssertFalse(sut.pulse?.availableSlices.contains("llm") == true)
+        XCTAssertTrue(sut.isLoading)
+        // Requests already queued on the protocol may arrive after this point.
+        releaseAnalytics = true
+        let finished = expectation(description: "Remaining sections finish")
+        sut.$isLoading.dropFirst().filter { !$0 }.prefix(1).sink { _ in finished.fulfill() }.store(in: &cancellables)
+        pending.forEach { $0() }
+        wait(for: [finished], timeout: 3)
+    }
+
     func testPublishedBriefingMuijParsesRepresentativeDashboardWithoutStringifyingJSON() throws {
         let raw: JSONValue = .object([
             "muij_version": .string("1.0"),

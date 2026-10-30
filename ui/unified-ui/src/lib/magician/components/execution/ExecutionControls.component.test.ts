@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/sv
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { requestConfirmation } from '$lib/stores/confirmationStore';
+import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+import { get } from 'svelte/store';
 import ExecutionControls from './ExecutionControls.svelte';
 import ExecutionControlsTestHost from './ExecutionControls.test-host.svelte';
 
@@ -36,6 +38,41 @@ function controlState(overrides: Record<string, unknown> = {}): Record<string, u
 }
 
 describe('ExecutionControls', () => {
+	it.each([
+		{ status: 200, switchScope: false },
+		{ status: 409, switchScope: false },
+		{ status: 200, switchScope: true },
+		{ status: 409, switchScope: true }
+	])('ignores a delayed steer response ($status, scope=$switchScope) after switching context', async ({ status, switchScope }) => {
+		const originalScope = get(scopeIdentityStore);
+		let settle!: (response: Response) => void;
+		vi.stubGlobal('fetch', vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+			if (String(input).endsWith('/steer')) return new Promise<Response>((resolve) => { settle = resolve; });
+			return new Response(JSON.stringify(controlState()), { status: 200 });
+		}));
+		const user = userEvent.setup();
+		const view = render(ExecutionControls, { executionId: 'exec-1' });
+		await user.click(await screen.findByRole('button', { name: 'Steer run' }));
+		await user.type(screen.getByRole('textbox'), 'Original guidance');
+		await user.click(screen.getByRole('button', { name: 'Send steer' }));
+		await waitFor(() => expect(settle).toBeTypeOf('function'));
+		if (switchScope) scopeIdentityStore.observe('steer-test-owner', 'steer-test-workspace');
+		else await view.rerender({ executionId: 'exec-2' });
+		if (!switchScope) {
+			await user.click(await screen.findByRole('button', { name: 'Steer run' }));
+			await user.type(screen.getByRole('textbox'), 'Replacement guidance');
+		} else {
+			await waitFor(() => expect(screen.queryByRole('textbox')).not.toBeInTheDocument());
+		}
+		settle(new Response(JSON.stringify(status === 200 ? {} : { error: 'Old run ended' }), { status }));
+		if (!switchScope) await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Replacement guidance'));
+		else await waitFor(() => expect(screen.getByRole('button', { name: 'Steer run' })).toBeEnabled());
+		// Wait through the fetch/body and component continuations before checking notifications.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(showSuccessMock).not.toHaveBeenCalled();
+		expect(showErrorMock).not.toHaveBeenCalled();
+		if (switchScope) scopeIdentityStore.observe(originalScope.principal, originalScope.workspace);
+	});
 	it('keeps an in-progress steer draft through live refreshes of the same run', async () => {
 		vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify(controlState()), { status: 200 })));
 		const user = userEvent.setup();

@@ -45,6 +45,8 @@ harness LLM calls outside the managed router are out of scope.
 - Cancelling a waiter releases its reservations; queue pressure or expiry never
   marks a provider unhealthy or creates a receipt. Compatible reloads resize the queue;
   queue settings never enable local fallback.
+- Host `NotDispatched` errors mean policy expiry, budget exhaustion or disabled
+  classification prevented dispatch; they are distinct from provider outages.
 - Local seeds allow one active request; MLX handoff skips cancelled work, but a
   running GPU kernel keeps its slot until done.
 - Background gates may set `classification.queue_budget_ms` plus
@@ -77,16 +79,72 @@ flowchart LR
   A -->|fresh evidence| H
 ```
 
+### Screenshots
+
+`DecisionRequest.assets` (and `ActionContext.assets` on the rail) maps a
+reference key to a PNG or JPEG (`decision_engine_contract::asset`); the state
+names the image by writing the key, e.g. `{"state": "..", "screenshot":
+"screen-<hash>"}`. Keys are 8–1024 bytes of `[A-Za-z0-9._:-]` because the
+provider expands every occurrence. Each side must be 280–1568 px, each file at
+most 16 MiB; the engine and provider refuse images outside the limits (they
+never resize), and every asset must be referenced. The engine checks all of this before dispatch
+(`DecisionError::InvalidRequest`).
+
+Only image-capable models (`text_only: false`, today hosted Jev) take such a
+request; text-only models on the route are skipped, never sent the bare key.
+`OperationPolicy.images_local` / `images_cloud` advertise whether a route can
+take images, and the host attaches a screenshot only when its locality's flag
+is set: an engine that predates assets would drop them (`/v1/decide`) or refuse
+the request (`/v1/action`). Body-seeing operations still drop remote models in
+local mode, so screenshots never reach Jev there and the rail keeps its
+incumbent. The rail attaches the turn's own screenshot (browser page, Android
+screen, last desktop capture) from `decision::extract_screenshot`. The host
+scales an oversized capture to a 1568 px long side first
+(`magician_v2::decision_screenshot`, PNG out): a browser page over CDP on a
+Retina display is 2560 px wide and a full-page capture was 4160x3200 in a live
+run. One that would end up thinner than 280 px (a very tall, narrow page) is
+left off and the rail decides from text. A screenshot goes to the rail once:
+the task's browser state keeps the last capture after a click, so a later
+iteration that finds the same image (`LoopProtectiveState.
+decision_rail_screenshot`) decides from text rather than from a screen that
+may be gone. The agent's planner model only sees the screenshot of the state
+it decides on, so it never saw one from a step the rail decided, and lost its
+own on the next turn (often spent fetching element references). The loop now
+keeps the newest screenshot (`LoopProtectiveState.planner_screenshot_carry`,
+not persisted) and offers it on each later planner turn whose state has none,
+under `## EARLIER SCREENSHOT` with the steps run since; a newer screenshot
+replaces it and it is dropped after 3 iterations. Each hand-over journals
+`planner.earlier_screenshot` (with the caption). Each rail step with a screenshot
+journals `decision_rail.screenshot` (`attached`, `key`, captured size,
+`scaled_to`, or the `reason` it was left off). Chat's rail (`chat/decision_rail.rs`) does the same
+with the newest tool result: its inline image, or the image the session file
+index records for that call (`ToolOutput { tool_call_id }`, `prompt_image`).
+An image from an earlier call, or one followed by a user message, is never
+sent, since the screen may have changed since; it scales the same way and
+logs the outcome (`chat decision rail: screenshot`). When the rail hands the
+turn to the planner, the planner prompt drops the assets and reads the observation text unwrapped,
+exactly as without a screenshot. Classification batches carry no images.
+
 ### Selection and fallback
 
 `decision-engine-contract::action` is the contract; `magician-decision/src/action`
-implements it with no tool-name branches (skills need no annotations). A
+implements it with no tool-name branches. A
 request carries authorized tool schemas, bounded evidence, task context and an
 optional continuation plan.
 
 - **Candidates** come from the next proposed step or from schema constants,
-  enums, booleans and matching typed values in successful evidence, and must
-  pass the tool's JSON Schema (external refs refused; `validate_call`). A host
+  enums, required booleans and typed fields in the newest successful result.
+  Optional arguments are copied when grounded; values stay in their result row
+  (with ancestor fields), never across siblings. A property may declare
+  `x-magician-grounding-aliases` for equivalent result field names (the shared MCP
+  projector declares `name` → `tool_name`). Older values require explicit plan
+  bindings; prose and new content go to the planner.
+  Whole-call `parameter_constraints` in pack YAML are shared by registry, native,
+  flat and decision catalogs, including `allOf`/`anyOf`/`oneOf` requirements.
+  Schemas with missing required inputs are withheld; valid default and
+  argument-free calls remain eligible. Bounded admission prioritizes fresh
+  evidence bindings, taking turns across tools within each group. Candidates
+  must pass the tool's JSON Schema (external refs refused; `validate_call`). A host
   marker (`{"$ref": "<string>"}` alone, or `{"$file": "<string>"}` with optional
   `format`) stands in for any value: errors at or inside it are ignored because
   the host substitutes and checks the full value before dispatch. Free-form
@@ -100,6 +158,17 @@ optional continuation plan.
   `action_timeout_ms` bounds both (default 8,000 ms; 0 skips typed evaluation);
   the host socket timeout must exceed it. An oversized request for a pinned
   model escalates; evidence is never truncated.
+- **Selection receipts** include candidate call hashes, the selected option,
+  Choice confidence, both exact-call review scores and their effective thresholds.
+  Host diagnostic logs correlate them to workspace/chat/task execution without
+  retaining arguments or evidence. Explicit abstention, low choice confidence,
+  insufficient evidence and inapplicability have separate reasons. No candidates
+  or only an immediate repeated call skips paid selection; main-model proposals
+  still pass the same schema and host authorization checks. Replay saved
+  candidate cases without providers by setting `MAGICIAN_ACTION_REPLAY` to a JSONL
+  fixture and running `make cargo ARGS="test -p magician-decision --lib -- retained_candidate_replay --ignored --nocapture"`.
+  `MAGICIAN_ACTION_REPLAY_OUTPUT` optionally saves the report. It measures
+  exact-call coverage and construction latency, without claiming calls were optimal.
 - **Plans stick** (agent runs and chat). While steps remain, the host sends the
   stored continuation to `ResolvePlanner`, which validates it against the
   current catalog and schema and fills bindings from evidence; no model is asked
@@ -246,7 +315,7 @@ leave usage unavailable, never estimated.
 
 Rates come from the effective-dated `llm_pricing.json` overlay (seed
 `magician_data_v3/llm_pricing.template.json`; see
-[multi-llm](../magicllm/multi-llm.md)): `decision:typesafe` + `jev-1.13` at
+[multi-llm](../magicllm/multi-llm.md)): `decision:typesafe` + `jev-1.13` and `jev-1.14` (shipped) at
 $0.042 per million input tokens, output free
 ([model card](https://docs.typesafe.ai/models)); a new model family needs a new
 dated row. Only the official HTTPS endpoint gets that identity; custom System
@@ -357,8 +426,8 @@ No dependency on `magician`, `magician-comms` or any model vendor.
 
 Engine settings live in `<runtime root>/decision-engine.yaml`, read only by the
 `decision-engine` process; seed is repo-root `decision-engine.yaml`, copied when
-absent (never over a live file) by installers, the container entrypoint,
-`seed-silverbullet-space.sh` and `package-release.sh` beside
+absent (never over a live file) by installers, the container entrypoint and
+`package-release.sh` beside
 `magician-config.yaml`. It is separate from `llm.router` and never merged into
 `llm-router.yaml`. Schema `magician-decision/src/config.rs` (`deny_unknown_fields`),
 binding `magician_decision::engine::build_runtime`. `TYPESAFE_API_KEY` is in
@@ -390,10 +459,16 @@ Model entries:
 
 - `adapter: typesafe`: `endpoint` defaults to
   `https://api.typesafe.ai/v1/systemone`, `api_key_env` to `TYPESAFE_API_KEY`
-  (required); calibrated, remote, 32,768 state tokens, 255 options, Score.
+  (required); calibrated, remote, 65,536 tokens per request and 32,768 per
+  question (state plus one question), 255 options, Score. `long_context: true`
+  sends `TypeSafe-Danger-Zone-Long-Context` and raises both limits to 262,144
+  (slower, less accurate); on for the shipped `jev`, whose `tool_action_judge`
+  states outgrow 32k. `capabilities.images: true` lets the entry take
+  screenshots (provider-experimental; on for the shipped `jev`).
 - `adapter: systemone`: `endpoint` required, `api_key_env` optional (must
   resolve if named); uncalibrated with no limits until `capabilities:`
-  (`calibrated`, `max_state_tokens`, `max_choice_options`, `supports_score`).
+  (`calibrated`, `max_state_tokens`, `max_question_tokens`,
+  `max_choice_options`, `supports_score`, `images`).
   Responses carry adapter `systemone`, so thresholds never mix with Jev's.
 - `laya-onnx`, `kev-onnx`, `laya-mlx`, `kev-mlx`: in-process local models.
 - Locality comes from the endpoint host, never declared: only `localhost`, `127.0.0.0/8` or
@@ -451,11 +526,14 @@ Routing and thresholds:
   expiry is not an outage; real failures keep shared cooldown and health. Every attempt has a receipt. Routed local fallbacks
   load even when Jev answers. Memory classification has no LLM fallback.
 - `DecisionRuntime::evaluate_request` takes the first fitting, healthy model.
-  Fit (`runtime::misfit_reason`, pins too) checks `max_choice_options`,
-  `supports_score` and `max_state_tokens` against serialized (state + questions)
-  bytes / 3. A
+  Fit (`runtime::misfit_reason`, pins too) checks images against `text_only`,
+  `max_choice_options`, `supports_score`, `max_state_tokens` (state + all
+  questions) and `max_question_tokens` (state + the largest question), each as
+  serialized bytes / 3 plus one token per 375 pixels per image use (Jev
+  billed a 1280×800 screenshot at ~2.7k tokens). A
   transport, status, timeout or malformed answer means a 30 s cooldown
-  (cooling providers skip queues). Nothing fits →
+  (cooling providers skip queues); a 400/413/415/422 refusal of one request
+  does not. Nothing fits →
   `DecisionError::NoFittingModel` (unbound); an exhausted budget is `Timeout`.
 - Locality applies per model at bind time: in local mode a body-seeing route
   keeps loopback models and drops remote ones.
@@ -563,6 +641,10 @@ engine process, so supervising the engine supervises them.
 - The chain survives an image-shape flip that keeps the profile
   (`OperationLlmRouter::image_shape_changes_profile`); a `tool_search` load
   forces a full send (`ContextScratch::decision_loaded_tools`).
+- Loop-issued turns (`decision:<iteration>:<tool>` steps, pre-decided calls,
+  trace ids starting `synthetic:`) keep the OpenAI chain: their trailing pairs
+  fold into the model turn's tool result as `[loop-issued step, no model turn]`
+  (`decision::loop_issued_tool_call_ids`).
 - Providers without a server chain (Anthropic, Gemini, MiniMax, DeepSeek, xAI)
   keep the delta locally (`decision::keep_local_turn`,
   `ContextScratch::pending_local_turn`) while a full turn text ending
@@ -643,7 +725,20 @@ hardening.
 - Only these nine judgments use the rail; generated text uses the LLM router
   and only accepted heads, never filling missing decisions. Gated uncertainty or
   an outage defers locally, never calling an LLM classifier; Off and shadow keep
-  legacy calls.
+  legacy calls. One exception (owner decision 2026-10-19):
+  `memory_lifecycle_relation` passes `text::Unqualified::Generate`, so the
+  confident engine answers are locked in the written reviewer's prompt and
+  applied over its output, and the reviewer decides the pairs the engine could
+  not settle (every pair when none qualified). It had deferred every review:
+  across 61 reviews of 8 pairs, the engine was never sure of all 8. This
+  operation routes to Jev only; Kev-4B, its former backup, answered
+  `duplicate` for 164 of 165 pairs.
+- A gated `runner::Outcome` separates an abstention from a failure:
+  `abstained` (read through `current_abstentions()`) lists items the current
+  authority answered on every required question with nothing eligible. Failed,
+  unstarted or unanswered items, timeouts and admission refusals are never
+  listed, so an owner may remember an abstention (the contradiction sweep does,
+  per policy key) but must retry the rest.
 - The engine owns the gated budget within the owner's deadline; pure
   classification reserves nothing for an LLM fallback, mixed operations half
   for prose (`runner::text_reserve`). Eight background operations allow 30 s
@@ -766,6 +861,14 @@ the owner's request is the shared context.
 without qualification: verdict 0.85, core 0.8, Jev → Kev-4B, 4 s + 1 s queue,
 32 claims per reply. Unanswered claims, or all claims when the route is off or
 shadow-only, get the figures-only check.
+
+`result_delivery/1.0.0` independently compares one complete candidate with the
+owner's requested outcomes and bounded original source spans
+(`result_delivery_v1`). Its complete serialized item must fit the engine's
+16 KiB limit; its route and limits are in `decision-engine.yaml`.
+An older engine, unavailable route or oversized complete candidate leaves
+coverage unknown; it cannot inherit a factual verdict or trigger a revision.
+Coverage verdicts are invalidated when claim review edits the candidate.
 
 ## Preference alignment (`action_alignment`)
 

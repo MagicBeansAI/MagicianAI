@@ -43,7 +43,7 @@ pub const DEFAULT_ORB_LEASH_MINUTES: u64 = 120;
 pub const DEFAULT_ORB_FOLLOW_UP_SECONDS: u64 = 8;
 
 /// Desktop app configuration, stored in ~/magician_data_v3/config/magician.toml
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MagicianDesktopConfig {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -316,7 +316,7 @@ pub struct HostGatewayConfig {
     pub macos_speech_helper_bin: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ApiKeysConfig {
     #[serde(default)]
     pub openai_api_key: String,
@@ -839,36 +839,11 @@ impl Default for HostGatewayConfig {
     }
 }
 
-impl Default for ApiKeysConfig {
-    fn default() -> Self {
-        Self {
-            openai_api_key: String::new(),
-            anthropic_api_key: String::new(),
-        }
-    }
-}
-
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             auto_check: true,
             auto_update_container: false,
-        }
-    }
-}
-
-impl Default for MagicianDesktopConfig {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            contextual_assist: ContextualAssistConfig::default(),
-            container: ContainerResourceConfig::default(),
-            network: NetworkConfig::default(),
-            host_gateway: HostGatewayConfig::default(),
-            voice: VoiceConfig::default(),
-            orb: OrbConfig::default(),
-            api_keys: ApiKeysConfig::default(),
-            updates: UpdateConfig::default(),
         }
     }
 }
@@ -890,6 +865,73 @@ pub fn config_file_path() -> PathBuf {
 /// Returns the log directory: `<data_dir>/logs`.
 pub fn log_dir() -> PathBuf {
     data_dir().join("logs")
+}
+
+/// Clean-quit marker the tray's Quit writes before exiting. magic-supervisor
+/// (`--manage-desktop`) relaunches this app after it disappears only when no
+/// marker newer than the vanished process exists. It lives in the per-user
+/// support dir, not the runtime root, so every instance (Finder, login item,
+/// supervisor launch) writes the same file; on macOS that is
+/// `~/Library/Application Support/dev.magician.desktop/desktop-app.quit`,
+/// which the supervisor's `desktop_app` module spells the same way.
+pub const DESKTOP_QUIT_MARKER_FILE: &str = "desktop-app.quit";
+/// Set by the supervisor (and the Makefile launch targets) to the marker path
+/// it watches, so an override reaches the app.
+pub const DESKTOP_QUIT_MARKER_ENV: &str = "MAGICIAN_DESKTOP_QUIT_MARKER";
+
+fn quit_marker_path_from(env_override: Option<String>, support_dir: PathBuf) -> PathBuf {
+    env_override
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| support_dir.join(DESKTOP_QUIT_MARKER_FILE))
+}
+
+pub fn desktop_quit_marker_path() -> PathBuf {
+    quit_marker_path_from(std::env::var(DESKTOP_QUIT_MARKER_ENV).ok(), data_dir())
+}
+
+/// Record a deliberate quit before exiting, so a supervisor watching this
+/// app does not read the exit as a crash. In-app restart must not call this.
+pub fn write_desktop_quit_marker() -> std::io::Result<PathBuf> {
+    let path = desktop_quit_marker_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path,
+        format!("quit-from=tray-menu pid={}\n", std::process::id()),
+    )?;
+    Ok(path)
+}
+
+#[cfg(test)]
+mod quit_marker_tests {
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_quit_marker_is_the_env_path_else_the_support_dir_file() {
+        let support = PathBuf::from("/Users/a/Library/Application Support/dev.magician.desktop");
+        assert_eq!(
+            super::quit_marker_path_from(None, support.clone()),
+            support.join("desktop-app.quit")
+        );
+        assert_eq!(
+            super::quit_marker_path_from(Some("  ".to_string()), support.clone()),
+            support.join("desktop-app.quit"),
+            "a blank override is unset"
+        );
+        assert_eq!(
+            super::quit_marker_path_from(Some("/tmp/quit".to_string()), support),
+            PathBuf::from("/tmp/quit")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_default_support_dir_is_the_one_the_supervisor_watches() {
+        assert!(super::data_dir().ends_with("Library/Application Support/dev.magician.desktop"));
+    }
 }
 
 /// One-time migration: relocate the desktop config out of the legacy

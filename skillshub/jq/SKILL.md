@@ -63,7 +63,8 @@ metadata:
             input_file:
               type: workspace_path
               access: read_file
-              description: Path to JSON file to process
+              description: JSON file path, relative to the task workdir (scope workdirs
+                outside a task), or an absolute path within either admitted root.
               required: true
               max_length: 4096
             flags:

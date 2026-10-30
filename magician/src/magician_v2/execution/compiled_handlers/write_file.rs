@@ -5,7 +5,8 @@
 //! envelope; the actual write happens only after the operator applies the
 //! transaction from HITL. A path inside the running task's own workdir is
 //! written directly: that is the task's scratch space, which its shell may
-//! already write to without review.
+//! already write to without review. In God mode, a file grant authorizes the
+//! staged diff and may cover subsequent matching edits.
 
 use std::sync::Arc;
 
@@ -37,15 +38,19 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     if let Some(target) =
         crate::magician_v2::execution::native_executors::path_in_task_workdir(file_path)
     {
-        return Ok(staged_file_edit::write_task_workdir_file(
-            &target,
-            file_path,
-            content,
-            create_dirs,
-        ));
+        if !crate::magician_v2::god_mode::active()
+            || staged_file_edit::task_workdir_write_refusal(&target).is_none()
+        {
+            return Ok(staged_file_edit::write_task_workdir_file(
+                &target,
+                file_path,
+                content,
+                create_dirs,
+            ));
+        }
     }
 
-    let scoped = match staged_file_edit::resolve_path(&resources, &args, file_path) {
+    let scoped = match staged_file_edit::resolve_tool_write_path(&resources, &args, file_path) {
         Ok(path) => path,
         Err(err) => {
             // Out-of-workspace write: escalate to the sandbox-override HITL (the
@@ -58,6 +63,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 if crate::config::external_writes_enabled() {
                     return Err(ExecutionError::PathAccessDenied {
                         paths: vec![file_path.to_string()],
+                        roots_hint: staged_file_edit::staged_write_refusal_hint(&resources, &args),
                     });
                 }
                 // Feature OFF (default): out-of-workspace writes stay scoped — give the
@@ -65,8 +71,15 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 return Ok(json!({
                     "status": "error",
                     "reason": format!(
-                        "{err:#} — write inside your scoped workspace (out-of-workspace writes are disabled)."
+                        "{err:#} — write inside your scoped workspace (out-of-workspace writes are disabled){}.",
+                        staged_file_edit::staged_write_refusal_hint(&resources, &args)
                     ),
+                }));
+            }
+            if staged_file_edit::is_read_only_root_denied(&err) {
+                return Ok(json!({
+                    "status": "error",
+                    "reason": format!("Refused `file_path`: {err:#}"),
                 }));
             }
             return Ok(json!({
@@ -131,7 +144,9 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // screen — so surface the ABSOLUTE destination + an explicit marker in the
     // rationale rather than the bare relative filename.
     let verb = if exists { "Rewrite" } else { "Create" };
-    let rationale = if scoped.apply_root.is_some() {
+    let rationale = if scoped.god_mode_override.is_some() {
+        format!("{verb} {}", scoped.absolute_path.display())
+    } else if scoped.apply_root.is_some() {
         format!(
             "{verb} {} [OUTSIDE WORKSPACE — approved external write]",
             scoped.absolute_path.display()
@@ -139,7 +154,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     } else {
         format!("{verb} {}", scoped.relative_path.display())
     };
-    match staged_file_edit::stage_one_edit(&resources, &scoped, rationale, edit) {
+    match staged_file_edit::stage_one_edit(&resources, &scoped, rationale, edit).await {
         Ok(mut value) => {
             if let Some(obj) = value.as_object_mut() {
                 obj.insert(

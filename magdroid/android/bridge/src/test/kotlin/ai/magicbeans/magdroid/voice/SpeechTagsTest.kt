@@ -13,6 +13,13 @@ import org.junit.Test
  */
 class SpeechTagsTest {
 
+    @Test
+    fun `findings are spoken before a short qualification without critic text`() {
+        val raw = "⚠️ Not fully verified. Magician's evidence check could not confirm part of this answer: disputed 999999\n\n<speech>Found 18 comparable launches.</speech>"
+        assertEquals("Found 18 comparable launches. Some findings remain unverified.", SpeechTags.spokenText(raw))
+        assertEquals("Useful findings. Some findings remain unverified.", SpeechTags.spokenText("⚠️ Not fully verified. Useful findings."))
+    }
+
     /** Tagged bodies are what gets read — not the surrounding prose. */
     @Test
     fun `only the tagged parts are spoken`() {

@@ -29,7 +29,7 @@ The mint dropdown lists `claude_code`, `codex`, `codex_app_server`, `grok` and
 would silently fall back to Magician's own loop; `codex` and
 `codex_app_server` share the `codex` binary and its install status. Pi is in
 the roster for chat and run selection, but its Plane bridge has no terminal MCP
-grant picker, because pinned Pi 0.87.1 has no native MCP client.
+grant picker, because Magician launches Pi with its built-in MCP client off.
 
 The dropdowns are install-aware: `fetchEngineAvailability` reads
 `GET /api/magician/v2/plane/engines` (server-side PATH lookup) and greys out

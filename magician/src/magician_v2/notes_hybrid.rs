@@ -24,6 +24,8 @@ use serde_json::json;
 use super::notes_search_index::{tree_stamp, IndexedNote, NotesIndexRoot};
 
 const HASH_DIMS: usize = 32;
+/// The embedder name of a keyword-only index (no model).
+const HASH_EMBEDDER: &str = "hash";
 const MAX_EMBED_CHARS: usize = 8_000;
 const MAX_EMBED_NOTES_PER_SEARCH: usize = 200;
 /// L2 distance. Identical stored vectors are 0. Unrelated unit vectors sit
@@ -142,7 +144,7 @@ async fn refresh_watched(index_dir: &Path, notes: &[IndexedNote]) -> anyhow::Res
     #[cfg(test)]
     {
         let mode = EmbedMode {
-            name: "hash".to_string(),
+            name: HASH_EMBEDDER.to_string(),
             dims: HASH_DIMS,
             semantic: false,
             embed: None,
@@ -170,8 +172,19 @@ pub(crate) async fn query_stored_index(
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let mode = embed_mode().await;
-    let query_vector = if mode.semantic {
+    let mode = embed_mode(Readiness::Search).await;
+    // Search the table as it was built. An embedded index kept while Ollama
+    // looks down is still searched, by keyword only.
+    let manifest = load_manifest(index_dir);
+    let (dims, semantic) = if manifest.embedder.is_empty() {
+        (mode.dims, mode.semantic)
+    } else {
+        (
+            manifest.dims,
+            mode.semantic && manifest.embedder == mode.name,
+        )
+    };
+    let query_vector = if semantic {
         match tokio::time::timeout(Duration::from_millis(600), embed_query(&mode, query)).await {
             Ok(Ok(vector)) => Some(vector),
             _ => None,
@@ -179,7 +192,7 @@ pub(crate) async fn query_stored_index(
     } else {
         None
     };
-    let hits = VectorTable::at(index_dir, mode.dims)
+    let hits = VectorTable::at(index_dir, dims)
         .search_bm25_fuzzy_and_vector(query, query_vector.as_deref(), limit, MAX_SEMANTIC_DISTANCE)
         .await?;
     Ok(admissions_from_hits(hits))
@@ -228,14 +241,15 @@ pub(crate) async fn refresh_index(
     index_dir: &Path,
     notes: &[IndexedNote],
 ) -> anyhow::Result<RefreshStats> {
-    let mut mode = embed_mode().await;
+    let mut mode = embed_mode(Readiness::Refresh).await;
     match sync_index(index_dir, notes, &mode).await {
         Ok(stats) => Ok(stats),
-        Err(error) if mode.semantic => {
+        Err(_error) if mode.semantic => {
             // Ollama can answer a health check and still have no embedding model
-            // configured. The stored keyword index still has to be updated.
+            // configured. A keyword-only index is built when nothing was embedded
+            // yet; an embedded one is kept as it is (`sync_index`).
             mode = EmbedMode {
-                name: "hash".to_string(),
+                name: HASH_EMBEDDER.to_string(),
                 dims: HASH_DIMS,
                 semantic: false,
                 embed: None,
@@ -298,8 +312,18 @@ struct EmbedMode {
     embed: Option<fn(&[String]) -> Vec<Vec<f32>>>,
 }
 
-async fn embed_mode() -> EmbedMode {
-    if ollama_ready().await {
+/// How long the Ollama readiness check may take. A search waits on it, so it
+/// gets a short budget and reuses a recent answer. A refresh runs in the
+/// background, so it waits out a busy Ollama (the configured health timeout)
+/// rather than mistake it for a missing one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    Search,
+    Refresh,
+}
+
+async fn embed_mode(readiness: Readiness) -> EmbedMode {
+    if ollama_ready(readiness).await {
         let cfg = OllamaEmbedder::from_env().config().clone();
         EmbedMode {
             name: format!("ollama:{}", cfg.embedding_contract_id()),
@@ -309,7 +333,7 @@ async fn embed_mode() -> EmbedMode {
         }
     } else {
         EmbedMode {
-            name: "hash".to_string(),
+            name: HASH_EMBEDDER.to_string(),
             dims: HASH_DIMS,
             semantic: false,
             embed: None,
@@ -317,7 +341,7 @@ async fn embed_mode() -> EmbedMode {
     }
 }
 
-async fn ollama_ready() -> bool {
+async fn ollama_ready(readiness: Readiness) -> bool {
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
     struct Cached(Instant, bool);
@@ -325,19 +349,23 @@ async fn ollama_ready() -> bool {
     let slot = CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(guard) = slot.lock() {
         if let Some(Cached(at, ready)) = *guard {
-            if at.elapsed() < Duration::from_secs(60) {
+            // A refresh re-checks a recent "down": it can afford to wait.
+            let reuse = ready || readiness == Readiness::Search;
+            if reuse && at.elapsed() < Duration::from_secs(60) {
                 return ready;
             }
         }
     }
-    let ready = tokio::time::timeout(
-        Duration::from_millis(200),
-        OllamaEmbedder::from_env().health_check(),
-    )
-    .await
-    .ok()
-    .and_then(|result| result.ok())
-    .is_some();
+    let embedder = OllamaEmbedder::from_env();
+    let budget = match readiness {
+        Readiness::Search => Duration::from_millis(200),
+        Readiness::Refresh => embedder.config().health_timeout,
+    };
+    let ready = tokio::time::timeout(budget, embedder.health_check())
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .is_some();
     if let Ok(mut guard) = slot.lock() {
         *guard = Some(Cached(Instant::now(), ready));
     }
@@ -454,6 +482,17 @@ async fn sync_index(
     let _write = write_gate.lock().await;
     let mut manifest = load_manifest(index_dir);
     if manifest.embedder != mode.name || manifest.dims != mode.dims {
+        if !mode.semantic && !manifest.embedder.is_empty() && manifest.embedder != HASH_EMBEDDER {
+            // Ollama looked down or an embed failed. Deleting the embedded
+            // index here meant re-embedding every note once Ollama answered
+            // again (~1,450 chunks, five minutes of the one Ollama slot). Keep
+            // it: search reads the notes fresh for words, and the next refresh
+            // with Ollama catches up. Only a different model rebuilds.
+            return Ok(RefreshStats {
+                changed: 0,
+                removed: 0,
+            });
+        }
         if index_dir.exists() {
             std::fs::remove_dir_all(index_dir).ok();
         }
@@ -639,6 +678,54 @@ mod tests {
         assert!(
             hits.iter().any(|hit| hit.relative_path == "index.md"),
             "stored index should find the note, got {hits:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ollama_outage_keeps_the_embedded_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let index = temp.path().join("index");
+        let note = |markdown: &str| IndexedNote {
+            provider: "local_markdown".into(),
+            relative_path: "Inbox/orion.md".into(),
+            absolute_path: temp.path().join("orion.md"),
+            markdown: markdown.into(),
+            modified_at_ms: 1,
+        };
+        let semantic = EmbedMode {
+            name: "test".into(),
+            dims: 4,
+            semantic: true,
+            embed: Some(embed_topic),
+        };
+        let keyword_only = EmbedMode {
+            name: HASH_EMBEDDER.into(),
+            dims: HASH_DIMS,
+            semantic: false,
+            embed: None,
+        };
+        sync_index(&index, &[note("# Project\n\nPROJECT-ORION")], &semantic)
+            .await
+            .unwrap();
+
+        // Ollama looks down while a note changes: nothing is deleted or re-embedded.
+        let edited = [note("# Project\n\nPROJECT-ORION, now with a launch date")];
+        let skipped = sync_index(&index, &edited, &keyword_only).await.unwrap();
+        assert_eq!((skipped.changed, skipped.removed), (0, 0));
+        assert_eq!(load_manifest(&index).embedder, "test");
+        let hits = VectorTable::at(&index, 4)
+            .search_bm25_fuzzy_and_vector("PROJECT-ORION", None, 5, MAX_SEMANTIC_DISTANCE)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+
+        // Back up: only the changed note is embedded.
+        assert_eq!(
+            sync_index(&index, &edited, &semantic)
+                .await
+                .unwrap()
+                .changed,
+            1
         );
     }
 

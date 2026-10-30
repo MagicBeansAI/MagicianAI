@@ -168,8 +168,8 @@ impl CodexAppServerSession {
         // overwrite-safe, so a persistent home is re-installed per session.
         let owns_home = self.native_home.is_none();
         let home = self.native_home.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!(
-                "magician-plane-cax-{}",
+            crate::magician_v2::execution::plane::grant_channel::private_path(&format!(
+                "cax-{}",
                 uuid::Uuid::new_v4().simple()
             ))
         });

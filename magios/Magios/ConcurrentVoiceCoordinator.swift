@@ -101,7 +101,7 @@ final class ConcurrentVoiceCoordinator: ObservableObject {
     init(request: Request? = nil, play: Playback? = nil, stop: (() -> Void)? = nil, now: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 }) {
         self.request = request ?? Self.httpRequest
         self.play = play ?? { row, started, finished in
-            SpeechSynthesizer.shared.speak(row.speechText ?? "", messageId: "voice-delivery-\(row.id)", focusPolicy: .concurrentVoiceOwner, onStart: started, completion: finished)
+            SpeechSynthesizer.shared.speak(row.speechText ?? "", messageId: "voice-delivery-\(row.id)", chatSessionId: row.parentSessionId, focusPolicy: .concurrentVoiceOwner, onStart: started, completion: finished)
         }
         self.stopPlayback = stop ?? { SpeechSynthesizer.shared.stop() }
         self.now = now

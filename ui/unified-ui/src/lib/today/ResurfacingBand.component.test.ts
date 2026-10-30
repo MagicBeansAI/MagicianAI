@@ -9,6 +9,12 @@ import { attentionRankRecomputeStore } from '$lib/stores/attentionRankRecomputeS
 import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 import ResurfacingBand from './ResurfacingBand.svelte';
 
+// The band names Ask <agent> from the primary agent; keep the agent list offline.
+vi.mock('$lib/stores/agentStore', async () => {
+	const { writable } = await vi.importActual<typeof import('svelte/store')>('svelte/store');
+	return { primaryAgent: writable(null) };
+});
+
 function deferred<T>() {
 	let resolve!: (value: T) => void;
 	const promise = new Promise<T>((next) => {

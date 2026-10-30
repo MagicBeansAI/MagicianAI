@@ -5,7 +5,7 @@
 //!
 //! ```bash
 //! set -a; source "$MAGICIAN_ROOT_DIR/.env.development"; set +a
-//! cargo test -p magicllm --test live_sarvam -- --ignored --nocapture
+//! make cargo ARGS="test -p magicllm --test live_sarvam -- --ignored --nocapture"
 //! ```
 //!
 //! A missing `SARVAM_API_KEY` skips (exit 0). Every call goes through the
@@ -103,7 +103,10 @@ async fn a_hindi_turn_calls_a_tool_and_answers_from_its_result() {
         .cloned()
         .expect("a forced tool call comes back");
     assert_eq!(call.name, TOOL_NAME);
-    assert!(turn_one.reasoning_text.is_some(), "Sarvam always reasons");
+    assert!(
+        turn_one.reasoning_text.is_some(),
+        "explicit Low should return reasoning"
+    );
     let usage = turn_one.usage.clone().expect("usage reported");
     assert!(usage.prompt_tokens.unwrap_or(0) > 0);
     let cost = compute_cost(&LLMProviderKind::Sarvam, MODEL, &usage);

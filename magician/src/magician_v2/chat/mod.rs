@@ -3,13 +3,20 @@
 //! Ask-mode chat requires the agentic runtime and delegates actionable work
 //! through it. The old chat-local tool registry path has been removed.
 
+pub mod authored_framing;
 pub mod chat_store_sink;
 pub mod chat_turn_event_sink;
+pub mod context_compaction;
 pub(crate) mod decision_rail;
 pub mod enrollment;
 pub mod envoy;
 pub mod envoy_claims;
 pub mod escalation_listener;
+/// `/god` and `/godoff` typed into a chat: owner-only per-chat god mode.
+pub mod god_command;
+/// `search_chat_history`: read-only recall over the session's full transcript
+/// after context compaction has summarized its older part.
+pub mod history_search;
 /// The seam that joins a proved inbound identity to an open engagement's lane.
 pub mod inbound_authority;
 /// The chat ingress's seam into the counterparty register: who wrote to us, and
@@ -45,6 +52,7 @@ pub mod storage;
 pub mod tools_runtime;
 pub mod turn_liveness;
 pub mod turn_secrets;
+pub mod turn_state;
 pub mod voice_requests;
 
 /// Default agent ID used across the chat subsystem.

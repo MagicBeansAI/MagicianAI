@@ -54,6 +54,7 @@ async fn batch_fallback_qualifies_local_identity_and_meters_both_calls() {
                 choice_candidates: Default::default(),
             }],
         },
+        assets: Default::default(),
     };
     let reply = engine.decide(request).await;
     let item = &reply.batch.items[0];

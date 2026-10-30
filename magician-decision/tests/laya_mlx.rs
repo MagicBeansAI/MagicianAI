@@ -84,6 +84,7 @@ fn request_of(case: &serde_json::Value) -> DecisionRequest {
             other => DecisionState::from_json(other.clone()),
         },
         questions,
+        assets: Default::default(),
     }
 }
 

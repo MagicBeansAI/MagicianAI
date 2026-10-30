@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage, ChatRenderTaskExecutionGroup } from '$lib/stores/chatStore';
+import { taskStore, type Task } from '$lib/stores/taskStore';
 import {
 	ingestPendingHitlLineForTest,
 	teardownPendingHitlBridge
@@ -9,9 +10,15 @@ import {
 import LiveTaskCard from './LiveTaskCard.svelte';
 import LiveTaskCardSlotHarness from '../../../../test/fixtures/LiveTaskCardSlotHarness.svelte';
 
+beforeEach(() => {
+	vi.spyOn(taskStore, 'fetchTaskRecordById').mockResolvedValue(null);
+});
+
 afterEach(() => {
 	cleanup();
 	vi.useRealTimers();
+	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 const T0 = 1_760_000_000_000;
@@ -58,6 +65,91 @@ function props(message: ChatMessage, taskExecutionGroups: ChatRenderTaskExecutio
 }
 
 describe('LiveTaskCard', () => {
+	it('resolves an internal task by id before enabling its expanded controls', async () => {
+		const readTask = vi.spyOn(taskStore, 'fetchTaskRecordById').mockResolvedValue({
+			id: 'task-1', status: 'running', activeExecutionId: 'exec-internal'
+		} as Task);
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+			execution_id: 'exec-internal', waiting_state: 'executing', active: true,
+			can_pause: true, can_resume: false, can_steer: true, can_cancel: true
+		}), { status: 200 })));
+		render(LiveTaskCard, props(taskMessage('internal', 'running', 'exec-internal')));
+		expect(readTask).not.toHaveBeenCalled();
+		await fireEvent.click(toggle());
+		expect(await screen.findByRole('button', { name: 'Pause run' })).toBeEnabled();
+		expect(readTask).toHaveBeenCalledWith('task-1');
+	});
+
+	it('discards a delayed internal-task lookup after the card switches runs', async () => {
+		let resolveOld!: (task: Task) => void;
+		vi.spyOn(taskStore, 'fetchTaskRecordById')
+			.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+			.mockResolvedValue({ id: 'task-1', status: 'running', activeExecutionId: 'exec-new' } as Task);
+		const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response(JSON.stringify({
+			execution_id: 'exec-new', waiting_state: 'executing', active: true,
+			can_pause: true, can_resume: false, can_steer: true, can_cancel: true
+		}), { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+		const view = render(LiveTaskCard, props(taskMessage('old', 'running', 'exec-old')));
+		await fireEvent.click(toggle());
+		await view.rerender(props(taskMessage('new', 'running', 'exec-new')));
+		expect(await screen.findByRole('button', { name: 'Pause run' })).toBeEnabled();
+		resolveOld({ id: 'task-1', status: 'running', activeExecutionId: 'exec-old' } as Task);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/exec-old/control-state'))).toBe(false);
+		expect(screen.getByRole('button', { name: 'Pause run' })).toBeEnabled();
+	});
+
+	it('offers canonical run controls only after expanding the authoritative active run', async () => {
+		let paused = false;
+		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input).endsWith('/pause') && init?.method === 'POST') paused = true;
+			return new Response(JSON.stringify({
+				execution_id: 'exec-live', waiting_state: paused ? 'paused' : 'executing',
+				active: !paused, can_pause: !paused, can_resume: paused,
+				can_steer: !paused, can_cancel: true
+			}), { status: 200 });
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		render(LiveTaskCard, props(taskMessage('live', 'running', 'exec-live'), [], {
+			activeExecutionId: 'exec-live'
+		}));
+		expect(screen.queryByRole('button', { name: 'Pause run' })).toBeNull();
+		expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/control-state'))).toBe(false);
+		await fireEvent.click(toggle());
+		expect(await screen.findByRole('button', { name: 'Steer run' })).toBeEnabled();
+		expect(screen.getByRole('button', { name: 'Stop run' })).toBeEnabled();
+		await fireEvent.click(screen.getByRole('button', { name: 'Pause run' }));
+		await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) =>
+			String(url) === '/api/magician/v2/executions/exec-live/pause' && init?.method === 'POST'
+		)).toBe(true));
+		expect(await screen.findByRole('button', { name: 'Resume run' })).toBeEnabled();
+		expect(screen.queryByRole('button', { name: 'Steer run' })).toBeNull();
+	});
+
+	it.each([
+		{ status: 'running', executionId: 'exec-old', activeExecutionId: 'exec-live' },
+		{ status: 'completed', executionId: 'exec-live', activeExecutionId: 'exec-live' },
+		{ status: 'running', executionId: 'exec-old', activeExecutionId: undefined }
+	])('does not turn a historical or terminal card into a control target ($status, $executionId)', async ({ status, executionId, activeExecutionId }) => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+		render(LiveTaskCard, props(taskMessage('historical', status, executionId), [], { activeExecutionId }));
+		if (queryToggle()) await fireEvent.click(toggle());
+		expect(screen.queryByLabelText('Execution controls')).toBeNull();
+		expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/control-state'))).toBe(false);
+	});
+
+    it('removes the obsolete Cancel action when a paused task has already returned to ready', () => {
+        const cancel = vi.fn();
+        const { container } = render(LiveTaskCard, props(taskMessage('m', 'paused', 'run-1'), [], {
+            storeStatus: 'ready', onCancel: cancel
+        }));
+        expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull();
+        expect(container.querySelector('[data-testid="live-task-dot"]')).toHaveAttribute('data-status', 'queued');
+        expect(cancel).not.toHaveBeenCalled();
+    });
+
 	function dot(container: HTMLElement): HTMLElement {
 		return container.querySelector('[data-testid="live-task-dot"]') as HTMLElement;
 	}
@@ -118,6 +210,18 @@ describe('LiveTaskCard', () => {
 		const run = taskMessage('r1', 'running', 'e1');
 		render(LiveTaskCard, props(run, [group('e1', run)]));
 		expect(screen.getAllByText('Checking the release gates.')).toHaveLength(1);
+	});
+
+	it('shows a verification icon and renders the completed HTML report', () => {
+		const summary = "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: No observed dispatch.\n\n```html\n<h1>Runtime checks</h1><table><tr><th>Check</th><th>Result</th></tr><tr><td>Definition</td><td>Confirmed</td></tr></table>\n```";
+		const { container } = render(LiveTaskCard, props(taskMessage('verified-report', 'completed', 'e1', T0, { summary })));
+		const info = screen.getByRole('button', { name: 'Not fully verified — view details' });
+		expect(info).toBeVisible();
+		expect(info.closest('.cn-live-task__top')).not.toBeNull();
+		expect(container.querySelector('[data-testid="live-task-reason"]')).not.toContainElement(info);
+		expect(screen.getByRole('table')).toBeVisible();
+		expect(container.textContent).not.toContain('Not fully verified');
+		expect(container.querySelector('pre')).toBeNull();
 	});
 
 	it('offers "more" when the reason overflows its clamp, which expands the card', async () => {
@@ -387,7 +491,8 @@ describe('LiveTaskCard', () => {
 	});
 
 	it('becomes expandable once the live activity slot renders something', async () => {
-		const message = taskMessage('m', 'running', 'exec-2');
+		// An activity-only card has no concrete run to control yet.
+		const message = taskMessage('m', 'running');
 		const groups = [group('exec-2', message)];
 		const { rerender } = render(LiveTaskCardSlotHarness, {
 			message,

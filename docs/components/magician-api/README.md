@@ -1,5 +1,65 @@
 # Magician API
 
+`GET /channel-assist/resurfacing/today` includes each card’s `surfaced_at` (milliseconds), separate from its source reference date. Both Reading Room list endpoints accept `include_diagnostics=false` to omit full-universe operator health scans while retaining canonical decisions and delivery bindings; `Server-Timing` includes diagnostic work.
+
+Work task creation records owner origin only from a same-scope authenticated
+owner session/API token or verified paired owner phone; bot/terminal credentials and `created_by` do not establish
+it ([outward context controls](../magician/outward-actions.md#optional-context-controls)).
+`GET/PUT /settings/outward-actions` uses the owner-session/paired-phone guard,
+revision-checked persistence and immediate live application; agent/API tokens
+cannot edit the sending policy.
+
+Chat file open/reveal authenticates the session scope before resolving mentioned relative paths in scoped outputs/notes; ambiguous matches return `409` with a request for the full workspace path.
+
+Chat activity usage skips nested debug payloads and caches complete-row totals
+by scoped file identity; refreshes scan only appended rows, preserving whole-turn
+call deduplication and totals while the event page stays byte-bounded.
+
+The [model catalog](../magicllm/model-catalog.md) supplies one descriptor per
+model through `GET /chat/models?engine=magician|pi`, with `default_selection`
+and native thinking choices. Ordinary, streaming, queued and concurrent-voice
+requests send `model_selection: {model_id, thinking}` plus `harness_engine`.
+Invalid/unavailable choices are refused before admission. Retired `profile`
+inputs and competing native harness-model fields are rejected; the old profile
+list endpoints are no longer registered in source. Operation assignments use
+typed model/thinking selections through `PUT /llm/routing/{operation}`.
+
+Pi catalog/admission respects the catalog's qualification flags. An API model
+is not automatically a supported Pi model, and usable context remains hidden
+until its engine attests capacity. Native clients require the matching backend.
+See migration boundaries
+for configuration and saved-state ownership.
+
+`GET /coding/models` returns model descriptors, engine readiness and a typed
+default selection. Descriptors carry additive `availability` (runtime model
+discovery); models their source no longer offers are omitted, uncatalogued CLI
+models appear with `catalogued: false`, and the body adds `model_sources` and
+`catalog_drift`. `GET /llm/routing` adds the same per-model `availability` plus
+`uncatalogued_models`, and `GET /plane/engines` adds `unavailable_models`
+([runtime availability](../magicllm/model-catalog.md#runtime-availability)). `coding_choice` accepts `{"kind":"auto"}` or
+`{"kind":"model","engine":"pi","model_id":"provider/model","thinking":"high"}`.
+Native model IDs retain engine identity; mismatches are refused. Chat, cockpit
+and realtime voice share this parser. Retired `kind:profile` and cockpit
+`coding_profile_id` inputs are rejected. Image/URL admission reads the selected
+model's capability. Execution still seals the generated concrete route and
+selected effort in the existing dispatch digest; historical digests are not
+rewritten. Unattested SDK/CLI context capacity is omitted.
+
+`PUT /plane/engine` accepts typed `model_selection` for Pi background runs, and
+the roster returns `run_model_selection`. JSON null clears the pin; omission
+preserves it. The old `pi_profile` request/response contract is removed. The
+concrete internal route remains in the execution snapshot. Eval-only route
+validators accept canonical assignment/model paths; the web-researcher judge
+uses `operation/query_analysis`, preserving its governed workload.
+
+The one-time offline agent-pin migrator lives at
+`magician-api/examples/migrate_agent_model_pins.rs` and writes through
+`AgentDefinitionStore` with expected versions and verified backups. Its default
+`make migrate-agent-model-pins ARGS="…"` mode is a read-only preview; `--apply`
+requires explicit connection refusal on both API loopbacks. API admission,
+routing and the migration-owner guard tests share one Cargo invocation through
+`make test-llm-chat-model-api`, keeping the dependency graph consistent.
+
 Version 0.3.43 adds scoped receipt correlation, confirmed calendar transitions, exact reply Work routing and bounded follow-through pagination.
 
 Quality owner preview resolves scoped `native_harness.metered_tools` capability
@@ -52,6 +112,8 @@ The HTTP/WS surface of the Magician service, extracted from the `magician`
 monolith as a **satellite crate** over the `magician` lib. All routes below are
 under `/api/magician/v2` unless stated otherwise.
 
+Chat session `/assets` inventories uploads and related task outputs with recorded chat, task, execution and creation-time provenance; mirrored copies retain the source output metadata.
+
 ## Why a satellite
 
 `api` was the aggregation point nearly every surface hung from. Lib-module
@@ -100,6 +162,8 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   health}`, `magician_v2/notes_projection.rs`, `magician_v2::audio_notes_seam`,
   `magician_comms::channel_assist::assist`. Attention-learning/resurfacing
   handlers import engine types from `magician::magician_v2::attention::`.
+  Resurfacing observability reports `routing_held` (curator routing holds)
+  in both `funnel` and `queue`, separate from `cooling`.
 - Supervisor background loops (`magician-bg`) take their worker count from the
   pre-bootstrap `runtime.scale` plan (`current` is 4).
   `POST /settings/magician-config/reload` lists `runtime.scale` and
@@ -149,6 +213,32 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   [runtime async stack boundaries](../magician/runtime-async-stack-boundaries.md).
 - **Cached-response headers.** Surfacing, maintenance and background-behavior
   responses are `private, no-store`.
+- **Service health and versions.** Public `GET /health` answers `status`,
+  `service`, `version` and per-service health words (`magician`,
+  `magicutor_status`, `tauri_status`). `version` is the Magician **core**
+  crate (`magician::VERSION`, e.g. 0.7.146), not this crate: this crate's own
+  version is `api_version`. `versions` names each part — `magician`,
+  `magician_api`, `magicutor` (from Magicutor's `/health`) and `desktop` (from
+  the desktop host gateway's `/host/automation/status`), the last two `null`
+  when offline or too old to report. The phone apps and web Settings → About →
+  Versions read it.
+- **Voice terminal conversations.** `GET /api/magician/v2/devices/me/conversations?thread=<id>`
+  returns at most 8 recent threads and 6 chats in the chosen thread (default:
+  the device's own thread `device-<device id>`, named after its pairing label);
+  `POST /api/magician/v2/devices/me/threads` starts a thread named
+  "<label> · <time>" in the **Automated** lane. Both require a paired-device
+  credential. A voice note with `source_surface=esp_terminal` and no thread of
+  its own (or the legacy `general`, without `thread_choice=picked`) goes to the
+  device thread; sessions in an Automated thread are created Automated.
+- **TTS as 16-bit PCM.** `POST /media/tts/synthesize` accepts
+  `wav_encoding: "pcm16"`; a float32 or 32-bit WAV from the provider is
+  rewritten as 16-bit PCM (44-byte header). Other replies pass unchanged.
+- **Paired-device app version.** A paired phone or Desktop Edge sends
+  `X-Magician-App-Version` (`0.4.11 (222)`) beside `X-Magician-Device-Id`. The
+  device-credential layer stores it on the pairing (`app_version` in
+  `GET /api/magician/v2/devices`) when it changes — at most 40 printable
+  characters; anything else is ignored. It is diagnostic only and never
+  authorizes anything.
 
 ## Agentic resume and HITL respond
 
@@ -159,13 +249,21 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   future on client disconnect, and settlement in the request future would leave a
   delegated child's next ask with no pause, no card and `Executing` forever. The
   task returns status, content type and bytes (`HttpResponse` is not `Send`).
-- **Respond acknowledges on admission.** `POST /hitl/{id}/respond` uses
+- **Respond acknowledges on admission.** `POST /hitl/{id}/respond` (agentic
+  family; `diff_approval` with a live pause, after apply/reject) uses
   `resume_agentic_execution_acknowledged_when_admitted`: it races the spawned
   resume against a `loop_admitted` oneshot fired once the answer passed
   validation. Earlier exits (re-ask, abort, missing pause, error) return as
   before; after admission the client gets
   `202 {accepted: true, reason: "resume_admitted"}` and later pauses arrive as
   events. The plain resume keeps its synchronous contract.
+- **Manual pause acknowledgement** waits for a durable, publicly resumable
+  checkpoint without holding the status locks its publication requires.
+- **Cancelling a paused execution resolves its ask.**
+  `POST /executions/{id}/execution/agentic-cancel` emits a persisted
+  `HitlResolved` (`outcome: "cancelled"`) under the pause's
+  `hitl_correlation_id()`, so Needs you drops the ask (the tree cancel never
+  sees a pause the handler already took).
 - **Missing pause.** A resume that finds no pause finalizes a possibly-orphaned
   execution (`ArtifactV2Service::finalize_orphaned_user_pause_by_execution_id`),
   after the handler drops its own lifecycle exclusion (the in-process fence is a
@@ -324,9 +422,9 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   placeholders resolve at dispatch (`inject_inline`).
 - **Resolution timing.** The resume announces the answer (`AgenticResumed` +
   canonical `HitlResolved`) when the answer is admitted — after the fence is
-  released, before the loop runs — because all pauses of a run share a
-  correlation id and a later resolution would hide the next ask. A validation
-  re-ask or loop failure restores the pause and re-requests it canonically
+  released, before the loop runs. A validation re-ask or loop failure restores
+  the pause and re-requests its full per-ask correlation id, including the ask
+  generation, so cancellation and resolution match that exact question
   (`emit_hitl_requested_for_restored_pause`). See
   `docs/components/magician/hitl-attention.md`.
 - `magician`'s executor identity is one copy-on-write `RunIdentity`
@@ -339,6 +437,9 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   `SQLITE_OPEN_NOFOLLOW` policy real).
 - Service-health notices use canonical scoped HITL; `POST /hitl/{id}/respond`
   accepts source `service_health` with choice `dismiss`.
+- **Respond handle.** Feed/attention rows, `HitlRequested` frames and plan
+  `hitl_request`s carry the server's `respond` call; see
+  [hitl-attention.md](../magician/hitl-attention.md#respond-handle-respond).
 - **Plan approval from a notification.** `POST /hitl/{plan_id}/respond` with
   source `plan_approval` takes an explicit `task_id` (or `execution_id`) as
   authoritative; with neither (a phone notification action posts only the
@@ -368,10 +469,14 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   across a restart" text.
 - **Attention feed (`feed_api.rs`).** `/feed/attention` carries delegated
   child asks on the parent task, `waiting_without_question` escalations (once
-  60 s old) and every taskless pending ask (`mcp_oauth`, `user_request`,
-  `service_health`, `bot_auth` in requests; `approval` in approvals). A taskless
-  row whose lifecycle resolved is dropped from both lanes, and one a task-bound
-  row on the same page also carries is listed once, as the task's row. Shapes are in
+  60 s old) and every taskless pending ask, each in the lane of what it asks
+  for (`service_health` in failed, `approval` in approvals, `mcp_oauth`,
+  `user_request` and `bot_auth` in requests; see the lane rule in
+  [hitl-attention](../magician/hitl-attention.md)). A taskless row whose
+  lifecycle resolved is dropped from every lane, and one a task-bound row on the
+  same page also carries is listed once, as the task's row. A taskless
+  ask raised by a chat turn (`input_schema.context.chat_session_id`) takes that
+  chat's thread as `ui_thread_id` and `metadata.hitl_request.scope.thread_id`. Shapes are in
   HITL surfacing fixes.
   The exact read `GET /feed/attention/{correlation_id}` (what a phone's
   notification extension fetches) titles a pending ask with its question and
@@ -389,8 +494,23 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
 - `GET /notes/tree` (one level; empty `path` is root), `GET /notes/file?path=`
   (one Markdown note), `GET /notes/backlinks?path=`. `POST`/`PUT /notes/file`
   and the folder/delete routes write that folder and refresh the search index.
+  Note creation accepts optional `markdown` to publish complete content in one
+  request; an existing destination returns `409` and is never replaced.
+  Goals uses `POST /notes/file/content`, which requires `markdown`; older
+  backends reject that route instead of silently creating an empty note.
   The process watches each notes folder and reindexes after an outside edit is
-  quiet for ~1 s. All stay inside the notes-search boundary.
+  quiet for ~1 s. All stay inside the notes-search boundary. `GET /notes/file`
+  also finds a fallback-folder note by the same path.
+- `PATCH /notes/front-matter` (`path`, `set`/`unset`, `expected_revision`) sets
+  or removes top-level front-matter keys of one note and returns the note;
+  409 `note_revision_conflict` when it changed since the `revision` that
+  `GET /notes/file` returned.
+- Every `open_url` the notes routes return (writes, search, published task
+  notes) is the canonical relative link `/notes?path=…&workspace=…`
+  (`notes::note_link`); `/notes/settings` reads legacy `silverbullet` sections
+  as `notes_folder` and reports `notes_folder_path` / `notes_folder_write_safe`.
+  `POST /notes/providers/open-root` accepts `notes` / `notes_folder` as well as
+  the legacy provider spellings.
 - `POST /memory/search` runs `search_memory` recall for one agent in the scope
   (does not record a temperature use). The owner page stays unfiltered.
   An untrusted agent's own call applies the public-surface filter, and so does
@@ -441,7 +561,13 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   names binaries and one config value.
 - `PUT /plane/engine` persists `execution.harness_engine` + `harness_model`, and
   `pi_profile` (a chat-eligible profile validated against the router, or `null`
-  for Pi's own settings) as `execution.pi_profile`. `PUT /plane/chat-engine`
+  for Pi's own settings) as `execution.pi_profile`. `harness_engine: chat`
+  ("Same as Chat" in Settings → Agentic flows) makes agentic flows follow
+  `chat.harness_engine` and its model: the installed snapshot carries
+  `follows_chat` and `harness_engine_snapshot()` overlays the live chat
+  snapshot on every read, so a later chat-engine change applies without a
+  re-install. `GET /plane/engines` reports `follows_chat` beside the resolved
+  `current`. `PUT /plane/chat-engine`
   persists `chat.harness_engine` for any launchable roster name. Both pass the
   persisted engine to `set_harness_affinity(Some(engine))` unconditionally —
   `harness_affinity()` filters `""` and `magician`, so passing the built-in is
@@ -500,9 +626,29 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
 
 Contract: slash commands and run budgets;
 runtime rules in [agentic budgets](../magician/execution/AGENTIC_EXECUTION_DESIGN.md#budgets).
-All four routes are **session bearer only** (`plane_api::owner_identity`); errors
-are JSON `{error, message}`. Handlers live in `budgets_api.rs`.
+Run-budget and envelope routes need the owner: a login session (`plane_api::owner_identity`) or a
+verified paired owner phone (`programs_api::require_owner_session_or_phone`, shared with god mode:
+middleware-verified paired-device identity under 5 s old, matching scope headers, an iOS/Android
+roster entry without device automation). Agent grants, PATs and automation devices are refused
+(`401 owner_phone_required` for a refused paired device). Errors are JSON `{error, message}`.
+Handlers live in `budgets_api.rs`; Settings on web, iOS and Android edit them
+([settings: budgets](../unified-ui/settings-budgets.md)).
 
+- Model spend LIMITS live in resource authority (`resource_authority.model_spend`:
+  `window_usd`, `window`, `lifetime_usd`, `run_magician_usd`, `run_harness_usd`;
+  design); the routes
+  below read and write limits there and envelope behaviour (`enabled`,
+  `reset_offset_minutes`, `warn_at_pct`, `unpriced`) in
+  `execution.budgets.spend_envelope`. Old limit keys under `execution.budgets`
+  are migrated at boot.
+- `GET`/`PUT /budgets/envelope` read and partially update the spend envelope (window limit and behaviour; validated, written back to the config file); `POST /budgets/envelope/grant` `{add_cost_usd}` adds spend for the current window (never unlimited) and credits the ledger's model spend token. Spent envelope: [agentic budgets](../magician/execution/AGENTIC_EXECUTION_DESIGN.md#budgets).
+- `GET /budgets/limits` → `{enabled, limits: [{scope, id, commodity, ceiling, period}], applies: "on_restart"}`:
+  resource authority's action limits (`resource_authority.budgets`). `PUT /budgets/limits`
+  `{scope, id, commodity, ceiling, period}` adds a limit or changes one's ceiling and period
+  (carryover kept); `DELETE /budgets/limits?scope=&id=&commodity=` removes one. Invalid
+  input or an unknown limit is `400 invalid_action_limit`. Edits apply on the next restart
+  (the dispatch gate reads the rows at boot).
+- `GET`/`DELETE /browser/submission-grants[?origin=…]` list and revoke the sites approved with Approve Always on a browser-submission card (owner session only); no `origin` revokes all.
 - `GET /budgets/defaults` → `{native_max_cost_usd, harness_max_cost_usd,
   native_env_override}`; each cap is a number or `"unlimited"`;
   `native_env_override` is true when `MAGICIAN_AGENTIC_MAX_COST_USD` is set (it
@@ -510,10 +656,10 @@ are JSON `{error, message}`. Handlers live in `budgets_api.rs`.
 - `PUT /budgets/defaults` takes a **partial** body (either or both caps; a
   missing field is unchanged). Values are positive finite numbers or
   `"unlimited"`; zero, negative, `NaN`, unknown fields and an empty body are
-  `400 invalid_budget_defaults`. Edits only `execution.budgets` inside the live
-  `magician-config.yaml` under the shared config-file lock (other lines and
-  comments survive), verifies the file reads back, then publishes the new caps
-  to running loops. Response: same shape as `GET`.
+  `400 invalid_budget_defaults`. Edits only `resource_authority.model_spend`
+  inside the live `magician-config.yaml` under the shared config-file lock (other
+  lines and comments survive), verifies the file reads back, then publishes the
+  new caps to running loops. Response: same shape as `GET`.
 - `GET /tasks/{task_id}/budget` → the effective budget of the task's latest
   root execution: `{execution_id, cost_cap_usd (number | "unlimited"),
   cost_used_usd, tokens_limit (number | null), tokens_used, iterations_limit,
@@ -532,9 +678,9 @@ are JSON `{error, message}`. Handlers live in `budgets_api.rs`.
   invalid_budget_grant`). Appends a grant to the execution's
   `budget_grants.json` (`409 run_finished` for a completed/failed/cancelled run,
   `404 task_has_no_run` when nothing has launched). A running run picks it up at
-  its next iteration check; duration grants add active time at the next resume,
-  once per recorded grant, without resetting cost or token usage. When the run
-  is paused on a **budget** pause, the
+  its next iteration check for cost/tokens; iteration and duration grants apply
+  at the next resume, once per recorded grant, without resetting usage. When the run
+  is paused on a **budget or iteration-limit** pause, the
   grant also continues it through the HITL confirmation path (the same
   `Confirmation {confirmed: true}` a person gives); `resumed: true` reports that
   the resume was admitted. Responds with the effective budget and emits the
@@ -563,8 +709,8 @@ to the config selector).
   `affinity_scope: "flow"`, `driving_engines: {chat, run}` (`magician` is
   `null`), `engine_pins`, and per operation `engine`, `engine_source`,
   `follows_parent`, `local_floor`, `parent_profiles: {chat, run}`,
-  `routing_source` (`override` | `parent` | `config`). It lists `op-harness-pi`
-  as a harness profile with Pi install state. The overview is a pure function
+  `routing_source` (`override` | `parent` | `config`). Generated Pi harness routes
+  include Pi installation state. The overview is a pure function
   (`routing_overview`) of router config and `RoutingState`.
 - The parent engine is the flow's, never the agent's or client's:
   `OperationRoutingOverrides` built from an agent definition carry no
@@ -576,14 +722,74 @@ to the config selector).
 
 ### Agents
 
+Runtime inspection shares the harness admission-status reader; program-context assembly records scoped, content-free source/hash receipts for later read-only inspection.
+
 `PUT /agents/{id}` (YAML) and `PATCH /agents/{id}` (merge patch) share
 `update_agent_definition_with_store`, which after the trust-policy check runs
-`validate_definition_llm_routing`: any newly introduced `llm_routing` profile the
-router does not define or `coding_profile` not in `coding.profiles[].id` is
+`validate_definition_llm_routing`: any newly introduced `llm_routing` handle the
+generated router does not define, or `coding_profile` absent from the generated
+coding choices, is
 `422 unknown_pinned_profile` (`details.unknown`). Existing stale pins never block
 unrelated edits; an unreadable config skips the check. Success writes
 atomically, updates the runtime's in-memory definition (`upsert_definition`) and
 invalidates the agent-list cache, so pins apply to the next run without restart.
+`POST /agents/refresh-definitions` refreshes the store and then runs
+`reconcile_runtime_definitions_with_store` (also run at the start of every
+memory consolidation sweep): runtime definitions whose files are gone are
+evicted with delete's local cleanup and returned as `definitions_evicted`;
+changed files replace the runtime copy.
+`run_memory_consolidation_sweep` then runs the user-knowledge lifecycle pass
+once per scope (`user_knowledge_pass_scopes`) and the agent sweeps at most
+`MEMORY_SWEEP_AGENT_CONCURRENCY` (4) at a time; see
+[memory recall](../magician/memory-recall.md#user-knowledge-maintenance-and-the-knowledge-lock).
+
+Autonomous cycles get deterministic program context from
+`append_harness_program_context`, gated by the pure `program_context_mode`:
+`FullHarness` for personal agents with `harness:` (program, shared context,
+progress contract, supplemental profile, runtime state, anomalies, health,
+backlog, repo state, metrics), `ProgramOnly` for personal agents without
+`harness:` whose resolved focus area names a `program:` (program and shared
+context only), else nothing. Every branch of
+`execution_goal_for_manual_dispatch_inner` appends it, including a definition
+without a `prompt_pipeline` (focus text and strategy hint first, via
+`goal_without_prompt_pipeline`). The `Source:` line carries the whole document's
+sha256 for `propose_program_revision`. The shared block comes from the focus
+area's `shared_programs` when set, else `harness.shared_program_docs` (reloaded
+from `magician-config.yaml` per cycle; a read failure means no shared block).
+The pause toggle writes only the changed `harness:` lines
+(`runtime_settings::write_yaml_section`), so `shared_program_docs` and the
+owner's comments stay; `render_harness_config_block` seeds a missing block. See
+[autonomous agents](../magician/autonomous-agents.md#program-context).
+
+Turning the toggle off (`stop_active_harness_agents`) cancels only what
+`select_harness_stop_targets` picks from each harness agent's admission
+(harness cycles, not its VibeDev/owner work; see
+[harness SRE agent](../magician/harness-sre-agent.md)), and
+`clear_pending_harness_dispatches_for_agent` drops only queued `harness:`-goal
+triggers. Per-agent pause, delete and disable still use
+`cancel_active_agent_cycles` with the full admission.
+
+`PUT /programs/{name}` (`programs_api.rs`) admits the owner's signed-in session
+or, via `is_paired_owner_phone`, a verified paired-device bearer whose roster
+entry is an iOS/Android client without Apps automation authority. ESP and
+desktop Edge credentials and agent grants are refused.
+
+`POST /agents/{id}/trigger` and cron fires allocate `trigger_seq` above
+`used_trigger_seq_floor`: the highest sequence the runtime still tracks for the
+agent/goal (active, queued, recently completed) or any stored episode records.
+The scheduler counter alone restarts at 1 when an agent is deleted and
+re-created, while its episodes survive under the scoped memory root, so the new
+agent's first cycles used to collide with old episodes. A manual trigger passes
+the floor to `allocate_trigger_seq_above`; a consumed cron fire is moved past it
+with `rebase_consumed_trigger_seq` before it is prepared. A dispatch whose tuple
+an episode already records is decided before any task or execution is
+provisioned: a manual trigger returns `409 duplicate_trigger_tuple`
+(`details.reason: episode_already_exists_for_trigger`) instead of `202
+"triggered"`, and a promoted or scheduled dispatch records `dropped_duplicate`
+(`stage: before_provision`) and moves on to the next queued trigger. If a cycle
+is still dropped after its execution was provisioned (duplicate, paused,
+missing scope or memory), `settle_unlaunched_cycle_execution` cancels that
+execution and persists the outcome instead of leaving it in `Planning`.
 
 ### Components, skills and setup
 
@@ -593,7 +799,9 @@ invalidates the agent-list cache, so pins apply to the next run without restart.
   takes capability ids and returns the ordered setup plan and projected report;
   unknown ids fail closed.
 - Setup-token-gated: `POST /components/{id}/install` (graph component ids only;
-  serialized jobs; target/script from the graph),
+  serialized jobs; target/script from the graph; a make step can run again
+  after its probe is already present, and the catalog `again` prompt is the
+  client's confirmation),
   `GET /components/installations/{job_id}` (bounded progress + authoritative
   post-install probe), `GET /components/admin-access` (side-effect-free token
   check), `PUT /components/{id}/configuration-file` (only for components whose
@@ -743,13 +951,29 @@ invalidates the agent-list cache, so pins apply to the next run without restart.
 ### Chat, voice and screen
 
 - Chat SSE sends keepalive comments every 15 s while tools or human responses are
-  pending. Disconnect cancels by default; `continue_on_disconnect: true` lets an
-  authenticated mobile stream keep its accepted turn running for recovery. See
-  [Chat SSE streaming](../magician/chat-sse-streaming.md).
+  pending. Disconnect cancels by default; `continue_on_disconnect: true` (sent
+  by iOS, Android and the web UI) keeps the accepted turn running, on the SSE
+  and the non-streaming send. Session detail, `/chat/active` and `/queue` return
+  `turn_state` for reconnecting clients. See
+  [Chat SSE streaming](../magician/chat-sse-streaming.md#turn-state-on-reconnect).
+- A send whose whole text is `/god` or `/godoff`, from the proved owner, sets
+  the chat's god-mode override and returns the persisted user message plus a
+  confirmation `assistant_message` (one `done` frame on the SSE send) without
+  a turn. From anyone else it is an ordinary message. See
+  [God mode](../magician/god-mode.md).
+- A send whose whole text is `/claim <code>` (also `/claim@Bot`, `/magic
+  /claim`) is answered the same way without a turn, from a guest session too:
+  on a verified channel with a live code it appends the sender address to the
+  channel's owner identities; otherwise one short refusal. The transcript keeps
+  `/claim ••••••••`. See
+  [envoy agent](../magician/envoy-agent.md#adding-an-owner-identity).
 - Chat and contextual-writing usage expose nullable USD costs and optional bucket
   availability, so unpriced harness turns stay unknown.
+- `GET /chat/sessions/{id}` and the active-session reply embed the newest 200
+  messages with `has_more`; older pages come from `GET .../messages?before=<id>`.
 - `GET /chat/sessions/{sid}/turns/{tid}/events` returns only the newest ~1 MiB of
-  rows, so it also returns `usage`, computed over the whole turn file up to the
+  rows (at least 2,000 rows whatever `limit` asks; tool-lineage rows are not
+  stored there), so it also returns `usage`, computed over the whole turn file up to the
   byte the page ended at (streamed off the reactor; only rows naming
   `LLMResponseReceived` / `llm.succeeded` are parsed): `{calls, input_tokens,
   output_tokens, cost_usd: number|null, cache_read_tokens: number|null,
@@ -817,6 +1041,11 @@ invalidates the agent-list cache, so pins apply to the next run without restart.
   `{code, suggestion}` refusals. See [screen-capture-and-ask.md](../magician/screen-capture-and-ask.md).
 - `GET /contextual-writing/catalog` mirrors the desktop catalog flag-for-flag,
   including screenshot policy ([contextual-writing.md](../magician/contextual-writing.md)).
+  The turn `POST /contextual-writing` composes marks everything but the
+  owner's `userPrompt` as Magician's framing (`<magician_context>`), which
+  memory and learning drop. A selected personality adds that preset's voice
+  bullets to the framing, so the draft follows the user's pick over the
+  writing agent's own personality.
 
 ### Settings
 
@@ -831,6 +1060,24 @@ invalidates the agent-list cache, so pins apply to the next run without restart.
   models still pin (`rule_violated`); missing models are not auto-pulled.
   Desktop onboarding treats these two endpoints as the authority for locality and
   model choice.
+- `GET/PUT /settings/harness-auth` (`harness_auth_api.rs`, owner session or
+  paired owner phone): `execution.harness_auth`, whose credentials the harness
+  CLIs use, with each CLI's sign-in (`sign_in`: `signed_in` / `expired` /
+  `signed_out`, the CLI's reason, a remedy, `last_failure`, `key_fallback`).
+  `/plane/engines` and `/coding/models` engine rows carry `credentials`
+  (`login` / `magician_key` / `expired` / `none`). See
+  [harness credentials](../magician/harness-auth.md).
+- Owner identities (`owner_identities_api.rs`, owner session or paired owner
+  phone): `GET /owner-identities` lists, per channel, the owner identities from
+  `envoy.owner_identities` and the channel's `owner_identity_envs` variable,
+  masked to the last two characters (`{index, masked, source, removable}`),
+  plus `claimable_channels`. `POST /owner-identities/claim-code {channel?}`
+  mints a one-time code (8 chars, 10 min, single use) →
+  `{code, expires_at_ms, channel, claimable_channels, instructions}`; 400 for a
+  channel that cannot be claimed, 409 when none can. `DELETE
+  /owner-identities/{channel}/{index}` removes an env-held identity (409 for a
+  config-file one). See
+  [envoy agent](../magician/envoy-agent.md#adding-an-owner-identity).
 
 ### Preference alignment (`preference_alignment_api.rs`)
 
@@ -886,7 +1133,9 @@ All three need the owner's principal/workspace scope.
 
 ### Coding
 
-`GET /coding/profiles` projects Pi, Codex, Grok, Claude Code and Antigravity.
+`GET /coding/models` projects Pi, Codex, Grok, Claude Code and Antigravity.
+Clients derive picker rows from model choices and keep engine readiness separate.
+No authored profile rows or runtime aliases are required.
 Observation is filesystem plus cached receipt/overlay; GET never spawns a CLI.
 `POST /coding/engines/{grok_acp,claude_code,agy_cli}/refresh` return 202
 `checking`, coalesced 2 s. `POST /vibedev/runs/{task_id}/checkpoints/{id}/revert`
@@ -908,6 +1157,19 @@ execution or publication authority. See [authoring discovery](../magician/app-au
 
 ### VibeDev run list paging
 
+Run-turn responses include an optional `coding_route_id` from the stored coding
+handoff. Native follow-up composers resolve it through the current model catalog
+to restore the engine/model/thinking choice; absent routes remain optional for
+older runs. Project and work location stay pinned to the admitted run.
+
+`GET /vibedev/runs?limit=&cursor=` supplies the mobile companion’s cross-project
+history. It folds threaded turns into their root run, sorts by latest activity
+with a run-id tie-breaker and returns `has_more` / `next_cursor` (maximum 50
+runs per page). Unlike `/runs/live`, it has no recent-completion cutoff. Each
+row includes `needs_you_count` (pending decisions and diff reviews, excluding
+notices), `repo_path` and the run’s recorded `work_location`. Scope comes from
+the authenticated owner; archived projects and tasks are excluded.
+
 `GET /vibedev/projects/{id}/runs?limit=&cursor=&offset=&query=` returns one page of the project's runs, newest
 first (`limit` default 10, max 50): `tasks` lists each root run followed by its threaded follow-up
 turns (`vibedev-threaded` with its `Parent task:` present), and `pagination` carries `runs`,
@@ -926,8 +1188,15 @@ the project's own tasks (`run_task_ids` + `active_root_task_id`,
 owner's coding runs, crews and Work tasks as ranked items (`featured`, `next`,
 `counts`, `items`, `followed`); `POST /work/follow` `{item_id}` follows one
 (at most 3, 409 `follow_limit`) and `DELETE /work/follow/{item_id}` stops.
+`POST /v3/tasks` never starts the task: `approved` (default `true`) only authorizes
+it to run. The `201` body adds `next_step` `{action, method, path, message}` —
+`execute` → `POST /v3/tasks/{id}/execute`, or `approve` when created unapproved;
+absent when a `schedule` starts it.
 `POST /v3/tasks` takes an optional `source` (e.g. `ios_siri_intent`), recorded
 with who started the task in the task folder's `origin.json`.
+`DELETE /v3/tasks/{id}` waits up to 30 s for a run that already ended to finish
+settling (output synthesis); a task still active after that, or live, answers 409
+`{error: "task_active:<id>", code: "task_active", retry_after_secs: 5}` with `Retry-After: 5`.
 
 `GET /vibedev/projects/{id}/crews` lists the project's crews (newest first); `?state=open` returns
 the crews still in play, `?state=settled&offset=&limit=` a page of the rest (most recently changed
@@ -961,12 +1230,17 @@ home).
 
 `GET /vibedev/runs/live?recent_minutes=` lists, across every open project, the runs that are going,
 waiting on the owner, or ended within the window (default 30 minutes, at most a day), one `state`
-each: `needs_you` (a pending user request names a turn, a diff waits for review, or a live turn has a
-pending question), `working`, `paused`, `failed`, `stopped` or `done`. Rows come needs-you first, then
+each: `needs_you` (a diff waits for review, a pending user request that needs a decision names a
+turn, or a live turn has a pending question), `working`, `paused`, `failed`, `stopped` or `done`.
+`waiting_kind`: `diff_review`, `decision`, or `notice` (only an acknowledge-only owner briefing
+pends). A notice never makes a run `needs_you`; it rides the row as `notice` (`request_id`,
+`option_id`, `title`, `message`, `severity`, `respond`), answered via `POST /hitl/{request_id}/respond`
+(`source: user_request`, choice `option_id`), and keeps an ended run listed until acknowledged or
+timed out. Rows come needs-you first, then
 going, then ended; `live_task_id` is the id `/vibedev/runs/{id}/control` takes, `crew_id` and `lane`
 name a crew lane, `cost_usd` is the root and live turn's metered coding spend,
 `approval_id` (a run waiting on a diff approval) is an unclaimed proposal id of the turn that waits,
-which the HITL respond call answers, `started_at` is the root's creation time, and `counts` totals
+answered via its respond handle `approval_respond` (`apply` / `reject`), `started_at` is the root's creation time, and `counts` totals
 the states. State is derived from the stored tasks and pending requests on every read
 (`vibedev::live_runs`), never from events. A read covers each project's newest 150 recorded runs,
 its active run, its open crews' lanes and its runs a pending request names, plus the turns they
@@ -1007,12 +1281,36 @@ earlier allowed answer as applied, so a folder removed here is not added back fr
 
 ### VibeDev trusted repo mode
 
-`PATCH /vibedev/projects/{id}` accepts `trust` (`sandboxed` | `trusted`) and `base_branch` (empty
+Original-folder runs retain the admitted folder in the dispatch plan and run
+link. Their preview and checks use that folder, and run details return
+`work_location: original` and Changes source `original`. The per-run Citizen
+`POST /vibedev/citizen/edit_original` takes a rationale and file preimages /
+replacements; the token supplies the folder and execution identity. It waits
+for exact-diff approval and rejects ended runs or changed preimages. No edit
+session is issued to Discuss turns.
+
+`PATCH /vibedev/projects/{id}` accepts `trust` (`sandboxed` | `trusted` | `original`) and `base_branch` (empty
 clears). Both are owner-only (the Workbench terminal rule); `trusted` is refused with
 `vibedev_project_not_trustable` unless the project path is a git repository root. The project
 response carries `trust` (omitted while `sandboxed`) and `base_branch`. Runs of a trusted project
 report `trusted_branch` in the coding result and `coding.branch_updated` events. See
 [coding-engine isolation](../magician/coding-engine-isolation.md#trusted-repo-mode-no-shadow).
+
+Every project response carries `health` (`projects::project_health`):
+`{status: ok|warning|error, issues: [{code, severity, title, message, action?}]}`.
+Errors: `folder_missing`, `folder_unreadable`, `base_branch_missing` (trusted).
+Warnings (trusted projects fall back to the sandboxed copy,
+`coding.trusted_fallback`): `not_a_git_repository` (action `git_init`),
+`not_repository_root`, `git_unavailable`; also `chat_session_missing`. A parked
+(archived) conversation is not flagged. Creating a cockpit
+session never archives one a live project points at; a message sent to a
+project's archived session reactivates it (`ChatService::reactivate_parked_vibedev_project_session`),
+other archived sends get `400` with `code: chat_session_archived` and a `hint`. An
+`error` refuses `POST /vibedev/runs` with `409 vibedev_project_unhealthy`
+(message + `health`); the chat rail and crew lanes check before creating
+anything. `POST /vibedev/projects/{id}/git-init` (owner, terminal rule) runs
+`git init` on the base branch (else `main`) with a first commit
+(`trusted_workspace::init_repository`) and returns the new `health`.
 
 Review and landing, keyed by the chain's **root** task id:
 
@@ -1045,6 +1343,8 @@ process's tmux sessions under their old ids and reports `persistent`. See
 
 ### Tasks, recipes and channel assist
 
+- Today task, escalation and follow-up links use `/work?selected=<task_id>`;
+  API task resource paths remain under `/api/magician/v3/tasks`.
 - `POST /api/magician/v2/executions` with `skip_planning=false` creates a V3
   task plan (`create_execution_via_task_planning`) and returns 202
   `{execution_id: "planexec_…", execution, initial_message_enqueued,
@@ -1202,7 +1502,10 @@ because `authenticated_app_scope` does (one kernel, dependency one way).
   from the scope's pause control and the `ambient_turn` head; a failed health
   read reports "not configured", never healthy. `GET /social/health` remains
   (the Town Square page reads operator policy from it); `worker_global` is the
-  `ambient_turn` behavior head.
+  `ambient_turn` behavior head. `POST /social/ambient-turn/retry` requeues that
+  head when it is blocked on `workflow_launch_blocked` or a settled
+  `workflow_execution_failed`. The response `retry_scheduled` means the next
+  pass will try again, not that the launch will be accepted.
 - The members projection includes opted-out agents for the owner's roster;
   opt-out still gates mentions, groups and ambient selection.
 
@@ -1404,12 +1707,15 @@ retry`).
 
 ## Tests
 
+- **Parquet window fixtures** keep history in a separate file so pruning tests do not fail decoding an oversized dictionary page shared with recent rows.
 - **Fixtures run on the stateless driver.** It is the default; scopes need no
   seal or activation step (the per-scope legacy-writer seal was retired
   2026-10-08). **Do not set `MAGICIAN_EXECUTION_DRIVER=inprocess`** to pass
   tests — it hides failures by not exercising the production driver. Steers are driver-specific (`Inprocess`
   pushes to `steer_queue`; `Stateless` writes a durable inbox), so tests
-  asserting on the queue gate on `ExecutionDriver::from_env()`.
+  asserting on the queue gate on `ExecutionDriver::from_env()`. Both drivers refuse a
+  run that is not executing: `POST /executions/{id}/steer` answers `409` with
+  its `waiting_state`, matching `can_steer: false` in its control state.
 - **`apps_api.rs` synchronous tests** must use `#[::core::prelude::v1::test]`:
   its `use actix_web::{.., test, ..}` imports actix's `#[test]` macro, which
   requires an `async fn`.
@@ -1421,6 +1727,30 @@ retry`).
   SDK client regression, without the monolith fixture feature.
 
 Decision model observability: owner-session authenticated, middleware-scoped `GET /api/magician/v2/plane/decision-metrics`, `/cases`, and revision-checked `POST /review` expose bounded incremental summaries and private sampled review inputs; query/body fields cannot choose a principal or workspace.
+
+`GET /api/magician/v2/plane/decision-metrics/health?hours=24` (same auth and
+scope; `hours` 1–168, default 24; any other query field is a 400) returns
+per-operation Decision Model health from the retained cases (7 days, at most
+2,048), read-only with a 100 ms busy timeout and the dashboard's four reader
+permits (busy → 503). Body: `window_hours`, `since_ms`, `generated_at_ms`,
+`cases_scanned`, `unreadable_cases`, `truncated`, `capture_dropped`,
+`write_errors`, `read_ms`, and `operations[]` with `operation`, `mode`,
+`cases` (engine cases), `decided`, `unresolved` (gate answers below
+threshold), `timeout` (engine call timeout or item budget exhausted), `error`
+(engine unreachable/invalid reply, item failed, no fitting model), `skipped`
+(never reached the engine; not in `cases`), `items` (offered / answered /
+eligible / failed / no_fitting_model / cancelled / not_started), exact
+nearest-rank `p50_ms` / `p95_ms` of caller wall latency, `budget_ms` (latest
+caller budget), `last_case_ms`, `last_error_ms` + `last_error` (closed cause
+code, at most 96 chars; never provider text), `causes` (code → count, at most
+8 plus `other`), `models[]` (answered count and item p50/p95 per answering
+model) and `route_health[]` (engine-reported issue code per route model from
+the latest case). Records older than the `failure` field show
+`no_engine_reply` for any engine call that returned nothing, and older skipped
+invocations show `skipped_unrecorded`. A call the host never sent (its policy
+expired, its budget was spent or classification was switched before dispatch;
+`ClientError::NotDispatched`) is skipped with a `not_dispatched:<reason>` cause,
+never a timeout.
 
 Quality continuation uses `POST /api/magician/v2/relentless/runs/{id}/budget-resets`
 with `reset_id`, `expected_generation`, `expected_contract_hash`, and a `reset`
@@ -1438,14 +1768,23 @@ cumulative ledger totals, exhausted limits and owner-reset history.
 rollup) read the `llm_calls` view from each day's compacted object plus its
 uncompacted tail, for both halves of the view: the call facts and the provider
 attempts joined in for provider and model
-(`governed_attempts_read_source_sql`). The attempts were read raw before —
-every `part-provider_attempt-*` revision, 42,110 files for three busy days, 8.4 s
-against 0.01 s for the compacted objects — so every cost query (the VibeDev
-rail's lifetime and per-run spend, `/llm`) took 6–14 s and held the shared
-analytics DuckDB guard meanwhile, timing out the queries queued behind it.
-Choosing the files is cached per partition in process (see
-[storage governance](../magician/storage-governance.md)), so after the first
-read only partitions that changed are re-validated.
+(`governed_attempts_read_source_sql`). Days older than yesterday are that
+compact once `raw_sources_pruned` is set, plus any later raw file. Choosing
+the files is cached per partition in process (see
+[storage governance](../magician/storage-governance.md)).
+
+`llm_calls` and `llm_embeddings` are streaming views: the one-row-per-call
+reconciliation is inlined (`NOT MATERIALIZED`), so the caller's filters,
+projection and LIMIT reach the Parquet scan. The exception is `/query_batch`
+(up to 16 statements; each one past that gets an error result of its own,
+never a silently missing slot): when every statement's window is provably within 35
+days (literal or `epoch_ms(now() - INTERVAL …)` bounds, or the default 30-day
+file window), the reconciled window is copied into memory once, the analytics
+guard is released, and each statement reads the copy. Only the
+selected files are readable (DuckDB `allowed_paths`, frozen before external
+access is disabled). Queries without LIMIT/FETCH get `LIMIT 10000`. An
+out-of-memory refusal names the 512 MB + 1 GB spill budget and the remedy (a
+`timestamp_ms >=` bound, aggregation or LIMIT).
 
 Scheduling adds `POST /work/negotiations/{id}/bind-offer`,
 `POST /work/negotiations/inbound` and the paginated owner read
@@ -1475,3 +1814,32 @@ TTS synthesis endpoints apply scoped choices unless a request supplies a voice.
 Fallback providers use their own saved choice. Single synthesis returns the
 actual `X-Tts-Voice`. The additive fields preserve preferences schema 3.
 See the [voice selection contract](../magician/realtime-media-rails.md#speaking-voice-selection).
+
+
+Realtime `session.start.chat_choice` uses the typed Chat fields:
+`harness_engine`, optional native `harness_model`, and `model_selection` for
+Magician/Pi. Explicit Off remains `thinking: none`; Auto remains a default choice.
+The backend rejects retired `engine/model/profile` payloads and supplied invalid,
+unqualified or unavailable model choices with `invalid_chat_choice` before voice
+session admission. Omission follows the configured engine. Catalog validation
+uses a dry-run config load without installing process-wide policy.
+
+`GET /chat/sessions/{id}/assets` authorizes session scope before listing indexed uploads and registered outputs from chat-linked user/internal tasks, including archived tasks; mirrored files are deduplicated and unavailable task inventories are explicit. Sizes come from file metadata; `total_size` and `unknown_size_files` describe the deduplicated inventory. Owner-authenticated `DELETE .../assets/{asset_id}` removes one chat copy/reference, retains task originals, and returns `409` while chat messages are active or queued.
+
+Cumulative chat/task usage reuses the cached `llm_cost_daily` rollup with root-execution lineage and measured/priced/cache-availability counters, preserving unknown telemetry without rescanning lifetime calls for each header refresh.
+
+STT and TTS endpoints accept optional `X-Chat-Session-Id` billing lineage, validate the chat against the authenticated principal/workspace before provider dispatch, and reject missing/foreign chats. Calls without a chat remain workspace-level; historical unattributed charges are not guessed.
+
+Relentless review budgets use omitted or zero limits for Unlimited; positive values remain enforced caps, with owner admission unchanged.
+
+God-mode controls accept login sessions or verified paired owner phones; phone chat overrides verify session ownership, while automation and agent credentials remain refused.
+
+LLM usage queries keep a 20-second SQL execution cap; trusted daily-summary preparation has a 60-second cold-start allowance and materializes narrow call and provider-attempt columns within its three-partition window. The shared analytics guard and read-only SQL allowlist remain in force.
+
+Chat Files includes registered execution files as well as final task outputs; producer paths stay under the scoped execution outputs, and removal hides the chat reference while retaining task bytes.
+
+Service-account launch and private-viewer routes, managed-bot `bot/{start,input,state,cancel}` connect routes (Google Workspace, Telegram, WhatsApp) and the Google Cloud project check `bot/project-access[/grant]` are described in [Browser sign-in](../magician/browser-signin.md).
+
+Tool-declared MCP profiles are served as bounded, immutable JSON at
+`/.well-known/magican/mcp-profiles/<sha256>.json`, outside the authenticated API.
+The route exposes only verified public-profile content, never arbitrary files.

@@ -17,7 +17,7 @@
  */
 import { browser } from '$app/environment';
 import { derived, writable, type Readable } from 'svelte/store';
-import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+import { scopeIdentityStore, getCurrentScopeCredentialRevision } from '$lib/stores/scopeIdentityStore';
 import { timedFetch } from '$lib/shared/fetch';
 import { parseNdjsonFrames, subscribeWithBackfill } from '$lib/realtime/eventHub';
 import { attentionStore } from '$lib/stores/attentionStore';
@@ -422,7 +422,7 @@ export function ensurePendingHitlBridge(): void {
 	if (!browser) return;
 	if (scopeUnsub) return;
 	scopeUnsub = scopeIdentityStore.subscribe((scope) => {
-		const nextKey = `${scope.principal}::${scope.workspace}`;
+		const nextKey = `${scope.principal}::${scope.workspace}::${getCurrentScopeCredentialRevision()}`;
 		if (nextKey === lastScopeKey) return;
 		lastScopeKey = nextKey;
 		connect();

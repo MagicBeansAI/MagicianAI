@@ -615,18 +615,20 @@ mod tests {
     /// skill's prose.
     #[test]
     fn a_whatsapp_send_names_its_message() {
-        let taken = provider_message_from_result(
-            "whatsapp",
-            "send",
-            Some(r#"{"id":"3EB0C767D82B0F3A1B2C","timestamp":1755500000}"#),
-        )
-        .expect("wu prints the message key id");
-        assert_eq!(
-            taken.provider, "whatsapp",
-            "NOT `kapso`: a WhatsApp Web key and a Meta wamid are two id namespaces, and one \
+        for capability in ["whatsapp", "whatsapp__send"] {
+            let taken = provider_message_from_result(
+                capability,
+                "send",
+                Some(r#"{"id":"3EB0C767D82B0F3A1B2C","timestamp":1755500000}"#),
+            )
+            .expect("wu prints the message key id");
+            assert_eq!(
+                taken.provider, "whatsapp",
+                "NOT `kapso`: a WhatsApp Web key and a Meta wamid are two id namespaces, and one \
              provider name over both would let an event about one resolve to the other's act"
-        );
-        assert_eq!(taken.provider_message_id, "3EB0C767D82B0F3A1B2C");
+            );
+            assert_eq!(taken.provider_message_id, "3EB0C767D82B0F3A1B2C");
+        }
     }
 
     /// A Telegram send is identified by its CHAT and its number, never by the

@@ -111,6 +111,28 @@ else:
 PY
 fi
 
+# Magicutor admits only trusted peers to its bridge and automation routes when
+# no bridge token is configured. On a bridge network with Magicutor's port
+# published on host LOOPBACK only (run-container, install.sh and the desktop on
+# macOS), host traffic arrives from the container's default gateway, so the
+# launcher sets MAGICUTOR_TRUST_GATEWAY=1 and we trust exactly that address.
+# Never under `--network host` (the gateway is then the LAN router) or when the
+# port is published on all interfaces (LAN machines share the forwarder).
+# An operator-set MAGICUTOR_TRUSTED_PEERS is kept. Website Origins stay refused.
+if [[ -z "${MAGICUTOR_TRUSTED_PEERS:-}" && "${MAGICUTOR_TRUST_GATEWAY:-}" == "1" ]]; then
+  gateway_hex="$(awk 'NR > 1 && $2 == "00000000" && $8 == "00000000" { print $3; exit }' /proc/net/route 2>/dev/null || true)"
+  if [[ "$gateway_hex" =~ ^[0-9A-Fa-f]{8}$ && "$gateway_hex" != "00000000" ]]; then
+    # /proc/net/route stores the IPv4 gateway as little-endian hex.
+    MAGICUTOR_TRUSTED_PEERS="$((16#${gateway_hex:6:2})).$((16#${gateway_hex:4:2})).$((16#${gateway_hex:2:2})).$((16#${gateway_hex:0:2}))"
+    export MAGICUTOR_TRUSTED_PEERS
+    echo "Magicutor trusts the container gateway $MAGICUTOR_TRUSTED_PEERS for published ports"
+  else
+    echo "warning: no default gateway in /proc/net/route; Magicutor trusts only loopback peers without a bridge token" >&2
+  fi
+elif [[ -z "${MAGICUTOR_TRUSTED_PEERS:-}" ]]; then
+  echo "Magicutor trusts only loopback peers without a bridge token (MAGICUTOR_TRUST_GATEWAY not set)"
+fi
+
 if [[ -n "${MAGICIAN_KEYRING_STATE_DIR:-}" || -n "${MAGICIAN_KEYRING_PASSWORD_FILE:-}" ]]; then
   exec python3 "$ROOT_DIR/scripts/run-linux-keyring.py" \
     --state-dir "$MAGICIAN_KEYRING_STATE_DIR" \

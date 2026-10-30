@@ -48,6 +48,16 @@ use uuid::Uuid;
 #[path = "app_recipe_model.rs"]
 mod app_recipe_model;
 
+// Runtime/Artifact divergence repair: settles a runtime execution whose
+// Artifact record already ended, and wakes a parent left parked on it.
+#[path = "runtime_divergence.rs"]
+mod runtime_divergence;
+
+// Replays one finished execution's finalization on a copy of its task, for the
+// final-answer eval (`make test-final-answer-live-eval`).
+#[path = "service_finalize_replay.rs"]
+pub mod finalize_replay;
+
 use crate::magician_v2::apps::{
     agent_capability::AppAgentChildTaskBinding,
     recipe_ir::AppRecipeUncertaintyContract,
@@ -138,7 +148,7 @@ use super::{
         TaskPlanVersionSourceKind, TaskPlanVersionsRecord, TaskPlanningRecoveryReceipt,
         TaskPlanningResumeRecoveryPhase, TaskPlanningResumeRecoveryReceipt, TaskRecord, TaskRefs,
         TaskState, TaskSyncMode, TaskTagRecord, CONTINUATION_CONTEXT_OUTPUT_ROLE,
-        RELATIONSHIP_TYPE_DELEGATE, RELATIONSHIP_TYPE_ROOT,
+        DELIVERED_FILE_OUTPUT_ROLE, RELATIONSHIP_TYPE_DELEGATE, RELATIONSHIP_TYPE_ROOT,
     },
     pipeline_store::{ExecutionPipelineStoreError, FilesystemExecutionPipelineStore},
     progress::{
@@ -300,6 +310,97 @@ pub enum ArtifactV2Error {
     /// `TriggerError::AlreadyResolved` on the clarification-submit path.
     #[error("already resolved: {0}")]
     AlreadyResolved(String),
+}
+
+/// Reason code the reducer returns when an execution moved (`updated_at`,
+/// `status` or `plan_id`) between the caller's read and its schedule
+/// snapshot write. An optimistic-concurrency conflict, not a failure.
+pub const EXECUTION_SCHEDULE_SNAPSHOT_STALE: &str = "execution_schedule_snapshot_stale";
+
+/// Reason codes a caller may clear by reloading and retrying. Policy and
+/// integrity refusals (relentless limits, candidate mismatches) are absent on
+/// purpose: a reload cannot change their answer.
+const OPTIMISTIC_CONFLICT_CODES: &[&str] = &[EXECUTION_SCHEDULE_SNAPSHOT_STALE];
+
+/// Attempts (first try included) before an optimistic-concurrency conflict
+/// surfaces as an error.
+pub(crate) const OPTIMISTIC_CONFLICT_MAX_ATTEMPTS: u32 = 5;
+
+impl ArtifactV2Error {
+    pub(crate) fn execution_schedule_snapshot_stale() -> Self {
+        Self::InvalidRequest(EXECUTION_SCHEDULE_SNAPSHOT_STALE.to_owned())
+    }
+
+    /// True when the write lost an optimistic-concurrency race and the same
+    /// operation, rebuilt from a fresh read, may succeed. The exhausted-retry
+    /// error keeps the code as its prefix, so outer retry loops still see a
+    /// retryable conflict.
+    pub fn is_retryable_conflict(&self) -> bool {
+        let Self::InvalidRequest(reason) = self else {
+            return false;
+        };
+        OPTIMISTIC_CONFLICT_CODES.iter().any(|code| {
+            reason
+                .strip_prefix(code)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
+        })
+    }
+}
+
+/// Jittered exponential backoff after `failed_attempts` conflicts:
+/// 10, 20, 40, 80 ms base, each plus up to the same again in jitter.
+fn optimistic_conflict_backoff(failed_attempts: u32) -> Duration {
+    let base_ms = 10u64 << failed_attempts.saturating_sub(1).min(4);
+    Duration::from_millis(base_ms + rand::random::<u64>() % (base_ms + 1))
+}
+
+/// Run `attempt` (called with the 1-based attempt number) until it succeeds,
+/// fails with anything other than a retryable conflict, or has conflicted
+/// `max_attempts` times. Each attempt must re-read what it writes against —
+/// retrying a candidate built from the stale read would conflict again — and
+/// must be safe to repeat: only the attempt that commits has any effect.
+pub(crate) async fn retry_optimistic_conflict<T, F, Fut>(
+    operation: &str,
+    max_attempts: u32,
+    mut attempt: F,
+) -> Result<T, ArtifactV2Error>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T, ArtifactV2Error>>,
+{
+    let max_attempts = max_attempts.max(1);
+    let mut attempt_no = 1;
+    loop {
+        match attempt(attempt_no).await {
+            Err(error) if error.is_retryable_conflict() => {
+                if attempt_no >= max_attempts {
+                    warn!(
+                        operation,
+                        attempts = attempt_no,
+                        %error,
+                        "[ARTIFACT-V2] optimistic-concurrency conflict persisted; giving up"
+                    );
+                    return Err(match error {
+                        ArtifactV2Error::InvalidRequest(reason) => {
+                            ArtifactV2Error::InvalidRequest(format!(
+                                "{reason}: {operation} still conflicted after {attempt_no} attempts"
+                            ))
+                        },
+                        other => other,
+                    });
+                }
+                debug!(
+                    operation,
+                    attempt = attempt_no,
+                    %error,
+                    "[ARTIFACT-V2] optimistic-concurrency conflict; reloading and retrying"
+                );
+                tokio::time::sleep(optimistic_conflict_backoff(attempt_no)).await;
+                attempt_no += 1;
+            },
+            other => return other,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -514,6 +615,12 @@ pub(crate) enum TerminalLoopSettlementAcceptance {
     Publish,
     SupersededByCancellation,
     SuppressedByCanonicalPolicy,
+    /// A first-pass `Success` whose refinement pass is still running in this
+    /// process. Its events may publish, but nothing is settled and the
+    /// settlement debt stays durable until the pass commits its own receipt
+    /// (then `Publish` without settling) or stops without one (then this
+    /// receipt settles the run).
+    DeferredToRefinementSuccessor,
 }
 
 pub(crate) enum TerminalLoopReceiptLifecycleExclusion {
@@ -755,6 +862,32 @@ fn classify_executing_exact_retry(
 }
 
 const EXACT_RETRY_ADMISSION_VISIBILITY_GRACE_MS: i64 = 2 * 60 * 1_000;
+
+/// How long restart recovery leaves an `Executing` stateless run with no
+/// loop authority alone, in case its pre-seed generation is merely not yet
+/// visible. The admission gates in `recover_interrupted_runtime_execution`
+/// and the orchestrator's PlanGraph claim defer inside this window.
+pub(crate) const PRESEED_VISIBILITY_GRACE_MS: i64 = 2 * 60 * 1_000;
+
+/// First re-check of a deferred interrupted recovery whose reason names no
+/// grace window (a transient runtime or authority failure).
+const DEFERRED_INTERRUPTED_RECOVERY_RETRY_MS: i64 = 5_000;
+
+/// When a deferred interrupted recovery should be looked at again, or `None`
+/// when `reason` is not a visibility-grace deferral. A grace deferral is
+/// re-checked once the grace measured from `runtime_updated_at_ms` has
+/// passed, never before `now_ms`.
+pub(crate) fn deferred_interrupted_recovery_recheck_at_ms(
+    reason: &str,
+    runtime_updated_at_ms: i64,
+    now_ms: i64,
+) -> Option<i64> {
+    reason.contains("within_visibility_grace").then(|| {
+        runtime_updated_at_ms
+            .saturating_add(PRESEED_VISIBILITY_GRACE_MS)
+            .max(now_ms)
+    })
+}
 
 fn shared_recovery_retry_delay(attempt: u32) -> Duration {
     match attempt {
@@ -2229,6 +2362,11 @@ pub struct PendingDiffApprovals {
     /// announcement iterates, and the announcement is about the call, not
     /// about one task.
     unclaimed: Vec<ProposalSummary>,
+    /// task id → its `Pending`, unclaimed proposals stamped with the staging
+    /// execution, as `(proposal id, execution id)`. Attention answers a
+    /// review from these when the run's own `hitl.requested` never reached
+    /// its events. Empty in a [`Self::for_task`] snapshot.
+    unclaimed_reviews_by_task: HashMap<String, Vec<(String, String)>>,
 }
 
 impl PendingDiffApprovals {
@@ -2256,22 +2394,35 @@ impl PendingDiffApprovals {
         Self {
             proposal_ids_by_task,
             unclaimed: Vec::new(),
+            unclaimed_reviews_by_task: HashMap::new(),
         }
     }
 
     fn from_summaries(summaries: Vec<ProposalSummary>) -> Self {
         let mut proposal_ids_by_task: HashMap<String, Vec<String>> = HashMap::new();
         let mut unclaimed = Vec::new();
+        let mut unclaimed_reviews_by_task: HashMap<String, Vec<(String, String)>> = HashMap::new();
         for summary in summaries {
             if let Some(task_id) = summary.task_id.as_deref() {
                 proposal_ids_by_task
                     .entry(task_id.to_string())
                     .or_default()
                     .push(summary.id.to_string());
+                if let (false, Some(execution_id)) =
+                    (summary.decision_claimed, summary.execution_id.as_deref())
+                {
+                    unclaimed_reviews_by_task
+                        .entry(task_id.to_string())
+                        .or_default()
+                        .push((summary.id.to_string(), execution_id.to_string()));
+                }
             }
             if !summary.decision_claimed {
                 unclaimed.push(summary);
             }
+        }
+        for reviews in unclaimed_reviews_by_task.values_mut() {
+            reviews.sort();
         }
         // Sorted, so repeated reads of unchanged state produce an identical
         // list and a caller can dedupe against it without re-sorting. The
@@ -2282,7 +2433,17 @@ impl PendingDiffApprovals {
         Self {
             proposal_ids_by_task,
             unclaimed,
+            unclaimed_reviews_by_task,
         }
+    }
+
+    /// This task's `Pending`, unclaimed proposals with the execution that
+    /// staged each, as `(proposal id, execution id)`, sorted.
+    pub fn unclaimed_reviews_for_task(&self, task_id: &str) -> &[(String, String)] {
+        self.unclaimed_reviews_by_task
+            .get(task_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// Whether this task has at least one `Pending` proposal. Says nothing
@@ -3137,6 +3298,48 @@ impl ArtifactV2Service {
         Ok(agents)
     }
 
+    /// Originating chats with a planning/running task, including internal work.
+    /// Only in-flight records are materialized; no transcript or task-corpus
+    /// scan is needed. While the index warms, omit background markers until
+    /// the next poll rather than walk the corpus. Recheck canonical state
+    /// because a task may have settled after the index snapshot.
+    pub async fn working_chat_session_ids(
+        &self,
+        scope: &ScopeRef,
+        requested: &HashSet<String>,
+    ) -> Result<HashSet<String>, ArtifactV2Error> {
+        let mut sessions = HashSet::new();
+        let Some(index) = self.list_index().cloned() else {
+            return Ok(sessions);
+        };
+        let list_scope =
+            crate::magician_v2::artifact_v2::task_writes::TaskWriteReconciler::list_scope(scope);
+        let Some(working) = index
+            .working_task_refs_admitted(list_scope)
+            .await
+            .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?
+        else {
+            return Ok(sessions);
+        };
+        for (task_id, _) in working {
+            let task = match self.get_task(scope, &task_id).await {
+                Ok(task) => task,
+                Err(ArtifactV2Error::TaskNotFound(_)) => continue,
+                Err(error) => return Err(error),
+            };
+            if matches!(task.state.status.as_str(), "planning" | "running") {
+                if let Some(id) = task
+                    .manifest
+                    .chat_session_id
+                    .filter(|id| requested.contains(id))
+                {
+                    sessions.insert(id);
+                }
+            }
+        }
+        Ok(sessions)
+    }
+
     /// How many task-corpus walks this service has performed.
     ///
     /// Monotonic across the life of the service and shared by every clone.
@@ -3890,6 +4093,22 @@ impl ArtifactV2Service {
         Ok(())
     }
 
+    /// The scope's pending user requests (questions, approvals, owner
+    /// briefings). Empty when the request service is not wired.
+    pub async fn pending_user_requests(
+        &self,
+        scope: &ScopeRef,
+    ) -> Vec<crate::magician_v2::user_requests::UserRequest> {
+        match self.orchestrator.user_request_service() {
+            Some(service) => {
+                service
+                    .list_pending_for_scope(&scope.principal(), &scope.workspace())
+                    .await
+            },
+            None => Vec::new(),
+        }
+    }
+
     /// The tasks a pending user request names in `scope` (questions,
     /// approvals, owner briefings). Empty when the request service is not
     /// wired.
@@ -3911,7 +4130,10 @@ impl ArtifactV2Service {
     /// The scope's pending user requests that name a task, as
     /// `(task id, request id, created at ms)`: what the work summary ranks
     /// "longest waiting" by. Empty when the request service is not wired.
-    pub async fn pending_user_request_stamps(&self, scope: &ScopeRef) -> Vec<(String, String, i64)> {
+    pub async fn pending_user_request_stamps(
+        &self,
+        scope: &ScopeRef,
+    ) -> Vec<(String, String, i64)> {
         match self.orchestrator.user_request_service() {
             Some(service) => service
                 .list_pending_for_scope(&scope.principal(), &scope.workspace())
@@ -5477,6 +5699,25 @@ impl ArtifactV2Service {
                 input.lifecycle.clone(),
             )
             .await?;
+
+        // Immutable host provenance, published before the task can launch.
+        // Neither created_by/tags nor a model-written task description is authority.
+        let origin = match crate::magician_v2::agents::outward_policy::current_source() {
+            Some(source) => source
+                .resolve(&self.workspace, &input.principal, &input.workspace)
+                .await
+                .map_err(ArtifactV2Error::Runtime)?,
+            None => crate::magician_v2::agents::outward_policy::OutwardOrigin::Unclassified,
+        };
+        crate::magician_v2::agents::outward_policy::persist_task_origin(
+            &self.workspace,
+            &input.principal,
+            &input.workspace,
+            &task_id,
+            origin,
+        )
+        .await
+        .map_err(ArtifactV2Error::Runtime)?;
 
         let manifest = TaskManifest {
             task_id: task_id.clone(),
@@ -7956,6 +8197,35 @@ impl ArtifactV2Service {
         }
     }
 
+    /// Emit canonical `HitlResolved { outcome: "cancelled" }` for the
+    /// approval ask of a Draft plan whose task ended (cancelled, failed or
+    /// archived) before the owner answered it. Same correlation id as
+    /// `emit_plan_approval_requested`, persisted for backfill.
+    fn emit_plan_approval_cancelled(
+        &self,
+        scope: &ScopeRef,
+        task: &TaskRecord,
+        plan: &TaskPlanRecord,
+    ) {
+        if let Some(broadcaster) = self.runtime_event_broadcaster.get() {
+            broadcaster.emit(RuntimeTransportEvent::HitlResolved {
+                correlation_id: plan.plan_id.clone(),
+                source: "plan_approval".to_string(),
+                outcome: "cancelled".to_string(),
+                decision: None,
+                task_id: Some(task.manifest.task_id.clone()),
+                execution_id: plan
+                    .planning_execution_id
+                    .clone()
+                    .or_else(|| Some(task.manifest.task_id.clone())),
+                agent_id: Some(task.manifest.agent_id.clone()),
+                principal: Some(scope.principal().to_string()),
+                workspace: Some(scope.workspace().to_string()),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+    }
+
     /// Emit canonical `HitlResolved { outcome: "cancelled" }` for a
     /// pending V3 plan clarification that has been dropped from the
     /// next elicitation batch (the elicitor refined the question set).
@@ -8050,15 +8320,32 @@ impl ArtifactV2Service {
         task: &TaskRecord,
     ) {
         let task_id = &task.manifest.task_id;
-        let result: Result<Option<(TaskPlanRecord, Vec<String>)>, ArtifactV2Error> = async {
+        let result: Result<Option<(TaskPlanRecord, Vec<String>, bool)>, ArtifactV2Error> = async {
             let _guard = self.acquire_task_write_guard(scope, task_id).await?;
             self.task_writes.recover_task_writes(scope, task_id).await?;
+            let current = self.read_task_record_unlocked(scope, task_id).await?;
+            if !is_terminal_task_state(&current.state.status) {
+                return Ok(None);
+            }
             let mut plan = match self.get_task_plan(scope, task_id).await {
                 Ok(plan) => plan,
                 Err(ArtifactV2Error::TaskPlanNotFound(_)) => return Ok(None),
                 Err(error) => return Err(error),
             };
-            if plan.pending_questions.is_empty() {
+            let planning_active = matches!(
+                plan.status,
+                TaskPlanStatus::Planning | TaskPlanStatus::Eliciting
+            );
+            // A Draft plan is waiting on the owner's approval: an ended task
+            // can no longer run it, so its approval ask closes too. Only when
+            // the approval was what held the task (it never started a run) or
+            // the owner ended it: a run that completed or failed beside a
+            // re-drafted plan keeps the plan, whose failure would otherwise
+            // replace the run's own outcome on the task card.
+            let awaiting_approval = plan.status == TaskPlanStatus::Draft
+                && (current.state.latest_root_execution_id.is_none()
+                    || matches!(current.state.status.as_str(), "cancelled" | "archived"));
+            if plan.pending_questions.is_empty() && !planning_active && !awaiting_approval {
                 return Ok(None);
             }
             let question_ids = plan
@@ -8067,17 +8354,33 @@ impl ArtifactV2Service {
                 .map(|question| question.id.clone())
                 .collect();
             plan.pending_questions.clear();
+            if planning_active {
+                plan.status = TaskPlanStatus::Failed;
+                plan.error = Some(format!(
+                    "Task ended while planning: {}",
+                    current.state.status
+                ));
+            } else if awaiting_approval {
+                plan.status = TaskPlanStatus::Failed;
+                plan.error = Some(format!(
+                    "Task ended before the plan was approved: {}",
+                    current.state.status
+                ));
+            }
             plan.updated_at = now_rfc3339();
             let mut index = self.load_task_plan_index(scope, task_id).await?;
             index.updated_at = Some(plan.updated_at.clone());
             Self::upsert_task_plan_index_entry(&mut index, &plan);
             self.commit_task_plan_bundle_unlocked(scope, task_id, &plan, &index, None, None)
                 .await?;
-            Ok(Some((plan, question_ids)))
+            Ok(Some((plan, question_ids, awaiting_approval)))
         }
         .await;
         match result {
-            Ok(Some((plan, question_ids))) => {
+            Ok(Some((plan, question_ids, awaiting_approval))) => {
+                if awaiting_approval {
+                    self.emit_plan_approval_cancelled(scope, task, &plan);
+                }
                 let id_refs: Vec<&str> = question_ids.iter().map(String::as_str).collect();
                 if let Some(chain_id) =
                     planning_clarification_chain_id_from_ids(&plan.plan_id, &id_refs)
@@ -9785,16 +10088,45 @@ impl ArtifactV2Service {
         plan_id: &str,
         preparation: crate::magician_v2::ask_loop::ResumePreparation,
     ) -> Result<TaskPlanningResumeRecoveryReceipt, ArtifactV2Error> {
-        const DOMAIN: &str = "magician.task-planning-resume-recovery.v2";
-        let proof = serde_json::to_vec(&(
-            DOMAIN,
-            2_u8,
+        self.seal_task_planning_resume_recovery_version(scope, task_id, plan_id, preparation, 4)
+    }
+
+    fn seal_task_planning_resume_recovery_version(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        plan_id: &str,
+        preparation: crate::magician_v2::ask_loop::ResumePreparation,
+        schema_version: u8,
+    ) -> Result<TaskPlanningResumeRecoveryReceipt, ArtifactV2Error> {
+        let domain = match schema_version {
+            2 => "magician.task-planning-resume-recovery.v2",
+            3 => "magician.task-planning-resume-recovery.v3",
+            4 => "magician.task-planning-resume-recovery.v4",
+            _ => {
+                return Err(ArtifactV2Error::InvalidRequest(
+                    "task_planning_resume_recovery_schema_unsupported".to_owned(),
+                ))
+            },
+        };
+        let material = (
+            domain,
+            schema_version,
             scope.principal(),
             scope.workspace(),
             task_id,
             plan_id,
             &preparation,
-        ))?;
+        );
+        let proof = if schema_version == 2 {
+            serde_json::to_vec(&material)?
+        } else {
+            // StateBundle contains HashMaps. Their iteration order changes on
+            // JSON reload; the seal must bind values, not a process-local order.
+            crate::magician_v2::json_traversal::canonical_json_bytes(&serde_json::to_value(
+                &material,
+            )?)?
+        };
         if proof.len() > MAX_TASK_PLANNING_RESUME_NOTIFICATION_BYTES
             || !json_bytes_nesting_is_bounded(&proof, MAX_RETAINED_JSON_DEPTH)
             || !json_bytes_nodes_are_bounded(&proof, MAX_TASK_PLANNING_RESUME_NOTIFICATION_NODES)
@@ -9816,7 +10148,7 @@ impl ArtifactV2Service {
                 ))
             })?;
         Ok(TaskPlanningResumeRecoveryReceipt {
-            schema_version: 2,
+            schema_version,
             recovery_id: format!("planresume_{hmac_sha256}"),
             principal: scope.principal().to_owned(),
             workspace: scope.workspace().to_owned(),
@@ -9840,11 +10172,12 @@ impl ArtifactV2Service {
         plan_id: &str,
         receipt: &TaskPlanningResumeRecoveryReceipt,
     ) -> Result<(), ArtifactV2Error> {
-        let expected = self.seal_task_planning_resume_recovery(
+        let expected = self.seal_task_planning_resume_recovery_version(
             scope,
             task_id,
             plan_id,
             receipt.preparation.clone(),
+            receipt.schema_version,
         )?;
         if receipt.schema_version != expected.schema_version
             || receipt.recovery_id != expected.recovery_id
@@ -9863,6 +10196,43 @@ impl ArtifactV2Service {
             )));
         }
         Ok(())
+    }
+
+    fn retire_unverifiable_prepared_planning_resumes(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        plan_id: &str,
+        recoveries: &mut [TaskPlanningResumeRecoveryReceipt],
+        preparation: &crate::magician_v2::ask_loop::ResumePreparation,
+    ) {
+        for receipt in recoveries {
+            if !matches!(receipt.schema_version, 2 | 3)
+                || receipt.settled
+                || receipt.phase != TaskPlanningResumeRecoveryPhase::Prepared
+                || receipt.preparation.mutation.pause_resume.source_state_id
+                    != preparation.mutation.pause_resume.source_state_id
+                || receipt.preparation.notification.question_id
+                    != preparation.notification.question_id
+            {
+                continue;
+            }
+            let mismatch = matches!(
+                self.verify_task_planning_resume_recovery(scope, task_id, plan_id, receipt),
+                Err(ArtifactV2Error::InvalidRequest(ref reason))
+                    if reason.starts_with("task_planning_resume_recovery_receipt_mismatch:")
+            );
+            if mismatch {
+                // Never replay or re-seal the unverifiable payload. A new
+                // preparation came from the current AskLoop state and answer;
+                // retain this unapplied record for audit and unblock that new
+                // sealed preparation. Committed and current-schema records
+                // remain subject to the normal integrity checks.
+                receipt.settled = true;
+                receipt.claim_owner = None;
+                receipt.claim_until_ms = None;
+            }
+        }
     }
 
     pub(crate) async fn prepare_task_planning_resume_recovery(
@@ -9916,6 +10286,13 @@ impl ArtifactV2Service {
             let mut planning = self.verify_task_planning_recovery_receipt(&scope, &plan)?;
             let mut resume =
                 self.seal_task_planning_resume_recovery(&scope, &task_id, &plan_id, preparation)?;
+            self.retire_unverifiable_prepared_planning_resumes(
+                &scope,
+                &task_id,
+                &plan_id,
+                &mut planning.resume_recoveries,
+                &resume.preparation,
+            );
             if let Some(existing) = planning.resume_recoveries.iter().find(|existing| {
                 !existing.settled
                     && existing.preparation.mutation.pause_resume.source_state_id
@@ -11457,6 +11834,13 @@ impl ArtifactV2Service {
     ) -> Result<PreparedTaskPlanningResumeClaim, ArtifactV2Error> {
         let _guard = self.acquire_task_write_guard(scope, task_id).await?;
         self.task_writes.recover_task_writes(scope, task_id).await?;
+        let task = self.read_task_record_unlocked(scope, task_id).await?;
+        if is_terminal_task_state(&task.state.status) {
+            return Err(ArtifactV2Error::InvalidRequest(format!(
+                "task_terminal:{}",
+                task.state.status
+            )));
+        }
         let mut index = self.load_task_plan_index(scope, task_id).await?;
         if index.latest_plan_id.as_deref() != Some(plan_id) {
             return Err(ArtifactV2Error::InvalidRequest(format!(
@@ -11480,8 +11864,13 @@ impl ArtifactV2Service {
                 ))
             })?;
         self.verify_task_planning_resume_recovery(scope, task_id, plan_id, resume)?;
-        let supplied =
-            self.seal_task_planning_resume_recovery(scope, task_id, plan_id, preparation.clone())?;
+        let supplied = self.seal_task_planning_resume_recovery_version(
+            scope,
+            task_id,
+            plan_id,
+            preparation.clone(),
+            resume.schema_version,
+        )?;
         if supplied.recovery_id != recovery_id
             || !constant_time_bytes_eq(
                 supplied.hmac_sha256.as_bytes(),
@@ -11630,6 +12019,10 @@ impl ArtifactV2Service {
     {
         let _guard = self.acquire_task_write_guard(scope, task_id).await?;
         self.task_writes.recover_task_writes(scope, task_id).await?;
+        let task = self.read_task_record_unlocked(scope, task_id).await?;
+        if is_terminal_task_state(&task.state.status) {
+            return Ok(None);
+        }
         let mut plan = self.load_task_plan_record(scope, task_id, plan_id).await?;
         let mut index = self.load_task_plan_index(scope, task_id).await?;
         if index.latest_plan_id.as_deref() != Some(plan_id)
@@ -11672,6 +12065,10 @@ impl ArtifactV2Service {
     ) -> Result<bool, ArtifactV2Error> {
         let _guard = self.acquire_task_write_guard(scope, task_id).await?;
         self.task_writes.recover_task_writes(scope, task_id).await?;
+        let task = self.read_task_record_unlocked(scope, task_id).await?;
+        if is_terminal_task_state(&task.state.status) {
+            return Ok(false);
+        }
         let mut plan = self.load_task_plan_record(scope, task_id, plan_id).await?;
         let mut receipt = self.verify_task_planning_recovery_receipt(scope, &plan)?;
         if receipt.claim_owner.as_deref() != Some(lease.owner.as_str())
@@ -11714,6 +12111,10 @@ impl ArtifactV2Service {
     > {
         let _guard = self.acquire_task_write_guard(scope, task_id).await?;
         self.task_writes.recover_task_writes(scope, task_id).await?;
+        let task = self.read_task_record_unlocked(scope, task_id).await?;
+        if is_terminal_task_state(&task.state.status) {
+            return Ok(None);
+        }
         let mut plan = self.load_task_plan_record(scope, task_id, plan_id).await?;
         if plan.status.is_terminal() {
             return Ok(None);
@@ -11757,6 +12158,10 @@ impl ArtifactV2Service {
     ) -> Result<bool, ArtifactV2Error> {
         let _guard = self.acquire_task_write_guard(scope, task_id).await?;
         self.task_writes.recover_task_writes(scope, task_id).await?;
+        let task = self.read_task_record_unlocked(scope, task_id).await?;
+        if is_terminal_task_state(&task.state.status) {
+            return Ok(false);
+        }
         let mut plan = self.load_task_plan_record(scope, task_id, plan_id).await?;
         let mut planning = self.verify_task_planning_recovery_receipt(scope, &plan)?;
         let Some(resume) = planning
@@ -12027,10 +12432,10 @@ impl ArtifactV2Service {
         receipt: TaskPlanningRecoveryReceipt,
         lease: TaskPlanningRecoveryLease,
     ) -> Result<(), ArtifactV2Error> {
-        let task = self.get_task(&scope, &task_id).await?;
-        let plan = self
-            .load_task_plan_record(&scope, &task_id, &plan_id)
-            .await?;
+        // Every await here is off-frame: this sits under the recovery monitor
+        // on the same worker that polls planning down to the LLM router.
+        let task = crate::off_frame!(self.get_task(&scope, &task_id).await)?;
+        let plan = crate::off_frame!(self.load_task_plan_record(&scope, &task_id, &plan_id).await)?;
         if plan.status.is_terminal() {
             return Ok(());
         }
@@ -12072,31 +12477,34 @@ impl ArtifactV2Service {
             broadcaster.register_runtime_canonical_event_scope(scope_record);
         }
 
-        let runtime = match self
-            .orchestrator
-            .conversation_store()
-            .get_execution(&execution_id)
-            .await
-        {
-            Ok(runtime) => runtime,
-            Err(crate::magician_v2::storage::V2StorageError::ExecutionNotFound(_)) => self
-                .orchestrator
+        let runtime = match crate::off_frame!(
+            self.orchestrator
                 .conversation_store()
-                .create_execution_with_options(
-                    scope.principal(),
-                    scope.workspace(),
-                    Some(format!("[Planning] {}", task.manifest.title)),
-                    &receipt.agent_id,
-                    Some(task_id.clone()),
-                    Some(execution_id.clone()),
-                    Some(execution_id.clone()),
-                    None,
-                    None,
-                    Vec::new(),
-                    WaitingState::Planning,
-                )
+                .get_execution(&execution_id)
                 .await
-                .map_err(|err| ArtifactV2Error::Runtime(err.to_string()))?,
+        ) {
+            Ok(runtime) => runtime,
+            Err(crate::magician_v2::storage::V2StorageError::ExecutionNotFound(_)) => {
+                crate::off_frame!(
+                    self.orchestrator
+                        .conversation_store()
+                        .create_execution_with_options(
+                            scope.principal(),
+                            scope.workspace(),
+                            Some(format!("[Planning] {}", task.manifest.title)),
+                            &receipt.agent_id,
+                            Some(task_id.clone()),
+                            Some(execution_id.clone()),
+                            Some(execution_id.clone()),
+                            None,
+                            None,
+                            Vec::new(),
+                            WaitingState::Planning,
+                        )
+                        .await
+                )
+                .map_err(|err| ArtifactV2Error::Runtime(err.to_string()))?
+            },
             Err(error) => return Err(ArtifactV2Error::Runtime(error.to_string())),
         };
         if runtime.id != execution_id
@@ -12111,23 +12519,24 @@ impl ArtifactV2Service {
             )));
         }
 
-        let turn = self
-            .orchestrator
-            .conversation_store()
-            .add_turn_with_id(
-                &execution_id,
-                &receipt.deterministic_turn_id,
-                crate::magician_v2::storage::TurnDirection::Inbound,
-                receipt.goal.clone(),
-                None,
-            )
-            .await
-            .ok_or_else(|| {
-                ArtifactV2Error::Runtime(
-                    "task planning store lacks deterministic turn insertion".to_owned(),
+        let turn = crate::off_frame!(
+            self.orchestrator
+                .conversation_store()
+                .add_turn_with_id(
+                    &execution_id,
+                    &receipt.deterministic_turn_id,
+                    crate::magician_v2::storage::TurnDirection::Inbound,
+                    receipt.goal.clone(),
+                    None,
                 )
-            })?
-            .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?;
+                .await
+        )
+        .ok_or_else(|| {
+            ArtifactV2Error::Runtime(
+                "task planning store lacks deterministic turn insertion".to_owned(),
+            )
+        })?
+        .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?;
         if turn.id != receipt.deterministic_turn_id || turn.text != receipt.goal {
             return Err(ArtifactV2Error::InvalidRequest(format!(
                 "task_planning_recovery_turn_mismatch:{task_id}:{plan_id}"
@@ -12135,8 +12544,8 @@ impl ArtifactV2Service {
         }
 
         if turn.processing_metadata.is_none() {
-            if !self
-                .update_task_planning_recovery_claim(
+            if !crate::off_frame!(
+                self.update_task_planning_recovery_claim(
                     &scope,
                     &task_id,
                     &plan_id,
@@ -12144,8 +12553,8 @@ impl ArtifactV2Service {
                     Some(true),
                     false,
                 )
-                .await?
-            {
+                .await
+            )? {
                 return Err(ArtifactV2Error::Runtime(format!(
                     "task_planning_recovery_claim_lost_before_dispatch:{task_id}:{plan_id}"
                 )));
@@ -12167,15 +12576,19 @@ impl ArtifactV2Service {
                 workspace: scope.workspace().to_string(),
                 metadata,
             };
-            let planning = self
-                .orchestrator
-                .process_task_planning_receipt_with_strategy(
-                    &receipt.goal,
-                    execution_context,
-                    execution_id.clone(),
-                    receipt.deterministic_turn_id.clone(),
-                );
-            tokio::pin!(planning);
+            // Boxed from inside the block, so the orchestrator's planning
+            // future is built on the heap, not in this frame (the select loop
+            // rules out `off_frame!`).
+            let mut planning = Box::pin(async {
+                self.orchestrator
+                    .process_task_planning_receipt_with_strategy(
+                        &receipt.goal,
+                        execution_context,
+                        execution_id.clone(),
+                        receipt.deterministic_turn_id.clone(),
+                    )
+                    .await
+            });
             let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -12185,8 +12598,8 @@ impl ArtifactV2Service {
                         break;
                     },
                     _ = heartbeat.tick() => {
-                        if !self
-                            .update_task_planning_recovery_claim(
+                        if !crate::off_frame!(
+                            self.update_task_planning_recovery_claim(
                                 &scope,
                                 &task_id,
                                 &plan_id,
@@ -12194,8 +12607,8 @@ impl ArtifactV2Service {
                                 None,
                                 false,
                             )
-                            .await?
-                        {
+                            .await
+                        )? {
                             return Err(ArtifactV2Error::Runtime(format!(
                                 "task_planning_recovery_claim_lost_during_dispatch:{task_id}:{plan_id}"
                             )));
@@ -12205,9 +12618,10 @@ impl ArtifactV2Service {
             }
         }
 
-        let refreshed = self
-            .refresh_task_plan_from_planning_execution(&scope, &task_id, &plan_id)
-            .await?;
+        let refreshed = crate::off_frame!(
+            self.refresh_task_plan_from_planning_execution(&scope, &task_id, &plan_id)
+                .await
+        )?;
         // A no-output provider completion is a permanent planning result, but
         // the failure projection itself can still fail transiently. Commit it
         // before retiring the replay receipt so a crash cannot leave
@@ -12216,18 +12630,22 @@ impl ArtifactV2Service {
             && refreshed.plan_graph.is_none()
             && refreshed.pending_questions.is_empty()
         {
-            self.mark_task_plan_failed(
-                &scope,
-                &task_id,
-                &plan_id,
-                "Planning completed without producing a plan".to_string(),
-            )
-            .await?;
+            crate::off_frame!(
+                self.mark_task_plan_failed(
+                    &scope,
+                    &task_id,
+                    &plan_id,
+                    "Planning completed without producing a plan".to_string(),
+                )
+                .await
+            )?;
         }
-        if !self
-            .update_task_planning_recovery_claim(&scope, &task_id, &plan_id, &lease, None, true)
-            .await?
-        {
+        if !crate::off_frame!(
+            self.update_task_planning_recovery_claim(
+                &scope, &task_id, &plan_id, &lease, None, true
+            )
+            .await
+        )? {
             return Err(ArtifactV2Error::Runtime(format!(
                 "task_planning_recovery_claim_lost_before_settlement:{task_id}:{plan_id}"
             )));
@@ -12330,9 +12748,13 @@ impl ArtifactV2Service {
         };
         let service = Arc::clone(&self);
         crate::magician_v2::execution::runtime_boundary::spawn_execution_job(move || async move {
-            let retry = service
-                .monitor_task_planning_recovery(scope, task_id, plan_id)
-                .await;
+            // The monitor's frame (~0.5 MiB in debug) stays off this worker's
+            // stack, which also polls planning down to the LLM router.
+            let retry = crate::off_frame!(
+                service
+                    .monitor_task_planning_recovery(scope, task_id, plan_id)
+                    .await
+            );
             drop(guard);
             drop(permit);
             if let Some((scope, task_id, plan_id)) = retry {
@@ -12361,7 +12783,9 @@ impl ArtifactV2Service {
                 };
                 tokio::time::sleep(delay).await;
             }
-            let plan = match self.load_task_plan_record(&scope, &task_id, &plan_id).await {
+            let plan = match crate::off_frame!(
+                self.load_task_plan_record(&scope, &task_id, &plan_id).await
+            ) {
                 Ok(plan) => plan,
                 Err(error) => {
                     if attempt == 0 || attempt.is_power_of_two() {
@@ -12378,16 +12802,29 @@ impl ArtifactV2Service {
                 Ok(receipt) => receipt,
                 Err(error) => {
                     if matches!(&error, ArtifactV2Error::InvalidRequest(_)) {
-                        let _ = self
-                            .mark_task_plan_failed(&scope, &task_id, &plan_id, error.to_string())
-                            .await;
+                        let _ = crate::off_frame!(
+                            self.mark_task_plan_failed(
+                                &scope,
+                                &task_id,
+                                &plan_id,
+                                error.to_string()
+                            )
+                            .await
+                        );
                         return None;
                     }
                     attempt = attempt.saturating_add(1);
                     continue;
                 },
             };
-            if let Ok(task) = self.get_task(&scope, &task_id).await {
+            if let Ok(task) = crate::off_frame!(self.get_task(&scope, &task_id).await) {
+                if is_terminal_task_state(&task.state.status) {
+                    crate::off_frame!(
+                        self.resolve_pending_clarifications_on_terminal(&scope, &task)
+                            .await
+                    );
+                    return None;
+                }
                 let scope_record = CanonicalEventScope {
                     principal: receipt.principal.clone(),
                     workspace: receipt.workspace.clone(),
@@ -12428,8 +12865,8 @@ impl ArtifactV2Service {
                         attempt = attempt.saturating_add(1);
                         continue;
                     }
-                    match self
-                        .claim_exact_prepared_task_planning_resume_recovery(
+                    match crate::off_frame!(
+                        self.claim_exact_prepared_task_planning_resume_recovery(
                             &scope,
                             &task_id,
                             &plan_id,
@@ -12438,14 +12875,14 @@ impl ArtifactV2Service {
                             false,
                         )
                         .await
-                    {
+                    ) {
                         Ok(PreparedTaskPlanningResumeClaim::Claimed { receipt, lease }) => {
-                            if let Err(error) = self
-                                .run_prepared_task_planning_resume_recovery(
+                            if let Err(error) = crate::off_frame!(
+                                self.run_prepared_task_planning_resume_recovery(
                                     &scope, &task_id, &plan_id, receipt, lease,
                                 )
                                 .await
-                            {
+                            ) {
                                 warn!(task_id, plan_id, %error, "claimed prepared planning continuation deferred");
                                 attempt = attempt.saturating_add(1);
                             } else {
@@ -12465,14 +12902,14 @@ impl ArtifactV2Service {
                     }
                     continue;
                 }
-                match self
-                    .claim_task_planning_resume_recovery(&scope, &task_id, &plan_id)
-                    .await
-                {
+                match crate::off_frame!(
+                    self.claim_task_planning_resume_recovery(&scope, &task_id, &plan_id)
+                        .await
+                ) {
                     Ok(Some((resume, lease))) => {
                         if plan.status == TaskPlanStatus::Draft {
-                            if self
-                                .update_task_planning_resume_recovery_claim(
+                            if crate::off_frame!(
+                                self.update_task_planning_resume_recovery_claim(
                                     &scope,
                                     &task_id,
                                     &plan_id,
@@ -12481,7 +12918,8 @@ impl ArtifactV2Service {
                                     true,
                                 )
                                 .await
-                                .unwrap_or(false)
+                            )
+                            .unwrap_or(false)
                             {
                                 attempt = 0;
                             } else {
@@ -12489,12 +12927,12 @@ impl ArtifactV2Service {
                             }
                             continue;
                         }
-                        if let Err(error) = self
-                            .run_task_planning_resume_recovery(
+                        if let Err(error) = crate::off_frame!(
+                            self.run_task_planning_resume_recovery(
                                 &scope, &task_id, &plan_id, resume, lease,
                             )
                             .await
-                        {
+                        ) {
                             warn!(task_id, plan_id, %error, "durable planning clarification continuation deferred");
                             attempt = attempt.saturating_add(1);
                         } else {
@@ -12511,14 +12949,15 @@ impl ArtifactV2Service {
                     },
                     Err(error) => {
                         if matches!(&error, ArtifactV2Error::InvalidRequest(_)) {
-                            let _ = self
-                                .mark_task_plan_failed(
+                            let _ = crate::off_frame!(
+                                self.mark_task_plan_failed(
                                     &scope,
                                     &task_id,
                                     &plan_id,
                                     error.to_string(),
                                 )
-                                .await;
+                                .await
+                            );
                             return None;
                         }
                         attempt = attempt.saturating_add(1);
@@ -12532,19 +12971,20 @@ impl ArtifactV2Service {
             }
 
             if plan.planning_execution_id.is_some() {
-                if let Ok(refreshed) = self
-                    .refresh_task_plan_from_planning_execution(&scope, &task_id, &plan_id)
-                    .await
-                {
+                if let Ok(refreshed) = crate::off_frame!(
+                    self.refresh_task_plan_from_planning_execution(&scope, &task_id, &plan_id)
+                        .await
+                ) {
                     if refreshed.status == TaskPlanStatus::Draft || refreshed.status.is_terminal() {
                         return None;
                     }
                     if refreshed.status == TaskPlanStatus::Eliciting {
-                        let waiting = self
-                            .orchestrator
-                            .get_execution_status(&receipt.planning_execution_id)
-                            .await
-                            .ok();
+                        let waiting = crate::off_frame!(
+                            self.orchestrator
+                                .get_execution_status(&receipt.planning_execution_id)
+                                .await
+                        )
+                        .ok();
                         if waiting == Some(WaitingState::WaitingUser) {
                             return None;
                         }
@@ -12556,34 +12996,36 @@ impl ArtifactV2Service {
                 attempt = attempt.saturating_add(1);
                 continue;
             }
-            match self
-                .claim_task_planning_recovery(&scope, &task_id, &plan_id)
-                .await
-            {
+            match crate::off_frame!(
+                self.claim_task_planning_recovery(&scope, &task_id, &plan_id)
+                    .await
+            ) {
                 Ok(Some((receipt, lease))) => {
-                    if let Err(error) = Arc::clone(self)
-                        .run_task_planning(
-                            scope.clone(),
-                            task_id.clone(),
-                            plan_id.clone(),
-                            receipt,
-                            lease,
-                        )
-                        .await
-                    {
+                    if let Err(error) = crate::off_frame!(
+                        Arc::clone(self)
+                            .run_task_planning(
+                                scope.clone(),
+                                task_id.clone(),
+                                plan_id.clone(),
+                                receipt,
+                                lease,
+                            )
+                            .await
+                    ) {
                         error!(task_id, plan_id, %error, "durable task planning recovery deferred");
                         if matches!(
                             &error,
                             ArtifactV2Error::InvalidRequest(_) | ArtifactV2Error::TaskNotFound(_)
                         ) {
-                            let _ = self
-                                .mark_task_plan_failed(
+                            let _ = crate::off_frame!(
+                                self.mark_task_plan_failed(
                                     &scope,
                                     &task_id,
                                     &plan_id,
                                     error.to_string(),
                                 )
-                                .await;
+                                .await
+                            );
                             return None;
                         }
                         attempt = attempt.saturating_add(1);
@@ -12597,9 +13039,15 @@ impl ArtifactV2Service {
                         &error,
                         ArtifactV2Error::InvalidRequest(_) | ArtifactV2Error::TaskNotFound(_)
                     ) {
-                        let _ = self
-                            .mark_task_plan_failed(&scope, &task_id, &plan_id, error.to_string())
-                            .await;
+                        let _ = crate::off_frame!(
+                            self.mark_task_plan_failed(
+                                &scope,
+                                &task_id,
+                                &plan_id,
+                                error.to_string()
+                            )
+                            .await
+                        );
                         return None;
                     }
                 },
@@ -15626,15 +16074,98 @@ impl ArtifactV2Service {
                         ),
                     }
                 },
-                Err(error) => warn!(
-                    task_id = %task_id,
-                    execution_id = %execution_id,
-                    %error,
-                    "interrupted delegated-child recovery deferred after composition/runtime failure"
-                ),
+                Err(error) => {
+                    warn!(
+                        task_id = %task_id,
+                        execution_id = %execution_id,
+                        %error,
+                        "interrupted delegated-child recovery deferred after composition/runtime failure"
+                    );
+                    // A transient refusal (a pre-seed generation still inside
+                    // its visibility grace, an authority read that failed) is
+                    // not an owner: nothing else revisits this child while the
+                    // process stays up, and its parent waited in
+                    // WaitingChildren until the next restart. Hand it to the
+                    // persistent recovery monitor, which re-admits it once the
+                    // grace has passed and keeps retrying with backoff.
+                    let now_ms = Utc::now().timestamp_millis();
+                    let not_before_ms = deferred_interrupted_recovery_recheck_at_ms(
+                        &error.to_string(),
+                        now_ms,
+                        now_ms,
+                    )
+                    .unwrap_or_else(|| {
+                        now_ms.saturating_add(DEFERRED_INTERRUPTED_RECOVERY_RETRY_MS)
+                    });
+                    service.schedule_deferred_interrupted_runtime_recheck(
+                        scope.clone(),
+                        task_id.clone(),
+                        execution_id.clone(),
+                        not_before_ms,
+                    );
+                },
             }
         });
         Ok(InterruptedRuntimeRecovery::Scheduled)
+    }
+
+    /// Re-check an interrupted execution whose restart recovery was deferred
+    /// for a reason that names no durable owner (a stateless pre-seed
+    /// generation still inside its visibility grace, a transient child
+    /// recovery failure). The persistent accepted-launch recovery monitor
+    /// re-runs [`Self::recover_interrupted_runtime_execution`] at
+    /// `not_before_ms` (clamped to 1–61 s ahead) and retries with backoff
+    /// until the runtime state is durably parked or terminal and projected,
+    /// so a deferral no longer waits for the next restart. Idempotent per
+    /// execution.
+    pub(crate) fn schedule_deferred_interrupted_runtime_recheck(
+        self: &Arc<Self>,
+        scope: ScopeRef,
+        task_id: String,
+        execution_id: String,
+        not_before_ms: i64,
+    ) {
+        tracing::info!(
+            task_id = %task_id,
+            execution_id = %execution_id,
+            not_before_ms,
+            "deferred interrupted recovery scheduled for a re-check"
+        );
+        self.schedule_accepted_runtime_launch_claim_recheck(
+            scope,
+            task_id,
+            execution_id,
+            not_before_ms,
+        );
+    }
+
+    /// Restore the process-local canonical event scope of a task-backed
+    /// execution that is about to run again after a restart (a recovered
+    /// delegated child, a parent continuation). Without it every event the
+    /// run emits is journalled transport-only, so its asks — a diff review
+    /// included — never reach its Artifact events or Attention. `None` when
+    /// the execution is not Artifact-backed.
+    pub(crate) async fn restore_runtime_canonical_scope(
+        &self,
+        principal: &str,
+        workspace: &str,
+        task_id: &str,
+        execution_id: &str,
+    ) -> Option<CanonicalEventScope> {
+        let scope = ScopeRef::system_internal_unauthenticated(principal, workspace);
+        let task = self.get_task(&scope, task_id).await.ok()?;
+        self.get_execution(&scope, task_id, execution_id)
+            .await
+            .ok()?;
+        let execution = ExecutionContext {
+            principal: principal.to_string(),
+            workspace: workspace.to_string(),
+            task_id: task_id.to_string(),
+            execution_id: execution_id.to_string(),
+        };
+        self.register_runtime_canonical_scope(&execution, &task.manifest.ui_thread_id);
+        self.orchestrator
+            .runtime_canonical_event_scope_for_execution(execution_id)
     }
 
     /// Re-admit the exact task-root or integrity-bound delegated child named by a durable execution
@@ -16959,6 +17490,7 @@ impl ArtifactV2Service {
                 task_user_output,
                 continuation_context_output: None,
                 media_outputs: vec![],
+                delivered_file_outputs: vec![],
                 task_output_mode: binding.task_output_mode.clone(),
             };
             self.reducer
@@ -17193,6 +17725,32 @@ impl ArtifactV2Service {
             )),
         )
         .await?;
+        // The runtime half. The outcome above is the task's record; the
+        // runtime execution still says `WaitingUser` until it is settled here,
+        // and only that transition runs the terminal side effects — a
+        // delegated child's parent stayed in `WaitingChildren` without it.
+        if let Ok(runtime_state) = self.orchestrator.get_execution_status(execution_id).await {
+            if matches!(
+                runtime_state,
+                WaitingState::WaitingUser | WaitingState::Paused
+            ) {
+                if let Err(error) =
+                    Box::pin(self.orchestrator.settle_runtime_after_recorded_outcome(
+                        execution_id,
+                        &runtime_state,
+                        WaitingState::Failed,
+                        "orphaned user pause finalized",
+                    ))
+                    .await
+                {
+                    warn!(
+                        execution_id = %execution_id,
+                        %error,
+                        "orphaned user-pause finalized, but its runtime status could not be settled"
+                    );
+                }
+            }
+        }
         Ok(true)
     }
 
@@ -17741,7 +18299,7 @@ impl ArtifactV2Service {
         drop(_guard);
         self.project_task_feed_item(scope, task_id).await?;
         self.project_task_progress(scope, task_id).await?;
-        if normalized_status == "cancelled" {
+        if is_terminal_task_state(&normalized_status) {
             self.resolve_pending_clarifications_on_terminal(scope, &task)
                 .await;
             self.close_owner_escalations_if_ended(scope, &task).await;
@@ -18099,7 +18657,9 @@ impl ArtifactV2Service {
         // skipped the clear; `task_active` then refused the task forever. Drop
         // only references to executions that ended (or are gone) before the
         // check; anything still running or synthesizing keeps the task active.
-        let dangling = self.drop_dangling_execution_refs_unlocked(scope, &mut task).await?;
+        let dangling = self
+            .drop_dangling_execution_refs_unlocked(scope, &mut task)
+            .await?;
         if !dangling.is_empty() {
             warn!(task_id, cleared = ?dangling,
                 "archive: cleared references to executions that already ended");
@@ -18121,6 +18681,12 @@ impl ArtifactV2Service {
         task.manifest.updated_at = now;
         self.persist_task_record_unlocked(scope, &task).await?;
         drop(write);
+        // An archived task answers nothing: close its open plan questions and
+        // plan approval, or every surface keeps listing them.
+        crate::off_frame!(
+            self.resolve_pending_clarifications_on_terminal(scope, &task)
+                .await
+        );
         if let Some(adapter) = self.feed_projection_adapter.get() {
             // Archival is committed above. Feed is a rebuildable projection;
             // its failure must not report a failed archive or prevent a requested
@@ -18149,7 +18715,10 @@ impl ArtifactV2Service {
         let ended = |status: &str| matches!(status, "completed" | "failed" | "cancelled");
         let mut cleared = Vec::new();
         if let Some(root) = task.state.active_root_execution_id.clone() {
-            match self.read_execution_state_unlocked(scope, &task_id, &root).await? {
+            match self
+                .read_execution_state_unlocked(scope, &task_id, &root)
+                .await?
+            {
                 None => {
                     task.state.active_root_execution_id = None;
                     cleared.push(format!("active_root:{root}:missing"));
@@ -18208,11 +18777,39 @@ impl ArtifactV2Service {
         Ok(Some(self.workspace.read_json_path(&path).await?))
     }
 
+    /// Archive (or, with `remove_files`, delete) a task. Refuses an active
+    /// task at once with `task_active:<id>`; internal callers and sweeps
+    /// rely on that never waiting.
     pub async fn archive_task_with_options(
         &self,
         scope: &ScopeRef,
         task_id: &str,
         remove_files: bool,
+    ) -> Result<(), ArtifactV2Error> {
+        self.archive_task_with_settle_option(scope, task_id, remove_files, false)
+            .await
+    }
+
+    /// `archive_task_with_options` for the owner's HTTP delete: a task whose
+    /// run already ended but is still settling (output synthesis) is waited
+    /// out, up to `ARCHIVE_SETTLE_TIMEOUT`, instead of refused. A live task
+    /// is still refused at once.
+    pub async fn archive_task_with_options_when_settled(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        remove_files: bool,
+    ) -> Result<(), ArtifactV2Error> {
+        self.archive_task_with_settle_option(scope, task_id, remove_files, true)
+            .await
+    }
+
+    async fn archive_task_with_settle_option(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        remove_files: bool,
+        wait_for_settle: bool,
     ) -> Result<(), ArtifactV2Error> {
         // Guard before validation, lookup, and the TaskNotFound physical-delete
         // fallback. A missing/corrupt canonical app task must fail closed too;
@@ -18225,7 +18822,12 @@ impl ArtifactV2Service {
         // Read before the record goes, so the announcement can name it.
         let snapshot = self.get_task(scope, task_id).await.ok();
 
-        match self.archive_task(scope, task_id).await {
+        let archived = if wait_for_settle {
+            Box::pin(self.archive_task_when_settled(scope, task_id)).await
+        } else {
+            self.archive_task(scope, task_id).await
+        };
+        match archived {
             Ok(()) => {},
             Err(ArtifactV2Error::TaskNotFound(_)) if remove_files => {
                 // Task may live in `internal_tasks/` (no manifest in
@@ -18244,6 +18846,52 @@ impl ArtifactV2Service {
         }
         self.emit_task_deleted_transport(scope, task_id, snapshot.as_ref());
         Ok(())
+    }
+
+    /// `archive_task`, waiting out a run that already ended but is still
+    /// settling. A task turns `completed` before its output synthesis has
+    /// written the outputs, so a delete right after completion used to get
+    /// `task_active` for ~15 s. While the record shows only that settling
+    /// (terminal status plus pending synthesis or an active root), poll until
+    /// it clears, up to `ARCHIVE_SETTLE_TIMEOUT`, then retry the guarded
+    /// archive, whose own check still decides. A live task fails at once.
+    ///
+    /// No task guard or admission permit is held while waiting: every read
+    /// goes through `get_task`, which takes and releases the guard itself.
+    async fn archive_task_when_settled(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+    ) -> Result<(), ArtifactV2Error> {
+        let deadline = tokio::time::Instant::now() + ARCHIVE_SETTLE_TIMEOUT;
+        loop {
+            let refused = match self.archive_task(scope, task_id).await {
+                Err(ArtifactV2Error::InvalidRequest(message))
+                    if message.starts_with("task_active:") =>
+                {
+                    message
+                },
+                other => return other,
+            };
+            loop {
+                let blocker = match self.get_task(scope, task_id).await {
+                    Ok(task) => archive_blocker(
+                        &task.state.status,
+                        task.state.active_root_execution_id.is_some(),
+                        !task.state.synthesis_pending_executions.is_empty(),
+                    ),
+                    // Let the guarded retry report what happened to it.
+                    Err(_) => ArchiveBlocker::Clear,
+                };
+                if blocker == ArchiveBlocker::Active || tokio::time::Instant::now() >= deadline {
+                    return Err(ArtifactV2Error::InvalidRequest(refused));
+                }
+                tokio::time::sleep(ARCHIVE_SETTLE_POLL).await;
+                if blocker != ArchiveBlocker::SynthesisPending {
+                    break;
+                }
+            }
+        }
     }
 
     /// Tell live clients a task left the list (archived or deleted). Every
@@ -18952,7 +19600,9 @@ impl ArtifactV2Service {
                     .join(&output.relative_path);
                 let raw = read_auxiliary_output_prefix(&service.workspace, &file_path).await?;
                 let readable = match base_media_type(&output.media_type) {
-                    "text/html" => crate::magician_v2::execution::compiled_handlers::web_fetch::strip_html_to_text(&raw),
+                    "text/html" => {
+                        crate::magician_v2::artifact_v2::synthesis::html_answer_readable_text(&raw)
+                    },
                     "application/json" => summarize_json_output(&raw).unwrap_or(raw),
                     _ => raw,
                 };
@@ -18960,35 +19610,38 @@ impl ArtifactV2Service {
                     .source_execution_id
                     .as_deref()
                     .unwrap_or("task-summary-background");
-                let (root_execution_id, summary_agent_id) = match output.source_execution_id.as_deref() {
-                    Some(source_execution_id) => {
-                        let source_execution = service
-                            .get_execution(&scope, &task_id, source_execution_id)
-                            .await
-                            .ok();
-                        task_summary_execution_attribution(
-                            source_execution_id,
-                            &task.manifest.agent_id,
-                            source_execution.as_ref(),
-                        )
-                    },
-                    None => (
-                        task.state
-                            .last_completed_root_execution_id
-                            .clone()
-                            .or_else(|| task.state.latest_root_execution_id.clone())
-                            .unwrap_or_else(|| execution_id.to_string()),
-                        task.manifest.agent_id.clone(),
-                    ),
-                };
+                let (root_execution_id, summary_agent_id) =
+                    match output.source_execution_id.as_deref() {
+                        Some(source_execution_id) => {
+                            let source_execution = service
+                                .get_execution(&scope, &task_id, source_execution_id)
+                                .await
+                                .ok();
+                            task_summary_execution_attribution(
+                                source_execution_id,
+                                &task.manifest.agent_id,
+                                source_execution.as_ref(),
+                            )
+                        },
+                        None => (
+                            task.state
+                                .last_completed_root_execution_id
+                                .clone()
+                                .or_else(|| task.state.latest_root_execution_id.clone())
+                                .unwrap_or_else(|| execution_id.to_string()),
+                            task.manifest.agent_id.clone(),
+                        ),
+                    };
                 let routing_overrides = match output.source_execution_id.as_deref() {
-                    Some(source_execution_id) => service
-                        .load_execution_llm_routing_overrides(
-                            &scope,
-                            &task_id,
-                            source_execution_id,
-                        )
-                        .await?,
+                    Some(source_execution_id) => {
+                        service
+                            .load_execution_llm_routing_overrides(
+                                &scope,
+                                &task_id,
+                                source_execution_id,
+                            )
+                            .await?
+                    },
                     None => None,
                 };
                 let Some(sidecar) = build_task_summary_sidecar(
@@ -24357,6 +25010,16 @@ impl ArtifactV2Service {
         terminal: crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind,
         terminal_seq: u64,
         outcome: &AgenticOutcome,
+        // The outcome the run settles with when it is not `outcome` itself: a
+        // refinement pass that ended without closing its gaps settles the
+        // first pass's `Success` merged with the refinement's result
+        // (`merge_refinement_outcomes`). Only a final `Success` may stand in,
+        // and only for a non-resumable ending; `outcome` still binds the
+        // journalled terminal kind and every pause field.
+        settled_outcome: Option<&AgenticOutcome>,
+        // The refinement segment this `Success` hands its settlement to. See
+        // `TerminalSettlementDescriptor::refinement_successor_segment`.
+        refinement_successor_segment: Option<&str>,
         executors: &crate::magician_v2::execution::agentic::ActionExecutors,
         protected_app: bool,
         source_revision: crate::magician_v2::execution::agentic::run_loop::store::Revision,
@@ -24398,6 +25061,19 @@ impl ArtifactV2Service {
         {
             return Err(ArtifactV2Error::InvalidRequest(
                 "stateless_terminal_settlement_identity_or_terminal_mismatch".to_owned(),
+            ));
+        }
+        if settled_outcome.is_some_and(|settled| {
+            !matches!(settled, AgenticOutcome::Success { .. })
+                || outcome.requires_continuation()
+                || refinement_successor_segment.is_some()
+        }) || refinement_successor_segment.is_some_and(|successor| {
+            successor.trim().is_empty()
+                || successor == key.execution_id()
+                || !matches!(outcome, AgenticOutcome::Success { .. })
+        }) {
+            return Err(ArtifactV2Error::InvalidRequest(
+                "stateless_terminal_settlement_refinement_binding_invalid".to_owned(),
             ));
         }
         // Boxed for the same reason its own tail is: this runs at the bottom
@@ -24443,8 +25119,10 @@ impl ArtifactV2Service {
                 .and_then(|pause_state| pause_state.pipeline_loop_state_segment),
             _ => None,
         };
-        let snapshot =
-            ExecutionOutcomeSnapshot::from_agentic_outcome_for_app(outcome, protected_app);
+        let snapshot = ExecutionOutcomeSnapshot::from_agentic_outcome_for_app(
+            settled_outcome.unwrap_or(outcome),
+            protected_app,
+        );
         let pipeline_stage_settlement = if snapshot.is_terminal && !task_id.is_empty() {
             let continuation = self
                 .pipeline_continuation_binding_by_execution_id(execution_id)
@@ -24603,6 +25281,7 @@ impl ArtifactV2Service {
             pause_revision: pause.as_ref().map(|commit| commit.revision.clone()),
             pause_body_sha256: pause.map(|commit| commit.body_sha256),
             pause_resume_segment,
+            refinement_successor_segment: refinement_successor_segment.map(str::to_owned),
         };
         match self.seal_terminal_settlement_descriptor(descriptor.clone()) {
             Ok(receipt) => Ok(Some(receipt)),
@@ -24916,6 +25595,7 @@ impl ArtifactV2Service {
             let delegated_non_success = delegated_child
                 && terminal
                     != crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind::Success
+                && !receipt.is_some_and(|receipt| receipt.descriptor.settles_completed())
                 && !permitted_child_suspend;
             if delegated_non_success
                 && !self
@@ -25083,6 +25763,42 @@ impl ArtifactV2Service {
             }
             return Ok(TerminalLoopSettlementAcceptance::SupersededByCancellation);
         }
+        // A first pass that handed its settlement to a refinement pass. The
+        // refinement's own receipt carries the run's settled outcome (the
+        // first pass merged with whatever the refinement achieved), so this
+        // receipt settles only when no such receipt exists and the pass is no
+        // longer running here: the pass errored, or the process died
+        // mid-refinement and this is boot recovery.
+        if let Some(successor) = verified_descriptor
+            .and_then(|descriptor| descriptor.refinement_successor_segment.as_deref())
+        {
+            use crate::magician_v2::execution::agentic::run_loop::state::{
+                refinement_in_flight, refinement_successor_disposition,
+                RefinementSuccessorDisposition,
+            };
+            let successor_committed_receipt = self
+                .refinement_successor_committed_receipt(key, successor)
+                .await?;
+            match refinement_successor_disposition(
+                successor_committed_receipt,
+                refinement_in_flight(principal, workspace, key.execution_id()),
+            ) {
+                RefinementSuccessorDisposition::SuccessorSettles => {
+                    return Ok(TerminalLoopSettlementAcceptance::Publish);
+                },
+                RefinementSuccessorDisposition::InFlight => {
+                    return Ok(TerminalLoopSettlementAcceptance::DeferredToRefinementSuccessor);
+                },
+                RefinementSuccessorDisposition::FirstPassSettles => {
+                    tracing::warn!(
+                        execution = %key,
+                        successor,
+                        "[REFINEMENT] the refinement pass left no settlement receipt and is not \
+                         running; the first pass's Success settles the run"
+                    );
+                },
+            }
+        }
         if !task_id.is_empty() {
             let scope = ScopeRef::system_internal_unauthenticated(principal, workspace);
             let root = runtime.root_execution_id.as_deref().unwrap_or(execution_id);
@@ -25163,6 +25879,7 @@ impl ArtifactV2Service {
                     pause_revision: None,
                     pause_body_sha256: None,
                     pause_resume_segment: None,
+                    refinement_successor_segment: None,
                 };
                 &reconciler_descriptor
             };
@@ -25483,8 +26200,12 @@ impl ArtifactV2Service {
             } else {
                 false
             };
+        // A refinement segment's receipt may journal its own non-success
+        // ending while settling the merged first-pass `Success`; that child
+        // delivered and is not force-failed.
         let delegated_child_forced_failure = delegated_child
             && terminal != TerminalKind::Success
+            && !verified_descriptor.is_some_and(|descriptor| descriptor.settles_completed())
             && !delegated_diff_approval_suspend;
         if delegated_child_forced_failure {
             // Receipt preparation happens inside the loop, before the normal
@@ -25620,6 +26341,7 @@ impl ArtifactV2Service {
                 pause_revision: None,
                 pause_body_sha256: None,
                 pause_resume_segment: None,
+                refinement_successor_segment: None,
             };
             self.orchestrator
                 .settle_stateless_terminal_receipt(&descriptor)
@@ -27009,14 +27731,12 @@ impl ArtifactV2Service {
             .filter(|value| !value.is_empty())
             .map(|value| format!("\n## Approved Plan Runtime Context\n{}\n", value))
             .unwrap_or_default();
-        let body = format!(
-            "# Runtime Context Seed\n\n## Task\n{}\n\n## Effective Goal\n{}\n\n## Description\n{}\n{}{}\
-\n> This seed is execution bookkeeping for runtime-context mode. It is not taskplan markdown. When approved plan context is present, the runtime prompt receives the same context as advisory execution guidance.\n",
-            manifest.title,
-            effective_goal,
-            manifest.description,
-            refinement_section,
-            runtime_plan_section
+        let body = render_runtime_context_seed(
+            &manifest.title,
+            &effective_goal,
+            &manifest.description,
+            &refinement_section,
+            &runtime_plan_section,
         );
         self.workspace
             .write_string_atomic_path(&full_path, &body)
@@ -29629,16 +30349,22 @@ impl ArtifactV2Service {
         } else {
             goal
         };
-        // A trusted project's coordinator gets the branch model, overriding the
-        // proposal guidance above (docs/archive/plans/2026-10-07-vibedev-trusted-repo-mode.md).
-        let goal = if coding_coordinator_run && !goal.contains(VIBEDEV_TRUSTED_POLICY_MARKER) {
-            let scope_root = self
-                .workspace
-                .scope_root(binding.scope.principal(), binding.scope.workspace());
-            match vibedev_trusted_project_policy(&scope_root, &manifest.description) {
-                Some(block) => format!("{}\n\n{}", goal.trim_end(), block),
-                None => goal,
-            }
+        // How this run's changes land — a staged proposal or commits on a
+        // branch — stated once, chosen by the mode its coding will actually use
+        // (`vibedev_run_trust_mode`, the dispatcher's own decision). Nothing
+        // above says it, so nothing contradicts it.
+        if coding_coordinator_run {
+            record_vibedev_change_delivery(self, binding, manifest).await;
+        }
+        let goal = if coding_coordinator_run {
+            goal_with_vibedev_change_delivery(
+                self,
+                &binding.scope,
+                &binding.execution.task_id,
+                manifest,
+                goal,
+            )
+            .await
         } else {
             goal
         };
@@ -29940,6 +30666,14 @@ impl ArtifactV2Service {
             &manifest.ui_thread_id,
             &manifest.tags,
         );
+        // A Discuss (plan) run, and every engineer it delegates to (they run
+        // on this task): read-only, enforced by `execution::plan_run_policy`.
+        overrides.plan_run = crate::magician_v2::artifact_v2::models::is_vibedev_plan_run(
+            &manifest.ui_thread_id,
+            &manifest.tags,
+        );
+        overrides.vibedev_autopilot =
+            crate::magician_v2::artifact_v2::models::is_vibedev_autopilot_run(&manifest.tags);
         if exact_sleep_retry_authorized {
             let generation = binding.exact_retry_generation.as_ref().ok_or_else(|| {
                 ArtifactV2Error::InvalidRequest(format!(
@@ -30769,6 +31503,8 @@ impl ArtifactV2Service {
         // Without it each pack call opened its own window and closed it at
         // the end, so a follow-up call started blind.
         browser_session_id_override: Option<String>,
+        // Name of that window's tab group: the conversation's title.
+        browser_tab_label: Option<String>,
         // Secrets the chat turn collected for this run (P3); vaulted at loop
         // entry, referenced from then on.
         seeded_sensitive_inputs: Vec<
@@ -30818,6 +31554,7 @@ impl ArtifactV2Service {
                 cancel_token,
                 accept_in_scope_enabled,
                 browser_session_id_override,
+                browser_tab_label,
                 seeded_sensitive_inputs,
                 alignment_owner_turn,
                 dispatch,
@@ -30846,6 +31583,7 @@ impl ArtifactV2Service {
         cancel_token: Option<tokio_util::sync::CancellationToken>,
         accept_in_scope_enabled: bool,
         browser_session_id_override: Option<String>,
+        browser_tab_label: Option<String>,
         seeded_sensitive_inputs: Vec<
             crate::magician_v2::execution::agentic::types::SeededSensitiveInput,
         >,
@@ -30924,6 +31662,7 @@ impl ArtifactV2Service {
             chat_inline: true,
             accept_in_scope_enabled,
             browser_session_id_override,
+            browser_tab_label,
             seeded_sensitive_inputs,
             alignment_owner_turn,
             // Iteration budget stays the default: a pre-decided run needs one
@@ -31132,6 +31871,23 @@ impl ArtifactV2Service {
             } else {
                 goal
             };
+            // …and the same change-delivery block, so a resumed run is still
+            // told how its changes land.
+            if coding_coordinator_run {
+                record_vibedev_change_delivery(self, binding, manifest).await;
+            }
+            let goal = if coding_coordinator_run {
+                goal_with_vibedev_change_delivery(
+                    self,
+                    &binding.scope,
+                    &binding.execution.task_id,
+                    manifest,
+                    goal,
+                )
+                .await
+            } else {
+                goal
+            };
             // Recurring Monitors Phase 2 — re-stamp the MONITOR_CONTEXT_V1 block
             // on the RESUME seam too (mirrors the VibeDev marker pattern: the
             // goal is recomposed from the manifest here, and the marker check
@@ -31226,6 +31982,12 @@ impl ArtifactV2Service {
                 &manifest.ui_thread_id,
                 &manifest.tags,
             );
+            overrides.plan_run = crate::magician_v2::artifact_v2::models::is_vibedev_plan_run(
+                &manifest.ui_thread_id,
+                &manifest.tags,
+            );
+            overrides.vibedev_autopilot =
+                crate::magician_v2::artifact_v2::models::is_vibedev_autopilot_run(&manifest.tags);
 
             let app_execution = self
                 .get_execution(
@@ -34086,12 +34848,22 @@ impl ArtifactV2Service {
             .filter(|output| output.role == "user_media")
             .cloned()
             .collect();
+        // Delivered files are kept for the same reason: a re-reduction must
+        // not drop the file the run named beside its answer.
+        let delivered_file_outputs = task
+            .refs
+            .outputs
+            .iter()
+            .filter(|output| output.role == DELIVERED_FILE_OUTPUT_ROLE)
+            .cloned()
+            .collect();
 
         Some(FinalizedOutputs {
             execution_output,
             task_user_output,
             continuation_context_output,
             media_outputs,
+            delivered_file_outputs,
             task_output_mode: task_output_mode.clone(),
         })
     }
@@ -35791,6 +36563,19 @@ impl ArtifactV2Service {
                             }
                         },
                     ));
+                } else if prepared_stateless_handoff.is_some()
+                    && runtime_parent.waiting_state == WaitingState::WaitingChildren
+                {
+                    // The orchestrator left the parent parked on purpose: a
+                    // child's code change still waits for the owner's review.
+                    // Answering the review reconciles the parent again; this
+                    // is not a failure to retry.
+                    info!(
+                        task_id = %task_id,
+                        parent_execution_id = %parent_execution_id,
+                        "parent stays parked for a child's open review"
+                    );
+                    return Ok(Some(false));
                 } else if prepared_stateless_handoff.is_some() {
                     return Err(ArtifactV2Error::Runtime(format!(
                         "stateless_children_handoff_prepared_without_runtime_resume:{parent_execution_id}"
@@ -38202,6 +38987,43 @@ impl ArtifactV2Service {
         Ok(Some((terminal, deliverable)))
     }
 
+    /// Whether a refinement successor segment committed a receipt-backed
+    /// ending of its own (a final terminal or a pause). Once it has, that
+    /// segment owns the run's settlement and the first pass's receipt only
+    /// publishes its events.
+    async fn refinement_successor_committed_receipt(
+        &self,
+        first_pass_key: &crate::magician_v2::execution::agentic::run_loop::store::ExecutionKey,
+        successor_segment: &str,
+    ) -> Result<bool, ArtifactV2Error> {
+        use crate::magician_v2::execution::agentic::run_loop::store::{
+            fs::FsLoopStateStore, ExecutionKey, LoopStateStore,
+        };
+
+        let key = ExecutionKey::new(
+            first_pass_key.principal(),
+            first_pass_key.workspace(),
+            successor_segment,
+        )
+        .map_err(|error| ArtifactV2Error::InvalidRequest(error.to_string()))?;
+        let store = FsLoopStateStore::new(self.workspace.base_root());
+        let Some(committed) = store
+            .load(&key)
+            .await
+            .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?
+        else {
+            return Ok(false);
+        };
+        Ok(committed
+            .state
+            .terminal_settlement_receipt
+            .as_ref()
+            .is_some_and(|receipt| {
+                receipt.descriptor.exact_segment_id == successor_segment
+                    && receipt.descriptor.terminal_seq == committed.state.journal_seq
+            }))
+    }
+
     /// Whether an exact stateless segment has a committed terminal receipt
     /// whose settlement/publication cursor is still below that receipt. Boot
     /// runtime recovery uses this as a barrier so it cannot redispatch a
@@ -39820,6 +40642,27 @@ impl ArtifactV2Service {
             );
             execution_output.clone()
         };
+        // Files the run wrote and named as delivered DO join the answer-ready
+        // transaction: the terminal chat card is built from this commit, so a
+        // file registered later (as media is) never reaches it. Only the
+        // execution that owns the task projection attaches them, and a
+        // cancelled run delivers nothing.
+        let delivered_file_outputs = if is_root_task_projection
+            && !matches!(outcome.execution_status.as_str(), "cancelled" | "canceled")
+        {
+            self.delivered_file_outputs_for_terminal(
+                binding,
+                outcome,
+                execution,
+                &task_user_output,
+                verified_terminal_projection
+                    .as_ref()
+                    .map(|projection| projection.content_sha256.as_ref()),
+            )
+            .await
+        } else {
+            Vec::new()
+        };
         Ok(FinalizedOutputs {
             execution_output,
             task_user_output,
@@ -39828,6 +40671,7 @@ impl ArtifactV2Service {
             // revision-keyed terminal auxiliary worker after reducer commit.
             continuation_context_output: None,
             media_outputs: Vec::new(),
+            delivered_file_outputs,
             task_output_mode: binding.task_output_mode.clone(),
         })
     }
@@ -40435,6 +41279,465 @@ impl ArtifactV2Service {
             });
         }
         Ok(refs)
+    }
+
+    /// The files a terminal root delivers beside its answer: every file the
+    /// root, or a child whose output it consumed, wrote and named as
+    /// delivered. Never fails finalization — a file that cannot be verified
+    /// is logged and left out, and the answer publishes regardless.
+    async fn delivered_file_outputs_for_terminal(
+        &self,
+        binding: &V3ExecutionBinding,
+        outcome: &ExecutionOutcomeSnapshot,
+        execution: &ExecutionRecord,
+        task_user_output: &OutputRef,
+        published_sha256: Option<&str>,
+    ) -> Vec<OutputRef> {
+        let task_id = binding.execution.task_id.as_str();
+        let root_execution_id = execution.state.execution_id.as_str();
+        let mut source_execution_ids = vec![root_execution_id.to_string()];
+        for child_execution_id in execution
+            .refs
+            .child_output_refs
+            .iter()
+            .filter_map(|output| output.source_execution_id.as_deref())
+        {
+            if !source_execution_ids
+                .iter()
+                .any(|id| id == child_execution_id)
+            {
+                source_execution_ids.push(child_execution_id.to_string());
+            }
+        }
+        let mut delivery_text = String::new();
+        for source_execution_id in &source_execution_ids {
+            let outcome_summary = (source_execution_id == root_execution_id)
+                .then_some(outcome.outcome_summary.as_str());
+            let text = self
+                .delivery_text_for_execution(
+                    &binding.scope,
+                    task_id,
+                    source_execution_id,
+                    outcome_summary,
+                )
+                .await;
+            if text.trim().is_empty() {
+                continue;
+            }
+            if !delivery_text.is_empty() {
+                delivery_text.push_str("\n\n");
+            }
+            delivery_text.push_str(&text);
+        }
+        if delivery_text.trim().is_empty() {
+            return Vec::new();
+        }
+        let now = now_rfc3339();
+        let mut refs = Vec::new();
+        for source_execution_id in &source_execution_ids {
+            if refs.len() >= MAX_DELIVERED_FILE_OUTPUTS {
+                break;
+            }
+            let collected = self
+                .collect_delivered_file_output_refs(
+                    &binding.scope,
+                    task_id,
+                    source_execution_id,
+                    &delivery_text,
+                    &task_user_output.output_id,
+                    published_sha256,
+                    &now,
+                )
+                .await;
+            let room = MAX_DELIVERED_FILE_OUTPUTS - refs.len();
+            refs.extend(collected.into_iter().take(room));
+        }
+        refs
+    }
+
+    /// What an execution said it delivered: its outcome summary, the verified
+    /// text of the deliverable and notes it filed, and the descriptions of
+    /// the micro-goals it completed. Best effort — an unreadable or
+    /// unverifiable source is left out.
+    async fn delivery_text_for_execution(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution_id: &str,
+        outcome_summary: Option<&str>,
+    ) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(summary) = outcome_summary.filter(|summary| !summary.trim().is_empty()) {
+            parts.push(summary.to_string());
+        }
+        let store = FilesystemExecutionArtifactIndexStore::new(self.workspace.clone());
+        let records = match store.list_artifacts(scope, task_id, execution_id).await {
+            Ok(records) => records,
+            Err(error) => {
+                warn!(
+                    %task_id,
+                    %execution_id,
+                    %error,
+                    "[DELIVERED-FILES] could not read the execution artifact index"
+                );
+                Vec::new()
+            },
+        };
+        let execution_outputs_dir = self.workspace.execution_outputs_dir(
+            &scope.principal(),
+            &scope.workspace(),
+            task_id,
+            execution_id,
+        );
+        let mut canonical_execution_outputs_dir = None;
+        for record in &records {
+            if !matches!(
+                record.artifact_type.as_str(),
+                "task_deliverable" | "partial_findings" | "summary_note"
+            ) || record.source_execution_id.as_deref() != Some(execution_id)
+                || !record
+                    .payload
+                    .get("content_sha256")
+                    .and_then(Value::as_str)
+                    .is_some_and(|digest| digest.len() == 64)
+            {
+                continue;
+            }
+            let Some(path) = [
+                "execution_absolute_path",
+                "absolute_path",
+                "task_absolute_path",
+                "export_path",
+            ]
+            .iter()
+            .find_map(|key| record.payload.get(*key).and_then(Value::as_str)) else {
+                continue;
+            };
+            let canonical_dir = match canonical_execution_outputs_dir.as_ref() {
+                Some(dir) => dir,
+                None => match self
+                    .workspace
+                    .canonicalize_path(&execution_outputs_dir)
+                    .await
+                {
+                    Ok(dir) => &*canonical_execution_outputs_dir.insert(dir),
+                    Err(_) => break,
+                },
+            };
+            let Ok(canonical_path) = self.workspace.canonicalize_path(path).await else {
+                continue;
+            };
+            if !canonical_path.starts_with(canonical_dir) {
+                continue;
+            }
+            let Ok(Some(inspection)) =
+                inspect_verified_terminal_artifact_file(record, &canonical_path).await
+            else {
+                continue;
+            };
+            if let Some(text) = inspection.text_preview {
+                parts.push(text);
+            }
+        }
+        parts.extend(
+            self.completed_micro_goal_descriptions(scope, task_id, execution_id)
+                .await,
+        );
+        parts.join("\n\n")
+    }
+
+    /// Descriptions of the micro-goals the durable task state marks
+    /// completed, when this execution wrote that state last — the same
+    /// ownership rule synthesis applies to the state. Anything else yields
+    /// none.
+    async fn completed_micro_goal_descriptions(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution_id: &str,
+    ) -> Vec<String> {
+        use crate::magician_v2::artifacts::durable_store::{split_frontmatter, DurableFrontmatter};
+        if task_id.is_empty() || task_id.contains(['/', '\\']) || task_id.contains("..") {
+            return Vec::new();
+        }
+        let path = self
+            .workspace
+            .durable_artifacts_root(&scope.principal(), &scope.workspace())
+            .join("task_state")
+            .join(format!("{task_id}.json"));
+        match fs::metadata(&path).await {
+            Ok(meta) if meta.is_file() && meta.len() <= MAX_DELIVERY_TASK_STATE_BYTES => {},
+            _ => return Vec::new(),
+        }
+        let Ok(content) = fs::read_to_string(&path).await else {
+            return Vec::new();
+        };
+        let Some((frontmatter, body)) = split_frontmatter(&content) else {
+            return Vec::new();
+        };
+        let Ok(frontmatter) = serde_yaml::from_str::<DurableFrontmatter>(&frontmatter) else {
+            return Vec::new();
+        };
+        if frontmatter.source_execution_id.as_deref() != Some(execution_id) {
+            return Vec::new();
+        }
+        let Ok(state) = serde_json::from_str::<Value>(&body) else {
+            return Vec::new();
+        };
+        state
+            .get("micro_goals")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|goal| goal.get("status").and_then(Value::as_str) == Some("completed"))
+            .filter_map(|goal| goal.get("description").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// User-audience OutputRefs for the files this execution wrote (its
+    /// `tool_output_file` captures) whose name `delivery_text` says. Each is
+    /// copied, digest-checked, to `outputs/delivered/<execution>/<name>` so
+    /// the owner sees it under its original file name. Only the newest write
+    /// of a name counts; media is left to `user_media`; the run's own notes
+    /// and bytes already published as the answer are not attached again.
+    /// Never errors: a file that fails a check is logged and skipped.
+    #[allow(clippy::too_many_arguments)]
+    async fn collect_delivered_file_output_refs(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution_id: &str,
+        delivery_text: &str,
+        primary_output_id: &str,
+        published_sha256: Option<&str>,
+        now: &str,
+    ) -> Vec<OutputRef> {
+        let store = FilesystemExecutionArtifactIndexStore::new(self.workspace.clone());
+        let records = match store.list_artifacts(scope, task_id, execution_id).await {
+            Ok(records) => records,
+            Err(error) => {
+                warn!(
+                    %task_id,
+                    %execution_id,
+                    %error,
+                    "[DELIVERED-FILES] could not read the execution artifact index"
+                );
+                return Vec::new();
+            },
+        };
+        let delivery_text = delivery_text.to_lowercase();
+        let execution_outputs_dir = self.workspace.execution_outputs_dir(
+            &scope.principal(),
+            &scope.workspace(),
+            task_id,
+            execution_id,
+        );
+        let delivered_dir = self
+            .workspace
+            .task_outputs_dir(&scope.principal(), &scope.workspace(), task_id)
+            .join("delivered")
+            .join(execution_id);
+        let mut canonical_execution_outputs_dir = None;
+        let mut seen_names = HashSet::new();
+        let mut refs = Vec::new();
+        // `list_artifacts` is oldest-first; a rewritten file delivers its
+        // newest bytes.
+        for record in records.iter().rev() {
+            if refs.len() >= MAX_DELIVERED_FILE_OUTPUTS {
+                break;
+            }
+            if record.artifact_type != "tool_output_file"
+                || record.payload.get("artifact_kind").and_then(Value::as_str)
+                    != Some("tool_output_file")
+            {
+                continue;
+            }
+            // The same producer binding `collect_media_output_refs` requires:
+            // a local capture names this execution and task in its payload;
+            // a copied record keeps its explicit source.
+            let origin_matches = match record.source_execution_id.as_deref() {
+                Some(source) => source == execution_id,
+                None => {
+                    record.source_artifact_id.is_none()
+                        && record.payload.get("execution_id").and_then(Value::as_str)
+                            == Some(execution_id)
+                        && record.payload.get("task_id").and_then(Value::as_str) == Some(task_id)
+                },
+            };
+            if !origin_matches {
+                continue;
+            }
+            let Some(display_name) = record
+                .payload
+                .get("display_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            else {
+                continue;
+            };
+            if !seen_names.insert(display_name.to_lowercase()) {
+                continue;
+            }
+            let Some(file_name) = delivered_file_name(display_name) else {
+                continue;
+            };
+            if matches!(
+                file_name.to_ascii_lowercase().as_str(),
+                "partial_findings.md" | "task_deliverable.md"
+            ) {
+                continue;
+            }
+            let media_type = record
+                .payload
+                .get("content_type")
+                .and_then(Value::as_str)
+                .map(base_media_type)
+                .filter(|media_type| !media_type.is_empty())
+                .unwrap_or("application/octet-stream");
+            if media_type.starts_with("image/")
+                || media_type.starts_with("video/")
+                || media_type.starts_with("audio/")
+            {
+                continue;
+            }
+            if !file_named_in_text(&delivery_text, display_name) {
+                continue;
+            }
+            let Some(expected_sha256) = record
+                .payload
+                .get("content_sha256")
+                .and_then(Value::as_str)
+                .filter(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            else {
+                warn!(
+                    %task_id,
+                    %execution_id,
+                    artifact_id = %record.artifact_id,
+                    "[DELIVERED-FILES] named file has no content digest; not attached"
+                );
+                continue;
+            };
+            // Bytes already published as the answer are not attached twice.
+            if published_sha256
+                .is_some_and(|published| published.eq_ignore_ascii_case(expected_sha256))
+            {
+                continue;
+            }
+            let Some(source_path) = record
+                .payload
+                .get("execution_absolute_path")
+                .and_then(Value::as_str)
+            else {
+                warn!(
+                    %task_id,
+                    %execution_id,
+                    artifact_id = %record.artifact_id,
+                    "[DELIVERED-FILES] named file has no execution path; not attached"
+                );
+                continue;
+            };
+            let canonical_dir = match canonical_execution_outputs_dir.as_ref() {
+                Some(dir) => dir,
+                None => match self
+                    .workspace
+                    .canonicalize_path(&execution_outputs_dir)
+                    .await
+                {
+                    Ok(dir) => &*canonical_execution_outputs_dir.insert(dir),
+                    Err(error) => {
+                        warn!(
+                            %task_id,
+                            %execution_id,
+                            %error,
+                            "[DELIVERED-FILES] execution outputs dir is unreadable"
+                        );
+                        break;
+                    },
+                },
+            };
+            let canonical_source = match self.workspace.canonicalize_path(source_path).await {
+                Ok(path) => path,
+                Err(error) => {
+                    warn!(
+                        %task_id,
+                        %execution_id,
+                        artifact_id = %record.artifact_id,
+                        %error,
+                        "[DELIVERED-FILES] named file is unreadable; not attached"
+                    );
+                    continue;
+                },
+            };
+            if !canonical_source.starts_with(canonical_dir) {
+                warn!(
+                    %task_id,
+                    %execution_id,
+                    artifact_id = %record.artifact_id,
+                    "[DELIVERED-FILES] named file lies outside the execution outputs; not attached"
+                );
+                continue;
+            }
+            // The bytes on disk must be the bytes the run indexed; the copy
+            // below is digest-checked too, but this one does not depend on
+            // the file provider.
+            match delivered_file_sha256(&canonical_source).await {
+                Ok(actual) if actual.eq_ignore_ascii_case(expected_sha256) => {},
+                Ok(_) => {
+                    warn!(
+                        %task_id,
+                        %execution_id,
+                        artifact_id = %record.artifact_id,
+                        "[DELIVERED-FILES] named file no longer matches its digest; not attached"
+                    );
+                    continue;
+                },
+                Err(error) => {
+                    warn!(
+                        %task_id,
+                        %execution_id,
+                        artifact_id = %record.artifact_id,
+                        %error,
+                        "[DELIVERED-FILES] named file could not be hashed; not attached"
+                    );
+                    continue;
+                },
+            }
+            if let Err(error) = self
+                .workspace
+                .copy_workspace_file_verified_atomic_path(
+                    &canonical_source,
+                    delivered_dir.join(&file_name),
+                    expected_sha256,
+                )
+                .await
+            {
+                warn!(
+                    %task_id,
+                    %execution_id,
+                    artifact_id = %record.artifact_id,
+                    %error,
+                    "[DELIVERED-FILES] verified copy failed; not attached"
+                );
+                continue;
+            }
+            refs.push(OutputRef {
+                output_id: format!("out_task_user_attachment:{}", record.artifact_id),
+                scope: "task".to_string(),
+                audience: "user".to_string(),
+                role: DELIVERED_FILE_OUTPUT_ROLE.to_string(),
+                relative_path: format!("outputs/delivered/{execution_id}/{file_name}"),
+                media_type: media_type.to_string(),
+                created_at: now.to_string(),
+                source_execution_id: Some(execution_id.to_string()),
+                source_plan_id: None,
+                source_output_ids: vec![primary_output_id.to_string()],
+            });
+        }
+        refs
     }
 }
 
@@ -41148,7 +42451,14 @@ impl ArtifactV2Service {
             Some(&pending_proposal_ids),
         );
         reconcile_task_plan_attention(&mut attention, &task, latest_plan.as_ref());
+        surface_pending_diff_reviews(
+            &mut attention,
+            &task,
+            &projection_nodes,
+            pending_proposals.unclaimed_reviews_for_task(task_id),
+        );
         drop_stalled_waits_with_an_ask(&mut attention);
+        drop_stalled_waits_with_a_descendant_ask(&mut attention, &projection_nodes);
 
         Ok(V3ProgressProjectionRecord {
             source_updated_at: recent_events_by_execution
@@ -41834,7 +43144,39 @@ impl ArtifactV2Service {
         })
     }
 
+    /// Project the execution's runtime schedule snapshot. The reducer refuses
+    /// the write when the execution moved after `execution` was read (another
+    /// run delegating, a status update); that conflict is retried here from a
+    /// fresh read of the execution, so no caller — delegation dispatch,
+    /// parent reconciliation, the readiness API — sees a transient race as a
+    /// failure. The snapshot write is a whole-file replace, so repeating it is
+    /// idempotent.
     async fn sync_execution_schedule_snapshot(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution: &ExecutionRecord,
+    ) -> Result<ExecutionScheduleRecord, ArtifactV2Error> {
+        retry_optimistic_conflict(
+            "execution schedule snapshot",
+            OPTIMISTIC_CONFLICT_MAX_ATTEMPTS,
+            move |attempt| async move {
+                if attempt == 1 {
+                    return self
+                        .sync_execution_schedule_snapshot_once(scope, task_id, execution)
+                        .await;
+                }
+                let fresh = self
+                    .get_execution(scope, task_id, &execution.state.execution_id)
+                    .await?;
+                self.sync_execution_schedule_snapshot_once(scope, task_id, &fresh)
+                    .await
+            },
+        )
+        .await
+    }
+
+    async fn sync_execution_schedule_snapshot_once(
         &self,
         scope: &ScopeRef,
         task_id: &str,
@@ -44422,6 +45764,55 @@ fn reject_generic_app_workflow_lifecycle(task_id: &str) -> Result<(), ArtifactV2
     Ok(())
 }
 
+/// How long an archive/delete waits for a run that already ended to finish
+/// settling (output synthesis, active-root clear) before answering
+/// `task_active`. Synthesis normally takes ~15 s.
+#[cfg(not(test))]
+const ARCHIVE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const ARCHIVE_SETTLE_TIMEOUT: Duration = Duration::from_millis(1_500);
+const ARCHIVE_SETTLE_POLL: Duration = Duration::from_millis(250);
+
+/// What keeps a task from being archived, judged from its record alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveBlocker {
+    /// Nothing in the record blocks archiving.
+    Clear,
+    /// The run ended; its output synthesis is still writing into the task.
+    SynthesisPending,
+    /// The run ended but the task still names an active root. The terminal
+    /// path clears it after synthesis, and the guarded archive drops a stale
+    /// one whose execution already ended.
+    ActiveRoot,
+    /// The task is live (or not terminal while holding execution refs):
+    /// archiving must not wait for it.
+    Active,
+}
+
+fn archive_blocker(
+    status: &str,
+    has_active_root: bool,
+    has_synthesis_pending: bool,
+) -> ArchiveBlocker {
+    if matches!(
+        status,
+        "running" | "planning" | "paused" | "waiting_for_user"
+    ) {
+        return ArchiveBlocker::Active;
+    }
+    if !has_active_root && !has_synthesis_pending {
+        return ArchiveBlocker::Clear;
+    }
+    if !matches!(status, "completed" | "failed" | "cancelled") {
+        return ArchiveBlocker::Active;
+    }
+    if has_synthesis_pending {
+        ArchiveBlocker::SynthesisPending
+    } else {
+        ArchiveBlocker::ActiveRoot
+    }
+}
+
 fn task_manifest_matches_create_input(manifest: &TaskManifest, input: &CreateTaskInput) -> bool {
     manifest.principal == input.principal
         && manifest.workspace == input.workspace
@@ -45318,6 +46709,29 @@ pub fn build_attention_summaries(
                 let latest = confirmations
                     .last()
                     .expect("non-empty waiting for confirmation group");
+                // Since H7.4 the confirmation's HITL payload (prompt, and the
+                // `input_schema` with the raw call and any approval preview)
+                // rides the canonical `hitl.requested` announced right after
+                // the status marker; the marker itself carries neither.
+                // Only a confirmation with an approval preview is re-worded
+                // from it; every other card keeps its generic text.
+                let canonical = recent_events.iter().rev().find(|event| {
+                    event.seq >= latest.seq
+                        && event.event_type == ArtifactV2EventType::HitlRequested.as_str()
+                        && event.payload.get("source").and_then(Value::as_str) == Some("agentic")
+                        && event.payload.get("input_type").and_then(Value::as_str)
+                            == Some("confirmation")
+                        && event
+                            .payload
+                            .pointer("/input_schema/approval_preview")
+                            .is_some_and(Value::is_object)
+                });
+                let canonical_prompt = canonical
+                    .and_then(|event| event.payload.get("prompt"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned);
                 let detail = latest
                     .payload
                     .get("action_summary")
@@ -45333,7 +46747,8 @@ pub fn build_attention_summaries(
                             .map(str::trim)
                             .filter(|value| !value.is_empty())
                             .map(ToOwned::to_owned)
-                    });
+                    })
+                    .or_else(|| canonical_prompt.clone());
                 grouped.push(V3AttentionSummary {
                     delegated_agent_id: None,
                     attention_id: format!(
@@ -45352,6 +46767,7 @@ pub fn build_attention_summaries(
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(|value| vec![value.to_string()])
+                        .or_else(|| canonical_prompt.map(|value| vec![value]))
                         .unwrap_or_default(),
                     item_count: confirmations.len(),
                     updated_at: latest.timestamp.clone(),
@@ -45359,7 +46775,9 @@ pub fn build_attention_summaries(
                     input_type: None,
                     hint: None,
                     options: None,
-                    input_schema: None,
+                    input_schema: canonical.and_then(|event| {
+                        extract_payload_json_value(&event.payload, "input_schema")
+                    }),
                     source: None,
                 });
             }
@@ -45809,6 +47227,112 @@ fn drop_stalled_waits_with_an_ask(attention: &mut Vec<V3AttentionSummary>) {
     attention.retain(|item| {
         item.attention_kind != WAITING_WITHOUT_QUESTION_KIND
             || (!plan_asked && !asked.contains(&item.execution_id))
+    });
+}
+
+/// Answer a pending diff review from the authoritative proposal store when
+/// the run that staged it waits on the user but its `hitl.requested` never
+/// reached its events (a run restarted without its canonical event scope
+/// journals its asks transport-only). Without this the run showed only a
+/// `waiting_without_question` escalation while VibeDev listed the review.
+///
+/// `reviews` is `(proposal id, staging execution id)` for the task's
+/// pending, unclaimed proposals. One item per proposal: a review already
+/// carried by an event-built group (same correlation id) is left alone. The
+/// item is the same `input.requested` / `diff_approval` group the event path
+/// builds, so its feed row carries the open target and respond handle.
+fn surface_pending_diff_reviews(
+    attention: &mut Vec<V3AttentionSummary>,
+    task: &TaskRecord,
+    projection_nodes: &[ExecutionTreeNode],
+    reviews: &[(String, String)],
+) {
+    for (proposal_id, execution_id) in reviews {
+        if attention
+            .iter()
+            .any(|item| item.pause_state_id.as_deref() == Some(proposal_id.as_str()))
+        {
+            continue;
+        }
+        let Some(node) = projection_nodes
+            .iter()
+            .find(|node| &node.execution_id == execution_id)
+        else {
+            continue;
+        };
+        if node.status != "waiting_for_user" {
+            continue;
+        }
+        let prompt = "Review the file changes before they are applied.".to_string();
+        attention.push(V3AttentionSummary {
+            delegated_agent_id: node
+                .parent_execution_id
+                .is_some()
+                .then(|| node.agent_id.clone()),
+            attention_id: format!(
+                "attention:diff_review:{}:{}:{}",
+                task.manifest.task_id, node.execution_id, proposal_id
+            ),
+            attention_kind: "input.requested".to_string(),
+            task_id: task.manifest.task_id.clone(),
+            execution_id: node.execution_id.clone(),
+            summary: "1 pending input request(s).".to_string(),
+            detail: Some(prompt.clone()),
+            entries: vec![prompt],
+            item_count: 1,
+            updated_at: node.updated_at.clone(),
+            pause_state_id: Some(proposal_id.clone()),
+            input_type: Some("diff_approval".to_string()),
+            hint: None,
+            options: None,
+            input_schema: Some(json!({
+                "type": "diff_approval",
+                "proposal_id": proposal_id,
+                "options": [
+                    {"id": "apply", "label": "Apply"},
+                    {"id": "reject", "label": "Reject"}
+                ]
+            })),
+            source: Some("diff_approval".to_string()),
+        });
+    }
+}
+
+/// A stalled wait also yields to an ask of any descendant execution: a parent
+/// whose delegated child awaits a review is waiting on that review, not on
+/// "no question". Keeps one item — the descendant's ask.
+fn drop_stalled_waits_with_a_descendant_ask(
+    attention: &mut Vec<V3AttentionSummary>,
+    projection_nodes: &[ExecutionTreeNode],
+) {
+    let parent_of: HashMap<&str, &str> = projection_nodes
+        .iter()
+        .filter_map(|node| {
+            node.parent_execution_id
+                .as_deref()
+                .map(|parent| (node.execution_id.as_str(), parent))
+        })
+        .collect();
+    let mut covered: HashSet<String> = HashSet::new();
+    for item in attention
+        .iter()
+        .filter(|item| attention_kind_is_an_ask(&item.attention_kind))
+    {
+        let mut current = item.execution_id.as_str();
+        // Bounded: a corrupt parent cycle cannot loop.
+        for _ in 0..projection_nodes.len() {
+            let Some(parent) = parent_of.get(current) else {
+                break;
+            };
+            if !covered.insert((*parent).to_string()) {
+                break;
+            }
+            current = *parent;
+        }
+    }
+    attention.retain(|item| {
+        item.attention_kind != WAITING_WITHOUT_QUESTION_KIND
+            || !covered.contains(&item.execution_id)
     });
 }
 
@@ -46319,7 +47843,8 @@ pub fn build_attention_feed_item(
         detail.or_else(|| Some(attention.summary.clone()))
     };
     let summary = summary.map(|s| truncate_summary_to_two_lines(&s));
-    let hitl_request = build_attention_hitl_open_target(task, attention);
+    let hitl_request =
+        build_attention_hitl_open_target(task, attention).map(HitlOpenTarget::with_respond_handle);
     let updated_at_ms = parse_rfc3339_millis_value(&attention.updated_at);
     let mut metadata = json!({
         "storage_backend": "v3",
@@ -46468,6 +47993,7 @@ fn build_attention_hitl_open_target(
             thread_id: Some(task.ui_thread_id.clone()),
         },
         at: Some(parse_rfc3339_millis_value(&attention.updated_at)),
+        respond: None,
     })
 }
 
@@ -48493,6 +50019,13 @@ fn unreviewable_deliverable_document(
         OutputBody::Text(text) => text.clone(),
         OutputBody::Json(value) => value.to_string(),
     };
+    // A preview is a prefix that may end mid-tag: give an HTML one as its
+    // text, not as markup under a markdown caveat.
+    let preview = if base_media_type(&document.media_type) == "text/html" {
+        crate::magician_v2::artifact_v2::synthesis::html_answer_readable_text(&preview)
+    } else {
+        preview
+    };
     let link = format!(
         "/api/magician/v3/tasks/{}/outputs/{}",
         ctx.execution.task_id, ctx.execution_output.relative_path
@@ -48543,6 +50076,12 @@ async fn verified_projection_review_document(
         }
         complete = false;
     }
+    if !complete && matches!(&document.body, OutputBody::File { .. }) {
+        // Retain the immutable-file identity when only a prefix is available.
+        // Its preview can support factual checks, never a whole-answer omission
+        // verdict. Converting it to prose would falsely label that prefix complete.
+        return (document.clone(), false);
+    }
     (
         OutputDocument {
             media_type: document.media_type.clone(),
@@ -48552,6 +50091,39 @@ async fn verified_projection_review_document(
     )
 }
 
+#[cfg(test)]
+mod projection_review_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_incomplete_file_preview_is_not_a_complete_prose_candidate() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = ArtifactV2Workspace::new(directory.path());
+        let path = directory.path().join("unavailable-deliverable.html");
+        let document = OutputDocument {
+            media_type: "text/html".into(),
+            body: OutputBody::File {
+                source_path: Arc::new(path.clone()),
+                expected_sha256: Arc::from("0".repeat(64)),
+                text_preview: Some(Arc::from("Partial report prefix")),
+            },
+        };
+        let (review, complete) =
+            verified_projection_review_document(&workspace, &path, &document).await;
+        assert!(!complete);
+        let OutputBody::File {
+            source_path,
+            text_preview,
+            ..
+        } = review.body
+        else {
+            panic!("a preview must retain its incomplete-file identity");
+        };
+        assert_eq!(source_path.as_ref(), &path);
+        assert_eq!(text_preview.as_deref(), Some("Partial report prefix"));
+    }
+}
+
 /// Drop any spoken line that states a figure the published answer does not:
 /// speech is authored separately from the checked document.
 fn speech_checked_against(
@@ -48559,13 +50131,38 @@ fn speech_checked_against(
     speech: Option<VoiceSpeechSummary>,
 ) -> Option<VoiceSpeechSummary> {
     let speech = speech?;
+    let source = match &document.body {
+        OutputBody::Text(text) => Some(text.as_str()),
+        OutputBody::File { text_preview, .. } => text_preview.as_deref(),
+        OutputBody::Json(_) => None,
+    };
+    let uncaveated =
+        source.map(crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat);
+    let caveated = source
+        .zip(uncaveated.as_deref())
+        .is_some_and(|(source, body)| source.len() != body.len());
+    // A critic may quote an unsupported figure in its diagnostic. That quote
+    // cannot prove a separately authored spoken claim.
+    let check_document = caveated.then(|| OutputDocument {
+        media_type: document.media_type.clone(),
+        body: OutputBody::Text(uncaveated.as_deref().unwrap_or("").to_string()),
+    });
+    let check_document = check_document.as_ref().unwrap_or(document);
+    let check_line = |line: String| {
+        let body = crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat(&line);
+        let body = body.trim();
+        if body.is_empty() || !speech_figures_in_document(body, check_document) {
+            return None;
+        }
+        Some(if caveated {
+            qualified_voice_summary(body)
+        } else {
+            body.to_string()
+        })
+    };
     let checked = VoiceSpeechSummary {
-        live: speech
-            .live
-            .filter(|line| speech_figures_in_document(line, document)),
-        tts: speech
-            .tts
-            .filter(|line| speech_figures_in_document(line, document)),
+        live: speech.live.and_then(check_line),
+        tts: speech.tts.and_then(check_line),
     };
     (!checked.is_empty()).then_some(checked)
 }
@@ -48733,14 +50330,21 @@ fn compose_outcome_statement_with_verified_deliverable(
         return None;
     }
     let deliverable = text_preview?.trim();
+    // A page is published as the page: prose wrapped around an HTML document
+    // stops it rendering as one, and the run summary already carries it.
+    if is_html_document_deliverable(deliverable) {
+        return None;
+    }
     let statement = outcome_summary.trim();
     // The answer first, the deliverable after, then every note the agent
     // filed elsewhere that says something the composition does not yet say.
+    // Either side may already contain the other (a harness yield's summary is
+    // its deliverable plus narration); neither is repeated.
     let mut parts: Vec<&str> = Vec::new();
-    if !statement.is_empty() && !deliverable.contains(statement) {
+    if !statement.is_empty() && !carries_words(deliverable, statement) {
         parts.push(statement);
     }
-    if !deliverable.is_empty() {
+    if !deliverable.is_empty() && !(parts.len() == 1 && carries_words(statement, deliverable)) {
         parts.push(deliverable);
     }
     let mut composed = parts.join("\n\n");
@@ -48763,9 +50367,214 @@ fn compose_outcome_statement_with_verified_deliverable(
     }
     Some(composed)
 }
+
+/// Whether `text` already says `part` as whole words: an occurrence not
+/// glued to a letter or digit on either side. A bare substring is not
+/// enough: an answer of `12` is not said by "Checked 120 rows", while
+/// "**Answer:** 1987" does say `1987`.
+fn carries_words(text: &str, part: &str) -> bool {
+    !part.is_empty()
+        && text.match_indices(part).any(|(start, _)| {
+            let end = start + part.len();
+            !text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric)
+                && !text[end..]
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_alphanumeric)
+        })
+}
+
+/// At most this many delivered files attach to one terminal answer.
+const MAX_DELIVERED_FILE_OUTPUTS: usize = 8;
+/// The ceiling synthesis applies to the durable task state it reads.
+const MAX_DELIVERY_TASK_STATE_BYTES: u64 = 1024 * 1024;
+
+/// Whether `text_lower` (already lowercased) names the file `display_name`
+/// as a whole token, ignoring case. The character before must not continue a
+/// name — a letter, digit, `_` or `-` — so `final_report.md` does not name
+/// `report.md` while `outputs/report.md` does. Nor may the character after;
+/// a `.` continues the name only when a letter or digit follows it, so a
+/// sentence-ending `report.md.` names the file and `report.md.bak` does not.
+fn file_named_in_text(text_lower: &str, display_name: &str) -> bool {
+    let name = display_name.trim().to_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    let continues_name = |ch: char| ch.is_alphanumeric() || matches!(ch, '_' | '-');
+    text_lower.match_indices(name.as_str()).any(|(start, _)| {
+        let end = start + name.len();
+        if text_lower[..start]
+            .chars()
+            .next_back()
+            .is_some_and(continues_name)
+        {
+            return false;
+        }
+        let mut after = text_lower[end..].chars();
+        match after.next() {
+            None => true,
+            Some('.') => !after.next().is_some_and(char::is_alphanumeric),
+            Some(ch) => !continues_name(ch),
+        }
+    })
+}
+
+/// SHA-256 of a delivered file's bytes, streamed off the async runtime.
+async fn delivered_file_sha256(path: &std::path::Path) -> std::io::Result<String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+/// `display_name` as a plain file name to publish a delivered file under:
+/// its last path segment, control characters replaced, leading dots
+/// dropped. `None` when nothing usable is left.
+fn delivered_file_name(display_name: &str) -> Option<String> {
+    let last_segment = display_name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let name: String = last_segment
+        .chars()
+        .map(|ch| if ch.is_control() { '_' } else { ch })
+        .collect();
+    let name = name.trim().trim_start_matches('.').trim_start();
+    (!name.is_empty() && name.len() <= 255).then(|| name.to_string())
+}
+
+/// A deliverable that is a whole HTML page, bare or as one fenced block.
+fn is_html_document_deliverable(deliverable: &str) -> bool {
+    let body = deliverable
+        .strip_prefix("```html")
+        .and_then(|rest| rest.trim_end().strip_suffix("```"))
+        .unwrap_or(deliverable)
+        .trim_start();
+    let head = body.get(..14).unwrap_or(body).to_ascii_lowercase();
+    head.starts_with("<!doctype html") || head.starts_with("<html")
+}
+impl FilesystemExecutionFinalizer {
+    /// A completed run's own answer, when it yielded one: the summary and
+    /// open items of its `partial_findings` note, as
+    /// `render_yield_partial_findings` wrote them. Anything else — a full
+    /// completion, the `cannot_proceed` safety net, an unreadable note —
+    /// leaves the execution output to synthesis.
+    async fn agent_answer_document(
+        &self,
+        ctx: &ExecutionFinalizeContext,
+    ) -> Option<OutputDocument> {
+        if ctx.execution_status != "completed" {
+            return None;
+        }
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &ctx.execution.principal,
+            &ctx.execution.workspace,
+        );
+        let records = FilesystemExecutionArtifactIndexStore::new(self.workspace.clone())
+            .list_artifacts(&scope, &ctx.execution.task_id, &ctx.execution.execution_id)
+            .await
+            .ok()?;
+        let note = records.iter().rev().find(|record| {
+            record.artifact_type == "partial_findings"
+                && record.artifact_id.starts_with("terminal_decision:")
+        })?;
+        let relative = note
+            .payload
+            .get("execution_relative_path")
+            .and_then(Value::as_str)?;
+        if !Path::new(relative)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        let path = ctx.execution_dir.join(relative);
+        let body = read_legacy_projection_text_bounded(&self.workspace, &path)
+            .await
+            .ok()?;
+        let answer = crate::magician_v2::execution::agentic::yield_partial_findings_answer(&body)?;
+        Some(OutputDocument {
+            media_type: "text/markdown".to_string(),
+            body: OutputBody::Text(answer),
+        })
+    }
+}
+
+/// The step of writing a finished run's final answer that is under way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerProgress {
+    Writing,
+    Checking,
+    Revising,
+}
+
+impl AnswerProgress {
+    fn phase(self) -> &'static str {
+        match self {
+            Self::Writing => "writing",
+            Self::Checking => "checking",
+            Self::Revising => "revising",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Writing => "Writing the final answer…",
+            Self::Checking => "Checking the answer against the evidence…",
+            Self::Revising => "Revising claims the evidence does not support…",
+        }
+    }
+}
+
+/// Tells live clients which step of the final answer is under way
+/// (`task.answer_progress`). The run's own events have all ended by now, so
+/// without this the card looks finished until the answer lands.
+fn emit_answer_progress(
+    dependencies: &SynthesisDependencies,
+    execution: &ExecutionContext,
+    agent_id: &str,
+    progress: AnswerProgress,
+) {
+    let Some(broadcaster) = dependencies.event_broadcaster.as_ref() else {
+        return;
+    };
+    broadcaster.emit_named(
+        crate::magician_v2::realtime_events::RuntimeAgentEventType::TaskAnswerProgress.as_str(),
+        agent_id,
+        Some(&execution.principal),
+        Some(&execution.workspace),
+        json!({
+            "task_id": execution.task_id,
+            "execution_id": execution.execution_id,
+            "phase": progress.phase(),
+            "label": progress.label(),
+        }),
+    );
+}
+
 #[async_trait]
 impl ExecutionFinalizer for FilesystemExecutionFinalizer {
     async fn finalize(&self, ctx: &ExecutionFinalizeContext) -> Result<OutputRef, ArtifactV2Error> {
+        emit_answer_progress(
+            &self.synthesis_dependencies,
+            &ctx.execution,
+            &ctx.manifest.agent_id,
+            AnswerProgress::Writing,
+        );
         let output_id = format!("out_exec_{}", ctx.execution.execution_id);
         let (document, allowed_media_types) = if let Some(projection) =
             ctx.verified_terminal_projection.as_ref()
@@ -48807,6 +50616,26 @@ impl ExecutionFinalizer for FilesystemExecutionFinalizer {
                 },
                 allowed_media_types,
             )
+        } else if let Some(answer) = self.agent_answer_document(ctx).await {
+            // The run yielded its own answer: publish it rather than have a
+            // model rewrite it from a budgeted view of the evidence (which
+            // dropped a partial run's established totals). The task-user
+            // grounding boundary checks every claim in it all the same.
+            let mut allowed_media_types = Vec::new();
+            let mut preferred_media_type = None;
+            apply_allowed_media_types(
+                OutputClass::ExecutionAgent,
+                &self.output_writer_registry,
+                self.output_formats_policy.as_ref(),
+                &mut allowed_media_types,
+                &mut preferred_media_type,
+            )?;
+            info!(
+                task_id = %ctx.execution.task_id,
+                execution_id = %ctx.execution.execution_id,
+                "[ARTIFACT-V2] Publishing the run's own yielded answer without execution synthesis"
+            );
+            (answer, allowed_media_types)
         } else {
             let mut bundle = self
                 .bundle_builder
@@ -48876,7 +50705,7 @@ async fn grounded_task_user_fallback(
         if let Some(predecessor) = task_user_predecessor_fallback_document(bundle) {
             let check = verify_task_user_answer(dependencies, bundle, &predecessor).await;
             if check.faithful {
-                return Some(check.publishable);
+                return Some(check.delivery_annotated_document());
             }
             warn!(
                 execution_id = %bundle.execution_state.execution_id,
@@ -48943,13 +50772,26 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
             &mut bundle.allowed_media_types,
             &mut bundle.preferred_media_type,
         )?;
+        emit_answer_progress(
+            &self.synthesis_dependencies,
+            &ctx.execution,
+            &ctx.manifest.agent_id,
+            AnswerProgress::Writing,
+        );
         let (mut document, mut voice_speech) = self.synthesizer.synthesize(&bundle).await?;
+        emit_answer_progress(
+            &self.synthesis_dependencies,
+            &ctx.execution,
+            &ctx.manifest.agent_id,
+            AnswerProgress::Checking,
+        );
         let check = verify_task_user_answer(&self.synthesis_dependencies, &bundle, &document).await;
         // What the check took out of, or could not confirm in, the published
         // answer — kept beside it so "Magician removed N statements" can be
         // traced to the statements and the judge's reasons.
         let mut claim_record = TaskUserClaimCheckRecord::default();
-        if check.faithful {
+        claim_record.delivery = Some(check.delivery.clone());
+        if check.faithful && check.delivery.missing.is_empty() {
             if !check.failing_supporting.is_empty() {
                 info!(
                     task_id = %ctx.execution.task_id,
@@ -48985,14 +50827,21 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
                 task_id = %ctx.execution.task_id,
                 execution_id = %ctx.execution.execution_id,
                 failing = check.failing_core.len(),
-                "[ARTIFACT-V2] task-user presentation has unsupported core claims; attempting one bounded grounding repair"
+                "[ARTIFACT-V2] task-user presentation needs factual or delivery revision; attempting one bounded repair"
             );
             claim_record.repaired = check.failing_core.clone();
+            emit_answer_progress(
+                &self.synthesis_dependencies,
+                &ctx.execution,
+                &ctx.manifest.agent_id,
+                AnswerProgress::Revising,
+            );
+            claim_record.delivery_repair_requested = check.delivery.missing.clone();
             let repaired = repair_task_user_output_grounding(
                 &self.synthesis_dependencies,
                 &bundle,
                 &check.publishable,
-                &check.reason,
+                &check.repair_feedback(),
             )
             .await;
             let repaired_check = match repaired.as_ref() {
@@ -49010,19 +50859,31 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
                 },
             };
             match (repaired, repaired_check) {
-                (Ok((_, repaired_speech)), Some(repaired_check)) if repaired_check.faithful => {
+                (Ok((_, repaired_speech)), Some(repaired_check))
+                    if repaired_check.accepts_revision_of(&check) =>
+                {
                     claim_record.removed = repaired_check.failing_supporting.clone();
-                    voice_speech = if repaired_check.failing_supporting.is_empty() {
+                    voice_speech = if repaired_check.failing_supporting.is_empty()
+                        && repaired_check.delivery.missing.is_empty()
+                    {
                         repaired_speech
                     } else {
                         None
                     };
-                    document = repaired_check.publishable;
+                    claim_record.delivery = Some(repaired_check.delivery.clone());
+                    document = repaired_check.delivery_annotated_document();
                     info!(
                         task_id = %ctx.execution.task_id,
                         execution_id = %ctx.execution.execution_id,
                         "[ARTIFACT-V2] bounded task-user grounding repair succeeded"
                     );
+                },
+                (_, _) if check.faithful => {
+                    // A failed delivery revision cannot turn supported original
+                    // findings into a factual-verification warning.
+                    document = check.delivery_annotated_document();
+                    voice_speech = None;
+                    claim_record.delivery = Some(check.delivery.clone());
                 },
                 (_, repaired_check) => {
                     claim_record.unconfirmed = repaired_check
@@ -49262,9 +51123,16 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
             } else {
                 (document.clone(), true)
             };
+            emit_answer_progress(
+                &self.synthesis_dependencies,
+                &ctx.execution,
+                &ctx.manifest.agent_id,
+                AnswerProgress::Checking,
+            );
             let check =
                 verify_task_user_answer(&self.synthesis_dependencies, bundle, &review_document)
                     .await;
+            claim_record.delivery = Some(check.delivery.clone());
             let clean = check.faithful && check.failing_supporting.is_empty();
             // A deliverable too large to read whole was reviewed on its
             // preview only; editing it would replace the owner's file with a
@@ -49301,7 +51169,9 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
             }
             if publish_verified_bytes || (verified_terminal_projection && !review_complete) {
                 // The verified bytes stand, or the caveated preview above.
-            } else if check.faithful {
+            } else if check.faithful
+                && (verified_terminal_projection || check.delivery.missing.is_empty())
+            {
                 if !check.failing_supporting.is_empty() {
                     info!(
                         task_id = %ctx.execution.task_id,
@@ -49335,14 +51205,21 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
                     task_id = %ctx.execution.task_id,
                     execution_id = %ctx.execution.execution_id,
                     failing = check.failing_core.len(),
-                    "[ARTIFACT-V2] projected task-user answer failed its publication grounding boundary; attempting one bounded repair"
+                    "[ARTIFACT-V2] projected task-user answer needs factual or delivery revision; attempting one bounded repair"
                 );
                 claim_record.repaired = check.failing_core.clone();
+                emit_answer_progress(
+                    &self.synthesis_dependencies,
+                    &ctx.execution,
+                    &ctx.manifest.agent_id,
+                    AnswerProgress::Revising,
+                );
+                claim_record.delivery_repair_requested = check.delivery.missing.clone();
                 let repaired = repair_task_user_output_grounding(
                     &self.synthesis_dependencies,
                     bundle,
                     &check.publishable,
-                    &check.reason,
+                    &check.repair_feedback(),
                 )
                 .await;
                 let repaired_check = match repaired.as_ref() {
@@ -49353,16 +51230,25 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
                     Err(_) => None,
                 };
                 match (repaired, repaired_check) {
-                    (Ok((_, speech)), Some(repaired_check)) if repaired_check.faithful => {
-                        let stripped = !repaired_check.failing_supporting.is_empty();
+                    (Ok((_, speech)), Some(repaired_check))
+                        if repaired_check.accepts_revision_of(&check) =>
+                    {
+                        let stripped = !repaired_check.failing_supporting.is_empty()
+                            || !repaired_check.delivery.missing.is_empty();
                         claim_record.removed = repaired_check.failing_supporting.clone();
-                        document = repaired_check.publishable;
+                        claim_record.delivery = Some(repaired_check.delivery.clone());
+                        document = repaired_check.delivery_annotated_document();
                         // Authored speech may name claims that were removed.
                         voice_speech = if stripped {
                             projected_voice_speech_summary(&document)
                         } else {
                             speech.or_else(|| projected_voice_speech_summary(&document))
                         };
+                    },
+                    (_, _) if check.faithful => {
+                        document = check.delivery_annotated_document();
+                        voice_speech = projected_voice_speech_summary(&document);
+                        claim_record.delivery = Some(check.delivery.clone());
                     },
                     (_, repaired_check) => {
                         warn!(
@@ -49495,14 +51381,35 @@ fn projected_voice_speech_summary(document: &OutputDocument) -> Option<VoiceSpee
         return None;
     }
     let text = output_document_grounding_text(document);
-    let excerpt = voice_summary_excerpt(&text);
+    let body = crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat(&text);
+    let caveated = body.len() != text.len();
+    let readable = result_readable_text(&document.media_type, &body);
+    let mut excerpt = voice_summary_excerpt(&readable);
     if excerpt.trim().is_empty() {
         return None;
+    }
+    if caveated {
+        excerpt = qualified_voice_summary(&excerpt);
     }
     Some(VoiceSpeechSummary {
         live: Some(excerpt.clone()),
         tts: Some(excerpt),
     })
+}
+
+/// Presentation markup and checker diagnostics are not spoken findings.
+fn result_readable_text(media_type: &str, body: &str) -> String {
+    let body = body.trim();
+    let fenced_html = body
+        .strip_prefix("```html\n")
+        .and_then(|text| text.strip_suffix("```"));
+    if base_media_type(media_type) == "text/html" || fenced_html.is_some() {
+        crate::magician_v2::execution::compiled_handlers::web_fetch::strip_html_to_text(
+            fenced_html.unwrap_or(body),
+        )
+    } else {
+        body.to_string()
+    }
 }
 
 const MAX_AUXILIARY_OUTPUT_PREFIX_BYTES: u64 = 256 * 1024;
@@ -49610,9 +51517,7 @@ impl ArtifactV2Service {
                     // Extract readable text from the HTML deliverable so the task
                     // summary is real prose, not a bare "available at" placeholder.
                     let text =
-                        crate::magician_v2::execution::compiled_handlers::web_fetch::strip_html_to_text(
-                            &raw,
-                        );
+                        crate::magician_v2::artifact_v2::synthesis::html_answer_readable_text(&raw);
                     if text.trim().is_empty() {
                         Some(format!(
                             "HTML output available at `{}`.",
@@ -49691,9 +51596,7 @@ impl ArtifactV2Service {
                 let raw =
                     read_auxiliary_output_prefix(&self.workspace, &canonical_output_path).await?;
                 let text =
-                    crate::magician_v2::execution::compiled_handlers::web_fetch::strip_html_to_text(
-                        &raw,
-                    );
+                    crate::magician_v2::artifact_v2::synthesis::html_answer_readable_text(&raw);
                 Some(if text.trim().is_empty() {
                     format!("HTML output available at `{}`.", output.relative_path)
                 } else {
@@ -50026,6 +51929,8 @@ impl ArtifactV2Service {
             current_substep_title,
             completion_summary,
             completion_outcome,
+            completion_kind: task.state.completion_kind.clone(),
+            open_items: task.state.open_items.clone(),
             completion_artifact_names,
             has_plan,
             latest_plan_id,
@@ -50443,6 +52348,36 @@ fn recipe_uses_manifest_intent(
         && accepted_goal.is_none_or(|value| value.trim() == task_goal(manifest))
 }
 
+/// The runtime-context seed body.
+///
+/// `## Description` is written only when the Effective Goal does not already
+/// contain it. The Effective Goal IS the description whenever one exists
+/// (`task_goal`), so for every described task the seed used to carry the same
+/// text twice — for an agent cycle, the whole assembled goal with its Program
+/// Context and Shared Context (tens of KB), and the synthesis model reads this
+/// seed. The section stays for a task whose goal came from somewhere else.
+fn render_runtime_context_seed(
+    title: &str,
+    effective_goal: &str,
+    description: &str,
+    refinement_section: &str,
+    runtime_plan_section: &str,
+) -> String {
+    let description = description.trim();
+    let description_section = if description.is_empty() || effective_goal.contains(description) {
+        String::new()
+    } else {
+        format!("\n## Description\n{description}\n")
+    };
+    format!(
+        "# Runtime Context Seed\n\n## Task\n{title}\n\n## Effective Goal\n{effective_goal}\n\
+         {description_section}{refinement_section}{runtime_plan_section}\n> This seed is \
+         execution bookkeeping for runtime-context mode. It is not taskplan markdown. When \
+         approved plan context is present, the runtime prompt receives the same context as \
+         advisory execution guidance.\n"
+    )
+}
+
 fn task_goal_with_refinement(manifest: &TaskManifest, refinement: Option<&str>) -> String {
     let base_goal = task_goal(manifest);
     let Some(refinement) = refinement.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -50561,13 +52496,17 @@ async fn goal_with_monitor_context(goal: String, manifest: &TaskManifest) -> Str
 /// so that EVERY coding-coordinator Build run — including programmatic /
 /// non-cockpit task creators that never ran the client composer — receives the
 /// implementation contract (route through engineers, drive file changes through
-/// the Pi-backed `run_coding_task`, stage diffs as `CodeChangeProposal` items).
+/// the Pi-backed `run_coding_task`).
 /// Sourced from the editable prompt store with a compiled fallback so a missing
 /// template degrades to known-good text instead of silently dropping the policy.
 /// The FALLBACK head MUST match `VIBEDEV_EXECUTION_POLICY_MARKER` for the
 /// idempotency check above.
+///
+/// **Mode-agnostic.** How the changes land (a staged proposal, or commits on a
+/// branch) depends on the mode the run's coding will use, so it is not here:
+/// [`vibedev_change_delivery_block`] states it once, chosen by that mode.
 async fn vibedev_execution_policy_block(root_task_id: &str) -> String {
-    const FALLBACK: &str = "Execution policy:\n- Route implementation through the existing engineering agents.\n- Use the managed Pi-backed run_coding_task flow for file changes.\n- Preserve the Original VibeDev user prompt verbatim when delegating to a coding engineer.\n- The coding engineer's first tool call should be run_coding_task. Do not ask the engineer to inspect files with shell/files before that first Pi run unless repo_path or the request is genuinely missing/ambiguous.\n- Stage code changes as CodeChangeProposal diff_approval items.";
+    const FALLBACK: &str = "Execution policy:\n- Route implementation through the existing engineering agents.\n- Use the managed Pi-backed run_coding_task flow for file changes.\n- Preserve the Original VibeDev user prompt verbatim when delegating to a coding engineer.\n- The coding engineer's first tool call should be run_coding_task. Do not ask the engineer to inspect files with shell/files before that first Pi run unless repo_path or the request is genuinely missing/ambiguous.";
     let policy = crate::magician_v2::prompts::rendered_prompt_or(
         crate::magician_v2::prompts::names::VIBEDEV_EXECUTION_POLICY,
         crate::magician_v2::prompts::versions::VIBEDEV_EXECUTION_POLICY,
@@ -50578,29 +52517,272 @@ async fn vibedev_execution_policy_block(root_task_id: &str) -> String {
     with_vibedev_artifact_handoff_policy(policy, root_task_id)
 }
 
+/// Heads of the three change-delivery blocks — one per effective mode. A goal
+/// carrying any of them already says how its changes land (a resumed or
+/// recovered goal), so none is appended again.
 const VIBEDEV_TRUSTED_POLICY_MARKER: &str = "Trusted project (git branch mode):";
+const VIBEDEV_TRUSTED_FALLBACK_POLICY_MARKER: &str = "Trusted project (sandboxed run):";
+const VIBEDEV_SANDBOXED_DELIVERY_MARKER: &str = "Change delivery (sandboxed run):";
 
-/// The coordinator's policy for a **trusted** VibeDev project, or `None` for a
-/// sandboxed one. Trust is read from the server's records — the task's fenced
-/// `VibeDev project:` line and the scope's project store — never from prose.
-fn vibedev_trusted_project_policy(
-    scope_root: &std::path::Path,
+/// The mode this VibeDev run's coding will actually use, with the project
+/// folder it works on, or `None` when the task names no live project. Read
+/// from the server's records only — the task's fenced `VibeDev project:` and
+/// `Parent task:` lines, the project store and the chain's trusted-workspace
+/// record — and decided by the same `trusted_workspace::effective_trust_mode`
+/// (over the same chain walk) that `run_coding_task` dispatches with, so the
+/// goal cannot promise a branch run the dispatcher then runs sandboxed. Called
+/// for Build runs only, so never a plan run.
+async fn vibedev_run_trust_mode(
+    service: &ArtifactV2Service,
+    scope: &ScopeRef,
+    task_id: &str,
     description: &str,
-) -> Option<String> {
-    let project_id = crate::magician_v2::vibedev::projects::parse_vibedev_project_id(description)?;
-    let project = crate::magician_v2::vibedev::projects::read_vibedev_projects(scope_root)
+) -> Option<(
+    crate::magician_v2::vibedev::trusted_workspace::EffectiveTrustMode,
+    std::path::PathBuf,
+)> {
+    use crate::magician_v2::vibedev::{projects, trusted_workspace};
+    let project_id = projects::parse_vibedev_project_id(description)?;
+    let scope_root = service
+        .workspace
+        .scope_root(scope.principal(), scope.workspace());
+    let mut project = projects::read_vibedev_projects(&scope_root)
         .into_iter()
         .find(|project| project.project_id == project_id && !project.archived)?;
-    if project.trust != crate::magician_v2::vibedev::projects::VibeDevProjectTrust::Trusted {
-        return None;
+    let ancestors =
+        crate::magician_v2::execution::compiled_handlers::run_coding_task::vibedev_chain_ancestor_ids(
+            service,
+            scope,
+            description,
+        )
+        .await;
+    let root_task_id = ancestors.last().map(String::as_str).unwrap_or(task_id);
+    if let Ok(Some(run)) =
+        crate::magician_v2::vibedev::original_workspace::load(&scope_root, root_task_id)
+    {
+        return Some((trusted_workspace::EffectiveTrustMode::Original, run.repo));
     }
-    Some(format!(
-        "{VIBEDEV_TRUSTED_POLICY_MARKER}\n\
-         - This project is trusted. The coding engineer's run_coding_task works in this conversation's own git clone on a `vibedev/…` branch, commits the changes, and Magician publishes the branch to the owner's repository.\n\
-         - There is NO CodeChangeProposal and NO diff_approval for this project; ignore any instruction above to stage or apply one, and never ask the owner to open, approve or apply a proposal.\n\
-         - run_coding_task's result (`committed`, `trusted_branch`: branch, head_sha, commits_ahead) is the evidence of the change. Verify against it, report the branch and its commits, and finish.\n\
-         - The owner reviews the branch, merges it or opens a pull request from VibeDev's Branch tab; that is not your step."
-    ))
+    if let Some(run) = trusted_workspace::load_run_workspace(&scope_root, root_task_id) {
+        return Some((
+            trusted_workspace::EffectiveTrustMode::Trusted,
+            run.real_repo,
+        ));
+    }
+    let pinned = project
+        .run_links
+        .get(root_task_id)
+        .and_then(|link| link.work_location.clone());
+    if let Some(location) = pinned.as_ref() {
+        project.trust = location.mode;
+        project.repo_path = location.repo_path.clone();
+    }
+    let workspace_root = service
+        .workspace
+        .capability_home_root(scope.principal(), scope.workspace());
+    let mode = trusted_workspace::effective_trust_mode(
+        &project,
+        &workspace_root,
+        false,
+        if pinned.is_some() { 0 } else { ancestors.len() },
+        false,
+    );
+    let folder =
+        trusted_workspace::project_repo_folder(project.repo_path.as_deref(), &workspace_root);
+    Some((mode, folder))
+}
+
+/// How a sandboxed run's changes land — shared by a sandboxed project's run and
+/// a trusted project's fallback run, so the two cannot word it differently.
+///
+/// The review rule follows the run's kind: an attended Build leaves applying to
+/// the owner's review (approval, or the cockpit's auto-apply), while an
+/// Autopilot run applies its own proposals — the mechanics its mode-neutral
+/// directive leaves to this block. Where those applied changes live follows
+/// the project folder's actual git state (`folder_git`, decided server-side by
+/// `trusted_workspace::project_folder_git`): at a repository's root the run
+/// first makes an `autopilot/…` branch with dugite in that folder (its absolute
+/// path is given, since dugite's `cwd` is not relative to the project); in any
+/// other folder — or with no project folder to check (`None`) — there is no
+/// branch, and the block says so and why instead of asking for a step the
+/// folder cannot do.
+fn vibedev_sandboxed_delivery_lines(
+    autopilot: bool,
+    folder_git: Option<&crate::magician_v2::vibedev::trusted_workspace::ProjectFolderGit>,
+) -> String {
+    use crate::magician_v2::vibedev::trusted_workspace::ProjectFolderGit;
+    const STAGE: &str = "- Stage code changes as CodeChangeProposal diff_approval items. A proposal whose files[].path touch the intended file(s) is the evidence of the change";
+    if !autopilot {
+        return format!(
+            "{STAGE}; a pending OR an applied proposal both count.\n\
+             - Do not apply a proposal yourself: the owner's review applies it — after the owner approves it under manual review, or automatically under auto-apply. Report the proposal and finish; do not wait for the approval."
+        );
+    }
+    match folder_git {
+        Some(ProjectFolderGit::RepositoryRoot(repo)) => format!(
+            "{STAGE}.\n\
+             - This is an Autopilot run: apply your own proposals; there is no owner approval to wait for. The project folder `{repo}` is the root of a git repository. Before delegating any coding, create a dedicated work branch off its current HEAD with dugite (name it autopilot/<short-task-slug>), passing cwd `{repo}` (this absolute path, not a folder name) on every dugite call; never commit to or modify main.\n\
+             - Add to the engineer's loop instruction: after each run_coding_task, call apply_code_proposal with the returned proposal_id to apply the change to the working tree, then run_project_checks — the checks see only applied changes.\n\
+             - When the engineer returns green (or exhausts iterations), commit the accumulated work to that branch with dugite (same cwd) and report that branch.",
+            repo = repo.display(),
+        ),
+        other => {
+            let why = match other {
+                Some(ProjectFolderGit::NoBranch(why)) => why.as_str(),
+                _ => "this run names no project folder Magician could check for git",
+            };
+            format!(
+                "{STAGE}.\n\
+                 - This is an Autopilot run: apply your own proposals; there is no owner approval to wait for. There is no git branch for this run because {why}: do not create, switch or commit any branch, and run no git commands.\n\
+                 - Add to the engineer's loop instruction: after each run_coding_task, call apply_code_proposal with the returned proposal_id to apply the change to the project folder, then run_project_checks — the checks see only applied changes.\n\
+                 - When the engineer returns green (or exhausts iterations), list the files the applied proposals changed in your notify_owner report and say the work landed in the project folder with no branch, and why."
+            )
+        },
+    }
+}
+
+/// How this coordinator's changes land, chosen by the mode its coding will
+/// actually use ([`vibedev_run_trust_mode`]) — the **only** place a VibeDev
+/// Build goal is told. The description and the execution policy say nothing
+/// about staging or review, so this block never contradicts them:
+///
+/// * `Trusted` → the branch model: commits on a `vibedev/…` branch, no proposal
+///   (and, for Autopilot, nothing to apply and no branch to make);
+/// * `SandboxedFallback` → a trusted project run sandboxed, with the reason,
+///   and the sandboxed staging + review rule;
+/// * `Sandboxed`, or no live project (`None`) → the sandboxed staging + review
+///   rule.
+///
+/// `folder_git` matters to a sandboxed Autopilot run only (see
+/// [`vibedev_sandboxed_delivery_lines`]).
+fn vibedev_change_delivery_block(
+    mode: Option<&crate::magician_v2::vibedev::trusted_workspace::EffectiveTrustMode>,
+    autopilot: bool,
+    folder_git: Option<&crate::magician_v2::vibedev::trusted_workspace::ProjectFolderGit>,
+) -> String {
+    use crate::magician_v2::vibedev::trusted_workspace::EffectiveTrustMode;
+    match mode {
+        Some(EffectiveTrustMode::Original) => "VibeDev original-folder delivery:\n- Work directly in the owner's current project folder, preserving their branch and uncommitted changes.\n- run_coding_task applies edits only through its exact-diff approval broker. There is no CodeChangeProposal, staged Apply step, automatic commit or merge.\n- Do not copy, clone, stash, reset, switch branches or create a delivery branch. Verify in the same original folder and report the broker's actual result.\n".to_string(),
+        Some(EffectiveTrustMode::Trusted) => format!(
+            "{VIBEDEV_TRUSTED_POLICY_MARKER}\n\
+             - This project is trusted. The coding engineer's run_coding_task works in this conversation's own git clone on a `vibedev/…` branch, commits the changes, and Magician publishes the branch to the owner's repository.\n\
+             - There is NO CodeChangeProposal and NO diff_approval for this project: never stage or apply one, and never ask the owner to open, approve or apply a proposal.\n\
+             - run_coding_task's result (`committed`, `trusted_branch`: branch, head_sha, commits_ahead) is the evidence of the change. Verify against it, report the branch and its commits, and finish.\n\
+             {autopilot}\
+             - The owner reviews the branch, merges it or opens a pull request from VibeDev's Branch tab; that is not your step.",
+            autopilot = if autopilot {
+                "- This is an Autopilot run: every run_coding_task turn is already committed on that branch, so there is nothing to apply and no other branch to create. Run run_project_checks after each turn (it runs in the clone), iterate until green, and name the `vibedev/…` branch in your notify_owner report.\n"
+            } else {
+                ""
+            },
+        ),
+        Some(EffectiveTrustMode::SandboxedFallback { reason, .. }) => format!(
+            "{VIBEDEV_TRUSTED_FALLBACK_POLICY_MARKER}\n\
+             - This project is trusted, but {reason}, so this run does not get its own `vibedev/…` branch: the coding engineer's run_coding_task works on a sandboxed copy and returns its changes as a diff.\n\
+             {lines}\n\
+             - Do not call this a trusted branch run. Say once in your report that the run was sandboxed and why.",
+            lines = vibedev_sandboxed_delivery_lines(autopilot, folder_git),
+        ),
+        Some(EffectiveTrustMode::Sandboxed) | None => format!(
+            "{VIBEDEV_SANDBOXED_DELIVERY_MARKER}\n\
+             - The coding engineer's run_coding_task works on a sandboxed copy of the project and returns its changes as a diff.\n\
+             {lines}",
+            lines = vibedev_sandboxed_delivery_lines(autopilot, folder_git),
+        ),
+    }
+}
+
+/// Whether `goal` already says how its changes land.
+fn goal_has_vibedev_change_delivery(goal: &str) -> bool {
+    [
+        "VibeDev original-folder delivery:",
+        VIBEDEV_TRUSTED_POLICY_MARKER,
+        VIBEDEV_TRUSTED_FALLBACK_POLICY_MARKER,
+        VIBEDEV_SANDBOXED_DELIVERY_MARKER,
+    ]
+    .iter()
+    .any(|marker| goal.contains(marker))
+}
+
+/// Append the change-delivery block for `mode` — once: a goal that already
+/// carries one is returned unchanged.
+fn with_vibedev_change_delivery(
+    goal: String,
+    mode: Option<&crate::magician_v2::vibedev::trusted_workspace::EffectiveTrustMode>,
+    autopilot: bool,
+    folder_git: Option<&crate::magician_v2::vibedev::trusted_workspace::ProjectFolderGit>,
+) -> String {
+    if goal_has_vibedev_change_delivery(&goal) {
+        return goal;
+    }
+    format!(
+        "{}\n\n{}",
+        goal.trim_end(),
+        vibedev_change_delivery_block(mode, autopilot, folder_git)
+    )
+}
+
+/// A coding-coordinator Build goal's change-delivery block, from the server's
+/// records: the mode is the dispatcher's own decision for this task
+/// ([`vibedev_run_trust_mode`]), and — for a sandboxed Autopilot run, the one
+/// run that makes its own branch — the project folder's actual git state
+/// (`trusted_workspace::project_folder_git`), both computed only when the goal
+/// does not already carry a block. Both the dispatch and the resume seam call
+/// this, so a resumed run is told the same thing.
+async fn goal_with_vibedev_change_delivery(
+    service: &ArtifactV2Service,
+    scope: &ScopeRef,
+    task_id: &str,
+    manifest: &TaskManifest,
+    goal: String,
+) -> String {
+    use crate::magician_v2::vibedev::trusted_workspace::{project_folder_git, EffectiveTrustMode};
+    if goal_has_vibedev_change_delivery(&goal) {
+        return goal;
+    }
+    let run = vibedev_run_trust_mode(service, scope, task_id, &manifest.description).await;
+    let autopilot =
+        crate::magician_v2::artifact_v2::models::is_vibedev_autopilot_run(&manifest.tags);
+    let (mode, folder_git) = match run {
+        Some((mode, folder)) => {
+            let folder_git = (autopilot && mode != EffectiveTrustMode::Trusted)
+                .then(|| project_folder_git(&folder));
+            (Some(mode), folder_git)
+        },
+        None => (None, None),
+    };
+    with_vibedev_change_delivery(goal, mode.as_ref(), autopilot, folder_git.as_ref())
+}
+
+/// Record this coordinator run's change-delivery decision on its execution
+/// (`vibedev::change_delivery`): the mode [`vibedev_run_trust_mode`] chose,
+/// the project folder and its git state, as a Magician-authored fact its
+/// reports are checked against. Nothing is recorded for a task naming no
+/// live project.
+async fn record_vibedev_change_delivery(
+    service: &ArtifactV2Service,
+    binding: &V3ExecutionBinding,
+    manifest: &TaskManifest,
+) {
+    use crate::magician_v2::vibedev::change_delivery::ChangeDeliveryRecord;
+    let Some((mode, folder)) = vibedev_run_trust_mode(
+        service,
+        &binding.scope,
+        &binding.execution.task_id,
+        &manifest.description,
+    )
+    .await
+    else {
+        return;
+    };
+    ChangeDeliveryRecord::decided(&mode, &folder, "coordinator_dispatch")
+        .write(
+            &service.workspace,
+            binding.scope.principal(),
+            binding.scope.workspace(),
+            &binding.execution.task_id,
+            &binding.execution.execution_id,
+        )
+        .await;
 }
 
 /// The coordinator's note on the folders the owner allowed for this VibeDev
@@ -50875,6 +53057,10 @@ const ANSWER_CLAIM_CHECK_SIDECAR_FILE: &str = "answer_claim_check.json";
 
 #[derive(Debug, Default, Serialize)]
 struct TaskUserClaimCheckRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery: Option<super::result_delivery::DeliveryCheck>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    delivery_repair_requested: Vec<super::result_delivery::DeliveryGap>,
     execution_id: String,
     /// Supporting statements taken out of the published answer.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -50889,7 +53075,28 @@ struct TaskUserClaimCheckRecord {
 
 impl TaskUserClaimCheckRecord {
     fn is_empty(&self) -> bool {
-        self.removed.is_empty() && self.repaired.is_empty() && self.unconfirmed.is_empty()
+        self.removed.is_empty()
+            && self.repaired.is_empty()
+            && self.unconfirmed.is_empty()
+            && self.delivery_repair_requested.is_empty()
+            && self
+                .delivery
+                .as_ref()
+                .is_none_or(|review| review.missing.is_empty())
+    }
+
+    /// One entry per statement in each list. An answer that repeats a
+    /// sentence (a summary restated under "Completed") yields one claim unit
+    /// per copy, and the record listed each verdict twice.
+    fn deduplicated(mut self) -> Self {
+        fn first_per_claim(failures: &mut Vec<ClaimFailure>) {
+            let mut seen = HashSet::new();
+            failures.retain(|failure| seen.insert(failure.claim.trim().to_string()));
+        }
+        first_per_claim(&mut self.removed);
+        first_per_claim(&mut self.repaired);
+        first_per_claim(&mut self.unconfirmed);
+        self
     }
 }
 
@@ -50898,8 +53105,9 @@ impl TaskUserClaimCheckRecord {
 async fn record_task_user_claim_check(
     workspace: &ArtifactV2Workspace,
     ctx: &TaskFinalizeContext,
-    mut record: TaskUserClaimCheckRecord,
+    record: TaskUserClaimCheckRecord,
 ) {
+    let mut record = record.deduplicated();
     let path = workspace
         .task_outputs_dir(
             &ctx.execution.principal,
@@ -50919,6 +53127,53 @@ async fn record_task_user_claim_check(
             error = %error,
             "[ARTIFACT-V2] could not record the task-user claim check"
         );
+    }
+}
+
+#[cfg(test)]
+mod task_user_claim_check_record_tests {
+    use super::*;
+
+    fn failure(claim: &str, reason: &str) -> ClaimFailure {
+        ClaimFailure {
+            claim: claim.to_string(),
+            contradicted: false,
+            reason: reason.to_string(),
+        }
+    }
+
+    /// The live record listed five of its eleven `repaired` claims twice,
+    /// because the answer restated them; each statement now appears once,
+    /// first verdict kept, in every list.
+    #[test]
+    fn each_statement_is_recorded_once_per_list() {
+        let record = TaskUserClaimCheckRecord {
+            delivery: None,
+            delivery_repair_requested: Vec::new(),
+            execution_id: String::new(),
+            removed: vec![
+                failure("A side remark.", "r1"),
+                failure("A side remark. ", "r2"),
+            ],
+            repaired: vec![
+                failure("Created 23 notes.", "first"),
+                failure("Read 13 documents.", "x"),
+                failure("Created 23 notes.", "second"),
+            ],
+            unconfirmed: vec![failure("Created 23 notes.", "kept")],
+        }
+        .deduplicated();
+        assert_eq!(record.removed.len(), 1);
+        assert_eq!(
+            record
+                .repaired
+                .iter()
+                .map(|failure| (failure.claim.as_str(), failure.reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Created 23 notes.", "first"), ("Read 13 documents.", "x")]
+        );
+        // Lists are separate records: the same claim may sit in two of them.
+        assert_eq!(record.unconfirmed.len(), 1);
     }
 }
 const VOICE_SPEECH_SIDECAR_MAX_BYTES: u64 = 32 * 1024;
@@ -51077,14 +53332,10 @@ fn task_summary_needs_llm(text: &str) -> bool {
 /// keeps the caveat: cards, chat previews and voice read the summary, and the
 /// summarizer has no rule to carry it.
 fn summary_keeping_caveat(source: &str, summary: &str) -> String {
-    let caveated = source
-        .trim_start()
-        .trim_start_matches('>')
-        .trim_start()
-        .starts_with("⚠️")
-        && source.contains("Not fully verified");
-    if caveated && !summary.contains("Not fully verified") {
-        format!("⚠️ Not fully verified. {summary}")
+    let source_body = crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat(source);
+    let summary_body = crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat(summary);
+    if source_body.len() != source.len() {
+        format!("⚠️ Not fully verified. {summary_body}")
     } else {
         summary.to_string()
     }
@@ -51113,7 +53364,15 @@ async fn generate_task_summary_llm(
     .await;
     // Cap the input so a huge report doesn't blow the local model's context /
     // latency budget.
-    let input = truncate_text(text.trim().to_string(), 16_000);
+    // A critic's diagnostic may quote a rejected claim or a large number.
+    // Give the summarizer the actual answer, retaining the qualification
+    // separately below, so warnings cannot replace the findings or lend
+    // their quoted figures to the card's apparent result.
+    let body = crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat(text);
+    if body.trim().is_empty() {
+        return None;
+    }
+    let input = truncate_text(body.trim().to_string(), 16_000);
     let operation = LLMOperation::Other("task_summary".to_string());
     let llm_started = std::time::Instant::now();
     let task_ref = task_summary_task_ref(
@@ -51188,7 +53447,7 @@ async fn generate_task_summary_llm(
                     summary,
                     &OutputDocument {
                         media_type: "text/plain".to_string(),
-                        body: OutputBody::Text(text.to_string()),
+                        body: OutputBody::Text(body.to_string()),
                     },
                 );
             (!summary.is_empty() && summary_figures_checked)
@@ -51249,7 +53508,7 @@ fn task_summary_execution_attribution(
 }
 
 /// Degrade-loudly fallback if the store prompt is missing/invalid.
-const TASK_SUMMARY_SYSTEM_FALLBACK: &str = "You are a task assistant. Summarize the completed task's deliverable text for the requester: 1-2 sentences on what was produced or found, then up to 4 short bullets of key results. Be faithful to the content; do not invent. Under ~120 words.";
+const TASK_SUMMARY_SYSTEM_FALLBACK: &str = "Summarize the task's actual findings and useful outputs for the requester: lead with the supported answer, then up to four key results. Preserve useful findings from partial work. Put secondary gaps in a short final coverage note; retain a qualification beside any conclusion it materially changes. Never invent results or present an unverified claim as verified. Under ~120 words.";
 
 /// Build the cached task-result summary sidecar from the deliverable's readable
 /// text. The caller performs the exact-revision check and atomic commit after
@@ -51313,24 +53572,42 @@ async fn build_task_summary_sidecar(
 /// alone exceeds it. Used as the FALLBACK when the synthesizer authored no
 /// `speech_live` line (the preferred source).
 fn voice_summary_excerpt(text: &str) -> String {
-    const BUDGET: usize = 320;
+    voice_summary_excerpt_with_budget(text, 320)
+}
+
+fn qualified_voice_summary(text: &str) -> String {
+    const QUALIFICATION: &str = "Some findings remain unverified.";
+    let body = text
+        .trim()
+        .strip_suffix(QUALIFICATION)
+        .unwrap_or(text)
+        .trim();
+    let findings = voice_summary_excerpt_with_budget(body, 320 - QUALIFICATION.chars().count() - 1);
+    format!("{findings} {QUALIFICATION}")
+}
+
+fn voice_summary_excerpt_with_budget(text: &str, budget: usize) -> String {
     let cleaned = text.trim();
-    if cleaned.chars().count() <= BUDGET {
+    if cleaned.chars().count() <= budget {
         return cleaned.to_string();
     }
     let mut out = String::new();
     for sentence in cleaned.split_inclusive(|c| matches!(c, '.' | '!' | '?' | '\n')) {
-        if !out.is_empty() && out.chars().count() + sentence.chars().count() > BUDGET {
+        if out.chars().count() + sentence.chars().count() > budget {
+            if out.is_empty() {
+                let hard: String = cleaned.chars().take(budget.saturating_sub(1)).collect();
+                return format!("{hard}…");
+            }
             break;
         }
         out.push_str(sentence);
-        if out.chars().count() >= BUDGET {
+        if out.chars().count() >= budget {
             break;
         }
     }
     let out = out.trim();
     if out.is_empty() {
-        let hard: String = cleaned.chars().take(BUDGET).collect();
+        let hard: String = cleaned.chars().take(budget.saturating_sub(1)).collect();
         format!("{hard}…")
     } else {
         out.to_string()
@@ -52204,6 +54481,8 @@ impl ArtifactV2Service {
             current_substep_title: None,
             completion_summary: None,
             completion_outcome,
+            completion_kind: task.state.completion_kind.clone(),
+            open_items: task.state.open_items.clone(),
             completion_artifact_names,
             has_plan: false,
             latest_plan_id: None,
@@ -52536,6 +54815,306 @@ mod tests {
     use crate::magician_v2::artifact_v2::events::attach_projected_source_identity;
     use crate::magician_v2::artifact_v2::workspace::WorkspaceFileProvider as _;
     use crate::magician_v2::artifact_v2::{CANONICAL_UI_THREAD_ID_FIELD, SOURCE_EVENT_REF_FIELD};
+
+    fn planning_resume_seal_fixture() -> crate::magician_v2::ask_loop::ResumePreparation {
+        let per_slot: serde_json::Map<String, Value> = (0..32)
+            .map(|index| (format!("slot-{index}"), json!(0.5)))
+            .collect();
+        let resumed = json!({
+            "state_id": "resumed-state", "workflow_id": "planexec-seal",
+            "current_state": "observe", "llm_reasoning": null,
+            "observations": [], "slot_deltas": [],
+            "confidence": {"overall": 0.5, "per_slot": per_slot, "slope": null},
+            "budget": {"remaining": 1.0, "initial": 1.0},
+            "stage_context": "unknown", "created_at": 1_700_000_000_000_i64
+        });
+        serde_json::from_value(json!({
+            "schema_version": 1,
+            "notification": {
+                "workflow_id": "planexec-seal", "question_id": "question-seal",
+                "stage": "unknown", "blocker_type": null, "slots": [],
+                "resumed_state": resumed.clone(), "resume_mode": "FullReplan",
+                "answered_count": 1, "pending_count": 0
+            },
+            "mutation": {"pause_resume": {
+                "schema_version": 1, "workflow_id": "planexec-seal",
+                "source_state_id": "paused-state",
+                "paused": {
+                    "workflow_id": "planexec-seal", "paused_at": "2026-01-01T00:00:00Z",
+                    "reason": {"WaitingOnUser": "question-seal"},
+                    "checkpoint_id": "paused-state", "pending_questions": ["question-seal"]
+                },
+                "remaining_questions": [], "resumed_state": resumed
+            }}
+        }))
+        .expect("planning resume fixture")
+    }
+
+    #[tokio::test]
+    async fn task_planning_resume_terminal_tasks_cannot_claim_or_renew_work() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let service = crate::magician_v2::test_support::build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("anonymous", "default");
+        let lease = TaskPlanningRecoveryLease {
+            owner: "expired-worker".to_owned(),
+            revision: 1,
+        };
+        for status in ["completed", "failed", "cancelled"] {
+            let mut task = service
+                .create_task(make_create_input(
+                    "anonymous",
+                    "default",
+                    "terminal planning fixture",
+                    "test",
+                ))
+                .await
+                .unwrap();
+            let task_id = task.manifest.task_id.clone();
+            {
+                let _guard = service
+                    .acquire_task_write_guard(&scope, &task_id)
+                    .await
+                    .unwrap();
+                task.state.status = status.to_owned();
+                service
+                    .persist_task_record_unlocked(&scope, &task)
+                    .await
+                    .unwrap();
+            }
+            // No plan exists: terminal-task admission must stop before looking
+            // for one, including stale workers renewing an old lease.
+            assert!(service
+                .claim_task_planning_recovery(&scope, &task_id, "plan_missing")
+                .await
+                .unwrap()
+                .is_none());
+            assert!(service
+                .claim_task_planning_resume_recovery(&scope, &task_id, "plan_missing")
+                .await
+                .unwrap()
+                .is_none());
+            assert!(!service
+                .update_task_planning_recovery_claim(
+                    &scope,
+                    &task_id,
+                    "plan_missing",
+                    &lease,
+                    None,
+                    false
+                )
+                .await
+                .unwrap());
+            assert!(!service
+                .update_task_planning_resume_recovery_claim(
+                    &scope,
+                    &task_id,
+                    "plan_missing",
+                    "resume_missing",
+                    &lease,
+                    false
+                )
+                .await
+                .unwrap());
+            assert!(matches!(
+                service.claim_exact_prepared_task_planning_resume_recovery(
+                    &scope, &task_id, "plan_missing", &planning_resume_seal_fixture(), "resume_missing", false,
+                ).await,
+                Err(ArtifactV2Error::InvalidRequest(reason)) if reason == format!("task_terminal:{status}")
+            ));
+            let now = now_rfc3339();
+            let plan: TaskPlanRecord = serde_json::from_value(json!({
+                "plan_id":"plan_terminal_fixture", "task_id":task_id,
+                "agent_id":"personal-assistant", "status":"planning",
+                "created_at":now, "updated_at":now,
+            }))
+            .unwrap();
+            {
+                let _guard = service
+                    .acquire_task_write_guard(&scope, &task_id)
+                    .await
+                    .unwrap();
+                let mut index = ArtifactV2Service::default_task_plan_index(&task_id);
+                index.latest_plan_id = Some(plan.plan_id.clone());
+                service
+                    .commit_task_plan_bundle_unlocked(&scope, &task_id, &plan, &index, None, None)
+                    .await
+                    .unwrap();
+            }
+            service
+                .resolve_pending_clarifications_on_terminal(&scope, &task)
+                .await;
+            // A separate live task exercises the actual terminal transition:
+            // cleanup cannot run until the new status has been committed.
+            let transitioning = service
+                .create_task(make_create_input(
+                    "anonymous",
+                    "default",
+                    "planning transition",
+                    "test",
+                ))
+                .await
+                .unwrap();
+            let transition_id = transitioning.manifest.task_id;
+            let mut transition_plan = plan.clone();
+            transition_plan.task_id = transition_id.clone();
+            {
+                let _guard = service
+                    .acquire_task_write_guard(&scope, &transition_id)
+                    .await
+                    .unwrap();
+                let mut index = ArtifactV2Service::default_task_plan_index(&transition_id);
+                index.latest_plan_id = Some(transition_plan.plan_id.clone());
+                service
+                    .commit_task_plan_bundle_unlocked(
+                        &scope,
+                        &transition_id,
+                        &transition_plan,
+                        &index,
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+            service
+                .update_task_status(&scope, &transition_id, status)
+                .await
+                .unwrap();
+            assert_eq!(
+                service
+                    .get_task_plan(&scope, &transition_id)
+                    .await
+                    .unwrap()
+                    .status,
+                TaskPlanStatus::Failed
+            );
+            assert_eq!(
+                service
+                    .get_task_plan(&scope, &task_id)
+                    .await
+                    .unwrap()
+                    .status,
+                TaskPlanStatus::Failed
+            );
+        }
+    }
+
+    #[test]
+    fn task_planning_resume_seal_survives_json_roundtrips_and_rejects_tampering() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let service = crate::magician_v2::test_support::build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("anonymous", "default");
+        let mut preparation = planning_resume_seal_fixture();
+        preparation.notification.resumed_state.confidence.overall = 0.9550000000000001;
+        preparation
+            .mutation
+            .pause_resume
+            .resumed_state
+            .confidence
+            .overall = 0.9550000000000001;
+        let mut receipt = service
+            .seal_task_planning_resume_recovery(&scope, "task-seal", "plan-seal", preparation)
+            .unwrap();
+        assert_eq!(receipt.schema_version, 4);
+        for _ in 0..16 {
+            receipt = serde_json::from_slice(&serde_json::to_vec(&receipt).unwrap()).unwrap();
+            service
+                .verify_task_planning_resume_recovery(&scope, "task-seal", "plan-seal", &receipt)
+                .expect("map order after persistence must not change the seal");
+        }
+        let other_scope = ScopeRef::system_internal_unauthenticated("anonymous", "other");
+        for (scope, task, plan) in [
+            (&other_scope, "task-seal", "plan-seal"),
+            (&scope, "other-task", "plan-seal"),
+            (&scope, "task-seal", "other-plan"),
+        ] {
+            assert!(
+                service
+                    .verify_task_planning_resume_recovery(scope, task, plan, &receipt,)
+                    .is_err(),
+                "a persisted receipt must remain bound to its owner and plan"
+            );
+        }
+        receipt.preparation.notification.answered_count += 1;
+        assert!(
+            service
+                .verify_task_planning_resume_recovery(&scope, "task-seal", "plan-seal", &receipt,)
+                .is_err(),
+            "canonical encoding must retain payload integrity"
+        );
+    }
+
+    #[test]
+    fn task_planning_resume_retires_only_unverifiable_unapplied_legacy_preparations() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let service = crate::magician_v2::test_support::build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("anonymous", "default");
+        let preparation = planning_resume_seal_fixture();
+        let valid_legacy = service
+            .seal_task_planning_resume_recovery_version(
+                &scope,
+                "task-seal",
+                "plan-seal",
+                preparation.clone(),
+                2,
+            )
+            .unwrap();
+        let mut broken_legacy = valid_legacy.clone();
+        broken_legacy.hmac_sha256 = "invalid-legacy-seal".to_owned();
+        let mut committed = broken_legacy.clone();
+        committed.phase = TaskPlanningResumeRecoveryPhase::Committed;
+        let mut current = service
+            .seal_task_planning_resume_recovery(
+                &scope,
+                "task-seal",
+                "plan-seal",
+                preparation.clone(),
+            )
+            .unwrap();
+        current.hmac_sha256 = "invalid-current-seal".to_owned();
+        let mut other_source = broken_legacy.clone();
+        other_source
+            .preparation
+            .mutation
+            .pause_resume
+            .source_state_id = "other".to_owned();
+        let mut broken_float_legacy = service
+            .seal_task_planning_resume_recovery_version(
+                &scope,
+                "task-seal",
+                "plan-seal",
+                preparation.clone(),
+                3,
+            )
+            .unwrap();
+        broken_float_legacy.hmac_sha256 = "invalid-legacy-float-seal".to_owned();
+        let mut committed_float_legacy = broken_float_legacy.clone();
+        committed_float_legacy.phase = TaskPlanningResumeRecoveryPhase::Committed;
+        let mut receipts = vec![
+            valid_legacy,
+            broken_legacy,
+            committed,
+            current,
+            other_source,
+            broken_float_legacy,
+            committed_float_legacy,
+        ];
+        service.retire_unverifiable_prepared_planning_resumes(
+            &scope,
+            "task-seal",
+            "plan-seal",
+            &mut receipts,
+            &preparation,
+        );
+        assert_eq!(
+            receipts.iter().map(|r| r.settled).collect::<Vec<_>>(),
+            vec![false, true, false, false, false, true, false]
+        );
+        assert_eq!(
+            receipts[1].hmac_sha256, "invalid-legacy-seal",
+            "retain the original untrusted record; never bless or replay it"
+        );
+    }
 
     /// Every starter admits a launch's routing overrides through one line,
     /// and that line keeps the endpoints and drops a wire-supplied parent.
@@ -53207,6 +55786,7 @@ mod tests {
             pause_revision: None,
             pause_body_sha256: None,
             pause_resume_segment: None,
+            refinement_successor_segment: None,
         };
         let sealed = service
             .seal_terminal_settlement_descriptor(descriptor.clone())
@@ -53355,6 +55935,54 @@ mod tests {
             .expect("canonical child failure owner");
         assert!(adopted < sealed_subtype && sealed_subtype < body_check);
         assert!(body_check < force_failure);
+    }
+
+    /// A first pass that handed its settlement to a refinement pass is judged
+    /// against that successor after cancellation and before anything settles,
+    /// and boot recovery of an Executing row holding such a receipt defers to
+    /// the projector instead of redispatching — so a crash mid-refinement
+    /// settles the first pass's `Success` rather than re-running the run.
+    #[test]
+    fn a_withheld_first_pass_receipt_is_settled_by_the_projector_after_a_crash() {
+        let source = include_str!("service.rs");
+        let acceptance = source
+            .split("pub(crate) async fn accept_terminal_loop_settlement")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(crate) async fn publish_terminal_loop_pause")
+                    .next()
+            })
+            .expect("terminal receipt acceptance");
+        let cancelled = acceptance
+            .find("SupersededByCancellation")
+            .expect("cancellation supersession");
+        let successor = acceptance
+            .find("refinement_successor_segment")
+            .expect("refinement successor gate");
+        let disposition = acceptance[successor..]
+            .find("refinement_successor_disposition(")
+            .map(|offset| successor + offset)
+            .expect("one disposition rule");
+        let first_settle = acceptance
+            .find("settle_stateless_terminal_receipt")
+            .expect("runtime settlement");
+        assert!(cancelled < successor && successor < disposition);
+        assert!(disposition < first_settle);
+        assert!(acceptance[disposition..first_settle].contains("refinement_in_flight("));
+        assert!(acceptance[disposition..first_settle]
+            .contains("TerminalLoopSettlementAcceptance::DeferredToRefinementSuccessor"));
+
+        let recovery = source
+            .split("pub(crate) async fn recover_interrupted_runtime_execution")
+            .nth(1)
+            .expect("interrupted runtime recovery");
+        let receipt_barrier = recovery
+            .find("stateless_terminal_receipt_pending_for_execution")
+            .expect("receipt barrier");
+        let redispatch = recovery
+            .find("load_accepted_runtime_launch_intent")
+            .expect("redispatch path");
+        assert!(receipt_barrier < redispatch);
     }
 
     #[test]
@@ -54087,6 +56715,7 @@ mod tests {
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: crate::magician_v2::storage::models::ExecutionEntryMode::Direct,
@@ -54421,6 +57050,7 @@ mod tests {
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: crate::magician_v2::storage::models::ExecutionEntryMode::Direct,
@@ -54473,34 +57103,432 @@ mod tests {
     }
 
     #[test]
-    fn a_trusted_projects_coordinator_is_told_there_is_no_proposal() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let scope_root = tmp.path();
-        let store = crate::magician_v2::vibedev::projects::vibedev_project_store_path(scope_root);
-        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
-        let project = |id: &str, trust: &str| {
-            serde_json::json!({
-                "project_id": id, "name": id, "chat_thread_id": "vibedev",
-                "chat_session_id": format!("s-{id}"), "created_at_ms": 0,
-                "updated_at_ms": 0, "trust": trust
-            })
+    fn a_trusted_projects_coordinator_is_told_the_mode_its_run_will_use() {
+        use crate::magician_v2::vibedev::trusted_workspace::{
+            effective_trust_mode, EffectiveTrustMode,
         };
-        std::fs::write(
-            &store,
-            serde_json::to_vec(&serde_json::json!({
-                "projects": [project("p-trusted", "trusted"), project("p-sandboxed", "sandboxed")]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let description = |id: &str| format!("VibeDev coding request:\nVibeDev project: {id}\n");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let project = |trust: &str, folder: &std::path::Path| {
+            serde_json::from_value::<crate::magician_v2::vibedev::projects::VibeDevProjectRecord>(
+                serde_json::json!({
+                    "project_id": "p-1", "name": "Trusted rehearsal", "chat_thread_id": "vibedev",
+                    "chat_session_id": "s-1", "created_at_ms": 0, "updated_at_ms": 0,
+                    "trust": trust, "repo_path": folder.display().to_string()
+                }),
+            )
+            .unwrap()
+        };
 
-        let block = vibedev_trusted_project_policy(scope_root, &description("p-trusted"))
-            .expect("trusted project gets the branch policy");
+        // Trusted and a usable repository: the branch model, stated on its own
+        // terms — nothing above it says otherwise any more.
+        let block = vibedev_change_delivery_block(Some(&EffectiveTrustMode::Trusted), false, None);
         assert!(block.starts_with(VIBEDEV_TRUSTED_POLICY_MARKER));
         assert!(block.contains("NO CodeChangeProposal"));
-        assert!(vibedev_trusted_project_policy(scope_root, &description("p-sandboxed")).is_none());
-        assert!(vibedev_trusted_project_policy(scope_root, "no project line").is_none());
+        assert!(!block.contains("ignore any instruction above"), "{block}");
+
+        // Trusted, but the folder is not a repository (live 2026-10-19): the
+        // same decision the dispatcher makes, worded as the sandboxed run it is,
+        // and stating the staging + review rule itself.
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let mode = effective_trust_mode(&project("trusted", &plain), tmp.path(), false, 0, false);
+        assert!(
+            matches!(mode, EffectiveTrustMode::SandboxedFallback { .. }),
+            "{mode:?}"
+        );
+        let block = vibedev_change_delivery_block(Some(&mode), false, None);
+        assert!(
+            block.starts_with(VIBEDEV_TRUSTED_FALLBACK_POLICY_MARKER),
+            "{block}"
+        );
+        assert!(!block.contains(VIBEDEV_TRUSTED_POLICY_MARKER), "{block}");
+        assert!(block.contains("sandboxed copy"), "{block}");
+        assert!(block.contains("is not a git repository"), "{block}");
+        assert!(
+            block.contains("- Stage code changes as CodeChangeProposal diff_approval items."),
+            "{block}"
+        );
+        assert!(block.contains("the owner's review applies it"), "{block}");
+        assert!(
+            !block.to_lowercase().contains("no diff_approval"),
+            "{block}"
+        );
+        assert!(!block.contains("NO CodeChangeProposal"), "{block}");
+
+        // A sandboxed project gets the sandboxed delivery block — and so does
+        // a goal naming no live project.
+        let mode = effective_trust_mode(&project("sandboxed", &plain), tmp.path(), false, 0, false);
+        assert_eq!(mode, EffectiveTrustMode::Sandboxed);
+        for mode in [Some(&mode), None] {
+            let block = vibedev_change_delivery_block(mode, false, None);
+            assert!(
+                block.starts_with(VIBEDEV_SANDBOXED_DELIVERY_MARKER),
+                "{block}"
+            );
+            assert!(!block.contains("Trusted project"), "{block}");
+            assert!(
+                block.contains("- Stage code changes as CodeChangeProposal diff_approval items."),
+                "{block}"
+            );
+        }
+    }
+
+    /// A sandboxed Autopilot run is told to make a dugite branch only when the
+    /// project folder is a repository's root, with dugite pointed at that
+    /// folder's absolute path. Live 2026-10-19: a non-git project folder was
+    /// told to branch with dugite, every git call failed, and the run escalated
+    /// without coding. Attended and trusted runs read the same block whatever
+    /// the folder.
+    #[test]
+    fn a_sandboxed_autopilot_branches_only_in_a_git_repository_root() {
+        use crate::magician_v2::vibedev::trusted_workspace::{
+            project_folder_git, EffectiveTrustMode, ProjectFolderGit,
+        };
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("site");
+        std::fs::create_dir_all(&repo).unwrap();
+        let init = std::process::Command::new(runtime_core::process::git_program())
+            .arg("-C")
+            .arg(&repo)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap();
+        assert!(init.success());
+        let plain = tmp.path().join("pi_1_3_0_live_test");
+        std::fs::create_dir_all(&plain).unwrap();
+        let (sandboxed_mode, trusted_mode) =
+            (EffectiveTrustMode::Sandboxed, EffectiveTrustMode::Trusted);
+        let (sandboxed, trusted) = (Some(&sandboxed_mode), Some(&trusted_mode));
+
+        let git = project_folder_git(&repo);
+        let ProjectFolderGit::RepositoryRoot(root) = &git else {
+            panic!("a repository root gets a branch: {git:?}");
+        };
+        let block = vibedev_change_delivery_block(sandboxed, true, Some(&git));
+        assert!(block.contains("with dugite (name it autopilot/"), "{block}");
+        assert!(
+            block.contains(&format!("passing cwd `{}`", root.display())),
+            "{block}"
+        );
+        assert!(
+            block.contains("call apply_code_proposal with the returned proposal_id"),
+            "{block}"
+        );
+
+        let git = project_folder_git(&plain);
+        assert!(matches!(git, ProjectFolderGit::NoBranch(_)), "{git:?}");
+        let block = vibedev_change_delivery_block(sandboxed, true, Some(&git));
+        assert!(!block.contains("dugite"), "{block}");
+        assert!(!block.contains("create a dedicated work branch"), "{block}");
+        assert!(
+            block.contains("There is no git branch for this run because"),
+            "{block}"
+        );
+        assert!(block.contains("is not a git repository"), "{block}");
+        assert!(
+            block.contains("call apply_code_proposal with the returned proposal_id"),
+            "{block}"
+        );
+        assert!(block.contains("run_project_checks"), "{block}");
+        assert!(block.contains("notify_owner"), "{block}");
+
+        for git in [project_folder_git(&repo), project_folder_git(&plain)] {
+            let attended = vibedev_change_delivery_block(sandboxed, false, Some(&git));
+            assert_eq!(
+                attended,
+                vibedev_change_delivery_block(sandboxed, false, None)
+            );
+            assert!(
+                attended.contains("Do not apply a proposal yourself"),
+                "{attended}"
+            );
+            assert!(!attended.contains("dugite"), "{attended}");
+            assert!(!attended.contains("apply_code_proposal"), "{attended}");
+            for autopilot in [false, true] {
+                assert_eq!(
+                    vibedev_change_delivery_block(trusted, autopilot, Some(&git)),
+                    vibedev_change_delivery_block(trusted, autopilot, None),
+                );
+            }
+        }
+    }
+
+    /// How a VibeDev Build run's changes land is said ONCE, by the block its
+    /// effective mode chooses — never also by the description or the execution
+    /// policy, so no mode reads both "stage a proposal" and "there is no
+    /// proposal". Assembled the way the dispatch seam assembles the goal: the
+    /// description, the execution policy when it carries none, then the
+    /// change-delivery block (idempotently). Covers both layouts (rail and
+    /// cockpit), both review settings, a plan-implementing follow-up, the
+    /// opt-in visual self-correction block, and Autopilot — whose apply/branch
+    /// mechanics (apply_code_proposal, a dugite branch) belong to the
+    /// sandboxed delivery block alone, and whose dugite branch appears only
+    /// when the project folder is a repository's root (live 2026-10-19: a
+    /// non-git folder was told to branch with dugite and never coded).
+    #[tokio::test]
+    async fn a_vibedev_build_goal_says_how_changes_land_once_and_never_both_ways() {
+        use crate::magician_v2::vibedev::dispatch_intent::DispatchMode;
+        use crate::magician_v2::vibedev::run_service::{
+            vibedev_run_task_description, StartVibeDevBuild, VibeDevCockpitRun,
+            VibeDevCodingCatalog, VibeDevRunParent,
+        };
+        use crate::magician_v2::vibedev::trusted_workspace::{
+            EffectiveTrustMode, ProjectFolderGit,
+        };
+
+        const STAGE: &str = "Stage code changes as CodeChangeProposal";
+        const NO_PROPOSAL: &str = "NO CodeChangeProposal";
+        // Sandboxed-only apply/branch mechanics.
+        const APPLY: &str = "apply_code_proposal";
+        const DUGITE: &str = "dugite";
+        const TRUSTED_AUTOPILOT: &str = "nothing to apply and no other branch to create";
+        // Wordings that asserted proposal mechanics outside the delivery block.
+        const RETIRED: [&str; 4] = [
+            "wait for approval before applying proposals",
+            "auto-apply is enabled for proposal-backed code diffs",
+            "Stage the implementation as CodeChangeProposal",
+            "returned a staged proposal",
+        ];
+
+        let project = serde_json::from_value::<
+            crate::magician_v2::vibedev::projects::VibeDevProjectRecord,
+        >(serde_json::json!({
+            "project_id": "p-1", "name": "Trusted rehearsal", "chat_thread_id": "vibedev",
+            "chat_session_id": "s-1", "created_at_ms": 0, "updated_at_ms": 0,
+            "trust": "trusted", "repo_path": "apps/site"
+        }))
+        .unwrap();
+        let plan_parent = VibeDevRunParent {
+            task_id: "task-plan".to_string(),
+            title: "The plan".to_string(),
+            status: "completed".to_string(),
+            updated_at: "2026-10-19T00:00:00Z".to_string(),
+            plan_run: true,
+            reference: true,
+            synthesis_pending: false,
+            execution_id: None,
+            summary: "Wrote the plan".to_string(),
+        };
+        let cockpit = |auto_apply: bool| VibeDevCockpitRun {
+            auto_apply,
+            attachment_session_id: Some("s-1".to_string()),
+            created_by: "user".to_string(),
+            ..VibeDevCockpitRun::default()
+        };
+
+        let mut descriptions = Vec::new();
+        for mode in [DispatchMode::Build, DispatchMode::Autopilot] {
+            let layouts = [
+                ("rail", None, None),
+                ("cockpit/manual", Some(cockpit(false)), None),
+                ("cockpit/auto-apply", Some(cockpit(true)), None),
+                (
+                    "cockpit/implement-plan",
+                    Some(cockpit(false)),
+                    Some(&plan_parent),
+                ),
+                (
+                    "cockpit/visual",
+                    Some(VibeDevCockpitRun {
+                        visual_self_correct: true,
+                        project_is_visual: true,
+                        ..cockpit(false)
+                    }),
+                    None,
+                ),
+            ];
+            for (layout, studio, parent) in layouts {
+                let build = StartVibeDevBuild {
+                    scope: ScopeRef::system_internal_unauthenticated(
+                        &"user".to_string(),
+                        &"workspace".to_string(),
+                    ),
+                    chat_session_id: "s-1".to_string(),
+                    chat_turn_id: "turn-1".to_string(),
+                    owner_agent_id: "cto".to_string(),
+                    project: project.clone(),
+                    request: "fix the footer".to_string(),
+                    mode,
+                    coding_choice: None,
+                    coding_catalog: VibeDevCodingCatalog::default(),
+                    cockpit: studio,
+                };
+                let description = vibedev_run_task_description(&build, parent).await;
+                descriptions.push((
+                    format!("{mode:?}/{layout}"),
+                    mode == DispatchMode::Autopilot,
+                    description,
+                ));
+            }
+        }
+
+        let modes = [
+            ("trusted", Some(EffectiveTrustMode::Trusted)),
+            (
+                "fallback",
+                Some(EffectiveTrustMode::SandboxedFallback {
+                    reason: "`/x` is not a git repository".to_string(),
+                    remedy: "the folder is a git repository",
+                }),
+            ),
+            ("sandboxed", Some(EffectiveTrustMode::Sandboxed)),
+            ("no project", None),
+        ];
+        // The project folder's git state, as `project_folder_git` reports it.
+        let folders = [
+            (
+                "git root",
+                ProjectFolderGit::RepositoryRoot(std::path::PathBuf::from("/owner/site")),
+            ),
+            (
+                "plain folder",
+                ProjectFolderGit::NoBranch("`/owner/notes` is not a git repository".to_string()),
+            ),
+        ];
+        for (label, description_autopilot, description) in &descriptions {
+            for retired in RETIRED {
+                assert!(
+                    !description.contains(retired),
+                    "{label}: the description still asserts a delivery mechanism ({retired:?}):\n{description}"
+                );
+            }
+            for mechanism in [STAGE, APPLY, DUGITE] {
+                assert!(
+                    !description.contains(mechanism),
+                    "{label}: the description says how changes land ({mechanism:?}):\n{description}"
+                );
+            }
+            if label.ends_with("/cockpit/visual") {
+                assert!(
+                    description.contains("\nVisual self-correction (opt-in"),
+                    "{label}: the visual block is under test:\n{description}"
+                );
+            }
+            for ((mode_label, mode), (folder_label, folder)) in modes
+                .iter()
+                .flat_map(|mode| folders.iter().map(move |folder| (mode, folder)))
+            {
+                let autopilot = *description_autopilot;
+                // Exactly what the dispatch seam looks up: the folder's git
+                // state for a sandboxed Autopilot run of a live project only.
+                let folder_git = (autopilot
+                    && mode.is_some()
+                    && !matches!(mode, Some(EffectiveTrustMode::Trusted)))
+                .then_some(folder);
+                let mut goal = description.clone();
+                if !goal.contains(VIBEDEV_EXECUTION_POLICY_MARKER) {
+                    goal = format!(
+                        "{}\n\n{}",
+                        goal.trim_end(),
+                        vibedev_execution_policy_block("task-1").await
+                    );
+                }
+                let goal = with_vibedev_change_delivery(goal, mode.as_ref(), autopilot, folder_git);
+                assert_eq!(
+                    with_vibedev_change_delivery(
+                        goal.clone(),
+                        mode.as_ref(),
+                        autopilot,
+                        folder_git
+                    ),
+                    goal,
+                    "{label}/{mode_label}/{folder_label}: the delivery block is appended once"
+                );
+
+                let case = format!("{label}/{mode_label}/{folder_label}");
+                let blocks = [
+                    VIBEDEV_TRUSTED_POLICY_MARKER,
+                    VIBEDEV_TRUSTED_FALLBACK_POLICY_MARKER,
+                    VIBEDEV_SANDBOXED_DELIVERY_MARKER,
+                ]
+                .iter()
+                .map(|marker| goal.matches(marker).count())
+                .sum::<usize>();
+                assert_eq!(blocks, 1, "{case}: exactly one delivery block:\n{goal}");
+                for retired in RETIRED {
+                    assert!(!goal.contains(retired), "{case}: {retired:?}:\n{goal}");
+                }
+
+                if matches!(mode, Some(EffectiveTrustMode::Trusted)) {
+                    assert_eq!(goal.matches(STAGE).count(), 0, "{case}:\n{goal}");
+                    assert!(goal.contains(NO_PROPOSAL), "{case}:\n{goal}");
+                    assert!(
+                        !goal.contains("Do not apply a proposal yourself"),
+                        "{case}:\n{goal}"
+                    );
+                    // A branch run — Autopilot included — never reads the
+                    // sandboxed apply/branch mechanics.
+                    assert!(!goal.contains(APPLY), "{case}:\n{goal}");
+                    assert!(!goal.contains(DUGITE), "{case}:\n{goal}");
+                    assert_eq!(
+                        goal.contains(TRUSTED_AUTOPILOT),
+                        autopilot,
+                        "{case}:\n{goal}"
+                    );
+                } else {
+                    assert_eq!(goal.matches(STAGE).count(), 1, "{case}:\n{goal}");
+                    assert!(!goal.contains(NO_PROPOSAL), "{case}:\n{goal}");
+                    assert!(!goal.contains(TRUSTED_AUTOPILOT), "{case}:\n{goal}");
+                    if autopilot {
+                        assert!(
+                            goal.contains("call apply_code_proposal with the returned proposal_id"),
+                            "{case}:\n{goal}"
+                        );
+                        assert!(
+                            !goal.contains("Do not apply a proposal yourself"),
+                            "{case}:\n{goal}"
+                        );
+                        if let Some(ProjectFolderGit::RepositoryRoot(_)) = folder_git {
+                            // A repository root: the branch step, in that
+                            // folder by its absolute path.
+                            assert_eq!(
+                                goal.matches("with dugite (name it autopilot/").count(),
+                                1,
+                                "{case}:\n{goal}"
+                            );
+                            assert!(
+                                goal.contains("passing cwd `/owner/site`"),
+                                "{case}:\n{goal}"
+                            );
+                            assert!(!goal.contains("There is no git branch"), "{case}:\n{goal}");
+                        } else {
+                            // A plain folder, or no project folder to check:
+                            // no branch, no dugite, and the reason said once.
+                            assert!(!goal.contains(DUGITE), "{case}:\n{goal}");
+                            assert!(!goal.contains("autopilot/<"), "{case}:\n{goal}");
+                            assert_eq!(
+                                goal.matches("There is no git branch for this run because")
+                                    .count(),
+                                1,
+                                "{case}:\n{goal}"
+                            );
+                            let why = if mode.is_some() {
+                                "`/owner/notes` is not a git repository"
+                            } else {
+                                "names no project folder"
+                            };
+                            assert!(goal.contains(why), "{case}:\n{goal}");
+                            assert!(
+                                goal.contains("list the files the applied proposals changed"),
+                                "{case}:\n{goal}"
+                            );
+                        }
+                    } else {
+                        // An attended run applies nothing itself.
+                        assert!(!goal.contains(APPLY), "{case}:\n{goal}");
+                        assert!(!goal.contains(DUGITE), "{case}:\n{goal}");
+                        assert!(
+                            goal.contains("Do not apply a proposal yourself"),
+                            "{case}:\n{goal}"
+                        );
+                        assert!(
+                            !goal.contains("there is no owner approval to wait for"),
+                            "{case}:\n{goal}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -55428,6 +58456,64 @@ mod tests {
             &[],
         )
         .is_none());
+    }
+
+    /// A harness yield's summary is its deliverable plus narration; the
+    /// composition must not repeat the deliverable after it (2026-10-25: an
+    /// HTML answer published page, "Wrote …", page).
+    #[test]
+    fn a_statement_that_already_carries_the_deliverable_does_not_repeat_it() {
+        let composed = compose_outcome_statement_with_verified_deliverable(
+            "1987\n\nRead the About page for the founding year.",
+            "text/markdown",
+            4,
+            Some("1987"),
+            &[],
+        )
+        .expect("the narration still accompanies the answer");
+        assert_eq!(composed.matches("1987").count(), 1);
+        assert!(composed.contains("Read the About page"));
+    }
+
+    #[test]
+    fn a_short_answer_inside_a_longer_word_is_still_published() {
+        let composed = compose_outcome_statement_with_verified_deliverable(
+            "Checked 120 rows in the export.",
+            "text/markdown",
+            2,
+            Some("12"),
+            &[],
+        )
+        .expect("the narration and the answer are both published");
+        assert!(composed.ends_with("\n\n12"), "{composed}");
+    }
+
+    #[test]
+    fn an_answer_stated_inside_a_line_of_the_deliverable_is_not_repeated() {
+        assert!(compose_outcome_statement_with_verified_deliverable(
+            "1987",
+            "text/markdown",
+            16,
+            Some("**Answer:** 1987"),
+            &[],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn an_html_deliverable_is_published_as_the_page() {
+        let page = "<!DOCTYPE html>\n<html><body><h1>Followup QA</h1></body></html>";
+        let statement = format!("{page}\n\nWrote outputs/followup_qa.html (168 bytes).");
+        for deliverable in [page.to_string(), format!("```html\n{page}\n```")] {
+            assert!(compose_outcome_statement_with_verified_deliverable(
+                &statement,
+                "text/markdown",
+                deliverable.len() as u64,
+                Some(&deliverable),
+                &[],
+            )
+            .is_none());
+        }
     }
 
     #[test]
@@ -56495,6 +59581,85 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn history_activity_tracks_only_working_tasks_in_the_requested_scope() {
+        use crate::magician_v2::storage::list_index::ListIndex;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("anonymous", "default");
+        let requested: HashSet<String> = ["running", "planning", "paused", "completed", "foreign"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut running = None;
+        for status in ["running", "planning", "paused", "completed", "foreign"] {
+            let mut input = make_create_input(
+                "anonymous",
+                if status == "foreign" {
+                    "other"
+                } else {
+                    "default"
+                },
+                status,
+                "test",
+            );
+            input.chat_session_id = Some(status.to_owned());
+            let mut task = service.create_task(input).await.unwrap();
+            task.state.status = if status == "foreign" {
+                "running"
+            } else {
+                status
+            }
+            .to_owned();
+            let task_scope =
+                ScopeRef::system_internal_unauthenticated("anonymous", &task.manifest.workspace);
+            service
+                .persist_task_record_unlocked(&task_scope, &task)
+                .await
+                .unwrap();
+            if status == "running" {
+                running = Some(task);
+            }
+        }
+        let index = ListIndex::open(tmp.path()).unwrap();
+        service.set_list_index(index.clone());
+        assert!(service
+            .working_chat_session_ids(&scope, &requested)
+            .await
+            .unwrap()
+            .is_empty());
+        index
+            .rebuild_from_disk_async(service.workspace.scopes_root())
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .working_chat_session_ids(&scope, &requested)
+                .await
+                .unwrap(),
+            HashSet::from(["running".into(), "planning".into()])
+        );
+        let mut running = running.unwrap();
+        running.state.status = "completed".into();
+        // Leave the index stale: the canonical state recheck must still clear it.
+        let path =
+            service
+                .workspace
+                .task_state_path("anonymous", "default", &running.manifest.task_id);
+        service
+            .workspace
+            .write_json_atomic_path(&path, &running.state)
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .working_chat_session_ids(&scope, &requested)
+                .await
+                .unwrap(),
+            HashSet::from(["planning".into()])
+        );
+    }
+
     fn app_workflow_create_input_fixture(scope: &ScopeRef) -> CreateTaskInput {
         CreateTaskInput {
             principal: scope.principal().to_string(),
@@ -56950,6 +60115,373 @@ mod tests {
         }
     }
 
+    #[test]
+    fn file_named_in_text_matches_whole_file_names_only() {
+        let text = "Delivered Report.MD to outputs/notes.md and data.csv.".to_lowercase();
+        assert!(file_named_in_text(&text, "report.md"), "case-insensitive");
+        assert!(
+            file_named_in_text(&text, "REPORT.md"),
+            "the name's case too"
+        );
+        assert!(
+            file_named_in_text(&text, "notes.md"),
+            "a path prefix is fine"
+        );
+        assert!(
+            file_named_in_text(&text, "data.csv"),
+            "a sentence-ending period is not part of the name"
+        );
+        assert!(!file_named_in_text(
+            &"see final_report.md".to_lowercase(),
+            "report.md"
+        ));
+        assert!(!file_named_in_text(
+            &"see draft-report.md".to_lowercase(),
+            "report.md"
+        ));
+        assert!(!file_named_in_text(
+            &"kept report.md.bak".to_lowercase(),
+            "report.md"
+        ));
+        assert!(!file_named_in_text(
+            &"kept report.mdx".to_lowercase(),
+            "report.md"
+        ));
+        assert!(file_named_in_text(
+            &"`report.md`, done".to_lowercase(),
+            "report.md"
+        ));
+        assert!(!file_named_in_text(&text, ""));
+        assert!(!file_named_in_text(&text, "summary.md"));
+    }
+
+    #[test]
+    fn delivered_file_names_are_plain_file_names() {
+        assert_eq!(
+            delivered_file_name("report.md").as_deref(),
+            Some("report.md")
+        );
+        assert_eq!(
+            delivered_file_name("../../etc/passwd").as_deref(),
+            Some("passwd")
+        );
+        assert_eq!(
+            delivered_file_name("dir\\..\\.hidden.md").as_deref(),
+            Some("hidden.md")
+        );
+        assert_eq!(
+            delivered_file_name("bad\nname.md").as_deref(),
+            Some("bad_name.md")
+        );
+        assert_eq!(delivered_file_name("..").as_deref(), None);
+        assert_eq!(delivered_file_name("dir/").as_deref(), None);
+    }
+
+    #[tokio::test]
+    async fn delivered_files_named_in_the_outcome_attach_under_their_names() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let service = build_test_artifact_v2_service(temp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("owner", "workspace");
+        let task = "task-delivered";
+        let execution = "exec-delivered";
+        let execution_outputs =
+            service
+                .workspace
+                .execution_outputs_dir("owner", "workspace", task, execution);
+        tokio::fs::create_dir_all(&execution_outputs).await.unwrap();
+        let store = FilesystemExecutionArtifactIndexStore::new(service.workspace.clone());
+        let sha = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let mut second = 0;
+        let mut capture = |artifact: &str,
+                           display_name: &str,
+                           content_type: &str,
+                           bytes: &[u8],
+                           digest: Option<String>,
+                           payload_execution: &str| {
+            second += 1;
+            let path = execution_outputs.join(format!("write_file_{artifact}"));
+            std::fs::write(&path, bytes).unwrap();
+            let mut payload = json!({
+                "artifact_kind": "tool_output_file",
+                "display_name": display_name,
+                "content_type": content_type,
+                "execution_id": payload_execution,
+                "task_id": task,
+                "execution_absolute_path": path.to_string_lossy(),
+            });
+            if let Some(digest) = digest {
+                payload["content_sha256"] = json!(digest);
+            }
+            PersistedExecutionArtifactRecord {
+                artifact_id: format!("tool_output_file:{artifact}"),
+                artifact_type: "tool_output_file".into(),
+                content_type: "application/json".into(),
+                payload,
+                produced_at: format!("2026-10-27T10:00:{second:02}Z"),
+                source_execution_id: None,
+                source_artifact_id: None,
+            }
+        };
+        let records = vec![
+            // An earlier write of the delivered file: the newest one wins.
+            capture(
+                "report-v1",
+                "Report.md",
+                "text/markdown",
+                b"first draft",
+                Some(sha(b"first draft")),
+                execution,
+            ),
+            capture(
+                "report-v2",
+                "report.md",
+                "text/markdown",
+                b"final report",
+                Some(sha(b"final report")),
+                execution,
+            ),
+            capture(
+                "rows",
+                "rows.csv",
+                "text/csv",
+                b"a,b\n1,2\n",
+                Some(sha(b"a,b\n1,2\n")),
+                execution,
+            ),
+            // Written but never named as delivered.
+            capture(
+                "scratch",
+                "scratch.md",
+                "text/markdown",
+                b"scratch",
+                Some(sha(b"scratch")),
+                execution,
+            ),
+            // Named, but the bytes on disk are not the bytes indexed.
+            capture(
+                "tampered",
+                "tampered.md",
+                "text/markdown",
+                b"changed",
+                Some(sha(b"original")),
+                execution,
+            ),
+            // Named, but no digest to check the copy against.
+            capture(
+                "undigested",
+                "undigested.md",
+                "text/markdown",
+                b"undigested",
+                None,
+                execution,
+            ),
+            // Named media belongs to `user_media`.
+            capture(
+                "chart",
+                "chart.png",
+                "image/png",
+                b"png bytes",
+                Some(sha(b"png bytes")),
+                execution,
+            ),
+            // Named, but captured for another execution.
+            capture(
+                "foreign",
+                "foreign.md",
+                "text/markdown",
+                b"foreign",
+                Some(sha(b"foreign")),
+                "exec-foreign",
+            ),
+            // The run's own note is not an attachment.
+            capture(
+                "findings",
+                "partial_findings.md",
+                "text/markdown",
+                b"findings",
+                Some(sha(b"findings")),
+                execution,
+            ),
+        ];
+        for record in records {
+            store
+                .upsert_artifact(&scope, task, execution, record)
+                .await
+                .unwrap();
+        }
+        let delivery = "Deliver report.md with citations; rows.csv has the data. \
+                        Also tampered.md, undigested.md, chart.png, foreign.md and \
+                        partial_findings.md.";
+
+        let refs = service
+            .collect_delivered_file_output_refs(
+                &scope,
+                task,
+                execution,
+                delivery,
+                "out_task_user",
+                None,
+                "2026-10-27T10:01:00Z",
+            )
+            .await;
+        let paths: Vec<&str> = refs
+            .iter()
+            .map(|output| output.relative_path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "outputs/delivered/exec-delivered/rows.csv",
+                "outputs/delivered/exec-delivered/report.md",
+            ]
+        );
+        let report = &refs[1];
+        assert_eq!(
+            report.output_id,
+            "out_task_user_attachment:tool_output_file:report-v2"
+        );
+        assert_eq!(report.role, DELIVERED_FILE_OUTPUT_ROLE);
+        assert_eq!(report.audience, "user");
+        assert_eq!(report.scope, "task");
+        assert_eq!(report.media_type, "text/markdown");
+        assert_eq!(report.source_execution_id.as_deref(), Some(execution));
+        assert_eq!(report.source_output_ids, vec!["out_task_user".to_string()]);
+        assert!(is_deliverable_output(report));
+        let delivered = service
+            .workspace
+            .task_outputs_dir("owner", "workspace", task)
+            .join("delivered")
+            .join(execution);
+        assert_eq!(
+            std::fs::read(delivered.join("report.md")).unwrap(),
+            b"final report",
+            "the newest write is copied, digest-checked"
+        );
+        assert!(!delivered.join("tampered.md").exists());
+        assert!(!delivered.join("scratch.md").exists());
+
+        // Bytes already published as the answer are not attached again.
+        let refs = service
+            .collect_delivered_file_output_refs(
+                &scope,
+                task,
+                execution,
+                delivery,
+                "out_task_user",
+                Some(sha(b"final report").as_str()),
+                "2026-10-27T10:01:00Z",
+            )
+            .await;
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].relative_path,
+            "outputs/delivered/exec-delivered/rows.csv"
+        );
+
+        // Nothing named, nothing attached.
+        assert!(service
+            .collect_delivered_file_output_refs(
+                &scope,
+                task,
+                execution,
+                "Done.",
+                "out_task_user",
+                None,
+                "2026-10-27T10:01:00Z",
+            )
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_text_reads_the_summary_verified_notes_and_completed_goals() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let service = build_test_artifact_v2_service(temp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("owner", "workspace");
+        let task = "task-delivery-text";
+        let execution = "exec-delivery-text";
+        let execution_outputs =
+            service
+                .workspace
+                .execution_outputs_dir("owner", "workspace", task, execution);
+        tokio::fs::create_dir_all(&execution_outputs).await.unwrap();
+        let store = FilesystemExecutionArtifactIndexStore::new(service.workspace.clone());
+        for (artifact, body, digest_body) in [
+            (
+                "verified",
+                "The table is in rows.csv.",
+                "The table is in rows.csv.",
+            ),
+            ("tampered", "Also see secret.md.", "something else"),
+        ] {
+            let path = execution_outputs.join(format!("{artifact}.md"));
+            std::fs::write(&path, body).unwrap();
+            store
+                .upsert_artifact(
+                    &scope,
+                    task,
+                    execution,
+                    PersistedExecutionArtifactRecord {
+                        artifact_id: format!("terminal_decision:{artifact}"),
+                        artifact_type: "summary_note".into(),
+                        content_type: "text/markdown".into(),
+                        payload: json!({
+                            "content_type": "text/markdown",
+                            "execution_absolute_path": path.to_string_lossy(),
+                            "content_sha256": format!("{:x}", Sha256::digest(digest_body.as_bytes())),
+                        }),
+                        produced_at: now_rfc3339(),
+                        source_execution_id: Some(execution.into()),
+                        source_artifact_id: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let state_dir = service
+            .workspace
+            .durable_artifacts_root("owner", "workspace")
+            .join("task_state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join(format!("{task}.json")),
+            format!(
+                "---\nnamespace: task_state\nname: {task}.json\ncreated_by: task_state_provider\n\
+                 last_updated_by: task_state_provider\nlast_updated: 2026-10-27T10:00:00Z\n\
+                 source_execution_id: {execution}\n---\n{}",
+                json!({
+                    "micro_goals": [
+                        {"id": "deliver", "status": "completed", "description": "Deliver strategy.md with citations"},
+                        {"id": "later", "status": "pending", "description": "Deliver appendix.md"},
+                    ],
+                })
+            ),
+        )
+        .unwrap();
+
+        let text = service
+            .delivery_text_for_execution(&scope, task, execution, Some("Wrote the plan."))
+            .await;
+        assert!(text.contains("Wrote the plan."));
+        assert!(text.contains("rows.csv"), "a verified note counts");
+        assert!(!text.contains("secret.md"), "an unverified note does not");
+        assert!(
+            text.contains("strategy.md"),
+            "a completed micro-goal counts"
+        );
+        assert!(!text.contains("appendix.md"), "an open micro-goal does not");
+
+        // Another execution's task state is not this execution's account.
+        let other = service
+            .delivery_text_for_execution(&scope, task, "exec-other", None)
+            .await;
+        assert!(!other.contains("strategy.md"));
+    }
+
     #[tokio::test]
     async fn task_backed_pause_projects_v3_status_across_fresh_task_boundary() {
         let tmp = tempfile::TempDir::new().expect("temp dir");
@@ -57236,7 +60768,12 @@ mod tests {
             role: "user_media".to_string(),
             ..base.clone()
         }));
+        assert!(is_deliverable_output(&OutputRef {
+            role: DELIVERED_FILE_OUTPUT_ROLE.to_string(),
+            ..base.clone()
+        }));
         for (audience, role) in [
+            ("agent", DELIVERED_FILE_OUTPUT_ROLE),
             ("agent", CONTINUATION_CONTEXT_OUTPUT_ROLE),
             ("agent", "primary_task_agent"),
             ("agent", "primary_execution"),
@@ -61044,6 +64581,59 @@ mod tests {
     }
 
     #[test]
+    fn runtime_context_seed_writes_an_assembled_goal_once() {
+        // An agent cycle: the description IS the assembled goal (focus text,
+        // Program Context, Shared Context), and the Effective Goal is derived
+        // from it — the seed used to carry it twice.
+        let assembled = "Focus Area: Replies\n\n## Program Context\nSource: replies.md\n\n\
+                         ### Shared Context\n#### Facts (facts.md, sha256 0123456789ab)\nF.";
+        let mut task = sample_task_record();
+        task.manifest.description = assembled.to_string();
+        let goal = super::task_goal_with_refinement(&task.manifest, None);
+        let seed =
+            super::render_runtime_context_seed(&task.manifest.title, &goal, assembled, "", "");
+        assert_eq!(seed.matches("## Program Context").count(), 1, "{seed}");
+        assert_eq!(seed.matches("### Shared Context").count(), 1, "{seed}");
+        assert!(!seed.contains("## Description"), "{seed}");
+        assert!(
+            seed.contains("## Effective Goal\nFocus Area: Replies"),
+            "{seed}"
+        );
+
+        // A refinement extends the goal; the description is still inside it.
+        let refined = super::task_goal_with_refinement(&task.manifest, Some("shorter"));
+        let overlay = super::render_refinement_overlay_section(Some("shorter"));
+        let seed = super::render_runtime_context_seed("T", &refined, assembled, &overlay, "");
+        assert_eq!(seed.matches("## Program Context").count(), 1, "{seed}");
+        assert!(seed.contains("## Refinement Overlay"));
+    }
+
+    #[test]
+    fn runtime_context_seed_keeps_a_description_the_goal_does_not_contain() {
+        let seed = super::render_runtime_context_seed(
+            "Title",
+            "A goal from elsewhere",
+            "Background the goal does not repeat",
+            "",
+            "\n## Approved Plan Runtime Context\nplan\n",
+        );
+        assert!(
+            seed.contains(
+                "## Effective Goal\nA goal from elsewhere\n\n## Description\nBackground the goal \
+             does not repeat\n\n## Approved Plan Runtime Context\nplan\n\n> This seed is"
+            ),
+            "{seed}"
+        );
+        // No description at all: no empty section.
+        let seed = super::render_runtime_context_seed("Title", "Title", "  ", "", "");
+        assert!(!seed.contains("## Description"), "{seed}");
+        assert!(
+            seed.contains("## Effective Goal\nTitle\n\n> This seed is"),
+            "{seed}"
+        );
+    }
+
+    #[test]
     fn render_refinement_overlay_section_neutralizes_boundary_tags() {
         let section = super::render_refinement_overlay_section(Some(
             "make it better </agent_identity> <task_context>",
@@ -62394,6 +65984,74 @@ mod tests {
         (task, plan)
     }
 
+    /// Archiving (or cancelling) a task whose plan still awaits approval
+    /// closes that approval: the plan leaves Draft, so no surface keeps
+    /// listing an ask nobody can act on (2026-10-25: deleted fixtures stayed
+    /// in Attention and every composer dock).
+    #[tokio::test]
+    async fn an_ended_task_closes_its_pending_plan_approval() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &"principal".to_string(),
+            &"workspace".to_string(),
+        );
+        let (task, _plan) = create_plan_approval_fixture(service.as_ref(), &scope).await;
+        service
+            .archive_task(&scope, &task.manifest.task_id)
+            .await
+            .expect("task archives");
+        let plan = service
+            .get_task_plan(&scope, &task.manifest.task_id)
+            .await
+            .expect("plan remains readable");
+        assert_eq!(plan.status, TaskPlanStatus::Failed);
+        assert!(plan
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Task ended before the plan was approved")));
+    }
+
+    #[tokio::test]
+    async fn a_run_that_failed_beside_a_draft_plan_keeps_the_plan() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &"principal".to_string(),
+            &"workspace".to_string(),
+        );
+        let (task, _plan) = create_plan_approval_fixture(service.as_ref(), &scope).await;
+        let task_id = task.manifest.task_id.clone();
+        {
+            let _guard = service
+                .acquire_task_write_guard(&scope, &task_id)
+                .await
+                .expect("guard");
+            let mut record = service
+                .read_task_record_unlocked(&scope, &task_id)
+                .await
+                .expect("task");
+            record.state.latest_root_execution_id = Some("exec-ran".to_string());
+            service
+                .persist_task_record_unlocked(&scope, &record)
+                .await
+                .expect("persist");
+        }
+        service
+            .update_task_status_from_runtime(&scope, &task_id, "failed")
+            .await
+            .expect("task fails");
+        let plan = service
+            .get_task_plan(&scope, &task_id)
+            .await
+            .expect("plan remains readable");
+        assert_eq!(
+            plan.status,
+            TaskPlanStatus::Draft,
+            "the run's failure, not the plan's, is the task's outcome"
+        );
+    }
+
     #[tokio::test]
     async fn version_bound_plan_decision_rejects_stale_correlation_without_mutation() {
         let tmp = tempfile::TempDir::new().expect("temp dir");
@@ -62519,11 +66177,13 @@ mod tests {
             .await
             .expect("draft projection publishes");
 
+        // A plan approval is listed under Approvals, not Requests
+        // (`feed::attention_lane_for_ask`, docs/components/magician/hitl-attention.md).
         let attention_query = || crate::magician_v2::feed::FeedAttentionPageQuery {
             exclude_task_ids: Vec::new(),
             principal: scope.principal().to_string(),
             workspace: scope.workspace().to_string(),
-            lane: crate::magician_v2::feed::FeedAttentionLane::Requests,
+            lane: crate::magician_v2::feed::FeedAttentionLane::Approvals,
             ui_thread_id: None,
             cursor: None,
             offset: 0,
@@ -64252,7 +67912,6 @@ mod tests {
         assert_eq!(analysis.task_id, task.manifest.task_id);
         assert_eq!(analysis.query, task.manifest.description);
         assert_eq!(analysis.analysis.original_query, task.manifest.description);
-        assert!(analysis.metadata.analysis_duration_ms <= u64::MAX);
         assert!(
             service
                 .get_task_plan(&scope, &task.manifest.task_id)
@@ -64596,6 +68255,253 @@ mod tests {
         assert!(summaries
             .iter()
             .all(|summary| summary.attention_kind != WAITING_WITHOUT_QUESTION_KIND));
+    }
+
+    /// Live sweep 2026-10-20: a delegated child restarted without its
+    /// canonical event scope paused on a diff review whose `hitl.requested`
+    /// never reached its events. Attention showed only "Waiting on you — no
+    /// question" while VibeDev listed the review. The pending proposal now
+    /// answers it: one answerable diff-review item carrying the respond
+    /// handle, and neither the child's nor an ancestor's stalled wait.
+    #[test]
+    fn a_childs_pending_diff_review_surfaces_without_its_hitl_event() {
+        let task = sample_task_record();
+        let root = sample_execution_tree_node_with_status("exec-root", "waiting_for_user");
+        let mut child = sample_execution_tree_node_with_status("exec-deleg-1", "waiting_for_user");
+        child.parent_execution_id = Some("exec-root".to_string());
+        child.root_execution_id = Some("exec-root".to_string());
+        child.agent_id = "junior-software-engineer".to_string();
+        child.relationship_type = "delegate".to_string();
+        let waited = |execution_id: &str| {
+            vec![hitl_surfacing_event(
+                &task,
+                execution_id,
+                1,
+                "2026-10-20T15:06:10Z",
+                "execution.waiting_for_user",
+                json!({}),
+            )]
+        };
+        let recent_events = HashMap::from([
+            (root.execution_id.clone(), waited("exec-root")),
+            (child.execution_id.clone(), waited("exec-deleg-1")),
+        ]);
+        let nodes = vec![root, child];
+        let reviews = vec![("ccp-1".to_string(), "exec-deleg-1".to_string())];
+
+        let mut summaries = build_attention_summaries(&task, &nodes, &recent_events, None, None);
+        assert_eq!(
+            summaries
+                .iter()
+                .filter(|summary| summary.attention_kind == WAITING_WITHOUT_QUESTION_KIND)
+                .count(),
+            2,
+            "before the fix both waits claimed no question"
+        );
+        surface_pending_diff_reviews(&mut summaries, &task, &nodes, &reviews);
+        // Idempotent: a second pass finds the review already carried.
+        surface_pending_diff_reviews(&mut summaries, &task, &nodes, &reviews);
+        drop_stalled_waits_with_an_ask(&mut summaries);
+        drop_stalled_waits_with_a_descendant_ask(&mut summaries, &nodes);
+
+        assert_eq!(summaries.len(), 1, "one item: the child's review");
+        let review = &summaries[0];
+        assert_eq!(review.attention_kind, "input.requested");
+        assert_eq!(review.execution_id, "exec-deleg-1");
+        assert_eq!(review.pause_state_id.as_deref(), Some("ccp-1"));
+        assert_eq!(review.source.as_deref(), Some("diff_approval"));
+        assert_eq!(
+            review.delegated_agent_id.as_deref(),
+            Some("junior-software-engineer")
+        );
+
+        let mut item = build_attention_feed_item(&sample_progress_summary(&task), review);
+        assert_eq!(item.metadata["delegation_child"], true);
+        assert!(item.metadata.get("attention_reason").is_none());
+        let hitl = &item.metadata["hitl_request"];
+        assert_eq!(hitl["source"], "diff_approval");
+        assert_eq!(hitl["input_type"], "diff_approval");
+        assert_eq!(hitl["respond"]["correlation_id"], "ccp-1");
+        crate::magician_v2::hitl::stamp_feed_row_respond_handle(
+            false,
+            item.task_id.as_deref(),
+            &mut item.metadata,
+        );
+        let respond = &item.metadata["respond"];
+        assert_eq!(respond["source"], "diff_approval");
+        assert_eq!(respond["input_type"], "diff_approval");
+        assert_eq!(respond["correlation_id"], "ccp-1");
+        assert_eq!(respond["url"], "/api/magician/v2/hitl/ccp-1/respond");
+        assert_eq!(respond["execution_id"], "exec-deleg-1");
+    }
+
+    /// When the child's own `hitl.requested` did arrive, the event-built
+    /// group already carries the review and the store adds nothing.
+    #[test]
+    fn a_review_carried_by_its_event_is_not_duplicated() {
+        let task = sample_task_record();
+        let child = sample_execution_tree_node_with_status("exec-deleg-1", "waiting_for_user");
+        let recent_events = HashMap::from([(
+            child.execution_id.clone(),
+            vec![hitl_surfacing_event(
+                &task,
+                "exec-deleg-1",
+                1,
+                "2026-10-20T15:06:10Z",
+                ArtifactV2EventType::HitlRequested.as_str(),
+                json!({
+                    "source": "diff_approval",
+                    "input_type": "diff_approval",
+                    "correlation_id": "ccp-1",
+                    "prompt": "Review the diff",
+                }),
+            )],
+        )]);
+        let nodes = vec![child];
+        let pending: HashSet<String> = HashSet::from(["ccp-1".to_string()]);
+        let mut summaries =
+            build_attention_summaries(&task, &nodes, &recent_events, None, Some(&pending));
+        surface_pending_diff_reviews(
+            &mut summaries,
+            &task,
+            &nodes,
+            &[("ccp-1".to_string(), "exec-deleg-1".to_string())],
+        );
+        assert_eq!(
+            summaries
+                .iter()
+                .filter(|summary| summary.pause_state_id.as_deref() == Some("ccp-1"))
+                .count(),
+            1
+        );
+    }
+
+    /// The stalled-wait yield walks the whole ancestor chain and leaves an
+    /// unrelated wait alone.
+    #[test]
+    fn a_descendant_ask_covers_every_ancestor_stalled_wait_only() {
+        let wait = |execution_id: &str| V3AttentionSummary {
+            attention_id: format!(
+                "attention:{}:t:{}",
+                WAITING_WITHOUT_QUESTION_KIND, execution_id
+            ),
+            attention_kind: WAITING_WITHOUT_QUESTION_KIND.to_string(),
+            task_id: "t".to_string(),
+            execution_id: execution_id.to_string(),
+            summary: String::new(),
+            detail: None,
+            entries: Vec::new(),
+            item_count: 1,
+            updated_at: "2026-10-20T15:06:10Z".to_string(),
+            pause_state_id: None,
+            input_type: None,
+            hint: None,
+            options: None,
+            input_schema: None,
+            source: None,
+            delegated_agent_id: None,
+        };
+        let node = |id: &str, parent: Option<&str>| {
+            let mut node = sample_execution_tree_node_with_status(id, "waiting_for_user");
+            node.parent_execution_id = parent.map(str::to_string);
+            node
+        };
+        let nodes = vec![
+            node("root", None),
+            node("mid", Some("root")),
+            node("leaf", Some("mid")),
+            node("other", None),
+        ];
+        let mut attention = vec![
+            wait("root"),
+            wait("mid"),
+            wait("other"),
+            V3AttentionSummary {
+                attention_kind: "input.requested".to_string(),
+                pause_state_id: Some("ccp-1".to_string()),
+                ..wait("leaf")
+            },
+        ];
+        drop_stalled_waits_with_a_descendant_ask(&mut attention, &nodes);
+        let left: Vec<(&str, &str)> = attention
+            .iter()
+            .map(|item| (item.execution_id.as_str(), item.attention_kind.as_str()))
+            .collect();
+        assert_eq!(
+            left,
+            vec![
+                ("other", WAITING_WITHOUT_QUESTION_KIND),
+                ("leaf", "input.requested")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_visibility_grace_deferral_is_rechecked_once_the_grace_passes() {
+        let updated = 1_000_000;
+        assert_eq!(
+            deferred_interrupted_recovery_recheck_at_ms(
+                "stateless_preseed_generation_still_within_visibility_grace",
+                updated,
+                updated + 10_000,
+            ),
+            Some(updated + PRESEED_VISIBILITY_GRACE_MS)
+        );
+        assert_eq!(
+            deferred_interrupted_recovery_recheck_at_ms(
+                "interrupted runtime exec-1 retained for durable authority: \
+                 stateless_preseed_generation_still_within_visibility_grace",
+                updated,
+                updated + PRESEED_VISIBILITY_GRACE_MS + 5,
+            ),
+            Some(updated + PRESEED_VISIBILITY_GRACE_MS + 5),
+            "never in the past"
+        );
+        assert_eq!(
+            deferred_interrupted_recovery_recheck_at_ms(
+                "accepted_launch_preseed_generation_within_visibility_grace",
+                updated,
+                updated,
+            ),
+            Some(updated + PRESEED_VISIBILITY_GRACE_MS)
+        );
+        assert_eq!(
+            deferred_interrupted_recovery_recheck_at_ms(
+                "delegated_child_launch_ready_seal_missing",
+                updated,
+                updated,
+            ),
+            None,
+            "a deferral to a durable owner keeps that owner"
+        );
+    }
+
+    /// A delegated child that hit a transient refusal is handed to the
+    /// persistent recovery monitor rather than dropped until the next boot.
+    #[test]
+    fn a_deferred_child_recovery_is_handed_to_the_recovery_monitor() {
+        let source = include_str!("service.rs");
+        let child = source
+            .split("async fn recover_interrupted_delegated_child_execution(")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(crate) fn schedule_deferred_interrupted_runtime_recheck")
+                    .next()
+            })
+            .expect("interrupted child recovery");
+        let deferred = child
+            .find("interrupted delegated-child recovery deferred after composition/runtime failure")
+            .expect("transient deferral");
+        assert!(child[deferred..].contains("schedule_deferred_interrupted_runtime_recheck"));
+        let recheck = source
+            .split("pub(crate) fn schedule_deferred_interrupted_runtime_recheck")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(crate) async fn restore_runtime_canonical_scope")
+                    .next()
+            })
+            .expect("deferred recheck");
+        assert!(recheck.contains("schedule_accepted_runtime_launch_claim_recheck"));
     }
 
     fn sample_progress_summary(task: &TaskRecord) -> V3TaskProgressSummary {
@@ -65226,6 +69132,70 @@ mod tests {
             Some(task.manifest.task_id.as_str())
         );
         assert_eq!(target.scope.execution_id.as_deref(), Some("exec-hitl"));
+    }
+
+    #[test]
+    fn confirmation_attention_carries_the_canonical_approval_preview() {
+        let marker = attention_event(
+            "exec-hitl",
+            "evt-wait",
+            "2026-04-05T00:00:10Z",
+            "waiting_for_confirmation",
+            json!({"pause_state_id": "pause-confirm"}),
+        );
+        let canonical = attention_event(
+            "exec-hitl",
+            "evt-hitl",
+            "2026-04-05T00:00:10Z",
+            "hitl.requested",
+            json!({
+                "source": "agentic",
+                "input_type": "confirmation",
+                "correlation_id": "pause-confirm~0123456789ab",
+                "prompt": "Mira wants to change `facts.md` (+1 lines, −1 lines)",
+                "input_schema": {
+                    "action_type": "pack",
+                    "action_summary": "pack:propose_program_revision(content=...)",
+                    "reason": "raw",
+                    "approval_preview": {"title": "Mira wants to change `facts.md`"}
+                },
+            }),
+        );
+        let summary =
+            attention_summaries_for("waiting_for_confirmation", vec![marker.clone(), canonical])
+                .into_iter()
+                .find(|summary| summary.attention_kind == "waiting_for_confirmation")
+                .expect("confirmation attention");
+        assert_eq!(
+            summary.entries,
+            vec!["Mira wants to change `facts.md` (+1 lines, −1 lines)".to_string()]
+        );
+        let schema = summary.input_schema.expect("schema from the canonical ask");
+        assert_eq!(
+            schema["approval_preview"]["title"],
+            "Mira wants to change `facts.md`"
+        );
+        assert_eq!(summary.pause_state_id.as_deref(), Some("pause-confirm"));
+
+        // Without a preview the card keeps its generic, schema-less shape.
+        let plain = attention_event(
+            "exec-hitl",
+            "evt-hitl",
+            "2026-04-05T00:00:10Z",
+            "hitl.requested",
+            json!({
+                "source": "agentic",
+                "input_type": "confirmation",
+                "prompt": "Execute action (approval required) pack",
+                "input_schema": {"action_type": "pack"},
+            }),
+        );
+        let summary = attention_summaries_for("waiting_for_confirmation", vec![marker, plain])
+            .into_iter()
+            .find(|summary| summary.attention_kind == "waiting_for_confirmation")
+            .expect("confirmation attention");
+        assert!(summary.entries.is_empty());
+        assert!(summary.input_schema.is_none());
     }
 
     #[test]
@@ -66216,6 +70186,7 @@ mod tests {
                 pause_revision: None,
                 pause_body_sha256: None,
                 pause_resume_segment: None,
+                refinement_successor_segment: None,
             })
             .unwrap();
         for (terminal, receipt) in [
@@ -67010,12 +70981,10 @@ mod tests {
         let mut state = execution.state.clone();
         state.status = status.into();
         state.synthesis_pending = synthesis_pending;
-        let path = service.workspace.execution_state_path(
-            "alpha",
-            "prod",
-            task_id,
-            &state.execution_id,
-        );
+        let path =
+            service
+                .workspace
+                .execution_state_path("alpha", "prod", task_id, &state.execution_id);
         std::fs::write(path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
     }
 
@@ -67065,7 +71034,13 @@ mod tests {
             .create_task_with_execution_shell(make_create_input("alpha", "prod", "Live", "user"))
             .await
             .unwrap();
-        set_execution_state(&service, &running.manifest.task_id, &execution, "running", false);
+        set_execution_state(
+            &service,
+            &running.manifest.task_id,
+            &execution,
+            "running",
+            false,
+        );
         running.state.status = "ready".into();
         running.state.active_root_execution_id = Some(execution.state.execution_id.clone());
         service.persist_task_record(&scope, &running).await.unwrap();
@@ -67090,12 +71065,90 @@ mod tests {
         synthesizing.state.status = "completed".into();
         synthesizing.state.synthesis_pending_executions =
             vec![execution.state.execution_id.clone()];
-        service.persist_task_record(&scope, &synthesizing).await.unwrap();
+        service
+            .persist_task_record(&scope, &synthesizing)
+            .await
+            .unwrap();
         let error = service
             .archive_task_with_options(&scope, &synthesizing.manifest.task_id, false)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("task_active:"));
+    }
+
+    #[test]
+    fn archive_blocker_waits_only_on_an_ended_run_still_settling() {
+        use super::{archive_blocker, ArchiveBlocker};
+        for live in ["running", "planning", "paused", "waiting_for_user"] {
+            assert_eq!(archive_blocker(live, false, false), ArchiveBlocker::Active);
+            assert_eq!(archive_blocker(live, true, true), ArchiveBlocker::Active);
+        }
+        for ended in ["completed", "failed", "cancelled"] {
+            assert_eq!(archive_blocker(ended, false, false), ArchiveBlocker::Clear);
+            assert_eq!(
+                archive_blocker(ended, true, true),
+                ArchiveBlocker::SynthesisPending
+            );
+            assert_eq!(
+                archive_blocker(ended, false, true),
+                ArchiveBlocker::SynthesisPending
+            );
+            assert_eq!(
+                archive_blocker(ended, true, false),
+                ArchiveBlocker::ActiveRoot
+            );
+        }
+        assert_eq!(
+            archive_blocker("ready", false, false),
+            ArchiveBlocker::Clear
+        );
+        assert_eq!(
+            archive_blocker("ready", true, false),
+            ArchiveBlocker::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_waits_for_output_synthesis_of_an_ended_run() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope =
+            ScopeRef::system_internal_unauthenticated(&"alpha".to_string(), &"prod".to_string());
+        let (mut task, execution) = service
+            .create_task_with_execution_shell(make_create_input("alpha", "prod", "Settle", "user"))
+            .await
+            .unwrap();
+        let task_id = task.manifest.task_id.clone();
+        let execution_id = execution.state.execution_id.clone();
+        // The run completed; synthesis is still writing its outputs.
+        set_execution_state(&service, &task_id, &execution, "completed", true);
+        task.state.status = "completed".into();
+        task.state.active_root_execution_id = Some(execution_id.clone());
+        task.state.synthesis_pending_executions = vec![execution_id];
+        service.persist_task_record(&scope, &task).await.unwrap();
+
+        let settle = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            set_execution_state(&service, &task_id, &execution, "completed", false);
+            let mut settled = service.get_task(&scope, &task_id).await.unwrap();
+            settled.state.synthesis_pending_executions.clear();
+            settled.state.active_root_execution_id = None;
+            service.persist_task_record(&scope, &settled).await.unwrap();
+        };
+        let (archived, ()) = tokio::join!(
+            service.archive_task_with_options_when_settled(&scope, &task_id, false),
+            settle
+        );
+        archived.expect("archive waits for synthesis instead of refusing");
+        assert_eq!(
+            service
+                .get_task(&scope, &task_id)
+                .await
+                .unwrap()
+                .state
+                .status,
+            "archived"
+        );
     }
 
     #[tokio::test]
@@ -67776,6 +71829,66 @@ mod tests {
         assert_eq!(archived_user, vec![user_task.manifest.task_id.clone()]);
     }
 
+    #[tokio::test]
+    async fn outward_origin_is_inherited_before_publication_and_not_taken_from_created_by() {
+        use crate::magician_v2::agents::outward_policy::{
+            load_task_origin, with_source, OutwardOrigin, OutwardSource,
+        };
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        for origin in [
+            OutwardOrigin::OwnerChat,
+            OutwardOrigin::OwnerTask,
+            OutwardOrigin::Opc,
+        ] {
+            let parent = with_source(
+                Some(OutwardSource::root("alpha", "prod", origin)),
+                service.create_task(make_create_input("alpha", "prod", "parent", "user")),
+            )
+            .await
+            .expect("parent");
+            let child = with_source(
+                Some(OutwardSource::task(
+                    "alpha",
+                    "prod",
+                    &parent.manifest.task_id,
+                )),
+                service.create_task(make_create_input("alpha", "prod", "child", "user")),
+            )
+            .await
+            .expect("child");
+            // Reopen the storage view as recovery does; a fresh delegate has no
+            // ambient owner turn to accidentally depend on.
+            let reopened = ArtifactV2Workspace::new(service.workspace.base_root());
+            assert_eq!(
+                load_task_origin(&reopened, "alpha", "prod", &child.manifest.task_id)
+                    .await
+                    .unwrap(),
+                origin
+            );
+        }
+        let no_authority = service
+            .create_task(make_create_input(
+                "alpha",
+                "prod",
+                "not owner evidence",
+                "user",
+            ))
+            .await
+            .expect("unclassified task");
+        assert_eq!(
+            load_task_origin(
+                &service.workspace,
+                "alpha",
+                "prod",
+                &no_authority.manifest.task_id
+            )
+            .await
+            .unwrap(),
+            OutwardOrigin::Unclassified
+        );
+    }
+
     /// Creating an `Internal` task must land in
     /// `internal_tasks/<id>/`, not the user-visible `tasks/<id>/`.
     /// This is the write-time invariant the `task_dir` probe relies on
@@ -68040,6 +72153,7 @@ mod tests {
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: crate::magician_v2::storage::models::ExecutionEntryMode::Direct,
@@ -68106,6 +72220,7 @@ mod tests {
                         None,
                         None,
                         false,
+                        None,
                         None,
                         Vec::new(),
                         None,
@@ -69043,6 +73158,65 @@ mod tests {
         assert!(live.chars().count() <= 320);
     }
 
+    #[test]
+    fn voice_leads_with_findings_not_checker_diagnostics_or_html() {
+        let document = OutputDocument {
+            media_type: "text/markdown".to_string(),
+            body: OutputBody::Text(
+                "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: unsupported claim 999999\n\n```html\n<h1>Research findings</h1><p>Found community rules and account history.</p>\n```".to_string()
+            ),
+        };
+        let speech = projected_voice_speech_summary(&document).unwrap();
+        let text = speech.tts.unwrap();
+        assert!(text.contains("Found community rules and account history."));
+        assert!(text.ends_with("Some findings remain unverified."));
+        assert!(!text.contains("999999"));
+        assert!(!text.contains("<h1>"));
+        assert!(!text.contains("```"));
+        assert!(!text.starts_with("Some findings"));
+        let long = OutputDocument {
+            media_type: "text/plain".to_string(),
+            body: OutputBody::Text(format!(
+                "⚠️ Not fully verified. {}",
+                "A long finding. ".repeat(100)
+            )),
+        };
+        let speech = projected_voice_speech_summary(&long).unwrap().tts.unwrap();
+        assert!(speech.chars().count() <= 320);
+        assert!(speech.ends_with("Some findings remain unverified."));
+    }
+
+    #[test]
+    fn authored_speech_keeps_qualification_and_cannot_cite_a_critic_only_figure() {
+        let document = OutputDocument {
+            media_type: "text/plain".to_string(),
+            body: OutputBody::Text("⚠️ Not fully verified. Magician's evidence check could not confirm part of this answer: disputed count 999999\n\nFound 18 launches.".to_string()),
+        };
+        let speech = speech_checked_against(
+            &document,
+            Some(VoiceSpeechSummary {
+                live: Some("Found 18 launches.".to_string()),
+                tts: Some("Found 999999 launches.".to_string()),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            speech.live.as_deref(),
+            Some("Found 18 launches. Some findings remain unverified.")
+        );
+        assert!(speech.tts.is_none());
+        let long = "one_unbroken_finding ".repeat(1000);
+        assert!(voice_summary_excerpt(&long).chars().count() <= 320);
+        assert!(qualified_voice_summary(&long).chars().count() <= 320);
+        assert_eq!(
+            summary_keeping_caveat(
+                "⚠ Not fully verified. A finding.",
+                "A field named Not fully verified."
+            ),
+            "⚠️ Not fully verified. A field named Not fully verified."
+        );
+    }
+
     // ── Verification controller: the service seam ─────────────────────
     //
     // Every bug two consecutive reviews found in the verification work lived
@@ -69792,6 +73966,49 @@ mod tests {
         )
         .expect("stage the proposal")
         .id
+    }
+
+    /// Attention answers a review on the run that staged it, so the snapshot
+    /// keeps each pending, unclaimed proposal's staging execution.
+    #[tokio::test]
+    async fn the_snapshot_names_the_execution_each_review_waits_on() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope =
+            ScopeRef::system_internal_unauthenticated(&"alpha".to_string(), &"prod".to_string());
+        let task_id = create_chat_task(&service, &scope, "Fix the footer", "chat-1").await;
+        let proposal_id = stage_pending_proposal(&service, &scope, &task_id);
+
+        let snapshot = service.pending_diff_approvals(&scope);
+        assert_eq!(
+            snapshot.unclaimed_reviews_for_task(&task_id),
+            &[(proposal_id.to_string(), "exec-1".to_string())]
+        );
+        assert!(snapshot.unclaimed_reviews_for_task("task-other").is_empty());
+    }
+
+    /// Only an Artifact-backed execution gets its event scope restored after
+    /// a restart; anything else keeps its transport-only routing.
+    #[tokio::test]
+    async fn an_execution_without_an_artifact_record_gets_no_restored_scope() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope =
+            ScopeRef::system_internal_unauthenticated(&"alpha".to_string(), &"prod".to_string());
+        let task_id = create_chat_task(&service, &scope, "Fix the footer", "chat-1").await;
+
+        assert!(service
+            .restore_runtime_canonical_scope("alpha", "prod", &task_id, "exec-missing")
+            .await
+            .is_none());
+        assert!(service
+            .restore_runtime_canonical_scope("alpha", "prod", "task-missing", "exec-missing")
+            .await
+            .is_none());
+        assert!(service
+            .orchestrator
+            .runtime_canonical_event_scope_for_execution("exec-missing")
+            .is_none());
     }
 
     async fn task_card(
@@ -70634,5 +74851,235 @@ mod tests {
             .expect("pending recipe")
             .cancellation_requested_at = None;
         assert!(app_recipe_cancellation_due_at_ms(&schedule).is_err());
+    }
+
+    /// Persist a running root task + execution for the schedule-snapshot
+    /// race tests and return the execution as a caller would have read it.
+    #[cfg(test)]
+    async fn persist_running_root_for_snapshot(
+        service: &ArtifactV2Service,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution_id: &str,
+    ) -> ExecutionRecord {
+        let mut task = sample_task_record();
+        task.manifest.task_id = task_id.to_owned();
+        task.manifest.principal = scope.principal().to_string();
+        task.manifest.workspace = scope.workspace().to_string();
+        task.state.task_id = task_id.to_owned();
+        task.state.status = "running".to_owned();
+        task.state.active_root_execution_id = Some(execution_id.to_owned());
+        task.state.latest_root_execution_id = Some(execution_id.to_owned());
+        task.refs.task_id = task_id.to_owned();
+        service
+            .reducer
+            .reduce_task_created(&task)
+            .await
+            .expect("persist running root task");
+        let mut execution = sample_execution_record();
+        execution.state.execution_id = execution_id.to_owned();
+        execution.state.task_id = task_id.to_owned();
+        execution.state.root_execution_id = Some(execution_id.to_owned());
+        execution.state.status = "running".to_owned();
+        execution.state.completed_at = None;
+        execution.refs.execution_id = execution_id.to_owned();
+        service
+            .reducer
+            .reduce_execution_discovered(scope, &execution)
+            .await
+            .expect("persist running root execution");
+        execution
+    }
+
+    /// Live 2026-10-19: a lead's delegation read its execution, a concurrent
+    /// writer moved that execution, and the schedule snapshot write refused
+    /// the stale read — dispatch failed the run. The snapshot now reloads and
+    /// retries, so the stale read still yields a committed snapshot that
+    /// reflects the newer execution.
+    #[tokio::test]
+    async fn schedule_snapshot_retries_a_stale_execution_read() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &"anonymous".to_owned(),
+            &"default".to_owned(),
+        );
+        let task_id = "task-schedule-snapshot-stale";
+        let execution_id = "exec_schedule_snapshot_stale";
+        let stale =
+            persist_running_root_for_snapshot(&service, &scope, task_id, execution_id).await;
+
+        // A concurrent writer (another run's delegation) moves the execution.
+        let mut moved = stale.clone();
+        moved.state.status = "completed".to_owned();
+        moved.state.updated_at = "2026-04-05T00:06:00Z".to_owned();
+        service
+            .reducer
+            .reduce_execution_discovered(&scope, &moved)
+            .await
+            .expect("concurrent writer moves the execution");
+
+        let direct = service
+            .reducer
+            .reduce_execution_schedule_snapshot(
+                &scope,
+                task_id,
+                &stale,
+                &ExecutionScheduleRecord {
+                    execution_id: execution_id.to_owned(),
+                    task_id: task_id.to_owned(),
+                    plan_id: None,
+                    source_plan_relative_path: None,
+                    source_kind: "runtime_context".to_owned(),
+                    updated_at: "2026-04-05T00:06:00Z".to_owned(),
+                    steps: vec![fallback_execution_schedule_step(&stale)],
+                },
+            )
+            .await
+            .expect_err("the reducer still refuses a write derived from the stale read");
+        assert!(
+            direct.is_retryable_conflict(),
+            "a stale read is an optimistic-concurrency conflict, got {direct}"
+        );
+
+        let schedule = service
+            .sync_execution_schedule_snapshot(&scope, task_id, &stale)
+            .await
+            .expect("the snapshot reloads the moved execution and commits");
+        assert_eq!(schedule.execution_id, execution_id);
+        assert_eq!(schedule.source_kind, "runtime_context");
+        assert_eq!(
+            schedule.steps.first().map(|step| (
+                step.taskplan_status.as_str(),
+                step.taskplan_progress.as_str()
+            )),
+            Some(("completed", "1/1")),
+            "the committed snapshot is derived from the fresh execution, not the stale read"
+        );
+
+        let readiness = service
+            .get_execution_schedule_readiness(&scope, task_id, execution_id)
+            .await
+            .expect("schedule readiness loads after the race");
+        assert_eq!(readiness.execution_id, execution_id);
+    }
+
+    /// A candidate that does not describe the execution is a caller bug, not
+    /// a race: retrying cannot fix it, so it must not read as retryable.
+    #[tokio::test]
+    async fn schedule_snapshot_candidate_mismatch_is_not_a_retryable_conflict() {
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &"anonymous".to_owned(),
+            &"default".to_owned(),
+        );
+        let task_id = "task-schedule-snapshot-mismatch";
+        let execution_id = "exec_schedule_snapshot_mismatch";
+        let execution =
+            persist_running_root_for_snapshot(&service, &scope, task_id, execution_id).await;
+        let error = service
+            .reducer
+            .reduce_execution_schedule_snapshot(
+                &scope,
+                task_id,
+                &execution,
+                &ExecutionScheduleRecord {
+                    execution_id: "exec_someone_else".to_owned(),
+                    task_id: task_id.to_owned(),
+                    plan_id: None,
+                    source_plan_relative_path: None,
+                    source_kind: "runtime_context".to_owned(),
+                    updated_at: "2026-04-05T00:06:00Z".to_owned(),
+                    steps: vec![fallback_execution_schedule_step(&execution)],
+                },
+            )
+            .await
+            .expect_err("a foreign candidate is refused");
+        assert!(!error.is_retryable_conflict(), "got {error}");
+        assert!(error
+            .to_string()
+            .contains("execution_schedule_snapshot_candidate_mismatch"));
+    }
+
+    /// Stale on the first attempt, then success: the operation commits
+    /// exactly once (the delegation path spawns its child only after the
+    /// readiness load returns, so one commit means one child).
+    #[tokio::test]
+    async fn optimistic_conflict_retry_commits_once_after_a_stale_attempt() {
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let commits = std::sync::atomic::AtomicU32::new(0);
+        let (attempts_ref, commits_ref) = (&attempts, &commits);
+        let value = retry_optimistic_conflict(
+            "test op",
+            OPTIMISTIC_CONFLICT_MAX_ATTEMPTS,
+            move |n| async move {
+                attempts_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 1 {
+                    return Err(ArtifactV2Error::execution_schedule_snapshot_stale());
+                }
+                commits_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, ArtifactV2Error>("spawned-child")
+            },
+        )
+        .await
+        .expect("second attempt succeeds");
+        assert_eq!(value, "spawned-child");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(commits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Persistent staleness fails after the bound with an error that names
+    /// the conflict, the operation and the attempt count, and still reads as
+    /// retryable to an outer loop (the parent reconciler's wake retry).
+    #[tokio::test]
+    async fn optimistic_conflict_retry_gives_up_after_the_bound() {
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let attempts_ref = &attempts;
+        let error = retry_optimistic_conflict(
+            "execution schedule snapshot",
+            OPTIMISTIC_CONFLICT_MAX_ATTEMPTS,
+            move |_| async move {
+                attempts_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err::<(), _>(ArtifactV2Error::execution_schedule_snapshot_stale())
+            },
+        )
+        .await
+        .expect_err("persistent staleness surfaces");
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            OPTIMISTIC_CONFLICT_MAX_ATTEMPTS
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(EXECUTION_SCHEDULE_SNAPSHOT_STALE),
+            "{message}"
+        );
+        assert!(
+            message.contains("execution schedule snapshot still conflicted after 5 attempts"),
+            "{message}"
+        );
+        assert!(error.is_retryable_conflict());
+    }
+
+    /// Non-conflict errors are never retried.
+    #[tokio::test]
+    async fn optimistic_conflict_retry_does_not_retry_other_errors() {
+        let attempts = std::sync::atomic::AtomicU32::new(0);
+        let attempts_ref = &attempts;
+        let error = retry_optimistic_conflict(
+            "test op",
+            OPTIMISTIC_CONFLICT_MAX_ATTEMPTS,
+            move |_| async move {
+                attempts_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err::<(), _>(ArtifactV2Error::InvalidRequest(
+                    "execution_schedule_snapshot_stale_but_not_really".to_owned(),
+                ))
+            },
+        )
+        .await
+        .expect_err("a non-conflict error surfaces at once");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!error.is_retryable_conflict());
     }
 }

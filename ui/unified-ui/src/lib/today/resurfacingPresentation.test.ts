@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResurfacingCard, ResurfacingDetail } from './resurfacingQueries';
+import { ASSISTANT_FALLBACK_NAME } from '$lib/presentationIdentity';
+import { actionLabel } from './resurfacingQueries';
 import {
+	askAgentLabel,
 	buildResurfacingActionInput,
 	defaultResurfacingActionDraft,
 	mergeResurfacingCapabilities,
+	resurfacingActionDisplayLabel,
 	resurfacingHasMissingDetails,
 	resurfacingPrimaryAction,
 	resurfacingRowFacts
@@ -210,5 +214,20 @@ describe('resurfacing action dialog inputs', () => {
 			ok: false,
 			error: 'Fact is required.'
 		});
+	});
+});
+
+describe('ask action naming', () => {
+	it('names the primary agent instead of the ask_presto wire value', () => {
+		expect(askAgentLabel('Nova')).toBe('Ask Nova');
+		expect(askAgentLabel('  ')).toBe(`Ask ${ASSISTANT_FALLBACK_NAME}`);
+		expect(actionLabel('ask_presto', 'Nova')).toBe('Ask Nova');
+		expect(actionLabel('ask_presto')).toBe(`Ask ${ASSISTANT_FALLBACK_NAME}`);
+	});
+
+	it('overrides a server "Ask Presto" label and keeps every other label', () => {
+		expect(resurfacingActionDisplayLabel({ kind: 'ask_presto', label: 'Ask Presto' }, 'Nova')).toBe('Ask Nova');
+		expect(resurfacingActionDisplayLabel({ kind: 'create_task', label: 'Create task' }, 'Nova')).toBe('Create task');
+		expect(resurfacingActionDisplayLabel({ kind: 'save_to_memory', label: '' }, 'Nova')).toBe('Save To Memory');
 	});
 });

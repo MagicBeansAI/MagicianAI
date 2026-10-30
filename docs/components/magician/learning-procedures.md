@@ -95,6 +95,18 @@ transition with actor, reason and evidence. New records are always `draft`;
 moving to `active`, `deprecated` or `archived` goes through the status endpoint
 so a decision is logged. Duplicate status files for one id are refused on read
 and surfaced by the API as a conflict, not a missing procedure.
+Listing and reading reuse a process-wide parse of each YAML file, revalidated by
+size + mtime and, when those change or are recent, a BLAKE3 content hash, so a
+file is parsed once per revision; status/content writes re-read it fresh.
+The post-turn "already reflected?" check (`has_completed_reflection_for_episode`)
+reads the day-partitioned `learning/events/<date>.jsonl` logs through a
+process-wide index of `learning_reflection_completed` (episode, boundary) pairs,
+so each event line is deserialized once: a settled, unchanged stamp (size, mtime,
+dev/inode) skips the read; an append parses only lines after the last indexed
+newline, once the indexed prefix still matches its BLAKE3 hash; a shrunk,
+replaced or rewritten log is rescanned from the start; and an unterminated final
+line is never indexed until its newline lands. Malformed complete lines still
+fail the check and are not cached.
 
 REST surfaces:
 

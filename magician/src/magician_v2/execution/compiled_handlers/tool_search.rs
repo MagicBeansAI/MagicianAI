@@ -548,8 +548,12 @@ mod tests {
             Some(&callable),
         );
         assert_eq!(out["matches"][0]["loaded"], true);
-        assert!(out["how_to_call"].as_str().unwrap().starts_with("Already in your tool list"));
-        let fresh = search_response_with_loaded(Some(&index), "select:save_preference", 5, None, None);
+        assert!(out["how_to_call"]
+            .as_str()
+            .unwrap()
+            .starts_with("Already in your tool list"));
+        let fresh =
+            search_response_with_loaded(Some(&index), "select:save_preference", 5, None, None);
         let fresh = fresh["how_to_call"].as_str().unwrap();
         assert!(fresh.starts_with("These tools are now in your active tool list"));
         // "Next turn" read as the owner's next message in chat.

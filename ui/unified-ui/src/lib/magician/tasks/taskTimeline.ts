@@ -32,12 +32,14 @@
  */
 
 import type { FeedItem, FeedItemStatus } from '$lib/feed/types';
+import { contextPreparationRow } from '$lib/magician/components/contextPreparation';
 import { cachedPercentOf, totalUsage, type TokenUsage, type UsageTotals } from '$lib/llm/tokenUsage';
 import type {
 	ExecutionPanelDelegationGroup,
 	ExecutionPanelState
 } from '$lib/types/executionPanel';
 import type { RecipeLifecycleEvent } from '$lib/magician/api-mining/recipeNarrative';
+import { answeredModelLabel, requestedModelLabel } from '$lib/magician/components/llmModelLabel';
 
 import { durationIfKnown } from './taskVerdict';
 
@@ -346,7 +348,8 @@ function recipeLifecycle(
 /**
  * Title an activity row in the **same vocabulary the chat activity card uses**,
  * so one step reads identically in the card and in the panel it opens:
- * `Thinking with <capability>` for an LLM call, `Calling <tool>` /
+ * `Thinking with <model>` for an LLM call (the capability when the event names
+ * no model), `Calling <tool>` /
  * `<tool> returned` / `<tool> failed` for a tool.
  *
  * Falls back to the backend's own humanized title whenever the metadata that
@@ -355,7 +358,9 @@ function recipeLifecycle(
  * than the generic one.
  */
 function activityTitle(item: FeedItem, meta: Record<string, unknown>, eventType: string): string {
-	const tool = text(meta.target) ?? text(meta.tool_name) ?? text(meta.action_type);
+	const preparation = contextPreparationRow(eventType, meta);
+	if (preparation) return preparation.label;
+	const tool = text(meta.detail) ?? text(meta.target) ?? text(meta.tool_name) ?? text(meta.action_type);
 	const capability = text(meta.capability);
 	const recipeKind = text(meta.kind);
 	if (eventType === 'recipe.replay' && recipeKind?.startsWith('recipe.replay.')) {
@@ -369,10 +374,19 @@ function activityTitle(item: FeedItem, meta: Record<string, unknown>, eventType:
 		case 'tool.started':
 		case 'tool.requested':
 			return tool ? `Calling ${tool}` : item.title;
+		// The model by name, as the chat card titles it: the one asked for while
+		// the call runs, the one that answered once it settles. The capability
+		// ("decision") names an operation, not a model, so it is only the
+		// fallback for an event that carries no model.
 		case 'llm.requested':
+		case 'llm.routed':
+			return text(meta.model) || capability ? `Thinking with ${requestedModelLabel(meta)}` : item.title;
 		case 'llm.succeeded':
-		case 'llm.failed':
-			return capability ? `Thinking with ${capability}` : item.title;
+		case 'llm.failed': {
+			const model = answeredModelLabel(meta) ?? text(meta.model);
+			const label = model ?? capability;
+			return label ? `Thinking with ${label}` : item.title;
+		}
 		default:
 			return item.title;
 	}
@@ -432,6 +446,47 @@ function runStatus(status: string): TimelineEntryStatus {
 		default:
 			return 'info';
 	}
+}
+
+/** The activity rows one LLM call emits, paired on `llm_call_id`. */
+const LLM_CALL_EVENTS = new Set(['llm.requested', 'llm.routed', 'llm.succeeded', 'llm.failed']);
+/** The activity rows one tool call emits, paired on `call_id`. */
+const TOOL_CALL_EVENTS = new Set(['tool.started', 'tool.requested', 'tool.succeeded', 'tool.failed']);
+/** The events that settle a paired call. */
+const SETTLING_EVENTS = new Set(['llm.succeeded', 'llm.failed', 'tool.succeeded', 'tool.failed', 'context.retrieval.completed']);
+
+/**
+ * The id one call's rows share, or `null` when this row has none (a server
+ * predating the ids, or an event that is not a call). An LLM call pairs on
+ * `llm_call_id`; a tool call on its run and `call_id`, because a call id is
+ * only unique within the run that issued it.
+ */
+function pairKeyOf(eventType: string, meta: Record<string, unknown>): string | null {
+	const preparation = contextPreparationRow(eventType, meta);
+	if (preparation) return preparation.key;
+	if (LLM_CALL_EVENTS.has(eventType)) {
+		const id = text(meta.llm_call_id);
+		return id ? `llm-call:${id}` : null;
+	}
+	if (TOOL_CALL_EVENTS.has(eventType)) {
+		const id = text(meta.call_id);
+		return id ? `tool-call:${text(meta.execution_id) ?? ''}:${id}` : null;
+	}
+	return null;
+}
+
+/** `next` over `base`, except that a field `next` leaves absent keeps `base`'s. */
+function mergeMeta(
+	base: Record<string, unknown>,
+	next: Record<string, unknown>
+): Record<string, unknown> {
+	const merged = { ...base };
+	for (const [key, value] of Object.entries(next)) {
+		if (value === null || value === undefined) continue;
+		if (typeof value === 'string' && !value.trim()) continue;
+		merged[key] = value;
+	}
+	return merged;
 }
 
 /**
@@ -515,21 +570,86 @@ export function deriveTimeline(
 	// the two cannot double-render.
 	const activityLog = state.run?.activity_log ?? [];
 	const activity = activityLog.length > 0 ? activityLog : (state.run?.recent_activity ?? []);
+	// One call, one row, as in the chat card. A call's rows share an id —
+	// `llm_call_id` for a model call (`llm.requested` → `llm.routed` →
+	// `llm.succeeded` / `llm.failed`), `call_id` for a tool (`tool.started` →
+	// `tool.succeeded` / `tool.failed`) — and fold into ONE entry under a
+	// stable id: running from the first row (with the model as soon as the
+	// route names it), and the settled row replaces it in place, keeping the
+	// start as the entry's instant. A late start never reopens a settled call.
+	const pairIndex = new Map<string, number>();
+	const pairMeta = new Map<number, Record<string, unknown>>();
+	// The fallback for a server that sends no `llm_call_id` on the request:
+	// `llm.requested` then names only the capability and nothing links it to
+	// its settled event. The two arrive in order per run, so a requested row
+	// the next settled LLM event of the same run answers is that call's start,
+	// and only the settled row (model, time, bill) is kept. A requested row
+	// nothing settled stays: it is a call in flight or lost.
+	const openRequest = new Map<string, number>();
+	const answeredRequests = new Set<number>();
 	for (const item of activity) {
 		if (!item) continue;
 		const meta = (item.metadata ?? {}) as Record<string, unknown>;
 		const eventType = text(meta.event_type) ?? '';
+		const preparation = contextPreparationRow(eventType, meta);
+		// The server retires an unpaired start once the execution moves on.
+		// Only a measured completion overrides that authoritative feed status.
+		const preparationStatus = eventType === 'context.retrieval.completed'
+			? preparation?.status : undefined;
 		const kind = activityKind(eventType);
 		const recipe = recipeLifecycle(eventType, meta);
+		const callRun = text(meta.execution_id) ?? '';
+		const pairKey = pairKeyOf(eventType, meta);
+		const paired = pairKey === null ? undefined : pairIndex.get(pairKey);
+		if (paired !== undefined) {
+			const previous = entries[paired];
+			const callMeta = mergeMeta(pairMeta.get(paired) ?? {}, meta);
+			pairMeta.set(paired, callMeta);
+			if (SETTLING_EVENTS.has(eventType)) {
+				entries[paired] = {
+					...previous,
+					status: preparationStatus ?? FEED_STATUS[item.status] ?? previous.status,
+					title: activityTitle(item, callMeta, eventType),
+					body: text(item.summary) ?? previous.body,
+					latencyMs: preparation?.durationMs ?? num(meta.latency_ms) ?? previous.latencyMs,
+					model: text(meta.model) ?? previous.model,
+					costUsd:
+						kind === 'llm' ? (num(meta.cost_usd) ?? num(meta.cost) ?? previous.costUsd) : null,
+					tokens: tokensOf(meta) ?? previous.tokens
+				};
+			} else if (previous.status === 'running') {
+				// A route (or a repeated start) on a call still in flight: the
+				// model it names becomes the row's, and the row stays running.
+				entries[paired] = {
+					...previous,
+					title: activityTitle(item, callMeta, eventType),
+					model: text(meta.model) ?? previous.model
+				};
+			}
+			continue;
+		}
+		if (eventType === 'llm.requested' && pairKey === null) {
+			openRequest.set(callRun, entries.length);
+		} else if (eventType === 'llm.succeeded' || eventType === 'llm.failed') {
+			const requested = openRequest.get(callRun);
+			if (requested !== undefined) answeredRequests.add(requested);
+			openRequest.delete(callRun);
+		}
+		if (pairKey !== null) {
+			pairIndex.set(pairKey, entries.length);
+			pairMeta.set(entries.length, meta);
+		}
+		// A tool's own start instant, when the row carries one, is when it began.
+		const startedAt = eventType === 'tool.started' ? num(meta.started_at_ms) : null;
 		entries.push({
-			id: item.id,
-			at: num(item.created_at) ?? 0,
+			id: pairKey ?? item.id,
+			at: startedAt ?? num(item.created_at) ?? 0,
 			kind,
-			status: FEED_STATUS[item.status] ?? null,
+			status: preparationStatus ?? FEED_STATUS[item.status] ?? null,
 			title: activityTitle(item, meta, eventType),
 			body: text(item.summary),
 			detail: null,
-			latencyMs: num(meta.latency_ms),
+			latencyMs: preparation?.durationMs ?? num(meta.latency_ms),
 			model: text(meta.model),
 			// `cost_usd` is the unit-bearing contract. `cost` keeps older execution
 			// snapshots useful while their persisted activity rows age out.
@@ -544,6 +664,12 @@ export function deriveTimeline(
 			offPlan: meta.off_plan === true,
 			...(recipe ? { recipe } : {})
 		});
+	}
+
+	if (answeredRequests.size > 0) {
+		const kept = entries.filter((_, index) => !answeredRequests.has(index));
+		entries.length = 0;
+		entries.push(...kept);
 	}
 
 	// The progress/reasoning timeline, and only when there is no activity log —
@@ -1127,72 +1253,6 @@ export function timelineOffset(at: number | null, origin: number | null): string
  */
 export function timelineIsolated(entry: TimelineEntry): boolean {
 	return Boolean(entry.body) || Boolean(entry.detail);
-}
-
-/**
- * The narrowest a drawn bar may be, as a percentage of the track.
- *
- * A row that *was* timed and came back fast must still draw something: a
- * zero-width bar is indistinguishable from the no-bar a row with no measurement
- * gets, and those are different facts — the same "absence and zero are not one
- * value" rule `tokensOf` above follows for the token bill.
- */
-const MIN_BAR_PERCENT = 2;
-
-/**
- * The longest latency in this feed, or `null` when there is no comparison to
- * draw.
- *
- * **`null` for fewer than two timed rows, and that is the whole point.** A bar
- * is a *relative* claim; one timed row against nothing would render a full-width
- * bar meaning only "this is the longest of the one thing measured", which reads
- * as "this took a long time" and is not a fact the list contains. The Run act
- * then shows the durations it already showed and no bars at all.
- *
- * Rows with no latency and rows reporting `0` are both excluded from the count.
- * A zero-millisecond call is not a measurement a reader can act on, and letting
- * one count toward "two timed rows" would switch the bars on for a feed with a
- * single real number in it.
- *
- * **Not `trendBarHeightPercent` from `$lib/evals/format.ts`**, which is the same
- * arithmetic to the eye and a different contract underneath: it always returns a
- * number, because an evals trend strip draws a bar for every run it plots. Here
- * an unmeasured row must draw **nothing**, so the absence has to survive into
- * the return type. Sharing the function would mean either bars on rows nothing
- * timed, or a second `null` check at each call site that its own floor already
- * defeated.
- */
-export function latencyScale(entries: readonly TimelineEntry[]): number | null {
-	let longest = 0;
-	let timed = 0;
-	for (const entry of entries) {
-		const latency = entry.latencyMs;
-		if (latency === null || !Number.isFinite(latency) || latency <= 0) continue;
-		timed += 1;
-		if (latency > longest) longest = latency;
-	}
-	return timed >= 2 ? longest : null;
-}
-
-/**
- * This row's latency as a percentage of the feed's longest, or `null` when it
- * has none to show.
- *
- * **Share of the longest rather than share of the total**, which is the choice
- * that makes the bars answer the question. Against the total, a two-hundred-row
- * feed gives every row half a percent and the strip is uniformly invisible
- * whatever the shape of the run. Against the longest, one dominant call fills
- * the track and everything else is a sliver beside it — the reader sees the
- * answer without reading a number — and a feed of equal calls draws equal full
- * bars, which is the truthful picture of a run where nothing stood out.
- *
- * Never `0`, and never above `100`: see `MIN_BAR_PERCENT`.
- */
-export function latencyShare(latencyMs: number | null, scale: number | null): number | null {
-	if (scale === null || scale <= 0) return null;
-	if (latencyMs === null || !Number.isFinite(latencyMs) || latencyMs <= 0) return null;
-	const scaled = Math.round((latencyMs / scale) * 100);
-	return Math.min(100, Math.max(MIN_BAR_PERCENT, scaled));
 }
 
 /**

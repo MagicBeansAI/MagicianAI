@@ -355,17 +355,25 @@ impl V3TaskProgressProjectionAdapter {
         &self,
         projection: &V3ProgressProjectionRecord,
     ) -> anyhow::Result<()> {
+        // One task's asks land in the lane each belongs to: a question in
+        // Requests, a gate in Approvals, a spent budget in Escalations, a
+        // failed agent in Failed.
         let items = projection
             .attention
             .iter()
             .filter(|attention| attention_kind_surfaces_in_feed(&attention.attention_kind))
-            .map(|attention| super::service::build_attention_feed_item(&projection.task, attention))
+            .map(|attention| {
+                let item = super::service::build_attention_feed_item(&projection.task, attention);
+                (
+                    crate::magician_v2::feed::attention_lane_for_ask(&item),
+                    item,
+                )
+            })
             .collect();
         self.attention_store
-            .reconcile_attention_projection(
+            .reconcile_attention_projection_routed(
                 &projection.task.principal,
                 &projection.task.workspace,
-                FeedAttentionLane::Requests,
                 "v3_task_attention",
                 &projection.task.task_id,
                 projection_generation(projection),

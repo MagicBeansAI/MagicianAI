@@ -18,8 +18,8 @@ blocks and has no cutover action. Gate 3 drills live in
 machine (`make test-rust` only records them); gate closure is a compile-time
 assertion in `magician-storage/src/gate3.rs`. See
 [adr-2026-09-01-performance-capacity](../magician-storage/adr-2026-09-01-performance-capacity.md).
-Switching the desktop Runtime provider (`local_file` / `silverbullet_space`)
-does not move data, and reaching `remote_ready` does not delete the local
+The runtime store is `local_file` (the retired `silverbullet_space` selector
+reads as it over the same root), and reaching `remote_ready` does not delete the local
 source. New implicit-path bypasses fail `make check-typed-storage-boundaries`.
 
 ## Ownership and lifecycle
@@ -193,24 +193,23 @@ compatibility LLM pipelines publish final batches.
 
 ## Governed reads must consume compaction output
 
-Canonical LLM fact revisions (`part-call_fact-<hash>-rN.parquet`) are kept on
-purpose as a corruption fallback and never pruned, so compaction only helps if
-readers use it. **Select sources through
+Canonical LLM fact revisions (`part-<kind>-<hash>-rN.parquet` for calls,
+provider attempts, tool calls, and capture gaps) stay for today and yesterday.
+A row is filed by its `occurred_at_ms` day, so yesterday can still receive a
+late write. Days older than yesterday set `raw_sources_pruned` and delete the
+covered raw files once the compact verifies. **Select sources through
 `llm_fact_compactor::governed_dataset_sources*`, never by listing a partition.**
-They return `[compacted] + uncompacted_tail` only after validating manifest
-scope, schema, source-set checksum, existence of every compacted source, the
-compacted file's length and BLAKE3 checksum, and `source_row_count ==
-compacted_row_count`; any mismatch falls back to the full raw set (lossless,
-fail-closed). The legacy batch equivalent is
+They return `[compacted] + uncompacted_tail` after scope, schema, source-set
+checksum, length, BLAKE3, and row-count checks. Until the flag is set, a
+missing covered source falls back to the raw set; after it is set, those misses
+are expected and a file absent from the manifest is still a tail. A bad compact
+fails closed and is not rebuilt from leftovers. Legacy batches use
 `parquet_maintenance::partition_sources`; `llm_calls` attempts use
-`analytics_api::governed_attempts_read_source_sql`. Reading raw revisions is
-correct, only slower.
+`analytics_api::governed_attempts_read_source_sql`.
 
-Validation is cached in process: a partition's read set while the directory,
-manifest and compacted object keep length and mtime, and (today and yesterday
-only) the manifest's verdict while manifest and compacted object are
-unchanged. A hit still checks every covered source exists; any change
-re-validates from disk.
+Validation is cached while the directory, manifest, and compact keep length and
+mtime. Until the manifest records a prune, a hit still checks that every
+covered source exists.
 
 ## DuckDB copy-compaction
 
@@ -234,8 +233,9 @@ user-owned.
 
 ## Parquet generation protocol
 
-Completed UTC partitions (never today's) with at least two raw batches compact
-into a generation-named replacement:
+Completed UTC partitions with at least two raw batches compact
+into a generation-named replacement. Today's partition stays raw, except the
+legacy `llm_calls` `batch_*` stream (below):
 
 ```text
 memory_events.compacted.01K....parquet
@@ -250,6 +250,44 @@ mismatch, malformed output or lock timeout fails the partition closed. Late
 batches stay visible until merged. With a malformed or missing manifest,
 readers recover only a sole valid generation (multiple candidates or checksum
 drift fail closed); the next guarded sweep republishes the manifest.
+
+**Open legacy LLM partition.** The five-minute pass also folds today's and
+yesterday's legacy `llm_calls` `batch_*` stream
+(`compact_open_legacy_llm_partition`) through the same protocol once 64
+batches are uncompacted or the last fold (before one, the oldest batch) is an
+hour old. A batch the sink publishes mid-fold is not in the new manifest's
+source list, so readers keep it as tail; nothing is read twice or missed.
+
+**Retirement grace (legacy `llm_calls` only).** Its readers choose files
+outside the writer guard, so a fold there deletes nothing: the folded batches
+and the superseded generation stay for `LEGACY_LLM_SOURCE_RETIREMENT_GRACE`
+(15 min) after the manifest that replaced them, and a later pass (five-minute
+lane for today and yesterday, the full sweep for older days) deletes them.
+"Due" is computed from the durable manifest's `generated_at_ms`, so a restart
+neither forgets nor hastens it. Governed readers (`partition_sources`) skip
+the leftovers by the manifest's source list, and a fold inside the grace
+carries still-present sources forward into the new list. Repricing skips them
+(`retired_partition_objects`) and the growth eval reads through
+`partition_sources`, as does the DuckDB tool's `read_parquet` `llm_calls@`
+shorthand, which passes the selected files instead of a `dt=*/*.parquet` glob
+(that glob also matched the `part-*` fact files in the same partitions).
+
+**One unreadable input never wedges a partition.** When a fold's
+`read_parquet([...])` fails, each raw `batch_`/legacy input is probed alone
+(twice, fresh connection); failures are **moved, never deleted**, to
+`<dataset>/_quarantine/dt=…[/hour=…]/<name>.unreadable-<ulid>` plus a `….json`
+record (original path, length, BLAKE3, error, time), outside retention and
+readers, and the fold runs over the rest. If no input reads and none has a
+broken `PAR1` envelope, nothing moves. Other failures back off per input set
+(`_compact/<dataset>.fold-backoff.json`: 5 min doubling to 6 h; `error` after
+8 failures; a changed set retries at once). Stats: `inputs_quarantined`,
+`partitions_backed_off`. The activity roll-up quarantines the same way.
+
+**Writers never publish a partial batch.** Every analytics batch sink writes
+through `parquet_maintenance::copy_to_parquet_durably`: `COPY` to a hidden
+`.<name>.tmp`, fsync, rename, fsync the directory (temp removed on error);
+readers select only `*.parquet`. The sweep removes a writer's orphaned temp
+only after an hour (mtime); its own compaction/rollup temps go at once.
 
 The 90-day lifecycle covers runtime events, memory events, local embedding
 batches, legacy/canonical LLM calls, provider attempts, tool-call lineage,
@@ -299,17 +337,20 @@ the retention window, and never gives up on its own.
 
 ### Rolling canonical LLM generations
 
-Canonical LLM compaction never deletes raw revisions: a versioned manifest
-selects a checksum-verified generation covering an explicit subset, and later
-appends are read as a raw tail. Every five minutes (and at startup), once the
-active UTC partition's tail reaches 64 files, the prior object and tail merge
-into a new generation; the six-hour sweep finalizes closed partitions.
-Version-1 exact-set manifests stay readable as safe prefixes. Readers check the
-selected object's length and checksum; only a generation roll rechecks all
-covered raw fingerprints. Missing, malformed, cross-scope, duplicate-key or
-corrupt generations fail closed to raw revisions. Publication: temp Parquet,
-row/idempotency/scope/sequence validation, fsync, atomic rename, atomic
-manifest write; an append racing compaction joins the next tail.
+A versioned manifest selects one checksum-verified generation; later appends
+are a raw tail. Which raw files stay is the
+[governed-read rule](#governed-reads-must-consume-compaction-output) above.
+Every five minutes, once the active UTC partition's tail reaches 64 files, the
+prior object and tail merge into a new generation. Startup and the six-hour
+sweep fold any tail of an ended day. Version-1 manifests stay readable and
+default `raw_sources_pruned` to false. A roll rechecks fingerprints of covered
+files still present and carries forward fingerprints of files already pruned.
+It re-reads a file only when its length, mtime, ctime or inode changed since
+the last hash, and remembers no digest while those times are under 5 s old.
+The flag is written before the first unlink. Publication is a temp Parquet
+file, row, idempotency, scope, and sequence checks, fsync, an atomic rename,
+and an atomic manifest write. An append that races compaction joins the next
+tail.
 
 ## Compaction impact metrics
 

@@ -43,9 +43,40 @@ MAGICIAN_OWNER_TELEGRAM_IDENTITIES=123456789
 MAGICIAN_OWNER_AGENTMAIL_IDENTITIES=owner@example.com
 ```
 
-Matching is exact-string against the sender as the channel delivers it (Kapso
-sends the number without `+`; Telegram private chats send the numeric
-`ctx.chat.id`; emails are lower-cased).
+Matching is `config::owner_identity_matches`: on the phone channels
+(`kapso`, `whatsapp`, `sms`, `imessage`) a phone-like identity and sender
+compare **digits only**, so `+91 98765 43210` in config matches the
+`919876543210` Kapso sends (and a `…@s.whatsapp.net` JID); an email compares
+case-insensitively; everything else — a Telegram chat id — is exact.
+
+### Adding an owner identity
+
+Two equal ways; both keep working side by side.
+
+1. **Claim it from the chat (easiest).** Settings → Owner identities →
+   *Claim* (or `POST /api/magician/v2/owner-identities/claim-code`, owner
+   session or paired owner phone) mints a one-time code: 8 characters from an
+   unambiguous alphabet, 10 minutes, single use. Send `/claim <code>` to the
+   Magician bot from the WhatsApp number or Telegram chat to record
+   (`/claim@Bot`, `/magic /claim` work too). The chat API answers it before
+   any agent turn — from a guest session as well — and appends the sender
+   address the transport verified to the channel's `owner_identity_envs`
+   variable in both live env files and the process env, so the very next
+   message routes as the owner with no restart
+   (`magician/src/magician_v2/owner_claim.rs`). A wrong or expired code gets
+   one neutral reply; five wrong codes per sender per 10 minutes, then every
+   try is refused, and 50 failures across senders burn all live codes. The
+   code is never echoed and the transcript stores `/claim ••••••••`. Mail
+   channels are refused (a `From:` is not proof), and so is a channel with no
+   `owner_identity_envs` variable (the routing config is a startup snapshot).
+2. **Set it by hand.** Put the address in the channel's
+   `MAGICIAN_OWNER_*_IDENTITIES` variable or in `envoy.owner_identities`
+   (restart for the config-file form). A claim only appends: it never
+   reorders, rewrites or removes hand-set entries or touches other env keys.
+
+`GET /api/magician/v2/owner-identities` lists both sources per channel,
+masked to the last two characters; `DELETE …/owner-identities/{channel}/{index}`
+removes an env-held one (config-file entries are edited in the file).
 
 **Sender-auth gate.** `is_owner` / routing take a `verified` flag. The
 active-session handler does **not** trust `channel_verified` as an escalation:
@@ -58,9 +89,12 @@ address routes to the per-sender envoy guest thread
 (`ext:agentmail:<email>`), not the owner's full-trust thread.
 
 **Control-intent gate.** Kapso and the normal Telegram bot send
-`control_intent=false` for an ordinary channel message. That suppresses owner
-allowlist routing and sends even an allowlisted sender to the envoy guest
-route. The bot SDK only sends `control_intent=true` when the message starts
+`control_intent=false` for an ordinary channel message, which routes a
+non-owner sender to the envoy guest route. A verified owner is the exception
+(`envoy::effective_control_intent`): every channel bot forwards only direct
+chats, so the owner's own number or chat id is in control with or without the
+prefix, and the message lands on the owner's `ext:<channel>:<address>:magic`
+thread rather than the envoy-bound `ext:<channel>:<address>` one. The bot SDK only sends `control_intent=true` when the message starts
 with the configured control prefix (Kapso and Telegram bots: `MAGICIAN_CONTROL_PREFIX`,
 default `/magic`, legacy alias `@magic`), and strips the prefix before dispatch. This bit never authenticates a
 sender by itself. Shipped public chat bots also request a channel-scoped
@@ -68,8 +102,15 @@ owner-control thread (`ext:<channel>:<address>:magic`); a
 `control_intent=true` request on the default `general` thread is mapped to the
 same `:magic` thread before routing.
 
-To find a Telegram chat id, send any message to the bot and inspect
-`session.origin_channel.address` under
+**Owner chat commands.** `/god` and `/godoff` sent by the verified owner turn
+god mode on or off for that chat (`docs/components/magician/god-mode.md`).
+The send endpoint re-checks `envoy::is_owner` against the stored session's
+origin address; a guest's `/god` reaches the envoy as plain text and changes
+nothing. `/claim <code>` is the one command a guest may send: see *Adding an
+owner identity* above.
+
+To set a Telegram chat id by hand instead of claiming it, send any message to
+the bot and inspect `session.origin_channel.address` under
 `MagicianNotes/scopes/<principal>/<workspace>/ui/chat_sessions/*/session.json`.
 
 **Public ordinary chat policy.** Non-prefixed Kapso and Telegram messages
@@ -83,6 +124,13 @@ no adaptive thinking-mode tool. Model choice is backend-owned: `public_chat.kaps
 mapped in `llm-router.yaml`; with no `kapso_envoy_chat` profile the turn uses
 the `chat_completion` operation default. Users must send
 `/magic <request>` to enter the Magician control/work rail.
+
+A session bound to envoy always runs on the `public_envoy` surface, whether or
+not its bot sends a public-chat source surface (the AgentMail, Gmail and
+WhatsApp bots send none). The server derives this from the binding, as it does
+when the session is created; the source surface only adds the chat-only policy
+and paid admission above. A shared meeting room bound to envoy keeps the
+`meeting` surface.
 
 A shared call binds this same agent. `delegate_to_chat` on that call runs as
 that agent and does not become the personal assistant. Search and the browser
@@ -102,9 +150,9 @@ every transport.
 - `route_for_inbound(...)` — projection of `resolve_inbound_lane` with
   `engagement: None`. Returns `(ui_thread_id, force_agent_id)`.
 
-Both identity helpers use `address` verbatim. Callers must pass a
-canonicalized address (E.164 for phones, lower-cased for email). An
-un-normalized or unknown-channel address fails **closed** — treated as a guest.
+`is_owner` matches through `owner_identity_matches` (digits-only phones on
+phone channels, case-insensitive email, exact otherwise). An address that
+still misses, or an unknown channel, fails **closed** — treated as a guest.
 
 ## Routing
 
@@ -134,8 +182,9 @@ pub fn resolve_inbound_lane(
 ) -> InboundLane
 ```
 
-- **Non-control** (`control_intent=false`): guest thread + `envoy_agent_id`,
-  even when the sender is allowlisted.
+- **Non-control** (`control_intent=false`): guest thread + `envoy_agent_id`.
+  The API seam promotes a verified owner's non-control message to
+  `control_intent=true` first, so only non-owners reach this branch live.
 - **Owner** (verified web, or an allowlisted `(channel_type, address)` with
   authenticated sender and no explicit non-control signal): requested thread,
   no forced agent.

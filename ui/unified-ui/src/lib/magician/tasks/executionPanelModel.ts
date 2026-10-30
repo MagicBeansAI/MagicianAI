@@ -46,6 +46,7 @@ import {
 	type PanelOutputFile
 } from './taskPanelModel';
 import { deriveTimeline, executionIdOf } from './taskTimeline';
+import { executionProgressAt } from './taskProgress';
 import type {
 	RunStepStatus,
 	TaskPanelModel,
@@ -194,36 +195,6 @@ function attentionOf(state: ExecutionPanelState): TaskAsk | null {
 }
 
 /**
- * When this run last did something, or `null`.
- *
- * `VerdictInput.lastProgressAt` must be a **real** progress instant, never an
- * `updated_at` — a record rewritten by a status poll would make a wedged run
- * un-stallable, which is the failure design §5 names. So this is the latest
- * instant across the two event logs the payload carries and nothing else:
- * `overview.updated_at` is exactly the value the rule forbids, and it is right
- * beside these in the same object.
- *
- * `activity_log` is the full humanized log and `recent_activity` is a capped
- * view of it; the maximum over both is taken rather than choosing between them,
- * because whichever is populated the answer is the same instant.
- *
- * This is a **gain** over the task adapter, which has no run-start or
- * run-progress instant at all and reports `lastProgressAt` only because the
- * task row happens to carry one.
- */
-function lastProgressAtOf(state: ExecutionPanelState): number | null {
-	const instants: number[] = [];
-	const consider = (candidate: number | null): void => {
-		if (candidate !== null) instants.push(candidate);
-	};
-
-	for (const item of state.run?.activity_log ?? []) consider(instant(item?.created_at));
-	for (const item of state.run?.recent_activity ?? []) consider(instant(item?.created_at));
-	for (const entry of state.debug?.timeline ?? []) consider(instant(entry?.timestamp));
-	return instants.length > 0 ? Math.max(...instants) : null;
-}
-
-/**
  * How long the run took, or `null` while it is still going.
  *
  * Both instants describe the same execution, so their difference is measured
@@ -309,7 +280,8 @@ function outputOf(
 	if (files === null) return null;
 	return {
 		files,
-		summary: text(state.output?.result?.summary),
+		summary: text(state.output?.result?.report) ?? text(state.output?.result?.summary),
+		...(text(state.output?.result?.report) ? {verificationSummary: text(state.output?.result?.summary)} : {}),
 		provenance: provenanceRows([
 			['Source execution id', executionId],
 			...files.map((file): [string, string] => [file.name, file.path])
@@ -362,7 +334,7 @@ export function toExecutionPanelModel(
 		totalSteps: steps.length > 0 ? steps.length : null,
 		currentStepLabel: liveStep === null ? null : (steps[liveStep - 1]?.label ?? null),
 		elapsedMs: elapsedMsOf(state),
-		lastProgressAt: lastProgressAtOf(state),
+		lastProgressAt: executionProgressAt(state, executionId),
 		// **An execution has no plan act.** The plan belongs to the task and is
 		// served by a different endpoint; this payload carries step *statuses*,
 		// which are the run's account of executing a plan rather than the plan

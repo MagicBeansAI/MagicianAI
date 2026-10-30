@@ -5,6 +5,26 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class TaskDeepLinksTest {
+    @Test fun retired_path_links_keep_exact_task_run_and_thread_selection() {
+        assertEquals(TaskDeepLinkTarget.Task("task/one+two", ai.magicbeans.magdroid.tasks.TaskDetailAct.Plan,
+            executionId = "exec/one", internalWork = true),
+            TaskDeepLinks.parse("/tasks/task%2Fone+two?selected=wrong&type=internal&execution_id=exec%2Fone&plan=open"))
+        assertEquals(TaskDeepLinkTarget.Task("task%2Fone"), TaskDeepLinks.parse("https://magican.example/tasks/task%252Fone"))
+        assertEquals(TaskDeepLinkTarget.Task("task-one", executionId = "run-one", threadId = "launch"),
+            TaskDeepLinks.parse("/t/Launch/tasks/task-one?execution=run-one&selected=wrong"))
+        assertEquals(TaskDeepLinkTarget.Task("task-one", executionId = "run-one", threadId = "launch"),
+            TaskDeepLinks.parse("/t/Launch/tasks?selected=task-one&execution=run-one"))
+        assertNull(WorkDeepLinks.parse("/t/Launch/tasks?selected=task-one"))
+        assertNull(TaskDeepLinks.parse("/api/magician/v3/tasks/task-one"))
+        assertNull(TaskDeepLinks.parse("/tasks/task-one/outputs/report.pdf"))
+        assertNull(TaskDeepLinks.parse("javascript:/tasks/task-one"))
+        assertNull(TaskDeepLinks.parse("/tasks/%ZZ"))
+    }
+
+    @Test fun custom_work_task_links_use_the_same_selected_task_handoff() {
+        assertEquals(TaskDeepLinkTarget.Task("task-one", executionId = "run-one"),
+            TaskDeepLinks.parse("magican://work?selected=task-one&execution_id=run-one"))
+    }
     @org.junit.Test fun customTaskScheduleKeepsExactCronTimezoneAndRetention() {
         val schedule = taskSchedule("custom", "12", "30", "0 6 * * 1", "Asia/Kolkata")!!
         org.junit.Assert.assertEquals("Asia/Kolkata", (schedule["timezone"] as kotlinx.serialization.json.JsonPrimitive).content)

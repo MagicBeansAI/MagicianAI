@@ -70,7 +70,7 @@ describe('ObserveNotesPanel', () => {
 							date: '2026-08-01',
 							tags: ['magician/task', 'date/2026-08-01'],
 							note_path: `Tasks/2026-08-01/task-${offset}.md`,
-							open_url: `https://notes.example.test/Tasks/2026-08-01/task-${offset}`,
+							open_url: `/notes?path=${encodeURIComponent(`Tasks/2026-08-01/task-${offset}.md`)}&workspace=research`,
 							assets: []
 						}],
 						offset,
@@ -86,6 +86,11 @@ describe('ObserveNotesPanel', () => {
 		render(ObserveNotesPanel);
 		expect(await screen.findByText('Launch note 0')).toBeInTheDocument();
 		expect(screen.getByText('date/2026-08-01')).toBeInTheDocument();
+		// One canonical, relative note link carrying the workspace it belongs to.
+		expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
+			'href',
+			'/notes?path=Tasks%2F2026-08-01%2Ftask-0.md&workspace=research'
+		);
 
 		await user.click(screen.getByRole('button', { name: 'Next page' }));
 		await waitFor(() => expect(calls.at(-1)?.url.searchParams.get('offset')).toBe('5'));

@@ -312,6 +312,18 @@ pub trait V2ConversationStore: Send + Sync {
         owner_stack: &[String],
     ) -> std::result::Result<(), Self::Error>;
 
+    /// Record who delegated down to an execution for goal workspace reads
+    /// (`ExecutionRun::read_lineage`): set once by the server when a verified
+    /// delegation creates it. A store that does not keep it records nothing,
+    /// which grants nothing.
+    async fn set_execution_read_lineage(
+        &self,
+        _execution_id: &str,
+        _read_lineage: &[String],
+    ) -> std::result::Result<(), Self::Error> {
+        Ok(())
+    }
+
     async fn replace_active_delegation_group(
         &self,
         execution_id: &str,

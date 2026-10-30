@@ -1778,10 +1778,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.status, ResurfacingSourceStatus::Available);
-        assert!(detail
-            .open_url
-            .as_deref()
-            .is_some_and(|url| url.starts_with("file://")));
+        assert_eq!(
+            detail.open_url.as_deref(),
+            Some("/notes?path=Inbox%2Flive.md&workspace=w")
+        );
         assert!(matches!(
             detail.original,
             Some(ResurfacingOriginalContent::Note { .. })

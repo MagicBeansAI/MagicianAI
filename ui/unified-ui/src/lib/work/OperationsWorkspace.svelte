@@ -1,4 +1,6 @@
 <script lang="ts">
+	import WorkHelp from './WorkHelp.svelte';
+	import { WORK_HELP } from './help';
 	import FollowThroughPanel from './FollowThroughPanel.svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
@@ -314,7 +316,7 @@
 			const result = await loadHarnessRuntimeStatus();
 			if (current(ticket, scope)) harnessRuntime = result;
 		} catch (e) {
-			if (current(ticket, scope)) harnessRuntimeError = e instanceof Error ? e.message : 'Failed to load harness runtime';
+			if (current(ticket, scope)) harnessRuntimeError = e instanceof Error ? e.message : 'Failed to load autopilot runtime';
 		} finally {
 			if (current(ticket, scope)) harnessRuntimeLoading = false;
 		}
@@ -332,15 +334,15 @@
 			harnessRuntime = result;
 			const warnings = result.warnings ?? [];
 			if (warnings.length > 0) {
-				const msg = `Harness saved, but cleanup incomplete: ${warnings.join('; ')}`;
+				const msg = `Autopilot saved, but cleanup incomplete: ${warnings.join('; ')}`;
 				harnessRuntimeError = msg;
 				showError(msg);
 			} else {
-				showSuccess(`Company loop cadence switched ${result.enabled ? 'ON' : 'OFF'}`);
+				showSuccess(`Team routines cadence switched ${result.enabled ? 'ON' : 'OFF'}`);
 			}
 		} catch (e) {
 			if (!current(ticket, scope)) return;
-			const msg = e instanceof Error ? e.message : 'Failed to toggle harness runtime';
+			const msg = e instanceof Error ? e.message : 'Failed to toggle autopilot runtime';
 			harnessRuntimeError = msg;
 			showError(msg);
 		} finally {
@@ -369,7 +371,7 @@
 		const payload = (await response.json()) as Record<string, unknown>;
 		const executionId = readString(payload, 'execution_id') || undefined;
 		const queuePosition = readNumber(payload, 'queue_position');
-		let detail = 'Accepted by harness admission';
+		let detail = 'Accepted for execution';
 		if (typeof queuePosition === 'number') {
 			detail = `Queued at position ${queuePosition}`;
 		} else if (executionId) {
@@ -438,7 +440,7 @@
 		companyLoopRunning = false;
 		currentStageIndex = -1;
 		if (!companyLoopError) {
-			showSuccess('Company loop sequence dispatched successfully');
+			showSuccess('Team routines sequence dispatched successfully');
 		} else {
 			showError(companyLoopError);
 		}
@@ -482,16 +484,15 @@
 </script>
 
 <svelte:head>
-	<title>Harness & Company Loop — Operations</title>
+	<title>Team routines · Work</title>
 </svelte:head>
 
 <div class="harness-page">
- <nav class="operations-specialists" aria-label="Company loop specialist tools">
+ <nav class="operations-specialists" aria-label="Team routines specialist tools">
   {#each [['/runtime','Runtime'],['/events','Events'],['/observe','Observability'],['/skills','Skills'],['/apps','Apps']] as entry}
    <a href={workSpecialistHref(entry[0] as WorkSpecialist,$page.url)}>{entry[1]}</a>
   {/each}
  </nav>
- <FollowThroughPanel />
 	<!-- Top Command Masthead -->
 	<header class="harness-masthead">
 		<div class="harness-masthead__identity">
@@ -500,7 +501,7 @@
 					<Icon name="chevron-left" size={14} />
 					<span>Back to Crew</span>
 				</a>
-				<span class="harness-badge harness-badge-outline">Autonomous Harness</span>
+				<span class="harness-badge harness-badge-outline">Autopilot</span>
 				<span class="pulse-indicator">
 					<span class="pulse-dot pulse-dot--{connectionStatus}"></span>
 					{connectionStatus}
@@ -509,8 +510,8 @@
 					<span class="updated-time">Updated {formatTimestamp(new Date(lastRefreshedAt).toISOString())}</span>
 				{/if}
 			</div>
-			<h1>Harness & Company Loop</h1>
-			<p>Monitor autonomous harness execution, trigger executive cadence sequences, and audit detected anomalies.</p>
+			<h2>Team routines <WorkHelp topic={WORK_HELP.operations} /></h2>
+			<p>Keep company roles moving on a shared schedule, start a routine and inspect problems that need attention.</p>
 		</div>
 
 		<div class="harness-masthead__actions">
@@ -539,7 +540,7 @@
 	{/if}
 
 	<!-- SECTION 1: Autonomous Cadence & Company Loop Console -->
-	<section class="company-loop-console" aria-label="Company Loop Cadence Console">
+	<section class="company-loop-console" aria-label="Team Routines Cadence Console">
 		<header class="console-header">
 			<div class="console-title-group">
 				<div class="console-icon" class:console-icon--active={harnessEnabled} aria-hidden="true">
@@ -547,7 +548,7 @@
 				</div>
 				<div>
 					<div class="console-heading-row">
-						<h2>Autonomous Company Loop</h2>
+						<h2>Scheduled team routines</h2>
 						<span class={`harness-badge harness-badge-${harnessStatusColor}`}>{harnessStatusLabel}</span>
 						{#if harnessEnabled}
 							<span class="cadence-live-pill">
@@ -579,8 +580,8 @@
 						type="button"
 						role="switch"
 						aria-checked={harnessEnabled}
-						aria-label={harnessEnabled ? 'Turn off company loop cadence' : 'Turn on company loop cadence'}
-						title={harnessEnabled ? 'Turn off company loop cadence' : 'Turn on company loop cadence'}
+						aria-label={harnessEnabled ? 'Turn off the team routines schedule' : 'Turn on the team routines schedule'}
+						title={harnessEnabled ? 'Turn off the team routines schedule' : 'Turn on the team routines schedule'}
 						disabled={!harnessRuntime || harnessRuntimeLoading || harnessRuntimeMutating}
 						on:click={toggleHarnessRuntime}
 					>
@@ -595,7 +596,7 @@
 					on:click={runCompanyLoop}
 				>
 					<Icon name="flag" size={14} />
-					<span>{companyLoopRunning ? 'Running Cadence...' : 'Run Company Loop'}</span>
+					<span>{companyLoopRunning ? 'Running Cadence...' : 'Start team sequence'}</span>
 				</button>
 			</div>
 		</header>
@@ -753,7 +754,7 @@
 	</section>
 
 	<!-- SECTION 3: Detected Anomalies Roster -->
-	<section class="anomalies-section" aria-label="Detected harness anomalies">
+	<section class="anomalies-section" aria-label="Detected autopilot anomalies">
 		<div class="anomalies-toolbar">
 			<div class="anomalies-search-box">
 				<Icon name="search" size={15} />
@@ -834,7 +835,7 @@
 				<h3>{totalAnomaliesCount === 0 ? 'No anomalies detected' : 'No matching anomalies found'}</h3>
 				<p>
 					{totalAnomaliesCount === 0
-						? 'The autonomous harness has not flagged any operational cycle drops, sandbox violations, or tool stalls.'
+						? 'The autonomous autopilot has not flagged any operational cycle drops, sandbox violations, or tool stalls.'
 						: 'Try clearing the search query or switching the status filter.'}
 				</p>
 				{#if totalAnomaliesCount > 0}
@@ -1004,12 +1005,13 @@
 					{startItem}
 					{endItem}
 					totalItems={totalFilteredItems}
-					ariaLabel="Harness anomalies pagination"
+					ariaLabel="Autopilot anomalies pagination"
 					on:pagechange={(event) => (currentPage = event.detail.page)}
 				/>
 			</div>
 		{/if}
 	</section>
+	<FollowThroughPanel />
 </div>
 
 <style>
@@ -1110,7 +1112,7 @@
 		font-size: 0.74rem;
 	}
 
-	.harness-masthead__identity h1 {
+	.harness-masthead__identity h2 {
 		color: var(--text-primary);
 		font-size: 1.5rem;
 		font-weight: 700;
@@ -1216,7 +1218,7 @@
 	.cadence-live-pill {
 		align-items: center;
 		background: color-mix(in srgb, var(--accent-success, #10b981) 12%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-sm, 6px);
 		color: var(--accent-success, #10b981);
 		display: inline-flex;
 		font-size: 0.72rem;
@@ -1477,7 +1479,7 @@
 
 	.kpi-warn-badge {
 		background: color-mix(in srgb, var(--accent-warning, #f59e0b) 15%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-sm, 6px);
 		color: var(--accent-warning, #f59e0b);
 		font-size: 0.7rem;
 		font-weight: 600;
@@ -1486,7 +1488,7 @@
 
 	.kpi-blue-badge {
 		background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-sm, 6px);
 		color: var(--accent-primary);
 		font-size: 0.7rem;
 		font-weight: 600;
@@ -1548,14 +1550,16 @@
 		align-items: center;
 		background: var(--bg-card);
 		border: 1px solid var(--border-soft);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--text-secondary);
 		cursor: pointer;
 		display: inline-flex;
 		font-size: 0.78rem;
 		font-weight: 500;
 		gap: 0.35rem;
-		padding: 0.3rem 0.7rem;
+		padding: 0.22rem 0.62rem;
+		min-height: 1.6rem;
+		box-sizing: border-box;
 		transition: border-color 0.15s, background-color 0.15s, color 0.15s;
 	}
 
@@ -1696,7 +1700,7 @@
 
 	.occurrence-pill {
 		background: var(--bg-soft);
-		border-radius: 9999px;
+		border-radius: var(--radius-sm, 6px);
 		color: var(--text-secondary);
 		font-size: 0.74rem;
 		font-weight: 700;
@@ -1925,15 +1929,17 @@
 	.crew-button {
 		align-items: center;
 		border: 1px solid transparent;
-		border-radius: 7px;
+		border-radius: var(--radius-chip, 6px);
 		cursor: pointer;
 		display: inline-flex;
 		font-family: inherit;
-		font-size: 0.85rem;
+		font-size: 0.82rem;
 		font-weight: 600;
 		gap: 0.45rem;
 		line-height: 1;
-		padding: 0.5rem 0.85rem;
+		min-height: 1.85rem;
+		padding: 0.38rem 0.75rem;
+		box-sizing: border-box;
 		text-decoration: none;
 		transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 		white-space: nowrap;
@@ -1973,8 +1979,9 @@
 	}
 
 	.crew-button-sm {
-		font-size: 0.76rem;
-		padding: 0.35rem 0.6rem;
+		font-size: 0.74rem;
+		min-height: 1.55rem;
+		padding: 0.2rem 0.52rem;
 	}
 
 	.crew-button:disabled {
@@ -2029,7 +2036,7 @@
 		align-items: center;
 		background: var(--bg-soft);
 		border: 1px solid var(--border-soft);
-		border-radius: 9999px;
+		border-radius: var(--radius-sm, 6px);
 		cursor: pointer;
 		display: inline-flex;
 		height: 22px;
@@ -2041,7 +2048,7 @@
 
 	.crew-switch span {
 		background: var(--text-secondary);
-		border-radius: 50%;
+		border-radius: 4px;
 		display: block;
 		height: 16px;
 		transform: translateX(0);

@@ -25,13 +25,13 @@ class AgentMailBotEnvTests(unittest.TestCase):
             self.assertNotIn("whsec_test-only-canary", "\n".join(log))
             self.assertFalse(any("refuse to start" in line for line in log))
 
-    def test_api_key_alone_reports_missing_verified_webhook_configuration(self):
+    def test_api_key_alone_relies_on_self_registration(self):
         with tempfile.TemporaryDirectory() as directory:
             log = []
             setup_bot_envs.write_agentmail(Path(directory), {"AGENT_MAIL_KEY": "test-key"}, False, log)
-            self.assertTrue(any("AGENTMAIL_WEBHOOK_SECRET or AGENTMAIL_WEBHOOK_URL" in line for line in log))
+            self.assertTrue(any("MAGICIAN_WEBHOOK_HOST" in line for line in log))
 
-    def test_registration_url_satisfies_setup_and_existing_settings_are_preserved(self):
+    def test_webhook_url_is_derived_not_baked_and_existing_settings_are_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             log = []
             target = Path(directory) / "agentmail/.env.development"
@@ -39,7 +39,7 @@ class AgentMailBotEnvTests(unittest.TestCase):
                 "AGENT_MAIL_KEY": "test-key", "AGENTMAIL_WEBHOOK_URL": "https://example.invalid",
             }, False, log)
             original = target.read_text()
-            self.assertFalse(any("refuse to start" in line for line in log))
+            self.assertNotIn("AGENTMAIL_WEBHOOK_URL", original)
             self.assertEqual(setup_bot_envs.write_agentmail(Path(directory), {
                 "AGENT_MAIL_KEY": "new-key", "AGENTMAIL_WEBHOOK_SECRET": "new-secret",
             }, False, log), 0)
@@ -66,7 +66,7 @@ class KapsoBotEnvTests(unittest.TestCase):
             self.assertIn("KAPSO_WEBHOOK_SECRET=wh_sec_test\n", env)
             self.assertNotIn("wh_sec_test", "\n".join(log))
 
-    def test_missing_webhook_secret_is_explicit_and_warned(self):
+    def test_missing_webhook_secret_relies_on_self_registration(self):
         with tempfile.TemporaryDirectory() as directory:
             log: list[str] = []
             setup_bot_envs.write_kapso(
@@ -80,8 +80,8 @@ class KapsoBotEnvTests(unittest.TestCase):
             )
 
             env = (Path(directory) / "kapso" / ".env.development").read_text()
-            self.assertIn("KAPSO_WEBHOOK_SECRET=\n", env)
-            self.assertTrue(any("will refuse to start" in line for line in log))
+            self.assertNotIn("KAPSO_WEBHOOK_SECRET", env)
+            self.assertTrue(any("MAGICIAN_WEBHOOK_HOST" in line for line in log))
 
 
 if __name__ == "__main__":

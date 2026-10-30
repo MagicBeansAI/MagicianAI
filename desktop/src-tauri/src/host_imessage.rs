@@ -292,7 +292,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("run/host-imessage.token");
-        std::fs::write(&path.with_extension("token.tmp"), "stale").ok();
+        std::fs::write(path.with_extension("token.tmp"), "stale").ok();
         publish_local_token_at(&path).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert_eq!(

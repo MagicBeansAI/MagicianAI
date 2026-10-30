@@ -41,7 +41,7 @@
 					<tr>
 						<th class="rank">Rank</th>
 						<th>Crew member</th>
-						<th>Program</th>
+						<th>Playbook</th>
 						<th>Status</th>
 						<th class="number">Overall</th>
 						<th class="number">Health 7d</th>

@@ -8,6 +8,13 @@ import org.junit.Test
 
 /** The composer stack's rules: ask dock, planner dock, queue row, auto-send, presence, archived. */
 class ComposerStackTest {
+    @Test fun `review-bearing transcript approvals retain the focused form before feed hydration`() {
+        val schema = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.decodeFromString(ChatInputSchema.serializer(),
+            """{"type":"confirmation","approval_preview":{"title":"Review the change"}}""")
+        assertTrue(schema.requiresReview)
+        val card = EscalationCard("Allow?", emptyList(), "ask", "run", false, inputType = "confirmation", requiresReview = schema.requiresReview)
+        assertEquals("Review and decide →", ComposerAskDock.handoff(card))
+    }
     private fun ask(id: String, resolved: Boolean = false, inputType: String? = "choice", type: String? = "user_input", sensitive: SensitiveSpec? = null) =
         ChatMessage(
             id = id, fromUser = false, text = "", kind = MessageKind.Escalation,

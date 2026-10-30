@@ -3,9 +3,9 @@
   {
    "id": "one-person-company",
    "name": "One Person Companies (OPC)",
-   "oneLine": "Runs a one-person company's outward deals: counterparties, scoped engagements, data rooms, approval envelopes and work modules.",
+   "oneLine": "Coordinate company work through a CEO and bounded specialists, with scoped engagements, approval envelopes and data rooms for outward work.",
    "maturity": "shipped",
-   "maturityEvidence": "Owner set shipped (2026-10-13). Earlier scan notes: The owner surfaces are mounted at magician-bin/src/main.rs:13354-13374 and the reader at main.rs:12056. Outward sends are recorded but not performed by default (outward_actions.capture_only: true, magician-config.yaml:2468). The C-suite autonomous set is described as 'a bet, not a shipped product' (docs/components/magician/autonomous-agents.md:56).",
+   "maturityEvidence": "Engagements, counterparties, approval envelopes, data rooms and work modules have owner APIs (docs/components/magician-api/opc-owner-and-reader-surfaces.md). Explicit assistant-to-CEO template grants support bounded specialist coordination; they do not enable the company loop or change schedules. Autonomous C-suite operation retains its qualification limits (docs/components/magician/autonomous-agents.md). Outward sends remain captured by default; optional outward_actions.contexts.opc controls company work independently of personal work.",
    "locations": [
     {
      "file": "magician/src/magician_v2/engagements.rs",
@@ -88,7 +88,7 @@
      "file": "magician/src/magician_v2/harness/program.rs",
      "type": "ProgramLoader",
      "fn": null,
-     "line": 93,
+     "line": 121,
      "why": "Loads program charters that drive company agents"
     },
     {
@@ -167,6 +167,13 @@
      "fn": "submit",
      "line": 704,
      "why": "Named person submits, act recorded"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/runtime.rs",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "One coordination route"
     }
    ],
    "configKeys": [
@@ -186,7 +193,7 @@
     "/rooms/{room_id}/document"
    ],
    "uiSurface": {
-    "description": "Work page Programs view, and the counterparty catalog inside the Quality campaign workspace",
+    "description": "Work page Playbooks view, and the counterparty catalog inside the Quality campaign workspace",
     "path": "ui/unified-ui/src/lib/work/ProgramsWorkspace.svelte",
     "also": "ui/unified-ui/src/lib/relentless/CampaignWorkspace.svelte"
    },
@@ -253,6 +260,15 @@
      "title": "Run a work module",
      "say": "Composable work modules open tracked runs for a deal, collecting declared fields, open gaps and expectations against the same audience reference.",
      "evidence": "work_modules_api.rs:398-485 (OpenRunRequest, DeclareFieldRequest, RaiseGapRequest, RaiseExpectationRequest)"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/runtime.rs",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "One coordination route",
+     "say": "The personal assistant can delegate company coordination to the CEO, who has bounded specialist routes. Each specialist keeps its own grants and limits.",
+     "evidence": "docs/components/magician/autonomous-agents.md; magician_data_v3/system/agent_templates/agents/ceo/definition.agent.yaml"
     }
    ]
   },
@@ -267,63 +283,63 @@
      "file": "magician/src/config.rs",
      "type": "EnvoyConfig",
      "fn": null,
-     "line": 4637,
+     "line": 5018,
      "why": "Owner allowlists and envoy agent id"
     },
     {
      "file": "magician/src/config.rs",
      "type": "PublicChatPolicyConfig",
      "fn": "source_surface_matches",
-     "line": 5020,
+     "line": 5468,
      "why": "Marks public chat surfaces as chat-only"
     },
     {
      "file": "magician/src/magician_v2/chat/envoy.rs",
      "type": null,
      "fn": "resolve_inbound_lane",
-     "line": 323,
+     "line": 350,
      "why": "Chooses owner, guest or engagement lane"
     },
     {
      "file": "magician/src/magician_v2/chat/envoy.rs",
      "type": null,
      "fn": "is_owner",
-     "line": 123,
+     "line": 125,
      "why": "Owner only when allowlisted and transport-authenticated"
     },
     {
      "file": "magician/src/magician_v2/chat/envoy.rs",
      "type": null,
      "fn": "guest_thread_id",
-     "line": 135,
+     "line": 162,
      "why": "Per-sender isolated guest thread id"
     },
     {
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "get_active_session_handler",
-     "line": 1299,
+     "line": 1324,
      "why": "Bots resolve their chat session here"
     },
     {
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "route_inbound_query",
-     "line": 884,
+     "line": 911,
      "why": "Applies envoy routing before session creation"
     },
     {
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "get_or_create_session",
-     "line": 29868,
+     "line": 30402,
      "why": "Binds envoy agent on first guest message"
     },
     {
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "public_chat_policy_for_source",
-     "line": 9242,
+     "line": 9546,
      "why": "Selects public-chat policy by source surface"
     },
     {
@@ -351,8 +367,22 @@
      "file": "magician/src/magician_v2/chat/storage.rs",
      "type": "FileChatStore",
      "fn": "append_message",
-     "line": 6274,
+     "line": 1532,
      "why": "Persists chat messages to segments"
+    },
+    {
+     "file": "magician/src/magician_v2/owner_claim.rs",
+     "type": null,
+     "fn": "mint_claim_code",
+     "why": "Claim your own channel",
+     "line": 281
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Keep the bound public policy"
     }
    ],
    "configKeys": [
@@ -383,7 +413,7 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "get_active_session_handler",
-     "line": 1299,
+     "line": 1324,
      "title": "Bot requests a session",
      "say": "The bot asks the server for the active session, passing channel, address, verification status and whether the user typed the control prefix.",
      "evidence": "docs/components/magician/envoy-agent.md:104-110"
@@ -392,7 +422,7 @@
      "file": "magician/src/magician_v2/chat/envoy.rs",
      "type": null,
      "fn": "resolve_inbound_lane",
-     "line": 323,
+     "line": 350,
      "title": "Choose the lane",
      "say": "Routing picks a lane: non-control messages go to the guest envoy, verified allowlisted owners keep full trust, and everyone else fails closed.",
      "evidence": "docs/components/magician/envoy-agent.md:135-143"
@@ -401,7 +431,7 @@
      "file": "magician/src/magician_v2/chat/envoy.rs",
      "type": null,
      "fn": "is_owner",
-     "line": 123,
+     "line": 125,
      "title": "Owner check fails closed",
      "say": "Owner status needs an allowlisted address and a transport that authenticated the sender, so unauthenticated email from the owner's address stays a guest.",
      "evidence": "docs/components/magician/envoy-agent.md:48-58"
@@ -410,7 +440,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "get_or_create_session",
-     "line": 29868,
+     "line": 30402,
      "title": "Bind the envoy agent",
      "say": "The first guest message creates a session bound to the envoy agent, and later messages reuse it, so each stranger stays isolated.",
      "evidence": "docs/components/magician/envoy-agent.md:147-152"
@@ -419,16 +449,32 @@
      "file": "magician/src/config.rs",
      "type": "PublicChatPolicyConfig",
      "fn": "source_surface_matches",
-     "line": 5020,
+     "line": 5468,
      "title": "Chat-only public turns",
      "say": "Public chat surfaces match a policy with no tools, delegation or handover, so guests get conversation only unless they use the control prefix.",
      "evidence": "docs/components/magician/envoy-agent.md:77-83"
+    },
+    {
+     "file": "magician/src/magician_v2/owner_claim.rs",
+     "type": null,
+     "fn": "mint_claim_code",
+     "title": "Claim your own channel",
+     "say": "Settings gives the owner a one-time code. Sending the claim command through an authenticated channel records that sender as an owner identity.",
+     "line": 281
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "title": "Keep the bound public policy",
+     "say": "An Envoy-bound bot session keeps its public-agent policy even when the bot omits surface metadata. Meeting rooms retain their separate meeting policy."
     }
    ]
   },
   {
    "id": "relentless",
-   "name": "Relentless (work quality)",
+   "name": "Quality checks",
    "oneLine": "Keeps improving a draft or media artifact within a budget until independent critics accept it, then hands it off.",
    "maturity": "shipped",
    "maturityEvidence": "Owner confirmed complete (2026-10-13). Doc caveats found by the scan, kept for reference: Native and API suites pass, and paid image and video regeneration is qualified live (docs/components/magician/relentless.md:30-66). Live promotion, canary and adoption of guidance 'remains unverified', and communication remains local draft/capture (relentless.md:70-80).",
@@ -451,28 +497,28 @@
      "file": "magician/src/magician_v2/relentless_service.rs",
      "type": "RelentlessService",
      "fn": "start_owner_text_draft",
-     "line": 2753,
+     "line": 2764,
      "why": "Service entry for an owner draft run"
     },
     {
      "file": "magician/src/magician_v2/relentless_runtime.rs",
      "type": "PreparedTextDraft",
      "fn": "admit",
-     "line": 653,
+     "line": 661,
      "why": "Freezes contract and budget at admission"
     },
     {
      "file": "magician/src/magician_v2/relentless_service.rs",
      "type": "RelentlessService",
      "fn": "launch",
-     "line": 2392,
+     "line": 2403,
      "why": "Spawns the controller worker for a run"
     },
     {
      "file": "magician-relentless/src/controller.rs",
      "type": "Controller",
      "fn": "run_pass",
-     "line": 876,
+     "line": 891,
      "why": "One actor, critics and decision pass"
     },
     {
@@ -507,7 +553,7 @@
      "file": "magician-relentless/src/store.rs",
      "type": "RunStore",
      "fn": null,
-     "line": 1427,
+     "line": 1442,
      "why": "Durable run state store"
     },
     {
@@ -516,6 +562,13 @@
      "fn": null,
      "line": 1,
      "why": "Quality view inside the Work page"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/relentless/modelChoices.ts",
+     "type": null,
+     "fn": "qualityModels",
+     "line": 6,
+     "why": "Filters supported thinking choices and independent reviewer families"
     }
    ],
    "configKeys": [
@@ -530,10 +583,18 @@
     "/api/magician/v2/relentless/work"
    ],
    "uiSurface": {
-    "description": "Work page, Quality and review view",
+    "description": "Work → More → Quality checks selects draft/review models and thinking levels from bounded, priced choices. Independent review excludes the draft family; preview freezes the exact contract.",
     "path": "ui/unified-ui/src/lib/relentless/RelentlessWorkspace.svelte"
    },
    "tour": [
+    {
+     "file": "ui/unified-ui/src/lib/relentless/modelChoices.ts",
+     "type": null,
+     "fn": "qualityModels",
+     "line": 6,
+     "title": "Choose draft and reviewer",
+     "say": "Pick draft and review models with supported thinking levels. Review must use an independent family, and every choice must fit the bounded price contract."
+    },
     {
      "file": "magician-api/src/relentless_api.rs",
      "type": null,
@@ -547,7 +608,7 @@
      "file": "magician/src/magician_v2/relentless_runtime.rs",
      "type": "PreparedTextDraft",
      "fn": "admit",
-     "line": 653,
+     "line": 661,
      "title": "Freeze the contract",
      "say": "Admission freezes the criteria, model pins and maximum spend, so the run cannot quietly change its rules or exceed what the owner approved.",
      "evidence": "magician/src/config.rs:2220-2226 ('admitted contracts never change on reload')"
@@ -556,7 +617,7 @@
      "file": "magician-relentless/src/controller.rs",
      "type": "Controller",
      "fn": "run_pass",
-     "line": 876,
+     "line": 891,
      "title": "Actor makes a candidate",
      "say": "Each pass asks the actor for a new candidate, seals its bytes, and sends those sealed bytes to independent critic models for review.",
      "evidence": "magician-relentless/src/lib.rs:1-5"
@@ -594,7 +655,7 @@
      "fn": null,
      "line": 1,
      "title": "Owner reviews in Work",
-     "say": "Accepted artifacts appear in the Work page's quality view for the owner to review, and acceptance and delivery stay separate owner-controlled steps.",
+     "say": "Accepted artifacts appear in the Work page's Quality checks view for the owner to review, and acceptance and delivery stay separate owner-controlled steps.",
      "evidence": "magician-relentless/src/lib.rs:4-5; ui/unified-ui/src/lib/work/WorkWorkspace.svelte:10"
     }
    ]
@@ -602,7 +663,7 @@
   {
    "id": "notes",
    "name": "Notes",
-   "oneLine": "Markdown notes that you and your agents write, search, link and publish tasks into, stored wherever you choose.",
+   "oneLine": "Magician's own Markdown notes that you and your agents write, search, link and publish tasks into, opened at /notes through one relative link that carries the workspace.",
    "maturity": "shipped",
    "maturityEvidence": "The feature map lists Notes, notes search, save-selection and task pages (docs/features/README.md:150-153). Web, Magios and Android surfaces are listed there.",
    "locations": [
@@ -610,42 +671,49 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettings",
      "fn": null,
-     "line": 67,
+     "line": 75,
      "why": "Per-scope provider and root settings"
+    },
+    {
+     "file": "magician/src/magician_v2/notes.rs",
+     "type": null,
+     "fn": "note_link",
+     "line": 5000,
+     "why": "The one canonical relative note link, /notes?path=…&workspace=…"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "search_notes",
-     "line": 1373,
+     "line": 1346,
      "why": "Searches notes across the configured roots"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "save_note_markdown",
-     "line": 1701,
+     "line": 1800,
      "why": "Writes edited markdown back to the provider"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "capture_selection",
-     "line": 2096,
+     "line": 2252,
      "why": "Saves a selection with its source"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "publish_task_note",
-     "line": 2302,
+     "line": 2448,
      "why": "Publishes a task page into notes"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "auto_publish_completed_task",
-     "line": 2442,
+     "line": 2583,
      "why": "Auto-publishes completed tasks"
     },
     {
@@ -666,14 +734,14 @@
      "file": "magician-api/src/notes_api.rs",
      "type": null,
      "fn": "configure_notes_routes",
-     "line": 1114,
+     "line": 1178,
      "why": "Mounts notes tree, file, search, audio routes"
     },
     {
      "file": "magician-api/src/notes_api.rs",
      "type": null,
      "fn": "search_notes_handler",
-     "line": 544,
+     "line": 604,
      "why": "HTTP note search endpoint"
     },
     {
@@ -682,6 +750,20 @@
      "fn": null,
      "line": 58,
      "why": "Web library calls notes tree and file APIs"
+    },
+    {
+     "file": "magios/Magios/NotesBrowser.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Open notes on iPhone"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/NotesScreen.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Open notes on Android"
     }
    ],
    "configKeys": [
@@ -698,7 +780,7 @@
     "/api/magician/v2/notes/settings"
    ],
    "uiSurface": {
-    "description": "/notes page",
+    "description": "The Notes library on Web, iPhone and Android, plus workspace-aware relative links from chat, tasks and Goals. Readers hide front matter; Markdown titles remain readable.",
     "path": "ui/unified-ui/src/routes/(app)/notes/+page.svelte"
    },
    "tour": [
@@ -706,9 +788,9 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettings",
      "fn": null,
-     "line": 67,
+     "line": 75,
      "title": "Choose where notes live",
-     "say": "Each workspace picks a notes provider and root folder, and changing it only redirects new notes without ever deleting existing ones.",
+     "say": "Each workspace has a Notes folder. Changing that folder redirects new notes, while existing files stay where they are until you move them.",
      "evidence": "docs/components/magician/notes-provider.md:17-19, 24-29"
     },
     {
@@ -724,9 +806,9 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "save_note_markdown",
-     "line": 1701,
+     "line": 1800,
      "title": "Edit and save",
-     "say": "Saving writes the markdown back to the chosen provider root, so notes stay ordinary files the user can also open elsewhere.",
+     "say": "Saving writes Markdown to the notes folder, so the files stay readable in other editors. An unavailable folder uses the scoped fallback and reports why.",
      "evidence": "docs/components/magician/notes-provider.md:3-4"
     },
     {
@@ -742,7 +824,7 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "capture_selection",
-     "line": 2096,
+     "line": 2252,
      "title": "Save a selection",
      "say": "Highlighting text and choosing save to notes files the selection along with the title and link of the page it came from.",
      "evidence": "docs/features/README.md:152; docs/features/contextual.md:53"
@@ -751,7 +833,7 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "publish_task_note",
-     "line": 2302,
+     "line": 2448,
      "title": "Publish task pages",
      "say": "Completed tasks can be published as note pages, by hand or automatically, giving a readable record that lives outside the task store.",
      "evidence": "notes.rs:2442 auto_publish_completed_task; docs/features/README.md:153"
@@ -764,13 +846,31 @@
      "title": "Promote to memory",
      "say": "A published task note can be offered to memory as a candidate, instead of silently becoming a remembered fact.",
      "evidence": "magician-api/src/notes_api.rs:1141-1143 (promote-memory route)"
+    },
+    {
+     "file": "magios/Magios/NotesBrowser.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Open notes on iPhone",
+     "say": "A note link opens the native library in its workspace. Reading hides front matter while editing keeps the original Markdown file intact.",
+     "evidence": "magios/Magios/NotesBrowser.swift:1"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/NotesScreen.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Open notes on Android",
+     "say": "Android opens the same workspace-aware note links in its own reader, so a goal or task can take you straight to its note.",
+     "evidence": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/NotesScreen.kt:1"
     }
    ]
   },
   {
    "id": "tasks-work",
-   "name": "Tasks (V3 task store) and the Work page",
-   "oneLine": "Creates, plans, runs and tracks visible and internal tasks, all shown together on the unified Work page.",
+   "name": "Work: tasks, goals and playbooks",
+   "oneLine": "See goals and playbooks above your tasks, follow live steps and results, and handle the work that needs you across Web, iPhone and Android.",
    "maturity": "shipped",
    "maturityEvidence": "Listed as 'Tasks and execution' in docs/features/README.md:20. The /work route renders WorkWorkspace (ui/unified-ui/src/routes/(app)/work/+page.svelte). The unified-work doc header still reads 'implemented on codex/unified-work' (docs/components/unified-ui/unified-work.md:3).",
    "locations": [
@@ -778,56 +878,56 @@
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "create_task_v3_handler",
-     "line": 3483,
+     "line": 3745,
      "why": "POST /v3/tasks entry"
     },
     {
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "list_tasks_v3_handler",
-     "line": 3551,
+     "line": 3813,
      "why": "Lists user-visible tasks"
     },
     {
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "list_internal_tasks_v3_handler",
-     "line": 3559,
+     "line": 3821,
      "why": "Lists internal and background tasks"
     },
     {
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "start_task_planning_v3_handler",
-     "line": 3585,
+     "line": 3847,
      "why": "Starts versioned task planning"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "create_task",
-     "line": 5179,
+     "line": 5419,
      "why": "Core task creation in the V3 store"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "start_execution",
-     "line": 22105,
+     "line": 22861,
      "why": "Launches an execution for a task"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/models.rs",
      "type": "TaskManifest",
      "fn": null,
-     "line": 167,
+     "line": 184,
      "why": "Durable task manifest shape"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/models.rs",
      "type": "TaskLifecycle",
      "fn": null,
-     "line": 127,
+     "line": 144,
      "why": "Persistent vs internal lifecycle routing"
     },
     {
@@ -862,21 +962,21 @@
      "file": "magician/src/magician_v2/artifact_v2/workspace.rs",
      "type": "ArtifactV2Workspace",
      "fn": "task_dir",
-     "line": 5604,
+     "line": 5508,
      "why": "Per-scope task folder layout"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/events.rs",
      "type": null,
      "fn": "map_v2_realtime_event",
-     "line": 622,
+     "line": 632,
      "why": "Runtime events become task history"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/execution_artifacts.rs",
      "type": "FilesystemExecutionArtifactIndexStore",
      "fn": "upsert_artifact",
-     "line": 1314,
+     "line": 1420,
      "why": "Indexes each run's artifacts"
     },
     {
@@ -897,7 +997,7 @@
      "file": "magician/src/magician_v2/execution/task_state_provider.rs",
      "type": "TaskStateProvider",
      "fn": "execute",
-     "line": 186,
+     "line": 176,
      "why": "Agent saves state for next run"
     },
     {
@@ -927,6 +1027,41 @@
      "fn": "shell_entries_for_execution",
      "line": 77,
      "why": "Live shell lines per execution"
+    },
+    {
+     "file": "magios/Magios/Work/WorkLandingSummary.swift",
+     "type": "WorkLandingSummary",
+     "fn": null,
+     "line": 87,
+     "why": "Work on iPhone"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkLanding.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Work on Android"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/run_effects.rs",
+     "type": "RunEffectsLedger",
+     "fn": null,
+     "line": 350,
+     "why": "A result for the whole run"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/chat/next/LiveTaskCard.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Control active work from chat"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/service.rs",
+     "fn": "delivered_file_outputs_for_terminal",
+     "type": null,
+     "line": 41287,
+     "why": "Keep delivered files beside the answer"
     }
    ],
    "configKeys": [],
@@ -938,7 +1073,7 @@
     "/api/magician/v3/events"
    ],
    "uiSurface": {
-    "description": "/work page (All work, Needs you, Crew; Tasks, Monitors and Internal as filters)",
+    "description": "Work → All work opens with folding Goals and Playbooks summaries, followed by tasks in one scroll. Needs you and Crew stay primary; More opens Goals, Playbooks, Quality checks and Team routines. Phone section tabs stay pinned.",
     "path": "ui/unified-ui/src/lib/work/WorkWorkspace.svelte"
    },
    "tour": [
@@ -946,7 +1081,7 @@
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "create_task_v3_handler",
-     "line": 3483,
+     "line": 3745,
      "title": "Create a task",
      "say": "A task arrives through the version-three task API from chat, the Work page, a schedule or an agent, always scoped to the authenticated workspace.",
      "evidence": "magician-bin/src/main.rs:14575-14591 (v3 scope auth middleware), main.rs:14606"
@@ -955,7 +1090,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "create_task",
-     "line": 5179,
+     "line": 5419,
      "title": "Write the manifest",
      "say": "The service writes the task manifest and state, marking it persistent or internal so background work stays off the main task list.",
      "evidence": "docs/components/magician/internal-tasks-api.md:3,7"
@@ -964,7 +1099,7 @@
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "start_task_planning_v3_handler",
-     "line": 3585,
+     "line": 3847,
      "title": "Plan before running",
      "say": "Tasks can be planned first; plans are versioned, can ask clarifying questions, and may need the owner's approval before execution.",
      "evidence": "task_api_v3.rs:3594-3758 (plan versions, approve, clarifications handlers)"
@@ -973,7 +1108,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "start_execution",
-     "line": 22105,
+     "line": 22861,
      "title": "Start an execution",
      "say": "Starting execution creates a run under the task, which agents carry out, handing sub-work to the delegation dispatcher when they need help.",
      "evidence": "service.rs:22087; scheduler.rs:29"
@@ -1002,15 +1137,211 @@
      "fn": null,
      "line": 1,
      "title": "One Work page",
-     "say": "The Work page composes tasks, monitors, internal work, crew, attention and quality views over these same APIs without adding a new store.",
+     "say": "All work puts folding Goals and Playbooks summaries above the task feed. Phones keep section tabs pinned while the page scrolls as one.",
      "evidence": "docs/components/unified-ui/unified-work.md:17-20; WorkWorkspace.svelte:4-12"
+    },
+    {
+     "file": "magios/Magios/Work/WorkLandingSummary.swift",
+     "type": "WorkLandingSummary",
+     "fn": null,
+     "line": 87,
+     "title": "Work on iPhone",
+     "say": "On iPhone, compact goal and playbook summaries lead into the task list, with review counts and links to the full Work sections.",
+     "evidence": "magios/Magios/Work/WorkLandingSummary.swift:81"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkLanding.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Work on Android",
+     "say": "Android follows the same Work layout, with folding summaries, compact navigation and visible counts when quality runs need review.",
+     "evidence": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkLanding.kt:1"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/run_effects.rs",
+     "type": "RunEffectsLedger",
+     "fn": null,
+     "line": 350,
+     "title": "A result for the whole run",
+     "say": "The final result gathers effects across the whole run, so files changed and actions completed stay visible beyond the last model message.",
+     "evidence": "magician/src/magician_v2/artifact_v2/run_effects.rs:350"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/chat/next/LiveTaskCard.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "title": "Control active work from chat",
+     "say": "Expand a chat task card to pause or resume, steer, or stop its active run. Historical runs remain available for inspection."
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/service.rs",
+     "fn": "delivered_file_outputs_for_terminal",
+     "type": null,
+     "line": 41287,
+     "title": "Keep delivered files beside the answer",
+     "say": "Files the run wrote and explicitly named as delivered appear beside the answer, using their own filenames and copies checked against their digests."
+    }
+   ]
+  },
+  {
+   "id": "goal-workspaces",
+   "name": "Goals and private workspaces",
+   "oneLine": "Organize main goals and sub-goals with owners, target dates, facts and metrics, using ordinary notes with explicit agent membership.",
+   "maturity": "shipped",
+   "maturityEvidence": "docs/features/goal-workspaces.md; Work Goals exists on Web, iOS and Android. Web creates folders/goals and edits target dates; phone goal trees are read-only. Templates need owner approval and use existing notes/tasks/monitors, with no new goal store. Agent access is bounded by membership and visibility; public visibility alone does not publish a note.",
+   "locations": [
+    {
+     "file": "ui/unified-ui/src/lib/work/goals.ts",
+     "type": null,
+     "fn": "buildGoalTree",
+     "line": 146,
+     "why": "A tree from notes"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/GoalCreateForm.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Start with one goal"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/goals.ts",
+     "type": null,
+     "fn": "updateGoalTarget",
+     "line": 472,
+     "why": "Change a target date"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/goal_workspace_access.rs",
+     "type": null,
+     "fn": "refusal",
+     "line": 1022,
+     "why": "Choose who may enter"
+    },
+    {
+     "file": "magios/Magios/Work/WorkGoalsView.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Goals on iPhone"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkGoalsScreen.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Goals on Android"
+    },
+    {
+     "file": "magician/src/magician_v2/notes.rs",
+     "type": "NotesSettingsStore",
+     "fn": null,
+     "line": 1087,
+     "why": "Grow into a workspace"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/GoalRow.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Show linked Playbooks and distinguish missing documents from lookup failures"
+    }
+   ],
+   "configKeys": [
+    "execution.goal_workspace_access.enabled",
+    "execution.goal_workspace_access.admin_agent"
+   ],
+   "routes": [
+    "GET /api/magician/v2/notes/tree",
+    "GET /api/magician/v2/notes/file",
+    "PATCH /api/magician/v2/notes/front-matter",
+    "POST /api/magician/v2/notes/file/content"
+   ],
+   "uiSurface": {
+    "description": "Work → More → Goals, or All goals from the landing summary. Web offers New folder, New goal and target-date edits; iPhone and Android browse the same goal tree and open its notes. New goals can link an existing Playbook; rows distinguish missing documents from failed catalog checks.",
+    "path": "ui/unified-ui/src/lib/work/GoalsWorkspace.svelte"
+   },
+   "tour": [
+    {
+     "file": "ui/unified-ui/src/lib/work/goals.ts",
+     "type": null,
+     "fn": "buildGoalTree",
+     "line": 146,
+     "title": "A tree from notes",
+     "say": "Goals are ordinary Markdown notes. Their parent links form a tree, with owners, dates, status and visibility shown together.",
+     "evidence": "ui/unified-ui/src/lib/work/goals.ts:111"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/GoalCreateForm.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Start with one goal",
+     "say": "On the Web, create a folder or a main goal or sub-goal. New goals start private, proposed and owned by you, without launching work.",
+     "evidence": "ui/unified-ui/src/lib/work/GoalCreateForm.svelte:1"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/goals.ts",
+     "type": null,
+     "fn": "updateGoalTarget",
+     "line": 472,
+     "title": "Change a target date",
+     "say": "Changing a target date updates only that note field. A revision check catches edits from another device before anything is overwritten.",
+     "evidence": "ui/unified-ui/src/lib/work/goals.ts:407"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/goal_workspace_access.rs",
+     "type": null,
+     "fn": "refusal",
+     "line": 1022,
+     "title": "Choose who may enter",
+     "say": "Workspace membership limits which agents can read or change its notes. A private goal stays with its permitted owner, even under God mode.",
+     "evidence": "magician/src/magician_v2/execution/goal_workspace_access.rs:941"
+    },
+    {
+     "file": "magios/Magios/Work/WorkGoalsView.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Goals on iPhone",
+     "say": "The iPhone shows the same goal tree, with links to notes and playbooks. Creation and target-date editing remain Web controls.",
+     "evidence": "magios/Magios/Work/WorkGoalsView.swift:1"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkGoalsScreen.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Goals on Android",
+     "say": "Android reads the same notes and parent links. Missing parents and loops appear under Not linked, with bounded reads and visible omissions.",
+     "evidence": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkGoalsScreen.kt:1"
+    },
+    {
+     "file": "magician/src/magician_v2/notes.rs",
+     "type": "NotesSettingsStore",
+     "fn": null,
+     "line": 1087,
+     "title": "Grow into a workspace",
+     "say": "In chat, a template can propose goal notes, metric tasks, monitors and a dashboard. The owner reviews that setup before it is written.",
+     "evidence": "docs/features/goal-workspaces.md; skillshub/goal-workspace-startup/SKILL.md"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/GoalCreateForm.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Connect a goal to its playbook",
+     "say": "On the Web, choose an optional playbook when creating a goal. Linked goals show whether the document is missing or could not be checked. The link does not start work.",
+     "evidence": "GoalCreateForm.svelte; GoalRow.svelte; GoalsWorkspace.svelte"
     }
    ]
   },
   {
    "id": "autonomous-harness",
-   "name": "Autonomous harness (plane, coding engines, harness engines)",
-   "oneLine": "Lets agents work unattended on schedules and drive external coding CLIs through a governed tool plane.",
+   "name": "Autopilot and work engines",
+   "oneLine": "Let crew members review playbooks during scheduled check-ins, with governed native or coding engines carrying out their work.",
    "maturity": "shipped",
    "maturityEvidence": "Owner confirmed complete (2026-10-13). Doc caveats found by the scan, kept for reference: Seven agents fire on schedules, but the C-suite set is 'a bet, not a shipped product' (docs/components/magician/autonomous-agents.md:38-57). The Claude, Grok, Antigravity and Pi coding engines are listed in docs/features/README.md:110-113.",
    "locations": [
@@ -1018,21 +1349,21 @@
      "file": "magician/src/magician_v2/agents/types.rs",
      "type": "AutonomousConfig",
      "fn": null,
-     "line": 455,
+     "line": 461,
      "why": "Schedule and focus areas enable autonomy"
     },
     {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "reconcile_autonomous_scheduler_entries",
-     "line": 10751,
+     "line": 9325,
      "why": "Turns declarations into scheduler entries"
     },
     {
      "file": "magician/src/magician_v2/harness/program.rs",
      "type": "ProgramLoader",
      "fn": null,
-     "line": 93,
+     "line": 121,
      "why": "Loads program charter and runtime state"
     },
     {
@@ -1053,21 +1384,21 @@
      "file": "magician/src/magician_v2/execution/plane/turn_engine.rs",
      "type": null,
      "fn": "maybe_harness_decide",
-     "line": 441,
+     "line": 544,
      "why": "Routes a turn to a harness engine"
     },
     {
      "file": "magician/src/magician_v2/execution/plane/engines/mod.rs",
      "type": null,
      "fn": "harness_engine_for",
-     "line": 25,
+     "line": 68,
      "why": "Engine roster: pi, claude_code, codex, grok, agy"
     },
     {
      "file": "magician/src/magician_v2/execution/plane/engine.rs",
      "type": "HarnessEngine",
      "fn": null,
-     "line": 291,
+     "line": 297,
      "why": "Trait every external engine implements"
     },
     {
@@ -1081,14 +1412,14 @@
      "file": "magician/src/magician_v2/execution/plane/grant.rs",
      "type": "PlaneGrantRegistry",
      "fn": "mint",
-     "line": 1105,
+     "line": 1189,
      "why": "Mints short-lived plane grants"
     },
     {
      "file": "magician-api/src/plane_api.rs",
      "type": null,
      "fn": "plane_mcp_handler",
-     "line": 1241,
+     "line": 1270,
      "why": "MCP door engines call back into"
     },
     {
@@ -1109,56 +1440,56 @@
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "harness_tool_future",
-     "line": 161,
+     "line": 145,
      "why": "Routes each harness tool by name"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "create_harness_task_with_budget",
-     "line": 1268,
+     "line": 1335,
      "why": "Caps tasks created per cycle"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "execute_evaluate_harness",
-     "line": 766,
+     "line": 832,
      "why": "Evaluates harness outcomes"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "owner_approval_required_result",
-     "line": 1703,
+     "line": 1770,
      "why": "Out-of-scope asks go to owner"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "execute_promote_backlog_item",
-     "line": 1729,
+     "line": 1796,
      "why": "Promotes a backlog item to work"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "render_goal_program_metrics_block",
-     "line": 3380,
+     "line": 3448,
      "why": "Program metrics for cycle prompts"
     },
     {
      "file": "magician/src/magician_v2/execution/plane/engines/oneshot.rs",
      "type": "OneShotSession",
      "fn": null,
-     "line": 110,
+     "line": 121,
      "why": "One CLI process per turn"
     },
     {
      "file": "magician/src/magician_v2/execution/plane/engines/oneshot.rs",
      "type": "OneShotEngineSpec",
      "fn": null,
-     "line": 74,
+     "line": 81,
      "why": "Shared base for Codex, Grok, agy"
     },
     {
@@ -1172,7 +1503,7 @@
      "file": "magician/src/magician_v2/execution/plane/submitted_plans.rs",
      "type": null,
      "fn": "take",
-     "line": 223,
+     "line": 226,
      "why": "Loop runs plan without turns"
     }
    ],
@@ -1188,10 +1519,10 @@
     "/api/magician/v2/plane/engines",
     "/api/magician/v2/plane/engine",
     "/api/magician/v2/plane/chat-engine",
-    "/api/magician/v2/coding/profiles"
+    "/api/magician/v2/coding/models"
    ],
    "uiSurface": {
-    "description": "Settings engines panel; Work page Company loop view",
+    "description": "Crew settings expose Autopilot, Scheduled check-ins and Focus areas; Work → More → Team routines controls the shared company schedule. Settings selects the work engines.",
     "path": "ui/unified-ui/src/lib/plane/EnginesPanel.svelte"
    },
    "tour": [
@@ -1199,16 +1530,16 @@
      "file": "magician/src/magician_v2/agents/types.rs",
      "type": "AutonomousConfig",
      "fn": null,
-     "line": 455,
-     "title": "Declare a schedule",
-     "say": "An agent becomes autonomous by declaring a schedule and focus areas, each pointing at a written charter, with no separate enable switch.",
+     "line": 461,
+     "title": "Schedule check-ins",
+     "say": "Give a crew member a schedule and focus areas. These scheduled check-ins review its responsibilities and start useful work within the configured limits.",
      "evidence": "docs/components/magician/autonomous-agents.md:3-5, 29-33"
     },
     {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "reconcile_autonomous_scheduler_entries",
-     "line": 10751,
+     "line": 9325,
      "title": "Scheduler picks it up",
      "say": "The server reconciles scheduler entries from those declarations, so each focus area fires on its own cron schedule as a separate cycle.",
      "evidence": "docs/components/magician/autonomous-agents.md:29"
@@ -1217,25 +1548,25 @@
      "file": "magician/src/magician_v2/harness/program.rs",
      "type": "ProgramLoader",
      "fn": null,
-     "line": 93,
-     "title": "Load the program",
-     "say": "Each cycle loads the program charter and its runtime state, so the standing instructions live in the store rather than in code.",
+     "line": 121,
+     "title": "Load the playbook",
+     "say": "Each work cycle loads its playbook and runtime progress, so the standing goals and instructions live in the store rather than in code.",
      "evidence": "docs/ARCHITECTURE_V2.md:1256"
     },
     {
      "file": "magician/src/magician_v2/execution/plane/turn_engine.rs",
      "type": null,
      "fn": "maybe_harness_decide",
-     "line": 441,
-     "title": "Pick a harness engine",
-     "say": "When a harness engine is configured, the turn goes to a named external engine such as Claude Code, Codex, Pi, Grok or Antigravity.",
+     "line": 544,
+     "title": "Choose a work engine",
+     "say": "A configured external work engine, called a harness in the code, can handle a turn through Claude Code, Codex, Pi, Grok or Antigravity.",
      "evidence": "engines/mod.rs:25-47; turn_engine.rs:554"
     },
     {
      "file": "magician/src/magician_v2/execution/plane/grant.rs",
      "type": "PlaneGrantRegistry",
      "fn": "mint",
-     "line": 1105,
+     "line": 1189,
      "title": "Mint a plane grant",
      "say": "Magician mints a short-lived grant and gives the engine an MCP configuration pointing back at itself, so every tool call returns through Magician.",
      "evidence": "docs/components/magician/plane.md:6-7; engine.rs:321 mcp_config_document"
@@ -1255,8 +1586,147 @@
      "fn": "decide_continuation",
      "line": 201,
      "title": "Continue or stop",
-     "say": "After a cycle, the harness decides whether to continue within budget and classifies anomalies, so hollow or stuck runs come up for repair.",
+     "say": "After a work cycle, the runtime decides whether to continue within budget and checks for problems, so hollow or stuck runs come up for repair.",
      "evidence": "cycle_continuation.rs:107 CycleBudgetSnapshot; anomaly.rs:107"
+    }
+   ]
+  },
+  {
+   "id": "program-documents",
+   "name": "Playbooks",
+   "oneLine": "Playbooks are living goals and instructions for your crew: share context across work cycles, approve proposed revisions and edit with version history on Web, iPhone or Android.",
+   "maturity": "shipped",
+   "maturityEvidence": "Merged 2026-10-17 (0fbd8f21d, d0f0bf165). Owner saves go through ProgramDocEditor::save_document with a history snapshot and a base_sha256 check (409 program_changed on conflict); browser edit and save were tested live. propose_program_revision is approval-gated and refuses a document changed since it was read. Shared docs are capped at 24 KiB each and 64 KiB in total. See docs/components/magician/autonomous-agents.md. Phone saves (paired iOS/Android app) live-tested 2026-10-18/19.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/harness/program_doc.rs",
+     "type": null,
+     "fn": "load_shared_program_context",
+     "line": 397,
+     "why": "Adds shared program docs to every program cycle"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/propose_program_revision.rs",
+     "type": null,
+     "fn": "handle",
+     "line": 246,
+     "why": "Approval-gated revision proposed by an agent"
+    },
+    {
+     "file": "magician/src/magician_v2/harness/program_doc.rs",
+     "type": "ProgramDocEditor",
+     "fn": "save_document",
+     "line": 606,
+     "why": "Saves with a history snapshot; refuses a stale base"
+    },
+    {
+     "file": "magician-api/src/programs_api.rs",
+     "type": null,
+     "fn": "save_program_handler",
+     "line": 242,
+     "why": "Save endpoint: owner session or paired phone"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/ProgramsWorkspace.svelte",
+     "type": null,
+     "fn": "save",
+     "line": 108,
+     "why": "Edit, save, and reload the latest on conflict"
+    },
+    {
+     "file": "magios/Magios/Work/WorkLibraryView.swift",
+     "type": null,
+     "fn": "save",
+     "line": 501,
+     "why": "iPhone edit and save"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkLibraryScreen.kt",
+     "type": null,
+     "fn": "save",
+     "line": 323,
+     "why": "Android edit and save"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/crew/FocusAreaSharedDocuments.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Shared documents per focus area"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/WorkHelp.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Explains Work concepts on hover, focus or tap"
+    },
+    {
+     "file": "magios/Magios/Work/WorkComponents.swift",
+     "type": "WorkHelpButton",
+     "fn": null,
+     "line": 4,
+     "why": "Themed iOS help with its own tap target"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/WorkGroupedRows.kt",
+     "type": null,
+     "fn": "WorkHelpButton",
+     "line": 67,
+     "why": "Themed Android help with its own tap target"
+    }
+   ],
+   "configKeys": [
+    "harness.shared_program_docs",
+    "focus area shared_programs"
+   ],
+   "routes": [
+    "PUT /api/magician/v2/programs/{name}"
+   ],
+   "uiSurface": {
+    "description": "Work → More → Playbooks on Web, iPhone and Android. Edit goals and instructions, restore earlier versions and keep your draft if a concurrent change requires reloading. Info buttons explain Playbooks and related Work controls.",
+    "path": "ui/unified-ui/src/lib/work/ProgramsWorkspace.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/harness/program_doc.rs",
+     "type": null,
+     "fn": "load_shared_program_context",
+     "line": 397,
+     "title": "Shared context in every cycle",
+     "say": "Playbooks are written goals and instructions that steer agent cycles. The documents you mark as shared are added to every work cycle, so the whole team works from the same context."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/propose_program_revision.rs",
+     "type": null,
+     "fn": "handle",
+     "line": 246,
+     "title": "Agents propose, you approve",
+     "say": "An agent that learns something can propose the next version of a playbook. Nothing changes until you approve it, and a document edited in the meantime is refused."
+    },
+    {
+     "file": "magician/src/magician_v2/harness/program_doc.rs",
+     "type": "ProgramDocEditor",
+     "fn": "save_document",
+     "line": 606,
+     "title": "Every save is reversible",
+     "say": "Each save keeps a snapshot of the previous version, and a save based on an older copy is refused instead of overwriting someone else’s change."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/ProgramsWorkspace.svelte",
+     "type": null,
+     "fn": "save",
+     "line": 108,
+     "title": "Edit in Work, Playbooks",
+     "say": "In Work, Playbooks, on the web or your phone, you can edit a playbook directly. If it changed underneath you, your draft is kept and you can reload the latest version."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/WorkHelp.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Help beside the controls",
+     "say": "Work uses the same names on Web, iPhone and Android. Info buttons explain Playbooks, Autopilot, Team routines and Quality checks without starting work."
     }
    ]
   },
@@ -1529,7 +1999,7 @@
   {
    "id": "vibedev",
    "name": "VibeDev",
-   "oneLine": "Builds and edits software projects from chat or a studio, running coding engines in sandboxes with previews and deploys.",
+   "oneLine": "Discuss a project, build in its original folder or an isolated workspace, approve exact edits, and follow runs on web and mobile.",
    "maturity": "shipped",
    "maturityEvidence": "Listed as 'VibeDev Living Studio' in docs/features/README.md:108, and the rail is documented end to end in docs/components/magician/vibedev-rail.md:20-31. Parallel work is its own feature, VibeDev crews (vibedev-rail.md §8.2), and live run tracking is Live VibeDev runs.",
    "locations": [
@@ -1544,14 +2014,14 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "start_vibedev_rail_run",
-     "line": 17226,
+     "line": 17276,
      "why": "Diverts the chat turn into VibeDev"
     },
     {
      "file": "magician/src/magician_v2/vibedev/projects.rs",
      "type": null,
      "fn": "resolve_vibedev_project_for_session",
-     "line": 648,
+     "line": 911,
      "why": "Resolves which project is meant"
     },
     {
@@ -1565,22 +2035,22 @@
      "file": "magician/src/magician_v2/vibedev/run_service.rs",
      "type": "VibeDevRunService",
      "fn": "start_build",
-     "line": 806,
+     "line": 853,
      "why": "Durably admits and dispatches a build"
     },
     {
      "file": "magician-api/src/vibedev_api.rs",
      "type": null,
      "fn": "start_vibedev_run_handler",
-     "line": 1264,
+     "line": 1281,
      "why": "Studio starts runs via same service"
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/selection.rs",
      "type": null,
      "fn": "decide_vibedev_dispatch_profile",
-     "line": 838,
-     "why": "Chooses coding engine profile"
+     "line": 884,
+     "why": "Resolves typed coding choices under readiness and budget constraints"
     },
     {
      "file": "magician/src/magician_v2/vibedev/sandbox_approvals.rs",
@@ -1593,14 +2063,14 @@
      "file": "magician-api/src/vibedev_api.rs",
      "type": null,
      "fn": "start_vibedev_preview_handler",
-     "line": 2427,
+     "line": 2509,
      "why": "Starts a live preview"
     },
     {
      "file": "magician-api/src/vibedev_api.rs",
      "type": null,
      "fn": "deploy_vibedev_project_handler",
-     "line": 3704,
+     "line": 4017,
      "why": "Deploys a project"
     },
     {
@@ -1614,7 +2084,7 @@
      "file": "magician/src/magician_v2/vibedev/dispatch_intent.rs",
      "type": "DispatchIntentStore",
      "fn": "admit",
-     "line": 1410,
+     "line": 1413,
      "why": "Admits a build exactly once"
     },
     {
@@ -1628,15 +2098,85 @@
      "file": "magician/src/magician_v2/vibedev/dispatch_intent.rs",
      "type": "DispatchIntentStore",
      "fn": "claim_for_recovery",
-     "line": 1595,
+     "line": 1598,
      "why": "Restart reclaims abandoned dispatches"
     },
     {
      "file": "magician/src/magician_v2/vibedev/run_service.rs",
      "type": null,
      "fn": "recover_pending_vibedev_dispatch",
-     "line": 2752,
+     "line": 2931,
      "why": "Finishes builds a crash interrupted"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/VibeComposer.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Shared compact composer and themed Dev activity"
+    },
+    {
+     "file": "magios/Magios/VibeDev/VibeDevComponents.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Native themed selectors and rounded-square controls"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/vibedev/VibeDevParts.kt",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Android engine/model/thinking controls"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plan_run_policy.rs",
+     "type": null,
+     "fn": "action_refusal",
+     "line": 136,
+     "why": "Discuss before building"
+    },
+    {
+     "file": "magician/src/magician_v2/vibedev/run_service.rs",
+     "type": "VibeDevRunService",
+     "fn": null,
+     "line": 807,
+     "why": "Know how changes will land"
+    },
+    {
+     "file": "magician/src/magician_v2/vibedev/change_delivery.rs",
+     "type": "ChangeDeliveryRecord",
+     "fn": null,
+     "line": 109,
+     "why": "Recorded branch-versus-proposal delivery mode"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/original_edits.rs",
+     "fn": "edit",
+     "type": null,
+     "line": 173,
+     "why": "Exact-diff approval before original-folder writes"
+    },
+    {
+     "file": "magician/src/magician_v2/vibedev/live_runs.rs",
+     "fn": "history_runs",
+     "type": null,
+     "line": 425,
+     "why": "Cross-project cursor-paginated run history"
+    },
+    {
+     "file": "magios/Magios/VibeDev/VibeDevNewRunSheet.swift",
+     "fn": null,
+     "type": "VibeDevNewRunSheet",
+     "line": 6,
+     "why": "iPhone Chat-style voice and typing composer"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/vibedev/VibeDevSheets.kt",
+     "fn": "VibeDevComposer",
+     "type": null,
+     "line": 205,
+     "why": "Android Chat-style voice and typing composer"
     }
    ],
    "configKeys": [
@@ -1655,13 +2195,33 @@
     "/api/magician/v2/vibedev/runs/{task_id}/merge",
     "/api/magician/v2/vibedev/runs/{task_id}/pull-request",
     "/api/magician/v2/vibedev/deploy/settings",
-    "POST /api/magician/v3/tasks (cockpit runs)"
+    "POST /api/magician/v3/tasks (cockpit runs)",
+    "GET /api/magician/v2/coding/models",
+    "GET /api/magician/v2/vibedev/runs",
+    "POST /api/magician/v2/vibedev/citizen/edit_original"
    ],
    "uiSurface": {
-    "description": "/vibe (Living Studio), /devsessions",
+    "description": "The studio offers Work location beside App options and Save as task. Mobile opens a paged run history. New run and follow-ups use the shared Chat composer with voice/mute and Live controls, file/photo/camera attachments, and model/thinking selection. Project and work location selectors sit above the input; Discuss and Autopilot show guidance and relevant settings there.",
     "path": "ui/unified-ui/src/routes/(app)/vibe/+page.svelte"
    },
    "tour": [
+    {
+     "file": "ui/unified-ui/src/lib/shell/VibeComposer.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Choose the run model",
+     "say": "Choose an engine, a model and its supported thinking level. The Dev sphere shows activity; the labelled Super God control beside it opens the duration and approval flow."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plan_run_policy.rs",
+     "type": null,
+     "fn": "action_refusal",
+     "line": 136,
+     "title": "Discuss before building",
+     "say": "Discuss mode admits read-only work and a plan-only coding turn. Its policy blocks writes and outward actions instead of relying on prompt instructions.",
+     "evidence": "magician/src/magician_v2/execution/plan_run_policy.rs:136"
+    },
     {
      "file": "magician/src/magician_v2/chat/invoke_grammar.rs",
      "type": null,
@@ -1675,7 +2235,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "start_vibedev_rail_run",
-     "line": 17226,
+     "line": 17276,
      "title": "Divert the chat turn",
      "say": "After saving the user's message and before any model call, the chat turn is diverted into the VibeDev rail instead of producing a reply.",
      "evidence": "docs/components/magician/vibedev-rail.md:26"
@@ -1693,7 +2253,7 @@
      "file": "magician/src/magician_v2/vibedev/run_service.rs",
      "type": "VibeDevRunService",
      "fn": "start_build",
-     "line": 806,
+     "line": 853,
      "title": "Admit and dispatch",
      "say": "The run service durably admits the build, creates a task owned by the lead coding agent, and dispatches it for execution.",
      "evidence": "docs/components/magician/vibedev-rail.md:29-30"
@@ -1702,9 +2262,9 @@
      "file": "magician/src/magician_v2/execution/coding_engine/selection.rs",
      "type": null,
      "fn": "decide_vibedev_dispatch_profile",
-     "line": 838,
+     "line": 884,
      "title": "Pick a coding engine",
-     "say": "A coding profile decides which engine runs the build, such as Pi, Claude Code, Codex, Grok or Antigravity, within budget and sandbox rules.",
+     "say": "The validated engine, model and thinking choice selects a coding adapter, while coordinator Auto chooses only from ready engines within budget and sandbox rules.",
      "evidence": "magician/src/magician_v2/execution/coding_engine/ (pi.rs, claude.rs, codex.rs, grok.rs, agy.rs, budgets.rs)"
     },
     {
@@ -1724,6 +2284,48 @@
      "title": "Studio, preview, deploy",
      "say": "The studio shows runs, logs, checkpoints and diffs, starts live previews, and can merge, open pull requests, or deploy the project.",
      "evidence": "magician-bin/src/main.rs:13001-13067; vibedev_api.rs:2392,3154"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/vibe/VibeStudio.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "See project health",
+     "say": "The studio reports project health and whether a preview is available, so repository problems are visible before you start more work.",
+     "evidence": "ui/unified-ui/src/lib/shell/vibe/VibeStudio.svelte:1"
+    },
+    {
+     "file": "magician/src/magician_v2/vibedev/change_delivery.rs",
+     "type": "ChangeDeliveryRecord",
+     "fn": null,
+     "line": 109,
+     "title": "Know how changes will land",
+     "say": "Choose Original folder to work on the current branch and uncommitted files, Isolated workspace for proposed diffs, or Isolated branch for commits and branch review. Follow-ups keep their admitted location.",
+     "evidence": "docs/components/magician/vibedev-rail.md; docs/components/magician/coding-engine-guardrails.md"
+    },
+    {
+     "title": "Approve original-folder edits",
+     "file": "magician/src/magician_v2/execution/coding_engine/original_edits.rs",
+     "fn": "edit",
+     "type": null,
+     "line": 173,
+     "say": "Original-folder text edits show their exact diff before files change. Allow once, for this session, or always at the repository scope. Denied or stale proposals do not write files."
+    },
+    {
+     "title": "Follow runs on iPhone",
+     "file": "magios/Magios/VibeDev/VibeDevHomeView.swift",
+     "fn": null,
+     "type": "VibeDevNowScreen",
+     "line": 108,
+     "say": "One activity-ordered history shows each run’s project, repository, work location and needs-you count. Both companions offer project selection, pull-to-refresh and server-paged older runs. Their More menu controls the Magician at work summary. Tap New run to open the composer."
+    },
+    {
+     "title": "Compose on Android",
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/vibedev/VibeDevSheets.kt",
+     "fn": "VibeDevComposer",
+     "type": null,
+     "line": 205,
+     "say": "The companion uses the shared Chat composer, including voice and mute settings, Live calls, attachments and model thinking controls. A welcome offers prompt starters that fill a draft. Project and work location selectors sit above the input. Discuss explains read-only work; Autopilot adds budget and nightly scheduling. Follow-ups keep their project and work location fixed."
     }
    ]
   },
@@ -1903,63 +2505,63 @@
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "contextual_assist_monitor",
-     "line": 407,
+     "line": 411,
      "why": "Accessibility watcher loop on macOS"
     },
     {
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "detect_contextual_target",
-     "line": 480,
+     "line": 453,
      "why": "Detects selection, field, page or files"
     },
     {
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "screen_context_fallback_target",
-     "line": 499,
+     "line": 503,
      "why": "Falls back to the frontmost window"
     },
     {
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "get_contextual_assist_action_catalog",
-     "line": 1064,
+     "line": 1066,
      "why": "Backend catalog with local fallback"
     },
     {
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "invoke_contextual_assist_action",
-     "line": 1075,
+     "line": 1077,
      "why": "Sends the chosen action to backend"
     },
     {
      "file": "magician-api/src/contextual_writing_api.rs",
      "type": null,
      "fn": "contextual_writing_action_handler",
-     "line": 577,
+     "line": 578,
      "why": "Server drafts the contextual result"
     },
     {
      "file": "magician-api/src/contextual_writing_api.rs",
      "type": null,
      "fn": "create_task_from_contextual_draft",
-     "line": 1237,
+     "line": 840,
      "why": "Task and Follow-up actions create tasks"
     },
     {
      "file": "magician-api/src/contextual_writing_api.rs",
      "type": null,
      "fn": "contextual_writing_catalog_handler",
-     "line": 2229,
+     "line": 2274,
      "why": "Canonical action catalog"
     },
     {
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "insert_contextual_text",
-     "line": 647,
+     "line": 651,
      "why": "Focus-verified paste back in place"
     },
     {
@@ -1982,6 +2584,13 @@
      "fn": null,
      "line": 1,
      "why": "Menu window rendered by Tauri"
+    },
+    {
+     "file": "magicutor/extension/contextual_assist_menu.js",
+     "type": null,
+     "fn": null,
+     "why": "Ask about a local page",
+     "line": 1
     }
    ],
    "configKeys": [
@@ -2006,7 +2615,7 @@
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "contextual_assist_monitor",
-     "line": 407,
+     "line": 411,
      "title": "Watch the target",
      "say": "A native Accessibility watcher on the Mac notices what you are working on, whether a selection, a text field, a web page or Finder files.",
      "evidence": "docs/components/desktop/contextual-assist.md:3-6, 43-48"
@@ -2015,7 +2624,7 @@
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "screen_context_fallback_target",
-     "line": 499,
+     "line": 503,
      "title": "Never a dead end",
      "say": "If nothing text-like is found, the frontmost window becomes the context, while password fields and excluded apps are suppressed entirely.",
      "evidence": "docs/features/contextual.md:45-48"
@@ -2024,7 +2633,7 @@
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "get_contextual_assist_action_catalog",
-     "line": 1064,
+     "line": 1066,
      "title": "Offer fitting actions",
      "say": "A single left Option tap opens a menu whose actions come from the backend catalog, with a local copy used if the server is unreachable.",
      "evidence": "docs/components/desktop/contextual-assist.md:7-14"
@@ -2033,7 +2642,7 @@
      "file": "magician-api/src/contextual_writing_api.rs",
      "type": null,
      "fn": "contextual_writing_action_handler",
-     "line": 577,
+     "line": 578,
      "title": "Run the action",
      "say": "The chosen action, with its text, page, app and optional screenshot context, goes to the contextual writing endpoint, which drafts the result.",
      "evidence": "docs/components/desktop/contextual-assist.md:14-17"
@@ -2042,7 +2651,7 @@
      "file": "magician-api/src/contextual_writing_api.rs",
      "type": null,
      "fn": "create_task_from_contextual_draft",
-     "line": 1237,
+     "line": 840,
      "title": "Or file a task",
      "say": "Task and follow-up actions create real tasks in the same thread, using the draft as the task description.",
      "evidence": "docs/features/contextual.md:53-55"
@@ -2051,10 +2660,139 @@
      "file": "desktop/src-tauri/src/contextual_assist.rs",
      "type": null,
      "fn": "insert_contextual_text",
-     "line": 647,
+     "line": 651,
      "title": "Insert in place",
      "say": "Pressing Tab pastes the draft where you were after re-checking focus, then restores your clipboard; if focus moved, nothing is pasted.",
      "evidence": "docs/components/desktop/contextual-assist.md:28-35"
+    },
+    {
+     "file": "magicutor/extension/contextual_assist_menu.js",
+     "type": null,
+     "fn": null,
+     "title": "Ask about a local page",
+     "say": "Right-click a website or local HTML page to ask Magican about it. The desktop captures the page context for the native assistance menu.",
+     "line": 1
+    }
+   ]
+  },
+  {
+   "id": "desktop-quick-chat",
+   "name": "Quick chat and the full desktop app",
+   "oneLine": "Summon a compact chat panel, expand into the full Chat or VibeDev page, and return with your draft and attachments intact.",
+   "maturity": "shipped",
+   "maturityEvidence": "docs/components/desktop/hud-overlay-window.md; desktop overlay geometry and the shared HUD mode controller implement both modes. Expanded is a normal app window; compact is the quick-summon launcher. In-memory draft transfer is scoped to workspace/session and is not a persistent draft guarantee.",
+   "locations": [
+    {
+     "file": "ui/unified-ui/src/lib/threads/ThreadSessionBar.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Shared navigation and session details on default and named chat pages"
+    },
+    {
+     "file": "desktop/src-tauri/src/overlay.rs",
+     "type": null,
+     "fn": "show_overlay_window",
+     "line": 635,
+     "why": "Summon quick chat"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/hudWindow.ts",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Open the actual app"
+    },
+    {
+     "file": "desktop/src-tauri/src/overlay.rs",
+     "type": null,
+     "fn": "set_hud_expanded",
+     "line": 4011,
+     "why": "A normal desktop window"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/hudWindow.ts",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Return to quick chat"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": {
+    "description": "Desktop quick-summon HUD → Expand or choose history → full Chat or VibeDev page. Default and named Chat pages share thread navigation, Files beside Settings and cumulative token/cache/cost totals, with a per-model breakdown behind the totals. The Compact icon at the far right returns to quick chat; native close, minimize and fullscreen controls apply when expanded.",
+    "path": "ui/unified-ui/src/routes/hud/+page.svelte"
+   },
+   "tour": [
+    {
+     "file": "desktop/src-tauri/src/overlay.rs",
+     "type": null,
+     "fn": "show_overlay_window",
+     "line": 635,
+     "title": "Summon quick chat",
+     "say": "A desktop shortcut opens a compact themed chat panel near your current screen, with history and the usual composer controls.",
+     "evidence": "desktop/src-tauri/src/overlay.rs:1706"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/hudWindow.ts",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Open the actual app",
+     "say": "Expanding opens the full Chat or VibeDev page in the same window, keeping the chosen session instead of mounting a separate chat view.",
+     "evidence": "ui/unified-ui/src/lib/shell/hudWindow.ts:1"
+    },
+    {
+     "file": "desktop/src-tauri/src/overlay.rs",
+     "type": null,
+     "fn": "set_hud_expanded",
+     "line": 4011,
+     "title": "A normal desktop window",
+     "say": "The expanded app fills most of the screen, with a draggable native title bar and standard close, minimize and fullscreen controls.",
+     "evidence": "desktop/src-tauri/src/overlay.rs:3964"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/chat/components/ChatFilesPage.svelte",
+     "type": null,
+     "fn": "remove",
+     "title": "Manage chat files",
+     "say": "Files shows uploads and artifacts with individual and total sizes. Delete removes one chat copy after confirmation; task originals remain under Work.",
+     "line": 68
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/chat/components/ChatModelsPage.svelte",
+     "type": null,
+     "fn": "load",
+     "title": "Compare chat model usage",
+     "say": "Models sits beside Files and shows each recorded model's calls, tokens, cache and cost, including chat-linked decision and voice calls.",
+     "line": 36
+    },
+    {
+     "file": "magios/Magios/ChatNavigationChrome.swift",
+     "type": "ChatSessionActionsMenu",
+     "fn": null,
+     "line": 90,
+     "title": "Chat details on mobile",
+     "say": "Android and iOS put thread tasks, thread settings, Files and Models in the chat's three-dot menu, keeping the conversation area clear.",
+     "evidence": "magios/Magios/ChatNavigationChrome.swift:90"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
+     "type": null,
+     "fn": "compact_task_user_output_bundle",
+     "title": "Keep useful findings visible",
+     "say": "Partial results preserve source findings across the run, lead with useful answers, and keep remaining gaps and verification limits separate.",
+     "line": 1927
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/hudWindow.ts",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Return to quick chat",
+     "say": "The Compact icon restores the small launcher. Unsent drafts and staged attachments follow that transition within the same workspace and session.",
+     "evidence": "ui/unified-ui/src/lib/shell/hudWindow.ts:1"
     }
    ]
   },
@@ -2069,7 +2807,7 @@
      "file": "skillshub/bots/sdk/src/types.ts",
      "type": "ChannelAdapter",
      "fn": null,
-     "line": 359,
+     "line": 360,
      "why": "Contract every platform adapter implements"
     },
     {
@@ -2083,14 +2821,14 @@
      "file": "skillshub/bots/sdk/src/magician-client.ts",
      "type": "MagicianClient",
      "fn": "sendMessage",
-     "line": 371,
+     "line": 375,
      "why": "HTTP client to the chat API"
     },
     {
      "file": "skillshub/bots/telegram/src/adapter.ts",
      "type": "TelegramAdapter",
      "fn": null,
-     "line": 39,
+     "line": 44,
      "why": "Official Telegram bot adapter"
     },
     {
@@ -2104,21 +2842,21 @@
      "file": "skillshub/bots/whatsapp/src/adapter.ts",
      "type": "WhatsAppAdapter",
      "fn": null,
-     "line": 44,
+     "line": 50,
      "why": "Consumer WhatsApp bridge with QR pairing"
     },
     {
      "file": "skillshub/bots/gmail/src/adapter.ts",
      "type": "GmailAdapter",
      "fn": null,
-     "line": 67,
+     "line": 97,
      "why": "Gmail via gws OAuth"
     },
     {
      "file": "skillshub/bots/agentmail/src/adapter.ts",
      "type": "AgentMailAdapter",
      "fn": null,
-     "line": 47,
+     "line": 62,
      "why": "AgentMail inbound webhook adapter"
     },
     {
@@ -2148,6 +2886,35 @@
      "fn": null,
      "line": 547,
      "why": "Feeds Kapso messages into Channel Assist"
+    },
+    {
+     "file": "skillshub/bots/sdk/src/channel-runtime.ts",
+     "type": null,
+     "fn": "observePendingQueue",
+     "line": 697,
+     "why": "Read-only queue observation and shared reply deduplication"
+    },
+    {
+     "file": "skillshub/bots/whatsapp/src/adapter.ts",
+     "type": null,
+     "fn": null,
+     "why": "Typed text and scoped attachment sends through the paired owner account",
+     "evidence": "skillshub/whatsapp/SKILL.md",
+     "line": 1
+    },
+    {
+     "file": "skillshub/bots/kapso/src/webhook-registration.ts",
+     "type": null,
+     "fn": null,
+     "why": "Register inbound webhooks",
+     "line": 1
+    },
+    {
+     "file": "skillshub/bots/gmail/src/watch-topic.ts",
+     "type": null,
+     "fn": null,
+     "why": "Reuse the Gmail watch topic",
+     "line": 1
     }
    ],
    "configKeys": [
@@ -2166,7 +2933,7 @@
     "GET /api/magician/v2/chat/active"
    ],
    "uiSurface": {
-    "description": "/channels control plane",
+    "description": "/channels manages supervised adapters. Explicit model choices use the typed catalog; queued replies are observed from backend-owned turns without reposting messages.",
     "path": "ui/unified-ui/src/routes/(app)/channels/+page.svelte"
    },
    "tour": [
@@ -2178,6 +2945,14 @@
      "title": "Start a bot",
      "say": "Each channel runs as a supervised per-scope bot process that the owner starts, stops, restarts and inspects from the Channels page.",
      "evidence": "docs/components/bots/README.md:12-13, 28-29"
+    },
+    {
+     "file": "magician-learning/src/bots/mod.rs",
+     "type": "ManagedBot",
+     "fn": "monitor_child",
+     "title": "Clean up child processes",
+     "say": "Stops and unexpected exits clean up the bot's process group before draining output pipes. Starts wait for the previous stop to finish.",
+     "line": 2363
     },
     {
      "file": "skillshub/bots/kapso/src/webhook-signature.ts",
@@ -2208,9 +2983,17 @@
     },
     {
      "file": "skillshub/bots/sdk/src/channel-runtime.ts",
+     "type": null,
+     "fn": "observePendingQueue",
+     "line": 697,
+     "title": "Keep the queued turn intact",
+     "say": "A busy conversation keeps its queued message in Magician. The bot observes its reply without deleting or reposting it, preserving the original engine and model."
+    },
+    {
+     "file": "skillshub/bots/sdk/src/channel-runtime.ts",
      "type": "ChannelRuntime",
      "fn": "handleRealtimeEvent",
-     "line": 804,
+     "line": 753,
      "title": "Replies flow back",
      "say": "Replies, task updates and critical alerts come back over the realtime connection, and the adapter sends them out on the platform.",
      "evidence": "channel-runtime.ts:1362 handleCriticalRequestAlert; telegram/src/adapter.ts:127-211"
@@ -2223,15 +3006,40 @@
      "title": "Auth problems surface",
      "say": "When a bot needs re-authentication or detects an account mismatch, the problem becomes a human-in-the-loop ask for the owner.",
      "evidence": "docs/components/magician/hitl-attention.md:19"
+    },
+    {
+     "file": "skillshub/bots/whatsapp/src/adapter.ts",
+     "type": null,
+     "fn": null,
+     "title": "Use WhatsApp beyond text",
+     "say": "The WhatsApp tool sends text, task-generated files and polls through the same recipient controls. File inputs share the task's working directory across CLI and MCP tools. Native MCP schemas expose exports, downloads, OCR, transcription and approved group changes; native CLI writes and administration remain available with approval controls.",
+     "evidence": "skillshub/whatsapp/SKILL.md",
+     "line": 1
+    },
+    {
+     "file": "skillshub/bots/kapso/src/webhook-registration.ts",
+     "type": null,
+     "fn": null,
+     "title": "Register inbound webhooks",
+     "say": "AgentMail and Kapso register their webhook addresses from the configured machine hostname and verify incoming requests with the provider signing secret.",
+     "line": 1
+    },
+    {
+     "file": "skillshub/bots/gmail/src/watch-topic.ts",
+     "type": null,
+     "fn": null,
+     "title": "Reuse the Gmail watch topic",
+     "say": "Gmail reuses the configured watch topic when reconnecting. Definitive authentication failures clear rejected credentials rather than repeatedly retrying a broken login.",
+     "line": 1
     }
    ]
   },
   {
    "id": "hitl-approvals-outward",
    "name": "HITL, approvals and outward actions",
-   "oneLine": "Every question, approval and outward send is gated, collected in one Attention inbox, and answered from any device.",
+   "oneLine": "Every question, approval and outward send is gated, collected in one Attention inbox, and answered from any device; approving runs exactly what you approved.",
    "maturity": "shipped",
-   "maturityEvidence": "Owner confirmed complete (2026-10-13). Doc caveats found by the scan, kept for reference: One canonical envelope and endpoint for all asks (docs/components/magician/hitl-attention.md:1-5). /approvals redirects to /attention (ui/unified-ui/src/routes/(app)/approvals/+page.ts). Outward sends are still capture-only by default (magician-config.yaml:2468; magician/src/config.rs:4085-4093).",
+   "maturityEvidence": "Owner confirmed complete (2026-10-13). Outward sends are capture-only by default (magician-config.yaml outward_actions.capture_only). Approval cards and approved-call replay live-tested on web, iPhone and Android (2026-10-18/19). Optional owner-chat, owner-task and OPC overrides use trusted task provenance (outward_policy.rs); owner-only Settings persists and applies the policy without restarting (outward_settings_api.rs).",
    "locations": [
     {
      "file": "magician/src/magician_v2/agents/approval.rs",
@@ -2244,28 +3052,28 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "classify_outward_dispatch",
-     "line": 48652,
+     "line": 50839,
      "why": "Classifies each action before execution"
     },
     {
      "file": "magician/src/magician_v2/agents/outward_actions.rs",
      "type": null,
      "fn": "outward_action_class",
-     "line": 310,
+     "line": 311,
      "why": "Central table of outward capabilities"
     },
     {
      "file": "magician/src/magician_v2/agents/outward_actions.rs",
      "type": null,
      "fn": "outward_dispatch_class",
-     "line": 427,
+     "line": 428,
      "why": "Argument-aware outward classification"
     },
     {
-     "file": "magician/src/magician_v2/agents/outward_actions.rs",
+     "file": "magician/src/magician_v2/agents/outward_policy.rs",
      "type": null,
-     "fn": "outward_capture_only",
-     "line": 627,
+     "fn": "capture_for_task",
+     "line": 403,
      "why": "Record instead of send by default"
     },
     {
@@ -2300,7 +3108,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 26456,
+     "line": 27747,
      "why": "Canonical answer endpoint"
     },
     {
@@ -2328,7 +3136,7 @@
      "file": "magician/src/magician_v2/chat/escalation_listener.rs",
      "type": null,
      "fn": "extract_escalation",
-     "line": 831,
+     "line": 853,
      "why": "Builds action-required card from events"
     },
     {
@@ -2344,19 +3152,86 @@
      "fn": "bind_result_to_disclosure",
      "line": 770,
      "why": "Records what the send created"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/approval_preview.rs",
+     "type": null,
+     "fn": "approval_preview_for_action",
+     "line": 188,
+     "why": "Readable card instead of the raw call"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/hitl/ApprovalPreviewCard.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Web approval card"
+    },
+    {
+     "file": "magios/Magios/AttentionDetailModal.swift",
+     "type": "ApprovalPreviewCard",
+     "fn": null,
+     "line": 1740,
+     "why": "iPhone approval card"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/ApprovalPreviewCard.kt",
+     "type": null,
+     "fn": "ApprovalPreviewCard",
+     "line": 58,
+     "why": "Android approval card"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/approved_replay.rs",
+     "type": null,
+     "fn": "maybe_replay_approved",
+     "line": 61,
+     "why": "Approval runs the recorded call"
+    },
+    {
+     "file": "magician-api/src/outward_settings_api.rs",
+     "type": null,
+     "fn": "put_handler",
+     "line": 196,
+     "why": "Owner-only durable and immediate sending controls"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/settings/OutwardSettingsPanel.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Explained context choices in web Settings"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/outward_review.rs",
+     "type": "OutwardReview",
+     "fn": null,
+     "why": "Review a captured send",
+     "line": 52
+    },
+    {
+     "file": "ui/unified-ui/src/lib/attention/pendingFeed.ts",
+     "type": null,
+     "fn": null,
+     "why": "Keep every open ask visible",
+     "line": 1
     }
    ],
    "configKeys": [
     "hitl",
     "outward_actions.capture_only",
     "approval_envelopes",
-    "preference_alignment"
+    "preference_alignment",
+    "outward_actions.force_capture_only",
+    "outward_actions.contexts"
    ],
    "routes": [
     "POST /api/magician/v2/hitl/{correlation_id}/respond",
     "/api/magician/v2/hitl/deliveries",
     "/api/magician/v2/hitl/deliveries/{delivery_id}/claim",
-    "/api/magician/v2/feed/attention"
+    "/api/magician/v2/feed/attention",
+    "GET /api/magician/v2/settings/outward-actions",
+    "PUT /api/magician/v2/settings/outward-actions"
    ],
    "uiSurface": {
     "description": "/attention inbox (/approvals redirects here); Work page Needs you",
@@ -2376,19 +3251,28 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "classify_outward_dispatch",
-     "line": 48652,
+     "line": 50839,
      "title": "Spot outward actions",
      "say": "Before executing, each action is classified, and anything that can send email, messages or invitations, including raw passthrough arguments, counts as outward.",
      "evidence": "docs/components/magician/outward-actions.md:1-23"
     },
     {
-     "file": "magician/src/magician_v2/agents/outward_actions.rs",
+     "file": "magician/src/magician_v2/agents/outward_policy.rs",
      "type": null,
-     "fn": "outward_capture_only",
-     "line": 627,
+     "fn": "capture_for_task",
+     "line": 403,
      "title": "Capture by default",
-     "say": "By default an outward action is recorded but not performed, so the whole system can be rehearsed without reaching a real third party.",
-     "evidence": "magician/src/config.rs:4085-4093"
+     "say": "An outward action is captured by default. Optional owner-chat, owner-task and OPC choices use the trusted origin, which delegation and restarts preserve. Other permission and recipient checks still apply.",
+     "evidence": "docs/components/magician/outward-actions.md#optional-context-controls"
+    },
+    {
+     "file": "magician-api/src/outward_settings_api.rs",
+     "type": null,
+     "fn": "put_handler",
+     "line": 196,
+     "title": "Choose which work may send",
+     "say": "In Settings the owner can permit real sends separately for personal work and company work, or capture everything. Saving applies immediately without restarting; tool permissions and required approvals remain.",
+     "evidence": "docs/components/magician/outward-actions.md#optional-context-controls"
     },
     {
      "file": "magician/src/magician_v2/agents/outward_gate.rs",
@@ -2409,13 +3293,47 @@
      "evidence": "magician-bin/src/main.rs:12302-12313; records.rs:121-214"
     },
     {
+     "file": "magician/src/magician_v2/execution/approval_preview.rs",
+     "type": null,
+     "fn": "approval_preview_for_action",
+     "line": 188,
+     "title": "A card, not a raw call",
+     "say": "A tool can describe its own approval: who wants to change what, their reason, the changed lines and any warning. Web, iPhone and Android show that card instead of the raw call.",
+     "evidence": "docs/components/magician/hitl-attention.md"
+    },
+    {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 26456,
+     "line": 27747,
      "title": "Answer once",
      "say": "The owner answers through one endpoint from Attention, chat, a bot or a phone, and the waiting work resumes with that answer.",
      "evidence": "docs/components/magician/hitl-attention.md:547; main.rs:13460"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/approved_replay.rs",
+     "type": null,
+     "fn": "maybe_replay_approved",
+     "line": 61,
+     "title": "Approve means run it",
+     "say": "After you approve, the run replays the exact call you saw, through the same checks, instead of asking the model again. A reworded call can never loop back for another approval.",
+     "evidence": "docs/components/magician/execution/AGENTIC_EXECUTION_DESIGN.md"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/outward_review.rs",
+     "type": "OutwardReview",
+     "fn": null,
+     "title": "Review a captured send",
+     "say": "By default, a captured send asks whether to send, discard, or always allow that agent and recipient. Unanswered requests expire after seven days.",
+     "line": 52
+    },
+    {
+     "file": "ui/unified-ui/src/lib/attention/pendingFeed.ts",
+     "type": null,
+     "fn": null,
+     "title": "Keep every open ask visible",
+     "say": "Open questions and approvals stay in the composer dock across web, iPhone and Android, including requests from work outside the current conversation.",
+     "line": 1
     }
    ]
   },
@@ -2528,21 +3446,21 @@
      "file": "magician/src/magician_v2/secrets/credential_lifecycle_executor.rs",
      "type": "GovernedCredentialLifecycleExecutor",
      "fn": "execute",
-     "line": 189,
+     "line": 190,
      "why": "Runs CLI login without shell"
     },
     {
      "file": "magician/src/magician_v2/secrets/credential_lifecycle_executor.rs",
      "type": null,
      "fn": "execute_login",
-     "line": 226,
+     "line": 242,
      "why": "Coordinated interactive CLI login"
     },
     {
      "file": "magician/src/magician_v2/secrets/credential_lifecycle_executor.rs",
      "type": null,
      "fn": "execute_pty",
-     "line": 439,
+     "line": 455,
      "why": "PTY login, capped and reaped"
     }
    ],
@@ -2618,9 +3536,9 @@
   {
    "id": "skills",
    "name": "Skills hub and skills",
-   "oneLine": "A hub of installable skills, covering tools, playbooks and personalities, that agents discover, activate and run.",
+   "oneLine": "A hub of installable skills, covering tools, procedures and personalities, that agents discover, activate and run.",
    "maturity": "shipped",
-   "maturityEvidence": "AgentSkills, the skill catalog and runner, and capability packs are listed in docs/features/README.md:100-103. More than 50 skills ship under skillshub/.",
+   "maturityEvidence": "The skill loader, catalog, activation and governed pack dispatch expose installed tools and procedures to authorized agents. Skill schemas and credential authority are defined alongside each installed skill; image generation and editing has its own feature entry.",
    "locations": [
     {
      "file": "skillshub/music-generation-via-minimax/bin/minimax-music",
@@ -2696,15 +3614,44 @@
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "install_skill_handler",
-     "line": 311,
+     "line": 310,
      "why": "Installs a skill into scope"
     },
     {
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "list_skills_catalog_handler",
-     "line": 2092,
+     "line": 2583,
      "why": "Catalog for the Skills page"
+    },
+    {
+     "file": "magician-api/src/browser_signin/mod.rs",
+     "type": "BrowserSignInApi",
+     "fn": null,
+     "line": 38,
+     "why": "Owner sign-in handoff shared by web, Android and iOS"
+    },
+    {
+     "file": "skillshub/scripts/install_skill_layer.py",
+     "type": null,
+     "fn": "install_skill",
+     "why": "Keep account state through updates",
+     "line": 383
+    },
+    {
+     "file": "magician-api/src/browser_signin/bots.rs",
+     "type": null,
+     "fn": null,
+     "why": "Connect managed accounts",
+     "line": 1
+    },
+    {
+     "file": "magician-components/src/google_project_access.rs",
+     "type": null,
+     "fn": null,
+     "why": "Check Google project access",
+     "evidence": "scripts/setup-gws-project-access.sh",
+     "line": 1
     }
    ],
    "configKeys": [
@@ -2724,10 +3671,10 @@
    },
    "tour": [
     {
-     "file": "skillshub/gmail/SKILL.md",
-     "type": null,
+     "file": "magician/src/magician_v2/skills/manifest.rs",
+     "type": "SkillManifest",
      "fn": null,
-     "line": 1,
+     "line": 9,
      "title": "A skill is a folder",
      "say": "Each skill is a folder with a manifest describing its name, version, required binaries and setup, like the bundled Gmail skill.",
      "evidence": "skillshub/gmail/SKILL.md:1-10"
@@ -2764,7 +3711,7 @@
      "type": null,
      "fn": "activate_procedure_skill",
      "line": 54,
-     "title": "Activate playbooks",
+     "title": "Activate procedures",
      "say": "Procedure skills are activated on demand, loading their instructions and any helper scripts as ephemeral tools for the current run.",
      "evidence": "activation.rs:18-54; runner.rs:45"
     },
@@ -2772,17 +3719,51 @@
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "install_skill_handler",
-     "line": 311,
+     "line": 310,
      "title": "Install and run",
      "say": "From the Skills page the owner browses the catalog, installs or uninstalls skills, edits their environment and runs actions directly.",
      "evidence": "skills_api.rs:1958-1975"
+    },
+    {
+     "file": "magician-api/src/browser_signin/mod.rs",
+     "type": "BrowserSignInApi",
+     "fn": null,
+     "line": 38,
+     "title": "Connect an account from another device",
+     "say": "Supported accounts open provider consent directly when a public HTTPS callback is available. Localhost callbacks stay on the computer, with a private sign-in viewer for web and paired phones; credentials remain with the engine or scoped CLI.",
+     "evidence": "docs/components/magician/browser-signin.md"
+    },
+    {
+     "file": "skillshub/scripts/install_skill_layer.py",
+     "type": null,
+     "fn": "install_skill",
+     "title": "Keep account state through updates",
+     "say": "Skill updates replace package code atomically while credentials and provider sessions stay in durable workspace state. Explicitly removed skills remain removed during repair.",
+     "line": 383
+    },
+    {
+     "file": "magician-api/src/browser_signin/bots.rs",
+     "type": null,
+     "fn": null,
+     "title": "Connect managed accounts",
+     "say": "Service accounts groups Google Workspace, Telegram and WhatsApp sign-in. Supported phones can finish codes, pairing or private computer-browser consent from the same flow.",
+     "line": 1
+    },
+    {
+     "file": "magician-components/src/google_project_access.rs",
+     "type": null,
+     "fn": null,
+     "title": "Check Google project access",
+     "say": "Google Workspace setup checks the account’s project roles. When the signed-in administrator has permission, the owner can grant only the missing required roles.",
+     "evidence": "scripts/setup-gws-project-access.sh",
+     "line": 1
     }
    ]
   },
   {
    "id": "mobile-devices",
    "name": "Mobile access and devices",
-   "oneLine": "Pairs iPhone and Android devices to your Magician, sends push alerts, and lets agents act on an enrolled Android.",
+   "oneLine": "Pair iPhone and Android, follow chat and Work, receive push alerts, and let agents use an enrolled Android under owner policy.",
    "maturity": "shipped",
    "maturityEvidence": "'Runtime mobile enrollment' is listed in docs/features/README.md:148. The Magdroid 0.6.0 device bridge is documented in docs/components/magician/device-bridge.md:1-9.",
    "locations": [
@@ -2804,7 +3785,7 @@
      "file": "magician/src/magician_v2/device_pairing.rs",
      "type": "DevicePairingStore",
      "fn": "exchange_enrollment",
-     "line": 1205,
+     "line": 1227,
      "why": "Records paired device and grant"
     },
     {
@@ -2818,7 +3799,7 @@
      "file": "magician/src/magician_v2/mobile_push.rs",
      "type": "MobilePushStore",
      "fn": "upsert",
-     "line": 233,
+     "line": 237,
      "why": "Registers device push tokens"
     },
     {
@@ -2832,7 +3813,7 @@
      "file": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/access/MagicianAccess.kt",
      "type": "MagicianAccess",
      "fn": "bridgeWebSocketUrl",
-     "line": 512,
+     "line": 565,
      "why": "Android dials the bridge websocket"
     },
     {
@@ -2869,6 +3850,34 @@
      "fn": null,
      "line": 1,
      "why": "Settings Mobile devices panel"
+    },
+    {
+     "file": "magios/Magios/HowToUseView.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Help for the controls you see"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/SettingsPages.kt",
+     "type": null,
+     "fn": "HowToUseSettingsPage",
+     "line": 208,
+     "why": "Android How to Use guide"
+    },
+    {
+     "file": "magios/Magios/ChatView.swift",
+     "fn": null,
+     "type": "ChatWelcomeView",
+     "line": 2374,
+     "why": "Start from an editable suggestion"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/ChatScreen.kt",
+     "fn": "ChatScreen",
+     "type": null,
+     "line": 265,
+     "why": "Android welcome, draft starters and recent conversations"
     }
    ],
    "configKeys": [
@@ -2886,7 +3895,7 @@
     "/api/magician/v2/devices/policy"
    ],
    "uiSurface": {
-    "description": "Settings, Mobile devices panel",
+    "description": "Settings → Mobile devices pairs phones. Both native apps provide Chat, Work and Notes plus a How to Use guide for visible controls; the old Features & Roadmap screen is removed.",
     "path": "ui/unified-ui/src/lib/devices/DevicePairingPanel.svelte"
    },
    "tour": [
@@ -2912,7 +3921,7 @@
      "file": "magician/src/magician_v2/device_pairing.rs",
      "type": "DevicePairingStore",
      "fn": "exchange_enrollment",
-     "line": 1205,
+     "line": 1227,
      "title": "Record the pairing",
      "say": "The server records the paired device and its capabilities in a pairing store, which the owner can list, review or revoke.",
      "evidence": "device_pairing_api.rs:689 list, :784 unpair"
@@ -2921,7 +3930,7 @@
      "file": "magician/src/magician_v2/mobile_push.rs",
      "type": "MobilePushStore",
      "fn": "upsert",
-     "line": 233,
+     "line": 237,
      "title": "Register for push",
      "say": "Each device registers its push token, so asks and alerts can reach the phone even when the app is closed.",
      "evidence": "main.rs:13747-13753 /devices/me/push"
@@ -2943,6 +3952,23 @@
      "title": "Agents use the phone",
      "say": "Over that socket Magician acts as the MCP client, calling the phone's declared tools to read the screen or type, under owner policy.",
      "evidence": "docs/components/magician/device-bridge.md:16-27; device_governance.rs:35-57"
+    },
+    {
+     "file": "magios/Magios/HowToUseView.swift",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Help for the controls you see",
+     "say": "How to Use explains the phone app’s visible screens and controls, from chat and Work to voice and settings, replacing the old roadmap page.",
+     "evidence": "magios/Magios/HowToUseView.swift:1"
+    },
+    {
+     "file": "magios/Magios/ChatView.swift",
+     "fn": null,
+     "type": "ChatWelcomeView",
+     "line": 2374,
+     "title": "Start from an editable suggestion",
+     "say": "New mobile chats show editable prompt starters and recent conversations. Choosing a starter fills a draft without sending it."
     }
    ]
   },
@@ -2957,21 +3983,21 @@
      "file": "magician-api/src/feed_api.rs",
      "type": "FeedApi",
      "fn": "today",
-     "line": 1391,
+     "line": 1418,
      "why": "Builds Today sections"
     },
     {
      "file": "magician-api/src/feed_api.rs",
      "type": "FeedApi",
      "fn": "attention",
-     "line": 1008,
+     "line": 1023,
      "why": "Builds the attention inbox"
     },
     {
      "file": "magician-api/src/feed_api.rs",
      "type": null,
      "fn": "today_handler",
-     "line": 9198,
+     "line": 9220,
      "why": "GET /today handler"
     },
     {
@@ -2985,7 +4011,7 @@
      "file": "magician/src/magician_v2/feed/store.rs",
      "type": "FeedStore",
      "fn": null,
-     "line": 110,
+     "line": 105,
      "why": "Durable per-scope feed store"
     },
     {
@@ -3006,7 +4032,7 @@
      "file": "magician/src/magician_v2/web_push.rs",
      "type": null,
      "fn": "attention_web_path",
-     "line": 309,
+     "line": 336,
      "why": "Push deep links into attention"
     },
     {
@@ -3022,6 +4048,90 @@
      "fn": null,
      "line": 1,
      "why": "Attention inbox UI"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/readingRoomMetadata.ts",
+     "type": null,
+     "fn": "readingRoomDateline",
+     "line": 8,
+     "why": "Read dates and sources clearly"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/TodayTriageDeck.svelte",
+     "type": null,
+     "fn": "requestNextIfLow",
+     "line": 131,
+     "why": "Page through the Morning Brief"
+    },
+    {
+     "file": "magios/Magios/TodayViewModel.swift",
+     "type": null,
+     "fn": "loadSection",
+     "line": 2553,
+     "why": "Publish Today sections and pulse slices independently"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/MorningEdition.svelte",
+     "type": null,
+     "fn": "loadMoreDeck",
+     "line": 390,
+     "why": "Independent cursor paging for the Morning Brief stack"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/TodayNewspaperCard.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Reading Room source and lane labels"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/stores/todayPulseStore.ts",
+     "type": null,
+     "fn": "createTodayPulseStore",
+     "line": 114,
+     "why": "Publish model, coding and memory pulse slices independently"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/TodayOpsEconomicsSlide.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Distinguish loading, unavailable model spend and a returned zero"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/TodayOpsStateSlide.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Wait for task and agent data before showing Operations totals"
+    },
+    {
+     "file": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/today/TodayRepository.kt",
+     "type": null,
+     "fn": "pulse",
+     "line": 395,
+     "why": "Publish partial Android pulse results as each query finishes"
+    },
+    {
+     "file": "magician-api/src/resurfacing_api.rs",
+     "type": null,
+     "fn": "get_resurfacing_today_handler",
+     "line": 1039,
+     "why": "Omit optional health scans without changing canonical Reading Room bindings"
+    },
+    {
+     "file": "magician-api/src/channel_assist_api.rs",
+     "type": null,
+     "fn": "get_channel_assist_needs_you_handler",
+     "line": 2727,
+     "why": "Keep optional diagnostics separate from follow-up card reads"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/deckActMenu.ts",
+     "type": null,
+     "fn": "deckActEntryResolvesCard",
+     "line": 48,
+     "why": "Which actions a Reading Room card offers, and which of them resolve it"
     }
    ],
    "configKeys": [
@@ -3060,7 +4170,7 @@
      "file": "magician-api/src/feed_api.rs",
      "type": "FeedApi",
      "fn": "today",
-     "line": 1391,
+     "line": 1418,
      "title": "Build Today",
      "say": "The Today endpoint groups items into needs you, follow-ups, active work, delivered and changed, and returns either previews or paged sections.",
      "evidence": "docs/components/magician/today-feed.md:1-22"
@@ -3078,7 +4188,7 @@
      "file": "magician-api/src/feed_api.rs",
      "type": "FeedApi",
      "fn": "attention",
-     "line": 1008,
+     "line": 1023,
      "title": "One attention inbox",
      "say": "Attention lists approvals, requests and escalations in one place and drops rows whose ask has already been resolved.",
      "evidence": "docs/components/magician/hitl-attention.md:23-27"
@@ -3091,6 +4201,64 @@
      "title": "Act from the page",
      "say": "On the web, Today and Attention let you answer, dismiss or open each item, and push notifications deep-link straight to the ask.",
      "evidence": "magician/src/magician_v2/web_push.rs:310; feed_api.rs:9240 dismiss handler"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/readingRoomMetadata.ts",
+     "type": null,
+     "fn": "readingRoomDateline",
+     "line": 8,
+     "title": "Read dates and sources clearly",
+     "say": "Reading Room cards show their source and available local dates. Labels distinguish when something was received or surfaced, with reference dates for older suggestions."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/TodayTriageDeck.svelte",
+     "type": null,
+     "fn": "requestNextIfLow",
+     "line": 131,
+     "title": "Page through the Morning Brief",
+     "say": "Morning Brief shows loaded cards against server totals and prefetches as the stack runs low. Loading and retry states stay distinct from a cleared deck."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/deckActMenu.ts",
+     "type": null,
+     "fn": "deckActEntryResolvesCard",
+     "line": 48,
+     "title": "Act from a card’s own menu",
+     "say": "Each Morning Brief and Broadsheet card offers an Act menu built from its own data: reply, open in the provider, start a follow-up task with an optional instruction, snooze, or details. Only snooze and open clear the card; cancelling or a failed action leaves it in place."
+    },
+    {
+     "file": "magios/Magios/TodayViewModel.swift",
+     "type": null,
+     "fn": "loadSection",
+     "line": 2553,
+     "title": "Keep Today visible during refresh",
+     "say": "Phone Today sections appear as each request finishes. Refresh keeps existing content, while first-load placeholders wait for their own section."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/stores/todayPulseStore.ts",
+     "type": null,
+     "fn": "createTodayPulseStore",
+     "line": 114,
+     "title": "Let each pulse arrive",
+     "say": "Today publishes model, coding and memory activity as each query finishes. Ready sections can appear while other requests are still pending."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/today/TodayOpsEconomicsSlide.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Distinguish waiting from zero",
+     "say": "Operations and Economics show loading while their data is pending. If model spend is unavailable, the page says so; a completed query can still report zero.",
+     "evidence": "TodayOpsLoading.component.test.ts; todayPulseStore.test.ts; TodayOpsStateSlide.svelte"
+    },
+    {
+     "file": "magician-api/src/resurfacing_api.rs",
+     "type": null,
+     "fn": "get_resurfacing_today_handler",
+     "line": 1039,
+     "title": "Read cards without extra diagnostics",
+     "say": "Reading Room card requests omit optional full-universe health scans. Canonical attention decisions and delivery bindings stay intact.",
+     "evidence": "resurfacing_api.rs TodayQuery.include_diagnostics; channel_assist_api.rs NeedsYouQuery.include_diagnostics; MorningEdition.svelte"
     }
    ]
   },
@@ -3161,7 +4329,7 @@
      "file": "magician-api/src/channel_assist_api.rs",
      "type": null,
      "fn": "get_channel_assist_needs_you_handler",
-     "line": 2723,
+     "line": 2727,
      "why": "Needs-you follow-up list"
     },
     {
@@ -3182,14 +4350,14 @@
      "file": "magician-comms/src/channel_assist/store.rs",
      "type": "MailAssistStore",
      "fn": "upsert_thread",
-     "line": 1116,
+     "line": 1122,
      "why": "Durable thread metadata in DuckDB"
     },
     {
      "file": "magician-comms/src/channel_assist/store.rs",
      "type": "MailAssistStore",
      "fn": "apply_classification_annotation",
-     "line": 2754,
+     "line": 2760,
      "why": "Applies classifier verdict to thread"
     },
     {
@@ -3245,7 +4413,7 @@
      "file": "magician/src/magician_v2/decisions/runner.rs",
      "type": null,
      "fn": "run",
-     "line": 209,
+     "line": 229,
      "why": "Shared shadow-or-gate classification runner"
     },
     {
@@ -3347,7 +4515,7 @@
      "file": "magician-api/src/channel_assist_api.rs",
      "type": null,
      "fn": "get_channel_assist_needs_you_handler",
-     "line": 2723,
+     "line": 2727,
      "title": "Draft a reply",
      "say": "Threads that need a reply appear in Today and Attention, alongside a suggested draft written by the reply-draft model.",
      "evidence": "reply_draft.rs:112; docs/features/README.md:63"
@@ -3416,7 +4584,7 @@
      "file": "magician/src/magician_v2/media_seam/meeting_realtime_responder.rs",
      "type": "RealtimeResponder",
      "fn": null,
-     "line": 92,
+     "line": 99,
      "why": "Realtime voice responder"
     },
     {
@@ -3566,21 +4734,21 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "start",
-     "line": 906,
+     "line": 921,
      "why": "Starts realtime provider session"
     },
     {
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "CallBoundary",
      "fn": null,
-     "line": 264,
+     "line": 263,
      "why": "Grounds each call turn"
     },
     {
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "rotate",
-     "line": 1856,
+     "line": 1956,
      "why": "Rotates long sessions"
     },
     {
@@ -3615,14 +4783,14 @@
      "file": "magician-api/src/media_api.rs",
      "type": null,
      "fn": "synthesize_tts_handler",
-     "line": 1474,
+     "line": 1675,
      "why": "Text-to-speech endpoint"
     },
     {
      "file": "magician-api/src/media_api.rs",
      "type": null,
      "fn": "submit_voice_note_handler",
-     "line": 2190,
+     "line": 2436,
      "why": "Dictated voice notes"
     },
     {
@@ -3638,6 +4806,76 @@
      "fn": "admit_voice_request_inner",
      "line": 292,
      "why": "Durable voice request admission"
+    },
+    {
+     "file": "magician-media/src/media_rails/voice_orchestrator.rs",
+     "fn": "requested_chat_session_is_usable",
+     "type": null,
+     "line": 394,
+     "why": "Stay with the selected chat"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/media/tts/autoSpeak.ts",
+     "fn": "maybeAutoSpeakTail",
+     "type": null,
+     "line": 122,
+     "why": "Speak each reply once"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/media/voice/MicModeControl.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Choose the mic mode during the call"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/LiveCallPanel.kt",
+     "fn": "LiveVoicePanel",
+     "type": null,
+     "line": 118,
+     "why": "Follow the call on Android"
+    },
+    {
+     "file": "magios/Magios/ComposerView.swift",
+     "fn": null,
+     "type": "ComposerVoiceHero",
+     "line": 121,
+     "why": "Remember the selected voice flow"
+    },
+    {
+     "file": "magios/Magios/ChatView.swift",
+     "fn": null,
+     "type": "ChatView",
+     "line": 6,
+     "why": "Keep the composer through a call"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/media/voice/VoiceActivityWaveform.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Show measured audio activity"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/components/chat/MicCaptureButton.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Dictation timer and measured capture waveform"
+    },
+    {
+     "file": "magdroid/android/bridge/src/main/kotlin/ai/magicbeans/magdroid/voice/RealtimeVoiceLiveCall.kt",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Measured Android call activity"
+    },
+    {
+     "file": "magios/Magios/VoiceAudioEngine.swift",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "why": "Measured iPhone capture and playback activity"
     }
    ],
    "configKeys": [
@@ -3672,7 +4910,7 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "start",
-     "line": 906,
+     "line": 921,
      "title": "Orchestrator starts",
      "say": "The voice orchestrator starts a realtime session with the configured provider and sets call boundaries that ground each turn of the conversation.",
      "evidence": "voice_control_handler.rs:335, 2683; voice_orchestrator.rs:264, 342"
@@ -3708,7 +4946,7 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "rotate",
-     "line": 1856,
+     "line": 1956,
      "title": "Keep long calls alive",
      "say": "Long calls can rotate to a fresh provider session for a recorded reason, so the conversation continues past provider session limits.",
      "evidence": "voice_orchestrator.rs:90 RotateReason, :114 RotationResult; media_rails/voice_context_compactor.rs"
@@ -3717,10 +4955,66 @@
      "file": "magician-api/src/media_api.rs",
      "type": "",
      "fn": "synthesize_tts_handler",
-     "line": 1474,
+     "line": 1675,
      "title": "Dictation and speech",
      "say": "Outside calls, dictated voice notes are transcribed and saved, and replies can be spoken aloud through the text-to-speech endpoint.",
      "evidence": "media_api.rs:2190 submit_voice_note_handler; main.rs:13632"
+    },
+    {
+     "file": "magician-media/src/media_rails/voice_orchestrator.rs",
+     "fn": "requested_chat_session_is_usable",
+     "type": null,
+     "line": 394,
+     "title": "Stay with the selected chat",
+     "say": "When its owner and agent match, the call binds to the chat shown at start. Later tab switches do not move its transcripts or usage."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/media/tts/autoSpeak.ts",
+     "fn": "maybeAutoSpeakTail",
+     "type": null,
+     "line": 122,
+     "title": "Speak each reply once",
+     "say": "Web chat avoids reading replies already spoken by a live call. Switching conversations also leaves their existing last messages silent."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/media/voice/MicModeControl.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "title": "Choose the mic mode during the call",
+     "say": "Web, iPhone and Android share Open mic and Hold to talk controls. Change modes during a call; translation profiles keep Hold to talk unavailable."
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/LiveCallPanel.kt",
+     "fn": "LiveVoicePanel",
+     "type": null,
+     "line": 118,
+     "title": "Follow the call on Android",
+     "say": "Android shows an elapsed timer, live captions and a microphone meter. Collapse the call panel to type while the call continues."
+    },
+    {
+     "file": "magios/Magios/ComposerView.swift",
+     "fn": null,
+     "type": "ComposerVoiceHero",
+     "line": 121,
+     "title": "Remember the selected voice flow",
+     "say": "Phone composers remember Dictation, Live or Hands-free. The main button starts the selected flow, and the voice menu also opens settings."
+    },
+    {
+     "file": "magios/Magios/ChatView.swift",
+     "fn": null,
+     "type": "ChatView",
+     "line": 6,
+     "title": "Keep the composer through a call",
+     "say": "Calls can share the composer with typing. When a call ends, mobile chat and VibeDev keep the draft and restore the saved composer mode."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/media/voice/VoiceActivityWaveform.svelte",
+     "fn": null,
+     "type": null,
+     "line": 1,
+     "title": "Show measured audio activity",
+     "say": "Dictation shows Listening time and a live waveform. Calls show measured microphone and playback activity, with muted input flat and reduced-motion preferences respected."
     }
    ]
   },
@@ -3749,28 +5043,28 @@
      "file": "magician-pty/src/session.rs",
      "type": null,
      "fn": "start_session",
-     "line": 729,
+     "line": 734,
      "why": "Spawns the PTY process"
     },
     {
      "file": "magician-pty/src/session.rs",
      "type": "TmuxHost",
      "fn": null,
-     "line": 210,
+     "line": 215,
      "why": "tmux host for persistent sessions"
     },
     {
      "file": "magician-pty/src/session.rs",
      "type": null,
      "fn": "registry_for_scope",
-     "line": 467,
+     "line": 472,
      "why": "Per-workspace session registry"
     },
     {
      "file": "magician-pty/src/session.rs",
      "type": "InteractiveSessionRegistry",
      "fn": null,
-     "line": 487,
+     "line": 492,
      "why": "Live sessions with replay buffers"
     },
     {
@@ -3854,7 +5148,7 @@
      "file": "magician-pty/src/session.rs",
      "type": null,
      "fn": "start_session",
-     "line": 729,
+     "line": 734,
      "title": "Spawn a terminal",
      "say": "Starting a session spawns a real pseudo-terminal hosted in tmux, so it behaves like the bare CLI and can persist across reloads.",
      "evidence": "docs/components/magician/developer-mode-workbench.md:192"
@@ -3863,7 +5157,7 @@
      "file": "magician-pty/src/session.rs",
      "type": "InteractiveSessionRegistry",
      "fn": null,
-     "line": 487,
+     "line": 492,
      "title": "Track live sessions",
      "say": "Each workspace keeps a registry of live sessions with replay buffers, so reopening the page restores what was on the screen.",
      "evidence": "session.rs:567 snapshot_replay_buffer"
@@ -4496,7 +5790,7 @@
      "file": "magician-api/src/task_api_v3.rs",
      "type": null,
      "fn": "submit_task_plan_clarification_v3_handler",
-     "line": 3723,
+     "line": 3985,
      "why": "V3 plan clarification path"
     },
     {
@@ -4554,6 +5848,13 @@
      "fn": null,
      "line": 54,
      "why": "Slots, confidence, budget, completed stages"
+    },
+    {
+     "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+     "type": null,
+     "fn": null,
+     "why": "Continue after a declined question",
+     "line": 1
     }
    ],
    "configKeys": [],
@@ -4629,6 +5930,14 @@
      "title": "Resume the work",
      "say": "Once answered, the resume service applies the value and resumes the paused execution from where it stopped.",
      "evidence": "triggers.rs:63 PreparedResumeMutation, :76 ResumePreparation"
+    },
+    {
+     "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
+     "type": null,
+     "fn": null,
+     "title": "Plan when no question was created",
+     "say": "If the ask policy declines to create a question, planning continues to a draft with unresolved inputs. Real unanswered questions still wait.",
+     "line": 1
     }
    ]
   },
@@ -4817,79 +6126,135 @@
   {
    "id": "god-mode",
    "name": "God mode",
-   "oneLine": "Lets trusted agents step outside the shell, file and network sandbox, asking the owner before each new action.",
+   "oneLine": "Let trusted agents request bounded exceptions to shell, file and network restrictions, with an explicit scope for every owner grant.",
    "maturity": "experimental",
-   "maturityEvidence": "Off by default: GodModeSettings.enabled has #[serde(default)] (magician/src/config.rs:2263-2266) and the seed config sets god_mode.enabled: false (magician-config.yaml:2193-2194); listed under [Unreleased] in magician/CHANGELOG.md:18; documented in docs/components/magician/god-mode.md. Only trusted agents qualify (god_mode.rs:250), and every uncovered action waits for owner approval, defaulting to deny after 300 s (god_mode.rs:51).",
+   "maturityEvidence": "God mode is off by default and restricted to trusted agents. god_mode.rs binds qualifying lasting script grants to invocation, working directory, input and reviewed contents; APPROVAL_TIMEOUT_SECS is 1800. Optional auto-approval still holds destructive, privileged, hidden-code and blocked operations for the owner. Goal workspace and read-only root boundaries remain enforced. Governed tool session/always approvals also work independently of God mode. See docs/components/magician/god-mode.md.",
    "locations": [
     {
      "file": "ui/unified-ui/src/lib/settings/GodModePanel.svelte",
      "type": null,
      "fn": "toggle",
-     "line": 24,
+     "line": 36,
      "why": "Settings switch for the default"
     },
     {
      "file": "ui/unified-ui/src/lib/magician/chat/ChatPanel.svelte",
      "type": null,
      "fn": "toggleChatGodMode",
-     "line": 945,
+     "line": 1160,
      "why": "Composer orb toggles one chat"
+    },
+    {
+     "file": "magios/Magios/ComposerExecutionModes.swift",
+     "type": "ComposerExecutionModes",
+     "fn": null,
+     "line": 116,
+     "why": "Native iOS chat and VibeDev execution mode controls"
+    },
+    {
+     "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/ComposerExecutionModes.kt",
+     "type": null,
+     "fn": "ComposerExecutionModes",
+     "line": 31,
+     "why": "Native Android chat and VibeDev execution mode controls"
     },
     {
      "file": "ui/unified-ui/src/lib/settings/godMode.ts",
      "type": null,
      "fn": "saveChatGodMode",
-     "line": 97,
+     "line": 112,
      "why": "Client call for chat override"
     },
     {
      "file": "magician-api/src/god_mode_api.rs",
      "type": null,
      "fn": "chat_god_mode_put_handler",
-     "line": 177,
+     "line": 295,
      "why": "Owner-only chat override endpoint"
     },
     {
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": null,
      "fn": "set_chat_override",
-     "line": 142,
+     "line": 435,
      "why": "Stores per-chat on/off choice"
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/types.rs",
      "type": null,
      "fn": "god_session_for",
-     "line": 166,
+     "line": 197,
      "why": "Grants session only to trusted runs"
     },
     {
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "god_mode_shell_override",
-     "line": 1898,
+     "line": 2729,
      "why": "Shell refusal routed to god mode"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/native_executors.rs",
+     "type": null,
+     "fn": "http_destination_reach",
+     "line": 2071,
+     "why": "God-mode approval for the runtime HTTP API; origin-bound redirects"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/native_executors.rs",
+     "type": null,
+     "fn": "authorize_file_read_path",
+     "line": 687,
+     "why": "Search tools share file-read approvals and privacy fences"
     },
     {
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": "GodAction",
      "fn": "authorize",
-     "line": 723,
+     "line": 1964,
      "why": "Checks grants, asks owner, decides"
     },
     {
      "file": "magician/src/magician_v2/god_mode/shell_scope.rs",
      "type": "ShellReading",
      "fn": "read",
-     "line": 86,
+     "line": 274,
      "why": "Bash parser names every command"
     },
     {
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": null,
      "fn": "record",
-     "line": 563,
+     "line": 1276,
      "why": "Saves session or always grants"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/hitl/godGrantScopes.ts",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Approve at the scope you mean"
+    },
+    {
+     "file": "magician/src/magician_v2/god_mode.rs",
+     "type": null,
+     "fn": null,
+     "why": "Bind approval to the script",
+     "line": 1
+    },
+    {
+     "file": "magician/src/magician_v2/god_mode.rs",
+     "type": null,
+     "fn": "set_chat_auto_override",
+     "why": "Choose automatic approval deliberately",
+     "line": 493
+    },
+    {
+     "file": "magios/Magios/ComposerExecutionModes.swift",
+     "fn": null,
+     "type": "ComposerExecutionModes",
+     "line": 116,
+     "why": "See the mode in the mobile composer"
     }
    ],
    "configKeys": [
@@ -4906,7 +6271,7 @@
     "PUT /api/magician/v2/chat/sessions/{session_id}/god-mode"
    ],
    "uiSurface": {
-    "description": "A God mode panel at the top of Settings sets the default and can forget all grants; in chat, the composer's presence orb turns it on or off for that chat with a danger halo; approvals arrive as choice cards (allow once, this session, always, deny).",
+    "description": "Settings sets the God mode default and can forget grants. Web chat uses its presence orb; iOS and Android composers offer a current-chat mode menu. Chat and VibeDev mobile composers expose backend-wide Super God duration and turn-off controls; web VibeDev labels its control beside the presence dot. Existing owner approval boundaries apply.",
     "path": "ui/unified-ui/src/lib/settings/GodModePanel.svelte"
    },
    "tour": [
@@ -4914,7 +6279,7 @@
      "file": "ui/unified-ui/src/lib/settings/GodModePanel.svelte",
      "type": null,
      "fn": "toggle",
-     "line": 24,
+     "line": 36,
      "title": "Flip the default",
      "say": "The owner turns god mode on in Settings. That becomes the default for every chat and for background runs."
     },
@@ -4922,15 +6287,15 @@
      "file": "ui/unified-ui/src/lib/magician/chat/ChatPanel.svelte",
      "type": null,
      "fn": "toggleChatGodMode",
-     "line": 945,
+     "line": 1160,
      "title": "Per-chat orb switch",
-     "say": "Clicking the glowing orb in the composer overrides that default for one chat, along with every run the chat starts."
+     "say": "Clicking the glowing orb in the composer overrides that default for one chat, along with every run the chat starts. Mobile mode saves stay bound to the connection whose settings were shown."
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/types.rs",
      "type": null,
      "fn": "god_session_for",
-     "line": 166,
+     "line": 197,
      "title": "Only trusted agents",
      "say": "When a run starts, it gets a god mode session only if the agent is trusted and god mode is on for it. Everyone else keeps the normal sandbox."
     },
@@ -4938,7 +6303,7 @@
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "god_mode_shell_override",
-     "line": 1898,
+     "line": 2729,
      "title": "Sandbox says no",
      "say": "When the sandbox would refuse a command, the request goes to god mode instead of failing."
     },
@@ -4946,7 +6311,7 @@
      "file": "magician/src/magician_v2/god_mode/shell_scope.rs",
      "type": "ShellReading",
      "fn": "read",
-     "line": 86,
+     "line": 274,
      "title": "Read every command",
      "say": "A real shell parser picks out every command in the line. Anything it cannot name can only ever be allowed once."
     },
@@ -4954,17 +6319,50 @@
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": "GodAction",
      "fn": "authorize",
-     "line": 723,
+     "line": 1964,
      "title": "Ask the owner",
-     "say": "If no earlier approval covers the action, the owner gets a card: allow once, for this session, always, or deny. No answer in five minutes counts as deny."
+     "say": "If no earlier grant covers the action, the owner chooses once, this session, always, or deny. No answer within thirty minutes means deny."
     },
     {
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": null,
      "fn": "record",
-     "line": 563,
+     "line": 1276,
      "title": "Remember the answer",
      "say": "Lasting approvals are saved at the scope the owner picked, and all forgotten when the god mode setting changes."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/hitl/godGrantScopes.ts",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "Approve at the scope you mean",
+     "say": "Web and phone approval cards expose the available grant scopes. File-edit reviews stay bounded and an answer can resume the originating work from another chat.",
+     "evidence": "ui/unified-ui/src/lib/hitl/godGrantScopes.ts:1"
+    },
+    {
+     "file": "magician/src/magician_v2/god_mode.rs",
+     "type": null,
+     "fn": null,
+     "title": "Bind approval to the script",
+     "say": "A qualifying script grant covers its exact invocation, working directory, input and reviewed contents. Editing the script invalidates that permission.",
+     "line": 1
+    },
+    {
+     "file": "magician/src/magician_v2/god_mode.rs",
+     "type": null,
+     "fn": "set_chat_auto_override",
+     "title": "Choose automatic approval deliberately",
+     "say": "Optional automatic approval handles eligible God mode requests. Deletes, root commands, hidden code and blocked operations still require the owner’s answer.",
+     "line": 493
+    },
+    {
+     "file": "magios/Magios/ComposerExecutionModes.swift",
+     "fn": null,
+     "type": "ComposerExecutionModes",
+     "line": 116,
+     "title": "See the mode in the mobile composer",
+     "say": "Mobile composers show a themed God mode aura and an auto-approve chip. Enabling God mode still uses the existing confirmation and server policy."
     }
    ]
   },
@@ -4973,41 +6371,41 @@
    "name": "VibeDev crews",
    "oneLine": "Splits one coding goal into lanes that build at once, then merges them into one branch.",
    "maturity": "hardening",
-   "maturityEvidence": "No feature flag: magician-bin always starts the crew supervisor at boot and registers the eight crew routes; the web studio rail (CrewSection.svelte) and the iPhone app (VibeDevCrewCard.swift) both show crews. Crews only run on trusted projects. Since deae26fa3 (2026-10-15) the planner sees the base branch's real files and the rail pages finished crews. Push to the iPhone lock screen shipped with coding-runs push (7c93cbbbd); the open follow-up is a per-lane engine choice in the planner (docs/plans/2026-10-12-vibedev-crews-plan.md).",
+   "maturityEvidence": "No feature flag: magician-bin always starts the crew supervisor at boot and registers the eight crew routes; the web studio rail (CrewSection.svelte) and the iPhone app (VibeDevCrewCard.swift) both show crews. Crews only run on trusted projects. Since deae26fa3 (2026-10-15) the planner sees the base branch's real files and the rail pages finished crews. Push to the iPhone lock screen shipped with coding-runs push (7c93cbbbd); the open follow-up is a per-lane engine choice in the planner (docs/archive/plans/2026-10-12-vibedev-crews-plan.md).",
    "locations": [
     {
      "file": "magician-api/src/vibedev_api.rs",
      "type": null,
      "fn": "create_vibedev_crew_handler",
-     "line": 2964,
+     "line": 3247,
      "why": "POST endpoint that proposes a crew"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "propose_crew",
-     "line": 1638,
+     "line": 1643,
      "why": "Trusted-only check, plan, ask owner"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "plan_crew_lanes",
-     "line": 1000,
+     "line": 1005,
      "why": "Planner splits goal into lanes"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "crew_plan_repo_layout",
-     "line": 931,
+     "line": 936,
      "why": "Planner sees the repo's real files"
     },
     {
      "file": "magician/src/magician_v2/vibedev/trusted_workspace.rs",
      "type": null,
      "fn": "base_branch_files",
-     "line": 247,
+     "line": 510,
      "why": "Committed tree of the base branch"
     },
     {
@@ -5021,42 +6419,42 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "start_pending_lanes",
-     "line": 1784,
+     "line": 1789,
      "why": "Starts each lane with budget share"
     },
     {
      "file": "magician/src/magician_v2/vibedev/run_service.rs",
      "type": "VibeDevRunService",
      "fn": "start_build",
-     "line": 806,
+     "line": 853,
      "why": "Each lane is a trusted run"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "spawn_vibedev_crew_supervisor",
-     "line": 3309,
+     "line": 3314,
      "why": "Background watcher settles lanes"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "refresh_running_crew",
-     "line": 2230,
+     "line": 2235,
      "why": "Re-reads lanes, settles the crew"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "integrate_crew",
-     "line": 2241,
+     "line": 2246,
      "why": "Merges lane branches into one"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "crew_settled_notice",
-     "line": 1198,
+     "line": 1203,
      "why": "One combined end-of-crew notice"
     },
     {
@@ -5070,14 +6468,14 @@
      "file": "magician/src/magician_v2/vibedev/trusted_workspace.rs",
      "type": null,
      "fn": "integrate_branches",
-     "line": 897,
+     "line": 1163,
      "why": "Merges lane branches into one"
     },
     {
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "page_crews",
-     "line": 749,
+     "line": 751,
      "why": "Open crews first, finished ones paged"
     }
    ],
@@ -5104,7 +6502,7 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "propose_crew",
-     "line": 1638,
+     "line": 1643,
      "title": "One goal, a crew",
      "say": "You give the crew one goal for a trusted project. It saves a plan and asks you to start it, in the studio or right from the notch."
     },
@@ -5112,7 +6510,7 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "plan_crew_lanes",
-     "line": 1000,
+     "line": 1005,
      "title": "Splitting into lanes",
      "say": "A planner breaks the goal into up to eight lanes. It reads the files actually in the repo first, so each lane gets a short brief and claims real paths, and lanes don't step on each other."
     },
@@ -5120,7 +6518,7 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "start_pending_lanes",
-     "line": 1784,
+     "line": 1789,
      "title": "Lanes start together",
      "say": "Once you say go, every lane starts as its own coding run on its own branch, each with a fair share of the budget."
     },
@@ -5128,7 +6526,7 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "spawn_vibedev_crew_supervisor",
-     "line": 3309,
+     "line": 3314,
      "title": "A quiet supervisor",
      "say": "In the background, a supervisor wakes whenever a lane finishes and checks every minute too, so a missed event or a restart never leaves the crew stuck."
     },
@@ -5136,7 +6534,7 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "integrate_crew",
-     "line": 2241,
+     "line": 2246,
      "title": "Merging the work",
      "say": "When every lane is done, their branches merge in order into one crew branch. If two lanes clash, a helper lane can fix the conflict."
     },
@@ -5144,7 +6542,7 @@
      "file": "magician/src/magician_v2/vibedev/crews.rs",
      "type": null,
      "fn": "crew_settled_notice",
-     "line": 1198,
+     "line": 1203,
      "title": "One tidy report",
      "say": "You get one summary for the whole crew instead of a ping per lane, then a question about opening a pull request."
     },

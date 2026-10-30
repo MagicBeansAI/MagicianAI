@@ -3,7 +3,6 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
@@ -15,14 +14,15 @@ use super::{
 };
 use crate::{
     capability::{LLMCapability, LLMModality, LLMProviderKind, LLMReasoning},
+    catalog::{ModelWire, ThinkingWire},
     error::{LLMError, LLMResult},
     provider::LLMProvider,
     types::{
-        anthropic_raw_content_block, as_anthropic_raw_content_block, clone_admitted_tool_argument,
-        clone_json_value_iteratively, parse_provider_json_or_string, parse_provider_json_value,
-        parse_tool_argument_json_or_string, ContentBlock, LLMMessage, LLMRequest, LLMResponse,
-        LLMResponseFormat, LLMToolCall, LLMToolResult, LLMToolSpec, MessageRole, PromptCacheConfig,
-        ReasoningConfig, RequestMetadata, StreamDelta, TokenUsage,
+        anthropic_raw_content_block, append_tool_argument_fragment, as_anthropic_raw_content_block,
+        clone_admitted_tool_argument, clone_json_value_iteratively, parse_provider_json_or_string,
+        parse_provider_json_value, parse_tool_argument_json_or_string, ContentBlock, LLMMessage,
+        LLMRequest, LLMResponse, LLMResponseFormat, LLMToolCall, LLMToolResult, LLMToolSpec,
+        MessageRole, PromptCacheConfig, ReasoningConfig, RequestMetadata, StreamDelta, TokenUsage,
     },
 };
 
@@ -31,37 +31,85 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
 const ANTHROPIC_MAX_TOKENS_RETRY_CAP: u32 = 32_000;
 
-/// Provider implementation for the Anthropic Messages API.
 /// Whether an Anthropic model takes adaptive thinking (`thinking.type =
-/// adaptive` + `output_config.effort`) rather than a `budget_tokens` budget.
-/// Fable / Mythos / Opus 5.x / Sonnet 5 / Opus 4.6–4.7 / Sonnet 4.6 reject
-/// `thinking.type = enabled`; Haiku 4.5 still takes it and rejects adaptive.
-/// Public so a harness that calls Anthropic itself (Pi) is configured by the
-/// same rule as Magician's own calls.
+/// adaptive` + `output_config.effort`) rather than a `budget_tokens` budget,
+/// by model name. Uncatalogued fallback only (`uncatalogued_wire`).
+/// Public so a harness that calls Anthropic itself (Pi) without a catalog
+/// entry is configured by the same rule as Magician's own calls.
 pub fn anthropic_model_uses_adaptive_thinking(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    model.contains("claude-fable")
-        || model.contains("claude-mythos")
-        || model.contains("claude-opus-5")
-        || model.contains("claude-opus-4-7")
-        || model.contains("claude-opus-4-6")
-        || model.contains("claude-sonnet-5")
-        || model.contains("claude-sonnet-4-6")
+    uncatalogued_wire(&LLMProviderKind::Anthropic, model).thinking == Some(ThinkingWire::Adaptive)
 }
 
-/// Whether an Anthropic model rejects `temperature` / `top_p`. Opus 4.7+,
-/// Opus 5.x, Sonnet 5.x, Fable and Mythos return 400 on non-default sampling
-/// values; Opus 4.6, Sonnet 4.6 and Haiku 4.5 still accept them.
-fn anthropic_model_rejects_sampling(model: &str) -> bool {
+/// FALLBACK for models absent from the model catalog (ad-hoc ids, legacy
+/// profiles, direct provider calls). Catalogued models carry their request
+/// shape on [`LLMRequest::model_wire`] (catalog `thinking` + `wire`) and never
+/// reach this function. Every model-name rule of this transport lives here.
+///
+/// - Adaptive thinking: Fable / Mythos / Opus 5.x / Sonnet 5 / Haiku 5.x /
+///   Opus 4.6–4.7 / Sonnet 4.6 reject `thinking.type = enabled`; Haiku 4.5
+///   still takes it and rejects adaptive.
+/// - Sampling: Opus 4.7+, Opus 5.x, Sonnet 5.x, Haiku 5.x, Fable and Mythos
+///   return 400 on `temperature` / `top_p`; Opus 4.6, Sonnet 4.6 and Haiku
+///   4.5 accept them.
+/// - Thinking Off: Claude 4.x, Opus 5, Sonnet 5 and Haiku 5.5; Opus 5 and
+///   Haiku 5.5 reject Off with an inherited xhigh/max effort, so Off sends
+///   `low`.
+pub(crate) fn uncatalogued_wire(provider_kind: &LLMProviderKind, model: &str) -> ModelWire {
+    const ADAPTIVE: [&str; 8] = [
+        "claude-fable",
+        "claude-mythos",
+        "claude-opus-5",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-sonnet-5",
+        "claude-haiku-5",
+        "claude-sonnet-4-6",
+    ];
+    const REJECTS_SAMPLING: [&str; 7] = [
+        "claude-fable",
+        "claude-mythos",
+        "claude-opus-5",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-haiku-5",
+    ];
+    const OFF_NEEDS_EFFORT: [&str; 2] = ["claude-opus-5", "claude-haiku-5-5"];
     let model = model.to_ascii_lowercase();
-    model.contains("claude-fable")
-        || model.contains("claude-mythos")
-        || model.contains("claude-opus-5")
-        || model.contains("claude-opus-4-7")
-        || model.contains("claude-opus-4-8")
-        || model.contains("claude-sonnet-5")
+    let any = |families: &[&str]| families.iter().any(|family| model.contains(family));
+    let anthropic = *provider_kind == LLMProviderKind::Anthropic;
+    let name = model.rsplit('/').next().unwrap_or(&model);
+    let thinking_off = anthropic
+        && (["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+            || name == "claude-opus-5"
+            || name == "claude-sonnet-5"
+            || name.starts_with("claude-haiku-5-5"));
+    ModelWire {
+        thinking: Some(if anthropic && any(&ADAPTIVE) {
+            ThinkingWire::Adaptive
+        } else {
+            ThinkingWire::Budget
+        }),
+        thinking_off,
+        thinking_off_effort: (anthropic && any(&OFF_NEEDS_EFFORT)).then(|| "low".to_string()),
+        sampling: !any(&REJECTS_SAMPLING),
+    }
 }
 
+/// The catalogued model's request shape, else the name-based fallback.
+fn wire_for(
+    provider_kind: &LLMProviderKind,
+    model: &str,
+    catalogued: Option<&ModelWire>,
+) -> ModelWire {
+    catalogued
+        .cloned()
+        .unwrap_or_else(|| uncatalogued_wire(provider_kind, model))
+}
+
+/// Provider implementation for the Anthropic Messages API.
 pub struct AnthropicMessagesProvider {
     client: Client,
     api_key: String,
@@ -194,7 +242,112 @@ impl AnthropicMessagesProvider {
             }
         }
 
-        Ok((system_prompt, anthropic_messages))
+        Ok((system_prompt, Self::pair_tool_uses(anthropic_messages)))
+    }
+
+    /// Every `tool_use` gets exactly one `tool_result` in the user message
+    /// right after its assistant message, as Anthropic requires ("tool_use ids
+    /// were found without tool_result blocks immediately after"). A later
+    /// duplicate result for the same id there is dropped; a call with none
+    /// (a parallel call that never ran, a refused or skipped call) is
+    /// answered with [`super::MISSING_TOOL_RESULT_TEXT`] after the results
+    /// that are present, in a new user message when no user message follows.
+    /// A history whose calls are all answered once is returned unchanged.
+    fn pair_tool_uses(messages: Vec<Value>) -> Vec<Value> {
+        use std::collections::HashSet;
+
+        fn role(message: &Value) -> Option<&str> {
+            message.get("role").and_then(Value::as_str)
+        }
+        fn block_type(block: &Value) -> Option<&str> {
+            block.get("type").and_then(Value::as_str)
+        }
+
+        let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+        let mut synthesized = 0usize;
+        let mut dropped_duplicates = 0usize;
+        let mut messages = messages.into_iter().peekable();
+        while let Some(message) = messages.next() {
+            let mut tool_use_ids: Vec<String> = Vec::new();
+            if role(&message) == Some("assistant") {
+                for block in message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if block_type(block) == Some("tool_use") {
+                        if let Some(id) = block.get("id").and_then(Value::as_str) {
+                            if !tool_use_ids.iter().any(|seen| seen == id) {
+                                tool_use_ids.push(id.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            out.push(message);
+            if tool_use_ids.is_empty() {
+                continue;
+            }
+
+            let mut answer = match messages.next_if(|next| role(next) == Some("user")) {
+                Some(next) => next,
+                None => json!({ "role": "user", "content": [] }),
+            };
+            let text_content = answer
+                .get("content")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            if let Some(text) = text_content {
+                answer["content"] = json!([{ "type": "text", "text": text }]);
+            }
+            if let Some(content) = answer.get_mut("content").and_then(Value::as_array_mut) {
+                let mut answered: HashSet<String> = HashSet::new();
+                content.retain(|block| {
+                    if block_type(block) != Some("tool_result") {
+                        return true;
+                    }
+                    match block.get("tool_use_id").and_then(Value::as_str) {
+                        Some(id) if !answered.insert(id.to_string()) => {
+                            dropped_duplicates += 1;
+                            false
+                        },
+                        _ => true,
+                    }
+                });
+                let insert_at = content
+                    .iter()
+                    .rposition(|block| block_type(block) == Some("tool_result"))
+                    .map_or(0, |index| index + 1);
+                let missing: Vec<Value> = tool_use_ids
+                    .iter()
+                    .filter(|id| !answered.contains(id.as_str()))
+                    .map(|id| {
+                        json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": super::MISSING_TOOL_RESULT_TEXT,
+                            "is_error": true,
+                        })
+                    })
+                    .collect();
+                synthesized += missing.len();
+                for (offset, block) in missing.into_iter().enumerate() {
+                    content.insert(insert_at + offset, block);
+                }
+            }
+            out.push(answer);
+        }
+
+        if synthesized > 0 || dropped_duplicates > 0 {
+            warn!(
+                provider = "anthropic_messages",
+                synthesized_results = synthesized,
+                dropped_duplicate_results = dropped_duplicates,
+                "paired every tool_use with exactly one tool_result before sending"
+            );
+        }
+        out
     }
 
     fn map_content_block(block: &ContentBlock) -> LLMResult<Value> {
@@ -229,7 +382,7 @@ impl AnthropicMessagesProvider {
                 "type": "tool_use",
                 "id": id,
                 "name": name,
-                "input": arguments,
+                "input": Self::tool_use_input(arguments),
             })),
             ContentBlock::ToolResult {
                 tool_call_id,
@@ -239,6 +392,33 @@ impl AnthropicMessagesProvider {
                 "tool_use_id": tool_call_id,
                 "content": Self::map_tool_result_content(content),
             })),
+        }
+    }
+
+    /// Anthropic rejects a `tool_use` whose `input` is not a JSON object. A
+    /// call the model emitted with unparseable arguments is kept in history as
+    /// its raw string, so replaying it verbatim fails every later turn of that
+    /// conversation. Send an object that names the problem instead.
+    fn tool_use_input(arguments: &Value) -> Value {
+        const PREVIEW_CHARS: usize = 200;
+        let preview = |raw: &str| -> Value {
+            let head: String = raw.chars().take(PREVIEW_CHARS).collect();
+            json!({
+                "_unparsed_arguments": format!(
+                    "{head}... ({} bytes, not a valid JSON object)",
+                    raw.len()
+                )
+            })
+        };
+        match arguments {
+            Value::Object(_) => arguments.clone(),
+            Value::Null => json!({}),
+            Value::String(raw) if raw.trim().is_empty() => json!({}),
+            Value::String(raw) => match serde_json::from_str::<Value>(raw) {
+                Ok(parsed @ Value::Object(_)) => parsed,
+                _ => preview(raw),
+            },
+            other => preview(&other.to_string()),
         }
     }
 
@@ -300,10 +480,12 @@ impl AnthropicMessagesProvider {
         let mut mapped: Vec<Value> = tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 json!({
                     "name": tool.name,
-                    "description": tool.description,
-                    "input_schema": tool.parameters,
+                    "description": description,
+                    "input_schema": parameters,
                 })
             })
             .collect();
@@ -374,13 +556,28 @@ impl AnthropicMessagesProvider {
         Ok(())
     }
 
+    /// Anthropic takes `tool_choice` only as an object. Catalog routes carry
+    /// the OpenAI spelling (`"auto"`, `"required"`, `{"type":"function"}`),
+    /// so it is translated here instead of reaching the API as a 400.
     fn tool_choice_for_request(request: &LLMRequest) -> Value {
-        request
-            .extra
-            .as_ref()
-            .and_then(|e| e.get("tool_choice"))
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({"type": "auto"}))
+        let Some(choice) = request.extra.as_ref().and_then(|e| e.get("tool_choice")) else {
+            return json!({"type": "auto"});
+        };
+        match choice {
+            Value::String(mode) => match mode.as_str() {
+                "none" => json!({"type": "none"}),
+                "required" | "any" => json!({"type": "any"}),
+                _ => json!({"type": "auto"}),
+            },
+            Value::Object(object) if object.get("type") == Some(&json!("function")) => match choice
+                .pointer("/function/name")
+                .or_else(|| object.get("name"))
+            {
+                Some(name) => json!({"type": "tool", "name": name}),
+                None => json!({"type": "any"}),
+            },
+            other => other.clone(),
+        }
     }
 
     fn map_reasoning(reasoning: &ReasoningConfig) -> Value {
@@ -400,8 +597,13 @@ impl AnthropicMessagesProvider {
 
     /// Callers set sampling per operation, not per model, so a model that
     /// rejects it gets the request without it rather than a 400.
-    fn insert_sampling(body: &mut Map<String, Value>, model: &str, request: &LLMRequest) {
-        if anthropic_model_rejects_sampling(model) {
+    fn insert_sampling(
+        body: &mut Map<String, Value>,
+        model: &str,
+        wire: &ModelWire,
+        request: &LLMRequest,
+    ) {
+        if !wire.sampling {
             if request.temperature.is_some() || request.top_p.is_some() {
                 debug!(model, "omitting sampling controls the model rejects");
             }
@@ -415,10 +617,11 @@ impl AnthropicMessagesProvider {
         }
     }
 
-    fn provider_supports_disabled_thinking(provider_kind: &LLMProviderKind) -> bool {
-        // Minimax now uses its own OpenAI-compatible provider and never reaches
-        // this Anthropic path; only DeepSeek's Anthropic-compat surface remains.
-        matches!(provider_kind, LLMProviderKind::DeepSeek)
+    fn provider_supports_disabled_thinking(
+        provider_kind: &LLMProviderKind,
+        wire: &ModelWire,
+    ) -> bool {
+        *provider_kind == LLMProviderKind::DeepSeek || wire.thinking_off
     }
 
     fn disabled_thinking_config() -> Value {
@@ -431,10 +634,6 @@ impl AnthropicMessagesProvider {
 
     fn adaptive_thinking_config() -> Value {
         json!({ "type": "adaptive", "display": "summarized" })
-    }
-
-    fn anthropic_supports_adaptive_thinking(model: &str) -> bool {
-        anthropic_model_uses_adaptive_thinking(model)
     }
 
     fn claude_output_config(reasoning: &ReasoningConfig) -> Option<Value> {
@@ -499,6 +698,7 @@ impl AnthropicMessagesProvider {
             .effort
             .as_deref()
             .map(|effort| match effort.trim().to_ascii_lowercase().as_str() {
+                "low" | "minimal" => "low",
                 "max" | "xhigh" | "extra_high" | "extra-high" => "max",
                 _ => "high",
             })
@@ -510,23 +710,33 @@ impl AnthropicMessagesProvider {
     fn insert_provider_reasoning_config(
         provider_kind: &LLMProviderKind,
         model: &str,
+        wire: &ModelWire,
         body: &mut Map<String, Value>,
         reasoning: &ReasoningConfig,
-    ) {
+    ) -> LLMResult<()> {
         if reasoning.is_disabled() {
-            if Self::provider_supports_disabled_thinking(provider_kind) {
-                body.insert("thinking".to_string(), Self::disabled_thinking_config());
+            if !Self::provider_supports_disabled_thinking(provider_kind, wire) {
+                return Err(LLMError::UnsupportedCapability(format!(
+                    "{model} does not support disabling thinking"
+                )));
             }
-            return;
+            body.insert("thinking".to_string(), Self::disabled_thinking_config());
+            if *provider_kind != LLMProviderKind::DeepSeek {
+                if let Some(effort) = wire.thinking_off_effort.as_deref() {
+                    // The model rejects disabled + xhigh/max, including an
+                    // inherited effort. Off gets a valid, explicit effort.
+                    body.insert("output_config".to_string(), json!({ "effort": effort }));
+                }
+            }
+            return Ok(());
         }
-
         match provider_kind {
             LLMProviderKind::DeepSeek => {
                 body.insert("thinking".to_string(), Self::enabled_thinking_config());
                 body.entry("output_config".to_string())
                     .or_insert_with(|| Self::deepseek_output_config(reasoning));
             },
-            LLMProviderKind::Anthropic if Self::anthropic_supports_adaptive_thinking(model) => {
+            _ if wire.thinking == Some(ThinkingWire::Adaptive) => {
                 body.insert("thinking".to_string(), Self::adaptive_thinking_config());
                 if let Some(output_config) = Self::claude_output_config(reasoning) {
                     body.entry("output_config".to_string())
@@ -537,6 +747,7 @@ impl AnthropicMessagesProvider {
                 body.insert("thinking".to_string(), Self::map_reasoning(reasoning));
             },
         }
+        Ok(())
     }
 
     fn ensure_default_no_thinking(
@@ -544,9 +755,7 @@ impl AnthropicMessagesProvider {
         body: &mut Map<String, Value>,
         reasoning: Option<&ReasoningConfig>,
     ) {
-        if body.contains_key("thinking")
-            || !Self::provider_supports_disabled_thinking(provider_kind)
-        {
+        if body.contains_key("thinking") || *provider_kind != LLMProviderKind::DeepSeek {
             return;
         }
 
@@ -650,13 +859,21 @@ impl AnthropicMessagesProvider {
         }
     }
 
+    /// A rolling request anchors the last completed turn as well as the
+    /// stable prefix. An agentic loop asks for it through its context-reuse
+    /// plan; a chat, which carries no reuse plan, asks through a conversation
+    /// prompt cache. Without it a chat cached only tools + system and paid
+    /// full price for its whole history on every call.
     fn uses_rolling_prefix(&self, request: &LLMRequest) -> bool {
         self.provider_kind == LLMProviderKind::Anthropic
-            && request
+            && (request
                 .context_reuse
                 .as_ref()
-                .map(|reuse| reuse.rolling_prefix)
-                .unwrap_or(false)
+                .is_some_and(|reuse| reuse.rolling_prefix)
+                || request
+                    .prompt_cache
+                    .as_ref()
+                    .is_some_and(PromptCacheConfig::is_conversation))
     }
 
     /// Convert a text-only user message to an Anthropic content payload,
@@ -1027,20 +1244,53 @@ impl AnthropicMessagesProvider {
         }
     }
 
-    /// The tools' own breakpoint. A rolling request with a system prompt
-    /// leaves it out: the system breakpoint caches the tools too (they come
-    /// first), and Anthropic allows four breakpoints — system, the last
-    /// completed turn, the lookback block and the final block use them all.
-    fn tools_cache_control(
+    /// Anthropic rejects a request with more than four `cache_control` blocks.
+    const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+    /// The tools' own breakpoint. The system breakpoint caches the tools too
+    /// (they come first), but only while the system prompt is unchanged; the
+    /// tools' own entry still reads back when it changes. A rolling request
+    /// with a system prompt gives it up only when system, the last completed
+    /// turn, the lookback block and the final block have taken all four
+    /// slots. `body` already holds the system prompt and messages.
+    fn tools_cache_control<'a>(
         rolling_prefix: bool,
         anchored_on_system: bool,
-        cache_control: Option<&Value>,
-    ) -> Option<&Value> {
-        if rolling_prefix && anchored_on_system {
+        body: &Map<String, Value>,
+        cache_control: Option<&'a Value>,
+    ) -> Option<&'a Value> {
+        if rolling_prefix
+            && anchored_on_system
+            && Self::cache_breakpoints_in(body) >= Self::MAX_CACHE_BREAKPOINTS
+        {
             None
         } else {
             cache_control
         }
+    }
+
+    /// `cache_control` blocks already placed in the system prompt and messages.
+    fn cache_breakpoints_in(body: &Map<String, Value>) -> usize {
+        let marked = |blocks: &Value| {
+            blocks.as_array().map_or(0, |blocks| {
+                blocks
+                    .iter()
+                    .filter(|block| block.get("cache_control").is_some())
+                    .count()
+            })
+        };
+        let in_system = body.get("system").map_or(0, marked);
+        let in_messages = body
+            .get("messages")
+            .and_then(Value::as_array)
+            .map_or(0, |messages| {
+                messages
+                    .iter()
+                    .filter_map(|message| message.get("content"))
+                    .map(marked)
+                    .sum()
+            });
+        in_system + in_messages
     }
 
     /// Content blocks between the last-completed-turn breakpoint and a second
@@ -1410,23 +1660,16 @@ impl AnthropicMessagesProvider {
             "opened streaming response with Anthropic"
         );
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
@@ -1459,7 +1702,9 @@ impl AnthropicMessagesProvider {
         let mut state = AnthropicStreamState::new(self.provider_kind())
             .with_stream_event_sink(stream_event_sink);
 
-        while let Some(chunk_result) = stream.next().await {
+        let mut watchdog = super::StreamWatchdog::new(timeout);
+        let mut marker_tail = Vec::new();
+        while let Some(chunk_result) = watchdog.next(&mut stream).await? {
             let chunk = chunk_result.map_err(|error| {
                 if error.is_timeout() {
                     LLMError::Timeout
@@ -1468,6 +1713,11 @@ impl AnthropicMessagesProvider {
                 }
             })?;
 
+            // Text, tool-use and thinking all stream as content blocks;
+            // `ping` keepalives are not output.
+            if super::chunk_mentions(&mut marker_tail, &chunk, b"content_block") {
+                watchdog.mark_progress();
+            }
             body_admission.admit_chunk(&chunk)?;
             append_sse_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk)?;
             Self::drain_sse_buffer(&mut buffer, &mut state)?;
@@ -1591,25 +1841,25 @@ impl AnthropicMessagesProvider {
             explicit_cache_control,
         );
 
-        self.attach_tools_or_server_web_search(
-            &mut body,
-            &request,
-            Self::tools_cache_control(
-                rolling_prefix,
-                cache_anchored_on_system,
-                explicit_cache_control,
-            ),
-        )?;
+        let tools_cache_control = Self::tools_cache_control(
+            rolling_prefix,
+            cache_anchored_on_system,
+            &body,
+            explicit_cache_control,
+        );
+        self.attach_tools_or_server_web_search(&mut body, &request, tools_cache_control)?;
 
-        Self::insert_sampling(&mut body, &model, &request);
+        let wire = wire_for(&self.provider_kind, &model, request.model_wire.as_ref());
+        Self::insert_sampling(&mut body, &model, &wire, &request);
 
         if let Some(reasoning) = request.reasoning.as_ref() {
             Self::insert_provider_reasoning_config(
                 &self.provider_kind,
                 &model,
+                &wire,
                 &mut body,
                 reasoning,
-            );
+            )?;
         }
 
         self.attach_response_format(&mut body, &request)?;
@@ -1663,29 +1913,38 @@ impl AnthropicMessagesProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        // Plain calls stream too, so a long answer that is still producing is
+        // bounded by progress, not cut at the request timeout. The events fold
+        // back into the message body parsed below.
+        body.insert("stream".to_string(), Value::Bool(true));
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
-        let raw_body = read_bounded_response_text(response).await?;
-
-        let payload = parse_provider_json_value(&raw_body)?;
-        drop(raw_body);
+        let payload = if !status.is_success() || super::is_json_response(&response) {
+            super::read_json_body(response, timeout).await?
+        } else {
+            let mut message =
+                AnthropicMessageAssembler::new(self.provider_kind(), protected_request);
+            let mut reader = super::SseReader::new(response.bytes_stream(), timeout);
+            while let Some(data) = reader.next_data().await? {
+                if message.fold_data(&data)? {
+                    reader.mark_progress();
+                }
+                if message.done() {
+                    break;
+                }
+            }
+            message.finish()?
+        };
         if status.is_client_error() || status.is_server_error() {
             if let Some(error) = payload.get("error") {
                 let message = error
@@ -1940,25 +2199,25 @@ impl AnthropicMessagesProvider {
             explicit_cache_control,
         );
 
-        self.attach_tools_or_server_web_search(
-            &mut body,
-            &request,
-            Self::tools_cache_control(
-                rolling_prefix,
-                cache_anchored_on_system,
-                explicit_cache_control,
-            ),
-        )?;
+        let tools_cache_control = Self::tools_cache_control(
+            rolling_prefix,
+            cache_anchored_on_system,
+            &body,
+            explicit_cache_control,
+        );
+        self.attach_tools_or_server_web_search(&mut body, &request, tools_cache_control)?;
 
-        Self::insert_sampling(&mut body, &model, &request);
+        let wire = wire_for(&self.provider_kind, &model, request.model_wire.as_ref());
+        Self::insert_sampling(&mut body, &model, &wire, &request);
 
         if let Some(reasoning) = request.reasoning.as_ref() {
             Self::insert_provider_reasoning_config(
                 &self.provider_kind,
                 &model,
+                &wire,
                 &mut body,
                 reasoning,
-            );
+            )?;
         }
 
         self.attach_response_format(&mut body, &request)?;
@@ -1997,23 +2256,16 @@ impl AnthropicMessagesProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         // Check HTTP status before consuming the stream — mirrors OpenAI Chat provider
         let status = response.status();
@@ -2044,7 +2296,9 @@ impl AnthropicMessagesProvider {
         let mut state = AnthropicStreamState::new(self.provider_kind())
             .with_stream_event_sink(stream_event_sink);
 
-        while let Some(chunk_result) = stream.next().await {
+        let mut watchdog = super::StreamWatchdog::new(timeout);
+        let mut marker_tail = Vec::new();
+        while let Some(chunk_result) = watchdog.next(&mut stream).await? {
             let chunk = chunk_result.map_err(|error| {
                 if error.is_timeout() {
                     LLMError::Timeout
@@ -2053,6 +2307,11 @@ impl AnthropicMessagesProvider {
                 }
             })?;
 
+            // Text, tool-use and thinking all stream as content blocks;
+            // `ping` keepalives are not output.
+            if super::chunk_mentions(&mut marker_tail, &chunk, b"content_block") {
+                watchdog.mark_progress();
+            }
             body_admission.admit_chunk(&chunk)?;
             append_sse_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk)?;
             Self::drain_sse_buffer_with_deltas(&mut buffer, &mut state, &tx).await?;
@@ -2222,25 +2481,25 @@ impl LLMProvider for AnthropicMessagesProvider {
                 explicit_cache_control,
             );
 
-            self.attach_tools_or_server_web_search(
-                &mut body,
-                &request,
-                Self::tools_cache_control(
-                    rolling_prefix,
-                    cache_anchored_on_system,
-                    explicit_cache_control,
-                ),
-            )?;
+            let tools_cache_control = Self::tools_cache_control(
+                rolling_prefix,
+                cache_anchored_on_system,
+                &body,
+                explicit_cache_control,
+            );
+            self.attach_tools_or_server_web_search(&mut body, &request, tools_cache_control)?;
 
-            Self::insert_sampling(&mut body, &model, &request);
+            let wire = wire_for(&self.provider_kind, &model, request.model_wire.as_ref());
+            Self::insert_sampling(&mut body, &model, &wire, &request);
 
             if let Some(reasoning) = request.reasoning.as_ref() {
                 Self::insert_provider_reasoning_config(
                     &self.provider_kind,
                     &model,
+                    &wire,
                     &mut body,
                     reasoning,
-                );
+                )?;
             }
 
             self.attach_response_format(&mut body, &request)?;
@@ -2305,6 +2564,211 @@ impl LLMProvider for AnthropicMessagesProvider {
         }
 
         self.invoke_non_stream_with_max_tokens_retry(request).await
+    }
+}
+
+/// Folds a Messages event stream back into the non-streaming message body,
+/// so a plain call that streamed is parsed by `parse_output` like one that
+/// did not. Unlike the delta-oriented [`AnthropicStreamState`] it keeps every
+/// block as sent (server tool use, web search results, citations), merges
+/// `message_start` usage with the final `message_delta` counts, and keeps
+/// the message envelope (`id`, `model`, `stop_reason`, `stop_sequence`).
+struct AnthropicMessageAssembler {
+    provider: LLMProviderKind,
+    protected: bool,
+    message: Map<String, Value>,
+    usage: Map<String, Value>,
+    blocks: std::collections::BTreeMap<u64, Value>,
+    tool_input: HashMap<u64, String>,
+    done: bool,
+}
+
+impl AnthropicMessageAssembler {
+    fn new(provider: LLMProviderKind, protected: bool) -> Self {
+        Self {
+            provider,
+            protected,
+            message: Map::new(),
+            usage: Map::new(),
+            blocks: std::collections::BTreeMap::new(),
+            tool_input: HashMap::new(),
+            done: false,
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.done
+    }
+
+    /// Fold one SSE `data` payload; `Ok(true)` when it was a content-block
+    /// event, the same output rule the streaming paths use for progress.
+    fn fold_data(&mut self, data: &str) -> LLMResult<bool> {
+        if data == "[DONE]" {
+            self.done = true;
+            return Ok(false);
+        }
+        let Value::Object(mut event) = parse_provider_json_value(data)? else {
+            return Ok(false);
+        };
+        let kind = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
+        if kind == "message_start" {
+            if let Some(Value::Object(message)) = event.remove("message") {
+                for (key, value) in message {
+                    if key == "usage" {
+                        Self::merge_usage(&mut self.usage, value);
+                    } else if key != "content" {
+                        self.message.insert(key, value);
+                    }
+                }
+            }
+        } else if kind == "content_block_start" {
+            if let Some(block) = event.remove("content_block") {
+                self.blocks.insert(index, block);
+            }
+            return Ok(true);
+        } else if kind == "content_block_delta" {
+            if let Some(Value::Object(delta)) = event.remove("delta") {
+                self.fold_delta(index, delta)?;
+            }
+            return Ok(true);
+        } else if kind == "content_block_stop" {
+            self.close_block(index)?;
+            return Ok(true);
+        } else if kind == "message_delta" {
+            if let Some(Value::Object(delta)) = event.remove("delta") {
+                for (key, value) in delta {
+                    if key == "usage" {
+                        Self::merge_usage(&mut self.usage, value);
+                    } else if !value.is_null() {
+                        self.message.insert(key, value);
+                    }
+                }
+            }
+            if let Some(usage) = event.remove("usage") {
+                Self::merge_usage(&mut self.usage, usage);
+            }
+        } else if kind == "message_stop" {
+            self.done = true;
+        } else if kind == "error" {
+            let message = if self.protected {
+                super::PROTECTED_PROVIDER_ERROR.to_owned()
+            } else {
+                event
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Anthropic streaming error")
+                    .to_owned()
+            };
+            return Err(LLMError::Provider {
+                provider: self.provider.to_string(),
+                message,
+            });
+        }
+        Ok(false)
+    }
+
+    fn fold_delta(&mut self, index: u64, mut delta: Map<String, Value>) -> LLMResult<()> {
+        let kind = delta
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        if kind == "input_json_delta" {
+            if let Some(fragment) = delta.get("partial_json").and_then(Value::as_str) {
+                append_tool_argument_fragment(self.tool_input.entry(index).or_default(), fragment)?;
+            }
+            return Ok(());
+        }
+        let Some(Value::Object(block)) = self.blocks.get_mut(&index) else {
+            return Ok(());
+        };
+        if kind == "citations_delta" {
+            if let Some(citation) = delta.remove("citation") {
+                match block.get_mut("citations") {
+                    Some(Value::Array(citations)) => citations.push(citation),
+                    _ => {
+                        block.insert("citations".to_string(), Value::Array(vec![citation]));
+                    },
+                }
+            }
+            return Ok(());
+        }
+        // text_delta -> text, thinking_delta -> thinking, signature_delta ->
+        // signature: each appends to the block field of the same name.
+        for (key, value) in delta {
+            if key == "type" {
+                continue;
+            }
+            if let Value::String(fragment) = value {
+                match block.get_mut(&key) {
+                    Some(Value::String(existing)) => existing.push_str(&fragment),
+                    _ => {
+                        block.insert(key, Value::String(fragment));
+                    },
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A tool-use block's streamed JSON replaces the empty `input` it opened
+    /// with.
+    fn close_block(&mut self, index: u64) -> LLMResult<()> {
+        let Some(raw) = self.tool_input.remove(&index) else {
+            return Ok(());
+        };
+        if raw.is_empty() {
+            return Ok(());
+        }
+        let input = parse_tool_argument_json_or_string(&raw)?;
+        if let Some(Value::Object(block)) = self.blocks.get_mut(&index) {
+            block.insert("input".to_string(), input);
+        }
+        Ok(())
+    }
+
+    fn merge_usage(usage: &mut Map<String, Value>, value: Value) {
+        if let Value::Object(fields) = value {
+            for (key, value) in fields {
+                if !value.is_null() {
+                    usage.insert(key, value);
+                }
+            }
+        }
+    }
+
+    /// The assembled message. A stream that ended before `message_stop` was
+    /// cut off: a plain call got no complete answer, so it fails as
+    /// transport (as a truncated JSON body did).
+    fn finish(mut self) -> LLMResult<Value> {
+        if !self.done {
+            return Err(LLMError::Transport(
+                "Anthropic stream ended before message_stop".to_string(),
+            ));
+        }
+        let open: Vec<u64> = self.tool_input.keys().copied().collect();
+        for index in open {
+            self.close_block(index)?;
+        }
+        let mut message = std::mem::take(&mut self.message);
+        let blocks = std::mem::take(&mut self.blocks);
+        message.insert(
+            "content".to_string(),
+            Value::Array(blocks.into_values().collect()),
+        );
+        if !self.usage.is_empty() {
+            message.insert(
+                "usage".to_string(),
+                Value::Object(std::mem::take(&mut self.usage)),
+            );
+        }
+        Ok(Value::Object(message))
     }
 }
 
@@ -2452,14 +2916,25 @@ impl AnthropicStreamState {
             Some("content_block_start") => self.handle_content_block_start(event)?,
             Some("content_block_delta") => self.handle_content_block_delta(event)?,
             Some("content_block_stop") => self.handle_content_block_stop(event)?,
+            // Anthropic reports input and cache counts on `message_start`
+            // (`message.usage`) and the cumulative counts on `message_delta`
+            // (top-level `usage`, beside `delta`). Later fields win.
+            Some("message_start") => {
+                if let Some(usage) = event.pointer("/message/usage") {
+                    self.merge_usage(usage);
+                }
+            },
             Some("message_delta") => {
                 if let Some(delta) = event.get("delta") {
                     if let Some(stop_reason) = delta.get("stop_reason").and_then(Value::as_str) {
                         self.finish_reason = Some(stop_reason.to_string());
                     }
                     if let Some(usage) = delta.get("usage") {
-                        self.usage_value = Some(usage.clone());
+                        self.merge_usage(usage);
                     }
+                }
+                if let Some(usage) = event.get("usage") {
+                    self.merge_usage(usage);
                 }
             },
             Some("message_stop") => {
@@ -2482,6 +2957,20 @@ impl AnthropicStreamState {
         }
 
         Ok(false)
+    }
+
+    fn merge_usage(&mut self, usage: &Value) {
+        let Some(fields) = usage.as_object() else {
+            return;
+        };
+        let merged = self.usage_value.get_or_insert_with(|| json!({}));
+        if let Some(object) = merged.as_object_mut() {
+            for (key, value) in fields {
+                if !value.is_null() {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
+        }
     }
 
     fn handle_content_block_start(&mut self, event: &Value) -> LLMResult<()> {
@@ -2830,8 +3319,41 @@ mod tests {
             .get(0)
             .and_then(|b| b.get("cache_control"))
             .is_none());
-        assert!(AnthropicMessagesProvider::tools_cache_control(true, true, Some(&cc)).is_none());
-        assert!(AnthropicMessagesProvider::tools_cache_control(false, true, Some(&cc)).is_some());
+        // The tools keep their own breakpoint while a slot is free and defer to
+        // the system anchor only when all four are taken.
+        let marked = serde_json::json!([{"type": "text", "text": "x", "cache_control": cc}]);
+        let body = |marked_messages: usize| {
+            let mut body = serde_json::Map::new();
+            body.insert("system".to_string(), marked.clone());
+            body.insert(
+                "messages".to_string(),
+                Value::Array(
+                    (0..3)
+                        .map(|i| {
+                            let content = if i < marked_messages {
+                                marked.clone()
+                            } else {
+                                serde_json::json!("plain")
+                            };
+                            serde_json::json!({"role": "user", "content": content})
+                        })
+                        .collect(),
+                ),
+            );
+            body
+        };
+        assert!(
+            AnthropicMessagesProvider::tools_cache_control(true, true, &body(3), Some(&cc))
+                .is_none()
+        );
+        assert!(
+            AnthropicMessagesProvider::tools_cache_control(true, true, &body(2), Some(&cc))
+                .is_some()
+        );
+        assert!(
+            AnthropicMessagesProvider::tools_cache_control(false, true, &body(3), Some(&cc))
+                .is_some()
+        );
     }
 
     #[test]
@@ -2890,6 +3412,30 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    /// The uncatalogued path: request shape from the model-name fallback.
+    fn fallback_reasoning(
+        kind: &LLMProviderKind,
+        model: &str,
+        body: &mut Map<String, Value>,
+        reasoning: &ReasoningConfig,
+    ) -> LLMResult<()> {
+        let wire = wire_for(kind, model, None);
+        AnthropicMessagesProvider::insert_provider_reasoning_config(
+            kind, model, &wire, body, reasoning,
+        )
+    }
+
+    /// Catalog facts for a model resolved from YAML, as the router hands
+    /// them to the adapter.
+    fn catalogued(thinking: &str, wire: &str) -> ModelWire {
+        let thinking: crate::catalog::ThinkingControl = serde_yaml::from_str(thinking).unwrap();
+        let wire: crate::catalog::ModelWireTraits = serde_yaml::from_str(wire).unwrap();
+        wire.resolve(&thinking)
+    }
+
+    const EFFORT_WITH_OFF: &str =
+        "{mode: effort, levels: [none, low, medium, high, xhigh, max], default: medium}";
 
     #[test]
     fn server_web_search_tool_replaces_function_tools() {
@@ -3061,6 +3607,27 @@ mod tests {
     }
 
     #[test]
+    fn stream_usage_merges_message_start_and_top_level_message_delta() {
+        let mut state = AnthropicStreamState::new(LLMProviderKind::Anthropic);
+        for event in [
+            json!({"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],
+                "usage":{"input_tokens":1200,"cache_creation_input_tokens":300,"cache_read_input_tokens":500,"output_tokens":1}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}}),
+            json!({"type":"message_stop"}),
+        ] {
+            state.apply_event(&event).unwrap();
+        }
+        let usage = state.into_response().unwrap().usage.expect("usage");
+        assert_eq!(usage.completion_tokens, Some(42));
+        assert!(usage.prompt_tokens.unwrap_or(0) >= 1200, "{usage:?}");
+        assert_eq!(usage.cached_tokens, Some(500));
+        assert_eq!(usage.cache_creation_tokens, Some(300));
+    }
+
+    #[test]
     fn test_stream_state_collects_tool_calls() {
         let mut state = AnthropicStreamState::new(LLMProviderKind::Anthropic);
         let partial_1 = "{\"city\":\"San";
@@ -3103,6 +3670,34 @@ mod tests {
         }
     }
     #[test]
+    fn map_tools_moves_whole_call_rules_out_of_the_input_schema() {
+        use serde_json::json;
+
+        // Anthropic answers a top-level anyOf/oneOf/allOf with a 400 for the
+        // whole request (2026-10-30, a pack's whole-call constraint).
+        let tools = vec![LLMToolSpec {
+            name: "shell".to_string(),
+            description: "Run a command.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}, "job_id": {"type": "string"}},
+                "required": [],
+                "allOf": [{"anyOf": [{"required": ["command"]}, {"required": ["job_id"]}]}],
+            }),
+        }];
+
+        let mapped = AnthropicMessagesProvider::map_tools(&tools, None);
+        let schema = &mapped[0]["input_schema"];
+        for key in ["allOf", "anyOf", "oneOf", "not"] {
+            assert!(schema.get(key).is_none(), "{key} reached Anthropic");
+        }
+        assert_eq!(schema["properties"], tools[0].parameters["properties"]);
+        let description = mapped[0]["description"].as_str().unwrap();
+        assert!(description.starts_with("Run a command.\n\n"));
+        assert!(description.contains(r#"{"required":["command"]}"#));
+    }
+
+    #[test]
     fn map_tools_produces_anthropic_format() {
         use serde_json::json;
 
@@ -3131,9 +3726,9 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_reasoning_none_omits_thinking_for_claude() {
+    fn anthropic_reasoning_none_sends_disabled_thinking_for_claude() {
         let mut body = Map::new();
-        AnthropicMessagesProvider::insert_provider_reasoning_config(
+        fallback_reasoning(
             &LLMProviderKind::Anthropic,
             "claude-sonnet-4-6",
             &mut body,
@@ -3142,15 +3737,45 @@ mod tests {
                 strategy: Some("extended_thinking".to_string()),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
-        assert!(body.get("thinking").is_none());
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+    }
+
+    #[test]
+    fn claude_off_is_explicit_and_mandatory_reasoners_reject_it() {
+        let off = ReasoningConfig {
+            effort: Some("none".into()),
+            ..Default::default()
+        };
+        for model in [
+            "claude-haiku-4-5",
+            "claude-opus-4-7",
+            "claude-opus-5",
+            "claude-haiku-5-5",
+        ] {
+            let mut body = Map::new();
+            fallback_reasoning(&LLMProviderKind::Anthropic, model, &mut body, &off).unwrap();
+            assert_eq!(body["thinking"], json!({"type": "disabled"}), "{model}");
+            if model == "claude-opus-5" || model == "claude-haiku-5-5" {
+                assert_eq!(body["output_config"]["effort"], "low");
+            }
+        }
+        for model in ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"] {
+            let mut body = Map::new();
+            assert!(
+                fallback_reasoning(&LLMProviderKind::Anthropic, model, &mut body, &off).is_err(),
+                "{model} must not silently enable reasoning for Off"
+            );
+            assert!(body.is_empty());
+        }
     }
 
     #[test]
     fn anthropic_reasoning_high_enables_claude_thinking() {
         let mut body = Map::new();
-        AnthropicMessagesProvider::insert_provider_reasoning_config(
+        fallback_reasoning(
             &LLMProviderKind::Anthropic,
             "claude-sonnet-4-6",
             &mut body,
@@ -3159,7 +3784,8 @@ mod tests {
                 max_reasoning_tokens: Some(8192),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
@@ -3173,10 +3799,11 @@ mod tests {
             "claude-opus-5",
             "claude-opus-5-5",
             "claude-sonnet-5-5",
+            "claude-haiku-5-5",
             "anthropic/claude-fable-5-1",
         ] {
             let mut body = Map::new();
-            AnthropicMessagesProvider::insert_provider_reasoning_config(
+            fallback_reasoning(
                 &LLMProviderKind::Anthropic,
                 model,
                 &mut body,
@@ -3185,7 +3812,8 @@ mod tests {
                     max_reasoning_tokens: Some(8192),
                     ..Default::default()
                 },
-            );
+            )
+            .unwrap();
             assert_eq!(
                 body["thinking"]["type"], "adaptive",
                 "{model} must not send enabled+budget_tokens"
@@ -3198,7 +3826,7 @@ mod tests {
     #[test]
     fn deepseek_reasoning_none_sends_disabled_thinking() {
         let mut body = Map::new();
-        AnthropicMessagesProvider::insert_provider_reasoning_config(
+        fallback_reasoning(
             &LLMProviderKind::DeepSeek,
             "deepseek-v4-pro",
             &mut body,
@@ -3207,16 +3835,34 @@ mod tests {
                 strategy: Some("deepseek_thinking".to_string()),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(body["thinking"], json!({ "type": "disabled" }));
         assert!(body.get("output_config").is_none());
     }
 
     #[test]
+    fn deepseek_low_effort_stays_low_on_the_wire() {
+        let mut body = Map::new();
+        fallback_reasoning(
+            &LLMProviderKind::DeepSeek,
+            "deepseek-flash",
+            &mut body,
+            &ReasoningConfig {
+                effort: Some("low".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
+        assert_eq!(body["output_config"], json!({"effort": "low"}));
+    }
+
+    #[test]
     fn deepseek_reasoning_max_uses_deepseek_thinking_shape() {
         let mut body = Map::new();
-        AnthropicMessagesProvider::insert_provider_reasoning_config(
+        fallback_reasoning(
             &LLMProviderKind::DeepSeek,
             "deepseek-v4-pro",
             &mut body,
@@ -3225,7 +3871,8 @@ mod tests {
                 strategy: Some("deepseek_thinking".to_string()),
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
 
         assert_eq!(body["thinking"], json!({ "type": "enabled" }));
         assert_eq!(body["output_config"], json!({ "effort": "max" }));
@@ -3338,18 +3985,109 @@ mod tests {
             "claude-opus-5-5",
             "claude-opus-4-7",
             "claude-fable-5-1",
+            "claude-haiku-5-5",
             "anthropic/claude-sonnet-5-5",
         ] {
             let mut body = Map::new();
-            AnthropicMessagesProvider::insert_sampling(&mut body, model, &request);
+            let wire = wire_for(&LLMProviderKind::Anthropic, model, None);
+            AnthropicMessagesProvider::insert_sampling(&mut body, model, &wire, &request);
             assert!(body.is_empty(), "{model} must not send sampling: {body:?}");
         }
         for model in ["claude-sonnet-4-6", "claude-haiku-4-5", "deepseek-flash"] {
             let mut body = Map::new();
-            AnthropicMessagesProvider::insert_sampling(&mut body, model, &request);
+            let wire = wire_for(&LLMProviderKind::Anthropic, model, None);
+            AnthropicMessagesProvider::insert_sampling(&mut body, model, &wire, &request);
             assert_eq!(body["temperature"], Value::from(0.2_f32), "{model}");
             assert_eq!(body["top_p"], Value::from(0.9_f32), "{model}");
         }
+    }
+
+    /// A catalogued model is shaped by its catalog facts alone: a made-up id
+    /// declaring Haiku 5.5's facts gets Haiku 5.5's request, and a real
+    /// Claude name without them gets the plain shape.
+    #[test]
+    fn catalogued_models_are_shaped_by_catalog_facts_not_names() {
+        let haiku_like = catalogued(
+            EFFORT_WITH_OFF,
+            "{sampling: false, thinking_off_effort: low}",
+        );
+        let plain = catalogued(
+            "{mode: budget, levels: [none, low], default: low, budget: {min_tokens: 1024, max_tokens: 32000, step_tokens: 1024}}",
+            "{}",
+        );
+        let low = ReasoningConfig {
+            effort: Some("low".into()),
+            max_reasoning_tokens: Some(2048),
+            ..Default::default()
+        };
+        let off = ReasoningConfig {
+            effort: Some("none".into()),
+            ..Default::default()
+        };
+        let request = LLMRequest {
+            temperature: Some(0.2),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        let shape = |model: &str, wire: &ModelWire, reasoning: &ReasoningConfig| {
+            let mut body = Map::new();
+            let wire = wire_for(&LLMProviderKind::Anthropic, model, Some(wire));
+            AnthropicMessagesProvider::insert_sampling(&mut body, model, &wire, &request);
+            AnthropicMessagesProvider::insert_provider_reasoning_config(
+                &LLMProviderKind::Anthropic,
+                model,
+                &wire,
+                &mut body,
+                reasoning,
+            )
+            .map(|()| body)
+        };
+
+        let body = shape("acme-small-7", &haiku_like, &low).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"], json!({ "effort": "low" }));
+        assert!(body.get("temperature").is_none() && body.get("top_p").is_none());
+        let body = shape("acme-small-7", &haiku_like, &off).unwrap();
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+        assert_eq!(body["output_config"], json!({ "effort": "low" }));
+
+        // `claude-haiku-5-5` would match every fallback rule; its catalog
+        // entry here declares none of them.
+        let body = shape("claude-haiku-5-5", &plain, &low).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 2048);
+        assert_eq!(body["temperature"], Value::from(0.2_f32));
+        let body = shape("claude-haiku-5-5", &plain, &off).unwrap();
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+        assert!(body.get("output_config").is_none());
+
+        let mandatory = catalogued(
+            "{mode: effort, levels: [low, high], default: low}",
+            "{sampling: false}",
+        );
+        assert!(shape("claude-haiku-4-5", &mandatory, &off).is_err());
+    }
+
+    #[test]
+    fn uncatalogued_names_keep_the_fallback_rules() {
+        let wire = uncatalogued_wire(&LLMProviderKind::Anthropic, "claude-haiku-5-5");
+        assert_eq!(
+            wire,
+            ModelWire {
+                thinking: Some(ThinkingWire::Adaptive),
+                thinking_off: true,
+                thinking_off_effort: Some("low".into()),
+                sampling: false,
+            }
+        );
+        let wire = uncatalogued_wire(&LLMProviderKind::Anthropic, "claude-haiku-4-5");
+        assert_eq!(wire.thinking, Some(ThinkingWire::Budget));
+        assert!(wire.thinking_off && wire.sampling && wire.thinking_off_effort.is_none());
+        let wire = uncatalogued_wire(&LLMProviderKind::DeepSeek, "deepseek-flash");
+        assert_eq!(wire.thinking, Some(ThinkingWire::Budget));
+        assert!(wire.sampling && !wire.thinking_off);
+        assert!(anthropic_model_uses_adaptive_thinking("claude-opus-5-5"));
+        assert!(!anthropic_model_uses_adaptive_thinking("claude-haiku-4-5"));
     }
 
     #[test]
@@ -3383,6 +4121,26 @@ mod tests {
     /// The canonical "tools advertised, use forbidden" choice is Anthropic's
     /// own `{"type": "none"}`; it passes through unchanged.
     #[test]
+    fn openai_style_tool_choice_becomes_an_anthropic_object() {
+        for (choice, expected) in [
+            (json!("auto"), json!({"type": "auto"})),
+            (json!("none"), json!({"type": "none"})),
+            (json!("required"), json!({"type": "any"})),
+            (
+                json!({"type": "function", "function": {"name": "search"}}),
+                json!({"type": "tool", "name": "search"}),
+            ),
+        ] {
+            let mut request = LLMRequest::default();
+            request.set_extra(json!({ "tool_choice": choice }).into());
+            assert_eq!(
+                AnthropicMessagesProvider::tool_choice_for_request(&request),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn tool_choice_none_passes_through() {
         use serde_json::json;
 
@@ -3392,6 +4150,27 @@ mod tests {
             AnthropicMessagesProvider::tool_choice_for_request(&request),
             json!({"type": "none"})
         );
+    }
+
+    #[test]
+    fn replayed_tool_calls_always_carry_an_object_input() {
+        let truncated = format!("{{\"context\":\"{}", "x".repeat(5_000));
+        let cases = [
+            (json!(truncated), true),
+            (json!("[1, 2]"), true),
+            (json!(42), true),
+            (json!(null), false),
+            (json!("  "), false),
+            (json!("{\"prompt\":\"poster\"}"), false),
+            (json!({ "prompt": "poster" }), false),
+        ];
+        for (arguments, flagged) in cases {
+            let input = AnthropicMessagesProvider::tool_use_input(&arguments);
+            assert!(input.is_object(), "{arguments} mapped to {input}");
+            assert_eq!(input.get("_unparsed_arguments").is_some(), flagged);
+        }
+        let preview = AnthropicMessagesProvider::tool_use_input(&json!(truncated));
+        assert!(preview["_unparsed_arguments"].as_str().unwrap().len() < 400);
     }
 
     #[test]
@@ -3452,6 +4231,147 @@ mod tests {
             mapped[1]["content"][0]["content"][1]["source"]["data"],
             "aGVsbG8="
         );
+    }
+
+    fn pairing_tool_call(id: &str) -> ContentBlock {
+        ContentBlock::ToolCall {
+            id: id.to_string(),
+            name: "run_project_checks".to_string(),
+            arguments: json!({}),
+        }
+    }
+
+    fn pairing_tool_result(id: &str, output: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_call_id: id.to_string(),
+            content: Value::String(output.to_string()),
+        }
+    }
+
+    /// `(type, tool_use_id)` of each block of a mapped message.
+    fn result_shape(message: &Value) -> Vec<(String, String)> {
+        message["content"]
+            .as_array()
+            .expect("content blocks")
+            .iter()
+            .map(|block| {
+                (
+                    block["type"].as_str().unwrap_or_default().to_string(),
+                    block["tool_use_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_parallel_tool_use_without_a_result_is_answered_right_after_it() {
+        let messages = vec![
+            LLMMessage::user("do two things"),
+            LLMMessage {
+                role: MessageRole::Assistant,
+                content: vec![pairing_tool_call("toolu_a"), pairing_tool_call("toolu_b")],
+            },
+            LLMMessage {
+                role: MessageRole::User,
+                content: vec![
+                    pairing_tool_result("toolu_a", "applied"),
+                    ContentBlock::Text {
+                        text: "state".to_string(),
+                    },
+                ],
+            },
+        ];
+
+        let (_system, mapped) = AnthropicMessagesProvider::map_messages(&messages).expect("maps");
+
+        assert_eq!(mapped.len(), 3);
+        assert_eq!(
+            result_shape(&mapped[2]),
+            vec![
+                ("tool_result".to_string(), "toolu_a".to_string()),
+                ("tool_result".to_string(), "toolu_b".to_string()),
+                ("text".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(mapped[2]["content"][0]["content"], "applied");
+        assert_eq!(
+            mapped[2]["content"][1]["content"],
+            crate::providers::MISSING_TOOL_RESULT_TEXT
+        );
+        assert_eq!(mapped[2]["content"][1]["is_error"], true);
+    }
+
+    #[test]
+    fn a_refused_tool_use_is_answered_and_a_trailing_one_gets_a_user_turn() {
+        let messages = vec![
+            LLMMessage::user("go"),
+            LLMMessage {
+                role: MessageRole::Assistant,
+                content: vec![pairing_tool_call("toolu_refused")],
+            },
+            // The loop refused the call and only said so in text.
+            LLMMessage::user("that call was refused"),
+            LLMMessage {
+                role: MessageRole::Assistant,
+                content: vec![pairing_tool_call("toolu_last")],
+            },
+        ];
+
+        let (_system, mapped) = AnthropicMessagesProvider::map_messages(&messages).expect("maps");
+
+        assert_eq!(mapped.len(), 5);
+        assert_eq!(
+            result_shape(&mapped[2]),
+            vec![
+                ("tool_result".to_string(), "toolu_refused".to_string()),
+                ("text".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(mapped[4]["role"], "user");
+        assert_eq!(
+            result_shape(&mapped[4]),
+            vec![("tool_result".to_string(), "toolu_last".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_paired_history_is_unchanged_and_a_duplicate_result_dropped() {
+        let paired = vec![
+            LLMMessage {
+                role: MessageRole::Assistant,
+                content: vec![pairing_tool_call("toolu_1")],
+            },
+            LLMMessage {
+                role: MessageRole::Tool,
+                content: vec![pairing_tool_result("toolu_1", "ok")],
+            },
+        ];
+        let (_system, mapped) = AnthropicMessagesProvider::map_messages(&paired).expect("maps");
+        assert_eq!(
+            Value::Array(mapped),
+            json!([
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "run_project_checks", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
+                ]},
+            ])
+        );
+
+        let mut duplicated = paired.clone();
+        duplicated[1]
+            .content
+            .push(pairing_tool_result("toolu_1", "again"));
+        let (_system, mapped) = AnthropicMessagesProvider::map_messages(&duplicated).expect("maps");
+        assert_eq!(
+            result_shape(&mapped[1]),
+            vec![("tool_result".to_string(), "toolu_1".to_string())]
+        );
+        assert_eq!(mapped[1]["content"][0]["content"], "ok");
     }
 
     #[test]

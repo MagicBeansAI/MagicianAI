@@ -12,7 +12,7 @@
 import { ChannelRuntime, MagicianClient } from "@magician/bot-sdk";
 import type { ChannelIdentity } from "@magician/bot-sdk";
 
-import { AgentMailAdapter } from "./adapter.js";
+import { AgentMailAdapter, resolveAgentMailWebhookUrl } from "./adapter.js";
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -47,7 +47,7 @@ function optionalBooleanEnv(name: string, defaultValue: boolean): boolean {
 const adapter = new AgentMailAdapter({
   apiKey: requiredEnv("AGENT_MAIL_KEY"),
   webhookPort: Number(process.env.WEBHOOK_PORT?.trim() || "3011"),
-  webhookUrl: optionalEnv("AGENTMAIL_WEBHOOK_URL"),
+  webhookUrl: resolveAgentMailWebhookUrl(process.env),
   webhookSecret: optionalEnv("AGENTMAIL_WEBHOOK_SECRET"),
 });
 const magician = new MagicianClient({

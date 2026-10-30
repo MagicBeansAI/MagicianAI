@@ -35,7 +35,7 @@ native_action_schemas:
     parameters:
     - query
     - max
-    - label
+    - labels
     - format
     - account
     - extra_args
@@ -47,15 +47,16 @@ native_action_schemas:
       max:
         type: integer
         description: Maximum messages to triage. Maps to `--max`.
-      label:
-        type: string
-        description: Restrict to messages with this label. Maps to `--label`.
+      labels:
+        type: boolean
+        description: Include label names in the output. To filter a label, use label:<name> in query. Maps to `--labels` (bool flag — emitted only when true).
       format:
         type: string
         enum:
         - json
         - table
-        - text
+        - yaml
+        - csv
         description: Output format. Maps to `--format`.
       account: &id002
         type: string
@@ -84,9 +85,9 @@ native_action_schemas:
     - type: flag
       flag: --max
       param: max
-    - type: flag
-      flag: --label
-      param: label
+    - type: bool_flag
+      flag: --labels
+      param: labels
     - type: flag
       flag: --format
       param: format
@@ -105,7 +106,6 @@ native_action_schemas:
     - bcc
     - subject
     - body
-    - reply_to_message_id
     - account
     - extra_args
     required:
@@ -128,9 +128,6 @@ native_action_schemas:
       body:
         type: string
         description: Email body text. Maps to `--body`.
-      reply_to_message_id:
-        type: string
-        description: Message id to reply to (sets In-Reply-To/References headers). Maps to `--reply-to-message-id`.
       account: *id002
       extra_args:
         type: array
@@ -156,9 +153,6 @@ native_action_schemas:
     - type: flag
       flag: --body
       param: body
-    - type: flag
-      flag: --reply-to-message-id
-      param: reply_to_message_id
     - type: passthrough
       param: extra_args
   reply:
@@ -171,7 +165,6 @@ native_action_schemas:
     parameters:
     - message_id
     - body
-    - include_original
     - account
     - extra_args
     required:
@@ -184,9 +177,6 @@ native_action_schemas:
       body:
         type: string
         description: Reply body text. Maps to `--body`.
-      include_original:
-        type: boolean
-        description: Quote the original message in the reply. Maps to `--include-original` (bool flag — emitted only when true).
       account: *id002
       extra_args:
         type: array
@@ -200,9 +190,6 @@ native_action_schemas:
     - type: flag
       flag: --body
       param: body
-    - type: bool_flag
-      flag: --include-original
-      param: include_original
     - type: passthrough
       param: extra_args
   reply_all:
@@ -215,7 +202,6 @@ native_action_schemas:
     parameters:
     - message_id
     - body
-    - include_original
     - account
     - extra_args
     required:
@@ -228,9 +214,6 @@ native_action_schemas:
       body:
         type: string
         description: Reply body text. Maps to `--body`.
-      include_original:
-        type: boolean
-        description: Quote the original message. Maps to `--include-original` (bool flag).
       account: *id002
       extra_args:
         type: array
@@ -244,9 +227,6 @@ native_action_schemas:
     - type: flag
       flag: --body
       param: body
-    - type: bool_flag
-      flag: --include-original
-      param: include_original
     - type: passthrough
       param: extra_args
   forward:

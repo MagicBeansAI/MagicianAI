@@ -86,6 +86,14 @@ public struct ChatSessionListResponse: Codable {
 public struct ChatSessionDetailResponse: Codable {
     public let session: ChatSession
     public let messages: [ChatMessageRawData]
+    /// True when messages older than the first embedded one exist. Absent
+    /// on servers that predate it; see `ChatViewModel.initialHasMore`.
+    public var hasMore: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case session, messages
+        case hasMore = "has_more"
+    }
 }
 
 public struct ChatSessionEnvelope: Codable {

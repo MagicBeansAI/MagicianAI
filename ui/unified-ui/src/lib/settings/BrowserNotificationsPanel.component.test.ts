@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
+import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,7 +6,8 @@ const client = vi.hoisted(() => ({
 	fetchWebPushConfig: vi.fn(),
 	readWebPushState: vi.fn(),
 	enableWebPush: vi.fn(),
-	disableWebPush: vi.fn()
+	disableWebPush: vi.fn(),
+	setupWebPushKeys: vi.fn()
 }));
 vi.mock('$lib/webPush/client', () => client);
 
@@ -46,13 +47,16 @@ describe('BrowserNotificationsPanel', () => {
 		await waitFor(() => expect(screen.getByTestId('browser-notifications-state')).toHaveTextContent('Off'));
 	});
 
-	it('explains a server without web push and offers no button', async () => {
+	it('offers to set up a server without web push, then turns on', async () => {
 		client.fetchWebPushConfig.mockResolvedValue({ enabled: false, vapid_public_key: null });
-		client.readWebPushState.mockResolvedValue('server-disabled');
+		client.readWebPushState.mockResolvedValueOnce('server-disabled').mockResolvedValue('off');
+		client.setupWebPushKeys.mockResolvedValue(CONFIG);
 		render(BrowserNotificationsPanel);
 
-		expect(await screen.findByText(/not configured on this Magician server/)).toBeInTheDocument();
-		expect(screen.queryByRole('button')).toBeNull();
+		expect(await screen.findByText(/no notification keys yet/)).toBeInTheDocument();
+		await fireEvent.click(screen.getByRole('button', { name: 'Set up browser notifications' }));
+		expect(client.setupWebPushKeys).toHaveBeenCalledTimes(1);
+		expect(await screen.findByRole('button', { name: 'Turn on browser notifications' })).toBeInTheDocument();
 	});
 
 	it('explains blocked permission', async () => {

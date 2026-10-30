@@ -8,7 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 ## Unreleased
 
-_Current development version: `0.1.8`._
+_Current development version: `0.1.9`._
+
+### Added — `process::git_program` (0.1.9)
+
+- One git for Magician's own git work: `MAGICIAN_GIT`, else a working host git, else the `dugite` skill's bundled git.
+
+### Added — `FileSandboxConfig.read_only_roots` (unversioned)
+
+- Roots where file actions may read, check existence, list and copy from, but every mutation is refused. Defaults to empty, so configs without the key are unchanged.
+- `FileSandboxConfig.extra_writable_roots` (not read from or written to config): writable roots added at run time, which never outrank a read-only root.
 
 ### Added — `ShellSandboxConfig.os_enforce` (0.1.8)
 
@@ -21,14 +30,6 @@ _Current development version: `0.1.8`._
 ### Added — deterministic execution-turn insertion
 
 - Idempotent insertion of a turn with a server-derived ID, so launch recovery cannot duplicate a planning message.
-
-### Added — exact execution-status compare-and-swap
-
-- **Breaking:** conversation stores must provide status compare-and-swap (with revision) so pause/resume rejects stale writers; stores without atomicity must fail closed.
-
-### Added — `PromptCategory::Social`
-
-- New prompt category for social gate and composition prompts.
 
 ---
 

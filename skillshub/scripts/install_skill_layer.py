@@ -41,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pinned_bin_store  # noqa: E402
 import skill_render  # noqa: E402
+import shared_skill_bins  # noqa: E402
 
 # Directories at any depth that should be skipped entirely (source-only,
 # typically large vendor blobs that the runtime doesn't read directly).
@@ -202,6 +203,7 @@ def install_skill(src: Path, dst: Path, bin_store: Path | None = None) -> None:
 
 def _install_skill_locked(src: Path, dst: Path, bin_store: Path | None = None) -> None:
     src = src.resolve()
+    shared_skill_bins.Resolver(src.parent).wire(src)
     if dst.is_symlink() or (dst.exists() and not dst.is_dir()):
         raise ValueError(f"installed skill destination must be a real directory: {dst}")
     state_root = dst.parent / ".skill-state"

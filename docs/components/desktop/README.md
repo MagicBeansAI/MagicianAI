@@ -11,6 +11,8 @@ packages cannot be observation targets.
 Tauri v2 native menu-bar/tray application. macOS places the control menu in the
 top menu bar; Windows in the notification area (left click opens Magican, right
 click the menu); Linux in the desktop environment's status-notifier area.
+Periodic window/monitor work uses an Objective-C autorelease pool only on
+macOS; Linux and Windows call the same helper without AppKit dependencies.
 Windows and Linux use the full-colour app icon rather than the monochrome macOS
 template mask so it stays visible on dark panels. Ships `.dmg` (macOS),
 `.AppImage` (Linux) and NSIS `.exe` (Windows), and registers and routes only the
@@ -44,6 +46,11 @@ Optional Cloudflare remote access and Microsoft Clarity session recording use
 the shared capability catalog. Identifiers use plain fields, credentials remain
 masked, and saves update both private runtime env files. Clarity recording is
 off without explicit opt-in and applies on page reload without rebuilding.
+When the tunnel step is already installed, Desktop shows the catalog's domain
+switch. Save the new zone on the Cloudflare account step first, then run the
+switch. The shared installer clears hostnames from the previous zone and
+rebuilds this computer's tunnel and the original shared tunnel. Old DNS records
+and Access apps stay until each hostname is parked.
 
 A fresh install opens a placement chooser before it starts or downloads any
 backend; it is reachable later as **Change setup**. The same four explicit
@@ -62,6 +69,13 @@ placements appear on every OS (the app never infers intent from a port or URL):
   opening capability onboarding. Build or readiness failures leave setup
   incomplete and preserve the chosen data folder. Re-running reconciles the
   LaunchAgent with the reviewed root and updated binaries/configuration.
+  The LaunchAgent passes the supervisor `--magician-config` and, from a stable
+  bundle, `--desktop-app`/`--desktop-log`, so it relaunches the app after a
+  crash, never after Quit (`supervisor.manage_desktop`). At login it starts
+  the app only if "launch at login" is on and the app has not appeared within
+  30 s. Each app launch updates those plist arguments without restarting the
+  backend; see the
+  [supervisor guide](../magic-supervisor/supervisor.md#desktop-app-macos).
   The read-only, loopback-only `/host/permissions/status` route reports key/state
   pairs from the signed app's permission registry for terminal setup. It does
   not request grants, return account details or replace native permission checks.
@@ -78,6 +92,9 @@ placements appear on every OS (the app never infers intent from a port or URL):
   folder, seeds missing runtime files, starts the container and verifies health.
   The data folder becomes `/data`; configuration changes name any required
   container replacement before approval.
+  Magicutor (3003) is published on host loopback only, with
+  `MAGICUTOR_TRUST_GATEWAY=1` so it trusts the bridge gateway; see
+  [Magicutor trust boundary](../magicutor/README.md).
 - **Connect to a local container** — loopback HTTP only, verifies `/health`, and
   takes no lifecycle ownership.
 - **Connect to a remote container** — HTTPS only, verified before the saved origin
@@ -151,6 +168,11 @@ packages, probes and login requirements.
   actions, and opens only catalog-allowed HTTPS login hosts. File prerequisites
   (e.g. a Google OAuth Desktop-client JSON) upload to the engine through a
   setup-token-gated endpoint; secrets are never returned.
+- Once a managed Google account connects, the pairing panel checks its Cloud
+  project roles (`onboarding_google_project_access` →
+  `auth/browser-signin/bot/project-access`, session bearer) and offers
+  **Grant access** or copyable commands; a 400 `bot_method_unsupported`
+  shows nothing.
 - **Working now** combines the engine's software probes with fresh desktop-owned
   permissions, CuaDriver readiness, extension connection and managed account
   pairing. The same observations feed the selection plan before dependency
@@ -176,11 +198,14 @@ packages, probes and login requirements.
   graphical session, and verifies native access (macOS: `cua-driver permissions
   grant`, then Privacy panes). It never installs the GUI driver in a backend
   container. See [CUA setup](../scripts/cua-setup.md).
-- **Harnesses** reads the server's `/coding/profiles` readiness catalog and
+- **Harnesses** reads the server's `/coding/models` engine readiness list and
   `/plane/engines` roster (Codex, Claude Code, Grok Build, Antigravity) in catalog
   order. Desktop never installs or signs into them; only server-reported Ready
   harnesses can be selected for Chat or runs. Scheduled work follows the run
   engine; one-shot background model work stays under Settings → Model routing.
+  Readiness is separate from model descriptors and contains no saved profile
+  aliases. The managed-container acceptance fixture derives its local-processing
+  assignment from the seed and pins only the query-analysis selector.
 - Credential writes use the engine's atomic write-only APIs with its setup token,
   stored per exact origin in the OS credential store (captured automatically over
   loopback; copied manually for remote administration). Secret-backed skills are
@@ -438,18 +463,29 @@ desktop/
     manifest.rs           # Install manifest (tracks pre-existing vs installed state)
   src/                    # Svelte 5 frontend
     App.svelte            # Root: setup/settings/orb routing
-    lib/Settings.svelte   # Settings window: voice/media, environment, ports, resources, uninstall
+    lib/Settings.svelte   # Settings window, This Mac tab: categories, search, permissions, Orb, network, keys, environment
+    lib/DesktopSettingsNav.svelte  # Sticky category panel + search (chip bar in a narrow window)
+    lib/desktopSettingsIndex.js    # This Mac categories, cards and search keywords
     lib/Setup.svelte      # First-run progress UI with step indicators
     lib/Overlay.svelte    # Hotkey-summoned overlay for launch + follow-up input
     orb/                  # WebGL2 aurora renderer + interactive conversation card
   package.json            # Svelte/Vite frontend deps
 ```
 
-Desktop Settings holds controls tied to the installed app, local runtime and this
-desktop. Its **Shared settings** card opens the unified UI's `/settings` or
-`/settings/model-routing` in the system browser (via `open_app_at`), so account,
-trust, provider, routing, notes, storage and device configuration are not
-embedded in Tauri. Native editors remain until each has a web replacement.
+Desktop Settings is one window with two tabs. **This Mac** (the bundled page)
+holds controls tied to the installed app, local runtime and this desktop, on one
+page with a sticky category panel, scroll-spy and live-filter search
+(`DesktopSettingsNav.svelte`, categories in `desktopSettingsIndex.js`):
+Permissions & privacy, Orb & assist, Engine & connection, General, and Keys &
+environment. **Magican** switches the same window to web Settings
+(`open_shared_settings` → `<ui>/settings?embed=1&host=desktop&device=Mac`), so
+account, trust, provider, routing, notes, storage and device configuration stay
+web-owned and are not duplicated here. The window gets a capability bound to the
+selected server's UI origin (`settings_ui_capability`, like the Attention
+window's), so the page is signed in through the desktop session; it can also go
+back (`magician-settings:open_desktop_settings`) and send other app links to
+`open_application_path` instead of navigating away. With no server selected the
+tab falls back to the browser.
 
 `desktop/src-tauri` declares its own workspace boundary and is excluded from
 root `cargo check --workspace`. This also keeps Cargo from selecting an outer
@@ -971,3 +1007,5 @@ voice IDs reported by the speech helper; the `macos_tts` binding advertises
 those choices alongside FluidAudio/Kokoro and online providers. An older helper
 without voice metadata keeps the system default until it is updated.
 See the [voice selection contract](../magician/realtime-media-rails.md#speaking-voice-selection).
+
+Account setup supports governed MCP OAuth and declarative CLI-owned browser login through [browser sign-in](../magician/browser-signin.md).

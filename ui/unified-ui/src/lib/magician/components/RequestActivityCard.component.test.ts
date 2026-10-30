@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,12 +36,33 @@ vi.mock('$lib/stores/chatTurnEventsStore', async () => {
 	};
 });
 
+vi.mock('$lib/magician/tasks/taskAttention', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/magician/tasks/taskAttention')>()),
+	readTaskRunState: vi.fn(async () => ({ ok: true, state: null }))
+}));
+
 import * as eventsStore from '$lib/stores/chatTurnEventsStore';
+import { recordTaskLlmCall, recordTaskUsageSnapshot, resetTaskUsage } from '$lib/magician/chat/next/taskUsage';
+import type { ExecutionPanelState } from '$lib/types/executionPanel';
 import RequestActivityCard from './RequestActivityCard.svelte';
 
 const seed = (eventsStore as unknown as { __seed: (id: string, e: unknown[]) => void }).__seed;
 const seedUsage = (eventsStore as unknown as { __seedUsage: (id: string, u: unknown) => void })
 	.__seedUsage;
+
+it('retains context timings and typed Decision Engine tokens in saved response steps', async () => {
+	seed('context-turn',[
+		agentEvent('context.retrieval.started',1,{phase_id:'p'}),
+		agentEvent('context.retrieval.completed',2,{phase_id:'p',duration_ms:123,status:'completed',summary:'Memory search: 100 ms · Procedures: 20 ms'}),
+		agentEvent('context.retrieval.started',3,{phase_id:'p'}),
+		{event_type:'LLMResponseReceived',timestamp_ms:4,data:{success:true,model:'jev-test',latency_ms:71,input_tokens:1200,output_tokens:0,cost:0,usage_reported:true,correlation:{llm_call_id:'de-1',usage_availability:{tokens:true,cost:true,cache_read:false}}}}
+	]);
+	const {container}=render(RequestActivityCard,{sessionId:'s1',chatTurnId:'context-turn',live:true,embedded:true});
+	await tick();
+	expect(container).toHaveTextContent('Memory search: 100 ms');
+	expect(container).toHaveTextContent('1.2k tok');
+	expect(container).toHaveTextContent('$0.000');
+});
 
 /** An AgentEvent-enveloped frame, as the per-turn projection stores it. */
 function agentEvent(eventType: string, ts: number, payload: Record<string, unknown>) {
@@ -76,6 +97,7 @@ const FIXTURE_EVENTS = [
 ];
 
 beforeEach(() => {
+	resetTaskUsage();
 	store.events.clear();
 	store.usage.clear();
 	seedUsage('__none__', null);
@@ -85,9 +107,100 @@ beforeEach(() => {
 	seed('turn-1', FIXTURE_EVENTS);
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+it('lets the live subscription own its initial REST read', async () => {
+	render(RequestActivityCard, { sessionId: 's1', chatTurnId: 'live-turn', live: true });
+	await tick();
+	expect(eventsStore.subscribeToChatTurn).toHaveBeenCalledTimes(1);
+	expect(eventsStore.fetchEventsPage).not.toHaveBeenCalled();
+});
+
+it('defers offscreen historical event reads until the card approaches the viewport', async () => {
+	let reveal!: (entries: Array<{ isIntersecting: boolean }>) => void;
+	vi.stubGlobal('IntersectionObserver', class {
+		constructor(callback: typeof reveal) { reveal = callback; }
+		observe() {}
+		disconnect() {}
+	});
+	render(RequestActivityCard, { sessionId: 's1', chatTurnId: 'offscreen-turn' });
+	await tick();
+	expect(eventsStore.fetchEventsPage).not.toHaveBeenCalled();
+	reveal([{ isIntersecting: true }]);
+	await tick();
+	expect(eventsStore.fetchEventsPage).toHaveBeenCalledTimes(1);
+	reveal([{ isIntersecting: true }]);
+	await tick();
+	expect(eventsStore.fetchEventsPage).toHaveBeenCalledTimes(1);
+});
+
+it('loads historical steps on explicit expansion even before the visibility callback', async () => {
+	vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+	const { container } = render(RequestActivityCard, { sessionId: 's1', chatTurnId: 'offscreen-open' });
+	await tick();
+	expect(eventsStore.fetchEventsPage).not.toHaveBeenCalled();
+	await fireEvent.click(container.querySelector('.request-activity__header')!);
+	expect(eventsStore.fetchEventsPage).toHaveBeenCalledTimes(1);
+});
+
+it('observes an embedded turn even while its empty activity strip is hidden', async () => {
+	let reveal!: (entries: Array<{ isIntersecting: boolean }>) => void;
+	vi.stubGlobal('IntersectionObserver', class {
+		constructor(callback: typeof reveal) { reveal = callback; }
+		observe() {}
+		disconnect() {}
+	});
+	const { container } = render(RequestActivityCard, { sessionId: 's1', chatTurnId: 'hidden-turn', embedded: true });
+	await tick();
+	expect(container.querySelector('.request-activity')).toBeNull();
+	expect(container.querySelector('.activity-viewport-marker')).not.toBeNull();
+	reveal([{ isIntersecting: true }]);
+	await tick();
+	expect(eventsStore.fetchEventsPage).toHaveBeenCalledTimes(1);
+	seed('hidden-turn', FIXTURE_EVENTS);
+	await tick();
+	expect(container.querySelector('.request-activity')).not.toBeNull();
+});
 
 describe('RequestActivityCard', () => {
+	it('uses the subscribed task history even when the chat replay contains only a tiny tail', async () => {
+		const taskId = 'task_12345678901234567890123456789012';
+		const state = {
+			overview: { task_id: taskId, execution_id: 'exec-1', updated_at: 1 },
+			run: { activity_log: ['call-a', 'call-b'].flatMap((callId) => ['requested', 'succeeded'].map((phase) => ({
+				id: `${callId}-${phase}`, status: phase === 'requested' ? 'running' : 'done', created_at: 1,
+				metadata: { event_type: `llm.${phase}`, llm_call_id: callId, execution_id: 'exec-1',
+					...(phase === 'succeeded' ? { input_tokens: 1000, output_tokens: 200 } : {}) }
+			}))) }, output: {}, debug: {}
+		} as unknown as ExecutionPanelState;
+		recordTaskUsageSnapshot(taskId, state);
+		seed('task-tail', [{ event_type: 'LLMResponseReceived', data: {
+			input_tokens: 0, output_tokens: 0, cost: 0, timestamp: 2,
+			correlation: { llm_call_id: 'judge', usage_availability: { tokens: false, cost: false } }
+		} }]);
+		const props = { sessionId: 's1', chatTurnId: 'task-tail', live: true, controlTaskId: taskId, controlExecutionId: 'exec-1' };
+		const first = render(RequestActivityCard, props);
+		expect(first.container.querySelector('.request-activity__cache-detail')).toHaveTextContent('2 calls · 2.4k tok');
+		expect(first.container.querySelector('.request-activity__count')).toHaveTextContent('2');
+		await first.unmount();
+		// A remount gets an even shorter replay; the recorded history remains.
+		seed('task-tail', []);
+		const second = render(RequestActivityCard, props);
+		expect(second.container.querySelector('.request-activity__count')).toHaveTextContent('2');
+		recordTaskLlmCall(taskId, 'call-c', 500, null, 'exec-1');
+		await tick();
+		expect(second.container.querySelector('.request-activity__cache-detail')).toHaveTextContent('3 calls · 2.9k tok');
+	});
+
+	it('labels a priced call with unreported tokens as unavailable', () => {
+		recordTaskLlmCall('task-priced', 'call-a', null, 0.01);
+		const { container } = render(RequestActivityCard, {
+			sessionId: 's1', chatTurnId: 'turn-priced', controlTaskId: 'task-priced', live: true
+		});
+		expect(container.querySelector('.request-activity__cache-detail')).toHaveTextContent('1 call · tokens unavailable');
+		expect(container.querySelector('.request-activity__cache-detail')).not.toHaveTextContent('0 tok');
+	});
+
 	it('renders the classic row list by default', () => {
 		const { container } = render(RequestActivityCard, {
 			sessionId: 's1',
@@ -344,6 +457,129 @@ describe('RequestActivityCard', () => {
 		});
 	});
 
+	describe('typed LLM calls, paired by llm_call_id', () => {
+		const base = { execution_id: 'exec-d', plan_id: 'plan-1', step_id: 'step-1', capability: 'decision' };
+		const correlation = (id: string) => ({ trace_id: 'trace-run', llm_call_id: id });
+		const sent = (id: string | null, ts: number) => ({
+			event_type: 'LLMRequestSent',
+			data: {
+				...base,
+				request_summary: 'decide',
+				budget_remaining: 1,
+				timestamp: ts,
+				...(id ? { correlation: correlation(id) } : {})
+			}
+		});
+		const routed = (id: string, ts: number, model: string) => ({
+			event_type: 'LLMRouted',
+			data: { ...base, correlation: correlation(id), provider: 'openai', model, profile: 'fast', timestamp: ts }
+		});
+		const received = (id: string | null, ts: number, extra: Record<string, unknown> = {}) => ({
+			event_type: 'LLMResponseReceived',
+			data: {
+				...base,
+				success: true,
+				decision_summary: 'call shell',
+				cost: 0,
+				latency_ms: 1200,
+				timestamp: ts,
+				...(id ? { correlation: correlation(id) } : {}),
+				...extra
+			}
+		});
+		const renderTurn = (turn: string) =>
+			render(RequestActivityCard, { sessionId: 's1', chatTurnId: turn, live: true, embedded: true });
+		const rowsOf = (container: HTMLElement) => container.querySelectorAll('.request-activity__row');
+
+		it('opens a running row on the request, names the routed model, and settles the same row', async () => {
+			seed('turn-typed', [sent('call-1', 10)]);
+			const { container } = renderTurn('turn-typed');
+			await tick();
+			expect(rowsOf(container)).toHaveLength(1);
+			expect(rowsOf(container)[0]).toHaveClass('request-activity__row--running');
+			expect(rowsOf(container)[0]).toHaveTextContent('Thinking…');
+
+			seed('turn-typed', [sent('call-1', 10), routed('call-1', 11, 'gpt-6.1-sol')]);
+			await tick();
+			expect(rowsOf(container)).toHaveLength(1);
+			expect(rowsOf(container)[0]).toHaveClass('request-activity__row--running');
+			expect(rowsOf(container)[0]).toHaveTextContent('Thinking with gpt-6.1-sol');
+
+			seed('turn-typed', [sent('call-1', 10), routed('call-1', 11, 'gpt-6.1-sol'), received('call-1', 20)]);
+			await tick();
+			expect(rowsOf(container)).toHaveLength(1);
+			expect(rowsOf(container)[0]).toHaveClass('request-activity__row--done');
+			expect(rowsOf(container)[0]).toHaveTextContent('Thinking with gpt-6.1-sol');
+			expect(rowsOf(container)[0]).toHaveTextContent('1200ms');
+		});
+
+		it('follows a fallback re-route to the new model', async () => {
+			seed('turn-reroute', [
+				sent('call-1', 10),
+				routed('call-1', 11, 'gpt-6.1-sol'),
+				routed('call-1', 12, 'claude-opus-5-5')
+			]);
+			const { container } = renderTurn('turn-reroute');
+			await tick();
+			expect(rowsOf(container)).toHaveLength(1);
+			expect(rowsOf(container)[0]).toHaveTextContent('Thinking with claude-opus-5-5');
+		});
+
+		it('keeps one row per response on a server without llm_call_id', async () => {
+			seed('turn-old', [sent(null, 10), received(null, 20), sent(null, 30), received(null, 40)]);
+			const { container } = renderTurn('turn-old');
+			await tick();
+			const rows = rowsOf(container);
+			expect(rows).toHaveLength(2);
+			for (const row of rows) expect(row).toHaveClass('request-activity__row--done');
+		});
+
+		it('folds the chat-side and typed copies of one call into one row, in either order', async () => {
+			const chatRequested = agentEvent('llm.requested', 10, { event_id: 'q', iteration: 1, model: 'chat-profile' });
+			const chatSucceeded = agentEvent('llm.succeeded', 13, {
+				event_id: 's',
+				iteration: 1,
+				llm_call_id: 'call-own',
+				model: 'claude-opus-5-5',
+				duration_ms: 900
+			});
+			seed('turn-copies-a', [chatRequested, received('call-own', 12), chatSucceeded]);
+			seed('turn-copies-b', [chatRequested, chatSucceeded, received('call-own', 14)]);
+			for (const turn of ['turn-copies-a', 'turn-copies-b']) {
+				const { container, unmount } = renderTurn(turn);
+				await tick();
+				const rows = rowsOf(container);
+				expect(rows).toHaveLength(1);
+				expect(rows[0]).toHaveClass('request-activity__row--done');
+				expect(rows[0]).toHaveTextContent('Thinking with claude-opus-5-5');
+				unmount();
+			}
+		});
+
+		it('ticks a running row once a second and stops when it settles', async () => {
+			vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+			vi.setSystemTime(100_000);
+			try {
+				seed('turn-tick', [sent('call-1', 95_000)]);
+				const { container } = renderTurn('turn-tick');
+				await tick();
+				const elapsed = () => container.querySelector('.request-activity__row-elapsed');
+				expect(elapsed()).toHaveTextContent('0:05');
+
+				vi.advanceTimersByTime(1_000);
+				await tick();
+				expect(elapsed()).toHaveTextContent('0:06');
+
+				seed('turn-tick', [sent('call-1', 95_000), received('call-1', 101_000)]);
+				await tick();
+				expect(elapsed()).toBeNull();
+				expect(rowsOf(container)[0]).toHaveTextContent('1200ms');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
 	it('relabels a thinking row with the model that answered', () => {
 		seed('turn-llm', [
 			agentEvent('llm.requested', 10, { trace_id: 'tr-1', model: 'native-profile' }),
@@ -379,6 +615,91 @@ describe('RequestActivityCard', () => {
 		expect(container.querySelector('.request-activity__tail')).toHaveTextContent(
 			'Thinking with Claude Code · opus'
 		);
+	});
+
+	describe('a task row whose final answer is being written', () => {
+		const taskEvent = (ts: number, payload: Record<string, unknown>) =>
+			agentEvent('task.status_changed', ts, {
+				task_id: 'task_synth',
+				display_label: 'Researcher',
+				...payload
+			});
+		const renderTask = (turnId: string) =>
+			render(RequestActivityCard, {
+				sessionId: 's1',
+				chatTurnId: turnId,
+				live: true,
+				embedded: true
+			});
+		const rowText = (container: HTMLElement) =>
+			container.querySelector('.request-activity__row')?.textContent ?? '';
+
+		it('restarts the row clock when the synthesis flag flips, so the timer counts synthesis time', async () => {
+			vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+			vi.setSystemTime(100_000);
+			try {
+				seed('turn-synth', [
+					taskEvent(10_000, { status: 'running' }),
+					taskEvent(95_000, { status: 'running', synthesis_pending: true })
+				]);
+				const { container } = renderTask('turn-synth');
+				await tick();
+
+				expect(rowText(container)).toContain('Researcher preparing final result');
+				const elapsed = () => container.querySelector('.request-activity__row-elapsed');
+				// 5 s since the flag, not 90 s since the row first appeared.
+				expect(elapsed()).toHaveTextContent('0:05');
+
+				vi.advanceTimersByTime(1_000);
+				await tick();
+				expect(elapsed()).toHaveTextContent('0:06');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('keeps the restarted clock on a repeated flagged event', async () => {
+			vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+			vi.setSystemTime(100_000);
+			try {
+				seed('turn-synth-repeat', [
+					taskEvent(10_000, { status: 'running' }),
+					taskEvent(90_000, { status: 'running', synthesis_pending: true }),
+					taskEvent(98_000, { status: 'running', synthesis_pending: true })
+				]);
+				const { container } = renderTask('turn-synth-repeat');
+				await tick();
+
+				expect(container.querySelector('.request-activity__row-elapsed')).toHaveTextContent('0:10');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('settles on the terminal event once the flag clears', async () => {
+			vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+			vi.setSystemTime(100_000);
+			try {
+				seed('turn-synth-done', [
+					taskEvent(10_000, { status: 'running' }),
+					taskEvent(95_000, { status: 'running', synthesis_pending: true })
+				]);
+				const { container } = renderTask('turn-synth-done');
+				await tick();
+				expect(container.querySelector('.request-activity__row-elapsed')).not.toBeNull();
+
+				seed('turn-synth-done', [
+					taskEvent(10_000, { status: 'running' }),
+					taskEvent(95_000, { status: 'running', synthesis_pending: true }),
+					taskEvent(101_000, { status: 'completed', synthesis_pending: false })
+				]);
+				await tick();
+				expect(container.querySelector('.request-activity__row-elapsed')).toBeNull();
+				expect(rowText(container)).toContain('Researcher completed');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
 	});
 
 	it('settles a running task row from a terminal transcript card', () => {

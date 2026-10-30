@@ -30,8 +30,9 @@
 
 	let lastMinted: MintedGrant | null = null;
 	let engineAvailability: EngineAvailability[] = [{ name: 'magician', installed: true }];
-	// Pi 0.87.1 reaches MCP through the private spawned bridge, not a terminal
-	// CLI MCP client. Keep it in chat/run choices but out of terminal grants.
+	// Pi reaches MCP through the private spawned bridge; Magician launches it
+	// with its own MCP client off. Keep it in chat/run choices but out of
+	// terminal grants.
 	$: installedEngines = engineAvailability.filter((engine) => engine.installed && engine.name !== 'pi');
 
 	async function refresh() {
@@ -300,6 +301,7 @@
 	code {
 		color: var(--text-primary);
 		font-size: 0.78rem;
+		overflow-wrap: anywhere;
 	}
 	.mint-result {
 		background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-card));

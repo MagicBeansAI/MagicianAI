@@ -288,6 +288,61 @@ pub async fn get_bot_qr_handler(
     }
 }
 
+/// A pairing QR artifact as a `data:image/png;base64,…` URL for phone
+/// clients (which cannot render SVG): a published PNG as is, or a text
+/// payload (Telegram's `tg://` login link) rendered to PNG here.
+pub(crate) fn qr_png_data_url(path: &std::path::Path) -> Option<String> {
+    use base64::Engine as _;
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let png = if path.extension().and_then(|value| value.to_str()) == Some("txt") {
+        let value = std::str::from_utf8(&bytes).ok()?.trim();
+        if value.is_empty() || value.len() > 8192 {
+            return None;
+        }
+        qr_png(value.as_bytes())?
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        bytes
+    } else {
+        return None;
+    };
+    Some(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    ))
+}
+
+/// Render a QR payload to a black-on-white PNG with the standard 4-module
+/// quiet zone.
+fn qr_png(value: &[u8]) -> Option<Vec<u8>> {
+    const SCALE: u32 = 8;
+    const QUIET: usize = 4;
+    let code = QrCode::new(value).ok()?;
+    let width = code.width();
+    let side = u32::try_from(width + 2 * QUIET).ok()? * SCALE;
+    let mut image = image::GrayImage::from_pixel(side, side, image::Luma([255u8]));
+    for (index, color) in code.to_colors().into_iter().enumerate() {
+        if color != qrcode::Color::Dark {
+            continue;
+        }
+        let left = u32::try_from(index % width + QUIET).ok()? * SCALE;
+        let top = u32::try_from(index / width + QUIET).ok()? * SCALE;
+        for y in top..top + SCALE {
+            for x in left..left + SCALE {
+                image.put_pixel(x, y, image::Luma([0u8]));
+            }
+        }
+    }
+    let mut png = Vec::new();
+    image::DynamicImage::ImageLuma8(image)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
 pub async fn get_bot_auth_state_handler(
     bot_api: web::Data<BotApi>,
     req: HttpRequest,

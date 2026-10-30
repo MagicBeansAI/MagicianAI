@@ -10,6 +10,31 @@ before task-user publication are in
 [Unified Task Panel](../unified-ui/unified-task-panel.md). Auxiliary
 `task_summary` condensation starts only after that primary output is ready.
 
+## Findings and delivery coverage
+
+Reporting selects requirement-relevant source spans across the admitted corpus,
+with source fingerprints, normalized line ranges and explicit selection gaps.
+An omitted source is never evidence of absence. Optional micro-goal
+`result_summary` checkpoints retain their original `result_evidence_refs` through
+status changes, pause/recovery and storage compaction; they remain authored
+claims, checked against original sources before publication.
+
+Task claim-review batches assess delivery separately from factual support;
+native chat uses the dedicated `result_delivery` decision contract. A confirmed
+omission can request one tools-free revision; an unavailable
+or truncated coverage review supplies no negative verdict. A coverage-only
+revision replaces a grounded answer only after coverage passes. Revisions are
+checked again, metered and scoped; edits from factual review invalidate the
+earlier coverage verdict. Auxiliary chat calls keep their session/turn identity
+without inventing a task or execution. Native revisions must be bounded Markdown
+before further review; abandoned auxiliary calls cancel only their own queued
+or active work, including logical chunks. Protected attempts retain settlement.
+Native replies carrying local-only app memory decline this extra review/revision;
+they retain existing claim checks.
+Persistent coverage gaps are recorded separately from unsupported claims;
+structured deliverables, verified file bytes and revision-pinned summaries keep their
+existing ownership. No model calls run on output reads.
+
 ## File-backed execution artifacts
 
 The result summary and the file are separate records. Terminal artifacts expose
@@ -166,7 +191,7 @@ summaries keep their own `meeting_summary` mapping (`op-meeting-summary-local`,
 `op-meeting-summary-remote` in cloud mode); the task-summary binding does not
 change it. Routing is **config-only**
 (`LLMOperation::Other("task_summary")` is map-keyed, no Rust enum change). The system prompt lives in the store:
-`data/magician_v2/prompts/task_summary_system_v1.0.0.json` (edit there, never in
+`data/magician_v2/prompts/task_summary_system_v1.0.1.json` (edit there, never in
 Rust).
 
 ## Startup recovery
@@ -186,5 +211,5 @@ and needs no read-time LLM work.
 | Answer-ready boundary + background revision claim | `magician/src/magician_v2/artifact_v2/service.rs` (`spawn_task_summary_for_output`, `reconcile_stale_task_summaries_at_startup`) |
 | Sidecar + gate + LLM call | `magician/src/magician_v2/artifact_v2/service.rs` (`TaskSummarySidecar`, `build_task_summary_sidecar`, `commit_task_summary_sidecar_if_current`) |
 | HTML→text helper | `magician/src/magician_v2/execution/compiled_handlers/web_fetch.rs` (`strip_html_to_text`) |
-| Store prompt | `data/magician_v2/prompts/task_summary_system_v1.0.0.json` |
+| Store prompt | `data/magician_v2/prompts/task_summary_system_v1.0.1.json` |
 | Op → profile binding | `llm-router.yaml` (`operation_mapping.task_summary`) |

@@ -100,6 +100,14 @@ class VibeDevProjectViewModel(
         }
     }
 
+    /** A health issue's one-tap fix (confirmed by the caller); unknown kinds do nothing. */
+    fun runHealthAction(action: VibeDevHealthAction) {
+        if (!action.isSupported) return
+        act(healthActionKey(action), success = "The project folder is now a git repository.") { gitInit(projectId) }
+    }
+
+    fun healthActionKey(action: VibeDevHealthAction): String = "health:${action.kind}:$projectId"
+
     companion object {
         const val PAGE = 20
         const val SEARCH_DEBOUNCE_MS = 400L

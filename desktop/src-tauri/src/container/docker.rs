@@ -229,11 +229,13 @@ impl ContainerRuntime for DockerRuntime {
         // Canonical runtime root and private persistent credential mounts.
         args.extend(keyring_args);
 
-        // Port mappings
+        // Port mappings. Magicutor's port is published on loopback only: a
+        // LAN machine must not reach it through the same forwarder as the
+        // host, and only then may Magicutor trust the container gateway.
         if !linux_host_network {
             for (host, container) in &config.ports {
                 args.push("-p".to_string());
-                args.push(format!("{}:{}", host, container));
+                args.push(publish_spec(*host, *container));
             }
         }
 
@@ -267,6 +269,12 @@ impl ContainerRuntime for DockerRuntime {
                     _ => {},
                 }
             }
+        }
+        if !linux_host_network {
+            // Bridge network with a loopback-bound Magicutor port: the
+            // gateway is the host. Never set for `--network host`, where the
+            // gateway is the LAN router.
+            env_vars.insert("MAGICUTOR_TRUST_GATEWAY".to_string(), "1".to_string());
         }
         for (key, value) in &env_vars {
             args.push("-e".to_string());
@@ -712,5 +720,26 @@ assert os.access('/data',os.R_OK|os.W_OK|os.X_OK)"#;
                 )
             },
         }
+    }
+}
+
+/// `-p` spec for one published port: Magicutor (3003) on host loopback only.
+pub(crate) fn publish_spec(host: u16, container: u16) -> String {
+    if container == 3003 {
+        format!("127.0.0.1:{host}:{container}")
+    } else {
+        format!("{host}:{container}")
+    }
+}
+
+#[cfg(test)]
+mod publish_tests {
+    use super::publish_spec;
+
+    #[test]
+    fn only_magicutor_is_published_on_loopback() {
+        assert_eq!(publish_spec(13003, 3003), "127.0.0.1:13003:3003");
+        assert_eq!(publish_spec(3003, 3003), "127.0.0.1:3003:3003");
+        assert_eq!(publish_spec(13002, 3002), "13002:3002");
     }
 }

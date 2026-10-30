@@ -22,21 +22,16 @@ describe('vibeStudioStore browser preferences', () => {
 			visualSelfCorrect: true,
 			costBudgetUsd: null
 		});
-		expect(vibeStudioStore.policyPromptLine()).toContain('manual review is enabled');
 	});
 
 	it('persists proposal policy and prevents client auto-apply in discuss or autopilot mode', () => {
 		vibeStudioStore.setAutoApply(true);
 		expect(localStorage.getItem('magician.vibedev.autoApplyCodeProposals')).toBe('true');
-		expect(vibeStudioStore.policyPromptLine()).toContain('auto-apply is enabled');
 
 		vibeStudioStore.setMode('discuss');
 		expect(get(vibeStudioStore).autoApplyCodeProposals).toBe(false);
-		expect(vibeStudioStore.policyPromptLine()).toContain('read-only request');
-		expect(vibeStudioStore.planDirectiveBlock()).toContain('NO code changes');
 
 		vibeStudioStore.setMode('autopilot');
-		expect(vibeStudioStore.autopilotDirectiveBlock()).toContain('UNATTENDED');
 		expect(get(vibeStudioStore).autoApplyCodeProposals).toBe(false);
 	});
 
@@ -44,12 +39,10 @@ describe('vibeStudioStore browser preferences', () => {
 		vibeStudioStore.setCostBudget(2.5);
 		expect(get(vibeStudioStore).costBudgetUsd).toBe(2.5);
 		expect(localStorage.getItem('magician.vibedev.costBudgetUsd')).toBe('2.5');
-		expect(vibeStudioStore.costBudgetLine()).toContain('$2.50');
 
 		vibeStudioStore.setCostBudget(0);
 		expect(get(vibeStudioStore).costBudgetUsd).toBeNull();
 		expect(localStorage.getItem('magician.vibedev.costBudgetUsd')).toBeNull();
-		expect(vibeStudioStore.costBudgetLine()).toBe('');
 	});
 
 	it('keeps project-switch reset behavior deterministic', () => {
@@ -82,6 +75,16 @@ describe('vibeStudioStore browser preferences', () => {
 		expect(get(vibeStudioStore).stageExpanded).toBe(false);
 		vibeStudioStore.toggleStage(true);
 		expect(localStorage.getItem('magician.vibedev.stageExpanded')).toBe('true');
+	});
+
+	it('starts the rail drawer closed below 1280px and the rail column open above it', () => {
+		setWindowWidth(1052);
+		vibeStudioStore.resetView();
+		expect(get(vibeStudioStore).railExpanded).toBe(false);
+
+		setWindowWidth(1440);
+		vibeStudioStore.resetView();
+		expect(get(vibeStudioStore).railExpanded).toBe(true);
 	});
 
 	it('starts the build stage drawer closed below 1280px without forgetting the wide-screen choice', () => {
@@ -127,15 +130,6 @@ describe('vibeStudioStore browser preferences', () => {
 			vibeStudioStore.closeStage();
 			expect(get(vibeStudioStore)).toMatchObject({ stageExpanded: false, stageClosing: false });
 		});
-	});
-
-	it('gates visual correction to visual build work', () => {
-		expect(vibeStudioStore.visualSelfCorrectDirectiveBlock(true)).toContain(
-			'screenshot_preview'
-		);
-		expect(vibeStudioStore.visualSelfCorrectDirectiveBlock(false)).toBe('');
-		vibeStudioStore.setVisualSelfCorrect(false);
-		expect(vibeStudioStore.visualSelfCorrectDirectiveBlock(true)).toBe('');
 	});
 
 	it('reads, persists, and overrides the studio feature flag from the URL', () => {

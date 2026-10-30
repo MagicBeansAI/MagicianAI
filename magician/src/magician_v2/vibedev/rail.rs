@@ -1212,13 +1212,29 @@ mod tests {
         // The service owns the orchestrator, so releasing this handle keeps
         // nothing from working.
         drop(orchestrator);
-        (
-            service,
-            ScopeRef::system_internal_unauthenticated(
-                &"user".to_string(),
-                &"workspace".to_string(),
-            ),
+        let scope = test_scope();
+        seed_project_store(&service, &scope);
+        (service, scope)
+    }
+
+    fn seed_project_store(service: &Arc<ArtifactV2Service>, scope: &ScopeRef) {
+        let scope_root = service
+            .workspace()
+            .scope_root(&scope.principal(), &scope.workspace());
+        let path = super::super::projects::vibedev_project_store_path(&scope_root);
+        std::fs::create_dir_all(path.parent().expect("project store parent"))
+            .expect("project store directory");
+        crate::magician_v2::artifact_v2::io::write_bytes_durably_sync(
+            &path,
+            &serde_json::to_vec(&serde_json::json!({
+                "projects": [
+                    project("proj-1", Some("apps/site")),
+                    project("proj-2", Some("apps/docs")),
+                ]
+            }))
+            .expect("project records"),
         )
+        .expect("seed projects before admitting a run");
     }
 
     /// Every task id the scope has on disk. This is the "no second task"
@@ -2418,6 +2434,7 @@ mod tests {
             &scope.principal().to_string(),
             &"other-workspace".to_string(),
         );
+        seed_project_store(&service, &elsewhere);
         let build = build_for("@vibedev fix the footer", "proj-1", Some("apps/site"));
 
         let here = run_turn(&service, &scope, "chat-session-1", "turn-1", &build).await;

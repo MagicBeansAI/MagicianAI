@@ -10,6 +10,8 @@ final class StubVibeDevAPI: VibeDevServing {
     var failReads = false
     /// Root runs `runsPage` pages through, newest first (server cap: 50 a page).
     var runRoots: [VibeDevTaskItem] = []
+    var historyPages: [String: VibeDevRunHistory] = [:]
+    private(set) var historyCursors: [String?] = []
     /// Seconds each next `runTurns` / `liveRuns` call waits, in call order. A
     /// call returns what the stub held when it was made.
     var turnsDelays: [Double] = []
@@ -24,6 +26,9 @@ final class StubVibeDevAPI: VibeDevServing {
     private(set) var startedRuns: [VibeDevStartRunRequest] = []
     private(set) var diffAnswers: [(String, Bool)] = []
     private(set) var discards: [String] = []
+    private(set) var gitInits: [String] = []
+    /// What `gitInit` throws, when set.
+    var gitInitError: Error?
     /// Calls arrive from concurrent tasks off the main actor.
     private let lock = NSLock()
     private func record(_ change: () -> Void) { lock.lock(); change(); lock.unlock() }
@@ -40,6 +45,11 @@ final class StubVibeDevAPI: VibeDevServing {
         let value = live
         await wait(nextDelay(\.liveDelays))
         return value
+    }
+    func runHistory(limit: Int, cursor: String?) async throws -> VibeDevRunHistory {
+        if failReads { throw URLError(.notConnectedToInternet) }
+        historyCursors.append(cursor)
+        return historyPages[cursor ?? "first"] ?? VibeDevRunHistory(runs: live.runs, hasMore: false, nextCursor: nil)
     }
     func projects() async throws -> VibeDevProjectsResponse {
         if failReads { throw URLError(.notConnectedToInternet) }
@@ -80,6 +90,12 @@ final class StubVibeDevAPI: VibeDevServing {
     }
     func updateProject(id: String, trust: VibeDevTrust?, baseBranch: String?) async throws -> VibeDevProject {
         VibeDevProject(projectId: id, name: "x", trust: trust ?? .sandboxed, baseBranch: baseBranch)
+    }
+    func gitInit(projectID: String) async throws -> VibeDevGitInitResponse {
+        record { gitInits.append(projectID) }
+        if let gitInitError { throw gitInitError }
+        let data = Data(#"{"project_id": "\#(projectID)", "health": {"status": "ok"}}"#.utf8)
+        return try JSONDecoder().decode(VibeDevGitInitResponse.self, from: data)
     }
     func control(liveTaskID: String, action: VibeDevControlAction, message: String?) async throws {
         if let controlError { throw controlError }
@@ -125,7 +141,7 @@ final class VibeDevViewModelTests: XCTestCase {
     override func setUp() async throws {
         api = StubVibeDevAPI()
         approvals = StubApprovals()
-        context = VibeDevContext(api: api, approvals: approvals, undo: VibeDevUndoCenter(delay: 0.1, haptics: false))
+        context = VibeDevContext(api: api, approvals: approvals, undo: VibeDevUndoCenter(delay: 0.1, haptics: false), cache: nil)
     }
 
     private func run(_ id: String, _ state: VibeDevRunState, lane: String? = nil,
@@ -191,6 +207,41 @@ final class VibeDevViewModelTests: XCTestCase {
         let answered = VibeDevCrew(crewId: "c", goal: "g", status: .conflict, resolveRequestId: nil)
         XCTAssertNil(VibeDevQuestions.question(for: answered, projectID: "p", projectName: ""))
         XCTAssertTrue(answered.isFinished)
+    }
+
+    func testHistoryWireDecodesOriginalFolderAndAttentionCount() throws {
+        let data = Data(#"{"runs":[{"run_id":"r","live_task_id":"turn","project_id":"p","project_name":"App","title":"Change title","state":"needs_you","status":"running","turns":2,"updated_at":"2026-10-22T00:00:00Z","work_location":"original","repo_path":"/owner/app","needs_you_count":2}],"has_more":true,"next_cursor":"2026-10-22T00:00:00Z|r"}"#.utf8)
+        let page = try JSONDecoder().decode(VibeDevRunHistory.self, from: data)
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.runs.first?.workLocation, "original")
+        XCTAssertEqual(page.runs.first?.needsYouCount, 2)
+        XCTAssertEqual(page.runs.first?.repoPath, "/owner/app")
+        XCTAssertEqual(page.nextCursor, "2026-10-22T00:00:00Z|r")
+    }
+
+    func testRunHistoryPagesAcrossProjectsAndRefreshKeepsOlderRows() async {
+        var first = run("new", .working)
+        first.needsYouCount = 2
+        first.workLocation = "original"
+        first.repoPath = "/owner/repo"
+        let older = run("old", .done, updated: "2020-01-01T00:00:00Z")
+        api.historyPages["first"] = VibeDevRunHistory(runs: [first], hasMore: true, nextCursor: "cursor-one")
+        api.historyPages["cursor-one"] = VibeDevRunHistory(runs: [first, older], hasMore: false, nextCursor: nil)
+        let model = VibeDevNowModel(context: context)
+        await model.refresh()
+        XCTAssertEqual(model.history.map(\.runId), ["new"])
+        XCTAssertEqual(model.history.first?.workLocation, "original")
+        XCTAssertEqual(model.history.first?.needsYouCount, 2)
+        await model.loadMore()
+        XCTAssertEqual(model.history.map(\.runId), ["new", "old"])
+        XCTAssertNil(model.nextCursor)
+        await model.refresh()
+        XCTAssertEqual(model.history.map(\.runId), ["new", "old"])
+        XCTAssertEqual(api.historyCursors.compactMap { $0 }, ["cursor-one"])
+        api.historyPages["first"] = VibeDevRunHistory(runs: [run("newer", .working)], hasMore: true, nextCursor: "new-head")
+        await model.refresh()
+        XCTAssertEqual(model.nextCursor, "new-head") // offline activity can exceed the old first page
+        XCTAssertEqual(Set(model.history.map(\.runId)), Set(["newer", "new", "old"]))
     }
 
     func testRefreshSplitsWorkingAndJustFinished() async {
@@ -633,9 +684,11 @@ final class VibeDevViewModelTests: XCTestCase {
     }
 
     // MARK: Live updates
-    // MARK: Live updates
 
     func testLiveUpdatesListenToLifecycleNotStreamingDeltas() {
+        XCTAssertTrue(VibeDevLiveUpdates.isRelevant("TaskCreated"))
+        XCTAssertTrue(VibeDevLiveUpdates.isRelevant("TaskUpdated"))
+        XCTAssertTrue(VibeDevLiveUpdates.isRelevant("TaskDeleted"))
         XCTAssertTrue(VibeDevLiveUpdates.isRelevant("task.updated"))
         XCTAssertTrue(VibeDevLiveUpdates.isRelevant("hitl.requested"))
         XCTAssertTrue(VibeDevLiveUpdates.isRelevant("execution.completed"))
@@ -656,6 +709,32 @@ final class VibeDevViewModelTests: XCTestCase {
 
     // MARK: Wire helpers
 
+    func testCodingModelCatalogKeepsEngineAndThinkingWithoutLegacyRows() throws {
+        let engines = ["pi", "claude_code", "codex_app_server", "grok_acp", "agy_cli"]
+        let models: [[String: Any]] = engines.map { engine in
+            ["id": engine == "pi" ? "provider/model" : "native/\(engine)/provider/model",
+             "engine": engine, "provider": "provider", "connection": "provider", "model": "physical-model", "label": "Model",
+             "thinking": ["mode": "effort", "levels": ["low", "high"], "default": "low"],
+             "choices": ["auto": "\(engine)/auto", "high": "\(engine)/high"]]
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "models": models,
+            "engines": engines.map { ["id": $0, "selectable": true] as [String: Any] },
+            "default_selection": ["kind": "model", "engine": "pi", "model_id": "provider/model", "thinking": "high"]
+        ])
+        let catalog = try JSONDecoder().decode(VibeDevModelCatalog.self, from: data)
+        XCTAssertEqual(catalog.rows.count, 10)
+        XCTAssertEqual(catalog.rows.filter(\.isDefault).map(\.id), ["pi/high"])
+        for engine in engines {
+            let row = try XCTUnwrap(catalog.rows.first { $0.id == "\(engine)/high" })
+            let selected = VibeDevCodingSelection(profile: row)
+            XCTAssertEqual(selected.wireValue["engine"], engine)
+            XCTAssertEqual(selected.wireValue["thinking"], "high")
+            XCTAssertEqual(selected.wireValue["model_id"], engine == "pi" ? "provider/model" : "native/\(engine)/provider/model")
+            XCTAssertNil(selected.wireValue["profile_id"])
+        }
+    }
+
     func testStartRunBodyCarriesTheIdempotencyKeyAndThread() {
         var request = VibeDevStartRunRequest(prompt: "go", projectId: "p1", mode: .discuss)
         request.clientRunId = "abc"
@@ -668,6 +747,42 @@ final class VibeDevViewModelTests: XCTestCase {
         XCTAssertEqual(request.body["parent_task_id"] as? String, "turn1")
         XCTAssertEqual(request.body["threaded"] as? Bool, true)
         XCTAssertEqual(request.body["cost_budget_usd"] as? Double, 2)
+        var row = VibeDevCodingProfile(id: "pi/model/provider/model/high", label: "Model", engine: "pi")
+        row.modelSelection = ChatModelSelection(modelId: "provider/model", thinking: "high")
+        request.codingChoice = VibeDevCodingSelection(profile: row)
+        XCTAssertEqual(request.body["coding_choice"] as? [String: String],
+            ["kind": "model", "engine": "pi", "model_id": "provider/model", "thinking": "high"])
+        XCTAssertNil(request.body["coding_profile_id"])
+    }
+
+    func testProjectReferencesAndNightlyScheduleMatchWebContract() throws {
+        var request = VibeDevStartRunRequest(prompt: "Build this", projectId: "p1", mode: .autopilot)
+        request.nightly = true
+        request.attachmentSessionId = "project-chat"
+        request.attachments = [StagedAttachment(id: UUID(), remoteId: "remote", filename: "design.png", mime: "image/png", uploading: false)]
+        XCTAssertEqual(request.body["attachment_session_id"] as? String, "project-chat")
+        let attachment = try XCTUnwrap((request.body["attachments"] as? [[String: Any]])?.first)
+        XCTAssertEqual(attachment["attachment_id"] as? String, "remote")
+        let schedule = try XCTUnwrap(request.body["schedule"] as? [String: Any])
+        let kind = try XCTUnwrap(schedule["kind"] as? [String: [String: String]])
+        XCTAssertEqual(kind["Cron"]?["expression"], "0 2 * * *")
+        XCTAssertEqual(schedule["timezone"] as? String, "UTC")
+        request.parentTaskId = "existing"
+        XCTAssertNil(request.body["schedule"])
+        request.parentTaskId = nil
+        request.mode = .discuss
+        XCTAssertNil(request.body["schedule"])
+        XCTAssertEqual(request.body["agent_id"] as? String, "cto")
+        XCTAssertEqual(request.body["auto_apply"] as? Bool, false)
+    }
+
+    func testSharedAttachmentRequestUsesProjectSessionAndEscapesFilename() throws {
+        let request = try XCTUnwrap(ComposerAttachmentUpload.request(Data("reference".utf8), filename: "a\"\r\nb.txt", mime: "text/plain", sessionID: "project-chat"))
+        XCTAssertTrue(request.url!.path.hasSuffix("/chat/sessions/project-chat/attachments"))
+        XCTAssertEqual(request.httpMethod, "POST")
+        let body = String(decoding: request.httpBody!, as: UTF8.self)
+        XCTAssertTrue(body.contains("filename=\"a___b.txt\""))
+        XCTAssertEqual(ComposerAttachmentUpload.attachmentID(Data(#"{"attachment":{"attachment_id":"remote"}}"#.utf8)), "remote")
     }
 
     func testCrewRequestAsksTheOwnerBeforeStarting() {
@@ -712,5 +827,23 @@ final class VibeDevViewModelTests: XCTestCase {
         XCTAssertEqual(rows[1].turnCount, 3)
         XCTAssertEqual(rows[1].state, .working, "a run's state is its newest turn's")
         XCTAssertEqual(rows[0].title, "B")
+    }
+
+    // MARK: Project health git init
+
+    func testGitInitReReadsProjectsOnSuccess() async {
+        api.projectList = VibeDevProjectsResponse(projects: [VibeDevProject(projectId: "p1", name: "Shop")],
+                                                  activeProjectId: "p1")
+        let message = await context.gitInit(projectID: "p1")
+        XCTAssertNil(message)
+        XCTAssertEqual(api.gitInits, ["p1"])
+        XCTAssertEqual(context.projectList.map(\.projectId), ["p1"])
+    }
+
+    func testGitInitFailureReturnsTheServersMessage() async {
+        api.gitInitError = VibeDevAPIError.http(409, "The project folder is missing.")
+        let message = await context.gitInit(projectID: "p1")
+        XCTAssertEqual(message, "The project folder is missing.")
+        XCTAssertTrue(context.projectList.isEmpty)
     }
 }

@@ -36,6 +36,7 @@ async fn run_http_server() -> std::io::Result<()> {
         "Bridge: enabled={}, path={}",
         config.bridge.enabled, config.bridge.path
     );
+    magicutor::server::cdp_proxy::set_automation_surface(&config.bridge.automation_surface);
 
     // Bind address for the server
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);

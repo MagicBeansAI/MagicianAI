@@ -97,8 +97,8 @@ impl PrivacyProcessingSettingsStore {
         self.envelope_for(self.load_settings())
     }
 
-    /// Durable write of the `privacy:` section, under the config-file lock
-    /// shared with every other whole-file config writer.
+    /// Durable write of the changed `privacy.processing` values, under the
+    /// config-file lock shared with every other config writer.
     pub async fn save(
         &self,
         settings: PrivacyProcessingSettings,
@@ -115,13 +115,23 @@ impl PrivacyProcessingSettingsStore {
             } else {
                 crate::config::magician_config_path()
             };
-            let mut config = crate::config::load_magician_config_from_path(&base_path)
+            let config = crate::config::load_magician_config_from_path(&base_path)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            config.privacy.processing = write_settings.clone();
+            // Only the changed `privacy.processing` lines are written; the
+            // owner's comments and every other section stay byte for byte.
+            let original = std::fs::read_to_string(&base_path)?;
+            let yaml = crate::magician_v2::runtime_settings::apply_yaml_section(
+                &original,
+                &["privacy", "processing"],
+                &config.privacy.processing,
+                &write_settings,
+            )?;
+            if yaml == original && base_path == write_path {
+                return Ok(());
+            }
             if let Some(parent) = write_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let yaml = serde_yaml::to_string(&config).map_err(std::io::Error::other)?;
             write_bytes_durably_sync(&write_path, yaml.as_bytes())
         })
         .await
@@ -212,6 +222,29 @@ impl PrivacyProcessingSettingsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn saving_the_mode_changes_only_its_own_line() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let contents = crate::magician_v2::runtime_settings::replace_top_level_yaml_block(
+            &crate::config::shipped_repo_config_yaml(),
+            "privacy",
+            "privacy:\n  # owner: cloud while travelling\n  processing:\n    mode: cloud          # local | cloud\n",
+        );
+        std::fs::write(temp.path().join(CONFIG_FILE), &contents).expect("seed config");
+        let store = PrivacyProcessingSettingsStore::new(temp.path());
+        let mut settings = store.load_settings();
+        settings.mode = magicllm::ProcessingLocality::Local;
+        store.save(settings).await.expect("save");
+        let written = std::fs::read_to_string(temp.path().join(CONFIG_FILE)).expect("read");
+        assert_eq!(
+            written,
+            contents.replace(
+                "    mode: cloud          # local | cloud\n",
+                "    mode: local          # local | cloud\n"
+            )
+        );
+    }
 
     #[test]
     fn missing_config_section_defaults_to_local() {

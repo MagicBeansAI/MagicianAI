@@ -28,6 +28,7 @@ const STATES: VerdictState[] = [
 	'cancelled',
 	'queued',
 	'archived',
+	'finalizing',
 	'finished'
 ];
 
@@ -206,7 +207,14 @@ describe('actOrder — what the reader sees first', () => {
 	});
 
 	it('puts the live run first while it runs, and the run first once it stopped short', () => {
-		for (const state of ['running', 'stalled', 'paused', 'failed', 'cancelled'] as VerdictState[]) {
+		for (const state of [
+			'running',
+			'stalled',
+			'paused',
+			'failed',
+			'cancelled',
+			'finalizing'
+		] as VerdictState[]) {
 			expect(actOrder(state, ['plan', 'run', 'output']), state).toEqual(['run', 'plan', 'output']);
 		}
 	});

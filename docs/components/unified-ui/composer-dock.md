@@ -5,6 +5,13 @@ the session `ContextPill` and, optionally, host-supplied controls pinned to its
 right. Applies to every `ChatPanel` surface — `/chat`, `/t/[name]/chat`, and the
 Tauri HUD (`/hud`).
 
+The Talk | Code switch navigates between full app pages and is omitted from the
+compact HUD. Expanding or selecting a history entry uses the actual `/chat` or
+`/vibe` page in the same decorated desktop window. The far-right Compact icon returns
+to `/hud`, preserving the chat session, draft and attachments. The route guard
+restricts navigation only while compact. Switching full pages hands off an
+editable `draft`; landing-page `q` links retain their automatic send behavior.
+
 ## Anatomy
 
 ```
@@ -28,13 +35,26 @@ to the same action. The explicit group keeps Svelte a11y diagnostics enabled
 instead of suppressing the drag-surface warning.
 
 `composer-tools` is split by a `flex: 1` spacer: **mode + attach left**, **the
-profile chip and thinking status right**. The profile dropdown is
-`position: fixed` and viewport-centred, not anchored to its trigger. The trigger
-opens the chat engine picker: installed Plane harnesses first, then Magician API
-profiles (for Magician/Pi) or the harness model list. On narrow screens it is one
-icon-sized target. The engine/model choice is shared with chat Settings in
+model chip and thinking status right**. The model dropdown uses `position: fixed`
+outside the glass composer's stacking context and anchors directly above its
+trigger. It follows composer/viewport resizing and scrolling, with viewport-edge
+clamping. The trigger opens custom Engine and Model dropdowns followed by the
+selected model's qualified thinking controls. Chat and VibeDev render one shared
+`ComposerModelChip` with the same tinted rounded-square background, compact
+labels and rounded-square Auto badge. On narrow screens it is one icon-sized
+target. The engine/model choice is shared with chat Settings in
 browser storage across sessions (per device/browser); each message sends that
-route with the selected API profile.
+typed engine/model/thinking selection.
+
+VibeDev's matching dock keeps the project/run title as a shortcut to the left
+panel. Separate icon buttons provide `+` for a fresh run and an explicit left
+panel opener. When an existing run is selected, `⋯` offers Delete run through
+the studio's existing confirmation dialog. The right-aligned Dev presence dot
+shares Chat's 3D sphere shading and orb component, with colors drawn from the selected theme's
+secondary accent and information tokens. It spins during preparation, pulses
+during live coding/synthesis and signals run-scoped pending reviews. It also
+opens the existing Super god approval flow. Both
+composers use 2px vertical footer padding and an 8px bottom margin.
 
 ## Turning it on
 
@@ -152,8 +172,9 @@ The dock row does not make the composer taller because `composer-tools` is
 dense: symmetric `2px 12px` padding, `.seg button` `2px 7px` at 9.5px, `.profile`
 `2px 6px` gap 4 (model 9.5px, badge/tier 8.5px, icon 10px, chevron 8px),
 `.icon-btn` and `.auto-speak-toggle` 20px boxes with 11px glyphs, `.thinking-chip`
-`2px 8px 2px 6px`. `.pp-tier` colours instant / normal / advanced / frontier as
-distinct chips (frontier is the GPT-6 Astra adaptive composite).
+`2px 8px 2px 6px`. Current model chips show Auto or the selected native thinking
+level; provider-owned Off support comes from the catalog. Floating lightning and
+dollar feedback uses each model's catalog hint across providers and engines.
 
 - **Chrome rows use symmetric vertical padding** — asymmetric padding makes an
   `align-items: center` row look top-aligned.
@@ -183,11 +204,12 @@ Super god mode (debug, `execution.super_god_mode`) is global. Settings and the
 VibeDev composer both set it, and one shared poll (`superGodModePoll` in
 `lib/settings/godMode.ts`, 30 s idle) feeds every surface.
 
-- **VibeDev composer** (`SuperGodModeToggle.svelte`, next to the coding
-  profile): a ⚡ button. Off, it opens "Super god mode for 1 hour" and "Super
+- **VibeDev composer** (`SuperGodModeToggle.svelte`, top dock): the Dev dot
+  combines run activity with mode control. It uses only selected-theme colors
+  in light and dark themes and honors reduced motion. Off, it opens "Super god mode for 1 hour" and "Super
   god mode until turned off", each behind the same confirmation as Settings.
-  On, it is red, shows the time left ("Super god · 52 min"), and one click
-  turns it off.
+  On, it shows the same themed danger halo as Chat's orb, and one click turns
+  it off. Other surfaces retain the labeled toggle and time-left text.
 - **Banner** (`SuperGodModeBanner.svelte`): mounted in the app layout under
   the top bar on `/chat`, `/tasks`, `/t/…`, `/vibe` and `/settings`. It is
   red, says how long is left and that approved harnesses start with no
@@ -199,3 +221,26 @@ What it does is server-side: each harness launch asks first (once, this
 session or always), and only an approved launch starts unrestricted. See
 `docs/components/magician/god-mode.md`.
 
+## Selection and restoration
+
+Chat reads `/chat/models?engine=magician|pi` and sends typed `model_selection` on
+ordinary, streaming, queued and concurrent-voice requests. CLI chat engines retain
+their native model field. VibeDev and `@vibedev` read `/coding/models` and send
+`coding_choice` with engine/model/thinking, or coordinator `{kind:"auto"}`.
+Follow-up steering retains the existing run's admitted engine.
+
+Both persist typed choices and validate them against fresh catalog metadata.
+Unknown, malformed or unavailable saved choices remain visible and block new
+model-based sends, including keyboard/voice entry. A bounded frozen converter
+imports old preferences once; typed preferences take priority. Catalog loads are
+generation-guarded against engine/session changes. Old profile endpoints and
+transport fallback branches are removed.
+
+Provider headings use product names rather than credential/transport connection
+IDs. The shared burst reads catalog `feedback` across providers and engines;
+`fast` shows lightning and `premium` dollars. Its pointer-transparent page overlay
+anchors to the selector above the popup and honors reduced motion. These hints
+are qualitative, not measured latency or price quotes.
+
+See [routing controls](model-routing-panel.md) for crew, background and Evals
+selection, and [testing](../../testing.md) for dependency-safe Vite checks.

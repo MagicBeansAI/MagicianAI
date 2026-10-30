@@ -11,15 +11,10 @@ struct ThemesView: View {
         NavigationStack {
             List {
                 Section {
-                    Picker("Appearance", selection: Binding(
-                        get: { themeManager.appearanceMode },
-                        set: { themeManager.setAppearanceMode($0, systemDark: ThemeManager.systemIsDark) }
-                    )) {
-                        ForEach(ThemeManager.AppearanceMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    AppearanceModePicker(
+                        selection: themeManager.appearanceMode,
+                        select: { themeManager.setAppearanceMode($0, systemDark: ThemeManager.systemIsDark) }
+                    )
                     .listRowBackground(themeManager.surfaceColor)
                 } header: {
                     Text("Appearance").foregroundColor(themeManager.secondaryTextColor)
@@ -72,6 +67,7 @@ struct ThemesView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(themeManager.backgroundColor, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(themeManager.colorScheme, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -79,6 +75,61 @@ struct ThemesView: View {
                 }
             }
         }
+        // A sheet's navigation bar resolves its SwiftUI toolbar preferences once
+        // per presentation, so a live palette flip made INSIDE this sheet (the
+        // System/Day/Night switch) leaves the bar on the old palette until a
+        // relaunch. Rebuilding the stack on `themeRevision` recreates the bar
+        // from the already-updated UIKit appearance, like the working tabs do.
+        .id(themeManager.themeRevision)
+    }
+}
+
+/// System / Day / Night as one themed segment — the twin of magdroid's
+/// `AppearanceModePicker`. The stock `.segmented` control only flips light/dark
+/// with the color scheme; it never takes the palette, so the switch sat on
+/// system grays in every theme.
+private struct AppearanceModePicker: View {
+    @ObservedObject private var theme = ThemeManager.shared
+    let selection: ThemeManager.AppearanceMode
+    let select: (ThemeManager.AppearanceMode) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(ThemeManager.AppearanceMode.allCases.enumerated()), id: \.element.id) { index, mode in
+                let chosen = mode == selection
+                Button {
+                    select(mode)
+                } label: {
+                    Text(mode.label)
+                        .font(.themed(12, weight: chosen ? .semibold : .regular))
+                        .foregroundColor(chosen ? theme.onAccentColor : theme.secondaryTextColor)
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
+                                .fill(chosen ? theme.accentFillColor : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mode.label)
+                .accessibilityAddTraits(chosen ? [.isSelected] : [])
+                if index != ThemeManager.AppearanceMode.allCases.count - 1 {
+                    Rectangle()
+                        .fill(theme.controlBorderColor.opacity(0.5))
+                        .frame(width: 1, height: 18)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
+                .fill(theme.softBackgroundColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
+                .strokeBorder(theme.controlBorderColor, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
     }
 }
 

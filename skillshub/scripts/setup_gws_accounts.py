@@ -31,7 +31,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -135,7 +137,25 @@ def main() -> int:
             f"gws auth login -s gmail,sheets,drive,docs,calendar"
         )
         print(cmd)
+    ensure_project_access(Path(args.data_root))
     return 0
+
+
+def ensure_project_access(data_root: Path) -> None:
+    """Every account needs Service Usage Consumer and Pub/Sub Editor on the
+    client's Cloud project; the shared step checks and offers to grant them."""
+    script = Path(__file__).resolve().parents[2] / "scripts" / "setup-gws-project-access.sh"
+    if not script.is_file():
+        return
+    print()
+    print("Cloud project roles per account:")
+    env = dict(os.environ, MAGICIAN_ROOT_DIR=str(data_root))
+    status = subprocess.run(["bash", str(script)], env=env, check=False).returncode
+    if status != 0:
+        print(
+            "  ! Some accounts still lack project roles; mail sync and the Gmail bot fail "
+            "for them until granted (make setup-gws-project-access)."
+        )
 
 
 if __name__ == "__main__":

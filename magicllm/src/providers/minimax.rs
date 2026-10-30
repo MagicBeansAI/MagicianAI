@@ -5,7 +5,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
@@ -17,6 +16,7 @@ use super::{
 };
 use crate::{
     capability::{LLMCapability, LLMModality, LLMProviderKind, LLMReasoning},
+    catalog::ThinkingWire,
     error::{LLMError, LLMResult},
     provider::LLMProvider,
     types::{
@@ -284,12 +284,14 @@ impl MinimaxProvider {
         tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 json!({
                     "type": "function",
                     "function": {
                         "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
+                        "description": description,
+                        "parameters": parameters,
                     }
                 })
             })
@@ -430,6 +432,15 @@ impl MinimaxProvider {
 
     fn build_request_body(request: &LLMRequest) -> LLMResult<Map<String, Value>> {
         let messages = Self::map_messages(&request.messages)?;
+        let effort_model = request.model_wire.as_ref().map_or_else(
+            || {
+                request
+                    .model
+                    .to_ascii_lowercase()
+                    .starts_with("minimax-m3.1")
+            },
+            |wire| wire.thinking == Some(ThinkingWire::Adaptive),
+        );
 
         let mut body = Map::new();
         body.insert("model".to_string(), Value::String(request.model.clone()));
@@ -479,37 +490,40 @@ impl MinimaxProvider {
             }
         }
 
-        // MiniMax temperature range is (0, 1] — clamp defensively so profiles
-        // tuned for other providers (which allow up to 2.0) don't 400.
-        if let Some(temp) = request.temperature {
-            let clamped = (temp as f64).clamp(0.01, 1.0);
-            body.insert("temperature".to_string(), Value::from(clamped));
-        }
-        if let Some(top_p) = request.top_p {
-            body.insert("top_p".to_string(), Value::from(top_p));
+        let sampling = request
+            .model_wire
+            .as_ref()
+            .map_or(!effort_model, |wire| wire.sampling);
+        if sampling {
+            if let Some(temp) = request.temperature {
+                let clamped = (temp as f64).clamp(0.01, 1.0);
+                body.insert("temperature".to_string(), Value::from(clamped));
+            }
+            if let Some(top_p) = request.top_p {
+                body.insert("top_p".to_string(), Value::from(top_p));
+            }
         }
         if let Some(max_tokens) = request.max_output_tokens {
             body.insert("max_completion_tokens".to_string(), Value::from(max_tokens));
         }
 
-        // Engage M3's reasoning via MiniMax's NATIVE `thinking` switch. M3
-        // reasons inline (`<think>` / `reasoning_content`) adaptively, but left
-        // on its default it frequently emitted ZERO reasoning before deciding
-        // (the lazy "inspect, don't act" turns that sank the SoTA run). The
-        // profile's `reasoning.effort` was previously dropped on the wire, so
-        // the model never got the "think hard" signal. On this surface the
-        // effective control is `thinking: {type: enabled|disabled}` — the same
-        // toggle the old Anthropic-compat path used. A live probe showed it
-        // roughly doubles reasoning vs. default, whereas the OpenAI-style
-        // `reasoning_effort` is essentially a no-op here AND combining the two
-        // REDUCES reasoning — so we send ONLY `thinking`. The toggle is BINARY:
-        // M3 has no high/medium/low intensity dial, so the profile's effort
-        // TIER collapses to on/off — `high`/`medium`/`low`/`minimal` all map to
-        // the SAME `enabled` (the tier is not a depth M3 acts on; when enabled
-        // it reasons adaptively per turn). An explicit `none`/`off` maps to
-        // `disabled`; an absent reasoning config leaves M3 on its adaptive
-        // default.
-        if let Some(reasoning) = request.reasoning.as_ref() {
+        // M3.1 always thinks and accepts native effort. M3 retains its binary
+        // switch. Omitted effort leaves M3.1 on the provider's Max default.
+        if effort_model {
+            if let Some(effort) = request.reasoning.as_ref().and_then(|r| r.effort.as_deref()) {
+                match effort {
+                    "low" | "medium" | "high" | "xhigh" | "max" => {
+                        body.insert("reasoning_effort".to_string(), json!(effort));
+                    },
+                    "auto" => {},
+                    _ => {
+                        return Err(LLMError::Validation(format!(
+                            "MiniMax effort must be low, medium, high, xhigh or max; got {effort}"
+                        )))
+                    },
+                }
+            }
+        } else if let Some(reasoning) = request.reasoning.as_ref() {
             let state = if reasoning.is_disabled() {
                 "disabled"
             } else {
@@ -520,12 +534,13 @@ impl MinimaxProvider {
 
         if let Some(Value::Object(extra_map)) = request.extra_value() {
             for (key, value) in extra_map {
-                // Strip Magician/magicllm internal routing keys + reasoning
-                // controls. `thinking` is set above from the typed reasoning
-                // config (authoritative); `reasoning_effort` / `reasoning_split`
-                // are a no-op / non-standard on this surface. Dropping them from
-                // `extra` keeps a noisy `metadata:` block from injecting a
-                // conflicting copy.
+                // Typed controls above own reasoning and sampling. Metadata
+                // cannot override them or select an unsupported M3.1 tier.
+                if (effort_model && key == "service_tier")
+                    || (!sampling && matches!(key.as_str(), "temperature" | "top_p"))
+                {
+                    continue;
+                }
                 if matches!(
                     key.as_str(),
                     "tool_choice"
@@ -561,7 +576,43 @@ impl MinimaxProvider {
             }
         }
 
+        // MiniMax omits streamed metering unless explicitly requested. Keep
+        // usage enabled even when caller extras contain stream_options.
+        body.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
         Ok(body)
+    }
+}
+
+impl MinimaxProvider {
+    /// Fold a streamed completion into the non-streaming body. A chunk whose
+    /// `base_resp` reports an error ends the read and comes back as the body,
+    /// so the caller's `check_base_resp` maps it as for a plain call.
+    async fn collect_stream(
+        response: reqwest::Response,
+        timeout: Duration,
+        protected_request: bool,
+    ) -> LLMResult<Value> {
+        let mut assembler = super::ChatCompletionAssembler::new("minimax", protected_request);
+        let mut reader = super::SseReader::new(response.bytes_stream(), timeout);
+        while let Some(data) = reader.next_data().await? {
+            if data == "[DONE]" {
+                assembler.mark_done();
+                break;
+            }
+            let Some(value) = parse_minimax_stream_event(&data)? else {
+                continue;
+            };
+            if Self::check_base_resp(&value, protected_request).is_err() {
+                return Ok(json!({ "base_resp": value.get("base_resp").cloned() }));
+            }
+            if assembler.fold(value)? {
+                reader.mark_progress();
+            }
+        }
+        assembler.finish()
     }
 }
 
@@ -605,34 +656,33 @@ impl LLMProvider for MinimaxProvider {
             "issuing MiniMax completion"
         );
 
-        let body = Self::build_request_body(&request)?;
+        let mut body = Self::build_request_body(&request)?;
         let timeout = request
             .metadata
             .timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        // Plain calls stream too, so a long answer that is still producing is
+        // bounded by progress, not cut at the request timeout; the chunks fold
+        // back into the body parsed below.
+        body.insert("stream".to_string(), Value::Bool(true));
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
-        let raw_body = read_bounded_response_text(response).await?;
-        let payload = parse_provider_json_value(&raw_body)?;
-        drop(raw_body);
+        let payload = if !status.is_success() || super::is_json_response(&response) {
+            super::read_json_body(response, timeout).await?
+        } else {
+            Self::collect_stream(response, timeout, protected_request).await?
+        };
 
         // MiniMax surfaces logical errors via base_resp on HTTP 200 — check first.
         if let Err(err) = Self::check_base_resp(&payload, protected_request) {
@@ -793,22 +843,15 @@ impl LLMProvider for MinimaxProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
@@ -837,14 +880,16 @@ impl LLMProvider for MinimaxProvider {
         let mut utf8_carry = Vec::with_capacity(4);
         let mut body_admission = SseBodyAdmission::new();
         let mut aggregated_text = String::new();
+        let mut aggregated_reasoning = String::new();
         let mut tool_call_deltas: HashMap<u32, ChatToolCallDelta> = HashMap::new();
         let mut finish_reason: Option<String> = None;
         let mut usage_value: Option<Value> = None;
         let mut base_resp_err: Option<LLMError> = None;
         let mut done = false;
 
+        let mut watchdog = super::StreamWatchdog::new(timeout);
         while !done {
-            let Some(chunk) = stream.next().await else {
+            let Some(chunk) = watchdog.next(&mut stream).await? else {
                 break;
             };
             let chunk = chunk.map_err(|error| {
@@ -875,6 +920,9 @@ impl LLMProvider for MinimaxProvider {
                 if let Some(usage) = value.get("usage") {
                     usage_value = Some(clone_json_value_iteratively(usage));
                 }
+                if super::plain_stream::chat_chunk_has_output(&value) {
+                    watchdog.mark_progress();
+                }
                 let Some(choice) = value
                     .get("choices")
                     .and_then(Value::as_array)
@@ -894,6 +942,7 @@ impl LLMProvider for MinimaxProvider {
                     let _ = tx.send(StreamDelta::Token(content.to_string())).await;
                 }
                 if let Some(rc) = delta.get("reasoning_content").and_then(Value::as_str) {
+                    aggregated_reasoning.push_str(rc);
                     let _ = tx
                         .send(StreamDelta::ReasoningDelta {
                             index: 0,
@@ -972,7 +1021,11 @@ impl LLMProvider for MinimaxProvider {
 
         let aggregated = LLMResponse {
             text: text.map(Arc::<str>::from),
-            reasoning_text: inline_think.map(Arc::<str>::from),
+            reasoning_text: if aggregated_reasoning.is_empty() {
+                inline_think.map(Arc::<str>::from)
+            } else {
+                Some(Arc::<str>::from(aggregated_reasoning))
+            },
             response_id: None,
             messages: Arc::new(messages.unwrap_or_default()),
             tool_calls: Arc::new(tool_calls),

@@ -1,5 +1,8 @@
 # MagicLLM Docs
 
+[Model catalog and thinking selection](model-catalog.md) covers generation
+configuration, shared budgets, client controls and saved selection migration.
+
 Landing page for `magicllm` documentation. Provider contracts (prompt caching,
 token usage and cost, tool transcript replay, tool-choice policy, truncation)
 live in [multi-llm.md](multi-llm.md).
@@ -71,7 +74,11 @@ resource meters together deny before I/O.
 
 The router quotes the resolved profile, model, transport cohort and lineage
 before dispatch. A pre-I/O denial releases the permit; usage settles it; missing
-usage or provider errors stay uncertain. Queue cancellation drains settlement
+usage or provider errors stay uncertain. A typed HTTP client rejection
+(`ProviderStatus` 4xx other than 408/429) is still uncertain but carries
+`is_definitive_rejection()` with zero counters, so an owner may release the
+reservation; timeouts, 5xx and untyped provider messages carry no such flag.
+Queue cancellation drains settlement
 first, and protected rate limits never trigger a second attempt. Local prep
 keeps the raw content without calling Ollama. Streaming,
 embeddings, continuations, fallbacks, logical chunking and server tools with
@@ -101,6 +108,10 @@ duplicated coverage, and enforces the logical window (no `max_chunks`). The
 crate does not schedule calls or persist output; Magician owns the runner, adapters, profiles and activation
 ([Ollama Logical-context Chunking](../magician/ollama-logical-context-chunking.md)).
 
+## Spend gate
+
+`spend_gate::install_spend_gate` installs one process-wide `SpendGate` that every router call passes: `admit` before any provider is contacted (a refusal is `LLMError::SpendEnvelopeExhausted`, terminal for dispatch and never a breaker failure), `settle` with the priced cost afterwards. With no gate installed nothing changes. Pricing returns `None` for an unlisted model (`try_compute_cost_at`) and `estimate_unpriced_cost_microusd` charges the provider's highest known rate, so an unpriced model is not free. The owner envelope that uses it: [agentic budgets](../magician/execution/AGENTIC_EXECUTION_DESIGN.md#budgets).
+
 ## Streaming Support
 
 `LLMProvider::invoke_stream(request, tx)` streams `StreamDelta`s; providers
@@ -110,7 +121,18 @@ resolves like `route()` and streams only when the profile has
 
 Streaming providers: OpenAI Chat, OpenAI Responses, Anthropic, DeepSeek (via
 Anthropic-compatible Messages), MiniMax (OpenAI-compatible
-`/v1/chat/completions`), and OpenAI Meta (delegates by API mode).
+`/v1/chat/completions`), Gemini (`:streamGenerateContent?alt=sse`), OpenRouter,
+Sarvam, Ollama (NDJSON) and OpenAI Meta (delegates by API mode).
+
+Plain `invoke()` streams too (`providers/plain_stream.rs`): the provider sends
+its streaming request, `StreamWatchdog` bounds the body by progress (request
+timeout until the first output, then 120 s without new output, 30-minute
+ceiling), and the provider's own non-streaming body is rebuilt from the stream
+for the unchanged parser and max-tokens retry. A long answer that keeps
+producing is not cut at the request timeout; a stream that ends before its
+terminal event is a `Transport` error. Stays non-streaming: Responses
+`background: true` and Gemini Interactions. An error status or a JSON reply is
+parsed as before.
 
 Every completed response and terminal error carries `LlmRouteIdentity` for the
 route that actually ran, fallbacks included. A provider's streaming error delta
@@ -190,6 +212,9 @@ model (`DeepSeekProvider::model_supports_vision`): `deepseek-flash` (V4.1
 Flash) takes images; V4 Pro is text-only.
 
 ## Realtime voice
+
+Provider WebSockets use an explicit rustls crypto backend with WebPKI certificate
+verification, so dependency feature unification cannot panic during voice startup.
 
 - **OpenAI Realtime (backend-proxied)** sends `session.update` on connect and
   surfaces a dropped socket as `TransportClosed`. A new spoken turn cancels any

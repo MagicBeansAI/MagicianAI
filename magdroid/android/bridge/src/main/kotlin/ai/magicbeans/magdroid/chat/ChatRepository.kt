@@ -92,13 +92,18 @@ class ChatRepository internal constructor(
     private val headers: () -> Map<String, String>,
     private val scope: () -> Pair<String, String>,
     realtimeHub: RealtimeHub? = null,
+    private val modeConnection: (() -> ai.magicbeans.magdroid.access.MagicianConnectionSnapshot?)? = null,
 ) {
-    constructor(context: Context) : this(
+    constructor(
+        context: Context,
+        modeConnection: () -> ai.magicbeans.magdroid.access.MagicianConnectionSnapshot? = { MagicianAccess.connectionSnapshot(context) },
+    ) : this(
         client = chatHttpClient(),
         baseUrl = { MagicianAccess.baseUrl(context) },
         headers = { MagicianAccess.headers(context) },
         scope = { MagicianAccess.principal(context) to MagicianAccess.workspace(context) },
         realtimeHub = RealtimeHub.shared(context),
+        modeConnection = modeConnection,
     )
 
     /** The app's one realtime connection; a private one only for tests built on a bare client. */
@@ -119,8 +124,53 @@ class ChatRepository internal constructor(
         return Json.parseToJsonElement(response.bodyAsText()).jsonObject
     }
 
-    suspend fun queueSnapshot(sessionId: String): ChatQueueSnapshot = chatJson.decodeFromJsonElement(
-        ChatQueueSnapshot.serializer(), voiceRequest("/chat/sessions/$sessionId/queue", null))
+    /** The existing owner-only mode endpoints; a null chat choice follows Settings. */
+    suspend fun chatGodMode(sessionId: String, choice: Boolean? = null, update: Boolean = false): ChatGodModeState {
+        val body = if (update) buildJsonObject {
+            put("enabled", choice?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        } else null
+        return chatJson.decodeFromJsonElement(ChatGodModeState.serializer(), executionModeRequest(
+            "/chat/sessions/${encoded(sessionId)}/god-mode", body))
+    }
+
+    /** Sets this chat's auto-approve; `null` follows the Settings default. */
+    suspend fun chatAutoApprove(sessionId: String, choice: Boolean?): ChatGodModeState {
+        val body = buildJsonObject {
+            put("auto_approve", choice?.let { kotlinx.serialization.json.JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull)
+        }
+        return chatJson.decodeFromJsonElement(ChatGodModeState.serializer(), executionModeRequest(
+            "/chat/sessions/${encoded(sessionId)}/god-mode", body))
+    }
+
+    suspend fun superGodMode(choice: SuperGodModeDuration? = null, update: Boolean = false): SuperGodModeState {
+        val body = if (update) buildJsonObject {
+            put("enabled", choice != null)
+            choice?.let { put("duration", it.wire) }
+        } else null
+        return chatJson.decodeFromJsonElement(SuperGodModeState.serializer(), executionModeRequest(
+            "/settings/super-god-mode", body))
+    }
+
+    private suspend fun executionModeRequest(path: String, body: JsonObject?): JsonObject {
+        val snapshot = modeConnection?.invoke()
+        if (modeConnection != null && snapshot == null) throw ChatError("Connect to your Magician in Settings.")
+        val endpoint = snapshot?.baseUrl?.trimEnd('/')?.let { "$it/api/magician/v2" } ?: base()
+        val authHeaders = snapshot?.headers ?: headers()
+        val response = if (body == null) client.get("$endpoint$path") {
+            authHeaders.forEach { (key,value) -> header(key,value) }
+        } else client.put("$endpoint$path") {
+            authHeaders.forEach { (key,value) -> header(key,value) }
+            contentType(ContentType.Application.Json); setBody(body.toString())
+        }
+        if (!response.status.isSuccess()) throw failure(response.status, response.bodyAsText())
+        return Json.parseToJsonElement(response.bodyAsText()).jsonObject
+    }
+
+    suspend fun queueSnapshot(sessionId: String): ChatQueueSnapshot {
+        val body = voiceRequest("/chat/sessions/$sessionId/queue", null)
+        return chatJson.decodeFromJsonElement(ChatQueueSnapshot.serializer(), body)
+            .copy(turnState = ChatTurnStateReport.from(body, sessionId))
+    }
 
     suspend fun enqueue(sessionId: String, request: SendMessageRequest): String {
         val body = chatRequestJson.encodeToJsonElement(SendMessageRequest.serializer(), request).jsonObject
@@ -215,10 +265,20 @@ class ChatRepository internal constructor(
     suspend fun history(sessionId: String): List<ChatMessage> = conversation(sessionId).second
 
     /** Exact metadata matters for voice branches omitted from the history list. */
-    suspend fun conversation(sessionId: String, target: OriginalAnswerLink? = null): Pair<SessionSummary, List<ChatMessage>> {
+    suspend fun conversation(sessionId: String, target: OriginalAnswerLink? = null): Pair<SessionSummary, List<ChatMessage>> =
+        conversationSnapshot(sessionId, target).let { it.summary to it.messages }
+
+    /**
+     * The conversation with the session's latest turn state.
+     *
+     * Read from the same response, so the transcript and the turn agree: a
+     * turn the server is still running shows live over exactly this history.
+     */
+    suspend fun conversationSnapshot(sessionId: String, target: OriginalAnswerLink? = null): ChatConversation {
         val response = client.get("${base()}/chat/sessions/$sessionId") { authorize() }
         if (!response.status.isSuccess()) throw failure(response.status, response.bodyAsText())
-        val detail = chatJson.decodeFromString(ChatSessionDetail.serializer(), response.bodyAsText())
+        val root = chatJson.parseToJsonElement(response.bodyAsText()).jsonObject
+        val detail = chatJson.decodeFromJsonElement(ChatSessionDetail.serializer(), root)
         val session = detail.session
         val metadata = SessionSummary(
             id = session.identifier(), title = session.title, uiThreadId = session.uiThreadId,
@@ -226,25 +286,36 @@ class ChatRepository internal constructor(
             internalVoice = session.internalVoice, historyLane = session.historyLane,
         )
         var messages = detail.messages
-        var hasMore = messages.size >= 200
+        var hasMore = resolveHistoryHasMore(detail.hasMore, messages.size)
         val cursors = mutableSetOf<String>()
         while (target != null && messages.none(target::matches) && hasMore) {
             val before = messages.firstOrNull()?.id ?: break
             check(cursors.add(before)) { "Could not locate the original answer. Please try again." }
-            val page = client.get("${base()}/chat/sessions/$sessionId/messages") {
-                authorize(); parameter("limit", 200); parameter("before", before)
-            }
-            if (!page.status.isSuccess()) throw failure(page.status, page.bodyAsText())
-            val body = chatJson.parseToJsonElement(page.bodyAsText()).jsonObject
-            val rows = chatJson.decodeFromJsonElement(
-                kotlinx.serialization.builtins.ListSerializer(ChatMessageDto.serializer()), body.getValue("messages"),
-            )
-            messages = rows + messages
-            hasMore = body["has_more"]?.jsonPrimitive?.content == "true" && rows.isNotEmpty()
+            val page = olderMessages(sessionId, before, CHAT_EMBEDDED_HISTORY_LIMIT)
+            messages = page.messages + messages
+            hasMore = page.hasMore
         }
-        return metadata to coalesceTaskStatusMessages(
-            messages.mapIndexed { index, dto -> dto.project(index).copy(linkedAnswerTarget = target?.matches(dto) == true) },
+        val oldest = messages.firstOrNull()?.id
+        return ChatConversation(
+            summary = metadata,
+            messages = coalesceTaskStatusMessages(
+                messages.mapIndexed { index, dto -> dto.project(index).copy(linkedAnswerTarget = target?.matches(dto) == true) },
+            ),
+            turnState = ChatTurnStateReport.from(root, metadata.id.ifBlank { sessionId }),
+            // Without a cursor there is nothing to page from.
+            hasMore = hasMore && oldest != null,
+            oldestMessageId = oldest,
         )
+    }
+
+    /** One page of messages older than [before], oldest first. */
+    suspend fun olderMessages(sessionId: String, before: String, limit: Int = CHAT_OLDER_PAGE_LIMIT): OlderMessagesPage {
+        val page = client.get("${base()}/chat/sessions/$sessionId/messages") {
+            authorize(); parameter("limit", limit); parameter("before", before)
+        }
+        val body = page.bodyAsText()
+        if (!page.status.isSuccess()) throw failure(page.status, body)
+        return parseOlderMessagesPage(body, limit)
     }
 
     /** Remove the transcript while preserving the session itself. */
@@ -415,23 +486,16 @@ class ChatRepository internal constructor(
         chatJson.decodeFromString(ReferenceCatalogResponse.serializer(), response.bodyAsText())
     }.getOrDefault(ReferenceCatalogResponse())
 
-    /**
-     * Profiles the composer can pick between.
-     *
-     * Empty on failure rather than throwing: a missing profile list should hide
-     * a selector, not block the conversation.
-     */
-    suspend fun profiles(): List<ChatProfile> = runCatching {
-        val response = client.get("${base()}/chat/profiles") { authorize() }
-        if (!response.status.isSuccess()) return emptyList()
-        val body = response.bodyAsText()
-        runCatching { chatJson.decodeFromString(ChatProfileList.serializer(), body).all() }
-            .getOrElse {
-                chatJson.decodeFromString(
-                    kotlinx.serialization.builtins.ListSerializer(ChatProfile.serializer()), body,
-                )
-            }
-    }.getOrDefault(emptyList())
+    /** An unavailable catalog is explicit; it never resets a saved choice. */
+    suspend fun models(engine: String): ChatModelCatalog {
+        require(engine in setOf("magician", "pi"))
+        val response = client.get("${base()}/chat/models") {
+            authorize()
+            parameter("engine", engine)
+        }
+        check(response.status.isSuccess()) { "Model choices could not be loaded." }
+        return chatJson.decodeFromString(ChatModelCatalog.serializer(), response.bodyAsText())
+    }
 
     /**
      * The engine roster with the run engine it names (`current`, `run_model`),
@@ -474,6 +538,18 @@ class ChatRepository internal constructor(
     }.getOrDefault(emptyList())
 
     /** Sessions, newest first — what the history panel lists. */
+    suspend fun workingSessionIds(ids: Set<String>): Set<String> {
+        if (ids.isEmpty()) return emptySet()
+        val response = client.get("${base()}/chat/activity") {
+            authorize()
+            parameter("session_ids", ids.joinToString(","))
+            timeout { requestTimeoutMillis = 5_000 }
+        }
+        val body = response.bodyAsText()
+        if (!response.status.isSuccess()) throw failure(response.status, body)
+        return chatJson.decodeFromString(SessionActivityResponse.serializer(), body).workingSessionIds.toSet().intersect(ids)
+    }
+
     suspend fun sessions(): List<SessionSummary> {
         val response = client.get("${base()}/chat/sessions") { authorize() }
         if (!response.status.isSuccess()) throw failure(response.status, response.bodyAsText())
@@ -618,12 +694,23 @@ class ChatRepository internal constructor(
             authorize()
             contentType(ContentType.Application.Json)
             setBody(buildJsonObject { put("archived", archived) }.toString())
+            // Archiving walks every session on the thread.
+            timeout {
+                requestTimeoutMillis = 600_000
+                socketTimeoutMillis = 600_000
+            }
         }
         if (!response.status.isSuccess()) throw failure(response.status, response.bodyAsText())
     }
 
     suspend fun deleteThread(threadId: String) {
-        val response = client.delete("${base()}/ui-threads/${encoded(threadId)}") { authorize() }
+        val response = client.delete("${base()}/ui-threads/${encoded(threadId)}") {
+            authorize()
+            timeout {
+                requestTimeoutMillis = 600_000
+                socketTimeoutMillis = 600_000
+            }
+        }
         if (!response.status.isSuccess()) throw failure(response.status, response.bodyAsText())
     }
 
@@ -638,7 +725,7 @@ class ChatRepository internal constructor(
         text: String,
         /** Stable correlation owned by the caller before either stream starts. */
         chatTurnId: String,
-        profile: String? = null,
+        modelSelection: ChatModelSelection? = null,
         harnessEngine: String? = null,
         harnessModel: String? = null,
         attachmentIds: List<String> = emptyList(),
@@ -661,9 +748,9 @@ class ChatRepository internal constructor(
                 text = text,
                 chatTurnId = chatTurnId,
                 sourceSurface = sourceSurface,
-                profile = profile?.takeIf { it.isNotBlank() },
+                modelSelection = modelSelection,
                 harnessEngine = harnessEngine,
-                harnessModel = harnessModel,
+                harnessModel = harnessModel.takeUnless { modelSelection != null },
                 attachmentIds = attachmentIds,
                 voiceOrigin = voiceOrigin,
                 continueOnDisconnect = true,
@@ -706,8 +793,9 @@ class ChatRepository internal constructor(
                     }
                 }
             }
-            // A socket that ends without `done` must not leave the bubble spinning.
-            emit(ChatStreamEvent.Done())
+            // A socket that ends without `done` must not leave the bubble
+            // spinning. Marked dropped: the turn may still be running there.
+            emit(ChatStreamEvent.Done(dropped = true))
         }
     }
 
@@ -914,17 +1002,6 @@ class ChatRepository internal constructor(
         )
     }
 
-    /** Authenticated, scoped status; no inventory scans or database reads. */
-    suspend fun storageMaintenance(): List<StorageMaintenanceStatus> {
-        val response = client.get("${base()}/storage/maintenance") {
-            authorize()
-            timeout { requestTimeoutMillis = 8_000 }
-        }
-        val body = response.bodyAsText()
-        if (!response.status.isSuccess()) throw failure(response.status, body)
-        return chatJson.decodeFromString<List<StorageMaintenanceStatus>>(body)
-    }
-
     /** Release this repository's sockets when a short-lived settings surface leaves. */
     fun close() = client.close()
 
@@ -1017,12 +1094,3 @@ internal fun serviceHealthMessage(error: Throwable): String {
  * comfortably covers any turn a phone screen will summarise into steps.
  */
 private const val TURN_EVENTS_LIMIT = 200
-
-
-@kotlinx.serialization.Serializable
-data class StorageMaintenanceStatus(
-    val database: String,
-    val state: String,
-    val message: String,
-    val last_success_at_ms: Long? = null,
-)

@@ -4,7 +4,7 @@ use crate::magician_v2::decision_host::{
     classification::{Participation, PolicyLookup},
 };
 use decision_engine_contract::{
-    batch::{BatchRequest, ClassificationMode, DecisionItem},
+    batch::{BatchRequest, ClassificationMode, DecisionItem, ItemStatus},
     request::{Answer, DecisionState},
     DecideRequest, CONTRACT_VERSION,
 };
@@ -58,6 +58,12 @@ pub struct Outcome<T> {
     pub incumbent: Option<T>,
     /// Only engine-authorized items; uncertain gated items stay unresolved.
     pub answers: BTreeMap<String, BTreeMap<String, Answer>>,
+    /// Items the gate authority answered (every required question) without
+    /// any answer clearing its eligibility gate: the engine considered the
+    /// item and abstained. Transient failures (timeout, admission refusal,
+    /// failed or unstarted items, an unavailable engine) are never listed, so
+    /// an owner may remember an abstention but must retry everything else.
+    pub abstained: BTreeSet<String>,
     pub origins: BTreeMap<String, decision_engine_contract::classification::ClassificationOrigin>,
     pub authority: Option<Participation>,
     pub observation: Option<telemetry::Observation>,
@@ -72,6 +78,19 @@ impl<T> Outcome<T> {
             self.answers.clone()
         } else {
             BTreeMap::new()
+        }
+    }
+
+    /// [`Outcome::abstained`] while the authority that produced it is current.
+    pub fn current_abstentions(&self) -> BTreeSet<String> {
+        if self
+            .authority
+            .as_ref()
+            .is_some_and(Participation::is_current)
+        {
+            self.abstained.clone()
+        } else {
+            BTreeSet::new()
         }
     }
 }
@@ -137,6 +156,7 @@ fn request(input: &Input, mode: ClassificationMode) -> DecideRequest {
             context: input.context.clone(),
             items: input.items.clone(),
         },
+        assets: Default::default(),
     }
 }
 fn within_bounds(input: &Input, participation: &Participation) -> bool {
@@ -262,6 +282,7 @@ where
         return Outcome {
             incumbent,
             answers: BTreeMap::new(),
+            abstained: BTreeSet::new(),
             origins: BTreeMap::new(),
             authority: None,
             observation: None,
@@ -293,7 +314,7 @@ where
             telemetry::record(
                 &input,
                 &participation,
-                result.as_ref().ok(),
+                result.as_ref(),
                 observed
                     .as_ref()
                     .and_then(|(reference, _): &(Option<Reference>, u64)| reference.clone()),
@@ -301,6 +322,7 @@ where
                 "shadow",
                 true,
                 observed.map(|(_, elapsed)| elapsed),
+                budget,
             );
         });
         let incumbent = tokio::time::timeout_at(deadline, Box::pin(incumbent(all, total)))
@@ -314,6 +336,7 @@ where
         return Outcome {
             incumbent,
             answers: BTreeMap::new(),
+            abstained: BTreeSet::new(),
             origins: BTreeMap::new(),
             authority: None,
             observation: None,
@@ -342,6 +365,7 @@ where
         )
         .await;
     let mut answers = BTreeMap::new();
+    let mut abstained = BTreeSet::new();
     let mut origins = BTreeMap::new();
     // The model budget may exceed the short discovery TTL. Refresh the same
     // authority before consuming a slow successful reply; never adopt a new one.
@@ -386,6 +410,18 @@ where
                                 .collect(),
                         );
                     }
+                } else if !input.required_questions.is_empty()
+                    && item.status == ItemStatus::Answered
+                    && item.response.as_ref().is_some_and(|response| {
+                        input.required_questions.iter().all(|q| {
+                            response
+                                .answers
+                                .keys()
+                                .any(|answered| answered.as_str() == q.as_str())
+                        })
+                    })
+                {
+                    abstained.insert(item.item_id.clone());
                 }
             }
         }
@@ -394,23 +430,25 @@ where
     // retains its deterministic/no-mutation behavior for unresolved items.
     let reference_attempted = false;
     let incumbent = None;
-    if !answers.is_empty() && !participation.is_current() {
+    if (!answers.is_empty() || !abstained.is_empty()) && !participation.is_current() {
         let current = tokio::time::timeout_at(deadline, participation.revalidate())
             .await
             .unwrap_or(false);
         if !current {
             answers.clear();
+            abstained.clear();
         }
     }
     let observation = telemetry::record(
         &input,
         &participation,
-        result.as_ref().ok(),
+        result.as_ref(),
         incumbent.as_ref().map(labels),
         started.elapsed(),
         "gate",
         reference_attempted,
         Some(started.elapsed().as_millis() as u64),
+        budget,
     );
     match input.replay.take() {
         Some(Ok(replay)) => {
@@ -429,6 +467,7 @@ where
     Outcome {
         incumbent,
         answers,
+        abstained,
         origins,
         authority: Some(participation),
         observation: Some(observation),

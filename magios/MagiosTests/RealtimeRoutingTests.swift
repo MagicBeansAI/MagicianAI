@@ -39,7 +39,7 @@ final class RealtimeRoutingTests: XCTestCase {
     // MARK: - Event classifiers (gate the debounced reload)
 
     func testIsTaskEventClassifier() {
-        let vm = TasksViewModel(session: makeMockSession())
+        let vm = TasksViewModel(session: makeMockSession(chatCatalogFixture: true))
         XCTAssertTrue(vm.isTaskEvent(#"{"event_type":"TaskUpdated"}"#))
         // Archive and delete announce `TaskDeleted`; the list re-reads on it.
         XCTAssertTrue(vm.isTaskEvent(#"{"event_type":"TaskDeleted"}"#))
@@ -52,7 +52,7 @@ final class RealtimeRoutingTests: XCTestCase {
     }
 
     func testIsHitlEventClassifier() {
-        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let vm = AttentionViewModel(networkSession: makeMockSession(chatCatalogFixture: true))
         XCTAssertTrue(vm.isHitlEvent(#"{"event_type":"HitlRequested"}"#))
         XCTAssertTrue(vm.isHitlEvent(#"{"event_type":"HitlResolved"}"#))
         XCTAssertTrue(vm.isHitlEvent(#"{"event_type":"UserRequestCreated"}"#))
@@ -65,7 +65,7 @@ final class RealtimeRoutingTests: XCTestCase {
     /// `.string` drops the binary ones, and a dropped attention event is
     /// indistinguishable from a quiet inbox.
     func testRealtimeFrameFlattensBinaryAndTextIdentically() {
-        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let vm = AttentionViewModel(networkSession: makeMockSession(chatCatalogFixture: true))
         let payload = #"{"event_type":"HitlRequested"}"#
 
         let fromText = AttentionViewModel.realtimeText(from: .string(payload))
@@ -91,7 +91,7 @@ final class RealtimeRoutingTests: XCTestCase {
 
     private var defaultsSuites: [String] = []
 
-    private func chat(networkSession: URLSession = makeMockSession()) -> ChatViewModel {
+    private func chat(networkSession: URLSession = makeMockSession(chatCatalogFixture: true)) -> ChatViewModel {
         let suite = "RealtimeRoutingTests-\(UUID().uuidString)"
         defaultsSuites.append(suite)
         let m = ChatViewModel(
@@ -168,6 +168,7 @@ final class RealtimeRoutingTests: XCTestCase {
             }
             return (response(for: req), jsonData([:]))
         }
+        prepareChatModelCatalog(m)
         m.sendMessage("Identical text")
         waitUntil { turnID != nil }
         m.handleIncomingJSON(textEvent(id: "own-canonical", direction: "user", turn: turnID, text: "Identical text"))
@@ -187,6 +188,7 @@ final class RealtimeRoutingTests: XCTestCase {
             }
             return (response(for: req), jsonData([:]))
         }
+        prepareChatModelCatalog(m)
         m.sendMessage("hi")
         waitUntil(timeout: 5) { m.messages.last?.text == "Streamed" }
         m.handleIncomingJSON(textEvent(id: "own-answer", turn: turnID, text: "Streamed"))
@@ -221,7 +223,7 @@ final class RealtimeRoutingTests: XCTestCase {
 
     func testOldStreamCannotChangeReplacementConversationEvenWhenReopeningSameSession() {
         for selected in ["s2", "s1"] {
-            let m = chat(networkSession: makeDeferredMockSession())
+            let m = chat(networkSession: makeDeferredMockSession(chatCatalogFixture: true))
             var pending: [String: (URLRequest, (DeferredMockURLProtocol.ResultValue) -> Void)] = [:]
             DeferredMockURLProtocol.handler = { req, finish in
                 if req.url?.path.hasSuffix("/messages/stream") == true {
@@ -231,9 +233,11 @@ final class RealtimeRoutingTests: XCTestCase {
                     finish(.success((response(for: req), jsonData([:]))))
                 }
             }
+            prepareChatModelCatalog(m)
             m.sendMessage("old")
             waitUntil { pending["old"] != nil }
             m.startNewSession(selected)
+            prepareChatModelCatalog(m)
             m.sendMessage("new")
             waitUntil { pending["new"] != nil }
 
@@ -491,6 +495,7 @@ final class RealtimeRoutingTests: XCTestCase {
             }
             return (response(for: req), Data("{}".utf8))
         }
+        prepareChatModelCatalog(m)
         m.sendMessage("hello", viaVoice: true)
         wait(for: [exp], timeout: 3)
         XCTAssertEqual(m.messages.first(where: { $0.isUser })?.voiceOrigin, true)   // user echo badged

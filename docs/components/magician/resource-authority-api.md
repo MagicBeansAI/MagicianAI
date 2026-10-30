@@ -22,6 +22,18 @@ panic the handler and cannot invert `admit`'s ledger-then-ceilings lock order.
 drop so commit/rollback is a recovery handoff. Commit or rollback of any stacked
 member settles the whole `batch_id` group.
 
+## Model spend
+
+Model spend limits (`resource_authority.model_spend`) are enforced in memory by
+the spend envelope, not by reserve/commit. Every 15 minutes and at shutdown it
+posts each scope's spend to the ledger as a reserve plus metered commit against
+the config token `cfg-model-window-USD` (issued to `model:*`; ceiling = window
+limit, period = window; zero and `total` when unlimited). Top-ups credit it with
+a `period_refill`. The owner edits limits via `/budgets/defaults` and
+`/budgets/envelope`, and action limits (`budgets` rows) via `/budgets/limits`,
+with an owner session or paired phone, not this API's key
+(design).
+
 ## Authentication
 
 Every endpoint is gated by `ApiAuth::extract`, which reads the
@@ -29,9 +41,14 @@ Every endpoint is gated by `ApiAuth::extract`, which reads the
 
 - **Unset** → the API runs in open ("anonymous") mode. Intended for local
   development only.
-- **Set** → each request must present the key, either as
-  `Authorization: Bearer <key>` or as a `?token=<key>` query parameter. The key
-  is compared in constant time; a missing or mismatched key returns `401`.
+- **Set** → a request presents the key in `X-Resource-Authority-Key: <key>`
+  (a bare `Authorization: Bearer <key>` is still read for older clients). The
+  API's sign-in gate runs first, so a browser keeps its session bearer in
+  `Authorization` and sends the key beside it. The key is compared in
+  constant time; a missing or mismatched key returns `401`.
+- **Owner reads** → a signed-in owner session may `GET`/`HEAD` without the key
+  (the Spend ledger page, `/budget`). Every change (freeze, fund, revoke,
+  close) still needs the key.
 
 This key gates **only** the resource-authority admin API. It is not an
 authentication layer for the general magician API — do not treat it as one.
@@ -39,8 +56,9 @@ authentication layer for the general magician API — do not treat it as one.
 ## Uniform enforcement
 
 All resource-authority endpoints — reads and mutations alike — call
-`ApiAuth::extract` before any work, so the billing plane cannot be read or
-mutated without the key when it is configured. That includes secondary
+`ApiAuth::extract` before any work, so the billing plane cannot be mutated
+without the key, or read without the key or an owner session, when the key is
+configured. That includes secondary
 mutations (`delete_ceiling`, `revoke_token`, `commit_reservation`,
 `rollback_reservation`) and every financial read (`list_ceilings`,
 `list_tokens`, `get_token`, `query_ledger`, `ledger_balances`, `ledger_audit`,

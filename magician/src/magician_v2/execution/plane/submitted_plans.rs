@@ -47,11 +47,11 @@ pub(crate) fn tool_entry() -> Value {
     json!({
         "name": SUBMIT_PLAN_TOOL,
         "description": "Optional. Hand Magician a sequence of tool calls to run after this turn, \
-without another turn of yours between steps. Use it only when you already know every step and its \
-arguments (no step needs an earlier step's result); otherwise call the tools yourself. After \
-submitting, end your turn: Magician runs the steps in order, each checked by the Decision Engine, \
-and gives you a new turn when the plan finishes, a step fails or no longer fits, or the run is \
-steered. Tool calls after submitting are refused.",
+    without another turn of yours between steps. Use it only when you already know every step and its \
+    arguments (no step needs an earlier step's result); otherwise call the tools yourself. After \
+    submitting, end your turn: Magician runs the steps in order, each checked by the Decision Engine, \
+    and gives you a new turn when the plan finishes, a step fails or no longer fits, or the run is \
+    steered. Tool calls after submitting are refused.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -94,7 +94,10 @@ pub(crate) fn submit(grant: &PlaneGrant, arguments: &Value) -> Result<String, St
         .into_iter()
         .filter_map(|entry| {
             let name = entry.get("name").and_then(Value::as_str)?.to_string();
-            Some((name, entry.get("inputSchema").cloned().unwrap_or(Value::Null)))
+            Some((
+                name,
+                entry.get("inputSchema").cloned().unwrap_or(Value::Null),
+            ))
         })
         .collect();
     for (index, (tool, arguments, _)) in steps.iter_mut().enumerate() {
@@ -241,10 +244,16 @@ mod tests {
     fn only_an_agent_runs_harness_turn_qualifies_for_submit_plan() {
         assert!(agent_run_harness_turn(&run_grant("exec-offer")));
         let terminal = PlaneGrant::for_test("exec-terminal");
-        assert!(!agent_run_harness_turn(&terminal), "terminal grants are no harness turn");
+        assert!(
+            !agent_run_harness_turn(&terminal),
+            "terminal grants are no harness turn"
+        );
         let mut chat = run_grant("exec-chat");
         chat.turn_ledger = Some(Default::default());
-        assert!(!agent_run_harness_turn(&chat), "a chat harness turn has no loop to run a plan in");
+        assert!(
+            !agent_run_harness_turn(&chat),
+            "a chat harness turn has no loop to run a plan in"
+        );
         assert_eq!(tool_entry()["name"], SUBMIT_PLAN_TOOL);
     }
 
@@ -289,7 +298,10 @@ mod tests {
             &json!({"steps": [{"tool": "send_note", "arguments": {"to": "a@x.com", "inbox_id": "me"}}]}),
         )
         .expect_err("an undeclared key");
-        assert!(extra.contains("step 1") && extra.contains("not accepted: inbox_id"), "{extra}");
+        assert!(
+            extra.contains("step 1") && extra.contains("not accepted: inbox_id"),
+            "{extra}"
+        );
         let missing = submit(
             &grant,
             &json!({"steps": [{"tool": "send_note", "arguments": {"text": "hi"}}]}),
@@ -320,11 +332,20 @@ mod tests {
         assert!(pending(&grant));
         let plan = take(&grant.session_id).expect("the plan");
         assert_eq!(
-            plan.steps.iter().map(|s| (s.id.as_str(), s.call.tool.as_str())).collect::<Vec<_>>(),
-            vec![("plan-step-1", "read_file"), ("plan-step-2", "agentmail-send")],
+            plan.steps
+                .iter()
+                .map(|s| (s.id.as_str(), s.call.tool.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("plan-step-1", "read_file"),
+                ("plan-step-2", "agentmail-send")
+            ],
             "the MCP server prefix a CLI shows its model is stripped"
         );
-        assert!(!pending(&grant) && take(&grant.session_id).is_none(), "taken once");
+        assert!(
+            !pending(&grant) && take(&grant.session_id).is_none(),
+            "taken once"
+        );
 
         assert!(submit(&grant, &json!({"steps": []})).is_err());
         assert!(!pending(&grant), "a malformed plan records nothing");
@@ -340,7 +361,10 @@ mod tests {
             &json!({"steps": [{"tool": "shell", "arguments": {"cmd": "ls"}}]}),
         )
         .expect_err("an unlisted tool");
-        assert!(error.contains("`shell` is not one of your tools"), "{error}");
+        assert!(
+            error.contains("`shell` is not one of your tools"),
+            "{error}"
+        );
         assert!(!pending(&grant));
     }
 

@@ -19,7 +19,7 @@ tempfile = "3"
 futures = "0.3"
 decision-engine-contract = { path = "../decision-engine-contract" }
 magician-decision = { path = "../magician-decision", features = ["onnx"] }
-actix-web = { version = "4.4", features = ["rustls"] }
+actix-web = { workspace = true }
 dotenvy = "0.15"
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

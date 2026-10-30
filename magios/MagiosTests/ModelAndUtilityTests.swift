@@ -4,6 +4,141 @@ import UIKit
 @testable import Magician
 
 final class ModelAndUtilityTests: XCTestCase {
+    func testTaskSummarySeparatesVerificationAndRendersHTMLDocumentAsMarkdown() {
+        let summary = """
+        > ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: The evidence reviewer was unavailable.
+
+        ```html
+        <h1>Morning briefing &mdash; incomplete</h1><p><strong>No validated summary.</strong></p><h2>Findings</h2><ul><li>All 9 agents were idle.</li><li>No <code>daily_ops.md</code> state.</li></ul><script>alert('no')</script>
+        ```
+        """
+        let display = AnswerVerificationDisplay.split(summary)
+        XCTAssertNotNil(display.verification)
+        XCTAssertFalse(display.body.contains("Not fully verified"))
+        let markdown = TaskSummaryMarkdown.display(display.body)
+        XCTAssertTrue(markdown.hasPrefix("# Morning briefing — incomplete"))
+        XCTAssertTrue(markdown.contains("**No validated summary.**"))
+        XCTAssertTrue(markdown.contains("\n\n## Findings\n\n"))
+        XCTAssertTrue(markdown.contains("- All 9 agents were idle."))
+        XCTAssertTrue(markdown.contains("`daily_ops.md`"))
+        XCTAssertFalse(markdown.contains("<h1>") || markdown.contains("alert("))
+        let example = "Use this example:\n\n```html\n<h1>Keep this code</h1>\n```"
+        XCTAssertEqual(TaskSummaryMarkdown.display(example), example)
+    }
+
+    func testModelCatalogPreservesNativeThinkingChoicesAndLegacySelections() throws {
+        let data = Data(#"""
+        {"name":"old-saved-profile","model":"gpt-6.1-sol",
+         "model_selection":{"model_id":"openai/sol","thinking":"high"},
+         "model_choice":{"id":"openai/sol","provider":"openai","connection":"openai",
+           "model":"gpt-6.1-sol","label":"GPT Sol","limits":null,
+           "thinking":{"mode":"effort","levels":["low","medium","high"],"default":"medium"},
+           "operation_choices":{"auto":"opaque-initial"},
+           "choices":{"auto":"opaque-auto","high":"opaque-high"}}}
+        """#.utf8)
+        let profile = try JSONDecoder().decode(ChatProfile.self, from: data)
+        XCTAssertEqual(profile.modelSelection?.modelId, "openai/sol")
+        XCTAssertEqual(profile.modelSelection?.thinking, "high")
+        XCTAssertEqual(profile.modelChoice?.choices["high"], "opaque-high")
+        XCTAssertNil(profile.modelChoice?.choices["none"])
+        XCTAssertNil(profile.modelChoice?.limits)
+        XCTAssertEqual(profile.modelChoice?.operationChoices?["auto"], "opaque-initial")
+        XCTAssertEqual(ChatThinkingControl.label("xhigh"), "Extra high")
+        let legacy = try JSONDecoder().decode(ChatProfile.self, from: Data(#"{"name":"legacy","model":"old"}"#.utf8))
+        XCTAssertNil(legacy.modelSelection)
+        XCTAssertNil(legacy.modelChoice)
+        let coding = try JSONDecoder().decode(VibeDevCodingProfile.self, from: Data(#"""
+        {"id":"saved-coding","engine":"pi","model_selection":{"model_id":"openai/sol","thinking":"high"},
+         "model_choice":{"id":"openai/sol","provider":"openai","connection":"openai","model":"gpt-6.1-sol","label":"GPT Sol",
+         "thinking":{"mode":"effort","levels":["low","medium","high"],"default":"medium"},
+         "choices":{"auto":"opaque-coding-auto","high":"opaque-coding-high"}}}
+        """#.utf8))
+        XCTAssertEqual(coding.modelSelection?.thinking, "high")
+        XCTAssertEqual(coding.modelChoice?.choices["high"], "opaque-coding-high")
+
+        let autoRow = try JSONDecoder().decode(ChatProfile.self, from: Data(String(data: data, encoding: .utf8)!
+            .replacingOccurrences(of: "old-saved-profile", with: "opaque-auto").utf8))
+        let highRow = try JSONDecoder().decode(ChatProfile.self, from: Data(#"{"name":"opaque-high","model_selection":{"model_id":"openai/sol","thinking":"high"}}"#.utf8))
+        let migrated = ChatModelPreference.resolve(profiles: [profile, autoRow, highRow], legacyID: profile.name, saved: nil)
+        XCTAssertEqual(migrated.route, "opaque-high")
+        XCTAssertEqual(migrated.selection, profile.modelSelection)
+        XCTAssertNil(migrated.issue)
+        let restored = ChatModelPreference.resolve(profiles: [autoRow, highRow], legacyID: "", saved: migrated.selection)
+        XCTAssertEqual(restored.route, "opaque-high")
+        XCTAssertNil(restored.issue)
+        let unavailable = ChatModelPreference.resolve(profiles: [autoRow], legacyID: "opaque-auto", saved: migrated.selection)
+        XCTAssertEqual(unavailable.route, ChatModelPreference.unavailableRoute)
+        XCTAssertEqual(unavailable.selection, migrated.selection)
+        XCTAssertNotNil(unavailable.issue)
+        XCTAssertEqual(ChatModelPreference.resolve(profiles: [autoRow], legacyID: "retired-unknown", saved: nil).route, "retired-unknown")
+
+        // A client returning for the first time after server alias retirement.
+        let nativeChoice = try JSONDecoder().decode(ChatProfile.self, from: Data(#"""
+        {"name":"new-auto","model_choice":{"id":"openai/gpt-6.1-sol","provider":"openai","connection":"openai",
+        "model":"gpt-6.1-sol","label":"GPT Sol","thinking":{"mode":"effort","levels":["low","high"]},
+        "choices":{"auto":"new-auto","high":"new-high"}}}
+        """#.utf8))
+        let nativeHigh = try JSONDecoder().decode(ChatProfile.self, from: Data(#"{"name":"new-high"}"#.utf8))
+        let oldID = "chat-gpt61sol-responses-vision-toolsauto-thinking"
+        let offline = ChatModelPreference.resolve(profiles: [nativeChoice, nativeHigh], legacyID: oldID, saved: nil)
+        XCTAssertEqual(offline.route, "new-high")
+        XCTAssertEqual(offline.selection, ChatModelSelection(modelId: "openai/gpt-6.1-sol", thinking: "high"))
+        XCTAssertNil(offline.issue)
+        let typedWins = ChatModelPreference.resolve(profiles: [nativeChoice, nativeHigh], legacyID: oldID,
+            saved: ChatModelSelection(modelId: "openai/gpt-6.1-sol", thinking: "auto"))
+        XCTAssertEqual(typedWins.route, "new-auto")
+        XCTAssertEqual(ChatModelPreference.resolve(profiles: [nativeChoice], legacyID: oldID, saved: nil).route,
+            ChatModelPreference.unavailableRoute)
+        XCTAssertNil(LegacyLlmSelections.chatSelection(for: "op-embedding-local"))
+        XCTAssertEqual(LegacyLlmSelections.chatSelection(for: "chat-dsv4-flash-messages-toolsauto-rnone")?.thinking, "none")
+        XCTAssertEqual(LegacyLlmSelections.chatSelection(for: "chat-anthropic-adaptive-frontier")?.thinking, "auto")
+
+        let catalog = try JSONDecoder().decode(ChatModelCatalog.self, from: Data(#"""
+        {"models":[{"id":"openai/gpt-6.1-sol","model":"gpt-6.1-sol","provider":"openai","connection":"openai","label":"Sol",
+        "capabilities":{"vision":true},"thinking":{"mode":"effort","levels":["low","high"],"default":"low"},
+        "choices":{"auto":"new-auto","high":"new-high"}}],"default_selection":{"model_id":"openai/gpt-6.1-sol","thinking":"auto"}}
+        """#.utf8))
+        XCTAssertEqual(catalog.rows.filter { $0.isDefault == true }.map(\.name), ["new-auto"])
+        XCTAssertTrue(catalog.rows.allSatisfy { $0.supportsUserImageInputs == true })
+        let exact = ChatModelSelection(modelId: "openai/gpt-6.1-sol", thinking: "high")
+        for engine in ["magician", "pi"] {
+            let fields = try XCTUnwrap(ChatModelPreference.requestFields(selection: exact, engine: engine, nativeModel: "stale-native-model"))
+            XCTAssertEqual(fields["model_selection"] as? [String: String], exact.wireValue)
+            XCTAssertNil(fields["profile"])
+            XCTAssertNil(fields["harness_model"])
+        }
+        XCTAssertNil(ChatModelPreference.requestFields(selection: nil, engine: "magician", nativeModel: "default"))
+        let native = ChatModelPreference.requestFields(selection: exact, engine: "claude_code", nativeModel: "claude-opus-5")
+        XCTAssertEqual(native?["harness_model"] as? String, "claude-opus-5")
+        XCTAssertNil(native?["model_selection"])
+    }
+
+    func testComposerChipThinkingLabelMatchesWebRuleAndMapping() {
+        let expected = ["auto": "Auto", "none": "Off", "on": "On", "minimal": "Minimal", "low": "Low",
+                        "medium": "Medium", "high": "High", "xhigh": "Extra high", "max": "Max", "ultra": "Ultra"]
+        for (level, label) in expected { XCTAssertEqual(ChatThinkingControl.label(level), label) }
+        XCTAssertEqual(ChatThinkingControl.label("turbo"), "turbo")
+
+        let effort = ChatModelChoice(id: "openai/sol", provider: "openai", connection: "openai", model: "gpt-6.1-sol", label: "GPT Sol",
+            thinking: ChatThinkingControl(mode: "effort", levels: ["low", "high"], defaultLevel: nil), choices: ["auto": "a", "high": "h"], limits: nil)
+        let flat = ChatModelChoice(id: "local/flat", provider: "ollama", connection: "ollama", model: "flat", label: "Flat",
+            thinking: ChatThinkingControl(mode: "none", levels: [], defaultLevel: nil), choices: ["none": "n"], limits: nil)
+        let high = ChatModelSelection(modelId: effort.id, thinking: "high")
+        XCTAssertEqual(ChatThinkingControl.chatChipLabel(engine: "magician", model: effort, selection: high), "High")
+        XCTAssertEqual(ChatThinkingControl.chatChipLabel(engine: "pi", model: effort, selection: high), "High")
+        XCTAssertEqual(ChatThinkingControl.chatChipLabel(engine: "magician", model: effort, selection: nil), "Auto")
+        XCTAssertNil(ChatThinkingControl.chatChipLabel(engine: "claude_code", model: effort, selection: high))
+        XCTAssertNil(ChatThinkingControl.chatChipLabel(engine: "magician", model: flat, selection: ChatModelSelection(modelId: flat.id, thinking: "none")))
+        XCTAssertNil(ChatThinkingControl.chatChipLabel(engine: "magician", model: nil, selection: high))
+        // VibeDev's coding chip has no engine gate, only the model rule.
+        XCTAssertEqual(ChatThinkingControl.chipLabel(model: effort, selection: ChatModelSelection(modelId: effort.id, thinking: "xhigh")), "Extra high")
+        XCTAssertNil(ChatThinkingControl.chipLabel(model: flat, selection: nil))
+        XCTAssertEqual(ChatThinkingControl.chipAccessibilityLabel("Chat engine: magician; model: gpt-6.1-sol", thinking: "High"),
+                       "Chat engine: magician; model: gpt-6.1-sol, thinking: High")
+        XCTAssertEqual(ChatThinkingControl.chipAccessibilityLabel("Chat engine: codex; model: default", thinking: nil),
+                       "Chat engine: codex; model: default")
+    }
+
     func testGeneratedProductIdentityStaysPresentationOnly() {
         XCTAssertEqual(ProductIdentity.productName.trimmingCharacters(in: .whitespacesAndNewlines), ProductIdentity.productName)
         XCTAssertEqual(ProductIdentity.hostAppName.trimmingCharacters(in: .whitespacesAndNewlines), ProductIdentity.hostAppName)
@@ -21,30 +156,6 @@ final class ModelAndUtilityTests: XCTestCase {
             .lowercased()
             .contains("magician")
         )
-    }
-
-    func testRoadmapContainsOnlyEvidenceBackedPendingCapabilities() {
-        XCTAssertEqual(
-            RoadmapCatalog.pending.map(\.name),
-            [
-                "Screenshot + dictation Shortcut / Action Button flow",
-                "Inline visual confirmations in Siri",
-                "Agent-assisted negotiation from messaging apps",
-                "Camera or sketch handoff to VibeDev",
-                "Screen-broadcast App Copilot guidance"
-            ]
-        )
-
-        let shippedOrSuperseded = [
-            "Apple Reminders from Worth a look",
-            "Dynamic Island Task Tracking",
-            "Action Extension (Text Interceptor)",
-            "Custom Keyboard (Ghost Writer)",
-            "Shadow Meeting (Audio Interception)",
-            "Screen Broadcast Extension (ReplayKit)",
-            "QR setup for a Magician endpoint"
-        ]
-        XCTAssertTrue(Set(RoadmapCatalog.pending.map(\.name)).isDisjoint(with: Set(shippedOrSuperseded)))
     }
 
     func testAtAGlancePrioritizesNeedsYouAndBoundsLockScreenCopy() throws {
@@ -357,6 +468,12 @@ final class ModelAndUtilityTests: XCTestCase {
         XCTAssertTrue(result.contains("Bold and link with code"))
         XCTAssertFalse(result.contains("hidden"))
         XCTAssertFalse(result.contains("**"))
+    }
+
+    func testSpeechKeepsFindingsBeforeQualificationWithoutCriticText() {
+        let input = "⚠️ Not fully verified. Magician's evidence check could not confirm part of this answer: disputed 999999\n\n<speech>Found 18 comparable launches.</speech>"
+        XCTAssertEqual(SpeechSynthesizer.spokenReplyText(input), "Found 18 comparable launches. Some findings remain unverified.")
+        XCTAssertEqual(SpeechSynthesizer.spokenReplyText("⚠️ Not fully verified. Useful findings."), "Useful findings. Some findings remain unverified.")
     }
 
     func testArtifactRoutingCoversSupportedTypes() {

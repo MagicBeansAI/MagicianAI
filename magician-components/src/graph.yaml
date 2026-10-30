@@ -54,7 +54,7 @@ components:
     required: true
     provides: []
     requires: []
-    cost: "Installs the pinned Node runtime, Python packages, and skill executables. No account login or paid calls. Releases include the generated tools."
+    cost: "Installs the pinned Node runtime, Python packages, and skill executables. No account login or paid calls. Releases include pinned native tools; remote MCP accounts are configured separately."
     install: { kind: make, target: setup-skill-runtime, script: setup-skill-runtime.sh }
     probe: { kind: file_inventory, path: "{data_root}/system/skillshub/.runtime/skills.yaml" }
 
@@ -281,7 +281,7 @@ components:
     core: false
     provides: [agent-whatsapp-number]
     requires: [bot-runtime]
-    cost: "A Kapso account and a Meta Cloud number belonging to the agent — not the one on your phone. Inbound messages fail closed until the webhook signing secret is set, because an unsigned message is one anybody could have sent."
+    cost: "A Kapso account and a Meta Cloud number belonging to the agent — not the one on your phone. The bot registers its webhook on this machine's tunnel host at start and refuses any inbound message not signed with that webhook's secret."
     pricing: paid
     install:
       kind: manual
@@ -290,15 +290,14 @@ components:
       - "Create a Kapso project and a number for the agent."
       - "Add KAPSO_API_KEY= to {data_root}/.env"
       - "Add KAPSO_PHONE_NUMBER_ID= from the WhatsApp numbers list."
-      - "Copy the number-webhook signing secret from Kapso Project Settings and add it too."
-      - "WhatsApp also needs the public tunnel, so Kapso can reach this machine."
+      - "WhatsApp also needs the public tunnel, so Kapso can reach this machine. Nothing is pasted into Kapso: the bot registers the webhook when it starts."
+      - "Once it runs, make your own WhatsApp number the owner: in Magician open Settings → Owner identities, press Claim, and send /claim <code> to the agent's number within 10 minutes. (Or set MAGICIAN_OWNER_KAPSO_IDENTITIES in {data_root}/.env by hand.)"
       secrets:
       - { variable: KAPSO_API_KEY, label: "Kapso API key", bot: kapso }
       - { variable: KAPSO_PHONE_NUMBER_ID, label: "Kapso phone number ID", bot: kapso }
-      - { variable: KAPSO_WEBHOOK_SECRET, label: "Kapso webhook signing secret", bot: kapso }
     probe:
       kind: env_keys_all_present
-      keys: [KAPSO_API_KEY, KAPSO_PHONE_NUMBER_ID, KAPSO_WEBHOOK_SECRET]
+      keys: [KAPSO_API_KEY, KAPSO_PHONE_NUMBER_ID]
       files: ["{data_root}/.env", "{data_root}/.env.development"]
 
   # Every channel comes in two shapes and they are not interchangeable: the
@@ -320,6 +319,7 @@ components:
       - "Pick a name and a username ending in 'bot'."
       - "Copy the token it gives you."
       - "Add TELEGRAM_TOKEN=<token> to {data_root}/.env"
+      - "Once it runs, make your Telegram chat the owner: in Magician open Settings → Owner identities, press Claim, and send /claim <code> to the bot within 10 minutes. (Or set MAGICIAN_OWNER_TELEGRAM_IDENTITIES to your chat id in {data_root}/.env by hand.)"
       secrets:
       - { variable: TELEGRAM_TOKEN, label: "Telegram bot token from @BotFather", bot: telegram }
     probe:
@@ -436,6 +436,7 @@ components:
       - "Create an API token scoped to your account and zone: Tunnel Edit, Zone Read, DNS Edit, Access Apps and Policies Edit, Access Service Tokens Edit, and Access Organizations Read."
       - "Choose a distinct machine label and the email addresses allowed to open its browser UI. Values are saved only in your private runtime env files."
       - "The next step provisions one tunnel for this machine and protects device/UI hosts with Access. Provider webhook hosts use provider authentication. See docs/setup/cloudflare.md."
+      - "Saving a new zone and running the tunnel step again moves this computer’s tunnel and the original shared tunnel onto that zone. Saved hostnames from the previous zone are cleared. Old DNS records and Access apps stay until each hostname is parked."
       secrets:
       - { variable: MAGICIAN_TUNNEL_ZONE, label: "Your Cloudflare zone (example.com)", kind: text }
       - { variable: MAGICIAN_CF_ACCOUNT_ID, label: "Your Cloudflare account ID", kind: text }
@@ -454,7 +455,11 @@ components:
     requires: [cloudflare-configuration]
     cost: "A Cloudflare account and a zone you own. Reachable from anywhere."
     pricing: free_tier
-    install: { kind: make, target: setup-cloudflare, script: setup-cloudflare.sh }
+    install:
+      kind: make
+      target: setup-cloudflare
+      script: setup-cloudflare.sh
+      again: "Switch this computer to a different domain and rebuild every tunnel?"
     host: { os: [macos], because: "Automatic per-machine connector installation currently uses macOS launchd. Other hosts can use the manual Cloudflare setup guide." }
     probe:
       kind: http_configured
@@ -537,12 +542,12 @@ components:
     core: false
     provides: []
     requires: []
-    cost: "A Google Cloud project with an OAuth client and a Pub/Sub topic."
+    cost: "A Google Cloud project with an OAuth client and the Gmail and Pub/Sub APIs enabled."
     pricing: free_tier
     install:
       kind: manual
       steps:
-      - "In Google Cloud, create an OAuth client and a Pub/Sub topic."
+      - "In Google Cloud, create a Desktop OAuth client and enable the Gmail and Pub/Sub APIs."
       - "Download the client secret and save it as {data_root}/client_secret.json"
     probe: { kind: file_exists, path: "{data_root}/client_secret.json" }
     setup: { definition: google-oauth-client }
@@ -564,6 +569,22 @@ components:
       kind: manual
       hint: "Connect and verify the Google Workspace account in Desktop setup"
     setup: { definition: google-workspace, profile: work }
+
+  # Every account that is not the project owner bills its calls to the client's
+  # project and creates the Gmail bot's watch topic there. Without these roles
+  # mail sync fails and the Gmail bot restarts forever; signing in again cannot
+  # fix it. A gcloud check, so it cannot be a background probe.
+  - id: workspace-project-access
+    name: Google accounts' Cloud project roles
+    core: false
+    provides: []
+    requires: [workspace-oauth]
+    cost: "Service Usage Consumer and Pub/Sub Editor on the OAuth client's project, per account."
+    pricing: free
+    install: { kind: make, target: setup-gws-project-access, script: setup-gws-project-access.sh }
+    probe:
+      kind: manual
+      hint: "Run this step, or check each Google account under Service accounts"
 
   # CUA belongs to the desktop provider, independently of the backend OS and
   # independently of the Mac-only Automation/Full Disk Access permissions.

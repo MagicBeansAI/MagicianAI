@@ -8,7 +8,7 @@ struct VibeDevNewProjectSheet: View {
     @ObservedObject private var theme = ThemeManager.shared
     @State private var name = ""
     @State private var repoPath = ""
-    @State private var trusted = false
+    @State private var location: VibeDevTrust = .sandboxed
     @State private var baseBranch = ""
     @State private var suggestions: [VibeDevRepoSuggestion] = []
     @State private var sending = false
@@ -35,10 +35,16 @@ struct VibeDevNewProjectSheet: View {
                         field("~/code/billing", text: $repoPath, mono: true)
                     }
                 }
-                VibeDevToggleRow(title: "Trusted",
-                                 detail: "Runs get their own branch and can run at once. Needed for crews. Only the owner can turn it on.",
-                                 isOn: $trusted)
-                if trusted {
+                VibeDevField(label: "Work location") {
+                    VibeDevPills(options: [
+                        VibeDevPillOption(value: VibeDevTrust.original, label: "Original folder"),
+                        VibeDevPillOption(value: VibeDevTrust.sandboxed, label: "Isolated workspace"),
+                        VibeDevPillOption(value: VibeDevTrust.trusted, label: "Isolated branch")
+                    ], selection: $location)
+                    Text("Original folder keeps your current branch and uncommitted files. Review exact diffs before they apply. Independent of Super god mode.")
+                        .font(.themed(12)).foregroundStyle(theme.secondaryTextColor)
+                }
+                if location == .trusted {
                     VibeDevField(label: "Base branch (optional)") {
                         field("the repo's current branch", text: $baseBranch, mono: true)
                     }
@@ -93,10 +99,10 @@ struct VibeDevNewProjectSheet: View {
             defer { sending = false }
             do {
                 var project = try await api.createProject(name: projectName, repoPath: path)
-                if trusted || !branch.isEmpty {
+                if location != .sandboxed || !branch.isEmpty {
                     do {
                         project = try await api.updateProject(id: project.projectId,
-                                                              trust: trusted ? .trusted : nil,
+                                                              trust: location,
                                                               baseBranch: branch.isEmpty ? nil : branch)
                     } catch {
                         context.undo.show("Created \(projectName), sandboxed: \(VibeDevActions.describe(error))", isError: true)

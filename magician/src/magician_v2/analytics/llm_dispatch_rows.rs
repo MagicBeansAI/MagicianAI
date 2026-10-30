@@ -419,13 +419,15 @@ fn write_batch(
             .context("flushing llm_dispatch_batch appender")?;
     }
 
-    let path_sql = parquet_path.display().to_string().replace('\'', "''");
-    let copy_sql = format!(
-        "COPY llm_dispatch_batch TO '{}' (FORMAT PARQUET, COMPRESSION 'zstd');",
-        path_sql
-    );
-    conn.execute_batch(&copy_sql)
-        .with_context(|| format!("copying llm_dispatch_batch to {}", parquet_path.display()))?;
+    // Staged, fsynced and renamed: `batch_<ulid>.parquet` only ever names a
+    // complete object, so a crash mid-`COPY` cannot leave a zero-byte batch.
+    super::parquet_maintenance::copy_to_parquet_durably(
+        &conn,
+        "llm_dispatch_batch",
+        "FORMAT PARQUET, COMPRESSION 'zstd'",
+        &parquet_path,
+    )
+    .with_context(|| format!("copying llm_dispatch_batch to {}", parquet_path.display()))?;
     crate::magician_v2::dataset_owners::publish_written_parquet(&parquet_path)
         .with_context(|| format!("publishing llm_dispatch parquet {}", parquet_path.display()))?;
 
@@ -952,6 +954,33 @@ mod tests {
                 .expect("external")
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn dispatch_parquet_write_leaves_no_staging_and_staging_is_invisible() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_layout = ArtifactV2Workspace::new(temp.path());
+        let mut meta = base_meta(JobState::Completed);
+        meta.trace_context.scope = magicllm::LlmScope::new("principal-a", "workspace-a");
+        let row = row_from_event(&LlmQueueEvent::Completed { meta }).expect("row");
+        let partition_dt = partition_date_for(row.timestamp_ms);
+        write_batch(
+            &workspace_layout,
+            "principal-a",
+            "workspace-a",
+            &partition_dt,
+            &[row],
+        )
+        .expect("write dispatch parquet");
+        let partition = workspace_layout
+            .analytics_root("principal-a", "workspace-a")
+            .join("llm_dispatch")
+            .join(format!("dt={partition_dt}"));
+        crate::magician_v2::analytics::parquet_maintenance::assert_published_without_staging(
+            &partition,
+            crate::magician_v2::analytics::parquet_maintenance::PartitionedDataset::LlmDispatch,
+            1,
         );
     }
 }

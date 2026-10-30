@@ -776,18 +776,33 @@ pub(super) fn lower_bash_action(step: &PlanStep) -> Result<ExecutableAction, Exe
         .and_then(|s| serde_json::from_str::<HashMap<String, String>>(s).ok())
         .unwrap_or_default();
 
-    let timeout_secs = params
-        .get("timeout")
-        .or_else(|| params.get("timeout_secs"))
-        .and_then(|v| v.as_str())
-        .map(parse_u64)
+    let requested_timeout = params
+        .get("timeout_secs")
+        .or_else(|| params.get("timeout"))
+        .map(|value| {
+            value
+                .as_u64()
+                .map(Ok)
+                .or_else(|| value.as_str().map(parse_u64))
+                .unwrap_or_else(|| Err("Shell timeout must be a positive integer".to_string()))
+        })
         .transpose()
         .map_err(ExecutionError::Step)?;
-
+    let timeout_secs = step.timeout_override_secs.or(requested_timeout);
+    if timeout_secs == Some(0) {
+        return Err(ExecutionError::AgentActionable(
+            "Shell timeout must be positive".to_string(),
+        ));
+    }
     let capture_output = params
         .get("capture_output")
-        .and_then(|v| v.as_str())
-        .map(parse_bool)
+        .map(|value| {
+            value
+                .as_bool()
+                .map(Ok)
+                .or_else(|| value.as_str().map(parse_bool))
+                .unwrap_or_else(|| Err("Shell capture_output must be a boolean".to_string()))
+        })
         .transpose()
         .map_err(ExecutionError::Step)?
         .unwrap_or(true);
@@ -863,9 +878,27 @@ pub(super) fn build_duckdb_read_parquet_sql(
     hive_partitioning: bool,
 ) -> String {
     let escaped = path.replace('\'', "''");
+    build_duckdb_read_parquet_source_sql(
+        &format!("'{escaped}'"),
+        where_clause,
+        select,
+        limit,
+        hive_partitioning,
+    )
+}
+
+/// [`build_duckdb_read_parquet_sql`] for a source that is already SQL: one
+/// quoted path or a `[...]` list of them.
+fn build_duckdb_read_parquet_source_sql(
+    source: &str,
+    where_clause: Option<&str>,
+    select: &str,
+    limit: Option<i64>,
+    hive_partitioning: bool,
+) -> String {
     let hive = if hive_partitioning { "true" } else { "false" };
     let mut sql =
-        format!("SELECT {select} FROM read_parquet('{escaped}', hive_partitioning = {hive})");
+        format!("SELECT {select} FROM read_parquet({source}, hive_partitioning = {hive})");
     if let Some(w) = where_clause {
         sql.push_str(&format!(" WHERE {w}"));
     }
@@ -944,6 +977,65 @@ pub(super) fn expand_llm_calls_path(path: &str) -> String {
     }
 }
 
+/// The `read_parquet` source for `path`, as SQL. The `llm_calls@` shorthand
+/// names the files a governed read selects rather than its glob: a
+/// compaction leaves the batches it folded, and the generation it replaced,
+/// on disk for a grace period, which the glob would count twice, and the
+/// glob also matched the LLM fact files (`part-*`) kept in the same
+/// partitions under another schema. With nothing to read, the glob stays,
+/// so DuckDB reports the missing files itself.
+fn duckdb_read_parquet_source(path: &str) -> Result<String, ExecutionError> {
+    let quoted = |path: &str| format!("'{}'", path.replace('\'', "''"));
+    let Some(scope) = path.strip_prefix("llm_calls@") else {
+        return Ok(quoted(path));
+    };
+    let root = PathBuf::from(format!(
+        "magician_data_v3/scopes/{scope}/analytics/llm_calls"
+    ));
+    let files = governed_llm_calls_files(&root).map_err(|error| {
+        ExecutionError::Step(format!(
+            "duckdb.read_parquet: cannot select the LLM-call files for `{path}`: {error:#}"
+        ))
+    })?;
+    if files.is_empty() {
+        return Ok(quoted(&expand_llm_calls_path(path)));
+    }
+    let files = files
+        .iter()
+        .map(|file| quoted(&file.display().to_string()))
+        .collect::<Vec<_>>();
+    Ok(format!("[{}]", files.join(", ")))
+}
+
+/// The governed sources of every `dt=` partition under `root`, in order.
+fn governed_llm_calls_files(root: &std::path::Path) -> anyhow::Result<Vec<PathBuf>> {
+    use crate::magician_v2::analytics::parquet_maintenance::{
+        partition_sources, PartitionedDataset,
+    };
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let is_partition = entry.file_type()?.is_dir()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("dt="));
+        if is_partition {
+            files.extend(partition_sources(
+                &entry.path(),
+                PartitionedDataset::LegacyLlmCalls,
+            )?);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
 /// Lower a DuckDB tool to DuckDbAction
 pub(super) fn lower_duckdb_action(step: &PlanStep) -> Result<ExecutableAction, ExecutionError> {
     let params = &step.parameters;
@@ -1010,7 +1102,7 @@ pub(super) fn lower_duckdb_action(step: &PlanStep) -> Result<ExecutableAction, E
             let raw_path = params.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
                 ExecutionError::Step("duckdb.read_parquet requires a `path` parameter".to_string())
             })?;
-            let expanded = expand_llm_calls_path(raw_path);
+            let source = duckdb_read_parquet_source(raw_path)?;
             let where_clause = params
                 .get("where_clause")
                 .and_then(|v| v.as_str())
@@ -1021,7 +1113,13 @@ pub(super) fn lower_duckdb_action(step: &PlanStep) -> Result<ExecutableAction, E
                 .get("hive_partitioning")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            build_duckdb_read_parquet_sql(&expanded, where_clause, select, limit, hive_partitioning)
+            build_duckdb_read_parquet_source_sql(
+                &source,
+                where_clause,
+                select,
+                limit,
+                hive_partitioning,
+            )
         },
         "export" => {
             let select_sql = params.get("sql").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -1091,7 +1189,9 @@ fn canonical_file_tool(
     params: &HashMap<String, serde_json::Value>,
     step_id: &str,
 ) -> Result<String, ExecutionError> {
-    if tool != "files" {
+    // `delegation_files` is the same file grammar with a widened sandbox (its
+    // provider lowers through here); rejecting its name made every call fail.
+    if !matches!(tool, "files" | "delegation_files") {
         return Err(ExecutionError::Step(format!(
             "Plan step '{}' uses unsupported files tool '{}'",
             step_id, tool
@@ -1155,6 +1255,37 @@ pub fn is_shell_tool(tool: &str) -> bool {
 #[cfg(any(test, feature = "test-fixtures"))]
 mod duckdb_action_tests {
     use super::*;
+
+    #[test]
+    fn delegation_files_lowers_with_the_files_grammar() {
+        for tool in ["files", "delegation_files"] {
+            let step = PlanStep {
+                id: "read-notes".to_owned(),
+                tool: Some(tool.to_owned()),
+                parameters: HashMap::from([
+                    ("action".to_owned(), serde_json::json!("read")),
+                    (
+                        "path".to_owned(),
+                        serde_json::json!("/tmp/project/NOTES.md"),
+                    ),
+                ]),
+                ..Default::default()
+            };
+            let ExecutableAction::File(FileAction::Read { path, .. }) =
+                lower_file_action(&step).unwrap()
+            else {
+                panic!("{tool}: expected a file read");
+            };
+            assert_eq!(path, PathBuf::from("/tmp/project/NOTES.md"));
+        }
+        let other = PlanStep {
+            id: "x".to_owned(),
+            tool: Some("shell".to_owned()),
+            parameters: HashMap::from([("action".to_owned(), serde_json::json!("read"))]),
+            ..Default::default()
+        };
+        assert!(lower_file_action(&other).is_err());
+    }
 
     #[test]
     fn bound_http_lowering_preserves_typed_timeout_and_redirect_policy() {
@@ -1340,6 +1471,83 @@ mod duckdb_action_tests {
     }
 
     #[test]
+    fn duckdb_llm_calls_shorthand_reads_each_row_once_after_a_fold() {
+        use crate::magician_v2::analytics::parquet_maintenance::{
+            compact_open_legacy_llm_partition, OpenPartitionPolicy,
+        };
+        use crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace;
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_llm_calls_root("owner", "default");
+        let partition = root.join(format!("dt={}", chrono::Utc::now().format("%Y-%m-%d")));
+        std::fs::create_dir_all(&partition).expect("partition");
+        let connection = duckdb::Connection::open_in_memory().expect("duckdb");
+        let write = |name: &str, sql: &str| {
+            let path = partition
+                .join(name)
+                .display()
+                .to_string()
+                .replace('\'', "''");
+            connection
+                .execute_batch(&format!("COPY ({sql}) TO '{path}' (FORMAT PARQUET)"))
+                .expect("write parquet");
+        };
+        for batch in 0..3 {
+            write(
+                &format!("batch_0{batch}.parquet"),
+                &format!("SELECT {batch} * 2 + range AS id FROM range(2)"),
+            );
+        }
+        write(
+            "part-call_fact-a-r1.parquet",
+            "SELECT 'fact' AS record_kind",
+        );
+        let policy = OpenPartitionPolicy {
+            max_raw_files: 3,
+            max_tail_age: std::time::Duration::from_secs(60 * 60),
+        };
+        let stats = compact_open_legacy_llm_partition(&workspace, "owner", "default", policy)
+            .expect("fold");
+        assert_eq!(stats.partitions_compacted, 1);
+        assert!(
+            partition.join("batch_00.parquet").exists(),
+            "folded batches wait out the grace"
+        );
+
+        let files = governed_llm_calls_files(&root).expect("files");
+        assert_eq!(files.len(), 1, "the generation alone: {files:?}");
+        let source = files
+            .iter()
+            .map(|file| format!("'{}'", file.display().to_string().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rows: i64 = connection
+            .query_row(
+                &format!("SELECT count(*) FROM read_parquet([{source}])"),
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(rows, 6);
+        assert!(governed_llm_calls_files(&temporary.path().join("missing"))
+            .expect("missing root")
+            .is_empty());
+    }
+
+    #[test]
+    fn duckdb_read_parquet_source_quotes_plain_paths() {
+        assert_eq!(
+            duckdb_read_parquet_source("o'reilly/*.parquet").unwrap(),
+            "'o''reilly/*.parquet'"
+        );
+        assert_eq!(
+            duckdb_read_parquet_source("llm_calls@nobody-here/none").unwrap(),
+            "'magician_data_v3/scopes/nobody-here/none/analytics/llm_calls/dt=*/*.parquet'",
+            "with nothing to read the glob stays"
+        );
+    }
+
+    #[test]
     fn duckdb_expand_llm_calls_handles_scope_with_multiple_workspaces() {
         let path = expand_llm_calls_path("llm_calls@principal_a/workspace_b");
         assert_eq!(
@@ -1444,5 +1652,37 @@ mod duckdb_action_tests {
     #[test]
     fn duckdb_attach_rejects_empty_path() {
         assert!(try_build_duckdb_attach_sql("", "good_alias", true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod shell_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_and_string_shell_deadlines_reach_the_child() {
+        for value in [serde_json::json!(1800), serde_json::json!("1800")] {
+            let step = PlanStep {
+                parameters: HashMap::from([
+                    ("command".to_string(), serde_json::json!("true")),
+                    ("timeout_secs".to_string(), value),
+                    ("capture_output".to_string(), serde_json::json!(false)),
+                ]),
+                ..PlanStep::default()
+            };
+            let ExecutableAction::Bash(action) = lower_bash_action(&step).unwrap() else {
+                panic!("shell action");
+            };
+            assert_eq!(action.timeout_secs, Some(1800));
+            assert!(!action.capture_output);
+            let step = PlanStep {
+                timeout_override_secs: Some(2400),
+                ..step
+            };
+            let ExecutableAction::Bash(action) = lower_bash_action(&step).unwrap() else {
+                panic!("shell action");
+            };
+            assert_eq!(action.timeout_secs, Some(2400));
+        }
     }
 }

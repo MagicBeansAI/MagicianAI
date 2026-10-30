@@ -276,6 +276,12 @@ pub struct PrimitiveExecCtx {
     /// `execution_id`. `None` preserves legacy behaviour.
     pub browser_session_id_override: Option<String>,
 
+    /// What the run's browser tab group is called in the owner's Chrome
+    /// (Magicutor's `?label=`): the chat conversation's title for a chat
+    /// launch, else the task's title. Travels beside
+    /// `browser_session_id_override` and is set by whoever starts the run.
+    pub browser_tab_label: Option<String>,
+
     /// Secret store handle used by direct inner-loop dispatchers that do not
     /// flow through `ExecutableAction` secret injection. Browser commands use
     /// this to resolve `[REDACTED:<id>]` / `[REF:<id>]` placeholders at the
@@ -603,7 +609,16 @@ impl PrimitiveExecCtx {
                 },
             },
         };
-        crate::magician_v2::engagement_retrieval::engagement_browser_session_id(&base, &scope)
+        // Partition before taking the lease: cleanup must reserve the actual
+        // window ID, including the engagement/program namespace.
+        let namespaced =
+            crate::magician_v2::engagement_retrieval::engagement_browser_session_id(&base, &scope);
+        match super::browser::session_lease::split_launch_override(&namespaced) {
+            Some((shared, launch)) => {
+                super::browser::session_lease::resolve(shared, launch, &self.thread_id())
+            },
+            None => namespaced,
+        }
     }
 
     /// Resolve the process storage root. Used by [`Self::default_for_runtime`]
@@ -645,6 +660,7 @@ impl PrimitiveExecCtx {
             browser_session_keep_alive_override: None,
             browser_window_open_override: None,
             browser_session_id_override: None,
+            browser_tab_label: None,
             secret_store: None,
             secret_store_resolver: None,
             governed_operator_config_source: None,
@@ -840,6 +856,12 @@ impl PrimitiveExecCtx {
     /// Chrome window keyed on the chat thread.
     pub fn with_browser_session_id_override(mut self, session_id: Option<String>) -> Self {
         self.browser_session_id_override = session_id;
+        self
+    }
+
+    /// Builder helper: name the run's browser tab group.
+    pub fn with_browser_tab_label(mut self, label: Option<String>) -> Self {
+        self.browser_tab_label = label;
         self
     }
 

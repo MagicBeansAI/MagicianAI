@@ -43,6 +43,37 @@ describe('stageRows', () => {
 		]);
 	});
 
+	it('toStageRows carries a start only on a running row, for its live elapsed', () => {
+		const rows = [
+			{ key: 'a', label: 'Thinking…', status: 'running', startedAt: 1_000 },
+			{ key: 'b', label: 'Thinking with x', status: 'done', startedAt: 500 },
+			{ key: 'c', label: 'Calling y', status: 'running' }
+		];
+		expect(toStageRows(rows, new Map())).toEqual([
+			{ key: 'a', label: 'Thinking…', status: 'running', startedAt: 1_000 },
+			{ key: 'b', label: 'Thinking with x', status: 'done' },
+			{ key: 'c', label: 'Calling y', status: 'running' }
+		]);
+	});
+
+	it('toStageRows keeps the secondary line of model calls and context phases only', () => {
+		const rows = [
+			{ key: 'context:p1', label: 'Context prepared (partial)', status: 'done', kind: 'step',
+				detail: '5769 ms total · Memory search: not completed' },
+			{ key: 'llm:1', label: 'Thinking with jev-1.13.0', status: 'done', kind: 'llm',
+				detail: '299ms · 7.9k tok · <$0.001' },
+			{ key: 'tool:1', label: 'Calling web_fetch', status: 'done', kind: 'tool', detail: 'GET /' },
+			{ key: 'file:1', label: 'Artifact', status: 'done', kind: 'llm', detail: 'out.csv' }
+		];
+		const stage = toStageRows(rows, new Map(), (row) => (row.key === 'file:1' ? 'out.csv' : undefined));
+		expect(stage.map((row) => row.detail)).toEqual([
+			'5769 ms total · Memory search: not completed',
+			'299ms · 7.9k tok · <$0.001',
+			undefined,
+			undefined
+		]);
+	});
+
 	it('latestRows keeps the latest rows and counts the rest', () => {
 		const rows = Array.from({ length: 8 }, (_, i) => i);
 		expect(latestRows(rows)).toEqual({ shown: [3, 4, 5, 6, 7], hidden: 3 });
@@ -79,6 +110,17 @@ describe('stageRows', () => {
 		expect(
 			describeToolCall('zepto-mcp__call_tool', { name: 'search', arguments_json: { term: 'milk' } })
 		).toEqual({ tool: 'zepto-mcp__call_tool', name: 'zepto-mcp · search', target: 'milk', source: 'mcp' });
+	});
+
+	it('shows the governed MCP tool_name and the internal CLI operation', () => {
+		expect(describeToolCall('zepto-mcp__call_tool', { tool_name: 'search_products', arguments_json: '{"query":"milk"}' }))
+			.toMatchObject({ name: 'zepto-mcp · search_products', target: 'milk' });
+		expect(describeToolCall('higgsfield__run', { args: ['model', 'list', '--json'] }))
+			.toMatchObject({ name: 'higgsfield · model list', source: 'cli' });
+		expect(describeToolCall('creative__run', { args: ['generate', 'create', 'model', '--prompt', 'private prompt'] }).name)
+			.toBe('creative · generate create');
+		expect(describeToolCall('creative__run', { args: ['--token', 'private token'] }).name)
+			.toBe('creative__run');
 	});
 
 	it('describeToolCall never shows raw JSON longer than ~100 chars', () => {

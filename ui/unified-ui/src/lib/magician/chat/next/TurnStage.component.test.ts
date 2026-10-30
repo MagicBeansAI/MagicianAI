@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { tick } from 'svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import TurnStage from './TurnStage.svelte';
 
@@ -11,6 +12,7 @@ type Row = {
 	status: 'running' | 'done' | 'failed' | 'waiting';
 	tool?: string;
 	target?: string;
+	startedAt?: number;
 };
 
 const rows: Row[] = [
@@ -143,5 +145,30 @@ describe('TurnStage', () => {
 		await fireEvent.click(screen.getByRole('button', { name: /hide/i }));
 		await fireEvent.click(screen.getByRole('button', { name: /show 9 steps/i }));
 		expect(screen.getAllByRole('listitem')).toHaveLength(5);
+	});
+
+	it("ticks the working chip's elapsed once a second, and drops it when the row settles", async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+		vi.setSystemTime(100_000);
+		try {
+			const running: Row = { key: 'llm:call-1', label: 'Thinking with gpt-6.1-sol', status: 'running', startedAt: 35_000 };
+			const { container, rerender } = render(TurnStage, { rows: [running] });
+			const elapsed = () => container.querySelector('[data-testid="turn-stage-elapsed"]');
+			expect(elapsed()).toHaveTextContent('1:05');
+
+			vi.advanceTimersByTime(1_000);
+			await tick();
+			expect(elapsed()).toHaveTextContent('1:06');
+
+			await rerender({ rows: [{ ...running, status: 'done', startedAt: undefined }] });
+			expect(elapsed()).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('shows no elapsed for a running row with no start', () => {
+		const { container } = render(TurnStage, { rows });
+		expect(container.querySelector('[data-testid="turn-stage-elapsed"]')).toBeNull();
 	});
 });

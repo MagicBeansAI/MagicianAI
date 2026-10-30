@@ -11,6 +11,7 @@
 		type TaskNotePage
 	} from '$lib/notes/taskNotes';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+	import { noteHref } from '$lib/notes/noteLinks';
 
 	const PAGE_SIZE_OPTIONS = [5, 10, 20, 50];
 	let page: TaskNotePage = { items: [], offset: 0, limit: 5, total: 0, has_more: false };
@@ -187,7 +188,7 @@
 						<div class="tags">{#each note.tags.slice(0, 6) as tag}<span>{tag}</span>{/each}</div>
 					</div>
 					<div class="note-actions">
-						{#if note.note_path}<a href={`/notes?path=${encodeURIComponent(note.note_path)}`}>Open</a>{/if}
+						{#if note.note_path}<a href={noteHref(note.note_path, $scopeIdentityStore.workspace)}>Open</a>{/if}
 						<button type="button" disabled={promotingId !== null} on:click={() => void promote(note)}>
 							{promotingId === note.task_id ? 'Creating…' : 'Promote to memory'}
 						</button>

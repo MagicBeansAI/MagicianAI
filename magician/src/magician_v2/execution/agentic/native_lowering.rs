@@ -499,7 +499,10 @@ fn lower_submit_plan(
         .collect();
     if let NativeDecisionOutcome::Valid(envelope) = &mut outcome {
         if !rest.is_empty() {
-            envelope.plan_continuation = Some(ActionPlan { scope: None, steps: rest });
+            envelope.plan_continuation = Some(ActionPlan {
+                scope: None,
+                steps: rest,
+            });
         }
     }
     outcome
@@ -2235,7 +2238,10 @@ mod tests {
         let rest = planned.plan_continuation.expect("the rest of the plan");
         assert_eq!(rest.scope, None);
         assert_eq!(
-            rest.steps.iter().map(|s| (s.id.as_str(), s.call.tool.as_str())).collect::<Vec<_>>(),
+            rest.steps
+                .iter()
+                .map(|s| (s.id.as_str(), s.call.tool.as_str()))
+                .collect::<Vec<_>>(),
             vec![("plan-step-2", "read_file"), ("plan-step-3", "yield")]
         );
         assert_eq!(rest.steps[0].reason, "Read the match");
@@ -2245,8 +2251,13 @@ mod tests {
             name: "submit_plan".into(),
             arguments: json!({"steps": [{"tool": "grep", "arguments": {"pattern": "x", "path": "."}}]}),
         });
-        let NativeDecisionOutcome::Valid(single) = single else { panic!("valid") };
-        assert!(single.plan_continuation.is_none(), "one step is just a call");
+        let NativeDecisionOutcome::Valid(single) = single else {
+            panic!("valid")
+        };
+        assert!(
+            single.plan_continuation.is_none(),
+            "one step is just a call"
+        );
     }
 
     #[test]

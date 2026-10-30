@@ -17,6 +17,22 @@ afterEach(() => {
 });
 
 describe('ChatHistoryRail component', () => {
+	it('marks background work and clears the badge when the server reports completion', async () => {
+		let working = true;
+		vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+			const activity = String(input).includes('/chat/activity?');
+			return new Response(JSON.stringify(activity
+				? { working_session_ids: working ? ['background', 'not-on-this-page'] : [] }
+				: { sessions: [{ id: 'background', title: 'Background research', status: 'active', ui_thread_id: 'general', updated_at: Date.now() }], total: 1, limit: 15, offset: 0 }),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } });
+		}));
+		render(ChatHistoryRail, { expanded: true });
+		expect(await screen.findByLabelText('Session is working')).toBeInTheDocument();
+		expect(screen.getAllByText('Working')).toHaveLength(1);
+		working = false;
+		await waitFor(() => expect(screen.queryByLabelText('Session is working')).toBeNull(), { timeout: 4500 });
+		expect(screen.getByText('Background research')).toBeInTheDocument();
+	}, 6500);
 	it('renders expanded rail with History title and new button', async () => {
 		vi.stubGlobal('fetch', vi.fn(async () => {
 			return new Response(JSON.stringify({ sessions: [], total: 0, limit: 15, offset: 0 }), {
@@ -160,5 +176,90 @@ describe('ChatHistoryRail component', () => {
 		expect(await screen.findByText('VibeDev')).toBeInTheDocument();
 		await user.click(screen.getByText('VibeDev'));
 		expect(gotoMock).toHaveBeenCalledWith('/vibe');
+	});
+
+	it('clears the selected thread so sessions from other threads appear', async () => {
+		const requested: URL[] = [];
+		vi.stubGlobal('fetch', vi.fn(async (request: string | URL | Request) => {
+			const url = new URL(String(request), 'http://localhost');
+			if (url.pathname.endsWith('/chat/sessions')) requested.push(url);
+			const thread = url.searchParams.get('ui_thread_id');
+			const sessions = thread
+				? [{ id: 'in-thread', title: 'Only this thread', status: 'active', ui_thread_id: 'screens', updated_at: 2 }]
+				: [{ id: 'other-thread', title: 'From another thread', status: 'active', ui_thread_id: 'plans', updated_at: 3 }];
+			return new Response(JSON.stringify({ sessions, total: 1, limit: 15, offset: 0 }), {
+				status: 200, headers: { 'Content-Type': 'application/json' }
+			});
+		}));
+		const user = userEvent.setup();
+		render(ChatHistoryRail, { expanded: true, threadFilter: 'screens' });
+		expect(await screen.findByText('Only this thread')).toBeInTheDocument();
+		expect(requested.at(-1)!.searchParams.get('ui_thread_id')).toBe('screens');
+
+		await user.click(screen.getByRole('button', { name: 'Show sessions from all threads' }));
+
+		expect(await screen.findByText('From another thread')).toBeInTheDocument();
+		expect(screen.queryByRole('button', { name: 'Show sessions from all threads' })).not.toBeInTheDocument();
+		expect(screen.getByRole('group', { name: 'History source' })).toBeInTheDocument();
+		expect(requested.at(-1)!.searchParams.has('ui_thread_id')).toBe(false);
+		expect(requested.at(-1)!.searchParams.get('history_lane')).toBe('personal');
+	});
+
+	it('shows archive and delete on a thread, keeps a long name on one line, and says Archiving while it saves', async () => {
+		const longName = 'Quarterly planning thread for the whole product family and every follow-up';
+		let releasePatch: (response: Response) => void = () => {};
+		const patch = new Promise<Response>((resolve) => {
+			releasePatch = resolve;
+		});
+		vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input instanceof Request ? input.url : input);
+			const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+			if (method === 'PATCH') return patch;
+			if (url.includes('/ui-threads')) {
+				return new Response(JSON.stringify({
+					threads: [
+						{ id: 'general', name: 'general', archived: false, updated_at: 1 },
+						{ id: 'plans', name: longName, archived: false, updated_at: 2 }
+					],
+					total: 2, limit: 15, offset: 0
+				}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+			}
+			if (url.includes('/chat/activity')) {
+				return new Response(JSON.stringify({ working_session_ids: [] }), {
+					status: 200, headers: { 'Content-Type': 'application/json' }
+				});
+			}
+			return new Response(JSON.stringify({ sessions: [], total: 0, limit: 15, offset: 0 }), {
+				status: 200, headers: { 'Content-Type': 'application/json' }
+			});
+		}));
+
+		const user = userEvent.setup();
+		render(ChatHistoryRail, { expanded: true });
+		await user.click(screen.getByRole('tab', { name: 'Threads' }));
+
+		expect(await screen.findByText('general')).toBeInTheDocument();
+		const generalRow = screen.getByText('general').closest('.thread-item');
+		expect(generalRow?.querySelector('[aria-label="Archive thread"]')).toBeNull();
+		expect(generalRow?.querySelector('[aria-label="Delete thread"]')).toBeNull();
+
+		const title = screen.getByText(longName);
+		expect(title).toHaveAttribute('title', longName);
+		expect(title).toHaveClass('title');
+		expect(screen.getByRole('button', { name: 'Archive thread' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Delete thread' })).toBeInTheDocument();
+
+		await user.click(screen.getByRole('button', { name: 'Archive thread' }));
+		expect(await screen.findByRole('status')).toHaveTextContent('Archiving…');
+		expect(screen.getByRole('button', { name: 'Archive thread' })).toBeDisabled();
+		expect(screen.getByRole('button', { name: 'Delete thread' })).toBeDisabled();
+
+		releasePatch(new Response(JSON.stringify({
+			thread: {
+				principal: 'anonymous', workspace: 'default', id: 'plans', name: longName,
+				archived: true, sort_order: 0, created_at: 1, updated_at: 3
+			}
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+		await waitFor(() => expect(screen.queryByText('Archiving…')).not.toBeInTheDocument());
 	});
 });

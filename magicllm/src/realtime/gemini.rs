@@ -28,10 +28,11 @@ use futures_util::{Sink, SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 use ulid::Ulid;
 
+use crate::realtime::transport::connect as connect_async;
 use crate::{
     config::RealtimeVoiceMode,
     providers::gemini::sanitize_gemini_schema,
@@ -1653,11 +1654,13 @@ fn gemini_live_tools(tools: &[LLMToolSpec], non_blocking: bool) -> Vec<Value> {
     let declarations = tools
         .iter()
         .map(|tool| {
-            let mut parameters = tool.parameters.clone();
+            let (description, parameters) =
+                crate::tool_schema::project_whole_call_constraints(tool);
+            let mut parameters = parameters.into_owned();
             sanitize_gemini_schema(&mut parameters);
             let mut declaration = json!({
                 "name": tool.name,
-                "description": tool.description,
+                "description": description,
                 "parameters": parameters,
             });
             if non_blocking {

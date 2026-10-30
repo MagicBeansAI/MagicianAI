@@ -91,6 +91,16 @@ reloads all scopes;
 `MAGICIAN_API` selects the backend, `MAGICIAN_BEARER_TOKEN` scopes it when
 set), as does Crew's **Reload from disk**.
 
+The runtime keeps its own copy of every definition, which background loops
+(the memory consolidation sweep) read. A refresh, and each consolidation sweep
+tick, reconciles that copy with the store
+(`reconcile_runtime_definitions_with_store`): a definition whose file is gone is
+evicted with the same local cleanup as a delete (scheduler entries, queued
+dispatches, pause flag) and listed in the response's `definitions_evicted`
+(`principal`, `workspace`, `agent_id`); a changed file replaces the runtime
+copy. A cron fire whose definition is missing also unregisters that agent's
+schedule.
+
 ## 2. Tools & Delegation
 
 | Field | Type · default | Contract |
@@ -616,7 +626,7 @@ scoped stores in the owner's harness scope.
 `harness.program_section` (`Option<String>`, `null`, non-empty if set):
 `program.md` section injected for focus areas without their own `program` (a
 focus-area `program` is injected as-is). Program docs load from `programs/`
-(locally) or `Programs/` (SilverBullet); a `Success Metrics` section takes
+(locally) or `Programs/` (older notes-folder layouts); a `Success Metrics` section takes
 bullets like `harness_success_rate_30d >= 0.7`.
 
 ## Global Validation Rules

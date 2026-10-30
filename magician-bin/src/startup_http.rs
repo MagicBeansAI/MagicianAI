@@ -41,7 +41,16 @@ struct State {
     route_build: Arc<Semaphore>,
     phase: Mutex<&'static str>,
     failed: CancellationToken,
+    /// The loopback port that serves only the plane's MCP route, when one
+    /// was opened (`StartupHttp::start`).
+    plane_port: std::sync::OnceLock<u16>,
 }
+
+/// The only path prefix the plane-only listener serves.
+const PLANE_MCP_PREFIX: &str = "/api/magician/v2/plane/mcp";
+/// The Citizen API a coding run's Pi calls (`vibedev_api::authorize_citizen`),
+/// reached through the run's own grant channel like the plane's MCP route.
+const CITIZEN_PREFIX: &str = "/api/magician/v2/vibedev/citizen/";
 
 pub struct StartupHttp {
     state: Arc<State>,
@@ -59,15 +68,43 @@ impl StartupHttp {
         workers: usize,
         static_dir: Option<Arc<PathBuf>>,
     ) -> std::io::Result<Self> {
-        Self::start_with_barrier(host, port, workers, static_dir, StartupBarrier::install())
+        Self::start_inner(
+            host,
+            port,
+            workers,
+            static_dir,
+            StartupBarrier::install(),
+            true,
+        )
     }
 
+    /// The loopback port that serves only the plane's MCP route.
+    pub fn plane_port(&self) -> Option<u16> {
+        self.state.plane_port.get().copied()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn start_with_barrier(
         host: &str,
         port: u16,
         workers: usize,
         static_dir: Option<Arc<PathBuf>>,
         barrier: Arc<StartupBarrier>,
+    ) -> std::io::Result<Self> {
+        Self::start_inner(host, port, workers, static_dir, barrier, false)
+    }
+
+    /// `plane_listener`: also listen on an ephemeral loopback port that
+    /// serves nothing but the plane's MCP route. OS boxes allow that port
+    /// (a boxed harness keeps Magician's tools, with its grant) and deny the
+    /// API's own port.
+    fn start_inner(
+        host: &str,
+        port: u16,
+        workers: usize,
+        static_dir: Option<Arc<PathBuf>>,
+        barrier: Arc<StartupBarrier>,
+        plane_listener: bool,
     ) -> std::io::Result<Self> {
         let state = Arc::new(State {
             factory: Mutex::new(None),
@@ -78,6 +115,7 @@ impl StartupHttp {
             route_build: Arc::new(Semaphore::new(workers.saturating_sub(1).max(1))),
             phase: Mutex::new("core"),
             failed: CancellationToken::new(),
+            plane_port: std::sync::OnceLock::new(),
         });
         let factory_state = Arc::clone(&state);
         let server = HttpServer::new(move || StartupFactory {
@@ -87,6 +125,13 @@ impl StartupHttp {
         .workers(workers.max(1))
         .disable_signals()
         .bind((host, port))?;
+        let server = if plane_listener {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+            let _ = state.plane_port.set(listener.local_addr()?.port());
+            server.listen(listener)?
+        } else {
+            server
+        };
         // A hostname can bind multiple addresses. Actix creates one app per
         // worker AND listener, and all of them must be installed before ready.
         state
@@ -258,6 +303,12 @@ impl ServiceFactory<Request> for StartupFactory {
 
     fn new_service(&self, config: AppConfig) -> Self::Future {
         let state = Arc::clone(&self.state);
+        // One service per worker and listener: this one serves the
+        // plane-only listener when its local port is that one.
+        let plane_only = state
+            .plane_port
+            .get()
+            .is_some_and(|port| config.local_addr().port() == *port);
         let mut app = App::new()
             .wrap(actix_web::middleware::from_fn(
                 magician::magician_v2::cors::api_cors_middleware,
@@ -347,6 +398,7 @@ impl ServiceFactory<Request> for StartupFactory {
                 full,
                 state,
                 has_ui,
+                plane_only,
             })
         })
     }
@@ -357,7 +409,14 @@ struct StartupService {
     full: Rc<RefCell<Option<HttpService>>>,
     state: Arc<State>,
     has_ui: bool,
+    /// This instance serves the plane-only listener: every path but the
+    /// plane's MCP route is refused.
+    plane_only: bool,
 }
+
+/// Marks a request on the plane-only listener outside the MCP route.
+#[derive(Clone, Copy)]
+struct PlaneOnlyRefused;
 
 impl Service<Request> for StartupService {
     type Response = ServiceResponse<BoxBody>;
@@ -378,6 +437,13 @@ impl Service<Request> for StartupService {
     }
 
     fn call(&self, request: Request) -> Self::Future {
+        if self.plane_only
+            && !request.path().starts_with(PLANE_MCP_PREFIX)
+            && !request.path().starts_with(CITIZEN_PREFIX)
+        {
+            request.extensions_mut().insert(PlaneOnlyRefused);
+            return self.bootstrap.call(request);
+        }
         if !matches!(
             request.path(),
             "/startup" | "/api/magician/v2/startup" | "/live"
@@ -421,6 +487,58 @@ mod tests {
                 context.text(text);
             }
         }
+    }
+
+    /// The plane-only listener serves the plane's MCP route and refuses
+    /// every other path, so a boxed harness keeps Magician's tools while the
+    /// rest of the API stays out of reach.
+    #[actix_web::test]
+    async fn the_plane_only_listener_serves_only_the_plane_mcp_route() {
+        let barrier = Arc::new(StartupBarrier::new());
+        let server = StartupHttp::start_inner("127.0.0.1", 0, 1, None, barrier, true).unwrap();
+        let plane = server.plane_port().expect("a plane-only port");
+        server.publish(|| {
+            App::new()
+                .route(
+                    "/api/magician/v2/plane/mcp",
+                    web::post().to(|| async { HttpResponse::Ok().body("mcp") }),
+                )
+                .route(
+                    "/api/magician/v2/tasks",
+                    web::get().to(|| async { HttpResponse::Ok().body("tasks") }),
+                )
+        });
+        tokio::time::timeout(Duration::from_secs(5), server.ready())
+            .await
+            .unwrap()
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let mcp = client
+            .post(format!(
+                "http://127.0.0.1:{plane}/api/magician/v2/plane/mcp"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), 200);
+        assert_eq!(mcp.text().await.unwrap(), "mcp");
+        let other = client
+            .get(format!("http://127.0.0.1:{plane}/api/magician/v2/tasks"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(other.status(), 403);
+        // The main listener still serves everything.
+        let main = client
+            .get(format!("http://{}/api/magician/v2/tasks", server.address))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(main.text().await.unwrap(), "tasks");
     }
 
     #[actix_web::test]
@@ -712,6 +830,12 @@ async fn status(state: web::Data<State>) -> HttpResponse {
 
 async fn starting(request: HttpRequest) -> HttpResponse {
     use actix_web::HttpMessage;
+    if request.extensions().get::<PlaneOnlyRefused>().is_some() {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "plane_only_listener",
+            "message": "this listener serves only the plane's MCP route",
+        }));
+    }
     let is_document = request
         .extensions()
         .get::<HasUi>()

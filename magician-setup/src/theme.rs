@@ -33,7 +33,7 @@ pub fn selected() -> Style {
 /// tagline that differs between the site and the installer reads as two
 /// products.
 pub const NAME: &str = "Magican";
-pub const TAGLINE: &str = "Superpowers for Work, Play, and all your side quests";
+pub const TAGLINE: &str = "Life assistant for work, play, and everything else";
 /// The manifesto's closing line, which is the argument for the whole thing.
 pub const THESIS: &str =
     "Not another intelligence at the heart of your life — more power in your own hands.";

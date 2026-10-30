@@ -22,6 +22,21 @@ const PREVIEW_LIMIT = 200;
 //   https://<host>/webhook            →  the kapso bot
 const WEBHOOK_PATH = "/agentmail-webhook";
 
+/**
+ * AGENTMAIL_WEBHOOK_URL when set, else https://${MAGICIAN_WEBHOOK_HOST} — the
+ * machine's tunnel webhook host, so a machine move re-registers on restart.
+ */
+export function resolveAgentMailWebhookUrl(
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const explicit = env.AGENTMAIL_WEBHOOK_URL?.trim();
+  if (explicit) return explicit;
+  const host = env.MAGICIAN_WEBHOOK_HOST?.trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "");
+  return host ? `https://${host}` : undefined;
+}
+
 export interface AgentMailAdapterOptions {
   apiKey: string;
   webhookPort: number;
@@ -67,7 +82,7 @@ export class AgentMailAdapter implements ChannelAdapter<string> {
 
   async start(handlers: ChannelAdapterHandlers<string>): Promise<void> {
     if (!this.webhookSecret && !this.webhookUrl) {
-      throw new Error("AgentMail requires AGENTMAIL_WEBHOOK_SECRET or AGENTMAIL_WEBHOOK_URL for verified webhooks");
+      throw new Error("AgentMail requires AGENTMAIL_WEBHOOK_SECRET, or MAGICIAN_WEBHOOK_HOST / AGENTMAIL_WEBHOOK_URL to self-register, for verified webhooks");
     }
     this.handlers = handlers;
 
@@ -396,7 +411,7 @@ export class AgentMailAdapter implements ChannelAdapter<string> {
   private async selfRegisterWebhook(): Promise<void> {
     if (!this.webhookUrl) {
       console.info(
-        "[agentmail-bot] AGENTMAIL_WEBHOOK_URL not set — skipping self-register. " +
+        "[agentmail-bot] no webhook URL (MAGICIAN_WEBHOOK_HOST / AGENTMAIL_WEBHOOK_URL unset) — skipping self-register. " +
           `Register a webhook manually pointing at <public-url>${WEBHOOK_PATH} ` +
           `for events ${["message.received", ...DELIVERY_EVENT_TYPES].join(", ")} (e.g. via an ngrok / magictunnel URL).`,
       );
@@ -419,8 +434,30 @@ export class AgentMailAdapter implements ChannelAdapter<string> {
         client_id: SELF_REGISTER_CLIENT_ID,
       };
       let webhook = await this.client.webhooks.create(subscription as Parameters<typeof this.client.webhooks.create>[0]);
+      const currentUrl = (webhook as typeof webhook & { url?: string }).url;
+      let recreated = false;
+      if (typeof currentUrl === "string" && currentUrl !== url) {
+        // Reusing a client_id returns the existing hook unchanged, so a
+        // machine moved to a new webhook host kept the old, unserved URL.
+        // The update endpoint cannot change a URL: delete the stale hook and
+        // register again under the same client_id (which also issues the new
+        // hook's signing secret).
+        const removed = await fetch(`https://api.agentmail.to/v0/webhooks/${encodeURIComponent(webhook.webhook_id)}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${this.apiKey}` },
+          signal: AbortSignal.timeout(20_000),
+          redirect: "error",
+        });
+        if (!removed.ok && removed.status !== 404) throw new Error(`Stale webhook removal failed (${removed.status}).`);
+        console.info("[agentmail-bot] webhook moved", { from: currentUrl, to: url });
+        webhook = await this.client.webhooks.create(subscription as Parameters<typeof this.client.webhooks.create>[0]);
+        const createdUrl = (webhook as typeof webhook & { url?: string }).url;
+        if (typeof createdUrl === "string" && createdUrl !== url) throw new Error("Provider did not register the configured webhook URL.");
+        recreated = true;
+      }
       const currentTypes = (webhook as typeof webhook & { event_types?: string[] }).event_types as string[] | undefined;
-      if (!currentTypes || !subscription.event_types.every(type => currentTypes.includes(type))) {
+      const missingTypes = !currentTypes || !subscription.event_types.every(type => currentTypes.includes(type));
+      if (missingTypes) {
         // Reusing a client_id may return the existing incoming-only hook.
         // PATCH replaces the list, so preserve its other subscriptions too.
         const patch = { event_types: [...new Set([...(currentTypes ?? []), ...subscription.event_types])] };
@@ -443,7 +480,9 @@ export class AgentMailAdapter implements ChannelAdapter<string> {
       }
       // The provider returns the secret for this registration. Keep explicit
       // operator configuration when present; never print the returned secret.
-      this.webhookSecret ??= webhook.secret?.trim() || undefined;
+      // A recreated hook has a new secret, so a configured one is stale.
+      const issued = webhook.secret?.trim() || undefined;
+      this.webhookSecret = recreated ? issued ?? this.webhookSecret : this.webhookSecret ?? issued;
       console.info("[agentmail-bot] webhook registered", {
         url,
         webhookId: webhook.webhook_id,

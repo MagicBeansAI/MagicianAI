@@ -1,5 +1,7 @@
 # Magicutor - Extension CDP Proxy
 
+Browser WebSocket clients use Rustls 0.23.
+
 Magicutor is the local browser bridge used by Magician's browser inner loop. It
 does not own agentic browser decisions anymore. Magician runs `agent-browser`;
 Magicutor exposes a Chrome DevTools Protocol compatible proxy that forwards CDP
@@ -22,9 +24,9 @@ requests to the installed Chrome extension through a WebSocket bridge.
   capture buffer.
 - The extension's right-click menu has these entries: **Magician** (on
   selection/editable targets, opens the native assist menu with the text) and
-  **Ask Magician about this page** (on any page right-click, opens the native
-  assist menu in `page-context` state with the tab URL/title — grounding comes
-  from a tab capture on the desktop side). A third, selection-only entry,
+  **Ask Magician about this page** (right-click on any web page or local
+  `file://` page, opens the native assist menu in `page-context` state with
+  the tab URL/title — grounding comes from a tab capture on the desktop side). A third, selection-only entry,
   **Save selection to Magician Notes**, posts the selection to Magician's
   `/notes/capture-selection`.
 - `GET /trace/drain/{thread_id}` drains per-thread network traces for Magician API mining.

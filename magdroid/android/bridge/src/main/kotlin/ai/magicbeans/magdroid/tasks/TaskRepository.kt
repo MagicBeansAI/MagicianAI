@@ -461,7 +461,13 @@ class TaskRepository(private val context: Context) : TasksDataSource, AutoClosea
         if (status.isSuccess()) return body
         val message = runCatching {
             val root = taskJson.parseToJsonElement(body).jsonObject
-            (root["error"] ?: root["message"] ?: root["detail"])?.jsonPrimitive?.content
+            val raw = (root["error"] ?: root["message"] ?: root["detail"])?.jsonPrimitive?.content
+            // 409 `task_active`: the run is still finishing (e.g. writing outputs).
+            if ((root["code"] as? JsonPrimitive)?.contentOrNull == "task_active" || raw?.startsWith("task_active:") == true) {
+                "This task is still finishing. Try again in a few seconds."
+            } else {
+                raw
+            }
         }.getOrNull()?.takeIf(String::isNotBlank)
         throw TaskApiError(message ?: "Could not $action (HTTP ${status.value}).", status.value)
     }
@@ -536,6 +542,18 @@ internal fun parseTaskRealtimeEvent(
     principal: String,
     workspace: String,
 ): TaskRealtimeEvent? {
+    val progressData = envelope["data"] as? JsonObject
+    val inner = if (envelope["event_type"].textValue() == "AgentEvent") progressData?.get("event") as? JsonObject else null
+    val payload = (inner?.get("payload") as? JsonObject) ?: progressData
+    val correlation = payload?.get("correlation") as? JsonObject
+    val workType = inner?.get("event_type").textValue() ?: envelope["event_type"].textValue().orEmpty()
+    if (payload != null && TaskRunEvidence.isProgress(workType, payload)) {
+        if ((payload["principal"] ?: inner?.get("principal") ?: progressData?.get("principal")).textValue() != principal ||
+            (payload["workspace"] ?: inner?.get("workspace") ?: progressData?.get("workspace")).textValue() != workspace) return null
+        val root = (payload["root_execution_id"] ?: correlation?.get("root_execution_id") ?: payload["execution_id"] ?: correlation?.get("execution_id")).textValue() ?: return null
+        val at = TaskRunEvidence.instant(payload["timestamp"] ?: inner?.get("timestamp") ?: progressData?.get("timestamp") ?: envelope["timestamp"]) ?: return null
+        return TaskRealtimeEvent(workType, executionId = root, eventTimestamp = at, progress = true)
+    }
     val type = envelope["event_type"].textValue().orEmpty()
     if (!type.contains("Task") && !type.contains("Planning") &&
         !type.contains("Execution") && !type.contains("Monitor")) return null

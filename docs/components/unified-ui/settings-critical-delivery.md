@@ -17,8 +17,9 @@ quiet window with the time-bound interrupt. A channel enabled without an
 owner identity is flagged, as is a missing link origin (the alert then
 says to open Magician → Attention instead of linking the request). The link
 origin is not editable here — it is deployment topology, read from
-`hitl.critical_delivery.owner_ui_origin` and falling back to
-`mobile_access.public_origin`, and a save from this panel leaves it alone.
+`hitl.critical_delivery.owner_ui_origin`, falling back to this machine's
+`MAGICIAN_UI_HOST` and then `mobile_access.public_origin`, and a save from this
+panel leaves it alone.
 
 Below the settings the panel lists recent deliveries — request, masked
 destination, state (`queued`, `claimed`, `provider_accepted`, `failed`,

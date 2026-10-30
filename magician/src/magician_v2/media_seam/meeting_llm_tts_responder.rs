@@ -72,9 +72,9 @@ impl LlmTtsResponder {
         scope: Option<(String, String)>,
         execution_id: Option<String>,
     ) -> Self {
-        self.meter_scope = scope
-            .clone()
-            .map(|(principal, workspace)| crate::magician_v2::media_seam::metering::MediaMeterScope::new(principal, workspace));
+        self.meter_scope = scope.clone().map(|(principal, workspace)| {
+            crate::magician_v2::media_seam::metering::MediaMeterScope::new(principal, workspace)
+        });
         if let (Some(router), Some((principal, workspace))) = (self.router.as_ref(), scope.as_ref())
         {
             self.router = Some(std::sync::Arc::new(
@@ -184,7 +184,13 @@ impl MeetingResponder for LlmTtsResponder {
             emphasis: None,
         };
         let synth = match self.meter_scope.clone() {
-            Some(scope) => crate::magician_v2::media_seam::metering::with_media_meter_scope(scope, self.tts.synthesize(request)).await,
+            Some(scope) => {
+                crate::magician_v2::media_seam::metering::with_media_meter_scope(
+                    scope,
+                    self.tts.synthesize(request),
+                )
+                .await
+            },
             None => self.tts.synthesize(request).await,
         }
         .map_err(|e| ResponderError::Failed(format!("tts: {e}")))?;

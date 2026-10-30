@@ -1474,6 +1474,12 @@ pub(crate) fn audio_config_error_response(error: AudioConfigError) -> HttpRespon
 pub struct SynthesizeTtsRequest {
     #[serde(default)]
     pub workspace: Option<String>,
+    /// `"pcm16"`: return a WAV reply as 16-bit PCM even when the provider
+    /// renders float32 (macOS speech does, at 22.05 kHz). Half the bytes; the
+    /// ESP32 voice terminal asks for it because it downloads every sample over
+    /// Wi-Fi and TLS while playing, and float32 starved its playback.
+    #[serde(default)]
+    pub wav_encoding: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
     pub text: String,
@@ -1503,14 +1509,199 @@ pub struct SynthesizeTtsRequest {
     pub audio_stage_options: BTreeMap<AudioStage, String>,
 }
 
+/// Optional billing lineage; a client-supplied chat never changes authority.
+async fn request_media_meter_scope(
+    req: &HttpRequest,
+    principal: &str,
+    workspace: &str,
+) -> std::result::Result<magician::magician_v2::media_seam::metering::MediaMeterScope, HttpResponse>
+{
+    let scope =
+        magician::magician_v2::media_seam::metering::MediaMeterScope::new(principal, workspace);
+    let Some(header) = req.headers().get("X-Chat-Session-Id") else {
+        return Ok(scope);
+    };
+    let id = match header.to_str() {
+        Ok(id)
+            if !id.is_empty()
+                && id.len() <= 256
+                && id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') =>
+        {
+            id
+        },
+        _ => {
+            return Err(
+                HttpResponse::BadRequest().json(json!({"error":"invalid_media_chat_session"}))
+            )
+        },
+    };
+    let Some(chat) = req.app_data::<web::Data<crate::chat_api::ChatApi>>() else {
+        return Err(
+            HttpResponse::ServiceUnavailable().json(json!({"error":"media_chat_unavailable"}))
+        );
+    };
+    match chat.chat_service.get_session(id).await {
+        Ok(Some(session))
+            if crate::chat_api::session_matches_scope(&session, principal, workspace) =>
+        {
+            Ok(scope.with_chat_session(Some(session.id)))
+        },
+        Ok(_) => Err(HttpResponse::NotFound().json(json!({"error":"media_chat_not_found"}))),
+        Err(_) => {
+            Err(HttpResponse::ServiceUnavailable().json(json!({"error":"media_chat_unavailable"})))
+        },
+    }
+}
+
+/// A float32 or 32-bit PCM WAV rewritten as 16-bit PCM with a plain 44-byte
+/// header (padding chunks such as `JUNK`/`FLLR` are dropped). `None` when the
+/// bytes are not such a WAV — already 16-bit, another format, or malformed —
+/// so the caller sends them unchanged.
+pub(crate) fn wav_as_pcm16(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let u16_at = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+    let u32_at =
+        |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let mut at = 12;
+    let mut fmt: Option<(u16, u16, u32, u16)> = None; // format, channels, rate, bits
+    let mut data: Option<&[u8]> = None;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32_at(at + 4) as usize;
+        let start = at + 8;
+        let end = start.checked_add(size)?.min(bytes.len());
+        if id == b"fmt " && size >= 16 && start + 16 <= bytes.len() {
+            let mut format = u16_at(start);
+            if format == 0xFFFE && size >= 26 && start + 26 <= bytes.len() {
+                format = u16_at(start + 24); // WAVE_FORMAT_EXTENSIBLE sub-format
+            }
+            fmt = Some((
+                format,
+                u16_at(start + 2),
+                u32_at(start + 4),
+                u16_at(start + 14),
+            ));
+        } else if id == b"data" {
+            data = Some(&bytes[start..end]);
+            break;
+        }
+        at = start.checked_add(size)? + (size & 1);
+    }
+    let (format, channels, rate, bits) = fmt?;
+    let data = data?;
+    let samples: Vec<i16> = match (format, bits) {
+        (3, 32) => data
+            .chunks_exact(4)
+            .map(|c| {
+                let v = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                (v.clamp(-1.0, 1.0) * 32767.0).round() as i16
+            })
+            .collect(),
+        (1, 32) => data
+            .chunks_exact(4)
+            .map(|c| (i32::from_le_bytes([c[0], c[1], c[2], c[3]]) >> 16) as i16)
+            .collect(),
+        _ => return None,
+    };
+    let payload = samples.len() * 2;
+    let mut out = Vec::with_capacity(44 + payload);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((36 + payload) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(
+        &rate
+            .checked_mul(u32::from(channels))?
+            .checked_mul(2)?
+            .to_le_bytes(),
+    );
+    out.extend_from_slice(&channels.checked_mul(2)?.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(payload as u32).to_le_bytes());
+    for sample in samples {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod wav_pcm16_tests {
+    use super::wav_as_pcm16;
+
+    fn wav(format: u16, bits: u16, padding: bool, payload: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"WAVEfmt ");
+        body.extend_from_slice(&16u32.to_le_bytes());
+        body.extend_from_slice(&format.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&22_050u32.to_le_bytes());
+        body.extend_from_slice(&(22_050u32 * u32::from(bits / 8)).to_le_bytes());
+        body.extend_from_slice(&(bits / 8).to_le_bytes());
+        body.extend_from_slice(&bits.to_le_bytes());
+        if padding {
+            body.extend_from_slice(b"FLLR");
+            body.extend_from_slice(&7u32.to_le_bytes());
+            body.extend_from_slice(&[0; 8]); // 7 bytes + the pad byte
+        }
+        body.extend_from_slice(b"data");
+        body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        body.extend_from_slice(payload);
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn float32_becomes_pcm16_behind_padding() {
+        let floats: Vec<u8> = [0.0f32, 1.0, -1.0, 0.5, 2.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let out = wav_as_pcm16(&wav(3, 32, true, &floats)).expect("converted");
+        assert_eq!(&out[0..4], b"RIFF");
+        assert_eq!(u16::from_le_bytes([out[20], out[21]]), 1); // PCM
+        assert_eq!(u16::from_le_bytes([out[34], out[35]]), 16); // bits per sample
+        assert_eq!(
+            u32::from_le_bytes([out[24], out[25], out[26], out[27]]),
+            22_050
+        );
+        let samples: Vec<i16> = out[44..]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(samples, vec![0, 32767, -32767, 16384, 32767]);
+    }
+
+    #[test]
+    fn pcm16_and_non_wav_pass_through() {
+        assert!(wav_as_pcm16(&wav(1, 16, false, &[0, 0, 1, 0])).is_none());
+        assert!(wav_as_pcm16(b"ID3 not a wav").is_none());
+        assert!(wav_as_pcm16(&[]).is_none());
+    }
+}
+
 pub async fn synthesize_tts_handler(
     api: web::Data<Arc<MediaApi>>,
     req: HttpRequest,
     body: web::Json<SynthesizeTtsRequest>,
 ) -> Result<HttpResponse> {
     let body = body.into_inner();
+    let want_pcm16 = body.wav_encoding.as_deref().map(str::trim) == Some("pcm16");
     let (principal, workspace) = match resolve_required_scope(req.headers(), body.workspace.clone())
     {
+        Ok(scope) => scope,
+        Err(response) => return Ok(response),
+    };
+    let meter_scope = match request_media_meter_scope(&req, &principal, &workspace).await {
         Ok(scope) => scope,
         Err(response) => return Ok(response),
     };
@@ -1603,8 +1794,12 @@ pub async fn synthesize_tts_handler(
             request_for_attempt.voice = None;
             request_for_attempt.model = None;
         }
-        let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(principal.clone(), workspace.clone());
-        match magician::magician_v2::media_seam::metering::with_media_meter_scope(meter_scope, provider.synthesize(request_for_attempt)).await {
+        match magician::magician_v2::media_seam::metering::with_media_meter_scope(
+            meter_scope.clone(),
+            provider.synthesize(request_for_attempt),
+        )
+        .await
+        {
             Ok(response) => {
                 let is_fallback = idx > 0;
                 let mut builder = HttpResponse::Ok();
@@ -1630,7 +1825,14 @@ pub async fn synthesize_tts_handler(
                         "[TTS] synth succeeded on fallback provider"
                     );
                 }
-                return Ok(builder.body(response.audio));
+                let audio = if want_pcm16 {
+                    wav_as_pcm16(&response.audio)
+                        .map(Into::into)
+                        .unwrap_or(response.audio)
+                } else {
+                    response.audio
+                };
+                return Ok(builder.body(audio));
             },
             Err(err @ TtsError::Upstream { .. }) | Err(err @ TtsError::Transport(_)) => {
                 tracing::warn!(
@@ -1943,6 +2145,10 @@ pub async fn synthesize_message_handler(
         Ok(scope) => scope,
         Err(response) => return Ok(response),
     };
+    let meter_scope = match request_media_meter_scope(&req, &principal, &workspace).await {
+        Ok(scope) => scope,
+        Err(response) => return Ok(response),
+    };
     let effective_provider = match resolve_dictation_tts_provider(
         api.get_ref(),
         &principal,
@@ -2039,7 +2245,6 @@ pub async fn synthesize_message_handler(
         message_id: message_id.clone(),
         timeout: segment_timeout,
     };
-    let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(principal.clone(), workspace.clone());
     tokio::spawn(async move {
         let total = segments.len();
         for (index, segment) in segments.into_iter().enumerate() {
@@ -2283,12 +2488,34 @@ pub async fn submit_voice_note_handler(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let ui_thread_id = form_field(&form.fields, "thread_id")
+    let requested_thread = form_field(&form.fields, "thread_id")
         .or_else(|| form_field(&form.fields, "ui_thread_id"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("general")
-        .to_string();
+        .map(str::to_owned);
+    // A paired voice terminal that names no thread of its own (the ESP32 sends
+    // its default "general") talks in a thread of its own, named after the
+    // device, instead of filing each turn into the owner's #general as an
+    // untitled chat. Phones send the thread they are showing and keep it.
+    // A thread chosen on the terminal's own screen is sent with
+    // `thread_choice=picked` and is always honoured, #general included.
+    let picked_on_device =
+        form_field(&form.fields, "thread_choice").map(str::trim) == Some("picked");
+    let terminal = if chat_session_id.is_none()
+        && !picked_on_device
+        && source_surface == "esp_terminal"
+        && requested_thread
+            .as_deref()
+            .is_none_or(|thread| thread == "general")
+    {
+        crate::device_conversations_api::paired_terminal(&req, &principal, &workspace).await
+    } else {
+        None
+    };
+    let ui_thread_id = match &terminal {
+        Some(device) => device.thread_id.clone(),
+        None => requested_thread.unwrap_or_else(|| "general".to_string()),
+    };
     let language = form_field(&form.fields, "language").map(str::to_owned);
     let model = form_field(&form.fields, "model").map(str::to_owned);
     let message_id = form_field(&form.fields, "message_id").map(str::to_owned);
@@ -2338,11 +2565,69 @@ pub async fn submit_voice_note_handler(
             channel_type: "desktop_voice".to_string(),
             address: presence_session_id.clone(),
         };
-        match chat_api
+        if let Some(device) = &terminal {
+            if let Err(error) = chat_api
+                .chat_service
+                .ensure_named_thread(
+                    &principal,
+                    &workspace,
+                    &device.thread_id,
+                    &device.label,
+                    magician::magician_v2::history::HistoryLane::Personal,
+                )
+                .await
+            {
+                tracing::warn!(
+                    "[VOICE-NOTE] could not name thread {}: {error}",
+                    device.thread_id
+                );
+            }
+        }
+        // A thread started on a voice terminal is filed under Automated, and
+        // so are the chats inside it.
+        let automated = chat_api
             .chat_service
-            .get_or_create_session(&principal, &workspace, &ui_thread_id, &origin, None)
+            .thread_lane(&principal, &workspace, &ui_thread_id)
             .await
-        {
+            == Some(magician::magician_v2::history::HistoryLane::Automated);
+        let resolved = if automated {
+            chat_api
+                .chat_service
+                .get_or_create_automated_session(
+                    &principal,
+                    &workspace,
+                    &ui_thread_id,
+                    &origin,
+                    None,
+                )
+                .await
+        } else {
+            chat_api
+                .chat_service
+                .get_or_create_session(&principal, &workspace, &ui_thread_id, &origin, None)
+                .await
+        };
+        match resolved {
+            Ok(session) if session.title.is_none() && terminal.is_some() => {
+                // Name the chat after the device too; otherwise the first
+                // thing said becomes its title ("Can you hear me now").
+                let label = terminal
+                    .as_ref()
+                    .map(|device| device.label.as_str())
+                    .unwrap_or_default();
+                if let Err(error) = chat_api
+                    .chat_service
+                    .chat_store_ref()
+                    .update_session_title(&session.id, label)
+                    .await
+                {
+                    tracing::warn!(
+                        "[VOICE-NOTE] could not title session {}: {error}",
+                        session.id
+                    );
+                }
+                session
+            },
             Ok(session) => session,
             Err(error) => {
                 return Ok(HttpResponse::InternalServerError().json(json!({
@@ -2469,49 +2754,54 @@ pub async fn submit_voice_note_handler(
         filename: form.filename,
         prompt,
     };
-    let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(principal.clone(), workspace.clone());
-    let (stt_provider, stt_response) = match magician::magician_v2::media_seam::metering::with_media_meter_scope(
-        meter_scope,
-        transcribe_with_stt_chain(stt_chain, stt_request),
+    let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(
+        principal.clone(),
+        workspace.clone(),
     )
-    .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            emit_voice_note_event(
-                media_api.get_ref(),
-                MEDIA_VOICE_NOTE_TRANSCRIPTION_FAILED,
-                &principal,
-                &workspace,
-                json!({
-                    "chat_session_id": session.id.as_str(),
-                    "source_surface": source_surface.as_str(),
-                    "presence_session_id": presence_session_id.as_deref(),
-                    "voice_session_id": voice_session_id.as_deref(),
-                    "transcript_provider": initial_stt_provider_id.as_str(),
-                    "requested_transcript_provider": requested_stt_provider.as_deref(),
-                    "error": "stt_failed",
-                    "details": error.to_string(),
-                    "audio_artifact_id": audio_artifact_id.as_deref(),
-                }),
-            );
-            emit_voice_note_event(
-                media_api.get_ref(),
-                MEDIA_VOICE_NOTE_ERROR,
-                &principal,
-                &workspace,
-                json!({
-                    "chat_session_id": session.id.as_str(),
-                    "source_surface": source_surface.as_str(),
-                    "presence_session_id": presence_session_id.as_deref(),
-                    "voice_session_id": voice_session_id.as_deref(),
-                    "error": "stt_failed",
-                    "details": error.to_string(),
-                }),
-            );
-            return Ok(stt_error_response(&error));
-        },
-    };
+    .with_chat_session(Some(session.id.clone()));
+    let (stt_provider, stt_response) =
+        match magician::magician_v2::media_seam::metering::with_media_meter_scope(
+            meter_scope,
+            transcribe_with_stt_chain(stt_chain, stt_request),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                emit_voice_note_event(
+                    media_api.get_ref(),
+                    MEDIA_VOICE_NOTE_TRANSCRIPTION_FAILED,
+                    &principal,
+                    &workspace,
+                    json!({
+                        "chat_session_id": session.id.as_str(),
+                        "source_surface": source_surface.as_str(),
+                        "presence_session_id": presence_session_id.as_deref(),
+                        "voice_session_id": voice_session_id.as_deref(),
+                        "transcript_provider": initial_stt_provider_id.as_str(),
+                        "requested_transcript_provider": requested_stt_provider.as_deref(),
+                        "error": "stt_failed",
+                        "details": error.to_string(),
+                        "audio_artifact_id": audio_artifact_id.as_deref(),
+                    }),
+                );
+                emit_voice_note_event(
+                    media_api.get_ref(),
+                    MEDIA_VOICE_NOTE_ERROR,
+                    &principal,
+                    &workspace,
+                    json!({
+                        "chat_session_id": session.id.as_str(),
+                        "source_surface": source_surface.as_str(),
+                        "presence_session_id": presence_session_id.as_deref(),
+                        "voice_session_id": voice_session_id.as_deref(),
+                        "error": "stt_failed",
+                        "details": error.to_string(),
+                    }),
+                );
+                return Ok(stt_error_response(&error));
+            },
+        };
     let transcript = stt_response.transcript.trim().to_string();
     let transcript_model = stt_response.model.clone();
     let transcript_language = stt_response.language.clone();
@@ -3156,6 +3446,10 @@ pub async fn transcribe_stt_handler(
         Ok(options) => options,
         Err(response) => return Ok(response),
     };
+    let meter_scope = match request_media_meter_scope(&req, &principal, &workspace).await {
+        Ok(scope) => scope,
+        Err(response) => return Ok(response),
+    };
     let effective_provider = match resolve_dictation_stt_provider(
         api.get_ref(),
         &principal,
@@ -3244,8 +3538,12 @@ pub async fn transcribe_stt_handler(
         filename,
         prompt: query.prompt,
     };
-    let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(principal.clone(), workspace.clone());
-    match magician::magician_v2::media_seam::metering::with_media_meter_scope(meter_scope, transcribe_with_stt_chain(stt_chain, stt_request)).await {
+    match magician::magician_v2::media_seam::metering::with_media_meter_scope(
+        meter_scope,
+        transcribe_with_stt_chain(stt_chain, stt_request),
+    )
+    .await
+    {
         Ok((_provider, response)) => Ok(HttpResponse::Ok().json(response)),
         Err(err) => Ok(stt_error_response(&err)),
     }
@@ -3277,6 +3575,10 @@ pub async fn transcribe_stt_stream_handler(
     };
     let stage_options = match parse_audio_stage_options_from_query(req.query_string()) {
         Ok(options) => options,
+        Err(response) => return Ok(response),
+    };
+    let meter_scope = match request_media_meter_scope(&req, &principal, &workspace).await {
+        Ok(scope) => scope,
         Err(response) => return Ok(response),
     };
     let effective_provider = match resolve_dictation_stt_provider(
@@ -3372,7 +3674,6 @@ pub async fn transcribe_stt_stream_handler(
     // provider, which is desirable when the client is reading
     // slower than OpenAI streams.
     let (event_tx, event_rx) = tokio::sync::mpsc::channel::<SttStreamEvent>(64);
-    let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(principal.clone(), workspace.clone());
 
     tokio::spawn(async move {
         let mut last_error: Option<SttError> = None;
@@ -3520,6 +3821,118 @@ mod audio_settings_api_tests {
     use magician_media::media_rails::{
         AudioRuntimeConfigManager, SttError, SttProvider, SttRequest, SttResponse, TtsResponse,
     };
+
+    struct UnusedPrompts;
+    #[async_trait]
+    impl runtime_core::PromptStore for UnusedPrompts {
+        async fn get_prompt(&self, _: &str, _: &str) -> anyhow::Result<runtime_core::Prompt> {
+            anyhow::bail!("unused")
+        }
+        async fn list_versions(&self, _: &str) -> anyhow::Result<Vec<String>> {
+            Ok(vec![])
+        }
+        async fn list_prompt_names(&self) -> anyhow::Result<Vec<String>> {
+            Ok(vec![])
+        }
+        async fn save_prompt(&self, _: &runtime_core::Prompt) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn prompt_exists(&self, _: &str, _: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        async fn latest_version(&self, _: &str) -> anyhow::Result<String> {
+            anyhow::bail!("unused")
+        }
+        async fn delete_prompt(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn initialize(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn health_check(&self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[actix_web::test]
+    async fn media_chat_attribution_validates_the_authenticated_scope() {
+        use magician::magician_v2::chat::{
+            models::ChatChannel,
+            storage::{ChatStore, FileChatStore},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileChatStore::new(root.path().to_path_buf()));
+        let session = store
+            .get_or_create_active_session(
+                "owner",
+                "work",
+                "general",
+                &ChatChannel::web(),
+                "personal-assistant",
+            )
+            .await
+            .unwrap();
+        let api = web::Data::new(crate::chat_api::ChatApi::new(ChatService::new(
+            store,
+            magician::magician_v2::chat::llm_service::ChatLlmService::new(Arc::new(
+                magician::magician_v2::query_analysis::multi_llm_service::MultiLLMService::new(
+                    std::collections::HashMap::new(),
+                    std::collections::HashMap::new(),
+                ),
+            )),
+            Arc::new(magician::magician_v2::prompts::PromptManager::new(
+                Arc::new(UnusedPrompts),
+            )),
+            Arc::new(RuntimeTransportBroadcaster::new(16)),
+        )));
+        let req = test::TestRequest::default()
+            .app_data(api.clone())
+            .insert_header(("X-Chat-Session-Id", session.id.as_str()))
+            .to_http_request();
+        let scope = request_media_meter_scope(&req, "owner", "work")
+            .await
+            .unwrap();
+        assert_eq!(scope.chat_session_id.as_deref(), Some(session.id.as_str()));
+        for (principal, workspace) in [("other-owner", "work"), ("owner", "other-work")] {
+            assert_eq!(
+                request_media_meter_scope(&req, principal, workspace)
+                    .await
+                    .unwrap_err()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
+        let unlinked = test::TestRequest::default().to_http_request();
+        assert_eq!(
+            request_media_meter_scope(&unlinked, "owner", "work")
+                .await
+                .unwrap()
+                .chat_session_id,
+            None
+        );
+        for id in ["  ", "../another-chat", "chat/other"] {
+            let invalid = test::TestRequest::default()
+                .insert_header(("X-Chat-Session-Id", id))
+                .to_http_request();
+            assert_eq!(
+                request_media_meter_scope(&invalid, "owner", "work")
+                    .await
+                    .unwrap_err()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let missing_service = test::TestRequest::default()
+            .insert_header(("X-Chat-Session-Id", session.id.as_str()))
+            .to_http_request();
+        assert_eq!(
+            request_media_meter_scope(&missing_service, "owner", "work")
+                .await
+                .unwrap_err()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 
     #[actix_web::test]
     async fn corrective_voice_note_error_retains_session_and_audio_receipt() {

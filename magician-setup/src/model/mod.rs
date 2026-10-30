@@ -63,6 +63,7 @@ impl Selection {
 
     /// Why this machine cannot have a component, if it cannot. One place, so
     /// the plan, the screen and the engine cannot disagree about it.
+    #[cfg(test)]
     pub fn unsupported(&self, component_id: &str) -> Option<String> {
         self.graph
             .component(component_id)

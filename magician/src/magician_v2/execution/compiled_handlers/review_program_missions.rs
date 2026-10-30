@@ -39,8 +39,23 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         .map(str::trim)
         .filter(|p| !p.is_empty());
 
-    let ws = &resources.artifact_workspace;
+    review(
+        &resources.artifact_workspace,
+        &resources.agent_definition_store,
+        &principal,
+        &workspace,
+        program_filter,
+    )
+    .await
+}
 
+async fn review(
+    ws: &crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace,
+    definitions: &crate::magician_v2::agents::AgentDefinitionStore,
+    principal: &str,
+    workspace: &str,
+    program_filter: Option<&str>,
+) -> Result<Value, ExecutionError> {
     // programs to review: one when asked, else every program that currently
     // carries a managed missions section
     let mut docs: Vec<ProgramDoc> = Vec::new();
@@ -68,9 +83,9 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         },
     }
 
-    let definitions = resources
-        .agent_definition_store
-        .list_definitions()
+    let definitions = definitions
+        .for_scope(principal, workspace)
+        .list_persisted_definitions()
         .await
         .map_err(|err| invalid(format!("failed to list agent definitions: {err}")))?;
     let loader = ProgramLoader::new(ws.clone());
@@ -130,7 +145,69 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         "note": if reports.is_empty() {
             "no programs carry a managed `## Missions (CEO)` section yet — nothing to review"
         } else {
-            "officer `state` is each program's runtime state (written every harness cycle); null = the officer has not run since the missions landed"
+            "officer `state` is the persisted runtime state for this scoped program and goal; null means no state was found, not proof that the officer never ran"
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::magician_v2::{
+        agents::{AgentDefinition, AgentDefinitionStore},
+        artifact_v2::workspace::ArtifactV2Workspace,
+    };
+
+    #[tokio::test]
+    async fn mission_reviews_use_workspace_bindings_not_another_workspaces_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = ArtifactV2Workspace::new(dir.path());
+        let store = AgentDefinitionStore::with_workspace_layout(ws.clone());
+        for (workspace, focus) in [
+            ("workspace-a", "current focus"),
+            ("workspace-b", "old review"),
+        ] {
+            let definition = AgentDefinition::from_yaml_str(&format!(
+                r#"
+agent_id: analyst
+name: Analyst
+persona: Analyst
+kind: personal
+principal: owner
+workspace: {workspace}
+harness: {{}}
+autonomous_config:
+  schedule: "0 7 * * *"
+  focus_areas:
+    - name: {focus}
+      priority: medium
+      description: Review work
+      program: plan.md
+"#
+            ))
+            .unwrap();
+            store
+                .for_scope("owner", workspace)
+                .create_definition(definition)
+                .await
+                .unwrap();
+            let root = ws.program_specs_root("owner", workspace);
+            tokio::fs::create_dir_all(&root).await.unwrap();
+            tokio::fs::write(
+                root.join("plan.md"),
+                "# Plan\n\n## Missions (CEO)\nReview\n",
+            )
+            .await
+            .unwrap();
+        }
+        let report = review(&ws, &store, "owner", "workspace-a", Some("plan.md"))
+            .await
+            .unwrap();
+        let officers = report["programs"][0]["officers"].as_array().unwrap();
+        assert_eq!(officers.len(), 1);
+        assert_eq!(officers[0]["focus_area"], "current focus");
+        assert!(!report.to_string().contains("old review"));
+        assert!(officers[0]["state"].is_null());
+        assert!(!report["note"].as_str().unwrap().contains("has not run"));
+    }
 }

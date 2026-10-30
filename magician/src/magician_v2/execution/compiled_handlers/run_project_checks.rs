@@ -116,6 +116,28 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         .artifact_workspace
         .capability_home_root(&principal, &workspace);
 
+    let original = if let (Some(service), Some(task_id)) = (
+        resources.artifact_v2_service.as_ref(),
+        scope_arg_str(&args, "__task_id"),
+    ) {
+        let scope =
+            crate::magician_v2::artifact_v2::service::ScopeRef::system_internal_unauthenticated(
+                &principal, &workspace,
+            );
+        match crate::magician_v2::vibedev::original_workspace::for_execution_task(
+            service,
+            &scope,
+            &scope_root,
+            &task_id,
+        )
+        .await
+        {
+            Ok(run) => run,
+            Err(reason) => return Ok(json!({"status":"error", "reason":reason})),
+        }
+    } else {
+        None
+    };
     let proposal_context = authoritative_proposal_verification_context(
         &scope_root,
         scope_arg_str(&args, "__task_id").as_deref(),
@@ -138,8 +160,10 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         }));
     }
 
-    let authoritative_repo_path = explicit_real_working_dir
-        .clone()
+    let authoritative_repo_path = original
+        .as_ref()
+        .map(|run| run.repo.display().to_string())
+        .or(explicit_real_working_dir.clone())
         .or_else(|| {
             proposal_context
                 .as_ref()
@@ -162,7 +186,10 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     .await
     .lock_owned()
     .await;
-    let shadow_root = coding_shadow_root(&scope_root, &binding.real_path);
+    let shadow_root = original
+        .as_ref()
+        .map(|run| run.repo.clone())
+        .unwrap_or_else(|| coding_shadow_root(&scope_root, &binding.real_path));
     if !shadow_root.exists() {
         if let Some(parent) = shadow_root.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -211,15 +238,39 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         }));
     }
 
+    let build_env = if original.is_some() {
+        let dir = crate::magician_v2::execution::coding_engine::coding_build_dir(
+            &scope_root,
+            crate::magician_v2::execution::coding_engine::budgets::coding_budget_settings()
+                .build_dir
+                .as_deref(),
+        )
+        .map_err(ExecutionError::Step)?;
+        vec![("CARGO_TARGET_DIR".to_string(), dir)]
+    } else {
+        Vec::new()
+    };
     let mut results = Vec::with_capacity(selected.len());
     let mut all_ok = true;
     for command in &selected {
-        let (ok, exit_code, timed_out, output_tail) = run_one(
+        let check = run_one(
             &shadow_root,
             &command.command,
             Duration::from_secs(command.timeout_secs),
-        )
-        .await;
+            &build_env,
+        );
+        let (ok, exit_code, timed_out, output_tail) = if let Some(run) = &original {
+            crate::magician_v2::execution::coding_engine::with_coding_context(
+                true,
+                crate::magician_v2::execution::coding_engine::with_coding_real_repo(
+                    run.repo.clone(),
+                    check,
+                ),
+            )
+            .await
+        } else {
+            check.await
+        };
         if !ok {
             all_ok = false;
         }
@@ -503,7 +554,7 @@ fn git_side_ref_snapshot(
         })
         .collect();
     let git = |index: Option<&std::path::Path>, a: &[&str]| -> Option<std::process::Output> {
-        let mut command = Command::new("git");
+        let mut command = Command::new(runtime_core::process::git_program());
         command.arg("-C").arg(real_path);
         if let Some(idx) = index {
             command.env("GIT_INDEX_FILE", idx);
@@ -587,6 +638,7 @@ async fn run_one(
     working_dir: &std::path::Path,
     command: &CheckCommand,
     timeout: Duration,
+    build_env: &[(String, std::path::PathBuf)],
 ) -> (bool, Option<i32>, bool, String) {
     // Sandboxed (repo read-only) when run inside a coding context — the check
     // runner is a coding tool invoked by a coding agent, so it inherits the
@@ -602,6 +654,9 @@ async fn run_one(
         sandbox_program.as_os_str(),
         &sandbox_args,
     );
+    for (name, path) in build_env {
+        cmd.env(name, path);
+    }
     cmd.current_dir(working_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

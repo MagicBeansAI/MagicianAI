@@ -289,7 +289,10 @@ impl MeetingResponder for MagicianAgentResponder {
             emphasis: None,
         };
         let synth = crate::magician_v2::media_seam::metering::with_media_meter_scope(
-            crate::magician_v2::media_seam::metering::MediaMeterScope::new(self.principal.clone(), self.workspace.clone()),
+            crate::magician_v2::media_seam::metering::MediaMeterScope::new(
+                self.principal.clone(),
+                self.workspace.clone(),
+            ),
             self.tts.synthesize(request),
         )
         .await

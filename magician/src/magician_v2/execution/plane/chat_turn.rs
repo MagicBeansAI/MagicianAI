@@ -232,6 +232,11 @@ fn native_homes_root() -> &'static Path {
     &NATIVE_HOMES_ROOT
 }
 
+/// Where the harnesses' native homes live (boxes deny every other session's).
+pub fn native_homes_root_path() -> PathBuf {
+    NATIVE_HOMES_ROOT.clone()
+}
+
 #[doc(hidden)]
 pub fn native_home_is_owned(home: &Path) -> bool {
     home.parent() == Some(native_homes_root())
@@ -682,6 +687,46 @@ fn chat_model_fingerprint(
 pub async fn maybe_harness_chat_turn(
     request: ChatHarnessTurnRequest<'_>,
 ) -> Result<Option<ChatHarnessTurnOutcome>> {
+    let mut retry = KeyFallbackRetry::default();
+    let result = match harness_chat_turn_attempt(&request, &mut retry).await {
+        // The owner approved Magician's key for this CLI after its own
+        // sign-in or account failed: the failed turn runs again, once, on it.
+        Ok(first) if retry.approved && !request.cancel.is_cancelled() => {
+            retry.approved = false;
+            match harness_chat_turn_attempt(&request, &mut retry).await {
+                Ok(Some(outcome)) => Ok(Some(outcome)),
+                Ok(None) => Ok(first),
+                Err(error) => Err(error),
+            }
+        },
+        other => other,
+    };
+    // A "once" approval covers this turn only.
+    if retry.asked {
+        if let Some(engine) = retry.engine.as_deref() {
+            crate::magician_v2::harness_auth::fallback::finish_once(engine);
+        }
+    }
+    result
+}
+
+/// The key-fallback state across a chat turn's attempts
+/// (`harness_auth::fallback`): the owner is asked at most once per turn,
+/// and an approval reruns the failed attempt on Magician's key.
+#[derive(Default)]
+struct KeyFallbackRetry {
+    /// The owner was asked this turn (before the launch or after a failure).
+    asked: bool,
+    /// The owner approved the key: the caller reruns the attempt.
+    approved: bool,
+    /// The engine the attempt ran, whose "once" approval the rerun spends.
+    engine: Option<String>,
+}
+
+async fn harness_chat_turn_attempt(
+    request: &ChatHarnessTurnRequest<'_>,
+    retry: &mut KeyFallbackRetry,
+) -> Result<Option<ChatHarnessTurnOutcome>> {
     if request.disclosure_guarded {
         abandon_for_magician_mouth(request.invocation);
         return skip_chat_harness();
@@ -808,7 +853,8 @@ pub async fn maybe_harness_chat_turn(
     // which the floor otherwise keeps off the plane.
     if super::grant::god_mode_lifts_floor("shell", &grant)
         && request.policy_snapshot.is_some_and(|policy| {
-            (policy.direct_tools.contains_key("shell") || policy.deferred_tools.contains_key("shell"))
+            (policy.direct_tools.contains_key("shell")
+                || policy.deferred_tools.contains_key("shell"))
                 && !policy.denied_tool_names.iter().any(|name| name == "shell")
         })
         && !grant.allowed_tools.iter().any(|name| name == "shell")
@@ -888,7 +934,8 @@ pub async fn maybe_harness_chat_turn(
     // Super god mode: the owner approves (once / this session / always)
     // before this harness starts with no restrictions.
     let unrestricted =
-        crate::magician_v2::god_mode::approve_unrestricted_launch(&grant_ctx, engine_name, None).await;
+        crate::magician_v2::god_mode::approve_unrestricted_launch(&grant_ctx, engine_name, None)
+            .await;
     // Started unrestricted, the harness also stops when super god mode ends.
     let (harness_cancel, _super_watch) = if unrestricted {
         let (token, watch) =
@@ -924,42 +971,99 @@ pub async fn maybe_harness_chat_turn(
         turn_timeout: Duration::from_secs(snapshot.turn_max_seconds),
         native_home: native_home.clone(),
     };
-    let mut settled_health = None;
-    let turn_result = async {
-        let mut session = engine.start(&req).await?;
-        let mut prompt_text = turn_input_text(
-            request.history,
-            request.user_text,
-            request.system_prompt,
-            engine_name,
-            resume_session_id.as_deref(),
-        );
-        if engine_name == "pi" && !request.pi_images.is_empty() {
-            const OMITTED: &str = "[attachment omitted from harness prompt]";
-            if let Some(start) = prompt_text.rfind(OMITTED) {
-                prompt_text.replace_range(start..start + OMITTED.len(), "[image attached]");
-            }
+    // `login_first` with the CLI not signed in (or its session expired):
+    // ask the owner before the launch whether to use Magician's key, rather
+    // than failing first. Never automatic (`harness_auth::fallback`).
+    retry.engine = Some(engine_name.to_string());
+    let ask_scope = crate::magician_v2::harness_auth::fallback::AskScope {
+        principal: request.invocation.principal.clone(),
+        workspace: request.invocation.workspace.clone(),
+        execution_id: None,
+        task_id: None,
+    };
+    if !retry.asked {
+        if let Some(decision) =
+            crate::magician_v2::harness_auth::fallback::preflight(&ask_scope, engine_name).await
+        {
+            retry.asked = true;
+            tracing::info!(
+                engine = engine_name,
+                ?decision,
+                "chat harness launch after the key-fallback decision"
+            );
         }
-        let settled = session
-            .turn(
-                &HarnessTurnInput {
-                    text: prompt_text,
-                    operator_steer: Vec::new(),
-                },
-                &sink,
-            )
-            .await?;
-        settled_health = session.service_health(&settled);
-        session.shutdown().await;
-        Ok::<HarnessTurnSettled, crate::magician_v2::execution::plane::engine::HarnessError>(
-            settled,
-        )
     }
+    let mut settled_health = None;
+    let mut settled_failure_text = String::new();
+    // The grant is good only on this turn's own loopback channel, which its
+    // box alone may reach (`plane::grant_channel`).
+    let mut req = req;
+    let plane_channel = crate::magician_v2::execution::plane::grant_channel::open(
+        &token,
+        native_home.iter().cloned().collect(),
+    )
     .await;
+    let plane_session = plane_channel.as_ref().map(|(session, _)| session.clone());
+    if let Some(session) = &plane_session {
+        req.endpoint.url = crate::magician_v2::execution::plane::grant_channel::endpoint_on(
+            &req.endpoint.url,
+            session.port,
+        );
+    }
+    // The harness process's box keeps out the goal workspaces the chat's
+    // agent may not reach (`goal_workspace_access`).
+    let acting_agent = Some(request.invocation.target_agent_id.clone());
+    let turn_result = crate::magician_v2::execution::native_executors::ACTING_AGENT
+        .scope(
+            acting_agent,
+            crate::magician_v2::execution::plane::grant_channel::with_plane_session(
+                plane_session,
+                async {
+                    let mut session = engine.start(&req).await?;
+                    let mut prompt_text = turn_input_text(
+                        request.history,
+                        request.user_text,
+                        request.system_prompt,
+                        engine_name,
+                        resume_session_id.as_deref(),
+                    );
+                    if engine_name == "pi" && !request.pi_images.is_empty() {
+                        const OMITTED: &str = "[attachment omitted from harness prompt]";
+                        if let Some(start) = prompt_text.rfind(OMITTED) {
+                            prompt_text
+                                .replace_range(start..start + OMITTED.len(), "[image attached]");
+                        }
+                    }
+                    let settled = session
+                        .turn(
+                            &HarnessTurnInput {
+                                text: prompt_text,
+                                operator_steer: Vec::new(),
+                            },
+                            &sink,
+                        )
+                        .await?;
+                    settled_health = session.service_health(&settled);
+                    settled_failure_text = session.failure_text();
+                    session.shutdown().await;
+                    Ok::<
+                        HarnessTurnSettled,
+                        crate::magician_v2::execution::plane::engine::HarnessError,
+                    >(settled)
+                },
+            ),
+        )
+        .await;
+    drop(plane_channel);
     drop(sink);
     let _ = pump.await;
 
+    // An auth, credit, quota, rate-limit or reachability failure, in the
+    // CLI's own words with a remedy: the reply, the notice and the
+    // key-fallback question all carry it.
+    let mut failure = None;
     if !request.cancel.is_cancelled() {
+        use crate::magician_v2::harness_auth::{failure as harness_failure, fallback};
         let health = match &turn_result {
             Ok(_) => settled_health,
             Err(error) => {
@@ -967,13 +1071,56 @@ pub async fn maybe_harness_chat_turn(
                     .map(Err)
             },
         };
+        failure = match &turn_result {
+            Ok(settled) if settled.stop_reason == HarnessStopReason::Refused => {
+                harness_failure::HarnessFailure::classify(
+                    engine_name,
+                    &[
+                        settled.assistant_text.as_str(),
+                        settled_failure_text.as_str(),
+                    ],
+                )
+            },
+            Ok(_) => None,
+            Err(error) => harness_failure::HarnessFailure::classify(
+                engine_name,
+                &[error.to_string().as_str()],
+            ),
+        };
+        harness_failure::observe(engine_name, health, failure.as_ref());
+        // Asked at most once per turn, and only before anything reached the
+        // client (a rerun must not follow streamed text).
+        let offer = failure.as_ref().filter(|failure| {
+            !retry.asked
+                && failure.is_account_failure()
+                && !streamed.load(Ordering::Relaxed)
+                && fallback::offers_key(engine_name, failure.class)
+        });
         if let Some(health) = health {
-            crate::magician_v2::decision_host::report_health(
-                &request.invocation.principal,
-                &request.invocation.workspace,
-                &req.health_service(engine_name),
-                health,
-            );
+            // The decision card already says why; one card, not two.
+            if offer.is_none() {
+                let detail = failure.as_ref().map(|failure| {
+                    crate::magician_v2::realtime_events::ServiceDetail {
+                        title: harness_failure::engine_label(engine_name).to_string(),
+                        reason: failure.reason.clone(),
+                        remedy: failure.remedy.clone(),
+                    }
+                });
+                crate::magician_v2::decision_host::report_health_with_detail(
+                    &request.invocation.principal,
+                    &request.invocation.workspace,
+                    &req.health_service(engine_name),
+                    health,
+                    detail.as_ref(),
+                );
+            }
+        }
+        if let Some(offer) = offer {
+            retry.asked = true;
+            let decision =
+                fallback::ask_key_fallback(&ask_scope, engine_name, offer.class, &offer.reason)
+                    .await;
+            retry.approved = decision.approved() && !request.cancel.is_cancelled();
         }
     }
     let settled = match turn_result {
@@ -1001,12 +1148,14 @@ pub async fn maybe_harness_chat_turn(
                 .clone();
             // Grant was minted: do not fall through to Magician. Spawn
             // failures and mid-turn crashes both already occupied the mouth.
-            let assistant_text = if !collected_text.is_empty() {
-                collected_text
-            } else if streamed.load(Ordering::Relaxed) {
-                "The harness turn failed after it started speaking.".to_string()
-            } else {
-                format!("The harness turn failed: {error}")
+            let assistant_text = match &failure {
+                Some(failure) if collected_text.is_empty() => failure.user_message(),
+                Some(failure) => format!("{collected_text}\n\n{}", failure.user_message()),
+                None if !collected_text.is_empty() => collected_text,
+                None if streamed.load(Ordering::Relaxed) => {
+                    "The harness turn failed after it started speaking.".to_string()
+                },
+                None => format!("The harness turn failed: {error}"),
             };
             return Ok(Some(ChatHarnessTurnOutcome {
                 decision_model_calls: Vec::new(),
@@ -1022,6 +1171,16 @@ pub async fn maybe_harness_chat_turn(
         },
     };
 
+    // Every settled turn (a key-fallback rerun is a second, separately paid
+    // turn) counts toward the owner's spend envelope here, once: a harness
+    // chat turn never passes through the router.
+    charge_harness_chat_turn(
+        engine_name,
+        request.pi_profile.as_ref(),
+        &request.invocation.principal,
+        &request.invocation.workspace,
+        settled.usage.as_ref(),
+    );
     let native_session_id =
         native_id_to_keep(&settled, resume_session_id.as_deref(), supports_resume);
     // Chat HITL is the next user message. Never retain the grant for
@@ -1063,16 +1222,35 @@ pub async fn maybe_harness_chat_turn(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
     let mut settled = settled;
-    let assistant_text =
+    let mut assistant_text =
         reply_to_persist(std::mem::take(&mut settled.assistant_text), &collected_text);
+    let was_streamed = streamed.load(Ordering::Relaxed);
+    // A failed turn says why, in the CLI's words, with a remedy. After a
+    // streamed reply it follows that text (and reaches the client too).
+    let mut failure_delta = None;
+    if let Some(failure) = &failure {
+        if was_streamed {
+            let message = failure.user_message();
+            if !assistant_text.contains(&message) {
+                assistant_text = format!("{}\n\n{message}", assistant_text.trim_end());
+                failure_delta = Some(format!("\n\n{message}"));
+            }
+        } else {
+            assistant_text = failure.annotate(&assistant_text);
+        }
+    }
     // A turn that streamed nothing to the client shows its reply live as
     // one chunk — the engine does not stream, or the CLI refused before any
     // text, or an older CLI has no delta mode. Whether anything streamed is
-    // the gate, not the roster's `streams_text_deltas` promise.
-    if !streamed.load(Ordering::Relaxed) {
+    // the gate, not the roster's `streams_text_deltas` promise. A failed
+    // attempt the owner approved rerunning on Magician's key shows nothing:
+    // the rerun replies instead.
+    if !retry.approved {
         if let Some(tx) = request.token_sink.as_ref() {
-            if !assistant_text.is_empty() {
+            if !was_streamed && !assistant_text.is_empty() {
                 let _ = tx.try_send(magicllm::StreamDelta::Token(assistant_text.clone()));
+            } else if let Some(delta) = failure_delta {
+                let _ = tx.try_send(magicllm::StreamDelta::Token(delta));
             }
         }
     }
@@ -1111,6 +1289,39 @@ fn reply_to_persist(settled_text: String, collected: &str) -> String {
         text.push_str(appended);
     }
     text
+}
+
+/// The spend-envelope class of a harness chat turn: the owner's foreground
+/// chat, counted but never refused.
+const HARNESS_CHAT_SPEND_CLASS: magicllm::LlmWorkloadClass =
+    magicllm::LlmWorkloadClass::ForegroundChat;
+
+/// Count a settled harness chat turn toward the owner's spend envelope: the
+/// CLI's reported cost, else its reported tokens priced from the pricing
+/// table (`turn_engine::harness_turn_spend`); a turn that reported neither
+/// counts nothing. The analytics row (`harness_chat_usage_event`) is not a
+/// feed of the envelope, so this is the turn's only charge.
+fn charge_harness_chat_turn(
+    engine: &str,
+    pi_profile: Option<&magicllm::config::LlmConfig>,
+    principal: &str,
+    workspace: &str,
+    usage: Option<&HarnessUsage>,
+) {
+    let at_ms = chrono::Utc::now().timestamp_millis();
+    if let Some((micro_usd, estimated)) =
+        crate::magician_v2::execution::plane::turn_engine::harness_turn_spend(
+            engine, pi_profile, usage, at_ms,
+        )
+    {
+        crate::magician_v2::spend_envelope_producers::charge_micro(
+            HARNESS_CHAT_SPEND_CLASS,
+            principal,
+            workspace,
+            micro_usd,
+            estimated,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1244,15 +1455,9 @@ pub(crate) fn chat_harness_floor_rejects(name: &str) -> bool {
 /// advertises under the name, or the mouth's entry would shadow the door's.
 const PLANE_DOOR_VERBS: &[&str] = &["tool_search", "session_ledger"];
 
-/// Verbs the native loop answers itself, before dispatch: the model issues
-/// the call, the loop intercepts it by name, and `dispatch_chat_tool_call`
-/// never sees it — an adaptive profile's thinking-mode escalation is one.
-/// The native mouth advertises them in its specs like any tool, but through
-/// the bridge there is no loop in front of the dispatcher: the name would
-/// fall to the dispatcher's pack fallthrough and start a task for a pack
-/// that does not exist. Never bridged.
-const LOOP_INTERCEPTED_VERBS: &[&str] =
-    &[crate::magician_v2::chat::service::REQUEST_THINKING_MODE_TOOL_NAME];
+/// Retired controls can remain in historical harness snapshots. Never route
+/// them through the pack fallback as if they were executable tool packs.
+const RETIRED_LOOP_VERBS: &[&str] = &["request_thinking_mode"];
 
 /// Names the native mouth advertises that the plane does not execute itself
 /// and that may cross through the mouth bridge: everything the plane-executed
@@ -1263,7 +1468,7 @@ const LOOP_INTERCEPTED_VERBS: &[&str] =
 pub(crate) fn chat_harness_bridgeable(name: &str) -> bool {
     !NEVER_ON_THE_PLANE.contains(&name)
         && !PLANE_DOOR_VERBS.contains(&name)
-        && !LOOP_INTERCEPTED_VERBS.contains(&name)
+        && !RETIRED_LOOP_VERBS.contains(&name)
         && !crate::magician_v2::execution::compiled_dispatch::is_governed_app_compiled_tool(name)
         && (name == "read_result"
             || !crate::magician_v2::execution::plane::PLANE_CONTROL_VERBS.contains(&name))
@@ -1792,6 +1997,38 @@ mod tests {
     use super::*;
 
     use super::CHAT_SNAPSHOT_TEST_GUARD as CHAT_SNAPSHOT_GUARD;
+
+    /// A harness chat turn counts as foreground chat, which the spend envelope
+    /// counts but never refuses, and is priced like a run's harness turn: the
+    /// reported cost as is, else the reported tokens, else nothing. Charging
+    /// with no envelope installed is a no-op.
+    #[test]
+    fn a_harness_chat_turn_is_counted_as_foreground_chat() {
+        assert!(!crate::magician_v2::spend_envelope::is_gated(
+            HARNESS_CHAT_SPEND_CLASS
+        ));
+        let usage = HarnessUsage {
+            input_tokens: 10_000,
+            cached_input_tokens: 0,
+            output_tokens: 1_000,
+            cache_read_reported: false,
+            cache_creation_tokens: None,
+            cost_usd: Some(0.25),
+            model: Some("claude-sonnet-4-5".into()),
+        };
+        let at_ms = chrono::Utc::now().timestamp_millis();
+        assert_eq!(
+            crate::magician_v2::execution::plane::turn_engine::harness_turn_spend(
+                "claude_code",
+                None,
+                Some(&usage),
+                at_ms,
+            ),
+            Some((250_000, false))
+        );
+        charge_harness_chat_turn("claude_code", None, "owner", "default", Some(&usage));
+        charge_harness_chat_turn("claude_code", None, "owner", "default", None);
+    }
 
     /// A voice call's chat choice is checked as a typed turn's is: roster
     /// engines only, `magician` always allowed, sane model and profile names.
@@ -2767,8 +3004,8 @@ mod tests {
 
     #[test]
     fn a_runtime_control_unknown_to_the_index_does_not_cross() {
-        // Server-owned controls added via extend_snapshot_with_runtime_tool
-        // are Runtime-kind but are not ChatRuntimeTools; they stay native.
+        // Historical runtime controls absent from today's tool index stay
+        // withheld; they cannot become executable through a bridge fallback.
         let snapshot = policy_snapshot(&[], &[], &["request_thinking_mode"], &[]);
         assert!(plane_hands_allowlist(&snapshot, &real_postures()).is_empty());
     }
@@ -2938,7 +3175,7 @@ mod tests {
             "create_chat_thread",
             "tool_search",
             "session_ledger",
-            crate::magician_v2::chat::service::REQUEST_THINKING_MODE_TOOL_NAME,
+            "request_thinking_mode",
         ]
         .iter()
         .map(|name| mouth_spec(name))
@@ -2985,11 +3222,11 @@ mod tests {
             "app_action_invoke",
             "tool_search",
             "session_ledger",
-            crate::magician_v2::chat::service::REQUEST_THINKING_MODE_TOOL_NAME,
+            "request_thinking_mode",
         ] {
             assert!(!chat_harness_bridgeable(name), "{name} must not bridge");
         }
-        for name in LOOP_INTERCEPTED_VERBS {
+        for name in RETIRED_LOOP_VERBS {
             assert!(
                 !chat_harness_bridgeable(name),
                 "{name} is the loop's, not the dispatcher's"

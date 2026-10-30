@@ -3,8 +3,12 @@
 // TaskStatusCard. The other ChatPanel tests are source-contract tests; this
 // is the first that mounts the panel, so every collaborator it touches on
 // mount is stubbed to an inert async no-op.
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
+import { page } from '$app/stores';
+import { desktopComposerDrafts } from './desktopComposerDrafts';
+import { historyDrawerOpen } from '$lib/shell/shellState';
 
 import type { ChatMessage } from '$lib/stores/chatStore';
 import { taskStore } from '$lib/stores/taskStore';
@@ -12,7 +16,13 @@ import * as notifications from '$lib/shared/stores/notifications';
 import { setChatNext } from './next/chatNextFlag';
 import ChatPanel from './ChatPanel.svelte';
 
-const { chatState } = vi.hoisted(() => ({ chatState: { current: null as unknown } }));
+const { chatState } = vi.hoisted(() => ({ chatState: {
+	current: null as unknown,
+	nativeMode: false,
+	before: null as null | ((event: { from: { url: URL }; to: { url: URL } }) => void),
+	loadOlderMessages: vi.fn().mockResolvedValue(undefined),
+	sendMessageStreaming: vi.fn().mockResolvedValue(null)
+} }));
 
 vi.mock('$app/stores', async () => {
 	const { readable } = await import('svelte/store');
@@ -20,9 +30,12 @@ vi.mock('$app/stores', async () => {
 });
 
 vi.mock('$app/navigation', () => ({
+	beforeNavigate: (callback: NonNullable<typeof chatState.before>) => { chatState.before = callback; },
 	goto: vi.fn().mockResolvedValue(undefined),
 	replaceState: vi.fn()
 }));
+
+vi.mock('$lib/shell/hudWindow', () => ({ isHudWindow: () => chatState.nativeMode }));
 
 vi.mock('$lib/stores/chatStore', async (importActual) => {
 	const actual = await importActual<typeof import('$lib/stores/chatStore')>();
@@ -42,7 +55,7 @@ vi.mock('$lib/stores/chatStore', async (importActual) => {
 	chatState.current = state;
 	// Every store method becomes an inert async no-op; only the state is real.
 	const chatStore = new Proxy(
-		{ subscribe: state.subscribe, listQueuedMessages: vi.fn().mockResolvedValue([]) },
+		{ subscribe: state.subscribe, listQueuedMessages: vi.fn().mockResolvedValue([]), sendMessageStreaming: chatState.sendMessageStreaming, loadOlderMessages: chatState.loadOlderMessages },
 		{
 			get: (target, key) =>
 				key in target ? target[key as keyof typeof target] : vi.fn().mockResolvedValue(null)
@@ -96,8 +109,19 @@ function transcript(): ChatMessage[] {
 }
 
 beforeEach(() => {
+	historyDrawerOpen.set(false);
+	chatState.nativeMode = false;
+	desktopComposerDrafts.clear();
+	get(page).url.pathname = '/chat';
+	get(page).url.search = '';
+	chatState.sendMessageStreaming.mockClear();
+	chatState.loadOlderMessages.mockReset().mockResolvedValue(undefined);
 	// jsdom has no scrolling; ChatPanel scrolls the transcript on load.
 	Element.prototype.scrollTo = vi.fn();
+	// Svelte cancels incoming message animations when switching transcripts.
+	if (!Element.prototype.getAnimations) {
+		Object.defineProperty(Element.prototype, 'getAnimations', { configurable: true, value: () => [] });
+	}
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async () =>
@@ -105,17 +129,150 @@ beforeEach(() => {
 		)
 	);
 	setMessages([]);
+	(chatState.current as ChatStateStore).update((s) => ({ ...s, activeSessionId: 'session-1', sessions: [], viewingArchivedId: null, isLoading: false, isLoadingOlder: false, hasMoreMessages: false, focusedMessageId: null }));
 });
 
 afterEach(() => {
 	cleanup();
 	setChatNext(false);
 	localStorage.clear();
+	sessionStorage.clear();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
 
 describe('ChatPanel chat-next wiring', () => {
+	it('shows the thread bar on default chat with Files beside Settings', async () => {
+		get(page).url.search = '?session=session-1';
+		render(ChatPanel);
+		const bar = within(screen.getByRole('navigation', { name: 'Thread workspace' }));
+		expect(bar.getByText('#general')).toBeInTheDocument();
+		expect(bar.getByRole('link', { name: 'Chat' })).toHaveAttribute('href', '/chat?session=session-1');
+		expect(bar.getByRole('link', { name: /^Tasks/ })).toHaveAttribute('href', '/work?thread=general');
+		const settings = bar.getByRole('link', { name: 'Settings' });
+		expect(settings).toHaveAttribute('href', '/t/general/settings?session=session-1');
+		expect(settings.nextElementSibling).toBe(bar.getByRole('link', { name: 'Files' }));
+		expect(bar.getByRole('link', { name: 'Files' })).toHaveAttribute('href', '/chat/files?session=session-1&thread=general');
+		expect(bar.getByRole('link', { name: 'Models' })).toHaveAttribute('href', '/chat/models?session=session-1&thread=general');
+		expect(bar.queryByLabelText('Model for next message')).not.toBeInTheDocument();
+		expect(bar.getByLabelText('Total chat usage')).toBeInTheDocument();
+		expect(bar.queryByRole('button', { name: 'Files' })).not.toBeInTheDocument();
+	});
+
+	it('uses the viewed archived session for files and cumulative usage', async () => {
+		get(page).url.pathname = '/t/research/chat';
+		get(page).url.search = '?session=archived-session';
+		(chatState.current as ChatStateStore).update((s) => ({ ...s,
+			viewingArchivedId: 'archived-session',
+			sessions: [{ id: 'archived-session', title: 'Earlier research', ui_thread_id: 'research' }]
+		}));
+		render(ChatPanel, { props: { threadId: 'research' } });
+		const bar = within(screen.getByRole('navigation', { name: 'Thread workspace' }));
+		expect(bar.getByText('#research')).toBeInTheDocument();
+		expect(bar.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/t/research/settings?session=archived-session');
+        expect(bar.getByRole('link', { name: 'Files' })).toHaveAttribute('href', '/t/research/files?session=archived-session');
+        expect(bar.getByRole('link', { name: 'Models' })).toHaveAttribute('href', '/t/research/models?session=archived-session');
+        await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url, init]) => String(url).endsWith('/analytics/llm_calls/query') && String(init?.body).includes("chat_session_id = 'archived-session'"))).toBe(true));
+	});
+
+	it('moves the verification reason into a message-header popup and preserves the answer figures', async () => {
+		render(ChatPanel);
+		const messages = transcript();
+		messages[1].content = { type: 'text', text: "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: figure 93217, 45330 not found in any tool result\n\nContact: +91 93217 45330." };
+		setMessages(messages);
+		await waitFor(() => expect(screen.getByText('Contact: +91 93217 45330.')).toBeInTheDocument());
+		expect(screen.queryByText(/figure 93217/)).not.toBeInTheDocument();
+		await fireEvent.click(screen.getByRole('button', { name: 'Not fully verified — view details' }));
+		expect(screen.getByRole('dialog', { name: 'Answer verification' })).toHaveTextContent('figure 93217, 45330 not found in any tool result');
+	});
+
+	it('restores switch-carried text as an editable draft without sending it', async () => {
+		get(page).url.search = '?draft=Fix%20layout%20%26%20spacing&q=do-not-send';
+		render(ChatPanel);
+		await waitFor(() => expect(screen.getByRole('textbox')).toHaveTextContent('Fix layout & spacing'));
+		expect(chatState.sendMessageStreaming).not.toHaveBeenCalled();
+	});
+
+	it('waits for the chat’s model catalog before auto-sending a ?q= link', async () => {
+		const model = { id: 'custom/model', label: 'Custom model', model: 'physical-model', provider: 'custom', connection: 'custom',
+			limits: null, capabilities: { vision: true, tools: true, streaming: true, computer_use: false, structured_output: false, web_search: false },
+			thinking: { mode: 'effort', levels: ['low'], default: 'low' }, choices: { auto: 'opaque-auto', low: 'opaque-low' } };
+		vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+			String(input).includes('/chat/models') ? { models: [model], default_selection: { model_id: model.id, thinking: 'auto' } } : {}
+		), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+		get(page).url.search = '?q=Plan%20my%20week';
+		render(ChatPanel);
+		await waitFor(() => expect(chatState.sendMessageStreaming).toHaveBeenCalledTimes(1));
+		const [sessionId, text, , , options] = chatState.sendMessageStreaming.mock.calls[0];
+		expect([sessionId, text]).toEqual(['session-1', 'Plan my week']);
+		expect(options).toMatchObject({ harnessEngine: 'magician',
+			modelRequest: { harness_engine: 'magician', model_selection: { model_id: 'custom/model', thinking: 'auto' } } });
+	});
+
+	it('keeps a ?q= link’s words and says why when the model choice cannot be used', async () => {
+		const showError = vi.spyOn(notifications, 'showError');
+		// The default stub answers the catalog with no models and no default.
+		get(page).url.search = '?q=Plan%20my%20week';
+		render(ChatPanel);
+		await waitFor(() => expect(showError).toHaveBeenCalledWith('Message not sent', expect.any(String)));
+		expect(chatState.sendMessageStreaming).not.toHaveBeenCalled();
+		await waitFor(() => expect(screen.getByRole('textbox')).toHaveTextContent('Plan my week'));
+	});
+
+	it('recovers typed text after reload, isolates chats and respects clearing', async () => {
+		const first = render(ChatPanel);
+		await waitFor(() => expect(screen.getByRole('textbox')).toBeInTheDocument());
+		const editor = screen.getByRole('textbox');
+		editor.textContent = 'My unfinished message';
+		await fireEvent.input(editor);
+		await waitFor(() => expect(Object.keys(sessionStorage).some(key => key.startsWith('magician:composer-draft:'))).toBe(true));
+		first.unmount();
+		render(ChatPanel);
+		await waitFor(() => expect(screen.getByRole('textbox')).toHaveTextContent('My unfinished message'));
+		(chatState.current as ChatStateStore).update(s => ({ ...s, activeSessionId: 'session-2' }));
+		await waitFor(() => expect(screen.getByRole('textbox')).toBeEmptyDOMElement());
+		(chatState.current as ChatStateStore).update(s => ({ ...s, activeSessionId: 'session-1' }));
+		await waitFor(() => expect(screen.getByRole('textbox')).toHaveTextContent('My unfinished message'));
+		screen.getByRole('textbox').textContent = '';
+		await fireEvent.input(screen.getByRole('textbox'));
+		await waitFor(() => expect(Object.keys(sessionStorage).filter(key => key.startsWith('magician:composer-draft:'))).toHaveLength(0));
+		expect(chatState.sendMessageStreaming).not.toHaveBeenCalled();
+	});
+
+	it('hands off an unsent desktop draft and attachments between the app and HUD', async () => {
+		chatState.nativeMode = true;
+		get(page).url.search = '?draft=Unsent%20desktop%20draft';
+		const first = render(ChatPanel, { props: { seedStagedAttachments: [{ session_id: 'session-1', attachment_id: 'attachment-1', filename: 'handoff-note.txt', mime_type: 'text/plain', size: 15 }] } });
+		await waitFor(() => expect(screen.getByRole('textbox')).toHaveTextContent('Unsent desktop draft'));
+		chatState.before!({ from: { url: new URL('http://localhost/chat') }, to: { url: new URL('http://localhost/hud') } });
+		expect([...desktopComposerDrafts.values()][0].composer.attachments).toHaveLength(1);
+		first.unmount();
+		get(page).url.search = '';
+		render(ChatPanel, { props: { hud: true } });
+		await waitFor(() => expect(screen.getByRole('textbox')).toHaveTextContent('Unsent desktop draft'));
+		expect(screen.getByText('handoff-note.txt')).toBeInTheDocument();
+		expect(desktopComposerDrafts.size).toBe(0);
+		expect(chatState.sendMessageStreaming).not.toHaveBeenCalled();
+	});
+
+	it('keeps page switching out of the compact HUD while preserving its composer', () => {
+		render(ChatPanel, { props: { hud: true } });
+		expect(screen.queryByRole('radiogroup', { name: 'Talk or Code mode' })).not.toBeInTheDocument();
+		expect(screen.getByRole('group', { name: 'Message composer' })).toBeInTheDocument();
+	});
+
+	it('opens the HUD-owned session picker instead of the page-navigating chat rail', async () => {
+		const { container } = render(ChatPanel, { props: { hud: true } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Open history' }));
+		expect(get(historyDrawerOpen)).toBe(true);
+		expect(container.querySelector('.chat-history-rail')).toBeNull();
+	});
+
+	it('keeps Talk and Code available on the full chat page', () => {
+		render(ChatPanel);
+		expect(screen.getByRole('radiogroup', { name: 'Talk or Code mode' })).toBeInTheDocument();
+	});
+
 	it('renders the live task card for a running task when chatNext is on', async () => {
 		setChatNext(true);
 		const { container } = render(ChatPanel);
@@ -188,15 +345,15 @@ describe('ChatPanel chat-next wiring', () => {
 		expect(container.querySelector('[data-testid="chat-empty-next"]')).toBeNull();
 	});
 
-	it('offers Cancel in the title row and no empty expansion; no side panel opens', async () => {
+	it('keeps Cancel in the title row and run controls in the inline expansion', async () => {
 		setChatNext(true);
 		const { container } = render(ChatPanel);
 		setMessages(transcript());
 
 		await waitFor(() => expect(container.querySelector('.cn-live-task')).not.toBeNull());
-		// The live activity has produced nothing yet: nothing to expand.
-		expect(screen.queryByRole('button', { name: /Review release/ })).toBeNull();
-		expect(container.querySelector('.cn-live-task__chevron')).toBeNull();
+		// The active task's lifecycle controls make expansion useful even before
+		// its first activity event. They stay in the card, without a side panel.
+		expect(screen.getByRole('button', { name: /Review release.*show details/ })).toHaveAttribute('aria-expanded', 'false');
 
 		const cancel = screen.getByRole('button', { name: 'Cancel' });
 		expect(container.querySelector('.cn-live-task__top')).toContainElement(cancel);
@@ -402,5 +559,81 @@ describe('ChatPanel chat-started task while the turn is in flight', () => {
 		await waitFor(() => expect(container).toHaveTextContent('Make me a digest'));
 		expect(container.querySelector('.chat-status-alert')).toBeNull();
 		expect(container.querySelector('.cn-live-task')).toBeNull();
+	});
+});
+
+// Use measured row heights: jsdom does not lay out the conversation itself.
+function measureTranscript(el: HTMLElement): void {
+	Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => el.querySelectorAll('.chat-message-row').length * 200 });
+	Object.defineProperty(el, 'clientHeight', { configurable: true, value: 400 });
+}
+
+function historyRows(sessionId: string, count = 20): ChatMessage[] {
+	return Array.from({ length: count }, (_, i) => ({
+		id: `${sessionId}-${i}`, session_id: sessionId, direction: 'assistant',
+		created_at: Date.now() - (count - i) * 1000, content: { type: 'text', text: `Reply ${sessionId} ${i}` }
+	}));
+}
+
+describe('ChatPanel history viewport', () => {
+	it('follows late card layout at the tail but leaves a reader who scrolls up in place', async () => {
+		let notifyResize = () => {};
+		vi.stubGlobal('ResizeObserver', class {
+			constructor(private callback: () => void) {}
+			observe(node: Element) {
+				if (node.classList.contains('chat-message-list')) notifyResize = this.callback;
+			}
+			unobserve() {}
+			disconnect() {}
+		});
+		const { container } = render(ChatPanel);
+		const el = container.querySelector<HTMLElement>('.chat-messages-area')!;
+		let extraHeight = 0;
+		Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => el.querySelectorAll('.chat-message-row').length * 200 + extraHeight });
+		Object.defineProperty(el, 'clientHeight', { configurable: true, value: 400 });
+		setMessages(historyRows('session-1'));
+		await waitFor(() => expect(el.scrollTop).toBe(4000));
+		extraHeight = 500;
+		notifyResize();
+		expect(el.scrollTop).toBe(4500);
+		el.scrollTop = 1000;
+		await fireEvent.scroll(el);
+		extraHeight = 1000;
+		notifyResize();
+		expect(el.scrollTop).toBe(1000);
+	});
+
+	it('lands instantly at the tail again when another conversation loads', async () => {
+		const { container } = render(ChatPanel);
+		const el = container.querySelector<HTMLElement>('.chat-messages-area')!;
+		measureTranscript(el);
+		setMessages(historyRows('session-1'));
+		await waitFor(() => expect(el.scrollTop).toBe(4000));
+		(el.scrollTo as ReturnType<typeof vi.fn>).mockClear();
+		(chatState.current as ChatStateStore).update(s => ({ ...s, isLoading: true }));
+		await waitFor(() => expect(screen.getByText('Loading conversation…')).toBeInTheDocument());
+		(chatState.current as ChatStateStore).update(s => ({ ...s, activeSessionId: 'session-2', messages: historyRows('session-2', 30), isLoading: false }));
+		await waitFor(() => expect(el.scrollTop).toBe(6000));
+		expect(el.scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
+		expect(chatState.loadOlderMessages).not.toHaveBeenCalled();
+	});
+
+	it('loads a single older page at the top and preserves the reading position', async () => {
+		const { container } = render(ChatPanel);
+		const el = container.querySelector<HTMLElement>('.chat-messages-area')!;
+		measureTranscript(el);
+		setMessages(historyRows('session-1'));
+		(chatState.current as ChatStateStore).update(s => ({ ...s, hasMoreMessages: true }));
+		await waitFor(() => expect(el.scrollTop).toBe(4000));
+		chatState.loadOlderMessages.mockImplementation(async () => {
+			(chatState.current as ChatStateStore).update(s => ({ ...s,
+				messages: [...historyRows('older', 50), ...(s.messages as ChatMessage[])], hasMoreMessages: true
+			}));
+		});
+		el.scrollTop = 0;
+		await fireEvent.scroll(el);
+		await waitFor(() => expect(el.scrollTop).toBe(10000));
+		expect(chatState.loadOlderMessages).toHaveBeenCalledExactlyOnceWith('session-1');
+		expect(screen.getByRole('button', { name: 'Load earlier messages' })).toBeInTheDocument();
 	});
 });

@@ -121,6 +121,7 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
     /// `webSocket` directly (that races with teardown). `URLSessionWebSocketTask`
     /// itself is thread-safe; only the reference read needs guarding.
     private let audioSocket = OSAllocatedUnfairLock<URLSessionWebSocketTask?>(initialState: nil)
+    private let firstAudioSent = OSAllocatedUnfairLock<Bool>(initialState: false)
     private var sessionId: String?
     private var urlSession: URLSession
     /// The turn boundary latched at `startCall`: true = push-to-talk, false =
@@ -158,6 +159,9 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
     /// the exact partial to update or remove across fallback and reconnects.
     private var captionState = RealtimeVoiceCaptionState()
     private var activeUiThreadId: String?
+    /// The chat on screen when the call started. A thread can hold several
+    /// active chats, so the server posts the call into this one when it is set.
+    private var activeChatSessionId: String?
     private var reconnectAttempt = 0
     private var reconnectWork: DispatchWorkItem?
     /// The MID-CALL budget: a socket that drops after `session.ready` gets three
@@ -232,6 +236,7 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
     /// They are independent — see `RealtimeVoiceProtocol`.
     func startCall(
         uiThreadId: String,
+        chatSessionId: String? = nil,
         engine: VoiceEngine = .realtime,
         pttOn: Bool = false,
         realtimeProfile: String? = nil,
@@ -243,6 +248,7 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
             self.realtimeProfile = realtimeProfile
         }
         phase = .connecting
+        firstAudioSent.withLock { $0 = false }
         errorMessage = nil
         guidedFlowNoticeMessage = nil
         captionState.reset()
@@ -256,6 +262,8 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
         pttOnMode = pttOn
         engineMode = engine
         activeUiThreadId = uiThreadId
+        let requestedChat = chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        activeChatSessionId = requestedChat.isEmpty ? nil : requestedChat
         reconnectAttempt = 0
         hasBeenReadyThisCall = false
         pttHeld = false
@@ -342,6 +350,16 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
                 Task { @MainActor in
                     guard let self, self.webSocket === ws else { return }
                     self.handleSendError(error)
+                }
+            } else if let self, self.audioSocket.withLock({ $0 === ws }) {
+                let first = self.firstAudioSent.withLock { sent in
+                    guard !sent else { return false }
+                    sent = true
+                    return true
+                }
+                if first {
+                    Logger(subsystem: "ai.magicbeans.magios", category: "voice.call")
+                        .notice("First microphone frame sent after ready: \(data.count, privacy: .public) bytes")
                 }
             }
         }
@@ -519,6 +537,7 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
             screenLocked: DeviceScreenLock.isLocked
         )
         payload["concurrent_requests"] = concurrentRequests
+        if let activeChatSessionId { payload["chat_session_id"] = activeChatSessionId }
         ws.send(.string(RealtimeVoiceProtocol.envelopeText(kind: "session.start", payload: payload))) { [weak self] error in
             // Instrumentation only — see `VoiceConnectTrace`. This completing
             // without an error IS the socket being up: `URLSessionWebSocketTask`
@@ -777,6 +796,7 @@ final class RealtimeVoiceClient: NSObject, ObservableObject {
         socketSession = nil
         sessionId = nil
         activeUiThreadId = nil
+        activeChatSessionId = nil
         pttHeld = false
         pttEngageSent = false
         captionState.clearUnfinishedUserCaptions()

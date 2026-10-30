@@ -12,7 +12,7 @@
  * computed hash of the Rust sources and fails the build with a clear
  * remediation message if codegen needs to be re-run.
  */
-// SOURCE_HASH: f0b2cc08ac0adfea9eaf7b1a5c805e7831d2a0c2287b0f32acf1006fde46cc8e
+// SOURCE_HASH: 10618ddf66ddf9114cbbc636b38edb01ee30db389e1160ba506e6ea4bc60b205
 
 export const EVENT_CATEGORIES = [
 	'pipeline',
@@ -122,6 +122,7 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 	LLMAnalysisCompleted: t('llm', 'info', false),
 	LLMAnalysisFailed: t('llm', 'error', true),
 	LLMRequestSent: t('llm', 'info', false),
+	LLMRouted: t('llm', 'info', false),
 	LLMResponseReceived: t('llm', 'info', false),
 	InferenceAttempted: t('llm', 'info', false),
 	ThinkingModeActivated: t('llm', 'info', true),
@@ -137,6 +138,7 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 	AgenticStepFailed: t('agentic', 'error', true),
 	AgenticStepSkipped: t('agentic', 'info', true),
 	AgenticStepStuckWarning: t('agentic', 'warn', true),
+	AgenticProviderOutage: t('agentic', 'warn', true),
 	AgenticPageUnderstanding: t('agentic', 'info', false),
 	AgenticDecisionMade: t('agentic', 'decision', true),
 	AgenticActionStarted: t('agentic', 'info', true),
@@ -195,6 +197,8 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 
 	// ─── GAUI envelope events ───
 	// Pipeline
+	'context.retrieval.started': t('pipeline', 'info', false),
+	'context.retrieval.completed': t('pipeline', 'info', false),
 	'message.processing_started': t('pipeline', 'info', true),
 	'query_analysis.completed': t('pipeline', 'info', false),
 	'strategy.selected': t('pipeline', 'info', false),
@@ -242,6 +246,7 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 	'llm_analysis.completed': t('llm', 'info', false),
 	'llm_analysis.failed': t('llm', 'error', true),
 	'llm.requested': t('llm', 'info', false),
+	'llm.routed': t('llm', 'info', false),
 	'llm.first_token': t('llm', 'info', false),
 	'llm.succeeded': t('llm', 'info', false),
 	'llm.failed': t('llm', 'error', true),
@@ -255,6 +260,8 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 	'tool.failed': t('tool', 'error', true),
 
 	// Agentic loop
+	'decision_rail.screenshot': t('agentic', 'info', false),
+	'planner.earlier_screenshot': t('agentic', 'info', false),
 	'agentic.execution_started': t('agentic', 'info', true),
 	'agentic.iteration_started': t('agentic', 'info', false),
 	'agentic.decision_made': t('agentic', 'decision', false),
@@ -407,6 +414,7 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 
 	// Execution + Workflow lifecycle
 	'task.status_changed': t('execution', 'info', true),
+	'task.answer_progress': t('execution', 'info', false),
 	'task.action_progress': t('execution', 'info', true),
 	'task.child.status_changed': t('execution', 'info', true),
 	'task.budget.updated': t('execution', 'info', false),
@@ -420,6 +428,7 @@ export const EVENT_TAXONOMY: Readonly<Record<string, EventTaxonomy>> = Object.fr
 	'chat.delegate.output_ready': t('execution', 'info', true),
 	'chat.delegate.output_failed': t('execution', 'warn', true),
 	'chat.turn.stopped': t('execution', 'warn', false),
+	'chat.turn.state_changed': t('execution', 'info', false),
 
 	// Agent lifecycle
 	'chat.agent_turn.status_changed': t('agent', 'info', true),

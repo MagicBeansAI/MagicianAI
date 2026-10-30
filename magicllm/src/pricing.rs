@@ -17,6 +17,7 @@
 //! their real boundary.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use tracing::warn;
@@ -349,7 +350,8 @@ impl PricingTable {
     /// seed file repeats them, so a change goes there as a dated row.
     pub fn defaults() -> Self {
         use LLMProviderKind::*;
-        let catch_all = |provider, prefix: &'static str, pricing| PricingRow::new(provider, prefix, 0, pricing);
+        let catch_all =
+            |provider, prefix: &'static str, pricing| PricingRow::new(provider, prefix, 0, pricing);
         let mut rows = vec![
             catch_all(Anthropic, "claude-", ProviderPricing::anthropic(3.0, 15.0)),
             catch_all(Minimax, "", ProviderPricing::openai(1.0, 5.0)),
@@ -365,10 +367,22 @@ impl PricingTable {
             ),
             // Unknown `grok-` ids take the flagship rate: over-stating a
             // spend gate stops a run, under-stating it lets one overrun.
-            catch_all(Xai, "grok-", ProviderPricing::openai_with_cache(2.00, 0.50, 6.00))
-                .with_long_context(LongContextPricing::new(199_999, 2.0, 2.0)),
-            catch_all(Sarvam, "", ProviderPricing::openai_with_cache(0.333, 0.125, 0.832)),
-            catch_all(Gemini, "gemini-", ProviderPricing::openai_with_cache(0.30, 0.03, 2.5)),
+            catch_all(
+                Xai,
+                "grok-",
+                ProviderPricing::openai_with_cache(2.00, 0.50, 6.00),
+            )
+            .with_long_context(LongContextPricing::new(199_999, 2.0, 2.0)),
+            catch_all(
+                Sarvam,
+                "",
+                ProviderPricing::openai_with_cache(0.333, 0.125, 0.832),
+            ),
+            catch_all(
+                Gemini,
+                "gemini-",
+                ProviderPricing::openai_with_cache(0.30, 0.03, 2.5),
+            ),
             catch_all(Ollama, "", ProviderPricing::free()),
             catch_all(Yutori, "", ProviderPricing::free()),
         ];
@@ -381,14 +395,19 @@ impl PricingTable {
                 ProviderPricing::free(),
             ));
         }
-        let web_search_rows = [(OpenAI, 0.01), (Anthropic, 0.01), (Gemini, 0.035), (OpenRouter, 0.007)]
-            .into_iter()
-            .map(|(provider, usd_per_call)| WebSearchPricingRow {
-                provider,
-                effective_from_ms: 0,
-                usd_per_call,
-            })
-            .collect();
+        let web_search_rows = [
+            (OpenAI, 0.01),
+            (Anthropic, 0.01),
+            (Gemini, 0.035),
+            (OpenRouter, 0.007),
+        ]
+        .into_iter()
+        .map(|(provider, usd_per_call)| WebSearchPricingRow {
+            provider,
+            effective_from_ms: 0,
+            usd_per_call,
+        })
+        .collect();
         // On-machine voice engines (Fluid, macOS speech) cost nothing; their
         // rows record volume and latency at an exact $0.
         let media_rows = [MediaKind::Tts, MediaKind::Stt, MediaKind::SttStreaming]
@@ -493,6 +512,18 @@ impl PricingTable {
             .map(|row| row.pricing)
     }
 
+    /// Long-context adjustment from the same effective row as [`Self::lookup_at`].
+    /// Native coding engines use this alongside the base rates for their cost tables.
+    pub fn long_context_at(
+        &self,
+        provider: &LLMProviderKind,
+        model: &str,
+        at_ms: i64,
+    ) -> Option<LongContextPricing> {
+        self.lookup_row_at(provider, model, at_ms)
+            .and_then(|row| row.long_context)
+    }
+
     /// Stable, content-free identity of the exact effective text-pricing row.
     ///
     /// Analytics must not label two different rate tables with the same
@@ -522,6 +553,94 @@ impl PricingTable {
             .filter(|row| row.effective_from_ms <= at_ms)
             .filter(|row| model.starts_with(&*row.model_prefix))
             .max_by_key(|row| (row.model_prefix.len(), row.effective_from_ms))
+    }
+
+    /// Whether any row prices `(provider, model)` as of `at_ms`. A model the
+    /// table does not cover bills as $0.00 through [`compute_cost_with_at`];
+    /// callers that must not mistake "unknown" for "free" ask this first.
+    pub fn model_is_priced_at(&self, provider: &LLMProviderKind, model: &str, at_ms: i64) -> bool {
+        self.lookup_row_at(provider, model, at_ms).is_some()
+    }
+
+    /// Whether `(provider, model)` is priced at exactly $0 as of `at_ms` (the
+    /// free local engines: Ollama, the on-machine decision models). An
+    /// unpriced model is not free.
+    pub fn model_is_free_at(&self, provider: &LLMProviderKind, model: &str, at_ms: i64) -> bool {
+        self.lookup_row_at(provider, model, at_ms)
+            .is_some_and(|row| {
+                let pricing = row.pricing;
+                pricing.input_per_m == 0.0
+                    && pricing.output_per_m == 0.0
+                    && pricing.cache_read_per_m.unwrap_or(0.0) == 0.0
+                    && pricing.cache_write_per_m.unwrap_or(0.0) == 0.0
+            })
+    }
+
+    /// The highest `(input_per_m, output_per_m)` USD rates any row of
+    /// `provider` charges as of `at_ms`: the latest effective row of each
+    /// model prefix, its long-context multiplier and the dearer of its input,
+    /// cache-read and cache-write rates counted in. `None` when the table has
+    /// no row for the provider. This is the over-stating rate an unlisted
+    /// model of a known provider is charged by a spend gate: over-stating
+    /// stops a run, under-stating lets one overrun.
+    pub fn highest_known_rates_at(
+        &self,
+        provider: &LLMProviderKind,
+        at_ms: i64,
+    ) -> Option<(f64, f64)> {
+        self.highest_rates_at(|row| &row.provider == provider, at_ms)
+    }
+
+    /// [`Self::highest_known_rates_at`] across every provider: the flagship
+    /// rate of last resort for a provider the table has never heard of.
+    pub fn highest_known_rates_any_provider_at(&self, at_ms: i64) -> Option<(f64, f64)> {
+        self.highest_rates_at(|_| true, at_ms)
+    }
+
+    fn highest_rates_at(
+        &self,
+        include: impl Fn(&PricingRow) -> bool,
+        at_ms: i64,
+    ) -> Option<(f64, f64)> {
+        let mut latest: HashMap<(&LLMProviderKind, &str), &PricingRow> = HashMap::new();
+        for row in self
+            .rows
+            .iter()
+            .filter(|row| include(*row) && row.effective_from_ms <= at_ms)
+        {
+            let key = (&row.provider, &*row.model_prefix);
+            match latest.get(&key) {
+                Some(kept) if kept.effective_from_ms > row.effective_from_ms => {},
+                _ => {
+                    latest.insert(key, row);
+                },
+            }
+        }
+        let mut highest: Option<(f64, f64)> = None;
+        for row in latest.values() {
+            let pricing = row.pricing;
+            let (input_multiplier, output_multiplier) =
+                row.long_context.map_or((1.0, 1.0), |rule| {
+                    (rule.input_multiplier, rule.output_multiplier)
+                });
+            let input = [
+                pricing.input_per_m,
+                pricing.cache_read_per_m.unwrap_or(0.0),
+                pricing.cache_write_per_m.unwrap_or(0.0),
+            ]
+            .into_iter()
+            .fold(0.0_f64, f64::max)
+                * input_multiplier;
+            let output = pricing.output_per_m * output_multiplier;
+            if !input.is_finite() || !output.is_finite() || input < 0.0 || output < 0.0 {
+                continue;
+            }
+            highest = Some(match highest {
+                Some((best_input, best_output)) => (best_input.max(input), best_output.max(output)),
+                None => (input, output),
+            });
+        }
+        highest
     }
 
     /// Resolve the exact effective row and conservative per-token rate ceiling
@@ -632,14 +751,17 @@ impl PricingTable {
         usage: &MediaUsage,
         at_ms: i64,
     ) -> Option<f64> {
-        let p = self.media_pricing_row_at(provider, model, kind, at_ms)?.pricing;
+        let p = self
+            .media_pricing_row_at(provider, model, kind, at_ms)?
+            .pricing;
         let chars = if p.usd_per_million_chars > 0.0 {
             usage.input_chars? as f64 * p.usd_per_million_chars / 1_000_000.0
         } else {
             0.0
         };
         let audio = if p.usd_per_audio_minute > 0.0 {
-            usage.audio_seconds.filter(|s| s.is_finite() && *s >= 0.0)? / 60.0 * p.usd_per_audio_minute
+            usage.audio_seconds.filter(|s| s.is_finite() && *s >= 0.0)? / 60.0
+                * p.usd_per_audio_minute
         } else {
             0.0
         };
@@ -906,6 +1028,91 @@ pub fn compute_cost_at(
     at_ms: i64,
 ) -> f64 {
     compute_cost_with_at(active_table(), provider, model, usage, at_ms)
+}
+
+/// Like [`compute_cost_at`], but `None` when no pricing row covers the model:
+/// an unlisted model is *unpriced*, not free. [`compute_cost_at`] keeps
+/// returning 0.0 for it (a value safe to emit); a spend gate that must not
+/// let an unknown model through as free asks this instead.
+pub fn try_compute_cost_at(
+    provider: &LLMProviderKind,
+    model: &str,
+    usage: &TokenUsage,
+    at_ms: i64,
+) -> Option<f64> {
+    try_compute_cost_with_at(active_table(), provider, model, usage, at_ms)
+}
+
+/// [`try_compute_cost_at`] against an explicit pricing table.
+pub fn try_compute_cost_with_at(
+    table: &PricingTable,
+    provider: &LLMProviderKind,
+    model: &str,
+    usage: &TokenUsage,
+    at_ms: i64,
+) -> Option<f64> {
+    table
+        .model_is_priced_at(provider, model, at_ms)
+        .then(|| compute_cost_with_at(table, provider, model, usage, at_ms))
+}
+
+/// Whether the active table prices `(provider, model)` as of `at_ms`.
+pub fn model_is_priced_at(provider: &LLMProviderKind, model: &str, at_ms: i64) -> bool {
+    active_table().model_is_priced_at(provider, model, at_ms)
+}
+
+/// Whether the active table prices `(provider, model)` at exactly $0 as of
+/// `at_ms`. A spend gate neither refuses nor charges such a call.
+pub fn model_is_free_at(provider: &LLMProviderKind, model: &str, at_ms: i64) -> bool {
+    active_table().model_is_free_at(provider, model, at_ms)
+}
+
+/// Over-stating micro-USD charge for a call whose model the table does not
+/// price (or whose provider reported no usage): the highest rate the active
+/// table knows for `provider` (else the highest of any provider), applied to
+/// the reported tokens. With no usage at all the call is charged
+/// `output_ceiling_tokens` output tokens at that rate. Free local providers
+/// carry $0 rows, so they stay free. Zero when the table is empty.
+pub fn estimate_unpriced_cost_microusd(
+    provider: &LLMProviderKind,
+    usage: Option<&TokenUsage>,
+    output_ceiling_tokens: u64,
+    at_ms: i64,
+) -> u64 {
+    estimate_unpriced_cost_microusd_with(
+        active_table(),
+        provider,
+        usage,
+        output_ceiling_tokens,
+        at_ms,
+    )
+}
+
+/// [`estimate_unpriced_cost_microusd`] against an explicit pricing table.
+pub fn estimate_unpriced_cost_microusd_with(
+    table: &PricingTable,
+    provider: &LLMProviderKind,
+    usage: Option<&TokenUsage>,
+    output_ceiling_tokens: u64,
+    at_ms: i64,
+) -> u64 {
+    let (input_per_m, output_per_m) = table
+        .highest_known_rates_at(provider, at_ms)
+        .or_else(|| table.highest_known_rates_any_provider_at(at_ms))
+        .unwrap_or((0.0, 0.0));
+    let usage_tokens = usage.and_then(|usage| {
+        let prompt = usage.prompt_tokens.map(u64::from);
+        let completion = usage.completion_tokens.map(u64::from);
+        (prompt.is_some() || completion.is_some())
+            .then(|| (prompt.unwrap_or(0), completion.unwrap_or(0)))
+    });
+    let usd = match usage_tokens {
+        Some((prompt, completion)) => {
+            (prompt as f64 * input_per_m + completion as f64 * output_per_m) / 1_000_000.0
+        },
+        None => output_ceiling_tokens as f64 * output_per_m / 1_000_000.0,
+    };
+    usd_to_microusd_ceil(usd).unwrap_or(0)
 }
 
 /// Convert a trusted, non-negative USD cost to integer micro-USD by rounding
@@ -1220,9 +1427,13 @@ mod tests {
         for model in ["sarvam-105b", "sarvam-105b-conversations", "sarvam-next"] {
             for (at_ms, expected) in [
                 (day("2026-10-14"), 0.6 * 0.333 + 0.4 * 0.125 + 0.832),
-                (day("2026-10-15"), 0.6 * 0.170455 + 0.4 * 0.056818 + 0.681818),
+                (
+                    day("2026-10-15"),
+                    0.6 * 0.170455 + 0.4 * 0.056818 + 0.681818,
+                ),
             ] {
-                let cost = compute_cost_with_at(&table, &LLMProviderKind::Sarvam, model, &usage, at_ms);
+                let cost =
+                    compute_cost_with_at(&table, &LLMProviderKind::Sarvam, model, &usage, at_ms);
                 assert!((cost - expected).abs() < 1e-9, "{model} at {at_ms}: {cost}");
             }
         }
@@ -1253,8 +1464,17 @@ mod tests {
             (day("2026-09-13"), 1.74 + 3.48),
             (day("2026-09-14"), 0.30 + 1.20),
         ] {
-            let pro = compute_cost_with_at(&table, &LLMProviderKind::DeepSeek, "deepseek-v4-pro", &u, at_ms);
-            assert!((pro - expected).abs() < 1e-9, "pro at {at_ms}: expected {expected}, got {pro}");
+            let pro = compute_cost_with_at(
+                &table,
+                &LLMProviderKind::DeepSeek,
+                "deepseek-v4-pro",
+                &u,
+                at_ms,
+            );
+            assert!(
+                (pro - expected).abs() < 1e-9,
+                "pro at {at_ms}: expected {expected}, got {pro}"
+            );
         }
     }
 
@@ -1499,6 +1719,39 @@ mod tests {
     }
 
     #[test]
+    fn gpt_6_1_terra_prices_cache_and_strict_long_context_boundary_from_launch() {
+        let table = PricingTable::builtin();
+        let launch = crate::pricing_file::parse_effective_from_ms("2026-10-26").unwrap();
+        let provider = LLMProviderKind::OpenAI;
+        let model = "gpt-6.1-terra";
+        assert!(table.lookup_row_at(&provider, model, launch - 1).is_none());
+        let row = table.lookup_row_at(&provider, model, launch).unwrap();
+        assert_eq!(row.model_prefix.as_ref(), model);
+        assert_eq!(
+            table.long_context_at(&provider, model, launch),
+            Some(LongContextPricing::new(272_000, 2.0, 1.5))
+        );
+        for (u, expected) in [
+            (usage(100_000, 100_000, 0, 0), 0.6),
+            (usage(100_000, 0, 100_000, 0), 0.005),
+            (usage(100_000, 0, 0, 100_000), 0.125),
+            (usage(272_000, 100_000, 0, 0), 0.772),
+            (usage(272_001, 100_000, 0, 0), 1.294002),
+            (usage(300_000, 100_000, 100_000, 100_000), 1.21),
+        ] {
+            let cost = compute_cost_with_at(&table, &provider, model, &u, launch);
+            assert!(
+                (cost - expected).abs() < 1e-9,
+                "${cost}, expected ${expected}"
+            );
+        }
+        // The previous Terra id keeps its independent rates.
+        let old = table.lookup_at(&provider, "gpt-5.6-terra", launch).unwrap();
+        assert_eq!(old.input_per_m, 2.0);
+        assert_eq!(old.output_per_m, 12.0);
+    }
+
+    #[test]
     fn september_22_models_price_cache_and_long_context_buckets() {
         let opus_read = compute_cost(
             &LLMProviderKind::Anthropic,
@@ -1699,6 +1952,30 @@ mod tests {
     /// billed at `gpt-4o`'s $2.50/$10.00, ~16x over.
     ///
     #[test]
+    fn haiku_5_5_prices_both_prompt_tiers_from_the_seed() {
+        for (provider, model) in [
+            (LLMProviderKind::Anthropic, "claude-haiku-5-5"),
+            (LLMProviderKind::OpenRouter, "anthropic/claude-haiku-5-5"),
+        ] {
+            for (u, expected) in [
+                // Up to 100k prompt tokens: $0.10 in, $0.50 out.
+                (usage(100_000, 100_000, 0, 0), 0.06),
+                (usage(100_000, 0, 100_000, 0), 0.001),
+                (usage(100_000, 0, 0, 100_000), 0.0125),
+                // Over 100k every bucket is 5x: $0.50 in, $2.50 out.
+                (usage(200_000, 100_000, 0, 0), 0.35),
+                (usage(200_000, 0, 200_000, 0), 0.01),
+            ] {
+                let cost = compute_cost(&provider, model, &u);
+                assert!(
+                    (cost - expected).abs() < 1e-9,
+                    "{model}: ${cost}, expected ${expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn configured_text_models_resolve_to_their_own_row() {
         let table = active_table();
         let at = now_unix_ms();
@@ -1710,6 +1987,7 @@ mod tests {
             (LLMProviderKind::Anthropic, "claude-sonnet-5-5"),
             (LLMProviderKind::Anthropic, "claude-fable-5-1"),
             (LLMProviderKind::Anthropic, "claude-haiku-4-5"),
+            (LLMProviderKind::Anthropic, "claude-haiku-5-5"),
             (LLMProviderKind::DeepSeek, "deepseek-flash"),
             (LLMProviderKind::DeepSeek, "DeepSeek-V4-Flash-0731"),
             (LLMProviderKind::DeepSeek, "deepseek-v4-flash-vision-exp"),
@@ -1718,6 +1996,7 @@ mod tests {
             (LLMProviderKind::Gemini, "gemini-3.5-flash-lite"),
             (LLMProviderKind::Minimax, "MiniMax-M2.7"),
             (LLMProviderKind::Minimax, "MiniMax-M3"),
+            (LLMProviderKind::Minimax, "MiniMax-M3.1-Flash"),
             // Retained row: no longer configured (the vision profile moved to
             // gpt-5.4-nano) but kept so historical rows reprice correctly.
             (LLMProviderKind::OpenAI, "gpt-4o-mini"),
@@ -1762,6 +2041,32 @@ mod tests {
                 "{model} should be (0.30 + 1.20) / 10 = 0.15, got {cost}"
             );
             assert!(cost < m2, "{model} must not inherit M2's dearer rate");
+        }
+    }
+
+    #[test]
+    fn minimax_m31_flash_uses_flat_rates_and_separate_cached_input() {
+        for model in ["MiniMax-M3.1-Flash", "minimax-m3.1-flash"] {
+            let row = active_table()
+                .lookup_row_at(&LLMProviderKind::Minimax, model, now_unix_ms())
+                .unwrap();
+            assert_eq!(&*row.model_prefix, model);
+            assert!(row.long_context.is_none());
+            assert_eq!(row.pricing.cache_write_per_m, None);
+            for (prompt, expected) in [(512_000, 0.0693), (600_000, 0.0825)] {
+                let usage = TokenUsage {
+                    prompt_tokens: Some(prompt),
+                    cached_tokens: Some(100_000),
+                    completion_tokens: Some(10_000),
+                    reasoning_tokens: Some(5_000),
+                    ..Default::default()
+                };
+                let cost = compute_cost(&LLMProviderKind::Minimax, model, &usage);
+                assert!(
+                    (cost - expected).abs() < 1e-9,
+                    "{model}: {cost} != {expected}"
+                );
+            }
         }
     }
 
@@ -1895,6 +2200,107 @@ mod tests {
         let u = usage(1_000_000, 1_000_000, 0, 0);
         let c = compute_cost(&LLMProviderKind::Anthropic, "some-future-unknown-model", &u);
         assert_eq!(c, 0.0);
+    }
+
+    #[test]
+    fn an_unlisted_model_is_unpriced_not_free() {
+        let table = PricingTable::with_pricing_rows(vec![PricingRow::new(
+            LLMProviderKind::OpenAI,
+            "gpt-5",
+            0,
+            ProviderPricing::openai(1.25, 10.0),
+        )]);
+        let u = usage(1_000_000, 1_000_000, 0, 0);
+        let openai = LLMProviderKind::OpenAI;
+        // `compute_cost` keeps returning a safe-to-emit zero; the `try_` form
+        // is the one that can tell "unknown" from "free".
+        assert_eq!(
+            compute_cost_with_at(&table, &openai, "gpt-9-unlisted", &u, 0),
+            0.0
+        );
+        assert_eq!(
+            try_compute_cost_with_at(&table, &openai, "gpt-9-unlisted", &u, 0),
+            None
+        );
+        assert!(!table.model_is_priced_at(&openai, "gpt-9-unlisted", 0));
+        let listed = try_compute_cost_with_at(&table, &openai, "gpt-5.1", &u, 0)
+            .expect("a listed prefix prices the model");
+        assert!((listed - 11.25).abs() < 1e-9, "got {listed}");
+    }
+
+    #[test]
+    fn only_a_zero_rate_row_is_free_and_an_unlisted_model_is_not() {
+        let table = PricingTable::with_pricing_rows(vec![
+            PricingRow::new(LLMProviderKind::Ollama, "", 0, ProviderPricing::free()),
+            PricingRow::new(
+                LLMProviderKind::OpenAI,
+                "gpt-5",
+                0,
+                ProviderPricing::openai(1.25, 10.0),
+            ),
+        ]);
+        assert!(table.model_is_free_at(&LLMProviderKind::Ollama, "nomic-embed-text", 0));
+        assert!(!table.model_is_free_at(&LLMProviderKind::OpenAI, "gpt-5", 0));
+        assert!(!table.model_is_free_at(&LLMProviderKind::OpenAI, "gpt-9-unlisted", 0));
+        // The built-in table keeps every local Ollama model free.
+        assert!(model_is_free_at(
+            &LLMProviderKind::Ollama,
+            "qwen3-embedding:0.6b",
+            now_unix_ms()
+        ));
+    }
+
+    #[test]
+    fn an_unpriced_estimate_charges_the_highest_known_provider_rate() {
+        let table = PricingTable::with_pricing_rows(vec![
+            PricingRow::new(
+                LLMProviderKind::OpenAI,
+                "gpt-4",
+                0,
+                ProviderPricing::openai(2.5, 10.0),
+            ),
+            PricingRow::new(
+                LLMProviderKind::OpenAI,
+                "gpt-5.5",
+                0,
+                ProviderPricing::openai(5.0, 30.0),
+            ),
+            PricingRow::new(
+                LLMProviderKind::Anthropic,
+                "claude-",
+                0,
+                ProviderPricing::anthropic(3.0, 15.0),
+            ),
+            PricingRow::new(LLMProviderKind::Ollama, "", 0, ProviderPricing::free()),
+        ]);
+        let u = usage(1_000_000, 1_000_000, 0, 0);
+        let openai = LLMProviderKind::OpenAI;
+        // 1M in at $5 + 1M out at $30.
+        assert_eq!(
+            estimate_unpriced_cost_microusd_with(&table, &openai, Some(&u), 0, 0),
+            35_000_000
+        );
+        // No usage: the output ceiling at the output rate ($30/M * 1000).
+        assert_eq!(
+            estimate_unpriced_cost_microusd_with(&table, &openai, None, 1_000, 0),
+            30_000
+        );
+        // A provider the table never heard of takes the flagship of all.
+        assert_eq!(
+            estimate_unpriced_cost_microusd_with(
+                &table,
+                &LLMProviderKind::Custom("mystery".into()),
+                Some(&u),
+                0,
+                0
+            ),
+            35_000_000
+        );
+        // A free local engine stays free.
+        assert_eq!(
+            estimate_unpriced_cost_microusd_with(&table, &LLMProviderKind::Ollama, Some(&u), 0, 0),
+            0
+        );
     }
 
     #[test]
@@ -2194,7 +2600,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod pricing_file_layering_tests {
     use super::*;
@@ -2215,7 +2620,10 @@ mod pricing_file_layering_tests {
         let defaults = PricingTable::defaults();
         for row in &defaults.rows {
             let free = row.pricing == ProviderPricing::free();
-            let catch_all = matches!(&*row.model_prefix, "" | "claude-" | "deepseek-" | "grok-" | "gemini-");
+            let catch_all = matches!(
+                &*row.model_prefix,
+                "" | "claude-" | "deepseek-" | "grok-" | "gemini-"
+            );
             assert!(
                 free || catch_all,
                 "model-specific price in code: {} `{}` (move it to llm_pricing.template.json)",
@@ -2223,7 +2631,10 @@ mod pricing_file_layering_tests {
                 row.model_prefix
             );
         }
-        assert!(defaults.realtime_rows.is_empty(), "realtime prices belong in the pricing file");
+        assert!(
+            defaults.realtime_rows.is_empty(),
+            "realtime prices belong in the pricing file"
+        );
     }
 
     /// Every code default is repeated in the seed, so the file shows every
@@ -2233,14 +2644,21 @@ mod pricing_file_layering_tests {
         let seed = parse_pricing_file(SEED_PRICING_JSON).unwrap();
         for row in &PricingTable::defaults().rows {
             assert!(
-                seed.text.iter().any(|seed_row| text_pricing_row_version(seed_row) == text_pricing_row_version(row)),
+                seed.text
+                    .iter()
+                    .any(|seed_row| text_pricing_row_version(seed_row)
+                        == text_pricing_row_version(row)),
                 "code default missing from the seed: {} `{}`",
                 row.provider.as_str(),
                 row.model_prefix
             );
         }
         for row in &PricingTable::defaults().web_search_rows {
-            assert!(seed.web_search.contains(row), "web-search default missing from the seed: {:?}", row.provider);
+            assert!(
+                seed.web_search.contains(row),
+                "web-search default missing from the seed: {:?}",
+                row.provider
+            );
         }
     }
 
@@ -2271,10 +2689,22 @@ mod pricing_file_layering_tests {
         let table = PricingTable::builtin_with_file(file);
         let jan_2027 = crate::pricing_file::parse_effective_from_ms("2027-01-01").unwrap();
         let oct_15 = crate::pricing_file::parse_effective_from_ms("2026-10-15").unwrap();
-        assert_eq!(table.web_search_cost_per_call_at(&LLMProviderKind::Gemini, oct_15 - 1), 0.035);
-        assert_eq!(table.web_search_cost_per_call_at(&LLMProviderKind::Gemini, jan_2027 - 1), 0.014);
-        assert_eq!(table.web_search_cost_per_call_at(&LLMProviderKind::Gemini, jan_2027), 0.014);
-        assert_eq!(table.web_search_cost_per_call_at(&LLMProviderKind::Ollama, jan_2027), 0.0);
+        assert_eq!(
+            table.web_search_cost_per_call_at(&LLMProviderKind::Gemini, oct_15 - 1),
+            0.035
+        );
+        assert_eq!(
+            table.web_search_cost_per_call_at(&LLMProviderKind::Gemini, jan_2027 - 1),
+            0.014
+        );
+        assert_eq!(
+            table.web_search_cost_per_call_at(&LLMProviderKind::Gemini, jan_2027),
+            0.014
+        );
+        assert_eq!(
+            table.web_search_cost_per_call_at(&LLMProviderKind::Ollama, jan_2027),
+            0.0
+        );
     }
 
     #[test]
@@ -2292,25 +2722,67 @@ mod pricing_file_layering_tests {
         table.layer(file);
         let at = crate::pricing_file::parse_effective_from_ms("2026-06-01").unwrap();
         let xai = LLMProviderKind::Xai;
-        let tts = MediaUsage { input_chars: Some(2_000), requests: 1, ..MediaUsage::default() };
-        let cost = table.compute_media_cost_at(&xai, "grok-tts", MediaKind::Tts, &tts, at).unwrap();
+        let tts = MediaUsage {
+            input_chars: Some(2_000),
+            requests: 1,
+            ..MediaUsage::default()
+        };
+        let cost = table
+            .compute_media_cost_at(&xai, "grok-tts", MediaKind::Tts, &tts, at)
+            .unwrap();
         assert!((cost - 0.03).abs() < 1e-12, "{cost}");
-        let upload = MediaUsage { audio_seconds: Some(90.0), requests: 1, ..MediaUsage::default() };
+        let upload = MediaUsage {
+            audio_seconds: Some(90.0),
+            requests: 1,
+            ..MediaUsage::default()
+        };
         let stt = table
-            .compute_media_cost_at(&xai, "grok-voice-transcribe-2.0", MediaKind::Stt, &upload, at)
+            .compute_media_cost_at(
+                &xai,
+                "grok-voice-transcribe-2.0",
+                MediaKind::Stt,
+                &upload,
+                at,
+            )
             .unwrap();
         assert!((stt - 0.15).abs() < 1e-12, "{stt}");
         let streaming = table
-            .compute_media_cost_at(&xai, "grok-voice-transcribe-2.0", MediaKind::SttStreaming, &upload, at)
+            .compute_media_cost_at(
+                &xai,
+                "grok-voice-transcribe-2.0",
+                MediaKind::SttStreaming,
+                &upload,
+                at,
+            )
             .unwrap();
         assert!((streaming - 0.30).abs() < 1e-12, "{streaming}");
         // A compressed upload with no measurable duration has no price, not $0.
-        let unknown = MediaUsage { requests: 1, ..MediaUsage::default() };
-        assert_eq!(table.compute_media_cost_at(&xai, "grok-voice-transcribe-2.0", MediaKind::Stt, &unknown, at), None);
+        let unknown = MediaUsage {
+            requests: 1,
+            ..MediaUsage::default()
+        };
+        assert_eq!(
+            table.compute_media_cost_at(
+                &xai,
+                "grok-voice-transcribe-2.0",
+                MediaKind::Stt,
+                &unknown,
+                at
+            ),
+            None
+        );
         // Before the row, and for an unpriced model, there is no price either.
-        assert_eq!(table.compute_media_cost_at(&xai, "grok-tts", MediaKind::Tts, &tts, 0), None);
-        assert_eq!(table.media_pricing_version_at(&xai, "other-tts", MediaKind::Tts, at), None);
-        assert!(table.media_pricing_version_at(&xai, "grok-tts", MediaKind::Tts, at).is_some());
+        assert_eq!(
+            table.compute_media_cost_at(&xai, "grok-tts", MediaKind::Tts, &tts, 0),
+            None
+        );
+        assert_eq!(
+            table.media_pricing_version_at(&xai, "other-tts", MediaKind::Tts, at),
+            None
+        );
+        assert!(table
+            .media_pricing_version_at(&xai, "grok-tts", MediaKind::Tts, at)
+            .is_some());
     }
 
     /// Grok voice bills its session by the minute ($0.08), reported as the
@@ -2318,31 +2790,65 @@ mod pricing_file_layering_tests {
     #[test]
     fn grok_voice_bills_session_minutes() {
         assert!(realtime_is_duration_billed_at("grok-voice-latest", 0));
-        let minute = RealtimeUsage { billed_seconds: 60.0, ..RealtimeUsage::default() };
-        let cost = PricingTable::builtin().compute_realtime_cost_at("grok-voice-latest", &minute, 0);
+        let minute = RealtimeUsage {
+            billed_seconds: 60.0,
+            ..RealtimeUsage::default()
+        };
+        let cost =
+            PricingTable::builtin().compute_realtime_cost_at("grok-voice-latest", &minute, 0);
         assert!((cost - 0.08).abs() < 1e-9, "{cost}");
-        let tokens_only = RealtimeUsage { audio_output_tokens: 10_000, ..RealtimeUsage::default() };
-        assert_eq!(PricingTable::builtin().compute_realtime_cost_at("grok-voice-latest", &tokens_only, 0), 0.0);
+        let tokens_only = RealtimeUsage {
+            audio_output_tokens: 10_000,
+            ..RealtimeUsage::default()
+        };
+        assert_eq!(
+            PricingTable::builtin().compute_realtime_cost_at("grok-voice-latest", &tokens_only, 0),
+            0.0
+        );
     }
 
     #[test]
     fn local_voice_engines_price_at_an_exact_zero() {
         let table = PricingTable::builtin();
         let local = LLMProviderKind::Custom("local".into());
-        let usage = MediaUsage { input_chars: Some(500), audio_seconds: Some(12.0), requests: 1 };
+        let usage = MediaUsage {
+            input_chars: Some(500),
+            audio_seconds: Some(12.0),
+            requests: 1,
+        };
         for kind in [MediaKind::Tts, MediaKind::Stt, MediaKind::SttStreaming] {
-            assert_eq!(table.compute_media_cost_at(&local, "FluidInference/kokoro-82m-coreml", kind, &usage, 0), Some(0.0));
-            assert!(table.media_pricing_version_at(&local, "macos", kind, 0).is_some());
+            assert_eq!(
+                table.compute_media_cost_at(
+                    &local,
+                    "FluidInference/kokoro-82m-coreml",
+                    kind,
+                    &usage,
+                    0
+                ),
+                Some(0.0)
+            );
+            assert!(table
+                .media_pricing_version_at(&local, "macos", kind, 0)
+                .is_some());
         }
     }
 
     #[test]
     fn media_rows_need_a_known_kind_and_a_rate() {
         for (body, needle) in [
-            (r#"{"provider": "xai", "kind": "speech", "effective_from": "2026-01-01", "usd_per_request": 1.0}"#, "kind"),
-            (r#"{"provider": "xai", "kind": "tts", "effective_from": "2026-01-01"}"#, "non-zero"),
+            (
+                r#"{"provider": "xai", "kind": "speech", "effective_from": "2026-01-01", "usd_per_request": 1.0}"#,
+                "kind",
+            ),
+            (
+                r#"{"provider": "xai", "kind": "tts", "effective_from": "2026-01-01"}"#,
+                "non-zero",
+            ),
         ] {
-            let error = parse_pricing_file(&format!(r#"{{"schema_version": 2, "rates": [], "media_rates": [{body}]}}"#)).unwrap_err();
+            let error = parse_pricing_file(&format!(
+                r#"{{"schema_version": 2, "rates": [], "media_rates": [{body}]}}"#
+            ))
+            .unwrap_err();
             assert!(error.contains(needle), "{error}");
         }
     }

@@ -132,3 +132,36 @@ test('an existing incoming-only subscription is extended through the actual PATC
   assert.equal(calls,1);
   assert.deepEqual(patch.event_types,['message.received','domain.verified','message.delivered','message.bounced','message.complained']);
 });
+
+test('an existing subscription on a retired host is deleted and registered again at the configured URL', async (t) => {
+  // The update endpoint cannot change a URL, so the stale hook is replaced
+  // and the replacement's secret wins over the configured, now stale, one.
+  const adapter = new AgentMailAdapter({apiKey:'unused-test-key',webhookPort:0,webhookUrl:'https://webhook-new.example.invalid',webhookSecret:secret});
+  const types = ['message.received','message.delivered','message.bounced','message.complained'];
+  const newSecret = `whsec_${Buffer.from('replacement-fixture-key').toString('base64')}`;
+  const requests = [];
+  t.mock.method(globalThis,'fetch',async (url,init) => {
+    requests.push(`${init.method} ${url}`);
+    return new Response(null,{status:204});
+  });
+  const created = [];
+  adapter.client = {webhooks:{async create(body) {
+    created.push(body.url);
+    return created.length === 1
+      ? {webhook_id:'old-hook',secret,url:'https://webhook-old.example.invalid/agentmail-webhook',event_types:types}
+      : {webhook_id:'new-hook',secret:newSecret,url:body.url,event_types:types};
+  }}};
+  await adapter.selfRegisterWebhook();
+  assert.deepEqual(requests,['DELETE https://api.agentmail.to/v0/webhooks/old-hook']);
+  assert.deepEqual(created,['https://webhook-new.example.invalid/agentmail-webhook','https://webhook-new.example.invalid/agentmail-webhook']);
+  assert.equal(adapter.webhookSecret,newSecret);
+});
+
+test('an existing subscription already on the configured URL is left alone', async (t) => {
+  const adapter = new AgentMailAdapter({apiKey:'unused-test-key',webhookPort:0,webhookUrl:'https://webhook-new.example.invalid',webhookSecret:secret});
+  let calls = 0;
+  t.mock.method(globalThis,'fetch',async () => { calls++; return new Response('{}'); });
+  adapter.client = {webhooks:{async create() {return {webhook_id:'existing',secret,url:'https://webhook-new.example.invalid/agentmail-webhook',event_types:['message.received','message.delivered','message.bounced','message.complained']};}}};
+  await adapter.selfRegisterWebhook();
+  assert.equal(calls,0);
+});

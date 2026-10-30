@@ -7,8 +7,8 @@
  * OFF — U5). Data lives in `codingSpineStore` / `vibeHitlStore` /
  * `vibeDevProjectStore`; this is purely the cockpit's own UI knobs.
  *
- * `policyPromptLine()` is exported so the submit pipeline's task description
- * tells the agent the SAME policy the toggle enforces (they used to drift).
+ * The task description an agent sees (policy, mode directives, budget, visual
+ * self-correction) is assembled by the server from the structured run request.
  */
 import { get, writable, type Readable } from 'svelte/store';
 import { browser } from '$app/environment';
@@ -54,6 +54,11 @@ function stageIsDrawer(): boolean {
 }
 const STAGE_EXPANDED_STORAGE_KEY = 'magician.vibedev.stageExpanded';
 
+/** Below 1280px the rail is a drawer over the conversation, so it starts closed there. */
+function railStartsExpanded(): boolean {
+	return !browser || window.innerWidth > 1280;
+}
+
 function loadStageExpanded(): boolean {
 	if (!browser) return true;
 	// Below 1280px the open stage is a drawer over the conversation, so it
@@ -74,10 +79,6 @@ function persistStageExpanded(value: boolean): void {
 		// best-effort
 	}
 }
-
-/** The cheap default + the premium escalation profile (magician-config coding.profiles). */
-const FLOOR_PROFILE = 'coding-balanced';
-const PREMIUM_PROFILE = 'coding-premium';
 
 function loadAutoApplyPreference(): boolean {
 	// Default OFF (U5) — manual review unless the user opts into auto-apply.
@@ -124,8 +125,8 @@ function persistCostBudget(value: number | null): void {
 }
 
 function loadVisualSelfCorrect(): boolean {
-	// Default AUTO (on). It only rides along for vision-capable profiles (gated in
-	// visualSelfCorrectDirectiveBlock) and Pi skips non-visual changes at runtime —
+	// Default AUTO (on). It only rides along for vision-capable profiles (the
+	// server gates the directive) and Pi skips non-visual changes at runtime —
 	// so the cost lands only on genuinely-visual work, not as a blanket opt-in.
 	// 'Off' (explicit) = never. Stored choice wins; unset = Auto.
 	if (!browser) return true;
@@ -150,7 +151,7 @@ function initialState(): VibeStudioState {
 	return {
 		stageTab: 'preview',
 		mode: 'build',
-		railExpanded: true,
+		railExpanded: railStartsExpanded(),
 		stageExpanded: loadStageExpanded(),
 		stageClosing: false,
 		terminalOpen: false,
@@ -238,115 +239,6 @@ function createVibeStudioStore() {
 		resetView(): void {
 			cancelStageClose();
 			set(initialState());
-		},
-
-		/**
-		 * The execution-policy line the submit pipeline appends so the agent's
-		 * instructions match the toggle. Reads the live store value.
-		 */
-		policyPromptLine(): string {
-			const state = get(store);
-			if (state.mode === 'discuss') {
-				return '- Discuss mode: this is a read-only request. Explain, plan, or review — do NOT modify files or stage code proposals.';
-			}
-			if (state.mode === 'autopilot') {
-				return '- VibeDev Autopilot is enabled: this is an unattended run — apply your own proposals (apply_code_proposal), self-verify with run_project_checks, iterate until green on a dedicated branch (never main), and report the final status with notify_owner. Do not block on routine review.';
-			}
-			return state.autoApplyCodeProposals
-				? '- VibeDev auto-apply is enabled for proposal-backed code diffs; keep changes focused and reviewable.'
-				: '- VibeDev manual review is enabled; wait for approval before applying proposals.';
-		},
-
-		/**
-		 * The full Autopilot operating directive appended to the task description
-		 * (empty unless in autopilot mode). Tells the engineering-manager to run
-		 * the unattended apply → check → fix loop on a branch and report back.
-		 * The tools it references (apply_code_proposal / run_project_checks /
-		 * notify_owner) are granted to the engineers / EM (M1 backend).
-		 */
-		autopilotDirectiveBlock(): string {
-			if (get(store).mode !== 'autopilot') return '';
-			return [
-				'',
-				'Autopilot policy (UNATTENDED — the owner has closed the session and will review on return):',
-				'- This is an UNATTENDED autopilot run. Do NOT pause for routine approval. The owner has pre-authorized you to apply your own changes and iterate to completion. Only stop to escalate if you are genuinely blocked.',
-				'- Before delegating any coding, create a dedicated work branch off the current HEAD with dugite (name it autopilot/<short-task-slug>). Never commit to or modify main — main must stay untouched.',
-				'- Delegate implementation to the right engineer with this loop instruction, verbatim: "After each run_coding_task, immediately call apply_code_proposal with the returned proposal_id to apply your own change to the working tree, then call run_project_checks to run build/test/lint. If any check fails, read the diagnostics, make a focused fix, and repeat. Continue until all checks pass (green) or you reach 12 coding iterations. Do not wait for human approval at any point."',
-				'- When the engineer returns green (or exhausts iterations), commit the accumulated work to the branch with dugite and capture the branch name and a `git diff --stat` summary for the morning review.',
-				'- Report exactly one final status with notify_owner: success → kind=briefing severity=info ("Autopilot finished: <task>. Checks green. Branch <name>, <N> files changed. Review & merge when ready."); not green → kind=escalation severity=warning ("Autopilot needs you: <task>. Stopped on <reason>. Branch <name> has the partial work.").',
-				'- If owner cross-channel delivery is configured, ALSO delegate_to_agent(personal-assistant) with a one-line recap so the owner gets the same status over their preferred channel (WhatsApp/email).',
-				'- Respect the task iteration budget. If you cannot make progress, stop and escalate rather than loop.',
-				'- Respect the cost budget stated in the Execution policy above: after each run_coding_task read session_stats.cost (cumulative USD), prefer the cheap profile as you approach the budget, and STOP + report rather than exceed it.'
-			].join('\n');
-		},
-
-		/**
-		 * Planning directive (Discuss mode → plan run). Empty unless mode==='discuss'.
-		 * Tells the agent the run's outcome is a written PLAN, not a code diff: inspect
-		 * the repo via run_coding_task with plan_only:true (read-only, stages no diff,
-		 * captures the plan as the output), then YIELD with the plan as the result.
-		 * Pairs with the `plan` task tag, which FORCES plan_only at the handler even if
-		 * the agent ignores the arg (so the no-diff invariant cannot silently degrade).
-		 */
-		planDirectiveBlock(): string {
-			if (get(store).mode !== 'discuss') return '';
-			return [
-				'',
-				'Planning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):',
-				'- Produce a concrete written plan. Do NOT modify files or stage code proposals.',
-				'- Make ONE plan_only run_coding_task call (read-only — it stages NO diff and captures your plan as the run output; the `plan` tag also forces plan_only at the handler). Do NOT re-run it or start a second planning pass.',
-				'- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.',
-				'- As soon as that one call returns the plan, YIELD with it as your completed result (a substantive completed item / artifact) — never an empty yield, and never additional planning turns.'
-			].join('\n');
-		},
-
-		/**
-		 * Informational pin only. The server owns the task description; this
-		 * helper is leftover from the client assembler and must not be a second
-		 * policy. Magician enforces the committed constraint at dispatch.
-		 */
-		escalationPolicyLine(floorProfileId: string): string {
-			const floor = floorProfileId || FLOOR_PROFILE;
-			if (floor === PREMIUM_PROFILE) {
-				return `- This request is pinned to coding_profile: ${PREMIUM_PROFILE}. Magician enforces that pin on every run_coding_task; do not pass a different coding_profile.`;
-			}
-			if (floor === FLOOR_PROFILE) {
-				return `- This request is pinned to coding_profile: ${floor}. Magician allows the configured one-hop to ${PREMIUM_PROFILE}. You may pass coding_profile: ${PREMIUM_PROFILE} for a genuinely hard step or one that has failed twice; Magician rejects anything else.`;
-			}
-			return `- This request is pinned to coding_profile: ${floor}. Magician enforces that named pin on every run_coding_task. The pin is not an engine switch; do not pass a different coding_profile as authority.`;
-		},
-
-		/**
-		 * Optional per-run cost-budget stop-condition (M2). Empty when no budget is
-		 * set. Mirrors the server's line, which `run_coding_task` reads back and
-		 * enforces as a hard cap (`coding_engine/cost_budget.rs`).
-		 */
-		costBudgetLine(): string {
-			const budget = get(store).costBudgetUsd;
-			if (budget == null) return '';
-			return `- Cost budget: $${budget.toFixed(2)} for this run. Magician refuses any coding turn once this run's coding spend reaches it, and stops a Pi turn mid-way. After each run_coding_task, check session_stats.cost (cumulative USD); prefer the cheap profile as you approach it, and STOP and report your progress rather than exceed it.`;
-		},
-
-		/**
-		 * Visual self-correction directive (M5). Empty unless "Auto" is on (default),
-		 * the project is plausibly visual (`projectIsVisual`), and not in Discuss. We do
-		 * NOT gate this directive on the initially selected profile's image support:
-		 * the run may escalate from a text-only coding profile to a vision-capable one. Pi
-		 * gates NEEDEDNESS at runtime (the directive skips non-visual changes, starts the
-		 * preview, and self-skips if a run reports no image support), so it only runs the
-		 * screenshot→critique→patch loop on visual work. Hard-capped at 3 passes.
-		 */
-		visualSelfCorrectDirectiveBlock(projectIsVisual: boolean): string {
-			const state = get(store);
-			if (!state.visualSelfCorrect || state.mode === 'discuss' || !projectIsVisual) return '';
-			return [
-				'',
-				'Visual self-correction (opt-in — SEE what you build, do not fly blind):',
-				'- After a change that affects the rendered UI, call screenshot_preview { project_id } to capture the running preview. If it returns ok=false (no preview running), start the dev server first; if the change is NOT visual (config, backend, tests), SKIP visual self-correction entirely.',
-				'- Feed the screenshot back as a critic: call run_coding_task with attachment_ids set to the returned attachment_id and attachment_session_id set to the returned attachment_session_id, instructing it to compare the rendered screenshot against the goal and fix what looks wrong — broken layout, overflow, misalignment, poor spacing/contrast, missing or clipped content.',
-				'- Then apply_code_proposal + run_project_checks, and screenshot_preview again to confirm the fix landed visually.',
-				'- HARD CAP: at most 3 visual passes per change. Stop when it looks right or the cap is reached — never loop on cosmetics. This needs a coding profile that supports image inputs; if a run reports it does not, skip the visual loop and say so.'
-			].join('\n');
 		}
 	};
 }

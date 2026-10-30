@@ -7,6 +7,11 @@
 //! | tools-and-data   | yes       | yes   | yes       | yes          | yes             | yes      |
 //! | only-tools       | yes       | yes   | no        | yes          | yes             | no       |
 //! | only-data        | yes       | no    | yes       | no           | no              | no       |
+//!
+//! Order matters: a running service is stopped or unregistered before its
+//! data folder is removed (see [`cleanup_plan`]). With Desktop's own native
+//! service, "only-data" stops it, removes the data, re-seeds the root the
+//! service uses and starts it again.
 
 use std::sync::Arc;
 use tauri::{AppHandle, Manager};
@@ -16,6 +21,81 @@ use crate::container::ContainerRuntime;
 use crate::manifest::InstallManifest;
 use crate::AppState;
 
+/// One side-effecting cleanup step, in the order [`cleanup_plan`] returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupStep {
+    StopRemoveContainer,
+    RemoveImage,
+    RemoveLaunchAgent,
+    /// Unregisters the native service and removes its install prefix.
+    RemoveInstalledTools,
+    /// The desktop app's clean-quit marker (magic-supervisor's desktop watch).
+    RemoveQuitMarker,
+    StopNativeService,
+    WarnForeignNativeService,
+    RemoveDataDirs,
+    ReseedAndStartNative,
+    RemoveManifest,
+}
+
+/// The steps for `mode`. Any service writing into the data folder is stopped
+/// or unregistered before the data is removed.
+fn cleanup_plan(
+    mode: &str,
+    native: bool,
+    native_service_ours: bool,
+) -> Result<Vec<CleanupStep>, String> {
+    use CleanupStep::*;
+    Ok(match mode {
+        "tools-and-data" => vec![
+            StopRemoveContainer,
+            RemoveImage,
+            RemoveLaunchAgent,
+            RemoveInstalledTools,
+            RemoveQuitMarker,
+            RemoveDataDirs,
+            RemoveManifest,
+        ],
+        "only-tools" => vec![
+            StopRemoveContainer,
+            RemoveImage,
+            RemoveLaunchAgent,
+            RemoveInstalledTools,
+            RemoveQuitMarker,
+        ],
+        "only-data" if native && native_service_ours => vec![
+            StopRemoveContainer,
+            StopNativeService,
+            RemoveDataDirs,
+            ReseedAndStartNative,
+        ],
+        "only-data" if native => vec![
+            StopRemoveContainer,
+            WarnForeignNativeService,
+            RemoveDataDirs,
+        ],
+        "only-data" => vec![StopRemoveContainer, RemoveDataDirs],
+        other => {
+            return Err(format!(
+                "Unknown cleanup mode \"{other}\". Expected: tools-and-data, only-tools, only-data"
+            ))
+        },
+    })
+}
+
+/// Whether `root` (or its canonical form, taken before the deletion) is a
+/// directory this run actually removed, or inside one. A refused or failed
+/// delete never counts, so nothing is seeded into an intact root.
+fn root_was_removed(
+    root: &std::path::Path,
+    canonical_root: Option<&std::path::Path>,
+    removed: &[std::path::PathBuf],
+) -> bool {
+    removed.iter().any(|dir| {
+        root.starts_with(dir) || canonical_root.is_some_and(|canonical| canonical.starts_with(dir))
+    })
+}
+
 /// Run cleanup/uninstall according to the requested `mode`.
 ///
 /// Returns a human-readable summary of everything that was done.
@@ -23,37 +103,83 @@ pub async fn run_cleanup(app: &AppHandle, mode: &str) -> Result<String, String> 
     let manifest = crate::manifest::read_manifest()
         .ok_or_else(|| "No install manifest found — nothing to uninstall.".to_string())?;
 
+    let native = manifest.runtime == crate::native_runtime::RUNTIME_NAME;
+    let plan = cleanup_plan(mode, native, !manifest.pre_existing.native_service)?;
     let mut summary: Vec<String> = Vec::new();
+    // Read before the data goes: the root the native service really uses,
+    // re-seeded afterwards only when this run actually removed it.
+    let registered_root = crate::native_runtime::registered_runtime_root();
+    let canonical_root = registered_root
+        .as_ref()
+        .and_then(|root| root.canonicalize().ok());
+    let mut removed: Vec<std::path::PathBuf> = Vec::new();
 
-    // Always stop + remove the container regardless of mode.
-    stop_and_remove_container(app, &manifest, &mut summary).await;
-
-    match mode {
-        "tools-and-data" => {
-            remove_container_image(&manifest, &mut summary).await;
-            remove_data_dirs(&manifest, &mut summary);
-            remove_launch_agent(&manifest, &mut summary).await;
-            remove_installed_tools(&manifest, &mut summary).await;
-            if let Err(e) = crate::manifest::remove_manifest() {
-                warn!("Failed to remove manifest: {e}");
-                summary.push(format!("Warning: could not remove manifest — {e}"));
-            } else {
-                summary.push("Removed install manifest.".to_string());
-            }
-        },
-        "only-tools" => {
-            remove_container_image(&manifest, &mut summary).await;
-            remove_launch_agent(&manifest, &mut summary).await;
-            remove_installed_tools(&manifest, &mut summary).await;
-        },
-        "only-data" => {
-            remove_data_dirs(&manifest, &mut summary);
-        },
-        other => {
-            return Err(format!(
-                "Unknown cleanup mode \"{other}\". Expected: tools-and-data, only-tools, only-data"
-            ));
-        },
+    for step in plan {
+        match step {
+            CleanupStep::StopRemoveContainer => {
+                stop_and_remove_container(app, &manifest, &mut summary).await
+            },
+            CleanupStep::RemoveImage => remove_container_image(&manifest, &mut summary).await,
+            CleanupStep::RemoveLaunchAgent => remove_launch_agent(&manifest, &mut summary).await,
+            CleanupStep::RemoveInstalledTools => {
+                remove_installed_tools(&manifest, &mut summary).await
+            },
+            CleanupStep::RemoveQuitMarker => {
+                let marker = crate::config::desktop_quit_marker_path();
+                match std::fs::remove_file(&marker) {
+                    Ok(()) => summary.push(format!(
+                        "Removed the desktop clean-quit marker {}.",
+                        marker.display()
+                    )),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(error) => summary.push(format!(
+                        "Warning: could not remove {} — {error}",
+                        marker.display()
+                    )),
+                }
+            },
+            CleanupStep::StopNativeService => match crate::native_runtime::stop_service().await {
+                Ok(()) => summary
+                    .push("Stopped the native backend before removing its data.".to_string()),
+                Err(error) => summary.push(format!(
+                    "Warning: could not stop the native backend before removing its data — {error}"
+                )),
+            },
+            CleanupStep::WarnForeignNativeService => summary.push(
+                "Warning: the native backend service existed before Desktop setup and was left running; its data was removed under it."
+                    .to_string(),
+            ),
+            CleanupStep::RemoveDataDirs => removed = remove_data_dirs(&manifest, &mut summary),
+            CleanupStep::ReseedAndStartNative => match registered_root
+                .as_deref()
+                .filter(|root| root_was_removed(root, canonical_root.as_deref(), &removed))
+            {
+                Some(root) => match crate::native_runtime::reseed_and_start(root).await {
+                    Ok(()) => summary.push(format!(
+                        "Re-seeded {} and started the native backend again.",
+                        root.display()
+                    )),
+                    Err(error) => summary.push(format!(
+                        "Warning: could not re-seed {} and start the native backend — {error}",
+                        root.display()
+                    )),
+                },
+                None => match crate::native_runtime::ensure_service_started().await {
+                    Ok(()) => summary.push("Started the native backend again.".to_string()),
+                    Err(error) => summary.push(format!(
+                        "Warning: could not start the native backend again — {error}"
+                    )),
+                },
+            },
+            CleanupStep::RemoveManifest => {
+                if let Err(e) = crate::manifest::remove_manifest() {
+                    warn!("Failed to remove manifest: {e}");
+                    summary.push(format!("Warning: could not remove manifest — {e}"));
+                } else {
+                    summary.push("Removed install manifest.".to_string());
+                }
+            },
+        }
     }
 
     if summary.is_empty() {
@@ -161,11 +287,22 @@ async fn remove_container_image(manifest: &InstallManifest, summary: &mut Vec<St
     }
 }
 
-/// Remove data directories listed in the manifest.
+/// `path` is inside `home` and is not `home` itself (nor, therefore, any
+/// ancestor of it); mirrors `scripts/cleanup.sh`'s `"$HOME"/*` pattern.
+fn is_strictly_under(path: &std::path::Path, home: &std::path::Path) -> bool {
+    path.starts_with(home) && path != home
+}
+
+/// Remove data directories listed in the manifest; returns the resolved
+/// paths actually removed.
 ///
 /// Safety: each path is validated to be under the user's home directory and
 /// free of `..` components before deletion, guarding against a tampered manifest.
-fn remove_data_dirs(manifest: &InstallManifest, summary: &mut Vec<String>) {
+fn remove_data_dirs(
+    manifest: &InstallManifest,
+    summary: &mut Vec<String>,
+) -> Vec<std::path::PathBuf> {
+    let mut removed = Vec::new();
     let home = match dirs::home_dir() {
         Some(h) => h.canonicalize().unwrap_or(h),
         None => {
@@ -173,7 +310,7 @@ fn remove_data_dirs(manifest: &InstallManifest, summary: &mut Vec<String>) {
             summary.push(
                 "Warning: cannot determine home directory — skipped data dir removal.".to_string(),
             );
-            return;
+            return removed;
         },
     };
 
@@ -199,8 +336,9 @@ fn remove_data_dirs(manifest: &InstallManifest, summary: &mut Vec<String>) {
             continue;
         }
 
-        // Reject paths that are not under the user's home directory.
-        if !resolved.starts_with(&home) {
+        // Reject paths that are not strictly under the user's home directory:
+        // home itself (or an ancestor of it) is never a data folder.
+        if !is_strictly_under(&resolved, &home) {
             warn!(
                 "REFUSED to delete '{dir}': not under home directory {}",
                 home.display()
@@ -215,6 +353,8 @@ fn remove_data_dirs(manifest: &InstallManifest, summary: &mut Vec<String>) {
             Ok(()) => {
                 info!("Removed data directory {dir}");
                 summary.push(format!("Removed data directory \"{dir}\"."));
+                removed.push(path.to_path_buf());
+                removed.push(resolved.clone());
             },
             Err(e) => {
                 warn!("Failed to remove data directory {dir}: {e}");
@@ -222,6 +362,7 @@ fn remove_data_dirs(manifest: &InstallManifest, summary: &mut Vec<String>) {
             },
         }
     }
+    removed
 }
 
 /// Remove the macOS launch agent plist (if we installed one).
@@ -391,6 +532,134 @@ async fn remove_installed_tools(manifest: &InstallManifest, summary: &mut Vec<St
             "Homebrew was installed by Magician but has NOT been removed (other apps may depend on it). \
              To remove it manually, run: /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)\""
                 .to_string(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CleanupStep::*;
+    use super::*;
+
+    fn position(plan: &[CleanupStep], step: CleanupStep) -> usize {
+        plan.iter()
+            .position(|item| *item == step)
+            .expect("step planned")
+    }
+
+    #[test]
+    fn services_stop_before_their_data_is_removed() {
+        for native in [false, true] {
+            let plan = cleanup_plan("tools-and-data", native, true).expect("plan");
+            assert_eq!(
+                plan,
+                vec![
+                    StopRemoveContainer,
+                    RemoveImage,
+                    RemoveLaunchAgent,
+                    RemoveInstalledTools,
+                    RemoveQuitMarker,
+                    RemoveDataDirs,
+                    RemoveManifest
+                ]
+            );
+            assert!(position(&plan, RemoveInstalledTools) < position(&plan, RemoveDataDirs));
+        }
+        assert_eq!(
+            cleanup_plan("only-tools", true, true).expect("plan"),
+            vec![
+                StopRemoveContainer,
+                RemoveImage,
+                RemoveLaunchAgent,
+                RemoveInstalledTools,
+                RemoveQuitMarker
+            ]
+        );
+        assert!(
+            !cleanup_plan("only-data", true, true)
+                .expect("plan")
+                .contains(&RemoveQuitMarker),
+            "data-only cleanup keeps the marker, like scripts/cleanup.sh"
+        );
+    }
+
+    #[test]
+    fn only_data_with_our_native_service_stops_reseeds_and_restarts_it() {
+        assert_eq!(
+            cleanup_plan("only-data", true, true).expect("plan"),
+            vec![
+                StopRemoveContainer,
+                StopNativeService,
+                RemoveDataDirs,
+                ReseedAndStartNative
+            ]
+        );
+        assert_eq!(
+            cleanup_plan("only-data", true, false).expect("plan"),
+            vec![
+                StopRemoveContainer,
+                WarnForeignNativeService,
+                RemoveDataDirs
+            ],
+            "a service that predates Desktop is never touched"
+        );
+        assert_eq!(
+            cleanup_plan("only-data", false, true).expect("plan"),
+            vec![StopRemoveContainer, RemoveDataDirs]
+        );
+        assert!(cleanup_plan("everything", true, true).is_err());
+    }
+
+    #[test]
+    fn home_itself_or_an_ancestor_is_never_a_data_folder() {
+        use std::path::Path;
+        let home = Path::new("/Users/me");
+        assert!(is_strictly_under(
+            Path::new("/Users/me/MagicianNotes"),
+            home
+        ));
+        assert!(
+            !is_strictly_under(Path::new("/Users/me"), home),
+            "home itself is refused"
+        );
+        assert!(
+            !is_strictly_under(Path::new("/Users"), home),
+            "an ancestor is refused"
+        );
+        assert!(!is_strictly_under(Path::new("/"), home));
+        assert!(!is_strictly_under(Path::new("/Users/meme"), home));
+    }
+
+    #[test]
+    fn the_service_root_is_reseeded_only_when_it_was_actually_removed() {
+        use std::path::{Path, PathBuf};
+        let removed = vec![PathBuf::from("/Volumes/ssd/MagicianNotes")];
+        assert!(root_was_removed(
+            Path::new("/Volumes/ssd/MagicianNotes"),
+            None,
+            &removed
+        ));
+        assert!(root_was_removed(
+            Path::new("/Volumes/ssd/MagicianNotes/sub"),
+            None,
+            &removed
+        ));
+        assert!(
+            root_was_removed(
+                Path::new("/Users/me/MagicianNotes"),
+                Some(Path::new("/Volumes/ssd/MagicianNotes")),
+                &removed
+            ),
+            "a symlinked root matches through its canonical target"
+        );
+        assert!(!root_was_removed(
+            Path::new("/Users/me/MagicianNotesOld"),
+            None,
+            &removed
+        ));
+        assert!(
+            !root_was_removed(Path::new("/Volumes/ssd/MagicianNotes"), None, &[]),
+            "a refused or failed delete never leads to seeding"
         );
     }
 }

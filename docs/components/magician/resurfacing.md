@@ -38,7 +38,9 @@ The LLM never scans the corpus, only a pre-ranked shortlist.
 - **Curator (default daily):** surfaces at most the configured cap from a top-ranked
   non-cooldown shortlist. Deterministic path: top-K with a signal-derived "why
   now". LLM path: reviews a wider shortlist and temporarily cools
-  reviewed-but-rejected candidates so the queue rotates.
+  reviewed-but-rejected candidates so the queue rotates. Both paths hold
+  router-dropped candidates that belong elsewhere out of the window, so the
+  shortlist reaches reviewable candidates below them.
 
 ## Components
 
@@ -110,6 +112,26 @@ The LLM never scans the corpus, only a pre-ranked shortlist.
     required-action mapping and active annotations; actionable evidence becomes
     one Follow-up before the candidate is withheld, and each outcome is recorded
     as an attention-funnel reason.
+  - Routing holds: a candidate the router drops because it belongs elsewhere
+    (`owner_dismissed`, `action_already_handled`, `sensitive_or_suppressed`,
+    `stale_content_revision`: 7 days; `active_follow_up_exists` or routed to
+    another lane: 24 hours) leaves the review window through one batched
+    `hold_routing_dropped_candidates` call per pass. The hold stays a
+    `candidate`-state cooldown (`routing_held` in the queue stats, counted
+    apart from `cooling`, and shown as "held" on the Resurfacing page; `/today`, state
+    counts and the Follow-up lane are unchanged; memory-connection discovery
+    skips it like any cooling row) and records the revision it
+    judged (`routing_hold_revision` / `routing_hold_until`). A new content
+    revision from the scorer ends it at once; an owner action or any other
+    cooldown written after it wins. Expiry or a new revision only re-routes the
+    row, so an owner-dismissed Follow-up is dropped and held again, never
+    surfaced. A failed source read or materialization never holds.
+  - Funnel events: each pass (deterministic, LLM with fallbacks, or active
+    repair) collects its events and writes them with one
+    `AttentionFunnelStore::append_events`. Event ids hash scope, candidate,
+    content revision (title + digest for revisionless sources), state, stage
+    and outcome — not `last_scored_at`, which the hourly decay rewrites — so an
+    unchanged repeated decision is ignored as a duplicate id.
 - **`source_refs` + `interaction`**: strict encoded comm refs and the read-only
   `ResurfacingInteractionAdapter`, which reports `available`, `newer_available`,
   `stale`, `offline`, `deleted`, `suppressed`, `unsupported` or `unavailable`
@@ -397,7 +419,9 @@ in `resurfacing_runs` (kind, `started_at`, `duration_ms`, `produced`,
 and the pass continues). `GET …/observability` returns `pipeline` (per-kind
 aggregates) and `recent_runs` (newest 50); `funnel` (by
 `state × source_kind`, plus `pending`/`eligible` (cooldown elapsed, actionable
-now), `candidate_pool`, `cooling`, `surfaced`) and `queue` (the same snapshot
+now), `candidate_pool`, `cooling` (ordinary cooldowns such as model
+deferrals), `routing_held` (live curator routing holds, never inside
+`cooling`), `surfaced`) and `queue` (the same snapshot
 standalone); `watermarks`, `sizes` (every table, including repair receipts);
 `engagement` (as `/stats`); `recommendations` (shown/selected/completed totals
 and rates by kind); `briefs` (comm coverage, detail status); `actions`

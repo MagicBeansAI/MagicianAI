@@ -1867,19 +1867,30 @@ impl RelentlessService {
         text: String,
     ) -> String {
         use super::artifact_v2::synthesis::{
-            check_owner_text, load_execution_grounding_corpus, OwnerTextReview,
+            check_owner_text_detailed, load_execution_grounding_corpus, record_owner_text_check,
+            OwnerTextReview,
         };
         let corpus =
             load_execution_grounding_corpus(&self.workspace, scope, task_id, execution_id).await;
-        check_owner_text(
+        let check = check_owner_text_detailed(
             Arc::new(corpus),
             &text,
             "",
             OwnerTextReview::Figures,
             "relentless_report_grounding",
         )
-        .await
-        .unwrap_or(text)
+        .await;
+        record_owner_text_check(
+            &self.workspace,
+            scope,
+            task_id,
+            execution_id,
+            "relentless_report",
+            None,
+            &check,
+        )
+        .await;
+        check.text.unwrap_or(text)
     }
 
     async fn project(&self, store: Arc<RunStore>, state: &RunState) -> Result<()> {
@@ -2488,7 +2499,7 @@ impl RelentlessService {
                     }
                     if state.status == RunStatus::WaitingOwner && state.deadline_at > Utc::now() {
                         if let Err(error) = api.project(store.clone(), &state).await { tracing::warn!(run_id=%id, %error, "Relentless task projection pending; deadline remains active"); }
-                        tokio::select! { _ = control.cancel.cancelled() => {}, _ = control.wake.notified() => {}, _ = tokio::time::sleep((state.deadline_at - Utc::now()).to_std().unwrap_or_default()) => {} }
+                        tokio::select! { _ = control.cancel.cancelled() => {}, _ = control.wake.notified() => {}, _ = magician_relentless::controller::wait_for_deadline(state.deadline_at) => {} }
                         continue;
                     }
                     if setup.native_harness.is_some() && state.deadline_at > Utc::now() {

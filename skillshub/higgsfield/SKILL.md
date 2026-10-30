@@ -4,10 +4,11 @@ version: 0.2.0
 description: "Generate or transform images, video, audio, 3D assets, ads, and product media through the authenticated Higgsfield CLI. Use for GPT Image 2, Nano Banana, Seedance, Marketing Studio, Virality Predictor, Soul, product-photoshoot, marketplace-card, game, and website workflows exposed by the installed CLI. Prefer model/workflow discovery before constructing unfamiliar argv. Not for local image editing that should stay offline."
 metadata:
   magician:
+    setup: { definition: higgsfield-account }
     requires:
       bins: ["higgsfield"]
     install_hint:
-      docs: "Run `make setup-higgsfield-cli` to install and bind the pinned native CLI. Authenticate with `./skillshub/higgsfield/bin/higgsfield auth login`, then run `make setup-higgsfield-auth SCOPE=<principal>/<workspace>` to seed the scoped login."
+      docs: "Run `make setup-higgsfield-cli` to install the pinned CLI, then connect Higgsfield in Settings → Service accounts (also on mobile). Terminal fallback: authenticate with `./skillshub/higgsfield/bin/higgsfield auth login`, then seed with `make setup-higgsfield-auth SCOPE=<principal>/<workspace>`."
     runtime_canary:
       schema_version: tool-runtime.canary.v1
       exempt:
@@ -85,7 +86,8 @@ The shell-form commands below document canonical CLI argv. Translate them to
 `higgsfield.run`; do not invoke a generic shell. Never call `auth login`,
 `auth logout`, or mutate the selected billing workspace from an autonomous run.
 If `account status` reports an expired/missing session, pause for the operator
-to refresh the scoped CLI credentials. The governed manifest enforces this
+to refresh the scoped CLI credentials through Settings → Service accounts.
+The governed manifest enforces this
 before process launch: `auth` and every workspace command except `list` and
 `status` are rejected. No skill-owned shell wrapper participates in active
 execution.

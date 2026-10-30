@@ -17,6 +17,7 @@ export type VerdictState =
 	| 'cancelled'
 	| 'queued'
 	| 'archived'
+	| 'finalizing'
 	| 'finished';
 
 export interface VerdictAttention {
@@ -72,6 +73,14 @@ export interface VerdictInput {
 	elapsedMs: number | null;
 	/** MUST be a real progress timestamp, never `updated_at`. See design §5. */
 	lastProgressAt: number | null;
+	/**
+	 * The work has stopped but its final answer is still being written (the
+	 * backend's `synthesis_pending`, typically 10 s to 2 min). Optional so a
+	 * surface that cannot say — an execution record carries no such flag — reads
+	 * as "not synthesizing". It only ever turns `finished` into `finalizing`:
+	 * failed, waiting, cancelled and every in-flight state still win.
+	 */
+	synthesisPending?: boolean;
 	now: number;
 }
 
@@ -83,6 +92,14 @@ export interface Verdict {
 
 /** No stall is reported before this much silence. */
 export const STALL_AFTER_MS = 5 * 60_000;
+
+/**
+ * A `synthesis_pending` flag older than this (measured from the last progress
+ * instant) is a flag that never cleared, e.g. the backend died mid-synthesis.
+ * Past it the verdict stops claiming the answer is being written and reads the
+ * task's own status. Synthesis runs 10 s to 2 min, so this is well clear of it.
+ */
+export const SYNTHESIS_STALE_AFTER_MS = 10 * 60_000;
 
 /**
  * What each HITL source is asking for, in the user's words. Never render the
@@ -278,6 +295,21 @@ export function deriveVerdict(input: VerdictInput): Verdict {
 			state: 'archived',
 			headline: 'Archived',
 			detail: 'No longer active'
+		};
+	}
+
+	// The work is over but the answer is not: say so instead of `Finished`. The
+	// time is measured from the last progress instant, which for a stopped run is
+	// when synthesis began. It sits after every state above so a failure, an ask or
+	// a cancel is never hidden behind a flag that outlived its run.
+	const sinceProgress = input.lastProgressAt === null ? null : input.now - input.lastProgressAt;
+	const synthesisStale = sinceProgress !== null && sinceProgress >= SYNTHESIS_STALE_AFTER_MS;
+	if (input.synthesisPending === true && !synthesisStale) {
+		const writing = durationIfKnown(sinceProgress);
+		return {
+			state: 'finalizing',
+			headline: writing === null ? 'Preparing final result' : `Preparing final result · ${writing}`,
+			detail: 'The work is done; the final answer is being written'
 		};
 	}
 

@@ -204,7 +204,11 @@ async fn the_client_rejects_a_reply_for_a_different_snapshot() {
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut buf = vec![0u8; 8192];
-        stream.read(&mut buf).await.unwrap();
+        let received = stream.read(&mut buf).await.unwrap();
+        assert!(
+            received > 0,
+            "mock HTTP client disconnected before sending a request"
+        );
         let body =
             serde_json::to_string(&ActionResponse::rejected("another-snapshot", "stale")).unwrap();
         let reply = format!(
@@ -611,10 +615,16 @@ async fn a_stored_continuation_resolves_without_a_model_until_instructions_chang
     req.phase = ActionPhase::ResolvePlanner;
     let engine = engine("plan:0");
     let first = engine.action(req.clone()).await;
-    assert!(first.model_calls.is_empty(), "no model resolves a plan step");
+    assert!(
+        first.model_calls.is_empty(),
+        "no model resolves a plan step"
+    );
     let (_, origin, remaining) = executed(first);
     assert_eq!(origin, ActionOrigin::Planner);
-    assert!(remaining.scope.is_some(), "the continuation carries its scope");
+    assert!(
+        remaining.scope.is_some(),
+        "the continuation carries its scope"
+    );
 
     let mut next = req.clone();
     next.plan = remaining.clone();
@@ -648,7 +658,7 @@ async fn policy_cap_thresholds_shadow_and_locality_are_owned_by_the_engine() {
     let low = configured(model("schema:0", 0.5), true, Some(BTreeMap::new()));
     assert_eq!(
         low.action(req.clone()).await.reason,
-        "insufficient_confidence_or_evidence"
+        "next_action_confidence_below_threshold"
     );
     let uncalibrated = configured(model("schema:0", 0.98), true, None);
     assert_eq!(
@@ -937,4 +947,110 @@ async fn action_mapping_tries_backup_for_uncertainty_and_stops_after_confident_p
         );
         assert_eq!(calls.len(), if primary_confidence < 0.75 { 3 } else { 2 });
     }
+}
+
+#[actix_web::test]
+async fn unbound_content_skips_paid_selection_but_native_proposals_still_validate() {
+    let scripted = model("need_planner", 0.98);
+    let engine = configured(Arc::clone(&scripted), true, Some(BTreeMap::new()));
+    let req = request(
+        "compose",
+        json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
+    );
+    let reply = engine.action(req.clone()).await;
+    assert_eq!(reply.reason, "no_grounded_candidates");
+    assert!(reply.model_calls.is_empty());
+    assert_eq!(reply.diagnostics.tools_without_candidates, 1);
+    assert!(reply.diagnostics.candidates.is_empty());
+    let mut proposal = proposed(req, json!({"command":"newly composed content"}));
+    proposal.phase = ActionPhase::ResolvePlanner;
+    let reply = engine.action(proposal).await;
+    assert!(reply.model_calls.is_empty());
+    assert_eq!(executed(reply).1, ActionOrigin::Planner);
+}
+
+#[actix_web::test]
+async fn abstention_is_distinct_from_confidence_and_exact_call_review_failures() {
+    let req = request("inspect", json!({"type":"object"}));
+    let reply = configured(model("need_planner", 0.2), true, Some(BTreeMap::new()))
+        .action(req.clone())
+        .await;
+    assert_eq!(reply.reason, "model_requested_planner");
+    assert_eq!(reply.model_calls.len(), 1);
+    assert_eq!(
+        reply.diagnostics.selected_option.as_deref(),
+        Some("need_planner")
+    );
+    assert_eq!(reply.diagnostics.choice_confidence, Some(0.2));
+    assert!(reply.diagnostics.evidence_sufficient.is_none());
+    for (head, reason) in [
+        (
+            "evidence_sufficient",
+            "evidence_sufficiency_below_threshold",
+        ),
+        ("action_applicable", "action_applicability_below_threshold"),
+    ] {
+        let scripted = Arc::new(
+            MemoryDecisionModel::new("memory", "scripted")
+                .with_answer(
+                    "next_action",
+                    Answer::Choice {
+                        choice: OptionId::new("schema:0"),
+                        confidence: 0.98,
+                        probabilities: BTreeMap::from([(OptionId::new("schema:0"), 0.98)]),
+                    },
+                )
+                .with_answer(
+                    "evidence_sufficient",
+                    Answer::Noul {
+                        noul: if head == "evidence_sufficient" {
+                            0.4
+                        } else {
+                            0.98
+                        },
+                    },
+                )
+                .with_answer(
+                    "action_applicable",
+                    Answer::Noul {
+                        noul: if head == "action_applicable" {
+                            0.4
+                        } else {
+                            0.98
+                        },
+                    },
+                ),
+        );
+        let reply = configured(scripted, true, Some(BTreeMap::new()))
+            .action(req.clone())
+            .await;
+        assert_eq!(reply.reason, reason);
+        assert_eq!(reply.model_calls.len(), 2);
+        assert_eq!(reply.diagnostics.stage, "selected_call_review");
+        assert_eq!(reply.diagnostics.choice_threshold, Some(0.9));
+        assert_eq!(reply.diagnostics.evidence_threshold, Some(0.9));
+        assert_eq!(reply.diagnostics.applicability_threshold, Some(0.9));
+        assert!(reply.diagnostics.evidence_sufficient.is_some());
+        assert!(reply.diagnostics.action_applicable.is_some());
+    }
+}
+
+#[actix_web::test]
+async fn selection_receipt_keeps_fingerprints_and_scores_without_user_content() {
+    let req = proposed(
+        request(
+            "inspect",
+            json!({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}),
+        ),
+        json!({"key":"private-value-do-not-log"}),
+    );
+    let reply = engine("plan:0").action(req).await;
+    assert_eq!(reply.diagnostics.stage, "complete");
+    assert_eq!(reply.diagnostics.candidates.len(), 1);
+    assert_eq!(reply.diagnostics.candidates[0].call_sha256.len(), 64);
+    let receipt = serde_json::to_string(&reply.diagnostics).unwrap();
+    assert!(!receipt.contains("private-value-do-not-log"));
+    assert_eq!(reply.diagnostics.choice_confidence, Some(0.98));
+    assert_eq!(reply.diagnostics.evidence_sufficient, Some(0.98));
+    assert_eq!(reply.diagnostics.action_applicable, Some(0.98));
 }

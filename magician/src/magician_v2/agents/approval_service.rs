@@ -312,13 +312,11 @@ impl ApprovalService {
             });
         };
 
-        if pause_state.approval_rules.is_empty() {
-            return Ok(MaybeCreateForConfirmationPauseOutcome {
-                request: None,
-                created_new: false,
-            });
-        }
-
+        // No early return on an empty rule set: the gate also carries
+        // code-owned floors (`approval::plan_hits_code_approval_floor`) that
+        // no agent authors, and a pause the gate held for one of them is an
+        // approval like any other. The gate below is the only judge of
+        // whether this confirmation is an approval at all.
         let pending_actions =
             pending_approvals_for_action_json(pause_state, action_json, action_summary);
         if pending_actions.is_empty() {
@@ -2116,6 +2114,109 @@ state_machines:
             .unwrap();
         assert_eq!(in_app.status, DeliveryStatus::Resolved);
         assert_eq!(email.status, DeliveryStatus::Dismissed);
+    }
+
+    fn pause_state_without_approval_rules(
+        agent_id: &str,
+        goal_id: &str,
+        cycle_id: &str,
+    ) -> AgenticPauseState {
+        AgenticPauseState::new(
+            1,
+            "goal",
+            "criteria",
+            EnvironmentState::Shell(ShellState::default()),
+            "history",
+            16,
+            3,
+        )
+        .with_agent_routing(agent_id, goal_id, cycle_id)
+    }
+
+    fn whatsapp_action_json(capability_name: &str, params: serde_json::Value) -> String {
+        let resolved_params = params
+            .as_object()
+            .cloned()
+            .map(|values| values.into_iter().collect())
+            .unwrap_or_default();
+        serde_json::to_string(&ExecutableAction::Pack {
+            capability_name: capability_name.to_string(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "whatsapp".to_string(),
+                },
+            resolved_params,
+        })
+        .expect("action_json should serialize")
+    }
+
+    /// Most agents author no approval rules. A pause the executor held on the
+    /// code-owned WhatsApp floor must still become a durable approval request,
+    /// and a confirmation the floor does not cover must not.
+    #[tokio::test]
+    async fn confirmation_pause_on_the_code_floor_creates_an_approval_without_rules() {
+        let service = test_service();
+        let pause_state = pause_state_without_approval_rules("a1", "g1", "a1::g1::7");
+        assert!(pause_state.approval_rules.is_empty());
+
+        for (cycle, action_json) in [
+            (
+                "a1::g1::7",
+                whatsapp_action_json(
+                    "whatsapp__group_leave",
+                    serde_json::json!({"jid": "123@g.us"}),
+                ),
+            ),
+            (
+                "a1::g1::8",
+                whatsapp_action_json(
+                    "whatsapp__run",
+                    serde_json::json!({"command": "groups leave 123@g.us"}),
+                ),
+            ),
+        ] {
+            let pause_state = pause_state_without_approval_rules("a1", "g1", cycle);
+            let outcome = service
+                .maybe_create_for_confirmation_pause_with_outcome(
+                    &pause_state,
+                    "Leave the group",
+                    "approval required",
+                    &action_json,
+                )
+                .await
+                .expect("approval creation should succeed");
+            let request = outcome
+                .request
+                .expect("a floored act must create an approval request without any rule");
+            assert!(outcome.created_new);
+            assert_eq!(request.pending_actions.len(), 1);
+            assert_eq!(request.pending_actions[0].matched_rule.tool, "whatsapp");
+        }
+
+        for action_json in [
+            whatsapp_action_json(
+                "whatsapp__run",
+                serde_json::json!({"command": "groups list --json"}),
+            ),
+            whatsapp_action_json(
+                "whatsapp__send",
+                serde_json::json!({"to": "x", "text": "hi"}),
+            ),
+            serde_json::to_string(&ExecutableAction::Bash(BashAction::new("echo hi")))
+                .expect("action_json should serialize"),
+        ] {
+            let outcome = service
+                .maybe_create_for_confirmation_pause_with_outcome(
+                    &pause_state,
+                    "Ordinary act",
+                    "criticality",
+                    &action_json,
+                )
+                .await
+                .expect("non-approval confirmation should not error");
+            assert!(outcome.request.is_none(), "{action_json}");
+            assert!(!outcome.created_new);
+        }
     }
 
     #[tokio::test]

@@ -1011,7 +1011,7 @@
 				return;
 			}
 			if (!response.ok) {
-				let message = `Failed to load harness overview (${response.status})`;
+				let message = `Failed to load autopilot overview (${response.status})`;
 				try {
 					const payload = await response.json();
 					const parsedError = parseApiError(payload);
@@ -1024,7 +1024,7 @@
 			const payload = (await response.json()) as unknown;
 			const overview = asRecord(payload);
 			if (!overview) {
-				throw new Error('Malformed harness overview payload');
+				throw new Error('Malformed autopilot overview payload');
 			}
 			if (
 				requestId !== harnessOverviewRequestId
@@ -1043,7 +1043,7 @@
 				return;
 			}
 			harnessOverview = null;
-			harnessOverviewError = err instanceof Error ? err.message : 'Failed to load harness overview';
+			harnessOverviewError = err instanceof Error ? err.message : 'Failed to load autopilot overview';
 		} finally {
 			if (
 				requestId === harnessOverviewRequestId
@@ -1991,7 +1991,7 @@
 			if (scopeKey !== currentCrewScopeKey() || actionAgentId !== agentId) {
 				return;
 			}
-			showSuccess('Owner request acknowledged', 'The pending harness notification was cleared.');
+			showSuccess('Owner request acknowledged', 'The pending autopilot notification was cleared.');
 			await refreshHarnessOperatorView(actionAgentId);
 		} catch (err) {
 			if (scopeKey !== currentCrewScopeKey() || actionAgentId !== agentId) {
@@ -2691,7 +2691,7 @@
 			if (input.harnessProgramSection) {
 				scheduleItems.push({
 					id: 'presto-double-detail-auto-harness-program-section',
-					key: 'Harness program section',
+					key: 'Autopilot playbook section',
 					value: input.harnessProgramSection
 				});
 			}
@@ -2744,7 +2744,7 @@
 					description: fa.description,
 					priority: fa.priority,
 					schedule: fa.schedule || 'inherits agent schedule',
-					program: fa.program || (input.harnessProgramSection || 'inherits harness default'),
+					program: fa.program || (input.harnessProgramSection || 'inherits autopilot default'),
 					scope: fa.scope && fa.scope.length > 0 ? fa.scope.join(', ') : 'inherits delegation targets'
 				}));
 				autoScheduleChildren.push({
@@ -2765,7 +2765,7 @@
 									{ key: 'description', label: 'Description' },
 									{ key: 'priority', label: 'Priority' },
 									{ key: 'schedule', label: 'Schedule' },
-									{ key: 'program', label: 'Program' },
+									{ key: 'program', label: 'Playbook' },
 									{ key: 'scope', label: 'Scope' }
 								],
 								rows: focusAreaRows
@@ -2860,7 +2860,7 @@
 						component_type: 'EmptyState',
 						props: {
 							title: 'Loading operator view',
-							description: 'Collecting harness scope, focus-area health, and proposal signals...'
+							description: 'Collecting autopilot scope, focus-area health, and proposal signals...'
 						}
 					});
 				} else if (!input.harnessOverview) {
@@ -2869,7 +2869,7 @@
 						component_type: 'EmptyState',
 						props: {
 							title: 'Operator view unavailable',
-							description: 'This harness has no operator snapshot yet.'
+							description: 'This autopilot has no operator snapshot yet.'
 						}
 					});
 				} else {
@@ -2916,7 +2916,7 @@
 						},
 						{
 							id: 'presto-harness-summary-metrics',
-							key: 'Program metrics',
+							key: 'Playbook metrics',
 							value: metricsTotal > 0 ? `${metricsMet}/${metricsTotal} met` : 'none defined'
 						},
 						{
@@ -2944,7 +2944,7 @@
 					if (programPath) {
 						operatorItems.push({
 							id: 'presto-harness-summary-program',
-							key: 'Current program',
+							key: 'Current playbook',
 							value: programSection ? `${programPath} · ${programSection}` : programPath
 						});
 					}
@@ -2955,7 +2955,7 @@
 						props: {
 							title: 'Operator Snapshot',
 							subtitle: `${scopeAgents.length} scoped agent(s)`,
-							body: 'Human-readable view over harness health, scope activity, and structural change signals.'
+							body: 'Human-readable view over autopilot health, scope activity, and structural change signals.'
 						},
 						children: [
 							{
@@ -2966,7 +2966,7 @@
 									{
 										id: 'presto-harness-operator-badge-mode',
 										component_type: 'Badge',
-										props: { text: 'Harness', color: 'info' }
+										props: { text: 'Autopilot', color: 'info' }
 									},
 									{
 										id: 'presto-harness-operator-badge-scope',
@@ -3083,10 +3083,10 @@
 					});
 					harnessChildren.push(
 						buildSectionTable(
-							'Program Metrics',
+							'Playbook Metrics',
 							metricRows.length > 0
 								? `${metricsMet}/${metricsTotal} metric(s) met`
-								: 'No program metrics defined',
+								: 'No playbook metrics defined',
 							metricRows,
 							'presto-harness-program-metrics'
 						)
@@ -3133,7 +3133,7 @@
 							component_type: 'EmptyState',
 							props: {
 								title: 'Loading structural review queue',
-								description: 'Collecting actionable harness-owned structural proposals in this scope.'
+								description: 'Collecting actionable autopilot-owned structural proposals in this scope.'
 							}
 						});
 					} else if (input.harnessStructuralProposals.length === 0) {
@@ -3328,7 +3328,7 @@
 								component_type: 'Alert',
 								props: {
 									type: 'warning',
-									message: 'The selected proposal is no longer present in the recent harness snapshot. Refresh the operator view to reload the queue.',
+									message: 'The selected proposal is no longer present in the recent autopilot snapshot. Refresh the operator view to reload the queue.',
 									closable: false
 								}
 							});
@@ -3480,7 +3480,7 @@
 							component_type: 'EmptyState',
 							props: {
 								title: 'Loading owner briefings',
-								description: 'Collecting pending harness briefings, escalations, and questions for this owner.'
+								description: 'Collecting pending autopilot briefings, escalations, and questions for this owner.'
 							}
 						});
 					} else if (input.harnessOwnerRequests.length === 0) {
@@ -3489,7 +3489,7 @@
 							component_type: 'EmptyState',
 							props: {
 								title: 'No pending owner briefings',
-								description: 'Harness notifications will appear here when the owner needs to review or acknowledge them.'
+								description: 'Autopilot notifications will appear here when the owner needs to review or acknowledge them.'
 							}
 						});
 					} else {
@@ -3503,7 +3503,7 @@
 								readString(requestContext || {}, 'severity') || 'info';
 							const requestTitle =
 								readString(requestContext || {}, 'title')
-								|| humanizeIdentifier(requestKind, 'Harness notification');
+								|| humanizeIdentifier(requestKind, 'Autopilot notification');
 							const requestMessage =
 								readString(requestContext || {}, 'message')
 								|| readString(request, 'question')
@@ -3645,7 +3645,7 @@
 								input.harnessOwnerRequests.length > 0
 									? `${input.harnessOwnerRequests.length} pending request(s)`
 									: 'No pending owner notifications',
-							body: 'Pending `notify_owner` briefings, escalations, and questions for the current harness owner.'
+							body: 'Pending `notify_owner` briefings, escalations, and questions for the current autopilot owner.'
 						},
 						children: ownerRequestChildren
 					});
@@ -3668,7 +3668,7 @@
 							component_type: 'EmptyState',
 							props: {
 								title: 'Loading briefing timeline',
-								description: 'Rebuilding recent owner notifications and acknowledgements for this harness.'
+								description: 'Rebuilding recent owner notifications and acknowledgements for this autopilot.'
 							}
 						});
 					} else if (input.harnessOwnerRequestHistory.length === 0) {
@@ -3677,7 +3677,7 @@
 							component_type: 'EmptyState',
 							props: {
 								title: 'No recent briefing history',
-								description: 'Resolved and pending `notify_owner` items will accumulate here as the harness runs.'
+								description: 'Resolved and pending `notify_owner` items will accumulate here as the autopilot runs.'
 							}
 						});
 					} else {
@@ -3693,7 +3693,7 @@
 							const requestStatus = ownerRequestStatusFromRecord(request);
 							const requestTitle =
 								readString(requestContext || {}, 'title')
-								|| humanizeIdentifier(requestKind, 'Harness notification');
+								|| humanizeIdentifier(requestKind, 'Autopilot notification');
 							const requestMessage =
 								readString(requestContext || {}, 'message')
 								|| readString(request, 'question')
@@ -3806,7 +3806,7 @@
 								input.harnessOwnerRequestHistory.length > 0
 									? `${input.harnessOwnerRequestHistory.length} recent notification(s)`
 									: 'No recent owner notifications',
-							body: 'Recent `notify_owner` briefings, escalations, questions, and their acknowledgement status for this harness owner.'
+							body: 'Recent `notify_owner` briefings, escalations, questions, and their acknowledgement status for this autopilot owner.'
 						},
 						children: ownerHistoryChildren
 					});
@@ -3834,9 +3834,9 @@
 					id: 'presto-double-detail-harness-overview',
 					component_type: 'Card',
 					props: {
-						title: 'Harness Operator View',
+						title: 'Autopilot Operator View',
 						subtitle: 'Thin control surface for human oversight',
-						body: 'Read the live harness snapshot without dropping into raw YAML or memory internals.'
+						body: 'Read the live autopilot snapshot without dropping into raw YAML or memory internals.'
 					},
 					children: harnessChildren
 				});
@@ -4663,7 +4663,7 @@
 		align-items: center;
 		gap: 0.45rem;
 		padding: 0.25rem 0.65rem;
-		border-radius: 999px;
+		border-radius: var(--radius-chip, 6px);
 		font-size: 0.76rem;
 		font-weight: 600;
 		background: var(--bg-surface, #fbfaf8);

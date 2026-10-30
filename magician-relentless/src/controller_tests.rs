@@ -768,6 +768,32 @@ async fn insufficient_actor_and_review_headroom_stops_before_dispatch() {
 }
 
 #[tokio::test]
+async fn zero_cost_and_time_caps_admit_review_and_keep_usage_accounting() {
+    let f = Fixture::new(Actor::new(true), critic(), 0, 0);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), f.run())
+        .await
+        .unwrap();
+    assert_eq!(result.status, RunStatus::Accepted);
+    assert_eq!(result.attempts.len(), 2);
+    assert_eq!(result.deadline_at, chrono::DateTime::<Utc>::MAX_UTC);
+    assert_eq!(result.budget.spend().unwrap().total().unwrap(), 38);
+    let restored = f.controller.store.load(f.id).unwrap();
+    assert_eq!(restored.effective_budget().unwrap().max_cost_microusd, 0);
+    assert!(restored.budget_usage(Utc::now()).unwrap()["cost"]["remaining_microusd"].is_null());
+}
+
+#[tokio::test]
+async fn unlimited_deadline_wait_has_no_overflowing_timer_and_stays_cancellable() {
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    tokio::select! {
+        _ = wait_for_deadline(chrono::DateTime::<Utc>::MAX_UTC) => panic!("unlimited deadline expired"),
+        _ = cancel.cancelled() => {},
+    }
+    wait_for_deadline(Utc::now() - chrono::Duration::seconds(1)).await;
+}
+
+#[tokio::test]
 async fn deadline_cancels_actor_and_preserves_unsettled_spend() {
     let mut actor = Actor::new(false);
     actor.hang = true;

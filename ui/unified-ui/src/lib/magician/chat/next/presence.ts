@@ -11,11 +11,13 @@ export interface PresenceSignals {
 	streaming: boolean;
 	/** Tools or a spawned task are running for the live turn. */
 	toolsRunning: boolean;
+	/** The live turn's spawned task is paused or awaiting review, not running. */
+	taskWaitingOnUser?: boolean;
 }
 
 /** Precedence: needs-you > working > thinking > idle. */
 export function derivePresence(signals: PresenceSignals): PresenceState {
-	if (signals.hasPendingHitl) return 'needs-you';
+	if (signals.hasPendingHitl || signals.taskWaitingOnUser) return 'needs-you';
 	if (signals.streaming || signals.toolsRunning) return 'working';
 	if (signals.liveTurn) return 'thinking';
 	return 'idle';

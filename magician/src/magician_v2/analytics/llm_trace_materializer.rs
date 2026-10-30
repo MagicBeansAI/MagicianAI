@@ -6,11 +6,15 @@
 //! Phase 2D owns compaction and latest-revision views; this module preserves the
 //! complete content-free source facts needed to build them.
 
-use std::{collections::HashSet, path::Path, sync::Arc};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
-use duckdb::Connection;
+use duckdb::{appender_params_from_iter, types::Value as DuckValue, Connection};
 use magicllm::{LlmScope, LlmTraceContext};
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +121,15 @@ impl ParquetLlmTraceMaterializer {
         Ok(rows)
     }
 
+    /// Materialize one validated batch on a single DuckDB connection.
+    ///
+    /// Existing objects are verified first (the replay path). Missing objects
+    /// are staged in one typed table, each copied to its own temporary Parquet
+    /// object, fsynced and read back once, then all renamed to their
+    /// deterministic names, with one fsync per touched partition directory.
+    /// Each dataset's watermark is then advanced once. A failure anywhere leaves
+    /// the journal checkpoint behind, so the whole batch replays: published
+    /// objects are verified and missing ones written.
     fn materialize_rows(
         &self,
         scope: &LlmScope,
@@ -130,82 +143,124 @@ impl ParquetLlmTraceMaterializer {
             .context("opening in-memory DuckDB for canonical LLM facts")?;
         configure_analytics_connection_checked(&connection, "llm_trace_materialization")
             .context("configuring canonical LLM fact materializer")?;
-        for row in rows {
-            self.materialize_row(scope, row, &connection)?;
+        let plans = self.plan_fact_objects(scope, rows)?;
+        for plan in &plans {
+            if let Some(existing_path) = plan.existing_path.as_deref() {
+                verify_existing_row(&connection, existing_path, plan.row)?;
+            }
         }
-        Ok(())
+        let pending = plans
+            .iter()
+            .filter(|plan| plan.existing_path.is_none())
+            .collect::<Vec<_>>();
+        if !pending.is_empty() {
+            self.stage_and_publish(&connection, &pending)?;
+        }
+        self.advance_dataset_watermarks(&plans)
     }
 
-    fn materialize_row(
+    /// Resolve every row's partition and deterministic object before anything
+    /// is written. Each partition's directory chain is checked for symlinks
+    /// before and after creation, once per batch.
+    fn plan_fact_objects<'a>(
         &self,
         scope: &LlmScope,
-        row: &CanonicalLlmFactRow,
-        connection: &Connection,
-    ) -> anyhow::Result<()> {
-        let date = partition_date(row.occurred_at_ms)?;
-        let dataset = LlmFactDataset::from_record_kind(&row.record_kind)?;
-        let dataset_root = dataset.root(&self.workspace, scope);
-        let partition = dataset_root.join(format!("dt={date}"));
-        ensure_real_scoped_directory_chain(self.workspace.base_root(), &partition)?;
-        std::fs::create_dir_all(&partition)
-            .with_context(|| format!("creating LLM fact partition {}", partition.display()))?;
-        ensure_real_scoped_directory_chain(self.workspace.base_root(), &partition)?;
-        let file_name = deterministic_file_name(row);
-        let final_path = partition.join(&file_name);
-        let existing_path = if dataset.is_restricted() {
-            find_restricted_object_by_stable_name(&dataset_root, &file_name)?
-        } else if canonical_file_exists(&final_path)? {
-            Some(final_path.clone())
-        } else {
-            None
-        };
-        if let Some(existing_path) = existing_path {
-            verify_existing_row(connection, &existing_path, row)?;
-            self.advance_dataset_watermark(dataset, &dataset_root, row)?;
-            return Ok(());
-        }
-
-        let nonce = ulid::Ulid::new();
-        let json_path = partition.join(format!(".materialize-{nonce}.json"));
-        let parquet_path = partition.join(format!(".materialize-{nonce}.parquet.tmp"));
-        let result = (|| -> anyhow::Result<()> {
-            let mut json = serde_json::to_vec(row).context("serializing canonical LLM fact")?;
-            json.push(b'\n');
-            write_synced(&json_path, &json)?;
-
-            let columns = dataset.materialized_columns();
-            let projection = columns
-                .iter()
-                .map(|(name, ty)| format!("CAST(\"{name}\" AS {ty}) AS \"{name}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let json_sql = sql_path(&json_path);
-            let parquet_sql = sql_path(&parquet_path);
-            let copy = format!(
-                "COPY (SELECT {projection} FROM read_json_auto('{json_sql}', format = 'newline_delimited')) \
-                 TO '{parquet_sql}' (FORMAT PARQUET, COMPRESSION 'zstd');"
-            );
-            connection.execute_batch(&copy).with_context(|| {
-                format!("writing canonical LLM fact {}", parquet_path.display())
-            })?;
-            sync_file(&parquet_path)?;
-
-            if canonical_file_exists(&final_path)? {
-                verify_existing_row(connection, &final_path, row)?;
-                std::fs::remove_file(&parquet_path).with_context(|| {
-                    format!("removing redundant LLM fact {}", parquet_path.display())
+        rows: &'a [CanonicalLlmFactRow],
+    ) -> anyhow::Result<Vec<PlannedFactObject<'a>>> {
+        let mut prepared_partitions = HashSet::<PathBuf>::new();
+        let mut plans = Vec::with_capacity(rows.len());
+        for row in rows {
+            let date = partition_date(row.occurred_at_ms)?;
+            let dataset = LlmFactDataset::from_record_kind(&row.record_kind)?;
+            let dataset_root = dataset.root(&self.workspace, scope);
+            let partition = dataset_root.join(format!("dt={date}"));
+            if !prepared_partitions.contains(&partition) {
+                ensure_real_scoped_directory_chain(self.workspace.base_root(), &partition)?;
+                std::fs::create_dir_all(&partition).with_context(|| {
+                    format!("creating LLM fact partition {}", partition.display())
                 })?;
+                ensure_real_scoped_directory_chain(self.workspace.base_root(), &partition)?;
+                prepared_partitions.insert(partition.clone());
+            }
+            let file_name = deterministic_file_name(row);
+            let final_path = partition.join(&file_name);
+            let existing_path = if dataset.is_restricted() {
+                find_restricted_object_by_stable_name(&dataset_root, &file_name)?
+            } else if canonical_file_exists(&final_path)? {
+                Some(final_path.clone())
             } else {
-                std::fs::rename(&parquet_path, &final_path).with_context(|| {
-                    format!(
-                        "publishing canonical LLM fact {} -> {}",
-                        parquet_path.display(),
-                        final_path.display()
-                    )
-                })?;
-                sync_directory(&partition)?;
-                verify_existing_row(connection, &final_path, row)?;
-                crate::magician_v2::dataset_owners::publish_written_parquet(&final_path)
+                None
+            };
+            plans.push(PlannedFactObject {
+                row,
+                dataset,
+                dataset_root,
+                partition,
+                final_path,
+                existing_path,
+            });
+        }
+        Ok(plans)
+    }
+
+    fn stage_and_publish(
+        &self,
+        connection: &Connection,
+        pending: &[&PlannedFactObject<'_>],
+    ) -> anyhow::Result<()> {
+        stage_fact_rows(connection, pending.iter().map(|plan| plan.row))?;
+        let mut temp_paths = Vec::<PathBuf>::with_capacity(pending.len());
+        let result = (|| -> anyhow::Result<()> {
+            // Write, fsync and verify every temporary object before the first
+            // rename. A freshly written object carries the full current
+            // schema, so its read-back skips DESCRIBE; the renamed bytes are
+            // these verified bytes, so the published object is not re-read.
+            for (index, plan) in pending.iter().enumerate() {
+                let temp_path = plan
+                    .partition
+                    .join(format!(".materialize-{}.parquet.tmp", ulid::Ulid::new()));
+                temp_paths.push(temp_path.clone());
+                // Re-check right before writing through the partition, as the
+                // per-row path did; planning may be well before this write.
+                ensure_real_scoped_directory_chain(self.workspace.base_root(), &plan.partition)?;
+                copy_staged_fact_row_to_parquet(connection, index, plan.dataset, &temp_path)?;
+                sync_file(&temp_path)?;
+                verify_written_row(connection, &temp_path, plan.row)?;
+            }
+
+            let mut touched_partitions = Vec::<&Path>::new();
+            for plan in pending {
+                if !touched_partitions.contains(&plan.partition.as_path()) {
+                    ensure_real_scoped_directory_chain(
+                        self.workspace.base_root(),
+                        &plan.partition,
+                    )?;
+                    touched_partitions.push(plan.partition.as_path());
+                }
+            }
+            let mut published = Vec::<&Path>::with_capacity(pending.len());
+            for (plan, temp_path) in pending.iter().zip(temp_paths.iter()) {
+                if canonical_file_exists(&plan.final_path)? {
+                    verify_existing_row(connection, &plan.final_path, plan.row)?;
+                    std::fs::remove_file(temp_path).with_context(|| {
+                        format!("removing redundant LLM fact {}", temp_path.display())
+                    })?;
+                } else {
+                    std::fs::rename(temp_path, &plan.final_path).with_context(|| {
+                        format!(
+                            "publishing canonical LLM fact {} -> {}",
+                            temp_path.display(),
+                            plan.final_path.display()
+                        )
+                    })?;
+                    published.push(plan.final_path.as_path());
+                }
+            }
+            for partition in touched_partitions {
+                sync_directory(partition)?;
+            }
+            for final_path in published {
+                crate::magician_v2::dataset_owners::publish_written_parquet(final_path)
                     .with_context(|| {
                         format!(
                             "publishing canonical LLM fact through DatasetAccess {}",
@@ -215,20 +270,49 @@ impl ParquetLlmTraceMaterializer {
             }
             Ok(())
         })();
-        let _ = std::fs::remove_file(&json_path);
         if result.is_err() {
-            let _ = std::fs::remove_file(&parquet_path);
+            // Renamed objects no longer exist under their temporary names.
+            for temp_path in &temp_paths {
+                let _ = std::fs::remove_file(temp_path);
+            }
         }
-        result?;
-        self.advance_dataset_watermark(dataset, &dataset_root, row)
+        result
     }
 
-    fn advance_dataset_watermark(
+    /// Advance each dataset's watermark once per batch. Rows are folded in
+    /// journal order through exactly the per-row rule (older sequences leave
+    /// state alone, an equal sequence must carry the committed checksum, a
+    /// newer one advances and counts one revision), so the persisted result is
+    /// the one per-row advancement would produce. Every dataset is checked
+    /// before any watermark is written.
+    fn advance_dataset_watermarks(&self, plans: &[PlannedFactObject<'_>]) -> anyhow::Result<()> {
+        let mut datasets = Vec::<(LlmFactDataset, &Path, Vec<&CanonicalLlmFactRow>)>::new();
+        for plan in plans {
+            match datasets.iter_mut().find(|entry| entry.0 == plan.dataset) {
+                Some((_, _, rows)) => rows.push(plan.row),
+                None => datasets.push((plan.dataset, plan.dataset_root.as_path(), vec![plan.row])),
+            }
+        }
+        let mut advanced = Vec::new();
+        for (dataset, dataset_root, rows) in datasets {
+            if let Some(watermark) = self.fold_dataset_watermark(dataset, dataset_root, &rows)? {
+                advanced.push((dataset_root.join(DATASET_WATERMARK_FILE), watermark));
+            }
+        }
+        for (path, watermark) in advanced {
+            self.workspace
+                .write_json_atomic_path_sync(path, &watermark)
+                .context("advancing LLM dataset watermark")?;
+        }
+        Ok(())
+    }
+
+    fn fold_dataset_watermark(
         &self,
         dataset: LlmFactDataset,
         dataset_root: &Path,
-        row: &CanonicalLlmFactRow,
-    ) -> anyhow::Result<()> {
+        rows: &[&CanonicalLlmFactRow],
+    ) -> anyhow::Result<Option<LlmDatasetMaterializationWatermark>> {
         let path = dataset_root.join(DATASET_WATERMARK_FILE);
         ensure_real_scoped_directory_chain(self.workspace.base_root(), dataset_root)?;
         let watermark_exists = ensure_regular_file_or_missing(&path)?;
@@ -245,42 +329,69 @@ impl ParquetLlmTraceMaterializer {
                 },
             }
         };
-
         if let Some(previous) = previous.as_ref() {
             previous.validate(dataset)?;
-            if row.journal_sequence < previous.committed_journal_sequence {
-                // Interleaved datasets can replay an older revision after a
-                // later revision of this dataset was already published. The
-                // immutable object was verified above; never move state back.
-                return Ok(());
-            }
-            if row.journal_sequence == previous.committed_journal_sequence {
-                if previous.committed_checksum != row.payload_checksum {
-                    return Err(anyhow!(
-                        "LLM dataset {} watermark checksum conflicts at journal sequence {}",
-                        dataset.as_str(),
-                        row.journal_sequence
-                    ));
-                }
-                return Ok(());
-            }
         }
 
-        let watermark = LlmDatasetMaterializationWatermark {
+        let mut committed = previous.as_ref().map(|value| {
+            (
+                value.committed_journal_sequence,
+                value.committed_checksum.as_str(),
+                value.published_revision_count,
+            )
+        });
+        let mut changed = false;
+        for row in rows {
+            if let Some((sequence, checksum, revision_count)) = committed {
+                if row.journal_sequence < sequence {
+                    // Interleaved datasets can replay an older revision after
+                    // a later revision of this dataset was already published.
+                    // The immutable object was verified; never move state back.
+                    continue;
+                }
+                if row.journal_sequence == sequence {
+                    if checksum != row.payload_checksum {
+                        return Err(anyhow!(
+                            "LLM dataset {} watermark checksum conflicts at journal sequence {}",
+                            dataset.as_str(),
+                            row.journal_sequence
+                        ));
+                    }
+                    continue;
+                }
+                committed = Some((
+                    row.journal_sequence,
+                    row.payload_checksum.as_str(),
+                    revision_count.saturating_add(1),
+                ));
+            } else {
+                committed = Some((row.journal_sequence, row.payload_checksum.as_str(), 1));
+            }
+            changed = true;
+        }
+        let Some((sequence, checksum, revision_count)) = committed.filter(|_| changed) else {
+            return Ok(None);
+        };
+        Ok(Some(LlmDatasetMaterializationWatermark {
             schema_version: DATASET_WATERMARK_SCHEMA_VERSION,
             dataset: dataset.as_str().to_string(),
             materialized_schema_version: MATERIALIZED_FACT_SCHEMA_VERSION,
-            committed_journal_sequence: row.journal_sequence,
-            committed_checksum: row.payload_checksum.clone(),
-            published_revision_count: previous
-                .as_ref()
-                .map_or(1, |value| value.published_revision_count.saturating_add(1)),
+            committed_journal_sequence: sequence,
+            committed_checksum: checksum.to_string(),
+            published_revision_count: revision_count,
             updated_at_ms: Utc::now().timestamp_millis(),
-        };
-        self.workspace
-            .write_json_atomic_path_sync(path, &watermark)
-            .context("advancing LLM dataset watermark")
+        }))
     }
+}
+
+/// One row's publication target, resolved before any object is written.
+struct PlannedFactObject<'a> {
+    row: &'a CanonicalLlmFactRow,
+    dataset: LlmFactDataset,
+    dataset_root: PathBuf,
+    partition: PathBuf,
+    final_path: PathBuf,
+    existing_path: Option<PathBuf>,
 }
 
 /// Restricted replay journals intentionally discard committed payloads. The
@@ -1259,6 +1370,120 @@ fn partition_date(timestamp_ms: i64) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow!("LLM fact timestamp {timestamp_ms} is outside the supported range"))
 }
 
+/// Per-batch staging table holding every materialized column of both the
+/// canonical and restricted schemas, plus the row's position in the batch.
+const FACT_STAGING_TABLE: &str = "llm_fact_materialize_batch";
+const FACT_STAGING_ROW_COLUMN: &str = "materialize_batch_row";
+
+/// The projection every one-row object is written through. Each column is
+/// cast to its declared type, so a published object's Parquet schema (names,
+/// order, logical types, optional repetition) depends only on the dataset.
+fn fact_projection(dataset: LlmFactDataset) -> String {
+    dataset
+        .materialized_columns()
+        .iter()
+        .map(|(name, ty)| format!("CAST(\"{name}\" AS {ty}) AS \"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Load rows into a typed, constraint-free staging table on the batch's
+/// connection. Values bind natively (no JSON text round-trip), so strings and
+/// money are stored exactly.
+fn stage_fact_rows<'r>(
+    connection: &Connection,
+    rows: impl IntoIterator<Item = &'r CanonicalLlmFactRow>,
+) -> anyhow::Result<()> {
+    let columns = FACT_COLUMNS
+        .iter()
+        .chain(RESTRICTED_CONTENT_COLUMNS)
+        .copied()
+        .collect::<Vec<_>>();
+    let definitions = std::iter::once(format!("\"{FACT_STAGING_ROW_COLUMN}\" BIGINT"))
+        .chain(columns.iter().map(|(name, ty)| format!("\"{name}\" {ty}")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE {FACT_STAGING_TABLE} ({definitions});"
+        ))
+        .context("creating canonical LLM fact staging table")?;
+    let mut appender = connection
+        .appender(FACT_STAGING_TABLE)
+        .context("opening canonical LLM fact appender")?;
+    for (index, row) in rows.into_iter().enumerate() {
+        let serde_json::Value::Object(fields) =
+            serde_json::to_value(row).context("encoding canonical LLM fact")?
+        else {
+            return Err(anyhow!("canonical LLM fact did not encode as an object"));
+        };
+        let mut values = Vec::with_capacity(columns.len() + 1);
+        values.push(DuckValue::BigInt(
+            i64::try_from(index).context("canonical LLM fact batch index")?,
+        ));
+        for (name, ty) in &columns {
+            values.push(staged_fact_value(name, ty, fields.get(*name))?);
+        }
+        appender
+            .append_row(appender_params_from_iter(values))
+            .with_context(|| format!("staging canonical LLM fact {}", row.idempotency_key))?;
+    }
+    appender
+        .flush()
+        .context("flushing canonical LLM fact appender")
+}
+
+/// Convert one serialized field to its declared DuckDB type. Errors name the
+/// column and type only, never the value: restricted rows share this path.
+fn staged_fact_value(
+    column: &str,
+    duckdb_type: &str,
+    value: Option<&serde_json::Value>,
+) -> anyhow::Result<DuckValue> {
+    let Some(value) = value else {
+        return Err(anyhow!("canonical LLM fact is missing column {column}"));
+    };
+    if value.is_null() {
+        return Ok(DuckValue::Null);
+    }
+    let converted = match duckdb_type {
+        "VARCHAR" => value.as_str().map(|text| DuckValue::Text(text.to_string())),
+        "BOOLEAN" => value.as_bool().map(DuckValue::Boolean),
+        "INTEGER" => value
+            .as_i64()
+            .and_then(|number| i32::try_from(number).ok())
+            .map(DuckValue::Int),
+        "BIGINT" => value.as_i64().map(DuckValue::BigInt),
+        "UBIGINT" => value.as_u64().map(DuckValue::UBigInt),
+        "DOUBLE" => value.as_f64().map(DuckValue::Double),
+        other => {
+            return Err(anyhow!(
+                "canonical LLM fact column {column} has unsupported type {other}"
+            ));
+        },
+    };
+    converted
+        .ok_or_else(|| anyhow!("canonical LLM fact column {column} does not fit {duckdb_type}"))
+}
+
+fn copy_staged_fact_row_to_parquet(
+    connection: &Connection,
+    batch_row: usize,
+    dataset: LlmFactDataset,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let projection = fact_projection(dataset);
+    let parquet_sql = sql_path(path);
+    let copy = format!(
+        "COPY (SELECT {projection} FROM {FACT_STAGING_TABLE} \
+         WHERE \"{FACT_STAGING_ROW_COLUMN}\" = {batch_row}) \
+         TO '{parquet_sql}' (FORMAT PARQUET, COMPRESSION 'zstd');"
+    );
+    connection
+        .execute_batch(&copy)
+        .with_context(|| format!("writing canonical LLM fact {}", path.display()))
+}
+
 fn verify_existing_row(
     connection: &Connection,
     path: &Path,
@@ -1292,6 +1517,35 @@ fn verify_existing_row(
         })
         .collect::<Vec<_>>()
         .join(", ");
+    verify_row_fields(connection, path, dataset, &fields, expected)
+}
+
+/// Verify an object this process just wrote through `fact_projection`. It
+/// carries the complete current schema, so unlike replayed objects (which may
+/// predate an additive column) it needs no DESCRIBE.
+fn verify_written_row(
+    connection: &Connection,
+    path: &Path,
+    expected: &CanonicalLlmFactRow,
+) -> anyhow::Result<()> {
+    let dataset = LlmFactDataset::from_record_kind(&expected.record_kind)?;
+    let fields = dataset
+        .materialized_columns()
+        .iter()
+        .map(|(name, _)| format!("{name} := \"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    verify_row_fields(connection, path, dataset, &fields, expected)
+}
+
+fn verify_row_fields(
+    connection: &Connection,
+    path: &Path,
+    dataset: LlmFactDataset,
+    fields: &str,
+    expected: &CanonicalLlmFactRow,
+) -> anyhow::Result<()> {
+    let path_sql = sql_path(path);
     let sql = format!("SELECT to_json(struct_pack({fields})) FROM read_parquet('{path_sql}')");
     let mut statement = connection
         .prepare(&sql)
@@ -1417,19 +1671,6 @@ fn canonical_file_exists(path: &Path) -> anyhow::Result<bool> {
             Err(error).with_context(|| format!("inspecting canonical LLM fact {}", path.display()))
         },
     }
-}
-
-fn write_synced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    use std::io::Write;
-
-    let mut file = std::fs::File::create(path)
-        .with_context(|| format!("creating temporary LLM fact {}", path.display()))?;
-    file.write_all(bytes)
-        .with_context(|| format!("writing temporary LLM fact {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("flushing temporary LLM fact {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("syncing temporary LLM fact {}", path.display()))
 }
 
 fn sync_file(path: &Path) -> anyhow::Result<()> {
@@ -2458,5 +2699,310 @@ mod tests {
         assert!(watermark.committed_checksum.is_some());
         let calls = workspace.analytics_llm_calls_root(&scope.principal, &scope.workspace);
         assert_eq!(parquet_count(&calls), 1);
+    }
+
+    /// The pre-staging writer: one JSON line read back through
+    /// `read_json_auto` and cast to the declared types. Kept to prove objects
+    /// it published stay schema-identical to, and as replayable as, new ones.
+    fn write_legacy_json_parquet(
+        connection: &Connection,
+        dir: &Path,
+        row: &CanonicalLlmFactRow,
+    ) -> PathBuf {
+        let dataset = LlmFactDataset::from_record_kind(&row.record_kind).expect("dataset");
+        let json_path = dir.join(format!("legacy-{}.json", row.record_kind));
+        let parquet_path = dir.join(format!("legacy-{}.parquet", row.record_kind));
+        let mut json = serde_json::to_vec(row).expect("legacy json");
+        json.push(b'\n');
+        std::fs::write(&json_path, json).expect("legacy json file");
+        connection
+            .execute_batch(&format!(
+                "COPY (SELECT {} FROM read_json_auto('{}', format = 'newline_delimited')) \
+                 TO '{}' (FORMAT PARQUET, COMPRESSION 'zstd');",
+                fact_projection(dataset),
+                sql_path(&json_path),
+                sql_path(&parquet_path)
+            ))
+            .expect("legacy parquet");
+        parquet_path
+    }
+
+    fn described_columns(connection: &Connection, path: &Path) -> Vec<(String, String)> {
+        let mut statement = connection
+            .prepare(&format!(
+                // Published objects sit under `dt=…/`; compare the file's own
+                // schema, not the hive partition column DuckDB would add.
+                "DESCRIBE SELECT * FROM read_parquet('{}', hive_partitioning = false)",
+                sql_path(path)
+            ))
+            .expect("describe");
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("describe rows")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("described columns")
+    }
+
+    fn parquet_physical_schema(connection: &Connection, path: &Path) -> Vec<Vec<Option<String>>> {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT name, CAST(type AS VARCHAR), CAST(repetition_type AS VARCHAR), \
+                 CAST(converted_type AS VARCHAR), CAST(logical_type AS VARCHAR) \
+                 FROM parquet_schema('{}')",
+                sql_path(path)
+            ))
+            .expect("parquet schema");
+        statement
+            .query_map([], |row| {
+                (0_usize..5)
+                    .map(|index| row.get::<_, Option<String>>(index))
+                    .collect::<duckdb::Result<Vec<_>>>()
+            })
+            .expect("parquet schema rows")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("parquet schema values")
+    }
+
+    fn object_names(partition: &Path) -> Vec<String> {
+        std::fs::read_dir(partition)
+            .expect("partition")
+            .map(|entry| {
+                entry
+                    .expect("partition entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn typed_staging_writes_the_legacy_parquet_schema_with_exact_values() {
+        let (temp, workspace, scope) = fixture();
+        let trace_context = context(&scope);
+        let attempt = envelope(1, attempt_completed(trace_context.clone(), DAY_ONE));
+        let call_io = envelope(2, sanitized_call_io(trace_context, DAY_ONE));
+        let materializer = ParquetLlmTraceMaterializer::new(workspace.clone());
+        materializer
+            .materialize(&scope, std::slice::from_ref(&attempt))
+            .expect("canonical object");
+        materializer
+            .materialize(&scope, std::slice::from_ref(&call_io))
+            .expect("restricted object");
+
+        let date = partition_date(DAY_ONE).expect("date");
+        let connection = Connection::open_in_memory().expect("DuckDB");
+        let cases = [
+            (
+                &attempt,
+                workspace.analytics_llm_provider_attempts_root(&scope.principal, &scope.workspace),
+            ),
+            (
+                &call_io,
+                workspace.analytics_llm_call_io_root(&scope.principal, &scope.workspace),
+            ),
+        ];
+        for (record, root) in &cases {
+            let row = CanonicalLlmFactRow::from_envelope(record).expect("canonical row");
+            let dataset = LlmFactDataset::from_record_kind(&row.record_kind).expect("dataset");
+            let written = root
+                .join(format!("dt={date}"))
+                .join(deterministic_file_name(&row));
+            let legacy = write_legacy_json_parquet(&connection, temp.path(), &row);
+            let declared = dataset
+                .materialized_columns()
+                .into_iter()
+                .map(|(name, ty)| (name.to_string(), ty.to_string()))
+                .collect::<Vec<_>>();
+            assert_eq!(described_columns(&connection, &written), declared);
+            assert_eq!(described_columns(&connection, &legacy), declared);
+            assert_eq!(
+                parquet_physical_schema(&connection, &written),
+                parquet_physical_schema(&connection, &legacy)
+            );
+            verify_existing_row(&connection, &legacy, &row).expect("legacy object replays");
+            verify_existing_row(&connection, &written, &row).expect("typed object replays");
+            verify_written_row(&connection, &written, &row).expect("typed object verifies");
+        }
+
+        let attempt_row = CanonicalLlmFactRow::from_envelope(&attempt).expect("attempt row");
+        let attempt_object = workspace
+            .analytics_llm_provider_attempts_root(&scope.principal, &scope.workspace)
+            .join(format!("dt={date}"))
+            .join(deterministic_file_name(&attempt_row));
+        let stored = connection
+            .query_row(
+                &format!(
+                    "SELECT input_cost_usd, output_cost_usd, reasoning_cost_usd, cache_cost_usd, \
+                     cost_usd FROM read_parquet('{}')",
+                    sql_path(&attempt_object)
+                ),
+                [],
+                |row| {
+                    (0_usize..5)
+                        .map(|index| row.get::<_, Option<f64>>(index))
+                        .collect::<duckdb::Result<Vec<_>>>()
+                },
+            )
+            .expect("stored money");
+        let expected = [
+            attempt_row.input_cost_usd,
+            attempt_row.output_cost_usd,
+            attempt_row.reasoning_cost_usd,
+            attempt_row.cache_cost_usd,
+            attempt_row.cost_usd,
+        ];
+        assert!(expected.iter().all(Option::is_some));
+        assert_eq!(
+            stored
+                .iter()
+                .map(|value| value.map(f64::to_bits))
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.map(f64::to_bits))
+                .collect::<Vec<_>>(),
+            "money is stored bit-exact"
+        );
+
+        let call_io_row = CanonicalLlmFactRow::from_envelope(&call_io).expect("call io row");
+        let call_io_object = workspace
+            .analytics_llm_call_io_root(&scope.principal, &scope.workspace)
+            .join(format!("dt={date}"))
+            .join(deterministic_file_name(&call_io_row));
+        let payload: Option<String> = connection
+            .query_row(
+                &format!(
+                    "SELECT restricted_payload_json FROM read_parquet('{}')",
+                    sql_path(&call_io_object)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("stored payload");
+        assert!(payload.is_some());
+        assert_eq!(payload, call_io_row.restricted_payload_json);
+    }
+
+    #[test]
+    fn one_batch_publishes_across_datasets_and_partitions_with_one_watermark_each() {
+        let (_temp, workspace, scope) = fixture();
+        let first = context(&scope);
+        let second = context(&scope);
+        let rows = vec![
+            envelope(1, call_started(first.clone(), DAY_ONE)),
+            envelope(2, attempt_completed(first, DAY_ONE + 10)),
+            envelope(3, call_started(second.clone(), DAY_TWO)),
+            envelope(4, attempt_completed(second, DAY_TWO + 10)),
+        ];
+        ParquetLlmTraceMaterializer::new(workspace.clone())
+            .materialize(&scope, &rows)
+            .expect("multi-dataset batch");
+
+        let calls = workspace.analytics_llm_calls_root(&scope.principal, &scope.workspace);
+        let attempts =
+            workspace.analytics_llm_provider_attempts_root(&scope.principal, &scope.workspace);
+        for root in [&calls, &attempts] {
+            for day in [DAY_ONE, DAY_TWO] {
+                let partition = root.join(format!("dt={}", partition_date(day).expect("date")));
+                let names = object_names(&partition);
+                assert!(
+                    names.iter().all(|name| !name.starts_with(".materialize-")),
+                    "staging objects must not survive a successful batch: {names:?}"
+                );
+                assert_eq!(
+                    names
+                        .iter()
+                        .filter(|name| name.starts_with("part-") && name.ends_with(".parquet"))
+                        .count(),
+                    1,
+                    "{names:?}"
+                );
+            }
+        }
+        assert_eq!(parquet_count(&calls), 2);
+        assert_eq!(parquet_count(&attempts), 2);
+
+        let call_watermark: LlmDatasetMaterializationWatermark = workspace
+            .read_json_path_sync(calls.join(DATASET_WATERMARK_FILE))
+            .expect("call watermark");
+        assert_eq!(call_watermark.committed_journal_sequence, 3);
+        assert_eq!(call_watermark.committed_checksum, rows[2].payload_checksum);
+        assert_eq!(call_watermark.published_revision_count, 2);
+        let attempt_watermark: LlmDatasetMaterializationWatermark = workspace
+            .read_json_path_sync(attempts.join(DATASET_WATERMARK_FILE))
+            .expect("attempt watermark");
+        assert_eq!(attempt_watermark.dataset, "llm_provider_attempts");
+        assert_eq!(attempt_watermark.committed_journal_sequence, 4);
+        assert_eq!(
+            attempt_watermark.committed_checksum,
+            rows[3].payload_checksum
+        );
+        assert_eq!(attempt_watermark.published_revision_count, 2);
+    }
+
+    #[test]
+    fn rerun_after_partial_batch_publish_verifies_objects_without_double_counting() {
+        let (_temp, workspace, scope) = fixture();
+        let first = context(&scope);
+        let second = context(&scope);
+        let materializer = ParquetLlmTraceMaterializer::new(workspace.clone());
+        materializer
+            .materialize(
+                &scope,
+                &[envelope(1, call_started(first.clone(), DAY_ONE - 100))],
+            )
+            .expect("earlier committed batch");
+        let calls = workspace.analytics_llm_calls_root(&scope.principal, &scope.workspace);
+        let attempts =
+            workspace.analytics_llm_provider_attempts_root(&scope.principal, &scope.workspace);
+        let committed_call_watermark =
+            std::fs::read(calls.join(DATASET_WATERMARK_FILE)).expect("committed call watermark");
+
+        let batch = vec![
+            envelope(2, attempt_completed(first.clone(), DAY_ONE - 20)),
+            envelope(3, call_completed(first, DAY_ONE)),
+            envelope(4, call_started(second, DAY_TWO)),
+        ];
+        materializer.materialize(&scope, &batch).expect("batch");
+
+        // Crash after the first two renames: the third object and both dataset
+        // watermark advances never became durable, and the journal checkpoint
+        // did not move, so the whole batch is replayed.
+        let unpublished = CanonicalLlmFactRow::from_envelope(&batch[2]).expect("row");
+        let unpublished_path = calls
+            .join(format!("dt={}", partition_date(DAY_TWO).expect("date")))
+            .join(deterministic_file_name(&unpublished));
+        std::fs::remove_file(&unpublished_path).expect("drop unpublished object");
+        std::fs::write(
+            calls.join(DATASET_WATERMARK_FILE),
+            &committed_call_watermark,
+        )
+        .expect("restore committed call watermark");
+        std::fs::remove_file(attempts.join(DATASET_WATERMARK_FILE))
+            .expect("drop attempt watermark");
+
+        for pass in ["crash replay", "replay before journal commit"] {
+            materializer.materialize(&scope, &batch).expect(pass);
+            assert!(unpublished_path.exists(), "{pass}");
+            assert_eq!(parquet_count(&calls), 3, "{pass}");
+            assert_eq!(parquet_count(&attempts), 1, "{pass}");
+            let call_watermark: LlmDatasetMaterializationWatermark = workspace
+                .read_json_path_sync(calls.join(DATASET_WATERMARK_FILE))
+                .expect("call watermark");
+            assert_eq!(call_watermark.committed_journal_sequence, 4, "{pass}");
+            assert_eq!(
+                call_watermark.committed_checksum, batch[2].payload_checksum,
+                "{pass}"
+            );
+            assert_eq!(call_watermark.published_revision_count, 3, "{pass}");
+            let attempt_watermark: LlmDatasetMaterializationWatermark = workspace
+                .read_json_path_sync(attempts.join(DATASET_WATERMARK_FILE))
+                .expect("attempt watermark");
+            assert_eq!(attempt_watermark.committed_journal_sequence, 2, "{pass}");
+            assert_eq!(attempt_watermark.published_revision_count, 1, "{pass}");
+        }
     }
 }

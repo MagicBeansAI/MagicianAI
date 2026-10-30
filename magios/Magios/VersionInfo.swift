@@ -9,18 +9,62 @@ enum AppInfo {
     static var versionAndBuild: String { build == version ? version : "\(version) (\(build))" }
 }
 
-/// Backend component versions, fetched from the magician `/health` endpoint.
+/// Component versions read from the paired machine's `/health` body.
 ///
-/// Today `/health` reports only the magician version (`{status, service, version}`).
-/// The magicutor / supervisor / tauri fields are parsed opportunistically — the
-/// app can only reach its runtime-enrolled Magician origin, so those populate once the
-/// backend aggregates and exposes them (e.g. `magicutor_version`); until then they
-/// read as "not reported".
+/// Current servers send `version` (the Magician core version), `api_version`
+/// (the magician-api crate) and a `versions` object
+/// (`magician`, `magician_api`, `magicutor`, `desktop`; the last two may be
+/// null or absent when that component is offline or unknown). Older servers
+/// send only `version`, which was the API crate's version. Every field is
+/// optional: missing, null, empty or non-string values read as nil, and the
+/// status keys (`magicutor`, `tauri`, `*_status`) are never read as versions.
+struct HealthVersions: Equatable {
+    var magician: String?
+    var magicianAPI: String?
+    var magicutor: String?
+    var desktop: String?
+    var supervisor: String?
+
+    init(magician: String? = nil, magicianAPI: String? = nil, magicutor: String? = nil,
+         desktop: String? = nil, supervisor: String? = nil) {
+        self.magician = magician
+        self.magicianAPI = magicianAPI
+        self.magicutor = magicutor
+        self.desktop = desktop
+        self.supervisor = supervisor
+    }
+
+    init(json: [String: Any]) {
+        let nested = json["versions"] as? [String: Any] ?? [:]
+        func text(_ object: [String: Any], _ key: String) -> String? {
+            guard let raw = object[key] as? String else { return nil }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        magician = text(nested, "magician") ?? text(json, "version")
+        magicianAPI = text(json, "api_version") ?? text(nested, "magician_api")
+        magicutor = text(nested, "magicutor") ?? text(json, "magicutor_version")
+        desktop = text(nested, "desktop") ?? text(json, "desktop_version") ?? text(json, "tauri_version")
+        supervisor = text(nested, "supervisor") ?? text(json, "supervisor_version")
+    }
+
+    /// Nil when the body is not a JSON object.
+    init?(data: Data) {
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        self.init(json: json)
+    }
+}
+
+/// Backend component versions, fetched from the magician `/health` endpoint
+/// and decoded by `HealthVersions`. The app can only reach its
+/// runtime-enrolled Magician origin, so other components appear only when
+/// that machine reports them.
 final class VersionInfoModel: ObservableObject {
     @Published var magician: String?
+    @Published var magicianAPI: String?
     @Published var magicutor: String?
     @Published var supervisor: String?
-    @Published var tauri: String?
+    @Published var desktop: String?
     @Published var loaded = false
 
     func load() {
@@ -29,20 +73,14 @@ final class VersionInfoModel: ObservableObject {
         MagicianAccess.authorize(&request)
         request.httpMethod = "GET"
         URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
-            var m: String?, mu: String?, sv: String?, tv: String?
-            if let data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                m = json["version"] as? String
-                mu = (json["magicutor_version"] ?? json["magicutor"]) as? String
-                sv = (json["supervisor_version"] ?? json["supervisor"]) as? String
-                tv = (json["tauri_version"] ?? json["tauri"]) as? String
-            }
+            let versions = data.flatMap(HealthVersions.init(data:)) ?? HealthVersions()
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                self.magician = m
-                self.magicutor = mu
-                self.supervisor = sv
-                self.tauri = tv
+                self.magician = versions.magician
+                self.magicianAPI = versions.magicianAPI
+                self.magicutor = versions.magicutor
+                self.supervisor = versions.supervisor
+                self.desktop = versions.desktop
                 self.loaded = true
             }
         }.resume()

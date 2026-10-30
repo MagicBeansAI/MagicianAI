@@ -167,6 +167,42 @@ class HitlSurfacingTest {
             ai.magicbeans.magdroid.chat.HitlResponseValue.ExternalActionCompleted(null)
                 .toJson()["type"]!!.jsonPrimitive.content,
         )
+        // Every sign-in can be declined, even one published before the label.
+        assertEquals("Not now", request.externalDismissLabel)
+    }
+
+    @Test
+    fun `mcp oauth names its service and declines with an abort`() {
+        val json = """
+            {"requests":[{
+              "id":"mcp:2","item_type":"request","title":"Finish connecting Swiggy (food) in your browser.",
+              "status":"needs_action",
+              "metadata":{"source":"mcp_oauth",
+                "hitl_request":{"correlation_id":"oauth-2","source":"mcp_oauth","input_type":"external_action",
+                  "input_schema":{"dismiss_label":"Later","service_label":"Swiggy (food)","browser_signin":true}}}
+            }]}
+        """.trimIndent()
+        val item = feed(json).requests.single()
+        val request = item.request(item.metadata)
+        assertEquals("Later", request.externalDismissLabel)
+        assertEquals("Swiggy (food)", request.externalServiceLabel)
+        val declined = ai.magicbeans.magdroid.chat.HitlResponseValue.Aborted("owner_declined").toJson()
+        assertEquals("aborted", declined["type"]!!.jsonPrimitive.content)
+        assertEquals("owner_declined", declined["reason"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `only a sign-in offers the decline`() {
+        val json = """
+            {"requests":[{
+              "id":"x:1","item_type":"request","title":"Rotate the key","status":"needs_action",
+              "metadata":{"source":"agentic",
+                "hitl_request":{"correlation_id":"x-1","source":"agentic","input_type":"external_action",
+                  "input_schema":{"dismiss_label":"Not now"}}}
+            }]}
+        """.trimIndent()
+        val item = feed(json).requests.single()
+        assertEquals(null, item.request(item.metadata).externalDismissLabel)
     }
 
     // ── Nothing is silently dropped ──────────────────────────────────────────

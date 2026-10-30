@@ -312,7 +312,8 @@ tokio::task_local! {
     /// `ActionExecutors`) around the handler future — the same inline-awaited
     /// chain `EXECUTION_CANCEL_TOKEN` relies on. File-touching compiled handlers
     /// (`read_file`) read `current_session_file_sandbox_roots()` and merge these
-    /// into their effective `FileSandboxConfig.allowed_roots`, so a folder the
+    /// into their effective `FileSandboxConfig.extra_writable_roots` (which
+    /// never outrank `read_only_roots`), so a folder the
     /// operator approved via the sandbox-override HITL is readable on the retry
     /// (parity with the native `files` pack path). `None` outside a scoped
     /// dispatch — the handler then uses the boot `file_sandbox` unchanged.
@@ -577,6 +578,36 @@ pub async fn dispatch_compiled_provider(
     Ok(dispatch.result)
 }
 
+/// Shell's declared per-call deadline belongs to both the outer provider and
+/// the lowered child. A pack default is a fallback, never an additional cap.
+fn resolved_compiled_timeout_secs(
+    tool: &str,
+    parameters: &HashMap<String, Value>,
+    default: u64,
+) -> Result<u64, ExecutionError> {
+    if tool != "shell"
+        || parameters
+            .get(crate::magician_v2::execution::compiled_providers::PACK_DEFAULT_TIMEOUT_MARKER)
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        return Ok(default);
+    }
+    let Some(value) = parameters
+        .get("timeout_secs")
+        .or_else(|| parameters.get("timeout"))
+    else {
+        return Ok(default);
+    };
+    let seconds = value.as_u64().or_else(|| value.as_str()?.parse().ok());
+    match seconds {
+        Some(seconds) if seconds > 0 && seconds <= super::coding_engine::budgets::MAX_CODING_TURN_TIMEOUT_SECS => Ok(seconds),
+        _ => Err(ExecutionError::AgentActionable(
+            "shell timeout_secs must be a positive integer no greater than one year; cancellation and the parent run budget still apply".to_string(),
+        )),
+    }
+}
+
 async fn dispatch_compiled_provider_with_guard(
     provider: Arc<dyn CapabilityProvider>,
     tool_routing_key: &str,
@@ -600,7 +631,11 @@ async fn dispatch_compiled_provider_with_guard(
         .execution_id
         .map(str::to_string)
         .or_else(|| parameter_string(&parameters, "__execution_id"));
-    let timeout_secs = timeout_override.unwrap_or_else(|| provider.default_timeout_secs());
+    let timeout_secs = resolved_compiled_timeout_secs(
+        tool_routing_key,
+        &parameters,
+        timeout_override.unwrap_or_else(|| provider.default_timeout_secs()),
+    )?;
     let session_id_owned = ctx.session_id.map(|s| s.to_string());
 
     // Unified path: always go through `dispatch_with_gating` even
@@ -617,8 +652,33 @@ async fn dispatch_compiled_provider_with_guard(
         .then(|| ctx.app_owner_execution_credential.clone())
         .flatten();
     let app_result_sink = Arc::new(Mutex::new(None));
-    let outcome = COMPILED_APP_RESULT_SINK
-        .scope(
+    // The agent the provider acts as, for the goal workspace fences: the
+    // active owner the agentic dispatch already set, else `ctx.agent_id`
+    // (chat, runtime callers). Boxed so the outer scope holds a pointer, not
+    // the scope chain below.
+    let acting_agent =
+        crate::magician_v2::execution::native_executors::compiled_acting_agent(Some(ctx.agent_id));
+    let shell_owner = match (ctx.workspace, ctx.task_id, ctx.execution_id) {
+        (Some(workspace), Some(task_id), Some(execution_id))
+            if !ctx.principal.is_empty()
+                && !workspace.is_empty()
+                && !task_id.is_empty()
+                && !execution_id.is_empty() =>
+        {
+            Some(super::shell_jobs::Owner {
+                principal: ctx.principal.to_string(),
+                workspace: workspace.to_string(),
+                task_id: task_id.to_string(),
+                execution_id: execution_id.to_string(),
+                agent_id: ctx.agent_id.to_string(),
+                effect_id: ctx.effect_id.map(str::to_string),
+            })
+        },
+        _ => None,
+    };
+    let dispatch = crate::magician_v2::execution::native_executors::ACTING_AGENT.scope(
+        acting_agent,
+        Box::pin(COMPILED_APP_RESULT_SINK.scope(
             Some(Arc::clone(&app_result_sink)),
             COMPILED_APP_OWNER_EXECUTION_CREDENTIAL.scope(
                 app_owner_execution_credential,
@@ -650,7 +710,10 @@ async fn dispatch_compiled_provider_with_guard(
                     ),
                 ),
             ),
-        )
+        )),
+    );
+    let outcome = super::shell_jobs::OWNER
+        .scope(shell_owner, Box::pin(dispatch))
         .await;
 
     // Generic learning evidence is not a policy-aware hidden consumer. Even
@@ -1403,7 +1466,9 @@ async fn dispatch_with_gating(
     // the message is already phase-labelled here.
     let lowered = provider.lower(&step).map_err(|err| match err {
         ExecutionError::Configuration(_) => err,
-        other => ExecutionError::Step(format!("compiled-pack lower failed: {other}")),
+        // Arguments that do not lower into the tool's grammar are the
+        // agent's to fix, not a dispatch fault.
+        other => ExecutionError::AgentActionable(format!("compiled-pack lower failed: {other}")),
     })?;
 
     // Move (not clone) the Arc and Option<String> into the closure
@@ -1747,7 +1812,11 @@ pub fn action_result_to_value(result: &ActionResult) -> Option<Value> {
 pub fn compiled_pack_error_value(tool_name: &str, error: &ExecutionError) -> Value {
     let reason = match error {
         ExecutionError::Configuration(msg) => msg.clone(),
-        ExecutionError::Step(msg) if msg.starts_with("compiled-pack ") => msg.clone(),
+        ExecutionError::Step(msg) | ExecutionError::AgentActionable(msg)
+            if msg.starts_with("compiled-pack ") =>
+        {
+            msg.clone()
+        },
         other => format!("compiled-pack dispatch failed: {other}"),
     };
     json!({
@@ -1922,6 +1991,51 @@ fn truncate_for_evidence(value: &str, max_chars: usize) -> String {
 
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
+    #[test]
+    fn shell_explicit_deadlines_are_not_capped_by_pack_defaults() {
+        for seconds in [1_u64, 240, 1800, 86400] {
+            for value in [
+                serde_json::json!(seconds),
+                serde_json::json!(seconds.to_string()),
+            ] {
+                let parameters = HashMap::from([("timeout_secs".to_string(), value)]);
+                assert_eq!(
+                    super::resolved_compiled_timeout_secs("shell", &parameters, 60).unwrap(),
+                    seconds
+                );
+            }
+        }
+        assert_eq!(
+            super::resolved_compiled_timeout_secs("shell", &HashMap::new(), 60).unwrap(),
+            60
+        );
+        for invalid in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(true),
+            serde_json::json!("forever"),
+        ] {
+            assert!(super::resolved_compiled_timeout_secs(
+                "shell",
+                &HashMap::from([("timeout_secs".to_string(), invalid)]),
+                60
+            )
+            .is_err());
+        }
+        let parameters = HashMap::from([
+            ("timeout_secs".to_string(), serde_json::json!(60)),
+            (
+                crate::magician_v2::execution::compiled_providers::PACK_DEFAULT_TIMEOUT_MARKER
+                    .to_string(),
+                serde_json::json!(true),
+            ),
+        ]);
+        assert_eq!(
+            super::resolved_compiled_timeout_secs("shell", &parameters, 1800).unwrap(),
+            1800
+        );
+    }
+
     fn learning_source_projection(
     ) -> crate::magician_v2::apps::reconciliation::AppReconciliationSourceProjection {
         let package: Value = serde_json::from_str(include_str!(concat!(

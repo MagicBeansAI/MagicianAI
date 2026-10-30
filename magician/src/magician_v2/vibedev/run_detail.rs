@@ -4,7 +4,7 @@
 //! The desktop cockpit folds the raw `coding.*` stream in the browser
 //! (`spineModel.ts`). Two native apps would each need their own port of that
 //! parser, and they would drift; so the fold lives here once and the mobile
-//! endpoints serve its result (`docs/plans/2026-10-13-vibedev-mobile-companion.md`):
+//! endpoints serve its result (`docs/archive/plans/2026-10-13-vibedev-mobile-companion.md`):
 //!
 //! * [`run_turns`] — the run's root and threaded follow-ups, each with its
 //!   request, mode, engine, status, cost, summary and (trusted) commit and
@@ -416,6 +416,9 @@ pub struct RunTurn {
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
+    /// Generated catalog route used by this turn, for follow-up settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coding_route_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     /// Trusted runs: the commit the turn ended on.
@@ -424,6 +427,11 @@ pub struct RunTurn {
     /// Trusted runs: files the turn changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files_changed: Option<usize>,
+    /// `partial` when the turn finished with requirements open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_kind: Option<crate::magician_v2::artifact_v2::models::CompletionKind>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_items: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -434,6 +442,8 @@ pub struct RunTurns {
     pub title: String,
     pub status: String,
     pub trusted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_location: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -540,6 +550,10 @@ pub async fn run_turns(
     let root_path = scope_root(service, scope);
     let workspace = trusted_workspace::load_run_workspace(&root_path, &root.id);
     let link = project.run_links.get(&root.id).cloned().unwrap_or_default();
+    let handoff = crate::magician_v2::execution::coding_engine::run_handoff::load(
+        &scope_root(service, scope),
+        &root.id,
+    );
     let mut turns = Vec::new();
     for item in std::iter::once(&root).chain(followups.iter()) {
         let events = service
@@ -575,9 +589,17 @@ pub async fn run_turns(
                 .filter(|summary| !summary.is_empty())
                 .map(str::to_string),
             engine: engine_of(&events),
+            coding_route_id: handoff
+                .turns
+                .iter()
+                .rev()
+                .find(|turn| turn.task_id == item.id)
+                .and_then(|turn| turn.profile_id.clone()),
             cost_usd: task_cost_usd(service, scope, &item.id),
             commit: range.map(|(_, to)| to),
             files_changed,
+            completion_kind: item.completion_kind.clone(),
+            open_items: item.open_items.clone(),
         });
     }
     let latest = turns
@@ -590,6 +612,22 @@ pub async fn run_turns(
         project_name: project.name.clone(),
         title: root.title.clone(),
         status: latest,
+        work_location: if super::original_workspace::load(&root_path, &root.id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            Some("original".into())
+        } else {
+            link.work_location.as_ref().map(|location| {
+                match location.mode {
+                    super::projects::VibeDevProjectTrust::Original => "original",
+                    super::projects::VibeDevProjectTrust::Trusted => "trusted",
+                    super::projects::VibeDevProjectTrust::Sandboxed => "sandboxed",
+                }
+                .into()
+            })
+        },
         trusted: workspace.is_some(),
         branch: workspace.map(|workspace| workspace.branch),
         crew_id: link.crew_id,
@@ -684,6 +722,56 @@ pub async fn run_changes(
         }
     }
     let root_path = scope_root(service, scope);
+    if super::original_workspace::load(&root_path, &root.id)
+        .map_err(RunDetailError::Failed)?
+        .is_some()
+    {
+        let history = crate::magician_v2::execution::coding_engine::original_edits::applied_history(
+            &root_path, &root.id,
+        );
+        let mut changed = std::collections::BTreeMap::<String, ChangedFile>::new();
+        let mut diff = String::new();
+        for txn in history
+            .into_iter()
+            .filter(|txn| turn.is_none_or(|id| txn.task_id.as_deref() == Some(id)))
+        {
+            for file in txn.diff_approval_files() {
+                if path == Some(file.path.as_str()) {
+                    diff.push_str(&file.unified_diff);
+                }
+                let row = changed.entry(file.path.clone()).or_insert(ChangedFile {
+                    path: file.path,
+                    status: file.status,
+                    additions: 0,
+                    deletions: 0,
+                });
+                row.additions += file.additions;
+                row.deletions += file.deletions;
+            }
+        }
+        let patch = path.map(|path| {
+            let truncated = diff.len() > 128 * 1024;
+            if truncated {
+                let mut end = 128 * 1024;
+                while !diff.is_char_boundary(end) {
+                    end -= 1;
+                }
+                diff.truncate(end);
+            }
+            FilePatch {
+                path: path.into(),
+                unified_diff: diff,
+                truncated,
+            }
+        });
+        return Ok(RunChanges {
+            run_id: root.id.clone(),
+            turn: turn.map(str::to_string),
+            source: "original".into(),
+            files: changed.into_values().collect(),
+            patch,
+        });
+    }
     if let Some(workspace) = trusted_workspace::load_run_workspace(&root_path, &root.id) {
         let (from, to) = match turn {
             Some(turn) => turn_range(&workspace, turn).ok_or_else(|| {

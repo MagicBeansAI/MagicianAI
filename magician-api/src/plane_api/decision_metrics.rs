@@ -1,7 +1,7 @@
 //! Scope comes from auth middleware, never from query/body filters.
 use actix_web::{web, HttpRequest, HttpResponse};
 use magician::magician_v2::{
-    analytics::decision_metrics::{DecisionMetrics, MetricsQuery, ReviewUpdate},
+    analytics::decision_metrics::{DecisionMetrics, HealthQuery, MetricsQuery, ReviewUpdate},
     auth::middleware::AuthRuntime,
 };
 use magicllm::LlmScope;
@@ -51,6 +51,26 @@ pub async fn decision_metrics_cases(
         Ok(result) => HttpResponse::Ok().json(result),
         Err(_) => HttpResponse::ServiceUnavailable()
             .json(json!({"message":"Recent cases unavailable; retry shortly"})),
+    }
+}
+/// Per-operation Decision Model health (`?hours=`, default 24, max 168).
+pub async fn decision_metrics_health(
+    req: HttpRequest,
+    auth: Option<web::Data<AuthRuntime>>,
+    service: web::Data<DecisionMetrics>,
+    query: web::Query<HealthQuery>,
+) -> HttpResponse {
+    let scope = match scope(&req, auth.as_ref().map(|data| data.get_ref())) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if let Err(message) = query.hours() {
+        return HttpResponse::BadRequest().json(json!({"message":message}));
+    }
+    match service.health(scope, query.into_inner()).await {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(_) => HttpResponse::ServiceUnavailable()
+            .json(json!({"message":"Decision model health unavailable; retry shortly"})),
     }
 }
 pub async fn decision_metrics_review(

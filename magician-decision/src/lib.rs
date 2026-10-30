@@ -40,6 +40,9 @@ pub mod request;
 pub mod runtime;
 pub mod telemetry;
 
+/// Images a request may carry — owned by `decision-engine-contract`.
+pub use decision_engine_contract::asset;
+
 pub use compose::ShadowComparison;
 pub use error::DecisionError;
 pub use model::{ModelCapabilities, ModelIdentity, StructuredDecisionModel};

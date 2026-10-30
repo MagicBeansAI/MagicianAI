@@ -109,10 +109,11 @@ use magician_api::{
         cancel_chat_run_handler, cancel_concurrent_voice_handler, clear_messages_handler,
         clear_queued_messages_handler, concurrent_voice_delivery_handler,
         concurrent_voice_result_handler, delete_message_handler, delete_queued_message_handler,
-        delete_session_handler, delete_tailed_task_handler, get_active_session_handler,
-        get_messages_handler, get_public_chat_status_handler, get_reference_catalog_handler,
+        delete_session_asset_handler, delete_session_handler, delete_tailed_task_handler,
+        get_active_session_handler, get_messages_handler, get_public_chat_status_handler,
+        get_reference_catalog_handler, get_session_activity_handler, get_session_assets_handler,
         get_session_handler, get_session_output_handler, get_tailed_task_handler,
-        list_chat_profiles_handler, list_concurrent_voice_handler,
+        list_chat_models_handler, list_concurrent_voice_handler,
         list_public_contact_profiles_handler, list_queued_messages_handler, list_sessions_handler,
         new_session_handler, open_output_file_handler, open_output_folder_handler,
         post_invoke_server_action_handler, post_transcript_handler, post_tutor_cancel_handler,
@@ -178,8 +179,9 @@ use magician_api::{
     memory_api::{
         confirm_user_memory_entry_handler, get_memory_effect_review_handler,
         keep_user_memory_entry_conflict_handler, list_user_memory_entries_handler,
-        memory_save_preference_handler, memory_search_handler, memory_source_repair_handler,
-        patch_user_memory_entry_scope_handler, post_memory_effect_review_handler, MemoryApi,
+        memory_duplicate_fold_handler, memory_save_preference_handler, memory_search_handler,
+        memory_source_repair_handler, patch_user_memory_entry_scope_handler,
+        post_memory_effect_review_handler, MemoryApi,
     },
     monitors_api::{
         convert_task_to_monitor_v3_handler, create_monitor_v3_handler, delete_monitor_v3_handler,
@@ -248,18 +250,19 @@ use magician_api::{
     user_request_api::{list_user_requests_handler, respond_user_request_handler},
     vibedev_api::{
         activate_vibedev_project_handler, check_vibedev_deploy_settings_handler,
-        choose_vibedev_crew_handler, citizen_code_knowledge_handler, citizen_preview_url_handler,
-        citizen_secret_handler, control_vibedev_run_handler, create_vibedev_crew_handler,
-        create_vibedev_project_handler, delete_vibedev_project_handler,
-        deploy_vibedev_project_handler, discard_vibedev_trusted_run_handler,
-        follow_work_item_handler, get_vibedev_deploy_settings_handler,
-        get_vibedev_live_runs_handler, get_vibedev_preview_handler,
-        get_vibedev_project_file_handler, get_vibedev_project_files_handler,
-        get_vibedev_project_info_handler, get_vibedev_project_runs_handler,
-        get_vibedev_project_screenshots_handler, get_vibedev_run_changes_handler,
-        get_vibedev_run_checkpoints_handler, get_vibedev_run_coding_events_handler,
-        get_vibedev_run_logs_handler, get_vibedev_run_proposals_handler,
-        get_vibedev_run_timeline_handler, get_vibedev_run_turns_handler,
+        choose_vibedev_crew_handler, citizen_code_knowledge_handler, citizen_edit_original_handler,
+        citizen_preview_url_handler, citizen_secret_handler, control_vibedev_run_handler,
+        create_vibedev_crew_handler, create_vibedev_project_handler,
+        delete_vibedev_project_handler, deploy_vibedev_project_handler,
+        discard_vibedev_trusted_run_handler, follow_work_item_handler,
+        get_vibedev_deploy_settings_handler, get_vibedev_live_runs_handler,
+        get_vibedev_preview_handler, get_vibedev_project_file_handler,
+        get_vibedev_project_files_handler, get_vibedev_project_info_handler,
+        get_vibedev_project_runs_handler, get_vibedev_project_screenshots_handler,
+        get_vibedev_run_changes_handler, get_vibedev_run_checkpoints_handler,
+        get_vibedev_run_coding_events_handler, get_vibedev_run_logs_handler,
+        get_vibedev_run_proposals_handler, get_vibedev_run_timeline_handler,
+        get_vibedev_run_turns_handler, get_vibedev_runs_handler,
         get_vibedev_trusted_branch_handler, get_vibedev_trusted_disk_handler,
         get_work_live_handler, integrate_vibedev_crew_handler, list_vibedev_crews_handler,
         list_vibedev_projects_handler, merge_vibedev_trusted_branch_handler,
@@ -288,7 +291,7 @@ use magician_api::{
         get_harness_runtime_status_handler, get_mode_handler, get_observation_json_handler,
         get_observation_screenshot_handler, get_pause_state_handler, get_proposal_handler,
         get_storage_stats_handler, get_trust_policy_handler, get_user_knowledge_handler,
-        list_agent_definitions_handler, list_approvals_handler, list_coding_profiles_handler,
+        list_agent_definitions_handler, list_approvals_handler, list_coding_models_handler,
         list_executions_v2_handler, list_observations_handler, list_proposals_handler,
         list_triggers_handler, list_turns_v2_handler, manual_trigger_agent_handler,
         memory_pending_tasks_handler, memory_synthesize_handler, patch_agent_definition_handler,
@@ -409,6 +412,12 @@ enum CliCommand {
     /// Print normalized Ollama daemon/prewarm settings for lifecycle scripts.
     #[command(name = "ollama-launch-config", hide = true)]
     OllamaLaunchConfig,
+    /// Check each Google Workspace account's roles on the Cloud project behind
+    /// `client_secret.json` (Service Usage Consumer, Pub/Sub Editor). With
+    /// --grant, add missing roles using this computer's gcloud account when it
+    /// can set the project policy; otherwise print the commands for an owner.
+    #[command(name = "google-project-access")]
+    GoogleProjectAccess(GoogleProjectAccessArgs),
     /// Plan or explicitly execute the dormant Ollama logical-chunk shadow
     /// fixtures. The command has no persistence handle and emits JSON only.
     #[command(name = "logical-chunk-eval")]
@@ -421,6 +430,30 @@ enum CliCommand {
         #[command(subcommand)]
         command: MemoryIndexCommand,
     },
+    /// Read-only size report for the owner's user-memory file: counts,
+    /// sizes, dates and review-queue length per section. Prints no contents.
+    #[command(name = "memory-user-report")]
+    MemoryUserReport(MemoryUserScopeArgs),
+    /// One-time clean-up of the user-memory file (growth bounds). Dry run
+    /// unless --apply; --apply backs the file up first and archives
+    /// everything that leaves it.
+    #[command(name = "memory-compact-user")]
+    MemoryCompactUser(MemoryCompactUserArgs),
+    /// Put a record from the user-memory archive back into service, pending
+    /// review. Looks only unless --apply.
+    #[command(name = "memory-user-restore")]
+    MemoryUserRestore(MemoryUserRestoreArgs),
+    /// Dry run: user-memory records that say the same thing in different
+    /// words (local embedding model), plus what the write-time fold archives
+    /// on the next write. Writes nothing.
+    #[command(name = "memory-dedupe-user")]
+    MemoryDedupeUser(MemoryDedupeUserArgs),
+    /// Fold near-duplicate user-memory records (one claim under key variants
+    /// or rewordings) into their most-confirmed copy through the lifecycle:
+    /// evidence merged, the other copies superseded, nothing deleted. Dry run
+    /// unless --apply.
+    #[command(name = "memory-fold-user-duplicates")]
+    MemoryFoldUserDuplicates(MemoryCompactUserArgs),
     /// Retired: workspaces no longer need a legacy-writer seal (the runtime
     /// writer floor replaced it). Accepted and ignored for one release so
     /// existing scripts keep working.
@@ -964,6 +997,80 @@ struct MemoryIndexScopeArgs {
 }
 
 #[derive(clap::Args, Debug, Clone)]
+struct GoogleProjectAccessArgs {
+    /// Cloud project id. Defaults to `project_id` in the runtime root's
+    /// `client_secret.json`.
+    #[arg(long)]
+    project: Option<String>,
+
+    /// Google account to check; repeatable. Defaults to every `expected_email`
+    /// in the runtime root's `operator-config.yaml`.
+    #[arg(long = "email")]
+    emails: Vec<String>,
+
+    /// Grant missing roles with this computer's gcloud account.
+    #[arg(long)]
+    grant: bool,
+
+    /// Emit the reports as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct MemoryUserScopeArgs {
+    /// Principal scope.
+    #[arg(long, default_value = "anonymous")]
+    principal: String,
+
+    /// Workspace scope.
+    #[arg(long, default_value = "default")]
+    workspace: String,
+
+    /// Emit machine-readable JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct MemoryCompactUserArgs {
+    #[command(flatten)]
+    scope: MemoryUserScopeArgs,
+
+    /// Make the changes. Without it nothing is written.
+    #[arg(long)]
+    apply: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct MemoryDedupeUserArgs {
+    #[command(flatten)]
+    scope: MemoryUserScopeArgs,
+
+    /// Cosine similarity at or above which two records count as one claim.
+    #[arg(long, default_value_t = magician::magician_v2::agents::user_memory_bounds::dedupe::DEFAULT_THRESHOLD)]
+    threshold: f32,
+
+    /// Sections to compare (repeatable). Default: the agent-learned ones.
+    #[arg(long = "section")]
+    sections: Vec<String>,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct MemoryUserRestoreArgs {
+    #[command(flatten)]
+    scope: MemoryUserScopeArgs,
+
+    /// The archived record's id (`memory_record_id`, as the archive shows it).
+    #[arg(long)]
+    record_id: String,
+
+    /// Put it back. Without it the command only reports what it found.
+    #[arg(long)]
+    apply: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
 struct MemoryIndexRebuildArgs {
     #[command(flatten)]
     scope: MemoryIndexScopeArgs,
@@ -1449,6 +1556,10 @@ fn sweep_stale_app_jail_members() {
 }
 
 fn main() -> Result<()> {
+    // Dependencies can enable both rustls crypto backends. Choose the server's
+    // default before any client is constructed; retain an existing selection.
+    // Provider connectors also configure their own backend for library hosts.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     if magician_apps::apps::surface_worker::maybe_run_surface_worker() {
         return Ok(());
     }
@@ -1488,6 +1599,12 @@ fn main() -> Result<()> {
         return run_live_app_before_boot(command, *json);
     }
 
+    // Setup scripts run this before the engine is configured: it reads only
+    // the runtime root's client file and operator config, then asks gcloud.
+    if let Some(CliCommand::GoogleProjectAccess(args)) = &cli.command {
+        return run_google_project_access(args);
+    }
+
     // Live-runtime paths load and resolve the boot plan before constructing
     // main, execution, or Lance runtimes. Provider-free app authoring above
     // stays config-free.
@@ -1498,6 +1615,30 @@ fn main() -> Result<()> {
         source = ?storage_profile.source,
         "resolved storage profile before opening stores"
     );
+    // Model spend limits live in resource authority now; a config written
+    // before the move is migrated once, before it is loaded — by a serving
+    // boot only: a CLI command can run beside a live server, and the config
+    // lock is per process.
+    if cli.command.is_none() && !cli.reindex {
+        let config_path = if cli.config == std::path::Path::new("tool-runtime-config.yaml") {
+            magician::config::magician_config_path()
+        } else {
+            cli.config.clone()
+        };
+        match magician::magician_v2::resource_authority::config::migrate_model_spend_limits(
+            &config_path,
+        ) {
+            Ok(true) => info!(
+                "[BUDGETS] moved the model spend limits into resource_authority.model_spend in {}",
+                config_path.display()
+            ),
+            Ok(false) => {},
+            Err(error) => warn!(
+                %error,
+                "[BUDGETS] could not move the model spend limits; the legacy execution.budgets values stay in force"
+            ),
+        }
+    }
     let mut magician_config = load_magician_config(&cli.config)?;
     let cpu_count = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1593,8 +1734,34 @@ fn main() -> Result<()> {
             // Also reap a child when initialization fails before the normal HTTP
             // shutdown sequence has been constructed.
             magician::magician_v2::runtime::ollama_lifecycle::stop().await;
+            // Backstop for CLI commands and early exits; after a served
+            // shutdown nothing is pending and this writes nothing.
+            flush_memory_temperature_counters_on_shutdown().await;
             result
         })
+}
+
+/// Persist the memory-temperature usage counters still held for write-behind.
+/// Bounded: a wedged filesystem must not hang shutdown, and whatever is not
+/// written here is the documented counter crash-loss window.
+async fn flush_memory_temperature_counters_on_shutdown() {
+    use magician::magician_v2::agents::memory_temperature::flush_pending_memory_temperature_writes;
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        flush_pending_memory_temperature_writes(),
+    )
+    .await
+    {
+        Ok(summary) if summary.failed_overlays > 0 => warn!(
+            ?summary,
+            "Memory temperature counters were not all written at shutdown"
+        ),
+        Ok(summary) if summary.flushed_overlays > 0 => {
+            info!(?summary, "Memory temperature counters written at shutdown")
+        },
+        Ok(_) => {},
+        Err(_) => warn!("Memory temperature counter flush did not finish within 10s of shutdown"),
+    }
 }
 
 fn run_live_app_before_boot(
@@ -1651,27 +1818,52 @@ async fn run(
     magician::magician_v2::execution::coding_engine::configure_coding_budgets(
         &magician_config.coding,
     );
-    // Per-run USD ceilings (`execution.budgets`): the loop's cost checks
-    // hold no config snapshot either.
-    magician::config::configure_execution_budgets(&magician_config.execution.budgets);
+    // Model spend limits (`resource_authority.model_spend`) and envelope
+    // behaviour: the loop's cost checks hold no config snapshot either. Before
+    // the envelope is installed, so it restores into the configured window.
+    magician::config::configure_execution_budgets(&magician::config::effective_execution_budgets(
+        &magician_config,
+    ));
     magician::config::configure_quality_round_budget(&magician_config.execution.quality_round);
+    magician::config::configure_harness_turn_idle_seconds(
+        magician_config.execution.harness_turn_idle_seconds,
+    );
     // Outward posture, published BEFORE the CLI branch below and before any
     // server start: the executor's capture gate holds no config snapshot, and
     // an unpublished posture defaults to capture. Installing it here means the
     // only way to send is a deliberate config edit, not an initialisation order
     // nobody noticed. Readiness review §9 steps 2 and 4.
-    magician::magician_v2::agents::outward_actions::install_outward_capture_posture(
-        magician_config.outward_actions.capture_only,
+    magician::magician_v2::agents::outward_policy::install(magician_config.outward_actions.clone());
+    magician::magician_v2::agents::outward_actions::install_browser_submission_guard(
+        magician_config.outward_actions.browser_submission_guard,
     );
-    if magician_config.outward_actions.capture_only {
-        tracing::info!(
-            "[OUTWARD-CAPTURE] outward actions are CAPTURED, not sent \
-             (outward_actions.capture_only = true)"
+    if magician_config.outward_actions.force_capture_only {
+        tracing::warn!(
+            "[OUTWARD-CAPTURE] forced capture for every context, including live overrides"
+        );
+    } else if [
+        magician::magician_v2::agents::outward_policy::OutwardOrigin::OwnerChat,
+        magician::magician_v2::agents::outward_policy::OutwardOrigin::OwnerTask,
+        magician::magician_v2::agents::outward_policy::OutwardOrigin::Opc,
+        magician::magician_v2::agents::outward_policy::OutwardOrigin::PublicAgent,
+        magician::magician_v2::agents::outward_policy::OutwardOrigin::Unclassified,
+    ]
+    .into_iter()
+    .any(|origin| {
+        !magician::magician_v2::agents::outward_policy::capture_for(
+            &magician_config.outward_actions,
+            origin,
+        )
+    }) {
+        tracing::warn!(
+            baseline_capture = magician_config.outward_actions.capture_only,
+            contexts = ?magician_config.outward_actions.contexts,
+            "[OUTWARD-LIVE] at least one context permits real sends; other gates still apply"
         );
     } else {
-        tracing::warn!(
-            "[OUTWARD-LIVE] outward actions will be SENT FOR REAL \
-             (outward_actions.capture_only = false)"
+        tracing::info!(
+            contexts = ?magician_config.outward_actions.contexts,
+            "[OUTWARD-CAPTURE] every context is capture-only"
         );
     }
     let storage_workspace = resolve_storage_workspace(&magician_config)?;
@@ -1686,6 +1878,12 @@ async fn run(
         return run_list_index_reindex(&magician_config).await;
     }
     sweep_stale_app_jail_members();
+    // The owner-set spend envelope (`execution.budgets.spend_envelope`):
+    // restore today's count and the owner's grants from the runtime root,
+    // install the router gate into magicllm and start the checkpoint ticker.
+    // Server path only, after the settings above were published and before
+    // any model call can be made.
+    magician::magician_v2::spend_envelope::install_process_envelope(storage_workspace.base_root());
     // Workspaces deleted with `?purge=true` lose their directory here: server
     // path only (a CLI command can run beside a live server), after the
     // runtime lease is held, and before any store below discovers scopes —
@@ -1738,6 +1936,42 @@ async fn run(
     // loopback (it would bypass the plane's gates); the box denies the port
     // registered here, the default API port until then.
     magician::magician_v2::execution::shell_box::register_magician_listener(cli.port);
+    // The other loopback services that are a way out of the box: the
+    // supervisor's unauthenticated control port, Magicutor (its CDP proxy),
+    // a configured CDP endpoint. Denied to every boxed process.
+    {
+        use magician::magician_v2::execution::shell_box::{
+            register_loopback_service, register_loopback_service_url, LoopbackService,
+        };
+        if let Some(port) = std::env::var("MAGIC_SUPERVISOR_CONTROL_PORT")
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+        {
+            register_loopback_service(port, LoopbackService::Supervisor);
+        }
+        register_loopback_service_url(
+            &magician_config.execution.magicutor_base_url,
+            LoopbackService::Magicutor,
+        );
+        if let Ok(url) = std::env::var(
+            magician::magician_v2::execution::primitive_dispatch::browser::session::ENV_AGENT_BROWSER_CDP_URL,
+        ) {
+            register_loopback_service_url(&url, LoopbackService::Cdp);
+        }
+        // Serving no UI itself, Magician's UI runs on a dev or preview
+        // server that proxies this API (`make dev`: vite on 5173, preview on
+        // 4173), unless `MAGICIAN_UI_DEV_PORTS` names others.
+        if matches!(frontend_delivery, FrontendDelivery::ApiOnly) {
+            let ports =
+                std::env::var("MAGICIAN_UI_DEV_PORTS").unwrap_or_else(|_| "5173,4173".into());
+            for port in ports
+                .split(',')
+                .filter_map(|port| port.trim().parse::<u16>().ok())
+            {
+                register_loopback_service(port, LoopbackService::DevServer);
+            }
+        }
+    }
     let startup_http = startup_http::StartupHttp::start(
         &cli.host,
         cli.port,
@@ -1748,11 +1982,18 @@ async fn run(
         },
     )
     .context("starting bootstrap HTTP listener")?;
+    // The loopback listener that serves only the plane's MCP route: boxed
+    // harnesses reach Magician's tools there, never the rest of the API.
+    if let Some(port) = startup_http.plane_port() {
+        magician::magician_v2::execution::shell_box::register_plane_mcp_port(port);
+    }
     magician::magician_v2::runtime::ollama_lifecycle::start_background();
     magician::magician_v2::execution::coding_engine::qualify_worker::spawn_codex_qualify_worker();
     magician::magician_v2::execution::coding_engine::qualify_worker::spawn_grok_version_worker();
     magician::magician_v2::execution::coding_engine::qualify_worker::spawn_claude_version_worker();
     magician::magician_v2::execution::coding_engine::qualify_worker::spawn_agy_version_worker();
+    magician::magician_v2::execution::coding_engine::model_discovery::spawn_model_discovery_worker(
+    );
 
     info!("🎩 Starting Magician V2 service binary");
 
@@ -2790,7 +3031,10 @@ fn build_configured_tts_provider(
                     let (enabled_gate, generation_gate) = manager.cache_gate();
                     let cache =
                         Arc::new(magician_media::media_rails::CachedTtsProvider::new_gated(
-                            magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(Arc::new(provider), "local"),
+                            magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(
+                                Arc::new(provider),
+                                "local",
+                            ),
                             cache_capacity,
                             enabled_gate,
                             generation_gate,
@@ -2849,7 +3093,9 @@ fn build_legacy_openai_tts_provider(
     }
     let tts: DynTtsProvider = Arc::new(tts);
     let tts = match meter_vendor {
-        Some(vendor) => magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(tts, vendor),
+        Some(vendor) => {
+            magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(tts, vendor)
+        },
         None => tts,
     };
     Some(magician_media::media_rails::CachedTtsProvider::wrap(
@@ -2895,7 +3141,10 @@ fn build_legacy_minimax_tts_provider(
         );
     }
     Some(magician_media::media_rails::CachedTtsProvider::wrap(
-        magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(Arc::new(mm_tts), "minimax"),
+        magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(
+            Arc::new(mm_tts),
+            "minimax",
+        ),
         cache_capacity,
     ))
 }
@@ -2927,7 +3176,9 @@ fn configured_cached_tts_provider(
 ) -> DynTtsProvider {
     // Metered inside the cache: a cache hit is not a vendor call.
     let provider = match meter_vendor {
-        Some(vendor) => magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(provider, vendor),
+        Some(vendor) => {
+            magician::magician_v2::media_seam::metering::MeteredTtsProvider::wrap(provider, vendor)
+        },
         None => provider,
     };
     magician_media::media_rails::CachedTtsProvider::wrap(
@@ -2961,7 +3212,11 @@ fn build_recording_stt_providers(
         ) {
             Some(built) => providers.push(
                 match media_meter_vendor(&provider.adapter, provider.base_url.as_deref()) {
-                    Some(vendor) => magician::magician_v2::media_seam::metering::MeteredSttProvider::wrap(built, vendor),
+                    Some(vendor) => {
+                        magician::magician_v2::media_seam::metering::MeteredSttProvider::wrap(
+                            built, vendor,
+                        )
+                    },
                     None => built,
                 },
             ),
@@ -2990,7 +3245,9 @@ fn build_recording_stt_providers(
     }
     let stt: DynSttProvider = Arc::new(stt);
     vec![match meter_vendor {
-        Some(vendor) => magician::magician_v2::media_seam::metering::MeteredSttProvider::wrap(stt, vendor),
+        Some(vendor) => {
+            magician::magician_v2::media_seam::metering::MeteredSttProvider::wrap(stt, vendor)
+        },
         None => stt,
     }]
 }
@@ -3083,7 +3340,11 @@ fn build_streaming_stt_catalog_providers(
         };
         if let Some(provider) = provider {
             providers.push(match media_meter_vendor(&binding.adapter, None) {
-                Some(vendor) => magician::magician_v2::media_seam::metering::MeteredStreamingSttProvider::wrap(provider, vendor),
+                Some(vendor) => {
+                    magician::magician_v2::media_seam::metering::MeteredStreamingSttProvider::wrap(
+                        provider, vendor,
+                    )
+                },
                 None => provider,
             });
         }
@@ -4557,9 +4818,17 @@ async fn run_cli_command(config: &MagicianConfig, command: &CliCommand) -> Resul
             finish_app_authoring_status(status)
         },
         CliCommand::OllamaLaunchConfig => print_ollama_launch_config(config),
+        CliCommand::GoogleProjectAccess(args) => run_google_project_access(args),
         CliCommand::LogicalChunkEval(args) => run_logical_chunk_eval(config, args).await,
         CliCommand::ReconcileOrphanedTasks(args) => run_reconcile_orphaned_tasks(args).await,
         CliCommand::MemoryIndex { command } => run_memory_index_command(config, command).await,
+        CliCommand::MemoryUserReport(args) => run_memory_user_report(config, args).await,
+        CliCommand::MemoryCompactUser(args) => run_memory_compact_user(config, args).await,
+        CliCommand::MemoryDedupeUser(args) => run_memory_dedupe_user(config, args).await,
+        CliCommand::MemoryFoldUserDuplicates(args) => {
+            run_memory_fold_user_duplicates(config, args).await
+        },
+        CliCommand::MemoryUserRestore(args) => run_memory_user_restore(config, args).await,
         CliCommand::SealStatelessLoopCutover(args) => run_retired_stateless_loop_cutover(args),
         CliCommand::TownSquareMigrate(args) => run_town_square_migrate(config, args).await,
         CliCommand::DistillEvidence(args) => run_distill_evidence(config, args).await,
@@ -4797,6 +5066,71 @@ async fn run_logical_chunk_eval(
     println!("{rendered}");
     if !report.all_plans_valid || report.all_live_runs_valid == Some(false) {
         anyhow::bail!("logical chunk eval gates did not pass");
+    }
+    Ok(())
+}
+
+/// Exits 0 when every account can use the project, 3 when a role is still
+/// missing, 4 when the policy could not be read; setup scripts branch on it.
+fn run_google_project_access(args: &GoogleProjectAccessArgs) -> Result<()> {
+    use magician_components::google_project_access::{self as access, AccessStatus};
+    let root = std::env::var_os("MAGICIAN_ROOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join("MagicianNotes")
+        });
+    let project = match &args.project {
+        Some(project) => project.clone(),
+        None => access::project_id_from_client_secret(&root.join("client_secret.json"))
+            .map_err(anyhow::Error::msg)?,
+    };
+    let emails = if args.emails.is_empty() {
+        access::operator_accounts(&root.join("operator-config.yaml"))
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .map(|(_, email)| email)
+            .collect::<Vec<_>>()
+    } else {
+        args.emails.clone()
+    };
+    anyhow::ensure!(!emails.is_empty(), "no Google account emails to check");
+    let mut reports = Vec::with_capacity(emails.len());
+    for email in &emails {
+        let report = if args.grant && access::check(&project, email).can_grant() {
+            access::grant(&project, email).map_err(anyhow::Error::msg)?
+        } else {
+            access::check(&project, email)
+        };
+        reports.push(report);
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+    } else {
+        for report in &reports {
+            let mark = match report.status {
+                AccessStatus::Granted => "ok",
+                AccessStatus::Missing => "missing",
+                AccessStatus::Unknown => "unknown",
+            };
+            println!("[{mark}] {}", report.detail);
+            for command in &report.commands {
+                println!("    {command}");
+            }
+        }
+    }
+    let worst = reports
+        .iter()
+        .map(|report| report.status)
+        .fold(0i32, |code, status| {
+            code.max(match status {
+                AccessStatus::Granted => 0,
+                AccessStatus::Missing => 3,
+                AccessStatus::Unknown => 4,
+            })
+        });
+    if worst != 0 {
+        std::process::exit(worst);
     }
     Ok(())
 }
@@ -5574,6 +5908,189 @@ async fn run_review(config: &MagicianConfig, args: &ReviewArgs) -> Result<()> {
         artifact_name,
         path.display()
     );
+    Ok(())
+}
+
+fn resolve_user_memory_service(
+    config: &MagicianConfig,
+    args: &MemoryUserScopeArgs,
+) -> Result<magician::magician_v2::agents::AgentMemoryService> {
+    load_runtime_env_files();
+    let storage_workspace = resolve_storage_workspace(config)?;
+    AgentMemoryResolver::with_workspace_layout(storage_workspace)
+        .resolve_for_scope(&args.principal, &args.workspace)
+        .with_context(|| {
+            format!(
+                "resolving memory service for {}/{}",
+                args.principal, args.workspace
+            )
+        })
+}
+
+async fn run_memory_user_report(config: &MagicianConfig, args: &MemoryUserScopeArgs) -> Result<()> {
+    use magician::magician_v2::agents::user_memory_bounds::report;
+    let service = resolve_user_memory_service(config, args)?;
+    let report = report::build(service.storage(), &config.memory.user_knowledge_bounds).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report::render(&report));
+    }
+    Ok(())
+}
+
+async fn run_memory_compact_user(
+    config: &MagicianConfig,
+    args: &MemoryCompactUserArgs,
+) -> Result<()> {
+    use magician::magician_v2::agents::user_memory_bounds::compact;
+    let service = resolve_user_memory_service(config, &args.scope)?;
+    let summary = compact::run(
+        &service,
+        &config.memory.user_knowledge_bounds,
+        args.apply,
+        chrono::Utc::now(),
+    )
+    .await?;
+    if args.scope.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
+    }
+    println!(
+        "{}",
+        if summary.applied {
+            "memory-compact-user: APPLIED"
+        } else {
+            "memory-compact-user: dry run (nothing written; add --apply to make these changes)"
+        }
+    );
+    if summary.nothing_to_do {
+        println!("nothing to do");
+        return Ok(());
+    }
+    println!(
+        "knowledge.json: {} -> {} bytes",
+        summary.bytes_before, summary.bytes_after
+    );
+    println!(
+        "review queue: {} (old rules) -> {}",
+        summary.review_queue_before, summary.review_queue_after
+    );
+    for (lane, moved) in &summary.lanes {
+        println!(
+            "lane {lane}: {} records moved, {} slices combined, {} rows, {} archived",
+            moved.records_moved, moved.slices_combined, moved.rows_after, moved.rows_archived
+        );
+    }
+    for (section, reasons) in &summary.archived_by_rule {
+        for (reason, count) in reasons {
+            println!("archive {section}: {count} ({reason})");
+        }
+    }
+    println!(
+        "pre-review records marked reviewed: {}",
+        summary.pre_review_stamped
+    );
+    println!(
+        "learning promotion audit rows moved to the archive: {}",
+        summary.learning_promotions_moved
+    );
+    println!("archive lines: {}", summary.archive_lines);
+    if let Some(backup) = &summary.backup {
+        println!("backup: {backup}");
+    }
+    Ok(())
+}
+
+async fn run_memory_dedupe_user(
+    config: &MagicianConfig,
+    args: &MemoryDedupeUserArgs,
+) -> Result<()> {
+    use magician::magician_v2::agents::user_memory_bounds::dedupe;
+    anyhow::ensure!(
+        args.threshold > 0.0 && args.threshold <= 1.0,
+        "--threshold must be in (0, 1]"
+    );
+    let service = resolve_user_memory_service(config, &args.scope)?;
+    let sections: Vec<String> = if args.sections.is_empty() {
+        dedupe::DEFAULT_SECTIONS
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        args.sections.clone()
+    };
+    let report = dedupe::dry_run(
+        service.storage(),
+        &config.memory.user_knowledge_bounds,
+        &sections,
+        args.threshold,
+        chrono::Utc::now(),
+        dedupe::local_embed,
+    )
+    .await?;
+    if args.scope.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", dedupe::render(&report));
+    }
+    Ok(())
+}
+
+async fn run_memory_fold_user_duplicates(
+    config: &MagicianConfig,
+    args: &MemoryCompactUserArgs,
+) -> Result<()> {
+    use magician::magician_v2::agents::memory_lifecycle::runtime::fold_near_duplicate_records;
+    let service = resolve_user_memory_service(config, &args.scope)?;
+    let folds = fold_near_duplicate_records(&service, args.apply, chrono::Utc::now()).await?;
+    if args.scope.json {
+        println!("{}", serde_json::to_string_pretty(&folds)?);
+        return Ok(());
+    }
+    let verb = if args.apply { "folded" } else { "would fold" };
+    for fold in &folds {
+        println!(
+            "{} keeps {} ({}, {} observations); {verb}:",
+            fold.collection,
+            fold.keeper.key.as_deref().unwrap_or("-"),
+            fold.keeper.id,
+            fold.keeper.observations
+        );
+        for copy in &fold.folded {
+            println!(
+                "  {} ({}, {} observations)",
+                copy.key.as_deref().unwrap_or("-"),
+                copy.id,
+                copy.observations
+            );
+        }
+    }
+    println!(
+        "{} record(s) {verb} into {} keeper(s){}",
+        folds.iter().map(|fold| fold.folded.len()).sum::<usize>(),
+        folds.len(),
+        if args.apply {
+            ""
+        } else {
+            " (dry run; pass --apply)"
+        }
+    );
+    Ok(())
+}
+
+async fn run_memory_user_restore(
+    config: &MagicianConfig,
+    args: &MemoryUserRestoreArgs,
+) -> Result<()> {
+    let service = resolve_user_memory_service(config, &args.scope)?;
+    let outcome = magician::magician_v2::agents::user_memory_bounds::restore_record(
+        &service,
+        &args.record_id,
+        args.apply,
+    )
+    .await?;
+    println!("{}", serde_json::to_string_pretty(&outcome)?);
     Ok(())
 }
 
@@ -6924,7 +7441,13 @@ async fn run_http_server(
     MagicianV2Orchestrator::register_resume_listener(&orchestrator, &ask_loop_api);
     // TTS/STT cost rows (`media_seam::metering`) ride the same event bus as
     // model calls into `llm_calls`.
-    magician::magician_v2::media_seam::metering::install_media_meter(Arc::clone(&event_broadcaster));
+    magician::magician_v2::media_seam::metering::install_media_meter(Arc::clone(
+        &event_broadcaster,
+    ));
+    // "Memory index needs a rebuild" notices (`memory_index_maintainer`).
+    magician::magician_v2::analytics::memory_index_maintainer::install_memory_index_notice_broadcaster(
+        Arc::clone(&event_broadcaster),
+    );
 
     let static_dir: Option<Arc<PathBuf>> = match frontend_delivery {
         FrontendDelivery::ApiOnly => {
@@ -6961,6 +7484,9 @@ async fn run_http_server(
     magician_api::mcp_oauth_api::McpOAuthApi::install_shared(Arc::clone(&shared_mcp_oauth_api))
         .map_err(|_| anyhow::anyhow!("MCP OAuth callback broker was installed more than once"))?;
     let shared_mcp_oauth_api = web::Data::from(shared_mcp_oauth_api);
+    let shared_browser_signin_api = web::Data::new(
+        magician_api::browser_signin::BrowserSignInApi::new(magician_config.browser_signin.clone()),
+    );
 
     // Work-evidence graph (Phase 0) read-path API. Built here (outside the chat
     // let-tuple) so the actix factory can capture it for app_data.
@@ -7076,6 +7602,9 @@ async fn run_http_server(
             storage_workspace.clone(),
         ),
     );
+    // Model spend the spend envelope counts is posted to this resource
+    // authority's ledger (`spend_envelope_ledger`).
+    magician::magician_v2::spend_envelope_ledger::install(Arc::clone(&scoped_authority_resolver));
     let shared_decision_metrics = decision_metrics.clone();
     let analytics_shutdown = CancellationToken::new();
     let analytics_dispatcher =
@@ -8890,6 +9419,9 @@ async fn run_http_server(
         repo_root.clone(),
     ));
     let shared_runtime_env_api = web::Data::new(RuntimeEnvApi::new(repo_root.clone()));
+    let shared_public_mcp_profile_api = web::Data::new(
+        magician_api::mcp_public_profile_api::PublicMcpProfileApi::new(storage_root.clone()),
+    );
     let shared_component_setup_api = web::Data::new(ComponentSetupApi::new(repo_root.clone()));
     let shared_notes_api = web::Data::new(Arc::new(NotesApi::with_workspace_layout(
         storage_workspace.clone(),
@@ -9129,7 +9661,9 @@ async fn run_http_server(
             .filter(|_| host_speech_availability.stt)
             .map(|host_gateway_url| {
                 magician::magician_v2::media_seam::metering::MeteredSttProvider::wrap(
-                    Arc::new(magician_media::media_rails::MacOsSpeechProvider::new(host_gateway_url)),
+                    Arc::new(magician_media::media_rails::MacOsSpeechProvider::new(
+                        host_gateway_url,
+                    )),
                     "local",
                 )
             });
@@ -10016,6 +10550,12 @@ async fn run_http_server(
             },
         };
 
+        let llm_service = llm_service.with_context_compaction(
+            magician_config.llm.chat_history.clone(),
+            Arc::clone(&chat_store) as Arc<dyn magician::magician_v2::chat::storage::ChatStore>,
+            Arc::clone(&event_broadcaster),
+        );
+
         let persona_provider = Arc::new(
             magician::magician_v2::chat::service::DefinitionStorePersonaProvider::new(Arc::clone(
                 &shared_agent_api.definition_store,
@@ -10349,6 +10889,14 @@ async fn run_http_server(
         });
         shared_artifact_v2_service
             .set_feed_projection(feed_store.clone(), Arc::clone(&event_broadcaster));
+        // The spend envelope raises/removes its `spend_envelope:exhausted`
+        // attention item through the same feed projection.
+        magician::magician_v2::spend_envelope::attach_feed_notifier(Arc::new(
+            magician::magician_v2::feed::V3FeedProjectionAdapter::new(
+                feed_store.clone(),
+                Arc::clone(&event_broadcaster),
+            ),
+        ));
         shared_artifact_v2_service
             .set_progress_projection(Arc::clone(&event_broadcaster), feed_store.clone());
         // Recurring Monitors Phase 3: monitor notification dedupe rows +
@@ -10479,6 +11027,15 @@ async fn run_http_server(
         // and aborting it is not something any caller should be able to do by
         // dropping a handle it never wanted.
         let _ = shared_artifact_v2_service.spawn_verification_reconciler();
+
+        // Runtime/Artifact divergence: an execution whose Artifact record
+        // already ended while the runtime still says WaitingUser/Paused/...
+        // gets its runtime settled from the recorded outcome (which wakes a
+        // parent parked in WaitingChildren on it), and a parent parked on
+        // children that all ended is re-woken. One pass at boot, then every
+        // ten minutes, bounded per pass. See
+        // `ArtifactV2Service::spawn_runtime_divergence_reconciler`.
+        let _ = shared_artifact_v2_service.spawn_runtime_divergence_reconciler();
 
         // Finish admitting every VibeDev run this deployment durably accepted
         // but did not get to start. `@vibedev` records a dispatch intent before
@@ -10950,6 +11507,7 @@ async fn run_http_server(
             magician_config.agent_surface_runtime.cache.singleflight,
         );
         orchestrator.configure_agent_surface_runtime(magician_config.agent_surface_runtime.clone());
+        orchestrator.configure_agentic_settings(magician_config.agentic.clone());
         let (surface_plan_cache, surface_working_sets) =
             orchestrator.agent_surface_runtime_stores();
 
@@ -11421,6 +11979,13 @@ async fn run_http_server(
     // call site and here can depend on it: it was spawned, never awaited to
     // completion, so it only ever guaranteed that the task had started.
     spawn_agent_services_startup_hydration(shared_agent_api.clone()).await;
+
+    // Background shell jobs run in their own process groups and outlive a
+    // restart. Re-adopt them before recovery resumes their owning runs, and
+    // let the durable execution row (not a pause) decide when they end.
+    magician::magician_v2::execution::compiled_providers::start_shell_job_runtime(
+        orchestrator.conversation_store(),
+    );
 
     // Ordered startup recovery for executions and chat-inline delegate cards.
     //
@@ -12014,9 +12579,17 @@ async fn run_http_server(
             engine: magician_config.execution.harness_engine.clone(),
             harness_model: magician_config.execution.harness_model.clone(),
             pi_profile: magician_config.execution.pi_profile.clone(),
+            follows_chat: magician::magician_v2::execution::plane::follows_chat_engine(
+                &magician_config.execution.harness_engine,
+            ),
             turn_max_tool_calls: magician_config.execution.harness_turn_max_tool_calls,
             turn_max_seconds: magician_config.execution.harness_turn_max_seconds,
-            plane_endpoint: format!("http://127.0.0.1:{port}/api/magician/v2/plane/mcp"),
+            // The plane-only listener when startup opened one: a boxed
+            // harness may reach it, and it serves nothing but this route.
+            plane_endpoint: format!(
+                "http://127.0.0.1:{}/api/magician/v2/plane/mcp",
+                magician::magician_v2::execution::shell_box::plane_mcp_port().unwrap_or(port)
+            ),
         },
     );
     // Engine affinity (owner rule 2026-08-31): whatever harness drives,
@@ -12044,7 +12617,12 @@ async fn run_http_server(
             turn_stall_seconds: magician_config.chat.harness_turn_stall_seconds,
             turn_max_iterations: magician_config.chat.harness_turn_max_iterations,
             pack_direct_dispatch: magician_config.chat.chat_pack_direct_dispatch,
-            plane_endpoint: format!("http://127.0.0.1:{port}/api/magician/v2/plane/mcp"),
+            // The plane-only listener when startup opened one: a boxed
+            // harness may reach it, and it serves nothing but this route.
+            plane_endpoint: format!(
+                "http://127.0.0.1:{}/api/magician/v2/plane/mcp",
+                magician::magician_v2::execution::shell_box::plane_mcp_port().unwrap_or(port)
+            ),
         },
     );
     magician::magician_v2::execution::plane::install_runless_executors(std::sync::Arc::new(
@@ -12098,6 +12676,9 @@ async fn run_http_server(
         // A spoken answer to a preference alignment hold runs the same
         // resume and answer policy as the respond route.
         magician_api::preference_alignment_api::ApiVoiceReviewSink::install(api.clone().into_inner());
+        // Reviews-before-sending left past their deadline settle as discarded
+        // through the same resume path.
+        magician_api::outward_review_expiry::install(api.clone().into_inner());
         let broadcaster = web::Data::new(Arc::clone(&event_broadcaster));
         let chat_turn_event_sink_data = web::Data::new(Arc::clone(&chat_turn_event_sink));
         let ask_loop = web::Data::from(Arc::clone(&ask_loop_api));
@@ -12176,6 +12757,7 @@ async fn run_http_server(
             .app_data(shared_thinking_map_coordinator.clone())
             .app_data(shared_media_api.clone())
             .app_data(shared_mcp_oauth_api.clone())
+            .app_data(shared_browser_signin_api.clone())
             .app_data(shared_ui_preferences_api.clone())
             .app_data(shared_vibedev_api.clone())
             .app_data(shared_prompt_manager.clone())
@@ -12239,6 +12821,10 @@ async fn run_http_server(
         // checked against the living audience on every request.
         app = app.configure(magician_api::data_room_reader_api::configure_data_room_reader_routes);
         app = app
+            .app_data(shared_public_mcp_profile_api.clone())
+            // Only immutable, explicitly public tool profile JSON lives here.
+            // API auth and Access middleware remain on the entire API scope.
+            .configure(magician_api::mcp_public_profile_api::configure_public_mcp_profile_routes)
             .app_data(
                 web::JsonConfig::default()
                     .limit(API_JSON_PAYLOAD_LIMIT_BYTES)
@@ -12288,6 +12874,7 @@ async fn run_http_server(
                     .configure(magician_api::storage_governance_api::configure)
                     .configure(magician_api::storage_activation_api::configure)
                     .configure(magician_api::mcp_oauth_api::configure_routes)
+                    .configure(magician_api::browser_signin::configure_routes)
                     .configure(configure_app_routes)
                     .route(
                         "/updates",
@@ -12295,11 +12882,16 @@ async fn run_http_server(
                             magician_api::agent_updates_api::list_agent_updates_handler,
                         ),
                     )
-                    // Program documents (Fleet Civilization guild missions; reads + owner revert)
+                    // Program documents (Fleet Civilization guild missions; reads,
+                    // owner save and owner revert)
                     .route("/programs", web::get().to(magician_api::programs_api::list_programs_handler))
                     .route(
                         "/programs/{name}",
                         web::get().to(magician_api::programs_api::get_program_handler),
+                    )
+                    .route(
+                        "/programs/{name}",
+                        web::put().to(magician_api::programs_api::save_program_handler),
                     )
                     .route(
                         "/programs/{name}/revert",
@@ -13143,7 +13735,9 @@ async fn run_http_server(
                     )
                     .route("/chat/active", web::get().to(get_active_session_handler))
                     .route("/chat/new", web::post().to(new_session_handler))
-                    .route("/chat/profiles", web::get().to(list_chat_profiles_handler))
+                    .route("/chat/models", web::get().to(list_chat_models_handler))
+                    .route("/chat/sessions/{id}/assets", web::get().to(get_session_assets_handler))
+                    .route("/chat/sessions/{id}/assets/{asset_id}", web::delete().to(delete_session_asset_handler))
                     .route(
                         "/chat/public-chat/status",
                         web::get().to(get_public_chat_status_handler),
@@ -13152,7 +13746,7 @@ async fn run_http_server(
                         "/chat/public-contacts",
                         web::get().to(list_public_contact_profiles_handler),
                     )
-                    .route("/coding/profiles", web::get().to(list_coding_profiles_handler))
+                    .route("/coding/models", web::get().to(list_coding_models_handler))
                     .route(
                         "/coding/engines/codex_app_server/refresh",
                         web::post().to(refresh_codex_app_server_handler),
@@ -13192,6 +13786,10 @@ async fn run_http_server(
                     .route(
                         "/vibedev/projects/{project_id}",
                         web::patch().to(update_vibedev_project_handler),
+                    )
+                    .route(
+                        "/vibedev/projects/{id}/git-init",
+                        web::post().to(magician_api::vibedev_api::git_init_vibedev_project_handler),
                     )
                     .route(
                         "/vibedev/projects/{project_id}",
@@ -13260,6 +13858,7 @@ async fn run_http_server(
                     // `@vibedev` chat rail uses, so there is no second creation
                     // path to keep in step (handoff plan §10).
                     .route("/vibedev/runs", web::post().to(start_vibedev_run_handler))
+                    .route("/vibedev/runs", web::get().to(get_vibedev_runs_handler))
                     .route(
                         "/vibedev/runs/live",
                         web::get().to(get_vibedev_live_runs_handler),
@@ -13363,6 +13962,10 @@ async fn run_http_server(
                     // M6 Citizen API — called by the Pi Citizen extension (Bearer
                     // token = scope), not the cockpit.
                     .route(
+                        "/vibedev/citizen/edit_original",
+                        web::post().to(citizen_edit_original_handler),
+                    )
+                    .route(
                         "/vibedev/citizen/preview_url",
                         web::post().to(citizen_preview_url_handler),
                     )
@@ -13383,6 +13986,7 @@ async fn run_http_server(
                     .route("/plane/decision-mode", web::put().to(plane_decision_mode_put_handler))
                     .route("/plane/decision-metrics", web::get().to(magician_api::plane_api::decision_metrics_get))
                 .route("/plane/decision-metrics/cases", web::get().to(magician_api::plane_api::decision_metrics_cases))
+                .route("/plane/decision-metrics/health", web::get().to(magician_api::plane_api::decision_metrics_health))
                 .route("/plane/decision-metrics/review", web::post().to(magician_api::plane_api::decision_metrics_review))
                 .route("/plane/decision-routing", web::get().to(plane_decision_routing_get_handler))
                     .route("/plane/decision-routing", web::put().to(plane_decision_routing_put_handler))
@@ -13394,8 +13998,8 @@ async fn run_http_server(
                         "/plane/engine",
                         web::put().to(plane_engine_put_handler),
                     )
-                    // Run budgets (docs/plans/2026-10-03-slash-commands-and-run-budgets.md).
-                    // Session bearer only, like the engine switches above.
+                    // Run budgets (docs/archive/plans/2026-10-03-slash-commands-and-run-budgets.md).
+                    // Owner login session or a verified paired owner phone.
                     .route(
                         "/budgets/defaults",
                         web::get().to(magician_api::budgets_api::budget_defaults_get_handler),
@@ -13404,14 +14008,81 @@ async fn run_http_server(
                         "/budgets/defaults",
                         web::put().to(magician_api::budgets_api::budget_defaults_put_handler),
                     )
-                    // God mode (`execution.god_mode`). Session bearer only.
+                    // The owner-set spend envelope across all autonomous LLM
+                    // work (`execution.budgets.spend_envelope`). Owner login
+                    // session or a verified paired owner phone.
+                    .route(
+                        "/budgets/envelope",
+                        web::get().to(magician_api::budgets_api::envelope_get_handler),
+                    )
+                    .route(
+                        "/budgets/envelope",
+                        web::put().to(magician_api::budgets_api::envelope_put_handler),
+                    )
+                    .route(
+                        "/budgets/envelope/grant",
+                        web::post().to(magician_api::budgets_api::envelope_grant_handler),
+                    )
+                    // Action limits: resource authority's budget rows. Owner
+                    // session or paired owner phone, like the budgets above.
+                    .route(
+                        "/budgets/limits",
+                        web::get().to(magician_api::budgets_api::limits_get_handler),
+                    )
+                    .route(
+                        "/budgets/limits",
+                        web::put().to(magician_api::budgets_api::limits_put_handler),
+                    )
+                    .route(
+                        "/budgets/limits",
+                        web::delete().to(magician_api::budgets_api::limits_delete_handler),
+                    )
+                    // Standing "Approve Always" browser-submission grants.
+                    // Session bearer only.
+                    .route(
+                        "/browser/submission-grants",
+                        web::get()
+                            .to(magician_api::browser_submission_grants_api::submission_grants_get_handler),
+                    )
+                    .route(
+                        "/browser/submission-grants",
+                        web::delete()
+                            .to(magician_api::browser_submission_grants_api::submission_grants_delete_handler),
+                    )
+                    // God mode (`execution.god_mode`). Owner login session or a
+                    // verified paired owner phone.
                     .route(
                         "/settings/god-mode",
                         web::get().to(magician_api::god_mode_api::god_mode_get_handler),
                     )
                     .route(
+                        "/settings/outward-actions",
+                        web::get().to(magician_api::outward_settings_api::get_handler),
+                    )
+                    .route(
+                        "/settings/outward-actions",
+                        web::put().to(magician_api::outward_settings_api::put_handler),
+                    )
+                    .route(
+                        "/settings/outward-actions/grants",
+                        web::get().to(magician_api::outward_settings_api::grants_get_handler),
+                    )
+                    .route(
+                        "/settings/outward-actions/grants/{id}",
+                        web::delete().to(magician_api::outward_settings_api::grants_delete_handler),
+                    )
+                    .route(
                         "/settings/god-mode",
                         web::put().to(magician_api::god_mode_api::god_mode_put_handler),
+                    )
+                    // Harness credentials (`execution.harness_auth`). Session bearer only.
+                    .route(
+                        "/settings/harness-auth",
+                        web::get().to(magician_api::harness_auth_api::harness_auth_get_handler),
+                    )
+                    .route(
+                        "/settings/harness-auth",
+                        web::put().to(magician_api::harness_auth_api::harness_auth_put_handler),
                     )
                     // Super god mode (`execution.super_god_mode`, debug).
                     .route(
@@ -13425,6 +14096,20 @@ async fn run_http_server(
                     .route(
                         "/settings/god-mode/grants",
                         web::delete().to(magician_api::god_mode_api::god_mode_grants_delete_handler),
+                    )
+                    // Owner identities + `/claim` codes. Owner login session
+                    // or a verified paired owner phone.
+                    .route(
+                        "/owner-identities",
+                        web::get().to(magician_api::owner_identities_api::list_handler),
+                    )
+                    .route(
+                        "/owner-identities/claim-code",
+                        web::post().to(magician_api::owner_identities_api::claim_code_handler),
+                    )
+                    .route(
+                        "/owner-identities/{channel}/{index}",
+                        web::delete().to(magician_api::owner_identities_api::delete_handler),
                     )
                     .route(
                         "/chat/sessions/{session_id}/god-mode",
@@ -13453,6 +14138,7 @@ async fn run_http_server(
                         web::route().to(vibedev_preview_proxy_handler),
                     )
                     .route("/chat/sessions", web::get().to(list_sessions_handler))
+                    .route("/chat/activity", web::get().to(get_session_activity_handler))
                     .route(
                         "/chat/sessions/{id}/messages/{message_id}/envoy-delivery",
                         web::post().to(magician_api::chat_api::envoy_delivery_handler),
@@ -13591,6 +14277,10 @@ async fn run_http_server(
                     // Memory API routes used by chat/runtime clients.
                     .route("/chat/memory/search", web::post().to(memory_search_handler))
                     .route("/chat/memory/sources/repair", web::post().to(memory_source_repair_handler))
+                    .route(
+                        "/chat/memory/duplicates/fold",
+                        web::post().to(memory_duplicate_fold_handler),
+                    )
                     .route(
                         "/chat/memory/preference",
                         web::post().to(memory_save_preference_handler),
@@ -14018,6 +14708,18 @@ async fn run_http_server(
                         ),
                     )
                     .route(
+                        "/devices/me/conversations",
+                        web::get().to(
+                            magician_api::device_conversations_api::device_conversations_handler,
+                        ),
+                    )
+                    .route(
+                        "/devices/me/threads",
+                        web::post().to(
+                            magician_api::device_conversations_api::create_device_thread_handler,
+                        ),
+                    )
+                    .route(
                         "/devices/me/push",
                         web::put().to(
                             magician_api::mobile_push_api::put_mobile_push_handler,
@@ -14034,6 +14736,12 @@ async fn run_http_server(
                         "/web-push/config",
                         web::get().to(
                             magician_api::web_push_api::get_web_push_config_handler,
+                        ),
+                    )
+                    .route(
+                        "/web-push/vapid",
+                        web::post().to(
+                            magician_api::web_push_api::create_web_push_vapid_handler,
                         ),
                     )
                     .route(
@@ -15230,6 +15938,20 @@ async fn run_http_server(
 
     let server_handle = startup_http.handle();
     let shutdown_token = startup_http.shutdown_token();
+    // Bots run in their own process groups, out of reach of the supervisor's
+    // signal to Magician's group, and the supervisor SIGKILLs Magician 10 s
+    // after that signal. Stop them as soon as shutdown starts, alongside the
+    // HTTP drain rather than after it. A task of its own, not a branch of the
+    // `select!` below: a drain that finished first would drop the stop
+    // mid-wait, leaving bot supervisors detached between SIGTERM and the
+    // SIGKILL escalation. Every exit path cancels this token (at the latest
+    // in `startup_http.stop()`), and the handle is awaited further down.
+    let bot_shutdown_token = startup_http.shutdown_token();
+    let shutdown_bot_runtime = Arc::clone(&bot_runtime);
+    let mut bot_shutdown_task = tokio::spawn(async move {
+        bot_shutdown_token.cancelled().await;
+        shutdown_bot_runtime.shutdown_all().await;
+    });
     let shutdown = async move {
         shutdown_token.cancelled().await;
         info!("🛑 Shutdown signal received, stopping HTTP server");
@@ -15259,6 +15981,21 @@ async fn run_http_server(
     }
     bot_startup_task.abort();
     let _ = bot_startup_task.await;
+
+    // Wait for the bot stop started when shutdown began, before the rest of
+    // the teardown, so the bots and the CLIs they fork (e.g. `gws gmail
+    // +watch`) end instead of outliving Magician. Its stops share one ~6 s
+    // grace (SIGTERM, then SIGKILL of each bot's group); the bound here only
+    // guards against a wedged task, which the backstop further down covers.
+    match tokio::time::timeout(Duration::from_secs(10), &mut bot_shutdown_task).await {
+        Ok(Ok(())) => {},
+        Ok(Err(error)) => {
+            warn!(error = %error, "Bot shutdown task failed; the backstop stop will retry");
+        },
+        Err(_) => {
+            warn!("Bot shutdown did not finish within 10s; the backstop stop will retry");
+        },
+    }
 
     // Gracefully end live meeting captures BEFORE the runtime dies: each
     // stop/leave runs the session's teardown (tail drain + final summary +
@@ -15349,6 +16086,8 @@ async fn run_http_server(
     // Stop the dedicated agent supervisor runtime without blocking the async
     // shutdown context (dropping a Runtime in async context panics).
     supervisor_runtime.shutdown_background();
+    // Backstop for a bot started after the bot stop above, or one that stop
+    // timed out on; a no-op otherwise.
     bot_runtime.shutdown_all().await;
 
     if let Some(queue) = dispatch_queue_for_shutdown.as_ref() {
@@ -15362,6 +16101,11 @@ async fn run_http_server(
             info!(?stats, "LLM dispatch queue drained before trace shutdown");
         }
     }
+
+    // Chat turns and executions have stopped recording memory usage, so
+    // persist the write-behind temperature counters (at most the last
+    // `MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY`) while storage is still open.
+    flush_memory_temperature_counters_on_shutdown().await;
 
     // Quiesce compaction/retention before the canonical and compatibility
     // pipelines publish their final batches. This preserves those final files
@@ -15466,6 +16210,11 @@ async fn run_http_server(
     // this last write.
     decision_metrics.shutdown().await;
     activity_rows_sink.shutdown().await;
+    // Last checkpoint of the spend envelope's count, after every LLM producer
+    // above has quiesced.
+    // Post pending model spend first, so the final checkpoint records it posted.
+    magician::magician_v2::spend_envelope_ledger::post_pending().await;
+    magician::magician_v2::spend_envelope::flush_on_shutdown().await;
     // Stop Ollama lifecycle (SIGTERM child if magician spawned it; leave
     // pre-existing user daemons alone). Cancels the background health
     // probe task. Best-effort — never blocks shutdown.
@@ -16053,6 +16802,42 @@ mod tests {
             "anonymous"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn memory_compact_user_cli_is_a_dry_run_by_default() {
+        let cli = Cli::try_parse_from(["magician", "memory-compact-user"])
+            .expect("valid memory-compact-user CLI");
+        let Some(CliCommand::MemoryCompactUser(args)) = cli.command else {
+            panic!("expected memory-compact-user command");
+        };
+        assert!(!args.apply);
+        assert_eq!(args.scope.principal, "anonymous");
+        assert_eq!(args.scope.workspace, "default");
+
+        let cli = Cli::try_parse_from(["magician", "memory-user-restore", "--record-id", "r1"])
+            .expect("valid memory-user-restore CLI");
+        let Some(CliCommand::MemoryUserRestore(args)) = cli.command else {
+            panic!("expected memory-user-restore command");
+        };
+        assert!(!args.apply);
+        assert!(Cli::try_parse_from(["magician", "memory-user-restore"]).is_err());
+        assert!(Cli::try_parse_from(["magician", "memory-user-report", "--json"]).is_ok());
+
+        let cli = Cli::try_parse_from([
+            "magician",
+            "memory-dedupe-user",
+            "--section",
+            "preferences",
+            "--threshold",
+            "0.92",
+        ])
+        .expect("valid memory-dedupe-user CLI");
+        let Some(CliCommand::MemoryDedupeUser(args)) = cli.command else {
+            panic!("expected memory-dedupe-user command");
+        };
+        assert_eq!(args.sections, vec!["preferences".to_string()]);
+        assert!((args.threshold - 0.92).abs() < f32::EPSILON);
     }
 
     #[test]

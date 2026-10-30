@@ -5,6 +5,7 @@ import {
     getSessionPrimaryTab,
     registerSessionTab
 } from './background_state.js';
+import { forgetSetup, recordSetupCommand, replaySetupCommands } from './debugger_setup.js';
 
 const DEBUGGER_COMMAND_TIMEOUT_MS = 60000;
 const RUNTIME_EVALUATE_TIMEOUT_MS = 45000;
@@ -142,6 +143,8 @@ async function detachDebugger(params) {
         }
     };
 
+    // The CDP session on this tab is over; a later attach starts clean.
+    await forgetSetup(params.tabId).catch(() => {});
     try {
         await chrome.debugger.detach(target);
         debuggerSessions.delete(params.tabId);
@@ -169,9 +172,18 @@ async function sendDebuggerCommand(params) {
         ? { tabId: params.tabId, sessionId: params.sessionId }
         : { tabId: params.tabId };
 
-    // Ensure debugger is attached
+    // Ensure debugger is attached. Attaching here, not through an explicit
+    // attach_debugger, means this worker lost the attachment (a service-worker
+    // restart): Chrome reset every domain, so the client's setup is replayed
+    // before its command runs, or its session would get no events.
     if (!debuggerSessions.has(params.tabId)) {
         await attachDebugger(params);
+        await replaySetupCommands(params.tabId, (method, setupParams) =>
+            withDebuggerCommandTimeout(
+                chrome.debugger.sendCommand({ tabId: params.tabId }, method, setupParams),
+                method
+            )
+        );
     }
 
     // Clone params to avoid mutating the original
@@ -237,6 +249,13 @@ async function sendDebuggerCommand(params) {
                                  exception.text ||
                                  'JavaScript execution error';
             throw new Error(errorMessage);
+        }
+
+        // Child sessions (iframes) end with the attachment and come back
+        // through the replayed Target.setAutoAttach; only the tab's own
+        // session setup is kept.
+        if (!params.sessionId) {
+            await recordSetupCommand(params.tabId, params.method, commandParams).catch(() => {});
         }
 
         return { result };

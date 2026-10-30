@@ -27,7 +27,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::magician_v2::device_bridge::{
     global_hub, DeviceBridgeHub, DeviceConnectionId, DeviceKey, DeviceSink,
 };
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-fixtures")))]
 use crate::magician_v2::secrets::durable_platform_key_provider;
 
 /// Five minutes is long enough to open App Pilot and scan a code, but short
@@ -50,7 +50,7 @@ const MAX_PAIRED_DEVICES_PER_SCOPE: usize = 64;
 const PAIRING_ROSTER_SCHEMA: &str = "magician.paired-devices.sealed.v2";
 const PAIRING_ROSTER_SEAL_DOMAIN: &[u8] = b"magician.paired-devices.seal.v2\0";
 const PAIRING_ROSTER_KEY_DOMAIN: &[u8] = b"magician.paired-devices.key.v1\0";
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-fixtures")))]
 const PAIRING_ROSTER_KEYCHAIN_SERVICE: &str = "com.magicbeans.magician.paired-devices";
 
 /// The native client the owner intended to enroll. This is captured when the
@@ -197,6 +197,12 @@ pub struct PairedDevice {
     /// gone quiet or one they do not recognise.
     #[serde(default)]
     pub last_seen_ms: Option<i64>,
+    /// The app build this device last said it runs (`X-Magician-App-Version`,
+    /// e.g. `0.4.11 (222)`), shown beside it in Settings → Devices. Diagnostic
+    /// only: never consulted for authorization. `None` until an app that sends
+    /// it connects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
     /// Monotonic even when the current review is revoked. This makes stale UI
     /// writes and pre-rotation approvals fail closed.
     #[serde(default)]
@@ -246,11 +252,11 @@ impl PairingRosterSealOwner {
     fn load(base_root: &Path) -> Result<Self, PairingError> {
         let canonical_root = std::fs::canonicalize(base_root)?;
         let root_bytes = canonical_root.as_os_str().as_encoded_bytes();
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-fixtures")))]
         let mut master_key = durable_platform_key_provider()
             .and_then(|provider| provider.get_or_create_key())
             .map_err(|error| PairingError::SealUnavailable(error.to_string()))?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         let mut master_key = [0x9du8; 32];
         let mut derivation = Hmac::<Sha256>::new_from_slice(&master_key)
             .map_err(|_| PairingError::SealUnavailable("pairing seal key is invalid".to_owned()))?;
@@ -302,7 +308,7 @@ impl PairingRosterSealOwner {
     }
 
     fn generation_high_water(&self) -> Result<PairingRosterGenerationAnchor, PairingError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         {
             let anchors = test_pairing_generation_anchors().lock().map_err(|_| {
                 PairingError::SealUnavailable("test anchor lock poisoned".to_owned())
@@ -319,7 +325,7 @@ impl PairingRosterSealOwner {
                     seal_hex: String::new(),
                 }));
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-fixtures")))]
         {
             let entry = keyring::Entry::new(PAIRING_ROSTER_KEYCHAIN_SERVICE, &self.anchor_account)
                 .map_err(|error| PairingError::SealUnavailable(error.to_string()))?;
@@ -369,7 +375,7 @@ impl PairingRosterSealOwner {
                 "paired device generation did not advance monotonically".to_owned(),
             ));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-fixtures"))]
         {
             test_pairing_generation_anchors()
                 .lock()
@@ -380,7 +386,7 @@ impl PairingRosterSealOwner {
                 );
             return Ok(());
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-fixtures")))]
         {
             keyring::Entry::new(PAIRING_ROSTER_KEYCHAIN_SERVICE, &self.anchor_account)
                 .map_err(|error| PairingError::SealUnavailable(error.to_string()))?
@@ -390,7 +396,7 @@ impl PairingRosterSealOwner {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 fn test_pairing_generation_anchors() -> &'static std::sync::Mutex<HashMap<String, (u64, String)>> {
     static ANCHORS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, (u64, String)>>> =
         std::sync::OnceLock::new();
@@ -423,6 +429,22 @@ pub struct PairedAutomationTarget {
     pub review_generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<DeviceAutomationReview>,
+}
+
+/// The longest app version a device may report; longer values are dropped.
+const MAX_APP_VERSION_LEN: usize = 40;
+
+/// A device-reported app version, kept only when it is short, printable ASCII
+/// of the shape apps send (`0.4.11 (222)`, `0.6.13 (40)`, `0.3.28`). Anything
+/// else is ignored rather than stored or echoed into the owner's Settings.
+fn reported_app_version(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let shaped = !value.is_empty()
+        && value.len() <= MAX_APP_VERSION_LEN
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | ' ' | '(' | ')' | '-' | '+' | '_')
+        });
+    shaped.then(|| value.to_string())
 }
 
 impl PairedDevice {
@@ -1612,6 +1634,7 @@ impl DevicePairingStore {
             capabilities,
             paired_at_ms: now_ms,
             last_seen_ms: None,
+            app_version: None,
             automation_review_generation: rotated_generation,
             automation_review: None,
             automation_identity,
@@ -1646,6 +1669,21 @@ impl DevicePairingStore {
         token: &str,
         now_ms: i64,
     ) -> Result<PairedDevice, PairingError> {
+        self.authenticate_mobile_reporting(device_id, token, None, now_ms)
+            .await
+    }
+
+    /// [`Self::authenticate_mobile`], also recording the app version the
+    /// request reports (`X-Magician-App-Version`). A changed version is written
+    /// at once; an unchanged one rides the throttled presence write.
+    pub async fn authenticate_mobile_reporting(
+        &self,
+        device_id: &str,
+        token: &str,
+        app_version: Option<&str>,
+        now_ms: i64,
+    ) -> Result<PairedDevice, PairingError> {
+        let app_version = app_version.and_then(reported_app_version);
         let device_id = device_id.trim();
         let (matched, changed) = {
             let mut devices = self.devices.write().await;
@@ -1664,7 +1702,11 @@ impl DevicePairingStore {
             if due {
                 device.last_seen_ms = Some(now_ms);
             }
-            (device.clone(), due)
+            let version_changed = app_version.is_some() && device.app_version != app_version;
+            if version_changed {
+                device.app_version = app_version;
+            }
+            (device.clone(), due || version_changed)
         };
         if changed {
             // Presence is diagnostic, not authorization state. A failed write
@@ -2690,6 +2732,7 @@ mod tests {
             ],
             paired_at_ms: 10,
             last_seen_ms: None,
+            app_version: None,
             automation_review_generation: 9,
             automation_review: None,
             automation_identity: None,
@@ -2926,6 +2969,7 @@ mod tests {
                 capabilities: vec![DeviceCapability::MobileClient],
                 paired_at_ms: 1,
                 last_seen_ms: None,
+                app_version: None,
                 automation_review_generation: 1,
                 automation_review: None,
                 automation_identity: None,
@@ -3147,6 +3191,50 @@ mod tests {
             .authenticate_mobile("phone-1", "wrong", 64_000)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_reported_app_version_is_stored_at_once_and_kept_across_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DevicePairingStore::open(temp.path()).await.unwrap();
+        let ticket = store
+            .begin_mobile_enrollment("owner", "default", MobileClientKind::Ios, 1_000)
+            .await
+            .unwrap();
+        let grant = store
+            .exchange_enrollment(
+                &ticket.enrollment_id,
+                &ticket.secret,
+                "iphone-1",
+                "iPhone",
+                2_000,
+            )
+            .await
+            .unwrap();
+
+        let first = store
+            .authenticate_mobile_reporting("iphone-1", &grant.token, Some("0.4.10 (221)"), 3_000)
+            .await
+            .unwrap();
+        assert_eq!(first.app_version.as_deref(), Some("0.4.10 (221)"));
+        // An upgrade inside the presence throttle window is still recorded.
+        let upgraded = store
+            .authenticate_mobile_reporting("iphone-1", &grant.token, Some(" 0.4.11 (222) "), 4_000)
+            .await
+            .unwrap();
+        assert_eq!(upgraded.app_version.as_deref(), Some("0.4.11 (222)"));
+        // Requests without the header, or with junk in it, leave it alone.
+        for reported in [None, Some(""), Some("<script>"), Some(&*"9".repeat(41))] {
+            let unchanged = store
+                .authenticate_mobile_reporting("iphone-1", &grant.token, reported, 5_000)
+                .await
+                .unwrap();
+            assert_eq!(unchanged.app_version.as_deref(), Some("0.4.11 (222)"));
+        }
+
+        let reopened = DevicePairingStore::open(temp.path()).await.unwrap();
+        let listed = reopened.list_mobile("owner", "default").await;
+        assert_eq!(listed[0].app_version.as_deref(), Some("0.4.11 (222)"));
     }
 
     #[tokio::test]

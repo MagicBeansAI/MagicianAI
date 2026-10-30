@@ -36,6 +36,7 @@ impl Pack {
             pack_version: self.version.clone(),
             state,
             questions: self.questions.clone(),
+            assets: Default::default(),
         }
     }
 }
@@ -198,6 +199,9 @@ fn embedded(id: &str, version: &str) -> Option<&'static str> {
         )),
         ("claim_support", "1.0.0") => Some(include_str!(
             "../../data/magician_v2/decision_packs/claim_support/1.0.0.json"
+        )),
+        ("result_delivery", "1.0.0") => Some(include_str!(
+            "../../data/magician_v2/decision_packs/result_delivery/1.0.0.json"
         )),
         ("plan_parameter_priority", "1.1.0") => Some(include_str!(
             "../../data/magician_v2/decision_packs/plan_parameter_priority/1.1.0.json"

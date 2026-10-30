@@ -50,7 +50,12 @@ export interface TaskAskState {
 }
 
 export type TaskAskOutcome =
-	| { ok: true }
+	/**
+	 * `alreadyClosed`: the ask was already answered, expired or drained, so it
+	 * is gone but this answer did not land — a caller holding the reader's
+	 * words gives them back.
+	 */
+	| { ok: true; alreadyClosed?: true }
 	/** The reader dismissed the prompt. Nothing was posted; the ask stays as it was. */
 	| { ok: false; cancelled: true }
 	| { ok: false; cancelled?: false; message: string };
@@ -98,6 +103,7 @@ export function askPromptFrom(
 }
 
 export interface AnswerTaskAskDependencies extends OpenHitlPromptDependencies {
+	startPlanRun?: typeof startRunAfterPlanApproval;
 	/** The first post, when the reader answered in place. Injected for its own test. */
 	post?: typeof postHitlResponse;
 	/** Every later prompt, including a re-ask. Injected for its own test. */
@@ -138,7 +144,7 @@ export async function answerTaskAsk(
 	dependencies: AnswerTaskAskDependencies = {},
 	options: { cancel?: boolean } = {}
 ): Promise<TaskAskOutcome> {
-	const { post = postHitlResponse, prompt = respondToHitl, ...openDependencies } = dependencies;
+	const { post = postHitlResponse, prompt = respondToHitl, startPlanRun = startRunAfterPlanApproval, ...openDependencies } = dependencies;
 
 	// **Filled only where absent.** A target that names a scope keeps it, so
 	// `openHitlPrompt`'s "this belongs to another principal" guard still fires;
@@ -189,8 +195,8 @@ export async function answerTaskAsk(
 	});
 
 	if (outcome.status === 'resolved') {
-		if (usedInline) await startRunAfterPlanApproval(inlineRequest, result);
-		return { ok: true };
+		if (usedInline && !outcome.alreadyClosed) await startPlanRun(inlineRequest, result);
+		return outcome.alreadyClosed ? { ok: true, alreadyClosed: true } : { ok: true };
 	}
 	if (outcome.status === 'cancelled') return { ok: false, cancelled: true };
 	if (outcome.status === 'stale') {

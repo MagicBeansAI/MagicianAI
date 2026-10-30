@@ -126,6 +126,7 @@ final class TaskCapabilitiesTests: XCTestCase {
         XCTAssertEqual(TaskCapabilities.defaultOpenAct(state: .failed, acts: all, attention: nil), .run)
         XCTAssertEqual(TaskCapabilities.defaultOpenAct(state: .cancelled, acts: all, attention: nil), .run)
         XCTAssertEqual(TaskCapabilities.defaultOpenAct(state: .archived, acts: all, attention: nil), .output)
+        XCTAssertEqual(TaskCapabilities.defaultOpenAct(state: .finalizing, acts: all, attention: nil), .output)
         XCTAssertEqual(TaskCapabilities.defaultOpenAct(state: .finished, acts: all, attention: nil), .output)
     }
 

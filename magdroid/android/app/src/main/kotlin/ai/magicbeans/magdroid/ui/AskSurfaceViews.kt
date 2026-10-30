@@ -11,20 +11,26 @@ import ai.magicbeans.magdroid.chat.HitlResponseValue
 import ai.magicbeans.magdroid.tasks.PlanApprovalChoice
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -39,6 +45,25 @@ import androidx.lifecycle.repeatOnLifecycle
 
 internal const val ASK_SHEET_DOCK = "dock"
 internal const val ASK_SHEET_TASK = "task"
+
+/** Keep the full content reachable without letting it displace the other region. */
+@Composable
+internal fun AskScrollableSection(
+    requestKey: String,
+    maxHeight: Dp,
+    tag: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    key(requestKey) {
+        Column(
+            modifier.fillMaxWidth().heightIn(max = maxHeight)
+                .verticalScroll(rememberScrollState()).testTag(tag),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            content = content,
+        )
+    }
+}
 
 /** Keep [viewModel]'s asks live while the calling screen is RESUMED. */
 @Composable
@@ -167,16 +192,20 @@ internal fun TaskAsksCard(
                 border = androidx.compose.foundation.BorderStroke(1.dp, MWarn.copy(alpha = 0.45f)),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.heightIn(max = 480.dp).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            if (asks.size > 1) "Waiting on you · ${index + 1} of ${asks.size}" else "Waiting on you",
-                            color = MWarn, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                        )
-                        request.fromLabel?.let { Text(it, color = Secondary, fontSize = 11.sp) }
-                        Spacer(Modifier.weight(1f))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (asks.size > 1) "Waiting on you · ${index + 1} of ${asks.size}" else "Waiting on you",
+                                color = MWarn, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                            )
+                            request.fromLabel?.let { Text(it, color = Secondary, fontSize = 11.sp, maxLines = 1) }
+                        }
+                        StackChip("Review", onClick = { viewModel.openSheet(item, ASK_SHEET_TASK) })
                     }
-                    Text(request.prompt, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    AskScrollableSection(item.askKey, 160.dp, "task-ask-prompt") {
+                        Text(request.headline, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
                     InlineAskAnswer(
                         item = item,
                         state = state,
@@ -187,6 +216,9 @@ internal fun TaskAsksCard(
                         onOpenSheet = { viewModel.openSheet(it, ASK_SHEET_TASK) },
                         onReviewPlan = onReviewPlan,
                         onOpenReview = onOpenReview,
+                        modifier = if (request.isGodMode) Modifier.fillMaxWidth().weight(1f, fill = false)
+                            else Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 280.dp)
+                                .verticalScroll(rememberScrollState()),
                     )
                 }
             }

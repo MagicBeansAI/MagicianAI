@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { contextPreparationRow } from './contextPreparation';
+	import { llmStepUsageParts } from './llmStepUsage';
 	import { loadTaskUsageSnapshot, taskUsage, type TaskUsageTotal } from '$lib/magician/chat/next/taskUsage';
 	import { formatUsd, spokenUsd } from '$lib/magician/tasks/taskTimeline';
 	/**
@@ -51,7 +53,14 @@
 		type PathSize,
 	} from '$lib/magician/links/pathActions';
 	import { deriveTaskBackedInspectTarget } from './requestActivityInspection';
-	import { answeredModelLabel, requestedModelLabel } from './llmModelLabel';
+	import {
+		answeredModelLabel,
+		llmCallIdOf,
+		requestedModelLabel,
+		routedModelLabel,
+		THINKING_LABEL
+	} from './llmModelLabel';
+	import { liveClock, runningElapsed } from '$lib/magician/chat/next/liveClock';
 	import { tutorOverlayTransitionForEvent } from './tutorOverlayLifecycle';
 	import {
 		parseCompleteResultOwner,
@@ -124,6 +133,10 @@
 		absolutePath: string;
 		label: string;
 	}
+
+	/** Label suffix of a `task::<id>` row whose work finished but whose final
+	 *  answer (`synthesis_pending`) is still being written. */
+	const SYNTHESIS_LABEL_SUFFIX = ' preparing final result';
 
 	interface Leaf {
 		key: string;
@@ -360,6 +373,21 @@
 	let unsubscribe: (() => void) | null = null;
 	let subscribedKey: string | null = null;
 	let initialFetchedKey: string | null = null;
+	let historyVisible = false;
+	function observeHistoryVisibility(node: HTMLElement) {
+		if (typeof IntersectionObserver === 'undefined') {
+			historyVisible = true;
+			return;
+		}
+		const observer = new IntersectionObserver(entries => {
+			if (entries.some(entry => entry.isIntersecting)) {
+				historyVisible = true;
+				observer.disconnect();
+			}
+		}, { root: node.closest('.chat-messages-area'), rootMargin: '400px 0px' });
+		observer.observe(node);
+		return { destroy: () => observer.disconnect() };
+	}
 	/**
 	 * Inline expand/collapse. Default = `live` so an in-flight turn
 	 * pops open immediately (the user wants to watch it work), and a
@@ -430,9 +458,11 @@
 		);
 	}
 
-	// Historical cards: one-shot REST fetch on first valid scope+turnId.
-	// Caches per turnId so re-mounts don't re-fetch.
-	$: maybeFetchInitialPage(scope?.principal, scope?.workspace, chatTurnId);
+	// Opening a long transcript must not read every old turn's event file.
+	// Fetch historical activity near the viewport or on an explicit open.
+	$: if (!keepTailing && (historyVisible || expanded || modalOpen)) {
+		maybeFetchInitialPage(scope?.principal, scope?.workspace, chatTurnId);
+	}
 
 	function maybeSubscribe(
 		principal: string | undefined | null,
@@ -444,6 +474,8 @@
 		if (key === subscribedKey) return;
 		unsubscribe?.();
 		subscribedKey = key;
+		// The shared live subscription already performs the initial REST read.
+		initialFetchedKey = key;
 		unsubscribe = subscribeToChatTurn(
 			{ principal, workspace },
 			sessionId,
@@ -463,7 +495,7 @@
 		const key = `${principal}::${workspace}::${sessionId}::${turnId}`;
 		if (key === initialFetchedKey) return;
 		initialFetchedKey = key;
-		// Per-chat-turn endpoint returns the full event log in one
+		// Per-chat-turn endpoint returns a bounded tail in one
 		// response — no pagination cursor. Refresh and the live SSE
 		// tail both consume the same projection from the sink, so the
 		// initial fetch is the only REST call this card ever makes.
@@ -514,12 +546,17 @@
 	// calls are added from the task usage store — every one of them, always:
 	// the card loads each task's stored usage itself rather than relying on
 	// that task's live card being on screen.
-	$: spawnedTaskIds = spawnedTaskIdsOf(rawEvents);
+	$: spawnedTaskIds = controlTaskId?.trim() ? [controlTaskId.trim()] : spawnedTaskIdsOf(rawEvents);
 	$: for (const taskId of spawnedTaskIds) {
 		const scope = get(scopeIdentityStore);
 		void loadTaskUsageSnapshot(taskId, scope.principal, scope.workspace, live ? 'turn-live' : 'turn');
 	}
-	$: cacheSummary = withSpawnedTaskUsage(turnSummary, spawnedTaskIds, $taskUsage);
+	// A task-status card is a task projection, not a chat turn. In particular,
+	// unscoped judge rows in its tail must not become a second "own" call.
+	$: cacheSummary = withSpawnedTaskUsage(controlTaskId ? null : turnSummary, spawnedTaskIds, $taskUsage);
+	$: taskProgress = controlTaskId ? $taskUsage.get(controlTaskId) : undefined;
+	$: recordedActivityCount = taskProgress && (!controlExecutionId || taskProgress.executionId === controlExecutionId)
+		? taskProgress.activityCount : null;
 	// Deep-work panel target = the durable delegated task execution this card is
 	// showing. Inline chat/Tutor/Thinking Map calls stamp their chat-turn id as an
 	// execution_id for telemetry, but have no task-backed execution panel; both
@@ -527,15 +564,9 @@
 	$: inspectTarget = controlExecutionId?.trim() && controlTaskId?.trim()
 		? { taskId: controlTaskId.trim(), executionId: controlExecutionId.trim() }
 		: deriveInspectTarget(rawEvents);
-	/**
-	 * Header count = the number of rendered rows (leaves), NOT the raw
-	 * event count. A "hi" turn produces ~7 raw events but renders as 2
-	 * rows (one LLM call + one reasoning), so a raw-count badge ("7
-	 * events") felt misleading next to "2 visible rows" — the user
-	 * couldn't account for the missing 5. Tying the badge to `leaves`
-	 * makes the number self-consistent with what's on screen.
-	 */
-	$: totalEvents = leaves.length;
+	// Task progress uses the full, call-coalesced execution history, which
+	// survives a bounded chat-tail replay, a remount and a resumed run.
+	$: totalEvents = recordedActivityCount ?? leaves.length;
 	$: inlineLeaves = leaves.slice(-MAX_INLINE_ROWS);
 	$: hiddenCount = Math.max(0, leaves.length - inlineLeaves.length);
 	/** Tree-view inline summary: one synthetic row per agent showing
@@ -544,6 +575,11 @@
 	 *  the cap fold into a "+N more agents" row. */
 	$: inlineAgentSummary = buildAgentSummary(leaves);
 	$: anyRunning = leaves.some((l) => l.status === 'running');
+	/** The shared 1 s clock, held only while a row is running: each running
+	 *  row shows how long it has been running, and settling stops it. */
+	let now = Date.now();
+	const clock = liveClock((tick) => (now = tick));
+	$: clock.sync(anyRunning);
 	/** "Complete" = the request has emitted at least one event, nothing
 	 *  is currently running, and the card is no longer subscribed live.
 	 *  Used to flip the embedded card's accent border from "still
@@ -718,18 +754,7 @@
 	 * `cost_usd` on chat calls and `cost` on task-run calls.
 	 */
 	function llmUsageSuffix(payload: Record<string, unknown> | undefined): string {
-		if (!payload) return '';
-		const input = numberOrNull(payload.input_tokens);
-		const output = numberOrNull(payload.output_tokens);
-		const tokens = input === null && output === null ? null : (input ?? 0) + (output ?? 0);
-		const cost = formatUsd(numberOrNull(payload.cost_usd) ?? numberOrNull(payload.cost));
-		return [
-			tokens !== null && tokens > 0 ? `${formatTokenCount(tokens)} tok` : null,
-			cost
-		]
-			.filter((part): part is string => part !== null)
-			.map((part) => ` · ${part}`)
-			.join('');
+		return llmStepUsageParts(payload).map((part) => ` · ${part}`).join('');
 	}
 
 	/** A step detail with its usage appended; `null` when there is neither. */
@@ -787,6 +812,7 @@
 	): CacheSummary | null {
 		if (taskIds.length === 0) return summary;
 		const tasks = taskIds.map((id) => usageByTask.get(id)).filter((u): u is TaskUsageTotal => !!u);
+		if (!summary && tasks.every((usage) => usage.calls === 0)) return null;
 		const base: CacheSummary = summary ?? {
 			inputTokens: 0,
 			cachedTokens: 0,
@@ -811,6 +837,7 @@
 			outputTokens: base.outputTokens + taskTokens,
 			callCount: calls,
 			costUsd,
+			tokensReported: summary !== null || tasks.some((usage) => usage.tokensReported),
 			// Every task the turn started counts, priced or not yet.
 			spawnedTasks: taskIds.length,
 		};
@@ -871,8 +898,12 @@
 			}
 		}
 
+		// llm_call_id → the leaf key that call's row lives under, so every copy
+		// of one call (the chat-side `llm.*`, the typed `LLMRequestSent` /
+		// `LLMRouted` / `LLMResponseReceived`) lands on one row.
+		const llmKeyByCallId = new Map<string, string>();
 		for (const parsed of events) {
-			applyEvent(parsed, upsert, patch, byKey);
+			applyEvent(parsed, upsert, patch, byKey, llmKeyByCallId);
 		}
 
 		// A task row the event tail left running settles from the task's
@@ -1029,11 +1060,11 @@
 		// actions map onto the `tool.call.*` branch: the start opens a running
 		// row the moment the action begins, and the executed event settles the
 		// same row through their shared `call_id` (see
-		// `agenticActionAsToolEvent`). LLM calls do NOT (they share no per-call
-		// id — `step_index` is null, `step_id`/`capability` are constant across
-		// iterations), so they get a dedicated, timestamp-keyed branch in
-		// `applyEvent`. Both typed events carry no `agent_id`, so both
-		// normalise to the same agent key ('system') below.
+		// `agenticActionAsToolEvent`). LLM calls get a dedicated branch in
+		// `applyEvent`, paired by `correlation.llm_call_id` (request → routed →
+		// response on one row); a server predating that id falls back to a
+		// timestamp-keyed row per response. The typed events carry no
+		// `agent_id`, so they normalise to the same agent key ('system') below.
 		const agentic = agenticActionAsToolEvent(outerType, payload);
 		if (agentic) {
 			eventType = agentic.eventType;
@@ -1111,14 +1142,79 @@
 		}
 	}
 
+	/**
+	 * The row key for a chat-side `llm.*` event. Without an `llm_call_id` it is
+	 * the trace/iteration key, as it always was. With one, every copy of that
+	 * call shares a row: a `requested` that names the id opens the row under
+	 * it, and a later event follows the row the id already points at. One
+	 * repair: when an id-less `requested` opened the trace row and a typed copy
+	 * of the same call opened a second row before this settle named the id,
+	 * the typed row is folded away and the trace row (the one the chat's own
+	 * events keep patching) is that call's single row.
+	 */
+	function resolveChatLlmKey(
+		evt: ParsedEvent,
+		traceKey: string,
+		leafByKey: Map<string, Leaf>,
+		llmKeyByCallId: Map<string, string>
+	): string {
+		const callId = llmCallIdOf(evt.payload);
+		if (!callId) return traceKey;
+		const aliased = llmKeyByCallId.get(callId);
+		let key: string;
+		if (evt.eventType === 'llm.requested') {
+			key = aliased ?? `${evt.agentId}::llm::call::${callId}`;
+		} else if (aliased && aliased !== traceKey && leafByKey.get(traceKey)?.status === 'running') {
+			leafByKey.delete(aliased);
+			key = traceKey;
+		} else {
+			key = aliased ?? traceKey;
+		}
+		// Only a key that holds (or is about to hold) this call's row: a
+		// settle that patches nothing must not send the typed copy onto a
+		// shared fallback key (`llm`) another call's row may own.
+		if (evt.eventType === 'llm.requested' || evt.eventType === 'llm.failed' || leafByKey.has(key)) {
+			llmKeyByCallId.set(callId, key);
+		}
+		return key;
+	}
+
+	/**
+	 * The model a settled chat-side `llm.*` event names, or `null` to keep the
+	 * running label. A row still reading "Thinking…" (opened by the typed
+	 * request copy, never routed) takes the capability rather than settle
+	 * nameless.
+	 */
+	function settledModelLabel(
+		payload: Record<string, unknown>,
+		existing: Leaf | undefined
+	): string | null {
+		const answered = answeredModelLabel(payload);
+		if (answered) return answered;
+		return existing?.label === THINKING_LABEL ? requestedModelLabel(payload) : null;
+	}
+
 	function applyEvent(
 		parsed: RawTurnEvent,
 		upsertLeaf: (leaf: Leaf) => void,
 		patchLeaf: (key: string, patch: Partial<Leaf>) => void,
-		leafByKey: Map<string, Leaf>
+		leafByKey: Map<string, Leaf>,
+		llmKeyByCallId: Map<string, string> = new Map()
 	) {
 		const evt = parseEvent(parsed);
 		if (!evt) return;
+		const preparation = contextPreparationRow(evt.eventType, evt.payload);
+		if (preparation) {
+			const existing = leafByKey.get(preparation.key);
+			if (preparation.status === 'running' && existing) {
+				// A running phase may report progress (k/N); a finished one keeps its result.
+				if (existing.status === 'running') patchLeaf(preparation.key, { label: preparation.label, detail: preparation.detail });
+				return;
+			}
+			upsertLeaf({ ...preparation, kind: 'lifecycle', agentId: evt.agentId,
+				startedAt: existing?.startedAt ?? evt.ts, fullText: null, files: [] });
+			return;
+		}
 
 		if (evt.eventType.startsWith('tutor.')) {
 			const runId = (evt.payload?.run_id as string | undefined) ?? 'active';
@@ -1459,31 +1555,102 @@
 			return;
 		}
 
-		// Flat-loop LLM call (typed `LLMResponseReceived`). Rendered as a
-		// self-contained row keyed by timestamp: the typed LLM events carry
-		// no per-call id to pair request↔response or coalesce by, so each
-		// completed call is its own row. `LLMRequestSent` is skipped — the
-		// response already carries capability + outcome + latency.
-		if (evt.eventType === 'LLMResponseReceived') {
-			// The model that answered beats the capability name.
-			const cap = answeredModelLabel(evt.payload) ?? requestedModelLabel(evt.payload);
+		// Flat-loop LLM call, as TYPED transport events. `LLMRequestSent` opens
+		// a running row the moment the call is sent ("Thinking…": it names
+		// only the capability), `LLMRouted` names the model the router chose
+		// (again on a fallback re-route), and `LLMResponseReceived` settles
+		// the SAME row with outcome, model and latency. All three share
+		// `correlation.llm_call_id`. A server predating that id sends none on
+		// the request, so the request is skipped and the response is its own
+		// timestamp-keyed row, as before.
+		if (
+			evt.eventType === 'LLMRequestSent' ||
+			evt.eventType === 'LLMRouted' ||
+			evt.eventType === 'LLMResponseReceived'
+		) {
+			const callId = llmCallIdOf(evt.payload);
+			const key = callId
+				? (llmKeyByCallId.get(callId) ?? `${evt.agentId}::llm::call::${callId}`)
+				: null;
+			if (callId && key) llmKeyByCallId.set(callId, key);
+			const existing = key ? leafByKey.get(key) : undefined;
+			if (evt.eventType === 'LLMRequestSent') {
+				// Upsert-if-missing: a late request must not reopen a row its
+				// response (or a chat-side copy) already settled.
+				if (!key || existing) return;
+				upsertLeaf({
+					key,
+					kind: 'llm',
+					agentId: evt.agentId,
+					label: THINKING_LABEL,
+					fullText: null,
+					detail: null,
+					status: 'running',
+					startedAt: evt.ts,
+					durationMs: null,
+					files: []
+				});
+				return;
+			}
+			if (evt.eventType === 'LLMRouted') {
+				const model = routedModelLabel(evt.payload);
+				if (!key || !model) return;
+				if (!existing) {
+					upsertLeaf({
+						key,
+						kind: 'llm',
+						agentId: evt.agentId,
+						label: `Thinking with ${model}`,
+						fullText: null,
+						detail: null,
+						status: 'running',
+						startedAt: evt.ts,
+						durationMs: null,
+						files: []
+					});
+				} else if (existing.status === 'running') {
+					// A route that lands after the response must not relabel the
+					// settled row: the answering model is the truer name.
+					patchLeaf(key, { label: `Thinking with ${model}` });
+				}
+				return;
+			}
+			// LLMResponseReceived. A row a chat-side `llm.succeeded` /
+			// `llm.failed` copy of the same call already settled keeps what
+			// that event wrote (it carries the TTFT and usage this one lacks).
+			if (existing && existing.status !== 'running') return;
+			const answered = answeredModelLabel(evt.payload);
 			const ok = evt.payload?.success !== false;
 			const ms = evt.payload?.latency_ms as number | undefined;
 			const summary =
 				(evt.payload?.decision_summary as string | undefined) ||
 				(evt.payload?.error as string | undefined) ||
 				null;
+			// The model that answered beats the routed one, which beats the
+			// capability name.
+			const label = answered
+				? `Thinking with ${answered}`
+				: existing && existing.label !== THINKING_LABEL
+					? existing.label
+					: `Thinking with ${requestedModelLabel(evt.payload)}`;
+			const settled = {
+				label,
+				fullText: summary,
+				detail: withUsage(typeof ms === 'number' ? `${Math.round(ms)}ms` : null, llmUsageSuffix(evt.payload)),
+				status: (ok ? 'done' : 'failed') as EventStatus,
+				durationMs: ms ?? null
+			};
+			if (key && existing) {
+				patchLeaf(key, settled);
+				return;
+			}
 			upsertLeaf({
-				key: `${evt.agentId}::llm::${evt.ts}`,
+				key: key ?? `${evt.agentId}::llm::${evt.ts}`,
 				kind: 'llm',
 				agentId: evt.agentId,
-				label: `Thinking with ${cap}`,
-				fullText: summary,
-				detail: typeof ms === 'number' ? `${Math.round(ms)}ms` : null,
-				status: ok ? 'done' : 'failed',
 				startedAt: evt.ts,
-				durationMs: ms ?? null,
-				files: []
+				files: [],
+				...settled
 			});
 			return;
 		}
@@ -1494,15 +1661,24 @@
 				evt.traceId ??
 				(evt.payload?.iteration as number | undefined)?.toString() ??
 				'llm';
-			const key = `${evt.agentId}::llm::${tracePart}`;
+			const traceKey = `${evt.agentId}::llm::${tracePart}`;
+			const key = resolveChatLlmKey(evt, traceKey, leafByKey, llmKeyByCallId);
 			if (evt.eventType === 'llm.requested') {
 				// `requested` is upsert-if-missing — same out-of-order
 				// reasoning as the reasoning.start guard above. A late
 				// `requested` arriving after `succeeded` would otherwise
 				// flip the leaf from "Done" back to "running" and lose
 				// the duration detail patched by `succeeded`.
-				if (leafByKey.has(key)) return;
 				const model = requestedModelLabel(evt.payload);
+				const existing = leafByKey.get(key);
+				if (existing) {
+					// The typed `LLMRequestSent` copy opened it as "Thinking…";
+					// this event names the model asked for.
+					if (existing.status === 'running' && existing.label === THINKING_LABEL) {
+						patchLeaf(key, { label: `Thinking with ${model}` });
+					}
+					return;
+				}
 				upsertLeaf({
 					key,
 					kind: 'llm',
@@ -1545,7 +1721,7 @@
 				// when the settled event names a model the label takes it.
 				// Retaining the leaf ensures simple LLM-only turns still
 				// surface at least one activity row after page reload.
-				const answered = answeredModelLabel(evt.payload);
+				const answered = settledModelLabel(evt.payload, leafByKey.get(key));
 				patchLeaf(key, {
 					...(answered ? { label: `Thinking with ${answered}` } : {}),
 					status: 'done',
@@ -1562,7 +1738,7 @@
 			}
 			if (evt.eventType === 'llm.failed') {
 				const err = (evt.payload?.error as string | undefined) ?? 'error';
-				const answered = answeredModelLabel(evt.payload);
+				const answered = settledModelLabel(evt.payload, leafByKey.get(key));
 				const model = answered ?? requestedModelLabel(evt.payload);
 				// Upsert-if-missing — a failure that arrives without a
 				// preceding `requested` (event reordering, or a chat
@@ -1869,7 +2045,12 @@
 				(evt.payload?.display_label as string | undefined)?.trim() || targetAgent;
 			const status = (evt.payload?.status as string | undefined) ?? 'running';
 			const summary = (evt.payload?.summary as string | undefined) ?? null;
-			const synthesisPending = evt.payload?.synthesis_pending === true;
+			// A cancelled run abandons its synthesis, so a flag that arrives with
+			// it is stale and must not keep the row spinning.
+			const synthesisPending =
+				evt.payload?.synthesis_pending === true &&
+				evt.payload?.status !== 'cancelled' &&
+				evt.payload?.status !== 'canceled';
 			const partial = evt.payload?.completion_kind === 'partial';
 			const key = `task::${taskId}`;
 			const leafStatus: EventStatus =
@@ -1882,7 +2063,7 @@
 					: 'running';
 			const label =
 				synthesisPending
-					? `${displayLabel} preparing final result`
+					? `${displayLabel}${SYNTHESIS_LABEL_SUFFIX}`
 					: leafStatus === 'done'
 					? `${displayLabel} ${partial ? 'partially completed' : 'completed'}`
 					: leafStatus === 'failed'
@@ -1906,9 +2087,16 @@
 					files: extractFiles(evt.payload),
 				});
 			} else {
+				// The row first appears when the work starts, so its clock would
+				// count the whole run. The moment the synthesis flag flips it
+				// restarts, so the timer shows how long the final answer has
+				// taken. A repeated flagged event keeps the restarted clock.
+				const synthesisStarted =
+					synthesisPending && !existing.label.endsWith(SYNTHESIS_LABEL_SUFFIX);
 				patchLeaf(key, {
 					label,
 					status: leafStatus,
+					...(synthesisStarted ? { startedAt: evt.ts } : {}),
 					fullText: fullText ?? existing.fullText,
 					files:
 						extractFiles(evt.payload).length > 0
@@ -2159,10 +2347,17 @@
 		unsubscribe?.();
 		unsubscribe = null;
 		subscribedKey = null;
+		clock.stop();
 	});
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
+
+{#if !historyVisible && !live}
+	<!-- Embedded strips are hidden until activity arrives. Observe a layout-
+	     neutral marker independently, so that hiding cannot prevent their read. -->
+	<div class="activity-viewport-marker" use:observeHistoryVisibility aria-hidden="true"></div>
+{/if}
 
 {#if !embedded || live || leaves.length > 0}
 <!-- When the card is embedded inside an assistant bubble and the turn
@@ -2191,7 +2386,7 @@
 	>
 		<span class="request-activity__caret" aria-hidden="true">▸</span>
 		<span class="request-activity__title">Steps</span>
-		<span class="request-activity__count">
+		<span class="request-activity__count" title={recordedActivityCount !== null ? "Recorded run activity; recent rows shown below" : undefined}>
 			{totalEvents}
 			{#if live || anyRunning}
 				<!-- Working spinner: show whenever the card is live-tailing
@@ -2216,15 +2411,15 @@
 				class="request-activity__cache"
 				class:request-activity__cache--warm={cacheSummary.hitPct !== null && cacheSummary.hitPct >= 50}
 				class:request-activity__cache--cold={cacheSummary.hitPct !== null && cacheSummary.hitPct < 10}
-				title={`${cacheSummary.callCount} model call${cacheSummary.callCount === 1 ? '' : 's'}: ${cacheSummary.inputTokens.toLocaleString()} input + ${cacheSummary.outputTokens.toLocaleString()} output tokens${turnCost ? `, ${turnCost}` : ''}${cacheSummary.spawnedTasks ? `, including ${cacheSummary.spawnedTasks} task${cacheSummary.spawnedTasks === 1 ? '' : 's'} this turn started (run and planning)` : ''}. Prompt cache: ${cacheSummary.cachedTokens.toLocaleString()} input tokens served from cache. Cache writes: ${cacheSummary.cacheCreationTokens?.toLocaleString() ?? 'not reported'}.`}
-				aria-label={`${cacheSummary.callCount} model calls, ${turnTokens} tokens${turnCost ? `, ${spokenUsd(cacheSummary.costUsd)}` : ''}`}
+				title={`${cacheSummary.callCount} model call${cacheSummary.callCount === 1 ? '' : 's'}: ${cacheSummary.tokensReported === false ? 'tokens unavailable' : cacheSummary.spawnedTasks ? `${turnTokens.toLocaleString()} total tokens` : `${cacheSummary.inputTokens.toLocaleString()} input + ${cacheSummary.outputTokens.toLocaleString()} output tokens`}${turnCost ? `, ${turnCost}` : ''}${controlTaskId ? ', task run and planning' : cacheSummary.spawnedTasks ? `, including ${cacheSummary.spawnedTasks} task${cacheSummary.spawnedTasks === 1 ? '' : 's'} this turn started (run and planning)` : ''}.${cacheSummary.hitPct !== null ? ` Prompt cache: ${cacheSummary.cachedTokens.toLocaleString()} input tokens served from cache. Cache writes: ${cacheSummary.cacheCreationTokens?.toLocaleString() ?? 'not reported'}.` : ''}`}
+				aria-label={`${cacheSummary.callCount} model calls, ${cacheSummary.tokensReported === false ? 'tokens unavailable' : `${turnTokens} tokens`}${turnCost ? `, ${spokenUsd(cacheSummary.costUsd)}` : ''}`}
 			>
 				{#if cacheSummary.hitPct !== null}
 					<span class="request-activity__cache-pct">{cacheSummary.hitPct.toFixed(0)}%</span>
 					<span class="request-activity__cache-label">cached ·</span>
 				{/if}
 				<span class="request-activity__cache-detail"
-					>{cacheSummary.callCount} call{cacheSummary.callCount === 1 ? '' : 's'} · {formatTokenCount(turnTokens)} tok{turnCost ? ` · ${turnCost}` : ''}{cacheSummary.spawnedTasks ? ` · incl. ${cacheSummary.spawnedTasks} task${cacheSummary.spawnedTasks === 1 ? '' : 's'}` : ''}</span
+					>{cacheSummary.callCount} call{cacheSummary.callCount === 1 ? '' : 's'} · {cacheSummary.tokensReported === false ? 'tokens unavailable' : `${formatTokenCount(turnTokens)} tok`}{turnCost ? ` · ${turnCost}` : ''}{cacheSummary.spawnedTasks && !controlTaskId ? ` · incl. ${cacheSummary.spawnedTasks} task${cacheSummary.spawnedTasks === 1 ? '' : 's'}` : ''}</span
 				>
 			</span>
 		{/if}
@@ -2345,6 +2540,9 @@
 							Open full result
 						</button>
 					{/if}
+					{#if leaf.status === 'running' && runningElapsed(leaf.startedAt, now)}
+						<span class="request-activity__row-elapsed">{runningElapsed(leaf.startedAt, now)}</span>
+					{/if}
 					{#if leaf.detail}
 						<span class="request-activity__row-detail">{leaf.detail}</span>
 					{/if}
@@ -2376,7 +2574,7 @@
 			on:click|stopPropagation
 		>
 			<div class="request-activity-modal__head">
-				<span class="request-activity-modal__title">Activity · {totalEvents} events</span>
+				<span class="request-activity-modal__title">Activity · {leaves.length} events</span>
 				<div class="request-activity-modal__view-toggle" role="group" aria-label="View">
 					<button
 						type="button"
@@ -2466,6 +2664,11 @@
 											{#if leaf.fullText && leaf.fullText.length > leaf.label.length && leaf.kind !== 'file'}
 												<div class="request-activity-modal__row-full">{leaf.fullText}</div>
 											{/if}
+											{#if leaf.status === 'running' && runningElapsed(leaf.startedAt, now)}
+												<div class="request-activity-modal__row-elapsed">
+													running {runningElapsed(leaf.startedAt, now)}
+												</div>
+											{/if}
 											{#if leaf.detail}
 												<div class="request-activity-modal__row-detail">{leaf.detail}</div>
 											{/if}
@@ -2528,6 +2731,11 @@
 									{#if leaf.fullText && leaf.fullText.length > leaf.label.length && leaf.kind !== 'file'}
 										<div class="request-activity-modal__row-full">{leaf.fullText}</div>
 									{/if}
+									{#if leaf.status === 'running' && runningElapsed(leaf.startedAt, now)}
+										<div class="request-activity-modal__row-elapsed">
+											running {runningElapsed(leaf.startedAt, now)}
+										</div>
+									{/if}
 									{#if leaf.detail}
 										<div class="request-activity-modal__row-detail">{leaf.detail}</div>
 									{/if}
@@ -2573,6 +2781,7 @@
 {/if}
 
 <style>
+	.activity-viewport-marker { height: 1px; margin-bottom: -1px; pointer-events: none; }
 	/* All colors / borders here go through the project's design tokens
 	 * (`--bg-*`, `--text-*`, `--border-*`, `--accent-secondary`,
 	 * `--color-success/error/warning/info`) defined in `app.css` for
@@ -2656,6 +2865,18 @@
 	}
 	.request-activity__header:hover .request-activity__title {
 		opacity: 1;
+	}
+	/* One line: the header's parts never wrap their own text. When the row
+	 * is short of room only the usage detail gives way, cut with an ellipsis
+	 * (its full numbers stay in the chip's title). */
+	.request-activity__header > * {
+		flex: 0 0 auto;
+		white-space: nowrap;
+	}
+	.request-activity__header > .request-activity__cache {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
 	}
 	/* The disclosure caret rotates 90° when expanded — same visual
 	 * grammar as a native `<details>` triangle. Tiny + muted so the
@@ -2753,6 +2974,9 @@
 	.request-activity__cache-detail {
 		opacity: 0.55;
 		font-family: var(--font-mono, monospace);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	/* "Show all" pushed to the far right of the header. Renders as a
 	 * subtle link-style affordance — no bg/border so it doesn't compete
@@ -2785,7 +3009,8 @@
 		color: var(--color-error, #d23a3a);
 		background: transparent;
 		border: 1px solid color-mix(in srgb, var(--color-error, #d23a3a) 40%, transparent);
-		border-radius: var(--radius-full, 999px);
+		/* Same rounded square as the Inspect chip beside it. */
+		border-radius: var(--radius-chip);
 		padding: 0.05rem 0.5rem;
 		cursor: pointer;
 		white-space: nowrap;
@@ -2845,6 +3070,15 @@
 	.request-activity__row-agent {
 		opacity: 0.55;
 		font-size: 0.9em;
+	}
+	/* A running row's live elapsed: tabular digits so the tick holds still. */
+	.request-activity__row-elapsed,
+	.request-activity-modal__row-elapsed {
+		flex: 0 0 auto;
+		opacity: 0.55;
+		font-size: 0.85em;
+		font-family: var(--font-mono, monospace);
+		font-variant-numeric: tabular-nums;
 	}
 	.request-activity__row-detail {
 		flex: 0 0 auto;

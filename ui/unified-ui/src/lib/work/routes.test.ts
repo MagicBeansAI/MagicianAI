@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { legacyTasksWorkHref, legacyRelentlessWorkHref, resolveWorkView, taskQualityHref, workQualityHref, workReturnHref, workTaskHref, workAgentHref, workSelectionKey, workCrewEditorHref, workCrewRulesHref, workMemoryTierHref } from './routes';
-import { canonicalWorkHref, resolvedWorkTaskHref, isTaskSelectionHref } from './routes';
+import { canonicalWorkHref, resolvedWorkTaskHref, isTaskSelectionHref, workViewHref } from './routes';
 
 describe('Work navigation compatibility', () => {
 	it.each(['task', 'run', 'proposal', 'campaign'])('reloads Quality when its %s deep-link target changes', key => {
@@ -34,6 +34,10 @@ describe('Work navigation compatibility', () => {
 	});
 	it('falls back to All work for an unknown view without choosing a specialist destination', () => {
 		expect(resolveWorkView(new URLSearchParams('view=unknown'))).toBe('all');
+	});
+	it('opens Goals as its own Work view', () => {
+		expect(resolveWorkView(new URLSearchParams('view=goals'))).toBe('goals');
+		expect(workViewHref('goals')).toBe('/work?view=goals');
 	});
 	it('returns from quality to the original selected task and deep inspector', () => {
 		const origin = new URL('https://work.invalid/work?selected=task%2F1&plan=open&filter=running');
@@ -113,6 +117,10 @@ it('resolves untyped Today task links while keeping their exact execution and pl
 });
 
 it.each([
+ ['/tasks/task-one', '/work?selected=task-one'],
+ ['/tasks/task%2Fone/?execution_id=run%2Ftwo&plan=open&tag=a&tag=b#output', '/work?execution_id=run%2Ftwo&plan=open&tag=a&tag=b&selected=task%2Fone#output'],
+ ['/tasks/task%252Fone?selected=wrong&selected=another&view=crew&type=internal', '/work?selected=task%252Fone&type=internal'],
+ ['/t/Launch/tasks/task%2B1?execution=run&view=crew&type=internal&selected=wrong#output', '/work?execution=run&selected=task%2B1&thread=launch#output'],
  ['/tasks?selected=task%2Fone&execution_id=old&plan=open&tag=a&tag=b#output', '/work?selected=task%2Fone&execution_id=old&plan=open&tag=a&tag=b#output'],
  ['/relentless?proposal=owner%2Fone&run=run%2Ftwo', '/work?proposal=owner%2Fone&run=run%2Ftwo&view=quality'],
  ['/crew/owner%2Fone?tab=memory', '/work?tab=memory&view=crew&agent=owner%2Fone'],
@@ -126,6 +134,21 @@ it.each([
  expect(canonicalWorkHref(source)).toBe(destination);
 });
 
-it.each(['/work?view=crew', '/crew/owner/delete', '/api/magician/v3/tasks/one', '/tasks-archive', '/t/launch/chat', '/crew/%ZZ', '//external.example/tasks', 'https://external.example/tasks', '/\\external.example/tasks'])('leaves unrelated or unsafe links unchanged: %s', source => {
+it.each(['/work?view=crew', '/crew/owner/delete', '/api/magician/v3/tasks/one', '/tasks/one/outputs/report.pdf', '/tasks/%ZZ', '/t/launch/tasks/%ZZ', '/tasks-archive', '/t/launch/chat', '/crew/%ZZ', '//external.example/tasks', 'https://external.example/tasks', '/\\external.example/tasks'])('leaves unrelated or unsafe links unchanged: %s', source => {
  expect(canonicalWorkHref(source)).toBe(source);
+});
+
+it('resolves a saved path-style task link without losing its thread, run or fragment', () => {
+ const source = '/t/Launch/tasks/task%2Fone?execution_id=old&plan=open&tag=a&tag=b#output';
+ expect(isTaskSelectionHref(source)).toBe(true);
+ expect(isTaskSelectionHref('/tasks/task-one?type=monitors&update=exact')).toBe(false);
+ const destination = new URL(resolvedWorkTaskHref('task/one', workTaskHref('task/one', 'internal'), source), 'https://work.invalid');
+ expect(destination.pathname).toBe('/work');
+ expect(destination.searchParams.get('selected')).toBe('task/one');
+ expect(destination.searchParams.get('thread')).toBe('launch');
+ expect(destination.searchParams.get('type')).toBe('internal');
+ expect(destination.searchParams.get('execution_id')).toBe('old');
+ expect(destination.searchParams.get('plan')).toBe('open');
+ expect(destination.searchParams.getAll('tag')).toEqual(['a', 'b']);
+ expect(destination.hash).toBe('#output');
 });

@@ -22,6 +22,7 @@ import ai.magicbeans.magdroid.chat.TaskStoreRecord
 import ai.magicbeans.magdroid.tasks.PlanApprovalActions
 import ai.magicbeans.magdroid.tasks.PlanApprovalOutcome
 import ai.magicbeans.magdroid.tasks.PlanApprovalPost
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -30,6 +31,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -43,6 +46,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -65,13 +71,16 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.KeyboardHide
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -82,12 +91,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -111,6 +128,46 @@ import kotlinx.coroutines.launch
 internal val COMPOSER_DOCK_INSET = 10.dp
 
 internal val COMPOSER_HAIRLINE = 0.5.dp
+
+@Composable
+internal fun ComposerKeyboardDismiss() {
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    if (WindowInsets.ime.getBottom(LocalDensity.current) > 0) {
+        IconButton(onClick = { keyboard?.hide(); focus.clearFocus() }, modifier = Modifier.size(30.dp)) {
+            Icon(Icons.Outlined.KeyboardHide, "Hide keyboard", tint = Muted, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+/** Chat and VibeDev use the same floating composer surface and spacing. */
+@Composable
+internal fun ComposerCard(
+    modifier: Modifier = Modifier,
+    accented: Boolean = false,
+    privilegeLabel: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Box(modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = COMPOSER_BOTTOM_GAP_DP.dp)) {
+        if (privilegeLabel != null) {
+            Box(Modifier.matchParentSize().blur(14.dp, edgeTreatment = BlurredEdgeTreatment.Unbounded).background(
+                Brush.linearGradient(listOf(Coral.copy(alpha = 0.34f), activePalette.discovery.copy(alpha = 0.26f), activePalette.info.copy(alpha = 0.24f))),
+                Lively.composerShape))
+        }
+        Surface(
+            color = composerSurfaceColor(),
+            shape = Lively.composerShape,
+            border = BorderStroke(1.dp, if (accented || privilegeLabel != null) Coral.copy(alpha = 0.4f) else Muted.copy(alpha = 0.25f)),
+        ) {
+            Column(Modifier.fillMaxWidth().animateContentSize(
+                animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+                alignment = Alignment.BottomCenter,
+            )) {
+                content()
+            }
+        }
+    }
+}
 
 /** An outlined rounded-square chip (Lively.chipShape), the composer stack's one button. */
 @Composable
@@ -225,6 +282,11 @@ internal fun AutoSendBand(seconds: Int?, onCancel: () -> Unit) {
 /** Plan mode: an accent-soft band with a small pulsing dot (web `plan-banner`). */
 @Composable
 internal fun PlanModeBand() {
+    ComposerModeBand("Plan mode", "I'll draft a plan first. Switch to Do for direct execution.")
+}
+
+@Composable
+internal fun ComposerModeBand(title: String, message: String, maxLines: Int = Int.MAX_VALUE, options: @Composable () -> Unit = {}) {
     val moving = rememberAnimatorDurationScale() > 0f
     val transition = rememberInfiniteTransition(label = "plan-mode-dot")
     val pulse by transition.animateFloat(1f, 0.35f, infiniteRepeatable(tween(1_100), RepeatMode.Reverse), label = "plan-mode-dot-alpha")
@@ -237,14 +299,16 @@ internal fun PlanModeBand() {
             Box(Modifier.size(6.dp).graphicsLayer { alpha = if (moving) pulse else 1f }.background(Coral, CircleShape))
             Text(
                 androidx.compose.ui.text.buildAnnotatedString {
-                    pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)); append("Plan mode"); pop()
-                    append(" — I'll draft a plan first. Switch to Do for direct execution.")
+                    pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold)); append(title); pop()
+                    append(" — $message")
                 },
                 color = Ink,
                 fontSize = 12.sp,
                 lineHeight = 16.sp,
+                maxLines = maxLines, overflow = TextOverflow.Ellipsis,
             )
         }
+        Column(Modifier.fillMaxWidth().background(Coral.copy(alpha = 0.08f)).padding(horizontal = 14.dp)) { options() }
         ComposerHairline()
     }
 }
@@ -312,14 +376,14 @@ fun ChatPresenceDot(presence: ChatPresence, modifier: Modifier = Modifier, size:
 // ── Ask dock ──
 
 /**
- * The questions this conversation is waiting on, above the composer: a
- * "Waiting on you" badge, "1 of N" with previous / next, the prompt and its
- * answer in place. Two sources: the transcript's escalation cards, and the
- * Attention feed's asks for this conversation ([feedAsks], already scoped by
- * thread or task — Relentless and quality-controller asks arrive only this
- * way). A feed ask is answered with the same form Attention uses; secrets and
- * grants open the secure sheet. An answer that lands reads "Answered"
- * briefly, then the dock moves on or leaves.
+ * Every open question, above the composer, so the reader answers wherever
+ * they are: a "Waiting on you" badge, "1 of N" with previous / next, the
+ * prompt and its answer in place. Two sources: the transcript's escalation
+ * cards, and the Attention feed's open asks ([feedAsks], this conversation's
+ * first — Relentless and quality-controller asks arrive only this way). An ask
+ * [feedHere] does not name says where it came from. A feed ask is answered
+ * with the same form Attention uses; secrets and grants open the secure sheet.
+ * An answer that lands reads "Answered" briefly, then the dock moves on or leaves.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -329,6 +393,9 @@ internal fun ComposerAskDockView(
     onAnswer: (messageId: String, option: EscalationOption?, text: String, selectedIds: List<String>) -> Unit,
     onOpenAttention: (String?) -> Unit,
     feedAsks: List<AttentionItem> = emptyList(),
+    /** The [feedAsks] that belong to this conversation, by `askKey`; `null`: all of them. */
+    feedHere: Set<String>? = null,
+    originChatTitles: Map<String, String> = emptyMap(),
     askState: AskSurfaceState = AskSurfaceState(),
     onAnswerFeed: (AttentionItem, HitlResponseValue) -> Unit = { _, _ -> },
     onPlanChoice: (AttentionItem, PlanApprovalChoice) -> Unit = { _, _ -> },
@@ -373,55 +440,101 @@ internal fun ComposerAskDockView(
         val feedRequest = (target as? ComposerAsk.Feed)?.item?.let { it.request(it.metadata) }
         val question = when (target) {
             is ComposerAsk.Transcript -> target.target.card.question
-            is ComposerAsk.Feed -> feedRequest?.prompt.orEmpty()
+            is ComposerAsk.Feed -> feedRequest?.headline.orEmpty()
+        }
+        val dockHeight = minOf(360.dp, (LocalConfiguration.current.screenHeightDp * 0.55f).dp)
+        val godNeedsSheet = feedRequest?.isGodMode == true &&
+            (dockHeight < 320.dp || LocalDensity.current.fontScale > 1.2f)
+        val keyboard = LocalSoftwareKeyboardController.current
+        val focus = LocalFocusManager.current
+        val review = {
+            focus.clearFocus()
+            keyboard?.hide()
+            when (target) {
+                is ComposerAsk.Transcript -> onOpenAttention(target.target.card.correlationId)
+                is ComposerAsk.Feed -> onOpenSheet(target.item)
+            }
         }
         Surface(
             color = activePalette.card,
             shape = Lively.composerShape,
             border = BorderStroke(1.dp, MWarn.copy(alpha = 0.45f)),
-            modifier = Modifier.fillMaxWidth().padding(start = COMPOSER_DOCK_INSET, end = COMPOSER_DOCK_INSET, bottom = 6.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = COMPOSER_DOCK_INSET, end = COMPOSER_DOCK_INSET, bottom = 6.dp)
+                .testTag("composer-ask-card"),
         ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.heightIn(max = dockHeight).padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (isAnswered) "Answered" else "Waiting on you",
-                        color = Ink,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier
-                            .clip(Lively.chipShape)
-                            .background((if (isAnswered) ChatSuccess else MWarn).copy(alpha = 0.22f))
-                            .padding(horizontal = 7.dp, vertical = 2.dp),
-                    )
-                    feedRequest?.fromLabel?.let { Text(it, color = Secondary, fontSize = 11.sp) }
-                    Spacer(Modifier.weight(1f))
+                    Box(Modifier.weight(1f)) {
+                        Text(
+                            if (isAnswered) "Answered" else "Waiting on you",
+                            color = Ink,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .clip(Lively.chipShape)
+                                .background((if (isAnswered) ChatSuccess else MWarn).copy(alpha = 0.22f))
+                                .padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                    if (!isAnswered) {
+                        StackChip("Review", onClick = review, modifier = Modifier.testTag("composer-ask-review"))
+                    }
                     ComposerAskDock.positionOf(keys, activeId)?.takeIf { !isAnswered }?.let { position ->
-                        IconChip(Icons.AutoMirrored.Outlined.ArrowBack, "Previous question") {
+                        IconChip(Icons.AutoMirrored.Outlined.ArrowBack, "Previous question", compact = true) {
                             activeId = ComposerAskDock.stepKey(keys, activeId, -1)
                         }
                         Text(position, color = Secondary, fontSize = 11.sp)
-                        IconChip(Icons.AutoMirrored.Outlined.ArrowForward, "Next question") {
+                        IconChip(Icons.AutoMirrored.Outlined.ArrowForward, "Next question", compact = true) {
                             activeId = ComposerAskDock.stepKey(keys, activeId, 1)
                         }
                     }
                 }
-                Text(question, color = Ink, fontSize = 14.sp, lineHeight = 19.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
+                if (feedRequest?.isGodMode == true) {
+                    val chat = originChatTitles[feedRequest.godChatSessionId]
+                        ?: feedRequest.godChatSessionId?.let { "Chat ${it.take(8)}" } ?: "background run"
+                    val origin = feedRequest.godOriginSession?.takeIf { it.startsWith("run:") }
+                        ?.let { "Run ${it.removePrefix("run:").take(8)} · $chat" } ?: chat
+                    val agent = feedRequest.godOriginAgent?.let { " · $it" }.orEmpty()
+                    Text("Requested in $origin$agent. This session refers to that originating chat or run.", color = Secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } else if (target is ComposerAsk.Feed && !ComposerAskDock.isHere(target, feedHere)) {
+                    // A question from another chat or run says where it came from.
+                    Text(ComposerAskDock.originLabel(target.item, originChatTitles), color = Secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (isAnswered) {
+                    // A settled request only needs a short acknowledgement.
+                    Text(question, color = Ink, fontSize = 14.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                } else if (feedRequest?.isGodMode != true || godNeedsSheet) {
+                    AskScrollableSection(target.key, minOf(140.dp, dockHeight * 0.35f), "composer-ask-prompt") {
+                        feedRequest?.fromLabel?.let { Text(it, color = Secondary, fontSize = 11.sp) }
+                        Text(question, color = Ink, fontSize = 14.sp, lineHeight = 19.sp)
+                    }
+                }
                 if (!isAnswered) when (target) {
                     is ComposerAsk.Transcript -> {
-                        AskDockAnswer(target.target, enabled, onAnswer, onOpenAttention)
-                        target.target.card.error?.let { Text(it, color = Danger, fontSize = 12.sp) }
+                        AskScrollableSection(target.key, 220.dp, "composer-ask-decisions", Modifier.weight(1f, fill = false)) {
+                            AskDockAnswer(target.target, enabled, onAnswer, onOpenAttention)
+                            target.target.card.error?.let { Text(it, color = Danger, fontSize = 12.sp) }
+                        }
                     }
-                    is ComposerAsk.Feed -> InlineAskAnswer(
-                        item = target.item,
-                        state = askState,
-                        compact = true,
-                        onAnswer = onAnswerFeed,
-                        loadAlignmentDetail = loadAlignmentDetail,
-                        onPlanChoice = onPlanChoice,
-                        onOpenSheet = onOpenSheet,
-                        onReviewPlan = onReviewPlan,
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
-                    )
+                    is ComposerAsk.Feed -> if (godNeedsSheet) {
+                        StackChip("Review and decide →", onClick = review)
+                    } else key(target.key) {
+                        InlineAskAnswer(
+                            item = target.item,
+                            state = askState,
+                            compact = true,
+                            onAnswer = onAnswerFeed,
+                            loadAlignmentDetail = loadAlignmentDetail,
+                            onPlanChoice = onPlanChoice,
+                            onOpenSheet = onOpenSheet,
+                            onReviewPlan = onReviewPlan,
+                            modifier = if (feedRequest?.isGodMode == true) Modifier.fillMaxWidth().weight(1f, fill = false)
+                                else Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 220.dp)
+                                    .verticalScroll(rememberScrollState()).testTag("composer-ask-decisions"),
+                        )
+                    }
                 }
             }
         }
@@ -489,9 +602,9 @@ private fun AskDockAnswer(
 }
 
 @Composable
-private fun IconChip(icon: ImageVector, description: String, onClick: () -> Unit) {
+private fun IconChip(icon: ImageVector, description: String, compact: Boolean = false, onClick: () -> Unit) {
     Box(
-        Modifier.size(Lively.tapMin).clickable(role = Role.Button, onClickLabel = description, onClick = onClick),
+        Modifier.size(if (compact) 28.dp else Lively.tapMin).clickable(role = Role.Button, onClickLabel = description, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(

@@ -21,6 +21,78 @@ function jsonResponse(body, init = {}) {
   });
 }
 
+test("chat sends typed model selections across providers and leaves defaults server-owned", async () => {
+  const requests = [];
+  const client = new MagicianClient({ baseUrl: "http://localhost:3002", fetchImpl: async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body) });
+    return jsonResponse({ pending_queue_depth: 0 });
+  } });
+  const identity = { channelType: "telegram", channelAddress: "chat-42" };
+  for (const [engine, model, level] of [
+    ["magician", "openai/luna", "none"],
+    ["pi", "openai/sol", "high"],
+    ["magician", "anthropic/claude", "low"],
+    ["magician", "google/gemini", "auto"],
+    ["pi", "xai/grok", "medium"],
+    ["magician", "sarvam/model", "none"],
+    ["magician", "ollama/local", "auto"],
+  ]) {
+    await client.sendMessage("s", identity, "hello", {
+      modelSelection: { model_id: model, thinking: level }, harnessEngine: engine,
+    });
+    assert.deepEqual(requests.at(-1).body, {
+      text: "hello", model_selection: { model_id: model, thinking: level }, harness_engine: engine,
+    });
+  }
+  await client.sendMessage("s", identity, "hello", { modelSelection: { model_id: "provider/model" } });
+  assert.deepEqual(requests.at(-1).body, {
+    text: "hello", model_selection: { model_id: "provider/model", thinking: "auto" }, harness_engine: "magician",
+  });
+  await client.sendMessage("s", identity, "hello");
+  assert.deepEqual(requests.at(-1).body, { text: "hello" });
+});
+
+test("retired profiles and malformed selections fail before an HTTP request", async () => {
+  let calls = 0;
+  const client = new MagicianClient({ baseUrl: "http://localhost:3002", fetchImpl: async () => {
+    calls++;
+    return jsonResponse({});
+  } });
+  for (const options of [
+    { profile: "old-profile" }, { profile: undefined },
+    { modelSelection: null }, { modelSelection: { model_id: " " } },
+    { modelSelection: { model_id: " model" } },
+    { modelSelection: { model_id: "provider/model", thinking: null } },
+    { modelSelection: { model_id: "provider/model", thinking: "high/extra" } },
+    { modelSelection: { model_id: "provider/model", thinking: "" } },
+    { harnessEngine: "unknown" },
+  ]) {
+    await assert.rejects(client.sendMessage("s", { channelType: "telegram" }, "hello", options));
+  }
+  assert.equal(calls, 0);
+});
+
+test("model catalogs use the typed engine endpoint and never downgrade to profiles", async () => {
+  const urls = [];
+  let reply = { models: [], default_selection: null };
+  const client = new MagicianClient({ baseUrl: "http://localhost:3002", fetchImpl: async url => {
+    urls.push(String(url));
+    return reply instanceof Response ? reply : jsonResponse(reply);
+  } });
+  await client.getChatModels();
+  await client.getChatModels("pi");
+  assert.deepEqual(urls, [
+    "http://localhost:3002/api/magician/v2/chat/models?engine=magician",
+    "http://localhost:3002/api/magician/v2/chat/models?engine=pi",
+  ]);
+  reply = { profiles: [] };
+  await assert.rejects(client.getChatModels(), /Upgrade the backend/);
+  reply = jsonResponse({ error: "not found" }, { status: 404 });
+  await assert.rejects(client.getChatModels());
+  assert.equal(urls.length, 4);
+  assert.ok(urls.every(url => url.includes("/chat/models?")));
+});
+
 test("delivery receipts use the bound bearer and require a durable acknowledgement", async () => {
   const requests = [];
   let confirmed = true;

@@ -86,29 +86,71 @@ impl Drop for RestoreSecret {
     }
 }
 
-const ACCEPTANCE_QUERY_ANALYSIS_PROFILE: &str = "op-app-workflow-local";
-
-fn pin_acceptance_query_analysis(router_path: &Path) -> Result<(), String> {
-    const CLOUD_BINDING: &str =
-        "      query_analysis:\n        default: gpt6luna-responses-toolsany\n";
-    let local_binding =
-        format!("      query_analysis:\n        default: {ACCEPTANCE_QUERY_ANALYSIS_PROFILE}\n");
+fn pin_acceptance_query_analysis(router_path: &Path) -> Result<String, String> {
+    let config_path = router_path.with_file_name("magician-config.yaml");
+    let config: serde_yaml::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(&config_path).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let local = config["app_platform"]["processing"]["local_profile"]
+        .as_str()
+        .filter(|route| !route.is_empty())
+        .ok_or("Packaged local-processing assignment is missing")?;
     let router = std::fs::read_to_string(router_path)
         .map_err(|error| format!("Cannot read acceptance router: {error}"))?;
-    if router.matches(CLOUD_BINDING).count() != 1 {
-        return Err("Packaged query_analysis binding changed; update the acceptance pin".into());
+    let mut lines = router
+        .split_inclusive('\n')
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let roots = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim() == "query_analysis:")
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if roots.len() != 1 {
+        return Err("Expected exactly one packaged query_analysis selector".into());
     }
-    std::fs::write(
-        router_path,
-        router.replacen(CLOUD_BINDING, &local_binding, 1),
-    )
-    .map_err(|error| format!("Cannot pin acceptance query analysis: {error}"))
+    let root = roots[0];
+    let indent = lines[root].len() - lines[root].trim_start().len();
+    let defaults = lines
+        .iter()
+        .enumerate()
+        .skip(root + 1)
+        .take_while(|(_, line)| {
+            line.trim().is_empty()
+                || line.trim_start().starts_with('#')
+                || line.len() - line.trim_start().len() > indent
+        })
+        .filter(|(_, line)| line.trim_start().starts_with("default:"))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if defaults.len() != 1 {
+        return Err("Packaged query_analysis default is missing or ambiguous".into());
+    }
+    let index = defaults[0];
+    let prefix = &lines[index][..lines[index].len() - lines[index].trim_start().len()];
+    let newline = if lines[index].ends_with("\r\n") {
+        "\r\n"
+    } else if lines[index].ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    lines[index] = format!(
+        "{prefix}default: {}{newline}",
+        serde_json::to_string(local).map_err(|error| error.to_string())?
+    );
+    std::fs::write(router_path, lines.concat())
+        .map_err(|error| format!("Cannot pin acceptance query analysis: {error}"))?;
+    Ok(local.to_string())
 }
 
 async fn qualify(
     runtime: &AppleContainerRuntime,
     config: &ContainerConfig,
     root: &Path,
+    query_analysis_assignment: &str,
 ) -> Result<Value, String> {
     runtime.start(config).await?;
     ready(runtime, &config.name).await?;
@@ -189,7 +231,7 @@ async fn qualify(
         "fresh_automatic_custody": true, "pairings_survived_recreation": true,
         "revocation_survived_recreation": true, "wrong_secret_refused_before_stop": true,
         "runtime_file_preserved": true, "same_unlock_secret": true,
-        "query_analysis_profile": ACCEPTANCE_QUERY_ANALYSIS_PROFILE,
+        "query_analysis_assignment": query_analysis_assignment,
         "hardware_acceptance": false, "installer_qualified": false,
     }))
 }
@@ -244,7 +286,8 @@ async fn managed_container_preserves_device_credentials() {
     // This isolated lane deliberately supplies no cloud credentials. Keep its
     // mandatory startup analysis on the packaged host-Ollama route so the test
     // qualifies container transport and custody rather than an API account.
-    pin_acceptance_query_analysis(&data.join("llm-router.yaml")).unwrap();
+    let query_analysis_assignment =
+        pin_acceptance_query_analysis(&data.join("llm-router.yaml")).unwrap();
     let config_path = data.join("magician-config.yaml");
     let config_text = std::fs::read_to_string(&config_path).unwrap();
     assert!(config_text.contains("  public_origin: null"));
@@ -287,8 +330,11 @@ async fn managed_container_preserves_device_credentials() {
         memory_limit: Some("3g".into()),
         env_vars: HashMap::from([("MAGICIAN_ROOT_DIR".into(), "/data".into())]),
     };
-    let outcome =
-        tokio::time::timeout(Duration::from_secs(600), qualify(&runtime, &config, &root)).await;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(600),
+        qualify(&runtime, &config, &root, &query_analysis_assignment),
+    )
+    .await;
     // Stop only our UUID-named fixture on either success or failure; retain its
     // data and logs. Never run the installer or stop native/shared services here.
     let stopped = match runtime.container_info(&config.name).await {

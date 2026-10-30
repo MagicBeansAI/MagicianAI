@@ -3,8 +3,11 @@ package ai.magicbeans.magdroid.ui
 import ai.magicbeans.magdroid.work.*
 import android.content.Intent
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -23,7 +26,8 @@ internal fun WorkBinaryArtifact(path: String, name: String, mime: String?, resou
     val scope = rememberCoroutineScope()
     var file by remember(path, name) { mutableStateOf<File?>(null) }
     LaunchedEffect(state.identity) { file = null }
-    WorkLink("Load exact file: $name") {
+    WorkRowDivider()
+    WorkActionRow("Load exact file: $name", Icons.Outlined.Download) {
         val identity = state.identity
         scope.launch {
             val data = resource.file("$path/file?name=${WorkRepository.segment(name)}", identity) ?: return@launch
@@ -42,18 +46,20 @@ internal fun WorkBinaryArtifact(path: String, name: String, mime: String?, resou
         }
     }
     file?.let { saved ->
-        WorkLink("Preview exact file") {
+        WorkRowDivider()
+        WorkActionRow("Preview exact file", Icons.Outlined.Visibility) {
             try {
                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.artifact-files", saved)
                 context.startActivity(Intent(Intent.ACTION_VIEW).apply { setDataAndType(uri, mime ?: "application/octet-stream"); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) })
             } catch (_: Exception) { resource.reportError("No viewer is installed for this file type. Save it from the file menu.") }
         }
-        WorkLink("Save or share exact file") {
+        WorkRowDivider()
+        WorkActionRow("Save or share exact file", Icons.Outlined.Share) {
             try {
                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.artifact-files", saved)
                 context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = mime ?: "application/octet-stream"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }, "Save exact file"))
             } catch (_: Exception) { resource.reportError("Could not open the file menu.") }
         }
-        if (onReviewed != null) TextButton(onClick = onReviewed, modifier = Modifier.heightIn(min = 48.dp)) { Text("I reviewed this file", color = Coral) }
+        if (onReviewed != null) { WorkRowDivider(); WorkActionRow("I reviewed this file", Icons.Outlined.CheckCircle, onClick = onReviewed) }
     }
 }

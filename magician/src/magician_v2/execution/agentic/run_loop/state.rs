@@ -478,6 +478,124 @@ pub struct TerminalSettlementDescriptor {
     /// than reconstructing an address from naming conventions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_resume_segment: Option<String>,
+    /// Set on a `Success` the refinement wrapper is about to refine: the exact
+    /// segment its refinement pass runs under. This receipt then settles the
+    /// run only if that pass never commits a receipt of its own and is no
+    /// longer running in this process (the pass errored, or the process died
+    /// mid-refinement) — in which case the first pass's `Success` is the run's
+    /// outcome. Once the successor commits a receipt, the successor settles
+    /// the run and this one publishes its events only. Skipped when absent so
+    /// receipts sealed before the field existed re-serialize byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinement_successor_segment: Option<String>,
+}
+
+impl TerminalSettlementDescriptor {
+    /// Whether this receipt settles the run as a completed final outcome.
+    ///
+    /// Normally that is a `Success` terminal. A refinement segment is the one
+    /// other case: its journalled terminal is its own ending (`CannotProceed`,
+    /// `Failed`, …) while its sealed projection is the merged outcome the run
+    /// actually returns — the first pass's `Success`. Settlement policy keyed
+    /// on "the child did not succeed" (delegated force-failure, its lifecycle
+    /// fence) must read this rather than the terminal kind.
+    pub fn settles_completed(&self) -> bool {
+        self.outcome.is_terminal && self.outcome.execution_status == "completed"
+    }
+}
+
+/// What a first-pass receipt that names a refinement successor does at
+/// settlement time. See
+/// [`TerminalSettlementDescriptor::refinement_successor_segment`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefinementSuccessorDisposition {
+    /// The refinement pass committed a receipt; it owns the run's settlement.
+    SuccessorSettles,
+    /// The refinement pass is still running here; settle nothing yet.
+    InFlight,
+    /// No refinement receipt and nothing running: the pass errored or its
+    /// process died. The first pass's `Success` settles the run.
+    FirstPassSettles,
+}
+
+/// The one rule for [`RefinementSuccessorDisposition`]. A committed successor
+/// receipt wins even while the wrapper is still finishing, because that
+/// receipt already carries the run's settled outcome.
+pub fn refinement_successor_disposition(
+    successor_committed_receipt: bool,
+    refinement_in_flight: bool,
+) -> RefinementSuccessorDisposition {
+    if successor_committed_receipt {
+        RefinementSuccessorDisposition::SuccessorSettles
+    } else if refinement_in_flight {
+        RefinementSuccessorDisposition::InFlight
+    } else {
+        RefinementSuccessorDisposition::FirstPassSettles
+    }
+}
+
+/// First-pass segments whose refinement wrapper is running in this process.
+///
+/// Process-local on purpose: a crash is exactly what must make a first-pass
+/// receipt settle, and a restarted process starts with this set empty. The
+/// wrapper and the terminal projector run in the same process; a projector in
+/// another process sees nothing in flight and settles the first pass, which
+/// is the safe direction (the run completes with the first pass's result).
+static REFINEMENTS_IN_FLIGHT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn refinement_in_flight_key(principal: &str, workspace: &str, segment: &str) -> String {
+    format!("{principal}\u{1f}{workspace}\u{1f}{segment}")
+}
+
+/// Held by the refinement wrapper for its whole run. Dropping it — on return,
+/// error, cancellation or panic — wakes the terminal projector so a first-pass
+/// receipt it deferred is settled or retired promptly.
+#[derive(Debug)]
+pub struct RefinementInFlight {
+    key: String,
+}
+
+impl RefinementInFlight {
+    pub fn enter(principal: &str, workspace: &str, first_pass_segment: &str) -> Self {
+        let key = refinement_in_flight_key(principal, workspace, first_pass_segment);
+        let mut set = REFINEMENTS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *set.entry(key.clone()).or_insert(0) += 1;
+        Self { key }
+    }
+}
+
+impl Drop for RefinementInFlight {
+    fn drop(&mut self) {
+        {
+            let mut set = REFINEMENTS_IN_FLIGHT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(count) = set.get_mut(&self.key) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    set.remove(&self.key);
+                }
+            }
+        }
+        super::terminal_outbox::wake_terminal_outbox_projector();
+    }
+}
+
+/// Whether the refinement wrapper for this first-pass segment is running in
+/// this process.
+pub fn refinement_in_flight(principal: &str, workspace: &str, first_pass_segment: &str) -> bool {
+    REFINEMENTS_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(&refinement_in_flight_key(
+            principal,
+            workspace,
+            first_pass_segment,
+        ))
 }
 
 fn pause_bool_is_false(value: &bool) -> bool {
@@ -3363,8 +3481,10 @@ mod loop_state_tests {
             "exec_1-seg"
         )
         .process_has_exited());
-        assert!(!WorkerId::new(format!("inproc-{}-0123abcd-exec_1", std::process::id()))
-            .process_has_exited());
+        assert!(
+            !WorkerId::new(format!("inproc-{}-0123abcd-exec_1", std::process::id()))
+                .process_has_exited()
+        );
         // Other worker kinds, malformed names and pid 0 never count.
         for name in [
             format!("reconciler-{dead_pid}"),
@@ -3959,5 +4079,112 @@ mod loop_state_tests {
             state.wait.is_some(),
             "the park a caller gates on must be readable beside the cursor answer"
         );
+    }
+}
+
+#[cfg(test)]
+mod refinement_successor_tests {
+    use super::*;
+
+    fn first_pass_descriptor(successor: Option<&str>) -> TerminalSettlementDescriptor {
+        TerminalSettlementDescriptor {
+            schema_version: 1,
+            principal: "principal".to_owned(),
+            workspace: "workspace".to_owned(),
+            task_id: "task-1".to_owned(),
+            base_execution_id: "execution-1".to_owned(),
+            exact_segment_id: "execution-1".to_owned(),
+            terminal_kind: "success".to_owned(),
+            terminal_seq: 7,
+            outcome: TerminalOutcomeProjection {
+                execution_status: "completed".to_owned(),
+                task_status: "completed".to_owned(),
+                outcome_type: "success".to_owned(),
+                outcome_summary: "Execution completed successfully with 1 artifact(s).".to_owned(),
+                iterations_used: Some(3),
+                is_terminal: true,
+                completion_kind: None,
+                open_items: Vec::new(),
+            },
+            waiting_for_user_diff_approval: false,
+            pipeline_loop_state_segment: None,
+            pipeline_stage_settlement: None,
+            pause_key: None,
+            pause_revision: None,
+            pause_body_sha256: None,
+            pause_resume_segment: None,
+            refinement_successor_segment: successor.map(str::to_owned),
+        }
+    }
+
+    /// The first pass's receipt is crash-safe: while the refinement runs it
+    /// settles nothing; once the refinement commits a receipt, that receipt
+    /// settles the run; and when neither holds — the pass errored, or the
+    /// process restarted mid-refinement so nothing is in flight and the
+    /// successor never sealed a receipt — the first pass's `Success` settles.
+    #[test]
+    fn a_first_pass_receipt_settles_only_when_its_refinement_left_none() {
+        assert_eq!(
+            refinement_successor_disposition(false, true),
+            RefinementSuccessorDisposition::InFlight
+        );
+        assert_eq!(
+            refinement_successor_disposition(true, true),
+            RefinementSuccessorDisposition::SuccessorSettles
+        );
+        assert_eq!(
+            refinement_successor_disposition(true, false),
+            RefinementSuccessorDisposition::SuccessorSettles
+        );
+        // Boot recovery after a crash mid-refinement: the in-flight set starts
+        // empty and the successor sealed nothing.
+        assert!(!refinement_in_flight(
+            "principal",
+            "workspace",
+            "refinement-recovery-segment"
+        ));
+        assert_eq!(
+            refinement_successor_disposition(
+                false,
+                refinement_in_flight("principal", "workspace", "refinement-recovery-segment"),
+            ),
+            RefinementSuccessorDisposition::FirstPassSettles
+        );
+    }
+
+    #[test]
+    fn the_in_flight_guard_covers_exactly_the_wrapper_s_lifetime() {
+        let segment = "refinement-guard-segment";
+        assert!(!refinement_in_flight("principal", "workspace", segment));
+        {
+            let _outer = RefinementInFlight::enter("principal", "workspace", segment);
+            assert!(refinement_in_flight("principal", "workspace", segment));
+            assert!(!refinement_in_flight(
+                "principal",
+                "other-workspace",
+                segment
+            ));
+            {
+                let _inner = RefinementInFlight::enter("principal", "workspace", segment);
+            }
+            assert!(
+                refinement_in_flight("principal", "workspace", segment),
+                "an overlapping guard's drop does not end the outer one"
+            );
+        }
+        assert!(!refinement_in_flight("principal", "workspace", segment));
+    }
+
+    /// Receipts sealed before the field existed must re-serialize
+    /// byte-identical, or their seals would stop verifying.
+    #[test]
+    fn the_refinement_successor_is_absent_from_receipts_that_do_not_name_one() {
+        let plain = serde_json::to_value(first_pass_descriptor(None)).expect("serialize");
+        assert!(plain.get("refinement_successor_segment").is_none());
+        let named = first_pass_descriptor(Some("execution-1-p1"));
+        let round_trip: TerminalSettlementDescriptor =
+            serde_json::from_value(serde_json::to_value(&named).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(round_trip, named);
     }
 }

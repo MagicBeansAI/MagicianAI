@@ -62,7 +62,7 @@ selector offers 10, 25, 50, and 100 rows.
 ## Reproducible browser driver
 
 The pinned upstream tag and
-`skillshub/browser/_vendor/v0.38.1-Magician.0/patches/0001-magician-patches.patch`
+`skillshub/browser/_vendor/v0.41.0-Magician.0/patches/0001-magician-patches.patch`
 are the source of truth. Native driver executables are local build artifacts
 and are not committed. `make setup-agent-browser` automatically invokes the
 source rebuild when the current artifact is missing, then installs the npm

@@ -28,6 +28,28 @@ function nextFrame(): Promise<void> {
 }
 
 describe('keepToggledInView', () => {
+	it('does not scroll a long answer when its verification popover opens', async () => {
+		const container = document.createElement('div');
+		container.style.overflowY = 'auto';
+		Object.defineProperty(container, 'scrollHeight', { value: 2000 });
+		Object.defineProperty(container, 'clientHeight', { value: 600 });
+		container.getBoundingClientRect = () => ({ top: 0, bottom: 600 }) as DOMRect;
+		const card = document.createElement('div');
+		card.className = 'chat';
+		card.getBoundingClientRect = () => ({ top: 300, bottom: 1400 }) as DOMRect;
+		const toggle = document.createElement('button');
+		toggle.setAttribute('aria-expanded', 'false');
+		toggle.setAttribute('data-popover-trigger', '');
+		card.append(toggle); container.append(card); document.body.append(container);
+		const scrollBy = vi.fn();
+		container.scrollBy = scrollBy as typeof container.scrollBy;
+		const action = keepToggledInView(container);
+		toggle.click();
+		await nextFrame();
+		expect(scrollBy).not.toHaveBeenCalled();
+		action.destroy(); container.remove();
+	});
+
 	it('nudges the scroller when a disclosure inside a card is clicked', async () => {
 		const container = document.createElement('div');
 		const card = document.createElement('div');

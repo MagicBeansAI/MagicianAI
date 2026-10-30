@@ -9,6 +9,7 @@ class TaskParityUiTest {
     @Test
     fun verdict_states_map_to_the_ios_dot_tones() {
         assertEquals(StatusTone.Running, verdictTone(TaskVerdictState.Running))
+        assertEquals(StatusTone.Running, verdictTone(TaskVerdictState.Finalizing))
         assertEquals(StatusTone.NotStarted, verdictTone(TaskVerdictState.Queued))
         assertEquals(StatusTone.Done, verdictTone(TaskVerdictState.Finished))
         assertEquals(StatusTone.Failed, verdictTone(TaskVerdictState.Failed))
@@ -16,6 +17,7 @@ class TaskParityUiTest {
         assertEquals(StatusTone.Partial, verdictTone(TaskVerdictState.Paused))
         assertEquals(StatusTone.Cancelled, verdictTone(TaskVerdictState.Cancelled))
         assertEquals(StatusTone.Waiting, verdictTone(TaskVerdictState.Waiting))
+        assertEquals(StatusTone.Partial, verdictTone(TaskVerdictState.PartlyDone))
     }
 
     @Test

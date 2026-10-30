@@ -1,5 +1,13 @@
 # magesp changelog
 
+## 1.10.0 — 2026-10-25
+
+### Changed
+- The face page is the Magican star, the brand mascot: its "hi" pose (star, shine, glasses, arms and legs) is drawn from flash, with live eyes behind the glasses and a live mouth. The eyes widen while the microphone is open, glance about while Magician thinks, and blink; the mouth smiles at rest and moves only while audio plays. The dark theme draws the arms and legs light so they show on the black panel. `tools/star/gen_star_body.py` regenerates the art from `ui/unified-ui/static/brand`.
+- A **conversations** page (between For you and voice mode) chooses which Magician thread and chat the terminal talks in: the current choice, **+ new thread**, the recent threads and the chosen thread's chats. A pick is kept in NVS across restarts. Until one is made, turns go to the terminal's own thread, named after it. A new thread is named after the device and the time and filed under Automated. Lists load when the page opens and run on the turn worker, never alongside a voice turn.
+- Speech is requested as 16-bit PCM (`wav_encoding: "pcm16"`). macOS speech arrives as float32 at 22.05 kHz, twice the bytes the terminal has to pull over Wi-Fi and TLS while playing, which brought back static and gaps between words.
+- Every authenticated request sends `X-Magician-App-Version` (the firmware version), so web Settings → Devices shows which build each terminal runs.
+
 ## 1.9.3 — 2026-09-18
 
 ### Fixed
@@ -41,15 +49,6 @@
 
 ### Unchanged
 - Dictate and hands-free modes are unaffected.
-
-## 1.8.0 — 2026-08-14
-
-### Added — realtime step 1: the socket, and what it costs
-- Experimental realtime control socket with heap reporting at each stage; no audio yet and only runs when asked. A live session fits in memory and frees fully on close.
-- Larger websocket header buffer and task stack, needed for the TLS handshake through an access proxy.
-
-### Unchanged
-- Dictate and hands-free modes are unaffected; realtime still cannot be selected.
 
 ---
 

@@ -7,6 +7,7 @@
 //! carries [`CONTRACT_VERSION`] and a major mismatch reads as "unbound".
 
 pub mod action;
+pub mod asset;
 pub mod batch;
 pub mod classification;
 pub mod error;

@@ -988,6 +988,7 @@ private func addingAttentionFeedbackMetadata(
 }
 
 struct ResurfacingCard: Codable, Identifiable, Equatable {
+    let surfacedAt: Int64?
     let candidateID: String
     let sourceRevision: String?
     let line: String
@@ -1014,6 +1015,7 @@ struct ResurfacingCard: Codable, Identifiable, Equatable {
     var id: String { candidateID }
     enum CodingKeys: String, CodingKey {
         case line, summary, brief, actions
+        case surfacedAt = "surfaced_at"
         case openURL = "open_url"
         case sourceRoute = "source_route"
         case candidateID = "candidate_id"
@@ -1033,6 +1035,7 @@ struct ResurfacingCard: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        surfacedAt = try? c.decodeIfPresent(Int64.self, forKey: .surfacedAt)
         candidateID = (try? c.decode(String.self, forKey: .candidateID)) ?? UUID().uuidString
         sourceRevision = try? c.decodeIfPresent(String.self, forKey: .sourceRevision)
         line = (try? c.decode(String.self, forKey: .line)) ?? ""
@@ -2121,6 +2124,9 @@ struct TodayBriefingRender: Codable, Equatable {
 }
 
 struct TodayPulse: Equatable {
+    // Availability is established only by a successful source read.
+    var availableSlices: Set<String> = []
+    var pendingSlices: Set<String> = []
     struct TopModel: Equatable { let provider: String; let model: String; let share: Double }
     var spendToday = 0.0
     var spendYesterday = 0.0
@@ -2262,6 +2268,10 @@ final class TodayViewModel: ObservableObject {
     @Published private(set) var briefingRenders: [String: TodayBriefingRender] = [:]
     @Published private(set) var pulse: TodayPulse?
     @Published private(set) var isLoading = false
+    @Published private(set) var loadingSections: Set<String> = []
+    @Published private(set) var settledSections: Set<String> = []
+    private static let initialSections: Set<String> = ["today", "hidden", "worth_a_look", "message_followups", "activity", "briefings", "pulse", "agent_updates", "event_count"]
+    func initiallyLoading(_ sections: String...) -> Bool { sections.contains { !settledSections.contains($0) } }
     @Published private(set) var error: String?
     @Published private(set) var sectionErrors: [String: String] = [:]
     @Published private(set) var actionItemID: String?
@@ -2284,6 +2294,9 @@ final class TodayViewModel: ObservableObject {
     /// True while the Morning Brief deck is pulling the next follow-up /
     /// worth page because its visible stack ran low.
     @Published private(set) var isDeckLoadingMore = false
+    @Published private(set) var deckPageRevision = 0
+    private var followUpsPaged = false
+    private var worthPaged = false
     /// Deck vs Broadsheet, remembered per device.
     @Published var readingRoomMode: TodayReadingMode {
         didSet { defaults.set(readingRoomMode.rawValue, forKey: Self.readingRoomModeKey) }
@@ -2392,6 +2405,7 @@ final class TodayViewModel: ObservableObject {
     }
 
     private func seedUITestFixture() {
+        settledSections = Self.initialSections
         payload = try? JSONDecoder().decode(TodayResponse.self, from: Self.uiTestTodayData)
         hiddenItems = (try? JSONDecoder().decode(HiddenTodayResponse.self, from: Self.uiTestHiddenData).items) ?? []
         resurfacingCards = (try? JSONDecoder().decode(ResurfacingPage.self, from: Self.uiTestResurfacingData).cards) ?? []
@@ -2405,7 +2419,7 @@ final class TodayViewModel: ObservableObject {
             + updates.map { TodayMorningEdition.wireItem(fromAgentUpdate: $0) })
         wireEventCount24h = 1_500
         briefings = (try? JSONDecoder().decode(TodayBriefingsResponse.self, from: Self.uiTestBriefingsData).surfaces) ?? []
-        pulse = TodayPulse(spendToday: 1.42, spendYesterday: 0.91, callsToday: 18, callsYesterday: 12,
+        pulse = TodayPulse(availableSlices: ["llm", "coding", "memory", "tasks", "agents", "crew"], spendToday: 1.42, spendYesterday: 0.91, callsToday: 18, callsYesterday: 12,
                            hourlySpend: [0, 0, 0, 0, 0, 0, 0.05, 0.2, 0.4, 0.77] + Array(repeating: 0, count: 14),
                            hourlyCalls: [0, 0, 0, 0, 0, 0, 1, 3, 5, 9] + Array(repeating: 0, count: 14),
                            topModel: .init(provider: "openai", model: "gpt-test", share: 0.72),
@@ -2516,30 +2530,37 @@ final class TodayViewModel: ObservableObject {
         fetchGeneration += 1
         let generation = fetchGeneration
         isLoading = true
+        loadingSections = Self.initialSections
         error = nil
         Task {
-            do {
-                async let today = captured {
-                    try await self.get("/api/magician/v2/today", query: [
-                        "per_section": "8", "digest_limit": String(Self.digestPageSize)
-                    ]) as TodayResponse
-                }
-                async let hidden = captured { try await self.get("/api/magician/v2/today/visibility") as HiddenTodayResponse }
-                async let resurfacing = captured { try await self.get("/api/magician/v2/channel-assist/resurfacing/today", query: ["limit": "8"]) as ResurfacingPage }
-                async let followups = captured { try await self.get("/api/magician/v2/channel-assist/follow-ups", query: ["limit": "5"]) as ChannelFollowUpPage }
-                async let activity = captured { try await self.get("/api/magician/v2/feed", query: [
-                    "limit": "80"
-                ]) as TodayActivityResponse }
-                async let briefingPage = captured { try await self.get("/api/magician/v3/published-surfaces/projections", query: [
-                    "route": "/briefing", "limit": "8"
-                ]) as TodayBriefingsResponse }
-                async let pulseValue = captured { try await self.fetchPulse() }
-                async let agentUpdates = captured { try await self.get("/api/magician/v2/agents/updates") as TodayAgentUpdatesResponse }
-                async let eventCount = captured { try await self.fetchWireEventCount() }
+            async let today: Void = loadSection("today", generation: generation, operation: { try await self.get("/api/magician/v2/today", query: ["per_section": "8", "digest_limit": String(Self.digestPageSize)]) as TodayResponse }, apply: { self.applyOverview($0) })
+            async let hidden: Void = loadSection("hidden", generation: generation, operation: { try await self.get("/api/magician/v2/today/visibility") as HiddenTodayResponse }, apply: { self.applyHidden($0) })
+            async let worth: Void = loadSection("worth_a_look", generation: generation, operation: { try await self.get("/api/magician/v2/channel-assist/resurfacing/today", query: ["limit": "8", "include_diagnostics": "false"]) as ResurfacingPage }, apply: { self.applyResurfacing($0) })
+            async let followups: Void = loadSection("message_followups", generation: generation, operation: { try await self.get("/api/magician/v2/channel-assist/follow-ups", query: ["limit": "5", "include_diagnostics": "false"]) as ChannelFollowUpPage }, apply: { self.applyFollowUps($0) })
+            async let activity: Void = loadSection("activity", generation: generation, operation: { try await self.get("/api/magician/v2/feed", query: ["limit": "80"]) as TodayActivityResponse }, apply: { self.applyActivity($0); self.applyWire(feed: $0) })
+            async let briefings: Void = loadSection("briefings", generation: generation, operation: { try await self.get("/api/magician/v3/published-surfaces/projections", query: ["route": "/briefing", "limit": "8"]) as TodayBriefingsResponse }, apply: { self.applyBriefings($0) })
+            async let pulse: Void = loadSection("pulse", generation: generation, operation: { try await self.fetchPulse() }, apply: { self.applyPulse($0) })
+            async let updates: Void = loadSection("agent_updates", generation: generation, operation: { try await self.get("/api/magician/v2/agents/updates") as TodayAgentUpdatesResponse }, apply: { self.applyWire(updates: $0) })
+            async let count: Void = loadSection("event_count", generation: generation, operation: { try await self.fetchWireEventCount() }, apply: { self.applyWire(count: $0) })
+            _ = await (today, hidden, worth, followups, activity, briefings, pulse, updates, count)
+            if generation == fetchGeneration {
+                isLoading = false
+                reloadLoadedBroadsheetPages()
+            }
+        }
+    }
 
-                let todayResult = await today
-                guard generation == fetchGeneration else { return }
-                switch todayResult {
+    private func loadSection<T>(_ section: String, generation: Int,
+                                operation: () async throws -> T, apply: @MainActor (Result<T, Error>) -> Void) async {
+        let result = await captured(operation)
+        guard generation == fetchGeneration else { return }
+        apply(result)
+        settledSections.insert(section)
+        loadingSections.remove(section)
+    }
+
+    private func applyOverview(_ result: Result<TodayResponse, Error>) {
+                switch result {
                 case .success(let todayValue):
                     payload = todayValue
                     if let data = try? JSONEncoder().encode(todayValue),
@@ -2556,26 +2577,6 @@ final class TodayViewModel: ObservableObject {
                 case .failure(let failure):
                     error = Self.errorMessage(failure)
                 }
-                let hiddenResult = await hidden
-                let resurfacingResult = await resurfacing
-                let followUpsResult = await followups
-                let activityResult = await activity
-                let briefingResult = await briefingPage
-                let pulseResult = await pulseValue
-                let agentUpdatesResult = await agentUpdates
-                let eventCountResult = await eventCount
-                guard generation == fetchGeneration else { return }
-                applyHidden(hiddenResult)
-                applyResurfacing(resurfacingResult)
-                applyFollowUps(followUpsResult)
-                applyActivity(activityResult)
-                applyBriefings(briefingResult)
-                applyPulse(pulseResult)
-                applyWire(feed: activityResult, updates: agentUpdatesResult, count: eventCountResult)
-                reloadLoadedBroadsheetPages()
-            }
-            if generation == fetchGeneration { isLoading = false }
-        }
     }
 
     private func captured<T>(_ operation: () async throws -> T) async -> Result<T, Error> {
@@ -2589,7 +2590,7 @@ final class TodayViewModel: ObservableObject {
     private func applyResurfacing(_ result: Result<ResurfacingPage, Error>) {
         switch result {
         case .success(let value):
-            resurfacingCards = value.cards
+            resurfacingCards = worthPaged ? Self.merging(value.cards, resurfacingCards) : value.cards
             worthProjectionReference = value.canonicalProjectionReference
             optimisticResurfacingIDs = Set(optimisticResurfacingIDs.filter {
                 mutationCoordinator.isSuppressed(.resurfacing($0))
@@ -2601,7 +2602,7 @@ final class TodayViewModel: ObservableObject {
                     || (self.mutationCoordinator.isSuppressed(key) && rawIDs.contains(id))
             }.count
             resurfacingTotal = max(visibleResurfacingCards.count, value.total - projectedDecrements)
-            resurfacingCursor = value.nextCursor; sectionErrors[TodaySection.worthALook.rawValue] = nil
+            if !worthPaged || (resurfacingCursor == nil && value.total > visibleResurfacingCards.count) { resurfacingCursor = value.nextCursor }; sectionErrors[TodaySection.worthALook.rawValue] = nil
             refreshAttentionDelivery(
                 surface: "worth_a_look",
                 reference: value.canonicalProjectionReference,
@@ -2613,7 +2614,7 @@ final class TodayViewModel: ObservableObject {
     private func applyFollowUps(_ result: Result<ChannelFollowUpPage, Error>) {
         switch result {
         case .success(let value):
-            messageFollowUps = value.items
+            messageFollowUps = followUpsPaged ? Self.merging(value.items, messageFollowUps) : value.items
             followUpProjectionReference = value.canonicalProjectionReference
             optimisticFollowUpIDs = Set(optimisticFollowUpIDs.filter {
                 mutationCoordinator.isSuppressed(.channelFollowUp($0))
@@ -2625,7 +2626,7 @@ final class TodayViewModel: ObservableObject {
                     || (self.mutationCoordinator.isSuppressed(key) && rawIDs.contains(id))
             }.count
             messageFollowUpTotal = max(visibleMessageFollowUps.count, value.total - projectedDecrements)
-            messageFollowUpCursor = value.nextCursor; sectionErrors["message_followups"] = nil
+            if !followUpsPaged || (messageFollowUpCursor == nil && value.total > visibleMessageFollowUps.count) { messageFollowUpCursor = value.nextCursor }; sectionErrors["message_followups"] = nil
             refreshAttentionDelivery(
                 surface: "follow_up",
                 reference: value.canonicalProjectionReference,
@@ -2666,18 +2667,18 @@ final class TodayViewModel: ObservableObject {
     /// (its newest 15 rows, like web's `feed?limit=15`) plus agent updates.
     /// Live websocket events already on the wire are kept; each source
     /// fails soft on its own.
-    private func applyWire(feed: Result<TodayActivityResponse, Error>,
-                           updates: Result<TodayAgentUpdatesResponse, Error>,
-                           count: Result<Int, Error>) {
+    private func applyWire(feed: Result<TodayActivityResponse, Error>? = nil,
+                           updates: Result<TodayAgentUpdatesResponse, Error>? = nil,
+                           count: Result<Int, Error>? = nil) {
         var incoming: [TodayWireItem] = []
-        if case .success(let value) = feed {
+        if case .success(let value)? = feed {
             incoming += value.items.prefix(Self.wireFeedLimit).map { TodayMorningEdition.wireItem(fromFeed: $0) }
         }
-        if case .success(let value) = updates {
+        if case .success(let value)? = updates {
             incoming += value.events.map { TodayMorningEdition.wireItem(fromAgentUpdate: $0) }
         }
         if !incoming.isEmpty { wireItems = TodayMorningEdition.mergingWireItems(wireItems, incoming) }
-        if case .success(let value) = count { wireEventCount24h = value }
+        if case .success(let value)? = count { wireEventCount24h = value }
     }
 
     static let wireFeedLimit = 15
@@ -2744,9 +2745,11 @@ final class TodayViewModel: ObservableObject {
         }
     }
 
-    private func fetchNextResurfacingPage() async {
+    private func fetchNextResurfacingPage(ifNeeded: Bool = true) async {
+        guard ifNeeded else { return }
+        let requestedCursor = resurfacingCursor
         do {
-            var query = ["limit": "8"]
+            var query = ["limit": "8", "include_diagnostics": "false"]
             if let cursor = resurfacingCursor {
                 query["cursor_surfaced_at"] = String(cursor.surfacedAt)
                 query["cursor_score"] = String(cursor.score)
@@ -2762,7 +2765,10 @@ final class TodayViewModel: ObservableObject {
             }.count
             resurfacingTotal = max(visibleResurfacingCards.count, page.total - projectedDecrements)
             resurfacingCursor = page.nextCursor
-            sectionErrors[TodaySection.worthALook.rawValue] = nil
+            worthPaged = true
+            deckPageRevision += 1
+            sectionErrors[TodaySection.worthALook.rawValue] = page.nextCursor != nil && page.nextCursor == requestedCursor
+                ? "More cards did not advance. Retry loading." : nil
         } catch { sectionErrors[TodaySection.worthALook.rawValue] = Self.errorMessage(error) }
     }
 
@@ -2775,9 +2781,11 @@ final class TodayViewModel: ObservableObject {
         }
     }
 
-    private func fetchNextMessageFollowUpPage() async {
+    private func fetchNextMessageFollowUpPage(ifNeeded: Bool = true) async {
+        guard ifNeeded else { return }
+        let requestedCursor = messageFollowUpCursor
         do {
-            var query = ["limit": "5"]
+            var query = ["limit": "5", "include_diagnostics": "false"]
             if let cursor = messageFollowUpCursor { query["cursor"] = cursor }
             let page: ChannelFollowUpPage = try await get("/api/magician/v2/channel-assist/follow-ups", query: query)
             messageFollowUps = Self.merging(messageFollowUps, page.items)
@@ -2789,18 +2797,20 @@ final class TodayViewModel: ObservableObject {
             }.count
             messageFollowUpTotal = max(visibleMessageFollowUps.count, page.total - projectedDecrements)
             messageFollowUpCursor = page.nextCursor
-            sectionErrors["message_followups"] = nil
+            followUpsPaged = true
+            deckPageRevision += 1
+            sectionErrors["message_followups"] = page.nextCursor != nil && page.nextCursor == requestedCursor
+                ? "More cards did not advance. Retry loading." : nil
         } catch { sectionErrors["message_followups"] = Self.errorMessage(error) }
     }
 
-    /// Another follow-up page exists: the server said so AND handed back a
-    /// cursor (without one a "next page" would re-read page one).
+    /// A server cursor, rather than a loaded-count estimate, establishes the next page.
     var hasMoreMessageFollowUps: Bool {
-        messageFollowUpCursor != nil && visibleMessageFollowUpTotal > visibleMessageFollowUps.count
+        messageFollowUpCursor != nil
     }
 
     var hasMoreResurfacing: Bool {
-        resurfacingCursor != nil && visibleResurfacingTotal > visibleResurfacingCards.count
+        resurfacingCursor != nil
     }
 
     // MARK: Broadsheet server paging
@@ -2859,7 +2869,7 @@ final class TodayViewModel: ObservableObject {
                 case .worth:
                     let pageValue: ResurfacingPage = try await get(
                         "/api/magician/v2/channel-assist/resurfacing/today",
-                        query: ["limit": String(size), "offset": String((target - 1) * size)]
+                        query: ["limit": String(size), "offset": String((target - 1) * size), "include_diagnostics": "false"]
                     )
                     guard broadsheetGeneration[tab] == generation else { return }
                     // Past the end (the column shrank): land on the last page.
@@ -2902,7 +2912,7 @@ final class TodayViewModel: ObservableObject {
     }
 
     private func fetchFollowUpPage(cursor: String?, limit: Int) async throws -> ChannelFollowUpPage {
-        var query = ["limit": String(limit)]
+        var query = ["limit": String(limit), "include_diagnostics": "false"]
         if let cursor { query["cursor"] = cursor }
         return try await get("/api/magician/v2/channel-assist/follow-ups", query: query)
     }
@@ -2936,13 +2946,14 @@ final class TodayViewModel: ObservableObject {
     /// pull the next page of whichever source(s) still have one, through the
     /// same cursor paging the broadsheet's "Load more" uses.
     func loadMoreDeckCards(followUps: Bool = true, worth: Bool = true) {
-        let wantsFollowUps = followUps && hasMoreMessageFollowUps
-        let wantsWorth = worth && hasMoreResurfacing
-        guard !isDeckLoadingMore, actionItemID == nil, wantsFollowUps || wantsWorth else { return }
+        let wantsFollowUps = followUps && (hasMoreMessageFollowUps || sectionErrors["message_followups"] != nil)
+        let wantsWorth = worth && (hasMoreResurfacing || sectionErrors["worth_a_look"] != nil)
+        guard !isDeckLoadingMore, wantsFollowUps || wantsWorth else { return }
         isDeckLoadingMore = true
         Task {
-            if wantsFollowUps { await fetchNextMessageFollowUpPage() }
-            if wantsWorth { await fetchNextResurfacingPage() }
+            async let followups: Void = fetchNextMessageFollowUpPage(ifNeeded: wantsFollowUps)
+            async let worth: Void = fetchNextResurfacingPage(ifNeeded: wantsWorth)
+            _ = await (followups, worth)
             isDeckLoadingMore = false
         }
     }
@@ -3601,83 +3612,94 @@ final class TodayViewModel: ObservableObject {
 
     private func fetchPulse(now: Date = Date(), calendar: Calendar = .current) async throws -> TodayPulse {
         let boundaries = Self.localDayBoundaries(now: now, calendar: calendar)
-        async let llm = postQuery("/api/magician/v2/analytics/llm_calls/query", sql: Self.llmPulseSQL(boundaries))
-        async let coding = postQuery("/api/magician/v2/analytics/query", sql: Self.codingPulseSQL(boundaries))
-        async let memory = postQuery("/api/magician/v2/analytics/memory_events/query", sql: Self.memoryPulseSQL(boundaries))
-        async let tasks: PulseTaskPage = get("/api/magician/v3/tasks")
-        async let agents: TodayAgentsResponse = get("/api/magician/v2/agents")
+        let generation = fetchGeneration
+        var next = pulse ?? TodayPulse()
+        if pulse == nil { next.availableSlices = [] }
+        next.pendingSlices = ["llm", "coding", "memory", "tasks", "agents", "crew"]
+        var successful = 0
+        var agentPage: TodayAgentsResponse?
+        @MainActor func finish(_ slice: String, success: Bool) {
+            next.pendingSlices.remove(slice)
+            if success { next.availableSlices.insert(slice); successful += 1 }
+            if generation == self.fetchGeneration { self.pulse = next }
+        }
         let crewSince = Int64(now.timeIntervalSince1970 * 1_000) - TodayMorningEdition.crewWindowMS
         async let crewLLM = captured {
-            try await self.postQuery("/api/magician/v2/analytics/llm_calls/query",
-                                     sql: TodayMorningEdition.crewSQL(since: crewSince))
+            try await self.postQuery("/api/magician/v2/analytics/llm_calls/query", sql: TodayMorningEdition.crewSQL(since: crewSince))
         }
         async let crewTasks = captured { try await self.fetchCrewTasks(since: crewSince) }
-
-        var result = pulse ?? TodayPulse()
-        var successfulSlices = 0
-        if let response = try? await llm {
-            result.spendToday = 0; result.spendYesterday = 0; result.callsToday = 0; result.callsYesterday = 0
-            result.hourlySpend = Array(repeating: 0, count: 24); result.hourlyCalls = Array(repeating: 0, count: 24)
-            result.topModel = nil
-            Self.applyLLMPulse(response, to: &result); successfulSlices += 1
-        }
-        if let response = try? await coding { result.codingRunsToday = Int(Self.cell(response, row: 0, column: "n").number); successfulSlices += 1 }
-        if let response = try? await memory {
-            result.memoriesToday = 0; result.evalCasesToday = 0; result.evalPassesToday = 0
-            Self.applyMemoryPulse(response, to: &result); successfulSlices += 1
-        }
-        if let taskPage = try? await tasks {
-            result.tasksCompletedToday = 0; result.tasksCompletedYesterday = 0
-            for task in taskPage.tasks where task.status == "completed" {
-                guard let raw = task.updatedAt, let date = ISO8601DateFormatter().date(from: raw) else { continue }
-                let milliseconds = Int64(date.timeIntervalSince1970 * 1_000)
-                if milliseconds >= boundaries.today && milliseconds < boundaries.tomorrow { result.tasksCompletedToday += 1 }
-                else if milliseconds >= boundaries.yesterday && milliseconds < boundaries.today { result.tasksCompletedYesterday += 1 }
-            }
-            // Fleet panel buckets (web TodayNewspaperLedger): succeeded never
-            // reads below the completed-today pulse count.
-            let statuses = taskPage.tasks.map(\.status)
-            result.tasksSucceeded = max(statuses.filter { $0 == "completed" }.count, result.tasksCompletedToday)
-            result.tasksFailed = statuses.filter { $0 == "failed" }.count
-            result.tasksInFlight = statuses.filter { ["running", "paused", "planning"].contains($0) }.count
-            // State of Operations task list: the same read, newest first.
-            result.recentTasks = TodayMorningEdition.recentTasks(taskPage.tasks.compactMap { task in
-                guard let id = task.taskID, !id.isEmpty else { return nil }
-                return TodayRecentTask(
-                    id: id,
-                    title: TodayMorningEdition.firstNonEmpty(task.title) ?? "Untitled task",
-                    status: task.status,
-                    updatedAt: task.updatedAt.flatMap(TodayMorningEdition.epochMilliseconds(fromISO:)) ?? 0
-                )
-            })
-        }
-        // Fail-soft: a missing agents list keeps the last known counts.
-        let agentPage = try? await agents
-        if let agentPage {
-            result.agents = TodayMorningEdition.agentCounts(agentPage.agents)
-        }
-        // State of the Crew needs all three reads; otherwise it reports an
-        // error and keeps the last good crew.
+        async let llm: Void = loadSection("pulse_llm", generation: generation, operation: {
+            try await self.postQuery("/api/magician/v2/analytics/llm_calls/query", sql: Self.llmPulseSQL(boundaries))
+        }, apply: { incoming in
+            if case .success(let response) = incoming {
+                next.spendToday = 0; next.spendYesterday = 0; next.callsToday = 0; next.callsYesterday = 0
+                next.hourlySpend = Array(repeating: 0, count: 24); next.hourlyCalls = Array(repeating: 0, count: 24); next.topModel = nil
+                Self.applyLLMPulse(response, to: &next); finish("llm", success: true)
+            } else { finish("llm", success: false) }
+        })
+        async let coding: Void = loadSection("pulse_coding", generation: generation, operation: {
+            try await self.postQuery("/api/magician/v2/analytics/query", sql: Self.codingPulseSQL(boundaries))
+        }, apply: { incoming in
+            if case .success(let response) = incoming {
+                next.codingRunsToday = Int(Self.cell(response, row: 0, column: "n").number); finish("coding", success: true)
+            } else { finish("coding", success: false) }
+        })
+        async let memory: Void = loadSection("pulse_memory", generation: generation, operation: {
+            try await self.postQuery("/api/magician/v2/analytics/memory_events/query", sql: Self.memoryPulseSQL(boundaries))
+        }, apply: { incoming in
+            if case .success(let response) = incoming {
+                next.memoriesToday = 0; next.evalCasesToday = 0; next.evalPassesToday = 0
+                Self.applyMemoryPulse(response, to: &next); finish("memory", success: true)
+            } else { finish("memory", success: false) }
+        })
+        async let tasks: Void = loadSection("pulse_tasks", generation: generation, operation: {
+            try await self.get("/api/magician/v3/tasks") as PulseTaskPage
+        }, apply: { incoming in
+            if case .success(let page) = incoming {
+                next.tasksCompletedToday = 0; next.tasksCompletedYesterday = 0
+                for task in page.tasks where task.status == "completed" {
+                    guard let raw = task.updatedAt, let date = ISO8601DateFormatter().date(from: raw) else { continue }
+                    let milliseconds = Int64(date.timeIntervalSince1970 * 1_000)
+                    if milliseconds >= boundaries.today && milliseconds < boundaries.tomorrow { next.tasksCompletedToday += 1 }
+                    else if milliseconds >= boundaries.yesterday && milliseconds < boundaries.today { next.tasksCompletedYesterday += 1 }
+                }
+                let statuses = page.tasks.map(\.status)
+                next.tasksSucceeded = max(statuses.filter { $0 == "completed" }.count, next.tasksCompletedToday)
+                next.tasksFailed = statuses.filter { $0 == "failed" }.count
+                next.tasksInFlight = statuses.filter { ["running", "paused", "planning"].contains($0) }.count
+                next.recentTasks = TodayMorningEdition.recentTasks(page.tasks.compactMap { task in
+                    guard let id = task.taskID, !id.isEmpty else { return nil }
+                    return TodayRecentTask(id: id, title: TodayMorningEdition.firstNonEmpty(task.title) ?? "Untitled task", status: task.status,
+                        updatedAt: task.updatedAt.flatMap(TodayMorningEdition.epochMilliseconds(fromISO:)) ?? 0)
+                })
+                finish("tasks", success: true)
+            } else { finish("tasks", success: false) }
+        })
+        async let agents: Void = loadSection("pulse_agents", generation: generation, operation: {
+            try await self.get("/api/magician/v2/agents") as TodayAgentsResponse
+        }, apply: { incoming in
+            if case .success(let page) = incoming {
+                agentPage = page; next.agents = TodayMorningEdition.agentCounts(page.agents); finish("agents", success: true)
+            } else { finish("agents", success: false) }
+        })
+        _ = await (llm, coding, memory, tasks, agents)
         switch (agentPage, await crewLLM, await crewTasks) {
-        case (let agentPage?, .success(let llm), .success(let taskRows)):
+        case (let page?, .success(let llm), .success(let taskRows)):
             let rows = llm.rows.indices.compactMap { row -> TodayCrewLLMRow? in
                 let id = Self.cell(llm, row: row, column: "agent_id").text.trimmingCharacters(in: .whitespaces)
                 guard !id.isEmpty else { return nil }
-                return TodayCrewLLMRow(agentID: id,
-                                       calls: Int(Self.cell(llm, row: row, column: "calls").number),
-                                       costUSD: Self.cell(llm, row: row, column: "cost_usd").number,
-                                       okCalls: Int(Self.cell(llm, row: row, column: "ok_calls").number))
+                return TodayCrewLLMRow(agentID: id, calls: Int(Self.cell(llm, row: row, column: "calls").number),
+                    costUSD: Self.cell(llm, row: row, column: "cost_usd").number, okCalls: Int(Self.cell(llm, row: row, column: "ok_calls").number))
             }
-            result.crew = TodayMorningEdition.crewSummary(agents: agentPage.agents, llm: rows,
-                                                          tasks: taskRows, since: crewSince)
-            result.crewError = nil
+            next.crew = TodayMorningEdition.crewSummary(agents: page.agents, llm: rows, tasks: taskRows, since: crewSince)
+            next.crewError = nil; finish("crew", success: true)
         case (_, .failure(let failure), _), (_, _, .failure(let failure)):
-            result.crewError = Self.errorMessage(failure)
+            next.crewError = Self.errorMessage(failure); finish("crew", success: false)
         default:
-            result.crewError = "The crew roster is temporarily unavailable."
+            next.crewError = "The crew roster is temporarily unavailable."; finish("crew", success: false)
         }
-        if successfulSlices == 0 { throw NSError(domain: "TodayPulse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Today's pulse is temporarily unavailable."]) }
-        return result
+        if successful == 0 { throw NSError(domain: "TodayPulse", code: -1, userInfo: [NSLocalizedDescriptionKey: "Today's pulse is temporarily unavailable."]) }
+        return next
     }
 
     /// `/v3/tasks` newest-first pages for the crew window (max 5 pages).
@@ -3795,7 +3817,7 @@ final class TodayViewModel: ObservableObject {
     private func refreshMessageFollowUps() {
         Task {
             let result: Result<ChannelFollowUpPage, Error> = await captured {
-                try await self.get("/api/magician/v2/channel-assist/follow-ups", query: ["limit": "5"])
+                try await self.get("/api/magician/v2/channel-assist/follow-ups", query: ["limit": "5", "include_diagnostics": "false"])
             }
             applyFollowUps(result)
         }
@@ -3879,7 +3901,7 @@ private extension TodayViewModel {
     """#.utf8)
 
     static let uiTestResurfacingData = Data(#"""
-    {"cards":[{"candidate_id":"resurface-1","line":"Review travel policy","why_now":"It becomes effective tomorrow","source_title":"Travel policy","summary":"The reimbursement limit increased.","source_kind":"memory","source_ref":"policy:1","brief_status":"v2","brief":{"schema_version":2,"key_facts":["Limit is now $100"],"changes":[{"aspect":"Limit","before":"$75","after":"$100"}],"temporal_facts":[],"detail_status":"complete","missing_details":[]},"actions":[{"kind":"create_task","label":"Create task","requires_input":true,"side_effect":"creates_task"}]},
+    {"cards":[{"candidate_id":"resurface-1","surfaced_at":1783900800000,"line":"Review travel policy","why_now":"It becomes effective tomorrow","source_title":"Travel policy","summary":"The reimbursement limit increased.","source_kind":"memory","source_ref":"policy:1","brief_status":"v2","brief":{"schema_version":2,"key_facts":["Limit is now $100"],"changes":[{"aspect":"Limit","before":"$75","after":"$100"}],"temporal_facts":[],"detail_status":"complete","missing_details":[]},"actions":[{"kind":"create_task","label":"Create task","requires_input":true,"side_effect":"creates_task"}]},
       {"candidate_id":"resurface-2","line":"Vendor contract renewal","why_now":"Renewal window opens next week","source_title":"Vendor contract notes","summary":"Last year's renewal terms and the discount we negotiated.","source_kind":"project_note","source_ref":"note:2"}],"total":2}
     """#.utf8)
 

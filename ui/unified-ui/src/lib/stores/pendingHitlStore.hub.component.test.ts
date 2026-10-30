@@ -7,6 +7,7 @@ vi.mock('$lib/shared/fetch', () => ({ timedFetch: vi.fn(), LONG_FETCH_TIMEOUT_MS
 import { timedFetch } from '$lib/shared/fetch';
 import { eventHub } from '$lib/realtime/eventHub';
 import { ensurePendingHitlBridge, pendingHitlCount, teardownPendingHitlBridge } from './pendingHitlStore';
+import { setCurrentScopeBearerToken } from './scopeIdentityStore';
 
 const ask = (id: string) => ({
 	event_type: 'HitlRequested',
@@ -26,6 +27,15 @@ const ndjson = (frames: unknown[]) => frames.map((f) => JSON.stringify(f)).join(
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('pendingHitlStore on the event hub', () => {
+	it('discards the previous credential epoch even when account names stay the same', async () => {
+		backfillBody = ndjson([ask('old-credential')]);
+		ensurePendingHitlBridge(); await flush();
+		expect(get(pendingHitlCount)).toBe(1);
+		backfillBody = ndjson([]);
+		setCurrentScopeBearerToken('rotated-credential');
+		await flush(); await flush();
+		expect(get(pendingHitlCount)).toBe(0);
+	});
 	const urls: string[] = [];
 	let backfillBody = '';
 

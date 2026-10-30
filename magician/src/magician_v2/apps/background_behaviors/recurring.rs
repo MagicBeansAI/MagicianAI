@@ -347,14 +347,57 @@ impl AppBehaviorScheduler {
                 } else if !state.latest.settled {
                     item.state = "recovering".into();
                 }
-                if item.state != "blocked" && state.latest.error.is_some() {
-                    item.last_error = state.latest.error.clone();
-                }
+                item.last_error =
+                    recurring_health_last_error(&item.state, item.last_error.take(), state, now);
             }
             item.recurring = recurring;
         }
         Ok(())
     }
+}
+
+/// The reason a behavior's health shows. A blocked head keeps its own
+/// reason; otherwise the latest run's error wins. A period-ceiling error whose
+/// `deferred_until` has passed describes a closed period, so neither the run's
+/// copy nor the head's identical copy is shown any more.
+pub(super) fn recurring_health_last_error(
+    item_state: &str,
+    head_error: Option<String>,
+    state: &AppBehaviorRecurringState,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let expired = state
+        .latest
+        .deferred_until
+        .is_some_and(|deferred| deferred <= now);
+    if expired {
+        return head_error.filter(|error| Some(error) != state.latest.error.as_ref());
+    }
+    if item_state != "blocked" && state.latest.error.is_some() {
+        return state.latest.error.clone();
+    }
+    head_error
+}
+
+/// The longest a run of failures pushes a behavior's next fire out.
+const FAILED_RUN_BACKOFF_CEILING_SECONDS: u64 = 86_400;
+
+/// Delay before the next fire after the `consecutive_failures`-th failed run
+/// in a row: the interval, doubled per further failure (at most 64x) and
+/// capped at a day, but never shorter than the interval itself.
+pub(super) fn failed_run_delay_seconds(
+    interval: u64,
+    consecutive_failures: u32,
+) -> Result<i64, AppBehaviorSchedulerError> {
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    let multiplier = 1_u64
+        .checked_shl(exponent)
+        .ok_or(AppBehaviorSchedulerError::CorruptState)?;
+    let delay = interval
+        .saturating_mul(multiplier)
+        .min(FAILED_RUN_BACKOFF_CEILING_SECONDS)
+        .max(interval);
+    i64::try_from(delay).map_err(|_| AppBehaviorSchedulerError::CorruptState)
 }
 
 fn persist_recurring_observation(
@@ -406,10 +449,27 @@ fn persist_recurring_observation(
             .latest
             .completed_at
             .ok_or(AppBehaviorSchedulerError::CorruptState)?;
+        // A failed run backs off: a run that fails on every fire (a provider
+        // rejecting each request, a broken recipe) otherwise relaunches on the
+        // interval forever. Completed and partial runs keep the interval.
+        let delay = if state.latest.status == "failed" {
+            let failures: Option<i64> = transaction
+                .query_row(
+                    "SELECT consecutive_failures FROM app_behavior_heads
+                     WHERE installation_id = ?1 AND behavior_id = ?2",
+                    params![installation_id.as_str(), behavior_id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let failures = failures
+                .and_then(|failures| u32::try_from(failures).ok())
+                .unwrap_or(0);
+            failed_run_delay_seconds(interval, failures.saturating_add(1).min(64))?
+        } else {
+            i64::try_from(interval).map_err(|_| AppBehaviorSchedulerError::CorruptState)?
+        };
         let interval_next = completed
-            .checked_add_signed(Duration::seconds(
-                i64::try_from(interval).map_err(|_| AppBehaviorSchedulerError::CorruptState)?,
-            ))
+            .checked_add_signed(Duration::seconds(delay))
             .ok_or(AppBehaviorSchedulerError::CorruptState)?;
         // A run that died on a period ceiling parks the behavior until the
         // period ends. Relaunching on the interval only reproduces the

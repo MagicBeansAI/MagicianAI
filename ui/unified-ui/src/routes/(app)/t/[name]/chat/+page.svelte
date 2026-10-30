@@ -4,15 +4,17 @@
 
 	// Chat tab of the thread workspace. The shared <ChatPanel/> (also used by
 	// /chat) owns all chat chrome — ContextPill, FloatingComposer, sessions,
-	// voice, and its own execution inspection — scoped to this thread via the
-	// `threadId` prop. The thread shell lives in ../+layout.svelte.
+	// voice, the chat history rail, and its own execution inspection — scoped
+	// to this thread via the `threadId` prop. Not `embedded`: that hides the
+	// rail, and every session the rail opens lands on this route. The thread
+	// shell lives in ../+layout.svelte.
 	const threadPage = getThreadPageContext();
 	$: threadName = $threadPage.threadName;
 	$: threadDisplayName = $threadPage.threadDisplayName;
 </script>
 
 <div class="thread-chat-panel">
-	<ChatPanel threadId={threadName} embedded={true} pageTitle={`#${threadDisplayName} · Magican`} />
+	<ChatPanel threadId={threadName} pageTitle={`#${threadDisplayName} · Magican`} />
 </div>
 
 <style>
@@ -22,8 +24,9 @@
 		display: flex;
 	}
 
-	.thread-chat-panel :global(.chat-page--embedded) {
+	.thread-chat-panel :global(.chat-page) {
 		flex: 1 1 auto;
+		width: 100%;
 		min-width: 0;
 		min-height: 0;
 	}

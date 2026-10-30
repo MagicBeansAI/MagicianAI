@@ -28,6 +28,13 @@ class PrimaryAgentWakeIdentityTest {
     }
 
     @Test
+    fun `display name prefers the name, then an alias, then the product name`() {
+        assertEquals("Atlas", primaryAgentDisplayName(PrimaryAgentWakeIdentity("pa", " Atlas ", listOf("Nova"))))
+        assertEquals("Nova", primaryAgentDisplayName(PrimaryAgentWakeIdentity("pa", "  ", listOf("", "Nova"))))
+        assertEquals(ai.magicbeans.magdroid.identity.ProductIdentity.productName, primaryAgentDisplayName(null))
+    }
+
+    @Test
     fun `primary identity decodes from the scoped agent envelope`() {
         val decoded = decodePrimaryAgent(
             """{"agents":[

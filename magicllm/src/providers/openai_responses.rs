@@ -5,7 +5,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
@@ -95,6 +94,104 @@ pub enum ResponsesDialect {
     Xai,
 }
 
+/// FALLBACK for models absent from the model catalog; catalogued models
+/// declare `wire.sampling` instead. OpenAI reasoning models (gpt-5+, o1*,
+/// o3*) reject temperature/top_p.
+pub(crate) fn uncatalogued_rejects_sampling(model: &str) -> bool {
+    let basename = super::openai_model_basename(model);
+    super::openai_gpt_family_from_5(model)
+        || basename.starts_with("o1")
+        || basename.starts_with("o3")
+}
+
+/// How many responses' function-call ids [`remember_response_function_calls`]
+/// keeps. A chain only ever continues from a recent response.
+const PENDING_CALL_REGISTRY_CAPACITY: usize = 4096;
+
+/// The `function_call` ids each parsed response made, by response id.
+///
+/// A continuation (`previous_response_id`) must answer EVERY call that
+/// response made, or the request is rejected ("No tool output found for
+/// function call …"). The caller's transcript does not mark which assistant
+/// message that response was: a turn its loop issued without a model call (a
+/// Decision Engine step) reads the same. Remembering the calls lets the delta
+/// start at the right message and lets the final pairing check answer any
+/// call the transcript left without a result. Process-local and bounded: an
+/// id it no longer knows (a restart, eviction) keeps the last-assistant
+/// anchor.
+#[derive(Default)]
+struct PendingCallRegistry {
+    order: std::collections::VecDeque<String>,
+    calls: HashMap<String, Vec<String>>,
+}
+
+fn pending_call_registry() -> &'static std::sync::Mutex<PendingCallRegistry> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Mutex<PendingCallRegistry>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(Default::default)
+}
+
+/// Record the `function_call` ids of a parsed Responses payload under its id.
+fn remember_response_function_calls(payload: &Value) {
+    let Some(response_id) = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    let call_ids: Vec<String> = payload
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+                .filter_map(|item| {
+                    item.get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)
+                })
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let Ok(mut registry) = pending_call_registry().lock() else {
+        return;
+    };
+    if registry
+        .calls
+        .insert(response_id.to_string(), call_ids)
+        .is_none()
+    {
+        registry.order.push_back(response_id.to_string());
+        while registry.order.len() > PENDING_CALL_REGISTRY_CAPACITY {
+            if let Some(evicted) = registry.order.pop_front() {
+                registry.calls.remove(&evicted);
+            }
+        }
+    }
+}
+
+/// The `function_call` ids a remembered response made, `None` when unknown.
+fn remembered_response_function_calls(response_id: &str) -> Option<Vec<String>> {
+    let registry = pending_call_registry().lock().ok()?;
+    registry.calls.get(response_id.trim()).cloned()
+}
+
+/// Whether a Responses stream event is output: a `*.delta` (text, reasoning
+/// summary, refusal, tool-call arguments) or a finished item or part. An item
+/// merely opened (`output_item.added`, e.g. a reasoning item), a web search
+/// still `in_progress` / `searching`, and the lifecycle events are not, so a
+/// model reasoning silently stays under the first-output bound instead of
+/// starting the idle clock.
+fn responses_event_is_output(event_type: &str) -> bool {
+    event_type.ends_with(".delta")
+        || event_type.ends_with(".done")
+        || (event_type.ends_with(".completed") && event_type != "response.completed")
+}
+
 impl OpenAIResponsesProvider {
     fn max_tokens_retry_attempt(request: &LLMRequest) -> u64 {
         request
@@ -120,19 +217,7 @@ impl OpenAIResponsesProvider {
 
     fn should_retry_max_tokens(response: &LLMResponse) -> bool {
         response.finish_reason.as_deref() == Some("incomplete")
-            && response
-                .raw_response
-                .as_ref()
-                .and_then(|payload| payload.get("incomplete_details"))
-                .and_then(|details| details.get("reason"))
-                .and_then(Value::as_str)
-                .map(|reason| {
-                    matches!(
-                        reason,
-                        "max_output_tokens" | "max_completion_tokens" | "max_tokens"
-                    )
-                })
-                .unwrap_or(false)
+            && response.stopped_at_output_limit()
     }
 
     fn is_excessive_max_tokens_error(error: &LLMError) -> bool {
@@ -354,6 +439,155 @@ impl OpenAIResponsesProvider {
         previous_response_id: Option<&str>,
         explicit_cache_breakpoint: bool,
     ) -> LLMResult<Vec<Value>> {
+        let chain_calls = previous_response_id.and_then(remembered_response_function_calls);
+        Self::map_messages_with_chain_calls(
+            messages,
+            previous_response_id,
+            chain_calls.as_deref(),
+            explicit_cache_breakpoint,
+        )
+    }
+
+    /// The assistant message a continuation delta starts after.
+    ///
+    /// The chain's response is the assistant message carrying one of the
+    /// calls it made (`chain_calls`, when remembered). Turns after it that
+    /// the caller's loop issued without a model call are not in the chain,
+    /// so they go in the delta as `function_call` + output pairs. Without
+    /// remembered calls — or when that message is gone from the transcript —
+    /// the last assistant message is the anchor.
+    fn continuation_anchor(
+        messages: &[LLMMessage],
+        chain_calls: Option<&[String]>,
+    ) -> Option<usize> {
+        let last_assistant = messages
+            .iter()
+            .rposition(|message| message.role == MessageRole::Assistant);
+        let Some(chain_calls) = chain_calls.filter(|calls| !calls.is_empty()) else {
+            return last_assistant;
+        };
+        messages
+            .iter()
+            .rposition(|message| {
+                message.role == MessageRole::Assistant
+                    && message.content.iter().any(|block| {
+                        matches!(block, ContentBlock::ToolCall { id, .. }
+                            if chain_calls.iter().any(|call| call == id))
+                    })
+            })
+            .or(last_assistant)
+    }
+
+    /// Every `function_call` in the request gets exactly one
+    /// `function_call_output` with its `call_id`: a later duplicate output
+    /// is dropped, and a call with none is answered with
+    /// [`super::MISSING_TOOL_RESULT_TEXT`] at the end of its run of tool
+    /// items. `chain_calls` are the calls the continued response made; they
+    /// are answered at the start of the input when the delta lacks them.
+    /// An output whose call is in neither is left alone — a pre-sliced
+    /// delta answers a chain call this adapter does not remember.
+    fn pair_function_calls(payload: Vec<Value>, chain_calls: &[String]) -> Vec<Value> {
+        use std::collections::HashSet;
+
+        fn item_type(item: &Value) -> Option<&str> {
+            item.get("type").and_then(Value::as_str)
+        }
+        fn call_id(item: &Value) -> Option<&str> {
+            item.get("call_id").and_then(Value::as_str)
+        }
+        fn missing_output(call_id: &str) -> Value {
+            json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": super::MISSING_TOOL_RESULT_TEXT,
+            })
+        }
+        fn flush_open(
+            out: &mut Vec<Value>,
+            open: &mut Vec<String>,
+            answered: &mut HashSet<String>,
+            synthesized: &mut usize,
+        ) {
+            for id in open.drain(..) {
+                if answered.insert(id.clone()) {
+                    out.push(missing_output(&id));
+                    *synthesized += 1;
+                }
+            }
+        }
+
+        // One output per call id: the first one stands.
+        let mut answered: HashSet<String> = HashSet::new();
+        let mut dropped_duplicates = 0usize;
+        let mut kept: Vec<Value> = Vec::with_capacity(payload.len());
+        for item in payload {
+            if item_type(&item) == Some("function_call_output") {
+                if let Some(id) = call_id(&item) {
+                    if !answered.insert(id.to_string()) {
+                        dropped_duplicates += 1;
+                        continue;
+                    }
+                }
+            }
+            kept.push(item);
+        }
+
+        // A chain call the input itself replays is paired where it stands.
+        let replayed_calls: HashSet<&str> = kept
+            .iter()
+            .filter(|item| item_type(item) == Some("function_call"))
+            .filter_map(call_id)
+            .collect();
+        let chain_pending: Vec<String> = chain_calls
+            .iter()
+            .filter(|id| !replayed_calls.contains(id.as_str()))
+            .cloned()
+            .collect();
+        drop(replayed_calls);
+
+        let mut synthesized = 0usize;
+        let mut out: Vec<Value> = Vec::with_capacity(kept.len() + chain_pending.len());
+        for id in &chain_pending {
+            if answered.insert(id.clone()) {
+                out.push(missing_output(id));
+                synthesized += 1;
+            }
+        }
+        let mut open: Vec<String> = Vec::new();
+        for item in kept {
+            let kind = item_type(&item);
+            let in_tool_run = matches!(kind, Some("function_call" | "function_call_output"));
+            if !in_tool_run {
+                flush_open(&mut out, &mut open, &mut answered, &mut synthesized);
+            }
+            if kind == Some("function_call") {
+                if let Some(id) = call_id(&item) {
+                    if !answered.contains(id) && !open.iter().any(|pending| pending == id) {
+                        open.push(id.to_string());
+                    }
+                }
+            }
+            out.push(item);
+        }
+        flush_open(&mut out, &mut open, &mut answered, &mut synthesized);
+
+        if synthesized > 0 || dropped_duplicates > 0 {
+            warn!(
+                provider = "openai_responses",
+                synthesized_outputs = synthesized,
+                dropped_duplicate_outputs = dropped_duplicates,
+                "paired every function_call with exactly one function_call_output before sending"
+            );
+        }
+        out
+    }
+
+    fn map_messages_with_chain_calls(
+        messages: &[LLMMessage],
+        previous_response_id: Option<&str>,
+        chain_calls: Option<&[String]>,
+        explicit_cache_breakpoint: bool,
+    ) -> LLMResult<Vec<Value>> {
         // Continuation mode: when `previous_response_id` is set, the OpenAI
         // Responses API already has the prior conversation server-side. Per
         // the docs (Migrate to Responses guide; Conversation State guide),
@@ -372,11 +606,15 @@ impl OpenAIResponsesProvider {
         // or local state diverged), fall back to standard mode for safety.
         // Scope: this branch only fires when previous_response_id is set,
         // so non-chained Responses calls and other transports are untouched.
+        //
+        // The anchor is the chain response's own message when its calls are
+        // remembered (`continuation_anchor`): assistant turns the caller's
+        // loop issued after it without a model call are not in the chain, so
+        // the suffix after the LAST assistant would drop the output the chain
+        // is waiting for (live 2026-10-20: two Decision Engine steps after a
+        // model turn → 400 "No tool output found for function call").
         let effective_messages: Vec<&LLMMessage> = match previous_response_id {
-            Some(_) => match messages
-                .iter()
-                .rposition(|m| m.role == MessageRole::Assistant)
-            {
+            Some(_) => match Self::continuation_anchor(messages, chain_calls) {
                 // Suffix has at least one new input item — preferred path.
                 Some(idx) if idx + 1 < messages.len() => messages[(idx + 1)..].iter().collect(),
                 // No Assistant at all: the caller already sliced the payload
@@ -513,7 +751,13 @@ impl OpenAIResponsesProvider {
             flush_text(&mut payload, &mut pending_text_items, role);
         }
 
-        Ok(payload)
+        // Final invariant, whatever shape the caller sent: no call leaves
+        // unanswered. A chain's own calls only count in continuation mode.
+        let chain_calls = match previous_response_id {
+            Some(_) => chain_calls.unwrap_or_default(),
+            None => &[],
+        };
+        Ok(Self::pair_function_calls(payload, chain_calls))
     }
 
     /// Whether the local transcript has an unambiguous delta after the
@@ -731,14 +975,16 @@ impl OpenAIResponsesProvider {
         tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 // The Responses API (/v1/responses) uses a flat tool object with
                 // top-level name/description/parameters — NOT the nested
                 // {"type":"function","function":{...}} format used by Chat Completions.
                 json!({
                     "type": "function",
                     "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
+                    "description": description,
+                    "parameters": parameters,
                 })
             })
             .collect()
@@ -789,9 +1035,9 @@ impl OpenAIResponsesProvider {
         // medium / high / xhigh). `max_reasoning_tokens` on the
         // `ReasoningConfig` struct is intentionally kept for YAML
         // compatibility but is no longer forwarded to the API.
-        if let Some(strategy) = reasoning.strategy.as_ref() {
-            object.insert("strategy".to_string(), Value::String(strategy.clone()));
-        }
+        // `strategy` selects an internal adapter policy (for example the
+        // catalog's `native_effort`); it is not a Responses API parameter.
+        // Keep it out of sync, streaming and fallback requests alike.
         // Ask for a reasoning summary when reasoning is enabled. Without this, the
         // Responses API bills `reasoning_tokens` but returns no
         // `output[].type == "reasoning"` summary text — so
@@ -1200,6 +1446,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gpt_6_1_terra_keeps_off_and_max_efforts_with_function_tools() {
+        let provider = OpenAIResponsesProvider::new("test-key");
+        for effort in ["none", "max"] {
+            let request = LLMRequest {
+                model: "gpt-6.1-terra".into(),
+                messages: vec![LLMMessage::user("inspect the document")].into(),
+                reasoning: Some(ReasoningConfig {
+                    effort: Some(effort.into()),
+                    ..Default::default()
+                }),
+                tools: vec![LLMToolSpec {
+                    name: "read_file".into(),
+                    description: "read".into(),
+                    parameters: json!({"type": "object"}),
+                }]
+                .into(),
+                ..Default::default()
+            };
+            let (body, _) = provider
+                .build_responses_request_body(&request, &request.model)
+                .unwrap();
+            assert_eq!(body["reasoning"]["effort"], effort);
+            assert_eq!(body["tools"][0]["type"], "function");
+            assert_eq!(body["tools"][0]["name"], "read_file");
+            assert!(body.get("temperature").is_none());
+            assert!(body.get("top_p").is_none());
+        }
+    }
+
+    #[test]
     fn gpt_6_1_sol_responses_preserves_low_reasoning_and_tool_support() {
         let caps = OpenAIResponsesProvider::capabilities_for_model("gpt-6.1-sol");
         assert!(caps.modalities.contains(&LLMModality::Vision));
@@ -1334,6 +1610,352 @@ mod tests {
             .expect("body builds");
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tool_choice"], "required");
+    }
+
+    fn tool_call_block(id: &str, name: &str) -> ContentBlock {
+        ContentBlock::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: json!({}),
+        }
+    }
+
+    fn tool_result_block(id: &str, output: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_call_id: id.to_string(),
+            content: Value::String(output.to_string()),
+        }
+    }
+
+    fn text_block(text: &str) -> ContentBlock {
+        ContentBlock::Text {
+            text: text.to_string(),
+        }
+    }
+
+    fn message(role: MessageRole, content: Vec<ContentBlock>) -> LLMMessage {
+        LLMMessage { role, content }
+    }
+
+    /// `(type, call_id)` per item, `("message:<role>", "")` for messages.
+    fn item_shape(items: &[Value]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|item| match item.get("type").and_then(Value::as_str) {
+                Some(kind) => (
+                    kind.to_string(),
+                    item["call_id"].as_str().unwrap_or_default().to_string(),
+                ),
+                None => (
+                    format!("message:{}", item["role"].as_str().unwrap_or_default()),
+                    String::new(),
+                ),
+            })
+            .collect()
+    }
+
+    fn outputs_for<'a>(items: &'a [Value], call_id: &str) -> Vec<&'a Value> {
+        items
+            .iter()
+            .filter(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
+            .collect()
+    }
+
+    #[test]
+    fn a_parallel_call_without_a_result_is_answered_in_the_same_request() {
+        let messages = vec![
+            message(MessageRole::User, vec![text_block("do two things")]),
+            message(
+                MessageRole::Assistant,
+                vec![
+                    tool_call_block("call_a", "apply_code_proposal"),
+                    tool_call_block("call_b", "run_project_checks"),
+                ],
+            ),
+            message(
+                MessageRole::User,
+                vec![tool_result_block("call_a", "applied"), text_block("state")],
+            ),
+        ];
+
+        let mapped = OpenAIResponsesProvider::map_messages(&messages, None, false).expect("maps");
+
+        assert_eq!(
+            item_shape(&mapped),
+            vec![
+                ("message:user".to_string(), String::new()),
+                ("function_call".to_string(), "call_a".to_string()),
+                ("function_call".to_string(), "call_b".to_string()),
+                ("function_call_output".to_string(), "call_a".to_string()),
+                ("function_call_output".to_string(), "call_b".to_string()),
+                ("message:user".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(outputs_for(&mapped, "call_a")[0]["output"], "applied");
+        let missing = outputs_for(&mapped, "call_b");
+        assert_eq!(missing.len(), 1);
+        assert_eq!(
+            missing[0]["output"],
+            crate::providers::MISSING_TOOL_RESULT_TEXT
+        );
+    }
+
+    #[test]
+    fn a_refused_call_with_no_result_is_answered_and_a_duplicate_output_dropped() {
+        let messages = vec![
+            message(MessageRole::User, vec![text_block("go")]),
+            message(
+                MessageRole::Assistant,
+                vec![tool_call_block("call_refused", "delete_everything")],
+            ),
+            // The loop refused the call and only said so in text.
+            message(MessageRole::User, vec![text_block("that call was refused")]),
+            message(
+                MessageRole::Assistant,
+                vec![tool_call_block("call_ok", "read")],
+            ),
+            message(
+                MessageRole::User,
+                vec![
+                    tool_result_block("call_ok", "first"),
+                    tool_result_block("call_ok", "second"),
+                ],
+            ),
+        ];
+
+        let mapped = OpenAIResponsesProvider::map_messages(&messages, None, false).expect("maps");
+
+        assert_eq!(
+            item_shape(&mapped),
+            vec![
+                ("message:user".to_string(), String::new()),
+                ("function_call".to_string(), "call_refused".to_string()),
+                (
+                    "function_call_output".to_string(),
+                    "call_refused".to_string()
+                ),
+                ("message:user".to_string(), String::new()),
+                ("function_call".to_string(), "call_ok".to_string()),
+                ("function_call_output".to_string(), "call_ok".to_string()),
+            ]
+        );
+        assert_eq!(
+            outputs_for(&mapped, "call_refused")[0]["output"],
+            crate::providers::MISSING_TOOL_RESULT_TEXT
+        );
+        assert_eq!(outputs_for(&mapped, "call_ok")[0]["output"], "first");
+    }
+
+    #[test]
+    fn a_fully_paired_history_maps_exactly_as_before() {
+        let messages = vec![
+            LLMMessage::system("sys"),
+            message(MessageRole::User, vec![text_block("go")]),
+            message(
+                MessageRole::Assistant,
+                vec![text_block("calling"), tool_call_block("call_1", "read")],
+            ),
+            message(
+                MessageRole::User,
+                vec![tool_result_block("call_1", "ok"), text_block("next")],
+            ),
+        ];
+
+        let mapped = OpenAIResponsesProvider::map_messages(&messages, None, false).expect("maps");
+
+        assert_eq!(
+            Value::Array(mapped),
+            json!([
+                {"role": "system", "content": [{"type": "input_text", "text": "sys"}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "go"}]},
+                {"role": "assistant", "content": [{"type": "output_text", "text": "calling"}]},
+                {"type": "function_call", "call_id": "call_1", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+                {"role": "user", "content": [{"type": "input_text", "text": "next"}]},
+            ])
+        );
+    }
+
+    /// Live 2026-10-20: a model turn, then two Decision Engine steps the loop
+    /// issued without a model call, then a continuation from the model
+    /// turn's response. The suffix after the LAST assistant message dropped
+    /// `call_model`'s output → 400 "No tool output found for function call".
+    #[test]
+    fn a_continuation_after_loop_issued_turns_starts_at_the_chain_response() {
+        let messages = vec![
+            LLMMessage::system("sys"),
+            message(
+                MessageRole::Assistant,
+                vec![tool_call_block("call_model", "run_coding_task")],
+            ),
+            message(
+                MessageRole::User,
+                vec![tool_result_block("call_model", "proposal")],
+            ),
+            message(
+                MessageRole::Assistant,
+                vec![
+                    text_block("Decision Engine: apply"),
+                    tool_call_block("decision:2:apply_code_proposal", "apply_code_proposal"),
+                ],
+            ),
+            message(
+                MessageRole::User,
+                vec![tool_result_block(
+                    "decision:2:apply_code_proposal",
+                    "applied",
+                )],
+            ),
+            message(
+                MessageRole::Assistant,
+                vec![tool_call_block(
+                    "decision:3:run_project_checks",
+                    "run_project_checks",
+                )],
+            ),
+            message(
+                MessageRole::User,
+                vec![
+                    tool_result_block("decision:3:run_project_checks", "passed"),
+                    text_block("## CONTINUATION DELTA"),
+                ],
+            ),
+        ];
+        let chain_calls = vec!["call_model".to_string()];
+
+        let mapped = OpenAIResponsesProvider::map_messages_with_chain_calls(
+            &messages,
+            Some("resp_model_turn"),
+            Some(chain_calls.as_slice()),
+            false,
+        )
+        .expect("maps");
+
+        assert_eq!(
+            item_shape(&mapped),
+            vec![
+                ("function_call_output".to_string(), "call_model".to_string()),
+                ("message:assistant".to_string(), String::new()),
+                (
+                    "function_call".to_string(),
+                    "decision:2:apply_code_proposal".to_string()
+                ),
+                (
+                    "function_call_output".to_string(),
+                    "decision:2:apply_code_proposal".to_string()
+                ),
+                (
+                    "function_call".to_string(),
+                    "decision:3:run_project_checks".to_string()
+                ),
+                (
+                    "function_call_output".to_string(),
+                    "decision:3:run_project_checks".to_string()
+                ),
+                ("message:user".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(outputs_for(&mapped, "call_model")[0]["output"], "proposal");
+
+        // Without the remembered calls the old anchor is kept.
+        let unknown = OpenAIResponsesProvider::map_messages_with_chain_calls(
+            &messages,
+            Some("resp_model_turn"),
+            None,
+            false,
+        )
+        .expect("maps");
+        assert_eq!(
+            item_shape(&unknown)[0],
+            (
+                "function_call_output".to_string(),
+                "decision:3:run_project_checks".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_continuation_answers_a_chain_call_the_delta_lacks() {
+        let messages = vec![
+            message(
+                MessageRole::Assistant,
+                vec![
+                    tool_call_block("call_x", "apply_code_proposal"),
+                    tool_call_block("call_y", "run_project_checks"),
+                ],
+            ),
+            message(
+                MessageRole::User,
+                vec![tool_result_block("call_x", "applied"), text_block("delta")],
+            ),
+        ];
+        let chain_calls = vec!["call_x".to_string(), "call_y".to_string()];
+
+        let mapped = OpenAIResponsesProvider::map_messages_with_chain_calls(
+            &messages,
+            Some("resp_parallel"),
+            Some(chain_calls.as_slice()),
+            false,
+        )
+        .expect("maps");
+
+        assert_eq!(
+            item_shape(&mapped),
+            vec![
+                ("function_call_output".to_string(), "call_y".to_string()),
+                ("function_call_output".to_string(), "call_x".to_string()),
+                ("message:user".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(
+            outputs_for(&mapped, "call_y")[0]["output"],
+            crate::providers::MISSING_TOOL_RESULT_TEXT
+        );
+        assert_eq!(outputs_for(&mapped, "call_x")[0]["output"], "applied");
+    }
+
+    #[test]
+    fn a_parsed_response_remembers_its_function_calls_for_the_next_continuation() {
+        let response_id = "resp_pairing_registry_roundtrip_7f3c";
+        remember_response_function_calls(&json!({
+            "id": response_id,
+            "output": [
+                {"type": "reasoning", "id": "rs_1"},
+                {"type": "function_call", "id": "fc_1", "call_id": "call_reg", "name": "read", "arguments": "{}"},
+                {"type": "message", "role": "assistant", "content": []},
+            ],
+        }));
+        assert_eq!(
+            remembered_response_function_calls(response_id),
+            Some(vec!["call_reg".to_string()])
+        );
+        assert_eq!(
+            remembered_response_function_calls("resp_never_seen_pairing"),
+            None
+        );
+
+        let messages = vec![
+            message(
+                MessageRole::Assistant,
+                vec![tool_call_block("call_reg", "read")],
+            ),
+            message(MessageRole::User, vec![tool_result_block("call_reg", "ok")]),
+            message(
+                MessageRole::Assistant,
+                vec![tool_call_block("decision:2:read", "read")],
+            ),
+            message(
+                MessageRole::User,
+                vec![tool_result_block("decision:2:read", "ok2")],
+            ),
+        ];
+        let mapped = OpenAIResponsesProvider::map_messages(&messages, Some(response_id), false)
+            .expect("maps");
+        assert_eq!(
+            item_shape(&mapped)[0],
+            ("function_call_output".to_string(), "call_reg".to_string())
+        );
+        assert_eq!(outputs_for(&mapped, "decision:2:read").len(), 1);
     }
 
     #[test]
@@ -2167,6 +2789,24 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_payload_keeps_catalog_strategy_and_token_budget_internal() {
+        for effort in ["low", "medium", "high", "xhigh", "max"] {
+            let payload = OpenAIResponsesProvider::reasoning_payload_for_request(
+                "gpt-6.1-sol",
+                Some(&ReasoningConfig {
+                    effort: Some(effort.to_string()),
+                    max_reasoning_tokens: Some(4096),
+                    strategy: Some("native_effort".to_string()),
+                    summary: Some("concise".to_string()),
+                }),
+            )
+            .expect("reasoning payload");
+
+            assert_eq!(payload, json!({"effort": effort, "summary": "concise"}));
+        }
+    }
+
+    #[test]
     fn reasoning_payload_omits_summary_for_explicit_none() {
         let payload = OpenAIResponsesProvider::reasoning_payload_for_request(
             "gpt-5.6-terra",
@@ -2269,7 +2909,14 @@ impl LLMProvider for OpenAIResponsesProvider {
             "constructed OpenAI Responses request payload"
         );
 
-        if request.stream {
+        // Plain calls stream too, so a long answer that is still producing is
+        // bounded by progress, not cut at the request timeout; the
+        // `response.completed` event carries the same response object a plain
+        // call returns. A `background` response is the exception: a plain
+        // call returns it queued at once, while streaming it would wait for
+        // the result.
+        let background = body.get("background").and_then(Value::as_bool) == Some(true);
+        if request.stream || !background {
             body.insert("stream".to_string(), Value::Bool(true));
             info!(
                 provider = "openai_responses",
@@ -2283,7 +2930,9 @@ impl LLMProvider for OpenAIResponsesProvider {
             // `invoke_stream` override below, which builds the same
             // body and forwards the channel handle into
             // `invoke_streaming`.
-            return self.invoke_streaming(request, body, timeout, None).await;
+            return self
+                .invoke_streaming_with_max_tokens_retry(request, body, timeout, None)
+                .await;
         }
 
         let response = self
@@ -2358,6 +3007,7 @@ impl LLMProvider for OpenAIResponsesProvider {
             }
         }
 
+        remember_response_function_calls(&payload);
         let (messages, tool_calls, tool_results, text, reasoning_text) =
             Self::parse_output(&payload)?;
 
@@ -2532,7 +3182,7 @@ impl LLMProvider for OpenAIResponsesProvider {
         body.insert("stream".to_string(), Value::Bool(true));
 
         let response = self
-            .invoke_streaming(request, body, timeout, Some(&tx))
+            .invoke_streaming_with_max_tokens_retry(request, body, timeout, Some(&tx))
             .await?;
         // Send the canonical Done frame so downstream consumers can
         // settle the turn (assemble the final response, fire
@@ -2671,16 +3321,14 @@ impl OpenAIResponsesProvider {
             }
         }
 
-        // OpenAI reasoning models (o1, o1-mini, gpt-5, gpt-6, etc.) don't
-        // support temperature/top_p. Skip these params if:
-        // 1. A reasoning config is explicitly set, OR
-        // 2. The model is a reasoning model (gpt-5+, o1*, o3*)
-        let basename = super::openai_model_basename(&model);
-        let is_reasoning_model = super::openai_gpt_family_from_5(&model)
-            || basename.starts_with("o1")
-            || basename.starts_with("o3");
+        // Skip temperature/top_p when a reasoning config is set or the model
+        // rejects them (catalog `wire.sampling`, else the name fallback).
+        let rejects_sampling = match request.model_wire.as_ref() {
+            Some(wire) => !wire.sampling,
+            None => uncatalogued_rejects_sampling(model),
+        };
 
-        if request.reasoning.is_none() && !is_reasoning_model {
+        if request.reasoning.is_none() && !rejects_sampling {
             if let Some(temp) = request.temperature {
                 body.insert("temperature".to_string(), Value::from(temp));
             }
@@ -2821,9 +3469,88 @@ impl OpenAIResponsesProvider {
     /// `invoke_stream` override sets it to `Some(tx)` so chat surfaces
     /// can render tokens as they arrive instead of waiting for the
     /// full response to land.
-    async fn invoke_streaming(
+    /// `invoke_streaming` with the same max_output_tokens retry `invoke()`
+    /// applies: a stream that ended `incomplete` at the output cap is asked
+    /// again once with twice the budget (backed off if the provider rejects
+    /// that). Text the cut-off attempt already streamed stays on screen, so
+    /// the retry streams tokens only when that attempt showed none; its
+    /// final response still carries the whole answer.
+    async fn invoke_streaming_with_max_tokens_retry(
         &self,
         request: LLMRequest,
+        body: Map<String, Value>,
+        timeout: Duration,
+        token_tx: Option<&mpsc::Sender<StreamDelta>>,
+    ) -> LLMResult<LLMResponse> {
+        let response = self
+            .invoke_streaming(&request, body, timeout, token_tx)
+            .await?;
+        if request.metadata.single_physical_attempt
+            || Self::max_tokens_retry_attempt(&request) != 0
+            || !Self::should_retry_max_tokens(&response)
+        {
+            return Ok(response);
+        }
+        let Some(base_max_output_tokens) = Self::retry_base_max_output_tokens(&request, &response)
+        else {
+            return Ok(response);
+        };
+        let retry_max_output_tokens = Self::retry_max_output_tokens(base_max_output_tokens);
+        if retry_max_output_tokens <= base_max_output_tokens {
+            return Ok(response);
+        }
+        warn!(
+            provider = "openai_responses",
+            model = %request.model,
+            operation = %request.metadata.operation,
+            trace_id = request.metadata.trace_id.as_deref().unwrap_or(""),
+            base_max_output_tokens,
+            retry_max_output_tokens,
+            "OpenAI Responses stream was incomplete due to max_output_tokens; retrying with higher max_output_tokens"
+        );
+        let retry_tx =
+            token_tx.filter(|_| response.text.as_deref().is_none_or(|text| text.is_empty()));
+        let mut retry_request = request;
+        retry_request.max_output_tokens = Some(retry_max_output_tokens);
+        Self::set_max_tokens_retry_attempt(&mut retry_request, 1);
+        match self.stream_once(&retry_request, retry_tx).await {
+            Err(error) if Self::is_excessive_max_tokens_error(&error) => {
+                let Some(backed_off_max_output_tokens) = Self::backed_off_max_output_tokens(
+                    base_max_output_tokens,
+                    retry_max_output_tokens,
+                ) else {
+                    return Err(error);
+                };
+                warn!(
+                    provider = "openai_responses",
+                    model = %retry_request.model,
+                    retry_max_output_tokens,
+                    backed_off_max_output_tokens,
+                    error = %error,
+                    "OpenAI Responses stream retry rejected larger max_output_tokens; retrying with backed-off token budget"
+                );
+                retry_request.max_output_tokens = Some(backed_off_max_output_tokens);
+                Self::set_max_tokens_retry_attempt(&mut retry_request, 2);
+                self.stream_once(&retry_request, retry_tx).await
+            },
+            outcome => outcome,
+        }
+    }
+
+    async fn stream_once(
+        &self,
+        request: &LLMRequest,
+        token_tx: Option<&mpsc::Sender<StreamDelta>>,
+    ) -> LLMResult<LLMResponse> {
+        let (mut body, timeout) = self.build_responses_request_body(request, &request.model)?;
+        body.insert("stream".to_string(), Value::Bool(true));
+        self.invoke_streaming(request, body, timeout, token_tx)
+            .await
+    }
+
+    async fn invoke_streaming(
+        &self,
+        request: &LLMRequest,
         body: Map<String, Value>,
         timeout: Duration,
         token_tx: Option<&mpsc::Sender<StreamDelta>>,
@@ -2840,22 +3567,15 @@ impl OpenAIResponsesProvider {
             "opened streaming response with OpenAI Responses"
         );
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
@@ -2867,6 +3587,20 @@ impl OpenAIResponsesProvider {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown error")
                     .to_string();
+                if request.metadata.single_physical_attempt {
+                    error!(
+                        provider = "openai_responses",
+                        model = %model,
+                        operation = %operation,
+                        trace_id = trace_id.as_deref().unwrap_or(""),
+                        status = %status,
+                        "OpenAI Responses API rejected protected request"
+                    );
+                    return Err(LLMError::Provider {
+                        provider: self.provider_kind().to_string(),
+                        message: super::PROTECTED_PROVIDER_ERROR.to_owned(),
+                    });
+                }
                 error!(
                     provider = "openai_responses",
                     model = %model,
@@ -2888,6 +3622,105 @@ impl OpenAIResponsesProvider {
             }
         }
 
+        let payload = if super::is_json_response(&response) {
+            // A server that ignored `stream: true` sent the whole response.
+            super::read_json_body(response, timeout).await?
+        } else {
+            // Only a plain call needs the terminal event: a streaming caller
+            // already rendered whatever text arrived.
+            self.read_response_events(
+                response,
+                timeout,
+                token_tx,
+                !request.stream,
+                request.metadata.single_physical_attempt,
+            )
+            .await?
+        };
+        let finish_reason = payload
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+
+        remember_response_function_calls(&payload);
+        let (messages, tool_calls, tool_results, text, reasoning_text) =
+            Self::parse_output(&payload)?;
+
+        // Server-side searches bill per call; surface the count at the
+        // provider boundary so cost attribution does not depend on callers
+        // re-scanning `raw_response`.
+        let web_search_calls = crate::server_web_search::web_search_call_count(
+            &crate::capability::LLMProviderKind::OpenAI,
+            &payload,
+        );
+        if web_search_calls > 0 {
+            info!(
+                provider = "openai_responses",
+                model = %model,
+                operation = %operation,
+                trace_id = trace_id.as_deref().unwrap_or(""),
+                web_search_calls,
+                "server-side web searches executed by OpenAI"
+            );
+        }
+        let usage = payload.get("usage").map(Self::map_usage).transpose()?;
+        let response_id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+
+        let response = LLMResponse {
+            text: text.map(Arc::<str>::from),
+            reasoning_text: reasoning_text.map(Arc::<str>::from),
+            response_id,
+            messages: Arc::new(messages),
+            tool_calls: Arc::new(tool_calls),
+            tool_results: Arc::new(tool_results),
+            usage,
+            finish_reason,
+            raw_response: Some(Arc::new(payload)),
+            provider_latency_ms: None,
+            trace_receipt: None,
+            route_identity: None,
+        };
+
+        if let Some(usage) = response.usage.as_ref() {
+            debug!(
+                provider = "openai_responses",
+                model = %model,
+                operation = %operation,
+                trace_id = trace_id.as_deref().unwrap_or(""),
+                usage = ?usage,
+                "token usage reported by OpenAI Responses streaming"
+            );
+        }
+
+        info!(
+            provider = "openai_responses",
+            model = %model,
+            operation = %operation,
+            trace_id = trace_id.as_deref().unwrap_or(""),
+            finish_reason = response.finish_reason.as_deref().unwrap_or(""),
+            tool_call_count = response.tool_calls.len(),
+            "OpenAI Responses streaming call succeeded"
+        );
+
+        Ok(response)
+    }
+
+    /// Read a Responses event stream to its end: the `response.completed` /
+    /// `response.incomplete` response object, or one assembled from the
+    /// deltas when the stream carried none. `require_terminal` fails the
+    /// latter instead, since a plain call must not mistake a cut-off stream
+    /// for a whole answer.
+    async fn read_response_events(
+        &self,
+        response: reqwest::Response,
+        timeout: Duration,
+        token_tx: Option<&mpsc::Sender<StreamDelta>>,
+        require_terminal: bool,
+        protected: bool,
+    ) -> LLMResult<Value> {
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut utf8_carry = Vec::with_capacity(4);
@@ -2895,7 +3728,6 @@ impl OpenAIResponsesProvider {
         let mut aggregated_text = String::new();
         let mut tool_calls: HashMap<String, ToolCallDelta> = HashMap::new();
         let mut final_response: Option<Value> = None;
-        let mut finish_reason: Option<String> = None;
 
         #[derive(Clone, Copy)]
         enum StreamEventKind {
@@ -2903,13 +3735,15 @@ impl OpenAIResponsesProvider {
             ToolCallDelta,
             Completed,
             Error,
+            Failed,
             Other,
         }
 
         let mut done = false;
+        let mut watchdog = super::StreamWatchdog::new(timeout);
 
         while !done {
-            let Some(chunk) = stream.next().await else {
+            let Some(chunk) = watchdog.next(&mut stream).await? else {
                 break;
             };
             let chunk = chunk.map_err(|error| {
@@ -2932,11 +3766,24 @@ impl OpenAIResponsesProvider {
                 let mut value = parse_provider_json_value(data.as_ref())?;
                 drop(data);
 
+                if value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(responses_event_is_output)
+                {
+                    watchdog.mark_progress();
+                }
                 let event_kind = match value.get("type").and_then(Value::as_str) {
                     Some("response.output_text.delta") => StreamEventKind::TextDelta,
                     Some("response.output_tool_call.delta") => StreamEventKind::ToolCallDelta,
-                    Some("response.completed") => StreamEventKind::Completed,
-                    Some("response.error") => StreamEventKind::Error,
+                    // `incomplete` ends the stream as terminally as
+                    // `completed` (e.g. at max_output_tokens) and carries the
+                    // status, `incomplete_details` and usage the caller needs.
+                    Some("response.completed" | "response.incomplete") => {
+                        StreamEventKind::Completed
+                    },
+                    Some("response.error" | "error") => StreamEventKind::Error,
+                    Some("response.failed") => StreamEventKind::Failed,
                     _ => StreamEventKind::Other,
                 };
                 match event_kind {
@@ -3013,10 +3860,6 @@ impl OpenAIResponsesProvider {
                             .as_object_mut()
                             .and_then(|object| object.remove("response"))
                         {
-                            finish_reason = response
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .map(|s| s.to_string());
                             final_response = Some(response);
                         }
                     },
@@ -3024,9 +3867,37 @@ impl OpenAIResponsesProvider {
                         let message = value
                             .get("error")
                             .and_then(|err| err.get("message"))
+                            .or_else(|| value.get("message"))
                             .and_then(Value::as_str)
                             .unwrap_or("unknown error")
                             .to_string();
+                        // A protected request's error text may echo its
+                        // content; it never leaves the adapter.
+                        let message = if protected {
+                            super::PROTECTED_PROVIDER_ERROR.to_owned()
+                        } else {
+                            message
+                        };
+                        return Err(LLMError::Provider {
+                            provider: self.provider_kind().to_string(),
+                            message,
+                        });
+                    },
+                    StreamEventKind::Failed => {
+                        let message = value
+                            .get("response")
+                            .and_then(|response| response.get("error"))
+                            .and_then(|err| err.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("response failed")
+                            .to_string();
+                        // A protected request's error text may echo its
+                        // content; it never leaves the adapter.
+                        let message = if protected {
+                            super::PROTECTED_PROVIDER_ERROR.to_owned()
+                        } else {
+                            message
+                        };
                         return Err(LLMError::Provider {
                             provider: self.provider_kind().to_string(),
                             message,
@@ -3045,105 +3916,74 @@ impl OpenAIResponsesProvider {
 
         finish_sse_utf8(&utf8_carry)?;
 
-        let payload = if let Some(response) = final_response {
-            response
-        } else {
-            let mut content = Vec::new();
-            if !aggregated_text.is_empty() {
-                content.push(json!({ "type": "output_text", "text": aggregated_text }));
-            }
+        if let Some(response) = final_response {
+            return Ok(response);
+        }
+        if require_terminal {
+            return Err(LLMError::Transport(
+                "OpenAI Responses stream ended before the response completed".to_string(),
+            ));
+        }
+        let mut content = Vec::new();
+        if !aggregated_text.is_empty() {
+            content.push(json!({ "type": "output_text", "text": aggregated_text }));
+        }
 
-            for (id, call) in tool_calls.iter() {
-                if let Some(name) = &call.name {
-                    content.push(json!({
-                        "type": "tool_call",
-                        "tool_call": {
-                            "id": id,
-                            "function": {
-                                "name": name,
-                                "arguments": call.arguments.clone(),
-                            }
+        for (id, call) in tool_calls.iter() {
+            if let Some(name) = &call.name {
+                content.push(json!({
+                    "type": "tool_call",
+                    "tool_call": {
+                        "id": id,
+                        "function": {
+                            "name": name,
+                            "arguments": call.arguments.clone(),
                         }
-                    }));
-                }
-            }
-
-            let payload = json!({
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content,
                     }
-                ]
-            });
-
-            payload
-        };
-
-        let (messages, tool_calls, tool_results, text, reasoning_text) =
-            Self::parse_output(&payload)?;
-
-        // Server-side searches bill per call; surface the count at the
-        // provider boundary so cost attribution does not depend on callers
-        // re-scanning `raw_response`.
-        let web_search_calls = crate::server_web_search::web_search_call_count(
-            &crate::capability::LLMProviderKind::OpenAI,
-            &payload,
-        );
-        if web_search_calls > 0 {
-            info!(
-                provider = "openai_responses",
-                model = %model,
-                operation = %operation,
-                trace_id = trace_id.as_deref().unwrap_or(""),
-                web_search_calls,
-                "server-side web searches executed by OpenAI"
-            );
-        }
-        let usage = payload.get("usage").map(Self::map_usage).transpose()?;
-        let response_id = payload
-            .get("id")
-            .and_then(Value::as_str)
-            .map(|s| s.to_string());
-
-        let response = LLMResponse {
-            text: text.map(Arc::<str>::from),
-            reasoning_text: reasoning_text.map(Arc::<str>::from),
-            response_id,
-            messages: Arc::new(messages),
-            tool_calls: Arc::new(tool_calls),
-            tool_results: Arc::new(tool_results),
-            usage,
-            finish_reason,
-            raw_response: Some(Arc::new(payload)),
-            provider_latency_ms: None,
-            trace_receipt: None,
-            route_identity: None,
-        };
-
-        if let Some(usage) = response.usage.as_ref() {
-            debug!(
-                provider = "openai_responses",
-                model = %model,
-                operation = %operation,
-                trace_id = trace_id.as_deref().unwrap_or(""),
-                usage = ?usage,
-                "token usage reported by OpenAI Responses streaming"
-            );
+                }));
+            }
         }
 
-        info!(
-            provider = "openai_responses",
-            model = %model,
-            operation = %operation,
-            trace_id = trace_id.as_deref().unwrap_or(""),
-            finish_reason = response.finish_reason.as_deref().unwrap_or(""),
-            tool_call_count = response.tool_calls.len(),
-            "OpenAI Responses streaming call succeeded"
-        );
+        Ok(json!({
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": content,
+                }
+            ]
+        }))
+    }
+}
 
-        Ok(response)
+#[cfg(test)]
+mod stream_progress_tests {
+    use super::responses_event_is_output;
+
+    /// Deltas and finished items are output; an opened item, a search still
+    /// running and the lifecycle events are not.
+    #[test]
+    fn only_output_events_count_as_progress() {
+        for output in [
+            "response.output_text.delta",
+            "response.reasoning_summary_text.delta",
+            "response.function_call_arguments.delta",
+            "response.output_item.done",
+            "response.web_search_call.completed",
+        ] {
+            assert!(responses_event_is_output(output), "{output}");
+        }
+        for not_output in [
+            "response.created",
+            "response.in_progress",
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.web_search_call.in_progress",
+            "response.web_search_call.searching",
+            "response.completed",
+        ] {
+            assert!(!responses_event_is_output(not_output), "{not_output}");
+        }
     }
 }
 
@@ -3154,6 +3994,32 @@ mod xai_dialect_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn whole_call_rules_reach_neither_dialect_as_schema() {
+        // xAI refuses a top-level anyOf ("tool parameter root must be an object
+        // type"); OpenAI accepts but does not enforce it outside strict mode.
+        let tools = vec![LLMToolSpec {
+            name: "shell".to_string(),
+            description: "Run a command.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}, "job_id": {"type": "string"}},
+                "anyOf": [{"required": ["command"]}, {"required": ["job_id"]}],
+            }),
+        }];
+
+        let mapped = OpenAIResponsesProvider::map_tools(&tools);
+        assert!(mapped[0]["parameters"].get("anyOf").is_none());
+        assert_eq!(
+            mapped[0]["parameters"]["properties"],
+            tools[0].parameters["properties"]
+        );
+        assert!(mapped[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains(r#""anyOf":[{"required":["command"]},{"required":["job_id"]}]"#));
+    }
 
     fn xai_request(reasoning: Option<ReasoningConfig>) -> LLMRequest {
         LLMRequest {

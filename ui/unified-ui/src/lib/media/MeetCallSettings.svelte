@@ -60,6 +60,7 @@
 		border-radius: 8px;
 		color: var(--text-primary);
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 0.85rem;
 		padding: 1rem;
 	}
@@ -85,6 +86,7 @@
 	label {
 		display: grid;
 		gap: 0.32rem;
+		grid-template-columns: minmax(0, 1fr);
 	}
 	label > span {
 		color: var(--text-secondary);

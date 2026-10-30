@@ -58,6 +58,27 @@ BUDGETS: list[tuple[str, int]] = [
     (r"phases7resolve3run28\{closure\}17", 268),
     (r"StatelessArm23advance_iteration_inner28\{closure\}17", 164),
     (r"driver_worker19advance_under_lease28\{closure\}17", 156),
+    # Durable task-planning recovery (execution worker): the monitor, its
+    # planning run and the planner's classification sit above the LLM router
+    # on one worker. Unboxed they reached the whole 2 MiB stack and
+    # crash-looped the service on restart (2026-10-25: 476 + 201 + 138 KiB).
+    (r"ArtifactV2Service30monitor_task_planning_recovery28\{closure\}17", 224),
+    (r"ArtifactV2Service17run_task_planning28\{closure\}17", 136),
+    (r"spawn_task_planning_recovery_monitor28\{closure\}28\{closure\}28\{closure\}17", 32),
+    (r"parameter_priority_decisions12llm_classify28\{closure\}28\{closure\}28\{closure\}28\{closure\}17", 40),
+    # Owner-text checks: every Relentless report, chat reply and owner
+    # notification nests this future by value, so its awaits stay off its
+    # frame. Inline, the delivery repair's LLM call and a second claim check
+    # added ~28 KiB to each caller and 427 KiB to the native Relentless test
+    # fixture, which then overflowed in the terminal projector (2026-10-30).
+    # The caller frames are the early warning: they grow with this future.
+    (r"answer_verification25check_owner_text_detailed28\{closure\}17", 80),
+    (r"RelentlessService20checked_owner_report28\{closure\}17", 16),
+    (r"ChatService18checked_chat_reply28\{closure\}17", 12),
+    (r"notify_owner20checked_notification28\{closure\}17", 16),
+    # Terminal projector -> settlement acceptance. Already large; may not grow.
+    (r"ArtifactV2Service31accept_terminal_loop_settlement28\{closure\}17", 540),
+    (r"terminal_outbox24project_claimed_terminal28\{closure\}17", 176),
 ]
 
 CLOSURE = re.compile(r"_\$u7b\$\$u7b\$closure\$u7d\$\$u7d\$")

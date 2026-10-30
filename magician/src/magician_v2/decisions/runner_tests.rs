@@ -79,6 +79,8 @@ async fn fixture_with_limits_and_notify(
             route_local: vec![],
             route_cloud: vec!["jev".into()],
             classification: Default::default(),
+            images_local: false,
+            images_cloud: false,
         }],
     };
     if let Some(value) = decision_budget_ms {
@@ -238,6 +240,8 @@ async fn memory_decision_saved_policy_refreshes_without_retiring_current_authori
             route_local: vec![],
             route_cloud: vec!["jev".into()],
             classification: Default::default(),
+            images_local: false,
+            images_cloud: false,
         }],
     };
     let server = tokio::spawn(async move {
@@ -400,6 +404,8 @@ async fn memory_decision_revalidation_observes_reload_inside_cache_ttl() {
             route_local: vec![],
             route_cloud: vec!["jev".into()],
             classification: Default::default(),
+            images_local: false,
+            images_cloud: false,
         }],
     };
     let participation =
@@ -446,6 +452,8 @@ async fn memory_decision_revalidation_outage_revokes_cached_authority() {
             route_local: vec![],
             route_cloud: vec!["jev".into()],
             classification: Default::default(),
+            images_local: false,
+            images_cloud: false,
         }],
     };
     let participation = decision_host::classification::test_participation(&socket.0, operations);
@@ -609,6 +617,7 @@ async fn memory_decision_partial_heads_cannot_generate_unapproved_decisions() {
         "memory_test",
         "p1",
         Duration::from_secs(3),
+        super::super::text::Unqualified::Defer,
         |_| async { anyhow::bail!("generator must never be called for partial decisions") },
         |raw| Ok(raw.to_owned()),
         |_| BTreeMap::new(),
@@ -620,6 +629,105 @@ async fn memory_decision_partial_heads_cannot_generate_unapproved_decisions() {
         .unwrap()
         .to_string()
         .contains("incomplete engine answers"));
+}
+
+#[tokio::test]
+async fn memory_decision_partial_heads_lock_the_confident_items_and_the_text_model_decides_the_rest(
+) {
+    let _serial = TEST_LOCK.lock().await;
+    let (policy, _socket, mut input) = fixture_with_answer(Duration::ZERO, true, true).await;
+    let mut second = input.items[0].clone();
+    second.item_id = "1".into();
+    input.items.push(second);
+    let router = text_router();
+    input.reference_version =
+        super::super::reference::version(&router, "memory_test", "p1").unwrap();
+    let generated = std::sync::Mutex::new(Vec::new());
+    let applied = std::sync::Mutex::new(Vec::new());
+    let result = super::super::text::review(
+        input,
+        PolicyLookup::Participating(policy),
+        &router,
+        "memory_test",
+        "p1",
+        Duration::from_secs(3),
+        super::super::text::Unqualified::Generate,
+        |heads| {
+            generated
+                .lock()
+                .unwrap()
+                .push(heads.keys().cloned().collect::<Vec<_>>());
+            async {
+                Ok(crate::magician_v2::query_analysis::operation_llm_router::SimplifiedLLMResponse {
+                    content: "whole review".into(),
+                    ..Default::default()
+                })
+            }
+        },
+        |raw| Ok(raw.to_owned()),
+        |_| BTreeMap::new(),
+        |_, heads| {
+            applied
+                .lock()
+                .unwrap()
+                .push(heads.keys().cloned().collect::<Vec<_>>());
+            Ok(())
+        },
+    )
+    .await
+    .expect("the text model decides the unsettled item");
+    assert_eq!(result.value, "whole review");
+    let generated = generated.into_inner().unwrap();
+    assert_eq!(generated.len(), 1, "one text call");
+    assert_eq!(generated[0].len(), 1, "only the confident item is locked");
+    assert!(!generated[0].contains(&"1".to_string()));
+    assert_eq!(
+        applied.into_inner().unwrap(),
+        generated,
+        "the locked heads are applied"
+    );
+    assert_eq!(
+        result.origins.keys().cloned().collect::<Vec<_>>(),
+        generated[0],
+        "only engine-decided items carry an engine origin"
+    );
+}
+
+#[tokio::test]
+async fn memory_decision_with_nothing_confident_is_the_text_model_s_alone() {
+    let _serial = TEST_LOCK.lock().await;
+    let (policy, _socket, mut input) = fixture_with_answer(Duration::ZERO, true, false).await;
+    let router = text_router();
+    input.reference_version =
+        super::super::reference::version(&router, "memory_test", "p1").unwrap();
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let result = super::super::text::review(
+        input,
+        PolicyLookup::Participating(policy),
+        &router,
+        "memory_test",
+        "p1",
+        Duration::from_secs(3),
+        super::super::text::Unqualified::Generate,
+        |heads| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(heads.is_empty());
+            async {
+                Ok(crate::magician_v2::query_analysis::operation_llm_router::SimplifiedLLMResponse {
+                    content: "whole review".into(),
+                    ..Default::default()
+                })
+            }
+        },
+        |raw| Ok(raw.to_owned()),
+        |_| BTreeMap::new(),
+        |_, _| anyhow::bail!("no engine heads to apply"),
+    )
+    .await
+    .expect("the text model decides every item");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(result.origins.is_empty());
+    assert!(result.guard.is_none());
 }
 
 #[tokio::test]
@@ -685,7 +793,7 @@ async fn memory_decision_required_text_is_generated_once_and_invalid_prose_never
             super::super::reference::version(&router, "memory_test", "p1").unwrap();
         input.requires_completion = true;
         let calls = std::sync::atomic::AtomicUsize::new(0);
-        let result=super::super::text::review(input,PolicyLookup::Participating(policy),&router,"memory_test","p1",Duration::from_secs(3),
+        let result=super::super::text::review(input,PolicyLookup::Participating(policy),&router,"memory_test","p1",Duration::from_secs(3),super::super::text::Unqualified::Defer,
             |heads| { calls.fetch_add(1,std::sync::atomic::Ordering::SeqCst); assert!(!heads.is_empty()); async move {
                 Ok(crate::magician_v2::query_analysis::operation_llm_router::SimplifiedLLMResponse{content:if valid {"grounded text"}else{""}.into(),..Default::default()})
             }}, |raw| Ok(raw.to_owned()), |_| BTreeMap::new(), |text,heads| {
@@ -715,7 +823,7 @@ async fn memory_decision_required_text_reuses_incumbent_and_rollback_rejects_gen
         input.reference_version =
             super::super::reference::version(&router, "memory_test", "p1").unwrap();
         let calls = std::sync::atomic::AtomicUsize::new(0);
-        let result=super::super::text::review(input,PolicyLookup::Participating(policy),&router,"memory_test","p1",Duration::from_secs(3),
+        let result=super::super::text::review(input,PolicyLookup::Participating(policy),&router,"memory_test","p1",Duration::from_secs(3),super::super::text::Unqualified::Defer,
             |heads| {calls.fetch_add(1,std::sync::atomic::Ordering::SeqCst);assert_eq!(!heads.is_empty(),gate);async move {
                 if gate { decision_host::configure(&crate::config::DecisionHostConfig{mode:crate::config::DecisionMode::Off,..Default::default()}); }
                 Ok(crate::magician_v2::query_analysis::operation_llm_router::SimplifiedLLMResponse{content:"incumbent or text".into(),..Default::default()})

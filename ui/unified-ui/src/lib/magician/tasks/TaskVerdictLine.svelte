@@ -45,6 +45,8 @@
 		cancelled: 'neutral',
 		queued: 'neutral',
 		archived: 'neutral',
+		// The answer is still being written: live, so the running band.
+		finalizing: 'running',
 		finished: 'completed'
 	};
 
@@ -73,6 +75,7 @@
 		cancelled: '■',
 		queued: '⋯',
 		archived: '◇',
+		finalizing: '◐',
 		finished: '✓'
 	};
 </script>
@@ -110,6 +113,9 @@
 	 * file's extension is the half worth keeping. The full text is on `title=`.
 	 */
 	$: wraps = tone === 'failed' || tone === 'attention';
+	/** The answer is still being written: the marker turns, the headline's
+	 *  elapsed time counts up, and the line does not read as done. */
+	$: spins = verdict.state === 'finalizing';
 </script>
 
 <!--
@@ -123,9 +129,9 @@
 	forbidding it because the fact is only spoken.
 
 	The cost, stated rather than hidden: this announces on **every** change,
-	including one where nothing happened. Two of the nine headlines carry a
-	duration measured against `now` — `Waiting on you · 4m` and `Stalled · no
-	progress for 6m` — so while either is on screen every poll re-reads a verdict
+	including one where nothing happened. Three of the ten headlines carry a
+	duration measured against `now` — `Waiting on you · 4m`, `Stalled · no
+	progress for 6m` and `Preparing final result · 40s` — so while any is on screen every poll re-reads a verdict
 	that has not changed. That is not fixable here: this component cannot make an
 	announcement lag its own text. It is fixable in the two layers that produce
 	the churn — whatever owns `now` can advance it on a coarser cadence than it
@@ -142,7 +148,7 @@
 	says the state in words) and is what survives greyscale.
 -->
 <div class="verdict" data-verdict-state={verdict.state} data-tone={tone} role="status" aria-live="polite">
-	<span class="verdict__marker" aria-hidden="true">{marker}</span>
+	<span class="verdict__marker" class:verdict__marker--spin={spins} aria-hidden="true">{marker}</span>
 	<div class="verdict__lines">
 		<div class="verdict__top">
 			<p class="verdict__headline">{verdict.headline}</p>
@@ -246,7 +252,14 @@
 		animation: verdict-pulse calc(var(--dur-slow, 520ms) * 3) ease-in-out infinite;
 	}
 
+	/* Same specificity as the tone's own breathing rule above, and later, so the
+	   turn replaces the breath rather than stacking with it. */
+	.verdict[data-tone] .verdict__marker--spin {
+		animation: verdict-spin 1.1s linear infinite;
+	}
+
 	@media (prefers-reduced-motion: reduce) {
+		.verdict[data-tone] .verdict__marker--spin,
 		.verdict[data-tone='running'] .verdict__marker,
 		.verdict[data-tone='attention'] .verdict__marker {
 			animation: none;
@@ -260,6 +273,12 @@
 		}
 		50% {
 			box-shadow: 0 0 0 3px color-mix(in srgb, var(--verdict-tone) 28%, transparent);
+		}
+	}
+
+	@keyframes verdict-spin {
+		to {
+			transform: rotate(360deg);
 		}
 	}
 

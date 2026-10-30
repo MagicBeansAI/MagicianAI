@@ -188,6 +188,18 @@ struct AttentionPushAsk: Equatable {
                        string(metadata["execution_id"]), string(item["execution_id"])]
             .compactMap { $0 }.first
         taskID = [string(item["task_id"]), string(metadata["task_id"])].compactMap { $0 }.first
+
+        // The server's respond handle (`metadata.respond`, Rust
+        // `HitlRespondHandle`) names the source, input type and run to post;
+        // the derivations above are the fallback for older servers.
+        if let respond = (metadata["respond"] as? [String: Any]) ?? (hitl["respond"] as? [String: Any]),
+           let handleSource = string(respond["source"]),
+           let handleInputType = string(respond["input_type"]) {
+            source = handleSource
+            inputType = handleInputType
+            if let handleExecution = string(respond["execution_id"]) { executionID = handleExecution }
+            if let handleTask = string(respond["task_id"]) { taskID = handleTask }
+        }
     }
 }
 

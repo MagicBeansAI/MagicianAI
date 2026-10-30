@@ -59,8 +59,8 @@ routing or pins models, and edits the pins: one select per `llm_routing`
 lane (Decisions & planning — the catch-all, including agentic decisions —
 Evaluation & safety checks, Input interpretation, Memory consolidation) plus
 the coding-engine model (`coding_profile`). Options come from
-`GET /llm/routing` (concrete router profiles only; adaptive composites cannot
-be pinned) and `GET /coding/profiles` (without `auto`). "Default" clears a
+`GET /llm/routing` (canonical assignment/model handles) and
+`GET /coding/models` (model choices projected without coordinator `auto`). "Default" clears a
 lane. Save sends one JSON Merge Patch (`PATCH /agents/{id}` with the record
 etag as `If-Match`) carrying only what changed: newly set lanes as profile
 endpoints, cleared lanes as `null`, and `{"llm_routing": null}` when nothing
@@ -78,3 +78,17 @@ with. After a save the page's record (Config version) is replaced from the
 `saved` event. Logic lives in `agentModelPins.ts` (unit-tested, including
 the direct-pin round trip); the panel test covers load → pin → save and
 clear-all.
+
+## Shared documents per focus area (`FocusAreaSharedDocuments`)
+
+When a Personal agent has autonomous mode on, the definition editor shows a
+**Shared documents** card with one fieldset per focus area and a radio group:
+**Use global list** (omits `shared_programs`, so the area follows
+`harness.shared_program_docs`), **None** (saves `shared_programs: []`) and
+**Choose documents** (saves the checked names; nothing checked saves `[]` and
+says so). Choices are Playbooks from `GET /api/magician/v2/programs`,
+shown by title and file name. A stored name missing from that list stays listed
+as "not found" and can be unchecked. If the list fails to load, the card shows
+the error with Retry and the rest of the form still saves. The read/write
+mapping lives in `focusAreaSharedPrograms.ts` (unit-tested for all three
+states); the component test covers loading, choosing and the failure path.

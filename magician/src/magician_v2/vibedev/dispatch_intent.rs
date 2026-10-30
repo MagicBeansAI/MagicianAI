@@ -504,6 +504,9 @@ pub(crate) struct DispatchTaskPlan {
     /// existed would fail that check and take the whole key's replay down.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_id: String,
+    /// Server-owned location snapshot. Old admissions have no snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_location: Option<super::projects::VibeDevWorkLocation>,
     /// The run this one continues — **server-derived**, never read from the
     /// turn's text (see `vibedev::rail::resolve_vibedev_rail_parent`). Selects
     /// the follow-up tag set at recovery, so a recovered follow-up is still a
@@ -1890,6 +1893,7 @@ mod tests {
             owner_agent_id: "cto".to_string(),
             mode: DispatchMode::Build,
             project_id: "proj-1".to_string(),
+            work_location: None,
             parent_task_id: None,
             reference_task_ids: Vec::new(),
             coding_choice: None,

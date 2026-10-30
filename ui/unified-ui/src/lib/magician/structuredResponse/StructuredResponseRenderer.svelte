@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { toPlainText } from './toPlainText';
+	import { withoutAnswerVerification } from '$lib/magician/chat/answerVerification';
 	import { isStructuredResponseV1, validateStructuredResponse } from './schema';
 	import type { StructuredResponseActionV1, StructuredResponseV1 } from './types';
 	import { isActionRenderable, presentationForAction } from './actions';
@@ -29,6 +30,9 @@
 	 * other kind always renders the classic block.
 	 */
 	export let variant: 'classic' | 'next' = 'classic';
+	/** Validate the canonical response first; compact only the displayed copy. */
+	export let compactVerification = false;
+	$: displayResponse = compactVerification ? withoutAnswerVerification(response) : response;
 
 	let validationReason: string | null = null;
 	let isRenderable = true;
@@ -85,18 +89,18 @@
 	</section>
 {:else}
 	<article
-		class={`sr-response sr-response--${toneClass(response.tone)}`}
+		class={`sr-response sr-response--${toneClass(displayResponse.tone)}`}
 		class:sr-response--next={variant === 'next'}
 		data-testid="sr-renderer"
 	>
-		{#if response.title}
-			<header class="sr-response__title">{response.title}</header>
+		{#if displayResponse.title}
+			<header class="sr-response__title">{displayResponse.title}</header>
 		{/if}
-		{#if response.summary}
-			<p class="sr-response__summary">{response.summary}</p>
+		{#if displayResponse.summary}
+			<p class="sr-response__summary">{displayResponse.summary}</p>
 		{/if}
 		<div class="sr-response__blocks">
-			{#each response.blocks as block, index (index)}
+			{#each displayResponse.blocks as block, index (index)}
 				{#if block.kind === 'markdown'}
 					<MarkdownBlock {sessionId} {block} />
 				{:else if block.kind === 'text'}
@@ -124,9 +128,9 @@
 				{/if}
 			{/each}
 		</div>
-		{#if response.actions && response.actions.length > 0}
+		{#if displayResponse.actions && displayResponse.actions.length > 0}
 			<div class="sr-response__actions">
-				{#each response.actions as action}
+				{#each displayResponse.actions as action}
 					{@const present = actionPresentation(action)}
 					{@const active = !!onAction && isActionRenderable(action)}
 					<button

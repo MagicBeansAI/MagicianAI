@@ -27,6 +27,11 @@ import {
 } from './background_state.js';
 import { getLivePreviewSources } from './live_preview_background.js';
 import {
+    humanizeAgent,
+    setSessionGroupLabel,
+    setSessionGroupStatus
+} from './automation_surface.js';
+import {
     buildTerminalOverlayStatus,
     isPausedExecutionStatus,
     isSuccessExecutionStatus,
@@ -224,12 +229,15 @@ async function checkMagicianHealth() {
     }
 }
 
-async function checkMagicutorHealth() {
+async function checkMagicutorHealth(identity = null) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1500);
+    // Naming our own id lets Magicutor mark our entry (`this_browser`)
+    // without listing any browser's id.
+    const query = identity?.id ? `?browser_id=${encodeURIComponent(identity.id)}` : '';
 
     try {
-        const response = await fetch(`${MAGICUTOR_API_BASE}/health`, {
+        const response = await fetch(`${MAGICUTOR_API_BASE}/health${query}`, {
             method: 'GET',
             cache: 'no-store',
             signal: controller.signal
@@ -238,9 +246,84 @@ async function checkMagicutorHealth() {
             return { ok: false, version: null };
         }
         const data = await response.json().catch(() => ({}));
-        return { ok: true, version: data.version || null };
+        return {
+            ok: true,
+            version: data.version || null,
+            extensionConnected: data.extension_connected === true,
+            browsers: Array.isArray(data.browsers) ? data.browsers : null,
+            maxBrowsers: Number.isInteger(data.max_browsers) ? data.max_browsers : null
+        };
     } catch (error) {
         return { ok: false, version: null };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+/** An identity without its secret key, for panels and message replies. */
+function withoutBrowserKey(identity) {
+    if (!identity) return null;
+    const { key: _secret, ...visible } = identity;
+    return visible;
+}
+
+/**
+ * This browser's place on the bridge, from Magicutor's `/health` list of
+ * connected browsers (asked with our id, so our entry is `this_browser`).
+ * `bridge_full` means every slot is held by other browsers. Our own entry
+ * while we are disconnected is an old socket of ours: our reconnect replaces
+ * it once it goes quiet (`bridge_id_in_use` until then — or for good if a
+ * copied profile shares our identity). Against a Magicutor build that
+ * predates slots (no `browsers` list), one connected extension fills it.
+ */
+function describeBridgeSlots({ bridgeOk, health, identity }) {
+    const browsers = Array.isArray(health?.browsers) ? health.browsers : null;
+    const maxBrowsers = Number.isInteger(health?.maxBrowsers) ? health.maxBrowsers : null;
+    const self = browsers ? browsers.find((browser) => browser?.this_browser === true) || null : null;
+    const full = browsers && maxBrowsers
+        ? !bridgeOk && health.ok === true && !self && browsers.length >= maxBrowsers
+        : !bridgeOk && health?.ok === true && health?.extensionConnected === true;
+    return {
+        bridge_full: full,
+        bridge_busy: full,
+        bridge_id_in_use: !bridgeOk && health?.ok === true && !!self,
+        browser: identity?.id ? { label: self?.label || identity.label || null } : null,
+        slot: bridgeOk && Number.isInteger(self?.slot) ? self.slot : null,
+        max_browsers: maxBrowsers,
+        browsers: (browsers || []).map((browser) => ({
+            fingerprint: browser?.fingerprint || null,
+            label: browser?.label || null,
+            slot: Number.isInteger(browser?.slot) ? browser.slot : null,
+            default: browser?.default === true,
+            pinned_threads: Number.isInteger(browser?.pinned_threads) ? browser.pinned_threads : 0
+        }))
+    };
+}
+
+/**
+ * Keep an extension-started run in this browser. Without a pin Magicutor puts
+ * a new thread in its default browser, which may be another profile.
+ */
+async function pinThreadToBrowser({ threadId, browserId }) {
+    if (!threadId || !browserId) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), MAGICUTOR_API_TIMEOUT_MS);
+    try {
+        const response = await fetch(`${MAGICUTOR_API_BASE}/cdp/threads/${encodeURIComponent(threadId)}/browser`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ browserId }),
+            signal: controller.signal
+        });
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => '');
+            console.warn(`[Magicutor] Could not keep ${threadId} in this browser (${response.status}): ${errorText.slice(0, 240)}`);
+            return null;
+        }
+        return await response.json().catch(() => ({}));
+    } catch (error) {
+        console.warn(`[Magicutor] Could not keep ${threadId} in this browser:`, error?.message || error);
+        return null;
     } finally {
         clearTimeout(timeout);
     }
@@ -303,10 +386,30 @@ async function clearCdpThread({ threadId }) {
 }
 
 // Poll execution status and update panel when completed
+// Keep the task's tab group status mark current: ⏸ while it waits for the
+// owner, ✓ when it is done. Magician names the group (the CDP URL's ?label=);
+// only a group it did not name falls back to the run's agent.
+async function syncTaskGroup(executionId, execution, status, labelState) {
+    const sessionId = browserThreadIdForExecution(executionId);
+    if (!labelState.named) {
+        labelState.named = true;
+        await setSessionGroupLabel(
+            sessionId,
+            humanizeAgent(execution.active_owner_agent_id || execution.agent_id),
+            { fallback: true }
+        );
+    }
+    const mark = isSuccessExecutionStatus(status)
+        ? 'done'
+        : isPausedExecutionStatus(status) ? 'waiting' : null;
+    await setSessionGroupStatus(sessionId, mark);
+}
+
 function pollExecutionStatus(executionId, tabId) {
     const POLL_INTERVAL = 3000; // 3 seconds
     const MAX_POLLS = 600; // 30 minutes max
     let pollCount = 0;
+    const groupLabel = { named: false };
     const resolveTargetTabs = (sessionAlias) => {
         const sessionTabs = getSessionTabs(sessionAlias);
         if (sessionTabs && sessionTabs.size > 0) {
@@ -350,6 +453,7 @@ function pollExecutionStatus(executionId, tabId) {
 
             const execution = await response.json();
             const status = normalizeExecutionStatus(execution);
+            void syncTaskGroup(executionId, execution, status, groupLabel).catch(() => {});
 
             console.log(
                 `[PollExecution] Execution ${executionId} status: "${status}" (poll #${pollCount})`
@@ -499,13 +603,17 @@ function pollExecutionStatus(executionId, tabId) {
     setTimeout(poll, POLL_INTERVAL);
 }
 
-async function bindThreadToTab({ threadId, tabId, windowId }) {
+async function bindThreadToTab({ threadId, tabId, windowId, browserId }) {
     const payload = {
         tabId,
     };
 
     if (windowId) {
         payload.windowId = windowId;
+    }
+    // Tab ids are per browser: name the browser that owns this tab.
+    if (browserId) {
+        payload.browserId = browserId;
     }
 
     const controller = new AbortController();
@@ -531,23 +639,43 @@ async function bindThreadToTab({ threadId, tabId, windowId }) {
     }
 }
 
-function createExtensionMessageHandler({ isBridgeConnected, checkHttpHealth, activityState, recordDecision }) {
+function createExtensionMessageHandler({
+    isBridgeConnected,
+    checkHttpHealth,
+    activityState,
+    recordDecision,
+    getBrowserIdentity,
+    renameBrowser,
+    bridgePrompts
+}) {
     if (typeof isBridgeConnected !== 'function' || typeof checkHttpHealth !== 'function') {
         throw new Error('createExtensionMessageHandler requires isBridgeConnected and checkHttpHealth');
     }
+
+    const readBrowserIdentity = async () => {
+        if (typeof getBrowserIdentity !== 'function') return null;
+        try {
+            return await getBrowserIdentity();
+        } catch (_) {
+            return null;
+        }
+    };
 
     return async function handleExtensionMessage(message, sender) {
         console.log('[Magicutor] Extension message:', message);
 
         switch (message.action) {
             case 'ping': {
+                const identityPromise = readBrowserIdentity();
+                const [magicutorHealth, magicianHealth, identity] = await Promise.all([
+                    identityPromise.then(checkMagicutorHealth), checkMagicianHealth(), identityPromise
+                ]);
                 const bridgeOk = isBridgeConnected();
-                const magicutorHealth = await checkMagicutorHealth();
-                const magicianHealth = await checkMagicianHealth();
                 return {
                     status: 'ok',
                     connected: bridgeOk && magicutorHealth.ok && magicianHealth.ok,
                     bridge: bridgeOk,
+                    ...describeBridgeSlots({ bridgeOk, health: magicutorHealth, identity }),
                     http: magicutorHealth.ok,
                     magician: magicianHealth.ok,
                     versions: {
@@ -556,6 +684,45 @@ function createExtensionMessageHandler({ isBridgeConnected, checkHttpHealth, act
                         extension: chrome.runtime.getManifest().version
                     }
                 };
+            }
+
+            case 'get_browser_identity': {
+                return withoutBrowserKey(await readBrowserIdentity());
+            }
+
+            // Pairing and per-run browser choice (bridge_prompts.js).
+            case 'get_bridge_prompts': {
+                return bridgePrompts ? await bridgePrompts.snapshot() : null;
+            }
+
+            case 'bridge_pairing_accept': {
+                if (!bridgePrompts) throw new Error('Pairing is unavailable');
+                return await bridgePrompts.accept();
+            }
+
+            case 'bridge_pairing_decline': {
+                if (!bridgePrompts) throw new Error('Pairing is unavailable');
+                return await bridgePrompts.decline();
+            }
+
+            case 'bridge_connect': {
+                if (!bridgePrompts) throw new Error('Pairing is unavailable');
+                return await bridgePrompts.connect();
+            }
+
+            case 'bridge_choice_answer': {
+                if (!bridgePrompts) throw new Error('Browser choice is unavailable');
+                if (typeof message.choiceId !== 'string' || !message.choiceId) {
+                    throw new Error('choiceId is required');
+                }
+                return await bridgePrompts.choose(message.choiceId, message.always === true);
+            }
+
+            case 'set_browser_label': {
+                if (typeof renameBrowser !== 'function') {
+                    throw new Error('Renaming this browser is unavailable');
+                }
+                return withoutBrowserKey(await renameBrowser(message.label));
             }
 
             case 'get_activity': {
@@ -863,18 +1030,21 @@ function createExtensionMessageHandler({ isBridgeConnected, checkHttpHealth, act
                     throw new Error('Failed to create execution');
                 }
 
+                const sessionAlias = browserThreadIdForExecution(executionResponse.executionId);
+                const browserId = (await readBrowserIdentity())?.id || null;
                 if (message.useThisTab) {
-                    const sessionAlias = browserThreadIdForExecution(executionResponse.executionId);
-
                     await bindThreadToTab({
                         threadId: sessionAlias,
                         tabId: message.tabId,
-                        windowId: message.windowId || null
+                        windowId: message.windowId || null,
+                        browserId
                     });
 
                     // Register the tab-session relationship in extension memory
                     // This allows getActiveExecution() to find the execution for this tab
                     registerSessionTab(sessionAlias, message.tabId, true);
+                } else {
+                    await pinThreadToBrowser({ threadId: sessionAlias, browserId });
                 }
 
                 await startExecution({

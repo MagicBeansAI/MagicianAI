@@ -11,6 +11,7 @@ import ai.magicbeans.magdroid.chat.ChatHistoryTab
 import ai.magicbeans.magdroid.chat.ChatHistoryViewModel
 import ai.magicbeans.magdroid.chat.ChatViewModel
 import ai.magicbeans.magdroid.chat.HistoryMutation
+import ai.magicbeans.magdroid.chat.progressLabel
 import ai.magicbeans.magdroid.chat.HistorySearchItem
 import ai.magicbeans.magdroid.chat.SessionSummary
 import ai.magicbeans.magdroid.chat.UiThreadRecord
@@ -75,6 +76,9 @@ import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -90,11 +94,13 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 
@@ -188,10 +194,29 @@ internal fun AppShell(
     var unbuilt by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    var chatContextTarget by remember(state.activeSessionId) { mutableStateOf<ChatContextTarget?>(null) }
+    val chatContextSession = state.selectedSession?.takeIf { it.identifier() == state.activeSessionId }
+        ?: state.sessions.firstOrNull { it.identifier() == state.activeSessionId }
+    val chatContextThread = chatContextSession?.uiThreadId?.takeIf(String::isNotBlank)
+    chatContextTarget?.let { target ->
+        when (val page = target.page) {
+            ChatContextPage.Files, ChatContextPage.Models -> ChatSessionDetails(target.sessionId, page, target.connection, onDismiss = { chatContextTarget = null })
+            ChatContextPage.Settings -> target.threadId?.let { threadId ->
+                ChatThreadSettings(threadId, target.connection, onDismiss = { chatContextTarget = null }, onSaved = historyViewModel::refresh)
+            }
+            else -> Unit
+        }
+    }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    var showNotes by remember { mutableStateOf(false) }
-    val notesChrome = remember { NotesChrome() }
+    // A launch from a note link draws Notes on the first frame, not the last
+    // tab for a moment; the link effect below still settles and consumes it.
+    val launchNote = remember { NoteLinks.target.value as? NoteLinkTarget.Open }
+    var showNotes by remember { mutableStateOf(launchNote != null) }
+    val notesChrome = remember { NotesChrome().apply { if (launchNote != null) explorerOpen = false } }
+    // The note a link asked for; null when Notes opened from the menu.
+    var linkedNote by remember { mutableStateOf(launchNote) }
+    var noteInOtherWorkspace by remember { mutableStateOf<String?>(null) }
     var showVibeDev by remember { mutableStateOf(false) }
     // Each VibeDev screen's view models live in its route's store, cleared
     // when the route is popped; the stores outlive a rotation.
@@ -268,6 +293,7 @@ internal fun AppShell(
     // drawn over the tabs (VibeDev, Notes, …) would otherwise hide where it
     // landed. [keepTask] leaves a task detail pushed by the same link.
     fun showTab(target: Destination, keepTask: Boolean = false) {
+        chatContextTarget = null
         showSettings = false
         showAudioNotes = false
         showNotes = false
@@ -279,6 +305,7 @@ internal fun AppShell(
     LaunchedEffect(Unit) {
         ai.magicbeans.magdroid.access.MagicianAccess.activeMachine.collect {
             pushedTask = null
+            chatContextTarget = null
             // VibeDev read the old machine: its screens, view models and
             // drawer count start over against the new one.
             vibeDevChrome.resetConnection()
@@ -311,6 +338,41 @@ internal fun AppShell(
     // A task link already on Tasks requests its thread here and pushes the
     // task's detail itself; that detail stays.
     LaunchedEffect(workDeepLink) { if (workDeepLink != null) showTab(Destination.Tasks, keepTask = true) }
+
+    // A note link (chat Markdown, a task summary, an ask, `magican://notes`)
+    // opens the native Notes screen on that document over the current tab;
+    // back returns to where the reader was.
+    val noteLink by NoteLinks.target.collectAsStateWithLifecycle()
+    LaunchedEffect(noteLink) {
+        when (val target = noteLink) {
+            is NoteLinkTarget.Open -> {
+                showSettings = false
+                showAudioNotes = false
+                showThinkingMap = false
+                showVibeDev = false
+                notesChrome.query = ""
+                notesChrome.explorerOpen = false
+                linkedNote = target
+                showNotes = true
+            }
+            is NoteLinkTarget.OtherWorkspace -> noteInOtherWorkspace = target.workspace
+            null -> Unit
+        }
+        noteLink?.let(NoteLinks::consume)
+    }
+    noteInOtherWorkspace?.let { workspace ->
+        AlertDialog(
+            onDismissRequest = { noteInOtherWorkspace = null },
+            confirmButton = { TextButton(onClick = { noteInOtherWorkspace = null }) { Text("OK") } },
+            title = { Text("This note is in another workspace") },
+            text = {
+                Text(
+                    "It belongs to " + (if (workspace.isBlank()) "another workspace" else "the \u201c$workspace\u201d workspace") +
+                        ", which this phone is not signed in to. Pair this phone with that workspace to open it.",
+                )
+            },
+        )
+    }
 
     // A launcher shortcut lands somewhere specific. Consumed on arrival: a
     // target left set would re-fire on every recomposition, and for "new chat"
@@ -390,6 +452,41 @@ internal fun AppShell(
         // animation finishes; the latter makes a warm local fetch look slow.
         if (history.targetValue == DrawerValue.Open) historyViewModel.refresh()
     }
+    // Keyed on which rows are visible, not the row objects: a quiet re-read
+    // that only reorders or re-times them must not restart the poll (and
+    // blink every Working badge off while it does).
+    val polledHistoryIds = remember(historyState.sessions, historyState.searchResults) {
+        historyState.sessions.map { it.identifier() }.toSet() +
+            historyState.searchResults.mapNotNull { it.session?.identifier() }
+    }
+    LaunchedEffect(history.targetValue, lifecycleOwner, polledHistoryIds) {
+        if (history.targetValue == DrawerValue.Open) {
+            try {
+                lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    try {
+                        while (true) {
+                            historyViewModel.refreshActivity()
+                            kotlinx.coroutines.delay(3_000)
+                        }
+                    } finally {
+                        historyViewModel.clearActivity()
+                    }
+                }
+            } finally {
+                historyViewModel.clearActivity()
+            }
+        }
+    }
+    // A turn finishing in the open chat moves its row: re-read the visible
+    // page quietly (rows stay, no spinner) while the drawer shows it.
+    var chatTurnWasBusy by remember { mutableStateOf(false) }
+    val chatTurnBusy = state.sending || state.serverRunning
+    LaunchedEffect(chatTurnBusy) {
+        if (chatTurnWasBusy && !chatTurnBusy && history.targetValue == DrawerValue.Open) {
+            historyViewModel.refreshQuietly()
+        }
+        chatTurnWasBusy = chatTurnBusy
+    }
     // The left menu's VibeDev count, re-read as the menu opens; a failed read
     // keeps the last count rather than showing none.
     LaunchedEffect(drawer.targetValue) {
@@ -402,11 +499,18 @@ internal fun AppShell(
     val taskScreenVisible = destination == Destination.Tasks && !showSettings &&
         !showAudioNotes && !showNotes && !showThinkingMap && !showVibeDev && brainstormSeed == null
     val taskDetailVisible = taskScreenVisible && tasksActions.isDetailVisible
-    // Chat sits on the theme's wash, full bleed: the bars go transparent over
-    // it rather than cutting a flat band across the gradient.
+    // Attention draws its own bar (menu; History and Refresh on the right, as
+    // iOS), so the shell's bar stands down while that tab is showing.
+    val attentionScreenVisible = destination == Destination.Attention && !showSettings &&
+        !showAudioNotes && !showNotes && !showThinkingMap && !showVibeDev
+    // Chat sits on the theme's wash, full bleed across the CONTENT area. The
+    // bars above and below it stay opaque Ground — the same flat bands iOS
+    // paints around its wash — so the two clients show the same chrome.
     val chatSurfaceVisible = destination == Destination.Chat && !showSettings &&
         !showAudioNotes && !showNotes && !showThinkingMap && !showVibeDev && brainstormSeed == null
-    val barColor = if (chatSurfaceVisible) Color.Transparent else Ground
+    // The scaffold container goes transparent on chat so the wash (the scaffold
+    // modifier) shows through; the bars paint Ground regardless.
+    val containerColor = if (chatSurfaceVisible) Color.Transparent else Ground
 
     // Two panels, on the sides their contents belong to. History is opened by
     // the control in the top-right and slides from the right, so the gesture
@@ -492,6 +596,7 @@ internal fun AppShell(
                 },
                 onNotes = {
                     scope.launch { drawer.close() }
+                    linkedNote = null
                     notesChrome.explorerOpen = true
                     showVibeDev = false
                     showNotes = true
@@ -526,7 +631,7 @@ internal fun AppShell(
     ) {
         Scaffold(
             modifier = if (chatSurfaceVisible) Modifier.themeWash() else Modifier,
-            containerColor = barColor,
+            containerColor = containerColor,
             topBar = {
                 if (pushedTask != null) {
                     // The pushed task detail draws its own bar.
@@ -536,7 +641,11 @@ internal fun AppShell(
                         onCreate = tasksActions::showCreate,
                         onRefresh = tasksActions::refresh,
                         canCreate = tasksActions.canCreate,
+                        menu = tasksActions.menu,
                     )
+                } else if (attentionScreenVisible) {
+                    // The Attention tab draws its own bar (menu; History and
+                    // Refresh on the right, as iOS's Attention bar).
                 } else {
                 TopAppBar(
                     title = {
@@ -619,6 +728,15 @@ internal fun AppShell(
                         }
                     },
                     actions = {
+                        if (showSettings && settingsPage == SettingsPage.WebSettings) {
+                            androidx.compose.material3.IconButton(onClick = EmbeddedWebSettingsRefresh::request) {
+                                androidx.compose.material3.Icon(
+                                    Icons.Outlined.Refresh,
+                                    contentDescription = "Refresh ${ai.magicbeans.magdroid.identity.ProductIdentity.productName} settings",
+                                    tint = Coral,
+                                )
+                            }
+                        }
                         if (showVibeDev && !showSettings && !showAudioNotes && !showNotes && !showThinkingMap) {
                             ai.magicbeans.magdroid.ui.vibedev.VibeDevTopBarActions(vibeDevChrome)
                         }
@@ -653,6 +771,13 @@ internal fun AppShell(
                             state.activeSessionId?.let {
                                 ChatSessionActionsMenu(
                                     state = state,
+                                    hasThreadContext = chatContextThread != null,
+                                    onOpenContext = { page ->
+                                        if (page == ChatContextPage.Tasks) chatContextThread?.let { WorkDeepLinks.request(WorkLinkTarget.Thread(it)) }
+                                        else state.activeSessionId?.let { sessionId ->
+                                            chatContextTarget = ChatContextTarget(sessionId, chatContextThread, page, ai.magicbeans.magdroid.access.MagicianAccess.connectionSnapshot(context))
+                                        }
+                                    },
                                     onClear = viewModel::clearSession,
                                     onArchive = viewModel::archiveSession,
                                     onDelete = viewModel::deleteSession,
@@ -676,8 +801,8 @@ internal fun AppShell(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = barColor,
-                        scrolledContainerColor = barColor,
+                        containerColor = Ground,
+                        scrolledContainerColor = Ground,
                         navigationIconContentColor = Ink,
                         titleContentColor = Ink,
                         actionIconContentColor = Ink,
@@ -694,7 +819,7 @@ internal fun AppShell(
                     ObservationMiniBar(onOpen = { destination = Destination.Observe })
                     NavigationBar(
                         modifier = Modifier.padding(horizontal = BOTTOM_NAV_SIDE_INSET_DP.dp),
-                        containerColor = barColor,
+                        containerColor = Ground,
                         tonalElevation = 0.dp,
                     ) {
                     Destination.entries.forEach { entry ->
@@ -760,7 +885,9 @@ internal fun AppShell(
                     )
                 }
                 else if (showAudioNotes) AudioNotesScreen()
-                else if (showNotes) NotesScreen(chrome = notesChrome)
+                else if (showNotes) key(linkedNote?.request) {
+                    NotesScreen(initialPath = linkedNote?.path.orEmpty(), chrome = notesChrome)
+                }
                 else if (showThinkingMap) ThinkingMapScreen(
                     onClose = { showThinkingMap = false },
                     // The app bar's back arrow is the way out here.
@@ -784,6 +911,7 @@ internal fun AppShell(
                     )
                     Destination.Tasks -> WorkScreen(
                         actions = tasksActions,
+                        needsYouCount = attentionBadge,
                         onOpenTask = { taskId -> openTaskDetail.open(taskId) },
                         onReviewPlan = { taskId ->
                             openPlanInspector?.invoke(ai.magicbeans.magdroid.tasks.PlanInspectorRoute(taskId))
@@ -791,6 +919,7 @@ internal fun AppShell(
                         },
                         onOpenThread = { threadId -> viewModel.openSession(threadId); destination = Destination.Chat },
                         onOpenSettings = { settingsPage = SettingsPage.Root; showSettings = true },
+                        onOpenChat = { destination = Destination.Chat },
                     )
                     Destination.Today -> TodayScreen(
                         viewModel = todayViewModel,
@@ -830,6 +959,7 @@ internal fun AppShell(
                             settingsPage = SettingsPage.Root
                             showSettings = true
                         },
+                        onMenu = { scope.launch { drawer.open() } },
                     )
                     Destination.Observe -> ObserveScreen(
                         appSurfacing = appSurfacing,
@@ -1172,8 +1302,10 @@ private fun HistoryPanel(
                                 HistorySessionRow(
                                     session = session,
                                     active = session.identifier() == state.activeSessionId,
+                                    working = session.identifier() in state.workingSessionIds,
                                     lane = null,
                                     busy = state.mutationInFlight != null,
+                                    mutation = state.sessionMutation(session.identifier()),
                                     onOpen = { onOpenSession(session) },
                                     onMutation = { onSessionMutation(session, it) },
                                 )
@@ -1186,6 +1318,7 @@ private fun HistoryPanel(
                                     lane = null,
                                     busy = state.mutationInFlight != null || state.openingThreadId != null,
                                     opening = thread.id == state.openingThreadId,
+                                    mutation = state.threadMutation(thread.id),
                                     onOpen = { onOpenThread(thread) },
                                     onMutation = { onThreadMutation(thread, it) },
                                 )
@@ -1299,8 +1432,10 @@ private fun HistorySearchRow(
         HistorySessionRow(
             session = session,
             active = session.identifier() == state.activeSessionId,
+            working = session.identifier() in state.workingSessionIds,
             lane = result.historyLane,
             busy = state.mutationInFlight != null,
+            mutation = state.sessionMutation(session.identifier()),
             onOpen = { onOpenSession(session) },
             onMutation = { onSessionMutation(session, it) },
         )
@@ -1311,6 +1446,7 @@ private fun HistorySearchRow(
             lane = result.historyLane,
             busy = state.mutationInFlight != null || state.openingThreadId != null,
             opening = thread.id == state.openingThreadId,
+            mutation = state.threadMutation(thread.id),
             onOpen = { onOpenThread(thread) },
             onMutation = { onThreadMutation(thread, it) },
         )
@@ -1322,8 +1458,10 @@ private fun HistorySearchRow(
 private fun HistorySessionRow(
     session: SessionSummary,
     active: Boolean,
+    working: Boolean,
     lane: String?,
     busy: Boolean,
+    mutation: HistoryMutation? = null,
     onOpen: () -> Unit,
     onMutation: (HistoryMutation) -> Unit,
 ) {
@@ -1348,14 +1486,26 @@ private fun HistorySessionRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        session.title?.takeIf { it.isNotBlank() } ?: "Untitled session",
-                        color = if (active) Coral else Ink,
-                        fontSize = HISTORY_ROW_TITLE_SP.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            session.title?.takeIf { it.isNotBlank() } ?: "Untitled session",
+                            modifier = Modifier.weight(1f),
+                            color = if (active) Coral else Ink,
+                            fontSize = HISTORY_ROW_TITLE_SP.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (working) {
+                            Row(Modifier.background(Coral.copy(alpha = 0.10f), RoundedCornerShape(5.dp))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                                .semantics(mergeDescendants = true) { contentDescription = "Session is working" },
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Box(Modifier.size(5.dp).background(Coral, CircleShape))
+                                Text("Working", color = Coral, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(
                             "#${session.uiThreadId?.takeIf { it.isNotBlank() } ?: "general"}",
@@ -1376,6 +1526,7 @@ private fun HistorySessionRow(
                     }
                 }
                 when {
+                    mutation != null -> HistoryMutationProgress(mutation)
                     session.isDefaultSession -> {
                         Spacer(Modifier.width(8.dp))
                         Icon(Icons.Filled.Lock, "Default session", tint = Muted, modifier = Modifier.size(11.dp))
@@ -1407,6 +1558,7 @@ private fun HistoryThreadRow(
     lane: String?,
     busy: Boolean,
     opening: Boolean,
+    mutation: HistoryMutation? = null,
     onOpen: () -> Unit,
     onMutation: (HistoryMutation) -> Unit,
 ) {
@@ -1430,13 +1582,9 @@ private fun HistoryThreadRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
+                    OneLineThreadTitle(
                         thread.name.ifBlank { thread.id },
                         color = if (active) Coral else Ink,
-                        fontSize = HISTORY_ROW_TITLE_SP.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     HistoryBadges("Thread", lane)
                     thread.memorySummary?.takeIf { it.isNotBlank() }?.let {
@@ -1444,6 +1592,7 @@ private fun HistoryThreadRow(
                     }
                 }
                 when {
+                    mutation != null -> HistoryMutationProgress(mutation)
                     opening -> {
                         Spacer(Modifier.width(8.dp))
                         CircularProgressIndicator(color = Coral, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
@@ -1462,11 +1611,73 @@ private fun HistoryThreadRow(
         HistoryMutationMenu(
             expanded = menu,
             archived = thread.archived,
+            caption = thread.name.ifBlank { thread.id },
             onDismiss = { menu = false },
             onMutation = {
                 menu = false
                 onMutation(it)
             },
+        )
+    }
+}
+
+/** One line in the row. Hover shows the full name; long-press stays the menu. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OneLineThreadTitle(name: String, color: Color) {
+    val tooltipState = rememberTooltipState()
+    val scope = rememberCoroutineScope()
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = { PlainTooltip { Text(name) } },
+        state = tooltipState,
+        enableUserInput = false,
+    ) {
+        Text(
+            name,
+            color = color,
+            fontSize = HISTORY_ROW_TITLE_SP.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.pointerInput(name) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        when (event.type) {
+                            PointerEventType.Enter -> scope.launch { tooltipState.show() }
+                            PointerEventType.Exit -> tooltipState.dismiss()
+                            else -> Unit
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** A row's change still waiting on the server: "Deleting…" until it answers. */
+@Composable
+private fun HistoryMutationProgress(mutation: HistoryMutation) {
+    val label = mutation.progressLabel()
+    Spacer(Modifier.width(8.dp))
+    Row(
+        Modifier.semantics(mergeDescendants = true) { contentDescription = label },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        CircularProgressIndicator(
+            color = if (mutation == HistoryMutation.Delete) Danger else Muted,
+            strokeWidth = 1.5.dp,
+            modifier = Modifier.size(11.dp),
+        )
+        Text(
+            label,
+            color = if (mutation == HistoryMutation.Delete) Danger else Muted,
+            fontSize = HISTORY_ROW_META_SP.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
         )
     }
 }
@@ -1520,10 +1731,20 @@ private fun HistoryTime(millis: Long?, modifier: Modifier = Modifier) {
 private fun HistoryMutationMenu(
     expanded: Boolean,
     archived: Boolean,
+    caption: String? = null,
     onDismiss: () -> Unit,
     onMutation: (HistoryMutation) -> Unit,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, containerColor = Panel) {
+        if (!caption.isNullOrBlank()) {
+            Text(
+                caption,
+                color = Ink,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 280.dp),
+            )
+            HorizontalDivider(color = BorderSoft)
+        }
         DropdownMenuItem(
             text = { Text(if (archived) "Restore" else "Archive", color = Ink, fontSize = 13.sp) },
             leadingIcon = { Icon(if (archived) Icons.Outlined.Restore else Icons.Outlined.Archive, null, tint = Muted) },
@@ -1541,6 +1762,8 @@ private fun HistoryMutationMenu(
 @Composable
 private fun ChatSessionActionsMenu(
     state: ChatUiState,
+    hasThreadContext: Boolean,
+    onOpenContext: (ChatContextPage) -> Unit,
     onClear: () -> Unit,
     onArchive: () -> Unit,
     onDelete: () -> Unit,
@@ -1558,17 +1781,36 @@ private fun ChatSessionActionsMenu(
             onClick = { expanded = true },
             enabled = !busy,
         ) {
-            Icon(
-                Icons.Outlined.MoreVert,
-                contentDescription = "Chat options",
-                tint = if (busy) Muted else Ink,
-            )
+            // The change is still waiting on the server: say which, in place
+            // of the menu it came from, until the server answers.
+            val pending = state.sessionActionInFlight?.progressLabel()
+            if (pending != null) {
+                CircularProgressIndicator(
+                    color = if (state.sessionActionInFlight == ai.magicbeans.magdroid.chat.ChatSessionAction.Delete) Danger else Muted,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(18.dp).semantics { contentDescription = pending },
+                )
+            } else {
+                Icon(
+                    Icons.Outlined.MoreVert,
+                    contentDescription = "Chat options",
+                    tint = Ink,
+                )
+            }
         }
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             containerColor = Panel,
         ) {
+            ChatContextPage.entries.forEach { page ->
+                DropdownMenuItem(
+                    text = { Text(page.title, color = Ink, fontSize = 14.sp) },
+                    enabled = page !in listOf(ChatContextPage.Tasks, ChatContextPage.Settings) || hasThreadContext,
+                    onClick = { expanded = false; onOpenContext(page) },
+                )
+            }
+            androidx.compose.material3.HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("Clear chat", color = if (busy) Muted else Ink, fontSize = 14.sp) },
                 leadingIcon = { Icon(Icons.Outlined.DeleteSweep, null, tint = Muted) },

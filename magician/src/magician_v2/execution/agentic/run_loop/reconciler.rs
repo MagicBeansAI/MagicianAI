@@ -992,56 +992,56 @@ async fn prepare_children_handoff_under_lease(
     }
 
     let already_retired = replayed.terminal == Some(TerminalKind::HandedOff);
-    if state.wait.is_none() {
-        if !already_retired {
-            return Err(ChildrenHandoffError::StateMismatch {
-                key: source.clone(),
-                detail: "the segment is no longer parked and has no handoff terminal".to_string(),
-            });
-        }
-        let resolutions = store
-            .wake_resolutions(source, wake_token)
-            .await
-            .map_err(|error| handoff_store_error(source, "wake_resolutions", error))?;
-        if !resolutions.iter().any(|existing| existing == resolution_id) {
-            return Err(ChildrenHandoffError::StateMismatch {
-                key: source.clone(),
-                detail:
-                    "the cleared handoff does not carry this checkpoint's bound readiness receipt"
+    match state.wait.as_ref() {
+        None => {
+            if !already_retired {
+                return Err(ChildrenHandoffError::StateMismatch {
+                    key: source.clone(),
+                    detail: "the segment is no longer parked and has no handoff terminal"
                         .to_string(),
-            });
-        }
-    } else {
-        let wait = state
-            .wait
-            .as_ref()
-            .expect("the preceding branch handled None");
-        let WaitReason::Children {
-            child_execution_ids,
-            resume,
-        } = wait
-        else {
-            return Err(ChildrenHandoffError::StateMismatch {
-                key: source.clone(),
-                detail: "the checkpoint source is not parked on delegated children".to_string(),
-            });
-        };
-        let mut actual_children = child_execution_ids.clone();
-        actual_children.sort();
-        if actual_children.as_slice() != expected_children {
-            return Err(ChildrenHandoffError::StateMismatch {
-                key: source.clone(),
-                detail: "the parked child set differs from the lifecycle owner's ready set"
-                    .to_string(),
-            });
-        }
-        if resume.run_resumes_as.as_deref() != Some(resumes_as) {
-            return Err(ChildrenHandoffError::StateMismatch {
-                key: source.clone(),
-                detail: "the parked successor address differs from the durable checkpoint"
-                    .to_string(),
-            });
-        }
+                });
+            }
+            let resolutions = store
+                .wake_resolutions(source, wake_token)
+                .await
+                .map_err(|error| handoff_store_error(source, "wake_resolutions", error))?;
+            if !resolutions.iter().any(|existing| existing == resolution_id) {
+                return Err(ChildrenHandoffError::StateMismatch {
+                    key: source.clone(),
+                    detail:
+                        "the cleared handoff does not carry this checkpoint's bound readiness receipt"
+                            .to_string(),
+                });
+            }
+        },
+        Some(wait) => {
+            let WaitReason::Children {
+                child_execution_ids,
+                resume,
+            } = wait
+            else {
+                return Err(ChildrenHandoffError::StateMismatch {
+                    key: source.clone(),
+                    detail: "the checkpoint source is not parked on delegated children".to_string(),
+                });
+            };
+            let mut actual_children = child_execution_ids.clone();
+            actual_children.sort();
+            if actual_children.as_slice() != expected_children {
+                return Err(ChildrenHandoffError::StateMismatch {
+                    key: source.clone(),
+                    detail: "the parked child set differs from the lifecycle owner's ready set"
+                        .to_string(),
+                });
+            }
+            if resume.run_resumes_as.as_deref() != Some(resumes_as) {
+                return Err(ChildrenHandoffError::StateMismatch {
+                    key: source.clone(),
+                    detail: "the parked successor address differs from the durable checkpoint"
+                        .to_string(),
+                });
+            }
+        },
     }
 
     let mut revision_for_clear = revision;

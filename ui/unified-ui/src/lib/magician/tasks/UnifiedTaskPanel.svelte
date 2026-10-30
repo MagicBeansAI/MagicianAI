@@ -28,7 +28,7 @@
 	/**
 	 * One ask blocking the plan.
 	 *
-	 * **It carries an id**, which is what lets the act body render the ask block
+	 * **It carries an id**, which is what lets the panel render the ask block
 	 * for the question it is answering and list the *other* questions underneath,
 	 * with nothing said twice. Matching on the question's text would work today
 	 * and stop working the first moment either side trimmed a string — the ask
@@ -52,7 +52,7 @@
 		approvedAt: number | null;
 		/** The plan's steps, in order, as the act body lists them. */
 		steps: readonly string[];
-		/** The asks blocking the plan, in the order the act body lists them. */
+		/** The asks blocking the plan, in the order the questions area lists them. */
 		questions: readonly TaskPanelQuestion[];
 		/**
 		 * What planning has done so far, oldest first, while the plan is being
@@ -342,6 +342,7 @@
 		 * wrote prose and no artifacts.
 		 */
 		summary: string | null;
+		verificationSummary?: string | null;
 		provenance: ProvenanceEntry[];
 	}
 
@@ -429,7 +430,7 @@
 	}
 
 	/**
-	 * Where each ask is answered: in the act, or in the focused prompt.
+	 * Where each ask is answered: in the questions area, or in the focused prompt.
 	 *
 	 * **Every one of the eleven renders**, here or there — `HitlPromptFields` is
 	 * one component and the panel embeds the same one the Attention centre does,
@@ -633,6 +634,9 @@
 		cancelled: true,
 		queued: false,
 		archived: true,
+		// Not settled: the answer is still being written, so the panel must not
+		// yet claim `no output` about a task whose output is on its way.
+		finalizing: false,
 		finished: true
 	};
 
@@ -642,8 +646,8 @@
 
 <script lang="ts">
 	/**
-	 * The task panel: a verdict line, then the acts the task has, in fixed order,
-	 * with one of them open.
+	 * The task panel: a verdict line, pending questions, then the acts the task
+	 * has in lifecycle-dependent order, with at most one of them open.
 	 *
 	 * It composes the four pure modules and the two small components rather than
 	 * deciding anything they decide. What it owns is what only a composer can
@@ -657,7 +661,7 @@
 	import { afterUpdate, beforeUpdate, createEventDispatcher, onDestroy } from 'svelte';
 
 	import HitlPromptFields from '$lib/hitl/HitlPromptFields.svelte';
-	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import TaskReport from './TaskReport.svelte';
 	import MiddleEllipsis from '$lib/magician/components/chat/MiddleEllipsis.svelte';
 	import { narrate, recipeCue } from '$lib/magician/api-mining/recipeNarrative';
 	import Button from '$lib/magician/components/native/Button.svelte';
@@ -700,8 +704,6 @@
 	import {
 		followsBottom,
 		formatUsd,
-		latencyScale,
-		latencyShare,
 		timelineClock,
 		timelineCost,
 		timelineIsolated,
@@ -712,6 +714,7 @@
 		TIMELINE_TAIL
 	} from './taskTimeline';
 	import { deriveVerdict, durationIfKnown, type Verdict, type VerdictAttention } from './taskVerdict';
+	import { liveClock } from '$lib/magician/chat/next/liveClock';
 
 	/** `null` while nothing has loaded. The panel then renders nothing rather than a shape. */
 	export let task: TaskPanelModel | null = null;
@@ -927,6 +930,7 @@
 			currentStepLabel: model.currentStepLabel,
 			elapsedMs: model.elapsedMs,
 			lastProgressAt: model.lastProgressAt,
+			synthesisPending: model.synthesisPending,
 			now: at
 		});
 	}
@@ -1082,6 +1086,7 @@
 
 	onDestroy(() => {
 		if (copiedTimer !== null) clearTimeout(copiedTimer);
+		runningTick.stop();
 	});
 
 	function canPreview(file: TaskPanelFile): boolean {
@@ -1521,6 +1526,22 @@
 	// Lifted for the same reason: the act body reads it inside an `{#each}`, and a
 	// value narrowed outside one is not narrowed inside it.
 	$: timeline = run?.timeline ?? null;
+	// A running row's elapsed ticks off the shared 1 s clock, held only while the
+	// run is live and a row is running: a settled run's leftover `running` row is
+	// a lost terminal event, not a call to count up. Never behind the `now` prop,
+	// so a caller's clock (and a test's) still decides the reading when no tick
+	// has landed.
+	let tickNow: number | null = null;
+	const runningTick = liveClock((tick) => (tickNow = tick));
+	$: timelineTicking = !settled && (timeline ?? []).some((entry) => entry.status === 'running');
+	// A finished task whose final answer is still being written also ticks, so the
+	// verdict's `Preparing final result · 40s` counts up between polls. Decided off
+	// the model's flag, not the verdict, which reads the clock this tick feeds.
+	$: synthesisTicking = task?.synthesisPending === true && task.status === 'finished';
+	$: runningTick.sync(timelineTicking || synthesisTicking);
+	$: liveNow = Math.max(now, tickNow ?? 0);
+	// Every other verdict keeps reading the caller's clock, as it always has.
+	$: verdictNow = synthesisTicking ? liveNow : now;
 	$: recipeEvents = (timeline ?? []).flatMap((entry) => (entry.recipe ? [entry.recipe] : []));
 	$: recipeNarrative = narrate(recipeEvents);
 	$: taskRecipeCue = recipeCue(recipeEvents);
@@ -1601,18 +1622,8 @@
 		lastNewestId = newest;
 	}
 	/**
-	 * The yardstick the latency bars are drawn against — the longest call in this
-	 * feed, or `null` when fewer than two rows were timed and there is therefore
-	 * no comparison to draw.
-	 *
-	 * Computed **once per feed** rather than inside the `{#each}`: a per-row
-	 * derivation would be O(n²) over a two-hundred-row log, and worse, each row
-	 * would be free to answer "longest" differently.
-	 */
-	$: timelineScale = timeline === null ? null : latencyScale(timeline);
-	/**
-	 * The instant every row's offset is measured from. Computed **once per feed**
-	 * for the reason `timelineScale` is: a per-row derivation would be O(n²) over a
+	 * The instant every row's offset is measured from. Computed **once per feed**:
+	 * a per-row derivation would be O(n²) over a
 	 * two-hundred-row log, and every row would be free to answer "when did this run
 	 * begin" differently — which is the class of disagreement nothing on screen can
 	 * catch, because each row's number would be individually plausible.
@@ -1629,7 +1640,7 @@
 		? 'No activity was recorded for this run'
 		: 'No activity recorded yet';
 
-	$: verdict = task === null ? null : verdictOf(task, now, task.attention);
+	$: verdict = task === null ? null : verdictOf(task, verdictNow, task.attention);
 
 	// The task's own state with the ask taken off. Only computed while blocked,
 	// because with no ask the verdict already is the lifecycle.
@@ -1638,7 +1649,7 @@
 			? null
 			: task.attention === null
 				? verdict.state
-				: verdictOf(task, now, null).state;
+				: verdictOf(task, verdictNow, null).state;
 	$: settled = lifecycle !== null && SETTLED[lifecycle];
 
 	// `deriveVerdict` leaves the finished row's detail for the panel to compose;
@@ -1686,26 +1697,6 @@
 		verdict === null ? null : defaultOpenAct(verdict.state, acts, task?.attention?.source ?? null);
 
 	/**
-	 * Which act holds the ask — the same expression that decides where the panel
-	 * opens, evaluated once and read by both.
-	 *
-	 * It has to be `autoAct` rather than `openAct`: the reader may have opened a
-	 * different act, and the ask does not move to follow them. Deriving it a
-	 * second way would let the act the panel opens and the act the ask is in come
-	 * apart, which is a panel that lands the reader somewhere the control is not.
-	 */
-	$: askAct = ask === null ? null : autoAct;
-
-	/**
-	 * The plan questions the list renders: every one except the one the ask block
-	 * is already showing, matched on the id both carry.
-	 *
-	 * Not filtered on the *text*: the two strings are the same field of the same
-	 * record today, and the first trim on either side would put the ask on screen
-	 * twice — once with a control and once as a bare line — with every value
-	 * involved still correct.
-	 */
-	/**
 	 * The plan graph chip, on the right of the Plan act's header. A run opened
 	 * from a chat card has no Plan act (the plan is the task's), so there it
 	 * sits on the Run act's header instead.
@@ -1739,6 +1730,7 @@
 			: null;
 	})();
 	$: planActivityTokens = planProgress.reduce((sum, entry) => sum + (entry.tokens ?? 0), 0);
+	// The primary question already has a control above; match by identity.
 	$: planQuestions = (plan?.questions ?? []).filter(
 		(question) => !(answerAsk && ask !== null && question.id === ask.id)
 	);
@@ -1945,6 +1937,139 @@
 			</div>
 		{/if}
 
+		{#if (answerAsk && ask !== null && askPrompt !== null) || moreAsks.length > 0 || planQuestions.length > 0}
+			<!-- Pending questions stay mounted when the reader collapses or switches acts. -->
+			<section class="panel-asks" aria-label="Pending questions" data-pending-asks>
+				<h3 class="panel-asks__title">Needs your input</h3>
+				{#if answerAsk && ask !== null && askPrompt !== null}
+					<div class="ask" data-ask-source={ask.source} data-ask-input={ask.input_type}>
+						{#if ask.delegated_agent_id}
+							<!-- C2: a delegated child's ask, surfaced on this parent task. -->
+							<p class="ask__from">from {ask.delegated_agent_id}</p>
+						{/if}
+						<p class="ask__prompt">{ask.prompt}</p>
+						{#if askHandoff === null}
+							<HitlPromptFields
+								bind:this={askFields}
+								bind:canSubmit={askCanSubmit}
+								request={askPrompt}
+								busy={askBusy}
+								on:answer={onAskAnswer}
+								on:dismiss={onAskDismiss}
+								on:reviewPlan={() => dispatch('openPlan')}
+							/>
+							{#if !PROMPT_HAS_OWN_ACTIONS[askPrompt.kind]}
+								<!--
+									The submit for the shapes that are fields rather than
+									decisions. The modal puts this in a footer; this area has no
+									footer, so it sits under the field — and it gates on the same
+									`canSubmit` the modal's does, because there is one gate.
+								-->
+								<div class="ask__actions">
+									<Button
+										label={askBusy ? 'Sending…' : 'Answer'}
+										variant="secondary"
+										size="sm"
+										className="ask__submit"
+										disabled={!askCanSubmit || askBusy}
+										on:click={() => askFields?.submit()}
+									/>
+								</div>
+							{/if}
+						{:else}
+							<div class="ask__actions">
+								<Button
+									label={askBusy ? 'Sending…' : askHandoff}
+									size="sm"
+									className="ask__submit"
+									disabled={askBusy}
+									on:click={() => dispatch('answer', { ask, result: null })}
+								/>
+							</div>
+						{/if}
+						{#if askFailure !== null}
+							<!--
+								**The ask stays open and says why.** `role="alert"` because the
+								reader has just acted and nothing else on screen changed: the
+								verdict still reads `Waiting on you`, which is now the truth
+								twice over. An ask that looked answered and was not is the
+								failure this whole feature is against.
+							-->
+							<p class="ask__error" role="alert">{askFailure}</p>
+						{/if}
+					</div>
+				{/if}
+
+				{#if moreAsks.length > 0}
+					<!--
+						The run's other asks. The block above answers one; a run blocked
+						on several lists the rest here, each with its own control, so
+						none of them is reachable only from another surface.
+					-->
+					<ul class="more-asks" aria-label="Also waiting on you">
+						{#each moreAsks as other (other.id)}
+							{@const progress = otherAskProgress(askState, other)}
+							<li class="more-ask" data-ask-source={other.source} data-ask-id={other.id}>
+								{#if other.delegated_agent_id}
+									<p class="ask__from">from {other.delegated_agent_id}</p>
+								{/if}
+								<p class="ask__prompt">{other.prompt}</p>
+								<div class="ask__actions">
+									{#if other.input_schema?.review_href}
+										<!-- Navigation only; the ask stays open (see HitlPromptFields). -->
+										<a class="ask__review" href={other.input_schema.review_href}
+											>{other.input_schema.review_label ?? 'Review'} →</a
+										>
+									{/if}
+									<Button
+										label={progress?.status === 'sending' ? 'Sending…' : otherAskLabel(other)}
+										variant="outline"
+										size="sm"
+										className="ask__submit"
+										disabled={progress?.status === 'sending'}
+										on:click={() => openOtherAsk(other)}
+									/>
+								</div>
+								{#if progress?.status === 'failed'}
+									<p class="ask__error" role="alert">{progress.message}</p>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+
+				{#if planQuestions.length > 0}
+					<!--
+						The plan's asks. The one the block above is answering is absent
+						from this list — matched by **id**, so a question and its control
+						cannot both appear and cannot both disappear. The header's count
+						still names every question, because what is blocking the plan does
+						not change with where each one is drawn.
+					-->
+					<ul class="plan-asks">
+						{#each planQuestions as question (question.id)}
+							{@const target = answerAsk ? (question.target ?? null) : null}
+							{@const progress = target === null ? null : otherAskProgress(askState, target)}
+							<!--
+								Every question that published a target is answerable, not only
+								the first: its button opens the focused prompt for it. The
+								children sit flush so a question with no control reads as its
+								text alone.
+							-->
+							<li class="plan-ask" data-question-id={question.id}><span class="plan-ask__text">{question.question}</span>{#if target !== null}<Button
+										label={progress?.status === 'sending' ? 'Sending…' : otherAskLabel(target)}
+										variant="outline"
+										size="sm"
+										className="plan-ask__answer"
+										disabled={progress?.status === 'sending'}
+										on:click={() => openOtherAsk(target)}
+									/>{/if}{#if progress?.status === 'failed'}<p class="ask__error" role="alert">{progress.message}</p>{/if}</li>
+						{/each}
+					</ul>
+				{/if}
+			</section>
+		{/if}
+
 		<!--
 			Presence comes from `deriveActs`; the rendering order from `actOrder`,
 			which moves the state's leading act to the front (result first for a
@@ -2026,149 +2151,7 @@
 						<RunStepDots view={runDots} live={!settled} />
 					{/if}
 				</svelte:fragment>
-				<!--
-					**The ask, and the thing that answers it, in the act the reader was
-					sent to** — design §4's L2 rule, that being blocked and unblocking
-					yourself happen in one place.
-
-					`askAct` is `defaultOpenAct` over the ask's own source, which is the
-					same expression that decides where the panel opens, so the ask is by
-					construction in the act the reader lands in. One render site: for a
-					plan clarification the matching `<li>` below is suppressed rather than
-					this block moving into the list, because a mid-run ask has no list to
-					move into and two sites is two things to keep in step.
-
-					Only when the caller answers. Without a listener the verdict line has
-					already said what is being asked, and a second copy of it under a
-					control that could not post would be a promise with nothing behind it.
-				-->
-				{#if answerAsk && ask !== null && askPrompt !== null && id === askAct}
-					<div class="ask" data-ask-source={ask.source} data-ask-input={ask.input_type}>
-						{#if ask.delegated_agent_id}
-							<!-- C2: a delegated child's ask, surfaced on this parent task. -->
-							<p class="ask__from">from {ask.delegated_agent_id}</p>
-						{/if}
-						<p class="ask__prompt">{ask.prompt}</p>
-						{#if askHandoff === null}
-							<HitlPromptFields
-								bind:this={askFields}
-								bind:canSubmit={askCanSubmit}
-								request={askPrompt}
-								busy={askBusy}
-								on:answer={onAskAnswer}
-								on:dismiss={onAskDismiss}
-								on:reviewPlan={() => dispatch('openPlan')}
-							/>
-							{#if !PROMPT_HAS_OWN_ACTIONS[askPrompt.kind]}
-								<!--
-									The submit for the shapes that are fields rather than
-									decisions. The modal puts this in a footer; an act body has no
-									footer, so it sits under the field — and it gates on the same
-									`canSubmit` the modal's does, because there is one gate.
-								-->
-								<div class="ask__actions">
-									<Button
-										label={askBusy ? 'Sending…' : 'Answer'}
-										variant="secondary"
-										size="sm"
-										className="ask__submit"
-										disabled={!askCanSubmit || askBusy}
-										on:click={() => askFields?.submit()}
-									/>
-								</div>
-							{/if}
-						{:else}
-							<div class="ask__actions">
-								<Button
-									label={askBusy ? 'Sending…' : askHandoff}
-									size="sm"
-									className="ask__submit"
-									disabled={askBusy}
-									on:click={() => dispatch('answer', { ask, result: null })}
-								/>
-							</div>
-						{/if}
-						{#if askFailure !== null}
-							<!--
-								**The ask stays open and says why.** `role="alert"` because the
-								reader has just acted and nothing else on screen changed: the
-								verdict still reads `Waiting on you`, which is now the truth
-								twice over. An ask that looked answered and was not is the
-								failure this whole feature is against.
-							-->
-							<p class="ask__error" role="alert">{askFailure}</p>
-						{/if}
-					</div>
-				{/if}
-
-				{#if moreAsks.length > 0 && id === autoAct}
-					<!--
-						The run's other asks. The block above answers one; a run blocked
-						on several lists the rest here, each with its own control, so
-						none of them is reachable only from another surface.
-					-->
-					<ul class="more-asks" aria-label="Also waiting on you">
-						{#each moreAsks as other (other.id)}
-							{@const progress = otherAskProgress(askState, other)}
-							<li class="more-ask" data-ask-source={other.source} data-ask-id={other.id}>
-								{#if other.delegated_agent_id}
-									<p class="ask__from">from {other.delegated_agent_id}</p>
-								{/if}
-								<p class="ask__prompt">{other.prompt}</p>
-								<div class="ask__actions">
-									{#if other.input_schema?.review_href}
-										<!-- Navigation only; the ask stays open (see HitlPromptFields). -->
-										<a class="ask__review" href={other.input_schema.review_href}
-											>{other.input_schema.review_label ?? 'Review'} →</a
-										>
-									{/if}
-									<Button
-										label={progress?.status === 'sending' ? 'Sending…' : otherAskLabel(other)}
-										variant="outline"
-										size="sm"
-										className="ask__submit"
-										disabled={progress?.status === 'sending'}
-										on:click={() => openOtherAsk(other)}
-									/>
-								</div>
-								{#if progress?.status === 'failed'}
-									<p class="ask__error" role="alert">{progress.message}</p>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-				{/if}
-
 				{#if id === 'plan' && plan !== null}
-					{#if planQuestions.length > 0}
-						<!--
-							The plan's asks. The one the block above is answering is absent
-							from this list — matched by **id**, so a question and its control
-							cannot both appear and cannot both disappear. The header's count
-							still names every question, because what is blocking the plan does
-							not change with where each one is drawn.
-						-->
-						<ul class="plan-asks">
-							{#each planQuestions as question (question.id)}
-								{@const target = answerAsk ? (question.target ?? null) : null}
-								{@const progress = target === null ? null : otherAskProgress(askState, target)}
-								<!--
-									Every question that published a target is answerable, not only
-									the first: its button opens the focused prompt for it. The
-									children sit flush so a question with no control reads as its
-									text alone.
-								-->
-								<li class="plan-ask" data-question-id={question.id}><span class="plan-ask__text">{question.question}</span>{#if target !== null}<Button
-											label={progress?.status === 'sending' ? 'Sending…' : otherAskLabel(target)}
-											variant="outline"
-											size="sm"
-											className="plan-ask__answer"
-											disabled={progress?.status === 'sending'}
-											on:click={() => openOtherAsk(target)}
-										/>{/if}{#if progress?.status === 'failed'}<p class="ask__error" role="alert">{progress.message}</p>{/if}</li>
-							{/each}
-						</ul>
-					{/if}
 					{#if planProgress.length > 0}
 						<!--
 							What planning did: its milestones and each model call, oldest first.
@@ -2437,6 +2420,10 @@
 							{#snippet timelineRow(entry: TimelineEntry)}
 									{@const cost = timelineCost(entry)}
 									{@const latency = durationIfKnown(entry.latencyMs)}
+									{@const elapsed =
+										timelineTicking && entry.status === 'running' && latency === null && entry.at > 0
+											? durationIfKnown(Math.max(0, liveNow - entry.at))
+											: null}
 									{@const clock = timelineClock(entry.at)}
 									{@const offset = timelineOffset(entry.at, timelineFrom)}
 									<li
@@ -2497,32 +2484,22 @@
 												At the end of the row, where a step's duration already sits.
 												It is the same fact about a smaller thing, so it takes the
 												same place rather than joining the cost line below.
-
-												**The bar is the number's own underline, not a row of its
-												own.** A feed is already the longest thing in this panel and
-												a second line per entry would double it — the constraint
-												this act is held to is that no body becomes something the
-												reader scrolls past to reach the next act. Drawn behind a
-												right-aligned, tabular number in a fixed-width track, so the
-												bars share one baseline and one origin and the eye can run
-												down them; absent entirely on a row nothing timed, and on
-												every row of a feed with only one measurement in it.
 											-->
-											{@const share = latencyShare(entry.latencyMs, timelineScale)}
 											<span class="timeline-row__latency">
-												{#if share !== null}
-													<span
-														class="timeline-row__bar"
-														aria-hidden="true"
-														style="width: {share}%"
-													></span>
-												{/if}
 												<span class="timeline-row__latency-value">{latency}</span>
+											</span>
+										{:else if elapsed !== null}
+											<!--
+												A call still running counts up in the same place its duration
+												will land, so settling replaces the number rather than moving it.
+											-->
+											<span class="timeline-row__latency timeline-row__latency--live" data-timeline-elapsed>
+												<span class="timeline-row__latency-value">{elapsed}</span>
 											</span>
 										{/if}
 										{#if entry.body}
 											<div class="timeline-row__body">
-												<ChatMarkdown content={entry.body} sessionId={null} />
+												<TaskReport content={entry.body} />
 											</div>
 										{/if}
 										{#if entry.model || cost.length > 0}
@@ -2717,7 +2694,7 @@
 							open-file endpoint that could not answer for them.
 						-->
 						<div class="output-summary">
-							<ChatMarkdown content={output.summary} sessionId={null} />
+							<TaskReport content={output.summary} verificationContent={output.verificationSummary} />
 						</div>
 					{/if}
 					{#if output.taskFilesKnown === false}
@@ -2851,7 +2828,7 @@
 												chat session here.
 											-->
 											<div class="output-preview__markdown">
-												<ChatMarkdown content={previewText} sessionId={null} />
+												<TaskReport content={previewText} />
 											</div>
 										{:else if previewKind === 'csv'}
 											{@const table = parseDelimited(
@@ -3200,6 +3177,19 @@
 		margin-top: var(--space-sm);
 	}
 
+	.panel-asks {
+		min-width: 0;
+		padding-inline: var(--task-panel-bleed, 0px);
+	}
+
+	.panel-asks__title {
+		margin: 0 0 var(--space-sm);
+		font-family: var(--font-primary);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
 	.plan-asks,
 	.plan-steps,
 	.run-steps,
@@ -3242,7 +3232,7 @@
 	}
 
 	/* ── the ask, and the thing that answers it ───────────────────────────
-	   Sits at the top of its act with a rule under it, so the reader's eye
+	   Sits above the acts with a rule under it, so the reader's eye
 	   separates "the thing you have to do" from the record below it without a
 	   card, a wash or a border box — the three gestures this panel replaced.
 	   No colour of its own: the verdict line above already carries the
@@ -3258,7 +3248,7 @@
 	}
 
 	/* The ask in the backend's own words. One step up from the body text
-	   around it, because within this act it is the sentence everything else is
+	   around it, because within this area it is the sentence everything else is
 	   subordinate to — and it is the only place the full prompt appears: the
 	   verdict's detail line is the same string and clips. */
 	.ask__from {
@@ -4603,24 +4593,10 @@
 		color: var(--text-secondary);
 	}
 
-	/* Where the time went. A 2px rule under the number rather than a bar beside
-	   it: the row is already four elements wide in a 560px drawer, and a feed of
-	   two hundred rows cannot afford a line each. Quiet enough to read as an
-	   annotation on the number rather than as a chart competing with the titles —
-	   the answer is in the *relative* lengths, which survive at any opacity. */
-	.timeline-row__bar {
-		position: absolute;
-		left: 0;
-		bottom: -0.1rem;
-		height: 2px;
-		border-radius: 1px;
-		background: color-mix(in srgb, var(--text-secondary) 45%, transparent);
-	}
-
-	/* Above the bar, so a full-width bar reads as an underline rather than a
-	   strike. */
-	.timeline-row__latency-value {
-		position: relative;
+	/* A running row's live elapsed: the running tone, so it reads as a count in
+	   progress rather than a settled duration. */
+	.timeline-row__latency--live {
+		color: color-mix(in srgb, var(--status-running) 60%, var(--text-secondary));
 	}
 
 	/* Everything under the title line hangs off the row's own content edge — the

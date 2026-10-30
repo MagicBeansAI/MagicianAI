@@ -432,8 +432,7 @@ fn tie_effect(
     heads: &IntentionHeads,
     bars: &ComposerBars,
 ) -> Effect {
-    let firm =
-        heads.firm_limit > bars.soft || intention.kind == IntentionKind::StandingInstruction;
+    let firm = heads.firm_limit > bars.soft || intention.kind == IntentionKind::StandingInstruction;
     let advisory = matches!(
         input.policy.for_intention(intention),
         Some(InterventionPolicy::Advisory)
@@ -495,7 +494,10 @@ fn statements<'a>(intentions: &[&'a Intention]) -> Vec<&'a str> {
 }
 
 fn ids(intentions: &[&Intention]) -> Vec<String> {
-    intentions.iter().map(|intention| intention.id.clone()).collect()
+    intentions
+        .iter()
+        .map(|intention| intention.id.clone())
+        .collect()
 }
 
 /// Compose a decision from per-intention answers against `bars`. The result
@@ -537,13 +539,14 @@ pub fn compose(
         let relation = settled.unwrap_or(Relation::Unclear);
         // An exception the host already matched to this scope and act is the
         // owner's recorded answer: it does not intervene again.
-        let effect = if matched.contains(&intention.id.as_str()) || muted(input, intention, heads, bars) {
-            Effect::None
-        } else if settled.is_some() {
-            effect_of(input, intention, relation, heads, bars)
-        } else {
-            capped(input, tie_effect(input, intention, heads, bars))
-        };
+        let effect =
+            if matched.contains(&intention.id.as_str()) || muted(input, intention, heads, bars) {
+                Effect::None
+            } else if settled.is_some() {
+                effect_of(input, intention, relation, heads, bars)
+            } else {
+                capped(input, tie_effect(input, intention, heads, bars))
+            };
         effects.push((intention, relation, effect));
     }
 
@@ -700,7 +703,11 @@ pub fn compose(
                 Vec::new(),
                 format!(
                     "This {} {}. Which would you like?",
-                    if conflict { "doesn't fit" } else { "may not fit" },
+                    if conflict {
+                        "doesn't fit"
+                    } else {
+                        "may not fit"
+                    },
                     quoted(&statements(&holding))
                 ),
                 Vec::new(),
@@ -927,19 +934,22 @@ mod tests {
             .collect()
     }
 
-    fn composed(
-        input: &AlignmentInput,
-        pairs: &[(&str, IntentionHeads)],
-    ) -> AlignmentDecision {
+    fn composed(input: &AlignmentInput, pairs: &[(&str, IntentionHeads)]) -> AlignmentDecision {
         let decision = compose(input, &answers(pairs), &at(0.7)).expect("composes");
         let validated = validate_decision(input, decision.clone()).expect("validates");
-        assert_eq!(validated.downgrade, None, "the composer never needs lowering");
+        assert_eq!(
+            validated.downgrade, None,
+            "the composer never needs lowering"
+        );
         decision
     }
 
     #[test]
     fn an_explicit_conflict_holds_for_confirmation() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = composed(&input, &[("i1", heads(Relation::Conflict, 0.9, 0.0))]);
         assert_eq!(decision.intervention, Intervention::Confirm);
         assert_eq!(decision.continuation, Continuation::Wait);
@@ -1003,7 +1013,10 @@ mod tests {
 
     #[test]
     fn an_unclear_explicit_intention_asks_and_waits() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = composed(&input, &[("i1", heads(Relation::Unclear, 0.8, 0.0))]);
         assert_eq!(decision.intervention, Intervention::Clarify);
         assert_eq!(decision.unresolved_facts.len(), 1);
@@ -1011,7 +1024,10 @@ mod tests {
 
     #[test]
     fn an_acknowledged_exception_proceeds_citing_the_owner_turn() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = composed(
             &input,
             &[("i1", heads(Relation::AcknowledgedException, 0.9, 0.0))],
@@ -1043,7 +1059,10 @@ mod tests {
 
     #[test]
     fn the_owner_cancelling_cancels_with_the_owner_span() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = composed(&input, &[("i1", heads(Relation::Consistent, 0.9, 0.95))]);
         assert_eq!(decision.continuation, Continuation::Cancel);
         assert_eq!(decision.cited_owner_spans, vec!["span-1"]);
@@ -1051,7 +1070,10 @@ mod tests {
 
     #[test]
     fn not_applicable_and_consistent_pool_into_no_intervention() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let mut distribution = BTreeMap::new();
         distribution.insert(Relation::NotApplicable, 0.45);
         distribution.insert(Relation::Consistent, 0.45);
@@ -1076,14 +1098,21 @@ mod tests {
 
     #[test]
     fn an_unsettled_firm_rule_asks_and_an_unsure_cancel_stays_unresolved() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = composed(&input, &[("i1", heads(Relation::Consistent, 0.6, 0.0))]);
         assert_eq!(
             (decision.intervention, decision.continuation),
             (Intervention::Clarify, Continuation::Wait)
         );
         assert!(matches!(
-            compose(&input, &answers(&[("i1", heads(Relation::Consistent, 0.9, 0.5))]), &at(0.7)),
+            compose(
+                &input,
+                &answers(&[("i1", heads(Relation::Consistent, 0.9, 0.5))]),
+                &at(0.7)
+            ),
             Err(ComposeUnresolved::Uncertain {
                 question: CANCEL_QUESTION,
                 ..
@@ -1109,7 +1138,10 @@ mod tests {
             muted: 0.0,
             owner_decides: 0.0,
         };
-        let explicit = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let explicit = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = compose(&explicit, &answers(&[("i1", heads.clone())]), &at(0.5)).unwrap();
         assert_eq!(decision.continuation, Continuation::Wait);
         // Inferred evidence never holds, so the threshold alone settles it.
@@ -1120,7 +1152,10 @@ mod tests {
 
     #[test]
     fn a_soft_explicit_preference_offers_a_choice_and_a_firm_one_confirms() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let mut soft = heads(Relation::Conflict, 0.9, 0.0);
         soft.firm_limit = 0.1;
         let decision = composed(&input, &[("i1", soft.clone())]);
@@ -1141,7 +1176,10 @@ mod tests {
         let input = input(vec![instruction], None);
         let mut soft = heads(Relation::Conflict, 0.9, 0.0);
         soft.firm_limit = 0.0;
-        assert_eq!(composed(&input, &[("i1", soft)]).intervention, Intervention::Confirm);
+        assert_eq!(
+            composed(&input, &[("i1", soft)]).intervention,
+            Intervention::Confirm
+        );
     }
 
     #[test]
@@ -1159,10 +1197,16 @@ mod tests {
             assert!(decision.supporting_intentions.is_empty());
         }
         // An explicit statement does not: asking for the act is not consent.
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let mut chosen = heads(Relation::Conflict, 0.9, 0.0);
         chosen.owner_specified = 0.95;
-        assert_eq!(composed(&input, &[("i1", chosen)]).intervention, Intervention::Confirm);
+        assert_eq!(
+            composed(&input, &[("i1", chosen)]).intervention,
+            Intervention::Confirm
+        );
     }
 
     #[test]
@@ -1174,7 +1218,10 @@ mod tests {
 
     #[test]
     fn untrusted_evidence_is_only_ever_an_unclear_nudge() {
-        let input = input(vec![intention("i1", AssertionStatus::InferredUntrusted)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::InferredUntrusted)],
+            None,
+        );
         let decision = composed(&input, &[("i1", heads(Relation::Conflict, 0.95, 0.0))]);
         assert_eq!(decision.assessment, Assessment::Unclear);
         assert_eq!(decision.remember_offer, None);
@@ -1222,14 +1269,20 @@ mod tests {
 
     #[test]
     fn a_reply_or_a_local_step_earns_at_most_a_mention() {
-        let mut reply = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let mut reply = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         reply.action = None;
         let decision = composed(&reply, &[("i1", heads(Relation::Conflict, 0.95, 0.0))]);
         assert_eq!(
             (decision.intervention, decision.continuation),
             (Intervention::Nudge, Continuation::Proceed)
         );
-        let mut local = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let mut local = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         if let Some(action) = local.action.as_mut() {
             action.outward_class = None;
             action.consequence_class = "private_local".to_string();
@@ -1246,10 +1299,16 @@ mod tests {
         // "No door codes for anyone outside the household", a code for the
         // plumber: the model reads the subject as someone else, but the
         // relation decides.
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let mut outsiders = heads(Relation::Conflict, 0.9, 0.0);
         outsiders.same_subject = 0.2;
-        assert_eq!(composed(&input, &[("i1", outsiders)]).intervention, Intervention::Confirm);
+        assert_eq!(
+            composed(&input, &[("i1", outsiders)]).intervention,
+            Intervention::Confirm
+        );
     }
 
     fn torn(firm_limit: f64, owner_specified: f64) -> IntentionHeads {
@@ -1270,11 +1329,22 @@ mod tests {
 
     #[test]
     fn a_torn_answer_on_a_soft_goal_is_mentioned_and_proceeds() {
-        let explicit = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let explicit = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         let decision = composed(&explicit, &[("i1", torn(0.1, 0.1))]);
         assert_eq!(
-            (decision.assessment, decision.intervention, decision.continuation),
-            (Assessment::Unclear, Intervention::Nudge, Continuation::Proceed)
+            (
+                decision.assessment,
+                decision.intervention,
+                decision.continuation
+            ),
+            (
+                Assessment::Unclear,
+                Intervention::Nudge,
+                Continuation::Proceed
+            )
         );
         let inferred = input(vec![intention("i1", AssertionStatus::Inferred)], None);
         let decision = composed(&inferred, &[("i1", torn(0.9, 0.1))]);
@@ -1283,7 +1353,10 @@ mod tests {
 
     #[test]
     fn a_torn_answer_yields_to_the_owners_current_choice_unless_the_rule_is_firm() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
         assert_eq!(
             composed(&input, &[("i1", torn(0.2, 0.9))]).assessment,
             Assessment::Aligned
@@ -1317,8 +1390,12 @@ mod tests {
 
     #[test]
     fn malformed_answers_and_bars_decide_nothing() {
-        let input = input(vec![intention("i1", AssertionStatus::DirectOwnerStatement)], None);
-        let unresolved = |heads: IntentionHeads| compose(&input, &answers(&[("i1", heads)]), &at(0.5));
+        let input = input(
+            vec![intention("i1", AssertionStatus::DirectOwnerStatement)],
+            None,
+        );
+        let unresolved =
+            |heads: IntentionHeads| compose(&input, &answers(&[("i1", heads)]), &at(0.5));
         let invalid = Err(ComposeUnresolved::InvalidAnswer("i1".to_string()));
         let mut nan = heads(Relation::Consistent, 0.9, 0.0);
         nan.firm_limit = f64::NAN;
@@ -1337,7 +1414,11 @@ mod tests {
             ..ComposerBars::default()
         };
         assert!(matches!(
-            compose(&input, &answers(&[("i1", heads(Relation::Consistent, 0.9, 0.0))]), &bars),
+            compose(
+                &input,
+                &answers(&[("i1", heads(Relation::Consistent, 0.9, 0.0))]),
+                &bars
+            ),
             Err(ComposeUnresolved::InvalidBars(_))
         ));
     }
@@ -1431,7 +1512,12 @@ mod tests {
         input
     }
 
-    fn shaped(id: &str, status: AssertionStatus, kind: IntentionKind, lifecycle: IntentionLifecycle) -> Intention {
+    fn shaped(
+        id: &str,
+        status: AssertionStatus,
+        kind: IntentionKind,
+        lifecycle: IntentionLifecycle,
+    ) -> Intention {
         let mut intention = intention(id, status);
         intention.kind = kind;
         intention.lifecycle = lifecycle;
@@ -1441,7 +1527,10 @@ mod tests {
     /// Whatever the answers, a composed decision is one the host validator
     /// accepts unchanged, and it keeps every force rule. Checks one
     /// composition; returns a description of the first broken guarantee.
-    fn broken_guarantee(input: &AlignmentInput, answers: &BTreeMap<String, IntentionHeads>) -> Option<String> {
+    fn broken_guarantee(
+        input: &AlignmentInput,
+        answers: &BTreeMap<String, IntentionHeads>,
+    ) -> Option<String> {
         let bars = ComposerBars::default();
         let decision = match compose(input, answers, &bars) {
             Ok(decision) => decision,
@@ -1455,7 +1544,12 @@ mod tests {
             Ok(validated) => return Some(format!("needed lowering: {:?}", validated.downgrade)),
             Err(rejection) => return Some(format!("rejected: {rejection:?}")),
         }
-        let held_by = |id: &String| input.intentions.iter().find(|intention| &intention.id == id);
+        let held_by = |id: &String| {
+            input
+                .intentions
+                .iter()
+                .find(|intention| &intention.id == id)
+        };
         if decision.intervention == Intervention::Confirm
             && !decision
                 .holding_intentions
@@ -1488,7 +1582,10 @@ mod tests {
                 for lifecycle in LIFECYCLES {
                     for policy in POLICIES {
                         for action in 0..3 {
-                            let base = with_action(input(vec![shaped("i1", status, kind, lifecycle)], policy), action);
+                            let base = with_action(
+                                input(vec![shaped("i1", status, kind, lifecycle)], policy),
+                                action,
+                            );
                             for relation in &shapes {
                                 for (cancels, specified, firm, subject) in &grid {
                                     let heads = IntentionHeads {
@@ -1509,8 +1606,10 @@ mod tests {
                                     }
                                     checked += 1;
                                     let intention = &base.intentions[0];
-                                    let conflict = relation.get(&Relation::Conflict).copied().unwrap_or(0.0);
-                                    let firm_rule = *firm > bars.soft || kind == IntentionKind::StandingInstruction;
+                                    let conflict =
+                                        relation.get(&Relation::Conflict).copied().unwrap_or(0.0);
+                                    let firm_rule = *firm > bars.soft
+                                        || kind == IntentionKind::StandingInstruction;
                                     // A confident conflict with a firm explicit rule on an
                                     // outward act never proceeds, unless the owner asked to
                                     // be advised only or cancelled the act.
@@ -1521,14 +1620,31 @@ mod tests {
                                         && *cancels < 0.05
                                         && policy != Some(InterventionPolicy::Advisory)
                                     {
-                                        let decision = compose(&base, &answers, &bars).expect("composes");
-                                        assert_eq!(decision.continuation, Continuation::Wait, "{case}");
+                                        let decision =
+                                            compose(&base, &answers, &bars).expect("composes");
+                                        assert_eq!(
+                                            decision.continuation,
+                                            Continuation::Wait,
+                                            "{case}"
+                                        );
                                     }
                                     // A tie never intervenes harder than a settled `unclear`.
                                     if settled(&heads, intention, &bars).is_none() {
-                                        let tie = capped(&base, tie_effect(&base, intention, &heads, &bars));
-                                        let unclear = effect_of(&base, intention, Relation::Unclear, &heads, &bars);
-                                        assert!(tie <= unclear, "{case}: tie {tie:?} above unclear {unclear:?}");
+                                        let tie = capped(
+                                            &base,
+                                            tie_effect(&base, intention, &heads, &bars),
+                                        );
+                                        let unclear = effect_of(
+                                            &base,
+                                            intention,
+                                            Relation::Unclear,
+                                            &heads,
+                                            &bars,
+                                        );
+                                        assert!(
+                                            tie <= unclear,
+                                            "{case}: tie {tie:?} above unclear {unclear:?}"
+                                        );
                                     }
                                 }
                             }
@@ -1550,8 +1666,18 @@ mod tests {
                         for b in &shapes {
                             let input = input(
                                 vec![
-                                    shaped("i1", first, IntentionKind::StandingInstruction, IntentionLifecycle::Active),
-                                    shaped("i2", second, IntentionKind::Goal, IntentionLifecycle::Unresolved),
+                                    shaped(
+                                        "i1",
+                                        first,
+                                        IntentionKind::StandingInstruction,
+                                        IntentionLifecycle::Active,
+                                    ),
+                                    shaped(
+                                        "i2",
+                                        second,
+                                        IntentionKind::Goal,
+                                        IntentionLifecycle::Unresolved,
+                                    ),
                                 ],
                                 policy,
                             );
@@ -1588,9 +1714,17 @@ mod tests {
     fn the_owners_own_decision_satisfies_a_rule_that_reserves_it() {
         // "Don't agree to lend the car - ask me first"; the owner: "Tell
         // Petrov yes" (owner ruling 2026-10-11).
-        let rule = shaped("lend", AssertionStatus::DirectOwnerStatement, IntentionKind::StandingInstruction, IntentionLifecycle::Active);
+        let rule = shaped(
+            "lend",
+            AssertionStatus::DirectOwnerStatement,
+            IntentionKind::StandingInstruction,
+            IntentionLifecycle::Active,
+        );
         let lend = input(vec![rule.clone()], None);
-        let decided = |p: f64| IntentionHeads { owner_decides: p, ..heads(Relation::Conflict, 0.95, 0.0) };
+        let decided = |p: f64| IntentionHeads {
+            owner_decides: p,
+            ..heads(Relation::Conflict, 0.95, 0.0)
+        };
         let decision = composed(&lend, &[("lend", decided(0.85))]);
         assert_eq!(decision.assessment, Assessment::AcknowledgedException);
         assert_eq!(decision.continuation, Continuation::Proceed);
@@ -1600,11 +1734,17 @@ mod tests {
         // Only the current owner turn can make the decision.
         let mut no_turn = lend.clone();
         no_turn.request.owner_spans.clear();
-        let decision = compose(&no_turn, &answers(&[("lend", decided(0.95))]), &at(0.7)).expect("composes");
+        let decision =
+            compose(&no_turn, &answers(&[("lend", decided(0.95))]), &at(0.7)).expect("composes");
         assert_eq!(decision.intervention, Intervention::Confirm);
         // Never for anything but a standing instruction.
         let goal = input(
-            vec![shaped("goal", AssertionStatus::DirectOwnerStatement, IntentionKind::Goal, IntentionLifecycle::Active)],
+            vec![shaped(
+                "goal",
+                AssertionStatus::DirectOwnerStatement,
+                IntentionKind::Goal,
+                IntentionLifecycle::Active,
+            )],
             None,
         );
         let decision = composed(&goal, &[("goal", decided(0.95))]);
@@ -1616,8 +1756,18 @@ mod tests {
         // "Don't bring up the deposit goal for things under $300", a $240 buy.
         let input = input(
             vec![
-                shaped("no-nag", AssertionStatus::DirectOwnerStatement, IntentionKind::StandingInstruction, IntentionLifecycle::Active),
-                shaped("deposit", AssertionStatus::DirectOwnerStatement, IntentionKind::Goal, IntentionLifecycle::Active),
+                shaped(
+                    "no-nag",
+                    AssertionStatus::DirectOwnerStatement,
+                    IntentionKind::StandingInstruction,
+                    IntentionLifecycle::Active,
+                ),
+                shaped(
+                    "deposit",
+                    AssertionStatus::DirectOwnerStatement,
+                    IntentionKind::Goal,
+                    IntentionLifecycle::Active,
+                ),
             ],
             None,
         );
@@ -1642,53 +1792,105 @@ mod tests {
 
     #[test]
     fn a_mute_never_silences_a_firm_rule_and_needs_the_owners_instruction() {
-        let owner_rule = shaped("no-nag", AssertionStatus::DirectOwnerStatement, IntentionKind::StandingInstruction, IntentionLifecycle::Active);
+        let owner_rule = shaped(
+            "no-nag",
+            AssertionStatus::DirectOwnerStatement,
+            IntentionKind::StandingInstruction,
+            IntentionLifecycle::Active,
+        );
         let firm = input(
             vec![
                 owner_rule.clone(),
-                shaped("codes", AssertionStatus::DirectOwnerStatement, IntentionKind::StandingInstruction, IntentionLifecycle::Active),
+                shaped(
+                    "codes",
+                    AssertionStatus::DirectOwnerStatement,
+                    IntentionKind::StandingInstruction,
+                    IntentionLifecycle::Active,
+                ),
             ],
             None,
         );
         let decision = composed(
             &firm,
-            &[("no-nag", heads(Relation::Consistent, 0.95, 0.0)), ("codes", conflict_heads(0.9, 0.95))],
+            &[
+                ("no-nag", heads(Relation::Consistent, 0.95, 0.0)),
+                ("codes", conflict_heads(0.9, 0.95)),
+            ],
         );
-        assert_eq!(decision.intervention, Intervention::Confirm, "a firm rule is never muted");
+        assert_eq!(
+            decision.intervention,
+            Intervention::Confirm,
+            "a firm rule is never muted"
+        );
         // Only an inferred "instruction" in the input: nothing can mute.
         let inferred_rule = input(
             vec![
-                shaped("no-nag", AssertionStatus::Inferred, IntentionKind::StandingInstruction, IntentionLifecycle::Active),
-                shaped("deposit", AssertionStatus::DirectOwnerStatement, IntentionKind::Goal, IntentionLifecycle::Active),
+                shaped(
+                    "no-nag",
+                    AssertionStatus::Inferred,
+                    IntentionKind::StandingInstruction,
+                    IntentionLifecycle::Active,
+                ),
+                shaped(
+                    "deposit",
+                    AssertionStatus::DirectOwnerStatement,
+                    IntentionKind::Goal,
+                    IntentionLifecycle::Active,
+                ),
             ],
             None,
         );
         let decision = composed(
             &inferred_rule,
-            &[("no-nag", heads(Relation::Consistent, 0.95, 0.0)), ("deposit", conflict_heads(0.1, 0.95))],
+            &[
+                ("no-nag", heads(Relation::Consistent, 0.95, 0.0)),
+                ("deposit", conflict_heads(0.1, 0.95)),
+            ],
         );
-        assert_eq!(decision.continuation, Continuation::Wait, "an inference cannot mute");
+        assert_eq!(
+            decision.continuation,
+            Continuation::Wait,
+            "an inference cannot mute"
+        );
     }
 
     #[test]
     fn the_projection_shows_the_other_statements_without_their_force() {
         let input = input(
             vec![
-                shaped("a", AssertionStatus::DirectOwnerStatement, IntentionKind::StandingInstruction, IntentionLifecycle::Active),
-                shaped("b", AssertionStatus::Inferred, IntentionKind::Goal, IntentionLifecycle::Active),
+                shaped(
+                    "a",
+                    AssertionStatus::DirectOwnerStatement,
+                    IntentionKind::StandingInstruction,
+                    IntentionLifecycle::Active,
+                ),
+                shaped(
+                    "b",
+                    AssertionStatus::Inferred,
+                    IntentionKind::Goal,
+                    IntentionLifecycle::Active,
+                ),
             ],
             None,
         );
         let (context, _) = project(&input);
         assert_eq!(context["intentions"].as_array().unwrap().len(), 2);
         assert!(!context.to_string().contains("inferred"), "{context}");
-        assert!(!context.to_string().contains("direct_owner_statement"), "{context}");
+        assert!(
+            !context.to_string().contains("direct_owner_statement"),
+            "{context}"
+        );
     }
 
     #[test]
     fn a_lone_intention_is_not_repeated_in_context() {
         let input = input(
-            vec![shaped("a", AssertionStatus::DirectOwnerStatement, IntentionKind::StandingInstruction, IntentionLifecycle::Active)],
+            vec![shaped(
+                "a",
+                AssertionStatus::DirectOwnerStatement,
+                IntentionKind::StandingInstruction,
+                IntentionLifecycle::Active,
+            )],
             None,
         );
         let (context, items) = project(&input);

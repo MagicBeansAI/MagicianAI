@@ -6,7 +6,7 @@ import UIKit
 /// chat HITL payloads. Built with `connectsOnInit: false` to skip the WS.
 final class ChatViewModelTests: XCTestCase {
     private func makeVM() -> ChatViewModel {
-        ChatViewModel(networkSession: makeMockSession(), connectsOnInit: false)
+        ChatViewModel(networkSession: makeMockSession(chatCatalogFixture: true), connectsOnInit: false)
     }
 
     private func escalationContent(_ overrides: [String: Any] = [:]) -> ChatMessageContentData {
@@ -42,8 +42,7 @@ final class ChatViewModelTests: XCTestCase {
         let m = makeVM()
         m.messages.append(ChatMessage(id: "x", isUser: true, text: "hi", type: .text))
         m.startNewSession("s1")
-        XCTAssertEqual(m.messages.count, 1)
-        XCTAssertFalse(m.messages[0].isUser)          // greeting is an assistant message
+        XCTAssertTrue(m.messages.isEmpty)             // the view shows its welcome screen
         XCTAssertEqual(m.currentSessionIdValue, "s1")
     }
 
@@ -55,13 +54,12 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(m.messages.map(\.id), ["b"])
     }
 
-    func testClearMessagesKeepsOnlyGreeting() {
+    func testClearMessagesEmptiesTheTranscript() {
         let m = makeVM()
         m.messages = [ChatMessage(id: "a", isUser: true, text: "x", type: .text),
                       ChatMessage(id: "b", isUser: false, text: "y", type: .text)]
         m.clearMessages()
-        XCTAssertEqual(m.messages.count, 1)
-        XCTAssertFalse(m.messages[0].isUser)
+        XCTAssertTrue(m.messages.isEmpty)
     }
 
     @MainActor
@@ -82,7 +80,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(m.queueNoticeMessage, "Please unlock your screen to use Tutor.")
         XCTAssertEqual(spoken, ["Please unlock your screen to use Tutor."])
         XCTAssertEqual(presentations, 0)
-        XCTAssertEqual(m.messages.count, 1)
+        XCTAssertTrue(m.messages.isEmpty)
     }
 
     @MainActor
@@ -104,7 +102,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(presentedQuestion, "#quick blackboard explain recursion")
         XCTAssertNil(presentedImage)
         XCTAssertTrue(didAutoStart)
-        XCTAssertEqual(m.messages.count, 1)
+        XCTAssertTrue(m.messages.isEmpty)
     }
 
     @MainActor
@@ -126,7 +124,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(lockChecks, 2)
         XCTAssertEqual(spoken, ["Please unlock your screen to use Tutor."])
         XCTAssertEqual(presentations, 0)
-        XCTAssertEqual(m.messages.count, 1)
+        XCTAssertTrue(m.messages.isEmpty)
     }
 
     @MainActor
@@ -149,7 +147,7 @@ final class ChatViewModelTests: XCTestCase {
             ["Screen tutoring isn't available on this device yet. Say Tutor blackboard instead."]
         )
         XCTAssertEqual(presentations, 0)
-        XCTAssertEqual(m.messages.count, 1)
+        XCTAssertTrue(m.messages.isEmpty)
     }
 
     @MainActor
@@ -159,11 +157,12 @@ final class ChatViewModelTests: XCTestCase {
         var spoken: String?
         m.guidedFlowSpeaker = { spoken = $0 }
 
+        prepareChatModelCatalog(m)
         m.sendMessage("App Copilot show me how to create a note", viaVoice: true)
 
         XCTAssertEqual(m.queueNoticeMessage, "App Copilot isn't available on this device yet.")
         XCTAssertEqual(spoken, "App Copilot isn't available on this device yet.")
-        XCTAssertEqual(m.messages.count, 1)
+        XCTAssertTrue(m.messages.isEmpty)
     }
 
     func testDeleteQueuedRemovesOnlyAfterBackendSuccess() {
@@ -654,6 +653,7 @@ final class ChatViewModelTests: XCTestCase {
         MockURLProtocol.handler = { req in (response(for: req), Data("{}".utf8)) }
         let initialMessageCount = m.messages.count
 
+        prepareChatModelCatalog(m)
         m.sendMessage("Hello world")
 
         // Sending also mounts the assistant row immediately so activity can
@@ -748,6 +748,28 @@ final class ChatViewModelTests: XCTestCase {
 
         let projected = ChatViewModel.projectedMessage(from: raw)
         XCTAssertNotNil(projected.structuredResponse)
+    }
+
+    func testVerificationReasonUsesCanonicalParagraphsInsteadOfFlattenedProjection() throws {
+        let reason = "figure 93217, 45330 not found in any tool result"
+        let answer = "**My suggested route:** try a sample.\n\nContact: **+91 93217 45330**."
+        let canonical = "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: \(reason)\n\n\(answer)"
+        let flattened = canonical.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        let raw = try decodeRawMessage(
+            presentation: [
+                "schema": "magician.structured_response", "version": 1,
+                "plain_text": flattened,
+                "blocks": [["kind": "markdown", "text": answer]]
+            ],
+            content: ["type": "text", "text": canonical]
+        )
+        let projected = ChatViewModel.projectedMessage(from: raw)
+        XCTAssertNotNil(projected.structuredResponse)
+        XCTAssertEqual(projected.text, flattened)
+        let display = AnswerVerificationDisplay.split(projected.verificationSourceText ?? projected.text)
+        XCTAssertEqual(display.verification?.details, reason)
+        XCTAssertEqual(display.body, answer)
+        XCTAssertFalse(display.verification?.details?.contains("My suggested route") ?? true)
     }
 
     func testUserMessagesCannotRenderStructuredPresentation() throws {
@@ -866,6 +888,49 @@ final class ChatViewModelTests: XCTestCase {
         )
 
         XCTAssertNil(ChatViewModel.projectedMessage(from: raw).structuredResponse)
+    }
+
+    func testPresentationValidatesArtifactLocatorsForShortenedIds() throws {
+        let shortenedId = "magician-artifact:task:task-1:outputs/\(String(repeating: "x", count: 100))~0123456789abcdef"
+        let fullPath = "outputs/\(String(repeating: "x", count: 150))/a.md"
+        func presentation(locator: [String: Any]) -> [String: Any] {
+            [
+                "schema": "magician.structured_response",
+                "version": 1,
+                "plain_text": "Completed",
+                "blocks": [["kind": "artifacts", "items": [["label": "a.md", "artifact_id": shortenedId]]]],
+                "meta": ["artifact_locators": [locator]]
+            ]
+        }
+
+        let valid = try decodeRawMessage(
+            presentation: presentation(locator: [
+                "artifact_id": shortenedId,
+                "task_id": "task-1",
+                "relative_path": fullPath
+            ]),
+            content: ["type": "text", "text": "Completed"]
+        )
+        let locator = try XCTUnwrap(
+            ChatViewModel.projectedMessage(from: valid).structuredResponse?.meta?.artifactLocators?.first
+        )
+        XCTAssertEqual(locator["artifact_id"], shortenedId)
+        XCTAssertEqual(locator["task_id"], "task-1")
+        XCTAssertEqual(locator["relative_path"], fullPath)
+
+        let invalidLocators: [[String: Any]] = [
+            ["artifact_id": shortenedId],
+            ["artifact_id": shortenedId, "relative_path": String(repeating: "y", count: 2_049)],
+            ["artifact_id": String(repeating: "a", count: 161), "relative_path": "a.md"],
+            ["artifact_id": shortenedId, "task_id": "", "relative_path": "a.md"]
+        ]
+        for invalid in invalidLocators {
+            let raw = try decodeRawMessage(
+                presentation: presentation(locator: invalid),
+                content: ["type": "text", "text": "Completed"]
+            )
+            XCTAssertNil(ChatViewModel.projectedMessage(from: raw).structuredResponse)
+        }
     }
 
     func testPresentationRejectsInvalidStructuredMeta() throws {
@@ -1459,7 +1524,7 @@ final class ChatViewModelTests: XCTestCase {
     func testPrimaryStopCoordinatesTheSessionCancellationWithItsActiveExecution() {
         let coordinator = ExecutionControlCoordinator()
         let m = ChatViewModel(
-            networkSession: makeMockSession(),
+            networkSession: makeMockSession(chatCatalogFixture: true),
             connectsOnInit: false,
             executionControlCoordinator: coordinator
         )
@@ -1492,7 +1557,7 @@ final class ChatViewModelTests: XCTestCase {
     func testPrimaryStopSurfacesCoordinationConflictWithoutBypassingIt() {
         let coordinator = ExecutionControlCoordinator()
         let m = ChatViewModel(
-            networkSession: makeMockSession(),
+            networkSession: makeMockSession(chatCatalogFixture: true),
             connectsOnInit: false,
             executionControlCoordinator: coordinator
         )
@@ -1564,5 +1629,562 @@ final class ChatViewModelTests: XCTestCase {
             data: try! JSONSerialization.data(withJSONObject: event),
             encoding: .utf8
         )!
+    }
+}
+
+
+final class AnswerVerificationDisplayTests: XCTestCase {
+    private let caveat = "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: figure 93217, 45330 not found in any tool result"
+
+    func testGeneratedCaveatLeavesPhoneNumbersAndBodyIntact() {
+        let body = "Contact: +91 93217 45330."
+        let display = AnswerVerificationDisplay.split(caveat + "\n\n" + body)
+        XCTAssertEqual(display.body, body)
+        XCTAssertEqual(display.verification?.details, "figure 93217, 45330 not found in any tool result")
+        XCTAssertEqual(AnswerVerificationDisplay.split("⚠️ Not fully verified. Total: 93217.").body, "Total: 93217.")
+    }
+
+    func testOrdinaryTextCodeAndQuotedCaveatsAreUntouched() {
+        for body in ["Not fully verified is a status.", "Figure 93217; record 45330.", "```\n" + caveat + "\n```", "Quoted below:\n\n" + caveat] {
+            XCTAssertEqual(AnswerVerificationDisplay.split(body), AnswerVerificationDisplay(body: body, verification: nil))
+        }
+        XCTAssertEqual(AnswerVerificationDisplay.split(caveat + "\r\n\r\nAnswer.").body, "Answer.")
+    }
+}
+
+/// Server turn state (`turn_state` on session/queue reads, the
+/// `chat.turn.state_changed` event): a turn still running after a stream drop
+/// or relaunch is a live bubble with its steps; a settled one shows its reply
+/// or a status line.
+final class ChatTurnStateTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // Opening a session also reads its mention catalog; state-only tests do not need entries.
+        MockURLProtocol.handler = { request in (response(for: request), jsonData([:])) }
+    }
+    private func makeVM() -> ChatViewModel {
+        ChatViewModel(networkSession: makeMockSession(chatCatalogFixture: true), connectsOnInit: false)
+    }
+
+    override func tearDown() {
+        MockURLProtocol.handler = { req in (response(for: req), Data("{}".utf8)) }
+        super.tearDown()
+    }
+
+    private func stateEvent(
+        _ turnId: String,
+        _ status: String,
+        session: String = "s1",
+        reason: String? = nil
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "chat_turn_id": turnId, "chat_session_id": session,
+            "status": status, "started_at": 100
+        ]
+        if status != "running" { payload["ended_at"] = 200 }
+        if let reason { payload["reason"] = reason }
+        return [
+            "event_type": "AgentEvent",
+            "data": ["event": [
+                "event_type": ChatTurnState.eventType,
+                "agent_id": "personal-assistant",
+                "payload": payload
+            ]]
+        ]
+    }
+
+    private func messageEvent(
+        id: String, direction: String, text: String, turnId: String, session: String = "s1"
+    ) -> [String: Any] {
+        [
+            "event_type": "ChatMessageReceived",
+            "data": [
+                "session_id": session,
+                "message": [
+                    "id": id, "session_id": session, "direction": direction,
+                    "content": ["type": "text", "text": text],
+                    "chat_turn_id": turnId
+                ]
+            ]
+        ]
+    }
+
+    private func sessionBody(messages: [[String: Any]], turnState: Any?) -> Data {
+        var body: [String: Any] = [
+            "session": [
+                "id": "s1", "principal": "anonymous", "workspace": "default",
+                "agent_id": "personal-assistant", "ui_thread_id": "general",
+                "title": "History", "status": "active",
+                "created_at": 1, "updated_at": 2
+            ],
+            "messages": messages
+        ]
+        if let turnState { body["turn_state"] = turnState }
+        return jsonData(body)
+    }
+
+    private func userRow(_ id: String, turn: String, text: String = "Research this") -> [String: Any] {
+        ["id": id, "session_id": "s1", "direction": "user",
+         "content": ["type": "text", "text": text], "chat_turn_id": turn]
+    }
+
+    // MARK: Wire model
+
+    func testParsesTheWireStateAndItsStatusLine() throws {
+        let running = try XCTUnwrap(ChatTurnState.parse(
+            ["chat_turn_id": " t1 ", "status": "running", "started_at": 10] as [String: Any], sessionId: "s1"))
+        XCTAssertEqual(running.chatTurnId, "t1")
+        XCTAssertEqual(running.sessionId, "s1")
+        XCTAssertTrue(running.isRunning)
+        XCTAssertNil(running.notice)
+
+        func notice(_ status: String, _ reason: String?) -> String? {
+            var raw: [String: Any] = ["chat_turn_id": "t", "status": status, "started_at": 1, "ended_at": 2]
+            if let reason { raw["reason"] = reason }
+            return ChatTurnState.parse(raw, sessionId: "s1")?.notice
+        }
+        XCTAssertNil(notice("completed", nil))
+        XCTAssertEqual(notice("stopped", "user_stop"), "Stopped")
+        XCTAssertEqual(notice("stopped", nil), "Stopped")
+        XCTAssertNil(notice("stopped", "turn_stalled"), "a watchdog stop has its persisted notice")
+        XCTAssertNil(notice("stopped", "turn_wall_clock_exceeded"))
+        XCTAssertEqual(notice("failed", "error"), "This turn failed before it could answer")
+        XCTAssertEqual(notice("failed", "interrupted"), "Interrupted before it finished")
+
+        XCTAssertNil(ChatTurnState.parse(["chat_turn_id": "t", "status": "paused"] as [String: Any], sessionId: "s1"))
+        XCTAssertNil(ChatTurnState.parse(["status": "running"] as [String: Any], sessionId: "s1"))
+        XCTAssertNil(ChatTurnState.parse(["chat_turn_id": "t", "status": "running"] as [String: Any], sessionId: nil))
+    }
+
+    func testReadsTheStateEventEnvelope() throws {
+        let state = try XCTUnwrap(ChatTurnState.fromEvent(stateEvent("t1", "stopped", reason: "user_stop")))
+        XCTAssertEqual(state.chatTurnId, "t1")
+        XCTAssertEqual(state.sessionId, "s1")
+        XCTAssertEqual(state.status, .stopped)
+        XCTAssertEqual(state.endedAt, 200)
+        XCTAssertNil(ChatTurnState.fromEvent(messageEvent(id: "a", direction: "assistant", text: "x", turnId: "t1")))
+    }
+
+    func testSnapshotTellsAnOlderServerFromNoTurn() {
+        XCTAssertEqual(ChatTurnStateSnapshot.parse(object: ["queued": []], sessionId: "s1"), .unsupported)
+        XCTAssertEqual(ChatTurnStateSnapshot.parse(object: ["turn_state": NSNull()], sessionId: "s1"), .noTurn)
+        let latest = ChatTurnStateSnapshot.parse(
+            object: ["turn_state": ["chat_turn_id": "t", "status": "completed", "started_at": 1]],
+            sessionId: "s1")
+        XCTAssertEqual(latest.state?.status, .completed)
+        XCTAssertEqual(latest.state?.sessionId, "s1")
+    }
+
+    func testSettledStateIsNeverReplacedByAStaleRunningOne() {
+        let running = ChatTurnState(chatTurnId: "t", sessionId: "s1", status: .running, startedAt: 1)
+        let done = ChatTurnState(chatTurnId: "t", sessionId: "s1", status: .completed, startedAt: 1, endedAt: 2)
+        XCTAssertTrue(ChatTurnState.shouldRecord(running, over: nil))
+        XCTAssertTrue(ChatTurnState.shouldRecord(done, over: running))
+        XCTAssertFalse(ChatTurnState.shouldRecord(running, over: done))
+    }
+
+    func testOnlyATrailingUnansweredTypedTurnReadsAsInterrupted() {
+        var question = ChatMessage(id: "u1", isUser: true, text: "Hi", type: .text)
+        question.chatTurnId = "t1"
+        var answer = ChatMessage(id: "a1", isUser: false, text: "Hello", type: .text)
+        answer.chatTurnId = "t1"
+        var voice = ChatMessage(id: "u2", isUser: true, text: "Hi", type: .text)
+        voice.chatTurnId = "voice-request-1"
+
+        XCTAssertEqual(ChatViewModel.unansweredTrailingUserTurnId([question]), "t1")
+        XCTAssertNil(ChatViewModel.unansweredTrailingUserTurnId([question, answer]))
+        XCTAssertNil(ChatViewModel.unansweredTrailingUserTurnId([answer]))
+        XCTAssertNil(ChatViewModel.unansweredTrailingUserTurnId([voice]))
+    }
+
+    // MARK: Live events
+
+    func testRunningTurnFromAnotherSurfaceIsALiveBubbleUntilItsReply() throws {
+        let m = makeVM()
+        m.startNewSession("s1")
+
+        m.handleIncomingObject(stateEvent("turn-web", "running"))
+        let live = try XCTUnwrap(m.messages.last)
+        XCTAssertFalse(live.isUser)
+        XCTAssertEqual(live.chatTurnId, "turn-web")
+        XCTAssertEqual(live.text, "")
+        XCTAssertTrue(live.activityIsLive)
+        XCTAssertTrue(m.serverRunning, "the composer offers Stop")
+        XCTAssertEqual(m.runningServerTurnId, "turn-web")
+
+        // The question lands above the live bubble it started.
+        m.handleIncomingObject(messageEvent(id: "u1", direction: "user", text: "Research", turnId: "turn-web"))
+        XCTAssertEqual(m.messages.suffix(2).map(\.id), ["u1", live.id])
+
+        m.handleIncomingObject(messageEvent(id: "a1", direction: "assistant", text: "Found it", turnId: "turn-web"))
+        XCTAssertEqual(m.messages.last?.id, "a1")
+        XCTAssertFalse(m.messages.contains { $0.id == live.id }, "the reply replaces the live bubble")
+
+        m.handleIncomingObject(stateEvent("turn-web", "completed"))
+        XCTAssertFalse(m.serverRunning)
+        XCTAssertNil(m.runningServerTurnId)
+        XCTAssertEqual(m.messages.last?.activityIsLive, false)
+        XCTAssertNil(m.messages.last?.turnStatusNotice)
+    }
+
+    func testUserStopShowsStoppedOnTheBubble() {
+        let m = makeVM()
+        m.startNewSession("s1")
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        m.handleIncomingObject(stateEvent("t1", "stopped", reason: "user_stop"))
+
+        XCTAssertEqual(m.messages.last?.turnStatusNotice, "Stopped")
+        XCTAssertEqual(m.messages.last?.activityIsLive, false)
+        XCTAssertFalse(m.serverRunning)
+    }
+
+    func testFailedTurnShowsTheFailedLine() {
+        let m = makeVM()
+        m.startNewSession("s1")
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        m.handleIncomingObject(stateEvent("t1", "failed", reason: "error"))
+        XCTAssertEqual(m.messages.last?.turnStatusNotice, ChatTurnState.failedNotice)
+    }
+
+    func testWatchdogStopKeepsItsPersistedNoticeWithoutAStatusLine() {
+        let m = makeVM()
+        m.startNewSession("s1")
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        m.handleIncomingObject(messageEvent(
+            id: "notice-1", direction: "assistant", text: "I stopped: no progress.", turnId: "t1"))
+        m.handleIncomingObject(stateEvent("t1", "stopped", reason: "turn_stalled"))
+
+        XCTAssertEqual(m.messages.last?.id, "notice-1")
+        XCTAssertEqual(m.messages.last?.text, "I stopped: no progress.")
+        XCTAssertNil(m.messages.last?.turnStatusNotice)
+        XCTAssertFalse(m.messages.contains { $0.id.hasPrefix("streaming-") })
+    }
+
+    func testStaleRunningAfterTheEndDoesNotReviveTheTurn() {
+        let m = makeVM()
+        m.startNewSession("s1")
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        m.handleIncomingObject(stateEvent("t1", "stopped", reason: "user_stop"))
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        XCTAssertFalse(m.serverRunning)
+        XCTAssertEqual(m.messages.last?.turnStatusNotice, "Stopped")
+    }
+
+    func testOtherSessionsAndRealtimeVoiceTurnsGetNoBubble() {
+        let m = makeVM()
+        m.startNewSession("s1")
+        let before = m.messages.map(\.id)
+        m.handleIncomingObject(stateEvent("t-elsewhere", "running", session: "s2"))
+        m.handleIncomingObject(stateEvent("voice-request-1", "running"))
+        XCTAssertEqual(m.messages.map(\.id), before)
+        XCTAssertFalse(m.serverRunning)
+    }
+
+    // MARK: Reopen (relaunch / reconnect)
+
+    func testReopenedRunningTurnIsLiveWithItsStepsFromTheStart() {
+        let m = makeVM()
+        MockURLProtocol.handler = { req in
+            if req.url?.path.hasSuffix("/chat/sessions/s1") == true {
+                return (response(for: req), self.sessionBody(
+                    messages: [self.userRow("u1", turn: "t1")],
+                    turnState: ["chat_turn_id": "t1", "status": "running", "started_at": 100] as [String: Any]))
+            }
+            if req.url?.path.hasSuffix("/turns/t1/events") == true {
+                return (response(for: req), jsonData([
+                    "events": [
+                        ["event_type": "tool.call.started", "data": ["call_id": "c1", "tool_name": "search"]]
+                    ],
+                    "count": 1, "total": 1, "chat_turn_id": "t1"
+                ]))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+
+        m.loadSession("s1")
+        waitUntil(timeout: 5) {
+            m.messages.last?.chatTurnId == "t1" && m.messages.last?.isUser == false
+                && m.messages.last?.activityRows.isEmpty == false
+        }
+        XCTAssertEqual(m.messages.map(\.isUser), [true, false])
+        XCTAssertTrue(m.messages.last?.activityIsLive == true)
+        XCTAssertEqual(m.messages.last?.activityRows.first?.status, .running)
+        XCTAssertTrue(m.serverRunning)
+    }
+
+    func testReopenAfterRestartShowsTheUnansweredTurnAsInterrupted() {
+        let m = makeVM()
+        MockURLProtocol.handler = { req in
+            if req.url?.path.hasSuffix("/chat/sessions/s1") == true {
+                return (response(for: req), self.sessionBody(
+                    messages: [self.userRow("u1", turn: "t1")], turnState: NSNull()))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.loadSession("s1")
+        waitUntil(timeout: 5) { m.messages.count == 2 }
+        XCTAssertEqual(m.messages.last?.turnStatusNotice, ChatTurnState.interruptedNotice)
+        XCTAssertEqual(m.messages.last?.chatTurnId, "t1")
+        XCTAssertFalse(m.serverRunning)
+
+        // A load that raced the turn's start: its running state revives it.
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        XCTAssertNil(m.messages.last?.turnStatusNotice)
+        XCTAssertTrue(m.messages.last?.activityIsLive == true)
+    }
+
+    func testOlderServerWithoutTurnStateLeavesTheTranscriptAlone() {
+        let m = makeVM()
+        MockURLProtocol.handler = { req in
+            if req.url?.path.hasSuffix("/chat/sessions/s1") == true {
+                return (response(for: req), self.sessionBody(
+                    messages: [self.userRow("u1", turn: "t1")], turnState: nil))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.loadSession("s1")
+        waitUntil(timeout: 5) { m.messages.first?.id == "u1" }
+        waitForMainQueue()
+        XCTAssertEqual(m.messages.map(\.id), ["u1"])
+    }
+
+    func testQueuePollSettlesATurnWhoseEndEventWasMissed() {
+        let m = makeVM()
+        m.startNewSession("s1")
+        m.handleIncomingObject(stateEvent("t1", "running"))
+        XCTAssertTrue(m.serverRunning)
+        MockURLProtocol.handler = { req in
+            if req.url?.path.hasSuffix("/chat/sessions/s1/queue") == true {
+                return (response(for: req), jsonData([
+                    "queued": [], "active": false, "session_id": "s1",
+                    "turn_state": ["chat_turn_id": "t1", "status": "stopped", "started_at": 100,
+                                   "ended_at": 200, "reason": "user_stop"]
+                ]))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.fetchQueue()
+        waitUntil(timeout: 5) { !m.serverRunning }
+        XCTAssertEqual(m.messages.last?.turnStatusNotice, "Stopped")
+    }
+}
+
+/// Older-history paging: `has_more`, one page per scroll to the top, prepend.
+final class ChatOlderHistoryTests: XCTestCase {
+    override func tearDown() {
+        MockURLProtocol.handler = { req in (response(for: req), Data("{}".utf8)) }
+        super.tearDown()
+    }
+
+    private func makeVM() -> ChatViewModel {
+        ChatViewModel(networkSession: makeMockSession(chatCatalogFixture: true), connectsOnInit: false)
+    }
+
+    private func row(_ id: String, session: String = "s1", direction: String = "user", turn: String? = nil) -> [String: Any] {
+        var row: [String: Any] = ["id": id, "session_id": session, "direction": direction,
+                                  "content": ["type": "text", "text": "message \(id)"]]
+        if let turn { row["chat_turn_id"] = turn }
+        return row
+    }
+
+    private func detail(_ session: String, rows: [[String: Any]], hasMore: Bool?) -> Data {
+        var body: [String: Any] = [
+            "session": [
+                "id": session, "principal": "anonymous", "workspace": "default",
+                "agent_id": "personal-assistant", "ui_thread_id": "general",
+                "title": "History", "status": "active", "created_at": 1, "updated_at": 2
+            ],
+            "messages": rows
+        ]
+        if let hasMore { body["has_more"] = hasMore }
+        return jsonData(body)
+    }
+
+    private func query(_ request: URLRequest, _ name: String) -> String? {
+        URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == name })?.value
+    }
+
+    // MARK: has_more
+
+    func testDetailDecodesHasMoreAndToleratesAnOlderServer() throws {
+        let withFlag = try JSONDecoder().decode(
+            ChatSessionDetailResponse.self, from: detail("s1", rows: [row("m1")], hasMore: true))
+        XCTAssertEqual(withFlag.hasMore, true)
+        let legacy = try JSONDecoder().decode(
+            ChatSessionDetailResponse.self, from: detail("s1", rows: [row("m1")], hasMore: nil))
+        XCTAssertNil(legacy.hasMore)
+    }
+
+    func testInitialHasMoreFallsBackToAFullPageGuess() {
+        XCTAssertTrue(ChatViewModel.initialHasMore(serverHasMore: nil, embeddedCount: 200))
+        XCTAssertFalse(ChatViewModel.initialHasMore(serverHasMore: nil, embeddedCount: 199))
+        XCTAssertFalse(ChatViewModel.initialHasMore(serverHasMore: false, embeddedCount: 200))
+        XCTAssertTrue(ChatViewModel.initialHasMore(serverHasMore: true, embeddedCount: 3))
+    }
+
+    // MARK: Trigger
+
+    func testTriggerNeedsArmedScrolledUpAndAnIdlePageWithMore() {
+        let ready = OlderHistoryState(hasMore: true)
+        XCTAssertTrue(ChatOlderHistoryTrigger.shouldLoad(armed: true, isAtBottom: false, state: ready))
+        // The open: the top row shows before the scroll to the bottom.
+        XCTAssertFalse(ChatOlderHistoryTrigger.shouldLoad(armed: false, isAtBottom: false, state: ready))
+        XCTAssertFalse(ChatOlderHistoryTrigger.shouldLoad(armed: true, isAtBottom: true, state: ready))
+        XCTAssertFalse(ChatOlderHistoryTrigger.shouldLoad(
+            armed: true, isAtBottom: false, state: OlderHistoryState(hasMore: false)))
+        XCTAssertFalse(ChatOlderHistoryTrigger.shouldLoad(
+            armed: true, isAtBottom: false, state: OlderHistoryState(hasMore: true, isLoading: true)))
+        XCTAssertFalse(ChatOlderHistoryTrigger.shouldLoad(
+            armed: true, isAtBottom: false, state: OlderHistoryState(hasMore: true, failed: true)))
+    }
+
+    // MARK: Merge
+
+    func testPrependDropsShownRowsAndOlderCardsOfAShownTask() {
+        let current = [
+            ChatMessage(id: "b", isUser: true, text: "b", type: .text),
+            ChatMessage(id: "card-2", isUser: false, text: "",
+                        type: .taskStatus(TaskStatusModel(taskId: "t1", title: "T", status: "completed", steps: [])))
+        ]
+        let older = [
+            ChatMessage(id: "a", isUser: true, text: "a", type: .text),
+            ChatMessage(id: "a", isUser: true, text: "a again", type: .text),
+            ChatMessage(id: "card-1", isUser: false, text: "",
+                        type: .taskStatus(TaskStatusModel(taskId: "t1", title: "T", status: "running", steps: []))),
+            ChatMessage(id: "b", isUser: true, text: "b", type: .text)
+        ]
+        let merged = ChatViewModel.prependOlderMessages(older, to: current)
+        XCTAssertEqual(merged.map(\.id), ["a", "b", "card-2"])
+        XCTAssertEqual(ChatViewModel.prependOlderMessages([], to: current).map(\.id), ["b", "card-2"])
+    }
+
+    func testPrependLeavesTheActivityAnchorOnTheNewerReplyOfASplitTurn() {
+        var newer = ChatMessage(id: "reply-2", isUser: false, text: "second", type: .text)
+        newer.chatTurnId = "turn-1"
+        var older = ChatMessage(id: "reply-1", isUser: false, text: "first", type: .text)
+        older.chatTurnId = "turn-1"
+        var other = ChatMessage(id: "reply-0", isUser: false, text: "zero", type: .text)
+        other.chatTurnId = "turn-0"
+        let merged = ChatViewModel.prependOlderMessages([other, older], to: [newer])
+        XCTAssertEqual(merged.map(\.id), ["reply-0", "reply-1", "reply-2"])
+        XCTAssertEqual(merged.map(\.chatTurnId), ["turn-0", nil, "turn-1"])
+    }
+
+    // MARK: Paging
+
+    func testScrollToTopLoadsOneOlderPageAndPrependsIt() {
+        let m = makeVM()
+        var pageRequests: [URLRequest] = []
+        let release = DispatchSemaphore(value: 0)
+        MockURLProtocol.handler = { req in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/chat/sessions/s1") {
+                return (response(for: req), self.detail("s1", rows: [self.row("m3"), self.row("m4")], hasMore: true))
+            }
+            if path.hasSuffix("/chat/sessions/s1/messages") {
+                pageRequests.append(req)
+                release.wait()
+                return (response(for: req), jsonData([
+                    "messages": [self.row("m1"), self.row("m2")], "has_more": false
+                ]))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+
+        m.loadSession("s1")
+        waitUntil { m.olderHistory.hasMore }
+        XCTAssertEqual(m.messages.map(\.id), ["m3", "m4"])
+
+        m.loadOlderMessages()
+        XCTAssertTrue(m.olderHistory.isLoading)
+        m.loadOlderMessages()  // in flight: no second request
+        waitUntil { pageRequests.count == 1 }
+        release.signal()
+        waitUntil { !m.olderHistory.isLoading }
+
+        XCTAssertEqual(pageRequests.count, 1)
+        XCTAssertEqual(query(pageRequests[0], "before"), "m3")
+        XCTAssertEqual(query(pageRequests[0], "limit"), "50")
+        XCTAssertEqual(m.messages.map(\.id), ["m1", "m2", "m3", "m4"])
+        XCTAssertEqual(m.olderHistory, OlderHistoryState(hasMore: false))
+        XCTAssertEqual(m.olderHistoryPrepend?.anchorMessageId, "m3")
+
+        m.loadOlderMessages()  // exhausted: nothing more to ask for
+        waitForMainQueue()
+        XCTAssertEqual(pageRequests.count, 1)
+    }
+
+    func testOlderServerWithAFullPageStillOffersOlderHistory() {
+        let m = makeVM()
+        let rows = (0..<200).map { row("m\($0)") }
+        MockURLProtocol.handler = { req in
+            if req.url?.path.hasSuffix("/chat/sessions/s1") == true {
+                return (response(for: req), self.detail("s1", rows: rows, hasMore: nil))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.loadSession("s1")
+        waitUntil(timeout: 5) { m.messages.count == 200 }
+        XCTAssertTrue(m.olderHistory.hasMore)
+    }
+
+    func testFailedPageKeepsMessagesAndOffersARetry() {
+        let m = makeVM()
+        var failPage = true
+        MockURLProtocol.handler = { req in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/chat/sessions/s1") {
+                return (response(for: req), self.detail("s1", rows: [self.row("m2")], hasMore: true))
+            }
+            if path.hasSuffix("/chat/sessions/s1/messages") {
+                if failPage { return (response(for: req, status: 500), Data("{}".utf8)) }
+                return (response(for: req), jsonData(["messages": [self.row("m1")], "has_more": true]))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.loadSession("s1")
+        waitUntil { m.olderHistory.hasMore }
+        m.loadOlderMessages()
+        waitUntil { m.olderHistory.failed }
+        XCTAssertFalse(m.olderHistory.isLoading)
+        XCTAssertEqual(m.messages.map(\.id), ["m2"])
+
+        failPage = false
+        m.loadOlderMessages()  // the retry
+        waitUntil { m.messages.count == 2 }
+        XCTAssertEqual(m.messages.map(\.id), ["m1", "m2"])
+        XCTAssertEqual(m.olderHistory, OlderHistoryState(hasMore: true))
+    }
+
+    func testPageForAChatTheUserLeftIsDropped() {
+        let m = makeVM()
+        let release = DispatchSemaphore(value: 0)
+        var pageRequested = false
+        MockURLProtocol.handler = { req in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/chat/sessions/s1") {
+                return (response(for: req), self.detail("s1", rows: [self.row("m2")], hasMore: true))
+            }
+            if path.hasSuffix("/chat/sessions/s1/messages") {
+                pageRequested = true
+                release.wait()
+                return (response(for: req), jsonData(["messages": [self.row("m1")], "has_more": true]))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.loadSession("s1")
+        waitUntil { m.olderHistory.hasMore }
+        m.loadOlderMessages()
+        waitUntil { pageRequested }
+        m.startNewSession("s2")
+        release.signal()
+        let settled = expectation(description: "a late page would have landed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+
+        XCTAssertEqual(m.currentSessionIdValue, "s2")
+        XCTAssertFalse(m.messages.contains { $0.id == "m1" })
+        XCTAssertEqual(m.olderHistory, OlderHistoryState())
     }
 }

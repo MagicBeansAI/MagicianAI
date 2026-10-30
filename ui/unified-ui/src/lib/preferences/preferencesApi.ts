@@ -37,6 +37,8 @@ export interface Preference {
 	source: string;
 	editable: boolean;
 	lastCheckedAtMs: number | null;
+	/** When memory first saved it; `null` for profile and app preferences. */
+	learnedAtMs: number | null;
 	grounds: Array<{ role: string; sourceId: string }>;
 }
 
@@ -104,6 +106,7 @@ export function parseView(body: unknown): PreferenceView {
 			source: sourceName(row.source),
 			editable: row.editable === true,
 			lastCheckedAtMs: typeof row.last_checked_at_ms === 'number' ? row.last_checked_at_ms : null,
+			learnedAtMs: typeof row.learned_at_ms === 'number' ? row.learned_at_ms : null,
 			grounds: (Array.isArray(row.grounds) ? row.grounds : []).map((ground) => ({
 				role: str((ground as Record<string, unknown>).role) ?? 'unknown',
 				sourceId: str((ground as Record<string, unknown>).source_id) ?? ''

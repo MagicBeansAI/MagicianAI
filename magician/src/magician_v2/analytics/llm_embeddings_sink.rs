@@ -490,13 +490,15 @@ fn write_batch(workspace_layout: &ArtifactV2Workspace, job: &FlushJob) -> Result
             .context("flushing llm_embeddings_batch appender")?;
     }
 
-    let path_sql = parquet_path.display().to_string().replace('\'', "''");
-    let copy_sql = format!(
-        "COPY llm_embeddings_batch TO '{}' (FORMAT PARQUET, COMPRESSION 'zstd');",
-        path_sql
-    );
-    conn.execute_batch(&copy_sql)
-        .with_context(|| format!("copying llm_embeddings_batch to {}", parquet_path.display()))?;
+    // Staged, fsynced and renamed: `embed_<ulid>.parquet` only ever names a
+    // complete object, so a crash mid-`COPY` cannot leave a zero-byte batch.
+    super::parquet_maintenance::copy_to_parquet_durably(
+        &conn,
+        "llm_embeddings_batch",
+        "FORMAT PARQUET, COMPRESSION 'zstd'",
+        &parquet_path,
+    )
+    .with_context(|| format!("copying llm_embeddings_batch to {}", parquet_path.display()))?;
     crate::magician_v2::dataset_owners::publish_written_parquet(&parquet_path).with_context(
         || {
             format!(
@@ -774,5 +776,29 @@ mod tests {
         let texts = vec!["abcdefgh".to_string(), "abcd".to_string()];
         assert_eq!(estimate_input_tokens(&texts), 3);
         assert_eq!(estimate_input_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn embeddings_parquet_write_leaves_no_staging_and_staging_is_invisible() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = ArtifactV2Workspace::new(tmp.path());
+        let record = sample_record("memory_index", 3, 120);
+        let partition = ws
+            .analytics_llm_embeddings_root("p", "w")
+            .join(format!("dt={}", partition_date_for(record.timestamp_ms)));
+        write_batch(
+            &ws,
+            &FlushJob {
+                principal: "p".to_string(),
+                workspace: "w".to_string(),
+                rows: vec![record],
+            },
+        )
+        .expect("write_batch");
+        crate::magician_v2::analytics::parquet_maintenance::assert_published_without_staging(
+            &partition,
+            crate::magician_v2::analytics::parquet_maintenance::PartitionedDataset::LlmEmbeddings,
+            1,
+        );
     }
 }

@@ -542,27 +542,12 @@ impl MagicianServiceBuilder {
         let router_config = router_config.expect("checked is_some");
 
         info!(
-            "Loaded {} LLM profiles ({} adaptive composites) from {}",
+            "Loaded {} models and {} concrete routes from {}",
+            router_config.catalog.models.len(),
             router_config.profiles.len(),
-            router_config.adaptive_profiles.len(),
             magician_config_path.display()
         );
         info!("Operation mappings: {:?}", router_config.operation_mapping);
-        if !router_config.adaptive_profiles.is_empty() {
-            // Sort by name so successive boots log in the same order —
-            // makes diff-comparing two startup logs trivial. HashMap
-            // iteration is non-deterministic.
-            let mut adaptive_names: Vec<&String> = router_config.adaptive_profiles.keys().collect();
-            adaptive_names.sort();
-            for name in adaptive_names {
-                if let Some(adaptive) = router_config.adaptive_profiles.get(name) {
-                    info!(
-                        "Adaptive profile `{}`: fast=`{}` thinking=`{}`",
-                        name, adaptive.fast_profile, adaptive.thinking_profile
-                    );
-                }
-            }
-        }
 
         // Build MultiLLMService from the same router config so ChatLlmService
         // gets a properly initialised service instead of falling back to a dummy.
@@ -836,6 +821,10 @@ impl MagicianServiceBuilder {
         // Tool authorization policy for unlisted tools
         v2_orchestrator.configure_tool_authorization(&magician_config.tool_authorization);
         crate::magician_v2::agents::configure_memory_prompt_budgets(&magician_config.memory);
+        // User-memory size bounds, read on every `knowledge.json` write.
+        crate::magician_v2::agents::user_memory_bounds::install_settings(
+            magician_config.memory.user_knowledge_bounds.clone(),
+        );
         // Publish the coding budgets for readers that hold no config snapshot —
         // notably the agentic executor's wall-clock watchdog, which must move in
         // lockstep with the Pi turn clip or one ceiling is lifted and the other
@@ -845,15 +834,30 @@ impl MagicianServiceBuilder {
         );
         // Per-run USD ceilings (`execution.budgets`), read by the loop's cost
         // checks, which hold no config snapshot.
-        crate::config::configure_execution_budgets(&magician_config.execution.budgets);
+        crate::config::configure_execution_budgets(&crate::config::effective_execution_budgets(
+            &magician_config,
+        ));
         crate::config::configure_quality_round_budget(&magician_config.execution.quality_round);
+        crate::config::configure_harness_turn_idle_seconds(
+            magician_config.execution.harness_turn_idle_seconds,
+        );
         // `execution.god_mode`, read at each shell/file call and plane grant.
         crate::magician_v2::god_mode::configure(&magician_config.execution.god_mode);
+        crate::magician_v2::harness_auth::configure(
+            &magician_config.execution.harness_auth,
+            &magician_config.coding,
+        );
         crate::magician_v2::god_mode::configure_super(&magician_config.execution.super_god_mode);
         // `execution.network_policy`, read by the shell box, the egress proxy
         // and the `http` tool.
         crate::magician_v2::execution::network_policy::configure(
             &magician_config.execution.network_policy,
+        );
+        // `execution.goal_workspace_access`, read by every file, shell, notes
+        // and coding fence.
+        crate::magician_v2::execution::goal_workspace_access::configure(
+            magician_config.execution.goal_workspace_access.enabled,
+            &magician_config.execution.goal_workspace_access.admin_agent,
         );
         // RSS probe only. magician-bin already applies live_agent_limit from
         // the resolved plan; per-agent cap and RSS tripwire bytes remain PR8.

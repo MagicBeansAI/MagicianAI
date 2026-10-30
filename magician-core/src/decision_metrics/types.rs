@@ -106,6 +106,10 @@ pub struct Case {
     pub projection: Option<Value>,
     pub reviews: BTreeMap<String, BTreeMap<String, Value>>,
     pub review_revision: u64,
+    /// Closed runner status for a decision that never reached the engine
+    /// (`disabled`, `policy_unavailable`, `admission_or_coalesced`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_status: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -31,10 +31,10 @@ use super::factory::{ClaudeCodingOptions, ClaudeTurnMode};
 use super::jsonl::{append_bounded_utf8, read_bounded_jsonl_value, BoundedJsonlError};
 use super::selection::CodingContinuationRef;
 use super::{
-    harness_command, harness_unrestricted, without_flags, require_outer_fence, CodingEngineAdapter, CodingEngineEvent,
-    CodingEngineEventKind, CodingEngineEventSink, CodingEngineKind, CodingEngineRequest,
-    CodingEngineRunResult, CodingFenceError, CodingLiveSessionReporter, CodingTurnUsage,
-    CodingUsage,
+    harness_command, harness_unrestricted, require_outer_fence, without_flags, CodingEngineAdapter,
+    CodingEngineEvent, CodingEngineEventKind, CodingEngineEventSink, CodingEngineKind,
+    CodingEngineRequest, CodingEngineRunResult, CodingFenceError, CodingLiveSessionReporter,
+    CodingTurnUsage, CodingUsage,
 };
 
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -118,9 +118,14 @@ const MAX_RESULT_ERROR_CHARS: usize = 600;
 /// safeguards), which resending the same request cannot get past.
 fn is_safety_refusal(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
-    ["safeguards flagged", "usage policy", "/legal/aup", "safety classifier"]
-        .iter()
-        .any(|marker| text.contains(marker))
+    [
+        "safeguards flagged",
+        "usage policy",
+        "/legal/aup",
+        "safety classifier",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 impl From<CodingFenceError> for ClaudeSessionError {
@@ -260,7 +265,7 @@ fn spawn_claude(
     adapter: &ClaudeCodeAdapter,
     request: &CodingEngineRequest,
 ) -> Result<tokio::process::Child> {
-    let args: Vec<OsString> = super::claude_contract::launch_args_with(
+    let mut args: Vec<OsString> = super::claude_contract::launch_args_with(
         request.claude.mode,
         &request.prompt,
         request.claude.resume_session_id.as_deref(),
@@ -269,13 +274,23 @@ fn spawn_claude(
     .into_iter()
     .map(OsString::from)
     .collect();
+    args.extend(super::factory::native_model_args(
+        request.claude.model.as_deref(),
+        request.claude.effort.as_deref(),
+        "--effort",
+    )?);
     debug_assert!(!args.iter().any(|arg| arg == "--bare"));
     // Super god mode: the owner's own Claude Code, with their settings, MCP
     // servers and every tool.
     let args = if harness_unrestricted() {
         without_flags(
             args,
-            &["--strict-mcp-config", "--safe-mode", "--no-chrome", "--disable-slash-commands"],
+            &[
+                "--strict-mcp-config",
+                "--safe-mode",
+                "--no-chrome",
+                "--disable-slash-commands",
+            ],
             &["--setting-sources", "--disallowedTools"],
         )
     } else {
@@ -317,6 +332,7 @@ fn spawn_claude(
     }
     command.env("GIT_CEILING_DIRECTORIES", &request.scope_root);
     harness.apply_env();
+    super::original_edits::apply_env(request, &mut harness.command);
     let command = &mut harness.command;
     apply_claude_child_process_group(command);
     command.spawn().with_context(|| {

@@ -12,10 +12,9 @@
 	 *   • Recent sessions — last 5 from chatStore.sessions
 	 *   • Recent tasks    — last 5 from taskStore.tasks
 	 *
-	 * Built on bits-ui's `Command` primitive — fuzzy filter, keyboard nav,
-	 * a11y, type-ahead and empty/group hiding are delegated to the library.
-	 * This file keeps the data wiring (stores → items) and overlay coordinator
-	 * integration; the rest is markup.
+	 * Root results are ranked and grouped before rendering, including async
+	 * app matches. bits-ui owns keyboard navigation, accessibility and nested
+	 * flow filtering; it must not also reorder the root's keyed DOM.
 	 *
 	 * Wires to overlayCoordinator at priority `commandPalette` (6).
 	 * Higher-priority overlays close it automatically.
@@ -52,7 +51,7 @@
 		requestFocus
 	} from '$lib/shell/overlayCoordinator';
 	import { toggleEventsConsole } from '$lib/stores/eventsConsoleStore';
-	import { commandFilter, sectionKeyword } from '$lib/shell/commandMatch';
+	import { commandFilter, commandItemScore } from '$lib/shell/commandMatch';
 	import { showSuccess, showError } from '$lib/shared/stores/notifications';
 	import { SOTA_FIXTURES, sotaDisplayName, sotaGoalForFixture } from '$lib/data/sotaFixtures';
 	import { timedFetch } from '$lib/shared/fetch';
@@ -410,7 +409,7 @@
 			['Skills', '/skills', '🧩', 'G K'],
 			['Skill evolution', '/skills/evolution', '🌱'],
 			['Channels', '/channels', '📡'],
-			['Budget', '/budget', '💰'],
+			['Spend ledger (budget)', '/budget', '💰'],
 			['Dev sessions', '/devsessions', '⌨'],
 			['Debug', '/debug', '🐞'],
 			['Voice debug', '/debug/voice', '◉'],
@@ -666,11 +665,8 @@
 	const CONTEXT_WEIGHT = 0.8;
 	const SECTION_ORDER = ['Suggested', 'Needs attention', 'Jump to', 'Actions', 'Manage', 'Apps', 'Threads', 'Recent sessions', 'Recent tasks', 'Recent executions', 'Workspace'];
 
-	// Group items in stable section order. bits-ui auto-hides groups whose
-	// items all fail the filter, so we pass the full unfiltered set. When
-	// the input is empty, prepend a "Suggested" section with the top-N
-	// items ranked by frecency × route-context relevance — so the most
-	// useful next-action surfaces instantly even on the user's first open.
+	// Root filtering and ordering have one owner, including async Apps results.
+	// Empty searches retain stable sections and frecency/context suggestions.
 	$: groups = buildGroups(items, query, $commandFrequencyStore, currentPath, $page.url.searchParams.get('view'));
 
 	function buildGroups(
@@ -680,10 +676,16 @@
 		path: string,
 		workView: string | null
 	): Array<{ section: string; items: CommandItem[] }> {
+		if (q.trim() !== '') {
+			const ranked = list
+				.map((item) => ({ item, score: commandItemScore(item, q) }))
+				.filter(({ score }) => score > 0)
+				.sort((a, b) => b.score - a.score);
+			const scores = new Map(ranked.map(({ item, score }) => [item.id, score]));
+			return groupItems(ranked.map(({ item }) => item))
+				.sort((a, b) => (scores.get(b.items[0].id) ?? 0) - (scores.get(a.items[0].id) ?? 0));
+		}
 		const base = groupItems(list);
-		// Only show Suggested when not searching — when typing, fuzzy
-		// results across the full catalog are what the user wants.
-		if (q.trim() !== '') return base;
 
 		const ranked = list
 			.map((item) => ({
@@ -1391,7 +1393,6 @@
 	}
 
 	$: shouldFilter =
-		palettePage === 'root' ||
 		palettePage === 'pick-target' ||
 		palettePage === 'task-action' ||
 		palettePage === 'sota-list' ||
@@ -1599,7 +1600,6 @@
 											<Command.Item
 												class="palette-item"
 												value={searchValue(item)}
-												keywords={[sectionKeyword(item.section)]}
 												data-palette-forward={item.keepOpen ? 'true' : undefined}
 												onSelect={() => run(item)}
 											>

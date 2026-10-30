@@ -1,7 +1,14 @@
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
-import TodayNewspaperCard from './TodayNewspaperCard.svelte';
 import type { ChannelFollowUp } from '$lib/stores/channelNeedsYouStore';
+
+const store = vi.hoisted(() => ({ approve: vi.fn() }));
+vi.mock('$lib/stores/channelNeedsYouStore', async (importOriginal) => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	approveChannelFollowUp: store.approve
+}));
+
+import TodayNewspaperCard from './TodayNewspaperCard.svelte';
 
 describe('TodayNewspaperCard', () => {
 	const mockFollowUp: ChannelFollowUp = {
@@ -44,7 +51,7 @@ describe('TodayNewspaperCard', () => {
 		});
 
 		expect(screen.getByText('Reschedule sync to 2:30 PM')).toBeInTheDocument();
-		expect(screen.getByText(/DISPATCH · GMAIL/)).toBeInTheDocument();
+		expect(screen.getByText(/FOR YOU · GMAIL/)).toBeInTheDocument();
 		expect(screen.getByText('Sarah Connor')).toBeInTheDocument();
 		expect(screen.getByText('Wants to move our weekly architecture review to this afternoon.')).toBeInTheDocument();
 	});
@@ -56,9 +63,9 @@ describe('TodayNewspaperCard', () => {
 			}
 		});
 
-		// 1. Primary action — labelled for what it runs (approve), not for a
-		// channel descriptor that needs compose/commit.
-		expect(screen.getByRole('button', { name: /Do it/ })).toBeInTheDocument();
+		// 1. Act — opens this card's actions; it never starts a task itself.
+		expect(screen.getByTestId('today-broadsheet-act')).toHaveTextContent('⚡ Act');
+		expect(screen.queryByRole('button', { name: /Do it/ })).not.toBeInTheDocument();
 		expect(screen.queryByRole('button', { name: /Confirm 2:30 PM/ })).not.toBeInTheDocument();
 		// 2. Useful
 		expect(screen.getByRole('button', { name: /Useful/ })).toBeInTheDocument();
@@ -128,10 +135,43 @@ describe('TodayNewspaperCard', () => {
 			}
 		});
 
-		expect(screen.getByRole('button', { name: /Open/ })).toBeInTheDocument();
+		await fireEvent.click(screen.getByTestId('today-broadsheet-act'));
+		expect(screen.getAllByRole('menuitem').map((item) => item.textContent?.trim())).toEqual(['Open', 'Details']);
 		await fireEvent.click(screen.getByRole('button', { name: /More dismissal and snooze options/ }));
 		expect(screen.getByText('Already handled')).toBeInTheDocument();
 		expect(screen.queryByText("Shouldn't be flagged")).not.toBeInTheDocument();
 		expect(screen.queryByText(/Snooze/)).not.toBeInTheDocument();
+	});
+
+	it('lists the deck Act entries and asks for the instruction before approving', async () => {
+		store.approve.mockResolvedValue({ ok: true });
+		const action = vi.fn();
+		const resolved = vi.fn();
+		render(TodayNewspaperCard, { props: { followUp: mockFollowUp }, events: { action, resolved } });
+		await fireEvent.click(screen.getByTestId('today-broadsheet-act'));
+		expect(screen.getAllByRole('menuitem').map((item) => item.textContent?.trim())).toEqual([
+			'check Confirm 2:30 PM',
+			'Open in Gmail',
+			'Start follow-up task…',
+			'Snooze — hide from Today',
+			'Details'
+		]);
+		await fireEvent.click(screen.getByTestId('today-broadsheet-act-start-task'));
+		const instruction = await screen.findByLabelText('Optional instruction for the agent');
+		expect(store.approve).not.toHaveBeenCalled();
+		expect(action).not.toHaveBeenCalled();
+		await fireEvent.input(instruction, { target: { value: 'Confirm Tuesday' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Create follow-up task' }));
+		await waitFor(() => expect(resolved).toHaveBeenCalledTimes(1));
+		expect(store.approve.mock.calls[0].slice(0, 2)).toEqual(['fu-1', 'Confirm Tuesday']);
+		expect(action).not.toHaveBeenCalled();
+	});
+
+	it('routes Act snooze and Worth Open through the host action handlers', async () => {
+		const action = vi.fn();
+		render(TodayNewspaperCard, { props: { followUp: mockFollowUp }, events: { action } });
+		await fireEvent.click(screen.getByTestId('today-broadsheet-act'));
+		await fireEvent.click(screen.getByTestId('today-broadsheet-act-snooze'));
+		expect(action).toHaveBeenCalledWith(expect.objectContaining({ detail: { kind: 'snooze' } }));
 	});
 });

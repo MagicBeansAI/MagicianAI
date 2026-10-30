@@ -21,9 +21,11 @@ backstops.**
 1. **No-progress cutoff** (`decision.rs::try_synthesize_stuck_auto_yield`):
    fires after `NO_PROGRESS_AUTO_YIELD_THRESHOLD` consecutive read-only
    iterations.
-2. **Definition-of-done auto-conclude**
-   (`executor.rs::all_durable_micro_goals_resolved`): concludes as soon as all
-   tracked requirements in the durable task state close.
+2. **Definition-of-done final answer**
+   (`executor.rs::resolved_durable_micro_goals`): as soon as all tracked
+   requirements this execution recorded in the durable task state close, the
+   run takes one last model turn with tools disabled to write its answer, then
+   concludes.
 3. **Prerequisite: durable-task-state Patch UPSERT**
    (`executor.rs::apply_outer_task_state_action`): keeps durable state
    maintained so definition-of-done can see micro-goals close.
@@ -42,6 +44,27 @@ no-progress cutoff is the backstop for runs that do not maintain durable state.
 Definition-of-done is the precise reading of "no new verified criterion"; the
 no-progress cutoff is the generic reading of "no new information or state".
 Neither touches the LLM's own `yield`.
+
+Internal same-owner sub-goals use the parent's remaining iteration allowance;
+`budget_iterations` is a planning estimate, not a separate approval cap. Their
+iterations are still charged back to the parent.
+
+Shell calls honor explicit positive `timeout_secs` in both dispatch and child
+execution (foreground default: 60 s). Task-owned `background=true` jobs instead
+default to a 72 h deadline when no timeout is supplied; `action=status`
+and `action=cancel` use the returned `job_id`. Live jobs block clean completion;
+waiting for their status is not read-only churn. A job runs under a `/bin/sh`
+wrapper in its own process group, stdout/stderr appended to capped files (64 MiB
+each) in its job directory; the wrapper records the exit status and enforces the
+deadline, so the job needs no live Magician and shutdown leaves it running. A
+pause keeps the run's jobs (the resumed run reaches them by `job_id`); the owning
+execution's terminal row, or a missing one, cancels them (owner lookup installed
+at boot by `start_shell_job_runtime`; without it, as in CLI runs, cancelling or
+returning from the run stops them). After a restart, jobs are re-adopted from
+`process.json` when the recorded group passes an identity check (same boot,
+leader start time, job marker in argv), else settled from the wrapper's exit
+status (`interrupted` when there is none); a reused pid is never signalled. The
+receipt (`state.json`) still holds no commands, credentials, PIDs or output.
 
 ## Caller-selected active-work budgets
 
@@ -85,6 +108,13 @@ Each task may carry a small JSON durable task state
 - `micro_goals[]`: `id`, `description`, `status` (`pending` | `in_progress` |
   `completed` | `blocked`), `evidence_refs` (non-empty when `completed`);
 - `active_micro_goal_id`.
+
+A micro-goal may checkpoint a concrete, qualified finding in `result_summary`
+(800 characters) with observed `evidence_refs`; the runtime freezes those refs
+as `result_evidence_refs`. The bounded state allowance is 32 KiB. Status updates
+retain the finding. The final-answer turn and budget-boundary artifact carry
+these authored findings into ordinary result synthesis without treating them
+as verification or extending a grant.
 
 A micro-goal is **resolved** when `completed` or `blocked`. Transitions only
 move forward (`ensure_forward_micro_goal_transition`).
@@ -281,30 +311,129 @@ execution's outcome without re-running (`status ∈ {completed,failed,cancelled}
 `active_root == this` OR (`active_root` is None AND this is the latest root),
 never when a newer execution holds the active root.
 
-## Definition-of-done auto-conclude
+## Definition-of-done final answer
 
-`all_durable_micro_goals_resolved(ctx, executors)` is `true` when durable
-state tracks **at least one** micro-goal AND every one is resolved. It is
-stricter than `open_durable_micro_goals(..).is_empty()` (also true with no
-state), so a task without durable tracking is never falsely concluded and a
+`resolved_durable_micro_goals(ctx, executors)` is `Some(goals)` when durable
+state tracks **at least one** micro-goal AND every one is resolved
+(`completed` or `blocked`; parsed by `decision.rs::resolved_micro_goals_in_state`).
+It is stricter than `open_durable_micro_goals(..).is_empty()` (also true with
+no state), so a task without durable tracking is never falsely concluded and a
 fresh baseline never reads as done.
 
-It is computed once per iteration and passed to `decide_next_action` as
-`definition_of_done_met`. When set, the decider short-circuits before any
-prompt or LLM call and returns `Decision::Completed { evidence, artifacts: [] }`
-with `NativeDecisionMetadata::synthetic("definition_of_done", ...)`. The
-synthetic completion is not trusted: the executor re-runs
-`terminal_success_rejection` (`goal_reached_rejection_reason`, then
-`open_durable_micro_goals`). On rejection it is dropped and the rejection
-recorded, and `definition_of_done_met` is computed only while
-`loop_protective.consecutive_goal_reached_rejections == 0`, so the next turn
-goes to the model (re-issuing a bare synthetic terminal would hit the
-three-strike abort).
+**Only this execution's state counts.** The orchestrator preloads a task's
+last durable state into `ctx.task_state`, so a recurring task, a retry or a
+follow-up whose previous run resolved everything would otherwise conclude on
+iteration 1 having done nothing. For a task-backed run the store file's
+`source_execution_id` must name this execution
+(`durable_task_state_written_by_this_execution`; missing, unreadable or
+foreign fails closed). An untasked run is never preloaded.
+
+**The signal.** It is computed once per iteration (only while
+`loop_protective.consecutive_goal_reached_rejections == 0`) and folded by
+`executor.rs::definition_of_done_signal` into a `DefinitionOfDone` (`Open` /
+`Met` / `OwnerReportOutstanding`) that both decide paths (native `decide.rs`
+and the Decision Engine rail) read. Only `Met` leads to the final-answer turn
+below; `OwnerReportOutstanding` is handled by `decision_preflight` (see
+**Owner-report obligation**). Definition-of-done is never a preflight
+terminal.
+
+**When the turn is taken.** `decision::take_definition_of_done_turn` decides
+and records it in `LoopProtectiveState`, which a pause persists: not while
+`consecutive_goal_reached_rejections > 0`, never twice for the same micro-goal
+set (`definition_of_done_fingerprint`; a tool turn resets the rejection
+counter, so without it a rejected answer would be retaken every other turn),
+and at most `MAX_DEFINITION_OF_DONE_TURNS` (2) per run
+(`definition_of_done_turns`).
+
+**The turn.** The run does not conclude silently. It takes **one final model
+turn with tools disabled**: the normal decision request, with the run's tools
+still advertised (cached prefix unchanged) but `tool_choice: {"type": "none"}`
+(`native_integration::decision_tool_choice`) and a text terminal allowed. Most
+magicllm adapters map that to their provider's "none"; Ollama forwards it as
+given and Yutori drops it, so a reply that still calls a tool is not run: its
+text, or a yield's summary, is taken as the answer. The turn prompt ends with
+`## FINAL ANSWER (tools are disabled for this turn)`
+(`definition_of_done_final_answer_directive`), after the turn's operator steer.
+It overrides `NATIVE_TOOL_INSTRUCTION`'s tool-every-turn rule for this turn,
+forbids tool calls or JSON written as text, and asks for the deliverable itself
+if one is due, what was found, and for each blocked requirement what blocked
+it, listing every micro-goal with its description and `blocked_reason`. The
+call goes through the same adapter, operation (`agentic_decision`), telemetry
+slot and cost accounting as any decision. The conversation keeps the turn with
+the directive replaced by a note that tools are available again on any later
+turn. On the Decision Engine rail, `decision_rail::definition_of_done_turn`
+makes the same call over the provider-sanitized planner context, with the
+turn's steer, and adds its cost and trace to the decision.
+
+A retryable failure (`classify_decision_error` → `Transient`: 429, timeout,
+5xx) goes back to the transient retry policy and the turn is not spent
+(`release_definition_of_done_turn`); once that budget is gone, or on any other
+failure, the answer is built from the micro-goals.
+
+`decision.rs::definition_of_done_terminal` turns the reply into the terminal:
+
+- **Every micro-goal completed** → `Decision::Completed { evidence: answer }`
+  with the model's answer as the run's `task_deliverable` (`final_answer.md`),
+  so `completed_terminal_summary` publishes the answer itself.
+- **Any micro-goal blocked** → a partial `Decision::Yield`: `summary` is the
+  answer, `completed[]` the completed requirements, `open[]` the blocked ones,
+  one blocker per blocked requirement carrying its `blocked_reason`, and the
+  model's answer as `task_deliverable`. `dispose_yield` settles it as
+  `PartialSuccess` (`CompletionKind::Partial`, `open[]` filled,
+  `partial_findings.md`). When every requirement is blocked, `completed[]` is
+  a short marker if the model answered, and empty if it did not, so that
+  yield disposes as **Failed**. A definition-of-done yield is the runtime's
+  stop (`decision_is_synthetic_stuck`): the owner's allowlist does not refuse
+  it and the give-up gate does not bounce it.
+- **The turn's response is rejected** (a `yield` whose arguments do not
+  parse, say) → the prose that response still carried is the answer: its
+  free text, else the call's `summary` (or `answer`/`evidence`/`text`), with
+  the strings of a nested object or list joined
+  (`MultiLlmAgentAdapter::recovered_answer_from_error`).
+- **The turn fails with no prose, or returns no text** → the summary is built
+  from the micro-goals: one `COMPLETED: <description>` line each and one
+  `BLOCKED: <description> — <blocked_reason>` line each, with no deliverable
+  artifact; the same completed/partial/failed split applies. That status list
+  is not an answer: the yield carries `summary_is_runtime_status` (never read
+  from a model), `partial_findings.md` leaves it out, and finalization writes
+  the owner's answer from the run's evidence instead of publishing it.
+
+The terminal is not trusted, and the answer cannot vouch for itself: the
+executor re-runs `terminal_success_rejection` (`goal_reached_rejection_reason`,
+then `open_durable_micro_goals`) on the terminal's artifacts **minus** the
+`final_answer.md` deliverable (`apply::artifacts_beyond_the_answer`), so a
+task-backed run still needs real evidence (a material artifact, a successful
+substantive iteration with a narrative, or `COMPLETED:`/`BLOCKED:` markers).
+On rejection it is dropped and the rejection recorded, and the next turn goes
+to the model with its tools.
+
+Output synthesis sees the same requirements: `ExecutionOutputSynthesisBundle`
+carries `micro_goals` (status, description, `blocked_reason`), read from the
+task's durable task state only when its frontmatter names this execution
+(unparseable frontmatter yields none). Bundle ceiling degradation
+(`bound_prompt_json_value`, `PROTECTED_SYNTHESIS_BUNDLE_KEYS`) never shrinks or
+drops that section, and the `execution_output_synthesize` prompt (1.1.0) tells
+the model to report completed requirements and each blocked one with its
+reason.
+
+**Owner-report obligation.** A VibeDev Autopilot coordinator
+(`run_owes_owner_final_report`: `vibedev_autopilot`, not a plan run,
+`depth == 0`, empty owner stack, its own root execution, task-backed) owes one
+final `notify_owner` report. Until a `harness.notify_owner.*` request exists
+for that task and execution (pending or history), resolved micro-goals yield
+`OwnerReportOutstanding`: the model decides **with its tools**, with an
+`[owner-report-outstanding]` steer line, instead of taking the no-tools
+final-answer turn. Once the report is filed the signal is `Met` and the
+final-answer turn follows. Delegated engineers, attended and Discuss runs, and
+hosts without a request service go straight to the final-answer turn (the
+run-ended notice, `vibedev::run_terminal_notice`, is the backstop).
 
 **Resumed parents.** The task-backed evidence gate
 (`goal_reached_has_sufficient_evidence`: an artifact, a
-`COMPLETED:`/`BLOCKED:` partial claim, or a ≥ 40-char narrative backed by a
-successful iteration) counts what the parent was resumed with.
+`COMPLETED:`/`BLOCKED:` partial claim, or a ≥ 40-char narrative backed by an
+iteration the harness observed — a successful result with ≥ 30 chars or a
+structured projection, or a refusal one of its own rails issued (`Refused: …`);
+a runtime error backs nothing) counts what the parent was resumed with.
 `terminal_success_rejection` reads the children-ready summary (rendered as
 `## RECENT DELEGATION RESULTS`) and adds each child's readable deliverable as a
 `delegation_deliverable` artifact
@@ -379,9 +508,26 @@ represented at the boundary, or the enforcement is advisory.
 ## File references
 
 - `execution/durable_task_state.rs`: micro-goal schema, synthesize/patch/validate, forward-only transitions.
-- `execution/agentic/executor.rs`: Patch UPSERT, `all_durable_micro_goals_resolved`, `terminal_success_rejection`, clean-completion contracts.
+- `execution/agentic/executor.rs`: Patch UPSERT, `resolved_durable_micro_goals`, `terminal_success_rejection`, clean-completion contracts.
+- `execution/agentic/decision.rs`: `definition_of_done_terminal`, `definition_of_done_final_answer_directive`.
 - `execution/agentic/decision.rs`: `NO_PROGRESS_AUTO_YIELD_THRESHOLD` (= 10), `try_synthesize_stuck_auto_yield`, `iteration_is_read_only` / `sig_has_mutation_marker`.
 - `execution/agentic/run_loop/driver_inproc.rs`: `'iteration_body` and eight re-performed breaks.
 - `execution/agentic/run_loop/outcome.rs`: `BoundaryOutcome`, `ITERATION_EARLY_EXITS=21`, `DRIVER_REPERFORMED_EXITS=8`.
 - `execution/agentic/run_loop/phases/{resolve,apply}.rs`: the 21 typed early exits.
 - `orchestrator/v2_orchestrator.rs`: B14 `DelegationRoundProgressRecord` / `enforce_delegation_no_progress_guard`.
+
+## Provider outages and long runs
+
+A provider that is down (`ProviderUnavailable` including an open dispatch breaker, timeouts, queue-full, transport errors, HTTP 5xx) is `DecisionErrorKind::Outage`, distinct from a 429 (`Transient`); each has its own persisted counter (`outage_retry_count`, `transient_retry_count`), reset by a clean decision. An outage retries 6 times with backoff 15, 30, 60, 120, 240, 300 s (about 13 min; `OUTAGE_MAX_RETRIES`), pushes no failed iteration record (identical failures would trip the repeat-failure stuck detector) and emits `AgenticProviderOutage`; a transient error retries 5 times (about 16 s; `MAX_TRANSIENT_RETRIES`). A decision the provider returned but the contract rejected (`NativeDecisionResponseError`: invalid tool arguments, unknown tool, zero or several tool calls) is a `ParseFailure`, recognised by type before the text markers, because its message quotes model-supplied words such as `timeout_secs`. It is never a provider retry, so the model sees the rejection reason in its history. A rejected decision (also a refused repeat or a rejected terminal) is recorded as the `decision_rejected` placeholder action, never a tool the model did not call, so replayed history, the owner's failure summary and the repeat-call guard report no tool as run. A retried call did no work, so it hands its iteration back through `parked_iteration_refunds`, as a spend-envelope park does (same eligibility: never a sealed controller attempt or an app contract). The live budget display's iteration limit includes these refunds.
+
+There is no fallback model. When either budget runs out on an ordinary task-backed root run (`run_budget::pauses_on_provider_failure`, the runs that own a renewable wall clock), the run pauses instead of failing: `BudgetExhausted { dimension: ProviderFailure { route, error, attempts, waited_secs } }`, checkpointed before the failed call, raised on the canonical budget confirmation card (`pause_kind: "budget"`, `pause_reason: "provider_failure"`, so it reaches web, phone and notifications like any budget pause): *"The model provider kept failing (provider/model: error) for about 13 minutes. Retry this run from where it stopped, or cancel it?"*
+
+- **Retry** resumes from saved progress with both provider retry counters at zero.
+- **Cancel** settles the run as cancelled by the owner (`Execution cancelled by user`), not `Failed`. The persisted bundle marks the pause with `provider_failure_pause`, cleared when it resumes.
+- No answer leaves it paused; there is no timeout default.
+
+A delegated child, a sealed controller attempt or an app contract still ends `Failed`, so its parent or controller decides.
+
+An ordinary task-backed root run has no wall clock (see [budgets](execution/AGENTIC_EXECUTION_DESIGN.md#budgets)); a goal pipeline has no hard timer unless the agent sets `constraints.max_duration_secs`; a paused or sleeping cycle is neutral for the agent circuit breaker. The stuck-yield rules exempt a declared wait (a status check on a running owned shell job, or a successful `SleepUntil`) by action kind, never by result fingerprint.
+
+Final reports lead with supported findings, including at budget stops (bounded source excerpts from the whole run, gaps after findings). Working-set chunks and host-captured browser evidence keep distinct provenance for grounding; rounded source figures cannot prove exact or derived counts.

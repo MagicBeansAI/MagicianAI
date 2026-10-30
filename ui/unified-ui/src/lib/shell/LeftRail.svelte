@@ -14,7 +14,6 @@
 
 	$: pathname = $page.url.pathname;
 	$: scope = $scopeIdentityStore;
-	$: isQualityActive = pathname === '/work' && $page.url.searchParams.get('view') === 'quality';
 
 	const THEME_PAIRS: Record<string, { light: Theme; dark: Theme }> = {
 		sorbet: { light: 'sorbet', dark: 'sorbet-dark' },
@@ -176,29 +175,15 @@
 			class="rail-btn"
 			class:active={isActive('/budget')}
 			href="/budget"
-			title="Resource Authority"
-			aria-label="Resource Authority"
+			title="Spend ledger"
+			aria-label="Spend ledger"
 		>
 			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 				<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
 				<path d="M21 9h-6a3 3 0 0 0 0 6h6z" />
 				<circle cx="15.5" cy="12" r="0.6" fill="currentColor" />
 			</svg>
-			<span class="rail-tooltip">Resource Authority</span>
-		</a>
-
-		<a
-			class="rail-btn"
-			class:active={isQualityActive}
-			href="/work?view=quality"
-			title="Quality & Review"
-			aria-label="Quality and Review"
-		>
-			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-				<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-				<path d="m9 12 2 2 4-4" />
-			</svg>
-			<span class="rail-tooltip">Quality &amp; Review</span>
+			<span class="rail-tooltip">Spend ledger</span>
 		</a>
 
 		<a

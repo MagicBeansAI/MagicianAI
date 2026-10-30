@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import ModelSelectionControl from '$lib/llm/ModelSelectionControl.svelte';
+	import { selectionForRoute, thinkingLabel, type ModelSelection } from '$lib/llm/modelCatalog';
 	import {
 		fetchRoutingOverview,
-		setOperationProfile,
+		setOperationModel,
 		clearOperationProfile,
 		setOperationEngine,
 		clearOperationEngine,
@@ -102,9 +104,27 @@
 		return `${profile.provider} · ${profile.model}`;
 	}
 
-	function profileOptionLabel(profile: RoutingProfile): string {
-		const unavailable = profile.installed ? '' : ' — not installed';
-		return `${profile.name} — ${profile.provider} · ${profile.model}${unavailable}`;
+	function modelLabel(name: string): string {
+		const selection = selectionForRoute(overview?.models ?? [], overview?.profiles ?? [], name);
+		const model = overview?.models?.find(model => model.id === selection?.model_id);
+		return model ? `${model.label} · ${thinkingLabel(selection?.thinking ?? 'auto')}` : profileRuntimeLabel(name);
+	}
+
+	async function switchModel(operation: string, selection: ModelSelection): Promise<void> {
+		if (busyOp) return;
+		busyOp = operation;
+		error = null;
+		try {
+			await setOperationModel(operation, selection);
+			await refresh();
+			showSuccess('Model assignment saved');
+		} catch (cause) {
+			const message = cause instanceof Error ? cause.message : 'Model assignment failed';
+			error = message;
+			showError(message);
+		} finally {
+			busyOp = null;
+		}
 	}
 
 	/** The profiles a following operation would ride, one per external driving engine. */
@@ -131,7 +151,7 @@
 		if (operation.local_floor) return 'local default — never follows';
 		const rides = parentRides(operation);
 		if (rides.length > 0) return `would ride ${rides.join(' · ')}`;
-		if (operation.engine === 'pinned') return 'stays on its own profile';
+		if (operation.engine === 'pinned') return 'keeps its assigned model';
 		return 'follows when an external engine drives';
 	}
 
@@ -178,23 +198,6 @@
 			showError(message);
 		} finally {
 			reloading = false;
-		}
-	}
-
-	async function switchProfile(operation: string, profile: string): Promise<void> {
-		if (busyOp) return;
-		busyOp = operation;
-		error = null;
-		try {
-			await setOperationProfile(operation, profile);
-			await refresh();
-			showSuccess(`${operation} now uses ${profile}`);
-		} catch (cause) {
-			const message = cause instanceof Error ? cause.message : 'Switch failed';
-			error = message;
-			showError(message);
-		} finally {
-			busyOp = null;
 		}
 	}
 
@@ -263,8 +266,8 @@
 		<div>
 			<h3>Operation routing</h3>
 			<p class="hint">
-				Every configured LLM operation, what it does, and the profile and model serving it now.
-				Choosing a profile applies an install-level override immediately; reload reads external YAML
+				Choose the model and thinking level for each operation.
+				Assignments apply immediately; reload reads external YAML
 				changes into the running backend.
 			</p>
 		</div>
@@ -334,8 +337,10 @@
 								{classLabel[profileClass(operation.effective_profile)] ?? 'API'}
 							</span>
 						</div>
-						<strong title={operation.effective_profile}>{operation.effective_profile}</strong>
-						<span class="runtime">{profileRuntimeLabel(operation.effective_profile)}</span>
+						<strong>{modelLabel(operation.effective_profile)}</strong>
+						{#if selectionForRoute(overview.models ?? [], overview.profiles, operation.effective_profile)}
+							<span class="runtime">{profileRuntimeLabel(operation.effective_profile)}</span>
+						{/if}
 						{#if !profileInstalled(operation.effective_profile)}
 							<em title="CLI not on PATH">CLI not installed</em>
 						{/if}
@@ -345,40 +350,20 @@
 						<span class="mapping-title">Configured mapping</span>
 						{#each configuredArms(operation) as arm (`${arm.label}:${arm.profile}`)}
 							<span class:active-arm={arm.profile === operation.configured_profile}>
-								<b>{arm.label}</b> · {arm.profile}
+								<b>{arm.label}</b> · {modelLabel(arm.profile)}
 							</span>
 						{/each}
 					</div>
 
 					<div class="choice">
-						<label for={`profile-${operation.operation.replaceAll(':', '-')}`}>Choose profile</label>
-						<select
-							id={`profile-${operation.operation.replaceAll(':', '-')}`}
-							disabled={busyOp === operation.operation}
-							value={operation.effective_profile}
-							onchange={(event) => {
-								const next = event.currentTarget.value;
-								if (next && next !== operation.effective_profile) {
-									void switchProfile(operation.operation, next);
-								}
-							}}
-						>
-							<optgroup label="Local">
-								{#each overview.profiles.filter((profile) => profile.class === 'local') as profile (profile.name)}
-									<option value={profile.name} disabled={profile.selectable === false}>{profileOptionLabel(profile)}</option>
-								{/each}
-							</optgroup>
-							<optgroup label="API">
-								{#each overview.profiles.filter((profile) => profile.class === 'api') as profile (profile.name)}
-									<option value={profile.name} disabled={profile.selectable === false}>{profileOptionLabel(profile)}</option>
-								{/each}
-							</optgroup>
-							<optgroup label="Harness (CLI subscription)">
-								{#each overview.profiles.filter((profile) => profile.class === 'harness') as profile (profile.name)}
-									<option value={profile.name} disabled={profile.selectable === false}>{profileOptionLabel(profile)}</option>
-								{/each}
-							</optgroup>
-						</select>
+						{#if overview.models?.length}
+							<ModelSelectionControl models={overview.models}
+								selection={selectionForRoute(overview.models, overview.profiles, operation.effective_profile)}
+								disabled={busyOp !== null}
+								on:change={(event) => void switchModel(operation.operation, event.detail)} />
+						{:else}
+							<p role="status">Model choices are unavailable. Refresh the catalog to change this assignment.</p>
+						{/if}
 						{#if operation.stale_override}
 							<button class="clear stale" type="button" disabled={busyOp === operation.operation} onclick={() => void revert(operation.operation)}>Clear stale override</button>
 						{:else if operation.overridden}
@@ -450,12 +435,11 @@
 	.chip.api { background: var(--color-info-soft, rgba(90, 140, 255, 0.15)); color: var(--color-info, var(--text-secondary)); }
 	.chip.harness { background: var(--accent-primary-soft, rgba(170, 110, 255, 0.16)); color: var(--accent-primary, var(--text-secondary)); }
 	.effective strong { font-family: var(--font-mono, monospace); font-size: 0.77rem; overflow-wrap: anywhere; }
-	.runtime, .mapping span, .choice label, .automatic { color: var(--text-secondary); font-size: 0.74rem; }
+	.runtime, .mapping span, .choice p, .automatic { color: var(--text-secondary); font-size: 0.74rem; }
 	.effective em { color: var(--color-error, #c2502a); font-size: 0.72rem; }
 	.mapping-title { font-size: 0.7rem !important; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; }
 	.mapping span { overflow-wrap: anywhere; }
 	.mapping .active-arm { color: var(--text-primary); }
-	.choice select { width: 100%; min-width: 0; padding: 0.42rem 0.5rem; border-radius: 8px; border: 1px solid var(--input-border, var(--border-soft)); background: var(--input-bg, var(--bg-soft)); color: var(--text-primary); font-size: 0.78rem; }
 	.clear { width: fit-content; padding: 0.28rem 0.55rem; font-size: 0.74rem; }
 	.clear.stale { color: var(--color-error, #c2502a); }
 	.engine { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.15rem; }

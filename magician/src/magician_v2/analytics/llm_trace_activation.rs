@@ -1657,8 +1657,9 @@ fn map_response_event(
     // Text-to-speech and speech-to-text calls are priced by their producer
     // from the pricing file's media rows (characters, audio seconds); the
     // event carries no unit to recompute from.
-    let media_pricing = media_kind_for_response(response_kind)
-        .map(|kind| media_pricing_fact(provider, model, kind, started_at_ms, *cost, *usage_reported));
+    let media_pricing = media_kind_for_response(response_kind).map(|kind| {
+        media_pricing_fact(provider, model, kind, started_at_ms, *cost, *usage_reported)
+    });
     if !*success {
         let completed = LlmCallCompleted {
             schema_version: LLM_TRACE_FACT_SCHEMA_VERSION,
@@ -2438,7 +2439,9 @@ fn pricing_for_runtime_event(
 /// The media kind a voice `response_kind` names (`voice_tts`, `voice_stt`,
 /// `voice_stt_streaming`), as emitted by `media_seam::metering`.
 fn media_kind_for_response(response_kind: &str) -> Option<magicllm::MediaKind> {
-    response_kind.strip_prefix("voice_").and_then(magicllm::MediaKind::parse)
+    response_kind
+        .strip_prefix("voice_")
+        .and_then(magicllm::MediaKind::parse)
 }
 
 /// The pricing fact for a producer-priced media call. A media row that covers
@@ -2477,7 +2480,9 @@ fn media_pricing_fact(
     match version {
         None => unknown(UNPRICED_VERSION),
         Some(_) if !usage_reported => unknown(USAGE_UNREPORTED_VERSION),
-        Some(_) if !supplied_cost_usd.is_finite() || supplied_cost_usd < 0.0 => unknown(INVALID_PRICING_VERSION),
+        Some(_) if !supplied_cost_usd.is_finite() || supplied_cost_usd < 0.0 => {
+            unknown(INVALID_PRICING_VERSION)
+        },
         Some(version) => LlmPricingFact {
             pricing_version: Some(version),
             cost_source: Some(LlmCostSource::Estimated),
@@ -3552,7 +3557,13 @@ mod tests {
 
     /// A TTS/STT call as `media_seam::metering` emits it: no tokens, the
     /// producer's price, a `voice_*` response kind.
-    fn voice_event(provider: &str, model: &str, kind: &str, cost_usd: f64, usage_reported: bool) -> RuntimeTransportEvent {
+    fn voice_event(
+        provider: &str,
+        model: &str,
+        kind: &str,
+        cost_usd: f64,
+        usage_reported: bool,
+    ) -> RuntimeTransportEvent {
         let mut event = response_event(1);
         if let RuntimeTransportEvent::LLMResponseReceived {
             provider: event_provider,
@@ -3572,10 +3583,20 @@ mod tests {
             *event_provider = provider.to_string();
             *event_model = model.to_string();
             *response_kind = format!("voice_{kind}");
-            *capability = if kind == "tts" { "voice.tts" } else { "voice.stt" }.to_string();
+            *capability = if kind == "tts" {
+                "voice.tts"
+            } else {
+                "voice.stt"
+            }
+            .to_string();
             *cost = cost_usd;
             *reported = usage_reported;
-            (*input_tokens, *output_tokens, *reasoning_tokens, *cache_read_tokens) = (0, 0, 0, 0);
+            (
+                *input_tokens,
+                *output_tokens,
+                *reasoning_tokens,
+                *cache_read_tokens,
+            ) = (0, 0, 0, 0);
             *ttft_ms = None;
         }
         event
@@ -3597,10 +3618,19 @@ mod tests {
         let priced = voice_pricing(&voice_event("sarvam", "bulbul:v4-flash", "tts", 0.05, true));
         assert_eq!(priced.cost_source, Some(LlmCostSource::Estimated));
         assert_eq!(priced.cost_usd, Some(0.05));
-        assert!(priced.pricing_version.as_deref().is_some_and(|v| v.starts_with("pricing-row-v1:")));
+        assert!(priced
+            .pricing_version
+            .as_deref()
+            .is_some_and(|v| v.starts_with("pricing-row-v1:")));
 
         // On-machine engines are an authoritative local $0.
-        let local = voice_pricing(&voice_event("local", "FluidInference/kokoro-82m-coreml", "tts", 0.0, true));
+        let local = voice_pricing(&voice_event(
+            "local",
+            "FluidInference/kokoro-82m-coreml",
+            "tts",
+            0.0,
+            true,
+        ));
         assert_eq!(local.cost_source, Some(LlmCostSource::Local));
         assert_eq!(local.cost_usd, Some(0.0));
 
@@ -3613,7 +3643,10 @@ mod tests {
         // A row whose billed unit went unmeasured (a webm upload's length).
         let unmeasured = voice_pricing(&voice_event("openai", "gpt-transcribe", "stt", 0.0, false));
         assert_eq!(unmeasured.cost_source, Some(LlmCostSource::Unknown));
-        assert_eq!(unmeasured.pricing_version.as_deref(), Some(USAGE_UNREPORTED_VERSION));
+        assert_eq!(
+            unmeasured.pricing_version.as_deref(),
+            Some(USAGE_UNREPORTED_VERSION)
+        );
 
         // Streaming STT is its own kind.
         let streaming = voice_pricing(&voice_event("xai", "grok-stt", "stt_streaming", 0.01, true));

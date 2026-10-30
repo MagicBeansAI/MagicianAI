@@ -383,6 +383,7 @@ fn every_shipped_approval_rule_has_a_consequence_class() {
             // commitment rather than to private/local, which would have deleted
             // the gate its author asked for.
             "ceo · propose_program_missions -> commitment_or_transaction".to_string(),
+            "ceo · propose_program_revision -> commitment_or_transaction".to_string(),
             "cmo · agentmail-send -> bounded_communication".to_string(),
             // 2026-08-20, §5A.1 identity split: the company assistant's rules
             // moved off the OWNER's `gmail`/`calendar` onto the four company
@@ -405,6 +406,8 @@ fn every_shipped_approval_rule_has_a_consequence_class() {
             "executive-assistant · imessage_send -> bounded_communication".to_string(),
             "executive-assistant · swiggy-mcp -> commitment_or_transaction".to_string(),
             "executive-assistant · zepto-mcp -> commitment_or_transaction".to_string(),
+            "personal-assistant · propose_program_revision -> commitment_or_transaction"
+                .to_string(),
             // Deck production is an owner-visible artifact mutation and remains
             // outside standing approval envelopes.
             "presentation-maker · office-powerpoint -> commitment_or_transaction".to_string(),
@@ -706,12 +709,11 @@ fn creative_mind_delegates_only_to_web_research() {
 ///    while still reading as a grant in the YAML, which is precisely how a
 ///    capability gets quietly deleted. `resolved == declared` proves every id
 ///    here is live.
-/// 3. The company harness is absent from the resolved set. Naming the exclusion
-///    rather than trusting the list above means a future addition of `cto` (say)
-///    fails here with the reason, not just with a changed vector.
+/// 3. Company work enters through the explicitly permitted CEO. Department
+///    officers remain behind that coordinator rather than becoming PA routes.
 ///
 /// If a real owner ask fails because a specialist is missing, add that ONE id
-/// with its evidence — never `'*'`, and never an officer.
+/// with its evidence — never `'*'`.
 #[test]
 fn the_owners_router_names_its_delegates() {
     use magician::magician_v2::agents::resolve_effective_delegation_target_ids_for_surface;
@@ -725,11 +727,7 @@ fn the_owners_router_names_its_delegates() {
     )
     .expect("personal-assistant definition should parse and validate");
 
-    // Declaration order is the evidence order the definition's own comment
-    // explains: edges proven by a shipped artifact first, then those resting on
-    // the definition's own text, then the four the OWNER confirmed on
-    // 2026-08-21 — which the repo could not prove either way, and which are
-    // therefore evidence no reading of the source could have supplied.
+    // Personal specialists remain explicit; CEO is the owner's named company entry.
     let expected = vec![
         "mac-operator".to_string(),
         "android-operator".to_string(),
@@ -741,6 +739,7 @@ fn the_owners_router_names_its_delegates() {
         "internal-system-analyst".to_string(),
         "harness-sre".to_string(),
         "wealth-manager".to_string(),
+        "ceo".to_string(),
     ];
     assert_eq!(
         def.delegation_targets, expected,
@@ -780,12 +779,9 @@ fn the_owners_router_names_its_delegates() {
             surface.as_str()
         );
 
-        // The company harness, named so a regression says WHY rather than only
-        // WHAT. `ceo` owns the edge to `ambassador`, the company's outward
-        // voice, so an officer in this set is an outward route the owner's
-        // router should not hold.
+        // The owner-approved company entry is CEO; departments and outward
+        // specialists remain behind their own coordinator's named edges.
         for company in [
-            "ceo",
             "cmo",
             "cro",
             "cpo",
@@ -801,6 +797,170 @@ fn the_owners_router_names_its_delegates() {
                 surface.as_str()
             );
         }
+    }
+}
+
+#[test]
+fn ceo_can_coordinate_company_when_delegated() {
+    use magician::magician_v2::agents::resolve_effective_delegation_target_ids_for_surface;
+
+    let agents_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("magician_data_v3/system/agent_templates/agents");
+    let mut paths = Vec::new();
+    collect_agent_definition_paths(&agents_root, &mut paths);
+    let roster = paths
+        .iter()
+        .map(|path| AgentDefinition::from_yaml_file(path).unwrap())
+        .collect::<Vec<_>>();
+    let ceo = roster
+        .iter()
+        .find(|definition| definition.agent_id == "ceo")
+        .unwrap();
+    assert!(ceo.is_personal());
+    assert!(ceo.tools.iter().any(|tool| tool == "delegate_to_agent"));
+    let assistant = roster
+        .iter()
+        .find(|definition| definition.agent_id == "personal-assistant")
+        .unwrap();
+    for tool in ["inspect_agent", "system_status"] {
+        assert!(ceo.tools.iter().any(|granted| granted == tool));
+        assert!(
+            !assistant.tools.iter().any(|granted| granted == tool),
+            "Magican delegates {tool} to Atlas"
+        );
+        assert!(
+            !assistant.permits_declared_tool(tool),
+            "universal injection must not restore {tool} to Magican"
+        );
+    }
+    assert!(
+        ceo.constraints.coordination.allow_transitive_delegation,
+        "CEO must be able to sub-delegate when reached through personal-assistant"
+    );
+    assert_eq!(ceo.constraints.coordination.max_delegation_depth, 2);
+    assert!(ceo
+        .tools
+        .iter()
+        .any(|tool| tool == "propose_program_revision"));
+    assert!(ceo
+        .constraints
+        .requires_approval
+        .iter()
+        .any(|rule| rule.tool == "propose_program_revision"));
+    let disabled = magician::magician_v2::agents::disabled_agent_hierarchy(roster.iter());
+    for surface in [InvocationSurface::Delegation, InvocationSurface::Handover] {
+        let resolved = resolve_effective_delegation_target_ids_for_surface(
+            ceo,
+            roster.iter(),
+            &disabled,
+            surface,
+        );
+        for target in ["cmo", "cro", "cpo", "cto", "harness-sre"] {
+            assert!(
+                resolved.iter().any(|agent| agent == target),
+                "CEO cannot reach {target} on {surface:?}"
+            );
+        }
+        for owner_agent in ["personal-assistant", "executive-assistant"] {
+            assert!(!resolved.iter().any(|agent| agent == owner_agent));
+        }
+    }
+}
+
+#[test]
+fn harness_runtime_metadata_survives_large_definition_projection() {
+    use magician::magician_v2::execution::capability::CapabilityPackDefinition;
+    use magician::magician_v2::tool_result_projection::{
+        ConservativeTokenEstimator, DisplayResultProjection, ProjectionBudget,
+        ProjectionContractRegistry, RawResultDescriptor, ResultRetentionClass, ScopedResultRef,
+        ToolOutcome, ToolResultIdentity, ToolResultProjectionRequest, ToolResultProjector,
+    };
+    use serde_json::json;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let definition = AgentDefinition::from_yaml_file(
+        &root.join("magician_data_v3/system/agent_templates/agents/cmo/definition.agent.yaml"),
+    )
+    .unwrap();
+    let metadata = json!({
+        "agents": [{"agent_id":"cmo", "saved":{"schedule":"30 4,8,13,16 * * *"},
+            "runtime":{"definition_loaded":true, "matches_saved_definition":true,
+                "scheduler_source":"durable_registration_state", "registrations":[
+                    {"trigger":{"kind":"cron", "schedule":"30 4,8,13,16 * * *", "timezone":"UTC"}}
+                ]}}],
+        "configured_router_defaults":{"agentic_decision":{"provider":"openai", "model":"gpt-6.1-sol"}},
+        "routing_evidence":"Configured defaults do not prove a future dispatch."
+    });
+    for tool in ["inspect_agent", "system_status"] {
+        let pack: CapabilityPackDefinition = serde_yaml::from_str(
+            &std::fs::read_to_string(root.join(format!(
+                "magician/src/magician_v2/execution/embedded_pack_defs/{tool}.yaml"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let contract = pack
+            .result_projection
+            .expect("runtime inspection declares projection priority");
+        let contract_id = contract.contract_id.clone();
+        let mut registry = ProjectionContractRegistry::default();
+        registry.register_override(contract).unwrap();
+        let raw = json!({
+            "context":{"goal_id":"Detailed runtime verification instructions. ".repeat(200), "scope_agent_ids":["cmo"]},
+            "agent":{"definition":definition, "definition_yaml":definition.to_yaml_string().unwrap()},
+            "agents":(0..25).map(|i| json!({"agent_id":format!("worker-{i}"), "pending_tasks":[{"summary":"task preview ".repeat(100)}]})).collect::<Vec<_>>(),
+            "runtime_metadata":metadata,
+        });
+        let descriptor = RawResultDescriptor {
+            content_ref: ScopedResultRef {
+                result_ref: "result_ref_v1_inspection".into(),
+                cursor: None,
+            },
+            content_hash: "hash".into(),
+            media_type: "application/json".into(),
+            size_bytes: serde_json::to_vec(&raw).unwrap().len() as u64,
+            retention_class: ResultRetentionClass::TaskExecution,
+        };
+        let result = ToolResultProjector::new(registry, ConservativeTokenEstimator)
+            .project(ToolResultProjectionRequest {
+                identity: ToolResultIdentity {
+                    tool_name: tool.into(),
+                    tool_call_id: "call-1".into(),
+                    execution_id: None,
+                    task_id: None,
+                    scope_digest: "scope".into(),
+                    authority_revision: "revision-1".into(),
+                },
+                outcome: ToolOutcome::succeeded(),
+                raw_result: &raw,
+                display: DisplayResultProjection::referenced(&descriptor),
+                raw: descriptor,
+                spoken_hint: None,
+                contract_id: Some(&contract_id),
+                budget: ProjectionBudget {
+                    max_serialized_bytes: 24_576,
+                    max_estimated_tokens: 6_144,
+                    max_records: 20,
+                    max_depth: 8,
+                    max_scalar_bytes: 8_192,
+                    max_spoken_chars: 420,
+                },
+            })
+            .unwrap();
+        let projected = &result.model.value["data"]["runtime_metadata"];
+        assert_eq!(
+            projected["agents"][0]["runtime"]["matches_saved_definition"], true,
+            "{tool}: {projected}"
+        );
+        assert_eq!(
+            projected["agents"][0]["runtime"]["registrations"][0]["trigger"]["schedule"],
+            "30 4,8,13,16 * * *"
+        );
+        assert_eq!(
+            projected["configured_router_defaults"]["agentic_decision"]["model"],
+            "gpt-6.1-sol"
+        );
     }
 }
 

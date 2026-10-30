@@ -21,18 +21,15 @@ internal fun WorkCrewCreate(onSaved: () -> Unit) {
     var editor by remember { mutableStateOf("") }
     var advanced by remember { mutableStateOf(false) }
     LaunchedEffect(state.identity) { draft = newCrewDefinition(); editor = ""; advanced = false }
-    LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(state, resource) }
-        item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = !advanced, onClick = {
-                if (advanced) {
-                    val parsed = runCatching { Json.parseToJsonElement(editor) as JsonObject }.getOrNull()
-                    if (parsed == null) resource.reportError("Enter a valid definition before returning to guided editing.") else { draft = parsed; advanced = false }
-                }
-            }, label = { Text("Guided") }, modifier = Modifier.heightIn(min = 48.dp))
-            FilterChip(selected = advanced, onClick = { if (!advanced) { editor = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), draft); advanced = true } }, label = { Text("Advanced JSON") }, modifier = Modifier.heightIn(min = 48.dp))
-        } }
-        if (advanced) item { OutlinedTextField(editor, { editor = it }, label = { Text("Definition") }, modifier = Modifier.fillMaxWidth(), minLines = 8, maxLines = 20) }
+    WorkPage(Modifier.imePadding()) {
+        item { WorkSegmented(listOf("guided" to "Guided", "json" to "Advanced JSON"), if (advanced) "json" else "guided", { choice ->
+            if (choice == "guided" && advanced) {
+                val parsed = runCatching { Json.parseToJsonElement(editor) as JsonObject }.getOrNull()
+                if (parsed == null) resource.reportError("Enter a valid definition before returning to guided editing.") else { draft = parsed; advanced = false }
+            } else if (choice == "json" && !advanced) { editor = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), draft); advanced = true }
+        }) }
+        workStatusItem(state, resource)
+        if (advanced) item { WorkGroup("Definition") { WorkFieldStack { WorkLabeledField("Definition", editor, { editor = it }, minLines = 8, maxLines = 20, mono = true) } } }
         else item { WorkCrewFields(draft, { draft = it }) }
         item { Button(onClick = {
             val definition = if (advanced) runCatching { Json.parseToJsonElement(editor) as JsonObject }.getOrNull() else draft

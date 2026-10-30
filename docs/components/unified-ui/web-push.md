@@ -17,7 +17,7 @@ one state:
 |---|---|
 | On / Off | This browser is / is not subscribed. **Turn on browser notifications** / **Turn off**. |
 | Blocked | The site's notification permission is denied; allow it in the browser's site settings. |
-| Off on this server | `GET /web-push/config` answered `enabled: false` (no VAPID keys) or 404. No button. |
+| Off on this server | `GET /web-push/config` answered `enabled: false` (no VAPID keys) or 404. **Set up browser notifications** (owner) calls `POST /web-push/vapid`: the server generates a P-256 pair, writes it to its runtime env files (the private key is never returned) and turns web push on without a restart; it refuses with 409 once keys exist. |
 | Not supported | No service worker / Push API, or not a secure context (HTTPS or localhost; iOS needs the Home Screen app). |
 | Handled by the desktop app | The Tauri webview: the desktop app has its own notch; web push is never used there. |
 

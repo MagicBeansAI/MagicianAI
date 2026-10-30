@@ -1,5 +1,5 @@
 agent_id: web-researcher
-version: 3
+version: 4
 name: Sleuth
 aliases:
 - sleuth
@@ -210,7 +210,7 @@ trust_level: local
 llm_routing:
   operations:
     agentic_decision:
-      profile: gpt6luna-responses-toolsany
+      profile: operation/query_analysis
 memory_tiers:
 - name: episode
   scope: agent

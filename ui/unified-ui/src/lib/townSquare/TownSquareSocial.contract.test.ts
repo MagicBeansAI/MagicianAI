@@ -16,6 +16,10 @@ describe('Town Square social transport contract', () => {
 		expect(source).toContain('autonomous_scope_enabled');
 		expect(source).toContain('scope_policy');
 		expect(source).toContain('worker_global');
+		expect(source).toContain('workflow_launch_blocked');
+		expect(source).toContain('Retry the next turn');
+		expect(source).toContain("fetchJson('/ambient-turn/retry', { method: 'POST' })");
+		expect(source).toContain('If this banner returns, the launch was refused again.');
 		expect(source).toContain('not configured for this workspace');
 		expect(source).toContain('Town Square could not load.');
 		expect(source).toContain('role="alert"');

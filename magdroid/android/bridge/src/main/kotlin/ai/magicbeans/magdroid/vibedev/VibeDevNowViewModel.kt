@@ -1,5 +1,7 @@
 package ai.magicbeans.magdroid.vibedev
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -11,6 +13,10 @@ import kotlinx.coroutines.flow.asStateFlow
 data class VibeDevNowData(
     val runs: List<VibeDevLiveRun> = emptyList(),
     val projects: List<VibeDevProject> = emptyList(),
+    val history: List<VibeDevLiveRun> = emptyList(),
+    val nextCursor: String? = null,
+    val loadingMore: Boolean = false,
+    val pageError: String? = null,
     /** Runs taken off the list while their Stop waits out its undo window. */
     val stopping: Set<String> = emptySet(),
     val hiddenCrews: Set<String> = emptySet(),
@@ -59,12 +65,16 @@ class VibeDevNowViewModel(
     init {
         cache()?.let { stored ->
             restore({ stored.loadNow() }) { snapshot ->
-                mutable.value = mutable.value.copy(runs = snapshot.runs, projects = snapshot.projects)
+                mutable.value = mutable.value.copy(runs = snapshot.runs, projects = snapshot.projects,
+                    history = snapshot.history?.runs ?: snapshot.runs, nextCursor = snapshot.history?.nextCursor)
             }
         }
     }
 
+    private var readRevision = 0
+
     override suspend fun load() = coroutineScope {
+        readRevision++
         // Machine, connection and cache resolved once, before the reads, so a
         // switch mid-read cannot file one machine's runs under another.
         val owner = identity()
@@ -72,15 +82,47 @@ class VibeDevNowViewModel(
         val api = source()
         val runs = async { api.liveRuns() }
         val projects = async { api.projects() }
-        val loaded = mutable.value.copy(runs = runs.await().runs, projects = projects.await().projects)
+        val page = async { api.runHistory(20, null) }
+        val first = page.await()
+        val prior = mutable.value
+        val ids = first.runs.map { it.runId }.toSet()
+        val loaded = prior.copy(runs = runs.await().runs, projects = projects.await().projects,
+            history = (first.runs + prior.history.filterNot { it.runId in ids })
+                .sortedWith(compareByDescending<VibeDevLiveRun> { it.updatedAt }.thenByDescending { it.runId }),
+            nextCursor = if (prior.history.isEmpty() || !first.hasMore || prior.history.none { it.runId in ids }) first.nextCursor else prior.nextCursor,
+            pageError = null)
         // Switched while this read was out: it is the old machine's, and must
         // not reach the coding-runs card, the badge or the new cache.
         if (identity() != owner) return@coroutineScope
         mutable.value = loaded
         VibeDevBadge.publish(loaded.needsYou.size)
         runCatching { onRuns(loaded.runs) }
-        stored?.let { persist { it.saveNow(VibeDevNowSnapshot(loaded.runs, loaded.projects), clock()) } }
+        stored?.let { persist { it.saveNow(VibeDevNowSnapshot(loaded.runs, loaded.projects, first), clock()) } }
         Unit
+    }
+
+    fun loadMore() {
+        val held = mutable.value
+        val cursor = held.nextCursor ?: return
+        if (held.loadingMore) return
+        val revision = readRevision
+        val owner = identity()
+        mutable.value = held.copy(loadingMore = true, pageError = null)
+        viewModelScope.launch {
+            try {
+                val page = source().runHistory(20, cursor)
+                if (identity() != owner || revision != readRevision) return@launch
+                val current = mutable.value
+                val ids = current.history.map { it.runId }.toSet()
+                mutable.value = current.copy(history = (current.history + page.runs.filterNot { it.runId in ids })
+                    .sortedWith(compareByDescending<VibeDevLiveRun> { it.updatedAt }.thenByDescending { it.runId }),
+                    nextCursor = page.nextCursor)
+            } catch (error: Exception) {
+                if (identity() == owner) mutable.value = mutable.value.copy(pageError = error.message ?: "Could not load older runs")
+            } finally {
+                mutable.value = mutable.value.copy(loadingMore = false)
+            }
+        }
     }
 
     fun steer(run: VibeDevLiveRun, message: String) {

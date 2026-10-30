@@ -12,9 +12,6 @@ fi
 missing_formulas=()
 command -v pdftotext >/dev/null && command -v pdftoppm >/dev/null || missing_formulas+=(poppler)
 command -v tesseract >/dev/null || missing_formulas+=(tesseract)
-if [[ -f "$ROOT_DIR/Cargo.toml" ]] && ! command -v go >/dev/null; then
-  missing_formulas+=(go)
-fi
 if [[ ${#missing_formulas[@]} -gt 0 ]]; then
   if [[ "$(uname -s)" == Darwin ]] && command -v brew >/dev/null; then
     HOMEBREW_NO_AUTO_UPDATE=1 brew install "${missing_formulas[@]}"

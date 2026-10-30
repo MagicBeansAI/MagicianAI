@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount } from 'svelte';
+	import { slide } from 'svelte/transition';
+	import { flipDurationMs, reducedMotion } from '$lib/shared/motion';
 	import { requestConfirmation } from '$lib/stores/confirmationStore';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import {
@@ -107,6 +109,25 @@
 		if (kind === 'ios') return 'iPhone';
 		if (kind === 'desktop') return 'Desktop Edge';
 		return 'Android device';
+	}
+
+	/** The ESP32 voice terminal pairs as a mobile client but runs firmware, not an app. */
+	function isVoiceTerminal(device: PairedDevice): boolean {
+		return device.device_id.startsWith('magesp-');
+	}
+
+	function deviceAppName(device: PairedDevice): string {
+		if (isVoiceTerminal(device)) return 'Voice terminal firmware';
+		const kind = device.client_kind;
+		if (kind === 'ios') return 'Magican iOS';
+		if (kind === 'desktop') return 'Magican Desktop';
+		return 'Magican Android';
+	}
+
+	/** "Magican iOS 0.4.11 (222)", or null when the app never reported one. */
+	function deviceAppVersion(device: PairedDevice): string | null {
+		const version = device.app_version?.trim();
+		return version ? `${deviceAppName(device)} ${version}` : null;
 	}
 
 	function isTauriRuntime(): boolean {
@@ -223,6 +244,16 @@
 		} finally {
 			if (!silent) loading = false;
 		}
+	}
+
+	/** A connect step opens under the header buttons that started it; once it
+	 *  has slid open, bring all of it into view if the page left it partly
+	 *  off-screen. */
+	function revealWhenOpened(node: HTMLElement) {
+		const timer = setTimeout(() => {
+			node.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+		}, flipDurationMs());
+		return { destroy: () => clearTimeout(timer) };
 	}
 
 	function chooseConnection(clientKind: DeviceEnrollment['client_kind']): void {
@@ -346,6 +377,91 @@
 		</div>
 	</div>
 
+	{#if error}
+		<div class="alert" role="alert">{error}</div>
+	{/if}
+	{#if !pairingAvailable}
+		<div class="alert" role="alert">Device pairing storage is unavailable. Restore the server’s credential storage and restart Magician, then refresh this page.</div>
+	{/if}
+
+	{#if choosingClientKind}
+		<div class="connection-choice" aria-labelledby="connection-choice-title" transition:slide={{ duration: flipDurationMs() }} use:revealWhenOpened>
+			<div class="choice-heading">
+				<div>
+					<p class="step">Connect {choosingClientKind === 'ios' ? 'iPhone' : 'Android'}</p>
+					<h3 id="connection-choice-title">Where will this phone use Magican?</h3>
+					{#if connectionOptions.machine_name}
+						<p class="pairs-with">This QR pairs the phone with <strong>{connectionOptions.machine_name}</strong>.</p>
+					{/if}
+				</div>
+				<button class="secondary" type="button" on:click={() => (choosingClientKind = null)}>Cancel</button>
+			</div>
+			<div class="choice-grid">
+				<button
+					class="route-card"
+					type="button"
+					disabled={creating || !connectionOptions.same_wifi}
+					on:click={() => choosingClientKind && createEnrollment(choosingClientKind, 'same_wifi')}
+				>
+					<strong>Same Wi-Fi · this computer</strong>
+					<span>Choose this when the phone and this computer are on the same trusted Wi-Fi. It is direct and stays on your local network.</span>
+					<code>{connectionOptions.same_wifi ?? 'Unavailable on the current Magician listener'}</code>
+				</button>
+				<button
+					class="route-card"
+					type="button"
+					disabled={creating || !connectionOptions.remote}
+					on:click={() => choosingClientKind && createEnrollment(choosingClientKind, 'remote')}
+				>
+					<strong>Remote · works anywhere</strong>
+					<span>Choose this on a different network or when the computer is remote. Traffic uses your configured secure remote address.</span>
+					<code>{connectionOptions.remote ?? 'Remote access is not configured'}</code>
+				</button>
+			</div>
+			<p class="localhost-note">“localhost” on a phone means the phone itself, so local pairing uses this computer’s private network address.</p>
+		</div>
+	{/if}
+
+	{#if enrollment}
+		<div class:desktop-enrollment={enrollment.client_kind === 'desktop'} class="enrollment" aria-live="polite" transition:slide={{ duration: flipDurationMs() }} use:revealWhenOpened>
+			{#if enrollment.client_kind === 'desktop'}
+				<div class:expired class="desktop-link-mark" aria-hidden="true">↗</div>
+			{:else}
+				<div class:expired class="qr" aria-label={`${enrollment.client_kind === 'ios' ? 'iPhone' : 'Android'} connection QR code`}>
+					{@html enrollment.qr_svg}
+				</div>
+			{/if}
+			<div class="instructions">
+				<p class="step">On {enrollment.client_kind === 'desktop' ? 'this computer' : enrollment.client_kind === 'ios' ? 'iPhone' : 'Android'}</p>
+				{#if enrollment.client_kind === 'desktop'}
+					<h3>Authorize the installed Magican Desktop</h3>
+					<p>Open this one-time link. Magican Desktop verifies this server and stores its Desktop Edge credential in the operating system credential store.</p>
+				{:else}
+					<h3>Open Magican and scan this connection QR</h3>
+					<p>Confirm the displayed Magician address. The app exchanges this one-time code and stores its device credential securely.</p>
+				{/if}
+				<div class="route-summary">
+					<strong>{enrollment.connection_mode === 'same_wifi' ? 'Same Wi-Fi' : 'Remote'}</strong>
+					<code>{enrollment.origin}</code>
+				</div>
+				<div class="scope"><span>Scope</span><strong>{enrollment.principal} / {enrollment.workspace}</strong></div>
+				<div class:expired class="expiry">
+					{expired ? 'Code expired' : `Expires in ${countdown(secondsRemaining)}`}
+				</div>
+				<div class="actions">
+					{#if enrollment.client_kind === 'desktop' && !expired}
+						<a class="primary link-button" href={enrollment.enrollment_uri}>Open Magican Desktop</a>
+						<button class="secondary" type="button" on:click={copyEnrollmentLink}>Copy one-time link</button>
+					{/if}
+					{#if expired}
+					<button class="primary" type="button" disabled={creating || !pairingAvailable} on:click={() => enrollment && createEnrollment(enrollment.client_kind, enrollment.connection_mode)}>Create a new code</button>
+					{/if}
+					<button class="secondary" type="button" on:click={closeEnrollment}>Close</button>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	{#if edgeStatus?.enrolled}
 		<div class="edge-status" class:online={edgeStatus.connected}>
 			<strong>{edgeStatus.connected ? 'Desktop Edge connected' : 'Desktop Edge enrolled'}</strong>
@@ -407,91 +523,6 @@
 		{/if}
 	</div>
 
-	{#if error}
-		<div class="alert" role="alert">{error}</div>
-	{/if}
-	{#if !pairingAvailable}
-		<div class="alert" role="alert">Device pairing storage is unavailable. Restore the server’s credential storage and restart Magician, then refresh this page.</div>
-	{/if}
-
-	{#if choosingClientKind}
-		<div class="connection-choice" aria-labelledby="connection-choice-title">
-			<div class="choice-heading">
-				<div>
-					<p class="step">Connect {choosingClientKind === 'ios' ? 'iPhone' : 'Android'}</p>
-					<h3 id="connection-choice-title">Where will this phone use Magican?</h3>
-					{#if connectionOptions.machine_name}
-						<p class="pairs-with">This QR pairs the phone with <strong>{connectionOptions.machine_name}</strong>.</p>
-					{/if}
-				</div>
-				<button class="secondary" type="button" on:click={() => (choosingClientKind = null)}>Cancel</button>
-			</div>
-			<div class="choice-grid">
-				<button
-					class="route-card"
-					type="button"
-					disabled={creating || !connectionOptions.same_wifi}
-					on:click={() => choosingClientKind && createEnrollment(choosingClientKind, 'same_wifi')}
-				>
-					<strong>Same Wi-Fi · this computer</strong>
-					<span>Choose this when the phone and this computer are on the same trusted Wi-Fi. It is direct and stays on your local network.</span>
-					<code>{connectionOptions.same_wifi ?? 'Unavailable on the current Magician listener'}</code>
-				</button>
-				<button
-					class="route-card"
-					type="button"
-					disabled={creating || !connectionOptions.remote}
-					on:click={() => choosingClientKind && createEnrollment(choosingClientKind, 'remote')}
-				>
-					<strong>Remote · works anywhere</strong>
-					<span>Choose this on a different network or when the computer is remote. Traffic uses your configured secure remote address.</span>
-					<code>{connectionOptions.remote ?? 'Remote access is not configured'}</code>
-				</button>
-			</div>
-			<p class="localhost-note">“localhost” on a phone means the phone itself, so local pairing uses this computer’s private network address.</p>
-		</div>
-	{/if}
-
-	{#if enrollment}
-		<div class:desktop-enrollment={enrollment.client_kind === 'desktop'} class="enrollment" aria-live="polite">
-			{#if enrollment.client_kind === 'desktop'}
-				<div class:expired class="desktop-link-mark" aria-hidden="true">↗</div>
-			{:else}
-				<div class:expired class="qr" aria-label={`${enrollment.client_kind === 'ios' ? 'iPhone' : 'Android'} connection QR code`}>
-					{@html enrollment.qr_svg}
-				</div>
-			{/if}
-			<div class="instructions">
-				<p class="step">On {enrollment.client_kind === 'desktop' ? 'this computer' : enrollment.client_kind === 'ios' ? 'iPhone' : 'Android'}</p>
-				{#if enrollment.client_kind === 'desktop'}
-					<h3>Authorize the installed Magican Desktop</h3>
-					<p>Open this one-time link. Magican Desktop verifies this server and stores its Desktop Edge credential in the operating system credential store.</p>
-				{:else}
-					<h3>Open Magican and scan this connection QR</h3>
-					<p>Confirm the displayed Magician address. The app exchanges this one-time code and stores its device credential securely.</p>
-				{/if}
-				<div class="route-summary">
-					<strong>{enrollment.connection_mode === 'same_wifi' ? 'Same Wi-Fi' : 'Remote'}</strong>
-					<code>{enrollment.origin}</code>
-				</div>
-				<div class="scope"><span>Scope</span><strong>{enrollment.principal} / {enrollment.workspace}</strong></div>
-				<div class:expired class="expiry">
-					{expired ? 'Code expired' : `Expires in ${countdown(secondsRemaining)}`}
-				</div>
-				<div class="actions">
-					{#if enrollment.client_kind === 'desktop' && !expired}
-						<a class="primary link-button" href={enrollment.enrollment_uri}>Open Magican Desktop</a>
-						<button class="secondary" type="button" on:click={copyEnrollmentLink}>Copy one-time link</button>
-					{/if}
-					{#if expired}
-					<button class="primary" type="button" disabled={creating || !pairingAvailable} on:click={() => enrollment && createEnrollment(enrollment.client_kind, enrollment.connection_mode)}>Create a new code</button>
-					{/if}
-					<button class="secondary" type="button" on:click={closeEnrollment}>Close</button>
-				</div>
-			</div>
-		</div>
-	{/if}
-
 	{#if loading && devices.length === 0}
 		<div class="empty">Loading paired devices…</div>
 	{:else if devices.length === 0 && pairingAvailable}
@@ -504,6 +535,11 @@
 						<div class="device-dot" class:online={!!device.last_seen_ms && Date.now() - device.last_seen_ms < 120_000}></div>
 						<div class="device-copy">
 							<strong>{device.label || deviceKindLabel(device.client_kind)}</strong>
+							{#if deviceAppVersion(device)}
+								<span class="device-version">{deviceAppVersion(device)}</span>
+							{:else}
+								<span class="device-version device-version--missing">Version not reported yet — update the {isVoiceTerminal(device) ? 'firmware' : 'app'}</span>
+							{/if}
 							<span title={device.device_id}>{device.device_id}</span>
 						</div>
 						<div class="last-seen">{relativeTime(device.last_seen_ms ?? device.paired_at_ms)}</div>
@@ -537,6 +573,10 @@
 	h3 { font-size: 1rem; margin-bottom: .4rem; }
 	.panel-header p:not(.overline), .instructions p { color: var(--text-secondary); font-size: .82rem; margin-bottom: 0; }
 	.actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+	/* Header actions: one right-aligned group that wraps evenly instead of a
+	   ragged stack beside the description. */
+	.panel-header > .actions { flex: 0 1 26rem; justify-content: flex-end; }
+	.panel-header > div:first-child { flex: 1 1 18rem; min-width: 0; }
 	button { border-radius: 6px; cursor: pointer; font: inherit; font-size: .86rem; font-weight: 600; min-height: 2.25rem; padding: .52rem .78rem; }
 	button:disabled { cursor: wait; opacity: .6; }
 	.primary { background: var(--accent-fill); border: 1px solid var(--accent-primary); color: var(--text-on-accent, var(--accent-on-primary, #fff)); }
@@ -562,12 +602,12 @@
 	.observation-card p:not(.step) { color: var(--text-secondary); font-size: .78rem; margin-bottom: .35rem; }
 	.observation-status { color: var(--text-muted); display: block; font-size: .72rem; }
 	.observation-error { color: var(--color-error); display: block; font-size: .75rem; margin-bottom: .3rem; }
-	.trust-options { display: grid; gap: .45rem; margin: .7rem 0; }
+	.trust-options { display: grid; gap: .45rem; grid-template-columns: minmax(0, 1fr); margin: .7rem 0; }
 	.trust-options label { align-items: flex-start; background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 7px; display: flex; gap: .55rem; padding: .65rem; }
 	.trust-options label.ready { cursor: pointer; }
 	.trust-options label.selected { border-color: var(--accent-primary); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 35%, transparent); }
 	.trust-options input { margin-top: .18rem; }
-	.trust-options span { display: flex; flex-direction: column; gap: .18rem; }
+	.trust-options span { display: flex; flex-direction: column; gap: .18rem; min-width: 0; overflow-wrap: anywhere; }
 	.trust-options strong { font-size: .78rem; }
 	.trust-options small { color: var(--text-secondary); font-size: .72rem; font-weight: 400; line-height: 1.35; }
 	.trust-options .missing { color: var(--color-error); }
@@ -597,6 +637,8 @@
 	.device-copy strong { font-size: .84rem; }
 	.device-copy span, .last-seen { color: var(--text-muted); font-size: .7rem; }
 	.device-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.device-copy .device-version { color: var(--text-secondary); font-family: var(--font-mono); font-size: .72rem; margin: .1rem 0 .05rem; }
+	.device-copy .device-version--missing { color: var(--text-muted); font-family: inherit; white-space: normal; }
 	@media (max-width: 700px) {
 		.panel-header { flex-direction: column; }
 		.observation-card { align-items: stretch; flex-direction: column; }

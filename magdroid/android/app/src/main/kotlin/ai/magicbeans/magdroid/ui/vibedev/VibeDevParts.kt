@@ -7,6 +7,10 @@ import ai.magicbeans.magdroid.ui.StatusDot
 import ai.magicbeans.magdroid.ui.StatusTone
 import ai.magicbeans.magdroid.ui.activePalette
 import ai.magicbeans.magdroid.ui.magicanButtonColors
+import ai.magicbeans.magdroid.ui.Palette
+import ai.magicbeans.magdroid.vibedev.VibeDevHealthAction
+import ai.magicbeans.magdroid.vibedev.VibeDevHealthLevel
+import ai.magicbeans.magdroid.vibedev.VibeDevProjectHealth
 import ai.magicbeans.magdroid.vibedev.VibeDevRunState
 import ai.magicbeans.magdroid.vibedev.VibeDevStatus
 import ai.magicbeans.magdroid.vibedev.isoMillis
@@ -21,19 +25,30 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -68,6 +83,12 @@ internal fun crewTone(status: String): StatusTone = when (status) {
 @Composable
 internal fun RunDot(state: VibeDevRunState, modifier: Modifier = Modifier) =
     StatusDot(state.tone(), modifier.semantics { contentDescription = state.label })
+
+/** A run that ended Done with requirements open: the amber partial dot, read as "Partly done". */
+@Composable
+internal fun RunDot(state: VibeDevRunState, partlyDone: Boolean, modifier: Modifier = Modifier) =
+    if (partlyDone) LabeledDot(StatusTone.Partial, ai.magicbeans.magdroid.tasks.TaskCompletion.PARTLY_DONE, modifier)
+    else RunDot(state, modifier)
 
 /** A crew or lane dot that TalkBack reads as its status. */
 @Composable
@@ -174,7 +195,7 @@ internal fun Tag(text: String, strong: Boolean = false) {
 }
 
 @Composable
-internal fun TrustBadge(trusted: Boolean) = Tag(if (trusted) "trusted" else "sandboxed", strong = trusted)
+internal fun TrustBadge(location: String?) = Tag(when (location) { "original" -> "Original folder"; "trusted" -> "Isolated branch"; else -> "Isolated workspace" }, strong = location == "trusted")
 
 /** Label / value pairs in the header cards. */
 @Composable
@@ -194,6 +215,20 @@ internal fun KeyValues(rows: List<Pair<String, String>>) {
 }
 
 enum class VibeButtonKind { Primary, Secondary, Danger }
+
+/** Match the action buttons, including each icon's pressed-state outline. */
+@Composable
+internal fun VibeIconButton(onClick: () -> Unit, compact: Boolean = false, content: @Composable () -> Unit) {
+    Surface(
+        modifier = if (compact) Modifier.padding(horizontal = 2.dp) else Modifier,
+        shape = MagicanButtonShape,
+        color = activePalette.control,
+        border = BorderStroke(1.dp, activePalette.controlBorder),
+    ) {
+        IconButton(onClick = onClick,
+            modifier = (if (compact) Modifier.size(36.dp) else Modifier).clip(MagicanButtonShape), content = content)
+    }
+}
 
 /** The three button roles: accent fill, outline, danger outline. */
 @Composable
@@ -224,7 +259,11 @@ internal fun VibeButton(
             val tint = if (kind == VibeButtonKind.Danger) activePalette.danger else activePalette.text
             OutlinedButton(
                 onClick = onClick, modifier = modifier, enabled = enabled && !busy, shape = MagicanButtonShape,
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = tint),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = activePalette.control,
+                    contentColor = tint,
+                    disabledContainerColor = activePalette.control,
+                ),
                 border = BorderStroke(1.dp, if (kind == VibeButtonKind.Danger) activePalette.danger.copy(alpha = 0.7f) else activePalette.controlBorder),
                 contentPadding = padding,
             ) { label() }
@@ -246,7 +285,7 @@ internal fun StaleLine(status: VibeDevStatus, hasData: Boolean, onRetry: () -> U
                 "Updated ${ago(status.updatedAtMs, now).let { if (it == "just now") it else "$it ago" }} · offline",
                 Modifier.weight(1f), maxLines = 1,
             )
-            TextButton(onClick = onRetry) { Text("Retry", color = activePalette.accent, fontSize = 12.sp) }
+            TextButton(onClick = onRetry, shape = MagicanButtonShape) { Text("Retry", color = activePalette.accent, fontSize = 12.sp) }
         }
     } else {
         VibeCard {
@@ -270,20 +309,109 @@ internal fun LoadingLine() {
     }
 }
 
-/** A selectable pill (Build / Discuss, engines, attempts). */
+/** A compact rounded-square choice (projects, Build / Discuss, engines, attempts). */
 @Composable
-internal fun Pill(text: String, selected: Boolean, onClick: () -> Unit, enabled: Boolean = true) {
+internal fun Pill(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    leading: (@Composable () -> Unit)? = null,
+) {
     Surface(
         onClick = onClick,
         enabled = enabled,
         // The chip stays compact; its touch target is still 48 dp.
         modifier = Modifier.minimumInteractiveComponentSize().semantics { this.selected = selected },
-        shape = Lively.chipShape,
+        shape = MagicanButtonShape,
         color = if (selected) activePalette.accentFill else activePalette.control,
         contentColor = if (selected) activePalette.onAccent else activePalette.text,
         border = BorderStroke(1.dp, if (selected) activePalette.accentFill else activePalette.controlBorder),
     ) {
-        Text(text, Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 12.5.sp,
-            fontWeight = FontWeight.SemiBold, fontFamily = LocalMagicanFontFamilies.current.body, maxLines = 1)
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            leading?.invoke()
+            Text(text, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold,
+                fontFamily = LocalMagicanFontFamilies.current.body, maxLines = 1)
+        }
+    }
+}
+
+/** A health level's colour: danger for error, warning otherwise (web project health). */
+internal fun VibeDevHealthLevel.color(palette: Palette = activePalette): Color =
+    if (this == VibeDevHealthLevel.Error) palette.danger else palette.warning
+
+/** The marker beside a project that needs attention; nothing when it is fine. */
+@Composable
+internal fun ProjectHealthGlyph(health: VibeDevProjectHealth, modifier: Modifier = Modifier, size: Int = 16) {
+    if (!health.needsAttention) return
+    Icon(
+        if (health.level == VibeDevHealthLevel.Error) Icons.Outlined.ErrorOutline else Icons.Outlined.WarningAmber,
+        contentDescription = VibeDevProjectHealth.ATTENTION_DESCRIPTION,
+        tint = health.level.color(),
+        modifier = modifier.size(size.dp),
+    )
+}
+
+/**
+ * "Project needs attention…" and each issue (bold title, then message) for the
+ * active project. An issue whose action the app knows gets a button that
+ * confirms first; [onAction] null shows no buttons.
+ */
+@Composable
+internal fun ProjectHealthBanner(
+    health: VibeDevProjectHealth,
+    modifier: Modifier = Modifier,
+    onAction: ((VibeDevHealthAction) -> Unit)? = null,
+    busy: (VibeDevHealthAction) -> Boolean = { false },
+) {
+    val title = health.title ?: return
+    val tint = health.level.color()
+    val fonts = LocalMagicanFontFamilies.current
+    var confirming by remember { mutableStateOf<VibeDevHealthAction?>(null) }
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = Lively.cardShape,
+        color = tint.copy(alpha = 0.10f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.35f)),
+    ) {
+        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+            Icon(
+                if (health.level == VibeDevHealthLevel.Error) Icons.Outlined.ErrorOutline else Icons.Outlined.WarningAmber,
+                contentDescription = null, tint = tint, modifier = Modifier.size(18.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(title, color = tint, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, fontFamily = fonts.body,
+                    modifier = Modifier.semantics { heading() })
+                health.issues.forEach { issue ->
+                    Column(Modifier.semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        issue.title?.let {
+                            Text(it, color = activePalette.text, fontSize = 12.5.sp, fontWeight = FontWeight.Bold, fontFamily = fonts.body)
+                        }
+                        Text(issue.message, color = activePalette.text, fontSize = 12.5.sp, fontFamily = fonts.body)
+                    }
+                    val action = issue.action?.takeIf { it.isSupported && onAction != null }
+                    if (action != null) {
+                        VibeButton(action.label, { confirming = action }, busy = busy(action))
+                    }
+                }
+            }
+        }
+    }
+    confirming?.let { action ->
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            containerColor = activePalette.background,
+            title = { Text(VibeDevProjectHealth.GIT_INIT_CONFIRM_TITLE, color = activePalette.text) },
+            text = { Text(VibeDevProjectHealth.GIT_INIT_CONFIRM_BODY, color = activePalette.secondaryText) },
+            confirmButton = {
+                TextButton(onClick = { confirming = null; onAction?.invoke(action) }) {
+                    Text(VibeDevProjectHealth.GIT_INIT_CONFIRM_ACTION, color = activePalette.accent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = null }) { Text("Cancel", color = activePalette.secondaryText) }
+            },
+        )
     }
 }

@@ -16,6 +16,18 @@ codes in stdout).
   (`POST /bots/{name}/auth/start`). `BotManager::auth_state` reports a
   `BotAuthFlowState` of `Idle`, `Active` or `Queued`.
 
+`BotManager::start_auth_with` adds sign-in methods for Service accounts on a
+phone ([browser-signin.md](browser-signin.md#managed-bot-accounts)): headless
+Google login whose URL goes only to the API's private sign-in session
+(`auth_connect_material`); Telegram code login whose prompts become
+`pending_input` (`phone`/`code`/`password`); WhatsApp pairing code via one-shot
+`WHATSAPP_PHONE` and `WHATSAPP_PAIRING_CODE_FILE`. `cancel_auth` dequeues or
+kills a login; `auth_availability` names a missing CLI, API key, OAuth client
+or bundle. Before a Telegram login the supervisor seeds tgcli's store config
+with `TGCLI_API_ID`/`TGCLI_API_HASH` (tgcli ignores those env vars and would
+prompt on stdin). A successful Google login clears the needs-auth sidecar
+without a bot restart.
+
 A parent that does not treat exit 79 as needs-auth still sees the standard
 auto-restart loop; the sidecar file is benign on disk.
 
@@ -38,7 +50,8 @@ operator → clicks "Authenticate" in UI:
             POST /bots/{name}/auth/start
             → supervisor dispatches by sidecar.provider
               · google_workspace → spawn `gws auth login` out of process
-              · telegram_self    → restart bot (tgcli QR shows in logs)
+              · telegram_self    → `tgcli auth --qr` (or `tgcli auth` for a
+                                     code login), stdin fed by auth/input
               · whatsapp_web     → restart bot (wu-cli onQr fires)
               · kapso            → restart bot (API-key reread)
               · <custom>         → restart bot (generic fallback)
@@ -117,6 +130,16 @@ returns `false` (env var absent) and `exitNeedsAuth` still calls
 |-----|---------|-------------|-------|
 | `@magician/bot-gmail` | `0.2.3+` | `google_workspace` | `gws auth status --format json` |
 | `@magician/bot-telegram-self` | `0.2.2+` | `telegram_self` | `tgcli channels --limit 1 --json` |
+
+The Gmail probe checks stored credentials locally, so it can accept ones Google
+refuses. When Google rejects the watcher's credentials (`UNAUTHENTICATED`, 401,
+`ACCESS_TOKEN_TYPE_UNSUPPORTED`) on two consecutive watcher runs, the Gmail bot
+exits needs-auth with its sidecar instead of counting toward its
+persistent-failure exit (70); permission and quota errors still take that path,
+since signing in cannot fix them. The watcher reuses one Pub/Sub topic per
+profile: the topic `gws` created on first watch activation is kept in
+`$GWS_CONFIG_DIR/gmail-watch-topic.json` (mode `0600`) and passed back with
+`--topic` for the same project; it is dropped when Google reports it not found.
 
 WhatsApp (wu-cli) and Kapso are not on the contract: their auth is
 connect-and-auth-in-one (QR appears during connect), which does not decompose

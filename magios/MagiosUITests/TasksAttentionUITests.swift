@@ -98,7 +98,7 @@ final class TasksAttentionUITests: XCTestCase {
         tab.tap()
         XCTAssertTrue(tab.isSelected)
         // Two-lane segmented control (the "Internal tasks" segment is unambiguous).
-        XCTAssertTrue(app.buttons["Internal tasks"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["System work"].waitForExistence(timeout: 3))
         // The web preset filters.
         XCTAssertTrue(app.buttons["Overdue"].exists)
         XCTAssertTrue(app.buttons["Completed"].exists)
@@ -116,7 +116,7 @@ final class TasksAttentionUITests: XCTestCase {
         app.buttons["work-view-crew"].tap()
         XCTAssertTrue(app.buttons["work-new"].waitForExistence(timeout: 5))
         app.buttons["work-more"].tap()
-        app.buttons["Programs"].tap()
+        app.buttons["Playbooks"].tap()
         XCTAssertTrue(app.buttons["work-new"].waitForExistence(timeout: 5))
         app.buttons["work-new"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
@@ -133,7 +133,7 @@ final class TasksAttentionUITests: XCTestCase {
         app.buttons["work-new"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5)); app.buttons["Cancel"].tap()
         XCTAssertTrue(app.buttons["work-more"].waitForExistence(timeout: 5))
-        app.buttons["work-more"].tap(); app.buttons["Programs"].tap()
+        app.buttons["work-more"].tap(); app.buttons["Playbooks"].tap()
         XCTAssertTrue(app.buttons["work-program-fixture.md"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Fixture crew"].exists)
     }
@@ -192,7 +192,7 @@ final class TasksAttentionUITests: XCTestCase {
         XCTAssertTrue(app.textViews["work-crew-definition-editor"].waitForExistence(timeout: 3))
         app.buttons["Cancel"].tap()
         app.navigationBars.buttons.firstMatch.tap()
-        app.buttons["work-more"].tap(); app.buttons["Programs"].tap()
+        app.buttons["work-more"].tap(); app.buttons["Playbooks"].tap()
         app.buttons["work-program-fixture.md"].tap()
         XCTAssertTrue(app.buttons["Restore"].waitForExistence(timeout: 3))
         app.buttons["Restore"].tap()
@@ -200,7 +200,7 @@ final class TasksAttentionUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)).tap()
         XCTAssertTrue(app.buttons["Restore version"].waitForNonExistence(timeout: 2))
         app.navigationBars.buttons.firstMatch.tap()
-        app.buttons["work-more"].tap(); app.buttons["Quality and review"].tap()
+        app.buttons["work-more"].tap(); app.buttons["Quality checks"].tap()
         for _ in 0..<4 where !app.buttons["Capture policies"].isHittable { app.swipeUp() }
         app.buttons["Capture policies"].tap()
         app.buttons["New capture policy"].tap()
@@ -212,7 +212,7 @@ final class TasksAttentionUITests: XCTestCase {
 
     func testProgramShowsResponsibleCrewAndExactRuntimeEvidence() {
         let app = launchedApp(extraArguments: ["--work-ui-test-fixture"])
-        app.tabBars.buttons["Work"].tap(); app.buttons["work-more"].tap(); app.buttons["Programs"].tap()
+        app.tabBars.buttons["Work"].tap(); app.buttons["work-more"].tap(); app.buttons["Playbooks"].tap()
         let program = app.buttons["work-program-fixture.md"]; XCTAssertTrue(program.waitForExistence(timeout: 5)); program.tap()
         let evidence = app.buttons["Task and execution evidence"]
         for _ in 0..<7 where !evidence.isHittable { app.swipeUp() }
@@ -264,7 +264,7 @@ final class TasksAttentionUITests: XCTestCase {
 
     func testWorkReferenceAttachmentAndExactAttemptComparison() {
         let app = launchedApp(extraArguments: ["--work-ui-test-fixture"])
-        app.tabBars.buttons["Work"].tap(); app.buttons["work-more"].tap(); app.buttons["Quality and review"].tap()
+        app.tabBars.buttons["Work"].tap(); app.buttons["work-more"].tap(); app.buttons["Quality checks"].tap()
         app.buttons["New quality work"].tap()
         let search = app.textFields["Find a reference"]; XCTAssertTrue(search.waitForExistence(timeout: 3))
         for _ in 0..<5 where !search.isHittable { app.swipeUp() }
@@ -321,7 +321,7 @@ final class TasksAttentionUITests: XCTestCase {
         app.buttons["Remove reference: Fixture completed task"].tap()
         XCTAssertTrue(app.buttons["Reference completed work (0)"].exists)
         app.navigationBars["New Task"].buttons["Cancel"].firstMatch.tap()
-        app.buttons["Internal tasks"].tap()
+        app.buttons["System work"].tap()
         let cleanup = app.buttons["Select cleanup"]
         for _ in 0..<5 where !cleanup.isHittable { app.swipeLeft() }
         XCTAssertTrue(cleanup.waitForExistence(timeout: 3)); cleanup.tap()
@@ -345,7 +345,7 @@ final class TasksAttentionUITests: XCTestCase {
     func testWorkAdoptedMonitoringRejectsChangedEvidence() {
         let app = launchedApp(extraArguments: ["--work-ui-test-fixture"])
         app.tabBars.buttons["Work"].tap()
-        app.buttons["work-more"].tap(); app.buttons["Quality and review"].tap()
+        app.buttons["work-more"].tap(); app.buttons["Quality checks"].tap()
         for _ in 0..<5 where !app.buttons["Learning policies"].isHittable { app.swipeUp() }
         app.buttons["Learning policies"].tap()
         let policy = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Fixture learning policy")).firstMatch
@@ -377,7 +377,7 @@ final class TasksAttentionUITests: XCTestCase {
                       || app.staticTexts["Runs"].waitForExistence(timeout: 2))
         app.navigationBars["Task"].buttons.firstMatch.tap()
 
-        app.buttons["Internal tasks"].tap()
+        app.buttons["System work"].tap()
         let internalTask = app.staticTexts["Fixture internal task"]
         XCTAssertTrue(internalTask.waitForExistence(timeout: 3))
         internalTask.tap()
@@ -421,7 +421,7 @@ final class TasksAttentionUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)).tap()
         XCTAssertTrue(confirmCancel.waitForNonExistence(timeout: 2))
 
-        app.buttons["Internal tasks"].tap()
+        app.buttons["System work"].tap()
         let failed = app.staticTexts["Fixture internal task"]
         XCTAssertTrue(failed.waitForExistence(timeout: 3))
         let reset = app.buttons["task-action-reset-fixture-internal"]
@@ -484,7 +484,7 @@ final class TasksAttentionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Fixture internal task"].waitForExistence(timeout: 3))
         app.navigationBars["Task"].buttons.firstMatch.tap()
 
-        let internalLane = app.buttons["Internal tasks"]
+        let internalLane = app.buttons["System work"]
         XCTAssertTrue(internalLane.waitForExistence(timeout: 3))
         XCTAssertTrue(internalLane.isSelected)
         XCTAssertTrue(app.staticTexts["Fixture internal task"].exists)
@@ -645,10 +645,20 @@ final class TasksAttentionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Dictation pipeline"].waitForExistence(timeout: 2))
         app.buttons["Done"].tap()
 
-        let sessionSettings = app.buttons["voice-settings-session"]
-        XCTAssertTrue(sessionSettings.waitForExistence(timeout: 3))
-        sessionSettings.tap()
+        let selector = app.buttons["voice-mode-selector"]
+        XCTAssertTrue(selector.waitForExistence(timeout: 3))
+        let expectedSection = selector.label.contains("Dictation") ? "dictation" : "session"
+        selector.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        for mode in ["Live", "Dictation", "Hands-free"] {
+            XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", mode)).firstMatch.waitForExistence(timeout: 3))
+        }
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
+        selector.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)).tap()
+        let settings = app.buttons["voice-mode-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3)); settings.tap()
         XCTAssertTrue(app.navigationBars["Voice settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["voice-settings-tab-\(expectedSection)"].isSelected)
+        app.buttons["voice-settings-tab-session"].tap()
         XCTAssertTrue(app.buttons["voice-settings-tab-session"].isSelected)
         XCTAssertTrue(app.buttons["voice-settings-start-call"].exists)
     }

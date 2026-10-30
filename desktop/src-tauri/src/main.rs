@@ -29,6 +29,7 @@ mod host_imessage;
 mod magician_auth;
 mod manifest;
 mod native_runtime;
+mod notch_inbox_policy;
 mod onboarding;
 mod orb_state;
 mod orb_window;
@@ -64,7 +65,14 @@ use tracing::{error, info, warn};
 /// Wrap the synchronous body of any periodic task that touches windows or
 /// monitors.
 pub(crate) fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
-    objc2::rc::autoreleasepool(|_| f())
+    #[cfg(target_os = "macos")]
+    {
+        objc2::rc::autoreleasepool(|_| f())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f()
+    }
 }
 
 /// Shared application state, managed by Tauri.
@@ -237,84 +245,6 @@ fn open_deep_link(app: &tauri::AppHandle, url: &tauri::Url) {
     }
 }
 
-#[cfg(test)]
-mod deep_link_tests {
-    use super::{
-        android_observation_deep_link_trust_mode, deep_link_path, desktop_edge_enrollment_uri,
-    };
-
-    #[test]
-    fn deep_link_path_preserves_attention_selection_and_fragment() {
-        let url =
-            tauri::Url::parse("magican://attention?attention=1&attention_item=pause%2F7#current")
-                .unwrap();
-        assert_eq!(
-            deep_link_path(&url).as_deref(),
-            Some("/attention?attention=1&attention_item=pause%2F7#current")
-        );
-    }
-
-    #[test]
-    fn deep_link_path_keeps_non_attention_queries() {
-        let url = tauri::Url::parse("magican:///tasks?selected=task-4").unwrap();
-        assert_eq!(
-            deep_link_path(&url).as_deref(),
-            Some("/tasks?selected=task-4")
-        );
-    }
-
-    #[test]
-    fn android_observation_deep_link_is_an_exact_native_action() {
-        assert_eq!(
-            android_observation_deep_link_trust_mode(
-                &tauri::Url::parse("magican://android-observation").unwrap()
-            ),
-            Some("owner_pinned_private_build")
-        );
-        assert_eq!(
-            android_observation_deep_link_trust_mode(
-                &tauri::Url::parse("magican://android-observation/play-integrity").unwrap()
-            ),
-            Some("play_integrity")
-        );
-        assert_eq!(
-            android_observation_deep_link_trust_mode(
-                &tauri::Url::parse("magican://android-observation?next=/tasks").unwrap()
-            ),
-            None
-        );
-        assert_eq!(
-            android_observation_deep_link_trust_mode(
-                &tauri::Url::parse("https://example.test/android-observation").unwrap()
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn only_desktop_connect_links_trigger_native_edge_enrollment() {
-        let desktop = tauri::Url::parse(
-            "magican://connect?base=https%3A%2F%2Fconnect.example.com&kind=desktop&id=e-1&secret=s-1",
-        )
-        .unwrap();
-        assert_eq!(
-            desktop_edge_enrollment_uri(&desktop).as_deref(),
-            Some(desktop.as_str())
-        );
-        for rejected in [
-            "magican://connect?base=https%3A%2F%2Fconnect.example.com&kind=ios&id=e-1&secret=s-1",
-            "magican://connect/extra?kind=desktop",
-            "magican://connect?kind=desktop&kind=desktop",
-            "https://connect.example.com/?kind=desktop",
-        ] {
-            assert_eq!(
-                desktop_edge_enrollment_uri(&tauri::Url::parse(rejected).unwrap()),
-                None
-            );
-        }
-    }
-}
-
 fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -325,6 +255,12 @@ fn main() {
         .init();
 
     info!("Starting {} v{}", HOST_APP_NAME, env!("CARGO_PKG_VERSION"));
+
+    // The clean-quit marker means "the last run ended in Quit": clear it at
+    // start, so a crash of this run is never read as a quit by
+    // magic-supervisor (e.g. when the crash coincides with a supervisor
+    // restart). Best effort.
+    let _ = std::fs::remove_file(crate::config::desktop_quit_marker_path());
 
     let mut builder = tauri::Builder::default();
     if desktop_autostart_plugin_enabled() {
@@ -360,6 +296,7 @@ fn main() {
     builder
         .plugin(magician_auth::session_plugin())
         .plugin(magician_auth::attention_plugin())
+        .plugin(magician_auth::settings_plugin())
         .manage(AppState {
             runtime: Mutex::new(None),
             config: Mutex::new(initial_config),
@@ -472,6 +409,8 @@ fn main() {
             onboarding::get_onboarding_skill_auth,
             onboarding::configure_onboarding_skill_auth,
             onboarding::submit_onboarding_skill_auth_input,
+            onboarding::onboarding_google_project_access,
+            onboarding::onboarding_grant_google_project_access,
             onboarding::open_onboarding_target,
             commands::approve_setup,
             commands::uninstall,
@@ -484,6 +423,8 @@ fn main() {
             overlay::get_overlay_state,
             overlay::show_overlay,
             overlay::hide_overlay,
+            overlay::set_hud_expanded,
+            overlay::get_hud_expanded,
             overlay::show_contextual_assist,
             overlay::set_contextual_assist_expanded,
             overlay::get_contextual_assist_target,
@@ -496,6 +437,7 @@ fn main() {
             tray::set_pending_approval_count,
             tray::get_notifications_enabled,
             tray::open_app_at,
+            tray::open_shared_settings,
             contextual_assist::get_contextual_assist_action_catalog,
             contextual_assist::get_contextual_assist_permission_status,
             contextual_assist::insert_contextual_text,
@@ -574,6 +516,7 @@ fn main() {
             theme::get_app_theme,
         ])
         .setup(|app| {
+            overlay::install_hud_window_menu(app.handle())?;
             #[cfg(target_os = "macos")]
             {
                 if let Err(error) = dock_icon::install_runtime_dock_icon() {
@@ -695,6 +638,7 @@ fn main() {
                 );
                 if code.is_none() {
                     api.prevent_exit();
+                    let _ = overlay::hide_overlay_window(app);
                     if let Some(window) =
                         app.get_webview_window(crate::tray::ATTENTION_WINDOW_LABEL)
                     {
@@ -874,6 +818,21 @@ async fn async_setup(app: tauri::AppHandle) -> Result<(), String> {
         && crate::native_runtime::installed_by_desktop()
         && !cfg.is_remote_engine()
     {
+        // Keep the LaunchAgent's supervisor arguments (this bundle, its log,
+        // the runtime config) current, so the supervisor can relaunch this
+        // app after a crash. Only the plist file is rewritten; launchd loads
+        // it at the next login (the running backend is never restarted here).
+        let runtime_root = cfg
+            .general
+            .runtime_root
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(crate::runtime_paths::runtime_root_dir);
+        match crate::native_runtime::sync_supervisor_arguments(&runtime_root).await {
+            Ok(true) => info!("Recorded supervisor arguments in the native backend LaunchAgent (loaded at the next login)"),
+            Ok(false) => {},
+            Err(error) => warn!("Could not update the native backend LaunchAgent: {error}"),
+        }
         match crate::native_runtime::ensure_service_started().await {
             Ok(()) => {
                 info!("Ensured the Desktop-managed native backend service is started");
@@ -1051,4 +1010,82 @@ fn spawn_background_monitors(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(contextual_assist::contextual_assist_monitor(
         contextual_assist_handle,
     ));
+}
+
+#[cfg(test)]
+mod deep_link_tests {
+    use super::{
+        android_observation_deep_link_trust_mode, deep_link_path, desktop_edge_enrollment_uri,
+    };
+
+    #[test]
+    fn deep_link_path_preserves_attention_selection_and_fragment() {
+        let url =
+            tauri::Url::parse("magican://attention?attention=1&attention_item=pause%2F7#current")
+                .unwrap();
+        assert_eq!(
+            deep_link_path(&url).as_deref(),
+            Some("/attention?attention=1&attention_item=pause%2F7#current")
+        );
+    }
+
+    #[test]
+    fn deep_link_path_keeps_non_attention_queries() {
+        let url = tauri::Url::parse("magican:///tasks?selected=task-4").unwrap();
+        assert_eq!(
+            deep_link_path(&url).as_deref(),
+            Some("/tasks?selected=task-4")
+        );
+    }
+
+    #[test]
+    fn android_observation_deep_link_is_an_exact_native_action() {
+        assert_eq!(
+            android_observation_deep_link_trust_mode(
+                &tauri::Url::parse("magican://android-observation").unwrap()
+            ),
+            Some("owner_pinned_private_build")
+        );
+        assert_eq!(
+            android_observation_deep_link_trust_mode(
+                &tauri::Url::parse("magican://android-observation/play-integrity").unwrap()
+            ),
+            Some("play_integrity")
+        );
+        assert_eq!(
+            android_observation_deep_link_trust_mode(
+                &tauri::Url::parse("magican://android-observation?next=/tasks").unwrap()
+            ),
+            None
+        );
+        assert_eq!(
+            android_observation_deep_link_trust_mode(
+                &tauri::Url::parse("https://example.test/android-observation").unwrap()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn only_desktop_connect_links_trigger_native_edge_enrollment() {
+        let desktop = tauri::Url::parse(
+            "magican://connect?base=https%3A%2F%2Fconnect.example.com&kind=desktop&id=e-1&secret=s-1",
+        )
+        .unwrap();
+        assert_eq!(
+            desktop_edge_enrollment_uri(&desktop).as_deref(),
+            Some(desktop.as_str())
+        );
+        for rejected in [
+            "magican://connect?base=https%3A%2F%2Fconnect.example.com&kind=ios&id=e-1&secret=s-1",
+            "magican://connect/extra?kind=desktop",
+            "magican://connect?kind=desktop&kind=desktop",
+            "https://connect.example.com/?kind=desktop",
+        ] {
+            assert_eq!(
+                desktop_edge_enrollment_uri(&tauri::Url::parse(rejected).unwrap()),
+                None
+            );
+        }
+    }
 }

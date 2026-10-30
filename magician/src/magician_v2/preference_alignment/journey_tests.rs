@@ -66,8 +66,7 @@ impl ScriptedJudge for HoldOnEverything {
             supporting_intentions: input.intentions.iter().map(|i| i.id.clone()).collect(),
             holding_intentions: input.intentions.iter().map(|i| i.id.clone()).collect(),
             cited_owner_spans: Vec::new(),
-            explanation: "This order includes meat, and you asked to be checked first."
-                .to_string(),
+            explanation: "This order includes meat, and you asked to be checked first.".to_string(),
             unresolved_facts: Vec::new(),
             resolution_choices: vec![ResolutionChoice::AllowOnce, ResolutionChoice::Cancel],
             remember_offer: None,
@@ -144,7 +143,12 @@ fn request(text: &str) -> CheckRequest {
 /// owner's direct surface.
 async fn save(resolver: &AgentMemoryResolver, key: &str, value: Value, owner_said: bool) {
     let turn = owner_said
-        .then(|| OwnerTurn::new("turn-1", "I'm vegetarian now. Check with me before ordering meat for me."))
+        .then(|| {
+            OwnerTurn::new(
+                "turn-1",
+                "I'm vegetarian now. Check with me before ordering meat for me.",
+            )
+        })
         .flatten();
     let result = with_owner_turn(
         turn,
@@ -174,6 +178,7 @@ fn environment<'a>(
         resolver,
         taste_loader: None,
         taste_capture: None,
+        late_advisory_notices: false,
     }
 }
 
@@ -200,9 +205,15 @@ async fn an_explicit_preference_saved_in_chat_holds_the_next_act() {
     )
     .await;
     let AlignmentAdmission::Hold { .. } = check.admission else {
-        panic!("an explicit check-first instruction must hold: {:?}", check.admission);
+        panic!(
+            "an explicit check-first instruction must hold: {:?}",
+            check.admission
+        );
     };
-    assert!(check.ticket(&request("x")).is_none(), "a held act has no ticket");
+    assert!(
+        check.ticket(&request("x")).is_none(),
+        "a held act has no ticket"
+    );
 
     // The owner's answer is bound to this exact act, under a purpose no other
     // gate's approval can satisfy.
@@ -239,11 +250,104 @@ async fn an_inferred_preference_only_nudges_even_when_the_judge_asks_to_hold() {
             let super::judge::JudgeOutcome::Decided { decision, .. } = outcome else {
                 panic!("decided");
             };
-            assert!(decision.downgrade.is_some(), "the host capped the judge's hold");
+            assert!(
+                decision.downgrade.is_some(),
+                "the host capped the judge's hold"
+            );
         },
         other => panic!("inferred evidence must never hold: {other:?}"),
     }
     assert!(check.ticket(&request("x")).is_some());
+}
+
+/// Late advisory lane: a nudge that lands after the act already went is not
+/// lost. It reaches the owner as a notice about that act, citing the
+/// preference it rested on.
+#[tokio::test]
+async fn an_advisory_nudge_that_arrives_after_the_act_becomes_a_notice() {
+    use super::judge::{judge_advisory_batches_with, JudgeBackend};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let resolver = AgentMemoryResolver::new(tmp.path());
+    save(&resolver, "meat_check", json!(STATEMENT), false).await;
+
+    let act = order("chicken biryani");
+    let check_request = request("Order chicken biryani for dinner.");
+    let facts = super::collect::action_facts(&act, &super::classify::classify_action(&act))
+        .expect("an order binds");
+    let inventory = super::inventory::collect_inventory(
+        &resolver,
+        super::inventory::InventoryRequest {
+            principal: PRINCIPAL,
+            workspace: WORKSPACE,
+            taste_loader: None,
+            taste_capture: None,
+            taste_timeout: std::time::Duration::from_secs(1),
+            now: chrono::Utc::now(),
+        },
+    )
+    .await;
+    let policy = super::policy::read_policy(&resolver, PRINCIPAL, WORKSPACE)
+        .await
+        .expect("default policy")
+        .effective();
+    let inputs = super::collect::build_inputs(
+        inventory,
+        &check_request,
+        Some(facts.clone()),
+        &policy,
+        &[],
+        24,
+    );
+    assert!(
+        inputs.iter().all(|input| input
+            .intentions
+            .iter()
+            .all(|intention| !policy.may_make_act_wait(intention))),
+        "an inferred preference is advisory"
+    );
+
+    let lane_inputs = inputs.clone();
+    let lane = tokio::spawn(async move {
+        let judge = HoldOnEverything::new();
+        judge_advisory_batches_with(
+            Some(JudgeBackend::Scripted(&judge)),
+            &lane_inputs,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    });
+    super::service::deliver_late_advisory(
+        super::service::LateAdvisory {
+            resolver: resolver.clone(),
+            principal: PRINCIPAL.to_string(),
+            workspace: WORKSPACE.to_string(),
+            execution_id: check_request.execution_id.clone(),
+            binding_id: facts.binding_id.clone(),
+            act_summary: act.action_type_name().to_string(),
+            inputs,
+        },
+        lane,
+    )
+    .await;
+
+    let notices = super::notices::list_notices(&resolver, PRINCIPAL, WORKSPACE)
+        .await
+        .expect("notices");
+    assert_eq!(notices.len(), 1, "one notice for the late nudge");
+    let notice = &notices[0];
+    assert_eq!(notice.act_summary, act.action_type_name());
+    assert_eq!(notice.execution_id.as_deref(), Some("journey-exec"));
+    assert_eq!(
+        notice.intentions.len(),
+        1,
+        "cites the preference it rested on"
+    );
+    let memory = resolver.resolve_for_scope(PRINCIPAL, WORKSPACE).unwrap();
+    let log = std::fs::read_to_string(alignment_log_path(memory.storage())).unwrap();
+    let line: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(line["kind"], "late_advisory");
+    assert_eq!(line["notice_recorded"], true);
 }
 
 /// Supersession: a cleared preference stops governing.
@@ -282,6 +386,60 @@ async fn the_owner_cancelling_in_the_current_turn_cancels_the_act() {
     )
     .await;
     assert!(matches!(check.admission, AlignmentAdmission::Cancel { .. }));
+}
+
+/// The owner's cancel is judged before the act even when every preference
+/// they have is inferred (all advisory): one is carried onto the blocking
+/// path, so the cancel cannot arrive after the act.
+#[tokio::test]
+async fn an_owner_cancel_is_judged_before_the_act_with_only_inferred_preferences() {
+    let tmp = tempfile::tempdir().unwrap();
+    let resolver = AgentMemoryResolver::new(tmp.path());
+    save(&resolver, "meat_check", json!(STATEMENT), false).await;
+    let enforce = config("enforce");
+    let check = check_action(
+        &environment(&enforce, &resolver, &OwnerCancels),
+        &request("Actually, forget the order."),
+        &order("chicken biryani"),
+        &[],
+    )
+    .await;
+    assert!(matches!(check.admission, AlignmentAdmission::Cancel { .. }));
+    let memory = resolver.resolve_for_scope(PRINCIPAL, WORKSPACE).unwrap();
+    let log = std::fs::read_to_string(alignment_log_path(memory.storage())).unwrap();
+    let line: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        line["advisory_batches"], 0,
+        "the carrier left the advisory lane"
+    );
+    assert_eq!(line["carried"], true);
+}
+
+/// A judge that cannot be reached.
+struct ProviderDown;
+
+impl ScriptedJudge for ProviderDown {
+    fn respond(&self, _input: &AlignmentInput) -> Result<String, String> {
+        Err("provider unavailable".to_string())
+    }
+}
+
+/// The carrier is inferred evidence: a judge that cannot answer about it
+/// leaves the owner's cancel unchecked but never holds the act.
+#[tokio::test]
+async fn an_unanswerable_carrier_never_holds_the_act() {
+    let tmp = tempfile::tempdir().unwrap();
+    let resolver = AgentMemoryResolver::new(tmp.path());
+    save(&resolver, "meat_check", json!(STATEMENT), false).await;
+    let enforce = config("enforce");
+    let check = check_action(
+        &environment(&enforce, &resolver, &ProviderDown),
+        &request("Order chicken biryani for dinner."),
+        &order("chicken biryani"),
+        &[],
+    )
+    .await;
+    assert_eq!(check.admission, AlignmentAdmission::Proceed);
 }
 
 /// A judge that records the statements it was shown, and asks to hold.
@@ -376,7 +534,13 @@ async fn a_same_key_write_without_the_owners_word_keeps_the_instruction() {
     .await;
     assert!(unscoped.get("superseded").is_none(), "{unscoped}");
 
-    let unrelated = save_said(&resolver, "meat_check", CORRECTION, "What's the weather like?").await;
+    let unrelated = save_said(
+        &resolver,
+        "meat_check",
+        CORRECTION,
+        "What's the weather like?",
+    )
+    .await;
     assert!(unrelated.get("superseded").is_none(), "{unrelated}");
 
     let judge = RecordsStatements {
@@ -412,7 +576,9 @@ async fn a_preference_saved_after_the_check_stops_the_admitted_act() {
         &[],
     )
     .await;
-    let ticket = check.ticket(&request).expect("an admitted act has a ticket");
+    let ticket = check
+        .ticket(&request)
+        .expect("an admitted act has a ticket");
     assert!(ticket.fenced_generation().is_some());
     assert_eq!(
         verify_fence(&resolver, None, &ticket).await,
@@ -446,7 +612,10 @@ async fn shadow_records_a_content_free_line_and_never_holds() {
     .await;
     assert_eq!(check.admission, AlignmentAdmission::Proceed);
     let ticket = check.ticket(&request("x")).expect("shadow admits");
-    assert!(ticket.fenced_generation().is_none(), "shadow is never fenced");
+    assert!(
+        ticket.fenced_generation().is_none(),
+        "shadow is never fenced"
+    );
 
     let memory = resolver.resolve_for_scope(PRINCIPAL, WORKSPACE).unwrap();
     let log = std::fs::read_to_string(alignment_log_path(memory.storage())).unwrap();

@@ -15,8 +15,16 @@ prove that every model-inferred relationship is true or useful.
 
 The resurfacing worker reconciles connections every minute. It reserves at most
 **three reviews per principal/workspace per rolling hour**, durably before recall
-or model I/O; empty inputs, cached decisions, failures and crashes still spend a
-reservation, and check and debit share one SQLite transaction across workers.
+or model I/O; empty inputs, cached decisions, rejected replies and crashes still
+spend a reservation, and check and debit share one SQLite transaction across
+workers. A review that ends before any decision exists (the review timed out, no
+route or engine answered, or its sources could not be read) is recorded
+`deferred` and released from that budget. Deferrals have their own cap of three
+per scope per rolling hour, enforced in the same transaction, and a pass stops at
+its first deferral. A failing engine therefore costs at most one review timeout
+per tick, and the candidate keeps its one-hour hold. Each deferral logs its root
+cause (`memory connection review deferred`, debug; warn when the scope already
+deferred within the hour).
 Active decisions are capped at 100 per scope and expire after seven days.
 Reconciliation spends no generation budget.
 
@@ -41,7 +49,12 @@ independent of any chat/execution harness. Removing the binding stops
 generation; reconciliation still handles existing answers and withdrawal.
 `RESURFACING_ENABLED` stops the whole resurfacing worker.
 
-The judge has a 20-second timeout; its prompt says to usually return
+A review runs under one 60-second budget: the `memory_connection_gate` engine
+decides within half of it (capped by the engine's own decision and queue
+budgets), and accepted text gets the rest. The caller's outer timeout
+(`REVIEW_TIMEOUT`) is that budget plus a five-second margin, derived from the
+same constant, so it never cuts a decision the engine was granted. The judge's
+prompt says to usually return
 `{"connection":null}` and that similar topics alone are insufficient. It must cite
 the activity and one to three distinct supplied memories with exact quotes of
 12–300 characters. Unknown IDs, invented quotes, duplicate evidence, invalid
@@ -89,6 +102,11 @@ resurfacing database, retaining source identities/revisions and generation state
 They are not a memory tier or a second evidence store. Delivery reuses the
 attention router, feed store and user-request service. Review attempts use the
 `memory_connections` resurfacing run kind; idle zero-review ticks are omitted.
+The [memory lifecycle](memory-lifecycle.md) pass that runs first on the same
+tick is timed and recorded separately as `memory_lifecycle`, so
+`memory_connections` durations cover the connection pass only. For both
+kinds a repeating failure writes one row per 15 minutes per scope unless its
+message changes, so a persistent fault cannot crowd the bounded run history.
 Memory-effect Shadow/Canary/Enforced is a separate ranking mechanism.
 
 Applicability reorders precisely the 12 offered preferences even when recall

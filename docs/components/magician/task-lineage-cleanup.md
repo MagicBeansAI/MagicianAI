@@ -9,7 +9,7 @@ Tasks live in one of two parallel folders, distinguished by visibility:
 - `<scope>/tasks/<task_id>/` — user-visible. Shown on `/tasks`.
 - `<scope>/internal_tasks/<task_id>/` — internal / non-user-visible. Shown only on `/tasks?type=internal`.
 
-Both folders hold the same internal shape: `manifest.json`, `state/`, `refs/`, `outputs/`, `executions/<exec_id>/`, plan storage, event journals. `archive_task` (`remove_files=false`) keeps the folder but sets status `archived`: it refuses a task that is running, planning, paused, waiting for the user, or still has an active root or pending synthesis (`task_active`). Stale execution references are cleared before these checks; later terminal events and direct output writes leave it archived, and archived tasks drop out of task lists (list-index schema 5 rebuilds older caches).
+Both folders hold the same internal shape: `manifest.json`, `state/`, `refs/`, `outputs/`, `executions/<exec_id>/`, plan storage, event journals. `archive_task` (`remove_files=false`) keeps the folder but sets status `archived`: it refuses a task that is running, planning, paused, waiting for the user, or still has an active root or pending synthesis (`task_active`). Only the HTTP delete (`archive_task_with_options_when_settled`) first waits, with no guard held, up to 30 s for an ended run (terminal status) whose synthesis or active-root clear is still pending, then reruns the guarded check; a live task is refused at once, and internal callers (`archive_task_with_options`) never wait. Stale execution references are cleared before these checks; later terminal events and direct output writes leave it archived, and archived tasks drop out of task lists (list-index schema 5 rebuilds older caches).
 
 ## Delete entry points
 

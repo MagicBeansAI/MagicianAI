@@ -335,6 +335,25 @@ pub const NATIVE_TOOL_INSTRUCTION: &str = "\n\nFor every autonomous decision, us
 pub const CHAT_NATIVE_TOOL_INSTRUCTION: &str =
     "\n\nIMPORTANT: When a runtime action is needed, call exactly ONE tool per response. If the chat request can be answered directly without a tool, respond with assistant text.";
 
+/// The request's `tool_choice` and whether a text-only reply may stand as
+/// the terminal. A `final_answer` turn (definition-of-done) still advertises
+/// the run's tools — the conversation's tool calls stay valid for every
+/// provider, and the cached prefix is unchanged — but forbids calling them
+/// with the canonical `tool_choice: {"type": "none"}`. Most magicllm adapters
+/// map it to their provider's "none"; Ollama forwards it as given and Yutori
+/// drops it, so a reply may still carry a tool call, and
+/// `decision::definition_of_done_terminal` takes the reply's text (or falls
+/// back to the micro-goals) rather than running it.
+fn decision_tool_choice(ctx: &AgenticContext, final_answer: bool) -> (Option<Value>, bool) {
+    if final_answer {
+        return (Some(json!({"type": "none"})), true);
+    }
+    (
+        ctx.chat_inline.then(|| json!({"type": "auto"})),
+        ctx.chat_inline,
+    )
+}
+
 /// Execute a native execution decision using the adapter directly.
 ///
 /// Returns the decision and side-channel metadata on success, or an error if
@@ -348,13 +367,14 @@ pub async fn native_decision_via_adapter(
     images: Option<Vec<crate::magician_v2::slot_graph::extraction::ImageData>>,
     projection_iteration: Option<usize>,
     viewport: Option<(u32, u32)>,
+    final_answer: bool,
 ) -> anyhow::Result<(Decision, NativeDecisionMetadata)> {
     let native_instruction = if ctx.chat_inline {
         CHAT_NATIVE_TOOL_INSTRUCTION
     } else {
         NATIVE_TOOL_INSTRUCTION
     };
-    let tool_choice_override = ctx.chat_inline.then(|| json!({"type": "auto"}));
+    let (tool_choice_override, allow_text_terminal) = decision_tool_choice(ctx, final_answer);
 
     let catalog_ctx = build_catalog_context(ctx);
     // §4.2c layer 1: live engagement authority is read immediately before
@@ -389,7 +409,7 @@ pub async fn native_decision_via_adapter(
             tools,
             images,
             tool_choice_override,
-            ctx.chat_inline,
+            allow_text_terminal,
             viewport,
         )
         .await?;
@@ -481,6 +501,7 @@ pub async fn native_decision_via_adapter_with_history(
     projection_iteration: Option<usize>,
     previous_response_id: Option<&str>,
     viewport: Option<(u32, u32)>,
+    final_answer: bool,
 ) -> anyhow::Result<(Decision, NativeDecisionMetadata)> {
     if history_messages.is_empty() {
         return native_decision_via_adapter(
@@ -492,6 +513,7 @@ pub async fn native_decision_via_adapter_with_history(
             images,
             projection_iteration,
             viewport,
+            final_answer,
         )
         .await;
     }
@@ -501,7 +523,7 @@ pub async fn native_decision_via_adapter_with_history(
     } else {
         NATIVE_TOOL_INSTRUCTION
     };
-    let tool_choice_override = ctx.chat_inline.then(|| json!({"type": "auto"}));
+    let (tool_choice_override, allow_text_terminal) = decision_tool_choice(ctx, final_answer);
 
     let catalog_ctx = build_catalog_context(ctx);
     // §4.2c layer 1: live engagement authority is read immediately before
@@ -586,7 +608,7 @@ pub async fn native_decision_via_adapter_with_history(
             messages,
             tools,
             tool_choice_override,
-            ctx.chat_inline,
+            allow_text_terminal,
             previous_response_id,
             viewport,
         )
@@ -998,6 +1020,19 @@ pub fn build_catalog_context(ctx: &AgenticContext) -> CatalogBuildContext {
             .collect(),
         None => direct_capabilities,
     };
+    // A plan (Discuss) run is read-only end to end: it is offered only what
+    // the plan-run policy admits (fail closed — an unclassified tool is not
+    // offered). The dispatch gate re-checks every call, arguments included.
+    let direct_capabilities = if ctx.plan_run {
+        direct_capabilities
+            .into_iter()
+            .filter(|(name, _, _)| {
+                crate::magician_v2::execution::plan_run_policy::admits_tool(name)
+            })
+            .collect()
+    } else {
+        direct_capabilities
+    };
     // FIX #4: the agent's OWN granted capability names — i.e. exactly what its
     // YAML `tools:` block grants (`providing_agent_id.is_none()`), BEFORE the
     // universal-backend-pack injection inside `extract_direct_capabilities`.
@@ -1016,6 +1051,28 @@ pub fn build_catalog_context(ctx: &AgenticContext) -> CatalogBuildContext {
         coordinator_grant_gate(ctx, &granted_capability_names),
     );
     let mut denied_tool_names = ctx.denied_capability_names.clone();
+    if ctx.plan_run {
+        // Names the catalog offers outside `direct_capabilities`: the
+        // structural controls, and the leaves of an admitted pack that the
+        // policy refuses (`files__write`).
+        let mut refused: Vec<String> =
+            crate::magician_v2::execution::plan_run_policy::STRUCTURAL_CATALOG_TOOLS
+                .iter()
+                .map(|name| name.to_string())
+                .collect();
+        if let Some(index) = ctx.tool_index.as_ref() {
+            for (pack, _, _) in &direct_capabilities {
+                refused.extend(index.leaf_names_for_pack(pack));
+            }
+        }
+        for name in refused {
+            if !crate::magician_v2::execution::plan_run_policy::admits_tool(&name)
+                && !denied_tool_names.iter().any(|denied| denied.trim() == name)
+            {
+                denied_tool_names.push(name);
+            }
+        }
+    }
     if is_untrusted
         && !denied_tool_names
             .iter()
@@ -1911,7 +1968,12 @@ pub(crate) fn render_deferred_block(
     // result (`tool_search::stamp_callable_now`). "Next turn" read as the
     // owner's next message, so it says "next tool call".
     out.push_str(
-        "You can load each tool below. To use one:\n\
+        "Before writing a script or probing shell PATH to replace a capability, search this \
+         catalog for the requested operation and use the matching governed tool. A missing \
+         shell executable does not establish that a tool is unavailable: skill executables \
+         have their own runtime PATH. For capabilities outside your grants, discover a \
+         permitted specialist rather than recreating its account access.\n\
+         You can load each tool below. To use one:\n\
          1. Call `tool_search` with `query: \"select:<name>\"` (comma-separate to load several at \
          once; or pass a keyword to search first). This returns the tool's schema AND makes it \
          callable.\n\
@@ -2098,20 +2160,7 @@ pub fn trust_level_is_untrusted(trust_level: Option<&str>) -> bool {
 fn pack_def_to_direct_capability(
     def: &crate::magician_v2::execution::capability::CapabilityPackDefinition,
 ) -> (String, String, Value) {
-    use crate::magician_v2::execution::capability::derive_param_schema_for_emission;
-    let mut properties = serde_json::Map::new();
-    let mut required: Vec<Value> = Vec::new();
-    for param in &def.parameters {
-        properties.insert(param.name.clone(), derive_param_schema_for_emission(param));
-        if param.required {
-            required.push(Value::String(param.name.clone()));
-        }
-    }
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
-    });
+    let schema = def.parameters_schema();
     (
         def.name.clone(),
         def.description.clone().unwrap_or_default(),
@@ -2247,6 +2296,27 @@ fn parameters_to_json_schema(params: &[runtime_core::ParameterDefinition]) -> Va
 mod tests {
     use super::*;
     use runtime_core::{ParameterDefinition, ToolInfo};
+
+    /// A definition-of-done turn forbids tool calls on the request and lets
+    /// a text reply stand; an ordinary turn keeps its own shape.
+    #[test]
+    fn decision_tool_choice_forbids_tools_only_on_the_final_answer_turn() {
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        assert_eq!(
+            decision_tool_choice(&ctx, true),
+            (Some(json!({"type": "none"})), true)
+        );
+        assert_eq!(decision_tool_choice(&ctx, false), (None, false));
+        ctx.chat_inline = true;
+        assert_eq!(
+            decision_tool_choice(&ctx, false),
+            (Some(json!({"type": "auto"})), true)
+        );
+        assert_eq!(
+            decision_tool_choice(&ctx, true),
+            (Some(json!({"type": "none"})), true)
+        );
+    }
 
     fn invocation_definition(agent_id: &str) -> crate::magician_v2::agents::AgentDefinition {
         crate::magician_v2::agents::AgentDefinition::from_yaml_str(&format!(
@@ -2516,6 +2586,124 @@ tools: []
         assert!(names.contains(&"propose_relentless"));
         // Both custom tools plus the complete trusted substrate.
         assert_eq!(names.len(), 2 + UNIVERSAL_BACKEND_PACKS.len());
+    }
+
+    /// A plan (Discuss) run is offered only what `plan_run_policy` admits —
+    /// not a hard-coded deny list — and is not inferred from a missing
+    /// coordinator flag: a Build engineer's catalog is untouched.
+    #[test]
+    fn a_plan_run_catalog_offers_only_admitted_tools() {
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        ctx.merged_agent_tools = vec![
+            make_custom_tool("run_coding_task", "Run the coding engine"),
+            make_custom_tool("apply_code_proposal", "Apply a proposal"),
+            make_custom_tool("delegation_shell", "Shell outside the workspace"),
+            make_custom_tool("delegation_files", "Files outside the workspace"),
+            make_custom_tool("dugite", "git"),
+        ];
+        ctx.vibedev_run = true;
+        let names = |ctx: &AgenticContext| -> Vec<String> {
+            build_catalog_context(ctx)
+                .direct_capabilities
+                .into_iter()
+                .map(|(name, _, _)| name)
+                .collect()
+        };
+        let build = names(&ctx);
+        for tool in ["apply_code_proposal", "delegation_shell", "dugite", "shell"] {
+            assert!(build.iter().any(|name| name == tool), "{tool}");
+        }
+
+        ctx.plan_run = true;
+        let plan = names(&ctx);
+        for tool in [
+            "apply_code_proposal",
+            "delegation_shell",
+            "dugite",
+            "shell",
+            "write_file",
+            "edit_file",
+            "http",
+            "update_task",
+        ] {
+            assert!(!plan.iter().any(|name| name == tool), "{tool} offered");
+        }
+        for tool in [
+            "run_coding_task",
+            "delegation_files",
+            "files",
+            "read_file",
+            "grep",
+        ] {
+            assert!(plan.iter().any(|name| name == tool), "{tool} withheld");
+        }
+        let denied = build_catalog_context(&ctx).denied_tool_names;
+        assert!(denied.iter().any(|name| name == "export_result"));
+        assert!(!denied
+            .iter()
+            .any(|name| name == "yield" || name == "delegate_to_agent"));
+    }
+
+    /// The dispatch gate refuses a plan run's writes even when the model
+    /// names a tool it was never offered, and checks per-call arguments.
+    #[test]
+    fn a_plan_run_dispatch_refuses_writes() {
+        use crate::magician_v2::execution::actions::ExecutableAction;
+        use crate::magician_v2::execution::capability::ImplementationType;
+
+        let pack = |name: &str, action: Option<&str>| ExecutableAction::Pack {
+            capability_name: name.to_string(),
+            implementation: ImplementationType::Compiled {
+                provider_name: name.to_string(),
+            },
+            resolved_params: action
+                .map(|action| {
+                    std::collections::HashMap::from([(
+                        "action".to_string(),
+                        serde_json::Value::String(action.to_string()),
+                    )])
+                })
+                .unwrap_or_default(),
+        };
+        let is_plan_refusal = |refusal: Option<String>| {
+            refusal.is_some_and(|text| text.contains("plan (Discuss) run"))
+        };
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        ctx.plan_run = true;
+        for action in [
+            pack("apply_code_proposal", None),
+            pack("delegation_shell", None),
+            pack("dugite", None),
+            pack("write_file", None),
+            pack("delegation_files", Some("write")),
+            pack("files", Some("delete")),
+        ] {
+            assert!(
+                is_plan_refusal(super::super::executor::validate_action_against_allowlists(
+                    &action, &ctx
+                )),
+                "{action:?}"
+            );
+        }
+        for action in [
+            pack("run_coding_task", None),
+            pack("delegation_files", Some("read")),
+            pack("read_file", None),
+        ] {
+            assert!(
+                !is_plan_refusal(super::super::executor::validate_action_against_allowlists(
+                    &action, &ctx
+                )),
+                "{action:?}"
+            );
+        }
+        ctx.plan_run = false;
+        assert!(!is_plan_refusal(
+            super::super::executor::validate_action_against_allowlists(
+                &pack("apply_code_proposal", None),
+                &ctx
+            )
+        ));
     }
 
     #[test]
@@ -3248,13 +3436,12 @@ tools: []
 
     #[test]
     fn render_deferred_block_says_a_loaded_tool_is_callable_on_the_next_call() {
-        let block = render_deferred_block(&[
-            crate::magician_v2::execution::flat_loop::DeferredEntry {
+        let block =
+            render_deferred_block(&[crate::magician_v2::execution::flat_loop::DeferredEntry {
                 name: "agentmail-send".to_string(),
                 group: "pack",
                 search_hint: None,
-            },
-        ]);
+            }]);
         assert!(block.contains("Your very next tool call can be that tool"));
         assert!(block.contains("Loading happens once per tool"));
         assert!(block.contains("The latest `tool_search` result says what is callable now"));

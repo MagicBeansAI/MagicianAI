@@ -23,6 +23,21 @@ use super::{
 #[path = "controller_tests.rs"]
 mod tests;
 
+/// Wait without constructing an overflowing monotonic timer for an unlimited
+/// wall-clock budget. Finite deadlines are checked in portable timer windows.
+pub async fn wait_for_deadline(deadline: chrono::DateTime<Utc>) {
+    if deadline == chrono::DateTime::<Utc>::MAX_UTC {
+        std::future::pending::<()>().await;
+    }
+    loop {
+        let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
+        if remaining.is_zero() {
+            return;
+        }
+        tokio::time::sleep(remaining.min(std::time::Duration::from_secs(86_400))).await;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActorRequest {
     pub contract: FrozenContract,
@@ -274,9 +289,9 @@ impl Controller {
             retained_files,
             feedback: serde_json::json!({"retained": state.retained, "attempts": state.attempts, "decisions": state.decisions}),
             remaining_attempts: limits
-                .max_attempts
+                .attempt_ceiling()
                 .saturating_sub(u32::try_from(state.attempts.len())?),
-            remaining_cost_microusd: limits.max_cost_microusd.saturating_sub(spent),
+            remaining_cost_microusd: limits.cost_ceiling().saturating_sub(spent),
             deadline_at: state.deadline_at,
         })
     }
@@ -897,11 +912,10 @@ impl Controller {
                 }
             }
         }));
-        let remaining = (deadline - Utc::now()).to_std().unwrap_or_default();
         let result = tokio::select! {
             result = self.drive(state, cancel.clone()) => result,
             _ = cancel.cancelled() => self.io(move |s| s.load(id)).await,
-            _ = tokio::time::sleep(remaining) => self.io(move |s| {
+            _ = wait_for_deadline(deadline) => self.io(move |s| {
                 let current = s.load(id)?;
                 if current.status.terminal() { Ok(current) }
                 else { s.commit(id, generation, RunEvent::DeadlineExpired, Utc::now()) }

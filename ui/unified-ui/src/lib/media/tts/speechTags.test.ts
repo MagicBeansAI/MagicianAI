@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { extractSpeechBlocks, hasSpeechTags, stripSpeechTags } from './speechTags';
+import { extractSpeechBlocks, hasSpeechTags, resolveSpeechBlocks, stripSpeechTags } from './speechTags';
+
+describe('resolveSpeechBlocks', () => {
+	it('recovers findings when a legacy flattened segment contains only the diagnostic', () => {
+		const diagnostic = "⚠️ Not fully verified. Magician's evidence check could not confirm part of this answer: disputed 999999";
+		expect(resolveSpeechBlocks([{ text: diagnostic }], `${diagnostic}\n\nFound 18 launches.`)).toEqual([
+			{ text: 'Found 18 launches.' }, { text: 'Some findings remain unverified.' }
+		]);
+	});
+	it('speaks findings before the qualification and omits critic diagnostics', () => {
+		const raw = "⚠️ Not fully verified. Magician's evidence check could not confirm part of this answer: disputed 999999\n\nFound 18 comparable launches.";
+		expect(resolveSpeechBlocks(null, raw)).toEqual([
+			{ text: 'Found 18 comparable launches.' },
+			{ text: 'Some findings remain unverified.' }
+		]);
+	});
+
+	it('preserves server speech and its delivery hints with a trailing qualification', () => {
+		const raw = '⚠️ Not fully verified. Detailed findings.';
+		const blocks = resolveSpeechBlocks([{ text: 'Found useful examples.', pace: 'slow' }], raw);
+		expect(blocks[0]).toMatchObject({ text: 'Found useful examples.', pace: 'slow' });
+		expect(blocks[1]).toEqual({ text: 'Some findings remain unverified.' });
+	});
+});
 
 describe('extractSpeechBlocks', () => {
 	it('returns a single block with full trimmed text when no tags present', () => {

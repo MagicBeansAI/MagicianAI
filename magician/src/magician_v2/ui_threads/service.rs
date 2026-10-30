@@ -6,9 +6,11 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use futures_util::{stream, StreamExt};
 use serde_json::Value;
 use tracing::warn;
 
+use crate::magician_v2::chat::models::ChatSessionStatus;
 use crate::magician_v2::{
     agents::{
         memory_tiers::{
@@ -33,6 +35,10 @@ use super::{
 const THREAD_MEMORY_TIER_NAME: &str = "thread_context";
 const THREAD_TASK_SCAN_LIMIT: usize = 500;
 const SEARCH_SCOPE_SYNC_INTERVAL: Duration = Duration::from_secs(300);
+/// Sessions a thread archive, restore, or delete may change at once.
+/// Each session keeps its own lock and generation fence. Wider than this
+/// loads too many session trees together. Tool-result files stay one scan.
+const THREAD_SESSION_MUTATION_CONCURRENCY: usize = 4;
 
 #[derive(Clone)]
 pub struct UiThreadService {
@@ -188,6 +194,23 @@ impl UiThreadService {
             .await
     }
 
+    /// [`Self::create_thread`] in a chosen history lane — a thread a voice
+    /// terminal starts is filed under Automated rather than Personal.
+    pub async fn create_thread_in_lane(
+        &self,
+        principal: &str,
+        workspace: &str,
+        thread_id: &str,
+        name: &str,
+        lane: HistoryLane,
+    ) -> Result<UiThreadRecord> {
+        let normalized_id = normalize_thread_id(thread_id)?;
+        let normalized_name = normalize_thread_name(name)?;
+        self.store
+            .upsert_thread_with_lane(principal, workspace, &normalized_id, &normalized_name, lane)
+            .await
+    }
+
     pub async fn update_thread(
         &self,
         principal: &str,
@@ -226,6 +249,13 @@ impl UiThreadService {
         } else {
             None
         };
+
+        // Sessions move first. A failure leaves the thread flag unchanged so
+        // the caller can retry the same archive or restore.
+        if let Some(archived) = archived {
+            self.set_thread_sessions_archived(principal, workspace, &normalized_id, archived)
+                .await?;
+        }
 
         let record = self
             .store
@@ -272,38 +302,49 @@ impl UiThreadService {
         }
 
         self.sync_scope(principal, workspace).await?;
-        let deleted = self
-            .store
-            .delete_thread(principal, workspace, &normalized_id)
-            .await?;
-        if !deleted {
-            return Ok(false);
-        }
-
-        for session in self
+        let sessions = self
             .chat_store
-            .list_sessions(principal, workspace)
+            .session_ids_for_thread(principal, workspace, &normalized_id)
             .await
             .with_context(|| {
                 format!(
                     "listing chat sessions while deleting ui thread {principal}/{workspace}/{normalized_id}"
                 )
-            })?
-        {
-            if normalize_referenced_thread_id(&session.ui_thread_id).as_deref()
-                == Some(normalized_id.as_str())
-            {
-                self.chat_store
-                    .delete_session(&session.id)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "deleting chat session {} for ui thread {principal}/{workspace}/{normalized_id}",
-                            session.id
-                        )
-                    })?;
+            })?;
+        let session_ids: HashSet<String> = sessions.iter().map(|(id, _)| id.clone()).collect();
+        // One locator scan for every session, then the row tombstone. A retry
+        // of an already-tombstoned row still removes sessions that remain.
+        self.cleanup_thread_session_results(principal, workspace, &normalized_id, &session_ids)
+            .await?;
+        self.sweep_ephemeral_tasks_for_sessions(principal, workspace, &session_ids)
+            .await;
+
+        let deleted = self
+            .store
+            .delete_thread(principal, workspace, &normalized_id)
+            .await?;
+        if !deleted {
+            let known = self
+                .store
+                .thread_ids_including_deleted(principal, workspace)
+                .await?;
+            if !known.contains(&normalized_id) {
+                return Ok(false);
             }
         }
+
+        let scope_label = format!("{principal}/{workspace}/{normalized_id}");
+        let store = Arc::clone(&self.chat_store);
+        let outcomes = stream::iter(sessions.into_iter().map(|(session_id, _)| session_id))
+            .map(move |session_id| {
+                let store = Arc::clone(&store);
+                async move {
+                    let result = store.delete_session(&session_id).await;
+                    (session_id, result)
+                }
+            })
+            .buffer_unordered(THREAD_SESSION_MUTATION_CONCURRENCY);
+        collect_session_mutation_results(outcomes, "deleting", &scope_label).await?;
 
         self.save_thread_memory(principal, workspace, &normalized_id, None)
             .await
@@ -524,6 +565,188 @@ fn summarize_thread_memory(text: &str) -> Option<String> {
     Some(summary)
 }
 
+impl UiThreadService {
+    /// Archive or restore every session on a thread. A session the runtime
+    /// still owns (internal voice, or the locked default session) is left
+    /// alone; every other session follows the thread.
+    async fn set_thread_sessions_archived(
+        &self,
+        principal: &str,
+        workspace: &str,
+        thread_id: &str,
+        archived: bool,
+    ) -> Result<()> {
+        let target = if archived {
+            ChatSessionStatus::Archived
+        } else {
+            ChatSessionStatus::Active
+        };
+        let sessions = self
+            .chat_store
+            .session_ids_for_thread(principal, workspace, thread_id)
+            .await
+            .with_context(|| {
+                format!("listing chat sessions while updating ui thread {principal}/{workspace}/{thread_id}")
+            })?;
+        let scope_label = format!("{principal}/{workspace}/{thread_id}");
+        let action = if archived { "archiving" } else { "restoring" };
+        let store = Arc::clone(&self.chat_store);
+        let pending: Vec<String> = sessions
+            .into_iter()
+            .filter(|(_, status)| status != &target)
+            .map(|(session_id, _)| session_id)
+            .collect();
+        let outcomes = stream::iter(pending)
+            .map(move |session_id| {
+                let store = Arc::clone(&store);
+                async move {
+                    let result = store.set_session_archived(&session_id, archived).await;
+                    (session_id, result)
+                }
+            })
+            .buffer_unordered(THREAD_SESSION_MUTATION_CONCURRENCY);
+        collect_session_mutation_results(outcomes, action, &scope_label).await
+    }
+
+    /// One pass over the scope's tool-result locators. `failed > 0` leaves the
+    /// thread row in place so the same delete can be retried.
+    async fn cleanup_thread_session_results(
+        &self,
+        principal: &str,
+        workspace: &str,
+        thread_id: &str,
+        session_ids: &HashSet<String>,
+    ) -> Result<()> {
+        if session_ids.is_empty() {
+            return Ok(());
+        }
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &principal.to_string(),
+            &workspace.to_string(),
+        );
+        let report = crate::magician_v2::tool_result_materialization::CanonicalRawResultStore::for_lifecycle_cleanup(
+            self.v3_service.workspace().clone(),
+        )
+        .cleanup_chat_sessions(&scope, session_ids)
+        .await
+        .with_context(|| {
+            format!("cleaning tool results for ui thread {principal}/{workspace}/{thread_id}")
+        })?;
+        if report.failed > 0 {
+            return Err(anyhow!(
+                "refusing to delete ui thread {principal}/{workspace}/{thread_id} while {} tool-result cleanup operation(s) remain incomplete",
+                report.failed
+            ));
+        }
+        Ok(())
+    }
+
+    /// One listing of internal tasks, then the chat-spawned rows for these
+    /// sessions. A failure here is logged and does not stop the thread delete.
+    async fn sweep_ephemeral_tasks_for_sessions(
+        &self,
+        principal: &str,
+        workspace: &str,
+        session_ids: &HashSet<String>,
+    ) {
+        if session_ids.is_empty() {
+            return;
+        }
+        let scope = ScopeRef::system_internal_unauthenticated(
+            &principal.to_string(),
+            &workspace.to_string(),
+        );
+        let tasks = match self.v3_service.list_internal_tasks(&scope).await {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "[UI-THREAD] listing internal tasks before a thread delete failed"
+                );
+                return;
+            },
+        };
+        for task in tasks {
+            let Some(session_id) = task.chat_session_id.as_deref() else {
+                continue;
+            };
+            if !session_ids.contains(session_id) {
+                continue;
+            }
+            match self
+                .v3_service
+                .delete_completed_task_if_safe(&scope, &task.id, false)
+                .await
+            {
+                Ok(report) if !report.deleted => {
+                    warn!(
+                        session_id = %session_id,
+                        task_id = %task.id,
+                        reason = report.reason.as_deref().unwrap_or("unknown"),
+                        "[UI-THREAD] ephemeral task not deletable during thread delete"
+                    );
+                },
+                Ok(_) => {},
+                Err(error) => {
+                    warn!(
+                        session_id = %session_id,
+                        task_id = %task.id,
+                        error = %error,
+                        "[UI-THREAD] ephemeral task delete failed during thread delete"
+                    );
+                },
+            }
+        }
+    }
+}
+
+fn session_lifecycle_left_alone(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("internal_voice_session_lifecycle_managed")
+        || text.contains("cannot be archived")
+        || text.contains("cannot be deleted")
+}
+
+async fn collect_session_mutation_results(
+    outcomes: impl futures_util::Stream<Item = (String, Result<()>)>,
+    action: &str,
+    scope_label: &str,
+) -> Result<()> {
+    let mut outcomes = Box::pin(outcomes);
+    let mut failure: Option<anyhow::Error> = None;
+    while let Some((session_id, result)) = outcomes.next().await {
+        let Err(error) = result else {
+            continue;
+        };
+        if session_lifecycle_left_alone(&error) {
+            warn!(
+                error = %error,
+                session_id = %session_id,
+                thread = %scope_label,
+                action,
+                "[UI-THREAD] left a managed session unchanged"
+            );
+            continue;
+        }
+        warn!(
+            error = %error,
+            session_id = %session_id,
+            thread = %scope_label,
+            action,
+            "[UI-THREAD] session change failed"
+        );
+        if failure.is_none() {
+            failure = Some(error.context(format!(
+                "{action} chat session {session_id} for ui thread {scope_label}"
+            )));
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 fn normalize_thread_name(value: &str) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -724,6 +947,159 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_thread_archives_its_sessions_and_restore_brings_them_back() {
+        let tmp = TempDir::new().unwrap();
+        let v3_service = build_test_artifact_v2_service(tmp.path());
+        let chat_store = Arc::new(
+            FileChatStore::with_index(tmp.path().join("chat"))
+                .await
+                .unwrap(),
+        );
+        let memory_resolver = AgentMemoryResolver::new(tmp.path());
+        let store = UiThreadStore::open(tmp.path()).unwrap();
+        let service = UiThreadService::new(
+            store.clone(),
+            v3_service,
+            chat_store.clone(),
+            memory_resolver,
+        );
+        let origin = ChatChannel {
+            channel_type: "web".to_string(),
+            address: None,
+        };
+        let first = chat_store
+            .new_session("alpha", "prod", "travel", &origin, "personal-assistant")
+            .await
+            .unwrap();
+        let second = chat_store
+            .new_session("alpha", "prod", "travel", &origin, "personal-assistant")
+            .await
+            .unwrap();
+        let other = chat_store
+            .new_session("alpha", "prod", "plans", &origin, "personal-assistant")
+            .await
+            .unwrap();
+        store
+            .upsert_thread("alpha", "prod", "travel", "Travel")
+            .await
+            .unwrap();
+
+        service
+            .update_thread(
+                "alpha",
+                "prod",
+                "travel",
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        for session_id in [&first.id, &second.id] {
+            let session = chat_store.get_session(session_id).await.unwrap().unwrap();
+            assert_eq!(session.status, ChatSessionStatus::Archived);
+        }
+        let untouched = chat_store.get_session(&other.id).await.unwrap().unwrap();
+        assert_eq!(untouched.status, ChatSessionStatus::Active);
+        assert!(
+            store
+                .get_thread("alpha", "prod", "travel")
+                .await
+                .unwrap()
+                .unwrap()
+                .archived
+        );
+
+        service
+            .update_thread(
+                "alpha",
+                "prod",
+                "travel",
+                None,
+                Some(false),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        for session_id in [&first.id, &second.id] {
+            let session = chat_store.get_session(session_id).await.unwrap().unwrap();
+            assert_eq!(session.status, ChatSessionStatus::Active);
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_a_rolling_thread_keeps_every_session_active() {
+        let tmp = TempDir::new().unwrap();
+        let v3_service = build_test_artifact_v2_service(tmp.path());
+        let chat_store = Arc::new(
+            FileChatStore::with_index(tmp.path().join("chat"))
+                .await
+                .unwrap(),
+        );
+        let memory_resolver = AgentMemoryResolver::new(tmp.path());
+        let store = UiThreadStore::open(tmp.path()).unwrap();
+        let service = UiThreadService::new(store, v3_service, chat_store.clone(), memory_resolver);
+        let origin = ChatChannel {
+            channel_type: "web".to_string(),
+            address: None,
+        };
+        let older = chat_store
+            .new_session("alpha", "prod", "screens", &origin, "personal-assistant")
+            .await
+            .unwrap();
+        let newer = chat_store
+            .new_session("alpha", "prod", "screens", &origin, "personal-assistant")
+            .await
+            .unwrap();
+        assert_eq!(
+            chat_store
+                .get_session(&older.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ChatSessionStatus::Archived
+        );
+
+        service
+            .update_thread(
+                "alpha",
+                "prod",
+                "screens",
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        service
+            .update_thread(
+                "alpha",
+                "prod",
+                "screens",
+                None,
+                Some(false),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        for session_id in [&older.id, &newer.id] {
+            let session = chat_store.get_session(session_id).await.unwrap().unwrap();
+            assert_eq!(session.status, ChatSessionStatus::Active);
+        }
+    }
+
+    #[tokio::test]
     async fn delete_thread_rejects_general() {
         let tmp = TempDir::new().unwrap();
         let v3_service = build_test_artifact_v2_service(tmp.path());
@@ -740,5 +1116,52 @@ mod tests {
             .delete_thread("alpha", "prod", "general")
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_thread_finishes_sessions_left_after_the_row_was_tombstoned() {
+        let tmp = TempDir::new().unwrap();
+        let v3_service = build_test_artifact_v2_service(tmp.path());
+        let chat_store = Arc::new(
+            FileChatStore::with_index(tmp.path().join("chat"))
+                .await
+                .unwrap(),
+        );
+        let memory_resolver = AgentMemoryResolver::new(tmp.path());
+        let store = UiThreadStore::open(tmp.path()).unwrap();
+        let service = UiThreadService::new(
+            store.clone(),
+            v3_service,
+            chat_store.clone(),
+            memory_resolver,
+        );
+        let session = chat_store
+            .new_session(
+                "alpha",
+                "prod",
+                "travel",
+                &ChatChannel {
+                    channel_type: "web".to_string(),
+                    address: None,
+                },
+                "personal-assistant",
+            )
+            .await
+            .unwrap();
+        store
+            .upsert_thread("alpha", "prod", "travel", "Travel")
+            .await
+            .unwrap();
+        assert!(store
+            .delete_thread("alpha", "prod", "travel")
+            .await
+            .unwrap());
+        assert!(chat_store.get_session(&session.id).await.unwrap().is_some());
+
+        assert!(service
+            .delete_thread("alpha", "prod", "travel")
+            .await
+            .unwrap());
+        assert!(chat_store.get_session(&session.id).await.unwrap().is_none());
     }
 }

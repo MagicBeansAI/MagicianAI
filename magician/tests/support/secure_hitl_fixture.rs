@@ -236,10 +236,11 @@ impl LoginService {
             .and(path("/api/private"))
             .respond_with(move |request: &Request| {
                 let expected = format!("Basic {raw_password}");
-                let authorized = request.headers.iter().any(|(name, values)| {
-                    name.as_str().eq_ignore_ascii_case("authorization")
-                        && values.iter().any(|v| v.as_str() == expected)
-                });
+                let authorized = request
+                    .headers
+                    .get_all("authorization")
+                    .iter()
+                    .any(|value| value.to_str().is_ok_and(|value| value == expected));
                 if authorized {
                     ResponseTemplate::new(200)
                         .set_body_json(serde_json::json!({"secret_page": "private-data"}))
@@ -269,14 +270,9 @@ impl LoginService {
             .flat_map(|request| {
                 request
                     .headers
+                    .get_all(header)
                     .iter()
-                    .filter(|(name, _)| name.as_str().eq_ignore_ascii_case(header))
-                    .flat_map(|(_, values)| {
-                        values
-                            .iter()
-                            .map(|value| value.as_str().to_owned())
-                            .collect::<Vec<_>>()
-                    })
+                    .filter_map(|value| value.to_str().ok().map(str::to_owned))
                     .collect::<Vec<_>>()
             })
             .collect()

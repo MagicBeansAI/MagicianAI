@@ -9,7 +9,7 @@ HUD command; “Open full crew record” opens `/work?view=crew&agent=…` (no l
 Crew page needed).
 
 Everything is driven by real agents, programs, tasks, approvals, execution
-trees, deliveries and cost data. Visible UI uses Crew, Tasks, Programs,
+trees, deliveries and cost data. Visible UI uses Crew, Tasks, Playbooks,
 Delegation, Capabilities and Usage; fleet/citizen/guild/quest are
 implementation names only. Mobile is out of scope. Design source:
 `2026-07-10-town-square-aaa-desktop-game-experience.md`.

@@ -9,6 +9,13 @@ export interface StageRow {
 	status: StageStatus;
 	tool?: string;
 	target?: string;
+	/** When the step started (ms epoch): a running row's live elapsed counts from it. */
+	startedAt?: number;
+	/**
+	 * A secondary line for a model call (latency, tokens, cache, cost) or a
+	 * context-preparation phase (its timings). Other rows stay one line.
+	 */
+	detail?: string;
 }
 
 /** Presentation-only metadata for a tool row: the tool name and a short target. */
@@ -43,6 +50,8 @@ const TOOL_LABEL_MAX = 100;
 /** Argument keys whose value best says what a remote call does, in order. */
 const SUMMARY_KEYS = ['sql', 'query', 'term', 'q', 'search', 'question', 'prompt'];
 const CALL_TOOL_SUFFIX = '__call_tool';
+const CLI_SUFFIXES = ['__run', '__exec', '__execute'];
+const CLI_VERBS = new Set(['list', 'get', 'show', 'search', 'create', 'generate', 'update', 'delete', 'remove', 'send', 'upload', 'download', 'status', 'info', 'help', 'login', 'logout', 'run', 'start', 'stop', 'wait', 'select', 'export', 'import', 'query', 'render', 'convert', 'inspect']);
 
 /** One line, at most `max` chars, ellipsis when cut. */
 export function clipText(text: string, max: number): string {
@@ -84,7 +93,7 @@ export interface ToolCallDisplay {
 	name: string;
 	target?: string;
 	/** `detail` = server summary; `mcp` = derived from a `<pack>__call_tool` call. */
-	source: 'detail' | 'mcp' | 'plain';
+	source: 'detail' | 'mcp' | 'cli' | 'plain';
 }
 
 /**
@@ -101,7 +110,8 @@ export function describeToolCall(tool: string, args?: unknown, detail?: unknown)
 	const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : undefined;
 	if (tool.endsWith(CALL_TOOL_SUFFIX) && a) {
 		const pack = tool.slice(0, -CALL_TOOL_SUFFIX.length) || 'mcp';
-		const remote = typeof a.name === 'string' && a.name.trim() ? a.name.trim() : 'call_tool';
+		const rawName = a.tool_name ?? a.name;
+		const remote = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : 'call_tool';
 		const target = summarizeCallArgs(a.arguments_json ?? a.arguments);
 		return {
 			tool,
@@ -109,6 +119,12 @@ export function describeToolCall(tool: string, args?: unknown, detail?: unknown)
 			...(target ? { target } : {}),
 			source: 'mcp'
 		};
+	}
+	const cliSuffix = CLI_SUFFIXES.find((suffix) => tool.endsWith(suffix));
+	const argv = a?.args ?? a?.argv;
+	if (cliSuffix && Array.isArray(argv) && typeof argv[0] === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(argv[0])) {
+		const verb = typeof argv[1] === 'string' && CLI_VERBS.has(argv[1]) ? ` ${argv[1]}` : '';
+		return { tool, name: clipText(`${tool.slice(0, -cliSuffix.length)} · ${argv[0]}${verb}`, TOOL_LABEL_MAX), source: 'cli' };
 	}
 	const target = toolTarget(args);
 	return { tool, name: tool, ...(target ? { target } : {}), source: 'plain' };
@@ -168,7 +184,16 @@ export function toStageStatus(status: string): StageStatus {
  * Map host rows to TurnStage rows, attaching `tool` / `target` from
  * `metaByKey`. `fallbackTarget` supplies a target for rows without one.
  */
-export function toStageRows<R extends { key: string; label: string; status: string }>(
+export function toStageRows<
+	R extends {
+		key: string;
+		label: string;
+		status: string;
+		startedAt?: number;
+		kind?: string;
+		detail?: string | null;
+	}
+>(
 	rows: readonly R[],
 	metaByKey: ReadonlyMap<string, StageToolMeta>,
 	fallbackTarget?: (row: R) => string | undefined
@@ -176,12 +201,27 @@ export function toStageRows<R extends { key: string; label: string; status: stri
 	return rows.map((row) => {
 		const meta = metaByKey.get(row.key);
 		const target = meta?.target ?? fallbackTarget?.(row);
+		const status = toStageStatus(row.status);
+		// Only a running row carries its start: it is the one with a live
+		// elapsed counter, and a settled row's start would be noise.
+		const startedAt =
+			status === 'running' && typeof row.startedAt === 'number' && Number.isFinite(row.startedAt)
+				? row.startedAt
+				: undefined;
+		// Both hosts key context phases `context:<phase_id>` and mark model
+		// calls `kind: 'llm'`; an artifact row's detail is already its target.
+		const detail =
+			(row.kind === 'llm' || row.key.startsWith('context:')) && row.detail && row.detail !== target
+				? row.detail
+				: undefined;
 		return {
 			key: row.key,
 			label: row.label,
-			status: toStageStatus(row.status),
+			status,
 			...(meta ? { tool: meta.tool } : {}),
-			...(target ? { target } : {})
+			...(target ? { target } : {}),
+			...(startedAt !== undefined ? { startedAt } : {}),
+			...(detail ? { detail } : {})
 		};
 	});
 }

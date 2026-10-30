@@ -18,6 +18,19 @@ describe('StartupGate', () => {
     expect(screen.queryByText('Starting your workspace…')).toBeNull();
   });
 
+  it('shows the Settings skeleton instead of the message while Settings waits', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ service: 'magician', status: 'starting', ready: false }) }));
+    render(StartupGate, { props: { enabled: true, skeleton: true } });
+    expect(screen.getByRole('status', { name: 'Loading settings' })).toBeTruthy();
+    expect(screen.queryByText('Starting your workspace…')).toBeNull();
+  });
+
+  it('still says the workspace failed when Settings was waiting on it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ service: 'magician', status: 'failed', ready: false }) }));
+    render(StartupGate, { props: { enabled: true, skeleton: true } });
+    await waitFor(() => expect(screen.getByText('Workspace could not start')).toBeTruthy());
+  });
+
   it('preserves older-server and offline behavior', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
     const ready = vi.fn();
@@ -31,6 +44,27 @@ describe('StartupGate', () => {
     render(StartupGate, { props: { enabled: true }, events: { ready } });
     await waitFor(() => expect(screen.getByText('Workspace could not start')).toBeTruthy());
     expect(ready).not.toHaveBeenCalled();
+  });
+
+  it('checks again at once when a suspended panel is shown, without abandoning a probe', async () => {
+    vi.useFakeTimers();
+    try {
+      let answer = { service: 'magician', status: 'starting', ready: false };
+      const fetcher = vi.fn().mockImplementation(async () => ({ ok: true, json: async () => answer }));
+      vi.stubGlobal('fetch', fetcher);
+      const ready = vi.fn();
+      render(StartupGate, { props: { enabled: true }, events: { ready } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      // The panel's timer never fires (suspended); the service became ready.
+      answer = { service: 'magician', status: 'ready', ready: true };
+      window.dispatchEvent(new Event('focus'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(ready).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not contact the backend for bypassed public surfaces', async () => {

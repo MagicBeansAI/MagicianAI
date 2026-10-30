@@ -88,6 +88,13 @@ fn reported_realtime_totals(
     (usage_reported, input_tokens, output_tokens)
 }
 
+/// What a realtime turn charges the owner's spend envelope, in micro-USD.
+/// `None` for a turn whose provider reported no usage (its cost is `NaN`,
+/// unknown rather than free) or that cost nothing.
+fn realtime_turn_charge_micro(turn_cost_usd: f64) -> Option<u64> {
+    magicllm::pricing::usd_to_microusd_ceil(turn_cost_usd).filter(|micro| *micro > 0)
+}
+
 /// Responder driven by a persistent (auto-rotating) OpenAI Realtime session.
 pub struct RealtimeResponder {
     provider: OpenAiRealtimeProvider,
@@ -427,6 +434,24 @@ impl MeetingResponder for RealtimeResponder {
             "realtime meeting response cost + latency"
         );
 
+        // The realtime rail bypasses the router, so the turn counts toward the
+        // owner's spend envelope here. A live meeting the owner is in is
+        // foreground work: counted, never refused, so a call is never cut off.
+        if let Some(micro_usd) = realtime_turn_charge_micro(turn_cost) {
+            let (principal, workspace) = self
+                .scope
+                .as_ref()
+                .map_or(("anonymous", "default"), |(principal, workspace)| {
+                    (principal.as_str(), workspace.as_str())
+                });
+            crate::magician_v2::spend_envelope::charge_external_micro(
+                magicllm::LlmWorkloadClass::ForegroundChat,
+                principal,
+                workspace,
+                micro_usd,
+            );
+        }
+
         // Route the meeting turn into the `llm_calls` analytics ledger — same
         // schema as chat + browser/desktop voice — when a scoped broadcaster is
         // available (the meeting was joined by a scoped agent). Audio+text folded
@@ -501,8 +526,15 @@ impl MeetingResponder for RealtimeResponder {
 
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
-    use super::reported_realtime_totals;
+    use super::{realtime_turn_charge_micro, reported_realtime_totals};
     use magicllm::types::RealtimeUsage;
+
+    #[test]
+    fn a_realtime_turn_without_usage_charges_the_envelope_nothing() {
+        assert_eq!(realtime_turn_charge_micro(f64::NAN), None);
+        assert_eq!(realtime_turn_charge_micro(0.0), None);
+        assert_eq!(realtime_turn_charge_micro(0.5), Some(500_000));
+    }
 
     #[test]
     fn missing_realtime_usage_is_unknown_not_reported_zero() {

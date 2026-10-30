@@ -14,6 +14,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -50,6 +51,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.NonCancellable
@@ -119,6 +121,23 @@ data class RealtimeVoiceState(
      * `interaction.status` envelope; engines without the signal never set it.
      */
     val assistantWorking: Boolean = false,
+    /**
+     * Smoothed 0..1 microphone level for the call orb, from the capture loop
+     * ([MicLevelMeter], ~16 Hz). Zero while muted or while hold-to-talk is not
+     * held. Collect [withoutMicLevel] for a screen and read this only where it
+     * is drawn.
+     */
+    val micLevel: Float = 0f,
+    val playbackLevel: Float = 0f,
+    /**
+     * When the call first became ready, on the [SystemClock.elapsedRealtime]
+     * clock. Kept across reconnects, so the panel's mm:ss timer is the call's.
+     */
+    val connectedAtMillis: Long? = null,
+    /** The recent caption lines, oldest first, bounded by [RealtimeVoiceCaptions.Max]. */
+    val captions: List<RealtimeVoiceCaption> = emptyList(),
+    /** False for a realtime translation profile: hold-to-talk is refused there. */
+    val holdToTalkAvailable: Boolean = true,
 ) {
     enum class Phase { Idle, Connecting, Reconnecting, Ready, Ending, Failed }
     val active: Boolean get() = phase == Phase.Connecting || phase == Phase.Reconnecting ||
@@ -192,6 +211,7 @@ class RealtimeVoiceSession(private val context: Context) {
     @Volatile private var ending = false
     private var capture: AudioRecord? = null
     private var playback: AudioTrack? = null
+    private val playbackMeter = PlaybackLevelMeter()
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -216,6 +236,9 @@ class RealtimeVoiceSession(private val context: Context) {
     fun start(
         uiThreadId: String?,
         engine: LiveVoiceEngine,
+        /** The chat on screen. A thread can hold several active chats, so the
+         *  server posts the call into this one when it is set. */
+        chatSessionId: String? = null,
         realtimeProfile: RealtimeVoiceProfile? = null,
         audioProfile: String? = null,
         audioStageOptions: Map<NativeAudioStage, String> = emptyMap(),
@@ -253,6 +276,7 @@ class RealtimeVoiceSession(private val context: Context) {
             engine = engine,
             profileLabel = realtimeProfile?.label ?: audioProfile?.let(::audioProfileLabel),
             pushToTalk = pushToTalk,
+            holdToTalkAvailable = resolveLivePushToTalk(true, engine, realtimeProfile),
         )
         // From the first connecting frame to teardown, the call is the only
         // voice: app TTS stops and waits (`LiveCallAudioFocus`). One token per
@@ -265,7 +289,14 @@ class RealtimeVoiceSession(private val context: Context) {
             try {
                 val id = registerSession(engine, audioProfile, audioStageOptions)
                 registeredSessionId = id
-                openControlWithRecovery(id, uiThreadId.orEmpty(), engine, realtimeProfile, pushToTalk)
+                openControlWithRecovery(
+                    id,
+                    uiThreadId.orEmpty(),
+                    chatSessionId?.trim()?.takeIf { it.isNotEmpty() },
+                    engine,
+                    realtimeProfile,
+                    pushToTalk,
+                )
                 if (!ending && _state.value.phase != RealtimeVoiceState.Phase.Failed) {
                     _state.value = _state.value.copy(phase = RealtimeVoiceState.Phase.Idle)
                 }
@@ -299,6 +330,7 @@ class RealtimeVoiceSession(private val context: Context) {
     private suspend fun openControlWithRecovery(
         sessionId: String,
         uiThreadId: String,
+        chatSessionId: String?,
         engine: LiveVoiceEngine,
         realtimeProfile: RealtimeVoiceProfile?,
         pushToTalk: Boolean,
@@ -308,6 +340,7 @@ class RealtimeVoiceSession(private val context: Context) {
                 val serverEnded = openControl(
                     sessionId,
                     uiThreadId,
+                    chatSessionId,
                     engine,
                     realtimeProfile,
                     pushToTalk,
@@ -331,6 +364,7 @@ class RealtimeVoiceSession(private val context: Context) {
                     pushToTalkHeld = false,
                     muted = false,
                 )
+                _state.update { it.copy(micLevel = 0f) }
                 delay(wait)
             }
         }
@@ -354,6 +388,7 @@ class RealtimeVoiceSession(private val context: Context) {
     private suspend fun openControl(
         sessionId: String,
         uiThreadId: String,
+        chatSessionId: String?,
         engine: LiveVoiceEngine,
         realtimeProfile: RealtimeVoiceProfile?,
         pushToTalk: Boolean,
@@ -386,6 +421,7 @@ class RealtimeVoiceSession(private val context: Context) {
             }
             val payload = buildJsonObject {
                 put("ui_thread_id", uiThreadId.trim())
+                chatSessionId?.let { put("chat_session_id", it) }
                 realtimeProfile?.let { put("realtime_profile", it.id) }
                 put("voice_mode", engine.wire)
                 put("turn_boundary", if (pushToTalk) "push_to_talk" else "server_vad")
@@ -433,11 +469,25 @@ class RealtimeVoiceSession(private val context: Context) {
                                         error = null,
                                         assistantWorking = false,
                                     )
+                                    _state.update {
+                                        if (it.connectedAtMillis != null) it
+                                        else it.copy(connectedAtMillis = SystemClock.elapsedRealtime())
+                                    }
                                     captureJob = launch(Dispatchers.IO) {
                                         val recorder = capture ?: return@launch
                                         val buffer = ByteArray(CaptureChunkBytes)
+                                        val meter = MicLevelMeter()
                                         while (isActive && recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                                             val count = recorder.read(buffer, 0, buffer.size)
+                                            val outputLevel = playback?.let {
+                                                playbackMeter.levelAt(it.playbackHeadPosition.toLong() and 0xffffffffL)
+                                            } ?: 0f
+                                            _state.update { if (it.playbackLevel == outputLevel) it else it.copy(playbackLevel = outputLevel) }
+                                            if (count > 0) meter.feed(
+                                                buffer,
+                                                count,
+                                                gateOpen = !microphoneMuted && (!_state.value.pushToTalk || pushToTalkEngaged),
+                                            )?.let { level -> _state.update { it.copy(micLevel = level) } }
                                             if (count > 0 && !microphoneMuted && (!_state.value.pushToTalk || pushToTalkEngaged)) {
                                                 pttControl.withLock {
                                                     if (!_state.value.pushToTalk || pushToTalkEngaged) {
@@ -451,6 +501,15 @@ class RealtimeVoiceSession(private val context: Context) {
                                 "transcript.user", "transcript.user.partial" -> {
                                     val text = body["text"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
                                     if (text.isNotEmpty()) _state.value = _state.value.copy(lastUserText = text)
+                                    if (text.isNotEmpty()) _state.update {
+                                        it.copy(captions = RealtimeVoiceCaptions.apply(
+                                            it.captions,
+                                            fromUser = true,
+                                            text = text,
+                                            final = kind == "transcript.user",
+                                            sourceId = body["item_id"]?.jsonPrimitive?.contentOrNull,
+                                        ))
+                                    }
                                 }
                                 "transcript.assistant", "transcript.assistant.delta" -> {
                                     val text = body["text"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
@@ -463,6 +522,18 @@ class RealtimeVoiceSession(private val context: Context) {
                                     }
                                     assistantResponseId = responseId ?: assistantResponseId
                                     _state.value = _state.value.copy(lastAssistantText = merged)
+                                    _state.update {
+                                        it.copy(captions = RealtimeVoiceCaptions.apply(
+                                            it.captions,
+                                            fromUser = false,
+                                            text = merged,
+                                            final = kind == "transcript.assistant",
+                                            sourceId = responseId,
+                                        ))
+                                    }
+                                }
+                                "transcript.user.cleared", "transcript.user.ignored" -> _state.update {
+                                    it.copy(captions = RealtimeVoiceCaptions.clearUnfinishedUser(it.captions))
                                 }
                                 "response.interrupted" -> {
                                     flushPlayback()
@@ -530,6 +601,7 @@ class RealtimeVoiceSession(private val context: Context) {
     fun setPushToTalk(enabled: Boolean) {
         if (_state.value.phase != RealtimeVoiceState.Phase.Ready) return
         if (_state.value.pushToTalk == enabled) return
+        if (enabled && !_state.value.holdToTalkAvailable) return
         if (!enabled && pushToTalkDesired) releasePushToTalk()
         pushToTalkDesired = false
         _state.value = _state.value.copy(pushToTalk = enabled, pushToTalkHeld = false)
@@ -711,12 +783,15 @@ class RealtimeVoiceSession(private val context: Context) {
         responsePending = true
         if (concurrentRequests) onConcurrentEvent?.invoke("audio.output.started", JsonObject(emptyMap()))
         playback?.let { track ->
+            playbackMeter.queue(bytes, playbackFrames, SampleRate)
             val written = track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING)
             if (written > 0) playbackFrames += written / 2
         }
     }
 
     private fun flushPlayback() {
+        playbackMeter.reset()
+        _state.update { it.copy(playbackLevel = 0f) }
         playback?.let { track ->
             runCatching {
                 track.pause()
@@ -729,6 +804,8 @@ class RealtimeVoiceSession(private val context: Context) {
 
     @Synchronized
     private fun releaseAudio() {
+        playbackMeter.reset()
+        _state.update { it.copy(playbackLevel = 0f) }
         if (concurrentRequests) onConcurrentEvent?.invoke("input.cleared", JsonObject(emptyMap()))
         responsePending = false
         playbackFrames = 0

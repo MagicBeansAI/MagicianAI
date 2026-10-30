@@ -88,7 +88,7 @@ Commands live in `desktop/src-tauri/src/overlay.rs` except `open_app_at`,
 | `set_pending_approval_count` | `count: u32` | Menu-bar pending-approval counter (`set_title`). |
 | `get_notifications_enabled` | — | Seed the route's notifications-enabled mirror (see below). |
 | `open_app_at` | `path: String` | `/attention` and legacy `/approvals` (optional `attention_item` / `approval_id` / `correlation_id`) open the native Attention window at `/attention?native_attention=1&attention_item=…`; other paths open in the browser. Completion is reported only after launch succeeds, so the overlay can keep a card on failure. |
-| `publish_notch_inbox` | `items` | Replace the side-notch Attention list. A new id opens the panel; the same ids do not reopen a panel the user closed. |
+| `publish_notch_inbox` | `items` | Replace the side-notch Attention list and update its badge without opening the drawer. Click the notch to open it; an open Attention drawer closes when the last question clears. |
 | `notch_answer` | `answer` | Post an inline answer from the host, report the result to the notch, then queue it. `posted: true` means the host already posted. Dismiss and Open are queued without a host post. |
 | `notch_report` | `id`, `ok`, `message?` | Tell the notch whether the answer landed. Dismiss and unpostable questions report success so the field unlocks. Success drops the question. |
 | `drain_notch_answers` | — | Take answers queued by `notch_answer`, drained on the `notch://answer` event and a short timer. A host-posted answer only drops the card. |
@@ -166,8 +166,16 @@ The overlay and tray badge deliver only while the menu-bar app runs.
 Magician is a menu-bar (Accessory) app with no Dock icon by default. Closing
 the window, Cmd-Q and Dock → Quit only **hide** it (`CloseRequested` →
 `prevent_close()`; the terminate signal is intercepted and demotes back to
-Accessory). Only the tray's **"Quit Magican"** terminates. The tray counter
+Accessory). Only the tray's **"Quit Magican"** terminates; **"Restart Magican"**
+relaunches the app (windows, notch panels, tray) without touching the backend. The tray counter
 is the ambient indicator when the window is hidden or notifications are off.
+
+Quit first writes the clean-quit marker (`config::write_desktop_quit_marker`):
+`MAGICIAN_DESKTOP_QUIT_MARKER` when set, else the fixed per-user
+`~/Library/Application Support/dev.magician.desktop/desktop-app.quit`; Restart
+writes nothing, and the app deletes the marker at start. magic-supervisor uses
+it to relaunch the app after a crash but not after Quit; see the
+[supervisor guide](../magic-supervisor/supervisor.md#desktop-app-macos).
 
 ## Known Limitations
 

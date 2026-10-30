@@ -1,7 +1,55 @@
 # Magios Component Documentation
 
+Device builds use the configured Xcode team; a matching imported App Store Connect key supplies provisioning authentication when present, with credentials retained outside Git.
+
+Settings search and About version rows use the shared product and backend labels.
+
+Empty chats mirror Web's local greeting, four editable prompt starters and three recent conversations, using themed compact cards, scrolling and a single column at accessibility text sizes; starter taps focus a draft without sending.
+
+History session rows show a compact Working badge for current chat/task activity, refreshed only while the panel is visible in the foreground.
+
+Live calls occupy the Chat and VibeDev composer slot, retaining queue/ask controls and a Type message option; ending a call restores its previous voice/text mode and draft.
+
+The split voice control persists Dictation, Live or Hands-free on its mode side and opens settings from its chevron; the central button starts the selected flow with microphone, waveform or headphone icons. God mode exposes an auto-approve chip and a themed composer aura; enabling still uses the existing confirmation and server policy.
+
+Chat model/harness choices and unsent drafts persist per server, account, workspace and chat. The chat’s three-dot menu opens Tasks (thread-filtered Work), Thread settings (name and saved memory), Files, and Models (per-model and cumulative tokens, cache and cost); unknown usage stays explicit. Dictation and spoken replies carry the initiating chat for billing. File lists show uploads/task artifacts, sizes and confirmed removal of chat copies, retaining task originals under Work; relative links use the originating chat. Quality budget controls accept zero as Unlimited.
+
+Chat composers expose God mode for the current chat and its Settings default; Chat and VibeDev expose backend-wide Super God mode for one hour or until turned off, with confirmation, expiry status and a turn-off action. Mode changes use owner-authenticated endpoints and stay bound to the connection whose settings were shown.
+
+Spoken results lead with findings and keep a short verification qualification; checker diagnostics stay in the answer's disclosure. Chat detail sheets stay bound to the connection that opened them.
+
+Chat and VibeDev consume the server's [model catalog](../magicllm/model-catalog.md).
+Chat reads `/chat/models?engine=magician|pi` and sends `model_selection` with an
+explicit engine on streaming, queued and concurrent-voice requests. CLI chat
+engines retain their native model field. VibeDev reads `/coding/models`, filters
+models by engine and sends `coding_choice` on new/follow-up runs. Readiness is
+independent of model availability.
+
+Pickers show product provider names and supported native thinking steps/switches.
+Auto uses the model/workload or engine default without escalation; context is
+read-only and token allowances stay internal. Preferences persist model/thinking
+and coding engine identity. The frozen historical converter imports old selectors
+once; typed preferences win. Missing/malformed/unavailable explicit choices remain
+saved and block new model-based sends until replaced. There is no profile-list
+fallback. Catalog requests are guarded against stale engine/session responses.
+
+Crew editors derive lane and coding choices from routing/model descriptors.
+Pins retain canonical handles and can explicitly follow global routing. Slider
+drags preview locally and commit the final step on release. Quality uses the same
+controls but admits only bounded, priced routes and independent review families;
+the existing preview seals exact generated handles.
+
+Selectors use themed bordered boxes and searchable full-height sheets. Choices
+are snapshotted with stable IDs while open so refreshes cannot reset scrolling;
+gestures prefer list scrolling over detent changes. All slider stops are tappable,
+Auto/selected labels use rounded squares, and VoiceOver commits adjustments directly.
+VibeDev actions and project/mode/crew choices share 8-point rounded squares and
+opaque themed secondary fills. Wide actions are 38 points tall with 44-point tap
+targets; segments have a 32-point visible selection with 44-point targets. Custom
+iOS 26 toolbars supply their themed background instead of a glass capsule. A VibeDev project whose `health` is not `ok` shows its issues (and a confirmed `git_init` button, `POST /vibedev/projects/{id}/git-init`) on its header and new-run sheet, and a ⚠ glyph in lists and pickers.
+
 **Path:** `/magios`
-**Version:** 0.4.1 (build 205; see [`magios/CHANGELOG.md`](../../../magios/CHANGELOG.md))
+**Version:** 0.4.4 (build 215; see [`magios/CHANGELOG.md`](../../../magios/CHANGELOG.md))
 
 Magios is the native iOS companion application for Magician. It is a full Today/chat/attention
 client (a native SwiftUI port of the web unified-ui experience) and an ambient OS-integrated
@@ -21,8 +69,9 @@ Unified Work is implemented on `codex/unified-work`. Work replaces the Tasks
 tab at the same position and composes the existing full task/internal/monitor,
 Attention and Plan Inspector screens. New work keeps the ordinary task form.
 Native pushed details add Crew controls and version-checked definition editing,
-program history/restore, guided Quality and advanced policies, exact artifact
-review and local captures, harness/operator decisions and company-loop controls.
+playbook history/restore and version-checked owner editing (a conflict keeps the
+draft), per-focus-area shared documents, guided Quality and advanced policies, exact artifact
+review and local captures, Autopilot reviews and Team routines controls.
 All use ThemeManager tokens and themed typography. Frozen connection snapshots,
 lifetime invalidation and late-response guards protect reads and confirmations.
 Crew definition editing freezes the opened version and scope in its sheet
@@ -38,10 +87,10 @@ existing 128 MiB ceiling on declared and delivered bytes. Oversized responses
 stop before EOF even without Content-Length; failure/cancellation stops the
 transfer. Accepted previews retain their bytes and review/open/share controls.
 
-The complete migration adds guided Crew creation/editing, actual profile choices
+The complete migration adds guided Crew creation/editing, model and thinking choices
 and global-default clearing, roster leaderboard/hierarchy/pipeline views,
 full rules and goal-aware memory inspectors, and eligible isolated-user memory
-merge. Program documents link to real configured members and runtime progress.
+merge. Playbooks link to real configured members and runtime progress.
 Quality adds frozen note/file references, explicit new-work versus source-task
 attachment, owner/status filters and independent previous-attempt comparison.
 Task/thread and Work deep links retain exact record/run identity; unknown threads
@@ -86,7 +135,7 @@ stop control reachable without opening the app. **Full contract: [ambient-mode.m
 (wake spotter, state machine, orb reduction, cross-process disarm, microphone tap, never-deactivate
 rule, audio-session safety rails, entry points).
 
-Settings → Ambient Listening owns a local **Dictation**, **Hands-free/FluidAudio** or **Live/realtime**
+Settings → Voice & audio (Talk behavior rows) owns a local **Dictation**, **Hands-free/FluidAudio** or **Live/realtime**
 choice, seeded once from backend media preferences and then independent of in-app Chat and Talk.
 Ambient Dictation is a complete turn loop (bounded recording, Dictation STT, canonical agent turn,
 Dictation TTS, bounded follow-up capture).
@@ -223,6 +272,10 @@ live-test runbook.
 ### Notes and Audio Notes
 
 - Menu → Notes opens the in-app Markdown library; published task notes open there at their path.
+  Note links (`/notes?path=…&workspace=…`, the same route on a paired origin, `magican://notes?…`)
+  in chat, task summaries, Attention and notes open that note natively (`NoteLinks.swift`); a link
+  for a workspace held by exactly one other paired machine switches to it, otherwise it says
+  "This note is in another workspace" without loading anything.
   Terminal task cards expose **Publish to Notes** (card and Actions sheet; the task view keeps a top-bar
   action) using scoped server-owned defaults, serialized taps, and in-place success/failure.
   An archived task is terminal too ("Archived", muted, no polling), so a card whose last status update
@@ -310,6 +363,14 @@ capture nothing. See [magican-keyboard.md](magican-keyboard.md).
     stopping capture. Finalized transcripts persist in Chat with call-scoped message identity.
   - The floating call panel mirrors web `VoiceCallOverlay` (~four-line caption viewport). Display-only
     call boundary: [voice-call-boundary.md](voice-call-boundary.md).
+  - Mic mode in the call panel is a two-segment control, **Open mic | Hold to talk** (the same words
+    on iOS, Android and web); the active segment is accent-filled, and Hold to talk is disabled for a
+    translation profile. The mic button's shape follows the mode: Open mic is a round mute toggle whose
+    ring follows the mic level, captioned "Listening · tap to mute" / "Muted · tap to unmute"; Hold to
+    talk is a wide capsule that reads "Release to send" while held. The status line leads with the
+    mode ("Open mic · Listening", "Hold to talk · Ready"), and the composer's live strip shows
+    "Live · Open mic / Muted / Hold to talk" with a matching icon (a hand, never a slashed mic, for
+    Hold to talk).
 - **Voice settings:** Replies, Dictation and Live Call sections. First install seeds stable profile IDs
   from scoped backend preferences only after both bootstrap endpoints return schema-valid JSON; later
   choices are device-local. Apple Speech/Voice are labelled **This iPhone**; macOS Speech and FluidAudio
@@ -323,24 +384,48 @@ artifact actions, session lifecycle, staged attachments, a queue inspector, Stop
 failure-safe mutations. Do is a split Ask/Accept control remembering its permission across Plan; Plan
 is the only peer.
 
-- **Engine chip:** installed engines from `GET /plane/engines`; Magician API profiles for Magician/Pi,
-  model choices for other harnesses. Each send carries the `harness_engine`, `harness_model` and
-  `profile` selected when Send was tapped (device-local in UserDefaults).
+- **Engine chip:** installed engines come from `GET /plane/engines`; Magician/Pi
+  model choices come from `/chat/models`. Each send captures `harness_engine`
+  and typed `model_selection`, or the CLI engine's native `harness_model`.
+  UserDefaults persist model/thinking; queued/concurrent sends share admission.
+  The chip (and VibeDev's coding chip) tags the selected thinking level, also in its
+  accessibility label/value, when the model's thinking mode is not `none` (chat:
+  Magician/Pi only; `ChatThinkingControl.chipLabel`).
 - **Mentions** (`magios/Shared/MentionCatalog.swift`): `@tutor`, `@tutor #quick`, `@brainstorm`,
   `@vibedev`, `@vibedev #discuss`. `insertText` stays `feature:<slug>`; `serialized` is the literal
   command (the ASCII space in `@vibedev #discuss` is load-bearing — `#` is a token character).
   Detection and dispatch are server-side.
 - **Slash commands** (`magios/Shared/ComposerCommands.swift`,
-  plan): `/` as the composer's first
-  character opens `/budget`, `/budget default`, `/engine`, `/run-engine` in the `@` picker's card,
-  filtered as you type; a command opens its options there with a Back row, and sending a composer
-  that holds exactly a command opens it too. Options run client-side (never a chat message), clear
-  the composer and post a short toast over it (the server's `message`/`error` on failure):
-  `/engine` sets this device's engine × model (scope row → also `PUT /plane/chat-engine`),
-  `/run-engine` → `PUT /plane/engine`, `/budget` → a running/paused task from this chat's task cards
-  (newest first) then `+$25` / `+$100` / `+1M tokens` / `+50 iterations` / `Unlimited` →
-  `POST /tasks/{id}/budget`, `/budget default` → marks `GET /budgets/defaults`, harness
-  `$50/$100/$250/Unlimited`, native `$5/$15/$50/Unlimited` → `PUT /budgets/defaults`.
+  plan,
+  engine/model/voice design): `/` as the
+  composer's first character opens `/budget`, `/budget default`, `/engine`, `/run-engine`,
+  `/voice-mode` in the `@` picker's card, filtered as you type; a command opens its options there
+  with a Back row, and sending a composer that holds exactly a command, or an open level's prefix
+  (`/engine pi son`), opens or keeps the picker. Options run client-side (never a chat message),
+  clear the composer and post a short toast over it (the server's `message`/`error` on failure):
+  - `/engine`: a **Now:** note (this device's engine · model, and the server's engine
+    everywhere), the scope row, one row per installed engine. Magician/Pi, and an engine with
+    more than `default`, open a model level: the `GET /chat/models?engine=` rows (loaded apart from
+    the chat's own list) set the engine and `selectedProfile`, so the composer sends that
+    `model_selection`; roster engines set `harness_model` (`CLI default` first). A catalog model
+    whose thinking control offers a choice opens a third level (`/engine pi <model> `, Back to
+    models): Auto then the control's levels, the level in force marked for the model in use, else
+    its default. Any other model keeps the current thinking level when it offers it, else its
+    default. "Default everywhere" sets engines only (`PUT /plane/chat-engine`); the model stays
+    this device's choice. Engine `pi` reads "Coding agent".
+  - `/run-engine` mirrors Settings → Agentic flows: a **Now:** note, **Same as Chat**
+    (`harness_engine: chat`), then engines. Magician lists the `agentic_decision` models from
+    `GET /llm/routing` and saves `PUT /llm/routing/agentic_decision {selection}`, pinning
+    `magician` with `PUT /plane/engine` first unless runs resolve to Magician (its engine, or Same
+    as Chat with a Magician chat default); the coding agent lists "Default" (`model_selection:
+    null`) then its catalog → `PUT /plane/engine {harness_engine: pi, model_selection}`; others →
+    `harness_model`. Catalog models open the thinking level as under `/engine`.
+  - `/voice-mode`: Live / Dictate / Hands-free, current marked, unavailable ones (the voice-mode
+    menu's availability) shown as "Not available here"; sets `AudioSettings.composerVoiceMode`.
+  - `/budget` → a running/paused task from this chat's task cards (newest first) then `+$25` /
+    `+$100` / `+1M tokens` / `+50 iterations` / `Unlimited` → `POST /tasks/{id}/budget`;
+    `/budget default` → marks `GET /budgets/defaults`, harness `$50/$100/$250/Unlimited`, native
+    `$5/$15/$50/Unlimited` → `PUT /budgets/defaults`.
 - **Structured sidecars:** `ChatMessage.presentation` renders only after V1 validation (scalars
   preserved, UTF-8 bounds, HTTP(S) artifact links, ids/MIME ≤ 160 bytes, sizes non-negative
   signed-32-bit), else canonical content. Actions: `copy_text`, `open_url`, `open_task`,
@@ -359,7 +444,13 @@ is the only peer.
   6/4 pt (collapsed keeps 7/7); the caret has 5 pt after it. **All** opens the full log. Flat-loop
   actions open a running row on `AgenticActionStarted`, and `AgenticActionExecuted` settles the same
   row by the server's `call_id` (a legacy executed event without one keeps its step-iteration-timestamp
-  row); on a timestamp tie a start sorts before its finish. A tool row reads the event's `detail`
+  row); on a timestamp tie a start sorts before its finish. A flat-loop model call is one row keyed by
+  `correlation.llm_call_id`: "Thinking…" from `LLMRequestSent`, "Thinking with <model>" from `LLMRouted`,
+  settled in place by `LLMResponseReceived`; a server without the id keeps one row per response. The
+  chat-side `llm.*` copy of the same call (trace-keyed; `llm.succeeded` names the id) folds into that
+  one row, and a typed response never re-settles a row the chat-side settle closed. While
+  the turn is live, running LLM and tool rows tick their elapsed time (`ActivityLiveClock`, "12s",
+  "1m 5s") until they settle. A tool row reads the event's `detail`
   ("metabase-mcp · execute_sql — SELECT …", split into label and target), or for `<pack>__call_tool`
   "<pack> · <name>" from its args with the first ~80 chars of a sql/query/term field as the target
   (`activityToolDisplay`); never a JSON blob over ~100 chars. Terminal task status triggers a REST reconciliation. Events are deduplicated and timestamp-ordered. **Open complete result** reconstructs
@@ -373,6 +464,22 @@ is the only peer.
 - **History:** Sessions and Threads tabs with Personal/Automated lanes, 15-item server pages per tab and
   lane; search uses the mixed-history endpoint (120-char cap) with an explicit all-scope. A thread opens
   its newest usable session. `#general` (`is_default_session`) is locked with no archive/delete.
+  A thread name stays on one line; the full name is the row tooltip and the first line of the
+  long-press menu. Archive, restore, and delete hold that row with "Archiving…" / "Restoring…" /
+  "Deleting…" until the server answers (the request waits up to 10 minutes), one change at a time.
+  A deleted session's row reads "Deleting…" (inert) until the server answers; one delete runs at a
+  time, and the open chat moves to a new session only after the DELETE succeeds (a failure keeps the
+  row and shows the history error). While the panel is shown, a session's Working state flipping on
+  the 3 s `/chat/activity` poll, or a turn finishing in the open chat, re-reads the current page
+  quietly (rows, tab, lane and search stay), at most once per poll cycle.
+- **Older history:** a session opens on its newest 200 messages (`has_more` from the session detail;
+  a server without it counts a full page as "maybe more"). Scrolling back to the top loads one older
+  page (`GET .../messages?before=<oldest id>&limit=50`) per return to the top, never during the open
+  (the top row's "Load earlier messages" also loads one on tap, for a transcript that fits on screen);
+  the row that was first stays in place, a "Loading earlier messages…" row shows meanwhile and a
+  failure offers Retry. Pages for a chat the user left are dropped.
+- **Answer route:** `AttentionItem.respondCall` posts the server `respond` handle when present
+  ([respond handle](../magician/hitl-attention.md#respond-handle-respond)).
 - **Attention** is live-only: Requests, Approvals, Escalations, Failed, All. Counters use backend totals;
   each lane advances its own cursor. Lane chips sit on a UIKit touch layer because SwiftUI button hit
   regions were unreliable on devices. Failed items swipe-to-dismiss. Live updates ride the
@@ -385,18 +492,26 @@ is the only peer.
   `HitlRequested` under the same correlation id makes it answerable again.
 - **Asks answered in place** (`ComposerAskDock.swift`): one card, one set of controls (choices,
   confirm/deny, text, plan approval) and the Attention respond path serve the composer ask dock and the
-  task detail screen. The dock lists the session's escalation cards plus feed asks scoped to the
+  task detail screen. Taskless questions also match their originating chat session from the request ledger or feed schema.
+  Long arguments and choices scroll separately; Review opens the full request. Tool scopes distinguish one action from the whole integration, and MCP/CLI timeline labels name the underlying operation.
+  The dock (chat and VibeDev) lists every open ask except a dismiss-only notice (`AttentionItem.isDismissOnly`: a service-health or expired notice, left to Attention), this conversation's first: the session's escalation cards plus feed asks scoped to the
   session/thread — the hitl scope **or the feed row's own `ui_thread_id`** — or owned by a task known to
   belong to the thread (its task cards, its cards' tasks, the tasks of thread-stamped feed rows), so a
-  Relentless ask carrying only `task_id` + `ui_thread_id` shows. Forms, secrets, grants and diffs open
+  Relentless ask carrying only `task_id` + `ui_thread_id` counts as here. An ask stamped with another
+  chat session is never here, and the shared default `general` thread alone never places one here
+  (typed text answers only this chat's question); every other ask follows with a
+  "From <chat or task> · <agent>" line. Forms, secrets, grants and diffs open
   the focused `AttentionDetailModal` over the current screen (`attentionAskSheet`), which closes when
   the ask settles elsewhere. Options `approve`/`reject` (the Relentless `relentless.accepted_review`
   ask) render as the decision; an ask whose `input_schema.context` (or row) names `review_href` shows
   its `review_label` ("Review draft") and opens the Work Quality destination in-app
   (`HitlReviewLink` → `WorkNavigationTarget`), in the dock, the task screen and the Attention sheet.
   `AppTabView` shares its `AttentionViewModel` as `\.attentionFeed`, so an answer anywhere clears
-  everywhere.
-- **HITL modals:** a distinct shape per input type (eleven). `tool_authorization` and
+  everywhere. Visible ask surfaces share live refresh with a 30-second missed-event backstop,
+  suspended in the background; failed optimistic answers remain retryable.
+  VibeDev's new-run and follow-up composers list every open ask too, run turns' and project-session
+  questions first, with native plan review and the same focused answer sheets.
+- **HITL modals:** typed controls for all canonical input kinds. `tool_authorization` and
   `sandbox_override` name the subject verbatim in mono with the broken policy and covered roots, refusal
   first, and one button per offered grant (`allow_always` writes the session allowlist). Matches web
   [unified-task-panel.md](../unified-ui/unified-task-panel.md), *Answering an ask*.
@@ -405,7 +520,9 @@ is the only peer.
   `execution_id`; `form` asks answer `{id, value}` / `{id, selected_ids}` / `{id, skipped: true}`;
   a `waiting_without_question` escalation offers Cancel run (`POST /executions/{id}/cancel`) and Open
   task instead of an answer field; `mcp_oauth` opens `input_schema.url` and answers
-  `external_action_completed`. Unknown sources and input types fall back to a free-text answer.
+  `external_action_completed`, and its Attention sheet offers **Not now**
+  (`dismiss_label`), which posts `{type:"aborted"}` so the computer cancels the sign-in
+  (the composer dock hands sign-ins to Attention). Unknown sources and input types fall back to a free-text answer.
 - **Preference alignment holds** (P6.2; `Shared/AlignmentAsk.swift`, `Magios/AlignmentAskView.swift`).
   - A `confirmation` whose `input_schema.alignment` decodes is a hold. A malformed block never fails
     the row; it reads as no hold.
@@ -418,16 +535,10 @@ is the only peer.
   - A typed reply posts `{type: text}`, which is an instruction, never consent.
   - A combined ask (`alignment.also_covers`) lists the approvals it also settles under "It also
     needs your approval:"; allowing it approves it too.
-  - **Notes from recent checks** (Settings → Preferences, `PreferenceNotesView`) lists nudges that
-    let an act through, from `GET /preference-alignment/notices?surface=ios`. "Save this wording"
-    posts the note's token; "Dismiss" posts `{answer: dismiss}`. A changed note is read again
-    before anything is saved.
-  - **Your preferences** (Settings → Preferences, `OwnerPreferencesView`) shows the owner's
-    preferences as checks see them, from `GET /preference-alignment/intentions?surface=ios`,
-    grouped as rules, goals and tastes with how strong each is. Swipe to edit, confirm (inferred
-    only), retire or forget (asked first: it also erases the wording from the history); tap for
-    the history. Every edit sends the revision on screen; a `409 stale_preference` reloads and
-    says so. Requests and parsing are in `OwnerPreferences` (`Shared/AlignmentAsk.swift`).
+  - **Your preferences** and **Notes from recent checks** are no longer native screens: they live
+    in the embedded web Settings (Settings → Magican settings → Preferences). The request and
+    parsing helpers (`OwnerPreferences`, `PreferenceNotice` in `Shared/AlignmentAsk.swift`) and
+    their unit tests remain.
     A footnote says how to swipe. A preference stored as `key: {json}` reads as a title
     and its fields (`PresentedStatement`, the web's and Android's rule, fields sorted by
     key). Rows sit on `surfaceColor` over the theme background, as Settings does, never the
@@ -442,10 +553,40 @@ reply, which the server has checked against the turn's tool results, and its
 also what Voice reads aloud, so a reply that failed the check is shown and
 spoken under its "Not fully verified" caveat.
 
+**Turn state after a stream drop or relaunch.** iOS sends `continue_on_disconnect: true`, so
+the server keeps a turn running when the reply stream or the app goes away. `ChatViewModel` reads
+the session's latest turn from `turn_state` on `GET /chat/sessions/{id}` (load, relaunch, hub
+resync) and on the 2 s `GET /chat/sessions/{id}/queue` poll, and every change from the
+`chat.turn.state_changed` agent event (`ChatTurnState`). What the transcript shows:
+
+- `running`: a live assistant bubble keyed by `chat_turn_id`, with its steps backfilled from
+  `/turns/{id}/events` and followed live, and Stop in the composer. The turn may have been sent
+  from this device, another surface or the queue.
+- `completed`: the reply (`ChatMessageReceived`, same `chat_turn_id`) replaces the bubble. If the
+  reply was missed, the transcript is re-read.
+- `stopped` with `user_stop`: "Stopped". With a watchdog reason (`turn_stalled`,
+  `turn_wall_clock_exceeded`), the persisted notice is the reply and gets no line.
+- `failed`: "This turn failed before it could answer". With `interrupted`: "Interrupted before it
+  finished".
+- `turn_state: null` on a load (after a server restart) with a trailing question and no reply: the
+  question reads as interrupted. Its own `running` event, if one arrives, makes it live again.
+
+A settled state is never replaced by a stale `running` one. When a server names a newer turn, or
+none, iOS stops treating any other turn as running. When a reply stream ends without a reply
+(no tokens, an `error` frame, `cancelled` in `done`, a dropped connection), iOS keeps the
+bubble and lets the turn state decide. If the stream dropped while offline, the bubble stays
+live until the poll answers. A server without `turn_state` gets the old behaviour, plus
+"Stopped" or the failed line from the stream's own frames. Realtime voice turns (`voice-*`
+ids, or rows with a `presence_session_id`) never get a bubble.
+
 ### Tasks
 
 Work retains the native task workspace with three lanes (Tasks / Monitors /
-Internal tasks), alongside Crew, Programs, Quality and Company loop.
+System work), alongside Crew, Playbooks, Quality checks and Team routines.
+Work → More → Goals (`Work/WorkGoalsView.swift`, rules in `Work/WorkGoals.swift`) shows the web's goal tree at parity.
+All work shows a foldable Goals and Playbooks summary (`Work/WorkLandingSummary.swift`; folding, counts and landing limits in `Work/WorkSummaries.swift`) under the switcher, read with `WorkLanding.goalReadLimits` (main-goal folders, 32 notes) once per visit.
+
+Goals with status `done` or `dropped` are closed. The Goals tree, its counts and the All work summary show only open goals (`workOpenGoalTree`): an open goal under a closed one moves up to its nearest open ancestor, or heads its own tree, and its row reads "Its parent goal “…” is closed." An **Open N | Closed M** switch (remembered; the summary's "See closed goals" link and a `/work?view=goals&goals=closed` or `magican://work?view=goals&goals=closed` link select Closed, a plain Goals link selects Open) shows each workspace's closed goals, newest `closed:` date first, then undated by title, with their parent and a **Reopen** button. Each open goal has **Mark done**. Both save through `PATCH /api/magician/v2/notes/front-matter` with the revision the note was read at: done sets `status: done` and `closed: <today, device time zone>`, reopen sets `status: active` and removes `closed:`. A 409 says the goal changed since the screen loaded and reloads the goals.
 
 - **Regular lane:** presets (All / Inbox / Today / Overdue / Running / Completed) computed server-side
   over the whole pool and badged from `counts` (no badge when unreported); tag chips, search, status
@@ -463,6 +604,7 @@ Internal tasks), alongside Crew, Programs, Quality and Company loop.
   **↻ Recurring** chip (`TaskCronDescription`) instead of a raw cron pill, and an Actions sheet.
   Swipe right = Complete / Mark not done; left = confirmed Cancel/Delete; execution controls are never
   inferred from status for swipes.
+- **Partly done:** `completed` with `completion_kind: partial` reads "Partly done" (warning tone) with "Open: <first open item>" (`TaskCompletion`) on task and VibeDev rows, headers and turns.
 - **Detail:** Overview, Run, Output, Plan, History tabs, with the nine-state verdict
   ([task-verdict.md](task-verdict.md)). Output: Result, task-scoped **Deliverables**, then a collapsed
   **Intermediate artifacts & evidence** grouped Direct / Delegated / Persisted. Run groups delegated
@@ -470,6 +612,8 @@ Internal tasks), alongside Crew, Programs, Quality and Company loop.
   streams exact-execution `ExecutionPanelDelta` snapshots, bounded to the newest 200 events. History
   shows `started → ended · duration`. Historical runs are inspect-only; Pause/Resume/Steer/Stop bind to
   the server-authorized active root execution. Reset is a checked server lifecycle transition.
+  Controls retain their opening connection and reject actions after a machine or credential switch.
+  Ask docks recover older and exact requests, prefer canonical review contracts, and scroll long choice lists; unacknowledged answers stay retryable and closed approvals cannot start a second run.
 - All task mutations carry the workspace-bound device bearer, including routes with no scope selectors.
 - **Monitors:** full web parity; see [monitors.md](monitors.md).
 
@@ -547,7 +691,12 @@ Dismiss atomically cancels the chat turn and its Tutor run (keeping the session)
   one-shot modes.
 - **Appearance:** one row per theme family plus a sun/moon control; exact theme IDs stay web-compatible.
   Colours resolve through `ThemeManager` semantic tokens; accent foregrounds follow web
-  `--text-on-accent`.
+  `--text-on-accent`. Every tab binds its navigation bar with
+  `toolbarBackground`/`toolbarColorScheme` so a live palette flip repaints it; bars of
+  background tabs (which the UIKit restyle walk cannot reach while detached) are
+  re-styled when their tab becomes selected, and the Themes sheet rebuilds its bar on
+  the applied-theme revision because a sheet resolves its toolbar background once per
+  presentation.
   Work task-card actions, including Reset to Ready, use that explicit accent
   foreground for text, icons and busy indicators. Filled status actions choose
   their foreground from the status fill instead of inheriting the accent token.
@@ -559,9 +708,36 @@ Dismiss atomically cancels the chat turn and its Tutor run (keeping the session)
   pressed about 5.5:1), and their on-accent colour is white. Accent text, strokes, outlines, progress and
   soft tints keep the bright `accentColor`. All theme variants mirror unified-ui's brand, display, body and mono roles (bundled
   Outfit, Manrope, Geist Mono, Bricolage Grotesque, Pixelify Sans, Permanent Marker, Lilita One).
-- **Storage maintenance:** Settings shows Automatic maintenance (Channel Assist/Feed state, message,
-  last completion); the scoped `/storage/maintenance` read refreshes every 10 s only while mounted and
-  active, and failures clear stale status.
+- **Settings** (`SettingsView.swift`) keeps only this iPhone's own settings, as one headed list
+  with a search field (`.searchable`, "Search settings"). Every row has a title and keywords
+  (`SettingsSearchRow`); a query shows the rows where every word matches, hides empty sections,
+  and with no match offers to search Magican settings. Section headings are bold, left-aligned
+  titles. A horizontally scrolling chip bar pinned under the search field (one chip per section
+  with matches; hidden when only the top row or nothing matches) jumps to a section on tap and
+  highlights the section in view as the list scrolls (`SettingsSectionSpy`, choice logic in
+  `SettingsSearch.activeSection`). Sections, in order:
+  - (top) **Magican settings ›** — the paired machine's shared web Settings, full screen
+    (`EmbeddedWebSettingsView.swift`). Its keywords cover what moved there (budgets, harness
+    credentials, preferences and check notes, storage maintenance, speaking voices, trust and
+    rules, workspaces, models), so searching for one of those finds this row. Unpaired, the row
+    says to pair first instead of opening.
+  - **Voice & audio** — this iPhone's speaking voice, Talk to Magican (Siri), Talk behavior.
+  - **Notifications** — permission, lock-screen questions, At a glance (widget, Live Activities).
+  - **Keyboard** — Magican Keyboard settings, Reset learned words.
+  - **Connection** — Machines, self-hosted connection (route, QR, endpoint), service health.
+  - **Help & about** — How to Use, versions: Magican iOS (marketing version and build), Magician
+    backend (`versions.magician`, else `version`), and Magician API, Magicutor and Desktop when
+    `/health` reports them. The Connection service rows show the same Magician, Magicutor and Desktop
+    versions as badges.
+- **Embedded web Settings:** loads `<ui_origin>/settings?embed=1&host=ios`, where `ui_origin` is the
+  active machine's entry in `GET /remote-machines` (matched by `api_origin`, else `is_self`) when it
+  is reachable from the phone (not loopback; not a private-network address while paired over the
+  remote route), else the paired `publicOrigin`. The `WKWebView` uses the persistent default data
+  store and adds no device or Cloudflare headers: the page signs in with the ordinary web sign-in
+  (`/login?redirectTo=…`), and that sign-in and any Cloudflare Access login survive relaunches.
+  Only `/settings`, `/login…`, Cloudflare Access sign-in pages and subframes load inside; other app
+  pages (including client-side routes, caught by watching the URL) and external links open in
+  Safari. It shows a progress bar and a Retry state for failed or empty pages.
 
 ## Networking
 
@@ -573,7 +749,9 @@ at runtime (`connect.<zone>`, not compiled in). `scripts/ensure-magician-tunnel.
   host port, normally `localhost:13002`). Cloudflare proxies WebSocket upgrades natively.
 - `/host/*` — the Tauri Desktop Host Gateway (`localhost:3017`).
 - `/health` — the backend's aggregated health (Magican, Magicutor, Tauri reachability) for the Settings
-  service ledger.
+  service ledger, plus component versions (`version` = Magician core, `api_version`, and a `versions`
+  object with `magician`, `magician_api`, `magicutor`, `desktop`). Every version field is optional;
+  older servers send only `version`, which was the API crate's.
 - Everything else — `404`.
 
 `scripts/ensure-connect-access.sh` gates the origin behind Cloudflare Zero Trust Access and writes the
@@ -581,7 +759,9 @@ origin, Access audience and issuer to runtime env. Magician Settings issues sepa
 five-minute QRs; the exchange is the only path-specific bypass and returns the outer credential plus a
 revocable per-device token. Magios probes an authenticated route before committing the atomic Keychain
 profile, then attaches both layers via `MagicianAccess`, which derives the device bearer and outer
-credentials from one profile snapshot per request (no mixed-authority requests during rotation). Legacy
+credentials from one profile snapshot per request (no mixed-authority requests during rotation).
+Requests that carry the device id also carry `X-Magician-App-Version: <version> (<build>)` (for
+example `0.4.11 (222)`), so web Settings → Devices can show which app build each iPhone runs. Legacy
 Cloudflare fields migrate lazily into Keychain; the plaintext is deleted only after exact read-back.
 
 ### Multi-machine profiles
@@ -611,7 +791,7 @@ Magios keeps one paired profile per machine and switches between them without re
   and, if it was active, activates another paired one (or none); `clearConnection()` forgets the
   active machine; `forgetAll()` clears every profile. Each change posts
   `magicianMobileConnectionDidChange`, which rebuilds the app tree and RealtimeHub.
-- **Settings → Machines:** paired machines first (named by the profile's stored `machineName`, else
+- **Settings → Connection (machines):** paired machines first (named by the profile's stored `machineName`, else
   from the registry when its `api_origin` matches, else the host; check = in use; tap to switch;
   swipe or long-press to Forget), then registry machines not paired yet by any route (origin or
   name), read from the active machine's
@@ -642,14 +822,15 @@ Magios keeps one paired profile per machine and switches between them without re
   uses are pruned): Approve/Reject (`confirm_label`/`deny_label`), one `opt:<option id>` button per
   option, or a text reply. Every answer button needs an unlocked phone and runs in the background;
   the app posts `/hitl/{id}/respond` with channel `ios_push` (the in-app body: `source`,
-  `input_type`, `value`, `execution_id`, planning `task_id`) and replaces the notification with
+  `input_type`, `value`, `execution_id`, planning `task_id`; from `metadata.respond` when
+  present) and replaces the notification with
   "Answer sent", "Already answered" (404/409) or "Couldn't send your answer — tap to open", never
   repeating the question. Any fetch failure (404 included — older servers have no single-ask
   read), a mismatch, or the system deadline delivers the push unchanged. The legacy
   `MAGICAN_ATTENTION_APPROVAL` Approve/Reject category (`actions: approve_reject`, channel
   `ios_notification`) still works.
 - **Lock-screen privacy:** by default the question and its buttons only appear where iOS hides
-  them until unlock. The extension adds them when Settings → Permissions → **Show questions on lock
+  them until unlock. The extension adds them when Settings → Notifications → **Show questions on lock
   screen** (App Group `attentionPushShowQuestionsOnLockScreenV1`, off by default) is on, or when the
   system preview setting is *When Unlocked* (the category's placeholder "Unlock to see the question"
   shows while locked). With previews *Always* or *Never* and the setting off, the push stays
@@ -741,6 +922,7 @@ explicit module dependency.
 - **`make test-ios`** — the **blocking gate** invoked by root `make test` on macOS (skipped without
   Xcode). Runs `MagiosTests` with coverage and skips `MagiosUITests`. Provisions and checksum-verifies
   the gitignored Vosk framework/model; unit tests isolate HTTP via a mock URL protocol.
+  Deferred streaming fixtures drain session cancellation before clearing their handlers.
 - **`make test-ios-ui`** — on-demand, non-blocking XCUITest smoke suite
   (`-retry-tests-on-failure -test-iterations 3`, no coverage). Split out because under full-suite load
   XCUITest's late SIGTERM of a slow-to-terminate app is misreported as a crash — framework timing, not
@@ -796,8 +978,9 @@ server and enrollment rather than an operator hostname in source.
 
 ## Speaking voices
 
-Settings → Voice and audio contains Speaking voices for backend TTS/realtime
-models and a separate This iPhone voice picker. The composer exposes backend
+Settings → Voice & audio contains the This iPhone voice picker; backend
+TTS/realtime speaking voices are in Settings → Magican settings (the embedded
+web Settings) and in the composer. The composer exposes backend
 voices under Replies → Backend host and Live; searchable lists are populated
 from `/media/providers`, including FluidAudio/Kokoro. Backend choices patch the
 shared scoped media preferences; iPhone voices stay local and are applied to
@@ -807,6 +990,17 @@ See the [voice selection contract](../magician/realtime-media-rails.md#speaking-
 
 Voice selectors use compact themed current-value rows, including transcription source, reply engine, realtime model, pipeline stages, and personas. A row opens a searchable checked list in the current NavigationStack; composer settings keep one sheet with Back navigation rather than expanding catalogs inside panels or stacking sheets. `VoiceSelectionPicker` / `VoiceSelectionList` share the model picker’s fonts, surfaces, borders, and selection colors.
 
-Dictation and Hands-free pipelines show **Speaking voice** directly below **Speech model**, restricted to that selected TTS binding. Profile order uses the first available configured provider; explicit model choices switch the persona catalog. Only global Settings lists every binding. Transcription providers select recognition models and do not have speaking personas.
+Dictation and Hands-free pipelines show **Speaking voice** directly below **Speech model**, restricted to that selected TTS binding. Profile order uses the first available configured provider; explicit model choices switch the persona catalog. Only the web Settings (Settings → Magican settings) lists every binding. Transcription providers select recognition models and do not have speaking personas.
 
 Changing the speech model filters the already loaded voice catalog; it does not recreate the voice loader or fetch settings for every selection. Empty advertised voice lists use a neutral provider-default message, with no error/Retry. Cancelled panel requests are not failures; a real load failure offers Retry and clears on successful reload.
+
+God-mode approvals appear in every chat composer in the authenticated workspace,
+with the originating chat/run, staged diff and every offered grant choice.
+Session grants remain tied to the origin. Answering anywhere clears the shared
+request everywhere; enforcement and grant storage stay on the backend.
+Exact shell approvals retain session and always choices under the backend's
+[invocation scope rules](../magician/god-mode.md).
+Scope pickers retain full paths above short duration buttons. Composer review
+content scrolls separately; focused God-mode reviews pin decisions above the safe area.
+
+Settings → Services → Service accounts and MCP Attention cards use the shared [browser sign-in](../magician/browser-signin.md) handoff with a native private viewer. Provider registration failures show the server's secret-free explanation. Account rows show the engine's status chip and detail, offer Reconnect when connected, pass the row's `endpoint_alias` to launch, and reload on appear, foreground, pull-to-refresh and viewer dismissal; `unavailable` rows show a grey chip with no Connect. Managed-bot rows (Google Workspace, Telegram, WhatsApp) open `ManagedBotConnectSheet` (in `AttentionDetailModal.swift`), running the `bot/start|input|state|cancel` flow (method, phone, code, two-step password, pairing code, PNG QR, or Google's ticket in the private viewer, with an **Open on computer** fallback), polling every 2 s while signing in. Service choices are full-width themed buttons with 44-point minimum targets.

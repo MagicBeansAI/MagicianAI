@@ -105,6 +105,7 @@
 // The other four are scoped the same way so the set has one rule rather than a
 // rule and four exceptions.
 pub mod apply;
+mod approved_replay;
 pub mod decide;
 pub mod decision_rail;
 mod decision_rail_events;

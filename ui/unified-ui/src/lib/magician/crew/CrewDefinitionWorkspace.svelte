@@ -8,6 +8,14 @@
 	import { get } from 'svelte/store';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import NativeCrewRenderer from '$lib/magician/crew/NativeCrewRenderer.svelte';
+	import FocusAreaSharedDocuments from '$lib/magician/crew/FocusAreaSharedDocuments.svelte';
+	import {
+		applySharedPrograms,
+		cloneSharedDocs,
+		globalSharedDocs,
+		sharedDocsFromFocusArea,
+		type FocusAreaSharedDocs
+	} from '$lib/magician/crew/focusAreaSharedPrograms';
 	import type { CrewNativeComponent, CrewNativeInteractionEventDetail } from '$lib/magician/crew/nativeSurface';
 	import { createAgent, refreshAgents, updateAgent, agentList } from '$lib/stores/agentStore';
 	import type { AgentKind } from '$lib/stores/agentStore';
@@ -40,6 +48,8 @@
 		schedule: string;
 		program: string;
 		scope_csv: string;
+		/** `shared_programs`: global list (key omitted), none (`[]`) or chosen names. */
+		shared_docs: FocusAreaSharedDocs;
 	}
 
 	interface AgentFormState {
@@ -133,6 +143,16 @@
 		void hydrateFromEditQuery(requestedEditId);
 	}
 	$: existingAgentIds = $agentList.map(a => a.agent_id);
+	$: showSharedDocuments = editorMode === 'form'
+		&& !isHydratingEdit
+		&& formState.kind === 'Personal'
+		&& formState.autonomous_enabled
+		&& formState.autonomous_focus_areas.length > 0;
+	$: sharedDocumentAreas = formState.autonomous_focus_areas.map((fa) => ({
+		name: fa.name,
+		docs: fa.shared_docs,
+		retained: sharedDocsFromFocusArea(fa.original_fields).selected
+	}));
 	$: components = buildDefinitionSurface({
 		editing,
 		editAgentId,
@@ -154,7 +174,7 @@
 			tools: [...state.tools],
 			excluded_tools: [...state.excluded_tools],
 			delegation_targets: [...state.delegation_targets],
-			autonomous_focus_areas: state.autonomous_focus_areas.map((fa) => ({ ...fa })),
+			autonomous_focus_areas: state.autonomous_focus_areas.map((fa) => ({ ...fa, shared_docs: cloneSharedDocs(fa.shared_docs) })),
 			harness_enabled: state.harness_enabled,
 			harness_program_section: state.harness_program_section,
 			user_memory_isolation: state.user_memory_isolation,
@@ -243,7 +263,8 @@
 			description: state.description.trim(),
 			persona: state.persona.trim(),
 			trust_level: state.trust_level.trim(),
-			kind: state.kind,
+			// The server's `AgentKind` is snake_case (`personal` / `worker`).
+			kind: state.kind === 'Personal' ? 'personal' : 'worker',
 			tools: [...state.tools],
 			excluded_tools: [...state.excluded_tools]
 		};
@@ -251,12 +272,16 @@
 		// Delegation targets for Personal and Worker kinds
 		if (state.kind === 'Personal' || state.kind === 'Worker') {
 			definition.delegation_targets = delegateTo;
-			const baseCoordination = asRecord(baseDefinition.coordination);
-			definition.coordination = {
-				...(baseCoordination || {}),
-				max_delegation_depth: state.max_delegation_depth
+			// Delegation depth lives in `constraints.coordination`; the definition
+			// has no top-level `coordination` and the server rejects unknown fields.
+			const baseConstraints = asRecord(baseDefinition.constraints) || {};
+			const baseCoordination = asRecord(baseConstraints.coordination) || asRecord(baseDefinition.coordination);
+			definition.constraints = {
+				...baseConstraints,
+				coordination: { ...(baseCoordination || {}), max_delegation_depth: state.max_delegation_depth }
 			};
 		}
+		delete definition.coordination;
 
 		// Autonomous config for Personal agents only
 		if (state.kind === 'Personal' && state.autonomous_enabled) {
@@ -268,7 +293,7 @@
 						.split(',')
 						.map((value) => value.trim())
 						.filter((value) => value.length > 0);
-					return {
+					return applySharedPrograms({
 						...(fa.original_fields || {}),
 						name: fa.name.trim(),
 						description: fa.description.trim(),
@@ -276,7 +301,7 @@
 						schedule: fa.schedule.trim() || undefined,
 						program: fa.program.trim() || undefined,
 						scope: scope.length > 0 ? scope : undefined
-					};
+					}, fa.shared_docs);
 				}),
 				max_tasks_per_cycle: state.autonomous_max_tasks_per_cycle,
 				max_steps_per_plan: state.autonomous_max_steps_per_plan
@@ -386,7 +411,7 @@
 	}
 
 	function formStateFromDefinition(definition: Record<string, unknown>): AgentFormState {
-		const coordination = asRecord(definition.coordination);
+		const coordination = asRecord(asRecord(definition.constraints)?.coordination) || asRecord(definition.coordination);
 		const delegateTo = readStringArray(definition, 'delegation_targets');
 		const maxDelegationDepth = coordination
 			? (typeof coordination.max_delegation_depth === 'number' ? coordination.max_delegation_depth : 3)
@@ -421,7 +446,8 @@
 						priority: normalizeFocusAreaPriority(priority || 'medium'),
 						schedule: readString(faRec, 'schedule') || '',
 						program: readString(faRec, 'program') || '',
-						scope_csv: readStringArray(faRec, 'scope').join(', ')
+						scope_csv: readStringArray(faRec, 'scope').join(', '),
+						shared_docs: sharedDocsFromFocusArea(faRec)
 					};
 				})
 				.filter((fa): fa is FocusAreaFormEntry => fa !== null);
@@ -523,6 +549,7 @@
 			if (faName || faDesc || faSchedule || faProgram || faScopeCsv) {
 				focusAreas.push({
 					original_fields: formState.autonomous_focus_areas[i]?.original_fields,
+					shared_docs: cloneSharedDocs(formState.autonomous_focus_areas[i]?.shared_docs ?? globalSharedDocs()),
 					name: faName,
 					description: faDesc,
 					priority: normalizeFocusAreaPriority(faPriority || 'medium'),
@@ -708,8 +735,8 @@
 		const kindMatch = trimmed.match(/^kind:\s*(.+)$/m);
 		if (kindMatch) {
 			const kindValue = kindMatch[1].trim().replace(/^['"]|['"]$/g, '');
-			if (!['Personal', 'Worker'].includes(kindValue)) {
-				return `Invalid kind "${kindValue}" — must be Personal or Worker`;
+			if (!['personal', 'worker'].includes(kindValue)) {
+				return `Invalid kind "${kindValue}" — must be personal or worker`;
 			}
 		}
 		return null;
@@ -952,7 +979,7 @@
 				fields.push(
 					{
 						id: 'harness_enabled',
-						label: '--- Harness --- Enable harness mode',
+						label: 'Enable Autopilot',
 						type: 'text',
 						required: false,
 						value: input.formState.harness_enabled ? 'true' : 'false',
@@ -960,7 +987,7 @@
 					},
 					{
 						id: 'harness_program_section',
-						label: 'Harness program section (optional, blank = full program)',
+						label: 'Playbook section (optional, blank = full playbook)',
 						type: 'text',
 						required: false,
 						value: input.formState.harness_program_section,
@@ -989,7 +1016,7 @@
 			if (kindValue === 'Personal') {
 				fields.push({
 					id: 'autonomous_enabled',
-					label: '--- Autonomous Behavior --- Enable autonomous mode',
+					label: 'Enable scheduled check-ins',
 					type: 'text',
 					required: false,
 					value: input.formState.autonomous_enabled ? 'true' : 'false',
@@ -1065,7 +1092,7 @@
 							},
 							{
 								id: `fa_program_${i}`,
-								label: `Focus area ${i + 1}: Program override (optional)`,
+								label: `Focus area ${i + 1}: Playbook override (optional)`,
 								type: 'text',
 								required: false,
 								value: fa.program,
@@ -1281,7 +1308,8 @@
 						priority: 'medium',
 						schedule: '',
 						program: '',
-						scope_csv: ''
+						scope_csv: '',
+						shared_docs: globalSharedDocs()
 					}
 				];
 				return;
@@ -1340,6 +1368,14 @@
 		}
 	}
 
+	function handleSharedDocsChange(event: CustomEvent<{ index: number; docs: FocusAreaSharedDocs }>): void {
+		const { index, docs } = event.detail;
+		if (!formState.autonomous_focus_areas[index]) return;
+		const next = cloneFormState(formState);
+		next.autonomous_focus_areas[index] = { ...next.autonomous_focus_areas[index], shared_docs: cloneSharedDocs(docs) };
+		formState = next;
+	}
+
 	let toolOptions: { value: string; label: string }[] = [];
 
 	async function loadCapabilityPacks(): Promise<void> {
@@ -1383,4 +1419,12 @@
 
 <div class="new-agent-route presto-gaui-page">
 	<NativeCrewRenderer {components} on:interaction={handleSurfaceInteraction} />
+	{#if showSharedDocuments}
+		<FocusAreaSharedDocuments
+			areas={sharedDocumentAreas}
+			disabled={isSubmitting || isHydratingEdit}
+			scopeKey={currentEditorScopeKey}
+			on:change={handleSharedDocsChange}
+		/>
+	{/if}
 </div>

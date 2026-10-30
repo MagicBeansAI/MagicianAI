@@ -18,10 +18,9 @@ use uuid::Uuid;
 
 use super::budgets::{record_termination_reason, CodingTerminationReason, ProgressWatchdog};
 use super::codex_contract::{
-    CODEX_CODE_MODE_FEATURES,
     app_server_args, app_server_args_for, classify_server_request,
     launch_disables_local_code_mode_host, may_send_method, CodexLaunchProfile,
-    CodexServerRequestClass, CODEX_APP_SERVER_EXPERIMENTAL_API_ENABLED,
+    CodexServerRequestClass, CODEX_APP_SERVER_EXPERIMENTAL_API_ENABLED, CODEX_CODE_MODE_FEATURES,
 };
 use super::control::{
     coding_control_registry, CodexControlCommand, CodexTurnHandle, CodingControlHandle,
@@ -224,7 +223,8 @@ fn codex_writable_roots_overlay(roots: &[&str]) -> String {
 /// A chat or agent-run Codex (the plane profile) under super god mode, as
 /// approved for its session: it starts with no restrictions.
 fn plane_unrestricted(request: &CodingEngineRequest) -> bool {
-    request.codex.launch_profile == CodexLaunchProfile::PlaneHarness && request.codex.plane_unrestricted
+    request.codex.launch_profile == CodexLaunchProfile::PlaneHarness
+        && request.codex.plane_unrestricted
 }
 
 /// Codex's own sandbox is off for this turn, so it runs `danger-full-access`.
@@ -265,7 +265,11 @@ fn unrestricted_plane_args(args: Vec<String>) -> Vec<String> {
     let mut kept = Vec::with_capacity(args.len());
     let mut iter = args.into_iter().peekable();
     while let Some(mut arg) = iter.next() {
-        if arg == "-c" && iter.peek().is_some_and(|next| next == "web_search=disabled") {
+        if arg == "-c"
+            && iter
+                .peek()
+                .is_some_and(|next| next == "web_search=disabled")
+        {
             iter.next();
             continue;
         }
@@ -332,7 +336,11 @@ fn spawn_app_server(
         if harness_unrestricted() {
             // Super god mode, approved: every feature on, like the other
             // unrestricted engines.
-            args = crate::magician_v2::execution::plane::engines::strip_flags(args, &[], &["--disable"]);
+            args = crate::magician_v2::execution::plane::engines::strip_flags(
+                args,
+                &[],
+                &["--disable"],
+            );
         } else if harness_boxed() {
             // Current Codex runs every command through its code-mode host
             // (measured 2026-10-14: with it off, each command failed "code-mode
@@ -382,11 +390,14 @@ fn spawn_app_server(
             .iter()
             .map(|(key, value)| (key.clone(), value.clone())),
     );
-    let filtered = filter_codex_child_env(
+    let mut filtered = filter_codex_child_env(
         inherited
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
+    if !crate::magician_v2::harness_auth::uses_magician_credentials("codex") {
+        filtered.remove("OPENAI_API_KEY");
+    }
     for (key, value) in filtered {
         command.env(key, value);
     }
@@ -395,6 +406,7 @@ fn spawn_app_server(
     }
     command.env("GIT_CEILING_DIRECTORIES", &request.scope_root);
     harness.apply_env();
+    super::original_edits::apply_env(request, &mut harness.command);
     let command = &mut harness.command;
     #[cfg(unix)]
     {
@@ -2012,10 +2024,19 @@ mod tests {
         // unrestricted VibeDev fence are not the plane's to inherit.
         let dir = tempfile::tempdir().unwrap();
         let request = plane_request(dir.path(), false);
-        for fence in [HarnessFence::Profile, HarnessFence::Box, HarnessFence::Unrestricted] {
+        for fence in [
+            HarnessFence::Profile,
+            HarnessFence::Box,
+            HarnessFence::Unrestricted,
+        ] {
             let (thread, turn) =
-                with_coding_context(true, with_harness_fence(fence, sandboxes_sent(&request))).await;
-            assert_eq!(thread.get("sandbox").and_then(Value::as_str), Some("read-only"), "{fence:?}");
+                with_coding_context(true, with_harness_fence(fence, sandboxes_sent(&request)))
+                    .await;
+            assert_eq!(
+                thread.get("sandbox").and_then(Value::as_str),
+                Some("read-only"),
+                "{fence:?}"
+            );
             assert_eq!(
                 turn.pointer("/sandboxPolicy/type").and_then(Value::as_str),
                 Some("readOnly"),
@@ -2027,10 +2048,15 @@ mod tests {
     #[tokio::test]
     async fn an_approved_plane_codex_is_restricted_again_once_super_god_mode_is_off() {
         let _lock = crate::magician_v2::god_mode::test_lock();
-        crate::magician_v2::god_mode::configure_super(&crate::config::SuperGodModeSettings::default());
+        crate::magician_v2::god_mode::configure_super(
+            &crate::config::SuperGodModeSettings::default(),
+        );
         let dir = tempfile::tempdir().unwrap();
         let (thread, turn) = sandboxes_sent(&plane_request(dir.path(), true)).await;
-        assert_eq!(thread.get("sandbox").and_then(Value::as_str), Some("read-only"));
+        assert_eq!(
+            thread.get("sandbox").and_then(Value::as_str),
+            Some("read-only")
+        );
         assert_eq!(
             turn.pointer("/sandboxPolicy/type").and_then(Value::as_str),
             Some("readOnly"),
@@ -2042,10 +2068,22 @@ mod tests {
     fn an_unrestricted_plane_launch_has_every_feature_web_search_and_no_sandbox() {
         let args = unrestricted_plane_args(app_server_args_for(CodexLaunchProfile::PlaneHarness));
         assert!(!args.iter().any(|arg| arg == "--disable"), "{args:?}");
-        assert!(!args.iter().any(|arg| arg.starts_with("web_search=")), "{args:?}");
-        assert!(args.iter().any(|arg| arg == "sandbox_mode=danger-full-access"), "{args:?}");
-        assert!(!args.iter().any(|arg| arg == "sandbox_mode=read-only"), "{args:?}");
-        assert!(args.windows(2).any(|pair| pair == ["-c", "approval_policy=never"]));
+        assert!(
+            !args.iter().any(|arg| arg.starts_with("web_search=")),
+            "{args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "sandbox_mode=danger-full-access"),
+            "{args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "sandbox_mode=read-only"),
+            "{args:?}"
+        );
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-c", "approval_policy=never"]));
     }
 
     #[tokio::test]
@@ -2309,11 +2347,21 @@ mod tests {
         let args = app_server_args_for(CodexLaunchProfile::Coding);
         let kept = without_code_mode_disables(args.clone());
         for feature in CODEX_CODE_MODE_FEATURES {
-            assert!(!kept.windows(2).any(|pair| pair[0] == "--disable" && pair[1] == *feature), "{feature}");
+            assert!(
+                !kept
+                    .windows(2)
+                    .any(|pair| pair[0] == "--disable" && pair[1] == *feature),
+                "{feature}"
+            );
         }
         let disables = |list: &[String]| list.iter().filter(|arg| *arg == "--disable").count();
-        assert_eq!(disables(&kept), disables(&args) - CODEX_CODE_MODE_FEATURES.len());
-        assert!(kept.windows(2).any(|pair| pair[0] == "--disable" && pair[1] == "plugins"));
+        assert_eq!(
+            disables(&kept),
+            disables(&args) - CODEX_CODE_MODE_FEATURES.len()
+        );
+        assert!(kept
+            .windows(2)
+            .any(|pair| pair[0] == "--disable" && pair[1] == "plugins"));
     }
 
     #[test]

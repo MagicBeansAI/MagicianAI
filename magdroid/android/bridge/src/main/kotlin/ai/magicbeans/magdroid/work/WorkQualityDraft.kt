@@ -1,6 +1,45 @@
 package ai.magicbeans.magdroid.work
 
 import kotlinx.serialization.json.*
+import ai.magicbeans.magdroid.chat.ChatModelChoice
+import ai.magicbeans.magdroid.chat.ChatModelSelection
+
+/** Quality's bounded route catalog owns eligibility; the shared catalog owns model controls. */
+class WorkQualityModels(quality: JsonElement?, catalog: JsonElement?) {
+    private val decoder = Json { ignoreUnknownKeys = true }
+    private val routes = rows(quality, "profiles")
+    private val catalogRoutes = rows(catalog, "profiles")
+    private val catalogModels = rows(catalog, "models").mapNotNull { runCatching { decoder.decodeFromJsonElement<ChatModelChoice>(it) }.getOrNull() }
+    fun family(route: String): String? = routes.firstOrNull { text(it, "name") == route }?.let { text(it, "family") }
+    fun models(excludedFamily: String? = null): List<ChatModelChoice> {
+        val eligible = routes.filter { excludedFamily == null || (text(it, "family") != excludedFamily && ((it as? JsonObject)?.get("supports_json") as? JsonPrimitive)?.booleanOrNull != false) }.mapNotNull { text(it, "name") }.toSet()
+        return catalogModels.filter { !it.provider.startsWith("harness-") }.mapNotNull { model ->
+            val choices = (model.operationChoices ?: model.choices).filterValues { it in eligible }.toMutableMap()
+            var defaultLevel = model.thinking.defaultLevel
+            if ("auto" !in choices) {
+                val assignment = catalogRoutes.firstOrNull { text(it, "name") in eligible && (((it as? JsonObject)?.get("model_selection") as? JsonObject)?.get("model_id") as? JsonPrimitive)?.contentOrNull == model.id }
+                val route = assignment?.let { text(it, "name") }
+                val level = (((assignment as? JsonObject)?.get("model_selection") as? JsonObject)?.get("thinking") as? JsonPrimitive)?.contentOrNull
+                if (route != null) {
+                    choices["auto"] = route
+                    if (level in model.thinking.levels) { choices[requireNotNull(level)] = route; defaultLevel = level }
+                }
+            }
+            if ("auto" !in choices) null else model.copy(choices = choices, operationChoices = null,
+                thinking = model.thinking.copy(levels = model.thinking.levels.filter { it in choices }, defaultLevel = defaultLevel))
+        }
+    }
+    fun selection(route: String, models: List<ChatModelChoice>): ChatModelSelection? {
+        models.firstOrNull { it.choices["auto"] == route }?.let { return ChatModelSelection(it.id, "auto") }
+        val saved = (catalogRoutes.firstOrNull { text(it, "name") == route } as? JsonObject)?.get("model_selection")
+            ?.let { runCatching { decoder.decodeFromJsonElement<ChatModelSelection>(it) }.getOrNull() }
+        if (saved != null && models.any { it.id == saved.modelId && saved.thinking in it.choices }) return saved
+        return models.firstNotNullOfOrNull { model -> model.choices.entries.firstOrNull { it.value == route }?.let { ChatModelSelection(model.id, it.key) } }
+    }
+    fun valid(route: String, models: List<ChatModelChoice>): Boolean = family(route) != null && selection(route, models)?.let { selected -> models.any { it.id == selected.modelId && it.installed } } == true
+    private fun rows(value: JsonElement?, key: String): List<JsonElement> = ((value as? JsonObject)?.get(key) as? JsonArray)?.toList().orEmpty()
+    private fun text(value: JsonElement, key: String): String? = ((value as? JsonObject)?.get(key) as? JsonPrimitive)?.contentOrNull
+}
 
 data class WorkSourceReference(val id: String, val title: String, val origin: String, val content: String) {
     val source: String get() = "Reference: $title\nOrigin: $origin\n\n$content"

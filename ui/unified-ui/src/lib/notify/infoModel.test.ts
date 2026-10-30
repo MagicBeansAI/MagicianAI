@@ -124,3 +124,35 @@ describe('infoEventToCard — non-informational / unknown', () => {
 		expect(infoEventToCard({ event_type: 'SomethingElse', data: {} })).toBeNull();
 	});
 });
+
+describe('infoEventToCard — provider outage', () => {
+	it('shows a retrying card kept until just after the next probe', () => {
+		const card = infoEventToCard({
+			event_type: 'AgenticProviderOutage',
+			data: {
+				execution_id: 'exec-1',
+				attempt: 2,
+				max_attempts: 7,
+				next_probe_ms: 30000,
+				error_class: 'circuit_open',
+				recovered: false
+			}
+		});
+		expect(card).toMatchObject({
+			id: 'provider-outage-exec-1',
+			kind: 'info',
+			deepLink: 'exec-1',
+			dismissAfterMs: 35000
+		});
+		expect(card && 'message' in card ? card.message : '').toContain('try 2 of 7');
+	});
+
+	it('turns into a short success card when the provider answers', () => {
+		expect(
+			infoEventToCard({
+				event_type: 'AgenticProviderOutage',
+				data: { execution_id: 'exec-1', attempt: 3, max_attempts: 7, next_probe_ms: 0, recovered: true }
+			})
+		).toMatchObject({ id: 'provider-back-exec-1', kind: 'success', dismissAfterMs: 5000 });
+	});
+});

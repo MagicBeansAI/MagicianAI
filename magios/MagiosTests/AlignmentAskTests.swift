@@ -168,7 +168,7 @@ final class AlignmentAskTests: XCTestCase {
                        "The answer window has closed; a late answer runs nothing.")
     }
 
-    // MARK: Your preferences
+    // MARK: Preference models
 
     private func json(_ object: Any) throws -> Data {
         try JSONSerialization.data(withJSONObject: object)
@@ -229,7 +229,7 @@ final class AlignmentAskTests: XCTestCase {
     }
 }
 
-// MARK: - Structured preferences and the preferences screen
+// MARK: - Structured preferences
 
 final class PresentedStatementTests: XCTestCase {
     func testAStoredKeyAndJsonObjectReadsAsATitleAndSortedFields() {
@@ -249,81 +249,5 @@ final class PresentedStatementTests: XCTestCase {
         XCTAssertNil(PresentedStatement.parse("Check with me before ordering meat."))
         XCTAssertNil(PresentedStatement.parse("Note: {not json}"))
         XCTAssertNil(PresentedStatement.parse("list: [1,2]"))
-    }
-}
-
-/// Renders Settings → Your preferences offscreen from fixtures, in Sorbet
-/// light and dark. PNGs land in `PREFERENCES_SHOTS_DIR` (or the temp dir).
-@MainActor
-final class OwnerPreferencesRenderTests: XCTestCase {
-    private var savedTheme = ""
-
-    override func setUp() async throws {
-        savedTheme = ThemeManager.shared.currentThemeName
-    }
-
-    override func tearDown() async throws {
-        ThemeManager.shared.applyTheme(savedTheme)
-    }
-
-    private let fixture = Data(#"""
-    {"intentions":[
-      {"id":"p1","revision":"r1","kind":"standing_instruction","assertion_status":"direct_owner_statement",
-       "statement":"Check with me before ordering meat for me.","lifecycle":"active","editable":true},
-      {"id":"p2","revision":"r2","kind":"goal","assertion_status":"direct_owner_statement",
-       "statement":"Keep dining out under $300 this month.","conditions":"until 31 October","lifecycle":"active","editable":true},
-      {"id":"p3","revision":"r3","kind":"taste","assertion_status":"inferred",
-       "statement":"output_format_preference: {\"media_type\":\"text/markdown\",\"scope\":\"both execution output and user-facing output\"}",
-       "lifecycle":"active","editable":true},
-      {"id":"p4","revision":"r4","kind":"taste","assertion_status":"confirmed",
-       "statement":"I prefer aisle seats.","lifecycle":"active","editable":true}]}
-    """#.utf8)
-
-    func testRenderOwnerPreferencesSorbetLightAndDark() throws {
-        let preferences = OwnerPreferences.parse(fixture)
-        XCTAssertEqual(preferences.count, 4)
-        for theme in ["sorbet", "sorbet-dark"] {
-            ThemeManager.shared.applyTheme(theme)
-            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-            try render(
-                NavigationStack { OwnerPreferencesView(seededWith: preferences) },
-                name: "owner-preferences-\(theme)"
-            )
-        }
-    }
-
-    private var outputDir: URL {
-        let path = ProcessInfo.processInfo.environment["PREFERENCES_SHOTS_DIR"]
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("preferences-shots").path
-        let url = URL(fileURLWithPath: path)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
-
-    private func render<V: View>(_ view: V, name: String, width: CGFloat = 393, height: CGFloat = 852) throws {
-        let host = UIHostingController(rootView: view.frame(width: width, height: height))
-        let window: UIWindow
-        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
-            window = UIWindow(windowScene: scene)
-        } else {
-            window = UIWindow()
-        }
-        window.frame = CGRect(origin: .zero, size: CGSize(width: width, height: height))
-        window.overrideUserInterfaceStyle = ThemeManager.shared.isDark ? .dark : .light
-        window.rootViewController = host
-        window.isHidden = false
-        host.view.frame = window.bounds
-        host.view.layoutIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        host.view.layoutIfNeeded()
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 3
-        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
-            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-        }
-        window.isHidden = true
-        let url = outputDir.appendingPathComponent("\(name).png")
-        try XCTUnwrap(image.pngData()).write(to: url)
-        print("preferences render: \(url.path)")
     }
 }

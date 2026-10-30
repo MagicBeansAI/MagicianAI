@@ -5,7 +5,7 @@
 //!
 //! Frontend → backend
 //! ```text
-//! session.start          { ui_thread_id, thread_id? }
+//! session.start          { ui_thread_id, thread_id?, chat_session_id? }
 //! ptt.engage             { }
 //! ptt.release            { }
 //! user.text              { text }
@@ -2628,6 +2628,14 @@ impl VoiceControlSession {
             .and_then(|v| v.as_str())
             .map(str::to_owned)
             .or_else(|| self.thread_id_hint.clone());
+        // The chat the client is showing. Without it the call joins the
+        // thread's active chat, which is ambiguous once a thread has tabs.
+        let chat_session_id = body
+            .get("chat_session_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned);
         let realtime_profile_name = body
             .get("realtime_profile")
             .or_else(|| body.get("profile"))
@@ -2645,19 +2653,33 @@ impl VoiceControlSession {
             .unwrap_or(false);
         let half_duplex = hands_free && !echo_cancellation;
         let turn_detection_override = requested_realtime_turn_detection(body, hands_free);
-        let coding_choice = body
-            .get("coding_choice")
-            .cloned()
-            .and_then(|value| {
-                serde_json::from_value::<
-                    magician::magician_v2::vibedev::run_service::ClientVibeDevCodingChoice,
-                >(value)
-                .ok()
-            })
-            .and_then(
-                magician::magician_v2::vibedev::run_service::ClientVibeDevCodingChoice::into_internal,
-            );
-        let chat_choice = requested_chat_choice(body);
+        let coding_choice = match body.get("coding_choice").filter(|value| !value.is_null()) {
+            Some(value) => match crate::coding_model_selection::parse_choice(value.clone()) {
+                Ok(choice) => Some(choice.into_internal()),
+                Err(message) => {
+                    self.send_envelope(
+                        ctx,
+                        "error",
+                        json!({
+                            "error_code":"invalid_coding_choice", "message":message
+                        }),
+                    );
+                    return;
+                },
+            },
+            None => None,
+        };
+        let chat_choice = match requested_chat_choice(body) {
+            Ok(choice) => choice,
+            Err(message) => {
+                self.send_envelope(
+                    ctx,
+                    "error",
+                    json!({"error_code":"invalid_chat_choice", "message":message}),
+                );
+                return;
+            },
+        };
         let realtime_voices = self.realtime_voices.clone();
         self.concurrent_requests = body
             .get("concurrent_requests")
@@ -2687,6 +2709,7 @@ impl VoiceControlSession {
                     source_surface,
                     ui_thread_id,
                     thread_id,
+                    chat_session_id,
                     realtime_profile_name,
                     hands_free,
                     concurrent_requests,
@@ -2760,11 +2783,12 @@ impl VoiceControlSession {
                     // delegated backend via delegate_to_chat.
                     //
                     // `delegate_to_chat` still authorizes against the voice
-                    // catalog snapshot, so we render session_context for the
-                    // snapshot id and then throw away its instructions/tools
-                    // instead of advertising them to Live. Skipping that
-                    // snapshot left Live hung: Magician refused the hatch
-                    // with "realtime tool policy snapshot was not advertised".
+                    // catalog snapshot, so Live records that snapshot id
+                    // without rendering the chat prompt (whose memory
+                    // retrieval held session.ready for up to the chat
+                    // deadline). Skipping the snapshot left Live hung:
+                    // Magician refused the hatch with "realtime tool policy
+                    // snapshot was not advertised".
                     let (
                         instructions,
                         tools,
@@ -2782,8 +2806,10 @@ impl VoiceControlSession {
                             mouth.push('\n');
                             mouth.push_str(VoiceOrchestrator::concurrent_voice_instructions());
                         }
-                        match orchestrator.session_context().await {
-                            Ok(ctx) => (mouth, Vec::new(), ctx.policy_snapshot_id, false, false, 0),
+                        match orchestrator.session_policy_snapshot().await {
+                            Ok(policy_snapshot_id) => {
+                                (mouth, Vec::new(), policy_snapshot_id, false, false, 0)
+                            },
                             Err(err) => {
                                 warn!(
                                     error = %err,
@@ -6209,26 +6235,97 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for VoiceControlSessi
     }
 }
 
-/// The client's composer chat choice from `session.start` (`chat_choice`:
-/// `{engine, model?, profile?}`), validated as a typed turn's is. The call's
-/// chat turns think with it; an absent, malformed, or not-installed choice
-/// is dropped and the call follows `chat.harness_engine`.
+/// Voice uses the same model/thinking fields as typed chat. A supplied invalid
+/// choice refuses session admission instead of silently changing the model.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceChatChoice {
+    harness_engine: String,
+    #[serde(default)]
+    harness_model: Option<String>,
+    #[serde(default)]
+    model_selection: Option<magicllm::catalog::ModelSelection>,
+}
+
+fn resolve_voice_chat_choice(
+    choice: VoiceChatChoice,
+    router: Option<&magicllm::LLMRouterConfig>,
+) -> std::result::Result<magician::magician_v2::execution::plane::ChatHarnessChoice, String> {
+    let route = if let Some(selection) = &choice.model_selection {
+        if !matches!(choice.harness_engine.as_str(), "magician" | "pi") {
+            return Err("Model selections require a Magician or Pi engine".into());
+        }
+        if choice
+            .harness_model
+            .as_deref()
+            .is_some_and(|model| !model.is_empty() && model != "default")
+        {
+            return Err("Use model_selection instead of a harness model for this engine".into());
+        }
+        let router = router.ok_or("The model catalog is unavailable")?;
+        let model = router
+            .catalog
+            .models
+            .get(&selection.model_id)
+            .filter(|model| model.selectable && !model.embedding)
+            .ok_or("This model is unavailable for chat")?;
+        if choice.harness_engine == "pi" && !model.coding {
+            return Err("This model is not qualified for Pi".into());
+        }
+        if selection.thinking != "auto" && !model.thinking.levels.contains(&selection.thinking) {
+            return Err("This thinking level is unavailable for the selected model".into());
+        }
+        let route = magicllm::catalog::choice_id(&selection.model_id, &selection.thinking);
+        magician::magician_v2::query_analysis::multi_llm_service::resolve_chat_profile_config(
+            router, &route,
+        )
+        .map_err(|_| "This model selection is unavailable for chat".to_string())?;
+        Some(route)
+    } else {
+        if matches!(choice.harness_engine.as_str(), "magician" | "pi")
+            && choice
+                .harness_model
+                .as_deref()
+                .is_some_and(|model| !model.is_empty() && model != "default")
+        {
+            return Err("Use model_selection for this engine".into());
+        }
+        None
+    };
+    let mut resolved =
+        magician::magician_v2::execution::plane::validated_client_chat_harness_choice(
+            &choice.harness_engine,
+            choice.harness_model.as_deref(),
+            None,
+        )?;
+    resolved.profile = route;
+    Ok(resolved)
+}
+
 fn requested_chat_choice(
     body: &Value,
-) -> Option<magician::magician_v2::execution::plane::ChatHarnessChoice> {
-    let choice = body.get("chat_choice")?.as_object()?;
-    let engine = choice.get("engine")?.as_str()?;
-    match magician::magician_v2::execution::plane::validated_client_chat_harness_choice(
-        engine,
-        choice.get("model").and_then(Value::as_str),
-        choice.get("profile").and_then(Value::as_str),
-    ) {
-        Ok(choice) => Some(choice),
-        Err(reason) => {
-            warn!(%reason, "voice session.start chat_choice ignored");
-            None
-        },
-    }
+) -> std::result::Result<Option<magician::magician_v2::execution::plane::ChatHarnessChoice>, String>
+{
+    let Some(value) = body.get("chat_choice").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let choice: VoiceChatChoice = serde_json::from_value(value.clone())
+        .map_err(|error| format!("Invalid chat choice: {error}"))?;
+    let config = choice
+        .model_selection
+        .as_ref()
+        .map(|_| {
+            magician::config::dry_run_magician_config_from_path(
+                &magician::config::magician_config_path(),
+            )
+        })
+        .transpose()
+        .map_err(|_| "The model catalog is unavailable".to_string())?;
+    resolve_voice_chat_choice(
+        choice,
+        config.as_ref().and_then(|config| config.router_config()),
+    )
+    .map(Some)
 }
 
 #[cfg(test)]
@@ -6237,6 +6334,62 @@ mod tests {
 
     use magician_media::media_rails::SurfaceType;
     use serde_json::json;
+
+    #[test]
+    fn voice_chat_choice_preserves_model_and_explicit_thinking_without_aliases() {
+        let router: magicllm::LLMRouterConfig = serde_json::from_value(json!({
+            "catalog": {
+                "connections":{"openai":{"provider":"openai","metadata":{"openai_api_mode":"responses"}}},
+                "models":{"luna":{"connection":"openai","model":"gpt-6-luna","label":"Luna",
+                    "limits":{"context_window_tokens":128000,"max_output_tokens":16384},
+                    "thinking":{"mode":"effort","levels":["none","low","medium"],"default":"medium"},
+                    "capabilities":{"tools":true}}}
+            },"default_profile":"model/luna/auto"
+        })).unwrap();
+        for thinking in ["auto", "none", "low"] {
+            let choice = serde_json::from_value(json!({"harness_engine":"magician","model_selection":{"model_id":"luna","thinking":thinking}})).unwrap();
+            let resolved = resolve_voice_chat_choice(choice, Some(&router)).unwrap();
+            assert_eq!(resolved.engine, "magician");
+            assert_eq!(
+                resolved.profile.as_deref(),
+                Some(format!("model/luna/{thinking}").as_str())
+            );
+        }
+        for value in [
+            json!({"harness_engine":"magician","model_selection":{"model_id":"missing"}}),
+            json!({"harness_engine":"magician","model_selection":{"model_id":"luna","thinking":"max"}}),
+            json!({"harness_engine":"pi","model_selection":{"model_id":"luna"}}),
+            json!({"harness_engine":"claude_code","model_selection":{"model_id":"luna"}}),
+            json!({"harness_engine":"magician","harness_model":"arbitrary"}),
+        ] {
+            let choice = serde_json::from_value(value).unwrap();
+            assert!(resolve_voice_chat_choice(choice, Some(&router)).is_err());
+        }
+    }
+
+    #[test]
+    fn voice_chat_choice_rejects_retired_fields_and_malformed_supplied_choices() {
+        for value in [
+            json!({"engine":"magician","profile":"old"}),
+            json!({"harness_engine":"magician","profile":"old"}),
+            json!({"harness_engine":"magician","model":"old"}),
+            json!({}),
+            json!("bad"),
+        ] {
+            assert!(requested_chat_choice(&json!({"chat_choice":value})).is_err());
+        }
+        assert!(requested_chat_choice(&json!({})).unwrap().is_none());
+        assert!(requested_chat_choice(&json!({"chat_choice":null}))
+            .unwrap()
+            .is_none());
+        let choice = requested_chat_choice(
+            &json!({"chat_choice":{"harness_engine":"magician","harness_model":"default"}}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(choice.engine, "magician");
+        assert!(choice.profile.is_none());
+    }
 
     /// A realtime call still open when the person hangs up has not failed.
     /// `session.end` marked it `cancelled` before the provider was even told

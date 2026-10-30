@@ -1,6 +1,7 @@
 import { cleanup, render, screen, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installBrowserTestPolyfills, installFetchMock, jsonResponse } from '../../test/browser';
+import { hudWindow } from './hudWindow';
 import TopBar from './TopBar.svelte';
 
 vi.mock('$app/stores', async () => {
@@ -12,6 +13,7 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	hudWindow.set({ available: false, ready: false, expanded: false });
 	installBrowserTestPolyfills();
 	// Every backend read the bar's stores make answers empty; the nav itself
 	// is static markup and must not depend on any of them.
@@ -46,6 +48,15 @@ describe('TopBar primary navigation', () => {
 		expect(labels).not.toContain('Tasks');
 		expect(labels).not.toContain('Crew');
 		expect(labels).not.toContain('Relentless');
+	});
+
+	it('places the native Compact action last, with an icon and accessible name', () => {
+		hudWindow.set({ available: true, ready: true, expanded: true });
+		const { container } = render(TopBar);
+		const button = screen.getByRole('button', { name: 'Return to compact' });
+		expect(button.textContent?.trim()).toBe('');
+		expect(button.querySelector('svg')).not.toBeNull();
+		expect(container.querySelector('.top-right')?.lastElementChild).toBe(button);
 	});
 
 	it('leaves only search and attention in the top right', () => {

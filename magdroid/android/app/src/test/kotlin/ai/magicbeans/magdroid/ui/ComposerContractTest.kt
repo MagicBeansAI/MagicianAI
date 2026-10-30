@@ -57,10 +57,6 @@ class ComposerContractTest {
         assertTrue(COMPOSER_TOOL_BUTTON_DP <= 30)
         assertTrue(COMPOSER_TOOL_ICON_DP <= 16)
         assertTrue(COMPOSER_PROFILE_VERTICAL_PADDING_DP <= 3)
-        assertTrue(COMPOSER_PROFILE_TAG_CORNER_DP <= 4)
-        assertEquals(8, COMPOSER_PROFILE_TAG_FONT_SP)
-        assertEquals(1, COMPOSER_PROFILE_TAG_VERTICAL_PADDING_DP)
-        assertEquals(4, COMPOSER_PROFILE_TAG_HORIZONTAL_PADDING_DP)
         assertEquals(32, COMPOSER_VOICE_DOCK_HEIGHT_DP)
         assertEquals(31, COMPOSER_VOICE_DOCK_PRIMARY_WIDTH_DP)
         assertEquals(22, COMPOSER_VOICE_DOCK_CHEVRON_WIDTH_DP)
@@ -79,10 +75,6 @@ class ComposerContractTest {
         assertEquals(Lively.composerRadius, COMPOSER_CORNER_DP.dp)
         assertTrue(COMPOSER_BOTTOM_GAP_DP <= 4)
         assertEquals(AccentFill, composerModeFill(ai.magicbeans.magdroid.chat.ChatComposerMode.AcceptInScope))
-        assertEquals(ChatSuccess, chatProfileTierColor("instant"))
-        assertEquals(Teal, chatProfileTierColor("normal"))
-        assertEquals(ChatDiscovery, chatProfileTierColor("advanced"))
-        assertEquals(Secondary, chatProfileTierColor("unknown"))
     }
 
     @Test

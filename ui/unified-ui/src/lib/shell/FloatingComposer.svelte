@@ -12,6 +12,7 @@
 	 *   • top — compact updates above the session dock
 	 *   • attachments — rendered above the textarea (e.g. the staged
 	 *     attachments strip)
+	 *   • attachment-actions — beside Attach files, when attachments are allowed
 	 *   • banner — rendered above the composer body (e.g. read-only
 	 *     viewing-archived banner)
 	 *   • warnings — rendered below the composer (e.g. profile warnings
@@ -36,9 +37,10 @@
 		type SlashView
 	} from '$lib/magician/chat/composerCommands';
 	import Icon from '$lib/shared/icons/Icon.svelte';
-	import ProfileSelectionBurst from '$lib/magician/components/chat/ProfileSelectionBurst.svelte';
 	import VoiceControl from '$lib/magician/components/chat/VoiceControl.svelte';
 	import CodingEnginePicker from './CodingEnginePicker.svelte';
+	import ComposerModelChip from './ComposerModelChip.svelte';
+	import type { ModelFeedback } from '$lib/llm/modelCatalog';
 	import ComposerTalkCodeSwitch from './ComposerTalkCodeSwitch.svelte';
 	import { draftInvokesVibedev, type CodingProfile } from '$lib/stores/codingProfileStore';
 
@@ -79,12 +81,17 @@
 	export let profileName: string | null = null;
 	export let engineName: string | null = null;
 	export let profileModel: string | null = null;
+	export let profileModelLabel: string | null = null;
+	export let profileThinkingLabel: string | null = null;
+	export let profileFeedback: ModelFeedback | null = null;
 	export let profileMenuOpen = false;
 	/** Composer column cap. Accepts a number (treated as px) or any CSS
 	 *  length string (e.g. `var(--chat-col)`) so the composer can share
 	 *  a width token with the surface that mounts it. */
 	export let maxWidth: number | string = 760;
 	export let variant: 'chat' | 'dev' = 'chat';
+	/** Page navigation belongs to full app surfaces, not the persistent HUD. */
+	export let showModeSwitch = true;
 	/**
 	 * Render the docked chrome row above the input (the `dock` and
 	 * `dock-actions` slots). Off by default so surfaces that don't dock —
@@ -92,26 +99,7 @@
 	 * show — are untouched.
 	 */
 	export let dock = false;
-	/** True when the selected profile is an adaptive composite. Renders
-	 *  an "Adaptive" badge next to the profile name in the trigger. */
-	export let profileIsAdaptive = false;
-	/** Optional tier label for adaptive composites (instant / normal /
-	 *  advanced). Rendered as a chip alongside the Adaptive badge so
-	 *  the user sees the size / capability tier at a glance. Null /
-	 *  empty hides the chip. */
-	export let profileAdaptiveTier: string | null = null;
-	/** True for the duration of a chat turn that has escalated to the
-	 *  thinking variant of an adaptive profile. Renders a "Thinking
-	 *  mode" chip on the composer so the user can see why the response
-	 *  is slower / costs more for this turn. Cleared on
-	 *  `ThinkingModeCompleted`. */
-	export let thinkingModeActive = false;
-	/** Optional reason string the LLM passed when escalating. Shown as
-	 *  the chip tooltip and (truncated) as the chip subtitle. */
-	export let thinkingModeReason: string | null = null;
-	/** Inline lookup entries for inserting agent/tool/personality names into
-	 *  the draft. This is a composer aid only; selection does not activate
-	 *  skills or switch runtime state by itself. */
+
 	export let mentionItems: ComposerMentionItem[] = [];
 	/** Named + Auto coding rows. Shown only while the draft invokes `@vibedev`. */
 	export let codingProfiles: CodingProfile[] = [];
@@ -285,6 +273,9 @@
 
 	export function focusProfileTrigger(): void {
 		profileTriggerEl?.focus();
+	}
+	export function profileTrigger(): HTMLButtonElement | null {
+		return profileTriggerEl;
 	}
 
 	// Only fires for keys the mention layer did NOT consume (i.e. the picker is
@@ -525,7 +516,9 @@
 			</div>
 		{:else}
 		<div class="composer-tools">
-			<ComposerTalkCodeSwitch active="talk" draftText={value} />
+			{#if showModeSwitch}
+				<ComposerTalkCodeSwitch active="talk" draftText={value} />
+			{/if}
 			<span class="seg" class:plan-on={mode === 'plan'} class:accept-on={mode === 'accept_in_scope'} role="tablist" aria-label="Composer mode">
 				<!-- Do is a split control: the face selects Do, the caret picks how
 				     much it asks. Accept is a permission posture, not a peer mode,
@@ -605,6 +598,10 @@
 					<path d="M21.44 11.05l-8.49 8.49a6 6 0 0 1-8.49-8.49l8.49-8.48a4 4 0 0 1 5.66 5.65l-8.49 8.49a2 2 0 0 1-2.83-2.83l7.78-7.78"/>
 				</svg>
 			</button>
+			<!-- Optional host actions share attachment availability. -->
+			{#if supportsAttachments && !isUploading && !isReadOnly}
+				<slot name="attachment-actions" />
+			{/if}
 			<!-- Spacer splits the row: mode + attach stay left with the input,
 			     the profile chip and its thinking-mode status park right. -->
 			<span class="spacer"></span>
@@ -620,52 +617,19 @@
 					on:select={(event) => dispatch('selectCodingProfile', { id: event.detail.id })}
 				/>
 			{/if}
-			{#if thinkingModeActive}
-				<span
-					class="thinking-chip"
-					title={thinkingModeReason ?? 'Escalated to thinking variant for this turn'}
-					role="status"
-					aria-live="polite"
-				>
-					<span class="thinking-chip-dot" aria-hidden="true"></span>
-					Thinking mode
-				</span>
-			{/if}
 			{#if profileName}
-				<button
-					type="button"
-					class="profile"
-					class:adaptive={profileIsAdaptive}
-					bind:this={profileTriggerEl}
+				<ComposerModelChip
+					engine={engineName}
+					model={profileModelLabel ?? profileModel}
+					modelIdentifier={profileModel ?? profileName}
+					feedback={profileFeedback}
+					thinking={profileThinkingLabel}
+					expanded={profileMenuOpen}
+					bind:triggerElement={profileTriggerEl}
 					on:click={() => dispatch('toggleProfile')}
-					aria-haspopup="dialog"
-					aria-expanded={profileMenuOpen}
-					aria-label={`Chat engine: ${engineName ?? 'Magician'}, selection: ${profileName}`}
+					ariaLabel={`Chat engine: ${engineName ?? 'Magician'}, selection: ${profileName}${profileThinkingLabel ? `, thinking: ${profileThinkingLabel}` : ''}`}
 					title={`${engineName ?? 'Magician'}: ${profileName}${profileModel ? ` (${profileModel})` : ''}`}
-				>
-					<!-- Icon-led chip — same parsing as the mobile composer:
-					     sparkles + optional Adaptive badge + model tag +
-					     chevron, no verbose profile-name text (it lives in
-					     the tooltip). -->
-					<svg class="pp-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M12 3l1.9 4.9L19 10l-4.9 1.9L12 17l-1.9-5.1L5 10l5.1-2L12 3z" />
-						<path d="M5 19l.7-1.7L7 16.5l-1.3-.8L5 14l-.7 1.7L3 16.5l1.3.8L5 19z" />
-					</svg>
-					{#if engineName}<span class="pp-engine">{engineName}</span>{/if}
-					{#if profileIsAdaptive}
-						<span class="pp-badge" title="Adaptive: auto-escalates from fast to thinking when needed">Adaptive</span>
-					{/if}
-					{#if profileAdaptiveTier}
-						<span class="pp-tier pp-tier--{profileAdaptiveTier}" title={`Tier: ${profileAdaptiveTier}`}>{profileAdaptiveTier}</span>
-					{/if}
-					{#if profileModel}<span class="pp-model">{profileModel}</span>{/if}
-					<svg class="pp-chevron" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-					<ProfileSelectionBurst
-						{profileName}
-						{profileModel}
-						profileAdaptiveTier={profileAdaptiveTier}
-					/>
-				</button>
+				/>
 			{/if}
 		</div>
 		{/if}
@@ -706,7 +670,7 @@
 		box-shadow:
 			0 1px 0 rgba(255, 255, 255, 0.04) inset,
 			var(--shadow-lg, 0 24px 48px -12px rgba(0, 0, 0, 0.25));
-		/* `visible` (not `hidden`) so the absolutely-positioned voice-slot
+		/* `visible` (not `hidden`) so the absolutely-positioned recording
 		   overlays — the live `0:03` timer pill above the mic and the
 		   post-recording preview row — can poke above the composer shell
 		   without being clipped by its rounded-corner mask. The inner
@@ -837,194 +801,11 @@
 		50% { opacity: 0.4; }
 	}
 
-	/* Two circular voice icon slots that sit immediately right of the
-	   send button on the composer row. The mic slot wraps
-	   `<MicCaptureButton compact />`; the call slot wraps `<VoiceCallButton />`.
-	   Both inherit the same circular orange treatment via :global() drills
-	   below so the recording state, error overlay, and call-active state
-	   all read as one consistent icon-button family. */
-	.voice-slot {
-		flex-shrink: 0;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 32px;
-		height: 32px;
-		padding: 0;
-		border: none;
-		border-radius: 999px;
-		background: var(--accent-soft, var(--accent-primary-soft));
-		color: var(--accent-primary);
-		cursor: pointer;
-		transition: background-color 120ms ease, color 120ms ease, transform 80ms ease;
-	}
-	.voice-slot :global(.voice-call-btn),
-	.voice-slot :global(.capture-btn),
-	.voice-slot :global(.mic-capture__btn) {
-		width: 32px;
-		height: 32px;
-		min-width: 32px;
-		min-height: 32px;
-		padding: 0;
-		border-radius: var(--radius-full);
-		border: none;
-		background: var(--accent-soft, var(--accent-primary-soft));
-		color: var(--accent-primary);
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.voice-slot:hover:not(:disabled),
-	.voice-slot :global(.voice-call-btn:hover:not(:disabled)),
-	.voice-slot :global(.capture-btn:hover:not(:disabled)),
-	.voice-slot :global(.mic-capture__btn:hover:not(:disabled)) {
-		background: color-mix(in srgb, var(--accent-primary) 22%, var(--accent-soft, var(--accent-primary-soft)));
-		color: var(--accent-primary-hover, var(--accent-primary));
-	}
-	.voice-slot:active:not(:disabled) {
-		transform: scale(0.94);
-	}
-	.voice-slot:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-	.voice-slot :global(svg) {
-		width: 14px;
-		height: 14px;
-		display: block;
-	}
-	/* Live realtime call → red ring. */
-	.voice-slot :global(.voice-call-btn--active) {
-		background: var(--color-error-soft);
-		color: var(--color-error);
-	}
-
-	/* Mic slot: the MicCaptureButton wraps its `.mic-capture__btn` in a
-	   `.mic-capture` container that also hosts the elapsed-timer chip
-	   and the post-stop preview row. Position the container so those
-	   secondary affordances overflow ABOVE the composer row rather than
-	   pushing the send button leftward. */
-	.voice-slot--mic {
-		position: relative;
-		background: transparent;
-	}
-	.voice-slot--mic :global(.mic-capture) {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		gap: 0;
-	}
-	/* Live recording chip: orb stays inside the circular slot, the
-	   `0:03` timer floats up-and-right as a small pill so the composer
-	   row never grows mid-utterance. */
-	.voice-slot--mic :global(.mic-capture__btn--recording) {
-		background: var(--color-error-soft);
-		color: var(--color-error);
-		box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-error) 18%, transparent);
-		animation: voice-slot-pulse 1.4s ease-in-out infinite;
-	}
-	.voice-slot--mic :global(.mic-capture__elapsed) {
-		position: absolute;
-		bottom: calc(100% + 6px);
-		left: 50%;
-		transform: translateX(-50%);
-		padding: 3px 8px;
-		font-size: var(--text-2xs);
-		font-variant-numeric: tabular-nums;
-		color: var(--text-on-bright, var(--text-on-accent, #fff));
-		background: var(--color-error);
-		border-radius: var(--radius-full);
-		box-shadow: var(--shadow-sm);
-		white-space: nowrap;
-		pointer-events: none;
-	}
-	/* Pending-preview state (STT unavailable or transcribe failed):
-	   compact pill bar floats above the composer instead of expanding
-	   inline. Theme-driven palette. */
-	.voice-slot--mic :global(.mic-capture__preview) {
-		position: absolute;
-		bottom: calc(100% + 8px);
-		right: 0;
-		display: inline-flex;
-		flex-wrap: nowrap;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 8px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-soft);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-md);
-		white-space: nowrap;
-		z-index: 2;
-	}
-	.voice-slot--mic :global(.mic-capture__duration) {
-		font-size: var(--text-2xs);
-		color: var(--text-secondary);
-	}
-	.voice-slot--mic :global(.mic-capture__action) {
-		padding: 4px 10px;
-		font-size: var(--text-2xs);
-		font-weight: 600;
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--border-default);
-		background: transparent;
-		color: var(--text-primary);
-		cursor: pointer;
-	}
-	.voice-slot--mic :global(.mic-capture__action--primary) {
-		background: var(--accent-fill);
-		border-color: var(--accent-primary);
-		color: var(--text-on-accent, #fff);
-	}
-	.voice-slot--mic :global(.mic-capture__error) {
-		position: absolute;
-		bottom: calc(100% + 8px);
-		right: 0;
-		padding: 5px 10px;
-		font-size: var(--text-2xs);
-		color: var(--color-error);
-		background: var(--color-error-soft);
-		border-radius: var(--radius-sm);
-		white-space: nowrap;
-	}
-	@keyframes voice-slot-pulse {
-		0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-error) 18%, transparent); }
-		50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-error) 28%, transparent); }
-	}
-
 	.composer-row {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		padding: 12px 12px 12px 14px;
-	}
-
-	.composer-textarea {
-		flex: 1;
-		background: transparent;
-		border: 0;
-		outline: 0;
-		font-family: var(--font-primary);
-		font-size: 14.5px;
-		line-height: 22px;
-		color: var(--text-primary, #1a1a1a);
-		resize: none;
-		/* Match the send button's 32px so a single line of text/placeholder
-		   sits visually centered next to the send icon. Padding (32 - 22) / 2
-		   keeps line content vertically centered; auto-resize grows from there. */
-		min-height: 32px;
-		max-height: 220px;
-		padding: 5px 0;
-		letter-spacing: -0.005em;
-	}
-
-	.composer-textarea::placeholder {
-		color: var(--text-faint, #aaa);
-	}
-
-	.composer-textarea:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 
 	.send {
@@ -1185,154 +966,6 @@
 		cursor: not-allowed;
 	}
 
-	/* Sparkles glyph leads the icon-only profile chip — visible on
-	   desktop AND mobile. The verbose profile name now lives in the
-	   button's `title` tooltip; the badge + model tag carry the
-	   at-a-glance identity (e.g. "ADAPTIVE • gpt-5.6-terra"). */
-	/* The chip's children all set their own font-size, so they do NOT
-	   inherit `.profile`'s. Every one of them has to be sized explicitly or
-	   the box shrinks while the text inside stays put. Same for the two
-	   inline SVGs, whose width/height attributes need a CSS override. */
-	.profile .pp-icon {
-		flex-shrink: 0;
-		color: var(--accent-primary);
-		width: 10px;
-		height: 10px;
-	}
-
-	.profile .pp-chevron {
-		flex-shrink: 0;
-		width: 8px;
-		height: 8px;
-	}
-
-	.profile {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		padding: 2px 6px;
-		border-radius: 5px;
-		font-family: var(--font-primary);
-		font-size: 9.5px;
-		color: var(--text-secondary, #444);
-		background: transparent;
-		border: 0;
-		cursor: pointer;
-		transition: background 0.15s ease;
-		min-width: 0;
-		overflow: visible;
-	}
-
-	.profile:hover {
-		background: var(--bg-soft, rgba(0, 0, 0, 0.05));
-	}
-
-	.profile .pp-model {
-		font-family: var(--font-mono);
-		font-size: 9.5px;
-		color: var(--text-muted, #888);
-		flex-shrink: 0;
-	}
-
-	.profile .pp-engine {
-		font-weight: 650;
-		white-space: nowrap;
-	}
-
-	.profile .pp-badge {
-		/* Chips use the themed display font (Fredoka in the default
-		   theme, swapped per theme via the same `--font-display` var)
-		   so they pick up the same branding as headings + nav rather
-		   than inheriting the body font and reading as system-default
-		   at this small size. */
-		font-family: var(--font-display);
-		font-size: 8.5px;
-		font-weight: 600;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		padding: 0 4px;
-		border-radius: 999px;
-		background: var(--accent-soft, rgba(194, 80, 42, 0.12));
-		color: var(--accent-primary, #c2502a);
-		border: 1px solid var(--accent-border, rgba(194, 80, 42, 0.28));
-		flex-shrink: 0;
-	}
-
-	/* Tier chip — adaptive composite size/capability indicator
-	   (instant / normal / advanced / frontier). Sits next to .pp-badge so the
-	   Adaptive label + tier read as one cluster. Per-tier colour. */
-	.profile .pp-tier {
-		font-family: var(--font-display);
-		font-size: 8.5px;
-		font-weight: 600;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		padding: 0 4px;
-		border-radius: 999px;
-		background: rgba(140, 150, 175, 0.14);
-		color: var(--text-muted, #888);
-		border: 1px solid rgba(140, 150, 175, 0.30);
-		flex-shrink: 0;
-	}
-	.profile .pp-tier.pp-tier--instant {
-		background: rgba(110, 231, 183, 0.16);
-		color: #2f9e7a;
-		border-color: rgba(110, 231, 183, 0.40);
-	}
-	.profile .pp-tier.pp-tier--normal {
-		background: rgba(125, 211, 252, 0.16);
-		color: #2784c4;
-		border-color: rgba(125, 211, 252, 0.40);
-	}
-	.profile .pp-tier.pp-tier--advanced {
-		background: rgba(196, 181, 253, 0.18);
-		color: #6c4ec2;
-		border-color: rgba(196, 181, 253, 0.44);
-	}
-	.profile .pp-tier.pp-tier--frontier {
-		background: rgba(251, 191, 36, 0.18);
-		color: #b45309;
-		border-color: rgba(251, 191, 36, 0.46);
-	}
-
-	.profile.adaptive {
-		background: var(--accent-soft, rgba(194, 80, 42, 0.06));
-	}
-
-	.thinking-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		padding: 2px 8px 2px 6px;
-		border-radius: 999px;
-		font-family: var(--font-primary);
-		font-size: 9.5px;
-		font-weight: 500;
-		color: var(--accent-primary, #c2502a);
-		background: var(--accent-soft, rgba(194, 80, 42, 0.12));
-		border: 1px solid var(--accent-border, rgba(194, 80, 42, 0.28));
-		animation: thinking-chip-pulse 1.6s ease-in-out infinite;
-	}
-
-	.thinking-chip-dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--accent-primary, #c2502a);
-		box-shadow: 0 0 0 0 var(--accent-primary, #c2502a);
-		animation: thinking-chip-dot-pulse 1.4s ease-in-out infinite;
-	}
-
-	@keyframes thinking-chip-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.85; }
-	}
-
-	@keyframes thinking-chip-dot-pulse {
-		0%, 100% { box-shadow: 0 0 0 0 rgba(194, 80, 42, 0.45); }
-		50% { box-shadow: 0 0 0 5px rgba(194, 80, 42, 0); }
-	}
 
 	.spacer {
 		flex: 1;
@@ -1395,31 +1028,7 @@
 			width: 40px;
 			height: 40px;
 		}
-		/* Profile picker: collapse to a pure-icon 40×40 button at narrow
-		   widths so it fits beside the audio actions on a 360px phone.
-		   The badge/model/chevron drop; the sparkles glyph stays. */
-		.composer-tools .profile .pp-badge,
-		.composer-tools .profile .pp-model,
-		.composer-tools .profile .pp-engine,
-		.composer-tools .profile .pp-chevron {
-			display: none;
-		}
-		/* The sparkles glyph is the ONLY thing left in the chip here, so it
-		   keeps its full size — the desktop shrink to 10px is for a dense
-		   chip sitting beside a model tag, not for a lone 40px touch
-		   target. */
-		.composer-tools .profile .pp-icon {
-			width: 16px;
-			height: 16px;
-		}
-		.composer-tools .profile {
-			width: 40px;
-			height: 40px;
-			min-width: 40px;
-			padding: 0;
-			justify-content: center;
-			gap: 0;
-		}
+
 	}
 
 	/* Split control: Do carries its permission posture on its face, the caret

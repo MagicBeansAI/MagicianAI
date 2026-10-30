@@ -62,6 +62,9 @@ CAPABILITY_NODE_VERSION := $(shell cat $(CURDIR)/.node-version 2>/dev/null | sed
 CAPABILITY_NODE_MAJOR := $(firstword $(subst ., ,$(CAPABILITY_NODE_VERSION)))
 NODE_ROOT := $(CURDIR)/.node
 NODE_BIN := $(NODE_ROOT)/bin
+# Bootstrap may install PyYAML only in the project venv. Use that interpreter
+# for frontmatter/setup scripts instead of assuming the host Python has it.
+SETUP_PYTHON = $(shell if [ -x "$(CURDIR)/.venv/bin/python" ] && "$(CURDIR)/.venv/bin/python" -c 'import yaml' >/dev/null 2>&1; then printf '%s' "$(CURDIR)/.venv/bin/python"; else command -v python3; fi)
 # Keep installation caches with the managed runtime, including packaged installs.
 export npm_config_cache := $(CURDIR)/.cache/npm
 ENSURE_CAPABILITY_NODE_RUNTIME = \
@@ -79,16 +82,15 @@ ENSURE_CAPABILITY_NODE_RUNTIME = \
 		echo "  run: 'make setup-node' to install the project-local copy"; exit 1; \
 	fi
 
-.PHONY: help validate test-openai-image build install-scope uninstall-scope link-scopes check-scopes list list-source clean \
+.PHONY: help validate test-openai-image test-polymarket-search build install-scope uninstall-scope link-scopes check-scopes list list-source clean \
 	clean-build clean-runtime clean-legacy-scope clean-all \
 	setup-all setup-all-plan setup-node setup-deps setup-python-bootstrap setup-agent-browser verify-agent-browser \
 	ensure-agent-browser-vendor-bin \
 	kill-stale-agent-browser \
-	agent-browser-source rebuild-agent-browser setup-skill-bins setup-officecli verify-officecli \
+	agent-browser-source rebuild-agent-browser setup-skill-bins setup-whatsapp-bins setup-officecli verify-officecli \
 	setup-document-to-markdown setup-pdftotext setup-media-fetch setup-ocr setup-python verify-python setup-env setup-gws-accounts \
 	seed-scope setup-bot-envs setup-bots install-bot-bundles build-bots \
-	check-bots setup-printing-press setup-metabase-cli regen-metabase-cli \
-	refresh-metabase-spec setup-marimo \
+	check-bots setup-marimo \
 	setup-cloak-browser verify-cloak-browser setup-lightpanda verify-lightpanda \
 	setup-kapso-cli setup-higgsfield-cli verify-higgsfield-cli setup-higgsfield-auth \
 	verify-runtime verify-bot-runtime setup-wizard-skills setup-wizard-bots setup-wizard-media setup-wizard-browser setup-wizard-browser-engines
@@ -105,6 +107,7 @@ help:
 	@echo "  setup-python-bootstrap              Ensure PyYAML for setup/materialization scripts"
 	@echo "  setup-agent-browser                 Browser skill: own npm install + patched-binary overlay"
 	@echo "  setup-skill-bins                    Symlink rg, dugite, and TinyFish binaries to root node_modules"
+	@echo "  setup-whatsapp-bins                 Link pinned wu and Node into both WhatsApp skills"
 	@echo "  setup-document-to-markdown          Build the standalone AnyDoc CLI workspace tool and link it into its skill"
 	@echo "  setup-officecli                     Fetch pinned, checksum-verified OfficeCLI and link all Office skills"
 	@echo "  verify-officecli                    Verify the pinned OfficeCLI binary and skill links without downloading"
@@ -121,7 +124,6 @@ help:
 	@echo "  setup-bot-envs [SCOPE=..] [FORCE=1] Generate per-bot env files at scope from root secrets source"
 	@echo "  setup-bots [FORCE=1]                Build bot daemon dist/index.js (esbuild bundle, mtime-skipped)"
 	@echo "  setup-marimo                        Dedicated venv at skillshub/marimo/.venv + bin/marimo symlink"
-	@echo "  setup-metabase-cli                  Build metabase-pp-cli via printing-press"
 	@echo "  setup-cloak-browser                 Cloak Browser: fetch stealth Chromium binary (one-time, ~200MB)"
 	@echo "  verify-cloak-browser                Confirm CloakBrowser SDK + binary + wrapper script are healthy"
 	@echo "  setup-lightpanda                    Install the official Lightpanda nightly (Homebrew on macOS)"
@@ -134,6 +136,7 @@ help:
 	@echo "Skill catalog:"
 	@echo "  validate                   Validate every SKILL.md frontmatter"
 	@echo "  test-openai-image          Offline OpenAI image API/artifact/accounting regressions"
+	@echo "  test-polymarket-search     Offline provider search, pagination and connection regressions"
 	@echo "  build                      Run any per-skill build steps (bin/ compilation)"
 	@echo "  install-scope SCOPE=<id> [NAMES=a,b,c]"
 	@echo "                              Install skills (symlinks back to skillshub/) to DATA_ROOT/scopes/<id>/skills/."
@@ -141,6 +144,7 @@ help:
 	@echo "                              Example: make install-scope SCOPE=anonymous/default NAMES=\"image-generation-via-minimax\""
 	@echo "  uninstall-scope SCOPE=<id> Remove all skill + bot bundle symlinks; preserves config/.env, auth/, bot node_modules, .env.<account>, workdirs/"
 	@echo "  link-scopes                Repair EVERY scope's skills layer (missing/dangling links, pinned CLI store) and check it"
+	@echo "  migrate-metabase-mcp       Retire legacy CLI in every workspace; retain credentials and use scoped MCP origins"
 	@echo "  check-scopes               Read-only: list each scope's broken bin/ entries with the make target that fixes it"
 	@echo "  list                       List installed system skills"
 	@echo "  list-source                List source skills under skillshub/ (preview)"
@@ -166,17 +170,20 @@ help:
 # ============================================================================
 
 validate:
-	@python3 scripts/validate_skill_md.py $(SKILL_DIRS)
+	@"$(SETUP_PYTHON)" scripts/validate_skill_md.py $(SKILL_DIRS)
 
 test-openai-image:
-	@python3 scripts/validate_skill_md.py image-generation-via-openai
+	@"$(SETUP_PYTHON)" scripts/validate_skill_md.py image-generation-via-openai
 	@python3 -m unittest discover -s image-generation-via-openai/tests -v
 
+test-polymarket-search:
+	@python3 -m unittest discover -s polymarket-search/tests -v
+
 list:
-	@python3 scripts/list_skills.py --data-root "$(DATA_ROOT)"
+	@"$(SETUP_PYTHON)" scripts/list_skills.py --data-root "$(DATA_ROOT)"
 
 list-source:
-	@python3 scripts/list_skills.py --source-only
+	@"$(SETUP_PYTHON)" scripts/list_skills.py --source-only
 
 build: setup-document-to-markdown
 	@for d in $(SKILL_DIRS); do \
@@ -202,15 +209,7 @@ install-scope: validate build
 	@test -n "$(SCOPE)" || (echo "SCOPE=<principal>/<workspace> required" && exit 1)
 	@NAMES_ARG=""; \
 	 if [ -n "$(NAMES)" ]; then NAMES_ARG="--names $(NAMES)"; fi; \
-	 python3 scripts/install_skill_layer.py --layer all --dest "$(DATA_ROOT)/scopes/$(SCOPE)/skills" $$NAMES_ARG
-	@SCOPE_ROOT="$(DATA_ROOT)/scopes/$(SCOPE)"; \
-	 WU_SRC="$$SCOPE_ROOT/bots/whatsapp/node_modules/.bin/wu"; \
-	 WU_DST="$$SCOPE_ROOT/skills/whatsapp/bin/wu"; \
-	 if [ -e "$$WU_SRC" ] && [ -d "$$SCOPE_ROOT/skills/whatsapp" ]; then \
-	   mkdir -p "$$(dirname "$$WU_DST")"; \
-	   ln -sf "../../../bots/whatsapp/node_modules/.bin/wu" "$$WU_DST"; \
-	   echo ">>> linked scoped whatsapp wu executable at $$WU_DST"; \
-	 fi
+	 "$(SETUP_PYTHON)" scripts/install_skill_layer.py --layer all --dest "$(DATA_ROOT)/scopes/$(SCOPE)/skills" $$NAMES_ARG
 
 # uninstall-scope: surgical reverse of install-scope. Removes symlinks under
 # each public `<scope>/skills/<name>/` package view and every bot bundle
@@ -226,8 +225,8 @@ install-scope: validate build
 # runtime trees including auth tokens), see `clean-runtime`.
 uninstall-scope:
 	@test -n "$(SCOPE)" || (echo "SCOPE=<principal>/<workspace> required" && exit 1)
-	@python3 scripts/uninstall_skill_layer.py --dest "$(DATA_ROOT)/scopes/$(SCOPE)/skills"
-	@python3 scripts/uninstall_bot_bundles.py --scope "$(SCOPE)" --data-root "$(DATA_ROOT)"
+	@"$(SETUP_PYTHON)" scripts/uninstall_skill_layer.py --dest "$(DATA_ROOT)/scopes/$(SCOPE)/skills"
+	@"$(SETUP_PYTHON)" scripts/uninstall_bot_bundles.py --scope "$(SCOPE)" --data-root "$(DATA_ROOT)"
 	@echo ">>> uninstall-scope done (kept: config/.env, auth/, bot node_modules, .env.<account>, bot_configs.yaml, workdirs/)"
 
 clean: clean-build
@@ -244,7 +243,6 @@ clean: clean-build
 #   - skillshub/*/bin/ (regenerated symlinks from setup-skill-bins,
 #       setup-pdftotext, setup-ocr, setup-marimo; browser/bin/ holds
 #       the patched binary, regenerated by setup-agent-browser)
-#   - skillshub/metabase/{bin,.pp-build}/ (regenerated by setup-metabase-cli)
 #   - skillshub/bots/*/dist/ (regenerated by setup-bots)
 # Preserves:
 #   - All SKILL.md, scripts/, config/, references/, assets/, and independent source
@@ -258,7 +256,7 @@ clean-build:
 	  echo "Removing skillshub build artifacts..."; \
 	fi
 	@for p in node_modules .venv marimo/.venv browser/node_modules \
-	         metabase/.pp-build $$(ls -d */bin 2>/dev/null) \
+	         $$(ls -d */bin 2>/dev/null) \
 	         $$(ls -d bots/*/dist 2>/dev/null); do \
 	  if [ -e "$$p" ]; then \
 	    sz="$$(du -sh "$$p" 2>/dev/null | cut -f1)"; \
@@ -300,7 +298,7 @@ clean-runtime:
 	else \
 	  echo "Removing runtime install tree (preserving auth/, bot env files, agent_runtime/, tasks/, chat/, memory/, ...)..."; \
 	fi
-	@python3 scripts/clean_runtime.py --data-root "$(DATA_ROOT)" $(if $(DRY),--dry-run,)
+	@"$(SETUP_PYTHON)" scripts/clean_runtime.py --data-root "$(DATA_ROOT)" $(if $(DRY),--dry-run,)
 	@if [ -z "$(DRY)" ]; then echo "  ✓ runtime tree cleaned (auth/, bot env files, agent_runtime/, all preserved)"; fi
 
 # One-shot legacy-scope cleanup. Drops the pre-bundling-era artifacts
@@ -323,7 +321,7 @@ clean-legacy-scope:
 	 if [ -n "$(ALL)" ]; then ALL_ARG="--all-scopes"; fi; \
 	 DRY_ARG=""; \
 	 if [ -n "$(DRY)" ]; then DRY_ARG="--dry-run"; fi; \
-	 python3 scripts/clean_legacy_scope.py $$SCOPE_ARG $$ALL_ARG $$DRY_ARG --data-root "$(DATA_ROOT)"
+	 "$(SETUP_PYTHON)" scripts/clean_legacy_scope.py $$SCOPE_ARG $$ALL_ARG $$DRY_ARG --data-root "$(DATA_ROOT)"
 
 # Full clean: build artifacts + runtime install tree.
 # Pass DRY=1 to preview without deleting.
@@ -358,10 +356,10 @@ setup-all:
 	$(MAKE) setup-cloak-browser && \
 	$(MAKE) setup-kapso-cli && \
 	$(MAKE) setup-higgsfield-cli && \
-	$(MAKE) setup-metabase-cli && \
 	$(MAKE) setup-bots && \
 	$(MAKE) seed-scope && \
 	$(MAKE) install-scope SCOPE=$(or $(SCOPE),anonymous/default) && \
+	$(MAKE) migrate-metabase-mcp && \
 	$(MAKE) setup-env && \
 	$(MAKE) setup-gws-accounts && \
 	$(MAKE) setup-bot-envs && \
@@ -375,8 +373,8 @@ setup-all:
 # Drives `make setup-all DRY=1`.
 setup-all-plan:
 	@DR=$(DATA_ROOT); SC=$(or $(SCOPE),anonymous/default); \
-	 SYS_SKILLS=$$(python3 scripts/skill_layer.py --layer system --names-only | wc -l | tr -d ' '); \
-	 SCO_SKILLS=$$(python3 scripts/skill_layer.py --layer scope --names-only | wc -l | tr -d ' '); \
+	 SYS_SKILLS=$$("$(SETUP_PYTHON)" scripts/skill_layer.py --layer system --names-only | wc -l | tr -d ' '); \
+	 SCO_SKILLS=$$("$(SETUP_PYTHON)" scripts/skill_layer.py --layer scope --names-only | wc -l | tr -d ' '); \
 	 BOT_COUNT=$$(ls -d bots/*/ 2>/dev/null | grep -vE '/(sdk|build_bundle|bot_configs)/' | wc -l | tr -d ' '); \
 	 ACC_COUNT=$$(python3 -c 'import yaml,sys; d=yaml.safe_load(open("operator-config.yaml")) or {}; print(len(d.get("gws_accounts") or []))' 2>/dev/null || echo 0); \
 	 echo ""; \
@@ -398,7 +396,6 @@ setup-all-plan:
 	 echo " 9a. setup-cloak-browser    fetch/verify licensed stealth Chromium binary"; \
 	 echo " 9b. setup-kapso-cli        verify shared pinned Kapso CLI in skillshub/node_modules/.bin"; \
 	 echo " 9c. setup-higgsfield-cli   verify/link shared pinned Higgsfield native executable (authentication separate)"; \
-	 echo "10. setup-metabase-cli      go build skillshub/metabase/bin/metabase-pp-cli"; \
 	 echo "11. setup-bots              esbuild bundle each bot → skillshub/bots/<bot>/dist/index.js"; \
 	 echo "                            ($$BOT_COUNT bot(s): $$(ls -d bots/*/ 2>/dev/null | grep -vE '/(sdk|build_bundle|bot_configs)/' | xargs -n1 basename | tr '\n' ' '))"; \
 	 echo ""; \
@@ -412,11 +409,7 @@ setup-all-plan:
 	 echo "                            for each of $$ACC_COUNT account(s) in operator-config.yaml gws_accounts:"; \
 	 echo "16. setup-bot-envs          generate $$DR/scopes/$$SC/bots/<bot>/.env.<account>"; \
 	 echo "                            (gmail: per-account; kapso/telegram/whatsapp: .env.development)"; \
-	 echo "17. install-bot-bundles     copy each bot's dist/index.js → $$DR/scopes/$$SC/bots/<bot>/dist/"; \
-	 echo "                            + (whatsapp only) write runtime package.json + npm install --omit=dev"; \
-	 echo "                            for the externalized @ibrahimwithi/wu-cli dep"; \
-	 echo "                            + link $$DR/scopes/$$SC/skills/whatsapp/bin/wu to the scoped runtime"; \
-	 echo "                            (idempotent; ~30-50M one-time on first install per scope)"; \
+	 echo "17. install-bot-bundles     link shared bot bundles; keep scoped account state and use pinned shared CLIs"; \
 	 echo "18. link all scopes         every other scope under $$DR/scopes/ gets the same links; pinned native"; \
 	 echo "                            executables are stored in $$DR/system/skill-bin/ and linked relatively"; \
 	 echo "19. verify-python + verify-runtime (shared runtime AND every scope's bin/ entries)"; \
@@ -435,7 +428,7 @@ setup-all-plan:
 seed-scope:
 	@SCOPE_ARG=""; \
 	 if [ -n "$(SCOPE)" ]; then SCOPE_ARG="--scope $(SCOPE)"; fi; \
-	 python3 scripts/seed_scope.py $$SCOPE_ARG --data-root "$(DATA_ROOT)"
+	 "$(SETUP_PYTHON)" scripts/seed_scope.py $$SCOPE_ARG --data-root "$(DATA_ROOT)"
 
 # Install skillshub root npm workspace (rg, dugite, bots). Browser is
 # intentionally NOT a workspace member — it owns its own node_modules
@@ -519,11 +512,11 @@ $(NODE_ABI_STAMP): $(NPM_DEPS_STAMP) .node/bin/node scripts/native_addons_needin
 	 fi; \
 	 node -p process.versions.modules > $@
 
-setup-deps: setup-node $(NPM_DEPS_STAMP) $(NODE_ABI_STAMP)
-	@python3 scripts/verify_runtime.py --group npm >/dev/null 2>&1 || { \
+setup-deps: setup-python-bootstrap setup-node $(NPM_DEPS_STAMP) $(NODE_ABI_STAMP)
+	@"$(SETUP_PYTHON)" scripts/verify_runtime.py --group npm >/dev/null 2>&1 || { \
 	  echo "Shared npm runtime is incomplete; restoring the exact package lock..."; \
 	  PATH="$(NODE_BIN):$$PATH" npm ci --include=optional || exit 1; \
-	  python3 scripts/verify_runtime.py --group npm || exit 1; \
+	  "$(SETUP_PYTHON)" scripts/verify_runtime.py --group npm || exit 1; \
 	}
 
 $(NPM_DEPS_STAMP): package.json package-lock.json | .node/bin/node
@@ -538,7 +531,7 @@ $(NPM_DEPS_STAMP): package.json package-lock.json | .node/bin/node
 # `<data_root>/system/skills/<skill>/bin/` (where there's no sibling
 # `node_modules/`). The runtime hits the absolute path back into
 # `skillshub/node_modules/` which always exists.
-setup-skill-bins: setup-deps
+setup-skill-bins: setup-deps setup-python-bootstrap
 	@mkdir -p rg/bin
 	@export PATH="$(NODE_BIN):$$PATH"; \
 	 RG_BIN="$$(node -e "import('@vscode/ripgrep').then(m => process.stdout.write(m.rgPath))" 2>/dev/null)"; \
@@ -573,7 +566,24 @@ setup-skill-bins: setup-deps
 	 else \
 	   echo "  ✗ pinned Node missing — run 'make setup-node'"; exit 1; \
 	 fi
+	@$(MAKE) setup-whatsapp-bins
+	@"$(SETUP_PYTHON)" scripts/shared_skill_bins.py
 	@echo "Skill bins ready."
+
+# Activation checks the skill's own bin/ before the service PATH. Both
+# transports need these links even when wu exists in shared node_modules.
+setup-whatsapp-bins:
+	@WU_BIN="$(CURDIR)/node_modules/.bin/wu"; \
+	 NODE_BIN_PATH="$(NODE_BIN)/node"; \
+	 if [ ! -x "$$WU_BIN" ] || [ ! -x "$$NODE_BIN_PATH" ]; then \
+	   echo "Pinned wu or Node missing; run make -C skillshub setup-deps setup-node"; exit 1; \
+	 fi; \
+	 for skill in whatsapp whatsapp-mcp; do \
+	   mkdir -p "$$skill/bin"; \
+	   ln -sf "$$WU_BIN" "$$skill/bin/wu"; \
+	   ln -sf "$$NODE_BIN_PATH" "$$skill/bin/node"; \
+	   echo "  ✓ $$skill: pinned wu and Node linked"; \
+	 done
 
 # AnyDoc is a library, so the repository owns one small standalone CLI adapter.
 # Its source is a normal workspace crate, not vendored inside the skill. The
@@ -599,10 +609,10 @@ setup-document-to-markdown:
 # bin symlinks. It does not run OfficeCLI's upstream self-installer, modify
 # developer-agent config, or enable auto-updates.
 setup-officecli:
-	@python3 scripts/setup_officecli.py
+	@"$(SETUP_PYTHON)" scripts/setup_officecli.py
 
 verify-officecli:
-	@python3 scripts/setup_officecli.py --verify-only
+	@"$(SETUP_PYTHON)" scripts/setup_officecli.py --verify-only
 
 # pdftotext skill: poppler-utils binaries (pdftotext, pdftoppm). The
 # `pdftotext` skill is a thin wrapper around the host's poppler install.
@@ -708,7 +718,7 @@ setup-python: setup-python-bootstrap
 	  echo "  ✗ uv not found — install via 'curl -LsSf https://astral.sh/uv/install.sh | sh'"; exit 1; \
 	}
 	@echo "Aggregating python_packages from skill SKILL.md frontmatters..."
-	@python3 scripts/aggregate_python_packages.py
+	@"$(SETUP_PYTHON)" scripts/aggregate_python_packages.py
 	@echo "Creating/refreshing .venv ..."
 	@if [ ! -x .venv/bin/python ]; then \
 	  uv venv .venv --python 3.12 --quiet; \
@@ -729,7 +739,7 @@ setup-python: setup-python-bootstrap
 setup-env:
 	@SCOPE_ARG=""; \
 	 if [ -n "$(SCOPE)" ]; then SCOPE_ARG="--scope $(SCOPE)"; fi; \
-	 python3 scripts/aggregate_env_examples.py $$SCOPE_ARG --data-root "$(DATA_ROOT)"
+	 "$(SETUP_PYTHON)" scripts/aggregate_env_examples.py $$SCOPE_ARG --data-root "$(DATA_ROOT)"
 
 # Bootstrap per-account auth dirs for the Google Workspace skills
 # (gmail, calendar, sheets — all three use the shared `gws` CLI).
@@ -751,7 +761,7 @@ setup-env:
 setup-gws-accounts:
 	@SCOPE_ARG=""; \
 	 if [ -n "$(SCOPE)" ]; then SCOPE_ARG="--scope $(SCOPE)"; fi; \
-	 python3 scripts/setup_gws_accounts.py $$SCOPE_ARG --data-root "$(DATA_ROOT)"
+	 "$(SETUP_PYTHON)" scripts/setup_gws_accounts.py $$SCOPE_ARG --data-root "$(DATA_ROOT)"
 
 # Generate per-bot runtime env files at <scope>/bots/<bot>/ from the
 # repo-root secrets source (.env.copy.development). Multi-account bots
@@ -766,7 +776,7 @@ setup-bot-envs:
 	 if [ -n "$(SCOPE)" ]; then SCOPE_ARG="--scope $(SCOPE)"; fi; \
 	 FORCE_ARG=""; \
 	 if [ -n "$(FORCE)" ]; then FORCE_ARG="--force"; fi; \
-	 python3 scripts/setup_bot_envs.py $$SCOPE_ARG $$FORCE_ARG --data-root "$(DATA_ROOT)"
+	 "$(SETUP_PYTHON)" scripts/setup_bot_envs.py $$SCOPE_ARG $$FORCE_ARG --data-root "$(DATA_ROOT)"
 
 # Build all bot packages (sdk first, then telegram + whatsapp + others).
 # `setup-deps` is the workspace install; `setup-bots` is the per-package
@@ -824,7 +834,7 @@ setup-bots: setup-deps
 	@$(MAKE) --no-print-directory verify-bot-runtime
 
 verify-bot-runtime:
-	@python3 scripts/verify_runtime.py --group bots --versions --write-inventory
+	@"$(SETUP_PYTHON)" scripts/verify_runtime.py --group bots --versions
 
 verify-runtime:
 	@.venv/bin/python scripts/verify_runtime.py --group all --versions --write-inventory $(SCOPE_CHECK_ARGS)
@@ -833,7 +843,7 @@ verify-runtime:
 # a workspace created after the first setup has its own skills layer.
 SETUP_SCOPE = $(or $(SCOPE),anonymous/default)
 SCOPE_CHECK_ARGS = --data-root "$(DATA_ROOT)" --scope "$(SETUP_SCOPE)" --all-scopes
-LINK_ALL_SCOPES = python3 scripts/link_runtime.py --data-root "$(DATA_ROOT)" --scope "$(SETUP_SCOPE)" --all-scopes
+LINK_ALL_SCOPES = "$(SETUP_PYTHON)" scripts/link_runtime.py --data-root "$(DATA_ROOT)" --scope "$(SETUP_SCOPE)" --all-scopes
 
 # Repair every scope's skills layer from this skillshub: add missing links,
 # re-point links into a checkout that moved, store pinned native executables
@@ -841,31 +851,34 @@ LINK_ALL_SCOPES = python3 scripts/link_runtime.py --data-root "$(DATA_ROOT)" --s
 # check that every scoped bin/ entry runs. Offline, idempotent, no npm.
 link-scopes:
 	@$(LINK_ALL_SCOPES) --prune-bin-store
-	@python3 scripts/verify_runtime.py --group scopes $(SCOPE_CHECK_ARGS)
+	@"$(SETUP_PYTHON)" scripts/verify_runtime.py --group scopes $(SCOPE_CHECK_ARGS)
 
 # Read-only: report every scope's broken bin/ entries with the exact repair.
 check-scopes:
-	@python3 scripts/verify_runtime.py --group scopes $(SCOPE_CHECK_ARGS)
+	@"$(SETUP_PYTHON)" scripts/verify_runtime.py --group scopes $(SCOPE_CHECK_ARGS)
 
 # Shared software setup is separate from account login. Package installs ship
-# generated binaries and never ask end users to run Go/Rust generators.
+# pinned binaries and never ask end users to run source generators.
 # Each step links before it verifies, so its inventory (and the component
 # graph probe reading it) covers the scoped files the runtime executes.
 setup-wizard-skills: setup-deps setup-python setup-skill-bins setup-officecli setup-pdftotext setup-ocr setup-marimo setup-kapso-cli setup-higgsfield-cli
 	@if [ -f release-tools.json ]; then \
-	  python3 scripts/stage_release.py --verify "$(CURDIR)"; \
+	  "$(SETUP_PYTHON)" scripts/stage_release.py --verify "$(CURDIR)"; \
 	elif [ -f "$(REPO_ROOT)/Cargo.toml" ]; then \
-	  $(MAKE) setup-document-to-markdown && $(MAKE) setup-metabase-cli; \
+	  $(MAKE) setup-document-to-markdown; \
 	else \
-	  echo "Packaged generated tool manifest missing; reinstall a complete release."; exit 1; \
+	  echo "Packaged tool manifest missing; reinstall a complete release."; exit 1; \
 	fi
+	@$(MAKE) migrate-metabase-mcp
 	@$(LINK_ALL_SCOPES)
 	@.venv/bin/python scripts/verify_runtime.py --group skills --write-inventory $(SCOPE_CHECK_ARGS)
 
 setup-wizard-bots: setup-bots
+	@$(MAKE) setup-whatsapp-bins
 	@$(MAKE) seed-scope SCOPE="$(SETUP_SCOPE)"
-	@python3 scripts/install_bot_bundles.py --data-root "$(DATA_ROOT)" --scope "$(SETUP_SCOPE)"
+	@"$(SETUP_PYTHON)" scripts/install_bot_bundles.py --data-root "$(DATA_ROOT)" --scope "$(SETUP_SCOPE)"
 	@$(LINK_ALL_SCOPES)
+	@"$(SETUP_PYTHON)" scripts/verify_runtime.py --group bots --versions --write-inventory $(SCOPE_CHECK_ARGS)
 
 setup-wizard-media: setup-python
 	@$(MAKE) setup-media-fetch
@@ -874,12 +887,12 @@ setup-wizard-media: setup-python
 
 setup-wizard-browser: setup-agent-browser
 	@$(LINK_ALL_SCOPES)
-	@python3 scripts/verify_runtime.py --group browser --write-inventory $(SCOPE_CHECK_ARGS)
+	@"$(SETUP_PYTHON)" scripts/verify_runtime.py --group browser --write-inventory $(SCOPE_CHECK_ARGS)
 
 # These engines are optional; the default browser does not require them.
 setup-wizard-browser-engines: setup-python setup-lightpanda setup-cloak-browser
-	@.venv/bin/python scripts/verify_runtime.py --group engines --write-inventory
 	@$(LINK_ALL_SCOPES)
+	@.venv/bin/python scripts/verify_runtime.py --group engines --write-inventory $(SCOPE_CHECK_ARGS)
 
 # Install the freshly-bundled bot dist/index.js files into the scope's
 # bots/ tree. The runtime also does this on next workspace open via
@@ -893,7 +906,7 @@ install-bot-bundles:
 	 if [ -n "$(SCOPE)" ]; then SCOPE_ARG="--scope $(SCOPE)"; fi; \
 	 ALL_ARG=""; \
 	 if [ -n "$(ALL)" ]; then ALL_ARG="--all-scopes"; fi; \
-	 python3 scripts/install_bot_bundles.py $$SCOPE_ARG $$ALL_ARG --data-root "$(DATA_ROOT)"
+	 "$(SETUP_PYTHON)" scripts/install_bot_bundles.py $$SCOPE_ARG $$ALL_ARG --data-root "$(DATA_ROOT)"
 
 build-bots: setup-deps
 	@$(ENSURE_CAPABILITY_NODE_RUNTIME); \
@@ -941,8 +954,8 @@ setup-marimo:
 # Agent-browser skill setup — own npm install + patched-binary overlay.
 # Browser is the one skill that's NOT a workspace member.
 # ============================================================================
-AGENT_BROWSER_VERSION ?= 0.38.1-Magician.0
-AGENT_BROWSER_UPSTREAM_TAG ?= v0.38.1
+AGENT_BROWSER_VERSION ?= 0.41.0-Magician.0
+AGENT_BROWSER_UPSTREAM_TAG ?= v0.41.0
 AGENT_BROWSER_UPSTREAM_VERSION := $(patsubst v%,%,$(AGENT_BROWSER_UPSTREAM_TAG))
 AGENT_BROWSER_SKILL_DIR := browser
 AGENT_BROWSER_SKILL_NODE_MODULES := $(AGENT_BROWSER_SKILL_DIR)/node_modules
@@ -1022,7 +1035,7 @@ setup-agent-browser: setup-node setup-python-bootstrap ensure-agent-browser-vend
 	@# a rebuilt skill bin/ is not enough on its own: store it and relink every
 	@# scope that already exists (never creates one). This is what makes the
 	@# runtime's "run make setup-agent-browser" advice a complete repair.
-	@python3 scripts/link_runtime.py --data-root "$(DATA_ROOT)" --scope "$(or $(SCOPE),anonymous/default)" \
+	@"$(SETUP_PYTHON)" scripts/link_runtime.py --data-root "$(DATA_ROOT)" --scope "$(or $(SCOPE),anonymous/default)" \
 	  --all-scopes --existing-only --names browser
 
 # Pre-test hygiene: terminate any agent-browser daemon spawned from THIS repo
@@ -1137,52 +1150,6 @@ rebuild-agent-browser: agent-browser-source
 	else \
 	  echo "  → run 'make setup-agent-browser' to install + deploy into the live runtime"; \
 	fi
-
-# ============================================================================
-# Metabase CLI — generated via printing-press from a curated OpenAPI spec.
-# Used by the `metabase` skill at runtime.
-# ============================================================================
-override PP_VERSION := $(shell python3 -c 'import json; print(json.load(open("metabase/generator-pin.json"))["generator_version"])')
-# printing-press v4.0.3 declares Go 1.26.1. Build both the generator and its
-# output with that exact toolchain rather than a drifting host Go release.
-override PP_GO_VERSION := $(shell python3 -c 'import json; print(json.load(open("metabase/generator-pin.json"))["go_version"])')
-PP_BIN := $(HOME)/go/bin/printing-press
-PP_GO := $(HOME)/go/bin/$(PP_GO_VERSION)
-# Metabase skill source + build outputs both live under
-# skillshub/metabase/. Build artifacts go to skillshub/metabase/bin/
-# (gitignored); `install-scope` carries them into the runtime tree
-# at $(DATA_ROOT)/scopes/<id>/skills/metabase/bin/metabase-pp-cli.
-METABASE_SKILL_DIR := metabase
-METABASE_SCRIPTS_DIR := $(METABASE_SKILL_DIR)/scripts
-METABASE_BIN_DIR := $(METABASE_SKILL_DIR)/bin
-METABASE_SPEC := $(METABASE_SCRIPTS_DIR)/spec.json
-METABASE_PP_BIN := $(METABASE_BIN_DIR)/metabase-pp-cli
-METABASE_PP_BUILD_DIR := $(METABASE_SKILL_DIR)/.pp-build
-
-setup-printing-press:
-	@command -v go >/dev/null 2>&1 || { echo "  ✗ go is required (install go 1.21+ first)"; exit 1; }
-	@if [ ! -x "$(PP_GO)" ]; then \
-	  echo "  Installing Go $(PP_GO_VERSION) toolchain..."; \
-	  go install golang.org/dl/$(PP_GO_VERSION)@latest || exit 1; \
-	  $(PP_GO) download || exit 1; \
-	else \
-	  echo "  ✓ Go toolchain $(PP_GO_VERSION) present"; \
-	fi
-	@PP_VER_STRIPPED="$(PP_VERSION)"; PP_VER_STRIPPED="$${PP_VER_STRIPPED#v}"; \
-	if [ ! -x "$(PP_BIN)" ] || ! "$(PP_BIN)" --version 2>/dev/null | grep -q "$$PP_VER_STRIPPED"; then \
-	  echo "  Installing printing-press $(PP_VERSION)..."; \
-	  GOTOOLCHAIN=local GOBIN=$(HOME)/go/bin $(PP_GO) install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@$(PP_VERSION) || exit 1; \
-	  $(PP_BIN) --version; \
-	else \
-	  echo "  ✓ printing-press $(PP_VERSION) present"; \
-	fi
-
-$(METABASE_PP_BIN): $(METABASE_SPEC) $(METABASE_SCRIPTS_DIR)/apply-postgen-patches.py metabase/generator-pin.json | setup-printing-press
-	@$(MAKE) --no-print-directory regen-metabase-cli
-
-setup-metabase-cli: $(METABASE_PP_BIN)
-	@python3 scripts/generated_tools.py verify || $(MAKE) --no-print-directory regen-metabase-cli
-	@echo "  ✓ metabase-pp-cli ready: $$($(METABASE_PP_BIN) --version 2>/dev/null || echo 'unknown') (spec.json sha=$$(shasum $(METABASE_SPEC) 2>/dev/null | cut -c1-12))"
 
 # Cloak Browser — stealth Chromium engine for the `browser` tool. The
 # `cloakbrowser` pip package is aggregated into skillshub/.venv via
@@ -1340,36 +1307,6 @@ setup-higgsfield-auth: setup-higgsfield-cli
 	 done; \
 	 echo "  ✓ Higgsfield auth ready for scope $$SC"
 
-regen-metabase-cli: setup-printing-press
-	@python3 scripts/generated_tools.py inputs
-	@if [ ! -f "$(METABASE_SPEC)" ]; then \
-	  echo "  ✗ $(METABASE_SPEC) missing — run 'make refresh-metabase-spec' first"; exit 1; \
-	fi
-	@mkdir -p $(METABASE_BIN_DIR)
-	@echo "  Generating metabase CLI source from $(METABASE_SPEC)..."
-	@rm -rf $(METABASE_PP_BUILD_DIR)
-	@$(PP_BIN) generate \
-	  --spec $(abspath $(METABASE_SPEC)) \
-	  --name metabase \
-	  --output $(abspath $(METABASE_PP_BUILD_DIR)) \
-	  --spec-source official --lenient --validate=false --force >/dev/null
-	@# 2026-05-23 — Re-apply hand-maintained patches to the auto-
-	@# generated tree. Adds the query-result-aware slim (compactQueryResult)
-	@# so card-query / dataset-query responses fit under the agent's
-	@# 24 KB tool-result cap. See scripts/apply-postgen-patches.py.
-	@echo "  Applying post-gen patches..."
-	@python3 $(METABASE_SCRIPTS_DIR)/apply-postgen-patches.py | sed 's/^/    /'
-	@echo "  Building $(METABASE_PP_BIN) (Go $(PP_GO_VERSION))..."
-	@( cd $(METABASE_PP_BUILD_DIR) && GOTOOLCHAIN=local $(PP_GO) mod tidy >/dev/null 2>&1 && \
-	   GOTOOLCHAIN=local $(PP_GO) build -ldflags='-s -w' -o $(abspath $(METABASE_PP_BIN)) ./cmd/metabase-pp-cli )
-	@# Don't copy the PP-generated SKILL.md over the hand-authored one —
-	@# PP emits an OpenClaw-style frontmatter (`name: pp-metabase`,
-	@# `metadata.openclaw`) that doesn't match our AgentSkills v1 schema.
-	@# The hand-authored skillshub/metabase/SKILL.md is the canonical body.
-	@touch $(METABASE_PP_BIN)
-	@python3 scripts/generated_tools.py record
-	@echo "  ✓ metabase-pp-cli built: $$($(METABASE_PP_BIN) --version)  ($$(du -h $(METABASE_PP_BIN) | cut -f1))"
-
-refresh-metabase-spec:
-	@: "$${METABASE_BASE_URL:?Set METABASE_BASE_URL in your environment (e.g. source the scoped .env first)}"
-	@bash $(METABASE_SCRIPTS_DIR)/refresh-spec.sh
+.PHONY: migrate-metabase-mcp
+migrate-metabase-mcp:
+	"$(SETUP_PYTHON)" scripts/migrate_metabase_mcp.py --data-root "$(DATA_ROOT)" --apply

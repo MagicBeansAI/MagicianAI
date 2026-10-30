@@ -73,6 +73,33 @@ final class VibeDevFixtureTests: XCTestCase {
         let items = VibeDevQuestions.needsYou(projects: [], liveRuns: response.runs)
         XCTAssertEqual(items.map(\.kind), [.run])
         XCTAssertEqual(items.first?.options.map(\.action), [.reviewRun, .approveRun])
+        XCTAssertEqual(waiting.waitingKind, .diffReview)
+        // An Autopilot run's briefing is a notice on a done run, never needs-you.
+        let briefed = try XCTUnwrap(response.runs.first { $0.notice != nil })
+        XCTAssertEqual(briefed.state, .done)
+        XCTAssertEqual(briefed.waitingKind, .notice)
+        XCTAssertNil(briefed.approvalId)
+        XCTAssertEqual(briefed.notice?.optionId, "acknowledge")
+        XCTAssertFalse(briefed.notice?.requestId.isEmpty ?? true)
+        XCTAssertFalse(briefed.notice?.message.isEmpty ?? true)
+    }
+
+    func testLiveRunWaitingKindIsLenient() throws {
+        // A question-only wait is opened, never offered Approve.
+        let ask = try JSONDecoder().decode(VibeDevLiveRun.self, from: Data("""
+        {"run_id": "r", "live_task_id": "r", "project_id": "p", "project_name": "Shop",
+         "title": "Ask", "state": "needs_you", "status": "running", "turns": 1,
+         "updated_at": "2026-10-13T09:41:00Z", "waiting_kind": "decision"}
+        """.utf8))
+        XCTAssertEqual(VibeDevQuestions.runItem(ask).options.map(\.action), [.reviewRun])
+        // An unknown kind and a malformed notice decode instead of failing the run.
+        let odd = try JSONDecoder().decode(VibeDevLiveRun.self, from: Data("""
+        {"run_id": "r", "live_task_id": "r", "project_id": "p", "project_name": "Shop",
+         "title": "Odd", "state": "done", "status": "completed", "turns": 1,
+         "updated_at": "2026-10-13T09:41:00Z", "waiting_kind": "later_kind", "notice": "text"}
+        """.utf8))
+        XCTAssertEqual(odd.waitingKind, .unknown)
+        XCTAssertEqual(odd.notice?.requestId, "")
     }
 
     func testProjectsFixture() throws {
@@ -232,5 +259,172 @@ final class VibeDevFixtureTests: XCTestCase {
                 }
             }
         }
+    }
+
+    // MARK: Completion kind
+
+    @MainActor func testRunsPageRowsReadPartlyDoneFromTheLatestTurn() throws {
+        let json = """
+        {"tasks": [
+          {"id": "root", "title": "VibeDev · Add login", "status": "completed",
+           "completion_kind": "partial", "open_items": ["OAuth callback blocked: no client secret"]},
+          {"id": "full", "title": "VibeDev · Fix bug", "status": "completed", "completion_kind": "full"},
+          {"id": "odd", "title": "VibeDev · Odd", "status": "completed", "completion_kind": 4, "open_items": {"x": 1}}
+        ], "pagination": {"runs": 3, "total_runs": 3, "offset": 0, "has_more": false}}
+        """
+        let page = try JSONDecoder().decode(VibeDevRunsPage.self, from: Data(json.utf8))
+        let rows = Dictionary(uniqueKeysWithValues: page.rows.map { ($0.id, $0) })
+        let partly = try XCTUnwrap(rows["root"])
+        XCTAssertTrue(partly.isPartlyDone)
+        XCTAssertEqual(partly.state, .done)
+        XCTAssertEqual(partly.stateLabel, "Partly done")
+        XCTAssertEqual(partly.openItemLine, "Open: OAuth callback blocked: no client secret")
+        XCTAssertEqual(VibeDevStateDot(run: partly.state, partlyDone: partly.isPartlyDone).tone, .partial)
+        XCTAssertEqual(VibeDevStateDot(run: partly.state, partlyDone: partly.isPartlyDone).label, "Partly done")
+        for id in ["full", "odd"] {
+            let row = try XCTUnwrap(rows[id])
+            XCTAssertFalse(row.isPartlyDone, id)
+            XCTAssertEqual(row.stateLabel, "Done", id)
+            XCTAssertNil(row.openItemLine, id)
+            XCTAssertEqual(VibeDevStateDot(run: row.state, partlyDone: row.isPartlyDone).tone, .done, id)
+        }
+    }
+
+    // MARK: Project health
+
+    private func project(health: String?) throws -> VibeDevProject {
+        let json = #"{"project_id": "p", "name": "Shop""# + (health.map { #", "health": "# + $0 } ?? "") + "}"
+        return try JSONDecoder().decode(VibeDevProject.self, from: Data(json.utf8))
+    }
+
+    func testProjectHealthDecodesLenientlyAndAbsentIsOk() throws {
+        XCTAssertEqual(try project(health: nil).health, .ok)
+        XCTAssertEqual(try project(health: "null").health, .ok)
+        XCTAssertEqual(try project(health: #""broken""#).health, .ok)
+        XCTAssertEqual(try project(health: #"{"status": "ok"}"#).health.level, .ok)
+
+        let error = try project(health: #"""
+            {"status": "error", "issues": [
+              {"code": "folder_missing", "severity": "error", "message": "The folder /src/shop is gone."},
+              {"code": "chat_session_missing", "severity": "warning", "message": "The chat session is missing."},
+              "junk", {"code": "no_message"}
+            ]}
+            """#).health
+        XCTAssertEqual(error.level, .error)
+        XCTAssertEqual(error.messages, ["The folder /src/shop is gone.", "The chat session is missing."])
+        XCTAssertEqual(error.issues.first?.code, "folder_missing")
+
+        // An unknown status falls back to the worst issue.
+        let derived = try project(health: #"{"status": "meh", "issues": [{"code": "x", "severity": "warning", "message": "m"}]}"#).health
+        XCTAssertEqual(derived.level, .warning)
+
+        // Round-trips through the offline cache encoding.
+        let encoded = try JSONEncoder().encode(error)
+        XCTAssertEqual(try JSONDecoder().decode(VibeDevProjectHealth.self, from: encoded), error)
+    }
+
+    func testProjectHealthTitleAndColor() {
+        let theme = ThemeManager.shared
+        let ok = VibeDevProjectHealth.ok
+        XCTAssertFalse(ok.needsAttention)
+        XCTAssertNil(ok.title)
+
+        let warning = VibeDevProjectHealth(level: .warning, issues: [
+            VibeDevProjectHealthIssue(code: "chat_session_missing", severity: "warning", message: "No chat.")])
+        XCTAssertTrue(warning.needsAttention)
+        XCTAssertEqual(warning.title, "Project needs attention.")
+        XCTAssertEqual(VibeDevHealthTone.color(for: warning.level, in: theme), theme.warningColor)
+
+        let error = VibeDevProjectHealth(level: .error, issues: [
+            VibeDevProjectHealthIssue(code: "folder_missing", severity: "error", message: "Gone.")])
+        XCTAssertEqual(error.title, "Project needs attention: runs cannot start.")
+        XCTAssertEqual(VibeDevHealthTone.color(for: error.level, in: theme), theme.dangerColor)
+        XCTAssertEqual(VibeDevHealthTone.accessibilityLabel, "Project needs attention")
+    }
+
+    @MainActor func testUnhealthyStartRunShowsTheServersMessage() {
+        let body = Data(#"""
+            {"error": "vibedev_project_unhealthy", "message": "The project folder /src/shop is missing.",
+             "health": {"status": "error", "issues": [{"code": "folder_missing", "severity": "error", "message": "x"}]}}
+            """#.utf8)
+        let error = VibeDevAPIError.http(409, VibeDevAPI.message(from: body))
+        XCTAssertEqual(VibeDevActions.describe(error), "The project folder /src/shop is missing.")
+
+        let noMessage = Data(#"""
+            {"error": "vibedev_project_unhealthy",
+             "health": {"status": "error", "issues": [{"code": "folder_missing", "severity": "error", "message": "The folder is gone."}]}}
+            """#.utf8)
+        XCTAssertEqual(VibeDevAPI.message(from: noMessage),
+                       "Project needs attention: runs cannot start. The folder is gone.")
+    }
+
+    func testHealthIssueTitleAndActionDecodeLeniently() throws {
+        let health = try project(health: #"""
+            {"status": "warning", "issues": [
+              {"code": "not_a_git_repository", "severity": "warning", "title": "Folder isn't a git repository",
+               "message": "Runs use a sandboxed copy.", "action": {"kind": "git_init", "label": "Make this a git repository"}},
+              {"code": "x", "severity": "warning", "title": "Something new", "message": "m",
+               "action": {"kind": "teleport", "label": "Teleport"}},
+              {"code": "y", "severity": "warning", "message": "no title", "action": "bogus"},
+              {"code": "z", "severity": "error", "title": "Only a title"}
+            ]}
+            """#).health
+        XCTAssertEqual(health.level, .warning)
+        XCTAssertEqual(health.issues.count, 4)
+        let git = health.issues[0]
+        XCTAssertEqual(git.title, "Folder isn't a git repository")
+        XCTAssertEqual(git.gitInitAction?.label, "Make this a git repository")
+        XCTAssertEqual(health.issues[1].action?.kind, "teleport")
+        XCTAssertNil(health.issues[1].gitInitAction, "unknown kinds get no button")
+        XCTAssertNil(health.issues[2].title)
+        XCTAssertNil(health.issues[2].action)
+        XCTAssertEqual(health.issues[3].message, "Only a title")
+
+        let encoded = try JSONEncoder().encode(health)
+        XCTAssertEqual(try JSONDecoder().decode(VibeDevProjectHealth.self, from: encoded), health)
+    }
+
+    func testGitInitResponseAndFailureMessage() throws {
+        let ok = try JSONDecoder().decode(VibeDevGitInitResponse.self,
+                                          from: Data(#"{"project_id": "p", "health": {"status": "ok"}}"#.utf8))
+        XCTAssertEqual(ok.projectId, "p")
+        XCTAssertEqual(ok.health, .ok)
+        let failure = Data(#"{"error": "vibedev_git_init_failed", "message": "git is not installed."}"#.utf8)
+        XCTAssertEqual(VibeDevAPIError.http(409, VibeDevAPI.message(from: failure)).errorDescription,
+                       "git is not installed.")
+        XCTAssertEqual(VibeDevGitInitCopy.title, "Make this folder a git repository?")
+        XCTAssertEqual(VibeDevGitInitCopy.confirm, "Make it a git repository")
+    }
+
+    func testLiveRunsAndTurnsReadPartlyDone() throws {
+        let live = try JSONDecoder().decode(VibeDevLiveRun.self, from: Data(#"""
+            {"run_id": "r", "live_task_id": "r", "project_id": "p", "project_name": "Shop", "title": "VibeDev · x",
+             "state": "done", "status": "completed", "turns": 1, "updated_at": "", "crew_id": null, "lane": null,
+             "last_progress_at": null, "completion_kind": "partial", "open_items": ["Blocked: no token", 3]}
+            """#.utf8))
+        XCTAssertTrue(live.isPartlyDone)
+        XCTAssertEqual(live.stateLabel, "Partly done")
+        XCTAssertEqual(live.openItemLine, "Open: Blocked: no token")
+
+        let odd = try JSONDecoder().decode(VibeDevLiveRun.self, from: Data(#"""
+            {"run_id": "r", "live_task_id": "r", "project_id": "p", "project_name": "Shop", "title": "x",
+             "state": "done", "status": "completed", "turns": 1, "updated_at": "", "completion_kind": 9, "open_items": "x"}
+            """#.utf8))
+        XCTAssertFalse(odd.isPartlyDone)
+        XCTAssertEqual(odd.stateLabel, "Done")
+
+        let turn = try JSONDecoder().decode(VibeDevRunTurn.self, from: Data(#"""
+            {"task_id": "t", "prompt": "p", "mode": "build", "status": "completed", "created_at": "", "updated_at": "",
+             "completion_kind": "partial", "open_items": ["Tests"]}
+            """#.utf8))
+        XCTAssertTrue(turn.isPartlyDone)
+        XCTAssertEqual(turn.stateLabel, "Partly done")
+        XCTAssertEqual(turn.openItems, ["Tests"])
+        let full = try JSONDecoder().decode(VibeDevRunTurn.self, from: Data(#"""
+            {"task_id": "t", "prompt": "p", "mode": "build", "status": "completed", "created_at": "", "updated_at": "",
+             "completion_kind": "full"}
+            """#.utf8))
+        XCTAssertFalse(full.isPartlyDone)
+        XCTAssertEqual(full.stateLabel, "Done")
     }
 }

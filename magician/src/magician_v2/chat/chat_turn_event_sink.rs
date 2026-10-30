@@ -157,6 +157,13 @@ impl ChatTurnEventSink {
         if crate::magician_v2::realtime_events::is_app_owner_notification_transport_event(&event) {
             return Ok(());
         }
+        // Tool-lineage rows are analytics (read from the execution journal),
+        // not card steps. Kept here they were ~90% of a long turn's file
+        // (446 of ~500 rows, 2.4 MB, live 2026-10-20), so a reload's page
+        // held lineage instead of the turn's steps.
+        if is_tool_lineage_event(&event) {
+            return Ok(());
+        }
         // We rely on the serialized form to find both the id and the
         // scope (the variants are wildly heterogeneous — payload,
         // envelope, nested message — and a centralized "where does
@@ -283,6 +290,15 @@ struct ChatTurnMeta {
 /// payload property, not envelope metadata — it can land anywhere
 /// inside `data.event.payload`, `metadata`, or hand-crafted
 /// `serde_json::json!({...})` blobs.
+fn is_tool_lineage_event(event: &RuntimeTransportEvent) -> bool {
+    matches!(
+        event,
+        RuntimeTransportEvent::AgentEvent { event }
+            if event.event_type
+                == crate::magician_v2::analytics::llm_tool_lineage::LLM_TOOL_LINEAGE_EVENT_TYPE
+    )
+}
+
 fn extract_chat_turn_meta(serialized: &str) -> Option<ChatTurnMeta> {
     let value: serde_json::Value = serde_json::from_str(serialized).ok()?;
     let principal = envelope_scope_field(&value, "principal")?;

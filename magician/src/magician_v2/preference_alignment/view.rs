@@ -13,9 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::admission::alignment_log_path;
-use super::intention::{
-    Coverage, EvidenceRole, Intention, IntentionSource, StandingGeneration,
-};
+use super::intention::{Coverage, EvidenceRole, Intention, IntentionSource, StandingGeneration};
 use super::inventory::{collect_inventory_for_memory, InventoryRequest};
 use super::policy::read_policy;
 use super::sources::native::{
@@ -44,6 +42,11 @@ pub struct IntentionRow {
     pub editable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_checked_at_ms: Option<i64>,
+    /// When memory first saved the native record (`memory_saved_at`, else
+    /// `created_at`, else `updated_at`), for the owner's review of what
+    /// Magician learned. Absent for profile and app intentions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learned_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,13 +107,42 @@ async fn last_checked(log: &std::path::Path) -> BTreeMap<String, i64> {
             ) else {
                 continue;
             };
-            for id in judged.iter().filter_map(|j| j.get("id").and_then(Value::as_str)) {
+            for id in judged
+                .iter()
+                .filter_map(|j| j.get("id").and_then(Value::as_str))
+            {
                 let slot = latest.entry(id.to_string()).or_insert(at);
                 *slot = (*slot).max(at);
             }
         }
     }
     latest
+}
+
+/// When each native record was learned, by intention id. The first record
+/// with an id wins, as in the inventory; unparseable stamps are skipped.
+fn learned_at(knowledge: &Value) -> BTreeMap<String, i64> {
+    let mut learned = BTreeMap::new();
+    let Some(tiers) = knowledge.as_object() else {
+        return learned;
+    };
+    for (tier, items) in tiers {
+        let Some(items) = items.as_array() else {
+            continue;
+        };
+        for item in items.iter().filter(|item| bears_intention(tier, item)) {
+            let stamp = ["memory_saved_at", "created_at", "updated_at"]
+                .iter()
+                .filter_map(|key| item.get(*key).and_then(Value::as_str))
+                .find_map(|raw| DateTime::parse_from_rfc3339(raw).ok());
+            if let Some(stamp) = stamp {
+                learned
+                    .entry(intention_id(tier, item))
+                    .or_insert_with(|| stamp.timestamp_millis());
+            }
+        }
+    }
+    learned
 }
 
 fn retired_and_omitted(
@@ -190,6 +222,7 @@ pub async fn build_view(
     };
     let knowledge = memory.load_user_knowledge().await.unwrap_or(Value::Null);
     let (retired, native_omitted) = retired_and_omitted(&knowledge, now);
+    let learned = learned_at(&knowledge);
     let checked = last_checked(&alignment_log_path(memory.storage())).await;
 
     let omitted = inventory
@@ -231,6 +264,10 @@ pub async fn build_view(
                 .collect(),
             editable: matches!(intention.source, IntentionSource::NativeTier { .. }),
             last_checked_at_ms: checked.get(&intention.id).copied(),
+            learned_at_ms: match intention.source {
+                IntentionSource::NativeTier { .. } => learned.get(&intention.id).copied(),
+                _ => None,
+            },
             intention,
         })
         .collect();
@@ -271,7 +308,11 @@ mod tests {
             .await
             .unwrap();
         let view = build_view(&resolver, "owner", "default").await.unwrap();
-        let ids: Vec<&str> = view.intentions.iter().map(|row| row.intention.id.as_str()).collect();
+        let ids: Vec<&str> = view
+            .intentions
+            .iter()
+            .map(|row| row.intention.id.as_str())
+            .collect();
         assert_eq!(ids, ["x", "y"]);
         assert_eq!(
             view.intentions[0].intention.assertion_status,
@@ -288,5 +329,47 @@ mod tests {
             .any(|row| row.id == "z" && row.superseded_by.as_deref() == Some("x")));
         assert!(view.retired.iter().all(|row| row.id != "f"));
         assert_eq!(view.policy_revision, Some(0));
+    }
+
+    #[tokio::test]
+    async fn each_native_preference_says_when_it_was_learned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolver = AgentMemoryResolver::new(tmp.path());
+        let memory = resolver.resolve_for_scope("owner", "default").unwrap();
+        memory
+            .save_user_knowledge(&json!({"preferences": [
+                {"memory_record_id": "saved", "key": "coffee", "value": "decaf after 3pm",
+                 "memory_saved_at": "2026-10-01T08:00:00Z", "updated_at": "2026-10-20T08:00:00Z"},
+                {"memory_record_id": "updated", "key": "tea", "value": "green",
+                 "updated_at": "2026-10-02T08:00:00Z"},
+                {"memory_record_id": "unstamped", "key": "music", "value": "jazz",
+                 "memory_saved_at": "yesterday"}
+            ]}))
+            .await
+            .unwrap();
+        let view = build_view(&resolver, "owner", "default").await.unwrap();
+        let learned = |id: &str| {
+            view.intentions
+                .iter()
+                .find(|row| row.intention.id == id)
+                .unwrap()
+                .learned_at_ms
+        };
+        let ms = |raw: &str| {
+            DateTime::parse_from_rfc3339(raw)
+                .unwrap()
+                .timestamp_millis()
+        };
+        // The first save, not the latest touch, is when it was learned.
+        assert_eq!(learned("saved"), Some(ms("2026-10-01T08:00:00Z")));
+        assert_eq!(learned("updated"), Some(ms("2026-10-02T08:00:00Z")));
+        assert_eq!(learned("unstamped"), None);
+        let unstamped = view
+            .intentions
+            .iter()
+            .find(|row| row.intention.id == "unstamped")
+            .unwrap();
+        let row = serde_json::to_value(unstamped).unwrap();
+        assert!(row.get("learned_at_ms").is_none());
     }
 }

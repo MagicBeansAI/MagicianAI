@@ -1,12 +1,18 @@
 package ai.magicbeans.magdroid.ui
 
+import ai.magicbeans.magdroid.chat.splitAnswerVerification
+import ai.magicbeans.magdroid.chat.withoutAnswerVerification
 import ai.magicbeans.magdroid.chat.OriginalAnswerLink
 import ai.magicbeans.magdroid.chat.ChatMessage
 import ai.magicbeans.magdroid.chat.ChatDateDividers
 import ai.magicbeans.magdroid.chat.ChatComposerMode
 import ai.magicbeans.magdroid.chat.ChatDoPermission
 import ai.magicbeans.magdroid.chat.ChatProfile
+import ai.magicbeans.magdroid.chat.thinkingLevelLabel
+import ai.magicbeans.magdroid.chat.chatComposerThinkingLabel
+import ai.magicbeans.magdroid.chat.modelChipAccessibilityLabel
 import ai.magicbeans.magdroid.chat.ChatUiState
+import ai.magicbeans.magdroid.chat.SessionSummary
 import ai.magicbeans.magdroid.chat.ChatViewModel
 import ai.magicbeans.magdroid.chat.ActivityRow
 import ai.magicbeans.magdroid.chat.CompleteResultViewerState
@@ -19,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.combinedClickable
@@ -34,16 +41,30 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import ai.magicbeans.magdroid.chat.MentionCatalog
 import ai.magicbeans.magdroid.chat.ComposerCommandAction
 import ai.magicbeans.magdroid.chat.ComposerCommandRow
+import ai.magicbeans.magdroid.chat.ComposerCommandVoice
+import ai.magicbeans.magdroid.chat.ComposerCommands
 import ai.magicbeans.magdroid.chat.commandRows
 import ai.magicbeans.magdroid.chat.MentionItem
 import ai.magicbeans.magdroid.chat.ContentBlockRecord
 import ai.magicbeans.magdroid.voice.DictationState
 import ai.magicbeans.magdroid.voice.VoicePrefs
 import ai.magicbeans.magdroid.voice.PrimaryAgentWakeIdentityStore
-import ai.magicbeans.magdroid.identity.ProductIdentity
+import ai.magicbeans.magdroid.voice.primaryAgentDisplayName
 import ai.magicbeans.magdroid.voice.WakeService
 import ai.magicbeans.magdroid.voice.LiveVoiceEngine
+import ai.magicbeans.magdroid.preferences.HarnessCredentials
 import ai.magicbeans.magdroid.voice.RealtimeVoiceState
+import ai.magicbeans.magdroid.voice.liveMicLevel
+import ai.magicbeans.magdroid.voice.livePlaybackLevel
+import ai.magicbeans.magdroid.voice.withoutMicLevel
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import ai.magicbeans.magdroid.access.MagicianAccess
 import ai.magicbeans.magdroid.chat.EscalationCard
 import ai.magicbeans.magdroid.chat.EscalationOption
@@ -53,10 +74,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.FlightTakeoff
+import androidx.compose.material.icons.outlined.CalendarToday
+import androidx.compose.material.icons.outlined.ShoppingBasket
+import androidx.compose.material.icons.outlined.Computer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Description
@@ -67,14 +93,16 @@ import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Headphones
+import ai.magicbeans.magdroid.voice.ComposerVoiceMode
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Screenshot
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.automirrored.outlined.VolumeOff
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Sensors
-import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -83,6 +111,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -99,6 +128,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.luminance
@@ -175,10 +207,6 @@ internal const val COMPOSER_MODE_VERTICAL_PADDING_DP = 1
 internal const val COMPOSER_TOOL_BUTTON_DP = 30
 internal const val COMPOSER_TOOL_ICON_DP = 16
 internal const val COMPOSER_PROFILE_VERTICAL_PADDING_DP = 2
-internal const val COMPOSER_PROFILE_TAG_CORNER_DP = 4
-internal const val COMPOSER_PROFILE_TAG_FONT_SP = 8
-internal const val COMPOSER_PROFILE_TAG_HORIZONTAL_PADDING_DP = 4
-internal const val COMPOSER_PROFILE_TAG_VERTICAL_PADDING_DP = 1
 internal const val COMPOSER_VOICE_DOCK_HEIGHT_DP = 32
 internal const val COMPOSER_VOICE_DOCK_PRIMARY_WIDTH_DP = 31
 internal const val COMPOSER_VOICE_DOCK_CHEVRON_WIDTH_DP = 22
@@ -222,14 +250,6 @@ internal fun chatContrastingTextColor(color: Color): Color {
     val lightContrast = 1.05f / (luminance + 0.05f)
     val darkContrast = (luminance + 0.05f) / (dark.luminance() + 0.05f)
     return if (darkContrast > lightContrast) dark else Color.White
-}
-
-/** Profile tier badges use the same semantic palette as iOS. */
-internal fun chatProfileTierColor(tier: String?): Color = when (tier?.lowercase()) {
-    "instant" -> ChatSuccess
-    "normal" -> Teal
-    "advanced" -> ChatDiscovery
-    else -> Secondary
 }
 
 /**
@@ -309,22 +329,7 @@ fun ChatScreen(
     }
     val voicePrefs = remember(context) { VoicePrefs.get(context) }
 
-    // Two paths, as iOS has: any file, and an image. A picked file is read to
-    // bytes here — the URI is a grant made to this process for this pick, and
-    // holding it to upload later is how an attachment becomes unreadable.
-    val stage: (android.net.Uri?) -> Unit = { uri ->
-        uri?.let {
-            readPicked(context, it)?.let { (name, mime, bytes) ->
-                viewModel.stageAttachment(name, mime, bytes)
-            }
-        }
-    }
-    val pickDocument = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(), stage,
-    )
-    val pickImage = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(), stage,
-    )
+    val attachmentPicker = rememberComposerAttachments(viewModel::stageAttachment)
 
     // Asked when the mic is first pressed, not at launch: a permission prompt
     // before anyone has tried to speak is a prompt with no context to judge it
@@ -373,7 +378,17 @@ fun ChatScreen(
     val sttSource by voicePrefs.sttSource.collectAsStateWithLifecycle()
     val ttsEngine by voicePrefs.ttsEngine.collectAsStateWithLifecycle()
     val archiveDictation by voicePrefs.archiveDictation.collectAsStateWithLifecycle()
-    val realtimeState by viewModel.realtimeVoiceState.collectAsStateWithLifecycle()
+    val voiceInputMode by voicePrefs.composerVoiceMode.collectAsStateWithLifecycle()
+    // The call state without its ~16 Hz mic level, so the screen does not
+    // recompose at the meter's rate; the level is read only where it is drawn.
+    val realtimeFlow = viewModel.realtimeVoiceState
+    val dictationLevel by viewModel.dictationLevel.collectAsStateWithLifecycle()
+    val realtimeState by remember(realtimeFlow) { realtimeFlow.withoutMicLevel() }
+        .collectAsStateWithLifecycle(initialValue = realtimeFlow.value.copy(micLevel = 0f))
+    val liveMicLevel by remember(realtimeFlow) { realtimeFlow.liveMicLevel() }
+        .collectAsStateWithLifecycle(initialValue = 0f)
+    val livePlaybackLevel by remember(realtimeFlow) { realtimeFlow.livePlaybackLevel() }
+        .collectAsStateWithLifecycle(initialValue = 0f)
     val voiceCatalog by viewModel.voiceCatalog.collectAsStateWithLifecycle()
     val liveEngine by voicePrefs.liveEngine.collectAsStateWithLifecycle()
     val realtimeProfile by voicePrefs.realtimeProfile.collectAsStateWithLifecycle()
@@ -398,6 +413,15 @@ fun ChatScreen(
     val onMic: () -> Unit = {
         when {
             state.dictation == DictationState.Recording -> viewModel.stopDictation()
+            state.dictation == DictationState.Transcribing -> Unit
+            voiceInputMode != ComposerVoiceMode.Dictation -> {
+                voicePrefs.setLiveEngine(if (voiceInputMode == ComposerVoiceMode.Live) LiveVoiceEngine.Realtime else LiveVoiceEngine.HandsFree)
+                if (micGranted.value) viewModel.startConfiguredVoice()
+                else {
+                    pendingMicAction = MicPermissionAction.Live
+                    requestMic.launch(android.Manifest.permission.RECORD_AUDIO)
+                }
+            }
             micGranted.value -> viewModel.startDictation()
             else -> {
                 pendingMicAction = MicPermissionAction.Dictation
@@ -406,6 +430,8 @@ fun ChatScreen(
         }
     }
     val liveActive = realtimeState.active
+    var suggestionFocusRequest by remember { mutableIntStateOf(0) }
+    val composerVoiceMode = rememberComposerVoiceMode(liveActive, suggestionFocusRequest)
     var typingDuringCall by remember { mutableStateOf(false) }
     LaunchedEffect(liveActive) { if (!liveActive) typingDuringCall = false }
     val onToggleLive: () -> Unit = {
@@ -464,7 +490,9 @@ fun ChatScreen(
     // The transcript's top edge: the background-requests list in the composer
     // sizes itself against the room between it and its own bottom edge.
     var composerRoomTop by remember { mutableStateOf<Float?>(null) }
-    CompositionLocalProvider(LocalComposerRoomTop provides composerRoomTop) {
+    val outputLinks = rememberChatOutputHandler(androidx.compose.ui.platform.LocalUriHandler.current, state.activeSessionId)
+    CompositionLocalProvider(LocalComposerRoomTop provides composerRoomTop, LocalChatOutputSession provides state.activeSessionId,
+        androidx.compose.ui.platform.LocalUriHandler provides outputLinks) {
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).onGloballyPositioned { composerRoomTop = it.boundsInWindow().top }) {
             Transcript(
@@ -476,9 +504,19 @@ fun ChatScreen(
                 onOpenCompleteResult = viewModel::openCompleteResult,
                 onOpenTask = onOpenTask,
                 onLoadActivity = viewModel::loadActivityIfNeeded,
+                onLoadOlder = viewModel::loadOlderMessages,
                 onOpenOriginalAnswer = viewModel::openOriginalAnswer,
                 onInspectTask = onInspectTask,
                 onReviewPlan = onReviewPlan,
+                onSuggest = { prompt ->
+                    viewModel.onDraftChange(prompt)
+                    if (liveActive) typingDuringCall = true
+                    suggestionFocusRequest++
+                },
+                onOpenSession = { id ->
+                    viewModel.cancelAutoSend()
+                    viewModel.openSession(id)
+                },
             )
             // Jump pill, as iOS has: only while scrolled away, and only when
             // there is something below to jump to.
@@ -508,9 +546,10 @@ fun ChatScreen(
         val activeSession = state.selectedSession?.takeIf { it.identifier() == state.activeSessionId }
             ?: state.sessions.firstOrNull { it.identifier() == state.activeSessionId }
         val readOnly = ai.magicbeans.magdroid.chat.ChatReadOnly.isArchived(activeSession)
-        // The dock also answers this conversation's asks from the Attention
-        // feed — by thread, or by a task it started (Relentless and quality
-        // asks carry only a task). Shared with a task detail pushed over chat.
+        // The dock also answers every open ask from the Attention feed, this
+        // conversation's first — by thread, or by a task it started (Relentless
+        // and quality asks carry only a task); the rest show where they came
+        // from. Shared with a task detail pushed over chat.
         val askSurface: ai.magicbeans.magdroid.attention.AskSurfaceViewModel = viewModel()
         val askState by askSurface.state.collectAsStateWithLifecycle()
         FollowAskSurface(askSurface)
@@ -522,9 +561,18 @@ fun ChatScreen(
             // it would put one chat's asks in all of them.
             activeSession?.uiThreadId?.takeIf { it.isNotBlank() && it != "general" },
         )
+        // A named thread can hold several chats: an ask that names the chat
+        // session raising it is here only in that session.
+        val askSessionIds = setOfNotNull(
+            state.activeSessionId,
+            activeSession?.identifier(),
+            activeSession?.id?.takeIf { it.isNotBlank() },
+        )
         val askTaskIds = remember(state.messages) { ai.magicbeans.magdroid.chat.ComposerAskDock.taskIds(state.messages) }
-        val feedAsks = remember(askState.feed, askState.settled, askThreadIds, askTaskIds) {
-            ai.magicbeans.magdroid.attention.AskSurfaces.forThread(askState.feed, askThreadIds, askTaskIds, askState.settled)
+        val feedAsks = remember(askState.feed, askState.settled, askThreadIds, askTaskIds, askSessionIds) {
+            ai.magicbeans.magdroid.attention.AskSurfaces.forComposer(
+                askState.feed, askThreadIds, askTaskIds, askState.settled, chatSessionIds = askSessionIds,
+            )
         }
         AskSurfaceSheet(
             viewModel = askSurface,
@@ -536,10 +584,12 @@ fun ChatScreen(
         if (!readOnly) {
             ComposerAskDockView(
                 messages = state.messages,
-                enabled = !state.sending,
+                enabled = !readOnly,
                 onAnswer = { messageId, option, text, ids -> viewModel.answerEscalation(messageId, option, text, ids) },
                 onOpenAttention = onOpenAttention,
-                feedAsks = feedAsks,
+                feedAsks = feedAsks.items,
+                feedHere = feedAsks.here,
+                originChatTitles = state.sessions.associate { it.identifier() to (it.title?.takeIf(String::isNotBlank) ?: "Chat ${it.identifier().take(8)}") },
                 askState = askState,
                 onAnswerFeed = askSurface::answer,
                 loadAlignmentDetail = askSurface::alignmentDetail,
@@ -547,9 +597,16 @@ fun ChatScreen(
                 onOpenSheet = { item -> askSurface.openSheet(item, ASK_SHEET_DOCK) },
                 onReviewPlan = onReviewPlan,
             )
-            PlannerDockView(messages = state.messages, enabled = !state.sending, onReviewPlan = onReviewPlan)
+            PlannerDockView(messages = state.messages, enabled = !readOnly, onReviewPlan = onReviewPlan)
             // The `/` command picker takes the mention picker's place.
-            val commandRows = state.commandRows()
+            // `/voice-mode` reads the composer mic's mode and the same availability its menu uses.
+            val commandRows = state.commandRows(
+                ComposerCommandVoice(
+                    mode = voiceInputMode,
+                    liveVoiceAvailable = voiceCatalog.profiles.any { it.nativeAndAvailable },
+                    handsFreeAvailable = voiceCatalog.handsFreeAvailable,
+                ),
+            )
             if (commandRows.isNotEmpty()) {
                 CommandPicker(commandRows, viewModel::pickCommandRow)
             } else if (state.mentions.isNotEmpty()) {
@@ -594,22 +651,33 @@ fun ChatScreen(
                 onDismiss = { voiceSection = null },
             )
         }
-        if (realtimeState.active && !typingDuringCall) {
+        val livePanelVisible = realtimeState.active && !typingDuringCall
+        AnimatedVisibility(
+            visible = livePanelVisible,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut() + shrinkVertically(),
+        ) {
             LiveVoicePanel(
                 state = realtimeState,
+                micLevel = { liveMicLevel },
+                playbackLevel = { livePlaybackLevel },
                 voiceQueue = { ChatComposerTopRows(state, viewModel, topCornerRadius = Lively.composerRadius) },
                 onMute = viewModel::toggleLiveVoiceMute,
                 onHoldStart = viewModel::engageLiveVoicePushToTalk,
                 onHoldEnd = viewModel::releaseLiveVoicePushToTalk,
                 onSetPushToTalk = viewModel::setLiveVoicePushToTalk,
-                onSettings = { voiceSection = VoiceSection.Live },
                 onEnd = onToggleLive,
                 onTypeMessage = { typingDuringCall = true },
             )
+        }
+        if (livePanelVisible) {
+            // The call panel above holds the composer's place while it shows.
         } else if (readOnly) {
             ArchivedComposerBand(onReturn = viewModel::returnToActive)
         } else {
             Composer(
+                voiceModeState = composerVoiceMode,
+                dictationLevel = { dictationLevel },
                 state = state,
                 voiceQueue = {
                     ChatComposerTopRows(state, viewModel, liveStrip = {
@@ -625,8 +693,8 @@ fun ChatScreen(
                 onPickProfile = viewModel::selectProfile,
                 onPickEngine = viewModel::selectHarnessEngine,
                 onPickModel = viewModel::selectHarnessModel,
-                onAttach = { pickDocument.launch(arrayOf("*/*")) },
-                onCamera = { pickImage.launch("image/*") },
+                onAttach = attachmentPicker.files,
+                onCamera = attachmentPicker.photos,
                 // Offered only when the service that reads the screen is
                 // running. Absent rather than disabled: a control that explains
                 // why it cannot work is worse than one that was never promised.
@@ -643,9 +711,12 @@ fun ChatScreen(
                 onOpenReplySettings = { voiceSection = VoiceSection.Replies },
                 onOpenLiveSettings = { voiceSection = VoiceSection.Live },
                 liveActive = liveActive,
+                liveVoiceAvailable = voiceCatalog.profiles.any { it.nativeAndAvailable },
+                handsFreeAvailable = voiceCatalog.handsFreeAvailable,
                 onToggleLive = onToggleLive,
                 onRemoveAttachment = viewModel::removeAttachment,
                 onComposerMode = viewModel::setComposerMode,
+                focusRequest = suggestionFocusRequest,
             )
         }
     }
@@ -677,6 +748,12 @@ private fun ChatComposerTopRows(
         onStopTurn = viewModel::stop,
     )
     state.queueError?.let { QueueErrorBand(it, viewModel::dismissQueueError) }
+    if (state.selectedHarnessEngine in setOf("magician", "pi")) {
+        state.modelSelectionIssue?.let {
+            Text(it, color = Danger, fontSize = 11.sp, lineHeight = 15.sp,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        }
+    }
     ConcurrentVoiceStrip(viewModel, topCornerRadius = if (hasQueue) 0.dp else topCornerRadius)
     metadata?.internalVoice?.parentSessionId?.let { parent ->
         ConcurrentOriginStrip(
@@ -693,207 +770,6 @@ private fun ChatComposerTopRows(
 }
 
 /**
- * The full call surface can collapse into the text composer without ending
- * the call. Dictation remains unavailable while realtime owns the microphone.
- */
-@Composable
-private fun LiveVoicePanel(
-    voiceQueue: @Composable () -> Unit = {},
-    state: RealtimeVoiceState,
-    onMute: () -> Unit,
-    onHoldStart: () -> Unit,
-    onHoldEnd: () -> Unit,
-    onSetPushToTalk: (Boolean) -> Unit,
-    onSettings: () -> Unit,
-    onEnd: () -> Unit,
-    onTypeMessage: () -> Unit,
-) {
-    Surface(
-        color = composerSurfaceColor(),
-        shape = Lively.composerShape,
-        border = BorderStroke(1.dp, Coral.copy(alpha = 0.35f)),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
-    ) {
-        Column(Modifier.fillMaxWidth()) {
-            voiceQueue()
-            Column(
-                Modifier.fillMaxWidth().padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(11.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(
-                        Modifier.size(9.dp).background(
-                            if (state.phase == RealtimeVoiceState.Phase.Ready) Teal else Coral,
-                            CircleShape,
-                        ),
-                    )
-                    Text(
-                        when (state.phase) {
-                            RealtimeVoiceState.Phase.Connecting -> "Connecting voice…"
-                            RealtimeVoiceState.Phase.Reconnecting -> "Reconnecting voice…"
-                            RealtimeVoiceState.Phase.Ready -> state.profileLabel ?: state.engine.label
-                            RealtimeVoiceState.Phase.Ending -> "Ending call…"
-                            else -> state.engine.label
-                        },
-                        color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = onTypeMessage) {
-                        Icon(Icons.Outlined.Keyboard, "Type a message", tint = Secondary, modifier = Modifier.size(19.dp))
-                    }
-                    IconButton(onClick = onSettings, enabled = state.phase != RealtimeVoiceState.Phase.Ending) {
-                        Icon(Icons.Outlined.Tune, "Voice call settings", tint = Secondary, modifier = Modifier.size(19.dp))
-                    }
-                }
-
-                if (state.lastUserText.isNotBlank()) {
-                    CaptionLine("You", state.lastUserText, Coral)
-                }
-                if (state.lastAssistantText.isNotBlank()) {
-                    CaptionLine("Magican", state.lastAssistantText, Teal)
-                }
-                // Between "let me check…" and the answer the line is silent; say so
-                // rather than inviting the next question.
-                val statusLine = when {
-                    state.assistantWorking -> "Working…"
-                    state.lastUserText.isNotBlank() || state.lastAssistantText.isNotBlank() -> null
-                    state.phase == RealtimeVoiceState.Phase.Ready -> "Listening…"
-                    else -> "Preparing microphone and voice…"
-                }
-                statusLine?.let { Text(it, color = Muted, fontSize = 12.sp) }
-                state.error?.let { Text(it, color = Danger, fontSize = 11.sp, lineHeight = 15.sp) }
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // The mode is changeable while the call runs. It was fixed at
-                    // connect time, so a room that stopped being quiet meant ending
-                    // the call and going to Settings.
-                    TextButton(onClick = { onSetPushToTalk(!state.pushToTalk) }) {
-                        Text(
-                            if (state.pushToTalk) "Open mic" else "Hold to talk",
-                            color = Coral, fontSize = 12.sp,
-                        )
-                    }
-                    if (state.pushToTalk) {
-                        val pushFill = if (state.pushToTalkHeld) Danger else AccentFill
-                        val pushForeground = if (state.pushToTalkHeld) {
-                            chatContrastingTextColor(pushFill)
-                        } else {
-                            OnAccent
-                        }
-                        Surface(
-                            color = pushFill,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).height(48.dp)
-                                .alpha(if (state.phase == RealtimeVoiceState.Phase.Ready) 1f else 0.5f)
-                                .pointerInput(state.phase) {
-                                    if (state.phase != RealtimeVoiceState.Phase.Ready) return@pointerInput
-                                    detectTapGestures(onPress = {
-                                        onHoldStart()
-                                        tryAwaitRelease()
-                                        onHoldEnd()
-                                    })
-                                },
-                        ) {
-                            Row(
-                                Modifier.fillMaxSize(),
-                                horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(Icons.Filled.Mic, null, tint = pushForeground, modifier = Modifier.size(19.dp))
-                                Text(
-                                    if (state.pushToTalkHeld) "Release to send" else "Hold to talk",
-                                    color = pushForeground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                        }
-                    } else {
-                        val muteForeground = if (state.muted) Ground else OnAccent
-                        Surface(
-                            color = if (state.muted) Muted else AccentFill,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).height(48.dp)
-                                .alpha(if (state.phase == RealtimeVoiceState.Phase.Ready) 1f else 0.5f)
-                                .clickable(enabled = state.phase == RealtimeVoiceState.Phase.Ready) { onMute() },
-                        ) {
-                            Row(
-                                Modifier.fillMaxSize(),
-                                horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    if (state.muted) Icons.AutoMirrored.Outlined.VolumeOff else Icons.Filled.Mic,
-                                    null, tint = muteForeground, modifier = Modifier.size(19.dp),
-                                )
-                                Text(
-                                    if (state.muted) "Unmute" else "Mute mic",
-                                    color = muteForeground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                        }
-                    }
-                    Surface(
-                        color = Danger,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(48.dp).clickable { onEnd() },
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 15.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            val dangerForeground = chatContrastingTextColor(Danger)
-                            Icon(Icons.Filled.Stop, null, tint = dangerForeground, modifier = Modifier.size(17.dp))
-                            Text("End", color = dangerForeground, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** Keep call status and immediate mute/end controls reachable beside typed chat. */
-@Composable
-private fun LiveCallComposerStrip(state: RealtimeVoiceState, onOpen: () -> Unit, onMute: () -> Unit, onEnd: () -> Unit) {
-    val label = when (state.phase) {
-        RealtimeVoiceState.Phase.Ready -> "Live · ${if (state.pushToTalk) "Hold to talk" else if (state.muted) "Muted" else "Mic on"}"
-        RealtimeVoiceState.Phase.Connecting -> "Connecting…"
-        RealtimeVoiceState.Phase.Reconnecting -> "Reconnecting…"
-        RealtimeVoiceState.Phase.Ending -> "Ending call…"
-        else -> "Call ended"
-    }
-    Column {
-        Row(Modifier.fillMaxWidth().height(30.dp).padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label,
-                color = Secondary, fontSize = 12.sp, maxLines = 1,
-                modifier = Modifier.weight(1f).fillMaxHeight().wrapContentHeight(Alignment.CenterVertically)
-                    .clickable(role = Role.Button, onClickLabel = "Open voice call controls", onClick = onOpen))
-            IconButton(onClick = if (state.pushToTalk) onOpen else onMute, modifier = Modifier.size(36.dp)) {
-                Icon(if (state.muted || state.pushToTalk) Icons.AutoMirrored.Outlined.VolumeOff else Icons.Filled.Mic,
-                    if (state.pushToTalk) "Open voice call controls" else if (state.muted) "Unmute microphone" else "Mute microphone",
-                    tint = Secondary, modifier = Modifier.size(17.dp))
-            }
-            IconButton(onClick = onEnd, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Filled.Stop, "End voice call", tint = Danger, modifier = Modifier.size(16.dp))
-            }
-        }
-        HorizontalDivider(thickness = 0.5.dp, color = Muted.copy(alpha = 0.2f))
-    }
-}
-
-@Composable
-private fun CaptionLine(speaker: String, text: String, color: Color) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(speaker.uppercase(), color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .5.sp)
-        Text(text, color = Ink, fontSize = 13.sp, lineHeight = 17.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-/**
  * Read a picked file, and name it as the picker names it.
  *
  * The whole file is read into memory deliberately: the endpoint caps uploads at
@@ -903,7 +779,7 @@ private fun CaptionLine(speaker: String, text: String, color: Color) {
  * Null when the provider cannot open the URI — a file on a disconnected share,
  * or a grant that has already lapsed.
  */
-private fun readPicked(
+internal fun readPicked(
     context: android.content.Context,
     uri: android.net.Uri,
 ): Triple<String, String, ByteArray>? {
@@ -914,7 +790,17 @@ private fun readPicked(
         if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
     } ?: uri.lastPathSegment ?: "attachment"
     val bytes = runCatching {
-        resolver.openInputStream(uri)?.use { it.readBytes() }
+        resolver.openInputStream(uri)?.use { input ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (output.size() + count > 20 * 1024 * 1024) return null
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        }
     }.getOrNull() ?: return null
     return Triple(name, mime, bytes)
 }
@@ -963,9 +849,12 @@ private fun Transcript(
     onOpenCompleteResult: (ActivityRow) -> Unit = {},
     onOpenTask: (String) -> Unit = {},
     onLoadActivity: (String, String) -> Unit = { _, _ -> },
+    onLoadOlder: () -> Unit = {},
     onOpenOriginalAnswer: (OriginalAnswerLink) -> Unit = {},
     onInspectTask: (String, String?) -> Unit = { taskId, _ -> onOpenTask(taskId) },
     onReviewPlan: (String) -> Unit = onOpenTask,
+    onSuggest: (String) -> Unit = {},
+    onOpenSession: (String) -> Unit = {},
 ) {
     Box(modifier.fillMaxWidth()) {
         when {
@@ -984,7 +873,19 @@ private fun Transcript(
             // looked like it had never been spoken. The conversation stays;
             // the error is a banner over it.
             state.messages.isEmpty() && state.error != null -> ErrorPanel(state)
-            state.messages.isEmpty() -> EmptyChat()
+            state.messages.isEmpty() -> {
+                val session = state.selectedSession?.takeIf { it.identifier() == state.activeSessionId }
+                    ?: state.sessions.firstOrNull { it.identifier() == state.activeSessionId }
+                EmptyChat(
+                    readOnly = ai.magicbeans.magdroid.chat.ChatReadOnly.isArchived(session),
+                    suggestionsEnabled = state.dictation != DictationState.Recording && state.dictation != DictationState.Transcribing,
+                    recentSessions = state.sessions.filter {
+                        it.identifier().isNotBlank() && it.identifier() != state.activeSessionId && it.internalVoice == null
+                    }.distinctBy { it.identifier() }.sortedByDescending { it.updatedAt ?: it.createdAt ?: 0 }.take(3),
+                    onSuggest = onSuggest,
+                    onOpenSession = onOpenSession,
+                )
+            }
             else -> Column(Modifier.fillMaxSize()) {
                 // Messages already on screen stay; the bar says the newest may
                 // be missing, and offers the way to ask again.
@@ -1008,6 +909,20 @@ private fun Transcript(
                 val messageIndexById = remember(state.messages) {
                     state.messages.withIndex().associate { (index, message) -> message.id to index }
                 }
+                val showOlderRow = state.historyHasMore || state.olderHistoryLoading || state.olderHistoryError != null
+                // Each message's position among the list's items, in the order
+                // they are emitted below: the older-history row, then each
+                // message behind its day divider.
+                val lazyIndexById = remember(state.messages, dayLabels, showOlderRow) {
+                    var next = if (showOlderRow) 1 else 0
+                    buildMap {
+                        state.messages.forEachIndexed { index, message ->
+                            if (dayLabels[index] != null) next++
+                            put(message.id, next++)
+                        }
+                    }
+                }
+                OlderHistoryPaging(state, listState, messageIndexById, lazyIndexById, onLoadOlder)
                 Box(Modifier.fillMaxSize()) {
                 LazyColumn(
                     state = listState,
@@ -1015,6 +930,15 @@ private fun Transcript(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    if (showOlderRow) {
+                        item(key = OLDER_HISTORY_ROW_KEY, contentType = "older-history") {
+                            OlderHistoryRow(
+                                loading = state.olderHistoryLoading,
+                                error = state.olderHistoryError,
+                                onLoad = onLoadOlder,
+                            )
+                        }
+                    }
                     state.messages.forEachIndexed { index, message ->
                         dayLabels[index]?.let { label ->
                             item(key = "${DAY_DIVIDER_KEY_PREFIX}${message.id}", contentType = "day-divider") {
@@ -1070,6 +994,10 @@ private fun Bubble(
     onReviewPlan: (String) -> Unit = onOpenTask,
 ) {
     val alignment = if (message.fromUser) Alignment.End else Alignment.Start
+    val answerDisplay = remember(message.text, message.fromUser) {
+        if (message.fromUser) ai.magicbeans.magdroid.chat.AnswerVerificationDisplay(message.text, null)
+        else splitAnswerVerification(message.text)
+    }
     val bubbleShape = remember { chatBubbleShape() }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -1152,6 +1080,16 @@ private fun Bubble(
         }
         if (message.system && message.structured == null) {
             SystemNote(message.text)
+            // A stopped turn's "Stopped" line keeps the steps it ran.
+            if (!message.fromUser && message.activityRows.isNotEmpty()) {
+                ActivitySection(
+                    message.activityRows,
+                    onOpenAttention = { onOpenAttention(null) },
+                    onOpenCompleteResult = onOpenCompleteResult,
+                    sessionId = sessionId,
+                    onInspectRun = { taskId, executionId -> onInspectTask(taskId, executionId) },
+                )
+            }
             return@Column
         }
         val structured = message.structured
@@ -1188,10 +1126,10 @@ private fun Bubble(
                 if (structured != null) {
                     // The backend composed this answer as blocks. Rendering the
                     // flat text instead would collapse a table into a paragraph.
-                    StructuredResponseView(structured)
+                    StructuredResponseView(if (answerDisplay.verification != null) withoutAnswerVerification(structured) else structured)
                 } else {
                     MarkdownText(
-                        markdown = message.text.ifEmpty { if (message.streaming) "…" else "" },
+                        markdown = answerDisplay.body.ifEmpty { if (message.streaming) "…" else "" },
                         color = when {
                             message.fromUser -> OnAccent
                             message.failed -> Coral
@@ -1223,7 +1161,10 @@ private fun Bubble(
                 onInspectRun = { taskId, executionId -> onInspectTask(taskId, executionId) },
             )
             if (message.text.isNotBlank() && !message.streaming) {
-                MessageSpeakButton(active = speaking, onToggle = onToggleSpeak)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MessageSpeakButton(active = speaking, onToggle = onToggleSpeak)
+                    answerDisplay.verification?.let { AnswerVerificationInfo(it) }
+                }
             }
         }
     }
@@ -1367,6 +1308,27 @@ private fun MessageSpeakButton(active: Boolean, onToggle: () -> Unit) {
 internal fun messageSpeechActionLabel(active: Boolean): String =
     if (active) "Stop" else "Speak"
 
+/** Owned above the call/composer switch, so hiding the composer cannot reset it. */
+@Composable
+internal fun rememberComposerVoiceMode(liveActive: Boolean, focusRequest: Int = 0): MutableState<Boolean> {
+    val mode = rememberSaveable { mutableStateOf(true) }
+    var beforeCall by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    var handledFocusRequest by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(liveActive) {
+        if (liveActive) {
+            if (beforeCall == null) beforeCall = mode.value
+        } else {
+            beforeCall?.let { mode.value = it }
+            beforeCall = null
+        }
+    }
+    LaunchedEffect(focusRequest) {
+        if (focusRequest > 0 && focusRequest != handledFocusRequest) mode.value = false
+        handledFocusRequest = focusRequest
+    }
+    return mode
+}
+
 /**
  * The composer, laid out as iOS lays it out.
  *
@@ -1383,7 +1345,9 @@ internal fun messageSpeechActionLabel(active: Boolean): String =
  * file HITL announces itself before it is sent.
  */
 @Composable
-private fun Composer(
+internal fun Composer(
+    voiceModeState: MutableState<Boolean>,
+    dictationLevel: () -> Float = { 0f },
     voiceQueue: @Composable () -> Unit = {},
     onBackground: () -> Unit = {},
     onStopAndSend: () -> Unit = {},
@@ -1406,183 +1370,267 @@ private fun Composer(
     onOpenReplySettings: () -> Unit,
     onOpenLiveSettings: () -> Unit,
     liveActive: Boolean,
+    liveVoiceAvailable: Boolean = true,
+    handsFreeAvailable: Boolean = true,
     onToggleLive: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     onComposerMode: (ai.magicbeans.magdroid.chat.ChatComposerMode) -> Unit,
+    topPanel: (@Composable () -> Unit)? = null,
+    modeControl: (@Composable () -> Unit)? = null,
+    modelControl: (@Composable () -> Unit)? = null,
+    inputPlaceholder: String? = null,
+    showChatGodMode: Boolean = true,
+    holdToSend: Boolean = true,
+    focusRequest: Int = 0,
 ) {
     val composerMode = state.composerMode
+    var privilegeLabel by remember(state.activeSessionId) { mutableStateOf<String?>(null) }
     val context = LocalContext.current
+    val voicePrefs = remember(context) { VoicePrefs.get(context) }
+    val voiceInputMode by voicePrefs.composerVoiceMode.collectAsStateWithLifecycle()
     remember(context) { PrimaryAgentWakeIdentityStore.initialize(context) }
     val primaryAgent by PrimaryAgentWakeIdentityStore.identity.collectAsStateWithLifecycle()
-    val assistantName = primaryAgent?.let { identity ->
-        (listOf(identity.name) + identity.aliases).firstNotNullOfOrNull { name ->
-            name.trim().takeIf { it.isNotEmpty() }
-        }
-    } ?: ProductIdentity.productName
+    val assistantName = primaryAgentDisplayName(primaryAgent)
     val identityScope = rememberCoroutineScope()
     androidx.lifecycle.compose.LifecycleResumeEffect(context) {
         val refresh = identityScope.launch { PrimaryAgentWakeIdentityStore.refresh(context) }
         onPauseOrDispose { refresh.cancel() }
     }
-    // Voice is the default mode, as on iOS.
-    var voiceMode by remember { mutableStateOf(true) }
+    var voiceMode by voiceModeState
+    val inputFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(voiceMode, focusRequest) {
+        if (!voiceMode) {
+            androidx.compose.runtime.withFrameNanos { }
+            inputFocus.requestFocus()
+            keyboard?.show()
+        }
+    }
     var profileMenu by remember { mutableStateOf(false) }
+    val hasModelCatalog = state.profiles.any { it.modelChoice != null }
+    if (profileMenu && hasModelCatalog) {
+        CatalogModelSheet(state, onPickProfile, onPickEngine, onPickModel) { profileMenu = false }
+    }
     val acting = composerMode != ai.magicbeans.magdroid.chat.ChatComposerMode.Ask
-    val accentEdge = if (acting) Coral.copy(alpha = 0.4f) else Muted.copy(alpha = 0.25f)
 
     // No band behind the card: the chat's wash shows around it, and the card's
     // own border carries the mode (iOS `ComposerView`).
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = COMPOSER_BOTTOM_GAP_DP.dp),
-    ) {
-        Surface(
-            // iOS uses the theme's surface, not the elevated card layer. This
-            // keeps the composer related to assistant content in every theme.
-            color = composerSurfaceColor(),
-            shape = RoundedCornerShape(COMPOSER_CORNER_DP.dp),
-            border = BorderStroke(1.dp, accentEdge),
+    ComposerCard(accented = acting, privilegeLabel = privilegeLabel) {
+        if (topPanel != null) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 6.dp)) { topPanel() }
+        voiceQueue()
+        Column(
+            Modifier.padding(start = 12.dp, end = 12.dp, top = 9.dp, bottom = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                voiceQueue()
-                Column(
-                    Modifier.padding(start = 12.dp, end = 12.dp, top = 9.dp, bottom = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (state.attachments.isNotEmpty()) AttachmentStrip(state, onRemoveAttachment)
+            if (state.attachments.isNotEmpty()) AttachmentStrip(state, onRemoveAttachment)
+            AnimatedVisibility(
+                visible = state.dictation == DictationState.Recording,
+                enter = fadeIn(tween(160)) + expandVertically(tween(240)),
+                exit = fadeOut(tween(120)) + shrinkVertically(tween(220)),
+            ) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Listening", color = Secondary, fontSize = 12.sp, modifier = Modifier.padding(end = 10.dp))
+                    VoiceActivityWaveform(active = true, muted = false, animate = rememberAnimatorDurationScale() > 0f,
+                        micLevel = dictationLevel, playbackLevel = { 0f })
+                }
+            }
 
-                    // iOS opens in voice mode: while nothing has been typed the field
-                    // is *replaced* by a large centred mic with mute and Live
-                    // flanking it. It is a different composer state, not a button,
-                    // and starting in text mode was the wrong default.
-                    if (voiceMode && state.draft.isEmpty() && !liveActive) {
-                        VoiceHero(
-                            state = state.dictation,
-                            partial = state.partialTranscript,
-                            onMic = onMic,
-                            onHoldStart = onHoldStart,
-                            onHoldEnd = onHoldEnd,
-                            speakReplies = speakReplies,
-                            onToggleSpeak = onToggleSpeak,
-                            onOpenReplySettings = onOpenReplySettings,
-                            onOpenLiveSettings = onOpenLiveSettings,
-                            liveActive = liveActive,
-                            onToggleLive = onToggleLive,
-                            onKeyboard = { voiceMode = false },
-                        )
-                    } else {
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        BasicComposerField(
-                            value = state.draft,
-                            placeholder = when (composerMode) {
-                                ai.magicbeans.magdroid.chat.ChatComposerMode.Plan -> "Plan with $assistantName…"
-                                ai.magicbeans.magdroid.chat.ChatComposerMode.AcceptInScope ->
-                                    "Accept in-scope edits…"
-                                ai.magicbeans.magdroid.chat.ChatComposerMode.Ask -> "Ask $assistantName…"
-                            },
-                            onValueChange = onDraftChange,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        if (state.draft.isNotBlank() && state.composerMode != ChatComposerMode.Plan) {
-                            ComposerSendOptions(state, onSend, onStopAndSend, onBackground)
-                        }
-                        TrailingSlot(
-                            state = state,
-                            onSend = onSend,
-                            onStop = onStop,
-                            onVoice = { voiceMode = true },
-                            liveActive = liveActive,
+            // iOS opens in voice mode: while nothing has been typed the field
+            // is *replaced* by a large centred mic with mute and Live
+            // flanking it. It is a different composer state, not a button,
+            // and starting in text mode was the wrong default.
+            if (voiceMode && state.draft.isEmpty() && !liveActive) {
+                VoiceHero(
+                    state = state.dictation,
+                    partial = state.partialTranscript,
+                    onMic = onMic,
+                    onHoldStart = onHoldStart,
+                    onHoldEnd = onHoldEnd,
+                    speakReplies = speakReplies,
+                    onToggleSpeak = onToggleSpeak,
+                    onOpenReplySettings = onOpenReplySettings,
+                    onOpenLiveSettings = onOpenLiveSettings,
+                    liveActive = liveActive,
+                    inputMode = voiceInputMode,
+                    onSelectInputMode = voicePrefs::setComposerVoiceMode,
+                    liveVoiceAvailable = liveVoiceAvailable,
+                    handsFreeAvailable = handsFreeAvailable,
+                    onToggleLive = onToggleLive,
+                    onKeyboard = { voiceMode = false }, holdToSend = holdToSend,
+                )
+            } else {
+            Row(verticalAlignment = Alignment.Bottom) {
+                BasicComposerField(
+                    value = state.draft,
+                    placeholder = inputPlaceholder ?: when (composerMode) {
+                        ai.magicbeans.magdroid.chat.ChatComposerMode.Plan -> "Plan with $assistantName…"
+                        ai.magicbeans.magdroid.chat.ChatComposerMode.AcceptInScope ->
+                            "Accept in-scope edits…"
+                        ai.magicbeans.magdroid.chat.ChatComposerMode.Ask -> "Ask $assistantName…"
+                    },
+                    onValueChange = onDraftChange,
+                    modifier = Modifier.weight(1f).focusRequester(inputFocus),
+                )
+                Spacer(Modifier.width(4.dp))
+                ComposerKeyboardDismiss()
+                if (state.draft.isNotBlank() && state.composerMode != ChatComposerMode.Plan) {
+                    ComposerSendOptions(state, onSend, onStopAndSend, onBackground)
+                }
+                TrailingSlot(
+                    state = state,
+                    onSend = onSend,
+                    onStop = onStop,
+                    onVoice = { voiceMode = true },
+                    liveActive = liveActive,
+                    inputMode = voiceInputMode,
+                )
+            }
+            }
+
+            // Keep this small tool row composed while it scrolls, so God-mode
+            // status and the composer's aura remain live even offscreen.
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                key("composer-tool-1") {
+                    if (modeControl != null) modeControl() else ModeToggle(
+                        mode = composerMode,
+                        permission = state.composerDoPermission,
+                        onChange = onComposerMode,
+                    )
+                }
+                key("composer-tool-2") {
+                    Box(
+                        Modifier
+                            .height(16.dp)
+                            .width(1.dp)
+                            .background(Muted.copy(alpha = 0.3f)),
+                    )
+                }
+                key("composer-tool-3") { ComposerExecutionModes(state.activeSessionId, showChatGodMode) { privilegeLabel = it } }
+                key("composer-tool-4") { ToolIcon(Icons.Outlined.AttachFile, "Attach a file", onClick = onAttach) }
+                key("composer-tool-5") { ToolIcon(Icons.Outlined.PhotoCamera, "Add a photo", onClick = onCamera) }
+                // Ask about the screen itself. `teachThisScreen` was written
+                // for this and never given a way in: the quick-settings tile
+                // and the assist gesture both reach the tutor from outside
+                // the app, and inside it there was no way to ask at all.
+                //
+                // Android-only by capability rather than by choice — iOS
+                // cannot read another app's screen from inside itself, which
+                // is why its version is a share-sheet extension.
+                if (onTeachScreen != null) {
+                    key("composer-tool-6") {
+                        ToolIcon(
+                            Icons.Outlined.Screenshot,
+                            "Explain my screen",
+                            onClick = onTeachScreen,
                         )
                     }
-                    }
-
-                    // One horizontal surface owns every secondary action, matching
-                    // iOS. A LazyRow gives long profile labels and narrow phones
-                    // real overflow instead of asking a width-filling Row to both
-                    // constrain and scroll itself.
-                    LazyRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        item {
-                            ModeToggle(
-                                mode = composerMode,
-                                permission = state.composerDoPermission,
-                                onChange = onComposerMode,
-                            )
-                        }
-                        item {
-                            Box(
-                                Modifier
-                                    .height(16.dp)
-                                    .width(1.dp)
-                                    .background(Muted.copy(alpha = 0.3f)),
-                            )
-                        }
-                        item { ToolIcon(Icons.Outlined.AttachFile, "Attach a file", onClick = onAttach) }
-                        item { ToolIcon(Icons.Outlined.PhotoCamera, "Add a photo", onClick = onCamera) }
-                        // Ask about the screen itself. `teachThisScreen` was written
-                        // for this and never given a way in: the quick-settings tile
-                        // and the assist gesture both reach the tutor from outside
-                        // the app, and inside it there was no way to ask at all.
-                        //
-                        // Android-only by capability rather than by choice — iOS
-                        // cannot read another app's screen from inside itself, which
-                        // is why its version is a share-sheet extension.
-                        if (onTeachScreen != null) {
-                            item {
-                                ToolIcon(
-                                    Icons.Outlined.Screenshot,
-                                    "Explain my screen",
-                                    onClick = onTeachScreen,
+                }
+                key("composer-tool-7") {
+                    Box {
+                        if (modelControl != null) modelControl() else ProfileChip(state) { profileMenu = true }
+                        DropdownMenu(profileMenu && !hasModelCatalog, onDismissRequest = { profileMenu = false }) {
+                            Text("ENGINE", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = Muted)
+                            state.chatHarnesses.forEach { engine ->
+                                DropdownMenuItem(
+                                    text = { Text("${HarnessCredentials.engineName(engine.name, engine.name.replace('_', ' '), engine.credentials)}${if (engine.name == state.selectedHarnessEngine) " ✓" else ""}") },
+                                    onClick = { onPickEngine(engine.name) },
                                 )
                             }
-                        }
-                        item {
-                            Box {
-                                ProfileChip(state) { profileMenu = true }
-                                DropdownMenu(profileMenu, onDismissRequest = { profileMenu = false }) {
-                                    Text("ENGINE", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = Muted)
-                                    state.chatHarnesses.forEach { engine ->
+                            HorizontalDivider()
+                            if (state.selectedHarnessEngine == "magician" || state.selectedHarnessEngine == "pi") {
+                                Text("Model choices are unavailable.", modifier = Modifier.padding(16.dp), color = Muted)
+                            } else {
+                                Text("MODEL", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = Muted)
+                                (state.chatHarnesses.firstOrNull { it.name == state.selectedHarnessEngine }?.models ?: listOf("default"))
+                                    .forEach { model ->
                                         DropdownMenuItem(
-                                            text = { Text("${engine.name.replace('_', ' ')}${if (engine.name == state.selectedHarnessEngine) " ✓" else ""}") },
-                                            onClick = { onPickEngine(engine.name) },
+                                            text = { Text("${if (model == "default") "Harness default" else model}${if (model == state.selectedHarnessModel) " ✓" else ""}") },
+                                            onClick = { onPickModel(model); profileMenu = false },
                                         )
                                     }
-                                    HorizontalDivider()
-                                    if (state.selectedHarnessEngine == "magician" || state.selectedHarnessEngine == "pi") {
-                                        Text("PROFILE", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = Muted)
-                                        state.profiles.forEach { profile ->
-                                            ProfileMenuItem(
-                                                profile = profile,
-                                                selected = profile.name == state.selectedProfile ||
-                                                    (state.selectedProfile.isBlank() && profile.isDefault),
-                                                onClick = {
-                                                    onPickProfile(profile.name)
-                                                    profileMenu = false
-                                                },
-                                            )
-                                        }
-                                    } else {
-                                        Text("MODEL", modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = Muted)
-                                        (state.chatHarnesses.firstOrNull { it.name == state.selectedHarnessEngine }?.models ?: listOf("default"))
-                                            .forEach { model ->
-                                                DropdownMenuItem(
-                                                    text = { Text("${if (model == "default") "Harness default" else model}${if (model == state.selectedHarnessModel) " ✓" else ""}") },
-                                                    onClick = { onPickModel(model); profileMenu = false },
-                                                )
-                                            }
-                                    }
-                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun CatalogModelSheet(
+    state: ChatUiState,
+    onPickProfile: (String) -> Unit,
+    onPickEngine: (String) -> Unit,
+    onPickModel: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val models = state.profiles.mapNotNull { it.modelChoice }.distinctBy { it.id }
+    val selection = state.profiles.firstOrNull { it.name == state.selectedProfile }?.modelSelection
+        ?: state.profiles.firstOrNull { it.isDefault }?.modelSelection
+    val usesCatalog = state.selectedHarnessEngine in listOf("magician", "pi")
+    ComposerModelPickerSheet(
+        selectedEngine = state.selectedHarnessEngine,
+        engines = state.chatHarnesses.map { CatalogChoiceOption(it.name, catalogEngineLabel(it.name, it.credentials), enabled = it.installed) },
+        onPickEngine = onPickEngine, onDismiss = onDismiss,
+    ) {
+        if (usesCatalog) ComposerModelCatalogControls(models, selection, onPickProfile)
+        else {
+            Text("Model", color = Muted, fontSize = 12.sp)
+            CatalogChoiceDropdown("Model", state.selectedHarnessModel,
+                (state.chatHarnesses.firstOrNull { it.name == state.selectedHarnessEngine }?.models ?: listOf("default"))
+                    .map { CatalogChoiceOption(it, if (it == "default") "Engine default" else it) }, onSelect = onPickModel)
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun ComposerModelPickerSheet(
+    selectedEngine: String,
+    engines: List<CatalogChoiceOption>,
+    onPickEngine: (String) -> Unit,
+    onDismiss: () -> Unit,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Ground,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Model and thinking", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Done", color = Coral) }
+            }
+            Text("Engine", color = Muted, fontSize = 12.sp)
+            CatalogChoiceDropdown("Engine", selectedEngine, engines, onSelect = onPickEngine)
+            content()
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+internal fun ComposerModelCatalogControls(
+    models: List<ai.magicbeans.magdroid.chat.ChatModelChoice>,
+    selection: ai.magicbeans.magdroid.chat.ChatModelSelection?,
+    onPickRoute: (String) -> Unit,
+) {
+    val active = models.firstOrNull { it.id == selection?.modelId }
+    Text("Model", color = Muted, fontSize = 12.sp)
+    CatalogChoiceDropdown("Model", active?.id.orEmpty(), models.map { CatalogChoiceOption(it.id, it.label, it.providerDisplayName, enabled = it.installed) }) { id ->
+        models.firstOrNull { it.id == id }?.let { model ->
+            val level = selection?.thinking?.takeIf { model.choices.containsKey(it) } ?: "auto"
+            model.choices[level]?.let(onPickRoute)
+        }
+    }
+    active?.let { model ->
+        Text(model.providerDisplayName + (model.limits?.let { " · ${it.contextWindowTokens / 1000}K context" } ?: ""), color = Muted, fontSize = 12.sp)
+        ModelThinkingControl(model.thinking, selection?.thinking ?: "auto") { level -> model.choices[level]?.let(onPickRoute) }
     }
 }
 
@@ -1732,29 +1780,7 @@ private fun ModeToggle(
             }
 
             val planSelected = mode == ChatComposerMode.Plan
-            Surface(
-                color = if (planSelected) composerModeFill(ChatComposerMode.Plan) else Color.Transparent,
-                shape = segmentShape,
-                modifier = Modifier
-                    .heightIn(min = COMPOSER_MODE_MIN_HEIGHT_DP.dp)
-                    .clickable(role = Role.Button) { onChange(ChatComposerMode.Plan) }
-                    .semantics { selected = planSelected },
-            ) {
-                Text(
-                    "PLAN",
-                    color = if (planSelected) composerModeForeground(ChatComposerMode.Plan) else Muted,
-                    fontSize = COMPOSER_MODE_FONT_SP.sp,
-                    lineHeight = 12.sp,
-                    maxLines = 1,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = LocalMagicanFontFamilies.current.mono,
-                    letterSpacing = 0.4.sp,
-                    modifier = Modifier.wrapContentHeight(Alignment.CenterVertically).padding(
-                        horizontal = COMPOSER_MODE_HORIZONTAL_PADDING_DP.dp,
-                        vertical = COMPOSER_MODE_VERTICAL_PADDING_DP.dp,
-                    ),
-                )
-            }
+            ComposerModeSegment("PLAN", planSelected) { onChange(ChatComposerMode.Plan) }
         }
     }
 }
@@ -1766,6 +1792,35 @@ private fun ProfileChip(state: ChatUiState, onClick: () -> Unit) {
         ?: state.profiles.firstOrNull()
     val usesProfile = state.selectedHarnessEngine == "magician" || state.selectedHarnessEngine == "pi"
     val isDefault = if (usesProfile) active == null || active.isDefault else state.selectedHarnessModel == "default"
+    val engineName = state.selectedHarnessEngine.replace('_', ' ')
+    val selectionName = if (usesProfile) active?.compactDisplay() ?: "Default" else state.selectedHarnessModel
+    // Web parity (`ChatPanel` `profileThinkingLabel`): the chip carries the
+    // selected thinking level for a catalog model that has thinking.
+    val selection = active?.modelSelection
+    val model = state.profiles.mapNotNull { it.modelChoice }.firstOrNull { it.id == selection?.modelId }
+    val thinking = chatComposerThinkingLabel(state.selectedHarnessEngine, model, selection)
+    ComposerSelectorChip(
+        label = "$engineName · $selectionName",
+        onClick = onClick,
+        isDefault = isDefault,
+        thinking = thinking,
+        accessibilityLabel = modelChipAccessibilityLabel("Chat engine: $engineName, selection: $selectionName", thinking),
+    )
+}
+
+@Composable
+internal fun ComposerSelectorChip(
+    label: String,
+    onClick: (() -> Unit)? = null,
+    icon: androidx.compose.ui.graphics.vector.ImageVector = Icons.Outlined.AutoAwesome,
+    isDefault: Boolean = true,
+    maxWidth: androidx.compose.ui.unit.Dp = 180.dp,
+    /** Selected thinking level tag (web `pp-badge`), e.g. "Auto" or "High"; null hides it. */
+    thinking: String? = null,
+    /** Replaces the chip's merged text for screen readers when set. */
+    accessibilityLabel: String? = null,
+) {
+    val tap = if (onClick != null) Modifier.clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick) else Modifier
     Surface(
         color = composerSurfaceColor(),
         shape = Lively.chipShape,
@@ -1773,10 +1828,11 @@ private fun ProfileChip(state: ChatUiState, onClick: () -> Unit) {
             1.dp,
             if (isDefault) Muted.copy(alpha = 0.25f) else Coral.copy(alpha = 0.5f),
         ),
-        modifier = Modifier.clickable { onClick() },
+        modifier = if (accessibilityLabel != null) tap.semantics { contentDescription = accessibilityLabel } else tap,
     ) {
         Row(
-            Modifier.padding(
+            // With an explicit label the visible texts stay out of the merged node.
+            (if (accessibilityLabel != null) Modifier.clearAndSetSemantics { } else Modifier).padding(
                 horizontal = 8.dp,
                 vertical = COMPOSER_PROFILE_VERTICAL_PADDING_DP.dp,
             ),
@@ -1784,115 +1840,35 @@ private fun ProfileChip(state: ChatUiState, onClick: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Icon(
-                Icons.Outlined.AutoAwesome,
+                icon,
                 contentDescription = null,
                 tint = if (isDefault) Ink else Coral,
                 modifier = Modifier.size(12.dp),
             )
-            if (usesProfile && active?.isAdaptive == true) {
-                ChatProfileTag("Adaptive", Coral)
-            }
-            active?.adaptiveTier?.takeIf { usesProfile && it.isNotBlank() }?.let { tier ->
-                ChatProfileTag(tier, chatProfileTierColor(tier))
-            }
             Text(
-                "${state.selectedHarnessEngine.replace('_', ' ')} · ${if (usesProfile) active?.display() ?: "Default" else state.selectedHarnessModel}",
+                label,
                 color = Ink, fontSize = 10.sp,
                 fontFamily = LocalMagicanFontFamilies.current.mono,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 180.dp),
+                modifier = Modifier.widthIn(max = maxWidth),
             )
-            Icon(
+            if (thinking != null) Text(
+                thinking.uppercase(),
+                color = Coral, fontSize = 8.sp, fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.3.sp, maxLines = 1,
+                modifier = Modifier
+                    .background(Coral.copy(alpha = 0.12f), RoundedCornerShape(3.dp))
+                    .border(1.dp, Coral.copy(alpha = 0.28f), RoundedCornerShape(3.dp))
+                    .padding(horizontal = 4.dp),
+            )
+            if (onClick != null) Icon(
                 Icons.Outlined.UnfoldMore,
                 contentDescription = null,
                 tint = Muted,
                 modifier = Modifier.size(12.dp),
             )
         }
-    }
-}
-
-@Composable
-private fun ProfileMenuItem(
-    profile: ChatProfile,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    DropdownMenuItem(
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        profile.name,
-                        color = Ink,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                    )
-                    if (profile.isDefault) {
-                        Text("★", color = MWarn, fontSize = 11.sp)
-                    }
-                    if (selected) {
-                        Text("✓", color = Coral, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-                if (profile.isAdaptive || !profile.adaptiveTier.isNullOrBlank()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (profile.isAdaptive) ChatProfileTag("Adaptive", Coral)
-                        profile.adaptiveTier?.takeIf { it.isNotBlank() }?.let { tier ->
-                            ChatProfileTag(tier, chatProfileTierColor(tier))
-                        }
-                    }
-                }
-                profile.model?.takeIf { it.isNotBlank() }?.let { model ->
-                    Text(
-                        model,
-                        color = Secondary,
-                        fontSize = 11.sp,
-                        fontFamily = LocalMagicanFontFamilies.current.mono,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                (profile.adaptiveDescription ?: profile.description)
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { description ->
-                        Text(
-                            description,
-                            color = Secondary,
-                            fontSize = 11.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-            }
-        },
-        onClick = onClick,
-    )
-}
-
-@Composable
-private fun ChatProfileTag(text: String, color: Color) {
-    Surface(
-        color = color.copy(alpha = 0.12f),
-        shape = RoundedCornerShape(COMPOSER_PROFILE_TAG_CORNER_DP.dp),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.36f)),
-    ) {
-        Text(
-            text.uppercase(),
-            color = color,
-            fontSize = COMPOSER_PROFILE_TAG_FONT_SP.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            modifier = Modifier.padding(
-                horizontal = COMPOSER_PROFILE_TAG_HORIZONTAL_PADDING_DP.dp,
-                vertical = COMPOSER_PROFILE_TAG_VERTICAL_PADDING_DP.dp,
-            ),
-        )
     }
 }
 
@@ -1911,8 +1887,9 @@ private fun TrailingSlot(
     onStop: () -> Unit,
     onVoice: () -> Unit,
     liveActive: Boolean = false,
+    inputMode: ComposerVoiceMode = ComposerVoiceMode.Dictation,
 ) {
-    val hasText = state.draft.isNotBlank()
+    val hasText = state.draft.isNotBlank() || state.attachments.any { it.remoteId != null }
     val stopping = (state.sending || state.serverRunning) && !hasText
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -1942,7 +1919,11 @@ private fun TrailingSlot(
         Box(contentAlignment = Alignment.Center) {
             if (!stopping && !hasText) {
                 Icon(
-                    Icons.Filled.Mic,
+                    when (inputMode) {
+                        ComposerVoiceMode.Dictation -> Icons.Filled.Mic
+                        ComposerVoiceMode.Live -> Icons.Outlined.GraphicEq
+                        ComposerVoiceMode.HandsFree -> Icons.Outlined.Headphones
+                    },
                     contentDescription = "Switch to voice",
                     tint = OnAccent,
                     modifier = Modifier.size(20.dp),
@@ -1960,22 +1941,39 @@ private fun TrailingSlot(
 }
 
 @Composable
-private fun VoiceHero(
+internal fun VoiceHero(
     state: DictationState,
     partial: String,
     onMic: () -> Unit,
     onHoldStart: () -> Unit,
     onHoldEnd: () -> Unit,
-    speakReplies: Boolean,
-    onToggleSpeak: () -> Unit,
-    onOpenReplySettings: () -> Unit,
-    onOpenLiveSettings: () -> Unit,
-    liveActive: Boolean,
-    onToggleLive: () -> Unit,
+    speakReplies: Boolean = false,
+    onToggleSpeak: () -> Unit = {},
+    onOpenReplySettings: () -> Unit = {},
+    onOpenLiveSettings: () -> Unit = {},
+    liveActive: Boolean = false,
+    inputMode: ComposerVoiceMode = ComposerVoiceMode.Dictation,
+    onSelectInputMode: (ComposerVoiceMode) -> Unit = {},
+    liveVoiceAvailable: Boolean = true,
+    handsFreeAvailable: Boolean = true,
+    onToggleLive: () -> Unit = {},
     onKeyboard: () -> Unit,
+    holdToSend: Boolean = true,
+    sideControls: (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? = null,
 ) {
     val recording = state == DictationState.Recording
     val transcribing = state == DictationState.Transcribing
+    val available = when (inputMode) {
+        ComposerVoiceMode.Dictation -> true
+        ComposerVoiceMode.Live -> liveVoiceAvailable
+        ComposerVoiceMode.HandsFree -> handsFreeAvailable
+    }
+    val modeIcon = when (inputMode) {
+        ComposerVoiceMode.Dictation -> Icons.Filled.Mic
+        ComposerVoiceMode.Live -> Icons.Outlined.GraphicEq
+        ComposerVoiceMode.HandsFree -> Icons.Outlined.Headphones
+    }
+    var modeMenu by remember { mutableStateOf(false) }
     // A held capture ends on release; a tapped one ends on the next tap. The
     // hint has to say which, or the gesture that works is guesswork.
     var holding by remember { mutableStateOf(false) }
@@ -1984,6 +1982,8 @@ private fun VoiceHero(
     val currentOnMic by rememberUpdatedState(onMic)
     val currentOnHoldStart by rememberUpdatedState(onHoldStart)
     val currentOnHoldEnd by rememberUpdatedState(onHoldEnd)
+    val currentMode by rememberUpdatedState(inputMode)
+    val currentAvailable by rememberUpdatedState(available)
     Column(
         Modifier.fillMaxWidth().padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1992,7 +1992,11 @@ private fun VoiceHero(
         // What was heard so far, while it is being heard. Showing it is the
         // difference between dictation you can trust and dictation you have to
         // re-read afterwards.
-        if (recording && partial.isNotBlank()) {
+        AnimatedVisibility(
+            visible = recording && partial.isNotBlank(),
+            enter = fadeIn(tween(160)) + expandVertically(tween(240)),
+            exit = fadeOut(tween(120)) + shrinkVertically(tween(220)),
+        ) {
             Text(
                 partial,
                 color = Ink, fontSize = 15.sp,
@@ -2000,7 +2004,8 @@ private fun VoiceHero(
                 maxLines = 3, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth(),
             )
-        } else if (transcribing) {
+        }
+        if (transcribing) {
             Text("Transcribing…", color = Coral, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         }
 
@@ -2027,11 +2032,13 @@ private fun VoiceHero(
                     // it to that state cancels the gesture it just started.
                     .pointerInput(Unit) {
                         detectTapGestures(
-                            onTap = { if (!currentTranscribing) currentOnMic() },
+                            onTap = { if (!currentTranscribing && (currentAvailable || currentRecording)) currentOnMic() },
                             onLongPress = {
-                                if (!currentRecording && !currentTranscribing) {
-                                    holding = true
-                                    currentOnHoldStart()
+                                if (!currentRecording && !currentTranscribing && currentAvailable) {
+                                    if (currentMode == ComposerVoiceMode.Dictation) {
+                                        holding = true
+                                        currentOnHoldStart()
+                                    } else currentOnMic()
                                 }
                             },
                             onPress = {
@@ -2058,8 +2065,8 @@ private fun VoiceHero(
                         )
                     } else {
                         Icon(
-                            if (recording) Icons.Filled.Stop else Icons.Filled.Mic,
-                            contentDescription = if (recording) "Stop dictation" else "Talk",
+                            if (recording) Icons.Filled.Stop else modeIcon,
+                            contentDescription = if (recording) "Stop dictation" else if (inputMode == ComposerVoiceMode.Dictation) "Talk" else "Start ${inputMode.label}",
                             tint = micForeground,
                             modifier = Modifier.size(if (recording) 26.dp else 30.dp),
                         )
@@ -2071,6 +2078,7 @@ private fun VoiceHero(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (sideControls != null) sideControls() else {
                 // Replies. Two segments, as iOS builds it: the toggle you
                 // reach for, and a chevron to everything else about voice.
                 DockPill(
@@ -2095,29 +2103,33 @@ private fun VoiceHero(
                     }
                 }
 
-                DockPill(
-                    active = liveActive,
-                    onChevron = onOpenLiveSettings,
-                    chevronLabel = "Live call settings",
-                ) {
-                    Row(
-                        Modifier
-                            .fillMaxHeight()
-                            .clickable { onToggleLive() }
+                Box {
+                    DockPill(active = inputMode != ComposerVoiceMode.Dictation,
+                        onChevron = { if (!recording && !transcribing) modeMenu = true },
+                        chevronLabel = "Choose voice mode or settings") {
+                        Row(Modifier.fillMaxHeight().clickable(enabled = !recording && !transcribing) { modeMenu = true }
                             .padding(start = 7.dp, end = 5.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Outlined.GraphicEq, contentDescription = null,
-                            tint = Secondary, modifier = Modifier.size(12.dp),
-                        )
-                        Text(
-                            if (liveActive) "Stop" else "Live",
-                            color = if (liveActive) Coral else Secondary,
-                            fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
-                        )
+                            horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(modeIcon, null, tint = Secondary, modifier = Modifier.size(12.dp))
+                            Text(inputMode.label, color = Secondary, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     }
+                    DropdownMenu(modeMenu, onDismissRequest = { modeMenu = false }, containerColor = Panel) {
+                        ComposerVoiceMode.entries.forEach { mode ->
+                            val ready = when (mode) {
+                                ComposerVoiceMode.Dictation -> true
+                                ComposerVoiceMode.Live -> liveVoiceAvailable
+                                ComposerVoiceMode.HandsFree -> handsFreeAvailable
+                            }
+                            DropdownMenuItem(text = { Text(mode.label + if (inputMode == mode) " ✓" else "", color = Ink) },
+                                enabled = ready && !recording && !transcribing,
+                                onClick = { modeMenu = false; onSelectInputMode(mode) })
+                        }
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text("Voice settings…", color = Ink) },
+                            onClick = { modeMenu = false; onOpenLiveSettings() })
+                    }
+                }
                 }
             }
         }
@@ -2125,7 +2137,12 @@ private fun VoiceHero(
         // caption leaves the keyboard undiscoverable.
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                dictationHint(state, holding),
+                when {
+                    recording || transcribing || holding -> if (holding && !holdToSend) "Listening — release to finish" else dictationHint(state, holding)
+                    !available -> "${inputMode.label} is unavailable"
+                    inputMode != ComposerVoiceMode.Dictation -> "Tap to start ${inputMode.label}"
+                    else -> dictationHint(state, holding)
+                },
                 color = Secondary, fontSize = 12.sp, fontWeight = FontWeight.Medium,
             )
             if (!recording && !transcribing) {
@@ -2141,7 +2158,7 @@ private fun VoiceHero(
 }
 
 @Composable
-private fun BasicComposerField(
+internal fun BasicComposerField(
     value: String,
     placeholder: String,
     onValueChange: (String) -> Unit,
@@ -2157,6 +2174,7 @@ private fun BasicComposerField(
             textStyle = androidx.compose.ui.text.TextStyle(color = Ink, fontSize = 16.sp),
             cursorBrush = androidx.compose.ui.graphics.SolidColor(Coral),
             maxLines = 5,
+            keyboardOptions = KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences, keyboardType = KeyboardType.Text),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
         )
     }
@@ -2313,7 +2331,12 @@ private fun EscalationCardView(
             val busy = card.answering != null
             val locked = card.resolved || busy
 
-            when (card.inputType) {
+            if ((card.requiresReview || card.allowOther) && !card.resolved) {
+                EscalationSubmit(enabled = !locked && !card.correlationId.isNullOrBlank(),
+                    label = if (card.requiresReview) "Review in Attention" else "Answer in Attention") {
+                    onOpenAttention(card.correlationId)
+                }
+            } else when (card.inputType) {
                 "form" -> {
                     Text(
                         "Open this request in Attention to answer every field.",
@@ -2540,7 +2563,7 @@ private fun AttachmentRow(filename: String, size: String?, fromUser: Boolean = f
  * decoration rather than as controls with more inside them.
  */
 @Composable
-private fun DockPill(
+internal fun DockPill(
     active: Boolean,
     onChevron: () -> Unit,
     chevronLabel: String,
@@ -2703,7 +2726,7 @@ private fun CommandPicker(
                 .padding(vertical = 4.dp),
         ) {
             rows.forEach { row ->
-                val inert = row.action == ComposerCommandAction.None
+                val inert = row.inert
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -2728,10 +2751,12 @@ private fun CommandPicker(
                         )
                     }
                     Column(Modifier.weight(1f)) {
+                        // A note ("Now: …") may run to a second line rather than lose its end.
                         Text(
                             row.label,
                             color = if (inert) Secondary else Ink, fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium, maxLines = 1,
+                            fontWeight = FontWeight.Medium, maxLines = if (row.action == ComposerCommandAction.None) 2 else 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         row.detail?.takeIf { it.isNotBlank() }?.let {
                             Text(it, color = Secondary, fontSize = 11.sp, maxLines = 1)
@@ -2837,42 +2862,183 @@ private fun FloatingDatePill(
 
 internal const val FLOATING_DATE_FADE_MS = 1_200L
 
+private const val OLDER_HISTORY_ROW_KEY = "older-history"
+
 /**
- * The empty transcript, as iOS composes it: a mark, the question, and a pill
- * pointing at the mic.
+ * Older history, one page per scroll to the top.
  *
- * Voice-forward on purpose — the pill names the primary way in rather than
- * leaving a new owner staring at a blank screen wondering what this is. A bare
- * "Ask for anything", which is what stood here, told them nothing about how.
+ * Armed only by the reader's own drag, so the open and its programmatic
+ * scroll to the newest message never fetch. A page is requested when the
+ * first loaded message comes into view; the view model refuses while one is
+ * in flight or nothing older exists. While it loads, the first visible
+ * message is remembered and, once the page is prepended, put back exactly
+ * where it was, so reading continues instead of jumping.
  */
 @Composable
-private fun EmptyChat() {
-    Column(
-        Modifier.fillMaxSize().padding(top = 40.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+private fun OlderHistoryPaging(
+    state: ChatUiState,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    messageIndexById: Map<String, Int>,
+    lazyIndexById: Map<String, Int>,
+    onLoadOlder: () -> Unit,
+) {
+    var armed by remember(state.activeSessionId) { mutableStateOf(false) }
+    LaunchedEffect(listState, state.activeSessionId) {
+        listState.interactionSource.interactions.collect {
+            if (it is androidx.compose.foundation.interaction.DragInteraction.Start) armed = true
+        }
+    }
+    val firstId by rememberUpdatedState(state.messages.firstOrNull()?.id)
+    val topMessageInView by remember(listState) {
+        derivedStateOf {
+            firstId?.takeIf { id -> listState.layoutInfo.visibleItemsInfo.any { it.key == id } }
+        }
+    }
+    var anchor by remember(state.activeSessionId) { mutableStateOf<Pair<String, Int>?>(null) }
+    val settled = anchor == null && !state.olderHistoryLoading
+    // A failure waits for Retry rather than re-asking on every frame; until
+    // the prepended page is anchored, the new first message only looks visible.
+    LaunchedEffect(topMessageInView, armed, state.historyHasMore, settled) {
+        if (topMessageInView != null && armed && settled && state.historyHasMore && state.olderHistoryError == null) {
+            onLoadOlder()
+        }
+    }
+    LaunchedEffect(state.olderHistoryLoading) {
+        if (state.olderHistoryLoading) {
+            anchor = listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { (it.key as? String) in messageIndexById }
+                ?.let { (it.key as String) to it.offset }
+            return@LaunchedEffect
+        }
+        val (key, offset) = anchor ?: return@LaunchedEffect
+        try {
+            val index = lazyIndexById[key] ?: return@LaunchedEffect
+            listState.scrollToItem(index)
+            if (offset != 0) listState.scrollBy(-offset.toFloat())
+        } finally {
+            anchor = null
+        }
+    }
+}
+
+/** The transcript's top row: a way to read further back, its progress, or its failure. */
+@Composable
+private fun OlderHistoryRow(loading: Boolean, error: String?, onLoad: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .then(if (loading) Modifier else Modifier.clickable(onClick = onLoad))
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("✦", color = Coral, fontSize = 40.sp)
-        Text(
-            "How can I help you today?",
-            color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold,
-        )
-        Surface(
-            color = Panel,
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(1.dp, BorderSoft),
-            modifier = Modifier.padding(top = 20.dp),
-        ) {
-            Row(
-                Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("◉", color = Coral, fontSize = 14.sp)
+        when {
+            loading -> {
+                CircularProgressIndicator(color = Muted, strokeWidth = 1.5.dp, modifier = Modifier.size(12.dp))
+                Text("Loading earlier messages…", color = Muted, fontSize = 12.sp)
+            }
+            error != null -> {
                 Text(
-                    "Tap or hold to dictate",
-                    color = Secondary, fontSize = 15.sp, fontWeight = FontWeight.Medium,
+                    "Couldn't load earlier messages.",
+                    color = Coral, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
+                Text("Retry", color = Coral, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+            else -> Text("Load earlier messages", color = Muted, fontSize = 12.sp)
+        }
+    }
+}
+
+/** Same starters and draft-only interaction as Web, sized for a phone. */
+private data class ChatStarter(val label: String, val hint: String, val prompt: String, val icon: ImageVector)
+
+private val chatStarters = listOf(
+    ChatStarter("Research flights", "Compare fares", "Find the cheapest Kyoto flights for next month and shortlist the three best options.", Icons.Outlined.FlightTakeoff),
+    ChatStarter("Catch up on a meeting", "Decisions & next steps", "What did I miss in yesterday’s design sync? Decisions, and anything I owe people.", Icons.Outlined.CalendarToday),
+    ChatStarter("Restock the groceries", "Stay within budget", "We’re out of groceries. Order my usual list and stay within my spending limit.", Icons.Outlined.ShoppingBasket),
+    ChatStarter("Review my screen time", "See where time went", "Look at my recent screen observations and summarize where my time went today.", Icons.Outlined.Computer),
+)
+
+@Composable
+private fun EmptyChat(
+    readOnly: Boolean,
+    suggestionsEnabled: Boolean,
+    recentSessions: List<SessionSummary>,
+    onSuggest: (String) -> Unit,
+    onOpenSession: (String) -> Unit,
+) {
+    val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    val greeting = when {
+        readOnly -> "Nothing in this session"
+        hour < 12 -> "Good morning"
+        hour < 18 -> "Good afternoon"
+        else -> "Good evening"
+    }
+    val fontScale = LocalDensity.current.fontScale
+    val colors = listOf(Coral, Teal, ChatSuccess, ChatDiscovery)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val columns = if (maxWidth < 330.dp || fontScale >= 1.3f) 1 else 2
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(greeting, color = Ink, style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
+                        modifier = Modifier.semantics { heading() })
+                if (!readOnly) {
+                    Text("Pick a start, or say it your way.", color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                }
+            }
+            if (!readOnly) {
+                Column(Modifier.widthIn(max = 560.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    chatStarters.chunked(columns).forEachIndexed { rowIndex, row ->
+                        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            row.forEachIndexed { columnIndex, starter ->
+                                val tint = colors[rowIndex * columns + columnIndex]
+                                Surface(
+                                    color = Panel, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, BorderSoft),
+                                    modifier = Modifier.weight(1f).fillMaxHeight().clickable(enabled = suggestionsEnabled, role = Role.Button) { onSuggest(starter.prompt) }
+                                        .semantics(mergeDescendants = true) { contentDescription = "${starter.label}. ${starter.prompt}" },
+                                ) {
+                                    Row(Modifier.padding(12.dp).heightIn(min = 64.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Box(Modifier.size(28.dp).background(tint.copy(alpha = 0.12f), RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+                                            Icon(starter.icon, null, tint = tint, modifier = Modifier.size(17.dp))
+                                        }
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                            Text(starter.label, color = Ink, fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                            Text(starter.hint, color = Muted, fontSize = 12.sp, lineHeight = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (recentSessions.isNotEmpty()) {
+                Column(Modifier.widthIn(max = 560.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("PICK UP WHERE YOU LEFT OFF", color = Muted, fontSize = 10.sp, letterSpacing = 1.sp,
+                        fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 4.dp).semantics { heading() })
+                    recentSessions.forEach { session ->
+                        Surface(color = Panel.copy(alpha = 0.70f), shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = suggestionsEnabled, role = Role.Button) { onOpenSession(session.identifier()) }) {
+                            Row(Modifier.heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(Icons.Outlined.Schedule, null, tint = Muted, modifier = Modifier.size(15.dp))
+                                Text(session.label(), color = Ink, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                (session.updatedAt ?: session.createdAt)?.let { timestamp ->
+                                    Text(android.text.format.DateUtils.getRelativeTimeSpanString(timestamp, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS,
+                                        android.text.format.DateUtils.FORMAT_ABBREV_RELATIVE).toString(), color = Muted, fontSize = 10.sp)
+                                }
+                                Icon(Icons.Outlined.ChevronRight, null, tint = Muted, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2921,3 +3087,105 @@ private val ai.magicbeans.magdroid.chat.ArtifactKind.icon: androidx.compose.ui.g
         ai.magicbeans.magdroid.chat.ArtifactKind.Text -> Icons.Outlined.Description
         ai.magicbeans.magdroid.chat.ArtifactKind.Other -> Icons.AutoMirrored.Outlined.InsertDriveFile
     }
+
+@Composable
+internal fun ModelThinkingControl(control: ai.magicbeans.magdroid.chat.ChatThinkingControl, level: String, enabled: Boolean = true, onSelect: (String) -> Unit) {
+                    var previewIndex by remember(control.levels, control.defaultLevel, level) { mutableStateOf<Float?>(null) }
+                    val displayedLevel = previewIndex?.let { control.levels.getOrNull(it.toInt()) } ?: level
+                    if (control.mode != "none" && control.levels.isNotEmpty()) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Thinking · ${if (displayedLevel == "auto" && control.defaultLevel == null) "Engine default" else thinkingLevelLabel(if (displayedLevel == "auto") control.defaultLevel ?: "auto" else displayedLevel)}", color = Ink, modifier = Modifier.weight(1f))
+                            FilterChip(selected = displayedLevel == "auto", enabled = enabled, onClick = { previewIndex = null; onSelect("auto") }, label = { Text("Auto") },
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, if (displayedLevel == "auto") Coral else ControlBorder),
+                                colors = FilterChipDefaults.filterChipColors(containerColor = Control, labelColor = Ink,
+                                    selectedContainerColor = Soft, selectedLabelColor = Coral))
+                        }
+                        if (control.mode == "toggle") {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Thinking enabled", color = Ink, modifier = Modifier.weight(1f))
+                                Switch(checked = (if (level == "auto") control.defaultLevel else level) != "none", enabled = enabled,
+                                    colors = SwitchDefaults.colors(checkedTrackColor = AccentFill, checkedThumbColor = OnAccent),
+                                    onCheckedChange = { checked -> onSelect(if (checked) "on" else "none") })
+                            }
+                        } else if (control.levels.size > 1) {
+                            val current = control.levels.indexOf(if (level == "auto") control.defaultLevel else level).coerceAtLeast(0)
+                            Slider(value = previewIndex ?: current.toFloat(), enabled = enabled, onValueChange = { previewIndex = it },
+                                onValueChangeFinished = {
+                                    previewIndex?.let { onSelect(control.levels[it.toInt().coerceIn(control.levels.indices)]) }
+                                    previewIndex = null
+                                }, valueRange = 0f..(control.levels.size - 1).toFloat(), steps = (control.levels.size - 2).coerceAtLeast(0),
+                                colors = SliderDefaults.colors(thumbColor = Coral, activeTrackColor = Coral,
+                                    inactiveTrackColor = ControlBorder, activeTickColor = OnAccent, inactiveTickColor = Muted),
+                                modifier = Modifier.semantics { contentDescription = "Thinking level" })
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                control.levels.forEach { option ->
+                                    Box(Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
+                                        .background(if (displayedLevel == option) Soft else Color.Transparent)
+                                        .clickable(enabled = enabled, role = Role.Button) { previewIndex = null; onSelect(option) }
+                                        .semantics { selected = displayedLevel == option; contentDescription = "Set thinking to ${thinkingLevelLabel(option)}" }
+                                        .heightIn(min = 36.dp).padding(horizontal = 1.dp), contentAlignment = Alignment.Center) {
+                                        Text(thinkingLevelLabel(option), color = if (displayedLevel == option) Coral else Muted,
+                                            fontSize = 10.sp, textAlign = TextAlign.Center, maxLines = 2,
+                                            fontWeight = if (displayedLevel == option) FontWeight.SemiBold else FontWeight.Normal)
+                                    }
+                                }
+                            }
+                        }
+                        Text("Higher thinking can improve difficult answers and take more time.", color = Muted, fontSize = 12.sp)
+                    }
+}
+
+internal data class CatalogChoiceOption(val id: String, val label: String, val detail: String? = null, val enabled: Boolean = true)
+
+internal fun catalogEngineLabel(id: String): String = ComposerCommands.engineDisplayName(id)
+
+/** The engine's name plus whose credentials it runs on (`Codex · your login`). */
+internal fun catalogEngineLabel(id: String, credentials: String?): String =
+    HarnessCredentials.engineName(id, catalogEngineLabel(id), credentials)
+
+/** The same themed box and stable, bounded scrolling menu in Chat and VibeDev. */
+@Composable
+internal fun CatalogChoiceDropdown(label: String, selectedId: String, options: List<CatalogChoiceOption>, enabled: Boolean = true, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled && options.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth().semantics { contentDescription = label },
+            shape = RoundedCornerShape(8.dp), border = BorderStroke(1.dp, ControlBorder),
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = Control, contentColor = Ink),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(options.firstOrNull { it.id == selectedId }?.label ?: "Choose a model",
+                modifier = Modifier.weight(1f), textAlign = TextAlign.Start, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = null, tint = Muted, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false },
+            containerColor = Panel, scrollState = scrollState, modifier = Modifier.heightIn(max = 360.dp).widthIn(min = 240.dp, max = 360.dp)) {
+            options.forEach { option -> key(option.id) {
+                DropdownMenuItem(text = {
+                    Column {
+                        Text(option.label, color = Ink, fontSize = 14.sp)
+                        option.detail?.let { Text(it, color = Muted, fontSize = 11.sp) }
+                    }
+                }, enabled = enabled && option.enabled,
+                    trailingIcon = { if (option.id == selectedId) Icon(Icons.Outlined.Check, contentDescription = "Selected", tint = Coral) },
+                    modifier = Modifier.semantics { selected = option.id == selectedId },
+                    onClick = { onSelect(option.id); expanded = false })
+            } }
+        }
+    }
+}
+
+@Composable
+internal fun ComposerModeSegment(label: String, selected: Boolean, onSelect: () -> Unit) {
+    Surface(color = if (selected) AccentFill else Color.Transparent,
+        shape = RoundedCornerShape(COMPOSER_MODE_SEGMENT_CORNER_DP.dp),
+        modifier = Modifier.heightIn(min = COMPOSER_MODE_MIN_HEIGHT_DP.dp)
+            .clickable(role = Role.Button, onClick = onSelect).semantics { this.selected = selected }) {
+        Text(label, color = if (selected) OnAccent else Muted, fontSize = COMPOSER_MODE_FONT_SP.sp,
+            lineHeight = 12.sp, maxLines = 1, fontWeight = FontWeight.SemiBold,
+            fontFamily = LocalMagicanFontFamilies.current.mono, letterSpacing = 0.4.sp,
+            modifier = Modifier.wrapContentHeight(Alignment.CenterVertically).padding(
+                horizontal = COMPOSER_MODE_HORIZONTAL_PADDING_DP.dp, vertical = COMPOSER_MODE_VERTICAL_PADDING_DP.dp))
+    }
+}

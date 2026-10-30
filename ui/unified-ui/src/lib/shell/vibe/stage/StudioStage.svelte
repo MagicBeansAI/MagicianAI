@@ -35,7 +35,7 @@
 	} from '$lib/stores/vibeDevProjectStore';
 	import type { RunMeta, SpineCard } from '$lib/shell/vibe/conversation/spineModel';
 	import type { HitlRequest, HitlSource } from '$lib/hitl/types';
-	import type { VibeRow, VibeChangedFile } from '$lib/stores/vibeHitlStore';
+	import { isPendingDiffRow, type VibeRow, type VibeChangedFile } from '$lib/stores/vibeHitlStore';
 
 	/** First-run state (no run in view AND no runs exist yet): the tab strip and
 	 *  run-only controls are hidden and a single narrative card explains what
@@ -73,6 +73,7 @@
 		applyFile: { request: HitlRequest; path: string };
 		rejectFile: { request: HitlRequest; path: string };
 		respond: { row: VibeRow };
+		acknowledge: { row: VibeRow };
 		toggleEdit: void;
 		attemptFix: { result: CheckResult };
 		/** First-run example-prompt chip clicked — the parent fills the composer
@@ -139,6 +140,9 @@
 		{ id: 'tests', label: 'Tests' }
 	];
 	$: hasStagedReview = orderedDiffRows.length > 0 || orderedOtherRows.length > 0;
+	// Only proposals still waiting are counted or offered Apply: a finished
+	// run's applied/rejected diffs are history, and a notice is not a diff.
+	$: pendingDiffCount = orderedDiffRows.filter(isPendingDiffRow).length;
 	$: visibleTabs = TABS.filter((tab) => {
 		if (tab.id === 'preview') return previewAvailable;
 		if (tab.id === 'branch') return trusted;
@@ -377,8 +381,8 @@
 		>
 			<Icon name="chevrons-left" size={15} />
 			<span class="stage__collapsed-label">Build stage</span>
-			{#if orderedDiffRows.length > 0}
-				<span class="stage__tab-badge">{orderedDiffRows.length}</span>
+			{#if pendingDiffCount > 0}
+				<span class="stage__tab-badge">{pendingDiffCount}</span>
 			{/if}
 		</button>
 	{:else}
@@ -429,8 +433,8 @@
 				on:click={() => vibeStudioStore.setStageTab(tab.id)}
 			>
 				{tab.label}
-				{#if tab.id === 'diff' && orderedDiffRows.length > 0}
-					<span class="stage__tab-badge">{orderedDiffRows.length}</span>
+				{#if tab.id === 'diff' && pendingDiffCount > 0}
+					<span class="stage__tab-badge">{pendingDiffCount}</span>
 				{/if}
 			</button>
 		{/each}
@@ -609,6 +613,7 @@
 				on:applyFile
 				on:rejectFile
 				on:respond
+				on:acknowledge
 			/>
 		{:else if stageTab === 'visual'}
 			<div class="visual-tab">
@@ -765,14 +770,14 @@
 			>⌥ CLI Agent</button>
 			{#if !firstRun}
 			<!-- Status-bar shortcut for the Diff tab's Apply-all — ONE action, ONE
-			     name, ONE handler path (`approveAll`), same disabled logic. A trusted
-			     project has nothing to apply (its changes are commits), so it lands
-			     from the Branch tab instead. -->
-			{#if !trusted || orderedDiffRows.length > 0}
+			     name, ONE handler path (`approveAll`). Shown only while a proposal
+			     waits: a run with nothing to apply (a trusted project's commits, a
+			     finished run's resolved diffs, a briefing) gets no dead button. -->
+			{#if pendingDiffCount > 0}
 			<button
 				type="button"
 				class="vbtn vbtn--primary"
-				disabled={orderedDiffRows.length === 0 || bulkApplying}
+				disabled={bulkApplying}
 				title="Apply every staged change set to the repo (same as the Diff tab's Apply all changes)"
 				on:click={() => dispatch('approveAll')}
 			>{bulkApplying ? 'Applying…' : 'Apply all changes'}</button>

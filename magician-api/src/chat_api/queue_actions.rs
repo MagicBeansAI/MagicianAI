@@ -60,10 +60,7 @@ pub async fn enqueue_composer_message_handler(
     if rejects_client_selected_protected_surface(body.source_surface.as_deref()) {
         return HttpResponse::Forbidden().finish();
     }
-    if let Some(response) = validate_profile_override(&api, &body) {
-        return response;
-    }
-    let profile = match routed_profile_override(&body) {
+    let profile = match routed_profile_override(api.get_ref(), &body) {
         Ok(profile) => profile,
         Err(response) => return response,
     };
@@ -87,9 +84,8 @@ pub async fn enqueue_composer_message_handler(
         channel: None,
         channel_address: None,
         coding_choice: magician::magician_v2::vibedev::run_service::queued_coding_choice(
-            magician::magician_v2::vibedev::run_service::coding_choice_from_client_fields(
+            magician::magician_v2::vibedev::run_service::coding_choice_from_client(
                 body.coding_choice,
-                None,
             )
             .as_ref(),
         ),

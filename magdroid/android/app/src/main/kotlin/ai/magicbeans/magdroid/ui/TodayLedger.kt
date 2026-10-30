@@ -131,11 +131,19 @@ internal fun TodayLedger(
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(260), label = "opsChevron")
-    val current = pulse ?: TodayPulse()
+    val current = pulse ?: TodayPulse(
+        pendingSlices = if (pulseError == null) setOf("llm", "tasks") else emptySet(),
+    )
     val fleet = todayFleetYield(current.taskBuckets, current.tasksCompletedToday)
     val slides = listOf(
-        OpsSlide("Economics of Operations") { full -> SpendPanel(current, full) },
-        OpsSlide("State of Operations") { full -> StateOfOperations(fleet, agents, current.recentTasks, full, onOpenTasks, onOpenTask) },
+        OpsSlide("Economics of Operations") { full ->
+            if ("llm" !in current.availableSlices) PulseSliceStatus("model spend", "llm" in current.pendingSlices, onRetry)
+            else SpendPanel(current, full)
+        },
+        OpsSlide("State of Operations") { full ->
+            if ("tasks" !in current.availableSlices) PulseSliceStatus("operations", "tasks" in current.pendingSlices, onRetry)
+            else StateOfOperations(fleet, agents, current.recentTasks, full, onOpenTasks, onOpenTask)
+        },
         OpsSlide("State of the Crew") { full -> StateOfTheCrew(crew, crewError, full, onRetryCrew) },
     )
     val pager = rememberPagerState { slides.size }
@@ -281,9 +289,9 @@ private fun EconomicsStats(pulse: TodayPulse) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         EconomicsStat("Avg / call", formatPerCall(avgCostPerCall(pulse.spendToday, pulse.callsToday)), Modifier.weight(1f))
         EconomicsStat("Peak hour", peakSpendHour(pulse.hourlySpend) ?: "—", Modifier.weight(1f))
-        EconomicsStat("Coding runs", "${pulse.codingRunsToday}", Modifier.weight(1f))
+        EconomicsStat("Coding runs", if ("coding" in pulse.availableSlices) "${pulse.codingRunsToday}" else "—", Modifier.weight(1f))
         if (pulse.evalCasesToday > 0) EconomicsStat("Evals", "${pulse.evalPassesToday}/${pulse.evalCasesToday}", Modifier.weight(1f))
-        else EconomicsStat("Memories", "${pulse.memoriesToday}", Modifier.weight(1f))
+        else EconomicsStat("Memories", if ("memory" in pulse.availableSlices) "${pulse.memoriesToday}" else "—", Modifier.weight(1f))
     }
 }
 
@@ -612,4 +620,15 @@ private fun AgentMetric(label: String, value: Int?, dot: Color) {
         // Unknown (agents never answered) reads as a dash, not a made-up zero.
         Text(value?.toString() ?: "—", color = Ink, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
+}
+
+@Composable
+private fun PulseSliceStatus(label: String, loading: Boolean, onRetry: () -> Unit) {
+    if (loading) {
+        Row(Modifier.fillMaxWidth().height(OPS_COLLAPSED_HEIGHT), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Coral)
+            Text("Loading $label…", color = Secondary, fontSize = 12.sp)
+        }
+    } else TodayInlineError("$label is temporarily unavailable.", onRetry)
 }

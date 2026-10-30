@@ -88,6 +88,22 @@ impl EffectivePolicy {
     pub fn for_intention(&self, intention: &Intention) -> Option<InterventionPolicy> {
         intention.intervention_policy.or(self.global)
     }
+
+    /// Whether this intention can make an act wait at all: evidence that may
+    /// hold, or evidence that may offer a choice under a choice-based policy.
+    /// Every other intention can only nudge (see `cap_force`), so the host
+    /// judges it off the blocking path.
+    pub fn may_make_act_wait(&self, intention: &Intention) -> bool {
+        intention.assertion_status.may_hold()
+            || (intention.assertion_status.may_offer_choice()
+                && matches!(
+                    self.for_intention(intention),
+                    Some(
+                        InterventionPolicy::ChoiceForMaterial
+                            | InterventionPolicy::ConfirmBeforeException
+                    )
+                ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -566,6 +582,30 @@ mod tests {
             resolution_choices: vec![ResolutionChoice::AllowOnce, ResolutionChoice::Cancel],
             remember_offer: None,
         }
+    }
+
+    /// The blocking/advisory split matches what `cap_force` lets each
+    /// intention do: only evidence that may hold, or inferred evidence under a
+    /// choice-based policy, can make an act wait.
+    #[test]
+    fn only_intentions_that_can_make_an_act_wait_are_blocking() {
+        let defaults = EffectivePolicy {
+            global: None,
+            version: "v".to_string(),
+        };
+        assert!(defaults.may_make_act_wait(&intention("a", AssertionStatus::DirectOwnerStatement)));
+        assert!(defaults.may_make_act_wait(&intention("b", AssertionStatus::Confirmed)));
+        assert!(!defaults.may_make_act_wait(&intention("c", AssertionStatus::Inferred)));
+        assert!(!defaults.may_make_act_wait(&intention("d", AssertionStatus::InferredUntrusted)));
+        let choice = EffectivePolicy {
+            global: Some(InterventionPolicy::ChoiceForMaterial),
+            version: "v".to_string(),
+        };
+        assert!(choice.may_make_act_wait(&intention("c", AssertionStatus::Inferred)));
+        assert!(!choice.may_make_act_wait(&intention("d", AssertionStatus::InferredUntrusted)));
+        let mut advisory_only = intention("e", AssertionStatus::Inferred);
+        advisory_only.intervention_policy = Some(InterventionPolicy::Advisory);
+        assert!(!choice.may_make_act_wait(&advisory_only));
     }
 
     #[test]

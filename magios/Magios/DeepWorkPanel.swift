@@ -2,6 +2,83 @@ import SwiftUI
 import UIKit
 import MarkdownUI
 
+/// Run, result and history use the same display-only verification extraction
+/// as chat. Markdown gets the app's typography rather than the system default.
+struct TaskAnswerSummary: View {
+    let text: String
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        let display = AnswerVerificationDisplay.split(text)
+        VStack(alignment: .leading, spacing: 4) {
+            if let note = display.verification {
+                HStack {
+                    Text("Summary").font(.themed(13, weight: .semibold))
+                        .foregroundColor(theme.secondaryTextColor)
+                    Spacer()
+                    AnswerVerificationInfo(note: note, theme: theme)
+                }
+            }
+            if !display.body.isEmpty {
+                Markdown(TaskSummaryMarkdown.display(display.body))
+                    .markdownTextStyle {
+                        FontFamily(.custom(theme.fontName))
+                        FontSize(14)
+                        ForegroundColor(theme.textColor)
+                    }
+                    .tint(theme.accentColor)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A summary that consists entirely of HTML is a document, not a code example.
+/// Convert its text and structure without a web view, scripts or remote loads.
+enum TaskSummaryMarkdown {
+    static func display(_ text: String) -> String {
+        var html = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let fence = html.range(of: #"(?is)^```(?:html|htm)[ \t]*\r?\n"#, options: .regularExpression), html.hasSuffix("```") {
+            html = String(html[fence.upperBound...].dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if html.range(of: #"(?m)^```"#, options: .regularExpression) != nil { return text }
+        } else if !html.hasPrefix("<") { return text }
+        guard html.range(of: #"(?is)^\s*(?:<!doctype\b[^>]*>\s*)?<(?:html|body|article|section|div|h[1-6]|p|ul|ol|table)\b"#, options: .regularExpression) != nil else { return text }
+
+        func replace(_ pattern: String, _ transform: (String, [String]) -> String) {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+            for match in regex.matches(in: html, range: NSRange(html.startIndex..<html.endIndex, in: html)).reversed() {
+                guard let range = Range(match.range, in: html) else { continue }
+                let groups = (1..<match.numberOfRanges).map { i in Range(match.range(at: i), in: html).map { String(html[$0]) } ?? "" }
+                html.replaceSubrange(range, with: transform(String(html[range]), groups))
+            }
+        }
+        replace(#"(?is)<!--.*?-->|<(?:script|style|head)\b[^>]*>.*?</(?:script|style|head)\s*>"#) { _, _ in "" }
+        replace(#"(?is)<h([1-6])\b[^>]*>"#) { _, g in "\n\n" + String(repeating: "#", count: Int(g[0]) ?? 2) + " " }
+        replace(#"(?is)</h[1-6]\s*>|</?(?:p|div|section|article|ul|ol|blockquote|table)\b[^>]*>"#) { _, _ in "\n\n" }
+        replace(#"(?is)<li\b[^>]*>"#) { _, _ in "\n- " }
+        replace(#"(?is)</li\s*>"#) { _, _ in "\n" }
+        replace(#"(?is)<br\s*/?>|</tr\s*>"#) { _, _ in "  \n" }
+        replace(#"(?is)</?(?:strong|b)\b[^>]*>"#) { _, _ in "**" }
+        replace(#"(?is)</?(?:em|i)\b[^>]*>"#) { _, _ in "*" }
+        replace(#"(?is)</?code\b[^>]*>"#) { _, _ in "`" }
+        replace(#"(?is)<a\b[^>]*href\s*=\s*["'](https?://[^"']+|mailto:[^"']+)["'][^>]*>(.*?)</a\s*>"#) { _, g in "[\(g[1])](\(g[0]))" }
+        replace(#"(?is)</t[dh]\s*>"#) { _, _ in " · " }
+        replace(#"(?is)<[^>]*>"#) { _, _ in "" }
+        replace(#"&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);"#) { original, g in
+            let named = ["amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": " ", "mdash": "—", "ndash": "–", "hellip": "…", "rsquo": "’", "lsquo": "‘", "rdquo": "”", "ldquo": "“", "bull": "•"]
+            if let value = named[g[0]] { return value }
+            let number = g[0].hasPrefix("#x") ? UInt32(g[0].dropFirst(2), radix: 16) : UInt32(g[0].dropFirst())
+            return number.flatMap(UnicodeScalar.init).map(String.init) ?? original
+        }
+        replace(#"\n[ \t]+\n"#) { _, _ in "\n\n" }
+        replace(#"\n{3,}"#) { _, _ in "\n\n" }
+        return html.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 struct DeepWorkTaskDetailProjection: Equatable {
     let description: String
     let agentId: String?
@@ -266,23 +343,24 @@ struct TaskDetailStep: Identifiable, Equatable {
 
 struct TaskDetailActivity: Identifiable, Equatable {
     let id: String
-    let title: String
-    let body: String?
-    let status: String
+    var title: String
+    var body: String?
+    var status: String
+    var contextPhaseId: String? = nil
     let kind: String
-    let agentId: String?
-    let timestamp: Date?
-    let eventType: String?
+    var agentId: String?
+    var timestamp: Date?
+    var eventType: String?
     /// Backend-recorded latency for this event. This is the same measurement
     /// the web Run timeline renders at the trailing edge of a row.
-    let latencyMs: Double?
-    let model: String?
+    var latencyMs: Double?
+    var model: String?
     /// Backend-recorded price in US dollars. The app never reconstructs this
     /// from a model name or a bundled pricing table.
-    let costUsd: Double?
-    let inputTokens: Int?
-    let outputTokens: Int?
-    let cacheReadTokens: Int?
+    var costUsd: Double?
+    var inputTokens: Int?
+    var outputTokens: Int?
+    var cacheReadTokens: Int?
     /// The execution that produced this row — a delegated child's id for its
     /// rows. Matched against `run.delegations` to build envelopes.
     var executionId: String? = nil
@@ -292,6 +370,159 @@ struct TaskDetailActivity: Identifiable, Equatable {
     /// The run has an approved plan and this row was recorded outside every
     /// plan step (`metadata.off_plan`).
     var offPlan: Bool = false
+    /// When the call began (`metadata.started_at_ms`, else the row's time):
+    /// a running row's live clock counts from it.
+    var startedAt: Date? = nil
+    /// `metadata.llm_call_id`: pairs one model call's requested, routed and
+    /// settled rows (`TaskActivityCalls.fold`).
+    var llmCallId: String? = nil
+    /// `metadata.call_id` on a tool row: pairs `tool.started` with its settle.
+    var toolCallId: String? = nil
+    /// The tool a tool row calls (`target`, `tool_name`, else `action_type`).
+    var toolName: String? = nil
+    /// The capability an LLM row asked for; its title only when no row of the
+    /// call names a model.
+    var capability: String? = nil
+
+    /// A feed row whose status means running (`FeedItemStatus::Running`).
+    var isRunning: Bool { status.lowercased() == "running" }
+}
+
+/// One row per call in the Run timeline. The activity log records a model
+/// call as `llm.requested` (running), `llm.routed` (provider, model, profile)
+/// and `llm.succeeded`/`llm.failed`, and a tool call as `tool.started`
+/// (running) and `tool.succeeded`/`tool.failed`. Rows sharing `llm_call_id`
+/// (or a tool's `call_id`) fold into the first one, in its place: the settled
+/// row's status, body, timing and usage win, the routed model beats the
+/// requested one and the model that answered beats both. Rows from a server
+/// without ids fold an `llm.requested` into the next settled LLM row of the
+/// same execution. A call still running keeps its first row's id, so SwiftUI
+/// updates that row in place when the settle lands.
+enum TaskActivityCalls {
+    static func fold(_ rows: [TaskDetailActivity]) -> [TaskDetailActivity] {
+        var folded: [TaskDetailActivity] = []
+        var indexByCall: [String: Int] = [:]
+        /// An id-less `llm.requested` waiting for its settle, by execution.
+        var openRequestByExecution: [String: Int] = [:]
+        for row in rows {
+            if let key = callKey(row) {
+                if let index = indexByCall[key] {
+                    folded[index] = merge(folded[index], row)
+                } else {
+                    indexByCall[key] = folded.count
+                    folded.append(row)
+                }
+                continue
+            }
+            if row.kind == "llm" {
+                let execution = row.executionId ?? ""
+                if row.eventType == "llm.requested" {
+                    openRequestByExecution[execution] = folded.count
+                    folded.append(row)
+                    continue
+                }
+                if rank(row.eventType) == 2,
+                   let index = openRequestByExecution.removeValue(forKey: execution) {
+                    folded[index] = merge(folded[index], row)
+                    continue
+                }
+            }
+            folded.append(row)
+        }
+        return folded
+    }
+
+    private static func callKey(_ row: TaskDetailActivity) -> String? {
+        if row.eventType?.hasPrefix("context.retrieval.") == true {
+            return row.contextPhaseId.map { "context:\($0)" }
+        }
+        switch row.kind {
+        case "llm": return row.llmCallId.map { "llm:\($0)" }
+        case "tool": return row.toolCallId.map { "tool:\($0)" }
+        default: return nil
+        }
+    }
+
+    /// How settled a call's row is: start 0, route 1, terminal 2.
+    private static func rank(_ eventType: String?) -> Int {
+        switch eventType {
+        case "llm.succeeded", "llm.failed", "tool.succeeded", "tool.failed", "context.retrieval.completed": return 2
+        case "llm.routed": return 1
+        default: return 0
+        }
+    }
+
+    private static func merge(_ base: TaskDetailActivity, _ next: TaskDetailActivity) -> TaskDetailActivity {
+        // A late start or route never undoes a settle that already landed.
+        let leads = rank(next.eventType) >= rank(base.eventType)
+        func pick<T>(_ a: T?, _ b: T?) -> T? { leads ? (b ?? a) : (a ?? b) }
+        var merged = base
+        if leads { merged.eventType = next.eventType }
+        // Only a settle changes the call's status; before it, a row that says
+        // running keeps the call running (a route may be recorded as info).
+        if leads && rank(next.eventType) == 2 {
+            merged.status = next.status
+        } else if rank(base.eventType) < 2 && next.isRunning {
+            merged.status = next.status
+        }
+        merged.body = pick(base.body, next.body)
+        merged.latencyMs = pick(base.latencyMs, next.latencyMs)
+        merged.model = pick(base.model, next.model)
+        merged.costUsd = pick(base.costUsd, next.costUsd)
+        merged.inputTokens = pick(base.inputTokens, next.inputTokens)
+        merged.outputTokens = pick(base.outputTokens, next.outputTokens)
+        merged.cacheReadTokens = pick(base.cacheReadTokens, next.cacheReadTokens)
+        merged.agentId = base.agentId ?? next.agentId
+        merged.executionId = base.executionId ?? next.executionId
+        if base.planStepId == nil, next.planStepId != nil {
+            merged.planStepId = next.planStepId
+            merged.offPlan = next.offPlan
+        }
+        merged.timestamp = earliest(base.timestamp, next.timestamp)
+        merged.startedAt = earliest(base.startedAt, next.startedAt)
+        merged.llmCallId = base.llmCallId ?? next.llmCallId
+        merged.toolCallId = base.toolCallId ?? next.toolCallId
+        merged.toolName = base.toolName ?? next.toolName
+        merged.capability = base.capability ?? next.capability
+        merged.title = title(merged, fallback: leads ? next.title : base.title)
+        return merged
+    }
+
+    private static func earliest(_ a: Date?, _ b: Date?) -> Date? {
+        guard let a else { return b }
+        guard let b else { return a }
+        return min(a, b)
+    }
+
+    private static func title(_ row: TaskDetailActivity, fallback: String) -> String {
+        switch row.kind {
+        case "llm":
+            return (row.model ?? row.capability).map { "Thinking with \($0)" } ?? fallback
+        case "tool":
+            guard let tool = row.toolName else { return fallback }
+            switch row.eventType {
+            case "tool.succeeded": return "\(tool) returned"
+            case "tool.failed": return "\(tool) failed"
+            default: return "Calling \(tool)"
+            }
+        default: return fallback
+        }
+    }
+}
+
+/// The live elapsed clock of a Run timeline row that is still running: an LLM
+/// or tool call without a recorded latency, while the run has not ended.
+enum TaskActivityLiveClock {
+    static func ticks(_ activity: TaskDetailActivity, runActive: Bool) -> Bool {
+        runActive && activity.isRunning && activity.latencyMs == nil
+            && (activity.kind == "llm" || activity.kind == "tool")
+            && (activity.startedAt ?? activity.timestamp) != nil
+    }
+
+    static func label(_ activity: TaskDetailActivity, runActive: Bool, now: Date) -> String? {
+        guard ticks(activity, runActive: runActive) else { return nil }
+        return TaskTimelineFormatting.elapsed(since: activity.startedAt ?? activity.timestamp, now: now)
+    }
 }
 
 enum TaskTimelineFormatting {
@@ -321,6 +552,16 @@ enum TaskTimelineFormatting {
     static func duration(seconds: TimeInterval?) -> String? {
         guard let seconds else { return nil }
         return duration(milliseconds: seconds * 1_000)
+    }
+
+    /// A running call's live clock at `now`: whole elapsed seconds (never
+    /// rounded up) in `duration`'s grammar. Clamped at zero, since the start
+    /// is the server's time and the device clock may trail it.
+    static func elapsed(since start: Date?, now: Date) -> String? {
+        guard let start else { return nil }
+        let seconds = now.timeIntervalSince(start)
+        guard seconds.isFinite else { return nil }
+        return duration(seconds: max(0, seconds).rounded(.down))
     }
 
     static func offset(event: Date?, origin: Date?) -> String? {
@@ -641,6 +882,7 @@ struct TaskDetailSnapshot: Equatable {
     /// reading it would let a wedged run refresh its own liveness and never
     /// report stalled (design §5).
     var lastProgressAt: Date?
+    var progressExecutionId: String? = nil
     var runSummary: String?
     var resultSummary: String?
     var resultOutcome: String?
@@ -706,6 +948,13 @@ struct TaskDetailSnapshot: Equatable {
     var planUpdatedAt: Date? = nil
     /// The selected run has ended, so a pending step reads "not reached".
     var runEnded = false
+    /// `state.completion_kind` (`full` / `partial`), read leniently.
+    var completionKind: String? = nil
+    /// `state.open_items`: what a partial completion left undone.
+    var openItems: [String] = []
+
+    /// Completed with requirements still open.
+    var isPartlyDone: Bool { TaskCompletion.isPartlyDone(status: status, kind: completionKind) }
 
     var hasPlan: Bool {
         !isExecutionOnly && (taskHasPlan || planStatus != nil || planId != nil || planMarkdown?.isEmpty == false)
@@ -759,6 +1008,17 @@ struct TaskDetailSnapshot: Equatable {
         return ended.timeIntervalSince(started)
     }
 
+    /// When the run whose answer is being written reached terminal, for the
+    /// "Preparing final result" clock. `nil` (the row then counts from when it
+    /// first saw the flag) when the wire gave no end, or when the screen is
+    /// inspecting an older run than the latest root one, whose end says
+    /// nothing about the pending synthesis.
+    var synthesisBaseline: Date? {
+        if let selected = selectedExecutionId, let latest = latestRootExecutionId,
+           selected != latest { return nil }
+        return selectedExecutionEndedAt
+    }
+
     /// The honest origin for per-event `+elapsed` labels: the selected run's
     /// recorded start when present, otherwise the first timed event. This is
     /// the native equivalent of the web timeline's earliest-recorded-instant
@@ -809,6 +1069,7 @@ struct TaskDetailSnapshot: Equatable {
         var merged = self
         merged.title = live.title
         merged.description = live.description
+        merged.lastProgressAt = TaskRunEvidence.latest(lastProgressAt, TaskRunEvidence.progressAt(panelPayload, executionId: progressExecutionId))
         merged.status = live.status
         merged.agentId = live.agentId
         merged.threadId = live.threadId
@@ -848,7 +1109,10 @@ struct TaskDetailSnapshot: Equatable {
         merged.runEnded = live.runEnded
         if !live.planningEntries.isEmpty { merged.planningEntries = live.planningEntries }
         if let liveUsage = live.usage {
-            merged.usage = TaskUsageSnapshot(run: liveUsage.run, planning: liveUsage.planning ?? usage?.planning)
+            var ledger = TaskUsageLedger()
+            if let usage { ledger.setSnapshot(usage, for: seed.taskId) }
+            ledger.setSnapshot(liveUsage, for: seed.taskId)
+            merged.usage = ledger.snapshots[seed.taskId]
         }
         // Task deliverables are not part of the realtime contract; the run's
         // own outputs are, but only when this snapshot carried them.
@@ -890,12 +1154,28 @@ struct TaskDetailSnapshot: Equatable {
             currentStepLabel: currentStepLabel,
             elapsed: runElapsed,
             lastProgressAt: lastProgressAt,
+            synthesisPending: synthesisPending,
             now: now
         )
     }
 
     func verdict(now: Date) -> Verdict {
         TaskVerdict.derive(verdictInput(now: now))
+    }
+
+    /// The verdict as a header shows it: a finished task that completed with
+    /// open requirements reads "Partly done" with its first open item, never
+    /// a plain "Finished". The state stays `.finished` so act order and the
+    /// default tab do not change; surfaces tint it with `isPartlyDone`.
+    func displayVerdict(now: Date) -> Verdict {
+        let base = verdict(now: now)
+        guard base.state == .finished, isPartlyDone else { return base }
+        let took = TaskVerdict.durationIfKnown(runElapsed)
+        return Verdict(
+            state: base.state,
+            headline: took.map { "\(TaskCompletion.partlyDoneLabel) · \($0)" } ?? TaskCompletion.partlyDoneLabel,
+            detail: TaskCompletion.openLine(openItems) ?? ""
+        )
     }
 
     /// Which tab opens first. Derived from the verdict and the acts the task
@@ -942,6 +1222,8 @@ struct TaskDetailSnapshot: Equatable {
         let status = string(overview["status"]) ?? string(state["status"]) ?? seed.status
         let selectedExecutionId = string(selectedExecution["execution_id"])
             ?? string(overview["execution_id"]) ?? seed.latestRootExecutionId
+        let progressExecutionId = string(state["active_root_execution_id"]) ?? string(state["latest_root_execution_id"])
+            ?? seed.activeRootExecutionId ?? seed.latestRootExecutionId ?? selectedExecutionId
         let result = dictionary(output["result"])
         let taskplan = dictionary(debug["taskplan"])
 
@@ -954,8 +1236,10 @@ struct TaskDetailSnapshot: Equatable {
             }
         }
 
-        var activity = parseActivity(run["activity_log"])
-        if activity.isEmpty { activity = parseActivity(run["recent_activity"]).reversed() }
+        var activity = TaskActivityCalls.fold(parseActivity(run["activity_log"]))
+        if activity.isEmpty {
+            activity = TaskActivityCalls.fold(parseActivity(run["recent_activity"]).reversed())
+        }
         if activity.isEmpty { activity = parseTimeline(debug["timeline"]) }
         if activity.isEmpty {
             activity = seed.fallbackTerminalLines.enumerated().map {
@@ -1040,7 +1324,9 @@ struct TaskDetailSnapshot: Equatable {
                 ?? seed.createdAt.flatMap(TaskV3.parseISO),
             updatedAt: date(overview["updated_at"]) ?? date(state["updated_at"])
                 ?? seed.updatedAt.flatMap(TaskV3.parseISO),
-            lastProgressAt: date(state["last_progress_at"]),
+            lastProgressAt: TaskRunEvidence.latest(TaskRunEvidence.date(state["last_progress_at"]),
+                TaskRunEvidence.progressAt(panelPayload, executionId: progressExecutionId)),
+            progressExecutionId: progressExecutionId,
             runSummary: string(run["summary"]),
             resultSummary: string(result?["summary"]),
             resultOutcome: string(result?["outcome"]),
@@ -1091,6 +1377,9 @@ struct TaskDetailSnapshot: Equatable {
         }
         snapshot.planGraphSteps = parsePlanGraphSteps(plan["plan_graph"])
         snapshot.planUpdatedAt = date(plan["updated_at"])
+        let completion = TaskCompletion.read(state)
+        snapshot.completionKind = completion.kind
+        snapshot.openItems = completion.openItems
         return snapshot
     }
 
@@ -1236,6 +1525,8 @@ struct TaskDetailSnapshot: Equatable {
         array(value).enumerated().map { offset, item in
             let metadata = dictionary(item["metadata"]) ?? [:]
             let eventType = string(metadata["event_type"])
+            let timestamp = date(item["created_at"]) ?? date(item["updated_at"])
+            let kind = activityKind(eventType: eventType, fallback: string(item["item_type"]))
             return TaskDetailActivity(
                 id: string(item["id"]) ?? "activity-\(offset)",
                 title: activityTitle(
@@ -1245,9 +1536,10 @@ struct TaskDetailSnapshot: Equatable {
                 ),
                 body: string(item["summary"]),
                 status: string(item["status"]) ?? "info",
-                kind: activityKind(eventType: eventType, fallback: string(item["item_type"])),
+                contextPhaseId: string(metadata["phase_id"]),
+                kind: kind,
                 agentId: string(item["agent_id"]),
-                timestamp: date(item["created_at"]) ?? date(item["updated_at"]),
+                timestamp: timestamp,
                 eventType: eventType,
                 latencyMs: number(metadata["latency_ms"]),
                 model: string(metadata["model"]),
@@ -1259,9 +1551,18 @@ struct TaskDetailSnapshot: Equatable {
                 cacheReadTokens: integer(metadata["cache_read_tokens"]),
                 executionId: string(metadata["execution_id"]) ?? string(item["execution_id"]),
                 planStepId: string(metadata["plan_step_id"]),
-                offPlan: (metadata["off_plan"] as? Bool) == true
+                offPlan: (metadata["off_plan"] as? Bool) == true,
+                startedAt: date(metadata["started_at_ms"]) ?? timestamp,
+                llmCallId: kind == "llm" ? string(metadata["llm_call_id"]) : nil,
+                toolCallId: kind == "tool" ? string(metadata["call_id"]) : nil,
+                toolName: kind == "tool" ? activityToolName(metadata) : nil,
+                capability: string(metadata["capability"])
             )
         }
+    }
+
+    private static func activityToolName(_ metadata: [String: Any]) -> String? {
+        string(metadata["target"]) ?? string(metadata["tool_name"]) ?? string(metadata["action_type"])
     }
 
     private static func activityKind(eventType: String?, fallback: String?) -> String {
@@ -1278,21 +1579,22 @@ struct TaskDetailSnapshot: Equatable {
         metadata: [String: Any]
     ) -> String {
         guard let eventType else { return fallback }
-        let tool = string(metadata["target"])
-            ?? string(metadata["tool_name"])
-            ?? string(metadata["action_type"])
+        let tool = string(metadata["detail"]) ?? activityToolName(metadata)
         let capability = string(metadata["capability"])
         switch eventType {
+        case "context.retrieval.started": return string(metadata["label"]) ?? "Preparing context"
+        case "context.retrieval.completed":
+            if let done = string(metadata["done_label"]) { return done }
+            return string(metadata["status"]) == "cancelled" ? "Context preparation cancelled"
+                : string(metadata["status"]) == "partial" ? "Context prepared (partial)" : "Context prepared"
         case "tool.succeeded": return tool.map { "\($0) returned" } ?? fallback
         case "tool.failed": return tool.map { "\($0) failed" } ?? fallback
         case "tool.started", "tool.requested":
             return tool.map { "Calling \($0)" } ?? fallback
-        case "llm.requested", "llm.succeeded", "llm.failed":
-            // An external harness (`engine` set) answered in place of the
-            // native profile: name the engine/model that actually ran.
-            let label = string(metadata["engine"]) != nil
-                ? (string(metadata["model"]) ?? capability) : capability
-            return label.map { "Thinking with \($0)" } ?? fallback
+        case "llm.requested", "llm.routed", "llm.succeeded", "llm.failed":
+            // Name the model that ran (an external harness's included); the
+            // capability asked for only when the row names no model.
+            return (string(metadata["model"]) ?? capability).map { "Thinking with \($0)" } ?? fallback
         default: return fallback
         }
     }
@@ -1561,6 +1863,8 @@ final class TaskDetailRealtime {
     private var executionId: String?
     private var onPanelState: (([String: Any]) -> Void)?
     private var onResync: (() -> Void)?
+    private var onProgress: ((String, Date) -> Void)?
+    private var connectionKey: String?
     private(set) var active = false
 
     /// Stream full execution-panel snapshots for exactly one inspected run.
@@ -1571,15 +1875,18 @@ final class TaskDetailRealtime {
     func start(
         executionId: String?,
         onPanelState: @escaping ([String: Any]) -> Void,
+        onProgress: ((String, Date) -> Void)? = nil,
         onResync: (() -> Void)? = nil
     ) {
         stop()
         self.executionId = executionId
         self.onPanelState = onPanelState
+        self.onProgress = onProgress
+        connectionKey = TaskUsageStore.connectionKey()
         self.onResync = onResync
         active = true
         subscription = RealtimeHub.shared.subscribe(
-            RealtimeHubFilter(eventTypes: ["ExecutionPanelDelta"]),
+            RealtimeHubFilter(),
             onEvent: { [weak self] event in _ = self?.handleIncomingJSON(event.text) },
             onResync: { [weak self] in
                 guard let self, self.active else { return }
@@ -1598,6 +1905,8 @@ final class TaskDetailRealtime {
         subscription = nil
         executionId = nil
         onPanelState = nil
+        onProgress = nil
+        connectionKey = nil
         onResync = nil
     }
 
@@ -1610,9 +1919,12 @@ final class TaskDetailRealtime {
 
     @discardableResult
     private func handleIncomingData(_ data: Data) -> Bool {
-        guard active, let executionId,
-              let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              envelope["event_type"] as? String == "ExecutionPanelDelta",
+        guard active, connectionKey == TaskUsageStore.connectionKey(), let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        if let (root, at) = TaskRunEvidence.progressEvent(envelope, principal: MagicianAccess.principal, workspace: MagicianAccess.workspace) {
+            onProgress?(root, at)
+            return true
+        }
+        guard let executionId, envelope["event_type"] as? String == "ExecutionPanelDelta",
               let payload = envelope["data"] as? [String: Any],
               payload["principal"] as? String == MagicianAccess.principal,
               payload["workspace"] as? String == MagicianAccess.workspace,
@@ -1668,6 +1980,11 @@ final class TaskDetailViewModel: ObservableObject {
         realtime?.start(
             executionId: selectedExecutionId,
             onPanelState: { [weak self] panel in self?.applyRealtimePanel(panel) },
+            onProgress: { [weak self] root, at in
+                guard let self, self.snapshot?.progressExecutionId == root else { return }
+                guard at.timeIntervalSince(self.snapshot?.lastProgressAt ?? .distantPast) >= 1 else { return }
+                self.snapshot?.lastProgressAt = at
+            },
             onResync: { [weak self] in self?.refresh() }
         )
     }
@@ -1685,7 +2002,11 @@ final class TaskDetailViewModel: ObservableObject {
             do {
                 let refreshed = try await fetch(seed, selectedExecutionId)
                 guard generation == requestGeneration else { return }
-                snapshot = refreshed
+                var merged = refreshed
+                if merged.progressExecutionId != nil, merged.progressExecutionId == snapshot?.progressExecutionId {
+                    merged.lastProgressAt = TaskRunEvidence.latest(snapshot?.lastProgressAt, merged.lastProgressAt)
+                }
+                snapshot = merged
                 if selectedExecutionId == nil { selectedExecutionId = refreshed.selectedExecutionId }
                 realtime?.update(executionId: selectedExecutionId)
             } catch {
@@ -2067,7 +2388,7 @@ struct DeepWorkPanel: View {
             // panel would otherwise make the reader assemble: the chip says
             // `Running` where this says *stalled*, and the progress bar says
             // `64%` where this says *waiting on you, 4m*.
-            verdictBlock(snapshot.verdict(now: Date()))
+            verdictBlock(snapshot.displayVerdict(now: Date()), partlyDone: snapshot.isPartlyDone)
 
             if let progress = snapshot.progress {
                 HStack(spacing: 8) {
@@ -2095,13 +2416,14 @@ struct DeepWorkPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    private func verdictBlock(_ verdict: Verdict) -> some View {
-        let tint = verdictTint(verdict.state.severity)
+    private func verdictBlock(_ verdict: Verdict, partlyDone: Bool = false) -> some View {
+        let tint = partlyDone && verdict.state == .finished
+            ? themeManager.warningColor : verdictTint(verdict.state.severity)
         return HStack(alignment: .top, spacing: 9) {
             // The glyph carries the identity — all seven are distinct — because
             // the wash below is deliberately shared between states and carries
             // nothing at all in greyscale.
-            Image(systemName: verdict.state.marker)
+            Image(systemName: partlyDone && verdict.state == .finished ? "exclamationmark.circle.fill" : verdict.state.marker)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(tint)
                 .frame(width: 20)
@@ -2251,7 +2573,7 @@ struct DeepWorkPanel: View {
                 }
                 if let summary = snapshot.runSummary {
                     Divider().opacity(0.4)
-                    Markdown(summary).textSelection(.enabled)
+                    TaskAnswerSummary(text: summary, theme: themeManager)
                 }
                 if let error = snapshot.selectedExecutionError {
                     inlineNotice(error, tint: themeManager.dangerColor, icon: "exclamationmark.triangle.fill")
@@ -2304,9 +2626,11 @@ struct DeepWorkPanel: View {
                         ForEach(TaskDelegationTimeline.group(visibleActivity, delegations: snapshot.delegations)) { segment in
                             switch segment {
                             case .row(let activity):
-                                activityRow(activity, origin: snapshot.timelineOrigin)
+                                activityRow(activity, origin: snapshot.timelineOrigin,
+                                            runActive: !snapshot.runEnded)
                             case .delegation(let group, let entries):
-                                delegationBlock(group, entries: entries, origin: snapshot.timelineOrigin)
+                                delegationBlock(group, entries: entries, origin: snapshot.timelineOrigin,
+                                                runActive: !snapshot.runEnded)
                             }
                         }
                     } else {
@@ -2316,7 +2640,8 @@ struct DeepWorkPanel: View {
                                 origin: snapshot.timelineOrigin,
                                 delegatedAgent: TaskDelegationTimeline.delegatedAgent(
                                     for: $0, delegations: snapshot.delegations
-                                )
+                                ),
+                                runActive: !snapshot.runEnded
                             )
                         }
                     }
@@ -2343,15 +2668,12 @@ struct DeepWorkPanel: View {
         return VStack(spacing: 12) {
             detailCard("Result", subtitle: snapshot.resultOutcome?.replacingOccurrences(of: "_", with: " ").capitalized) {
                 if let summary = snapshot.resultSummary {
-                    Markdown(summary).textSelection(.enabled)
-                } else {
-                    emptyMessage(snapshot.synthesisPending
-                                 ? "The run finished and its output is still being synthesized."
-                                 : "No completion result has been recorded yet.")
+                    TaskAnswerSummary(text: summary, theme: themeManager)
+                } else if !snapshot.synthesisPending {
+                    emptyMessage("No completion result has been recorded yet.")
                 }
                 if snapshot.synthesisPending {
-                    inlineNotice("Output synthesis is running.", tint: themeManager.accentColor,
-                                 icon: "wand.and.stars")
+                    TaskSynthesisProgressRow(baseline: snapshot.synthesisBaseline)
                 } else if snapshot.synthesisFailedExecutionId != nil {
                     inlineNotice("Output synthesis needs attention.", tint: themeManager.dangerColor,
                                  icon: "exclamationmark.arrow.triangle.2.circlepath")
@@ -2518,7 +2840,7 @@ struct DeepWorkPanel: View {
                             metric("Outputs", "\(run.outputCount)")
                             metric("Artifacts", "\(run.persistedArtifactCount)")
                         }
-                        if let summary = run.summary { Markdown(summary).textSelection(.enabled) }
+                        if let summary = run.summary { TaskAnswerSummary(text: summary, theme: themeManager) }
                         if let error = run.error {
                             inlineNotice(error, tint: themeManager.dangerColor, icon: "exclamationmark.triangle.fill")
                         }
@@ -2693,7 +3015,8 @@ struct DeepWorkPanel: View {
     private func delegationBlock(
         _ group: TaskDelegationGroup,
         entries: [TaskDetailActivity],
-        origin: Date?
+        origin: Date?,
+        runActive: Bool = false
     ) -> some View {
         let tint = delegationTint(group.status)
         let span = TaskDelegationTimeline.span(entries: entries, group: group)
@@ -2732,7 +3055,7 @@ struct DeepWorkPanel: View {
                 .accessibilityLabel("Delegated to \(group.agentId), \(meta)")
                 .accessibilityHint(expanded ? "Collapse" : "Expand")
                 if expanded {
-                    ForEach(entries) { activityRow($0, origin: origin) }
+                    ForEach(entries) { activityRow($0, origin: origin, runActive: runActive) }
                 }
             }
             .padding(10)
@@ -2746,7 +3069,8 @@ struct DeepWorkPanel: View {
     private func activityRow(
         _ activity: TaskDetailActivity,
         origin: Date?,
-        delegatedAgent: String? = nil
+        delegatedAgent: String? = nil,
+        runActive: Bool = false
     ) -> some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(spacing: 0) {
@@ -2761,6 +3085,17 @@ struct DeepWorkPanel: View {
                     if let latency = TaskTimelineFormatting.duration(milliseconds: activity.latencyMs) {
                         Text(latency).font(.themed(10, weight: .medium))
                             .foregroundColor(themeManager.secondaryTextColor).monospacedDigit()
+                    } else if TaskActivityLiveClock.ticks(activity, runActive: runActive) {
+                        // Only this label ticks, and only while the call runs.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let elapsed = TaskActivityLiveClock.label(
+                                activity, runActive: runActive, now: context.date
+                            ) {
+                                Text(elapsed).font(.themed(10, weight: .medium))
+                                    .foregroundColor(themeManager.secondaryTextColor).monospacedDigit()
+                                    .accessibilityLabel("Running for \(elapsed)")
+                            }
+                        }
                     }
                 }
                 HStack(spacing: 6) {

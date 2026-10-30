@@ -8,7 +8,6 @@
 		title: string;
 		category: string;
 		summary: string;
-		primaryLabel?: string;
 		sender?: string;
 		originLane?: 'dispatch' | 'reading_room';
 		rawItem?: CanonicalAttentionItem;
@@ -17,30 +16,59 @@
 	}
 
 	export type DeckTab = 'all' | 'for_you' | 'worth';
+	/** Swipes, plus the two Act-menu entries that resolve the card in place:
+	 *  `primary` is a Worth card's Open, `snooze` a follow-up's snooze. */
+	export type DeckActionKind = 'useful' | 'acknowledge' | 'dismiss' | 'primary' | 'snooze';
 </script>
 
 <script lang="ts">
-	import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+	import { createEventDispatcher, onDestroy, tick } from 'svelte';
 	import Icon from '$lib/shared/icons/Icon.svelte';
+	import { ASSISTANT_FALLBACK_NAME } from '$lib/presentationIdentity';
+	import { deckActEntries, openWorthLinkInGesture, type DeckActEntry } from './deckActMenu';
+	import { readingRoomDateline } from './readingRoomMetadata';
+	import TodayActMenu from './TodayActMenu.svelte';
+	import TodayDeckDetail from './TodayDeckDetail.svelte';
 
 	export let cards: TriageCardData[] = [];
 	export let debug = false;
 	export let activeTab: DeckTab = 'all';
+	export let followUpTotal: number | null = null;
+	export let worthTotal: number | null = null;
+	export let hasMoreForYou = false;
+	export let hasMoreWorth = false;
+	export let forYouLoading = false;
+	export let worthLoading = false;
+	$: initialLoading = (activeTab !== 'worth' && forYouLoading) || (activeTab !== 'for_you' && worthLoading);
+	export let loadingMore = false;
+	export let loadError: string | null = null;
+	export let pageRevision = 0;
+	/** Primary agent's display name; `ask_presto` is shown as "Ask <name>". */
+	export let agentName: string = ASSISTANT_FALLBACK_NAME;
+	/** Existing chat thread Ask <agent> posts into; without one it is hidden. */
+	export let chatThreadId: string | null = null;
+
+	type SwipeKind = 'useful' | 'dismiss' | 'acknowledge';
 
 	const dispatch = createEventDispatcher<{
-		action: { card: TriageCardData; kind: 'useful' | 'acknowledge' | 'dismiss' | 'primary' };
+		action: { card: TriageCardData; kind: DeckActionKind; complete?: (success: boolean) => void };
+		/** The card's own detail-view action already resolved it server-side. */
+		resolved: { card: TriageCardData; message: string };
 		complete: void;
+		needMore: DeckTab;
 		switchView: void;
 	}>();
 
-	let triagedIds = new Set<string>();
+	let triagedIds = new Map<string, boolean>();
+    let swipeTimer: ReturnType<typeof setTimeout> | null = null;
+    onDestroy(() => { if (swipeTimer !== null) clearTimeout(swipeTimer); });
 
 	function isForYouCard(card: TriageCardData): boolean {
-		return card.originLane === 'dispatch' || Boolean(card.rawFollowUp) || card.category.toUpperCase().includes('DISPATCH');
+		return card.originLane === 'dispatch' || Boolean(card.rawFollowUp) || (card.category.toUpperCase().includes('FOR YOU') || card.category.toUpperCase().includes('DISPATCH'));
 	}
 
 	function isWorthCard(card: TriageCardData): boolean {
-		return card.originLane === 'reading_room' || Boolean(card.rawWorth) || card.category.toUpperCase().includes('READING ROOM') || card.category.toUpperCase().includes('NOTE') || card.category.toUpperCase().includes('MEMORY');
+		return card.originLane === 'reading_room' || Boolean(card.rawWorth) || (card.category.toUpperCase().includes('WORTH A LOOK') || card.category.toUpperCase().includes('READING ROOM')) || card.category.toUpperCase().includes('NOTE') || card.category.toUpperCase().includes('MEMORY');
 	}
 
 	$: unhandledAll = cards.filter(c => !triagedIds.has(c.id));
@@ -53,25 +81,28 @@
 			? worthCards
 			: unhandledAll;
 
-	$: totalInitialInTab = cards.filter(c => {
-		if (activeTab === 'for_you') return isForYouCard(c);
-		if (activeTab === 'worth') return isWorthCard(c);
-		return true;
-	}).length;
-
-	$: triagedInTab = cards.filter(c => triagedIds.has(c.id) && (
-		activeTab === 'for_you' ? isForYouCard(c) : activeTab === 'worth' ? isWorthCard(c) : true
-	)).length;
+	$: triagedInTab = [...triagedIds.values()].filter(forYou => activeTab === 'all' || (activeTab === 'for_you' ? forYou : !forYou)).length;
+	$: totalInitialInTab = currentStack.length + triagedInTab;
 
 	let dragX = 0;
 	let dragY = 0;
 	let isDragging = false;
 	let activePointerId: number | null = null;
-	let animatingOut: 'useful' | 'dismiss' | 'acknowledge' | null = null;
+	let pointerTravel = 0;
+	// `resolve` leaves upward without a stamp: snooze is neither of the swipes.
+	let animatingOut: SwipeKind | 'resolve' | null = null;
 	let cardElement: HTMLElement | null = null;
+
+	// Act menu + detail view for the top card.
+	let actMenuOpen = false;
+	let actMenu: TodayActMenu | null = null;
+	let detailCardId: string | null = null;
+	let detailRef: TodayDeckDetail | null = null;
+	let detailWrapEl: HTMLElement | null = null;
 
 	function selectTab(tab: DeckTab): void {
 		if (activeTab === tab) return;
+		actMenuOpen = false;
 		activeTab = tab;
 		dragX = 0;
 		dragY = 0;
@@ -79,15 +110,37 @@
 	}
 
 	$: activeCard = currentStack[0] ?? null;
+	$: dateline = activeCard ? readingRoomDateline(activeCard.rawFollowUp, activeCard.rawWorth, activeCard.rawItem) : null;
 	$: nextCard = currentStack[1] ?? null;
 	$: thirdCard = currentStack[2] ?? null;
+	$: actEntries = activeCard ? deckActEntries(activeCard, { agentName, chatThreadId }) : [];
+	$: hasDetails = Boolean(activeCard?.rawFollowUp || activeCard?.rawWorth);
+	// The detail view follows the top card: once that card leaves (or the tab
+	// changes it), the view closes rather than showing a card no longer on top.
+	$: if (detailCardId && activeCard?.id !== detailCardId) detailCardId = null;
+	$: if (actMenuOpen && !activeCard) actMenuOpen = false;
+	$: detailCard = detailCardId !== null && activeCard?.id === detailCardId ? activeCard : null;
 	$: remainingCount = currentStack.length;
-	$: isComplete = currentStack.length === 0 && totalInitialInTab > 0;
+	$: hasMore = activeTab === 'for_you' ? hasMoreForYou : activeTab === 'worth' ? hasMoreWorth : hasMoreForYou || hasMoreWorth;
+	$: totalAvailable = activeTab === 'for_you' ? followUpTotal ?? forYouCards.length
+		: activeTab === 'worth' ? worthTotal ?? worthCards.length
+		: (followUpTotal ?? forYouCards.length) + (worthTotal ?? worthCards.length);
+	$: isComplete = currentStack.length === 0 && totalInitialInTab > 0 && !hasMore && !initialLoading && !loadingMore;
+	let requestKey: string | null = null;
+	$: requestNextIfLow(activeTab, currentStack.length, hasMore, initialLoading, loadingMore, loadError, pageRevision);
+	function requestNextIfLow(tab: DeckTab, count: number, more: boolean, initial: boolean, busy: boolean, error: string | null, revision: number): void {
+		if (!more || initial || busy || error || count > 4) return;
+		const key = `${tab}:${count}:${revision}`;
+		if (requestKey === key) return;
+		requestKey = key;
+		dispatch('needMore', tab);
+	}
 
-	// Stamp opacities based on drag deltas
-	$: usefulOpacity = Math.max(0, Math.min(1, (dragX - 25) / 75));
-	$: dismissOpacity = Math.max(0, Math.min(1, (-dragX - 25) / 75));
-	$: ackOpacity = Math.max(0, Math.min(1, (-dragY - 25) / 65));
+	// Stamp opacities based on drag deltas; a menu-resolved exit carries none.
+	$: stampScale = animatingOut === 'resolve' ? 0 : 1;
+	$: usefulOpacity = stampScale * Math.max(0, Math.min(1, (dragX - 25) / 75));
+	$: dismissOpacity = stampScale * Math.max(0, Math.min(1, (-dragX - 25) / 75));
+	$: ackOpacity = stampScale * Math.max(0, Math.min(1, (-dragY - 25) / 65));
 
 	function onPointerDown(e: PointerEvent): void {
 		if (isComplete || animatingOut) return;
@@ -99,27 +152,35 @@
 		isDragging = true;
 		dragX = 0;
 		dragY = 0;
-		cardElement?.setPointerCapture(e.pointerId);
+		pointerTravel = 0;
+		cardElement?.setPointerCapture?.(e.pointerId);
 	}
 
 	function onPointerMove(e: PointerEvent): void {
 		if (!isDragging || e.pointerId !== activePointerId) return;
 		dragX += e.movementX;
 		dragY += e.movementY;
+		pointerTravel += Math.abs(e.movementX) + Math.abs(e.movementY);
 	}
 
 	function onPointerUp(e: PointerEvent): void {
 		if (!isDragging || e.pointerId !== activePointerId) return;
 		isDragging = false;
-		if (cardElement && cardElement.hasPointerCapture(e.pointerId)) {
+		if (cardElement && cardElement.hasPointerCapture?.(e.pointerId)) {
 			cardElement.releasePointerCapture(e.pointerId);
 		}
 		activePointerId = null;
 
 		const SWIPE_THRESHOLD = 95;
 		const VERT_THRESHOLD = 80;
+		const TAP_TRAVEL = 6;
 
-		if (dragX > SWIPE_THRESHOLD) {
+		if (e.type === 'pointerup' && pointerTravel < TAP_TRAVEL && activeCard && hasDetails) {
+			// A plain tap opens the card's details; only a drag triages it.
+			dragX = 0;
+			dragY = 0;
+			void openDetails(activeCard);
+		} else if (dragX > SWIPE_THRESHOLD) {
 			triggerSwipe('useful');
 		} else if (dragX < -SWIPE_THRESHOLD) {
 			triggerSwipe('dismiss');
@@ -132,28 +193,41 @@
 		}
 	}
 
-	function triggerSwipe(kind: 'useful' | 'dismiss' | 'acknowledge'): void {
+	function triggerSwipe(kind: SwipeKind): void {
+		exitCard(kind, kind);
+	}
+
+	/**
+	 * The deck's one commit path: the card leaves, the action is dispatched
+	 * with a `complete` callback, and a failed action puts the card back on
+	 * top. Swipes and the Act menu's resolving entries both come through here.
+	 */
+	function exitCard(animation: SwipeKind | 'resolve', kind: DeckActionKind): void {
 		if (!activeCard || animatingOut) return;
-		animatingOut = kind;
+		actMenuOpen = false;
+		animatingOut = animation;
 		const swipedCard = activeCard;
 
 		// Set target exit coordinates
-		if (kind === 'useful') {
+		if (animation === 'useful') {
 			dragX = typeof window !== 'undefined' && window.innerWidth > 600 ? 550 : 380;
 			dragY = dragY * 0.5;
-		} else if (kind === 'dismiss') {
+		} else if (animation === 'dismiss') {
 			dragX = typeof window !== 'undefined' && window.innerWidth > 600 ? -550 : -380;
 			dragY = dragY * 0.5;
-		} else if (kind === 'acknowledge') {
+		} else {
 			dragY = -450;
 			dragX = dragX * 0.4;
 		}
 
-		setTimeout(() => {
+		swipeTimer = setTimeout(() => {
+            swipeTimer = null;
 			if (swipedCard) {
-				triagedIds.add(swipedCard.id);
+				triagedIds.set(swipedCard.id, isForYouCard(swipedCard));
 				triagedIds = triagedIds;
-				dispatch('action', { card: swipedCard, kind });
+				dispatch('action', { card: swipedCard, kind, complete: success => {
+                    if (!success) { triagedIds.delete(swipedCard.id); triagedIds = triagedIds; }
+                } });
 			}
 			dragX = 0;
 			dragY = 0;
@@ -164,13 +238,56 @@
 		}, 260);
 	}
 
-	function handlePrimary(): void {
-		if (!activeCard) return;
-		dispatch('action', { card: activeCard, kind: 'primary' });
+	async function openDetails(card: TriageCardData): Promise<void> {
+		actMenuOpen = false;
+		detailCardId = card.id;
+		await tick();
+		detailWrapEl?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+	}
+
+	/**
+	 * Only `snooze` and Open resolve the card from the menu itself. Every other
+	 * entry opens the detail view and starts there, so an instruction, a draft
+	 * or a form comes first and the card stays on top until that flow resolves.
+	 */
+	async function chooseEntry(entry: DeckActEntry): Promise<void> {
+		const card = activeCard;
+		if (!card) return;
+		if (entry.kind === 'snooze') {
+			exitCard('resolve', 'snooze');
+			return;
+		}
+		if (entry.kind === 'open') {
+			openWorthLinkInGesture(card.rawWorth);
+			exitCard('useful', 'primary');
+			return;
+		}
+		// The menu item is the link; it has already opened the thread.
+		if (entry.kind === 'open_provider') return;
+		await openDetails(card);
+		if (entry.kind !== 'details') detailRef?.start(entry);
+	}
+
+	function onDetailResolved(card: TriageCardData, message: string): void {
+		detailCardId = null;
+		triagedIds.set(card.id, isForYouCard(card));
+		triagedIds = triagedIds;
+		dispatch('resolved', { card, message });
+		if (currentStack.length <= 1) {
+			dispatch('complete');
+		}
+	}
+
+	/** Keys typed into a field or a dialog belong there, not to the deck. */
+	function keyBelongsElsewhere(target: EventTarget | null): boolean {
+		if (!(target instanceof HTMLElement)) return false;
+		return target.isContentEditable || Boolean(target.closest('input, textarea, select, [role="dialog"]'));
 	}
 
 	function handleKeydown(e: KeyboardEvent): void {
-		if (isComplete || animatingOut) return;
+		// An open Act menu owns ↑/↓/Esc; Enter activates its focused item.
+		if (actMenuOpen) return;
+		if (isComplete || animatingOut || keyBelongsElsewhere(e.target)) return;
 		if (e.key === 'ArrowRight' || e.key === 'l' || e.key === 'L') {
 			e.preventDefault();
 			triggerSwipe('useful');
@@ -181,14 +298,19 @@
 			e.preventDefault();
 			triggerSwipe('acknowledge');
 		} else if (e.key === 'Enter') {
-			if (activeCard?.primaryLabel) {
+			// A focused control keeps its own Enter.
+			const target = e.target instanceof HTMLElement ? e.target : null;
+			if (target?.closest('button, a, [role="tab"]')) return;
+			if (actEntries.length > 0) {
 				e.preventDefault();
-				handlePrimary();
+				void actMenu?.openMenu();
 			}
 		}
 	}
 
 	function restartDeck(): void {
+		actMenuOpen = false;
+		detailCardId = null;
 		triagedIds.clear();
 		triagedIds = triagedIds;
 		dragX = 0;
@@ -212,8 +334,8 @@
 				on:click={() => selectTab('all')}
 			>
 				<span>All</span>
-				{#if unhandledAll.length > 0}
-					<span class="tab-badge">{unhandledAll.length}</span>
+				{#if (followUpTotal ?? forYouCards.length) + (worthTotal ?? worthCards.length) > 0}
+					<span class="tab-badge">{(followUpTotal ?? forYouCards.length) + (worthTotal ?? worthCards.length)}</span>
 				{/if}
 			</button>
 
@@ -226,8 +348,8 @@
 				on:click={() => selectTab('for_you')}
 			>
 				<span>For You</span>
-				{#if forYouCards.length > 0}
-					<span class="tab-badge">{forYouCards.length}</span>
+				{#if (followUpTotal ?? forYouCards.length) > 0}
+					<span class="tab-badge">{followUpTotal ?? forYouCards.length}</span>
 				{/if}
 			</button>
 
@@ -240,31 +362,38 @@
 				on:click={() => selectTab('worth')}
 			>
 				<span>Worth a Look</span>
-				{#if worthCards.length > 0}
-					<span class="tab-badge">{worthCards.length}</span>
+				{#if (worthTotal ?? worthCards.length) > 0}
+					<span class="tab-badge">{worthTotal ?? worthCards.length}</span>
 				{/if}
 			</button>
 		</div>
 	</div>
 
+	<p class="np-deck-count">{initialLoading ? 'Loading Reading Room…' : `${currentStack.length} loaded · ${totalAvailable} total`}</p>
 	<!-- The Card Stage -->
 	<div class="np-deck-stage">
-		{#if isComplete || currentStack.length === 0}
+		{#if currentStack.length === 0 && (initialLoading || loadingMore)}
+			<div class="np-deck-empty" role="status"><p>{initialLoading ? 'Loading Reading Room…' : 'Loading more cards…'}</p></div>
+		{:else if currentStack.length === 0 && (hasMore || loadError)}
+			<div class="np-deck-empty"><p>{loadError || 'More cards are available.'}</p>
+				<button type="button" class="np-btn np-btn--primary" on:click={() => dispatch('needMore', activeTab)}>Load more cards</button>
+			</div>
+		{:else if isComplete || currentStack.length === 0}
 			<!-- All Cleared / Empty State -->
 			<div class="np-deck-empty">
 				<div class="np-coffee-icon">☕</div>
 				<h3 class="np-empty-title">
 					{#if totalInitialInTab === 0}
-						No Dispatches in This Stack
+						No cards in this stack
 					{:else}
-						All Dispatches Cleared
+						All cards reviewed
 					{/if}
 				</h3>
 				<p class="np-empty-desc">
 					{#if totalInitialInTab === 0}
 						There are currently no {activeTab === 'for_you' ? 'For You' : activeTab === 'worth' ? 'Worth a Look' : ''} cards in today's deck.
 					{:else}
-						You've triaged all {totalInitialInTab} items in this stack. Your slate is completely clean.
+						You've reviewed {triagedInTab} items in this stack.
 					{/if}
 				</p>
 				<div class="np-empty-actions">
@@ -353,6 +482,7 @@
 					{/if}
 				</div>
 
+				{#if dateline}<time class="np-deck-date" datetime={dateline.iso}>{dateline.text}</time>{/if}
 				<h3 class="np-deck-card__title">
 					{activeCard.title}
 				</h3>
@@ -361,16 +491,31 @@
 					{activeCard.summary}
 				</p>
 
-				{#if activeCard.rawFollowUp?.open_url}
-					<div class="np-deck-card__link">
-						<a
-							href={activeCard.rawFollowUp.open_url}
-							target="_blank"
-							rel="noopener noreferrer"
-							on:pointerdown|stopPropagation
-						>
-							View thread in {activeCard.rawFollowUp.provider || 'app'} <Icon name="arrow-up-right" size={12} />
-						</a>
+				{#if activeCard.rawFollowUp?.open_url || hasDetails}
+					<div class="np-deck-card__footer">
+						{#if activeCard.rawFollowUp?.open_url}
+							<div class="np-deck-card__link">
+								<a
+									href={activeCard.rawFollowUp.open_url}
+									target="_blank"
+									rel="noopener noreferrer"
+									on:pointerdown|stopPropagation
+								>
+									View thread in {activeCard.rawFollowUp.provider || 'app'} <Icon name="arrow-up-right" size={12} />
+								</a>
+							</div>
+						{/if}
+						{#if hasDetails}
+							<button
+								type="button"
+								class="np-deck-card__details"
+								data-testid="today-deck-details"
+								aria-expanded={detailCard !== null}
+								on:click={() => activeCard && void openDetails(activeCard)}
+							>
+								Details ›
+							</button>
+						{/if}
 					</div>
 				{/if}
 			</article>
@@ -417,17 +562,18 @@
 				<span>Useful</span>
 			</button>
 
-			<!-- Primary Action -->
-			{#if activeCard.primaryLabel}
-				<button
-					type="button"
-					class="np-deck-btn np-deck-btn--primary"
-					title="Press Enter to execute primary action"
-					on:click={handlePrimary}
-				>
-					<span>⚡ {activeCard.primaryLabel}</span>
-				</button>
-			{/if}
+			<!-- Act: this card's own actions; nothing runs until one is chosen -->
+			<TodayActMenu
+				entries={actEntries}
+				variant="deck"
+				placement="up"
+				testIdPrefix="today-deck-act"
+				title="Press Enter to choose an action"
+				disabled={animatingOut !== null}
+				bind:open={actMenuOpen}
+				bind:this={actMenu}
+				on:choose={(event) => void chooseEntry(event.detail)}
+			/>
 		</div>
 
 		<!-- Keyboard Navigation Hints -->
@@ -435,14 +581,29 @@
 			<span><kbd>←</kbd> Dismiss</span>
 			<span><kbd>↑</kbd> Seen</span>
 			<span><kbd>→</kbd> Useful</span>
-			{#if activeCard.primaryLabel}
-				<span><kbd>↵</kbd> {activeCard.primaryLabel}</span>
+			{#if actEntries.length > 0}
+				<span><kbd>↵</kbd> Act</span>
 			{/if}
 		</div>
+
+		{#if detailCard}
+			<div class="np-deck-detail-wrap" bind:this={detailWrapEl}>
+				<TodayDeckDetail
+					card={detailCard}
+					{chatThreadId}
+					bind:this={detailRef}
+					on:close={() => (detailCardId = null)}
+					on:resolved={(event) => detailCard && onDetailResolved(detailCard, event.detail.message)}
+					on:open={() => exitCard('useful', 'primary')}
+				/>
+			</div>
+		{/if}
 	{/if}
 </div>
 
 <style>
+	.np-deck-count { margin: 0 0 12px; color: var(--text-secondary); font-size: 12px; }
+	.np-deck-date { display: block; font-size: 11px; color: var(--text-secondary); }
 	.np-deck-wrap {
 		display: flex;
 		flex-direction: column;
@@ -653,10 +814,35 @@
 		overflow-y: auto;
 	}
 
-	.np-deck-card__link {
+	.np-deck-card__footer {
 		margin-top: auto;
 		padding-top: 0.5rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.np-deck-card__link {
 		font-size: 0.82rem;
+	}
+
+	.np-deck-card__details {
+		margin-left: auto;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		font-family: var(--font-primary, sans-serif);
+		font-size: 0.82rem;
+		font-weight: 600;
+		color: var(--text-secondary, #52525b);
+		cursor: pointer;
+	}
+
+	.np-deck-card__details:hover,
+	.np-deck-card__details:focus-visible {
+		color: var(--accent-primary, #b45309);
+		text-decoration: underline;
 	}
 
 	.np-deck-card__link a {
@@ -808,6 +994,12 @@
 
 	.np-deck-btn--primary:hover {
 		background: var(--accent-fill-hover);
+	}
+
+	.np-deck-detail-wrap {
+		display: flex;
+		justify-content: center;
+		width: 100%;
 	}
 
 	.np-deck-shortcuts {

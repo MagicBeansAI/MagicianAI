@@ -52,6 +52,46 @@ def find_base_ref(explicit_ref: str | None) -> str:
     return "HEAD~1"
 
 
+def ignored_commits() -> set[str]:
+    """Full hashes of format-only commits listed in .git-blame-ignore-revs."""
+    path = Path(git_stdout(["rev-parse", "--show-toplevel"]).strip()) / ".git-blame-ignore-revs"
+    if not path.is_file():
+        return set()
+    hashes = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        token = line.split("#", 1)[0].strip()
+        if token:
+            resolved = run_git(["rev-parse", "--verify", "--quiet", f"{token}^{{commit}}"], check=False)
+            if resolved.returncode == 0:
+                hashes.add(resolved.stdout.strip())
+    return hashes
+
+
+def without_format_only_commits(files: list[str], base_ref: str) -> list[str]:
+    """Drop files that only format-only commits in base_ref..HEAD touched.
+
+    A reformat changes code in every component and can owe no documentation, so
+    the files it alone touches are not evidence of a behavior change.
+    """
+    ignored = ignored_commits()
+    log = run_git(["log", "--no-merges", "--format=%H", f"{base_ref}..HEAD"], check=False)
+    if not ignored or log.returncode != 0:
+        return files
+    commits = [line.strip() for line in log.stdout.splitlines() if line.strip()]
+    if not ignored.intersection(commits):
+        return files
+    real: set[str] = set()
+    for commit in commits:
+        if commit in ignored:
+            continue
+        touched = run_git(
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", "--diff-filter=ACMR", commit],
+            check=False,
+        )
+        real.update(line.strip() for line in touched.stdout.splitlines() if line.strip())
+    return [path for path in files if path in real]
+
+
 def changed_files(staged: bool, base_ref: str) -> list[str]:
     if staged:
         result = run_git(
@@ -65,7 +105,8 @@ def changed_files(staged: bool, base_ref: str) -> list[str]:
         ["diff", "--name-only", "--diff-filter=ACMR", f"{base_ref}...HEAD"], check=False
     )
     if primary.returncode == 0:
-        return [line.strip() for line in primary.stdout.splitlines() if line.strip()]
+        files = [line.strip() for line in primary.stdout.splitlines() if line.strip()]
+        return without_format_only_commits(files, base_ref)
 
     fallback = run_git(
         ["diff", "--name-only", "--diff-filter=ACMR", base_ref, "HEAD"], check=False
@@ -73,7 +114,8 @@ def changed_files(staged: bool, base_ref: str) -> list[str]:
     if fallback.returncode != 0:
         msg = fallback.stderr.strip() or primary.stderr.strip() or "git diff failed"
         raise RuntimeError(msg)
-    return [line.strip() for line in fallback.stdout.splitlines() if line.strip()]
+    files = [line.strip() for line in fallback.stdout.splitlines() if line.strip()]
+    return without_format_only_commits(files, base_ref)
 
 
 def changed_working_tree_files() -> list[str]:

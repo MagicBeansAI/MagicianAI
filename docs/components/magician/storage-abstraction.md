@@ -26,6 +26,9 @@ predecessor's) evidence, drift between Rust copies and catalog, an on-disk
 `measurements.direct_io_files`, or a listed owner/writer/reader path that does
 not exist.
 
+- **Outward origin.** Scope-restricted, HMAC-authenticated task provenance lives
+  under `restricted/outward_origins/`; capture overrides never trust task tags
+  or model-written descriptions ([decision matrix](outward-actions.md#optional-context-controls)).
 - **Idle owners.** One host collector retires unused scoped DuckDB owners and
   SQLCipher idle connections; requests pin owners during native work and
   reopening keeps data ([idle workspace resources](duckdb-analytics.md#idle-workspace-resources)).
@@ -42,8 +45,15 @@ not exist.
   answers or stops uncertain mutations without redispatch; Settlement projects
   Artifact before Runtime goes terminal, so the recovery scan sees partial commits.
 - `WorkspaceFileProvider` (`magician/src/magician_v2/artifact_v2/workspace.rs`)
-  is the local compatibility adapter (`local_file`, `silverbullet_space`), not a
-  remote-storage boundary.
+  is the local compatibility adapter (`local_file`; the retired
+  `silverbullet_space` selector reads as it), not a remote-storage boundary.
+
+Original-folder VibeDev runs store only admission/location records and an index
+of staged file transactions under scoped `coding_engine/`. The repository itself
+stays external owner data: clone retention, rewind and deletion never operate
+on it. The per-run Citizen token is ephemeral; an ended process cannot reuse
+that token to apply a pending diff. Transaction snapshots retain approved edit
+preimages through the existing file-edit owner.
 
 ## Process runtime
 
@@ -90,7 +100,7 @@ selects no remote repository, and no startup scanner uploads existing files.
 | Kit | Owners | Notes |
 | --- | --- | --- |
 | Immutable artifacts (`magician_v2/object_owners/`) | `durable_artifacts`, app blobs (`app_packages`, `app_attachments`, `app_exports`, `app_captures`, `app_evaluations`), `task_outputs`, `execution_outputs`, `execution_observations`, `execution_downloads`, `execution_recordings`, `llm_trace_journal`, `llm_restricted_journal`, accepted `skills_scope` bytes | `.part` downloads, live CDP screencast not durable. |
-| System, devices, secrets (`magician_v2/system_owners/`) | `secret_vault`, `device_pairing`, `resource_authority`, `programs`, `capability_evolution`, `content_sources`, `transport_log_jsonl`, `compaction_metrics`, `system_templates`, `runtime_config`, `notes_provider`, `silverbullet_space_runtime`, `device_local_imessage`, `device_local_whatsapp` | Secret export metadata-only (`secret_audit.jsonl`). Device-local DBs, notes provider: classified, not migrated. Bootstrap config, system templates host-managed; pairing roster keeps its sealed path. |
+| System, devices, secrets (`magician_v2/system_owners/`) | `secret_vault`, `device_pairing`, `resource_authority`, `programs`, `capability_evolution`, `content_sources`, `transport_log_jsonl`, `compaction_metrics`, `system_templates`, `runtime_config`, `notes_provider`, `device_local_imessage`, `device_local_whatsapp` | Secret export metadata-only (`secret_audit.jsonl`). Device-local DBs, notes provider: classified, not migrated. Bootstrap config, system templates host-managed; pairing roster keeps its sealed path. |
 | Subprocess and skill storage | `workdirs_scratch`, `subprocess_skill_working` | Below. |
 | Desktop engine-path reads | `desktop_engine_roots` | Below. |
 | SQLite and DuckDB lifecycle stores (`magician_v2/database_owners/`) | `analytics_duckdb`, `channel_assist_duckdb`, `ui_threads_duckdb`, `feed_duckdb`, `browser_engine_usage_sqlite`, `app_store_sqlite`, `social_sqlite`, `api_mining`, `attention_learning_sqlite`, `attention_funnel_sqlite`, `resurfacing_sqlite`, `hitl_lifecycle_sqlite` | Job: `storage_governance::duckdb_compaction`; `scratch_tool_duckdb` ephemeral. Paths `database_file_path` / `host_database_path`; WAL shares owner. Missing `feed_duckdb` must not empty `social_sqlite`. `feed_duckdb` failure rows are deleted after 7 days (`FeedStore::prune_failed_items`); Attention hides them after 2 h. Host attention files at runtime root, rows scope-owned. |
@@ -158,9 +168,9 @@ The catalog names each owner's intended capability:
 | `device_local` | Paired-device state, not server tenant storage |
 | `bootstrap` | Host-managed config outside the selected stores |
 
-Switching the Settings Runtime provider moves no data. `local_file` and
-`silverbullet_space` are variants of one layout; `silverbullet_space_runtime` is
-cataloged so it cannot be deleted as a "ratchet".
+The runtime store has one local layout (`local_file`); the retired
+`silverbullet_space` selector and `local_silverbullet_space` profile read as
+`local_file` / `local_embedded` over the same root, so nothing moves.
 
 ## Recovery, activation, and profiles
 
@@ -190,7 +200,7 @@ Operator workflow: `magician storage inventory|plan|export|import|verify|cutover
 the confirmation `CUT OVER STORAGE`; Settings and the command palette show
 inventory and status only ([task-19-activation.md](../magician-storage/task-19-activation.md)).
 
-93 owners, 76 tier 1; 89 are `remote_ready`. Activation needs every tier-1
+92 owners, 76 tier 1; 88 are `remote_ready`. Activation needs every tier-1
 owner `remote_ready`, so tier-1 `relentless_runs` (`characterized`) and
 `relentless_guidance_policies` (`discovered`) block it; tier-2
 `decision_metrics_sqlite` (`discovered`) and
@@ -426,6 +436,9 @@ orphan sweeps cannot erase them.
   snapshot under the session lifecycle fence, revision check under the episode
   lock (shared with forget/retention), publish via `write_json_atomic`; the derived index rebuilds from journaled
   canonical changes; never creates a missing episode or parallel store ([conversational recall](memory-recall.md)).
+- **Near-duplicate memory folds** (`magician memory-fold-user-duplicates`,
+  dry run unless `--apply`) go through the user-memory lifecycle: evidence
+  merged, other copies superseded, nothing deleted ([memory lifecycle](memory-lifecycle.md)).
 - **Quality allowance continuation** appends an owner-approved reset to the run
   journal under its lock, keeping contract, ledger, paid checkpoints and cumulative
   usage; notices use the durable request owner and canonical receipt path; no
@@ -493,3 +506,5 @@ older files with empty maps; partial writes use the existing scope-owned lock
 and atomic ArtifactV2 writer. Runtime provider catalogs do not become global
 voice preferences: each synthesis/call captures the requesting scope's choice
 outside the shared provider cache. Phone-native voice IDs stay device-local.
+
+Chat artifact inventory reads the existing session file index and scoped task output views, including archived tasks and canonical source-task provenance; it introduces no new authoritative file store.

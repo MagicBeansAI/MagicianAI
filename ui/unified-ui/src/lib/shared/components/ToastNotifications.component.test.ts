@@ -19,7 +19,7 @@ describe('ToastNotifications actions', () => {
 
 		expect(await screen.findByRole('link', { name: 'Open task' })).toHaveAttribute(
 			'href',
-			'/t/general/tasks?selected=task-1'
+			'/work?selected=task-1&thread=general'
 		);
 	});
 });

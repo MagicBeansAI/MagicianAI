@@ -122,8 +122,8 @@ impl CriticalDeliverySettingsStore {
         Ok(())
     }
 
-    /// Durable write of the `hitl.critical_delivery` section, under the
-    /// config-file lock shared with every other whole-file config writer.
+    /// Durable write of the changed `hitl.critical_delivery` values, under
+    /// the config-file lock shared with every other config writer.
     pub async fn save(
         &self,
         settings: HitlCriticalDeliverySettings,
@@ -139,15 +139,25 @@ impl CriticalDeliverySettingsStore {
             } else {
                 crate::config::magician_config_path()
             };
-            let mut config = crate::config::load_magician_config_from_path(&base_path)
+            let config = crate::config::load_magician_config_from_path(&base_path)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let mut written = write_settings;
             Self::carry_forward_operator_fields(&mut written, &config.hitl.critical_delivery);
-            config.hitl.critical_delivery = written;
+            // Only the changed `hitl.critical_delivery` lines are written; the
+            // owner's comments and every other section stay byte for byte.
+            let original = std::fs::read_to_string(&base_path)?;
+            let yaml = crate::magician_v2::runtime_settings::apply_yaml_section(
+                &original,
+                &["hitl", "critical_delivery"],
+                &config.hitl.critical_delivery,
+                &written,
+            )?;
+            if yaml == original && base_path == write_path {
+                return Ok(());
+            }
             if let Some(parent) = write_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let yaml = serde_yaml::to_string(&config).map_err(std::io::Error::other)?;
             write_bytes_durably_sync(&write_path, yaml.as_bytes())
         })
         .await
@@ -158,7 +168,7 @@ impl CriticalDeliverySettingsStore {
     /// Fields of the section that belong to the deployment, not to the owner,
     /// carried forward from disk when the writer did not name them.
     ///
-    /// `save` replaces the whole `hitl.critical_delivery` section, and the
+    /// `save` writes the `hitl.critical_delivery` section the payload describes, and the
     /// settings panel has no field for the link origin, so its payload always
     /// omits it and `#[serde(default)]` fills `None`. Without this the first
     /// save of Critical alerts would silently drop a configured origin and put
@@ -205,9 +215,19 @@ impl CriticalDeliverySettingsStore {
         available_channels.sort();
         available_channels.dedup();
         let public_origin_configured = settings.owner_link_origin(&view.mobile_access).is_some();
+        if let (Some(explicit), Some(machine)) = (
+            settings.explicit_owner_ui_origin(),
+            crate::config::machine_ui_origin(),
+        ) {
+            if explicit.trim_end_matches('/') != machine {
+                warnings.push(format!(
+                    "alert links use hitl.critical_delivery.owner_ui_origin ({explicit}), not this machine's UI host ({machine}); clear it unless that origin still serves this Magician"
+                ));
+            }
+        }
         if !public_origin_configured {
             warnings.push(
-                "no link origin is configured (hitl.critical_delivery.owner_ui_origin, or mobile_access.public_origin); alerts will say to open Magician → Attention instead of linking the request".to_string(),
+                "no link origin is configured (hitl.critical_delivery.owner_ui_origin, MAGICIAN_UI_HOST, or mobile_access.public_origin); alerts will say to open Magician → Attention instead of linking the request".to_string(),
             );
         }
         CriticalDeliverySettingsEnvelope {
@@ -238,6 +258,26 @@ pub fn mask(address: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::QuietHoursSettings;
+
+    #[tokio::test]
+    async fn saving_changes_only_the_changed_values_and_keeps_the_seed_comments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let contents = crate::config::shipped_repo_config_yaml();
+        std::fs::write(temp.path().join(CONFIG_FILE), &contents).expect("seed config");
+        let store = CriticalDeliverySettingsStore::new(temp.path());
+        let mut settings = store.load_view().hitl.critical_delivery;
+        settings.staged_fallback_secs = 90;
+        store.save(settings).await.expect("save");
+        let written = std::fs::read_to_string(temp.path().join(CONFIG_FILE)).expect("read");
+        assert_eq!(
+            written,
+            contents.replacen(
+                "    staged_fallback_secs: 45\n",
+                "    staged_fallback_secs: 90\n",
+                1
+            )
+        );
+    }
 
     #[test]
     fn validation_refuses_shapes_the_coordinator_could_not_honour() {

@@ -40,6 +40,10 @@ pub struct DecisionRequest {
     /// dynamic Choice options (see [`set_choice_candidates`]) before
     /// dispatch.
     pub questions: Vec<Question>,
+    /// Images the state refers to by key (see [`crate::asset`]). A request
+    /// that carries any only routes to models that accept images.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, crate::asset::DecisionAsset>,
 }
 
 impl DecisionRequest {

@@ -284,16 +284,17 @@ phase_runtime_root() {
   seed_default_harness_runtime_files
 
   if [ "$populated" = 1 ]; then
-    log "$DATA_DIR already populated — skipping seed-silverbullet-space.sh; skeleton + non-clobber config guards applied above."
+    log "$DATA_DIR already populated — skeleton + non-clobber config guards applied above."
   else
-    # Fresh root: let the seed script do the full initialization (Space
-    # skeleton, optional scopes/ migration, dataless check). The script is also
-    # non-clobbering for magician-config.yaml.
-    log "Fresh runtime root — running seed-silverbullet-space.sh"
-    if ! MAGICIAN_ROOT_DIR="$DATA_DIR" bash "$REPO/scripts/seed-silverbullet-space.sh"; then
-      warn "seed-silverbullet-space.sh failed — runtime root may be incomplete"
-    fi
+    # Fresh root: agents/DBs/trust policies materialize from the seed templates
+    # on first boot, and Notes are plain files Magician creates on first write.
+    log "Fresh runtime root — templates materialize from the seed on first boot."
   fi
+  # An iCloud-evicted (`dataless`) file blocks reads forever; refuse to be quiet
+  # about a runtime root that lives in iCloud Drive.
+  local dataless
+  dataless="$(find "$DATA_DIR" -type f -flags +dataless 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$dataless" = 0 ] || warn "$dataless dataless files under $DATA_DIR — is it on iCloud? reads WILL hang."
 
   # Warn (don't fabricate) when operator secrets are absent. The templates above
   # are placeholders; the operator must supply real values before first run.
@@ -423,11 +424,12 @@ phase_run() {
     #
     # `make run-supervisor` itself blocks (run-supervisor.sh foregrounds
     # `magic-supervisor.bin | tee`), so we detach it with nohup and poll health.
-    # The supervisor manages magician+magicutor only — it does NOT launch the
-    # tray — so the tray is launched exactly once, by phase_tauri.
+    # On macOS the supervisor can also watch and launch the desktop tray; it is
+    # started with SUPERVISOR_MANAGE_DESKTOP=0 here so it does not, and the
+    # tray is launched exactly once, by phase_tauri.
     local _runlog="$DATA_DIR/magician-run.log"
-    log "Starting the backend detached (nohup make run-supervisor -> $_runlog)"
-    nohup make -C "$REPO" run-supervisor >"$_runlog" 2>&1 &
+    log "Starting the backend detached (nohup make run-supervisor SUPERVISOR_MANAGE_DESKTOP=0 -> $_runlog)"
+    nohup make -C "$REPO" run-supervisor SUPERVISOR_MANAGE_DESKTOP=0 >"$_runlog" 2>&1 &
     log "  backend pid: $! (detached; logs at $_runlog)"
     log "Waiting for Magician API health on http://127.0.0.1:3002/health (up to 30s)..."
     if health_wait "http://127.0.0.1:3002/health" 30; then
@@ -494,9 +496,12 @@ phase_run() {
         # host regardless of -p (host.docker.internal is an outbound host alias, not a
         # published port).
         log "Running container (docker on macOS, host.docker.internal)"
+        # Magicutor's port is published on host loopback only, so the
+        # container may trust its gateway (the host) for it.
         local _cmd=(docker run -d --name "$CONTAINER_NAME"
           "${_keyring_args[@]}"
-          -p 3002:3002 -p 3003:3003
+          -p 3002:3002 -p 127.0.0.1:3003:3003
+          -e MAGICUTOR_TRUST_GATEWAY=1
           -e MAGICIAN_CONTAINER_HOST=host.docker.internal
           -e MAGICIAN_HOST_GATEWAY_URL=http://host.docker.internal:3017
           "$IMAGE_REF")
@@ -512,7 +517,8 @@ phase_run() {
       log "Running container (Apple container; official localhost forwarding)"
       local _cmd=(container run -d --name "$CONTAINER_NAME"
         "${_keyring_args[@]}"
-        -p 3002:3002 -p 3003:3003
+        -p 3002:3002 -p 127.0.0.1:3003:3003
+        -e MAGICUTOR_TRUST_GATEWAY=1
         -e MAGICIAN_CONTAINER_HOST=host.container.internal
         -e MAGICIAN_HOST_GATEWAY_URL=http://host.container.internal:3017
         "$IMAGE_REF")
@@ -675,7 +681,8 @@ phase_tauri() {
     # returning process. Launch it DETACHED with nohup so phase_tauri returns and
     # the funnel/verify phases still run (same no-block discipline as phase_run).
     # This is the ONLY tray launch in the local-dev flow — phase_run starts the
-    # backend supervisor (no tray) — so the :3017 host gateway is bound exactly once.
+    # supervisor with desktop management off — so the :3017 host gateway is bound
+    # exactly once (run-desktop-tray-debug also skips `open` when a tray holds it).
     local _traylog="$DATA_DIR/desktop-tray.log"
     log "Launching the desktop tray detached (nohup make run-desktop-tray-debug -> $_traylog)"
     nohup make -C "$REPO" run-desktop-tray-debug >"$_traylog" 2>&1 &
@@ -810,10 +817,10 @@ fi
 if [ "$ENABLE_FUNNEL" = 1 ]; then
   # The cloudflared tunnel script wrote the STABLE webhook URL to
   # $DATA_DIR/funnel-url (it is config-known on the operator domain, not derived
-  # from a live status call). Echo it last so it's the final thing the operator
-  # sees — paste it into Kapso once.
+  # from a live status call). Echo it last; nothing is pasted anywhere: the
+  # Kapso and AgentMail bots register it on start from MAGICIAN_WEBHOOK_HOST.
   if [ -s "$DATA_DIR/funnel-url" ]; then
-    log "Kapso webhook URL (set this in Kapso): $(cat "$DATA_DIR/funnel-url")"
+    log "Kapso webhook URL (the Kapso and AgentMail bots register it on start): $(cat "$DATA_DIR/funnel-url")"
   else
     log "Kapso webhook tunnel requested — see the tunnel output above for the public URL (https://webhook.${MAGICIAN_TUNNEL_ZONE:-<your-zone>}/webhook once set up)."
   fi

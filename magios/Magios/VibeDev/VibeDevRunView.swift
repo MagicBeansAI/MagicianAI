@@ -45,8 +45,11 @@ struct VibeDevRunView: View {
         .overlay { if !model.loaded { ProgressView().tint(theme.accentColor) } }
         .navigationTitle(VibeDevFormat.short(model.title, 30))
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbarBackground(theme.backgroundColor, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { VibeDevBackButton() }
+                .roundedSquareToolbarBackground()
             ToolbarItem(placement: .topBarTrailing) {
                 // Follow: the run as its own Live Activity until it ends. A
                 // crew lane is followed through its crew.
@@ -56,20 +59,50 @@ struct VibeDevRunView: View {
                             runID: turns.runId, projectID: turns.projectId, title: model.title,
                             projectName: turns.projectName, state: model.state.rawValue),
                         iconOnly: true)
+                        .vibeDevControlOutline()
                 }
             }
+            .roundedSquareToolbarBackground()
             ToolbarItem(placement: .topBarTrailing) {
                 if model.bar == .ended(trusted: true) {
                     Menu {
                         Button(role: .destructive) { confirm = .discard } label: {
                             Label("Discard branch", systemImage: "trash")
                         }
-                    } label: { Image(systemName: "ellipsis.circle") }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .frame(width: 28, height: 34)
+                    }
+                    .vibeDevControlOutline()
+                    .vibeDevHitTarget()
                     .accessibilityLabel("More")
                 }
             }
+            .roundedSquareToolbarBackground()
         }
-        .safeAreaInset(edge: .bottom) { bottomBar }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                ScrollView {
+                    TaskDetailAskSection(taskId: model.liveTaskID, panelRows: [],
+                        vibeDevTaskIds: model.askTaskIDs, chatSessionId: model.project?.chatSessionId, onAnswered: {
+                        Task { await model.refresh() }
+                    })
+                }.fixedSize(horizontal: false, vertical: true).frame(maxHeight: 260)
+                bottomBar
+                if let turns = model.turns, model.state.isEnded {
+                    VibeDevNewRunSheet(context: model.context,
+                        seed: VibeDevNewRunSeed(projectID: turns.projectId,
+                            followUp: (runID: turns.runId, parentTaskID: turns.latestTurnId),
+                            codingRouteID: turns.turns.last(where: { $0.codingRouteId != nil })?.codingRouteId,
+                            engine: turns.turns.last(where: { $0.engine != nil })?.engine,
+                            mode: turns.turns.last?.mode ?? .build),
+                        embedded: true, showPendingAsks: false, workLocation: turns.workLocation ?? (turns.trusted ? "trusted" : "sandboxed")) { _ in
+                            navigator.changed()
+                            Task { await model.refresh() }
+                        }
+                }
+            }
+        }
         .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
                             titleVisibility: .visible, presenting: confirm) { choice in
             switch choice {
@@ -99,10 +132,13 @@ struct VibeDevRunView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                VibeDevStateDot(run: model.stopping ? .stopped : model.state)
-                Text(model.stopping ? "Stopping…" : model.state.label)
+                VibeDevStateDot(run: model.stopping ? .stopped : model.state,
+                                partlyDone: !model.stopping && model.isPartlyDone)
+                Text(model.stopping ? "Stopping…"
+                     : model.isPartlyDone ? TaskCompletion.partlyDoneLabel : model.state.label)
                     .font(.themed(11, weight: .bold))
-                    .foregroundStyle(theme.secondaryTextColor)
+                    .foregroundStyle(!model.stopping && model.isPartlyDone
+                                     ? theme.warningColor : theme.secondaryTextColor)
                 if let lane = model.turns?.lane { VibeDevTag(text: "\(lane) lane") }
                 if let step = model.live?.step, model.state.isLive {
                     Text("· \(step)")
@@ -115,6 +151,12 @@ struct VibeDevRunView: View {
                 .font(.themedDisplay(17, weight: .semibold))
                 .foregroundStyle(theme.textColor)
                 .vibeDevLineLimit(3)
+            if !model.stopping, let open = model.partlyDoneOpenItems.flatMap(TaskCompletion.openLine) {
+                Text(open)
+                    .font(.themed(12))
+                    .foregroundStyle(theme.warningColor)
+                    .vibeDevLineLimit(2)
+            }
             if let turns = model.turns {
                 VibeDevKeyValues(rows: headerRows(turns))
             }
@@ -126,6 +168,7 @@ struct VibeDevRunView: View {
         var rows: [(String, String)] = [("Project", turns.projectName)]
         if !turns.engine.isEmpty { rows.append(("Engine", turns.engine)) }
         if let cost = turns.totalCost { rows.append(("Cost", VibeDevFormat.usd(cost))) }
+        if let location = turns.workLocation { rows.append(("Work location", location == "original" ? "Original folder" : location == "trusted" ? "Isolated branch" : "Isolated workspace")) }
         if turns.trusted { rows.append(("Branch", turns.branch ?? "—")) }
         return rows
     }
@@ -146,7 +189,7 @@ struct VibeDevRunView: View {
         return VStack(alignment: .leading, spacing: 0) {
             Button { withAnimation(.easeInOut(duration: 0.18)) { model.toggle(turn) } } label: {
                 HStack(alignment: .top, spacing: 10) {
-                    VibeDevStateDot(run: turn.state)
+                    VibeDevStateDot(run: turn.state, partlyDone: turn.isPartlyDone)
                         .padding(.top, 4)
                     VStack(alignment: .leading, spacing: 3) {
                         (Text(index == 0 ? "" : "Follow-up · ").bold() + Text(turn.prompt))
@@ -158,6 +201,12 @@ struct VibeDevRunView: View {
                             .font(.themed(11))
                             .foregroundStyle(theme.secondaryTextColor)
                             .vibeDevLineLimit(1)
+                        if turn.isPartlyDone, let open = TaskCompletion.openLine(turn.openItems) {
+                            Text(open)
+                                .font(.themed(11))
+                                .foregroundStyle(theme.warningColor)
+                                .vibeDevLineLimit(1)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right")
@@ -206,7 +255,7 @@ struct VibeDevRunView: View {
         if turn.mode == .discuss { parts.append("Discuss") }
         let engine = VibeDevFormat.engine(turn.engine)
         if !engine.isEmpty { parts.append(engine) }
-        parts.append(turn.state.label)
+        parts.append(turn.stateLabel)
         let duration = turn.duration
         if !duration.isEmpty { parts.append(duration) }
         if let cost = turn.costUsd { parts.append(VibeDevFormat.usd(cost)) }
@@ -284,30 +333,24 @@ struct VibeDevRunView: View {
                     .buttonStyle(VibeDevButtonStyle(style: .danger, expand: true, large: true))
             }
         case .needsYou:
-            VibeDevBottomBar {
-                Button("Reject") { model.decide(apply: false) }
-                    .buttonStyle(VibeDevButtonStyle(style: .plain, expand: true, large: true))
-                Button("Approve") { model.decide(apply: true) }
-                    .buttonStyle(VibeDevButtonStyle(style: .primary, expand: true, large: true))
+            if model.live?.approvalId?.isEmpty == false {
+                VibeDevBottomBar {
+                    Button("Reject") { model.decide(apply: false) }
+                        .buttonStyle(VibeDevButtonStyle(style: .plain, expand: true, large: true))
+                    Button("Approve") { model.decide(apply: true) }
+                        .buttonStyle(VibeDevButtonStyle(style: .primary, expand: true, large: true))
+                }.disabled(model.busy)
             }
-            .disabled(model.busy)
         case .ended(let trusted):
-            VibeDevBottomBar {
-                if trusted {
+            if trusted {
+                VibeDevBottomBar {
                     Button("Open PR") { confirm = .pullRequest }
                         .buttonStyle(VibeDevButtonStyle(style: .plain, expand: true, large: true))
                     Button("Merge") { confirm = .merge }
                         .buttonStyle(VibeDevButtonStyle(style: .plain, expand: true, large: true))
                 }
-                Button("Follow up") {
-                    guard let turns = model.turns else { return }
-                    navigator.present(.newRun(VibeDevNewRunSeed(
-                        projectID: turns.projectId,
-                        followUp: (runID: turns.runId, parentTaskID: turns.latestTurnId))))
-                }
-                .buttonStyle(VibeDevButtonStyle(style: .primary, expand: true, large: true))
+                .disabled(model.busy)
             }
-            .disabled(model.busy)
         case .none:
             EmptyView()
         }

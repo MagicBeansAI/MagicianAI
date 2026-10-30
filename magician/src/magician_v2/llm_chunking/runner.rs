@@ -56,6 +56,7 @@ pub struct LogicalChunkDispatchRequest {
     pub trace_id: Option<String>,
     pub submission_deadline: Option<Instant>,
     pub cancellation: CancellationToken,
+    pub cancel_on_drop: bool,
     pub idempotency_key: String,
     pub router_snapshot: Option<Arc<dyn magicllm::dispatch::DispatchRouter>>,
 }
@@ -91,9 +92,17 @@ impl LogicalChunkDispatch for LlmDispatchQueue {
         if let Some(router_snapshot) = request.router_snapshot {
             job = job.with_router_snapshot(router_snapshot);
         }
-        self.submit(job).await?;
+        let pending_job = if request.cancel_on_drop {
+            Some(job)
+        } else {
+            self.submit(job).await?;
+            None
+        };
 
         let receive = async {
+            if let Some(job) = pending_job {
+                return self.submit_and_wait_cancellable(job, response_rx).await;
+            }
             response_rx.await.map_err(|_| LLMError::Cancelled {
                 reason: "logical_chunk_receiver_dropped".to_string(),
             })?
@@ -153,6 +162,7 @@ pub struct LogicalChunkExecutionContext {
     pub trace_id: Option<String>,
     pub deadline: Option<Instant>,
     pub cancellation: CancellationToken,
+    pub cancel_on_drop: bool,
     pub caller: String,
     /// Exact configured-router generation that supplied the chunk policy and
     /// profile. Queue pickup and every retry must retain this authority.
@@ -177,6 +187,7 @@ impl LogicalChunkExecutionContext {
             trace_id: None,
             deadline: None,
             cancellation: CancellationToken::new(),
+            cancel_on_drop: false,
             caller: "logical_chunk_runner".to_string(),
             router_snapshot: None,
         }
@@ -1198,6 +1209,7 @@ impl LogicalChunkRunner {
             trace_id: execution.trace_id.clone(),
             submission_deadline: execution.deadline,
             cancellation: execution.cancellation.clone(),
+            cancel_on_drop: execution.cancel_on_drop,
             idempotency_key: format!(
                 "logical:{}:{}:{}:{}:{}",
                 execution.logical_call_id,
@@ -1765,6 +1777,7 @@ mod tests {
         task_ref: Option<TaskRef>,
         trace_id: Option<String>,
         has_deadline: bool,
+        cancel_on_drop: bool,
         idempotency_key: String,
     }
 
@@ -1816,6 +1829,7 @@ mod tests {
                 task_ref: request.task_ref,
                 trace_id: request.trace_id,
                 has_deadline: request.submission_deadline.is_some(),
+                cancel_on_drop: request.cancel_on_drop,
                 idempotency_key: request.idempotency_key,
             });
             let call = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2200,6 +2214,32 @@ mod tests {
         execution.deadline = Some(Instant::now() + Duration::from_secs(30));
         execution.caller = "phase3_test".to_string();
         execution
+    }
+
+    #[tokio::test]
+    async fn auxiliary_cancellation_policy_reaches_each_physical_chunk() {
+        for cancel_on_drop in [false, true] {
+            let dispatch = Arc::new(ScriptedDispatch::new(vec![
+                response(r#"{"id":"source-a"}"#, 10, 2),
+                response(r#"{"id":"source-b"}"#, 20, 3),
+            ]));
+            let runtime = runner(
+                FakeAdapter::default(),
+                dispatch.clone(),
+                Arc::new(RecordingTelemetry::default()),
+            );
+            let mut execution = execution_context();
+            execution.cancel_on_drop = cancel_on_drop;
+            runtime
+                .execute(logical_request(), budget(), execution)
+                .await
+                .unwrap();
+            let calls = dispatch.calls();
+            assert!(!calls.is_empty());
+            assert!(calls
+                .iter()
+                .all(|call| call.cancel_on_drop == cancel_on_drop));
+        }
     }
 
     fn profile_override(request: &LLMRequest) -> Option<&str> {

@@ -42,6 +42,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     let mut edits = Vec::new();
     let mut scope_anchor = None;
     let mut changed_paths = Vec::new();
+    let mut changed_scopes = Vec::new();
 
     for file_patch in parsed {
         let raw_target = file_patch
@@ -52,16 +53,21 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             .map_err(|err| {
                 ExecutionError::Step(format!("apply_patch target resolution failed: {err:#}"))
             })?;
-        let scoped = match staged_file_edit::resolve_path(
+        let scoped = match staged_file_edit::resolve_tool_write_path(
             &resources,
             &args,
             raw_target.to_string_lossy().as_ref(),
         ) {
             Ok(path) => path,
             Err(err) => {
+                let verdict = if staged_file_edit::is_read_only_root_denied(&err) {
+                    "Refused"
+                } else {
+                    "Invalid"
+                };
                 return Ok(json!({
                     "status": "error",
-                    "reason": format!("Invalid patch path `{}`: {err:#}", raw_target.display()),
+                    "reason": format!("{verdict} patch path `{}`: {err:#}", raw_target.display()),
                 }));
             },
         };
@@ -160,6 +166,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         };
 
         changed_paths.push(scoped.relative_path.display().to_string());
+        changed_scopes.push(scoped);
         edits.push(edit);
     }
 
@@ -171,12 +178,47 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         }));
     }
 
-    let Some(scoped) = scope_anchor else {
+    let Some(mut scoped) = scope_anchor else {
         return Ok(json!({
             "status": "error",
             "reason": "Patch did not resolve to a scoped workspace.",
         }));
     };
+
+    // A patch may span several protected folders. Use one common apply root,
+    // while retaining every absolute target for the revision and God grant.
+    for path in &changed_scopes {
+        while !path.absolute_path.starts_with(&scoped.workspace_root) {
+            let Some(parent) = scoped.workspace_root.parent() else {
+                return Ok(json!({"status":"error", "reason":"Patch targets have no common root"}));
+            };
+            scoped.workspace_root = parent.to_path_buf();
+        }
+    }
+    if changed_scopes
+        .iter()
+        .any(|path| path.workspace_root != scoped.workspace_root)
+    {
+        if scoped.god_mode_override.is_none() {
+            return Ok(
+                json!({"status":"error", "reason":"Patch targets require separate approved roots"}),
+            );
+        }
+        scoped.apply_root = Some(scoped.workspace_root.clone());
+    }
+    for (edit, target) in edits.iter_mut().zip(&changed_scopes) {
+        let path = target
+            .absolute_path
+            .strip_prefix(&scoped.workspace_root)
+            .map_err(|error| ExecutionError::Step(error.to_string()))?
+            .to_path_buf();
+        match edit {
+            ProposedEdit::Create { path: slot, .. }
+            | ProposedEdit::Modify { path: slot, .. }
+            | ProposedEdit::Delete { path: slot } => *slot = path,
+            _ => return Err(ExecutionError::Step("unsupported patch edit".to_string())),
+        }
+    }
 
     match staged_file_edit::stage_edits(
         &resources,
@@ -189,7 +231,9 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         ),
         edits,
     ) {
-        Ok(transaction) => Ok(staged_file_edit::pending_approval_response(&transaction)),
+        Ok(transaction) => staged_file_edit::finish_staged_edits(&resources, &scoped, &transaction)
+            .await
+            .map_err(|error| ExecutionError::Step(format!("Could not authorize patch: {error:#}"))),
         Err(err) => Ok(json!({
             "status": "error",
             "reason": format!("Could not stage patch for approval: {err:#}"),

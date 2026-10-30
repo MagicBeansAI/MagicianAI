@@ -283,10 +283,20 @@ async fn decision_rail_magicians_own_model_decides_and_the_engine_checks_its_cal
         .expect("an authorized call passes");
     assert!(matches!(allowed, Decision::Execute { .. }));
     let rejected = check
-        .validate(&ctx, decision("unauthorized_work_tool"), &mut protective, None)
+        .validate(
+            &ctx,
+            decision("unauthorized_work_tool"),
+            &mut protective,
+            None,
+        )
         .await
         .expect_err("a call outside the catalog never runs");
-    assert!(rejected.to_string().contains("rejected `unauthorized_work_tool`"), "{rejected}");
+    assert!(
+        rejected
+            .to_string()
+            .contains("rejected `unauthorized_work_tool`"),
+        "{rejected}"
+    );
 }
 
 /// A step the catalog does not authorize, or a steer, drops the sticky plan;
@@ -298,7 +308,10 @@ async fn decision_rail_drops_a_sticky_plan_on_an_unauthorized_step_or_a_steer() 
     unauthorized.steps[0].call.tool = "unauthorized_work_tool".into();
     for (plan, steer) in [
         (unauthorized, Vec::new()),
-        (fixture_plan(), vec!["Stop and summarise instead".to_string()]),
+        (
+            fixture_plan(),
+            vec!["Stop and summarise instead".to_string()],
+        ),
     ] {
         let (executors, queue) = executors(&fixture_plan());
         let mut protective = LoopProtectiveState {
@@ -320,7 +333,10 @@ async fn decision_rail_drops_a_sticky_plan_on_an_unauthorized_step_or_a_steer() 
         .unwrap();
         assert!(output.is_none(), "the agent's model decides afresh");
         assert!(queue.prompts().is_empty(), "no planner turn");
-        assert!(protective.decision_rail_plan.is_none(), "the plan is dropped");
+        assert!(
+            protective.decision_rail_plan.is_none(),
+            "the plan is dropped"
+        );
     }
 }
 
@@ -337,7 +353,8 @@ async fn decision_rail_a_freshly_submitted_plan_survives_the_failure_before_it()
         iteration: 1,
         timestamp: chrono::Utc::now(),
         state_before: EnvironmentState::Uninitialized,
-        action: crate::magician_v2::execution::agentic::executor::browser_observation_history_action(),
+        action:
+            crate::magician_v2::execution::agentic::executor::browser_observation_history_action(),
         result: ActionResultRecord {
             success: false,
             output: Some("The plan you submitted did not start".into()),
@@ -374,7 +391,10 @@ async fn decision_rail_a_freshly_submitted_plan_survives_the_failure_before_it()
         .await
         .unwrap();
         assert_eq!(output.is_some(), runs, "fresh {fresh}");
-        assert!(!protective.decision_rail_plan_fresh, "the mark is used once");
+        assert!(
+            !protective.decision_rail_plan_fresh,
+            "the mark is used once"
+        );
         assert!(queue.prompts().is_empty());
     }
 }
@@ -419,7 +439,10 @@ async fn decision_rail_every_selected_harness_can_use_structured_selection_witho
         );
         // A sticky plan step is resolved, not judged by Jev.
         assert_eq!(protective.decision_rail_consecutive_steps, 0);
-        assert_eq!(protective.decision_rail_plan.as_ref().unwrap().steps.len(), 2);
+        assert_eq!(
+            protective.decision_rail_plan.as_ref().unwrap().steps.len(),
+            2
+        );
     }
 }
 
@@ -595,4 +618,139 @@ async fn decision_rail_charges_structured_usage_before_returning_a_call() {
         assert!(queue.prompts().is_empty());
     })
     .await;
+}
+
+/// On the rail, a run whose every micro-goal is resolved takes the same
+/// definition-of-done turn the native path does: the run's own model, tools
+/// forbidden. The same micro-goal set is not answered twice. New operator steer
+/// reopens the normal decision path instead (covered separately below).
+#[actix_rt::test]
+async fn decision_rail_definition_of_done_takes_one_final_no_tools_turn() {
+    use crate::magician_v2::execution::agentic::decision::Decision;
+    use crate::magician_v2::execution::agentic::native_types::ExecutionNativeResponse;
+    let service = service().await;
+    let mut ctx = fixture_context();
+    ctx.task_state = Some(
+        json!({
+            "task_id": "task-rail-dod",
+            "micro_goals": [
+                {"id": "read", "status": "completed", "description": "Read the three records."},
+            ],
+        })
+        .to_string(),
+    );
+    let answer = "FINAL_ANSWER_MARKER: the three records, summarised.";
+    let mut response = ExecutionNativeResponse::unadmitted(Vec::new());
+    response.text = Some(answer.to_string());
+    response.finish_reason = Some("stop".to_string());
+    let (executors, queue) = executors_with_response(response);
+    let mut protective = LoopProtectiveState::default();
+
+    let output = decide_with_client(
+        service.client.clone(),
+        &ctx,
+        &executors,
+        &EnvironmentState::Uninitialized,
+        &ExecutionHistory::new(),
+        &mut protective,
+        &[],
+        None,
+        1,
+    )
+    .await
+    .unwrap()
+    .expect("the definition-of-done turn decides");
+    let Ok(Decision::Completed { evidence, .. }) = output.decision_result else {
+        panic!("expected Completed, got {:?}", output.decision_result);
+    };
+    assert_eq!(evidence.as_deref(), Some(answer));
+    let prompts = queue.prompts();
+    assert_eq!(prompts.len(), 1, "one final turn");
+    assert!(prompts[0].contains("FINAL ANSWER (tools are disabled for this turn)"));
+    assert_eq!(queue.tool_choices(), vec![Some(json!({"type": "none"}))]);
+    assert_eq!(protective.definition_of_done_turns, 1);
+
+    // The same micro-goals are not answered again: the model is not asked
+    // for another final turn.
+    let _ = decide_with_client(
+        service.client.clone(),
+        &ctx,
+        &executors,
+        &EnvironmentState::Uninitialized,
+        &ExecutionHistory::new(),
+        &mut protective,
+        &[],
+        None,
+        2,
+    )
+    .await;
+    assert_eq!(protective.definition_of_done_turns, 1);
+    assert!(
+        queue
+            .prompts()
+            .iter()
+            .filter(|prompt| prompt.contains("FINAL ANSWER (tools are disabled"))
+            .count()
+            <= 1
+    );
+}
+
+#[actix_rt::test]
+async fn decision_rail_definition_of_done_keeps_tools_for_new_operator_steer() {
+    use crate::magician_v2::execution::agentic::decision::Decision;
+    let service = service().await;
+    let mut ctx = fixture_context();
+    ctx.task_state = Some(
+        json!({
+            "task_id": "task-rail-dod",
+            "micro_goals": [
+                {"id": "read", "status": "completed", "description": "Read the three records."},
+            ],
+        })
+        .to_string(),
+    );
+    let (executors, queue) = executors(&fixture_plan());
+    let mut protective = LoopProtectiveState::default();
+    let (output, check) = decide_with_client_checked(
+        service.client.clone(),
+        &ctx,
+        &executors,
+        &EnvironmentState::Uninitialized,
+        &ExecutionHistory::new(),
+        &mut protective,
+        &["STEER_MARKER: read the updated records".to_string()],
+        None,
+        1,
+    )
+    .await
+    .unwrap();
+    assert!(
+        output.is_none(),
+        "the agent's normal turn decides the new work"
+    );
+    assert_eq!(protective.definition_of_done_turns, 0);
+    assert!(queue.prompts().is_empty(), "no premature final-answer turn");
+    let check = check.expect("the engine checks the model's subsequent calls");
+    assert!(check
+        .request
+        .context
+        .planner_context
+        .contains("STEER_MARKER"));
+    assert!(!check
+        .request
+        .context
+        .planner_context
+        .contains("FINAL ANSWER (tools are disabled for this turn)"));
+    let NativeDecisionOutcome::Valid(envelope) = lower_native_tool_call(&ExecutionToolCall {
+        id: "model".into(),
+        name: "rail_fixture".into(),
+        arguments: json!({"key": 1}),
+    }) else {
+        panic!("the normal tool call lowers")
+    };
+    let allowed = check
+        .validate(&ctx, envelope.decision, &mut protective, None)
+        .await
+        .expect("the new work retains its authorized tools");
+    assert!(matches!(allowed, Decision::Execute { .. }));
 }

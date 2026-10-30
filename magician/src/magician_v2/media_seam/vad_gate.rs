@@ -119,8 +119,10 @@ pub async fn resolve_installed_surface_streaming_stt_pipeline(
         ));
     }
 
-    let meter_scope =
-        crate::magician_v2::media_seam::metering::MediaMeterScope::new(principal.clone(), workspace.clone());
+    let meter_scope = crate::magician_v2::media_seam::metering::MediaMeterScope::new(
+        principal.clone(),
+        workspace.clone(),
+    );
     let telemetry = GateTelemetry::new(
         surface,
         principal,
@@ -179,7 +181,9 @@ async fn resolve_surface_audio_pipeline_with_overrides(
     )
     .await?;
     let pipeline = match meter_scope {
-        Some(meter_scope) => crate::magician_v2::media_seam::metering::scope_streaming_stt(pipeline, meter_scope),
+        Some(meter_scope) => {
+            crate::magician_v2::media_seam::metering::scope_streaming_stt(pipeline, meter_scope)
+        },
         None => pipeline,
     };
     Ok((pipeline, profile))

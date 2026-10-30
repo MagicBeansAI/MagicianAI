@@ -370,7 +370,8 @@ fn planning_parameter_priority_1_1_asks_priority_only() {
 #[test]
 fn planning_phase_d_packs_are_embedded_with_host_option_ids() {
     let store = PackStore::from_roots(vec![]);
-    let expected: [(&str, &[(&str, &[&str])]); 3] = [
+    type QuestionOptions<'a> = (&'a str, &'a [&'a str]);
+    let expected: [(&str, &[QuestionOptions<'_>]); 3] = [
         (
             "answer_interpretation",
             &[
@@ -510,6 +511,42 @@ fn claim_support_pack_and_route_match_the_host_adapter() {
         assert_eq!(op.thresholds_by_model[model]["verdict"], 0.85, "{model}");
     }
 }
+
+#[test]
+fn result_delivery_pack_is_separate_from_factual_claim_support_and_bounded() {
+    let pack = PackStore::from_roots(vec![])
+        .load("result_delivery", "1.0.0")
+        .unwrap();
+    pack.validate().unwrap();
+    assert_eq!(pack.questions.len(), 1);
+    let question = serde_json::to_value(&pack.questions[0]).unwrap();
+    assert_eq!(question["id"], "verdict");
+    assert_eq!(question["kind"], "choice");
+    let choices: std::collections::BTreeSet<_> = question["criteria"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        choices,
+        ["absent", "contradicted", "not_a_claim", "supported"]
+            .into_iter()
+            .collect()
+    );
+    let config: magician_decision::config::DecisionConfig =
+        serde_yaml::from_str(include_str!("../../decision-engine.yaml")).unwrap();
+    config.validate().unwrap();
+    let op = &config.operations["result_delivery"];
+    assert_eq!(op.pack, "result_delivery");
+    assert_eq!(op.pack_version, "1.0.0");
+    assert_eq!(op.classification.max_items, 1);
+    assert_eq!(op.classification.max_item_bytes, 16_384);
+    assert_eq!(op.classification.max_request_bytes, 32_768);
+    assert!(op.gate.enabled && op.allow_unqualified_gate);
+    assert_eq!(config.operations["claim_support"].pack_version, "1.0.0");
+}
+
 /// Preference alignment P3: the pack's three heads carry exactly the
 /// `alignment_decision.v2` enum values (unchanged from v1) the host validator accepts
 /// (`magician_v2/preference_alignment/contract.rs`). An option renamed here
@@ -597,19 +634,35 @@ fn action_alignment_seed_gates_on_pack_1_3_0_with_every_answer_eligible() {
     assert_eq!(op.pack, "action_alignment");
     assert_eq!(op.pack_version, "1.3.0");
     assert!(op.gate.enabled);
-    assert!(op.allow_unqualified_gate, "owner-approved switch, 2026-10-11");
+    assert!(
+        op.allow_unqualified_gate,
+        "owner-approved switch, 2026-10-11"
+    );
     assert!(op.qualifications.is_empty());
     assert!(op.restricted_outputs.is_empty());
     // The host composer judges uncertainty: every answer must be eligible.
-    let pack = PackStore::from_roots(vec![]).load("action_alignment", "1.3.0").unwrap();
+    let pack = PackStore::from_roots(vec![])
+        .load("action_alignment", "1.3.0")
+        .unwrap();
     let thresholds = &op.thresholds_by_model["jev"];
     for question in &pack.questions {
         let threshold = thresholds[question.id().as_str()];
-        let floor = if question.id().as_str() == "relation" { 0.0 } else { 0.5 };
-        assert!(threshold <= floor, "jev: {} must be at most {floor}", question.id().as_str());
+        let floor = if question.id().as_str() == "relation" {
+            0.0
+        } else {
+            0.5
+        };
+        assert!(
+            threshold <= floor,
+            "jev: {} must be at most {floor}",
+            question.id().as_str()
+        );
     }
     // Jev only: Kev-4B fails this task, so no route falls back to it.
-    let routing = op.routing.as_ref().expect("action_alignment pins its route");
+    let routing = op
+        .routing
+        .as_ref()
+        .expect("action_alignment pins its route");
     for route in [&routing.local, &routing.cloud] {
         assert_eq!(route.names(), vec!["jev".to_string()]);
     }
@@ -619,7 +672,9 @@ fn action_alignment_seed_gates_on_pack_1_3_0_with_every_answer_eligible() {
 /// decision a rule reserves for them; owner ruling 2026-10-11).
 #[test]
 fn action_alignment_pack_1_3_0_adds_owner_decides() {
-    let pack = PackStore::from_roots(vec![]).load("action_alignment", "1.3.0").unwrap();
+    let pack = PackStore::from_roots(vec![])
+        .load("action_alignment", "1.3.0")
+        .unwrap();
     pack.validate().unwrap();
     let ids: Vec<&str> = pack.questions.iter().map(|q| q.id().as_str()).collect();
     assert_eq!(
@@ -640,11 +695,20 @@ fn action_alignment_pack_1_3_0_adds_owner_decides() {
 /// context.
 #[test]
 fn action_alignment_pack_1_2_0_adds_muting() {
-    let pack = PackStore::from_roots(vec![]).load("action_alignment", "1.2.0").unwrap();
+    let pack = PackStore::from_roots(vec![])
+        .load("action_alignment", "1.2.0")
+        .unwrap();
     pack.validate().unwrap();
     let ids: Vec<&str> = pack.questions.iter().map(|q| q.id().as_str()).collect();
     assert_eq!(
         ids,
-        ["relation", "owner_cancels", "owner_specified", "firm_limit", "same_subject", "muted"]
+        [
+            "relation",
+            "owner_cancels",
+            "owner_specified",
+            "firm_limit",
+            "same_subject",
+            "muted"
+        ]
     );
 }

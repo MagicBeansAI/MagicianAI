@@ -4,6 +4,7 @@
  import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
  import DashboardChrome from '$lib/magician/dashboard/DashboardChrome.svelte';
  import DecisionRoutingPanel from '$lib/plane/DecisionRoutingPanel.svelte';
+ import DecisionHealthCard from '$lib/plane/DecisionHealthCard.svelte';
  import { metricsRequest, mergeStats, groupStats, percentile, rate, type Dashboard, type DailyRow, type ReviewCase } from '$lib/plane/decisionMetrics';
  let data:Dashboard|null=null, days=7, operation='', model='', cohort='', error='', loading=false, alive=true;
  let controller:AbortController|undefined, generation=0, casesGeneration=0;
@@ -12,6 +13,7 @@
  let casesController:AbortController|undefined;
  let nextBefore:number|null=null, nextBeforeId:string|null=null;
  let showSettings=false;
+ let healthCard:{refresh:()=>Promise<void>}|undefined;
  $: today=Math.floor((data?.generated_at_ms??Date.now())/86400000);
  $: currentRows=(data?.rows??[]).filter(r=>r.day>=today-days+1 && (!model||r.model===model||r.kind==='sampling'));
  $: qualityRows=currentRows.filter(r=>r.kind==='quality'&&(!cohort||r.cohort===cohort));
@@ -57,9 +59,10 @@
  onDestroy(()=>{alive=false;generation++;controller?.abort();casesController?.abort();});
 </script>
 <svelte:head><title>Decision models · Magician</title></svelte:head>
-<DashboardChrome title="Decision models" summary="Track model quality, real application outcomes, latency and observed pipeline cost." lastRefreshed={data?.generated_at_ms??null} on:refresh={load}>
+<DashboardChrome title="Decision models" summary="Track model quality, real application outcomes, latency and observed pipeline cost." lastRefreshed={data?.generated_at_ms??null} on:refresh={()=>{load();healthCard?.refresh();}}>
  <div class="decision-dashboard">
   <nav><a href="/llm">LLM usage and costs</a> · <a href="/settings">Engine settings</a></nav>
+  <DecisionHealthCard bind:this={healthCard} onSelect={(name)=>{operation=name;model='';cohort='';load();}}/>
   <div class="filters">
    <label>Period<select bind:value={days} onchange={load}><option value={1}>Today (UTC)</option><option value={7}>Last 7 days</option><option value={30}>Last 30 days</option></select></label>
    <label>Operation<select bind:value={operation} onchange={()=>{model='';cohort='';load();}}><option value="">All operations</option>{#if operation&&!operations.includes(operation)}<option value={operation}>{operation}</option>{/if}{#each operations as name}<option value={name}>{name.replaceAll('_',' ')}</option>{/each}</select></label>

@@ -87,6 +87,8 @@ pub struct ExecutorFactoryConfig {
     pub secret_store_resolver: Option<Arc<SecretStoreResolver>>,
     /// Shared Chat/voice/task surface runtime and bounded caches.
     pub agent_surface_runtime_config: crate::config::AgentSurfaceRuntimeConfig,
+    /// The `agentic:` config section (decide() keep-tail window).
+    pub agentic_settings: crate::config::AgenticSettings,
     pub surface_plan_cache: crate::magician_v2::execution::flat_loop::SurfacePlanCache,
     pub surface_working_sets: crate::magician_v2::execution::flat_loop::SurfaceWorkingSetStore,
 
@@ -159,6 +161,7 @@ pub fn build_action_executors(config: &ExecutorFactoryConfig) -> ActionExecutors
         config.surface_plan_cache.clone(),
         config.surface_working_sets.clone(),
     );
+    executors = executors.with_agentic_settings(config.agentic_settings.clone());
     let capability_workspace = Arc::new(CapabilityWorkspaceManager::new(
         ArtifactV2Workspace::new(ArtifactV2Workspace::resolve_scoped_root(
             &config.storage_base_path,
@@ -286,6 +289,7 @@ mod tests {
             repo_root: PathBuf::from("."),
             secret_store_resolver: None,
             agent_surface_runtime_config: crate::config::AgentSurfaceRuntimeConfig::default(),
+            agentic_settings: crate::config::AgenticSettings::default(),
             surface_plan_cache: crate::magician_v2::execution::flat_loop::SurfacePlanCache::new(16),
             surface_working_sets:
                 crate::magician_v2::execution::flat_loop::SurfaceWorkingSetStore::new(16),

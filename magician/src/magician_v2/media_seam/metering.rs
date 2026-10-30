@@ -30,7 +30,9 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::magician_v2::media_seam::providers_stt::{SttError, SttProvider, SttRequest, SttResponse, SttStreamEvent};
+use crate::magician_v2::media_seam::providers_stt::{
+    SttError, SttProvider, SttRequest, SttResponse, SttStreamEvent,
+};
 use crate::magician_v2::media_seam::streaming_stt_types::{
     AudioChunk, StreamAudioFormat, StreamSampleFormat, StreamingSttCapabilities, StreamingSttEvent,
     StreamingSttProvider, StreamingSttSession,
@@ -48,19 +50,40 @@ pub struct MediaMeterScope {
     pub principal: String,
     pub workspace: String,
     pub chat_session_id: Option<String>,
+    /// What the call counts as in the owner's spend envelope (and its
+    /// `llm_calls` row). Voice the owner is in — chat voice, a live meeting —
+    /// is `ForegroundChat`, the default: counted, never refused. Background
+    /// capture marks itself `Ambient` with [`Self::with_workload_class`].
+    pub workload_class: magicllm::LlmWorkloadClass,
 }
 
 impl MediaMeterScope {
     pub fn new(principal: impl Into<String>, workspace: impl Into<String>) -> Self {
+        let principal = principal.into();
+        let workspace = workspace.into();
+        // Nested pipeline/provider wrappers preserve the caller's frozen chat
+        // identity, only within the same authenticated tenant.
+        let parent = current_scope()
+            .filter(|scope| scope.principal == principal && scope.workspace == workspace);
         Self {
-            principal: principal.into(),
-            workspace: workspace.into(),
-            chat_session_id: None,
+            principal,
+            workspace,
+            chat_session_id: parent
+                .as_ref()
+                .and_then(|scope| scope.chat_session_id.clone()),
+            workload_class: parent.map_or(magicllm::LlmWorkloadClass::ForegroundChat, |scope| {
+                scope.workload_class
+            }),
         }
     }
 
     pub fn with_chat_session(mut self, chat_session_id: Option<String>) -> Self {
         self.chat_session_id = chat_session_id;
+        self
+    }
+
+    pub fn with_workload_class(mut self, workload_class: magicllm::LlmWorkloadClass) -> Self {
+        self.workload_class = workload_class;
         self
     }
 }
@@ -70,7 +93,10 @@ tokio::task_local! {
 }
 
 /// Run `fut` with its media calls billed to `scope`.
-pub async fn with_media_meter_scope<F: std::future::Future>(scope: MediaMeterScope, fut: F) -> F::Output {
+pub async fn with_media_meter_scope<F: std::future::Future>(
+    scope: MediaMeterScope,
+    fut: F,
+) -> F::Output {
     MEDIA_METER_SCOPE.scope(scope, fut).await
 }
 
@@ -90,14 +116,24 @@ pub fn install_media_meter(broadcaster: Arc<RuntimeTransportBroadcaster>) {
 /// `local` for an on-machine engine, `None` for an adapter we cannot attribute.
 pub fn media_vendor_for_adapter(adapter: &str) -> Option<&'static str> {
     Some(match adapter {
-        "openai_speech" | "openai_transcriptions" | "openai_streaming_stt" | "openai_diarize_streaming_stt" => "openai",
+        "openai_speech"
+        | "openai_transcriptions"
+        | "openai_streaming_stt"
+        | "openai_diarize_streaming_stt" => "openai",
         "minimax_t2a_v2" => "minimax",
-        "gemini_tts" | "gemini_generate_content" | "gemini_transcribe" | "gemini_live_transcribe" => "gemini",
+        "gemini_tts"
+        | "gemini_generate_content"
+        | "gemini_transcribe"
+        | "gemini_live_transcribe" => "gemini",
         "grok_tts" | "grok_stt" => "xai",
         "sarvam_tts" | "sarvam_stt" => "sarvam",
         "google_cloud_speech_v2" => "google_cloud_speech",
-        "fluid_audio_kokoro_tts" | "fluid_audio_recording_stt" | "fluid_audio_streaming_eou_stt" | "macos_tts"
-        | "macos_speech" | "macos_speech_streaming" => "local",
+        "fluid_audio_kokoro_tts"
+        | "fluid_audio_recording_stt"
+        | "fluid_audio_streaming_eou_stt"
+        | "macos_tts"
+        | "macos_speech"
+        | "macos_speech_streaming" => "local",
         _ => return None,
     })
 }
@@ -114,7 +150,42 @@ struct MediaCall<'a> {
     error: Option<String>,
 }
 
+/// Count a priced media call toward the owner's spend envelope: vendor
+/// speech calls never pass through the router. Counted only, never refused,
+/// so a live voice session is not cut off mid-call. A call the pricing file
+/// could not price or measure counts nothing; an unscoped call is still money
+/// spent and counts as unattributed `system` work.
+fn charge_spend_envelope(cost_usd: Option<f64>, scope: Option<&MediaMeterScope>) {
+    let Some(cost_usd) = cost_usd else {
+        return;
+    };
+    match scope {
+        Some(scope) => crate::magician_v2::spend_envelope::charge_external(
+            scope.workload_class,
+            &scope.principal,
+            &scope.workspace,
+            cost_usd,
+        ),
+        None => crate::magician_v2::spend_envelope::charge_external(
+            magicllm::LlmWorkloadClass::System,
+            "anonymous",
+            "default",
+            cost_usd,
+        ),
+    }
+}
+
 fn record(call: MediaCall<'_>, scope: Option<MediaMeterScope>) {
+    let provider = magicllm::LLMProviderKind::from_str(call.vendor);
+    let cost = magicllm::compute_media_cost_at(
+        &provider,
+        call.model,
+        call.kind,
+        &call.usage,
+        call.started_at_ms,
+    );
+    // The envelope counts the call whether or not the event bus is up.
+    charge_spend_envelope(cost, scope.as_ref());
     let Some(broadcaster) = BROADCASTER.get() else {
         return;
     };
@@ -128,9 +199,9 @@ fn record(call: MediaCall<'_>, scope: Option<MediaMeterScope>) {
         );
         return;
     };
-    let provider = magicllm::LLMProviderKind::from_str(call.vendor);
-    let cost = magicllm::compute_media_cost_at(&provider, call.model, call.kind, &call.usage, call.started_at_ms);
-    let priced = magicllm::media_pricing_version_at(&provider, call.model, call.kind, call.started_at_ms).is_some();
+    let priced =
+        magicllm::media_pricing_version_at(&provider, call.model, call.kind, call.started_at_ms)
+            .is_some();
     tracing::info!(
         target: "voice_cost",
         kind = call.kind.as_str(),
@@ -145,9 +216,11 @@ fn record(call: MediaCall<'_>, scope: Option<MediaMeterScope>) {
     let mut correlation = LlmEventCorrelation::direct(
         scope.principal.clone(),
         scope.workspace.clone(),
-        magicllm::LlmWorkloadClass::ForegroundChat,
+        scope.workload_class,
     );
-    correlation.chat_session_id.clone_from(&scope.chat_session_id);
+    correlation
+        .chat_session_id
+        .clone_from(&scope.chat_session_id);
     let capability = match call.kind {
         magicllm::MediaKind::Tts => "voice.tts",
         magicllm::MediaKind::Stt | magicllm::MediaKind::SttStreaming => "voice.stt",
@@ -223,13 +296,22 @@ pub fn audio_duration_seconds(audio: &[u8], content_type: &str) -> Option<f64> {
     None
 }
 
-fn pcm_seconds(bytes: u64, sample_rate_hz: u32, channels: u16, bytes_per_sample: u16) -> Option<f64> {
+fn pcm_seconds(
+    bytes: u64,
+    sample_rate_hz: u32,
+    channels: u16,
+    bytes_per_sample: u16,
+) -> Option<f64> {
     let per_second = u64::from(sample_rate_hz) * u64::from(channels) * u64::from(bytes_per_sample);
     (per_second > 0).then(|| bytes as f64 / per_second as f64)
 }
 
 fn wav_duration_seconds(audio: &[u8]) -> Option<f64> {
-    let le32 = |at: usize| audio.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let le32 = |at: usize| {
+        audio
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
     let mut at = 12;
     let mut byte_rate = None;
     while at + 8 <= audio.len() {
@@ -253,7 +335,9 @@ fn wav_duration_seconds(audio: &[u8]) -> Option<f64> {
 fn mp3_duration_seconds(audio: &[u8]) -> Option<f64> {
     let mut at = 0;
     if audio.starts_with(b"ID3") && audio.len() >= 10 {
-        let size = audio[6..10].iter().fold(0usize, |acc, b| (acc << 7) | usize::from(b & 0x7f));
+        let size = audio[6..10]
+            .iter()
+            .fold(0usize, |acc, b| (acc << 7) | usize::from(b & 0x7f));
         at = 10 + size;
     }
     while at + 4 <= audio.len() {
@@ -262,9 +346,16 @@ fn mp3_duration_seconds(audio: &[u8]) -> Option<f64> {
             let layer = (audio[at + 1] >> 1) & 0b11; // 1 = Layer III
             let index = usize::from(audio[at + 2] >> 4);
             if layer == 1 && version != 1 && (1..15).contains(&index) {
-                const MPEG1: [u32; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
-                const MPEG2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
-                let kbps = if version == 3 { MPEG1[index] } else { MPEG2[index] };
+                const MPEG1: [u32; 15] = [
+                    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+                ];
+                const MPEG2: [u32; 15] =
+                    [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+                let kbps = if version == 3 {
+                    MPEG1[index]
+                } else {
+                    MPEG2[index]
+                };
                 let bytes = (audio.len() - at) as f64;
                 return Some(bytes * 8.0 / (f64::from(kbps) * 1000.0));
             }
@@ -338,7 +429,10 @@ impl TtsProvider for MeteredTtsProvider {
     async fn synthesize(&self, request: TtsRequest) -> Result<TtsResponse, TtsError> {
         let scope = current_scope();
         let chars = request.text.chars().count() as u64;
-        let requested_model = request.model.clone().unwrap_or_else(|| self.inner.default_model().to_string());
+        let requested_model = request
+            .model
+            .clone()
+            .unwrap_or_else(|| self.inner.default_model().to_string());
         let (start, started_at_ms) = started();
         let result = self.inner.synthesize(request).await;
         let (model, audio_seconds, error) = match &result {
@@ -394,7 +488,14 @@ impl MeteredSttProvider {
         Arc::new(Self { inner, vendor })
     }
 
-    fn record(&self, request_audio_seconds: Option<f64>, requested_model: String, start: (Instant, i64), result: &Result<SttResponse, SttError>, scope: Option<MediaMeterScope>) {
+    fn record(
+        &self,
+        request_audio_seconds: Option<f64>,
+        requested_model: String,
+        start: (Instant, i64),
+        result: &Result<SttResponse, SttError>,
+        scope: Option<MediaMeterScope>,
+    ) {
         let (model, audio_seconds, error) = match result {
             Ok(response) => (
                 response.model.clone(),
@@ -403,7 +504,11 @@ impl MeteredSttProvider {
             ),
             // Nothing heard is still billed audio.
             Err(SttError::NoSpeech) => (requested_model, request_audio_seconds, None),
-            Err(error) => (requested_model, request_audio_seconds, Some(error.to_string())),
+            Err(error) => (
+                requested_model,
+                request_audio_seconds,
+                Some(error.to_string()),
+            ),
         };
         record(
             MediaCall {
@@ -426,7 +531,10 @@ impl MeteredSttProvider {
     fn measure(&self, request: &SttRequest) -> (Option<f64>, String) {
         (
             audio_duration_seconds(&request.audio, &request.content_type),
-            request.model.clone().unwrap_or_else(|| self.inner.default_model().to_string()),
+            request
+                .model
+                .clone()
+                .unwrap_or_else(|| self.inner.default_model().to_string()),
         )
     }
 }
@@ -501,7 +609,10 @@ pub struct MeteredStreamingSttProvider {
 }
 
 impl MeteredStreamingSttProvider {
-    pub fn wrap(inner: Arc<dyn StreamingSttProvider>, vendor: &'static str) -> Arc<dyn StreamingSttProvider> {
+    pub fn wrap(
+        inner: Arc<dyn StreamingSttProvider>,
+        vendor: &'static str,
+    ) -> Arc<dyn StreamingSttProvider> {
         Arc::new(Self { inner, vendor })
     }
 }
@@ -618,23 +729,42 @@ impl Drop for MeteredStreamingSession {
 
 /// Bind each TTS provider in `chain` to `scope`, for a session that resolves
 /// its chain once and synthesizes from spawned tasks (hands-free, meetings).
-pub fn scope_tts_chain(chain: Vec<Arc<dyn TtsProvider>>, scope: &MediaMeterScope) -> Vec<Arc<dyn TtsProvider>> {
+pub fn scope_tts_chain(
+    chain: Vec<Arc<dyn TtsProvider>>,
+    scope: &MediaMeterScope,
+) -> Vec<Arc<dyn TtsProvider>> {
     chain
         .into_iter()
-        .map(|inner| Arc::new(ScopedTtsProvider { inner, scope: scope.clone() }) as Arc<dyn TtsProvider>)
+        .map(|inner| {
+            Arc::new(ScopedTtsProvider {
+                inner,
+                scope: scope.clone(),
+            }) as Arc<dyn TtsProvider>
+        })
         .collect()
 }
 
 /// Bind a streaming STT provider to `scope`: its sessions bill there.
-pub fn scope_streaming_stt(inner: Arc<dyn StreamingSttProvider>, scope: MediaMeterScope) -> Arc<dyn StreamingSttProvider> {
+pub fn scope_streaming_stt(
+    inner: Arc<dyn StreamingSttProvider>,
+    scope: MediaMeterScope,
+) -> Arc<dyn StreamingSttProvider> {
     Arc::new(ScopedStreamingSttProvider { inner, scope })
 }
 
 /// Bind each STT provider in `chain` to `scope`.
-pub fn scope_stt_chain(chain: Vec<Arc<dyn SttProvider>>, scope: &MediaMeterScope) -> Vec<Arc<dyn SttProvider>> {
+pub fn scope_stt_chain(
+    chain: Vec<Arc<dyn SttProvider>>,
+    scope: &MediaMeterScope,
+) -> Vec<Arc<dyn SttProvider>> {
     chain
         .into_iter()
-        .map(|inner| Arc::new(ScopedSttProvider { inner, scope: scope.clone() }) as Arc<dyn SttProvider>)
+        .map(|inner| {
+            Arc::new(ScopedSttProvider {
+                inner,
+                scope: scope.clone(),
+            }) as Arc<dyn SttProvider>
+        })
         .collect()
 }
 
@@ -713,7 +843,8 @@ impl SttProvider for ScopedSttProvider {
     ) -> Result<SttResponse, SttError> {
         with_media_meter_scope(
             self.scope.clone(),
-            self.inner.transcribe_bounded_review(request, maximum_response_bytes, cancel),
+            self.inner
+                .transcribe_bounded_review(request, maximum_response_bytes, cancel),
         )
         .await
     }
@@ -722,7 +853,11 @@ impl SttProvider for ScopedSttProvider {
         request: SttRequest,
         events: mpsc::Sender<SttStreamEvent>,
     ) -> Result<SttResponse, SttError> {
-        with_media_meter_scope(self.scope.clone(), self.inner.transcribe_stream(request, events)).await
+        with_media_meter_scope(
+            self.scope.clone(),
+            self.inner.transcribe_stream(request, events),
+        )
+        .await
     }
 }
 
@@ -752,7 +887,9 @@ impl StreamingSttProvider for ScopedStreamingSttProvider {
     ) -> Result<Box<dyn StreamingSttSession>, SttError> {
         // The session's pushes and finish run in scope too: a fallback chain
         // reopens its next provider from inside `push_audio`.
-        let inner = with_media_meter_scope(self.scope.clone(), self.inner.open_session(format, events)).await?;
+        let inner =
+            with_media_meter_scope(self.scope.clone(), self.inner.open_session(format, events))
+                .await?;
         Ok(Box::new(ScopedStreamingSession {
             inner,
             scope: self.scope.clone(),
@@ -779,6 +916,35 @@ impl StreamingSttSession for ScopedStreamingSession {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn nested_pipeline_scope_preserves_chat_and_workload_only_for_same_tenant() {
+        let scope = MediaMeterScope::new("owner", "work")
+            .with_chat_session(Some("chat-original".into()))
+            .with_workload_class(magicllm::LlmWorkloadClass::Ambient);
+        with_media_meter_scope(scope.clone(), async {
+            assert_eq!(MediaMeterScope::new("owner", "work"), scope);
+            for other in [
+                MediaMeterScope::new("someone-else", "work"),
+                MediaMeterScope::new("owner", "other-workspace"),
+            ] {
+                assert_eq!(other.chat_session_id, None);
+                assert_eq!(
+                    other.workload_class,
+                    magicllm::LlmWorkloadClass::ForegroundChat
+                );
+            }
+            assert_eq!(
+                MediaMeterScope::new("owner", "work")
+                    .with_chat_session(Some("chat-explicit".into()))
+                    .chat_session_id
+                    .as_deref(),
+                Some("chat-explicit")
+            );
+        })
+        .await;
+        assert_eq!(current_scope(), None);
+    }
+
     fn wav(seconds: u32, rate: u32) -> Vec<u8> {
         let data = vec![0u8; (rate * 2 * seconds) as usize];
         let mut out = Vec::new();
@@ -796,6 +962,26 @@ mod tests {
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(&data);
         out
+    }
+
+    /// Voice the owner is in counts as foreground (exempt from the spend
+    /// envelope's refusal, so a live call is never cut off); background
+    /// capture can say it is ambient.
+    #[test]
+    fn owner_voice_counts_as_foreground_and_capture_can_say_ambient() {
+        let scope = MediaMeterScope::new("owner", "default");
+        assert_eq!(
+            scope.workload_class,
+            magicllm::LlmWorkloadClass::ForegroundChat
+        );
+        assert!(!crate::magician_v2::spend_envelope::is_gated(
+            scope.workload_class
+        ));
+        let ambient = scope.with_workload_class(magicllm::LlmWorkloadClass::Ambient);
+        assert_eq!(ambient.workload_class, magicllm::LlmWorkloadClass::Ambient);
+        // Without an installed envelope a charge is a no-op, priced or not.
+        charge_spend_envelope(Some(0.25), Some(&ambient));
+        charge_spend_envelope(None, None);
     }
 
     #[test]
@@ -823,7 +1009,10 @@ mod tests {
 
     #[test]
     fn compressed_containers_have_no_measured_length() {
-        assert_eq!(audio_duration_seconds(b"\x1a\x45\xdf\xa3webm", "audio/webm"), None);
+        assert_eq!(
+            audio_duration_seconds(b"\x1a\x45\xdf\xa3webm", "audio/webm"),
+            None
+        );
         assert_eq!(audio_duration_seconds(b"OggS....", "audio/ogg"), None);
     }
 
@@ -851,8 +1040,8 @@ mod tests {
         }
     }
 
-    /// One metered call inside a tenant scope emits one priced `voice_tts`
-    /// event for that tenant; the same call outside a scope emits nothing.
+    /// A hands-free chain retains its chat after moving into a spawned task;
+    /// an unscoped call emits nothing.
     #[tokio::test]
     async fn a_scoped_tts_call_emits_one_priced_event() {
         let broadcaster = Arc::new(RuntimeTransportBroadcaster::new(16));
@@ -873,42 +1062,85 @@ mod tests {
             voice_mode: None,
             emphasis: None,
         };
-        tts.synthesize(request.clone()).await.expect("unscoped synth");
-        with_media_meter_scope(MediaMeterScope::new("owner", "work"), tts.synthesize(request))
+        tts.synthesize(request.clone())
             .await
+            .expect("unscoped synth");
+        let scoped_tts = with_media_meter_scope(
+            MediaMeterScope::new("owner", "work").with_chat_session(Some("chat-voice".into())),
+            async {
+                let nested = MediaMeterScope::new("owner", "work");
+                scope_tts_chain(vec![tts], &nested).remove(0)
+            },
+        )
+        .await;
+        tokio::spawn(async move { scoped_tts.synthesize(request).await })
+            .await
+            .expect("speech task")
             .expect("scoped synth");
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
             .await
             .expect("an event")
             .expect("received");
         let RuntimeTransportEvent::LLMResponseReceived {
-            principal, workspace, provider, model, response_kind, capability, cost, usage_reported, ..
+            principal,
+            workspace,
+            provider,
+            model,
+            response_kind,
+            capability,
+            cost,
+            usage_reported,
+            chat_session_id,
+            ..
         } = event
         else {
             panic!("expected an LLM response event");
         };
-        assert_eq!((principal.as_deref(), workspace.as_deref()), (Some("owner"), Some("work")));
-        assert_eq!((provider.as_str(), model.as_str()), ("sarvam", "bulbul:v4-flash"));
-        assert_eq!((response_kind.as_str(), capability.as_str()), ("voice_tts", "voice.tts"));
+        assert_eq!(
+            (principal.as_deref(), workspace.as_deref()),
+            (Some("owner"), Some("work"))
+        );
+        assert_eq!(
+            (provider.as_str(), model.as_str()),
+            ("sarvam", "bulbul:v4-flash")
+        );
+        assert_eq!(
+            (response_kind.as_str(), capability.as_str()),
+            ("voice_tts", "voice.tts")
+        );
         assert!(usage_reported);
+        assert_eq!(chat_session_id.as_deref(), Some("chat-voice"));
         // The seed's bulbul:v4-flash row bills characters: 600 of them.
         let expected = magicllm::compute_media_cost_at(
             &magicllm::LLMProviderKind::Sarvam,
             "bulbul:v4-flash",
             magicllm::MediaKind::Tts,
-            &magicllm::MediaUsage { input_chars: Some(600), audio_seconds: Some(2.0), requests: 1 },
+            &magicllm::MediaUsage {
+                input_chars: Some(600),
+                audio_seconds: Some(2.0),
+                requests: 1,
+            },
             chrono::Utc::now().timestamp_millis(),
         )
         .expect("seed prices bulbul:v4-flash");
-        assert!(expected > 0.0 && (cost - expected).abs() < 1e-12, "{cost} vs {expected}");
+        assert!(
+            expected > 0.0 && (cost - expected).abs() < 1e-12,
+            "{cost} vs {expected}"
+        );
         // The unscoped call before it emitted nothing.
         assert!(events.try_recv().is_err());
     }
 
     #[test]
     fn local_engines_meter_as_local() {
-        assert_eq!(media_vendor_for_adapter("fluid_audio_kokoro_tts"), Some("local"));
-        assert_eq!(media_vendor_for_adapter("macos_speech_streaming"), Some("local"));
+        assert_eq!(
+            media_vendor_for_adapter("fluid_audio_kokoro_tts"),
+            Some("local")
+        );
+        assert_eq!(
+            media_vendor_for_adapter("macos_speech_streaming"),
+            Some("local")
+        );
         assert_eq!(media_vendor_for_adapter("some_new_adapter"), None);
         assert_eq!(media_vendor_for_adapter("sarvam_tts"), Some("sarvam"));
         assert_eq!(media_vendor_for_adapter("grok_stt"), Some("xai"));

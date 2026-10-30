@@ -89,6 +89,9 @@ struct ChatMessage: Identifiable, Equatable {
     /// renders this in the structured card format introduced in the web parity
     /// rollout instead of the legacy markdown-only bubble path.
     var structuredResponse: ChatMessagePresentationData? = nil
+    /// Original paragraph boundaries for the display-only verification note.
+    /// The structured plain-text projection may flatten the caveat and answer.
+    var verificationSourceText: String? = nil
     /// Access-gated image artifact URLs to render inline under the bubble
     /// (content-block images). Loaded with auth headers via AuthAsyncImage.
     var imageURLs: [String] = []
@@ -115,17 +118,91 @@ struct ChatMessage: Identifiable, Equatable {
     /// When the message was written (the server's `created_at`; now for a
     /// local echo). Drives the transcript's date dividers.
     var createdAt: Date? = nil
+    /// The status line of an assistant turn that settled without a reply of
+    /// its own ("Stopped", "Interrupted before it finished", …), from the
+    /// server's turn state (`ChatTurnState.notice`).
+    var turnStatusNotice: String? = nil
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.originalAnswer == rhs.originalAnswer && lhs.linkedAnswerTarget == rhs.linkedAnswerTarget && lhs.id == rhs.id && lhs.text == rhs.text && lhs.imageURLs == rhs.imageURLs
             && lhs.activityRows == rhs.activityRows && lhs.activityIsLive == rhs.activityIsLive
+            && lhs.turnStatusNotice == rhs.turnStatusNotice
             && lhs.chatTurnId == rhs.chatTurnId
             && lhs.structuredResponse == rhs.structuredResponse
+            && lhs.verificationSourceText == rhs.verificationSourceText
             && lhs.richBlocks == rhs.richBlocks
             // A task card's status lives in `type`; without it a status change
             // compares equal and SwiftUI can skip re-rendering the card.
             && lhs.type == rhs.type
             && lhs.createdAt == rhs.createdAt
+    }
+}
+
+struct ChatModelSelection: Codable, Equatable {
+    let modelId: String
+    let thinking: String
+    enum CodingKeys: String, CodingKey {
+        case modelId = "model_id"
+        case thinking
+    }
+    var wireValue: [String: String] { ["model_id": modelId, "thinking": thinking] }
+}
+
+struct ChatThinkingControl: Codable, Equatable {
+    let mode: String
+    let levels: [String]
+    let defaultLevel: String?
+    enum CodingKeys: String, CodingKey {
+        case mode, levels
+        case defaultLevel = "default"
+    }
+    /// Web `thinkingLabel` (`modelCatalog.ts`): known levels get a display name, anything else stays raw.
+    static func label(_ level: String) -> String {
+        ["auto": "Auto", "none": "Off", "on": "On", "minimal": "Minimal", "low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra high", "max": "Max", "ultra": "Ultra"][level] ?? level
+    }
+
+    /// The thinking tag on a composer model chip (web `ComposerModelChip` `thinking`):
+    /// only for a catalog model whose thinking mode is not `none`, level defaulting
+    /// to `auto`. VibeDev's coding chip uses this directly.
+    static func chipLabel(model: ChatModelChoice?, selection: ChatModelSelection?) -> String? {
+        guard let model, model.thinking.mode != "none" else { return nil }
+        return label(selection?.thinking ?? "auto")
+    }
+
+    /// Chat composer rule (web `ChatPanel` `profileThinkingLabel`): only the catalog engines `magician` and `pi`.
+    static func chatChipLabel(engine: String, model: ChatModelChoice?, selection: ChatModelSelection?) -> String? {
+        engine == "magician" || engine == "pi" ? chipLabel(model: model, selection: selection) : nil
+    }
+
+    /// The chip's spoken label: `<label>, thinking: High` when a thinking tag is shown (web aria-label).
+    static func chipAccessibilityLabel(_ label: String, thinking: String?) -> String {
+        thinking.map { "\(label), thinking: \($0)" } ?? label
+    }
+}
+
+struct ChatModelChoice: Codable, Identifiable, Equatable {
+    struct Capabilities: Codable, Equatable { let vision: Bool? }
+    struct Limits: Codable, Equatable {
+        let contextWindowTokens: Int
+        enum CodingKeys: String, CodingKey { case contextWindowTokens = "context_window_tokens" }
+    }
+    let id: String
+    let provider: String
+    let connection: String
+    let model: String
+    let label: String
+    let thinking: ChatThinkingControl
+    let choices: [String: String]
+    var operationChoices: [String: String]? = nil
+    var installed: Bool? = nil
+    var capabilities: Capabilities? = nil
+    enum CodingKeys: String, CodingKey {
+        case id, provider, connection, model, label, thinking, choices, limits, installed, capabilities
+        case operationChoices = "operation_choices"
+    }
+    let limits: Limits?
+    var providerDisplayName: String {
+        ["openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "deepseek": "DeepSeek", "minimax": "MiniMax", "xai": "xAI", "sarvam": "Sarvam", "ollama": "Ollama", "yutori": "Yutori", "openrouter": "OpenRouter", "harness-claude_code": "Claude Code", "harness-codex": "Codex", "harness-grok": "Grok", "harness-agy": "Antigravity", "harness-pi": "Pi"][provider] ?? provider
     }
 }
 
@@ -135,31 +212,94 @@ struct ChatProfile: Codable, Identifiable, Equatable {
     let model: String?
     let isDefault: Bool?
     let supportsUserImageInputs: Bool?
-    let isAdaptive: Bool?
-    let adaptiveDescription: String?
-    let adaptiveTier: String?
+    var modelSelection: ChatModelSelection? = nil
+    var modelChoice: ChatModelChoice? = nil
     var id: String { name }
 
     enum CodingKeys: String, CodingKey {
         case name, provider, model
         case isDefault = "is_default"
         case supportsUserImageInputs = "supports_user_image_inputs"
-        case isAdaptive = "is_adaptive"
-        case adaptiveDescription = "adaptive_description"
-        case adaptiveTier = "adaptive_tier"
+        case modelSelection = "model_selection"
+        case modelChoice = "model_choice"
     }
 }
 
-private struct ChatProfilesResponse: Codable {
-    let profiles: [ChatProfile]
+struct ChatModelCatalog: Codable {
+    let models: [ChatModelChoice]
+    let defaultSelection: ChatModelSelection?
+    enum CodingKeys: String, CodingKey {
+        case models
+        case defaultSelection = "default_selection"
+    }
+    var rows: [ChatProfile] {
+        models.flatMap { model in model.choices.sorted(by: { $0.key < $1.key }).map { thinking, route in
+            let selection = ChatModelSelection(modelId: model.id, thinking: thinking)
+            return ChatProfile(name: route, provider: model.provider, model: model.model,
+                isDefault: selection == defaultSelection, supportsUserImageInputs: model.capabilities?.vision == true,
+                modelSelection: selection, modelChoice: thinking == "auto" ? model : nil)
+        } }
+    }
+}
+
+/// Typed preferences survive removal of the old selector rows. Unknown choices
+/// stay unresolved until the owner explicitly chooses a replacement.
+enum ChatModelPreference {
+    static let storageKey = "magios.chat.modelSelection"
+    static let unavailableRoute = "__unavailable_model_selection__"
+    static let unavailableMessage = "Your saved model choice is unavailable. Choose a model to continue."
+
+    static func resolve(profiles: [ChatProfile], legacyID: String, saved: ChatModelSelection?)
+        -> (route: String, selection: ChatModelSelection?, issue: String?) {
+        let previous = profiles.first { $0.name == legacyID }
+        if let selection = saved ?? previous?.modelSelection ?? LegacyLlmSelections.chatSelection(for: legacyID) {
+            let route = profiles.compactMap(\.modelChoice)
+                .first { $0.id == selection.modelId }?.choices[selection.thinking]
+            if let route, profiles.contains(where: { $0.name == route }) {
+                return (route, selection, nil)
+            }
+            return (unavailableRoute, selection, unavailableMessage)
+        }
+        if !legacyID.isEmpty {
+            return (legacyID, nil, previous == nil ? unavailableMessage : nil)
+        }
+        guard let initial = profiles.first(where: { $0.isDefault == true }) else {
+            return ("", nil, "Choose a model to continue.")
+        }
+        return resolve(profiles: profiles, legacyID: initial.name, saved: initial.modelSelection)
+    }
+
+    static func requestFields(selection: ChatModelSelection?, engine: String, nativeModel: String) -> [String: Any]? {
+        if ["magician", "pi"].contains(engine) {
+            guard let selection, !selection.modelId.isEmpty, !selection.thinking.isEmpty else { return nil }
+            return ["harness_engine": engine, "model_selection": selection.wireValue]
+        }
+        return ["harness_engine": engine, "harness_model": nativeModel]
+    }
 }
 
 struct ChatHarnessOption: Codable, Identifiable, Equatable {
     let name: String
     let installed: Bool
     let models: [String]?
+    /// Whose account the CLI runs on: `login`, `magician_key` or `none`
+    /// (absent for `magician`); see `HarnessCredentialsLabel`.
+    var credentials: String? = nil
     var id: String { name }
     var availableModels: [String] { models ?? ["default"] }
+}
+
+extension ChatHarnessOption {
+    private enum CodingKeys: String, CodingKey { case name, installed, models, credentials }
+
+    /// `credentials` is read leniently: an unexpected value means no label.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(name: try c.decode(String.self, forKey: .name),
+                  installed: try c.decode(Bool.self, forKey: .installed),
+                  models: try c.decodeIfPresent([String].self, forKey: .models),
+                  credentials: try? c.decodeIfPresent(String.self, forKey: .credentials))
+    }
 }
 
 private struct ChatHarnessRoster: Codable {
@@ -167,10 +307,89 @@ private struct ChatHarnessRoster: Codable {
     /// The run engine (`execution.harness_engine`) and its model.
     var current: String? = nil
     var runModel: String? = nil
+    /// Pi's run model (`execution.pi_profile` as a catalog selection).
+    var runModelSelection: ChatModelSelection? = nil
+    /// Agentic flows follow the chat engine; `current` is what that resolves to.
+    var followsChat: Bool? = nil
+    /// The server's chat engine and model (clients with no pick of their own).
+    var chatCurrent: String? = nil
+    var chatModel: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case engines, current
         case runModel = "run_model"
+        case runModelSelection = "run_model_selection"
+        case followsChat = "follows_chat"
+        case chatCurrent = "chat_current"
+        case chatModel = "chat_model"
+    }
+}
+
+extension ComposerModelOption {
+    /// A catalog model as the `/` picker shows it; `operation` also reads a
+    /// routing operation's `operation_choices`.
+    init(_ model: ChatModelChoice, operation: Bool = false) {
+        var levels = Set(model.choices.keys)
+        if operation { levels.formUnion((model.operationChoices ?? [:]).keys) }
+        self.init(id: model.id, label: model.label, detail: model.providerDisplayName,
+                  thinkingLevels: levels.sorted(), defaultThinking: model.thinking.defaultLevel,
+                  available: model.installed != false,
+                  thinkingMode: model.thinking.mode, controlLevels: model.thinking.levels)
+    }
+}
+
+extension ComposerModelSelection {
+    init(_ selection: ChatModelSelection) { self.init(modelId: selection.modelId, thinking: selection.thinking) }
+}
+
+extension ChatModelSelection {
+    init(_ selection: ComposerModelSelection) { self.init(modelId: selection.modelId, thinking: selection.thinking) }
+}
+
+/// `GET /api/magician/v2/llm/routing`, the part `/run-engine magician` reads:
+/// the catalog and the model the `agentic_decision` operation resolves to
+/// (web `EnginesPanel` loop model).
+struct LoopModelRouting {
+    static let operation = "agentic_decision"
+    let models: [ChatModelChoice]
+    let selection: ChatModelSelection?
+
+    /// The routing, or why it cannot be read.
+    static func decode(_ data: Data) -> Result<LoopModelRouting, ChatViewModel.CommandFailure> {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .failure(.init(text: "Model routing could not be read."))
+        }
+        guard let loop = (object["operations"] as? [[String: Any]])?
+            .first(where: { $0["operation"] as? String == operation }) else {
+            return .failure(.init(text: "The agentic decision mapping is not in the model catalog."))
+        }
+        // One malformed model must not hide the rest.
+        let models = (object["models"] as? [Any] ?? []).compactMap { item -> ChatModelChoice? in
+            guard let raw = try? JSONSerialization.data(withJSONObject: item) else { return nil }
+            return try? JSONDecoder().decode(ChatModelChoice.self, from: raw)
+        }
+        let profiles = object["profiles"] as? [[String: Any]] ?? []
+        return .success(LoopModelRouting(
+            models: models,
+            selection: selectionForRoute(loop["effective_profile"] as? String, models: models, profiles: profiles)))
+    }
+
+    /// Web `selectionForRoute`: the profile's own selection when its model is
+    /// in the catalog, else the model and level whose choice is the route.
+    static func selectionForRoute(_ route: String?, models: [ChatModelChoice], profiles: [[String: Any]]) -> ChatModelSelection? {
+        guard let route else { return nil }
+        if let saved = profiles.first(where: { $0["name"] as? String == route })?["model_selection"] as? [String: Any],
+           let modelId = saved["model_id"] as? String, let thinking = saved["thinking"] as? String,
+           models.contains(where: { $0.id == modelId }) {
+            return ChatModelSelection(modelId: modelId, thinking: thinking)
+        }
+        for model in models {
+            let choices = Array(model.choices) + Array(model.operationChoices ?? [:])
+            if let thinking = choices.first(where: { $0.value == route })?.key {
+                return ChatModelSelection(modelId: model.id, thinking: thinking)
+            }
+        }
+        return nil
     }
 }
 
@@ -220,6 +439,153 @@ private struct QueueResponse: Codable {
     let active: Bool?
 }
 
+/// Server-side state of a chat turn (`chat::turn_state` in magician). The
+/// session detail, `/chat/active` and `/queue` responses carry the session's
+/// latest turn as `turn_state`; `chat.turn.state_changed` agent events carry
+/// every change. A reopened chat reads it to show a turn that is still
+/// running, stopped or failed, instead of guessing from the transcript.
+struct ChatTurnState: Equatable {
+    enum Status: String { case running, completed, stopped, failed }
+
+    static let eventType = "chat.turn.state_changed"
+    static let userStopReason = "user_stop"
+    static let interruptedReason = "interrupted"
+
+    static let stoppedNotice = "Stopped"
+    static let interruptedNotice = "Interrupted before it finished"
+    static let failedNotice = "This turn failed before it could answer"
+
+    let chatTurnId: String
+    let sessionId: String
+    let status: Status
+    /// Unix ms.
+    let startedAt: Double
+    var endedAt: Double? = nil
+    /// `user_stop`, a watchdog reason (`turn_stalled`,
+    /// `turn_wall_clock_exceeded`), `error` or `interrupted`.
+    var reason: String? = nil
+
+    var isRunning: Bool { status == .running }
+    var isRealtimeVoice: Bool { Self.isRealtimeVoiceTurn(chatTurnId) }
+
+    /// A watchdog stop persists an assistant notice under the turn's id;
+    /// that notice is the turn's reply, so it gets no status line.
+    var isWatchdogStop: Bool {
+        status == .stopped && (reason ?? Self.userStopReason) != Self.userStopReason
+    }
+
+    /// The status line for a settled turn with no reply of its own. A
+    /// completed turn has its reply and a watchdog stop has its notice, so
+    /// neither gets a line.
+    var notice: String? {
+        switch status {
+        case .stopped:
+            return isWatchdogStop ? nil : Self.stoppedNotice
+        case .failed:
+            return reason == Self.interruptedReason ? Self.interruptedNotice : Self.failedNotice
+        case .running, .completed:
+            return nil
+        }
+    }
+
+    /// Realtime voice turns render through the call surface, never as a
+    /// chat bubble (web `turnState.ts` skips the same ids).
+    static func isRealtimeVoiceTurn(_ turnId: String) -> Bool {
+        turnId.hasPrefix("voice-turn-") || turnId.hasPrefix("local-voice-turn-")
+            || turnId.hasPrefix("voice-request-") || turnId.hasPrefix("voice-task-result-")
+    }
+
+    /// Parse a wire `turn_state` (or a state event payload); `sessionId`
+    /// fills a payload that omits `chat_session_id`.
+    static func parse(_ raw: Any?, sessionId: String?) -> ChatTurnState? {
+        guard let value = raw as? [String: Any],
+              let turnId = (value["chat_turn_id"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !turnId.isEmpty,
+              let status = (value["status"] as? String).flatMap(Status.init(rawValue:))
+        else { return nil }
+        let explicitSession = (value["chat_session_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let session = explicitSession.flatMap({ $0.isEmpty ? nil : $0 }) ?? sessionId,
+              !session.isEmpty else { return nil }
+        let reason = (value["reason"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return ChatTurnState(
+            chatTurnId: turnId,
+            sessionId: session,
+            status: status,
+            startedAt: (value["started_at"] as? NSNumber)?.doubleValue ?? 0,
+            endedAt: (value["ended_at"] as? NSNumber)?.doubleValue,
+            reason: reason
+        )
+    }
+
+    /// The state a `chat.turn.state_changed` frame carries, else nil. The
+    /// hub delivers it as an `AgentEvent` whose inner payload is the state.
+    static func fromEvent(_ frame: [String: Any]) -> ChatTurnState? {
+        let outer = frame["event_type"] as? String
+        let data = frame["data"] as? [String: Any]
+        let inner = data?["event"] as? [String: Any]
+        let payload: [String: Any]?
+        if outer == "AgentEvent", inner?["event_type"] as? String == eventType {
+            payload = (inner?["payload"] as? [String: Any]) ?? (data?["payload"] as? [String: Any])
+        } else if outer == eventType {
+            payload = (data?["payload"] as? [String: Any]) ?? data
+        } else {
+            return nil
+        }
+        return parse(payload, sessionId: nil)
+    }
+
+    /// The recording rule: a settled state is never replaced by a stale
+    /// `running` snapshot of the same turn (a poll that raced the end event).
+    static func shouldRecord(_ incoming: ChatTurnState, over previous: ChatTurnState?) -> Bool {
+        guard let previous, previous.chatTurnId == incoming.chatTurnId else { return true }
+        return previous.isRunning || !incoming.isRunning
+    }
+}
+
+/// What a session or queue response says about the session's latest turn.
+enum ChatTurnStateSnapshot: Equatable {
+    /// The response has no `turn_state` field (a server that predates it).
+    case unsupported
+    /// `turn_state: null`: no turn yet, or the server restarted.
+    case noTurn
+    case latest(ChatTurnState)
+
+    static func parse(object: [String: Any]?, sessionId: String) -> ChatTurnStateSnapshot {
+        guard let object, object.keys.contains("turn_state") else { return .unsupported }
+        return ChatTurnState.parse(object["turn_state"], sessionId: sessionId)
+            .map { ChatTurnStateSnapshot.latest($0) } ?? .noTurn
+    }
+
+    static func parse(responseData: Data?, sessionId: String) -> ChatTurnStateSnapshot {
+        let object = responseData.flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        }
+        return parse(object: object, sessionId: sessionId)
+    }
+
+    var state: ChatTurnState? {
+        if case .latest(let state) = self { return state }
+        return nil
+    }
+}
+
+/// How one SSE reply stream ended (`postMessageStreaming`).
+struct ChatStreamEnd: Equatable {
+    /// Answer text arrived (tokens or the `done` frame's persisted reply).
+    var gotContent = false
+    /// The final `done` frame arrived.
+    var sawDone = false
+    /// The `done` frame said the turn was cancelled (Stop or the watchdog).
+    var cancelled = false
+    /// An `event: error` frame's message.
+    var errorMessage: String? = nil
+    /// The connection failed (radio loss, suspension) before the stream ended.
+    var transportFailed = false
+    /// The server answered the POST with a non-2xx status.
+    var rejected = false
+}
+
 /// Remembers the conversation selected on this device without making that
 /// choice global to every client. A server origin is part of the key: two
 /// Magician installations can legitimately use the same principal/workspace
@@ -264,10 +630,33 @@ struct ChatSessionSelectionStore {
     }
 }
 
+/// Scroll-to-top paging of a transcript's older messages.
+struct OlderHistoryState: Equatable {
+    var hasMore = false
+    var isLoading = false
+    /// The last page failed; the top row offers a retry.
+    var failed = false
+}
+
+/// When the transcript's top row may load one older page: it came back into
+/// view after leaving it (`armed`), the reader is not at the bottom, more
+/// exists, and no page is in flight or waiting on a retry.
+enum ChatOlderHistoryTrigger {
+    static func shouldLoad(armed: Bool, isAtBottom: Bool, state: OlderHistoryState) -> Bool {
+        armed && !isAtBottom && state.hasMore && !state.isLoading && !state.failed
+    }
+}
+
+/// One prepend of older messages: the row that was first before it.
+struct OlderHistoryPrepend: Equatable {
+    let token: UInt64
+    let anchorMessageId: String
+}
+
 class ChatViewModel: NSObject, ObservableObject {
-    @Published var messages: [ChatMessage] = [
-        ChatMessage(id: UUID().uuidString, isUser: false, text: "I am Sam. How can I help you today?", type: .text)
-    ]
+    /// Empty until the session has messages: the view shows `ChatWelcomeView`
+    /// (suggestions and recent chats) for an empty transcript.
+    @Published var messages: [ChatMessage] = []
     @Published var composerMode: ComposerMode = .ask {
         didSet {
             guard let permission = ComposerDoPermission(mode: composerMode),
@@ -283,6 +672,15 @@ class ChatViewModel: NSObject, ObservableObject {
     @Published var focusedMessageId: String?
     @Published var originalAnswerError: String?
     private var sessionLoadTask: Task<Void, Never>?
+    /// Older-history paging for the open transcript: one page per scroll to
+    /// the top, never during the initial open.
+    @Published private(set) var olderHistory = OlderHistoryState()
+    /// Set after a page lands on top; the transcript keeps `anchorMessageId`
+    /// (the row that was first) where the reader left it.
+    @Published private(set) var olderHistoryPrepend: OlderHistoryPrepend?
+    private var oldestLoadedRawMessageId: String?
+    private var olderHistoryGeneration: UInt64 = 0
+    private var olderHistoryTask: Task<Void, Never>?
     @Published var isConnected = false
     @Published var isThinking = false
     @Published var cancelRunErrorMessage: String?
@@ -298,9 +696,14 @@ class ChatViewModel: NSObject, ObservableObject {
     private var currentSessionId: String? {
         didSet {
             guard currentSessionId != oldValue else { return }
+            activateChatPreferences()
             queuedMessages = []; serverRunning = false; currentSessionOrigin = nil
+            turnStates = [:]; runningServerTurnId = nil; queueReportsActive = false
+            realtimeVoiceTurnIds = []
+            suppressedCanonicalByTurn = [:]
             if let reply = planReply { planReply = nil; composerMode = reply.returnMode }
             sessionLoadTask?.cancel()
+            resetOlderHistory()
             focusedMessageId = nil
             originalAnswerError = nil
             referenceCatalogGeneration &+= 1
@@ -339,21 +742,91 @@ class ChatViewModel: NSObject, ObservableObject {
 
     @Published var profiles: [ChatProfile] = []
     @Published var selectedProfile: String = UserDefaults.standard.string(forKey: "magios.chat.profile") ?? "" {
-        didSet { UserDefaults.standard.set(selectedProfile, forKey: "magios.chat.profile") }
+        didSet {
+            guard profiles.contains(where: { $0.name == selectedProfile }) else { return }
+            let resolved = ChatModelPreference.resolve(profiles: profiles, legacyID: selectedProfile, saved: nil)
+            modelSelectionIssue = resolved.issue
+            if resolved.issue == nil { persistModelPreference(resolved.route, selection: resolved.selection) }
+        }
+    }
+    @Published private(set) var modelSelectionIssue: String?
+    private var modelChoicesLoading = true
+    private var modelCatalogGeneration: UInt64 = 0
+    private var currentModelSelection: ChatModelSelection? {
+        profiles.first(where: { $0.name == selectedProfile })?.modelSelection
+    }
+
+    private var hydratingChatPreferences = false
+    var chatLocalStorageKey: String {
+        Self.localStorageKey(origin: MagicianAccess.baseURL.absoluteString, principal: MagicianAccess.principal,
+                             workspace: MagicianAccess.workspace, session: currentSessionId)
+    }
+    static func localStorageKey(origin: String, principal: String, workspace: String, session: String?) -> String {
+        "magios.chat.v2|" + [origin, principal, workspace, session ?? "pending"].map { "\($0.utf8.count):\($0)" }.joined(separator: "|")
+    }
+    private func preferenceKey(_ suffix: String) -> String { chatLocalStorageKey + "|" + suffix }
+    private func activateChatPreferences() {
+        hydratingChatPreferences = true
+        modelCatalogGeneration &+= 1
+        profiles = []
+        selectedProfile = UserDefaults.standard.string(forKey: "magios.chat.profile") ?? ""
+        selectedHarnessEngine = UserDefaults.standard.string(forKey: preferenceKey("engine")) ?? UserDefaults.standard.string(forKey: "magios.chat.harnessEngine") ?? "magician"
+        selectedHarnessModel = UserDefaults.standard.string(forKey: preferenceKey("model")) ?? UserDefaults.standard.string(forKey: "magios.chat.harnessModel") ?? "default"
+        hydratingChatPreferences = false
+        fetchProfiles()
+    }
+
+    private func persistModelPreference(_ route: String, selection: ChatModelSelection?) {
+        guard !hydratingChatPreferences, let selection, let encoded = try? JSONEncoder().encode(selection) else { return }
+        UserDefaults.standard.set(encoded, forKey: preferenceKey(ChatModelPreference.storageKey))
+    }
+
+    private func modelSelectionCanSend() -> Bool {
+        guard ["magician", "pi"].contains(selectedHarnessEngine), !isUITestLaunch else { return true }
+        if let issue = modelSelectionIssue {
+            commandNotice = ComposerCommandNotice(text: issue, isError: true)
+            return false
+        }
+        if modelChoicesLoading {
+            commandNotice = ComposerCommandNotice(text: "Model choices are still loading. Try again in a moment.", isError: true)
+            return false
+        }
+        if currentModelSelection == nil {
+            commandNotice = ComposerCommandNotice(text: ChatModelPreference.unavailableMessage, isError: true)
+            return false
+        }
+        return true
     }
     @Published var chatHarnesses: [ChatHarnessOption] = [ChatHarnessOption(name: "magician", installed: true, models: ["default"])]
     @Published var selectedHarnessEngine: String = UserDefaults.standard.string(forKey: "magios.chat.harnessEngine") ?? "magician" {
         didSet {
-            UserDefaults.standard.set(selectedHarnessEngine, forKey: "magios.chat.harnessEngine")
-            if oldValue != selectedHarnessEngine { selectedHarnessModel = "default" }
+            guard !hydratingChatPreferences else { return }
+            UserDefaults.standard.set(selectedHarnessEngine, forKey: preferenceKey("engine"))
+            if oldValue != selectedHarnessEngine {
+                selectedHarnessModel = "default"
+                fetchProfiles()
+            }
         }
     }
     @Published var selectedHarnessModel: String = UserDefaults.standard.string(forKey: "magios.chat.harnessModel") ?? "default" {
-        didSet { UserDefaults.standard.set(selectedHarnessModel, forKey: "magios.chat.harnessModel") }
+        didSet { if !hydratingChatPreferences { UserDefaults.standard.set(selectedHarnessModel, forKey: preferenceKey("model")) } }
     }
     /// The run engine from the roster (`/run-engine` marks it).
     @Published private(set) var runHarnessEngine: String?
     @Published private(set) var runHarnessModel: String?
+    /// Pi's run model, and whether agentic flows follow the chat engine.
+    @Published private(set) var runModelSelection: ChatModelSelection?
+    @Published private(set) var runFollowsChat = false
+    /// The server's chat engine (`/engine` "everywhere").
+    @Published private(set) var serverChatEngine: String?
+    /// `/engine <magician|pi>` and `/run-engine pi`: the catalog per engine,
+    /// loaded without touching the chat's own engine or model list.
+    @Published private(set) var commandCatalogs: [String: [ChatProfile]] = [:]
+    @Published private(set) var commandCatalogErrors: [String: String] = [:]
+    /// `/run-engine magician`: the `agentic_decision` models and choice.
+    @Published private(set) var loopModels: [ChatModelChoice]?
+    @Published private(set) var loopSelection: ChatModelSelection?
+    @Published private(set) var loopModelsError: String?
     /// `/budget default`: the caps read from the server, or why they could not be.
     @Published private(set) var budgetDefaults: BudgetDefaults?
     @Published private(set) var budgetDefaultsError: String?
@@ -364,6 +837,27 @@ class ChatViewModel: NSObject, ObservableObject {
     /// Messages queued behind the in-flight turn (surfaced by the QueueInspector).
     @Published var queuedMessages: [QueuedMessage] = []
     @Published private(set) var serverRunning = false
+    /// The session's chat turns by id, as the server last reported them
+    /// (`turn_state` snapshots and `chat.turn.state_changed` events).
+    private var turnStates: [String: ChatTurnState] = [:]
+    /// The non-voice turn the server says is running in this session. Its
+    /// bubble stays live (steps, Stop) whether or not this device still
+    /// reads the turn's reply stream: after a stream drop or a relaunch the
+    /// server keeps the turn running (`continue_on_disconnect`).
+    @Published private(set) var runningServerTurnId: String?
+    /// The queue endpoint's `active` (a run or a task tail holds the session).
+    private var queueReportsActive = false
+    /// Canonical replies the realtime path held back because this device's
+    /// SSE stream owned the turn; applied if that stream ends without one.
+    private var suppressedCanonicalByTurn: [String: ChatMessage] = [:]
+    private var transcriptReloadScheduled = false
+    private var transcriptReloadTurns: Set<String> = []
+    /// Turns of a realtime voice call (their rows carry the call's
+    /// `presence_session_id`): the call surface shows them, never a bubble.
+    private var realtimeVoiceTurnIds: Set<String> = []
+    /// Turns whose stream dropped after partial text; their canonical reply
+    /// still has to replace that text.
+    private var partialReplyTurns: Set<String> = []
     @Published private(set) var currentSessionOrigin: ConcurrentSessionOrigin?
     private var queueReadInFlight = false
     @Published private(set) var queueMutationInFlight = false
@@ -423,7 +917,7 @@ class ChatViewModel: NSObject, ObservableObject {
         if !TutorAudioFocus.shared.isActive,
            !VoiceCallAudioFocus.shared.isActive,
            AudioSettings.shared.speakReplies || currentTurnViaVoice {
-            SpeechSynthesizer.shared.speak(text, messageId: messageId)
+            SpeechSynthesizer.shared.speak(text, messageId: messageId, chatSessionId: currentSessionId)
         }
     }
 
@@ -575,8 +1069,6 @@ class ChatViewModel: NSObject, ObservableObject {
     }
 
     // MARK: - Session actions
-    private let greeting = "I am Sam. How can I help you today?"
-
     /// Adopt a freshly-created (or empty) session — reset the transcript.
     func startNewSession(_ id: String?) {
         resetTurnActivityState()
@@ -586,9 +1078,10 @@ class ChatViewModel: NSObject, ObservableObject {
             sessionSelectionStore.forget(currentSessionId)
         }
         currentSessionId = id
+        resetOlderHistory()
         currentRunExecutionId = nil
         activeExecutionLookupGeneration.removeAll()
-        messages = [ChatMessage(id: UUID().uuidString, isUser: false, text: greeting, type: .text)]
+        messages = []
     }
 
     func forgetRememberedSession(_ id: String?) {
@@ -598,13 +1091,17 @@ class ChatViewModel: NSObject, ObservableObject {
     /// Clear the current session's transcript locally and on the server.
     func clearMessages() {
         resetTurnActivityState()
-        messages = [ChatMessage(id: UUID().uuidString, isUser: false, text: greeting, type: .text)]
+        resetOlderHistory()
+        messages = []
         if let sessionId = currentSessionId { deleteRemote("chat/sessions/\(sessionId)/messages") }
     }
 
     /// Delete a single message locally and on the server.
     func deleteMessage(_ id: String) {
         messages.removeAll { $0.id == id }
+        // The server answers an unknown `before` cursor with the NEWEST page,
+        // so paging past a deleted oldest row would re-read the loaded history.
+        if oldestLoadedRawMessageId == id { oldestLoadedRawMessageId = messages.first?.id }
         if let sessionId = currentSessionId { deleteRemote("chat/sessions/\(sessionId)/messages/\(id)") }
     }
 
@@ -620,6 +1117,8 @@ class ChatViewModel: NSObject, ObservableObject {
         hydratedActivityTurns.removeAll()
         activityLoadsInFlight.removeAll()
         forcedActivityRefreshPending.removeAll()
+        suppressedCanonicalByTurn.removeAll()
+        partialReplyTurns.removeAll()
         activity.reset()
     }
 
@@ -633,22 +1132,46 @@ class ChatViewModel: NSObject, ObservableObject {
 
     // MARK: - Queue
     func fetchQueue() {
-        guard !queueReadInFlight, let sessionId = currentSessionId,
-              let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/sessions/\(sessionId)/queue") else { return }
+        guard !queueReadInFlight, let sessionId = currentSessionId else { return }
         queueReadInFlight = true
+        readQueue(sessionId: sessionId) { [weak self] _ in self?.queueReadInFlight = false }
+    }
+
+    /// Read the session queue, which also carries the latest turn's state,
+    /// and apply both. `completion` (main queue) gets the turn-state
+    /// snapshot, or nil when the read failed or the session changed.
+    private func readQueue(sessionId: String, completion: @escaping (ChatTurnStateSnapshot?) -> Void) {
+        guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/sessions/\(sessionId)/queue") else {
+            completion(nil)
+            return
+        }
         let base = MagicianAccess.baseURL.absoluteString
         var request = URLRequest(url: url); request.timeoutInterval = 10
         MagicianAccess.authorize(&request)
         networkSession.dataTask(with: request) { [weak self] data, response, _ in
             let queue = data.flatMap { try? JSONDecoder().decode(QueueResponse.self, from: $0) }
+            let snapshot = ChatTurnStateSnapshot.parse(responseData: data, sessionId: sessionId)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.queueReadInFlight = false
                 guard self.currentSessionId == sessionId, MagicianAccess.baseURL.absoluteString == base,
-                      (response as? HTTPURLResponse)?.statusCode == 200, let queue else { return }
-                self.queuedMessages = queue.queued; self.serverRunning = queue.active ?? false
+                      (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    completion(nil)
+                    return
+                }
+                if let queue {
+                    self.queuedMessages = queue.queued
+                    self.queueReportsActive = queue.active ?? false
+                }
+                self.applyTurnStateSnapshot(snapshot, sessionId: sessionId, fromTranscriptLoad: false)
+                self.refreshServerRunning()
+                completion(snapshot)
             }
         }.resume()
+    }
+
+    private func refreshServerRunning() {
+        let running = queueReportsActive || runningServerTurnId != nil
+        if serverRunning != running { serverRunning = running }
     }
 
     func actOnQueue(_ id: String, action: String) {
@@ -663,10 +1186,10 @@ class ChatViewModel: NSObject, ObservableObject {
               let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/sessions/\(sessionId)/queue") else { return }
         let attachments = stagedAttachments
         var body: [String: Any] = ["text": text, "chat_turn_id": "ios-chat-\(UUID().uuidString)",
-            "harness_engine": selectedHarnessEngine, "harness_model": selectedHarnessModel,
             "attachment_ids": attachments.compactMap(\.remoteId), "source_surface": "mobile"]
         body["mode"] = composerMode.wire
-        if !selectedProfile.isEmpty { body["profile"] = selectedProfile }
+        guard let fields = ChatModelPreference.requestFields(selection: currentModelSelection, engine: selectedHarnessEngine, nativeModel: selectedHarnessModel) else { return }
+        body.merge(fields) { _, new in new }
         queueMutationInFlight = true; stagedAttachments = []
         var request = URLRequest(url: url)
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -849,6 +1372,8 @@ class ChatViewModel: NSObject, ObservableObject {
             return
         }
 
+        guard modelSelectionCanSend() else { return }
+
         // A spoken turn only branches when it would otherwise wait behind a
         // running turn, or when the owner picked a voice topic to continue.
         // An idle session takes it as an ordinary chat turn.
@@ -856,9 +1381,10 @@ class ChatViewModel: NSObject, ObservableObject {
         if (background || voiceBranches), composerMode != .plan, stagedAttachments.isEmpty {
             admittedConcurrently = true
             let parent = currentSessionId
-            var options: [String: Any] = ["source_surface": "ios", "harness_engine": selectedHarnessEngine, "harness_model": selectedHarnessModel]
+            guard let fields = ChatModelPreference.requestFields(selection: currentModelSelection, engine: selectedHarnessEngine, nativeModel: selectedHarnessModel) else { return }
+            var options: [String: Any] = ["source_surface": "ios"]
+            options.merge(fields) { _, new in new }
             options["mode"] = composerMode.wire
-            if !selectedProfile.isEmpty && ["magician", "pi"].contains(selectedHarnessEngine) { options["profile"] = selectedProfile }
             Task { @MainActor in
                 let coordinator = ConcurrentVoiceCoordinator.shared
                 coordinator.voiceInteracted = coordinator.voiceInteracted || viaVoice
@@ -896,7 +1422,7 @@ class ChatViewModel: NSObject, ObservableObject {
         }
         let postedHarnessEngine = selectedHarnessEngine
         let postedHarnessModel = selectedHarnessModel
-        let postedProfile = selectedProfile
+        let postedModelSelection = currentModelSelection
 
         // Optimistic local echo of the user's message.
         var echo = ChatMessage(id: UUID().uuidString, isUser: true, text: trimmed, type: .text)
@@ -913,7 +1439,7 @@ class ChatViewModel: NSObject, ObservableObject {
             postMessageStreaming(
                 trimmed, to: sessionId, chatTurnId: chatTurnId, mode: postedMode,
                 harnessEngine: postedHarnessEngine, harnessModel: postedHarnessModel,
-                profile: postedProfile, planReply: postedPlanReply
+                modelSelection: postedModelSelection, planReply: postedPlanReply
             )
         } else {
             createSession { [weak self] sessionId in
@@ -934,7 +1460,7 @@ class ChatViewModel: NSObject, ObservableObject {
                     mode: postedMode,
                     harnessEngine: postedHarnessEngine,
                     harnessModel: postedHarnessModel,
-                    profile: postedProfile,
+                    modelSelection: postedModelSelection,
                     planReply: postedPlanReply
                 )
             }
@@ -951,7 +1477,7 @@ class ChatViewModel: NSObject, ObservableObject {
         mode: String? = nil,
         harnessEngine: String,
         harnessModel: String,
-        profile: String,
+        modelSelection: ChatModelSelection?,
         planReply: PlanReplyTarget? = nil
     ) {
         guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/sessions/\(sessionId)/messages/stream") else { return }
@@ -970,11 +1496,12 @@ class ChatViewModel: NSObject, ObservableObject {
             // result instead of replaying tools under a second request.
             "continue_on_disconnect": true
         ]
-        if !profile.isEmpty && (harnessEngine == "magician" || harnessEngine == "pi") {
-            payload["profile"] = profile
+        guard let fields = ChatModelPreference.requestFields(selection: modelSelection, engine: harnessEngine, nativeModel: harnessModel) else {
+            isThinking = false
+            commandNotice = ComposerCommandNotice(text: ChatModelPreference.unavailableMessage, isError: true)
+            return
         }
-        payload["harness_engine"] = harnessEngine
-        payload["harness_model"] = harnessModel
+        payload.merge(fields) { _, new in new }
         let uploadedIds = stagedAttachments.compactMap { $0.remoteId }
         if !uploadedIds.isEmpty { payload["attachment_ids"] = uploadedIds }
         if viaVoice { payload["voice_origin"] = true }   // web parity: stamp the turn's origin
@@ -1005,19 +1532,46 @@ class ChatViewModel: NSObject, ObservableObject {
         startActivityStream(sessionId: sessionId, chatTurnId: chatTurnId)
         Task { [weak self] in
             guard let self = self else { return }
+            var end = ChatStreamEnd()
             do {
                 let (bytes, response) = try await networkSession.bytes(for: request)
                 if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                    await self.finishStreaming(streamId, chatTurnId: chatTurnId, generation: generation, gotContent: false)
+                    end.rejected = true
+                    await self.finishStreaming(streamId, chatTurnId: chatTurnId, generation: generation, end: end)
                     return
                 }
                 var accumulated = ""
-                // SSE frames are `event: token` / `data: {"text": "…"}`; parse data lines.
+                // SSE frames are `event: <name>` / `data: {…}`. Tokens carry
+                // `text`; `error` carries `error`; the final `done` frame is
+                // the turn's `ChatResponse` (`assistant_message`, `cancelled`).
+                var frameEvent = ""
                 for try await line in bytes.lines {
-                    guard line.hasPrefix("data:") else { continue }
+                    if line.hasPrefix("event:") {
+                        frameEvent = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                        continue
+                    }
+                    guard line.hasPrefix("data:") else {
+                        if line.isEmpty { frameEvent = "" }
+                        continue
+                    }
                     let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                     guard let d = json.data(using: .utf8),
                           let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+                    let event = frameEvent
+                    frameEvent = ""
+                    if event == "error" {
+                        // The turn may still recover (a retried provider
+                        // call), so the bubble stays; the turn's state
+                        // decides what it shows when the stream ends.
+                        let message = (obj["error"] as? String) ?? (obj["message"] as? String) ?? ""
+                        end.errorMessage = message
+                        debugLog("Chat stream error frame: \(message)")
+                        continue
+                    }
+                    if event == "done" || obj.keys.contains("assistant_message") || obj["cancelled"] != nil {
+                        end.sawDone = true
+                        if (obj["cancelled"] as? Bool) == true { end.cancelled = true }
+                    }
                     // The final `done` frame carries the persisted reply, which
                     // the server checks against the turn's tool results; it
                     // replaces the streamed draft (and is what gets spoken).
@@ -1035,7 +1589,8 @@ class ChatViewModel: NSObject, ObservableObject {
                         }
                         continue
                     }
-                    guard let token = obj["text"] as? String, !token.isEmpty else { continue }
+                    guard event.isEmpty || event == "token" || event == "message",
+                          let token = obj["text"] as? String, !token.isEmpty else { continue }
                     accumulated += token
                     let snapshot = accumulated
                     await MainActor.run {
@@ -1059,52 +1614,426 @@ class ChatViewModel: NSObject, ObservableObject {
                         }
                     }
                 }
-                await self.finishStreaming(
-                    streamId,
-                    chatTurnId: chatTurnId,
-                    generation: generation,
-                    gotContent: !accumulated.isEmpty
-                )
+                end.gotContent = !accumulated.isEmpty
+                await self.finishStreaming(streamId, chatTurnId: chatTurnId, generation: generation, end: end)
             } catch {
-                await self.finishStreaming(streamId, chatTurnId: chatTurnId, generation: generation, gotContent: false)
+                end.transportFailed = true
+                end.gotContent = await MainActor.run {
+                    self.messages.first(where: { $0.id == streamId })?.text.isEmpty == false
+                }
+                await self.finishStreaming(streamId, chatTurnId: chatTurnId, generation: generation, end: end)
                 debugLog("Chat stream failed: \(error.localizedDescription)")
             }
         }
     }
 
+    /// The stream for `chatTurnId` ended. A complete reply finalizes as
+    /// before. Anything else (no reply, a Stop, an error frame, a dropped
+    /// connection) does not end the turn on the server, which keeps running
+    /// it (`continue_on_disconnect`): the turn's state decides whether the
+    /// bubble stays live, becomes the reply, or shows a status line.
     @MainActor
-    private func finishStreaming(_ streamId: String, chatTurnId: String, generation: UInt64, gotContent: Bool) {
+    private func finishStreaming(_ streamId: String, chatTurnId: String, generation: UInt64, end: ChatStreamEnd) {
         guard transcriptGeneration == generation else { return }
-        isThinking = false
         if activeSendingChatTurnId == chatTurnId {
             activeSendingChatTurnId = nil
         }
-        if gotContent {
-            // Attach the turn's activity timeline to the finalized streamed message.
-            if let idx = messages.firstIndex(where: { $0.id == streamId }) {
-                messages[idx].chatTurnId = chatTurnId
-                messages[idx].activityRows = activityRowsByTurn[chatTurnId] ?? activity.snapshot()
-                messages[idx].activityIsLive = isActivityTurnLive(chatTurnId)
-                speakReplyIfEnabled(messages[idx].text, messageId: streamId)
+        if end.gotContent && !end.transportFailed {
+            isThinking = false
+            if end.sawDone, !end.cancelled {
+                recordLocalCompletion(chatTurnId)
             }
+            finalizeStreamedReply(streamId, chatTurnId: chatTurnId)
+            synchronizeActivityLivenessAndStream()
+            return
+        }
+
+        // From here the realtime path owns the turn's canonical reply.
+        if streamingMessageId == streamId { streamingMessageId = nil }
+        if let stashed = suppressedCanonicalByTurn.removeValue(forKey: chatTurnId) {
+            isThinking = false
+            adoptCanonicalReply(stashed)
+            synchronizeActivityLivenessAndStream()
+            return
+        }
+        if let state = turnStates[chatTurnId], !(state.isRunning && end.sawDone) {
+            isThinking = false
+            if state.isRunning {
+                markTurnBubbleLive(chatTurnId)
+            } else {
+                settleTurnBubble(state)
+            }
+            synchronizeActivityLivenessAndStream()
+            return
+        }
+        guard let sessionId = currentSessionId, !sessionId.isEmpty else {
+            isThinking = false
+            settleStreamWithoutServerState(streamId, chatTurnId: chatTurnId, end: end, serverForgotTurn: false)
+            synchronizeActivityLivenessAndStream()
+            return
+        }
+        readQueue(sessionId: sessionId) { [weak self] snapshot in
+            guard let self, self.transcriptGeneration == generation else { return }
+            if self.activeSendingChatTurnId == nil { self.isThinking = false }
+            switch snapshot {
+            case .latest(let state) where state.chatTurnId == chatTurnId:
+                // Applied by `readQueue`: live, the reply, or a status line.
+                break
+            case nil where end.transportFailed:
+                // Offline: the server most likely still runs the turn. Keep
+                // the bubble live; the queue poll or a resync settles it.
+                self.recordTurnState(ChatTurnState(
+                    chatTurnId: chatTurnId, sessionId: sessionId, status: .running,
+                    startedAt: Date().timeIntervalSince1970 * 1000))
+                self.markTurnBubbleLive(chatTurnId)
+            case .noTurn:
+                self.settleStreamWithoutServerState(
+                    streamId, chatTurnId: chatTurnId, end: end, serverForgotTurn: true)
+            default:
+                self.settleStreamWithoutServerState(
+                    streamId, chatTurnId: chatTurnId, end: end, serverForgotTurn: false)
+            }
+            self.synchronizeActivityLivenessAndStream()
+        }
+    }
+
+    /// Attach the turn's activity to a fully streamed reply, speak it, and
+    /// hold off the realtime duplicate of the same reply for a short grace.
+    private func finalizeStreamedReply(_ streamId: String, chatTurnId: String) {
+        if let idx = messages.firstIndex(where: { $0.id == streamId }) {
+            messages[idx].chatTurnId = chatTurnId
+            messages[idx].activityRows = activityRowsByTurn[chatTurnId] ?? activity.snapshot()
+            messages[idx].activityIsLive = isActivityTurnLive(chatTurnId)
+            speakReplyIfEnabled(messages[idx].text, messageId: streamId)
+        }
+        refreshActivityRows(
+            sessionId: currentSessionId,
+            messageId: streamId,
+            chatTurnId: chatTurnId,
+            force: true
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.streamingMessageId == streamId else { return }
+            self.streamingMessageId = nil
+            self.suppressedCanonicalByTurn.removeValue(forKey: chatTurnId)
+        }
+    }
+
+    /// The stream ended without a reply and the server has no state for the
+    /// turn (an older server, a rejected send, or a restart). Show what the
+    /// stream itself said; with nothing to show, drop the empty bubble and
+    /// let the realtime feed deliver whatever the turn produced.
+    private func settleStreamWithoutServerState(
+        _ streamId: String,
+        chatTurnId: String,
+        end: ChatStreamEnd,
+        serverForgotTurn: Bool
+    ) {
+        let notice: String?
+        if end.cancelled {
+            notice = ChatTurnState.stoppedNotice
+        } else if end.errorMessage != nil {
+            notice = ChatTurnState.failedNotice
+        } else if serverForgotTurn && end.transportFailed {
+            notice = ChatTurnState.interruptedNotice
+        } else {
+            notice = nil
+        }
+        guard let idx = messages.firstIndex(where: { $0.id == streamId }) else { return }
+        if let notice {
+            messages[idx].turnStatusNotice = notice
+            messages[idx].activityIsLive = false
+        } else if messages[idx].text.isEmpty, messages[idx].turnStatusNotice == nil {
+            messages.remove(at: idx)
+        } else {
+            finalizeStreamedReply(streamId, chatTurnId: chatTurnId)
+        }
+    }
+
+    // MARK: - Server turn state (`turn_state`, `chat.turn.state_changed`)
+
+    /// Record one state of a turn in the open session (the recording rule
+    /// applies) and refresh which turn runs. False when it was ignored.
+    @discardableResult
+    private func recordTurnState(_ state: ChatTurnState) -> Bool {
+        guard state.sessionId == currentSessionId,
+              ChatTurnState.shouldRecord(state, over: turnStates[state.chatTurnId]) else { return false }
+        turnStates[state.chatTurnId] = state
+        recomputeRunningServerTurn()
+        return true
+    }
+
+    /// This device read the turn's whole reply: it is complete, whatever a
+    /// later poll that raced the end event says.
+    private func recordLocalCompletion(_ chatTurnId: String) {
+        guard let sessionId = currentSessionId else { return }
+        recordTurnState(ChatTurnState(
+            chatTurnId: chatTurnId,
+            sessionId: sessionId,
+            status: .completed,
+            startedAt: turnStates[chatTurnId]?.startedAt ?? 0,
+            endedAt: Date().timeIntervalSince1970 * 1000))
+    }
+
+    private func recomputeRunningServerTurn() {
+        let running = turnStates.values
+            .filter { $0.isRunning && !isRealtimeVoiceTurn($0.chatTurnId) && $0.sessionId == currentSessionId }
+            .max { $0.startedAt < $1.startedAt }?
+            .chatTurnId
+        if runningServerTurnId != running { runningServerTurnId = running }
+        refreshServerRunning()
+    }
+
+    /// One state change: a running turn gets its live bubble, a settled one
+    /// its reply or status line. Realtime voice turns stay on the call surface.
+    /// `force` re-applies a state already recorded (a freshly built transcript).
+    private func applyTurnState(_ state: ChatTurnState, force: Bool = false) {
+        let previous = turnStates[state.chatTurnId]
+        guard recordTurnState(state), !isRealtimeVoiceTurn(state.chatTurnId),
+              force || previous != state else { return }
+        if state.isRunning {
+            ensureLiveTurnBubble(state.chatTurnId)
+        } else {
+            settleTurnBubble(state)
+        }
+    }
+
+    /// A session or queue response's `turn_state`. The server names its
+    /// latest turn (or none, after a restart), so any other turn still marked
+    /// running here is not running. A transcript load with no turn state
+    /// shows a trailing unanswered question as interrupted.
+    private func applyTurnStateSnapshot(
+        _ snapshot: ChatTurnStateSnapshot,
+        sessionId: String,
+        fromTranscriptLoad: Bool
+    ) {
+        guard sessionId == currentSessionId, snapshot != .unsupported else { return }
+        let latest = snapshot.state
+        let orphaned = turnStates.values.filter { $0.isRunning && $0.chatTurnId != latest?.chatTurnId }
+        // This device's own stream settles its turn itself.
+        for state in orphaned where !turnOwnedByLocalStream(state.chatTurnId) {
+            turnStates.removeValue(forKey: state.chatTurnId)
+            guard !isRealtimeVoiceTurn(state.chatTurnId) else { continue }
+            if latest == nil {
+                // The server no longer knows the turn: it restarted mid-turn.
+                settleTurnBubble(Self.interruptedState(state.chatTurnId, sessionId: sessionId))
+            } else {
+                // A later turn started: this one ended while we were not
+                // listening; settle as completed, which re-reads a missed reply.
+                settleTurnBubble(ChatTurnState(
+                    chatTurnId: state.chatTurnId, sessionId: sessionId,
+                    status: .completed, startedAt: state.startedAt))
+            }
+        }
+        recomputeRunningServerTurn()
+        if let latest {
+            applyTurnState(latest, force: fromTranscriptLoad)
+        } else if fromTranscriptLoad,
+                  let turnId = Self.unansweredTrailingUserTurnId(messages),
+                  !isRealtimeVoiceTurn(turnId) {
+            // Not recorded: if this load raced the turn's start, its own
+            // `running` event still turns the line back into a live bubble.
+            settleTurnBubble(Self.interruptedState(turnId, sessionId: sessionId))
+        }
+    }
+
+    private func isRealtimeVoiceTurn(_ turnId: String) -> Bool {
+        ChatTurnState.isRealtimeVoiceTurn(turnId) || realtimeVoiceTurnIds.contains(turnId)
+    }
+
+    /// Note the turns of realtime voice rows; a bubble one of them got from
+    /// its running state (before its row arrived) leaves the transcript.
+    private func noteRealtimeVoiceTurns(_ rows: [ChatMessageRawData]) {
+        let turns = rows.compactMap { raw -> String? in
+            guard raw.presenceSessionId?.isEmpty == false else { return nil }
+            return Self.nonEmptyTurnId(raw.chatTurnId)
+        }
+        guard !turns.isEmpty else { return }
+        realtimeVoiceTurnIds.formUnion(turns)
+        messages.removeAll { message in
+            turns.contains { Self.isTurnPlaceholder(message, turnId: $0) }
+                && message.text.isEmpty && message.structuredResponse == nil
+        }
+        recomputeRunningServerTurn()
+    }
+
+    private static func interruptedState(_ turnId: String, sessionId: String) -> ChatTurnState {
+        ChatTurnState(
+            chatTurnId: turnId, sessionId: sessionId, status: .failed,
+            startedAt: 0, reason: ChatTurnState.interruptedReason)
+    }
+
+    /// The last message is a user turn with no assistant row of its own:
+    /// after a restart (`turn_state: null`) that turn was interrupted.
+    static func unansweredTrailingUserTurnId(_ messages: [ChatMessage]) -> String? {
+        guard let last = messages.last, last.isUser,
+              let turnId = nonEmptyTurnId(last.chatTurnId),
+              !ChatTurnState.isRealtimeVoiceTurn(turnId),
+              !messages.contains(where: { !$0.isUser && $0.chatTurnId == turnId })
+        else { return nil }
+        return turnId
+    }
+
+    /// The assistant bubble that holds a turn's place until its canonical
+    /// reply replaces it (`reconcileCanonicalText`): the SSE placeholder, or
+    /// one made from the turn's server state.
+    static func isTurnPlaceholder(_ message: ChatMessage, turnId: String) -> Bool {
+        !message.isUser && message.id.hasPrefix("streaming-") && message.chatTurnId == turnId
+    }
+
+    static func turnPlaceholderId(_ turnId: String) -> String { "streaming-turn-\(turnId)" }
+
+    /// This device is still sending, or reading the reply stream of, the turn.
+    private func turnOwnedByLocalStream(_ turnId: String) -> Bool {
+        if activeSendingChatTurnId == turnId { return true }
+        guard let streamId = streamingMessageId else { return false }
+        return messages.first(where: { $0.id == streamId })?.chatTurnId == turnId
+    }
+
+    /// A running turn shows as a live assistant bubble with its steps from
+    /// the start: keep this device's own placeholder, or make one (a stream
+    /// drop, a relaunch, a turn queued or sent from another surface).
+    private func ensureLiveTurnBubble(_ turnId: String) {
+        if let index = messages.lastIndex(where: { Self.isTurnPlaceholder($0, turnId: turnId) }) {
+            if messages[index].turnStatusNotice != nil {
+                messages[index].turnStatusNotice = nil
+            }
+            return
+        }
+        var bubble = ChatMessage(id: Self.turnPlaceholderId(turnId), isUser: false, text: "", type: .text)
+        bubble.chatTurnId = turnId
+        bubble.createdAt = Date()
+        bubble.activityRows = activityRowsByTurn[turnId] ?? []
+        bubble.activityIsLive = true
+        var next = messages
+        next.append(bubble)
+        // One activity disclosure per turn: the live bubble owns it now.
+        next = Self.retainLatestActivityAnchorPerTurn(next)
+        messages = Self.placeTaskCardsAfterTurnReply(next)
+    }
+
+    /// The stream dropped while the server still runs the turn.
+    private func markTurnBubbleLive(_ turnId: String) {
+        if let bubble = messages.last(where: { Self.isTurnPlaceholder($0, turnId: turnId) }),
+           !bubble.text.isEmpty {
+            // Partial streamed text; the canonical reply replaces it.
+            partialReplyTurns.insert(turnId)
+        }
+        ensureLiveTurnBubble(turnId)
+    }
+
+    /// A settled turn: its reply (already in place), the watchdog's notice,
+    /// or a status line ("Stopped", failed, interrupted).
+    private func settleTurnBubble(_ state: ChatTurnState) {
+        let turnId = state.chatTurnId
+        guard !state.isRunning, !isRealtimeVoiceTurn(turnId) else { return }
+        let placeholderIndex = messages.lastIndex { Self.isTurnPlaceholder($0, turnId: turnId) }
+        // A stream still reading this turn settles it itself (`finishStreaming`).
+        if let placeholderIndex, messages[placeholderIndex].id == streamingMessageId { return }
+        defer { partialReplyTurns.remove(turnId) }
+        if let stashed = suppressedCanonicalByTurn.removeValue(forKey: turnId) {
+            adoptCanonicalReply(stashed)
+            return
+        }
+        switch state.status {
+        case .running:
+            return
+        case .completed:
+            guard let placeholderIndex else { return }
+            let placeholder = messages[placeholderIndex]
+            if (placeholder.text.isEmpty && placeholder.structuredResponse == nil)
+                || partialReplyTurns.contains(turnId) {
+                // The reply never reached this device (missed realtime
+                // frames): re-read the transcript, which has it.
+                messages[placeholderIndex].activityIsLive = false
+                scheduleTranscriptReload(for: turnId)
+            }
+            // Otherwise the streamed text is the reply.
+        case .stopped where state.isWatchdogStop:
+            // The watchdog's persisted notice replaces the placeholder when
+            // it arrives; one still here means it was missed.
+            guard let placeholderIndex else { return }
+            messages[placeholderIndex].turnStatusNotice = ChatTurnState.stoppedNotice
+            messages[placeholderIndex].activityIsLive = false
+            scheduleTranscriptReload(for: turnId)
+        case .stopped, .failed:
+            guard let notice = state.notice else { return }
+            if let placeholderIndex {
+                messages[placeholderIndex].turnStatusNotice = notice
+                messages[placeholderIndex].activityIsLive = false
+            } else {
+                insertTurnStatusLine(notice, turnId: turnId)
+            }
+        }
+    }
+
+    /// A settled turn with no bubble here gets its status line under its
+    /// question, unless it already has an assistant row of its own.
+    private func insertTurnStatusLine(_ notice: String, turnId: String) {
+        guard messages.contains(where: { $0.isUser && $0.chatTurnId == turnId }),
+              !messages.contains(where: {
+                  !$0.isUser && $0.chatTurnId == turnId && Self.canOwnActivityTimeline($0)
+              }),
+              let anchor = messages.lastIndex(where: { $0.chatTurnId == turnId }) else { return }
+        var line = ChatMessage(id: Self.turnPlaceholderId(turnId), isUser: false, text: "", type: .text)
+        line.chatTurnId = turnId
+        line.createdAt = messages[anchor].createdAt
+        line.activityRows = activityRowsByTurn[turnId] ?? []
+        line.turnStatusNotice = notice
+        var next = messages
+        next.insert(line, at: anchor + 1)
+        messages = Self.placeTaskCardsAfterTurnReply(Self.retainLatestActivityAnchorPerTurn(next))
+    }
+
+    /// Fold one canonical assistant row into the transcript (replacing the
+    /// turn's placeholder) with the turn's activity. False when present.
+    @discardableResult
+    private func adoptCanonicalReply(_ incoming: ChatMessage) -> Bool {
+        var msg = incoming
+        msg.activityRows = msg.chatTurnId.flatMap { activityRowsByTurn[$0] } ?? activity.snapshot()
+        if let turnId = msg.chatTurnId {
+            msg.activityIsLive = isActivityTurnLive(turnId)
+        }
+        var transcript = messages
+        guard Self.reconcileCanonicalText(msg, into: &transcript) else { return false }
+        messages = transcript
+        if let turnId = msg.chatTurnId {
+            partialReplyTurns.remove(turnId)
             refreshActivityRows(
                 sessionId: currentSessionId,
-                messageId: streamId,
-                chatTurnId: chatTurnId,
+                messageId: msg.id,
+                chatTurnId: turnId,
                 force: true
             )
-            // Suppress the WS duplicate of this turn's final message for a short grace.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                if self?.streamingMessageId == streamId { self?.streamingMessageId = nil }
-            }
-        } else {
-            // No tokens streamed — drop the empty placeholder and let the WS deliver it.
-            if let idx = messages.firstIndex(where: { $0.id == streamId && $0.text.isEmpty }) {
-                messages.remove(at: idx)
-            }
-            streamingMessageId = nil
         }
-        synchronizeActivityLivenessAndStream()
+        if msg.chatTurnId?.hasPrefix("voice-request-") != true
+            && msg.chatTurnId?.hasPrefix("voice-task-result-") != true {
+            speakReplyIfEnabled(msg.text, messageId: msg.id)
+        }
+        return true
+    }
+
+    /// Re-read the transcript once (shortly, so a late reply can land
+    /// first) when a settled turn's reply or notice is missing here.
+    private func scheduleTranscriptReload(for turnId: String) {
+        guard let sessionId = currentSessionId else { return }
+        transcriptReloadTurns.insert(turnId)
+        guard !transcriptReloadScheduled else { return }
+        transcriptReloadScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            self.transcriptReloadScheduled = false
+            let turns = self.transcriptReloadTurns
+            self.transcriptReloadTurns = []
+            // Only while a placeholder still waits for what the reload brings.
+            guard self.currentSessionId == sessionId,
+                  self.streamingMessageId == nil,
+                  self.activeSendingChatTurnId == nil,
+                  turns.contains(where: { turnId in
+                      self.messages.contains { Self.isTurnPlaceholder($0, turnId: turnId) }
+                  }) else { return }
+            self.loadSession(sessionId)
+        }
     }
 
     // MARK: - Canonical per-turn activity
@@ -1328,6 +2257,7 @@ class ChatViewModel: NSObject, ObservableObject {
 
     private func isActivityTurnLive(_ chatTurnId: String, rows: [ActivityRow]? = nil) -> Bool {
         if activeSendingChatTurnId == chatTurnId { return true }
+        if runningServerTurnId == chatTurnId { return true }
         guard Self.latestActiveTaskTurnId(messages) == chatTurnId else { return false }
         let taskRows = (rows ?? activityRowsByTurn[chatTurnId] ?? [])
             .filter { $0.key.hasPrefix("task::") }
@@ -1335,7 +2265,8 @@ class ChatViewModel: NSObject, ObservableObject {
     }
 
     private func synchronizeActivityLivenessAndStream() {
-        let desiredTurnId = activeSendingChatTurnId ?? Self.latestActiveTaskTurnId(messages)
+        let desiredTurnId = activeSendingChatTurnId ?? runningServerTurnId
+            ?? Self.latestActiveTaskTurnId(messages)
         for index in messages.indices where !messages[index].isUser
             && Self.canOwnActivityTimeline(messages[index]) {
             guard let turnId = messages[index].chatTurnId else {
@@ -1391,7 +2322,8 @@ class ChatViewModel: NSObject, ObservableObject {
             unique.append((index, activityEventTimestampMs(event) ?? 0, event))
         }
         // Equal timestamps: a lifecycle start sorts before its completion
-        // (AgenticActionStarted before AgenticActionExecuted, tool.call.started
+        // (AgenticActionStarted before AgenticActionExecuted, LLMRequestSent
+        // before LLMRouted before LLMResponseReceived, tool.call.started
         // before tool.call.finished), then arrival order.
         return unique.sorted {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
@@ -1400,13 +2332,14 @@ class ChatViewModel: NSObject, ObservableObject {
         }.map(\.event)
     }
 
-    /// 0 for a lifecycle start, 1 for everything else.
+    /// 0 for a lifecycle start, 1 for an LLM call's route, 2 for everything else.
     private static func activityLifecycleRank(_ event: [String: Any]) -> Int {
         let outer = event["event_type"] as? String ?? ""
-        if outer == "AgenticActionStarted" { return 0 }
+        if outer == "AgenticActionStarted" || outer == "LLMRequestSent" { return 0 }
+        if outer == "LLMRouted" { return 1 }
         let inner = (event["data"] as? [String: Any])?["event"] as? [String: Any]
         let type = inner?["event_type"] as? String ?? outer
-        return type.hasSuffix(".started") ? 0 : 1
+        return type.hasSuffix(".started") ? 0 : 2
     }
 
     private static func activityEventDedupeKey(_ event: [String: Any]) -> String? {
@@ -1467,6 +2400,9 @@ class ChatViewModel: NSObject, ObservableObject {
                 self.chatHarnesses = roster.engines.filter { $0.installed }
                 self.runHarnessEngine = roster.current
                 self.runHarnessModel = roster.runModel
+                self.runModelSelection = roster.runModelSelection
+                self.runFollowsChat = roster.followsChat ?? false
+                self.serverChatEngine = roster.chatCurrent
                 if !self.chatHarnesses.contains(where: { $0.name == self.selectedHarnessEngine }) {
                     self.selectedHarnessEngine = "magician"
                 }
@@ -1476,12 +2412,14 @@ class ChatViewModel: NSObject, ObservableObject {
         }.resume()
     }
 
-    // MARK: - Slash commands (docs/plans/2026-10-03-slash-commands-and-run-budgets.md)
+    // MARK: - Slash commands (docs/archive/plans/2026-10-03-slash-commands-and-run-budgets.md)
 
     /// What the `/` picker's option rows read.
     var composerCommandContext: ComposerCommandContext {
-        ComposerCommandContext(
+        var context = ComposerCommandContext(
             engines: chatHarnesses.map { (name: $0.name, models: $0.availableModels) },
+            engineCredentials: Dictionary(chatHarnesses.compactMap { harness in
+                harness.credentials.map { (harness.name, $0) } }, uniquingKeysWith: { first, _ in first }),
             deviceEngine: selectedHarnessEngine,
             deviceModel: selectedHarnessModel,
             runEngine: runHarnessEngine,
@@ -1492,14 +2430,82 @@ class ChatViewModel: NSObject, ObservableObject {
             },
             budgetDefaults: budgetDefaults,
             budgetDefaultsError: budgetDefaultsError)
+        var catalogs = commandCatalogs
+        // The composer's own list stands in for its engine until a slash load lands.
+        if ["magician", "pi"].contains(selectedHarnessEngine), catalogs[selectedHarnessEngine] == nil, !profiles.isEmpty {
+            catalogs[selectedHarnessEngine] = profiles
+        }
+        context.catalogModels = catalogs.mapValues { $0.compactMap(\.modelChoice).map { ComposerModelOption($0) } }
+        context.catalogErrors = commandCatalogErrors
+        context.deviceModelSelection = currentModelSelection.map { ComposerModelSelection($0) }
+        context.serverChatEngine = serverChatEngine
+        context.runFollowsChat = runFollowsChat
+        context.runModelSelection = runModelSelection.map { ComposerModelSelection($0) }
+        context.loopModels = loopModels?.map { ComposerModelOption($0, operation: true) }
+        context.loopSelection = loopSelection.map { ComposerModelSelection($0) }
+        context.loopModelsError = loopModelsError
+        // `voiceMode` / `voiceModesAvailable`: the composer fills them (it owns availability).
+        return context
     }
 
     /// A command's options opened: refresh what they mark as current.
     func composerCommandOpened(_ id: ComposerCommandId) {
         switch id {
         case .budgetDefault: loadBudgetDefaults()
-        case .engine, .runEngine: fetchChatHarnesses()
-        case .budget: break
+        case .engine:
+            fetchChatHarnesses()
+            loadCommandCatalog(selectedHarnessEngine)
+        case .runEngine:
+            fetchChatHarnesses()
+            loadLoopRouting()
+            if chatHarnesses.contains(where: { $0.name == "pi" }) { loadCommandCatalog("pi") }
+        case .budget, .voiceMode: break
+        }
+    }
+
+    /// An engine's models opened under `/engine` or `/run-engine`: load them.
+    func composerCommandLevelOpened(_ level: ComposerCommandLevel) {
+        switch level {
+        case .runModels("magician"): loadLoopRouting()
+        case .engineModels(let engine), .runModels(let engine): loadCommandCatalog(engine)
+        case .command, .budgetTask, .thinking: break
+        }
+    }
+
+    /// `GET /chat/models?engine=` for the `/` picker (magician, pi). Kept
+    /// apart from `profiles`: browsing another engine's models must not change
+    /// the chat's engine until a model is picked.
+    func loadCommandCatalog(_ engine: String) {
+        guard !isUITestLaunch, ["magician", "pi"].contains(engine) else { return }
+        commandCatalogErrors[engine] = nil
+        commandRequest("GET", "/api/magician/v2/chat/models?engine=\(engine)", body: nil) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let data):
+                if let catalog = try? JSONDecoder().decode(ChatModelCatalog.self, from: data) {
+                    self.commandCatalogs[engine] = catalog.rows
+                } else {
+                    self.commandCatalogErrors[engine] = "The model list could not be read."
+                }
+            case .failure(let message):
+                self.commandCatalogErrors[engine] = message.text
+            }
+        }
+    }
+
+    /// `GET /llm/routing`: the model Magician's loop decides with.
+    func loadLoopRouting() {
+        guard !isUITestLaunch else { return }
+        loopModelsError = nil
+        commandRequest("GET", "/api/magician/v2/llm/routing", body: nil) { [weak self] result in
+            guard let self else { return }
+            switch result.flatMap(LoopModelRouting.decode) {
+            case .success(let routing):
+                self.loopModels = routing.models
+                self.loopSelection = routing.selection
+            case .failure(let message):
+                self.loopModelsError = message.text
+            }
         }
     }
 
@@ -1523,34 +2529,86 @@ class ChatViewModel: NSObject, ObservableObject {
     /// Run a picked command option. Never sends a chat message.
     func runComposerCommand(_ action: ComposerCommandAction) {
         switch action {
-        case .setChatEngine(let engine, let model, let everywhere):
-            selectedHarnessEngine = engine
-            selectedHarnessModel = model
+        case .setChatEngine(let engine, let model, let selection, let everywhere):
+            let context = composerCommandContext
+            guard applyChatChoice(engine: engine, model: model, selection: selection) else { return }
             guard everywhere else {
-                postCommandNotice(ComposerCommands.chatEngineConfirmation(engine: engine, model: model, everywhere: false))
+                postCommandNotice(ComposerCommands.chatEngineConfirmation(
+                    engine: engine, model: model, selection: selection, everywhere: false, context: context))
                 return
             }
             commandRequest("PUT", "/api/magician/v2/plane/chat-engine",
                            body: ComposerCommands.engineBody(engine: engine, model: model)) { [weak self] result in
                 switch result {
                 case .success:
-                    self?.postCommandNotice(ComposerCommands.chatEngineConfirmation(engine: engine, model: model, everywhere: true))
+                    self?.serverChatEngine = engine
+                    self?.postCommandNotice(ComposerCommands.chatEngineConfirmation(
+                        engine: engine, model: model, selection: nil, everywhere: true, context: context))
                 case .failure(let message):
                     self?.postCommandNotice("Set on this device only: \(message.text)", isError: true)
                 }
             }
-        case .setRunEngine(let engine, let model):
+        case .setRunEngine(let engine, let model, let selection):
+            let notice = ComposerCommands.runEngineConfirmation(engine: engine, model: model, selection: selection,
+                                                                context: composerCommandContext)
             commandRequest("PUT", "/api/magician/v2/plane/engine",
-                           body: ComposerCommands.engineBody(engine: engine, model: model)) { [weak self] result in
+                           body: ComposerCommands.runEngineBody(engine: engine, model: model, selection: selection)) { [weak self] result in
+                guard let self else { return }
                 switch result {
                 case .success:
-                    self?.runHarnessEngine = engine
-                    self?.runHarnessModel = model
-                    self?.postCommandNotice(ComposerCommands.runEngineConfirmation(engine: engine, model: model))
+                    let followsChat = engine == "chat"
+                    self.runFollowsChat = followsChat
+                    self.runHarnessEngine = followsChat ? (self.serverChatEngine ?? self.runHarnessEngine) : engine
+                    self.runHarnessModel = model
+                    self.runModelSelection = selection.map { ChatModelSelection($0) }
+                    self.postCommandNotice(notice)
+                    self.fetchChatHarnesses()
                 case .failure(let message):
-                    self?.postCommandNotice(message.text, isError: true)
+                    self.postCommandNotice(message.text, isError: true)
                 }
             }
+        case .setLoopModel(let selection):
+            let context = composerCommandContext
+            let notice = ComposerCommands.loopModelConfirmation(selection: selection, context: context)
+            let save: () -> Void = { [weak self] in
+                guard let self else { return }
+                self.commandRequest("PUT", "/api/magician/v2/llm/routing/\(LoopModelRouting.operation)",
+                                    body: ComposerCommands.loopModelBody(selection)) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        self.loopSelection = ChatModelSelection(selection)
+                        self.postCommandNotice(notice)
+                        self.loadLoopRouting()
+                    case .failure(let message):
+                        self.postCommandNotice(message.text, isError: true)
+                    }
+                }
+            }
+            // The loop model only drives runs Magician thinks: pin it first
+            // when agentic flows run on another engine (Settings does the same).
+            guard !ComposerCommands.runResolvesToMagician(context) else { save(); return }
+            commandRequest("PUT", "/api/magician/v2/plane/engine",
+                           body: ComposerCommands.engineBody(engine: "magician", model: "default")) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.runFollowsChat = false
+                    self.runHarnessEngine = "magician"
+                    self.runHarnessModel = "default"
+                    self.fetchChatHarnesses()
+                    save()
+                case .failure(let message):
+                    self.postCommandNotice(message.text, isError: true)
+                }
+            }
+        case .setVoiceMode(let mode):
+            guard let launch = SystemVoiceLaunchMode(rawValue: mode.rawValue) else { return }
+            // As the composer's voice-mode menu does.
+            let audio = AudioSettings.shared
+            audio.composerVoiceMode = launch
+            if launch != .dictation { audio.liveVoiceEngine = launch == .realtime ? .realtime : .handsFree }
+            postCommandNotice(ComposerCommands.voiceModeConfirmation(mode))
         case .grantBudget(let taskId, let title, let grant):
             let path = "/api/magician/v2/tasks/\(taskId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? taskId)/budget"
             commandRequest("POST", path, body: grant.body) { [weak self] result in
@@ -1577,9 +2635,36 @@ class ChatViewModel: NSObject, ObservableObject {
                     self.postCommandNotice(message.text, isError: true)
                 }
             }
-        case .back, .open, .toggleEngineScope, .pickBudgetTask, .none:
+        case .back, .open, .openModels, .openThinking, .toggleEngineScope, .pickBudgetTask, .none:
             break
         }
+    }
+
+    /// Set the chat's engine and model from `/engine`. A catalog engine's
+    /// model goes through `selectedProfile` (the route for the selection, as
+    /// the model sheet does), so the composer sends it as `model_selection`.
+    private func applyChatChoice(engine: String, model: String, selection: ComposerModelSelection?) -> Bool {
+        guard let selection, ["magician", "pi"].contains(engine) else {
+            selectedHarnessEngine = engine
+            selectedHarnessModel = model
+            return true
+        }
+        let rows = commandCatalogs[engine] ?? (engine == selectedHarnessEngine ? profiles : [])
+        let chosen = ChatModelSelection(selection)
+        guard let choice = rows.compactMap(\.modelChoice).first(where: { $0.id == chosen.modelId }),
+              let route = ComposerModelCatalogControls.route(for: choice, selection: chosen),
+              rows.contains(where: { $0.name == route }) else {
+            postCommandNotice("That model is not available on this Magician.", isError: true)
+            return false
+        }
+        // An engine switch refetches the catalog and resolves the saved
+        // choice: save this one first so the refetch lands on it.
+        persistModelPreference(route, selection: chosen)
+        selectedHarnessEngine = engine
+        selectedHarnessModel = "default"
+        profiles = rows
+        selectedProfile = route
+        return true
     }
 
     func postCommandNotice(_ text: String, isError: Bool = false) {
@@ -1619,18 +2704,37 @@ class ChatViewModel: NSObject, ObservableObject {
 
     func fetchProfiles() {
         guard !isUITestLaunch else { return }   // UI tests: no real backend fetch (keeps launch idle)
-        guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/profiles") else { return }
+        modelCatalogGeneration &+= 1
+        let generation = modelCatalogGeneration
+        let context = chatLocalStorageKey
+        guard ["magician", "pi"].contains(selectedHarnessEngine) else { return }
+        guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/models?engine=\(selectedHarnessEngine)") else { return }
+        modelChoicesLoading = true
         var request = URLRequest(url: url)
         MagicianAccess.authorize(&request)
-        networkSession.dataTask(with: request) { [weak self] data, _, _ in
-            guard let self = self, let data = data,
-                  let decoded = try? JSONDecoder().decode(ChatProfilesResponse.self, from: data) else { return }
+        networkSession.dataTask(with: request) { [weak self] data, response, _ in
+            let decoded = data.flatMap { try? JSONDecoder().decode(ChatModelCatalog.self, from: $0) }
             DispatchQueue.main.async {
-                self.profiles = decoded.profiles
-                if !decoded.profiles.contains(where: { $0.name == self.selectedProfile }) {
-                    self.selectedProfile = decoded.profiles.first(where: { $0.isDefault == true })?.name
-                        ?? decoded.profiles.first?.name ?? ""
+                guard let self, generation == self.modelCatalogGeneration, context == self.chatLocalStorageKey else { return }
+                self.modelChoicesLoading = false
+                guard (response as? HTTPURLResponse)?.statusCode == 200, let decoded else {
+                    self.modelSelectionIssue = "Model choices could not be loaded. Reconnect and try again."
+                    return
                 }
+                // The old device choice is a read-only migration baseline, never changed by a chat picker.
+                let stored = UserDefaults.standard.object(forKey: self.preferenceKey(ChatModelPreference.storageKey))
+                    ?? UserDefaults.standard.object(forKey: ChatModelPreference.storageKey)
+                let raw = stored as? Data
+                let saved = raw.flatMap { try? JSONDecoder().decode(ChatModelSelection.self, from: $0) }
+                let hasSaved = stored != nil
+                let invalid = hasSaved && (saved == nil || saved?.modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true || saved?.thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true)
+                let resolved = ChatModelPreference.resolve(profiles: decoded.rows, legacyID: self.selectedProfile, saved: saved)
+                self.profiles = decoded.rows
+                // Do not run the selection observer on a malformed preference:
+                // its original bytes must survive until an explicit new choice.
+                self.selectedProfile = invalid ? ChatModelPreference.unavailableRoute : resolved.route
+                self.modelSelectionIssue = invalid ? ChatModelPreference.unavailableMessage : resolved.issue
+                if !invalid && resolved.issue == nil { self.persistModelPreference(resolved.route, selection: resolved.selection) }
             }
         }.resume()
     }
@@ -1684,6 +2788,12 @@ class ChatViewModel: NSObject, ObservableObject {
                 self.currentRunExecutionId = nil
                 self.activeSendingChatTurnId = nil
                 self.synchronizeActivityLivenessAndStream()
+                // The stopped state arrives as `chat.turn.state_changed`; read
+                // it back too in case the realtime feed missed it.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                    guard let self, self.currentSessionId == sessionId else { return }
+                    self.readQueue(sessionId: sessionId) { _ in }
+                }
             }
         }.resume()
     }
@@ -1960,7 +3070,8 @@ class ChatViewModel: NSObject, ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         MagicianAccess.authorize(&request)
         request.httpBody = "{}".data(using: .utf8)
-        networkSession.dataTask(with: request) { data, _, _ in
+        let context = chatLocalStorageKey
+        networkSession.dataTask(with: request) { [weak self] data, _, _ in
             var sessionId: String? = nil
             if let data = data,
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1968,7 +3079,19 @@ class ChatViewModel: NSObject, ObservableObject {
                let id = session["id"] as? String {
                 sessionId = id
             }
-            DispatchQueue.main.async { completion(sessionId) }
+            DispatchQueue.main.async {
+                guard let self, context == self.chatLocalStorageKey else { completion(nil); return }
+                if let id = sessionId {
+                    let target = Self.localStorageKey(origin: MagicianAccess.baseURL.absoluteString,
+                        principal: MagicianAccess.principal, workspace: MagicianAccess.workspace, session: id)
+                    for suffix in ["engine", "model", ChatModelPreference.storageKey, "draft"] {
+                        if let value = UserDefaults.standard.object(forKey: context + "|" + suffix) {
+                            UserDefaults.standard.set(value, forKey: target + "|" + suffix)
+                        }
+                    }
+                }
+                completion(sessionId)
+            }
         }.resume()
     }
 
@@ -2008,37 +3131,13 @@ class ChatViewModel: NSObject, ObservableObject {
     }
 
     private func performUpload(_ data: Data, filename: String, mime: String, sessionId: String, localId: UUID) {
-        guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/sessions/\(sessionId)/attachments") else {
+        guard let request = ComposerAttachmentUpload.request(data, filename: filename, mime: mime, sessionID: sessionId) else {
             markUpload(localId, failed: true); return
         }
-        let boundary = "Boundary-\(UUID().uuidString)"
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        MagicianAccess.authorize(&request)
-        var body = Data()
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
-        body.append(data)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        request.httpBody = body
-        networkSession.dataTask(with: request) { [weak self] data, _, _ in
-            self?.markUpload(localId, remoteId: Self.parseAttachmentId(data))
+        networkSession.dataTask(with: request) { [weak self] data, response, _ in
+            let valid = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
+            self?.markUpload(localId, remoteId: valid ? ComposerAttachmentUpload.attachmentID(data) : nil)
         }.resume()
-    }
-
-    /// Robustly pull the attachment id from the upload response (top-level or
-    /// nested), so a shape variant doesn't silently drop the marker.
-    private static func parseAttachmentId(_ data: Data?) -> String? {
-        guard let data = data,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        if let id = obj["attachment_id"] as? String { return id }
-        if let id = obj["id"] as? String { return id }
-        if let a = obj["attachment"] as? [String: Any] {
-            return (a["attachment_id"] as? String) ?? (a["id"] as? String)
-        }
-        return nil
     }
 
     // MARK: - Canonical message projection
@@ -2072,6 +3171,7 @@ class ChatViewModel: NSObject, ObservableObject {
                 type: .text
             )
             message.planReplyContext = content.planReply?.taskTitle
+            if !isUser { message.verificationSourceText = canonicalText }
 
         case "tool_call_executed", "rich_tool_result":
             let tool = content.toolName ?? "tool"
@@ -2453,6 +3553,16 @@ class ChatViewModel: NSObject, ObservableObject {
                           item.ref.map({ isValidStructuredString($0) }) ?? true else { return false }
                 }
             }
+            if let locators = meta.artifactLocators {
+                guard locators.count <= 100 else { return false }
+                for locator in locators {
+                    guard isValidStructuredString(locator.values["artifact_id"]?.stringValue, maxBytes: 160),
+                          isValidStructuredString(locator.values["relative_path"]?.stringValue),
+                          locator.values["task_id"] == nil
+                            || isValidStructuredString(locator.values["task_id"]?.stringValue, maxBytes: 160)
+                    else { return false }
+                }
+            }
             if let confidence = meta.confidence, (!confidence.isFinite || confidence < 0 || confidence > 1) { return false }
             if let cost = meta.cost {
                 guard cost.inputTokens.map({ $0 >= 0 }) ?? true,
@@ -2637,6 +3747,7 @@ class ChatViewModel: NSObject, ObservableObject {
         resetTurnActivityState()
         if currentSessionId != sessionId { messages = [] }
         currentSessionId = sessionId
+        resetOlderHistory()
         focusedMessageId = nil
         originalAnswerError = nil
         currentRunExecutionId = nil
@@ -2653,8 +3764,9 @@ class ChatViewModel: NSObject, ObservableObject {
                     throw URLError(.badServerResponse)
                 }
                 let decoded = try JSONDecoder().decode(ChatSessionDetailResponse.self, from: data)
+                let turnSnapshot = ChatTurnStateSnapshot.parse(responseData: data, sessionId: sessionId)
                 var rows = decoded.messages
-                var hasMore = rows.count >= 200
+                var hasMore = Self.initialHasMore(serverHasMore: decoded.hasMore, embeddedCount: rows.count)
                 var cursors = Set<String>()
                 while let target, !rows.contains(where: target.matches), hasMore {
                     try Task.checkCancellation()
@@ -2662,18 +3774,15 @@ class ChatViewModel: NSObject, ObservableObject {
                     guard let before = rows.first?.id, cursors.insert(before).inserted else {
                         throw URLError(.cannotParseResponse)
                     }
-                    var components = URLComponents(url: url.appendingPathComponent("messages"), resolvingAgainstBaseURL: false)!
-                    components.queryItems = [URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "before", value: before)]
-                    var olderRequest = URLRequest(url: components.url!)
-                    MagicianAccess.authorize(&olderRequest)
-                    let (olderData, olderResponse) = try await self.networkSession.data(for: olderRequest)
-                    guard (olderResponse as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                    let page = try JSONDecoder().decode(LinkedAnswerMessagePage.self, from: olderData)
+                    let page = try await self.fetchOlderMessagePage(
+                        sessionURL: url, before: before, limit: Self.sessionEmbeddedPageSize)
                     rows = page.messages + rows
-                    hasMore = page.hasMore && !page.messages.isEmpty
+                    hasMore = page.hasMoreAfterThisPage
                 }
                 try Task.checkCancellation()
                 guard self.currentSessionId == sessionId, MagicianAccess.baseURL.absoluteString == base else { return }
+                self.oldestLoadedRawMessageId = rows.first?.id
+                self.olderHistory = OlderHistoryState(hasMore: hasMore && rows.first != nil)
                 self.sessionSelectionStore.remember(sessionId)
                 self.currentSessionOrigin = decoded.session.internalVoice
                 let built = Self.projectedMessages(from: rows, target: target)
@@ -2687,6 +3796,10 @@ class ChatViewModel: NSObject, ObservableObject {
                     return task.taskId
                 })
                 activeTaskIds.forEach { self.refreshAuthoritativeExecutionTarget(for: $0) }
+                // A turn still running after a stream drop or relaunch shows
+                // live with its steps; a settled one shows its status line.
+                self.noteRealtimeVoiceTurns(rows)
+                self.applyTurnStateSnapshot(turnSnapshot, sessionId: sessionId, fromTranscriptLoad: true)
                 self.synchronizeActivityLivenessAndStream()
             } catch {
                 guard !Task.isCancelled, self.currentSessionId == sessionId else { return }
@@ -2695,10 +3808,114 @@ class ChatViewModel: NSObject, ObservableObject {
         }
     }
 
-    private struct LinkedAnswerMessagePage: Decodable {
+    /// One `GET .../chat/sessions/{id}/messages?before=` page.
+    struct OlderMessagePage: Decodable {
         let messages: [ChatMessageRawData]
         let hasMore: Bool
         enum CodingKeys: String, CodingKey { case messages, hasMore = "has_more" }
+        /// An empty page ends paging even if the server still says more.
+        var hasMoreAfterThisPage: Bool { hasMore && !messages.isEmpty }
+    }
+
+    /// The newest messages a session detail embeds.
+    static let sessionEmbeddedPageSize = 200
+    /// One scroll-to-top page, like the web transcript.
+    static let olderHistoryPageSize = 50
+
+    /// Whether older messages exist before the embedded page. A server that
+    /// predates `has_more` leaves it out: a full page then means "maybe".
+    static func initialHasMore(serverHasMore: Bool?, embeddedCount: Int) -> Bool {
+        serverHasMore ?? (embeddedCount >= sessionEmbeddedPageSize)
+    }
+
+    private func fetchOlderMessagePage(sessionURL: URL, before: String, limit: Int) async throws -> OlderMessagePage {
+        guard var components = URLComponents(url: sessionURL.appendingPathComponent("messages"), resolvingAgainstBaseURL: false) else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [URLQueryItem(name: "limit", value: String(limit)), URLQueryItem(name: "before", value: before)]
+        guard let pageURL = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: pageURL)
+        MagicianAccess.authorize(&request)
+        let (data, response) = try await networkSession.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        return try JSONDecoder().decode(OlderMessagePage.self, from: data)
+    }
+
+    private func resetOlderHistory() {
+        olderHistoryGeneration &+= 1
+        olderHistoryTask?.cancel()
+        olderHistoryTask = nil
+        oldestLoadedRawMessageId = nil
+        if olderHistory != OlderHistoryState() { olderHistory = OlderHistoryState() }
+        olderHistoryPrepend = nil
+    }
+
+    /// The reader reached the top of the transcript: fetch ONE older page and
+    /// prepend it. A no-op while a page is in flight, after the last page, or
+    /// before the transcript has loaded; a reply for another chat is dropped.
+    func loadOlderMessages() {
+        guard olderHistory.hasMore, !olderHistory.isLoading,
+              let sessionId = currentSessionId,
+              let before = oldestLoadedRawMessageId else { return }
+        let base = MagicianAccess.baseURL.absoluteString
+        guard let url = URL(string: "\(base)/api/magician/v2/chat/sessions/\(sessionId)") else { return }
+        let generation = olderHistoryGeneration
+        olderHistory.isLoading = true
+        olderHistory.failed = false
+        olderHistoryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let isCurrent = {
+                generation == self.olderHistoryGeneration && self.currentSessionId == sessionId
+                    && MagicianAccess.baseURL.absoluteString == base
+            }
+            do {
+                let page = try await self.fetchOlderMessagePage(
+                    sessionURL: url, before: before, limit: Self.olderHistoryPageSize)
+                guard !Task.isCancelled, isCurrent() else { return }
+                let anchor = self.messages.first?.id
+                let older = Self.retainLatestActivityAnchorPerTurn(Self.projectedMessages(from: page.messages))
+                self.messages = Self.prependOlderMessages(older, to: self.messages)
+                if let first = page.messages.first?.id { self.oldestLoadedRawMessageId = first }
+                self.olderHistory = OlderHistoryState(hasMore: page.hasMoreAfterThisPage)
+                if let anchor {
+                    let token = (self.olderHistoryPrepend?.token ?? 0) &+ 1
+                    self.olderHistoryPrepend = OlderHistoryPrepend(token: token, anchorMessageId: anchor)
+                }
+            } catch {
+                guard !Task.isCancelled, isCurrent() else { return }
+                self.olderHistory.isLoading = false
+                self.olderHistory.failed = true
+            }
+        }
+    }
+
+    /// Put an older page above the loaded transcript. Rows already shown (by
+    /// id, or a task whose newer card is shown) are dropped; an older reply
+    /// of a turn whose newer reply is shown gives up the activity anchor.
+    static func prependOlderMessages(_ older: [ChatMessage], to current: [ChatMessage]) -> [ChatMessage] {
+        let shownIds = Set(current.map(\.id))
+        var shownTaskIds = Set<String>()
+        var anchoredTurns = Set<String>()
+        for message in current {
+            if case .taskStatus(let task) = message.type { shownTaskIds.insert(task.taskId) }
+            if !message.isUser, canOwnActivityTimeline(message), let turnId = nonEmptyTurnId(message.chatTurnId) {
+                anchoredTurns.insert(turnId)
+            }
+        }
+        var seen = Set<String>()
+        var fresh: [ChatMessage] = []
+        for var message in older where !shownIds.contains(message.id) && seen.insert(message.id).inserted {
+            if case .taskStatus(let task) = message.type, shownTaskIds.contains(task.taskId) { continue }
+            if !message.isUser, canOwnActivityTimeline(message),
+               let turnId = nonEmptyTurnId(message.chatTurnId), anchoredTurns.contains(turnId) {
+                message.chatTurnId = nil
+                message.activityRows = []
+                message.activityIsLive = false
+            }
+            fresh.append(message)
+        }
+        guard !fresh.isEmpty else { return current }
+        return placeTaskCardsAfterTurnReply(fresh + current)
     }
 
     static func retainLatestActivityAnchorPerTurn(_ messages: [ChatMessage]) -> [ChatMessage] {
@@ -2738,6 +3955,15 @@ class ChatViewModel: NSObject, ObservableObject {
     /// Route one decoded realtime frame (the hub hands frames over decoded).
     func handleIncomingObject(_ jsonObj: [String: Any]) {
         do {   // scope only: routing below never throws
+            // Turn lifecycle (`chat.turn.state_changed`): drives the live
+            // bubble, never a transcript row of its own.
+            if let state = ChatTurnState.fromEvent(jsonObj) {
+                guard let selected = currentSessionId, state.sessionId == selected else { return }
+                applyTurnState(state)
+                synchronizeActivityLivenessAndStream()
+                return
+            }
+
             if let eventType = jsonObj["event_type"] as? String {
 
                 // The socket is workspace-scoped, while this transcript belongs
@@ -2801,6 +4027,7 @@ class ChatViewModel: NSObject, ObservableObject {
                        let eventDataJson = try? JSONSerialization.data(withJSONObject: eventDataDict),
                        let chatMessageData = try? JSONDecoder().decode(ChatMessageReceivedEventData.self, from: eventDataJson) {
 
+                        self.noteRealtimeVoiceTurns([chatMessageData.message])
                         let content = chatMessageData.message.content
                         if content.type == "escalation" {
                             let msg = Self.projectedMessage(from: chatMessageData.message)
@@ -2866,40 +4093,36 @@ class ChatViewModel: NSObject, ObservableObject {
                                     // turn id; identical text from another device
                                     // is a distinct message and must stay visible.
                                     self.messages[index] = msg
+                                } else if let turn = msg.chatTurnId, !turn.isEmpty,
+                                          let placeholder = self.messages.firstIndex(where: {
+                                              Self.isTurnPlaceholder($0, turnId: turn)
+                                          }) {
+                                    // The turn's live bubble (from its running
+                                    // state) came first; the question goes above.
+                                    self.messages.insert(msg, at: placeholder)
                                 } else {
                                     self.messages.append(msg)
                                 }
-                            } else if !isOwnStreamEcho {
+                            } else if isOwnStreamEcho {
+                                // This device's stream owns the turn; keep the
+                                // canonical row in case the stream ends without
+                                // a reply of its own (a Stop's or watchdog's
+                                // notice, a dropped connection).
+                                if let turnId = raw.chatTurnId,
+                                   !self.messages.contains(where: { $0.id == raw.id }) {
+                                    self.suppressedCanonicalByTurn[turnId] = Self.projectedMessage(from: raw)
+                                }
+                            } else {
                                 if self.activeSendingChatTurnId == nil
                                     || self.activeSendingChatTurnId == raw.chatTurnId {
                                     self.isThinking = false
                                 }
-                                var msg = Self.projectedMessage(from: raw)
+                                let msg = Self.projectedMessage(from: raw)
                                 if let turnId = msg.chatTurnId,
                                    self.activeSendingChatTurnId == turnId {
                                     self.activeSendingChatTurnId = nil
                                 }
-                                msg.activityRows = msg.chatTurnId.flatMap {
-                                    self.activityRowsByTurn[$0]
-                                } ?? self.activity.snapshot()
-                                if let turnId = msg.chatTurnId {
-                                    msg.activityIsLive = self.isActivityTurnLive(turnId)
-                                }
-                                var transcript = self.messages
-                                if Self.reconcileCanonicalText(msg, into: &transcript) {
-                                    self.messages = transcript
-                                    if let turnId = msg.chatTurnId {
-                                        self.refreshActivityRows(
-                                            sessionId: self.currentSessionId,
-                                            messageId: msg.id,
-                                            chatTurnId: turnId,
-                                            force: true
-                                        )
-                                    }
-                                    if msg.chatTurnId?.hasPrefix("voice-request-") != true && msg.chatTurnId?.hasPrefix("voice-task-result-") != true {
-                                        self.speakReplyIfEnabled(msg.text, messageId: msg.id)
-                                    }
-                                }
+                                self.adoptCanonicalReply(msg)
                                 self.synchronizeActivityLivenessAndStream()
                             }
                         } else if content.type == "tool_call_executed" || content.type == "rich_tool_result" {
@@ -3014,5 +4237,30 @@ class ChatViewModel: NSObject, ObservableObject {
                 self.currentRunExecutionId = activeRootExecutionId
             }
         }.resume()
+    }
+}
+
+/// Shared multipart transport for Chat and VibeDev project-session attachments.
+enum ComposerAttachmentUpload {
+    static func request(_ data: Data, filename: String, mime: String, sessionID: String) -> URLRequest? {
+        guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/chat/sessions/\(sessionID)/attachments") else { return nil }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        MagicianAccess.authorize(&request)
+        let name = filename.replacingOccurrences(of: "\"", with: "_").replacingOccurrences(of: "\r", with: "_").replacingOccurrences(of: "\n", with: "_")
+        var body = Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(name)\"\r\nContent-Type: \(mime)\r\n\r\n".utf8)
+        body.append(data)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        request.httpBody = body
+        return request
+    }
+
+    static func attachmentID(_ data: Data?) -> String? {
+        guard let data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let id = obj["attachment_id"] as? String ?? obj["id"] as? String { return id }
+        let attachment = obj["attachment"] as? [String: Any]
+        return attachment?["attachment_id"] as? String ?? attachment?["id"] as? String
     }
 }

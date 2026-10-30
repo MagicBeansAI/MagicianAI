@@ -48,6 +48,12 @@ pub enum AnalyticsDuckDbQueryError<E> {
 /// the frontend's 3 otherwise-serial single-query lock acquisitions into one.
 /// New Pulse widgets MUST use those batch endpoints rather than firing parallel
 /// single-query requests that would each contend for this lock.
+///
+/// The `llm_calls` batch holds it only while it picks files and copies its
+/// window into connection memory; once no Parquet read remains it releases
+/// the guard before running the cards, so sinks and compactors are not queued
+/// behind a whole page. The LLM Parquet sink waits a bounded time and then
+/// writes without it: a batch is a new file published by rename.
 pub fn analytics_duckdb_guard() -> MutexGuard<'static, ()> {
     match ANALYTICS_DUCKDB_LOCK.lock() {
         Ok(guard) => guard,
@@ -182,6 +188,28 @@ where
     }
 }
 
+/// Turn DuckDB's out-of-memory refusal into an actionable analytics error.
+///
+/// DuckDB's own text suggests raising `memory_limit` /
+/// `max_temp_directory_size`, which callers cannot do and must not: the caps
+/// above protect the runtime. Name the budget and the query-side remedy
+/// instead. Returns `None` for every other error so callers keep it as is.
+pub fn explain_analytics_resource_error(message: &str) -> Option<String> {
+    if !message.contains("Out of Memory Error") {
+        return None;
+    }
+    let duckdb_reason = message
+        .lines()
+        .find(|line| line.contains("Out of Memory Error"))
+        .unwrap_or(message)
+        .trim();
+    Some(format!(
+        "analytics query exceeds the DuckDB budget ({ANALYTICS_DUCKDB_MEMORY_LIMIT} memory, \
+         {ANALYTICS_DUCKDB_MAX_TEMP_SIZE} spill); narrow it with a `timestamp_ms >= <epoch ms>` \
+         bound, aggregate it, or add a LIMIT ({duckdb_reason})"
+    ))
+}
+
 /// Return an upper bound for the serialized size of borrowed variable-width
 /// values. `None` means the value is fixed-width or nested and should be sized
 /// after conversion. Text and blob are handled here to avoid cloning an
@@ -225,6 +253,25 @@ mod tests {
         assert!(!contender.join().expect("guard contender"));
         drop(guard);
         assert!(try_analytics_duckdb_guard_for(Duration::from_secs(1)).is_some());
+    }
+
+    #[test]
+    fn out_of_memory_errors_name_the_budget_and_the_query_remedy() {
+        let raw = "prepare error: Out of Memory Error: failed to offload data block of size \
+                   256.0 KiB (953.5 MiB/953.6 MiB used).\nThis limit was set by the \
+                   'max_temp_directory_size' setting.\nPossible solutions: increase it";
+        let explained = explain_analytics_resource_error(raw).expect("OOM is explained");
+        assert!(explained.contains(ANALYTICS_DUCKDB_MEMORY_LIMIT));
+        assert!(explained.contains("timestamp_ms >="));
+        assert!(explained.contains("953.5 MiB/953.6 MiB used"));
+        assert!(
+            !explained.contains("Possible solutions"),
+            "DuckDB's raise-the-cap advice must not reach callers: {explained}"
+        );
+        assert_eq!(
+            explain_analytics_resource_error("Binder Error: column x not found"),
+            None
+        );
     }
 
     #[test]

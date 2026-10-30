@@ -2,6 +2,8 @@
 	import { createEventDispatcher } from 'svelte';
 
 	import Icon from '$lib/shared/icons/Icon.svelte';
+	import { agentDisplayName } from '$lib/presentationIdentity';
+	import { primaryAgent } from '$lib/stores/agentStore';
 	import type {
 		ResurfacingActionKind,
 		ResurfacingCard,
@@ -11,6 +13,7 @@
 	} from './resurfacingQueries';
 	import {
 		mergeResurfacingCapabilities,
+		resurfacingActionDisplayLabel,
 		resurfacingBrief,
 		resurfacingConcreteSummary,
 		resurfacingDisplayTitle,
@@ -37,6 +40,7 @@
 	$: title = resurfacingDisplayTitle(card, detail);
 	$: summary = resurfacingConcreteSummary(card, detail);
 	$: recommendation = resurfacingRecommendation(card, detail);
+	$: agentName = agentDisplayName($primaryAgent);
 	$: capabilityKinds = new Set(
 		mergeResurfacingCapabilities(card, detail).map((capability) => capability.kind)
 	);
@@ -183,7 +187,7 @@
 			{#if recommendation}
 				<section>
 					<h4>Recommended next step</h4>
-					<p><strong>{recommendation.label}</strong>{recommendation.rationale ? ` — ${recommendation.rationale}` : ''}</p>
+					<p><strong>{resurfacingActionDisplayLabel(recommendation, agentName)}</strong>{recommendation.rationale ? ` — ${recommendation.rationale}` : ''}</p>
 				</section>
 			{/if}
 

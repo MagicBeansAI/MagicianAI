@@ -76,7 +76,26 @@ class HttpPlanApprovalClientTest {
         assertEquals(PlanApprovalPost.Failed("scope mismatch"), refused)
         val answered = client { respond("""{"reason":"already_resolved"}""", HttpStatusCode.Conflict) }
             .respond(request, confirmed = true)
-        assertEquals(PlanApprovalPost.Ok, answered)
+        assertTrue(answered is PlanApprovalPost.Failed)
+    }
+
+    @Test fun `already answered approve and run never executes a task`() = runBlocking {
+        val outcome = PlanApprovalActions.approveAndRun(request,
+            client { respond("""{"reason":"already_resolved"}""", HttpStatusCode.Conflict) })
+        assertTrue(outcome is PlanApprovalOutcome.Failed)
+        assertEquals(1, seen.size)
+    }
+
+    @Test fun `a plan client cannot follow an approval onto a new server`() = runBlocking {
+        var host = "https://first.example"
+        val http = HttpClient(MockEngine { request -> seen.add(request); respond("""{"accepted":true}""") })
+        val bound = HttpPlanApprovalClient(http, { host }, { emptyMap() })
+        host = "https://second.example"
+        try {
+            val outcome = PlanApprovalActions.approveAndRun(request, bound)
+            assertTrue(outcome is PlanApprovalOutcome.Failed)
+            assertTrue(seen.isEmpty())
+        } finally { http.close() }
     }
 
     @Test

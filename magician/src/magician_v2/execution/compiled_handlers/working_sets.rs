@@ -314,6 +314,18 @@ pub async fn read(
         )
         .await
         .map_err(|error| ExecutionError::Step(format!("working-set read failed: {error}")))?;
+    let mut chunk = serde_json::to_value(chunk).map_err(|error| {
+        ExecutionError::Step(format!("working-set chunk serialization failed: {error}"))
+    })?;
+    // Only validated content-read documents enter this store. A chunk is a
+    // partial read of that source, retaining its URL/hash and byte range;
+    // searches remain discovery, and never receive these attestations.
+    let evidence = chunk
+        .as_object_mut()
+        .expect("typed chunk serializes as an object");
+    evidence.insert("fetch_status".into(), json!("partial"));
+    evidence.insert("evidence_role".into(), json!("opened_page"));
+    evidence.insert("claim_eligible".into(), json!(true));
     Ok(json!({"status": "complete", "chunk": chunk}))
 }
 

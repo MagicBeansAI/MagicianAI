@@ -128,6 +128,25 @@ final class WorkResource: ObservableObject {
         }
     }
 
+    /// A typed write under the same generation and connection guards as
+    /// `perform`. The caller handles a failure itself (nil: the screen moved
+    /// on, or the connection changed and `error` says so).
+    func call<T>(successNotice: String? = "Saved", _ operation: (WorkAPIClient) async throws -> T) async -> Result<T, Error>? {
+        guard !busy, let client, client.isCurrentConnection else {
+            error = "Connection changed. Refresh before continuing."; return nil
+        }
+        let ticket = generation; busy = true; error = nil; notice = nil
+        defer { finishRequest(ticket) }
+        do {
+            let result = try await operation(client)
+            guard generation == ticket, client.isCurrentConnection else { return nil }
+            notice = successNotice; return .success(result)
+        } catch {
+            guard generation == ticket, client.isCurrentConnection else { return nil }
+            return .failure(error)
+        }
+    }
+
     /// Return the exact reviewed response to the caller; never publish a late
     /// result or allow a stale screen to write to a previous connection.
     func perform(_ path: String, method: String = "POST", body: WorkJSON? = .object([:]), etag: String? = nil, successNotice: String? = "Saved") async -> WorkJSON? {

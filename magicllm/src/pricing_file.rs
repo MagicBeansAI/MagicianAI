@@ -156,7 +156,9 @@ pub fn parse_pricing_file(raw: &str) -> Result<PricingFileRows, String> {
             || !file.web_search_rates.is_empty()
             || !file.media_rates.is_empty())
     {
-        return Err("realtime_rates, web_search_rates and media_rates need schema_version 2".to_string());
+        return Err(
+            "realtime_rates, web_search_rates and media_rates need schema_version 2".to_string(),
+        );
     }
     let mut rows = PricingFileRows::default();
     for (index, rate) in file.rates.into_iter().enumerate() {
@@ -217,7 +219,10 @@ pub fn parse_pricing_file(raw: &str) -> Result<PricingFileRows, String> {
         });
     }
     for (index, rate) in file.realtime_rates.into_iter().enumerate() {
-        let context = format!("realtime_rates[{index}] (model_prefix `{}`)", rate.model_prefix);
+        let context = format!(
+            "realtime_rates[{index}] (model_prefix `{}`)",
+            rate.model_prefix
+        );
         if rate.model_prefix.trim().is_empty() {
             return Err(format!("{context}: model_prefix must not be empty"));
         }
@@ -271,8 +276,13 @@ pub fn parse_pricing_file(raw: &str) -> Result<PricingFileRows, String> {
         ] {
             check_rate(&context, field, value)?;
         }
-        if rate.usd_per_million_chars == 0.0 && rate.usd_per_audio_minute == 0.0 && rate.usd_per_request == 0.0 {
-            return Err(format!("{context}: needs at least one non-zero rate (a free engine needs no row)"));
+        if rate.usd_per_million_chars == 0.0
+            && rate.usd_per_audio_minute == 0.0
+            && rate.usd_per_request == 0.0
+        {
+            return Err(format!(
+                "{context}: needs at least one non-zero rate (a free engine needs no row)"
+            ));
         }
         let effective_from_ms = effective_from(&context, &rate.effective_from)?;
         rows.media.push(MediaPricingRow {
@@ -294,7 +304,9 @@ fn check_rate(context: &str, field: &str, value: f64) -> Result<(), String> {
     if value.is_finite() && value >= 0.0 {
         Ok(())
     } else {
-        Err(format!("{context}: {field} must be a non-negative finite USD rate, got {value}"))
+        Err(format!(
+            "{context}: {field} must be a non-negative finite USD rate, got {value}"
+        ))
     }
 }
 

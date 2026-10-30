@@ -788,8 +788,10 @@ struct FcmConfig {
 pub struct MobilePushConfig {
     apns: Option<ApnsConfig>,
     fcm: Option<FcmConfig>,
-    /// Browser Web Push: on only when both VAPID keys load.
-    web: Option<Arc<WebPushVapid>>,
+    /// Browser Web Push: on only when both VAPID keys load. Shared by every
+    /// clone (the API handlers and the sender hold copies), so keys installed
+    /// at runtime by `POST /web-push/vapid` take effect everywhere at once.
+    web: Arc<std::sync::RwLock<Option<Arc<WebPushVapid>>>>,
     /// `None` = `DEFAULT_ATTENTION_PUSH_TTL`.
     attention_ttl: Option<Duration>,
 }
@@ -880,19 +882,36 @@ impl MobilePushConfig {
         Self {
             apns,
             fcm,
-            web,
+            web: Arc::new(std::sync::RwLock::new(web)),
             attention_ttl,
         }
     }
 
+    fn web_vapid(&self) -> Option<Arc<WebPushVapid>> {
+        self.web
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// The VAPID public key browsers subscribe with, when web push is on.
-    pub fn web_push_public_key(&self) -> Option<&str> {
-        self.web.as_deref().map(WebPushVapid::public_key_b64)
+    pub fn web_push_public_key(&self) -> Option<String> {
+        self.web_vapid()
+            .map(|vapid| vapid.public_key_b64().to_string())
+    }
+
+    /// Turn browser Web Push on (or replace its keys) for every holder of
+    /// this config, without a restart.
+    pub fn install_web_push(&self, vapid: WebPushVapid) {
+        *self
+            .web
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(vapid));
     }
 
     #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn with_web_push(mut self, vapid: WebPushVapid) -> Self {
-        self.web = Some(Arc::new(vapid));
+    pub fn with_web_push(self, vapid: WebPushVapid) -> Self {
+        self.install_web_push(vapid);
         self
     }
 
@@ -901,14 +920,14 @@ impl MobilePushConfig {
     }
 
     pub fn any_enabled(&self) -> bool {
-        self.apns.is_some() || self.fcm.is_some() || self.web.is_some()
+        self.apns.is_some() || self.fcm.is_some() || self.web_vapid().is_some()
     }
 
     pub fn supports(&self, platform: PushPlatform) -> bool {
         match platform {
             PushPlatform::Apns => self.apns.is_some(),
             PushPlatform::Fcm => self.fcm.is_some(),
-            PushPlatform::Web => self.web.is_some(),
+            PushPlatform::Web => self.web_vapid().is_some(),
         }
     }
 }
@@ -1211,7 +1230,9 @@ impl MobilePushDispatcher {
         principal: &str,
         workspace: &str,
     ) -> Vec<PushRegistration> {
-        self.store.work_item_registrations(principal, workspace).await
+        self.store
+            .work_item_registrations(principal, workspace)
+            .await
     }
 
     /// Send a scope's coding-runs summary to its phones: an update (or, when
@@ -1478,7 +1499,7 @@ impl MobilePushDispatcher {
         registration: &PushRegistration,
         data: &Value,
     ) -> Result<DeliveryDisposition> {
-        let Some(vapid) = self.config.web.as_ref() else {
+        let Some(vapid) = self.config.web_vapid() else {
             return Ok(DeliveryDisposition::NotConfigured);
         };
         let Some(payload) = web_push::web_push_payload(data) else {
@@ -1574,10 +1595,9 @@ impl MobilePushDispatcher {
             PushRegistrationKind::CodingRuns | PushRegistrationKind::CodingRunsStart
         );
         let work_item = registration.kind == PushRegistrationKind::WorkItem;
-        let live = (registration.kind == PushRegistrationKind::TaskActivity
-            || coding_runs
-            || work_item)
-            && registration.platform == PushPlatform::Apns;
+        let live =
+            (registration.kind == PushRegistrationKind::TaskActivity || coding_runs || work_item)
+                && registration.platform == PushPlatform::Apns;
         let terminal = data.get("done").and_then(Value::as_bool).unwrap_or(false);
         let urgent = delivery_is_urgent(alert, terminal) || data_marks_urgent(data);
         let topic = if live {
@@ -2877,7 +2897,10 @@ mod tests {
         let web = config.with_web_push(test_vapid());
         assert!(web.supports(PushPlatform::Web));
         assert!(web.any_enabled());
-        assert_eq!(web.web_push_public_key(), Some(TEST_VAPID_PUBLIC));
+        assert_eq!(
+            web.web_push_public_key().as_deref(),
+            Some(TEST_VAPID_PUBLIC)
+        );
     }
 
     // The RFC 8291 example key pair; a test identity only.
@@ -3244,8 +3267,13 @@ mod tests {
         assert_eq!(state["deepLink"], "magican://vibe?project=p&crew=crew_1");
         // Android: strings, `next` as its JSON text.
         let fields = fcm_data_fields(&data, false);
-        assert_eq!(fields.get("featured_id").map(String::as_str), Some("crew:crew_1"));
-        assert!(fields.get("next").is_some_and(|next| next.contains("Weekly report")));
+        assert_eq!(
+            fields.get("featured_id").map(String::as_str),
+            Some("crew:crew_1")
+        );
+        assert!(fields
+            .get("next")
+            .is_some_and(|next| next.contains("Weekly report")));
 
         let item = WorkItemPush {
             item_id: "crew:crew_1".to_string(),

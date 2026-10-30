@@ -483,6 +483,16 @@ and per-skill `test_governed_kill_outlasts_the_inner_provider_budget`.
   through the coordinator with fresh profile status and expected-identity
   checks before authorization-before-auth; environment templates use the public
   alias (e.g. `{account}`).
+- Before lifecycle binding, every `profile_auth_root` sub-path a contract
+  injects (gws `cloudsdk`) is made owner-only, because the binding requires
+  exactly `0700`: a missing one is created `0700`, and one this user owns with
+  group/other bits set is tightened through an `O_NOFOLLOW` handle. A symlink,
+  a foreign owner, or a component outside the profile root is left for the
+  binding to refuse.
+- Auth-path failures keep the runtime's value-free diagnostic code and field
+  (`governed runtime status binding failed (directory_unavailable at …)`) and
+  log them. A missing, unknown, malformed or disabled profile also lists the
+  valid aliases: the declared profile enum ∩ the enabled registered profiles.
 - Static/multi-secret contracts take a profile-free branch through the same
   coordinator. Optional auth (`github-search`) injects `GITHUB_TOKEN` only when
   present; `at_least_one` (`video-generation-via-veo`) takes `VEO31_API_KEY` or
@@ -492,6 +502,12 @@ and per-skill `test_governed_kill_outlasts_the_inner_provider_budget`.
   `{"ok":false,"error":{"code":"...","message":"..."}}` becomes a typed failure
   when ≤ 16 KiB, `ok` is false, code matches `[a-z0-9_]{1,64}` and message is
   1–8 KiB without control characters; otherwise an opaque step failure.
+- `governed_dispatch_error` maps typed codes to `ExecutionError::Refused`
+  (text kept): rejected input, request admission rejections (argument, stdin,
+  working-directory, timeout), unusable/unauthorized working directories, and
+  pre-dispatch `AuthorizationDenied` / `ApprovalRequired`. Contract/material
+  admission codes, `ExecutionAuthorityFailed` and other settlement failures
+  stay step errors.
 - Schema-only fixtures:
   `magician/tests/fixtures/tool_runtime_legacy_contracts/`, outside every
   runtime skill root.
@@ -556,3 +572,5 @@ Migration-only artifacts: `docs/archive/components/tool-runtime-core/`.
 - Trusted computing boundary: crate-internal code can copy a borrowed byte
   slice before a sealed callback returns; the type system does not sandbox
   Magician.
+
+Magician also executes reviewed stdio MCP packages through the existing SDK; product-owned `mcp_bindings` describe paths, outward effects, artifact roots and redaction. Apps without scoped process authority continue to refuse stdio.

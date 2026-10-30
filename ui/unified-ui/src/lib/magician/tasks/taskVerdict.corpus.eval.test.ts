@@ -249,6 +249,7 @@ describe('the corpus', () => {
 			cancelled: true,
 			queued: true,
 			archived: true,
+			finalizing: true,
 			finished: true
 		};
 		const reached = new Set(VERDICTS.map(({ verdict }) => verdict.state));
@@ -408,6 +409,21 @@ describe('the verdict agrees with the backend about whether the task stopped', (
 	});
 });
 
+describe('a task whose final answer is still being written', () => {
+	it('reads `finalizing` only off a live synthesis flag, and the pending fixture does', () => {
+		// Both directions: the flagged fixture must finalize, and no shape without
+		// the flag may, or a pipeline marking every finished task would pass.
+		for (const { state, input, verdict } of VERDICTS) {
+			if (verdict.state === 'finalizing') {
+				expect(input.synthesisPending, where(state)).toBe(true);
+			}
+		}
+		const pending = VERDICTS.find(({ state }) => state.id === 'internal-synthesis-pending');
+		expect(pending?.verdict.state).toBe('finalizing');
+		expect(pending?.verdict.headline).toMatch(/^Preparing final result/);
+	});
+});
+
 // ---------------------------------------------------------------------------
 // The unmodelled-status guards.
 // ---------------------------------------------------------------------------
@@ -425,7 +441,15 @@ describe('every status the corpus reaches is one something models', () => {
 		// name yields a state of the same name, and one it does not falls through
 		// to `finished`. So `state === status` IS "the verdict models this status".
 		for (const { state, input } of VERDICTS) {
-			const bare = deriveVerdict({ ...input, attention: null, lastProgressAt: null });
+			// `synthesisPending` comes off too: `finalizing` is the one state named
+			// for the flag rather than for a status word, and is pinned by its own
+			// property below.
+			const bare = deriveVerdict({
+				...input,
+				attention: null,
+				lastProgressAt: null,
+				synthesisPending: false
+			});
 			expect(bare.state, `${where(state)} — status word \`${input.status}\``).toBe(input.status);
 		}
 	});

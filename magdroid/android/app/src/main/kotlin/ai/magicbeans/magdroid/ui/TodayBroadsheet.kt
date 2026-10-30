@@ -2,17 +2,25 @@
 
 package ai.magicbeans.magdroid.ui
 
+import ai.magicbeans.magdroid.today.readingRoomDateline
+
 import ai.magicbeans.magdroid.today.ChannelActionDescriptor
+import ai.magicbeans.magdroid.today.FOLLOW_UP_SNOOZE_LABEL
 import ai.magicbeans.magdroid.today.ChannelFollowUp
 import ai.magicbeans.magdroid.today.ResurfacingActionKind
 import ai.magicbeans.magdroid.today.ResurfacingCard
 import ai.magicbeans.magdroid.today.ResurfacingFeedbackAction
 import ai.magicbeans.magdroid.today.TodayAction
+import ai.magicbeans.magdroid.today.TodayDeckMenuEntry
+import ai.magicbeans.magdroid.today.TODAY_DECK_ACT_LABEL
+import ai.magicbeans.magdroid.today.deckActMenu
+import ai.magicbeans.magdroid.today.deckCard
 import ai.magicbeans.magdroid.today.TodayItem
 import ai.magicbeans.magdroid.today.TodayUiState
 import ai.magicbeans.magdroid.today.TodayViewModel
 import ai.magicbeans.magdroid.today.dispatchCategory
 import ai.magicbeans.magdroid.today.readingRoomCategory
+import ai.magicbeans.magdroid.today.resurfacingActionLabel
 import ai.magicbeans.magdroid.today.TodayBroadsheetPage
 import ai.magicbeans.magdroid.today.TodayBroadsheetTab
 import ai.magicbeans.magdroid.today.broadsheetRangeLabel
@@ -46,6 +54,8 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Snooze
 import androidx.compose.material.icons.outlined.ThumbUp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -63,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -207,6 +218,40 @@ private fun CardAction(label: String, color: Color = Coral, enabled: Boolean = t
     }
 }
 
+/**
+ * The ⚡ Act menu rows, shared by the deck and the broadsheet cards so both
+ * list the same [deckActMenu] entries with `<testTagPrefix>-<id>` tags.
+ * [entries] is only read while the menu is open.
+ */
+@Composable
+internal fun TodayActMenu(
+    expanded: Boolean, entries: () -> List<TodayDeckMenuEntry>, testTagPrefix: String,
+    onDismiss: () -> Unit, onSelect: (TodayDeckMenuEntry) -> Unit,
+) {
+    DropdownMenu(expanded, onDismissRequest = onDismiss, containerColor = Panel) {
+        entries().forEach { entry ->
+            DropdownMenuItem(
+                text = { Text(entry.label, color = if (entry == TodayDeckMenuEntry.Details) Secondary else Ink) },
+                onClick = { onDismiss(); onSelect(entry) },
+                modifier = Modifier.testTag("$testTagPrefix-${entry.id}"),
+            )
+        }
+    }
+}
+
+/** A broadsheet card's ⚡ Act button: opening the menu does nothing to the card. */
+@Composable
+private fun ActMenuAction(enabled: Boolean, entries: () -> List<TodayDeckMenuEntry>, onSelect: (TodayDeckMenuEntry) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.testTag("today-broadsheet-act"),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+            Text("⚡ $TODAY_DECK_ACT_LABEL", color = Coral, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        TodayActMenu(open, entries, "today-broadsheet-act", onDismiss = { open = false }, onSelect = onSelect)
+    }
+}
+
 // ---------------------------------------------------------------- Core Today follow-ups
 
 @Composable
@@ -274,10 +319,41 @@ internal data class FollowUpHandlers(
     val onWriting: (ChannelFollowUp) -> Unit,
     val onCompose: (ChannelFollowUp, ChannelActionDescriptor) -> Unit,
     val onOpenUrl: (String?) -> Unit,
+    /** Opens [FollowUpInstructionDialog]; only its confirm approves. */
+    val onStartTask: (ChannelFollowUp) -> Unit,
 )
 
+/**
+ * "Start follow-up task…" on the deck, broadsheet and message sheet: an
+ * optional instruction for the assistant, then `approve` with it as the hint.
+ * Cancel approves nothing. Tags are `<testTagPrefix>-instruction` / `-start`.
+ */
 @Composable
-internal fun BroadsheetFollowUpCard(item: ChannelFollowUp, state: TodayUiState, viewModel: TodayViewModel, handlers: FollowUpHandlers) {
+internal fun FollowUpInstructionDialog(key: String, subject: String, testTagPrefix: String, onDismiss: () -> Unit, onStart: (String?) -> Unit) {
+    var instruction by remember(key) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Start follow-up task") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(subject, color = Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                MagicianTextField(
+                    instruction, { instruction = it },
+                    modifier = Modifier.fillMaxWidth().testTag("$testTagPrefix-instruction"), minLines = 2,
+                    label = { Text("Instruction (optional)") },
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onStart(instruction.trim().takeIf(String::isNotEmpty)) }, shape = MagicanButtonShape,
+                colors = magicanButtonColors(), modifier = Modifier.testTag("$testTagPrefix-start")) { Text("Start task") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+internal fun BroadsheetFollowUpCard(item: ChannelFollowUp, state: TodayUiState, viewModel: TodayViewModel, handlers: FollowUpHandlers, assistantName: String) {
     val busy = state.isFollowUpMutationPending(item.id)
     TodaySwipeActionCard(
         itemId = item.id,
@@ -291,26 +367,44 @@ internal fun BroadsheetFollowUpCard(item: ChannelFollowUp, state: TodayUiState, 
                     color = Coral, modifier = Modifier.weight(1f))
                 if (busy) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp, color = Coral)
             }
+            readingRoomDateline(followUp = item)?.let { Text(it, color = Muted, fontSize = 11.sp) }
             Text(item.subject?.takeIf(String::isNotBlank) ?: "Untitled Message", style = newsSerif(18.sp, FontWeight.SemiBold, lineHeight = 22.sp),
                 maxLines = 3, overflow = TextOverflow.Ellipsis)
             item.accountAlias.takeIf(String::isNotBlank)?.let { Text(it, color = Muted, fontSize = 11.sp) }
             item.summary?.let { Text(it, color = Secondary, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis) }
             item.actionSummary?.let { Text(it, color = Muted, fontSize = 11.sp) }
             item.reason?.let { Text("Why now · $it", color = TodayWarning, fontSize = 11.sp) }
-            FollowUpActions(item, busy, viewModel, handlers)
+            // The deck's Act menu; Useful / Seen / Dismiss stay as buttons.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                ActMenuAction(!busy, { deckActMenu(deckCard(item), assistantName) }) { entry ->
+                    when (entry) {
+                        is TodayDeckMenuEntry.Channel -> handlers.onCompose(item, entry.descriptor)
+                        is TodayDeckMenuEntry.OpenInProvider -> handlers.onOpenUrl(entry.url)
+                        TodayDeckMenuEntry.StartFollowUpTask -> handlers.onStartTask(item)
+                        TodayDeckMenuEntry.Snooze -> viewModel.resolveFollowUp(item, "snooze")
+                        TodayDeckMenuEntry.Details -> handlers.onOpen(item)
+                        TodayDeckMenuEntry.Open, is TodayDeckMenuEntry.Resurfacing -> Unit
+                    }
+                }
+                CardAction("Useful", TodaySuccess, !busy, Icons.Outlined.ThumbUp) { viewModel.resolveFollowUp(item, "useful") }
+                if (item.canAcknowledge) CardAction("Seen", Secondary, !busy, Icons.Outlined.CheckCircle) { viewModel.resolveFollowUp(item, "acknowledge") }
+                CardAction("Writing style", Secondary) { handlers.onWriting(item) }
+                CardAction("Dismiss…", Danger, !busy) { handlers.onDismissWithReason(item) }
+            }
         }
     }
 }
 
+/** The message sheet's full follow-up action row. */
 @Composable
 internal fun FollowUpActions(item: ChannelFollowUp, busy: Boolean, viewModel: TodayViewModel, handlers: FollowUpHandlers) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-        CardAction("⚡ Do it", enabled = !busy) { viewModel.resolveFollowUp(item, "approve") }
+        CardAction(TodayDeckMenuEntry.StartFollowUpTask.label, enabled = !busy) { handlers.onStartTask(item) }
         item.openUrl?.let { url -> CardAction("Open", enabled = true) { handlers.onOpenUrl(url) } }
         CardAction("Useful", TodaySuccess, !busy, Icons.Outlined.ThumbUp) { viewModel.resolveFollowUp(item, "useful") }
         if (item.canAcknowledge) CardAction("Seen", Secondary, !busy, Icons.Outlined.CheckCircle) { viewModel.resolveFollowUp(item, "acknowledge") }
         // Follow-up snooze has no duration on the wire: it hides the card from Today.
-        CardAction("Snooze — hide from Today", Secondary, !busy, Icons.Outlined.Snooze) { viewModel.resolveFollowUp(item, "snooze") }
+        CardAction(FOLLOW_UP_SNOOZE_LABEL, Secondary, !busy, Icons.Outlined.Snooze) { viewModel.resolveFollowUp(item, "snooze") }
         CardAction("Writing style", Secondary) { handlers.onWriting(item) }
         item.availableActions.forEach { descriptor -> CardAction(descriptor.label, enabled = !busy) { handlers.onCompose(item, descriptor) } }
         CardAction("Dismiss…", Danger, !busy) { handlers.onDismissWithReason(item) }
@@ -321,8 +415,9 @@ internal fun FollowUpActions(item: ChannelFollowUp, busy: Boolean, viewModel: To
 
 @Composable
 internal fun BroadsheetWorthCard(
-    card: ResurfacingCard, state: TodayUiState, viewModel: TodayViewModel,
+    card: ResurfacingCard, state: TodayUiState, viewModel: TodayViewModel, assistantName: String,
     onDetail: (ResurfacingCard) -> Unit,
+    onOpen: (ResurfacingCard) -> Unit,
     onAction: (ResurfacingCard, ResurfacingActionKind) -> Unit,
     onDismissWithReason: (ResurfacingCard) -> Unit,
 ) {
@@ -343,6 +438,7 @@ internal fun BroadsheetWorthCard(
                 NewsKicker(readingRoomCategory(card), color = TodayDiscovery, modifier = Modifier.weight(1f))
                 if (busy) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp, color = Coral)
             }
+            readingRoomDateline(worth = card)?.let { Text(it, color = Muted, fontSize = 11.sp) }
             Text(card.sourceTitle.ifBlank { card.line }.ifBlank { "Resurfaced Note" }, style = newsSerif(18.sp, FontWeight.SemiBold, lineHeight = 22.sp),
                 maxLines = 3, overflow = TextOverflow.Ellipsis)
             if (card.line.isNotBlank() && card.line != card.sourceTitle && card.sourceTitle.isNotBlank()) Text(card.line, color = Ink, fontSize = 13.sp)
@@ -350,13 +446,17 @@ internal fun BroadsheetWorthCard(
             if (card.whyNow.isNotBlank()) Text("Why now · ${card.whyNow}", color = TodayDiscovery, fontSize = 11.sp)
             card.brief?.keyFacts?.take(3)?.forEach { Text("• $it", color = Ink, fontSize = 12.sp) }
             card.recommendedAction?.let { recommendation ->
-                Text("Suggested · ${recommendation.label}${recommendation.rationale.takeIf(String::isNotBlank)?.let { " — $it" }.orEmpty()}",
+                Text("Suggested · ${resurfacingActionLabel(recommendation.kind, recommendation.label, assistantName)}${recommendation.rationale.takeIf(String::isNotBlank)?.let { " — $it" }.orEmpty()}",
                     color = TodaySuccess, fontSize = 11.sp)
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                CardAction(card.detailLabel) { onDetail(card) }
-                card.actions.take(4).forEach { capability ->
-                    ResurfacingActionKind.fromWire(capability.kind)?.let { kind -> CardAction(capability.label, enabled = !busy) { onAction(card, kind) } }
+                ActMenuAction(!busy, { deckActMenu(deckCard(card), assistantName) }) { entry ->
+                    when (entry) {
+                        TodayDeckMenuEntry.Open -> onOpen(card)
+                        is TodayDeckMenuEntry.Resurfacing -> onAction(card, entry.kind)
+                        TodayDeckMenuEntry.Details -> onDetail(card)
+                        else -> Unit
+                    }
                 }
                 CardAction("Useful", TodaySuccess, !busy, Icons.Outlined.ThumbUp) { viewModel.resolveResurfacing(card, ResurfacingFeedbackAction.Open) }
                 CardAction("Seen", Secondary, !busy, Icons.Outlined.CheckCircle) { viewModel.resolveResurfacing(card, ResurfacingFeedbackAction.Acknowledge) }

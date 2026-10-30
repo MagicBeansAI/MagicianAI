@@ -297,6 +297,40 @@ pub async fn judge_batches_with(
     combine(outcomes)
 }
 
+/// Judge the advisory lane: batches of intentions that cannot make the act
+/// wait. The typed path runs them on the engine's background operation with
+/// no generative fallback. A batch that cannot be judged is dropped and
+/// counted, never returned as unresolved: nothing in it could have held the
+/// act. Returns the judged outcomes and how many batches went unchecked.
+pub async fn judge_advisory_batches_with(
+    backend: Option<JudgeBackend<'_>>,
+    inputs: &[AlignmentInput],
+    budget: Duration,
+) -> (Vec<JudgeOutcome>, usize) {
+    let outcomes = futures_util::future::join_all(inputs.iter().map(|input| async move {
+        match backend {
+            Some(JudgeBackend::Engine { bars, .. }) => {
+                if input.coverage.status == CoverageStatus::Complete && input.intentions.is_empty()
+                {
+                    return JudgeOutcome::NothingToCompare;
+                }
+                super::engine_judge::judge_typed_advisory(input, &bars, budget).await
+            },
+            other => judge_with(other, input, budget).await,
+        }
+    }))
+    .await;
+    let unchecked = outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome, JudgeOutcome::Unresolved { .. }))
+        .count();
+    let judged = outcomes
+        .into_iter()
+        .filter(|outcome| !matches!(outcome, JudgeOutcome::Unresolved { .. }))
+        .collect();
+    (judged, unchecked)
+}
+
 /// Fold batch outcomes. Precedence: cancel, a confirmation hold, unresolved,
 /// a clarification hold, a choice hold, a nudge, proceed. Within a rank the
 /// first batch wins, and batches lead with explicit standing instructions.
@@ -456,6 +490,34 @@ mod tests {
         }
     }
 
+    struct ProviderDown;
+    impl ScriptedJudge for ProviderDown {
+        fn respond(&self, _input: &AlignmentInput) -> Result<String, String> {
+            Err("decision request timed out".to_string())
+        }
+    }
+
+    /// An advisory batch that cannot be judged is dropped and counted; it
+    /// never becomes the check's unresolved outcome (2026-10-25: inferred
+    /// preferences timing out held every outward act).
+    #[tokio::test]
+    async fn an_unjudged_advisory_batch_is_dropped_not_unresolved() {
+        let mut inferred = budget_rule();
+        inferred.assertion_status = AssertionStatus::Inferred;
+        let inputs = vec![
+            input(vec![inferred], CoverageStatus::Complete),
+            input(Vec::new(), CoverageStatus::Complete),
+        ];
+        let (judged, unchecked) = judge_advisory_batches_with(
+            Some(JudgeBackend::Scripted(&ProviderDown)),
+            &inputs,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(unchecked, 1);
+        assert_eq!(judged, vec![JudgeOutcome::NothingToCompare]);
+    }
+
     #[tokio::test]
     async fn a_verified_empty_inventory_never_calls_the_model() {
         let outcome = judge(
@@ -551,7 +613,10 @@ mod tests {
         assert_eq!(with_failure.disposition(), AlignmentDisposition::Hold);
         match &with_failure {
             JudgeOutcome::Decided { decision, .. } => {
-                assert!(decision.decision.explanation.contains("could not be checked"))
+                assert!(decision
+                    .decision
+                    .explanation
+                    .contains("could not be checked"))
             },
             other => panic!("expected the hold, got {other:?}"),
         }
@@ -571,7 +636,10 @@ mod tests {
                     latency_ms: 1,
                 },
             ]);
-            assert_eq!(unresolved_first.disposition(), AlignmentDisposition::Unresolved);
+            assert_eq!(
+                unresolved_first.disposition(),
+                AlignmentDisposition::Unresolved
+            );
         }
         assert_eq!(
             combine(Vec::new()).disposition(),

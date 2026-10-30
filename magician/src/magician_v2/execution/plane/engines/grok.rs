@@ -138,9 +138,7 @@ fn install_config(install: &HomeInstall) -> std::io::Result<()> {
 /// the plane server, whose per-call timeout outlasts the turn ceiling so
 /// Magician's own bounds end a turn, never Grok's MCP client.
 fn plane_config_toml(endpoint_url: &str) -> String {
-    let url = endpoint_url
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let url = endpoint_url.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "[compat.claude]\n\
          mcps = false\n\
@@ -224,7 +222,9 @@ impl HarnessEngine for GrokEngine {
                     ("GROK_CLAUDE_HOOKS_ENABLED".to_string(), "false".to_string()),
                     ("GROK_CURSOR_HOOKS_ENABLED".to_string(), "false".to_string()),
                 ];
-                env.extend(inherit_env(&["XAI_API_KEY"]));
+                if crate::magician_v2::harness_auth::uses_magician_credentials("grok") {
+                    env.extend(inherit_env(&["XAI_API_KEY"]));
+                }
                 env
             },
             install_config,
@@ -251,11 +251,18 @@ mod tests {
             .iter()
             .position(|line| *line == format!("[mcp_servers.{SERVER_NAME}]"))
             .expect("plane server table");
-        let expected = format!("tool_timeout_sec = {}", super::super::PLANE_TOOL_TIMEOUT_SECS);
-        assert!(lines[plane_at + 1..].contains(&expected.as_str()), "{config}");
+        let expected = format!(
+            "tool_timeout_sec = {}",
+            super::super::PLANE_TOOL_TIMEOUT_SECS
+        );
+        assert!(
+            lines[plane_at + 1..].contains(&expected.as_str()),
+            "{config}"
+        );
         assert!(lines[plane_at + 1..].contains(&"url = \"http://127.0.0.1:1/plane/mcp\""));
         assert!(
-            super::super::PLANE_TOOL_TIMEOUT_SECS >= crate::config::default_harness_turn_max_seconds()
+            super::super::PLANE_TOOL_TIMEOUT_SECS
+                >= crate::config::default_harness_turn_max_seconds()
         );
     }
 

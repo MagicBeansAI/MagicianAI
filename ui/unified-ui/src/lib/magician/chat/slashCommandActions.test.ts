@@ -1,19 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { writable } from 'svelte/store';
 
 const select = vi.fn();
 const adoptServer = vi.fn();
+const notifyDefault = vi.fn();
 const setChatHarnessEngine = vi.fn();
 const setRunHarnessEngine = vi.fn();
+const setOperationModel = vi.fn();
+const saveMediaPreferences = vi.fn();
 
 vi.mock('$lib/stores/scopeIdentityStore', () => ({
 	scopedRequestHeaders: (headers?: HeadersInit) => new Headers(headers)
 }));
 vi.mock('$lib/stores/chatHarnessPreferenceStore', () => ({
-	chatHarnessPreferenceStore: { select: (...args: unknown[]) => select(...args), adoptServer: (...args: unknown[]) => adoptServer(...args) }
+	chatHarnessPreferenceStore: { select: (...args: unknown[]) => select(...args), adoptServer: (...args: unknown[]) => adoptServer(...args) },
+	notifyChatHarnessDefaultChanged: (...args: unknown[]) => notifyDefault(...args)
 }));
 vi.mock('$lib/plane/terminalGrants', () => ({
 	setChatHarnessEngine: (...args: unknown[]) => setChatHarnessEngine(...args),
 	setRunHarnessEngine: (...args: unknown[]) => setRunHarnessEngine(...args)
+}));
+vi.mock('$lib/stores/modelRoutingStore', () => ({
+	setOperationModel: (...args: unknown[]) => setOperationModel(...args)
+}));
+vi.mock('$lib/media/preferences', () => ({
+	saveMediaPreferences: (...args: unknown[]) => saveMediaPreferences(...args)
 }));
 
 import {
@@ -21,8 +32,16 @@ import {
 	describeEffectiveBudget,
 	fetchBudgetDefaults,
 	grantTaskBudget,
-	runSlashAction
+	runSlashAction,
+	type SlashActionDeps
 } from './slashCommandActions';
+
+/** A chat panel's model store: the catalog `ensureLoaded` brings in. */
+function panelProfiles(modelIds: string[], selectionError: string | null = null) {
+	const state = writable({ models: modelIds.map((id) => ({ id })), selectionError });
+	const store = { subscribe: state.subscribe, ensureLoaded: vi.fn(async () => {}), selectModel: vi.fn() };
+	return { store, deps: store as unknown as NonNullable<SlashActionDeps['chatProfiles']> };
+}
 
 function jsonResponse(status: number, body: unknown): Response {
 	return new Response(body === undefined ? '' : JSON.stringify(body), {
@@ -38,8 +57,11 @@ beforeEach(() => {
 	vi.stubGlobal('fetch', fetchMock);
 	select.mockReset();
 	adoptServer.mockReset();
+	notifyDefault.mockReset();
 	setChatHarnessEngine.mockReset();
 	setRunHarnessEngine.mockReset();
+	setOperationModel.mockReset();
+	saveMediaPreferences.mockReset();
 });
 
 afterEach(() => {
@@ -133,16 +155,114 @@ describe('runSlashAction', () => {
 		const result = await runSlashAction({ type: 'chat-engine', engine: 'codex', model: 'default', scope: 'everywhere' });
 		expect(setChatHarnessEngine).toHaveBeenCalledWith('codex', 'default');
 		expect(adoptServer).toHaveBeenCalledWith('codex', 'default');
-		expect(result.title).toBe('Chat engine: Codex');
+		expect(result.title).toBe('Chat engine everywhere: Codex');
+	});
+
+	it('/engine reaches the issuing chat panel and the chats that inherit the browser pick', async () => {
+		const panel = { select: vi.fn(), adoptServer: vi.fn() };
+		await runSlashAction({ type: 'chat-engine', engine: 'codex', model: 'default', scope: 'device' }, { chatHarness: panel });
+		expect(select).toHaveBeenCalledWith('codex', 'default');
+		expect(panel.select).toHaveBeenCalledWith('codex', 'default');
+		expect(notifyDefault).toHaveBeenCalledWith({ engine: 'codex', model: 'default' });
+
+		setChatHarnessEngine.mockResolvedValue({ chat_current: 'claude_code', chat_model: 'opus' });
+		await runSlashAction({ type: 'chat-engine', engine: 'claude_code', model: 'opus', scope: 'everywhere' }, { chatHarness: panel });
+		expect(adoptServer).toHaveBeenCalledWith('claude_code', 'opus');
+		expect(panel.adoptServer).toHaveBeenCalledWith('claude_code', 'opus');
+		expect(notifyDefault).toHaveBeenCalledWith({ engine: 'claude_code', model: 'opus' });
 	});
 
 	it('/run-engine sets the run engine and rethrows the server error', async () => {
-		setRunHarnessEngine.mockResolvedValue({ engine: 'claude_code', harness_model: 'default', pi_profile: null });
+		setRunHarnessEngine.mockResolvedValue({ engine: 'claude_code', harness_model: 'default', model_selection: null });
 		await expect(runSlashAction({ type: 'run-engine', engine: 'claude_code', model: 'default' })).resolves.toMatchObject({
-			title: 'Run engine: Claude Code'
+			title: 'Agentic flows: Claude Code'
 		});
+		expect(setRunHarnessEngine).toHaveBeenCalledWith('claude_code', 'default');
 		setRunHarnessEngine.mockRejectedValue(new Error('engine not installed'));
 		await expect(runSlashAction({ type: 'run-engine', engine: 'grok', model: 'default' })).rejects.toThrow('engine not installed');
+	});
+
+	it('/run-engine "Same as Chat" follows the chat engine', async () => {
+		setRunHarnessEngine.mockResolvedValue({ engine: 'chat', harness_model: 'default', model_selection: null });
+		const result = await runSlashAction({ type: 'run-engine', engine: 'chat', model: 'default' });
+		expect(setRunHarnessEngine).toHaveBeenCalledWith('chat', 'default');
+		expect(result.title).toBe('Agentic flows: Same as Chat');
+	});
+
+	it('/run-engine pi sends the model selection', async () => {
+		const selection = { model_id: 'anthropic:claude-sonnet', thinking: 'low' };
+		setRunHarnessEngine.mockResolvedValue({ engine: 'pi', harness_model: 'default', model_selection: selection });
+		const result = await runSlashAction({ type: 'run-engine', engine: 'pi', model: 'default', selection, modelLabel: 'Claude Sonnet' });
+		expect(setRunHarnessEngine).toHaveBeenCalledWith('pi', 'default', selection);
+		expect(result.title).toBe('Agentic flows: Coding agent · Claude Sonnet');
+	});
+
+	it('/run-engine pi "Default" clears the run model with an explicit null', async () => {
+		setRunHarnessEngine.mockResolvedValue({ engine: 'pi', harness_model: 'default', model_selection: null });
+		const result = await runSlashAction({ type: 'run-engine', engine: 'pi', model: 'default', selection: null, modelLabel: 'Default' });
+		expect(setRunHarnessEngine).toHaveBeenCalledWith('pi', 'default', null);
+		expect(result.title).toBe('Agentic flows: Coding agent · Default');
+	});
+
+	it('/run-engine magician saves the agentic_decision model, pinning Magician first when needed', async () => {
+		const selection = { model_id: 'openai:gpt-6.1-sol', thinking: 'high' };
+		setRunHarnessEngine.mockResolvedValue({ engine: 'magician', harness_model: 'default', model_selection: null });
+		setOperationModel.mockResolvedValue(undefined);
+		const result = await runSlashAction({ type: 'run-loop-model', selection, modelLabel: 'GPT-6.1 Sol', pinMagician: true });
+		expect(setRunHarnessEngine).toHaveBeenCalledWith('magician');
+		expect(setOperationModel).toHaveBeenCalledWith('agentic_decision', selection);
+		expect(setRunHarnessEngine.mock.invocationCallOrder[0]).toBeLessThan(setOperationModel.mock.invocationCallOrder[0]);
+		expect(result.title).toBe('Agentic flows: Magician · GPT-6.1 Sol');
+
+		setRunHarnessEngine.mockClear();
+		await runSlashAction({ type: 'run-loop-model', selection, modelLabel: 'GPT-6.1 Sol', pinMagician: false });
+		expect(setRunHarnessEngine).not.toHaveBeenCalled();
+		setOperationModel.mockRejectedValue(new Error('Model assignment failed (409)'));
+		await expect(
+			runSlashAction({ type: 'run-loop-model', selection, modelLabel: 'GPT-6.1 Sol', pinMagician: false })
+		).rejects.toThrow('Model assignment failed (409)');
+	});
+
+	it('/engine with a catalog pick sets the engine, then the model in the panel store', async () => {
+		const selection = { model_id: 'anthropic:claude-sonnet', thinking: 'low' };
+		const panel = { select: vi.fn(), adoptServer: vi.fn() };
+		const profiles = panelProfiles(['anthropic:claude-sonnet']);
+		const result = await runSlashAction(
+			{ type: 'chat-engine', engine: 'pi', model: 'default', scope: 'device', selection, modelLabel: 'Claude Sonnet' },
+			{ chatHarness: panel, chatProfiles: profiles.deps }
+		);
+		expect(panel.select).toHaveBeenCalledWith('pi', 'default');
+		expect(profiles.store.ensureLoaded).toHaveBeenCalledWith('pi');
+		expect(profiles.store.selectModel).toHaveBeenCalledWith(selection);
+		expect(panel.select.mock.invocationCallOrder[0]).toBeLessThan(profiles.store.selectModel.mock.invocationCallOrder[0]);
+		expect(result.title).toBe('Chat engine: Coding agent · Claude Sonnet');
+	});
+
+	it('/engine fails when the picked model is not in the loaded catalog', async () => {
+		const profiles = panelProfiles([], 'Model choices could not be loaded. Reconnect and try again.');
+		await expect(
+			runSlashAction(
+				{
+					type: 'chat-engine',
+					engine: 'magician',
+					model: 'default',
+					scope: 'device',
+					selection: { model_id: 'gone', thinking: 'auto' },
+					modelLabel: 'Gone'
+				},
+				{ chatProfiles: profiles.deps }
+			)
+		).rejects.toThrow('Model choices could not be loaded');
+		expect(profiles.store.selectModel).not.toHaveBeenCalled();
+	});
+
+	it('/voice-mode saves where the voice switch saves', async () => {
+		saveMediaPreferences.mockResolvedValue({});
+		const result = await runSlashAction({ type: 'voice-mode', mode: 'hands_free' });
+		expect(saveMediaPreferences).toHaveBeenCalledWith({ voice_mode: 'hands_free' });
+		expect(result.title).toBe('Voice mode: Hands-free');
+		saveMediaPreferences.mockRejectedValue(new Error('media preferences save 500'));
+		await expect(runSlashAction({ type: 'voice-mode', mode: 'realtime' })).rejects.toThrow('media preferences save 500');
 	});
 
 	it('/budget default PUTs both caps when the current ones are known', async () => {

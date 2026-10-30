@@ -1373,6 +1373,21 @@ describe('UnifiedTaskPanel — an output you can read without leaving', () => {
 });
 
 describe('UnifiedTaskPanel — the written report', () => {
+	it('uses the same verification disclosure and formatted report in Output and Run', async () => {
+		const body = "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: No observed dispatch.\n\n```html\n<h1>Runtime checks</h1><table><tr><th>Check</th><th>Result</th></tr><tr><td>Definition</td><td>Confirmed</td></tr></table>\n```";
+		const entry: TimelineEntry = { id: 'completion', at: NOW, kind: 'event', status: 'done', title: 'Run completed', body, detail: null, latencyMs: null, model: null, costUsd: null, tokens: null, screenshot: false, executionId: null, agentId: null };
+		const { container } = renderPanel({ task: makeTask({ status: 'finished', output: { ...OUTPUT, summary: body }, run: { ...RUN, timeline: [entry] } }) });
+		const output = container.querySelector<HTMLElement>('.output-summary');
+		expect(output?.querySelector('table')).not.toBeNull();
+		expect(output?.textContent).not.toContain('Not fully verified');
+		expect(within(output!).getByRole('button', { name: 'Not fully verified — view details' })).toBeVisible();
+		await fireEvent.click(screen.getByRole('button', { name: /^Run/ }));
+		const run = container.querySelector<HTMLElement>('.timeline-row__body');
+		expect(run?.querySelector('table')).not.toBeNull();
+		expect(run?.textContent).not.toContain('Not fully verified');
+		expect(within(run!).getByRole('button', { name: 'Not fully verified — view details' })).toBeVisible();
+	});
+
 	const REPORT = [
 		'## Revenue by region',
 		'',
@@ -2660,6 +2675,55 @@ describe('UnifiedTaskPanel — the Run act timeline', () => {
 			expect(fresh).toHaveLength(1);
 			expect(fresh[0]).toHaveTextContent('New one');
 		});
+
+		it('counts a running row up each second while the run is live, then shows its duration', async () => {
+			vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+			vi.setSystemTime(NOW);
+			try {
+				const running: TimelineEntry = {
+					...TIMELINE[1],
+					id: 'llm-call:call-1',
+					at: NOW - 42_000,
+					status: 'running',
+					title: 'Thinking with gpt-6.1-sol',
+					latencyMs: null,
+					model: 'gpt-6.1-sol',
+					costUsd: null,
+					tokens: null
+				};
+				// A running task opens on its Run card, so no click is needed.
+				const { container, rerender } = renderPanel({
+					task: withTimeline([running], { status: 'running' })
+				});
+				const live = () => rows(container)[0].querySelector('[data-timeline-elapsed]');
+				expect(live()?.textContent?.trim()).toBe('42s');
+
+				vi.advanceTimersByTime(1_000);
+				flushSync();
+				expect(live()?.textContent?.trim()).toBe('43s');
+
+				// The settled row replaces it in place: the duration where the count was.
+				await rerender({
+					task: withTimeline([{ ...running, status: 'done', latencyMs: 44_000 }], {
+						status: 'running'
+					})
+				});
+				expect(live()).toBeNull();
+				expect(rows(container)[0].querySelector('.timeline-row__latency')?.textContent?.trim()).toBe(
+					'44s'
+				);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('does not count up a running row left over on a settled run', async () => {
+			const { container } = renderPanel({ task: withTimeline(TIMELINE, { status: 'finished' }) });
+			await openRun();
+			const shell = rows(container).find((row) => row.dataset.timelineKind === 'shell');
+			expect(shell?.dataset.timelineStatus).toBe('running');
+			expect(shell?.querySelector('[data-timeline-elapsed]')).toBeNull();
+		});
 	});
 
 	it('reads each row as what happened, in order', async () => {
@@ -2904,120 +2968,19 @@ describe('UnifiedTaskPanel — the Run act timeline', () => {
 		expect(values.join(' ')).not.toContain('cached');
 	});
 
-	/**
-	 * Where the time went — the bar drawn to scale behind each latency.
-	 *
-	 * A duration per row is a number the reader compares by hand. What these pin
-	 * is that the bar is never drawn where there is nothing to compare, and that
-	 * it is drawn against the **longest** call rather than the total: the two
-	 * denominators give different numbers for the same feed, so a swap cannot pass
-	 * by coincidence.
-	 */
-	describe('the timing bars', () => {
-		const timed = (...latencies: (number | null)[]): TimelineEntry[] =>
-			latencies.map((latencyMs, index) => ({
-				id: `tl-timed-${index}`,
-				at: NOW - 300_000 + index * 1_000,
-				kind: 'llm' as const,
-				status: 'done' as const,
-				title: `Call ${index}`,
-				body: null,
-				detail: null,
-					latencyMs,
-					model: null,
-					costUsd: null,
-					tokens: null,
-				screenshot: false,
-				executionId: null,
-				agentId: null,
-			}));
+	// Durations stand alone at the row's trailing edge. The 2px "where the time
+	// went" rule under each one was retired 2026-10-20: drawn against the slowest
+	// call it read as a stray underscore whose length tracked the time.
+	it('shows a duration with no bar under it', async () => {
+		const { container } = renderPanel({ task: withTimeline(TIMELINE, { status: 'finished' }) });
+		await openRun();
 
-		const barWidths = (container: HTMLElement) =>
+		expect(container.querySelectorAll('.timeline-row__bar')).toHaveLength(0);
+		expect(
 			rows(container).map(
-				(row) => row.querySelector<HTMLElement>('.timeline-row__bar')?.style.width ?? null
-			);
-
-		it('draws nothing at all when only one row was timed', async () => {
-			// The base fixture: one latency among six rows. A lone full-width bar
-			// would mean "the longest of the one thing measured", which the eye reads
-			// as "this took a long time" — a claim the feed does not contain.
-			const { container } = renderPanel({ task: withTimeline(TIMELINE, { status: 'finished' }) });
-			await openRun();
-
-			expect(container.querySelectorAll('.timeline-row__bar')).toHaveLength(0);
-			// The number itself is still there. Only the comparison is withheld.
-			expect(
-				rows(container).map(
-					(row) => row.querySelector('.timeline-row__latency')?.textContent?.trim() ?? null
-				)
-			).toEqual([null, '4s', null, null, null, null]);
-		});
-
-		it('fills the track for the row that dominates and leaves the rest slivers', async () => {
-			const { container } = renderPanel({
-				task: withTimeline(timed(12_000, 700, 400, null), { status: 'finished' })
-			});
-			await openRun();
-
-			// Against the longest: 100 / 6 / 3. Against the total (13.1s) it would be
-			// 92 / 5 / 3 — a different first number, so the denominator is pinned.
-			// The untimed row draws no bar, not a zero-width one.
-			expect(barWidths(container)).toEqual(['100%', '6%', '3%', null]);
-		});
-
-		it('draws equal bars for equal calls, because nothing stood out', async () => {
-			const { container } = renderPanel({
-				task: withTimeline(timed(900, 900, 900), { status: 'finished' })
-			});
-			await openRun();
-
-			// Full width rather than uniformly tiny: the bars are a relative claim,
-			// and every call here really was as long as the longest. A reader
-			// scanning for the slow one correctly finds no answer.
-			expect(barWidths(container)).toEqual(['100%', '100%', '100%']);
-		});
-
-		it('draws a sliver for a real but tiny measurement, so it is not read as unmeasured', async () => {
-			const { container } = renderPanel({
-				task: withTimeline(timed(12_000, 1), { status: 'finished' })
-			});
-			await openRun();
-
-			// 1ms of 12s rounds to 0%, and a zero-width bar is indistinguishable from
-			// the no-bar an unmeasured row gets. Those are different facts.
-			expect(barWidths(container)).toEqual(['100%', '2%']);
-		});
-
-		it('costs the feed no extra rows, whatever the bars say', async () => {
-			// The act is held to "no body becomes something you scroll past to reach
-			// the next act". The bar is the number's own underline, inside the
-			// element that already held it — one element per row, not one line.
-			const { container } = renderPanel({
-				task: withTimeline(timed(12_000, 700, 400), { status: 'finished' })
-			});
-			await openRun();
-
-			expect(rows(container)).toHaveLength(3);
-			for (const row of rows(container)) {
-				expect(row.querySelector('.timeline-row__latency')?.contains(
-					row.querySelector('.timeline-row__bar')
-				)).toBe(true);
-			}
-		});
-
-		it('hides the bars from the screen reader, which hears the duration itself', async () => {
-			const { container } = renderPanel({
-				task: withTimeline(timed(12_000, 700), { status: 'finished' })
-			});
-			await openRun();
-
-			// The same rule every marker in this panel follows: the graphic restates
-			// a number that is already in the text, and a reader hearing it announced
-			// would learn a width rather than a duration.
-			for (const bar of container.querySelectorAll('.timeline-row__bar')) {
-				expect(bar).toHaveAttribute('aria-hidden', 'true');
-			}
-		});
+				(row) => row.querySelector('.timeline-row__latency')?.textContent?.trim() ?? null
+			)
+		).toEqual([null, '4s', null, null, null, null]);
 	});
 
 	/**
@@ -3308,7 +3271,7 @@ describe('UnifiedTaskPanel — the Plan act', () => {
 		expect(summaryOf(container, 'plan')).toBe('2 questions waiting — "Which quarter?"');
 	});
 
-	it('lists the asks and the steps in the act the reader was sent to', () => {
+	it('lists plan questions above the acts and steps within Plan', () => {
 		const { container } = renderPanel({
 			task: makeTask({
 				plan: { ...PLAN, questions: [{ id: 'q1', question: 'Which quarter?' }] },
@@ -3601,16 +3564,7 @@ describe('UnifiedTaskPanel — a moving open act does not drop the reader', () =
 	});
 });
 
-/**
- * **B5 — the ask, and the thing that answers it, in the act you were sent to.**
- *
- * The recurring defect this suite has to guard against here is an observable
- * hidden inside a closed disclosure: an answer control lives in an act body, and
- * a test that merely finds it in the DOM would pass while the reader had to
- * hunt for it. So the first assertion in this block is that the act holding the
- * ask is the act the panel *opens*, and the last is what happens when the reader
- * closes it themselves.
- */
+/** Pending questions stay visible and keep their draft independently of the acts. */
 describe('UnifiedTaskPanel — answering the ask', () => {
 	const CLARIFICATION: HitlOpenTarget = {
 		id: 'sq_7c11',
@@ -3651,7 +3605,7 @@ describe('UnifiedTaskPanel — answering the ask', () => {
 
 	const askBlock = (container: HTMLElement) => container.querySelector<HTMLElement>('.ask');
 
-	it('puts the ask in the act the panel opens, so the control is not behind a click', () => {
+	it('puts plan questions above the acts, so their controls are not behind a click', () => {
 		const { container } = renderPanel({
 			task: asked(CLARIFICATION, {
 				plan: { ...PLAN, questions: [{ id: 'sq_7c11', question: 'Which quarter should I report on?' }] }
@@ -3659,21 +3613,28 @@ describe('UnifiedTaskPanel — answering the ask', () => {
 			answerAsk: true
 		});
 
-		// The act with the ask in it *is* the open one. Finding the control in the
-		// document is not the property — being able to reach it without hunting is.
 		expect(openActs(container)).toEqual(['plan']);
-		const section = sections(container).find((candidate) => candidate.dataset.act === 'plan');
-		expect(section?.querySelector('.ask')).not.toBeNull();
-		expect(askBlock(container)?.textContent).toContain('Which quarter should I report on?');
+		const questions = screen.getByRole('region', { name: 'Pending questions' });
+		expect(questions).toHaveTextContent('Which quarter should I report on?');
+		expect(questions.closest('section[data-act]')).toBeNull();
+		expect(questions.nextElementSibling).toBe(sections(container)[0]);
 	});
 
-	it('sends a mid-run ask to the Run act, where the thing it is about is', () => {
+	it('shows a mid-run ask outside the Run act', () => {
 		const { container } = renderPanel({ task: asked(DIFF), answerAsk: true });
 
 		expect(openActs(container)).toEqual(['run']);
-		expect(
-			sections(container).find((candidate) => candidate.dataset.act === 'run')?.querySelector('.ask')
-		).not.toBeNull();
+		expect(askBlock(container)?.closest('section[data-act]')).toBeNull();
+		expect(screen.getByRole('button', { name: 'Review the changes →' })).toBeVisible();
+	});
+
+	it('keeps a question answerable even when no act loaded', () => {
+		const { container } = renderPanel({
+			task: asked(CLARIFICATION, { plan: null, run: null, output: null }),
+			answerAsk: true
+		});
+		expect(sections(container)).toHaveLength(0);
+		expect(screen.getByRole('textbox', { name: 'Response' })).toBeVisible();
 	});
 
 	it('shows a plan question once, not once with a control and once as a bare line', () => {
@@ -3763,6 +3724,10 @@ describe('UnifiedTaskPanel — answering the ask', () => {
 
 		const rows = Array.from((container as HTMLElement).querySelectorAll<HTMLElement>('.plan-ask'));
 		expect(rows.map((row) => row.dataset.questionId)).toEqual(['sq_0000', 'sq_9999']);
+		await fireEvent.click(screen.getByRole('button', { name: /^Plan/ }));
+		expect(openActs(container as HTMLElement)).toEqual([]);
+		expect(rows.every((row) => row.closest('section[data-act]') === null)).toBe(true);
+		expect(rows[0]).toBeVisible();
 		// A question with a target carries its own control; one without stays a line.
 		expect(rows[0].querySelector('button')).not.toBeNull();
 		expect(rows[1].querySelector('button')).toBeNull();
@@ -3785,6 +3750,9 @@ describe('UnifiedTaskPanel — answering the ask', () => {
 		const others = (container as HTMLElement).querySelectorAll<HTMLElement>('.more-ask');
 		expect(others).toHaveLength(1);
 		expect(others[0]).toHaveTextContent('Apply 1 edit to tests.py?');
+		await fireEvent.click(screen.getByRole('button', { name: /^Run/ }));
+		expect(openActs(container as HTMLElement)).toEqual([]);
+		expect(others[0]).toBeVisible();
 		// A diff keeps its handoff wording: it is answered in the focused surface.
 		await fireEvent.click(within(others[0]).getByRole('button', { name: 'Review the changes →' }));
 		expect(getByTestId('panel-ask-events').textContent).toBe('ccp-2:open');
@@ -3835,10 +3803,7 @@ describe('UnifiedTaskPanel — answering the ask', () => {
 		expect(screen.getByRole('button', { name: 'Answer' })).toBeInTheDocument();
 	});
 
-	it('does not follow the reader into an act the ask has nothing to do with', async () => {
-		// The ask belongs to the act its source routes to, not to whichever act
-		// happens to be open. Rendering it wherever the reader is would put a diff
-		// review inside the Output act, under a heading about files.
+	it('keeps the ask visible above the acts when the reader opens Output', async () => {
 		const { container } = renderPanel({ task: asked(DIFF), answerAsk: true });
 		expect(openActs(container)).toEqual(['run']);
 
@@ -3847,24 +3812,37 @@ describe('UnifiedTaskPanel — answering the ask', () => {
 
 		expect(openActs(container)).toEqual(['output']);
 		expect(output?.querySelector('.ask')).toBeNull();
-		expect(askBlock(container)).toBeNull();
+		expect(askBlock(container)).toBeVisible();
+		expect(screen.getByRole('button', { name: 'Review the changes →' })).toBeVisible();
 	});
 
-	it('lets the reader close the act it is in, and does not reopen it under them', async () => {
-		const { container } = renderPanel({ task: asked(DIFF), answerAsk: true });
+	it('preserves a draft and submits it after Run is collapsed', async () => {
+		const question = { ...CLARIFICATION, source: 'agentic' as const };
+		const { container, getByTestId } = render(UnifiedTaskPanelHarness, {
+			props: { task: asked(question), now: NOW, answerAsk: true }
+		});
 		expect(openActs(container)).toEqual(['run']);
+		const field = screen.getByRole('textbox', { name: 'Response' });
+		await fireEvent.input(field, { target: { value: 'Q3' } });
 
 		const header = sections(container)
 			.find((candidate) => candidate.dataset.act === 'run')
 			?.querySelector('button');
 		await fireEvent.click(header as HTMLElement);
 
-		// Closed by the reader's own gesture, so the control goes with the body.
-		// The verdict above still says the task is waiting on them, which is the
-		// thing that brings them back.
 		expect(openActs(container)).toEqual([]);
-		expect(askBlock(container)).toBeNull();
+		expect(screen.getByRole('textbox', { name: 'Response' })).toBe(field);
+		expect(field).toHaveValue('Q3');
+		await fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+		expect(getByTestId('panel-ask-events').textContent).toBe('sq_7c11:{"kind":"text","value":"Q3"}');
 		expect(verdictRoot(container)?.dataset.verdictState).toBe('waiting');
+	});
+
+	it('removes the questions area once the model no longer lists an ask', async () => {
+		const { rerender } = renderPanel({ task: asked(CLARIFICATION), answerAsk: true });
+		expect(screen.getByRole('region', { name: 'Pending questions' })).toBeVisible();
+		await rerender({ task: makeTask(), answerAsk: true });
+		expect(screen.queryByRole('region', { name: 'Pending questions' })).toBeNull();
 	});
 });
 
@@ -4129,5 +4107,47 @@ describe('UnifiedTaskPanel — deliverables in Output, the rest under Technical 
 		} finally {
 			Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard });
 		}
+	});
+});
+
+describe('UnifiedTaskPanel while the final answer is being written', () => {
+	it('reads Preparing final result instead of Finished, counting up off the live clock', () => {
+		// The verdict ticks off the shared 1 s clock while finalizing, so the clock
+		// is pinned to the test's `NOW` rather than the real one.
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+		vi.setSystemTime(NOW);
+		try {
+			const { container } = renderPanel({
+				task: makeTask({
+					status: 'finished',
+					synthesisPending: true,
+					output: emptyOutput(),
+					lastProgressAt: NOW - 40_000
+				}),
+				now: NOW
+			});
+
+			expect(verdictRoot(container)).toHaveAttribute('data-verdict-state', 'finalizing');
+			const headline = () => container.querySelector('.verdict__headline');
+			expect(headline()).toHaveTextContent('Preparing final result · 40s');
+			expect(headline()).not.toHaveTextContent('Finished');
+			expect(container.querySelector('.verdict__marker--spin')).not.toBeNull();
+			expect(container).not.toHaveTextContent('Produced no output');
+
+			vi.advanceTimersByTime(2_000);
+			flushSync();
+			expect(headline()).toHaveTextContent('Preparing final result · 42s');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('reads Finished once the flag clears', () => {
+		const { container } = renderPanel({
+			task: makeTask({ status: 'finished', synthesisPending: false }),
+			now: NOW
+		});
+
+		expect(verdictRoot(container)).toHaveAttribute('data-verdict-state', 'finished');
 	});
 });

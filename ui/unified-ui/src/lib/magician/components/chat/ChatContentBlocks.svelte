@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { showError } from '$lib/shared/stores/notifications';
 	import type { ContentBlockRecord } from '$lib/stores/chatStore';
-	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import TaskReport from '$lib/magician/tasks/TaskReport.svelte';
+	import AnswerVerificationInfo from '$lib/magician/chat/components/AnswerVerificationInfo.svelte';
+	import { splitAnswerVerification } from '$lib/magician/chat/answerVerification';
 	import MiddleEllipsis from '$lib/magician/components/chat/MiddleEllipsis.svelte';
 	import { timedFetch } from '$lib/shared/fetch';
 	import {
@@ -439,7 +441,7 @@
 		{#each blocks as block, blockIndex (block.relative_path ?? block.display_name ?? block.url ?? blockIndex)}
 			{#if block.type === 'text' && block.text}
 				<div class="chat-rich-text">
-					<ChatMarkdown content={block.text} />
+					<TaskReport content={block.text} />
 				</div>
 			{:else if block.type === 'file'}
 				{@const href = fileHref(block)}
@@ -574,13 +576,17 @@
 					{:else if isInlineableText(block)}
 						{@const textKind = isInlineableText(block)!.kind}
 						{@const previewState = textPreviews[previewKey(block, href)] ?? { status: 'idle' }}
+						{@const report = textKind === 'markdown' && previewState.status === 'ready' ? splitAnswerVerification(previewState.content) : null}
 						<div
 							class="chat-rich-file-block"
 							use:whenVisible={() => void loadInlineText(block, href)}
 						>
 							<div class="chat-rich-text-preview-header">
-								<div class="chat-rich-file-name">
-									<MiddleEllipsis text={block.label ?? block.display_name ?? block.relative_path ?? 'file'} copyText={block.type === 'file' ? block.absolute_path : undefined} />
+								<div class="chat-rich-text-preview-title">
+									<div class="chat-rich-file-name">
+										<MiddleEllipsis text={block.label ?? block.display_name ?? block.relative_path ?? 'file'} copyText={block.type === 'file' ? block.absolute_path : undefined} />
+									</div>
+									{#if report?.verification}<AnswerVerificationInfo verification={report.verification} />{/if}
 								</div>
 								<div class="chat-rich-file-meta">
 									{block.mime_type ?? textKind}
@@ -603,7 +609,7 @@
 							{:else if previewState.status === 'ready'}
 								{#if textKind === 'markdown'}
 									<div class="chat-rich-text-preview-body chat-rich-text-preview-markdown">
-										<ChatMarkdown content={previewState.content} />
+										<TaskReport content={report?.body ?? previewState.content} />
 									</div>
 								{:else if textKind === 'json'}
 									{@const pretty = prettyPrintJson(previewState.content)}
@@ -876,6 +882,9 @@
 		gap: 0.15rem;
 		padding-inline: 0.15rem;
 	}
+
+	.chat-rich-text-preview-title { display: flex; align-items: center; gap: 0.25rem; min-width: 0; }
+	.chat-rich-text-preview-title .chat-rich-file-name { flex: 1; }
 
 	.chat-rich-text-preview-status {
 		font-size: 0.8rem;

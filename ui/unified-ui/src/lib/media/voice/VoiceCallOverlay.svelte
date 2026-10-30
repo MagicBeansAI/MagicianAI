@@ -4,8 +4,12 @@
 	 *
 	 * Renders:
 	 *  - the VoiceOrb in capturing state (mic-reactive)
-	 *  - a "speaking" / "listening" status pill
+	 *  - a status line that names the mic mode ("Open mic · Listening",
+	 *    "Hold to talk · Ready", …)
 	 *  - the recent turn history (user + assistant transcripts)
+	 *  - the mic-mode control (Open mic | Hold to talk) above the main mic
+	 *    control, whose shape follows the mode: a round mute button with a
+	 *    level ring in Open mic, the large hold button in Hold to talk
 	 *  - an end-call button
 	 *
 	 * Mounted globally in (app)/+layout.svelte so the overlay follows
@@ -16,6 +20,8 @@
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { page } from '$app/stores';
 	import VoiceOrb from '$lib/media/VoiceOrb.svelte';
+	import MicModeControl from '$lib/media/voice/MicModeControl.svelte';
+    import VoiceActivityWaveform from './VoiceActivityWaveform.svelte';
 	import {
 		clearVoiceTranscript,
 		engagePushToTalk,
@@ -23,10 +29,12 @@
 		pushToTalkMode,
 		releasePushToTalk,
 		sessionCapMsStore,
-		setPushToTalkMode,
+		setVoiceMicMuted,
 		stopVoiceCall,
 		voiceCallStore,
 		voiceMicAnalyser,
+		voicePlaybackAnalyser,
+		voiceMicMuted,
 		voiceTranscriptStore
 	} from '$lib/media/voice/realtimeVoiceClient';
 	import { primaryAgent } from '$lib/stores/agentStore';
@@ -110,35 +118,41 @@
 		assistantSpeaking: boolean,
 		assistantWorking: boolean,
 		ptt: boolean,
-		pttActive: boolean
+		pttActive: boolean,
+		muted: boolean
 	): string {
 		if (state === 'connecting') return 'Connecting…';
 		if (state === 'reconnecting') return 'Reconnecting…';
 		if (state === 'rotating') return 'Refreshing session…';
 		if (state === 'closing') return 'Ending call…';
 		if (state === 'error') return 'Voice error';
+		// The mic-side states name the mode, so which one is active is
+		// readable from the status line as well as the segmented control.
+		if (ptt && pttActive) return 'Hold to talk · Sending';
+		if (!ptt && muted) return 'Open mic · Muted';
 		if (assistantSpeaking) return 'Speaking…';
-		if (userSpeaking) return 'Hearing you…';
-		if (ptt && pttActive) return 'Hearing you… (release to send)';
+		if (userSpeaking) return 'Open mic · Hearing you…';
 		// Between "let me check…" and the answer the line is silent; say so
 		// rather than inviting the next question.
 		if (assistantWorking) return 'Working…';
-		if (ptt) return 'Hold to talk';
+		if (ptt) return 'Hold to talk · Ready';
 		if (call.addressingRequired && call.activationPhrase) {
-			return `Listening — start with “${call.activationPhrase}”`;
+			return `Open mic · Listening — start with “${call.activationPhrase}”`;
 		}
-		return 'Listening';
+		return 'Open mic · Listening';
 	}
 
 	$: ptt = $pushToTalkMode;
 	$: pttActive = $pushToTalkActive;
+	$: muted = !ptt && $voiceMicMuted;
 	$: status = statusLabel(
 		call.state,
 		transcript.userSpeaking,
 		transcript.assistantSpeaking,
 		transcript.assistantWorking,
 		ptt,
-		pttActive
+		pttActive,
+		muted
 	);
 
 	// Hold-to-talk pointer handling with capture so the user can drag
@@ -210,11 +224,11 @@
 		}
 	});
 
-	function toggleMode(): void {
-		// Applies LIVE: `setPushToTalkMode` rebuilds turn detection + re-arms/mutes
-		// the mic on the active call (no reconnect) and updates the shared store
-		// the buttons read.
-		setPushToTalkMode(!ptt);
+	function toggleMute(): void {
+		// Open mic only. The mute holds through the half-duplex echo guard and
+		// a session rotation; switching mode or ending the call clears it.
+		if (call.state !== 'connected') return;
+		setVoiceMicMuted(!muted);
 	}
 </script>
 
@@ -229,8 +243,10 @@
 						? 'idle'
 						: transcript.assistantSpeaking
 							? 'playing'
-							: 'capturing'}
-					analyser={transcript.assistantSpeaking ? null : $voiceMicAnalyser}
+							: muted
+								? 'idle'
+								: 'capturing'}
+					analyser={transcript.assistantSpeaking || muted ? null : $voiceMicAnalyser}
 					size={32}
 				/>
 			</div>
@@ -260,6 +276,7 @@
 				</svg>
 			</button>
 		</header>
+        <VoiceActivityWaveform inputAnalyser={$voiceMicAnalyser} outputAnalyser={$voicePlaybackAnalyser} active={call.state === 'connected' || call.state === 'rotating'} listening={!$voiceMicMuted && (!$pushToTalkMode || $pushToTalkActive)} />
 		{#if call.boundary && call.boundary.audience === 'untrusted' && call.state === 'connected'}
 			<!-- Shown only for an untrusted call, and deliberately not actionable:
 			     there is no control here to raise the boundary, because a room
@@ -296,13 +313,16 @@
 						: call.state === 'rotating'
 							? 'Refreshing the voice session — hang on a moment.'
 							: ptt
-								? 'Hold the button (or space) and talk.'
-								: 'Start talking. Captions will appear here.'}
+								? 'Hold the button (or space) to talk; release to send.'
+								: muted
+									? 'Your mic is muted.'
+									: 'Start talking. Captions will appear here.'}
 			</div>
 		{/if}
 
-		{#if ptt}
-			<div class="vc-overlay__ptt-wrap">
+		<div class="vc-overlay__controls">
+			<MicModeControl disabled={call.state !== 'connected'} />
+			{#if ptt}
 				<button
 					bind:this={pttBtnEl}
 					type="button"
@@ -314,7 +334,7 @@
 					on:contextmenu|preventDefault
 					disabled={call.state !== 'connected'}
 					aria-pressed={pttActive}
-					aria-label={pttActive ? 'Release to send' : 'Push to talk'}
+					aria-label={pttActive ? 'Release to send' : 'Hold to talk'}
 					title="Hold to talk — release to send (or hold space)"
 				>
 					<VoiceOrb
@@ -326,24 +346,56 @@
 						{pttActive ? 'Release to send' : 'Hold to talk'}
 					</span>
 				</button>
-			</div>
-		{/if}
+			{:else}
+				<div class="vc-overlay__mic-wrap">
+					{#if !muted && call.state === 'connected'}
+						<!-- Level ring: the orb sits behind the button and grows past
+						     its edge with the mic level (same analyser as the header). -->
+						<span class="vc-overlay__mic-ring" aria-hidden="true">
+							<VoiceOrb state="capturing" analyser={$voiceMicAnalyser} size={52} />
+						</span>
+					{/if}
+					<button
+						type="button"
+						class="vc-overlay__mic"
+						class:vc-overlay__mic--muted={muted}
+						on:click={toggleMute}
+						disabled={call.state !== 'connected'}
+						aria-pressed={muted}
+						aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+						title={muted ? 'Muted · tap to unmute' : 'Listening · tap to mute'}
+					>
+						{#if muted}
+							<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<line x1="2" y1="2" x2="22" y2="22" />
+								<path d="M18.89 13.23A7 7 0 0 0 19 12v-2" />
+								<path d="M5 10v2a7 7 0 0 0 12 5" />
+								<path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" />
+								<path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
+								<line x1="12" y1="19" x2="12" y2="22" />
+							</svg>
+						{:else}
+							<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+								<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+								<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+								<line x1="12" y1="19" x2="12" y2="22" />
+							</svg>
+						{/if}
+					</button>
+				</div>
+				<span class="vc-overlay__mic-caption" aria-hidden="true">
+					{muted ? 'Muted · tap to unmute' : 'Listening · tap to mute'}
+				</span>
+			{/if}
+		</div>
 
-		<footer class="vc-overlay__foot">
-			<button
-				type="button"
-				class="vc-overlay__mode"
-				on:click={toggleMode}
-				title="Toggle push-to-talk vs hands-free. Applies immediately."
-			>
-				{ptt ? 'Push-to-talk' : 'Hands-free'}
-			</button>
-			{#if turns.length > 0}
+		{#if turns.length > 0}
+			<footer class="vc-overlay__foot">
 				<button type="button" class="vc-overlay__clear" on:click={clearVoiceTranscript}>
 					Clear transcript
 				</button>
-			{/if}
-		</footer>
+			</footer>
+		{/if}
 	</aside>
 {/if}
 
@@ -492,12 +544,68 @@
 		animation: vc-blink 1s steps(2) infinite;
 	}
 
-	.vc-overlay__ptt-wrap {
+	/* Mode control on top, the main mic control under it. */
+	.vc-overlay__controls {
 		flex: 0 0 auto;
 		display: flex;
-		justify-content: center;
+		flex-direction: column;
+		align-items: center;
+		gap: 10px;
 		padding: 10px 14px 14px;
 		border-top: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
+	}
+
+	.vc-overlay__mic-wrap {
+		position: relative;
+		width: 52px;
+		height: 52px;
+	}
+
+	/* The orb behind the button: at rest it is hidden by the button, and it
+	   grows past the button's edge with the mic level — a level ring. */
+	.vc-overlay__mic-ring {
+		position: absolute;
+		inset: 0;
+		display: inline-flex;
+		pointer-events: none;
+	}
+
+	.vc-overlay__mic {
+		position: relative;
+		width: 52px;
+		height: 52px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		background: var(--accent-fill, var(--accent-primary, #c2502a));
+		border: 1px solid var(--accent-fill, var(--accent-primary, #c2502a));
+		border-radius: 50%;
+		color: var(--text-on-accent, #ffffff);
+		cursor: pointer;
+		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+		transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+	}
+
+	.vc-overlay__mic--muted {
+		background: var(--bg-card, #ffffff);
+		border-color: var(--border-default, rgba(0, 0, 0, 0.18));
+		color: var(--text-secondary, #5f6668);
+	}
+
+	.vc-overlay__mic:focus-visible {
+		outline: 2px solid var(--accent-primary, #c2502a);
+		outline-offset: 3px;
+	}
+
+	.vc-overlay__mic:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.vc-overlay__mic-caption {
+		font-size: 11px;
+		color: var(--text-muted, #6b7280);
 	}
 
 	.vc-overlay__ptt {
@@ -538,14 +646,13 @@
 	.vc-overlay__foot {
 		flex: 0 0 auto;
 		display: flex;
-		justify-content: space-between;
+		justify-content: flex-end;
 		align-items: center;
 		gap: 6px;
 		padding: 6px 10px 8px;
 		border-top: 1px solid var(--border-soft, rgba(0, 0, 0, 0.06));
 	}
 
-	.vc-overlay__mode,
 	.vc-overlay__clear {
 		padding: 4px 10px;
 		font-size: 11px;
@@ -557,7 +664,6 @@
 		cursor: pointer;
 	}
 
-	.vc-overlay__mode:hover,
 	.vc-overlay__clear:hover {
 		color: var(--text-primary, #2d3436);
 		background: var(--bg-soft, rgba(0, 0, 0, 0.04));

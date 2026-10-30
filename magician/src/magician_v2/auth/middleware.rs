@@ -134,6 +134,15 @@ pub(crate) fn is_public_auth_path(path: &str) -> bool {
     path == "/api/magician/v2/auth/login"
         || path == "/api/magician/v2/auth/admin/orphaned-scopes"
         || path == "/api/magician/v2/plane/mcp"
+        // The Citizen API authenticates itself too: its bearer is a coding
+        // run's in-memory `czt_` token (`coding_engine::citizen`), which this
+        // store never holds, so the gate would refuse every call. The
+        // handlers resolve the token, check its capability allowlist and its
+        // grant channel (`vibedev_api::authorize_citizen`) before any work.
+        || path == "/api/magician/v2/vibedev/citizen/preview_url"
+        || path == "/api/magician/v2/vibedev/citizen/secret"
+        || path == "/api/magician/v2/vibedev/citizen/code_knowledge"
+        || path == "/api/magician/v2/vibedev/citizen/edit_original"
         // The enrollment approve door authenticates itself with the same
         // MAGICIAN_ADMIN_SECRET as the orphaned-scopes reconciler — its
         // Authorization bearer IS the secret, never a mag_ token, so it
@@ -146,6 +155,15 @@ pub(crate) fn is_public_auth_path(path: &str) -> bool {
         || path == "/api/magician/v2/devices/pair"
         || path == "/api/magician/v2/devices/enrollment/exchange"
         || path == "/api/magician/v2/devices/apps-automation/enrollment/exchange"
+        // These exact doors authenticate a one-use launch ticket or a narrow,
+        // expiring browser-viewer capability. Launch remains owner-only.
+        || matches!(path, "/api/magician/v2/auth/browser-signin/view"
+            | "/api/magician/v2/auth/browser-signin/view.js"
+            | "/api/magician/v2/auth/browser-signin/view.css"
+            | "/api/magician/v2/auth/browser-signin/claim"
+            | "/api/magician/v2/auth/browser-signin/frame"
+            | "/api/magician/v2/auth/browser-signin/input"
+            | "/api/magician/v2/auth/browser-signin/close")
         || (path.starts_with("/api/magician/v2/auth/social/") && path.ends_with("/start"))
         || path.starts_with("/api/magician/v2/auth/callback/")
         || path.starts_with("/api/magician/v2/auth/mcp/oauth/callback/")
@@ -505,6 +523,22 @@ mod tests {
     use super::is_public_auth_path;
 
     #[test]
+    fn private_signin_management_never_bypasses_owner_authentication() {
+        for action in ["launch", "accounts", "arbitrary", "frame/extra"] {
+            assert!(!is_public_auth_path(&format!(
+                "/api/magician/v2/auth/browser-signin/{action}"
+            )));
+        }
+        for action in [
+            "claim", "frame", "input", "close", "view", "view.js", "view.css",
+        ] {
+            assert!(is_public_auth_path(&format!(
+                "/api/magician/v2/auth/browser-signin/{action}"
+            )));
+        }
+    }
+
+    #[test]
     fn client_configuration_is_authenticated_while_env_remains_private() {
         assert!(!is_public_auth_path(
             "/api/magician/v2/runtime/client-config"
@@ -523,5 +557,24 @@ mod tests {
         assert!(!is_public_auth_path(
             "/api/magician/v2/auth/mcp/oauth/status"
         ));
+    }
+
+    /// The Citizen API's self-authenticating routes pass the gate;
+    /// nothing else under VibeDev does.
+    #[test]
+    fn only_the_citizen_routes_authenticate_themselves_under_vibedev() {
+        for route in ["preview_url", "secret", "code_knowledge", "edit_original"] {
+            assert!(is_public_auth_path(&format!(
+                "/api/magician/v2/vibedev/citizen/{route}"
+            )));
+        }
+        assert!(!is_public_auth_path(
+            "/api/magician/v2/vibedev/citizen/other"
+        ));
+        assert!(!is_public_auth_path(
+            "/api/magician/v2/vibedev/citizen/edit_original/other"
+        ));
+        assert!(!is_public_auth_path("/api/magician/v2/vibedev/runs"));
+        assert!(!is_public_auth_path("/api/magician/v2/vibedev/citizen"));
     }
 }

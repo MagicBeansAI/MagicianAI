@@ -14,8 +14,22 @@ import {
     connectBridge,
     reconnectBridge,
     isBridgeConnected,
-    sendToBridge
+    sendToBridge,
+    sendBrowserLabelToBridge,
+    sendBridgeMessage,
+    disconnectBridge
 } from './bridge.js';
+import {
+    badgeTextFor,
+    createBridgePrompts,
+    readBridgeConsent,
+    writeBridgeConsent
+} from './bridge_prompts.js';
+import {
+    bridgeIdentityQuery,
+    getBrowserIdentity,
+    setBrowserLabel
+} from './browser_identity.js';
 import {
     browserThreadIdForExecution,
     executionIdFromSessionId
@@ -26,9 +40,28 @@ import {
     closeTab,
     closeWindow,
     createWindow,
+    createTab,
     listTabs
 } from './actions_tabs_windows.js';
+import { closeAutomationTabs, handoffAutomationTabs, automationTabOwners, forgetAllAutomationTabs } from './automation_tabs.js';
 import { attachDebugger, detachDebugger, sendDebuggerCommand } from './debugger_actions.js';
+import { forgetAllSetup } from './debugger_setup.js';
+import {
+    rendersInBackground,
+    moveSessionToOwnWindow,
+    recheckInWindowSessions,
+    releaseSessionGroup,
+    forgetAllGroups,
+    noteActivatedTab
+} from './automation_surface.js';
+
+// CDP on one tab's main session, through the same path as the proxy's
+// commands (so emulation lands in the replayed setup too).
+function cdpSenderForTab(tabId) {
+    return (method, params) => sendDebuggerCommand({ tabId, method, params });
+}
+
+chrome.tabs.onActivated.addListener(info => { void noteActivatedTab(info).catch(() => {}); });
 import { createExtensionMessageHandler, pollExecutionStatus } from './extension_messages.js';
 import { activityState, recordActionComplete, recordActionStart, recordDecision, summarizeParams } from './activity_state.js';
 import {
@@ -494,12 +527,92 @@ async function showCdpCommandOverlayBefore(params = {}) {
  * - Route requests/responses between server and browser
  */
 
+// Pairing and per-run browser-choice prompts (see bridge_prompts.js).
+const bridgePrompts = createBridgePrompts();
+
+async function refreshBridgeBadge() {
+    const snapshot = bridgePrompts.snapshot({ consent: await readBridgeConsent() });
+    try {
+        await chrome.action.setBadgeText({ text: badgeTextFor(snapshot) });
+        await chrome.action.setBadgeBackgroundColor({ color: '#d97706' });
+    } catch (_) {
+        // The badge is a hint; the panel still shows the prompt.
+    }
+    return snapshot;
+}
+
+function handleBridgeNotice(envelope) {
+    bridgePrompts.applyNotice(envelope);
+    if (envelope?.type === 'browser_state') {
+        // Remote acceptance (from Magician) or revocation keeps the stored
+        // consent in step with Magicutor.
+        if (envelope.state === 'accepted') void writeBridgeConsent('accepted');
+        if (envelope.state === 'pending') void writeBridgeConsent('pending');
+    }
+    void refreshBridgeBadge();
+}
+
+const bridgePromptActions = {
+    async snapshot() {
+        return bridgePrompts.snapshot({ consent: await readBridgeConsent() });
+    },
+    async accept() {
+        await writeBridgeConsent('accepted');
+        bridgePrompts.setPairing('accepted');
+        sendBridgeMessage({ type: 'browser_consent', accepted: true });
+        return refreshBridgeBadge();
+    },
+    async decline() {
+        await writeBridgeConsent('declined');
+        sendBridgeMessage({ type: 'browser_consent', accepted: false });
+        disconnectBridge();
+        return refreshBridgeBadge();
+    },
+    async connect() {
+        await writeBridgeConsent('pending');
+        void connectBridge(createBridgeConfig());
+        return refreshBridgeBadge();
+    },
+    async choose(choiceId, always) {
+        const sent = sendBridgeMessage({ type: 'browser_choice_answer', choice_id: choiceId, always: !!always });
+        bridgePrompts.answered(choiceId);
+        await refreshBridgeBadge();
+        return { sent };
+    }
+};
+
+/** Whether the owner declined pairing: then the bridge stays disconnected. */
+async function bridgeDeclined() {
+    return (await readBridgeConsent()) === 'declined';
+}
+
 const extensionMessageHandler = createExtensionMessageHandler({
     isBridgeConnected,
     checkHttpHealth,
     activityState,
     recordDecision,
+    getBrowserIdentity,
+    async renameBrowser(label) {
+        const identity = await setBrowserLabel(label);
+        sendBrowserLabelToBridge(identity.label);
+        return identity;
+    },
+    bridgePrompts: bridgePromptActions,
 });
+
+/**
+ * Bridge connection settings. The handshake names this browser so Magicutor
+ * can hold several browsers at once and let this one's reconnect replace its
+ * own stale socket.
+ */
+function createBridgeConfig() {
+    return {
+        checkHttpHealth,
+        onRequest: handleBridgeRequest,
+        identityQuery: async () => bridgeIdentityQuery(await getBrowserIdentity()),
+        onNotice: handleBridgeNotice
+    };
+}
 
 /**
  * Initialize extension
@@ -733,8 +846,11 @@ function setupExecutionCleanupAlarm() {
 function setupBridgeHealthAlarm() {
     chrome.alarms.onAlarm.addListener((alarm) => {
         if (alarm.name !== BRIDGE_HEALTH_ALARM) return;
-        void refreshRuntimeEndpoints().then((resolution) => {
-            const bridgeConfig = { checkHttpHealth, onRequest: handleBridgeRequest };
+        void recheckInWindowSessions(cdpSenderForTab, tabId => debuggerSessions.has(tabId))
+            .catch(error => console.warn(`[Magicutor] In-window recheck failed: ${error.message}`));
+        void refreshRuntimeEndpoints().then(async (resolution) => {
+            if (await bridgeDeclined()) return undefined;
+            const bridgeConfig = createBridgeConfig();
             if (resolution.changed) {
                 console.log('[Magicutor] Runtime service endpoints changed — reconnecting bridge');
                 return reconnectBridge(bridgeConfig);
@@ -759,8 +875,11 @@ async function initialize() {
     const endpointResolution = await refreshRuntimeEndpoints();
     console.log(`[Magicutor] Runtime endpoints resolved from ${endpointResolution.source}`);
 
-    // Connect to WebSocket bridge (primary method for HTTP server communication)
-    void connectBridge({ checkHttpHealth, onRequest: handleBridgeRequest });
+    // Connect to WebSocket bridge (primary method for HTTP server communication),
+    // unless the owner declined pairing for this browser.
+    if (!(await bridgeDeclined())) {
+        void connectBridge(createBridgeConfig());
+    }
 
     // The WebSocket bridge is the only runtime channel. Magician/Magicutor are
     // expected to already be running.
@@ -826,6 +945,10 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+    // A new browser session reuses tab ids; no recorded debugger setup applies.
+    void forgetAllSetup().catch(() => {});
+    void forgetAllAutomationTabs().catch(() => {});
+    void forgetAllGroups().catch(() => {});
     setupContextualAssistContextMenu();
     setupNotesCaptureContextMenu();
     void configureActionSidePanel();
@@ -1421,6 +1544,19 @@ async function processActionInner(action, params) {
                 }
             }
 
+            // A tab in the owner's window is a background tab: it stays there
+            // only if, with focus emulation, the page reports visible and
+            // draws a frame. Otherwise it moves to a window of its own now.
+            if (result.surface === 'in_window' && primaryTabId) {
+                const renders = debuggerSessions.has(primaryTabId)
+                    && await rendersInBackground(cdpSenderForTab(primaryTabId));
+                if (!renders) {
+                    result.windowId = await moveSessionToOwnWindow(sessionId, [primaryTabId], 'background rendering check failed');
+                    result.surface = 'own_window_group';
+                    result.surfaceNote = 'background rendering check failed';
+                }
+            }
+
             if (sessionId && primaryTabId) {
                 registerSessionTab(sessionId, primaryTabId, true);
                 result.sessionContext = getTabSessionContext(primaryTabId);
@@ -1451,6 +1587,38 @@ async function processActionInner(action, params) {
             }
 
             return result;
+        }
+
+        case 'create_tab': {
+            const result = await createTab(params);
+            registerSessionTab(params.sessionId, result.tabId);
+            return result;
+        }
+
+        case 'close_session_tabs': {
+            const { sessionId } = params;
+            if (!sessionId) throw new Error('sessionId is required');
+            const ownedTabs = [...await automationTabOwners()].filter(([, owner]) => owner === sessionId).map(([tabId]) => tabId);
+            const sessionTabs = [...new Set([...getSessionTabs(sessionId), ...ownedTabs, ...(params.preserveTabs || [])])];
+            const executionId = executionIdFromSessionId(sessionId);
+            // Terminal cleanup is authoritative even if the status request
+            // made during the CLI disconnect still saw the run as executing.
+            sendOverlayMessageToTabs(sessionTabs, { action: 'overlay_panel_hide', executionId }).catch(() => {});
+            sendOverlayMessageToTabs(sessionTabs, { action: 'overlay_hide' }).catch(() => {});
+            if (executionId) untrackExecution(executionId);
+            // Handed-off tabs leave the task's group; closed ones take it along.
+            await releaseSessionGroup(sessionId, { ungroup: Boolean(params.keepTabs) })
+                .catch(error => console.warn(`[Magicutor] Could not release tab group of ${sessionId}: ${error.message}`));
+            const result = params.keepTabs
+                ? await handoffAutomationTabs(sessionId)
+                : await closeAutomationTabs(sessionId, params.preserveTabs || []);
+            // Existing owner tabs remain open, but no debugger/session stays attached.
+            for (const tabId of sessionTabs) {
+                const owner = getSessionForTab(tabId);
+                if (!owner || owner === sessionId) await detachDebugger({ tabId, sessionId });
+            }
+            clearSession(sessionId);
+            return { ...result, cleared: true };
         }
 
         case 'close_window':

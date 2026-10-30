@@ -26,29 +26,44 @@ struct WorkPoliciesView: View {
     @ObservedObject private var theme = ThemeManager.shared
     private var path: String { "/api/magician/v2/relentless/\(kind.endpoint)?limit=10&offset=\(page * 10)&q=\(WorkAPIClient.query(search))" }
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                NavigationLink("New \(kind == .capture ? "capture" : "qualification") policy") { WorkPolicyEditor(kind: kind) }.frame(minHeight: 44)
-                WorkResourceStatus(resource: resource)
-                ForEach(resource.value?[kind.rows].array ?? [], id: \.formatted) { row in
-                    let policy = kind == .capture ? row["state"]["campaign"] : row["policy"]
-                    NavigationLink { WorkPolicyDetail(kind: kind, row: row) } label: {
-                        WorkCard {
-                            Text(policy["spec"]["name"].text ?? policy["id"].display).font(.themed(17, weight: .semibold)).foregroundColor(theme.textColor)
-                            Text(row["status"].text ?? (policy["revoked_at"] == .null ? "Active capture policy" : "Revoked")).font(.themed(13)).foregroundColor(theme.secondaryTextColor)
-                            Text("Expires \(policy["spec"]["expires_at"].display)").font(.themed(12)).foregroundColor(theme.secondaryTextColor)
-                        }
-                    }.buttonStyle(.plain)
+        WorkPage {
+            WorkSearchField("Find policies", text: $search)
+            WorkGroupCard {
+                NavigationLink { WorkPolicyEditor(kind: kind) } label: {
+                    WorkRowLabel(title: "New \(kind == .capture ? "capture" : "qualification") policy", systemImage: "plus.circle", tint: theme.accentColor)
                 }
-                if let identities = resource.value?["identities"] { WorkCard { DisclosureGroup("Counterparty identities") { WorkRecordView(value: identities) } } }
-                HStack {
-                    Button("Previous") { page -= 1 }.disabled(page == 0 || resource.loading)
-                    Spacer(); Text("Page \(page + 1)").font(.themed(12)); Spacer()
-                    Button("Next") { page += 1 }.disabled(resource.value?["pagination"]["has_more"].flag != true || resource.loading)
-                }.frame(minHeight: 44)
-            }.padding(16)
-        }.foregroundColor(theme.textColor).background(theme.backgroundColor).navigationTitle(kind.title)
-        .searchable(text: $search, prompt: "Find policies").onChange(of: search) { _, _ in page = 0 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("New \(kind == .capture ? "capture" : "qualification") policy")
+            }
+            WorkResourceStatus(resource: resource)
+            if let rows = resource.value?[kind.rows].array {
+                VStack(alignment: .leading, spacing: 8) {
+                    WorkGroupCard(kind.title) {
+                        if rows.isEmpty { WorkEmptyState(title: "No \(kind == .capture ? "capture" : "learning") policies yet.", systemImage: "doc.badge.gearshape") }
+                        ForEach(Array(rows.enumerated()), id: \.element.formatted) { index, row in
+                            let policy = kind == .capture ? row["state"]["campaign"] : row["policy"]
+                            let status = row["status"].text ?? (policy["revoked_at"] == .null ? "Active capture policy" : "Revoked")
+                            if index > 0 { WorkRowDivider() }
+                            NavigationLink { WorkPolicyDetail(kind: kind, row: row) } label: {
+                                WorkItemLabel(title: policy["spec"]["name"].text ?? policy["id"].display,
+                                              subtitle: "Expires \(policy["spec"]["expires_at"].display)",
+                                              systemImage: kind == .capture ? "tray.and.arrow.down" : "graduationcap",
+                                              chips: [WorkChipSpec(title: WorkRecordView.label(status), tone: .workStatusTone(row["status"].text ?? (policy["revoked_at"] == .null ? "active" : "revoked")))])
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                    WorkPager(page: $page, hasMore: resource.value?["pagination"]["has_more"].flag == true, disabled: resource.loading)
+                }
+            }
+            if let identities = resource.value?["identities"] {
+                WorkGroupCard {
+                    DisclosureGroup("Counterparty identities") { WorkRecordView(value: identities) }
+                        .disclosureGroupStyle(WorkDisclosureStyle(systemImage: "person.2", value: WorkRecordView.summary(identities)))
+                }
+            }
+        }
+        .navigationTitle(kind.title).navigationBarTitleDisplayMode(.inline)
+        .onChange(of: search) { _, _ in page = 0 }
         .task(id: path) { resource.load(path) }.refreshable { resource.refresh() }
     }
 }
@@ -65,20 +80,31 @@ struct WorkPolicyEditor: View {
     @ObservedObject private var theme = ThemeManager.shared
     private var path: String { "/api/magician/v2/relentless/" + kind.endpoint }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(kind == .capture ? "Captures are local records. Use exact task, contract and identity references, finite caps and an expiry." : "Choose a procedural candidate, fresh evaluation and canary cases, exact recurring tasks, finite budgets and an expiry.").font(.themed(14)).foregroundColor(theme.secondaryTextColor)
-                TextEditor(text: $editor).font(.themed(13)).frame(minHeight: 360).scrollContentBackground(.hidden).background(theme.cardColor)
+        WorkPage {
+            WorkNote(kind == .capture ? "Captures are local records. Use exact task, contract and identity references, finite caps and an expiry." : "Choose a procedural candidate, fresh evaluation and canary cases, exact recurring tasks, finite budgets and an expiry.")
+                .padding(.horizontal, WorkMetrics.cardInset)
+            VStack(alignment: .leading, spacing: 8) {
+                WorkSectionHeader("Policy JSON")
+                TextEditor(text: $editor).font(.themedMono(13)).frame(minHeight: 360).scrollContentBackground(.hidden)
+                    .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    .padding(8)
+                    .background(theme.controlColor, in: RoundedRectangle(cornerRadius: WorkMetrics.cardRadius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: WorkMetrics.cardRadius, style: .continuous).strokeBorder(theme.controlBorderColor, lineWidth: 1))
                     .accessibilityIdentifier("work-policy-editor")
-                WorkResourceStatus(resource: resource)
-                Button("Review frozen policy") { Task { await review() } }.disabled(resource.busy || saved).frame(minHeight: 44)
-                if let preview, editor == reviewedEditor {
-                    WorkCard { WorkRecordView(value: preview) }
-                    Button("Approve exact policy") { Task { await save(preview) } }.disabled(resource.busy || saved).frame(minHeight: 44)
+            }
+            WorkResourceStatus(resource: resource)
+            WorkGroupCard(footer: saved ? "Policy saved. Return to the policy list and refresh." : nil) {
+                WorkButtonRow(title: "Review frozen policy", systemImage: "checkmark.shield") { Task { await review() } }.disabled(resource.busy || saved)
+            }
+            if let preview, editor == reviewedEditor {
+                WorkGroupCard("Frozen preview") {
+                    WorkRecordView(value: preview)
+                    WorkRowDivider()
+                    WorkButtonRow(title: "Approve exact policy", systemImage: "checkmark.seal") { Task { await save(preview) } }.disabled(resource.busy || saved)
                 }
-                if saved { Text("Policy saved. Return to the policy list and refresh.").font(.themed(14)) }
-            }.padding(16)
-        }.foregroundColor(theme.textColor).background(theme.backgroundColor).navigationTitle("Review policy")
+            }
+        }
+        .navigationTitle("Review policy").navigationBarTitleDisplayMode(.inline)
         .task {
             if editor.isEmpty {
                 editor = (previous?["spec"] ?? kind.initialSpec).formatted
@@ -123,29 +149,46 @@ struct WorkPolicyDetail: View {
     private var policy: WorkJSON { kind == .capture ? currentRow?["state"]["campaign"] ?? .null : currentRow?["policy"] ?? .null }
     private var path: String { "/api/magician/v2/relentless/" + kind.endpoint + "/" + WorkAPIClient.segment(policyID) }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+        WorkPage {
                 WorkResourceStatus(resource: resource)
                 if !resource.loading, resource.value != nil, currentRow == nil, resource.value?["pagination"]["has_more"].flag != true {
-                    Text("Requested policy is not available.").font(.themed(14)).foregroundColor(theme.secondaryTextColor)
+                    WorkGroupCard { WorkEmptyState(title: "Requested policy is not available.", systemImage: "questionmark.folder") }
                 }
                 if let currentRow {
-                WorkCard { WorkRecordView(value: currentRow) }
-                if kind == .capture {
-                    NavigationLink("Review successor policy") { WorkPolicyEditor(kind: kind, previous: policy) }.frame(minHeight: 44)
-                    NavigationLink("Captures and exact review") { WorkCapturesView(campaignID: policy["id"].text ?? "") }.frame(minHeight: 44)
+                    let status = currentRow["status"].text ?? (policy["revoked_at"] == .null ? "active" : "revoked")
+                    WorkHeaderCard(policy["spec"]["name"].text ?? kind.title, subtitle: policy["id"].text,
+                                   detail: policy["spec"]["expires_at"].text.map { "Expires " + $0 },
+                                   chips: [WorkChipSpec(title: WorkRecordView.label(status), tone: .workStatusTone(status))]) {
+                        if kind == .capture {
+                            WorkNavigationRow(title: "Review successor policy", systemImage: "square.and.pencil") { WorkPolicyEditor(kind: kind, previous: policy) }
+                            WorkRowDivider()
+                            WorkNavigationRow(title: "Captures and exact review", systemImage: "tray.full") { WorkCapturesView(campaignID: policy["id"].text ?? "") }
+                            WorkRowDivider()
+                        }
+                        if kind == .learning && currentRow["status"].text == "paused" {
+                            WorkButtonRow(title: "Resume exact qualification", systemImage: "play.circle") { confirm = .object(["action": .string("resume"), "version": policy["version_hash"]]) }
+                                .disabled(resource.busy || currentRow["expired"].flag == true)
+                            WorkRowDivider()
+                        }
+                        WorkButtonRow(title: "Revoke future \(kind == .capture ? "captures" : "guidance adoption")", systemImage: "nosign", role: .destructive) { confirm = .object(["action": .string("revoke"), "version": policy["version_hash"]]) }
+                            .disabled(resource.busy || currentRow["status"].text == "revoked" || (kind == .capture && policy["revoked_at"] != .null))
+                    }
+                    let targets = (policy["spec"]["targets"].array ?? []).compactMap { $0["task_id"].text }
+                    if !targets.isEmpty {
+                        WorkGroupCard("Targets") {
+                            ForEach(Array(targets.enumerated()), id: \.offset) { index, id in
+                                if index > 0 { WorkRowDivider() }
+                                WorkNavigationRow(title: "Task \(id)", systemImage: "checklist") { TaskDetailScreen(route: .init(taskId: id)) }
+                            }
+                        }
+                    }
+                    if kind == .learning {
+                        WorkGroupCard("Runs and evidence") { WorkGuidanceRunLinks(row: currentRow, path: path) }
+                    }
+                    WorkGroupCard("Policy record") { WorkRecordView(value: currentRow) }
                 }
-                Button("Revoke future \(kind == .capture ? "captures" : "guidance adoption")", role: .destructive) { confirm = .object(["action": .string("revoke"), "version": policy["version_hash"]]) }.disabled(resource.busy || currentRow["status"].text == "revoked" || (kind == .capture && policy["revoked_at"] != .null)).frame(minHeight: 44)
-                if kind == .learning && currentRow["status"].text == "paused" { Button("Resume exact qualification") { confirm = .object(["action": .string("resume"), "version": policy["version_hash"]]) }.frame(minHeight: 44).disabled(resource.busy || currentRow["expired"].flag == true) }
-                ForEach(policy["spec"]["targets"].array ?? [], id: \.formatted) { target in
-                    if let id = target["task_id"].text { NavigationLink("Task \(id)") { TaskDetailScreen(route: .init(taskId: id)) }.frame(minHeight: 44) }
-                }
-                if kind == .learning {
-                    WorkGuidanceRunLinks(row: currentRow, path: path)
-                }
-                }
-            }.padding(16)
-        }.foregroundColor(theme.textColor).background(theme.backgroundColor).navigationTitle(policy["spec"]["name"].text ?? kind.title)
+        }
+        .navigationTitle(policy["spec"]["name"].text ?? kind.title).navigationBarTitleDisplayMode(.inline)
         .task(id: "\(policyID)|\(page)") { resource.load(kind == .learning ? path : "/api/magician/v2/relentless/campaigns?limit=10&offset=\(page * 10)&q=" + WorkAPIClient.query(policyID)) }
         .onChange(of: resource.value) { _, _ in if kind == .capture, currentRow == nil, resource.value?["pagination"]["has_more"].flag == true { page += 1 } }
         .refreshable { resource.refresh() }
@@ -178,17 +221,18 @@ private struct WorkGuidanceRunLinks: View {
         Set((row["adoptions"].object ?? [:]).values.compactMap { $0["run_id"].text })
             .union((row["monitored"].object ?? [:]).keys).sorted()
     }
+    private var rows: [(title: String, icon: String, run: String, evidence: (String, String)?)] {
+        trials.map { ("Trial \($0)", "flask", $0, row["observations"][$0]["evidence_hash"].text.map { ("Sealed trial evidence", $0) }) }
+            + adopted.map { ("Adopted run \($0)", "checkmark.seal", $0, row["monitored"][$0]["evidence_hash"].text.map { ("Sealed monitoring evidence", $0) }) }
+    }
     var body: some View {
-        ForEach(trials, id: \.self) { runID in
-            NavigationLink("Trial \(runID)") { WorkQualityRunDetail(runID: runID) }.frame(minHeight: 44)
-            if let hash = row["observations"][runID]["evidence_hash"].text {
-                NavigationLink("Sealed trial evidence") { WorkSealedEvidence(path: path + "/evidence/" + WorkAPIClient.segment(runID), expectedHash: hash) }.frame(minHeight: 44)
-            }
-        }
-        ForEach(adopted, id: \.self) { runID in
-            NavigationLink("Adopted run \(runID)") { WorkQualityRunDetail(runID: runID) }.frame(minHeight: 44)
-            if let hash = row["monitored"][runID]["evidence_hash"].text {
-                NavigationLink("Sealed monitoring evidence") { WorkSealedEvidence(path: path + "/evidence/" + WorkAPIClient.segment(runID), expectedHash: hash) }.frame(minHeight: 44)
+        if rows.isEmpty { WorkInfoRow(title: "No trials or adopted runs yet.", systemImage: "hourglass") }
+        ForEach(Array(rows.enumerated()), id: \.offset) { index, entry in
+            if index > 0 { WorkRowDivider() }
+            WorkNavigationRow(title: entry.title, systemImage: entry.icon) { WorkQualityRunDetail(runID: entry.run) }
+            if let evidence = entry.evidence {
+                WorkRowDivider()
+                WorkNavigationRow(title: evidence.0, systemImage: "lock.doc") { WorkSealedEvidence(path: path + "/evidence/" + WorkAPIClient.segment(entry.run), expectedHash: evidence.1) }
             }
         }
     }
@@ -203,24 +247,39 @@ struct WorkCapturesView: View {
     @ObservedObject private var theme = ThemeManager.shared
     private var root: String { "/api/magician/v2/relentless/campaigns/" + WorkAPIClient.segment(campaignID) + "/captures" }
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                Picker("Capture status", selection: $status) { ForEach(["awaiting_review", "all", "captured", "rejected"], id: \.self) { Text(WorkRecordView.label($0)).tag($0) } }
-                WorkResourceStatus(resource: resource)
-                ForEach(resource.value?["captures"].array ?? [], id: \.formatted) { capture in
-                    WorkCard {
-                        WorkRecordView(value: capture)
-                        let hash = capture["binding"]["artifact_hash"].text ?? ""
-                        NavigationLink("Inspect bound artifact") { WorkQualityArtifact(runID: capture["binding"]["run_id"].text ?? "", hash: hash, onReviewed: { reviewed.insert($0) }) }.frame(minHeight: 44)
-                        if capture["status"].text == "awaiting_review" {
-                            Button("Approve exact capture") { act(capture, approved: true) }.disabled(!reviewed.contains(hash) || resource.busy).frame(minHeight: 44)
-                            Button("Reject capture", role: .destructive) { act(capture, approved: false) }.disabled(resource.busy).frame(minHeight: 44)
-                        }
-                    }
+        WorkPage {
+            WorkGroupCard {
+                WorkFormRow("Capture status") {
+                    Picker("Capture status", selection: $status) { ForEach(["awaiting_review", "all", "captured", "rejected"], id: \.self) { Text(WorkRecordView.label($0)).tag($0) } }
+                        .labelsHidden().pickerStyle(.menu).font(.themed(15))
                 }
-                HStack { Button("Previous") { page -= 1 }.disabled(page == 0); Spacer(); Text("Page \(page + 1)"); Spacer(); Button("Next") { page += 1 }.disabled(resource.value?["pagination"]["has_more"].flag != true) }.frame(minHeight: 44)
-            }.padding(16)
-        }.foregroundColor(theme.textColor).background(theme.backgroundColor).navigationTitle("Captures")
+            }
+            WorkResourceStatus(resource: resource)
+            if resource.value != nil && resource.value?["captures"].array?.isEmpty != false {
+                WorkGroupCard { WorkEmptyState(title: "No captures in this view.", systemImage: "tray") }
+            }
+            ForEach(resource.value?["captures"].array ?? [], id: \.formatted) { capture in
+                let hash = capture["binding"]["artifact_hash"].text ?? ""
+                let state = capture["status"].text ?? "unknown"
+                WorkHeaderCard(capture["id"].text ?? "Capture", subtitle: capture["binding"]["identity_id"].text.map { "Identity " + $0 },
+                               chips: [WorkChipSpec(title: WorkRecordView.label(state), tone: .workStatusTone(state))]) {
+                    WorkNavigationRow(title: "Inspect bound artifact", systemImage: "doc.text.magnifyingglass", value: reviewed.contains(hash) ? "Reviewed" : nil) {
+                        WorkQualityArtifact(runID: capture["binding"]["run_id"].text ?? "", hash: hash, onReviewed: { reviewed.insert($0) })
+                    }
+                    if state == "awaiting_review" {
+                        WorkRowDivider()
+                        WorkButtonRow(title: "Approve exact capture", systemImage: "checkmark.circle") { act(capture, approved: true) }.disabled(!reviewed.contains(hash) || resource.busy)
+                        WorkRowDivider()
+                        WorkButtonRow(title: "Reject capture", systemImage: "xmark.circle", role: .destructive) { act(capture, approved: false) }.disabled(resource.busy)
+                    }
+                    WorkRowDivider()
+                    DisclosureGroup("Capture record") { WorkRecordView(value: capture) }
+                        .disclosureGroupStyle(WorkDisclosureStyle(systemImage: "doc.badge.gearshape"))
+                }
+            }
+            WorkPager(page: $page, hasMore: resource.value?["pagination"]["has_more"].flag == true)
+        }
+        .navigationTitle("Captures").navigationBarTitleDisplayMode(.inline)
         .task(id: "\(page)|\(status)") { resource.load(root + "?limit=20&offset=\(page * 20)&status=\(status)") }
         .onChange(of: status) { _, _ in page = 0 }.onChange(of: resource.scopeID) { _, _ in reviewed = [] }
     }
@@ -236,12 +295,24 @@ struct WorkSealedEvidence: View {
     @StateObject private var resource = WorkResource()
     @ObservedObject private var theme = ThemeManager.shared
     var body: some View {
-        ScrollView { VStack(alignment: .leading, spacing: 12) {
+        WorkPage {
             WorkResourceStatus(resource: resource)
             if let evidence = resource.value {
-                if evidence["sealed"].flag == true && evidence["content_hash"].text == expectedHash { WorkRecordView(value: evidence) }
-                else { Text("Evidence changed or is not sealed. Refresh the recorded policy result.").foregroundColor(theme.warningColor) }
+                if evidence["sealed"].flag == true && evidence["content_hash"].text == expectedHash {
+                    WorkHeaderCard("Sealed evidence", subtitle: expectedHash, chips: [WorkChipSpec(title: "Sealed", systemImage: "lock.fill", tone: theme.successColor)])
+                    WorkGroupCard("Evidence") { WorkRecordView(value: evidence) }
+                } else {
+                    WorkGroupCard {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(theme.warningColor).accessibilityHidden(true)
+                            Text("Evidence changed or is not sealed. Refresh the recorded policy result.").font(.themed(15)).foregroundColor(theme.textColor)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.vertical, 12)
+                    }
+                }
             }
-        }.padding(16) }.background(theme.backgroundColor).foregroundColor(theme.textColor).navigationTitle("Sealed evidence").task { resource.load(path) }
+        }
+        .navigationTitle("Sealed evidence").navigationBarTitleDisplayMode(.inline).task { resource.load(path) }
     }
 }

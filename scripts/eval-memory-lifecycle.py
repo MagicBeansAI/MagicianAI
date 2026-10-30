@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from magician_config_text import read_config_text
+from magician_config_text import config_has_inline_router_tables, read_config_text
 from memory_lifecycle_report import render, summarize
 from write_eval_harness_report import run_command, build_payload, write_reports, utc_now
 
@@ -50,6 +50,10 @@ def snapshot_configs(config, profiles, private_root):
     for profile in profiles:
         if profile not in router["profiles"]:
             raise ValueError(f"Unknown configured profile: {profile}")
+    # The expanded view is read-only dispatch metadata, not authored config.
+    # Preserve the catalog pair verbatim so the Rust loader can admit it.
+    source_text = config.read_text(encoding="utf-8")
+    tables_text = None if config_has_inline_router_tables(source_text) else (config.parent / "llm-router.yaml").read_text(encoding="utf-8")
     override_path = config.parent / "system/llm_routing_overrides.json"
     overrides = json.loads(override_path.read_text()) if override_path.exists() else {}
     if not isinstance(overrides, dict): raise ValueError("Invalid runtime routing overrides")
@@ -60,7 +64,9 @@ def snapshot_configs(config, profiles, private_root):
         if profile:
             chosen.update({operation: profile for operation in OPERATIONS})
         destination = directory / "magician-config.yaml"
-        private_write(destination, text)
+        private_write(destination, source_text)
+        if tables_text is not None:
+            private_write(directory / "llm-router.yaml", tables_text)
         private_write(directory / "system/llm_routing_overrides.json", json.dumps(chosen))
         for name in (".env", ".env.development"):
             source = config.parent / name

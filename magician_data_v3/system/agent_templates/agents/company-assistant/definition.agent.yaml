@@ -110,11 +110,14 @@ denied_tools:
 - imessage
 - imessage_send
 - whatsapp
+- whatsapp-mcp
 - telegram
 # The owner's commerce accounts stay ungrantable here — §5A.1's table gives the
 # company assistant no commerce at all.
 - zepto-mcp
 - swiggy-mcp
+- shopify-mcp
+- zomato-mcp
 - search_memory
 - treasurer
 - internal_data

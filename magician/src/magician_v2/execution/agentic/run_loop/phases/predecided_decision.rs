@@ -412,7 +412,7 @@ pub(super) async fn authorize(
 /// `Some(true)` when an owner-scoped policy snapshot is active and does not
 /// list `leaf` as callable, `Some(false)` when it does, `None` when no
 /// snapshot is active (detached/legacy execution) or the slot is unreadable.
-fn dispatch_snapshot_lacks(ctx: &AgenticContext, leaf: &str) -> Option<bool> {
+pub(super) fn dispatch_snapshot_lacks(ctx: &AgenticContext, leaf: &str) -> Option<bool> {
     let guard = ctx.policy_dispatch_tool_names.lock().ok()?;
     guard.as_ref().map(|names| !names.contains(leaf))
 }

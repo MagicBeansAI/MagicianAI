@@ -1,6 +1,6 @@
 [package]
 name = "magician-learning"
-version = "0.1.5"
+version = "0.1.8"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "The learning plane — outcome learning, data room, chat bots, execution panel engines — extracted from the magician monolith"
@@ -12,12 +12,13 @@ test-fixtures = ["dep:tempfile", "magician/test-fixtures"]
 [dependencies]
 magician = { path = "../magician" }
 runtime-core = { path = "../runtime-core" }
-actix-web = { version = "4.4", features = ["rustls"] }
+actix-web = { workspace = true }
 tempfile = { version = "3.8", optional = true }
 
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 dotenvy = "0.15"
+libc = "0.2"
 shellexpand = "3.1"
 thiserror = { workspace = true }
 async-trait = { workspace = true }

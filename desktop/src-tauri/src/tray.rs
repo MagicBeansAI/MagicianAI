@@ -141,7 +141,7 @@ fn build_tray_menu(
         .build(app)
         .map_err(|e| format!("Failed to build status menu item: {}", e))?;
 
-    let runtime_item = MenuItemBuilder::with_id("runtime_mode", &current_runtime_label(app))
+    let runtime_item = MenuItemBuilder::with_id("runtime_mode", current_runtime_label(app))
         .enabled(false)
         .build(app)
         .map_err(|e| format!("Failed to build runtime menu item: {}", e))?;
@@ -166,7 +166,7 @@ fn build_tray_menu(
         .map_err(|e| format!("Failed to build menu item: {}", e))?;
     let orb_snapshot = crate::orb_window::current_snapshot(app);
     let orb_status =
-        MenuItemBuilder::with_id("orb_status", &format!("Status: {}", orb_snapshot.status))
+        MenuItemBuilder::with_id("orb_status", format!("Status: {}", orb_snapshot.status))
             .enabled(false)
             .build(app)
             .map_err(|e| format!("Failed to build orb status item: {e}"))?;
@@ -372,6 +372,10 @@ fn build_tray_menu(
     let separator5 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("Failed to build separator: {}", e))?;
 
+    let restart_app_item = MenuItemBuilder::with_id("restart_app", "Restart Magican")
+        .build(app)
+        .map_err(|e| format!("Failed to build menu item: {}", e))?;
+
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Magican")
         .accelerator("CmdOrCtrl+Q")
         .build(app)
@@ -398,6 +402,7 @@ fn build_tray_menu(
             &check_updates,
             &install_extension,
             &separator5,
+            &restart_app_item,
             &quit_item,
         ])
         .build()
@@ -952,8 +957,23 @@ fn handle_menu_event(app: &AppHandle, event_id: &str) {
                 }
             });
         },
+        "restart_app" => {
+            // Relaunches this app (windows, notch panels, tray) without
+            // touching the backend services.
+            info!("Restart requested from tray menu");
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                app.restart();
+            });
+        },
         "quit" => {
             info!("Quit requested from tray menu");
+            // A deliberate quit: magic-supervisor's desktop watch must not
+            // relaunch. Written before exit; "restart_app" writes nothing.
+            match crate::config::write_desktop_quit_marker() {
+                Ok(path) => info!("Wrote clean-quit marker {}", path.display()),
+                Err(error) => warn!("Could not write the clean-quit marker: {}", error),
+            }
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 app.exit(0);
@@ -1005,9 +1025,9 @@ const ATTENTION_WINDOW_TITLE: &str = "Magican — Needs You";
 const ATTENTION_WINDOW_INNER_SIZE: (f64, f64) = (820.0, 760.0);
 const ATTENTION_WINDOW_MIN_SIZE: (f64, f64) = (620.0, 560.0);
 const ATTENTION_WINDOW_MAX_SIZE: (f64, f64) = (1100.0, 900.0);
-const SETTINGS_WINDOW_LABEL: &str = "settings";
+pub(crate) const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub(crate) const SETUP_WINDOW_LABEL: &str = "setup";
-const SETTINGS_WINDOW_INNER_SIZE: (f64, f64) = (720.0, 640.0);
+const SETTINGS_WINDOW_INNER_SIZE: (f64, f64) = (1040.0, 760.0);
 const SETTINGS_WINDOW_MIN_SIZE: (f64, f64) = (640.0, 540.0);
 const LOGS_WINDOW_LABEL: &str = "logs";
 #[cfg(debug_assertions)]
@@ -1380,7 +1400,7 @@ pub(crate) fn promote_for_foreground_window(app: &AppHandle) {
 pub(crate) fn promote_for_foreground_window(_app: &AppHandle) {}
 
 #[cfg(target_os = "macos")]
-fn demote_if_no_foreground_windows(app: &AppHandle) {
+pub(crate) fn demote_if_no_foreground_windows(app: &AppHandle) {
     if foreground_window_visible(app) {
         return;
     }
@@ -1388,9 +1408,18 @@ fn demote_if_no_foreground_windows(app: &AppHandle) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn demote_if_no_foreground_windows(_app: &AppHandle) {}
+pub(crate) fn demote_if_no_foreground_windows(_app: &AppHandle) {}
 
 fn foreground_window_visible(app: &AppHandle) -> bool {
+    // Changing the app's activation policy while HUD is visible makes AppKit
+    // resign key status. Compact keeps it until the window is dismissed.
+    if app
+        .get_webview_window("overlay")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+    {
+        return true;
+    }
     [
         ATTENTION_WINDOW_LABEL,
         SETTINGS_WINDOW_LABEL,
@@ -1458,6 +1487,62 @@ pub fn open_settings_window(app: &AppHandle) {
     }
 }
 
+/// Web Settings inside the desktop Settings window: no app shell (`embed=1`)
+/// and the This Mac / Magican tab strip (`host=desktop`).
+const SHARED_SETTINGS_PATH: &str = "/settings?embed=1&host=desktop";
+
+/// The page names the device tab from this ("This Mac", "This Windows PC").
+#[cfg(target_os = "macos")]
+const DESKTOP_DEVICE_LABEL: &str = "Mac";
+#[cfg(target_os = "windows")]
+const DESKTOP_DEVICE_LABEL: &str = "Windows";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const DESKTOP_DEVICE_LABEL: &str = "Linux";
+
+/// The shared Settings path for `section` (a category or card anchor such as
+/// `voice` or `budgets`); anything that is not a plain anchor is dropped.
+fn shared_settings_path(section: Option<&str>) -> String {
+    let base = format!("{SHARED_SETTINGS_PATH}&device={DESKTOP_DEVICE_LABEL}");
+    match section.map(str::trim).filter(|section| {
+        !section.is_empty()
+            && section.len() <= 64
+            && section
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }) {
+        Some(section) => format!("{base}#{section}"),
+        None => base,
+    }
+}
+
+/// Switch the Settings window to shared (web) Settings — its "Magican" tab —
+/// at the UI origin, signed in through the desktop session.
+#[tauri::command]
+pub async fn open_shared_settings(app: AppHandle, section: Option<String>) -> Result<(), String> {
+    let url_string = {
+        let state = app.state::<crate::AppState>();
+        let config = state.config.lock().await;
+        app_url_at_path(&config, &shared_settings_path(section.as_deref()))
+    };
+    let url: tauri::Url = url_string
+        .parse()
+        .map_err(|error| format!("invalid Settings URL '{url_string}': {error}"))?;
+    crate::magician_auth::admit_settings_ui(&app, SETTINGS_WINDOW_LABEL, &url)?;
+    let window = app
+        .get_webview_window(SETTINGS_WINDOW_LABEL)
+        .ok_or("The Settings window is not open")?;
+    window
+        .navigate(url)
+        .map_err(|error| format!("failed to open shared Settings: {error}"))
+}
+
+/// Back from shared Settings to the desktop's own page (its "This Mac" tab).
+pub(crate) fn show_desktop_settings(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window
+        .navigate(desktop_app_url("/"))
+        .map_err(|error| format!("failed to open desktop Settings: {error}"))
+}
+
 /// Present the short, trusted approval step requested from Web Settings.
 /// The web page owns discovery and guidance; the bundled desktop origin keeps
 /// Keychain fingerprints and signing confirmations out of the server-owned UI.
@@ -1522,9 +1607,79 @@ fn open_logs_window(app: &AppHandle) {
     }
 }
 
+/// Update the tray icon state and tooltip text.
+pub fn update_tray_state(app: &AppHandle, state: TrayState) {
+    let status_text = match state {
+        TrayState::Running => "\u{1F7E2} Running",      // 🟢
+        TrayState::Starting => "\u{1F7E1} Starting...", // 🟡
+        TrayState::Stopped => "\u{1F534} Stopped",      // 🔴
+        TrayState::Updating => "\u{1F535} Updating...", // 🔵
+    };
+    update_tray_state_with_detail(app, state, status_text, None);
+}
+
+/// Update tray state with per-service detail line shown below the status.
+pub fn update_tray_state_with_detail(
+    app: &AppHandle,
+    state: TrayState,
+    detail: &str,
+    _update_version: Option<&str>,
+) {
+    let tray = match app.tray_by_id("main-tray") {
+        Some(t) => t,
+        None => return,
+    };
+
+    let (tooltip, status_text) = match state {
+        TrayState::Running => ("Magican \u{2014} Running", "\u{1F7E2} Running"), // 🟢
+        TrayState::Starting => ("Magican \u{2014} Starting...", "\u{1F7E1} Starting..."), // 🟡
+        TrayState::Stopped => ("Magican \u{2014} Stopped", "\u{1F534} Stopped"), // 🔴
+        TrayState::Updating => ("Magican \u{2014} Updating...", "\u{1F535} Updating..."), // 🔵
+    };
+
+    // Keep the status row current without replacing the native menu object.
+    // Replacing an open macOS status-item menu dismisses it under the cursor.
+    let status_label = format!(
+        "Magican v{} \u{2014} {}\n{}",
+        env!("CARGO_PKG_VERSION"),
+        status_text,
+        detail
+    );
+    set_status_label(app, &status_label);
+    update_status_menu_item_text(app, &status_label);
+    update_runtime_menu_item_text(app);
+
+    let _ = tray.set_tooltip(Some(tooltip));
+
+    let _ = app.emit(
+        "tray-state",
+        match state {
+            TrayState::Running => "Running",
+            TrayState::Starting => "Starting",
+            TrayState::Stopped => "Stopped",
+            TrayState::Updating => "Updating",
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_settings_path_keeps_only_plain_anchors() {
+        let base = format!("/settings?embed=1&host=desktop&device={DESKTOP_DEVICE_LABEL}");
+        assert_eq!(shared_settings_path(None), base);
+        assert_eq!(shared_settings_path(Some("  ")), base);
+        assert_eq!(shared_settings_path(Some("voice")), format!("{base}#voice"));
+        assert_eq!(
+            shared_settings_path(Some("browser-notifications-panel")),
+            format!("{base}#browser-notifications-panel")
+        );
+        for unsafe_section in ["voice#x", "../x", "a b", "x\ny", "https://other.example"] {
+            assert_eq!(shared_settings_path(Some(unsafe_section)), base);
+        }
+    }
 
     #[test]
     fn platform_tray_surfaces_have_native_names() {
@@ -1739,7 +1894,8 @@ mod tests {
 
     #[test]
     fn settings_window_opens_at_a_roomy_but_bounded_minimum_size() {
-        assert_eq!(SETTINGS_WINDOW_INNER_SIZE, (720.0, 640.0));
+        // Wide enough for the category panel beside the cards.
+        assert_eq!(SETTINGS_WINDOW_INNER_SIZE, (1040.0, 760.0));
         assert_eq!(SETTINGS_WINDOW_MIN_SIZE, (640.0, 540.0));
         assert!(SETTINGS_WINDOW_INNER_SIZE.0 >= SETTINGS_WINDOW_MIN_SIZE.0);
         assert!(SETTINGS_WINDOW_INNER_SIZE.1 >= SETTINGS_WINDOW_MIN_SIZE.1);
@@ -1790,59 +1946,4 @@ mod tests {
         assert!(desktop_asset_path(dist_dir, "/assets/app.js").is_some());
         assert!(desktop_asset_path(dist_dir, "/../secrets").is_none());
     }
-}
-
-/// Update the tray icon state and tooltip text.
-pub fn update_tray_state(app: &AppHandle, state: TrayState) {
-    let status_text = match state {
-        TrayState::Running => "\u{1F7E2} Running",      // 🟢
-        TrayState::Starting => "\u{1F7E1} Starting...", // 🟡
-        TrayState::Stopped => "\u{1F534} Stopped",      // 🔴
-        TrayState::Updating => "\u{1F535} Updating...", // 🔵
-    };
-    update_tray_state_with_detail(app, state, status_text, None);
-}
-
-/// Update tray state with per-service detail line shown below the status.
-pub fn update_tray_state_with_detail(
-    app: &AppHandle,
-    state: TrayState,
-    detail: &str,
-    _update_version: Option<&str>,
-) {
-    let tray = match app.tray_by_id("main-tray") {
-        Some(t) => t,
-        None => return,
-    };
-
-    let (tooltip, status_text) = match state {
-        TrayState::Running => ("Magican \u{2014} Running", "\u{1F7E2} Running"), // 🟢
-        TrayState::Starting => ("Magican \u{2014} Starting...", "\u{1F7E1} Starting..."), // 🟡
-        TrayState::Stopped => ("Magican \u{2014} Stopped", "\u{1F534} Stopped"), // 🔴
-        TrayState::Updating => ("Magican \u{2014} Updating...", "\u{1F535} Updating..."), // 🔵
-    };
-
-    // Keep the status row current without replacing the native menu object.
-    // Replacing an open macOS status-item menu dismisses it under the cursor.
-    let status_label = format!(
-        "Magican v{} \u{2014} {}\n{}",
-        env!("CARGO_PKG_VERSION"),
-        status_text,
-        detail
-    );
-    set_status_label(app, &status_label);
-    update_status_menu_item_text(app, &status_label);
-    update_runtime_menu_item_text(app);
-
-    let _ = tray.set_tooltip(Some(tooltip));
-
-    let _ = app.emit(
-        "tray-state",
-        match state {
-            TrayState::Running => "Running",
-            TrayState::Starting => "Starting",
-            TrayState::Stopped => "Stopped",
-            TrayState::Updating => "Updating",
-        },
-    );
 }

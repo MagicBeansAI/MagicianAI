@@ -1,12 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HitlRequest, HitlResolveOutcome } from '$lib/hitl/types';
+import { installFetchMock, jsonResponse } from '../../test/browser';
 import {
 	activateAttentionRow,
+	chooseAttentionRowOption,
 	createAttentionItemController,
 	type AttentionScopeSnapshot
 } from './controller';
-import type { AttentionDisplayRow } from './model';
+import { attentionQuickChoices, type AttentionDisplayRow } from './model';
 
 function request(overrides: Partial<HitlRequest> = {}): HitlRequest {
 	return {
@@ -241,10 +243,166 @@ describe('createAttentionItemController scope guards', () => {
 	});
 });
 
+describe('chooseAttentionRowOption', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	// A delegated run's `need_user_input(input_type="choice")` pause.
+	function choiceRow(): AttentionDisplayRow {
+		return row({
+			request: request({
+				id: 'pause-1',
+				input_type: 'choice',
+				prompt: 'The notes are drafted. What should I do?',
+				schema: {
+					options: [
+						{ id: 'approve_notes', label: 'Approve notes' },
+						{ id: 'approve_all', label: 'Approve everything' },
+						{ id: 'change', label: 'Change…' }
+					]
+				},
+				identifiers: { pause_state_id: 'pause-1', correlation_id: 'pause-1' }
+			}),
+			correlation_id: 'pause-1',
+			alias_ids: []
+		});
+	}
+
+	it('offers the options, with Change… opening the prompt', () => {
+		expect(attentionQuickChoices(choiceRow())).toEqual([
+			{ id: 'approve_notes', label: 'Approve notes', opensPrompt: false },
+			{ id: 'approve_all', label: 'Approve everything', opensPrompt: false },
+			{ id: 'change', label: 'Change…', opensPrompt: true }
+		]);
+		expect(attentionQuickChoices(row())).toEqual([]);
+	});
+
+	it('offers no one-click answer when the ask carries details the row cannot show', () => {
+		const detailed = { ...choiceRow(), hint: '## Goal tree\n- Raise a round' };
+		expect(attentionQuickChoices(detailed)).toEqual([]);
+		const oneLine = { ...choiceRow(), hint: 'Notes go under Workspaces/Magican/Goals' };
+		expect(attentionQuickChoices(oneLine)).toHaveLength(3);
+	});
+
+	it('posts the option to /hitl/{cid}/respond without the prompt and drops the row', async () => {
+		const { calls } = installFetchMock([
+			{
+				method: 'POST',
+				match: /\/hitl\/[^/]+\/respond$/,
+				handle: () => jsonResponse({ resumed: true })
+			}
+		]);
+		const prompt = vi.fn();
+		const dropAttention = vi.fn();
+		const result = await chooseAttentionRowOption(choiceRow(), 'approve_all', {
+			getScope: () => scope,
+			respond: prompt,
+			dropPending: vi.fn(),
+			dropAttention
+		});
+
+		expect(result.status).toBe('resolved');
+		expect(prompt).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(1);
+		expect(calls[0].url).toBe('/api/magician/v2/hitl/pause-1/respond');
+		expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+			source: 'agentic',
+			input_type: 'choice',
+			value: { type: 'choice', selected_id: 'approve_all' },
+			channel: 'web',
+			execution_id: 'execution-1'
+		});
+		expect(dropAttention).toHaveBeenCalledWith('pause-1');
+	});
+
+	it('offers no buttons for an escalation-source pause', () => {
+		// max-iterations / cannot-proceed / loop-detected: budget and their own endpoint.
+		const escalation = choiceRow();
+		escalation.request = { ...escalation.request!, source: 'escalation' };
+		expect(attentionQuickChoices({ ...escalation, source: 'escalation' })).toEqual([]);
+	});
+
+	it('offers a repeated option id once', () => {
+		const duplicated = choiceRow();
+		duplicated.request = {
+			...duplicated.request!,
+			schema: {
+				options: [
+					{ id: 'approve_notes', label: 'Approve notes' },
+					{ id: 'approve_notes', label: 'Approve notes again' }
+				]
+			}
+		};
+		expect(attentionQuickChoices(duplicated).map((choice) => choice.id)).toEqual(['approve_notes']);
+	});
+
+	it('offers no buttons for a confirmation outside the allow-list', () => {
+		const outside = [
+			// An agentic tool-action approval: no destructive flag at all.
+			{ action_type: 'shell' },
+			// The producer's explicit destructive: false does not excuse an action.
+			{ destructive: false, action_type: 'pack' },
+			// A protected app's ask.
+			{ destructive: false, protected: true },
+			// Not flagged: unknown, so not plain.
+			{}
+		];
+		for (const schema of outside) {
+			const confirmation = row({ request: request({ input_type: 'confirmation', schema }) });
+			expect(attentionQuickChoices(confirmation)).toEqual([]);
+		}
+	});
+
+	it('posts confirm as a confirmation for a plain confirmation row', async () => {
+		const postResponse = vi.fn().mockResolvedValue({ ok: true });
+		const confirmation = row({
+			request: request({ input_type: 'confirmation', schema: { destructive: false } })
+		});
+		expect(attentionQuickChoices(confirmation)).toEqual([
+			{ id: 'confirm', label: 'Approve', opensPrompt: false },
+			{ id: 'deny', label: 'Deny', opensPrompt: false }
+		]);
+
+		await chooseAttentionRowOption(confirmation, 'confirm', {
+			getScope: () => scope,
+			postResponse,
+			dropPending: vi.fn(),
+			dropAttention: vi.fn()
+		});
+		expect(postResponse).toHaveBeenCalledWith(
+			confirmation.request,
+			{ type: 'confirmation', confirmed: true },
+			expect.anything()
+		);
+	});
+
+	it('keeps the row and reports the failure', async () => {
+		const dropAttention = vi.fn();
+		const controller = createAttentionItemController({
+			getScope: () => scope,
+			postResponse: vi.fn().mockResolvedValue({ ok: false, status: 500, message: 'resume failed' }),
+			dropPending: vi.fn(),
+			dropAttention
+		});
+		let latest = null as ReturnType<typeof stateSnapshot> | null;
+		const unsubscribe = controller.state.subscribe((state) => {
+			latest = stateSnapshot(state);
+		});
+
+		const result = await controller.choose(choiceRow(), 'approve_notes');
+
+		expect(result.status).toBe('error');
+		expect(latest?.error).toBe('resume failed');
+		expect(latest?.choosingKey).toBeNull();
+		expect(dropAttention).not.toHaveBeenCalled();
+		unsubscribe();
+	});
+});
+
 function stateSnapshot(state: {
 	notice: string | null;
 	error: string | null;
 	skillEvolutionActionKey: string | null;
+	choosingKey?: string | null;
 }) {
 	return { ...state };
 }

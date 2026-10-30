@@ -328,6 +328,10 @@
 								<span class="headline-label">cooling</span>
 							</div>
 							<div class="headline">
+								<span class="headline-value">{compact(obs.queue.routing_held)}</span>
+								<span class="headline-label">held</span>
+							</div>
+							<div class="headline">
 								<span class="headline-value">{compact(obs.queue.surfaced)}</span>
 								<span class="headline-label">surfaced</span>
 							</div>

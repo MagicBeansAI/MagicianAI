@@ -76,6 +76,49 @@ pub struct BrowserDispatcher {
     /// agent-browser commands directly, so the shim stays off and avoids
     /// hijacking native command names like `drag`/`scroll`.
     yutori_translation: bool,
+    /// Where a submission is sent for the owner's approval. Without one, a
+    /// submission is refused outright.
+    submission_approver: Option<SubmissionApprover>,
+}
+
+/// How a held submission was settled.
+enum SubmissionAnswer {
+    Approved(&'static str),
+    Declined,
+    Unavailable,
+}
+
+/// The owner-approval channel for form submissions in this run.
+#[derive(Clone)]
+pub struct SubmissionApprover {
+    service: Arc<crate::magician_v2::user_requests::UserRequestService>,
+    asker: super::submit_guard::ApprovalAsker,
+    /// Where this scope's "Approve Always" grants are kept.
+    grants_path: PathBuf,
+}
+
+impl SubmissionApprover {
+    pub fn new(
+        service: Arc<crate::magician_v2::user_requests::UserRequestService>,
+        principal: String,
+        workspace: String,
+        execution_id: Option<String>,
+        task_id: Option<String>,
+        agent_id: Option<String>,
+        grants_path: PathBuf,
+    ) -> Self {
+        Self {
+            service,
+            asker: super::submit_guard::ApprovalAsker {
+                principal,
+                workspace,
+                execution_id,
+                task_id,
+                agent_id,
+            },
+            grants_path,
+        }
+    }
 }
 
 impl BrowserDispatcher {
@@ -104,6 +147,7 @@ impl BrowserDispatcher {
             delivered_secret_values: None,
             browser_capture_withheld: None,
             yutori_translation: false,
+            submission_approver: None,
         }
     }
 
@@ -135,6 +179,13 @@ impl BrowserDispatcher {
     /// default; the caller flips it on only when the decision provider is Yutori.
     pub fn with_yutori_translation(mut self, enabled: bool) -> Self {
         self.yutori_translation = enabled;
+        self
+    }
+
+    /// Route form submissions to the owner for approval instead of refusing
+    /// them. Without this the guard stays a hard refusal.
+    pub fn with_submission_approver(mut self, approver: Option<SubmissionApprover>) -> Self {
+        self.submission_approver = approver;
         self
     }
 }
@@ -263,7 +314,9 @@ impl PrimitiveDispatcher for BrowserDispatcher {
         // correct), so non-Yutori runs go straight to agent-browser native argv.
         let yutori = self.yutori_translation && is_yutori_action(tool_name);
         let invocation = if yutori {
-            translate_yutori_action(tool_name, arguments)?
+            let invocation = translate_yutori_action(tool_name, arguments)?;
+            local_access_check(&invocation.artifact_commands)?;
+            invocation
         } else {
             tool_call_to_cli_invocation(tool_name, arguments)?
         };
@@ -278,15 +331,37 @@ impl PrimitiveDispatcher for BrowserDispatcher {
             }
         }
         // A form submission is an outward act the browser has no bindable
-        // form for, so it is refused here, before anything runs. See
-        // `submit_guard` for what counts and what the probe cannot see.
-        if let Some(reason) = self.submission_refusal(&invocation).await {
-            tracing::warn!(
-                tool = %tool_name,
-                reason = %reason,
-                "[OUTWARD-REFUSED] browser form submission refused; the owner submits"
-            );
-            return Ok(submission_refused_result(&reason));
+        // form for. The guard that holds it for the owner is an explicit
+        // opt-in (`outward_actions.browser_submission_guard`); off, nothing
+        // here runs and no DOM probe is spent. See `submit_guard` for what
+        // counts and what the probe cannot see.
+        if crate::magician_v2::agents::outward_actions::browser_submission_guard_enabled() {
+            if let Some(reason) = self.submission_refusal(&invocation).await {
+                match self.confirm_submission(&reason, &invocation).await {
+                    SubmissionAnswer::Approved(how) => tracing::info!(
+                        tool = %tool_name,
+                        reason = %reason,
+                        approval = how,
+                        "[OUTWARD-APPROVED] browser submission approved"
+                    ),
+                    SubmissionAnswer::Declined => {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            reason = %reason,
+                            "[OUTWARD-DECLINED] the owner did not approve this browser submission"
+                        );
+                        return Ok(submission_declined_result(&reason));
+                    },
+                    SubmissionAnswer::Unavailable => {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            reason = %reason,
+                            "[OUTWARD-REFUSED] browser form submission refused; no owner to ask"
+                        );
+                        return Ok(submission_refused_result(&reason));
+                    },
+                }
+            }
         }
         let artifact_root_before = self.artifact_root_snapshot().await?;
         let (invocation, known_secret_values) = self.resolve_invocation_secrets(invocation)?;
@@ -334,6 +409,33 @@ impl PrimitiveDispatcher for BrowserDispatcher {
         sanitize_agent_browser_result(&mut result, &known_secret_values);
         self.scrub_result_with_delivered(&mut result);
         reject_truncated_capture(&mut result);
+        // A model-authored eval result is not opened-page evidence. Capture
+        // the current page independently with a host-owned read, retaining
+        // the original CLI response and existing capture/secret controls.
+        let capture_allowed = self.browser_capture_withheld.as_ref().is_none_or(|level| {
+            level.load(std::sync::atomic::Ordering::Acquire) == CAPTURE_WITHHELD_NONE
+        });
+        if invocation_reads_page(&invocation) {
+            let capture_started = std::time::Instant::now();
+            let evidence = if result.success && capture_allowed {
+                self.capture_current_page_evidence().await
+            } else {
+                None
+            };
+            result.elapsed_ms = result
+                .elapsed_ms
+                .saturating_add(capture_started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+            attach_host_page_evidence(&mut result, evidence);
+            sanitize_agent_browser_result(&mut result, &known_secret_values);
+            self.scrub_result_with_delivered(&mut result);
+            // Direct browser dispatch and legacy artifact readers consume
+            // stdout. Keep it aligned with the authoritative structured lane.
+            result.stdout = result
+                .parsed_json
+                .as_ref()
+                .expect("object checked above")
+                .to_string();
+        }
         // Defensive mouse-state cleanup: Yutori actions that press a button
         // (left_click, right_click, middle_click, drag, mouse_down) expand to a
         // multi-step batch where `mouse down` happens before `mouse up`. If
@@ -388,6 +490,21 @@ fn reject_truncated_capture(result: &mut AgentBrowserToolResult) {
 }
 
 impl BrowserDispatcher {
+    async fn capture_current_page_evidence(&self) -> Option<Value> {
+        // Bound capture in the browser before crossing the process boundary.
+        // For a batch this attests only the final page, never earlier results.
+        const SCRIPT: &str = "JSON.stringify((()=>{const t=document.body?.innerText||'';return {url:location.href,title:document.title,text:t.slice(0,12000),truncated:t.length>12000}})())";
+        let capture = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            self.session
+                .run_command_with_options_and_stdin(&["eval", SCRIPT], 3, &[], None),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        browser_page_evidence(&capture)
+    }
+
     /// Exact live viewport for physical-owner attestations. Unlike the
     /// user-facing dispatcher hint, this never substitutes the conventional
     /// 1280x800 default: an app observation must become uncertain when the
@@ -490,6 +607,113 @@ impl BrowserDispatcher {
             }
         }
         None
+    }
+
+    /// The page as the owner would see it: the draft and title with delivered
+    /// secrets scrubbed, and the draft left out while a capture is withheld.
+    async fn page_facts_for_owner(&self) -> (super::submit_guard::PageFacts, [u8; 32]) {
+        use super::submit_guard::{PageFacts, PAGE_FACTS_SCRIPT};
+        let mut page = self
+            .session
+            .run_command(&["eval", "--json", PAGE_FACTS_SCRIPT])
+            .await
+            .ok()
+            .and_then(|result| result.parsed_json)
+            .and_then(|json| json.get("data")?.get("result").cloned())
+            .and_then(|value| serde_json::from_value::<PageFacts>(value).ok())
+            .unwrap_or_default();
+        let fingerprint = page.submission_fingerprint();
+        let withheld = self
+            .browser_capture_withheld
+            .as_ref()
+            .map(|withheld| withheld.load(std::sync::atomic::Ordering::Acquire))
+            .unwrap_or(CAPTURE_WITHHELD_NONE);
+        page.title = self.scrub_with_delivered(&page.title);
+        page.text = if withheld > CAPTURE_WITHHELD_NONE {
+            String::new()
+        } else {
+            self.scrub_with_delivered(&page.text)
+        };
+        (page, fingerprint)
+    }
+
+    /// Put a held submission to the owner: a standing grant for the page's
+    /// site passes it, otherwise a decision card asks. `Unavailable` when
+    /// there is nobody to ask (no approval channel in this run).
+    ///
+    /// The page is read before the invocation runs, so an invocation that
+    /// itself navigates, or switches tab or frame, may submit somewhere else.
+    /// For those no standing grant applies and none is created: the owner is
+    /// asked every time, about a destination the card says it cannot confirm.
+    async fn confirm_submission(
+        &self,
+        reason: &str,
+        invocation: &BrowserCliInvocation,
+    ) -> SubmissionAnswer {
+        use super::submission_grants::{self, SubmissionGrant};
+        use super::submit_guard::{
+            approval_request, changes_destination, APPROVE_ALWAYS, APPROVE_ONCE,
+        };
+        let Some(approver) = self.submission_approver.as_ref() else {
+            return SubmissionAnswer::Unavailable;
+        };
+        let moves = changes_destination(&invocation.artifact_commands);
+        let (page, fingerprint) = self.page_facts_for_owner().await;
+        let origin = if moves {
+            None
+        } else {
+            submission_grants::origin_of(&page.url)
+        };
+        if let Some(origin) = origin.as_deref() {
+            if submission_grants::is_granted(&approver.grants_path, origin) {
+                return SubmissionAnswer::Approved("standing grant");
+            }
+        }
+        let response = approver
+            .service
+            .ask(approval_request(
+                reason,
+                &page,
+                &approver.asker,
+                origin.is_some(),
+                moves,
+            ))
+            .await;
+        let approved_always = response.decision == APPROVE_ALWAYS && origin.is_some();
+        if response.decision != APPROVE_ONCE && !approved_always {
+            return SubmissionAnswer::Declined;
+        }
+        // The answer can take a long time and the page can move meanwhile: the
+        // approval was for the page the owner was shown, not whatever is there
+        // now.
+        let (now, current_fingerprint) = self.page_facts_for_owner().await;
+        if !moves
+            && !super::submit_guard::approval_matches_page(
+                &page,
+                fingerprint,
+                &now,
+                current_fingerprint,
+                approved_always,
+            )
+        {
+            tracing::warn!(
+                "[OUTWARD-DECLINED] the submission page or draft changed while approval was pending"
+            );
+            return SubmissionAnswer::Declined;
+        }
+        if let (true, Some(origin)) = (approved_always, origin) {
+            let grant = SubmissionGrant {
+                origin,
+                granted_at_ms: chrono::Utc::now().timestamp_millis(),
+                request_id: response.request_id.clone(),
+                agent_id: approver.asker.agent_id.clone(),
+            };
+            if let Err(error) = submission_grants::grant(&approver.grants_path, grant) {
+                tracing::warn!(%error, "could not store the submission grant; approving once");
+            }
+            return SubmissionAnswer::Approved("always");
+        }
+        SubmissionAnswer::Approved("once")
     }
 
     async fn control_facts_for_target(
@@ -708,6 +932,81 @@ fn invocation_observes_page_text(invocation: &BrowserCliInvocation) -> bool {
     })
 }
 
+fn attach_host_page_evidence(result: &mut AgentBrowserToolResult, evidence: Option<Value>) {
+    if !result.parsed_json.as_ref().is_some_and(Value::is_object) {
+        let data = result
+            .parsed_json
+            .take()
+            .unwrap_or_else(|| Value::String(result.stdout.clone()));
+        result.parsed_json = Some(serde_json::json!({"data": data}));
+    }
+    let projected = result
+        .parsed_json
+        .as_mut()
+        .and_then(Value::as_object_mut)
+        .expect("object established above");
+    projected.insert(
+        "__magician_evidence_authority".into(),
+        Value::String("host".into()),
+    );
+    projected.insert(
+        "evidence".into(),
+        Value::Array(evidence.into_iter().collect()),
+    );
+    result.stdout = result
+        .parsed_json
+        .as_ref()
+        .expect("object established above")
+        .to_string();
+}
+
+fn invocation_reads_page(invocation: &BrowserCliInvocation) -> bool {
+    invocation.artifact_commands.iter().any(|command| {
+        matches!(
+            command.first().map(String::as_str),
+            Some("snapshot" | "text" | "html" | "eval")
+        ) || (command.first().map(String::as_str) == Some("get")
+            && matches!(command.get(1).map(String::as_str), Some("text" | "html")))
+    })
+}
+
+fn browser_page_evidence(capture: &AgentBrowserToolResult) -> Option<Value> {
+    if !capture.success || capture.stdout_truncated || capture.stdout.len() > 64_000 {
+        return None;
+    }
+    let mut value = capture
+        .parsed_json
+        .clone()
+        .or_else(|| serde_json::from_str::<Value>(capture.stdout.trim()).ok())?;
+    for _ in 0..4 {
+        if let Value::String(text) = &value {
+            value = serde_json::from_str(text).ok()?;
+        } else if value.get("url").is_some() && value.get("text").is_some() {
+            break;
+        } else {
+            value = value
+                .pointer("/data/result")
+                .or_else(|| value.get("data"))
+                .or_else(|| value.get("result"))?
+                .clone();
+        }
+    }
+    let url = value.get("url")?.as_str()?;
+    let canonical_url = crate::magician_v2::content_sources::canonicalize_http_url(url).ok()?;
+    let text = value.get("text")?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "canonical_url": canonical_url,
+        "title": value.get("title").and_then(Value::as_str),
+        "text": text.chars().take(12_000).collect::<String>(),
+        "fetch_status": if value.get("truncated").and_then(Value::as_bool) == Some(true) { "partial" } else { "complete" },
+        "evidence_role": "opened_page", "claim_eligible": true,
+        "retrieved_by": "browser_host_page_capture", "final_observation_only": true,
+    }))
+}
+
 /// Commands that act on the page without returning any of its content — the
 /// only ones that run while a value split across fields may still be on it.
 /// Anything not listed (a snapshot, `get`, `eval`, `find`, a capture) is
@@ -808,6 +1107,22 @@ fn submission_refused_result(reason: &str) -> PrimitiveToolResult {
     }
 }
 
+fn submission_declined_result(reason: &str) -> PrimitiveToolResult {
+    let note = super::submit_guard::declined_note(reason);
+    PrimitiveToolResult {
+        success: false,
+        stdout: String::new(),
+        stderr: note.clone(),
+        parsed_json: Some(serde_json::json!({
+            "status": "submission_declined",
+            "reason": reason,
+            "note": note,
+        })),
+        artifacts: Vec::new(),
+        elapsed_ms: 0,
+    }
+}
+
 fn withheld_page_result() -> PrimitiveToolResult {
     let note = "observation withheld: a code was just entered digit by digit on this page and \
                 cannot be redacted from text or pixels. Submit if you have not, then navigate \
@@ -832,6 +1147,28 @@ pub fn help_tool_call_to_cli_args(args: &Value) -> Result<Vec<String>> {
     let obj = args.as_object().cloned().unwrap_or_default();
     let argv = optional_string_array(&obj, "args")?.unwrap_or_default();
     if !argv.is_empty() {
+        // `help` runs its argv as given, so it may only ask for help: a
+        // `skills` lookup or `<command> [sub] --help`, plain words only.
+        // Anything else would run a real command past every check.
+        let plain = |token: &String| {
+            !token.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        };
+        let asks_help = argv
+            .last()
+            .is_some_and(|last| last == "--help" || last == "-h");
+        let skills = argv[0] == "skills";
+        if !argv.iter().all(plain)
+            || !(asks_help || skills)
+            || (skills && argv.iter().any(|t| t.starts_with('-') && t != "--full"))
+        {
+            bail!(
+                "`help` takes `[\"<command>\", \"--help\"]` or `[\"skills\", \"get\", \"<name>\"]`; run commands with their own tool"
+            );
+        }
+        local_access_check(std::slice::from_ref(&argv))?;
         return validate_argv(argv);
     }
 
@@ -877,7 +1214,9 @@ pub fn tool_call_to_cli_invocation(tool_name: &str, args: &Value) -> Result<Brow
 
     let command_args = optional_string_array(obj, "args")?.unwrap_or_default();
     if tool_name == "batch" {
-        return batch_invocation(command_args, optional_command_matrix(obj, "commands")?);
+        let invocation = batch_invocation(command_args, optional_command_matrix(obj, "commands")?)?;
+        local_access_check(&invocation.artifact_commands)?;
+        return Ok(invocation);
     }
     if obj.contains_key("commands") {
         bail!("`commands` is only supported by `batch`");
@@ -886,11 +1225,495 @@ pub fn tool_call_to_cli_invocation(tool_name: &str, args: &Value) -> Result<Brow
     let stdin = optional_string(obj, "stdin")?;
     let command_args = navigation_args(tool_name, obj, command_args)?;
     let argv = cli_argv(tool_name, command_args)?;
+    local_access_check(std::slice::from_ref(&argv))?;
     Ok(BrowserCliInvocation {
         artifact_commands: vec![argv.clone()],
         argv,
         stdin,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Local files and local services: the agent-browser daemon and its Chrome run
+// outside every OS box, so what they may open is decided here, per command.
+// ---------------------------------------------------------------------------
+
+/// Schemes a navigation may use. Anything that names a local file, a
+/// browser-internal page or script is refused; `file:` only while no goal
+/// workspace exists, and then only for a path the acting agent may read.
+const ALLOWED_NAVIGATION_SCHEMES: &[&str] = &["http", "https", "about", "data", "blob"];
+/// Schemes recognised as schemes (so `localhost:3000` stays a host).
+const KNOWN_SCHEMES: &[&str] = &[
+    "http",
+    "https",
+    "about",
+    "data",
+    "blob",
+    "file",
+    "view-source",
+    "filesystem",
+    "chrome",
+    "chrome-extension",
+    "chrome-untrusted",
+    "devtools",
+    "javascript",
+    "ftp",
+    "ws",
+    "wss",
+];
+
+/// Why `url` may not be opened by the acting agent's browser, or `None`.
+pub(crate) fn browser_url_refusal(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    // A bare local path is opened as a file.
+    if trimmed.starts_with('/') || trimmed.starts_with("~/") {
+        return local_file_refusal(&expand_home(trimmed), false)
+            .or_else(|| file_scheme_refusal(trimmed));
+    }
+    let scheme = lower
+        .split_once(':')
+        .map(|(scheme, _)| scheme)
+        .filter(|scheme| KNOWN_SCHEMES.contains(scheme));
+    match scheme {
+        None => loopback_service_navigation_refusal(&format!("https://{trimmed}")),
+        Some("file") => {
+            if let Some(refusal) = file_scheme_refusal(trimmed) {
+                return Some(refusal);
+            }
+            let path = url::Url::parse(trimmed)
+                .ok()
+                .and_then(|parsed| parsed.to_file_path().ok())?;
+            local_file_refusal(&path, false)
+        },
+        Some(scheme) if ALLOWED_NAVIGATION_SCHEMES.contains(&scheme) => {
+            if matches!(scheme, "http" | "https") {
+                loopback_service_navigation_refusal(trimmed)
+            } else if matches!(scheme, "data" | "blob")
+                && crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+                    .guards_workspaces
+            {
+                // A page this agent wrote could redirect or script its way
+                // anywhere; a fenced agent opens only web pages.
+                Some(format!(
+                    "The browser may not open `{scheme}:` pages for an agent fenced from a goal workspace"
+                ))
+            } else {
+                None
+            }
+        },
+        Some(scheme) => Some(format!(
+            "The browser may not open `{scheme}:` pages; use an http(s) URL"
+        )),
+    }
+}
+
+/// Whether `text` holds a `file:` URL scheme anywhere: `file:` at the start
+/// or after a character no scheme name contains (`'file:///…'`,
+/// `url=file:…`, `view-source:file:…`). A word that merely ends in "file"
+/// (`profile:`, `myfile:` in page script) is not a scheme.
+fn names_file_scheme(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    lower.match_indices("file:").any(|(at, _)| {
+        lower[..at].chars().next_back().is_none_or(|before| {
+            !(before.is_ascii_alphanumeric() || matches!(before, '+' | '.' | '-'))
+        })
+    })
+}
+
+/// `file:` pages are refused outright while any goal workspace exists: a
+/// directory listing would let later clicks reach a workspace without
+/// another check.
+fn file_scheme_refusal(url: &str) -> Option<String> {
+    crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+        .guards_workspaces
+        .then(|| {
+            format!(
+                "The browser may not open local files (`{url}`) while goal workspaces exist; read files with read_file"
+            )
+        })
+}
+
+/// A local service the browser may not open: the supervisor, Magicutor, a
+/// CDP endpoint and the notes server for every agent; Magician's API and
+/// the UI dev servers too for an agent fenced from a goal workspace.
+fn loopback_service_navigation_refusal(url: &str) -> Option<String> {
+    use crate::magician_v2::execution::network_policy;
+    use crate::magician_v2::execution::shell_box::{loopback_services, LoopbackService};
+    let fenced = crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+        .guards_workspaces;
+    // For a fenced agent, a target that is no URL with a host is refused
+    // rather than left to the browser to interpret.
+    let unparsed = || {
+        fenced.then(|| {
+            format!(
+                "The browser may not open `{url}`: it is not a web address this agent may check"
+            )
+        })
+    };
+    let Some(parsed) = url::Url::parse(url).ok() else {
+        return unparsed();
+    };
+    let Some(host) = parsed.host_str() else {
+        return unparsed();
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_string();
+    let Some(port) = parsed.port_or_known_default() else {
+        return unparsed();
+    };
+    // Resolved, not read by name: `localtest.me`, `localhost.`, an
+    // IPv4-mapped address and the host's own LAN address all count.
+    let addrs: Vec<std::net::IpAddr> = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => vec![ip],
+        Err(_) => {
+            use std::net::ToSocketAddrs;
+            (host.as_str(), port)
+                .to_socket_addrs()
+                .map(|addrs| addrs.map(|addr| addr.ip()).collect())
+                .unwrap_or_default()
+        },
+    };
+    let local = host.eq_ignore_ascii_case("localhost")
+        || addrs.iter().any(|ip| network_policy::is_local_address(*ip));
+    // A harness session's grant channel, for every agent: a page there with
+    // a stolen grant in `--headers` would act as that session.
+    if local && crate::magician_v2::execution::plane::grant_channel::is_channel_port(port) {
+        return Some(format!(
+            "The browser may not open {url}: it is a harness grant channel agents may not reach"
+        ));
+    }
+    if fenced
+        && !network_policy::allowed_private(&host, port)
+        && (local
+            || addrs.is_empty()
+            || addrs
+                .iter()
+                .any(|ip| !network_policy::is_public_unmapped(*ip)))
+    {
+        return Some(format!(
+            "The browser may not open {url}: an agent fenced from a goal workspace opens only public pages"
+        ));
+    }
+    if !local {
+        return None;
+    }
+    let kind = loopback_services()
+        .into_iter()
+        .find(|(candidate, _)| *candidate == port)
+        .map(|(_, kind)| kind)?;
+    let always = !matches!(
+        kind,
+        LoopbackService::MagicianApi | LoopbackService::DevServer
+    );
+    (always || fenced).then(|| {
+        format!(
+            "The browser may not open {url}: it is a local service agents may not reach ({kind:?})"
+        )
+    })
+}
+
+/// The Chrome flags that send every request of a fenced agent's browser
+/// (navigation, redirects, scripts, frames, loopback included) through the
+/// egress proxy's strict listener, which refuses local, private and service
+/// addresses after resolving them itself. WebRTC may not send UDP outside
+/// the proxy. `None` when that listener is not running: the fenced agent
+/// then gets no browser.
+pub(crate) fn fenced_browser_args() -> Option<String> {
+    fenced_browser_args_for(crate::magician_v2::execution::egress_proxy::strict_port()?).into()
+}
+
+/// An empty agent-browser config for fenced sessions, in the plane's
+/// private folder (no OS box reaches it), so no `agent-browser.json` an
+/// agent wrote can set the executable, proxy or profile.
+pub(crate) fn fenced_browser_config() -> Option<PathBuf> {
+    let path = crate::magician_v2::execution::plane::grant_channel::private_root()
+        .join("agent-browser-fenced.json");
+    if std::fs::read_to_string(&path).is_ok_and(|text| text.trim() == "{}") {
+        return Some(path);
+    }
+    std::fs::write(&path, "{}\n").ok().map(|()| path)
+}
+
+fn fenced_browser_args_for(port: u16) -> String {
+    format!(
+        "--proxy-server=http://127.0.0.1:{port},--proxy-bypass-list=<-loopback>,\
+         --force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+    )
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir()
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(path)),
+        None => PathBuf::from(path),
+    }
+}
+
+/// The goal workspace and notes-index refusal for the browser reading
+/// (`write: false`) or writing `path`.
+fn local_file_refusal(path: &Path, write: bool) -> Option<String> {
+    use crate::magician_v2::execution::goal_workspace_access as access;
+    access::hybrid_index_refusal(path).or_else(|| {
+        access::refusal_for_current(
+            path,
+            if write {
+                access::Op::Write
+            } else {
+                access::Op::Read
+            },
+        )
+    })
+}
+
+/// A token that names a local file: an absolute or `~/` path, or a
+/// `file:` URL.
+fn local_path_token(token: &str) -> Option<PathBuf> {
+    let token = token.trim();
+    if token.starts_with('/') || token.starts_with("~/") {
+        return Some(expand_home(token));
+    }
+    if token.to_ascii_lowercase().starts_with("file:") {
+        return url::Url::parse(token).ok()?.to_file_path().ok();
+    }
+    None
+}
+
+/// agent-browser options only Magician sets: how and where the browser
+/// launches (executable, launch args, extensions, init scripts, engine,
+/// provider, CDP, auto-connect), whose profile, session, namespace,
+/// saved state or config it uses, its proxy and certificate trust, file
+/// access, and where it writes by default. agent-browser takes a global
+/// option anywhere in argv and the last one wins, so an agent token naming
+/// one would override Magician's (an unboxed program, no proxy, the owner's
+/// Chrome or profile, another agent's session). Refused in every agent token,
+/// `--flag value` and `--flag=value` alike.
+const MAGICIAN_ONLY_OPTIONS: &[&str] = &[
+    "--profile",
+    "--restore",
+    "--restore-save",
+    "--restore-check-url",
+    "--restore-check-text",
+    "--restore-check-fn",
+    "--session-name",
+    "--state",
+    "--auto-connect",
+    "--session",
+    "--namespace",
+    "--executable-path",
+    "--extension",
+    "--init-script",
+    "--args",
+    "--proxy",
+    "--proxy-bypass",
+    "--ignore-https-errors",
+    "--ca-cert",
+    "--no-ca-cert",
+    "--allow-file-access",
+    "-p",
+    "--provider",
+    "--device",
+    "--screenshot-dir",
+    "--cdp",
+    "--download-path",
+    "--action-policy",
+    "--confirm-actions",
+    "--confirm-interactive",
+    "--engine",
+    "--idle-timeout",
+    "--config",
+    "--webgpu",
+    "--no-webmcp",
+    "--model",
+    "--debug",
+];
+
+/// Commands an agent a goal workspace is fenced from may not run: they
+/// attach to another browser (`connect`), run or install other programs
+/// (`plugin`, `install`, `upgrade`, `doctor`, `mcp`, `chat`), open servers
+/// (`dashboard`, `stream`), list the owner's Chrome profiles (`profiles`),
+/// or open DevTools (`inspect`).
+const FENCED_REFUSED_COMMANDS: &[&str] = &[
+    "connect",
+    "plugin",
+    "install",
+    "upgrade",
+    "doctor",
+    "mcp",
+    "chat",
+    "dashboard",
+    "stream",
+    "profiles",
+    "inspect",
+];
+
+/// Options of navigation commands that take a value, so the value is never
+/// read as the page to open (`open --headers '{…}' file:///…`).
+const VALUE_OPTIONS: &[&str] = &[
+    "--headers",
+    "--llms",
+    "--filter",
+    "--timeout",
+    "--allowed-domains",
+    "--max-output",
+    "--tags",
+    "-s",
+    "--selector",
+    "--fps",
+    "--contact-sheet-threshold",
+    "--frame",
+    "--baseline",
+];
+
+/// The option a token names (`--flag` or `--flag=value`), if it is one.
+fn option_name(token: &str) -> Option<&str> {
+    let token = token.trim();
+    (token.starts_with('-') && token != "-" && token != "--")
+        .then(|| token.split_once('=').map_or(token, |(name, _)| name))
+}
+
+/// The positional tokens of `args`: every token that is neither an option
+/// nor the value of a value-taking option.
+fn positional_tokens(args: &[String]) -> Vec<&String> {
+    let mut out = Vec::new();
+    let mut skip = false;
+    for token in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if let Some(name) = option_name(token) {
+            skip = !token.contains('=') && VALUE_OPTIONS.contains(&name);
+            continue;
+        }
+        out.push(token);
+    }
+    out
+}
+
+/// The pages a command opens, from its grammar: every positional of
+/// `open`/`goto`/`navigate`/`read`/`vitals`/`a11y`/`pushstate`, of
+/// `tab new`, `diff url`, and `record start` after its output path.
+fn navigation_targets<'a>(name: &str, args: &'a [String]) -> Vec<&'a String> {
+    let first = args.first().map(String::as_str);
+    match name {
+        "open" | "goto" | "navigate" | "read" | "vitals" | "a11y" | "pushstate" => {
+            positional_tokens(args)
+        },
+        "tab" if first == Some("new") => positional_tokens(&args[1..]),
+        "diff" if first == Some("url") => positional_tokens(&args[1..]),
+        "record" if first == Some("start") => {
+            positional_tokens(&args[1..]).into_iter().skip(1).collect()
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Every command an invocation runs (batch subcommands included): no
+/// Magician-only option in any token; for an agent a workspace is fenced
+/// from, no command that leaves its own browser and no `read` fetch of a
+/// URL (the daemon fetches it outside the browser's proxy); every page it
+/// opens ([`navigation_targets`]); no `file:` token at all while a goal
+/// workspace exists; the files it writes (screenshots, PDFs, downloads,
+/// HARs, traces, recordings, saved state) and every token naming a local
+/// file it may read (uploads, state loads).
+fn local_access_check(commands: &[Vec<String>]) -> Result<()> {
+    let fenced = crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+        .guards_workspaces;
+    for command in commands {
+        let Some(name) = command.first().map(String::as_str) else {
+            continue;
+        };
+        // Also as agent-browser would read a token it unquotes: quotes and
+        // backslashes dropped, split on whitespace.
+        let unquoted: Vec<String> = command
+            .iter()
+            .flat_map(|token| {
+                token
+                    .chars()
+                    .filter(|c| !matches!(*c, '"' | '\'' | '\\'))
+                    .collect::<String>()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if let Some(option) = command
+            .iter()
+            .chain(unquoted.iter())
+            .filter_map(|token| option_name(token))
+            .find(|option| MAGICIAN_ONLY_OPTIONS.contains(option))
+        {
+            bail!(
+                "The browser option `{option}` is set by Magician, not by an agent; leave it out"
+            );
+        }
+        let args = &command[1..];
+        if fenced && FENCED_REFUSED_COMMANDS.contains(&name) {
+            bail!(
+                "The browser command `{name}` is not available to an agent fenced from a goal workspace"
+            );
+        }
+        let targets = navigation_targets(name, args);
+        if fenced && name == "read" && !targets.is_empty() {
+            bail!(
+                "`read <url>` fetches outside the browser for an agent fenced from a goal workspace; \
+                 open the page and run `read` without a URL"
+            );
+        }
+        for target in targets {
+            if let Some(refusal) = browser_url_refusal(target) {
+                bail!(refusal);
+            }
+        }
+        for token in command.iter().chain(unquoted.iter()) {
+            let value = token
+                .split_once('=')
+                .map_or(token.as_str(), |(_, value)| value);
+            if [token.as_str(), value]
+                .iter()
+                .any(|text| names_file_scheme(text))
+            {
+                if let Some(refusal) = file_scheme_refusal(token) {
+                    bail!(refusal);
+                }
+            }
+        }
+        let mut outputs = artifact_paths_from_command(command);
+        if name == "state" && args.first().map(String::as_str) == Some("save") {
+            outputs.extend(
+                args[1..]
+                    .iter()
+                    .filter(|arg| !arg.starts_with('-'))
+                    .map(PathBuf::from),
+            );
+        }
+        for path in &outputs {
+            if let Some(refusal) = local_file_refusal(path, true) {
+                bail!(refusal);
+            }
+        }
+        for token in args {
+            let value = token
+                .split_once('=')
+                .map_or(token.as_str(), |(_, value)| value);
+            for candidate in [token.as_str(), value] {
+                if let Some(path) = local_path_token(candidate) {
+                    if outputs.contains(&path) {
+                        continue;
+                    }
+                    if let Some(refusal) = local_file_refusal(&path, false) {
+                        bail!(refusal);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Legacy helper used by tests and callers that only need argv.
@@ -904,6 +1727,16 @@ fn batch_invocation(
 ) -> Result<BrowserCliInvocation> {
     let argv = cli_argv("batch", args)?;
     let Some(commands) = commands else {
+        // agent-browser parses a batch string shell-style (quotes, escapes)
+        // and no Magician tokenizer matches it exactly: a quoted token could
+        // become an option or a target past every check. Agents send the
+        // `commands` matrix, checked token by token.
+        if let Some(command) = argv[1..].iter().find(|arg| !arg.starts_with('-')) {
+            bail!(
+                "`batch` takes its commands as `commands` (an array of argv arrays, e.g. \
+                 [[\"open\", \"https://example.com\"], [\"snapshot\", \"-i\"]]), not as a string (`{command}`)"
+            );
+        }
         let artifact_commands = artifact_command_candidates(&argv);
         return Ok(BrowserCliInvocation {
             argv,
@@ -1214,6 +2047,13 @@ fn validate_command_matrix(commands: &[Vec<String>]) -> Result<()> {
             bail!("`commands[{idx}]` must not be empty");
         };
         validate_command_token(name)?;
+        // A nested batch would carry its commands as strings past every
+        // per-command check (targets, outputs, fenced commands).
+        if name == "batch" {
+            bail!(
+                "`batch.commands[{idx}]` is itself a `batch`; put its commands in this `commands` matrix instead"
+            );
+        }
         if name == "help" {
             bail!(
                 "`batch.commands[{idx}]` uses `help`, but `help` is a runtime inner-loop tool, not an agent-browser batch subcommand. Call standalone help({{\"args\":[\"<command>\",\"--help\"]}}) outside batch."
@@ -1502,6 +2342,60 @@ fn has_known_artifact_extension(path: &Path) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn host_page_capture_keeps_source_provenance_and_rejects_failed_or_non_web_reads() {
+        let mut capture = AgentBrowserToolResult {
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            parsed_json: Some(json!({"data": {"result": serde_json::to_string(&json!({
+                "url":"https://example.org/report", "title":"Community research",
+                "text":"Subscribers: 878000", "truncated": true,
+            })).unwrap()}})),
+            elapsed_ms: 1,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        let evidence = browser_page_evidence(&capture).unwrap();
+        assert_eq!(evidence["canonical_url"], "https://example.org/report");
+        assert_eq!(evidence["text"], "Subscribers: 878000");
+        assert_eq!(evidence["fetch_status"], "partial");
+        assert_eq!(evidence["claim_eligible"], true);
+        assert_eq!(evidence["final_observation_only"], true);
+        let mut returned = capture.clone();
+        returned.parsed_json = Some(json!({"data":{"result":"MODEL_RETURN"}}));
+        attach_host_page_evidence(&mut returned, Some(evidence.clone()));
+        assert_eq!(
+            serde_json::from_str::<Value>(&returned.stdout).unwrap(),
+            returned.parsed_json.clone().unwrap()
+        );
+        assert_eq!(
+            returned.parsed_json.as_ref().unwrap()["evidence"][0],
+            evidence
+        );
+        assert_eq!(
+            returned.parsed_json.as_ref().unwrap()["__magician_evidence_authority"],
+            "host"
+        );
+        returned.parsed_json = Some(json!(["MODEL_RETURN"]));
+        attach_host_page_evidence(&mut returned, None);
+        assert_eq!(
+            returned.parsed_json.as_ref().unwrap()["evidence"],
+            json!([])
+        );
+        assert!(returned
+            .stdout
+            .starts_with("{\"__magician_evidence_authority\""));
+        capture.success = false;
+        assert!(browser_page_evidence(&capture).is_none());
+        capture.success = true;
+        capture.stdout_truncated = true;
+        assert!(browser_page_evidence(&capture).is_none());
+        capture.stdout_truncated = false;
+        capture.parsed_json = Some(json!({"url":"file:///private/config", "text":"secret"}));
+        assert!(browser_page_evidence(&capture).is_none());
+    }
 
     #[test]
     fn direct_tool_maps_exact_command_and_args() {
@@ -1812,26 +2706,54 @@ mod tests {
         );
     }
 
+    /// Batch strings are parsed shell-style by agent-browser, so agents may
+    /// not send them: the `commands` matrix is checked token by token.
     #[test]
-    fn native_batch_legacy_string_mode_maps_to_exact_argv() {
-        let argv = tool_call_to_cli_args(
-            "batch",
-            &json!({
-                "args": ["--bail", "open https://example.com", "snapshot -i"]
-            }),
-        )
-        .expect("argv");
+    fn native_batch_string_mode_is_refused() {
+        for args in [
+            json!({"args": ["--bail", "open https://example.com", "snapshot -i"]}),
+            json!({"args": ["open \"https://example.com\" \"--exec\"utable-path /tmp/x"]}),
+            json!({"args": ["open 'fi'le:///etc/hosts"]}),
+        ] {
+            let error = tool_call_to_cli_args("batch", &args).unwrap_err();
+            assert!(error.to_string().contains("`commands`"), "{error}");
+        }
         assert_eq!(
-            argv,
-            vec!["batch", "--bail", "open https://example.com", "snapshot -i"]
+            tool_call_to_cli_args(
+                "batch",
+                &json!({"args": ["--bail"], "commands": [["open", "https://example.com"]]})
+            )
+            .unwrap(),
+            vec!["batch", "--bail"]
         );
+    }
+
+    /// A matrix token agent-browser might unquote is checked unquoted too.
+    #[test]
+    fn quoted_tokens_cannot_hide_an_option_or_a_file_url() {
+        for command in [
+            json!([["open", "https://example.com", "\"--cdp\"", "9222"]]),
+            json!([["open", "https://example.com", "--exec\\utable-path=/tmp/x"]]),
+            json!([["open", "'--profile' Default"]]),
+            json!([["open", "fi\"le:///etc/hosts"]]),
+        ] {
+            let fx = crate::magician_v2::execution::goal_workspace_access::test_fixture();
+            let refused = crate::magician_v2::execution::goal_workspace_access::with_test_roots(
+                vec![fx.root.clone()],
+                || {
+                    crate::magician_v2::execution::native_executors::ACTING_AGENT
+                        .sync_scope(Some("ambassador".to_string()), || {
+                            tool_call_to_cli_invocation("batch", &json!({"commands": command}))
+                        })
+                },
+            );
+            assert!(refused.is_err(), "{command}");
+        }
     }
 
     #[test]
     fn direct_command_maps_to_exact_cli_argv() {
-        let argv =
-            tool_call_to_cli_args("batch", &json!({"args": ["snapshot -i"]})).expect("batch argv");
-        assert_eq!(argv, vec!["batch", "snapshot -i"]);
+        assert!(tool_call_to_cli_args("batch", &json!({"args": ["snapshot -i"]})).is_err());
 
         let argv = tool_call_to_cli_args("click", &json!({"args": ["@e3"]})).expect("click argv");
         // `open` accepts the page as args[0] or as `url`; never as nothing.
@@ -2176,5 +3098,451 @@ mod tests {
         assert_eq!(paths, vec![generated.display().to_string()]);
         assert_eq!(artifacts[0].kind, "screenshot");
         assert_eq!(artifacts[0].source_tool, "screenshot");
+    }
+}
+
+/// Goal workspaces and local services through the browser, whose daemon and
+/// Chrome run outside every OS box.
+#[cfg(test)]
+mod local_access_tests {
+    use super::*;
+    use crate::magician_v2::execution::goal_workspace_access as access;
+    use crate::magician_v2::execution::native_executors::ACTING_AGENT;
+    use serde_json::json;
+
+    fn invoke(agent: &str, tool: &str, args: Value) -> Result<BrowserCliInvocation> {
+        ACTING_AGENT.sync_scope(Some(agent.to_string()), || {
+            tool_call_to_cli_invocation(tool, &args)
+        })
+    }
+
+    #[test]
+    fn browser_refuses_file_urls_while_goal_workspaces_exist() {
+        let fx = access::test_fixture();
+        let goal = fx.root.join("Magican/Goals/X/x.md");
+        let url = url::Url::from_file_path(&goal).unwrap().to_string();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            for agent in ["ambassador", "cmo"] {
+                assert!(
+                    invoke(agent, "open", json!({"args": [url]})).is_err(),
+                    "{agent}"
+                );
+                assert!(invoke(agent, "open", json!({"args": ["file:///tmp/page.html"]})).is_err());
+            }
+            // The admin reads every workspace anyway.
+            assert!(invoke(access::DEFAULT_ADMIN_AGENT, "open", json!({"args": [url]})).is_ok());
+            assert!(invoke(
+                "ambassador",
+                "goto",
+                json!({"url": goal.display().to_string()})
+            )
+            .is_err());
+            assert!(invoke("ambassador", "tab", json!({"args": ["new", url]})).is_err());
+        });
+        // With no goal workspace, a local page the agent may read opens.
+        assert!(invoke(
+            "ambassador",
+            "open",
+            json!({"args": ["file:///tmp/page.html"]})
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn browser_upload_of_a_goal_file_is_refused_for_non_members() {
+        let fx = access::test_fixture();
+        let goal = fx.root.join("Magican/Goals/X/x.md").display().to_string();
+        let secret = fx
+            .root
+            .join("Magican/Goals/X/secret.md")
+            .display()
+            .to_string();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            assert!(invoke("ambassador", "upload", json!({"args": ["@e1", goal]})).is_err());
+            assert!(invoke("cmo", "upload", json!({"args": ["@e1", secret]})).is_err());
+            assert!(invoke("cmo", "upload", json!({"args": ["@e1", goal]})).is_ok());
+            assert!(invoke("ambassador", "state", json!({"args": ["load", goal]})).is_err());
+        });
+    }
+
+    #[test]
+    fn browser_screenshot_into_a_workspace_is_refused_for_non_members() {
+        let fx = access::test_fixture();
+        let shot = fx.root.join("Magican/shot.png").display().to_string();
+        let pdf = fx.root.join("Magican/README.pdf").display().to_string();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            assert!(invoke("ambassador", "screenshot", json!({"args": [shot]})).is_err());
+            assert!(invoke("ambassador", "pdf", json!({"args": [pdf]})).is_err());
+            assert!(invoke("cmo", "screenshot", json!({"args": [shot]})).is_ok());
+        });
+    }
+
+    #[test]
+    fn browser_batch_subcommands_are_checked() {
+        let fx = access::test_fixture();
+        let goal = fx.root.join("Magican/Goals/X/x.md").display().to_string();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            let matrix = invoke(
+                "ambassador",
+                "batch",
+                json!({"commands": [["open", "https://example.com"], ["upload", "@e1", goal]]}),
+            );
+            assert!(matrix.is_err());
+            let strings = invoke(
+                "ambassador",
+                "batch",
+                json!({"args": ["open file:///etc/hosts"]}),
+            );
+            assert!(strings.is_err());
+        });
+    }
+
+    #[test]
+    fn http_and_about_blank_navigation_still_pass_but_local_services_do_not() {
+        use crate::magician_v2::execution::shell_box::{
+            register_loopback_service, register_magician_listener, LoopbackService,
+        };
+        register_loopback_service(8081, LoopbackService::Supervisor);
+        register_loopback_service(3021, LoopbackService::NotesServer);
+        register_loopback_service(3003, LoopbackService::Magicutor);
+        register_magician_listener(3002);
+        for target in [
+            "https://example.com",
+            "about:blank",
+            "localhost:3000",
+            "example.com/a",
+        ] {
+            assert!(
+                invoke("ambassador", "open", json!({"args": [target]})).is_ok(),
+                "{target}"
+            );
+        }
+        for target in [
+            "chrome://settings",
+            "view-source:file:///etc/hosts",
+            "javascript:alert(1)",
+            "http://127.0.0.1:8081/",
+            "http://localhost:3021/.fs/Workspaces",
+            "http://127.0.0.1:3003/",
+        ] {
+            assert!(
+                invoke(
+                    access::DEFAULT_ADMIN_AGENT,
+                    "open",
+                    json!({"args": [target]})
+                )
+                .is_err(),
+                "{target}"
+            );
+        }
+        // Magician's API is refused only to an agent a workspace is fenced
+        // from.
+        assert!(invoke(
+            access::DEFAULT_ADMIN_AGENT,
+            "open",
+            json!({"args": ["http://127.0.0.1:3002/"]})
+        )
+        .is_ok());
+        let fx = access::test_fixture();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            assert!(invoke(
+                "ambassador",
+                "open",
+                json!({"args": ["http://127.0.0.1:3002/"]})
+            )
+            .is_err());
+        });
+    }
+
+    /// A fenced agent's browser opens only public pages, whatever the
+    /// spelling (a wildcard or trailing-dot name, an IPv4-mapped address, a
+    /// LAN or private address, a bare host), never a `data:` or `blob:` page
+    /// it could script past every check; the admin is not fenced.
+    #[test]
+    fn a_fenced_agent_opens_only_public_pages_under_any_spelling() {
+        let fx = access::test_fixture();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            for target in [
+                "http://localtest.me:3000/",
+                "http://localhost.:3000/",
+                "http://[::ffff:127.0.0.1]:3000/",
+                "http://[::ffff:7f00:1]:8080/",
+                "http://10.0.0.5/",
+                "http://192.168.1.1/",
+                "http://169.254.169.254/latest/meta-data/",
+                "localhost:3000",
+                "data:text/html,<script>location='http://127.0.0.1:8081/'</script>",
+                "blob:https://example.com/0b1c",
+                "http://unresolvable.invalid/",
+            ] {
+                for agent in ["ambassador", "cmo"] {
+                    assert!(
+                        invoke(agent, "open", json!({"args": [target]})).is_err(),
+                        "{agent} {target}"
+                    );
+                }
+            }
+            assert!(invoke("ambassador", "open", json!({"args": ["https://1.1.1.1/"]})).is_ok());
+            assert!(invoke(
+                access::DEFAULT_ADMIN_AGENT,
+                "open",
+                json!({"args": ["data:text/html,hi"]})
+            )
+            .is_ok());
+            assert!(invoke(
+                access::DEFAULT_ADMIN_AGENT,
+                "open",
+                json!({"args": ["http://10.0.0.5/"]})
+            )
+            .is_ok());
+        });
+    }
+
+    /// The fenced browser's flags proxy loopback too (`<-loopback>` removes
+    /// Chrome's implicit loopback bypass) and keep WebRTC inside the proxy.
+    #[test]
+    fn fenced_browser_flags_send_everything_through_the_strict_listener() {
+        let args = fenced_browser_args_for(4243);
+        let flags: Vec<&str> = args.split(',').collect();
+        assert!(
+            flags.contains(&"--proxy-server=http://127.0.0.1:4243"),
+            "{args}"
+        );
+        assert!(flags.contains(&"--proxy-bypass-list=<-loopback>"), "{args}");
+        assert!(
+            flags.contains(&"--force-webrtc-ip-handling-policy=disable_non_proxied_udp"),
+            "{args}"
+        );
+    }
+
+    /// No agent token may set an option only Magician sets, wherever it
+    /// stands (before or after the target, `--flag value` or
+    /// `--flag=value`), in a command, a structured batch or a batch string.
+    #[test]
+    fn magician_only_browser_options_are_refused_in_every_agent_token() {
+        for (flag, value) in [
+            ("--executable-path", "/tmp/evil"),
+            ("--args", "--no-sandbox"),
+            ("--proxy", "http://127.0.0.1:1"),
+            ("--proxy-bypass", "*"),
+            ("--cdp", "9222"),
+            ("--auto-connect", "true"),
+            ("--profile", "Default"),
+            ("--allow-file-access", "true"),
+            ("--init-script", "/tmp/x.js"),
+            ("--extension", "/tmp/ext"),
+            ("--config", "/tmp/c.json"),
+            ("--namespace", "other"),
+            ("--session", "magician-other"),
+            ("--state", "/tmp/state.json"),
+            ("--engine", "lightpanda"),
+            ("-p", "browserbase"),
+        ] {
+            let forms = [
+                vec![
+                    "https://example.com".to_string(),
+                    flag.to_string(),
+                    value.to_string(),
+                ],
+                vec![
+                    flag.to_string(),
+                    value.to_string(),
+                    "https://example.com".to_string(),
+                ],
+                vec!["https://example.com".to_string(), format!("{flag}={value}")],
+            ];
+            for args in forms {
+                for agent in ["ambassador", access::DEFAULT_ADMIN_AGENT] {
+                    assert!(
+                        invoke(agent, "open", json!({"args": args})).is_err(),
+                        "{agent} {args:?}"
+                    );
+                }
+            }
+            assert!(
+                invoke("ambassador", "snapshot", json!({"args": [flag, value]})).is_err(),
+                "{flag}"
+            );
+            assert!(invoke(
+                "ambassador",
+                "batch",
+                json!({"commands": [["open", "https://example.com", flag, value]]})
+            )
+            .is_err());
+            assert!(invoke(
+                "ambassador",
+                "batch",
+                json!({"args": [format!("open https://example.com {flag} {value}")]})
+            )
+            .is_err());
+        }
+        // Per-command options Magician does not own still pass.
+        assert!(invoke(
+            "ambassador",
+            "open",
+            json!({"args": ["https://example.com", "--headed"]})
+        )
+        .is_ok());
+        assert!(invoke("ambassador", "snapshot", json!({"args": ["-i", "--json"]})).is_ok());
+    }
+
+    #[test]
+    fn only_a_scheme_position_names_a_file_url() {
+        for text in [
+            "file:///etc/hosts",
+            "FILE:///etc/hosts",
+            "location='file:///etc/hosts'",
+            "url=file:/x",
+            "view-source:file:///etc/hosts",
+            "  file:x",
+        ] {
+            assert!(names_file_scheme(text), "{text}");
+        }
+        for text in [
+            "profile:[1]",
+            "{myfile: 1}",
+            "x.file:1",
+            "web+file:x",
+            "profile: file",
+        ] {
+            assert!(!names_file_scheme(text), "{text}");
+        }
+    }
+
+    /// The page a command opens is read from its grammar: a value-taking
+    /// option before the target does not hide it; a `file:` token is refused
+    /// in any command while a workspace exists; a fenced agent gets no
+    /// command that leaves its own browser, no `read` fetch of a URL and no
+    /// target that is not a checkable web address; `help` runs no command.
+    #[test]
+    fn browser_targets_follow_the_command_grammar_and_fenced_agents_stay_in_their_browser() {
+        let fx = access::test_fixture();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            for agent in ["ambassador", "cmo"] {
+                for args in [
+                    json!({"args": ["--headers", "{\"a\":\"1\"}", "file:///etc/hosts"]}),
+                    json!({"args": ["--headers", "{}", "http://127.0.0.1:8081/"]}),
+                    json!({"args": ["--timeout", "5", "http://10.0.0.5/"]}),
+                    json!({"args": ["http://%%%"]}),
+                ] {
+                    assert!(
+                        invoke(agent, "open", args.clone()).is_err(),
+                        "{agent} {args}"
+                    );
+                }
+                assert!(invoke(
+                    agent,
+                    "eval",
+                    json!({"args": ["location='file:///etc/hosts'"]})
+                )
+                .is_err());
+                // Page script whose words merely end in "file" is not a
+                // `file:` URL (`profile:` once refused a Reddit read).
+                assert!(invoke(
+                    agent,
+                    "eval",
+                    json!({"args": ["JSON.stringify({profile:[...document.querySelectorAll('a[href*=\"/user/\"]')].length, myfile: 1})"]})
+                )
+                .is_ok());
+                assert!(invoke(
+                    agent,
+                    "cookies",
+                    json!({"args": ["set", "--curl", "file:///etc/hosts"]})
+                )
+                .is_err());
+                for (command, args) in [
+                    ("connect", json!({"args": ["9222"]})),
+                    ("plugin", json!({"args": ["add", "x"]})),
+                    ("dashboard", json!({"args": ["start"]})),
+                    ("stream", json!({"args": ["enable"]})),
+                    ("read", json!({"args": ["https://1.1.1.1/"]})),
+                    (
+                        "tab",
+                        json!({"args": ["new", "--json", "http://localhost:3000/"]}),
+                    ),
+                    (
+                        "record",
+                        json!({"args": ["start", "/tmp/r.webm", "http://192.168.1.1/"]}),
+                    ),
+                ] {
+                    assert!(
+                        invoke(agent, command, args.clone()).is_err(),
+                        "{agent} {command} {args}"
+                    );
+                }
+                assert!(invoke(agent, "read", json!({"args": ["--outline"]})).is_ok());
+                assert!(invoke(
+                    agent,
+                    "open",
+                    json!({"args": ["--headers", "{}", "https://1.1.1.1/"]})
+                )
+                .is_ok());
+            }
+            // The admin is not fenced.
+            assert!(invoke(
+                access::DEFAULT_ADMIN_AGENT,
+                "read",
+                json!({"args": ["https://example.com"]})
+            )
+            .is_ok());
+        });
+        for argv in [
+            json!({"args": ["open", "file:///etc/passwd"]}),
+            json!({"args": ["open", "--executable-path", "x", "--help"]}),
+            json!({"args": ["connect", "9222"]}),
+            json!({"args": ["skills", "get", "/etc/passwd"]}),
+        ] {
+            assert!(help_tool_call_to_cli_args(&argv).is_err(), "{argv}");
+        }
+        assert!(help_tool_call_to_cli_args(&json!({"args": ["open", "--help"]})).is_ok());
+    }
+
+    /// A `batch` inside the `commands` matrix is refused for every agent: its
+    /// string commands would skip every per-command check.
+    #[test]
+    fn a_nested_batch_in_the_commands_matrix_is_refused() {
+        let fx = access::test_fixture();
+        let shot = fx.root.join("Magican/x.png").display().to_string();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            for commands in [
+                json!([["batch", "read http://169.254.169.254/"]]),
+                json!([["batch", "connect ws://127.0.0.1:9222"]]),
+                json!([
+                    ["open", "https://example.com"],
+                    ["batch", format!("screenshot {shot}")]
+                ]),
+            ] {
+                for agent in ["cmo", access::DEFAULT_ADMIN_AGENT] {
+                    let refused = invoke(agent, "batch", json!({"commands": commands}));
+                    assert!(refused.is_err(), "{agent} {commands}");
+                }
+            }
+        });
+    }
+
+    /// No agent's browser opens a harness grant channel, under any spelling
+    /// of this host.
+    #[tokio::test]
+    async fn the_browser_never_opens_a_grant_channel() {
+        use crate::magician_v2::execution::plane::grant_channel::{forget, open_to};
+        let (channel, _guard) = open_to("plt_browser_channel_test", 1, Vec::new())
+            .await
+            .unwrap();
+        for url in [
+            format!(
+                "http://127.0.0.1:{}/api/magician/v2/plane/mcp",
+                channel.port
+            ),
+            format!("http://[::ffff:127.0.0.1]:{}/", channel.port),
+            format!("http://localhost:{}/", channel.port),
+        ] {
+            for agent in ["ambassador", access::DEFAULT_ADMIN_AGENT] {
+                assert!(
+                    invoke(agent, "open", json!({"args": [url]})).is_err(),
+                    "{agent} {url}"
+                );
+            }
+        }
+        forget("plt_browser_channel_test");
     }
 }

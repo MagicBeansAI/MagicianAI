@@ -80,8 +80,13 @@ struct AppTabView: View {
         // dark-on-dark. In `.system` mode leave it unforced so the app follows the
         // device day/night.
         .preferredColorScheme(themeManager.forcedColorScheme)
-        // Follow the device appearance while in `.system` mode.
-        .onAppear { themeManager.systemAppearanceChanged(dark: ThemeManager.systemIsDark) }
+        // Follow the device appearance while in `.system` mode. The
+        // account-sync hook is installed in MagiosApp.init (before any view
+        // runs), so it is not repeated here.
+        .onAppear {
+            themeManager.systemAppearanceChanged(dark: ThemeManager.systemIsDark)
+            ThemeSync.reconcile(systemDark: ThemeManager.systemIsDark)
+        }
         .onChange(of: envColorScheme) { _, newValue in
             themeManager.systemAppearanceChanged(dark: newValue == .dark)
         }
@@ -161,6 +166,10 @@ struct AppTabView: View {
         // Refetch only when ENTERING Attention, not on every bottom-tab hop —
         // the throttled dirty loop keeps the badge fresh everywhere else.
         .onChange(of: selectedTab) { _, newValue in
+            // A tab that was in the background during a theme flip keeps its
+            // launch-time bar chrome (the walk can't reach detached bars); the
+            // tab becoming selected is the moment its bar re-attaches.
+            themeManager.refreshSystemAppearance()
             if newValue == 3 { attentionVM.fetch() }
         }
         // Any HITL/Attention event on the always-on global WS (BackgroundEngine)

@@ -41,6 +41,10 @@ still `WorkBinding::Unbound`, which declines to answer rather than passing.
 Program carriers can be enforced at dispatch, but `root_authority_for_work`
 still refuses to mint one: no roster owns programs.
 
+Capture/live posture may be overridden by trusted task origin; see the
+[context controls and decision matrix](outward-actions.md#optional-context-controls).
+Those overrides change only the final capture/dispatch decision, never gates 0–2.
+
 ## Every refusal is fail-closed
 
 - **No recipient, on a channel that requires one.** "We could not tell who this

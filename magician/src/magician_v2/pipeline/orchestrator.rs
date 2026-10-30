@@ -327,6 +327,19 @@ impl PlanningOrchestrator {
         // hasn't been wired yet at this point.
 
         let mut context = suspension.context;
+        if matches!(resume_mode.as_str(), "full_replan" | "partial_replan")
+            && !user_answer.trim().is_empty()
+        {
+            // These routes purge the interpreted answer and rebuild from query.
+            // Keep the owner's accepted answer in that input, alongside the
+            // exact question it settles, rather than repeating the old unknown.
+            let clarification = serde_json::json!({
+                "question": suspension.question_text,
+                "answer": user_answer,
+            });
+            context.query.push_str("\n\nAccepted owner clarification (use this answer to resolve the question; retain the other requirements):\n");
+            context.query.push_str(&clarification.to_string());
+        }
         context.user_answer = Some(user_answer);
         context.question_id = suspension.question_id.clone();
         context.resume_mode = Some(resume_mode);
@@ -2733,6 +2746,48 @@ mod tests {
             run_started_at <= Utc::now(),
             "run_started_at should be <= now"
         );
+    }
+
+    #[test]
+    fn from_suspension_replan_carries_owner_clarification_into_query() {
+        for mode in ["full_replan", "partial_replan"] {
+            let context = test_context();
+            let original = context.query.clone();
+            let suspension = PipelineSuspension {
+                checkpoint_id: "checkpoint-answer".to_owned(),
+                chain_id: "chain-answer".to_owned(),
+                workflow_id: "workflow-answer".to_owned(),
+                artifact_snapshot: HashMap::new(),
+                context,
+                iteration: 1,
+                question_text: "Which publication date?".to_owned(),
+                slot_ids: vec!["publication-date".to_owned()],
+                suspended_at: Utc::now(),
+                question_id: Some("question-date".to_owned()),
+            };
+            let router = Arc::new(SequenceRouter::new(vec![]));
+            let orchestrator = PlanningOrchestrator::from_suspension(
+                suspension,
+                HashMap::new(),
+                router,
+                "Use 2026-10-30, labelled \"final\".".to_owned(),
+                mode.to_owned(),
+                20,
+                None,
+            );
+            assert!(orchestrator.context.query.starts_with(&original));
+            let clarification: serde_json::Value =
+                serde_json::from_str(orchestrator.context.query.lines().last().unwrap()).unwrap();
+            assert_eq!(clarification["question"], "Which publication date?");
+            assert_eq!(
+                clarification["answer"],
+                "Use 2026-10-30, labelled \"final\"."
+            );
+            assert_eq!(
+                orchestrator.context.question_id.as_deref(),
+                Some("question-date")
+            );
+        }
     }
 
     #[tokio::test]

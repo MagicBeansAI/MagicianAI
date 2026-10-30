@@ -14,7 +14,8 @@ import kotlinx.coroutines.flow.map
  * web stores do; a resync (the hub may have missed frames) re-reads too.
  */
 object VibeDevLive {
-    val FILTER = HubFilter(eventTypes = listOf("task.", "coding.", "hitl.", "input.", "user_request.", "vibedev."))
+    val FILTER = HubFilter(eventTypes = listOf("Task", "task.", "execution.", "delegation.results_ready",
+        "coding.", "hitl.", "input.", "user_request.", "vibedev."))
 
     fun signals(context: Context): Flow<VibeDevSignal> =
         RealtimeHub.shared(context.applicationContext).subscribe(FILTER).map { delivery ->

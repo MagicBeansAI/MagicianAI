@@ -209,4 +209,36 @@ class ChatRealtimeTest {
         val messages = listOf(ChatMessage(id = "text", fromUser = true, text = "hi"))
         assertEquals(-1, shellTargetIndex(messages, "exec-1"))
     }
+
+    // ── Turn state ───────────────────────────────────────────────────────────
+
+    private fun turnState(principal: String = "anonymous", status: String = "running") =
+        """{"event_type":"AgentEvent","data":{"event":{"event_type":"chat.turn.state_changed",
+        "agent_id":"chat-agent","principal":"$principal","workspace":"default","timestamp":5,
+        "payload":{"chat_turn_id":"turn-1","status":"$status","started_at":1700000000000,
+        "chat_session_id":"session-1","timestamp_ms":5}}}}"""
+
+    /** Named agent events carry scope and type on the inner event. */
+    @Test
+    fun `a turn state change is read off its agent event`() {
+        val event = parse(turnState()) as ChatRealtimeEvent.TurnStateChanged
+        assertEquals("session-1", event.sessionId)
+        assertEquals("turn-1", event.state.chatTurnId)
+        assertEquals(ChatTurnStatus.Running, event.state.status)
+        assertEquals(1_700_000_000_000L, event.state.startedAtMs)
+
+        val settled = parse(turnState(status = "completed")) as ChatRealtimeEvent.TurnStateChanged
+        assertEquals(ChatTurnStatus.Completed, settled.state.status)
+    }
+
+    @Test
+    fun `another principal's turn state is not ours`() {
+        assertNull(parse(turnState(principal = "someone-else")))
+    }
+
+    @Test
+    fun `other agent events and unknown turn states are ignored`() {
+        assertNull(parse("""{"event_type":"AgentEvent","data":{"event":{"event_type":"tutor.draw.shape","payload":{}}}}"""))
+        assertNull(parse(turnState(status = "paused")))
+    }
 }

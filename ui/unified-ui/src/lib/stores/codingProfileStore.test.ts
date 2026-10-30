@@ -10,8 +10,12 @@ import {
 	groupCodingProfilesByEngine,
 	pickerCodingProfiles,
 	selectableCodingProfiles,
+	decodeSavedCodingSelection,
+	resolveSelectedCodingProfile,
+	savedCodingSelection,
 	type CodingProfile
 } from './codingProfileStore';
+import type { ModelChoice } from '$lib/llm/modelCatalog';
 
 function row(id: string, extra: Partial<CodingProfile> = {}): CodingProfile {
 	return {
@@ -169,13 +173,70 @@ describe('pickerCodingProfiles', () => {
 });
 
 describe('codingChoiceFromSelection', () => {
-	it('sends Auto as a kind, never as a profile id', () => {
-		expect(codingChoiceFromSelection(AUTO_CODING_CHOICE_ID)).toEqual({ kind: 'auto' });
-		expect(codingChoiceFromSelection('coding-balanced')).toEqual({
-			kind: 'profile',
-			profile_id: 'coding-balanced'
-		});
-		expect(codingChoiceFromSelection(null)).toBeNull();
+	it('sends Auto as a kind and refuses unknown explicit model choices', () => {
+		expect(codingChoiceFromSelection(AUTO_CODING_CHOICE_ID, [])).toEqual({ kind: 'auto' });
+		expect(() => codingChoiceFromSelection('coding-balanced', [])).toThrow('unavailable');
+		expect(codingChoiceFromSelection(null, [])).toBeNull();
+	});
+});
+
+describe('typed coding preferences', () => {
+	const model: ModelChoice = {
+		id: 'provider/model', model: 'physical-model', label: 'Model', provider: 'provider', connection: 'provider',
+		thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' }, limits: null,
+		capabilities: { vision: true, tools: true, streaming: true, computer_use: false, structured_output: false, web_search: false },
+		choices: { auto: 'canonical-auto', high: 'canonical-high' }
+	};
+	const profiles = [
+		row('canonical-auto', { engine: 'pi', is_default: true, model_choice: model, model_selection: { model_id: model.id, thinking: 'auto' } }),
+		row('canonical-high', { engine: 'pi', model_selection: { model_id: model.id, thinking: 'high' } }),
+		row('old-coding-pin', { engine: 'pi', model_selection: { model_id: model.id, thinking: 'high' } })
+	];
+	it('migrates old IDs once and restores model/thinking after aliases are removed', () => {
+		const migrated = resolveSelectedCodingProfile(profiles, 'old-coding-pin', null);
+		expect(migrated).toBe('canonical-high');
+		const saved = savedCodingSelection(profiles, migrated);
+		expect(saved).toEqual({ kind: 'model', engine: 'pi', model_id: model.id, thinking: 'high' });
+		expect(resolveSelectedCodingProfile(profiles.slice(0, 2), null, saved)).toBe('canonical-high');
+	});
+	it('retains missing choices and never switches engines to recover one', () => {
+		expect(resolveSelectedCodingProfile(profiles, 'retired-unknown', null)).toBe('retired-unknown');
+		expect(resolveSelectedCodingProfile(profiles, 'canonical-auto', { kind: 'model', engine: 'claude_code', model_id: model.id, thinking: 'high' })).toBe('__unavailable_coding_selection__');
+		expect(resolveSelectedCodingProfile(profiles, 'canonical-auto', { kind: 'model', engine: 'pi', model_id: model.id, thinking: 'none' })).toBe('__unavailable_coding_selection__');
+	});
+	it('converts returning Pi and native CLI preferences without legacy rows', () => {
+		const sol = { ...model, id: 'openai/gpt-6.1-sol' };
+		const rows = profiles.slice(0, 2).map(profile => ({ ...profile,
+			model_choice: profile.model_choice ? sol : null,
+			model_selection: { model_id: sol.id, thinking: profile.model_selection!.thinking }
+		}));
+		expect(resolveSelectedCodingProfile(rows, 'coding-premium', null)).toBe('canonical-high');
+		expect(resolveSelectedCodingProfile(rows, 'coding-premium', { kind: 'auto' })).toBe(AUTO_CODING_CHOICE_ID);
+		expect(resolveSelectedCodingProfile(rows.slice(0, 1), 'coding-premium', null)).toBe('__unavailable_coding_selection__');
+		for (const [old, engine, connection] of [
+			['codex-default', 'codex_app_server', 'harness-codex'],
+			['claude-default', 'claude_code', 'harness-claude_code'],
+			['grok-default', 'grok_acp', 'harness-grok'],
+			['agy-default', 'agy_cli', 'harness-agy']
+		]) {
+			const native = { ...model, id: `native/${engine}/${connection}/default` };
+			const entries = [row('canonical-auto', { engine, model_choice: native }), row('canonical-high', { engine })];
+			expect(resolveSelectedCodingProfile(entries, old, null)).toBe('canonical-auto');
+			expect(resolveSelectedCodingProfile(rows, old, null)).toBe('__unavailable_coding_selection__');
+		}
+	});
+	it('preserves opt-in Auto distinctly from a model with Auto thinking', () => {
+		expect(savedCodingSelection(profiles, AUTO_CODING_CHOICE_ID)).toEqual({ kind: 'auto' });
+		expect(resolveSelectedCodingProfile(profiles, null, { kind: 'auto' })).toBe(AUTO_CODING_CHOICE_ID);
+		expect(savedCodingSelection(profiles, 'canonical-auto')).toMatchObject({ kind: 'model', thinking: 'auto' });
+	});
+	it('rejects malformed typed preferences without interpreting them as defaults', () => {
+		expect(decodeSavedCodingSelection('{"kind":"auto"}')).toEqual({ kind: 'auto' });
+		const saved = savedCodingSelection(profiles, 'canonical-high');
+		expect(decodeSavedCodingSelection(JSON.stringify(saved))).toEqual(saved);
+		for (const raw of ['broken', '{}', '{"kind":"model","engine":"pi","model_id":"provider/model"}', '{"kind":"model","engine":"pi","model_id":"provider/model","thinking":""}']) {
+			expect(decodeSavedCodingSelection(raw)).toBeNull();
+		}
 	});
 });
 

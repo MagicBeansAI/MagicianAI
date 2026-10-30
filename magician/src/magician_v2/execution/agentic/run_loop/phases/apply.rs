@@ -94,9 +94,9 @@ use crate::magician_v2::execution::agentic::executor::{
     action_summary_for_diagnostics, apply_outer_task_state_action, approval_step_from_candidate,
     begin_agentic_tool_lineage, bind_pause_spec_to_pending_challenge,
     build_action_confirmation_outcome, build_action_confirmation_outcome_with,
-    build_agentic_execution_summary,
-    build_agentic_execution_summary_with_yield, build_full_pause_state, candidate_targets_iframe,
-    checked_approval, commit_terminal_task_state_transition, conclude_work_budget_reached,
+    build_agentic_execution_summary, build_agentic_execution_summary_with_yield,
+    build_full_pause_state, candidate_targets_iframe, checked_approval,
+    commit_terminal_task_state_transition, conclude_work_budget_reached,
     context_work_budget_elapsed_ms, context_work_budget_reached, degrade_yield_to_partial,
     delegation_summary_artifact_entry, derive_alternate_capabilities, effect_id_for_candidate,
     emit_agent_execution_mapping, emit_and_persist_agentic_completion, enforce_action_trust_policy,
@@ -117,10 +117,11 @@ use crate::magician_v2::execution::agentic::executor::{
     task_backed_completed_yield_artifact, terminal_grounding_draft,
     terminal_grounding_repair_decision, terminal_grounding_route, terminal_success_rejection,
     transient_retry_backoff, transport_scope, validate_action_against_allowlists,
-    yield_back_to_previous_owner, yield_escalation_prompt, yield_payload_summary_for,
-    ActionExecutors, AgenticToolLineageState, ExecutePathControl, HeapAwaitExt,
-    LoopRecoveryContext, ProtectedAppTerminalReadiness, TerminalGroundingRepairDecision,
-    TerminalGroundingRoute, TrustDispatchGuard, MAX_TRANSIENT_RETRIES,
+    with_checkpoint_findings, yield_back_to_previous_owner, yield_escalation_prompt,
+    yield_payload_summary_for, ActionExecutors, AgenticToolLineageState, ExecutePathControl,
+    HeapAwaitExt, LoopRecoveryContext, ProtectedAppTerminalReadiness,
+    TerminalGroundingRepairDecision, TerminalGroundingRoute, TrustDispatchGuard,
+    MAX_TRANSIENT_RETRIES,
 };
 use crate::magician_v2::execution::agentic::loop_detector::LoopCheckResult;
 use crate::magician_v2::execution::agentic::outward_settle::{
@@ -824,7 +825,7 @@ async fn settle_without_dispatch(
                     executors,
                     &history,
                     evidence.as_deref(),
-                    &artifacts,
+                    &artifacts_beyond_the_answer(&artifacts),
                     true,
                     prepared_terminal_task_state.state.as_ref(),
                 )
@@ -1087,6 +1088,8 @@ async fn settle_without_dispatch(
                 // partial goal_reached, this is the safety net for when
                 // the model didn't reformulate the terminal decision.
                 if let Some(partial_text) = extract_partial_success_summary(&history, &reason) {
+                    let partial_text =
+                        with_checkpoint_findings(ctx, Some(partial_text)).unwrap_or_default();
                     info!(
                         "[PARTIAL-SUCCESS-SAFETY-NET] cannot_proceed converted to \
                          partial-success ({} chars of findings preserved)",
@@ -1409,7 +1412,7 @@ async fn settle_without_dispatch(
                         executors,
                         &history,
                         Some(&evidence),
-                        &payload.artifacts,
+                        &artifacts_beyond_the_answer(&payload.artifacts),
                         completed,
                         prepared.state.as_ref(),
                     )
@@ -1557,7 +1560,8 @@ async fn settle_without_dispatch(
                                             // sentence, not the repair guidance that was
                                             // addressed to the model.
                                             grounding_caveat = Some(format!(
-                                                "Unverified against opened-page evidence: {}",
+                                                "{} {}",
+                                                crate::magician_v2::execution::agentic::executor::OPENED_PAGE_COVERAGE_CAVEAT,
                                                 verdict.reason.trim()
                                             ));
                                         },
@@ -1647,10 +1651,12 @@ async fn settle_without_dispatch(
                     disposition,
                     YieldDisposition::Failed { .. } | YieldDisposition::RetryTransient { .. }
                 ) {
+                    // Parked wakes are not work: measure the remaining budget
+                    // from iterations that actually ran.
                     if let Some(rejection_reason) = premature_giveup_rejection_reason(
                         ctx,
                         &payload,
-                        iteration,
+                        iteration.saturating_sub(loop_protective.parked_iteration_refunds),
                         decision_is_synthetic_stuck,
                     ) {
                         let abort = handle_terminal_evidence_rejection(
@@ -2549,16 +2555,28 @@ fn follow_up_requires_confirmation(
     {
         return true;
     }
-    if ctx.approval_rules.is_empty() {
-        return false;
+    // A send that may need the owner's review waits for its own turn too.
+    if crate::magician_v2::execution::agentic::executor::outward_review_may_apply(&follow_up.action)
+    {
+        return true;
     }
     let plan = ExecutionPlan {
         plan_id: ctx
             .plan_id
             .clone()
             .unwrap_or_else(|| format!("iter-{iteration}")),
-        steps: vec![approval_step_from_candidate(follow_up, iteration, &ctx.goal)],
+        steps: vec![approval_step_from_candidate(
+            follow_up, iteration, &ctx.goal,
+        )],
     };
+    // No rules of its own is not "nothing to gate": the code-owned floor
+    // (`agents::approval::plan_hits_code_approval_floor`) still pauses the
+    // next turn, so a floored follow-up must wait for it too.
+    if ctx.approval_rules.is_empty()
+        && !crate::magician_v2::agents::approval::plan_hits_code_approval_floor(&plan)
+    {
+        return false;
+    }
     let constraints = AgentConstraints {
         requires_approval: ctx.approval_rules.clone(),
         ..AgentConstraints::default()
@@ -2567,6 +2585,51 @@ fn follow_up_requires_confirmation(
         ApprovalGate.check(&plan, &constraints),
         ApprovalResult::NeedsApproval { .. }
     )
+}
+
+/// The approval the primary must wait for, if any: a matching
+/// `requires_approval` rule of the agent's, or a code-owned floor
+/// (`agents::approval::plan_hits_code_approval_floor`), with any standing
+/// consent applied through `checked_approval` — a waived act is debited there
+/// and comes back `None`.
+///
+/// The agent's own rules are skipped when it has none, so an ungated run pays
+/// no standing-consent lookup per action. The floor is not one of its rules and
+/// holds either way: most agents author none, and a floored act (a WhatsApp
+/// group leave, say) must still pause for the owner.
+async fn primary_approval_hold(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    iteration: usize,
+    candidate: &ActionCandidate,
+) -> Option<crate::magician_v2::agents::approval::PendingApproval> {
+    let plan = ExecutionPlan {
+        plan_id: ctx
+            .plan_id
+            .clone()
+            .unwrap_or_else(|| format!("iter-{iteration}")),
+        steps: vec![approval_step_from_candidate(
+            candidate, iteration, &ctx.goal,
+        )],
+    };
+    if ctx.approval_rules.is_empty()
+        && !crate::magician_v2::agents::approval::plan_hits_code_approval_floor(&plan)
+    {
+        return None;
+    }
+    let constraints = AgentConstraints {
+        requires_approval: ctx.approval_rules.clone(),
+        ..AgentConstraints::default()
+    };
+    match checked_approval(ctx, executors, &plan, &constraints)
+        .await
+        .result
+    {
+        ApprovalResult::NeedsApproval {
+            pending_actions, ..
+        } => pending_actions.into_iter().next(),
+        ApprovalResult::Approved(_) => None,
+    }
 }
 
 /// The pause for a harness turn that ended on a preference alignment hold
@@ -2627,6 +2690,7 @@ fn harness_alignment_hold_outcome(
         loop_protective,
         approved_confirmation_actions,
         Some(ask),
+        None,
     ))
 }
 
@@ -2685,9 +2749,9 @@ async fn gate_preference_alignment(
     use crate::magician_v2::preference_alignment::{
         admission::DecisionOrigin,
         backstop::note_loop_admission,
-        hold::HoldSeed,
         classify::classify_action,
         collect::{action_binding, CheckRequest},
+        hold::HoldSeed,
         ledger::{self, ConsumeOutcome},
         receipts::{receipt_token, AlignmentReceiptPurpose},
         service::{
@@ -2701,8 +2765,7 @@ async fn gate_preference_alignment(
     if config.mode() == crate::config::PreferenceAlignmentMode::Off {
         return Ok(AlignmentGate::Continue(None));
     }
-    let (Some(principal), Some(workspace)) = (ctx.principal.clone(), ctx.workspace.clone())
-    else {
+    let (Some(principal), Some(workspace)) = (ctx.principal.clone(), ctx.workspace.clone()) else {
         // No owner scope, no owner intentions to compare against.
         return Ok(AlignmentGate::Continue(None));
     };
@@ -2751,14 +2814,16 @@ async fn gate_preference_alignment(
             action = candidate.action.action_type_name(),
             "[PREFERENCE-ALIGNMENT] held: enforced checks need the worker driver"
         );
-        return Ok(AlignmentGate::Stop(return_outcome(AgenticOutcome::CannotProceed {
-            reason: "This action must be checked against your saved preferences before it \
+        return Ok(AlignmentGate::Stop(return_outcome(
+            AgenticOutcome::CannotProceed {
+                reason: "This action must be checked against your saved preferences before it \
                      runs, and this run uses the in-process driver, which cannot re-verify the \
                      check right before dispatch. Run it on the default worker driver."
-                .to_string(),
-            last_state: observed_state.clone(),
-            iterations_used: iteration,
-        })));
+                    .to_string(),
+                last_state: observed_state.clone(),
+                iterations_used: iteration,
+            },
+        )));
     }
 
     let resolver = crate::magician_v2::agents::AgentMemoryResolver::new(
@@ -2789,12 +2854,17 @@ async fn gate_preference_alignment(
         if answered {
             return Ok(AlignmentGate::Continue(None));
         }
-    } else if let (Some(canonical), Some(binding)) =
-        (canonical_action_json, binding_id.as_deref())
+    } else if let (Some(canonical), Some(binding)) = (canonical_action_json, binding_id.as_deref())
     {
         for (purpose, origin) in [
-            (AlignmentReceiptPurpose::Exception, DecisionOrigin::HostException),
-            (AlignmentReceiptPurpose::CheckWaiver, DecisionOrigin::OwnerWaiver),
+            (
+                AlignmentReceiptPurpose::Exception,
+                DecisionOrigin::HostException,
+            ),
+            (
+                AlignmentReceiptPurpose::CheckWaiver,
+                DecisionOrigin::OwnerWaiver,
+            ),
         ] {
             let Some(token) = receipt_token(purpose, canonical) else {
                 continue;
@@ -2851,6 +2921,9 @@ async fn gate_preference_alignment(
         resolver: &resolver,
         taste_loader: taste_loader.as_deref(),
         taste_capture: taste_capture.as_deref(),
+        // A precheck pauses the act for approval anyway; only the dispatch
+        // lets advisory verdicts arrive after it.
+        late_advisory_notices: !precheck,
     };
     let check = check_action(&environment, &request, &candidate.action, &[]).await;
     let ticket = check.ticket(&request);
@@ -2894,39 +2967,20 @@ async fn gate_preference_alignment(
             {
                 // The act goes ahead; the nudge (and any offer to remember an
                 // inferred preference) reaches the owner as a private notice.
-                // A hold lowered to this nudge is about what it rested on,
-                // not every intention it cited.
-                let about = decision
-                    .downgrade
-                    .as_ref()
-                    .map(|downgrade| &downgrade.rested_on)
-                    .filter(|rested_on| !rested_on.is_empty())
-                    .unwrap_or(&decision.decision.supporting_intentions)
-                    .clone();
-                let decision = &decision.decision;
-                let notice = crate::magician_v2::preference_alignment::notices::Notice::for_nudge(
-                    ctx.execution_id.clone(),
-                    binding,
-                    candidate.action.action_type_name().to_string(),
-                    decision.explanation.clone(),
-                    check
-                        .cited
-                        .iter()
-                        .filter(|cited| about.contains(&cited.id))
-                        .cloned()
-                        .collect(),
-                    decision.remember_offer.as_ref().and_then(|offer| {
-                        check.cited.iter().find(|cited| &cited.id == offer).cloned()
-                    }),
-                    now_ms,
-                );
-                if let Err(error) = crate::magician_v2::preference_alignment::notices::record_notice(
-                    &resolver,
-                    &principal,
-                    &workspace,
-                    notice,
-                )
-                .await
+                let notice =
+                    crate::magician_v2::preference_alignment::notices::Notice::for_decision(
+                        ctx.execution_id.clone(),
+                        binding,
+                        candidate.action.action_type_name().to_string(),
+                        decision,
+                        &check.cited,
+                        now_ms,
+                    );
+                if let Err(error) =
+                    crate::magician_v2::preference_alignment::notices::record_notice(
+                        &resolver, &principal, &workspace, notice,
+                    )
+                    .await
                 {
                     warn!(error = %error, "[PREFERENCE-ALIGNMENT] could not record the nudge notice");
                 }
@@ -2938,23 +2992,27 @@ async fn gate_preference_alignment(
             return Ok(AlignmentGate::Continue(ticket));
         },
         AlignmentAdmission::Cancel { .. } => {
-            return Ok(AlignmentGate::Stop(return_outcome(AgenticOutcome::CannotProceed {
-                reason: "The owner cancelled this action.".to_string(),
-                last_state: observed_state.clone(),
-                iterations_used: iteration,
-            })));
+            return Ok(AlignmentGate::Stop(return_outcome(
+                AgenticOutcome::CannotProceed {
+                    reason: "The owner cancelled this action.".to_string(),
+                    last_state: observed_state.clone(),
+                    iterations_used: iteration,
+                },
+            )));
         },
         AlignmentAdmission::Unresolved { cause }
             if !config.recovery.allow_proceed_without_check =>
         {
-            return Ok(AlignmentGate::Stop(return_outcome(AgenticOutcome::CannotProceed {
-                reason: format!(
-                    "This action could not be checked against your preferences \
+            return Ok(AlignmentGate::Stop(return_outcome(
+                AgenticOutcome::CannotProceed {
+                    reason: format!(
+                        "This action could not be checked against your preferences \
                      ({cause:?}), and proceeding without the check is disabled."
-                ),
-                last_state: observed_state.clone(),
-                iterations_used: iteration,
-            })));
+                    ),
+                    last_state: observed_state.clone(),
+                    iterations_used: iteration,
+                },
+            )));
         },
         AlignmentAdmission::Hold { .. } | AlignmentAdmission::Unresolved { .. } => {
             // The same seed the backstop builds for plane and harness holds,
@@ -2990,12 +3048,14 @@ async fn gate_preference_alignment(
         canonical_action_json.and_then(|canonical| receipt_token(purpose, canonical)),
         ask,
     ) else {
-        return Ok(AlignmentGate::Stop(return_outcome(AgenticOutcome::CannotProceed {
-            reason: "This action needs your review but cannot be bound to an answer."
-                .to_string(),
-            last_state: observed_state.clone(),
-            iterations_used: iteration,
-        })));
+        return Ok(AlignmentGate::Stop(return_outcome(
+            AgenticOutcome::CannotProceed {
+                reason: "This action needs your review but cannot be bound to an answer."
+                    .to_string(),
+                last_state: observed_state.clone(),
+                iterations_used: iteration,
+            },
+        )));
     };
     // Keep the approval the owner already gave for this act's other gates.
     if consumed_legacy_receipt {
@@ -3005,6 +3065,7 @@ async fn gate_preference_alignment(
             approved_confirmation_actions.push(ApprovedConfirmationAction {
                 action_json: canonical.to_string(),
                 owner_snapshot,
+                replay_call_json: None,
             });
         }
     }
@@ -3028,6 +3089,7 @@ async fn gate_preference_alignment(
         loop_protective,
         approved_confirmation_actions,
         Some(ask),
+        None,
     );
     persist_paused_execution_summary(
         ctx,
@@ -3293,7 +3355,26 @@ async fn gate_execute(
             ),
             Err(_) => false,
         };
-        if has_explicit_confirmation_for_action {
+        // Review before sending: a send its context would capture is put to
+        // the owner instead (`agents::outward_review`). Not for an act the
+        // allowlist refuses anyway. After an approval from another gate (or
+        // an alignment hold) the send is still reviewed, alone: its approval
+        // was consumed above, and only the review's own Send lifts capture.
+        let outward_review = if validate_action_against_allowlists(&first_candidate.action, ctx)
+            .is_none()
+        {
+            crate::magician_v2::execution::agentic::executor::outward_review_for(
+                &first_candidate.action,
+                executors,
+                ctx,
+            )
+            .heap_boxed()
+            .await
+        } else {
+            None
+        };
+        let review_after_approval = has_explicit_confirmation_for_action && outward_review.is_some();
+        if has_explicit_confirmation_for_action && !review_after_approval {
             info!(
                 "[EXECUTOR] Skipping confirmation gate for previously confirmed action: {}",
                 first_candidate.action.action_type_name()
@@ -3304,60 +3385,42 @@ async fn gate_execute(
             };
             let mut confirmation_reasons = Vec::new();
             let mut covered_gates = Vec::new();
-            if !ctx.approval_rules.is_empty() {
-                let plan = ExecutionPlan {
-                    plan_id: ctx
-                        .plan_id
-                        .clone()
-                        .unwrap_or_else(|| format!("iter-{iteration}")),
-                    steps: vec![approval_step_from_candidate(
-                        &first_candidate,
-                        iteration,
-                        &ctx.goal,
-                    )],
-                };
-                let constraints = AgentConstraints {
-                    requires_approval: ctx.approval_rules.clone(),
-                    ..AgentConstraints::default()
-                };
-                // Envelopes in front of `requires_approval` — plan
-                // phase 5. Nothing is waived unless the posture is
-                // `enforcing` and a live envelope covers the act's
-                // consequence class. The class is derived by the strict
-                // approval-rule classifier, which never answers
-                // `private_local` and fails closed to commitment, so an
-                // unclassified gated act is never waived.
-                let approval_check =
-                    checked_approval(ctx, executors, &plan, &constraints).await;
-                if let ApprovalResult::NeedsApproval {
-                    pending_actions, ..
-                } = approval_check.result
-                {
-                    if let Some(pending) = pending_actions.first() {
-                        let rule_action =
-                            serde_json::to_string(&pending.matched_rule.action)
-                                .unwrap_or_else(|_| "\"*\"".to_string());
-                        let confirmation_reason = format!(
-                            "Action matched approval rule (tool=`{}`, action={})",
-                            pending.matched_rule.tool, rule_action
-                        );
-                        confirmation_reasons.push(confirmation_reason);
-                        covered_gates.push(CoveredGate::ApprovalRule);
-                    }
-                }
+            if let Some(review) = outward_review.as_ref() {
+                confirmation_reasons.push(review.reason());
+                covered_gates.push(CoveredGate::OutwardReview);
             }
+            if !review_after_approval {
+                // Envelopes in front of `requires_approval` — plan phase 5.
+                // Nothing is waived unless the posture is `enforcing` and a live
+                // envelope covers the act's consequence class. The class is
+                // derived by the strict approval-rule classifier, which never
+                // answers `private_local` and fails closed to commitment, so an
+                // unclassified gated act is never waived.
+                if let Some(pending) =
+                    primary_approval_hold(ctx, executors, iteration, &first_candidate).await
+                {
+                    let rule_action = serde_json::to_string(&pending.matched_rule.action)
+                        .unwrap_or_else(|_| "\"*\"".to_string());
+                    let confirmation_reason = format!(
+                        "Action matched approval rule (tool=`{}`, action={})",
+                        pending.matched_rule.tool, rule_action
+                    );
+                    confirmation_reasons.push(confirmation_reason);
+                    covered_gates.push(CoveredGate::ApprovalRule);
+                }
 
-            let criticality = CriticalityEvaluator::new().evaluate(&first_candidate);
-            if criticality.requires_human_confirmation() {
-                confirmation_reasons.push(format!(
-                    "Action has {:?} criticality (page_context: {:?}) which requires human confirmation",
-                    criticality, first_candidate.page_context_hint
-                ));
-                covered_gates.push(CoveredGate::Criticality);
-            } else if llm_requires_confirmation {
-                confirmation_reasons
-                    .push("LLM marked this action as requiring confirmation".to_string());
-                covered_gates.push(CoveredGate::ModelFlag);
+                let criticality = CriticalityEvaluator::new().evaluate(&first_candidate);
+                if criticality.requires_human_confirmation() {
+                    confirmation_reasons.push(format!(
+                        "Action has {:?} criticality (page_context: {:?}) which requires human confirmation",
+                        criticality, first_candidate.page_context_hint
+                    ));
+                    covered_gates.push(CoveredGate::Criticality);
+                } else if llm_requires_confirmation {
+                    confirmation_reasons
+                        .push("LLM marked this action as requiring confirmation".to_string());
+                    covered_gates.push(CoveredGate::ModelFlag);
+                }
             }
 
             if !confirmation_reasons.is_empty() {
@@ -3376,7 +3439,11 @@ async fn gate_execute(
                 // and no consent asked for an act that cannot run.
                 let allowed = validate_action_against_allowlists(&first_candidate.action, ctx)
                     .is_none();
-                if allowed {
+                // A review card is the one ask here: the preference check
+                // runs on the replay after Send (the gate below the
+                // allowlist), so its consent rides the ordinary path instead
+                // of being folded into, and lost behind, the review.
+                if allowed && outward_review.is_none() {
                     if let AlignmentGate::Stop(control) = gate_preference_alignment(
                         ctx,
                         executors,
@@ -3433,7 +3500,12 @@ async fn gate_execute(
                     first_candidate.action.action_type_name(),
                     confirmation_reasons.join(" | ")
                 );
-                let outcome = build_action_confirmation_outcome(
+                let action_summary = if outward_review.is_some() && confirmation_reasons.len() == 1 {
+                    "Send (review before sending)"
+                } else {
+                    action_summary
+                };
+                let outcome = build_action_confirmation_outcome_with(
                     ctx,
                     executors,
                     Some((iteration, Phase::Apply)),
@@ -3450,6 +3522,8 @@ async fn gate_execute(
                     reason,
                     &loop_protective,
                     &approved_confirmation_actions,
+                    None,
+                    outward_review,
                 );
                 persist_paused_execution_summary(
                     ctx,
@@ -6257,6 +6331,7 @@ mod gate_tests {
             auth: None,
             reliability,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         }
     }
 
@@ -7613,6 +7688,25 @@ mod plan_tests {
     }
 }
 
+/// The artifacts a terminal's success gates may count as evidence: all but
+/// the definition-of-done answer (`decision::DEFINITION_OF_DONE_ANSWER_ARTIFACT`),
+/// which the runtime made from the terminal's own text. It repeats the
+/// answer, so it proves nothing the answer does not, and must not stand in
+/// for the work the gates ask for.
+fn artifacts_beyond_the_answer(
+    artifacts: &[crate::magician_v2::execution::agentic::types::Artifact],
+) -> Vec<crate::magician_v2::execution::agentic::types::Artifact> {
+    artifacts
+        .iter()
+        .filter(|artifact| {
+            !(artifact.artifact_type.as_deref() == Some("task_deliverable")
+                && artifact.name
+                    == crate::magician_v2::execution::agentic::decision::DEFINITION_OF_DONE_ANSWER_ARTIFACT)
+        })
+        .cloned()
+        .collect()
+}
+
 /// The deliverable text of a completed yield. The yield `summary` is the
 /// agent's headline — often the answer itself (`1987`) — and `completed[]`
 /// narrates the work. Publishing only the narration dropped the answer; the
@@ -7744,5 +7838,104 @@ mod follow_up_confirmation_tests {
         let mut candidate = http_get_candidate();
         candidate.requires_confirmation = Some(true);
         assert!(follow_up_requires_confirmation(&ctx, 1, &candidate));
+    }
+
+    fn whatsapp_candidate(capability_name: &str, params: serde_json::Value) -> ActionCandidate {
+        let resolved_params = params
+            .as_object()
+            .cloned()
+            .map(|values| values.into_iter().collect())
+            .unwrap_or_default();
+        ActionCandidate::new(
+            1,
+            0.9,
+            ExecutableAction::Pack {
+                capability_name: capability_name.to_string(),
+                implementation:
+                    crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                        provider_name: "whatsapp".to_string(),
+                    },
+                resolved_params,
+            },
+        )
+    }
+
+    fn test_executors() -> ActionExecutors {
+        use crate::magician_v2::prompts::{JsonPromptStorage, PromptManager};
+        use crate::magician_v2::test_utils::ConfigurableMockLlm;
+        let storage = JsonPromptStorage::with_default_config().expect("prompt storage");
+        ActionExecutors::new(
+            Arc::new(ConfigurableMockLlm::with_response("{}")),
+            Arc::new(PromptManager::new(Arc::new(storage))),
+        )
+    }
+
+    /// Most agents author no approval rules. The code-owned WhatsApp floor
+    /// must still hold the primary at the executor's own gate — the gate chat
+    /// routes floored calls to — and keep a floored follow-up out of a batch.
+    #[tokio::test]
+    async fn the_code_floor_holds_an_agent_with_no_approval_rules() {
+        let ctx = AgenticContext::new("goal", "criteria");
+        assert!(ctx.approval_rules.is_empty());
+        let executors = test_executors();
+
+        for floored in [
+            whatsapp_candidate(
+                "whatsapp__group_leave",
+                serde_json::json!({"jid": "123@g.us"}),
+            ),
+            whatsapp_candidate(
+                "whatsapp__run",
+                serde_json::json!({"command": "groups leave 123@g.us"}),
+            ),
+            // A discriminator param cannot steer the tool name around the
+            // floor: the dispatcher runs `groups leave` whatever it says.
+            whatsapp_candidate(
+                "whatsapp__run",
+                serde_json::json!({"command": "groups leave 123@g.us", "action": "status"}),
+            ),
+        ] {
+            let pending = primary_approval_hold(&ctx, &executors, 1, &floored)
+                .await
+                .expect("a floored act must wait for the owner without any rule of the agent's");
+            assert_eq!(pending.matched_rule.tool, "whatsapp");
+            assert!(follow_up_requires_confirmation(&ctx, 1, &floored));
+        }
+
+        // Nothing outside the floor starts asking. (The follow-up predicate
+        // also consults preference alignment for Pack acts, which another
+        // test may have installed; the primary's hold is the floor alone.)
+        assert!(!follow_up_requires_confirmation(
+            &ctx,
+            1,
+            &http_get_candidate()
+        ));
+        for free in [
+            whatsapp_candidate(
+                "whatsapp__run",
+                serde_json::json!({"command": "groups list --json"}),
+            ),
+            whatsapp_candidate("whatsapp__messages_count", serde_json::json!({})),
+            http_get_candidate(),
+        ] {
+            assert!(primary_approval_hold(&ctx, &executors, 1, &free)
+                .await
+                .is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_authored_rule_still_holds_the_primary() {
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        ctx.approval_rules = vec![ApprovalRule {
+            tool: "http".to_string(),
+            action: ActionPattern::Single("get".to_string()),
+            when: None,
+            ttl_secs: None,
+        }];
+        let pending = primary_approval_hold(&ctx, &test_executors(), 1, &http_get_candidate())
+            .await
+            .expect("the agent's own rule holds the act");
+        assert_eq!(pending.matched_rule.tool, "http");
     }
 }

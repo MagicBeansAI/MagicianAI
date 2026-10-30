@@ -4,21 +4,206 @@ use magicllm::{
     providers::{
         AnthropicMessagesProvider, DeepSeekProvider, GeminiProvider, MinimaxProvider,
         OllamaProvider, OpenAIChatProvider, OpenAIResponsesProvider, OpenRouterProvider,
-        YutoriN1Provider,
+        SarvamProvider, YutoriN1Provider,
     },
     types::{
         ContentBlock, LLMMessage, LLMRequest, LLMResponseFormat, LLMToolSpec, MessageRole,
         PromptCacheConfig, ReasoningConfig, RequestMetadata,
     },
-    ContextReuseConfig, ContextReuseStrategy, LLMModality, LLMProvider,
+    ContextReuseConfig, ContextReuseStrategy, LLMModality, LLMProvider, StreamDelta,
 };
 use serde_json::{json, Value};
 use std::{str::FromStr, time::Duration};
 use wiremock::{
     http::HeaderName,
-    matchers::{method, path},
+    matchers::{body_partial_json, method, path, query_param},
     Mock, MockServer, Request, ResponseTemplate,
 };
+
+#[tokio::test]
+async fn explicit_assignment_fallback_dispatches_without_aliases_and_respects_exact_pins(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use magicllm::{config::LLMRouterConfig, router::MultiLLMRouter};
+    use std::sync::Arc;
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .set_body_json(json!({"error":{"message":"fixture unavailable"}})),
+        )
+        .expect(2)
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"fallback-fixture","status":"completed",
+            "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"FALLBACK_OK"}]}],
+            "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+        }))).expect(1).mount(&backup).await;
+    let config: LLMRouterConfig = serde_json::from_value(json!({
+        "catalog": {
+            "connections": {
+                "a":{"provider":"anthropic","api_key_env":"FIXTURE_A"},
+                "b":{"provider":"openai","api_key_env":"FIXTURE_B","metadata":{"openai_api_mode":"responses"}}
+            },
+            "models": {
+                "a":{"connection":"a","model":"claude-opus-5-5","label":"Primary","thinking":{"mode":"effort","levels":["low","high"],"default":"low"}},
+                "b":{"connection":"b","model":"gpt-6-luna","label":"Backup","thinking":{"mode":"effort","levels":["none","low","high"],"default":"low"}}
+            },
+            "assignments": {
+                "main":{"model":"a","thinking":"low","fallback":"retry"},
+                "retry":{"model":"b","thinking":"high"}
+            }
+        },"default_profile":"main"
+    }))?;
+    assert!(serde_json::to_value(&config.catalog)?
+        .get("aliases")
+        .is_none());
+    let mut router = MultiLLMRouter::new(config)?;
+    router.register_provider(Arc::new(AnthropicMessagesProvider::with_base_url(
+        "fixture-a",
+        format!("{}/messages", primary.uri()),
+    )));
+    router.register_provider(Arc::new(OpenAIResponsesProvider::with_base_url(
+        "fixture-b",
+        format!("{}/responses", backup.uri()),
+    )));
+    let request = LLMRequest {
+        messages: vec![LLMMessage::user("Reply OK")].into(),
+        max_output_tokens: Some(1024),
+        ..Default::default()
+    };
+    assert_eq!(
+        router.route(request.clone()).await?.text.as_deref(),
+        Some("FALLBACK_OK")
+    );
+    let captured = backup.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&captured[0].body)?;
+    assert_eq!(body["model"], "gpt-6-luna");
+    assert_eq!(body["reasoning"]["effort"], "high");
+    assert_eq!(body["reasoning"], json!({"effort":"high","summary":"auto"}));
+    assert!(body.get("fallback").is_none());
+    assert!(body.get("fallback_profile").is_none());
+    let mut pinned = request;
+    pinned.set_extra(json!({"router_profile_override":"main"}));
+    let error = router
+        .route(pinned)
+        .await
+        .expect_err("an exact pin must not gain fallback permission");
+    assert!(error.to_string().contains("disallows fallback"), "{error}");
+    assert_eq!(backup.received_requests().await.unwrap().len(), 1);
+    Ok(())
+}
+
+/// Exercise every shipped Off choice through the production catalog/router
+/// and provider serializer. This catches omitted nulls, false -> true errors,
+/// transport drift, and a UI control that promises an unsupported wire value.
+#[tokio::test]
+async fn every_catalog_off_choice_reaches_its_provider_as_disabled(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use magicllm::{catalog::ModelAssignment, config::LLMRouterConfig, router::MultiLLMRouter};
+    use std::sync::Arc;
+    let yaml = format!(
+        "local_model: &local_generation_model fixture-local\nrouter:\n{}",
+        include_str!("../../llm-router.yaml")
+    );
+    let root: serde_yaml::Value = serde_yaml::from_str(&yaml)?;
+    let config: LLMRouterConfig = serde_yaml::from_value(root["router"].clone())?;
+    let mut checked = 0;
+    for (id, model) in &config.catalog.models {
+        if !model.thinking.levels.iter().any(|level| level == "none") {
+            continue;
+        }
+        let profile = config
+            .catalog
+            .resolve_assignment(&ModelAssignment::choice(id, "none"))?;
+        let kind = profile.provider.to_string();
+        let chat = profile
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("openai_api_mode"))
+            .and_then(Value::as_str)
+            == Some("chat");
+        let server = MockServer::start().await;
+        let response = match kind.as_str() {
+            "anthropic" | "deepseek" => {
+                json!({"id":"off-test","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}})
+            },
+            "ollama" => {
+                json!({"model":model.model,"done":true,"done_reason":"stop","message":{"role":"assistant","content":"OK"},"response":"OK","prompt_eval_count":1,"eval_count":1})
+            },
+            "openai" if !chat => {
+                json!({"id":"off-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}})
+            },
+            _ => {
+                json!({"choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})
+            },
+        };
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let endpoint = format!("{}/call", server.uri());
+        let provider: Arc<dyn LLMProvider> = match kind.as_str() {
+            "openai" if chat => Arc::new(OpenAIChatProvider::with_base_url("test-key", &endpoint)),
+            "openai" => Arc::new(OpenAIResponsesProvider::with_base_url(
+                "test-key", &endpoint,
+            )),
+            "anthropic" => Arc::new(AnthropicMessagesProvider::with_base_url(
+                "test-key", &endpoint,
+            )),
+            "deepseek" => Arc::new(DeepSeekProvider::with_base_url("test-key", &endpoint)),
+            "minimax" => Arc::new(MinimaxProvider::with_base_url("test-key", &endpoint)),
+            "sarvam" => Arc::new(SarvamProvider::with_base_url("test-key", &endpoint)),
+            "ollama" => Arc::new(OllamaProvider::with_base_url(format!(
+                "{}/api/chat",
+                server.uri()
+            ))),
+            _ => panic!("Off transport lacks qualification: {id}"),
+        };
+        let mut router = MultiLLMRouter::new(LLMRouterConfig {
+            profiles: [("off-test".into(), profile)].into(),
+            default_profile: "off-test".into(),
+            ..Default::default()
+        })?;
+        router.register_provider(provider);
+        router
+            .route(LLMRequest {
+                messages: vec![LLMMessage::user("Reply OK")].into(),
+                max_output_tokens: Some(1024),
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{id}: {error}"));
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body)?;
+        match kind.as_str() {
+            "openai" if chat => assert_eq!(body["reasoning_effort"], "none", "{id}"),
+            "openai" => assert_eq!(body["reasoning"]["effort"], "none", "{id}"),
+            "anthropic" | "deepseek" | "minimax" => {
+                assert_eq!(body["thinking"]["type"], "disabled", "{id}")
+            },
+            "ollama" => assert_eq!(body["think"], false, "{id}"),
+            "sarvam" => {
+                assert!(body.get("reasoning_effort").is_some(), "{id}");
+                assert_eq!(body["reasoning_effort"], Value::Null, "{id}");
+            },
+            _ => unreachable!(),
+        }
+        assert!(
+            body.get("feedback").is_none(),
+            "presentation hints must never reach {id}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 15,
+        "the all-model Off qualification must not silently become empty"
+    );
+    Ok(())
+}
 
 fn sample_tool() -> LLMToolSpec {
     LLMToolSpec {
@@ -65,8 +250,8 @@ fn header_value(request: &Request, name: &str) -> Option<String> {
         request
             .headers
             .get(&header)
-            .and_then(|values| values.get(0))
-            .map(|value| value.as_str().to_string())
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
     })
 }
 
@@ -216,7 +401,10 @@ async fn openai_responses_invocation_sends_expected_payload_and_parses_response(
         })
     );
     assert_eq!(body["reasoning"]["effort"], "medium");
-    assert_eq!(body["reasoning"]["strategy"], "default");
+    assert_eq!(
+        body["reasoning"],
+        json!({"effort":"medium","summary":"auto"})
+    );
     assert_eq!(body["metadata"]["operation"], "analysis");
     assert_eq!(body["metadata"]["trace_id"], "trace-123");
     // Note: temperature/top_p are NOT included when reasoning is set
@@ -379,11 +567,12 @@ async fn gemini_structured_output_reaches_stateless_generate_content(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/models/gemini-3.1-pro-preview:generateContent"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(path("/models/gemini-3.1-pro-preview:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(sse_response(&[json!({
             "candidates":[{"content":{"parts":[{"text":"{\"ok\":true}"}],"role":"model"},"finishReason":"STOP"}],
             "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":4,"totalTokenCount":11}
-        })))
+        })], false))
         .expect(4)
         .mount(&server).await;
     let provider = GeminiProvider::with_client(reqwest::Client::new(), "test-key", server.uri());
@@ -439,22 +628,26 @@ async fn gemini_invocation_supports_cached_content_reference(
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(path("/models/gemini-2.5-flash:generateContent"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "candidates": [{
-                "content": {
-                    "parts": [{ "text": "Gemini cache hit." }],
-                    "role": "model"
-                },
-                "finishReason": "STOP"
-            }],
-            "usageMetadata": {
-                "promptTokenCount": 12,
-                "cachedContentTokenCount": 100,
-                "candidatesTokenCount": 3,
-                "totalTokenCount": 15
-            }
-        })))
+        .and(path("/models/gemini-2.5-flash:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(sse_response(
+            &[json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{ "text": "Gemini cache hit." }],
+                        "role": "model"
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 12,
+                    "cachedContentTokenCount": 100,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 15
+                }
+            })],
+            false,
+        ))
         .mount(&server)
         .await;
 
@@ -725,6 +918,607 @@ data: [DONE]\n\n";
     );
     assert_eq!(response.finish_reason.as_deref(), Some("completed"));
 
+    Ok(())
+}
+
+/// A stream that ends `response.incomplete` at max_output_tokens is not a
+/// finished answer: the provider asks again once with twice the budget and
+/// returns that reply, usage included (live 2026-10-20: a chat proposal was
+/// cut to its preamble because the incomplete event was ignored).
+#[tokio::test]
+async fn openai_responses_stream_cut_off_at_the_output_cap_retries_with_a_larger_budget(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+
+    let cut_off = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial\"}\n\n\
+data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Partial\"}]}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":128,\"total_tokens\":138}}}\n\n";
+    let whole = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Whole answer\"}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Whole answer\"}]}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":200,\"total_tokens\":210}}}\n\n";
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(body_partial_json(json!({ "max_output_tokens": 256 })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(whole.as_ref(), "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(body_partial_json(json!({ "max_output_tokens": 128 })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(cut_off.as_ref(), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIResponsesProvider::with_client(
+        reqwest::Client::new(),
+        "test-key",
+        format!("{}/v1/responses", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "gpt-5.6-terra".to_string();
+    request.messages = vec![LLMMessage::user("write the proposal")].into();
+    request.max_output_tokens = Some(128);
+    request.stream = true;
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Whole answer"));
+    assert_eq!(response.finish_reason.as_deref(), Some("completed"));
+    assert!(!response.stopped_at_output_limit());
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.completion_tokens),
+        Some(200)
+    );
+
+    Ok(())
+}
+
+/// `response.failed` ends the stream with the provider's error, not with
+/// whatever partial text arrived before it.
+#[tokio::test]
+async fn openai_responses_stream_failed_event_is_an_error() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = MockServer::start().await;
+    let failed = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Part\"}\n\n\
+data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream overloaded\"}}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(failed.as_ref(), "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIResponsesProvider::with_client(
+        reqwest::Client::new(),
+        "test-key",
+        format!("{}/v1/responses", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "gpt-5.6-terra".to_string();
+    request.messages = vec![LLMMessage::user("hi")].into();
+    request.stream = true;
+
+    let err = provider.invoke(request).await.expect_err("failed stream");
+    assert!(
+        matches!(&err, LLMError::Provider { message, .. } if message.contains("upstream overloaded")),
+        "{err}"
+    );
+
+    Ok(())
+}
+
+/// An SSE body carrying `events`, optionally closed by `[DONE]`.
+fn sse_body(events: &[Value], done_sentinel: bool) -> String {
+    let mut body: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    if done_sentinel {
+        body.push_str("data: [DONE]\n\n");
+    }
+    body
+}
+
+fn sse_response(events: &[Value], done_sentinel: bool) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(sse_body(events, done_sentinel), "text/event-stream")
+}
+
+fn captured_body(request: &Request) -> Value {
+    serde_json::from_slice(&request.body).expect("request body is JSON")
+}
+
+/// A plain `invoke()` streams, so progress rather than a request-wide
+/// timeout bounds a long answer, and returns the `response.completed`
+/// response object as a non-streaming call would.
+#[tokio::test]
+async fn openai_responses_plain_invoke_streams_and_returns_the_completed_response(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(body_partial_json(json!({ "stream": true })))
+        .respond_with(sse_response(
+            &[
+                json!({"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}),
+                json!({"type":"response.output_text.delta","delta":"Hello "}),
+                json!({"type":"response.output_text.delta","delta":"world"}),
+                json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}}),
+            ],
+            false,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIResponsesProvider::with_client(
+        reqwest::Client::new(),
+        "test-key",
+        format!("{}/v1/responses", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "gpt-5.6-terra".to_string();
+    request.messages = vec![LLMMessage::user("say hi")].into();
+    assert!(!request.stream);
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Hello world"));
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.total_tokens),
+        Some(15)
+    );
+    assert_eq!(response.finish_reason.as_deref(), Some("completed"));
+    assert_eq!(response.response_id.as_deref(), Some("resp_1"));
+    Ok(())
+}
+
+/// A plain call's stream that ends before `response.completed` is not an
+/// answer: it fails as transport, as a truncated JSON body did.
+#[tokio::test]
+async fn openai_responses_plain_invoke_fails_a_stream_cut_before_completion(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(sse_response(
+            &[json!({"type":"response.output_text.delta","delta":"Part"})],
+            false,
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIResponsesProvider::with_client(
+        reqwest::Client::new(),
+        "test-key",
+        format!("{}/v1/responses", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "gpt-5.6-terra".to_string();
+    request.messages = vec![LLMMessage::user("hi")].into();
+
+    let err = provider.invoke(request).await.expect_err("cut-off stream");
+    assert!(matches!(err, LLMError::Transport(_)), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn openai_chat_plain_invoke_streams_with_usage_and_tool_calls(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "stream": true,
+            "stream_options": { "include_usage": true }
+        })))
+        .respond_with(sse_response(
+            &[
+                json!({"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}),
+                json!({"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"All systems "}}]}),
+                json!({"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"nominal.","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"extract_data","arguments":"{\"foo\":"}}]}}]}),
+                json!({"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"bar\"}"}}]},"finish_reason":"tool_calls"}]}),
+                json!({"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":9,"prompt_tokens_details":{"cached_tokens":7},"completion_tokens":4,"total_tokens":13}}),
+            ],
+            true,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIChatProvider::with_client(
+        reqwest::Client::new(),
+        "chat-key",
+        format!("{}/v1/chat/completions", server.uri()),
+    );
+    let response = provider.invoke(build_text_tool_request()).await?;
+    assert_eq!(response.text.as_deref(), Some("All systems nominal."));
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].id, "call_1");
+    assert_eq!(response.tool_calls[0].name, "extract_data");
+    assert_eq!(response.tool_calls[0].arguments, json!({"foo": "bar"}));
+    assert_eq!(response.finish_reason.as_deref(), Some("tool_calls"));
+    let usage = response.usage.as_ref().expect("usage");
+    assert_eq!(usage.total_tokens, Some(13));
+    assert_eq!(usage.cached_tokens, Some(7));
+    let raw = response.raw_response.as_deref().expect("raw response");
+    assert_eq!(raw["object"], "chat.completion");
+    assert_eq!(
+        raw["choices"][0]["message"]["content"],
+        "All systems nominal."
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let body = captured_body(&requests[0]);
+    assert_eq!(body["max_completion_tokens"], 128);
+    assert_eq!(body["seed"], 101);
+    Ok(())
+}
+
+/// A plain call whose stream stops at the output cap (`length`) is asked
+/// again once with twice the budget, as a non-streaming call was.
+#[tokio::test]
+async fn openai_chat_plain_stream_cut_off_at_the_output_cap_retries_with_a_larger_budget(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({ "stream": true, "max_completion_tokens": 256 })))
+        .respond_with(sse_response(
+            &[
+                json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"Whole answer"}}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":200,"total_tokens":210}}),
+            ],
+            true,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({ "stream": true, "max_completion_tokens": 128 })))
+        .respond_with(sse_response(
+            &[
+                json!({"choices":[{"index":0,"delta":{"role":"assistant","content":"Partial"}}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
+                json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":128,"total_tokens":138}}),
+            ],
+            true,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIChatProvider::with_client(
+        reqwest::Client::new(),
+        "chat-key",
+        format!("{}/v1/chat/completions", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "gpt-5.6-terra".to_string();
+    request.messages = vec![LLMMessage::user("write the proposal")].into();
+    request.max_output_tokens = Some(128);
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Whole answer"));
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.completion_tokens),
+        Some(200)
+    );
+    Ok(())
+}
+
+/// The streamed events fold back into the message body: thinking with its
+/// signature, text, tool input assembled from JSON fragments, and usage
+/// merged from `message_start` and the final `message_delta`.
+#[tokio::test]
+async fn anthropic_plain_invoke_streams_and_reassembles_the_message(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({ "stream": true })))
+        .respond_with(sse_response(
+            &[
+                json!({"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"check."}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"ping"}),
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Checking "}}),
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"now."}}),
+                json!({"type":"content_block_stop","index":1}),
+                json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"extract_data","input":{}}}),
+                json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"foo\":"}}),
+                json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"bar\"}"}}),
+                json!({"type":"content_block_stop","index":2}),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":20}}),
+                json!({"type":"message_stop"}),
+            ],
+            false,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicMessagesProvider::with_base_url(
+        "test-key",
+        format!("{}/v1/messages", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "claude-sonnet-5-5".into();
+    request.messages = vec![LLMMessage::user("check")].into();
+    request.tools = vec![sample_tool()].into();
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Checking now."));
+    assert_eq!(response.reasoning_text.as_deref(), Some("Let me check."));
+    assert_eq!(response.finish_reason.as_deref(), Some("tool_use"));
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].id, "toolu_1");
+    assert_eq!(response.tool_calls[0].arguments, json!({"foo": "bar"}));
+    let usage = response.usage.as_ref().expect("usage");
+    assert_eq!(usage.prompt_tokens, Some(15));
+    assert_eq!(usage.cached_tokens, Some(5));
+    assert_eq!(usage.completion_tokens, Some(20));
+    let raw = response.raw_response.as_deref().expect("raw response");
+    assert_eq!(raw["id"], "msg_1");
+    assert_eq!(raw["content"][0]["signature"], "sig-1");
+    assert_eq!(raw["content"][2]["input"], json!({"foo": "bar"}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn openrouter_plain_invoke_streams_with_usage_and_citations(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    // OpenRouter interleaves SSE comments while a provider is working.
+    let body = format!(
+        ": OPENROUTER PROCESSING\n\n{}",
+        sse_body(
+            &[
+                json!({"id":"gen-1","provider":"OpenAI","model":"openai/gpt-5.6-terra","choices":[{"index":0,"delta":{"role":"assistant","content":"Paris "}}]}),
+                json!({"id":"gen-1","choices":[{"index":0,"delta":{"content":"is the capital.","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com","title":"Example"}}]}}]}),
+                json!({"id":"gen-1","choices":[{"index":0,"delta":{},"finish_reason":"stop","native_finish_reason":"stop"}]}),
+                json!({"id":"gen-1","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":4}}}),
+            ],
+            true,
+        )
+    );
+    Mock::given(method("POST"))
+        .and(path("/api/v1/chat/completions"))
+        .and(body_partial_json(json!({
+            "stream": true,
+            "usage": { "include": true }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OpenRouterProvider::with_client(
+        reqwest::Client::new(),
+        "router-key",
+        format!("{}/api/v1/chat/completions", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "openai/gpt-5.6-terra".to_string();
+    request.messages = vec![LLMMessage::user("capital of France?")].into();
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Paris is the capital."));
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    let usage = response.usage.as_ref().expect("usage");
+    assert_eq!(usage.total_tokens, Some(18));
+    assert_eq!(usage.cached_tokens, Some(4));
+    let raw = response.raw_response.as_deref().expect("raw response");
+    assert_eq!(
+        raw["choices"][0]["message"]["annotations"][0]["url_citation"]["url"],
+        "https://example.com"
+    );
+    assert_eq!(raw["provider"], "OpenAI");
+    Ok(())
+}
+
+#[tokio::test]
+async fn minimax_plain_invoke_streams_and_splits_inline_thinking(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({ "stream": true, "stream_options": {"include_usage": true} })))
+        .respond_with(sse_response(
+            &[
+                json!({"id":"m1","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>plan"}}]}),
+                json!({"id":"m1","choices":[{"index":0,"delta":{"content":"</think>Done."}}]}),
+                json!({"id":"m1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7},"base_resp":{"status_code":0,"status_msg":""}}),
+            ],
+            true,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = MinimaxProvider::with_base_url(
+        "minimax-key",
+        format!("{}/v1/chat/completions", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "MiniMax-M3".to_string();
+    request.messages = vec![LLMMessage::user("go")].into();
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Done."));
+    assert_eq!(response.reasoning_text.as_deref(), Some("plan"));
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.total_tokens),
+        Some(7)
+    );
+    Ok(())
+}
+
+/// A `base_resp` error riding a streamed chunk fails the plain call as it
+/// did on a non-streaming body.
+#[tokio::test]
+async fn minimax_plain_invoke_maps_a_streamed_base_resp_error(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(sse_response(
+            &[json!({"choices":[],"base_resp":{"status_code":1002,"status_msg":"rate limit"}})],
+            true,
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = MinimaxProvider::with_base_url(
+        "minimax-key",
+        format!("{}/v1/chat/completions", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "MiniMax-M3".to_string();
+    request.messages = vec![LLMMessage::user("go")].into();
+
+    let err = provider.invoke(request).await.expect_err("base_resp error");
+    assert!(matches!(err, LLMError::RateLimited { .. }), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn sarvam_plain_invoke_streams_reasoning_answer_and_usage(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({ "stream": true })))
+        .respond_with(sse_response(
+            &[
+                json!({"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think"}}]}),
+                json!({"choices":[{"index":0,"delta":{"reasoning_content":"ing"}}]}),
+                json!({"choices":[{"index":0,"delta":{"content":" Namaste"}}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11,"reasoning_tokens":2}}),
+            ],
+            true,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = SarvamProvider::with_base_url(
+        "sarvam-key",
+        format!("{}/v1/chat/completions", server.uri()),
+    );
+    let mut request = LLMRequest::default();
+    request.model = "sarvam-m".to_string();
+    request.messages = vec![LLMMessage::user("greet")].into();
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Namaste"));
+    assert_eq!(response.reasoning_text.as_deref(), Some("thinking"));
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    let usage = response.usage.as_ref().expect("usage");
+    assert_eq!(usage.total_tokens, Some(11));
+    assert_eq!(usage.reasoning_tokens, Some(2));
+    Ok(())
+}
+
+/// A plain Gemini call goes over `streamGenerateContent?alt=sse`; text parts
+/// join back into one part and the last chunk's usage and finish reason
+/// stand. `invoke_stream` forwards the same text as token deltas.
+#[tokio::test]
+async fn gemini_plain_invoke_streams_generate_content_and_folds_parts(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/models/gemini-2.5-flash:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(sse_response(
+            &[
+                json!({"candidates":[{"content":{"role":"model","parts":[{"text":"Hello "}]}}],"modelVersion":"gemini-2.5-flash"}),
+                json!({"candidates":[{"content":{"role":"model","parts":[{"text":"world"}]}}]}),
+                json!({"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6}}),
+            ],
+            false,
+        ))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let provider = GeminiProvider::with_client(reqwest::Client::new(), "gemini-key", server.uri());
+    let request = || {
+        let mut request = LLMRequest::default();
+        request.model = "gemini-2.5-flash".to_string();
+        request.messages = vec![LLMMessage::user("greet the world")].into();
+        request
+    };
+
+    let response = provider.invoke(request()).await?;
+    assert_eq!(response.text.as_deref(), Some("Hello world"));
+    assert_eq!(response.finish_reason.as_deref(), Some("STOP"));
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.total_tokens),
+        Some(6)
+    );
+    let raw = response.raw_response.as_deref().expect("raw response");
+    assert_eq!(
+        raw["candidates"][0]["content"]["parts"],
+        json!([{"text":"Hello world"}])
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    provider.invoke_stream(request(), tx).await?;
+    let mut tokens = String::new();
+    let mut done = None;
+    while let Some(delta) = rx.recv().await {
+        match delta {
+            magicllm::types::StreamDelta::Token(text) => tokens.push_str(&text),
+            magicllm::types::StreamDelta::Done(response) => done = Some(response),
+            _ => {},
+        }
+    }
+    assert_eq!(tokens, "Hello world");
+    assert_eq!(done.expect("Done").text.as_deref(), Some("Hello world"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn ollama_plain_invoke_streams_ndjson_and_folds_the_final_record(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let records = [
+        json!({"model":"llama3","response":"Hel","done":false}),
+        json!({"model":"llama3","response":"lo","done":false}),
+        json!({"model":"llama3","response":"","done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":2}),
+    ]
+    .iter()
+    .map(|record| format!("{record}\n"))
+    .collect::<String>();
+    Mock::given(method("POST"))
+        .and(path("/api/generate"))
+        .and(body_partial_json(json!({ "stream": true })))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(records, "application/x-ndjson"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OllamaProvider::with_base_url(format!("{}/api/generate", server.uri()));
+    let mut request = LLMRequest::default();
+    request.model = "llama3".to_string();
+    request.messages = vec![LLMMessage::user("hello")].into();
+
+    let response = provider.invoke(request).await?;
+    assert_eq!(response.text.as_deref(), Some("Hello"));
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(
+        response.usage.as_ref().and_then(|u| u.total_tokens),
+        Some(5)
+    );
     Ok(())
 }
 
@@ -1649,6 +2443,138 @@ async fn minimax_hoists_observation_image_out_of_tool_message(
 }
 
 #[tokio::test]
+async fn minimax_m31_catalog_efforts_reach_the_wire_and_off_is_rejected(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use magicllm::{catalog::ModelAssignment, config::LLMRouterConfig, router::MultiLLMRouter};
+    use std::sync::Arc;
+    let yaml = format!(
+        "local_model: &local_generation_model fixture-local\nrouter:\n{}",
+        include_str!("../../llm-router.yaml")
+    );
+    let root: serde_yaml::Value = serde_yaml::from_str(&yaml)?;
+    let config: LLMRouterConfig = serde_yaml::from_value(root["router"].clone())?;
+    assert!(!config.catalog.models.contains_key("minimax/MiniMax-M2.7"));
+    let id = "minimax/MiniMax-M3.1-Flash";
+    let model = &config.catalog.models[id];
+    assert_eq!(
+        model.thinking.levels,
+        ["low", "medium", "high", "xhigh", "max"]
+    );
+    assert_eq!(model.thinking.default.as_deref(), Some("max"));
+    assert!(model.capabilities.vision && model.capabilities.tools && model.coding);
+    assert!(config
+        .catalog
+        .resolve_assignment(&ModelAssignment::choice(id, "none"))
+        .is_err());
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role":"assistant", "content":"OK", "reasoning_content":"Plan"}, "finish_reason":"stop"}],
+            "usage": {"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":5}}
+        })))
+        .expect(6)
+        .mount(&server).await;
+    let provider = Arc::new(MinimaxProvider::with_base_url(
+        "test-key",
+        format!("{}/call", server.uri()),
+    ));
+    for level in ["auto", "low", "medium", "high", "xhigh", "max"] {
+        let profile = config
+            .catalog
+            .resolve_assignment(&ModelAssignment::choice(id, level))?;
+        let mut router = MultiLLMRouter::new(LLMRouterConfig {
+            profiles: [("probe".into(), profile)].into(),
+            default_profile: "probe".into(),
+            ..Default::default()
+        })?;
+        router.register_provider(provider.clone());
+        let response = router.route(LLMRequest {
+            messages: vec![LLMMessage::user("Reply OK")].into(),
+            max_output_tokens: Some(1024),
+            temperature: Some(0.2),
+            extra: Some(json!({"reasoning_effort":"none", "thinking":{"type":"disabled"}, "reasoning_split":false, "service_tier":"priority", "top_p":0.5}).into()),
+            ..Default::default()
+        }).await?;
+        assert_eq!(response.reasoning_text.as_deref(), Some("Plan"));
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests.last().unwrap().body)?;
+        assert_eq!(
+            body["reasoning_effort"],
+            if level == "auto" { "max" } else { level }
+        );
+        assert_eq!(body["max_completion_tokens"], 1024);
+        for omitted in [
+            "thinking",
+            "reasoning_split",
+            "service_tier",
+            "temperature",
+            "top_p",
+        ] {
+            assert!(body.get(omitted).is_none(), "{omitted} must not reach M3.1");
+        }
+    }
+    for level in ["none", "off", "minimal", "invalid"] {
+        let error = provider
+            .invoke(LLMRequest {
+                model: "MiniMax-M3.1-Flash".into(),
+                reasoning: Some(ReasoningConfig {
+                    effort: Some(level.into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LLMError::Validation(_)));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn minimax_m31_stream_preserves_separate_reasoning_in_the_final_response(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"stream_options":{"include_usage":true}})))
+        .respond_with(sse_response(&[
+            json!({"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Think "}}]}),
+            json!({"choices":[{"index":0,"delta":{"reasoning_content":"first."}}]}),
+            json!({"choices":[{"index":0,"delta":{"content":"Answer."}}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":3}}}),
+        ], true))
+        .expect(2).mount(&server).await;
+    let provider = MinimaxProvider::with_base_url("test-key", format!("{}/call", server.uri()));
+    let mut request = LLMRequest {
+        model: "MiniMax-M3.1-Flash".into(),
+        messages: vec![LLMMessage::user("Go")].into(),
+        ..Default::default()
+    };
+    request.set_extra(json!({"stream_options":{"include_usage":false}}));
+    let plain = provider.invoke(request.clone()).await?;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    provider.invoke_stream(request, tx).await?;
+    let mut streamed = None;
+    let mut reasoning = String::new();
+    while let Some(delta) = rx.recv().await {
+        match delta {
+            StreamDelta::ReasoningDelta { delta, .. } => reasoning.push_str(&delta),
+            StreamDelta::Done(response) => streamed = Some(response),
+            _ => {},
+        }
+    }
+    assert_eq!(reasoning, "Think first.");
+    for response in [plain, streamed.expect("final streamed response")] {
+        assert_eq!(response.text.as_deref(), Some("Answer."));
+        assert_eq!(response.reasoning_text.as_deref(), Some("Think first."));
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.cached_tokens, Some(4));
+        assert_eq!(usage.reasoning_tokens, Some(3));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn minimax_forwards_reasoning_as_native_thinking_toggle(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Regression: the profile's `reasoning.effort` must reach M3 as MiniMax's
@@ -1963,14 +2889,18 @@ async fn gemini_strips_cache_sentinel_from_user_message() -> Result<(), Box<dyn 
     // the sentinel from user text and reconnect halves with `\n`.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/models/gemini-2.5-flash:generateContent"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "candidates": [{
-                "content": {"parts": [{"text": "ok"}], "role": "model"},
-                "finishReason": "STOP"
-            }],
-            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
-        })))
+        .and(path("/models/gemini-2.5-flash:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(sse_response(
+            &[json!({
+                "candidates": [{
+                    "content": {"parts": [{"text": "ok"}], "role": "model"},
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+            })],
+            false,
+        ))
         .mount(&server)
         .await;
 
@@ -2364,10 +3294,10 @@ async fn anthropic_messages_splits_multimodal_user_message_on_cache_sentinel(
 /// decisions and read zero back — $5 in eight iterations. The breakpoints
 /// have to sit on the parts that ARE stable: the system prompt, which
 /// already covers the tools, and the conversation up to the last completed
-/// turn. A rolling request that anchors the system prompt does not also
-/// mark the tools. Anthropic allows four breakpoints, and the system
-/// prompt, the last completed turn, the lookback block, and the final
-/// block already use them.
+/// turn. The tools keep their own breakpoint while one of Anthropic's four
+/// is free (system, the last completed turn, the lookback block and a
+/// marked final block can take them all), so a system-prompt change still
+/// reads the tools back.
 #[tokio::test]
 async fn anthropic_agentic_rolling_prefix_anchors_the_stable_prefix_and_the_last_completed_turn(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2435,9 +3365,9 @@ async fn anthropic_agentic_rolling_prefix_anchors_the_stable_prefix_and_the_last
         body.get("cache_control").is_none(),
         "no top-level breakpoint: it only ever cached a prefix ending in the volatile prompt"
     );
-    assert!(
-        body["tools"][0].get("cache_control").is_none(),
-        "the system breakpoint already caches the tools"
+    assert_eq!(
+        body["tools"][0]["cache_control"]["type"], "ephemeral",
+        "two of four breakpoints are used, so the tools keep theirs"
     );
     assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
 
@@ -2482,6 +3412,242 @@ async fn anthropic_agentic_rolling_prefix_anchors_the_stable_prefix_and_the_last
     assert!(!encoded.contains(magicllm::CACHE_BREAKPOINT_SENTINEL));
     assert!(!encoded.contains("stable-fingerprint"));
     assert!(!encoded.contains("execution-session"));
+    Ok(())
+}
+
+/// A chat history: system, two finished exchanges, and the new user turn.
+fn chat_history_request(model: &str, prompt_cache: PromptCacheConfig) -> LLMRequest {
+    let mut request = LLMRequest::default();
+    request.model = model.to_string();
+    request.messages = vec![
+        LLMMessage::system("stable system"),
+        LLMMessage::user("first question"),
+        LLMMessage::assistant("first answer"),
+        LLMMessage::user("second question"),
+        LLMMessage::assistant("second answer"),
+        LLMMessage::user("new question"),
+    ]
+    .into();
+    request.tools = vec![sample_tool()].into();
+    request.prompt_cache = Some(prompt_cache);
+    request
+}
+
+async fn anthropic_body_for(request: LLMRequest) -> Result<Value, Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{ "type": "text", "text": "ack" }],
+            "usage": { "input_tokens": 10, "output_tokens": 1 }
+        })))
+        .mount(&server)
+        .await;
+    let provider = AnthropicMessagesProvider::with_client(
+        reqwest::Client::new(),
+        "anthropic-key",
+        format!("{}/v1/messages", server.uri()),
+    );
+    provider.invoke(request).await?;
+    Ok(captured_body(&server.received_requests().await.unwrap()[0]))
+}
+
+/// A chat carries no context-reuse plan, so it used to get only the tools +
+/// system breakpoint: a Claude chat read ~25K tokens back per call and paid
+/// full price for a 300K–640K-token history (4–8% cached against OpenAI's
+/// 80–90%). A conversation cache anchors the last completed turn as well.
+#[tokio::test]
+async fn anthropic_conversation_cache_anchors_the_chat_history(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let body = anthropic_body_for(chat_history_request(
+        "claude-sonnet-5-5",
+        PromptCacheConfig::conversation_with_ttl("1h"),
+    ))
+    .await?;
+
+    assert!(body.get("cache_control").is_none(), "{body}");
+    assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+    assert_eq!(
+        body["tools"][0]["cache_control"]["ttl"], "1h",
+        "a free breakpoint slot keeps the tools cached if the system prompt changes"
+    );
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 5);
+    let anchor = messages[3]["content"]
+        .as_array()
+        .expect("anchored turn blocks");
+    assert_eq!(
+        anchor.last().unwrap()["cache_control"]["ttl"],
+        "1h",
+        "the last completed turn carries the history breakpoint: {}",
+        body["messages"]
+    );
+    let new_turn = &messages[4]["content"];
+    assert!(
+        new_turn.is_string()
+            || new_turn
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|block| block.get("cache_control").is_none()),
+        "{new_turn}"
+    );
+    Ok(())
+}
+
+/// Callers that do not declare a conversation keep the stable-prefix-only
+/// layout: their history is not re-sent, so a breakpoint on it would only add
+/// a write premium.
+#[tokio::test]
+async fn anthropic_plain_prompt_cache_still_anchors_only_the_stable_prefix(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let body = anthropic_body_for(chat_history_request(
+        "claude-sonnet-5-5",
+        PromptCacheConfig::enabled_with_ttl("1h"),
+    ))
+    .await?;
+
+    assert!(body.get("cache_control").is_none(), "{body}");
+    assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+    for message in body["messages"].as_array().expect("messages") {
+        let blocks = message["content"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block.get("cache_control").is_none()),
+            "{message}"
+        );
+    }
+    Ok(())
+}
+
+/// The conversation flag is Anthropic-only. OpenAI caches the prefix by
+/// itself, and chat chains Responses turns through
+/// `openai_previous_response_id`, which a context-reuse plan would have
+/// replaced. Both OpenAI APIs must send byte-identical bodies with and without
+/// the flag, chain id included.
+#[tokio::test]
+async fn openai_requests_are_unchanged_by_the_conversation_cache(
+) -> Result<(), Box<dyn std::error::Error>> {
+    async fn sent_body(
+        responses_api: bool,
+        prompt_cache: PromptCacheConfig,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        let mut request = chat_history_request("gpt-6.1-sol", prompt_cache);
+        let provider: Box<dyn LLMProvider> = if responses_api {
+            request.set_extra(json!({ "openai_previous_response_id": "resp_prior_turn" }));
+            Box::new(OpenAIResponsesProvider::with_client(
+                reqwest::Client::new(),
+                "responses-key",
+                format!("{}/v1/responses", server.uri()),
+            ))
+        } else {
+            Box::new(OpenAIChatProvider::with_client(
+                reqwest::Client::new(),
+                "chat-key",
+                format!("{}/v1/chat/completions", server.uri()),
+            ))
+        };
+        // Only the outgoing body matters; the mock fails every call.
+        let _ = provider.invoke(request).await;
+        Ok(captured_body(&server.received_requests().await.unwrap()[0]))
+    }
+
+    for responses_api in [true, false] {
+        let plain = sent_body(responses_api, PromptCacheConfig::enabled_with_ttl("1h")).await?;
+        let conversation = sent_body(
+            responses_api,
+            PromptCacheConfig::conversation_with_ttl("1h"),
+        )
+        .await?;
+        assert_eq!(plain, conversation, "responses_api={responses_api}");
+        if responses_api {
+            assert_eq!(conversation["previous_response_id"], "resp_prior_turn");
+        }
+    }
+    Ok(())
+}
+
+async fn openrouter_body_for(request: LLMRequest) -> Result<Value, Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "ack" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11 }
+        })))
+        .mount(&server)
+        .await;
+    let provider = OpenRouterProvider::with_client(
+        reqwest::Client::new(),
+        "router-key",
+        format!("{}/api/v1/chat/completions", server.uri()),
+    );
+    provider.invoke(request).await?;
+    Ok(captured_body(&server.received_requests().await.unwrap()[0]))
+}
+
+/// Claude through OpenRouter had the same gap as native Anthropic: a chat
+/// anchored only its system message. A conversation cache takes the rolling
+/// top-level breakpoint, which covers the history up to the newest block; a
+/// plain prompt cache keeps the system anchor.
+#[tokio::test]
+async fn openrouter_claude_conversation_cache_covers_the_chat_history(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let model = "anthropic/claude-sonnet-5-5";
+    let chat = openrouter_body_for(chat_history_request(
+        model,
+        PromptCacheConfig::conversation_with_ttl("1h"),
+    ))
+    .await?;
+    assert_eq!(chat["cache_control"]["type"], "ephemeral");
+    assert_eq!(chat["cache_control"]["ttl"], "1h");
+    assert_eq!(chat["messages"][0]["content"], "stable system");
+    assert!(chat.get("session_id").is_none(), "{chat}");
+
+    let plain = openrouter_body_for(chat_history_request(
+        model,
+        PromptCacheConfig::enabled_with_ttl("1h"),
+    ))
+    .await?;
+    assert!(plain.get("cache_control").is_none(), "{plain}");
+    assert_eq!(
+        plain["messages"][0]["content"][0]["cache_control"]["ttl"],
+        "1h"
+    );
+    Ok(())
+}
+
+/// Non-Anthropic models on OpenRouter get no `cache_control` either way, so
+/// the conversation flag leaves their bodies byte-identical.
+#[tokio::test]
+async fn openrouter_non_claude_requests_are_unchanged_by_the_conversation_cache(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for model in ["openai/gpt-6.1-sol", "google/gemini-4-pro"] {
+        let plain = openrouter_body_for(chat_history_request(
+            model,
+            PromptCacheConfig::enabled_with_ttl("1h"),
+        ))
+        .await?;
+        let conversation = openrouter_body_for(chat_history_request(
+            model,
+            PromptCacheConfig::conversation_with_ttl("1h"),
+        ))
+        .await?;
+        assert_eq!(plain, conversation, "{model}");
+        assert!(!serde_json::to_string(&conversation)?.contains("cache_control"));
+    }
     Ok(())
 }
 

@@ -92,4 +92,21 @@ describe('StudioRail archived runs', () => {
 		expect(chip).toHaveAttribute('title', 'Crew crew-1 · lane API');
 		expect(screen.getAllByText(/^API$/)).toHaveLength(1);
 	});
+
+	it('reads a completed run still writing its answer as Synthesizing, and a stale or cancelled one as settled', async () => {
+		vi.spyOn(taskStore, 'fetchVibeDevProjectRuns').mockResolvedValue(null);
+		const fresh = new Date().toISOString();
+		const runs = [
+			{ id: 'run_live', title: 'Live synthesis', description: '', status: 'completed', synthesisPending: true, updatedAt: fresh },
+			{ id: 'run_stuck', title: 'Stuck synthesis', description: '', status: 'completed', synthesisPending: true, updatedAt: '2026-10-12T00:00:00Z' },
+			{ id: 'run_cancelled', title: 'Cancelled synthesis', description: '', status: 'cancelled', synthesisPending: true, updatedAt: fresh }
+		] as unknown as Task[];
+		render(StudioRail, {
+			props: { projects: [project], activeProject: project, runs, totalRuns: 3 }
+		});
+		await screen.findAllByText('Synthesizing');
+		expect(screen.getAllByText('Synthesizing')).toHaveLength(1);
+		expect(screen.getByText('Cancelled')).toBeInTheDocument();
+		expect(screen.getByText('Done')).toBeInTheDocument();
+	});
 });

@@ -323,7 +323,7 @@ falls back to Exa, static reading, a browser, CDP, an agent or an LLM. Product
 Hunt and arXiv ship as RSS offers; users can add a custom RSS/Atom URL.
 
 Notes is a private built-in: `notes.discover` reads Markdown under the scoped
-Local Markdown root and any configured SilverBullet Space, with no network,
+fallback folder and any configured notes folder, with no network,
 browser or LLM. Notes settings gate it (disabled shows **Needs setup**; reads
 fail closed). Root configuration is revisioned; editing a note changes only
 that note's revision, so writes do not stale the subscription.

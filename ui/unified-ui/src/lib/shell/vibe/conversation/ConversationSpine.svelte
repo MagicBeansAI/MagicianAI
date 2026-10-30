@@ -429,9 +429,15 @@
 				{#if card.detail}<p class="card__notice">{card.detail}</p>{/if}
 
 			{:else if card.kind === 'completed'}
+				<!-- "Review pending" only while the proposal still waits: once its
+				     durable row says it was applied or rejected (an Autopilot run
+				     applies its own), the turn simply finished. -->
+				{@const settledRow = card.status === 'waiting' && card.proposalId && !livePendingProposals.has(card.proposalId)
+					? diffRowsByProposal.get(card.proposalId)
+					: undefined}
 				<header class="card__head">
-					<span class="card__icon" aria-hidden="true">{card.status === 'waiting' ? '⏸' : '✓'}</span>
-					<span class="card__title">{card.title}</span>
+					<span class="card__icon" aria-hidden="true">{card.status === 'waiting' && !settledRow ? '⏸' : '✓'}</span>
+					<span class="card__title">{settledRow ? `Finished — ${historicalDiffStatus(settledRow.request.raw?.status).replace(/^\S+\s/, '').toLowerCase()}` : card.title}</span>
 				</header>
 				{#if card.detail}
 					<div class="card__message"><ChatMarkdown content={card.detail} {sessionId} /></div>

@@ -25,6 +25,43 @@ pub struct BridgeConfig {
     pub enabled: bool,
     pub path: String,
     pub auth_token: String,
+    /// How many browsers (profiles, Chromium forks) may hold the bridge at
+    /// once. Further browsers are refused with 409 `bridge_full`.
+    #[serde(default = "default_bridge_max_connections")]
+    pub max_connections: usize,
+    /// How long a `?choose=ask` CDP connect waits for the owner to pick a
+    /// browser before using the default one, unless the URL names a timeout.
+    #[serde(default = "default_browser_choice_timeout_secs")]
+    pub browser_choice_timeout_secs: u64,
+    /// Peers trusted like loopback (addresses or CIDRs, e.g. a container's
+    /// gateway for published ports). Added to `MAGICUTOR_TRUSTED_PEERS`.
+    /// Empty by default: only this machine is trusted without a token.
+    #[serde(default)]
+    pub trusted_peers: Vec<String>,
+    /// Host names (besides `localhost` and IP literals) a trusted peer may
+    /// address Magicutor by. Added to `MAGICUTOR_ALLOWED_HOSTS`. Guards
+    /// against DNS rebinding; requests with the token are not affected.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    /// Where a task's browser tabs open. `auto`: a named tab group in the
+    /// owner's own window, falling back to a group in a window of its own,
+    /// then a plain window, when groups or background rendering are not
+    /// available. `in_window` and `own_window` start the same fallback
+    /// further along or pin it. The extension decides per task.
+    #[serde(default = "default_automation_surface")]
+    pub automation_surface: String,
+}
+
+fn default_bridge_max_connections() -> usize {
+    server::bridge::MAX_BRIDGE_CONNECTIONS
+}
+
+fn default_browser_choice_timeout_secs() -> u64 {
+    20
+}
+
+fn default_automation_surface() -> String {
+    "auto".to_string()
 }
 
 fn normalize_data_root(base: impl AsRef<Path>) -> PathBuf {
@@ -105,6 +142,11 @@ impl Default for BridgeConfig {
             enabled: true,
             path: "/bridge/native".to_string(),
             auth_token: "magicutor-bridge-dev-token".to_string(),
+            max_connections: default_bridge_max_connections(),
+            browser_choice_timeout_secs: default_browser_choice_timeout_secs(),
+            trusted_peers: Vec::new(),
+            allowed_hosts: Vec::new(),
+            automation_surface: default_automation_surface(),
         }
     }
 }
@@ -116,11 +158,7 @@ impl Default for MagicutorConfig {
                 host: "0.0.0.0".to_string(),
                 port: 3003,
             },
-            bridge: BridgeConfig {
-                enabled: true,
-                path: "/bridge/native".to_string(),
-                auth_token: "magicutor-bridge-dev-token".to_string(),
-            },
+            bridge: BridgeConfig::default(),
         }
     }
 }

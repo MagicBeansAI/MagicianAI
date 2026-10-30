@@ -5,6 +5,7 @@ import type {
   ChannelIdentity,
   ChannelMessageDispatchOptions,
   ChatResponse,
+  ChatModelCatalog,
   ChatSession,
   ChatSessionDetail,
   ClearQueuedMessagesResponse,
@@ -21,6 +22,9 @@ import type {
 } from "./types.js";
 
 type FetchLike = typeof fetch;
+
+const DEFAULT_CHAT_ENGINE = "magician"; // presentation-identity-allow: stable-operational-identifier
+type ChatCatalogEngine = typeof DEFAULT_CHAT_ENGINE | "pi";
 
 interface WebSocketLike {
   readonly readyState: number;
@@ -374,6 +378,22 @@ export class MagicianClient {
     text: string,
     options?: ChannelMessageDispatchOptions,
   ): Promise<ChatResponse> {
+    if (options && Object.prototype.hasOwnProperty.call(options, "profile")) {
+      throw new Error("Profile selections are retired. Use modelSelection and harnessEngine.");
+    }
+    const selection = options?.modelSelection;
+    if (selection !== undefined && (!selection || typeof selection.model_id !== "string"
+      || !selection.model_id.trim() || selection.model_id.trim() !== selection.model_id
+      || /\s/.test(selection.model_id))) {
+      throw new Error("modelSelection requires a valid catalog model_id.");
+    }
+    const thinking = selection?.thinking === undefined ? "auto" : selection.thinking;
+    if (selection && (typeof thinking !== "string" || !thinking || /[\s/]/.test(thinking))) {
+      throw new Error("modelSelection requires a native thinking level or auto.");
+    }
+    if (options?.harnessEngine !== undefined && options.harnessEngine !== DEFAULT_CHAT_ENGINE && options.harnessEngine !== "pi") {
+      throw new Error("Model selections require the default or Pi engine.");
+    }
     return this.requestJson<ChatResponse>(
       `/api/magician/v2/chat/sessions/${encodeURIComponent(sessionId)}/messages?${buildChatQuery(identity)}`,
       {
@@ -383,7 +403,10 @@ export class MagicianClient {
         },
         body: JSON.stringify({
           text,
-          ...(options?.profile ? { profile: options.profile } : {}),
+          ...(selection ? {
+            model_selection: { model_id: selection.model_id, thinking },
+            harness_engine: options?.harnessEngine ?? DEFAULT_CHAT_ENGINE,
+          } : options?.harnessEngine ? { harness_engine: options.harnessEngine } : {}),
           ...(options?.sourceSurface
             ? { source_surface: options.sourceSurface }
             : {}),
@@ -396,6 +419,15 @@ export class MagicianClient {
         }),
       },
     );
+  }
+
+  async getChatModels(engine: ChatCatalogEngine = DEFAULT_CHAT_ENGINE): Promise<ChatModelCatalog> {
+    if (engine !== DEFAULT_CHAT_ENGINE && engine !== "pi") throw new Error("Unknown model catalog engine.");
+    const catalog = await this.requestJson<ChatModelCatalog>(
+      `/api/magician/v2/chat/models?engine=${engine}`,
+    );
+    if (!Array.isArray(catalog.models)) throw new Error("Model choices are unavailable. Upgrade the backend.");
+    return catalog;
   }
 
   async reportEnvoyDelivery(sessionId: string, messageId: string, phase: "begin" | "provider_accepted" | "unknown", binding?: EnvoyDeliveryBinding, transportReceipt?: TransportReceipt):
@@ -431,7 +463,7 @@ export class MagicianClient {
 
   /**
    * List pending-replay messages for `sessionId` in FIFO order. Drives the
-   * SDK's drain loop and the unified-UI "N queued" indicator.
+   * SDK's reply observer and the unified-UI "N queued" indicator.
    */
   async listQueuedMessages(
     sessionId: string,

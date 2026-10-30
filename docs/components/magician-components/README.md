@@ -1,6 +1,6 @@
 # magician-components
 
-Version 0.1.6 shares source-install invocation and read-only native permission observations across setup frontends.
+Version 0.1.9 guides signed webhook registration and owner identity claims across setup frontends.
 
 Which stack components are present, what that enables, and what it costs to
 decline one. Read by the API, the setup wizard, and Desktop onboarding.
@@ -137,10 +137,13 @@ Software readiness is separate from account configuration. Required
 `bot-runtime` is a dependency of channel/account components. Their
 `file_inventory` probes read setup-generated lists through
 `{data_root}/system/skillshub/.runtime/` and recheck every nonempty file and
-executable permission. Missing CLI/native payloads or bundles block account
-readiness even when credentials exist. The bundled browser also checks its core
-skill instead of a state directory. These checks make no provider calls and do
+executable permission, size and modification time. Old verification revisions
+and changed manifests/software require rechecking; failed checks replace prior
+success inventories. Missing CLI/native payloads or bundles block account
+readiness even when credentials exist. The bundled browser runs offline version
+and core-skill discovery checks. These checks make no provider calls and do
 not assert that credentials are valid.
+Remote MCP skills have no local CLI prerequisite; the shared skill installer retires the old Metabase package, while the GUI checks OAuth separately through its generic account driver. For remote MCP accounts the terminal wizard installs software; OAuth is completed from Skills or an agent.
 
 `additional-browser-engines` is optional and checks actual Cloak Chromium and
 Lightpanda native files; SDK presence alone is insufficient. It is planned when
@@ -151,6 +154,9 @@ Every component declares an `InstallAction`:
 - `make` — carries the target *and* the script it runs, so a package install
   without a Makefile can still run the step; where make exists it stays the way
   in. A target with no script needs a checkout and says so before asking.
+  `again` is an optional prompt used only when the probe is already present.
+  The default answer is no, including in a dry run. Yes re-runs the target.
+  `cloudflare-tunnel` uses it to move this computer onto a different domain.
   Skill, bot, media and browser setup have packaged script entrypoints and
   ship their pinned skill payload alongside those scripts.
 - `manual` — an instruction with an optional place to open, expanded with
@@ -194,6 +200,17 @@ provider-name branch.
   and name, binary, coding and plane engine ids, config gate, refresh endpoint,
   vendor guide, surfaces. No installers: Magican detects, explains what remains,
   and selects a server-reported Ready engine.
+
+## Google Cloud project access
+
+`google_project_access` is the one place that knows which project roles a
+Google Workspace account needs (Service Usage Consumer, Pub/Sub Editor, or a
+covering Owner/Editor) and how to grant them. It reads the project policy with
+the host's `gcloud`, never a profile's `CLOUDSDK_CONFIG`, and grants only when
+that gcloud account holds Owner, Project IAM Admin or Security Admin. Bash
+setup and the wizard reach it through `magician.bin google-project-access`;
+Service accounts and Desktop through `bot/project-access`. Because it spawns
+gcloud, the `workspace-project-access` step uses a `manual` probe.
 
 ## No I/O
 
@@ -278,6 +295,8 @@ one of them.
   read-and-mutate pair) is the per-component shape the registry generalises;
   `media.engines.*.enabled` in `magician-config.yaml` is the shape a declared
   component entry follows.
+- Notes have no separate server component: the notes folder is plain files
+  Magician serves itself (component fixtures use a generic `notes-viewer`).
 
 Design: `docs/plans/2026-09-02-setup-wizard-rust.md`.
 
@@ -292,3 +311,5 @@ Neither an old URL file nor an Access login can report the tunnel as ready.
 Clarity credentials are tracking project IDs only; see the [setup guide](../../setup/clarity.md).
 Website configuration is a separate optional component, so configuring a
 website project never satisfies or enables the app-recording opt-in.
+
+The `browser_cli` setup driver connects reviewed CLI-owned accounts through the shared [browser sign-in](../magician/browser-signin.md) flow. `setup::resolve_template` reads a definition's driver without a profile so Service accounts can list one `managed_bot` row per configured `gmail-{profile}` bot; starting a setup still needs `resolve` with a profile.

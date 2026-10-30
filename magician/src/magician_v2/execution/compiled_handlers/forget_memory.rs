@@ -320,8 +320,8 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         }
         // The owner's knowledge is journaled in the preference history; this
         // path writes the file directly, so it diffs here, under its flock.
-        let before = (path.as_path() == storage.user_knowledge_path().as_path())
-            .then(|| document.clone());
+        let before =
+            (path.as_path() == storage.user_knowledge_path().as_path()).then(|| document.clone());
         match remove_at_json_pointer(&mut document, &candidate.json_pointer) {
             Ok(Some(_removed)) => match storage.write_json_value_atomic(path, &document).await {
                 Ok(()) => {

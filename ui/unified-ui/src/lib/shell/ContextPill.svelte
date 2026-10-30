@@ -13,6 +13,7 @@
 	export let sessionTitle: string | null = null;
 	export let updatedAt: number | null = null;
 	export let isReadOnly = false;
+	export let isDeleting = false;
 	export let canClear = false;
 	/**
 	 * Docked variant — the pill renders as a normal flow child (of the composer
@@ -103,6 +104,9 @@
 		</span>
 	{/if}
 
+	{#if isDeleting}
+		<span class="deleting-status" role="status" aria-live="polite">Deleting…</span>
+	{/if}
 	{#if isReadOnly}
 		<button
 			type="button"
@@ -170,19 +174,19 @@
 				<button
 					class="menu-item"
 					role="menuitem"
-					disabled={!canClear || isReadOnly}
+					disabled={!canClear || isReadOnly || isDeleting}
 					on:click={() => { moreMenuOpen = false; dispatch('clear'); }}
 				>Clear chat</button>
 				<button
 					class="menu-item"
 					role="menuitem"
-					disabled={isReadOnly}
+					disabled={isReadOnly || isDeleting}
 					on:click={() => { moreMenuOpen = false; dispatch('archive'); }}
 				>Archive session</button>
 				<button
 					class="menu-item menu-item--danger"
 					role="menuitem"
-					disabled={isReadOnly}
+					disabled={isReadOnly || isDeleting}
 					on:click={() => { moreMenuOpen = false; dispatch('delete'); }}
 				>Delete session</button>
 				{#if isReadOnly}
@@ -198,6 +202,7 @@
 </div>
 
 <style>
+	.deleting-status { color: var(--text-muted); font-size: 0.7rem; white-space: nowrap; }
 	.ctx-pill {
 		/* Fixed-to-viewport so the pill stays put when the message stream
 		   scrolls. `top: 54px` clears the 48px top bar with a hair of

@@ -126,6 +126,7 @@
 				{/each}
 			</div>
 		{/if}
+		<slot />
 	</div>
 	{#if tags.length > 0}
 		<div class="tasks-toolbar-v5__group tasks-toolbar-v5__group--tags" aria-label="Task tags">
@@ -164,6 +165,7 @@
 		min-width: 0;
 		align-items: center;
 		gap: 8px;
+		flex-wrap: wrap;
 	}
 
 	.tasks-toolbar-v5__group {
@@ -223,8 +225,13 @@
 	}
 
 	.tasks-toolbar-v5__filt.active {
-		background: var(--accent-primary-soft, rgba(0, 0, 0, 0.06));
+		background: linear-gradient(
+			135deg,
+			color-mix(in srgb, var(--accent-primary) 14%, var(--bg-card)) 0%,
+			color-mix(in srgb, var(--accent-primary) 6%, var(--bg-card)) 100%
+		);
 		color: var(--text-primary, #1a1a1a);
+		box-shadow: 0 1px 3px color-mix(in srgb, var(--accent-primary) 8%, transparent);
 	}
 
 	.tasks-toolbar-v5__ct {
@@ -271,9 +278,11 @@
 	/* Trailing display-only status ledger (absorbs the old summary card). */
 	.tasks-toolbar-v5__group--status {
 		margin-left: auto;
+		display: inline-flex;
 		align-items: center;
 		gap: 10px;
 		flex-wrap: wrap;
+		line-height: 1;
 	}
 
 	.tasks-toolbar-v5__total {
@@ -282,6 +291,9 @@
 		color: var(--text-faint, #aaa);
 		margin-right: 2px;
 		white-space: nowrap;
+		display: inline-flex;
+		align-items: center;
+		line-height: 1;
 	}
 
 	.tasks-toolbar-v5__status {
@@ -294,17 +306,19 @@
 		color: var(--text-muted, #888);
 		white-space: nowrap;
 		cursor: default;
+		line-height: 1;
 	}
 
 	.tasks-toolbar-v5__dot {
 		width: 7px;
 		height: 7px;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 4px);
 		flex: none;
 	}
 
 	.tasks-toolbar-v5__status-ct {
 		font-family: var(--font-mono);
 		color: var(--text-secondary, #555);
+		line-height: 1;
 	}
 </style>

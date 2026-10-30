@@ -14,13 +14,19 @@
 import { readAlignmentProjection } from './alignmentAsk';
 import type { FeedItem } from '$lib/feed/types';
 import type {
+	HitlApprovalPreview,
+	HitlApprovalPreviewDiff,
+	HitlApprovalPreviewHunk,
+	HitlApprovalPreviewLine,
 	HitlChoiceOption,
 	HitlDiffApprovalFile,
 	HitlIdentifiers,
 	HitlInputSchema,
 	HitlInputType,
+	HitlOutwardReview,
 	HitlRequest,
 	HitlResolveOutcome,
+	HitlRespondHandle,
 	HitlResponseValue,
 	HitlSensitiveKind,
 	HitlSensitiveSpec,
@@ -225,6 +231,97 @@ function readDiffApprovalFiles(value: unknown): HitlDiffApprovalFile[] {
 	return out;
 }
 
+const APPROVAL_PREVIEW_LINE_KINDS = new Set(['context', 'add', 'remove']);
+
+function readApprovalPreviewDiff(value: unknown): HitlApprovalPreviewDiff | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const path = readString(record, 'path');
+	if (!path) return undefined;
+	const hunks: HitlApprovalPreviewHunk[] = [];
+	for (const entry of Array.isArray(record.hunks) ? record.hunks : []) {
+		const hunk = asRecord(entry);
+		if (!hunk) continue;
+		const lines: HitlApprovalPreviewLine[] = [];
+		for (const rawLine of Array.isArray(hunk.lines) ? hunk.lines : []) {
+			const line = asRecord(rawLine);
+			// Line text is kept verbatim (indentation matters in a diff).
+			if (!line || typeof line.text !== 'string' || typeof line.kind !== 'string') continue;
+			if (!APPROVAL_PREVIEW_LINE_KINDS.has(line.kind)) continue;
+			lines.push({ kind: line.kind as HitlApprovalPreviewLine['kind'], text: line.text });
+		}
+		hunks.push({
+			old_start: readNumber(hunk, 'old_start', 0),
+			old_lines: readNumber(hunk, 'old_lines', 0),
+			new_start: readNumber(hunk, 'new_start', 0),
+			new_lines: readNumber(hunk, 'new_lines', 0),
+			lines
+		});
+	}
+	return {
+		path,
+		added: readNumber(record, 'added', 0),
+		removed: readNumber(record, 'removed', 0),
+		hunks,
+		truncated: readBoolean(record, 'truncated', false),
+		omitted_changed_lines: readNumber(record, 'omitted_changed_lines', 0),
+		unified_diff: typeof record.unified_diff === 'string' ? record.unified_diff : ''
+	};
+}
+
+/**
+ * `input_schema.approval_preview` (Rust `ApprovalPreview`), or `undefined`
+ * when absent or unusable — the prompt then shows the raw call as before.
+ * The raw call (`action_summary` + `reason` beside it) rides along for the
+ * collapsed audit view.
+ */
+function readApprovalPreview(
+	schemaRecord: Record<string, unknown> | null
+): HitlApprovalPreview | undefined {
+	const record = asRecord(schemaRecord?.approval_preview);
+	if (!record) return undefined;
+	const title = readString(record, 'title');
+	if (!title) return undefined;
+	const warnings: HitlApprovalPreview['warnings'] = [];
+	for (const entry of Array.isArray(record.warnings) ? record.warnings : []) {
+		const warning = asRecord(entry);
+		const message = readString(warning, 'message');
+		if (!message) continue;
+		warnings.push({ code: readString(warning, 'code') ?? 'warning', message });
+	}
+	const raw = [readString(schemaRecord, 'action_summary'), readString(schemaRecord, 'reason')]
+		.filter((part): part is string => !!part)
+		.join('\n\n');
+	return {
+		title,
+		why_label: readString(record, 'why_label') ?? undefined,
+		why: readString(record, 'why') ?? undefined,
+		diff: readApprovalPreviewDiff(record.diff),
+		evidence: readStrings(record, 'evidence'),
+		warnings,
+		notes: readStrings(record, 'notes'),
+		raw: raw.length > 0 ? raw : undefined
+	};
+}
+
+/**
+ * `input_schema.outward_review` — the captured send a review card is about —
+ * or `undefined` when absent. A negative or missing deadline reads as 0
+ * (no expiry shown).
+ */
+function readOutwardReview(value: unknown): HitlOutwardReview | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	return {
+		capability: readString(record, 'capability') ?? '',
+		action: readString(record, 'action') ?? '',
+		class: readString(record, 'class') ?? '',
+		recipients: readStrings(record, 'recipients'),
+		agent_id: readString(record, 'agent_id') ?? '',
+		deadline_at_ms: Math.max(0, readNumber(record, 'deadline_at_ms', 0))
+	};
+}
+
 const KNOWN_INPUT_TYPES: HitlInputType[] = [
 	'text',
 	'password',
@@ -350,6 +447,60 @@ export function hitlIdentifiersForCorrelation(
 	return identifiers;
 }
 
+// ─── Server respond handle ─────────────────────────────────────────────
+
+const HITL_RESPOND_PREFIX = '/api/magician/v2/hitl/';
+
+/**
+ * The server's respond handle (`HitlRespondHandle`), or `null` when absent or
+ * unusable. Only a same-origin `/api/magician/v2/hitl/{id}/respond` URL with a
+ * known source and input type is accepted; anything else falls back to the
+ * per-source derivation rather than posting somewhere unexpected.
+ */
+export function readHitlRespondHandle(value: unknown): HitlRespondHandle | null {
+	const record = asRecord(value);
+	if (!record) return null;
+	const url = readString(record, 'url');
+	const correlationId = readString(record, 'correlation_id');
+	const source = normalizeHitlSource(record.source);
+	const inputType = normalizeHitlInputType(record.input_type);
+	if (!url || !correlationId || !source || !inputType) return null;
+	if (!url.startsWith(HITL_RESPOND_PREFIX) || !url.endsWith('/respond')) return null;
+	if (/[\\\u0000- \u007f?#]/.test(url)) return null;
+	const method = readString(record, 'method');
+	if (method && method.toUpperCase() !== 'POST') return null;
+	const statuses = Array.isArray(record.soft_success_statuses)
+		? record.soft_success_statuses.filter(
+				(status): status is number => typeof status === 'number' && Number.isInteger(status)
+			)
+		: [];
+	const handle: HitlRespondHandle = {
+		url,
+		method: 'POST',
+		correlation_id: correlationId,
+		source,
+		input_type: inputType,
+		soft_success_statuses: statuses.length > 0 ? statuses : [409]
+	};
+	const executionId = readString(record, 'execution_id');
+	if (executionId) handle.execution_id = executionId;
+	const taskId = readString(record, 'task_id');
+	if (taskId) handle.task_id = taskId;
+	const options = readChoiceOptions(record.options);
+	if (options.length > 0) handle.options = options;
+	return handle;
+}
+
+/** A feed row's handle: `metadata.respond`, else the embedded target's. */
+export function hitlRespondHandleFromMetadata(metadata: unknown): HitlRespondHandle | null {
+	const record = asRecord(metadata);
+	if (!record) return null;
+	return (
+		readHitlRespondHandle(record.respond) ??
+		readHitlRespondHandle(asRecord(record.hitl_request)?.respond)
+	);
+}
+
 /** The delegation stamp on a row's metadata, or `null` for a non-delegated ask. */
 export function hitlDelegationFromMetadata(metadata: unknown): HitlDelegation | null {
 	const record = asRecord(metadata);
@@ -404,11 +555,27 @@ export function hitlRequestFromFeedItem(item: FeedItem): HitlRequest | null {
 
 	const attentionKind = readString(metadata, 'attention_kind');
 	const isApproval = item.item_type === 'approval';
-	if (!attentionKind && !isApproval) return null;
+	const respond = hitlRespondHandleFromMetadata(metadata);
+	if (!attentionKind && !isApproval && !respond) return null;
 
 	const pauseStateId = readString(metadata, 'pause_state_id');
-	const approvalId = readString(metadata, 'approval_id');
-	const requestId = readString(metadata, 'request_id') ?? readString(metadata, 'correlation_id');
+	// A taskless approval row names its id only as `correlation_id`; the
+	// server's handle names it either way.
+	const approvalId =
+		readString(metadata, 'approval_id') ??
+		(isApproval
+			? (respond?.correlation_id ?? readString(metadata, 'correlation_id'))
+			: null);
+	// The canonical envelope a row embeds (`metadata.hitl_request`) names its
+	// identifiers when the flat metadata does not: a pending user request's
+	// attention row carries only `pause_state_id` flat, so reading the flat
+	// keys alone left Acknowledge with nothing to post to.
+	const embeddedIds = asRecord(asRecord(metadata['hitl_request'])?.['identifiers']);
+	let requestId =
+		readString(metadata, 'request_id') ??
+		readString(metadata, 'correlation_id') ??
+		readString(embeddedIds, 'request_id') ??
+		readString(embeddedIds, 'correlation_id');
 
 	// Prefer the explicit `metadata.source` when the backend stamps it.
 	// The V3 attention projection now sets this for every canonical HITL
@@ -428,12 +595,18 @@ export function hitlRequestFromFeedItem(item: FeedItem): HitlRequest | null {
 	const explicitSource = readString(metadata, 'source');
 	const normalizedExplicitSource = normalizeHitlSource(explicitSource);
 	if (explicitSource && !normalizedExplicitSource) return null;
+	// The server's handle names the source it dispatches on; the derivation
+	// below is the fallback for rows from servers that predate it.
 	const source: HitlSource =
 		isApproval
 			? 'approval'
-			: normalizedExplicitSource
-				? normalizedExplicitSource
-				: resolveSource(attentionKind, false);
+			: respond
+				? respond.source
+				: normalizedExplicitSource
+					? normalizedExplicitSource
+					: resolveSource(attentionKind, false);
+	// A user request's pause id is its request id (`hitlIdentifiersForCorrelation`).
+	if (source === 'user_request' && !requestId) requestId = respond?.correlation_id ?? pauseStateId;
 
 	// Approvals carry a fixed input shape: confirmation with approve/reject
 	// labels. We don't read input_schema from approval metadata.
@@ -452,13 +625,17 @@ export function hitlRequestFromFeedItem(item: FeedItem): HitlRequest | null {
 			scope: scopeFromItem(item, metadata),
 			identifiers: { approval_id: approvalId, correlation_id: approvalId },
 			at: item.updated_at,
+			...(respond ? { respond } : {}),
 			raw: { ...metadata, item_type: item.item_type }
 		};
 	}
 
 	const schemaRecord = asRecord(metadata['input_schema']);
 	const inputType =
-		normalizeHitlInputType(schemaRecord?.type) ?? normalizeHitlInputType(metadata['input_type']);
+		normalizeHitlInputType(schemaRecord?.type) ??
+		normalizeHitlInputType(metadata['input_type']) ??
+		respond?.input_type ??
+		null;
 
 	// Without an input_type we can't build a render request. Surfaces fall
 	// back to their legacy dispatch (escalation paths often don't carry
@@ -484,6 +661,7 @@ export function hitlRequestFromFeedItem(item: FeedItem): HitlRequest | null {
 				request_id: requestId ?? undefined
 			},
 			at: item.updated_at,
+			...(respond ? { respond } : {}),
 			raw: { ...metadata, item_type: item.item_type, attention_kind: attentionKind ?? undefined }
 		},
 		hitlDelegationFromMetadata(metadata)
@@ -627,6 +805,9 @@ export function hitlRequestFromCanonicalEvent(raw: Record<string, unknown>): Hit
 	}
 
 	const delegatedAgentId = readString(payload, 'delegated_agent_id') ?? undefined;
+	// The frame's own handle (`data.respond`), when it names this same ask.
+	const respondHandle = readHitlRespondHandle(payload['respond']);
+	const respond = respondHandle?.correlation_id === correlationId ? respondHandle : null;
 	return {
 		id: correlationId,
 		source,
@@ -638,6 +819,7 @@ export function hitlRequestFromCanonicalEvent(raw: Record<string, unknown>): Hit
 		identifiers,
 		at: readNumber(payload, 'timestamp_ms') || readNumber(raw, 'timestamp_ms') || Date.now(),
 		...(delegatedAgentId ? { delegated_agent_id: delegatedAgentId } : {}),
+		...(respond ? { respond } : {}),
 		raw: payload as Record<string, unknown>
 	};
 }
@@ -710,6 +892,10 @@ function buildSchemaFromMetadata(
 		if (instructions) schema.instructions = instructions;
 		const doneLabel = readString(schemaRecord, 'done_label');
 		if (doneLabel) schema.done_label = doneLabel;
+		const dismissLabel = readString(schemaRecord, 'dismiss_label');
+		if (dismissLabel) schema.dismiss_label = dismissLabel;
+		const serviceLabel = readString(schemaRecord, 'service_label');
+		if (serviceLabel) schema.service_label = serviceLabel;
 		const actionUrl = readHttpUrl(schemaRecord, 'url') ?? readHttpUrl(schemaRecord, 'authorize_url');
 		if (actionUrl) schema.url = actionUrl;
 		const confirmLabel = readString(schemaRecord, 'confirm_label');
@@ -717,6 +903,9 @@ function buildSchemaFromMetadata(
 		const denyLabel = readString(schemaRecord, 'deny_label');
 		if (denyLabel) schema.deny_label = denyLabel;
 		if (typeof schemaRecord.destructive === 'boolean') schema.destructive = schemaRecord.destructive;
+		const actionType = readString(schemaRecord, 'action_type');
+		if (actionType) schema.action_type = actionType;
+		if (schemaRecord.protected === true) schema.protected = true;
 		// The two authorization shapes carry the thing being authorized as data
 		// rather than only inside the composed prompt sentence. Read here so the
 		// prompt surface can show it verbatim; see `HitlInputSchema`.
@@ -730,7 +919,7 @@ function buildSchemaFromMetadata(
 		if (violation) schema.violation = violation;
 		const allowedRoots = readStrings(schemaRecord, 'allowed_roots');
 		if (allowedRoots.length > 0) schema.allowed_roots = allowedRoots;
-		const context = readString(schemaRecord, 'context');
+		const context = asRecord(schemaRecord.context) ?? readString(schemaRecord, 'context');
 		if (context) schema.context = context;
 		const review = readReviewLink(schemaRecord);
 		if (review) {
@@ -776,6 +965,10 @@ function buildSchemaFromMetadata(
 		if (escalationTrigger) schema.escalation_trigger = escalationTrigger;
 		const alignment = readAlignmentProjection(schemaRecord.alignment);
 		if (alignment) schema.alignment = alignment;
+		const approvalPreview = readApprovalPreview(schemaRecord);
+		if (approvalPreview) schema.approval_preview = approvalPreview;
+		const outwardReview = readOutwardReview(schemaRecord.outward_review);
+		if (outwardReview) schema.outward_review = outwardReview;
 	}
 	const transactionId =
 		readString(schemaRecord, 'transaction_id') ?? readString(metadata, 'transaction_id');
@@ -888,11 +1081,43 @@ function correlationIdForRequest(request: HitlRequest): string | null {
  * preserving the durable runtime identity as `execution_id`. Legacy targets
  * may use the same value for both fields.
  */
+/**
+ * The call a server respond handle names: its URL, and a body of its
+ * `source` / `input_type` / `execution_id` / `task_id` beside the answer.
+ * Nothing is derived from the request: the handle is the whole route.
+ */
+export function hitlCallFromHandle(
+	handle: HitlRespondHandle,
+	value: HitlResponseValue,
+	options: HitlResolveOptions & { channel?: string } = {}
+): HitlResolveCall {
+	const body: Record<string, unknown> = {
+		source: handle.source,
+		input_type: handle.input_type,
+		value,
+		channel: options.channel ?? 'web'
+	};
+	const selectedPaths = (options.selectedPaths ?? [])
+		.map((path) => path.trim())
+		.filter((path) => path.length > 0);
+	if (selectedPaths.length > 0) body.selected_paths = selectedPaths;
+	if (handle.task_id) body.task_id = handle.task_id;
+	if (handle.execution_id) body.execution_id = handle.execution_id;
+	return {
+		url: handle.url,
+		method: 'POST',
+		body,
+		soft_success_statuses: [...handle.soft_success_statuses]
+	};
+}
+
 export function resolveHitlCall(
 	request: HitlRequest,
 	value: HitlResponseValue,
 	options: HitlResolveOptions = {}
 ): HitlResolveCall | null {
+	if (request.respond) return hitlCallFromHandle(request.respond, value, options);
+	// Fallback for servers that predate the respond handle.
 	const correlationId = correlationIdForRequest(request);
 	if (!correlationId) return null;
 	const body: Record<string, unknown> = {
@@ -995,11 +1220,12 @@ export async function postHitlResponse(
 						typeof payload.previous_answer === 'string' ? payload.previous_answer : undefined
 				};
 			}
-			if (payload?.accepted === false || payload?.resumed === false) {
+			if (payload?.accepted === false || payload?.resumed === false ||
+				(payload?.accepted !== true && payload?.resumed !== true)) {
 				return {
 					ok: false,
 					status: response.status,
-					message: String(payload.reason ?? payload.message ?? 'Response was not accepted')
+					message: String(payload?.reason ?? payload?.message ?? 'Response was not accepted')
 				};
 			}
 			return { ok: true };

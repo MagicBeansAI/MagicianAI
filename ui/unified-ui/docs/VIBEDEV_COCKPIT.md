@@ -32,7 +32,7 @@ is true), and isolation is attested.
 Pi stays the default. Auto is an opt-in last row and never the default;
 when Auto is chosen, the coordinator may pick Grok, Claude, or
 Antigravity only if that profile is Ready. Non-Ready Grok/Claude/Agy stay
-on `GET /coding/profiles` with `selectable: false` and an operator
+in the engines on `GET /coding/models` with `selectable: false` and an operator
 `reason` (no paths or email).
 The picker locks while the in-view run is non-terminal. Chat,
 composer-voice, and hands-free voice reuse the same persisted choice.
@@ -281,11 +281,11 @@ Backend tools/grants + deferrals: `docs/components/magician/pi-coding-engine-con
 (M1 section) and plan §13.3 #8–13.
 
 **Cost/quality autopilot (M2):** the Autopilot bar also takes a **cost budget ($)**
-(`vibeStudioStore.costBudgetUsd`). `costBudgetLine()` weaves it into the directive as an
+(`vibeStudioStore.costBudgetUsd`, sent as `cost_budget_usd`). The server's
+`vibedev_cockpit_cost_budget_line` weaves it into the directive as an
 agent-enforced stop-condition keyed on `session_stats.cost` (returned in every
-`run_coding_task` result); the server's escalation line is informational
-context about the committed pin (`coding-balanced` with a configured one-hop
-to `coding-premium` on hard steps). Magician enforces the pin at dispatch.
+`run_coding_task` result). Magician enforces the committed pin at dispatch,
+with no implicit escalation to a pricier profile.
 `StudioStage`
 shows a spent-vs-budget chip + progress bar (green→amber→red); `VibeStudio` also auto-stops
 the live run (U8 control plane) if the meter crosses the budget while the tab is open. The

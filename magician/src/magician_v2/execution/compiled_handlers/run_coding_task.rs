@@ -51,7 +51,7 @@ use crate::magician_v2::execution::coding_engine::ledger::{
 };
 use crate::magician_v2::execution::coding_engine::selection::{
     decide_vibedev_dispatch_profile, engine_str, CodingContinuationRef, CodingTerminalClass,
-    ProfileCatalogEntry, ResolvedCodingEngineSelection, VibeDevDispatchDecision,
+    ResolvedCodingEngineSelection, VibeDevDispatchDecision,
 };
 use crate::magician_v2::execution::coding_engine::task_budget as coding_task_budget;
 use crate::magician_v2::execution::coding_engine::{
@@ -70,9 +70,7 @@ use crate::magician_v2::execution::file_edit::transaction::TransactionScope;
 use crate::magician_v2::prompt_identity::render_prompt_identity_section;
 use crate::magician_v2::secrets::{SecretAuditEvent, SecretRef, SecretStoreError};
 use crate::magician_v2::vibedev::dispatch_intent::DispatchIntentStore;
-use crate::magician_v2::vibedev::projects::{
-    parse_vibedev_project_id, read_vibedev_projects, VibeDevProjectTrust,
-};
+use crate::magician_v2::vibedev::projects::{parse_vibedev_project_id, read_vibedev_projects};
 use crate::magician_v2::vibedev::run_service::VibeDevCodingCatalog;
 use crate::magician_v2::vibedev::trusted_workspace::{
     self, TrustedRunRequest, TrustedRunWorkspace,
@@ -111,6 +109,15 @@ pub const VIBEDEV_PARENT_TASK_PREFIX: &str = "Parent task:";
 /// the agent passes.
 const PLAN_TASK_TAG: &str = "plan";
 
+/// Whether the dispatching run is a plan run (`AgenticContext::plan_run`).
+/// The compiled-pack dispatch stamps the key from the run's flag after
+/// stripping every model-supplied `__*` key, so only the runtime sets it.
+fn forced_plan_run(args: &Value) -> bool {
+    args.get(crate::magician_v2::execution::plan_run_policy::PLAN_RUN_PARAM)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 const PI_ENV_ALLOWLIST: &[&str] = &["PI_API_KEY"];
 
 fn account_coding_turn_usage(usage: Option<&CodingTurnUsage>) -> anyhow::Result<()> {
@@ -143,6 +150,66 @@ fn account_coding_turn_usage_for(
         ) => Ok(()),
         (_, usage) => account_coding_turn_usage(usage),
     }
+}
+
+/// The class a coding turn's spend counts under: a turn launched from a chat
+/// is the owner's interactive work, counted but never refused; any other turn
+/// belongs to an autonomous run and is refused while the spend envelope is
+/// spent.
+fn coding_spend_class(args: &Value) -> magicllm::LlmWorkloadClass {
+    crate::magician_v2::spend_envelope_producers::run_workload_class(
+        scope_arg_str(args, "__chat_session_id").is_some()
+            || scope_arg_str(args, "__chat_turn_id").is_some(),
+    )
+}
+
+/// What one coding turn costs the owner's spend envelope, in micro-USD, and
+/// whether Magician estimated it: what the run's cost ledger charges (the
+/// engine's reported cost, or the live cost Pi streamed) when there is one,
+/// else the turn's reported tokens priced for the profile's model. `None` when
+/// the turn reported neither.
+fn coding_turn_envelope_spend(
+    charged: Option<u64>,
+    usage: Option<&CodingTurnUsage>,
+    engine: CodingEngineKind,
+    provider: &str,
+    model: &str,
+    at_ms: i64,
+) -> Option<(u64, bool)> {
+    use crate::magician_v2::spend_envelope_producers::{
+        engine_provider, price_tokens, token_usage,
+    };
+    if let Some(micro_usd) = charged {
+        return Some((micro_usd, false));
+    }
+    let usage = usage?;
+    // The engine CLIs' profiles name the CLI (`codex`, `claude`), not a
+    // provider: attribute those by model name, then engine.
+    let named = magicllm::LLMProviderKind::from_str(provider);
+    let provider = if matches!(named, magicllm::LLMProviderKind::Custom(_)) {
+        engine_provider(
+            crate::magician_v2::execution::coding_engine::selection::engine_str(engine),
+            Some(model),
+        )
+    } else {
+        named
+    };
+    // Pi and Claude Code report input without the cache buckets; Codex, Grok
+    // and agy count cache reads inside it.
+    let input = match engine {
+        CodingEngineKind::Pi | CodingEngineKind::ClaudeCode => {
+            usage.input.saturating_add(usage.cache_read)
+        },
+        _ => usage.input.max(usage.cache_read),
+    }
+    .saturating_add(usage.cache_write);
+    let tokens = token_usage(
+        input,
+        usage.output,
+        Some(usage.cache_read),
+        Some(usage.cache_write),
+    );
+    price_tokens(&provider, Some(model), &tokens, at_ms)
 }
 
 /// Billed USD for the /llm bridge. `None` when the provider omitted cost.
@@ -421,14 +488,33 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             "reason": "run_coding_task requires a non-empty `prompt`.",
         }));
     };
+    // A coding turn is paid for outside the router, so the owner's spend
+    // envelope refuses it here, before anything is journaled or spawned: no
+    // turn of an autonomous run starts while the envelope is spent. A
+    // chat-launched turn is interactive, counted but never refused. The
+    // agent loop (`phases::decide`) and the plane (`plane::dispatch`) refuse
+    // first and park the run; this is the guard for direct callers and for
+    // the window between their check and this one.
+    let spend_class = coding_spend_class(&args);
+    if let Err(refusal) = crate::magician_v2::spend_envelope_producers::preflight(spend_class) {
+        return Ok(json!({
+            "status": "error",
+            "reason": format!(
+                "{refusal} (or until the owner grants more); no coding turn starts until then."
+            ),
+            "stage": "spend_envelope_preflight",
+            "spend_envelope_exhausted": true,
+        }));
+    }
     let magician_config = resources.magician_config_snapshot();
     // Coding-model resolution order: explicit tool arg → the executing agent's declared
     // `llm_routing.coding_profile` (per-agent model tiering — e.g. principal/architect on GPT-5.6
     // Sol via `coding-premium`) → the global `coding.default_profile`. The agent fallback makes per-agent
     // binding deterministic rather than depending on the prompt to emit the arg.
-    let selected_profile_arg = match optional_string(&args, "coding_profile")
-        .or_else(|| optional_string(&args, "profile"))
-    {
+    let explicit_profile_arg =
+        optional_string(&args, "coding_profile").or_else(|| optional_string(&args, "profile"));
+    let profile_is_agent_default = explicit_profile_arg.is_none();
+    let selected_profile_arg = match explicit_profile_arg {
         explicit @ Some(_) => explicit,
         None => agent_coding_profile(&resources, &principal, &workspace, &args).await,
     };
@@ -440,8 +526,8 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         &principal,
         &workspace,
         &args,
-        &magician_config.coding,
         selected_profile_arg,
+        profile_is_agent_default,
     )
     .await
     {
@@ -460,8 +546,13 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             // that is not qualified is not inherited, super god mode or not.
             let (inherited, profile_arg) =
                 inherited_coding_choice(&pin, &magician_config.coding, |engine| {
-                    adapter_spec_for_engine(engine, &args, &magician_config.coding, HarnessFence::Box)
-                        .map(|_| ())
+                    adapter_spec_for_engine(
+                        engine,
+                        &args,
+                        &magician_config.coding,
+                        HarnessFence::Box,
+                    )
+                    .map(|_| ())
                 });
             coding_authority.inherited = inherited;
             coding_authority.profile_arg = profile_arg;
@@ -509,18 +600,34 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     }
     let continuation =
         derive_coding_continuation_context(resources.as_ref(), &principal, &workspace, &args).await;
+    // A plan run (Discuss): the captured plan is the outcome, NO code diff is
+    // staged. Signalled by the run's own flag (runtime-stamped `__plan_run`,
+    // which a model can neither forge nor drop), the `plan` task tag, or an
+    // explicit `plan_only` arg. Forces `stage_result = false` below so the handler
+    // can never surface a CodeChangeProposal / diff_approval for a planning run.
+    // Decided before the trusted workspace: a plan run never starts a clone.
+    let plan_only = forced_plan_run(&args)
+        || args
+            .get("plan_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || continuation
+            .as_ref()
+            .map(|context| context.current_is_plan)
+            .unwrap_or(false);
     // Trusted repo mode (docs/archive/plans/2026-10-07-vibedev-trusted-repo-mode.md §4.3):
     // decided from the server's own records — the task's fenced `VibeDev project:`
     // line and the project store — never from the model's `repo_path` argument.
     // The chain then works in its own clone, which is what gets bound below; the
     // owner's repo is only ever the clone's source.
-    let trusted_run = match resolve_trusted_run_workspace(
+    let (trusted_run, trusted_fallback, original_run) = match resolve_trusted_run_workspace(
         resources.as_ref(),
         &principal,
         &workspace,
         &scope_root,
         &workspace_root,
         continuation.as_ref(),
+        plan_only,
     )
     .await
     {
@@ -534,10 +641,14 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             }));
         },
     };
-    let requested_repo_path = match trusted_run.as_ref() {
-        Some(run) => Some(run.workspace_dir.display().to_string()),
-        None => optional_string(&args, "repo_path")
-            .or_else(|| optional_string(&args, "project_repo_path")),
+    let requested_repo_path = if let Some(run) = &original_run {
+        Some(run.repo.display().to_string())
+    } else {
+        match trusted_run.as_ref() {
+            Some(run) => Some(run.workspace_dir.display().to_string()),
+            None => optional_string(&args, "repo_path")
+                .or_else(|| optional_string(&args, "project_repo_path")),
+        }
     };
     let repo_binding =
         match resolve_coding_repo_binding(&workspace_root, requested_repo_path.as_deref()) {
@@ -635,6 +746,50 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         Some(&coding_profile),
         durable_coding_log,
     );
+    if let Some(note) = trusted_fallback.as_deref() {
+        tracing::warn!(engine = %engine_label, "[RUN-CODING-TASK] trusted project without git; running sandboxed");
+        event_emitter.emit(
+            "coding.trusted_fallback",
+            json!({ "engine": engine_label, "message": note }),
+        );
+    }
+    // The delivery this dispatch actually uses, recorded on the run's
+    // execution as a Magician-authored fact (`vibedev::change_delivery`): a
+    // trusted run's branch, or a fallback with the folder's git state.
+    if let (Some(task_id), Some(execution_id)) = &durable_coding_ids {
+        use crate::magician_v2::vibedev::change_delivery::ChangeDeliveryRecord;
+        let record = if let Some(run) = &original_run {
+            Some(ChangeDeliveryRecord::decided(
+                &trusted_workspace::EffectiveTrustMode::Original,
+                &run.repo,
+                "run_coding_task",
+            ))
+        } else {
+            match (trusted_run.as_ref(), trusted_fallback.as_deref()) {
+                (Some(run), _) => Some(ChangeDeliveryRecord::trusted_branch(
+                    &run.real_repo,
+                    &run.branch,
+                    "run_coding_task",
+                )),
+                (None, Some(_)) => Some(ChangeDeliveryRecord::sandboxed_fallback(
+                    &repo_binding.real_path,
+                    "run_coding_task",
+                )),
+                (None, None) => None,
+            }
+        };
+        if let Some(record) = record {
+            record
+                .write(
+                    &resources.artifact_workspace,
+                    &principal,
+                    &workspace,
+                    task_id,
+                    execution_id,
+                )
+                .await;
+        }
+    }
     // R2 — persistent, cache-preserving shadow keyed by the repo (not a per-run
     // throwaway): reused across a chain's turns so node_modules/target survive,
     // killing the cold-reinstall-every-run tax. The shadow-vs-real byte diff +
@@ -677,9 +832,13 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         },
         None => None,
     };
-    let shadow_workspace_root = match trusted_run.as_ref() {
-        Some(run) => run.workspace_dir.clone(),
-        None => coding_shadow_root(&scope_root, &repo_binding.real_path),
+    let shadow_workspace_root = if let Some(run) = &original_run {
+        run.repo.clone()
+    } else {
+        match trusted_run.as_ref() {
+            Some(run) => run.workspace_dir.clone(),
+            None => coding_shadow_root(&scope_root, &repo_binding.real_path),
+        }
     };
     if let Err(error) = std::fs::create_dir_all(
         shadow_workspace_root
@@ -694,7 +853,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             ),
         }));
     }
-    if trusted_run.is_some() {
+    if trusted_run.is_some() || original_run.is_some() {
         // Nothing to sync: the clone carries the chain's own history.
     } else if let Err(error) = sync_persistent_workspace(
         &repo_binding.real_path,
@@ -749,11 +908,16 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // Pi's read tool; `coding_images` = image attachments encoded for the RPC
     // `images[]` channel (the only way a vision model SEES them). Images are NOT
     // copied to the workspace — that copy would be unread dead weight.
+    let attachment_root = original_run.as_ref().map(|run| {
+        scope_root
+            .join("coding_engine/original_attachments")
+            .join(&run.root_task_id)
+    });
     let (materialized_attachments, coding_images) = match materialize_coding_attachments(
         resources.as_ref(),
         &principal,
         &workspace,
-        &shadow_working_dir,
+        attachment_root.as_deref().unwrap_or(&shadow_working_dir),
         &coding_profile,
         &args,
     ) {
@@ -792,18 +956,6 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         );
     }
 
-    // A plan run (Discuss): the captured plan is the outcome, NO code diff is
-    // staged. Signalled by the `plan` task tag (cockpit-set enforcement) or an
-    // explicit `plan_only` arg. Forces `stage_result = false` below so the handler
-    // can never surface a CodeChangeProposal / diff_approval for a planning run.
-    let plan_only = args
-        .get("plan_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || continuation
-            .as_ref()
-            .map(|context| context.current_is_plan)
-            .unwrap_or(false);
     if let Some(proposal) = continuation
         .as_ref()
         .and_then(|context| context.latest_code_change.as_ref())
@@ -833,13 +985,28 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         }));
     }
 
-    let mut effective_prompt = append_coding_context(
-        prompt,
-        &materialized_attachments,
-        continuation.as_ref(),
-        &repo_binding,
-        trusted_run.as_ref(),
-    );
+    let mut effective_prompt = if original_run.is_some() {
+        let mut text = prompt.trim_end().to_string();
+        text.push_str("\n\nThis turn runs in the original project folder. Preserve the owner's current branch and uncommitted work. Edits must use the runtime's pre-write diff approval broker. No shadow, staged proposal or automatic commit is involved.\n");
+        if let Some(root) = attachment_root.as_ref() {
+            for attachment in &materialized_attachments {
+                text.push_str(&format!(
+                    "\nAttachment {}: {}\n",
+                    attachment.original_name,
+                    root.join(&attachment.relative_path).display()
+                ));
+            }
+        }
+        text
+    } else {
+        append_coding_context(
+            prompt,
+            &materialized_attachments,
+            continuation.as_ref(),
+            &repo_binding,
+            trusted_run.as_ref(),
+        )
+    };
     // Greenfield scaffold-on-empty: when this is the FIRST build of the chain on an
     // ISOLATED (non-".") project dir that carries no recognized project manifest, prepend a
     // server-authoritative directive telling Pi to scaffold a starter (stack from the build
@@ -878,6 +1045,11 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     );
     request.working_dir = Some(shadow_working_dir.clone());
     request.apply_root = Some(repo_binding.real_path.clone());
+    // The agent the engine works for, from runtime identity (the dispatch
+    // scope), not `__agent_id`: its box keeps out the goal workspaces that
+    // agent may not reach.
+    request.acting_agent_id =
+        crate::magician_v2::execution::native_executors::current_acting_agent();
     // Stamp run identity onto any proposal staged this turn so the coordinator can
     // join it back to this run: `__task_id` is the shared parent task (children
     // share the parent task dir); `__execution_id` is the executing child's id (the
@@ -890,7 +1062,8 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // change. This is the single handler path that guarantees a Discuss run cannot
     // stall on diff-approval HITL.
     // A trusted chain's changes are commits on its branch, not a proposal.
-    if plan_only || trusted_run.is_some() {
+    request.original_repo = original_run.as_ref().map(|run| run.repo.clone());
+    if plan_only || trusted_run.is_some() || original_run.is_some() {
         request.stage_result = false;
     }
     // Three budgets, resolved together (§3.1): one Pi turn, the whole coding
@@ -1196,6 +1369,10 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // Magician-native tools (Phase 0: magician_preview_url). The extension is
     // written OUTSIDE the shadow tree (it never enters the proposal diff), and the
     // token is revoked the moment the run settles (after run_turn, below).
+    // The citizen token is good only on this run's own loopback channel to
+    // the plane-only listener, which its box alone may reach
+    // (`plane::grant_channel`); the API port stays closed to the box.
+    let mut citizen_channel = None;
     let citizen_token: Option<String> = match citizen_base_url() {
         Some(base_url) => {
             let ext_dir = scope_root.join("coding_engine").join("pi-extensions");
@@ -1229,26 +1406,59 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                             allowed_tools: citizen_tools.clone(),
                         })
                         .await;
-                    request
-                        .env
-                        .insert("MAGICIAN_CITIZEN_URL".to_string(), base_url);
-                    request
-                        .env
-                        .insert("MAGICIAN_CITIZEN_TOKEN".to_string(), token.clone());
-                    // Mirror the allowlist to Pi so the extension registers ONLY the granted tools.
-                    // ALWAYS set it (empty for build runs) so a stale value inherited from the host
-                    // process env can't leak in and silently scope a build run; the extension treats
-                    // an empty/absent value as unscoped == all (byte-identical default for builds).
-                    request.env.insert(
-                        "MAGICIAN_CITIZEN_TOOLS".to_string(),
-                        citizen_tools
-                            .iter()
-                            .map(|tool| format!("magician_{tool}"))
-                            .collect::<Vec<_>>()
-                            .join(","),
-                    );
-                    request.pi.extension_paths.push(path);
-                    Some(token)
+                    let base_url = match crate::magician_v2::execution::plane::grant_channel::open(
+                        &token,
+                        Vec::new(),
+                    )
+                    .await
+                    {
+                        Some((session, guard)) => {
+                            let url = crate::magician_v2::execution::plane::grant_channel::endpoint_on(
+                                &base_url,
+                                session.port,
+                            );
+                            citizen_channel = Some((session, guard));
+                            url
+                        },
+                        // No channel: an agent fenced from a goal workspace
+                        // gets no citizen tools rather than the API port;
+                        // any other keeps the API-port path.
+                        None if crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+                            .guards_workspaces =>
+                        {
+                            String::new()
+                        },
+                        None => base_url,
+                    };
+                    if base_url.is_empty() {
+                        citizen_token_registry().revoke(&token).await;
+                        tracing::warn!(
+                            target: "coding_engine",
+                            "no grant channel for a fenced agent's citizen token; skipping citizen tools"
+                        );
+                        None
+                    } else {
+                        request
+                            .env
+                            .insert("MAGICIAN_CITIZEN_URL".to_string(), base_url);
+                        request
+                            .env
+                            .insert("MAGICIAN_CITIZEN_TOKEN".to_string(), token.clone());
+                        // Mirror the allowlist to Pi so the extension registers ONLY the granted tools.
+                        // ALWAYS set it (empty for build runs) so a stale value inherited from the host
+                        // process env can't leak in and silently scope a build run; the extension treats
+                        // an empty/absent value as unscoped == all (byte-identical default for builds).
+                        request.env.insert(
+                            "MAGICIAN_CITIZEN_TOOLS".to_string(),
+                            citizen_tools
+                                .iter()
+                                .map(|tool| format!("magician_{tool}"))
+                                .collect::<Vec<_>>()
+                                .join(","),
+                        );
+                        request.pi.extension_paths.push(path);
+                        Some(token)
+                    }
                 },
                 Err(error) => {
                     tracing::warn!(
@@ -1262,6 +1472,46 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         },
         None => None,
     };
+    let mut _original_edit_lease = None;
+    if let Some(run) = original_run.as_ref() {
+        if !plan_only {
+            let token = citizen_token.as_deref().ok_or_else(|| {
+                ExecutionError::Step("Original-folder edits need the live approval channel".into())
+            })?;
+            let task_id = request.run_task_id.clone().ok_or_else(|| {
+                ExecutionError::Step("Original-folder edit task identity is missing".into())
+            })?;
+            let execution_id = request.run_execution_id.clone().ok_or_else(|| {
+                ExecutionError::Step("Original-folder edit execution identity is missing".into())
+            })?;
+            _original_edit_lease = Some(
+                crate::magician_v2::execution::coding_engine::original_edits::register(
+                    token,
+                    crate::magician_v2::execution::coding_engine::original_edits::EditSession {
+                        principal: principal.clone(),
+                        workspace: workspace.clone(),
+                        root_task_id: run.root_task_id.clone(),
+                        task_id,
+                        execution_id,
+                        scope_root: scope_root.clone(),
+                        repo: run.repo.clone(),
+                        agent_id: request.acting_agent_id.clone(),
+                    },
+                ),
+            );
+            let helper = scope_root.join("coding_engine/original_repo_edit.py");
+            std::fs::write(
+                &helper,
+                crate::magician_v2::execution::coding_engine::original_edits::HELPER,
+            )
+            .map_err(|error| {
+                ExecutionError::Step(format!(
+                    "could not prepare the original-folder edit helper: {error}"
+                ))
+            })?;
+            request.prompt.push_str(&format!("\n\nORIGINAL PROJECT FOLDER: {}. This is the owner's current checkout, including uncommitted work. Do not commit, stash, reset, change branches, clone, or copy the repository. Native writes are blocked by the OS. To create, modify or delete files, call `python3 '{}'` with JSON on stdin: {{\"rationale\":\"why\",\"files\":[{{\"path\":\"relative/path\",\"before\":\"full current text\",\"after\":\"full replacement text\"}}]}}. Use null before for a new file; null after to delete. The approval service shows the exact diff and waits for owner approval before applying it. Never circumvent this gate. Read the file again if its preimage is stale. Set the shell timeout to at least 360 seconds and wait for the helper result before proposing another edit. Report denied edits honestly. Run read-only checks here; do not request a staged proposal or merge.\n", run.repo.display(), helper.display()));
+        }
+    }
     // P1 — project the executing agent's persona into Pi via `--append-system-prompt` so the
     // coding loop inherits the same identity/taste the agent runs under. The file is written
     // OUTSIDE the shadow tree (never enters the proposal diff), like the Citizen extension, and
@@ -1595,6 +1845,16 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             predecessor_ledger_dirs: &predecessor_ledger_dirs,
         },
     );
+    if let Some(selection) = coding_authority
+        .journal
+        .as_ref()
+        .map(|seed| &seed.selection)
+    {
+        request.claude.model = selection.model.clone();
+        request.claude.effort = selection.reasoning_effort.clone();
+        request.agy.model = selection.model.clone();
+        request.agy.effort = selection.reasoning_effort.clone();
+    }
     bind_claude_turn_options(
         &mut request,
         engine,
@@ -1947,11 +2207,16 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         dirs::home_dir().as_deref(),
     );
     let turn_write_roots = write_roots.clone();
-    let run_turn = crate::magician_v2::execution::coding_engine::with_coding_write_roots(
-        write_roots,
-        adapter.run_turn(request),
+    let run_turn = crate::magician_v2::execution::plane::grant_channel::with_plane_session(
+        citizen_channel.as_ref().map(|(session, _)| session.clone()),
+        crate::magician_v2::execution::coding_engine::with_coding_write_roots(
+            write_roots,
+            adapter.run_turn(request),
+        ),
     );
-    let run_outcome = if shadow_workspace_root.starts_with(&fenced_real_repo) {
+    let run_outcome = if original_run.is_none()
+        && shadow_workspace_root.starts_with(&fenced_real_repo)
+    {
         tracing::warn!(
             real_working_dir = %repo_binding.real_path.display(),
             shadow = %shadow_workspace_root.display(),
@@ -1981,6 +2246,17 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         )
         .await
     };
+    // Retire edit authority as soon as the native turn ends, including cancellation.
+    drop(_original_edit_lease.take());
+    // An engine refusing its pinned model by name is a model-discovery
+    // result: the model is hidden from pickers until the CLI lists it again.
+    if let Err(error) = run_outcome.as_ref() {
+        crate::magician_v2::execution::coding_engine::model_discovery::observe_engine_failure(
+            engine,
+            &staging_request,
+            &format!("{error:#}"),
+        );
+    }
     // Stopped because super god mode ended: say so, and stage nothing it
     // wrote (checked before staging, which writes the proposal).
     let run_outcome = if super_watch.as_ref().is_some_and(|watch| watch.revoked()) {
@@ -1992,7 +2268,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     };
     // A Discuss turn is read-only by design: a refused write there is the
     // fence working, not a folder to ask the owner to allow.
-    let sandbox_blocked = if plan_only {
+    let sandbox_blocked = if plan_only || original_run.is_some() {
         None
     } else {
         sandbox_write_blocked(
@@ -2035,23 +2311,44 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // Why the run stopped, if something stopped it. Read before the entry is
     // cleared, so both the success and failure paths can report it.
     let termination = request_termination.as_deref().and_then(termination_reason);
-    // Charge the run's dollar cap on every path out of the turn, before any
-    // later step can return early. The usage cell is only read here; the /llm
-    // bridge below still takes it.
+    // Charge the turn on every path out of it, before any later step can
+    // return early: the run's dollar cap when the run has one, and the owner's
+    // spend envelope always. This is the turn's only envelope charge (the cost
+    // ledger records the turn; it does not charge the envelope). The usage
+    // cell is only read here; the /llm bridge below still takes it.
+    let turn_usage = usage_cell
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned());
+    let reported = turn_usage
+        .as_ref()
+        .filter(|usage| usage.cost_known)
+        .map(|usage| usd_to_micro(usage.cost));
+    let charged = match cost_ceiling.as_deref() {
+        Some(ceiling) => ceiling.settle(reported),
+        None => reported,
+    };
     if let Some((ledger, _)) = cost_ledger.as_ref() {
-        let reported = usage_cell.lock().ok().and_then(|slot| {
-            slot.as_ref()
-                .filter(|usage| usage.cost_known)
-                .map(|usage| usd_to_micro(usage.cost))
-        });
-        let charged = match cost_ceiling.as_deref() {
-            Some(ceiling) => ceiling.settle(reported),
-            None => reported,
-        };
         ledger.record_turn(
             &budget_execution_id,
             charged,
             chrono::Utc::now().timestamp_millis(),
+        );
+    }
+    if let Some((micro_usd, estimated)) = coding_turn_envelope_spend(
+        charged,
+        turn_usage.as_ref(),
+        engine,
+        &coding_profile.provider,
+        &coding_profile.model,
+        chrono::Utc::now().timestamp_millis(),
+    ) {
+        crate::magician_v2::spend_envelope_producers::charge_micro(
+            spend_class,
+            &principal,
+            &workspace,
+            micro_usd,
+            estimated,
         );
     }
     if let Some((ledger_dir, invocation_id)) = coding_ledger_target.as_ref() {
@@ -2125,10 +2422,12 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // shadow and the captured diff may be unreliable (e.g. inverted) — surface it loudly
     // instead of silently staging a contaminated proposal.
     let real_fingerprint_after = real_repo_fingerprint(&fenced_real_repo).await;
-    if matches!(
-        (&real_fingerprint_before, &real_fingerprint_after),
-        (Some(before), Some(after)) if before != after
-    ) {
+    if original_run.is_none()
+        && matches!(
+            (&real_fingerprint_before, &real_fingerprint_after),
+            (Some(before), Some(after)) if before != after
+        )
+    {
         tracing::warn!(
             real_working_dir = %fenced_real_repo.display(),
             trusted = trusted_run.is_some(),
@@ -2297,8 +2596,11 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // Revoke the per-run citizen token the moment the turn settles (success,
     // error, or timeout) so a stale token can never reach the Citizen API.
     if let Some(token) = &citizen_token {
+        crate::magician_v2::execution::coding_engine::original_edits::revoke(token);
         citizen_token_registry().revoke(token).await;
+        crate::magician_v2::execution::plane::grant_channel::forget(token);
     }
+    drop(citizen_channel);
     // /llm bridge: record THIS run's LLM spend regardless of outcome (success/failure/cancel) —
     // `run_turn` populated the cell with the per-turn delta on every terminal path. Skip an empty
     // delta (no spend) so failed-before-any-call runs don't write a zero row.
@@ -2329,6 +2631,18 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // and the coordinator was told the goal was already satisfied while the
     // engineer reported edits — so it paused to ask the owner for a proposal
     // that does not exist (found in the 2026-10-08 rehearsal).
+    let original_applied = original_run
+        .as_ref()
+        .map(|run| {
+            crate::magician_v2::execution::coding_engine::original_edits::applied_history(
+                &scope_root,
+                &run.root_task_id,
+            )
+            .into_iter()
+            .filter(|txn| txn.execution_id == staging_request.run_execution_id)
+            .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let trusted_commit_summary = trusted_branch_status.as_ref().and_then(|status| {
         let ahead = status.get("commits_ahead").and_then(Value::as_u64)?;
         Some((
@@ -2382,7 +2696,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 "coding.completed",
                 json!({
                     "engine": engine_label,
-                    "no_change": proposal_id.is_none() && !trusted_has_commits,
+                    "no_change": proposal_id.is_none() && !trusted_has_commits && original_applied.is_empty(),
                     "committed": trusted_has_commits,
                     "plan_run": plan_only,
                     "pending_approval": proposal_id.is_some(),
@@ -2420,7 +2734,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 "coding.completed",
                 json!({
                     "engine": engine_label,
-                    "no_change": proposal_id.is_none() && !trusted_has_commits,
+                    "no_change": proposal_id.is_none() && !trusted_has_commits && original_applied.is_empty(),
                     "committed": trusted_has_commits,
                     "plan_run": plan_only,
                     "pending_approval": proposal_id.is_some(),
@@ -2458,6 +2772,13 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                         "plan_run": true,
                         "no_change": true,
                         "reason": "Plan run (Discuss): produced a plan; no code changes were staged.",
+                    })
+                } else if let Some(run) = &original_run {
+                    json!({
+                        "status":"ok", "work_location":"original", "repo_path":run.repo,
+                        "applied":!original_applied.is_empty(), "no_change":original_applied.is_empty(),
+                        "approved_transactions":original_applied.iter().map(|txn| txn.id.as_str()).collect::<Vec<_>>(),
+                        "reason":format!("{} approved edit transaction(s) applied directly to the original folder. No clone, proposal, automatic commit or merge. Report only changes confirmed by these transactions and any checks actually run.", original_applied.len()),
                     })
                 } else if let Some((ahead, branch, base, head)) =
                     trusted_commit_summary.as_ref().filter(|(ahead, ..)| *ahead > 0)
@@ -2597,6 +2918,11 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 object.insert("budget".to_string(), budget_telemetry);
                 if let Some(status) = trusted_branch_status.take() {
                     object.insert("trusted_branch".to_string(), status);
+                }
+                // A trusted project that ran sandboxed says so in the result
+                // too, so the agent treats its diff review as this run's path.
+                if let Some(note) = trusted_fallback.as_deref() {
+                    object.insert("trusted_fallback".to_string(), json!(note));
                 }
                 if let Some(blocked) = sandbox_blocked.clone() {
                     object.insert("sandbox_write_blocked".to_string(), blocked);
@@ -3708,6 +4034,11 @@ async fn coding_task_project(
 /// chain keeps the mode it started with — an existing workspace record wins
 /// even if the project's trust changed since, and a chain whose root ran
 /// sandboxed (no record, depth > 0) stays sandboxed.
+/// The chain's trusted workspace, if it has (or should start) one, plus the
+/// owner-facing reason when a trusted project falls back to the sandboxed shadow
+/// copy (its folder is not a repository root, or there is no git), as decided by
+/// `trusted_workspace::effective_trust_mode`. A plan (Discuss) run never
+/// starts a clone: it only reads, so the shadow copy serves.
 async fn resolve_trusted_run_workspace(
     resources: &AgentResources,
     principal: &str,
@@ -3715,43 +4046,96 @@ async fn resolve_trusted_run_workspace(
     scope_root: &Path,
     workspace_root: &Path,
     continuation: Option<&CodingContinuationContext>,
-) -> Result<Option<TrustedRunWorkspace>, String> {
+    plan_only: bool,
+) -> Result<
+    (
+        Option<TrustedRunWorkspace>,
+        Option<String>,
+        Option<crate::magician_v2::vibedev::original_workspace::OriginalWorkspace>,
+    ),
+    String,
+> {
     let Some(context) = continuation else {
-        return Ok(None);
+        return Ok((None, None, None));
     };
     let Some(service) = resources.artifact_v2_service.as_ref() else {
-        return Ok(None);
+        return Ok((None, None, None));
     };
     let scope =
         ScopeRef::system_internal_unauthenticated(&principal.to_string(), &workspace.to_string());
     let Ok(task) = service.get_task(&scope, &context.current_task_id).await else {
-        return Ok(None);
+        return Ok((None, None, None));
     };
     let Some(project_id) = parse_vibedev_project_id(&task.manifest.description) else {
-        return Ok(None);
+        return Ok((None, None, None));
     };
-    let Some(project) = read_vibedev_projects(scope_root)
+    let Some(mut project) = read_vibedev_projects(scope_root)
         .into_iter()
         .find(|project| project.project_id == project_id && !project.archived)
     else {
-        return Ok(None);
+        return Ok((None, None, None));
     };
-    let existing = trusted_workspace::load_run_workspace(scope_root, &context.root_task_id);
-    if existing.is_none()
-        && (project.trust != VibeDevProjectTrust::Trusted || context.chain_depth > 0)
-    {
-        return Ok(None);
+    let location = project
+        .run_links
+        .get(&context.root_task_id)
+        .and_then(|link| link.work_location.clone());
+    if let Some(location) = &location {
+        project.trust = location.mode;
+        project.repo_path = location.repo_path.clone();
     }
-    let real_repo = match project
-        .repo_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty() && *path != ".")
+    let existing = trusted_workspace::load_run_workspace(scope_root, &context.root_task_id);
+    use crate::magician_v2::vibedev::{original_workspace, projects::VibeDevProjectTrust};
+    let original = original_workspace::load(scope_root, &context.root_task_id)?;
+    if original.is_some()
+        || (existing.is_none()
+            && location.is_some()
+            && project.trust == VibeDevProjectTrust::Original)
     {
-        Some(path) if Path::new(path).is_absolute() => PathBuf::from(path),
-        Some(path) => workspace_root.join(path),
-        None => workspace_root.to_path_buf(),
-    };
+        let repo =
+            trusted_workspace::project_repo_folder(project.repo_path.as_deref(), workspace_root);
+        let run = original_workspace::ensure(
+            scope_root,
+            &context.root_task_id,
+            &project.project_id,
+            &repo,
+        )?;
+        if !crate::magician_v2::execution::coding_engine::os_sandbox_available() {
+            return Err(
+                "Original-folder runs require a working OS sandbox to hold edits for review".into(),
+            );
+        }
+        return Ok((None, None, Some(run)));
+    }
+
+    // The same decision the coordinator's goal is written from
+    // (`artifact_v2::service::vibedev_change_delivery_block`), so the brief
+    // never promises a branch run this dispatch then refuses. Trusted mode
+    // needs git and a repository root to clone; without them the run works
+    // sandboxed (shadow copy, diff review) until the owner fixes the folder
+    // (project health offers `git init`).
+    let mode = trusted_workspace::effective_trust_mode(
+        &project,
+        workspace_root,
+        existing.is_some(),
+        if location.is_some() {
+            0
+        } else {
+            context.chain_depth
+        },
+        plan_only,
+    );
+    match &mode {
+        trusted_workspace::EffectiveTrustMode::Trusted => {},
+        trusted_workspace::EffectiveTrustMode::Original => {
+            return Err("original-folder run location was not pinned".into())
+        },
+        trusted_workspace::EffectiveTrustMode::Sandboxed => return Ok((None, None, None)),
+        trusted_workspace::EffectiveTrustMode::SandboxedFallback { .. } => {
+            return Ok((None, mode.fallback_note(&project.name), None));
+        },
+    }
+    let real_repo =
+        trusted_workspace::project_repo_folder(project.repo_path.as_deref(), workspace_root);
     sweep_trusted_run_workspaces_occasionally(scope_root);
     let scope_root = scope_root.to_path_buf();
     let root_task_id = context.root_task_id.clone();
@@ -3767,7 +4151,7 @@ async fn resolve_trusted_run_workspace(
     })
     .await
     .map_err(|error| format!("trusted workspace task failed: {error}"))?
-    .map(Some)
+    .map(|run| (Some(run), None, None))
 }
 
 async fn derive_coding_continuation_context(
@@ -3818,26 +4202,14 @@ async fn derive_coding_continuation_context(
         current_execution_id.as_deref(),
     );
 
-    let mut root_task_id = current_task_id.clone();
-    let mut parent_task_id = parent_task_id_from_description(&current.manifest.description);
-    let first_parent_task_id = parent_task_id.clone();
-    let mut ancestor_task_ids = Vec::new();
-    let mut chain_depth = 0usize;
-    while let Some(parent_id) = parent_task_id.clone() {
-        if chain_depth >= 24 {
-            break;
-        }
-        let Ok(parent) = service.get_task(&scope, &parent_id).await else {
-            break;
-        };
-        if !is_vibedev_task_record(&parent.manifest.ui_thread_id, &parent.manifest.tags) {
-            break;
-        }
-        ancestor_task_ids.push(parent.manifest.task_id.clone());
-        root_task_id = parent.manifest.task_id.clone();
-        parent_task_id = parent_task_id_from_description(&parent.manifest.description);
-        chain_depth += 1;
-    }
+    let first_parent_task_id = parent_task_id_from_description(&current.manifest.description);
+    let ancestor_task_ids =
+        vibedev_chain_ancestor_ids(service, &scope, &current.manifest.description).await;
+    let chain_depth = ancestor_task_ids.len();
+    let root_task_id = ancestor_task_ids
+        .last()
+        .cloned()
+        .unwrap_or_else(|| current_task_id.clone());
 
     Some(CodingContinuationContext {
         source: VIBEDEV_THREAD_ID.to_string(),
@@ -3930,7 +4302,7 @@ fn resolve_run_coding_profile(
                 .and_then(|item| item.model.clone())
                 .unwrap_or_else(|| "grok-build".to_string()),
             supports_user_image_inputs: false,
-            thinking_level: None,
+            thinking_level: selection.and_then(|item| item.reasoning_effort.clone()),
             api_key_env: None,
             turn_timeout_secs: magician_config.coding.turn_timeout_secs,
             context_window_tokens: None,
@@ -3950,7 +4322,7 @@ fn resolve_run_coding_profile(
                 .and_then(|item| item.model.clone())
                 .unwrap_or_else(|| "claude".to_string()),
             supports_user_image_inputs: false,
-            thinking_level: None,
+            thinking_level: selection.and_then(|item| item.reasoning_effort.clone()),
             api_key_env: None,
             turn_timeout_secs: magician_config.coding.turn_timeout_secs,
             context_window_tokens: None,
@@ -3970,7 +4342,7 @@ fn resolve_run_coding_profile(
                 .and_then(|item| item.model.clone())
                 .unwrap_or_else(|| "agy".to_string()),
             supports_user_image_inputs: false,
-            thinking_level: None,
+            thinking_level: selection.and_then(|item| item.reasoning_effort.clone()),
             api_key_env: None,
             turn_timeout_secs: magician_config.coding.turn_timeout_secs,
             context_window_tokens: None,
@@ -4105,7 +4477,8 @@ fn adapter_spec_for_engine(
             }
             Ok(CodingAdapterSpec::Claude(ClaudeCodingOptions {
                 binary,
-                use_api_key: coding.claude.use_api_key,
+                use_api_key: coding.claude.use_api_key
+                    || crate::magician_v2::harness_auth::uses_magician_credentials("claude_code"),
             }))
         },
         CodingEngineKind::AgyCli => {
@@ -4133,7 +4506,8 @@ fn adapter_spec_for_engine(
             }
             Ok(CodingAdapterSpec::Agy(AgyCodingOptions {
                 binary,
-                use_api_key: coding.agy.use_api_key,
+                use_api_key: coding.agy.use_api_key
+                    || crate::magician_v2::harness_auth::uses_magician_credentials("agy"),
             }))
         },
     }
@@ -4343,6 +4717,7 @@ fn bind_grok_turn_options(
     };
     if let Some(selection) = journal.map(|seed| &seed.selection) {
         request.grok.model = selection.model.clone();
+        request.grok.effort = selection.reasoning_effort.clone();
     }
     // The run loop's reattach, ahead of everything else. See
     // `bind_codex_turn_options` for the ordering argument and for the engine
@@ -4588,8 +4963,8 @@ async fn apply_vibedev_coding_constraint(
     principal: &str,
     workspace: &str,
     args: &Value,
-    coding: &MagicianCodingSettings,
     proposed: Option<String>,
+    proposal_is_agent_default: bool,
 ) -> Result<VibeDevCodingAuthority, String> {
     let unconstrained = VibeDevCodingAuthority {
         profile_arg: proposed.clone(),
@@ -4639,11 +5014,22 @@ async fn apply_vibedev_coding_constraint(
             },
         }
     }
-    let (catalog, default_profile_id) = dispatch_profile_catalog(coding);
+    let current_catalog = VibeDevCodingCatalog::from_config(&resources.magician_config_snapshot());
+    let (catalog, default_profile_id) =
+        (current_catalog.entries, current_catalog.default_profile_id);
+    // The engine the owner pinned for this chain outranks an engineer's own
+    // default (`llm_routing.coding_profile`): only a profile the call names
+    // is checked against the pin. Measured 2026-10-19: a principal engineer
+    // bound to GPT-6.1 Sol had every call refused under a Luna pin.
+    let proposed_for_pin = proposal_checked_against_pin(
+        proposed.clone(),
+        proposal_is_agent_default,
+        stored.is_some(),
+    );
     match decide_vibedev_dispatch_profile(
         true,
         stored,
-        proposed.as_deref(),
+        proposed_for_pin.as_deref(),
         &catalog,
         &default_profile_id,
     ) {
@@ -4659,6 +5045,20 @@ async fn apply_vibedev_coding_constraint(
         Err(error) => Err(format!(
             "coding_profile is not allowed for this VibeDev request: {error}"
         )),
+    }
+}
+
+/// The profile a VibeDev dispatch checks against the chain's pin: what the
+/// call named, never the agent's own default once a pin exists.
+fn proposal_checked_against_pin(
+    proposed: Option<String>,
+    proposal_is_agent_default: bool,
+    has_pin: bool,
+) -> Option<String> {
+    if proposal_is_agent_default && has_pin {
+        None
+    } else {
+        proposed
     }
 }
 
@@ -4688,11 +5088,6 @@ async fn vibedev_constraint_lookup_chain(
         depth += 1;
     }
     (ids, in_vibedev_chain)
-}
-
-fn dispatch_profile_catalog(coding: &MagicianCodingSettings) -> (Vec<ProfileCatalogEntry>, String) {
-    let catalog = VibeDevCodingCatalog::from_coding_settings(coding);
-    (catalog.entries, catalog.default_profile_id)
 }
 
 fn is_vibedev_task_record(
@@ -4736,6 +5131,37 @@ pub fn parent_task_id_from_description(description: &str) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+}
+
+/// Parent → root task ids of the VibeDev chain a task with `description`
+/// continues; empty for a chain's root. Follows the fenced `Parent task:` lines
+/// while each parent is a VibeDev task, at most 24 deep.
+///
+/// The one chain walk both readers of a chain's trust mode use — this
+/// dispatcher and the coordinator's goal
+/// (`artifact_v2::service::vibedev_change_delivery_block`) — so they find the
+/// same root and depth.
+pub async fn vibedev_chain_ancestor_ids(
+    service: &crate::magician_v2::artifact_v2::service::ArtifactV2Service,
+    scope: &ScopeRef,
+    description: &str,
+) -> Vec<String> {
+    let mut ancestors = Vec::new();
+    let mut parent_task_id = parent_task_id_from_description(description);
+    while let Some(parent_id) = parent_task_id.take() {
+        if ancestors.len() >= 24 {
+            break;
+        }
+        let Ok(parent) = service.get_task(scope, &parent_id).await else {
+            break;
+        };
+        if !is_vibedev_task_record(&parent.manifest.ui_thread_id, &parent.manifest.tags) {
+            break;
+        }
+        parent_task_id = parent_task_id_from_description(&parent.manifest.description);
+        ancestors.push(parent.manifest.task_id);
+    }
+    ancestors
 }
 
 fn attachment_session_id(args: &Value) -> Option<String> {
@@ -5059,7 +5485,7 @@ fn workspace_relative_path(root: &Path, path: &Path) -> Result<String, String> {
 /// non-git dir or any git error (the OS sandbox is the primary defense there, and a
 /// `None`/`None` pair is treated as "can't tell", never a false positive).
 async fn real_repo_fingerprint(real_path: &std::path::Path) -> Option<String> {
-    let output = tokio::process::Command::new("git")
+    let output = tokio::process::Command::new(runtime_core::process::git_program())
         .arg("-C")
         .arg(real_path)
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
@@ -5544,6 +5970,23 @@ mod tests {
     use crate::magician_v2::execution::file_edit::transaction::TransactionScope;
     use tempfile::TempDir;
 
+    /// A plan run's flag alone forces plan mode: the model passing no
+    /// `plan_only` (or `false`) does not stage a diff.
+    #[test]
+    fn the_plan_run_flag_forces_plan_mode_without_any_argument() {
+        assert!(forced_plan_run(
+            &json!({"__plan_run": true, "plan_only": false})
+        ));
+        assert!(forced_plan_run(&json!({"__plan_run": true})));
+        assert!(!forced_plan_run(&json!({})));
+        assert!(!forced_plan_run(&json!({"__plan_run": false})));
+        let source = include_str!("run_coding_task.rs");
+        assert!(
+            source.contains("let plan_only = forced_plan_run(&args)"),
+            "plan_only must be decided from the run's flag first"
+        );
+    }
+
     #[test]
     fn coding_events_stamp_the_run_engine_not_hardcoded_pi() {
         let source = include_str!("run_coding_task.rs");
@@ -5637,10 +6080,15 @@ mod tests {
         let denied_boxed = super_god_skips_qualification(HarnessFence::Box, "unqualified");
         let denied_profile = super_god_skips_qualification(HarnessFence::Profile, "incompatible");
         let missing = super_god_skips_qualification(HarnessFence::Unrestricted, "missing");
-        crate::magician_v2::god_mode::configure_super(&crate::config::SuperGodModeSettings::default());
+        crate::magician_v2::god_mode::configure_super(
+            &crate::config::SuperGodModeSettings::default(),
+        );
         let off = super_god_skips_qualification(HarnessFence::Unrestricted, "unqualified");
         assert!(approved, "approved: the unqualified engine runs");
-        assert!(!denied_boxed && !denied_profile, "denied or timed out: qualification holds");
+        assert!(
+            !denied_boxed && !denied_profile,
+            "denied or timed out: qualification holds"
+        );
         assert!(!missing, "a missing engine is still refused");
         assert!(!off, "super god mode off: qualification holds");
     }
@@ -5690,6 +6138,77 @@ mod tests {
             assert_eq!(execution_token_budget_snapshot(), Some((0, 100)));
         })
         .await;
+    }
+
+    /// A chat-launched coding turn is interactive (never refused by the spend
+    /// envelope); any other turn is autonomous.
+    #[test]
+    fn a_chat_launched_coding_turn_is_interactive_spend() {
+        assert_eq!(
+            coding_spend_class(&json!({"__chat_session_id": "session"})),
+            magicllm::LlmWorkloadClass::InteractiveTask
+        );
+        assert_eq!(
+            coding_spend_class(&json!({"__chat_turn_id": "turn"})),
+            magicllm::LlmWorkloadClass::InteractiveTask
+        );
+        assert_eq!(
+            coding_spend_class(&json!({"__task_id": "task", "__chat_session_id": ""})),
+            magicllm::LlmWorkloadClass::AutonomousTask
+        );
+    }
+
+    /// Every coding turn reaches the envelope, with or without a per-run cap:
+    /// the ledger's figure when there is one, else the reported tokens priced.
+    #[test]
+    fn a_coding_turn_is_charged_to_the_envelope_without_a_run_cap() {
+        let at_ms = chrono::Utc::now().timestamp_millis();
+        let usage = CodingTurnUsage {
+            input: 200_000,
+            output: 20_000,
+            cache_read: 150_000,
+            success: true,
+            ..CodingTurnUsage::default()
+        };
+        assert_eq!(
+            coding_turn_envelope_spend(
+                Some(1_250_000),
+                Some(&usage),
+                CodingEngineKind::CodexAppServer,
+                "codex",
+                "gpt-5",
+                at_ms,
+            ),
+            Some((1_250_000, false)),
+            "the ledger's figure is charged as is, never re-priced on top"
+        );
+        let (micro, estimated) = coding_turn_envelope_spend(
+            None,
+            Some(&usage),
+            CodingEngineKind::CodexAppServer,
+            "codex",
+            "gpt-5",
+            at_ms,
+        )
+        .expect("a subscription turn that reported tokens is priced");
+        assert!(micro > 0);
+        assert!(!estimated, "the model has a pricing row");
+        assert_eq!(
+            coding_turn_envelope_spend(
+                None,
+                Some(&CodingTurnUsage::default()),
+                CodingEngineKind::GrokAcp,
+                "grok",
+                "default",
+                at_ms,
+            ),
+            None,
+            "no cost and no tokens: nothing to count"
+        );
+        assert_eq!(
+            coding_turn_envelope_spend(None, None, CodingEngineKind::Pi, "openai", "gpt-5", at_ms),
+            None
+        );
     }
 
     #[test]
@@ -6750,13 +7269,21 @@ mod tests {
         assert!(!inherited.is_vibedev());
     }
 
-    /// The chain parent is a *control* line sharing a string with the user's own
-    /// request. A request that forges the fence's closing marker and then writes
-    /// its own `Parent task:` line above the server's must not be believed — it
-    /// would thread this build onto someone else's chain, and so onto their
-    /// coding session.
+    /// An engineer's own `llm_routing.coding_profile` gives way to the
+    /// chain's pin; a profile the call names is still checked against it.
     #[test]
-    fn dispatch_catalog_pins_the_cockpit_balanced_to_premium_escalation() {
+    fn a_pin_outranks_the_agents_default_profile_but_not_a_named_one() {
+        let sol = Some("pi/model/openai/gpt-6.1-sol/high".to_string());
+        assert_eq!(proposal_checked_against_pin(sol.clone(), true, true), None);
+        assert_eq!(proposal_checked_against_pin(sol.clone(), false, true), sol);
+        assert_eq!(proposal_checked_against_pin(sol.clone(), true, false), sol);
+    }
+
+    /// The implicit balanced → premium hop went with authored profiles
+    /// (2026-10-17): a settings profile escalates only when its definition
+    /// names a target, never by its id.
+    #[test]
+    fn dispatch_catalog_adds_no_implicit_escalation() {
         let mut coding = crate::config::MagicianCodingSettings::default();
         coding.default_profile = Some("coding-balanced".to_string());
         coding.profiles = vec![
@@ -6777,15 +7304,24 @@ mod tests {
                 enabled: true,
             },
         ];
-        let (entries, default_id) = dispatch_profile_catalog(&coding);
+        let catalog = VibeDevCodingCatalog::from_coding_settings(&coding);
+        let (entries, default_id) = (catalog.entries, catalog.default_profile_id);
         assert_eq!(default_id, "coding-balanced");
         let balanced = entries
             .iter()
             .find(|entry| entry.definition.id() == "coding-balanced")
             .expect("floor");
-        assert_eq!(balanced.definition.escalates_to(), ["coding-premium"]);
+        assert!(balanced.definition.escalates_to().is_empty());
+        assert!(entries
+            .iter()
+            .all(|entry| entry.definition.escalates_to().is_empty()));
     }
 
+    /// The chain parent is a *control* line sharing a string with the user's own
+    /// request. A request that forges the fence's closing marker and then writes
+    /// its own `Parent task:` line above the server's must not be believed — it
+    /// would thread this build onto someone else's chain, and so onto their
+    /// coding session.
     #[test]
     fn a_forged_fence_in_the_request_cannot_choose_the_chain_parent() {
         let description = "VibeDev coding follow-up:\n\

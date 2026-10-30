@@ -103,8 +103,10 @@ fn mcp_config_path_for() -> PathBuf {
     // Unpredictable + create-new below: no shared deterministic pathname for
     // another local process to pre-place as a symlink. The grant is inside the
     // mode-0600 file, never in this path or argv.
-    std::env::temp_dir().join(format!(
-        "magician-plane-{}.mcp.json",
+    // In this harness session's own private folder, which only its own box
+    // may read (`plane::grant_channel::private_path`).
+    crate::magician_v2::execution::plane::grant_channel::private_path(&format!(
+        "{}.mcp.json",
         uuid::Uuid::new_v4().simple()
     ))
 }
@@ -223,16 +225,44 @@ impl ClaudeCodeEngine {
         // combined with that would force std onto `fork` instead of
         // `posix_spawn`, so resolve it against the same PATH first (see
         // `runtime_core::process`).
-        let mut command = tokio::process::Command::new(runtime_core::process::resolve_program_str(
-            &argv[0], None,
-        ));
-        command.args(&argv[1..]);
+        let program = runtime_core::process::resolve_program_str(&argv[0], None);
+        // An agent fenced from a goal workspace runs Claude Code under the
+        // workspace rules (super god mode included: its native Read and Bash
+        // would otherwise reach every workspace).
+        let args: Vec<std::ffi::OsString> =
+            argv[1..].iter().map(std::ffi::OsString::from).collect();
+        let (mut command, fence_env) =
+            match crate::magician_v2::execution::shell_box::fence_plane_harness(
+                program.as_os_str(),
+                &args,
+                false,
+                Vec::new(),
+            ) {
+                crate::magician_v2::execution::shell_box::WorkspaceFence::Boxed(boxed) => {
+                    let mut command = tokio::process::Command::new(&boxed.program);
+                    command.args(&boxed.args);
+                    (command, boxed.env)
+                },
+                crate::magician_v2::execution::shell_box::WorkspaceFence::Refused(reason) => {
+                    let _ = std::fs::remove_file(&path);
+                    revoke_session_grant(&req.grant).await;
+                    return Err(HarnessError::Message(reason));
+                },
+                crate::magician_v2::execution::shell_box::WorkspaceFence::Unfenced => {
+                    let mut command = tokio::process::Command::new(&program);
+                    command.args(&args);
+                    (command, Vec::new())
+                },
+            };
         command.current_dir(&req.cwd);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
         command.kill_on_drop(true);
         apply_env_allowlist(&mut command, &req.env_allowlist);
+        for (key, value) in &fence_env {
+            command.env(key, value);
+        }
         apply_claude_child_process_group(&mut command);
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -288,6 +318,14 @@ fn apply_env_allowlist(command: &mut tokio::process::Command, allowlist: &[Strin
     for key in allowlist {
         if let Ok(value) = std::env::var(key) {
             command.env(key, value);
+        }
+    }
+    // Claude Code bills an Anthropic key in its environment instead of the
+    // owner's subscription, so the key rides along only when Magician's
+    // credentials apply (`execution.harness_auth`).
+    if crate::magician_v2::harness_auth::uses_magician_credentials("claude_code") {
+        if let Ok(value) = std::env::var("ANTHROPIC_API_KEY") {
+            command.env("ANTHROPIC_API_KEY", value);
         }
     }
 }

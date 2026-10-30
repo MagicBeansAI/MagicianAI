@@ -211,14 +211,32 @@ impl<'a, E: Effects> Engine<'a, E> {
 
         // Ask the machine before asking the person: re-running a wizard on a
         // configured install should be quiet, not a second interrogation.
+        // A make step that names `again` is the exception. The default is no,
+        // so a dry run stays on the quiet path.
+        let mut rerun = false;
         if self.effects.probe(id).is_present() {
-            return StepOutcome::AlreadyThere;
+            let prompt = match &install {
+                InstallAction::Make {
+                    again: Some(prompt),
+                    ..
+                } => Some(prompt.as_str()),
+                _ => None,
+            };
+            if let Some(prompt) = prompt {
+                if self.effects.confirm(prompt, false) {
+                    rerun = true;
+                } else {
+                    return StepOutcome::AlreadyThere;
+                }
+            } else {
+                return StepOutcome::AlreadyThere;
+            }
         }
 
         match install {
             InstallAction::WithRuntime => StepOutcome::WithRuntime,
 
-            InstallAction::Make { target, script } => {
+            InstallAction::Make { target, script, .. } => {
                 // Decided before asking. Offering to set something up and then
                 // discovering it is impossible here wastes the one answer the
                 // person gave.
@@ -231,7 +249,8 @@ impl<'a, E: Effects> Engine<'a, E> {
                         ),
                     };
                 }
-                if !self.effects.confirm(&format!("Set up {name} now?"), true) {
+                // The switch prompt already authorized this run.
+                if !rerun && !self.effects.confirm(&format!("Set up {name} now?"), true) {
                     return StepOutcome::Declined;
                 }
                 let attempt = if in_checkout {
@@ -241,9 +260,12 @@ impl<'a, E: Effects> Engine<'a, E> {
                         .run_script(script.as_deref().unwrap_or_default())
                 };
                 if let Err(e) = attempt {
-                    // Still probe: a target can report failure having already
-                    // done the part that matters, and the probe is the authority.
                     self.effects.say(&format!("  {target} reported: {e}"));
+                    // Match the GUI: a leftover inventory cannot turn a failed
+                    // installer into success or unblock its dependants.
+                    return StepOutcome::NotVerified {
+                        detail: format!("{target} failed: {e}"),
+                    };
                 }
                 self.verify(id)
             },

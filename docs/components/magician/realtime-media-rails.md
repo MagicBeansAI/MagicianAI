@@ -47,6 +47,15 @@ host-native clients may pin `realtime_profile` (or `profile`) in
 `session.start`. `voice_mode=hands_free` is the local FluidAudio → Chat → TTS
 cascade; `voice_mode=realtime` the named vendor profile.
 
+**Which chat a call posts into.** Clients send the chat on screen as
+`session.start.chat_session_id` (web from the chat store, iOS and Android from
+the open chat). The orchestrator uses it when it is the caller's open chat
+with the call's agent (not archived, not a concurrent-voice branch), and the
+call takes that chat's `ui_thread_id`. Otherwise, and for callers with no chat
+(wake word, war room, thinking map), it falls back to the active chat of
+`ui_thread_id`. That fallback alone is ambiguous: a thread with chat tabs has
+several active chats.
+
 **Turn boundaries.** `turn_boundary=server_vad|push_to_talk` maps to provider
 turn detection (`server_vad` / `none`) and persists across rotations; the Mac
 Orb always uses `server_vad` for Live. Otherwise `ptt.release` commits;
@@ -126,7 +135,7 @@ Under `/api/magician/v2/media`, scope-isolated by the workspace bearer.
 | POST   | `/sessions/{id}/events` | Publish a whitelisted client event |
 | GET    | `/providers` | `{ tts, tts_fallbacks?, stt, stt_fallbacks?, realtime_voice? }`; TTS rows carry default format, voices/formats, truthful streaming capability. `realtime_voice` is set when `resolve_realtime_provider(VoiceController)` succeeded at boot (gates `VoiceCallButton`); profiles list topology, mode, voices, models, availability. |
 | GET    | `/audio-settings` | Audio catalog, profiles/defaults, engine availability, revision. |
-| PUT    | `/audio-settings` | Revision-checked; persists and swaps the snapshot. FluidAudio disable drops leases, streams and TTS cache, stops an owned sidecar (external: unload models, not killed). Enable verifies host support; no restart. |
+| PUT    | `/audio-settings` | Revision-checked; persists only the changed `media:` values (comments kept) and swaps the snapshot. FluidAudio disable drops leases, streams and TTS cache, stops an owned sidecar (external: unload models, not killed). Enable verifies host support; no restart. |
 | POST   | `/audio-engines/{engine_id}/models/{action}` | Prewarm/unload. |
 | GET    | `/surfaces/{surface}/resolved` | Effective profile for a scope, with optional hints. |
 | GET    | `/preferences` | Schema-v3: `auto_speak`, `voice_mode`, `require_voice_prefix`, `surface_profiles`, `surface_stage_options`, `realtime_voices`. |
@@ -342,8 +351,10 @@ cumulative `transcript.assistant.delta`. Responses close on `turnComplete`
 full-duplex turn-taking; Magician is the delegated backend
 (`delegation.type = client` → `delegate_to_chat` →
 `session.commentary.append`); `session.instructions` is the isolated
-`voice_live_mouth_system` prompt. No tool list (Magician still renders the
-catalog so `delegate_to_chat` can authorize), no `response.create`, outside the
+`voice_live_mouth_system` prompt. No tool list (Magician still builds the
+catalog snapshot so `delegate_to_chat` can authorize, via
+`VoiceOrchestrator::session_policy_snapshot`, without rendering the chat
+prompt or waiting on its memory retrieval), no `response.create`, outside the
 turn-context gate. The brain is the chat turn per
 `chat.harness_engine`, persisting only the current utterance (`<speech>`
 stripped, `delegation_id` tracked, ack via `thinking.append`). PCM: 80 ms

@@ -66,6 +66,11 @@ const VERDICTS: Record<VerdictState, Verdict> = {
 		headline: 'Archived',
 		detail: 'No longer active'
 	},
+	finalizing: {
+		state: 'finalizing',
+		headline: 'Preparing final result · 40s',
+		detail: 'The work is done; the final answer is being written'
+	},
 	finished: {
 		state: 'finished',
 		headline: 'Finished · 3m 12s',
@@ -141,6 +146,8 @@ describe('TaskVerdictLine treatment — L0', () => {
 			cancelled: 'neutral',
 			queued: 'neutral',
 			archived: 'neutral',
+			// Live work, not a result: the running band, never `completed`.
+			finalizing: 'running',
 			finished: 'completed'
 		});
 	});
@@ -151,6 +158,21 @@ describe('TaskVerdictLine treatment — L0', () => {
 		// five-band palette and a glyph, and neither is a stable programmatic
 		// identity for "which verdict is this".
 		expect(renderVerdict('stalled')).toHaveAttribute('data-verdict-state', 'stalled');
+	});
+});
+
+describe('TaskVerdictLine while the answer is being written', () => {
+	it('turns the marker for finalizing and for no other state', () => {
+		for (const state of STATES) {
+			const marker = renderVerdict(state).querySelector('.verdict__marker');
+			expect(marker?.classList.contains('verdict__marker--spin'), state).toBe(state === 'finalizing');
+			cleanup();
+		}
+	});
+
+	it('shows the elapsed time in the headline it announces', () => {
+		renderVerdict('finalizing');
+		expect(screen.getByRole('status').textContent).toContain('Preparing final result · 40s');
 	});
 });
 

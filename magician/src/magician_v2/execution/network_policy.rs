@@ -25,7 +25,9 @@ fn cell() -> &'static RwLock<NetworkPolicySettings> {
 
 /// Publish `execution.network_policy`: at boot, on config reload.
 pub fn configure(settings: &NetworkPolicySettings) {
-    *cell().write().unwrap_or_else(|poisoned| poisoned.into_inner()) = settings.clone();
+    *cell()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = settings.clone();
 }
 
 pub fn settings() -> NetworkPolicySettings {
@@ -33,7 +35,10 @@ pub fn settings() -> NetworkPolicySettings {
     if let Some(local) = TEST_OVERRIDE.with(|cell| cell.borrow().clone()) {
         return local;
     }
-    cell().read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    cell()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 #[cfg(test)]
@@ -113,7 +118,10 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
 
 /// Whether `host[:port]` is on `allow_private`.
 pub fn allowed_private(host: &str, port: u16) -> bool {
-    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
     settings().allow_private.iter().any(|entry| {
         let entry = entry.trim().to_ascii_lowercase();
         match entry.rsplit_once(':') {
@@ -131,7 +139,9 @@ pub fn allowed_private(host: &str, port: u16) -> bool {
 pub fn refusal(host: &str, port: u16, addrs: &[SocketAddr]) -> Option<String> {
     match mode() {
         NetworkMode::Allow => None,
-        NetworkMode::Deny => Some(format!("network access is off (network_policy: deny); {host}:{port} was not contacted")),
+        NetworkMode::Deny => Some(format!(
+            "network access is off (network_policy: deny); {host}:{port} was not contacted"
+        )),
         NetworkMode::Public => {
             if allowed_private(host, port) {
                 return None;
@@ -190,17 +200,78 @@ impl reqwest::dns::Resolve for PublicOnlyResolver {
     }
 }
 
+/// Whether `ip` is an address of this host: loopback, unspecified (also as
+/// IPv4-mapped IPv6), or one it can bind (its own LAN addresses).
+pub fn is_local_address(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        other => other,
+    };
+    ip.is_loopback() || ip.is_unspecified() || std::net::UdpSocket::bind((ip, 0)).is_ok()
+}
+
+/// Whether `ip` (also as IPv4-mapped IPv6) is a public address.
+pub fn is_public_unmapped(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_public_ip(IpAddr::V4(v4)),
+            None => is_public_ip(IpAddr::V6(v6)),
+        },
+        other => is_public_ip(other),
+    }
+}
+
+/// A reqwest DNS resolver that refuses names resolving to any non-public
+/// address in every network mode: for an agent fenced from a goal
+/// workspace, whose requests may reach only public hosts and the
+/// `allow_private` exceptions (applied by the caller before the request).
+#[derive(Debug, Default)]
+pub struct StrictPublicResolver;
+
+impl reqwest::dns::Resolve for StrictPublicResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?
+                .collect();
+            if !allowed_private(&host, 0) && addrs.iter().any(|addr| !is_public_unmapped(addr.ip()))
+            {
+                return Err(format!("{host} resolves to a non-public address").into());
+            }
+            let iter: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(iter)
+        })
+    }
+}
+
 /// The resolver for the `http` tool under the current policy, if any.
 pub fn http_resolver() -> Option<Arc<PublicOnlyResolver>> {
     (mode() == NetworkMode::Public).then(|| Arc::new(PublicOnlyResolver))
 }
 
 /// Serializes tests that publish the process-wide policy (the egress proxy
-/// reads it on its own thread), and tests that need the default `allow`.
+/// reads it on its own thread), and tests that need the default `allow`. One
+/// lock for both kinds of test: a sync test takes it with [`test_lock`], an
+/// async test with [`test_lock_async`], whose guard may be held across
+/// `.await` without blocking the runtime thread.
 #[cfg(test)]
-pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// [`TEST_LOCK`] for a sync test (panics inside an async runtime).
+#[cfg(test)]
+pub(crate) fn test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.blocking_lock()
+}
+
+/// [`TEST_LOCK`] for an async test.
+#[cfg(test)]
+pub(crate) async fn test_lock_async() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().await
 }
 
 #[cfg(test)]
@@ -217,10 +288,28 @@ mod tests {
             assert!(is_public_ip(ip(public)), "{public}");
         }
         for private in [
-            "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1",
-            "0.0.0.0", "255.255.255.255", "224.0.0.1", "198.18.0.1", "192.0.2.1", "240.0.0.1",
-            "::1", "::", "fc00::1", "fd12::1", "fe80::1", "fec0::1", "2001:db8::1",
-            "::ffff:127.0.0.1", "::ffff:10.0.0.1", "64:ff9b::a00:1",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "198.18.0.1",
+            "192.0.2.1",
+            "240.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12::1",
+            "fe80::1",
+            "fec0::1",
+            "2001:db8::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "64:ff9b::a00:1",
         ] {
             assert!(!is_public_ip(ip(private)), "{private}");
         }
@@ -252,8 +341,14 @@ mod tests {
         {
             let _exceptions = policy(NetworkMode::Public, &["localhost:11434", "nas.local"]);
             assert!(refusal("localhost", 11434, &loopback).is_none());
-            assert!(refusal("localhost", 3002, &loopback).is_some(), "the port must match");
-            assert!(refusal("NAS.local", 80, &loopback).is_none(), "a bare host covers every port");
+            assert!(
+                refusal("localhost", 3002, &loopback).is_some(),
+                "the port must match"
+            );
+            assert!(
+                refusal("NAS.local", 80, &loopback).is_none(),
+                "a bare host covers every port"
+            );
         }
         {
             let _deny = policy(NetworkMode::Deny, &[]);

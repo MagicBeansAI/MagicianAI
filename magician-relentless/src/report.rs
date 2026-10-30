@@ -322,8 +322,8 @@ impl RunReport {
             line(&self.reason)
         );
         text.push_str(&format!("Attempts: {}/{} · settled: {} micro-USD · reserved: {} micro-USD · ceiling: {} micro-USD\n\nSource epoch: {} · journal generation: {}\n\n",
-            self.attempts_used, self.budget.max_attempts, self.spend.settled_microusd, self.spend.reserved_microusd,
-            self.budget.max_cost_microusd, self.source_epoch, self.generation));
+            self.attempts_used, if self.budget.max_attempts==0 { "Unlimited".into() } else { self.budget.max_attempts.to_string() }, self.spend.settled_microusd, self.spend.reserved_microusd,
+            if self.budget.max_cost_microusd==0 { "Unlimited".into() } else { self.budget.max_cost_microusd.to_string() }, self.source_epoch, self.generation));
         text.push_str(&format!("Elapsed wall time: {} seconds (including waits). Time allowance used across approved windows: {} seconds.\n\n",self.elapsed_wall_clock_secs,self.time_allowance_used_secs));
         if !self.budget_resets.is_empty() {
             text.push_str("## Approved allowance resets\n\nTotals above include every round. Only the selected exhausted allowances reset.\n\n");

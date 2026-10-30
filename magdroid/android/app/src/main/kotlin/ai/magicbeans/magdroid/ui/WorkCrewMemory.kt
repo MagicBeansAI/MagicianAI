@@ -4,6 +4,14 @@ import ai.magicbeans.magdroid.work.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.automirrored.outlined.CallMerge
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -13,16 +21,27 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
+private val CREW_RULE_SECTIONS = listOf("persona", "goals", "triggers", "constraints", "memory_tiers", "memory_consolidation", "prompt_pipeline", "circuit_breaker", "feedback_loops", "notification_rules", "retention", "llm_routing", "observation", "strategy", "state_machines", "delegation_targets", "coordination")
+
+/** Configured sections as titled cards; the rest listed once under "Not configured". */
 @Composable
 internal fun WorkCrewRules(agentId: String) {
     val resource = rememberWorkResource("/api/magician/v2/agents/${WorkRepository.segment(agentId)}")
     val state by resource.state.collectAsStateWithLifecycle()
     val definition = (state.value as? JsonObject)?.let { runCatching { WorkCrewMember.decode(it).definition }.getOrNull() }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(state, resource) }
-        definition?.let { fields -> items(listOf("persona", "goals", "triggers", "constraints", "memory_tiers", "memory_consolidation", "prompt_pipeline", "circuit_breaker", "feedback_loops", "notification_rules", "retention", "llm_routing", "observation", "strategy", "state_machines", "delegation_targets", "coordination")) { key ->
-            WorkCard { Text(workLabel(key), color = Ink, fontSize = 17.sp); if (fields[key] == null || fields[key] == JsonNull) Text("Not configured", color = Muted) else WorkRecord(fields[key]) }
-        } }
+    WorkPage {
+        workStatusItem(state, resource)
+        definition?.let { fields ->
+            val configured = CREW_RULE_SECTIONS.filter { fields[it] != null && fields[it] != JsonNull }
+            items(configured) { key -> WorkGroup(workLabel(key)) { WorkRecord(fields[key]) } }
+            val missing = CREW_RULE_SECTIONS - configured.toSet()
+            if (missing.isNotEmpty()) item { WorkGroup("Not configured") {
+                missing.forEachIndexed { index, key ->
+                    if (index > 0) WorkRowDivider()
+                    WorkRow(workLabel(key), value = "Not configured", accessory = WorkRowAccessory.None)
+                }
+            } }
+        }
     }
 }
 
@@ -31,19 +50,25 @@ internal fun WorkCrewMemory(agentId: String, push: (WorkRoute) -> Unit) {
     val base = "/api/magician/v2/agents/${WorkRepository.segment(agentId)}"
     val resource = rememberWorkResource("$base/memory")
     val state by resource.state.collectAsStateWithLifecycle()
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(state, resource); WorkLink("Refresh memory", resource::refresh) }
-        if (state.value != null && state.value.workRows("tiers").isEmpty()) item { Text("No declared memory tiers.", color = Muted) }
-        items(state.value.workRows("tiers")) { tier -> tier.workText("tier_name")?.let { name -> WorkCard {
-            Text(workLabel(name), color = Ink, fontSize = 18.sp)
-            Text(tier.workText("description").orEmpty(), color = Muted, fontSize = 14.sp)
-            Text("${tier.workText("scope").orEmpty()} · ${if (tier.workBool("shared")) "Shared" else "Private"} · ${if (tier.workBool("has_data")) "Has data" else "Empty"}", color = Muted, fontSize = 12.sp)
-            WorkLink("Inspect $name") { push(WorkRoute("memory-tier", agentId, "Memory tier", tier = name, goalId = tier.workText("goal_id") ?: tier.workRows("available_goal_ids").firstOrNull()?.workDisplay().orEmpty())) }
-        } } }
-        item {
-            WorkLink("Consolidation health") { push(WorkRoute("endpoint", "$base/memory/consolidation-health", "Consolidation health")) }
-            WorkLink("User memory and sharing") { push(WorkRoute("user-memory", agentId, "User memory")) }
-        }
+    val tiers = state.value.workRows("tiers").mapNotNull { tier -> tier.workText("tier_name")?.let { it to tier } }
+    WorkPage {
+        workStatusItem(state, resource)
+        if (state.value != null && tiers.isEmpty()) item { WorkGroup { WorkEmptyState("No declared memory tiers.", icon = Icons.Outlined.AccountTree) } }
+        if (tiers.isNotEmpty()) item { WorkGroup("Memory tiers") {
+            tiers.forEachIndexed { index, (name, tier) ->
+                if (index > 0) WorkRowDivider()
+                val meta = "${tier.workText("scope").orEmpty()} · ${if (tier.workBool("shared")) "Shared" else "Private"} · ${if (tier.workBool("has_data")) "Has data" else "Empty"}"
+                WorkRow(workLabel(name), icon = Icons.Outlined.AccountTree,
+                    detail = listOfNotNull(tier.workText("description")?.takeIf(String::isNotBlank), meta).joinToString("\n"),
+                    onClickLabel = "Inspect $name") {
+                    push(WorkRoute("memory-tier", agentId, "Memory tier", tier = name, goalId = tier.workText("goal_id") ?: tier.workRows("available_goal_ids").firstOrNull()?.workDisplay().orEmpty()))
+                }
+            }
+        } }
+        item { WorkGroup("Health and sharing") {
+            WorkRow("Consolidation health", icon = Icons.Outlined.Psychology) { push(WorkRoute("endpoint", "$base/memory/consolidation-health", "Consolidation health")) }
+            WorkRowDivider(); WorkRow("User memory and sharing", icon = Icons.Outlined.Groups) { push(WorkRoute("user-memory", agentId, "User memory")) }
+        } }
     }
 }
 
@@ -58,24 +83,25 @@ internal fun WorkCrewTier(agentId: String, tier: String, initialGoal: String) {
     val state by resource.state.collectAsStateWithLifecycle()
     val entry = summaryState.value.workRows("tiers").firstOrNull { it.workText("tier_name") == tier }
     val goals = (entry.workRows("available_goal_ids") + state.value.workRows("available_goal_ids")).mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.distinct()
-    var choosingGoal by remember { mutableStateOf(false) }
     LaunchedEffect(goals) { if (goal.isBlank() && goals.isNotEmpty()) goal = goals.first() }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(summaryState, summary); if (goals.isNotEmpty()) WorkLink("Goal context: $goal") { choosingGoal = true }; WorkResourceStatus(state, resource) }
+    WorkPage {
+        workStatusItem(summaryState, summary, key = "summary-status")
+        if (goals.isNotEmpty()) item { WorkGroup {
+            WorkChoiceRow("Goal context", (listOfNotNull(goal.takeIf { it.isNotBlank() && it !in goals }) + goals).map { it to if (it in goals) it else "$it (not in current goals)" }, goal, { goal = it }, icon = Icons.Outlined.Flag)
+        } }
+        workStatusItem(state, resource)
         state.value?.let { value ->
-            item { WorkCard {
-                Text(workLabel(tier), color = Ink, fontSize = 20.sp)
-                Text(value.workField("tier").workText("description").orEmpty(), color = Muted, fontSize = 14.sp)
-                Text("Scope: ${value.workField("tier").workText("scope").orEmpty()} · ${if (value.workBool("shared")) "Shared" else "Private"}", color = Muted, fontSize = 12.sp)
-                value.workText("goal_id")?.let { Text("Goal: $it", color = Ink) }
+            item { WorkHeaderCard(workLabel(tier), subtitle = value.workText("goal_id")?.let { "Goal: $it" }, detail = value.workField("tier").workText("description"),
+                chips = listOf(
+                    WorkChipSpec(workLabel(value.workField("tier").workText("scope").orEmpty().ifBlank { "unscoped" }), Muted),
+                    WorkChipSpec(if (value.workBool("shared")) "Shared" else "Private", if (value.workBool("shared")) Coral else Muted),
+                )) }
+            item { WorkGroup("Persisted memory") { WorkRecord(value.workField("data")) } }
+            item { WorkGroup("Sharing and consolidation") {
+                WorkRecord(buildJsonObject { put("shared_with_agents", value.workField("shared_with_agents") ?: JsonNull); put("consolidation_rules", value.workField("consolidation_rules") ?: JsonNull) })
             } }
-            item { WorkCard { Text("Persisted memory", color = Ink, fontSize = 18.sp); WorkRecord(value.workField("data")) } }
-            item { WorkCard { Text("Sharing and consolidation", color = Ink, fontSize = 18.sp); WorkRecord(value.workField("shared_with_agents")); WorkRecord(value.workField("consolidation_rules")) } }
         }
     }
-    if (choosingGoal) AlertDialog(onDismissRequest = { choosingGoal = false }, title = { Text("Goal context", color = Ink) }, text = {
-        LazyColumn { items(goals) { choice -> WorkLink(choice) { goal = choice; choosingGoal = false } } }
-    }, confirmButton = { TextButton(onClick = { choosingGoal = false }) { Text("Close", color = Coral) } }, containerColor = Ground)
 }
 
 @Composable
@@ -86,17 +112,33 @@ internal fun WorkCrewUserMemory(agentId: String, push: (WorkRoute) -> Unit) {
     val member = rememberWorkResource(base)
     val memberState by member.state.collectAsStateWithLifecycle()
     val definition = memberState.value.workField("definition")
-    val isolated = definition.workText("kind") == "Personal" && (definition.workText("user_memory_isolation") ?: "shared") != "shared"
+    val isolated = definition.workText("kind").equals("personal", ignoreCase = true) && (definition.workText("user_memory_isolation") ?: "shared") != "shared"
     val userTiers = state.value.workRows("tiers").filter { it.workText("scope") == "user" }
     val hasData = userTiers.any { it.workBool("has_data") }
     val scope = rememberCoroutineScope()
     var confirm by remember { mutableStateOf(false) }
     LaunchedEffect(state.identity) { confirm = false }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(state, resource); WorkLink("Refresh user memory", resource::refresh) }
-        item { WorkResourceStatus(memberState, member) }
-        if (state.value != null) item { WorkCard { Text("User memory", color = Ink, fontSize = 18.sp); userTiers.forEach { tier -> tier.workText("tier_name")?.let { name -> WorkLink(workLabel(name)) { push(WorkRoute("memory-tier", agentId, "Memory tier", goalId = tier.workText("goal_id").orEmpty(), tier = name)) } }; WorkRecord(tier) }; if (userTiers.isEmpty()) Text("No user memory tiers were reported.", color = Muted) } }
-        if (state.value != null && isolated) item { if (!hasData) Text("No local user memory is available to merge.", color = Muted, fontSize = 13.sp); TextButton(onClick = { confirm = true }, enabled = !state.busy && hasData, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Merge into shared user memory", color = Coral) } }
+    WorkPage {
+        workStatusItem(state, resource)
+        workStatusItem(memberState, member, key = "member-status")
+        if (state.value != null) item { WorkGroup("User memory") {
+            userTiers.forEachIndexed { index, tier ->
+                if (index > 0) WorkRowDivider()
+                tier.workText("tier_name")?.let { name ->
+                    WorkRow(workLabel(name), icon = Icons.Outlined.AccountCircle, value = if (tier.workBool("has_data")) "Has data" else "Empty",
+                        detail = "${tier.workText("scope").orEmpty()} · ${if (tier.workBool("shared")) "Shared" else "Private"}") {
+                        push(WorkRoute("memory-tier", agentId, "Memory tier", goalId = tier.workText("goal_id").orEmpty(), tier = name))
+                    }
+                }
+            }
+            if (userTiers.isEmpty()) WorkRow("No user memory tiers were reported.", icon = Icons.Outlined.AccountCircle, labelColor = Muted, accessory = WorkRowAccessory.None)
+        } }
+        if (state.value != null && isolated) item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            WorkGroup("Sharing") {
+                WorkActionRow("Merge into shared user memory", Icons.AutoMirrored.Outlined.CallMerge, enabled = !state.busy && hasData) { confirm = true }
+            }
+            if (!hasData) WorkFootnote("No local user memory is available to merge.")
+        } }
     }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Merge local user memory?", color = Ink) }, text = { Text("Shared user memory can be read by other eligible members in this workspace.", color = Muted) },
         confirmButton = { TextButton(onClick = { val identity = state.identity; confirm = false; scope.launch { if (resource.perform("$base/consolidate-user-memory", identity, body = null) != null) resource.refresh() } }, enabled = !state.busy) { Text("Merge reviewed memory", color = Coral) } },

@@ -1,5 +1,8 @@
 pub mod action_adapter;
 pub mod agent_learnings_projection;
+/// The HITL respond-handle contract fixture the clients pin.
+#[cfg(test)]
+mod hitl_respond_fixtures;
 pub mod materializer;
 pub mod store;
 pub mod task_projection;
@@ -14,8 +17,9 @@ pub use action_adapter::{
 };
 pub use materializer::FeedMaterializer;
 pub use store::{
-    AttentionProjectionReconcile, FeedAttentionLane, FeedAttentionPage, FeedAttentionPageQuery,
-    FeedCounts, FeedPage, FeedPageCursor, FeedQuery, FeedStore,
+    attention_lane_for_ask, attention_lane_for_hitl_source, AttentionProjectionReconcile,
+    FeedAttentionLane, FeedAttentionPage, FeedAttentionPageQuery, FeedCounts, FeedPage,
+    FeedPageCursor, FeedQuery, FeedStore,
 };
 pub use task_projection::TaskCrudFeedProjectionAdapter;
 pub use types::{FeedAction, FeedItem, FeedItemPatch, FeedItemStatus, FeedItemType};

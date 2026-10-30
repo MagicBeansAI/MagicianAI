@@ -2,10 +2,12 @@
 	import VibeComposer from '$lib/shell/VibeComposer.svelte';
 	import type { UploadedAttachment } from '$lib/stores/chatStore';
 	import type { CodingProfile } from '$lib/stores/codingProfileStore';
+	import type { PresenceState } from '$lib/magician/chat/next/presence';
 
 	export let submitDisabled = false;
 	export let submitBlocker: string | null = null;
 	export let busy = false;
+	export let presenceState: PresenceState = 'idle';
 	export let showActiveRun = true;
 	export let activeProjectName: string | null = 'VibeDev Project';
 	export let blockedProfiles: CodingProfile[] = [];
@@ -71,6 +73,8 @@
 			}
 		: null}
 	{activeProjectName}
+	canDeleteRun={showActiveRun}
+	{presenceState}
 	on:openRail={() => (lastAction = 'open-rail')}
 	on:submit={() => (lastAction = `submit:${value}`)}
 	on:setStudioMode={(event) => {
@@ -89,6 +93,7 @@
 		lastAction = `remove:${event.detail.attachmentId}`;
 	}}
 	on:newRun={() => (lastAction = 'new-run')}
+	on:deleteRun={() => (lastAction = 'delete-run')}
 />
 
 <output data-testid="vibe-value">{value}</output>

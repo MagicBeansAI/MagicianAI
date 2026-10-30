@@ -313,7 +313,6 @@ pub async fn get_config(app: AppHandle) -> Result<MagicianDesktopConfig, String>
 pub async fn get_hotkey_mappings(app: AppHandle) -> Result<HotkeyMappingsResponse, String> {
     let state = app.state::<AppState>();
     let config = state.config.lock().await.clone();
-    drop(state);
 
     let overlay_gesture =
         crate::voice_gesture::overlay_gesture_label(&config.general.quick_overlay_gesture);

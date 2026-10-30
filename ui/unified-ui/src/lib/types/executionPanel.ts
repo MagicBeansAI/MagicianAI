@@ -69,6 +69,8 @@ export interface ExecutionPanelDelegationGroup {
 
 export interface ExecutionPanelOutputResult {
 	summary?: string | null;
+	/** Bounded source document, rendered through the existing sanitizer. */
+	report?: string | null;
 	outcome?: string | null;
 	artifact_names: string[];
 }

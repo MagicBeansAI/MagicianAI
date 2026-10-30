@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { createEventDispatcher } from 'svelte';
+	import { isDetailedHint } from '$lib/hitl/hitlDetails';
 
 	import {
 		ATTENTION_FAILED_COLOR,
@@ -7,6 +8,7 @@
 		ATTENTION_FILTER_LABELS,
 		ATTENTION_SOURCE_COLORS,
 		ATTENTION_SOURCE_LABELS,
+		attentionQuickChoices,
 		attentionRelativeTime,
 		attentionScopeLabel,
 		countAttentionRowsBySource,
@@ -34,6 +36,14 @@
 	export let rollbackActionKey: string | null = null;
 	/** Row key of the stalled wait whose run is being cancelled (C3). */
 	export let stalledActionKey: string | null = null;
+	/**
+	 * Offer a pending agentic choice/confirmation's answers as buttons on its
+	 * row (`attentionQuickChoices`), dispatched as `choose`. Off unless the host
+	 * handles `choose`.
+	 */
+	export let quickChoices = false;
+	/** `<row key>:<choice id>` of the quick answer being posted. */
+	export let choosingKey: string | null = null;
 	export let showSearch = true;
 	export let showFilters = true;
 	export let skeletonRows = 6;
@@ -49,6 +59,8 @@
 		};
 		/** Cancel the run behind a stalled-wait row (C3). */
 		cancelstalled: { row: AttentionDisplayRow };
+		/** Answer the row with one of its quick choices. */
+		choose: { row: AttentionDisplayRow; choiceId: string };
 		showmore: void;
 	}>();
 
@@ -154,11 +166,14 @@
 			{@const rowColor = row.failed
 				? ATTENTION_FAILED_COLOR
 				: ATTENTION_SOURCE_COLORS[row.source]}
+			{@const rowChoices = quickChoices ? attentionQuickChoices(row) : []}
+			{@const rowChoosing = choosingKey !== null && choosingKey.startsWith(`${row.key}:`)}
 			<li class="attention-page__row">
 				<button
 					type="button"
 					class="attention-page__row-btn"
-					disabled={!row.failed && hydratingKey === row.key}
+                    class:attention-page__row-btn--opener={!row.failed}
+					disabled={(!row.failed && hydratingKey === row.key) || rowChoosing}
 					on:click={() => dispatch('activate', { row })}
 				>
 					<span
@@ -174,7 +189,11 @@
 
 					<div class="attention-page__body">
 						<div class="attention-page__prompt">{row.prompt}</div>
-						{#if row.hint}
+						{#if row.hint && isDetailedHint(row.hint)}
+							<!-- The details are a proposal to read; the row is a button and
+							     cannot hold them, so it points to the prompt that shows them. -->
+							<div class="attention-page__hint">Open to read the details before answering.</div>
+						{:else if row.hint}
 							<div class="attention-page__hint">{row.hint}</div>
 						{/if}
 						<div class="attention-page__meta">
@@ -198,6 +217,32 @@
 									: 'Respond →'}
 					</span>
 				</button>
+
+				{#if rowChoices.length > 0}
+					<!--
+						One click answers the ask. A change/other answer opens the
+						prompt, where its words are typed; the row click still opens
+						the prompt for everything.
+					-->
+					<div class="attention-page__row-actions" role="group" aria-label={`Answers: ${row.prompt}`}>
+						{#each rowChoices as choice, index (choice.id)}
+							<!-- The button keeps its answer's name while it posts; aria-busy says it is sending. -->
+							<button
+								type="button"
+								class="attention-page__action-btn"
+								class:attention-page__action-btn--primary={index === 0 && !choice.opensPrompt}
+								aria-busy={choosingKey === `${row.key}:${choice.id}` ? 'true' : undefined}
+								disabled={choosingKey !== null || hydratingKey === row.key}
+								on:click={() =>
+									choice.opensPrompt
+										? dispatch('activate', { row })
+										: dispatch('choose', { row, choiceId: choice.id })}
+							>
+								{choice.label}
+							</button>
+						{/each}
+					</div>
+				{/if}
 
 				{#if row.skillEvolution}
 					<div class="attention-page__row-actions">
@@ -313,6 +358,11 @@
 	.attention-page__surface-controls {
 		display: flex;
 		justify-content: flex-end;
+	}
+
+	.attention-page__action-btn[aria-busy='true'] {
+		cursor: progress;
+		opacity: 0.7;
 	}
 
 	.attention-page__search {
@@ -507,6 +557,25 @@
 		cursor: pointer;
 		color: inherit;
 		font: inherit;
+	}
+
+
+	/* Stretch the existing opener over the mini card, including its padding
+	   and action-row gaps. Actual action buttons remain above it. */
+	.attention-page__row-btn--opener::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+	}
+
+	.attention-page__row-btn--opener:focus-visible::after {
+		outline: 2px solid var(--accent-primary);
+		outline-offset: -2px;
+	}
+
+	.attention-page__action-btn {
+		position: relative;
+		z-index: 1;
 	}
 
 	.attention-page__row-btn:disabled {

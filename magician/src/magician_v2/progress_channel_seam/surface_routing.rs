@@ -316,6 +316,11 @@ mod tests {
         assert_eq!(taxonomy.category, EventCategory::Execution);
         assert_eq!(taxonomy.severity, EventSeverity::Warn);
         assert!(!chat_surface_renders_agent_event("chat.turn.stopped"));
+        // Turn state is client lifecycle data, never a chat row.
+        let state = lookup_agent_event_taxonomy("chat.turn.state_changed")
+            .expect("the turn state event is registered");
+        assert_eq!(state.category, EventCategory::Execution);
+        assert!(!chat_surface_renders_agent_event("chat.turn.state_changed"));
     }
 
     #[test]

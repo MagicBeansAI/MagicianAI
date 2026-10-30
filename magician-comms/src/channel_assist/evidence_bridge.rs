@@ -16,10 +16,19 @@
 //! governs them); suppressed rows are never bridged.
 //!
 //! Idempotence: rows are grouped by `(channel, account, day)` and written
-//! under the digest's `"{key_prefix}:{account}:{day}"` field key, so a
-//! re-run of the same day merges rather than duplicates. A per-scope
-//! watermark (the `mail_sync_watermarks` revision-v2 row's legacy-named
-//! `last_internal_date` field) advances by monotonic distill revision.
+//! under the digest's `"{key_prefix}:{account}:{day}"` field key. A pass
+//! writes each tier once, with every group. A per-scope watermark (the
+//! `mail_sync_watermarks` revision-v2 row's legacy-named `last_internal_date`
+//! field) advances by monotonic distill revision only after the writes, so a
+//! failed pass re-runs.
+//!
+//! Where the rows land: under `memory.user_knowledge_bounds` `mode: enforce`
+//! the shared write path sends these tiers to their own lane files
+//! (`memory/users/lanes/`), where a later slice of the same day is combined
+//! into the day's row (lists merged, counts added, notes capped) and a
+//! replayed pass changes nothing. Otherwise they go to `knowledge.json`
+//! through the memory lifecycle, which keeps each new slice of a day as its
+//! own record (it does not merge them).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -177,6 +186,19 @@ pub fn build_bridge_rows(rows: &[DistilledBridgeRow]) -> Vec<BridgeRow> {
         .collect()
 }
 
+/// Group a pass's rows into one `fields` map per tier (keyed by field key).
+pub fn fields_by_tier(rows: &[BridgeRow]) -> BTreeMap<String, Map<String, Value>> {
+    let mut by_tier: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    for row in rows {
+        by_tier
+            .entry(row.tier.clone())
+            .or_default()
+            .entry(row.field_key.clone())
+            .or_insert_with(|| row.fields.clone());
+    }
+    by_tier
+}
+
 fn push_unique(dst: &mut Vec<String>, value: Option<&str>) {
     if let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) {
         if !dst.iter().any(|x| x == v) {
@@ -216,24 +238,24 @@ pub async fn run_bridge_pass(
     let resolver = AgentMemoryResolver::with_workspace_layout(process_storage::workspace());
     let mut written = 0usize;
     let mut failed = 0usize;
-    for br in &bridge_rows {
-        let mut fields = Map::new();
-        fields.insert(br.field_key.clone(), br.fields.clone());
+    // One write per tier per pass, carrying every group of the pass.
+    for (tier, fields) in fields_by_tier(&bridge_rows) {
+        let groups = fields.len();
         let outcome =
-            merge_user_memory_tier_fields(&resolver, principal, workspace, &br.tier, &fields).await;
+            merge_user_memory_tier_fields(&resolver, principal, workspace, &tier, &fields).await;
         if outcome.get("status").and_then(Value::as_str) == Some("error") {
             // Compute the reason OUTSIDE the macro: inside `warn!`, a bare
             // `Value` resolves to tracing's `Value` trait, not serde_json's.
             let reason = outcome.get("reason").and_then(Value::as_str).unwrap_or("");
             warn!(
                 target: LOG_TARGET,
-                tier = br.tier.as_str(),
+                tier = tier.as_str(),
                 reason,
                 "evidence bridge tier write failed"
             );
-            failed += 1;
+            failed += groups;
         } else {
-            written += 1;
+            written += groups;
         }
     }
 
@@ -460,6 +482,38 @@ mod tests {
         assert_eq!(out[0].fields["thread_count"], json!(1));
         assert_eq!(out[0].fields["subjects"].as_array().unwrap().len(), 1);
         assert_eq!(out[0].fields["notes"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_pass_writes_each_tier_once_with_every_group() {
+        let rows = vec![
+            row("gmail", "business", "t1", D5 + 1, "a", "Invoice"),
+            row("gmail", "business", "t2", D6 + 1, "b", "Followup"),
+            row("whatsapp", "self", "c1", D5 + 2, "c", "Plans"),
+        ];
+        let by_tier = fields_by_tier(&build_bridge_rows(&rows));
+        assert_eq!(by_tier.len(), 2);
+        assert_eq!(by_tier["user.email_evidence"].len(), 2);
+        assert_eq!(by_tier["user.chat_evidence"].len(), 1);
+    }
+
+    /// The lane store recomputes this headline when it combines day slices;
+    /// both must render it the same way.
+    #[test]
+    fn the_lane_summary_matches_the_bridge_summary() {
+        use magician::magician_v2::agents::user_memory_lanes::{evidence_summary, Lane};
+        let rows = vec![
+            row("gmail", "business", "t1", D5 + 1, "a", "Invoice"),
+            row("gmail", "business", "t2", D5 + 2, "b", "Meeting"),
+            row("whatsapp", "self", "c1", D5 + 3, "c", "Plans"),
+        ];
+        for bridged in build_bridge_rows(&rows) {
+            let lane = Lane::for_tier(&bridged.tier).unwrap();
+            assert_eq!(
+                evidence_summary(lane, &bridged.fields),
+                bridged.fields["summary"].as_str().unwrap()
+            );
+        }
     }
 
     #[test]

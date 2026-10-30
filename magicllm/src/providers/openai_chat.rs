@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
@@ -36,6 +35,18 @@ pub struct OpenAIChatProvider {
     api_key: String,
     base_url: String,
     default_timeout: Duration,
+}
+
+/// FALLBACK for models absent from the model catalog; catalogued models
+/// declare `wire.sampling` instead. GPT-5.1+, GPT-6 and the o-series always
+/// reason and reject sampling controls. The original GPT-5 chat ids predate
+/// that split and still accept them, so they are carved back out — a
+/// family-wide "major >= 5" test drops `temperature` for a model that takes it.
+pub(crate) fn uncatalogued_rejects_sampling(model: &str) -> bool {
+    let basename = super::openai_model_basename(model);
+    (super::openai_gpt_family_from_5(model) && !super::openai_legacy_gpt5_chat_id(model))
+        || basename.starts_with("o1")
+        || basename.starts_with("o3")
 }
 
 impl OpenAIChatProvider {
@@ -250,12 +261,14 @@ impl OpenAIChatProvider {
         tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 json!({
                     "type": "function",
                     "function": {
                         "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
+                        "description": description,
+                        "parameters": parameters,
                     }
                 })
             })
@@ -422,16 +435,11 @@ impl OpenAIChatProvider {
             }
         }
 
-        let basename = super::openai_model_basename(&request.model);
-        // GPT-5.1+, GPT-6 and the o-series always reason and reject sampling
-        // controls. The original GPT-5 chat ids predate that split and still
-        // accept them, so they are carved back out — a family-wide "major >= 5"
-        // test drops `temperature` for a model that takes it.
-        let skip_sampling = has_reasoning_config
-            || (super::openai_gpt_family_from_5(&request.model)
-                && !super::openai_legacy_gpt5_chat_id(&request.model))
-            || basename.starts_with("o1")
-            || basename.starts_with("o3");
+        let rejects_sampling = match request.model_wire.as_ref() {
+            Some(wire) => !wire.sampling,
+            None => uncatalogued_rejects_sampling(&request.model),
+        };
+        let skip_sampling = has_reasoning_config || rejects_sampling;
         if !skip_sampling {
             if let Some(temp) = request.temperature {
                 body.insert("temperature".to_string(), Value::from(temp));
@@ -651,22 +659,15 @@ impl OpenAIChatProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
         if status.is_client_error() || status.is_server_error() {
@@ -699,8 +700,9 @@ impl OpenAIChatProvider {
         let mut usage_value: Option<Value> = None;
         let mut done = false;
 
+        let mut watchdog = super::StreamWatchdog::new(timeout);
         while !done {
-            let Some(chunk) = stream.next().await else {
+            let Some(chunk) = watchdog.next(&mut stream).await? else {
                 break;
             };
             let chunk = chunk.map_err(|error| {
@@ -728,6 +730,9 @@ impl OpenAIChatProvider {
                     usage_value = Some(usage.clone());
                 }
 
+                if super::plain_stream::chat_chunk_has_output(&value) {
+                    watchdog.mark_progress();
+                }
                 if let Some(choices) = value.get("choices").and_then(Value::as_array) {
                     if let Some(choice) = choices.first() {
                         // Check finish_reason
@@ -947,7 +952,7 @@ impl LLMProvider for OpenAIChatProvider {
             ));
         }
 
-        let body = Self::build_request_body(&request)?;
+        let mut body = Self::build_request_body(&request)?;
 
         debug!(
             provider = "openai_chat",
@@ -966,27 +971,31 @@ impl LLMProvider for OpenAIChatProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        // Plain calls stream too, so a long answer that is still producing is
+        // bounded by progress, not cut at the request timeout. The chunks fold
+        // back into the `chat.completion` body parsed below; usage arrives
+        // only when asked for.
+        body.insert("stream".to_string(), Value::Bool(true));
+        body.entry("stream_options".to_string())
+            .or_insert_with(|| json!({ "include_usage": true }));
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
-        let raw_body = read_bounded_response_text(response).await?;
-        let payload = parse_provider_json_value(&raw_body)?;
-        drop(raw_body);
+        let payload = super::collect_chat_completion(
+            response,
+            timeout,
+            &self.provider_kind().to_string(),
+            protected_request,
+        )
+        .await?;
 
         if status.is_client_error() || status.is_server_error() {
             if let Some(error) = payload.get("error") {
@@ -1330,6 +1339,28 @@ mod tests {
     }
 
     #[test]
+    fn map_tools_moves_whole_call_rules_out_of_parameters() {
+        // Chat Completions: "schema must … not have 'oneOf'/'anyOf'/'allOf'/
+        // 'enum'/'const'/'not' at the top level" (measured 2026-10-30).
+        let tools = vec![LLMToolSpec {
+            name: "search".to_string(),
+            description: "Search.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "requests": {"type": "array"}},
+                "oneOf": [{"required": ["query"]}, {"required": ["requests"]}],
+            }),
+        }];
+        let mapped = OpenAIChatProvider::map_tools(&tools);
+        let function = &mapped[0]["function"];
+        assert!(function["parameters"].get("oneOf").is_none());
+        assert!(function["description"]
+            .as_str()
+            .unwrap()
+            .contains(r#""oneOf":[{"required":["query"]},{"required":["requests"]}]"#));
+    }
+
+    #[test]
     fn tool_choice_defaults_to_required() {
         // Verifies that the tool_choice logic emits "required" when no override
         // is present (agentic execution default).
@@ -1587,6 +1618,31 @@ mod tests {
             (temperature - 0.7).abs() < 1e-6,
             "temperature should still be forwarded for legacy GPT-5 chat requests"
         );
+    }
+
+    #[test]
+    fn catalogued_sampling_fact_overrides_the_name_fallback() {
+        let wire = |sampling| crate::catalog::ModelWire {
+            thinking: None,
+            thinking_off: false,
+            thinking_off_effort: None,
+            sampling,
+        };
+        let mut request = LLMRequest {
+            model: "acme-reasoner-2".to_string(),
+            messages: vec![LLMMessage::user("hello")].into(),
+            temperature: Some(0.7),
+            model_wire: Some(wire(false)),
+            ..Default::default()
+        };
+        let body = OpenAIChatProvider::build_request_body(&request).expect("request body");
+        assert!(body.get("temperature").is_none());
+
+        // `gpt-6-astra` rejects sampling by name; its catalog entry decides.
+        request.model = "gpt-6-astra".to_string();
+        request.model_wire = Some(wire(true));
+        let body = OpenAIChatProvider::build_request_body(&request).expect("request body");
+        assert!(body.get("temperature").is_some());
     }
 
     #[test]

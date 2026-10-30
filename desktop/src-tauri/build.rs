@@ -91,6 +91,10 @@ fn main() {
                 "magician-attention",
                 tauri_build::InlinedPlugin::new()
                     .commands(&["open_application_path", "close_attention_window"]),
+            )
+            .plugin(
+                "magician-settings",
+                tauri_build::InlinedPlugin::new().commands(&["open_desktop_settings"]),
             ),
     )
     .expect("failed to build desktop capabilities");

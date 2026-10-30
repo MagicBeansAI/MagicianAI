@@ -15,11 +15,8 @@ const settings: NotesProviderSettings = {
 	default_provider: 'silverbullet',
 	fallback_provider: 'local_markdown',
 	local_markdown: { root: '/notes' },
-	silverbullet: {
-		space_path: '/notes/space',
-		local_url: 'http://127.0.0.1:3021',
-		server_url: 'http://127.0.0.1:3021',
-		public_origin: 'https://notes.example.com'
+	notes_folder: {
+		space_path: '/notes/space'
 	},
 	task_publishing: {
 		auto_publish_completed: false,
@@ -38,11 +35,8 @@ function envelope() {
 			default_provider: 'silverbullet',
 			fallback_provider: 'local_markdown',
 			local_markdown_root: '/notes',
-			silverbullet_space_path: '/notes/space',
-			silverbullet_write_safe: true,
-			silverbullet_local_url: 'http://127.0.0.1:3021',
-			silverbullet_public_origin: 'https://notes.example.com',
-			silverbullet_server_url: 'https://notes.example.com'
+			notes_folder_path: '/notes/space',
+			notes_folder_write_safe: true
 		},
 		warnings: []
 	};
@@ -58,7 +52,7 @@ function status() {
 		providers: [
 			{
 				id: 'silverbullet_space',
-				label: 'SilverBullet',
+				label: 'Notes',
 				configured: true,
 				available: true,
 				writable: true,
@@ -84,6 +78,14 @@ describe('notesSettingsStore browser workflows', () => {
 		const result = await refreshNotesSettings();
 
 		expect(result?.settings.default_provider).toBe('silverbullet');
+		expect(result?.settings.notes_folder).toEqual({ space_path: '/notes/space' });
+		expect(result?.resolved).toEqual({
+			default_provider: 'silverbullet',
+			fallback_provider: 'local_markdown',
+			local_markdown_root: '/notes',
+			notes_folder_path: '/notes/space',
+			notes_folder_write_safe: true
+		});
 		expect(get(notesSettingsStore).status?.providers[0]).toMatchObject({
 			id: 'silverbullet',
 			available: true,

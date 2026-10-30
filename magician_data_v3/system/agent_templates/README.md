@@ -189,7 +189,7 @@ session for that agent — no process restart needed.
 
 ## Always-on tools
 
-Muse (`creative-mind`) includes `image-generation-via-openai` for GPT Image 2
+Muse (`creative-mind`) includes `image-generation-via-openai` for GPT Image 2.5
 generation and editing, alongside its other image generators. The tool uses
 the existing scoped credential resolver (vault or private skill env) and saves new workspace artifacts with
 usage receipts; Work Quality continues to own metering and review. Existing

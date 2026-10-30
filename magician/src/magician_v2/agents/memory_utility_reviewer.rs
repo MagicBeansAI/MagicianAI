@@ -762,6 +762,13 @@ fn utility_review_llm_failure_class(error: &magicllm::LLMError) -> UtilityReview
                 retryable_indefinitely: true,
             }
         },
+        // The owner's spend envelope is spent. The review is not at fault and
+        // nothing is wrong with the request: it waits for the window to reset
+        // or for a grant, like any other pause in capacity.
+        magicllm::LLMError::SpendEnvelopeExhausted { .. } => UtilityReviewFailureClass {
+            code: "spend_envelope_exhausted",
+            retryable_indefinitely: true,
+        },
         magicllm::LLMError::Provider { .. }
         | magicllm::LLMError::Transport(_)
         | magicllm::LLMError::RateLimited { .. }

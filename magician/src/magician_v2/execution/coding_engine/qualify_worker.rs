@@ -242,11 +242,14 @@ async fn spawn_qualify_child(
     extra_args: &[String],
 ) -> Result<CodexQualifyEvidence, QualifySessionError> {
     let inherited: Vec<(String, String)> = std::env::vars().collect();
-    let filtered = filter_codex_child_env(
+    let mut filtered = filter_codex_child_env(
         inherited
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
+    if !crate::magician_v2::harness_auth::uses_magician_credentials("codex") {
+        filtered.remove("OPENAI_API_KEY");
+    }
     let mut args = app_server_args();
     args.extend(extra_args.iter().cloned());
     let mut command = Command::new(binary);

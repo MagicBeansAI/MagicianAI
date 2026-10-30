@@ -63,7 +63,7 @@ use super::memory_temperature::{
     memory_candidate_has_superseded_lifecycle, memory_temperature_candidate_key,
     memory_temperature_entry_is_prompt_current, memory_temperature_entry_is_superseded,
     memory_temperature_overlay_is_prompt_current, memory_temperature_tiers_for_prompt_snapshot,
-    record_memory_temperature_prompt_usage, sync_memory_temperature_overlay,
+    record_memory_temperature_prompt_usage, sync_memory_temperature_overlay_shared,
     MemoryTemperatureEntry, MemoryTemperatureOverlay, MemoryTemperatureTier,
     MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION,
 };
@@ -498,6 +498,8 @@ pub struct MemoryPromptRenderTiming {
     pub temperature_overlay_ms: f64,
     pub hot_projection_ms: f64,
     pub rank_select_render_ms: f64,
+    /// Included in rank_select_render_ms.
+    pub near_duplicate_collapse_ms: f64,
     pub total_ms: f64,
 }
 
@@ -600,10 +602,7 @@ pub async fn user_memory_sources_are_current(
     let temperature =
         sync_prompt_temperature_overlay(memory_service, "", Arc::clone(&documents), false).await;
     let live_apps = memory_service
-        .app_memory_prompt_eligibility(
-            documents.iter().map(|d| d.metadata_json.clone()),
-            Utc::now(),
-        )
+        .app_memory_prompt_eligibility(documents.iter().map(|d| &d.metadata_json), Utc::now())
         .await;
     Ok(sources.iter().all(|(key, revision)| {
         documents.iter().any(|candidate| {
@@ -716,6 +715,7 @@ pub(crate) async fn score_hybrid_index_for_prompt_with_provider(
     Option<String>,
 ) {
     let mut fallback_error = None;
+    let started = std::time::Instant::now();
     // Keep the shared recall frame small on ordinary execution-worker stacks.
     // Keeping projection/index futures inline propagates their large state into
     // every direct-execution caller, risking a 2 MiB worker stack overflow.
@@ -735,6 +735,7 @@ pub(crate) async fn score_hybrid_index_for_prompt_with_provider(
             Vec::new()
         },
     };
+    let projection_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let mut indexed_scores = if fallback_error.is_some() {
         None
     } else if let Some(reason) =
@@ -785,6 +786,7 @@ pub(crate) async fn score_hybrid_index_for_prompt_with_provider(
             },
         }
     };
+    let scored_ms = started.elapsed().as_secs_f64() * 1_000.0;
     if let Some(provider) = local_only_provider {
         let local_documents = projection_candidates
             .iter()
@@ -817,7 +819,7 @@ pub(crate) async fn score_hybrid_index_for_prompt_with_provider(
                         memory_service.app_memory_prompt_eligibility(
                             local_documents
                                 .iter()
-                                .map(|candidate| candidate.metadata_json.clone()),
+                                .map(|candidate| &candidate.metadata_json),
                             Utc::now(),
                         ),
                     )
@@ -844,6 +846,11 @@ pub(crate) async fn score_hybrid_index_for_prompt_with_provider(
             }
         }
     }
+    tracing::info!(target: "memory_index",
+        projection_sync_ms = projection_ms,
+        hybrid_score_ms = scored_ms - projection_ms,
+        local_only_ms = started.elapsed().as_secs_f64() * 1_000.0 - scored_ms,
+        "Prompt hybrid index query timing");
     let retrieval_backend = if indexed_scores.is_some() {
         MemoryPromptRetrievalBackend::LancedbHybrid
     } else {
@@ -1145,8 +1152,11 @@ pub(crate) async fn synchronize_app_memory_index_projection(
     memory_service: &AgentMemoryService,
     now: DateTime<Utc>,
 ) -> Result<Vec<AppMemoryCandidate>, AgentMemoryError> {
+    let started = std::time::Instant::now();
     let candidates = memory_service.indexable_app_memory_candidates(now).await;
+    let candidates_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let destination = memory_service.recover_app_memory_destination().await?;
+    let recovered_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let physical_partition = current_memory_embedding_physical_identity().partition_digest();
     let contribution_heads = destination
         .entries
@@ -1271,9 +1281,11 @@ pub(crate) async fn synchronize_app_memory_index_projection(
     }
     .seal()
     .map_err(|error| AgentMemoryError::Validation(error.to_string()))?;
+    let built_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let _changed = write_app_memory_index_projection(memory_service.storage(), &projection)
         .await
         .map_err(|error| AgentMemoryError::Validation(error.to_string()))?;
+    let written_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let journal_ack_path = memory_service
         .storage()
         .root()
@@ -1316,6 +1328,14 @@ pub(crate) async fn synchronize_app_memory_index_projection(
             .await?;
         memory_service.mark_index_dirty("app_memory_destination_projection_changed");
     }
+    tracing::info!(target: "memory_index",
+        candidates = candidates.len(),
+        candidates_ms,
+        recover_ms = recovered_ms - candidates_ms,
+        build_ms = built_ms - recovered_ms,
+        write_ms = written_ms - built_ms,
+        journal_ack_ms = started.elapsed().as_secs_f64() * 1_000.0 - written_ms,
+        "App memory projection sync timing");
     Ok(candidates)
 }
 
@@ -1524,15 +1544,26 @@ async fn render_memory_tiers_for_prompt_internal(
         .app_memory_prompt_eligibility(
             candidate_documents
                 .iter()
-                .map(|candidate| candidate.metadata_json.clone()),
+                .map(|candidate| &candidate.metadata_json),
             hot_projection_now,
         )
         .await;
+    let passage_lookup =
+        indexed_scores.map(magician_vector_index::memory_index::MemoryIndexPassageLookup::new);
     let mut entries = candidate_documents
         .iter()
         .zip(candidate_profiles.iter())
         .enumerate()
         .filter_map(|(snapshot_index, (candidate, profile))| {
+            // The personality summary is pinned into chat and task prompts
+            // in full; ranked here it would compete for seats and could
+            // contradict the pinned block. Collection items saved into the
+            // tier (`save_preference` fallback) still rank as memories.
+            if candidate.tier_name == crate::magician_v2::skills::PERSONALITY_PROFILE_TIER
+                && candidate.item_key == "tier"
+            {
+                return None;
+            }
             // §5A.2 containment, before anything else is decided about this
             // candidate. An execution bound to one engagement gets that
             // engagement's entries plus entries explicitly labelled neutral;
@@ -1611,11 +1642,11 @@ async fn render_memory_tiers_for_prompt_internal(
                 hot_projection,
             );
             if magician_vector_index::episode_candidates::is_native_episode_candidate(candidate) {
-                let passage = indexed_scores
-                    .and_then(|scores| {
-                        magician_vector_index::memory_index::memory_candidate_index_hit_passage(
-                            candidate, scores,
-                        )
+                let passage = episode_recall_passage(candidate)
+                    .or_else(|| {
+                        passage_lookup
+                            .as_ref()
+                            .and_then(|lookup| lookup.passage(candidate))
                     })
                     .unwrap_or_else(|| {
                         magician_vector_index::memory_index::memory_candidate_query_passage(
@@ -1651,6 +1682,7 @@ async fn render_memory_tiers_for_prompt_internal(
                 temperature_overlay_ms,
                 hot_projection_ms,
                 rank_select_render_ms: elapsed_ms(rank_select_render_started),
+                near_duplicate_collapse_ms: 0.0,
                 total_ms: elapsed_ms(total_started),
             },
         });
@@ -1665,6 +1697,9 @@ async fn render_memory_tiers_for_prompt_internal(
     });
     enrich_location_intent_aliases(&mut entries);
     dedupe_entries(&mut entries, candidate_profiles);
+    let collapse_started = Instant::now();
+    collapse_near_duplicate_items(&mut entries, candidate_documents);
+    let near_duplicate_collapse_ms = elapsed_ms(collapse_started);
     if matches!(
         request.retrieval_scope,
         RetrievalScope::PublicDurable { .. }
@@ -1683,7 +1718,7 @@ async fn render_memory_tiers_for_prompt_internal(
             candidate_documents,
             request.relevance_query,
             memory_service,
-            indexed_scores,
+            passage_lookup.as_ref(),
             &request.retrieval_scope,
         )
         .await;
@@ -1713,7 +1748,7 @@ async fn render_memory_tiers_for_prompt_internal(
         candidate_documents,
         request,
         memory_service,
-        indexed_scores,
+        passage_lookup.as_ref(),
     )
     .await;
     // Source hydration and context expansion above are the last asynchronous
@@ -1794,6 +1829,7 @@ async fn render_memory_tiers_for_prompt_internal(
             temperature_overlay_ms,
             hot_projection_ms,
             rank_select_render_ms,
+            near_duplicate_collapse_ms,
             total_ms: elapsed_ms(total_started),
         },
     })
@@ -1804,7 +1840,7 @@ async fn apply_episode_rerank(
     documents: &[MemoryCandidateDocument],
     query: &str,
     service: &AgentMemoryService,
-    scores: Option<&BTreeMap<String, f32>>,
+    passage_lookup: Option<&magician_vector_index::memory_index::MemoryIndexPassageLookup<'_>>,
     scope: &RetrievalScope,
 ) {
     let positions = entries
@@ -1825,12 +1861,8 @@ async fn apply_episode_rerank(
     let passages = candidates
         .iter()
         .filter_map(|candidate| {
-            scores
-                .and_then(|scores| {
-                    magician_vector_index::memory_index::memory_candidate_index_hit_passage(
-                        candidate, scores,
-                    )
-                })
+            passage_lookup
+                .and_then(|lookup| lookup.passage(candidate))
                 .map(|passage| (memory_candidate_index_score_key(candidate), passage))
         })
         .collect();
@@ -1859,7 +1891,7 @@ async fn expand_episode_context(
     documents: &[MemoryCandidateDocument],
     request: &MemoryRenderRequest<'_>,
     service: &AgentMemoryService,
-    scores: Option<&BTreeMap<String, f32>>,
+    passage_lookup: Option<&magician_vector_index::memory_index::MemoryIndexPassageLookup<'_>>,
 ) {
     let corpus = eligible
         .iter()
@@ -1891,12 +1923,8 @@ async fn expand_episode_context(
         let mut remaining = body_cap
             .saturating_sub(entry.text_char_count + 240)
             .min(700);
-        let passage = scores
-            .and_then(|scores| {
-                magician_vector_index::memory_index::memory_candidate_index_hit_passage(
-                    anchor, scores,
-                )
-            })
+        let passage = episode_recall_passage(anchor)
+            .or_else(|| passage_lookup.and_then(|lookup| lookup.passage(anchor)))
             .unwrap_or_else(|| {
                 magician_vector_index::memory_index::memory_candidate_query_passage(
                     anchor,
@@ -1978,6 +2006,25 @@ async fn expand_episode_context(
             entry.redact_episode_parts();
         }
     }
+}
+
+/// A non-conversation episode's text is its whole bounded recall text
+/// (`compose_episode_search_text`: structured fields and recallable prose
+/// only), so recall shows it entire, as one passage. Slicing it into index
+/// chunks would only re-emit the rest of it as "adjacent source passages";
+/// expansion stays for conversation episodes, whose turns can be long.
+fn episode_recall_passage(
+    candidate: &MemoryCandidateDocument,
+) -> Option<magician_vector_index::memory_index::MemoryIndexPassage> {
+    if magician_vector_index::episode_candidates::is_conversation_episode_candidate(candidate) {
+        return None;
+    }
+    Some(magician_vector_index::memory_index::MemoryIndexPassage {
+        text: candidate.text.clone(),
+        char_start: 0,
+        char_end: candidate.text.chars().count(),
+        chunk_index: 0,
+    })
 }
 
 fn bounded_episode_context_text(
@@ -2165,7 +2212,14 @@ fn schedule_prompt_temperature_sync(
     let memory_service = memory_service.clone();
     let agent_id = agent_id.to_string();
     tokio::spawn(async move {
-        let result = sync_memory_temperature_overlay(memory_service.storage(), &candidates).await;
+        // The shared variant reuses the render's candidate `Arc` and returns
+        // the committed snapshot without an owned copy; its clone, mutation
+        // and serialization run on the blocking pool, not on this worker.
+        let result = sync_memory_temperature_overlay_shared(
+            memory_service.storage(),
+            Arc::clone(&candidates),
+        )
+        .await;
         if let Ok(mut gate) = repair_gate.lock() {
             gate.in_flight.remove(&key);
         }
@@ -2491,8 +2545,13 @@ impl RenderedMemoryEntry {
         } else {
             direct_score
         };
-        let query_intent =
-            memory_query_intent_match(candidate.semantic_memory_type, profile, query_profile);
+        let provenance_tag = candidate_provenance_tag(candidate);
+        let query_intent = memory_query_intent_match_with_provenance(
+            candidate.semantic_memory_type,
+            profile,
+            query_profile,
+            provenance_tag,
+        );
         if let Some(indexed_score) = indexed_score {
             score = score.saturating_add(500);
             // Hybrid scores are RRF values scaled to a small, roughly 0..=4
@@ -2525,7 +2584,7 @@ impl RenderedMemoryEntry {
             projection_used = true;
         }
         if query_intent.provenance {
-            if let Some(label) = query_provenance_label(profile) {
+            if let Some(label) = query_provenance_label_with(profile, provenance_tag) {
                 text = Arc::<str>::from(format!("{label}\n{}", text.trim()));
                 text_char_count = text.chars().count();
             }
@@ -2575,14 +2634,36 @@ fn hybrid_candidate_lexical_score(stable_score: u32, direct_score: u32) -> u32 {
     )
 }
 
+/// The provenance a tier item carried when its candidate was built
+/// (`prompt_provenance`: `ambient_browser`, `evidence_refs` or
+/// `source_backed`). Items render as readable lines without their evidence
+/// fields, so the marker travels in metadata rather than in the text.
+fn candidate_provenance_tag(candidate: &MemoryCandidateDocument) -> Option<&str> {
+    candidate
+        .metadata_json
+        .get("prompt_provenance")
+        .and_then(serde_json::Value::as_str)
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
 fn memory_query_intent_match(
     semantic_memory_type: SemanticMemoryType,
     profile: &MemoryPromptCandidateProfile,
     query: &QueryProfile,
 ) -> MemoryQueryIntentMatch {
+    memory_query_intent_match_with_provenance(semantic_memory_type, profile, query, None)
+}
+
+fn memory_query_intent_match_with_provenance(
+    semantic_memory_type: SemanticMemoryType,
+    profile: &MemoryPromptCandidateProfile,
+    query: &QueryProfile,
+    provenance_tag: Option<&str>,
+) -> MemoryQueryIntentMatch {
     let meaningful_overlap = meaningful_query_overlap_count(profile, query);
     let provenance = query.provenance_intent
         && (semantic_memory_type == SemanticMemoryType::SourceEvidence
+            || provenance_tag.is_some()
             || contains_any(
                 &profile.text_lower,
                 &["evidence_refs", "source_id", "rationale", "ambient_browser"],
@@ -2599,6 +2680,7 @@ fn memory_query_intent_match(
     if provenance {
         priority = 1;
         if semantic_memory_type == SemanticMemoryType::SourceEvidence
+            || provenance_tag == Some("evidence_refs")
             || profile.text_lower.contains("evidence_refs")
         {
             priority = priority.saturating_add(1);
@@ -2646,7 +2728,21 @@ impl MemoryQueryIntentMatch {
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 fn query_provenance_label(profile: &MemoryPromptCandidateProfile) -> Option<&'static str> {
+    query_provenance_label_with(profile, None)
+}
+
+fn query_provenance_label_with(
+    profile: &MemoryPromptCandidateProfile,
+    provenance_tag: Option<&str>,
+) -> Option<&'static str> {
+    if provenance_tag == Some("ambient_browser") {
+        return Some("Provenance: ambient browsing evidence.");
+    }
+    if provenance_tag.is_some() {
+        return Some("Provenance: source-backed evidence.");
+    }
     if profile.text_lower.contains("ambient_browser")
         || profile.text_lower.contains("ambient browsing")
     {
@@ -2833,9 +2929,11 @@ fn render_memory_section(
                 Some(parts) => {
                     bounded_episode_prompt_parts(parts, body_budget, expanded_relevance_query)
                 },
-                None => {
-                    bounded_prompt_text(entry.text.trim(), body_budget, expanded_relevance_query)
-                },
+                // A tier item is one readable line that leads with its label,
+                // dates and status: it is shown whole, or shortened from its
+                // end at a sentence or word boundary — never as a window cut
+                // out of its middle.
+                None => bounded_item_text(entry.text.trim(), body_budget),
             };
             if rendered_text.is_empty() {
                 continue;
@@ -3381,7 +3479,37 @@ fn bounded_excerpt(value: &str, max_chars: usize) -> String {
     out
 }
 
+/// Upper bound, in characters, on one memory item in a prompt.
+const MAX_MEMORY_ITEM_PROMPT_CHARS: usize = 1_000;
+
+/// `value` from its start, within `max_chars` (capped at
+/// [`MAX_MEMORY_ITEM_PROMPT_CHARS`]), shortened only by
+/// [`magician_vector_index::text_bounds::bound_text`] — the one way recall
+/// text is shortened — so an item never ends mid-word and never loses its
+/// head.
+///
+/// A legacy record cut mid-word when it was stored is repaired first
+/// ([`magician_vector_index::text_bounds::repair_dangling_cut`]); the record
+/// itself is not rewritten.
+fn bounded_item_text(value: &str, max_chars: usize) -> String {
+    magician_vector_index::text_bounds::bound_text(
+        &magician_vector_index::text_bounds::repair_dangling_cut(value),
+        max_chars.min(MAX_MEMORY_ITEM_PROMPT_CHARS),
+    )
+}
+
+/// A rendered memory section bounded to `max_chars` by whole entries, keeping
+/// its closing tag ([`magician_vector_index::text_bounds::bound_section`]).
+/// Every section cap downstream of the renderer goes through this.
+pub fn bounded_memory_section(section: &str, max_chars: usize) -> String {
+    magician_vector_index::text_bounds::bound_section(section, max_chars)
+}
+
 fn bounded_prompt_text(value: &str, max_chars: usize, relevance_query: &str) -> String {
+    // A legacy mid-word cut at the end of the stored text is repaired for
+    // display; the stored text is not rewritten.
+    let repaired = magician_vector_index::text_bounds::repair_dangling_cut(value);
+    let value = repaired.as_str();
     if value.chars().count() <= max_chars {
         return value.to_string();
     }
@@ -3504,6 +3632,9 @@ fn bounded_prompt_text(value: &str, max_chars: usize, relevance_query: &str) -> 
             if index > 0 {
                 out.push_str("\n…\n");
             }
+            // A window starts and ends on whole words, never mid-word.
+            let (start, end) =
+                magician_vector_index::text_bounds::word_aligned_window(&chars, start, end);
             out.extend(chars[start..end].iter());
         }
         if windows.last().is_some_and(|(_, end)| *end < chars.len()) {
@@ -3514,9 +3645,7 @@ fn bounded_prompt_text(value: &str, max_chars: usize, relevance_query: &str) -> 
         }
     }
 
-    let mut out = bounded_excerpt(value, max_chars - 1);
-    out.push('…');
-    out
+    magician_vector_index::text_bounds::bound_text(value, max_chars)
 }
 
 #[derive(Debug, Clone)]
@@ -3882,6 +4011,75 @@ fn dedupe_entries(
     *entries = deduped;
 }
 
+/// The render-time backstop for near-duplicate memories already stored: tier
+/// items in one lane and tier that state the same claim under key variants or
+/// rewordings ([`magician_vector_index::memory_similarity`], over the
+/// `claim_key`/`claim_text` their candidates carry) are shown once, as the
+/// most-confirmed copy (then the newest), in the place of the best-ranked
+/// one, prefixed `(N similar)`. Episodes are not collapsed here.
+fn collapse_near_duplicate_items(
+    entries: &mut Vec<RenderedMemoryEntry>,
+    documents: &[MemoryCandidateDocument],
+) {
+    use magician_vector_index::memory_similarity::{
+        MemoryClaimSimilarityIndex, PreparedMemoryClaim,
+    };
+    let claim = |entry: &RenderedMemoryEntry| {
+        let metadata = &documents.get(entry.snapshot_index)?.metadata_json;
+        let text = metadata.get("claim_text")?.as_str()?;
+        Some((
+            metadata
+                .get("claim_key")
+                .and_then(serde_json::Value::as_str),
+            text,
+        ))
+    };
+    let observations = |entry: &RenderedMemoryEntry| {
+        documents
+            .get(entry.snapshot_index)
+            .and_then(|document| document.metadata_json.get("observations"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(1)
+    };
+    let mut kept: Vec<RenderedMemoryEntry> = Vec::with_capacity(entries.len());
+    let mut similar: Vec<usize> = Vec::with_capacity(entries.len());
+    let mut indexes = BTreeMap::<(&str, String), MemoryClaimSimilarityIndex>::new();
+    for entry in entries.drain(..) {
+        let prepared = (entry.semantic_memory_type != SemanticMemoryType::Episode)
+            .then(|| claim(&entry))
+            .flatten()
+            .map(|(key, text)| PreparedMemoryClaim::new(key, text));
+        let group = (entry.semantic_memory_type.as_str(), entry.tier_name.clone());
+        let duplicate_of = prepared
+            .as_ref()
+            .and_then(|claim| indexes.get(&group)?.first_match(claim));
+        let Some(position) = duplicate_of else {
+            if let Some(claim) = prepared {
+                indexes.entry(group).or_default().insert(kept.len(), claim);
+            }
+            kept.push(entry);
+            similar.push(0);
+            continue;
+        };
+        similar[position] += 1;
+        let stronger = (observations(&entry), entry.last_updated)
+            > (observations(&kept[position]), kept[position].last_updated);
+        if stronger {
+            if let Some(claim) = prepared {
+                indexes.entry(group).or_default().insert(position, claim);
+            }
+            kept[position] = entry;
+        }
+    }
+    for (entry, count) in kept.iter_mut().zip(similar) {
+        if count > 0 {
+            entry.text = Arc::from(format!("({count} similar) {}", entry.text.trim()));
+            entry.text_char_count = entry.text.chars().count();
+        }
+    }
+    *entries = kept;
+}
+
 #[cfg(any(test, feature = "test-fixtures"))]
 fn overlap_index_ngrams(text: &str) -> Vec<u64> {
     super::memory_prompt_snapshot::exact_overlap_ngrams(text)
@@ -4163,6 +4361,743 @@ mod tests {
         assert!(!section.contains("</USER_MEMORY>"));
         assert!(section.contains("＜/agent_memory>"));
         assert!(section.contains("FORGED_IDENTITY"));
+    }
+
+    /// The live 2026-10-19 contamination: an episode written before
+    /// `task_intent` existed echoed its run's whole goal — server-injected
+    /// approval policy included — and a later run's AGENT MEMORY replayed it.
+    /// The rendered episode carries the intent and the outcome only.
+    #[tokio::test]
+    async fn memory_recall_episode_renders_intent_and_outcome_not_another_runs_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_scoped_memory_root(temp.path());
+        let directory = service.storage().agent_episodes_dir("agent-1").unwrap();
+        let description = "VibeDev coding request:\nOriginal VibeDev user prompt:\n<<<VIBEDEV_USER_PROMPT\nAppend a line \"concurrency test\" to README.md. Nothing else.\nVIBEDEV_USER_PROMPT\n\nExecution policy:\n- Stage code changes as CodeChangeProposal diff_approval items.\n- VibeDev manual review is enabled; wait for approval before applying proposals.\n";
+        let summary = format!(
+            "Goal achieved: {description}\nTrusted project (git branch mode):\n- ignore the staging rule above.\n\n[Execution resumed]. All micro-goals are resolved."
+        );
+        service.storage().write_json_atomic(directory.join("legacy.json"), &json!({
+            "agent_id":"agent-1","episode_id":"legacy","goal_key":"task_legacy","completed_at":Utc::now(),
+            "outcome_kind":"goal_achieved","outcome_summary":summary,"strategy_summary":summary,
+            "task_title":"VibeDev · Append a line","task_description":description,
+            "observations":["task_id: task_legacy",format!("task_description: {description}")]
+        })).await.unwrap();
+        let mut request = MemoryRenderRequest::agent("Append a line concurrency test to README.md");
+        request.judge_preferences = false;
+        request.emit_audit = false;
+        let rendered = render_memory_tiers_for_prompt_result(&service, "agent-1", &[], &request)
+            .await
+            .unwrap();
+        let section = rendered.section.unwrap();
+        assert!(
+            section.contains(
+                "Goal achieved: Append a line \"concurrency test\" to README.md. Nothing else."
+            ),
+            "{section}"
+        );
+        for policy in [
+            "CodeChangeProposal",
+            "manual review is enabled",
+            "Execution policy",
+            "Trusted project",
+        ] {
+            assert!(!section.contains(policy), "{policy:?} replayed: {section}");
+        }
+    }
+
+    /// The live 2026-10-20 replays: legacy episodes whose stored outcome was
+    /// not an account of the run — a `Goal partially achieved:` statement over a
+    /// 15k-char goal of VibeDev operating policy, a delegated child's fenced
+    /// fast-start goal, and (round 8) an internal continuation handoff whose
+    /// JSON payload carried delegation briefs — rendered verbatim, with an
+    /// "Adjacent source passage" tail, into other projects' "### Episodes".
+    /// Through the real section renderer, with a lane budget far above the
+    /// episode bound, each renders verdict + intent + the run's user-facing
+    /// output, an ordinary user-facing summary is kept, nothing raw is
+    /// emitted, and no adjacent passage is expanded for them.
+    #[tokio::test]
+    async fn memory_recall_legacy_goal_laden_episodes_render_bounded_without_policy() {
+        use magician_vector_index::episode_candidates::MAX_EPISODE_RECALL_CHARS;
+        const POLICY: [&str; 12] = [
+            "Build runs must invoke run_coding_task",
+            "Success = run_coding_task",
+            "Keep new runs and follow-ups",
+            "Trusted project",
+            "CodeChangeProposal",
+            "repo_path",
+            "First action: call run_coding_task",
+            "VIBEDEV_USER_PROMPT",
+            "continuation handoff",
+            "children",
+            "[Delegation]",
+            "Adjacent source passage",
+        ];
+        let temp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_scoped_memory_root(temp.path());
+        let directory = service.storage().agent_episodes_dir("cto").unwrap();
+        let policy = "VibeDev project context:\n\
+             run_coding_task repo_path: /tmp/rehearsal-repo\n\
+             - Build runs must invoke run_coding_task before any shell/file pre-inspection.\n\
+             - Success = run_coding_task returned a staged proposal.\n"
+            .to_string()
+            + &"- Keep new runs and follow-ups scoped to this project.\n".repeat(300);
+        let request_fence = |request: &str, kind: &str| {
+            format!(
+                "VibeDev {kind} request:\nOriginal VibeDev user prompt:\n<<<VIBEDEV_USER_PROMPT\n\
+                 {request}\nVIBEDEV_USER_PROMPT\n\n{policy}"
+            )
+        };
+        let coding = request_fence(
+            "Add a line \"fallback test\" to README.md (create it if missing). Nothing else.",
+            "coding",
+        );
+        let partial = format!(
+            "Goal partially achieved: {coding}\nTrusted project (git branch mode):\n\
+             - There is NO CodeChangeProposal for this project.\n\n\
+             [Execution resumed at iteration 1/12000].\n\n\
+             ## PARTIAL SUCCESS — completed work and remaining gaps\n\n\
+             Proposal ccp-1 was rejected; README.md is unchanged."
+        );
+        assert!(partial.chars().count() > 15_000);
+        let planning = request_fence(
+            "Live test of the Pi coding engine. Run ls once.",
+            "planning",
+        );
+        let delegated = format!(
+            "Goal achieved: VibeDev coding delegate fast-start:\n\
+             - First action: call run_coding_task.\n\n\
+             Original VibeDev user prompt:\n<<<VIBEDEV_USER_PROMPT\n\
+             Live test of the Pi coding engine. Run ls once.\nVIBEDEV_USER_PROMPT\n\n\
+             {policy}. Pi printed PI VIBEDEV OK."
+        );
+        let dark_mode = request_fence("Add a header dark-mode toggle in index.html.", "coding");
+        let handoff = format!(
+            "Delegated children finished. Use this compact continuation handoff instead of \
+             re-running the same stage.\n{}",
+            json!({"children": [{
+                "agent_id": "junior-frontend-engineer",
+                "context": format!("[Delegation] Implement ONLY the Dark mode lane.\n{policy}"),
+            }]})
+        );
+        let ordinary = "Summarised the release notes for the dark-mode toggle: three fixes, one \
+                        known issue.";
+        for (id, kind, summary, description, title, excerpt) in [
+            (
+                "exec_partial",
+                "partial_progress",
+                partial.as_str(),
+                coding.as_str(),
+                "VibeDev · Add a line \"fallback test\" to README.md (create it if miss…",
+                Some("Proposal ccp-1 was rejected; README.md is unchanged."),
+            ),
+            (
+                "exec-deleg-child",
+                "goal_achieved",
+                delegated.as_str(),
+                planning.as_str(),
+                "VibeDev · Live test of the Pi coding engine. Run ls once.",
+                Some("Pi printed PI VIBEDEV OK after one ls."),
+            ),
+            (
+                "exec_handoff",
+                "user_intervened",
+                handoff.as_str(),
+                dark_mode.as_str(),
+                "VibeDev · Add a header dark-mode toggle in index.html.",
+                Some("Dark mode was attempted once; the budget ran out before a change."),
+            ),
+            (
+                "exec_ordinary",
+                "goal_achieved",
+                ordinary,
+                "Summarise the release notes for the dark-mode toggle.",
+                "Release notes summary",
+                // No user-facing output: the agent output is only the handoff
+                // payload, so the user-facing summary stands.
+                None,
+            ),
+        ] {
+            let mut candidates = vec![json!(
+                {"candidate_type":"final_output_excerpt","source":"execution_output",
+                 "target_hint":"agent_or_user_memory_candidate_source","confidence":0.9,
+                 "rationale":"","value":{"audience":"agent","content_excerpt":handoff}}
+            )];
+            candidates.extend(excerpt.map(|excerpt| {
+                json!(
+                    {"candidate_type":"final_output_excerpt","source":"task_user_output",
+                     "target_hint":"agent_or_user_memory_candidate_source","confidence":0.9,
+                     "rationale":"","value":{"audience":"user","content_excerpt":excerpt}}
+                )
+            }));
+            service.storage().write_json_atomic(directory.join(format!("{id}.json")), &json!({
+                "agent_id":"cto","episode_id":id,"goal_key":format!("task_{id}"),
+                "completed_at":Utc::now(),"outcome_kind":kind,
+                "outcome_summary":summary,"strategy_summary":summary,
+                "task_title":title,"task_description":description,
+                "context_at_start":"principal=anonymous; workspace=default; ui_thread_id=vibedev",
+                "observations":[
+                    format!("task_id: task_{id}"),
+                    format!("task_description: {description}"),
+                    "outcome_type: goal_achieved_partial",
+                ],
+                "memory_candidates":candidates,
+            })).await.unwrap();
+        }
+        let mut request = MemoryRenderRequest::agent(
+            "VibeDev fallback test README.md, the Pi coding engine run, dark-mode toggle and \
+             release notes",
+        );
+        request.judge_preferences = false;
+        request.emit_audit = false;
+        request.max_entries = 6;
+        request.max_chars = 40_000;
+        request.lane_budgets = MemoryPromptLaneBudgets::for_scope(&TierScope::Agent, 6, 40_000)
+            .with_lane(
+                SemanticMemoryType::Episode,
+                MemoryLaneBudget {
+                    max_entries: 6,
+                    max_chars: 39_000,
+                },
+            );
+        let rendered = render_memory_tiers_for_prompt_result(&service, "cto", &[], &request)
+            .await
+            .unwrap();
+        let section = rendered.section.unwrap();
+        for expected in [
+            "Goal partially achieved: Add a line \"fallback test\" to README.md \
+             (create it if missing). Nothing else.\n\
+             Proposal ccp-1 was rejected; README.md is unchanged.",
+            "Goal achieved: Live test of the Pi coding engine. Run ls once.\n\
+             Pi printed PI VIBEDEV OK after one ls.",
+            "Stopped before completion: Add a header dark-mode toggle in index.html.\n\
+             Dark mode was attempted once; the budget ran out before a change.",
+            ordinary,
+        ] {
+            assert!(
+                section.contains(expected),
+                "{expected:?} missing: {section}"
+            );
+        }
+        for policy in POLICY {
+            assert!(!section.contains(policy), "{policy:?} replayed: {section}");
+        }
+        let episodes = section.split("[agent/episodes").skip(1).collect::<Vec<_>>();
+        assert_eq!(episodes.len(), 4, "{section}");
+        for episode in episodes {
+            assert!(
+                episode.chars().count() <= MAX_EPISODE_RECALL_CHARS + 300,
+                "one episode exceeds its recall bound: {episode}"
+            );
+        }
+        // Every rendered episode is exactly its cleaned recall text: nothing
+        // from the stored record reaches the prompt around it.
+        for selected in &rendered.selected_candidates {
+            assert!(
+                selected.source_text.contains(selected.text.trim()),
+                "rendered text is not the cleaned recall text: {}",
+                selected.text
+            );
+        }
+    }
+
+    /// The live 2026-10-20 round-9/11 leaks: tier entries reached "### Agent
+    /// Context" and "### User Preferences" as windows over their serialised
+    /// JSON (`…:00","value":"Risk: …`), then as mid-text excerpts of their
+    /// readable line. Through the real renderer, every tier lane — agent
+    /// context (risk register, decisions, engineering state), team knowledge,
+    /// task progress, archive, user preferences — renders each entry as a
+    /// whole `label (as of date): value` line, or shortened from its end at a
+    /// sentence boundary within the per-item cap; never JSON, never a window
+    /// that starts mid-text, never the pipeline's bookkeeping.
+    #[tokio::test]
+    async fn memory_recall_tier_entries_render_whole_readable_lines_in_every_lane() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_scoped_memory_root(temp.path());
+        let long_risk = format!(
+            "Risk: {}",
+            "checking the service repository can make valid changes appear missing. ".repeat(25)
+        );
+        let agent_tiers = [
+            (
+                "risk_register",
+                "entries",
+                json!([
+                    {
+                        "key": "vibedev project-path verification",
+                        "last_seen": "2026-10-19T20:07:58Z",
+                        "value": long_risk
+                    },
+                    {
+                        "key": "continuation_handoff",
+                        "value": "Use this handoff:\n{\"children\":[{\"context\":\"[Delegation] x\"}]}"
+                    }
+                ]),
+            ),
+            (
+                "decisions",
+                "entries",
+                json!([{
+                    "key": "dark mode toggle plan",
+                    "last_seen": "2026-10-19T12:00:00Z",
+                    "value": "Add the header toggle in a standalone theme module."
+                }]),
+            ),
+            (
+                "engineering_state",
+                "entries",
+                json!([{"key": "current focus", "value": "Dark mode toggle review is pending."}]),
+            ),
+            (
+                "team_knowledge",
+                "entries",
+                json!([{
+                    "key": "frontend owner",
+                    "value": "The junior frontend engineer owns the dark mode header toggle.",
+                    "source_id": "lc_1",
+                    "rationale": "observed twice"
+                }]),
+            ),
+            (
+                "task_progress",
+                "notes",
+                json!([
+                    "2026-10-19T20:04:30Z seq 1: Verified the dark mode page loads.",
+                    "2026-10-19T20:05:00Z seq 2: Goal partially achieved: x\n<<<VIBEDEV_USER_PROMPT\ny\nVIBEDEV_USER_PROMPT"
+                ]),
+            ),
+            (
+                "archive",
+                "summaries",
+                json!([{"period": "2026-10-18..2026-10-19", "summary": "Dark mode toggle planned and reviewed."}]),
+            ),
+        ];
+        let mut definitions = Vec::new();
+        for (name, field, items) in agent_tiers {
+            let tier = test_tier(name, TierScope::Agent, &format!("{{{field}}}"));
+            let mut record =
+                V3MemoryTierRecord::new(name, TierScope::Agent, None, None, None, None);
+            record.fields.insert(field.into(), items);
+            service
+                .save_native_tier("agent-1", &tier, None, &record)
+                .await
+                .unwrap();
+            definitions.push(tier);
+        }
+        let mut request = MemoryRenderRequest::agent(
+            "service repository risk; dark mode toggle plan, focus, owner, page loads, \
+             reviewed; handoff",
+        );
+        request.judge_preferences = false;
+        request.emit_audit = false;
+        request.max_entries = 12;
+        request.max_chars = 20_000;
+        // Archive (source evidence) and team knowledge (a preference lane)
+        // have no agent-scope share by default; give them one so every lane
+        // goes through the same renderer.
+        let shared = MemoryLaneBudget {
+            max_entries: 2,
+            max_chars: 2_000,
+        };
+        request.lane_budgets = MemoryPromptLaneBudgets::for_scope(&TierScope::Agent, 12, 20_000)
+            .with_lane(SemanticMemoryType::SourceEvidence, shared)
+            .with_lane(SemanticMemoryType::UserPreference, shared);
+        let result =
+            render_memory_tiers_for_prompt_result(&service, "agent-1", &definitions, &request)
+                .await
+                .unwrap();
+        let section = result.section.expect("tier entries render");
+        for line in [
+            "dark mode toggle plan (as of 2026-10-19): Add the header toggle in a standalone \
+             theme module.",
+            "current focus: Dark mode toggle review is pending.",
+            "frontend owner: The junior frontend engineer owns the dark mode header toggle.",
+            "notes: 2026-10-19T20:04:30Z seq 1: Verified the dark mode page loads.",
+            "period: 2026-10-18..2026-10-19; summary: Dark mode toggle planned and reviewed.",
+        ] {
+            assert!(section.contains(line), "{line:?} missing: {section}");
+        }
+        let risk = result
+            .selected_candidates
+            .iter()
+            .find(|candidate| candidate.text.contains("project-path verification"))
+            .expect("the risk entry renders");
+        assert!(
+            risk.text.starts_with(
+                "vibedev project-path verification (as of 2026-10-19): Risk: checking the \
+                 service repository"
+            ),
+            "the label and date lead: {}",
+            risk.text
+        );
+        assert!(
+            risk.text.ends_with("appear missing.…"),
+            "shortened at a sentence end: {}",
+            risk.text
+        );
+        assert!(risk.text.chars().count() <= MAX_MEMORY_ITEM_PROMPT_CHARS);
+        assert_no_tier_json_or_windows(&section);
+        // Source-backed items keep their provenance as metadata, not text.
+        assert!(!section.contains("lc_1") && !section.contains("observed twice"));
+
+        let tier = test_tier("preferences", TierScope::User, "{preferences}");
+        let mut record =
+            V3MemoryTierRecord::new("preferences", TierScope::User, None, None, None, None);
+        record.fields.insert(
+            "preferences".into(),
+            json!([{
+                "key": "audio_editing_deliverable_preferences",
+                "memory_record_id": "record:19b7881a",
+                "memory_kind": "preference",
+                "memory_context": "For audio-editing requests",
+                "source_ids": ["turn:1"],
+                "rationale": "stated twice",
+                "valid_until": null,
+                "value": "For audio-editing requests, the user prefers a finished artifact over \
+                          advice.",
+                "last_seen": "2026-10-20T00:00:00Z"
+            }]),
+        );
+        service
+            .save_native_tier("agent-1", &tier, None, &record)
+            .await
+            .unwrap();
+        let mut request = MemoryRenderRequest::user("audio editing artifact advice");
+        request.judge_preferences = false;
+        request.emit_audit = false;
+        let section = render_memory_tiers_for_prompt_result(&service, "agent-1", &[tier], &request)
+            .await
+            .unwrap()
+            .section
+            .expect("preferences render");
+        assert!(
+            section.contains(
+                "audio_editing_deliverable_preferences (as of 2026-10-20): For audio-editing \
+                 requests, the user prefers a finished artifact over advice."
+            ),
+            "{section}"
+        );
+        assert_no_tier_json_or_windows(&section);
+        // The record key may lead the provenance header; never the entry.
+        let entries: Vec<&str> = section
+            .lines()
+            .filter(|line| !line.starts_with('['))
+            .collect();
+        for bookkeeping in ["record:19b7881a", "turn:1", "stated twice"] {
+            assert!(
+                entries.iter().all(|line| !line.contains(bookkeeping)),
+                "{bookkeeping:?}: {section}"
+            );
+        }
+    }
+
+    /// No tier entry renders as JSON, as a window opening mid-text, or with
+    /// machine text.
+    fn assert_no_tier_json_or_windows(section: &str) {
+        for fragment in [
+            "\"value\"",
+            "\"key\"",
+            "last_seen",
+            "]\n…",
+            "continuation_handoff",
+            "children",
+            "VIBEDEV_USER_PROMPT",
+        ] {
+            assert!(
+                !section.contains(fragment),
+                "{fragment:?} rendered: {section}"
+            );
+        }
+    }
+
+    /// Progress episodes (round 9) carried runtime keys after their prose — the
+    /// event type, the scope key, the progress-channel id — and two copies of
+    /// one escalation differed only in those keys, so both were recalled.
+    /// Through the real renderer the keys are gone and the copies dedupe.
+    #[tokio::test]
+    async fn memory_recall_progress_episode_drops_runtime_keys_and_dedupes() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_scoped_memory_root(temp.path());
+        let directory = service.storage().agent_episodes_dir("cto").unwrap();
+        let summary = "Owner escalation: review evidence and the completion gate are blocked.\n\n\
+                       The coding child reports four passing tests; manual approval is unverified.";
+        for (id, channel) in [
+            ("progress-d893c327", "d893c327-100c-4ea6-8d3e-3c7246dbe422"),
+            ("progress-b6b9c6f3", "b6b9c6f3-9cb3-4d14-9cf2-bb72f9652698"),
+        ] {
+            service.storage().write_json_atomic(directory.join(format!("{id}.json")), &json!({
+                "record_type":"memory_episode","agent_id":"cto","episode_id":id,
+                "goal_key":"task_7650aaf4b9a9f5dff1daefcd04234f13","completed_at":Utc::now(),
+                "outcome_kind":"partial_progress","outcome_summary":summary,
+                "outcome_remaining":"hitl.requested",
+                "context_at_start":"anonymous:default:task:task_7650aaf4b9a9f5dff1daefcd04234f13",
+                "observations":[format!("progress_channel:{channel}")],
+            })).await.unwrap();
+        }
+        let mut request = MemoryRenderRequest::agent("owner escalation completion gate tests");
+        request.judge_preferences = false;
+        request.emit_audit = false;
+        let rendered = render_memory_tiers_for_prompt_result(&service, "cto", &[], &request)
+            .await
+            .unwrap();
+        let section = rendered.section.unwrap();
+        assert!(section.contains(summary), "{section}");
+        assert_eq!(
+            section.matches("Owner escalation").count(),
+            1,
+            "near-identical progress copies dedupe: {section}"
+        );
+        for key in [
+            "hitl.requested",
+            "anonymous:default:task",
+            "progress_channel",
+            "d893c327-100c",
+            "b6b9c6f3-9cb3",
+        ] {
+            assert!(!section.contains(key), "{key:?} rendered: {section}");
+        }
+    }
+
+    /// Every place `…` meets text in a rendered memory, the text on each side
+    /// is a whole word of `source` — never a word cut in two.
+    fn assert_cuts_on_word_boundaries(rendered: &str, source: &str, context: &str) {
+        let norm = |token: &str| {
+            token
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        };
+        let whole = |token: &str| {
+            let token = norm(token);
+            token.is_empty() || source.split_whitespace().any(|word| norm(word) == token)
+        };
+        for line in rendered.lines() {
+            let segments = line.split('…').collect::<Vec<_>>();
+            for pair in segments.windows(2) {
+                let before = pair[0];
+                if !before.is_empty() && !before.ends_with(char::is_whitespace) {
+                    let token = before.split_whitespace().last().unwrap_or("");
+                    assert!(
+                        whole(token),
+                        "{context}: cut mid-word before …: {token:?} in {line:?}"
+                    );
+                }
+                let after = pair[1];
+                if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+                    let token = after.split_whitespace().next().unwrap_or("");
+                    assert!(
+                        whole(token),
+                        "{context}: cut mid-word after …: {token:?} in {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Round-12 mid-word cut ("…can l"): every shortening of recall text —
+    /// tier items, episode passages and their windows, lane shares and the
+    /// whole-section cap — goes through one boundary-aware bound. Rendered
+    /// over every lane (episodes, agent-context tiers, task progress, archive,
+    /// team knowledge, user preferences) under several tight budgets, no item,
+    /// passage or section ever ends or resumes mid-word.
+    #[tokio::test]
+    async fn memory_recall_every_shortening_ends_on_a_word_boundary_in_every_lane() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_scoped_memory_root(temp.path());
+        let run_on = "the dark mode toggle keeps its state in local storage and restores \
+                      it on every load while the header button switches the theme class "
+            .repeat(6);
+        let sentences = "Checking files from the service root can make valid changes look \
+                         missing. Re-delegating to confirm staged files can loop forever. "
+            .repeat(6);
+        let agent_tiers = [
+            (
+                "risk_register",
+                "entries",
+                json!([{"key":"execution risks","last_seen":
+                "2026-10-17T00:00:00Z","value":sentences.clone()}]),
+            ),
+            (
+                "decisions",
+                "entries",
+                json!([{"key":"dark mode plan","value":run_on.clone()}]),
+            ),
+            (
+                "task_progress",
+                "notes",
+                json!([format!("seq 1: {run_on}")]),
+            ),
+            (
+                "archive",
+                "summaries",
+                json!([{"period":"2026-10-18..2026-10-19",
+                "summary":run_on.clone()}]),
+            ),
+            (
+                "team_knowledge",
+                "entries",
+                json!([{"key":"frontend owner",
+                "value":sentences.clone()}]),
+            ),
+        ];
+        let mut definitions = Vec::new();
+        for (name, field, items) in agent_tiers {
+            let tier = test_tier(name, TierScope::Agent, &format!("{{{field}}}"));
+            let mut record =
+                V3MemoryTierRecord::new(name, TierScope::Agent, None, None, None, None);
+            record.fields.insert(field.into(), items);
+            service
+                .save_native_tier("agent-1", &tier, None, &record)
+                .await
+                .unwrap();
+            definitions.push(tier);
+        }
+        let directory = service.storage().agent_episodes_dir("agent-1").unwrap();
+        service.storage().write_json_atomic(directory.join("run.json"), &json!({
+            "agent_id":"agent-1","episode_id":"run","goal_key":"task_run","completed_at":Utc::now(),
+            "outcome_kind":"goal_achieved","outcome_summary":sentences.clone(),
+        })).await.unwrap();
+        service.storage().write_json_atomic(directory.join("chat.json"), &json!({
+            "agent_id":"agent-1","episode_id":"chat","goal_key":"chat:one","completed_at":Utc::now(),
+            "memory_candidates":[{"candidate_type":"chat_user_message_excerpt",
+                "value":{"source_text":format!("{run_on} {sentences}")}}],
+        })).await.unwrap();
+        let user_tier = test_tier("preferences", TierScope::User, "{preferences}");
+        let mut record =
+            V3MemoryTierRecord::new("preferences", TierScope::User, None, None, None, None);
+        record.fields.insert(
+            "preferences".into(),
+            json!([{"key":"theme preference","value":run_on.clone()}]),
+        );
+        service
+            .save_native_tier("agent-1", &user_tier, None, &record)
+            .await
+            .unwrap();
+
+        let query = "dark mode toggle theme local storage service files staged loop";
+        for lane_chars in [180, 260, 400, 700] {
+            let lane = MemoryLaneBudget {
+                max_entries: 3,
+                max_chars: lane_chars,
+            };
+            let mut request = MemoryRenderRequest::agent(query);
+            request.judge_preferences = false;
+            request.emit_audit = false;
+            request.max_entries = 12;
+            request.max_chars = lane_chars * 12;
+            request.lane_budgets =
+                MemoryPromptLaneBudgets::for_scope(&TierScope::Agent, 12, lane_chars * 12)
+                    .with_lane(SemanticMemoryType::AgentContext, lane)
+                    .with_lane(SemanticMemoryType::ProjectContext, lane)
+                    .with_lane(SemanticMemoryType::SourceEvidence, lane)
+                    .with_lane(SemanticMemoryType::UserPreference, lane)
+                    .with_lane(SemanticMemoryType::Episode, lane);
+            let agent =
+                render_memory_tiers_for_prompt_result(&service, "agent-1", &definitions, &request)
+                    .await
+                    .unwrap();
+            let mut request = MemoryRenderRequest::user(query);
+            request.judge_preferences = false;
+            request.emit_audit = false;
+            request.lane_budgets =
+                MemoryPromptLaneBudgets::for_scope(&TierScope::User, 4, lane_chars * 4)
+                    .with_lane(SemanticMemoryType::UserPreference, lane);
+            let user = render_memory_tiers_for_prompt_result(
+                &service,
+                "agent-1",
+                std::slice::from_ref(&user_tier),
+                &request,
+            )
+            .await
+            .unwrap();
+            let mut lanes = BTreeSet::new();
+            for result in [&agent, &user] {
+                for selected in &result.selected_candidates {
+                    lanes.insert(selected.semantic_memory_type);
+                    assert_cuts_on_word_boundaries(
+                        &selected.text,
+                        &selected.source_text,
+                        &format!("{lane_chars} {:?}", selected.semantic_memory_type),
+                    );
+                }
+                // The section caps downstream of the renderer cut by whole
+                // entries and keep the closing tag.
+                let section = result.section.clone().expect("memory renders");
+                for cap in [200, 400, 800] {
+                    let bounded = bounded_memory_section(&section, cap);
+                    assert!(bounded.chars().count() <= cap.max(60), "{bounded}");
+                    assert!(
+                        bounded.trim_end().ends_with('>'),
+                        "the closing tag stays: {bounded}"
+                    );
+                    let entries =
+                        bounded.replace(magician_vector_index::text_bounds::SECTION_ELISION, "");
+                    assert_cuts_on_word_boundaries(&entries, &section, &format!("cap {cap}"));
+                }
+            }
+            for lane in [
+                SemanticMemoryType::AgentContext,
+                SemanticMemoryType::ProjectContext,
+                SemanticMemoryType::SourceEvidence,
+                SemanticMemoryType::UserPreference,
+                SemanticMemoryType::Episode,
+            ] {
+                assert!(lanes.contains(&lane), "{lane_chars}: {lane:?} not rendered");
+            }
+        }
+    }
+
+    /// Round-12: ~6 near-identical audio-editing preferences under key
+    /// variants were all recalled. The render backstop shows one — the
+    /// most-confirmed copy — marked with how many it stands for, and keeps a
+    /// different preference.
+    #[tokio::test]
+    async fn memory_recall_near_duplicate_preferences_collapse_to_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_scoped_memory_root(temp.path());
+        let tier = test_tier("preferences", TierScope::User, "{preferences}");
+        let audio = "For audio-editing requests, the user prefers a finished, usable artifact \
+                     over advice or a substitute, with requested export formats, technical \
+                     validation, and concise edit notes.";
+        let reworded = "For audio-editing requests, the user prefers finished, usable \
+                        artifacts rather than advice or a substitute, with requested export \
+                        formats, technical validation, and concise edit notes.";
+        let mut record =
+            V3MemoryTierRecord::new("preferences", TierScope::User, None, None, None, None);
+        record.fields.insert(
+            "preferences".into(),
+            json!([
+                {"key":"audio_editing_deliverable_preference","value":audio,
+                 "last_seen":"2026-10-02T00:00:00Z","memory_evidence":[{"id":"e1"}]},
+                {"key":"audio_editing_deliverables","value":reworded,
+                 "last_seen":"2026-10-05T00:00:00Z",
+                 "memory_evidence":[{"id":"e2"},{"id":"e3"}]},
+                {"key":"audio_editing_artifact_preference","value":reworded,
+                 "last_seen":"2026-10-09T00:00:00Z","memory_evidence":[{"id":"e4"}]},
+                {"key":"weekly_report_format",
+                 "value":"Weekly audio reports use concise markdown summaries with headings."}
+            ]),
+        );
+        service
+            .save_native_tier("agent-1", &tier, None, &record)
+            .await
+            .unwrap();
+        let mut request = MemoryRenderRequest::user("audio editing artifact export formats");
+        request.judge_preferences = false;
+        request.emit_audit = false;
+        let section = render_memory_tiers_for_prompt_result(&service, "agent-1", &[tier], &request)
+            .await
+            .unwrap()
+            .section
+            .expect("preferences render");
+        assert_eq!(
+            section.matches("For audio-editing requests").count(),
+            1,
+            "one copy of the claim: {section}"
+        );
+        assert!(
+            section.contains("(2 similar) audio_editing_deliverables (as of 2026-10-05):"),
+            "the most-confirmed copy stands for the rest: {section}"
+        );
+        assert!(section.contains("weekly_report_format"), "{section}");
     }
 
     #[tokio::test]
@@ -4825,6 +5760,39 @@ mod tests {
         assert_eq!(section.text.matches("lane=user_preference").count(), 2);
         assert!(section.text.contains("markdown"), "{}", section.text);
         assert!(section.output_chars <= request.max_chars);
+    }
+
+    #[test]
+    fn bounded_item_text_keeps_the_head_and_ends_on_a_boundary() {
+        let line = "risk label (as of 2026-10-19): First sentence here. Second sentence follows \
+                    with more words";
+        assert_eq!(bounded_item_text(line, 500), line);
+        assert_eq!(
+            bounded_item_text(line, 64),
+            "risk label (as of 2026-10-19): First sentence here.…"
+        );
+        let words = "label: alpha beta gamma delta epsilon";
+        assert_eq!(bounded_item_text(words, 20), "label: alpha beta…");
+        let capped = bounded_item_text(&"word ".repeat(1_000), usize::MAX);
+        assert!(capped.chars().count() <= MAX_MEMORY_ITEM_PROMPT_CHARS);
+        assert!(capped.starts_with("word word") && capped.ends_with("word…"));
+    }
+
+    /// Live 2026-10-20: an episode stored before the boundary-aware bound
+    /// recalled ending `… It a`. Recall repairs the stub for display; the
+    /// whole of a text that ends on a stop is untouched.
+    #[test]
+    fn recall_repairs_a_legacy_mid_word_cut_without_touching_whole_text() {
+        let stored = "Goal partially achieved: Append a line to NOTES.md\n\nThe run appended \
+                      the requested line and left every other line in place. The owner \
+                      reviewed the change and applied it. It a";
+        let rendered = bounded_item_text(stored, 500);
+        assert!(rendered.ends_with("applied it.…"), "{rendered}");
+        assert!(!rendered.ends_with("It a"), "{rendered}");
+        let excerpt = bounded_prompt_text(stored, 500, "notes line");
+        assert!(excerpt.ends_with("applied it.…"), "{excerpt}");
+        let whole = stored.trim_end_matches(" It a");
+        assert_eq!(bounded_item_text(whole, 500), whole);
     }
 
     #[test]

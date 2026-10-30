@@ -50,4 +50,21 @@ describe('vibedev llmCost SQL builders', () => {
 		expect(sql).toContain('FROM llm_calls WHERE');
 		expect(sql).toContain('1 AS calls');
 	});
+
+	it('windows llm_calls with a literal epoch-ms bound off the injected anchor', () => {
+		const anchor = Date.UTC(2026, 9, 30, 10, 17, 42, 123);
+		const bound = Date.UTC(2026, 9, 30, 10, 18, 0, 0) - 7 * 86_400_000;
+		for (const sql of [
+			buildVibeDevProjectRollupSql(attributions, 7, [], 'calls', anchor),
+			buildVibeDevModelBreakdownSql(attributions, 7, [], 10, anchor),
+			buildVibeDevTotalRollupSql(attributions, 7, [], anchor)
+		]) {
+			expect(sql).toContain(`FROM llm_calls WHERE timestamp_ms > ${bound}`);
+			expect(sql).not.toContain('INTERVAL');
+		}
+		// Same minute => same SQL, so a store tick never re-wires the widget.
+		expect(buildVibeDevProjectRollupSql(attributions, 7, [], 'calls', anchor)).toBe(
+			buildVibeDevProjectRollupSql(attributions, 7, [], 'calls', anchor + 5_000)
+		);
+	});
 });

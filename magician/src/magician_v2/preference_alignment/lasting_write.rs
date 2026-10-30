@@ -76,18 +76,16 @@ pub fn apply_to_document(
     ask_id: &str,
     now: DateTime<Utc>,
 ) -> WriteOutcome {
-    let Some(items) = knowledge
-        .get_mut(&write.tier)
-        .and_then(Value::as_array_mut)
-    else {
+    let Some(items) = knowledge.get_mut(&write.tier).and_then(Value::as_array_mut) else {
         return WriteOutcome::NotFound;
     };
     if items.iter().any(|item| carries_token(item, &write.token)) {
         return WriteOutcome::AlreadyApplied;
     }
-    let Some(index) = items.iter().position(|item| {
-        item.is_object() && intention_id(&write.tier, item) == write.intention_id
-    }) else {
+    let Some(index) = items
+        .iter()
+        .position(|item| item.is_object() && intention_id(&write.tier, item) == write.intention_id)
+    else {
         return WriteOutcome::NotFound;
     };
     if retired(&items[index]) {
@@ -260,7 +258,10 @@ mod tests {
     fn remembering_confirms_the_record_without_changing_its_words() {
         let mut doc = knowledge();
         let w = write(LastingWriteKind::Remember, "inf-1", &doc, "spice: mild");
-        assert_eq!(apply_to_document(&mut doc, &w, "ask-1", now()), WriteOutcome::Applied);
+        assert_eq!(
+            apply_to_document(&mut doc, &w, "ask-1", now()),
+            WriteOutcome::Applied
+        );
         let item = &doc["preferences"][0];
         assert_eq!(item["value"], json!("mild"));
         assert_eq!(assertion_status(item), AssertionStatus::Confirmed);
@@ -281,7 +282,10 @@ mod tests {
             &doc,
             "vegetarian on weekdays only",
         );
-        assert_eq!(apply_to_document(&mut doc, &w, "ask-2", now()), WriteOutcome::Applied);
+        assert_eq!(
+            apply_to_document(&mut doc, &w, "ask-2", now()),
+            WriteOutcome::Applied
+        );
         let items = doc["preferences"].as_array().unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[1]["memory_lifecycle"], json!("superseded"));
@@ -289,7 +293,10 @@ mod tests {
         assert_eq!(successor["value"], json!("vegetarian on weekdays only"));
         assert_eq!(successor["key"], json!("diet"));
         assert_eq!(items[1]["superseded_by"], successor["memory_record_id"]);
-        assert_eq!(assertion_status(successor), AssertionStatus::DirectOwnerStatement);
+        assert_eq!(
+            assertion_status(successor),
+            AssertionStatus::DirectOwnerStatement
+        );
         // The view now holds the new statement only.
         let projected = project_native_intentions(&doc, now());
         let statements: Vec<&str> = projected
@@ -311,13 +318,24 @@ mod tests {
         let w = write(LastingWriteKind::Remember, "inf-1", &doc, "spice: mild");
         doc["preferences"][0]["value"] = json!("medium");
         let before = doc.clone();
-        assert_eq!(apply_to_document(&mut doc, &w, "ask-1", now()), WriteOutcome::Stale);
+        assert_eq!(
+            apply_to_document(&mut doc, &w, "ask-1", now()),
+            WriteOutcome::Stale
+        );
         assert_eq!(doc, before);
 
         let mut gone = knowledge();
         gone["preferences"][0]["memory_lifecycle"] = json!("retracted");
-        let w = write(LastingWriteKind::Remember, "inf-1", &knowledge(), "spice: mild");
-        assert_eq!(apply_to_document(&mut gone, &w, "ask-1", now()), WriteOutcome::NotFound);
+        let w = write(
+            LastingWriteKind::Remember,
+            "inf-1",
+            &knowledge(),
+            "spice: mild",
+        );
+        assert_eq!(
+            apply_to_document(&mut gone, &w, "ask-1", now()),
+            WriteOutcome::NotFound
+        );
     }
 
     #[tokio::test]
@@ -326,7 +344,12 @@ mod tests {
         let resolver = AgentMemoryResolver::new(tmp.path());
         let memory = resolver.resolve_for_scope("owner", "ws").unwrap();
         memory.save_user_knowledge(&knowledge()).await.unwrap();
-        let w = write(LastingWriteKind::Remember, "inf-1", &knowledge(), "spice: mild");
+        let w = write(
+            LastingWriteKind::Remember,
+            "inf-1",
+            &knowledge(),
+            "spice: mild",
+        );
         assert_eq!(
             apply_lasting_write(&resolver, "owner", "ws", &w, "ask-1", now())
                 .await
@@ -334,6 +357,9 @@ mod tests {
             WriteOutcome::Applied
         );
         let saved = memory.load_user_knowledge().await.unwrap();
-        assert_eq!(assertion_status(&saved["preferences"][0]), AssertionStatus::Confirmed);
+        assert_eq!(
+            assertion_status(&saved["preferences"][0]),
+            AssertionStatus::Confirmed
+        );
     }
 }

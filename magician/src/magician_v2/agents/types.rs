@@ -427,6 +427,12 @@ pub struct FocusArea {
     /// `["*"]` means the resolved harness scope, not the entire workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<Vec<String>>,
+    /// Optional per-area override of the shared program documents appended
+    /// to this area's program context (`harness.shared_program_docs` in
+    /// `magician-config.yaml`). `Some(list)` replaces the global list for this
+    /// area (`Some([])` = no shared documents); `None` uses the global list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_programs: Option<Vec<String>>,
 }
 
 impl FocusArea {
@@ -463,6 +469,18 @@ pub struct AutonomousConfig {
     /// Maximum steps allowed per plan in an autonomous cycle.
     #[serde(default = "default_max_steps_per_plan")]
     pub max_steps_per_plan: u32,
+    /// `public_agent`: this agent's own cycles count as a public-facing agent
+    /// (with Envoy) for outward-send policy, not as OPC. An agent may only
+    /// declare itself public; nothing here can make work count as the owner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outward_context: Option<DeclaredOutwardContext>,
+}
+
+/// The one outward context an agent definition may declare for itself.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeclaredOutwardContext {
+    PublicAgent,
 }
 
 fn default_max_tasks_per_cycle_autonomous() -> u32 {
@@ -3147,7 +3165,7 @@ pub struct AgentConstraints {
     #[serde(default)]
     pub allow_self_modification: bool,
     /// Maximum wall-clock duration (seconds) for a single goal pipeline execution.
-    /// Overrides the global `GOAL_PIPELINE_TIMEOUT_SECS` (10800s) when set.
+    /// Unset means no hard timer: the pipeline is bounded by liveness and budgets.
     #[serde(default)]
     pub max_duration_secs: Option<u64>,
 }
@@ -6889,10 +6907,30 @@ persona: "A test agent"
     }
 
     #[test]
+    fn test_focus_area_shared_programs_is_optional_and_round_trips() {
+        let legacy: FocusArea =
+            serde_yaml::from_str("name: a\ndescription: b\nprogram: p.md\n").unwrap();
+        assert_eq!(legacy.shared_programs, None);
+        let legacy_yaml = serde_yaml::to_string(&legacy).unwrap();
+        assert!(!legacy_yaml.contains("shared_programs"));
+
+        let overriding: FocusArea =
+            serde_yaml::from_str("name: a\ndescription: b\nshared_programs: [facts.md]\n").unwrap();
+        assert_eq!(
+            overriding.shared_programs,
+            Some(vec!["facts.md".to_string()])
+        );
+        let none: FocusArea =
+            serde_yaml::from_str("name: a\ndescription: b\nshared_programs: []\n").unwrap();
+        assert_eq!(none.shared_programs, Some(Vec::new()));
+    }
+
+    #[test]
     fn test_personal_allows_autonomous_config() {
         let def = AgentDefinition {
             kind: AgentKind::Personal,
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "inbox".to_string(),
@@ -6901,6 +6939,7 @@ persona: "A test agent"
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -6915,6 +6954,7 @@ persona: "A test agent"
         let def = AgentDefinition {
             kind: AgentKind::Personal,
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![],
                 max_tasks_per_cycle: 3,
@@ -6931,6 +6971,7 @@ persona: "A test agent"
         let def = AgentDefinition {
             kind: AgentKind::Personal,
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "not-a-cron".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "test".to_string(),
@@ -6939,6 +6980,7 @@ persona: "A test agent"
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -6957,6 +6999,7 @@ persona: "A test agent"
             kind: AgentKind::Worker,
             tools: vec!["browser".to_string()],
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "test".to_string(),
@@ -6965,6 +7008,7 @@ persona: "A test agent"
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -6982,6 +7026,7 @@ persona: "A test agent"
         let def = AgentDefinition {
             kind: AgentKind::Personal,
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "bad-area".to_string(),
@@ -6990,6 +7035,7 @@ persona: "A test agent"
                     schedule: Some("not-a-cron".to_string()),
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -7007,6 +7053,7 @@ persona: "A test agent"
         let def = AgentDefinition {
             kind: AgentKind::Personal,
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "good-area".to_string(),
@@ -7015,6 +7062,7 @@ persona: "A test agent"
                     schedule: Some("0 * * * *".to_string()),
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -7171,6 +7219,7 @@ persona: "A test agent"
         AgentDefinition {
             kind: AgentKind::Personal,
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "inbox".to_string(),
@@ -7179,6 +7228,7 @@ persona: "A test agent"
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -7245,6 +7295,7 @@ persona: "A test agent"
             kind: AgentKind::Worker,
             tools: vec!["browser".to_string()],
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "test".to_string(),
@@ -7253,6 +7304,7 @@ persona: "A test agent"
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,

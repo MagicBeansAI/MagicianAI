@@ -909,8 +909,9 @@ execution:
         .expect("create the row's Artifact task and execution shell");
     let task_id = task.manifest.task_id;
     let execution_id = artifact_execution.state.execution_id;
-    let scope =
-        magician::magician_v2::artifact_v2::ScopeRef::system_internal_unauthenticated(principal, workspace);
+    let scope = magician::magician_v2::artifact_v2::ScopeRef::system_internal_unauthenticated(
+        principal, workspace,
+    );
     artifact_service
         .activate_execution(&scope, &task_id, &execution_id)
         .await

@@ -26,11 +26,21 @@ class VibeDevFixtureTest {
     @Test
     fun `live runs decode with states and the steer target`() {
         val live = decode(VibeDevLiveRuns.serializer(), "live_runs.json")
-        assertEquals(3, live.runs.size)
+        assertEquals(4, live.runs.size)
         val ask = live.runs.first { it.runId == "task_ask" }
         assertEquals(VibeDevRunState.NeedsYou, ask.state)
         // A run waiting on a diff approval names the approval to answer directly.
         assertEquals("ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30", ask.approvalId)
+        assertEquals(VibeDevWaitingKind.DiffReview, ask.waitingKind)
+        // An Autopilot run's briefing is a notice on a done run, never needs-you.
+        val briefed = live.runs.first { it.runId == "task_report" }
+        assertEquals(VibeDevRunState.Done, briefed.state)
+        assertEquals(VibeDevWaitingKind.Notice, briefed.waitingKind)
+        assertNull(briefed.approvalId)
+        val notice = briefed.notice!!
+        assertEquals("acknowledge", notice.optionId)
+        assertTrue(notice.requestId.startsWith("vibedev-run-ended:"))
+        assertTrue(notice.message.isNotBlank())
         val working = live.runs.first { it.runId == "task_api" }
         assertEquals(VibeDevRunState.Working, working.state)
         assertEquals("task_api", working.liveTaskId)
@@ -48,13 +58,31 @@ class VibeDevFixtureTest {
         assertNull(working.approvalId)
         // The lock-screen summary agrees with the server's for the same runs.
         val summary = CodingRunsSummary.fromLive(live.runs, 1L)
-        assertEquals(1, summary.needsYou); assertEquals(1, summary.working); assertEquals(1, summary.done)
+        assertEquals(1, summary.needsYou); assertEquals(1, summary.working); assertEquals(2, summary.done)
         assertEquals("Add dark-mode screenshots · Shop", summary.headline)
         assertEquals("Needs you", summary.detail)
         assertTrue(summary.active)
         assertEquals(1, live.counts["needs_you"])
         assertEquals(1, live.counts["working"])
-        assertEquals(1, live.counts["done"])
+        assertEquals(2, live.counts["done"])
+    }
+
+    @Test
+    fun `live run waiting kind and notice read leniently`() {
+        val odd = vibeDevJson.decodeFromString(
+            VibeDevLiveRun.serializer(),
+            """{"run_id":"r","live_task_id":"r","project_id":"p","state":"done",
+               "waiting_kind":"later_kind","notice":"not an object"}""",
+        )
+        assertEquals(VibeDevRunState.Done, odd.state)
+        assertNull(odd.waitingKind)
+        assertNull(odd.notice)
+        val old = vibeDevJson.decodeFromString(
+            VibeDevLiveRun.serializer(),
+            """{"run_id":"r","live_task_id":"r","project_id":"p","state":"needs_you"}""",
+        )
+        assertNull(old.waitingKind)
+        assertNull(old.notice)
     }
 
     @Test

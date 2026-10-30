@@ -25,6 +25,7 @@ import ai.magicbeans.magdroid.today.TodayUiState
 import ai.magicbeans.magdroid.today.TodayViewModel
 import ai.magicbeans.magdroid.today.TodayWireItem
 import ai.magicbeans.magdroid.today.readingRoomCountLabel
+import ai.magicbeans.magdroid.today.resurfacingActionLabel
 import ai.magicbeans.magdroid.today.titleCase
 import ai.magicbeans.magdroid.today.todaySnoozeMinutes
 import android.content.Intent
@@ -93,6 +94,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.magicbeans.magdroid.voice.PrimaryAgentWakeIdentityStore
+import ai.magicbeans.magdroid.voice.primaryAgentDisplayName
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.serialization.json.JsonObject
@@ -107,7 +110,7 @@ internal enum class TodayContentMode { Loading, Dashboard }
  * section affordances, or independently loadable projections.
  */
 internal fun todayContentMode(state: TodayUiState): TodayContentMode =
-    if (state.loading && state.payload == null) TodayContentMode.Loading else TodayContentMode.Dashboard
+    if (state.loading && state.payload == null && state.settledSections.isEmpty()) TodayContentMode.Loading else TodayContentMode.Dashboard
 
 private val TodayGutter = Modifier.padding(horizontal = 16.dp)
 
@@ -134,6 +137,7 @@ fun TodayScreen(
     var dismissFollowUp by remember { mutableStateOf<ChannelFollowUp?>(null) }
     var dismissWorth by remember { mutableStateOf<ResurfacingCard?>(null) }
     var channelDetail by remember { mutableStateOf<ChannelFollowUp?>(null) }
+    var startTaskFor by remember { mutableStateOf<ChannelFollowUp?>(null) }
     var writingFor by remember { mutableStateOf<ChannelFollowUp?>(null) }
     var composeFor by remember { mutableStateOf<Pair<ChannelFollowUp, ChannelActionDescriptor>?>(null) }
     var resurfacingDetail by remember { mutableStateOf<ResurfacingCard?>(null) }
@@ -143,6 +147,11 @@ fun TodayScreen(
     var deliveredVisible by rememberSaveable { mutableIntStateOf(TODAY_DELIVERED_PAGE) }
 
     DisposableEffect(viewModel) { viewModel.start(); onDispose(viewModel::stop) }
+    // `ask_presto` reads as "Ask <primary agent>", named as Chat names it.
+    remember(context) { PrimaryAgentWakeIdentityStore.initialize(context) }
+    val primaryAgent by PrimaryAgentWakeIdentityStore.identity.collectAsStateWithLifecycle()
+    val assistantName = primaryAgentDisplayName(primaryAgent)
+    LaunchedEffect(Unit) { if (primaryAgent == null) PrimaryAgentWakeIdentityStore.refresh(context) }
     LaunchedEffect(state.navigationTaskId) {
         state.navigationTaskId?.let { onOpenTask(it); viewModel.consumeNavigation() }
     }
@@ -235,12 +244,16 @@ fun TodayScreen(
 
     fun openFollowUp(item: ChannelFollowUp) { channelDetail = item; viewModel.loadFollowUpMessage(item) }
     fun openWorth(card: ResurfacingCard) { resurfacingDetail = card; viewModel.loadResurfacingDetail(card) }
+    fun resurfacingLabel(card: ResurfacingCard, kind: ResurfacingActionKind): String = resurfacingActionLabel(
+        kind.wire, card.actions.firstOrNull { it.kind == kind.wire }?.label ?: titleCase(kind.wire), assistantName,
+    )
     fun runResurfacingAction(card: ResurfacingCard, kind: ResurfacingActionKind) {
         val capability = card.actions.firstOrNull { it.kind == kind.wire }
-        if (capability?.requiresInput == true) actionInput = card to kind else viewModel.performResurfacingAction(card, kind)
+        if (capability?.requiresInput == true) actionInput = card to kind
+        else viewModel.performResurfacingAction(card, kind, label = resurfacingLabel(card, kind))
     }
 
-    /** Deck "Open": the source when the card links one, else its detail sheet. */
+    /** Deck Act menu "Open": the source when the card links one, else its detail sheet. */
     fun openWorthSource(card: ResurfacingCard) {
         if (openRoute(card.sourceRoute?.takeIf { it.startsWith("/") })) return
         card.openUrl?.takeIf(String::isNotBlank)?.let { openUrl(it); return }
@@ -253,6 +266,7 @@ fun TodayScreen(
         onWriting = { item -> writingFor = item; viewModel.loadWritingPreferences(item) },
         onCompose = { item, action -> composeFor = item to action; if (action.needsCompose) viewModel.composeFollowUp(item, action) },
         onOpenUrl = ::openUrl,
+        onStartTask = { startTaskFor = it },
     )
 
     Column(Modifier.fillMaxSize().background(Ground)) {
@@ -273,11 +287,13 @@ fun TodayScreen(
                 }
                 // 2. Realtime wire
                 item(key = "wire") {
-                    TodayRealtimeWire(state, onOpenItem = ::openWireItem, onOpenActivity = viewModel::openActivity, modifier = TodayGutter)
+                    if (state.initiallyLoading("activity", "agent_updates") && state.wireItems.isEmpty()) TodaySectionLoading("Live Wire", modifier = TodayGutter)
+                    else TodayRealtimeWire(state, onOpenItem = ::openWireItem, onOpenActivity = viewModel::openActivity, modifier = TodayGutter)
                 }
                 // 3. Lead story / slate clear
                 item(key = "lead") {
-                    TodayLeadStory(
+                    if (state.initiallyLoading("today") && state.payload == null) TodaySectionLoading("Your day", modifier = TodayGutter)
+                    else if (state.payload != null) TodayLeadStory(
                         needsYou = state.items(TodaySection.NeedsYou),
                         onTakeAction = ::openItem,
                         onOpenAttention = { onOpenAttention(null) },
@@ -286,7 +302,8 @@ fun TodayScreen(
                 }
                 // 4. Economics of operations
                 item(key = "ledger") {
-                    TodayLedger(
+                    if (state.initiallyLoading("pulse") && state.pulse == null) TodaySectionLoading("Operations", modifier = TodayGutter)
+                    else TodayLedger(
                         pulse = state.pulse, agents = state.agentCounts, pulseError = state.sectionErrors["pulse"],
                         onRetry = viewModel::refresh, onOpenTasks = onOpenTasks, onOpenTask = onOpenTask,
                         crew = state.crew, crewError = state.sectionErrors["crew"], onRetryCrew = viewModel::refreshCrew,
@@ -298,7 +315,7 @@ fun TodayScreen(
                     Box(TodayGutter) {
                         ReadingRoomHeader(
                             mode = state.readingRoomMode,
-                            deckCountLabel = readingRoomCountLabel(state.messageFollowUpTotal + state.resurfacingTotal),
+                            deckCountLabel = if (state.initiallyLoading("message_followups", "worth_a_look")) "…" else readingRoomCountLabel(state.messageFollowUpTotal + state.resurfacingTotal),
                             onMode = viewModel::setReadingRoomMode,
                         )
                     }
@@ -308,12 +325,15 @@ fun TodayScreen(
                         Box(TodayGutter) {
                             TodayTriageDeck(
                                 state = state,
+                                assistantName = assistantName,
                                 onAction = viewModel::triageDeckCard,
                                 onPrimaryCommitted = { card -> card.worth?.let(::openWorthSource) },
                                 onOpenCard = { card: TodayDeckCard ->
                                     card.followUp?.let(::openFollowUp) ?: card.worth?.let(::openWorth)
                                 },
                                 onOpenUrl = ::openUrl,
+                                onChannelAction = followUpHandlers.onCompose,
+                                onResurfacingAction = ::runResurfacingAction,
                                 onOpenBroadsheet = { viewModel.setReadingRoomMode(TodayReadingRoomMode.Broadsheet) },
                                 onReviewAgain = viewModel::reviewDeckAgain,
                                 onLoadMore = viewModel::loadMoreDeck,
@@ -326,7 +346,9 @@ fun TodayScreen(
                         state = state, viewModel = viewModel, handlers = followUpHandlers,
                         onOpenItem = ::openItem, onSnooze = { snoozeItem = it },
                         onWorthDetail = ::openWorth, onWorthAction = ::runResurfacingAction,
-                        onWorthDismiss = { dismissWorth = it },
+                        onWorthDismiss = { dismissWorth = it }, assistantName = assistantName,
+                        // Act menu "Open": the same optimistic useful + source as the deck.
+                        onWorthOpen = { card -> viewModel.resolveResurfacing(card, ResurfacingFeedbackAction.Open); openWorthSource(card) },
                     )
                 }
                 item(key = "hidden") {
@@ -345,7 +367,8 @@ fun TodayScreen(
                 }
                 // 7. § 3 Special reports
                 item(key = "reports") {
-                    TodaySpecialReports(
+                    if (state.initiallyLoading("briefings") && state.briefings.isEmpty()) TodaySectionLoading("Special Reports", modifier = TodayGutter)
+                    else TodaySpecialReports(
                         briefings = state.briefings, error = state.sectionErrors["briefings"], showAll = showAllBriefings,
                         onOpen = ::openBriefing,
                         onViewAll = { showAllBriefings = true; viewModel.loadAllBriefings() },
@@ -353,6 +376,10 @@ fun TodayScreen(
                     )
                 }
                 // 8. § 4 Completed deliverables
+                if (state.initiallyLoading("today") && state.payload == null) {
+                    item(key = "completed-loading") { TodaySectionLoading("Completed Deliverables", modifier = TodayGutter) }
+                    item(key = "chronicle-loading") { TodaySectionLoading("Chronicle", modifier = TodayGutter) }
+                }
                 val delivered = state.items(TodaySection.Delivered)
                 if (delivered.isNotEmpty()) {
                     val total = maxOf(state.counts.delivered, delivered.size)
@@ -420,14 +447,20 @@ fun TodayScreen(
     channelDetail?.let { item ->
         ChannelMessageSheet(item, state, viewModel, followUpHandlers, onDismiss = { channelDetail = null })
     }
+    startTaskFor?.let { item ->
+        FollowUpInstructionDialog(item.id, item.subject?.takeIf(String::isNotBlank) ?: "Untitled Message", "today-followup-task",
+            onDismiss = { startTaskFor = null }) { hint ->
+            startTaskFor = null; viewModel.resolveFollowUp(item, "approve", hint)
+        }
+    }
     writingFor?.let { item -> WritingPreferencesSheet(item, state, viewModel, onDismiss = { writingFor = null }) }
     composeFor?.let { (item, descriptor) -> ComposeActionDialog(item, descriptor, state, viewModel) { composeFor = null } }
     resurfacingDetail?.let { card ->
-        ResurfacingDetailSheet(card, state, viewModel, onDismiss = { resurfacingDetail = null }, onOpenUrl = ::openUrl,
+        ResurfacingDetailSheet(card, state, viewModel, assistantName, onDismiss = { resurfacingDetail = null }, onOpenUrl = ::openUrl,
             onAction = { kind -> runResurfacingAction(card, kind) }, onDismissWithReason = { dismissWorth = card })
     }
-    actionInput?.let { (card, kind) -> ResurfacingInputDialog(card, kind, onDismiss = { actionInput = null }) { input ->
-        actionInput = null; viewModel.performResurfacingAction(card, kind, input)
+    actionInput?.let { (card, kind) -> ResurfacingInputDialog(card, kind, resurfacingLabel(card, kind), onDismiss = { actionInput = null }) { input ->
+        actionInput = null; viewModel.performResurfacingAction(card, kind, input, resurfacingLabel(card, kind))
     } }
     briefingDetail?.let { briefing -> BriefingSheet(briefing, state, viewModel, onDismiss = { briefingDetail = null }, onOpenTask = onOpenTask) }
 }
@@ -446,6 +479,8 @@ private fun LazyListScope.broadsheet(
     onWorthDetail: (ResurfacingCard) -> Unit,
     onWorthAction: (ResurfacingCard, ResurfacingActionKind) -> Unit,
     onWorthDismiss: (ResurfacingCard) -> Unit,
+    onWorthOpen: (ResurfacingCard) -> Unit,
+    assistantName: String,
 ) {
     item(key = "broadsheet") {
         val coreFollowUps = state.items(TodaySection.FollowUps)
@@ -463,13 +498,13 @@ private fun LazyListScope.broadsheet(
             when (state.broadsheetTab) {
                 TodayBroadsheetTab.ForYou -> {
                     BroadsheetColumnHeader("For You", forYouCountLabel(forYou.total + state.counts.followups), "Messages and threads needing a decision or reply.")
-                    BroadsheetScrollContainer(pageKey = "for-you:${forYou.page}", loading = forYou.loading && !forYou.loaded) {
+                    BroadsheetScrollContainer(pageKey = "for-you:${forYou.page}", loading = !forYou.loaded && forYou.error == null) {
                         forYou.error?.let { TodayInlineError(it) { viewModel.loadFollowUpPage(forYou.page) } }
                         // Today's own follow-up items are few and unpaged; they lead page 1.
                         if (forYou.page == 1) coreFollowUps.forEach { item ->
                             BroadsheetTodayItemCard(item, state, viewModel, onOpenItem, onSnooze)
                         }
-                        forYou.items.forEach { item -> BroadsheetFollowUpCard(item, state, viewModel, handlers) }
+                        forYou.items.forEach { item -> BroadsheetFollowUpCard(item, state, viewModel, handlers, assistantName) }
                         if (forYou.loaded && forYou.items.isEmpty() && (forYou.page > 1 || coreFollowUps.isEmpty())) {
                             BroadsheetEmpty("No dispatches waiting. Inbox is calm.")
                         }
@@ -478,9 +513,9 @@ private fun LazyListScope.broadsheet(
                 }
                 TodayBroadsheetTab.Worth -> {
                     BroadsheetColumnHeader("Worth a look", worthCountLabel(worth.total), "Resurfaced memory, project notes, and relevant knowledge.")
-                    BroadsheetScrollContainer(pageKey = "worth:${worth.page}", loading = worth.loading && !worth.loaded) {
+                    BroadsheetScrollContainer(pageKey = "worth:${worth.page}", loading = !worth.loaded && worth.error == null) {
                         worth.error?.let { TodayInlineError(it) { viewModel.loadWorthPage(worth.page) } }
-                        worth.items.forEach { card -> BroadsheetWorthCard(card, state, viewModel, onWorthDetail, onWorthAction, onWorthDismiss) }
+                        worth.items.forEach { card -> BroadsheetWorthCard(card, state, viewModel, assistantName, onWorthDetail, onWorthOpen, onWorthAction, onWorthDismiss) }
                         if (worth.loaded && worth.items.isEmpty()) BroadsheetEmpty("Nothing worth a look right now. Your library is resting.")
                     }
                     BroadsheetPager(worth, "Worth a look", onPage = viewModel::loadWorthPage)
@@ -596,7 +631,7 @@ private fun LazyListScope.broadsheet(
 
 /** Worth-a-look detail. Resurfacing has no snooze; dismiss offers only its own reasons. */
 @Composable private fun ResurfacingDetailSheet(
-    card: ResurfacingCard, state: TodayUiState, viewModel: TodayViewModel, onDismiss: () -> Unit,
+    card: ResurfacingCard, state: TodayUiState, viewModel: TodayViewModel, assistantName: String, onDismiss: () -> Unit,
     onOpenUrl: (String?) -> Unit, onAction: (ResurfacingActionKind) -> Unit, onDismissWithReason: () -> Unit,
 ) {
     val detail = state.resurfacingDetails[card.id]
@@ -618,7 +653,7 @@ private fun LazyListScope.broadsheet(
                     ?: run { if (card.summary.isNotBlank()) Text(card.summary, color = Secondary, fontSize = 13.sp) }
             }
             FlowRow {
-                card.actions.forEach { capability -> ResurfacingActionKind.fromWire(capability.kind)?.let { kind -> TextButton(onClick = { onAction(kind) }, enabled = !busy) { Text(capability.label) } } }
+                card.actions.forEach { capability -> ResurfacingActionKind.fromWire(capability.kind)?.let { kind -> TextButton(onClick = { onAction(kind) }, enabled = !busy) { Text(resurfacingActionLabel(capability.kind, capability.label, assistantName)) } } }
                 TextButton(onClick = { viewModel.loadResurfacingDetail(card, true) }, enabled = !busy) { Text("Show original") }
             }
             Hairline()
@@ -632,9 +667,9 @@ private fun LazyListScope.broadsheet(
     }
 }
 
-@Composable private fun ResurfacingInputDialog(card: ResurfacingCard, kind: ResurfacingActionKind, onDismiss: () -> Unit, run: (JsonObject) -> Unit) {
+@Composable private fun ResurfacingInputDialog(card: ResurfacingCard, kind: ResurfacingActionKind, label: String, onDismiss: () -> Unit, run: (JsonObject) -> Unit) {
     var text by remember { mutableStateOf(card.line.ifBlank { card.sourceTitle }) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(titleCase(kind.wire)) }, text = { MagicianTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 2, label = { Text(if (kind == ResurfacingActionKind.CreateReminder) "Reminder" else "Instruction") }) }, confirmButton = { Button(shape = MagicanButtonShape, onClick = { run(buildJsonObject { put("title", text); put("instruction", text) }) }, enabled = text.isNotBlank(), colors = magicanButtonColors()) { Text("Continue") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(label) }, text = { MagicianTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 2, label = { Text(if (kind == ResurfacingActionKind.CreateReminder) "Reminder" else "Instruction") }) }, confirmButton = { Button(shape = MagicanButtonShape, onClick = { run(buildJsonObject { put("title", text); put("instruction", text) }) }, enabled = text.isNotBlank(), colors = magicanButtonColors()) { Text("Continue") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 
 @Composable private fun BriefingSheet(briefing: TodayBriefing, state: TodayUiState, viewModel: TodayViewModel, onDismiss: () -> Unit, onOpenTask: (String) -> Unit) {
@@ -682,4 +717,18 @@ internal fun todayStatusColor(status: String): Color = when (status.lowercase())
     "running", "active", "in_progress" -> Coral
     "needs_action", "waiting", "paused" -> TodayWarning
     else -> Muted
+}
+
+/** Section-local placeholders keep not-yet-loaded content distinct from empty results. */
+@Composable
+internal fun TodaySectionLoading(title: String, modifier: Modifier = Modifier, height: Int = 100) {
+    Column(modifier.fillMaxWidth().height(height.dp).background(Panel, MagicanButtonShape).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Coral)
+            Text("Loading $title…", color = Secondary, fontSize = 12.sp)
+        }
+        Box(Modifier.fillMaxWidth(.82f).height(10.dp).background(Soft, MagicanButtonShape))
+        Box(Modifier.fillMaxWidth(.6f).height(10.dp).background(Soft, MagicanButtonShape))
+    }
 }

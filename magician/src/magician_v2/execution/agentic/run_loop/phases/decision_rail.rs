@@ -7,8 +7,8 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use decision_engine_contract::action::{
-    ActionContext, ActionEvidence, ActionOrigin, ActionPhase, ActionPlan, ActionRequest, ActionTool,
-    ActionVerdict, ToolCall, ACTION_OPERATION,
+    ActionContext, ActionEvidence, ActionOrigin, ActionPhase, ActionPlan, ActionRequest,
+    ActionTool, ActionVerdict, ToolCall, ACTION_OPERATION,
 };
 use decision_engine_contract::wire::CONTRACT_VERSION;
 use serde_json::Value;
@@ -42,6 +42,14 @@ async fn engine_action(
     if request.phase == ActionPhase::Select {
         preflight_execution_token_budget()?;
     }
+    // The engine reaches its model providers itself, so the router cannot
+    // refuse its calls one by one: while the owner's spend envelope is spent,
+    // an autonomous run does not call the engine at all. The typed refusal
+    // reaches Resolve as a decision error, which parks the run until the
+    // window resets (or a grant arrives). A chat-launched run is exempt.
+    crate::magician_v2::spend_envelope_producers::preflight(
+        crate::magician_v2::spend_envelope_producers::agentic_run_class(ctx),
+    )?;
     let scope = super::decision_rail_events::synthetic_trace_context(ctx, "decision_model", 0);
     let reply = if let Some(cancel) = cancel {
         tokio::select! {
@@ -95,6 +103,7 @@ async fn engine_action(
 }
 
 fn account_decision_cost(
+    ctx: &AgenticContext,
     protective: &mut LoopProtectiveState,
     calls: &[decision_engine_contract::telemetry::DecisionModelCall],
 ) {
@@ -109,6 +118,15 @@ fn account_decision_cost(
         .cost_usd
         {
             protective.cumulative_run_cost_usd += cost;
+            // The Decision Engine's model calls never pass through the
+            // router, so they count toward the owner's spend envelope here,
+            // under the run's own class and scope.
+            crate::magician_v2::spend_envelope::charge_external(
+                crate::magician_v2::spend_envelope_producers::agentic_run_class(ctx),
+                ctx.principal.as_deref().unwrap_or("anonymous"),
+                ctx.workspace.as_deref().unwrap_or("default"),
+                cost,
+            );
         }
     }
 }
@@ -294,7 +312,7 @@ impl ProposalCheck {
                 }],
             };
             let reply = engine_action(ctx, &self.client, &resolve, cancel).await?;
-            account_decision_cost(protective, &reply.model_calls);
+            account_decision_cost(ctx, protective, &reply.model_calls);
             if !matches!(reply.verdict, ActionVerdict::Execute { .. }) {
                 return Err(anyhow!(
                     "The Decision Engine rejected `{tool}`: {}. Choose a call your tools accept, \
@@ -313,6 +331,7 @@ impl ProposalCheck {
     }
 }
 
+#[cfg(test)]
 async fn decide_with_client(
     client: decision_engine_contract::client::EngineClient,
     ctx: &AgenticContext,
@@ -387,6 +406,181 @@ async fn decide_with_client_checked(
     output
 }
 
+/// The turn's screenshot as a decision asset: the same image the vision
+/// planner would see (browser page, Android screen, or the last desktop
+/// capture), scaled to the image limits when it is too large. `None` when
+/// there is none or it cannot fit; the rail then decides from text alone, as
+/// it does on routes without an image-capable model. Whenever there is a
+/// screenshot, the run records whether it was sent (`decision_rail.screenshot`).
+async fn rail_screenshot(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    state: &EnvironmentState,
+    history: &ExecutionHistory,
+    protective: &mut LoopProtectiveState,
+    iteration: usize,
+) -> Option<(String, decision_engine_contract::asset::DecisionAsset)> {
+    use base64::Engine as _;
+    let image = crate::magician_v2::execution::agentic::decision::extract_screenshot(
+        state,
+        executors.screenshot_storage.as_ref(),
+        ctx.execution_id.as_deref(),
+        history,
+    )
+    .await?
+    .into_iter()
+    .next()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(image.base64.as_bytes())
+        .ok()?;
+    let (mut asset, mut note) = crate::magician_v2::decision_screenshot::fit(bytes).await;
+    if let Some(key) = note.key.clone().filter(|_| note.attached) {
+        let seen = protective
+            .decision_rail_screenshot
+            .as_ref()
+            .is_some_and(|(sent, at)| *sent == key && *at != iteration);
+        if seen {
+            asset = None;
+            note.attached = false;
+            note.reason = Some("already sent before the last action; it may be stale".into());
+        } else {
+            protective.decision_rail_screenshot = Some((key, iteration));
+        }
+    }
+    if let Some(broadcaster) = executors.event_broadcaster.as_ref() {
+        super::outbox::journal_and_emit_named(
+            ctx,
+            broadcaster,
+            iteration,
+            crate::magician_v2::execution::agentic::run_loop::outcome::Phase::Decide,
+            "decision_rail.screenshot",
+            ctx.agent_id.as_deref().unwrap_or("__system__"),
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            serde_json::json!({
+                "execution_id": ctx.execution_id,
+                "iteration": iteration,
+                "operation": ACTION_OPERATION,
+                "screenshot": note,
+            }),
+        );
+    }
+    asset
+}
+
+/// The run's last turn once every durable micro-goal is resolved: no plan
+/// step for the engine to select, so the run's own model writes the final
+/// answer with tools disabled, over the same planner context the engine would
+/// have read (steer included, provider-sanitized), and
+/// `definition_of_done_terminal` turns it into the terminal. The call's cost
+/// joins the run's total and its trace rides the decision, as on the native
+/// path. A retryable failure goes back to the transient retry policy unspent;
+/// once that budget is gone the terminal is built from the micro-goals.
+#[allow(clippy::too_many_arguments)]
+async fn definition_of_done_turn(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    state: &EnvironmentState,
+    history: &ExecutionHistory,
+    adapter: &crate::magician_v2::execution::MultiLlmAgentAdapter,
+    iteration: usize,
+    goals: &[crate::magician_v2::execution::agentic::decision::ResolvedMicroGoal],
+    steer_lines: &[&str],
+    protective: &mut LoopProtectiveState,
+    previous_fingerprint: Option<String>,
+) -> Result<DecideOutput> {
+    use crate::magician_v2::execution::agentic::decision::{
+        definition_of_done_final_answer_directive, definition_of_done_terminal,
+        provider_retry_budget_left, release_definition_of_done_turn, Decision,
+    };
+    use crate::magician_v2::secrets::sanitize_text_for_provider;
+    let delegation = build_delegation_results_section(
+        executors.screenshot_storage.as_ref(),
+        ctx.execution_id.as_deref(),
+    )
+    .await;
+    let (instructions, mut context) = decision_rail_prompt_context(
+        ctx,
+        state,
+        history,
+        &executors.prompt_manager,
+        &delegation,
+        false,
+    )
+    .await?;
+    if !steer_lines.is_empty() {
+        context.push_str("\n\n## OPERATOR STEER (live redirect — honour immediately)\n");
+        for line in steer_lines {
+            context.push_str("- ");
+            context.push_str(line);
+            context.push('\n');
+        }
+    }
+    context.push_str(&definition_of_done_final_answer_directive(goals));
+    let instructions = sanitize_text_for_provider(&instructions);
+    let context = sanitize_text_for_provider(&context);
+    let final_turn =
+        crate::magician_v2::execution::agentic::native_integration::native_decision_via_adapter_with_history(
+            ctx,
+            adapter,
+            "agentic_decision",
+            &instructions,
+            &context,
+            Vec::new(),
+            None,
+            Some(iteration),
+            None,
+            None,
+            true,
+        )
+        .await;
+    let final_turn = match final_turn {
+        // A spent owner spend envelope parks the run (Resolve); it is not a
+        // provider failure, so it must never fold into a terminal answer here,
+        // whatever the provider-retry budget says.
+        Err(error)
+            if crate::magician_v2::spend_envelope::is_exhaustion_error(&error)
+                || provider_retry_budget_left(
+                    &error,
+                    crate::magician_v2::execution::agentic::decision::provider_retries_used(
+                        &error, protective,
+                    ),
+                ) =>
+        {
+            release_definition_of_done_turn(protective, previous_fingerprint);
+            return Err(error);
+        },
+        other => other,
+    };
+    let (decision, metadata) = definition_of_done_terminal(ctx, final_turn, goals);
+    if let Some(cost) = metadata
+        .telemetry
+        .as_ref()
+        .map(|telemetry| telemetry.cost_usd)
+    {
+        if cost.is_finite() && cost > 0.0 {
+            protective.cumulative_run_cost_usd += cost;
+        }
+    }
+    let llm_trace_context = metadata
+        .telemetry
+        .as_ref()
+        .and_then(|telemetry| telemetry.trace_receipt.as_ref())
+        .map(|receipt| receipt.context.clone());
+    // A definition-of-done yield is the runtime's stop, as the stuck yield
+    // above is.
+    let is_stop = matches!(decision, Decision::Yield { .. });
+    Ok(DecideOutput {
+        decision_result: Ok(decision),
+        task_state_action_for_decision: metadata.task_state_action,
+        assistant_turn_for_decision: metadata.assistant_turn,
+        response_id_for_decision: None,
+        has_images_for_decision: false,
+        llm_trace_context_for_decision: llm_trace_context,
+        decision_is_synthetic_stuck: is_stop,
+    })
+}
+
 async fn maybe_decide_inner(
     client: &decision_engine_contract::client::EngineClient,
     ctx: &AgenticContext,
@@ -422,22 +616,50 @@ async fn maybe_decide_inner(
         );
         anyhow!("Decision Engine service unavailable: {error}")
     })?;
-    if !operations
+    let Some(policy) = operations
         .operations
         .iter()
-        .any(|op| op.name == ACTION_OPERATION)
-    {
+        .find(|op| op.name == ACTION_OPERATION)
+    else {
         return Ok(None);
-    }
+    };
+    let accepts_images = match global_decision_locality() {
+        decision_engine_contract::wire::Locality::Local => policy.images_local,
+        decision_engine_contract::wire::Locality::Cloud => policy.images_cloud,
+    };
     if operations.action_contract_version != Some(CONTRACT_VERSION) {
         return Err(anyhow!("Decision Engine does not support the configured shared action contract; update host and engine together"));
     }
     super::decide::refresh_working_set_routing_notice(ctx, executors).await;
-    let definition_of_done_met = protective.consecutive_goal_reached_rejections == 0
-        && crate::magician_v2::execution::agentic::executor::all_durable_micro_goals_resolved(
+    // As on the native path (`decide.rs`): only this execution's state, not
+    // after a rejected terminal, never twice for one micro-goal set, and not
+    // while the run still owes its owner a final report — that turn keeps its
+    // tools and is steered at the report (`decision_preflight`).
+    let dod_previous_fingerprint = protective.definition_of_done_fingerprint.clone();
+    let resolved_micro_goals = if protective.consecutive_goal_reached_rejections == 0 {
+        crate::magician_v2::execution::agentic::executor::resolved_durable_micro_goals(
             ctx, executors,
         )
-        .await;
+        .await
+    } else {
+        None
+    };
+    let dod_signal = crate::magician_v2::execution::agentic::executor::definition_of_done_signal(
+        ctx,
+        executors,
+        resolved_micro_goals.is_some(),
+    )
+    .await
+    .with_operator_steer(steer);
+    let definition_of_done =
+        if dod_signal == crate::magician_v2::execution::agentic::decision::DefinitionOfDone::Met {
+            crate::magician_v2::execution::agentic::decision::take_definition_of_done_turn(
+                protective,
+                resolved_micro_goals,
+            )
+        } else {
+            None
+        };
     let adapter = crate::magician_v2::execution::agentic::native_integration::decision_rail_adapter(
         ctx, executors, iteration,
     );
@@ -448,7 +670,8 @@ async fn maybe_decide_inner(
             &adapter,
             None,
             ctx.execution_id.as_deref(),
-            definition_of_done_met,
+            dod_signal,
+            steer,
             true,
         )
         .await?;
@@ -466,6 +689,29 @@ async fn maybe_decide_inner(
             llm_trace_context_for_decision: None,
             decision_is_synthetic_stuck: is_stuck,
         }));
+    }
+    if let Some(goals) = definition_of_done {
+        let steer_lines: Vec<&str> = steer
+            .iter()
+            .chain(recovery_steer.iter())
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect();
+        // Boxed: the provider call's state machine stays off this frame.
+        return Box::pin(definition_of_done_turn(
+            ctx,
+            executors,
+            state,
+            history,
+            &adapter,
+            iteration,
+            &goals,
+            &steer_lines,
+            protective,
+            dod_previous_fingerprint,
+        ))
+        .await
+        .map(Some);
     }
     let (tools, deferred) = decision_rail_catalog(ctx, iteration).await;
     let delegation = build_delegation_results_section(
@@ -510,6 +756,25 @@ async fn maybe_decide_inner(
             parameters: tool.parameters,
         })
         .collect();
+    let screenshot = if accepts_images {
+        Box::pin(rail_screenshot(
+            ctx, executors, state, history, protective, iteration,
+        ))
+        .await
+    } else {
+        None
+    };
+    let observation_text = Value::String(crate::magician_v2::secrets::sanitize_text_for_provider(
+        &bounded_text(
+            &state.format_for_llm_with_replayed_result(
+                history
+                    .iterations
+                    .last()
+                    .is_some_and(|record| record.result.tool_result_projection.is_some()),
+            ),
+            32 * 1024,
+        ),
+    ));
     let context = ActionContext {
         goal: crate::magician_v2::secrets::sanitize_text_for_provider(&ctx.goal),
         planner_mode: Default::default(),
@@ -524,18 +789,14 @@ async fn maybe_decide_inner(
                 .and_then(|text| serde_json::from_str(text).ok())
                 .unwrap_or(Value::Null),
         ),
-        observation: Value::String(crate::magician_v2::secrets::sanitize_text_for_provider(
-            &bounded_text(
-                &state.format_for_llm_with_replayed_result(
-                    history
-                        .iterations
-                        .last()
-                        .is_some_and(|record| record.result.tool_result_projection.is_some()),
-                ),
-                32 * 1024,
-            ),
-        )),
+        // The text stays exactly as a text-only route sees it; a screenshot
+        // rides beside it under its reference key.
+        observation: match &screenshot {
+            Some((key, _)) => serde_json::json!({"state": observation_text, "screenshot": key}),
+            None => observation_text,
+        },
         evidence: evidence(history),
+        assets: screenshot.into_iter().collect(),
     };
     let revision = serde_json::to_vec(&(&context, &tools, ctx.task_prompt_context_generation))?;
     let request = ActionRequest {
@@ -579,7 +840,11 @@ async fn maybe_decide_inner(
             tracing::info!(
                 operation = ACTION_OPERATION,
                 remaining_steps = plan.steps.len(),
-                reason = if failed { "prior_action_failed" } else { "steer" },
+                reason = if failed {
+                    "prior_action_failed"
+                } else {
+                    "steer"
+                },
                 "[DECISION-RAIL] sticky plan dropped"
             );
         } else {
@@ -587,7 +852,7 @@ async fn maybe_decide_inner(
             resolve.plan = plan;
             resolve.phase = ActionPhase::ResolvePlanner;
             let reply = engine_action(ctx, &client, &resolve, cancel).await?;
-            account_decision_cost(protective, &reply.model_calls);
+            account_decision_cost(ctx, protective, &reply.model_calls);
             if matches!(reply.verdict, ActionVerdict::Execute { .. }) {
                 response = Some(reply);
             } else {
@@ -604,7 +869,7 @@ async fn maybe_decide_inner(
         Some(response) => response,
         None => {
             let response = engine_action(ctx, &client, &request, cancel).await?;
-            account_decision_cost(protective, &response.model_calls);
+            account_decision_cost(ctx, protective, &response.model_calls);
             response
         },
     };

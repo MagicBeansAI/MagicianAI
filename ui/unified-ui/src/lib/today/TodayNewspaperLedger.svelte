@@ -19,7 +19,7 @@
 	import { onMount } from 'svelte';
 	import { todayPulseStore } from '$lib/stores/todayPulseStore';
 	import { taskStore, type Task } from '$lib/stores/taskStore';
-	import { agentList, runningAgentCount, loadAgents, type AgentSummary } from '$lib/stores/agentStore';
+	import { agentList, agentStoreState, runningAgentCount, loadAgents, type AgentSummary } from '$lib/stores/agentStore';
 	import type { LlmPulse } from '$lib/today/pulseQueries';
 	import type { OpsCarouselSlide } from '$lib/today/opsCarousel';
 	import TodayOpsCarousel from '$lib/today/TodayOpsCarousel.svelte';
@@ -107,7 +107,7 @@
 		};
 	});
 
-	const llm = $derived(customLlm ?? $todayPulseStore.snapshot?.llm ?? null);
+	const llm = $derived(customLlm ?? ($todayPulseStore.readySlices.includes('llm') ? $todayPulseStore.snapshot?.llm : null) ?? null);
 	const tasks = $derived(customTasks ?? $taskStore.tasks ?? []);
 	const agents = $derived(customAgents ?? $agentList ?? []);
 	const pulseCompletedToday = $derived($todayPulseStore.snapshot?.tasks?.completedToday ?? 0);
@@ -133,11 +133,16 @@
 	{/snippet}
 	{#snippet slide(s: OpsCarouselSlide)}
 		{#if s.id === 'economics'}
-			<TodayOpsEconomicsSlide {llm} pulse={customLlm ? null : $todayPulseStore.snapshot} />
+			<TodayOpsEconomicsSlide {llm} pulse={customLlm ? null : $todayPulseStore.snapshot}
+                loading={!customLlm && $todayPulseStore.loading}
+                readySlices={customLlm ? null : $todayPulseStore.readySlices}
+                unavailable={!customLlm && !$todayPulseStore.loading && !$todayPulseStore.readySlices.includes('llm')} />
 		{:else if s.id === 'state'}
 			<TodayOpsStateSlide
 				{tasks}
 				{agents}
+				tasksLoading={!customTasks && $taskStore.isLoading && tasks.length === 0}
+                agentsLoading={!customAgents && $agentStoreState.isLoading && agents.length === 0}
 				runningAgentCount={$runningAgentCount}
 				{pulseCompletedToday}
 				{nowMs}

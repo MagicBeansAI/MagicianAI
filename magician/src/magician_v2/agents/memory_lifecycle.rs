@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+pub mod bounds;
+pub mod candidates;
 mod decision;
 pub mod provenance;
 mod review_wire;
@@ -198,6 +200,23 @@ pub fn merge_items(existing: &[Value], incoming: &[Value], now: DateTime<Utc>) -
             }
             continue;
         }
+        // The same claim in other words (a key variant, a rewording) is one
+        // memory: its evidence folds into the record already held, which
+        // review then weighs, rather than a sibling record being saved.
+        if let Some(current) = items
+            .iter_mut()
+            .find(|e| !retired(e) && near_duplicate_record(e, raw))
+        {
+            let before = independent_observations(current);
+            let before_citations = evidence(current).len();
+            merge_evidence(current, raw);
+            if independent_observations(current) > before
+                || evidence(current).len() > before_citations
+            {
+                current["memory_review_needed"] = json!(true);
+            }
+            continue;
+        }
         if let Some(old) = items.iter().find(|e| {
             retired(e)
                 && (record_id(e) == id
@@ -296,6 +315,186 @@ pub fn merge_collection(
     merge_items(&existing, &incoming, now)
 }
 
+fn claim_key(item: &Value) -> Option<&str> {
+    ["key", "name", "title"]
+        .iter()
+        .find_map(|field| item.get(*field).and_then(Value::as_str))
+}
+
+/// Whether `incoming` states `existing`'s claim in other words: a near
+/// duplicate by [`magician_vector_index::memory_similarity`] (normalised key,
+/// content-word overlap, no differing negation, qualifier or number) with the
+/// same applicability, kind and trust. App-governed records are left to their
+/// own path.
+pub fn near_duplicate_record(existing: &Value, incoming: &Value) -> bool {
+    existing.is_object()
+        && incoming.is_object()
+        && existing.get("app_source_eligibility").is_none()
+        && incoming.get("app_source_eligibility").is_none()
+        && applicability(existing) == applicability(incoming)
+        && existing.get("memory_kind") == incoming.get("memory_kind")
+        && explicit(existing) == explicit(incoming)
+        && magician_vector_index::memory_similarity::near_duplicate_claims(
+            claim_key(existing),
+            &text(existing),
+            claim_key(incoming),
+            &text(incoming),
+        )
+}
+
+/// One stored record named in a [`NearDuplicateFold`].
+#[derive(Clone, Debug, Serialize)]
+pub struct FoldRecord {
+    pub pointer: String,
+    pub id: String,
+    /// The record's content digest when planned; a record changed since is
+    /// not folded.
+    pub revision: String,
+    pub key: Option<String>,
+    pub observations: usize,
+    pub updated_at: Option<String>,
+}
+
+impl FoldRecord {
+    fn of(source: &Source) -> Self {
+        Self {
+            pointer: source.pointer.clone(),
+            id: source.id.clone(),
+            revision: source.revision.clone(),
+            key: claim_key(&source.item).map(str::to_owned),
+            observations: independent_observations(&source.item),
+            updated_at: source
+                .item
+                .get("updated_at")
+                .or_else(|| source.item.get("memory_saved_at"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }
+    }
+}
+
+/// Near-duplicate copies already stored in one collection, and the record
+/// they fold into: the most-confirmed copy (most independent observations),
+/// the newest on a tie.
+#[derive(Clone, Debug, Serialize)]
+pub struct NearDuplicateFold {
+    pub collection: String,
+    pub keeper: FoldRecord,
+    pub folded: Vec<FoldRecord>,
+}
+
+/// The folds a maintenance pass would make in `document`: within each
+/// collection, every current record (not retired) that is a
+/// [`near_duplicate_record`] of a more-confirmed or newer one. Copies are
+/// compared with the keeper only, so a chain of small rewordings cannot drift
+/// into a different claim. Read-only: [`apply_near_duplicate_folds`] makes
+/// them.
+pub fn near_duplicate_folds(document: &Value) -> Vec<NearDuplicateFold> {
+    let mut by_collection = BTreeMap::<String, Vec<Source>>::new();
+    for source in sources(document) {
+        if retired(&source.item) || !source.item.is_object() {
+            continue;
+        }
+        let collection = source
+            .pointer
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.to_owned())
+            .unwrap_or_default();
+        by_collection.entry(collection).or_default().push(source);
+    }
+    let mut folds = Vec::new();
+    for (collection, mut records) in by_collection {
+        records.sort_by(|a, b| {
+            independent_observations(&b.item)
+                .cmp(&independent_observations(&a.item))
+                .then_with(|| {
+                    FoldRecord::of(b)
+                        .updated_at
+                        .cmp(&FoldRecord::of(a).updated_at)
+                })
+                .then_with(|| a.pointer.cmp(&b.pointer))
+        });
+        let mut assigned = vec![false; records.len()];
+        for keeper in 0..records.len() {
+            if assigned[keeper] {
+                continue;
+            }
+            let folded = (keeper + 1..records.len())
+                .filter(|&other| {
+                    !assigned[other]
+                        && near_duplicate_record(&records[keeper].item, &records[other].item)
+                })
+                .collect::<Vec<_>>();
+            if folded.is_empty() {
+                continue;
+            }
+            for &other in &folded {
+                assigned[other] = true;
+            }
+            folds.push(NearDuplicateFold {
+                collection: collection.clone(),
+                keeper: FoldRecord::of(&records[keeper]),
+                folded: folded
+                    .iter()
+                    .map(|&other| FoldRecord::of(&records[other]))
+                    .collect(),
+            });
+        }
+    }
+    folds
+}
+
+/// Make `folds` through the lifecycle: each copy's evidence merges into its
+/// keeper and the copy is superseded by it (`near_duplicate_of_record`), so
+/// nothing is deleted and every observation is kept. A record that is no
+/// longer where, or as, the plan found it is skipped. Returns how many copies
+/// folded.
+pub fn apply_near_duplicate_folds(
+    document: &mut Value,
+    folds: &[NearDuplicateFold],
+    now: DateTime<Utc>,
+) -> usize {
+    let mut count = 0;
+    for fold in folds {
+        let Some(mut keeper) = document.pointer(&fold.keeper.pointer).cloned() else {
+            continue;
+        };
+        if digest(&keeper) != fold.keeper.revision || retired(&keeper) {
+            continue;
+        }
+        let before = independent_observations(&keeper);
+        let mut copies = Vec::new();
+        for copy in &fold.folded {
+            let Some(mut item) = document.pointer(&copy.pointer).cloned() else {
+                continue;
+            };
+            if digest(&item) != copy.revision || retired(&item) {
+                continue;
+            }
+            merge_evidence(&mut keeper, &item);
+            item["memory_record_id"] = json!(copy.id);
+            supersede(&mut item, &fold.keeper.id, "near_duplicate_of_record", now);
+            item["memory_reconciled_at"] = json!(now.to_rfc3339());
+            copies.push((copy.pointer.clone(), item));
+        }
+        if copies.is_empty() {
+            continue;
+        }
+        keeper["memory_review_needed"] = json!(independent_observations(&keeper) > before);
+        keeper["memory_reconciled_at"] = json!(now.to_rfc3339());
+        if let Some(slot) = document.pointer_mut(&fold.keeper.pointer) {
+            *slot = keeper;
+        }
+        for (pointer, item) in copies {
+            if let Some(slot) = document.pointer_mut(&pointer) {
+                *slot = item;
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Source {
     pub pointer: String,
@@ -364,23 +563,55 @@ pub fn normalize_legacy_collections(document: &mut Value, now: DateTime<Utc>) ->
     walk(document, "", now)
 }
 
+/// Whether [`normalize_legacy_collections`] would change `document`, without
+/// copying or mutating it (same walk: non-journal object keys, arrays holding
+/// a primitive item).
+pub fn has_legacy_collections(document: &Value) -> bool {
+    match document {
+        Value::Object(map) => map
+            .iter()
+            .filter(|(key, _)| !key.starts_with('_'))
+            .any(|(_, value)| has_legacy_collections(value)),
+        Value::Array(items) => items.iter().any(|item| !item.is_object()),
+        _ => false,
+    }
+}
+
+/// The recognizable control payload [`quarantine_legacy_schema_echoes`] moves.
+fn is_legacy_schema_echo(map: &serde_json::Map<String, Value>) -> bool {
+    map.get("allowed_user_tiers").is_some_and(Value::is_array)
+        && map.get("promotion_rule").is_some_and(Value::is_string)
+        && map.values().any(|v| {
+            v.get("type") == Some(&json!("collection"))
+                && v.get("item_schema").is_some_and(Value::is_object)
+        })
+        && map.iter().all(|(key, v)| {
+            matches!(key.as_str(), "allowed_user_tiers" | "promotion_rule")
+                || v.get("type") == Some(&json!("collection"))
+                    && v.get("item_schema").is_some_and(Value::is_object)
+        })
+}
+
+/// Whether [`quarantine_legacy_schema_echoes`] would change `document`,
+/// without copying or mutating it.
+pub fn has_legacy_schema_echoes(document: &Value) -> bool {
+    let Some(map) = document.as_object() else {
+        return false;
+    };
+    is_legacy_schema_echo(map)
+        || map
+            .iter()
+            .filter(|(key, _)| !key.starts_with('_'))
+            .any(|(_, child)| has_legacy_schema_echoes(child))
+}
+
 /// Old promotion prompts could echo their collection descriptor into storage.
 /// Preserve that exact, recognizable control payload as audit data instead of
 /// teaching its allowed tier names to the model as owner preferences.
 pub fn quarantine_legacy_schema_echoes(document: &mut Value, now: DateTime<Utc>) -> usize {
     fn walk(value: &mut Value, path: &str, found: &mut Vec<(String, Value)>) {
         if let Some(map) = value.as_object() {
-            let schema_echo = map.get("allowed_user_tiers").is_some_and(Value::is_array)
-                && map.get("promotion_rule").is_some_and(Value::is_string)
-                && map.values().any(|v| {
-                    v.get("type") == Some(&json!("collection"))
-                        && v.get("item_schema").is_some_and(Value::is_object)
-                })
-                && map.iter().all(|(key, v)| {
-                    matches!(key.as_str(), "allowed_user_tiers" | "promotion_rule")
-                        || v.get("type") == Some(&json!("collection"))
-                            && v.get("item_schema").is_some_and(Value::is_object)
-                });
+            let schema_echo = is_legacy_schema_echo(map);
             if schema_echo {
                 found.push((
                     path.into(),
@@ -511,6 +742,8 @@ pub struct ApplyOutcome {
     pub applied: bool,
     pub stale: bool,
     pub conflicts: Vec<Conflict>,
+    /// Other copies of the merged claim retired into the kept record.
+    pub folded: usize,
 }
 
 fn current(document: &Value, source: &Source) -> bool {
@@ -541,6 +774,35 @@ fn incoming_is_covered(incoming: &Source, existing: &Source, relationship: &Rela
     relationship.incoming_coverage == IncomingCoverage::Full
         || (text(&incoming.item) == text(&existing.item)
             && applicability(&incoming.item) == applicability(&existing.item))
+}
+
+fn stored_scope_matches(incoming: &Source, existing: &Source) -> bool {
+    ["project_id", "engagement_scope", "scope", "subject"]
+        .iter()
+        .all(|key| existing.item.get(key) == incoming.item.get(key))
+}
+
+/// Whether `apply_review` would merge the incoming record into `existing`
+/// (outside an owner clarification): the same checks as its merge arm.
+fn merge_ready(
+    incoming: &Source,
+    revised: &Value,
+    existing: &Source,
+    relationship: &Relationship,
+) -> bool {
+    matches!(
+        relationship.relation,
+        Relation::Duplicate | Relation::Reinforce
+    ) && relationship.same_subject_and_aspect
+        && relationship.same_context
+        && stored_scope_matches(incoming, existing)
+        && relationship.confidence >= 0.9
+        && explicit(&incoming.item) == explicit(&existing.item)
+        && incoming_is_covered(incoming, existing, relationship)
+        && ["valid_from", "valid_until"].iter().all(|key| {
+            existing.item.get(key).filter(|v| !v.is_null())
+                == revised.get(key).filter(|v| !v.is_null())
+        })
 }
 
 fn sustained_observation_evidence(item: &Value) -> bool {
@@ -597,11 +859,10 @@ pub fn apply_review(
                 && incoming_is_covered(incoming, s, r)
         })
         .count();
-    if merges > 1
-        || (merges > 0
-            && selected
-                .iter()
-                .any(|(_, r)| r.relation == Relation::Clarify))
+    if merges > 0
+        && selected
+            .iter()
+            .any(|(_, r)| r.relation == Relation::Clarify)
     {
         return Err("a merge cannot also dispute another claim in the same plan".into());
     }
@@ -650,12 +911,51 @@ pub fn apply_review(
     }
     let mut outcome = ApplyOutcome::default();
     let mut changes = Vec::new();
+    // The incoming record merges into one memory. When it repeats several
+    // (they are copies of each other), it merges into the one the reviewer is
+    // surest of, earliest offered (closest in meaning) on a tie; the other
+    // copies the reviewer called duplicates fold into that one too, and the
+    // rest stay as they are. These plans used to be rejected outright, so a
+    // record with two saved copies could never be reviewed.
+    let (kept, extra_copies) = if resolving.is_some() {
+        if merges > 1 {
+            return Err("an owner clarification can merge into one memory only".into());
+        }
+        (None, Vec::new())
+    } else {
+        let mut ready: Vec<(usize, &Source, &Relationship)> = selected
+            .iter()
+            .filter(|(s, r)| merge_ready(incoming, &revised, s, r))
+            .map(|(s, r)| {
+                let at = offered
+                    .iter()
+                    .position(|o| o.id == s.id)
+                    .unwrap_or(usize::MAX);
+                (at, *s, *r)
+            })
+            .collect();
+        ready.sort_by(|a, b| {
+            b.2.confidence
+                .total_cmp(&a.2.confidence)
+                .then(a.0.cmp(&b.0))
+        });
+        if ready.len() > 1 {
+            let (_, kept, _) = ready.remove(0);
+            (
+                Some(kept),
+                ready.into_iter().map(|(_, s, r)| (s, r)).collect(),
+            )
+        } else {
+            (None, Vec::new())
+        }
+    };
     for (source, relationship) in selected {
+        if extra_copies.iter().any(|(s, _)| s.id == source.id) {
+            continue;
+        }
         let mut existing = source.item.clone();
         existing["memory_record_id"] = json!(source.id);
-        let stored_scope_matches = ["project_id", "engagement_scope", "scope", "subject"]
-            .iter()
-            .all(|key| existing.get(key) == incoming.item.get(key));
+        let stored_scope_matches = stored_scope_matches(incoming, source);
         let eligible = relationship.same_subject_and_aspect
             && relationship.same_context
             && stored_scope_matches
@@ -810,6 +1110,27 @@ pub fn apply_review(
             _ => {},
         }
     }
+    if let Some(kept) = kept {
+        let mut folded_copies = Vec::new();
+        if let Some((_, kept_value)) = changes.iter_mut().find(|(p, _)| p == &kept.pointer) {
+            for (copy, relationship) in &extra_copies {
+                // Only a copy the reviewer called the same claim folds away; a
+                // supporting one may say more, so it stays in service.
+                if relationship.relation != Relation::Duplicate {
+                    continue;
+                }
+                merge_evidence(kept_value, &copy.item);
+                let mut folded = copy.item.clone();
+                folded["memory_record_id"] = json!(copy.id);
+                supersede(&mut folded, &kept.id, "duplicate_of_merged_copy", now);
+                outcome.folded += 1;
+                folded_copies.push((copy.pointer.clone(), folded));
+            }
+            kept_value["memory_review_needed"] =
+                json!(independent_observations(kept_value) > independent_observations(&kept.item));
+        }
+        changes.extend(folded_copies);
+    }
     for (pointer, value) in changes {
         let mut value = value;
         value["memory_reconciled_at"] = json!(now.to_rfc3339());
@@ -841,18 +1162,21 @@ pub fn apply_review(
     Ok(outcome)
 }
 
+/// Whether a live record's explicit validity interval has ended; what
+/// [`expire`] retires.
+pub fn validity_ended(item: &Value, now: DateTime<Utc>) -> bool {
+    item.get("valid_until")
+        .and_then(Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .is_some_and(|until| until <= now)
+}
+
 /// Time passage retires only explicit validity intervals, never a standing goal
 /// just because it was not recalled or followed recently.
 pub fn expire(document: &mut Value, now: DateTime<Utc>) -> usize {
     let mut count = 0;
     for source in sources(document) {
-        let expired = source
-            .item
-            .get("valid_until")
-            .and_then(Value::as_str)
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .is_some_and(|until| until <= now);
-        if expired {
+        if validity_ended(&source.item, now) {
             let item = document.pointer_mut(&source.pointer).unwrap();
             item["memory_lifecycle"] = json!("expired");
             item["retired_at"] = json!(now.to_rfc3339());

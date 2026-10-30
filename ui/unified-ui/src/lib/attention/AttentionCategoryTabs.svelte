@@ -41,16 +41,41 @@
 
 <style>
 	.attention-tabs.attention-tabs--compact {
-		gap: 0.875rem;
+		gap: 0.625rem;
+		/* Room for the 3px scrollbar so it never sits on the tab labels. */
+		padding-bottom: 4px;
 	}
 	.attention-tabs--compact .attention-tabs__tab {
-		min-height: 32px;
-		font-size: 0.75rem;
-		gap: 0.25rem;
+		min-height: 26px;
+		font-size: 0.6875rem;
+		gap: 0.1875rem;
 	}
 	.attention-tabs--compact .attention-tabs__count {
-		font-size: 0.6875rem;
+		font-size: 0.625rem;
 		min-width: auto;
+	}
+	/* A thin, themed scrollbar instead of the platform's grey bar, which in
+	   the notch panel covered the bottom of the tabs once counts grew. */
+	.attention-tabs::-webkit-scrollbar {
+		height: 3px;
+	}
+	.attention-tabs::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	.attention-tabs::-webkit-scrollbar-thumb {
+		background: color-mix(in srgb, var(--accent-primary, #ff6b6b) 38%, transparent);
+		border-radius: 999px;
+	}
+	.attention-tabs:hover::-webkit-scrollbar-thumb {
+		background: color-mix(in srgb, var(--accent-primary, #ff6b6b) 62%, transparent);
+	}
+	/* The standard properties override ::-webkit-scrollbar where both exist,
+	   so they only style engines without it. */
+	@supports not selector(::-webkit-scrollbar) {
+		.attention-tabs {
+			scrollbar-width: thin;
+			scrollbar-color: color-mix(in srgb, var(--accent-primary, #ff6b6b) 45%, transparent) transparent;
+		}
 	}
 	.attention-tabs {
 		display: flex;
@@ -61,7 +86,6 @@
 		overflow-y: hidden;
 		padding: 0 2px;
 		border-bottom: 1px solid var(--border-soft, rgba(15, 23, 42, 0.12));
-		scrollbar-width: thin;
 		overscroll-behavior-inline: contain;
 	}
 

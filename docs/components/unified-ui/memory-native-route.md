@@ -63,7 +63,14 @@ The route keeps the tab query parameter:
   owner's preferences exactly as preference checks see them, grouped as rules,
   goals and tastes with strength, source and last check use; add, edit,
   confirm, retire and forget (forget asks first, since it also erases the
-  wording from history), plus each preference's history. Edits send the
+  wording from history), plus each preference's history. "Review what I've
+  learned (N)" switches to the preferences Magician inferred (`inferred`,
+  `inferred_untrusted`, `unknown_provenance`; `PreferenceReview.svelte`,
+  helpers in `preferenceReview.ts`), newest learned first (`learned_at_ms`),
+  25 a page with a source filter, each with source, learned and last-checked
+  dates. Confirm (plain inferences only; a page/screen/meeting capture stays
+  advisory) and Dismiss (retire, history kept) use the same `PATCH` as the
+  full list; profile preferences point to where they are changed. Edits send the
   revision on screen; a changed preference reloads and says so. A preference
   stored as `key: {json}` shows as a title and its fields
   (`presentStatement`, keeping acronyms such as UI and API uppercase, fields

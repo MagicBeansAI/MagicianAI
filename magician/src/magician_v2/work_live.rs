@@ -8,7 +8,7 @@
 //! failed, working (owner-started before scheduled or background work), just
 //! done — and held for [`FEATURE_HOLD_MS`] unless something needs the owner or
 //! fails, so the summary does not flicker. Plan:
-//! `docs/plans/2026-10-15-magician-at-work-summary.md`.
+//! `docs/archive/plans/2026-10-15-magician-at-work-summary.md`.
 //!
 //! Like `vibedev::live_runs`, every read derives the items from stored rows,
 //! never from events, so a restart reports exactly what the previous process
@@ -129,6 +129,30 @@ pub struct WorkAction {
     /// (a pending user request).
     pub kind: String,
     pub id: String,
+    /// The server's respond handle for an `approve_diff` (choice `apply` /
+    /// `reject`); `answer` opens the request, so it carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub respond: Option<crate::magician_v2::hitl::HitlRespondHandle>,
+}
+
+impl WorkAction {
+    /// Apply or reject a staged diff (`id` is the proposal id).
+    pub fn approve_diff(id: String) -> Self {
+        Self {
+            respond: crate::magician_v2::vibedev::live_runs::diff_review_respond_handle(&id),
+            kind: "approve_diff".to_string(),
+            id,
+        }
+    }
+
+    /// Open a pending user request (`id` is the request id).
+    pub fn answer(id: String) -> Self {
+        Self {
+            kind: "answer".to_string(),
+            id,
+            respond: None,
+        }
+    }
 }
 
 /// One item of long-running work.
@@ -240,7 +264,11 @@ fn ms_rfc3339(ms: i64) -> String {
 }
 
 fn one_line(text: &str, limit: usize) -> String {
-    let line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
     line.chars().take(limit).collect()
 }
 
@@ -320,8 +348,11 @@ pub fn surface_from_source(source: &str) -> Option<String> {
 pub fn write_task_origin(task_dir: &Path, origin: &WorkOrigin) -> std::io::Result<()> {
     std::fs::create_dir_all(task_dir)?;
     let bytes = serde_json::to_vec(origin).map_err(std::io::Error::other)?;
-    crate::magician_v2::artifact_v2::io::write_bytes_atomic_sync(&task_dir.join(ORIGIN_FILE), &bytes)
-        .map_err(std::io::Error::other)
+    crate::magician_v2::artifact_v2::io::write_bytes_atomic_sync(
+        &task_dir.join(ORIGIN_FILE),
+        &bytes,
+    )
+    .map_err(std::io::Error::other)
 }
 
 pub fn read_task_origin(task_dir: &Path) -> Option<WorkOrigin> {
@@ -334,7 +365,11 @@ pub fn infer_origin(item: &TaskListItemV3) -> OriginBy {
     if item.monitor_revision > 0 {
         return OriginBy::Monitor;
     }
-    if item.schedule.as_ref().is_some_and(|schedule| !schedule.is_null()) {
+    if item
+        .schedule
+        .as_ref()
+        .is_some_and(|schedule| !schedule.is_null())
+    {
         return OriginBy::Schedule;
     }
     origin_by_created_by(&item.created_by)
@@ -344,8 +379,8 @@ pub fn infer_origin(item: &TaskListItemV3) -> OriginBy {
 pub fn origin_by_created_by(created_by: &str) -> OriginBy {
     let created_by = created_by.trim().to_ascii_lowercase();
     match created_by.as_str() {
-        "" | "user" | "owner" | "chat" | "chat_delegate" | "chat_vibedev_rail"
-        | "vibedev_crew" | "ambient" => OriginBy::Owner,
+        "" | "user" | "owner" | "chat" | "chat_delegate" | "chat_vibedev_rail" | "vibedev_crew"
+        | "ambient" => OriginBy::Owner,
         "app_action" => OriginBy::App,
         other if other.starts_with("system") => OriginBy::System,
         _ => OriginBy::Agent,
@@ -401,7 +436,8 @@ fn write_follow(scope_root: &Path, file: &FollowFile) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec(file).map_err(std::io::Error::other)?;
-    crate::magician_v2::artifact_v2::io::write_bytes_atomic_sync(&path, &bytes).map_err(std::io::Error::other)
+    crate::magician_v2::artifact_v2::io::write_bytes_atomic_sync(&path, &bytes)
+        .map_err(std::io::Error::other)
 }
 
 /// Whether `id` is a work item id (`run:`, `crew:` or `task:` and a plain id).
@@ -429,7 +465,9 @@ pub fn follow(scope_root: &Path, item_id: &str, now_ms: i64) -> Result<Vec<Strin
     if !is_item_id(item_id) {
         return Err(FollowError::Invalid);
     }
-    let _guard = FOLLOW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = FOLLOW_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut file = read_follow(scope_root);
     if !file.items.iter().any(|entry| entry.id == item_id) {
         if file.items.len() >= MAX_FOLLOWED {
@@ -446,7 +484,9 @@ pub fn follow(scope_root: &Path, item_id: &str, now_ms: i64) -> Result<Vec<Strin
 }
 
 pub fn unfollow(scope_root: &Path, item_id: &str) -> Result<Vec<String>, FollowError> {
-    let _guard = FOLLOW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = FOLLOW_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut file = read_follow(scope_root);
     let before = file.items.len();
     file.items.retain(|entry| entry.id != item_id);
@@ -459,12 +499,15 @@ pub fn unfollow(scope_root: &Path, item_id: &str) -> Result<Vec<String>, FollowE
 /// Note which followed items ended (or left the list) and drop the ones that
 /// ended more than [`FOLLOW_AFTER_END_MS`] ago. Returns the followed ids.
 fn settle_followed(scope_root: &Path, items: &[WorkItem], now_ms: i64) -> Vec<String> {
-    let _guard = FOLLOW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = FOLLOW_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut file = read_follow(scope_root);
     if file.items.is_empty() {
         return Vec::new();
     }
-    let by_id: HashMap<&str, &WorkItem> = items.iter().map(|item| (item.id.as_str(), item)).collect();
+    let by_id: HashMap<&str, &WorkItem> =
+        items.iter().map(|item| (item.id.as_str(), item)).collect();
     let mut changed = false;
     for entry in &mut file.items {
         let ended = by_id
@@ -499,11 +542,14 @@ fn settle_followed(scope_root: &Path, items: &[WorkItem], now_ms: i64) -> Vec<St
 // Items.
 // ---------------------------------------------------------------------------
 
-/// A pending user request: its id and when it was raised.
+/// A pending user request: its id, when it was raised, and whether it is an
+/// acknowledge-only notice (an owner briefing), which never makes an item
+/// need the owner.
 #[derive(Debug, Clone)]
 pub struct WaitingRequest {
     pub id: String,
     pub created_at_ms: i64,
+    pub notice: bool,
 }
 
 /// What [`build_items`] reads, gathered by [`scope_work_live`] (or a test).
@@ -525,6 +571,8 @@ pub struct WorkInputs<'a> {
     pub now_ms: i64,
 }
 
+/// The oldest pending request on `task_ids` that needs a decision; notices
+/// are left out.
 fn oldest_request<'a>(
     requests: &'a HashMap<String, Vec<WaitingRequest>>,
     task_ids: &[&str],
@@ -533,10 +581,15 @@ fn oldest_request<'a>(
         .iter()
         .filter_map(|task_id| requests.get(*task_id))
         .flatten()
+        .filter(|request| !request.notice)
         .min_by_key(|request| request.created_at_ms)
 }
 
-fn run_item(run: &LiveRun, inputs: &WorkInputs<'_>, roots: &HashMap<&str, &TaskListItemV3>) -> WorkItem {
+fn run_item(
+    run: &LiveRun,
+    inputs: &WorkInputs<'_>,
+    roots: &HashMap<&str, &TaskListItemV3>,
+) -> WorkItem {
     let state = WorkState::from(run.state);
     let task_ids = [run.run_id.as_str(), run.live_task_id.as_str()];
     let request = oldest_request(inputs.requests, &task_ids);
@@ -549,16 +602,8 @@ fn run_item(run: &LiveRun, inputs: &WorkInputs<'_>, roots: &HashMap<&str, &TaskL
     let action = run
         .approval_id
         .as_ref()
-        .map(|id| WorkAction {
-            kind: "approve_diff".to_string(),
-            id: id.clone(),
-        })
-        .or_else(|| {
-            request.map(|request| WorkAction {
-                kind: "answer".to_string(),
-                id: request.id.clone(),
-            })
-        });
+        .map(|id| WorkAction::approve_diff(id.clone()))
+        .or_else(|| request.map(|request| WorkAction::answer(request.id.clone())));
     let id = format!("run:{}", run.run_id);
     WorkItem {
         followed: inputs.followed.contains(&id),
@@ -626,28 +671,22 @@ fn crew_item(
         CrewStatus::Failed => WorkState::Failed,
         CrewStatus::Cancelled => WorkState::Stopped,
     };
-    if state.is_ended()
-        && inputs.now_ms.saturating_sub(crew.updated_at_ms) > RECENT_WINDOW_MS
-    {
+    if state.is_ended() && inputs.now_ms.saturating_sub(crew.updated_at_ms) > RECENT_WINDOW_MS {
         return None;
     }
-    let done_lanes = crew.lanes.iter().filter(|lane| lane.status.is_ended()).count();
+    let done_lanes = crew
+        .lanes
+        .iter()
+        .filter(|lane| lane.status.is_ended())
+        .count();
     let step = non_empty(crew.note.as_ref()).or_else(|| {
         (!crew.lanes.is_empty()).then(|| format!("{done_lanes} of {} lanes done", crew.lanes.len()))
     });
     let request = open_request.and_then(|id| inputs.requests_by_id.get(id));
     let action = lane_waiting
         .and_then(|run| run.approval_id.as_ref())
-        .map(|id| WorkAction {
-            kind: "approve_diff".to_string(),
-            id: id.clone(),
-        })
-        .or_else(|| {
-            open_request.map(|id| WorkAction {
-                kind: "answer".to_string(),
-                id: id.clone(),
-            })
-        });
+        .map(|id| WorkAction::approve_diff(id.clone()))
+        .or_else(|| open_request.map(|id| WorkAction::answer(id.clone())));
     let waiting_since = (state == WorkState::NeedsYou).then(|| {
         request
             .map(|request| request.created_at_ms)
@@ -741,16 +780,8 @@ fn task_item(task: &TaskListItemV3, inputs: &WorkInputs<'_>) -> Option<WorkItem>
         })
         .flatten();
     let action = approval
-        .map(|id| WorkAction {
-            kind: "approve_diff".to_string(),
-            id,
-        })
-        .or_else(|| {
-            request.map(|request| WorkAction {
-                kind: "answer".to_string(),
-                id: request.id.clone(),
-            })
-        });
+        .map(WorkAction::approve_diff)
+        .or_else(|| request.map(|request| WorkAction::answer(request.id.clone())));
     let id = format!("task:{}", task.id);
     Some(WorkItem {
         followed: inputs.followed.contains(&id),
@@ -778,7 +809,7 @@ fn task_item(task: &TaskListItemV3, inputs: &WorkInputs<'_>) -> Option<WorkItem>
         action,
         // The task link both phone apps already open.
         deep_link: format!("magican://task/{}", task.id),
-        web_path: format!("/work?task={}", task.id),
+        web_path: crate::magician_v2::ui_links::task_href(&task.id, None),
         project_id: None,
         run_id: None,
         live_task_id: None,
@@ -790,8 +821,11 @@ fn task_item(task: &TaskListItemV3, inputs: &WorkInputs<'_>) -> Option<WorkItem>
 /// Every item of `inputs`, unranked: coding runs that are not crew lanes,
 /// one item per crew, and Work tasks that are not VibeDev runs.
 pub fn build_items(inputs: &WorkInputs<'_>) -> Vec<WorkItem> {
-    let roots: HashMap<&str, &TaskListItemV3> =
-        inputs.tasks.iter().map(|task| (task.id.as_str(), task)).collect();
+    let roots: HashMap<&str, &TaskListItemV3> = inputs
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect();
     let mut items = Vec::new();
     let mut lanes_by_crew: HashMap<&str, Vec<&LiveRun>> = HashMap::new();
     for run in inputs.runs {
@@ -807,7 +841,11 @@ pub fn build_items(inputs: &WorkInputs<'_>) -> Vec<WorkItem> {
             vibedev_task_ids.insert(active);
         }
         for crew in &project.crews {
-            vibedev_task_ids.extend(crew.lanes.iter().filter_map(|lane| lane.run_task_id.as_deref()));
+            vibedev_task_ids.extend(
+                crew.lanes
+                    .iter()
+                    .filter_map(|lane| lane.run_task_id.as_deref()),
+            );
             let lanes = lanes_by_crew
                 .get(crew.crew_id.as_str())
                 .map(Vec::as_slice)
@@ -885,14 +923,16 @@ static FEATURED: Mutex<Option<HashMap<String, (String, i64)>>> = Mutex::new(None
 /// owner or just failed.
 fn pick_featured(scope_key: &str, ranked: &[WorkItem], now_ms: i64) -> Option<usize> {
     let top = ranked.iter().position(|item| tier(item, now_ms) <= 5)?;
-    let mut guard = FEATURED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = FEATURED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let held = guard.get_or_insert_with(HashMap::new);
     let top_tier = tier(&ranked[top], now_ms);
     let chosen = match held.get(scope_key) {
         Some((previous, since)) if *previous != ranked[top].id => {
-            let keep = ranked.iter().position(|item| {
-                item.id == *previous && matches!(tier(item, now_ms), 2 | 4 | 5)
-            });
+            let keep = ranked
+                .iter()
+                .position(|item| item.id == *previous && matches!(tier(item, now_ms), 2 | 4 | 5));
             match keep {
                 Some(index)
                     if !matches!(top_tier, 1 | 3)
@@ -911,7 +951,12 @@ fn pick_featured(scope_key: &str, ranked: &[WorkItem], now_ms: i64) -> Option<us
 }
 
 /// Rank `items` and shape the summary.
-pub fn summarize(scope_key: &str, items: Vec<WorkItem>, followed: Vec<String>, now_ms: i64) -> WorkLive {
+pub fn summarize(
+    scope_key: &str,
+    items: Vec<WorkItem>,
+    followed: Vec<String>,
+    now_ms: i64,
+) -> WorkLive {
     let mut ranked = rank(items, now_ms);
     let featured_index = pick_featured(scope_key, &ranked, now_ms);
     let featured = featured_index.map(|index| ranked[index].clone());
@@ -952,24 +997,35 @@ fn scope_key(scope: &ScopeRef) -> String {
 }
 
 /// The scope's work summary, read from its stored rows.
-pub async fn scope_work_live(service: &ArtifactV2Service, scope: &ScopeRef) -> Result<WorkLive, String> {
+pub async fn scope_work_live(
+    service: &ArtifactV2Service,
+    scope: &ScopeRef,
+) -> Result<WorkLive, String> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let scope_root = service
         .workspace()
         .scope_root(&scope.principal(), &scope.workspace());
     let projects = read_vibedev_projects(&scope_root);
+    let pending_requests = service.pending_user_requests(scope).await;
+    let owner_requests = live_runs::OwnerRequests::from_requests(pending_requests.iter());
     let mut pending: HashMap<String, Vec<WaitingRequest>> = HashMap::new();
-    for (task_id, id, created_at_ms) in service.pending_user_request_stamps(scope).await {
-        pending.entry(task_id).or_default().push(WaitingRequest { id, created_at_ms });
+    for request in &pending_requests {
+        let Some(task_id) = request.task_id.clone() else {
+            continue;
+        };
+        pending.entry(task_id).or_default().push(WaitingRequest {
+            id: request.id.clone(),
+            created_at_ms: request.created_at,
+            notice: live_runs::owner_notice(request).is_some(),
+        });
     }
     for requests in pending.values_mut() {
         requests.sort_by_key(|request| request.created_at_ms);
     }
-    let waiting: HashSet<String> = pending.keys().cloned().collect();
     let run_items = service
         .list_task_items_by_ids_archive_filtered(
             scope,
-            &live_runs::project_task_ids(&projects, &waiting),
+            &live_runs::project_task_ids(&projects, &owner_requests.task_ids()),
             ArchivedFilter::Exclude,
         )
         .await
@@ -977,14 +1033,17 @@ pub async fn scope_work_live(service: &ArtifactV2Service, scope: &ScopeRef) -> R
     let mut runs = live_runs::live_runs(
         &projects,
         &run_items,
-        &waiting,
+        &owner_requests,
         now_ms,
         live_runs::DEFAULT_RECENT_WINDOW_MS,
     );
     live_runs::fill_costs(&mut runs, service, scope);
     let approvals = service.pending_diff_approvals_off_reactor(scope).await;
     live_runs::fill_approvals(&mut runs, &approvals);
-    let tasks = service.list_tasks(scope).await.map_err(|error| error.to_string())?;
+    let tasks = service
+        .list_tasks(scope)
+        .await
+        .map_err(|error| error.to_string())?;
     let requests_by_id: HashMap<String, WaitingRequest> = pending
         .values()
         .flatten()
@@ -1048,6 +1107,69 @@ mod tests {
         task.awaiting_diff_approval = false;
         task.status = "running".into();
         assert_eq!(task_item(&task, &inputs).unwrap().state, WorkState::Working);
+        assert_eq!(
+            task_item(&task, &inputs).unwrap().web_path,
+            "/work?selected=ready"
+        );
+    }
+
+    #[test]
+    fn a_notice_alone_never_makes_an_item_need_the_owner() {
+        let task: TaskListItemV3 = serde_json::from_value(serde_json::json!({
+            "id": "done", "title": "Finished task", "description": "", "status": "completed",
+            "agent_id": "assistant", "created_at": ms_rfc3339(NOW - 600_000),
+            "updated_at": ms_rfc3339(NOW - 60_000)
+        }))
+        .unwrap();
+        let briefing = WaitingRequest {
+            id: "brief".to_string(),
+            created_at_ms: NOW - 30_000,
+            notice: true,
+        };
+        let mut requests = HashMap::from([("done".to_string(), vec![briefing.clone()])]);
+        let followed = HashSet::new();
+        let by_id = HashMap::new();
+        let inputs = WorkInputs {
+            projects: &[],
+            runs: &[],
+            tasks: &[],
+            requests: &requests,
+            requests_by_id: &by_id,
+            approvals: None,
+            origin: &|_| None,
+            followed: &followed,
+            now_ms: NOW,
+        };
+        let item = task_item(&task, &inputs).unwrap();
+        assert_eq!(item.state, WorkState::Done);
+        assert_eq!(item.action, None, "a briefing is not an answer to give");
+
+        // A question next to it still needs the owner, and is what they answer.
+        requests.insert(
+            "done".to_string(),
+            vec![
+                briefing,
+                WaitingRequest {
+                    id: "ask".to_string(),
+                    created_at_ms: NOW - 20_000,
+                    notice: false,
+                },
+            ],
+        );
+        let inputs = WorkInputs {
+            projects: &[],
+            runs: &[],
+            tasks: &[],
+            requests: &requests,
+            requests_by_id: &by_id,
+            approvals: None,
+            origin: &|_| None,
+            followed: &followed,
+            now_ms: NOW,
+        };
+        let item = task_item(&task, &inputs).unwrap();
+        assert_eq!(item.state, WorkState::NeedsYou);
+        assert_eq!(item.action, Some(WorkAction::answer("ask".to_string())));
     }
 
     fn item(id: &str, kind: WorkKind, state: WorkState, updated_ago_ms: i64) -> WorkItem {
@@ -1105,10 +1227,39 @@ mod tests {
         let mut followed = item("run:f", WorkKind::CodingRun, WorkState::Working, 0);
         followed.followed = true;
         assert_eq!(tier(&followed, NOW), 2);
-        assert_eq!(tier(&item("run:x", WorkKind::CodingRun, WorkState::Failed, 60 * 1_000), NOW), 3);
-        assert_eq!(tier(&item("run:x", WorkKind::CodingRun, WorkState::Failed, 10 * 60 * 1_000), NOW), 6);
-        assert_eq!(tier(&item("run:x", WorkKind::CodingRun, WorkState::Done, 60 * 1_000), NOW), 5);
-        assert_eq!(tier(&item("run:x", WorkKind::CodingRun, WorkState::Stopped, 0), NOW), 6);
+        assert_eq!(
+            tier(
+                &item("run:x", WorkKind::CodingRun, WorkState::Failed, 60 * 1_000),
+                NOW
+            ),
+            3
+        );
+        assert_eq!(
+            tier(
+                &item(
+                    "run:x",
+                    WorkKind::CodingRun,
+                    WorkState::Failed,
+                    10 * 60 * 1_000
+                ),
+                NOW
+            ),
+            6
+        );
+        assert_eq!(
+            tier(
+                &item("run:x", WorkKind::CodingRun, WorkState::Done, 60 * 1_000),
+                NOW
+            ),
+            5
+        );
+        assert_eq!(
+            tier(
+                &item("run:x", WorkKind::CodingRun, WorkState::Stopped, 0),
+                NOW
+            ),
+            6
+        );
     }
 
     #[test]
@@ -1116,35 +1267,69 @@ mod tests {
         let scope = "test-hold";
         let first = item("run:first", WorkKind::CodingRun, WorkState::Working, 0);
         let live = summarize(scope, vec![first.clone()], Vec::new(), NOW);
-        assert_eq!(live.featured.as_ref().map(|item| item.id.as_str()), Some("run:first"));
+        assert_eq!(
+            live.featured.as_ref().map(|item| item.id.as_str()),
+            Some("run:first")
+        );
 
         // A newer working run ranks first, but the featured one is held.
         let newer = item("run:newer", WorkKind::CodingRun, WorkState::Working, 0);
         let mut first_later = first.clone();
         first_later.updated_at = ms_rfc3339(NOW - 30 * 1_000);
-        let live = summarize(scope, vec![first_later.clone(), newer.clone()], Vec::new(), NOW + 60 * 1_000);
-        assert_eq!(live.featured.as_ref().map(|item| item.id.as_str()), Some("run:first"));
-        assert_eq!(live.next.first().map(|item| item.id.as_str()), Some("run:newer"));
+        let live = summarize(
+            scope,
+            vec![first_later.clone(), newer.clone()],
+            Vec::new(),
+            NOW + 60 * 1_000,
+        );
+        assert_eq!(
+            live.featured.as_ref().map(|item| item.id.as_str()),
+            Some("run:first")
+        );
+        assert_eq!(
+            live.next.first().map(|item| item.id.as_str()),
+            Some("run:newer")
+        );
 
         // Something that needs the owner takes over at once.
         let waiting = item("task:ask", WorkKind::WorkTask, WorkState::NeedsYou, 0);
-        let live = summarize(scope, vec![first_later, newer, waiting], Vec::new(), NOW + 2 * 60 * 1_000);
-        assert_eq!(live.featured.as_ref().map(|item| item.id.as_str()), Some("task:ask"));
+        let live = summarize(
+            scope,
+            vec![first_later, newer, waiting],
+            Vec::new(),
+            NOW + 2 * 60 * 1_000,
+        );
+        assert_eq!(
+            live.featured.as_ref().map(|item| item.id.as_str()),
+            Some("task:ask")
+        );
         assert_eq!(live.counts.needs_you, 1);
         assert_eq!(live.counts.working, 2);
     }
 
     #[test]
     fn run_titles_lose_the_vibedev_prefix() {
-        assert_eq!(strip_run_title_prefix("VibeDev · Fix the footer"), "Fix the footer");
-        assert_eq!(strip_run_title_prefix("VibeDev follow-up · Add tests"), "Add tests");
+        assert_eq!(
+            strip_run_title_prefix("VibeDev · Fix the footer"),
+            "Fix the footer"
+        );
+        assert_eq!(
+            strip_run_title_prefix("VibeDev follow-up · Add tests"),
+            "Add tests"
+        );
         assert_eq!(strip_run_title_prefix("Fix the footer"), "Fix the footer");
     }
 
     #[test]
     fn origin_is_inferred_from_the_row_when_not_recorded() {
-        assert_eq!(surface_from_source("ios_siri_intent").as_deref(), Some("siri"));
-        assert_eq!(surface_from_source("android_app").as_deref(), Some("android"));
+        assert_eq!(
+            surface_from_source("ios_siri_intent").as_deref(),
+            Some("siri")
+        );
+        assert_eq!(
+            surface_from_source("android_app").as_deref(),
+            Some("android")
+        );
         assert_eq!(surface_from_source("unknown"), None);
         let origin = WorkOrigin {
             by: OriginBy::Owner,
@@ -1159,14 +1344,23 @@ mod tests {
     fn follow_is_capped_and_ids_are_checked() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        assert!(matches!(follow(root, "nope", NOW), Err(FollowError::Invalid)));
-        assert!(matches!(follow(root, "run:../x", NOW), Err(FollowError::Invalid)));
+        assert!(matches!(
+            follow(root, "nope", NOW),
+            Err(FollowError::Invalid)
+        ));
+        assert!(matches!(
+            follow(root, "run:../x", NOW),
+            Err(FollowError::Invalid)
+        ));
         for id in ["run:a", "crew:b", "task:c"] {
             follow(root, id, NOW).unwrap();
         }
         // Following again is a no-op; a fourth item is refused.
         assert_eq!(follow(root, "run:a", NOW).unwrap().len(), 3);
-        assert!(matches!(follow(root, "task:d", NOW), Err(FollowError::Limit)));
+        assert!(matches!(
+            follow(root, "task:d", NOW),
+            Err(FollowError::Limit)
+        ));
         assert_eq!(unfollow(root, "crew:b").unwrap(), ["run:a", "task:c"]);
 
         // An item that ended stays followed for a while, then is dropped.

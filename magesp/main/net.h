@@ -52,6 +52,9 @@ void         net_set_busy(bool busy);
  * The token is sent as `Authorization: Bearer` and the server resolves both
  * principal and workspace from its paired-device record. */
 const char  *net_device_id(void);
+/* This firmware's version, sent as X-Magician-App-Version beside the device
+   id so the owner's Settings → Devices can say which build each terminal runs. */
+const char  *net_app_version(void);
 bool         net_has_device_token(void);
 const char  *net_device_token(void);
 void         net_pair_if_needed(void);

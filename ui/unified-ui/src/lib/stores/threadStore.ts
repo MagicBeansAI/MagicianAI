@@ -3,7 +3,7 @@ import { get, writable } from 'svelte/store';
 
 import type { UiThreadDetail, UiThreadRecord } from '$lib/threads/types';
 import { getCurrentScopeCredentialRevision, scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
-import { timedFetch } from '$lib/shared/fetch';
+import { LONG_FETCH_TIMEOUT_MS, timedFetch } from '$lib/shared/fetch';
 
 interface ThreadStoreState {
 	isLoading: boolean;
@@ -36,7 +36,7 @@ function currentThreadScopeKey(): string {
 	return JSON.stringify([scope.principal, scope.workspace, getCurrentScopeCredentialRevision()]);
 }
 
-async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(input: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
 	const response = await timedFetch(input, init);
 	if (!response.ok) {
 		const text = await response.text().catch(() => '');
@@ -193,7 +193,8 @@ function createThreadStore() {
 				{
 					method: 'PATCH',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(patch)
+					body: JSON.stringify(patch),
+					timeoutMs: patch.archived === undefined ? undefined : LONG_FETCH_TIMEOUT_MS
 				}
 			);
 			if (isStaleThreadLoad(token.generation, token.scopeKey)) {
@@ -223,7 +224,7 @@ function createThreadStore() {
 		try {
 			const response = await timedFetch(
 				`/api/magician/v2/ui-threads/${encodeURIComponent(id)}`,
-				{ method: 'DELETE' }
+				{ method: 'DELETE', timeoutMs: LONG_FETCH_TIMEOUT_MS }
 			);
 			if (!response.ok) {
 				const text = await response.text().catch(() => '');

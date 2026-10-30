@@ -733,8 +733,12 @@ mod tests {
             }))
         };
         tokio::time::sleep(Duration::from_millis(30)).await;
-        let other = tokio::time::timeout(Duration::from_secs(2), spawn_blocking_admitted(|| 1)).await;
-        assert!(matches!(other, Ok(Ok(1))), "the only permit is free while the waiter waits");
+        let other =
+            tokio::time::timeout(Duration::from_secs(2), spawn_blocking_admitted(|| 1)).await;
+        assert!(
+            matches!(other, Ok(Ok(1))),
+            "the only permit is free while the waiter waits"
+        );
         held.store(false, Ordering::SeqCst);
         let got = tokio::time::timeout(Duration::from_secs(2), waiter)
             .await
@@ -743,6 +747,9 @@ mod tests {
             .expect("admitted")
             .expect("locked");
         assert_eq!(got, 7);
-        assert!(attempts.load(Ordering::SeqCst) >= 2, "it retried while contended");
+        assert!(
+            attempts.load(Ordering::SeqCst) >= 2,
+            "it retried while contended"
+        );
     }
 }

@@ -19,6 +19,8 @@ it.each([true, false])('canonicalizes retired browser entries before a 404 witho
     for (const [entered, destination] of [
         ['/relentless?run=sealed&campaign=local&tag=a&tag=b#artifact', '/work?run=sealed&campaign=local&tag=a&tag=b&view=quality#artifact'],
         ['/tasks?selected=task-one&execution_id=run-two', '/work?selected=task-one&execution_id=run-two'],
+        ['/tasks/task-one?execution_id=run-two&plan=open#output', '/work?execution_id=run-two&plan=open&selected=task-one#output'],
+        ['/t/Launch/tasks/task-one', '/work?selected=task-one&thread=launch'],
         ['/crew/forge/rules', '/work/crew/forge/rules'],
         ['/harness', '/work?view=operations']
     ]) {

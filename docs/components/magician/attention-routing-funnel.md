@@ -43,7 +43,10 @@ parsing, not a 500, if the source-family SQL fails.
   non-actionable-useful context. Distilled comms rehydrate `needs_reply_hint` / `follow_up_hint` at
   routing time (actionable → Follow-ups). Recency-only, weak, cooldown, missing-summary, overlap and
   curator-deferred decisions are recorded as drops; positive Worth events only after the guarded
-  store transition marks the candidate surfaced. Legacy refs with raw slashes fall back to
+  store transition marks the candidate surfaced. A curator pass writes its events in one
+  `append_events` batch with content-keyed ids, so an unchanged repeated decision is not
+  re-recorded. Time-windowed funnel counts for resurfacing therefore count each decision's first
+  occurrence per content revision, not every pass that repeated it. Legacy refs with raw slashes fall back to
   provider-scoped evidence-message lookup for overlap.
 - **Today / attention inbox** items (Needs you, Follow-ups, Active work, Delivered, Changed, HITL,
   failure, approval, escalation, running-work) become candidates, routed and recorded with

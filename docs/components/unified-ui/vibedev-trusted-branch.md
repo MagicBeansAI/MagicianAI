@@ -6,17 +6,35 @@ and the [API routes](../magician-api/README.md#vibedev-trusted-repo-mode).
 
 ## Turning it on
 
-Project settings (`VibeStudio.svelte`) has a **Trusted repo** checkbox and, when checked, a **Base
+Project settings (`VibeStudio.svelte`) offers **Work location**: Original folder,
+Isolated workspace, or Isolated branch. Isolated branch also shows a **Base
 branch** field (empty = the repo's current branch). Saving sends `trust` / `base_branch` in the
 project PATCH; the server refuses unless the caller is the owner and the repo folder is a git
 repository root, and the toast shows its message. Conversations already started keep their mode.
+If the folder later stops being a repository, `health` warns "Folder isn't a git repository" with
+a **Make this a git repository** button (confirm, then `POST /vibedev/projects/{id}/git-init`);
+meanwhile runs use a sandboxed copy with diff review, and their goal and `run_coding_task` result
+(`trusted_fallback`) say so ([rail §5](../magician/vibedev-rail.md#5-where-the-prose-lives)). A
+missing folder or base branch is an error: "Project needs attention: runs cannot start.", marked in
+the project menu, and run starts are refused.
+
+Original folder uses the existing branch and uncommitted files. Its shared
+composer approval card shows the exact diff before edits, with Allow once,
+Allow this session and Allow always. Normal and Super god permissions use the
+same work-location choice; Discuss stays read-only. Starting a run refreshes its
+admitted location before the composer opens it; changes to project defaults
+affect new runs. Work location shares the composer’s App options / Save as task row;
+both selectors use compact rounded rectangles. Original runs use no
+proposal/merge workflow.
 
 ## The Branch tab
 
 `stage/StudioStage.svelte` shows **Branch** instead of **Diff** for a trusted project. Diff stays
 visible only while older staged proposals exist (a conversation that started sandboxed), and the
-stage switches tabs when the project's mode makes the selected one disappear. The status bar's
-"Apply all changes" is hidden for a trusted project with nothing staged — there is nothing to apply.
+stage switches tabs when the project's mode makes the selected one disappear. "Apply all changes"
+(status bar and Diff tab) shows only while a proposal waits (`isPendingDiffRow`); finished
+proposals render as Applied/Rejected history, and an owner briefing (`isNoticeRequest`) renders as
+a notice with Acknowledge (`acknowledgeVibeNotice`), never as a review.
 
 `stage/StageBranch.svelte` is keyed by the active chain's **root** task (`chainRootTaskId` in
 `stores/vibeHitlStore.ts`, walking `Parent task:` links — not the project's

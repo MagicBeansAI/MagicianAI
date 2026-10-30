@@ -9,9 +9,12 @@
 	import {
 		vibeDevLiveRunsStore,
 		liveRunPath,
+		acknowledgeLiveRunNotice,
+		liveRunStalledForMs,
 		type LiveRun,
 		type LiveRunState
 	} from '$lib/stores/vibeDevLiveRunsStore';
+	import { durationIfKnown } from '$lib/magician/tasks/taskVerdict';
 	import { controlRun } from '$lib/shell/vibe/conversation/control';
 
 	/** Opens an app path; the notch drawer routes this to the main window. */
@@ -42,6 +45,17 @@
 	let pendingStopIds: string[] = [];
 
 	$: runs = $vibeDevLiveRunsStore.runs;
+	/** Re-read every half minute so a frozen run turns stalled without a poll. */
+	let now = Date.now();
+	let clock: ReturnType<typeof setInterval> | null = null;
+
+	/** `Working`, or `Stalled · no progress for 12m` past the verdict's stall rule. */
+	function stateLabel(run: LiveRun, at: number): string {
+		const stalled = liveRunStalledForMs(run, at);
+		if (stalled === null) return STATE_LABEL[run.state];
+		const silent = durationIfKnown(stalled);
+		return silent ? `Stalled · no progress for ${silent}` : 'Stalled';
+	}
 	$: void revealSelected(selectedRunId, runs.length);
 
 	const rowNodes = new Map<string, HTMLElement>();
@@ -67,8 +81,12 @@
 	}
 	$: activeCount = runs.filter((run) => run.state === 'working' || run.state === 'needs_you').length;
 
-	onMount(() => vibeDevLiveRunsStore.start());
+	onMount(() => {
+		clock = setInterval(() => (now = Date.now()), 30_000);
+		vibeDevLiveRunsStore.start();
+	});
 	onDestroy(() => {
+		if (clock) clearInterval(clock);
 		// A Stop the owner pressed still goes out when the strip unmounts
 		// inside its undo window; leaving the view is not an undo.
 		for (const [runId, handle] of pendingStops) {
@@ -97,6 +115,26 @@
 		if (line) parts.push(line);
 		else parts.push(STATE_LABEL[run.state]);
 		return parts.join(' · ');
+	}
+
+	/** A run waiting on a decision is answered; anything else is reviewed. */
+	function waitLabel(run: LiveRun): string {
+		return run.waitingKind === 'decision' ? 'Answer' : 'Review';
+	}
+
+	let acknowledgingId: string | null = null;
+	/** Answer a run's acknowledge-only notice in place; nothing to review. */
+	async function acknowledge(run: LiveRun): Promise<void> {
+		if (!run.notice || acknowledgingId) return;
+		acknowledgingId = run.runId;
+		notice = null;
+		const result = await acknowledgeLiveRunNotice(run.notice);
+		acknowledgingId = null;
+		if (result.ok) {
+			void vibeDevLiveRunsStore.refresh();
+			return;
+		}
+		notice = { runId: run.runId, text: result.error ?? 'That did not reach the server.' };
 	}
 
 	function syncPendingStops(): void {
@@ -199,9 +237,18 @@
 							on:click={() => void openPath(liveRunPath(run))}
 						>{run.title}</button>
 						<span class="live-runs__meta">
-							<span class="live-runs__state">{STATE_LABEL[run.state]}</span>
+							<span
+								class="live-runs__state"
+								data-stalled={liveRunStalledForMs(run, now) !== null ? 'true' : undefined}
+							>{stateLabel(run, now)}</span>
 							· {detail(run)}
 						</span>
+						{#if run.notice}
+							<span
+								class="live-runs__briefing"
+								data-severity={run.notice.severity ?? 'info'}
+							>{run.notice.message}</span>
+						{/if}
 						{#if notice?.runId === run.runId}
 							<span class="live-runs__notice" role="status">{notice.text}</span>
 						{/if}
@@ -224,7 +271,15 @@
 								type="button"
 								class="live-runs__btn live-runs__btn--primary"
 								on:click={() => void openPath(liveRunPath(run))}
-							>Review</button>
+							>{waitLabel(run)}</button>
+						{/if}
+						{#if run.notice}
+							<button
+								type="button"
+								class="live-runs__btn"
+								disabled={acknowledgingId === run.runId}
+								on:click={() => void acknowledge(run)}
+							>Acknowledge</button>
 						{/if}
 						{#if canControl(run)}
 							{#if pendingStopIds.includes(run.runId)}
@@ -368,9 +423,25 @@
 		white-space: nowrap;
 	}
 
+	/* An acknowledge-only owner briefing: information, not a review. */
+	.live-runs__briefing {
+		display: block;
+		font-size: var(--text-2xs, 0.72rem);
+		color: var(--text-secondary, var(--text-muted));
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.live-runs__briefing[data-severity='warning'],
+	.live-runs__briefing[data-severity='critical'] {
+		color: var(--run-needs-you);
+	}
+
 	.live-runs__state { font-weight: 600; }
 	[data-state='needs_you'] .live-runs__state { color: var(--run-needs-you); }
 	[data-state='failed'] .live-runs__state { color: var(--run-failed); }
+	.live-runs__state[data-stalled='true'] { color: var(--run-needs-you); }
 
 	.live-runs__steer {
 		margin-top: 0.3rem;

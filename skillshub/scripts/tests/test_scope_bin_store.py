@@ -124,6 +124,25 @@ class LinkRuntimeTests(unittest.TestCase):
             self.assertEqual(link_runtime.link_scope(f.scope, None, f.store), (0, 1))
             self.assertFalse((own / "bin").exists())
 
+    def test_repair_and_readiness_preserve_an_explicit_uninstall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            f = Fixture(Path(directory))
+            link_runtime.ROOT = f.hub
+            marker = f.skills / ".skill-state/browser/removed"
+            marker.parent.mkdir(parents=True)
+            marker.touch()
+            link_runtime.link_scope(f.scope, None, f.store)
+            self.assertFalse((f.skills / "browser/SKILL.md").exists())
+            audit = verify_runtime.Audit(f.hub)
+            audit.scope(f.scope, only={"browser"})
+            self.assertEqual(audit.errors, [])
+            self.assertTrue(marker.exists())
+            install_skill_layer.install_skill(f.skill, f.skills / "browser", f.store)
+            self.assertFalse(marker.exists(), "an explicit reinstall still restores the skill")
+            audit = verify_runtime.Audit(f.hub)
+            audit.scope(f.scope, only={"browser"})
+            self.assertEqual(audit.errors, [])
+
     def test_all_scopes_covers_later_workspaces_but_not_sinks(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
@@ -147,6 +166,25 @@ class LinkRuntimeTests(unittest.TestCase):
 
 
 class VerifyScopeTests(unittest.TestCase):
+    def test_missing_pack_companions_are_reported_even_when_both_bin_trees_lack_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "checkout/skillshub/media-fetch"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: media-fetch\n---\n")
+            write_exe(skill / "bin/media-fetch", b"#!/bin/sh\nexit 0\n")
+            scope = root / "data/scopes/anonymous/default"
+            scoped = scope / "skills/media-fetch"
+            (scoped / "bin").mkdir(parents=True)
+            (scoped / "SKILL.md").symlink_to(skill / "SKILL.md")
+            (scoped / "bin/media-fetch").symlink_to(skill / "bin/media-fetch")
+            audit = verify_runtime.Audit(skill.parent)
+            audit.scope(scope)
+            self.assertEqual(len(audit.errors), 2)
+            for name in ("ffmpeg", "ffprobe"):
+                self.assertTrue(any(f"bin/{name} is missing here and in skillshub" in e
+                                    for e in audit.errors))
+
     def test_dangling_scope_cli_names_the_target_that_rebuilds_it(self):
         with tempfile.TemporaryDirectory() as directory:
             f = Fixture(Path(directory))

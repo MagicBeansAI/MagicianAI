@@ -1,7 +1,7 @@
 ---
 name: document-to-markdown
-version: 0.1.0
-description: Convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV, and text-bearing PDF files into clean GitHub-Flavored Markdown with the local AnyDoc parser. Use for reading or normalizing documents before reasoning, indexing, summarizing, or transforming them. Use OCR instead for images and scanned/image-only PDFs; use pdftotext for PDF-specific page ranges, bounding boxes, passwords, or exact physical-layout extraction.
+version: 0.1.1
+description: First choice for reading Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV, and text-bearing PDFs as Markdown with the local AnyDoc parser. Reuse complete extracted text instead of running another reader or OCR. Use OCR for transcription of scans/images; use pdftotext for PDF page ranges, bounding boxes, passwords, or physical-layout text extraction. For visual layout, clipping, or legibility checks, inspect the rendered image with vision instead.
 metadata:
   magician:
     content_reader:
@@ -128,7 +128,7 @@ metadata:
       schema_version: tool-runtime.typed-action-overrides.v2
       actions:
         convert:
-          description: Read one supported workspace document and return GitHub-Flavored Markdown without writing files. The parser detects formats from content, falling back to the filename extension for signature-less CSV. Scanned/image-only PDFs return an explicit unsupported error and must be sent to OCR.
+          description: First choice for ordinary document reading. Return Markdown without writing files; reuse complete extracted text for later reasoning. Scanned/image-only PDFs return unsupported and need OCR for transcription. Permission, path, authentication, or resource errors require fixing their cause, not switching readers. Visual layout review needs the rendered image and vision.
           fixed_args:
           - convert
           parameters:
@@ -239,6 +239,13 @@ credentials or external service.
    signal and call `ocr`; do not retry AnyDoc with a forced PDF format.
 4. Use `pdftotext` instead when the task needs PDF page ranges, physical layout,
    raw content-stream order, TSV/bounding boxes, or password flags.
+
+Reuse a complete extraction for later reasoning. Check reported truncation before
+extracting again; an inline response limit is not evidence of a scanned PDF.
+Permission, path, authentication, and resource errors are not OCR-routing signals.
+For clipping, overlap, margins, or visual legibility, inspect a rendered page with
+vision; extracted Markdown cannot establish those properties. When that image is
+already attached to the current vision-capable model, inspect it directly.
 
 AnyDoc detects signed/container formats from bytes. CSV has no signature, so an
 extensionless CSV upload needs `format: "csv"`.

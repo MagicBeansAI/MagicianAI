@@ -2,6 +2,7 @@ package ai.magicbeans.magdroid.ui.vibedev
 
 import ai.magicbeans.magdroid.access.MagicianAccess
 import ai.magicbeans.magdroid.ui.LocalMagicanFontFamilies
+import ai.magicbeans.magdroid.ui.MagicanButtonShape
 import ai.magicbeans.magdroid.ui.activePalette
 import ai.magicbeans.magdroid.vibedev.CodingRunsNotifier
 import ai.magicbeans.magdroid.vibedev.VibeDevCache
@@ -18,8 +19,10 @@ import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.DropdownMenu
@@ -29,7 +32,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -61,6 +63,7 @@ import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
@@ -117,8 +120,6 @@ class VibeDevRouteStores : ViewModel() {
     override fun onCleared() = clearAll()
 }
 
-enum class VibeDevHomeTab { Now, Projects }
-
 /** A bottom sheet VibeDev is showing. */
 sealed class VibeDevSheet {
     data class NewRun(
@@ -126,8 +127,11 @@ sealed class VibeDevSheet {
         val parentTaskId: String? = null,
         val parentTitle: String? = null,
         val crew: Boolean = false,
+        val codingRouteId: String? = null,
+        val engine: String? = null,
+        val mode: String = "build",
     ) : VibeDevSheet()
-    data class Steer(val title: String, val onSend: (String) -> Unit) : VibeDevSheet()
+    data class Steer(val title: String, val taskId: String? = null, val onSend: (String) -> Unit) : VibeDevSheet()
     data object NewProject : VibeDevSheet()
 }
 
@@ -141,7 +145,6 @@ sealed class VibeDevSheet {
 @Stable
 class VibeDevChrome(private val stores: VibeDevRouteStores? = null) {
     val stack = mutableStateListOf<VibeDevRoute>(VibeDevRoute.Home)
-    var homeTab by mutableStateOf(VibeDevHomeTab.Now)
     var wrap by mutableStateOf(true)
     var refreshTick by mutableIntStateOf(0)
     var sheet by mutableStateOf<VibeDevSheet?>(null)
@@ -187,7 +190,6 @@ class VibeDevChrome(private val stores: VibeDevRouteStores? = null) {
     fun reset() {
         stack.clear()
         stack.add(VibeDevRoute.Home)
-        homeTab = VibeDevHomeTab.Now
         sheet = null
         release()
     }
@@ -210,22 +212,44 @@ class VibeDevChrome(private val stores: VibeDevRouteStores? = null) {
 /** The shell's top-bar actions for the current VibeDev screen. */
 @Composable
 fun VibeDevTopBarActions(chrome: VibeDevChrome) {
-    when (chrome.top) {
-        VibeDevRoute.Home -> {
-            IconButton(onClick = { chrome.sheet = VibeDevSheet.NewProject }) {
-                Icon(Icons.Outlined.Add, contentDescription = "New project", tint = activePalette.text)
+    key(chrome.connection) {
+        when (chrome.top) {
+            VibeDevRoute.Home -> {
+                val model = vibeDevNowModel(chrome)
+                val data by model.data.collectAsStateWithLifecycle()
+                var projectsOpen by remember { mutableStateOf(false) }
+                Box {
+                    VibeIconButton(onClick = { projectsOpen = true }, compact = true) {
+                        Icon(Icons.Outlined.FolderOpen, contentDescription = "Projects", tint = activePalette.text,
+                            modifier = Modifier.size(18.dp))
+                    }
+                    DropdownMenu(expanded = projectsOpen, onDismissRequest = { projectsOpen = false },
+                        containerColor = activePalette.elevated) {
+                        if (data.openProjects.isEmpty()) {
+                            DropdownMenuItem(text = { Text("No projects yet") }, onClick = {}, enabled = false)
+                        }
+                        data.openProjects.forEach { project ->
+                            DropdownMenuItem(text = { Text(project.name, color = activePalette.text,
+                                fontFamily = LocalMagicanFontFamilies.current.body) }, onClick = {
+                                projectsOpen = false
+                                chrome.push(VibeDevRoute.Project(project.projectId, project.name))
+                            })
+                        }
+                    }
+                }
+                VibeIconButton(onClick = { chrome.sheet = VibeDevSheet.NewProject }, compact = true) {
+                    Icon(Icons.Outlined.Add, contentDescription = "New project", tint = activePalette.text,
+                        modifier = Modifier.size(18.dp))
+                }
+                VibeDevHomeMenu()
             }
-            IconButton(onClick = { chrome.refreshTick++ }) {
+            is VibeDevRoute.Diff -> TextButton(onClick = { chrome.wrap = !chrome.wrap }, shape = MagicanButtonShape) {
+                Text(if (chrome.wrap) "Wrap" else "No wrap", color = activePalette.accent, fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold, fontFamily = LocalMagicanFontFamilies.current.body)
+            }
+            else -> VibeIconButton(onClick = { chrome.refreshTick++ }) {
                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = activePalette.text)
             }
-            VibeDevHomeMenu()
-        }
-        is VibeDevRoute.Diff -> TextButton(onClick = { chrome.wrap = !chrome.wrap }) {
-            Text(if (chrome.wrap) "Wrap" else "No wrap", color = activePalette.accent, fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold, fontFamily = LocalMagicanFontFamilies.current.body)
-        }
-        else -> IconButton(onClick = { chrome.refreshTick++ }) {
-            Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = activePalette.text)
         }
     }
 }
@@ -241,16 +265,7 @@ fun VibeDevSurface(chrome: VibeDevChrome) {
 private fun VibeDevScreens(chrome: VibeDevChrome) {
     val snackbar = remember { SnackbarHostState() }
     val composer = vibeDevViewModel(chrome, VibeDevRoute.Home) { context -> VibeDevComposerViewModel({ VibeDevConnection.source(context) }) }
-    val now = vibeDevViewModel(chrome, VibeDevRoute.Home) { context ->
-        VibeDevNowViewModel(
-            { VibeDevConnection.source(context) }, VibeDevLive.signals(context),
-            cache = { VibeDevCache.forConnection(context) },
-            // The open app keeps the "Magician at work" card current itself:
-            // one `/work/live` read, or these runs from an older Magician.
-            onRuns = { runs -> CodingRunsNotifier.refresh(context, fallbackRuns = runs) },
-            identity = { MagicianAccess.activeIdentity(context) },
-        )
-    }
+    val now = vibeDevNowModel(chrome)
     Box(Modifier.fillMaxSize()) {
         when (val route = chrome.top) {
             VibeDevRoute.Home -> VibeDevHomeScreen(chrome, now, snackbar)
@@ -266,7 +281,7 @@ private fun VibeDevScreens(chrome: VibeDevChrome) {
                         cache = { VibeDevCache.forConnection(context) },
                         identity = { MagicianAccess.activeIdentity(context) })
                 }
-                VibeDevRunScreen(chrome, route, model, snackbar)
+                VibeDevRunScreen(chrome, route, model, composer, now, snackbar)
             }
             is VibeDevRoute.Diff -> {
                 val model = vibeDevViewModel(chrome, route) { context ->
@@ -280,6 +295,20 @@ private fun VibeDevScreens(chrome: VibeDevChrome) {
         VibeDevSheets(chrome, composer, now, snackbar)
     }
 }
+
+/** One home model shared by history and the header's project selector. */
+@Composable
+private fun vibeDevNowModel(chrome: VibeDevChrome): VibeDevNowViewModel =
+    vibeDevViewModel(chrome, VibeDevRoute.Home) { context ->
+        VibeDevNowViewModel(
+            { VibeDevConnection.source(context) }, VibeDevLive.signals(context),
+            cache = { VibeDevCache.forConnection(context) },
+            // The open app keeps the "Magician at work" card current itself:
+            // one `/work/live` read, or these runs from an older Magician.
+            onRuns = { runs -> CodingRunsNotifier.refresh(context, fallbackRuns = runs) },
+            identity = { MagicianAccess.activeIdentity(context) },
+        )
+    }
 
 /**
  * A VibeDev view model built with the app context, in [route]'s own store
@@ -354,8 +383,9 @@ private fun VibeDevHomeMenu() {
         ai.magicbeans.magdroid.push.AndroidMobilePushRegistration.setCodingRunsEnabled(context, inShade)
     }
     Box {
-        IconButton(onClick = { open = true }) {
-            Icon(Icons.Outlined.MoreVert, contentDescription = "More VibeDev options", tint = activePalette.text)
+        VibeIconButton(onClick = { open = true }, compact = true) {
+            Icon(Icons.Outlined.MoreVert, contentDescription = "More VibeDev options", tint = activePalette.text,
+                modifier = Modifier.size(18.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(

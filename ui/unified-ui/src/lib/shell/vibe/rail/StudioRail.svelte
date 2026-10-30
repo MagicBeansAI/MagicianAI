@@ -14,7 +14,8 @@
 		setupLiveDataSource
 	} from '$lib/magician/dashboard/useLiveDataSource';
 	import { stripRunTitlePrefix } from '$lib/shell/vibe/conversation/submit';
-	import type { VibeDevProject } from '$lib/stores/vibeDevProjectStore';
+	import { vibeDevProjectStore, type VibeDevProject } from '$lib/stores/vibeDevProjectStore';
+	import { requestConfirmation } from '$lib/stores/confirmationStore';
 	import { taskStore, type Task, type VibeDevRunLink } from '$lib/stores/taskStore';
 	import CrewSection from './CrewSection.svelte';
 	import type { VibeCheckpoint } from '$lib/stores/vibeCheckpointsStore';
@@ -37,6 +38,28 @@
 
 	export let projects: VibeDevProject[] = [];
 	export let activeProject: VibeDevProject | null = null;
+
+	let gitInitBusy = false;
+	let gitInitError = '';
+	async function makeGitRepository(projectId: string): Promise<void> {
+		if (!projectId) return;
+		const confirmed = await requestConfirmation({
+			title: 'Make this folder a git repository?',
+			message:
+				'Magician runs `git init` in the project folder and commits its current files as a first commit on the base branch (main if none is set). Branch runs, merge, pull requests and rewind then work for this trusted project.',
+			confirmLabel: 'Make it a git repository'
+		});
+		if (!confirmed) return;
+		gitInitBusy = true;
+		gitInitError = '';
+		try {
+			await vibeDevProjectStore.initGitRepository(projectId);
+		} catch (error) {
+			gitInitError = error instanceof Error ? error.message : 'Could not make it a git repository.';
+		} finally {
+			gitInitBusy = false;
+		}
+	}
 	export let runs: Task[] = [];
 	/** Typed run links by task id; a run with a crew shows its lane. */
 	export let runLinks: Record<string, VibeDevRunLink> = {};
@@ -309,13 +332,18 @@
 		const terminal = ['completed', 'failed', 'cancelled', 'canceled', 'skipped'].includes(
 			task.status
 		);
-		// An orphaned `synthesis_pending` on an already-terminal task (e.g. a child whose
-		// synthesis was orphaned by a failed parent) must NOT render "Synthesizing" forever —
-		// fall through to the terminal status below. Stale-but-non-terminal → "Stalled".
-		if (task.synthesisPending && !terminal) {
-			return isRunStale(task)
-				? { kind: 'idle', label: 'Stalled' }
-				: { kind: 'building', label: 'Synthesizing' };
+		// A terminal task with `synthesis_pending` is the live synthesis state: the work
+		// is done and the final answer is still being written, so it reads
+		// "Synthesizing" (a Step-1 terminal run stays pending while finalization
+		// attaches its outputs, as VibeStudio's `runSynthesizing` also holds). A
+		// cancelled/skipped run abandons its synthesis, so its flag is orphaned. A flag
+		// nothing has touched for RUN_STALE_MS never cleared and must NOT render
+		// "Synthesizing" forever: non-terminal → "Stalled", terminal → fall through to
+		// the terminal status below.
+		const abandoned = ['cancelled', 'canceled', 'skipped'].includes(task.status);
+		if (task.synthesisPending && !abandoned) {
+			if (!isRunStale(task)) return { kind: 'building', label: 'Synthesizing' };
+			if (!terminal) return { kind: 'idle', label: 'Stalled' };
 		}
 		switch (task.status) {
 			case 'pending':
@@ -325,6 +353,10 @@
 				if (isRunStale(task)) return { kind: 'idle', label: 'Stalled' };
 				return { kind: 'building', label: planning ? 'Planning' : 'Building' };
 			case 'completed':
+				// Finished with requirements still open (often blocked): not a plain success.
+				if (task.completionKind === 'partial') {
+					return { kind: 'attention', label: planning ? 'Partly planned' : 'Partly done' };
+				}
 				return { kind: 'done', label: planning ? 'Planned' : 'Done' };
 			case 'failed':
 				return { kind: 'failed', label: 'Failed' };
@@ -426,6 +458,33 @@
 			</button>
 			<button type="button" class="rail__settings" title="Project settings" aria-label="Project settings" on:click={() => dispatch('openSettings')}><Icon name="settings" size={14} /></button>
 		</div>
+		{#if activeProject?.health && activeProject.health.status !== 'ok'}
+			<div
+				class="rail__project-problem"
+				class:rail__project-problem--error={activeProject.health.status === 'error'}
+				role={activeProject.health.status === 'error' ? 'alert' : 'status'}
+				data-testid="project-health"
+			>
+				<strong>
+					{activeProject.health.status === 'error' ? 'Project needs attention: runs cannot start.' : 'Project needs attention.'}
+				</strong>
+				{#each activeProject.health.issues ?? [] as issue (issue.code)}
+					<div class="rail__project-issue">
+						{#if issue.title}<b>{issue.title}</b>{/if}
+						<span>{issue.message}</span>
+						{#if issue.action?.kind === 'git_init'}
+							<button
+								type="button"
+								class="rail__mini rail__mini--primary"
+								disabled={gitInitBusy}
+								on:click={() => makeGitRepository(activeProject?.project_id ?? '')}
+							>{gitInitBusy ? 'Working…' : issue.action.label}</button>
+						{/if}
+					</div>
+				{/each}
+				{#if gitInitError}<span class="rail__project-problem-error">{gitInitError}</span>{/if}
+			</div>
+		{/if}
 		{#if projectSource}
 			{#if projectSource.href}
 				<a class="rail__project-source" href={projectSource.href} title="Open the originating meeting">
@@ -486,6 +545,14 @@
 						on:click={() => { dispatch('selectProject', { projectId: project.project_id }); menuOpen = false; }}
 					>
 						<span class="rail__menu-name">{project.name}</span>
+						{#if project.health && project.health.status !== 'ok'}
+							<span
+								class="rail__menu-problem"
+								class:rail__menu-problem--error={project.health.status === 'error'}
+								title={(project.health.issues ?? []).map((issue) => issue.message).join(' ')}
+								aria-label="Project needs attention"
+							>⚠</span>
+						{/if}
 						{#if cost.calls > 0}
 							<span class="rail__menu-cost">{formatUsd(cost.costUsd)}</span>
 						{/if}
@@ -615,7 +682,9 @@
 								type="button"
 								class="run"
 								class:active={task.id === activeTaskId}
-								title={runPrompt(task)}
+								title={task.completionKind === 'partial' && task.openItems?.[0]
+									? `${runPrompt(task)}\nOpen: ${task.openItems[0]}`
+									: runPrompt(task)}
 								on:click={() => dispatch('selectRun', { taskId: task.id })}
 							>
 								<span class="run__meta">
@@ -937,6 +1006,45 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.rail__project-problem {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		margin: 0.35rem 0.5rem 0.25rem;
+		padding: 0.45rem 0.55rem;
+		border: 1px solid var(--warning, #b45309);
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--warning, #b45309) 12%, transparent);
+		color: var(--vibe-text, inherit);
+		font-size: 0.75rem;
+		line-height: 1.35;
+	}
+	.rail__project-problem strong {
+		color: var(--warning, #b45309);
+	}
+	.rail__project-issue {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		align-items: flex-start;
+	}
+	.rail__project-problem-error {
+		color: var(--danger, #b91c1c);
+	}
+	.rail__project-problem--error {
+		border-color: var(--danger, #b91c1c);
+		background: color-mix(in srgb, var(--danger, #b91c1c) 12%, transparent);
+	}
+	.rail__project-problem--error strong {
+		color: var(--danger, #b91c1c);
+	}
+	.rail__menu-problem {
+		color: var(--warning, #b45309);
+		font-size: 0.75rem;
+	}
+	.rail__menu-problem--error {
+		color: var(--danger, #b91c1c);
 	}
 	.rail__menu-cost {
 		margin-left: auto;

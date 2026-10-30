@@ -243,7 +243,11 @@ const CLAUDE_FORBIDDEN_INIT_TOOLS: &[&str] = &[
 /// installed path, a marketplace source, a spoofed source) still fails
 /// closed.
 fn is_builtin_plugin(plugin: &Value) -> bool {
-    let Some(name) = plugin.get("name").and_then(Value::as_str).filter(|name| !name.is_empty()) else {
+    let Some(name) = plugin
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+    else {
         return false;
     };
     plugin.get("path").and_then(Value::as_str) == Some("builtin")

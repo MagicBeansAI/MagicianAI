@@ -1,5 +1,6 @@
 package ai.magicbeans.magdroid.vibedev
 
+import ai.magicbeans.magdroid.tasks.TaskCompletion
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -36,6 +37,15 @@ data class VibeDevRunData(
         get() = live?.state ?: turns?.turns?.lastOrNull()?.state ?: VibeDevRunState.fromTaskStatus(turns?.status)
 
     val isLive: Boolean get() = !pendingStop && (state == VibeDevRunState.Working || state == VibeDevRunState.Paused)
+    /** Done, but the newest turn left requirements open. */
+    val isPartlyDone: Boolean
+        get() = state == VibeDevRunState.Done &&
+            (turns?.turns?.lastOrNull()?.isPartlyDone == true || live?.isPartlyDone == true)
+    val statusLabel: String get() = if (isPartlyDone) TaskCompletion.PARTLY_DONE else state.label
+    val openItemsLine: String?
+        get() = if (!isPartlyDone) null
+            else turns?.turns?.lastOrNull()?.openItems?.takeIf { it.isNotEmpty() }?.let(TaskCompletion::openLine)
+                ?: live?.openItemsLine
     /** Waiting on a diff approval the run screen can answer itself. */
     val canAnswerApproval: Boolean get() = state == VibeDevRunState.NeedsYou && live?.hasApproval == true
     val liveTaskId: String? get() = live?.liveTaskId ?: turns?.liveTaskId

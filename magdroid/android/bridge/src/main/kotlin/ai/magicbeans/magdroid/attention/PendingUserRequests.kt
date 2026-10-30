@@ -3,6 +3,9 @@ package ai.magicbeans.magdroid.attention
 import ai.magicbeans.magdroid.chat.EscalationOption
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /** The scoped UserRequestService ledger, independent of feed projection timing. */
 @Serializable
@@ -22,16 +25,29 @@ internal data class PendingUserRequest(
         val task = taskId.clean() ?: context.taskId.clean()
         // The request type rides on the schema, where the feed projection
         // carries it, so a Relentless review reads the same from either path.
-        val schema = when {
+        var schema = when {
             requestType.clean() == null -> context.inputSchema
             context.inputSchema?.requestType != null -> context.inputSchema
             else -> (context.inputSchema ?: AttentionInputSchema()).copy(requestType = requestType.clean())
+        }
+        if (context.godMode == JsonPrimitive(true) && requestType == "sandbox_override") {
+            schema = (schema ?: AttentionInputSchema(requestType = requestType)).copy(context = buildJsonObject {
+                put("god_mode", JsonPrimitive(true))
+                context.chatSessionId?.let { put("chat_session_id", it) }
+                context.session?.let { put("session", it) }
+                context.agentId?.let { put("agent_id", it) }
+                context.command?.let { put("command", it) }
+                context.violation?.let { put("violation", it) }
+                context.files?.let { put("files", it) }
+            })
         }
         return AttentionItem(
             id = "user-request:$id",
             itemType = "request",
             taskId = task,
             uiThreadId = context.uiThreadId.clean(),
+            chatSessionId = (context.chatSessionId as? JsonPrimitive)
+                ?.takeIf { it.isString }?.content.clean(),
             title = question,
             status = "needs_action",
             createdAt = createdAt,
@@ -56,6 +72,13 @@ private fun String?.clean(): String? = this?.trim()?.takeIf { it.isNotEmpty() }
 
 @Serializable
 internal data class PendingUserRequestContext(
+    @SerialName("god_mode") val godMode: JsonElement? = null,
+    @SerialName("chat_session_id") val chatSessionId: JsonElement? = null,
+    val session: JsonElement? = null,
+    @SerialName("agent_id") val agentId: JsonElement? = null,
+    val command: JsonElement? = null,
+    val violation: JsonElement? = null,
+    val files: JsonElement? = null,
     @SerialName("input_type") val inputType: String? = null,
     @SerialName("input_schema") val inputSchema: AttentionInputSchema? = null,
     /** A Relentless review's Work Quality link and its wording. */

@@ -26,10 +26,16 @@ private class FakeVibeDev : VibeDevSource {
     var live = VibeDevLiveRuns()
     var projectList = VibeDevProjects()
     var pages = mutableListOf<VibeDevRunsPage>()
+    var historyPages = mutableMapOf<String, VibeDevRunHistory>()
+    val historyCursors = mutableListOf<String?>()
     var controlOutcome = VibeDevControlOutcome.Delivered
     val calls = mutableListOf<String>()
     var reads = 0
 
+    override suspend fun runHistory(limit: Int, cursor: String?): VibeDevRunHistory {
+        historyCursors += cursor
+        return historyPages[cursor ?: "first"] ?: VibeDevRunHistory(live.runs)
+    }
     override suspend fun liveRuns(): VibeDevLiveRuns { reads++; return live }
     override suspend fun projects(): VibeDevProjects = projectList
     override suspend fun projectRuns(projectId: String, limit: Int, offset: Int, query: String?): VibeDevRunsPage {
@@ -47,15 +53,24 @@ private class FakeVibeDev : VibeDevSource {
         return changesFor(runId, path)
     }
     override suspend fun repoSuggestions() = emptyList<VibeDevRepoSuggestion>()
-    override suspend fun codingProfiles() = listOf(VibeDevCodingProfile("pi", "Pi", isDefault = true))
+    override suspend fun codingProfiles() = listOf(VibeDevCodingProfile("pi", "Model", engine = "pi", isDefault = true,
+        modelSelection = ai.magicbeans.magdroid.chat.ChatModelSelection("provider/model", "auto"),
+        modelChoice = ai.magicbeans.magdroid.chat.ChatModelChoice(id = "provider/model", choices = mapOf("auto" to "pi"))))
     override suspend fun startRun(request: VibeDevRunRequest): VibeDevStartedRun {
         calls += "start:${request.clientRunId}:${request.parentTaskId}"
         return VibeDevStartedRun("task_new")
     }
     override suspend fun createProject(name: String, repoPath: String) = VibeDevProject("p_new", name)
-    override suspend fun updateProject(projectId: String, trusted: Boolean?, baseBranch: String?): VibeDevProject {
+    override suspend fun updateProject(projectId: String, trusted: Boolean?, baseBranch: String?, location: String?): VibeDevProject {
         calls += "patch:$projectId:$trusted:$baseBranch"
         return VibeDevProject(projectId, trust = if (trusted == true) "trusted" else null)
+    }
+    var gitInitError: VibeDevError? = null
+    override suspend fun gitInit(projectId: String): VibeDevProjectHealth {
+        calls += "git-init:$projectId"
+        delay(100)
+        gitInitError?.let { throw it }
+        return VibeDevProjectHealth.OK
     }
     override suspend fun control(liveTaskId: String, action: String, message: String?): VibeDevControlOutcome {
         calls += "control:$liveTaskId:$action:${message.orEmpty()}"
@@ -93,6 +108,24 @@ class VibeDevViewModelTest {
         VibeDevNowViewModel({ fake }, live, clock = { testScheduler.currentTime })
 
     @Test
+    fun `stored task and execution completion events refresh the companion`() {
+        val frames = listOf(
+            """{"event_type":"TaskCreated","data":{"task_id":"run"}}""",
+            """{"event_type":"TaskUpdated","data":{"task_id":"run"}}""",
+            """{"event_type":"TaskDeleted","data":{"task_id":"run"}}""",
+            """{"event_type":"AgentEvent","data":{"event":{"event_type":"execution.completed","payload":{}}}}""",
+            """{"event_type":"AgentEvent","data":{"event":{"event_type":"delegation.results_ready","payload":{}}}}""",
+        )
+        frames.forEach { raw ->
+            val event = (ai.magicbeans.magdroid.realtime.parseHubFrame(raw) as ai.magicbeans.magdroid.realtime.HubFrame.Event).event
+            assertTrue(VibeDevLive.FILTER.matches(event))
+        }
+        val unrelated = ai.magicbeans.magdroid.realtime.parseHubFrame("""{"event_type":"chat.delta","data":{}}""")
+            as ai.magicbeans.magdroid.realtime.HubFrame.Event
+        assertFalse(VibeDevLive.FILTER.matches(unrelated.event))
+    }
+
+    @Test
     fun `needs you lists crew questions first, then waiting runs, newest first`() {
         val older = VibeDevCrew("c_old", "Old goal", status = "proposed", updatedAtMs = 1_000)
         val newer = VibeDevCrew("c_new", "New goal", status = "choosing", mode = "race", updatedAtMs = 5_000,
@@ -120,6 +153,30 @@ class VibeDevViewModelTest {
     fun `archived projects ask nothing`() {
         val projects = listOf(VibeDevProject("p1", archived = true, crews = listOf(VibeDevCrew("c", status = "proposed"))))
         assertTrue(VibeDevNeedsYou.order(projects, emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `history pages deduplicate and survive live refresh with pinned location`() = runTest(dispatcher) {
+        val first = run("new", "working").copy(workLocation = "original", repoPath = "/owner/repo", needsYouCount = 2)
+        val older = run("old", "done").copy(updatedAt = "2020-01-01T00:00:00Z")
+        val fake = FakeVibeDev().apply {
+            historyPages["first"] = VibeDevRunHistory(listOf(first), true, "cursor-one")
+            historyPages["cursor-one"] = VibeDevRunHistory(listOf(first, older), false, null)
+        }
+        val model = now(fake)
+        model.refresh(); advanceUntilIdle()
+        assertEquals("original", model.data.value.history.first().workLocation)
+        assertEquals(2, model.data.value.history.first().needsYouCount)
+        model.loadMore(); advanceUntilIdle()
+        assertEquals(listOf("new", "old"), model.data.value.history.map { it.runId })
+        assertNull(model.data.value.nextCursor)
+        model.refresh(); advanceUntilIdle()
+        assertEquals(listOf("new", "old"), model.data.value.history.map { it.runId })
+        assertEquals(listOf("cursor-one"), fake.historyCursors.filterNotNull())
+        fake.historyPages["first"] = VibeDevRunHistory(listOf(run("newer", "working")), true, "new-head")
+        model.refresh(); advanceUntilIdle()
+        assertEquals("new-head", model.data.value.nextCursor)
+        assertEquals(setOf("newer", "new", "old"), model.data.value.history.map { it.runId }.toSet())
     }
 
     @Test
@@ -279,6 +336,34 @@ class VibeDevViewModelTest {
         assertFalse(model.data.value.hasMore)
         model.search("auth"); advanceTimeBy(500); advanceUntilIdle()
         assertEquals("runs:0:auth", fake.calls.last())
+    }
+
+    @Test
+    fun `the git init health action calls the server, re-reads projects and shows its failure`() = runTest(dispatcher) {
+        val fake = FakeVibeDev().apply {
+            projectList = VibeDevProjects(listOf(VibeDevProject("p1", "Shop")))
+            pages = mutableListOf(VibeDevRunsPage())
+        }
+        val model = VibeDevProjectViewModel("p1", { fake }, emptyFlow(), clock = { testScheduler.currentTime })
+        model.refresh(); advanceUntilIdle()
+        val readsBefore = fake.calls.count { it.startsWith("runs:") }
+
+        model.runHealthAction(VibeDevHealthAction("something_new", "Do a new thing"))
+        advanceUntilIdle()
+        assertTrue("an unknown kind sends nothing", fake.calls.none { it.startsWith("git-init") })
+
+        val gitInit = VibeDevHealthAction(VibeDevHealthAction.GIT_INIT, "Make this a git repository")
+        model.runHealthAction(gitInit)
+        runCurrent()
+        assertTrue(model.healthActionKey(gitInit) in model.loadStatus.value.busy)
+        advanceUntilIdle()
+        assertEquals(1, fake.calls.count { it == "git-init:p1" })
+        assertFalse(model.healthActionKey(gitInit) in model.loadStatus.value.busy)
+        assertTrue("projects re-read after", fake.calls.count { it.startsWith("runs:") } > readsBefore)
+
+        fake.gitInitError = VibeDevError(409, "git init failed: the folder is read-only.")
+        model.runHealthAction(gitInit); advanceUntilIdle()
+        assertEquals("git init failed: the folder is read-only.", model.loadStatus.value.notice)
     }
 
     @Test

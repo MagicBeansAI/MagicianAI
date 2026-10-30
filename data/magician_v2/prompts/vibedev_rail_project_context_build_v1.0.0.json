@@ -1,0 +1,22 @@
+{
+  "name": "vibedev_rail_project_context_build",
+  "version": "1.0.0",
+  "content": [
+    "- Build runs must invoke run_coding_task before any shell/file pre-inspection. Pass the original VibeDev user prompt, repo_path, project context and constraints into run_coding_task; the coding engine owns repo inspection inside its shadow workspace."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Build-only half of the `@vibedev` chat rail's project-context guidance, rendered above the mode-neutral vibedev_rail_project_context prose for a build run and never for a Discuss run. Its Discuss counterpart is vibedev_rail_project_context_plan.",
+    "author": "magician",
+    "created_at": "2026-10-19T00:00:00Z",
+    "changelog": "v1.0.0: Split out of vibedev_rail_project_context v1.0.0 so the run's mode selects its guidance instead of a post-render text swap.",
+    "tags": [
+      "vibedev",
+      "coding",
+      "vibedev-rail",
+      "project-context"
+    ],
+    "estimated_tokens": 50
+  }
+}

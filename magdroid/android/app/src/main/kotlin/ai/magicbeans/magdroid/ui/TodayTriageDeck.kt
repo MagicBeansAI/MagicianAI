@@ -1,10 +1,19 @@
 package ai.magicbeans.magdroid.ui
 
+import ai.magicbeans.magdroid.today.readingRoomDateline
+
 import ai.magicbeans.magdroid.today.AttentionDeliveryBinding
+import ai.magicbeans.magdroid.today.ChannelActionDescriptor
+import ai.magicbeans.magdroid.today.ChannelFollowUp
+import ai.magicbeans.magdroid.today.ResurfacingActionKind
+import ai.magicbeans.magdroid.today.ResurfacingCard
 import ai.magicbeans.magdroid.today.TodayDeckAction
 import ai.magicbeans.magdroid.today.TodayDeckCard
 import ai.magicbeans.magdroid.today.TodayDeckLane
+import ai.magicbeans.magdroid.today.TodayDeckMenuEntry
 import ai.magicbeans.magdroid.today.TodayDeckTab
+import ai.magicbeans.magdroid.today.deckActMenu
+import ai.magicbeans.magdroid.today.followUpProviderName
 import ai.magicbeans.magdroid.today.TodayReadingRoomMode
 import ai.magicbeans.magdroid.today.TodayUiState
 import ai.magicbeans.magdroid.today.deckNeedsMore
@@ -41,6 +50,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,6 +71,7 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.selected
@@ -176,53 +187,97 @@ private val DECK_CARD_HEIGHT = 350.dp
 /**
  * The Morning Brief: a Bumble-style stack of channel follow-ups and
  * worth-a-look cards. Swipe right Useful, left Dismiss, up Seen; tap opens
- * the card's full detail flow.
+ * the card's full detail flow. ⚡ Act opens a menu of the card's real
+ * actions ([deckActMenu]); a card leaves only when the chosen action resolves
+ * it (approve, snooze, Open-as-useful) through the same commit/rollback path.
  */
 @Composable
 internal fun TodayTriageDeck(
     state: TodayUiState,
-    onAction: (TodayDeckCard, TodayDeckAction) -> Boolean,
+    assistantName: String,
+    onAction: (TodayDeckCard, TodayDeckAction, String?) -> Boolean,
     onPrimaryCommitted: (TodayDeckCard) -> Unit,
     onOpenCard: (TodayDeckCard) -> Unit,
     onOpenUrl: (String?) -> Unit,
+    onChannelAction: (ChannelFollowUp, ChannelActionDescriptor) -> Unit,
+    onResurfacingAction: (ResurfacingCard, ResurfacingActionKind) -> Unit,
     onOpenBroadsheet: () -> Unit,
     onReviewAgain: () -> Unit,
-    onLoadMore: () -> Unit,
+    onLoadMore: (TodayDeckTab) -> Unit,
     onImpression: (AttentionDeliveryBinding) -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(TodayDeckTab.All) }
     val stack = state.deckStack(tab)
     val triagedInTab = state.deckTriagedCount(tab)
 
-    LaunchedEffect(stack.size, state.hasMoreFollowUps, state.hasMoreResurfacing) {
-        if (deckNeedsMore(stack.size, state.hasMoreFollowUps, state.hasMoreResurfacing)) onLoadMore()
+    val initialLoading = (tab != TodayDeckTab.Worth && state.initiallyLoading("message_followups")) ||
+        (tab != TodayDeckTab.ForYou && state.initiallyLoading("worth_a_look"))
+    val loading = (tab != TodayDeckTab.Worth && "lane:message_followups" in state.loadingMore) ||
+        (tab != TodayDeckTab.ForYou && "lane:worth_a_look" in state.loadingMore)
+    val hasMore = (tab != TodayDeckTab.Worth && state.hasMoreFollowUps) || (tab != TodayDeckTab.ForYou && state.hasMoreResurfacing)
+    val failed = (tab != TodayDeckTab.Worth && state.sectionErrors["message_followups"] != null) ||
+        (tab != TodayDeckTab.ForYou && state.sectionErrors["worth_a_look"] != null)
+    val total = when (tab) {
+        TodayDeckTab.All -> state.messageFollowUpTotal + state.resurfacingTotal
+        TodayDeckTab.ForYou -> state.messageFollowUpTotal
+        TodayDeckTab.Worth -> state.resurfacingTotal
+    }
+    LaunchedEffect(stack.size, tab, hasMore, loading, state.deckPageRevision, initialLoading, failed) {
+        if (!initialLoading && !loading && !failed && hasMore && stack.size <= 4) onLoadMore(tab)
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             TodayDeckTab.entries.forEach { option ->
-                DeckTabChip(option.label, state.deckStack(option).size, tab == option) { tab = option }
+                DeckTabChip(option.label, when (option) {
+                    TodayDeckTab.All -> state.messageFollowUpTotal + state.resurfacingTotal
+                    TodayDeckTab.ForYou -> state.messageFollowUpTotal
+                    TodayDeckTab.Worth -> state.resurfacingTotal
+                }, tab == option) { tab = option }
             }
         }
+        Text(if (initialLoading) "Loading Reading Room…" else "${stack.size} loaded · ${maxOf(total, stack.size)} total", color = Secondary, fontSize = 11.sp)
         // One line per distinct failure: an unreachable host fails both lanes identically.
         listOfNotNull(
             state.sectionErrors["message_followups"]?.takeIf { tab != TodayDeckTab.Worth },
             state.sectionErrors["worth_a_look"]?.takeIf { tab != TodayDeckTab.ForYou },
         ).distinct().forEach { TodayInlineError(it) }
-        if (stack.isEmpty()) {
-            DeckEmpty(tab, triagedInTab, onOpenBroadsheet, onReviewAgain)
-        } else {
+        if (stack.isEmpty() && (initialLoading || loading)) {
+            TodaySectionLoading(if (initialLoading) "Reading Room" else "more cards", height = 300)
+        } else if (stack.isEmpty() && (hasMore || failed)) {
+            Column(Modifier.fillMaxWidth().height(300.dp), horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center) {
+                Text("More cards are available.", color = Secondary, fontSize = 13.sp)
+                TextButton(onClick = { onLoadMore(tab) }) { Text("Load more cards", color = Coral) }
+            }
+        } else if (stack.isEmpty()) { DeckEmpty(tab, triagedInTab, onOpenBroadsheet, onReviewAgain) }
+        else {
             val top = stack.first()
-            var fling by remember { mutableStateOf<((TodayDeckAction) -> Unit)?>(null) }
+            var fling by remember { mutableStateOf<((TodayDeckAction, String?) -> Unit)?>(null) }
+            var actMenuOpen by remember(top.id) { mutableStateOf(false) }
+            var instructionFor by remember { mutableStateOf<TodayDeckCard?>(null) }
+            fun runEntry(entry: TodayDeckMenuEntry) {
+                when (entry) {
+                    is TodayDeckMenuEntry.Channel -> top.followUp?.let { onChannelAction(it, entry.descriptor) }
+                    is TodayDeckMenuEntry.OpenInProvider -> onOpenUrl(entry.url)
+                    // Never approves from the menu tap: the instruction dialog's confirm does.
+                    TodayDeckMenuEntry.StartFollowUpTask -> instructionFor = top
+                    TodayDeckMenuEntry.Snooze -> fling?.invoke(TodayDeckAction.Snooze, null)
+                    TodayDeckMenuEntry.Open -> fling?.invoke(TodayDeckAction.Primary, null)
+                    is TodayDeckMenuEntry.Resurfacing -> top.worth?.let { onResurfacingAction(it, entry.kind) }
+                    TodayDeckMenuEntry.Details -> onOpenCard(top)
+                }
+            }
             Box(Modifier.fillMaxWidth().height(DECK_CARD_HEIGHT + 24.dp)) {
                 stack.getOrNull(2)?.let { DeckPreviewCard(it, depth = 2) }
                 stack.getOrNull(1)?.let { DeckPreviewCard(it, depth = 1) }
                 key(top.id) {
                     DeckTopCard(
                         card = top,
-                        onCommit = { action -> onAction(top, action) },
+                        onCommit = { action, hint -> onAction(top, action, hint) },
                         onPrimaryCommitted = onPrimaryCommitted,
                         onOpen = { onOpenCard(top) },
+                        onAct = { actMenuOpen = true },
                         onOpenUrl = onOpenUrl,
                         onImpression = onImpression,
                         registerFling = { fling = it },
@@ -230,16 +285,29 @@ internal fun TodayTriageDeck(
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                DeckButton("✕ Dismiss", Danger, Modifier.weight(1f)) { fling?.invoke(TodayDeckAction.Dismiss) }
-                DeckButton("Seen", TodayInfo, Modifier.weight(.8f)) { fling?.invoke(TodayDeckAction.Acknowledge) }
-                DeckButton("✓ Useful", TodaySuccess, Modifier.weight(1f)) { fling?.invoke(TodayDeckAction.Useful) }
-                Button(
-                    onClick = { fling?.invoke(TodayDeckAction.Primary) },
-                    shape = MagicanButtonShape,
-                    colors = magicanButtonColors(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                    modifier = Modifier.weight(1f),
-                ) { Text("⚡ ${top.primaryLabel}", fontSize = 12.sp, maxLines = 1, fontWeight = FontWeight.SemiBold) }
+                DeckButton("✕ Dismiss", Danger, Modifier.weight(1f)) { fling?.invoke(TodayDeckAction.Dismiss, null) }
+                DeckButton("Seen", TodayInfo, Modifier.weight(.8f)) { fling?.invoke(TodayDeckAction.Acknowledge, null) }
+                DeckButton("✓ Useful", TodaySuccess, Modifier.weight(1f)) { fling?.invoke(TodayDeckAction.Useful, null) }
+                Box(Modifier.weight(1f)) {
+                    Button(
+                        onClick = { actMenuOpen = true },
+                        shape = MagicanButtonShape,
+                        colors = magicanButtonColors(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("today-deck-act"),
+                    ) { Text("⚡ ${top.primaryLabel}", fontSize = 12.sp, maxLines = 1, fontWeight = FontWeight.SemiBold) }
+                    TodayActMenu(actMenuOpen, { deckActMenu(top, assistantName) }, "today-deck-act",
+                        onDismiss = { actMenuOpen = false }, onSelect = ::runEntry)
+                }
+            }
+            instructionFor?.let { card ->
+                FollowUpInstructionDialog(card.id, card.title, "today-deck-act", onDismiss = { instructionFor = null }) { hint ->
+                    instructionFor = null
+                    // The top card flies through the deck's commit path; a card that is no
+                    // longer on top (a reload reordered the stack) commits directly.
+                    if (card.id == top.id) fling?.invoke(TodayDeckAction.Primary, hint)
+                    else onAction(card, TodayDeckAction.Primary, hint)
+                }
             }
         }
     }
@@ -308,12 +376,13 @@ internal fun deckLaneColor(lane: TodayDeckLane): Color = when (lane) {
 @Composable
 private fun DeckTopCard(
     card: TodayDeckCard,
-    onCommit: (TodayDeckAction) -> Boolean,
+    onCommit: (TodayDeckAction, String?) -> Boolean,
     onPrimaryCommitted: (TodayDeckCard) -> Unit,
     onOpen: () -> Unit,
+    onAct: () -> Unit,
     onOpenUrl: (String?) -> Unit,
     onImpression: (AttentionDeliveryBinding) -> Unit,
-    registerFling: (((TodayDeckAction) -> Unit)?) -> Unit,
+    registerFling: (((TodayDeckAction, String?) -> Unit)?) -> Unit,
 ) {
     val density = LocalDensity.current
     val context = LocalContext.current
@@ -332,7 +401,7 @@ private fun DeckTopCard(
         val flyX = with(density) { maxWidth.toPx() } * 1.2f
         val flyUp = with(density) { (-450).dp.toPx() }
 
-        fun fling(action: TodayDeckAction) {
+        fun fling(action: TodayDeckAction, hint: String?) {
             if (committing != null) return
             committing = action
             view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -344,12 +413,12 @@ private fun DeckTopCard(
                     val (targetX, targetY) = when (action) {
                         TodayDeckAction.Useful, TodayDeckAction.Primary -> flyX to offsetY.value * .5f
                         TodayDeckAction.Dismiss -> -flyX to offsetY.value * .5f
-                        TodayDeckAction.Acknowledge -> offsetX.value * .4f to flyUp
+                        TodayDeckAction.Acknowledge, TodayDeckAction.Snooze -> offsetX.value * .4f to flyUp
                     }
                     launch { offsetY.animateTo(targetY, exit) }
                     offsetX.animateTo(targetX, exit)
                 }
-                val accepted = onCommit(action)
+                val accepted = onCommit(action, hint)
                 if (accepted) {
                     if (action == TodayDeckAction.Primary) onPrimaryCommitted(card)
                 } else {
@@ -367,6 +436,8 @@ private fun DeckTopCard(
             TodayDeckAction.Useful -> DeckStampOpacity(1f, 0f, 0f)
             TodayDeckAction.Dismiss -> DeckStampOpacity(0f, 1f, 0f)
             TodayDeckAction.Acknowledge -> DeckStampOpacity(0f, 0f, 1f)
+            // Snooze flies up like Seen but is neither; it shows no stamp.
+            TodayDeckAction.Snooze -> DeckStampOpacity(0f, 0f, 0f)
             else -> deckStampOpacity(dxDp, dyDp)
         }
         val binding = card.followUp?.deliveryBinding ?: card.worth?.deliveryBinding
@@ -386,10 +457,11 @@ private fun DeckTopCard(
                 .border(1.dp, BorderSoft, RoundedCornerShape(12.dp))
                 .semantics {
                     customActions = listOf(
-                        CustomAccessibilityAction("Useful") { fling(TodayDeckAction.Useful); true },
-                        CustomAccessibilityAction("Dismiss") { fling(TodayDeckAction.Dismiss); true },
-                        CustomAccessibilityAction("Seen") { fling(TodayDeckAction.Acknowledge); true },
-                        CustomAccessibilityAction(card.primaryLabel) { fling(TodayDeckAction.Primary); true },
+                        CustomAccessibilityAction("Useful") { fling(TodayDeckAction.Useful, null); true },
+                        CustomAccessibilityAction("Dismiss") { fling(TodayDeckAction.Dismiss, null); true },
+                        CustomAccessibilityAction("Seen") { fling(TodayDeckAction.Acknowledge, null); true },
+                        // Opens the Act menu; it never resolves the card by itself.
+                        CustomAccessibilityAction(card.primaryLabel) { onAct(); true },
                     )
                 }
                 .pointerInput(card.id) {
@@ -423,7 +495,7 @@ private fun DeckTopCard(
                             (dx + velocity.x * DECK_PROJECTION_SECONDS) / px,
                             (dy + velocity.y * DECK_PROJECTION_SECONDS) / px,
                         )
-                        if (action != null) fling(action) else scope.launch {
+                        if (action != null) fling(action, null) else scope.launch {
                             val back = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
                             launch { offsetY.animateTo(0f, back) }
                             offsetX.animateTo(0f, back)
@@ -446,6 +518,7 @@ private fun DeckTopCard(
                     card.sender?.let { Text(it, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
             }
+            readingRoomDateline(card.followUp, card.worth)?.let { Text(it, color = Muted, fontSize = 11.sp) }
             Text(card.title, style = newsSerif(23.sp, FontWeight.SemiBold, lineHeight = 28.sp), maxLines = 3, overflow = TextOverflow.Ellipsis)
             Text(card.summary, color = Secondary, fontSize = 14.sp, lineHeight = 20.sp, maxLines = 6, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false))
@@ -453,12 +526,19 @@ private fun DeckTopCard(
             val followUp = card.followUp
             followUp?.openUrl?.takeIf(String::isNotBlank)?.let { url ->
                 Text(
-                    "View thread in ${followUp.provider.ifBlank { "app" }} ↗",
+                    "View thread in ${followUpProviderName(followUp)} ↗",
                     color = Coral, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clickable { onOpenUrl(url) }.padding(vertical = 4.dp),
                 )
             }
-            Text("Tap for details · swipe to triage", color = Muted, fontSize = 10.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Details ›", color = Coral, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable(enabled = committing == null, onClick = onOpen)
+                        .padding(vertical = 4.dp).testTag("today-deck-details"),
+                )
+                Text("Swipe to triage", color = Muted, fontSize = 10.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+            }
         }
         // Ink stamps sit above the card content and move with it.
         Box(

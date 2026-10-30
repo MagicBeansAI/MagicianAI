@@ -32,6 +32,7 @@ runtime:
       queue_capacity_normal: null
       queue_capacity_background: null
   retrieval:
+    lance_query_timeout_ms: 3000
     result_cache:
       # Default on. Kill switch MAGICIAN_MEMORY_HYBRID_RESULT_CACHE=off.
       enabled: true
@@ -153,7 +154,8 @@ runtime:
     prewarm: true
     replace_existing_local_daemon: true
 
-# Workspace storage backend selector (local_file | silverbullet_space). Folded in
+# Workspace storage backend selector (local_file; the retired notes-folder
+# value `silverbullet_space` still reads as local_file over the same root). Folded in
 # from the former workspace_storage/settings.json; the settings API reads + mutates
 # this section in place. Typed storage profiles are a separate bootstrap file
 # (`--storage-bootstrap` / MAGICIAN_STORAGE_BOOTSTRAP_CONFIG). When that file is
@@ -173,7 +175,13 @@ database_maintenance:
   maintenance_memory_mib: 2048
 
 workspace_storage:
-  provider: silverbullet_space
+  provider: local_file
+
+# Tools declare their OAuth callback mode in SKILL.md.
+# The private viewer needs Chromium on the engine host.
+# Set an absolute executable only for nonstandard installs.
+browser_signin:
+  browser_executable: null
 
 # Public HTTPS origin placed into short-lived mobile enrollment QR codes, and
 # used to build the "Open secure request" link in a critical-request alert
@@ -235,7 +243,7 @@ coding:
   # execution.network_policy. false = the coding profile alone (pre-2026-10-14).
   # God mode does not apply in VibeDev; super god mode lifts the box.
   box_harness: true
-  default_profile: coding-balanced
+  default_profile: pi/model/openai/gpt-6.1-sol/auto
   # Lead engineer that drives VibeDev coding runs (tasks tagged `vibedev`). Swapping the
   # coding lead (e.g. EM -> CTO) is a one-line edit here, not a UI/code change.
   # 2026-06-19 (plan §10/§10.1): EM "Bridge" collapsed into CTO "Forge"; CTO is now the
@@ -339,56 +347,6 @@ coding:
     enabled: true
     use_api_key: false
     # binary: ~/.local/bin/agy
-  profiles:
-    - id: coding-balanced
-      label: GPT-6.1 Sol coding · 64k output
-      llm_profile: gpt61sol-responses-vision-toolsany-rhigh-out64k
-      description: Default Pi-backed implementation profile for routine engineering work.
-
-    - id: coding-premium
-      label: GPT-6.1 Sol coding
-      llm_profile: gpt61sol-responses-vision-toolsany-rhigh
-      description: Premium vision-capable profile for the hardest implementation and review work.
-
-    - id: coding-astra
-      label: GPT-6 Astra coding
-      llm_profile: gptastra-responses-vision-toolsany-rhigh
-      description: Frontier vision-capable profile for the hardest end-to-end implementation and review work.
-
-    - id: coding-opus5
-      label: Claude Opus 5 coding
-      llm_profile: opus5-messages-vision-toolsauto-rhigh-think8k
-      description: Retained previous-generation Anthropic vision-capable profile for compatibility and rollback.
-
-    - id: coding-opus55
-      label: Claude Opus 5.5 coding
-      llm_profile: opus55-messages-vision-toolsauto-rhigh-think8k
-      description: Latest Anthropic advanced vision-capable profile for long-running agentic coding and review.
-
-    - id: coding-fable
-      label: Claude Fable 5.1 coding
-      llm_profile: fable51-messages-vision-toolsauto-rhigh
-      description: Anthropic frontier vision-capable profile. tool_choice is auto; Fable 5.1 rejects forced tool use.
-
-    - id: coding-luna
-      label: GPT-6 Luna coding
-      llm_profile: gpt6luna-responses-vision-toolsany-rnone-out16k
-      description: Fast, lower-cost vision-capable profile for bounded edits and routine iteration.
-
-    - id: coding-grok47
-      label: Grok 4.7 coding
-      llm_profile: grok47-responses-vision-toolsany-rhigh
-      description: xAI Grok 4.7 vision-capable profile with high reasoning; needs XAI_API_KEY. Pi runs it on the Responses API.
-
-    - id: coding-deepseek-v4.1-flash
-      label: DeepSeek V4.1 Flash coding
-      llm_profile: dsv4-flash-vision-messages-toolsany-rhigh
-      description: Vision + thinking DeepSeek V4.1 Flash profile for code work including screenshots. Replaces retired V4 Pro / V4 Flash / Flash Vision catalogue entries.
-
-    - id: coding-minimax-m3
-      label: MiniMax M3 coding
-      llm_profile: m3-vision-toolsauto-rhigh-out64k
-      description: Multimodal MiniMax profile for code work that also needs screenshots or visual context.
 
 verification:
   # The verification controller: holds a coding candidate's success until the
@@ -464,7 +422,9 @@ memory:
     enabled: true
     max_bytes: 67108864
     max_entries: 8
-    idle_ttl_secs: 600
+    # Keep content-checked snapshots warm between sessions; the cache budget
+    # still bounds retained memory.
+    idle_ttl_secs: 86400
     refresh_debounce_ms: 100
   prompt_scope_budgets:
     user: { max_entries: 24, max_chars: 12000 }
@@ -545,6 +505,69 @@ memory:
   #   capture_enabled: false
   #   max_proposals_per_day: 5   # against approval fatigue; must be >= 1 when on
   #   min_confidence: 0.6        # candidates below this are never filed
+
+  # ACTIVE user_knowledge_bounds block: size bounds for the owner's user-memory
+  # file (memory/users/knowledge.json). Same caveat as taste_profile: `memory`
+  # rejects unknown keys, so a binary older than the one that added this block
+  # cannot read this file — ship the binary first. Every value below is the
+  # code default (magician/src/magician_v2/agents/user_memory_bounds/settings.rs),
+  # so removing the block changes nothing. Plan:
+  # docs/archive/plans/2026-10-18-user-memory-growth-bounds.md.
+  user_knowledge_bounds:
+    # off | observe | enforce. observe logs (hourly) what would leave the file
+    # and changes nothing. enforce moves the activity logs to their own files,
+    # stores agent-made restatements once and applies the caps — always
+    # archiving first (memory/users/archive/<YYYY-MM>.jsonl). Nothing is deleted.
+    mode: observe
+    # Size goal for knowledge.json (the size report flags it). Not a hard stop.
+    hot_file_target_bytes: 1500000
+    lanes:
+      # Under enforce: email/chat evidence, channel patterns and channel
+      # feedback are written to memory/users/lanes/<name>.json.
+      enabled: true
+      hot_days: 45
+      max_rows:
+        email_evidence: 400
+        chat_evidence: 200
+        channel_patterns: 150
+        channel_feedback: 120
+      # Lets the evidence distiller read the email and chat activity logs
+      # (model calls and new memory suggestions). Off until the owner says yes.
+      distill_enabled: false
+    # One claim stored once: an agent's restatement (same key however it is
+    # spelled, or near-identical wording) replaces the older wording, and an
+    # exact duplicate of an owner record merges into the owner's strongest
+    # copy; the replaced wording is archived. Protection is per record, so an
+    # agent's rewording never replaces something the owner said.
+    fold_inferred_same_key: [workflows, organization, preferences]
+    # Records per section; over it, the least used unprotected records are
+    # archived. Owner-stated, confirmed, corrected, reviewed, restored and
+    # conflicted records are never archived.
+    max_live:
+      workflows: 600
+      organization: 250
+      preferences: 600
+      knowledge: 200
+      skills: 100
+      accounts: 100
+    retired_archive_after_days: 30
+    archive:
+      # Archive months older than this are compressed (.jsonl.zip), never deleted.
+      compress_after_months: 3
+    review:
+      max_per_hour: 6
+      # Only a verdict the reviewer could not use for a record (or a plan
+      # rejected for it) counts as a try; timeouts and outages never do.
+      max_attempts_per_record: 3
+      max_pending_per_section: 300
+      # A set-aside record is queued again with fresh tries after this long.
+      retry_after_days: 14
+      # Existing records shown with each incoming one, chosen by meaning
+      # (local embeddings). The decision engine answers them one at a time;
+      # 48 never finished in time, so nothing was ever reviewed.
+      max_offered: 8
+      # Seconds a review may take (engine answers plus the written verdict).
+      deadline_secs: 120
 
 media:
   tts:
@@ -1088,6 +1111,19 @@ planning:
   # planning-decisions plan, Phase C).
   analysis_path: new
 
+# Agentic outer loop (native decide()). Both keys are optional; unset keys
+# take the defaults below, so an empty mapping is the normal value. The
+# keep-tail window is how many recent turns decide() sees verbatim, also
+# used by the Decision Engine rail and the stateless continuation checkpoint.
+# Older turns are summarized under `## EXECUTION HISTORY`, and anything older
+# than that is listed there by result ref. Read at startup.
+#   verbatim_history_token_budget: 120000  # conservative tokens (UTF-8 bytes / 2); 40000..=1000000
+#   verbatim_history_max_iterations: 40    # turn pairs; 25..=200
+# The floor (40000 / 25) is the window every run had before 0.7.121.
+# `agentic` is strict (unknown keys fail the load), so a binary older than
+# 0.7.121 refuses a file that sets either key.
+agentic: {}
+
 # Unified Chat / realtime voice / autonomous-task runtime-context lifecycle.
 # The unified runtime and every supported surface are active by default; this
 # block contains tuning only. Retired rollout fields are rejected so stale
@@ -1128,14 +1164,14 @@ agent_surface_runtime:
       max_scalar_bytes: 8192
   context_retrieval:
     chat:
-      deadline_ms: 3000
+      deadline_ms: 8000
     realtime_voice:
       deadline_ms: 300
     autonomous_task:
       # First decision and HITL resume are answer-critical. Completed staged
-      # memory/procedure branches are retained; slow local indexes cannot hold
-      # bootstrap beyond this budget.
-      deadline_ms: 500
+      # memory/procedure branches are retained when this budget ends; the run
+      # starts with what finished rather than waiting on a slow local index.
+      deadline_ms: 8000
 
 # Slice 1: canonical outcome capture + embedding-based Bayesian kNN re-score.
 # Learned order is constrained to the existing lane; cross-lane routing remains
@@ -1575,14 +1611,14 @@ app_platform:
     # A provider/model name never proves locality. Add only concrete profile
     # keys from llm.router.profiles after reviewing their physical endpoint.
     endpoint_trust_revision: 1
-    local_profile: op-app-workflow-local
-    remote_profile: op-app-workflow-remote
+    local_profile: "workload/app_processing/local"
+    remote_profile: "workload/app_processing/cloud"
     profiles:
-      op-app-workflow-local:
+      "workload/app_processing/local":
         class: loopback_managed
         local_processing_eligible: true
         provider_retention: no_provider_storage
-      op-app-workflow-remote:
+      "workload/app_processing/cloud":
         class: external
         local_processing_eligible: false
         provider_retention: no_provider_storage
@@ -1667,6 +1703,21 @@ task_state:
     close_summary_operation: durable_task_state_close_summary
 
 llm:
+  chat_history:
+    enabled: true
+    trigger_ratio: 0.75
+    # Fold older history in the background past this share of the budget,
+    # so the in-turn trigger above rarely has work left.
+    background_trigger_ratio: 0.70
+    target_ratio: 0.50
+    preserve_recent_turns: 8
+    safety_margin_tokens: 4096
+    summary_max_bytes: 16384
+    # No per-call size here: each summarizer call is sized to the input
+    # window of the model routed for chat_history_compaction.
+    # Older tool output above this is reduced to head and tail before
+    # summarizing; the full text stays in the transcript.
+    tool_result_keep_bytes: 2048
   # Keep local inference responsive when derived-memory and comms maintenance
   # are active. Interactive work retains the high/normal lanes; background
   # work is bounded and Ollama is serialized to avoid model eviction/thrashing.
@@ -1730,141 +1781,10 @@ llm:
     completed_ring_capacity: 500
     tombstone_ring_capacity: 500
   router:
-    # Profiles live in `llm-router.yaml` beside this file and are spliced
+    # Model catalog and routing live in `llm-router.yaml` beside this file and are spliced
     # in at load. See that file's header for why it is a text splice.
 
-    adaptive_profiles:
-      # OpenAI adaptive tier — GPT-6 Luna powers instant; GPT-6.1 Sol powers normal/advanced;
-      # GPT-6.1 Sol requires at least low effort; Astra remains the frontier layer.
-      # The normal identifier remains as a compatibility tier for saved
-      # selections. Each composite pairs the chat-shaped fast + thinking
-      # variants of the same model. The `tier` label is rendered as a chip
-      # alongside the Adaptive badge in the chat profile picker so the
-      # user picks a size / capability point without seeing raw model
-      # names. Cost / latency scales Luna → Sol → Astra.
-      chat-openai-adaptive-advanced:
-        description: GPT-6.1 Sol, low effort escalating to high when needed.
-        tier: advanced
-        fast_profile: chat-gpt61sol-responses-vision-toolsauto-fast
-        thinking_profile: chat-gpt61sol-responses-vision-toolsauto-thinking
-
-      chat-openai-adaptive-frontier:
-        description: GPT-6 Astra, escalates to high reasoning when needed.
-        tier: frontier
-        fast_profile: chat-gptastra-responses-vision-toolsauto-fast
-        thinking_profile: chat-gptastra-responses-vision-toolsauto-thinking
-
-      chat-openai-adaptive-normal:
-        description: GPT-6.1 Sol, low effort escalating to high when needed.
-        tier: normal
-        fast_profile: chat-gpt61sol-responses-vision-toolsauto-fast
-        thinking_profile: chat-gpt61sol-responses-vision-toolsauto-thinking
-
-      chat-openai-adaptive-instant:
-        description: Cheapest / fastest, escalates to thinking when needed.
-        tier: instant
-        fast_profile: chat-gpt6luna-responses-vision-toolsauto-fast
-        thinking_profile: chat-gpt6luna-responses-vision-toolsauto-thinking
-
-      # Anthropic adaptive tier — Haiku instant, Sonnet normal, Opus 5.5
-      # advanced, Fable 5.1 frontier. Opus 5 remains selectable by name.
-      # Each composite pairs the chat-shaped fast + thinking variants of the same model.
-      chat-anthropic-adaptive-instant:
-        description: Cheapest / fastest, escalates to thinking when needed.
-        tier: instant
-        fast_profile: chat-haiku46-messages-vision-toolsauto-fast
-        thinking_profile: chat-haiku46-messages-vision-toolsauto-thinking
-
-      chat-anthropic-adaptive-normal:
-        description: Claude Sonnet 5.5, low effort escalating to high when needed.
-        tier: normal
-        fast_profile: chat-sonnet55-messages-vision-toolsauto-fast
-        thinking_profile: chat-sonnet55-messages-vision-toolsauto-thinking
-
-      chat-anthropic-adaptive-advanced:
-        description: Claude Opus 5.5, escalates to high effort when needed.
-        tier: advanced
-        fast_profile: chat-opus55-messages-vision-toolsauto-fast
-        thinking_profile: chat-opus55-messages-vision-toolsauto-thinking
-
-      chat-anthropic-adaptive-opus5:
-        description: Retained Claude Opus 5 profile, escalates to high effort when needed.
-        tier: advanced
-        fast_profile: chat-opus5-messages-vision-toolsauto-fast
-        thinking_profile: chat-opus5-messages-vision-toolsauto-thinking
-
-      chat-anthropic-adaptive-frontier:
-        description: Claude Fable 5.1, escalates to high effort when needed.
-        tier: frontier
-        fast_profile: chat-fable51-messages-vision-toolsauto-fast
-        thinking_profile: chat-fable51-messages-vision-toolsauto-thinking
-
-      # Gemini adaptive tier — two composites, both vision-capable.
-      # v0.6.598 retires the legacy `chat-gemini-adaptive` name in
-      # favour of the explicit -instant / -advanced suffix so the tier
-      # is part of the identifier, not just a sidecar field.
-      chat-gemini-adaptive-instant:
-        description: Cheapest / fastest, escalates to thinking when needed.
-        tier: instant
-        fast_profile: chat-gemini35-flash-lite-vision-toolsauto-fast
-        thinking_profile: chat-gemini35-flash-lite-vision-toolsauto-thinking
-
-      chat-gemini-adaptive-advanced:
-        description: Capable, escalates to thinking when needed.
-        tier: advanced
-        fast_profile: chat-gemini31-pro-vision-toolsauto-fast
-        thinking_profile: chat-gemini31-pro-vision-toolsauto-thinking
-
-      # DeepSeek adaptive tier — two composites. v0.6.598 retires the
-      # legacy `chat-deepseek-adaptive` name in favour of the explicit
-      # -instant / -advanced suffix.
-      chat-deepseek-adaptive-instant:
-        description: V4.1 Flash, vision, escalates to thinking when needed.
-        tier: instant
-        fast_profile: chat-dsv4-flash-vision-toolsauto-fast
-        thinking_profile: chat-dsv4-flash-vision-toolsauto-thinking
-
-      chat-deepseek-adaptive-advanced:
-        description: V4.1 Flash at max thinking effort, vision, escalates when needed.
-        tier: advanced
-        fast_profile: chat-dsv4-pro-toolsauto-fast
-        thinking_profile: chat-dsv4-pro-toolsauto-thinking
-
-      # MiniMax — single tier (no instant/advanced split per
-      # provider's current model lineup). Left untiered intentionally;
-      # the picker shows it as a regular Adaptive entry without a tier
-      # chip.
-      chat-minimax-adaptive:
-        description: Fast, escalates to reasoning when needed.
-        fast_profile: chat-m27-toolsauto-fast
-        thinking_profile: chat-m27-toolsauto-thinking
-
-      chat-minimax-adaptive-advanced:
-        description: Capable + multimodal MiniMax (M3); escalates to reasoning when needed.
-        tier: advanced
-        fast_profile: chat-m3-vision-toolsauto-fast
-        thinking_profile: chat-m3-vision-toolsauto-thinking
-
-      # xAI Grok — single advanced tier. Grok reasoning cannot be turned
-      # off, so the fast half is `low` effort and the thinking half `high`.
-      chat-xai-adaptive-advanced:
-        description: Grok 4.7, vision, low effort escalating to high when needed.
-        tier: advanced
-        fast_profile: chat-grok47-responses-vision-toolsauto-fast
-        thinking_profile: chat-grok47-responses-vision-toolsauto-thinking
-
-      # Sarvam — Indic-first, text-only. Reasoning cannot be turned off,
-      # so the fast half is `low` effort and the thinking half `high`.
-      chat-sarvam-adaptive:
-        description: Sarvam 105B for Indian languages, text-only, low effort escalating to high.
-        tier: advanced
-        fast_profile: chat-sarvam105b-toolsauto-fast
-        thinking_profile: chat-sarvam105b-toolsauto-thinking
-
-    # Operation mapping lives in `llm-router.yaml` beside this file,
-    # alongside the profiles it selects from. Spliced in at load.
-
-    default_profile: gpt61sol-responses-toolsany
+    default_profile: "operation/task_decomposition"
 
     # ── Realtime voice provider routing ───────────────────────────────
     # Lives in the same router config so chat models + realtime voice
@@ -2181,14 +2101,14 @@ execution:
   pi_profile: null
   harness_turn_max_tool_calls: 12000
   harness_turn_max_seconds: 86400
-  # Per-run USD ceilings (docs/plans/2026-10-03-slash-commands-and-run-budgets.md).
-  # A number, or "unlimited". Harness runs (any engine but `magician`) carry no
-  # token meter and are capped by cost only; native runs keep their agent's
-  # max_tokens_per_cycle. MAGICIAN_AGENTIC_MAX_COST_USD overrides the native cap.
-  # Live-reloadable; also written by PUT /api/magician/v2/budgets/defaults.
-  budgets:
-    native_max_cost_usd: 100
-    harness_max_cost_usd: 100
+  # A harness CLI silent this long (no output, no Magician tool call in
+  # flight) ends its turn as stalled. 0 = the default (3600 s). Read at boot and on settings reload.
+  harness_turn_idle_seconds: 3600
+  # Model spend LIMITS (per run, per window) live in
+  # resource_authority.model_spend below. `execution.budgets` keeps only the
+  # spend envelope's behaviour (`spend_envelope.enabled`, `reset_offset_minutes`,
+  # `warn_at_pct`, `unpriced`); a config that still has the old limit keys here
+  # is migrated into resource authority on the first boot.
   # Quality work pauses for explicit owner continuation at any reached limit.
   quality_round:
     max_cost_microusd: 100000000
@@ -2200,17 +2120,38 @@ execution:
   # the network only through Magician's egress proxy). `allow_private` lists
   # `host` / `host:port` exceptions. `allow` (no gate) and `deny` also exist.
   # God mode can lift a refusal per approval. Live-reloadable.
-  # See docs/plans/2026-10-13-hard-shell-sandbox-design.md.
+  # See docs/archive/plans/2026-10-13-hard-shell-sandbox-design.md.
   network_policy:
     mode: public
     allow_private: []
+  # Goal workspaces (<notes space>/Workspaces/<ws>/) are members-only: open to
+  # admin_agent (always a member) and the agents in `members:` in the
+  # workspace README's frontmatter; private goals only to their owner agent.
+  # Enforced for every agent tool (files, read/write/edit_file, grep, glob,
+  # notes tools, shell box, coding engines); god mode does not lift it.
+  # `enabled: false` turns the fence off. Live-reloadable.
+  # See docs/features/goal-workspaces.md ("Who can see a workspace").
+  goal_workspace_access:
+    enabled: true
+    admin_agent: personal-assistant
   # God mode: trusted agents' shell/files may go beyond shell_sandbox and
   # file_sandbox, and harness engines get `shell` through the plane. Anything
   # the normal sandbox refuses asks the owner first (allow once / this session
   # / always). Changing this forgets every approval. Live-reloadable; also set
   # from Settings. See docs/components/magician/god-mode.md.
+  # auto_approve: approve god mode's asks without asking, except deletes, root
+  # (sudo/doas/su), code the line does not show and the blocked list; a chat
+  # may override it. Changing it keeps approvals.
   god_mode:
     enabled: false
+    auto_approve: false
+  # Whose credentials the harness CLIs (Claude Code, Codex, Grok, Antigravity,
+  # Pi) use. login_first: the CLI's own sign-in, Magician's provider key only
+  # for a CLI with none. login_only: never Magician's keys. magician: always.
+  # engines: per-CLI overrides. A CLI not on its own sign-in hands background
+  # operations back to Magician's route. Settings → Harness credentials.
+  harness_auth:
+    mode: login_first
   # Super god mode (debug): each harness launch asks (once / session / always),
   # then starts with no restrictions (native tools, the owner's settings and MCP
   # servers; VibeDev engines with no fence).
@@ -2238,15 +2179,27 @@ execution:
       - chown -R /
       - curl | sh
       - wget | sh
+    # Goal workspaces (docs/features/goal-workspaces.md): add the absolute
+    # path "<notes space_path>/Workspaces" here and to file_sandbox
+    # allowed_roots so agents can maintain goal notes with file tools.
     allowed_working_dirs:
       - .
       - /tmp
   file_sandbox:
     mode: workspace_write
     allow_delete: true
+    # Goal workspaces: the same "<notes space_path>/Workspaces" path as
+    # shell_sandbox allowed_working_dirs above (absolute, per machine).
     allowed_roots:
       - .
       - /tmp
+    # Roots agents may read but never change through file tools (create_note,
+    # append_note, propose_program_revision and the missions tools still
+    # write there). Per machine, list the scope's programs/ folder and the
+    # notes space (absolute paths), so agents can read program docs and notes
+    # but change programs only through approved revisions. The deepest
+    # configured root decides: Workspaces/ stays writable.
+    read_only_roots: []
 
 chat:
   # Who thinks a chat turn. `magician` is today's LLM mouth. Roster names
@@ -2462,7 +2415,12 @@ preference_alignment:
   enforce_scopes: []
   budgets:
     # Per check; past it the check is unresolved and the act stays held.
-    foreground_check_ms: 4000
+    # Covers the blocking lane (stated or confirmed preferences); the advisory
+    # lane shares the deadline but never holds the act.
+    foreground_check_ms: 8000
+    # A dispatched act waits this long for the advisory lane after the
+    # blocking lane answers; later advisory nudges arrive as notices.
+    advisory_grace_ms: 1500
     max_judge_calls_per_task: 40
     # Most standing intentions offered to one check.
     max_standing_batch: 24
@@ -2504,14 +2462,37 @@ preference_alignment:
   judge: "engine"
 
 outward_actions:
-  # true (default): outward actions are RECORDED and NOT performed. The agents
-  # can be rehearsed end to end and nothing reaches a real person.
+  # Baseline: true records outward actions without sending. Optional context
+  # overrides below apply; force_capture_only always captures every context.
   #
   # Setting this to false makes them SEND FOR REAL. Do that deliberately, once,
   # after reviewing captured output — and expect `[OUTWARD-LIVE]` at boot and on
   # every send. Per-agent `requires_approval` rules still apply and are NOT
   # replaced by this switch.
   capture_only: true
+  # inherit preserves capture_only; live permits dispatch after other gates.
+  # Owner-chat work retains its origin through delegation and task creation.
+  force_capture_only: false
+  contexts:
+    owner_chat: inherit
+    owner_tasks: inherit
+    opc: inherit
+    # Envoy, public/shared-channel bots, and agents whose definition declares
+    # autonomous_config.outward_context: public_agent (the ambassador).
+    public_agents: inherit
+  # Browser form-submission guard. false (default): the browser clicks "Post",
+  # "Submit" and the like when the agent asks. true: such a click is held and
+  # put to the owner as a decision card (Approve Once / Approve Always for that
+  # site / Deny); "Approve Always" grants are listed and revoked at
+  # /api/magician/v2/browser/submission-grants. Applies immediately through Settings or config reload.
+  browser_submission_guard: false
+  # Review before sending. true (default): a send its context would capture
+  # pauses its run instead and asks the owner — Send, Discard, or always allow
+  # that agent to send to that recipient (grants at
+  # /api/magician/v2/settings/outward-actions/grants). Unanswered for 7 days it
+  # is discarded. false: captured sends are only recorded, as before.
+  # force_capture_only always records without asking.
+  review_captured_sends: true
 
 # Envoy routing: owner vs guest identity resolution.
 # Owners get full-trust (Presto) treatment; everyone else is bound to the
@@ -2525,18 +2506,26 @@ envoy:
   # Turning it ON is Phase 3: the message then reaches the agent an owner named
   # as that engagement's front, holding the engagement's grant. Deliberate act.
   engagement_forwarding_enabled: false
-  # Exact-string match against the sender as the channel delivers it. Use env
-  # vars for real phone numbers and email addresses so tracked config carries
-  # only variable names, not private owner identities.
+  # Phone channels (kapso, whatsapp, sms, imessage) match on digits, so
+  # "+91 98765 43210" matches what Kapso sends; email is case-insensitive;
+  # Telegram chat ids are exact. Use env vars for real phone numbers and email
+  # addresses so tracked config carries only variable names, not private owner
+  # identities.
+  #
+  # Two ways to add one, side by side: hand-set the address here or in the
+  # variable below, or claim it — Settings → Owner identities mints a one-time
+  # code and the owner sends `/claim <code>` to the bot from that chat; the
+  # verified sender is APPENDED to the channel's variable below (both live
+  # .env files + process env, no restart). Only a channel with a variable here
+  # and a sender-authenticating transport can be claimed (not agentmail).
   owner_identities: {}
   owner_identity_envs:
-    # Kapso/WhatsApp sends the number WITHOUT a leading "+" — if a match misses,
-    # check the bot logged sender phone_number and adjust the env value to that
-    # exact form.
+    # Kapso/WhatsApp sends the number WITHOUT a leading "+"; matching is on
+    # digits, so either form works here.
     kapso: MAGICIAN_OWNER_KAPSO_IDENTITIES
     # Telegram private chats use the numeric chat id (`ctx.chat.id`) as the
-    # channel address. Add that id to MAGICIAN_OWNER_TELEGRAM_IDENTITIES to
-    # allow `/magic` owner-control routing from Telegram.
+    # channel address. `/claim <code>` from the chat adds it to
+    # MAGICIAN_OWNER_TELEGRAM_IDENTITIES, or add that id by hand.
     telegram: MAGICIAN_OWNER_TELEGRAM_IDENTITIES
     # Owner emails for the agentmail envoy routing. An email "from" is spoofable,
     # so owner trust here is sender-auth-gated: the agentmail bot forwards
@@ -2566,7 +2555,9 @@ hitl:
     # Registered mobile devices receive the attention push.
     push_enabled: true
     # The origin the alert's "Open secure request" link is built on. Unset
-    # means mobile_access.public_origin, which is right whenever one origin
+    # means this machine's UI host (MAGICIAN_UI_HOST, from
+    # scripts/ensure-machine-tunnel.sh), else mobile_access.public_origin,
+    # which is right whenever one origin
     # serves both the API and the owner-facing UI. Set it when they are split
     # — a device hostname routed to the API cannot serve /attention, and the
     # link lands on a 404 the browser offers as a download.
@@ -2636,6 +2627,10 @@ harness:
   # cancellation of active harness cycles. Env MAGICIAN_HARNESS_PAUSED is an
   # emergency override; Crew-page changes clear it and persist this value.
   paused: true
+  # Program docs (bare *.md names in each scope's programs/) appended, in
+  # order, to every program-context cycle as "Shared Context". A focus area's
+  # `shared_programs` list replaces this for that area ([] = none).
+  shared_program_docs: []
 
 # Magician plane MCP catalog. Empty `hot` on a profile uses the built-in
 # list in execution::plane::catalog. Raw shell is excluded on every profile;
@@ -2646,6 +2641,17 @@ plane:
     hot: []
   terminal:
     hot: []
+
+# magic-supervisor settings. The supervisor reads this section itself, once at
+# its start (restart it to apply); the backend only declares it.
+# manage_desktop: watch the macOS desktop app and relaunch it after a crash,
+# never after its Quit. Absent = on; `--manage-desktop=0|1` on the supervisor
+# wins. Shipped commented out: Desktop seeds this file into new data folders
+# that an older backend (cached image, older package) may read, and an older
+# backend rejects an unknown root section. Uncomment only once every backend
+# reading this file knows the key.
+# supervisor:
+#   manage_desktop: true
 
 # ── Active resource-authority config ─────────────────────────────────────────
 # Presto's send caps are LIVE. `enabled: true` below, and each send debits 1
@@ -2710,14 +2716,20 @@ resource_authority:
       ceiling: "2000"
       period: daily
       carryover: { type: none }
-    # Shared USD pool for any agent (`id: *`). Commodity names are
-    # case-insensitive (`usd` == `USD`). This is one pool, not $10 per agent.
-    - scope: agent
-      id: "*"
-      commodity: USD
-      ceiling: "10.0"
-      period: daily
-      carryover: { type: none }
+  # Model spend: what every model call may cost. The spend envelope enforces
+  # these in memory and posts what it counts to each scope's ledger (token
+  # `cfg-model-window-USD`) every 15 minutes. Amounts are USD: a number, or
+  # "unlimited". Harness runs (any engine but `magician`) carry no token meter
+  # and are capped by cost only. MAGICIAN_AGENTIC_MAX_COST_USD overrides the
+  # Magician per-run limit. Written by Settings → Spending
+  # (PUT /api/magician/v2/budgets/defaults and /budgets/envelope); live.
+  # docs/plans/2026-10-26-model-spend-in-resource-authority.md
+  model_spend:
+    window_usd: 250
+    window: daily
+    lifetime_usd: unlimited
+    run_magician_usd: 100
+    run_harness_usd: 100
 
 #
 # ── Full schema + examples (commented reference) ─────────────────────────────

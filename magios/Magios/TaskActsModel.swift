@@ -26,7 +26,7 @@ enum TaskActs {
         switch state {
         case .waiting, .queued: return nil
         case .failed, .stalled, .running, .paused, .cancelled: return .run
-        case .archived, .finished: return .output
+        case .archived, .finalizing, .finished: return .output
         }
     }
 

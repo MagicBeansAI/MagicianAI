@@ -9,9 +9,15 @@ pub mod openai_meta;
 mod openai_prompt_cache;
 pub mod openai_responses;
 pub mod openrouter;
+mod plain_stream;
 pub mod sarvam;
 pub mod xai;
 pub mod yutori_n1;
+
+pub(crate) use plain_stream::{
+    collect_chat_completion, is_json_response, read_json_body, ChatCompletionAssembler,
+    NdjsonReader, SseReader, PROTECTED_PROVIDER_ERROR,
+};
 
 pub use anthropic_messages::AnthropicMessagesProvider;
 pub use deepseek::DeepSeekProvider;
@@ -76,6 +82,111 @@ pub(crate) fn default_http_client() -> reqwest::Client {
     builder.build().expect("failed to build LLM HTTP client")
 }
 
+/// Longest a streaming response may go without new output once output has
+/// started.
+pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Absolute bound on one streaming response, however steadily it produces.
+pub(crate) const STREAM_CEILING: std::time::Duration = std::time::Duration::from_secs(1_800);
+
+/// Bounds a streaming provider response by progress instead of total length.
+///
+/// A request-wide timeout cut long answers that were still producing (a
+/// 32k-token reply runs several minutes). Instead: until the first output the
+/// request's timeout bounds the wait (reasoning models can be silent for
+/// minutes first); after it, the stream fails only after
+/// [`STREAM_IDLE_TIMEOUT`] without new output, under [`STREAM_CEILING`].
+/// Providers call [`StreamWatchdog::mark_progress`] on content deltas (text,
+/// tool-call, reasoning), not on lifecycle events, so an opening
+/// `response.created` does not start the idle clock.
+pub(crate) struct StreamWatchdog {
+    first_output_by: tokio::time::Instant,
+    ceiling_at: tokio::time::Instant,
+    idle: std::time::Duration,
+    last_progress: Option<tokio::time::Instant>,
+}
+
+impl StreamWatchdog {
+    pub(crate) fn new(first_output_timeout: std::time::Duration) -> Self {
+        Self::with_limits(
+            first_output_timeout,
+            STREAM_IDLE_TIMEOUT,
+            STREAM_CEILING.max(first_output_timeout),
+        )
+    }
+
+    fn with_limits(
+        first_output_timeout: std::time::Duration,
+        idle: std::time::Duration,
+        ceiling: std::time::Duration,
+    ) -> Self {
+        let now = tokio::time::Instant::now();
+        Self {
+            first_output_by: now + first_output_timeout,
+            ceiling_at: now + ceiling,
+            idle,
+            last_progress: None,
+        }
+    }
+
+    pub(crate) fn mark_progress(&mut self) {
+        self.last_progress = Some(tokio::time::Instant::now());
+    }
+
+    fn deadline(&self) -> tokio::time::Instant {
+        match self.last_progress {
+            None => self.first_output_by,
+            Some(at) => at + self.idle,
+        }
+        .min(self.ceiling_at)
+    }
+
+    /// The stream's next item, or [`crate::error::LLMError::Timeout`] when the
+    /// current deadline passes first.
+    pub(crate) async fn next<S>(&self, stream: &mut S) -> crate::error::LLMResult<Option<S::Item>>
+    where
+        S: futures_util::Stream + Unpin,
+    {
+        use futures_util::StreamExt;
+        tokio::time::timeout_at(self.deadline(), stream.next())
+            .await
+            .map_err(|_| crate::error::LLMError::Timeout)
+    }
+}
+
+/// Whether `needle` occurs in `chunk` or across its boundary with the
+/// previous chunk, whose last `needle.len() - 1` bytes `tail` carries.
+pub(crate) fn chunk_mentions(tail: &mut Vec<u8>, chunk: &[u8], needle: &[u8]) -> bool {
+    let keep = needle.len().saturating_sub(1);
+    let head = &chunk[..chunk.len().min(keep)];
+    let mut seam = std::mem::take(tail);
+    seam.extend_from_slice(head);
+    let found = chunk.windows(needle.len()).any(|window| window == needle)
+        || seam.windows(needle.len()).any(|window| window == needle);
+    seam.clear();
+    let from = if chunk.len() >= keep {
+        chunk.len() - keep
+    } else {
+        0
+    };
+    seam.extend_from_slice(&chunk[from..]);
+    *tail = seam;
+    found
+}
+
+/// Send a streaming request, bounding only the wait for the response head:
+/// the body is bounded by a [`StreamWatchdog`], not a request-wide timeout.
+pub(crate) async fn send_streaming_request(
+    request: reqwest::RequestBuilder,
+    timeout: std::time::Duration,
+) -> crate::error::LLMResult<reqwest::Response> {
+    match tokio::time::timeout(timeout, request.send()).await {
+        Err(_) => Err(crate::error::LLMError::Timeout),
+        Ok(Err(error)) if error.is_timeout() => Err(crate::error::LLMError::Timeout),
+        Ok(Err(error)) => Err(crate::error::LLMError::Transport(error.to_string())),
+        Ok(Ok(response)) => Ok(response),
+    }
+}
+
 /// Consume a non-streaming provider body through one bounded allocation.
 /// `Response::text()` buffers without a ceiling; checking after that call is
 /// too late to prevent a hostile/misconfigured endpoint from exhausting the
@@ -125,6 +236,17 @@ pub(crate) async fn read_bounded_response_text(
 pub(crate) const MAX_PROVIDER_SSE_EVENT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_PROVIDER_SSE_STREAM_BYTES: usize =
     crate::types::MAX_PROVIDER_RESPONSE_JSON_BYTES;
+
+/// The result a provider adapter sends for a tool call whose result the
+/// caller's transcript does not carry (a parallel call that was never run or
+/// whose outcome was lost, a refused or skipped call). Every provider rejects
+/// a request with an unanswered call — OpenAI Responses with "No tool output
+/// found for function call …", Anthropic with "tool_use ids were found
+/// without tool_result blocks" — so the adapters answer it with this text
+/// rather than send the call unpaired.
+pub(crate) const MISSING_TOOL_RESULT_TEXT: &str = "No result was recorded for this tool call: \
+     it was not run, or its outcome was not captured. Treat it as not executed and decide again \
+     from the current state.";
 
 /// Return the next complete SSE `data` payload without moving the unconsumed
 /// buffer. The caller advances a cursor for all events in the received chunk
@@ -358,10 +480,13 @@ pub(crate) fn openai_model_supports_reasoning_none(model: &str) -> bool {
     }
 
     // GPT-6 split the family contract: Astra and GPT-6.1 Sol always reason,
-    // while GPT-6 Sol and Luna accept `none`. Keep unknown variants fail-closed instead of
-    // assuming that a future flagship accepts a latency-oriented setting.
+    // while GPT-6 Sol, Luna and GPT-6.1 Terra accept `none`. Keep unknown
+    // variants fail-closed instead of assuming future flagships accept it.
     if openai_gpt_major(&model).is_some_and(|major| major >= 6) {
-        return model.starts_with("gpt-6-sol") || model.starts_with("gpt-6-luna");
+        return model.starts_with("gpt-6-sol")
+            || model.starts_with("gpt-6-luna")
+            || model == "gpt-6.1-terra"
+            || model.starts_with("gpt-6.1-terra-");
     }
 
     let Some(rest) = model.strip_prefix("gpt-5.") else {
@@ -391,8 +516,105 @@ fn disable_system_proxy() -> bool {
 mod tests {
     use super::*;
 
+    /// Silence before the first output is bounded by the request timeout,
+    /// not the idle limit; once output flows, a stream that keeps producing
+    /// outlives the request timeout and a stalled one fails after the idle
+    /// limit.
+    #[tokio::test]
+    async fn stream_watchdog_bounds_silence_not_length() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+
+        // Silent past the idle limit but inside the first-output budget: fine.
+        let mut stream = Box::pin(futures_util::stream::once(async move {
+            tokio::time::sleep(ms(60)).await;
+            1u8
+        }));
+        let watchdog = StreamWatchdog::with_limits(ms(200), ms(20), ms(1_000));
+        assert_eq!(watchdog.next(&mut stream).await.unwrap(), Some(1));
+
+        // No first output inside the first-output budget: timeout.
+        let mut silent = futures_util::stream::pending::<u8>();
+        let watchdog = StreamWatchdog::with_limits(ms(30), ms(1_000), ms(1_000));
+        assert!(matches!(
+            watchdog.next(&mut silent).await,
+            Err(crate::error::LLMError::Timeout)
+        ));
+
+        // Steady output outlives the first-output budget; a stall then fails
+        // after the idle limit.
+        let mut steady = Box::pin(futures_util::stream::unfold(0u8, move |n| async move {
+            if n < 5 {
+                tokio::time::sleep(ms(15)).await;
+                Some((n, n + 1))
+            } else {
+                futures_util::future::pending().await
+            }
+        }));
+        let mut watchdog = StreamWatchdog::with_limits(ms(40), ms(30), ms(1_000));
+        let mut seen = 0;
+        loop {
+            match watchdog.next(&mut steady).await {
+                Ok(Some(_)) => {
+                    watchdog.mark_progress();
+                    seen += 1;
+                },
+                Ok(None) => panic!("stream ended"),
+                Err(crate::error::LLMError::Timeout) => break,
+                Err(other) => panic!("{other}"),
+            }
+        }
+        assert_eq!(
+            seen, 5,
+            "75 ms of steady output passed a 40 ms first-output budget"
+        );
+    }
+
+    /// Progress markers: a marker split across two chunks is still found, and
+    /// a chat chunk counts as output only when it carries content.
+    #[test]
+    fn progress_markers_count_only_output() {
+        let mut tail = Vec::new();
+        assert!(!chunk_mentions(
+            &mut tail,
+            b"event: content_bl",
+            b"content_block"
+        ));
+        assert!(chunk_mentions(
+            &mut tail,
+            b"ock_delta\ndata: {}",
+            b"content_block"
+        ));
+        assert!(!chunk_mentions(
+            &mut tail,
+            b"event: ping\n",
+            b"content_block"
+        ));
+
+        let has = |chunk: serde_json::Value| plain_stream::chat_chunk_has_output(&chunk);
+        assert!(!has(
+            serde_json::json!({"choices": [{"delta": {"role": "assistant", "content": ""}}]})
+        ));
+        assert!(!has(
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        ));
+        assert!(!has(serde_json::json!({"choices": []})));
+        assert!(has(
+            serde_json::json!({"choices": [{"delta": {"content": "Hi"}}]})
+        ));
+        assert!(has(
+            serde_json::json!({"choices": [{"delta": {"reasoning_content": "…"}}]})
+        ));
+        assert!(has(
+            serde_json::json!({"choices": [{"delta": {"tool_calls": [{"index": 0}]}}]})
+        ));
+    }
+
     #[test]
     fn gpt_6_family_preserves_per_tier_reasoning_none_support() {
+        assert!(openai_model_supports_reasoning_none("gpt-6.1-terra"));
+        assert!(openai_model_supports_reasoning_none("openai/gpt-6.1-terra"));
+        assert!(!openai_model_supports_reasoning_none("gpt-6.1-terrain"));
         assert_eq!(openai_gpt_major("gpt-6.1-sol"), Some(6));
         assert!(!openai_model_supports_reasoning_none("gpt-6.1-sol"));
         assert!(!openai_model_supports_reasoning_none(

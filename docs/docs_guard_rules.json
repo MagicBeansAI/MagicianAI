@@ -258,8 +258,7 @@
       "name": "task-22-process-runtime",
       "code_patterns": [
         "magician/src/magician_v2/process_storage.rs",
-        "magician-storage/src/runtime.rs",
-        "magician-bin/src/main.rs"
+        "magician-storage/src/runtime.rs"
       ],
       "doc_patterns": [
         "docs/components/magician-storage/**",
@@ -516,6 +515,7 @@
         "ui/unified-ui/tailwind.config.js",
         "ui/unified-ui/svelte.config.js",
         "ui/unified-ui/vite.config.ts",
+        "ui/unified-ui/vite-*.ts",
         "ui/unified-ui/vitest.config.ts",
         "ui/unified-ui/vitest.unit.config.ts",
         "ui/unified-ui/vitest.component.config.ts",

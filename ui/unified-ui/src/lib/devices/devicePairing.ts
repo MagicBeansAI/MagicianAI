@@ -9,6 +9,9 @@ export interface PairedDevice {
 	capabilities: Array<'mobile_client' | 'device_automation' | 'edge_client'>;
 	automation_review_generation: number;
 	automation_review?: DeviceAutomationReview;
+	/** Version the app last reported, e.g. "0.4.11 (222)"; absent or null
+	 * for apps and servers that predate the report. */
+	app_version?: string | null;
 }
 
 export interface DeviceAutomationReview {

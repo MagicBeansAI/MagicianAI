@@ -27,6 +27,10 @@ void voice_note_event(const char *event_type, const char *detail);
    recording is too short to be speech. */
 void voice_submit(void);
 
+/* Run one network action on the turn worker, between turns (the
+   Conversations page uses it). False when a turn or another job is busy. */
+bool voice_run_job(void (*job)(void));
+
 turn_state_t voice_state(void);
 const char  *voice_transcript(void);   /* what the user said, "" until known */
 const char  *voice_reply(void);        /* Magician's answer, "" until known  */

@@ -1,8 +1,11 @@
 package ai.magicbeans.magdroid.ui
 
 import ai.magicbeans.magdroid.work.*
+import ai.magicbeans.magdroid.chat.ChatModelChoice
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -17,6 +20,8 @@ import java.util.UUID
 internal fun WorkQualityCompose(target: String, onOpenRun: (String) -> Unit, agentId: String = "") {
     val resource = rememberWorkResource("$WORK_QUALITY_API/profiles")
     val state by resource.state.collectAsStateWithLifecycle()
+    val catalog = rememberWorkResource("/api/magician/v2/llm/routing")
+    val catalogState by catalog.state.collectAsStateWithLifecycle()
     val proposedResource = if (target.startsWith("proposal:")) rememberWorkResource("$WORK_QUALITY_API/proposals/${WorkRepository.segment(target.removePrefix("proposal:"))}") else null
     val proposalState = proposedResource?.state?.collectAsStateWithLifecycle()?.value
     val proposed = proposalState?.value
@@ -32,7 +37,6 @@ internal fun WorkQualityCompose(target: String, onOpenRun: (String) -> Unit, age
     var referencesPending by remember { mutableStateOf(false) }
     var agent by remember { mutableStateOf(agentId) }
     var thread by remember { mutableStateOf("general") }
-    var showCaptureTarget by remember { mutableStateOf(false) }
     var captureTarget by remember { mutableStateOf("") }
     var advanced by remember { mutableStateOf("") }
     var preview by remember { mutableStateOf<JsonElement?>(null) }
@@ -48,13 +52,16 @@ internal fun WorkQualityCompose(target: String, onOpenRun: (String) -> Unit, age
     }
     val signature = "$proposal|$agent|$thread|${contextState?.value}|$captureTarget|$useSourceTask"
     val currentSignature by rememberUpdatedState(signature)
-    val profiles = state.value.workRows("profiles")
+    val modelCatalog = remember(state.value, catalogState.value) { WorkQualityModels(state.value, catalogState.value) }
+    val draftModels = modelCatalog.models()
+    val reviewModels = modelCatalog.family(draft.actor)?.let { modelCatalog.models(it) }.orEmpty()
+    val modelsValid = modelCatalog.valid(draft.actor, draftModels) && modelCatalog.valid(draft.critic, reviewModels)
     val canAttachProposal = proposed == null || (proposed.workField("proposal").workField("native_harness") is JsonObject &&
         contextState?.value.workField("goal") == proposed.workField("proposal").workField("goal") && contextState?.value.workField("agent_id") == proposed.workField("origin").workField("agent_id"))
     val canReview = !referencesPending && proposal != null && agent.isNotBlank() && thread.isNotBlank() &&
         (!target.startsWith("proposal:") || proposed != null) &&
         (taskId.isBlank() || (contextState?.value.workText("task_id") == taskId && contextState?.value.workBool("can_start") && canAttachProposal)) &&
-        (proposed != null || advanced.isNotBlank() || (draft.goal.isNotBlank() && draft.rubric.isNotBlank() && draft.actor.isNotBlank() && draft.critic.isNotBlank()))
+        (proposed != null || advanced.isNotBlank() || (draft.goal.isNotBlank() && draft.rubric.isNotBlank() && modelsValid))
     LaunchedEffect(state.value) {
         if (draft.actor.isBlank()) draft = draft.copy(actor = state.value.workText("actor_default").orEmpty())
         if (draft.critic.isBlank()) draft = draft.copy(critic = state.value.workText("critic_default").orEmpty())
@@ -95,64 +102,106 @@ internal fun WorkQualityCompose(target: String, onOpenRun: (String) -> Unit, age
     LaunchedEffect(proposed) { proposed.workField("origin").workText("agent_id")?.let { agent = it } }
     LaunchedEffect(signature) { preview = null; reviewedSignature = ""; runId = UUID.randomUUID().toString() }
     LaunchedEffect(state.identity) { preview = null; reviewedSignature = "" }
-    LazyColumn(Modifier.fillMaxSize().imePadding(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(state, resource) }
-        proposalState?.let { item { WorkResourceStatus(it, requireNotNull(proposedResource)) } }
-        if (sourceTaskId.isNotBlank()) item { WorkCard {
-            Row { Text("Use the existing task", color = Ink, modifier = Modifier.weight(1f).padding(top = 12.dp)); Switch(useSourceTask, { useSourceTask = it }, enabled = !state.busy && canAttachProposal, colors = magicanSwitchColors()) }
-            Text(if (useSourceTask) "Quality uses the reviewed task context and its owning member." else "Creates new work; the proposal origin remains attached as evidence.", color = Muted, fontSize = 13.sp)
-        } }
-        contextState?.let { contextual -> item {
-            WorkResourceStatus(contextual, requireNotNull(contextResource))
-            WorkCard {
-                Text(if (useSourceTask) "Attached to task" else "Source task", color = Muted, fontSize = 12.sp)
-                Text(contextual.value.workText("title") ?: taskId, color = Ink, fontSize = 16.sp)
-                contextual.value.workText("reason")?.let { Text(it, color = activePalette.warning, fontSize = 13.sp) }
+    val crewRows = crewState.value.workRows("agents")
+    var captureOpen by remember { mutableStateOf(captureTarget.isNotBlank()) }
+    var advancedOpen by remember { mutableStateOf(false) }
+    WorkPage(Modifier.imePadding()) {
+        workStatusItem(state, resource)
+        proposalState?.let { workStatusItem(it, requireNotNull(proposedResource), key = "proposal-status") }
+        if (sourceTaskId.isNotBlank()) item(key = "task") { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            WorkGroup("Task") {
+                WorkSwitchRow("Use the existing task", useSourceTask, { useSourceTask = it }, enabled = !state.busy && canAttachProposal)
+                contextState?.value?.let { value ->
+                    WorkRowDivider()
+                    WorkRow(value.workText("title") ?: taskId.ifBlank { sourceTaskId }, icon = Icons.Outlined.Checklist, detail = if (useSourceTask) "Attached to task" else "Source task", accessory = WorkRowAccessory.None)
+                    value.workText("reason")?.let { WorkNote(it, color = activePalette.warning) }
+                }
             }
+            WorkFootnote(if (useSourceTask) "Quality uses the reviewed task context and its owning member." else "Creates new work; the proposal origin remains attached as evidence.")
         } }
-        if (proposed != null) item { WorkCard { Text("Owner proposal", color = Ink, fontSize = 18.sp); WorkRecord(proposed) } }
-        else item { WorkCard {
-            WorkDraftField("Outcome", draft.goal) { draft = draft.copy(goal = it) }
-            WorkDraftField("Source notes", draft.source, multiline = true) { draft = draft.copy(source = it) }
-            WorkReferencePicker(draft.references, { draft = draft.copy(references = it) }, { referencesPending = it }, disabled = state.busy || advanced.isNotBlank())
-            WorkDraftField("Quality requirements", draft.rubric, multiline = true) { draft = draft.copy(rubric = it) }
-            WorkProfilePicker("Actor", draft.actor, profiles) { draft = draft.copy(actor = it) }
-            WorkProfilePicker("Critic", draft.critic, profiles) { draft = draft.copy(critic = it) }
-            WorkNumber("Attempts", draft.attempts, 1..100) { draft = draft.copy(attempts = it) }
-            WorkNumber("Time limit (minutes)", draft.minutes, 1..1440) { draft = draft.copy(minutes = it) }
-            WorkNumber("Cost ceiling (USD)", draft.dollars, 1..10000) { draft = draft.copy(dollars = it) }
+        contextState?.let { contextual -> workStatusItem(contextual, requireNotNull(contextResource), key = "context-status") }
+        if (proposed != null) item(key = "proposal") { WorkGroup("Owner proposal") { WorkRecord(proposed) } }
+        else {
+            item(key = "brief") { WorkGroup("Brief") { WorkFieldStack {
+                WorkDraftField("Outcome", draft.goal) { draft = draft.copy(goal = it) }
+                WorkDraftField("Source notes", draft.source, multiline = true) { draft = draft.copy(source = it) }
+                WorkDraftField("Quality requirements", draft.rubric, multiline = true) { draft = draft.copy(rubric = it) }
+            } } }
+            item(key = "references") { WorkGroup("References") {
+                WorkReferencePicker(draft.references, { draft = draft.copy(references = it) }, { referencesPending = it }, disabled = state.busy || advanced.isNotBlank())
+            } }
+            item(key = "models") { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                WorkGroup("Models") {
+                    if (catalogState.hasStatus) Box(Modifier.padding(top = 12.dp)) { WorkResourceStatus(catalogState, catalog) }
+                    WorkQualityModelField("Draft model", draft.actor, modelCatalog, draftModels, !state.busy && advanced.isBlank()) { draft = draft.copy(actor = it) }
+                    WorkRowDivider()
+                    WorkQualityModelField("Independent review model", draft.critic, modelCatalog, reviewModels, !state.busy && advanced.isBlank()) { draft = draft.copy(critic = it) }
+                }
+                if (!modelsValid) WorkFootnote("Choose available draft and review models from different model families. Saved choices stay unchanged until you replace them.")
+            } }
+            item(key = "budget") { WorkGroup("Budget") {
+                WorkStepperRow("Attempts", draft.attempts, 0..100, { draft = draft.copy(attempts = it) }, display = if (draft.attempts == 0) "Unlimited" else "${draft.attempts}")
+                WorkRowDivider()
+                WorkStepperRow("Time limit", draft.minutes, 0..1440, { draft = draft.copy(minutes = it) }, display = if (draft.minutes == 0) "Unlimited" else "${draft.minutes} min")
+                WorkRowDivider()
+                WorkStepperRow("Cost ceiling", draft.dollars, 0..10000, { draft = draft.copy(dollars = it) }, display = if (draft.dollars == 0) "Unlimited" else "$${draft.dollars}")
+            } }
+        }
+        item(key = "assignment") { WorkGroup("Assignment") {
+            if (crewState.hasStatus) Box(Modifier.padding(top = 12.dp)) { WorkResourceStatus(crewState, crew) }
+            val members = listOf("" to "Choose a member") + listOfNotNull(agent.takeIf { it.isNotBlank() && crewRows.none { row -> row.workField("definition").workText("agent_id") == it } }?.let { it to it }) +
+                crewRows.mapNotNull { row -> row.workField("definition").workText("agent_id")?.let { id -> id to (row.workField("definition").workText("name") ?: id) } }
+            WorkChoiceRow("Crew member", members, agent, { agent = it }, icon = Icons.Outlined.AccountCircle, enabled = !useSourceTask,
+                semanticLabel = "Crew member: ${agent.ifBlank { "Choose a member" }}")
+            WorkRowDivider()
+            WorkFieldStack { WorkDraftField("Thread", thread) { thread = it } }
         } }
-        item { WorkCard {
-            WorkResourceStatus(crewState, crew)
-            WorkProfilePicker("Crew member", agent, crewState.value.workRows("agents").map { row -> buildJsonObject { put("name", row.workField("definition").workText("agent_id").orEmpty()); put("family", row.workField("definition").workText("name").orEmpty()) } }, enabled = !useSourceTask) { agent = it }
-            WorkDraftField("Thread", thread) { thread = it }
-            WorkLink("Optional capture handoff") { showCaptureTarget = !showCaptureTarget }
-            if (showCaptureTarget || captureTarget.isNotBlank()) WorkDraftField("Capture target JSON", captureTarget, multiline = true) { captureTarget = it }
+        item(key = "options") { WorkGroup("Options") {
+            WorkRow("Optional capture handoff", icon = Icons.Outlined.MoveToInbox, value = if (captureTarget.isBlank()) null else "Set",
+                accessory = if (captureOpen) WorkRowAccessory.Expanded else WorkRowAccessory.Collapsed) { captureOpen = !captureOpen }
+            if (captureOpen) Column {
+                WorkNote("Use an exact campaign, version and identity target from a reviewed capture policy. The contract must request a capture handoff.")
+                Box(Modifier.padding(bottom = 12.dp)) { WorkLabeledField("Capture target JSON", captureTarget, { captureTarget = it }, minLines = 3, maxLines = 10, mono = true) }
+            }
             if (proposed == null) {
-                WorkLink("Edit complete contract") { advanced = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), proposal ?: draft.proposal()) }
-                if (advanced.isNotBlank()) WorkDraftField("Advanced contract", advanced, multiline = true) { advanced = it }
+                WorkRowDivider()
+                WorkRow("Advanced contract", icon = Icons.Outlined.DataObject, value = if (advanced.isBlank()) null else "Edited",
+                    accessory = if (advancedOpen) WorkRowAccessory.Expanded else WorkRowAccessory.Collapsed) { advancedOpen = !advancedOpen }
+                if (advancedOpen) Column {
+                    WorkNote("Review a complete contract to configure references, artifact checks, task execution limits and policies.")
+                    WorkActionRow("Edit complete contract", Icons.Outlined.Code) { advanced = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), proposal ?: draft.proposal()) }
+                    if (advanced.isNotBlank()) Box(Modifier.padding(bottom = 12.dp)) { WorkLabeledField("Advanced contract", advanced, { advanced = it }, minLines = 8, maxLines = 24, mono = true) }
+                }
             }
-            Button(onClick = {
-                val original = signature; val identity = state.identity; val body = proposal ?: return@Button
+        } }
+        item(key = "review") { WorkGroup("Review and start") {
+            WorkActionRow("Review contract", Icons.Outlined.Shield, enabled = canReview && !state.busy) {
+                val original = signature; val identity = state.identity; val body = proposal ?: return@WorkActionRow
                 scope.launch {
                     val result = resource.perform("$WORK_QUALITY_API/preview", identity, body = body)
                     if (result != null && currentSignature == original) { preview = result; reviewedSignature = original }
                 }
-            }, enabled = canReview && !state.busy, colors = magicanButtonColors(), shape = MagicanButtonShape) { Text("Review contract") }
+            }
             preview?.takeIf { signature == reviewedSignature }?.let { reviewed ->
+                WorkRowDivider()
                 WorkRecord(reviewed)
-                Text("Outputs remain local. Approval does not send or submit anything.", color = Muted, fontSize = 13.sp)
+                WorkRowDivider()
+                WorkNote("Outputs remain local. Approval does not send or submit anything.")
                 if (taskId.isNotBlank()) {
-                    WorkNumber("Maximum recurring runs", policyRuns, 1..100) { policyRuns = it; policyId = UUID.randomUUID().toString() }
-                    WorkDraftField("Policy expires (UTC)", policyExpiry) { policyExpiry = it; policyId = UUID.randomUUID().toString() }
-                    Button(onClick = { configurePolicy(true) }, enabled = !state.busy && contextState?.busy != true, colors = magicanButtonColors(), shape = MagicanButtonShape) { Text("Approve bounded recurring policy") }
+                    WorkRowDivider()
+                    WorkStepperRow("Maximum recurring runs", policyRuns, 1..100, { policyRuns = it; policyId = UUID.randomUUID().toString() })
+                    WorkRowDivider()
+                    WorkFieldStack { WorkDraftField("Policy expires (UTC)", policyExpiry) { policyExpiry = it; policyId = UUID.randomUUID().toString() } }
+                    WorkRowDivider()
+                    WorkActionRow("Approve bounded recurring policy", Icons.Outlined.Verified, enabled = !state.busy && contextState?.busy != true) { configurePolicy(true) }
                 }
-                Button(onClick = {
-                    val proposalBody = proposal ?: return@Button
-                    val hash = reviewed.workText("contract_hash") ?: return@Button
+                WorkRowDivider()
+                WorkActionRow("Start reviewed work", Icons.Outlined.PlayCircleOutline, enabled = canReview && !state.busy && reviewed.workBool("budget_can_admit_attempt")) {
+                    val proposalBody = proposal ?: return@WorkActionRow
+                    val hash = reviewed.workText("contract_hash") ?: return@WorkActionRow
                     val identity = state.identity
                     val capture = if (captureTarget.isBlank()) null else runCatching { Json.parseToJsonElement(captureTarget) as JsonObject }.getOrNull()
-                    if (captureTarget.isNotBlank() && capture == null) { resource.reportError("Enter a valid capture target object."); return@Button }
+                    if (captureTarget.isNotBlank() && capture == null) { resource.reportError("Enter a valid capture target object."); return@WorkActionRow }
                     val body = buildJsonObject {
                         put("run_id", (if (taskId.isNotBlank()) contextState?.value.workText("pending_run_id") else null) ?: runId)
                         put("proposal", proposalBody); put("agent_id", agent); put("ui_thread_id", thread); put("expected_contract_hash", hash)
@@ -166,41 +215,35 @@ internal fun WorkQualityCompose(target: String, onOpenRun: (String) -> Unit, age
                         val run = resource.perform("$WORK_QUALITY_API/runs", identity, body = body)
                         run.workText("id")?.let { preview = null; onOpenRun(it) }
                     }
-                }, enabled = canReview && !state.busy && reviewed.workBool("budget_can_admit_attempt"), colors = magicanButtonColors(), shape = MagicanButtonShape) { Text("Start reviewed work") }
+                }
             }
         } }
-        if (useSourceTask && contextState?.value.workField("policy") != null && contextState?.value.workField("policy") != JsonNull) item { WorkCard {
-            Text("Current recurring policy", color = Ink, fontSize = 17.sp)
+        if (useSourceTask && contextState?.value.workField("policy") != null && contextState?.value.workField("policy") != JsonNull) item(key = "policy") { WorkGroup("Current recurring policy") {
             WorkRecord(contextState?.value.workField("policy"))
-            TextButton(onClick = { configurePolicy(false) }, enabled = contextState?.busy != true) { Text("Disable future quality runs", color = Danger) }
+            WorkRowDivider()
+            WorkActionRow("Disable future quality runs", Icons.Outlined.Block, destructive = true, enabled = contextState?.busy != true) { configurePolicy(false) }
         } }
     }
 }
 
 @Composable
 private fun WorkDraftField(title: String, value: String, multiline: Boolean = false, onChanged: (String) -> Unit) {
-    OutlinedTextField(value, onChanged, label = { Text(title) }, singleLine = !multiline, minLines = if (multiline) 3 else 1,
-        modifier = Modifier.fillMaxWidth(), textStyle = LocalTextStyle.current.copy(color = Ink))
+    WorkLabeledField(title, value, onChanged, minLines = if (multiline) 3 else 1, maxLines = if (multiline) 8 else 1)
 }
 
 @Composable
-private fun WorkProfilePicker(title: String, selected: String, profiles: List<JsonElement>, enabled: Boolean = true, onSelected: (String) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        TextButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.heightIn(min = 48.dp)) { Text("$title: ${selected.ifBlank { "Choose profile" }}", color = Coral) }
-        DropdownMenu(open, { open = false }) {
-            profiles.forEach { profile -> profile.workText("name")?.let { name ->
-                DropdownMenuItem(text = { Text("$name · ${profile.workText("family").orEmpty()}") }, onClick = { onSelected(name); open = false })
-            } }
+private fun WorkQualityModelField(title: String, route: String, catalog: WorkQualityModels, models: List<ChatModelChoice>, enabled: Boolean, select: (String) -> Unit) {
+    val selected = catalog.selection(route, models)
+    val model = models.firstOrNull { it.id == selected?.modelId }
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        CatalogChoiceDropdown(title, model?.id ?: route,
+            (if (model == null && route.isNotBlank()) listOf(CatalogChoiceOption(route, "Unavailable model · saved", enabled = false)) else emptyList()) +
+                models.map { CatalogChoiceOption(it.id, it.label, it.providerDisplayName, it.installed) }, enabled = enabled) { id ->
+            models.firstOrNull { it.id == id }?.let { next ->
+                (next.choices[selected?.thinking] ?: next.choices["auto"])?.let(select)
+            }
         }
-    }
-}
-
-@Composable
-private fun WorkNumber(title: String, value: Int, range: IntRange, onChanged: (Int) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text("$title: $value", color = Ink, modifier = Modifier.weight(1f).padding(vertical = 12.dp))
-        TextButton(onClick = { onChanged((value - 1).coerceIn(range)) }, enabled = value > range.first) { Text("−", color = Coral) }
-        TextButton(onClick = { onChanged((value + 1).coerceIn(range)) }, enabled = value < range.last) { Text("+", color = Coral) }
+        model?.let { active -> ModelThinkingControl(active.thinking, selected?.thinking ?: "auto", enabled = enabled) { level -> active.choices[level]?.let(select) } }
     }
 }

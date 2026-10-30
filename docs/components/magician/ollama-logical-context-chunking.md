@@ -40,6 +40,16 @@ Every candidate profile has `chunking.enabled: true` and its operation mapping
 points at it, so hard preflight covers every child, and recovery is Ollama-only
 `same_provider_only`. Voice context compaction keeps its own baseline mapping.
 
+The model-catalog migration keeps these contracts in semantic workload
+assignments. Candidate handles are `operation/<operation_name>`; shared fast
+baselines use `operation/voice_context_compaction` or
+`operation/screen_evidence_distill`. The memory-quality comparison retains
+`workload/memory_episode_quality/baseline` explicitly even though no configuration
+selector names it. No legacy profile alias is needed by readiness or dispatch.
+The immutable v1 activation manifest keeps its historical IDs; the offline
+evaluation reader translates only that manifest's recorded IDs for comparison
+with current assignments. It never rewrites evidence or installs runtime aliases.
+
 Release readiness pins the `gemma4:12b` model, 32K window, 4K output reserve,
 JSON output and local endpoint; another model fails readiness until reviewed.
 Only two per-operation states pass readiness and reload: dormant (candidate

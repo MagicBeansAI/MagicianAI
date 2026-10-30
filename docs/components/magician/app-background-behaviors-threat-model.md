@@ -190,11 +190,30 @@ response or persistence is charged and uncertain, never replayed.
 **Period ceilings park, not retry.** Admission checks monthly ceilings with a
 zero-size candidate, so near `max_monthly_tokens` a launch can pass whose first
 model call is refused. A `monthly_tokens` or `monthly_cost` refusal marks the
-run `period_ceiling_breach`; the observer reads it off the terminal run (status
-`completed`) and moves the next fire to `resource_period_end` (first of the next
-UTC month) with `last_error` `period_resource_ceiling:<ceiling>` and one
-warning. Per-run ceilings (`no_progress`, `active_time`) fail the run and
-reschedule normally.
+run `period_ceiling_breach`; the observer reads it off the terminal run
+(whatever its status) and moves the next fire to `resource_period_end` (first
+of the next UTC month) with `last_error` `period_resource_ceiling:<ceiling>`
+and one warning. Once that instant passes, behavior health stops showing the
+ceiling (neither the run's copy nor the head's identical copy). Per-run
+ceilings (`no_progress`, `active_time`) fail the run and reschedule normally.
+
+**A round where every tried participant failed is a failed run.** A
+contextual round with at least one failed participant and none committed,
+quiet or awaiting commit returns `ContextualRoundAllParticipantsFailed`
+instead of completing; excluded or deferred participants count as neither.
+
+**Failed runs back off.** After the n-th failed run in a row, the next fire is
+`completed_at + min(interval × 2^min(n−1, 6), 1 day)`, never less than the
+interval (`failed_run_delay_seconds`). A completed run (partial included)
+resets `consecutive_failures` and returns to the interval; a later
+period-ceiling `deferred_until` still wins.
+
+**Held reservations.** An outcome-uncertain model attempt keeps its full
+reservation in the period total; expiry alone never releases it. Only a
+definitive provider client rejection (typed HTTP 4xx other than 408/429, zero
+counters) settles committed at zero and frees it. Most cloud adapters report
+non-2xx replies, and every protected-request rejection, as untyped provider
+messages, so those still hold their reservation until the period rolls.
 
 ## Causation, spend depth, and self-amplification
 

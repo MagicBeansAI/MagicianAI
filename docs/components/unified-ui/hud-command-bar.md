@@ -1,28 +1,37 @@
 # HUD — the collapsed command bar
 
-The Tauri quick summon (double-tap Left Option → `/hud`) is a two-state
-command bar in a small centred window with the theme's own chrome.
+The Tauri quick summon (double-tap Left Option → `/hud`) is a compact
+command bar. Expanding opens the actual `/chat` app page in the same native
+window with normal navigation and native window controls.
 
 Design: 2026-07-27 HUD collapsed command bar.
 
 ## What it is
 
-|            | collapsed (every summon)     | expanded                    |
-| ---------- | ---------------------------- | --------------------------- |
-| transcript | not rendered                 | normal, flat, unmasked      |
-| composer   | the entire UI                | pinned at bottom            |
-| controls   | docked row, hover/focus-only | always visible              |
+| | compact | expanded app |
+| --- | --- | --- |
+| route | `/hud` | `/chat`, with normal app navigation |
+| transcript | hidden | normal chat page |
+| composer | the entire UI | normal browser composer layout |
+| controls | docked theme and expand | native window controls and app-header Compact |
 
-Expansion is never remembered: blur, dismiss and `overlay-focus-input` all
-force `expanded = false`, so every summon starts collapsed. The one exception
-is an attach-screen re-summon mid-conversation, which keeps the transcript as
-it was and only refocuses the composer.
+Compact mode dismisses on blur. Expanded mode stays open while switching apps
+and minimizing, and keeps its native size/mode on summon. Close resets it to
+compact; the **Compact** icon at the far right of the app header returns with the
+selected chat and its unsent draft/attachments. History opens from the left in
+both modes. Selecting an entry opens the exact session/thread on `/chat` or a
+coding session on `/vibe` in the same expanded app window.
+
+The HUD's **Attach screen context** action sits next to the file attachment
+button. It appears only on native HUD surfaces when the selected model accepts
+attachments and the session is editable. Capture is disabled while busy.
+The compact composer has no outer bottom margin; its panel forms the boundary.
 
 **Every summon also focuses the composer**, via `ChatPanel.focusComposer()`.
 It must be explicit: Tauri keeps the HUD WebView mounted across hide/show, so
 `onMount` runs once ever, and `handleWindowBlur` blurs the focused element on
 hide. Later summons focus on `overlay-focus-input` (emitted by
-`show_overlay_window`), which also resets expansion and re-glides the mascot. The
+`show_overlay_window`), which re-glides the mascot only in compact mode. The
 first open is focused from `onMount`, because the listener registers
 asynchronously and can miss the emission that opened the window; that call sits
 ahead of the `isTauri` guard so a browser `/hud` behaves the same.
@@ -35,12 +44,15 @@ Code depends on these window invariants:
   (`glide_mascot_to`) derives its target from `win.outerPosition()` +
   viewport coordinates. Any future feature translating viewport→screen must
   do the same.
-- The window is a fixed transparent stage (1000×760 logical px, clamped to
+- In compact mode the window is a fixed transparent stage (1000×760 logical px, clamped to
   90% of the monitor; `center_hud_window` in `desktop/src-tauri/src/overlay.rs`)
   around a centred 820px panel. Popups (theme panel, more-menu, capped at
   320px and scrolling) overlay into that stage rather than resizing the
   window, and must never assume monitor-sized room. Do not reintroduce window
   resizing for a popup.
+- Expanded mode uses 92% of the desktop work area's width and 90% of its height,
+  with native decorations, resizing, close/minimize/fullscreen and normal stacking.
+  Native `hud-window-mode` events keep the UI in sync across frontend reloads.
 - The mobile/phone composer variant must never render in the HUD window,
   whatever the window width reports.
 

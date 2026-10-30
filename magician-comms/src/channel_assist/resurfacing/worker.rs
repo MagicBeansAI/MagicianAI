@@ -182,6 +182,67 @@ fn run_success_error<T>(result: &anyhow::Result<T>) -> (bool, Option<String>) {
     }
 }
 
+/// A failure row is written again for the same scope and kind only after this
+/// long, unless its message changes.
+const FAILURE_RECORD_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
+/// Rate-limits failure rows of the minute-tick run kinds (`memory_lifecycle`,
+/// `memory_connections`). A persistent fault, such as a locked or unreadable
+/// store, would otherwise write a row every minute per scope and push the
+/// scorer/curator/retention rows out of the bounded run history. A failure is
+/// admitted when its message differs from the last one recorded for that
+/// scope and kind, or [`FAILURE_RECORD_INTERVAL`] after it; successes are
+/// always admitted and clear the memory, so the next failure is recorded.
+#[derive(Debug, Default)]
+struct FailureRecordGate {
+    last: std::collections::HashMap<(String, String, &'static str), (String, Instant)>,
+}
+
+impl FailureRecordGate {
+    fn admit(
+        &mut self,
+        principal: &str,
+        workspace: &str,
+        kind: &'static str,
+        failure: Option<&str>,
+        now: Instant,
+    ) -> bool {
+        let key = (principal.to_owned(), workspace.to_owned(), kind);
+        let Some(message) = failure else {
+            self.last.remove(&key);
+            return true;
+        };
+        if let Some((last, at)) = self.last.get(&key) {
+            if last == message && now.saturating_duration_since(*at) < FAILURE_RECORD_INTERVAL {
+                return false;
+            }
+        }
+        self.last.insert(key, (message.to_owned(), now));
+        true
+    }
+}
+
+/// The `memory_lifecycle` run record `(produced, success, error)` for one
+/// lifecycle pass, or `None` for a pass that did nothing. Like
+/// `memory_connections`, an idle pass is not recorded: the pass runs every
+/// minute per scope and the run history is bounded per scope, so recording
+/// idle passes would evict the scorer/curator/retention rows the
+/// observability `pipeline` block aggregates. Produced work is reviews,
+/// applied plans and expiries; re-offering a pending owner question is not.
+/// A review that ended without a verdict (`PassResult::error`) is a failure.
+fn lifecycle_run(
+    result: &anyhow::Result<magician::magician_v2::agents::memory_lifecycle::runtime::PassResult>,
+) -> Option<(i64, bool, Option<String>)> {
+    match result {
+        Err(error) => Some((0, false, Some(error.to_string()))),
+        Ok(pass) => {
+            let produced = pass.reviewed + pass.applied + pass.expired;
+            (produced > 0 || pass.error.is_some())
+                .then(|| (produced as i64, pass.error.is_none(), pass.error.clone()))
+        },
+    }
+}
+
 /// Cheap scope-local admission check for optional centrality work. A scorer
 /// pass still runs when this returns false so time decay remains intact; only
 /// the expensive all-history reference scan/provider path is skipped. Source
@@ -949,6 +1010,7 @@ impl ResurfacingWorker {
                 },
             };
             let mut cursors = std::collections::HashMap::new();
+            let mut failure_rows = FailureRecordGate::default();
             let mut tick = tokio::time::interval(Duration::from_secs(60));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -964,25 +1026,80 @@ impl ResurfacingWorker {
                         principal,
                         workspace,
                     };
+                    // The lifecycle pass is timed and recorded as its own run
+                    // kind, so `memory_connections` durations measure only the
+                    // connection pass.
+                    let lifecycle_started_at = chrono::Utc::now().timestamp_millis();
+                    let lifecycle_started = Instant::now();
+                    let lifecycle = tokio::select! {
+                        _ = connection_cancel.cancelled() => return,
+                        result = async {
+                            let Ok(memory) = runtime
+                                .resolver
+                                .resolve_for_scope(&scope.principal, &scope.workspace)
+                            else {
+                                return None;
+                            };
+                            Some(
+                                magician::magician_v2::agents::memory_lifecycle::runtime::pass(
+                                    &memory,
+                                    runtime.router.as_deref(),
+                                    runtime.requests.as_deref(),
+                                    chrono::Utc::now(),
+                                    None,
+                                )
+                                .await,
+                            )
+                        } => result,
+                    };
+                    if let Some(lifecycle) = &lifecycle {
+                        if let Err(error) = lifecycle {
+                            warn!(target: LOG_TARGET, %error, "memory lifecycle pass deferred");
+                        }
+                        if let Some((produced, success, error)) =
+                            lifecycle_run(lifecycle).filter(|(_, success, error)| {
+                                failure_rows.admit(
+                                    &scope.principal,
+                                    &scope.workspace,
+                                    "memory_lifecycle",
+                                    (!*success).then(|| error.as_deref().unwrap_or("failed")),
+                                    Instant::now(),
+                                )
+                            })
+                        {
+                            record_pass_run(
+                                &runtime.store,
+                                &scope.principal,
+                                &scope.workspace,
+                                "memory_lifecycle",
+                                lifecycle_started_at,
+                                lifecycle_started.elapsed().as_millis() as i64,
+                                produced,
+                                success,
+                                error.as_deref(),
+                            )
+                            .await;
+                        }
+                    }
                     let started_at = chrono::Utc::now().timestamp_millis();
                     let started = Instant::now();
                     let result = tokio::select! {
                         _ = connection_cancel.cancelled() => return,
-                        result = async {
-                            if let Ok(memory) = runtime.resolver.resolve_for_scope(&scope.principal,&scope.workspace) {
-                                if let Err(error) = magician::magician_v2::agents::memory_lifecycle::runtime::pass(
-                                    &memory,runtime.router.as_deref(),runtime.requests.as_deref(),chrono::Utc::now(),None,
-                                ).await {
-                                    warn!(target: LOG_TARGET,%error,"memory lifecycle pass deferred");
-                                }
-                            }
-                            runtime.pass(&scope, cursor, started_at / 1000).await
-                        } => result,
+                        result = runtime.pass(&scope, cursor, started_at / 1000) => result,
                     };
                     if let Err(error) = &result {
                         warn!(target: LOG_TARGET, %error, "memory connection pass failed; durable work retained");
                     }
-                    if !matches!(result, Ok(0)) {
+                    let failure = result.as_ref().err().map(|error| format!("{error:#}"));
+                    if !matches!(result, Ok(0))
+                        && failure_rows.admit(
+                            &scope.principal,
+                            &scope.workspace,
+                            "memory_connections",
+                            failure.as_deref(),
+                            Instant::now(),
+                        )
+                    {
                         record_pass_run(
                             &runtime.store,
                             &scope.principal,
@@ -1446,5 +1563,70 @@ mod tests {
         let (success, error) = run_success_error(&err);
         assert!(!success);
         assert_eq!(error.as_deref(), Some("boom"));
+    }
+
+    /// A repeating failure writes one row per FAILURE_RECORD_INTERVAL unless its
+    /// message changes; successes always record and re-arm the next failure.
+    #[test]
+    fn failure_record_gate_rate_limits_repeated_failures_per_scope_and_kind() {
+        let mut gate = FailureRecordGate::default();
+        let start = Instant::now();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        let kind = "memory_lifecycle";
+        assert!(gate.admit("p", "w", kind, Some("locked"), at(0)));
+        assert!(!gate.admit("p", "w", kind, Some("locked"), at(60)));
+        // Another scope or kind has its own memory.
+        assert!(gate.admit("p", "other", kind, Some("locked"), at(60)));
+        assert!(gate.admit("p", "w", "memory_connections", Some("locked"), at(60)));
+        // A changed message is recorded at once.
+        assert!(gate.admit("p", "w", kind, Some("unreadable"), at(120)));
+        assert!(!gate.admit("p", "w", kind, Some("unreadable"), at(180)));
+        // The same message again after the interval.
+        assert!(gate.admit(
+            "p",
+            "w",
+            kind,
+            Some("unreadable"),
+            at(120) + FAILURE_RECORD_INTERVAL
+        ));
+        // A success records and clears, so the next failure is recorded.
+        assert!(gate.admit("p", "w", kind, None, at(2000)));
+        assert!(gate.admit("p", "w", kind, Some("unreadable"), at(2001)));
+    }
+
+    /// The lifecycle pass gets its own run kind and records only real work or
+    /// failures, so idle minute ticks cannot flood the bounded run history.
+    #[test]
+    fn lifecycle_run_records_work_and_failures_but_not_idle_passes() {
+        use magician::magician_v2::agents::memory_lifecycle::runtime::PassResult;
+        let idle: anyhow::Result<PassResult> = Ok(PassResult::default());
+        assert_eq!(lifecycle_run(&idle), None);
+        // Re-offering a pending owner question is not produced work.
+        let questions: anyhow::Result<PassResult> = Ok(PassResult {
+            questions: 2,
+            ..Default::default()
+        });
+        assert_eq!(lifecycle_run(&questions), None);
+        let worked: anyhow::Result<PassResult> = Ok(PassResult {
+            reviewed: 1,
+            applied: 1,
+            expired: 3,
+            ..Default::default()
+        });
+        assert_eq!(lifecycle_run(&worked), Some((5, true, None)));
+        let deferred: anyhow::Result<PassResult> = Ok(PassResult {
+            reviewed: 1,
+            error: Some("review timed out".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            lifecycle_run(&deferred),
+            Some((1, false, Some("review timed out".into())))
+        );
+        let failed: anyhow::Result<PassResult> = Err(anyhow::anyhow!("knowledge locked"));
+        assert_eq!(
+            lifecycle_run(&failed),
+            Some((0, false, Some("knowledge locked".into())))
+        );
     }
 }

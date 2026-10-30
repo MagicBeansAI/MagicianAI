@@ -195,7 +195,7 @@
 	<Card className="ra-hero" elevation={1}>
 		<div class="ra-hero-copy">
 			<div class="ra-breadcrumb">
-				<a href="/budget" class="ra-breadcrumb-link">Resource Authority</a>
+				<a href="/budget" class="ra-breadcrumb-link">Spend ledger</a>
 				<span class="ra-breadcrumb-sep">/</span>
 				<span>Audit</span>
 			</div>

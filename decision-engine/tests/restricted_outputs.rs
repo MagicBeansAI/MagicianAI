@@ -88,6 +88,7 @@ async fn result(value: &str, qualified: bool) -> DecisionItemResult {
                 choice_candidates: Default::default(),
             }],
         },
+        assets: Default::default(),
     };
     engine.decide(request).await.batch.items.remove(0)
 }
@@ -187,6 +188,7 @@ async fn classified(
                 choice_candidates: Default::default(),
             }],
         },
+        assets: Default::default(),
     };
     engine.decide(request).await.batch.items.remove(0)
 }
@@ -357,6 +359,7 @@ async fn restricted_backup_answer_uses_its_own_reviewed_model_identity() {
                     choice_candidates: Default::default(),
                 }],
             },
+            assets: Default::default(),
         };
         let response = engine.decide(request).await;
         let item = &response.batch.items[0];

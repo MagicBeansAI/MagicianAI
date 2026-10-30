@@ -99,6 +99,8 @@
                 <data android:scheme="magican" android:host="observe" />
                 <!-- VibeDev Now: the coding-runs notification's tap. -->
                 <data android:scheme="magican" android:host="vibe" />
+                <!-- One note in the native Notes app: path + workspace query. -->
+                <data android:scheme="magican" android:host="notes" />
             </intent-filter>
 
             <meta-data

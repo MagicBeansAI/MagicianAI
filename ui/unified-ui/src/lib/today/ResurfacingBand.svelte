@@ -29,6 +29,8 @@
 	import type { AttentionRoutingPage } from '$lib/attention/attentionRouting';
 	import Icon from '$lib/shared/icons/Icon.svelte';
 	import type { IconName } from '$lib/shared/icons/paths';
+	import { agentDisplayName } from '$lib/presentationIdentity';
+	import { primaryAgent } from '$lib/stores/agentStore';
 	import { showError, showInfo, showSuccess, showWarning } from '$lib/shared/stores/notifications';
 	import {
 		OVERLAY_PRIORITIES,
@@ -66,6 +68,7 @@
 		resurfacingBrief,
 		resurfacingConcreteSummary,
 		resurfacingDisplayTitle,
+		resurfacingActionDisplayLabel,
 		resurfacingHasMissingDetails,
 		resurfacingPrimaryAction,
 		resurfacingRowFacts,
@@ -75,8 +78,10 @@
 
 	export let showEmpty = false;
 	export let page = 1;
-	/** Existing owner chat thread used by Ask Presto and action provenance. */
+	/** Existing owner chat thread used by Ask <agent> and action provenance. */
 	export let chatThreadId: string | null = null;
+
+	$: agentName = agentDisplayName($primaryAgent);
 
 	const PAGE_SIZE = 5;
 	const ACTION_DIALOG_OVERLAY_ID = 'resurfacing-action-dialog';
@@ -681,7 +686,7 @@
 	async function runContextualAction(card: ResurfacingCard, kind: ResurfacingActionKind): Promise<void> {
 		if (cardIsBusy(card.candidate_id)) return;
 		if (kind === 'ask_presto' && !chatThreadId?.trim()) {
-			showWarning('Ask Presto is unavailable', 'Open or create a chat thread in this workspace first.');
+			showWarning(`${actionLabel(kind, agentName)} is unavailable`, 'Open or create a chat thread in this workspace first.');
 			return;
 		}
 		const guard = captureScopeGuard();
@@ -706,7 +711,7 @@
 				await refreshStaleCard(card);
 			} else {
 				showError(
-					`${actionLabel(kind)} failed`,
+					`${actionLabel(kind, agentName)} failed`,
 					error instanceof Error ? error.message : 'The action could not be completed.'
 				);
 			}
@@ -1082,13 +1087,13 @@
 										use:recommendationPresentation={{ card, primary }}
 											disabled={allBusyIds.has(card.candidate_id)}
 											aria-describedby={`worth-rationale-${card.candidate_id}`}
-											title={primary.rationale || primary.label}
+											title={primary.rationale || resurfacingActionDisplayLabel(primary, agentName)}
 											on:click={() => void runCapability(card, primary.kind, true)}
 										>
 											<Icon name={actionIcon(primary.kind)} size={12} />
 											{operationBusy?.candidateId === card.candidate_id && operationBusy.kind === primary.kind
 												? 'Working…'
-												: primary.label}
+												: resurfacingActionDisplayLabel(primary, agentName)}
 										</button>
 										{#if quick}
 											<button
@@ -1129,7 +1134,7 @@
 													{#each menuActions(card) as action (action.kind)}
 														<button type="button" role="menuitem" on:click={() => void runCapability(card, action.kind)}>
 															<Icon name={actionIcon(action.kind)} size={14} />
-															<span>{action.label}</span>
+															<span>{resurfacingActionDisplayLabel(action, agentName)}</span>
 														</button>
 													{/each}
 													<div class="worth-menu__separator" role="separator"></div>

@@ -149,10 +149,17 @@ fn should_project_progress_item(event_type: ArtifactV2EventType) -> bool {
         ArtifactV2EventType::StepCompleted
             | ArtifactV2EventType::StepFailed
             | ArtifactV2EventType::LlmRequested
+            | ArtifactV2EventType::ContextRetrievalStarted
+            | ArtifactV2EventType::ContextRetrievalCompleted
+            // In-flight facts: the model a running call was routed to and a
+            // tool that has started. Projected live so the panel shows the
+            // work while it runs, not only once it settles.
+            | ArtifactV2EventType::LlmRouted
             | ArtifactV2EventType::LlmSucceeded
             | ArtifactV2EventType::LlmFailed
             | ArtifactV2EventType::AgenticIterationStarted
             | ArtifactV2EventType::AgenticDecisionMade
+            | ArtifactV2EventType::ToolStarted
             | ArtifactV2EventType::ToolSucceeded
             | ArtifactV2EventType::ToolFailed
             | ArtifactV2EventType::InputRequested
@@ -163,4 +170,23 @@ fn should_project_progress_item(event_type: ArtifactV2EventType) -> bool {
             | ArtifactV2EventType::ExecutionResponsibilityChanged
             | ArtifactV2EventType::ArtifactCreated
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_flight_llm_and_tool_events_project_progress_live() {
+        for event_type in [
+            ArtifactV2EventType::LlmRequested,
+            ArtifactV2EventType::LlmRouted,
+            ArtifactV2EventType::ToolStarted,
+        ] {
+            assert!(
+                should_project_progress_item(event_type),
+                "{event_type} must refresh the progress projection while the work runs"
+            );
+        }
+    }
 }

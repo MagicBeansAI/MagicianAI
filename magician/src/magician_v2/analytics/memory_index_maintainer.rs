@@ -24,7 +24,8 @@ use tracing::{debug, info, warn};
 use crate::magician_v2::{
     agents::{
         acknowledge_memory_index_changes, apply_memory_index_change_snapshot,
-        inspect_scope_memory_index, memory_index_stale_reason_is_transient_lancedb,
+        inspect_scope_memory_index, inspect_scope_memory_index_fast,
+        memory_index_stale_reason_is_transient_lancedb, optimize_scope_memory_index,
         reconcile_scope_memory_index, snapshot_memory_index_changes, AgentDefinitionStore,
         AgentMemoryResolver, AgentStorage, AgentStorageError, MemoryIndexIncrementalUpdateOutcome,
         MemoryIndexIncrementalUpdateResult, MemoryIndexRebuildOutcome, MemoryLanceDbWriteReport,
@@ -52,6 +53,21 @@ const MEMORY_EMBEDDING_KEEP_RESIDENT_INTERVAL: Duration = Duration::from_secs(30
 const MEMORY_INDEX_REBUILD_RETRY_INITIAL: Duration = Duration::from_secs(15 * 60);
 const MEMORY_INDEX_REBUILD_RETRY_MAX: Duration = Duration::from_secs(60 * 60);
 const MEMORY_INDEX_REBUILD_COOLDOWN_FILE: &str = "rebuild-cooldown.json";
+/// Persisted "paused until an explicit rebuild" state for one scope.
+const MEMORY_INDEX_REBUILD_REQUIRED_FILE: &str = "rebuild-required.json";
+/// Stale reasons the merge-only runtime can never repair: the stored index
+/// was built by another index/schema/backend version or embedding contract, or
+/// LanceDB holds table data without a manifest. Each is detectable from the
+/// manifest alone, so the pause re-checks cheaply and lifts on its own after a
+/// rebuild. Everything else keeps the ordinary failure backoff.
+const EXPLICIT_REBUILD_ONLY_REASONS: [&str; 5] = [
+    "index_version_changed",
+    "schema_version_changed",
+    "backend_changed",
+    "embedding_config_changed",
+    "missing_manifest",
+];
+const EXPLICIT_REBUILD_ERROR_MARKER: &str = "requires explicit rebuild: ";
 /// A quiet-period debounce coalesces bursts, but continuous writes must not
 /// postpone convergence indefinitely. The first-dirty ceiling is derived from
 /// the configured debounce and clamped to this conservative range: ordinary
@@ -154,6 +170,116 @@ impl MemoryIndexRebuildCooldown {
     fn remaining_ms(&self, now_unix_ms: u64) -> u64 {
         self.next_retry_at_unix_ms.saturating_sub(now_unix_ms)
     }
+}
+
+/// A scope whose derived index only an explicit rebuild can repair. While it
+/// stands the maintainer skips the scope entirely: no hourly reconcile, no
+/// full source inspection, no failure count. It lifts when the manifest no
+/// longer shows `reason` for the same stale manifest (a rebuild ran).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MemoryIndexRebuildRequired {
+    reason: String,
+    manifest_index_version: Option<String>,
+    manifest_schema_version: Option<u32>,
+    expected_index_version: String,
+    expected_schema_version: u32,
+    /// The stale manifest's `rebuilt_at` (RFC 3339); `None` without one.
+    manifest_rebuilt_at: Option<String>,
+    detected_at_unix_ms: u64,
+    command: String,
+}
+
+impl MemoryIndexRebuildRequired {
+    fn from_status(
+        reason: &str,
+        status: &magician_vector_index::memory_index::MemoryIndexStatus,
+        scope: &DirtyMemoryIndexScope,
+    ) -> Self {
+        use magician_vector_index::memory_index::{
+            MEMORY_INDEX_SCHEMA_VERSION, MEMORY_INDEX_VERSION,
+        };
+        let manifest = status.manifest.as_ref();
+        Self {
+            reason: reason.to_string(),
+            manifest_index_version: manifest.map(|manifest| manifest.index_version.clone()),
+            manifest_schema_version: manifest.map(|manifest| manifest.schema_version),
+            expected_index_version: MEMORY_INDEX_VERSION.to_string(),
+            expected_schema_version: MEMORY_INDEX_SCHEMA_VERSION,
+            manifest_rebuilt_at: manifest.map(|manifest| manifest.rebuilt_at.to_rfc3339()),
+            detected_at_unix_ms: unix_epoch_millis_now(),
+            command: memory_index_rebuild_command(scope),
+        }
+    }
+
+    /// Whether `status` still shows this same incident.
+    fn still_holds(&self, status: &magician_vector_index::memory_index::MemoryIndexStatus) -> bool {
+        status.reason == self.reason
+            && status
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.rebuilt_at.to_rfc3339())
+                == self.manifest_rebuilt_at
+    }
+
+    fn incident(&self) -> String {
+        format!(
+            "{}:{}",
+            self.reason,
+            self.manifest_rebuilt_at.as_deref().unwrap_or("no-manifest")
+        )
+    }
+
+    fn detail(&self) -> String {
+        match self.reason.as_str() {
+            "schema_version_changed" => format!(
+                "the index has schema {}; this build needs {}",
+                self.manifest_schema_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                self.expected_schema_version
+            ),
+            "index_version_changed" => format!(
+                "the index is `{}`; this build needs `{}`",
+                self.manifest_index_version.as_deref().unwrap_or("unknown"),
+                self.expected_index_version
+            ),
+            "backend_changed" => "the index was built by another retrieval backend".into(),
+            "embedding_config_changed" => {
+                "the embedding model or contract changed since the index was built".into()
+            },
+            "missing_manifest" => "the index has table data but no manifest".into(),
+            other => other.replace('_', " "),
+        }
+    }
+
+    fn notice(&self) -> crate::magician_v2::realtime_events::MemoryIndexRebuildNotice {
+        crate::magician_v2::realtime_events::MemoryIndexRebuildNotice {
+            incident: self.incident(),
+            reason: self.reason.clone(),
+            detail: self.detail(),
+            command: self.command.clone(),
+        }
+    }
+}
+
+fn memory_index_rebuild_command(scope: &DirtyMemoryIndexScope) -> String {
+    format!(
+        "./magician.bin memory-index rebuild --principal {} --workspace {}",
+        scope.principal, scope.workspace
+    )
+}
+
+/// The explicit-rebuild-only stale reason named in a reconcile error chain
+/// (`... requires explicit rebuild: schema_version_changed`), if any.
+fn explicit_rebuild_only_reason(error_chain: &str) -> Option<&'static str> {
+    let (_, tail) = error_chain.split_once(EXPLICIT_REBUILD_ERROR_MARKER)?;
+    let token = tail
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .next()?;
+    EXPLICIT_REBUILD_ONLY_REASONS
+        .iter()
+        .copied()
+        .find(|reason| *reason == token)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -765,6 +891,177 @@ async fn clear_memory_index_rebuild_cooldown(
     }
 }
 
+static MEMORY_INDEX_NOTICE_BROADCASTER: OnceLock<
+    std::sync::Arc<crate::magician_v2::realtime_events::RuntimeTransportBroadcaster>,
+> = OnceLock::new();
+
+/// Connect the maintainer's "rebuild required" notices to the runtime event
+/// bus, once at boot. Before this the state is still recorded and logged.
+pub fn install_memory_index_notice_broadcaster(
+    broadcaster: std::sync::Arc<crate::magician_v2::realtime_events::RuntimeTransportBroadcaster>,
+) {
+    let _ = MEMORY_INDEX_NOTICE_BROADCASTER.set(broadcaster);
+}
+
+fn memory_index_rebuild_required_path(storage: &AgentStorage) -> std::path::PathBuf {
+    storage
+        .memory_index_dir()
+        .join(MEMORY_INDEX_REBUILD_REQUIRED_FILE)
+}
+
+async fn load_memory_index_rebuild_required(
+    storage: &AgentStorage,
+) -> Option<MemoryIndexRebuildRequired> {
+    let path = memory_index_rebuild_required_path(storage);
+    let bytes = storage.read_bytes(&path).await.ok()?;
+    match serde_json::from_slice(&bytes) {
+        Ok(state) => Some(state),
+        Err(error) => {
+            warn!(
+                target: "analytics::memory_index_maintainer",
+                path = %path.display(),
+                error = %error,
+                "discarding unreadable memory index rebuild-required state"
+            );
+            let _ = storage.remove_file(&path).await;
+            None
+        },
+    }
+}
+
+/// Record that `scope` needs an explicit rebuild, when the cheap manifest
+/// check confirms `reason`. Stops the failure backoff for the scope (its
+/// cooldown is cleared, not incremented) and raises one Attention notice.
+/// Returns `None` when the manifest does not confirm it; the caller then keeps
+/// the ordinary failure path.
+async fn enter_memory_index_rebuild_required(
+    storage: &AgentStorage,
+    scope: &DirtyMemoryIndexScope,
+    reason: &str,
+) -> Option<MemoryIndexRebuildRequired> {
+    let status = inspect_scope_memory_index_fast(storage).await.ok()?;
+    if status.reason != reason {
+        return None;
+    }
+    let state = MemoryIndexRebuildRequired::from_status(reason, &status, scope);
+    let path = memory_index_rebuild_required_path(storage);
+    if let Err(error) = storage.write_json_atomic(&path, &state).await {
+        warn!(
+            target: "analytics::memory_index_maintainer",
+            principal = %scope.principal,
+            workspace = %scope.workspace,
+            path = %path.display(),
+            error = %error,
+            "failed to persist memory index rebuild-required state; keeping the failure backoff"
+        );
+        return None;
+    }
+    clear_memory_index_rebuild_cooldown(storage, scope).await;
+    raise_memory_index_rebuild_notice(scope, &state);
+    emit_maintenance_row(
+        storage,
+        "memory_index_rebuild_required",
+        "paused",
+        None,
+        Some(state.reason.clone()),
+        status.manifest.as_ref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    warn!(
+        target: "analytics::memory_index_maintainer",
+        principal = %scope.principal,
+        workspace = %scope.workspace,
+        reason = %state.reason,
+        manifest_schema_version = ?state.manifest_schema_version,
+        expected_schema_version = state.expected_schema_version,
+        command = %state.command,
+        "memory index needs an explicit rebuild; pausing runtime maintenance for this scope until it runs"
+    );
+    Some(state)
+}
+
+/// The scope's standing rebuild-required pause, if it still holds. Reads only
+/// the manifest. When a rebuild has replaced the stale manifest (or the
+/// condition otherwise cleared) the state is removed and its notice resolved,
+/// and maintenance resumes on this pass.
+async fn memory_index_rebuild_required_pause(
+    storage: &AgentStorage,
+    scope: &DirtyMemoryIndexScope,
+) -> Option<MemoryIndexRebuildRequired> {
+    let state = load_memory_index_rebuild_required(storage).await?;
+    let holds = match inspect_scope_memory_index_fast(storage).await {
+        Ok(status) => state.still_holds(&status),
+        // An unreadable manifest is not a rebuild; stay paused.
+        Err(_) => true,
+    };
+    if holds {
+        // Idempotent; re-raises after a restart if the notice was lost.
+        raise_memory_index_rebuild_notice(scope, &state);
+        return Some(state);
+    }
+    clear_memory_index_rebuild_required(storage, scope, &state).await;
+    None
+}
+
+async fn clear_memory_index_rebuild_required(
+    storage: &AgentStorage,
+    scope: &DirtyMemoryIndexScope,
+    state: &MemoryIndexRebuildRequired,
+) {
+    let path = memory_index_rebuild_required_path(storage);
+    if let Err(error) = storage.remove_file(&path).await {
+        warn!(
+            target: "analytics::memory_index_maintainer",
+            principal = %scope.principal,
+            workspace = %scope.workspace,
+            path = %path.display(),
+            error = %error,
+            "failed to clear memory index rebuild-required state"
+        );
+        return;
+    }
+    if let Some(broadcaster) = MEMORY_INDEX_NOTICE_BROADCASTER.get() {
+        broadcaster.resolve_memory_index_rebuild_notice(
+            &scope.principal,
+            &scope.workspace,
+            &state.incident(),
+        );
+    }
+    info!(
+        target: "analytics::memory_index_maintainer",
+        principal = %scope.principal,
+        workspace = %scope.workspace,
+        reason = %state.reason,
+        "memory index no longer needs an explicit rebuild; resuming runtime maintenance"
+    );
+}
+
+/// After an explicit rebuild in this process (the rebuild API), lift the
+/// scope's pause and resolve its notice now rather than on the next pass.
+pub async fn note_explicit_memory_index_rebuild(storage: &AgentStorage) {
+    let Some(scope) = scope_for_storage(storage) else {
+        return;
+    };
+    let _ = memory_index_rebuild_required_pause(storage, &scope).await;
+}
+
+fn raise_memory_index_rebuild_notice(
+    scope: &DirtyMemoryIndexScope,
+    state: &MemoryIndexRebuildRequired,
+) {
+    if let Some(broadcaster) = MEMORY_INDEX_NOTICE_BROADCASTER.get() {
+        broadcaster.raise_memory_index_rebuild_notice(
+            &scope.principal,
+            &scope.workspace,
+            &state.notice(),
+        );
+    }
+}
+
 fn memory_index_rebuild_backoff(failure_count: u32) -> Duration {
     let exponent = failure_count.saturating_sub(1).min(63);
     let multiplier = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
@@ -970,6 +1267,7 @@ async fn run_once_with_logging(
                     scopes_rebuilt = outcome.scopes_rebuilt,
                     scopes_failed = outcome.scopes_failed,
                     scopes_skipped_cooldown = outcome.scopes_skipped_cooldown,
+                    scopes_paused_rebuild_required = outcome.scopes_paused_rebuild_required,
                     scopes_quiesced_empty = outcome.scopes_quiesced_empty,
                     scopes_ignored_ephemeral_eval = outcome.scopes_ignored_ephemeral_eval,
                     "memory index maintainer completed"
@@ -990,6 +1288,7 @@ async fn run_once_with_logging(
                     scopes_rebuilt = outcome.scopes_rebuilt,
                     scopes_failed = outcome.scopes_failed,
                     scopes_skipped_cooldown = outcome.scopes_skipped_cooldown,
+                    scopes_paused_rebuild_required = outcome.scopes_paused_rebuild_required,
                     scopes_quiesced_empty = outcome.scopes_quiesced_empty,
                     scopes_ignored_ephemeral_eval = outcome.scopes_ignored_ephemeral_eval,
                     "memory index maintainer completed (no changes)"
@@ -1012,6 +1311,8 @@ struct MemoryIndexMaintenanceOutcome {
     scopes_rebuilt: usize,
     scopes_failed: usize,
     scopes_skipped_cooldown: usize,
+    /// Scopes waiting for an explicit rebuild: skipped, never counted failed.
+    scopes_paused_rebuild_required: usize,
     scopes_quiesced_empty: usize,
     scopes_ignored_ephemeral_eval: usize,
 }
@@ -1092,6 +1393,22 @@ async fn run_once(
                 error = %format_error_chain(&error),
                 "empty-scope preflight was inconclusive; continuing normal index maintenance"
             ),
+        }
+        // Only an explicit rebuild repairs this scope: skip it without the
+        // full inspection or a failure count until the manifest changes.
+        if let Some(state) =
+            memory_index_rebuild_required_pause(memory_service.storage(), &scope).await
+        {
+            outcome.scopes_paused_rebuild_required += 1;
+            debug!(
+                target: "analytics::memory_index_maintainer",
+                principal = %principal,
+                workspace = %workspace,
+                reason = %state.reason,
+                command = %state.command,
+                "memory index waits for an explicit rebuild; skipping runtime maintenance"
+            );
+            continue;
         }
         if let Some(cooldown) =
             active_memory_index_rebuild_cooldown(memory_service.storage(), &scope).await
@@ -1318,6 +1635,7 @@ async fn run_once(
             }
         };
         if status.as_ref().is_some_and(|status| !status.stale) {
+            compact_fragmented_memory_index(memory_service.storage(), &scope).await;
             continue;
         }
         if journal_full_reason.is_none()
@@ -1435,6 +1753,15 @@ async fn run_once(
             Err(error) => {
                 let duration_ms = started.elapsed().as_millis() as u64;
                 let error_chain = format_error_chain(&error);
+                if let Some(reason) = explicit_rebuild_only_reason(&error_chain) {
+                    if enter_memory_index_rebuild_required(memory_service.storage(), &scope, reason)
+                        .await
+                        .is_some()
+                    {
+                        outcome.scopes_paused_rebuild_required += 1;
+                        continue;
+                    }
+                }
                 let cooldown = record_memory_index_rebuild_failure(
                     memory_service.storage(),
                     &scope,
@@ -1477,6 +1804,98 @@ async fn run_once(
         }
     }
     Ok(outcome)
+}
+
+/// Active fragments above which a healthy scope index is compacted. Every
+/// incremental write adds a fragment and nothing else merges them; search cost
+/// grows with the count (2026-10-28: 480 active fragments searched in 771 ms
+/// p50 against 192 ms once compacted to 2, same build). Override with
+/// `MAGICIAN_MEMORY_INDEX_OPTIMIZE_FRAGMENTS`; 0 disables.
+const DEFAULT_MEMORY_INDEX_OPTIMIZE_FRAGMENTS: usize = 64;
+/// At most one fragment check (and so one compaction) per scope in this
+/// window, so a compaction that fails or cannot keep up is not retried every
+/// maintainer tick.
+const MEMORY_INDEX_OPTIMIZE_CHECK_INTERVAL: Duration = Duration::from_secs(600);
+
+fn memory_index_optimize_fragment_threshold() -> usize {
+    static THRESHOLD: OnceLock<usize> = OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
+        std::env::var("MAGICIAN_MEMORY_INDEX_OPTIMIZE_FRAGMENTS")
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(DEFAULT_MEMORY_INDEX_OPTIMIZE_FRAGMENTS)
+    })
+}
+
+/// Compact a healthy scope index whose active fragment count passed the
+/// threshold, with the same `optimize_scope_memory_index` the
+/// `memory-index optimize` command runs (compaction, version pruning, index
+/// optimization; it takes the scope's write lock).
+async fn compact_fragmented_memory_index(storage: &AgentStorage, scope: &DirtyMemoryIndexScope) {
+    static LAST_CHECK: OnceLock<Mutex<HashMap<DirtyMemoryIndexScope, Instant>>> = OnceLock::new();
+    let threshold = memory_index_optimize_fragment_threshold();
+    if threshold == 0 {
+        return;
+    }
+    let now = Instant::now();
+    {
+        let Ok(mut last) = LAST_CHECK.get_or_init(Default::default).lock() else {
+            return;
+        };
+        if last.get(scope).is_some_and(|at| {
+            now.saturating_duration_since(*at) < MEMORY_INDEX_OPTIMIZE_CHECK_INTERVAL
+        }) {
+            return;
+        }
+        last.insert(scope.clone(), now);
+    }
+    let fragments =
+        match magician_vector_index::memory_index::scope_memory_index_fragment_count(storage).await
+        {
+            Ok(Some(fragments)) if fragments > threshold => fragments,
+            Ok(_) => return,
+            Err(error) => {
+                debug!(
+                    target: "analytics::memory_index_maintainer",
+                    principal = %scope.principal,
+                    workspace = %scope.workspace,
+                    error = %format_error_chain(&error),
+                    "could not read memory index fragment count"
+                );
+                return;
+            },
+        };
+    let started = Instant::now();
+    match optimize_scope_memory_index(storage).await {
+        Ok(outcome) => {
+            let duration_ms = started.elapsed().as_millis() as u64;
+            let fragments_after =
+                magician_vector_index::memory_index::scope_memory_index_fragment_count(storage)
+                    .await
+                    .ok()
+                    .flatten();
+            info!(
+                target: "analytics::memory_index_maintainer",
+                principal = %scope.principal,
+                workspace = %scope.workspace,
+                fragments_before = fragments,
+                fragments_after = ?fragments_after,
+                threshold,
+                compaction_ran = outcome.compaction_ran,
+                prune_ran = outcome.prune_ran,
+                duration_ms,
+                "compacted fragmented memory index"
+            );
+        },
+        Err(error) => warn!(
+            target: "analytics::memory_index_maintainer",
+            principal = %scope.principal,
+            workspace = %scope.workspace,
+            fragments_before = fragments,
+            error = %format_error_chain(&error),
+            "memory index compaction failed; next attempt after the check interval"
+        ),
+    }
 }
 
 async fn settle_empty_memory_index_scope(
@@ -1630,6 +2049,14 @@ async fn rebuild_dirty_scope(
             return DirtyScopeRebuildOutcome::Complete;
         },
     };
+    if memory_index_rebuild_required_pause(memory_service.storage(), scope)
+        .await
+        .is_some()
+    {
+        // The source journal keeps the change; the explicit rebuild applies
+        // and acknowledges it.
+        return DirtyScopeRebuildOutcome::Complete;
+    }
     if let Some(cooldown) =
         active_memory_index_rebuild_cooldown(memory_service.storage(), scope).await
     {
@@ -1806,6 +2233,14 @@ async fn rebuild_dirty_scope(
         Err(error) => {
             let duration_ms = started.elapsed().as_millis() as u64;
             let error_chain = format_error_chain(&error);
+            if let Some(reason) = explicit_rebuild_only_reason(&error_chain) {
+                if enter_memory_index_rebuild_required(memory_service.storage(), scope, reason)
+                    .await
+                    .is_some()
+                {
+                    return DirtyScopeRebuildOutcome::Complete;
+                }
+            }
             let cooldown =
                 record_memory_index_rebuild_failure(memory_service.storage(), scope, &error_chain)
                     .await;
@@ -2636,6 +3071,125 @@ mod tests {
                 .await
                 .expect("malformed manifest gate")
         );
+    }
+
+    #[test]
+    fn only_manifest_detectable_explicit_rebuild_reasons_pause_the_scope() {
+        assert_eq!(
+            explicit_rebuild_only_reason(
+                "writing LanceDB memory index: runtime memory index reconciliation requires explicit rebuild: schema_version_changed"
+            ),
+            Some("schema_version_changed")
+        );
+        assert_eq!(
+            explicit_rebuild_only_reason(
+                "requires explicit rebuild: missing_manifest: more context"
+            ),
+            Some("missing_manifest")
+        );
+        // Unreadable manifests, failed merges and transient errors keep the
+        // ordinary failure backoff.
+        assert_eq!(
+            explicit_rebuild_only_reason("requires explicit rebuild: manifest_unreadable"),
+            None
+        );
+        assert_eq!(
+            explicit_rebuild_only_reason(
+                "runtime LanceDB memory index merge failed; explicit rebuild required"
+            ),
+            None
+        );
+        assert_eq!(
+            explicit_rebuild_only_reason("ollama embedding timed out"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_bump_pauses_without_counting_failures_until_a_rebuild_replaces_the_manifest() {
+        use magician_vector_index::memory_index::{
+            MEMORY_INDEX_BACKEND, MEMORY_INDEX_SCHEMA_VERSION, MEMORY_INDEX_VERSION,
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = AgentStorage::new(temp.path());
+        let scope = DirtyMemoryIndexScope {
+            principal: "anonymous".to_string(),
+            workspace: "default".to_string(),
+        };
+        let mut manifest = manifest_with_model(Some("nomic-embed-text"));
+        manifest.index_version = MEMORY_INDEX_VERSION.to_string();
+        manifest.backend = MEMORY_INDEX_BACKEND.to_string();
+        manifest.schema_version = MEMORY_INDEX_SCHEMA_VERSION - 2;
+        storage
+            .write_json_atomic(storage.memory_index_manifest_path(), &manifest)
+            .await
+            .expect("write stale manifest");
+        storage
+            .write_bytes_atomic(storage.memory_index_documents_path(), b"")
+            .await
+            .expect("write documents");
+        fs::create_dir_all(storage.memory_lancedb_index_dir())
+            .await
+            .expect("create lancedb dir");
+        // A prior hourly failure, to prove the pause stops the counter.
+        let cooldown = MemoryIndexRebuildCooldown {
+            failure_count: 290,
+            next_retry_at_unix_ms: unix_epoch_millis_now().saturating_add(60_000),
+            last_error: "requires explicit rebuild: schema_version_changed".to_string(),
+        };
+        assert!(persist_memory_index_rebuild_cooldown(&storage, &scope, &cooldown).await);
+
+        // The manifest must confirm the reason the error named.
+        assert!(
+            enter_memory_index_rebuild_required(&storage, &scope, "backend_changed")
+                .await
+                .is_none()
+        );
+        let state = enter_memory_index_rebuild_required(&storage, &scope, "schema_version_changed")
+            .await
+            .expect("schema bump is explicit-rebuild-only");
+        assert_eq!(
+            state.manifest_schema_version,
+            Some(MEMORY_INDEX_SCHEMA_VERSION - 2)
+        );
+        assert_eq!(state.expected_schema_version, MEMORY_INDEX_SCHEMA_VERSION);
+        assert_eq!(
+            state.command,
+            "./magician.bin memory-index rebuild --principal anonymous --workspace default"
+        );
+        assert!(state.detail().contains(&format!(
+            "schema {}; this build needs {}",
+            MEMORY_INDEX_SCHEMA_VERSION - 2,
+            MEMORY_INDEX_SCHEMA_VERSION
+        )));
+        assert!(
+            load_memory_index_rebuild_cooldown(&storage, &scope)
+                .await
+                .is_none(),
+            "a rebuild-only condition is not a counted failure"
+        );
+
+        // Every later pass is skipped while the stale manifest stands.
+        assert_eq!(
+            memory_index_rebuild_required_pause(&storage, &scope).await,
+            Some(state.clone())
+        );
+        assert_eq!(
+            memory_index_rebuild_required_pause(&storage, &scope).await,
+            Some(state)
+        );
+
+        // An explicit rebuild writes a current manifest: the pause lifts.
+        manifest.schema_version = MEMORY_INDEX_SCHEMA_VERSION;
+        manifest.rebuilt_at = chrono::Utc::now() + chrono::Duration::seconds(1);
+        storage
+            .write_json_atomic(storage.memory_index_manifest_path(), &manifest)
+            .await
+            .expect("write rebuilt manifest");
+        assert!(memory_index_rebuild_required_pause(&storage, &scope)
+            .await
+            .is_none());
+        assert!(load_memory_index_rebuild_required(&storage).await.is_none());
     }
 
     #[tokio::test]

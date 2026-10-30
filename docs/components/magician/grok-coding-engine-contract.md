@@ -51,8 +51,9 @@ options (Grok ≥ 1.0.40): `agent` rejects them, and `--no-auto-update` no
 longer exists. A wrong argv kills every qualify probe and turn at launch.
 
 Magician never relocates `GROK_HOME`. Child env is rebuilt from `PATH`,
-`HOME`, `USER`, `TMPDIR`, `LANG`, `TERM`, plus `GROK_HOME` and `XAI_API_KEY`
-only when already present in the parent; `MAGICIAN_*` is dropped.
+`HOME`, `USER`, `TMPDIR`, `LANG`, `TERM`, plus `GROK_HOME` when present and
+`XAI_API_KEY` only when Magician's credentials apply
+([harness credentials](harness-auth.md)); `MAGICIAN_*` is dropped.
 `grok --version` probes use the same `env_clear` + allowlist rebuild so
 Magician secrets are not inherited.
 
@@ -153,7 +154,7 @@ and omitted from proposal raw. Provider output is not proposal authority;
 
 Ready = `coding.grok.enabled` + exactly one resolved binary +
 `grok --version` parseable and ≥ **1.0.5** + either `~/.grok/auth.json`
-exists **or** `XAI_API_KEY` is non-empty in the filtered child env + a
+exists **or** (Magician's credentials apply and) `XAI_API_KEY` is non-empty + a
 cached ACP isolation receipt that **positively evidenced** isolation.
 `selectable` is true only for Ready; until then `grok-default` is listed with
 `selectable: false`, and Auto may pick Grok only when the row is Ready.
@@ -206,7 +207,7 @@ homes, `auth.json`, or email:
 
 ### Observation and qualify
 
-Request paths read the snapshot. GET `/api/magician/v2/coding/profiles`
+Request paths read the snapshot. GET `/api/magician/v2/coding/models`
 calls `observe_grok_readiness` + `project_coding_profiles` (filesystem +
 cached version/auth/isolation overlay, same shape as Codex observe) and never
 runs `grok --version`, ACP-initializes, or waits. `run_coding_task` observes

@@ -1,6 +1,22 @@
 name: read_file
-description: Read a file from the local filesystem. Returns the file contents. Prefer over `bash cat` — this tool has correct permissions and uniform error reporting. For binary or image content, use the appropriate pack capability instead.
-version: "1.0.0"
+description: Read a file from the local filesystem. Returns the file contents. Prefer over `bash cat` — this tool has correct permissions and uniform error reporting. For binary or image content, use the appropriate pack capability instead. A file larger than the per-result limit (about 8 KB) returns its head as an excerpt; read the rest with `offset` and `limit`.
+version: "1.1.0"
+# A file over the surface's scalar budget would otherwise be dropped whole
+# (an oversized-scalar omission plus a ref). The document-spans contract turns
+# `/content` into a boundary-aligned head excerpt instead, so the model sees
+# the start of the file, `end_byte` / `original_bytes`, and `full_result_ref`.
+result_projection:
+  contract_id: document_spans_v1
+  excerpt_paths:
+    - /content
+  priority_fields:
+    - status
+    - file_path
+    - byte_count
+    - total_bytes
+    - offset
+    - next_offset
+    - content
 guide: |
   Tool name: `read_file`
 
@@ -10,6 +26,13 @@ guide: |
   per-scope `FileSandboxConfig` (from `AgentResources`) enforces the
   same allowed-roots / read-only / allow-delete policy.
 
+  Large files: a result over the per-result limit (about 8 KB) shows
+  the head of the file as an excerpt (`projection.excerpts[0]`, ending
+  at `end_byte` of `original_bytes`). Read the rest with
+  `offset` = that `end_byte` and `limit` of at most 8000, then keep
+  passing the returned `next_offset` until it is absent. Offsets are
+  UTF-8 byte offsets.
+
   For modifying an existing file prefer `edit_file` (sends only the
   diff). For new files or full rewrites use `write_file`.
 parameters:
@@ -17,10 +40,23 @@ parameters:
     required: true
     param_type: string
     description: The absolute path to the file to read.
+    schema:
+      type: string
+      description: The absolute path to the file to read.
+      minLength: 1
+      x-magician-grounding-aliases: [path, artifact_path, output_path]
   - name: encoding
     required: false
     param_type: string
     description: Optional encoding hint (informational; the executor reads as UTF-8 text).
+  - name: offset
+    required: false
+    param_type: integer
+    description: Optional UTF-8 byte offset to start reading at (default 0). Use an excerpt's `end_byte` or a previous `next_offset`.
+  - name: limit
+    required: false
+    param_type: integer
+    description: Optional maximum bytes to return from `offset` (keep it at or under 8000 so the slice is shown whole). The result then carries `total_bytes` and, while more remains, `next_offset`.
 implementation:
   type: compiled
   provider_name: read_file

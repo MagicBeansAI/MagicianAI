@@ -56,10 +56,10 @@ describe('Harness Page component (harnessPage.component.test.ts)', () => {
 
 		render(HarnessPage);
 
-		expect(await screen.findByText('Harness & Company Loop')).toBeInTheDocument();
+		expect(await screen.findByRole('heading', {name: /^Team routines/, level: 2})).toBeInTheDocument();
 		expect(screen.getByText('Back to Crew')).toBeInTheDocument();
-		expect(screen.getByText('Autonomous Company Loop')).toBeInTheDocument();
-		expect(screen.getByText('Run Company Loop')).toBeInTheDocument();
+		expect(screen.getByText('Scheduled team routines')).toBeInTheDocument();
+		expect(screen.getByText('Start team sequence')).toBeInTheDocument();
 
 		// Check 5-stage stepper
 		expect(screen.getByText('CMO')).toBeInTheDocument();
@@ -147,7 +147,7 @@ describe('Harness Page component (harnessPage.component.test.ts)', () => {
 
 		render(HarnessPage);
 
-		const pagerNav = await screen.findByRole('navigation', { name: 'Harness anomalies pagination' });
+		const pagerNav = await screen.findByRole('navigation', { name: 'Autopilot anomalies pagination' });
 		expect(pagerNav).toBeInTheDocument();
 		expect(screen.getByText(/Page 1 of 1/i)).toBeInTheDocument();
 		expect(screen.getByText(/1-2 of 2/i)).toBeInTheDocument();

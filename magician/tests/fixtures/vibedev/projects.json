@@ -11,6 +11,9 @@
       "created_at_ms": 1760000000000,
       "deploy_targets": [],
       "deployments": [],
+      "health": {
+        "status": "ok"
+      },
       "name": "Shop",
       "project_id": "proj_shop",
       "repo_absolute_path": "/Users/owner/code/shop",

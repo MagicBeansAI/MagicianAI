@@ -472,6 +472,7 @@ impl FileV2Store {
             active_delegation_group: Vec::new(),
             timeout_secs: params.timeout_secs,
             delegation_chain: params.delegation_chain,
+            read_lineage: Vec::new(),
             work_authority: params.work_authority,
             paused_from_state: None,
             entry_mode: params.entry_mode,
@@ -1178,6 +1179,18 @@ impl CoreV2ConversationStore for FileV2Store {
             doc.execution.root_execution_id = root_execution_id.clone();
             doc.execution.updated_at = chrono::Utc::now().timestamp_millis();
             Ok(())
+        })
+        .await
+    }
+
+    async fn set_execution_read_lineage(
+        &self,
+        execution_id: &str,
+        read_lineage: &[String],
+    ) -> Result<(), V2StorageError> {
+        let read_lineage = read_lineage.to_vec();
+        self.update_execution_metadata(execution_id, move |execution| {
+            execution.read_lineage = read_lineage;
         })
         .await
     }

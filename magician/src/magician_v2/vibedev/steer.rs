@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use super::live_runs::{live_runs, project_task_ids, LiveRun, LiveRunState};
+use super::live_runs::{live_runs, project_task_ids, LiveRun, LiveRunState, OwnerRequests};
 use super::projects::read_vibedev_projects;
 use crate::magician_v2::archived_filter::ArchivedFilter;
 use crate::magician_v2::artifact_v2::{ArtifactV2Service, ScopeRef};
@@ -145,11 +145,12 @@ pub async fn steer_live_run(
         .workspace()
         .scope_root(&scope.principal(), &scope.workspace());
     let projects = read_vibedev_projects(&root);
-    let waiting = service.pending_user_request_task_ids(scope).await;
+    let pending = service.pending_user_requests(scope).await;
+    let requests = OwnerRequests::from_requests(pending.iter());
     let items = match service
         .list_task_items_by_ids_archive_filtered(
             scope,
-            &project_task_ids(&projects, &waiting),
+            &project_task_ids(&projects, &requests.task_ids()),
             ArchivedFilter::Exclude,
         )
         .await
@@ -160,7 +161,7 @@ pub async fn steer_live_run(
     let runs = live_runs(
         &projects,
         &items,
-        &waiting,
+        &requests,
         chrono::Utc::now().timestamp_millis(),
         0,
     );
@@ -221,11 +222,16 @@ mod tests {
             status: "running".to_string(),
             step: None,
             summary: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             turns: 1,
             started_at: "2026-10-13T00:00:00Z".to_string(),
             cost_usd: None,
             approval_id: None,
+            approval_respond: None,
             approval_task_id: None,
+            waiting_kind: None,
+            notice: None,
             crew_id: lane.map(|_| "crew_1".to_string()),
             lane: lane.map(str::to_string),
             updated_at: "2026-10-13T00:00:00Z".to_string(),

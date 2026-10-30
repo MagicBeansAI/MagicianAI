@@ -7,7 +7,11 @@ struct TasksView: View {
     var workCreateRequest: Binding<Bool> = .constant(false)
     var workNavigation: AnyView? = nil
     var threadContextID: String? = nil
+    /// Opens a Work view from the landing summary's "All goals" / "All playbooks".
+    var onOpenWorkSection: ((WorkSection) -> Void)? = nil
     @StateObject private var themeManager = ThemeManager.shared
+    /// Goals and Playbooks under the Work switcher; owned here so a lane switch keeps it.
+    @StateObject private var landing = WorkLandingModel()
     @StateObject private var vm = TasksViewModel()
     @StateObject private var monitorsVM = MonitorsListViewModel()
     @State private var selectedTask: TaskV3?
@@ -52,14 +56,27 @@ struct TasksView: View {
                         Button("Chat") { AppActions.shared.requestThread(threadContextID) }.tint(themeManager.accentColor)
                     }.padding(.horizontal, 12).padding(.vertical, 6)
                 }
-                lanePicker
-                if vm.lane != .monitors {
-                    filterBar
-                    if vm.lane == .internalTasks, let progress = vm.cleanupProgress { Text(progress).font(.themed(12)).foregroundColor(themeManager.secondaryTextColor).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12) }
-                    statusLedger
+                // One vertical scroll for the whole page: the landing summary
+                // scrolls away, the lane tabs and search pin under the Work
+                // switcher, and the lane content (no scroll view of its own) follows.
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if showsLandingSummary {
+                            WorkLandingSummary(model: landing, onOpenSection: onOpenWorkSection)
+                        }
+                        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            Section {
+                                if vm.lane != .monitors {
+                                    filterBar
+                                    if vm.lane == .internalTasks, let progress = vm.cleanupProgress { Text(progress).font(.themed(12)).foregroundColor(themeManager.secondaryTextColor).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12) }
+                                    statusLedger
+                                }
+                                content
+                            } header: { stickyHeader }
+                        }
+                    }
                 }
-                Divider().overlay(themeManager.secondaryTextColor.opacity(0.15))
-                content
+                .refreshable { await refreshPage() }
             }
             .background(themeManager.backgroundColor.ignoresSafeArea())
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -84,8 +101,19 @@ struct TasksView: View {
             }
             .navigationTitle("Work")
             .navigationBarTitleDisplayMode(.inline)
+            // Same bar on every Work view: menu leading; refresh, then the
+            // primary New work action at the trailing edge.
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) { HamburgerButton() }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        if vm.lane == .monitors { Task { await monitorsVM.reload() } }
+                        else { vm.load() }
+                        if showsLandingSummary { landing.reload() }
+                    } label: { Image(systemName: "arrow.clockwise") }
+                        .tint(themeManager.accentColor)
+                        .accessibilityLabel("Refresh")
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         if vm.lane == .monitors { showMonitorCompose = true }
@@ -96,22 +124,17 @@ struct TasksView: View {
                         .accessibilityLabel("New work")
                         .disabled(threadContextID != nil && !threadResolved && vm.lane != .monitors)
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        if vm.lane == .monitors { Task { await monitorsVM.reload() } }
-                        else { vm.load() }
-                    } label: { Image(systemName: "arrow.clockwise") }
-                        .tint(themeManager.accentColor)
-                }
             }
             .onAppear {
                 configureThread()
+                if showsLandingSummary { landing.appear() }
                 vm.load()
                 vm.connectRealtime()
                 revealRequestedTask()
                 revealRequestedMonitor()
             }
             .onChange(of: threadContextID) { _, _ in configureThread() }
+            .onChange(of: showsLandingSummary) { _, shown in if shown { landing.appear() } }
             .onReceive(AppActions.shared.$taskRequestID.dropFirst()) { _ in revealRequestedTask() }
             .onChange(of: workCreateRequest.wrappedValue) { _, requested in
                 if requested { vm.lane = .tasks; showCreate = threadContextID == nil || threadResolved; workCreateRequest.wrappedValue = false }
@@ -206,7 +229,6 @@ struct TasksView: View {
             .onChange(of: selectedTask?.id) { _, id in
                 if id == nil { detailFocus = nil; detailExecutionID = nil }
             }
-            .searchable(text: $vm.searchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search tasks")
             // A pushed, full-screen task detail (design §3). Its own ⋯ menu
             // sends lifecycle actions; the list reloads after each.
             .taskDetailDestination(detailRoute, onChanged: { vm.load() })
@@ -237,6 +259,9 @@ struct TasksView: View {
             }
         }
     }
+
+    /// The All work landing only: not in a thread's work, nor where Work is not the host.
+    private var showsLandingSummary: Bool { workNavigation != nil && threadContextID == nil }
 
     private var threadResolved: Bool {
         guard let threadContextID, let value = threadResource.value else { return false }
@@ -341,15 +366,37 @@ struct TasksView: View {
         }
     }
 
+    /// Pinned while the page scrolls: the lane tabs and, off Monitors, the task search.
+    private var stickyHeader: some View {
+        VStack(spacing: 0) {
+            lanePicker
+            if vm.lane != .monitors {
+                WorkSearchField(vm.lane == .internalTasks ? "Search internal tasks" : "Search tasks", text: $vm.searchQuery)
+                    .padding(.horizontal).padding(.top, 8)
+            }
+            Divider().overlay(themeManager.secondaryTextColor.opacity(0.15)).padding(.top, 8)
+        }
+        .background(themeManager.backgroundColor)
+    }
+
+    /// Pull-to-refresh: the lane, and the landing summary when it is shown.
+    private func refreshPage() async {
+        if showsLandingSummary { landing.reload() }
+        if vm.lane == .monitors { await monitorsVM.reload() } else { vm.load() }
+    }
+
     private var lanePicker: some View {
+        HStack(spacing: 2) {
         Picker("Lane", selection: $vm.lane) {
             ForEach(TaskLane.allCases) { lane in
                 Text(lane.title).tag(lane)
-                    .accessibilityLabel(lane == .internalTasks ? "Internal tasks" : lane.title)
+                    .accessibilityLabel(lane.title)
                     .accessibilityIdentifier("tasks-lane-\(lane.rawValue)")
             }
         }
         .pickerStyle(.segmented)
+        WorkHelpButton(topic: vm.lane == .monitors ? .monitors : vm.lane == .internalTasks ? .systemWork : .tasks)
+        }
         .padding(.horizontal)
         .padding(.top, 8)
     }
@@ -390,13 +437,29 @@ struct TasksView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 sortMenu
-                if vm.lane == .tasks { Menu("\(vm.taskPageSize) per page") { ForEach([25, 50, 100, 200], id: \.self) { size in Button("\(size) per page") { vm.taskPageSize = size } } }.font(.themed(13)).foregroundColor(themeManager.accentColor) }
+                if vm.lane == .tasks {
+                    Menu { ForEach([25, 50, 100, 200], id: \.self) { size in Button("\(size) per page") { vm.taskPageSize = size } } } label: {
+                        controlChipLabel(icon: "list.number", text: "\(vm.taskPageSize) per page")
+                    }.accessibilityLabel("\(vm.taskPageSize) per page")
+                }
                 if vm.lane == .internalTasks {
-                    Menu("\(vm.internalPageSize) per page") { ForEach([25, 50, 100, 200], id: \.self) { size in Button("\(size) per page") { vm.internalPageSize = size } } }.font(.themed(13)).foregroundColor(themeManager.accentColor)
-                    Button(vm.selectingInternal ? "Finish selection" : "Select cleanup") { vm.selectingInternal.toggle(); vm.clearInternalSelection() }.disabled(vm.mutatingTaskID != nil)
+                    Menu { ForEach([25, 50, 100, 200], id: \.self) { size in Button("\(size) per page") { vm.internalPageSize = size } } } label: {
+                        controlChipLabel(icon: "list.number", text: "\(vm.internalPageSize) per page")
+                    }.accessibilityLabel("\(vm.internalPageSize) per page")
+                    Button { vm.selectingInternal.toggle(); vm.clearInternalSelection() } label: {
+                        controlChipLabel(icon: vm.selectingInternal ? "checkmark" : "checkmark.circle", text: vm.selectingInternal ? "Finish selection" : "Select cleanup", active: vm.selectingInternal)
+                    }
+                    .buttonStyle(.plain).disabled(vm.mutatingTaskID != nil)
+                    .accessibilityLabel(vm.selectingInternal ? "Finish selection" : "Select cleanup")
                     if vm.selectingInternal {
-                        Button("Select loaded") { vm.selectLoadedInternal() }.disabled(vm.mutatingTaskID != nil)
-                        Button("Delete selected (\(vm.selectedInternalIDs.count))", role: .destructive) { confirmInternalCleanup = true }.disabled(vm.selectedInternalIDs.isEmpty || vm.mutatingTaskID != nil)
+                        Button { vm.selectLoadedInternal() } label: { controlChipLabel(icon: "checklist", text: "Select loaded") }
+                            .buttonStyle(.plain).disabled(vm.mutatingTaskID != nil).accessibilityLabel("Select loaded")
+                        Button(role: .destructive) { confirmInternalCleanup = true } label: {
+                            controlChipLabel(icon: "trash", text: "Delete selected (\(vm.selectedInternalIDs.count))", tint: themeManager.dangerColor)
+                        }
+                        .buttonStyle(.plain).disabled(vm.selectedInternalIDs.isEmpty || vm.mutatingTaskID != nil)
+                        .opacity(vm.selectedInternalIDs.isEmpty ? 0.5 : 1)
+                        .accessibilityLabel("Delete selected (\(vm.selectedInternalIDs.count))")
                             .confirmationDialog("Delete \(vm.selectedInternalIDs.count) selected internal records?", isPresented: $confirmInternalCleanup, titleVisibility: .visible) {
                                 Button("Delete selected records", role: .destructive) { vm.deleteSelectedInternal() }
                             } message: { Text("App-managed runs are excluded. Failed deletions remain selected for retry.") }
@@ -452,15 +515,15 @@ struct TasksView: View {
         }
     }
 
-    private func controlChipLabel(icon: String, text: String, active: Bool = false) -> some View {
+    private func controlChipLabel(icon: String, text: String, active: Bool = false, tint: Color? = nil) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 11))
+            Image(systemName: icon).font(.system(size: 11)).accessibilityHidden(true)
             Text(text)
         }
         .font(.themed(13, weight: .medium))
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(active ? themeManager.accentFillColor : themeManager.surfaceColor)
-        .foregroundColor(active ? themeManager.onAccentColor : themeManager.textColor)
+        .foregroundColor(active ? themeManager.onAccentColor : (tint ?? themeManager.textColor))
         .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous).stroke(themeManager.secondaryTextColor.opacity(active ? 0 : 0.2), lineWidth: 1))
     }
@@ -472,19 +535,18 @@ struct TasksView: View {
                 onSelect: { item in
                     selectedMonitor = Monitors.DeepLinkTarget(taskID: item.taskID)
                 },
-                onCreate: { showMonitorCompose = true }
+                onCreate: { showMonitorCompose = true },
+                embedded: true
             )
         } else if vm.visibleTasks.isEmpty {
             taskListPlaceholder
         } else {
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(vm.visibleTasks) { taskCard($0) }
-                    loadMoreFooter
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 10)
+            LazyVStack(spacing: 10) {
+                ForEach(vm.visibleTasks) { taskCard($0) }
+                loadMoreFooter
             }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
         }
     }
 
@@ -523,7 +585,7 @@ struct TasksView: View {
                     .font(.themed(15)).foregroundColor(themeManager.secondaryTextColor)
                 Spacer()
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 240)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("tasks-loading-state")
         case .failed:
@@ -549,7 +611,7 @@ struct TasksView: View {
                 .buttonStyle(.plain)
                 Spacer()
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 240)
             .accessibilityIdentifier("tasks-load-failed-state")
         case .loaded:
             VStack(spacing: 8) {
@@ -562,7 +624,7 @@ struct TasksView: View {
                     .foregroundColor(themeManager.secondaryTextColor)
                 Spacer()
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 240)
             .accessibilityIdentifier("tasks-empty-state")
         }
     }
@@ -619,6 +681,14 @@ struct TasksView: View {
                         .foregroundColor(themeManager.secondaryTextColor)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let open = t.openItemLine {
+                    Text(open)
+                        .font(.themed(13, weight: .medium))
+                        .foregroundColor(themeManager.warningColor)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("task-open-item-\(t.id)")
                 }
                 metaRow(t)
                 taskCardActionRow(t)
@@ -1098,6 +1168,12 @@ private struct TaskCardActionsSheet: View {
                         Text(task.statusLabel)
                             .font(.themed(12, weight: .semibold))
                             .foregroundColor(task.statusColor)
+                        if let open = task.openItemLine {
+                            Text(open)
+                                .font(.themed(12))
+                                .foregroundColor(themeManager.secondaryTextColor)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     Button(action: openDetails) {
                         Label("Open full task", systemImage: "arrow.up.right.square")

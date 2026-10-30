@@ -64,6 +64,24 @@ describe('direct HITL prompt opening', () => {
 		}
 	);
 
+	it('reports an already-closed ask as resolved but not landed', async () => {
+		const respond = vi.fn().mockResolvedValue({ ok: true, alreadyClosed: true });
+		const result = await openHitlPrompt(target(), {
+			getScope: scope,
+			respond,
+			dropPending: vi.fn(),
+			dropAttention: vi.fn()
+		});
+		expect(result).toMatchObject({ status: 'resolved', alreadyClosed: true });
+		const landed = await openHitlPrompt(target(), {
+			getScope: scope,
+			respond: vi.fn().mockResolvedValue({ ok: true }),
+			dropPending: vi.fn(),
+			dropAttention: vi.fn()
+		});
+		expect(landed).not.toHaveProperty('alreadyClosed');
+	});
+
 	it('normalizes a complete target into the canonical request contract', () => {
 		expect(hitlRequestFromOpenTarget(target())).toEqual({
 			id: 'question-7',

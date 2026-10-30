@@ -101,8 +101,9 @@ dead-code warnings. The crate root therefore carries
 unused_imports))]`, applying only when the feature is on and this is not
 magician's own test build.
 
-That hides real dead code in the unified build, so `check-all` also runs
-`cargo check -p magician --lib` (feature off) — the only place real dead code in
+That hides real dead code in the unified build, so CI runs
+`make check-magician-dead-code` (`cargo check -p magician --lib`, feature off;
+locally `make check-all CHECK_DEAD_CODE=1`) — the only place real dead code in
 magician's production source surfaces.
 
 A crate that gates code on `feature = "test-fixtures"` must declare the feature

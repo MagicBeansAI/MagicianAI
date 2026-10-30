@@ -43,7 +43,10 @@ internal fun voicePersonaBindings(catalog: RealtimeVoiceCatalog): List<VoicePers
         VoicePersonaBinding(it.id, true, it.label, it.voice, it.voices, it.available)
     }
 
-/** Account-scoped voice choices, reused by global Settings and composer panels. */
+/**
+ * Account-scoped voice choices for the composer's voice panels. The full
+ * list of shared speaking voices is edited in the embedded web Settings.
+ */
 @Composable
 fun VoicePersonaControls(
     showTts: Boolean = true,

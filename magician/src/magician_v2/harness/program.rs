@@ -20,6 +20,34 @@ pub struct LoadedProgram {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub content: String,
+    /// Hex SHA-256 of the WHOLE program document as read (not just the
+    /// injected section) — the base a `propose_program_revision` call is made
+    /// against, matching `program_doc::content_sha256`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
+}
+
+/// Content-free provenance of bytes actually appended to a cycle prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgramSourceMetadata {
+    pub relative_path: String,
+    pub absolute_path: PathBuf,
+    pub sha256: String,
+    pub included_sha256: String,
+    pub included_bytes: usize,
+    pub section: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgramContextReceipt {
+    pub schema_version: u32,
+    pub recorded_at: DateTime<Utc>,
+    pub stage: String,
+    pub agent_id: String,
+    pub cycle_id: String,
+    pub definition_sha256: String,
+    pub sources: Vec<ProgramSourceMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +125,100 @@ pub struct ProgramLoader {
 impl ProgramLoader {
     pub fn new(workspace: ArtifactV2Workspace) -> Self {
         Self { workspace }
+    }
+
+    /// Hash definition values in canonical key order, including nested maps.
+    pub fn definition_sha256(definition: &AgentDefinition) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let value = serde_json::to_value(definition).map_err(|error| error.to_string())?;
+        let bytes = crate::magician_v2::json_traversal::canonical_json_bytes(&value)
+            .map_err(|error| error.to_string())?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    pub fn source_metadata(
+        &self,
+        principal: &str,
+        workspace: &str,
+        loaded: &LoadedProgram,
+    ) -> ProgramSourceMetadata {
+        let path = self
+            .workspace
+            .program_specs_root(principal, workspace)
+            .join(&loaded.relative_path);
+        ProgramSourceMetadata {
+            relative_path: loaded.relative_path.clone(),
+            absolute_path: std::fs::canonicalize(&path).unwrap_or(path),
+            sha256: loaded.sha256.clone(),
+            included_sha256: super::program_doc::content_sha256(loaded.content.trim()),
+            included_bytes: loaded.content.trim().len(),
+            section: loaded.section.clone(),
+            truncated: false,
+        }
+    }
+
+    fn context_receipt_path(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+        goal_id: &str,
+    ) -> PathBuf {
+        let key = super::program_doc::content_sha256(&format!("{agent_id}\0{goal_id}"));
+        self.workspace
+            .programs_root(principal, workspace)
+            .join(".context_receipts")
+            .join(format!("{key}.json"))
+    }
+
+    pub async fn record_context_ingestion(
+        &self,
+        principal: &str,
+        workspace: &str,
+        definition: &AgentDefinition,
+        goal_id: &str,
+        cycle_id: &str,
+        sources: Vec<ProgramSourceMetadata>,
+    ) -> Result<(), String> {
+        let receipt = ProgramContextReceipt {
+            schema_version: 1,
+            recorded_at: Utc::now(),
+            stage: "cycle_prompt_assembly".into(),
+            agent_id: definition.agent_id.clone(),
+            cycle_id: cycle_id.into(),
+            definition_sha256: Self::definition_sha256(definition)?,
+            sources,
+        };
+        let path = self.context_receipt_path(principal, workspace, &definition.agent_id, goal_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        write_bytes_durably(
+            &path,
+            &serde_json::to_vec(&receipt).map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// An inspection read never creates a receipt or mutable program state.
+    pub async fn read_context_ingestion(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+        goal_id: &str,
+    ) -> Result<Option<ProgramContextReceipt>, String> {
+        let path = self.context_receipt_path(principal, workspace, agent_id, goal_id);
+        match fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     pub async fn load_for_goal(
@@ -177,6 +299,7 @@ impl ProgramLoader {
             section,
             title: first_heading(&raw),
             content,
+            sha256: crate::magician_v2::harness::program_doc::content_sha256(&raw),
         }))
     }
 
@@ -228,6 +351,7 @@ impl ProgramLoader {
             section: normalized_section,
             title: first_heading(&raw),
             content,
+            sha256: crate::magician_v2::harness::program_doc::content_sha256(&raw),
         }))
     }
 
@@ -732,6 +856,27 @@ autonomous_config:
     }
 
     #[test]
+    fn definition_provenance_hash_ignores_map_order_but_detects_setting_changes() {
+        let mut definition = owner_definition(None, None);
+        for index in 0..32 {
+            definition.state_machines.insert(
+                format!("setting-{index}"),
+                serde_json::json!({"enabled": true, "limits": {"steps": index, "tasks": 4}}),
+            );
+        }
+        let hash = ProgramLoader::definition_sha256(&definition).unwrap();
+        let serialized = serde_json::to_string(&definition).unwrap();
+        for _ in 0..16 {
+            let reloaded: AgentDefinition = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(ProgramLoader::definition_sha256(&reloaded).unwrap(), hash);
+        }
+        definition
+            .state_machines
+            .insert("setting-0".into(), serde_json::json!({"enabled": false}));
+        assert_ne!(ProgramLoader::definition_sha256(&definition).unwrap(), hash);
+    }
+
+    #[test]
     fn extract_markdown_section_preserves_nested_headings() {
         let markdown = r#"
 # Program
@@ -750,6 +895,86 @@ Grow demand.
         assert!(section.contains("Ship the harness."));
         assert!(section.contains("### KPIs"));
         assert!(!section.contains("## Marketing"));
+    }
+
+    #[tokio::test]
+    async fn program_context_receipts_are_scoped_content_free_and_do_not_change_on_inspection() {
+        let dir = TempDir::new().unwrap();
+        let workspace = ArtifactV2Workspace::new(dir.path());
+        let loader = ProgramLoader::new(workspace.clone());
+        let root = workspace.program_specs_root("owner", "default");
+        fs::create_dir_all(&root).await.unwrap();
+        fs::write(
+            root.join("program.md"),
+            "# Plan\nPrivate operating instructions\n",
+        )
+        .await
+        .unwrap();
+        let definition = owner_definition(None, None);
+        let goal = "harness:ceo:morning-briefing";
+        assert!(loader
+            .read_context_ingestion("owner", "default", "ceo", goal)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!loader
+            .context_receipt_path("owner", "default", "ceo", goal)
+            .exists());
+        let loaded = loader
+            .load_for_goal("owner", "default", &definition, Some(goal))
+            .await
+            .unwrap()
+            .unwrap();
+        let source = loader.source_metadata("owner", "default", &loaded);
+        loader
+            .record_context_ingestion(
+                "owner",
+                "default",
+                &definition,
+                goal,
+                "cycle-1",
+                vec![source.clone()],
+            )
+            .await
+            .unwrap();
+        let receipt = loader
+            .read_context_ingestion("owner", "default", "ceo", goal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.sources[0].sha256, loaded.sha256);
+        assert_eq!(receipt.stage, "cycle_prompt_assembly");
+        assert!(!serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("Private operating instructions"));
+        assert!(loader
+            .read_context_ingestion("owner", "other", "ceo", goal)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(loader
+            .read_context_ingestion("owner", "default", "ceo", "other-goal")
+            .await
+            .unwrap()
+            .is_none());
+        fs::write(root.join("program.md"), "# Plan\nChanged\n")
+            .await
+            .unwrap();
+        let now = loader
+            .load_for_goal("owner", "default", &definition, Some(goal))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(source.sha256, now.sha256);
+        assert_eq!(
+            loader
+                .read_context_ingestion("owner", "default", "ceo", goal)
+                .await
+                .unwrap()
+                .unwrap()
+                .recorded_at,
+            receipt.recorded_at
+        );
     }
 
     #[tokio::test]
@@ -926,8 +1151,7 @@ Grow demand.
     async fn program_specs_are_scoped_alongside_runtime_state() {
         let tempdir = TempDir::new().expect("tempdir");
         let space_root = tempdir.path().join("MagicianNotes");
-        let workspace = ArtifactV2Workspace::with_silverbullet_space_provider(&space_root)
-            .expect("silverbullet workspace");
+        let workspace = ArtifactV2Workspace::new(&space_root);
 
         // Specs are now SCOPED — the specs root IS the scope's `programs/` dir
         // (same root as the runtime state), not the old flat visible `Programs/`.

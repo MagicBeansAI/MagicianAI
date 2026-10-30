@@ -4,19 +4,25 @@
 
 The learning plane as a satellite crate (about 30k lines of Rust):
 
+Execution activity retains context-preparation timings and phase identity,
+including partial/cancelled outcomes, separately from model and tool usage.
+
 * `outcome_learning` — OPC outcome learning, all five phases: recording, the
   maturity policy, sweep, feeders, aggregates.
 * `data_room` — the OPC deal-close container and its audit log
   (access/disclosure/custody stores).
 * `bots` — the scoped chat-bot runtime, bot config store, and the auth HITL
   broker.
-* `execution_panel` — the projector, runtime store and v3 adapter, plus
+* `execution_panel` — the projector, runtime store and v3 adapter (questions
+  carry the respond handle), plus
   `plan_attribution` (which approved-plan step each run activity row belongs
   to, read back from the run's `step.started` / step-outcome events; see
   `docs/archive/plans/2026-10-01-plan-step-progress.md`).
 * `retraction` — when a claim is retracted, raises a replacement or
   revocation event against every data room still serving a revision that
   carries it (the served half; `corrections_api` covers what was sent).
+
+Execution output results add optional `report`: the UTF-8 source document up to 256 KiB. Listings retain `summary`; oversized/binary outputs retain their file controls.
 
 Production dependencies keep `magician/test-fixtures` disabled. This crate's
 `test-fixtures` feature forwards it and development dependencies enable it for
@@ -40,6 +46,12 @@ the last env layer and wins, so the program is resolved against it when set.
 The `gws auth login`/`auth status` probes resolve the same way. Unit tests pin
 the contract without starting a process.
 
+Each bot runs as its own process-group leader. Stops and unexpected exits
+clean up the group with bounded SIGTERM/SIGKILL escalation before draining
+output pipes, so forked CLIs (such as `gws gmail +watch`) cannot block recovery
+or linger on credential files. Starts and stops are serialized per bot through
+the supervisor join; startup also reaps recorded stale groups.
+
 ## Managed account setup
 
 The scoped bot supervisor owns interactive account state used by Desktop
@@ -49,8 +61,20 @@ accepts optional 2FA over a bounded stdin seam, and verifies
 `tgcli auth status` before reporting ready. Google Workspace profiles reuse
 the managed `gws` status/login and expected-identity checks; before a login,
 the supervisor copies the validated runtime-root OAuth client into the scope's
-profile with mode 0600. Auth subprocesses are serialized, timed out, drained
-and reaped; a successful login restarts a bot that was running before setup.
+profile with mode 0600. Auth subprocesses are serialized, timed out (an
+unfinished Google or Telegram sign-in ends after 10 minutes and frees the
+auth slot), drained and reaped; a successful login restarts a bot that was
+running before setup.
+
+Service accounts on a phone use `BotManager::start_auth_with`: a headless
+Google login (the URL never enters bot logs; `auth_connect_material` hands it
+to the API's private sign-in session), a Telegram code login (`tgcli auth`
+prompts parsed into `pending_input`: phone, code, password; tgcli's store
+`config.json` is seeded `0600` with the bot env's API id/hash first, for the
+QR login too) and a WhatsApp pairing code (a one-shot `WHATSAPP_PHONE` for the
+next spawn, read back from `WHATSAPP_PAIRING_CODE_FILE`). `cancel_auth` and
+`auth_availability` complete the seam; see
+[browser sign-in](../magician/browser-signin.md#managed-bot-accounts).
 
 ## Lib-side seam
 
@@ -102,6 +126,14 @@ is `failed`, then `completed` (`ExecutionState`), then `in_progress`
 the task progress log overlay `skipped` (only on a pending or in-progress step)
 and the agent's `note`. A run without an approved plan gets none; nothing is
 guessed.
+
+## Work in flight in the panel feed
+
+An `llm.requested` / `tool.started` row of `run.activity_log` is
+`status: "running"` until its settle (paired by `metadata.llm_call_id` /
+`metadata.call_id`) or until a later row of its execution, other than the
+call's own annotations, shows the run moved past it (`in_flight_event_ids`).
+Rows carry `llm_call_id`, `trace_id`, `profile` or `call_id`, `started_at_ms`.
 
 ## Delegated work in the panel feed
 

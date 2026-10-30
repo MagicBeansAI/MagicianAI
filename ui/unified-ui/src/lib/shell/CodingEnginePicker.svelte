@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher, onDestroy, tick } from 'svelte';
+	import CodingModelPicker from './CodingModelPicker.svelte';
+	import { withCredentials } from '$lib/settings/harnessAuth';
 	import {
 		codingEngineLabel,
 		codingEngineNote,
@@ -15,7 +17,7 @@
 	export let selectedProfileId: string | null = null;
 	export let selectedProfile: CodingProfile | null = null;
 	export let disabled = false;
-	export let ariaLabel = 'Coding profile';
+	export let ariaLabel = 'Coding model and engine';
 	/** A small chip for dense composers (the floating chat composer). */
 	export let compact = false;
 
@@ -103,6 +105,9 @@
 	}
 </script>
 
+{#if profiles.some(profile => profile.model_choice)}
+	<CodingModelPicker {profiles} {blockedProfiles} {selectedProfile} {disabled} {compact} {ariaLabel} on:select={event => dispatch('select', event.detail)} />
+{:else}
 <div class="engine-picker" class:is-compact={compact} bind:this={root}>
 	<button
 		type="button"
@@ -111,7 +116,7 @@
 		aria-expanded={open}
 		aria-controls={listId}
 		aria-label={ariaLabel}
-		title={selectedProfile?.description ?? selectedProfile?.model ?? 'Coding engine and profile'}
+		title={selectedProfile?.description ?? selectedProfile?.model ?? 'Coding engine and model'}
 		{disabled}
 		on:click={toggle}
 	>
@@ -154,9 +159,9 @@
 				<div class="engine-picker__group" role="group" aria-label={group.label ?? 'Other'}>
 					{#if group.label}
 						<div class="engine-picker__group-head">
-							<span class="engine-picker__group-name">{group.label}</span>
-							{#if codingEngineNote(group.profiles[0]?.engine)}
-								<span class="engine-picker__group-note">{codingEngineNote(group.profiles[0]?.engine)}</span>
+							<span class="engine-picker__group-name">{withCredentials(group.label, group.profiles[0]?.credentials)}</span>
+							{#if codingEngineNote(group.profiles[0]?.engine, group.profiles[0]?.credentials)}
+								<span class="engine-picker__group-note">{codingEngineNote(group.profiles[0]?.engine, group.profiles[0]?.credentials)}</span>
 							{/if}
 						</div>
 					{/if}
@@ -196,6 +201,7 @@
 		</div>
 	{/if}
 </div>
+{/if}
 
 <style>
 	.engine-picker {

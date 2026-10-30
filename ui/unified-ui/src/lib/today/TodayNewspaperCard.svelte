@@ -1,6 +1,12 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
+	import { createEventDispatcher, tick } from 'svelte';
 	import Icon from '$lib/shared/icons/Icon.svelte';
+	import { ASSISTANT_FALLBACK_NAME } from '$lib/presentationIdentity';
+	import { deckActEntries, FOLLOW_UP_SNOOZE_LABEL, openWorthLinkInGesture, type DeckActEntry } from './deckActMenu';
+	import { readingRoomDateline } from './readingRoomMetadata';
+	import TodayActMenu from './TodayActMenu.svelte';
+	import TodayDeckDetail from './TodayDeckDetail.svelte';
+	import type { TriageCardData } from './TodayTriageDeck.svelte';
 	import type { ChannelFollowUp } from '$lib/stores/channelNeedsYouStore';
 	import type { ResurfacingCard } from './resurfacingQueries';
 	import type { CanonicalAttentionItem } from '$lib/attention/canonicalAttentionProjection';
@@ -11,19 +17,64 @@
 	export let debug = false;
 	export let busy = false;
 	export let compact = false;
+	/** Primary agent's display name; `ask_presto` is shown as "Ask <name>". */
+	export let agentName: string = ASSISTANT_FALLBACK_NAME;
+	/** Existing chat thread Ask <agent> posts into; without one it is hidden. */
+	export let chatThreadId: string | null = null;
 
+	// `primary` is only a Worth card's Open (records `open`, opens the source).
+	// A follow-up task is never started from here directly: the Act menu opens
+	// the detail view, whose instruction dialog comes first.
 	const dispatch = createEventDispatcher<{
 		action: { kind: 'primary' | 'useful' | 'acknowledge' | 'dismiss' | 'snooze'; reason?: string; actionId?: string };
 		read: { followUp?: ChannelFollowUp; worth?: ResurfacingCard };
+		/** The card's own detail-view action already resolved it server-side. */
+		resolved: { message: string };
 	}>();
 
 	let showMenu = false;
 	let expanded = false;
 
+	$: dateline = readingRoomDateline(followUp, worth, item);
 	$: title = computeTitle(item, followUp, worth);
 	$: summary = computeSummary(item, followUp, worth);
 	$: category = computeCategory(item, followUp, worth);
-	$: primaryLabel = computePrimaryLabel(item, followUp, worth);
+	$: actEntries = deckActEntries(
+		{ rawFollowUp: followUp ?? undefined, rawWorth: worth ?? undefined },
+		{ agentName, chatThreadId }
+	);
+	$: detailCard = {
+		id: followUp ? `followup:${followUp.annotation_id}` : worth ? `worth:${worth.candidate_id}` : 'item',
+		title,
+		category,
+		summary,
+		rawFollowUp: followUp ?? undefined,
+		rawWorth: worth ?? undefined
+	} satisfies TriageCardData;
+
+	let actMenuOpen = false;
+	let detailOpen = false;
+	let detailRef: TodayDeckDetail | null = null;
+	let detailWrapEl: HTMLElement | null = null;
+
+	/** Same entries and flows as the Morning Brief deck's Act menu. */
+	async function chooseEntry(entry: DeckActEntry): Promise<void> {
+		if (entry.kind === 'snooze') {
+			dispatch('action', { kind: 'snooze' });
+			return;
+		}
+		if (entry.kind === 'open') {
+			openWorthLinkInGesture(worth);
+			dispatch('action', { kind: 'primary' });
+			return;
+		}
+		// The menu item is the link; it has already opened the thread.
+		if (entry.kind === 'open_provider') return;
+		detailOpen = true;
+		await tick();
+		detailWrapEl?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+		if (entry.kind !== 'details') detailRef?.start(entry);
+	}
 
 	function computeTitle(
 		item: CanonicalAttentionItem | null,
@@ -76,29 +127,15 @@
 		worth: ResurfacingCard | null
 	): string {
 		if (followUp) {
-			return `DISPATCH · ${followUp.provider?.toUpperCase() || 'CORRESPONDENCE'}`;
+			return `FOR YOU · ${followUp.provider?.toUpperCase() || 'CORRESPONDENCE'}`;
 		}
 		if (worth) {
-			return `READING ROOM · ${worth.source_kind?.replace(/_/g, ' ').toUpperCase() || 'NOTE'}`;
+			return `WORTH A LOOK · ${worth.source_kind?.replace(/_/g, ' ').toUpperCase() || 'NOTE'}`;
 		}
 		if (item?.origin_lane === 'follow_up') {
-			return 'DISPATCH · CORRESPONDENCE';
+			return 'FOR YOU · CORRESPONDENCE';
 		}
-		return 'READING ROOM · KNOWLEDGE';
-	}
-
-	function computePrimaryLabel(
-		item: CanonicalAttentionItem | null,
-		followUp: ChannelFollowUp | null,
-		worth: ResurfacingCard | null
-	): string | null {
-		// The parent maps primary to `approve` (follow-up) and `open` (worth),
-		// so the label names that action rather than a descriptor it won't run.
-		if (item && !followUp && !worth) {
-			const approveAct = item.actions.find(a => a.kind === 'approve');
-			if (approveAct) return approveAct.label;
-		}
-		return followUp ? 'Do it' : worth ? 'Open' : null;
+		return 'WORTH A LOOK · KNOWLEDGE';
 	}
 
 	const DISMISS_REASONS = [
@@ -111,10 +148,6 @@
 	// Follow-up snooze carries no duration on the wire (the annotation drops
 	// out of Today); resurfacing has no snooze at all. Offer only what exists.
 	$: canSnooze = Boolean(followUp) || item?.origin_lane === 'follow_up';
-
-	function handlePrimary(): void {
-		dispatch('action', { kind: 'primary' });
-	}
 
 	function handleUseful(): void {
 		dispatch('action', { kind: 'useful' });
@@ -154,7 +187,12 @@
 	function toggleExpand(e: MouseEvent | KeyboardEvent): void {
 		// Only expand if clicking the card body, not an interactive button
 		const target = e.target as HTMLElement;
-		if (target.closest('button') || target.closest('a') || target.closest('.np-menu')) return;
+		if (
+			target.closest('button') ||
+			target.closest('a') ||
+			target.closest('.np-menu') ||
+			target.closest('.np-card__detail')
+		) return;
 		expanded = !expanded;
 		if (expanded) {
 			dispatch('read', { followUp: followUp ?? undefined, worth: worth ?? undefined });
@@ -173,6 +211,7 @@
 	class:np-card--busy={busy}
 	on:click={toggleExpand}
 >
+	{#if dateline}<time class="np-card-date" datetime={dateline.iso}>{dateline.text}</time>{/if}
 	<!-- Eyebrow / Kicker -->
 	<header class="np-card__header">
 		<div class="np-card__kicker">
@@ -232,19 +271,15 @@
 	<!-- Footer: Maximum 4 Well-Placed Actions -->
 	<footer class="np-card__footer" aria-label="Card actions">
 		<div class="np-actions">
-			<!-- 1. Primary contextual action (if exists) -->
-			{#if primaryLabel}
-				<button
-					type="button"
-					class="np-btn np-btn--primary"
-					disabled={busy}
-					on:click|stopPropagation={handlePrimary}
-					title="Execute or start this item"
-				>
-					<span class="np-btn-icon">⚡</span>
-					<span>{primaryLabel}</span>
-				</button>
-			{/if}
+			<!-- 1. Act: this card's own actions; nothing runs until one is chosen -->
+			<TodayActMenu
+				entries={actEntries}
+				testIdPrefix="today-broadsheet-act"
+				title="Choose an action for this card"
+				disabled={busy}
+				bind:open={actMenuOpen}
+				on:choose={(event) => void chooseEntry(event.detail)}
+			/>
 
 			<!-- 2. Mark Useful (Positive feedback) -->
 			<button
@@ -320,7 +355,7 @@
 								role="menuitem"
 								on:click={() => handleSnooze()}
 							>
-								Snooze — hide from Today
+								{FOLLOW_UP_SNOOZE_LABEL}
 							</button>
 						{/if}
 					</div>
@@ -328,9 +363,26 @@
 			</div>
 		</div>
 	</footer>
+
+	{#if detailOpen}
+		<div class="np-card__detail" bind:this={detailWrapEl}>
+			<TodayDeckDetail
+				card={detailCard}
+				{chatThreadId}
+				bind:this={detailRef}
+				on:close={() => (detailOpen = false)}
+				on:resolved={(event) => {
+					detailOpen = false;
+					dispatch('resolved', { message: event.detail.message });
+				}}
+				on:open={() => dispatch('action', { kind: 'primary' })}
+			/>
+		</div>
+	{/if}
 </article>
 
 <style>
+	.np-card-date { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; }
 	.np-card {
 		position: relative;
 		display: flex;
@@ -498,18 +550,6 @@
 		border-color: var(--border-default, rgba(0, 0, 0, 0.25));
 	}
 
-	.np-btn--primary {
-		background: var(--accent-fill, #b45309);
-		border-color: transparent;
-		color: #ffffff;
-		font-weight: 600;
-	}
-
-	.np-btn--primary:hover {
-		background: var(--accent-fill-hover);
-		color: #ffffff;
-	}
-
 	.np-btn--useful:hover {
 		background: color-mix(in srgb, #10b981 12%, var(--bg-card));
 		border-color: #10b981;
@@ -526,11 +566,6 @@
 		background: color-mix(in srgb, #ef4444 10%, var(--bg-card));
 		border-color: #ef4444;
 		color: #b91c1c;
-	}
-
-	.np-btn-icon {
-		font-size: 0.85rem;
-		line-height: 1;
 	}
 
 	/* Split button for Dismiss */

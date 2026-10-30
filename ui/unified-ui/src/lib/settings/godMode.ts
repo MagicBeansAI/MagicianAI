@@ -5,6 +5,8 @@ import { createSharedPoll } from '$lib/stores/sharedPoll';
 
 export interface GodModeState {
 	enabled: boolean;
+	/** Approve god mode's asks without asking, except deletes, root and unseen code. */
+	auto_approve: boolean;
 	/** "Allow always" grants currently stored; cleared when the setting changes. */
 	always_grants: number;
 }
@@ -16,6 +18,7 @@ export function parseGodModeState(body: unknown): GodModeState {
 	if (typeof raw.enabled !== 'boolean') throw new Error('Malformed god mode response');
 	return {
 		enabled: raw.enabled,
+		auto_approve: raw.auto_approve === true,
 		always_grants: typeof raw.always_grants === 'number' ? raw.always_grants : 0
 	};
 }
@@ -49,6 +52,10 @@ export function saveGodMode(enabled: boolean): Promise<GodModeState> {
 	return request(ENDPOINT, { method: 'PUT', body: JSON.stringify({ enabled }) });
 }
 
+export function saveGodModeAutoApprove(autoApprove: boolean): Promise<GodModeState> {
+	return request(ENDPOINT, { method: 'PUT', body: JSON.stringify({ auto_approve: autoApprove }) });
+}
+
 export function forgetGodModeGrants(): Promise<GodModeState> {
 	return request(`${ENDPOINT}/grants`, { method: 'DELETE' });
 }
@@ -58,6 +65,10 @@ export interface ChatGodModeState {
 	enabled: boolean;
 	override: boolean | null;
 	default: boolean;
+	/** Auto-approve for this chat: what applies, its own choice, the Settings default. */
+	auto_approve: boolean;
+	auto_approve_override: boolean | null;
+	auto_approve_default: boolean;
 }
 
 export function parseChatGodModeState(body: unknown): ChatGodModeState {
@@ -66,7 +77,10 @@ export function parseChatGodModeState(body: unknown): ChatGodModeState {
 	return {
 		enabled: raw.enabled,
 		override: typeof raw.override === 'boolean' ? raw.override : null,
-		default: raw.default === true
+		default: raw.default === true,
+		auto_approve: raw.auto_approve === true,
+		auto_approve_override: typeof raw.auto_approve_override === 'boolean' ? raw.auto_approve_override : null,
+		auto_approve_default: raw.auto_approve_default === true
 	};
 }
 
@@ -97,6 +111,11 @@ export function fetchChatGodMode(sessionId: string): Promise<ChatGodModeState> {
 /** `null` follows the Settings default again. */
 export function saveChatGodMode(sessionId: string, enabled: boolean | null): Promise<ChatGodModeState> {
 	return chatRequest(sessionId, { method: 'PUT', body: JSON.stringify({ enabled }) });
+}
+
+/** `null` follows the Settings default again. */
+export function saveChatAutoApprove(sessionId: string, autoApprove: boolean | null): Promise<ChatGodModeState> {
+	return chatRequest(sessionId, { method: 'PUT', body: JSON.stringify({ auto_approve: autoApprove }) });
 }
 
 /** Super god mode (`execution.super_god_mode`, debug): nothing asks while it is on. */

@@ -738,11 +738,14 @@ fn write_partition(partition_dir: &Path, rows: &[&ActivityRow]) -> Result<()> {
             .context("flushing activity_rows_batch appender")?;
     }
 
-    let path_sql = parquet_path.display().to_string().replace('\'', "''");
-    conn.execute_batch(&format!(
-        "COPY (SELECT {ACTIVITY_ROWS_PUBLISHED_PROJECTION} FROM activity_rows_batch)
-           TO '{path_sql}' (FORMAT PARQUET, COMPRESSION 'zstd');"
-    ))
+    // Staged under a hidden `.…tmp` name, fsynced and renamed: the name
+    // `batch_<ulid>.parquet` only ever refers to a complete object.
+    super::parquet_maintenance::copy_to_parquet_durably(
+        &conn,
+        &format!("(SELECT {ACTIVITY_ROWS_PUBLISHED_PROJECTION} FROM activity_rows_batch)"),
+        "FORMAT PARQUET, COMPRESSION 'zstd'",
+        &parquet_path,
+    )
     .with_context(|| format!("copying activity rows to {}", parquet_path.display()))?;
     crate::magician_v2::dataset_owners::publish_written_parquet(&parquet_path).with_context(
         || {

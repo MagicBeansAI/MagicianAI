@@ -32,6 +32,40 @@ class WorkNavigationTest {
     private val themeId = mutableStateOf(Themes.DEFAULT)
     @Before fun start() { server = WorkHTTPFixture() }
     @After fun stop() { server.close() }
+
+    @Test fun aSuccessfulSteerRefreshesControlsAndAllowsTheNextSteer() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as android.app.Application
+        val delegate = ai.magicbeans.magdroid.tasks.TaskRepository(app)
+        val posts = AtomicInteger()
+        val gets = AtomicInteger()
+        val source = object : ai.magicbeans.magdroid.tasks.TasksDataSource by delegate {
+            override fun taskEvents() = emptyFlow<ai.magicbeans.magdroid.tasks.TaskRealtimeEvent>()
+            override suspend fun agents() = emptyList<ai.magicbeans.magdroid.tasks.AgentOption>()
+            override suspend fun listTasks(lane: ai.magicbeans.magdroid.tasks.TaskLane, filter: ai.magicbeans.magdroid.tasks.TaskFilter?, today: String, offset: Int, limit: Int, query: String?) = ai.magicbeans.magdroid.tasks.TaskListResponse()
+            override suspend fun listInternalTasks(query: ai.magicbeans.magdroid.tasks.InternalTaskQuery) = ai.magicbeans.magdroid.tasks.TaskListResponse()
+            override suspend fun executionControlState(executionId: String): ai.magicbeans.magdroid.tasks.ExecutionControlState {
+                gets.incrementAndGet()
+                return ai.magicbeans.magdroid.tasks.ExecutionControlState(executionId = executionId, active = true, canSteer = true)
+            }
+            override suspend fun executionControl(executionId: String, action: ai.magicbeans.magdroid.tasks.ExecutionControlAction, guidance: String?) {
+                Assert.assertEquals(ai.magicbeans.magdroid.tasks.ExecutionControlAction.Steer, action)
+                Assert.assertEquals("New requirement", guidance)
+                posts.incrementAndGet()
+            }
+        }
+        lateinit var model: ai.magicbeans.magdroid.tasks.TasksViewModel
+        try {
+            compose.runOnUiThread { model = ai.magicbeans.magdroid.tasks.TasksViewModel.usingDataSource(app, source) }
+            repeat(2) { index ->
+                compose.runOnUiThread { model.executionControl("exec", ai.magicbeans.magdroid.tasks.ExecutionControlAction.Steer, "New requirement") }
+                compose.waitUntil(5_000) {
+                    gets.get() == index + 1 && model.state.value.executionControls["exec"]?.busy == null
+                }
+            }
+            Assert.assertEquals(2, posts.get())
+            Assert.assertTrue(model.state.value.executionControls["exec"]?.state?.canSteer == true)
+        } finally { delegate.close() }
+    }
     private fun repository() = WorkRepository.usingConnection(MagicianConnectionSnapshot(server.origin, mapOf("Authorization" to "Bearer native-fixture")))
     private fun mount(section: WorkSection = WorkSection.Crew, route: WorkRoute? = null, fontScale: Float? = null, openTask: OpenTaskDetail? = null) {
         val factory: (android.content.Context) -> WorkResource = { context -> WorkResource(context, ::repository, { true }, emptyFlow()) }
@@ -259,6 +293,7 @@ class WorkNavigationTest {
         waitFor("Advanced JSON"); compose.onNodeWithText("Advanced JSON").performClick()
         compose.onNodeWithTag("work-crew-editor-scroll").performScrollToNode(hasTestTag("work-crew-definition-editor"))
         compose.onNodeWithTag("work-crew-definition-editor").performClick().performTextInput(" ")
+        compose.waitUntil(5_000) { compose.onNodeWithText("Cancel").isDisplayed() }
         compose.onNodeWithText("Cancel").assertIsDisplayed().performClick()
         Assert.assertEquals(0, server.writes.get())
     }
@@ -325,13 +360,13 @@ class WorkNavigationTest {
         waitFor("‹ Back"); scrollTo("Definition, rules and model pins")
         compose.onNodeWithText("‹ Back").performClick(); waitFor("Find crew")
         compose.onNodeWithTag("work-more").performClick()
-        compose.onNodeWithText("Programs").performClick(); waitFor("Fixture program")
+        compose.onNodeWithText("Playbooks").performClick(); waitFor("Fixture program")
         compose.onNodeWithText("Definition, rules and model pins").assertDoesNotExist()
         Assert.assertEquals(0, server.writes.get())
     }
     @Test fun qualityFromCrewKeepsTheSelectedMemberThroughReviewAndStart() {
         mount(); waitFor("Fixture crew"); compose.onNodeWithText("Fixture crew").performClick()
-        waitFor("Quality and review"); scrollTo("Quality and review"); compose.onNodeWithText("Quality and review").performClick()
+        waitFor("Quality checks"); scrollTo("Quality checks"); compose.onNodeWithText("Quality checks").performClick()
         waitFor("New quality work")
         compose.waitUntil(5_000) { server.readTargets.any { it.contains("/relentless/catalog?") && it.contains("agent_id=fixture-crew") } }
         compose.onNodeWithText("New quality work").performClick()
@@ -361,7 +396,7 @@ class WorkNavigationTest {
         compose.waitUntil(5_000) { server.writes.get() == 2 }
         Assert.assertEquals("/api/magician/v2/agents", server.lastWrite)
         val definition = Json.parseToJsonElement(server.lastBody) as JsonObject
-        Assert.assertEquals("New member", definition.workText("name")); Assert.assertEquals("Worker", definition.workText("kind"))
+        Assert.assertEquals("New member", definition.workText("name")); Assert.assertEquals("worker", definition.workText("kind"))
         Assert.assertNotNull(definition.workText("persona"))
     }
     @Test fun memoryGoalsAndIsolatedUserMergeUseRealTierAndOwner() {
@@ -443,8 +478,8 @@ class WorkNavigationTest {
         Assert.assertEquals(0, server.writes.get())
     }
     @Test fun manualCompanySequenceDispatchesExistingGoalsInOrder() {
-        mount(WorkSection.Operations); waitFor("Run company sequence")
-        scrollTo("Run company sequence"); compose.onNodeWithText("Run company sequence").performClick()
+        mount(WorkSection.Operations); waitFor("Start team sequence")
+        scrollTo("Start team sequence"); compose.onNodeWithText("Start team sequence").performClick()
         compose.onNodeWithText("Dispatch reviewed sequence").performClick()
         compose.waitUntil(8_000) { server.writes.get() == 5 }
         Assert.assertEquals(listOf("cmo", "cro", "cpo", "cto", "ceo"), server.writePaths.map { it.substringBeforeLast('/').substringAfterLast('/') })
@@ -521,6 +556,7 @@ private class WorkHTTPFixture : AutoCloseable {
         path.endsWith("/memory/goal-memory") -> """{"tier":{"scope":"goal","description":"Goal evidence"},"goal_id":"goal/+launch","data":"Exact goal memory","shared":false}"""
         path.endsWith("/memory") -> """{"tiers":[{"tier_name":"goal-memory","scope":"goal","has_data":true,"available_goal_ids":["goal/+launch"]},{"tier_name":"user-memory","scope":"user","has_data":true,"shared":false}]}"""
         path.endsWith("/harness-overview") -> """{"context":{"program":{"relative_path":"fixture.md"}},"evaluation":{"active_program_state":{"program":{"relative_path":"fixture.md"},"current_phase":"Verify migration","current_step":"Keep task controls","update_history":[{"reason":"Checked exact task evidence","task_id":"fixture-detail-done","execution_id":"exec-fixture"}]}}}"""
+        path.endsWith("/llm/routing") -> """{"models":[{"id":"m-a","provider":"openai","label":"Actor model","choices":{"auto":"fixture-actor"}},{"id":"m-b","provider":"anthropic","label":"Critic model","choices":{"auto":"fixture-critic"}}]}"""
         path.endsWith("/relentless/catalog") -> """{"items":[],"pagination":{"has_more":false}}"""
         path.endsWith("/relentless/profiles") -> """{"profiles":[{"name":"fixture-actor","family":"actor"},{"name":"fixture-critic","family":"critic"}],"actor_default":"fixture-actor","critic_default":"fixture-critic"}"""
         path.endsWith("/relentless/preview") -> """{"contract_hash":"fixture-contract","budget_can_admit_attempt":true}"""

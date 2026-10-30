@@ -577,6 +577,30 @@ impl LlmDispatchQueue {
         })?
     }
 
+    /// Wait for one owned job and cancel that job when this future is dropped
+    /// (for example by an auxiliary-call timeout). The private child token
+    /// also inherits ordinary task/session cancellation. Protected attempts
+    /// retain the worker's existing drain-and-settle cancellation contract.
+    pub async fn submit_and_wait_cancellable(
+        &self,
+        mut job: LlmJob,
+        rx: tokio::sync::oneshot::Receiver<LLMResult<DispatchedResponse>>,
+    ) -> LLMResult<DispatchedResponse> {
+        job.validate_trace_lineage().map_err(LLMError::Validation)?;
+        let cancellation = self
+            .inner
+            .worker_ctx
+            .task_state
+            .subscribe_cancel(job.task_ref.as_ref())
+            .child_token();
+        job.caller_cancellation = Some(cancellation.clone());
+        let _cancel_on_drop = cancellation.drop_guard();
+        self.submit(job).await?;
+        rx.await.map_err(|_| LLMError::Cancelled {
+            reason: "receiver_dropped".to_string(),
+        })?
+    }
+
     /// Submit a streaming job. Returns `Ok(())` on accepted; deltas are
     /// produced via the receiver embedded in the supplied job's `delta_tx`.
     pub async fn submit_stream(&self, mut job: LlmStreamJob) -> LLMResult<()> {

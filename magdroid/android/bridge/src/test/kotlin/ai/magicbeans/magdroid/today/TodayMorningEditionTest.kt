@@ -253,23 +253,80 @@ class TodayMorningEditionTest {
     @Test fun deck_cards_use_web_titles_categories_and_fallbacks() {
         val bare = deckCard(ChannelFollowUp(annotationId = "a", provider = ""))
         assertEquals("Untitled Message", bare.title)
-        assertEquals("DISPATCH · CORRESPONDENCE", bare.category)
+        assertEquals("FOR YOU · CORRESPONDENCE", bare.category)
         assertEquals("No preview available", bare.summary)
-        assertEquals("Do it", bare.primaryLabel)
+        assertEquals("Act", bare.primaryLabel)
         val gmail = deckCard(ChannelFollowUp(annotationId = "b", provider = "gmail", subject = "Invoice", reason = "Due today", sender = "Ana"))
-        assertEquals("DISPATCH · GMAIL", gmail.category)
+        assertEquals("FOR YOU · GMAIL", gmail.category)
         assertEquals("Due today", gmail.summary)
         assertEquals("Ana", gmail.sender)
 
         val note = deckCard(ResurfacingCard(candidateId = "w", sourceKind = "project_note", line = "Line", whyNow = "Because"))
-        assertEquals("READING ROOM · PROJECT NOTE", note.category)
+        assertEquals("WORTH A LOOK · PROJECT NOTE", note.category)
         assertEquals("Line", note.title)
         assertEquals("Because", note.summary)
-        assertEquals("Open", note.primaryLabel)
+        assertEquals("Act", note.primaryLabel)
         val empty = deckCard(ResurfacingCard(candidateId = "v", sourceKind = ""))
         assertEquals("Resurfaced Note", empty.title)
-        assertEquals("READING ROOM · NOTE", empty.category)
+        assertEquals("WORTH A LOOK · NOTE", empty.category)
         assertEquals("Resurfaced for your attention", empty.summary)
+    }
+
+    @Test fun deck_act_menu_for_a_follow_up_lists_its_real_actions_in_order() {
+        val followUp = ChannelFollowUp(
+            annotationId = "a", provider = "gmail", openUrl = "https://mail.example/t/1",
+            availableActions = listOf(
+                ChannelActionDescriptor(id = "reply", label = "Reply", needsCompose = true),
+                ChannelActionDescriptor(id = "create_reminder", label = "Create reminder"),
+            ),
+        )
+        val menu = deckActMenu(deckCard(followUp), "Atlas")
+        assertEquals(
+            listOf("Reply", "Create reminder", "Open in Gmail", "Start follow-up task…", FOLLOW_UP_SNOOZE_LABEL, "Details"),
+            menu.map(TodayDeckMenuEntry::label),
+        )
+        assertEquals(
+            listOf("channel-reply", "channel-create_reminder", "open-provider", "start-task", "snooze", "details"),
+            menu.map(TodayDeckMenuEntry::id),
+        )
+        assertEquals(TodayDeckMenuEntry.OpenInProvider("https://mail.example/t/1", "Gmail"), menu[2])
+        // No server actions and no link: only the always-available rows remain.
+        assertEquals(
+            listOf(TodayDeckMenuEntry.StartFollowUpTask, TodayDeckMenuEntry.Snooze, TodayDeckMenuEntry.Details),
+            deckActMenu(deckCard(ChannelFollowUp(annotationId = "b", openUrl = " ")), "Atlas"),
+        )
+        // A stale draft is reviewed in Details; the menu never approves it.
+        assertEquals(
+            listOf(TodayDeckMenuEntry.Snooze, TodayDeckMenuEntry.Details),
+            deckActMenu(deckCard(ChannelFollowUp(annotationId = "c", reviewRequired = true)), "Atlas"),
+        )
+    }
+
+    @Test fun deck_act_menu_for_worth_a_look_skips_open_and_details_duplicates() {
+        val card = ResurfacingCard(candidateId = "w", actions = listOf(
+            ResurfacingActionCapability(kind = "view_details", label = "View details"),
+            ResurfacingActionCapability(kind = "open_source", label = "Open source"),
+            ResurfacingActionCapability(kind = "ask_presto", label = "Ask Presto"),
+            ResurfacingActionCapability(kind = "create_task", label = "Create task", requiresInput = true),
+            ResurfacingActionCapability(kind = "teleport", label = "Unknown kind"),
+        ))
+        val menu = deckActMenu(deckCard(card), "Atlas")
+        assertEquals(listOf("Open", "Ask Atlas", "Create task", "Details"), menu.map(TodayDeckMenuEntry::label))
+        assertEquals(TodayDeckMenuEntry.Resurfacing(ResurfacingActionKind.AskPresto, "Ask Atlas"), menu[1])
+        assertEquals("resurfacing-create_task", menu[2].id)
+        assertEquals(listOf(TodayDeckMenuEntry.Open, TodayDeckMenuEntry.Details), deckActMenu(deckCard(ResurfacingCard(candidateId = "v")), "Atlas"))
+    }
+
+    @Test fun ask_presto_reads_as_the_primary_agent_and_other_labels_pass_through() {
+        assertEquals("Ask Atlas", resurfacingActionLabel("ask_presto", "Ask Presto", "Atlas"))
+        assertEquals("Ask Atlas", resurfacingActionLabel("ask_presto", "Ask Presto", " Atlas "))
+        assertEquals("Save to memory", resurfacingActionLabel("save_to_memory", "Save to memory", "Atlas"))
+    }
+
+    @Test fun follow_up_provider_name_is_capitalised_with_an_app_fallback() {
+        assertEquals("Gmail", followUpProviderName(ChannelFollowUp(annotationId = "a", provider = "gmail")))
+        assertEquals("app", followUpProviderName(ChannelFollowUp(annotationId = "b", provider = " ")))
+        assertEquals("app", followUpProviderName(ChannelFollowUp(annotationId = "c")))
     }
 
     @Test fun deck_tabs_track_remaining_and_triaged_cards() {
@@ -289,7 +346,7 @@ class TodayMorningEditionTest {
     @Test fun reading_room_count_mode_and_paging_rules() {
         assertEquals("0", readingRoomCountLabel(0))
         assertEquals("50", readingRoomCountLabel(50))
-        assertEquals("50+", readingRoomCountLabel(51))
+        assertEquals("51", readingRoomCountLabel(51))
         assertEquals(TodayReadingRoomMode.Deck, TodayReadingRoomMode.fromWire(null))
         assertEquals(TodayReadingRoomMode.Broadsheet, TodayReadingRoomMode.fromWire("broadsheet"))
         assertTrue(deckNeedsMore(2, hasMoreFollowUps = true, hasMoreWorth = false))
@@ -436,4 +493,18 @@ class TodayMorningEditionTest {
         assertFalse(crewTaskPageContinues(fresh, since, null))
         assertTrue(crewUsageSql(42).contains("timestamp_ms >= 42"))
     }
+    @Test fun reading_room_dates_distinguish_receipt_surfacing_and_reference_times() {
+        assertTrue(readingRoomDateline(ChannelFollowUp(annotationId = "f", receivedAt = 1700000000000, createdAt = 1800000000000))!!.startsWith("Received "))
+        assertTrue(readingRoomDateline(worth = ResurfacingCard(candidateId = "w", surfacedAt = 1800000000000, temporalAnchorAt = 1700000000000))!!.startsWith("Surfaced "))
+        assertTrue(readingRoomDateline(worth = ResurfacingCard(candidateId = "w", surfacedAt = 0, temporalAnchorAt = 1700000000000))!!.startsWith("Reference "))
+        assertNull(readingRoomDateline())
+    }
+
+    @Test fun exhausted_server_pages_do_not_loop_when_totals_include_unavailable_cards() {
+        val state = TodayUiState(messageFollowUpTotal = 20, resurfacingTotal = 10,
+            followUpsHaveNextPage = false, worthHasNextPage = false)
+        assertFalse(state.hasMoreFollowUps)
+        assertFalse(state.hasMoreResurfacing)
+    }
+
 }

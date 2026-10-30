@@ -13,14 +13,8 @@ tasks, internal tasks, chat sessions, execution runs, and their outputs.
 
 ## Provider
 
-Supported providers:
-
-```text
-local_file
-silverbullet_space
-```
-
-Both use the same logical runtime layout under the **provider root**:
+The one provider is `local_file`. It uses this logical runtime layout under the
+**provider root**:
 
 ```text
 scopes/{principal}/{workspace}/
@@ -37,24 +31,19 @@ system/
 defaulting to the live MagicianNotes root). Existing task, chat, and
 execution URLs continue to resolve to the same relative paths.
 
-`silverbullet_space` roots **directly at the Space path** and behaves like
-`LocalFileWorkspaceProvider`. A legacy `runtime_root` is validated for
-back-compat and otherwise ignored. `space_path` defaults to the
-bootstrap/runtime root, so the seed never hard-codes a machine path. Visible
-Markdown folders (`Inbox/`, `Tasks/`, `Threads/`, etc.) stay human-facing notes;
-canonical runtime state is the `scopes/` and `system/` tree at the same root,
-which SilverBullet indexes because `scopes/` is not hidden.
+The retired notes-folder backend (`silverbullet_space`, or `silverbullet`)
+already behaved exactly like `local_file` rooted at its folder, so a config that
+still selects it reads as `local_file`: with no `silverbullet.space_path` (the
+shipped shape) the root is the runtime root, and a legacy `space_path` keeps
+rooting the store at that folder. Nothing moves. Under `local_file` a stray
+legacy `space_path` stays inert, and a save that omits it keeps the stored one.
+Typed storage bootstrap profiles map `local_silverbullet_space` to
+`local_embedded` the same way.
 
-`silverbullet_space` is experimental for canonical storage. The recommended
-production shape is `local_file` for runtime state plus the Notes Provider for
-SilverBullet-visible projections. The settings API warns when
-`silverbullet_space` is selected, and warns more strongly when its root looks
-empty while the local root has data. Switching providers does not migrate task,
-chat, execution, memory or artifact state.
-
-Do not place a `silverbullet_space` root under an iCloud-synced folder:
-reads of dataless CloudDocs placeholders block while materializing and can
-stall startup. Use a plain local folder such as `~/MagicianNotes`.
+Do not place the runtime root under an iCloud-synced folder: reads of dataless
+CloudDocs placeholders block while materializing and can stall startup
+(`scripts/install.sh` warns). Use a plain local folder such as
+`~/MagicianNotes`.
 
 Program specs (harness focus areas) are **per-scope** user-authored markdown
 in the scope's `programs/` dir, beside machine-owned `state/`:
@@ -91,21 +80,15 @@ GET /api/magician/v2/workspace-storage/settings
 PUT /api/magician/v2/workspace-storage/settings
 ```
 
-Web Settings uses that API. Minimal payload:
+Web Settings shows the resolved values read-only. Minimal payload:
 
 ```json
-{
-  "provider": "silverbullet_space",
-  "silverbullet": {
-    "space_path": "/Users/me/MagicianNotes"
-  }
-}
+{ "provider": "local_file" }
 ```
 
-Omit `space_path` to use the bootstrap/runtime root; a leftover
-`runtime_root` is ignored. Changing the provider requires a restart (it is
-chosen before runtime services are constructed). Switching neither deletes
-nor migrates data; the previous local tree stays as rollback data.
+`resolved` carries `provider`, `local_root` and `active_runtime_root`. The root
+is chosen before runtime services are constructed, so a change needs a
+restart; nothing is deleted or migrated.
 
 ## Boundary
 
@@ -163,9 +146,7 @@ non-blocking shared locks and skips busy scopes; memory consolidation treats a
 busy shared memory file as a skipped tick.
 
 Provider path validation caches the resolved provider root and canonical
-root candidates per `ArtifactV2Workspace`. `silverbullet_space` is still
-direct filesystem IO at the Space root; it does not call the SilverBullet
-server API or CLI for canonical runtime state.
+root candidates per `ArtifactV2Workspace`.
 
 Task multi-write journals use a version-two metadata format: each
 destination payload is staged as a separate provider-owned file; the
@@ -195,10 +176,10 @@ local-provider fallback internals remain filesystem-backed.
 
 Tests pin path parity (task, internal-task, chat outputs, scoped execution
 dirs), that helpers route through an injected provider, wrapper behaviour
-including outside-root and parent-escape rejection, and `silverbullet_space`
-materializing at the Space root.
+including outside-root and parent-escape rejection, and that the retired
+`silverbullet_space` selector resolves to `local_file` over the same root.
 
 ## Non-Goals
 
-No migration of existing canonical task/chat data into SilverBullet;
-publishing user-visible Markdown copies is the separate notes layer.
+No migration of canonical task/chat data into the notes folder; publishing
+user-visible Markdown copies is the separate notes layer.

@@ -47,6 +47,10 @@ data class TaskV3(
     @SerialName("current_substep_title") val currentSubstepTitle: String? = null,
     @SerialName("completion_summary") val completionSummary: String? = null,
     @SerialName("completion_outcome") val completionOutcome: String? = null,
+    /** `full` | `partial`, read leniently through [completionKind]. */
+    @SerialName("completion_kind") val completionKindWire: JsonElement? = null,
+    /** What a partial completion left open, read leniently through [openItems]. */
+    @SerialName("open_items") val openItemsWire: JsonElement? = null,
     @SerialName("completion_artifact_names") val completionArtifactNames: List<String>? = null,
     /** App recurring behaviour schedule; only some internal payloads carry it. */
     @SerialName("recurring_schedule") val recurringSchedule: JsonElement? = null,
@@ -75,11 +79,29 @@ data class TaskV3(
             "ready" -> "Ready"
             "running", "executing" -> "Running"
             "paused" -> "Paused"
-            "completed" -> "Completed"
+            "completed" -> if (isPartlyDone) TaskCompletion.PARTLY_DONE else "Completed"
             "failed" -> "Failed"
             "cancelled", "canceled" -> "Cancelled"
             "deferred" -> "Deferred"
             else -> status.replace('_', ' ').replaceFirstChar { it.uppercase() }
+        }
+
+    val completionKind: String? get() = TaskCompletion.kind(completionKindWire)
+    val openItems: List<String> get() = TaskCompletion.openItems(openItemsWire)
+
+    /** Completed with requirements still open: never shown as a plain success. */
+    val isPartlyDone: Boolean get() = TaskCompletion.isPartlyDone(status, completionKind)
+
+    /** "Open: <first item>" for a partly done task; null otherwise. */
+    val openItemsLine: String? get() = if (isPartlyDone) TaskCompletion.openLine(openItems) else null
+
+    val statusTone: TaskStatusTone
+        get() = when (normalizedStatus) {
+            "running", "planning", "executing" -> TaskStatusTone.Active
+            "completed" -> if (isPartlyDone) TaskStatusTone.Warning else TaskStatusTone.Success
+            "failed", "cancelled", "canceled" -> TaskStatusTone.Danger
+            "paused", "deferred" -> TaskStatusTone.Warning
+            else -> TaskStatusTone.Neutral
         }
 
     val activityLine: String?
@@ -236,6 +258,9 @@ data class TaskV3(
     private fun scheduleObject(): JsonObject? = (schedule as? JsonObject)
 }
 
+/** A task status chip's semantic colour; the app maps it to the palette. */
+enum class TaskStatusTone { Active, Success, Warning, Danger, Neutral }
+
 enum class TaskCardAction {
     ViewPlan, AnswerQuestion, ReviewPlan, RunPlan, Preplan, RunNow,
     ViewExecution, ViewQuestion, Reset, Result, PublishToNotes,
@@ -244,7 +269,7 @@ enum class TaskCardAction {
 enum class TaskSwipeAction { MarkComplete, MarkNotDone, Reset, Cancel, Delete }
 
 enum class TaskLane(val title: String) {
-    Tasks("Tasks"), Monitors("Monitors"), Internal("Internal")
+    Tasks("Tasks"), Monitors("Monitors"), Internal("System work")
 }
 
 enum class TaskFilter(val wire: String, val title: String) {
@@ -337,6 +362,8 @@ data class TaskDetailBundle(
     val details: JsonObject? = null,
     val plan: JsonObject? = null,
     val unavailableSections: Set<String> = emptySet(),
+    val observedProgressAt: Long? = null,
+    val progressExecutionId: String? = null,
 )
 
 /** A scoped realtime hint. Panel deltas carry a full run projection snapshot. */
@@ -346,6 +373,7 @@ data class TaskRealtimeEvent(
     val executionId: String? = null,
     val panel: JsonObject? = null,
     val eventTimestamp: Long = 0,
+    val progress: Boolean = false,
     /** The realtime hub may have missed events: re-read by REST. */
     val resync: Boolean = false,
 ) {

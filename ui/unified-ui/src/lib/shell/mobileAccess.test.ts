@@ -69,6 +69,17 @@ describe('mobile app access policy', () => {
 		}
 	});
 
+	// The phone apps embed Settings from the machine's UI hostname; an
+	// install gate or a redirect to `/` there leaves them a blank screen.
+	it('keeps Settings available on a paired phone', () => {
+		expect(isOffDeviceSurface('/settings')).toBe(true);
+		expect(isOffDeviceSurface('/settings/')).toBe(true);
+		expect(isOffDeviceSurface('/settings/model-routing')).toBe(true);
+		expect(isOffDeviceSurface('/settingsx')).toBe(false);
+		expect(shouldShowMobileAppGate('/settings', true)).toBe(false);
+		expect(isMarketingPath('/settings')).toBe(false);
+	});
+
 	it('keeps non-root routes available on desktop', () => {
 		expect(shouldShowMobileAppGate('/today', false)).toBe(false);
 	});

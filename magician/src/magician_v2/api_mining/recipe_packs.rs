@@ -178,6 +178,7 @@ pub fn recipe_to_pack_definition(recipe: &TaskRecipe) -> Option<CapabilityPackDe
             ..Default::default()
         }),
         result_projection: None,
+        parameter_constraints: serde_json::Value::Null,
     })
 }
 

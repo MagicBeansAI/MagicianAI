@@ -5,11 +5,13 @@
 
 pub mod bootstrap;
 pub mod capability;
+pub mod catalog;
 pub mod chunking;
 pub mod config;
 pub mod context_reuse;
 pub mod dispatch;
 pub mod error;
+pub mod model_discovery;
 mod ollama_keep_alive;
 pub mod pricing;
 pub mod pricing_file;
@@ -19,6 +21,8 @@ pub mod realtime;
 pub mod router;
 pub mod server_web_search;
 pub mod speech_voices;
+pub mod spend_gate;
+pub mod tool_schema;
 pub mod trace;
 pub mod types;
 
@@ -53,17 +57,19 @@ pub use dispatch::{
     ProviderQuotaMap, QueueSnapshot, RetryConfig, ShutdownStats, TaskLedgerSink, TaskRef,
     TaskSnapshot, TaskStateView, TokenSummary, TombstoneReason,
 };
-pub use error::{LLMError, LLMResult};
+pub use error::{LLMError, LLMResult, SPEND_ENVELOPE_EXHAUSTED_MARKER};
 pub use ollama_keep_alive::{
     request_keep_alive_value, set_default_ollama_keep_alive, DEFAULT_OLLAMA_KEEP_ALIVE,
 };
 pub use pricing::{
     active_table, compute_cost, compute_cost_at, compute_cost_with, compute_cost_with_at,
-    compute_cost_with_server_web_search_at, compute_realtime_cost, compute_realtime_cost_at,
-    compute_media_cost_at, install_pricing_file, install_pricing_table, media_pricing_version_at,
-    realtime_is_duration_billed_at, MediaKind, MediaPricing, MediaPricingRow, MediaUsage,
-    server_web_search_cost_per_call_at, LongContextPricing, PricingRow, PricingTable,
-    ProviderPricing, RealtimePricing, RealtimePricingRow, WebSearchPricingRow,
+    compute_cost_with_server_web_search_at, compute_media_cost_at, compute_realtime_cost,
+    compute_realtime_cost_at, estimate_unpriced_cost_microusd, install_pricing_file,
+    install_pricing_table, media_pricing_version_at, model_is_free_at, model_is_priced_at,
+    realtime_is_duration_billed_at, server_web_search_cost_per_call_at, try_compute_cost_at,
+    try_compute_cost_with_at, LongContextPricing, MediaKind, MediaPricing, MediaPricingRow,
+    MediaUsage, PricingRow, PricingTable, ProviderPricing, RealtimePricing, RealtimePricingRow,
+    WebSearchPricingRow,
 };
 pub use pricing_file::{parse_pricing_file, PricingFileRows, SEED_PRICING_JSON};
 pub use provider::LLMProvider;
@@ -73,6 +79,10 @@ pub use providers::{
     YutoriN1Provider,
 };
 pub use router::MultiLLMRouter;
+pub use spend_gate::{
+    install_spend_gate, installed_spend_gate, SpendGate, SpendSettlement,
+    DEFAULT_OUTPUT_CEILING_TOKENS,
+};
 pub use trace::{
     LlmCallRole, LlmParentRelation, LlmScope, LlmScopeResolution, LlmTraceContext, LlmTraceReceipt,
     LlmWorkloadClass,

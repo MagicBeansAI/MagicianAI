@@ -46,7 +46,8 @@ object TaskActs {
         TaskVerdictState.Waiting, TaskVerdictState.Queued -> null
         TaskVerdictState.Failed, TaskVerdictState.Stalled, TaskVerdictState.Running,
         TaskVerdictState.Paused, TaskVerdictState.Cancelled -> TaskDetailAct.Run
-        TaskVerdictState.Archived, TaskVerdictState.Finished -> TaskDetailAct.Output
+        TaskVerdictState.Archived, TaskVerdictState.Finalizing, TaskVerdictState.Finished,
+        TaskVerdictState.PartlyDone -> TaskDetailAct.Output
     }
 
     /** [acts] (lifecycle order) with the state's leading act moved to the front. A permutation of its input. */

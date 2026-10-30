@@ -94,6 +94,16 @@ chmod +x "$prefix/node_modules/.bin/pnpm"
         self.assertIn("Installing checkout-local pnpm 10.33.0", result.stdout)
         self.assertIn("desktop pnpm 10.33.0", result.stdout)
 
+    def test_failed_command_preserves_its_diagnostic(self) -> None:
+        pnpm = self.root / "broken-pnpm"
+        self.write_executable(pnpm, "#!/bin/sh\necho 10.33.0\necho 'synthetic startup failure' >&2\nexit 7\n")
+
+        result = self.run_script("--verify-command", str(pnpm))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("synthetic startup failure", result.stderr)
+        self.assertIn("pnpm failed to start", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,38 +10,12 @@ export function normalizeCommandText(value: string): string {
  * as "recent sessions". A command matches when the full query is present, or
  * every query word is an exact or prefix word. Matching ignores capitalization.
  */
-export function commandFilter(value: string, search: string, keywords: string[] = []): number {
-	const score = matchScore(value, search);
-	return score > 0 ? score + sectionBoost(keywords) : 0;
-}
-
-/**
- * Sections that lead search results. bits-ui orders groups by their best
- * item's score, so a match in "Jump to" outranks every other section, then
- * "Manage"; the rest keep match-quality order. A palette item opts in with
- * the keyword `section:<name>` (see `sectionKeyword`).
- */
-const SECTION_BOOST: Record<string, number> = { 'Jump to': 2, Manage: 1 };
-
-export function sectionKeyword(section: string): string {
-	return `section:${section}`;
-}
-
-function sectionBoost(keywords: string[]): number {
-	let boost = 0;
-	for (const keyword of keywords) {
-		if (keyword.startsWith('section:')) {
-			boost = Math.max(boost, SECTION_BOOST[keyword.slice('section:'.length)] ?? 0);
-		}
-	}
-	return boost;
-}
-
-function matchScore(value: string, search: string): number {
+export function commandFilter(value: string, search: string): number {
 	const haystack = normalizeCommandText(value);
 	const needle = normalizeCommandText(search);
 	if (!needle) return 1;
-	if (haystack.startsWith(needle)) return 1;
+	if (haystack === needle) return 1;
+	if (haystack.startsWith(needle)) return 0.95;
 	if (haystack.includes(needle)) return 0.9;
 
 	const words = haystack.split(' ');
@@ -57,4 +31,14 @@ function matchScore(value: string, search: string): number {
 		}
 	}
 	return 0.6 + 0.3 * (score / terms.length);
+}
+
+/** Titles outrank supporting text; section membership never overrides relevance. */
+export function commandItemScore(
+	item: { label: string; section: string; hint?: string; entityId?: string },
+	search: string
+): number {
+	const labelScore = commandFilter(item.label, search);
+	if (labelScore > 0) return 1 + labelScore;
+	return commandFilter(`${item.label} ${item.section} ${item.hint ?? ''} ${item.entityId ?? ''}`, search) * 0.8;
 }

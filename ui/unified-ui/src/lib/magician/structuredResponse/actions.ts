@@ -1,4 +1,8 @@
-import type { StructuredResponseActionV1 } from './types';
+import type {
+	StructuredArtifactLocatorV1,
+	StructuredResponseActionV1,
+	StructuredResponseV1
+} from './types';
 
 const KIND_LABEL_BY_KIND: Record<string, string> = {
 	copy_text: 'Copy text',
@@ -25,4 +29,17 @@ export function presentationForAction(action: StructuredResponseActionV1): Struc
 
 export function isActionRenderable(_action: StructuredResponseActionV1): boolean {
 	return true;
+}
+
+/**
+ * The open target the server recorded for an artifact whose `artifact_id` was
+ * shortened (it then no longer embeds the full output path). Callers fall
+ * back to parsing `artifact_id` when there is none.
+ */
+export function artifactLocatorFor(
+	response: StructuredResponseV1 | null | undefined,
+	artifactId: string
+): StructuredArtifactLocatorV1 | undefined {
+	const id = artifactId.trim();
+	return response?.meta?.artifact_locators?.find((locator) => locator.artifact_id === id);
 }

@@ -1555,10 +1555,17 @@
     border-radius: 18px 0 0 18px;
     overflow: hidden;
     pointer-events: auto;
-    background: linear-gradient(180deg, #1a1a21 0%, #0c0c0f 42%, #070709 100%);
+    /* Themed: the app theme's surfaces (mirrored by App.svelte); the original
+       dark drawer is the fallback outside a themed shell. */
+    background: linear-gradient(
+      180deg,
+      var(--bg-elevated, #1a1a21) 0%,
+      var(--bg-surface, #0c0c0f) 58%,
+      color-mix(in srgb, var(--bg-surface, #0c0c0f) 88%, var(--text-primary, #f4efe6) 12%) 100%
+    );
     box-shadow:
-      inset 1px 0 0 rgba(255, 255, 255, .14),
-      inset 0 1px 0 rgba(255, 255, 255, .18);
+      inset 0 0 0 1px color-mix(in srgb, var(--bg-surface, #0c0c0f) 74%, var(--text-primary, #f4efe6) 26%),
+      inset 0 1px 0 color-mix(in srgb, var(--text-primary, #ffffff) 14%, transparent);
   }
   .voice-scroll {
     position: absolute;
@@ -1569,8 +1576,12 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding: 14px 52px 12px 16px;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(244, 239, 230, .35) transparent;
+  }
+  .voice-scroll::-webkit-scrollbar { width: 4px; }
+  .voice-scroll::-webkit-scrollbar-track { background: transparent; }
+  .voice-scroll::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--accent-primary, var(--phase)) 40%, transparent);
+    border-radius: 999px;
   }
   .voice-lines {
     min-height: 100%;
@@ -1590,7 +1601,7 @@
   }
   .voice-line {
     margin: 0;
-    color: rgba(244, 239, 230, .92);
+    color: var(--text-primary, rgba(244, 239, 230, .92));
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     font-size: 13px;
     line-height: 1.35;
@@ -1598,13 +1609,13 @@
   }
   .voice-line span {
     margin-right: 6px;
-    color: color-mix(in srgb, var(--phase) 74%, white);
+    color: color-mix(in srgb, var(--phase) 74%, var(--text-primary, white));
     font-size: 9px;
     font-weight: 720;
     letter-spacing: .08em;
     text-transform: uppercase;
   }
-  .voice-line.user { color: rgba(214, 206, 196, .84); }
+  .voice-line.user { color: var(--text-secondary, rgba(214, 206, 196, .84)); }
   .tray-notch:hover .tray-body { filter: brightness(1.06); }
   .tray-notch:focus-visible .tray-body { outline: 2px solid rgba(255, 244, 220, .95); outline-offset: 2px; }
 

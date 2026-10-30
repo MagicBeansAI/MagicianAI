@@ -34,6 +34,7 @@ struct VibeDevCrewCard: View {
                     WorkFollowButton(seed: FollowedItemActivity.crewSeed(
                         crewID: crew.crewId, projectID: nil, goal: crew.goal,
                         projectName: projectName, needsYou: question != nil))
+                        .vibeDevControlOutline()
                 }
             }
             Text(crew.goal)

@@ -66,6 +66,19 @@ const blockShowcase: StructuredResponseV1 = {
 };
 
 describe('StructuredResponseRenderer', () => {
+    it('validates canonical text before hiding a standalone verification projection', () => {
+        const caveat = "> ⚠️ **Not fully verified.** Magician's evidence check could not confirm part of this answer: figure 93217 not found in any tool result";
+        render(StructuredResponseRenderer, {
+            compactVerification: true,
+            response: {
+                schema: 'magician.structured_response', version: 1, plain_text: caveat,
+                blocks: [{ kind: 'markdown', text: 'The main response remains available: **93,217**.' }]
+            }
+        });
+        expect(screen.queryByTestId('sr-fallback')).not.toBeInTheDocument();
+        expect(screen.getByTestId('sr-renderer')).toHaveTextContent('The main response remains available: 93,217.');
+    });
+
 	it('renders all block kinds and inert actions in one pass', () => {
 		render(StructuredResponseRenderer, { response: blockShowcase });
 

@@ -15,6 +15,7 @@ Telegram is the current official-bot path. Discord remains a viable future offic
 All CLI-based bots (WhatsApp/wu-cli, Telegram-self/tgcli, Gmail/gws) share a `ResilientProcess` SDK utility (`skillshub/bots/sdk/src/resilient-process.ts`) for retry/backoff/timeout logic: exponential backoff (3s→60s), credential purging after 2 failures, and automatic give-up after 10 minutes of continuous failures (restart manually from bots page). WhatsApp binary resolution uses local-then-workspace fallback for npm workspace compatibility.
 
 Bot commands handled by the SDK (`channel-runtime.ts`): `/start` triggers the connect/welcome flow, `/new` archives the current chat session and starts fresh. Both work uniformly across all channels (Telegram bot, Telegram-self, WhatsApp, Gmail).
+`/god` and `/godoff` pass through the SDK as text; the backend answers them for the verified owner only (per-chat god mode, see `docs/components/magician/god-mode.md`). The Telegram adapter allows both command names.
 
 ---
 
@@ -300,6 +301,7 @@ No shared `OutboundMessage` type -- each channel knows its own format.
 - Connects to magician WebSocket for push events (task status updates), with restart-safe routing via `origin_channel`
 - Formats `ChatResponse` and realtime chat messages as Telegram messages
 - Runtime actions are owned by Magician; Telegram does not implement a separate tool-confirmation path
+- `/claim <code>` is passed through to the backend (like `/god`): with a one-time code the owner minted under Settings → Owner identities, it records this chat id as the owner's Telegram identity (`docs/components/magician/envoy-agent.md`, *Adding an owner identity*)
 
 ### Discord (Deferred / Future)
 
@@ -472,15 +474,16 @@ bots/
 **AgentMail inbound bot (`bots/agentmail/`).** The webhook receiver forwards
 verified `message.received` events through `@magician/bot-sdk` and sends threaded
 replies. It always requires a valid Svix signature before recording reply
-context or trusting the sender's authentication labels. Set
-`AGENTMAIL_WEBHOOK_SECRET` for a manually registered webhook, or set
-`AGENTMAIL_WEBHOOK_URL` to self-register and obtain the signing secret from the
-provider (idempotent via `client_id`). Explicit secret configuration takes
+context or trusting the sender's authentication labels. On start it
+self-registers `https://${MAGICIAN_WEBHOOK_HOST}/agentmail-webhook` (base URL
+overridable with `AGENTMAIL_WEBHOOK_URL`), idempotent via `client_id` and
+re-pointed when the host moves, and takes the signing secret from the provider.
+`AGENTMAIL_WEBHOOK_SECRET` is for a manually registered webhook and takes
 precedence. Events are refused while registration is pending; if no secret is
 available afterward, startup fails and closes the receiver. The secret is never
 logged. The bot uses the usual registration (`bot_configs.yaml`, `LAUNCHABLE_BOTS`,
-`write_agentmail` in `setup_bot_envs.py`). A public URL (ngrok / magictunnel →
-`WEBHOOK_PORT`, default `3011`) is required for AgentMail to deliver events.
+`write_agentmail` in `setup_bot_envs.py`). The machine's tunnel webhook host
+must route `/agentmail-webhook` to `WEBHOOK_PORT` (default `3011`).
 
 ### Bot SDK (`@magician/bot-sdk`)
 
@@ -635,7 +638,8 @@ time-bound decision, the runtime's delivery coordinator offers a value-free
 card on the bot's realtime feed (`CriticalRequestAlert`, no address), the
 bot claims it over the authenticated API (the claim returns the owner's
 address for exactly that delivery — owner identities from
-`envoy.owner_identities`, never the last inbound sender), sends the card
+`envoy.owner_identities` / `owner_identity_envs`, claimed with `/claim <code>`
+or set by hand, never the last inbound sender), sends the card
 (Telegram: inline **Open secure request** button; Kapso: interactive CTA-URL
 inside the 24-hour window, the fallback template outside it) and reports the
 provider's answer. When the request resolves the bot edits (Telegram) or

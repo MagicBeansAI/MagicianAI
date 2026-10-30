@@ -1,9 +1,6 @@
 # Magician Bin
 
-**Current development version:** `0.2.28`
-
-Version 0.2.28 wires the scoped Work-module bridge and task service into
-startup with Magician 0.7.107 and API 0.3.43.
+**Current development version:** `0.2.39`
 
 The `magician` server binary and composition root, in its own package. A
 satellite `magician-api` depending on the `magician` lib cannot live in the
@@ -13,12 +10,31 @@ on both and nothing depends back on it. The binary name stays `magician`, so
 
 ## Shape
 
+Startup selects an explicit rustls crypto default before constructing network
+clients, covering legacy and optional TLS WebSocket paths as well as voice.
+
+VibeDev's per-run Citizen routes include `POST /vibedev/citizen/edit_original`.
+The run token supplies scope and original-folder identity; the edit broker
+waits for owner diff approval before applying a revision. The composition root
+mounts it beside the existing Citizen routes, using the same loopback grant
+channel admission.
+
+- Startup binds native chat context compaction to the shared scoped chat store and event broadcaster using `llm.chat_history`; see [the context contract](../magician/chat-mode.md#bounded-model-context).
+- Chat exposes `GET /chat/models?engine=magician|pi`; coding exposes
+  `GET /coding/models`. The retired profile-list routes are not registered.
+  The typed model/thinking resolver is shared by ordinary, queued and concurrent
+  voice admission; see the [catalog contract](../magicllm/model-catalog.md).
 - `src/main.rs` — server wiring (actix bootstrap, service graph, CLI
   subcommands). Its `magician_api` handler imports (`chat_api`, `plane_api`,
   agent services) are kept rustfmt-sorted; reordering them registers no new
   route. `GET` and `POST /meetings/whatsapp-ring` are registered with the other
   literal `/meetings/*` routes, before `/meetings/{id}`.
 - `src/adapters/` — local tool services.
+- The opt-in `retrieval-eval` binary target runs the shared chat retrieval
+  benchmark with runtime keychain authority; example/test fixture keys cannot
+  authenticate an existing live app registry. macOS may require Keychain access
+  for this separate executable; the live API uses the backend's existing access.
+  Gates count warm query-vector reuse and prove write contention with batching enabled.
 - Depends on `magician`, `magician-api`, `runtime-core`, `tool-runtime-core`
   (through the root's exact MagicRun pin), `magicllm`, and CLI/HTTP deps;
   `once_cell` holds the process-lifetime cells installed at boot. Shared
@@ -57,7 +73,14 @@ sealed.
    records the keys it added (`set_runtime_injected_env_keys`) so Workbench
    terminals can drop them (see
    [Developer Mode Workbench](../magician/developer-mode-workbench.md#terminal-environment)).
-2. Provider-free app authoring returns before config load.
+2. Provider-free app authoring returns before config load. Live paths then
+   move model spend limits from `execution.budgets` into
+   `resource_authority.model_spend` before loading
+   (`resource_authority::config::migrate_model_spend_limits`; on failure the
+   legacy values stay in force). Once the scoped resource-authority resolver
+   exists, boot starts the spend ledger poster
+   (`spend_envelope_ledger::install`); shutdown posts pending spend before the
+   envelope's final checkpoint.
 3. **Storage bootstrap** — `--storage-bootstrap` /
    `MAGICIAN_STORAGE_BOOTSTRAP_CONFIG` are resolved by `magician-storage`
    before `magician-config.yaml` is opened; neither keeps the local
@@ -94,7 +117,7 @@ sealed.
    scope lists already skip deleted workspaces. Only tombstoned ids (`deleted`
    / `pending_purge`) are retired; absence from the registry is not enough.
    Failures never block boot. Accounting (`llm_dispatch/*.jsonl`), audit
-   (`system/device-actions.jsonl`) and SilverBullet notes are kept. See
+   (`system/device-actions.jsonl`) and the notes folder are kept. See
    retiring a scope.
    A second background task starts the attention learning
    storage-maintenance timer (`AttentionLearningService::spawn_storage_maintenance`,
@@ -119,7 +142,9 @@ sealed.
 7. **Coding-engine workers** — `spawn_codex_qualify_worker`,
    `spawn_grok_version_worker`, `spawn_claude_version_worker`,
    `spawn_agy_version_worker`, so HTTP never waits on `codex app-server` or
-   `--version`. Grok overlays CLI version, filesystem/env auth and ACP
+   `--version`. `spawn_model_discovery_worker` refreshes which models each CLI
+   and keyed provider offers (cached, TTL-bound; see
+   [runtime availability](../magicllm/model-catalog.md#runtime-availability)). Grok overlays CLI version, filesystem/env auth and ACP
    initialize isolation (omitted MCP/tool lists stay unqualified). Claude
    overlays version, Max/OAuth and init-only isolation. Agy overlays version,
    Antigravity OAuth and init-only isolation (`init.tools` + `permission_mode`;
@@ -165,17 +190,28 @@ sealed.
     dispatching before `AgentRuntime`'s `artifact_v2_service` is wired burns
     the cycle (`record_failed_goal_cycle`). The ordering test asserts
     `opened < hydration`.
+    Right after it, `start_shell_job_runtime` installs the background shell
+    jobs' owner lookup and re-adopts jobs a previous process left running
+    ([agentic-loop-termination](../magician/agentic-loop-termination.md));
+    shutdown does not stop them.
 13. Startup recovery: the pause reaper removes records whose execution
     directory is gone, whose `state.json` never landed, or whose durable state
     is terminal (`pause_execution_record_is_gone_or_terminal`); a real I/O
     failure keeps the record. The synthesis reconcile sweep budgets each task
-    itself (no outer timeout) and is idempotent.
+    itself (no outer timeout) and is idempotent. Boot also spawns
+    `spawn_runtime_divergence_reconciler`
+    ([hitl-attention § Restart durability](../magician/hitl-attention.md#restart-durability)).
 
 **Planning usage backfill.** After the execution-panel event log is created,
 boot spawns `planning_usage_backfill::spawn`, a one-off job that writes
 planning model usage from the LLM call ledger onto past tasks' timelines (see
 `docs/components/magician/plan-flow.md`). Nothing waits on it; failures are
 logged.
+
+**Agentic settings.** Boot hands the `agentic:` section (decide()'s
+[keep-tail window](../magician/execution/FLAT_LOOP.md#keep-tail-context-window))
+to `V2Orchestrator::configure_agentic_settings`, into every run's
+`AgenticContext`; it is read at startup only.
 
 ## Execution driver and shutdown
 
@@ -187,7 +223,12 @@ since start (`resolved_driver` should be `stateless` and
 supervisor until claimed child handlers finish generation-bound handoff, then
 closes the execution-job registry, refuses late launches, drains in-memory
 futures, and only then tears down event, queue and storage sinks. Cancellation
-here never fabricates a terminal execution.
+here never fabricates a terminal execution. Once producers have quiesced (after
+the LLM dispatch queue, before database maintenance stops) it flushes the
+memory temperature counters held for write-behind
+(`flush_pending_memory_temperature_writes`, bounded 10 s); every exit from
+`run`, CLI commands included, repeats the flush as a backstop. See
+[memory index](../magician/memory-index.md) for the 2 s crash-loss window.
 
 ## CLI subcommands
 
@@ -202,6 +243,13 @@ here never fabricates a terminal execution.
   cloud` with `generation_model_count=0` and sizes the daemon context from the
   embedder, so `run-ollama.sh` never falls back to a locality-unaware
   resolver.
+- `magician google-project-access` — checks each Google account's Service
+  Usage Consumer and Pub/Sub Editor roles on the OAuth client's Cloud project
+  (accounts from `operator-config.yaml`, project from `client_secret.json`,
+  both overridable) with the host's `gcloud`; `--grant` adds missing roles when
+  that gcloud account can set the policy. Runs before engine boot; exit 3 when
+  a role is still missing, 4 when the policy is unreadable.
+  `scripts/setup-gws-project-access.sh` wraps it.
 - `magician town-square-migrate` — one-shot migration of the retired
   first-party Town Square corpus into the `town_square` package's entity
   store; a CLI so it has no auth surface and is not network-reachable. It
@@ -210,6 +258,20 @@ here never fabricates a terminal execution.
   retiring the source). `--history-only` restores historical conversation
   entities into a used square, keeping live roster, moods, policy and cursor;
   no source data is deleted.
+- `magician memory-user-report`, `memory-compact-user [--apply]`,
+  `memory-user-restore --record-id <id> [--apply]` and `memory-dedupe-user
+  [--section <name>]... [--threshold 0.90]` — the user-memory growth
+  bounds tools (`--principal`/`--workspace`, default `anonymous`/`default`;
+  `--json`). The report, the compact dry run and the dedupe dry run only
+  read; `--apply` backs `knowledge.json` up first and archives everything
+  that leaves it. `memory-dedupe-user` groups records that say one thing in
+  different words (local embedding model) and shows what the write-time fold
+  archives on the next write. Make targets: `memory-user-report`,
+  `memory-compact-user`, `memory-compact-user-apply`, `memory-dedupe-user`.
+  `memory-fold-user-duplicates [--apply]` (same-named Make targets) folds
+  stored near-duplicates into their most-confirmed copy; without `--apply` it
+  only lists. See
+  [memory lifecycle](../magician/memory-lifecycle.md#runbook-report-clean-up-restore).
 - The live `magician app` client covers candidate publication, reviewed
   lifecycle and re-enable, update/reinstall migration and rollback, purge
   recovery, and package/data/combined portability. It reads archive
@@ -221,6 +283,15 @@ here never fabricates a terminal execution.
 Handlers often live in `magician-api`.
 
 - `GET/PUT /plane/decision-routing` — owner-only Decision Engine routing.
+- `GET /plane/decision-metrics/health` — owner-only per-operation Decision
+  Model health (handler in `magician-api/src/plane_api/decision_metrics.rs`).
+- `GET/PUT /budgets/envelope`, `POST /budgets/envelope/grant` — the owner-set
+  spend envelope; `GET/DELETE /browser/submission-grants` — list and revoke the
+  sites approved with Approve Always on a browser-submission card. Boot also
+  publishes `outward_actions.browser_submission_guard` (off by default).
+  Boot installs the baseline, optional context overrides and force-capture switch
+  together ([outward matrix](../magician/outward-actions.md#optional-context-controls));
+  owner Settings writes and accepted reloads apply them immediately.
 - `POST /memory/search` — the owner Memory page, same recall as
   `search_memory`.
 - `GET /components/catalog`, `POST /components/plan`, and setup-token-gated
@@ -280,6 +351,8 @@ Handlers often live in `magician-api`.
   With `GEMINI_API_KEY` present, boot registers Gemini 3.5 Transcribe
   (`gemini_transcribe`) for Dictation file STT and Gemini 3.5 Live Transcribe
   (`gemini_live_transcribe`) for Hands-free streaming STT.
+- `POST /chat/memory/duplicates/fold` — near-duplicate fold (dry run unless
+  `apply:true`; [memory lifecycle](../magician/memory-lifecycle.md)).
 - `POST /chat/memory/sources/repair` — scoped memory source assessment and
   repair, over the published chat store and canonical memory resolver; shared
   search receives the already-published definition store
@@ -420,3 +493,8 @@ and Grok retain adapter validation. The host speech status probe now carries
 installed macOS voice IDs into `MacOsTtsProvider`, so `/media/providers` can
 advertise host-local voices as well as FluidAudio/Kokoro and online voices.
 See the [voice selection contract](../magician/realtime-media-rails.md#speaking-voice-selection).
+
+The composition root exposes the scoped chat `/assets` inventory alongside protected output downloads.
+
+The root HTTP app mounts the public content-addressed MCP profile route; all
+API routes retain their existing bearer and Cloudflare Access middleware.

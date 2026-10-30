@@ -26,6 +26,7 @@ final class TaskVerdictTests: XCTestCase {
         currentStepLabel: String? = "Searching memory for \"quarterly plan\"",
         elapsed: TimeInterval? = nil,
         lastProgressAt: Date? = nil,
+        synthesisPending: Bool = false,
         now: Date? = nil
     ) -> VerdictInput {
         VerdictInput(
@@ -38,6 +39,7 @@ final class TaskVerdictTests: XCTestCase {
             currentStepLabel: currentStepLabel,
             elapsed: elapsed,
             lastProgressAt: lastProgressAt,
+            synthesisPending: synthesisPending,
             now: now ?? epoch
         )
     }
@@ -454,13 +456,59 @@ final class TaskVerdictTests: XCTestCase {
         XCTAssertEqual(v.headline, "Finished · 3m 12s")
     }
 
+    // MARK: - Finalizing (synthesis pending)
+
+    func testReportsFinalizingWhenTheWorkIsDoneButTheAnswerIsStillBeingWritten() {
+        let v = TaskVerdict.derive(base(status: "finished", elapsed: 192, synthesisPending: true))
+        XCTAssertEqual(v.state, .finalizing)
+        XCTAssertEqual(v.headline, "Preparing final result")
+        XCTAssertFalse(v.detail.isEmpty)
+    }
+
+    func testStillFinishesWhenSynthesisIsNotPending() {
+        let v = TaskVerdict.derive(base(status: "finished", elapsed: 192, synthesisPending: false))
+        XCTAssertEqual(v.state, .finished)
+        XCTAssertEqual(v.headline, "Finished · 3m 12s")
+    }
+
+    func testLetsFailureOutrankFinalizing() {
+        let v = TaskVerdict.derive(base(status: "failed", error: "boom", synthesisPending: true))
+        XCTAssertEqual(v.state, .failed)
+    }
+
+    func testLetsCancellationOutrankFinalizing() {
+        let v = TaskVerdict.derive(base(status: "cancelled", synthesisPending: true))
+        XCTAssertEqual(v.state, .cancelled)
+    }
+
+    func testLetsAWaitingAskOutrankFinalizing() {
+        let ask = VerdictAttention(source: .approval, summary: nil, raisedAt: nil)
+        let v = TaskVerdict.derive(base(status: "finished", attention: ask, synthesisPending: true))
+        XCTAssertEqual(v.state, .waiting)
+    }
+
+    func testKeepsARunningTaskRunningEvenIfSynthesisIsFlagged() {
+        let v = TaskVerdict.derive(base(status: "running", synthesisPending: true))
+        XCTAssertEqual(v.state, .running)
+    }
+
+    func testStopsSpinningOnceTheFlagHasBeenSetForMoreThanTenMinutes() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertFalse(SynthesisWait.isStale(since: start, now: start))
+        XCTAssertFalse(SynthesisWait.isStale(since: start, now: start.addingTimeInterval(600)))
+        XCTAssertTrue(SynthesisWait.isStale(since: start, now: start.addingTimeInterval(601)))
+        // A device clock behind the server's instant is not stale.
+        XCTAssertFalse(SynthesisWait.isStale(since: start, now: start.addingTimeInterval(-30)))
+        XCTAssertEqual(SynthesisWait.elapsed(since: start, now: start.addingTimeInterval(-30)), 0)
+    }
+
     // MARK: - Legibility
 
     func testEveryStateHasItsOwnMarkerGlyphSoGreyscaleStillDistinguishesThem() {
         // Every state has its own glyph. The severity bands are deliberately
         // shared, so if the glyphs collapse too the states become
         // indistinguishable without colour.
-        XCTAssertEqual(VerdictState.allCases.count, 9)
+        XCTAssertEqual(VerdictState.allCases.count, 10)
         let markers = VerdictState.allCases.map(\.marker)
         XCTAssertEqual(Set(markers).count, markers.count, "two states share a marker glyph")
         XCTAssertFalse(markers.contains(where: \.isEmpty))
@@ -477,6 +525,7 @@ final class TaskVerdictTests: XCTestCase {
         // and deliberate disagreement with the task-list status chip.
         XCTAssertEqual(VerdictState.cancelled.severity, .neutral)
         XCTAssertEqual(VerdictState.archived.severity, .neutral)
+        XCTAssertEqual(VerdictState.finalizing.severity, .progress)
         XCTAssertEqual(VerdictState.finished.severity, .success)
     }
 

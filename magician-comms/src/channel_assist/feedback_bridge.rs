@@ -206,18 +206,23 @@ pub async fn run_feedback_bridge_pass(
     let resolver = AgentMemoryResolver::with_workspace_layout(process_storage::workspace());
     let mut written = 0usize;
     let mut failed = 0usize;
+    // One write per pass, carrying every `(account, day)` row. Under
+    // `memory.user_knowledge_bounds` enforce it lands in the channel-feedback
+    // lane file, where a later slice of a day is combined into its row.
+    let mut fields = Map::new();
     for tr in &tier_rows {
-        let mut fields = Map::new();
-        fields.insert(tr.field_key.clone(), tr.fields.clone());
-        let outcome =
-            merge_user_memory_tier_fields(&resolver, principal, workspace, TIER, &fields).await;
-        if outcome.get("status").and_then(Value::as_str) == Some("error") {
-            let reason = outcome.get("reason").and_then(Value::as_str).unwrap_or("");
-            warn!(target: LOG_TARGET, tier = TIER, reason, "feedback bridge tier write failed");
-            failed += 1;
-        } else {
-            written += 1;
-        }
+        fields
+            .entry(tr.field_key.clone())
+            .or_insert_with(|| tr.fields.clone());
+    }
+    let outcome =
+        merge_user_memory_tier_fields(&resolver, principal, workspace, TIER, &fields).await;
+    if outcome.get("status").and_then(Value::as_str) == Some("error") {
+        let reason = outcome.get("reason").and_then(Value::as_str).unwrap_or("");
+        warn!(target: LOG_TARGET, tier = TIER, reason, "feedback bridge tier write failed");
+        failed += fields.len();
+    } else {
+        written += fields.len();
     }
 
     if failed > 0 {
@@ -398,6 +403,36 @@ mod tests {
         assert_eq!(f["acknowledged"], json!(1));
         assert_eq!(f["dismissed"], json!(2));
         assert_eq!(f["dismiss_reasons"]["spam"], json!(2));
+    }
+
+    /// The lane store recomputes this summary when it combines day slices;
+    /// both must render it the same way.
+    #[test]
+    fn the_lane_summary_matches_the_bridge_summary() {
+        let rows = vec![
+            fb("business", D5 + 1, "approved", "helpful", None, "Invoice"),
+            fb(
+                "business",
+                D5 + 3,
+                "dismissed",
+                "not_helpful",
+                Some("spam"),
+                "Promo",
+            ),
+            fb(
+                "business",
+                D5 + 4,
+                "dismissed",
+                "not_helpful",
+                Some("late"),
+                "Promo2",
+            ),
+        ];
+        let out = build_feedback_rows(&rows);
+        assert_eq!(
+            magician::magician_v2::agents::user_memory_lanes::feedback_summary(&out[0].fields),
+            out[0].fields["summary"].as_str().unwrap()
+        );
     }
 
     #[test]

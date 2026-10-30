@@ -442,87 +442,25 @@ impl RequestShape {
     };
 }
 
-/// Composite "adaptive" profile that pairs a fast (no-thinking) profile
-/// with a thinking profile. The chat runtime starts a turn in the fast
-/// profile and exposes a `request_thinking_mode` tool; the LLM calls the
-/// tool when it decides the task warrants extended reasoning, the
-/// runtime swaps to the `thinking_profile` and restarts the turn.
-///
-/// Adaptive profiles live in their own map (`LLMRouterConfig::adaptive_profiles`)
-/// keyed by name — alongside (not inside) the regular `profiles` map. Two
-/// reasons:
-///   1. Existing `LLMProfile` shape is unchanged. No schema migration on
-///      any standard profile; YAML loading is forward-compatible.
-///   2. The discriminator is *placement* — a name in `adaptive_profiles`
-///      is adaptive; a name in `profiles` is standard. No `kind` field
-///      required on standards.
-///
-/// References (`fast_profile`, `thinking_profile`) MUST point at entries
-/// in the `profiles` map; pointing at another adaptive profile is
-/// disallowed at load time to prevent escalation loops.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdaptiveProfile {
-    /// Name of the standard profile used for the initial fast turn.
-    pub fast_profile: String,
-    /// Name of the standard profile used after the runtime escalates.
-    pub thinking_profile: String,
-    /// Optional operator-facing description shown in the profile picker.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Optional tier label for UI grouping inside the Adaptive group
-    /// (e.g. `instant` / `normal` / `advanced` / `frontier` to communicate the
-    /// size / capability trade-off without exposing raw model names).
-    /// Free-form: the UI renders whatever string is here as a chip.
-    /// None = no chip is shown (caller relies on `description` alone).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tier: Option<String>,
-    /// Optional metadata bag for future use (e.g. per-channel overrides).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<HashMap<String, Value>>,
-}
-
-/// Resolved view of a profile name, distinguishing adaptive composites
-/// from standard profiles. Returned by
-/// [`LLMRouterConfig::resolve_profile`].
-#[derive(Debug, Clone, Copy)]
-pub enum ResolvedProfile<'a> {
-    /// A regular profile — what every existing caller expects.
-    Standard(&'a LLMProfile),
-    /// An adaptive composite — pre-resolved to its fast + thinking
-    /// inner profiles. The chat runtime treats this case specially
-    /// (exposes `request_thinking_mode` tool, injects fast-mode prompt
-    /// block); non-chat callers can safely treat the `fast` field as
-    /// "the profile to use" and get standard behavior.
-    Adaptive {
-        name: &'a str,
-        composite: &'a AdaptiveProfile,
-        fast: &'a LLMProfile,
-        thinking: &'a LLMProfile,
-    },
-}
-
 /// Router configuration mapping operations to profiles.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(try_from = "RouterConfigWire")]
 pub struct LLMRouterConfig {
-    /// Loaded from the sibling `llm-profiles.yaml`, spliced into the config
-    /// text before parse — see `magician::config::splice_router_profiles`.
+    /// Authoring surface for models; concrete profiles are generated internal
+    /// routes. Owned by the sibling router file, never an unrelated writer.
+    #[serde(default, skip_serializing)]
+    pub catalog: crate::catalog::ModelCatalog,
+    /// Resolved routes generated from the sibling `llm-router.yaml` catalog.
     ///
     /// `skip_serializing` is the structural half of that split. Two settings
-    /// writers (`privacy_processing_settings`, `workspace_storage_settings`)
-    /// save by deserializing the whole config, replacing one section, and
-    /// re-serializing. Without this, the first such save would write ~3,800
-    /// lines of spliced profiles back into `magician-config.yaml` and silently
-    /// undo the split — and a future writer would do it again. Omitting them
-    /// here means no config writer can, whether or not it remembers to.
+    /// writers save by deserializing the whole config, replacing one section,
+    /// and re-serializing. Omitting resolved routes prevents those writers from
+    /// baking dispatch data into `magician-config.yaml` or undoing the split.
     ///
-    /// Safe because deserialization keeps `default`, so a config without the
-    /// key still parses, and nothing serializes this struct expecting profiles.
+    /// RouterConfigWire deserialization admits catalog authoring only; resolved
+    /// routes are internal data, never accepted as an authored profile table.
     #[serde(default, skip_serializing)]
     pub profiles: HashMap<String, LLMProfile>,
-    /// Adaptive composite profiles — see [`AdaptiveProfile`]. Empty by
-    /// default; only populated when the operator opts in via YAML.
-    #[serde(default)]
-    pub adaptive_profiles: HashMap<String, AdaptiveProfile>,
     /// Loaded from the sibling `llm-router.yaml` alongside [`Self::profiles`],
     /// and skipped on serialize for the same reason: a settings writer that
     /// re-serializes the whole config would otherwise copy it back into
@@ -543,6 +481,43 @@ pub struct LLMRouterConfig {
     /// Empty by default; populated only when realtime voice is wired.
     #[serde(default)]
     pub realtime_voice: RealtimeVoiceConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouterConfigWire {
+    #[serde(default)]
+    catalog: crate::catalog::ModelCatalog,
+    #[serde(default)]
+    profiles: HashMap<String, LLMProfile>,
+    #[serde(default)]
+    operation_mapping: HashMap<String, OperationProfileSelector>,
+    #[serde(default = "default_profile_name")]
+    default_profile: String,
+    #[serde(default)]
+    locality: ProcessingLocality,
+    #[serde(default)]
+    realtime_voice: RealtimeVoiceConfig,
+}
+
+impl TryFrom<RouterConfigWire> for LLMRouterConfig {
+    type Error = String;
+
+    fn try_from(wire: RouterConfigWire) -> Result<Self, Self::Error> {
+        let catalog = wire.catalog;
+        let mut router = Self {
+            catalog: catalog.clone(),
+            profiles: wire.profiles,
+            operation_mapping: wire.operation_mapping,
+            default_profile: wire.default_profile,
+            locality: wire.locality,
+            realtime_voice: wire.realtime_voice,
+        };
+        catalog
+            .materialize(&mut router)
+            .map_err(|error| error.to_string())?;
+        Ok(router)
+    }
 }
 
 fn locality_is_local(locality: &ProcessingLocality) -> bool {
@@ -724,71 +699,22 @@ impl LLMRouterConfig {
         }
     }
 
-    /// Returns the profile associated with the specified operation.
-    /// Picks the unconditional default profile (no request-shape signals).
-    /// Use [`Self::get_profile_for_operation_with_shape`] when an
-    /// alternative-aware lookup is desired.
-    ///
-    /// Adaptive profiles transparently resolve to their `fast_profile`
-    /// for callers that aren't adaptive-aware. The chat runtime calls
-    /// [`Self::resolve_profile_for_operation`] instead to handle both
-    /// variants explicitly.
+    /// Resolve a concrete operation route using the current locality.
     pub fn get_profile_for_operation(&self, operation: &str) -> Option<&LLMProfile> {
         self.get_profile_for_operation_with_shape(operation, &RequestShape::NONE)
     }
 
-    /// Returns the profile selected for the operation given the request
-    /// shape (e.g. presence of images). Falls back to `default_profile`
-    /// when the operation isn't mapped. Adaptive composites transparently
-    /// resolve to their `fast_profile` — see [`Self::resolve_profile_for_operation`]
-    /// for the adaptive-aware variant.
     pub fn get_profile_for_operation_with_shape(
         &self,
         operation: &str,
         shape: &RequestShape,
     ) -> Option<&LLMProfile> {
-        let profile_name = self.profile_name_for_operation(operation, shape);
-        match self.adaptive_profiles.get(profile_name) {
-            Some(adaptive) => self.profiles.get(&adaptive.fast_profile),
-            None => self.profiles.get(profile_name),
-        }
+        self.profiles
+            .get(self.profile_name_for_operation(operation, shape))
     }
 
-    /// Adaptive-aware variant that surfaces the composite when the
-    /// resolved name is an adaptive profile. Chat-side runtime calls
-    /// this to decide whether to inject the escalation tool + fast-mode
-    /// prompt block. Non-adaptive operations can keep using
-    /// `get_profile_for_operation` without change.
-    pub fn resolve_profile_for_operation<'a>(
-        &'a self,
-        operation: &str,
-    ) -> Option<ResolvedProfile<'a>> {
-        self.resolve_profile_for_operation_with_shape(operation, &RequestShape::NONE)
-    }
-
-    pub fn resolve_profile_for_operation_with_shape<'a>(
-        &'a self,
-        operation: &str,
-        shape: &RequestShape,
-    ) -> Option<ResolvedProfile<'a>> {
-        let profile_name = self.profile_name_for_operation(operation, shape);
-        self.resolve_profile(profile_name)
-    }
-
-    /// Direct profile-name resolution, distinguishing standard vs
-    /// adaptive. Returns None when the name doesn't exist in either map.
-    pub fn resolve_profile<'a>(&'a self, name: &'a str) -> Option<ResolvedProfile<'a>> {
-        if let Some(adaptive) = self.adaptive_profiles.get(name) {
-            let fast = self.profiles.get(&adaptive.fast_profile)?;
-            let thinking = self.profiles.get(&adaptive.thinking_profile)?;
-            return Some(ResolvedProfile::Adaptive {
-                name,
-                composite: adaptive,
-                fast,
-                thinking,
-            });
-        }
-        self.profiles.get(name).map(ResolvedProfile::Standard)
+    pub fn resolve_profile(&self, name: &str) -> Option<&LLMProfile> {
+        self.profiles.get(name)
     }
 
     /// Compute the profile name selected for an operation + shape. Falls
@@ -798,60 +724,6 @@ impl LLMRouterConfig {
             .get(operation)
             .map(|selector| selector.profile_for_locality(shape, self.locality))
             .unwrap_or(self.default_profile.as_str())
-    }
-
-    /// Validate adaptive-profile references at config-load time. Returns
-    /// human-readable errors when:
-    ///   - an adaptive profile's `fast_profile` or `thinking_profile`
-    ///     references a name that doesn't exist in `profiles`
-    ///   - either reference points at another adaptive profile (would
-    ///     create an escalation loop)
-    ///   - both references point at the same profile (escalation would
-    ///     be a no-op — operator typo)
-    pub fn validate_adaptive_profiles(&self) -> Result<(), Vec<String>> {
-        let mut errors = Vec::new();
-        for (name, adaptive) in &self.adaptive_profiles {
-            if !self.profiles.contains_key(&adaptive.fast_profile) {
-                if self.adaptive_profiles.contains_key(&adaptive.fast_profile) {
-                    errors.push(format!(
-                        "adaptive profile `{name}` has fast_profile `{}` which is itself adaptive — adaptive profiles cannot nest",
-                        adaptive.fast_profile
-                    ));
-                } else {
-                    errors.push(format!(
-                        "adaptive profile `{name}` references fast_profile `{}` which doesn't exist in `profiles`",
-                        adaptive.fast_profile
-                    ));
-                }
-            }
-            if !self.profiles.contains_key(&adaptive.thinking_profile) {
-                if self
-                    .adaptive_profiles
-                    .contains_key(&adaptive.thinking_profile)
-                {
-                    errors.push(format!(
-                        "adaptive profile `{name}` has thinking_profile `{}` which is itself adaptive — adaptive profiles cannot nest",
-                        adaptive.thinking_profile
-                    ));
-                } else {
-                    errors.push(format!(
-                        "adaptive profile `{name}` references thinking_profile `{}` which doesn't exist in `profiles`",
-                        adaptive.thinking_profile
-                    ));
-                }
-            }
-            if adaptive.fast_profile == adaptive.thinking_profile {
-                errors.push(format!(
-                    "adaptive profile `{name}` has identical fast_profile and thinking_profile (`{}`) — escalation would be a no-op",
-                    adaptive.fast_profile
-                ));
-            }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
     }
 }
 
@@ -1205,8 +1077,8 @@ mod tests {
             },
         );
         let config = LLMRouterConfig {
+            catalog: Default::default(),
             profiles,
-            adaptive_profiles: HashMap::new(),
             operation_mapping,
             locality: ProcessingLocality::default(),
             default_profile: "text".to_string(),

@@ -157,11 +157,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "invoke_direct_input",
-   "line": 4327,
+   "line": 4340,
    "carries": null,
    "title": "Admitted as a durable task",
    "say": "The workflow service stamps the current installation, grant and schema evidence, then admits the run as a durable app task under an idempotency key.",
-   "evidence": "magician-api/src/apps_api.rs:6886",
+   "evidence": "magician-api/src/apps_api.rs:6886; branch at magician/src/magician_v2/apps/workflows.rs:4327",
    "next": "apps.run.tools"
   },
   {
@@ -173,11 +173,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "tool_for_execution",
-   "line": 6985,
+   "line": 6996,
    "carries": null,
    "title": "Tools narrowed to the grant",
    "say": "When the task runs, its tool list is cut down to the granted tools plus a store query tool and a terminal commit tool.",
-   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:29847; magician/src/magician_v2/artifact_v2/service.rs:29869",
+   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:29847; magician/src/magician_v2/artifact_v2/service.rs:29869; branch at magician/src/magician_v2/apps/workflows.rs:6985",
    "next": "apps.run.context"
   },
   {
@@ -211,11 +211,11 @@
    "file": "magician/src/magician_v2/execution/agentic/executor.rs",
    "type": "PreparedProtectedAppTool",
    "fn": "execute_pack_dispatch",
-   "line": 50099,
+   "line": 52698,
    "carries": null,
    "title": "Agent picks a tool",
    "say": "The app's agent answers with a tool call, and the executor treats it as a protected app tool rather than an ordinary one.",
-   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:329; magician/src/magician_v2/execution/agentic/executor.rs:50591; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063",
+   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:329; magician/src/magician_v2/execution/agentic/executor.rs:50591; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063; branch at magician/src/magician_v2/execution/agentic/executor.rs:50099; branch at magician/src/magician_v2/execution/agentic/executor.rs:50201; branch at magician/src/magician_v2/execution/agentic/executor.rs:50203; branch at magician/src/magician_v2/execution/agentic/executor.rs:50386; branch at magician/src/magician_v2/execution/agentic/executor.rs:51266; branch at magician/src/magician_v2/execution/agentic/executor.rs:51268; branch at magician/src/magician_v2/execution/agentic/executor.rs:52620; branch at magician/src/magician_v2/execution/agentic/executor.rs:52661",
    "next": "apps.bind.plan"
   },
   {
@@ -281,11 +281,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "execute_compiled_effect",
-   "line": 10355,
+   "line": 10373,
    "carries": "AppToolDisclosurePermit",
    "title": "Run in process",
    "say": "A trusted built-in provider runs the call inside Magician, under a one-shot disclosure permit sized to the reviewed byte ceilings.",
-   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:51018; magician/src/magician_v2/execution/agentic/executor.rs:51100",
+   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:51018; magician/src/magician_v2/execution/agentic/executor.rs:51100; branch at magician/src/magician_v2/apps/workflows.rs:10355",
    "next": "apps.tool.label"
   },
   {
@@ -297,11 +297,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "prepare_os_jail_disclosure",
-   "line": 9825,
+   "line": 9843,
    "carries": "AppOsJailPreparedAction",
    "title": "Prepare the jailed call",
    "say": "The workflow rechecks the locked skill, plans it for the jail, and refuses any action that would need approval or ambient authority.",
-   "evidence": "magician/src/magician_v2/apps/workflows.rs:9893; magician/src/magician_v2/apps/os_jail.rs:1639; magician/src/magician_v2/apps/os_jail.rs:2166",
+   "evidence": "magician/src/magician_v2/apps/workflows.rs:9893; magician/src/magician_v2/apps/os_jail.rs:1639; magician/src/magician_v2/apps/os_jail.rs:2166; branch at magician/src/magician_v2/apps/workflows.rs:9825",
    "next": "apps.tool.jail.run"
   },
   {
@@ -377,11 +377,11 @@
    "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs",
    "type": null,
    "fn": "request_tool_approval",
-   "line": 459,
+   "line": 987,
    "carries": "UserRequest",
    "title": "Ask the owner",
    "say": "When the tool's approval class is above ordinary, the owner is asked to approve this one call, with the amount shown for purchases.",
-   "evidence": "magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs:375; magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs:486",
+   "evidence": "magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs:375; magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs:486; branch at magician/src/magician_v2/execution/primitive_dispatch/governed_mcp.rs:459",
    "next": "apps.tool.mcp.hitl"
   },
   {
@@ -416,11 +416,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "execute_interactive_effect",
-   "line": 10564,
+   "line": 10582,
    "carries": "AppToolDisclosurePermit",
    "title": "Run on a device",
    "say": "An interactive tool runs on a browser, a paired Mac or an Android phone, inside a session the owner can watch and stop.",
-   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:51162; magician/src/magician_v2/apps/workflows.rs:2765",
+   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:51162; magician/src/magician_v2/apps/workflows.rs:2765; branch at magician/src/magician_v2/apps/workflows.rs:10564",
    "next": "apps.tool.label"
   },
   {
@@ -432,11 +432,11 @@
    "file": "magician/src/magician_v2/execution/agentic/executor.rs",
    "type": null,
    "fn": "execute_pack_dispatch",
-   "line": 50099,
+   "line": 52698,
    "carries": null,
    "title": "Tool refused",
    "say": "With no trusted dispatcher for this call, the tool is refused before any input leaves, and the agent sees only the refusal.",
-   "evidence": "magician/src/magician_v2/apps/app_tool_bind.rs:458; magician/src/magician_v2/execution/agentic/executor.rs:50702; branch at magician/src/magician_v2/execution/agentic/executor.rs:50659; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063",
+   "evidence": "magician/src/magician_v2/apps/app_tool_bind.rs:458; magician/src/magician_v2/execution/agentic/executor.rs:50702; branch at magician/src/magician_v2/execution/agentic/executor.rs:50659; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063; branch at magician/src/magician_v2/execution/agentic/executor.rs:50099; branch at magician/src/magician_v2/execution/agentic/executor.rs:50201; branch at magician/src/magician_v2/execution/agentic/executor.rs:50203; branch at magician/src/magician_v2/execution/agentic/executor.rs:50386; branch at magician/src/magician_v2/execution/agentic/executor.rs:51266; branch at magician/src/magician_v2/execution/agentic/executor.rs:51268; branch at magician/src/magician_v2/execution/agentic/executor.rs:52620; branch at magician/src/magician_v2/execution/agentic/executor.rs:52661",
    "next": "apps.run.next"
   },
   {
@@ -448,11 +448,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "label_tool_result",
-   "line": 13070,
+   "line": 13088,
    "carries": "AppToolDisclosurePermit",
    "title": "Result labelled",
    "say": "The result spends the call's disclosure permit and is labelled at a strict local-only floor; no label is ever read from tool output.",
-   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:51327",
+   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:51327; branch at magician/src/magician_v2/apps/workflows.rs:13070",
    "next": "apps.run.next"
   },
   {
@@ -487,11 +487,11 @@
    "file": "magician/src/magician_v2/apps/workflows.rs",
    "type": "AppWorkflowService",
    "fn": "commit_terminal",
-   "line": 17136,
+   "line": 17154,
    "carries": "AppWorkflowTerminalRequest",
    "title": "Terminal commit",
    "say": "The terminal commit is checked against the task's own schema and relations, then becomes the run's single final result.",
-   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:52156; magician/src/magician_v2/apps/workflows.rs:17161",
+   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:52156; magician/src/magician_v2/apps/workflows.rs:17161; branch at magician/src/magician_v2/apps/workflows.rs:17136",
    "next": "apps.run.mutate"
   },
   {

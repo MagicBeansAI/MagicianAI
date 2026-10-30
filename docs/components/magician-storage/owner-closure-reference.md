@@ -241,7 +241,6 @@ Secret export is metadata-only.
 | `device_local_imessage` | device Messages DB; not migrated |
 | `device_local_whatsapp` | device WhatsApp DB; not migrated |
 | `notes_provider` | human notes; not canonical runtime |
-| `silverbullet_space_runtime` | local profile variant |
 
 ## Desktop engine-path reads
 

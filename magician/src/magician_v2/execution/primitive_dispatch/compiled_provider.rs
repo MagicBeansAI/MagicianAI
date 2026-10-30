@@ -39,6 +39,7 @@ struct CompiledProviderDispatcher {
     /// degraded path (execute inner action without ledger bookkeeping).
     authority: Option<CompiledDispatchAuthority>,
     learning_store: Option<crate::magician_v2::learning::LearningStore>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl CompiledProviderDispatcher {
@@ -66,6 +67,7 @@ impl CompiledProviderDispatcher {
                 .or_else(|| exec_ctx.legacy_execution_id.clone()),
             provenance: provenance_params(exec_ctx),
             authority: exec_ctx.compiled_dispatch_authority.clone(),
+            cancel: exec_ctx.cancellation_token.clone(),
             learning_store: exec_ctx
                 .artifact_workspace
                 .clone()
@@ -179,15 +181,19 @@ impl CompiledProviderDispatcher {
                 crate::magician_v2::learning::LearningSkillInvocationSource::PrimitiveCompiledProvider,
             learning_store: self.learning_store.clone(),
         };
-        match dispatch_compiled_provider(
-            Arc::clone(&self.provider),
-            &self.provider_name,
-            resolved_params,
-            Some(timeout_secs),
-            &ctx,
-            self.authority.as_ref(),
-        )
-        .await
+        match crate::magician_v2::execution::compiled_dispatch::EXECUTION_CANCEL_TOKEN
+            .scope(
+                self.cancel.clone(),
+                dispatch_compiled_provider(
+                    Arc::clone(&self.provider),
+                    &self.provider_name,
+                    resolved_params,
+                    Some(timeout_secs),
+                    &ctx,
+                    self.authority.as_ref(),
+                ),
+            )
+            .await
         {
             Ok(result) => Ok(success_result(started, result)),
             Err(err) => Ok(failed_result(started, err.to_string())),

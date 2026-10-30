@@ -29,14 +29,35 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     };
 
     let store = NotesSettingsStore::with_workspace_layout(resources.artifact_workspace.clone());
+    if let Some(refused) = super::notes_shared::workspace_refusal(
+        "open_note",
+        &store,
+        &principal,
+        &workspace,
+        &path,
+        crate::magician_v2::execution::goal_workspace_access::Op::Read,
+    )
+    .await
+    {
+        return Ok(refused);
+    }
     match store.resolve_note(&principal, &workspace, &path).await {
-        Ok(location) => Ok(json!({
-            "status": "ok",
-            "path": location.path,
-            "absolute_path": location.absolute_path,
-            "provider": location.provider,
-            "open_url": location.open_url,
-        })),
+        Ok(location) => {
+            if let Some(refused) = super::notes_shared::workspace_refusal_at(
+                "open_note",
+                std::path::Path::new(&location.absolute_path),
+                crate::magician_v2::execution::goal_workspace_access::Op::Read,
+            ) {
+                return Ok(refused);
+            }
+            Ok(json!({
+                "status": "ok",
+                "path": location.path,
+                "absolute_path": location.absolute_path,
+                "provider": location.provider,
+                "open_url": location.open_url,
+            }))
+        },
         Err(error) => Ok(super::notes_shared::read_error("open_note", error)),
     }
 }

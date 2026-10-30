@@ -434,6 +434,7 @@ pub(super) async fn review(
         LEARNING_REFLECTION_OPERATION,
         PROMPT,
         Duration::from_secs(60),
+        text::Unqualified::Defer,
         generate,
         |raw| Ok(parse_reflection_output(raw)),
         |r| {

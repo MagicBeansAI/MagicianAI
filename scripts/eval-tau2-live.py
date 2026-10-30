@@ -64,6 +64,8 @@ from html import escape
 from pathlib import Path
 from typing import Any, Callable
 
+from chat_model_args import add_chat_model_arguments, chat_model_request_fields, resolve_chat_model_selections
+
 print = functools.partial(print, flush=True)  # noqa: A001 - background runs must not buffer progress
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE_URL = "http://127.0.0.1:3002"
@@ -269,7 +271,7 @@ def send_message(
     client: Client,
     session_id: str,
     text: str,
-    profile: str | None = None,
+    model_selection: dict[str, str] | None = None,
     retries: int = 2,
     *,
     stall_seconds: float = DEFAULT_STALL_SECONDS,
@@ -294,8 +296,7 @@ def send_message(
     holds it open until the driver answers, so it cannot block the watch."""
     chat_turn_id = f"bench-{secrets.token_hex(8)}"
     body: dict[str, Any] = {"text": text[:MAX_MESSAGE_CHARS], "source_surface": "web", "chat_turn_id": chat_turn_id}
-    if profile:
-        body["profile"] = profile
+    body.update(chat_model_request_fields(model_selection))
     started = time.monotonic()
 
     def watch(post_outcome: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1192,7 +1193,7 @@ class MagicianTauAgent(_HalfDuplexAgent):
 
     def _send(self, text: str) -> str:
         response = send_message(
-            self._client, self.session_id, text, profile=self.context.args.answer_profile,
+            self._client, self.session_id, text, model_selection=self.context.args.answer_model_selection,
             hitl_probe=self._hitl_probe if self._relay_enabled() else None,
             **self._wait_kwargs(),
         )
@@ -1471,7 +1472,7 @@ def write_report(output_dir: Path, args: argparse.Namespace, environment: dict[s
             "agent": "magician_agent (domain tools mounted natively as skills via the tool bridge)",
             "hitl": "free-text questions relayed to the user simulator" if getattr(args, "hitl_relay", True) else "free-text questions auto-answered (relay off)",
             "user_llm": args.user_llm or "tau2 default",
-            "answer_profile": args.answer_profile or "server default",
+            "answer_model_selection": args.answer_model_selection or "server default",
         },
         "profiles_seen": sorted(profiles),
         "summary": summary,
@@ -1497,6 +1498,11 @@ def write_report(output_dir: Path, args: argparse.Namespace, environment: dict[s
 
 
 def run(args: argparse.Namespace) -> int:
+    try:
+        resolve_chat_model_selections(args, ("answer",),
+            lambda: bootstrap_client(args).json("GET", "/api/magician/v2/chat/models", query={"engine": "magician"}))
+    except ValueError as error:
+        raise EvalFailure(str(error)) from error
     exported = export_runtime_provider_keys()
     from tau2 import registry
     from tau2.data_model.simulation import TextRunConfig
@@ -2136,7 +2142,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--task-ids", default="", help="comma-separated task ids (overrides --limit)")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--answer-profile", default="", help="chat profile for agent turns (default: server default)")
+    add_chat_model_arguments(parser, ("answer",))
     parser.add_argument("--user-llm", default="", help="LLM name for tau2's user simulator (default: tau2's default)")
     parser.add_argument("--max-cost-usd", type=float, default=DEFAULT_MAX_COST_USD)
     parser.add_argument("--stall-seconds", type=float, default=DEFAULT_STALL_SECONDS, help="give up on a turn only after this long with no new turn event and no tool execution")

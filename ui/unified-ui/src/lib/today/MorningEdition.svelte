@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
+	import { takeWorthLinkOpenedInGesture } from '$lib/today/deckActMenu';
 	import { page } from '$app/stores';
 	import { onMount, onDestroy } from 'svelte';
 
@@ -9,6 +10,10 @@
 	import { showSuccess, showError, showInfo } from '$lib/shared/stores/notifications';
 	import { todayStore } from '$lib/stores/todayStore';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+	import { primaryAgent } from '$lib/stores/agentStore';
+	import { threadStore } from '$lib/stores/threadStore';
+	import { agentDisplayName } from '$lib/presentationIdentity';
+	import { canonicalResurfacingChatThread } from '$lib/today/resurfacingChatContext';
 	import {
 		openAttentionCenter,
 		openHitlPrompt,
@@ -23,7 +28,6 @@
 		acknowledgeChannelFollowUp,
 		dismissChannelFollowUp,
 		dismissChannelFollowUpWithReason,
-		approveChannelFollowUp,
 		snoozeChannelFollowUp,
 		type ChannelFollowUp
 	} from '$lib/stores/channelNeedsYouStore';
@@ -40,7 +44,7 @@
 	import type { PublishedSurfaceRecord } from '$lib/types/surfaces';
 
 	import TodayNewspaperCard from '$lib/today/TodayNewspaperCard.svelte';
-	import TodayTriageDeck, { type TriageCardData } from '$lib/today/TodayTriageDeck.svelte';
+	import TodayTriageDeck, { type DeckActionKind, type TriageCardData } from '$lib/today/TodayTriageDeck.svelte';
 	import TodayNewspaperLedger from '$lib/today/TodayNewspaperLedger.svelte';
 	import TodayRealtimeWire from '$lib/today/TodayRealtimeWire.svelte';
 	import Button from '$lib/magician/components/generative/Button.svelte';
@@ -91,6 +95,55 @@
 	let followUpPage = 1;
 	const FOLLOW_UP_LIMIT = 5;
 	let followUpTotal = 0;
+	let deckFollowUps: ChannelFollowUp[] = [];
+	let deckWorth: ResurfacingCard[] = [];
+	let deckFollowUpCursor: string | null = null;
+	let deckWorthCursor: import('./resurfacingQueries').ResurfacingCursor | null = null;
+	let deckFollowUpsSeeded = false;
+	let deckWorthSeeded = false;
+	let deckFollowUpsPaged = false;
+	let deckWorthPaged = false;
+	let deckHasMoreForYou = false;
+	let deckHasMoreWorth = false;
+	let deckLoadingMore = false;
+	let deckPendingActions = 0;
+	let deckMutationRevision = 0;
+	let deckLaneErrors: Partial<Record<'for_you' | 'worth', string>> = {};
+	let deckTab: import('./TodayTriageDeck.svelte').DeckTab = 'all';
+	$: deckError = deckTab === 'for_you' ? deckLaneErrors.for_you ?? null
+		: deckTab === 'worth' ? deckLaneErrors.worth ?? null
+		: deckLaneErrors.for_you ?? deckLaneErrors.worth ?? null;
+	let readingRoomScope = '';
+	$: currentReadingRoomScope = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
+	$: if (mounted && readingRoomScope !== currentReadingRoomScope) {
+		readingRoomScope = currentReadingRoomScope;
+		channelFollowUps = []; worthCards = []; deckFollowUps = []; deckWorth = [];
+		followUpTotal = 0; worthTotal = 0; followUpPage = 1; worthPage = 1;
+		followUpCursorsByPage = { 1: null }; deckFollowUpCursor = null; deckWorthCursor = null;
+		deckFollowUpsSeeded = false; deckWorthSeeded = false; deckFollowUpsPaged = false; deckWorthPaged = false; deckHasMoreForYou = false; deckHasMoreWorth = false;
+		deckLoadingMore = false; deckPendingActions = 0; deckMutationRevision += 1;
+		deckLaneErrors = {}; deckHandled.clear(); deckPageRevision = 0;
+		scrollRecords = [];
+		void loadAllData();
+	}
+	function isCurrentScope(scope: string): boolean { return mounted && scope === `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`; }
+
+	function setDeckError(lane: 'for_you' | 'worth', message: string | null): void {
+		const errors = { ...deckLaneErrors };
+		if (message) errors[lane] = message; else delete errors[lane];
+		deckLaneErrors = errors;
+	}
+	let deckPageRevision = 0;
+	const deckHandled = new Set<string>();
+	function mergeDeck<T>(fresh: T[], cached: T[], id: (item: T) => string, prefix: string): T[] {
+		const seen = new Set<string>();
+		return [...fresh, ...cached].filter(item => {
+			const key = `${prefix}:${id(item)}`;
+			if (seen.has(key) || deckHandled.has(key)) return false;
+			seen.add(key); return true;
+		});
+	}
+
 	let followUpLoading = false;
 	let followUpCursorsByPage: Record<number, string | null> = { 1: null };
 
@@ -189,20 +242,17 @@
 	$: issueNumber = getDayOfYear(todayDate);
 
 	// Unify follow-up and worth cards for the Triage Deck
-	$: triageCards = buildTriageCards(channelFollowUps, worthCards);
+	$: triageCards = buildTriageCards(deckFollowUps, deckWorth);
 	$: totalTriageCount = (followUpTotal || 0) + (worthTotal || 0);
-	$: morningDeckCountLabel = totalTriageCount > 50 ? '50+' : `${totalTriageCount}`;
+	$: morningDeckCountLabel = !deckFollowUpsSeeded || !deckWorthSeeded ? '…' : totalTriageCount.toLocaleString();
 
 	function formatFollowUpTriageCard(f: ChannelFollowUp): TriageCardData {
 		return {
 			id: `followup:${f.annotation_id}`,
 			title: f.subject?.trim() || 'Untitled Message',
-			category: `DISPATCH · ${f.provider?.toUpperCase() || 'CORRESPONDENCE'}`,
+			category: `FOR YOU · ${f.provider?.toUpperCase() || 'CORRESPONDENCE'}`,
 			summary: f.summary?.trim() || f.reason?.trim() || 'No preview available',
 			sender: f.sender || undefined,
-			// ⚡ posts `approve` (start a follow-up task), so it is labelled for
-			// that — not for `available_actions[0]`, which needs compose/commit.
-			primaryLabel: 'Do it',
 			originLane: 'dispatch',
 			rawFollowUp: f
 		};
@@ -212,9 +262,8 @@
 		return {
 			id: `worth:${w.candidate_id}`,
 			title: w.source_title?.trim() || w.line?.trim() || 'Resurfaced Note',
-			category: `READING ROOM · ${w.source_kind?.replace(/_/g, ' ').toUpperCase() || 'NOTE'}`,
+			category: `WORTH A LOOK · ${w.source_kind?.replace(/_/g, ' ').toUpperCase() || 'NOTE'}`,
 			summary: w.summary?.trim() || w.why_now?.trim() || 'Resurfaced for your attention',
-			primaryLabel: 'Open',
 			originLane: 'reading_room',
 			rawWorth: w
 		};
@@ -238,6 +287,7 @@
 	}
 
 	async function ensureFollowUpCursor(targetPage: number): Promise<string | null> {
+		const requestScope = currentReadingRoomScope;
 		if (targetPage <= 1) return null;
 		if (Object.prototype.hasOwnProperty.call(followUpCursorsByPage, targetPage)) {
 			return followUpCursorsByPage[targetPage];
@@ -255,7 +305,7 @@
 			const res = await fetchChannelFollowUpsPage(FOLLOW_UP_LIMIT, cursor, {
 				includeCanonicalProjection: false
 			});
-			if (!res.ok || !res.has_more || !res.next_cursor) break;
+			if (!isCurrentScope(requestScope) || !res.ok || !res.has_more || !res.next_cursor) break;
 			cursor = res.next_cursor;
 			curr += 1;
 			followUpCursorsByPage[curr] = cursor;
@@ -264,15 +314,28 @@
 	}
 
 	async function loadFollowUps(targetPage = 1): Promise<void> {
+		const requestScope = currentReadingRoomScope;
 		followUpLoading = true;
 		try {
 			const cursor = await ensureFollowUpCursor(targetPage);
+			if (!isCurrentScope(requestScope)) return;
 			const res = await fetchChannelFollowUpsPage(FOLLOW_UP_LIMIT, cursor, {
 				includeCanonicalProjection: false
 			});
+			if (!isCurrentScope(requestScope)) return;
+			if (!res.ok) throw new Error(res.error || 'Could not load For You.');
 			if (res.ok) {
+				setDeckError('for_you', null);
 				channelFollowUps = res.items || [];
 				followUpTotal = res.total || 0;
+				if (targetPage === 1) {
+					deckFollowUps = mergeDeck(res.items || [], deckFollowUps, item => item.annotation_id, 'followup');
+					if (!deckFollowUpsPaged || (deckFollowUpCursor === null && followUpTotal > deckFollowUps.length)) {
+						deckFollowUpCursor = res.next_cursor ?? null;
+						deckHasMoreForYou = res.has_more === true && deckFollowUpCursor !== null;
+					}
+					deckFollowUpsSeeded = true;
+				}
 				channelHealth = res.health ?? null;
 				channelActionability = res.actionability ?? null;
 				channelActionabilityTraining = res.actionability_training ?? null;
@@ -287,29 +350,90 @@
 				}
 			}
 		} catch (err) {
+			if (!isCurrentScope(requestScope)) return;
+			setDeckError('for_you', 'Could not load For You. Try again.'); deckFollowUpsSeeded = true;
 			console.error('Failed to load dispatches page:', err);
 		} finally {
-			followUpLoading = false;
+			if (isCurrentScope(requestScope)) followUpLoading = false;
 		}
 	}
 
 	async function loadWorthPage(targetPage = 1): Promise<void> {
+		const requestScope = currentReadingRoomScope;
 		worthLoading = true;
 		try {
 			const offset = (targetPage - 1) * WORTH_LIMIT;
-			const res = await fetchResurfacingTodayPage({ limit: WORTH_LIMIT, offset });
+			const res = await fetchResurfacingTodayPage({ limit: WORTH_LIMIT, offset, includeDiagnostics: isDebug });
+			if (!isCurrentScope(requestScope)) return;
+			setDeckError('worth', null);
 			worthCards = res.cards || [];
 			worthTotal = res.total || 0;
+			if (targetPage === 1) {
+				deckWorth = mergeDeck(res.cards || [], deckWorth, card => card.candidate_id, 'worth');
+				if (!deckWorthPaged || (deckWorthCursor === null && worthTotal > deckWorth.length)) {
+					deckWorthCursor = res.next_cursor;
+					deckHasMoreWorth = res.has_more && deckWorthCursor !== null;
+				}
+				deckWorthSeeded = true;
+			}
 			worthBandit = res.bandit ?? null;
 			worthPage = targetPage;
 		} catch (err) {
+			if (!isCurrentScope(requestScope)) return;
+			setDeckError('worth', 'Could not load Worth a Look. Try again.'); deckWorthSeeded = true;
 			console.error('Failed to load reading room page:', err);
 		} finally {
-			worthLoading = false;
+			if (isCurrentScope(requestScope)) worthLoading = false;
 		}
 	}
 
+	async function loadMoreDeck(tab: import('./TodayTriageDeck.svelte').DeckTab = 'all'): Promise<void> {
+		const requestScope = currentReadingRoomScope;
+		if (deckLoadingMore || deckPendingActions > 0 || (tab !== 'worth' && !deckFollowUpsSeeded) || (tab !== 'for_you' && !deckWorthSeeded)) return;
+		deckLoadingMore = true;
+		const mutationRevision = deckMutationRevision;
+		const retryForYou = deckLaneErrors.for_you != null;
+		const retryWorth = deckLaneErrors.worth != null;
+		try {
+			const results = await Promise.allSettled([
+				(async () => {
+					if (tab === 'worth' || (!deckHasMoreForYou && !retryForYou)) return;
+					const cursor = deckFollowUpCursor;
+					const page = await fetchChannelFollowUpsPage(FOLLOW_UP_LIMIT, cursor, { includeCanonicalProjection: false });
+					if (!isCurrentScope(requestScope)) return;
+					if (!page.ok) throw new Error(page.error || 'Could not load For You.');
+					if (page.next_cursor && page.next_cursor === cursor) throw new Error('For You did not advance. Try again.');
+					deckFollowUps = mergeDeck(deckFollowUps, page.items, item => item.annotation_id, 'followup');
+					if (mutationRevision === deckMutationRevision && deckPendingActions === 0) followUpTotal = page.total;
+					deckFollowUpsPaged = true;
+					deckFollowUpCursor = page.next_cursor ?? null;
+					deckHasMoreForYou = page.has_more === true && deckFollowUpCursor !== null;
+				})(),
+				(async () => {
+					if (tab === 'for_you' || (!deckHasMoreWorth && !retryWorth)) return;
+					const cursor = deckWorthCursor;
+					const page = await fetchResurfacingTodayPage({ limit: WORTH_LIMIT, cursor, includeDiagnostics: isDebug });
+					if (!isCurrentScope(requestScope)) return;
+					if (page.next_cursor && JSON.stringify(page.next_cursor) === JSON.stringify(cursor)) throw new Error('Worth a Look did not advance. Try again.');
+					deckWorth = mergeDeck(deckWorth, page.cards, card => card.candidate_id, 'worth');
+					if (mutationRevision === deckMutationRevision && deckPendingActions === 0) worthTotal = page.total;
+					deckWorthPaged = true;
+					deckWorthCursor = page.next_cursor;
+					deckHasMoreWorth = page.has_more && deckWorthCursor !== null;
+				})()
+			]);
+			if (!isCurrentScope(requestScope)) return;
+			results.forEach((result, index) => {
+				const lane = index === 0 ? 'for_you' : 'worth';
+				if ((lane === 'for_you' && tab === 'worth') || (lane === 'worth' && tab === 'for_you')) return;
+				setDeckError(lane, result.status === 'rejected' ? result.reason instanceof Error ? result.reason.message : 'Could not load more cards.' : null);
+			});
+		}
+		finally { if (isCurrentScope(requestScope)) { deckLoadingMore = false; deckPageRevision += 1; } }
+	}
+
 	async function loadBriefings(): Promise<void> {
+		const requestScope = currentReadingRoomScope;
 		scrollsLoading = true;
 		scrollsError = null;
 		try {
@@ -317,12 +441,14 @@
 				route_target: '/briefing',
 				maxItems: 6
 			});
+			if (!isCurrentScope(requestScope)) return;
 			scrollRecords = page.records || [];
 		} catch (err) {
+			if (!isCurrentScope(requestScope)) return;
 			scrollsError = err instanceof Error ? err.message : 'Failed to load briefings';
 			scrollRecords = [];
 		} finally {
-			scrollsLoading = false;
+			if (isCurrentScope(requestScope)) scrollsLoading = false;
 		}
 	}
 
@@ -388,8 +514,10 @@
 
 	onMount(() => {
 		if (!browser) return;
+		readingRoomScope = currentReadingRoomScope;
 		mounted = true;
 		todayStore.start();
+		threadStore.start();
 		void loadAllData();
 		refreshTimer = setInterval(() => {
 			void loadAllData();
@@ -399,6 +527,7 @@
 	onDestroy(() => {
 		mounted = false;
 		todayStore.stop();
+		if (browser) threadStore.stop();
 		if (refreshTimer) clearInterval(refreshTimer);
 	});
 
@@ -456,14 +585,20 @@
 		}
 	}
 
-	// Follow-up actions
+	// Follow-up actions. Starting a follow-up task is not one of them: it runs
+	// only from the card's detail view, after the optional instruction.
 	async function handleFollowUpAction(
 		fu: ChannelFollowUp,
 		kind: 'primary' | 'useful' | 'acknowledge' | 'dismiss' | 'snooze',
 		reason?: string
-	): Promise<void> {
+	): Promise<boolean> {
+		if (kind === 'primary') return false;
+		const requestScope = currentReadingRoomScope;
 		// Optimistically remove from list; the action helpers report failure as
 		// `{ ok: false }` rather than throwing, so the result decides rollback.
+		const deckIndex = deckFollowUps.findIndex(item => item.annotation_id === fu.annotation_id);
+		deckHandled.add(`followup:${fu.annotation_id}`);
+		deckFollowUps = deckFollowUps.filter(item => item.annotation_id !== fu.annotation_id);
 		channelFollowUps = channelFollowUps.filter(c => c.annotation_id !== fu.annotation_id);
 
 		const result =
@@ -475,21 +610,22 @@
 						? reason
 							? await dismissChannelFollowUpWithReason(fu.annotation_id, reason as ChannelFollowUpDismissReason)
 							: await dismissChannelFollowUp(fu.annotation_id)
-						: kind === 'snooze'
-							? await snoozeChannelFollowUp(fu.annotation_id)
-							: await approveChannelFollowUp(fu.annotation_id);
+						: await snoozeChannelFollowUp(fu.annotation_id);
 
+		if (!isCurrentScope(requestScope)) return false;
 		if (!result.ok) {
+			deckHandled.delete(`followup:${fu.annotation_id}`);
+			deckFollowUps = [...deckFollowUps.slice(0, Math.max(0, deckIndex)), fu, ...deckFollowUps.slice(Math.max(0, deckIndex))];
 			showError(result.error || 'Action failed');
 			void loadFollowUps(followUpPage);
-			return;
+			return false;
 		}
 		followUpTotal = Math.max(0, followUpTotal - 1);
 		if (kind === 'useful') showSuccess('Marked useful — more like this will surface');
 		else if (kind === 'acknowledge') showInfo('Acknowledged');
 		else if (kind === 'dismiss') showInfo('Dismissed');
-		else if (kind === 'snooze') showInfo('Snoozed — hidden from Today');
-		else showSuccess('Task started');
+		else showInfo('Snoozed — hidden from Today');
+		return true;
 	}
 
 	// Worth-a-look actions
@@ -505,12 +641,16 @@
 		worth: ResurfacingCard,
 		kind: 'primary' | 'useful' | 'acknowledge' | 'dismiss' | 'snooze',
 		reason?: string
-	): Promise<void> {
+	): Promise<boolean> {
+		const requestScope = currentReadingRoomScope;
 		// Resurfacing has no snooze action; the card never offers one.
-		if (kind === 'snooze') return;
+		if (kind === 'snooze') return false;
 
 		// Optimistically remove from list; `postResurfacingAction` reports
 		// failure as `{ ok: false }` rather than throwing.
+		const deckIndex = deckWorth.findIndex(card => card.candidate_id === worth.candidate_id);
+		deckHandled.add(`worth:${worth.candidate_id}`);
+		deckWorth = deckWorth.filter(card => card.candidate_id !== worth.candidate_id);
 		worthCards = worthCards.filter(c => c.candidate_id !== worth.candidate_id);
 
 		const action = kind === 'acknowledge' ? 'acknowledge' : kind === 'dismiss' ? 'dismiss' : 'open';
@@ -519,16 +659,20 @@
 			: undefined;
 		const result = await postResurfacingAction(worth.candidate_id, action, dismissReason);
 
+		if (!isCurrentScope(requestScope)) return false;
 		if (!result.ok) {
+			deckHandled.delete(`worth:${worth.candidate_id}`);
+			deckWorth = [...deckWorth.slice(0, Math.max(0, deckIndex)), worth, ...deckWorth.slice(Math.max(0, deckIndex))];
 			showError(result.error || 'Action failed');
 			void loadWorthPage(worthPage);
-			return;
+			return false;
 		}
 		worthTotal = Math.max(0, worthTotal - 1);
 		if (kind === 'useful') showSuccess('Marked useful — noted for future recommendations');
 		else if (kind === 'acknowledge') showInfo('Acknowledged');
 		else if (kind === 'dismiss') showInfo('Dismissed');
 		else await openWorthSource(worth);
+		return true;
 	}
 
 	async function openWorthSource(worth: ResurfacingCard): Promise<void> {
@@ -538,6 +682,7 @@
 			return;
 		}
 		const url = worth.open_url?.trim();
+		if (url && takeWorthLinkOpenedInGesture(worth.candidate_id)) return;
 		if (url && typeof window !== 'undefined') {
 			window.open(url, '_blank', 'noopener');
 			return;
@@ -545,13 +690,46 @@
 		showInfo('Opened — this note has no linked source');
 	}
 
+	// The deck's Act menu labels `ask_presto` with the primary agent's name and
+	// only offers it when a chat thread exists to post into.
+	$: deckAgentName = agentDisplayName($primaryAgent);
+	$: deckChatThreadId = canonicalResurfacingChatThread($threadStore.threads);
+
+	/**
+	 * A deck card's detail-view action (a sent reply, a started follow-up task,
+	 * a reminder) already resolved the follow-up server-side, so the lists drop
+	 * it here without another call.
+	 */
+	function onDeckResolved(event: CustomEvent<{ card: TriageCardData; message: string }>): void {
+		const fu = event.detail.card.rawFollowUp;
+		if (fu) dropResolvedFollowUp(fu, event.detail.message);
+	}
+
+	function dropResolvedFollowUp(fu: ChannelFollowUp, message: string): void {
+		deckHandled.add(`followup:${fu.annotation_id}`);
+		deckFollowUps = deckFollowUps.filter(item => item.annotation_id !== fu.annotation_id);
+		channelFollowUps = channelFollowUps.filter(c => c.annotation_id !== fu.annotation_id);
+		followUpTotal = Math.max(0, followUpTotal - 1);
+		deckMutationRevision += 1; deckPageRevision += 1;
+		showSuccess(message);
+	}
+
 	// Deck swipe triage event handler
-	async function onDeckAction(event: CustomEvent<{ card: TriageCardData; kind: 'useful' | 'acknowledge' | 'dismiss' | 'primary' }>): Promise<void> {
-		const { card, kind } = event.detail;
-		if (card.rawFollowUp) {
-			await handleFollowUpAction(card.rawFollowUp, kind);
-		} else if (card.rawWorth) {
-			await handleWorthAction(card.rawWorth, kind);
+	async function onDeckAction(event: CustomEvent<{ card: TriageCardData; kind: DeckActionKind; complete?: (success: boolean) => void }>): Promise<void> {
+		const { card, kind, complete } = event.detail;
+		const requestScope = currentReadingRoomScope;
+		deckPendingActions += 1;
+		try {
+			const success = card.rawFollowUp ? await handleFollowUpAction(card.rawFollowUp, kind)
+				: card.rawWorth ? await handleWorthAction(card.rawWorth, kind) : false;
+			complete?.(success);
+		} catch (error) {
+			complete?.(false);
+			showError(error instanceof Error ? error.message : 'Action failed');
+		} finally {
+			if (isCurrentScope(requestScope)) {
+				deckPendingActions -= 1; deckMutationRevision += 1; deckPageRevision += 1;
+			}
 		}
 	}
 
@@ -841,7 +1019,11 @@
 		<TodayRealtimeWire />
 
 		<!-- Above-The-Fold: Front Page Lead / Urgent Decisions -->
-		{#if $todayStore.sections.needs_you.length > 0}
+		{#if !$todayStore.lastLoadedAt && !$todayStore.error}
+            <div class="morning-slate-clear" role="status">Loading your day…</div>
+        {:else if !$todayStore.lastLoadedAt && $todayStore.error}
+            <div class="morning-slate-clear" role="alert">{$todayStore.error}</div>
+        {:else if $todayStore.sections.needs_you.length > 0}
 			{@const leadItem = $todayStore.sections.needs_you[0]}
 			<section class="morning-lead-story" aria-label="Front Page Lead Story">
 				<div class="lead-badge">THE LEAD STORY · URGENT DECISION</div>
@@ -902,12 +1084,28 @@
 			</header>
 
 			{#if viewMode === 'deck'}
+				{#key readingRoomScope}
 				<TodayTriageDeck
 					cards={triageCards}
+					bind:activeTab={deckTab}
 					debug={isDebug}
+					followUpTotal={followUpTotal}
+					worthTotal={worthTotal}
+					hasMoreForYou={deckHasMoreForYou}
+					hasMoreWorth={deckHasMoreWorth}
+					forYouLoading={!deckFollowUpsSeeded}
+					worthLoading={!deckWorthSeeded}
+					loadingMore={deckLoadingMore}
+					loadError={deckError}
+					pageRevision={deckPageRevision}
+					agentName={deckAgentName}
+					chatThreadId={deckChatThreadId}
+					on:needMore={(e) => void loadMoreDeck(e.detail)}
 					on:action={onDeckAction}
+					on:resolved={onDeckResolved}
 					on:switchView={() => (viewMode = 'broadsheet')}
 				/>
+				{/key}
 			{:else}
 				<!-- Broadsheet Two-Column Grid: For You & Worth a look -->
 				<div class="morning-broadsheet-grid">
@@ -933,7 +1131,10 @@
 									<TodayNewspaperCard
 										followUp={fu}
 										debug={isDebug}
+										agentName={deckAgentName}
+										chatThreadId={deckChatThreadId}
 										on:action={(e) => handleFollowUpAction(fu, e.detail.kind, e.detail.reason)}
+										on:resolved={(e) => dropResolvedFollowUp(fu, e.detail.message)}
 									/>
 								{/each}
 							{/if}
@@ -977,6 +1178,8 @@
 									<TodayNewspaperCard
 										{worth}
 										debug={isDebug}
+										agentName={deckAgentName}
+										chatThreadId={deckChatThreadId}
 										on:action={(e) => handleWorthAction(worth, e.detail.kind, e.detail.reason)}
 									/>
 								{/each}

@@ -117,6 +117,8 @@ class HitlObservation:
     resolved_event_visible: bool = False
     plan_panel_cleared: bool = False
     attention_cleared: bool = False
+    # A grouped clarification has one canonical form request for several fields.
+    event_correlation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -488,6 +490,24 @@ def attention_items(payload: Any) -> list[dict[str, Any]]:
     return items
 
 
+def attention_clarification_question(
+    item: dict[str, Any], correlation_id: str
+) -> dict[str, Any] | None:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if metadata.get("source") != "clarification":
+        return None
+    schema = metadata.get("input_schema")
+    for container in (metadata, schema):
+        if not isinstance(container, dict):
+            continue
+        questions = container.get("questions")
+        if isinstance(questions, list):
+            for question in questions:
+                if isinstance(question, dict) and question.get("id") == correlation_id:
+                    return question
+    return None
+
+
 def attention_item_matches(item: dict[str, Any], correlation_id: str, task_id: str) -> bool:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     aliases = {
@@ -497,7 +517,10 @@ def attention_item_matches(item: dict[str, Any], correlation_id: str, task_id: s
         )),
     }
     item_task = str(item.get("task_id") or metadata.get("task_id") or "")
-    return correlation_id in aliases and (not item_task or item_task == task_id)
+    return (
+        correlation_id in aliases
+        or attention_clarification_question(item, correlation_id) is not None
+    ) and (not item_task or item_task == task_id)
 
 
 def find_attention(payload: Any, correlation_id: str, task_id: str) -> dict[str, Any] | None:
@@ -511,7 +534,9 @@ def find_attention(payload: Any, correlation_id: str, task_id: str) -> dict[str,
     )
 
 
-def attention_identity(item: dict[str, Any]) -> tuple[str | None, str | None, str]:
+def attention_identity(
+    item: dict[str, Any], question_id: str | None = None
+) -> tuple[str | None, str | None, str]:
     """Return canonical correlation, execution, and display prompt from a feed row."""
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     hitl_request = (
@@ -535,6 +560,9 @@ def attention_identity(item: dict[str, Any]) -> tuple[str | None, str | None, st
         or _nested_string(item, ("summary", "title"))
         or ""
     )
+    question = attention_clarification_question(item, question_id) if question_id else None
+    if question is not None:
+        return str(question["id"]), execution, str(question.get("prompt") or "")
     return correlation, execution, prompt
 
 
@@ -562,6 +590,13 @@ def event_matches(event: Any, correlation_id: str, kind: str) -> bool:
     return kind_normalized in normalized and _nested_string(
         event, ("correlation_id", "pause_state_id", "approval_id", "request_id", "question_id")
     ) == correlation_id
+
+
+def resolved_event_matches(event: Any, observation: HitlObservation) -> bool:
+    correlations = {observation.correlation_id}
+    if observation.source == "clarification" and observation.event_correlation_id:
+        correlations.add(observation.event_correlation_id)
+    return any(event_matches(event, correlation, "hitl.resolved") for correlation in correlations)
 
 
 def wait_until(
@@ -673,7 +708,7 @@ def observe_pending_hitl(
         f"{source} {correlation_id} in Attention", timeout_secs, attention_probe
     )
     metadata = item.get("metadata") if isinstance(item, dict) and isinstance(item.get("metadata"), dict) else {}
-    attention_correlation, attention_execution, attention_prompt = attention_identity(item)
+    attention_correlation, attention_execution, attention_prompt = attention_identity(item, correlation_id)
     plan_prompt = question_prompt(plan_item) if source == "clarification" else (
         _nested_string(plan_item, ("prompt",)) or ""
     )
@@ -726,6 +761,12 @@ def observe_pending_hitl(
         attention_visible=bool(item),
         plan_panel_latency_ms=plan_latency,
         attention_latency_ms=attention_latency,
+        event_correlation_id=(
+            attention_identity(item)[0]
+            if source == "clarification"
+            and attention_clarification_question(item, correlation_id) is not None
+            else None
+        ),
     ), gates
 
 
@@ -771,7 +812,7 @@ def observe_resolved_hitl(
         rows, latency = execution_events(
             client, task_id, observation.execution_id, since_ms
         )
-        match = next((event for event in rows if event_matches(event, correlation_id, "hitl.resolved")), None)
+        match = next((event for event in rows if resolved_event_matches(event, observation)), None)
         return match is not None, match or {"event_types": sorted({event_type(e) for e in rows})}, latency
 
     _, event_latency = wait_until(

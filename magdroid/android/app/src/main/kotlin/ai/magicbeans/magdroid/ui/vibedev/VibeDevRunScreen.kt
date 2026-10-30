@@ -37,7 +37,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -69,6 +68,8 @@ internal fun VibeDevRunScreen(
     chrome: VibeDevChrome,
     route: VibeDevRoute.Run,
     model: VibeDevRunViewModel,
+    composer: ai.magicbeans.magdroid.vibedev.VibeDevComposerViewModel,
+    now: ai.magicbeans.magdroid.vibedev.VibeDevNowViewModel,
     snackbar: SnackbarHostState,
 ) {
     AttachWhileVisible(model, chrome)
@@ -114,7 +115,19 @@ internal fun VibeDevRunScreen(
             }
             if (tab == 0) turnItems(data, model) else changeItems(chrome, data, model)
         }
+        val home by now.data.collectAsStateWithLifecycle()
+        VibeDevAskDock(turns?.turns.orEmpty().map { it.taskId }.toSet() + route.runId,
+            home.openProjects.firstOrNull { it.projectId == turns?.projectId }?.chatSessionId)
         RunActions(chrome, data, status, model)
+        if (turns != null && data.state.isEnded) {
+            androidx.compose.runtime.key(route.runId) {
+                val previous = turns.turns.lastOrNull()
+                VibeDevComposer(VibeDevSheet.NewRun(turns.projectId, turns.liveTaskId, turns.title,
+                    codingRouteId = turns.turns.lastOrNull { it.codingRouteId != null }?.codingRouteId,
+                    engine = turns.engine, mode = previous?.mode ?: "build"),
+                    home.openProjects, composer, onDismiss = {}, embedded = true, showPendingAsks = false, workLocation = turns.workLocation ?: if (turns.trusted) "trusted" else "sandboxed")
+            }
+        }
     }
 }
 
@@ -124,8 +137,8 @@ private fun RunHeader(data: VibeDevRunData) {
     val state = data.state
     VibeCard {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            RunDot(state)
-            MetaText(if (data.pendingStop) "Stopping" else state.label, maxLines = 1)
+            RunDot(state, data.isPartlyDone && !data.pendingStop)
+            MetaText(if (data.pendingStop) "Stopping" else data.statusLabel, maxLines = 1)
             turns.lane?.let { Tag("$it lane", strong = true) }
             // While it runs: its own ongoing notification until it ends.
             if (state.isLive) {
@@ -134,10 +147,15 @@ private fun RunHeader(data: VibeDevRunData) {
             }
         }
         CardTitle(turns.title.removePrefix("VibeDev · "), maxLines = 3)
+        data.openItemsLine?.let {
+            Text(it, color = activePalette.warning, fontSize = 13.sp, fontFamily = LocalMagicanFontFamilies.current.body,
+                maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
         KeyValues(buildList {
             add("Project" to turns.projectName.ifBlank { "—" })
             turns.engine?.let { add("Engine" to it) }
             add("Cost" to money(turns.costUsd))
+            turns.workLocation?.let { add("Work location" to when (it) { "original" -> "Original folder"; "trusted" -> "Isolated branch"; else -> "Isolated workspace" }) }
             if (turns.trusted) add("Branch" to (turns.branch ?: "—"))
         })
     }
@@ -177,7 +195,7 @@ private fun TurnSection(turn: VibeDevRunTurn, index: Int, expanded: Boolean, onT
             verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Box(Modifier.padding(top = 5.dp)) { RunDot(turn.state) }
+            Box(Modifier.padding(top = 5.dp)) { RunDot(turn.state, turn.isPartlyDone) }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
                     (if (index == 0) "" else "Follow-up · ") + turn.prompt,
@@ -189,7 +207,7 @@ private fun TurnSection(turn: VibeDevRunTurn, index: Int, expanded: Boolean, onT
                     buildList {
                         if (turn.mode == "discuss") add("Discuss")
                         turn.engine?.let(::add)
-                        add(turn.state.label)
+                        add(turn.statusLabel)
                         turn.costUsd?.let { add(money(it)) }
                         turn.filesChanged?.let { add(if (it == 1) "1 file" else "$it files") }
                     }.joinToString(" · "),
@@ -260,6 +278,7 @@ internal fun DiffCounts(additions: Int, deletions: Int) {
 @Composable
 private fun RunActions(chrome: VibeDevChrome, data: VibeDevRunData, status: VibeDevStatus, model: VibeDevRunViewModel) {
     val turns = data.turns ?: return
+    if (data.state.isEnded && (!turns.trusted || data.pendingDiscard)) return
     var menu by remember { mutableStateOf(false) }
     Surface(color = activePalette.surface, modifier = Modifier.fillMaxWidth()) {
         Column {
@@ -285,7 +304,7 @@ private fun RunActions(chrome: VibeDevChrome, data: VibeDevRunData, status: Vibe
                     }
                     data.isLive -> {
                         VibeButton("Steer", {
-                            chrome.sheet = VibeDevSheet.Steer(turns.title) { text -> model.steer(text) }
+                            chrome.sheet = VibeDevSheet.Steer(turns.title, data.live?.liveTaskId ?: turns.liveTaskId) { text -> model.steer(text) }
                         }, Modifier.weight(1f), busy = "steer" in status.busy)
                         VibeButton("Stop", model::stop, Modifier.weight(1f), kind = VibeButtonKind.Danger)
                     }
@@ -293,7 +312,7 @@ private fun RunActions(chrome: VibeDevChrome, data: VibeDevRunData, status: Vibe
                         if (turns.trusted && !data.pendingDiscard) {
                             VibeButton("Open PR", model::openPullRequest, busy = "land" in status.busy)
                             Box {
-                                IconButton(onClick = { menu = true }) {
+                                VibeIconButton(onClick = { menu = true }) {
                                     Icon(Icons.Outlined.MoreVert, contentDescription = "More landing actions", tint = activePalette.text,
                                         modifier = Modifier.size(22.dp))
                                 }
@@ -305,13 +324,7 @@ private fun RunActions(chrome: VibeDevChrome, data: VibeDevRunData, status: Vibe
                                 }
                             }
                         }
-                        VibeButton("Follow up", {
-                            chrome.sheet = VibeDevSheet.NewRun(
-                                projectId = turns.projectId,
-                                parentTaskId = turns.liveTaskId,
-                                parentTitle = turns.title,
-                            )
-                        }, Modifier.weight(1f), kind = VibeButtonKind.Primary)
+
                     }
                 }
             }

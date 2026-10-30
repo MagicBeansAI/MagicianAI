@@ -1232,6 +1232,22 @@ final class TasksViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testExecutionControlCannotSteerAnOldRunAfterSwitchingConnections() {
+        var current = true
+        let vm = ExecutionControlViewModel(executionId: "exec-old-machine", session: makeMockSession(),
+            coordinator: ExecutionControlCoordinator(), currentConnectionCheck: { current })
+        var requests = 0
+        MockURLProtocol.handler = { req in
+            requests += 1
+            return (response(for: req), self.controlStateData(executionId: "exec-old-machine"))
+        }
+        current = false
+        XCTAssertFalse(vm.perform(.steer, message: "New machine's guidance"))
+        XCTAssertEqual(vm.errorMessage, "Connection changed. Reopen this run before updating it.")
+        XCTAssertEqual(requests, 0)
+    }
+
+    @MainActor
     func testExecutionControlMutationSurfacesStructuredBackendError() {
         let vm = ExecutionControlViewModel(executionId: "exec-error", session: makeMockSession())
         var stateRequests = 0
@@ -1541,7 +1557,8 @@ final class TasksViewModelTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.activity.map(\.id), ["event-1", "event-2"])
-        XCTAssertEqual(snapshot.activity[0].title, "Thinking with chat.fast")
+        XCTAssertEqual(snapshot.activity[0].title, "Thinking with gpt-5.6-terra",
+                       "the model that ran names the row; the capability is only a fallback")
         XCTAssertEqual(snapshot.activity[0].kind, "llm")
         XCTAssertEqual(snapshot.activity[0].latencyMs, 2_450)
         XCTAssertEqual(snapshot.activity[0].model, "gpt-5.6-terra")
@@ -1576,6 +1593,155 @@ final class TasksViewModelTests: XCTestCase {
                 TaskRunSummaryRow(label: "Model", value: "gpt-5.6-terra")
             ]
         )
+    }
+
+    // MARK: One row per call (live in-progress steps)
+
+    private func runSnapshot(
+        _ log: [[String: Any]],
+        status: String = "running"
+    ) -> TaskDetailSnapshot {
+        let panel: [String: Any] = [
+            "overview": ["status": status, "execution_id": "exec-live", "title": "Live run"],
+            "run": ["activity_log": log],
+            "output": [:],
+            "debug": ["selected_execution": [
+                "execution_id": "exec-live", "status": status, "started_at": 1_752_550_000_000
+            ]]
+        ]
+        let seed = TaskDetailSeed(TaskStatusModel(
+            taskId: "task-live", title: "Live run", status: status, steps: []
+        ))
+        return TaskDetailSnapshot.parse(
+            seed: seed, taskPayload: nil, panelPayload: panel,
+            outputsPayload: nil, detailsPayload: nil, planPayload: nil
+        )
+    }
+
+    private func logRow(
+        _ id: String, _ eventType: String, status: String, at ms: Int, _ metadata: [String: Any] = [:]
+    ) -> [String: Any] {
+        var meta: [String: Any] = ["event_type": eventType, "execution_id": "exec-live"]
+        meta.merge(metadata) { _, new in new }
+        return ["id": id, "title": eventType, "status": status, "item_type": "task",
+                "created_at": ms, "metadata": meta]
+    }
+
+    func testRunTimelineFoldsAModelCallIntoOneRowByLLMCallId() {
+        let t0 = 1_752_550_001_000
+        let snapshot = runSnapshot([
+            logRow("req", "llm.requested", status: "running", at: t0,
+                   ["llm_call_id": "c1", "trace_id": "tr", "capability": "chat.fast"]),
+            logRow("route", "llm.routed", status: "info", at: t0 + 40,
+                   ["llm_call_id": "c1", "provider": "openai", "model": "routed-model", "profile": "fast"]),
+            logRow("tool", "tool.succeeded", status: "done", at: t0 + 100, ["tool_name": "search"]),
+            logRow("done", "llm.succeeded", status: "done", at: t0 + 2_000,
+                   ["llm_call_id": "c1", "capability": "chat.fast", "latency_ms": 1_960,
+                    "input_tokens": 300, "output_tokens": 40, "cost_usd": 0.002])
+        ])
+        XCTAssertEqual(snapshot.activity.map(\.id), ["req", "tool"], "one row per call, in the call's place")
+        let call = snapshot.activity[0]
+        XCTAssertEqual(call.title, "Thinking with routed-model")
+        XCTAssertEqual(call.status, "done")
+        XCTAssertEqual(call.eventType, "llm.succeeded")
+        XCTAssertEqual(call.latencyMs, 1_960)
+        XCTAssertEqual(call.inputTokens, 300)
+        XCTAssertEqual(call.model, "routed-model")
+        XCTAssertEqual(call.timestamp, Date(timeIntervalSince1970: Double(t0) / 1_000))
+        XCTAssertNil(TaskActivityLiveClock.label(call, runActive: true, now: Date()), "a settled call does not tick")
+
+        // The model that answered beats the routed one.
+        let answered = runSnapshot([
+            logRow("req", "llm.requested", status: "running", at: t0, ["llm_call_id": "c2"]),
+            logRow("route", "llm.routed", status: "info", at: t0 + 10, ["llm_call_id": "c2", "model": "routed"]),
+            logRow("done", "llm.failed", status: "failed", at: t0 + 500,
+                   ["llm_call_id": "c2", "model": "harness · opus", "engine": "claude"])
+        ])
+        XCTAssertEqual(answered.activity.count, 1)
+        XCTAssertEqual(answered.activity[0].title, "Thinking with harness · opus")
+        XCTAssertEqual(answered.activity[0].status, "failed")
+    }
+
+    func testRunningModelCallTicksFromItsRequest() {
+        let t0 = 1_752_550_001_000
+        let snapshot = runSnapshot([
+            logRow("req", "llm.requested", status: "running", at: t0,
+                   ["llm_call_id": "c1", "capability": "chat.fast"]),
+            logRow("route", "llm.routed", status: "running", at: t0 + 30,
+                   ["llm_call_id": "c1", "model": "routed-model"])
+        ])
+        XCTAssertEqual(snapshot.activity.count, 1)
+        let call = snapshot.activity[0]
+        XCTAssertEqual(call.title, "Thinking with routed-model")
+        XCTAssertTrue(call.isRunning)
+        let start = Date(timeIntervalSince1970: Double(t0) / 1_000)
+        XCTAssertEqual(call.startedAt, start)
+        XCTAssertEqual(TaskActivityLiveClock.label(call, runActive: true, now: start.addingTimeInterval(12.9)), "12s")
+        XCTAssertNil(TaskActivityLiveClock.label(call, runActive: false, now: start.addingTimeInterval(12)),
+                     "an ended run's stale row does not tick")
+
+        // Only the capability: the fallback title.
+        let requestedOnly = runSnapshot([
+            logRow("req", "llm.requested", status: "running", at: t0, ["llm_call_id": "c9", "capability": "chat.fast"])
+        ])
+        XCTAssertEqual(requestedOnly.activity.first?.title, "Thinking with chat.fast")
+    }
+
+    func testIdLessRequestFoldsIntoTheNextSettledModelRowOfItsExecution() {
+        let t0 = 1_752_550_001_000
+        let snapshot = runSnapshot([
+            logRow("req-a", "llm.requested", status: "info", at: t0, ["capability": "chat.fast"]),
+            logRow("req-b", "llm.requested", status: "info", at: t0 + 5,
+                   ["capability": "chat.fast", "execution_id": "exec-child"]),
+            logRow("done-a", "llm.succeeded", status: "done", at: t0 + 900,
+                   ["capability": "chat.fast", "model": "m-a", "latency_ms": 880])
+        ])
+        XCTAssertEqual(snapshot.activity.map(\.id), ["req-a", "req-b"],
+                       "the settle folds into its own execution's request only")
+        XCTAssertEqual(snapshot.activity[0].title, "Thinking with m-a")
+        XCTAssertEqual(snapshot.activity[0].status, "done")
+        XCTAssertEqual(snapshot.activity[0].latencyMs, 880)
+        XCTAssertEqual(snapshot.activity[1].status, "info")
+    }
+
+    func testToolCallFoldsStartedAndSettledByCallId() {
+        let t0 = 1_752_550_001_000
+        let started = logRow("start", "tool.started", status: "running", at: t0, [
+            "call_id": "call-7", "target": "web_fetch", "action_type": "tool", "started_at_ms": t0 - 200
+        ])
+        let running = runSnapshot([started])
+        XCTAssertEqual(running.activity.first?.title, "Calling web_fetch")
+        let start = Date(timeIntervalSince1970: Double(t0 - 200) / 1_000)
+        XCTAssertEqual(running.activity.first?.startedAt, start, "started_at_ms is the clock's start")
+        XCTAssertEqual(running.activity.first.flatMap {
+            TaskActivityLiveClock.label($0, runActive: true, now: start.addingTimeInterval(61))
+        }, "1m 1s")
+
+        let settled = runSnapshot([
+            started,
+            // The settle need not repeat the target.
+            logRow("end", "tool.failed", status: "failed", at: t0 + 700, ["call_id": "call-7", "latency_ms": 900])
+        ])
+        XCTAssertEqual(settled.activity.map(\.id), ["start"])
+        XCTAssertEqual(settled.activity[0].title, "web_fetch failed")
+        XCTAssertEqual(settled.activity[0].status, "failed")
+        XCTAssertEqual(settled.activity[0].latencyMs, 900)
+
+        // Rows without a call id stay as they are.
+        let legacy = runSnapshot([
+            logRow("a", "tool.started", status: "running", at: t0, ["tool_name": "search"]),
+            logRow("b", "tool.succeeded", status: "done", at: t0 + 10, ["tool_name": "search"])
+        ])
+        XCTAssertEqual(legacy.activity.map(\.title), ["Calling search", "search returned"])
+    }
+
+    func testLiveElapsedUsesWholeSecondsAndClampsAtZero() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(TaskTimelineFormatting.elapsed(since: start, now: start.addingTimeInterval(0.6)), "0s")
+        XCTAssertEqual(TaskTimelineFormatting.elapsed(since: start, now: start.addingTimeInterval(59.9)), "59s")
+        XCTAssertEqual(TaskTimelineFormatting.elapsed(since: start, now: start.addingTimeInterval(3_660)), "1h 1m")
+        XCTAssertEqual(TaskTimelineFormatting.elapsed(since: start, now: start.addingTimeInterval(-5)), "0s")
+        XCTAssertNil(TaskTimelineFormatting.elapsed(since: nil, now: start))
     }
 
     func testRunSummaryNeverEstimatesMissingDollarCostFromModelAndTokens() {
@@ -1733,9 +1899,11 @@ final class TasksViewModelTests: XCTestCase {
         endedAt: Any? = nil,
         errorMessage: String? = nil,
         hasPlan: Bool = false,
-        outputs: [String: Any]? = nil
+        outputs: [String: Any]? = nil,
+        synthesisPending: Bool = false
     ) -> TaskDetailSnapshot {
         var state: [String: Any] = ["status": status]
+        if synthesisPending { state["synthesis_pending"] = true }
         if let lastProgressAt = lastProgressAt { state["last_progress_at"] = lastProgressAt }
         var selected: [String: Any] = ["execution_id": "exec-1"]
         if let startedAt = startedAt { selected["started_at"] = startedAt }
@@ -1782,6 +1950,23 @@ final class TasksViewModelTests: XCTestCase {
         // The same snapshot a minute earlier is not stalled — the verdict is a
         // function of `now`, so nothing here is baked in at parse time.
         XCTAssertEqual(snapshot.verdict(now: progressed.addingTimeInterval(60)).state, .running)
+    }
+
+    func testSnapshotForwardsSynthesisPendingSoACompletedTaskReadsAsFinalizing() {
+        let ended = Date(timeIntervalSince1970: 1_752_562_000)
+        let snapshot = verdictSnapshot(
+            status: "completed",
+            endedAt: ended.timeIntervalSince1970 * 1000,
+            synthesisPending: true
+        )
+        XCTAssertTrue(snapshot.synthesisPending)
+        XCTAssertTrue(snapshot.verdictInput(now: ended).synthesisPending)
+        XCTAssertEqual(snapshot.verdict(now: ended).state, .finalizing)
+        XCTAssertEqual(snapshot.verdict(now: ended).headline, "Preparing final result")
+        XCTAssertEqual(snapshot.synthesisBaseline, ended)
+
+        let settled = verdictSnapshot(status: "completed")
+        XCTAssertEqual(settled.verdict(now: ended).state, .finished)
     }
 
     func testSnapshotCountsStepsTheWayAReaderDoes() {

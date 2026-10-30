@@ -47,6 +47,20 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         capture_id: None,
     };
 
+    if let Some(target) = request.target_path.as_deref() {
+        if let Some(refused) = super::notes_shared::workspace_refusal(
+            "save_selection_to_note",
+            &store,
+            &principal,
+            &workspace,
+            target,
+            crate::magician_v2::execution::goal_workspace_access::Op::Write,
+        )
+        .await
+        {
+            return Ok(refused);
+        }
+    }
     match store
         .capture_selection(&principal, &workspace, request)
         .await

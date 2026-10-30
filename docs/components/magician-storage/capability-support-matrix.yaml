@@ -114,14 +114,6 @@ owners:
   degraded_behavior: >
     Procedure LanceDB may be discarded and rebuilt from learning_procedures.
     A missing index must not empty procedure YAML.
-- id: silverbullet_space_runtime
-  tier: device_local
-  remote_outcome: unavailable
-  rebuild_sources: []
-  watermark: none
-  degraded_behavior: >
-    SilverBullet space runtime stays a local profile variant. It is not migrated
-    as server tenant storage.
 - id: notes_provider
   tier: device_local
   remote_outcome: unavailable

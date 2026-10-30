@@ -34,6 +34,7 @@ pub mod relentless_tools;
 
 // Structured-decision plane host wiring (typed Choice/Score/Noul judgments)
 pub mod decision_host;
+pub(crate) mod decision_screenshot;
 pub mod decisions;
 
 // Stage 1: Query Understanding & Analysis (implemented)
@@ -137,6 +138,8 @@ pub mod device_governance;
 pub mod device_pairing;
 pub mod hitl_delivery;
 pub mod mcp_oauth;
+pub mod mcp_oauth_binding;
+pub mod mcp_public_profile;
 pub mod mobile_push;
 pub mod web_push;
 
@@ -161,6 +164,13 @@ pub use magician_core::config_extras;
 // Deployment-level LLM pricing file (`llm_pricing.json`): load at startup,
 // install over the built-in pricing table.
 pub mod llm_pricing_config;
+
+// The owner-set spend envelope across all autonomous LLM work: counts every
+// model call's cost and parks gated work when the window ceiling is spent.
+pub mod spend_envelope;
+pub mod spend_envelope_ledger;
+// Class, preflight and token pricing for producers that pay outside the router.
+pub mod spend_envelope_producers;
 
 // Stack-safe shared traversal for externally supplied JSON/tool payloads.
 pub use magician_core::json_traversal;
@@ -230,7 +240,7 @@ pub mod work_live;
 // The shared `archived=exclude|include|only` list filter.
 pub mod archived_filter;
 
-// User-visible note provider settings and Markdown/SilverBullet workspace writes.
+// User-visible note provider settings and Markdown notes-folder writes.
 pub mod notes;
 pub(crate) mod notes_hybrid;
 pub(crate) mod notes_links;
@@ -251,10 +261,14 @@ pub mod taste_capture;
 
 // Slice 3: choosing preferences by applicability rather than cosine
 // similarity. Pure two-stage selection; the judge call lives with its caller.
-pub mod memory_applicability;
-pub mod preference_alignment;
 /// `execution.god_mode`: unrestricted shell/files for trusted agents, owner-approved.
 pub mod god_mode;
+pub mod harness_auth;
+pub mod memory_applicability;
+/// `/claim <code>`: owner-minted one-time codes that record a verified channel
+/// sender as an owner identity.
+pub mod owner_claim;
+pub mod preference_alignment;
 
 // Scope-owned UI preferences shared by browser and desktop webviews.
 pub mod ui_preferences;
@@ -515,6 +529,9 @@ pub mod social;
 
 // Curated execution-panel read model
 pub mod execution_panel;
+
+// User-facing Work links shared by tools, feeds and activity.
+pub mod ui_links;
 
 // Persisted UI thread model for Today/thread navigation
 pub mod ui_threads;

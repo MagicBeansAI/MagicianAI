@@ -175,14 +175,21 @@
  {/if}
 </section>
 <style>
- .routing { margin-block: 1.25rem; border-top: 1px solid var(--border-color, #8884); padding-top: 1rem; }
- .routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 1rem; }
- label { display: flex; flex-direction: column; gap: .35rem; margin-block: .6rem; }
- select, input[type=number] { width: 100%; max-width: 100%; min-width: 0; padding: .5rem; border: 1px solid #8886; border-radius: .4rem; background: var(--bg-secondary, transparent); }
- .opt-in { flex-direction: row; align-items: flex-start; }
- fieldset { padding: 0; border: 0; min-width: 0; }
- p { font-size: .9rem; margin-block: .6rem; overflow-wrap: anywhere; }
- button { margin-block: .5rem; padding: .5rem .8rem; border: 1px solid #8886; border-radius: .4rem; }
+ /* The same scale as the other Settings cards: 13px bold labels, compact
+    spacing, and dropdowns no wider than their content needs. */
+ .routing { margin-block: 0.75rem; border-top: 1px solid var(--border-soft, #8884); padding-top: 0.85rem; font-size: 0.88rem; }
+ h3 { margin: 0 0 0.25rem; font-size: 0.95rem; font-weight: 600; color: var(--text-primary); }
+ h4 { margin: 0.6rem 0 0.2rem; font-size: 0.86rem; font-weight: 600; color: var(--text-primary); }
+ .routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 0.25rem 1rem; }
+ label { display: flex; flex-direction: column; gap: 0.3rem; margin-block: 0.4rem; font-size: 0.82rem; font-weight: 700; color: var(--text-primary); }
+ select, input[type=number] { width: 100%; max-width: 100%; min-width: 0; padding-inline: 0.6rem; border: 1px solid var(--border-soft, #8886); border-radius: 6px; background-color: var(--bg-secondary, transparent); }
+ fieldset > label select, .routing > label select { max-width: 26rem; }
+ .opt-in { flex-direction: row; align-items: flex-start; gap: 0.5rem; font-weight: 500; }
+ fieldset { padding: 0; border: 0; min-width: 0; margin: 0; }
+ p { font-size: 0.82rem; line-height: 1.45; margin-block: 0.35rem; overflow-wrap: anywhere; color: var(--text-secondary); }
+ p.active { color: var(--text-primary); }
+ button { margin-block: 0.35rem; border: 1px solid var(--border-soft, #8886); border-radius: 6px; }
  button:disabled { opacity: .5; }
- details { margin-block: 1rem; }
+ details { margin-block: 0.6rem; }
+ summary { cursor: pointer; font-size: 0.86rem; font-weight: 600; }
 </style>

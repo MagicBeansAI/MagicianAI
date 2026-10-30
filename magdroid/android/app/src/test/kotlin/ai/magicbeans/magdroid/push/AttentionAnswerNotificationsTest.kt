@@ -48,6 +48,19 @@ class AttentionAnswerNotificationsTest {
     }
 
     @Test
+    fun `a previewed approval reads by its title and change size`() {
+        val plan = notificationAnswerPlan(
+            "confirm", "agentic",
+            item("confirmation", """{"type":"confirmation","approval_preview":{"title":"Mira wants to change `facts.md`",
+                "diff":{"path":"facts.md","added":3,"removed":1},
+                "warnings":[{"code":"shared_document","message":"Other agents read this document."}]}}"""),
+        )!!
+        assertEquals("Mira wants to change `facts.md`", plan.question)
+        assertEquals("+3 lines, −1 line · Other agents read this document.", plan.hint)
+        assertEquals(listOf("Approve", "Reject"), plan.buttons.map { it.label })
+    }
+
+    @Test
     fun `a confirmation without labels falls back to Approve and Reject`() {
         val plan = notificationAnswerPlan("confirm", "agentic", item("confirmation"))!!
         assertEquals(listOf("Approve", "Reject"), plan.buttons.map { it.label })
@@ -59,6 +72,25 @@ class AttentionAnswerNotificationsTest {
         assertNull(
             notificationAnswerPlan("confirm", "agentic", item("confirmation", """{"sensitive":{"kind":"password"}}""")),
         )
+    }
+
+    @Test
+    fun `an outward-send review opens the app in every mode`() {
+        val review = """{"type":"confirmation","escalation_trigger":"outward_review",
+            "approval_preview":{"title":"ambassador wants to email a@b.com"},
+            "options":[{"id":"send","label":"Send"},{"id":"discard","label":"Discard"},
+                       {"id":"always_allow_recipient","label":"Always allow ambassador to send to a@b.com"}],
+            "outward_review":{"capability":"gmail","action":"send","class":"message",
+                              "recipients":["a@b.com"],"agent_id":"ambassador","deadline_at_ms":0}}"""
+        for (mode in listOf("confirm", "choice", "text")) {
+            assertNull(mode, notificationAnswerPlan(mode, "agentic", item("confirmation", review)))
+        }
+        // The trigger alone is enough, before the record or options arrive.
+        assertNull(
+            notificationAnswerPlan("confirm", "agentic", item("confirmation", """{"escalation_trigger":"outward_review"}""")),
+        )
+        // Even if a server named it a choice.
+        assertNull(notificationAnswerPlan("choice", "agentic", item("choice", review.replace("\"type\":\"confirmation\"", "\"type\":\"choice\""))))
     }
 
     @Test

@@ -138,6 +138,13 @@ pub struct TodayQuery {
     pub cursor_score: Option<f64>,
     #[serde(default)]
     pub cursor_candidate_id: Option<String>,
+    /// Omit full-universe health scans while preserving canonical card bindings.
+    #[serde(default = "default_include_diagnostics")]
+    pub include_diagnostics: bool,
+}
+
+const fn default_include_diagnostics() -> bool {
+    true
 }
 
 /// JSON body for the action endpoint: `{ "action": "open"|"acknowledge"|"dismiss" }`.
@@ -1045,6 +1052,7 @@ pub async fn get_resurfacing_today_handler(
             Err(resp) => return resp,
         };
 
+    let request_started = Instant::now();
     let limit = normalize_today_limit(query.limit);
     let offset = query.offset.unwrap_or(0);
     let canonical_attention_projection = if let (Some(learning), Some(mail_store)) =
@@ -1074,6 +1082,7 @@ pub async fn get_resurfacing_today_handler(
     } else {
         None
     };
+    let canonical_ms = request_started.elapsed().as_secs_f64() * 1000.0;
     // The legacy endpoint remains an atomic baseline projection, while learned
     // order is served by the canonical union. Report the effective canonical
     // state rather than incorrectly equating a disabled legacy ranking path
@@ -1445,6 +1454,7 @@ pub async fn get_resurfacing_today_handler(
             "open_url": open_url,
             "detail_label": detail_label_for_source(c.source_kind),
             "temporal_anchor_at": c.temporal_anchor_at,
+            "surfaced_at": c.last_surfaced_at,
             "brief": brief,
             "brief_status": brief_status,
             "content_revision": c.content_revision,
@@ -1480,7 +1490,10 @@ pub async fn get_resurfacing_today_handler(
     });
     let next_cursor_token = page.next_cursor;
 
-    let source_family_counts = match store.candidate_funnel(&principal, &workspace).await {
+    let diagnostics_started = Instant::now();
+    let cards_ms = request_started.elapsed().as_secs_f64() * 1000.0 - canonical_ms;
+    let source_family_counts = if learning_projection.is_some() {
+        match store.candidate_funnel(&principal, &workspace).await {
         Ok(rows) => rows
             .into_iter()
             .filter(|(state, _, _)| {
@@ -1494,6 +1507,9 @@ pub async fn get_resurfacing_today_handler(
             tracing::warn!(principal, workspace, error = %error, "failed to load Worth-a-look source-family health");
             BTreeMap::new()
         },
+    }
+    } else {
+        BTreeMap::new()
     };
     let canonical_diagnostics = canonical_attention_projection
         .as_ref()
@@ -1518,31 +1534,38 @@ pub async fn get_resurfacing_today_handler(
     } else {
         None
     };
-    let semantic_extraction_health =
-        if let (Some(learning), Some(worker)) = (learning.as_ref(), semantic_worker.as_ref()) {
-            crate::attention_learning_api::build_semantic_extraction_health(
-                learning,
-                worker,
-                mail_store.as_ref(),
-                &store,
-                &principal,
-                &workspace,
-            )
-            .await
-            .ok()
-        } else {
-            None
-        };
-    let actionability_training = if let Some(learning) = learning.as_ref() {
-        learning
-            .actionability_training_status(&principal, &workspace)
-            .await
-            .ok()
+    let semantic_extraction_health = if let (Some(learning), Some(worker)) = (
+        learning.as_ref().filter(|_| query.include_diagnostics),
+        semantic_worker.as_ref(),
+    ) {
+        crate::attention_learning_api::build_semantic_extraction_health(
+            learning,
+            worker,
+            mail_store.as_ref(),
+            &store,
+            &principal,
+            &workspace,
+        )
+        .await
+        .ok()
     } else {
         None
     };
+    let actionability_training =
+        if let Some(learning) = learning.as_ref().filter(|_| query.include_diagnostics) {
+            learning
+                .actionability_training_status(&principal, &workspace)
+                .await
+                .ok()
+        } else {
+            None
+        };
 
-    HttpResponse::Ok().json(serde_json::json!({
+    let diagnostics_ms = diagnostics_started.elapsed().as_secs_f64() * 1000.0;
+    let total_ms = request_started.elapsed().as_secs_f64() * 1000.0;
+    HttpResponse::Ok().insert_header(("Server-Timing", format!(
+        "worth_canonical;dur={canonical_ms:.2}, worth_cards;dur={cards_ms:.2}, worth_diagnostics;dur={diagnostics_ms:.2}, worth_total;dur={total_ms:.2}"
+    ))).json(serde_json::json!({
         "cards": cards,
         "total": page.total,
         "limit": page.limit,
@@ -2788,6 +2811,7 @@ pub async fn get_resurfacing_observability_handler(
             "eligible": queue.eligible,
             "candidate_pool": queue.candidate_pool,
             "cooling": queue.cooling,
+            "routing_held": queue.routing_held,
             "surfaced": queue.surfaced,
             "detail": detail,
         },
@@ -2901,6 +2925,15 @@ mod tests {
             surface_count: 1,
             dismiss_count: 0,
         }
+    }
+
+    #[test]
+    fn worth_diagnostics_remain_compatible_and_can_be_omitted() {
+        let normal: TodayQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(normal.include_diagnostics);
+        let quick: TodayQuery =
+            serde_json::from_value(serde_json::json!({"include_diagnostics": false})).unwrap();
+        assert!(!quick.include_diagnostics);
     }
 
     #[test]
@@ -3482,6 +3515,7 @@ mod tests {
         let resp: serde_json::Value = actix_test::call_and_read_body_json(&app, req).await;
         let cards = resp["cards"].as_array().expect("cards array");
         assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0]["surfaced_at"], 3_000);
         assert_eq!(cards[0]["candidate_id"], first.candidate_id);
         assert_eq!(cards[1]["candidate_id"], second.candidate_id);
         assert_eq!(resp["total"].as_u64().unwrap(), 3);
@@ -3759,6 +3793,8 @@ mod tests {
         assert_eq!(resp["queue"]["pending"].as_u64().unwrap(), 1);
         assert_eq!(resp["queue"]["candidate_pool"].as_u64().unwrap(), 2);
         assert_eq!(resp["queue"]["cooling"].as_u64().unwrap(), 1);
+        assert_eq!(resp["funnel"]["routing_held"].as_u64().unwrap(), 0);
+        assert_eq!(resp["queue"]["routing_held"].as_u64().unwrap(), 0);
 
         // Sizes reflect the three candidates + one run.
         assert_eq!(resp["sizes"]["candidates"].as_u64().unwrap(), 3);

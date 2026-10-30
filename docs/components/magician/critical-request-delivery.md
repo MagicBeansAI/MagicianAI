@@ -70,7 +70,7 @@ sending.
 | `service_alias` | the host of the destination a challenge bound the request to (`expected_destination`), else "a service"; never a producer- or model-authored label |
 | `reason` | the kind: "a verification code", "your password", "your sign-in details", "a private value", "a decision" |
 | `deadline_ms` | the spec's collection window when it has one |
-| `open_url` | `{public_origin}/attention?attention=1&attention_item={id}` when an owner-link origin is configured (`hitl.critical_delivery.owner_ui_origin` first, then `mobile_access.public_origin` or its env fallback), else absent and the text says to open Magician → Attention. `attention_item` opens the exact item and `attention=1` keeps the list behind it, so a resolved request shows "Item no longer available … may have been resolved" rather than a form or a blank page |
+| `open_url` | `{public_origin}/attention?attention=1&attention_item={id}` when an owner-link origin is configured (`hitl.critical_delivery.owner_ui_origin` first, then `MAGICIAN_UI_HOST`, then `mobile_access.public_origin` or its env fallback), else absent and the text says to open Magician → Attention. `attention_item` opens the exact item and `attention=1` keeps the list behind it, so a resolved request shows "Item no longer available … may have been resolved" rather than a form or a blank page |
 | `text` | the one sentence every channel sends, with a relative expiry and "Don't reply with the value here." |
 
 Never the prompt, hint, option labels, a mailbox preview, a token or an answer.
@@ -203,8 +203,11 @@ hitl:
 ```
 
 `owner_ui_origin` is the origin the alert link is built on. Unset, it falls back
-to `mobile_access.public_origin`, which suits a deployment where one origin
-serves both the API and the owner UI. Set it when they are split: an API-only
+to this machine's UI host (`MAGICIAN_UI_HOST`, written by
+`scripts/ensure-machine-tunnel.sh --install`, so links follow a move to new
+tunnel hostnames), then to `mobile_access.public_origin`, which suits a
+deployment where one origin serves both the API and the owner UI. The settings
+envelope warns when an explicit value differs from `MAGICIAN_UI_HOST`. Set it when they are split: an API-only
 device origin cannot serve `/attention`, and the link would land on a bodyless
 404 the browser offers as a download. In dev that is the UI dev server's origin;
 once the runtime serves the built UI (`magician.frontend.directory`) it can go

@@ -1,0 +1,1264 @@
+{
+  "schema_version": 1,
+  "purpose": "one_time_saved_selection_migration",
+  "runtime_alias_resolver": false,
+  "chat": {
+    "chat-anthropic-adaptive-advanced": {
+      "model_id": "anthropic/claude-opus-5-5",
+      "thinking": "auto"
+    },
+    "chat-anthropic-adaptive-frontier": {
+      "model_id": "anthropic/claude-fable-5-1",
+      "thinking": "auto"
+    },
+    "chat-anthropic-adaptive-instant": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "auto"
+    },
+    "chat-anthropic-adaptive-normal": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "auto"
+    },
+    "chat-anthropic-adaptive-opus5": {
+      "model_id": "anthropic/claude-opus-5",
+      "thinking": "auto"
+    },
+    "chat-deepseek-adaptive-advanced": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "auto"
+    },
+    "chat-deepseek-adaptive-instant": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "auto"
+    },
+    "chat-dsv4-flash-messages-toolsauto-rhigh": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "chat-dsv4-flash-messages-toolsauto-rnone": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "chat-dsv4-flash-toolsauto-fast": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "chat-dsv4-flash-toolsauto-thinking": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "chat-dsv4-flash-vision-toolsauto-fast": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "chat-dsv4-flash-vision-toolsauto-thinking": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "chat-dsv4-pro-messages-toolsauto-rmax": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "chat-dsv4-pro-messages-toolsauto-rnone": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "chat-dsv4-pro-toolsauto-fast": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "chat-dsv4-pro-toolsauto-thinking": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "chat-fable51-messages-vision-toolsauto-fast": {
+      "model_id": "anthropic/claude-fable-5-1",
+      "thinking": "low"
+    },
+    "chat-fable51-messages-vision-toolsauto-thinking": {
+      "model_id": "anthropic/claude-fable-5-1",
+      "thinking": "high"
+    },
+    "chat-gemini-adaptive-advanced": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "auto"
+    },
+    "chat-gemini-adaptive-instant": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "auto"
+    },
+    "chat-gemini31-pro-vision-toolsauto-fast": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "low"
+    },
+    "chat-gemini31-pro-vision-toolsauto-rhigh": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "high"
+    },
+    "chat-gemini31-pro-vision-toolsauto-thinking": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "high"
+    },
+    "chat-gemini35-flash-lite-vision-toolsauto-fast": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "minimal"
+    },
+    "chat-gemini35-flash-lite-vision-toolsauto-rhigh": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "high"
+    },
+    "chat-gemini35-flash-lite-vision-toolsauto-thinking": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "high"
+    },
+    "chat-gemini4-argon-vision-toolsauto-rhigh": {
+      "model_id": "gemini/gemini-4-argon",
+      "thinking": "high"
+    },
+    "chat-gemini4-argon-vision-toolsauto-rlow": {
+      "model_id": "gemini/gemini-4-argon",
+      "thinking": "low"
+    },
+    "chat-gemini4-argon-vision-toolsauto-rmedium": {
+      "model_id": "gemini/gemini-4-argon",
+      "thinking": "medium"
+    },
+    "chat-gpt61sol-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "chat-gpt61sol-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "chat-gpt6luna-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "chat-gpt6luna-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "high"
+    },
+    "chat-gpt6sol-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "chat-gpt6sol-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "chat-gptastra-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "low"
+    },
+    "chat-gptastra-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "high"
+    },
+    "chat-gptluna-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "none"
+    },
+    "chat-gptluna-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "high"
+    },
+    "chat-gptsol-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-5.6-sol",
+      "thinking": "none"
+    },
+    "chat-gptsol-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-5.6-sol",
+      "thinking": "high"
+    },
+    "chat-gptterra-responses-toolsauto-rnone": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "chat-gptterra-responses-vision-toolsauto-fast": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "chat-gptterra-responses-vision-toolsauto-thinking": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "high"
+    },
+    "chat-grok47-responses-vision-toolsauto-fast": {
+      "model_id": "xai/grok-4.7",
+      "thinking": "low"
+    },
+    "chat-grok47-responses-vision-toolsauto-thinking": {
+      "model_id": "xai/grok-4.7",
+      "thinking": "high"
+    },
+    "chat-haiku46-messages-vision-toolsauto-fast": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "none"
+    },
+    "chat-haiku46-messages-vision-toolsauto-thinking": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "high"
+    },
+    "chat-m27-toolsauto": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "chat-m27-toolsauto-fast": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "chat-m27-toolsauto-rnone": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "chat-m27-toolsauto-thinking": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "chat-m3-vision-toolsauto-fast": {
+      "model_id": "minimax/MiniMax-M3",
+      "thinking": "none"
+    },
+    "chat-m3-vision-toolsauto-thinking": {
+      "model_id": "minimax/MiniMax-M3",
+      "thinking": "on"
+    },
+    "chat-minimax-adaptive": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "chat-minimax-adaptive-advanced": {
+      "model_id": "minimax/MiniMax-M3",
+      "thinking": "auto"
+    },
+    "chat-openai-adaptive-advanced": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "auto"
+    },
+    "chat-openai-adaptive-frontier": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "auto"
+    },
+    "chat-openai-adaptive-instant": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "auto"
+    },
+    "chat-openai-adaptive-normal": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "auto"
+    },
+    "chat-opus47-messages-vision-toolsauto-fast": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "low"
+    },
+    "chat-opus47-messages-vision-toolsauto-thinking": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "high"
+    },
+    "chat-opus5-messages-vision-toolsauto-fast": {
+      "model_id": "anthropic/claude-opus-5",
+      "thinking": "low"
+    },
+    "chat-opus5-messages-vision-toolsauto-thinking": {
+      "model_id": "anthropic/claude-opus-5",
+      "thinking": "high"
+    },
+    "chat-opus55-messages-vision-toolsauto-fast": {
+      "model_id": "anthropic/claude-opus-5-5",
+      "thinking": "low"
+    },
+    "chat-opus55-messages-vision-toolsauto-thinking": {
+      "model_id": "anthropic/claude-opus-5-5",
+      "thinking": "high"
+    },
+    "chat-sarvam-adaptive": {
+      "model_id": "sarvam/sarvam-105b",
+      "thinking": "auto"
+    },
+    "chat-sarvam105b-toolsauto-fast": {
+      "model_id": "sarvam/sarvam-105b",
+      "thinking": "low"
+    },
+    "chat-sarvam105b-toolsauto-thinking": {
+      "model_id": "sarvam/sarvam-105b",
+      "thinking": "high"
+    },
+    "chat-sonnet55-messages-vision-toolsauto-fast": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "low"
+    },
+    "chat-sonnet55-messages-vision-toolsauto-thinking": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "high"
+    },
+    "chat-xai-adaptive-advanced": {
+      "model_id": "xai/grok-4.7",
+      "thinking": "auto"
+    },
+    "dsv4-flash-messages-toolsany-rhigh": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "dsv4-flash-messages-toolsany-rnone": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "dsv4-flash-vision-messages-toolsany-rhigh": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "dsv4-pro-messages-toolsany-rmax": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "dsv4-pro-messages-toolsany-rnone": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "fable51-messages-vision-toolsauto-rhigh": {
+      "model_id": "anthropic/claude-fable-5-1",
+      "thinking": "high"
+    },
+    "gemini31-pro-toolsany": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "low"
+    },
+    "gemini31-pro-toolsany-rhigh": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "high"
+    },
+    "gemini31-pro-vision-toolsany": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "low"
+    },
+    "gemini35-flash-lite-toolsany": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "minimal"
+    },
+    "gemini35-flash-lite-toolsany-rhigh": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "high"
+    },
+    "gemini35-flash-lite-vision-toolsany": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "minimal"
+    },
+    "gemini4-argon-vision-toolsany-rhigh": {
+      "model_id": "gemini/gemini-4-argon",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-toolsany": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "gpt61sol-responses-toolsany-rhigh": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-toolsnone-out16k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "gpt61sol-responses-toolsnone-rhigh": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-toolsnone-rhigh-out64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-vision-toolsany-rdefault": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "gpt61sol-responses-vision-toolsany-rhigh": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-vision-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt61sol-responses-vision-toolsany-rlow-out16k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "gpt6luna-responses-toolsany": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "gpt6luna-responses-toolsany-rnone": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "gpt6luna-responses-toolsnone-out16k": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "gpt6luna-responses-toolsnone-out8k": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "gpt6luna-responses-vision-toolsany-rnone-out16k": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "gpt6sol-responses-toolsany": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "gpt6sol-responses-toolsany-rhigh": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt6sol-responses-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt6sol-responses-toolsnone-out16k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "gpt6sol-responses-toolsnone-rhigh": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt6sol-responses-toolsnone-rhigh-out64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt6sol-responses-vision-toolsany-rdefault": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "gpt6sol-responses-vision-toolsany-rhigh": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt6sol-responses-vision-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "gpt6sol-responses-vision-toolsany-rnone-out16k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "gptastra-responses-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "high"
+    },
+    "gptastra-responses-toolsnone-rhigh": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "high"
+    },
+    "gptastra-responses-toolsnone-rhigh-out64k": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "high"
+    },
+    "gptastra-responses-vision-toolsany-rhigh": {
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "high"
+    },
+    "gptluna-responses-toolsany": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "medium"
+    },
+    "gptluna-responses-toolsany-rnone": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "none"
+    },
+    "gptluna-responses-toolsnone-out16k": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "medium"
+    },
+    "gptluna-responses-toolsnone-out8k": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "medium"
+    },
+    "gptluna-responses-vision-toolsany-rnone-out16k": {
+      "model_id": "openai/gpt-5.6-luna",
+      "thinking": "none"
+    },
+    "gptsol-responses-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-5.6-sol",
+      "thinking": "high"
+    },
+    "gptsol-responses-toolsnone-rhigh": {
+      "model_id": "openai/gpt-5.6-sol",
+      "thinking": "high"
+    },
+    "gptsol-responses-toolsnone-rhigh-out64k": {
+      "model_id": "openai/gpt-5.6-sol",
+      "thinking": "high"
+    },
+    "gptsol-responses-vision-toolsany-rhigh": {
+      "model_id": "openai/gpt-5.6-sol",
+      "thinking": "high"
+    },
+    "gptterra-responses-toolsany": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "medium"
+    },
+    "gptterra-responses-toolsany-rhigh": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "high"
+    },
+    "gptterra-responses-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "high"
+    },
+    "gptterra-responses-toolsany-rnone": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "gptterra-responses-toolsnone-out16k": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "medium"
+    },
+    "gptterra-responses-toolsnone-out8k": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "medium"
+    },
+    "gptterra-responses-toolsnone-rhigh": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "high"
+    },
+    "gptterra-responses-vision-toolsany": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "medium"
+    },
+    "gptterra-responses-vision-toolsany-rdefault": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "gptterra-responses-vision-toolsany-rhigh-out64k": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "high"
+    },
+    "gptterra-responses-vision-toolsany-rnone-out16k": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "grok47-responses-vision-toolsany-rhigh": {
+      "model_id": "xai/grok-4.7",
+      "thinking": "high"
+    },
+    "haiku46-messages-vision-toolsany-rnone": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "none"
+    },
+    "llm-memory-small": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "llm-openai-chat": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "llm-openai-chat-reasoning": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "llm-openai-nano": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "llm-openai-reasoning-large": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "llm-openai-small": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "llm-opus-4.6": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "llm-reasoning-opus-max-60k-64k": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "m27-toolsany": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "m27-toolsany-rhigh": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "m27-toolsany-rnone-out16k": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "m27-toolsnone": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "m27-toolsnone-rhigh": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "m27-toolsnone-rnone-out16k": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "m3-vision-toolsauto-rhigh-out64k": {
+      "model_id": "minimax/MiniMax-M3",
+      "thinking": "on"
+    },
+    "op-agentic-ledger-compaction-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-agentic-ledger-compaction-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-ambient-distill-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-ambient-distill-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-analyze-image-openai-mini": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-app-workflow-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-channel-classify-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-channel-classify-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-channel-distill-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-channel-distill-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-channel-reply-draft-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-channel-reply-draft-remote": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "op-channel-reply-draft-remote-gpt61sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-channel-reply-draft-remote-gpt6sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-harness-agy": {
+      "model_id": "harness-agy/default",
+      "thinking": "auto"
+    },
+    "op-harness-agy-high": {
+      "model_id": "harness-agy/gemini-3.7-flash-high",
+      "thinking": "auto"
+    },
+    "op-harness-agy-medium": {
+      "model_id": "harness-agy/gemini-3.7-flash-medium",
+      "thinking": "auto"
+    },
+    "op-harness-agy-small": {
+      "model_id": "harness-agy/gemini-3.7-flash-low",
+      "thinking": "auto"
+    },
+    "op-harness-claude": {
+      "model_id": "harness-claude_code/default",
+      "thinking": "auto"
+    },
+    "op-harness-claude-fable": {
+      "model_id": "harness-claude_code/fable",
+      "thinking": "auto"
+    },
+    "op-harness-claude-opus": {
+      "model_id": "harness-claude_code/opus",
+      "thinking": "auto"
+    },
+    "op-harness-claude-small": {
+      "model_id": "harness-claude_code/haiku",
+      "thinking": "auto"
+    },
+    "op-harness-claude-sonnet": {
+      "model_id": "harness-claude_code/sonnet",
+      "thinking": "auto"
+    },
+    "op-harness-codex": {
+      "model_id": "harness-codex/default",
+      "thinking": "auto"
+    },
+    "op-harness-grok": {
+      "model_id": "harness-grok/default",
+      "thinking": "auto"
+    },
+    "op-harness-grok-4": {
+      "model_id": "harness-grok/grok-4",
+      "thinking": "auto"
+    },
+    "op-harness-grok-small": {
+      "model_id": "harness-grok/grok-4-fast",
+      "thinking": "auto"
+    },
+    "op-harness-pi": {
+      "model_id": "harness-pi/default",
+      "thinking": "auto"
+    },
+    "op-kapso-envoy-chat-fallback-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-kapso-envoy-chat-fallback-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-learning-reflection-retry": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-learning-reflection-retry-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-learning-reflection-retry-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "medium"
+    },
+    "op-learning-reflection-retry-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-learning-reflection-retry-opus47": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "medium"
+    },
+    "op-learning-reflection-standard": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-learning-reflection-standard-dsv4-flash": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "op-learning-reflection-standard-gemini35-flash-lite": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "medium"
+    },
+    "op-learning-reflection-standard-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-meeting-summary-local": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-meeting-summary-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-memory-archive-summary-fast-dsv4-flash": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "op-memory-archive-summary-fast-gemini35-flash-lite": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "minimal"
+    },
+    "op-memory-archive-summary-fast-haiku46": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "none"
+    },
+    "op-memory-archive-summary-fast-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-archive-summary-local-chunked": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-memory-archive-summary-remote": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "op-memory-archive-summary-remote-gpt61sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-memory-archive-summary-remote-gpt6sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-memory-conflict-review-high-risk": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-conflict-review-high-risk-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-memory-conflict-review-high-risk-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "high"
+    },
+    "op-memory-conflict-review-high-risk-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-conflict-review-high-risk-opus47": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "high"
+    },
+    "op-memory-conflict-review-retry": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-conflict-review-standard": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-conflict-review-standard-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-memory-conflict-review-standard-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "medium"
+    },
+    "op-memory-conflict-review-standard-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-entity-extraction-fast-dsv4-flash": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "op-memory-entity-extraction-fast-gemini35-flash-lite": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "minimal"
+    },
+    "op-memory-entity-extraction-fast-haiku46": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "none"
+    },
+    "op-memory-entity-extraction-fast-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-entity-extraction-local-chunked": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-memory-entity-extraction-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-memory-environment-extraction-fast-dsv4-flash": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "none"
+    },
+    "op-memory-environment-extraction-fast-gemini35-flash-lite": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "minimal"
+    },
+    "op-memory-environment-extraction-fast-haiku46": {
+      "model_id": "anthropic/claude-haiku-4-5",
+      "thinking": "none"
+    },
+    "op-memory-environment-extraction-fast-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-environment-extraction-local-chunked": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-memory-environment-extraction-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-memory-episode-quality-local-chunked": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-memory-episode-quality-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-memory-episode-quality-retry": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-episode-quality-retry-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-memory-episode-quality-retry-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "medium"
+    },
+    "op-memory-episode-quality-retry-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-episode-quality-retry-opus47": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "medium"
+    },
+    "op-memory-episode-quality-standard": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-episode-quality-standard-dsv4-flash": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "op-memory-episode-quality-standard-gemini35-flash-lite": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "medium"
+    },
+    "op-memory-episode-quality-standard-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-evidence-distillation-fast": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-evidence-distillation-local-chunked": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-memory-evidence-distillation-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-memory-evidence-distillation-retry": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-extraction-retry": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-extraction-retry-dsv4-flash": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "op-memory-extraction-retry-gemini35-flash-lite": {
+      "model_id": "gemini/gemini-3.5-flash-lite",
+      "thinking": "medium"
+    },
+    "op-memory-extraction-retry-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-extraction-retry-sonnet55": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "medium"
+    },
+    "op-memory-insight-distillation-standard": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "low"
+    },
+    "op-memory-insight-distillation-standard-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-memory-insight-distillation-standard-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "medium"
+    },
+    "op-memory-insight-distillation-standard-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-judgment-frontier": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "high"
+    },
+    "op-memory-judgment-frontier-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-memory-judgment-frontier-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "high"
+    },
+    "op-memory-judgment-frontier-gpt61sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "op-memory-judgment-frontier-gpt6sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "op-memory-judgment-frontier-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-judgment-frontier-opus47": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "max"
+    },
+    "op-memory-user-promotion-standard": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "op-memory-user-promotion-standard-dsv4-pro": {
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "max"
+    },
+    "op-memory-user-promotion-standard-gemini31-pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "medium"
+    },
+    "op-memory-user-promotion-standard-m27": {
+      "model_id": "minimax/MiniMax-M2.7",
+      "thinking": "auto"
+    },
+    "op-memory-utility-review-local-chunked": {
+      "model_id": "ollama-generation/selected-generation",
+      "thinking": "none"
+    },
+    "op-memory-utility-review-remote": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-screen-grounding-vision": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "op-screen-grounding-vision-gpt61sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-screen-grounding-vision-gpt6sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-screen-observation-mini-vision": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-screen-understanding-vision": {
+      "model_id": "openai/gpt-5.6-terra",
+      "thinking": "none"
+    },
+    "op-screen-understanding-vision-gpt61sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-screen-understanding-vision-gpt6sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "low"
+    },
+    "op-social-compose-luna": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-social-gate-luna": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-task-summary-luna": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "op-thinking-map-interpret": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "low"
+    },
+    "op-web-answer": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "opus47-messages-toolsany-rnone": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "low"
+    },
+    "opus47-messages-toolsauto-rhigh-think8k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "high"
+    },
+    "opus47-messages-toolsauto-rmax-think48k-out64k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "max"
+    },
+    "opus47-messages-toolsauto-rmin-think8k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "low"
+    },
+    "opus47-messages-toolsauto-think8k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "medium"
+    },
+    "opus47-messages-vision-toolsauto-rhigh-think8k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "high"
+    },
+    "opus47-messages-vision-toolsauto-rmin-think8k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "low"
+    },
+    "opus47-messages-vision-toolsauto-think8k": {
+      "model_id": "anthropic/claude-opus-4-7",
+      "thinking": "medium"
+    },
+    "opus5-messages-vision-toolsauto-rhigh-think8k": {
+      "model_id": "anthropic/claude-opus-5",
+      "thinking": "high"
+    },
+    "opus55-messages-vision-toolsauto-rhigh-think8k": {
+      "model_id": "anthropic/claude-opus-5-5",
+      "thinking": "high"
+    },
+    "relentless-text-gemini31pro": {
+      "model_id": "gemini/gemini-3.1-pro-preview",
+      "thinking": "high"
+    },
+    "relentless-text-gpt61sol": {
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "medium"
+    },
+    "relentless-text-gpt6luna": {
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "medium"
+    },
+    "relentless-text-sonnet55": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "low"
+    },
+    "sonnet55-messages-vision-toolsauto-rhigh": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "high"
+    },
+    "sonnet55-messages-vision-toolsauto-rlow": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "low"
+    },
+    "sonnet55-messages-vision-toolsauto-rmedium": {
+      "model_id": "anthropic/claude-sonnet-5-5",
+      "thinking": "medium"
+    },
+    "vision-yutori-n1.5": {
+      "model_id": "yutori/n1.5-latest",
+      "thinking": "auto"
+    }
+  },
+  "coding": {
+    "agy-default": {
+      "kind": "model",
+      "engine": "agy_cli",
+      "model_id": "native/agy_cli/harness-agy/default",
+      "thinking": "auto"
+    },
+    "claude-default": {
+      "kind": "model",
+      "engine": "claude_code",
+      "model_id": "native/claude_code/harness-claude_code/default",
+      "thinking": "auto"
+    },
+    "codex-default": {
+      "kind": "model",
+      "engine": "codex_app_server",
+      "model_id": "native/codex_app_server/harness-codex/default",
+      "thinking": "auto"
+    },
+    "coding-astra": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "openai/gpt-6-astra",
+      "thinking": "high"
+    },
+    "coding-balanced": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "coding-deepseek-v4.1-flash": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "deepseek/deepseek-flash",
+      "thinking": "high"
+    },
+    "coding-fable": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "anthropic/claude-fable-5-1",
+      "thinking": "high"
+    },
+    "coding-grok47": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "xai/grok-4.7",
+      "thinking": "high"
+    },
+    "coding-luna": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "openai/gpt-6-luna",
+      "thinking": "none"
+    },
+    "coding-minimax-m3": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "minimax/MiniMax-M3",
+      "thinking": "on"
+    },
+    "coding-opus5": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "anthropic/claude-opus-5",
+      "thinking": "high"
+    },
+    "coding-opus55": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "anthropic/claude-opus-5-5",
+      "thinking": "high"
+    },
+    "coding-premium": {
+      "kind": "model",
+      "engine": "pi",
+      "model_id": "openai/gpt-6.1-sol",
+      "thinking": "high"
+    },
+    "grok-default": {
+      "kind": "model",
+      "engine": "grok_acp",
+      "model_id": "native/grok_acp/harness-grok/default",
+      "thinking": "auto"
+    }
+  },
+  "unavailable_chat_ids": [
+    "gpt6luna-chat-toolsany-rnone",
+    "gptluna-chat-toolsany-rnone",
+    "gptterra-chat-toolsany-rlow",
+    "gptterra-chat-toolsany-rnone",
+    "op-app-workflow-local",
+    "op-embedding-local",
+    "op-memory-archive-summary-fast",
+    "op-memory-entity-extraction-fast",
+    "op-memory-environment-extraction-fast"
+  ]
+}

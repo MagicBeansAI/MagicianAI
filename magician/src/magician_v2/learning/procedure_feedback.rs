@@ -1698,6 +1698,7 @@ mod tests {
             ui_thread_id: None,
             task_title: Some("Task A".to_string()),
             task_description: None,
+            task_intent: None,
             execution_status: execution_status.map(str::to_string),
             outcome_type: None,
             execution_output_id: None,

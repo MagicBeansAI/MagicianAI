@@ -4,9 +4,11 @@
 # own domain. Replaces the old Tailscale funnel (ensure-magician-funnel.sh).
 #
 # Why cloudflared + a NAMED tunnel: a named tunnel + a DNS route on the operator
-# domain gives a STABLE public HTTPS URL (for example, webhook.<zone>/webhook)
-# that you set in Kapso ONCE — unlike a Tailscale `*.ts.net` host (derived live)
-# or a cloudflared *quick* tunnel (`--url`, ephemeral `*.trycloudflare.com`).
+# domain gives a STABLE public HTTPS URL (for example, webhook.<zone>/webhook) —
+# unlike a Tailscale `*.ts.net` host (derived live) or a cloudflared *quick*
+# tunnel (`--url`, ephemeral `*.trycloudflare.com`). The resolved hosts are
+# persisted as MAGICIAN_WEBHOOK_HOST / MAGICIAN_UI_HOST in the runtime .env, and
+# the Kapso and AgentMail bots register their webhooks from it on start.
 #
 # Upstream is unchanged: the host-native kapso bot receiver listens on
 # WEBHOOK_PORT (default 3010) and forwards each callback to magician :3002. The
@@ -57,7 +59,7 @@ if [ -z "$ZONE" ]; then
   printf '\033[1;31mERROR: MAGICIAN_TUNNEL_ZONE is not set — your Cloudflare zone (e.g. example.com). Run `make setup-identity` or export it; no zone is ever defaulted.\033[0m\n' >&2
   exit 1
 fi
-WEBHOOK_HOST="${MAGICIAN_WEBHOOK_HOST:-webhook.${ZONE}}"   # Kapso ingress
+WEBHOOK_HOST="${MAGICIAN_WEBHOOK_HOST:-}"   # Kapso ingress; resolved below
 KAPSO_WEBHOOK_PORT="${KAPSO_WEBHOOK_PORT:-3010}"
 WEBHOOK_PATH="${MAGICIAN_WEBHOOK_PATH:-/webhook}"
 # AgentMail inbound shares the webhook host, PATH-SPLIT to its own receiver: only
@@ -71,14 +73,10 @@ AGENTMAIL_PATH_REGEX='^/agentmail-webhook/?$'
 # Default ON (Tailscale dropped) so the private :8443 serve has a replacement;
 # put ui.<zone> behind a Cloudflare Access policy so it is not open to the world.
 DATA_DIR="${MAGICIAN_ROOT_DIR:-$HOME/MagicianNotes}"
-UI_HOST="${MAGICIAN_UI_HOST:-ui.${ZONE}}"
+UI_HOST="${MAGICIAN_UI_HOST:-}"   # resolved below
 UI_PORT="${MAGICIAN_UI_PORT:-5173}"
 CONNECT_HOST="${MAGICIAN_CONNECT_HOST:-${MAGICIAN_IOS_HOST:-}}"
 CONNECT_GATEWAY_PORT="${MAGICIAN_CONNECT_GATEWAY_PORT:-${MAGICIAN_IOS_PORT:-3017}}"
-NOTES_HOST="${MAGICIAN_NOTES_HOST:-notes.${ZONE}}"
-NOTES_PORT="${MAGICIAN_SILVERBULLET_PORT:-3021}"
-NOTES_READY_FILE="${MAGICIAN_NOTES_ACCESS_READY_FILE:-$DATA_DIR/.magician/notes-access-ready}"
-NOTES_ATTESTATION_MAX_AGE="${MAGICIAN_NOTES_ACCESS_ATTESTATION_MAX_AGE_SECONDS:-900}"
 CF_DIR="${CLOUDFLARED_HOME:-$HOME/.cloudflared}"
 CF_CONFIG="${CLOUDFLARED_CONFIG:-$CF_DIR/config.yml}"
 TOKEN_LAUNCH_LABEL="${MAGICIAN_CLOUDFLARED_TOKEN_LAUNCH_LABEL:-com.magican.magician-cloudflared-token}"
@@ -88,10 +86,6 @@ DRYRUN="${MAGICIAN_INSTALL_DRYRUN:-0}"
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33mWARN: %s\033[0m\n' "$*" >&2; }
 would_run() { if [ "$DRYRUN" = 1 ]; then log "would run: $*"; return 0; fi; "$@"; }
-
-WEBHOOK_URL="https://${WEBHOOK_HOST}${WEBHOOK_PATH}"
-AGENTMAIL_WEBHOOK_BASE_URL="https://${WEBHOOK_HOST}"   # AGENTMAIL_WEBHOOK_URL for the bot
-AGENTMAIL_PUBLIC_URL="${AGENTMAIL_WEBHOOK_BASE_URL}${AGENTMAIL_WEBHOOK_PATH}"
 
 # read_env_key KEY — resolve a flag/secret from the process env first, else from
 # the runtime .env files ($DATA_DIR/.env.development preferred, then $DATA_DIR/.env),
@@ -117,6 +111,20 @@ read_env_key() {
 [ -n "$CONNECT_HOST" ] || CONNECT_HOST="$(read_env_key MAGICIAN_CONNECT_HOST)"
 [ -n "$CONNECT_HOST" ] || CONNECT_HOST="$(read_env_key MAGICIAN_IOS_HOST)"
 [ -n "$CONNECT_HOST" ] || CONNECT_HOST="connect.${ZONE}"
+# The webhook and UI hosts resolve the same way. ensure-machine-tunnel.sh
+# --install writes this machine's hostnames (webhook-<machine>.<zone>,
+# ui-<machine>.<zone>) to the runtime .env files; defaulting straight to the
+# shared webhook./ui. names put those back onto the per-machine tunnel on every
+# `make run-all`, and Kapso, agentmail and the alert links lost this machine.
+# A host that fell back to the default is persisted below (persist_default_hosts),
+# so the bots, which derive their webhook URLs from MAGICIAN_WEBHOOK_HOST, see it.
+WEBHOOK_HOST_DEFAULTED=0; UI_HOST_DEFAULTED=0
+[ -n "$WEBHOOK_HOST" ] || WEBHOOK_HOST="$(read_env_key MAGICIAN_WEBHOOK_HOST)"
+[ -n "$WEBHOOK_HOST" ] || { WEBHOOK_HOST="webhook.${ZONE}"; WEBHOOK_HOST_DEFAULTED=1; }
+[ -n "$UI_HOST" ] || UI_HOST="$(read_env_key MAGICIAN_UI_HOST)"
+[ -n "$UI_HOST" ] || { UI_HOST="ui.${ZONE}"; UI_HOST_DEFAULTED=1; }
+WEBHOOK_URL="https://${WEBHOOK_HOST}${WEBHOOK_PATH}"
+AGENTMAIL_PUBLIC_URL="https://${WEBHOOK_HOST}${AGENTMAIL_WEBHOOK_PATH}"
 CONNECT_BACKEND="$(read_env_key MAGICIAN_CONNECT_BACKEND)"
 [ -n "$CONNECT_BACKEND" ] || CONNECT_BACKEND="local"
 CONNECT_BACKEND="$(printf '%s' "$CONNECT_BACKEND" | tr '[:upper:]' '[:lower:]')"
@@ -173,77 +181,15 @@ if [ -n "${MAGICIAN_CONNECT_SERVICE:-}" ] && [ "$MAGICIAN_CONNECT_SERVICE" != "$
 fi
 log "Device connection route: https://${CONNECT_HOST} -> ${CONNECT_BACKEND} backend at ${CONNECT_SERVICE}"
 
-# Runtime env files may own these non-secret deployment values. A notes route is
-# enabled only when a previous Access provisioning run wrote an exact readiness
-# attestation. Requesting it explicitly without that proof still fails closed.
-NOTES_HOST_ENV="$(read_env_key MAGICIAN_NOTES_HOST)"
-[ -z "$NOTES_HOST_ENV" ] || NOTES_HOST="$NOTES_HOST_ENV"
-NOTES_PORT_ENV="$(read_env_key MAGICIAN_SILVERBULLET_PORT)"
-[ -z "$NOTES_PORT_ENV" ] || NOTES_PORT="$NOTES_PORT_ENV"
-NOTES_ATTESTATION_MAX_AGE_ENV="$(read_env_key MAGICIAN_NOTES_ACCESS_ATTESTATION_MAX_AGE_SECONDS)"
-[ -z "$NOTES_ATTESTATION_MAX_AGE_ENV" ] || NOTES_ATTESTATION_MAX_AGE="$NOTES_ATTESTATION_MAX_AGE_ENV"
+# Notes have no hostname of their own: they are Magician's files, opened in the
+# web app at /notes behind the same sign-in as everything else, so no notes route
+# is ever published (an old notes.<zone> ingress is dropped by the PUT below).
 # Token-mode migrations may add exact hostnames to the dashboard-managed tunnel
 # without making this deployment's primary zone switch immediately. Preserve
 # only the explicitly declared remote hosts during reconciliation; this keeps a
 # coexistence alias from being erased while avoiding ownership of unrelated
 # dashboard rules. The list is comma-separated and does not create routes/DNS.
 PRESERVED_REMOTE_HOSTS="$(read_env_key MAGICIAN_TUNNEL_PRESERVED_REMOTE_HOSTS)"
-NOTES_TUNNEL_MODE="$(read_env_key MAGICIAN_NOTES_TUNNEL_ENABLED)"
-[ -n "$NOTES_TUNNEL_MODE" ] || NOTES_TUNNEL_MODE="auto"
-case "$(printf '%s' "$NOTES_TUNNEL_MODE" | tr '[:upper:]' '[:lower:]')" in
-  0|false|off) NOTES_TUNNEL_MODE=0 ;;
-  1|true|on) NOTES_TUNNEL_MODE=1 ;;
-  auto) NOTES_TUNNEL_MODE=auto ;;
-  *) warn "Unknown MAGICIAN_NOTES_TUNNEL_ENABLED='${NOTES_TUNNEL_MODE}' — using fail-closed auto mode."; NOTES_TUNNEL_MODE=auto ;;
-esac
-# The SilverBullet notes server is gone, so its public hostname is never published.
-NOTES_TUNNEL_MODE=0
-NOTES_ENABLED=0
-NOTES_ATTESTATION_FRESH=0
-NOTES_ATTESTATION_VALID=0
-NOTES_ATTESTATION_TIME_VALID=0
-NOTES_PRESERVE_EXISTING=0
-if [ -f "$NOTES_READY_FILE" ]; then
-  NOTES_VERIFIED_AT="$(sed -n 's/^verified_at_epoch=//p' "$NOTES_READY_FILE" | tail -1)"
-  case "$NOTES_VERIFIED_AT:$NOTES_ATTESTATION_MAX_AGE" in
-    *[!0-9:]*|:*|*:) ;;
-    *)
-      NOTES_ATTESTATION_AGE="$(( $(date +%s) - NOTES_VERIFIED_AT ))"
-      if [ "$NOTES_ATTESTATION_AGE" -ge 0 ]; then
-        NOTES_ATTESTATION_TIME_VALID=1
-        if [ "$NOTES_ATTESTATION_AGE" -le "$NOTES_ATTESTATION_MAX_AGE" ]; then
-          NOTES_ATTESTATION_FRESH=1
-        fi
-      fi
-      ;;
-  esac
-fi
-if [ -f "$NOTES_READY_FILE" ] \
-  && grep -Fxq "hostname=${NOTES_HOST}" "$NOTES_READY_FILE" \
-  && grep -Eq '^access_app_id=.+$' "$NOTES_READY_FILE" \
-  && grep -Fxq "service_token_policy=verified" "$NOTES_READY_FILE" \
-  && grep -Fxq "owner_allow_policy=verified" "$NOTES_READY_FILE" \
-  && grep -Fxq "service_worker_bypass=verified" "$NOTES_READY_FILE" \
-  && grep -Fxq "client_runtime_bypass=verified" "$NOTES_READY_FILE"; then
-  NOTES_ATTESTATION_VALID=1
-fi
-if [ "$NOTES_TUNNEL_MODE" != 0 ] \
-  && [ "$NOTES_ATTESTATION_VALID" = 1 ] \
-  && [ "$NOTES_ATTESTATION_FRESH" = 1 ]; then
-  NOTES_ENABLED=1
-elif [ "$NOTES_TUNNEL_MODE" != 0 ] \
-  && [ "$NOTES_ATTESTATION_VALID" = 1 ] \
-  && [ "$NOTES_ATTESTATION_TIME_VALID" = 1 ]; then
-  # A short-lived attestation authorizes only a NEW publication. Once a route
-  # has been published behind verified Access policies, an unrelated tunnel
-  # reconciliation must not erase it merely because the marker aged out.
-  # Each mode below preserves only an exact existing loopback route; it never
-  # creates one from stale evidence.
-  NOTES_PRESERVE_EXISTING=1
-  warn "Notes Access verification is stale; a new ${NOTES_HOST} route remains fail-closed, but an exact existing loopback route will be preserved. Run make ensure-notes-tunnel to re-verify it."
-elif [ "$NOTES_TUNNEL_MODE" = 1 ]; then
-  warn "Notes tunnel requested, but a fresh matching Access readiness attestation is absent at ${NOTES_READY_FILE}; refusing to publish ${NOTES_HOST}. Run make notes-access first."
-fi
 
 # Resolve the effective auth mode. token REQUIRES a non-empty CLOUDFLARED_TOKEN;
 # if it is missing we fall back to browser login (and say so). Token value is
@@ -276,6 +222,41 @@ if [ "$(read_env_key MAGICIAN_TUNNEL_UI)" = "0" ]; then
   UI_HOST=""
   log "Dev-UI host disabled (MAGICIAN_TUNNEL_UI=0) — webhook-only tunnel."
 fi
+
+# upsert_env_key KEY VALUE — set KEY in .env.development, and in .env when it
+# already carries the key (same contract as ensure-machine-tunnel.sh). Plain
+# hostnames only; the value is a hostname, never a secret.
+upsert_env_key() {
+  local key="$1" value="$2" file tmp
+  for file in "$DATA_DIR/.env.development" "$DATA_DIR/.env"; do
+    if [ "$file" = "$DATA_DIR/.env.development" ]; then
+      [ -f "$file" ] || { [ "$DRYRUN" = 1 ] || { mkdir -p "$DATA_DIR" && : > "$file" && chmod 600 "$file"; }; }
+    else
+      [ -f "$file" ] && grep -qE "^[[:space:]]*${key}=" "$file" || continue
+    fi
+    if [ "$DRYRUN" = 1 ]; then log "would set ${key}=${value} in ${file}"; continue; fi
+    tmp="$(mktemp "${file}.XXXXXX")"
+    grep -vE "^[[:space:]]*${key}=" "$file" > "$tmp" || true
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$file"
+  done
+}
+
+# persist_default_hosts — a host that fell back to webhook.<zone> / ui.<zone> is
+# written to the runtime env, so a fresh setup has one source of truth: the
+# backend loads it, the bots inherit it and register their webhooks from it.
+persist_default_hosts() {
+  if [ "$WEBHOOK_HOST_DEFAULTED" = 1 ]; then
+    upsert_env_key MAGICIAN_WEBHOOK_HOST "$WEBHOOK_HOST"
+    [ "$DRYRUN" = 1 ] || log "Recorded MAGICIAN_WEBHOOK_HOST=${WEBHOOK_HOST} in the runtime env."
+  fi
+  if [ "$UI_HOST_DEFAULTED" = 1 ] && [ -n "$UI_HOST" ]; then
+    upsert_env_key MAGICIAN_UI_HOST "$UI_HOST"
+    [ "$DRYRUN" = 1 ] || log "Recorded MAGICIAN_UI_HOST=${UI_HOST} in the runtime env."
+  fi
+}
+persist_default_hosts
 
 # start_token_connector — run the DASHBOARD-managed tunnel with its connector
 # token. A token tunnel's ingress (public hostnames) + DNS live in the Cloudflare
@@ -327,17 +308,15 @@ write_funnel_url() {
 }
 
 print_urls() {
-  log "Kapso webhook URL (set this ONCE in Kapso): ${WEBHOOK_URL}"
-  log "AgentMail webhook: ${AGENTMAIL_PUBLIC_URL} -> :${AGENTMAIL_WEBHOOK_PORT} (bot env: AGENTMAIL_WEBHOOK_URL=${AGENTMAIL_WEBHOOK_BASE_URL})"
+  log "Kapso webhook: ${WEBHOOK_URL} -> :${KAPSO_WEBHOOK_PORT}"
+  log "AgentMail webhook: ${AGENTMAIL_PUBLIC_URL} -> :${AGENTMAIL_WEBHOOK_PORT}"
+  log "The Kapso and AgentMail bots register these on start (from MAGICIAN_WEBHOOK_HOST=${WEBHOOK_HOST}); restart Magician after a host change."
   # `if` (not `[ … ] && log`): when UI_HOST is empty (MAGICIAN_TUNNEL_UI=0,
   # webhook-only) the bare `&&` test returns 1 as the function's LAST command, so
   # `print_urls` returns 1 and `set -e` aborts the whole script — a FALSE failure
   # reported to the caller even though the tunnel is fully up.
   if [ -n "$UI_HOST" ]; then
     log "Dev UI URL (gate with Cloudflare Access): https://${UI_HOST}/"
-  fi
-  if [ "$NOTES_ENABLED" = 1 ]; then
-    log "Protected Notes URL: https://${NOTES_HOST}/"
   fi
   log "Protected device connection URL: https://${CONNECT_HOST}/ (${CONNECT_BACKEND} backend)"
 }
@@ -355,7 +334,6 @@ print_setup_steps() {
     4) cloudflared tunnel route dns ${TUNNEL_NAME} ${WEBHOOK_HOST}
 $( [ -n "$UI_HOST" ] && echo "    5) cloudflared tunnel route dns ${TUNNEL_NAME} ${UI_HOST}" )
     6) cloudflared tunnel route dns ${TUNNEL_NAME} ${CONNECT_HOST}
-$( [ "$NOTES_ENABLED" = 1 ] && echo "    7) cloudflared tunnel route dns ${TUNNEL_NAME} ${NOTES_HOST}" )
   Then re-run this script (or the installer with MAGICIAN_ENABLE_FUNNEL=1) and it
   will write the config, ensure the routes, and start the service.
 EOF
@@ -369,8 +347,8 @@ EOF
 # Returns 1 ONLY when no API token is present (caller then prints manual guidance);
 # permission/zone failures warn with specifics and still return 0.
 configure_token_ingress_dns_via_api() {
-  local cf_api acct tun zone_id ingress_json connect_json notes_json webhook_json ok exist host name API dns_resp
-  local include_notes current_config current_success preserved_hosts_json preserved_rules_json
+  local cf_api acct tun zone_id ingress_json connect_json webhook_json ok exist host name API dns_resp
+  local current_config current_success preserved_hosts_json preserved_rules_json
   cf_api="$(read_env_key CLOUDFLARE_API_TOKEN)"; [ -n "$cf_api" ] || cf_api="$(read_env_key CF_API_TOKEN)"
   [ -n "$cf_api" ] || return 1
   command -v jq >/dev/null 2>&1 || { warn "CLOUDFLARE_API_TOKEN set but 'jq' not found — skipping API auto-config (brew install jq, or configure in the dashboard)."; return 0; }
@@ -380,9 +358,7 @@ configure_token_ingress_dns_via_api() {
   [ -n "$acct" ] && [ -n "$tun" ] || { warn "could not decode account/tunnel id from CLOUDFLARED_TOKEN — skipping API auto-config."; return 0; }
   API="https://api.cloudflare.com/client/v4"
   log "Configuring tunnel via Cloudflare API (account=${acct:0:6}…, tunnel=${tun})…"
-  include_notes="$NOTES_ENABLED"
-  if [ -n "$PRESERVED_REMOTE_HOSTS" ] \
-    || { [ "$include_notes" != 1 ] && [ "$NOTES_PRESERVE_EXISTING" = 1 ]; }; then
+  if [ -n "$PRESERVED_REMOTE_HOSTS" ]; then
     current_config="$(curl -s -H "Authorization: Bearer $cf_api" \
       "$API/accounts/$acct/cfd_tunnel/$tun/configurations")"
     current_success="$(printf '%s' "$current_config" | jq -r \
@@ -393,31 +369,16 @@ configure_token_ingress_dns_via_api() {
       return 0
     fi
   fi
-  if [ "$include_notes" != 1 ] && [ "$NOTES_PRESERVE_EXISTING" = 1 ]; then
-    if printf '%s' "$current_config" | jq -e \
-      --arg host "$NOTES_HOST" \
-      --arg service "http://127.0.0.1:${NOTES_PORT}" \
-      'any(.result.config.ingress[]?; .hostname == $host and .service == $service)' \
-      >/dev/null 2>&1; then
-      include_notes=1
-      log "Preserving existing protected Notes ingress while its Access verification is stale; no new route was authorized."
-    else
-      warn "Notes verification is stale and no exact existing loopback ingress was found; leaving Notes unpublished."
-    fi
-  fi
   # connect.<zone> is path-split: host automation -> the desktop gateway;
   # health and API -> the explicitly selected host, local-container, or remote backend.
   connect_json="{\"hostname\":\"${CONNECT_HOST}\",\"path\":\"^/host(/.*)?\$\",\"service\":\"http://localhost:${CONNECT_GATEWAY_PORT}\"},{\"hostname\":\"${CONNECT_HOST}\",\"path\":\"^/health/?\$\",\"service\":\"${CONNECT_SERVICE}\"},{\"hostname\":\"${CONNECT_HOST}\",\"path\":\"^/api(/.*)?\$\",\"service\":\"${CONNECT_SERVICE}\"}"
-  notes_json=""
-  if [ "$include_notes" = 1 ]; then
-    notes_json="{\"hostname\":\"${NOTES_HOST}\",\"service\":\"http://127.0.0.1:${NOTES_PORT}\"},"
-  fi
+  connect_json="${connect_json},{\"hostname\":\"${CONNECT_HOST}\",\"path\":\"^/\\\\.well-known/magican/mcp-profiles/[a-f0-9]{64}\\\\.json\$\",\"service\":\"${CONNECT_SERVICE}\"}"
   # First match wins: the exact AgentMail path must precede the host-wide Kapso rule.
   webhook_json="{\"hostname\":\"${WEBHOOK_HOST}\",\"path\":\"${AGENTMAIL_PATH_REGEX}\",\"service\":\"http://localhost:${AGENTMAIL_WEBHOOK_PORT}\"},{\"hostname\":\"${WEBHOOK_HOST}\",\"service\":\"http://localhost:${KAPSO_WEBHOOK_PORT}\"}"
   if [ -n "$UI_HOST" ]; then
-    ingress_json="[${notes_json}${webhook_json},{\"hostname\":\"${UI_HOST}\",\"service\":\"http://localhost:${UI_PORT}\"},${connect_json},{\"service\":\"http_status:404\"}]"
+    ingress_json="[${webhook_json},{\"hostname\":\"${UI_HOST}\",\"service\":\"http://localhost:${UI_PORT}\"},${connect_json},{\"service\":\"http_status:404\"}]"
   else
-    ingress_json="[${notes_json}${webhook_json},${connect_json},{\"service\":\"http_status:404\"}]"
+    ingress_json="[${webhook_json},${connect_json},{\"service\":\"http_status:404\"}]"
   fi
   if [ -n "$PRESERVED_REMOTE_HOSTS" ]; then
     preserved_hosts_json="$(printf '%s' "$PRESERVED_REMOTE_HOSTS" | jq -Rc '
@@ -427,18 +388,13 @@ configure_token_ingress_dns_via_api() {
       --argjson hosts "$preserved_hosts_json" \
       --arg webhook "$WEBHOOK_HOST" \
       --arg ui "$UI_HOST" \
-      --arg connect "$CONNECT_HOST" \
-      --arg notes "$NOTES_HOST" \
-      --arg notes_mode "$NOTES_TUNNEL_MODE" \
-      --arg notes_service "http://127.0.0.1:${NOTES_PORT}" '
+      --arg connect "$CONNECT_HOST" '
         [.result.config.ingress[]?
           | select(.hostname? as $host
             | ($hosts | index($host)) != null
               and $host != $webhook
               and $host != $ui
-              and $host != $connect
-              and $host != $notes)
-          | select($notes_mode != "0" or .service != $notes_service)]
+              and $host != $connect)]
       ')"
     ingress_json="$(jq -cn \
       --argjson preserved "$preserved_rules_json" \
@@ -453,7 +409,7 @@ configure_token_ingress_dns_via_api() {
         "$API/accounts/$acct/cfd_tunnel/$tun/configurations" \
         --data "{\"config\":{\"ingress\":$ingress_json}}" | jq -r '.success' 2>/dev/null)"
   if [ "$ok" = "true" ]; then
-    log "  ✓ public hostname(s) set: ${WEBHOOK_HOST}${AGENTMAIL_WEBHOOK_PATH} -> :${AGENTMAIL_WEBHOOK_PORT}, ${WEBHOOK_HOST} -> :${KAPSO_WEBHOOK_PORT}$( [ -n "$UI_HOST" ] && echo ", ${UI_HOST} -> :${UI_PORT}" )$( [ "$include_notes" = 1 ] && echo ", ${NOTES_HOST} -> 127.0.0.1:${NOTES_PORT}" )"
+    log "  ✓ public hostname(s) set: ${WEBHOOK_HOST}${AGENTMAIL_WEBHOOK_PATH} -> :${AGENTMAIL_WEBHOOK_PORT}, ${WEBHOOK_HOST} -> :${KAPSO_WEBHOOK_PORT}$( [ -n "$UI_HOST" ] && echo ", ${UI_HOST} -> :${UI_PORT}" )"
   else
     warn "  ✗ could not set tunnel ingress — the token needs Account · Cloudflare Tunnel · Edit. Configure in the dashboard, or fix the token."
     return 0
@@ -463,7 +419,7 @@ configure_token_ingress_dns_via_api() {
     warn "  ✗ zone ${ZONE} not visible to the token (needs Zone · DNS · Edit on ${ZONE}) — add the DNS CNAME(s) in the dashboard."
     return 0
   fi
-  for host in "$WEBHOOK_HOST" $( [ -n "$UI_HOST" ] && printf '%s' "$UI_HOST" ) "$CONNECT_HOST" $( [ "$include_notes" = 1 ] && printf '%s' "$NOTES_HOST" ); do
+  for host in "$WEBHOOK_HOST" $( [ -n "$UI_HOST" ] && printf '%s' "$UI_HOST" ) "$CONNECT_HOST"; do
     name="${host%.${ZONE}}"
     # Match ANY existing record for the name (not just CNAME) so we never try to
     # POST over a pre-existing A/AAAA/CNAME and report a misleading error.
@@ -510,7 +466,6 @@ print_token_setup_guidance() {
 $( [ -n "$UI_HOST" ] && echo "       ${UI_HOST}   ->   HTTP   localhost:${UI_PORT}   (then gate it behind Cloudflare Access)" )
        ${CONNECT_HOST}  (Path ^/host)  ->  HTTP  localhost:${CONNECT_GATEWAY_PORT}
        ${CONNECT_HOST}  (^/health and ^/api) ->  ${CONNECT_SERVICE} (${CONNECT_BACKEND})
-$( [ "$NOTES_ENABLED" = 1 ] && echo "       ${NOTES_HOST}  ->  HTTP  127.0.0.1:${NOTES_PORT}  (Access preflight verified)" )
      Saving auto-creates the DNS record.
 
   ⚠ IMPORTANT: do NOT put ${WEBHOOK_HOST} behind Cloudflare Access. Webhooks can't
@@ -528,7 +483,7 @@ verify_webhook_public() {
   local code loc
   code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 12 "$WEBHOOK_URL" 2>/dev/null)"
   case "$code" in
-    200|204|404|405) log "  ✓ webhook reachable through the tunnel (HTTP ${code}) — set ${WEBHOOK_URL} in Kapso." ;;
+    200|204|404|405) log "  ✓ webhook reachable through the tunnel (HTTP ${code}) — ${WEBHOOK_URL}; the Kapso bot registers it on start." ;;
     301|302|303|307|308)
       loc="$(curl -sSI --max-time 12 "$WEBHOOK_URL" 2>/dev/null | awk 'tolower($1)=="location:"{print $2}' | tr -d "\r")"
       if printf '%s' "$loc" | grep -qi 'cloudflareaccess.com'; then
@@ -624,10 +579,6 @@ write_config() {
       echo "  - hostname: ${UI_HOST}"
       echo "    service: http://localhost:${UI_PORT}"
     fi
-    if [ "$NOTES_ENABLED" = 1 ]; then
-      echo "  - hostname: ${NOTES_HOST}"
-      echo "    service: http://127.0.0.1:${NOTES_PORT}"
-    fi
     if [ -n "$CONNECT_HOST" ]; then
       # Path-split: host automation -> the desktop gateway; aggregated health
       # and magician API (REST + WebSockets) -> magician; anything else -> 404.
@@ -638,6 +589,9 @@ write_config() {
       echo '    path: ^/health/?$'
       echo "    service: ${CONNECT_SERVICE}"
       echo "  - hostname: ${CONNECT_HOST}"
+      echo '    path: ^/\.well-known/magican/mcp-profiles/[a-f0-9]{64}\.json$'
+      echo "    service: ${CONNECT_SERVICE}"
+      echo "  - hostname: ${CONNECT_HOST}"
       echo '    path: ^/api(/.*)?$'
       echo "    service: ${CONNECT_SERVICE}"
     fi
@@ -645,23 +599,8 @@ write_config() {
   } > "$CF_CONFIG"
 }
 
-existing_browser_notes_route_is_safe() {
-  [ -f "$CF_CONFIG" ] || return 1
-  awk -v host="$NOTES_HOST" -v service="http://127.0.0.1:${NOTES_PORT}" '
-    previous == "  - hostname: " host && $0 == "    service: " service { found = 1 }
-    { previous = $0 }
-    END { exit(found ? 0 : 1) }
-  ' "$CF_CONFIG"
-}
-
-if [ "$NOTES_ENABLED" != 1 ] \
-  && [ "$NOTES_PRESERVE_EXISTING" = 1 ] \
-  && existing_browser_notes_route_is_safe; then
-  NOTES_ENABLED=1
-  log "Preserving existing protected Notes ingress while its Access verification is stale; no new route was authorized."
-fi
 if [ "$DRYRUN" = 1 ]; then
-  log "would write $CF_CONFIG (ingress: ${WEBHOOK_HOST}${AGENTMAIL_WEBHOOK_PATH}->:${AGENTMAIL_WEBHOOK_PORT}, ${WEBHOOK_HOST}->:${KAPSO_WEBHOOK_PORT}$( [ -n "$UI_HOST" ] && echo ", ${UI_HOST}->:${UI_PORT}" )$( [ "$NOTES_ENABLED" = 1 ] && echo ", protected ${NOTES_HOST}->127.0.0.1:${NOTES_PORT}" ), then catch-all 404)"
+  log "would write $CF_CONFIG (ingress: ${WEBHOOK_HOST}${AGENTMAIL_WEBHOOK_PATH}->:${AGENTMAIL_WEBHOOK_PORT}, ${WEBHOOK_HOST}->:${KAPSO_WEBHOOK_PORT}$( [ -n "$UI_HOST" ] && echo ", ${UI_HOST}->:${UI_PORT}" )), then catch-all 404)"
 else
   log "Writing cloudflared config $CF_CONFIG (tunnel ${TUNNEL_NAME})"
   write_config
@@ -676,7 +615,6 @@ log "Ensuring DNS routes"
 ensure_route "$WEBHOOK_HOST"
 [ -n "$UI_HOST" ] && ensure_route "$UI_HOST"
 ensure_route "$CONNECT_HOST"
-[ "$NOTES_ENABLED" = 1 ] && ensure_route "$NOTES_HOST"
 
 # --- 5. ensure the tunnel is running (launchd via brew services, no sudo) ---
 if command -v brew >/dev/null 2>&1; then

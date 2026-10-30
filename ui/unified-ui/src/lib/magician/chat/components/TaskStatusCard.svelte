@@ -2,7 +2,9 @@
 	import Icon from '$lib/shared/icons/Icon.svelte';
 	import { statusToneVar } from '$lib/shared/statusTone';
 	import ChatContentBlocks from '$lib/magician/components/chat/ChatContentBlocks.svelte';
-	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import TaskReport from '$lib/magician/tasks/TaskReport.svelte';
+	import AnswerVerificationInfo from './AnswerVerificationInfo.svelte';
+	import { splitAnswerVerification } from '../answerVerification';
 	import RequestActivityCard from '$lib/magician/components/RequestActivityCard.svelte';
 	import ExecutionControls from '$lib/magician/components/execution/ExecutionControls.svelte';
 	import {
@@ -45,6 +47,7 @@
 
 {#if message.content.type === 'task_status_update'}
 	{@const content = message.content}
+	{@const answerDisplay = splitAnswerVerification(content.summary ?? '')}
 	{@const taskVisual = taskStatusVisual(content.status, content.synthesis_pending, content.completion_kind)}
 	<div class="chat-status-alert chat-status-alert--{taskVisual.tone}">
 		{#if taskVisual.icon === 'check'}
@@ -72,15 +75,19 @@
 			     and the run rows below are countable. -->
 			<span class="chat-status-label">
 				{taskVisual.verb}: {content.display_label ?? content.task_id}
+				{#if answerDisplay.verification}<AnswerVerificationInfo verification={answerDisplay.verification} />{/if}
 			</span>
 			{#if taskStatusReason(content)}
 				<div class="chat-status-summary">
-					<ChatMarkdown content={content.summary} sessionId={message.session_id} />
+					<TaskReport content={answerDisplay.body} sessionId={message.session_id}
+						taskId={content.task_id ?? null} executionId={isTerminalTaskStatus(content.status) ? content.execution_id ?? null : null}
+						showVerification={!answerDisplay.verification} />
 				</div>
 			{/if}
 			<div class="chat-status-runs">
 				{#each taskExecutionGroups as group, index (group.id)}
 					{@const groupBlocks = getMessageContentBlocks(group.message.content)}
+					{@const groupAnswer = splitAnswerVerification(group.message.content.summary ?? '')}
 					{@const archivedTaskHref = buildArchivedTaskHref(group.message.content)}
 					{@const groupHasActions = Boolean(group.message.content.execution_id || (isTerminalTaskStatus(group.message.content.status) && archivedTaskHref))}
 					{@const showGroupShell = taskExecutionGroups.length > 1 || groupBlocks.length > 0 || groupHasActions}
@@ -135,7 +142,11 @@
 									</div>
 									{#if group.message.content.summary}
 										<div class="chat-status-run-summary">
-											<ChatMarkdown content={group.message.content.summary} sessionId={group.message.session_id} />
+											{#if groupAnswer.verification}<AnswerVerificationInfo verification={groupAnswer.verification} />{/if}
+											<TaskReport content={groupAnswer.body} sessionId={group.message.session_id}
+												taskId={group.message.content.task_id ?? null}
+												executionId={isTerminalTaskStatus(group.message.content.status) ? group.message.content.execution_id ?? null : null}
+												showVerification={!groupAnswer.verification} />
 										</div>
 									{/if}
 									{/if}

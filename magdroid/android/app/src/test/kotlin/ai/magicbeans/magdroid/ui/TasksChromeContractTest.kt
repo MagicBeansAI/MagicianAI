@@ -63,6 +63,8 @@ class TasksChromeContractTest {
         assertEquals(day.info, taskStatusTint("running", day))
         assertEquals(day.warning, taskStatusTint("paused", day))
         assertEquals(day.danger, taskStatusTint("failed", day))
+        val partly = ai.magicbeans.magdroid.tasks.TaskV3(status = "completed", completionKindWire = kotlinx.serialization.json.JsonPrimitive("partial"))
+        assertEquals(day.warning, taskStatusTint(partly, day))
         assertNotEquals(taskStatusTint("completed", day), taskStatusTint("completed", night))
         assertNotEquals(taskStatusTint("running", day), taskStatusTint("running", night))
 

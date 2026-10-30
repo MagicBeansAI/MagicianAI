@@ -41,6 +41,11 @@ pub struct DecideRequest {
     pub choice_candidates: BTreeMap<String, Vec<(String, String)>>,
     #[serde(default)]
     pub locality: Locality,
+    /// Images the state refers to by key. Send them only to an operation
+    /// whose policy accepts images for this locality: an engine that predates
+    /// this field would drop them and answer from the bare reference.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, crate::asset::DecisionAsset>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +88,12 @@ pub struct OperationPolicy {
     /// Model entry names this operation routes across, per locality.
     pub route_local: Vec<String>,
     pub route_cloud: Vec<String>,
+    /// Whether some model on that locality's route accepts images. Absent
+    /// (an older engine) reads as no.
+    #[serde(default)]
+    pub images_local: bool,
+    #[serde(default)]
+    pub images_cloud: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

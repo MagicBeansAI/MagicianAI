@@ -35,9 +35,14 @@ final class VibeDevCacheTests: XCTestCase {
     func testNowSnapshotRoundTrips() throws {
         let cache = VibeDevCache(directory: root)
         let saved = Date(timeIntervalSince1970: 1_760_346_000)
-        cache.saveNow(snapshot, at: saved)
+        var historySnapshot = snapshot
+        var historicalRun = liveRun("old", .done)
+        historicalRun.workLocation = "original"
+        historySnapshot.history = VibeDevRunHistory(runs: [historicalRun], hasMore: true, nextCursor: "next")
+        cache.saveNow(historySnapshot, at: saved)
         let loaded = try XCTUnwrap(cache.loadNow())
-        XCTAssertEqual(loaded.0, snapshot)
+        XCTAssertEqual(loaded.0, historySnapshot)
+        XCTAssertEqual(loaded.0.history?.nextCursor, "next")
         XCTAssertEqual(loaded.1, saved)
     }
 
@@ -125,6 +130,7 @@ final class VibeDevCacheTests: XCTestCase {
         let model = VibeDevNowModel(context: context)
         await model.refresh()
         XCTAssertEqual(model.working.map(\.runId), ["a"])
+        XCTAssertEqual(model.history.map(\.runId), ["a", "b"])
         XCTAssertEqual(model.visibleProjects.map(\.projectId), ["p1"])
         XCTAssertTrue(model.refreshFailed, "the banner says how old the data is")
         XCTAssertEqual(model.lastUpdated?.timeIntervalSince1970 ?? 0, saved.timeIntervalSince1970, accuracy: 0.01)
@@ -139,7 +145,9 @@ final class VibeDevCacheTests: XCTestCase {
         let context = VibeDevContext(api: api, approvals: StubApprovals(),
                                      undo: VibeDevUndoCenter(delay: 0.1, haptics: false), cache: cache)
         await VibeDevNowModel(context: context).refresh()
-        XCTAssertEqual(cache.loadNow()?.0, snapshot)
+        var expected = snapshot
+        expected.history = VibeDevRunHistory(runs: snapshot.live.runs, hasMore: false, nextCursor: nil)
+        XCTAssertEqual(cache.loadNow()?.0, expected)
     }
 
     func testRunScreenFallsBackToCachedTurns() async throws {

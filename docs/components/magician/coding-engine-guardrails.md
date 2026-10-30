@@ -44,16 +44,25 @@ without one, only when a single unique `apply_root` exists — an ambiguity guar
   A force-terminated child has no live approval channel, so its `Pending` diff
   would otherwise park the parent in `WaitingChildren` forever; a run that failed
   should not leave an approvable change.
+- A child can finish with its proposal still `Pending`. Every review-closing
+  path (the `diff_approval` answer in `respond_hitl_handler`, and
+  `reject_orphaned_proposals_for_execution` when it rejected something) calls
+  `MagicianV2Orchestrator::notify_parent_after_child_review_closed`, which
+  queues the terminal transition's deduplicated `ChildCompleted` wake
+  (`notify_parent_of_terminal_child_transition`) for a finished child; a root
+  or still-running child gets none.
 - `review_open` is `Pending` only: a `PartiallyApplied` proposal does not block
   the parent. The `blocked_on_review` payload is success-shaped (`status: ok`,
   `all_ok: true`, `results: []`); callers must check `blocked_on_review`.
 
 Regression tests: `latest_task_proposal_handoff_*`,
-`reject_orphaned_proposals_unblocks_parent_from_review_gate`.
+`reject_orphaned_proposals_unblocks_parent_from_review_gate`,
+`closing_a_finished_childs_review_wakes_its_parent_and_nothing_else`,
+`approval_resolutions_that_finish_a_parked_child_wake_its_parent_but_not_a_root`.
 
 ## Key symbols
 
 - `run_coding_task.rs`: `latest_task_proposal_handoff`, `derive_coding_continuation_context`, `CodingContinuationProposalState`
 - `run_project_checks.rs`: `authoritative_proposal_verification_context`, `ProposalVerificationContext`
-- `v2_orchestrator.rs`: `latest_code_change_handoff_for_execution`, `delegation_results_have_open_review`, `reject_orphaned_proposals_for_execution`, `reconcile_waiting_children`
+- `v2_orchestrator.rs`: `latest_code_change_handoff_for_execution`, `delegation_results_have_open_review`, `reject_orphaned_proposals_for_execution`, `notify_parent_after_child_review_closed`, `reconcile_waiting_children`
 - `agents/runtime.rs`: `force_child_failure`

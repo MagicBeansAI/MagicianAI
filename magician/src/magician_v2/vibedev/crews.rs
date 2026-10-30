@@ -407,7 +407,9 @@ pub fn lane_request(crew: &VibeDevCrew, index: usize, context: &LaneContext) -> 
             review_lane_request(crew, context),
         ),
         (LaneRole::Work, CrewMode::Race) => (one_line(&crew.goal), race_lane_request(crew, index)),
-        (LaneRole::Work, CrewMode::Split) => (one_line(&lane.brief), work_lane_request(crew, index)),
+        (LaneRole::Work, CrewMode::Split) => {
+            (one_line(&lane.brief), work_lane_request(crew, index))
+        },
     };
     format!("{task}\n\n{body}")
 }
@@ -756,7 +758,10 @@ pub fn page_crews(
     let mut chosen: Vec<VibeDevCrew> = match state {
         CrewListState::All => crews,
         CrewListState::Open => crews.into_iter().filter(crew_is_open).collect(),
-        CrewListState::Settled => crews.into_iter().filter(|crew| !crew_is_open(crew)).collect(),
+        CrewListState::Settled => crews
+            .into_iter()
+            .filter(|crew| !crew_is_open(crew))
+            .collect(),
     };
     if state == CrewListState::Settled {
         chosen.sort_by(|a, b| {
@@ -1660,7 +1665,7 @@ pub async fn propose_crew(
         (Some(lanes), _) => normalize_crew_lanes(lanes).map_err(CrewError::Invalid)?,
         (None, CrewMode::Race) => {
             let config = resources.magician_config_snapshot();
-            let catalog = VibeDevCodingCatalog::from_coding_settings(&config.coding);
+            let catalog = VibeDevCodingCatalog::from_config(&config);
             race_lanes(&goal, request.profiles, request.racers, &catalog)
                 .map_err(CrewError::Invalid)?
         },
@@ -1857,7 +1862,7 @@ async fn start_pending_lanes(
     let context = lane_context(&root, &crew);
 
     let config = resources.magician_config_snapshot();
-    let catalog = VibeDevCodingCatalog::from_coding_settings(&config.coding);
+    let catalog = VibeDevCodingCatalog::from_config(&config);
     let owner_agent_id =
         crate::magician_v2::agents::task_ownership::resolve_created_task_owner_agent_id(
             resources,
@@ -3532,7 +3537,12 @@ mod tests {
             at("fail", CrewStatus::Failed, 5, 50),
             merged_with_pr,
         ];
-        let ids = |page: &CrewPage| page.crews.iter().map(|c| c.crew_id.clone()).collect::<Vec<_>>();
+        let ids = |page: &CrewPage| {
+            page.crews
+                .iter()
+                .map(|c| c.crew_id.clone())
+                .collect::<Vec<_>>()
+        };
 
         let open = page_crews(crews.clone(), CrewListState::Open, 0, None);
         assert_eq!(ids(&open), vec!["merged", "run"]);
@@ -3543,11 +3553,21 @@ mod tests {
         assert_eq!(first.total, 4);
         let second = page_crews(crews.clone(), CrewListState::Settled, 2, Some(2));
         assert_eq!(ids(&second), vec!["fail", "stop1"]);
-        assert!(page_crews(crews.clone(), CrewListState::Settled, 4, Some(2)).crews.is_empty());
+        assert!(
+            page_crews(crews.clone(), CrewListState::Settled, 4, Some(2))
+                .crews
+                .is_empty()
+        );
 
-        assert_eq!(page_crews(crews, CrewListState::All, 0, None).crews.len(), 6);
+        assert_eq!(
+            page_crews(crews, CrewListState::All, 0, None).crews.len(),
+            6
+        );
         assert_eq!(CrewListState::parse(None), Ok(CrewListState::All));
-        assert_eq!(CrewListState::parse(Some("settled")), Ok(CrewListState::Settled));
+        assert_eq!(
+            CrewListState::parse(Some("settled")),
+            Ok(CrewListState::Settled)
+        );
         assert!(CrewListState::parse(Some("closed")).is_err());
     }
 
@@ -3606,7 +3626,9 @@ mod tests {
             base: Some("abc123".to_string()),
         };
         let integrate = lane_request(&crew, 2, &context);
-        assert!(integrate.starts_with("Merge the crew's lane branches and resolve their conflicts\n\n"));
+        assert!(
+            integrate.starts_with("Merge the crew's lane branches and resolve their conflicts\n\n")
+        );
         assert!(
             integrate.contains("git fetch origin vibedev/app-aaaa && git merge --no-ff FETCH_HEAD")
         );

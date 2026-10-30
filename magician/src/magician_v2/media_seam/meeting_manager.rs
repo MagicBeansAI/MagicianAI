@@ -407,9 +407,9 @@ impl MeetingSessionManager {
             .unwrap_or(true);
         // The bot's TTS and STT calls bill to the meeting's tenant
         // (`media_seam::metering`); an unscoped spawn is not metered.
-        let meter_scope = scope
-            .clone()
-            .map(|(principal, workspace)| crate::magician_v2::media_seam::metering::MediaMeterScope::new(principal, workspace));
+        let meter_scope = scope.clone().map(|(principal, workspace)| {
+            crate::magician_v2::media_seam::metering::MediaMeterScope::new(principal, workspace)
+        });
         let transcript_sink: Arc<dyn TranscriptSink> = if stream_transcript {
             Arc::new(ChatThreadTranscriptSink::from_env(
                 Some(meeting_thread),
@@ -428,7 +428,8 @@ impl MeetingSessionManager {
         // Its STT pipeline is already bound by the resolver.
         let tts = match meter_scope {
             Some(meter_scope) => {
-                crate::magician_v2::media_seam::metering::scope_tts_chain(vec![tts], &meter_scope).remove(0)
+                crate::magician_v2::media_seam::metering::scope_tts_chain(vec![tts], &meter_scope)
+                    .remove(0)
             },
             None => tts,
         };

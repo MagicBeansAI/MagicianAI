@@ -222,6 +222,56 @@ impl DecisionMetrics {
         .await
         .map_err(|e| e.to_string())?
     }
+    /// Per-operation health over recent retained cases. Read-only connection
+    /// with the store's busy timeout; shares the dashboard's reader permits.
+    pub async fn health(
+        &self,
+        scope: LlmScope,
+        q: magician_core::decision_metrics::HealthQuery,
+    ) -> Result<magician_core::decision_metrics::HealthReport, String> {
+        let hours = q.hours()?;
+        if !scope.is_valid() {
+            return Err("Invalid scope".into());
+        }
+        let permit = Arc::clone(&self.0.readers)
+            .try_acquire_owned()
+            .map_err(|_| "Dashboard busy; retry shortly".to_string())?;
+        let inner = Arc::clone(&self.0);
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let start = Instant::now();
+            let now = chrono::Utc::now().timestamp_millis();
+            let path = inner
+                .layout
+                .analytics_decision_metrics_path(&scope.principal, &scope.workspace);
+            let mut report = if path.is_file() {
+                magician_core::decision_metrics::health::health(
+                    &store::open(&path, false)?,
+                    &q,
+                    now,
+                )?
+            } else {
+                magician_core::decision_metrics::HealthReport {
+                    window_hours: hours,
+                    since_ms: now - i64::from(hours) * 3_600_000,
+                    generated_at_ms: now,
+                    cases_scanned: 0,
+                    unreadable_cases: 0,
+                    truncated: false,
+                    operations: Vec::new(),
+                    capture_dropped: 0,
+                    write_errors: 0,
+                    read_ms: 0.0,
+                }
+            };
+            report.capture_dropped = inner.dropped.load(Ordering::Relaxed);
+            report.write_errors = inner.errors.load(Ordering::Relaxed);
+            report.read_ms = start.elapsed().as_secs_f64() * 1000.0;
+            Ok(report)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
     pub async fn review(&self, scope: LlmScope, update: ReviewUpdate) -> Result<u64, String> {
         if self.0.stopping.load(Ordering::Acquire) {
             return Err("Metrics writer unavailable".into());

@@ -27,10 +27,9 @@ They are preserved by default. Explicit --prune-legacy opts into cleanup.
 
 The whatsapp skill wrapper finds its `wu` binary via
 `skillshub/whatsapp/bin/wu` → `skillshub/node_modules/.bin/wu`. That
-single symlink lives at the skillshub source layer; no per-scope
-shim is needed because the skill's `scripts/magician-wu.mjs` is itself
-a symlink to skillshub, and `import.meta.url` resolves through to
-the source. Per-scope state stays via `WU_HOME` (set by the runtime).
+source link is materialized into each scope's skill bin/ for activation;
+neither transport uses legacy per-bot node_modules. Per-scope state stays
+via `WU_HOME` (set by the runtime). Legacy bot cleanup preserves skill bins.
 
 Usage:
   python3 skillshub/scripts/install_bot_bundles.py
@@ -132,22 +131,6 @@ def seed_whatsapp_wu_config(scope_root: Path) -> None:
     print(f"    ✓ whatsapp: seeded wu config at {config_path.relative_to(scope_root)}")
 
 
-def prune_legacy_whatsapp_skill_bin(scope_root: Path) -> None:
-    """Remove the legacy per-scope `<scope>/skills/whatsapp/bin/` shim.
-
-    The whatsapp skill wrapper now resolves its `wu` binary through
-    the skillshub-side `skillshub/whatsapp/bin/wu` symlink (which in
-    turn points at the workspace-hoisted `node_modules/.bin/wu`). The
-    per-scope skill bin/ directory only used to exist so the wrapper
-    could find a scope-local wu without crossing back into skillshub
-    — that's no longer the resolution path.
-    """
-    skill_bin = scope_root / "skills" / "whatsapp" / "bin"
-    if skill_bin.is_dir() and not skill_bin.is_symlink():
-        shutil.rmtree(skill_bin)
-        print(f"    ✓ whatsapp skill cli: removed legacy {skill_bin.relative_to(scope_root)}/")
-
-
 def install_into_scope(scope_root: Path, source_bots: Path, *, prune_legacy: bool = False) -> tuple[int, int]:
     if not source_bots.is_dir():
         print(f"  ✗ source bots root missing: {source_bots}")
@@ -197,8 +180,6 @@ def install_into_scope(scope_root: Path, source_bots: Path, *, prune_legacy: boo
 
         if bot_dir.name == "whatsapp":
             seed_whatsapp_wu_config(scope_root)
-            if prune_legacy:
-                prune_legacy_whatsapp_skill_bin(scope_root)
     return (written, failures)
 
 

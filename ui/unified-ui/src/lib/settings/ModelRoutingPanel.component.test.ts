@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -142,41 +142,71 @@ describe('ModelRoutingPanel', () => {
 		expect(screen.getByText(/follow the engine that starts each flow/)).toBeTruthy();
 		expect(screen.queryByTestId('driving-engines')).toBeNull();
 		expect(screen.getByLabelText('Configured mappings for screen_observation').textContent).toContain(
-			'Cloud · op-screen-luna'
+			'Cloud · openai · gpt-6-luna'
 		);
 	});
 
-	it('applies a profile override immediately and offers automatic routing again', async () => {
-		let effective = 'op-screen-luna';
-		let overridden = false;
+	it('applies a model override immediately and offers automatic routing again', async () => {
+        let effective = 'op-screen-luna';
+        let overridden = false;
+        const models = [
+            { id: 'luna', label: 'GPT Luna', provider: 'openai', connection: 'openai', model: 'gpt-6-luna',
+                limits: null, capabilities: {}, thinking: { mode: 'none', levels: [], default: null },
+                choices: { auto: 'op-screen-luna' } },
+            { id: 'terra', label: 'GPT Terra', provider: 'openai', connection: 'openai', model: 'gpt-5.6-terra',
+                limits: null, capabilities: {}, thinking: { mode: 'none', levels: [], default: null },
+                choices: { auto: 'op-screen-terra' } }
+        ];
+        const { calls } = installFetchMock([
+            { method: 'GET', match: '/llm/routing',
+                handle: () => jsonResponse({ ...overview({ effective, overridden }), models }) },
+            { method: 'PUT', match: '/llm/routing/screen_observation', handle: (call) => {
+                const body = JSON.parse(String(call.init?.body));
+                expect(body).toEqual({ selection: { model_id: 'terra', thinking: 'auto' } });
+                effective = 'op-screen-terra';
+                overridden = true;
+                return jsonResponse({ overridden: true });
+            } }
+        ]);
+        render(ModelRoutingPanel);
+        const row = (await screen.findByText('screen_observation')).closest('article')!;
+        await fireEvent.click(within(row).getByRole('button', { name: 'Model' }));
+        await fireEvent.click(screen.getByRole('button', { name: 'GPT Terra' }));
+        await waitFor(() => expect(screen.getByText('Use automatic routing')).toBeTruthy());
+        expect(screen.getByText('openai · gpt-5.6-terra')).toBeTruthy();
+        expect(calls.filter(call => call.method === 'PUT')).toHaveLength(1);
+    });
+
+    it('refuses to offer legacy profile choices when the model catalog is unavailable', async () => {
+        const { calls } = installFetchMock([
+            { method: 'GET', match: '/llm/routing', handle: () => jsonResponse(overview()) }
+        ]);
+        render(ModelRoutingPanel);
+        const row = (await screen.findByText('screen_observation')).closest('article')!;
+        expect(within(row).getByRole('status').textContent).toContain('Model choices are unavailable');
+        expect(within(row).queryByRole('combobox')).toBeNull();
+        expect(within(row).queryByText('Choose profile')).toBeNull();
+        expect(calls.some(call => call.method === 'PUT')).toBe(false);
+    });
+
+	it('sends a typed model and native thinking level from the catalog controls', async () => {
+		const model = {
+			id: 'sol', label: 'GPT Sol', provider: 'openai', connection: 'openai', model: 'gpt-sol', limits: null,
+			capabilities: { tools: true }, thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+			choices: { auto: 'opaque-auto', low: 'opaque-low', high: 'opaque-high' }
+		};
+		const data = overview();
 		const { calls } = installFetchMock([
-			{
-				method: 'GET',
-				match: '/llm/routing',
-				handle: () => jsonResponse(overview({ effective, overridden }))
-			},
-			{
-				method: 'PUT',
-				match: '/llm/routing/screen_observation',
-				handle: (call) => {
-					const body = JSON.parse(String(call.init?.body)) as { profile: string };
-					effective = body.profile;
-					overridden = true;
-					return jsonResponse({ effective_profile: effective, overridden: true });
-				}
-			}
+			{ method: 'GET', match: '/llm/routing', handle: () => jsonResponse({ ...data, models: [model],
+				profiles: data.profiles.map(profile => ({ ...profile, model_selection: { model_id: 'sol', thinking: 'low' } })) }) },
+			{ method: 'PUT', match: '/llm/routing/screen_observation', handle: () => jsonResponse({ overridden: true }) }
 		]);
-		const user = userEvent.setup();
-
-		const { container } = render(ModelRoutingPanel);
-		await screen.findByText('screen_observation');
-		const select = container.querySelector('#profile-screen_observation');
-		if (!(select instanceof HTMLSelectElement)) throw new Error('the profile select renders');
-		await user.selectOptions(select, 'op-screen-terra');
-
-		await waitFor(() => expect(screen.getByText('Use automatic routing')).toBeTruthy());
-		expect(screen.getByText('openai · gpt-5.6-terra')).toBeTruthy();
-		expect(calls.some((call) => call.method === 'PUT')).toBe(true);
+		render(ModelRoutingPanel);
+		const row = (await screen.findByText('screen_observation')).closest('article')!;
+		await fireEvent.keyDown(within(row).getByRole('slider', { name: 'Thinking level' }), { key: 'End' });
+		await waitFor(() => expect(calls.some(call => call.method === 'PUT')).toBe(true));
+		expect(JSON.parse(String(calls.find(call => call.method === 'PUT')?.init?.body)))
+			.toEqual({ selection: { model_id: 'sol', thinking: 'high' } });
 	});
 
 	it('renders the Parent/Pinned toggle with the current state and the local floor', async () => {

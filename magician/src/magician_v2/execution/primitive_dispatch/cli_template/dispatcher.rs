@@ -770,7 +770,7 @@ impl CliTemplateDispatcher {
         // MAGICIAN_SKILL_DIR — workspace-layer first, then each
         // `registry.paths` extras root. The system-shared tier was
         // retired (v0.6.572); scope-installed skills (image-generation,
-        // metabase, …) live under <scope>/skills/, and per-deployment
+        // data tools, …) live under <scope>/skills/, and per-deployment
         // overlays live under each <extra>/skills/.
         if value.contains("{skill_runtime_root}") {
             if let Some(paths) = &self.scope_paths {
@@ -1350,13 +1350,13 @@ mod tests {
 
     #[test]
     fn passthrough_appends_string_array_elements_after_typed_params() {
-        // Hybrid schema for metabase-style hot paths: typed Flag /
+        // Hybrid schema for typed hot paths: typed Flag /
         // Positional parameters PLUS a Passthrough escape hatch so the
         // LLM can still pass through CLI flags the schema does not
         // surface yet. The typed params land first (in mapping order),
         // then each Passthrough element appears verbatim, then any
         // suffix_args.
-        let mut d = CliTemplateDispatcher::new(vec!["metabase-pp-cli".into()]).unwrap();
+        let mut d = CliTemplateDispatcher::new(vec!["fixture-data-cli".into()]).unwrap();
         d.action_schemas.insert(
             "table_list".to_string(),
             NativeActionSchemaDef {
@@ -1386,7 +1386,7 @@ mod tests {
         assert_eq!(
             argv,
             vec![
-                "metabase-pp-cli",
+                "fixture-data-cli",
                 "table",
                 "list",
                 "--term",
@@ -1407,7 +1407,7 @@ mod tests {
         assert_eq!(
             argv,
             vec![
-                "metabase-pp-cli",
+                "fixture-data-cli",
                 "table",
                 "list",
                 "--limit",
@@ -1431,7 +1431,7 @@ mod tests {
         assert_eq!(
             argv,
             vec![
-                "metabase-pp-cli",
+                "fixture-data-cli",
                 "table",
                 "list",
                 "--term",
@@ -1448,7 +1448,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             argv,
-            vec!["metabase-pp-cli", "table", "list", "--term", "orders"]
+            vec!["fixture-data-cli", "table", "list", "--term", "orders"]
         );
 
         // Defensive: a stray scalar instead of an array is coerced to a
@@ -1460,7 +1460,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             argv,
-            vec!["metabase-pp-cli", "table", "list", "--single-token"]
+            vec!["fixture-data-cli", "table", "list", "--single-token"]
         );
     }
 
@@ -1491,7 +1491,7 @@ mod tests {
 
     #[test]
     fn action_schema_does_not_forward_reserved_control_args_as_flags() {
-        let mut d = CliTemplateDispatcher::new(vec!["metabase-pp-cli".into()]).unwrap();
+        let mut d = CliTemplateDispatcher::new(vec!["fixture-data-cli".into()]).unwrap();
         d.action_schemas.insert(
             "dataset_query".to_string(),
             NativeActionSchemaDef {
@@ -1508,7 +1508,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(argv, vec!["metabase-pp-cli", "dataset", "query", "--stdin"]);
+        assert_eq!(
+            argv,
+            vec!["fixture-data-cli", "dataset", "query", "--stdin"]
+        );
     }
 
     #[tokio::test]

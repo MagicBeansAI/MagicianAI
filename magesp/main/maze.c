@@ -24,6 +24,8 @@
 #include "audio.h"
 #include "realtime.h"
 #include "voice.h"
+#include "star_body.h"
+#include "conv.h"
 #include "net.h"
 #include "qmi8658.h"
 
@@ -123,12 +125,15 @@ static int s_themed_n;
 /* The settings rows are painted per-state rather than through the themed()
    registry, so a theme swap has to repaint them by hand. */
 static lv_obj_t  *set_layer, *mode_row[3], *mode_lbl[3], *set_foot;
+static lv_obj_t  *chats_layer;
+static void chats_force_repaint(void);
 static void mode_paint(void);
 static void paint_status(void);
 static void touch_probe(void);
 static void health_log(void);
 
 static void theme_apply_parts(void);
+static void face_apply_theme(bool dark);
 
 static uint32_t role_colour(role_t r)
 {
@@ -179,13 +184,15 @@ static void theme_apply(bool dark)
     /* Arcs and borders live on parts the registry does not cover, and their
        objects are declared further down. */
     theme_apply_parts();
+    face_apply_theme(dark);
+    chats_force_repaint();
     if (mode_row[0]) mode_paint();
 }
 
 typedef enum { UI_IDLE, UI_LISTENING, UI_THINKING, UI_SPEAKING } ui_state_t;
 
 /* Idle has two peer pages. A short press cycles them; a long hold talks. */
-typedef enum { PAGE_GAME, PAGE_FACE, PAGE_FEED, PAGE_SETTINGS, PAGE_COUNT } page_t;
+typedef enum { PAGE_GAME, PAGE_FACE, PAGE_FEED, PAGE_CHATS, PAGE_SETTINGS, PAGE_COUNT } page_t;
 
 static ui_state_t ui_state = UI_IDLE;
 /* Hands free listens only after someone asks it to, and only until they ask it
@@ -426,6 +433,7 @@ static void apply_layers(void)
     show_layer(game_layer,  idle && page == PAGE_GAME);
     show_layer(face_layer,  face_on);
     show_layer(feed_layer,  idle && page == PAGE_FEED);
+    show_layer(chats_layer, idle && page == PAGE_CHATS);
     show_layer(set_layer,   idle && page == PAGE_SETTINGS);
     show_layer(voice_layer, !idle && !face_on);
     if (!idle || page != PAGE_FACE) answer_close();
@@ -471,9 +479,10 @@ static void cycle_page(void)
         else                          audio_disarm();
         realtime_stop();          /* a call does not outlive its own screen */
     }
+    if (page == PAGE_CHATS) conv_refresh();   /* lists are fetched on entry, not polled */
     apply_layers();
     ESP_LOGI(TAG, "page -> %s", page == PAGE_GAME ? "game" : page == PAGE_FACE ? "face"
-                              : page == PAGE_FEED ? "feed" : "settings");
+                              : page == PAGE_FEED ? "feed" : page == PAGE_CHATS ? "chats" : "settings");
 }
 
 /* NOTE for the audio work: this drives the screen from the BUTTON, which is
@@ -922,67 +931,60 @@ static void build_feed_layer(lv_obj_t *parent)
     lv_obj_align(foot, LV_ALIGN_BOTTOM_MID, 0, -14);
 }
 
-/* Retro pixel face.
+/* The Magican star.
  *
- * Square corners and chunky blocks throughout: the whole read is "made of
- * pixels", and a rounded eye would break it instantly. Everything is plain
- * rectangles, so this costs a handful of LVGL objects and no extra draw
- * buffer -- that buffer is scratch space sized by the panel, not by what is
- * drawn into it. */
-/* Closer in: bigger features, less empty board. */
-#define EYE_W       72
-#define EYE_OPEN    52          /* wider than tall: a square stare reads cold */
-#define EYE_SHUT    10
-#define EYE_Y       170   /* low on the face: the big forehead is the cue */
-#define EYE_DX      100  /* wide-set reads younger */            /* centre offset of each eye */
-#define BROW_W      74
-#define BROW_H      12
-#define MOUTH_W     108
-#define MOUTH_MIN   18
-#define MOUTH_MAX   88
-#define MOUTH_Y     252
-/* The mouth is a centre bar plus two raised corner blocks. Flat reads grumpy;
-   lifting the ends by one chunky pixel is the whole difference, and keeping
-   them as separate blocks preserves the pixel look a curve would lose. */
-#define CORNER_W    26
-#define CORNER_H    18
-#define SMILE_LIFT  12
-#define GLINT       18
-#define BLUSH_W     34
-#define BLUSH_H     16
-#define BOB_PX      3        /* idle drift, small enough to feel rather than see */
+ * The body -- star, shine, glasses, arms and legs -- is the brand mascot's
+ * "hi" pose, pre-rendered into flash (star_body.c, tools/star/). What moves is
+ * drawn live on top: the eyes behind the glasses and the mouth, so the face
+ * still says only what the device is really doing. The image draws straight
+ * from flash; the LVGL draw buffer stays scratch space sized by the panel. */
+#define STAR_X      ((SCR_W - STAR_W) / 2)
+#define STAR_Y      ((SCR_H - STAR_H) / 2 + 10)   /* centred, a touch low: status above, caption below */
+#define FEATURE_INK 0x14110E    /* the mascot's own ink; it sits on yellow in both themes */
+#define EYE_W       20
+#define EYE_OPEN    28
+#define EYE_WIDE    34          /* listening: wide-eyed */
+#define EYE_SHUT    4
+#define GLINT       7
+#define SMILE_D     44          /* the resting smile is the bottom of this circle */
+#define MOUTH_W     26
+#define MOUTH_MIN   6
+#define MOUTH_MAX   24
+#define BOB_PX      3           /* idle drift, small enough to feel rather than see */
 
-static lv_obj_t *brow_l, *brow_r, *corner_l, *corner_r, *glint_l, *glint_r;
-static lv_obj_t *blush_l, *blush_r;
+static lv_obj_t *star_box, *star_img, *glint_l, *glint_r, *smile;
 
-static lv_obj_t *block(lv_obj_t *parent, int w, int h, role_t role)
+static lv_obj_t *feature(lv_obj_t *parent, int w, int h, uint32_t colour)
 {
     lv_obj_t *o = lv_obj_create(parent);
     lv_obj_remove_style_all(o);
     lv_obj_set_size(o, w, h);
-    lv_obj_set_style_radius(o, 0, 0);          /* pixels have corners */
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    /* Blocks are decoration. Left clickable, they swallow the tap meant for
+    lv_obj_set_style_bg_color(o, lv_color_hex(colour), 0);
+    /* Features are decoration. Left clickable, they swallow the tap meant for
        the page beneath and the answer never opens. */
     lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
-    return themed(o, role, false);
+    return o;
 }
 
-static void eye_height(lv_obj_t *e, int h)
+/* Eyes sit in the lenses and grow about their own centre, so a blink closes
+   like a lid instead of sliding the eye upward. */
+static void place_eye(lv_obj_t *e, int lens_x, int dx, int dy, int h)
 {
-    /* Grow and shrink about the centre so a blink closes like a lid rather
-       than sliding the eye upward. */
     lv_obj_set_size(e, EYE_W, h);
-    lv_obj_set_y(e, EYE_Y + (EYE_OPEN - h) / 2);
+    lv_obj_set_pos(e, lens_x - EYE_W / 2 + dx, STAR_LENS_Y - h / 2 + dy);
 }
+
+static int eye_dx_now, eye_dy_now;
 
 static void anim_blink(void *obj, int32_t v)
 {
     lv_obj_t *e = (lv_obj_t *)obj;
-    eye_height(e, v);
+    place_eye(e, e == eye_l ? STAR_LENS_LX : STAR_LENS_RX, eye_dx_now, eye_dy_now, v);
     lv_obj_t *g = (e == eye_l) ? glint_l : glint_r;
     if (g) {
-        if (v < GLINT + 16) lv_obj_add_flag(g, LV_OBJ_FLAG_HIDDEN);
+        if (v < GLINT + 10) lv_obj_add_flag(g, LV_OBJ_FLAG_HIDDEN);
         else                lv_obj_remove_flag(g, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -994,11 +996,8 @@ static void blink_tick(lv_timer_t *t)
     if (ui_state == UI_LISTENING) return;       /* wide-eyed while hearing you */
     if ((esp_random() % 100u) >= 6) return;
 
-    /* Blink in pairs, sometimes.
-     *
-     * One blink reads mechanical; a quick second beat reads alive. Pure
-     * timing -- no extra objects, and the difference is out of proportion to
-     * the change. */
+    /* Blink in pairs, sometimes. One blink reads mechanical; a quick second
+       beat reads alive. */
     const bool twice = (esp_random() % 100u) < 45;
     for (int i = 0; i < 2; i++) {
         lv_anim_t a;
@@ -1014,78 +1013,79 @@ static void blink_tick(lv_timer_t *t)
     }
 }
 
+/* The star's body follows the theme: dark draws its limbs light, so they
+   do not vanish into the black panel. */
+static void face_apply_theme(bool dark)
+{
+    if (star_img) lv_image_set_src(star_img, dark ? &star_body_dark : &star_body_light);
+}
+
 /* Everything the face does is driven by real device state.
  *
- * Brows raise when the microphone is genuinely live, furrow while waiting on
- * Magician, and the mouth moves only while audio is actually playing. A face
- * that emotes on a timer would be telling the same lie the indicators
- * elsewhere are built to avoid. */
+ * Eyes widen when the microphone is genuinely live, glance about while
+ * waiting on Magician, and the mouth moves only while audio is actually
+ * playing. A face that emotes on a timer would be telling the same lie the
+ * indicators elsewhere are built to avoid. */
 static void face_tick(lv_timer_t *t)
 {
     LV_UNUSED(t);
     if (face_layer == NULL || lv_obj_has_flag(face_layer, LV_OBJ_FLAG_HIDDEN)) return;
 
-    static int brow_y = EYE_Y - 34, mouth_h = MOUTH_MIN, phase, drift;
-    static int bob, eye_h = EYE_OPEN;
-    int brow_target = EYE_Y - 34, mouth_target = MOUTH_MIN, eye_dx = 0;
+    static int mouth_h = 0, phase, drift, bob, eye_h = EYE_OPEN, dx, dy;
+    int mouth_target = 0, mouth_w = MOUTH_W, dx_target = 0, dy_target = 0;
     int bob_target = 0, eye_target = EYE_OPEN;
+    bool smiling = false;
 
     const turn_state_t ts = voice_state();
     if (ui_state == UI_LISTENING) {
-        brow_target  = EYE_Y - 52;                       /* raised, attentive */
-        mouth_target = MOUTH_MIN + 8;
+        eye_target   = EYE_WIDE;                         /* attentive        */
+        mouth_target = 14;                               /* a small "o"      */
+        mouth_w      = 14;
     } else if (ts == TURN_SENDING || ts == TURN_THINKING) {
-        brow_target  = EYE_Y - 22;                       /* furrowed          */
-        mouth_target = MOUTH_MIN;
-        eye_dx = ((phase / 8) % 2) ? 7 : -7;             /* eyes cast about   */
-    } else if (ts == TURN_THINKING) {
-        /* Anticipation: eyes widen a beat BEFORE the reply lands, so the face
-           looks like it saw it coming rather than reacting late. */
-        eye_target = EYE_OPEN + 10;
+        dx_target    = ((phase / 8) % 2) ? 6 : -6;       /* eyes cast about  */
+        dy_target    = -4;                               /* ...and upward    */
+        mouth_target = 5;                                /* a thinking line  */
+        mouth_w      = 16;
     } else if (ts == TURN_SPEAKING) {
         static const uint8_t shape[] = {0, 3, 6, 4, 7, 2, 5, 1};
         mouth_target = MOUTH_MIN + (MOUTH_MAX - MOUTH_MIN) * shape[phase % 8] / 7;
-        brow_target  = EYE_Y - 38;
     } else {
-        /* Idle: a slow lazy drift so it reads alive without being busy. */
+        /* Idle: the brand's smile, a lazy glance and a slow bob, so it reads
+           alive without being busy. */
+        smiling = true;
         drift++;
-        eye_dx = (drift / 40) % 4 == 1 ? 5 : (drift / 40) % 4 == 3 ? -5 : 0;
-        /* A slow bob. Too small to notice; its absence is what makes a face
-           look like a frozen graphic. */
+        dx_target  = (drift / 40) % 4 == 1 ? 4 : (drift / 40) % 4 == 3 ? -4 : 0;
         bob_target = ((drift / 25) % 2) ? BOB_PX : -BOB_PX;
     }
     phase++;
 
     /* Ease toward the targets; stepping straight to them looks mechanical. */
-    brow_y  += (brow_target  - brow_y)  / 3;
     mouth_h += (mouth_target - mouth_h) / 2;
     bob     += (bob_target   - bob)     / 12;    /* slower than everything else */
     eye_h   += (eye_target   - eye_h)   / 4;
+    dx      += (dx_target    - dx)      / 3;
+    dy      += (dy_target    - dy)      / 3;
+    eye_dx_now = dx;
+    eye_dy_now = dy;
 
-    lv_obj_set_pos(brow_l, SCR_W / 2 - EYE_DX - BROW_W / 2 + eye_dx, brow_y + bob);
-    lv_obj_set_pos(brow_r, SCR_W / 2 + EYE_DX - BROW_W / 2 + eye_dx, brow_y + bob);
-    lv_obj_set_x(eye_l, SCR_W / 2 - EYE_DX - EYE_W / 2 + eye_dx);
-    lv_obj_set_x(eye_r, SCR_W / 2 + EYE_DX - EYE_W / 2 + eye_dx);
-    /* Only drive eye height here when no blink animation owns it. */
+    lv_obj_set_y(star_box, STAR_Y + bob);
+    /* Only drive the eyes here when no blink animation owns them. */
     if (!lv_anim_get(eye_l, anim_blink)) {
-        lv_obj_set_height(eye_l, eye_h);
-        lv_obj_set_height(eye_r, eye_h);
-        lv_obj_set_y(eye_l, EYE_Y + (EYE_OPEN - eye_h) / 2 + bob);
-        lv_obj_set_y(eye_r, EYE_Y + (EYE_OPEN - eye_h) / 2 + bob);
-    }
-    if (blush_l) {
-        lv_obj_set_y(blush_l, EYE_Y + EYE_OPEN + 14 + bob);
-        lv_obj_set_y(blush_r, EYE_Y + EYE_OPEN + 14 + bob);
+        place_eye(eye_l, STAR_LENS_LX, dx, dy, eye_h);
+        place_eye(eye_r, STAR_LENS_RX, dx, dy, eye_h);
     }
 
-    if (lv_obj_get_height(mouth) != mouth_h) {
-        const int top = MOUTH_Y + (MOUTH_MAX - mouth_h) / 2;
-        lv_obj_set_size(mouth, MOUTH_W, mouth_h);
-        lv_obj_set_y(mouth, top);
-        /* Corners ride the bar's top edge, so the smile survives the mouth
-           opening instead of detaching from it. */
-        lv_obj_set_y(corner_l, top - SMILE_LIFT);
-        lv_obj_set_y(corner_r, top - SMILE_LIFT);
+    if (smiling) {
+        lv_obj_remove_flag(smile, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(mouth, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(smile, LV_OBJ_FLAG_HIDDEN);
+        const int h = mouth_h < 2 ? 2 : mouth_h;
+        if (lv_obj_get_height(mouth) != h || lv_obj_get_width(mouth) != mouth_w) {
+            lv_obj_set_size(mouth, mouth_w, h);
+            lv_obj_set_pos(mouth, STAR_MOUTH_X - mouth_w / 2, STAR_MOUTH_Y - h / 2);
+        }
+        lv_obj_remove_flag(mouth, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* Once there is an answer, show the ANSWER. The transcript is only what
@@ -1319,41 +1319,48 @@ static void build_face_layer(lv_obj_t *parent)
     themed(face_layer, ROLE_BG, false);
     lv_obj_set_style_bg_opa(face_layer, LV_OPA_COVER, 0);
 
-    brow_l = block(face_layer, BROW_W, BROW_H, ROLE_FACE);
-    brow_r = block(face_layer, BROW_W, BROW_H, ROLE_FACE);
-    lv_obj_set_pos(brow_l, SCR_W / 2 - EYE_DX - BROW_W / 2, EYE_Y - 34);
-    lv_obj_set_pos(brow_r, SCR_W / 2 + EYE_DX - BROW_W / 2, EYE_Y - 34);
+    /* One box holds the body and its live features, so the idle bob moves
+       the whole star and the features never drift off it. */
+    star_box = lv_obj_create(face_layer);
+    lv_obj_remove_style_all(star_box);
+    lv_obj_set_size(star_box, STAR_W, STAR_H);
+    lv_obj_set_pos(star_box, STAR_X, STAR_Y);
+    lv_obj_remove_flag(star_box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(star_box, LV_OBJ_FLAG_SCROLLABLE);
 
-    eye_l = block(face_layer, EYE_W, EYE_OPEN, ROLE_FACE);
-    eye_r = block(face_layer, EYE_W, EYE_OPEN, ROLE_FACE);
-    lv_obj_set_pos(eye_l, SCR_W / 2 - EYE_DX - EYE_W / 2, EYE_Y);
-    lv_obj_set_pos(eye_r, SCR_W / 2 + EYE_DX - EYE_W / 2, EYE_Y);
+    star_img = lv_image_create(star_box);
+    lv_image_set_src(star_img, net_dark_theme() ? &star_body_dark : &star_body_light);
+    lv_obj_set_pos(star_img, 0, 0);
+    lv_obj_remove_flag(star_img, LV_OBJ_FLAG_CLICKABLE);
 
-    const int mouth_top = MOUTH_Y + (MOUTH_MAX - MOUTH_MIN) / 2;
-    /* One bright square in the upper-left of each eye. A pixel face reads as
-       a machine without it and as a character with it, for two objects. */
-    glint_l = block(eye_l, GLINT, GLINT, ROLE_GLINT);
-    glint_r = block(eye_r, GLINT, GLINT, ROLE_GLINT);
-    lv_obj_set_pos(glint_l, 12, 12);
-    lv_obj_set_pos(glint_r, 12, 12);
+    eye_l = feature(star_box, EYE_W, EYE_OPEN, FEATURE_INK);
+    eye_r = feature(star_box, EYE_W, EYE_OPEN, FEATURE_INK);
+    place_eye(eye_l, STAR_LENS_LX, 0, 0, EYE_OPEN);
+    place_eye(eye_r, STAR_LENS_RX, 0, 0, EYE_OPEN);
+    /* One bright point in the upper left of each eye: a dark dot reads as a
+       hole without it and as a character with it, for two objects. */
+    glint_l = feature(eye_l, GLINT, GLINT, 0xFFFFFF);
+    glint_r = feature(eye_r, GLINT, GLINT, 0xFFFFFF);
+    lv_obj_set_pos(glint_l, 4, 5);
+    lv_obj_set_pos(glint_r, 4, 5);
 
-    /* Blush. Soft, low, outboard of the eyes -- the oldest trick there is,
-       and two objects. Kept translucent so it reads as colour on the cheek
-       rather than another lit block. */
-    blush_l = block(face_layer, BLUSH_W, BLUSH_H, ROLE_BLUSH);
-    blush_r = block(face_layer, BLUSH_W, BLUSH_H, ROLE_BLUSH);
-    lv_obj_set_style_bg_opa(blush_l, LV_OPA_40, 0);
-    lv_obj_set_style_bg_opa(blush_r, LV_OPA_40, 0);
-    lv_obj_set_pos(blush_l, SCR_W / 2 - EYE_DX - BLUSH_W / 2 - 16, EYE_Y + EYE_OPEN + 14);
-    lv_obj_set_pos(blush_r, SCR_W / 2 + EYE_DX - BLUSH_W / 2 + 16, EYE_Y + EYE_OPEN + 14);
+    /* The resting smile: the bottom of a circle, as on the brand board. */
+    smile = lv_arc_create(star_box);
+    lv_obj_remove_style_all(smile);
+    lv_obj_set_size(smile, SMILE_D, SMILE_D);
+    lv_obj_set_pos(smile, STAR_MOUTH_X - SMILE_D / 2, STAR_MOUTH_Y - SMILE_D + 10);
+    lv_arc_set_bg_angles(smile, 35, 145);
+    lv_arc_set_angles(smile, 35, 145);
+    lv_obj_set_style_arc_width(smile, 5, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(smile, lv_color_hex(FEATURE_INK), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(smile, true, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(smile, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_remove_flag(smile, LV_OBJ_FLAG_CLICKABLE);
 
-    mouth = block(face_layer, MOUTH_W, MOUTH_MIN, ROLE_FACE);
-    lv_obj_set_pos(mouth, SCR_W / 2 - MOUTH_W / 2, mouth_top);
-
-    corner_l = block(face_layer, CORNER_W, CORNER_H, ROLE_FACE);
-    corner_r = block(face_layer, CORNER_W, CORNER_H, ROLE_FACE);
-    lv_obj_set_pos(corner_l, SCR_W / 2 - MOUTH_W / 2 - CORNER_W + 8, mouth_top - SMILE_LIFT);
-    lv_obj_set_pos(corner_r, SCR_W / 2 + MOUTH_W / 2 - 8,            mouth_top - SMILE_LIFT);
+    /* The open mouth: listening "o", thinking line, speaking -- hidden at rest. */
+    mouth = feature(star_box, MOUTH_W, MOUTH_MIN, FEATURE_INK);
+    lv_obj_set_pos(mouth, STAR_MOUTH_X - MOUTH_W / 2, STAR_MOUTH_Y - MOUTH_MIN / 2);
+    lv_obj_add_flag(mouth, LV_OBJ_FLAG_HIDDEN);
 
     /* Long transcripts scroll rather than truncate. */
     face_text = lv_label_create(face_layer);
@@ -1363,14 +1370,14 @@ static void build_face_layer(lv_obj_t *parent)
     lv_obj_set_width(face_text, SCR_W - 48);
     lv_obj_set_style_text_align(face_text, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(face_text, "hold to talk");
-    lv_obj_align(face_text, LV_ALIGN_BOTTOM_MID, 0, -34);
+    lv_obj_align(face_text, LV_ALIGN_BOTTOM_MID, 0, -16);
 
     face_status = lv_label_create(face_layer);
     lv_obj_set_style_text_font(face_status, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_align(face_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_remove_flag(face_status, LV_OBJ_FLAG_CLICKABLE);
     lv_label_set_text(face_status, "");
-    lv_obj_align(face_status, LV_ALIGN_BOTTOM_MID, 0, -80);
+    lv_obj_align(face_status, LV_ALIGN_TOP_MID, 0, 52);   /* under the temperature */
     /* The scrolling caption is what invites the tap, so make it the target
        rather than relying on hitting bare background. */
     lv_obj_add_flag(face_text, LV_OBJ_FLAG_CLICKABLE);
@@ -1432,6 +1439,170 @@ static void mode_clicked(lv_event_t *e)
     if (!net_voice_mode_available((voice_mode_t)idx)) return;
     net_set_voice_mode((voice_mode_t)idx);
     mode_paint();
+}
+
+/* Conversations: which Magician thread and chat this terminal talks in.
+ *
+ * The current choice at the top, "new thread", then the recent threads and
+ * the chosen thread's chats. Tapping one picks it, and the pick is kept across
+ * restarts (conv.c). The lists are fetched when the page opens -- never polled
+ * -- because each fetch is a TLS session the voice turn also needs. */
+static lv_obj_t   *chats_now, *chats_list, *chats_status, *chats_new;
+static unsigned    chats_painted = ~0u;
+static conv_view_t chats_view;
+
+#define CHATS_LATEST 99      /* user data for "latest chat"            */
+#define CHATS_SESSION 100    /* user data base for a chat row          */
+
+static void chats_force_repaint(void) { chats_painted = ~0u; }
+
+static void chats_row_clicked(lv_event_t *e)
+{
+    const int tag = (int)(intptr_t)lv_event_get_user_data(e);
+    if (tag == CHATS_LATEST)      conv_select_session(-1);
+    else if (tag >= CHATS_SESSION) conv_select_session(tag - CHATS_SESSION);
+    else                           conv_select_thread(tag);
+}
+
+static void chats_new_clicked(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    conv_new_thread();
+}
+
+static void chats_heading(const char *text)
+{
+    lv_obj_t *h = lv_label_create(chats_list);
+    lv_obj_set_style_text_font(h, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(h, lv_color_hex(P.text), 0);
+    lv_obj_set_style_pad_top(h, 8, 0);
+    lv_label_set_text(h, text);
+}
+
+static void chats_row(const char *text, bool current, int tag)
+{
+    lv_obj_t *row = lv_obj_create(chats_list);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), 46);
+    lv_obj_set_style_radius(row, 10, 0);
+    lv_obj_set_style_bg_opa(row, current ? LV_OPA_COVER : LV_OPA_60, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(current ? P.face : P.card), 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, lv_color_hex(P.arena), 0);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(row, chats_row_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)tag);
+
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(current ? P.bg : P.ink), 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lbl, SCR_W - 96);
+    lv_obj_remove_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(lbl, text);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 14, 0);
+}
+
+static void chats_paint(void)
+{
+    if (chats_layer == NULL || lv_obj_has_flag(chats_layer, LV_OBJ_FLAG_HIDDEN)) return;
+    const unsigned v = conv_version();
+    if (v == chats_painted) return;
+    chats_painted = v;
+    conv_snapshot(&chats_view);
+    const conv_view_t *cv = &chats_view;
+
+    /* Each line is bounded by the field it comes from (NUL-terminated by
+       conv), so the label always fits; the precision says so to the compiler. */
+    char now[CONV_ID_LEN + CONV_NAME_LEN + 2];
+    const char *thread = cv->thread_name[0] ? cv->thread_name
+                       : cv->thread_id[0]   ? cv->thread_id : "this device's thread";
+    snprintf(now, sizeof now, "%.*s\n%.*s", CONV_ID_LEN - 1, thread, CONV_NAME_LEN - 1,
+             cv->session_title[0] ? cv->session_title : "latest chat");
+    lv_label_set_text(chats_now, now);
+
+    switch (cv->state) {
+    case CONV_LOADING: lv_label_set_text(chats_status, "loading..."); break;
+    case CONV_FAILED:  lv_label_set_text(chats_status, cv->error);     break;
+    default:           lv_label_set_text(chats_status, "tap to choose  .  press to switch"); break;
+    }
+
+    lv_obj_clean(chats_list);
+    if (cv->n_threads > 0) {
+        chats_heading("threads");
+        for (int i = 0; i < cv->n_threads; i++)
+            chats_row(cv->threads[i].name, strcmp(cv->threads[i].id, cv->thread_id) == 0, i);
+        chats_heading("chats in this thread");
+        chats_row("latest chat", cv->session_id[0] == 0, CHATS_LATEST);
+        for (int i = 0; i < cv->n_sessions; i++)
+            chats_row(cv->sessions[i].name, strcmp(cv->sessions[i].id, cv->session_id) == 0,
+                      CHATS_SESSION + i);
+    }
+}
+
+static void chats_tick(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    chats_paint();
+}
+
+static void build_chats_layer(lv_obj_t *parent)
+{
+    chats_layer = full_layer(parent);
+    lv_obj_add_flag(chats_layer, LV_OBJ_FLAG_HIDDEN);
+    themed(chats_layer, ROLE_BG, false);
+    lv_obj_set_style_bg_opa(chats_layer, LV_OPA_COVER, 0);
+
+    lv_obj_t *title = lv_label_create(chats_layer);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    themed(title, ROLE_INK, true);
+    lv_label_set_text(title, "conversations");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+
+    chats_now = lv_label_create(chats_layer);
+    lv_obj_set_style_text_font(chats_now, &lv_font_montserrat_16, 0);
+    themed(chats_now, ROLE_TEXT, true);
+    lv_obj_set_width(chats_now, SCR_W - 48);
+    lv_label_set_long_mode(chats_now, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(chats_now, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_height(chats_now, 42);
+    lv_label_set_text(chats_now, "");
+    lv_obj_align(chats_now, LV_ALIGN_TOP_MID, 0, 74);
+
+    chats_new = lv_obj_create(chats_layer);
+    lv_obj_remove_style_all(chats_new);
+    lv_obj_set_size(chats_new, SCR_W - 76, 46);
+    lv_obj_align(chats_new, LV_ALIGN_TOP_MID, 0, 124);
+    lv_obj_set_style_radius(chats_new, 23, 0);
+    themed(chats_new, ROLE_ORB, false);
+    lv_obj_set_style_bg_opa(chats_new, LV_OPA_COVER, 0);
+    lv_obj_add_flag(chats_new, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(chats_new, chats_new_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *nl = lv_label_create(chats_new);
+    lv_obj_set_style_text_font(nl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(nl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_remove_flag(nl, LV_OBJ_FLAG_CLICKABLE);
+    lv_label_set_text(nl, "+ new thread");
+    lv_obj_center(nl);
+
+    chats_list = lv_obj_create(chats_layer);
+    lv_obj_remove_style_all(chats_list);
+    lv_obj_set_size(chats_list, SCR_W - 56, SCR_H - 190 - 40);
+    lv_obj_align(chats_list, LV_ALIGN_TOP_MID, 0, 182);
+    lv_obj_set_flex_flow(chats_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(chats_list, 6, 0);
+    lv_obj_set_scroll_dir(chats_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(chats_list, LV_SCROLLBAR_MODE_OFF);
+
+    chats_status = lv_label_create(chats_layer);
+    lv_obj_set_style_text_font(chats_status, &lv_font_montserrat_16, 0);
+    themed(chats_status, ROLE_TEXT, true);
+    lv_obj_set_width(chats_status, SCR_W - 40);
+    lv_obj_set_style_text_align(chats_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(chats_status, LV_LABEL_LONG_DOT);
+    lv_label_set_text(chats_status, "");
+    lv_obj_align(chats_status, LV_ALIGN_BOTTOM_MID, 0, -12);
+
+    lv_timer_create(chats_tick, 300, NULL);
 }
 
 static void build_settings_layer(lv_obj_t *parent)
@@ -1635,6 +1806,7 @@ static void build_ui(void)
     build_face_layer(scr);
     build_answer_layer(scr);
     build_feed_layer(scr);
+    build_chats_layer(scr);
     build_settings_layer(scr);
     build_voice_layer(scr);
 
@@ -1739,6 +1911,7 @@ void app_main(void)
     audio_init();
     voice_init();
     net_start();
+    conv_init();
     if (bsp_display_lock(1000)) { build_ui(); bsp_display_unlock(); }
     else { ESP_LOGE(TAG, "LVGL lock failed"); return; }
     ESP_LOGI(TAG, "RINGS RUNNING  rings=%d imu=%d", RINGS, (int)imu_ok);

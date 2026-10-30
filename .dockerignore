@@ -126,11 +126,11 @@ skillshub/**/_vendor/
 # requires the parent directory entries before the included patch file.
 !skillshub/browser/_vendor/
 skillshub/browser/_vendor/*
-!skillshub/browser/_vendor/v0.38.1-Magician.0/
-skillshub/browser/_vendor/v0.38.1-Magician.0/*
-!skillshub/browser/_vendor/v0.38.1-Magician.0/patches/
-skillshub/browser/_vendor/v0.38.1-Magician.0/patches/*
-!skillshub/browser/_vendor/v0.38.1-Magician.0/patches/*.patch
+!skillshub/browser/_vendor/v0.41.0-Magician.0/
+skillshub/browser/_vendor/v0.41.0-Magician.0/*
+!skillshub/browser/_vendor/v0.41.0-Magician.0/patches/
+skillshub/browser/_vendor/v0.41.0-Magician.0/patches/*
+!skillshub/browser/_vendor/v0.41.0-Magician.0/patches/*.patch
 skillshub/**/.DS_Store
 # Re-include skill markdown — the global `*.md` rule above would otherwise drop
 # every SKILL.md, which the loader needs.
@@ -145,6 +145,8 @@ skillshub/**/.venv/**/*.md
 skillshub/**/__pycache__/**/*.md
 
 .cache/
+# Host-only CI diagnostics; baseline updates do not change the runtime image.
+/scripts/clippy_baseline.json
 .playwright-mcp/
 
 # Host-staged dev binaries at the repo root (the image uses freshly-built /out

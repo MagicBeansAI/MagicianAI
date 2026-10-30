@@ -11,6 +11,8 @@
 	export let showMoreBusy = false;
 	export let hydratingKey: string | null = null;
 	export let skillEvolutionActionKey: string | null = null;
+	export let quickChoices = false;
+	export let choosingKey: string | null = null;
 
 	let sourceFilter: AttentionSourceFilter = 'all';
 	let search = '';
@@ -26,6 +28,8 @@
 	{showMoreBusy}
 	{hydratingKey}
 	{skillEvolutionActionKey}
+	{quickChoices}
+	{choosingKey}
 	on:filterchange={(event) => (sourceFilter = event.detail.sourceFilter)}
 	on:searchchange={(event) => (search = event.detail.search)}
 	on:activate={(event) => (lastAction = `activate:${event.detail.row.key}`)}
@@ -33,6 +37,7 @@
 		(lastAction = `skill:${event.detail.row.key}:${event.detail.action}`)}
 	on:rollbackdecision={(event) =>
 		(lastAction = `rollback:${event.detail.row.key}:${event.detail.decision}`)}
+	on:choose={(event) => (lastAction = `choose:${event.detail.row.key}:${event.detail.choiceId}`)}
 	on:showmore={() => (lastAction = 'showmore')}
 />
 

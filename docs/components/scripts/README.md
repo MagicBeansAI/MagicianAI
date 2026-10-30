@@ -1,5 +1,73 @@
 # Scripts Docs
 
+## Model catalog tools
+
+Production uses the Rust catalog resolver. `magician_config_text.py` and
+`llm_catalog_config.py` expose a read-only dispatch view for setup/evaluation
+clients; never serialize that view as runtime configuration. Normal readers
+reject authored profile/adaptive tables, aliases and reserved dispatch metadata,
+including empty declarations. Rust/Python route/default parity is required.
+The Python view resolves each model's request-shape `wire` facts (`resolved_wire()`) like the Rust catalog.
+Reader contracts also verify the generated `chat_history_compaction` route keeps tool use disabled.
+
+| Command | Purpose |
+| --- | --- |
+| `python3 scripts/migrate_llm_catalog.py --config /old/magician-config.yaml --output-dir /new` | Read historical profiles and write an intermediate catalog without editing inputs. |
+| `make prepare-llm-profile-retirement` | Inventory retired selectors in config, sources, templates and owned runtime records; no writes. |
+| `make prepare-llm-alias-free-config ARGS="--config /path/magician-config.yaml --output-dir /tmp/new-preview"` | Prepare a matched alias-free main/router pair with request/fallback parity and hash manifest. Never installs it. |
+| `make migrate-agent-model-pins ARGS="--inventory /tmp/inventory.json --backup-dir /tmp/backup --config /tmp/matched/magician-config.yaml"` | Preview current scoped pins through `AgentDefinitionStore`; `--apply` requires verifiable API shutdown. |
+| `make llm-preference-migration-codegen` / `make llm-preference-migration-check` | Generate/check Swift and Kotlin copies of the frozen historical Web preference asset. |
+
+Inventory options `LLM_RETIRE_CONFIG`, `LLM_RETIRE_ROOT` and `LLM_RETIRE_REPORT`
+select the config, runtime root and private report. Optional `LLM_RETIRE_BACKUP`
+creates a new private snapshot with hashes; existing directories or stale inputs
+are refused. Reports omit record bodies/credentials, identify each storage owner
+and explicitly list unscanned client, queue and sealed-state owners. Bounded
+lifecycle observations cannot authorize rewriting executions or approvals.
+
+Config retirement preserves comments, anchors, Rust enum tags and unrelated
+settings. It resolves selectors and processing-binding keys together, removes
+authored coding rows and retains assignment fallback closure. Use
+`--rename-assignment OLD=WORKLOAD_ID` for semantic names and `--keep-assignment ID`
+for source-owned workloads not rooted in configuration. Unknown roots, collisions,
+cycles and conflicting declarations fail preparation. The manifest remains
+`activation_ready: false`; state owners and matching clients require separate review.
+
+Pin application uses verified source/backup hashes, expected versions, original
+version archives and rerun detection. It does not edit execution snapshots,
+templates, journals or approvals. Restart after offline application to reload
+runtime caches. See migration ownership and recovery.
+
+`ui/unified-ui/src/lib/llm/legacySelections.v1.json` is immutable historical
+conversion data, not a live alias table. Never regenerate it from the current
+catalog. Typed preferences win; converted choices must validate against the
+current model/engine catalog, and unsupported choices require replacement.
+
+Evaluation clients resolve canonical assignments to typed model/thinking through
+server metadata. Memory lifecycle snapshots preserve the original config pair;
+logical-chunking candidates clone their local model record and repoint only their
+assignments. Alias expansion is restricted to the one-time before/after migration
+comparison. Inventories read inert source with `expand_catalog=False`.
+See [catalog validation](../../testing.md#llm-model-catalog) for test targets.
+
+## Build and CI tools
+
+`magios-run.sh` uses `apple_xcode_auth.py` to add an imported App Store Connect key only for the selected matching Xcode team; signing assets stay outside Git (see [Magios](../magios/README.md)).
+
+`make cargo ARGS="clippy …"` keeps the machine-wide compiler gate outside
+Clippy's own wrapper. mbx still manages targets and native caching; it bypasses
+Rust result caching for this wrapped lint invocation.
+Pinned `make cargo ARGS="install … --version …"` commands also initialize
+compiler temporary storage and use the cache router on a fresh host.
+
+`make clippy-ci` rejects new workspace warnings against `scripts/clippy_baseline.json`
+(Rust 1.92), attributing macro warnings to workspace call sites; existing findings stay visible.
+Review `python3 scripts/check_clippy_baseline.py --refresh` changes explicitly;
+Desktop continues to require zero warnings.
+
+`make audit` checks both committed Rust lockfiles without regenerating them.
+Any vulnerability finding or audit-tool failure blocks CI; no advisories are ignored.
+
 Codegraph endpoint discovery accepts rustfmt's trailing commas in multiline
 Actix routes and resource routes; `python3 scripts/test_codegraph_routes.py`
 guards that formatting does not hide endpoints from architecture evidence.
@@ -27,7 +95,8 @@ speech helpers, and Desktop. It excludes graph indexing and iOS; ordinary
 Vite and the original checkout. Source setup explicitly uses dev/local
 prerequisites and resolves the standard Cargo/Homebrew paths for GUI launches.
 On Apple Silicon with MLX enabled, source setup provisions the MLX compiler
-before building and uses `MLX_RUST_TOOLCHAIN` (default Rust 1.95.0) throughout.
+before building and uses `MLX_RUST_TOOLCHAIN` (default: the `rust-toolchain.toml`
+channel, 1.95.0) throughout.
 This avoids invalidating shared-target artifacts by alternating Rust versions.
 
 `native-runtime-service.py` seeds absent configuration and both private runtime
@@ -273,7 +342,8 @@ checks require the native executables as well as their Python SDKs.
 `skillshub/scripts/verify_runtime.py` writes file inventories that the component
 graph rechecks on every probe; with `--data-root` it also checks every scope's
 `bin/` entries and names the make target that rebuilds a missing one
-(`make skills-check-scopes`). `link_runtime.py` and `install_bot_bundles.py`
+(`make skills-check-scopes`). Optional runtime PATH companions are not installer
+prerequisites. `link_runtime.py` and `install_bot_bundles.py`
 repair source links while preserving regular scoped files, credentials and bot
 state; legacy dependency pruning is explicit. Setup runs `link_runtime.py
 --all-scopes`, so workspaces created after the first setup are linked too, and
@@ -442,6 +512,8 @@ renders normally with every attributed result absent.
   technical forms (`/api/magician`, env/config identifiers, `Magician backend`)
   and literal CLI invocations (`magician app …`, `magician storage …`,
   `restart-magician`, `stop-magician`) are allowed.
+  Its `ACTIVE_PROMPTS` list names each checked prompt file by its current
+  version, so bumping one of those prompts updates the list.
 - Desktop's capability onboarding and HTML title are covered too. A standalone
   uppercase constant declaration for the exact wire ID `"magician"` may carry
   `presentation-identity-allow: stable-operational-identifier`; that annotation
@@ -479,6 +551,10 @@ renders normally with every attributed result absent.
   dispatch entry points, and the god-mode task-local wrappers
   (`with_run_trust`, `with_session_and_trust`). Each must wrap a boxed future:
   unboxed, `scope` reached 1,419 KiB and overflowed every VibeDev engineer run.
+  - The durable task-planning recovery chain is capped (2026-10-25): the
+    recovery monitor, its spawner, `run_task_planning` and the planner's
+    per-parameter classification items. Unboxed they filled the 2 MiB worker
+    on the way to the LLM router and crash-looped the service on restart.
   - The native run chain's largest frames are capped too (2026-10-15):
     `execute_agentically_run`, the resolve phase, `advance_iteration_inner`
     and `advance_under_lease`. Together they use ~1.4 MiB of the 2 MiB worker
@@ -581,11 +657,27 @@ The `gate` helper in `install.sh` is kept for the funnel because it validates
 (`MAGICIAN_ENABLE_FUNNEL=ture` fails loudly) and is the seam future gates will
 use. Design: `docs/plans/2026-09-02-setup-wizard-rust.md`.
 
+### Container trusted peers
+
+Without a bridge token Magicutor admits only loopback and trusted peers to its
+bridge and automation routes. On a bridge network, a port published to the
+host arrives from the container's default gateway, so launchers that publish
+Magicutor on host **loopback** (`-p 127.0.0.1:<port>:3003`: `make
+run-container` and `scripts/install.sh` on macOS Docker and Apple container,
+the desktop's Docker and Apple container launches) also pass
+`MAGICUTOR_TRUST_GATEWAY=1`. Only then does `scripts/container-entrypoint.sh`
+set `MAGICUTOR_TRUSTED_PEERS` to the default IPv4 gateway (from
+`/proc/net/route`, logged; a warning if there is no default route). Linux
+`--network host` launches never set it — the gateway there is the LAN router —
+and trust stays loopback-only. An operator-set `MAGICUTOR_TRUSTED_PEERS` is
+kept. Magician's own port (3002) is published as before. Website `Origin`
+headers are refused regardless.
+
 ### Runtime root seeding
 
-`scripts/install.sh`, `scripts/seed-silverbullet-space.sh`,
-`scripts/run-supervisor.sh` and `scripts/container-entrypoint.sh` prepare the
-runtime root without clobbering operator files:
+`scripts/install.sh`, `scripts/run-supervisor.sh` and
+`scripts/container-entrypoint.sh` prepare the runtime root without clobbering
+operator files:
 
 - `magician-config.yaml` (with sibling `llm-router.yaml`) and
   `decision-engine.yaml` are copied from the repo-root seeds into
@@ -607,8 +699,10 @@ runtime root without clobbering operator files:
   bind-mounting (`MAGICIAN_RUNTIME_ROOT`, then `MAGICIAN_ROOT_DIR`, then
   `~/MagicianNotes`) so Docker does not create it as root. Desktop-managed
   container startup does the same from packaged seeds.
-- `seed-silverbullet-space.sh` seeds the notes folder skeleton only; there is no
-  notes server or `notes.<zone>` route (notes are the in-process Markdown index).
+- Notes need no seeding: they are Magician's own Markdown files, created on
+  first write and browsed at `/notes`. There is no notes server, seed script or
+  `notes.<zone>` tunnel route; `ensure-magician-tunnel.sh` publishes none, and
+  `install.sh` warns when the runtime root holds iCloud `dataless` files.
 
 ### Identity layer
 
@@ -634,7 +728,24 @@ when it is unset. `app-platform-processing-profile.sh` and
 - `scripts/run-supervisor.sh` starts magic-supervisor plus Magician/Magicutor on
   ordinary Rust/Tokio stack defaults (removes inherited `RUST_MIN_STACK`; the
   incident-only `MAGICIAN_EMERGENCY_RUST_MIN_STACK` logs a warning), logging to
-  `magician.log` unless `SUPERVISOR_LOG_FILE`. It raises the fd soft limit to
+  `magician.log` unless `SUPERVISOR_LOG_FILE`. It passes
+  `--magician-config <runtime root>/magician-config.yaml` and forwards its own
+  arguments (the desktop watch flags from `make run-supervisor`); see the
+  [supervisor guide](../magic-supervisor/supervisor.md#desktop-app-macos).
+  `scripts/run-native-backend.sh` forwards the LaunchAgent's extra arguments
+  the same way; `native-runtime-service.py` takes `--supervisor-args-json` on
+  `start` and a `sync-supervisor-args` action, both merging with the recorded
+  arguments by the guide's binding rule. An empty, corrupt or non-dict
+  registration counts as absent: `start` rewrites a clean one,
+  `sync-supervisor-args` leaves it alone. Its `seed` (the From-source path)
+  creates `.env` from `.env.example` but never `.env.development`, whose empty
+  `KEY=` lines would shadow `.env` (both loaders read `.env.development` first
+  and never overwrite). `scripts/install.sh` (local dev) runs `make
+  run-supervisor SUPERVISOR_MANAGE_DESKTOP=0`, since it launches the tray
+  itself; `make run-desktop-tray-debug` skips `open` when a tray already holds
+  the gateway port, and `restart-desktop-tray-debug` refuses to open while the
+  stopped tray still holds it.
+  It raises the fd soft limit to
   8192 when lower: macOS's default 256 starves the memory-index maintainer at
   boot, leaving the LanceDB manifest missing and memory queries on direct
   ranking for the process lifetime. Python skills run through
@@ -681,11 +792,12 @@ when it is unset. `app-platform-processing-profile.sh` and
   and removed. Defaults: `onnxruntime laya-multilingual` into
   `<root>/lib/onnxruntime/` and `<root>/models/decision/<name>/`
   (`DECISION_MODELS_ROOT`, else runtime root). `make build-decision-engine-mlx-release`
-  / `-debug` build the `mlx` feature under `MLX_RUST_TOOLCHAIN` (default 1.95.0)
+  / `-debug` build the `mlx` feature under `MLX_RUST_TOOLCHAIN` (default: the
+  `rust-toolchain.toml` channel)
   after checking CMake and the Metal Toolchain. `scripts/laya-{onnx,mlx}-reference.py`
   regenerate parity fixtures in `magician-decision/tests/fixtures/laya/`.
 - `scripts/setup-pi-coding-agent.sh` — reconciles the Pi CLI to
-  `@earendil-works/pi-coding-agent@0.87.1` (`npm install -g --ignore-scripts`;
+  `@earendil-works/pi-coding-agent@1.3.0` (`npm install -g --ignore-scripts`;
   Node ≥ 22.19). Required `phase_pi` in the local installer right after
   prerequisites, because the runtime lists an engine only when its binary is on
   PATH. The Dockerfile bakes the same pin under the Skillshub Node into
@@ -738,13 +850,26 @@ when it is unset. `app-platform-processing-profile.sh` and
   remote needs an HTTPS `MAGICIAN_CONNECT_REMOTE_URL` distinct from the public
   host). `MAGICIAN_TUNNEL_PRESERVED_REMOTE_HOSTS` keeps explicitly listed aliases
   during a hostname migration; a failed remote-config read aborts rather than
-  risking deletion. Never gate the webhook host with Access.
+  risking deletion. Never gate the webhook host with Access. The webhook, UI and
+  connect hosts come from the process env, then the runtime env files
+  (`MAGICIAN_WEBHOOK_HOST`, `MAGICIAN_UI_HOST`, `MAGICIAN_CONNECT_HOST`), and only
+  then the shared `webhook.`/`ui.`/`connect.<zone>` names, so a machine set up by
+  `ensure-machine-tunnel.sh --install` keeps its own hostnames. A webhook or UI
+  host that fell back to the shared default is written to the runtime env as
+  `MAGICIAN_WEBHOOK_HOST` / `MAGICIAN_UI_HOST` (honours `MAGICIAN_INSTALL_DRYRUN`);
+  the Kapso and AgentMail bots register their webhooks from it on start.
 - `scripts/select-connect-backend.sh` — `make connect-local|connect-container|connect-remote CONNECT_REMOTE_URL=…`
   preflights `/health`, reconciles the tunnel, verifies both ingress rules, and
   persists the choice to both runtime env files; `make connect-status` is
   read-only. Listener discovery never changes the route. It does not make
   concurrent writers safe: a native backend and the managed container must not
   share one runtime root.
+- `scripts/magesp-connect.sh <terminal-ip> [base-url]` — points an ESP32 voice
+  terminal at this machine (default: its `api_origin` in `remote-machines.yaml`)
+  through the terminal's `/config`, with the device Access pair from the runtime
+  env and `repair=1`, so it pairs again. Prompts for the passphrase on the
+  terminal's screen (no echo); prints no secret. Needed after a terminal's
+  hostname is retired (e.g. the shared `connect.<zone>` → `<machine>.<zone>`).
 - `scripts/ensure-machine-tunnel.sh` — `make machine-tunnel MACHINE=<name> [INSTALL=1]` / `PARK=<host>`.
   Setup examples use `example.com`; configure your own zone and account through
   the private environment as described in the [Cloudflare setup guide](../../setup/cloudflare.md).
@@ -758,8 +883,10 @@ when it is unset. `app-platform-processing-profile.sh` and
   `--install` it creates the tunnel, ingress and DNS from any machine;
   `--install` on that machine switches the `com.magican.magician-cloudflared-token`
   connector to it and sets `MAGICIAN_MACHINE_NAME`, `MAGICIAN_CONNECT_HOST`,
-  `MAGICIAN_MOBILE_PUBLIC_ORIGIN`, `MAGICIAN_UI_HOST`, `MAGICIAN_WEBHOOK_HOST` and
-  `CLOUDFLARED_TOKEN` in the live env. Each run records the machine in
+  `MAGICIAN_MOBILE_PUBLIC_ORIGIN`, `MAGICIAN_UI_HOST`, `MAGICIAN_WEBHOOK_HOST`
+  and `CLOUDFLARED_TOKEN` in the live env. After a Magician restart the Kapso
+  and AgentMail bots re-register their webhooks on the new host (Kapso also
+  retires the other machines' hooks for its number). Each run records the machine in
   `$MAGICIAN_ROOT_DIR/remote-machines.yaml` (owner data, not in git; sample:
   `magician_data_v3/remote-machines.example.yaml`). `park
   <host>` rewrites any tunnel rule for that host to `http_status:404`.
@@ -785,7 +912,11 @@ when it is unset. `app-platform-processing-profile.sh` and
   headers). Requires `MAGICIAN_UI_ACCESS_EMAILS` or `…_EMAIL_DOMAIN` and a
   `CLOUDFLARE_API_TOKEN` with Access Apps/Policies Edit; session
   `MAGICIAN_UI_ACCESS_SESSION` (default 730h, applied at app creation). Publish via
-  `MAGICIAN_TUNNEL_UI=1` or `make serve-ui-tunnel`.
+  `MAGICIAN_TUNNEL_UI=1` or `make serve-ui-tunnel`. It also merges the app's
+  audience into `MAGICIAN_CF_ACCESS_UI_AUD` in the runtime `.env` files: the UI
+  host proxies `/api` to Magician with an assertion for this app, which the API
+  refuses (`InvalidAudience`) unless that audience is accepted. Restart Magician
+  afterwards.
 
 ## Desktop automation drivers
 
@@ -930,7 +1061,9 @@ stale.
 - Physical-iPhone opt-in lanes (`MAGIOS_DEVICE_ID`, `MAGIOS_LIVE_TEST_HOST`):
   `make test-ios-live-notes` (Menu → Notes opens the library),
   `make test-ios-live-recovery` (terminate an active server-owned chat turn; one
-  canonical reply returns after relaunch), and the lanes in the
+  canonical reply returns after relaunch), `make test-ios-live-programs`
+  (`MAGIOS_LIVE_PROGRAMS_FIXTURE_JSON`: save a program edit, render and answer a
+  previewed approval, save a crew focus area's shared documents), and the lanes in the
   [integration harness](container-integration-harness.md).
 - `magdroid-device.sh` (`make install-magdroid` / `run-magdroid` / `logs-magdroid`
   / `screenshot-magdroid`; `make check-magdroid` builds and tests). Resolves `adb`
@@ -991,7 +1124,9 @@ Contracts: [container runtime](container-runtime.md),
   `skills get core --full` resolves in a relocated browser mirror and that
   operator `config/.env` survives rematerialization.
 - `scripts/cleanup.sh` — manifest-driven tiered uninstall (`tools-and-data`,
-  `only-tools`, `only-data`); see
+  `only-tools`, `only-data`) for container and native installs; Desktop's
+  native service and `~/.magician` prefix are removed only when Desktop
+  installed them, and `--only-data` re-seeds and restarts that backend; see
   [install manifest](../desktop/install-manifest-cleanup.md).
 
 ## Codegraph
@@ -1072,7 +1207,8 @@ mirror's flush (`LLM_PHASE2F_SETTLE_SECONDS`, default 35). Pre-plan uses fixture
 HITL answers so the aggregate never blocks. `scripts/live-eval-preflight.sh`
 checks the cloud key, both Ollama daemons and the server (`--check` read-only;
 `--fix` starts daemons and may rebuild/restart Magician after `make check-magician`;
-`--no-rebuild`).
+`--no-rebuild`). Authenticated server probes use `MAGICIAN_BEARER_TOKEN`;
+missing or denied credentials are reported separately from stale builds.
 
 **Decision and prompt contracts** (provider-free `.sh` gate plus opt-in live A/B
 `.py`, reports under `coverage/evals/<name>/`): task-state schema compaction,
@@ -1197,8 +1333,8 @@ Provider-free: `make test-harness-conformance-eval-harness`,
 **Product flows:**
 - `eval-preplan-flow-live.py` — full pre-plan lifecycle via public APIs: every
   clarification must be visible in both `/plan` and `/feed/attention` with
-  matching identity, clear after response, and pair with `hitl.resolved`.
-  Disposable tasks are cancelled/deleted so nothing leaks into user surfaces.
+  matching identity, clear after response, and pair with `hitl.resolved`, including
+  grouped questions through their form's canonical request ID. Tasks are retained unless `--delete-tasks` is set.
   `--prompt` runs an arbitrary request; `make eval-preplan-flow-live-interactive`
   reads answers from `/dev/tty`. Its config reader accepts legacy scalar mappings
   and block selectors' `default` (inline or in `llm-router.yaml`); a selector
@@ -1313,7 +1449,8 @@ All default to dry-run/read-only and require `--apply`:
 - `scripts/memory_audit.py` — memory shape/duplicate/noise audit with explicit
   rewrites and `--agent-rule-audit`; see [memory evals](../magician/memory-evals.md).
 - `scripts/backfill_task_summaries.py` — uses the governed `task_summary`
-  operation; a legacy-local pass needs all three Ollama overrides.
+  operation with the pinned prompt (`task_summary_system` v1.0.1); a
+  legacy-local pass needs all three Ollama overrides.
 - `purge_task_recipes_eval_workspaces.sh` — removes marked `recipes-eval*`
   workspaces and registry rows; refuses while `magician.bin` runs.
 - `scripts/queue_residue_workspaces.py` — reports, per principal, workspace ids
@@ -1373,7 +1510,11 @@ Desktop build, check, test, signing and release targets resolve one `PNPM` at
 chunks from one original transcript are sent into the same runtime session.
 `--max-digest-chars` remains conservative for legacy runtimes; source-complete
 versions can use larger sends within ingress limits. The driver's self-test
-checks session grouping and payload limits. `--resume` skips instances that
+checks session grouping, typed model/thinking sends and payload limits.
+LongMemEval uses `--ingest-model`, `--answer-model` and `--judge-model`, each
+with a corresponding `--*-thinking` option (default `auto`). Explicit choices
+are validated against `/chat/models?engine=magician` before instance workspaces
+are created. Retired profile flags are not accepted. `--resume` skips instances that
 already have a judged record in the output directory's `results.jsonl`, so a
 long serial run killed by a server restart continues where it stopped. Memory product correctness uses
 `make test-memory-recall`; completed fixes are recorded in the
@@ -1384,7 +1525,8 @@ active benchmark plan.
 `eval-tau2-live.py` runs tau2-bench domains through the public chat API as a
 registered `magician_agent` (`make test-tau2-live`; `TAU2_DOMAIN`,
 `TAU2_EVAL_LIMIT`, `TAU2_EVAL_ARGS` for flags such as
-`--answer-profile`). Its HITL answerer must be tracking the task's
+`--answer-model` and `--answer-thinking`). Explicit choices use the same typed
+model preflight and request contract as LongMemEval. Its HITL answerer must be tracking the task's
 workspace before the opening send — opening turns can raise user requests
 on their own. Questions the agent asks the customer through its input tool
 (`need_user_input`, free text) are relayed, not auto-answered: while a turn
@@ -1440,7 +1582,11 @@ policy with injected time and short real child processes, without paid calls.
 `configure-cloud-services.py` is shared by source installation and the
 `setup-cloudflare` / `setup-clarity` targets. It collects only explicit optional
 choices, preserves unrelated env settings in both private files, and delegates
-Cloudflare effects to `ensure-machine-tunnel.sh`. Clarity is runtime-configured
+Cloudflare effects to `ensure-machine-tunnel.sh`. A zone change that leaves
+saved hostnames on the previous domain clears those hostnames and then also
+runs `ensure-magician-tunnel.sh`, so this computer’s tunnel and the original
+shared tunnel follow the new zone. Old DNS records stay until each hostname is
+parked with `make machine-tunnel PARK=<hostname>`. Clarity is runtime-configured
 and off by default; `make setup-clarity ARGS=--disable` writes an explicit empty
 setting without rebuilding. Non-interactive source preparation saves only explicitly provided optional
 inputs; missing account prerequisites remain in the later capability plan.
@@ -1453,3 +1599,6 @@ Website Clarity has a separate `setup-clarity-website` target and catalog choice
 The build wrapper passes only its tracking ID from private runtime files to
 `build-marketing-site`; `build-ui` explicitly blanks website recording input.
 This prevents website consent from enabling personal-app recording.
+
+Tunnel setup also routes immutable MCP profile JSON on each computer’s own
+HTTPS hostname and adds an Access bypass limited to that public-profile path.

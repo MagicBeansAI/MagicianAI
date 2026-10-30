@@ -35,8 +35,28 @@ pub(crate) static ENGINE_LOCATION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn attention_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("magician-attention")
-        .invoke_handler(tauri::generate_handler![open_application_path, close_attention_window])
+        .invoke_handler(tauri::generate_handler![
+            open_application_path,
+            close_attention_window
+        ])
         .build()
+}
+
+/// Shared (web) Settings shown in the desktop Settings window switches back to
+/// the desktop's own page through this one command.
+pub(crate) fn settings_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("magician-settings")
+        .invoke_handler(tauri::generate_handler![open_desktop_settings])
+        .build()
+}
+
+#[tauri::command]
+fn open_desktop_settings(window: tauri::WebviewWindow) -> Result<(), String> {
+    caller_origin(&window, &engine_session())?;
+    if window.label() != crate::tray::SETTINGS_WINDOW_LABEL {
+        return Err("This is not the Settings window".into());
+    }
+    crate::tray::show_desktop_settings(&window)
 }
 
 fn is_application_path(path: &str) -> bool {
@@ -64,7 +84,10 @@ async fn open_application_path(
 /// closes the drawer as tapping the ear does. The standalone Attention window
 /// takes the same close request as its red button.
 #[tauri::command]
-fn close_attention_window(window: tauri::WebviewWindow, app: tauri::AppHandle) -> Result<(), String> {
+fn close_attention_window(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     caller_origin(&window, &engine_session())?;
     match window.label() {
         crate::orb_window::NOTCH_ATTENTION_WINDOW_LABEL => {
@@ -205,6 +228,49 @@ fn attention_ui_capability(
             .permission("core:event:allow-unlisten")
             .permission("core:window:allow-close"),
     )
+}
+
+/// Shared Settings in the desktop Settings window: the session operations, its
+/// way back to the desktop page, and opening other app paths (which go to the
+/// browser, or the Attention window for approvals) instead of navigating away.
+fn settings_ui_capability(
+    label: &str,
+    url: &reqwest::Url,
+    origin: &Origin,
+) -> Result<tauri::ipc::CapabilityBuilder, String> {
+    if label != crate::tray::SETTINGS_WINDOW_LABEL || !trusted_caller(url, origin) {
+        return Err("This Settings view cannot access the selected desktop session".into());
+    }
+    let ui_origin = Origin::parse(url.as_str()).ok_or("Invalid Settings UI origin")?;
+    Ok(
+        tauri::ipc::CapabilityBuilder::new(format!("{label}-shared-settings"))
+            .local(false)
+            .window(label)
+            .remote(format!("{}/*", ui_origin.as_str()))
+            .permission("magician-session:allow-get-magician-connection-auth")
+            .permission("magician-session:allow-set-magician-bearer-token")
+            .permission("magician-session:allow-sign-in-magician")
+            .permission("magician-attention:allow-open-application-path")
+            .permission("magician-settings:allow-open-desktop-settings")
+            .permission("core:event:allow-listen")
+            .permission("core:event:allow-unlisten"),
+    )
+}
+
+/// Admit shared Settings at the selected server's UI origin (or the reviewed
+/// local dev UI) in the desktop Settings window.
+pub(crate) fn admit_settings_ui(
+    app: &tauri::AppHandle,
+    label: &str,
+    url: &reqwest::Url,
+) -> Result<(), String> {
+    let origin = engine_session()
+        .origin
+        .clone()
+        .ok_or("No valid Magician server is selected")?;
+    let capability = settings_ui_capability(label, url, &origin)?;
+    app.add_capability(capability)
+        .map_err(|error| format!("Cannot admit shared Settings: {error}"))
 }
 
 /// Bind the bounded Attention UI to the selected server (or reviewed local dev
@@ -600,6 +666,56 @@ pub(crate) fn websocket_request_with_bearer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_settings_capability_is_bound_to_the_settings_window_and_selected_origin() {
+        use tauri::ipc::RuntimeCapability;
+        let origin = Origin::parse("https://engine.example:8443").unwrap();
+        let url = reqwest::Url::parse(
+            "https://engine.example:8443/settings?embed=1&host=desktop&device=Mac#voice",
+        )
+        .unwrap();
+        let tauri::utils::acl::capability::CapabilityFile::Capability(capability) =
+            settings_ui_capability(crate::tray::SETTINGS_WINDOW_LABEL, &url, &origin)
+                .unwrap()
+                .build()
+        else {
+            panic!("expected one bounded capability")
+        };
+        assert_eq!(capability.windows, vec!["settings"]);
+        assert_eq!(
+            capability.remote.unwrap().urls,
+            vec!["https://engine.example:8443/*"]
+        );
+        assert!(!capability.local);
+        // The exact grant: a new entry here is a new remote power.
+        let granted: Vec<&str> = capability
+            .permissions
+            .iter()
+            .map(|permission| permission.identifier().get())
+            .collect();
+        assert_eq!(
+            granted,
+            vec![
+                "magician-session:allow-get-magician-connection-auth",
+                "magician-session:allow-set-magician-bearer-token",
+                "magician-session:allow-sign-in-magician",
+                "magician-attention:allow-open-application-path",
+                "magician-settings:allow-open-desktop-settings",
+                "core:event:allow-listen",
+                "core:event:allow-unlisten",
+            ]
+        );
+        assert!(
+            settings_ui_capability(crate::tray::ATTENTION_WINDOW_LABEL, &url, &origin).is_err()
+        );
+        assert!(settings_ui_capability(
+            crate::tray::SETTINGS_WINDOW_LABEL,
+            &reqwest::Url::parse("https://other.example/settings").unwrap(),
+            &origin
+        )
+        .is_err());
+    }
 
     #[test]
     fn attention_session_capability_is_bound_to_the_owned_window_and_selected_origin() {

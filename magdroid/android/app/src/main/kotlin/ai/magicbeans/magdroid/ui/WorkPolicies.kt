@@ -5,7 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
+import androidx.compose.ui.Alignment
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -40,51 +45,53 @@ internal fun WorkPolicies(kind: WorkPolicyKind, push: (WorkRoute) -> Unit, onOpe
     LaunchedEffect(state.value, requestedId) {
         if (requestedId != null && state.value != null && rows.isEmpty() && state.value.workField("pagination").workBool("has_more")) page++
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            OutlinedTextField(search, { search = it; page = 0; requestedId = null }, label = { Text("Find policies") }, modifier = Modifier.fillMaxWidth())
-            WorkLink("New ${if (kind == WorkPolicyKind.Capture) "capture" else "qualification"} policy") { editing = null; showEditor = true }
-            WorkResourceStatus(state, resource); WorkLink("Refresh policies", resource::refresh)
-        }
-        if (requestedId != null && state.value != null && rows.isEmpty() && !state.loading && !state.value.workField("pagination").workBool("has_more")) item { Text("Requested policy is not available.", color = Muted) }
+    WorkPage {
+        item { WorkSearchField("Find policies", search, { search = it; page = 0; requestedId = null }) }
+        item { WorkGroup {
+            WorkActionRow("New ${if (kind == WorkPolicyKind.Capture) "capture" else "qualification"} policy", Icons.Outlined.AddCircleOutline) { editing = null; showEditor = true }
+        } }
+        workStatusItem(state, resource)
+        if (requestedId != null && state.value != null && rows.isEmpty() && !state.loading && !state.value.workField("pagination").workBool("has_more")) item { WorkGroup { WorkEmptyState("Requested policy is not available.", icon = Icons.Outlined.FolderOff) } }
+        else if (requestedId == null && state.value != null && rows.isEmpty()) item { WorkGroup { WorkEmptyState("No ${kind.title.lowercase()} yet.", icon = Icons.Outlined.Policy) } }
         items(rows) { row ->
             val policy = kind.policy(row) ?: JsonNull
             val id = policy.workText("id").orEmpty()
-            WorkCard {
-                Text(policy.workField("spec").workText("name") ?: id, color = Ink, fontSize = 18.sp)
-                Text(row.workText("status") ?: "Capture policy", color = Muted, fontSize = 13.sp)
-                WorkRecord(row)
+            val status = row.workText("status") ?: if (policy.workField("revoked_at").let { it != null && it != JsonNull }) "revoked" else "active"
+            WorkHeaderCard(policy.workField("spec").workText("name") ?: id, subtitle = id.ifBlank { null },
+                chips = listOf(WorkChipSpec(workLabel(status), workStatusTone(status)))) {
                 if (kind == WorkPolicyKind.Capture) {
-                    WorkLink("Review successor policy") { editing = policy; showEditor = true }
-                    WorkLink("Captures and exact review") { push(WorkRoute("captures", id, "Captures")) }
+                    WorkRow("Review successor policy", icon = Icons.Outlined.EditNote) { editing = policy; showEditor = true }
+                    WorkRowDivider(); WorkRow("Captures and exact review", icon = Icons.Outlined.Inventory) { push(WorkRoute("captures", id, "Captures")) }
+                    WorkRowDivider()
                 }
-                TextButton(onClick = { confirmation = policy to "revoke" }, enabled = !state.busy && row.workText("status") != "revoked" && (kind != WorkPolicyKind.Capture || policy.workField("revoked_at") == JsonNull)) { Text("Revoke future use", color = Danger) }
                 if (kind == WorkPolicyKind.Learning && row.workText("status") == "paused") {
-                    TextButton(onClick = { confirmation = policy to "resume" }, enabled = !state.busy && !row.workBool("expired")) { Text("Resume exact qualification", color = Coral) }
+                    WorkActionRow("Resume exact qualification", Icons.Outlined.PlayCircleOutline, enabled = !state.busy && !row.workBool("expired")) { confirmation = policy to "resume" }
+                    WorkRowDivider()
                 }
-                policy.workField("spec").workRows("targets").forEach { target -> target.workText("task_id")?.let { taskId -> WorkLink("Task $taskId") { onOpenTask(taskId) } } }
+                WorkActionRow("Revoke future use", Icons.Outlined.Block, destructive = true,
+                    enabled = !state.busy && row.workText("status") != "revoked" && (kind != WorkPolicyKind.Capture || policy.workField("revoked_at") == JsonNull)) { confirmation = policy to "revoke" }
+                policy.workField("spec").workRows("targets").mapNotNull { it.workText("task_id") }.forEach { taskId ->
+                    WorkRowDivider(); WorkRow("Task $taskId", icon = Icons.Outlined.Checklist) { onOpenTask(taskId) }
+                }
                 if (kind == WorkPolicyKind.Learning) {
                     val observations = row.workField("observations") as? JsonObject ?: JsonObject(emptyMap())
                     val trials = ((row.workField("reservations") as? JsonObject)?.values.orEmpty().mapNotNull { it.workText("run_id") } + observations.keys).distinct()
                     trials.forEach { runId ->
-                    WorkLink("Trial $runId") { push(WorkRoute("quality-run", runId, "Quality run")) }
-                    observations[runId].workText("evidence_hash")?.let { hash -> WorkLink("Sealed trial evidence") { push(WorkRoute("sealed-evidence", "$root/${WorkRepository.segment(id)}/evidence/${WorkRepository.segment(runId)}", hash)) } }
+                        WorkRowDivider(); WorkRow("Trial $runId", icon = Icons.Outlined.Science) { push(WorkRoute("quality-run", runId, "Quality run")) }
+                        observations[runId].workText("evidence_hash")?.let { hash -> WorkRowDivider(); WorkRow("Sealed trial evidence", icon = Icons.Outlined.Lock) { push(WorkRoute("sealed-evidence", "$root/${WorkRepository.segment(id)}/evidence/${WorkRepository.segment(runId)}", hash)) } }
                     }
                     val monitored = row.workField("monitored") as? JsonObject ?: JsonObject(emptyMap())
                     val adopted = ((row.workField("adoptions") as? JsonObject)?.values.orEmpty().mapNotNull { it.workText("run_id") } + monitored.keys).distinct()
                     adopted.forEach { runId ->
-                        WorkLink("Adopted run $runId") { push(WorkRoute("quality-run", runId, "Quality run")) }
-                        monitored[runId].workText("evidence_hash")?.let { hash -> WorkLink("Sealed monitoring evidence") { push(WorkRoute("sealed-evidence", "$root/${WorkRepository.segment(id)}/evidence/${WorkRepository.segment(runId)}", hash)) } }
+                        WorkRowDivider(); WorkRow("Adopted run $runId", icon = Icons.Outlined.Autorenew) { push(WorkRoute("quality-run", runId, "Quality run")) }
+                        monitored[runId].workText("evidence_hash")?.let { hash -> WorkRowDivider(); WorkRow("Sealed monitoring evidence", icon = Icons.Outlined.Lock) { push(WorkRoute("sealed-evidence", "$root/${WorkRepository.segment(id)}/evidence/${WorkRepository.segment(runId)}", hash)) } }
                     }
                 }
+                WorkRowDivider(); WorkRecordRow("Policy record", row, icon = Icons.Outlined.Article)
             }
         }
-        state.value.workField("identities")?.let { identities -> item { WorkCard { Text("Counterparty identities", color = Ink, fontSize = 17.sp); WorkRecord(identities) } } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { page-- }, enabled = page > 0 && !state.loading) { Text("Previous", color = Coral) }
-            Text("Page ${page + 1}", color = Muted, modifier = Modifier.padding(12.dp))
-            TextButton(onClick = { page++ }, enabled = state.value.workField("pagination").workBool("has_more") && !state.loading) { Text("Next", color = Coral) }
-        } }
+        state.value?.workField("identities")?.let { identities -> item { WorkGroup { WorkRecordRow("Counterparty identities", identities, icon = Icons.Outlined.Badge) } } }
+        if (state.value != null) item { WorkPager(page, state.value.workField("pagination").workBool("has_more"), { page = it }, disabled = state.loading) }
     }
     if (showEditor) WorkPolicyEditor(kind, editing, onClose = { showEditor = false; resource.refresh() })
     confirmation?.let { (policy, action) -> AlertDialog(
@@ -118,38 +125,45 @@ internal fun WorkPolicyEditor(kind: WorkPolicyKind, previous: JsonElement?, onCl
     var preview by remember { mutableStateOf<JsonElement?>(null) }
     var saved by remember { mutableStateOf(false) }
     LaunchedEffect(state.identity) { reviewedEditor = ""; preview = null }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        LazyColumn(Modifier.fillMaxSize().background(Ground).systemBarsPadding().imePadding(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { WorkLink("‹ Policies", onClose); Text("Review frozen policy", color = Ink, fontSize = 20.sp) }
-            item { Text(if (kind == WorkPolicyKind.Capture) "Captures are local records. Use exact task, contract and identity references, finite caps and an expiry." else "Choose a procedural candidate, fresh evaluation and canary cases, exact recurring tasks, finite budgets and an expiry.", color = Muted, fontSize = 14.sp) }
-            item { OutlinedTextField(editor, { editor = it; preview = null; reviewedEditor = "" }, modifier = Modifier.fillMaxWidth(), minLines = 16, label = { Text("Advanced policy") }) }
-            item { WorkResourceStatus(state, resource) }
-            item { Button(onClick = {
-                val original = editor; val identity = state.identity
-                val spec = runCatching { Json.parseToJsonElement(original) as JsonObject }.getOrNull()
-                if (spec == null) resource.reportError("Enter a valid policy object before review.")
-                else scope.launch {
-                    val result = resource.perform("$root/preview", identity, body = buildJsonObject { put("spec", spec); if (kind == WorkPolicyKind.Learning) put("policy_id", policyId) })
-                    if (result != null && currentEditor == original) {
-                        if (kind == WorkPolicyKind.Capture) editor = workPretty.encodeToString(JsonElement.serializer(), result.workField("spec") ?: JsonNull)
-                        reviewedEditor = editor; preview = result
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Column(Modifier.fillMaxSize().background(Ground).systemBarsPadding().imePadding()) {
+            WorkDetailBar("Review frozen policy", onBack = onClose, backLabel = "‹ Policies")
+            WorkPage {
+                item { WorkNote(if (kind == WorkPolicyKind.Capture) "Captures are local records. Use exact task, contract and identity references, finite caps and an expiry." else "Choose a procedural candidate, fresh evaluation and canary cases, exact recurring tasks, finite budgets and an expiry.") }
+                item { WorkGroup("Policy") { WorkFieldStack { WorkLabeledField("Advanced policy", editor, { editor = it; preview = null; reviewedEditor = "" }, minLines = 16, maxLines = 40, mono = true) } } }
+                workStatusItem(state, resource)
+                item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    WorkGroup {
+                        WorkActionRow("Review frozen policy", Icons.Outlined.Shield, enabled = !state.busy && !saved) {
+                            val original = editor; val identity = state.identity
+                            val spec = runCatching { Json.parseToJsonElement(original) as JsonObject }.getOrNull()
+                            if (spec == null) resource.reportError("Enter a valid policy object before review.")
+                            else scope.launch {
+                                val result = resource.perform("$root/preview", identity, body = buildJsonObject { put("spec", spec); if (kind == WorkPolicyKind.Learning) put("policy_id", policyId) })
+                                if (result != null && currentEditor == original) {
+                                    if (kind == WorkPolicyKind.Capture) editor = workPretty.encodeToString(JsonElement.serializer(), result.workField("spec") ?: JsonNull)
+                                    reviewedEditor = editor; preview = result
+                                }
+                            }
+                        }
                     }
-                }
-            }, enabled = !state.busy && !saved, colors = magicanButtonColors(), shape = MagicanButtonShape) { Text("Review frozen policy") } }
-            preview?.takeIf { editor == reviewedEditor }?.let { reviewed -> item { WorkCard {
-                WorkRecord(reviewed)
-                Button(onClick = {
-                    val spec = runCatching { Json.parseToJsonElement(editor) as JsonObject }.getOrNull() ?: return@Button
-                    val identity = state.identity
-                    val body = buildJsonObject {
-                        put("spec", spec)
-                        if (kind == WorkPolicyKind.Capture) put("expected_version", previous.workField("version_hash") ?: JsonNull)
-                        else put("expected_version_hash", reviewed.workField("policy").workField("version_hash") ?: JsonNull)
+                    if (saved) WorkFootnote("Policy saved. Return to refresh the policy list.", color = activePalette.success)
+                } }
+                preview?.takeIf { editor == reviewedEditor }?.let { reviewed -> item { WorkGroup("Frozen preview") {
+                    WorkRecord(reviewed)
+                    WorkRowDivider()
+                    WorkActionRow("Approve exact policy", Icons.Outlined.Verified, enabled = !state.busy && !saved) {
+                        val spec = runCatching { Json.parseToJsonElement(editor) as JsonObject }.getOrNull() ?: return@WorkActionRow
+                        val identity = state.identity
+                        val body = buildJsonObject {
+                            put("spec", spec)
+                            if (kind == WorkPolicyKind.Capture) put("expected_version", previous.workField("version_hash") ?: JsonNull)
+                            else put("expected_version_hash", reviewed.workField("policy").workField("version_hash") ?: JsonNull)
+                        }
+                        scope.launch { if (resource.perform("$root/${WorkRepository.segment(policyId)}", identity, body = body) != null) saved = true }
                     }
-                    scope.launch { if (resource.perform("$root/${WorkRepository.segment(policyId)}", identity, body = body) != null) saved = true }
-                }, enabled = !state.busy && !saved, colors = magicanButtonColors(), shape = MagicanButtonShape) { Text("Approve exact policy") }
-            } } }
-            if (saved) item { Text("Policy saved. Return to refresh the policy list.", color = Ink) }
+                } } }
+            }
         }
     }
 }
@@ -164,39 +178,37 @@ internal fun WorkCaptures(campaignId: String, push: (WorkRoute) -> Unit) {
     val scope = rememberCoroutineScope()
     var inspect by remember { mutableStateOf<JsonElement?>(null) }
     val reviewed = remember { mutableStateListOf<String>() }
-    var statusMenu by remember { mutableStateOf(false) }
     LaunchedEffect(state.identity) { reviewed.clear(); inspect = null }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { WorkResourceStatus(state, resource); WorkLink("Refresh captures", resource::refresh) }
-        item { Box {
-            WorkLink("Status: ${workLabel(status)}") { statusMenu = true }
-            DropdownMenu(statusMenu, { statusMenu = false }) { listOf("awaiting_review", "all", "captured", "rejected").forEach { value ->
-                DropdownMenuItem(text = { Text(workLabel(value)) }, onClick = { status = value; page = 0; statusMenu = false })
-            } }
-        } }
-        items(state.value.workRows("captures")) { capture -> WorkCard {
-            WorkRecord(capture)
+    val captures = state.value.workRows("captures")
+    WorkPage {
+        item { WorkGroup { WorkChoiceRow("Capture status", listOf("awaiting_review", "all", "captured", "rejected").map { it to workLabel(it) }, status, { status = it; page = 0 }, icon = Icons.Outlined.FilterList) } }
+        workStatusItem(state, resource)
+        if (state.value != null && captures.isEmpty()) item { WorkGroup { WorkEmptyState("No captures in this view.") } }
+        items(captures) { capture ->
             val binding = capture.workField("binding")
             val target = "${binding.workText("run_id")}/${binding.workText("artifact_hash")}"
-            WorkLink("Inspect bound artifact") { inspect = capture }
-            if (capture.workText("status") == "awaiting_review") Column {
-                listOf(true, false).forEach { approved -> TextButton(onClick = {
-                    val identity = state.identity; val id = capture.workText("id") ?: return@TextButton
-                    scope.launch { if (resource.perform("$root/${WorkRepository.segment(id)}/review", identity, body = buildJsonObject { put("binding_hash", capture.workField("binding_hash") ?: JsonNull); put("approved", approved) }) != null) resource.refresh() }
-                }, enabled = !state.busy && (!approved || target in reviewed)) { Text(if (approved) "Approve exact capture" else "Reject capture", color = if (approved) Coral else Danger) } }
+            val captureStatus = capture.workText("status") ?: "unknown"
+            WorkHeaderCard(capture.workText("id") ?: "Capture", subtitle = binding.workText("identity_id")?.let { "Identity $it" },
+                chips = listOf(WorkChipSpec(workLabel(captureStatus), workStatusTone(captureStatus)))) {
+                WorkRow("Inspect bound artifact", icon = Icons.Outlined.FindInPage, value = if (target in reviewed) "Reviewed" else null) { inspect = capture }
+                if (captureStatus == "awaiting_review") listOf(true, false).forEach { approved ->
+                    WorkRowDivider()
+                    WorkActionRow(if (approved) "Approve exact capture" else "Reject capture", if (approved) Icons.Outlined.CheckCircle else Icons.Outlined.Cancel, destructive = !approved,
+                        enabled = !state.busy && (!approved || target in reviewed)) {
+                        val identity = state.identity; val id = capture.workText("id") ?: return@WorkActionRow
+                        scope.launch { if (resource.perform("$root/${WorkRepository.segment(id)}/review", identity, body = buildJsonObject { put("binding_hash", capture.workField("binding_hash") ?: JsonNull); put("approved", approved) }) != null) resource.refresh() }
+                    }
+                }
+                WorkRowDivider(); WorkRecordRow("Capture record", capture, icon = Icons.Outlined.Article)
             }
-        } }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { page-- }, enabled = page > 0) { Text("Previous", color = Coral) }
-            Text("Page ${page + 1}", color = Muted)
-            TextButton(onClick = { page++ }, enabled = state.value.workField("pagination").workBool("has_more")) { Text("Next", color = Coral) }
-        } }
+        }
+        if (state.value != null) item { WorkPager(page, state.value.workField("pagination").workBool("has_more"), { page = it }) }
     }
     inspect?.let { capture ->
         val binding = capture.workField("binding"); val target = "${binding.workText("run_id")}/${binding.workText("artifact_hash")}"
-        Dialog(onDismissRequest = { inspect = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Dialog(onDismissRequest = { inspect = null }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
             Column(Modifier.fillMaxSize().background(Ground).systemBarsPadding()) {
-                WorkLink("‹ Captures") { inspect = null }
+                WorkDetailBar("Bound artifact", onBack = { inspect = null }, backLabel = "‹ Captures")
                 WorkQualityArtifact(target, push, onReviewed = { if (target !in reviewed) reviewed.add(target) })
             }
         }
@@ -207,12 +219,20 @@ internal fun WorkCaptures(campaignId: String, push: (WorkRoute) -> Unit) {
 internal fun WorkSealedEvidence(path: String, expectedHash: String) {
     val resource = rememberWorkResource(path)
     val state by resource.state.collectAsStateWithLifecycle()
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
-        item { WorkResourceStatus(state, resource) }
-        state.value?.let { evidence -> item {
-            if (evidence.workBool("sealed") && evidence.workText("content_hash") == expectedHash) WorkRecord(evidence)
-            else Text("Evidence changed or is not sealed. Refresh the recorded policy result.", color = activePalette.warning)
-        } }
+    WorkPage {
+        workStatusItem(state, resource)
+        state.value?.let { evidence ->
+            if (evidence.workBool("sealed") && evidence.workText("content_hash") == expectedHash) {
+                item { WorkHeaderCard("Sealed evidence", subtitle = expectedHash, chips = listOf(WorkChipSpec("Sealed", activePalette.success, Icons.Filled.Lock))) }
+                item { WorkGroup("Evidence") { WorkRecord(evidence) } }
+            } else item { WorkGroup {
+                Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Filled.Warning, null, tint = activePalette.warning, modifier = Modifier.padding(top = 2.dp).size(16.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Evidence changed or is not sealed. Refresh the recorded policy result.", color = Ink, fontSize = 15.sp, lineHeight = 20.sp)
+                }
+            } }
+        }
     }
 }
 

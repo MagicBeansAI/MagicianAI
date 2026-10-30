@@ -15,9 +15,12 @@ Next: `docs/plans/2026-08-15-esp32-for-you-feed.md`
 The voice loop sends microphone audio to Magician over HTTPS and streams the
 spoken reply back: hold the button to speak, then release to submit.
 
+`make test-magesp-conversations` checks conversation callback lifetimes and
+worker-completion races on the host.
+
 | State | Screen |
 |---|---|
-| Idle | Tilt game, **pixel face**, the For you page, or **voice mode** — short press cycles |
+| Idle | Tilt game, **the Magican star** (face), the For you page, **conversations**, or **voice mode** — short press cycles |
 | Hold BOOT | Voice orb; "opening mic" until the codec delivers, then "listening" |
 | Release | sending → thinking → the reply on the face, spoken aloud |
 | Tap the caption | The whole answer, wrapped and scrollable. Tap or press to exit |
@@ -185,7 +188,8 @@ single-user `anonymous/default` scope. The bootstrap is accepted only from an
 actual direct loopback peer (not a loopback reverse-proxy connection carrying
 forwarded-client metadata) or behind a verified Cloudflare Access assertion;
 merely reaching the origin cannot mint a device credential. Every later API and realtime request
-sends `Authorization: Bearer <device-token>` plus `X-Magician-Device-Id`; the
+sends `Authorization: Bearer <device-token>` plus `X-Magician-Device-Id` (and
+`X-Magician-App-Version`, the firmware version shown in web Settings → Devices); the
 device id locates the pairing record, while the bearer authenticates it and the
 server resolves principal/workspace from that record. The firmware never sends
 scope headers or scope query parameters. Cloudflare Access remains an optional
@@ -210,7 +214,9 @@ registered inside a `web::scope`, so the string there is only the tail.
 |---|---|
 | `GET /api/magician/v2/devices/me` | Authenticated device/scope verification, every 15 s |
 | `POST /api/magician/v2/media/voice-notes` | The whole turn: audio → transcript → reply |
-| `POST /api/magician/v2/media/tts/synthesize` | The reply as speech |
+| `POST /api/magician/v2/media/tts/synthesize` | The reply as speech, asked for as 16-bit PCM (`wav_encoding: "pcm16"`) |
+| `GET /api/magician/v2/devices/me/conversations` | The conversations page: recent threads and the chosen thread's chats |
+| `POST /api/magician/v2/devices/me/threads` | "+ new thread": named after the device and time, filed under Automated |
 
 > > **A reply is one TTS request per sentence, so the gap between sentences is a
 > network round trip.** Any idle timer short enough to save power is shorter
@@ -246,7 +252,9 @@ carrying:
   in less heap, but reallocates the record buffer per record and fails part-way
   through a large streamed download. Free heap for static buffers instead.
 - Pages are free. The draw buffer is scratch space sized by the panel, not a
-  framebuffer per page — the entire pixel-face page cost 16 bytes.
+  framebuffer per page — the pixel face cost 16 bytes. The star face draws a
+  258x300 RGB565A8 image straight from flash (~230 KB of flash per theme, no
+  RAM copy) plus a handful of objects for the eyes and mouth.
 
 Free heap is logged at the start and end of every turn. Watch it before adding
 anything resident.
@@ -281,6 +289,12 @@ The **For you** page doubles as the network status readout:
 The authenticated connection is rechecked every 15 s against `<base>/api/magician/v2/devices/me`.
 
 ### Reaching Magician from outside your LAN
+
+To move an already-set-up terminal to another machine's hostname — or off a
+retired one, such as the old shared connect host, which now answers
+HTTP 530 — run `scripts/magesp-connect.sh <terminal-ip>` from the machine it
+should use. It sends the new URL, that machine's device Access pair and
+`repair=1` to the terminal's `/config`, using the passphrase on its screen.
 
 The base URL may be **https**; the public-CA bundle is compiled in, so a
 Cloudflare-tunnel hostname verifies with no pinning. That is what makes the

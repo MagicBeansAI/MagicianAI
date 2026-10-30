@@ -102,6 +102,9 @@ internal fun ThemesSheet(onDismiss: () -> Unit) {
                 onSelect = { entry ->
                     store.setMode(entry)
                     applyTheme(familyId, entry, systemIsDark)
+                    // An explicit pick follows the account, so every surface
+                    // (web, iPhone) converges on it.
+                    ThemeSync.pushAsync(context, systemIsDark)
                 },
             )
             ThemesFooter(
@@ -112,14 +115,17 @@ internal fun ThemesSheet(onDismiss: () -> Unit) {
             ThemesGroup {
                 Themes.families.forEachIndexed { index, family ->
                     val isSelected = family == selectedFamily
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = Lively.tapMin)
-                            .clickable(role = Role.Button) {
-                                store.setFamily(family.id)
-                                applyTheme(family.id, mode, systemIsDark)
-                            }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = Lively.tapMin)
+                                .clickable(role = Role.Button) {
+                                    store.setFamily(family.id)
+                                    applyTheme(family.id, mode, systemIsDark)
+                                    // An explicit pick follows the account, so
+                                    // every surface (web, iPhone) converges on it.
+                                    ThemeSync.pushAsync(context, systemIsDark)
+                                }
                             .semantics {
                                 contentDescription = family.name
                                 selected = isSelected

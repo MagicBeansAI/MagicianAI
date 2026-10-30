@@ -48,6 +48,12 @@ export interface PendingAsk {
 	 * `null` when none of them says — never defaulted to `general`.
 	 */
 	threadId: string | null;
+	/**
+	 * The chat session that raised it, when the feed row says so outside the
+	 * ask's own context (the row's `input_schema` or `hitl_request.scope`), as
+	 * Android's `originChatSessionId` reads it.
+	 */
+	chatSessionId?: string | null;
 	at: number;
 }
 
@@ -75,6 +81,26 @@ function feedMetadata(item: FeedItem): Record<string, unknown> {
 		: {};
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+	return value && typeof value === 'object' && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function text(value: unknown): string | null {
+	return typeof value === 'string' ? clean(value) : null;
+}
+
+/** The chat session a feed row names: on the row, in its input schema's context, or in its ask's scope. */
+function feedOriginSession(item: FeedItem): string | null {
+	const metadata = feedMetadata(item);
+	const hitl = record(metadata.hitl_request);
+	const schema = record(metadata.input_schema) ?? record(hitl?.input_schema);
+	return text((item as unknown as Record<string, unknown>).chat_session_id)
+		?? text(record(schema?.context)?.chat_session_id)
+		?? text(record(hitl?.scope)?.chat_session_id);
+}
+
 /**
  * A feed row that can carry an ask: not failed, and not a C3 stalled wait
  * (waiting on the reader with no question delivered — nothing to answer).
@@ -98,7 +124,14 @@ export function collectPendingAsks(
 	const asks: PendingAsk[] = [];
 	const owners = new Map<string, number>();
 
-	function add(target: HitlOpenTarget, at: number, threadHint: string | null, taskHint: string | null, extra: string[]): void {
+	function add(
+		target: HitlOpenTarget,
+		at: number,
+		threadHint: string | null,
+		taskHint: string | null,
+		extra: string[],
+		sessionHint: string | null = null
+	): void {
 		const aliases = pendingAskAliases(target, extra);
 		const existing = aliases.map((alias) => owners.get(alias)).find((index) => index !== undefined);
 		if (existing !== undefined) {
@@ -109,6 +142,7 @@ export function collectPendingAsks(
 				...ask,
 				taskId: ask.taskId ?? taskHint ?? clean(target.scope?.task_id),
 				threadId: ask.threadId ?? clean(target.scope?.thread_id) ?? threadHint,
+				chatSessionId: ask.chatSessionId ?? sessionHint,
 				target:
 					!ask.target.delegated_agent_id && target.delegated_agent_id
 						? { ...ask.target, delegated_agent_id: target.delegated_agent_id }
@@ -122,6 +156,7 @@ export function collectPendingAsks(
 			target,
 			taskId: clean(target.scope?.task_id) ?? taskHint,
 			threadId: clean(target.scope?.thread_id) ?? threadHint,
+			chatSessionId: sessionHint,
 			at
 		});
 		for (const alias of aliases) owners.set(alias, index);
@@ -138,7 +173,7 @@ export function collectPendingAsks(
 		seenItems.add(item.id);
 		const target = hitlOpenTargetFromFeedItem(item);
 		if (!target) continue;
-		add(target, item.updated_at, clean(item.ui_thread_id), clean(item.task_id), [item.id]);
+		add(target, item.updated_at, clean(item.ui_thread_id), clean(item.task_id), [item.id], feedOriginSession(item));
 	}
 
 	return asks
@@ -161,6 +196,8 @@ export function pendingAsksForTask(
 }
 
 export interface ThreadAskFilter {
+	/** Session on screen; chat questions may have no task or thread stamp. */
+	chatSessionId?: string | null;
 	/** Normalises a thread id for comparison (the chat uses `normalizeThreadId`). */
 	normalize?: (threadId: string) => string;
 	/** Tasks known to sit in this thread; an ask on one of them belongs here. */
@@ -181,21 +218,89 @@ export function pendingAsksForThread(
 	threadId: string,
 	filter: ThreadAskFilter = {}
 ): HitlOpenTarget[] {
-	const normalize = filter.normalize ?? ((value: string) => value.trim().toLowerCase());
-	const current = normalize(threadId);
 	return asks
 		.filter((ask) => {
-			const inThread =
-				(ask.threadId !== null && normalize(ask.threadId) === current) ||
-				(ask.taskId !== null && (filter.threadTaskIds?.has(ask.taskId) ?? false));
-			if (!inThread) return false;
-			return !(
-				ask.target.source === 'plan_approval' &&
-				ask.taskId !== null &&
-				(filter.planApprovalTaskIds?.has(ask.taskId) ?? false)
-			);
+			// God-mode approvals are workspace-wide asks. Their origin is
+			// shown by the composer; viewing another chat never changes the grant.
+			if (isGodModeAsk(ask)) return true;
+			return askBelongsHere(ask, threadId, filter) && !plannerDockOffers(ask, filter);
 		})
 		.map((ask) => ask.target);
+}
+
+/**
+ * The composer dock's questions: every open ask, so the reader answers
+ * wherever they are, with this conversation's first. `here` names the asks
+ * that belong to this conversation (its chat session, thread or one of its
+ * tasks, by [`pendingAsksForThread`]'s rule); the dock labels the others with
+ * where they came from, and only a `here` ask takes typed composer text. A
+ * plan approval the planner dock already offers here is left to it.
+ */
+export function composerAsks(
+	asks: readonly PendingAsk[],
+	threadId: string,
+	filter: ThreadAskFilter = {}
+): { targets: HitlOpenTarget[]; here: Set<string> } {
+	const here: HitlOpenTarget[] = [];
+	const elsewhere: HitlOpenTarget[] = [];
+	for (const ask of asks) {
+		if (isDismissOnlyAsk(ask.target)) continue;
+		if (askBelongsHere(ask, threadId, filter)) {
+			if (!plannerDockOffers(ask, filter)) here.push(ask.target);
+		} else {
+			elsewhere.push(ask.target);
+		}
+	}
+	return { targets: [...here, ...elsewhere], here: new Set(here.map((target) => target.id)) };
+}
+
+/**
+ * A notice whose only answer is Dismiss (a service-health notice, an expired
+ * notice): nothing to decide, so composers (chat, VibeDev) leave it to the
+ * Attention page and the desktop notch.
+ */
+export function isDismissOnlyAsk(target: HitlOpenTarget): boolean {
+	const options = target.input_schema?.options ?? [];
+	return options.length === 1 && options[0].id === 'dismiss' && options[0].requires_input !== true;
+}
+
+function askContext(ask: PendingAsk): Record<string, unknown> | null {
+	const context = ask.target.input_schema?.context;
+	return context && typeof context === 'object' && !Array.isArray(context)
+		? context as Record<string, unknown> : null;
+}
+
+function isGodModeAsk(ask: PendingAsk): boolean {
+	return ask.target.source === 'user_request'
+		&& ask.target.input_schema?.request_type === 'sandbox_override'
+		&& askContext(ask)?.god_mode === true;
+}
+
+/**
+ * Raised by this conversation: its chat session, its thread, or one of its
+ * tasks. A chat's question belongs to that chat only, so another session's
+ * question is never local. Every untitled chat shares the default `general`
+ * thread, so that thread alone never makes an ask local either (as on Android).
+ */
+function askBelongsHere(ask: PendingAsk, threadId: string, filter: ThreadAskFilter): boolean {
+	const normalize = filter.normalize ?? ((value: string) => value.trim().toLowerCase());
+	const context = askContext(ask);
+	const originSession = clean(typeof context?.chat_session_id === 'string' ? context.chat_session_id : null)
+		?? clean(ask.chatSessionId);
+	const thisSession = clean(filter.chatSessionId);
+	if (originSession !== null && thisSession !== null) return originSession === thisSession;
+	const sharedThread = normalize(threadId) === normalize(DEFAULT_THREAD_ID);
+	return (!sharedThread && ask.threadId !== null && normalize(ask.threadId) === normalize(threadId)) ||
+		(ask.taskId !== null && (filter.threadTaskIds?.has(ask.taskId) ?? false));
+}
+
+/** The thread every untitled chat shares (`normalizeThreadId`'s fallback). */
+const DEFAULT_THREAD_ID = 'general';
+
+function plannerDockOffers(ask: PendingAsk, filter: ThreadAskFilter): boolean {
+	return ask.target.source === 'plan_approval' &&
+		ask.taskId !== null &&
+		(filter.planApprovalTaskIds?.has(ask.taskId) ?? false);
 }
 
 /**
@@ -265,4 +370,11 @@ export function createPendingAsksStore(
  * `HitlResolved` and drops resolved rows in the same frame); the pending store
  * is fed by the hub bridge the same component starts.
  */
-export const pendingAsks: Readable<PendingAsk[]> = createPendingAsksStore();
+const collectedPendingAsks = createPendingAsksStore();
+export const pendingAsks: Readable<PendingAsk[]> = {
+	subscribe(run, invalidate) {
+		const stopFollowing = attentionStore.followPendingAsks();
+		const unsubscribe = collectedPendingAsks.subscribe(run, invalidate);
+		return () => { unsubscribe(); stopFollowing(); };
+	}
+};

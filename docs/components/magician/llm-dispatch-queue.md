@@ -326,6 +326,12 @@ Wire orchestrator transitions to both `TaskStateView::fire_cancel` and
 `queue.cancel_task(...)` so cancellation reaches queued and in-flight jobs
 instantly.
 
+Auxiliary callers can opt into `submit_and_wait_cancellable(job, receiver)`:
+dropping that wait cancels a private child of the owner's token, across queue,
+provider waits and retries, without cancelling siblings. Native delivery repairs
+and LLM claim reviews use this path, including their logical chunks. Protected
+attempts still drain to their existing settlement boundary before cancellation.
+
 Streaming and terminal-path invariants:
 
 - Streams use the same per-lane admission permits as sync jobs, and their

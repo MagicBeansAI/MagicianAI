@@ -424,10 +424,7 @@ impl ChatChannel {
             &workspace.to_string(),
         );
         match self.v3_service.get_task(&scope, task_id).await {
-            Ok(task) => (
-                !task.state.synthesis_pending_executions.is_empty(),
-                task.state.completion_kind,
-            ),
+            Ok(task) => (task.state.synthesis_pending(), task.state.completion_kind),
             Err(_) => (false, None),
         }
     }

@@ -11,8 +11,61 @@ excerpt. Missing legacy content is never synthesized.
 Episode candidate composition is shared by the index and runtime. It prefers
 complete conversation sources, labels their speakers and excludes operational
 summaries/coordinates when conversational evidence exists. Non-conversational
-episodes retain their existing text fields and neutralize memory-boundary tags
-before indexing or rendering. Index schema v11 forces older
+episodes neutralize memory-boundary tags and compose from outcome, title and a
+bounded task intent, never the raw task description (an episode is memory of
+what happened, not a copy of another run's instructions).
+
+- **`task_intent`** (≤480 chars, recorded at terminal): the user's request
+  inside a `<<<…USER_PROMPT` / `<<<…USER_REQUEST` fence, else the
+  description's user-facing lead paragraph, else the title.
+- **Recalled fields** of a non-conversation episode: outcome, title, intent,
+  plus remaining work, a distinct `strategy_summary`, starting context and
+  observations when each passes the prose gate. The outcome is the verdict
+  (`outcome_kind`) + intent + the run's final output (user-audience excerpt
+  first, ≤600 chars); `outcome_summary` (≤2,000 chars) stands in only without
+  an output, only when it passes the gate and does not replay the task brief
+  (two or more substantive non-request description lines).
+- **Prose gate** (`is_user_facing_prose` / `user_facing_prose`, structural): a
+  line opening with `{` or holding `{"`/`[{`, a `<<<` fence or a bracketed
+  runtime marker (`[Execution resumed …]`, `[Delegation] …`) makes its
+  paragraph machine text; text whose every line is a bare identifier/key
+  (`hitl.requested`, `progress_channel:<uuid>`) is not prose. Runtime
+  bookkeeping and the raw description never enter recall (the description
+  stays on the record for provenance).
+- **Write and read apply one rule**: `episode_outcome_statement` at record
+  time, `recalled_episode_outcome` / `recalled_episode_strategy` on every
+  stored record at read time. All recall paths use it: indexed episode text
+  behind "### Episodes" (a non-conversation episode renders whole, so no
+  "Adjacent source passage" expansion), `prompt_pipeline` episode sources, the
+  `task_progress`/archive/strategy tier writers, and the consolidator's inputs
+  (episode projection, quality-classifier view, `source_text`), which carry
+  `task_intent` instead of `task_description`.
+- **Tier items** keep only the user-facing prose each string leads with (none
+  left: not recalled) and render as one line, `label (as of <date>; valid
+  until <date>; unresolved conflict): value`, never as JSON; ids,
+  supersession, provenance, evidence, rationale, confidence and containment
+  labels never render (provenance travels as `prompt_provenance` metadata).
+  Non-episode items render whole or shortened from the end within their lane
+  share and a 1,000-char cap (`bounded_item_text`), never as a mid-item
+  relevance window.
+- **Near-duplicate tier items** in one lane and tier (`memory_similarity` over
+  candidates' `claim_key` / `claim_text`) render once: the most-confirmed copy
+  (then newest), prefixed `(N similar)`. Storage folding lives in
+  [memory lifecycle](memory-lifecycle.md).
+- **Bounds.** All shortening goes through `magician_vector_index::text_bounds`:
+  `bound_text` (sentence end, else word boundary, then `…`) for outcomes,
+  results, intents, tier items and passage fallbacks; `word_aligned_window` for
+  query windows and index chunks; `bound_section` (`bounded_memory_section`)
+  for section caps, keeping whole entries, marking `…(more memory omitted)` and
+  keeping the closing tag. Text without spaces is cut at the budget.
+  `repair_dangling_cut` repairs, at read time only, a stored legacy cut (a word
+  glued to `...`, or a ≤3-word stub after the last sentence in text ≥160
+  chars) to that boundary plus `…`; records are not rewritten. A
+  non-conversation episode's recalled text is capped at 3,000 chars
+  (`MAX_EPISODE_RECALL_CHARS`); changed text hashes re-index episodes via
+  `source_hashes_changed`.
+
+Index schema v11 forces older
 derived vectors to rebuild through the normal maintainer. Dense embeddings use
 speaker-labeled passage text with boundaries supplied by the source producer; lexical search retains exact identifiers and scalar columns retain
 scope/source addresses.
@@ -103,3 +156,40 @@ a `.memory-recall-eval` marker and differ from the live config directory. Option
 Expected evidence in the case file is evaluated only after product retrieval.
 Reports contain private fixture evidence and must remain on the local eval
 surface.
+
+## User-knowledge maintenance and the knowledge lock
+
+`memory/users/knowledge.json` is one multi-megabyte document per scope, written
+under an exclusive file lock with a 10 s acquisition deadline. Its lifecycle
+pass (`memory_lifecycle::runtime::pass`: quarantine, legacy normalisation,
+expiry, owner-answer reconciliation, one bounded review) belongs to the scope:
+
+- The 5-minute consolidation sweep runs it once per scope per tick
+  (`MemoryConsolidator::run_user_knowledge_pass`, scopes from
+  `user_knowledge_pass_scopes`) before the agent sweeps. A per-agent batch sweep
+  runs only that agent's tier contradiction sweep
+  (`run_agent_tier_contradiction_sweep`). `run_contradiction_sweep_for_agent`
+  still does both for single-agent callers; the analytics maintenance endpoint
+  runs the user pass once and the tier sweep per agent. The resurfacing worker
+  also runs the pass; the sweep remains the fallback when it is off.
+- At most `MEMORY_SWEEP_AGENT_CONCURRENCY` (4) agent sweeps run at once, for
+  shared file-I/O contention (LLM back-pressure is the dispatch queue's job). A
+  long tick delays the next one; missed ticks are skipped, never overlapped.
+- The pass applies maintenance to an unlocked copy and takes the lock only when
+  something changes, re-applying it to the document under the lock. It checks
+  the hourly review budget (`memory.user_knowledge_bounds.review.max_per_hour`,
+  default `MAX_REVIEWS_PER_HOUR` = 6) and the per-item attempt cooldown on the
+  unlocked copy before the reservation lock, which re-checks both. Records
+  that used up `review.max_attempts_per_record` tries are set aside in a
+  maintenance write; queue order and set-aside are in
+  [memory lifecycle](memory-lifecycle.md#scheduling-and-bounds).
+- A busy lock is not a failure: the user pass reports
+  `user.knowledge:lock_busy` as a skipped target, and an agent's tier sweep
+  reports `memory_contradiction_sweep:lock_busy` as a skipped rule while its
+  batch outcome (reports, drained marking) is kept. Lock timeouts from the pass
+  keep their typed `FileLockTimeout`, so `is_memory_file_lock_timeout` matches
+  them.
+- A write (`update_user_knowledge`) diffs the preference history against the
+  document it loaded instead of re-reading it, fingerprints the generation from
+  the bytes it wrote, and parses, copies and serialises the document on the
+  blocking pool.

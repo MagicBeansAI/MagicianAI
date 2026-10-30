@@ -185,6 +185,7 @@ pub fn kev_capabilities(max_state: usize) -> ModelCapabilities {
         calibrated: false,
         text_only: true,
         max_state_tokens: Some(max_state as u64),
+        max_question_tokens: None,
         max_choice_options: Some(255),
         max_questions: None,
         supports_score: true,

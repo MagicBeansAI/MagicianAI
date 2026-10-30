@@ -12,8 +12,11 @@ import {
 } from './chatTurnEventsStore';
 import { timedFetch } from '$lib/shared/fetch';
 import { eventHub } from '$lib/realtime/eventHub';
+import { resetTaskUsage, taskUsage } from '$lib/magician/chat/next/taskUsage';
 
 vi.mock('$lib/shared/fetch', () => ({ timedFetch: vi.fn(), LONG_FETCH_TIMEOUT_MS: 600_000 }));
+
+beforeEach(resetTaskUsage);
 
 describe('chat turn live ownership', () => {
 	beforeEach(() => {
@@ -95,6 +98,40 @@ describe('chat turn live ownership', () => {
 		eventHub.ingestFrame({ event_type: 'AgenticIterationStarted', data: { task_id: 'task-9', iteration: 2, timestamp: 7 } });
 		expect(getEventsForChatTurn('turn-live')).toHaveLength(2);
 		releaseChatTurn('session', 'turn-live');
+	});
+
+	it('reconciles stored task usage with live calls and panel deltas through the same hub', async () => {
+		const state = {
+			overview: { task_id: 'task-usage', execution_id: 'exec-usage' },
+			run: { activity_log: [{ id: 'stored', status: 'done', created_at: 1, metadata: {
+				event_type: 'llm.succeeded', llm_call_id: 'call-a', input_tokens: 1000, output_tokens: 200
+			} }] }, output: {}, debug: {}
+		};
+		vi.mocked(timedFetch).mockResolvedValue({ ok: true, json: async () => ({ events: [{
+			event_type: 'ExecutionPanelDelta', data: {
+				chat_turn_id: 'usage-turn', task_id: 'task-usage', execution_id: 'exec-usage', state
+			}
+		}] }) } as Response);
+		const off = subscribeToChatTurn({ principal: 'test', workspace: 'test' }, 'session', 'usage-turn');
+		await vi.waitFor(() => expect(get(taskUsage).get('task-usage')?.tokens).toBe(1200));
+		for (const callId of ['call-a', 'call-b']) {
+			eventHub.ingestFrame({ event_type: 'LLMResponseReceived', data: {
+				task_id: 'task-usage', execution_id: 'exec-usage', timestamp: callId === 'call-a' ? 2 : 3,
+				correlation: { llm_call_id: callId }, input_tokens: 1000, output_tokens: 200
+			} });
+		}
+		expect(get(taskUsage).get('task-usage')).toMatchObject({ calls: 2, tokens: 2400, activityCount: 1 });
+		eventHub.ingestFrame({ event_type: 'ExecutionPanelDelta', data: {
+			chat_turn_id: 'usage-turn', task_id: 'task-usage', timestamp: 4,
+			state: { ...state, run: { activity_log: [...state.run.activity_log, {
+				id: 'new', status: 'done', created_at: 3, metadata: {
+					event_type: 'llm.succeeded', llm_call_id: 'call-b', input_tokens: 1000, output_tokens: 200
+				}
+			}] } }
+		} });
+		expect(get(taskUsage).get('task-usage')).toMatchObject({ calls: 2, tokens: 2400, activityCount: 2 });
+		off();
+		releaseChatTurn('session', 'usage-turn');
 	});
 
 	it('re-reads every watched turn when the hub resyncs', async () => {

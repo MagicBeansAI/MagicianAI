@@ -7,6 +7,7 @@
 mod memory_decisions;
 
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     path::PathBuf,
@@ -284,7 +285,18 @@ pub struct MemoryContradictionSweepSummary {
     pub superseded: usize,
     pub keep_existing: usize,
     pub keep_both: usize,
+    /// Pairs with no decision because the review failed transiently
+    /// (timeout, admission refusal, unavailable engine). Retried next sweep.
     pub missing_decisions: usize,
+    /// Pairs the engine considered and abstained on. Recorded as reviewed
+    /// under the current decision policy, so they are not re-sent until the
+    /// policy (engine revision or reference version) changes.
+    #[serde(default)]
+    pub abstained: usize,
+    /// Identical copies of one memory (same durable key and claim) folded
+    /// into their earliest copy without a model call.
+    #[serde(default)]
+    pub duplicates_folded: usize,
     pub skipped_targets: Vec<String>,
     pub changed_targets: Vec<String>,
 }
@@ -297,6 +309,8 @@ impl MemoryContradictionSweepSummary {
         self.keep_existing += other.keep_existing;
         self.keep_both += other.keep_both;
         self.missing_decisions += other.missing_decisions;
+        self.abstained += other.abstained;
+        self.duplicates_folded += other.duplicates_folded;
         self.skipped_targets.extend(other.skipped_targets);
         self.changed_targets.extend(other.changed_targets);
         self.skipped_targets.sort();
@@ -2009,19 +2023,30 @@ impl MemoryConsolidator {
             self.save_run_state(agent_id, &run_state).await?;
         }
 
+        // The agent's own tiers only. The user-knowledge lifecycle pass is
+        // per scope, not per agent: the sweep loop runs it once per scope per
+        // tick (`run_user_knowledge_pass`). Running it here made every agent
+        // of a scope take the same exclusive `knowledge.json` lock at once.
         if requested_rule.is_none() {
             match self
-                .run_contradiction_sweep_for_agent(definition, agent_id, now)
+                .run_agent_tier_contradiction_sweep(definition, agent_id, now)
                 .await
             {
                 Ok(sweep) => {
-                    if sweep.superseded > 0 || sweep.keep_both > 0 || sweep.missing_decisions > 0 {
+                    if sweep.superseded > 0
+                        || sweep.keep_both > 0
+                        || sweep.missing_decisions > 0
+                        || sweep.abstained > 0
+                        || sweep.duplicates_folded > 0
+                    {
                         debug!(
                             agent_id = %agent_id,
                             reviewed = sweep.reviewed,
                             superseded = sweep.superseded,
                             keep_both = sweep.keep_both,
                             missing_decisions = sweep.missing_decisions,
+                            abstained = sweep.abstained,
+                            duplicates_folded = sweep.duplicates_folded,
                             "memory contradiction sweep completed after batch consolidation"
                         );
                     }
@@ -2033,6 +2058,17 @@ impl MemoryConsolidator {
                         "Skipping memory contradiction sweep after non-fatal error"
                     );
                 },
+                // A busy memory file lock must not discard the batch work
+                // already done above: its reports still have to be emitted and
+                // a disabled agent still has to be marked drained.
+                Err(error) if is_memory_file_lock_timeout(&error) => {
+                    debug!(
+                        agent_id = %agent_id,
+                        error = %error,
+                        "Skipping memory contradiction sweep because a memory file lock is busy"
+                    );
+                    outcome.push_skipped_rule(CONTRADICTION_SWEEP_LOCK_BUSY);
+                },
                 Err(error) => return Err(error),
             }
         }
@@ -2042,13 +2078,34 @@ impl MemoryConsolidator {
 
     /// Reviews same-durable-key memory collisions and marks superseded evidence
     /// only when the reviewer explicitly chooses a replacement direction.
+    ///
+    /// Runs the scope's user-knowledge pass and then this agent's tiers. A
+    /// caller sweeping several agents of one scope should run
+    /// [`Self::run_user_knowledge_pass`] once and
+    /// [`Self::run_agent_tier_contradiction_sweep`] per agent instead.
     pub async fn run_contradiction_sweep_for_agent(
         &self,
         definition: &AgentDefinition,
         agent_id: &str,
         now: DateTime<Utc>,
     ) -> Result<MemoryContradictionSweepSummary, MemoryConsolidatorError> {
-        let mut summary = self.run_user_contradiction_sweep(agent_id, now).await?;
+        let mut summary = self.run_user_knowledge_pass(now).await?;
+        summary.merge(
+            self.run_agent_tier_contradiction_sweep(definition, agent_id, now)
+                .await?,
+        );
+        Ok(summary)
+    }
+
+    /// Contradiction sweep over this agent's own (`TierScope::Agent`) tiers.
+    /// Does not touch the scope's user knowledge.
+    pub async fn run_agent_tier_contradiction_sweep(
+        &self,
+        definition: &AgentDefinition,
+        agent_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<MemoryContradictionSweepSummary, MemoryConsolidatorError> {
+        let mut summary = MemoryContradictionSweepSummary::default();
         if self.llm_router.is_none() {
             summary
                 .skipped_targets
@@ -2123,16 +2180,20 @@ impl MemoryConsolidator {
         Ok(summary)
     }
 
-    async fn run_user_contradiction_sweep(
+    /// The scope's user-knowledge lifecycle pass (maintenance, owner-answer
+    /// reconciliation, one bounded review). It belongs to the scope, not to an
+    /// agent, so run it once per scope per sweep. A busy `knowledge.json`
+    /// lock is not a failure: the summary lists `user.knowledge:lock_busy` and
+    /// the next tick retries.
+    pub async fn run_user_knowledge_pass(
         &self,
-        _agent_id: &str,
         now: DateTime<Utc>,
     ) -> Result<MemoryContradictionSweepSummary, MemoryConsolidatorError> {
         let mut summary = MemoryContradictionSweepSummary::default();
         // The shared lifecycle performs model work before taking the write lock
         // and revalidates source revisions. Never write an optimistic whole tier
         // over unrelated edits that happened while a review was running.
-        let outcome = super::memory_lifecycle::runtime::pass(
+        let outcome = match super::memory_lifecycle::runtime::pass(
             &self.memory_service,
             self.llm_router.as_deref(),
             self.memory_clarification_runtime
@@ -2142,7 +2203,21 @@ impl MemoryConsolidator {
             None,
         )
         .await
-        .map_err(|error| AgentMemoryError::Validation(error.to_string()))?;
+        .map_err(memory_lifecycle_pass_error)
+        {
+            Ok(outcome) => outcome,
+            Err(error) if is_memory_file_lock_timeout(&error) => {
+                debug!(
+                    error = %error,
+                    "User knowledge pass skipped because knowledge.json is locked"
+                );
+                summary
+                    .skipped_targets
+                    .push(USER_KNOWLEDGE_LOCK_BUSY.to_string());
+                return Ok(summary);
+            },
+            Err(error) => return Err(error),
+        };
         summary.scanned_targets = 1;
         summary.reviewed = outcome.reviewed;
         if outcome.applied > 0 || outcome.expired > 0 {
@@ -2192,6 +2267,17 @@ impl MemoryConsolidator {
     ) -> MemoryContradictionSweepSummary {
         let mut summary = MemoryContradictionSweepSummary::default();
         summary.scanned_targets = 1;
+        // Identical copies are one memory, not a contradiction: fold them
+        // deterministically before any pair reaches the reviewer.
+        let folded = fold_identical_memory_duplicates(
+            items,
+            "memory_contradiction_sweep_identical_duplicate",
+            "memory_contradiction_sweep",
+        );
+        if folded > 0 {
+            summary.duplicates_folded += folded;
+            summary.changed_targets.push(target.to_string());
+        }
         let Some(llm_router) = self.llm_router.as_ref() else {
             summary.skipped_targets.push(target.to_string());
             return summary;
@@ -2215,7 +2301,7 @@ impl MemoryConsolidator {
                 field,
                 chunk,
             );
-            let decisions = self
+            let review = self
                 .review_memory_conflict_batch_with_policy(
                     llm_router,
                     &rule,
@@ -2225,6 +2311,7 @@ impl MemoryConsolidator {
                     Some(&source),
                 )
                 .await;
+            let decisions = &review.decisions;
             for conflict in conflicts {
                 discard_memory_conflict_review_case(conflict);
             }
@@ -2294,6 +2381,32 @@ impl MemoryConsolidator {
                         }
                         summary.keep_both += 1;
                     },
+                    // The engine considered this pair and abstained. Remember
+                    // that under the current policy key, or the same pair is
+                    // re-sent every sweep forever; a new engine revision or
+                    // reference version changes the key and reopens it.
+                    None if review.abstained.contains(&case.review_case.conflict_id) => {
+                        if contradiction_sweep_item_hash_matches(
+                            items,
+                            case.existing_index,
+                            &case.existing_hash,
+                        ) && contradiction_sweep_item_hash_matches(
+                            items,
+                            case.incoming_index,
+                            &case.incoming_hash,
+                        ) && mark_memory_pair_conflict_reviewed_with_policy(
+                            items,
+                            case.existing_index,
+                            case.incoming_index,
+                            "memory_contradiction_sweep_unresolved",
+                            &decision_policy.key,
+                        ) {
+                            summary.changed_targets.push(target.to_string());
+                        }
+                        summary.abstained += 1;
+                    },
+                    // Transient failure: nothing is recorded, so the pair is
+                    // retried on the next sweep.
                     None => {
                         summary.missing_decisions += 1;
                     },
@@ -4173,13 +4286,17 @@ Episodes:\n{episodes_json}"
             .await?;
         }
         if enforce_declared_schema {
-            validate_tier_target_value(tier_definition, field_path_ref, &merged).map_err(
-                |reason| MemoryConsolidatorError::InvalidTransformOutput {
-                    rule: rule.name.clone(),
-                    target: rule.target.clone(),
-                    reason: format!("merged value failed validation: {reason}"),
-                },
-            )?;
+            validate_merged_tier_target_value(
+                tier_definition,
+                field_path_ref,
+                &merged,
+                existing_value.as_ref(),
+            )
+            .map_err(|reason| MemoryConsolidatorError::InvalidTransformOutput {
+                rule: rule.name.clone(),
+                target: rule.target.clone(),
+                reason: format!("merged value failed validation: {reason}"),
+            })?;
         }
         if let Some(path) = field_path_ref {
             write_value_at_path(&mut tier_data.fields, path, merged)?;
@@ -4640,6 +4757,11 @@ Episodes:\n{episodes_json}"
 
         let mut cases = Vec::new();
         for (case_index, incoming_item) in incoming_items.iter().enumerate() {
+            // An identical copy is folded by the merge itself; there is no
+            // conflict for the reviewer to decide.
+            if identical_memory_duplicate_index(existing_items, incoming_item).is_some() {
+                continue;
+            }
             let Some(candidate_match) =
                 best_reviewable_memory_conflict_match(existing_items, incoming_item)
             else {
@@ -4730,6 +4852,7 @@ Episodes:\n{episodes_json}"
             llm_router, rule, target, conflicts, &policy, None,
         )
         .await
+        .decisions
     }
 
     async fn review_memory_conflict_batch_with_policy(
@@ -4740,10 +4863,11 @@ Episodes:\n{episodes_json}"
         conflicts: &[MemoryConflictReviewCase],
         policy: &memory_decisions::ConflictPolicy,
         source: Option<&memory_decisions::ConflictReplaySource<'_>>,
-    ) -> HashMap<String, memory_decisions::ConflictDecision> {
-        let decisions =
+    ) -> memory_decisions::ConflictOutcome {
+        let outcome =
             memory_decisions::conflict(self, llm_router, rule, target, conflicts, policy, source)
                 .await;
+        let decisions = &outcome.decisions;
         let reported = decisions
             .iter()
             .filter(|(_, d)| d.current())
@@ -4768,7 +4892,7 @@ Episodes:\n{episodes_json}"
             None,
             &origins,
         );
-        decisions
+        outcome
     }
 
     async fn review_memory_conflict_incumbent(
@@ -7497,6 +7621,176 @@ pub fn validate_tier_collection_items(
     validate_collection_items(items, *max_items, item_schema.as_ref(), collection_field)
 }
 
+/// Item fields the consolidator itself stamps on stored collection items:
+/// supersession (`mark_memory_item_superseded_with_reason`) and conflict-pair
+/// review bookkeeping. They are runtime-owned lifecycle metadata, not model
+/// output, so tier `item_schema`s never declare them. The stored/merged value
+/// admits them; fresh transform output is still validated strictly and may not
+/// set them.
+const MEMORY_ITEM_RUNTIME_TEXT_FIELDS: &[&str] = &[
+    "memory_lifecycle",
+    "superseded_by",
+    SUPERSEDED_BY_ITEM_KEY_METADATA_KEY,
+    "superseded_at",
+    "supersession_reason",
+    "supersession_source",
+    "superseded_id",
+    "memory_conflict_reviewed_at",
+    "memory_conflict_review_reason",
+];
+const MEMORY_ITEM_RUNTIME_COLLECTION_FIELDS: &[&str] = &["memory_conflict_reviewed_pairs"];
+
+/// Clone of `tier_definition` whose top-level collection item schemas also
+/// admit the runtime-owned lifecycle bookkeeping fields. `None` when no
+/// collection declares an item schema (nothing to augment).
+fn tier_definition_admitting_runtime_item_metadata(
+    tier_definition: &MemoryTierDefinition,
+) -> Option<MemoryTierDefinition> {
+    let mut augmented = tier_definition.clone();
+    let mut changed = false;
+    for schema in augmented.schema.values_mut() {
+        let TierFieldSchema::Collection {
+            item_schema: Some(item_schema),
+            ..
+        } = schema
+        else {
+            continue;
+        };
+        for field in MEMORY_ITEM_RUNTIME_TEXT_FIELDS {
+            if !item_schema.contains_key(*field) {
+                item_schema.insert((*field).to_string(), TierFieldSchema::Text {});
+                changed = true;
+            }
+        }
+        for field in MEMORY_ITEM_RUNTIME_COLLECTION_FIELDS {
+            if !item_schema.contains_key(*field) {
+                item_schema.insert(
+                    (*field).to_string(),
+                    TierFieldSchema::Collection {
+                        max_items: None,
+                        item_schema: None,
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+    changed.then_some(augmented)
+}
+
+/// Validate a merged tier value (stored items plus the new contribution)
+/// before it is written.
+///
+/// Differs from `validate_tier_target_value` in two ways, both so that one
+/// stored record cannot block every later consolidation of the tier:
+/// - runtime-owned lifecycle bookkeeping (`MEMORY_ITEM_RUNTIME_*_FIELDS`) is
+///   admitted on collection items;
+/// - a collection item that is byte-identical to an item already stored in
+///   `existing` is preserved as-is even when it no longer matches the schema
+///   (it was accepted when written; a later schema edit must not turn it into
+///   a permanent write blocker, and it is never silently discarded).
+///
+/// New or changed items are still validated strictly. Returns how many stored
+/// items were preserved despite failing validation.
+fn validate_merged_tier_target_value(
+    tier_definition: &MemoryTierDefinition,
+    field_path: Option<&str>,
+    merged: &Value,
+    existing: Option<&Value>,
+) -> Result<usize, String> {
+    let admitting = tier_definition_admitting_runtime_item_metadata(tier_definition);
+    let tier_definition = admitting.as_ref().unwrap_or(tier_definition);
+    let archive_definition = archive_definition_with_runtime_replay_identity(tier_definition);
+    let tier_definition = archive_definition.as_ref().unwrap_or(tier_definition);
+    let mut preserved = 0usize;
+    if let Some(path) = field_path {
+        let root = path.split('.').next().unwrap_or(path);
+        let Some(schema) = tier_definition.schema.get(root) else {
+            return Err(format!(
+                "target field `{root}` is absent from the tier schema"
+            ));
+        };
+        if !path.contains('.') {
+            validate_merged_field_value(merged, existing, schema, root, &mut preserved)?;
+        }
+        return Ok(preserved);
+    }
+    if tier_definition.schema.len() == 1 {
+        let (field, schema) = tier_definition
+            .schema
+            .iter()
+            .next()
+            .expect("single-field schema has one entry");
+        validate_merged_field_value(merged, existing, schema, field, &mut preserved)?;
+        return Ok(preserved);
+    }
+    let object = merged.as_object().ok_or_else(|| {
+        format!(
+            "tier `{}` requires an object root but received {}",
+            tier_definition.name,
+            short_value_type(merged)
+        )
+    })?;
+    for (field, field_value) in object {
+        let schema = tier_definition
+            .schema
+            .get(field)
+            .ok_or_else(|| format!("off-schema root field `{field}`"))?;
+        let existing_field = existing.and_then(|value| value.get(field));
+        validate_merged_field_value(field_value, existing_field, schema, field, &mut preserved)?;
+    }
+    Ok(preserved)
+}
+
+fn validate_merged_field_value(
+    value: &Value,
+    existing: Option<&Value>,
+    schema: &TierFieldSchema,
+    path: &str,
+    preserved: &mut usize,
+) -> Result<(), String> {
+    let (
+        Some(items),
+        TierFieldSchema::Collection {
+            max_items,
+            item_schema: Some(item_schema),
+        },
+    ) = (value.as_array(), schema)
+    else {
+        return validate_value_for_field_schema(value, schema, path);
+    };
+    if let Some(max_items) = max_items {
+        if items.len() > *max_items {
+            return Err(format!(
+                "`{path}` contains {} items, exceeding max_items {max_items}",
+                items.len()
+            ));
+        }
+    }
+    let existing_items = existing.and_then(Value::as_array);
+    for (index, item) in items.iter().enumerate() {
+        let Err(reason) = validate_collection_item(item, item_schema, path, index) else {
+            continue;
+        };
+        let already_stored = existing_items.is_some_and(|stored| {
+            stored
+                .iter()
+                .any(|stored_item| json_values_equal_iteratively(stored_item, item))
+        });
+        if !already_stored {
+            return Err(reason);
+        }
+        warn!(
+            path = %path,
+            index,
+            reason = %reason,
+            "preserving a stored memory item that no longer matches its tier schema; it does not block this merge"
+        );
+        *preserved += 1;
+    }
+    Ok(())
+}
+
 fn archive_definition_with_runtime_replay_identity(
     tier_definition: &MemoryTierDefinition,
 ) -> Option<MemoryTierDefinition> {
@@ -7573,22 +7867,32 @@ fn validate_collection_items(
     }
     if let Some(item_schema) = item_schema {
         for (index, item) in items.iter().enumerate() {
-            let object = item
-                .as_object()
-                .ok_or_else(|| format!("`{path}[{index}]` must be an object"))?;
-            for (field, field_value) in object {
-                let Some(field_schema) = item_schema.get(field) else {
-                    return Err(format!(
-                        "`{path}[{index}]` contains off-schema field `{field}`"
-                    ));
-                };
-                validate_value_for_field_schema(
-                    field_value,
-                    field_schema,
-                    &format!("{path}[{index}].{field}"),
-                )?;
-            }
+            validate_collection_item(item, item_schema, path, index)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_collection_item(
+    item: &Value,
+    item_schema: &BTreeMap<String, TierFieldSchema>,
+    path: &str,
+    index: usize,
+) -> Result<(), String> {
+    let object = item
+        .as_object()
+        .ok_or_else(|| format!("`{path}[{index}]` must be an object"))?;
+    for (field, field_value) in object {
+        let Some(field_schema) = item_schema.get(field) else {
+            return Err(format!(
+                "`{path}[{index}]` contains off-schema field `{field}`"
+            ));
+        };
+        validate_value_for_field_schema(
+            field_value,
+            field_schema,
+            &format!("{path}[{index}].{field}"),
+        )?;
     }
     Ok(())
 }
@@ -8188,6 +8492,11 @@ fn contradiction_sweep_cases_for_items_with_policy(
             if memory_conflict_pair_was_reviewed(existing_item, incoming_item, policy) {
                 continue;
             }
+            // Identical copies are folded, never reviewed (see
+            // `fold_identical_memory_duplicates`).
+            if memory_items_are_identical_duplicates(existing_item, incoming_item) {
+                continue;
+            }
             let similarity = match (
                 similarity_text(existing_item).as_deref(),
                 similarity_text(incoming_item).as_deref(),
@@ -8590,7 +8899,15 @@ fn merge_upsert_by_similarity_preserving_conflicts(
         return clone_json_iteratively(existing);
     };
 
+    // Identical copies are folded into the item they repeat after every
+    // reviewed decision is applied: folding changes the item's hash, and the
+    // review plan is keyed by the hashes it reviewed.
+    let mut folds = Vec::new();
     for incoming_item in incoming_items {
+        if let Some(index) = identical_memory_duplicate_index(&existing_items, incoming_item) {
+            folds.push((index, incoming_item));
+            continue;
+        }
         if let Some(candidate_match) =
             best_reviewable_memory_conflict_match(&existing_items, incoming_item)
         {
@@ -8614,8 +8931,284 @@ fn merge_upsert_by_similarity_preserving_conflicts(
             existing_items.push(clone_json_iteratively(incoming_item));
         }
     }
+    for (index, duplicate) in folds {
+        // A reviewed replacement retired the item this copy repeats: the copy
+        // is that retired claim, so it is dropped, never folded or revived.
+        if memory_item_is_superseded(&existing_items[index]) {
+            continue;
+        }
+        fold_memory_duplicate_provenance(&mut existing_items[index], duplicate);
+    }
 
     Value::Array(existing_items)
+}
+
+/// Durable-key fields whose value is a statement (an insight's text). The key
+/// already compares it normalized, so it is exempt from the exact comparison
+/// of the remaining claim fields.
+const MEMORY_STATEMENT_KEY_FIELDS: &[&str] = &["pattern", "insight"];
+
+/// How often, where and when a claim was observed (the fields a fold merges),
+/// plus review and supersession bookkeeping. Copies that differ only here are
+/// one memory: they are folded, not reviewed.
+const MEMORY_DUPLICATE_PROVENANCE_FIELDS: &[&str] = &[
+    "evidence_count",
+    "confidence",
+    "source_episodes",
+    "merged_from",
+    "created_at",
+    "updated_at",
+    "last_seen",
+    "memory_conflict_reviewed_pairs",
+    "memory_conflict_reviewed_at",
+    "memory_conflict_review_reason",
+    "superseded_by",
+    SUPERSEDED_BY_ITEM_KEY_METADATA_KEY,
+    "superseded_at",
+    "supersession_reason",
+    "supersession_source",
+    "superseded_id",
+];
+
+/// True when two items are copies of one memory: the same durable key, taken
+/// from the same field, and every other non-provenance field exactly equal.
+/// Exact under `durable_memory_key`'s normalization, never a similarity score.
+/// A statement key (`pattern`, `insight`) is compared normalized through the
+/// key; any other claim-bearing field (`type`, `status`, a recommendation,
+/// `project_id`, a value under an identifier key, ...) that differs keeps the
+/// pair a conflict for the reviewer.
+fn memory_items_are_identical_duplicates(left: &Value, right: &Value) -> bool {
+    let (Value::Object(left_map), Value::Object(right_map)) = (left, right) else {
+        return false;
+    };
+    let Some(field) = durable_memory_key_source_field(left) else {
+        return false;
+    };
+    if durable_memory_key_source_field(right) != Some(field) {
+        return false;
+    }
+    match (durable_memory_key(left), durable_memory_key(right)) {
+        (Some(left_key), Some(right_key)) if left_key == right_key => {},
+        _ => return false,
+    }
+    let statement_field = MEMORY_STATEMENT_KEY_FIELDS
+        .contains(&field)
+        .then_some(field);
+    let is_claim_field = |name: &str| {
+        Some(name) != statement_field && !MEMORY_DUPLICATE_PROVENANCE_FIELDS.contains(&name)
+    };
+    left_map
+        .keys()
+        .filter(|name| is_claim_field(name.as_str()))
+        .count()
+        == right_map
+            .keys()
+            .filter(|name| is_claim_field(name.as_str()))
+            .count()
+        && left_map
+            .iter()
+            .filter(|(name, _)| is_claim_field(name.as_str()))
+            .all(|(name, value)| {
+                right_map
+                    .get(name)
+                    .is_some_and(|other| json_values_equal_iteratively(value, other))
+            })
+}
+
+/// First active item `incoming` is an identical copy of.
+fn identical_memory_duplicate_index(existing_items: &[Value], incoming: &Value) -> Option<usize> {
+    existing_items.iter().position(|existing| {
+        !memory_item_is_superseded(existing)
+            && memory_items_are_identical_duplicates(existing, incoming)
+    })
+}
+
+/// Folds every later identical copy into the earliest active copy and marks
+/// the copy superseded (kept for audit, never hard-deleted). No model call:
+/// identical copies cannot contradict each other. Returns the number folded.
+fn fold_identical_memory_duplicates(items: &mut [Value], reason: &str, source: &str) -> usize {
+    let mut survivors: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut folded = 0;
+    for index in 0..items.len() {
+        if memory_item_is_superseded(&items[index]) {
+            continue;
+        }
+        let Some(key) = durable_memory_key(&items[index]) else {
+            continue;
+        };
+        let candidates = survivors.entry(key).or_default();
+        let Some(survivor) = candidates.iter().copied().find(|&survivor| {
+            memory_items_are_identical_duplicates(&items[survivor], &items[index])
+        }) else {
+            candidates.push(index);
+            continue;
+        };
+        let (head, tail) = items.split_at_mut(index);
+        fold_memory_duplicate_provenance(&mut head[survivor], &tail[0]);
+        let mut replacement = mark_memory_item_superseded_with_reason(
+            &items[index],
+            &items[survivor],
+            reason,
+            source,
+        );
+        // Byte-identical copies would share `existing_key::hash(copy)`, and so
+        // one `superseded:<id>` candidate key; bind the id to this fold too.
+        if let Value::Object(map) = &mut replacement {
+            let fold_hash = blake3::hash(
+                serde_json::to_string(&(
+                    "fold-v1",
+                    json_value_hash(&items[index]),
+                    memory_conflict_review_identity_hash(&items[survivor]),
+                    survivor,
+                    index,
+                ))
+                .unwrap_or_default()
+                .as_bytes(),
+            )
+            .to_hex()
+            .to_string();
+            map.insert(
+                "superseded_id".to_string(),
+                Value::String(format!(
+                    "{}::{fold_hash}",
+                    memory_conflict_item_key(&items[index])
+                )),
+            );
+        }
+        let replaced = std::mem::replace(&mut items[index], replacement);
+        discard_json_iteratively(replaced);
+        folded += 1;
+    }
+    folded
+}
+
+/// Merges a copy's provenance into the item it repeats. `evidence_count` and
+/// `confidence` keep the larger value, not the sum: the distiller re-reads the
+/// tier it writes, so a copy's count already includes the original's
+/// evidence. Episode lists are unioned by episode id, `created_at` keeps the
+/// earliest and `updated_at`/`last_seen` the latest. Each kept value is the
+/// original JSON value, so a string count stays a string.
+fn fold_memory_duplicate_provenance(survivor: &mut Value, duplicate: &Value) {
+    let (Value::Object(target), Value::Object(source)) = (survivor, duplicate) else {
+        return;
+    };
+    for field in ["evidence_count", "confidence"] {
+        fold_memory_scalar_field(
+            target,
+            source,
+            field,
+            memory_numeric_value,
+            Ordering::Greater,
+        );
+    }
+    fold_memory_scalar_field(
+        target,
+        source,
+        "created_at",
+        memory_timestamp_value,
+        Ordering::Less,
+    );
+    for field in ["updated_at", "last_seen"] {
+        fold_memory_scalar_field(
+            target,
+            source,
+            field,
+            memory_timestamp_value,
+            Ordering::Greater,
+        );
+    }
+    for field in ["source_episodes", "merged_from"] {
+        fold_memory_list_field(target, source, field);
+    }
+}
+
+fn fold_memory_scalar_field<T: PartialOrd>(
+    target: &mut Map<String, Value>,
+    source: &Map<String, Value>,
+    field: &str,
+    parse: fn(&Value) -> Option<T>,
+    prefer: Ordering,
+) {
+    let Some(candidate) = source.get(field) else {
+        return;
+    };
+    let Some(candidate_value) = parse(candidate) else {
+        return;
+    };
+    let replace = match target.get(field).and_then(parse) {
+        Some(current) => candidate_value.partial_cmp(&current) == Some(prefer),
+        None => true,
+    };
+    if replace {
+        let previous = target.insert(field.to_string(), clone_json_iteratively(candidate));
+        if let Some(previous) = previous {
+            discard_json_iteratively(previous);
+        }
+    }
+}
+
+fn memory_numeric_value(value: &Value) -> Option<f64> {
+    let number = match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    number.filter(|number| number.is_finite())
+}
+
+fn memory_timestamp_value(value: &Value) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value.as_str()?.trim())
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
+fn fold_memory_list_field(
+    target: &mut Map<String, Value>,
+    source: &Map<String, Value>,
+    field: &str,
+) {
+    let Some(Value::Array(incoming)) = source.get(field) else {
+        return;
+    };
+    if incoming.is_empty() {
+        return;
+    }
+    let entry = target
+        .entry(field.to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if entry.is_null() {
+        *entry = Value::Array(Vec::new());
+    }
+    let Some(current) = entry.as_array_mut() else {
+        return;
+    };
+    let mut seen = current
+        .iter()
+        .map(memory_list_entry_identity)
+        .collect::<HashSet<_>>();
+    for value in incoming {
+        if seen.insert(memory_list_entry_identity(value)) {
+            current.push(clone_json_iteratively(value));
+        }
+    }
+}
+
+/// One provenance entry's identity. Copies of one insight carry the same
+/// episode as `"id"`, `{"key": id}` or `{"episode": id}`; all are one episode.
+fn memory_list_entry_identity(value: &Value) -> String {
+    match value {
+        Value::String(text) => normalize_text_key(text),
+        Value::Object(map) => ["episode", "episode_id", "key", "id"]
+            .iter()
+            .find_map(|field| {
+                map.get(*field)
+                    .and_then(Value::as_str)
+                    .map(normalize_text_key)
+                    .filter(|identity| !identity.is_empty())
+            })
+            .unwrap_or_else(|| json_value_hash(value)),
+        _ => json_value_hash(value),
+    }
 }
 
 fn merge_append_period(existing: &Value, incoming: &Value) -> Value {
@@ -8805,15 +9398,33 @@ fn stamp_fact_items(items: &mut [Value], project_id: &str) {
     }
 }
 
+/// Fields `durable_memory_key` names an item by, in priority order; the first
+/// non-empty one wins, then `type`/`entity_type` + `name`.
+const DURABLE_MEMORY_KEY_FIELDS: [&str; 6] = [
+    "key",
+    "environment_key",
+    "pattern",
+    "insight",
+    "source_id",
+    "id",
+];
+
+/// The field `durable_memory_key` derived the item's key from (`"name"` for the
+/// type + name fallback).
+fn durable_memory_key_source_field(value: &Value) -> Option<&'static str> {
+    DURABLE_MEMORY_KEY_FIELDS
+        .into_iter()
+        .find(|field| {
+            value
+                .get(*field)
+                .and_then(Value::as_str)
+                .is_some_and(|raw| !normalize_text_key(raw).is_empty())
+        })
+        .or_else(|| value.get("name").and_then(Value::as_str).map(|_| "name"))
+}
+
 fn durable_memory_key(value: &Value) -> Option<String> {
-    for field in [
-        "key",
-        "environment_key",
-        "pattern",
-        "insight",
-        "source_id",
-        "id",
-    ] {
+    for field in DURABLE_MEMORY_KEY_FIELDS {
         if let Some(raw) = value.get(field).and_then(Value::as_str) {
             let normalized = normalize_text_key(raw);
             if !normalized.is_empty() {
@@ -9154,13 +9765,19 @@ fn run_builtin_transform(builtin: &BuiltinTransform, source_data: &Consolidation
 }
 
 fn append_strategy_record_for_episode_v3(episode: &V3EpisodeRecord) -> Value {
+    // Recall text: a raw strategy can echo the run's whole goal and policy.
     let strategy_type = episode
         .strategy_summary
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("unknown")
-        .to_string();
+        .map(|_| {
+            episode
+                .recalled_strategy_text()
+                .unwrap_or_else(|| episode.recalled_outcome_text())
+        })
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
     let execution_time_ms = episode_duration_ms_v3(episode);
     serde_json::to_value(StrategyRecord {
         goal_id: episode.goal_id().to_string(),
@@ -9190,11 +9807,14 @@ fn map_episode_to_task_value_v3(
     let completed_at = episode.completed_at_dt().unwrap_or_else(|_| Utc::now());
     let started_at = episode.started_at_dt().unwrap_or(completed_at);
     let mut notes = string_list_from_value(existing_fields.get("notes"));
+    // Tier memory is replayed into later prompts, so it keeps the recall
+    // text: bounded, with an echoed goal and its operating policy removed.
+    let outcome = episode.recalled_outcome_text();
     let note = format!(
         "{} seq {}: {}",
         completed_at.to_rfc3339(),
         episode.trigger_seq,
-        episode.outcome_summary_text()
+        outcome
     );
     if notes.last().map(|current| current != &note).unwrap_or(true) {
         notes.push(note);
@@ -9220,7 +9840,7 @@ fn map_episode_to_task_value_v3(
         "goal_id": episode.goal_id(),
         "status": status,
         "first_seen": first_seen,
-        "context_summary": episode.outcome_summary_text(),
+        "context_summary": outcome,
         "items": items,
         "notes": notes,
     })
@@ -9613,12 +10233,15 @@ fn episode_consolidation_source_value_with_signal(
         "root_execution_id": episode.root_execution_id.clone(),
         "ui_thread_id": episode.ui_thread_id.clone(),
         "status": episode_outcome_status_v3(episode),
-        "outcome_summary": episode.outcome_summary_text(),
+        // Recall text, never the raw outcome or description: those can carry
+        // the run's server-injected operating policy, which extraction would
+        // otherwise learn as an agent decision.
+        "outcome_summary": episode.recalled_outcome_text(),
         "outcome_remaining": episode.outcome_remaining.clone(),
         "failure_count": episode.failure_count,
         "last_error": episode.last_error.clone(),
         "task_title": episode.task_title.clone(),
-        "task_description": episode.task_description.clone(),
+        "task_intent": episode.recalled_intent_text(),
         "outcome_type": episode.outcome_type.clone(),
         "execution_status": episode.execution_status.clone(),
         "memory_quality": {
@@ -9636,10 +10259,10 @@ fn episode_consolidation_source_value_with_signal(
         "observation_count": episode.observations.len(),
         "conversation_sources": episode_conversation_sources(episode),
         "conversation_instruction": "Use exact quotes from conversation_sources. Preserve speaker, date, conditions and corrections. User text may quote or import other people's statements: attribute those to the quoted speaker, never the owner. Assistant suggestions and inferences are inferred evidence, never explicit owner statements. Facts augment the retained source.",
-        "memory_candidates_excerpt": bounded_memory_candidates_excerpt(&episode.memory_candidates, 1800),
+        "memory_candidates_excerpt": bounded_memory_candidates_excerpt(&consolidation_memory_candidates(episode), 1800),
         "memory_updates_excerpt": bounded_serde_json_excerpt(&episode.memory_updates, 1000),
         "actions_taken_excerpt": bounded_action_summaries_excerpt(&episode.actions_taken, 1400),
-        "observations_excerpt": bounded_serde_json_excerpt(&episode.observations, 1200),
+        "observations_excerpt": bounded_serde_json_excerpt(&consolidation_observations(episode), 1200),
         "artifact_output_excerpt": bounded_optional_json_excerpt(episode.artifact_output.as_ref(), 1200),
     })
 }
@@ -9650,12 +10273,15 @@ pub fn episode_memory_quality_classifier_value(episode: &V3EpisodeRecord) -> Val
         "goal_key": episode.goal_key.clone(),
         "completed_at": episode.completed_at.clone(),
         "status": episode_outcome_status_v3(episode),
-        "outcome_summary": episode.outcome_summary_text(),
+        // Recall text, never the raw outcome or description: those can carry
+        // the run's server-injected operating policy, which extraction would
+        // otherwise learn as an agent decision.
+        "outcome_summary": episode.recalled_outcome_text(),
         "outcome_remaining": episode.outcome_remaining.clone(),
         "failure_count": episode.failure_count,
         "last_error": episode.last_error.clone(),
         "task_title": episode.task_title.clone(),
-        "task_description": episode.task_description.clone(),
+        "task_intent": episode.recalled_intent_text(),
         "outcome_type": episode.outcome_type.clone(),
         "execution_status": episode.execution_status.clone(),
         "memory_candidate_count": episode.memory_candidates.len(),
@@ -9663,10 +10289,10 @@ pub fn episode_memory_quality_classifier_value(episode: &V3EpisodeRecord) -> Val
         "action_count": episode.actions_taken.len(),
         "observation_count": episode.observations.len(),
         "conversation_sources": episode_conversation_sources(episode),
-        "memory_candidates_excerpt": bounded_memory_candidates_excerpt(&episode.memory_candidates, 1000),
+        "memory_candidates_excerpt": bounded_memory_candidates_excerpt(&consolidation_memory_candidates(episode), 1000),
         "memory_updates_excerpt": bounded_serde_json_excerpt(&episode.memory_updates, 700),
         "actions_taken_excerpt": bounded_action_summaries_excerpt(&episode.actions_taken, 700),
-        "observations_excerpt": bounded_serde_json_excerpt(&episode.observations, 700),
+        "observations_excerpt": bounded_serde_json_excerpt(&consolidation_observations(episode), 700),
         "artifact_output_excerpt": bounded_optional_json_excerpt(episode.artifact_output.as_ref(), 700),
     })
 }
@@ -9872,6 +10498,110 @@ fn bounded_optional_json_excerpt(value: Option<&Value>, max_chars: usize) -> Str
             writer.write_all(b"null")
         }),
     }
+}
+
+/// The episode's memory candidates as extraction reads them. A terminal
+/// record's own candidates repeat its outcome statement and, on older
+/// records, the raw task description — both can carry the run's operating
+/// policy, or carry a handoff payload. A candidate's `task_description` is
+/// replaced by the recalled intent, and its `summary` and evidence by their
+/// recall text ([`V3EpisodeRecord::recalled_text`]). Every other candidate, and every
+/// other field, is passed through unchanged; borrowed when nothing changes.
+fn consolidation_memory_candidates(episode: &V3EpisodeRecord) -> Cow<'_, [MemoryCandidate]> {
+    let cleaned = episode
+        .memory_candidates
+        .iter()
+        .map(|candidate| consolidation_memory_candidate(episode, candidate))
+        .collect::<Vec<_>>();
+    if cleaned.iter().all(Option::is_none) {
+        return Cow::Borrowed(&episode.memory_candidates);
+    }
+    Cow::Owned(
+        cleaned
+            .into_iter()
+            .zip(&episode.memory_candidates)
+            .map(|(cleaned, original)| {
+                cleaned.unwrap_or_else(|| MemoryCandidate {
+                    candidate_type: original.candidate_type.clone(),
+                    target_hint: original.target_hint.clone(),
+                    key: original.key.clone(),
+                    value: clone_json_iteratively(&original.value),
+                    confidence: original.confidence,
+                    source: original.source.clone(),
+                    evidence: original.evidence.clone(),
+                    rationale: original.rationale.clone(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// `Some` cleaned copy of one candidate when recall would show it differently.
+fn consolidation_memory_candidate(
+    episode: &V3EpisodeRecord,
+    candidate: &MemoryCandidate,
+) -> Option<MemoryCandidate> {
+    let summary = candidate
+        .value
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(|summary| episode.recalled_text(summary))
+        .filter(|recalled| {
+            Some(&**recalled) != candidate.value.get("summary").and_then(Value::as_str)
+        });
+    let has_description = candidate.value.get("task_description").is_some();
+    let evidence = candidate
+        .evidence
+        .iter()
+        .map(|line| episode.recalled_text(line))
+        .collect::<Vec<_>>();
+    let evidence_changed = evidence
+        .iter()
+        .zip(&candidate.evidence)
+        .any(|(recalled, line)| *recalled != *line);
+    if summary.is_none() && !has_description && !evidence_changed {
+        return None;
+    }
+    let mut value = match &candidate.value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, _)| key.as_str() != "task_description")
+                .map(|(key, value)| (key.clone(), clone_json_iteratively(value)))
+                .collect(),
+        ),
+        other => clone_json_iteratively(other),
+    };
+    if let Some(summary) = summary {
+        value["summary"] = Value::String(summary.into_owned());
+    }
+    if has_description && value.get("task_intent").is_none() {
+        value["task_intent"] = json!(episode.recalled_intent_text());
+    }
+    Some(MemoryCandidate {
+        candidate_type: candidate.candidate_type.clone(),
+        target_hint: candidate.target_hint.clone(),
+        key: candidate.key.clone(),
+        value,
+        confidence: candidate.confidence,
+        source: candidate.source.clone(),
+        evidence: evidence.into_iter().map(Cow::into_owned).collect(),
+        rationale: candidate.rationale.clone(),
+    })
+}
+
+/// The episode's observations as extraction reads them: older terminal records
+/// copied the raw task description (and its operating policy) into one, which
+/// the recalled intent in the projection stands for; every other observation
+/// keeps only the user-facing prose it leads with.
+fn consolidation_observations(episode: &V3EpisodeRecord) -> Vec<Cow<'_, str>> {
+    episode
+        .observations
+        .iter()
+        .filter(|observation| !observation.trim_start().starts_with("task_description:"))
+        .map(|observation| {
+            magician_vector_index::episode_candidates::user_facing_prose(observation)
+        })
+        .collect()
 }
 
 fn bounded_memory_candidates_excerpt(candidates: &[MemoryCandidate], max_chars: usize) -> String {
@@ -10758,6 +11488,7 @@ fn clone_episode_record_iteratively(episode: &V3EpisodeRecord) -> V3EpisodeRecor
         ui_thread_id: episode.ui_thread_id.clone(),
         task_title: episode.task_title.clone(),
         task_description: episode.task_description.clone(),
+        task_intent: episode.task_intent.clone(),
         execution_status: episode.execution_status.clone(),
         outcome_type: episode.outcome_type.clone(),
         execution_output_id: episode.execution_output_id.clone(),
@@ -10875,7 +11606,7 @@ fn source_data_text(source_data: &ConsolidationInput) -> String {
                     episode_outcome_status_v3(episode),
                     signal.classification,
                     signal.extraction_priority,
-                    episode.outcome_summary_text()
+                    episode.recalled_outcome_text()
                 );
                 if !signal.reasons.is_empty() {
                     line.push_str(" signal_reasons=");
@@ -10891,7 +11622,7 @@ fn source_data_text(source_data: &ConsolidationInput) -> String {
                     }
                     line.push_str(" memory_candidates=");
                     line.push_str(&bounded_memory_candidates_excerpt(
-                        &episode.memory_candidates,
+                        &consolidation_memory_candidates(episode),
                         1400,
                     ));
                 }
@@ -10904,7 +11635,10 @@ fn source_data_text(source_data: &ConsolidationInput) -> String {
                 }
                 if !episode.observations.is_empty() {
                     line.push_str(" observations=");
-                    line.push_str(&bounded_serde_json_excerpt(&episode.observations, 800));
+                    line.push_str(&bounded_serde_json_excerpt(
+                        &consolidation_observations(episode),
+                        800,
+                    ));
                 }
                 if !episode.memory_updates.is_empty() {
                     line.push_str(" memory_updates=");
@@ -11745,6 +12479,32 @@ pub fn is_non_fatal_rule_error(err: &MemoryConsolidatorError) -> bool {
     )
 }
 
+/// Skipped-target marker: the user-knowledge pass found `knowledge.json`
+/// locked and will retry on the next sweep.
+pub const USER_KNOWLEDGE_LOCK_BUSY: &str = "user.knowledge:lock_busy";
+
+/// Skipped-rule marker: the agent-tier contradiction sweep found a memory file
+/// lock busy; the batch outcome before it is kept.
+pub const CONTRADICTION_SWEEP_LOCK_BUSY: &str = "memory_contradiction_sweep:lock_busy";
+
+/// Map a memory-lifecycle pass failure (`anyhow`) back onto the typed memory
+/// error it carries. Flattening it into `Validation(error.to_string())` turned
+/// a busy shared lock (`.knowledge.json.flock`) into "validation error: storage
+/// error: timed out acquiring file lock ...", which `is_memory_file_lock_timeout`
+/// cannot recognise, so every sweep tick logged it as a failure for every agent.
+fn memory_lifecycle_pass_error(error: anyhow::Error) -> MemoryConsolidatorError {
+    let error = match error.downcast::<AgentMemoryError>() {
+        Ok(memory) => return MemoryConsolidatorError::Memory(memory),
+        Err(error) => error,
+    };
+    match error.downcast::<AgentStorageError>() {
+        Ok(storage) => MemoryConsolidatorError::Memory(AgentMemoryError::Storage(storage)),
+        Err(error) => {
+            MemoryConsolidatorError::Memory(AgentMemoryError::Validation(error.to_string()))
+        },
+    }
+}
+
 pub fn is_memory_file_lock_timeout(err: &MemoryConsolidatorError) -> bool {
     matches!(
         err,
@@ -11874,6 +12634,101 @@ mod tests {
     use chrono::Duration as ChronoDuration;
     use tempfile::tempdir;
 
+    /// A busy `knowledge.json` lock costs neither the batch work nor the
+    /// sweep: the per-agent batch sweep no longer touches user knowledge, and
+    /// the per-scope user pass reports the busy lock as a skipped target.
+    #[tokio::test]
+    async fn busy_knowledge_lock_keeps_batch_outcome_and_skips_the_user_pass() {
+        use crate::magician_v2::agents::storage::override_file_lock_timeout_for_test;
+        let tmp = tempdir().unwrap();
+        let memory = AgentMemoryService::with_base_path(tmp.path());
+        let consolidator = MemoryConsolidator::new(memory.clone(), None, None);
+        let mut definition = sample_definition();
+        let mut rule = sample_llm_batch_rule("guarded_extract");
+        rule.source = "episodes(g1, unprocessed=true)".to_string();
+        definition.memory_consolidation.push(rule);
+        let episode = sample_episode("agent-a", "g1", 1, "remember the guarded input");
+        store_native_episode(&memory, "agent-a", &episode).await;
+        // A legacy schema echo makes the user pass need a write (quarantine),
+        // so it genuinely has to ask for the lock.
+        memory
+            .save_user_knowledge(&json!({
+                "preferences": {"type": "collection", "item_schema": {"key": "k", "value": "v"}},
+                "allowed_user_tiers": ["preferences"],
+                "promotion_rule": "Promote facts",
+                "identity": [{"key": "city", "value": "Pune"}]
+            }))
+            .await
+            .unwrap();
+
+        let _short = override_file_lock_timeout_for_test(std::time::Duration::from_millis(300));
+        let held =
+            AgentStorage::acquire_file_lock_exclusive(&memory.storage().user_knowledge_path())
+                .await
+                .unwrap();
+
+        let outcome = consolidator
+            .run_batch_sweep_for_agent(&definition, "agent-a", Utc::now())
+            .await
+            .expect("a busy knowledge lock must not fail the agent's batch sweep");
+        assert_eq!(outcome.skipped_rules, vec!["guarded_extract"]);
+        let state = consolidator.load_run_state("agent-a").await.unwrap();
+        assert!(
+            state.failures.contains_key("guarded_extract"),
+            "the batch work done before the contradiction step is kept"
+        );
+
+        let summary = consolidator
+            .run_user_knowledge_pass(Utc::now())
+            .await
+            .expect("a busy knowledge lock is not a user-pass failure");
+        assert_eq!(summary.skipped_targets, vec![USER_KNOWLEDGE_LOCK_BUSY]);
+
+        drop(held);
+        let summary = consolidator
+            .run_user_knowledge_pass(Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            summary.skipped_targets.is_empty(),
+            "{:?}",
+            summary.skipped_targets
+        );
+    }
+
+    #[test]
+    fn lifecycle_pass_lock_timeout_stays_recognisable_as_a_lock_timeout() {
+        let lock_timeout = || AgentStorageError::FileLockTimeout {
+            lock_path: "/tmp/memory/users/.knowledge.json.flock".to_string(),
+            wait_ms: 10_000,
+        };
+        // How the lifecycle pass surfaces it: an `AgentMemoryError` through
+        // `?`, possibly with context added on the way out.
+        let via_memory = anyhow::Error::from(AgentMemoryError::Storage(lock_timeout()));
+        let mapped = memory_lifecycle_pass_error(via_memory);
+        assert!(is_memory_file_lock_timeout(&mapped), "{mapped}");
+        assert!(!mapped.to_string().starts_with("validation error"));
+
+        let with_context = anyhow::Error::from(AgentMemoryError::Storage(lock_timeout()))
+            .context("memory review pass");
+        assert!(is_memory_file_lock_timeout(&memory_lifecycle_pass_error(
+            with_context
+        )));
+
+        let via_storage = anyhow::Error::from(lock_timeout());
+        assert!(is_memory_file_lock_timeout(&memory_lifecycle_pass_error(
+            via_storage
+        )));
+
+        // Anything else keeps its message, as a validation error.
+        let other = memory_lifecycle_pass_error(anyhow::anyhow!("review referenced nothing"));
+        assert!(!is_memory_file_lock_timeout(&other));
+        assert_eq!(
+            other.to_string(),
+            "validation error: review referenced nothing"
+        );
+    }
+
     #[test]
     fn memory_recall_consolidation_views_preserve_full_sources_and_speaker() {
         let mut episode = sample_episode("personal-assistant", "chat:session", 1, "Saved");
@@ -11904,6 +12759,124 @@ mod tests {
         let source = ConsolidationInput::Episodes(vec![episode]);
         assert!(source_data_json(&source).contains(tail));
         assert!(source_data_text(&source).contains(tail));
+    }
+
+    /// The live 2026-10-20 shape: a legacy terminal episode whose outcome,
+    /// strategy, description observation and terminal-outcome candidate all
+    /// carry the run's whole goal — server-injected VibeDev operating policy
+    /// included. Extraction must see the intent and the findings, never the
+    /// policy, or it learns that policy as an agent decision.
+    #[test]
+    fn consolidation_inputs_carry_intent_and_outcome_not_a_goals_operating_policy() {
+        const POLICY: [&str; 6] = [
+            "Build runs must invoke run_coding_task",
+            "CodeChangeProposal",
+            "Trusted project",
+            "repo_path",
+            "VIBEDEV_USER_PROMPT",
+            "Execution resumed",
+        ];
+        let description = "VibeDev coding request:\nOriginal VibeDev user prompt:\n\
+            <<<VIBEDEV_USER_PROMPT\nAdd a line to README.md. Nothing else.\nVIBEDEV_USER_PROMPT\n\n\
+            VibeDev project context:\nrun_coding_task repo_path: /tmp/rehearsal-repo\n\
+            - Build runs must invoke run_coding_task before any shell/file pre-inspection.\n\
+            - Stage code changes as CodeChangeProposal diff_approval items.\n";
+        let summary = format!(
+            "Goal partially achieved: {description}\nTrusted project (git branch mode):\n\
+             - There is NO CodeChangeProposal for this project.\n\n\
+             [Execution resumed at iteration 1/12000].\n\n\
+             ## PARTIAL SUCCESS — completed work and remaining gaps\n\n\
+             Proposal ccp-1 was rejected; README.md is unchanged.\n\n\
+             ### BLOCKED / REMAINING\n- Apply the README change."
+        );
+        let mut episode = sample_episode("cto", "task_legacy", 7, &summary);
+        episode.task_title = Some("VibeDev · Add a line to README.md".into());
+        episode.task_description = Some(description.into());
+        episode.strategy_summary = Some(summary.clone());
+        episode.observations = vec![
+            "task_id: task_legacy".into(),
+            format!("task_description: {description}"),
+            "outcome_type: goal_achieved_partial".into(),
+        ];
+        episode.memory_candidates = vec![
+            crate::magician_v2::artifact_v2::memory::MemoryCandidate {
+                candidate_type: "terminal_outcome".into(),
+                target_hint: "agent.memory_quality_source".into(),
+                key: Some("ep-7".into()),
+                value: json!({
+                    "outcome_type": "goal_achieved_partial",
+                    "summary": summary,
+                    "task_title": "VibeDev · Add a line to README.md",
+                    "task_description": description,
+                }),
+                confidence: 0.85,
+                source: "terminal_execution".into(),
+                evidence: vec![summary.clone()],
+                rationale: "Terminal outcome is source material.".into(),
+            },
+            crate::magician_v2::artifact_v2::memory::MemoryCandidate {
+                candidate_type: "final_output_excerpt".into(),
+                target_hint: "agent_or_user_memory_candidate_source".into(),
+                key: None,
+                value: json!({
+                    "audience": "user",
+                    "content_excerpt": "Proposal ccp-1 was rejected; README.md is unchanged.",
+                }),
+                confidence: 0.9,
+                source: "task_user_output".into(),
+                evidence: Vec::new(),
+                rationale: String::new(),
+            },
+        ];
+        let intent = "Add a line to README.md. Nothing else.";
+        let findings = "Proposal ccp-1 was rejected; README.md is unchanged.";
+
+        let projection = episode_consolidation_source_value(&episode);
+        let classifier = episode_memory_quality_classifier_value(&episode);
+        for value in [&projection, &classifier] {
+            assert_eq!(value["task_intent"], intent);
+            assert!(value.get("task_description").is_none());
+            let outcome = value["outcome_summary"].as_str().unwrap();
+            assert!(
+                outcome.starts_with(&format!("Goal partially achieved: {intent}\n{findings}")),
+                "{outcome}"
+            );
+        }
+        let source = ConsolidationInput::Episodes(vec![clone_episode_record_iteratively(&episode)]);
+        let inputs = [
+            projection.to_string(),
+            classifier.to_string(),
+            source_data_json(&source),
+            source_data_text(&source),
+        ];
+        for input in &inputs {
+            assert!(input.contains(intent), "{input}");
+            assert!(input.contains(findings), "{input}");
+            for policy in POLICY {
+                assert!(
+                    !input.contains(policy),
+                    "{policy:?} reached extraction: {input}"
+                );
+            }
+        }
+        let strategy = append_strategy_record_for_episode_v3(&episode);
+        let strategy = strategy["strategy_type"].as_str().unwrap();
+        assert!(
+            strategy.starts_with(&format!("Goal partially achieved: {intent}")),
+            "{strategy}"
+        );
+        for policy in POLICY {
+            assert!(
+                !strategy.contains(policy),
+                "{policy:?} in strategy: {strategy}"
+            );
+        }
+        // A record with nothing to clean is passed through untouched.
+        let plain = sample_episode("cto", "task_plain", 8, "Line count: 4.");
+        assert!(matches!(
+            consolidation_memory_candidates(&plain),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -12422,6 +13395,8 @@ mod tests {
 
     #[tokio::test]
     async fn memory_conflict_review_outage_revokes_cached_supersession_before_merge() {
+        // The decision host is process-global.
+        let _serial = crate::magician_v2::decisions::test_engine::serial().await;
         use crate::magician_v2::decision_host;
         use crate::magician_v2::decision_host::classification::test_participation;
         use decision_engine_contract::{OperationPolicy, OperationsResponse, CONTRACT_VERSION};
@@ -12442,6 +13417,8 @@ mod tests {
                 route_local: vec![],
                 route_cloud: vec!["jev".into()],
                 classification: Default::default(),
+                images_local: false,
+                images_cloud: false,
             }],
         };
         let authority = test_participation(&missing_socket, operations);
@@ -12574,6 +13551,8 @@ mod tests {
 
     #[tokio::test]
     async fn memory_conflict_qualified_owner_store_applies_each_reviewed_direction() {
+        // The decision host is process-global.
+        let _serial = crate::magician_v2::decisions::test_engine::serial().await;
         use crate::magician_v2::decision_host;
         use decision_engine_contract::{
             batch::{BatchResponse, DecisionItemResult, ItemStatus},
@@ -12609,6 +13588,8 @@ mod tests {
                 route_local: vec![],
                 route_cloud: vec!["jev".into()],
                 classification,
+                images_local: false,
+                images_cloud: false,
             }],
         };
         let answer = Arc::new(std::sync::Mutex::new((String::new(), false)));
@@ -12837,6 +13818,519 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn contradiction_sweep_folds_copies_remembers_abstentions_and_retries_failures() {
+        // The decision host is process-global.
+        let _serial = crate::magician_v2::decisions::test_engine::serial().await;
+        use crate::magician_v2::decision_host;
+        use decision_engine_contract::{
+            batch::{BatchResponse, DecisionItemResult, ItemStatus},
+            classification::ClassificationPolicy,
+            request::{Answer, DecisionResponse, Usage},
+            DecideRequest, DecideResponse, DecideStatus, OperationPolicy, OperationsResponse,
+            CONTRACT_VERSION,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::UnixListener,
+        };
+
+        let socket_dir = tempdir().unwrap();
+        let socket = socket_dir.path().join("sweep-conflict.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let operations = OperationsResponse {
+            contract_version: CONTRACT_VERSION,
+            action_contract_version: Some(CONTRACT_VERSION),
+            engine_instance: "fixture-engine".into(),
+            policy_revision: "fixture-sweep-v1".into(),
+            operations: vec![OperationPolicy {
+                name: "memory_conflict_review".into(),
+                shadow: false,
+                gate: true,
+                max_consecutive_steps: 3,
+                sees_body: true,
+                route_local: vec![],
+                route_cloud: vec!["jev".into()],
+                classification: ClassificationPolicy::default(),
+                images_local: false,
+                images_cloud: false,
+            }],
+        };
+        // "abstain": every item answered, none above the gate.
+        // "fail": every item failed before answering (a transient failure).
+        let mode = Arc::new(std::sync::Mutex::new("abstain"));
+        let decides = Arc::new(AtomicUsize::new(0));
+        let server_mode = mode.clone();
+        let server_decides = decides.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let operations = operations.clone();
+                let mode = server_mode.clone();
+                let decides = server_decides.clone();
+                tokio::spawn(async move {
+                    let mut bytes = Vec::new();
+                    let (header_end, body_len) = loop {
+                        let mut chunk = [0u8; 4096];
+                        let read = stream.read(&mut chunk).await.unwrap();
+                        assert!(read > 0, "request closed before its body");
+                        bytes.extend_from_slice(&chunk[..read]);
+                        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                            let header = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                            let len = header
+                                .lines()
+                                .find_map(|line| line.strip_prefix("content-length:"))
+                                .map(str::trim)
+                                .and_then(|value| value.parse::<usize>().ok())
+                                .unwrap_or(0);
+                            if bytes.len() >= end + 4 + len {
+                                break (end, len);
+                            }
+                        }
+                    };
+                    let header = String::from_utf8_lossy(&bytes[..header_end]);
+                    let payload = if header.starts_with("GET /v1/operations ") {
+                        serde_json::to_vec(&operations).unwrap()
+                    } else {
+                        assert!(header.starts_with("POST /v1/decide "));
+                        decides.fetch_add(1, AtomicOrdering::SeqCst);
+                        let request: DecideRequest = serde_json::from_slice(
+                            &bytes[header_end + 4..header_end + 4 + body_len],
+                        )
+                        .unwrap();
+                        assert_eq!(request.operation, "memory_conflict_review");
+                        let abstain = *mode.lock().unwrap() == "abstain";
+                        let items = request
+                            .batch
+                            .items
+                            .iter()
+                            .map(|item| {
+                                let choice = magician_decision::OptionId::new("replace_existing");
+                                let response = abstain.then(|| DecisionResponse {
+                                    model: magician_decision::ModelIdentity::new(
+                                        "typesafe", "fixture",
+                                    ),
+                                    pack_id: "memory_conflict_review".into(),
+                                    pack_version: "1.0.0".into(),
+                                    answers: BTreeMap::from([(
+                                        magician_decision::QuestionId::new("resolution"),
+                                        Answer::Choice {
+                                            choice: choice.clone(),
+                                            probabilities: BTreeMap::from([(choice, 0.55)]),
+                                            confidence: 0.55,
+                                        },
+                                    )]),
+                                    usage: Usage {
+                                        input_tokens: 8,
+                                        output_tokens: 1,
+                                    },
+                                });
+                                DecisionItemResult {
+                                    item_id: item.item_id.clone(),
+                                    status: if abstain {
+                                        ItemStatus::Answered
+                                    } else {
+                                        ItemStatus::Failed
+                                    },
+                                    response,
+                                    thresholds: Some(BTreeMap::from([("resolution".into(), 0.8)])),
+                                    // Below the threshold: nothing is eligible.
+                                    eligible_answers: BTreeMap::new(),
+                                    error: (!abstain).then(|| "model_timeout".to_string()),
+                                    latency_ms: 1,
+                                }
+                            })
+                            .collect();
+                        serde_json::to_vec(&DecideResponse {
+                            batch: BatchResponse {
+                                request_id: request.batch.request_id,
+                                engine_instance: operations.engine_instance,
+                                policy_revision: operations.policy_revision,
+                                items,
+                                model_health: BTreeMap::new(),
+                            },
+                            model_calls: Vec::new(),
+                            contract_version: CONTRACT_VERSION,
+                            status: DecideStatus::Answered,
+                            response: None,
+                            thresholds: None,
+                            error: None,
+                            latency_ms: 1,
+                        })
+                        .unwrap()
+                    };
+                    stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                payload.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    stream.write_all(&payload).await.unwrap();
+                });
+            }
+        });
+        decision_host::configure(&crate::config::DecisionHostConfig {
+            mode: crate::config::DecisionMode::AllEngines,
+            socket: Some(socket.display().to_string()),
+            ..Default::default()
+        });
+        let mut router_config = magicllm::config::LLMRouterConfig::default();
+        router_config.profiles.insert(
+            "base".into(),
+            serde_json::from_value(json!({"provider":"ollama","model":"fixture"})).unwrap(),
+        );
+        router_config.default_profile = "base".into();
+        router_config.operation_mapping.insert(
+            "memory_conflict_review".into(),
+            serde_json::from_value(json!("base")).unwrap(),
+        );
+        let router = Arc::new(OperationLlmRouter::new(Some(router_config)));
+        let tier = sample_collection_tier("records", 10, BTreeMap::new());
+        let mut definition = sample_definition();
+        definition.memory_tiers.push(tier.clone());
+        let conflicting_pair = json!([
+            {"key": "release_code", "value": "AMBER-741"},
+            {"key": "release_code", "value": "AMBER-942"}
+        ]);
+        let tmp = tempdir().unwrap();
+        let seeded = |workspace: &str, entries: &Value| {
+            let memory = AgentMemoryService::with_scoped_memory_scope(
+                tmp.path().join(workspace),
+                "fixture-principal",
+                workspace,
+            );
+            let stored = native_tier_record(
+                &memory,
+                "agent-a",
+                &tier,
+                None,
+                serde_json::Map::from_iter([("entries".into(), entries.clone())]),
+            );
+            (memory, stored)
+        };
+        async fn stored_entries(
+            memory: &AgentMemoryService,
+            tier: &MemoryTierDefinition,
+        ) -> Vec<Value> {
+            load_native_tier_data(memory, "agent-a", tier, None)
+                .await
+                .expect("tier")
+                .fields["entries"]
+                .as_array()
+                .expect("entries")
+                .clone()
+        }
+
+        // 1. Two copies of one insight (same statement under durable-key
+        //    normalization) fold without any engine call.
+        let (memory, stored) = seeded(
+            "sweep-fold",
+            &json!([
+                {
+                    "pattern": "Confirm the fixture server first",
+                    "confidence": "0.5",
+                    "evidence_count": "2",
+                    "source_episodes": [{"key": "ep-1", "value": "task-1"}],
+                    "created_at": "2026-10-24T04:15:54Z"
+                },
+                {
+                    "pattern": "confirm the  fixture server FIRST",
+                    "confidence": "0.6",
+                    "evidence_count": "3",
+                    "source_episodes": [{"episode": "ep-1"}, {"episode": "ep-2"}],
+                    "created_at": "2026-10-26T12:01:00Z"
+                }
+            ]),
+        );
+        save_native_tier_data(&memory, "agent-a", &tier, None, &stored).await;
+        let consolidator = MemoryConsolidator::new(memory.clone(), Some(router.clone()), None);
+        let summary = consolidator
+            .run_agent_tier_contradiction_sweep(&definition, "agent-a", Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            decides.load(AtomicOrdering::SeqCst),
+            0,
+            "copies reached the engine"
+        );
+        assert_eq!((summary.duplicates_folded, summary.reviewed), (1, 0));
+        let rows = stored_entries(&memory, &tier).await;
+        assert_eq!(rows.len(), 2);
+        assert!(!memory_item_is_superseded(&rows[0]));
+        assert_eq!(rows[0]["pattern"], "Confirm the fixture server first");
+        assert_eq!(rows[0]["evidence_count"], "3");
+        assert_eq!(rows[0]["confidence"], "0.6");
+        assert_eq!(rows[0]["created_at"], "2026-10-24T04:15:54Z");
+        assert_eq!(
+            rows[0]["source_episodes"],
+            json!([{"key": "ep-1", "value": "task-1"}, {"episode": "ep-2"}])
+        );
+        assert_eq!(rows[1]["memory_lifecycle"], "superseded");
+        assert_eq!(
+            rows[1]["supersession_reason"],
+            "memory_contradiction_sweep_identical_duplicate"
+        );
+
+        // 2. An abstention is remembered under the current policy key and is
+        //    not re-sent; another policy key reopens it.
+        let (memory, stored) = seeded("sweep-abstain", &conflicting_pair);
+        save_native_tier_data(&memory, "agent-a", &tier, None, &stored).await;
+        let consolidator = MemoryConsolidator::new(memory.clone(), Some(router.clone()), None);
+        let first = consolidator
+            .run_agent_tier_contradiction_sweep(&definition, "agent-a", Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(decides.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(
+            (first.reviewed, first.abstained, first.missing_decisions),
+            (1, 1, 0)
+        );
+        let rows = stored_entries(&memory, &tier).await;
+        assert!(rows.iter().all(|row| !memory_item_is_superseded(row)
+            && row["memory_conflict_review_reason"] == "memory_contradiction_sweep_unresolved"));
+        let second = consolidator
+            .run_agent_tier_contradiction_sweep(&definition, "agent-a", Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            decides.load(AtomicOrdering::SeqCst),
+            1,
+            "abstained pair re-sent"
+        );
+        assert_eq!(second.reviewed, 0);
+        assert_eq!(
+            contradiction_sweep_cases_for_items_with_policy(&rows, "next-engine-revision").len(),
+            1
+        );
+
+        // 3. A transient failure records nothing and is retried every sweep.
+        *mode.lock().unwrap() = "fail";
+        let (memory, stored) = seeded("sweep-fail", &conflicting_pair);
+        save_native_tier_data(&memory, "agent-a", &tier, None, &stored).await;
+        let consolidator = MemoryConsolidator::new(memory.clone(), Some(router.clone()), None);
+        for attempt in 1..=2 {
+            let summary = consolidator
+                .run_agent_tier_contradiction_sweep(&definition, "agent-a", Utc::now())
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    summary.reviewed,
+                    summary.abstained,
+                    summary.missing_decisions
+                ),
+                (1, 0, 1)
+            );
+            assert_eq!(decides.load(AtomicOrdering::SeqCst), 1 + attempt);
+        }
+        let rows = stored_entries(&memory, &tier).await;
+        assert!(rows
+            .iter()
+            .all(|row| row.get("memory_conflict_reviewed_pairs").is_none()));
+
+        decision_host::configure(&crate::config::DecisionHostConfig {
+            mode: crate::config::DecisionMode::Off,
+            ..Default::default()
+        });
+        server.abort();
+    }
+
+    #[test]
+    fn identical_duplicate_detection_is_exact_not_similar() {
+        // One statement under durable-key normalization, differing only in
+        // provenance: one memory.
+        assert!(memory_items_are_identical_duplicates(
+            &json!({"pattern": "Use the  Staging DB", "type": "x", "evidence_count": "1", "merged_from": null}),
+            &json!({"pattern": "use the staging db", "type": "x", "evidence_count": "4", "confidence": "0.9", "merged_from": []})
+        ));
+        // Same statement, different claim-bearing field: the reviewer decides.
+        let relabelled = vec![
+            json!({"pattern": "Use the staging db", "type": "workflow"}),
+            json!({"pattern": "use the staging DB", "type": "x"}),
+        ];
+        assert!(!memory_items_are_identical_duplicates(
+            &relabelled[0],
+            &relabelled[1]
+        ));
+        assert_eq!(contradiction_sweep_cases_for_items(&relabelled).len(), 1);
+        // One word apart is similar, not identical: still a reviewable pair.
+        assert!(!memory_items_are_identical_duplicates(
+            &json!({"pattern": "Use the staging db"}),
+            &json!({"pattern": "Use the production db"})
+        ));
+        // One identifier with two values is a conflict for the reviewer.
+        assert!(!memory_items_are_identical_duplicates(
+            &json!({"key": "release_code", "value": "AMBER-741"}),
+            &json!({"key": "release_code", "value": "AMBER-942"})
+        ));
+        // One identifier, one value, different provenance: one memory.
+        assert!(memory_items_are_identical_duplicates(
+            &json!({"key": "release_code", "value": "AMBER-741", "confidence": 0.6}),
+            &json!({"key": "release_code", "value": "AMBER-741", "confidence": 0.9, "source_episodes": ["ep-2"]})
+        ));
+        // A `type` named "pattern" keeps a name key an identifier key.
+        assert!(!memory_items_are_identical_duplicates(
+            &json!({"type": "pattern", "name": "x", "value": "a"}),
+            &json!({"type": "pattern", "name": "x", "value": "b"})
+        ));
+        let items = vec![
+            json!({"pattern": "Use the staging db"}),
+            json!({"pattern": "use the staging DB", "evidence_count": "2"}),
+        ];
+        assert!(contradiction_sweep_cases_for_items(&items).is_empty());
+    }
+
+    #[test]
+    fn fold_identical_memory_duplicates_supersedes_every_later_copy() {
+        let mut items = vec![
+            json!({"pattern": "Link saved work to the goal", "evidence_count": "2", "merged_from": null, "source_episodes": ["ep-1"], "created_at": "2026-10-23T00:00:00Z"}),
+            json!({"pattern": "Prefer short status updates", "evidence_count": "1"}),
+            json!({"pattern": "link saved work to the goal", "evidence_count": "6", "merged_from": [], "source_episodes": [{"key": "ep-1"}, {"key": "ep-3"}], "created_at": "2026-10-22T00:00:00Z"}),
+            json!({"pattern": "Link saved work to the goal", "evidence_count": "3", "memory_lifecycle": "superseded"}),
+            json!({"pattern": "Link  saved work to the goal", "evidence_count": "3"}),
+        ];
+
+        assert_eq!(
+            fold_identical_memory_duplicates(&mut items, "test_fold", "test"),
+            2
+        );
+
+        assert!(!memory_item_is_superseded(&items[0]));
+        assert_eq!(items[0]["evidence_count"], "6");
+        assert_eq!(items[0]["created_at"], "2026-10-22T00:00:00Z");
+        assert_eq!(
+            items[0]["source_episodes"],
+            json!(["ep-1", {"key": "ep-3"}])
+        );
+        assert_eq!(items[1].get("memory_lifecycle"), None);
+        for index in [2, 4] {
+            assert_eq!(items[index]["memory_lifecycle"], "superseded");
+            assert_eq!(items[index]["supersession_reason"], "test_fold");
+        }
+        // Byte-identical copies still get distinct candidate keys.
+        let mut copies = vec![
+            json!({"pattern": "Same claim", "evidence_count": "1"}),
+            json!({"pattern": "Same claim", "evidence_count": "1"}),
+            json!({"pattern": "Same claim", "evidence_count": "1"}),
+        ];
+        assert_eq!(
+            fold_identical_memory_duplicates(&mut copies, "test_fold", "test"),
+            2
+        );
+        assert_ne!(copies[1]["superseded_id"], copies[2]["superseded_id"]);
+        assert_ne!(item_memory_key(&copies[1]), item_memory_key(&copies[2]));
+        // Existing history is left alone.
+        assert_eq!(items[3].get("supersession_reason"), None);
+        // Nothing is left for the reviewer, and a second pass is a no-op.
+        assert!(contradiction_sweep_cases_for_items(&items).is_empty());
+        assert_eq!(
+            fold_identical_memory_duplicates(&mut items, "test_fold", "test"),
+            0
+        );
+    }
+
+    #[test]
+    fn similarity_merge_folds_identical_insight_copy_instead_of_appending() {
+        let existing = json!([
+            {
+                "pattern": "Confirm the fixture server first",
+                "type": "workflow",
+                "confidence": "0.5",
+                "evidence_count": "2",
+                "source_episodes": [{"key": "ep-1"}],
+                "created_at": "2026-10-24T04:15:54Z"
+            },
+            {"pattern": "Prefer short status updates", "evidence_count": "1"}
+        ]);
+        let incoming = json!([{
+            "pattern": "confirm the fixture  server first",
+            "type": "workflow",
+            "confidence": "0.7",
+            "evidence_count": "3",
+            "source_episodes": [{"episode": "ep-1"}, {"episode": "ep-2"}],
+            "created_at": "2026-10-26T12:01:00Z"
+        }]);
+        // The review plan builder never offers the copy to the reviewer.
+        assert_eq!(
+            identical_memory_duplicate_index(existing.as_array().unwrap(), &incoming[0]),
+            Some(0)
+        );
+
+        // No review decision at all: the old merge appended a copy here.
+        let merged = merge_upsert_by_similarity_preserving_conflicts(&existing, &incoming, None);
+        let merged = merged.as_array().unwrap();
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0]["pattern"], "Confirm the fixture server first");
+        assert_eq!(merged[0]["evidence_count"], "3");
+        assert_eq!(merged[0]["confidence"], "0.7");
+        assert_eq!(merged[0]["created_at"], "2026-10-24T04:15:54Z");
+        assert_eq!(
+            merged[0]["source_episodes"],
+            json!([{"key": "ep-1"}, {"episode": "ep-2"}])
+        );
+        assert_eq!(merged[1], existing[1]);
+    }
+
+    #[test]
+    fn similarity_merge_drops_copy_of_an_item_replaced_in_the_same_pass() {
+        let existing_item =
+            json!({"key": "release_code", "value": "AMBER-741", "evidence_count": "1"});
+        let copy = json!({"key": "release_code", "value": "AMBER-741", "evidence_count": "5"});
+        let successor = json!({"key": "release_code", "value": "AMBER-942"});
+        let mut review_plan = MemoryConflictReviewPlan::default();
+        review_plan.insert(
+            &existing_item,
+            &successor,
+            MemoryConflictDecision::ReplaceExisting,
+        );
+
+        let merged = merge_upsert_by_similarity_preserving_conflicts(
+            &json!([existing_item.clone()]),
+            &json!([copy, successor.clone()]),
+            Some(&review_plan),
+        );
+        let merged = merged.as_array().unwrap();
+
+        // The copy repeats the retired claim: neither folded into the
+        // superseded row nor revived as an active item.
+        assert_eq!(merged.len(), 2);
+        assert!(memory_item_is_superseded(&merged[0]));
+        assert_eq!(merged[0]["evidence_count"], "1");
+        assert_eq!(merged[1], successor);
+    }
+
+    #[test]
+    fn unresolved_sweep_mark_holds_only_for_its_policy() {
+        let mut items = vec![
+            json!({"key": "release_code", "value": "AMBER-741"}),
+            json!({"key": "release_code", "value": "AMBER-942"}),
+        ];
+        assert_eq!(
+            contradiction_sweep_cases_for_items_with_policy(&items, "engine-r1").len(),
+            1
+        );
+        assert!(mark_memory_pair_conflict_reviewed_with_policy(
+            &mut items,
+            0,
+            1,
+            "memory_contradiction_sweep_unresolved",
+            "engine-r1",
+        ));
+        assert!(contradiction_sweep_cases_for_items_with_policy(&items, "engine-r1").is_empty());
+        assert_eq!(
+            contradiction_sweep_cases_for_items_with_policy(&items, "engine-r2").len(),
+            1
+        );
+    }
+
     #[test]
     fn similarity_merge_without_review_keeps_both_items() {
         let existing = json!([
@@ -13014,7 +14508,9 @@ mod tests {
                     &conflict_incoming,
                     None,
                 );
-                assert_eq!(similarity_merged.as_array().map(Vec::len), Some(3));
+                // The incoming item is an identical copy of the first existing
+                // one (same name and claim), so it folds instead of appending.
+                assert_eq!(similarity_merged.as_array().map(Vec::len), Some(2));
 
                 for value in [
                     existing,
@@ -13680,6 +15176,95 @@ mod tests {
         let error = validate_tier_target_value(&tier, None, &normalized)
             .expect_err("unknown durable fields must remain fail-closed");
         assert!(error.contains("off-schema field `unsupported_annotation`"));
+    }
+
+    fn insights_like_tier() -> MemoryTierDefinition {
+        sample_collection_tier(
+            "insights",
+            100,
+            BTreeMap::from([
+                ("pattern".to_string(), TierFieldSchema::Text {}),
+                ("confidence".to_string(), TierFieldSchema::Text {}),
+                ("merged_from".to_string(), TierFieldSchema::KeyValueList {}),
+            ]),
+        )
+    }
+
+    #[test]
+    fn merged_validation_admits_runtime_supersession_bookkeeping_on_stored_items() {
+        let tier = insights_like_tier();
+        let kept = json!({"pattern": "Owner prefers short replies", "confidence": "high"});
+        let loser = json!({"pattern": "Owner prefers long replies", "confidence": "low"});
+        let superseded = mark_memory_item_superseded_with_reason(
+            &loser,
+            &kept,
+            "memory_contradiction_sweep_keep_existing",
+            "memory_contradiction_sweep",
+        );
+        assert_eq!(superseded["memory_lifecycle"], "superseded");
+        let mut reviewed = json!([kept.clone(), loser.clone()]);
+        assert!(mark_memory_pair_conflict_reviewed(
+            reviewed.as_array_mut().unwrap(),
+            0,
+            1,
+            "memory_contradiction_sweep_keep_both",
+        ));
+        let existing = json!([reviewed[0].clone(), superseded]);
+
+        let incoming = json!([{"pattern": "Owner reads mail at 9am", "confidence": "medium"}]);
+        validate_tier_target_value(&tier, None, &incoming)
+            .expect("fresh output without bookkeeping stays valid");
+        let merged = merge_values(Some(&existing), &incoming, &MergeStrategy::UpsertByName);
+        assert_eq!(merged.as_array().map(Vec::len), Some(3));
+
+        assert_eq!(
+            validate_merged_tier_target_value(&tier, None, &merged, Some(&existing)),
+            Ok(0),
+            "runtime lifecycle bookkeeping is legitimate stored tier metadata"
+        );
+    }
+
+    #[test]
+    fn fresh_transform_output_may_not_set_runtime_lifecycle_fields() {
+        let tier = insights_like_tier();
+        let output = json!([{"pattern": "x", "memory_lifecycle": "superseded"}]);
+        let error = validate_tier_target_value(&tier, None, &output)
+            .expect_err("the model does not own lifecycle state");
+        assert!(error.contains("off-schema field `memory_lifecycle`"));
+    }
+
+    #[test]
+    fn one_stored_off_schema_item_does_not_block_every_merge() {
+        let tier = insights_like_tier();
+        let drifted = json!({"pattern": "old shape", "legacy_note": "kept verbatim"});
+        let existing = json!([{"pattern": "fine", "confidence": "high"}, drifted.clone()]);
+        let incoming = json!([{"pattern": "new insight", "confidence": "low"}]);
+        let merged = merge_values(Some(&existing), &incoming, &MergeStrategy::UpsertByName);
+
+        assert!(validate_tier_target_value(&tier, None, &merged).is_err());
+        assert_eq!(
+            validate_merged_tier_target_value(&tier, None, &merged, Some(&existing)),
+            Ok(1),
+            "the unchanged stored item is preserved, not discarded and not blocking"
+        );
+        assert!(merged
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == &drifted));
+
+        // A new or changed item is still validated strictly.
+        let mut bad_new = merged.clone();
+        bad_new
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"pattern": "invented", "rogue": "field"}));
+        let error = validate_merged_tier_target_value(&tier, None, &bad_new, Some(&existing))
+            .expect_err("a new off-schema item must not slip through");
+        assert!(error.contains("off-schema field `rogue`"));
+        let error = validate_merged_tier_target_value(&tier, None, &merged, None)
+            .expect_err("without a stored copy nothing is grandfathered");
+        assert!(error.contains("off-schema field `legacy_note`"));
     }
 
     #[test]

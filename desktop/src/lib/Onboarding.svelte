@@ -8,7 +8,7 @@
   type Observed = { state: "present" | "absent" | "unknown"; detail: string };
   type InstallAction =
     | { kind: "with_runtime" }
-    | { kind: "make"; target: string; script?: string }
+    | { kind: "make"; target: string; script?: string; again?: string }
     | { kind: "manual"; steps: string[]; open?: string; secrets?: SecretPrompt[] };
 
   interface SecretPrompt { variable: string; label: string; kind?: "text" | "email" | "password"; bot?: string }
@@ -39,6 +39,7 @@
   type SetupDriver =
     | { kind: "managed_bot"; bot: string; start?: ("bot" | "auth")[]; fields?: SetupField[]; fixed_env?: Record<string, string>; login_url_hosts?: string[]; input?: SetupInput }
     | { kind: "governed_oauth" }
+    | { kind: "browser_cli"; executable: string; args: string[]; login_url_hosts: string[]; credential_file: string }
     | { kind: "configuration_file"; field_label: string; accept: string; destination: string; validator: string; max_bytes: number }
     | { kind: "model_runtime"; privacy_path: string; generation_path: string; local_feature: string; modes: SetupModeChoice[] }
     | { kind: "browser_extension"; bundle_resource: string; management_url: string; probe_path: string; probe_needle: string }
@@ -129,6 +130,19 @@
     qr_data_url?: string;
     login_url?: string;
   }
+  /** A Google Workspace account's roles on its OAuth client's Cloud project. */
+  interface GoogleProjectAccess {
+    bot: string;
+    project_id: string;
+    email: string;
+    status: "granted" | "missing" | "unknown";
+    missing_roles: string[];
+    detail: string;
+    grant_account?: string;
+    commands: string[];
+    console_url?: string;
+    can_grant: boolean;
+  }
   interface LocalGenerationModel {
     id: string;
     label: string;
@@ -201,6 +215,11 @@
   let installJobs = $state<Record<string, InstallJob>>({});
   let pairing = $state<Record<string, PairingSnapshot>>({});
   let skillAuth = $state<Record<string, PairingSnapshot>>({});
+  /** Keyed by bot name; `null` means not a Google account (no project step). */
+  let projectAccess = $state<Record<string, GoogleProjectAccess | null>>({});
+  let projectAccessErrors = $state<Record<string, string>>({});
+  let projectAccessBusy = $state("");
+  let projectAccessCopied = $state("");
   let setupFieldValues = $state<Record<string, string>>({});
   let setupInputValues = $state<Record<string, string>>({});
   let modelRuntime = $state<Record<string, ModelRuntimeSnapshot>>({});
@@ -639,6 +658,7 @@
       if (!snapshot.ready) {
         throw new Error("Pairing is still waiting. Leave this page open and try again when the account is connected.");
       }
+      void checkProjectAccess(snapshot.bot_name);
       await refreshPlan();
     } catch (reason) {
       error = String(reason);
@@ -665,9 +685,48 @@
     }
   }
 
+  // Google accounts also need two roles on their OAuth client's Cloud project.
+  async function checkProjectAccess(bot: string, fresh = false) {
+    if (!bot || projectAccessBusy === bot || projectAccessBusy === `${bot}:grant`) return;
+    projectAccessBusy = bot;
+    projectAccessErrors = { ...projectAccessErrors, [bot]: "" };
+    projectAccessCopied = "";
+    try {
+      const report = await invoke<GoogleProjectAccess | null>("onboarding_google_project_access", { request: { bot, fresh } });
+      projectAccess = { ...projectAccess, [bot]: report };
+    } catch (reason) {
+      projectAccessErrors = { ...projectAccessErrors, [bot]: String(reason) };
+    } finally {
+      projectAccessBusy = "";
+    }
+  }
+
+  async function grantProjectAccess(bot: string) {
+    if (projectAccessBusy) return;
+    projectAccessBusy = `${bot}:grant`;
+    projectAccessErrors = { ...projectAccessErrors, [bot]: "" };
+    try {
+      const report = await invoke<GoogleProjectAccess | null>("onboarding_grant_google_project_access", { request: { bot } });
+      projectAccess = { ...projectAccess, [bot]: report };
+    } catch (reason) {
+      projectAccessErrors = { ...projectAccessErrors, [bot]: String(reason) };
+    } finally {
+      projectAccessBusy = "";
+    }
+  }
+
+  async function copyProjectAccessCommands(bot: string, commands: string[]) {
+    try {
+      await navigator.clipboard.writeText(commands.join("\n"));
+      projectAccessCopied = bot;
+    } catch {
+      projectAccessErrors = { ...projectAccessErrors, [bot]: "Copy failed. Select the commands and copy them." };
+    }
+  }
+
   function hasManagedSkillAuth(skill: SkillItem): boolean {
     const kind = skill.auth?.setup?.driver.kind;
-    return installedHere(skill) && (kind === "managed_bot" || kind === "governed_oauth");
+    return installedHere(skill) && (kind === "managed_bot" || kind === "governed_oauth" || kind === "browser_cli");
   }
 
   async function startSkillAuth(skill: SkillItem) {
@@ -702,6 +761,7 @@
         skillAuth = { ...skillAuth, [skill.name]: snapshot };
       }
       if (!snapshot.ready) throw new Error("Account login is still waiting. Leave this page open and try again when it completes.");
+      if (driver) void checkProjectAccess(snapshot.bot_name);
       catalog = await invoke<Catalog>("get_onboarding_catalog");
     } catch (reason) {
       error = String(reason);
@@ -813,6 +873,39 @@
     });
   }
 </script>
+
+{#snippet projectAccessStep(bot: string)}
+  {@const report = projectAccess[bot]}
+  {@const checkingAccess = projectAccessBusy === bot}
+  {@const busy = checkingAccess || projectAccessBusy === `${bot}:grant`}
+  {#if report !== null && (report || busy || projectAccessErrors[bot])}
+    <div class="project-access" aria-live="polite">
+      {#if !report}
+        {#if checkingAccess}<small>Checking Cloud project access…</small>{/if}
+      {:else if report.status === "granted"}
+        <small class="skill-ready">✓ Cloud project access OK</small>
+      {:else}
+        <p>{report.detail}</p>
+        {#if report.status === "missing" && report.can_grant}
+          <button class="primary compact" type="button" disabled={busy} onclick={() => grantProjectAccess(bot)}>{busy && !checkingAccess ? "Granting…" : "Grant access"}</button>
+          {#if report.grant_account}<small>Uses {report.grant_account} on the computer.</small>{/if}
+        {:else if report.commands.length}
+          <pre class="pairing-log project-access-commands">{report.commands.join("\n")}</pre>
+          <div class="harness-actions">
+            <button class="secondary compact" type="button" onclick={() => copyProjectAccessCommands(bot, report.commands)}>{projectAccessCopied === bot ? "Copied" : "Copy commands"}</button>
+            {#if report.status === "missing" && report.console_url}
+              <button class="secondary compact" type="button" onclick={() => openTarget(report.console_url ?? "")}>Open Cloud console ↗</button>
+            {/if}
+          </div>
+        {/if}
+      {/if}
+      {#if report || projectAccessErrors[bot]}
+        <button class="secondary compact" type="button" disabled={busy} onclick={() => checkProjectAccess(bot, true)}>{checkingAccess ? "Checking…" : "Check again"}</button>
+      {/if}
+      {#if projectAccessErrors[bot]}<small class="skill-missing">{projectAccessErrors[bot]}</small>{/if}
+    </div>
+  {/if}
+{/snippet}
 
 <section class="onboarding-shell">
   {#if phase === "loading"}
@@ -1022,6 +1115,7 @@
                         {#if input?.help}<small>{input.help}</small>{/if}
                       </div>
                     {/if}
+                    {#if pairing[step.id].ready}{@render projectAccessStep(pairing[step.id].bot_name)}{/if}
                     {#if pairing[step.id].log}<pre class="pairing-log">{pairing[step.id].log}</pre>{/if}
                   </div>
                 {/if}
@@ -1032,6 +1126,9 @@
                 <button class="primary compact" type="button" disabled={!catalog.setup_access.authorized || busyStep === step.id} onclick={() => installComponent(step)}>{busyStep === step.id ? "Installing…" : "Install now"}</button>
               {:else}
                 <button class="secondary compact" type="button" disabled={checking} onclick={refreshPlan}>{checking ? "Checking…" : "Check again"}</button>
+                {#if step.install.again}
+                  <button class="secondary compact" type="button" disabled={!catalog.setup_access.authorized || busyStep === step.id} onclick={() => installComponent(step)}>{busyStep === step.id ? "Installing…" : step.install.again}</button>
+                {/if}
               {/if}
               {#if installJobs[step.id]}
                 <div class="install-progress" aria-live="polite">
@@ -1170,6 +1267,7 @@
                     {#if input?.help}<small>{input.help}</small>{/if}
                   </div>
                 {/if}
+                {#if skillAuth[skill.name].ready && managedDriver(skill.auth?.setup)}{@render projectAccessStep(skillAuth[skill.name].bot_name)}{/if}
                 {#if skillAuth[skill.name].log}<pre class="pairing-log">{skillAuth[skill.name].log}</pre>{/if}
               </div>
             {/if}
@@ -1307,6 +1405,10 @@
   .pairing-panel > p { margin: 0; }
   .pairing-panel img { display: block; width: min(280px, 100%); aspect-ratio: 1; object-fit: contain; background: white; padding: 8px; border-radius: 8px; }
   .auth-input-row { width: 100%; }
+  .project-access { display: grid; justify-items: start; gap: 6px; width: 100%; font-size: 12px; }
+  .project-access > p { margin: 0; color: var(--text-muted); }
+  .project-access small:not(.skill-ready):not(.skill-missing) { color: var(--text-muted); }
+  .project-access-commands { max-height: 140px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; user-select: all; }
   .pairing-log { box-sizing: border-box; width: 100%; max-height: 260px; overflow: auto; margin: 0; padding: 9px; color: var(--text); background: var(--bg-card); white-space: pre; font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .blocking-box, .inline-error, .result.error { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); border: 1px solid color-mix(in srgb, var(--error) 35%, transparent); border-radius: 10px; padding: 12px; }
   .blocking-box p { margin: 4px 0; }

@@ -112,12 +112,19 @@ view-model state separate from the deck's load-more lists:
 - A per-tab request generation drops late responses. Current pages re-read on
   the 30 s poll and after every follow-up/worth action (success or failure);
   an optimistic removal drops the page's total by one.
+- Row buttons: the deck's **⚡ Act** menu (same entries and handlers, see
+  below) beside **Useful** / **Acknowledge** / **Dismiss** + reason (follow-up)
+  or **Dismiss ▾** (worth). Snooze and the channel/resurfacing actions live in
+  Act; there is no separate Actions sheet.
+
+Card reads omit full-universe diagnostic scans. Pulse slices and page sections publish independently as requests finish, keeping first-load placeholders until each settles and existing content during refresh.
+Both Reading Room layouts show absolute local receipt/surfacing dates and `For You · source` / `Worth a Look · source` labels; older servers fall back to a labelled reference date when available.
 
 ### Morning Brief deck
 
 Cards interleave channel follow-ups and worth cards as {2 follow-ups, 1 worth}
 (core `followups` items live only in the broadsheet's For You column). Tabs:
-All / For You / Worth a Look with remaining counts. The top card sits over two
+All / For You / Worth a Look with server totals and a separate loaded/total caption. The top card sits over two
 preview cards.
 
 - **Gestures:** drag right past 95 pt = Useful, left = Dismiss; a flick whose
@@ -126,15 +133,28 @@ preview cards.
   triages (so there is no "Seen" swipe). Reduce Motion skips rotation/fly-out
   and fades.
 - **Buttons:** `Dismiss` · `Seen` (acknowledge — button only) · `Useful` ·
-  `⚡ Do it` (follow-up `approve`) / `⚡ Open` (worth `open` feedback, then the
-  card's `open_url`, an in-app `source_route`, or the resurfacing detail).
-- **Tap** opens the existing rich sheet (follow-up detail with compose, dismiss
-  reasons and writing style; resurfacing detail with actions/Reminders).
+  `⚡ Act`, a menu of the card's real actions (`TodayDeckCard.actEntries`):
+  - follow-up: each server `available_actions` entry (opens the detail sheet
+    on that action's composer / confirmation), **Open in <Provider>** when
+    there is an `open_url`, **Start follow-up task…** (opens the detail's
+    optional-instruction editor; `approve` is sent only from there, and the
+    entry is hidden while `review_required`), **Snooze — hide from Today**,
+    **Details**;
+  - worth: **Open** (`open` feedback, then the card's `open_url`, an in-app
+    `source_route`, or the resurfacing detail), each `actions` capability
+    except `view_details` / `open_source` (input actions open the existing
+    input form; the rest run and land on the detail), **Details**.
+  Only Snooze and Open take the card off the deck (optimistic, rolled back on
+  failure); every other entry leaves it on top.
+- **Tap** (or the card's **Details ›** link) opens the existing rich sheet
+  (follow-up detail with compose, dismiss reasons and writing style;
+  resurfacing detail with actions/Reminders).
+- `ask_presto` is labelled **Ask <primary agent>** everywhere in Today (Act
+  menus, resurfacing detail); the wire value is unchanged.
 - Actions go through the existing optimistic view-model calls; a failed call
   rolls back, shows the error banner and returns the card to the stack.
   Impressions are recorded for the top card only.
-- When two or fewer cards remain, `loadMoreDeckCards()` pulls the next
-  follow-up / worth page through the existing cursors (only when a cursor exists).
+- With four or fewer cards in the selected tab, cursor paging prefetches its next pages. Loading and retry states stay distinct from a cleared deck; head refreshes retain accumulated pages.
 
 Snooze: a channel follow-up snooze has no duration on the wire, so it is a
 single **Snooze — hide from Today** action; core Today follow-ups keep their

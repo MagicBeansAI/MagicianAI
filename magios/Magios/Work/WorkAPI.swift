@@ -38,6 +38,7 @@ struct WorkWebContext {
             if !run.isEmpty { query.append(.init(name: "run", value: run)) }
             if !agent.isEmpty { query.append(.init(name: "agent", value: agent)) }
         case .operations: query.append(.init(name: "view", value: "operations"))
+        case .goals: query.append(.init(name: "view", value: "goals"))
         case .needsYou: query.append(.init(name: "view", value: "needs-you"))
         case .all:
             if !task.isEmpty { query.append(.init(name: "selected", value: task)) }
@@ -76,16 +77,83 @@ struct WorkWebContext {
 
 /// Navigation over existing records, rather than another task or execution model.
 enum WorkSection: String, CaseIterable, Identifiable {
-    case all, needsYou, crew, programs, quality, operations
+    case all, needsYou, crew, goals, programs, quality, operations
     var id: String { rawValue }
     var title: String {
         switch self {
         case .all: return "All work"
         case .needsYou: return "Needs you"
         case .crew: return "Crew"
-        case .programs: return "Programs"
-        case .quality: return "Quality and review"
-        case .operations: return "Company loop"
+        case .goals: return "Goals"
+        case .programs: return "Playbooks"
+        case .quality: return "Quality checks"
+        case .operations: return "Team routines"
+        }
+    }
+}
+
+
+/// Plain-language Work concepts, shared by navigation and contextual help.
+enum WorkHelpTopic: CaseIterable {
+    case allWork, needsYou, crew, goals, playbooks, quality, operations, tasks, monitors, systemWork, autopilot, cycles, focus, delegation
+    var title: String {
+        switch self {
+        case .allWork: return "All work"
+        case .needsYou: return "Needs you"
+        case .crew: return "Crew"
+        case .goals: return "Goals"
+        case .playbooks: return "Playbooks"
+        case .quality: return "Quality checks"
+        case .operations: return "Team routines"
+        case .tasks: return "Tasks"
+        case .monitors: return "Monitors"
+        case .systemWork: return "System work"
+        case .autopilot: return "Autopilot"
+        case .cycles: return "Work cycles"
+        case .focus: return "Focus areas"
+        case .delegation: return "Delegation"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .allWork: return "Track tasks, scheduled checks and system activity in one place."
+        case .needsYou: return "Answer questions, review plans and unblock work waiting for your decision."
+        case .crew: return "Your AI team. Give each member a role, tools and responsibilities, then see what they are working on."
+        case .goals: return "Your goal workspaces: goals, the sub-goals under them and who owns each. Set one up from a template in chat."
+        case .playbooks: return "Reusable goals, instructions and success checks for your crew. Use them to guide ongoing work and track progress."
+        case .quality: return "Have agents review and improve an output against your criteria, then inspect the result before accepting it."
+        case .operations: return "Control the shared schedule for company roles, start their sequence manually and inspect problems. Individual crew schedules have separate controls."
+        case .tasks: return "Give an agent a specific outcome to deliver, once or on a schedule."
+        case .monitors: return "Watch for changes on a schedule and notify you when a condition needs attention."
+        case .systemWork: return "Background activity created by Magican, including crew cycles and supporting jobs."
+        case .autopilot: return "Let a crew member use its playbook to choose the next useful work. Permissions, budgets and approval rules still apply."
+        case .cycles: return "Scheduled check-ins where a crew member reviews its responsibilities and starts work within its task and step limits."
+        case .focus: return "A crew member’s ongoing responsibilities. Give each area a priority, instructions and an optional schedule."
+        case .delegation: return "Choose which teammates this member can ask for help, and how far work can be passed along."
+        }
+    }
+    static func forLabel(_ label: String) -> Self? {
+        let text = label.lowercased()
+        if text.contains("autopilot") { return .autopilot }
+        if text.contains("team routine") { return .operations }
+        if text.contains("playbook") { return .playbooks }
+        if text.contains("focus area") { return .focus }
+        if text.contains("cycle") || text.contains("scheduled check-in") { return .cycles }
+        if text.contains("delegation") { return .delegation }
+        return allCases.first { $0.title.lowercased() == text }
+    }
+}
+
+extension WorkSection {
+    var help: WorkHelpTopic {
+        switch self {
+        case .all: return .allWork
+        case .needsYou: return .needsYou
+        case .crew: return .crew
+        case .goals: return .goals
+        case .programs: return .playbooks
+        case .quality: return .quality
+        case .operations: return .operations
         }
     }
 }
@@ -193,6 +261,49 @@ struct WorkProgramDocument: Decodable, Equatable, Sendable {
     let title: String
     let content: String
     let history: [Version]
+    /// Hex SHA-256 of `content`, sent back as the base of an owner save.
+    /// Empty from a runtime that predates owner edits.
+    let sha256: String
+    private enum CodingKeys: String, CodingKey { case name, title, content, history, sha256 }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? name
+        content = try c.decode(String.self, forKey: .content)
+        history = (try? c.decodeIfPresent([Version].self, forKey: .history)) ?? []
+        sha256 = (try? c.decodeIfPresent(String.self, forKey: .sha256)) ?? ""
+    }
+}
+
+/// `PUT /programs/{name}` success: the stored document's new hash.
+struct WorkProgramSaveResult: Equatable, Sendable {
+    let program: String
+    let created: Bool
+    let unchanged: Bool
+    let historySnapshot: String?
+    let sha256: String
+    init(_ value: WorkJSON) {
+        program = value["program"].text ?? ""
+        created = value["created"].flag ?? false
+        unchanged = value["unchanged"].flag ?? false
+        historySnapshot = value["history_snapshot"].text
+        sha256 = value["sha256"].text ?? ""
+    }
+}
+
+/// A rejected program save. `changed` is the 409 `program_changed` answer:
+/// the document changed, appeared or vanished after it was opened.
+enum WorkProgramSaveError: LocalizedError, Equatable {
+    case changed(message: String, currentSHA256: String?)
+    case missingBase
+    case rejected(String)
+    var errorDescription: String? {
+        switch self {
+        case .changed(let message, _): return message
+        case .missingBase: return "Reload this document before editing it."
+        case .rejected(let message): return message
+        }
+    }
 }
 
 enum WorkAPIError: LocalizedError {
@@ -241,28 +352,43 @@ struct WorkAPIClient {
     static func query(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
     }
-    func request(_ path: String, method: String = "GET", body: WorkJSON? = nil, etag: String? = nil) async throws -> (WorkJSON, HTTPURLResponse) {
+    /// One round trip with any status; the caller interprets the answer.
+    private func send(_ path: String, method: String, body: WorkJSON?, etag: String?) async throws -> (WorkJSON?, HTTPURLResponse) {
         let bootstrapRead = method == "GET" && path.range(of: "^/api/magician/v3/tasks/bootstrap__[^/?]+$", options: .regularExpression) != nil
         guard path.hasPrefix("/api/magician/v2/") || bootstrapRead else { throw WorkAPIError.invalidResponse }
         guard let url = URL(string: baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
             throw WorkAPIError.invalidResponse
         }
         var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 30
+        if path == "/api/magician/v2/analytics/llm_calls/query",
+           body?["sql"].text?.contains("llm_cost_daily") == true {
+            request.timeoutInterval = 150
+        }
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if let etag { request.setValue(etag, forHTTPHeaderField: "If-Match") }
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw WorkAPIError.invalidResponse }
-        let value = try? JSONDecoder().decode(WorkJSON.self, from: data)
+        return (try? JSONDecoder().decode(WorkJSON.self, from: data), response)
+    }
+    func request(_ path: String, method: String = "GET", body: WorkJSON? = nil, etag: String? = nil) async throws -> (WorkJSON, HTTPURLResponse) {
+        let (value, response) = try await send(path, method: method, body: body, etag: etag)
         guard (200..<300).contains(response.statusCode) else {
             throw WorkAPIError.http(response.statusCode, value?["error"].text ?? value?["error"]["message"].text ?? value?["message"].text ?? "")
         }
         guard let value else { throw WorkAPIError.invalidResponse }
         return (value, response)
     }
+    /// One request (a GET unless named) with any status and its JSON body, for callers
+    /// that read a 404 as "absent" or a 409 as "changed" and word failures themselves
+    /// (the Goals notes reads and their front-matter edits).
+    func status(_ path: String, method: String = "GET", body: WorkJSON? = nil) async throws -> (status: Int, value: WorkJSON?) {
+        let (value, response) = try await send(path, method: method, body: body, etag: nil)
+        return (response.statusCode, value)
+    }
     func file(_ path: String, maximumBytes: Int = 128 * 1024 * 1024) async throws -> Data {
         guard (1...(128 * 1024 * 1024)).contains(maximumBytes) else { throw WorkAPIError.invalidResponse }
-        guard path.hasPrefix("/api/magician/v2/"), let url = URL(string: baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else { throw WorkAPIError.invalidResponse }
+        guard path.hasPrefix("/api/magician/v2/") || path.range(of: "^/api/magician/v3/tasks/[^/?]+/outputs/[^?]+$", options: .regularExpression) != nil, let url = URL(string: baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else { throw WorkAPIError.invalidResponse }
         var request = URLRequest(url: url); request.timeoutInterval = 60
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         let (bytes, response) = try await session.bytes(for: request)
@@ -314,6 +440,25 @@ struct WorkAPIClient {
     func restoreProgram(_ name: String, snapshot: String) async throws {
         _ = try await request("/api/magician/v2/programs/\(Self.segment(name))/revert", method: "POST", body: .object(["snapshot": .string(snapshot)]))
     }
+    /// The owner's whole-document save. `baseSHA256` is the `sha256` of the
+    /// version opened for edit; a document that changed since answers 409
+    /// and is never overwritten. Only a signed-in owner session may save, so
+    /// the server's own refusal text is surfaced as is.
+    func saveProgram(name: String, content: String, baseSHA256: String) async throws -> WorkProgramSaveResult {
+        guard !baseSHA256.isEmpty else { throw WorkProgramSaveError.missingBase }
+        let (value, response) = try await send("/api/magician/v2/programs/\(Self.segment(name))", method: "PUT",
+                                               body: .object(["content": .string(content), "base_sha256": .string(baseSHA256)]), etag: nil)
+        if response.statusCode == 409, value?["error"].text == "program_changed" {
+            throw WorkProgramSaveError.changed(message: value?["message"].text ?? "This playbook changed after you opened it.",
+                                               currentSHA256: value?["current_sha256"].text)
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            let message = value?["message"].text ?? value?["error"].text ?? value?["error"]["message"].text ?? ""
+            throw WorkProgramSaveError.rejected(message.isEmpty ? "Playbook save failed (\(response.statusCode))." : message)
+        }
+        guard let value, value.object != nil else { throw WorkAPIError.invalidResponse }
+        return WorkProgramSaveResult(value)
+    }
 }
 
 /// Runtime credentials must never follow a redirect to another host.
@@ -340,19 +485,22 @@ extension WorkJSON {
     static var newCrewDefinition: WorkJSON {
         .object(["agent_id": .string(""), "name": .string(""), "description": .string(""),
                  "persona": .string("You are a practical autonomous assistant."), "trust_level": .string("local"),
-                 "kind": .string("Worker"), "tools": .array([]), "excluded_tools": .array([]),
-                 "delegation_targets": .array([]), "coordination": .object(["max_delegation_depth": .integer(3)])])
+                 "kind": .string("worker"), "tools": .array([]), "excluded_tools": .array([]),
+                 "delegation_targets": .array([]), "constraints": .object(["coordination": .object(["max_delegation_depth": .integer(3)])])])
     }
+    /// A crew definition's `kind` is `personal` on the server (snake_case);
+    /// older fixtures and drafts may carry `Personal`.
+    var isPersonalCrew: Bool { self["kind"].text?.lowercased() == "personal" }
     func crewValidation(editingID: String? = nil) -> String? {
         if let editingID, self["agent_id"].text != editingID { return "Keep the crew member identity unchanged." }
         let id = self["agent_id"].text ?? ""
         if !id.isEmpty && id.range(of: "^[a-z0-9]+(?:-[a-z0-9]+)*$", options: .regularExpression) == nil { return "Use lowercase letters, numbers and hyphens for the member ID." }
         for key in ["name", "persona", "trust_level"] where (self[key].text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "\(key.replacingOccurrences(of: "_", with: " ").capitalized) is required." }
-        guard ["Personal", "Worker"].contains(self["kind"].text ?? "") else { return "Choose Personal or Worker." }
-        let depth = Int(self.at(["coordination", "max_delegation_depth"]).display) ?? 3
+        guard ["personal", "worker"].contains((self["kind"].text ?? "").lowercased()) else { return "Choose Personal or Worker." }
+        let depth = Int(self.at(["constraints", "coordination", "max_delegation_depth"]).display) ?? 3
         if !(1...10).contains(depth) { return "Delegation depth must be between 1 and 10." }
         if self["autonomous_config"].object != nil {
-            guard self["kind"].text == "Personal" else { return "Autonomous cycles require a Personal member." }
+            guard isPersonalCrew else { return "Autonomous cycles require a Personal member." }
             let auto = self["autonomous_config"]
             if (auto["schedule"].text ?? "").split(whereSeparator: { $0.isWhitespace }).count != 5 { return "Enter a five-field cron schedule for autonomous cycles." }
             guard let areas = auto["focus_areas"].array, !areas.isEmpty else { return "Add at least one focus area." }
@@ -369,6 +517,69 @@ extension WorkJSON {
 }
 
 
+/// A focus area's `shared_programs` has three distinct states that must
+/// survive a round trip: absent (or null) follows the global
+/// `harness.shared_program_docs` list, `[]` means no shared documents, and a
+/// non-empty list replaces the global list for that area.
+enum WorkSharedProgramsMode: String, CaseIterable, Identifiable {
+    case global, none, choose
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .global: return "Use global list"
+        case .none: return "None"
+        case .choose: return "Choose documents"
+        }
+    }
+    var hint: String {
+        switch self {
+        case .global: return "Follows the shared documents in autopilot settings."
+        case .none: return "This area gets no shared documents."
+        case .choose: return "These documents replace the global list for this area."
+        }
+    }
+}
+
+extension WorkJSON {
+    static let sharedProgramsKey = "shared_programs"
+    /// The stored names, trimmed and de-duplicated in order; nil when the key
+    /// is absent or null (the global list).
+    var sharedPrograms: [String]? {
+        guard let list = self[Self.sharedProgramsKey].array else { return nil }
+        var names: [String] = []
+        for case .string(let raw) in list {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty && !names.contains(name) { names.append(name) }
+        }
+        return names
+    }
+    /// The stored state. `[]` reads as `.none` unless the editor is in
+    /// "Choose documents" with nothing checked yet, which stores `[]` too.
+    func sharedProgramsMode(choosing: Bool = false) -> WorkSharedProgramsMode {
+        guard let names = sharedPrograms else { return .global }
+        return names.isEmpty && !choosing ? .none : .choose
+    }
+    /// The area with `mode` applied: `.global` removes the key, `.none` writes
+    /// `[]`, `.choose` writes `selected` (`[]` when nothing is checked).
+    /// Every other field of the area is left as it was.
+    func settingSharedPrograms(_ mode: WorkSharedProgramsMode, selected: [String] = []) -> WorkJSON {
+        switch mode {
+        case .global: return setting([Self.sharedProgramsKey], to: nil)
+        case .none: return setting([Self.sharedProgramsKey], to: .array([]))
+        case .choose:
+            var names: [String] = []
+            for name in selected.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !name.isEmpty && !names.contains(name) { names.append(name) }
+            return setting([Self.sharedProgramsKey], to: .array(names.map(WorkJSON.string)))
+        }
+    }
+    /// Checks or unchecks one document while choosing.
+    func togglingSharedProgram(_ name: String, on: Bool) -> WorkJSON {
+        var names = (sharedPrograms ?? []).filter { $0 != name }
+        if on { names.append(name) }
+        return settingSharedPrograms(.choose, selected: names)
+    }
+}
+
 extension WorkJSON {
     /// RFC 7386: absent draft fields require explicit nulls in the patch.
     func mergePatch(from original: WorkJSON) -> WorkJSON {
@@ -383,7 +594,7 @@ extension WorkJSON {
 
 /// Canonical Work and legacy URLs resolve to existing native records.
 struct WorkNavigationTarget: Hashable, Identifiable {
-    enum Kind: String { case all, needsYou, task, monitor, crew, member, editMember, addMember, rules, memory, programs, program, quality, qualityRun, qualityProposal, qualityCampaign, operations, thread }
+    enum Kind: String { case all, needsYou, task, monitor, crew, member, editMember, addMember, rules, memory, goals, programs, program, quality, qualityRun, qualityProposal, qualityCampaign, operations, thread }
     let kind: Kind
     var recordID = ""
     var executionID: String? = nil
@@ -394,10 +605,13 @@ struct WorkNavigationTarget: Hashable, Identifiable {
     var threadID: String? = nil
     var agentID: String? = nil
     var updateID: String? = nil
-    var id: String { "\(kind.rawValue)|\(recordID)|\(executionID ?? "")|\(goalID ?? "")|\(tier)|\(threadID ?? "")|\(plan)" }
+    /// `/work?view=goals&goals=closed`: open Goals on its Closed list.
+    var closedGoals = false
+    var id: String { "\(kind.rawValue)|\(recordID)|\(executionID ?? "")|\(goalID ?? "")|\(tier)|\(threadID ?? "")|\(plan)|\(closedGoals)" }
     var section: WorkSection {
         switch kind {
         case .crew, .member, .editMember, .addMember, .rules, .memory: return .crew
+        case .goals: return .goals
         case .programs, .program: return .programs
         case .quality, .qualityRun, .qualityProposal, .qualityCampaign: return .quality
         case .operations: return .operations
@@ -427,6 +641,23 @@ struct WorkNavigationTarget: Hashable, Identifiable {
             guard let value = query.first(where: { $0.name == name })?.value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }; return value
         }
         let segments = path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
+        func taskTarget(_ id: String, thread: String? = nil, threadScoped: Bool = false) -> Self {
+            Self(kind: !threadScoped && q("type") == "monitors" ? .monitor : .task, recordID: id,
+                 executionID: q("execution_id") ?? q("execution"), plan: q("plan") == "open",
+                 internalWork: !threadScoped && q("type") == "internal", threadID: thread ?? q("thread"), updateID: q("update"))
+        }
+        // Retired path-style links still exist in saved chat and feed content.
+        // Decode each identity once and prefer a path's task over query selection.
+        if segments.count == 2 && segments[0] == "tasks" {
+            return taskTarget(segments[1])
+        }
+        if (segments.count == 3 || segments.count == 4) && segments[0] == "t" && segments[2] == "tasks" {
+            let thread = segments[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let id = segments.count == 4 ? segments[3] : q("selected") {
+                return taskTarget(id, thread: thread, threadScoped: true)
+            }
+            return Self(kind: .thread, recordID: thread)
+        }
         if segments.first == "crew" || (segments.first == "work" && segments.dropFirst().first == "crew") {
             let crew = segments.first == "crew" ? Array(segments.dropFirst()) : Array(segments.dropFirst(2))
             if crew.isEmpty { return Self(kind: .crew) }
@@ -437,7 +668,6 @@ struct WorkNavigationTarget: Hashable, Identifiable {
             if crew.count == 3 && crew[1] == "memory" { return Self(kind: .memory, recordID: crew[0], goalID: q("goal_id"), tier: crew[2]) }
             return nil
         }
-        if segments.count == 3 && segments[0] == "t" && segments[2] == "tasks" { return Self(kind: .thread, recordID: segments[1]) }
         if path == "/harness" { return Self(kind: .operations) }
         guard ["/work", "/tasks", "/relentless"].contains(path) else { return nil }
         let view = path == "/relentless" ? "quality" : q("view")
@@ -450,12 +680,11 @@ struct WorkNavigationTarget: Hashable, Identifiable {
             return Self(kind: .quality, recordID: q("task") ?? "", agentID: q("agent"))
         }
         if view == "operations" { return Self(kind: .operations) }
+        if view == "goals" { return Self(kind: .goals, closedGoals: q("goals") == "closed") }
         if view == "needs-you" { return Self(kind: .needsYou) }
         guard view == nil || ["all", "inbox", "today", "overdue", "running", "completed"].contains(view!) else { return nil }
         if let selected = q("selected") {
-            return Self(kind: q("type") == "monitors" ? .monitor : .task, recordID: selected,
-                        executionID: q("execution_id") ?? q("execution"), plan: q("plan") == "open",
-                        internalWork: q("type") == "internal", threadID: q("thread"), updateID: q("update"))
+            return taskTarget(selected)
         }
         if let thread = q("thread") { return Self(kind: .thread, recordID: thread) }
         // `magican://work?task=…`: a Work task's link on the "Magician at work"

@@ -134,7 +134,7 @@ impl RoutingState {
 
 /// The `GET /llm/routing` body for one router config and one routing state.
 pub fn routing_overview(router: &LLMRouterConfig, state: &RoutingState) -> Value {
-    let mut profiles: Vec<_> = router
+    let profiles: Vec<_> = router
         .profiles
         .iter()
         .map(|(name, profile)| {
@@ -156,29 +156,10 @@ pub fn routing_overview(router: &LLMRouterConfig, state: &RoutingState) -> Value
                     .map(binary_on_path)
                     .unwrap_or(true),
                 "selectable": true,
+                "model_selection": magicllm::catalog::selection_for_profile(profile),
             })
         })
         .collect();
-    // Adaptive composites can be an operation's DEFAULT (chat routes to
-    // them); without listing them the panel's dropdown could not render
-    // such an effective profile. Composites are API profiles by
-    // construction (their arms name API profiles).
-    for name in router.adaptive_profiles.keys() {
-        profiles.push(json!({
-            "name": name,
-            "provider": "adaptive",
-            "model": "adaptive composite",
-            "class": "api",
-            "installed": true,
-            // Composites are listed so an operation whose DEFAULT is one
-            // renders correctly — but they cannot be override TARGETS
-            // (the seam resolves overrides against `profiles` only), and
-            // PUT would refuse them. The dropdown must not offer a
-            // choice that can never take.
-            "selectable": false,
-        }));
-    }
-
     // The profile each driving engine's followers would ride, once per
     // engine rather than per operation; the router owns the mapping.
     let parent_profile_for = |engine: Option<&String>| {
@@ -273,6 +254,22 @@ pub fn routing_overview(router: &LLMRouterConfig, state: &RoutingState) -> Value
     json!({
         "operations": operations,
         "profiles": profiles,
+        "models": router.catalog.choices().into_iter().map(|model| {
+            let installed = harness_binary(&model.provider).map(binary_on_path).unwrap_or(true);
+            // Runtime discovery: `unavailable` = the source no longer offers it.
+            let availability = magicllm::model_discovery::availability_view(&router.catalog, &model.id);
+            let operation_choices: std::collections::BTreeMap<_, _> = model.choices.iter().map(|(level, route)| {
+                (level.clone(), route.clone())
+            }).collect();
+            let mut value = serde_json::to_value(model).expect("catalog descriptor is serializable");
+            value["operation_choices"] = json!(operation_choices);
+            value["installed"] = Value::Bool(installed);
+            value["availability"] = json!(availability);
+            value
+        }).collect::<Vec<_>>(),
+        "uncatalogued_models": uncatalogued_models(router),
+        "model_sources": magicllm::model_discovery::source_statuses(),
+        "catalog_drift": magicllm::model_discovery::published_drift().1,
         "overrides": state.overrides,
         "engine_pins": engine_pins,
         "affinity": state.affinity,
@@ -285,6 +282,26 @@ pub fn routing_overview(router: &LLMRouterConfig, state: &RoutingState) -> Value
         "locality": router.locality,
         "rule": "Explicit operation override > the engine that started the flow (chat mouth, run engine, or connected CLI) for non-local, tool-free operations unless the operation is pinned > locality-aware config mapping.",
     })
+}
+
+/// Models a discovery source offers that the catalog lacks, per source. Shown,
+/// not routable: they have no price or request-shape entry yet.
+fn uncatalogued_models(router: &magicllm::LLMRouterConfig) -> Vec<Value> {
+    let sources: std::collections::BTreeSet<String> = router
+        .catalog
+        .connections
+        .values()
+        .map(magicllm::model_discovery::source_key)
+        .collect();
+    sources
+        .into_iter()
+        .flat_map(|source| {
+            magicllm::model_discovery::uncatalogued_models(&router.catalog, &source)
+                .into_iter()
+                .map(move |model| json!({"source": source, "model": model, "catalogued": false}))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// `GET /llm/routing` — every mapped operation with its default and
@@ -312,9 +329,8 @@ pub async fn llm_routing_overview_handler(req: HttpRequest) -> HttpResponse {
     HttpResponse::Ok().json(routing_overview(router, &RoutingState::live(router)))
 }
 
-/// `PUT /llm/routing/{operation}` — body `{"profile": "op-harness-claude"}`.
-/// Refuses unknown operations and unknown profiles; refuses stale config
-/// (profile gone) at set time so the store cannot drift into dead names.
+/// `PUT /llm/routing/{operation}` accepts a model/thinking selection.
+/// Refuses unknown operations, models and thinking levels.
 pub async fn llm_routing_set_handler(
     req: HttpRequest,
     operation: web::Path<String>,
@@ -322,16 +338,6 @@ pub async fn llm_routing_set_handler(
 ) -> HttpResponse {
     if let Err(response) = require_session(&req) {
         return response;
-    }
-    let profile = body
-        .get("profile")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .unwrap_or("");
-    if profile.is_empty() {
-        return HttpResponse::BadRequest().json(json!({
-            "error": "profile_required"
-        }));
     }
     let config = match load_magician_config_from_path(&magician_config_path()) {
         Ok(config) => config,
@@ -347,6 +353,15 @@ pub async fn llm_routing_set_handler(
             "error": "router_not_configured"
         }));
     };
+    let route = match requested_model_route(&body, router) {
+        Ok(route) => route,
+        Err(message) => {
+            return HttpResponse::BadRequest().json(json!({
+                "error": "invalid_model_selection", "message": message
+            }))
+        },
+    };
+    let profile = route.as_str();
     let operation = operation.into_inner();
     if !router.operation_mapping.contains_key(&operation) {
         return HttpResponse::NotFound().json(json!({
@@ -359,8 +374,8 @@ pub async fn llm_routing_set_handler(
     }
     if !router.profiles.contains_key(profile) {
         return HttpResponse::BadRequest().json(json!({
-            "error": "unknown_profile",
-            "message": format!("profile {profile:?} is not declared in llm.router.profiles")
+            "error": "invalid_model_selection",
+            "message": format!("model route {profile:?} is unavailable")
         }));
     }
     if let Err(error) = routing::set_llm_routing_override(&operation, profile) {
@@ -374,6 +389,34 @@ pub async fn llm_routing_set_handler(
         "effective_profile": profile,
         "overridden": true
     }))
+}
+
+/// Selection is typed at the API boundary. The override owner persists the
+/// resulting concrete dispatch handle.
+fn requested_model_route(body: &Value, router: &LLMRouterConfig) -> Result<String, String> {
+    if body.get("profile").is_some() {
+        return Err("profile input is retired; send a model selection".into());
+    }
+    if let Some(selection) = body.get("selection") {
+        let selection: magicllm::catalog::ModelSelection =
+            serde_json::from_value(selection.clone())
+                .map_err(|error| format!("invalid model selection: {error}"))?;
+        let model = router
+            .catalog
+            .models
+            .get(&selection.model_id)
+            .filter(|model| model.selectable && !model.embedding)
+            .ok_or_else(|| "model is not available for assignment".to_string())?;
+        if selection.thinking != "auto" && !model.thinking.levels.contains(&selection.thinking) {
+            return Err("selected thinking level is not supported by this model".into());
+        }
+        let route = magicllm::catalog::choice_id(&selection.model_id, &selection.thinking);
+        return router
+            .resolve_profile(&route)
+            .map(|_| route.clone())
+            .ok_or_else(|| "model selection has no resolved route".into());
+    }
+    Err("a model selection is required".into())
 }
 
 /// `DELETE /llm/routing/{operation}` — revert to the config default.
@@ -518,6 +561,60 @@ mod tests {
     use actix_web::http::StatusCode;
 
     #[test]
+    fn model_assignment_requires_qualified_levels_and_resolves_auto_to_a_concrete_route() {
+        let router: LLMRouterConfig = serde_json::from_value(json!({
+            "catalog": {
+                "connections": {"openai": {"provider":"openai"}},
+                "models": {"sol": {"connection":"openai", "model":"gpt-6.1-sol", "label":"Sol",
+                    "limits":{"context_window_tokens":1050000,"max_output_tokens":128000},
+                    "thinking":{"mode":"effort","levels":["low","medium","high"],"default":"medium"},
+                    "capabilities":{"tools":true}}}
+            }, "default_profile":"model/sol/auto"
+        })).unwrap();
+        let automatic = requested_model_route(
+            &json!({"selection":{"model_id":"sol","thinking":"auto"}}),
+            &router,
+        )
+        .unwrap();
+        assert!(router.profiles.contains_key(&automatic));
+        let overview = routing_overview(&router, &RoutingState::default());
+        assert_eq!(
+            overview["models"][0]["operation_choices"]["auto"],
+            automatic
+        );
+        assert_eq!(overview["models"][0]["choices"]["auto"], "model/sol/auto");
+        assert_eq!(
+            magicllm::catalog::selection_for_profile(&router.profiles[&automatic])
+                .unwrap()
+                .thinking,
+            "auto"
+        );
+        assert_eq!(
+            requested_model_route(
+                &json!({"selection":{"model_id":"sol","thinking":"high"}}),
+                &router
+            )
+            .unwrap(),
+            "model/sol/high"
+        );
+        assert!(requested_model_route(
+            &json!({"selection":{"model_id":"sol","thinking":"none"}}),
+            &router
+        )
+        .is_err());
+        assert!(requested_model_route(
+            &json!({"selection":{"model_id":"missing","thinking":"low"}}),
+            &router
+        )
+        .is_err());
+        assert!(requested_model_route(
+            &json!({"profile":"old","selection":{"model_id":"sol"}}),
+            &router
+        )
+        .is_err());
+    }
+
+    #[test]
     fn pi_operation_profile_uses_the_cli_install_probe() {
         assert_eq!(harness_binary("harness-pi"), Some("pi"));
     }
@@ -534,7 +631,7 @@ mod tests {
             "default_profile": "cloud-tools",
             "profiles": {
                 "cloud-tools": {"provider": "openai", "model": "api-model"},
-                "op-harness-codex": {"provider": "harness-codex", "model": "default"},
+                "model/harness-codex/default/auto": {"provider": "harness-codex", "model": "default"},
                 "local-summary": {"provider": "ollama", "model": "local-model"}
             },
             "operation_mapping": {
@@ -588,7 +685,7 @@ mod tests {
         assert_eq!(follows["effective_profile"], "cloud-tools");
         assert_eq!(
             follows["parent_profiles"],
-            json!({"chat": "op-harness-codex", "run": null})
+            json!({"chat": "model/harness-codex/default/auto", "run": null})
         );
         assert!(follows.get("via_affinity").is_none());
     }

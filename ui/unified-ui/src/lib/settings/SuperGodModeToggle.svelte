@@ -1,4 +1,9 @@
 <script lang="ts">
+	import { tick } from 'svelte';
+	import PresenceOrb from '$lib/magician/chat/next/PresenceOrb.svelte';
+	import type { PresenceState } from '$lib/magician/chat/next/presence';
+	import { clickOutside } from '$lib/shared/clickOutside';
+	import { createMenuKeydown } from '$lib/shared/menuKeydown';
 	import { requestConfirmation } from '$lib/stores/confirmationStore';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import {
@@ -9,8 +14,22 @@
 	} from '$lib/settings/godMode';
 
 	const superState = superGodModePoll.value;
+	let { orb = false, labelled = false, presenceState = 'idle' }: { orb?: boolean; labelled?: boolean; presenceState?: PresenceState } = $props();
 	let menuOpen = $state(false);
 	let busy = $state(false);
+	let root = $state<HTMLDivElement>();
+	let menu = $state<HTMLDivElement>();
+	let trigger = $state<HTMLButtonElement>();
+	function closeMenu(refocus: boolean): void {
+		menuOpen = false;
+		if (refocus) (trigger ?? root?.querySelector<HTMLButtonElement>('button'))?.focus();
+	}
+	const menuKeydown = createMenuKeydown({ getMenuEl: () => menu ?? null, close: closeMenu });
+	async function toggleMenu(event?: MouseEvent): Promise<void> {
+		trigger = event?.currentTarget instanceof HTMLButtonElement ? event.currentTarget : root?.querySelector<HTMLButtonElement>('button') ?? undefined;
+		menuOpen = !menuOpen;
+		if (menuOpen) { await tick(); menu?.querySelector<HTMLButtonElement>('button')?.focus(); }
+	}
 
 	async function turnOn(duration: SuperGodModeDuration): Promise<void> {
 		menuOpen = false;
@@ -39,7 +58,12 @@
 	}
 </script>
 
-<div class="sgm-toggle">
+<div class="sgm-toggle" class:orb class:labelled bind:this={root} use:clickOutside={{ enabled: menuOpen, handler: () => closeMenu(false) }}>
+	{#if orb}
+		<PresenceOrb variant="dev" state={presenceState} godMode={$superState?.active ?? null} godToggleable={!busy}
+			modeMenuOpen={menuOpen} on:toggleGodMode={() => $superState?.active ? save(null) : toggleMenu()} />
+	{/if}
+	{#if !orb || labelled}
 	{#if $superState?.active}
 		<button
 			type="button"
@@ -61,17 +85,19 @@
 			aria-label="Super god mode"
 			aria-haspopup="menu"
 			aria-expanded={menuOpen}
-			onclick={() => (menuOpen = !menuOpen)}
+			onclick={toggleMenu}
 		>
 			<span aria-hidden="true">⚡</span>
+			<span class="sgm-label">Super God</span>
 		</button>
-		{#if menuOpen}
-			<div class="sgm-menu" role="menu">
+	{/if}
+	{/if}
+		{#if menuOpen && !$superState?.active}
+			<div class="sgm-menu" role="menu" aria-label="Super god mode" tabindex="-1" bind:this={menu} onkeydown={menuKeydown}>
 				<button type="button" role="menuitem" onclick={() => turnOn('1h')}>Super god mode for 1 hour</button>
 				<button type="button" role="menuitem" onclick={() => turnOn('forever')}>Super god mode until turned off</button>
 			</div>
 		{/if}
-	{/if}
 </div>
 
 <style>
@@ -79,6 +105,7 @@
 		position: relative;
 		display: inline-flex;
 	}
+	.labelled { align-items: center; gap: 0.35rem; }
 	.sgm-button {
 		align-items: center;
 		background: transparent;
@@ -136,6 +163,7 @@
 		padding: 0.45rem 0.6rem;
 		text-align: left;
 	}
+	.orb .sgm-menu { left: auto; right: 0; max-width: calc(100vw - 32px); }
 	.sgm-menu button:hover {
 		background: var(--bg-hover, rgb(127 127 127 / 0.12));
 		color: var(--danger);

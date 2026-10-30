@@ -104,6 +104,15 @@ setups:
     driver:
       kind: governed_oauth
 
+  higgsfield-account:
+    label: Higgsfield account
+    driver:
+      kind: browser_cli
+      executable: higgsfield
+      args: [auth, login]
+      login_url_hosts: [higgsfield.ai, clerk.higgsfield.ai]
+      credential_file: .config/higgsfield/credentials.json
+
   google-oauth-client:
     label: Google OAuth Desktop client
     driver:

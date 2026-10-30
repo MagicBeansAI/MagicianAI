@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 0.1.4: Ask before re-running an install step that is already configured (`again`), defaulting to no.
+
 ### 2026-10-15 — 0.1.3
 
 - The installer offers optional Cloudflare remote access and Clarity recording.

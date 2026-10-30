@@ -53,22 +53,114 @@ use tracing::{info, warn};
 use crate::magician_v2::execution::actions::ExecutableAction;
 use crate::magician_v2::execution::agentic::decision::Decision;
 use crate::magician_v2::execution::agentic::executor::{
-    action_summary_for_diagnostics, agentic_decision_uses_yutori, agentic_iteration_id,
-    agentic_llm_event_correlation, all_durable_micro_goals_resolved, build_flat_browser_state,
-    build_primitive_exec_ctx, delegation_targets_markdown, emit_agent_execution_mapping,
-    flatten_scheduled_agentic_decision, llm_task_ref_for_context, response_kind_from_decision,
-    routing_overrides_for_run, runtime_execution_id, runtime_execution_id_opt,
-    schedule_agentic_decision_job, transport_scope, ActionExecutors, HeapAwaitExt,
+    action_summary_for_diagnostics, agentic_decision_call_identity, agentic_decision_uses_yutori,
+    agentic_iteration_id, agentic_llm_event_correlation, build_flat_browser_state,
+    build_primitive_exec_ctx, definition_of_done_signal, delegation_targets_markdown,
+    emit_agent_execution_mapping, flatten_scheduled_agentic_decision, llm_task_ref_for_context,
+    resolved_durable_micro_goals, response_kind_from_decision, routing_overrides_for_run,
+    runtime_execution_id, runtime_execution_id_opt, schedule_agentic_decision_job, transport_scope,
+    ActionExecutors, HeapAwaitExt,
 };
 use crate::magician_v2::execution::agentic::run_loop::outcome::Phase;
 use crate::magician_v2::execution::agentic::types::{
     action_signature, action_type_and_tool_name, AgenticAssistantTurnRecord, AgenticContext,
-    EnvironmentState, ExecutionHistory, LoopProtectiveState,
+    ApprovedConfirmationAction, EnvironmentState, ExecutionHistory, LoopProtectiveState,
 };
 use crate::magician_v2::execution::durable_task_state::TaskStateActionEnvelope;
 use crate::magician_v2::execution::screenshot_cache::SoMDecisionRecord;
 use crate::magician_v2::execution::verified_executor::types::{ActionCandidate, CandidateBatch};
 use crate::magician_v2::RuntimeTransportEvent;
+
+/// Iterations a kept screenshot stays offered to the planner model. Each one
+/// is an action the rail ran after it was taken, so an older image is more
+/// likely to show a screen that is gone than to help.
+const MAX_CARRIED_SCREENSHOT_AGE: usize = 3;
+
+/// Keep this state's screenshot for the planner model's next turns. The model
+/// only sees the screenshot of the state it decides on: when the rail decides
+/// the step it never sees this one, and when it decides itself it loses it on
+/// the next turn (often spent fetching element references). A state without a
+/// screenshot leaves an earlier kept one in place. True when this state's
+/// screenshot is new; false when there is none or it is the kept one again.
+async fn keep_screenshot_for_planner(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    observed_state: &EnvironmentState,
+    history: &ExecutionHistory,
+    loop_protective: &mut LoopProtectiveState,
+    iteration: usize,
+) -> bool {
+    let image = crate::magician_v2::execution::agentic::decision::extract_screenshot(
+        observed_state,
+        executors.screenshot_storage.as_ref(),
+        runtime_execution_id_opt(ctx),
+        history,
+    )
+    .await
+    .and_then(|images| images.into_iter().next());
+    let Some(image) = image else {
+        return false;
+    };
+    // After a click the browser state can still hold the capture from before
+    // it. The same image is not a new one: it keeps the iteration it was
+    // taken in, so its caption still names the steps since.
+    if loop_protective
+        .planner_screenshot_carry
+        .as_ref()
+        .is_some_and(|carry| carry.image.base64 == image.base64)
+    {
+        return false;
+    }
+    loop_protective.planner_screenshot_carry =
+        Some(crate::magician_v2::execution::agentic::types::CarriedScreenshot { image, iteration });
+    true
+}
+
+/// The kept screenshot for this planner turn, with a caption naming the steps
+/// run since it was taken. Offered on every turn until a newer screenshot
+/// replaces it or it is older than `MAX_CARRIED_SCREENSHOT_AGE` iterations.
+fn carried_screenshot_for_turn(
+    ctx: &AgenticContext,
+    history: &ExecutionHistory,
+    loop_protective: &mut LoopProtectiveState,
+    iteration: usize,
+) -> Option<(
+    crate::magician_v2::slot_graph::extraction::ImageData,
+    String,
+)> {
+    let carry = loop_protective.planner_screenshot_carry.as_ref()?;
+    if iteration.saturating_sub(carry.iteration) > MAX_CARRIED_SCREENSHOT_AGE {
+        loop_protective.planner_screenshot_carry = None;
+        return None;
+    }
+    let carry = carry.clone();
+    let since: Vec<String> = history
+        .iterations
+        .iter()
+        .filter(|record| record.iteration >= carry.iteration)
+        .map(|record| {
+            let summary =
+                action_summary_for_diagnostics(&record.action, ctx.app_disclosure_guard.is_some());
+            match summary.char_indices().nth(120) {
+                Some((cut, _)) => format!("{}…", &summary[..cut]),
+                None => summary,
+            }
+        })
+        .collect();
+    if since.is_empty() {
+        // The state it came from is the one being decided: the model sees it
+        // directly.
+        return None;
+    }
+    let caption = format!(
+        "The attached screenshot was taken at iteration {}, before these steps: {}. It \
+         may not show the current screen; trust the current observation for anything \
+         those steps changed.",
+        carry.iteration,
+        since.join("; ")
+    );
+    Some((carry.image, caption))
+}
 
 /// What the rest of the iteration reads from `Decide`.
 ///
@@ -93,9 +185,12 @@ pub struct DecideOutput {
     pub has_images_for_decision: bool,
     /// Per-call LLM trace, moved onto the assistant turn by `Resolve`.
     pub llm_trace_context_for_decision: Option<magicllm::LlmTraceContext>,
-    /// True only when the decision is the orchestrator-synthesised
-    /// stuck-auto-yield rather than a model-emitted give-up. The give-up gate in
-    /// `Apply::Yield` exempts it, because it already *is* the exhaustion signal.
+    /// True when the decision is a runtime stop rather than a model-emitted
+    /// terminal: the orchestrator-synthesised stuck-auto-yield, or a
+    /// definition-of-done yield (the model wrote its text, the runtime made it
+    /// the terminal). The give-up gate in `Apply::Yield` exempts it, because it
+    /// already *is* the exhaustion signal, and Resolve does not refuse it under
+    /// the owner's allowlist. (Named for its first use; it is persisted.)
     pub decision_is_synthetic_stuck: bool,
 }
 
@@ -244,11 +339,95 @@ fn working_set_routing_notice(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::magician_v2::execution::agentic) async fn run(
     ctx: &AgenticContext,
     executors: &ActionExecutors,
     history: &ExecutionHistory,
     loop_protective: &mut LoopProtectiveState,
+    approved_confirmation_actions: &[ApprovedConfirmationAction],
+    observed_state: &mut EnvironmentState,
+    pending_operator_steer: &[String],
+    cancellation_token: Option<&CancellationToken>,
+    browser_primitive_enabled: bool,
+    iteration: usize,
+) -> Result<DecideOutput> {
+    let output = Box::pin(run_inner(
+        ctx,
+        executors,
+        history,
+        loop_protective,
+        approved_confirmation_actions,
+        observed_state,
+        pending_operator_steer,
+        cancellation_token,
+        browser_primitive_enabled,
+        iteration,
+    ))
+    .await;
+    // Publish after every decider — the pinned harness, the decision rail,
+    // a caller-decided call and the native model — and on every exit, early
+    // returns included. A terminal decision may never reach another iteration
+    // check, so this is the last chance to record what the turn spent: a
+    // one-turn harness run that returned early used to finish with
+    // `cost_used_usd: 0.0, tokens_used: 0`.
+    super::super::super::run_budget::refresh_running_budget_with_harness_tokens(
+        ctx,
+        loop_protective.cumulative_run_cost_usd,
+        loop_protective.cumulative_harness_tokens,
+        iteration,
+        loop_protective.parked_iteration_refunds,
+    );
+    // A coding-engine turn is paid for outside the router, so the router's
+    // refusal never reaches it. A decision that would start one while the
+    // owner's spend envelope is spent hands Resolve the typed refusal
+    // instead: Resolve parks the run (no failed step is recorded and no retry
+    // or stuck counter moves) and it decides again once the window resets.
+    // Dispatching it would only record a refused, failed step.
+    output.map(|mut output| {
+        if let Some(refusal) = coding_decision_spend_refusal(
+            ctx,
+            &output.decision_result,
+            crate::magician_v2::spend_envelope_producers::preflight,
+        ) {
+            output.decision_result = Err(refusal);
+        }
+        output
+    })
+}
+
+/// The spend envelope's refusal for a decision that would start a
+/// coding-engine turn (`run_coding_task`) under this run's class, `None` for
+/// any other decision or while the envelope admits the run.
+fn coding_decision_spend_refusal(
+    ctx: &AgenticContext,
+    decision: &Result<Decision>,
+    preflight: impl Fn(magicllm::LlmWorkloadClass) -> Result<()>,
+) -> Option<anyhow::Error> {
+    let Ok(Decision::Execute { candidates, .. }) = decision else {
+        return None;
+    };
+    let starts_coding = candidates.candidates.iter().any(|candidate| {
+        matches!(
+            &candidate.action,
+            ExecutableAction::Pack { capability_name, .. }
+                if capability_name
+                    == crate::magician_v2::execution::compiled_handlers::run_coding_task::TOOL_NAME
+        )
+    });
+    if !starts_coding {
+        return None;
+    }
+    preflight(crate::magician_v2::spend_envelope_producers::agentic_run_class(ctx)).err()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_inner(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    history: &ExecutionHistory,
+    loop_protective: &mut LoopProtectiveState,
+    approved_confirmation_actions: &[ApprovedConfirmationAction],
     observed_state: &mut EnvironmentState,
     pending_operator_steer: &[String],
     cancellation_token: Option<&CancellationToken>,
@@ -273,6 +452,21 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
         );
         return Ok(output);
     }
+    // The first `Decide` after an approving resume runs the call the owner
+    // approved instead of asking the model to re-emit it byte for byte; see
+    // `approved_replay`. Every later iteration decides as usual.
+    if let Some(output) = super::approved_replay::maybe_replay_approved(
+        ctx,
+        executors,
+        approved_confirmation_actions,
+        loop_protective,
+        pending_operator_steer,
+        iteration,
+    )
+    .await
+    {
+        return Ok(output);
+    }
     // Set when Jev cannot ground a step for Magician's own model: the model
     // decides below, and the engine validates its calls before they run.
     let mut proposal_check = None;
@@ -289,7 +483,19 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
     )
     .await
     {
-        Ok(Some(output)) => return Ok(output),
+        Ok(Some(output)) => {
+            let _ = keep_screenshot_for_planner(
+                ctx,
+                executors,
+                observed_state,
+                history,
+                loop_protective,
+                iteration,
+            )
+            .heap_boxed()
+            .await;
+            return Ok(output);
+        },
         Ok(None) => {},
         Err(error) => {
             return Ok(DecideOutput {
@@ -303,18 +509,37 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
             })
         },
     }
-    if let Some(decision) = crate::magician_v2::execution::plane::turn_engine::maybe_harness_decide(
-        ctx,
-        executors,
-        history,
-        loop_protective,
-        observed_state,
-        pending_operator_steer,
-        cancellation_token,
-        iteration,
-    )
-    .await?
-    {
+    let harness_decision =
+        match crate::magician_v2::execution::plane::turn_engine::maybe_harness_decide(
+            ctx,
+            executors,
+            history,
+            loop_protective,
+            observed_state,
+            pending_operator_steer,
+            cancellation_token,
+            iteration,
+        )
+        .await
+        {
+            Ok(decision) => decision,
+            // The owner's spend envelope is spent. That is not a phase failure
+            // (which would walk the run toward quarantine): hand it to Resolve
+            // as a decision error, which parks the run until the window resets.
+            Err(error) if crate::magician_v2::spend_envelope::is_exhaustion_error(&error) => {
+                return Ok(DecideOutput {
+                    decision_result: Err(error),
+                    task_state_action_for_decision: TaskStateActionEnvelope::default(),
+                    assistant_turn_for_decision: None,
+                    response_id_for_decision: None,
+                    has_images_for_decision: false,
+                    llm_trace_context_for_decision: None,
+                    decision_is_synthetic_stuck: false,
+                });
+            },
+            Err(error) => return Err(error),
+        };
+    if let Some(decision) = harness_decision {
         // The harness submitted a plan (`submit_plan`) instead of finishing:
         // start it now. Its first step is validated by the engine like every
         // later one; if it cannot start, the harness gets a new turn and sees
@@ -334,7 +559,19 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
             )
             .await;
             let decision_result = match started {
-                Ok(Some(output)) => return Ok(output),
+                Ok(Some(output)) => {
+                    let _ = keep_screenshot_for_planner(
+                        ctx,
+                        executors,
+                        observed_state,
+                        history,
+                        loop_protective,
+                        iteration,
+                    )
+                    .heap_boxed()
+                    .await;
+                    return Ok(output);
+                },
                 Ok(None) => Err(anyhow!(
                     "The plan you submitted did not start: the Decision Engine rejected its \
                      first step, or the run was steered. Decide the next step again."
@@ -453,9 +690,18 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
     } else {
         let decision_branch = async {
             // Normal path: Ask LLM for decision
-            // Emit LLMRequestSent for decision
-            if ctx.has_observability() {
+            // Emit LLMRequestSent for decision, carrying the identity the call
+            // will be routed under so every surface can pair this request
+            // with the call's `LLMRouted` and `LLMResponseReceived`.
+            let decision_call_identity = if ctx.has_observability() {
                 let (principal, workspace) = transport_scope(ctx);
+                let (identity, correlation) = agentic_decision_call_identity(
+                    ctx,
+                    principal.as_deref(),
+                    workspace.as_deref(),
+                    iteration,
+                    "decision",
+                );
                 let request_sent_event = RuntimeTransportEvent::LLMRequestSent {
                     execution_id: runtime_execution_id(ctx),
                     principal,
@@ -467,16 +713,20 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
                     request_summary: format!("Deciding next action for iteration {}", iteration),
                     input_tokens_estimate: None,
                     budget_remaining: 0.0,
+                    correlation,
                     timestamp: Utc::now().timestamp_millis(),
                 };
-                super::outbox::journal_and_emit(
-                    ctx,
-                    executors,
-                    iteration,
-                    Phase::Decide,
-                    request_sent_event,
-                );
-            }
+                // Inline, never journalled — like `AgenticActionStarted`. A
+                // journalled record is delivered when the Decide phase
+                // commits, which is after this call has returned: the
+                // request would reach every surface together with its own
+                // response, and a minute-long call would show nothing while
+                // it ran.
+                executors.emit_event(request_sent_event);
+                Some(identity)
+            } else {
+                None
+            };
 
             let decision_start = Instant::now();
             // Slot that decision functions populate with per-call LLM telemetry
@@ -514,6 +764,10 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
                     )
                 })
                 .unwrap_or(routed_native_adapter);
+            let iteration_native_adapter = match decision_call_identity {
+                Some(identity) => iteration_native_adapter.with_preassigned_decision_call(identity),
+                None => iteration_native_adapter,
+            };
             let native_adapter = Arc::new(iteration_native_adapter);
 
             // Yutori grounds every action on a screenshot, but the flat loop's
@@ -576,25 +830,59 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
                 }
             }
 
-            // Definition-of-done (phase 2): conclude the run the moment the
-            // durable task state's micro-goals are ALL resolved, rather than
-            // spend another LLM turn re-verifying closed requirements. Computed
-            // executor-side so it can load the durable state, then threaded into
-            // `decide_next_action`, which returns a synthetic
-            // `Decision::Completed` when it is set.
+            // Definition-of-done (phase 2): once the durable task state's
+            // micro-goals are ALL resolved, this turn is the run's last — one
+            // model turn with tools disabled writes the final answer (the
+            // deliverable, what was found, what blocked each blocked
+            // requirement) instead of more tool turns re-verifying closed
+            // requirements. Computed executor-side so it can load the durable
+            // state, then threaded into `decide_next_action`, which runs that
+            // turn and builds the terminal (`definition_of_done_terminal`).
             //
-            // Not after the Completed arm rejected one. The synthetic terminal
-            // carries no artifact and no completed/blocked markers, and the
-            // gate reads the same history plus one rejection record, so the
-            // re-issued conclusion is rejected verbatim and the third one
-            // aborts the run — measured live on a parent whose child had just
-            // delivered the answer: three rejections, no model call, task
-            // failed with the result in hand. After a rejection the model
-            // decides, and can yield with the evidence the gate asks for.
-            let definition_of_done_met = loop_protective.consecutive_goal_reached_rejections == 0
-                && all_durable_micro_goals_resolved(ctx, executors)
+            // Only a state this execution wrote counts
+            // (`resolved_durable_micro_goals`): a task's previous run leaves
+            // its resolved state behind, and a retry or follow-up must not
+            // conclude on it before doing any work.
+            //
+            // Not after the Completed arm rejected one, never twice for the
+            // same micro-goal set, at most twice a run
+            // (`take_definition_of_done_turn`). The gate reads the same
+            // history plus one rejection record, so a re-issued conclusion
+            // was rejected verbatim and the third one aborted the run —
+            // measured live on a parent whose child had just delivered the
+            // answer. After a rejection the model decides with its tools, and
+            // can yield with the evidence the gate asks for.
+            //
+            // Nor while the run still owes its owner a final report (an
+            // unattended Autopilot coordinator): the model gets a turn WITH
+            // its tools, steered at that report (`definition_of_done_signal`,
+            // `decision_preflight`); the final no-tools turn follows once the
+            // report is filed.
+            let dod_previous_fingerprint = loop_protective.definition_of_done_fingerprint.clone();
+            let resolved_micro_goals = if loop_protective.consecutive_goal_reached_rejections == 0 {
+                resolved_durable_micro_goals(ctx, executors)
                     .heap_boxed()
-                    .await;
+                    .await
+            } else {
+                None
+            };
+            let dod_signal =
+                definition_of_done_signal(ctx, executors, resolved_micro_goals.is_some())
+                    .heap_boxed()
+                    .await
+                    .with_operator_steer(pending_operator_steer);
+            let definition_of_done = if dod_signal
+                == crate::magician_v2::execution::agentic::decision::DefinitionOfDone::Met
+            {
+                crate::magician_v2::execution::agentic::decision::take_definition_of_done_turn(
+                    loop_protective,
+                    resolved_micro_goals,
+                )
+            } else {
+                None
+            };
+            let definition_of_done_turn = definition_of_done.is_some();
+            let dod_goals_for_fallback = definition_of_done.clone();
 
             // Provider prompt composition and transport are polled from a fresh
             // scheduler-root task. A boxed child still polls synchronously on
@@ -602,6 +890,43 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
             // resumed history from combining provider mapping frames with the
             // executor/resume frames. The helper clones only immutable decision
             // inputs and preserves the exact shared execution token meter.
+            let carried_screenshot =
+                carried_screenshot_for_turn(ctx, &history, loop_protective, iteration);
+            // A new screenshot in this state is the model's to see as current,
+            // and is kept for its next turns, which may first fetch element
+            // references. Otherwise the kept one goes with its caption, also
+            // when the state still holds that same image after an action.
+            let fresh_screenshot = keep_screenshot_for_planner(
+                ctx,
+                executors,
+                observed_state,
+                &history,
+                loop_protective,
+                iteration,
+            )
+            .heap_boxed()
+            .await;
+            let carried_screenshot = carried_screenshot.filter(|_| !fresh_screenshot);
+            if let (Some((_, caption)), Some(broadcaster)) = (
+                carried_screenshot.as_ref(),
+                executors.event_broadcaster.as_ref(),
+            ) {
+                super::outbox::journal_and_emit_named(
+                    ctx,
+                    broadcaster,
+                    iteration,
+                    Phase::Decide,
+                    "planner.earlier_screenshot",
+                    ctx.agent_id.as_deref().unwrap_or("__system__"),
+                    ctx.principal.as_deref(),
+                    ctx.workspace.as_deref(),
+                    serde_json::json!({
+                        "execution_id": ctx.execution_id,
+                        "iteration": iteration,
+                        "caption": caption,
+                    }),
+                );
+            }
             let mut decision_job = match &observed_state {
                 EnvironmentState::Browser(_) if !browser_primitive_enabled => None,
                 _ => Some(schedule_agentic_decision_job(
@@ -612,8 +937,10 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
                     native_adapter,
                     Arc::clone(&decision_telemetry_slot),
                     decision_side_call_telemetry,
-                    definition_of_done_met,
+                    dod_signal,
+                    definition_of_done,
                     &pending_operator_steer,
+                    carried_screenshot,
                 )?),
             };
             let decision_outcome = if let Some(mut job) = decision_job.take() {
@@ -654,6 +981,38 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
                      decision paths are disabled"
                 ))
             };
+            // A definition-of-done turn that failed transiently (or to a provider
+            // outage, which has its own larger budget) goes back to the retry
+            // policy and is not spent; once the policy's budget is
+            // gone (Resolve would abort), the run concludes from its
+            // micro-goals instead of failing with the work done.
+            let decision_outcome = match (dod_goals_for_fallback.as_deref(), decision_outcome) {
+                (Some(goals), Err(error))
+                    if crate::magician_v2::execution::agentic::decision::provider_retry_budget_spent(
+                        &error,
+                        crate::magician_v2::execution::agentic::decision::provider_retries_used(
+                            &error,
+                            loop_protective,
+                        ),
+                    ) && !crate::magician_v2::spend_envelope::is_exhaustion_error(&error) =>
+                {
+                    Ok(
+                        crate::magician_v2::execution::agentic::decision::definition_of_done_terminal(
+                            ctx,
+                            Err(error),
+                            goals,
+                        ),
+                    )
+                },
+                (Some(_), Err(error)) => {
+                    crate::magician_v2::execution::agentic::decision::release_definition_of_done_turn(
+                        loop_protective,
+                        dod_previous_fingerprint,
+                    );
+                    Err(error)
+                },
+                (_, outcome) => outcome,
+            };
             let decision_result = decision_outcome.map(|(decision, metadata)| {
                 loop_protective.last_request_hover_discovery = metadata.request_hover_discovery;
                 loop_protective.pending_step_completed = metadata.step_completed;
@@ -672,10 +1031,13 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
                 prompt_projection_mode_for_decision =
                     metadata.prompt_projection_mode.map(str::to_string);
                 has_images_for_decision = metadata.has_images;
+                // A definition-of-done partial is the runtime's stop, like the
+                // stuck yield: the owner's allowlist does not refuse it.
                 decision_is_synthetic_stuck = assistant_turn_for_decision
                     .as_ref()
                     .map(|turn| turn.operation == "stuck_auto_yield")
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    || (definition_of_done_turn && matches!(decision, Decision::Yield { .. }));
                 decision
             });
             let decision_result = match decision_result {
@@ -1367,9 +1729,11 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
     // model just submitted, so no later step of it runs either.
     let decision_result = match (proposal_check, decision_result) {
         (Some(check), Ok(decision)) => {
-            let checked = crate::off_frame!(check
-                .validate(ctx, decision, loop_protective, cancellation_token)
-                .await);
+            let checked = crate::off_frame!(
+                check
+                    .validate(ctx, decision, loop_protective, cancellation_token)
+                    .await
+            );
             if checked.is_err() {
                 loop_protective.decision_rail_plan = None;
             }
@@ -1378,13 +1742,8 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
         (_, result) => result,
     };
 
-    // Publish after every rail, including foreign proposals and direct native
-    // turns. A terminal decision may never reach another iteration check.
-    super::super::super::run_budget::refresh_running_budget(
-        ctx,
-        loop_protective.cumulative_run_cost_usd,
-        iteration,
-    );
+    // The run's budget is published by `run` after this returns, on every
+    // exit path.
     Ok(DecideOutput {
         decision_result,
         task_state_action_for_decision,
@@ -1434,5 +1793,63 @@ mod working_set_routing_tests {
         assert!(notice.contains("Keep opening NEW pages with `content_read`"));
         assert!(notice.contains("Never conclude from a page's head"));
         assert!(notice.contains("working_set_search"));
+    }
+}
+
+#[cfg(test)]
+mod spend_envelope_tests {
+    use super::*;
+
+    fn decision_calling(tool: &str) -> Result<Decision> {
+        let action = ExecutableAction::Pack {
+            capability_name: tool.to_string(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: tool.to_string(),
+                },
+            resolved_params: Default::default(),
+        };
+        Ok(Decision::Execute {
+            candidates: CandidateBatch::new(vec![ActionCandidate::new(1, 1.0, action)], ""),
+            thinking: String::new(),
+        })
+    }
+
+    /// An envelope that refuses autonomous work and admits everything else.
+    fn spent(class: magicllm::LlmWorkloadClass) -> Result<()> {
+        if crate::magician_v2::spend_envelope::is_gated(class) {
+            Err(anyhow::Error::from(
+                magicllm::LLMError::SpendEnvelopeExhausted { resets_at_ms: 0 },
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A coding decision of an autonomous run becomes the typed refusal Resolve
+    /// parks on; a chat-launched run's, or any other decision, passes through.
+    #[test]
+    fn a_coding_decision_parks_an_autonomous_run_while_the_envelope_is_spent() {
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        let refusal =
+            coding_decision_spend_refusal(&ctx, &decision_calling("run_coding_task"), spent)
+                .expect("an autonomous coding decision is refused");
+        assert!(
+            crate::magician_v2::spend_envelope::is_exhaustion_error(&refusal),
+            "the refusal is the typed error Resolve parks on"
+        );
+        assert!(
+            coding_decision_spend_refusal(&ctx, &decision_calling("read_file"), spent).is_none()
+        );
+        assert!(
+            coding_decision_spend_refusal(&ctx, &decision_calling("run_coding_task"), |_| Ok(()))
+                .is_none()
+        );
+        ctx.chat_session_id = Some("session".into());
+        assert!(
+            coding_decision_spend_refusal(&ctx, &decision_calling("run_coding_task"), spent)
+                .is_none(),
+            "a chat-launched run is never refused"
+        );
     }
 }

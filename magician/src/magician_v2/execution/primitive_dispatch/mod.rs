@@ -20,8 +20,17 @@ pub mod cli_template;
 pub mod compiled_provider;
 pub mod dispatch;
 pub mod exec_ctx;
+/// Ceiling on one governed MCP request (HTTP or stdio), seconds: whatever a
+/// pack's `limits.timeout_secs` may declare (24 h, the manifest maximum).
+/// Owner decision 2026-10-23; was 10 min.
+pub(crate) const MAX_MCP_REQUEST_TIMEOUT_SECS: u64 =
+    tool_runtime_core::manifest_validation::MAX_RUNTIME_TIMEOUT_SECS as u64;
 mod governed_mcp;
 mod governed_runtime;
+pub(crate) mod mcp_bindings;
+mod mcp_commerce;
+mod mcp_stdio;
+mod public_mcp;
 pub(crate) use governed_runtime::NoProfileRegistry;
 pub mod outcome;
 pub mod runner;
@@ -40,4 +49,5 @@ pub use capability_invoker::{
 };
 pub(crate) use governed_mcp::dispatch_governed_mcp;
 pub(crate) use governed_runtime::admit_governed_route;
+pub(crate) use governed_runtime::approved_sender_profile_aliases;
 pub(crate) use governed_runtime::bind_scoped_workspace_path;

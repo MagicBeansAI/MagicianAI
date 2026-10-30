@@ -325,7 +325,11 @@ mod tests {
                 IntentionKind::StandingInstruction,
                 AssertionStatus::DirectOwnerStatement,
             ),
-            intention("taste", IntentionKind::Taste, AssertionStatus::DirectOwnerStatement),
+            intention(
+                "taste",
+                IntentionKind::Taste,
+                AssertionStatus::DirectOwnerStatement,
+            ),
             // An inferred "instruction" is not one the owner selected.
             intention(
                 "guessed",
@@ -338,10 +342,19 @@ mod tests {
             intentions[0].intervention_policy,
             Some(InterventionPolicy::ConfirmBeforeException)
         );
-        assert_eq!(intentions[1].intervention_policy, None, "the global applies");
+        assert_eq!(
+            intentions[1].intervention_policy, None,
+            "the global applies"
+        );
         assert_eq!(intentions[2].intervention_policy, None);
-        assert_eq!(policy.effective().global, Some(InterventionPolicy::Advisory));
-        assert_eq!(policy.effective().version, "preference_alignment_policy.v1+r3");
+        assert_eq!(
+            policy.effective().global,
+            Some(InterventionPolicy::Advisory)
+        );
+        assert_eq!(
+            policy.effective().version,
+            "preference_alignment_policy.v1+r3"
+        );
     }
 
     #[test]
@@ -351,9 +364,10 @@ mod tests {
             global: Some(InterventionPolicy::Advisory),
             ..OwnerPolicy::default()
         };
-        policy
-            .intentions
-            .insert("check-first".to_string(), InterventionPolicy::ChoiceForMaterial);
+        policy.intentions.insert(
+            "check-first".to_string(),
+            InterventionPolicy::ChoiceForMaterial,
+        );
         let mut intentions = vec![intention(
             "check-first",
             IntentionKind::StandingInstruction,
@@ -412,7 +426,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stale, PolicyWrite::Stale(written.clone()));
-        assert_eq!(read_policy(&resolver, "owner", "ws").await.unwrap(), written);
+        assert_eq!(
+            read_policy(&resolver, "owner", "ws").await.unwrap(),
+            written
+        );
         // Another owner's scope is untouched.
         assert_eq!(
             read_policy(&resolver, "owner", "other").await.unwrap(),
@@ -447,6 +464,12 @@ mod tests {
                 .unwrap(),
             PolicyWrite::Applied(_)
         ));
-        assert_eq!(read_policy(&resolver, "owner", "ws").await.unwrap().revision, 1);
+        assert_eq!(
+            read_policy(&resolver, "owner", "ws")
+                .await
+                .unwrap()
+                .revision,
+            1
+        );
     }
 }

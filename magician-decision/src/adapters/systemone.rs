@@ -31,6 +31,14 @@ use crate::request::{validate_answers, Answer, DecisionRequest, DecisionResponse
 /// and an unbounded read turns a misbehaving endpoint into a memory fault.
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(400);
+/// Hosted Jev context, in tokens: the whole request, and the state plus any
+/// one question; both rise to [`LONG_CONTEXT_TOKENS`] with the long-context
+/// header.
+const REQUEST_CONTEXT_TOKENS: u64 = 65_536;
+const QUESTION_CONTEXT_TOKENS: u64 = 32_768;
+const LONG_CONTEXT_TOKENS: u64 = 262_144;
+const IMAGES_HEADER: &str = "TypeSafe-Danger-Zone-Images";
+const LONG_CONTEXT_HEADER: &str = "TypeSafe-Danger-Zone-Long-Context";
 
 #[derive(Debug, Clone)]
 pub struct SystemOneConfig {
@@ -51,6 +59,8 @@ pub struct SystemOneConfig {
     /// Extra attempts beyond the first, for 429/529/5xx/timeout only.
     pub max_retries: u32,
     pub capabilities: ModelCapabilities,
+    /// Send the long-context header on every request.
+    pub long_context: bool,
 }
 
 impl SystemOneConfig {
@@ -68,6 +78,7 @@ impl SystemOneConfig {
             timeout: Duration::from_secs(15),
             max_retries: 2,
             capabilities: typesafe_capabilities(),
+            long_context: false,
         }
     }
 
@@ -86,17 +97,28 @@ impl SystemOneConfig {
             model: model.into(),
             timeout: Duration::from_secs(15),
             max_retries: 2,
+            long_context: false,
         }
+    }
+
+    /// Opt into the provider's long context: both limits become 262k.
+    pub fn enable_long_context(&mut self) {
+        self.long_context = true;
+        self.capabilities.max_state_tokens = Some(LONG_CONTEXT_TOKENS);
+        self.capabilities.max_question_tokens = Some(LONG_CONTEXT_TOKENS);
     }
 }
 
 /// What hosted Jev honestly promises: trained-calibrated probabilities,
-/// Choice capped at 255 options, Score supported, and it is remote.
+/// 64k per request and 32k per question, Choice capped at 255 options,
+/// Score supported, and it is remote. Images are experimental on the
+/// provider's side, so a model entry opts in (`capabilities.images`).
 pub fn typesafe_capabilities() -> ModelCapabilities {
     ModelCapabilities {
         calibrated: true,
         text_only: true,
-        max_state_tokens: Some(32_768),
+        max_state_tokens: Some(REQUEST_CONTEXT_TOKENS),
+        max_question_tokens: Some(QUESTION_CONTEXT_TOKENS),
         max_choice_options: Some(255),
         max_questions: None,
         supports_score: true,
@@ -150,6 +172,34 @@ struct WireRequest<'a> {
     model: &'a str,
     state: &'a serde_json::Value,
     questions: serde_json::Map<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    assets: std::collections::BTreeMap<&'a str, WireAsset<'a>>,
+}
+
+/// Only the fields the dialect defines; the IR's width and height stay here.
+#[derive(Serialize)]
+struct WireAsset<'a> {
+    r#type: &'static str,
+    format: &'static str,
+    data_base64: &'a str,
+}
+
+fn map_assets(request: &DecisionRequest) -> std::collections::BTreeMap<&str, WireAsset<'_>> {
+    request
+        .assets
+        .iter()
+        .map(|(key, asset)| {
+            let crate::asset::DecisionAsset::Image(image) = asset;
+            (
+                key.as_str(),
+                WireAsset {
+                    r#type: "image",
+                    format: image.format.as_str(),
+                    data_base64: &image.data_base64,
+                },
+            )
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -334,6 +384,7 @@ impl StructuredDecisionModel for SystemOneDecisionModel {
             model: &self.config.model,
             state: request.state.as_json(),
             questions: map_request(&request),
+            assets: map_assets(&request),
         };
         let body = serde_json::to_vec(&wire)
             .map_err(|err| DecisionError::Transport(format!("request serialize failed: {err}")))?;
@@ -403,6 +454,12 @@ impl SystemOneDecisionModel {
         let mut builder = self.client.post(&self.config.endpoint);
         if let Some(api_key) = &self.config.api_key {
             builder = builder.bearer_auth(api_key);
+        }
+        if !request.assets.is_empty() {
+            builder = builder.header(IMAGES_HEADER, "true");
+        }
+        if self.config.long_context {
+            builder = builder.header(LONG_CONTEXT_HEADER, "true");
         }
         let response = builder
             .timeout(self.config.timeout)

@@ -1,21 +1,28 @@
 name: run_task
 description: Start an execution for an existing task. Subscribes the calling chat session to the task's progress stream so status updates render as `TaskStatusUpdate` cards in chat.
-version: "1.0.0"
+version: "1.0.1"
 guide: |
   Tool name: `run_task`
+
+  Link users to the returned `task_url` in Work. Do not invent task-detail
+  paths; the canonical UI route is `/work?selected=<task_id>`.
 
   Inputs:
   - `task_id` (required) — existing task whose execution should start.
 
   Side effects:
-  - Begins a new root execution for the task (or restarts if terminal).
+  - Begins a new root execution for the task (or restarts if terminal); returns
+    an existing live execution when the task is already active.
   - Subscribes the chat session to the execution's progress stream so
     in-flight status events render as compact chat cards.
   - Emits an immediate `running` `TaskStatusUpdate` card so the user
     sees the task starting without waiting for the first server event.
 
-  Use ONLY when the user explicitly asks to run / start / kick off an
-  existing task. Don't call as a follow-up to normal chat `create_task`
+  Use when the user explicitly asks to run, start, retry, redo or continue
+  an unfinished existing task. Keep the same task and its saved checkpoints;
+  do not redo a long task directly in chat or detach a shell worker from it.
+  If the task already has a live execution, reuse its returned progress link
+  instead of starting duplicate work. Don't call as a follow-up to normal chat `create_task`
   unless the user said "and start it". Autonomous harness `create_task`
   and `promote_backlog_item` already start their assigned tasks by
   default, so harness cycles should not add a separate `run_task` call.

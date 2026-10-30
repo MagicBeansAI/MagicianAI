@@ -16,6 +16,7 @@ pub fn laya_capabilities(max_state_tokens: Option<u64>) -> ModelCapabilities {
         calibrated: false,
         text_only: true,
         max_state_tokens,
+        max_question_tokens: None,
         max_choice_options: Some(64),
         max_questions: None,
         supports_score: true,

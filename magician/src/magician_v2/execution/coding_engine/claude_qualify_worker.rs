@@ -138,7 +138,8 @@ where
                 snapshot.identity().to_string(),
                 snapshot.version.clone(),
                 binary,
-                settings.use_api_key,
+                settings.use_api_key
+                    || crate::magician_v2::harness_auth::uses_magician_credentials("claude_code"),
             )
             .await
             {

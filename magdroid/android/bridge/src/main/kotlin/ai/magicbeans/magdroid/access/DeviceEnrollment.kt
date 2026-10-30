@@ -705,6 +705,9 @@ class DeviceEnrollmentClient private constructor(
     ) {
         val response = client.get("${link.baseUrl}/api/magician/v2/devices/me") {
             header(MagicianAccess.HEADER_DEVICE_ID, deviceId)
+            appContext?.let(MagicianAccess::appVersion)?.let {
+                header(MagicianAccess.HEADER_APP_VERSION, it)
+            }
             header(MagicianAccess.HEADER_AUTHORIZATION, "Bearer ${grant.token}")
             grant.cloudflareAccess?.let { access ->
                 if (access.clientId.isNotBlank() && access.clientSecret.isNotBlank()) {

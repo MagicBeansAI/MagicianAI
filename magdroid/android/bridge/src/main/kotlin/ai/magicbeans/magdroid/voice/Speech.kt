@@ -94,7 +94,15 @@ class Speech(context: Context, private val callFocus: CallAudioFocus = LiveCallA
         begin(raw, null, onStart, onOutcome)
     }
 
-    private fun begin(raw: String, onComplete: (() -> Unit)?, onStart: (() -> Unit)?, onOutcome: ((SpeechOutcome) -> Unit)?) {
+    fun speakForChat(raw: String, chatSessionId: String?, onComplete: (() -> Unit)? = null) {
+        begin(raw, onComplete, null, null, chatSessionId)
+    }
+
+    fun speakManagedForChat(raw: String, chatSessionId: String?, onStart: () -> Unit, onOutcome: (SpeechOutcome) -> Unit) {
+        begin(raw, null, onStart, onOutcome, chatSessionId)
+    }
+
+    private fun begin(raw: String, onComplete: (() -> Unit)?, onStart: (() -> Unit)?, onOutcome: ((SpeechOutcome) -> Unit)?, chatSessionId: String? = null) {
         // Never on top of a live call (`LiveCallAudioFocus`): a skipped
         // utterance, not a failed one, so a managed caller keeps its result
         // for after the hang-up.
@@ -117,7 +125,7 @@ class Speech(context: Context, private val callFocus: CallAudioFocus = LiveCallA
         if (prefs.ttsEngine.value == TtsEngine.Magician) {
             _speaking.value = true
             backendJob = scope.launch {
-                val audio = runCatching { withContext(Dispatchers.IO) { backend.synthesize(text) } }
+                val audio = runCatching { withContext(Dispatchers.IO) { backend.synthesize(text, chatSessionId) } }
                     .getOrNull()
                 if (current != generation.get()) return@launch
                 if (audio != null && playBackend(audio, current)) return@launch

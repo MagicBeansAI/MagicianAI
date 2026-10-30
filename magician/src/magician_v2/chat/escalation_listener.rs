@@ -775,6 +775,31 @@ pub(crate) fn alignment_hold_card(
     .with_speech_segments(None)
 }
 
+fn outward_review_options(schema: Option<&serde_json::Value>) -> Vec<EscalationOption> {
+    use crate::magician_v2::agents::outward_review::{OPTION_DISCARD, OPTION_SEND};
+    let mut options: Vec<EscalationOption> = schema
+        .and_then(|schema| schema.get("options"))
+        .and_then(|options| options.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            let id = option.get("id")?.as_str()?;
+            let label = option
+                .get("label")
+                .and_then(|label| label.as_str())
+                .unwrap_or(id);
+            Some(EscalationOption::choice(id, label, false))
+        })
+        .collect();
+    if options.is_empty() {
+        options = vec![
+            EscalationOption::choice(OPTION_SEND, "Send", false),
+            EscalationOption::choice(OPTION_DISCARD, "Discard", false),
+        ];
+    }
+    options
+}
+
 fn alignment_escalation_options(schema: Option<&serde_json::Value>) -> Vec<EscalationOption> {
     let alignment = schema.and_then(|schema| schema.get("alignment"));
     let consent = alignment
@@ -897,6 +922,12 @@ fn extract_escalation(event: &RuntimeTransportEvent) -> Option<EscalationInfo> {
                 Some("preference_alignment") => (
                     "preference_alignment".to_string(),
                     alignment_escalation_options(input_schema.as_ref()),
+                ),
+                // Review before sending: the server's Send / Discard / Always
+                // allow, in its order (`agents::outward_review`).
+                Some(crate::magician_v2::agents::outward_review::ESCALATION_TRIGGER) => (
+                    crate::magician_v2::agents::outward_review::ESCALATION_TRIGGER.to_string(),
+                    outward_review_options(input_schema.as_ref()),
                 ),
                 _ if input_type == "confirmation" || action_type.is_some() => (
                     "confirmation".to_string(),

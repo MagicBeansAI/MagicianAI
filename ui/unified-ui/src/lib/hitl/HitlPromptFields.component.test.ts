@@ -8,7 +8,7 @@
  * focused nothing, or let Enter grant a sandbox escape. The joint is the part
  * that had no test.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -66,7 +66,75 @@ describe('confirmation', () => {
 	});
 });
 
+describe('outward review — a captured send held for the owner', () => {
+	const options = [
+		{ id: 'send', label: 'Send' },
+		{ id: 'discard', label: 'Discard' },
+		{ id: 'always_allow_recipient', label: 'Always allow ambassador to send to a@b.com' }
+	];
+
+	it.each(['send', 'discard', 'always_allow_recipient'])(
+		'shows the preview, then the three options, and answers %s by id',
+		async (choiceId) => {
+			const answered = open({
+				title: 'Review a captured send',
+				kind: 'confirmation',
+				confirmation: { confirmLabel: 'Confirm', denyLabel: 'Deny', destructive: false },
+				approvalPreview: {
+					title: 'ambassador wants to email a@b.com',
+					evidence: [],
+					warnings: [],
+					notes: []
+				},
+				outwardReview: { options, deadlineAtMs: 0 }
+			});
+			expect(await screen.findByText('ambassador wants to email a@b.com')).toBeInTheDocument();
+			const send = screen.getByRole('button', { name: 'Send' });
+			const discard = screen.getByRole('button', { name: 'Discard' });
+			const always = screen.getByRole('button', {
+				name: 'Always allow ambassador to send to a@b.com'
+			});
+			expect(send).toHaveClass('muij-button-primary');
+			expect(discard).toHaveClass('muij-button-secondary');
+			expect(always).toHaveClass('muij-button-outline');
+			// The plain pair is not offered beside the three answers.
+			expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+			expect(screen.queryByRole('button', { name: 'Deny' })).not.toBeInTheDocument();
+			expect(screen.queryByText(/^Expires/)).not.toBeInTheDocument();
+
+			const target = options.find((option) => option.id === choiceId)!;
+			await fireEvent.click(screen.getByRole('button', { name: target.label }));
+			expect(await answered).toEqual({ kind: 'choice', choiceId });
+		}
+	);
+
+	it('says when the review expires', async () => {
+		void open({
+			title: 'Review a captured send',
+			kind: 'confirmation',
+			confirmation: { confirmLabel: 'Confirm', denyLabel: 'Deny', destructive: false },
+			outwardReview: { options, deadlineAtMs: Date.now() + 6.5 * 86_400_000 }
+		});
+		expect(await screen.findByText(/^Expires in 6 days · /)).toBeInTheDocument();
+	});
+});
+
 describe('authorization', () => {
+	it.each([['allow_once', 'Allow once'], ['session:exact', 'This session'], ['always:exact', 'Always'], ['deny', 'Deny']])(
+		'keeps exact shell approval durations actionable: %s', async (id, label) => {
+			const answered = open({ title: 'Approve shell command', kind: 'authorization',
+				authorization: { grant: 'sandbox', godMode: true, subject: "python3 -c 'print(1)'", detail: 'Exact invocation approval', roots: [],
+					options: [{ id: 'allow_once', label: 'Allow once' },
+						{ id: 'session:exact', label: 'This session: this exact shell invocation' },
+						{ id: 'always:exact', label: 'Always: this exact shell invocation' },
+						{ id: 'deny', label: 'Deny' }], denyId: 'deny' } });
+			for (const name of ['Allow once', 'This session', 'Always', 'Deny']) {
+				expect(await screen.findByRole('button', { name })).toBeEnabled();
+			}
+			await fireEvent.click(screen.getByRole('button', { name: label }));
+			expect(await answered).toEqual({ kind: 'choice', choiceId: id });
+		}
+	);
 	const toolGrant: Omit<AttentionPromptRequest, 'id'> = {
 		title: 'Authorize a tool',
 		body: 'Approve use of `shell_exec` to continue execution.',
@@ -190,6 +258,45 @@ describe('external action', () => {
 		await fireEvent.click(await screen.findByRole('button', { name: 'Done' }));
 		expect(await answered).toEqual({ kind: 'choice', choiceId: 'completed', input: undefined });
 	});
+
+	it('lets the owner decline an MCP sign-in with "Not now", which answers rather than closes', async () => {
+		const answered = open({
+			title: 'Finish signing in',
+			body: 'Finish connecting Swiggy (food) in your browser.',
+			kind: 'external_action',
+			externalAction: {
+				browserSigninCorrelationId: 'mcp_oauth:binding:flow:attempt',
+				browserSigninScope: { principal: 'owner', workspace: 'default' },
+				instructions: 'Complete sign-in here, or open it on the computer.',
+				doneLabel: 'Open on computer',
+				showNote: false,
+				dismissLabel: 'Not now'
+			}
+		});
+		const decline = await screen.findByRole('button', { name: 'Not now' });
+		const actions = within(screen.getByRole('group', { name: 'Sign-in actions' }));
+		expect(actions.getByRole('button', { name: /Finish sign-in/ })).toBeInTheDocument();
+		expect(actions.getByRole('button', { name: 'Not now' })).toBe(decline);
+		// The decline is never where focus lands.
+		expect(decline).not.toHaveFocus();
+		await fireEvent.click(decline);
+		expect(await answered).toEqual({ kind: 'choice', choiceId: 'dismiss' });
+	});
+
+	it('offers no decline for a sign-in ask without a dismiss label', async () => {
+		open({
+			title: 'Finish signing in',
+			kind: 'external_action',
+			externalAction: {
+				browserSigninCorrelationId: 'mcp_oauth:binding:flow:attempt',
+				instructions: 'Complete sign-in here.',
+				doneLabel: 'Open on computer',
+				showNote: false
+			}
+		});
+		await screen.findByText('Complete sign-in here.');
+		expect(screen.queryByRole('button', { name: 'Not now' })).not.toBeInTheDocument();
+	});
 });
 
 describe('file path', () => {
@@ -228,6 +335,18 @@ describe('the ask’s own supporting text', () => {
 			hint: 'Retry attempt 2. Previous answer: Q1'
 		});
 		expect(await screen.findByText('Retry attempt 2. Previous answer: Q1')).toBeInTheDocument();
+	});
+
+	it('opens a long hint, the thing being approved, under Details as Markdown', async () => {
+		open({
+			title: 'Approve the goal tree?',
+			body: 'Approve the Magican goal tree and write 15 notes?',
+			kind: 'text',
+			hint: '## Proposed tree\n\n- **Raise a round**\n  - Accelerator path'
+		});
+		const details = await screen.findByTestId('hitl-details');
+		expect(details.querySelector('summary')?.textContent).toBe('Details');
+		expect(details.querySelector('strong')?.textContent).toBe('Raise a round');
 	});
 });
 

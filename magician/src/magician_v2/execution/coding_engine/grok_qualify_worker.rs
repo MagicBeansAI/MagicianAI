@@ -229,11 +229,14 @@ pub async fn grok_qualify_child_stdio(
 ) -> Result<GrokQualifyEvidence, GrokQualifyError> {
     let (cwd, canary) = qualify_cwd()?;
     let inherited: Vec<(String, String)> = std::env::vars().collect();
-    let filtered = filter_grok_child_env(
+    let mut filtered = filter_grok_child_env(
         inherited
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
+    if !crate::magician_v2::harness_auth::uses_magician_credentials("grok") {
+        filtered.remove("XAI_API_KEY");
+    }
     let args = agent_stdio_args(GrokTurnMode::Build);
     debug_assert!(
         args.iter().any(|arg| arg == "--no-leader") && !args.iter().any(|arg| arg == "--leader")
@@ -277,8 +280,9 @@ pub async fn grok_qualify_child_stdio(
         evidence.gateway_contained = match (&grok_home, evidence.session_id.as_deref()) {
             (Some(home), Some(session_id)) => {
                 super::grok_contract::grok_updates_show_no_mcp_servers(&evidence.updates)
-                    || grok_session_record(home, session_id)
-                        .is_some_and(|(events, updates)| grok_session_record_contained(&events, &updates))
+                    || grok_session_record(home, session_id).is_some_and(|(events, updates)| {
+                        grok_session_record_contained(&events, &updates)
+                    })
             },
             _ => false,
         };
@@ -302,11 +306,14 @@ async fn list_grok_gateway_reach(binary: &Path) -> GrokGatewayReach {
 
 async fn grok_listing_names(binary: &Path, args: &[&str]) -> Option<Vec<String>> {
     let inherited: Vec<(String, String)> = std::env::vars().collect();
-    let filtered = filter_grok_child_env(
+    let mut filtered = filter_grok_child_env(
         inherited
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
+    if !crate::magician_v2::harness_auth::uses_magician_credentials("grok") {
+        filtered.remove("XAI_API_KEY");
+    }
     let mut command = Command::new(binary);
     command
         .args(args)

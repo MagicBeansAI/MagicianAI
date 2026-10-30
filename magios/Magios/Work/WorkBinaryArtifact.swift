@@ -12,19 +12,27 @@ struct WorkBinaryArtifact: View {
     @State private var preview: URL?
     @ObservedObject private var theme = ThemeManager.shared
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(name).font(.themed(18, weight: .semibold)).textSelection(.enabled)
+        WorkPage {
+            WorkHeaderCard(name)
             WorkResourceStatus(resource: resource)
-            if let file {
-                Button("Preview exact file") { preview = file }.frame(minHeight: 44)
-                ShareLink("Save or share exact file", item: file).frame(minHeight: 44)
-                if let onReviewed { Button("I reviewed this file", action: onReviewed).frame(minHeight: 44) }
-            } else {
-                Button("Load exact file") { Task { await load() } }.disabled(resource.busy || resource.loading).frame(minHeight: 44)
+            WorkGroupCard {
+                if let file {
+                    WorkButtonRow(title: "Preview exact file", systemImage: "eye") { preview = file }
+                    WorkRowDivider()
+                    ShareLink(item: file) {
+                        WorkRowLabel(title: "Save or share exact file", systemImage: "square.and.arrow.up", accessory: .none, tint: theme.accentColor)
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("Save or share exact file")
+                    if let onReviewed {
+                        WorkRowDivider()
+                        WorkButtonRow(title: "I reviewed this file", systemImage: "checkmark.circle", action: onReviewed)
+                    }
+                } else {
+                    WorkButtonRow(title: "Load exact file", systemImage: "arrow.down.circle") { Task { await load() } }.disabled(resource.busy || resource.loading)
+                }
             }
-            Spacer()
-        }.padding(16).foregroundColor(theme.textColor).background(theme.backgroundColor)
-        .navigationTitle("Artifact file").quickLookPreview($preview)
+        }
+        .navigationTitle("Artifact file").navigationBarTitleDisplayMode(.inline).quickLookPreview($preview)
         .task { resource.load(path) }
         .onChange(of: resource.scopeID) { _, _ in file = nil; preview = nil }
     }

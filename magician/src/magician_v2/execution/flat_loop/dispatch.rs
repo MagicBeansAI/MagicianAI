@@ -174,11 +174,14 @@ fn ungranted_capability_error(tool_name: &str, agent_id: Option<&str>) -> Execut
         Some(id) => format!(" (agent `{id}`)"),
         None => String::new(),
     };
-    ExecutionError::Step(format!(
+    // A refusal, not a fault: the agent asked for a tool it does not have and
+    // can act on the answer (logged as a warning, never retried).
+    ExecutionError::Refused(format!(
         "`{tool_name}` is not available to this agent{owner} — it is not one of this agent's \
-         granted capabilities (its `tools` grant does not include it). Do not retry this tool \
-         directly; instead delegate this work to an agent that has this capability, or complete \
-         the goal with the tools you do have."
+         granted capabilities (its `tools` grant does not include it), so there is no such tool \
+         here. Do not retry this tool directly; use `tool_search` to find a tool you have, \
+         delegate this work to an agent that has this capability, or complete the goal with the \
+         tools you do have."
     ))
 }
 
@@ -604,6 +607,17 @@ mod tests {
             "explains it is a grant gap, got: {msg}"
         );
         assert!(msg.contains("agent `cro`"), "names the agent, got: {msg}");
+        // The agent's to act on: a refusal (a warning, not retried) that
+        // points at the discovery tool, not a runtime fault.
+        assert!(matches!(err, ExecutionError::Refused(_)), "{err:?}");
+        assert!(
+            msg.contains("no such tool"),
+            "missing-tool marker, got: {msg}"
+        );
+        assert!(
+            msg.contains("`tool_search`"),
+            "points at discovery, got: {msg}"
+        );
         assert!(
             msg.to_lowercase().contains("do not retry"),
             "tells the agent not to retry, got: {msg}"

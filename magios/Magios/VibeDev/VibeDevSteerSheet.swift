@@ -23,6 +23,7 @@ struct VibeDevSteerSheet: View {
             Text("The message reaches the run during its current turn.")
                 .font(.themed(12))
                 .foregroundStyle(theme.secondaryTextColor)
+            TaskDetailAskSection(taskId: liveTaskID, panelRows: [])
             VibeDevPromptField(placeholder: "Use Postgres, not SQLite", text: $text, singleLine: true,
                                dictation: dictation)
             if let error {

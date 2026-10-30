@@ -7,7 +7,7 @@
 //! - `Headed` / `Headless` modes: `agent-browser --session <id> open
 //!   <initial-url|about:blank> [--headed]` to start a fresh browser.
 //!
-//! Tested with the patched fork (e.g. `0.38.1-Magician.0`) shipped at
+//! Tested with the patched fork (e.g. `0.41.0-Magician.0`) shipped at
 //! `skillshub/browser/_vendor/v<version>/bin/` and codesigned + deployed
 //! by `make setup-agent-browser`. `make -C skillshub install-scope
 //! SCOPE=<principal>/<workspace>` mirrors the patched binary into the
@@ -64,7 +64,7 @@ pub const ENV_AGENT_BROWSER_CDP_URL: &str = "MAGICIAN_AGENT_BROWSER_CDP_URL";
 /// extras root's `<extra>/skills/` (declared via
 /// `tool-runtime-config.yaml :: registry.paths`) when resolving the
 /// runtime binary. The binary is the patched fork (e.g.
-/// `0.38.1-Magician.0`), not the vanilla npm release.
+/// `0.41.0-Magician.0`), not the vanilla npm release.
 const BROWSER_BIN_RELATIVE_PATH: &str = "browser/bin/agent-browser";
 
 /// Upstream headless daemons default to a one-hour idle shutdown.
@@ -184,6 +184,16 @@ impl Default for ConnectionMode {
 }
 
 impl ConnectionMode {
+    /// Magicutor owns one automation tab per session under its configured proxy.
+    pub(crate) fn for_session(self, session_id: &str) -> Self {
+        match self {
+            Self::Cdp { url } if url == DEFAULT_MAGICUTOR_PROXY_URL => Self::Cdp {
+                url: format!("ws://127.0.0.1:3003/devtools/browser/{session_id}"),
+            },
+            other => other,
+        }
+    }
+
     pub fn from_env_or_default() -> Self {
         Self::from_runtime_selection(None, None, DEFAULT_MAGICUTOR_PROXY_URL).unwrap_or_else(
             |err| {
@@ -593,6 +603,74 @@ pub struct AgentBrowserToolResult {
     pub stderr_truncated: bool,
 }
 
+const MAX_TAB_GROUP_LABEL_CHARS: usize = 60;
+
+/// A short tab-group name from a task or conversation title. Task titles are
+/// often the instruction itself ("web-researcher / READ-ONLY COMPARISON,
+/// SECOND PASS. Today is …") and chat titles are cut with "...": keep the
+/// first sentence without the agent prefix, end, or shouting. Magicutor's
+/// extension shortens it further to fit the tab strip.
+pub(crate) fn tab_group_label(title: &str) -> Option<String> {
+    let mut text: String = title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some((head, rest)) = text.split_once(" / ") {
+        if !head.is_empty() && !head.contains(' ') && !rest.trim().is_empty() {
+            text = rest.trim().to_string();
+        }
+    }
+    if let Some(end) = [". ", "! ", "? "]
+        .iter()
+        .filter_map(|stop| text.find(stop).map(|at| at + 1))
+        .min()
+    {
+        text.truncate(end);
+    }
+    let text = text
+        .trim_end_matches(|c: char| {
+            c == '…' || (c.is_ascii_punctuation() && c != ')') || c.is_whitespace()
+        })
+        .trim();
+    let letters: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
+    let shouting = letters.len() > 3 && letters.iter().all(|c| !c.is_lowercase());
+    let text = if shouting {
+        let lower = text.to_lowercase();
+        let mut chars = lower.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    } else {
+        text.to_string()
+    };
+    let label: String = text.chars().take(MAX_TAB_GROUP_LABEL_CHARS).collect();
+    (!label.is_empty()).then_some(label)
+}
+
+/// `url` with `?label=` added when it is a Magicutor thread endpoint
+/// (`…/devtools/browser/<thread>`); any other URL is returned as is.
+fn cdp_url_with_tab_label(url: &str, label: Option<&str>) -> String {
+    let Some(label) = label else {
+        return url.to_string();
+    };
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    let is_thread = parsed
+        .path()
+        .strip_prefix("/devtools/browser/")
+        .is_some_and(|id| !id.is_empty() && id != "magicutor-proxy" && !id.contains('/'));
+    if !is_thread || parsed.query_pairs().any(|(key, _)| key == "label") {
+        return url.to_string();
+    }
+    parsed.query_pairs_mut().append_pair("label", label);
+    parsed.to_string()
+}
+
 pub struct AgentBrowserSession {
     /// `--session <id>` argument used for state continuity across calls.
     session_id: String,
@@ -633,6 +711,9 @@ pub struct AgentBrowserSession {
     /// for session bootstrap so a headed/headless run opens directly on the
     /// target page instead of flashing an extra `about:blank` window.
     initial_url: Option<String>,
+    /// Name of the run's tab group, sent to Magicutor as `?label=` on the
+    /// first `connect`.
+    tab_group_label: Option<String>,
     /// Optional per-stream capture limit used by deterministic retrieval.
     /// The subprocess pipes are always drained fully; only retained bytes are
     /// bounded, preventing a page from forcing unbounded controller memory.
@@ -797,14 +878,7 @@ impl AgentBrowserSession {
         // this segment as the session id and owns one dedicated tab per
         // session, so agent-browser only ever sees the agent's tab —
         // never the user's other 100+ tabs.
-        let mode = match mode {
-            ConnectionMode::Cdp { url } if url == DEFAULT_MAGICUTOR_PROXY_URL => {
-                ConnectionMode::Cdp {
-                    url: format!("ws://127.0.0.1:3003/devtools/browser/{session_id}"),
-                }
-            },
-            other => other,
-        };
+        let mode = mode.for_session(&session_id);
         Ok(Self {
             session_id,
             mode,
@@ -818,11 +892,17 @@ impl AgentBrowserSession {
             capacity_fallback: None,
             capacity_fallback_used: AtomicBool::new(false),
             initial_url: None,
+            tab_group_label: None,
             capture_limit_bytes: None,
             analytics: None,
             analytics_fallback_from: None,
             analytics_last_url: RwLock::new(None),
         })
+    }
+
+    /// Whether the first `connect`/`open` has happened.
+    pub fn is_connected(&self) -> bool {
+        self.connected.get().is_some()
     }
 
     pub fn with_api_mining_capture_enabled(mut self, enabled: bool) -> Self {
@@ -853,6 +933,12 @@ impl AgentBrowserSession {
     /// unchanged when no target is known.
     pub fn with_initial_url(mut self, initial_url: Option<String>) -> Self {
         self.initial_url = initial_url.and_then(normalize_initial_url);
+        self
+    }
+
+    /// Name the run's tab group in the owner's Chrome (see [`tab_group_label`]).
+    pub fn with_tab_group_label(mut self, label: Option<&str>) -> Self {
+        self.tab_group_label = label.and_then(tab_group_label);
         self
     }
 
@@ -1035,8 +1121,19 @@ impl AgentBrowserSession {
     /// First-time connection bootstrap, dispatched on `mode`.
     async fn connect_initial(&self) -> Result<()> {
         let initial_url = self.initial_open_target();
+        // The same local-file and local-service rules as every browser
+        // command (`dispatch::browser_url_refusal`): this daemon is unboxed.
+        if let Some(refusal) = super::dispatch::browser_url_refusal(initial_url) {
+            anyhow::bail!(refusal);
+        }
+        let connect_url = match &self.mode {
+            ConnectionMode::Cdp { url } => {
+                cdp_url_with_tab_label(url, self.tab_group_label.as_deref())
+            },
+            _ => String::new(),
+        };
         let args: Vec<&str> = match &self.mode {
-            ConnectionMode::Cdp { url } => vec!["connect", url],
+            ConnectionMode::Cdp { .. } => vec!["connect", &connect_url],
             ConnectionMode::Headed => vec!["open", initial_url, "--headed"],
             ConnectionMode::Headless => vec!["open", initial_url],
         };
@@ -1246,6 +1343,23 @@ impl AgentBrowserSession {
         let first = self
             .run_command_internal(args, true, timeout_secs, envs, stdin)
             .await?;
+        if !first.success && looks_like_outcome_unknown(&first) {
+            // agent-browser (v0.41+) wrote the command to its daemon but got
+            // no reply, and did not re-send it. The browser connection is
+            // fine, so nothing is reconnected; the agent must still
+            // re-observe before repeating the action.
+            warn!(
+                session = %self.session_id,
+                args = ?args,
+                "agent-browser command outcome is unknown; not re-running"
+            );
+            return Ok(mark_indeterminate(
+                first,
+                "INDETERMINATE: agent-browser sent this command but got no reply, so it \
+                 may already have taken effect. It was NOT retried. Re-observe the page \
+                 to establish what actually happened before issuing this action again.",
+            ));
+        }
         if first.success || !looks_like_cdp_disconnect(&first) {
             return Ok(first);
         }
@@ -1284,17 +1398,13 @@ impl AgentBrowserSession {
                      command; returning the annotated result anyway"
                 );
             }
-            let mut indeterminate = first;
-            if !indeterminate.stderr.is_empty() {
-                indeterminate.stderr.push('\n');
-            }
-            indeterminate.stderr.push_str(
+            return Ok(mark_indeterminate(
+                first,
                 "INDETERMINATE: the browser connection dropped around this \
                  command, so it may already have taken effect. It was NOT \
                  retried. Re-observe the page to establish what actually \
                  happened before issuing this action again.",
-            );
-            return Ok(indeterminate);
+            ));
         }
 
         warn!(
@@ -1337,6 +1447,20 @@ impl AgentBrowserSession {
         for arg in args {
             cmd.arg(arg);
         }
+        // A fenced session's CLI and daemon take no agent-browser setting
+        // and no proxy from Magician's own environment (the owner's
+        // `AGENT_BROWSER_PROFILE`, `HTTP_PROXY`, …): only what Magician sets
+        // below for this session.
+        let fenced = self
+            .engine_env
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(FENCED_SESSION_ENV);
+        if fenced {
+            for key in inherited_browser_settings(std::env::vars_os().map(|(key, _)| key)) {
+                cmd.env_remove(key);
+            }
+        }
         for (key, value) in envs {
             cmd.env(key, value);
         }
@@ -1354,7 +1478,10 @@ impl AgentBrowserSession {
         ) {
             cmd.env(AGENT_BROWSER_IDLE_TIMEOUT_ENV, "0");
         }
-        for (key, value) in &engine_env {
+        for (key, value) in engine_env
+            .iter()
+            .filter(|(key, _)| key.as_str() != FENCED_SESSION_ENV)
+        {
             cmd.env(key, value);
         }
         if stdin.is_some() {
@@ -1570,6 +1697,26 @@ impl AgentBrowserSession {
         if !result.success {
             bail!("controller-owned browser session close failed");
         }
+        if let ConnectionMode::Cdp { url } = &self.mode {
+            // Retrieval owns its created tabs as well as the CLI daemon. Use
+            // the very same local proxy endpoint; never close the owner Chrome.
+            let mut endpoint = url::Url::parse(url)?;
+            let scheme = match endpoint.scheme() {
+                "ws" => "http",
+                "wss" => "https",
+                _ => bail!("retrieval CDP cleanup requires a WebSocket proxy URL"),
+            };
+            endpoint
+                .set_scheme(scheme)
+                .map_err(|_| anyhow!("invalid CDP cleanup scheme"))?;
+            endpoint.set_path("/");
+            endpoint.set_query(None);
+            endpoint.set_fragment(None);
+            let client = crate::magician_v2::execution::MagicutorClient::new(
+                crate::magician_v2::execution::ExecutionConfig::new(endpoint),
+            )?;
+            client.delete_session_checked(&self.session_id).await?;
+        }
         Ok(())
     }
 }
@@ -1658,13 +1805,14 @@ impl Drop for ControllerOwnedBrowserSession {
         let session = Arc::clone(&self.session);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
-                if let Err(error) = session.shutdown_controller_owned().await {
-                    warn!(
-                        session = session.session_id(),
-                        error = %error,
-                        "retrieval browser session teardown failed after cancellation"
-                    );
+                for delay in [0, 2, 5, 15] {
+                    if delay != 0 { tokio::time::sleep(Duration::from_secs(delay)).await; }
+                    match session.shutdown_controller_owned().await {
+                        Ok(()) => return,
+                        Err(error) => warn!(session = session.session_id(), %error, "Retrieval browser teardown incomplete; retrying"),
+                    }
                 }
+                warn!(session = session.session_id(), "Retrieval browser teardown still incomplete after retries");
             });
         }
     }
@@ -2059,6 +2207,15 @@ pub fn flat_browser_session_is_cdp(session_id: &str) -> Option<bool> {
         .map(|session| matches!(session.mode(), ConnectionMode::Cdp { .. }))
 }
 
+/// Resolve a reused session before authorizing its actual browser transport.
+pub(crate) fn flat_browser_session_mode(session_id: &str) -> Option<ConnectionMode> {
+    flat_browser_sessions()
+        .lock()
+        .ok()?
+        .get(session_id)
+        .map(|session| session.mode().clone())
+}
+
 /// Every cached session id belonging to one thread, including its
 /// ceiling-suffixed variants.
 ///
@@ -2155,7 +2312,7 @@ pub async fn close_session_for_thread(thread_id: &str, cli_path: &Path) -> Resul
 /// whichever it launched.
 ///
 /// Requires the Magician-patched agent-browser CLI; the current
-/// `0.38.1-Magician.0` vendor build preserves this handoff contract. On
+/// `0.41.0-Magician.0` vendor build preserves this handoff contract. On
 /// older binaries the flag is silently ignored and the CLI performs a normal
 /// close.
 pub async fn close_session_for_thread_with_options(
@@ -2258,11 +2415,6 @@ pub async fn close_session_by_id_with_options(
     {
         bail!("agent-browser session id is invalid");
     }
-    // The window is being torn down — drop any cached flat-mode session handle
-    // for this id so a later execution can't reuse a session whose browser is
-    // gone. (Keep-alive / window-handoff paths skip this fn entirely, so they
-    // retain the cached entry.)
-    forget_flat_browser_session(session_id);
     let mut cmd = Command::new(cli_path);
     cmd.arg("--session").arg(session_id).arg("close");
     if keep_browser {
@@ -2288,16 +2440,14 @@ pub async fn close_session_by_id_with_options(
         })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        debug!(
-            session = %session_id,
-            stderr = %stderr.trim(),
-            keep_browser,
-            "agent-browser close exited non-zero (likely already-closed session)"
+        bail!(
+            "agent-browser close failed for {}: {}",
+            session_id,
+            String::from_utf8_lossy(&output.stderr).trim()
         );
-    } else {
-        debug!(session = %session_id, keep_browser, "agent-browser session closed");
     }
+    // Forget only after success; failed teardown must retain mode and ownership.
+    forget_flat_browser_session(session_id);
     Ok(())
 }
 
@@ -2338,12 +2488,36 @@ fn looks_like_cdp_disconnect(result: &AgentBrowserToolResult) -> bool {
     .any(|needle| combined.contains(needle))
 }
 
+/// agent-browser's `outcome_unknown`: a mutating command reached its daemon but
+/// no response came back, and agent-browser deliberately did not re-send it.
+fn looks_like_outcome_unknown(result: &AgentBrowserToolResult) -> bool {
+    let combined = format!("{}\n{}", result.stdout, result.stderr);
+    combined.contains("outcome_unknown")
+        || combined.contains("reached the daemon but no response came back")
+}
+
+/// Append the "may already have taken effect, re-observe first" notice to a
+/// failed result so the next decision does not blindly repeat the action.
+fn mark_indeterminate(mut result: AgentBrowserToolResult, notice: &str) -> AgentBrowserToolResult {
+    if !result.stderr.is_empty() {
+        result.stderr.push('\n');
+    }
+    result.stderr.push_str(notice);
+    result
+}
+
 /// CloakBrowser's current binary reserves exit code 76 for a concurrent-session
 /// denial. The wrapper also exposes the canonical human message, so accept both
 /// representations while rejecting every other license code and browser error.
+/// Magician's agent-browser build reports the exit as "Browser process exited
+/// (exit code: 76): CloakBrowser concurrent-session limit reached; …"; the
+/// older "Chrome exited early (exit code: 76)" wording is kept for unpatched
+/// builds.
 fn looks_like_cloak_capacity_error(result: &AgentBrowserToolResult) -> bool {
     let combined = format!("{}\n{}", result.stdout, result.stderr).to_lowercase();
-    combined.contains("chrome exited early (exit code: 76)")
+    combined.contains("browser process exited (exit code: 76)")
+        || combined.contains("cloakbrowser concurrent-session limit")
+        || combined.contains("chrome exited early (exit code: 76)")
         || combined.contains("process did exit: exitcode=76")
         || combined.contains("cloakbrowser pro: session limit reached")
 }
@@ -2644,6 +2818,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_tab_group_label_is_the_titles_first_sentence_without_prefix_or_shouting() {
+        assert_eq!(
+            tab_group_label(
+                "web-researcher / READ-ONLY COMPARISON, SECOND PASS. Today is Thursday."
+            )
+            .as_deref(),
+            Some("Read-only comparison, second pass")
+        );
+        assert_eq!(
+            tab_group_label("Set up my company goal workspace (name it...").as_deref(),
+            Some("Set up my company goal workspace (name it")
+        );
+        assert_eq!(
+            tab_group_label("Reddit launch research").as_deref(),
+            Some("Reddit launch research")
+        );
+        assert_eq!(tab_group_label("  \n ").as_deref(), None);
+        assert!(
+            tab_group_label(&"word ".repeat(40))
+                .unwrap()
+                .chars()
+                .count()
+                <= 60
+        );
+    }
+
+    #[test]
+    fn only_a_magicutor_thread_connect_carries_the_label() {
+        assert_eq!(
+            cdp_url_with_tab_label(
+                "ws://127.0.0.1:3003/devtools/browser/magician-chat-general",
+                Some("Reddit research"),
+            ),
+            "ws://127.0.0.1:3003/devtools/browser/magician-chat-general?label=Reddit+research"
+        );
+        assert_eq!(
+            cdp_url_with_tab_label(
+                "ws://127.0.0.1:3003/devtools/browser/t1?browser=comet",
+                Some("X"),
+            ),
+            "ws://127.0.0.1:3003/devtools/browser/t1?browser=comet&label=X"
+        );
+        for untouched in [
+            "ws://127.0.0.1:3003/devtools/browser/magicutor-proxy",
+            "ws://example.test/browser",
+            "ws://127.0.0.1:3003/devtools/browser/t1?label=Kept",
+        ] {
+            assert_eq!(cdp_url_with_tab_label(untouched, Some("New")), untouched);
+        }
+        assert_eq!(
+            cdp_url_with_tab_label("ws://127.0.0.1:3003/devtools/browser/t1", None),
+            "ws://127.0.0.1:3003/devtools/browser/t1"
+        );
+    }
+
+    #[test]
+    fn browser_session_scoping_is_idempotent_and_preserves_explicit_endpoints() {
+        let scoped = ConnectionMode::default().for_session("owner-tab");
+        assert_eq!(scoped.clone().for_session("other-tab"), scoped);
+        assert_eq!(
+            ConnectionMode::Headless.for_session("owner-tab"),
+            ConnectionMode::Headless
+        );
+        let remote = ConnectionMode::Cdp {
+            url: "ws://example.test/browser".into(),
+        };
+        assert_eq!(remote.clone().for_session("owner-tab"), remote);
+    }
+
     /// The retrieval path resolves one exact transport from the retrieval
     /// AUTHORITY, never from an agent's tool call, and this change must not
     /// have moved it. Pins that `RetrievalBrowserMode::connection_mode` still
@@ -2795,12 +3039,28 @@ mod tests {
 
     #[tokio::test]
     async fn controller_owned_cdp_shutdown_keeps_attached_browser_alive() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(
+                "/cdp/threads/retrieval-cdp-close-test",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"cleared": true})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cdp = format!(
+            "{}/devtools/browser/magicutor-proxy",
+            server.uri().replacen("http:", "ws:", 1)
+        );
         let temp = tempfile::tempdir().unwrap();
         let (cli, log) = make_recording_cli(&temp);
         let session = AgentBrowserSession::new_retrieval(
             "retrieval-cdp-close-test".into(),
             RetrievalBrowserMode::AuthenticatedCdpRead,
-            DEFAULT_MAGICUTOR_PROXY_URL,
+            &cdp,
             cli,
         )
         .unwrap();
@@ -2810,6 +3070,35 @@ mod tests {
             .unwrap();
         let calls = std::fs::read_to_string(log).unwrap();
         assert!(calls.contains("close --keep-browser"));
+    }
+
+    #[tokio::test]
+    async fn failed_close_preserves_the_cached_session_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let (cli, _) = make_recording_cli(&temp);
+        std::fs::write(
+            &cli,
+            "#!/bin/sh\necho 'temporary close failure' >&2\nexit 9\n",
+        )
+        .unwrap();
+        let id = "magician-close-failure-regression";
+        get_or_create_flat_browser_session(id, || {
+            AgentBrowserSession::new_with_session_id(
+                id.into(),
+                ConnectionMode::Headless,
+                cli.clone(),
+            )
+        })
+        .unwrap();
+        assert!(close_session_by_id_with_options(id, &cli, false)
+            .await
+            .is_err());
+        assert_eq!(flat_browser_session_is_headless(id), Some(true));
+        std::fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        close_session_by_id_with_options(id, &cli, false)
+            .await
+            .unwrap();
+        assert_eq!(flat_browser_session_is_headless(id), None);
     }
 
     #[test]
@@ -3265,12 +3554,44 @@ mod tests {
         assert!(looks_like_cloak_capacity_error(&result(
             "CloakBrowser Pro: session limit reached for your plan"
         )));
+        // Magician's agent-browser build (format_browser_process_exit).
+        assert!(looks_like_cloak_capacity_error(&result(
+            "Browser process exited (exit code: 76): CloakBrowser concurrent-session limit reached; \
+             close the active session or use another browser engine"
+        )));
+        assert!(!looks_like_cloak_capacity_error(&result(
+            "Browser process exited (exit code: 77): CloakBrowser license key is missing, invalid, or expired"
+        )));
         assert!(!looks_like_cloak_capacity_error(&result(
             "Chrome exited early (exit code: 77) without writing DevToolsActivePort"
         )));
         assert!(!looks_like_cloak_capacity_error(&result(
             "navigation failed with HTTP 429"
         )));
+    }
+
+    #[test]
+    fn an_unanswered_mutating_command_is_marked_indeterminate() {
+        let failed = |stderr: &str| AgentBrowserToolResult {
+            success: false,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+            parsed_json: None,
+            elapsed_ms: 1,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        let unknown = failed(
+            "✗ Connection reset (the command reached the daemon but no response came back; \
+             it may or may not have run, so it was not retried)",
+        );
+        assert!(looks_like_outcome_unknown(&unknown));
+        assert!(looks_like_outcome_unknown(&failed(
+            r#"{"success":false,"code":"outcome_unknown"}"#
+        )));
+        assert!(!looks_like_outcome_unknown(&failed("✗ Element not found")));
+        let marked = mark_indeterminate(unknown, "INDETERMINATE: re-observe");
+        assert!(marked.stderr.ends_with("\nINDETERMINATE: re-observe"));
     }
 
     #[test]
@@ -3463,5 +3784,62 @@ mod tests {
         assert!(lines[1].ends_with(" close"));
         assert!(lines[2].starts_with("bundled|"));
         assert!(lines[2].contains(" open "));
+    }
+}
+
+/// Marks a fenced session's engine env (`primitive_dispatch::dispatch`):
+/// its commands drop every inherited agent-browser setting and proxy.
+pub(crate) const FENCED_SESSION_ENV: &str = "MAGICIAN_BROWSER_FENCED";
+
+/// The inherited variable names a fenced session's CLI drops: every
+/// `AGENT_BROWSER_*` and every proxy variable, either case.
+pub(crate) fn inherited_browser_settings(
+    keys: impl Iterator<Item = std::ffi::OsString>,
+) -> Vec<std::ffi::OsString> {
+    const PROXY: &[&str] = &["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"];
+    keys.filter(|key| {
+        let name = key.to_string_lossy();
+        name.starts_with("AGENT_BROWSER_")
+            || PROXY.iter().any(|proxy| name.eq_ignore_ascii_case(proxy))
+    })
+    .collect()
+}
+
+#[cfg(test)]
+mod fenced_env_tests {
+    use super::*;
+
+    /// Every inherited agent-browser setting and proxy variable is dropped
+    /// for a fenced session; nothing else is.
+    #[test]
+    fn a_fenced_session_drops_the_owners_browser_settings() {
+        let keys = [
+            "AGENT_BROWSER_PROFILE",
+            "AGENT_BROWSER_EXECUTABLE_PATH",
+            "AGENT_BROWSER_CDP",
+            "HTTP_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "all_proxy",
+            "PATH",
+            "HOME",
+        ]
+        .map(std::ffi::OsString::from);
+        let names: Vec<String> = inherited_browser_settings(keys.into_iter())
+            .iter()
+            .map(|key| key.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "AGENT_BROWSER_PROFILE",
+                "AGENT_BROWSER_EXECUTABLE_PATH",
+                "AGENT_BROWSER_CDP",
+                "HTTP_PROXY",
+                "https_proxy",
+                "NO_PROXY",
+                "all_proxy"
+            ]
+        );
     }
 }

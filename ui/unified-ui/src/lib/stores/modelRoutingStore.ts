@@ -7,14 +7,16 @@
  * operation. Reverting either is a DELETE.
  */
 import { scopedRequestHeaders } from '$lib/stores/scopeIdentityStore';
+import type { ModelChoice, ModelSelection } from '$lib/llm/modelCatalog';
 
 export interface RoutingProfile {
 	name: string;
 	provider: string;
 	model: string;
+	model_selection?: ModelSelection | null;
 	class: 'local' | 'api' | 'harness';
 	installed: boolean;
-	/** false for adaptive composites: listed for display, not settable. */
+	/** Unavailable choices remain visible but cannot be assigned. */
 	selectable?: boolean;
 }
 
@@ -65,6 +67,7 @@ export interface DrivingEngineProfiles {
 }
 
 export interface RoutingOverview {
+	models?: ModelChoice[];
 	affinity?: string | null;
 	affinity_profile?: string | null;
 	affinity_scope?: 'flow' | 'process' | null;
@@ -115,18 +118,15 @@ export async function fetchRoutingOverview(): Promise<RoutingOverview> {
 	};
 }
 
-export async function setOperationProfile(operation: string, profile: string): Promise<void> {
-	const response = await fetch(
-		`/api/magician/v2/llm/routing/${encodeURIComponent(operation)}`,
-		{
-			method: 'PUT',
-			headers: scopedRequestHeaders({ 'Content-Type': 'application/json' }),
-			body: JSON.stringify({ profile })
-		}
-	);
+export async function setOperationModel(operation: string, selection: ModelSelection): Promise<void> {
+	const response = await fetch(`/api/magician/v2/llm/routing/${encodeURIComponent(operation)}`, {
+		method: 'PUT',
+		headers: scopedRequestHeaders({ 'Content-Type': 'application/json' }),
+		body: JSON.stringify({ selection })
+	});
 	if (!response.ok) {
-		const body = (await response.json().catch(() => ({}))) as { message?: string };
-		throw new Error(body.message ?? `Switch failed (${response.status})`);
+		const body = await response.json().catch(() => ({}));
+		throw new Error(body.message ?? `Model assignment failed (${response.status})`);
 	}
 }
 

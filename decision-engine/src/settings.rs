@@ -288,8 +288,9 @@ pub(crate) async fn get(engine: web::Data<Engine>) -> HttpResponse {
     .await
     {
         Ok(Ok(view)) => HttpResponse::Ok().json(view),
-        _ => HttpResponse::ServiceUnavailable()
-            .json(json!({"code":error_code(503),"message":"Decision Engine settings are unavailable."})),
+        _ => HttpResponse::ServiceUnavailable().json(
+            json!({"code":error_code(503),"message":"Decision Engine settings are unavailable."}),
+        ),
     }
 }
 pub(crate) async fn put(engine: web::Data<Engine>, body: web::Json<RoutingUpdate>) -> HttpResponse {

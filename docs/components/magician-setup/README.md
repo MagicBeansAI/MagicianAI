@@ -16,6 +16,8 @@ Channel/account setup depends on verified bot software; credentials cannot make
 a missing CLI or bundle ready. Installers stream output, link shared software
 into the scope and recheck file inventories. The terminal engine passes its
 selected data root to both Make and packaged script actions.
+An automatic installer must exit successfully and pass verification; a stale
+positive probe cannot hide an installer failure or unblock dependent steps.
 
 Every skill step links ALL existing scopes, not only the selected one, then
 verifies what the runtime executes: with the data root, the `skills`, `media`
@@ -53,8 +55,8 @@ make setup-wizard ARGS=--dry-run         # rehearse with real probes, without wr
 
 The list is outcomes a person recognises; components are derived. The graph and
 resolver live in [`magician-components`](../magician-components/README.md), so
-the wizard and runtime answer from one declaration. Dependency closure and
-provider preference are `magician_components::selection`, shared with the API and
+the wizard and runtime answer from one declaration. Dependency closure, host eligibility and
+provider preference live in `magician_components::selection`, shared with the API and
 Desktop; the TUI keeps only cursor, remembered-answer, rendering and execution
 state. Selection starts from what already works, so re-runs never ask anyone to
 re-choose what they have.
@@ -72,7 +74,7 @@ deliberate: a wizard that blocks on input in CI is a hung build.
 
 ## Screens
 
-- **Welcome.** The argument on the left (the manifesto's closing line,
+- **Welcome.** The argument on the left (`theme::TAGLINE` ("Life assistant for work, play, and everything else") and the manifesto's closing line,
   `theme::THESIS`, shared with the landing page) and what the wizard already
   found on the right ("10 of 19 capabilities already work" — evidence it probed,
   not decoration). The wordmark is a readable lookup table (`theme::wordmark`,
@@ -147,8 +149,9 @@ installer prepares prerequisites, seeds absent configuration and both private
 env files, sets up software and the memory embedder, builds with
 `make build-source-debug`, and checks/installs the native package. It starts Desktop
 and the backend, then waits for core readiness before capability execution.
-The MLX-enabled source path uses Rust 1.95.0 for the entire build, including
-software helpers and Desktop, so sequential steps share compatible artifacts.
+Source builds use the repo's pinned Rust (`rust-toolchain.toml`, 1.95.0) for the
+entire build, including the MLX engine, software helpers and Desktop, so
+sequential steps share compatible artifacts.
 Terminal setup restarts Desktop to activate the new source build; a foreign
 gateway listener is refused before startup. Desktop's own installer keeps its
 current window running.
@@ -200,6 +203,11 @@ so a re-run starts from the last answer (declining the tunnel leaves no other
 trace). An unrecorded capability (new since the last run) falls back to whether
 it already works. The probe stays the authority on what is installed; this file
 only remembers a choice.
+
+A make step with `again` is the exception to staying quiet. When its probe is
+already present, the wizard asks that prompt and defaults to no. Yes re-runs
+the target and skips the usual setup confirmation. No leaves the step as
+already there. Every other component stays quiet on a re-run.
 
 ## Dry run
 

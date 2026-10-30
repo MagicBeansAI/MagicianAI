@@ -312,7 +312,7 @@ fn provisions(graph: &Graph) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for component in &graph.components {
         match &component.install {
-            InstallAction::Make { target, script } => {
+            InstallAction::Make { target, script, .. } => {
                 out.entry(target.clone())
                     .or_default()
                     .push(component.id.clone());

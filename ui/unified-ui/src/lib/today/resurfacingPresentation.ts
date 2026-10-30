@@ -6,6 +6,7 @@ import type {
 	ResurfacingDetail,
 	ResurfacingRecommendation
 } from './resurfacingQueries';
+import { ASSISTANT_FALLBACK_NAME } from '$lib/presentationIdentity';
 
 export interface ResurfacingRowFact {
 	id: string;
@@ -170,6 +171,26 @@ export function mergeResurfacingCapabilities(
 		});
 	}
 	return [...merged.values()];
+}
+
+/**
+ * `ask_presto` is a wire value; people see their own primary agent's name.
+ * Server-supplied labels for it still say "Ask Presto", so the label is
+ * rebuilt here rather than trusted.
+ */
+export function askAgentLabel(agentName: string | null | undefined): string {
+	return `Ask ${agentName?.trim() || ASSISTANT_FALLBACK_NAME}`;
+}
+
+export function resurfacingActionDisplayLabel(
+	action: { kind: ResurfacingActionKind; label?: string | null },
+	agentName: string | null | undefined
+): string {
+	if (action.kind === 'ask_presto') return askAgentLabel(agentName);
+	return (
+		action.label?.trim() ||
+		action.kind.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+	);
 }
 
 export function resurfacingRecommendation(

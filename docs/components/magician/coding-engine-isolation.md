@@ -5,6 +5,31 @@ tree** while it works in a per-scope shadow workspace. The default
 `storage_path` (`magician_data_v3`) nests the scope sandbox **inside** the repo, so a subprocess
 could otherwise walk up to the live `.git`.
 
+## Original project folders
+
+Work location is independent of normal / Super god permissions. A project's
+`trust: original` selects its existing folder and current branch, including
+uncommitted files; `sandboxed` keeps the persistent copy and `trusted` keeps
+an isolated branch. Admission stores `work_location` in the dispatch plan and
+project run link; follow-ups inherit it. Original runs have separate records
+under `coding_engine/original_runs`, outside clone cleanup and branch actions.
+Same-folder runs share the repository admission lock.
+
+For original runs every engine's OS fence holds the checkout read-only,
+including under Super god mode and during Discuss. Build turns receive the
+per-run Citizen `edit_original` capability and bundled `original_repo_edit.py`
+helper. The route authenticates its run grant and private loopback channel in
+the handler, like the other Citizen endpoints, instead of using a login token.
+The broker stages exact text preimages/replacements, shows the shared
+diff/grant card, then applies only the approved transaction after rechecking
+path identity and file contents. Deny, expired run tokens, symlinks, hard links,
+traversal and stale preimages fail closed. Discuss receives no edit session.
+Allow once applies that revision; session grants cover the run chain; always
+grants are scoped to the principal, workspace and canonical repository, separate
+from chat god-mode grants. No clone, proposal, automatic commit or merge occurs.
+Applied transaction history supplies the run's Changes view and completion facts.
+An OS sandbox and the live approval channel are required.
+
 ## Automatic + scoped to coding runs (no operator flag)
 
 There is no env flag to arm isolation. A spawn or file action is isolated only when both hold:
@@ -237,8 +262,10 @@ model's `repo_path`); a chain keeps its root's mode.
   a file boundary (`trusted_workspace::branch_diff`), as claim-check evidence.
 - **No proposal.** A committing turn reports `committed: true`, `no_change: false` (tool result and
   `coding.completed`). The coordinator gets a **Trusted project (git branch mode)** block
-  (`artifact_v2::service::vibedev_trusted_project_policy`, once per run): no `CodeChangeProposal`, no
-  diff approval, `trusted_branch` is the evidence; the owner lands it from the Branch tab.
+  (`artifact_v2::service::vibedev_change_delivery_block`, once per run): no `CodeChangeProposal`, no
+  diff approval, `trusted_branch` is the evidence; the owner lands it from the Branch tab. The block
+  follows dispatch's `trusted_workspace::effective_trust_mode`: a falling-back run gets **Trusted
+  project (sandboxed run)** instead, and its result carries `trusted_fallback`.
 - **Merge and PR.** `merge_into_base` moves `base_sha` to the merged head (later `commits_ahead`,
   diffs and rewinds count from it); a later commit clears
   `merged` (`record_turn`). The PR route always pushes and returns an open PR's link.
@@ -278,7 +305,9 @@ model's `repo_path`); a chain keeps its root's mode.
 
 Trust is set with `PATCH /vibedev/projects/{id}` `{trust, base_branch}`, owner-only; `trusted`
 requires a git repository root. A trusted project may point at the magician checkout (only ever the
-clone's source); the live-repo fence is not loosened.
+clone's source); the live-repo fence is not loosened. A trusted project whose folder stops being a
+repository, or a host with no git, runs sandboxed (`coding.trusted_fallback`). Magician's git is
+`runtime_core::process::git_program`: `MAGICIAN_GIT`, else host git, else `dugite`'s bundled git.
 
 ## Design notes
 

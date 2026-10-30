@@ -57,12 +57,18 @@ pub enum OwnerEdit {
 pub enum EditOutcome {
     /// Applied; `record_id` is the record that now carries the preference
     /// (the successor for an edit, the forgotten id for a forget).
-    Applied { record_id: String },
+    Applied {
+        record_id: String,
+    },
     /// The record changed since the owner read it.
-    Stale { current_revision: String },
+    Stale {
+        current_revision: String,
+    },
     NotFound,
     /// Empty wording, or an edit that would change nothing.
-    Invalid { reason: String },
+    Invalid {
+        reason: String,
+    },
 }
 
 /// Whether going from `before` to `after` removes an instruction the owner
@@ -76,18 +82,20 @@ pub fn removes_an_owner_instruction(before: &Value, after: &Value) -> bool {
         .iter()
         .filter(|change| change.op == HistoryOp::Forgotten)
         .any(|change| {
-            locate(before, &change.record_id).is_some_and(|(tier, index)| {
-                assertion_status(&before[&tier][index]).may_hold()
-            })
+            locate(before, &change.record_id)
+                .is_some_and(|(tier, index)| assertion_status(&before[&tier][index]).may_hold())
         })
 }
 
 fn locate(knowledge: &Value, id: &str) -> Option<(String, usize)> {
     knowledge.as_object()?.iter().find_map(|(tier, items)| {
-        items.as_array()?.iter().position(|item| {
-            item.is_object() && bears_intention(tier, item) && intention_id(tier, item) == id
-        })
-        .map(|index| (tier.clone(), index))
+        items
+            .as_array()?
+            .iter()
+            .position(|item| {
+                item.is_object() && bears_intention(tier, item) && intention_id(tier, item) == id
+            })
+            .map(|index| (tier.clone(), index))
     })
 }
 
@@ -150,7 +158,11 @@ pub fn apply_owner_edit(
             "memory_saved_at": stamp,
             "updated_at": stamp,
         });
-        if let Some(conditions) = conditions.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        if let Some(conditions) = conditions
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
             record["memory_context"] = json!(conditions);
         }
         let tier = knowledge
@@ -190,7 +202,9 @@ pub fn apply_owner_edit(
     let Some((tier, index)) = locate(knowledge, id) else {
         return EditOutcome::NotFound;
     };
-    let items = knowledge[&tier].as_array_mut().expect("located in an array");
+    let items = knowledge[&tier]
+        .as_array_mut()
+        .expect("located in an array");
     let current_revision = digest(&items[index]);
     if &current_revision != expected_revision {
         return EditOutcome::Stale { current_revision };
@@ -275,7 +289,8 @@ mod tests {
             OwnerEdit::Add {
                 kind: IntentionKind::StandingInstruction,
                 label: Some("door codes".to_string()),
-                wording: "Ask me before giving a door code to anyone outside the household".to_string(),
+                wording: "Ask me before giving a door code to anyone outside the household"
+                    .to_string(),
                 conditions: None,
             },
         ) else {
@@ -283,9 +298,15 @@ mod tests {
         };
         let added = &doc[OWNER_ADD_TIER][0];
         assert_eq!(added["memory_record_id"], json!(record_id));
-        assert_eq!(assertion_status(added), AssertionStatus::DirectOwnerStatement);
+        assert_eq!(
+            assertion_status(added),
+            AssertionStatus::DirectOwnerStatement
+        );
         let projected = project_native_intentions(&doc, now());
-        assert_eq!(projected.intentions[0].kind, IntentionKind::StandingInstruction);
+        assert_eq!(
+            projected.intentions[0].kind,
+            IntentionKind::StandingInstruction
+        );
         assert_eq!(projected.intentions[0].id, record_id);
     }
 
@@ -305,7 +326,10 @@ mod tests {
         };
         assert_eq!(doc["preferences"][0]["memory_lifecycle"], "superseded");
         assert_eq!(doc["preferences"][0]["superseded_by"], json!(record_id));
-        assert_eq!(doc["preferences"][0]["supersession_source"], "owner_surface");
+        assert_eq!(
+            doc["preferences"][0]["supersession_source"],
+            "owner_surface"
+        );
         assert_eq!(doc["preferences"][1]["value"], "No red meat");
         assert_eq!(
             assertion_status(&doc["preferences"][1]),
@@ -338,10 +362,25 @@ mod tests {
         let mut doc = json!({"preferences": [record("a", "dinner", "No meat"), record("b", "coffee", "decaf")]});
         let rev = |doc: &Value, i: usize| digest(&doc["preferences"][i]);
         let r = rev(&doc, 0);
-        apply(&mut doc, OwnerEdit::Confirm { id: "a".to_string(), expected_revision: r });
-        assert_eq!(assertion_status(&doc["preferences"][0]), AssertionStatus::Confirmed);
+        apply(
+            &mut doc,
+            OwnerEdit::Confirm {
+                id: "a".to_string(),
+                expected_revision: r,
+            },
+        );
+        assert_eq!(
+            assertion_status(&doc["preferences"][0]),
+            AssertionStatus::Confirmed
+        );
         let r = rev(&doc, 1);
-        apply(&mut doc, OwnerEdit::Retire { id: "b".to_string(), expected_revision: r });
+        apply(
+            &mut doc,
+            OwnerEdit::Retire {
+                id: "b".to_string(),
+                expected_revision: r,
+            },
+        );
         assert_eq!(doc["preferences"][1]["memory_lifecycle"], "retracted");
         assert!(project_native_intentions(&doc, now())
             .intentions
@@ -350,10 +389,22 @@ mod tests {
         // A retired record can be forgotten, not edited.
         let r = rev(&doc, 1);
         assert_eq!(
-            apply(&mut doc, OwnerEdit::Confirm { id: "b".to_string(), expected_revision: r.clone() }),
+            apply(
+                &mut doc,
+                OwnerEdit::Confirm {
+                    id: "b".to_string(),
+                    expected_revision: r.clone()
+                }
+            ),
             EditOutcome::NotFound
         );
-        apply(&mut doc, OwnerEdit::Forget { id: "b".to_string(), expected_revision: r });
+        apply(
+            &mut doc,
+            OwnerEdit::Forget {
+                id: "b".to_string(),
+                expected_revision: r,
+            },
+        );
         assert_eq!(doc["preferences"].as_array().unwrap().len(), 1);
     }
 
@@ -363,11 +414,24 @@ mod tests {
         let before = doc.clone();
         let r = digest(&doc["preferences"][0]);
         assert!(matches!(
-            apply(&mut doc, OwnerEdit::Edit { id: "a".to_string(), expected_revision: r, wording: "  ".to_string() }),
+            apply(
+                &mut doc,
+                OwnerEdit::Edit {
+                    id: "a".to_string(),
+                    expected_revision: r,
+                    wording: "  ".to_string()
+                }
+            ),
             EditOutcome::Invalid { .. }
         ));
         assert_eq!(
-            apply(&mut doc, OwnerEdit::Forget { id: "zz".to_string(), expected_revision: "x".to_string() }),
+            apply(
+                &mut doc,
+                OwnerEdit::Forget {
+                    id: "zz".to_string(),
+                    expected_revision: "x".to_string()
+                }
+            ),
             EditOutcome::NotFound
         );
         assert_eq!(doc, before);
@@ -380,10 +444,16 @@ mod tests {
             "memory_evidence": [{"source_role": "user", "source_id": "turn-1", "quote": "Ask me before giving out door codes"}]});
         let inferred = record("b", "coffee", "decaf");
         let before = json!({"preferences": [owner, inferred.clone()]});
-        assert!(removes_an_owner_instruction(&before, &json!({"preferences": [inferred]})));
+        assert!(removes_an_owner_instruction(
+            &before,
+            &json!({"preferences": [inferred]})
+        ));
         assert!(removes_an_owner_instruction(&before, &json!({})));
         let mut only_inferred_gone = before.clone();
-        only_inferred_gone["preferences"].as_array_mut().unwrap().remove(1);
+        only_inferred_gone["preferences"]
+            .as_array_mut()
+            .unwrap()
+            .remove(1);
         assert!(!removes_an_owner_instruction(&before, &only_inferred_gone));
     }
 }

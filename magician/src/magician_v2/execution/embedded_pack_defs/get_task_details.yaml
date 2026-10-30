@@ -1,10 +1,13 @@
 name: get_task_details
 description: Fetch a single task's basic metadata, status, current/latest execution ids, and a bounded recent-execution history. Returns plain task fields only — no download URLs, chat-projected output cards, or rich text previews (those live on the chat-runtime `get_task_details_for_chat` tool).
-version: "1.0.0"
+version: "1.0.1"
 guide: |
   Tool name: `get_task_details`
 
-  Returns `{task_id, title, description, status, agent_id, created_at,
+  Link users to the returned `task_url` in Work. Do not invent task-detail
+  paths; the canonical UI route is `/work?selected=<task_id>`.
+
+  Returns `{task_id, task_url, title, description, status, agent_id, created_at,
   updated_at, active_execution_id, latest_execution_id,
   recent_executions: [{execution_id, status, started_at, completed_at}]}`
   for the scoped task. Use when you need a structured snapshot before

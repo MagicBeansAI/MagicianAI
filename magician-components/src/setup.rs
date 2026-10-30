@@ -52,6 +52,13 @@ pub enum SetupDriver {
     /// OAuth whose resource, issuer, scopes, state, PKCE, and token custody are
     /// already governed by the installed skill runtime contract.
     GovernedOauth,
+    /// A reviewed CLI owns OAuth and writes credentials in the scoped HOME.
+    BrowserCli {
+        executable: String,
+        args: Vec<String>,
+        login_url_hosts: Vec<String>,
+        credential_file: String,
+    },
     /// A bounded setup file stored on the engine, with a code-owned validator.
     ConfigurationFile {
         field_label: String,
@@ -297,6 +304,29 @@ pub fn resolve(binding: &SetupBinding) -> Result<ResolvedSetup, String> {
         .as_ref()
         .map_err(|error| error.clone())?;
     resolve_from(catalog, binding)
+}
+
+/// Resolve one definition's reviewed driver without binding a profile, so a
+/// caller can list which bots a `{profile}` template serves (Service accounts
+/// shows one row per configured `gmail-{profile}` bot). Starting a setup
+/// still goes through [`resolve`], which requires the profile.
+pub fn resolve_template(definition: &str) -> Result<ResolvedSetup, String> {
+    static CATALOG: OnceLock<Result<SetupCatalogFile, String>> = OnceLock::new();
+    let catalog = CATALOG
+        .get_or_init(|| parse_catalog(SETUP_CATALOG_YAML))
+        .as_ref()
+        .map_err(|error| error.clone())?;
+    validate_identifier(definition, "setup definition")?;
+    let found = catalog
+        .setups
+        .get(definition)
+        .ok_or_else(|| format!("unknown setup definition `{definition}`"))?;
+    Ok(ResolvedSetup {
+        definition: definition.to_string(),
+        label: found.label.clone(),
+        profile: None,
+        driver: found.driver.clone(),
+    })
 }
 
 fn parse_catalog(source: &str) -> Result<SetupCatalogFile, String> {
@@ -654,6 +684,7 @@ fn driver_needs_profile(driver: &SetupDriver) -> bool {
                     .any(|value| value.contains("{profile}") || value.contains("{profile_label}"))
         },
         SetupDriver::GovernedOauth
+        | SetupDriver::BrowserCli { .. }
         | SetupDriver::ConfigurationFile { .. }
         | SetupDriver::ModelRuntime { .. }
         | SetupDriver::BrowserExtension { .. }
@@ -710,6 +741,32 @@ fn validate_driver(id: &str, driver: &SetupDriver) -> Result<(), String> {
             }
         },
         SetupDriver::GovernedOauth => {},
+        SetupDriver::BrowserCli {
+            executable,
+            args,
+            login_url_hosts,
+            credential_file,
+        } => {
+            validate_identifier(executable, "browser CLI")?;
+            if args.is_empty()
+                || args.len() > 16
+                || args.iter().any(|arg| arg.is_empty() || arg.len() > 256)
+                || login_url_hosts.is_empty()
+                || login_url_hosts.iter().any(|host| {
+                    host.is_empty()
+                        || host.len() > 253
+                        || !host
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+                })
+                || credential_file.is_empty()
+                || credential_file.starts_with('/')
+                || credential_file.contains("..")
+                || credential_file.contains(['\\', ':', '\0'])
+            {
+                return Err(format!("browser CLI setup `{id}` is invalid"));
+            }
+        },
         SetupDriver::ConfigurationFile {
             field_label,
             accept,
@@ -900,6 +957,23 @@ pub fn render_template(template: &str, profile: Option<&str>) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_template_resolves_without_a_profile_but_a_start_still_needs_one() {
+        let template = resolve_template("google-workspace").expect("template");
+        assert!(template.profile.is_none());
+        let SetupDriver::ManagedBot { bot, .. } = template.driver else {
+            panic!("expected managed bot");
+        };
+        assert_eq!(bot, "gmail-{profile}");
+        assert!(resolve(&SetupBinding {
+            definition: "google-workspace".to_string(),
+            profile: None,
+        })
+        .is_err());
+        assert!(resolve_template("../google-workspace").is_err());
+        assert!(resolve_template("not-a-setup").is_err());
+    }
 
     #[test]
     fn built_in_catalog_resolves_managed_and_oauth_drivers() {

@@ -5,6 +5,15 @@
 //! - The Fleet Civilization game reads program docs (guild "mission chips"):
 //!   [`list_program_docs`] / [`read_program_doc`] — read-only, scoped to the
 //!   scope's `programs/` root, never scanning outside it.
+//! - The owner edits whole documents through [`ProgramDocEditor::save_document`]
+//!   (Work → Programs): snapshot to `programs/.history/` first, then a durable
+//!   publish, guarded by the SHA-256 of the version the owner loaded so a
+//!   concurrent change is refused instead of overwritten. The approval-gated
+//!   `propose_program_revision` tool publishes an agent's approved revision
+//!   through the same save, against the hash the agent read.
+//! - Program-context cycles read the owner's shared documents
+//!   (`harness.shared_program_docs`, or a focus area's `shared_programs`)
+//!   through [`load_shared_program_context`].
 //! - The CEO decomposition tool APPLIES approved missions via
 //!   [`ProgramDocEditor`]: it edits ONLY the managed `## Missions (CEO)`
 //!   section (replace-or-append), stamps provenance, snapshots the prior file
@@ -15,6 +24,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -27,6 +37,10 @@ pub const MISSIONS_SECTION_HEADING: &str = "Missions (CEO)";
 
 /// Managed-section body cap — a runaway decomposition cannot bloat a program.
 pub const MANAGED_SECTION_MAX_BYTES: usize = 4096;
+
+/// Whole-document cap for owner saves. Programs are read into every harness
+/// cycle's prompt, so a pasted dump must not become a prompt-sized liability.
+pub const PROGRAM_DOC_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProgramDocSummary {
@@ -43,6 +57,8 @@ pub struct ProgramDoc {
     pub content: String,
     /// The managed `## Missions (CEO)` section body, when present.
     pub missions_section: Option<String>,
+    /// Hex SHA-256 of `content`; an owner save sends it back as its base.
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,6 +74,48 @@ pub struct HistorySnapshot {
     pub snapshot: String,
     /// Filesystem mtime, RFC3339.
     pub modified: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedProgramEdit {
+    pub program: String,
+    /// True when the program did not exist before this save.
+    pub created: bool,
+    /// True when the content already matched; nothing was written.
+    pub unchanged: bool,
+    /// Snapshot of the replaced content (absent for a create or a no-op).
+    pub history_snapshot: Option<String>,
+    /// Hex SHA-256 of the content now on disk.
+    pub sha256: String,
+}
+
+/// An owner save whose base no longer matches the document on disk: the
+/// program changed (or appeared, or vanished) after the owner loaded it.
+#[derive(Debug, Clone)]
+pub struct ProgramSaveConflict {
+    pub program: String,
+    /// Hash of the current document, or `None` when it does not exist.
+    pub current_sha256: Option<String>,
+}
+
+impl std::fmt::Display for ProgramSaveConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.current_sha256 {
+            Some(_) => write!(
+                f,
+                "program {:?} changed after it was loaded; reload it before saving",
+                self.program
+            ),
+            None => write!(f, "program {:?} no longer exists", self.program),
+        }
+    }
+}
+
+impl std::error::Error for ProgramSaveConflict {}
+
+/// Hex SHA-256 of a program document's content.
+pub fn content_sha256(content: &str) -> String {
+    hex::encode(Sha256::digest(content.as_bytes()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,9 +329,159 @@ pub async fn read_program_doc(
     Ok(Some(ProgramDoc {
         title: title_from(&content, name),
         missions_section: extract_section(&content, MISSIONS_SECTION_HEADING),
+        sha256: content_sha256(&content),
         name: name.to_string(),
         content,
     }))
+}
+
+/// [`read_program_doc`] for synchronous callers: the approval-preview builders
+/// (`execution::approval_preview`) run inside the pause path, which is not
+/// async. One bounded file read (`PROGRAM_DOC_MAX_BYTES` is the save cap), on
+/// an approval pause only. `Ok(None)` when the document does not exist.
+pub fn read_program_doc_blocking(
+    workspace: &ArtifactV2Workspace,
+    principal: &str,
+    workspace_name: &str,
+    name: &str,
+) -> Result<Option<ProgramDoc>> {
+    validate_name(name)?;
+    let path = workspace
+        .programs_root(principal, workspace_name)
+        .join(name);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(ProgramDoc {
+        title: title_from(&content, name),
+        missions_section: extract_section(&content, MISSIONS_SECTION_HEADING),
+        sha256: content_sha256(&content),
+        name: name.to_string(),
+        content,
+    }))
+}
+
+/// Per-document cap for one shared program document in a cycle prompt.
+pub const SHARED_PROGRAM_DOC_MAX_BYTES: usize = 24 * 1024;
+
+/// Cap on the combined document content of the shared-context block. Header
+/// and status lines are not counted; they are a few bytes per listed name.
+pub const SHARED_PROGRAM_CONTEXT_MAX_BYTES: usize = 64 * 1024;
+
+/// The longest prefix of `text` that fits in `max` bytes and ends on a char
+/// boundary.
+fn truncate_at_char_boundary(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Render the "Shared Context" block appended to a program-context cycle:
+/// owner-maintained program documents (positioning, facts, policies) that
+/// every cycle should see, not only the one whose own program they are.
+///
+/// `names` are bare `*.md` program names in the scope's `programs/` folder,
+/// rendered in list order; blanks, duplicates and `exclude` (the cycle's own
+/// program, already in the prompt) are dropped. Returns `None` when nothing is
+/// left to render. A missing or invalid name is reported in the block rather
+/// than dropped, so a typo in the list is visible to the cycle and the owner.
+/// Each document carries its title, name and the first 12 hex of its SHA-256
+/// (enough for a `propose_program_revision` base); content is capped per
+/// document and in total, truncated on a char boundary with a marker.
+pub async fn load_shared_program_context(
+    workspace: &ArtifactV2Workspace,
+    principal: &str,
+    workspace_name: &str,
+    names: &[String],
+    exclude: &str,
+) -> Option<String> {
+    load_shared_program_context_with_sources(workspace, principal, workspace_name, names, exclude)
+        .await
+        .map(|(block, _)| block)
+}
+
+pub async fn load_shared_program_context_with_sources(
+    workspace: &ArtifactV2Workspace,
+    principal: &str,
+    workspace_name: &str,
+    names: &[String],
+    exclude: &str,
+) -> Option<(String, Vec<super::program::ProgramSourceMetadata>)> {
+    let exclude = exclude.trim();
+    let mut selected: Vec<&str> = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() || name == exclude || selected.contains(&name) {
+            continue;
+        }
+        selected.push(name);
+    }
+    if selected.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from(
+        "### Shared Context\n\
+         Owner-maintained documents shared by every cycle. They supplement the program \
+         above; where they conflict with it, follow the stricter rule and tell the owner.\n",
+    );
+    let mut remaining = SHARED_PROGRAM_CONTEXT_MAX_BYTES;
+    let mut sources = Vec::new();
+    for name in selected {
+        if validate_name(name).is_err() {
+            out.push_str(&format!("\n- `{name}`: invalid name, skipped\n"));
+            continue;
+        }
+        let doc = match read_program_doc(workspace, principal, workspace_name, name).await {
+            Ok(Some(doc)) => doc,
+            Ok(None) | Err(_) => {
+                out.push_str(&format!("\n- `{name}`: missing\n"));
+                continue;
+            },
+        };
+        let content = doc.content.trim();
+        if content.is_empty() {
+            out.push_str(&format!("\n- `{name}`: empty\n"));
+            continue;
+        }
+        let kept = truncate_at_char_boundary(content, SHARED_PROGRAM_DOC_MAX_BYTES.min(remaining));
+        remaining -= kept.len();
+        if !kept.is_empty() {
+            let path = workspace
+                .program_specs_root(principal, workspace_name)
+                .join(name);
+            sources.push(super::program::ProgramSourceMetadata {
+                relative_path: name.into(),
+                absolute_path: std::fs::canonicalize(&path).unwrap_or(path),
+                sha256: doc.sha256.clone(),
+                included_sha256: content_sha256(kept),
+                included_bytes: kept.len(),
+                section: None,
+                truncated: kept.len() < content.len(),
+            });
+        }
+        out.push_str(&format!(
+            "\n#### {} ({name}, sha256 {})\n",
+            doc.title,
+            &doc.sha256[..12]
+        ));
+        out.push_str(kept);
+        let omitted = content.len() - kept.len();
+        if omitted > 0 {
+            if !kept.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&format!("[truncated: {omitted} bytes omitted]"));
+        }
+        out.push('\n');
+    }
+    Some((out.trim_end().to_string(), sources))
 }
 
 /// The managed-section editor. Narrow by design: one section, existing
@@ -384,6 +592,80 @@ impl ProgramDocEditor {
             program: program.to_string(),
             restored_from: chosen,
             pre_revert_snapshot,
+        })
+    }
+
+    /// The owner's whole-document save. `base_sha256` is the hash of the
+    /// version the owner loaded: it is required for an existing program and
+    /// must be absent to create a new one, so a document that changed, appeared
+    /// or vanished since it was loaded is refused with a typed
+    /// [`ProgramSaveConflict`] rather than overwritten. An existing document is
+    /// snapshotted to `.history/` before the durable publish, so every save can
+    /// be undone with [`Self::revert_from_history`]; an unchanged save writes
+    /// nothing.
+    pub async fn save_document(
+        &self,
+        principal: &str,
+        workspace_name: &str,
+        program: &str,
+        content: &str,
+        base_sha256: Option<&str>,
+    ) -> Result<SavedProgramEdit> {
+        validate_name(program)?;
+        if content.trim().is_empty() {
+            bail!("program {program:?} cannot be saved empty");
+        }
+        if content.len() > PROGRAM_DOC_MAX_BYTES {
+            bail!(
+                "program {program:?} exceeds {PROGRAM_DOC_MAX_BYTES} bytes ({})",
+                content.len()
+            );
+        }
+        let root = self.workspace.programs_root(principal, workspace_name);
+        let path = root.join(program);
+        let current = match fs::read_to_string(&path).await {
+            Ok(current) => Some(current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("read program {program:?}"));
+            },
+        };
+        let current_sha256 = current.as_deref().map(content_sha256);
+        if current_sha256.as_deref() != base_sha256 {
+            return Err(ProgramSaveConflict {
+                program: program.to_string(),
+                current_sha256,
+            }
+            .into());
+        }
+        let sha256 = content_sha256(content);
+        let history_snapshot = match current.as_deref() {
+            Some(existing) if existing == content => {
+                return Ok(SavedProgramEdit {
+                    program: program.to_string(),
+                    created: false,
+                    unchanged: true,
+                    history_snapshot: None,
+                    sha256,
+                });
+            },
+            Some(existing) => Some(self.snapshot_content(&root, program, existing).await?),
+            None => {
+                fs::create_dir_all(&root)
+                    .await
+                    .context("create programs root")?;
+                None
+            },
+        };
+        write_bytes_durably(&path, content.as_bytes())
+            .await
+            .with_context(|| format!("write program {program:?}"))?;
+        Ok(SavedProgramEdit {
+            program: program.to_string(),
+            created: current.is_none(),
+            unchanged: false,
+            history_snapshot,
+            sha256,
         })
     }
 
@@ -688,6 +970,355 @@ mod tests {
             .expect("present");
         assert!(doc.content.contains("## Cadence"));
         assert!(doc.missions_section.is_none());
+    }
+
+    #[tokio::test]
+    async fn owner_save_snapshots_then_publishes_and_returns_the_new_hash() {
+        let (_dir, ws) = fixture().await;
+        let editor = ProgramDocEditor::new(ws.clone());
+        let before = read_program_doc(&ws, "owner", "default", "engineering_strategy.md")
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(before.sha256, content_sha256(&before.content));
+
+        let saved = editor
+            .save_document(
+                "owner",
+                "default",
+                "engineering_strategy.md",
+                "# Engineering Strategy\n\nShip carefully.\n",
+                Some(&before.sha256),
+            )
+            .await
+            .expect("save");
+        assert!(!saved.created);
+        assert!(!saved.unchanged);
+        let snapshot = saved.history_snapshot.expect("pre-save snapshot");
+
+        let after = read_program_doc(&ws, "owner", "default", "engineering_strategy.md")
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(after.content, "# Engineering Strategy\n\nShip carefully.\n");
+        assert_eq!(saved.sha256, after.sha256);
+        let restore_point = fs::read_to_string(
+            ws.programs_root("owner", "default")
+                .join(".history")
+                .join(&snapshot),
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(restore_point, before.content);
+
+        // The save is revertible through the existing owner revert.
+        editor
+            .revert_from_history("owner", "default", "engineering_strategy.md", None)
+            .await
+            .expect("revert the save");
+        let reverted = read_program_doc(&ws, "owner", "default", "engineering_strategy.md")
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(reverted.content, before.content);
+    }
+
+    #[tokio::test]
+    async fn owner_save_refuses_a_stale_or_missing_base_without_writing() {
+        let (_dir, ws) = fixture().await;
+        let editor = ProgramDocEditor::new(ws.clone());
+        let original = read_program_doc(&ws, "owner", "default", "engineering_strategy.md")
+            .await
+            .expect("read")
+            .expect("present");
+
+        for base in [None, Some("0".repeat(64))] {
+            let error = editor
+                .save_document(
+                    "owner",
+                    "default",
+                    "engineering_strategy.md",
+                    "# Overwritten\n",
+                    base.as_deref(),
+                )
+                .await
+                .expect_err("stale or missing base must conflict");
+            let conflict = error
+                .downcast_ref::<ProgramSaveConflict>()
+                .expect("typed conflict");
+            assert_eq!(
+                conflict.current_sha256.as_deref(),
+                Some(original.sha256.as_str())
+            );
+        }
+        let unchanged = read_program_doc(&ws, "owner", "default", "engineering_strategy.md")
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(unchanged.content, original.content);
+        assert!(
+            list_history_snapshots(&ws, "owner", "default", "engineering_strategy.md")
+                .await
+                .expect("history")
+                .is_empty(),
+            "a refused save leaves no snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_save_creates_only_absent_programs_and_skips_no_op_writes() {
+        let (_dir, ws) = fixture().await;
+        let editor = ProgramDocEditor::new(ws.clone());
+
+        let created = editor
+            .save_document(
+                "owner",
+                "default",
+                "brand_voice.md",
+                "# Brand Voice\n",
+                None,
+            )
+            .await
+            .expect("create");
+        assert!(created.created);
+        assert!(created.history_snapshot.is_none());
+
+        // A base for a program that does not exist is a conflict, not a create.
+        let error = editor
+            .save_document(
+                "owner",
+                "default",
+                "missing.md",
+                "# Missing\n",
+                Some(&created.sha256),
+            )
+            .await
+            .expect_err("base for an absent program");
+        assert!(error
+            .downcast_ref::<ProgramSaveConflict>()
+            .is_some_and(|conflict| conflict.current_sha256.is_none()));
+
+        let same = editor
+            .save_document(
+                "owner",
+                "default",
+                "brand_voice.md",
+                "# Brand Voice\n",
+                Some(&created.sha256),
+            )
+            .await
+            .expect("no-op save");
+        assert!(same.unchanged);
+        assert!(same.history_snapshot.is_none());
+        assert!(
+            list_history_snapshots(&ws, "owner", "default", "brand_voice.md")
+                .await
+                .expect("history")
+                .is_empty(),
+            "an unchanged save writes no snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_save_rejects_invalid_names_blank_and_oversized_documents() {
+        let (_dir, ws) = fixture().await;
+        let editor = ProgramDocEditor::new(ws.clone());
+        for name in ["../evil.md", ".hidden.md", "state/x.md", "notes.txt"] {
+            assert!(editor
+                .save_document("owner", "default", name, "# X\n", None)
+                .await
+                .is_err());
+        }
+        let base = read_program_doc(&ws, "owner", "default", "engineering_strategy.md")
+            .await
+            .expect("read")
+            .expect("present")
+            .sha256;
+        let huge = "x".repeat(PROGRAM_DOC_MAX_BYTES + 1);
+        for content in ["   \n", huge.as_str()] {
+            let error = editor
+                .save_document(
+                    "owner",
+                    "default",
+                    "engineering_strategy.md",
+                    content,
+                    Some(&base),
+                )
+                .await
+                .expect_err("blank or oversized");
+            assert!(error.downcast_ref::<ProgramSaveConflict>().is_none());
+        }
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn shared_context_provenance_hashes_the_actual_included_prefix() {
+        let (_dir, ws) = fixture().await;
+        let body = format!(
+            "# Shared\n{}",
+            "private ".repeat(SHARED_PROGRAM_DOC_MAX_BYTES)
+        );
+        seed(&ws, "shared.md", &body).await;
+        let (block, sources) = load_shared_program_context_with_sources(
+            &ws,
+            "owner",
+            "default",
+            &names(&["shared.md"]),
+            "plan.md",
+        )
+        .await
+        .unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].truncated);
+        assert_eq!(sources[0].sha256, content_sha256(&body));
+        let kept = truncate_at_char_boundary(body.trim(), SHARED_PROGRAM_DOC_MAX_BYTES);
+        assert_eq!(sources[0].included_sha256, content_sha256(kept));
+        assert_eq!(sources[0].included_bytes, kept.len());
+        assert!(block.contains(kept));
+    }
+
+    async fn seed(ws: &ArtifactV2Workspace, name: &str, content: &str) {
+        fs::write(ws.programs_root("owner", "default").join(name), content)
+            .await
+            .expect("seed shared doc");
+    }
+
+    #[tokio::test]
+    async fn shared_context_renders_in_list_order_with_title_name_and_short_hash() {
+        let (_dir, ws) = fixture().await;
+        seed(&ws, "positioning.md", "# Positioning\n\nWe are calm.\n").await;
+        seed(&ws, "facts.md", "# Facts\n\nFounded 2026.\n").await;
+
+        let block = load_shared_program_context(
+            &ws,
+            "owner",
+            "default",
+            &names(&["facts.md", "positioning.md"]),
+            "engineering_strategy.md",
+        )
+        .await
+        .expect("block");
+        assert!(block.starts_with("### Shared Context\nOwner-maintained documents"));
+        let facts_hash = content_sha256("# Facts\n\nFounded 2026.\n");
+        let facts_header = format!("#### Facts (facts.md, sha256 {})", &facts_hash[..12]);
+        let facts_at = block.find(&facts_header).expect("facts header");
+        let positioning_at = block
+            .find("#### Positioning (positioning.md")
+            .expect("positioning");
+        assert!(facts_at < positioning_at, "list order is render order");
+        assert!(block.contains("Founded 2026."));
+        assert!(block.contains("We are calm."));
+    }
+
+    #[tokio::test]
+    async fn shared_context_excludes_the_cycle_program_and_dedupes() {
+        let (_dir, ws) = fixture().await;
+        seed(&ws, "facts.md", "# Facts\n\nOne.\n").await;
+
+        let block = load_shared_program_context(
+            &ws,
+            "owner",
+            "default",
+            &names(&["facts.md", "engineering_strategy.md", " facts.md ", ""]),
+            "engineering_strategy.md",
+        )
+        .await
+        .expect("block");
+        assert_eq!(block.matches("#### Facts").count(), 1);
+        assert!(!block.contains("engineering_strategy.md"));
+
+        // Nothing left after exclusion (or an empty list) renders nothing.
+        assert!(load_shared_program_context(
+            &ws,
+            "owner",
+            "default",
+            &names(&["engineering_strategy.md"]),
+            "engineering_strategy.md",
+        )
+        .await
+        .is_none());
+        assert!(
+            load_shared_program_context(&ws, "owner", "default", &[], "program.md")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_context_reports_missing_and_invalid_names() {
+        let (_dir, ws) = fixture().await;
+        let block = load_shared_program_context(
+            &ws,
+            "owner",
+            "default",
+            &names(&[
+                "absent.md",
+                "../evil.md",
+                "notes.txt",
+                "engineering_strategy.md",
+            ]),
+            "program.md",
+        )
+        .await
+        .expect("block");
+        assert!(block.contains("- `absent.md`: missing"));
+        assert!(block.contains("- `../evil.md`: invalid name, skipped"));
+        assert!(block.contains("- `notes.txt`: invalid name, skipped"));
+        assert!(block.contains("#### Engineering Strategy (engineering_strategy.md"));
+    }
+
+    #[tokio::test]
+    async fn shared_context_caps_each_document_on_a_char_boundary() {
+        let (_dir, ws) = fixture().await;
+        // One ASCII byte then 3-byte chars: the byte cap lands mid-char.
+        let content = format!("a{}", "€".repeat(10_000));
+        seed(&ws, "big.md", &content).await;
+
+        let block = load_shared_program_context(&ws, "owner", "default", &names(&["big.md"]), "")
+            .await
+            .expect("block");
+        let kept = truncate_at_char_boundary(&content, SHARED_PROGRAM_DOC_MAX_BYTES);
+        assert!(kept.len() <= SHARED_PROGRAM_DOC_MAX_BYTES);
+        assert!(kept.len() > SHARED_PROGRAM_DOC_MAX_BYTES - 3);
+        assert!(block.contains(kept));
+        assert!(!block.contains(&content));
+        assert!(block.contains(&format!(
+            "[truncated: {} bytes omitted]",
+            content.len() - kept.len()
+        )));
+    }
+
+    #[tokio::test]
+    async fn shared_context_caps_the_total_across_documents() {
+        let (_dir, ws) = fixture().await;
+        let doc = "~".repeat(20 * 1024);
+        for name in ["a.md", "b.md", "c.md", "d.md", "e.md"] {
+            seed(&ws, name, &doc).await;
+        }
+        let block = load_shared_program_context(
+            &ws,
+            "owner",
+            "default",
+            &names(&["a.md", "b.md", "c.md", "d.md", "e.md"]),
+            "",
+        )
+        .await
+        .expect("block");
+        // a, b, c fit whole (60 KiB); d gets the last 4 KiB; e gets nothing.
+        let content_bytes = block.matches('~').count();
+        assert_eq!(content_bytes, SHARED_PROGRAM_CONTEXT_MAX_BYTES);
+        assert!(block.contains(&format!("[truncated: {} bytes omitted]", 16 * 1024)));
+        assert!(block.contains(&format!("[truncated: {} bytes omitted]", 20 * 1024)));
+        // Every document still gets its header, so the cycle knows it exists.
+        for name in ["a.md", "b.md", "c.md", "d.md", "e.md"] {
+            assert!(
+                block.contains(&format!("({name}, sha256 ")),
+                "{name} header"
+            );
+        }
     }
 
     #[tokio::test]

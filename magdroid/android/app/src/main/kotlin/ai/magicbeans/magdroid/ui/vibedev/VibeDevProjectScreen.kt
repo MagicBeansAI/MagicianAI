@@ -1,6 +1,7 @@
 package ai.magicbeans.magdroid.ui.vibedev
 
 import ai.magicbeans.magdroid.ui.LocalMagicanFontFamilies
+import ai.magicbeans.magdroid.ui.MagicanButtonShape
 import ai.magicbeans.magdroid.ui.MagicianTextField
 import ai.magicbeans.magdroid.ui.activePalette
 import ai.magicbeans.magdroid.vibedev.VibeDevCrewQuestion
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -62,12 +64,18 @@ internal fun VibeDevProjectScreen(chrome: VibeDevChrome, model: VibeDevProjectVi
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(project.name, Modifier.weight(1f), color = activePalette.text, fontSize = 18.sp,
                             fontWeight = FontWeight.Bold, fontFamily = fonts.display, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        TrustBadge(trusted)
+                        ProjectHealthGlyph(project.health)
+                        TrustBadge(project.trust)
                     }
                     KeyValues(buildList {
                         add("Repo" to project.repoLabel.ifBlank { "—" })
                         if (trusted) add("Base" to (project.baseBranch ?: "the repo's current branch"))
                     })
+                    ProjectHealthBanner(
+                        project.health, Modifier.padding(top = 6.dp),
+                        onAction = model::runHealthAction,
+                        busy = { model.healthActionKey(it) in status.busy },
+                    )
                     if (trusted) {
                         Row(Modifier.padding(top = 4.dp)) {
                             VibeButton("New VibeDev crew", {
@@ -125,8 +133,9 @@ internal fun VibeDevProjectScreen(chrome: VibeDevChrome, model: VibeDevProjectVi
             }
         }
         ExtendedFloatingActionButton(
+            shape = MagicanButtonShape,
             onClick = { chrome.sheet = VibeDevSheet.NewRun(project?.projectId) },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).height(48.dp),
             containerColor = activePalette.accentFill,
             contentColor = activePalette.onAccent,
             icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
@@ -140,7 +149,7 @@ private fun ProjectRunRow(row: VibeDevRunRow, onOpen: () -> Unit) {
     val now = rememberNow()
     VibeCard(onClick = onOpen) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            RunDot(row.state)
+            RunDot(row.state, row.isPartlyDone)
             Text(row.root.title.removePrefix("VibeDev · "), Modifier.weight(1f), color = activePalette.text, fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold, fontFamily = LocalMagicanFontFamilies.current.body,
                 maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -151,10 +160,14 @@ private fun ProjectRunRow(row: VibeDevRunRow, onOpen: () -> Unit) {
             listOf(
                 if (turns == 1) "1 turn" else "$turns turns",
                 agoIso(row.updatedAt, now).let { if (it.isEmpty() || it == "just now") it else "$it ago" },
-                row.state.label,
+                row.statusLabel,
             ).filter { it.isNotEmpty() }.joinToString(" · "),
             Modifier.padding(start = 18.dp),
             maxLines = 1,
         )
+        row.openItemsLine?.let {
+            Text(it, Modifier.padding(start = 18.dp), color = activePalette.warning, fontSize = 12.sp,
+                fontFamily = LocalMagicanFontFamilies.current.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }

@@ -79,6 +79,11 @@ pub struct BrowserRunState {
     /// session instead of spawning a fresh Chrome window keyed on its own
     /// execution id. `None` preserves the legacy per-execution derivation.
     pub session_id_override: Arc<Mutex<Option<String>>>,
+
+    /// Name of the run's tab group in the owner's Chrome
+    /// (`AgenticContext::browser_tab_label`). Reseeded from the context every
+    /// cycle, so it is not part of [`BrowserRunSnapshot`].
+    pub tab_label: Arc<Mutex<Option<String>>>,
 }
 
 /// The same state as a value, for a holder that is not this process.

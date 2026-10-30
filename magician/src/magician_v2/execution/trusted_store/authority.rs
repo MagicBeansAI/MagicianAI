@@ -58,6 +58,7 @@ pub enum DecisionVerificationError {
 struct TrustedAuthorityRecord {
     entry: AuthorityEntry,
     provenance: Option<DecisionProvenance>,
+    file_override: Option<Vec<crate::magician_v2::god_mode::StagedFileOverride>>,
 }
 
 /// In-process, per-boot map. Populated ONLY when magician itself stages a record,
@@ -80,6 +81,7 @@ impl TrustAuthority {
             TrustedAuthorityRecord {
                 entry,
                 provenance: None,
+                file_override: None,
             },
         );
     }
@@ -97,6 +99,7 @@ impl TrustAuthority {
                 slot.insert(TrustedAuthorityRecord {
                     entry,
                     provenance: None,
+                    file_override: None,
                 });
                 true
             },
@@ -126,6 +129,7 @@ impl TrustAuthority {
             TrustedAuthorityRecord {
                 entry,
                 provenance: Some(provenance),
+                file_override: None,
             },
         );
         Ok(())
@@ -159,6 +163,50 @@ impl TrustAuthority {
             .expect("TrustAuthority poisoned")
             .get(key)
             .map(|record| record.entry.clone())
+    }
+
+    /// Attach only a runtime-issued God-mode override to an authenticated,
+    /// exact file-edit revision. Recovery never manufactures this authority.
+    pub(crate) fn bind_file_override(
+        &self,
+        key: &TrustedRecordKey,
+        revision: blake3::Hash,
+        permission: Vec<crate::magician_v2::god_mode::StagedFileOverride>,
+    ) -> Result<(), DecisionVerificationError> {
+        let mut records = self.inner.write().expect("TrustAuthority poisoned");
+        let record = records
+            .get_mut(key)
+            .ok_or(DecisionVerificationError::NotStaged)?;
+        if key.kind != StoreKind::Transaction || record.provenance.is_none() {
+            return Err(DecisionVerificationError::Unauthenticated);
+        }
+        if record.entry.content_hash != revision {
+            return Err(DecisionVerificationError::ReviewRevisionMismatch);
+        }
+        record.file_override = Some(permission);
+        Ok(())
+    }
+
+    pub(crate) fn permits_file_override(
+        &self,
+        key: &TrustedRecordKey,
+        revision: blake3::Hash,
+        target: &std::path::Path,
+    ) -> bool {
+        let records = self.inner.read().expect("TrustAuthority poisoned");
+        records.get(key).is_some_and(|record| {
+            key.kind == StoreKind::Transaction
+                && record.entry.content_hash == revision
+                && record
+                    .provenance
+                    .as_ref()
+                    .is_some_and(|p| p.review_revision == revision)
+                && record.file_override.as_ref().is_some_and(|permission| {
+                    permission.iter().any(|permission| {
+                        permission.permits(&key.principal, &key.workspace, target)
+                    })
+                })
+        })
     }
 
     /// Authenticate all decision provenance and return only the trusted entry.

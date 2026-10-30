@@ -27,6 +27,7 @@
 import { writable, type Readable } from 'svelte/store';
 import {
 	scopeIdentityStore,
+	getCurrentScopeCredentialRevision,
 	scopedMagicianWebSocketUrl,
 	scopedWebSocketProtocols
 } from '$lib/stores/scopeIdentityStore';
@@ -584,7 +585,7 @@ export class EventHub {
 		window.addEventListener('online', wake);
 		window.addEventListener('focus', wake);
 		scopeIdentityStore.subscribe((scope) => {
-			const next = `${scope.principal.trim()}:${scope.workspace.trim()}`;
+			const next = `${scope.principal.trim()}:${scope.workspace.trim()}:${getCurrentScopeCredentialRevision()}`;
 			if (!this.scopeKey) {
 				this.scopeKey = next;
 				return;

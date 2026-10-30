@@ -688,6 +688,7 @@ mod integration_tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_budget("alice", "USD", Decimal::from(3))],
+            model_spend: None,
         };
         let resolver: Arc<dyn ScopedAuthorityResolver> = Arc::new(DiskBackedScopedResolver::new(
             config,
@@ -754,6 +755,7 @@ mod integration_tests {
                 carryover: CarryoverPolicy::None,
                 system_ceiling_id: None,
             }],
+            model_spend: None,
         };
         let resolver: Arc<dyn ScopedAuthorityResolver> = Arc::new(DiskBackedScopedResolver::new(
             config,
@@ -817,6 +819,7 @@ mod integration_tests {
                 principal_budget("alice", "USD", Decimal::from(2)),
                 principal_budget("bob", "USD", Decimal::from(2)),
             ],
+            model_spend: None,
         };
         let resolver: Arc<dyn ScopedAuthorityResolver> = Arc::new(DiskBackedScopedResolver::new(
             config,
@@ -890,6 +893,7 @@ mod integration_tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_budget("alice", "USD", Decimal::from(10))],
+            model_spend: None,
         };
         let resolver: Arc<dyn ScopedAuthorityResolver> = Arc::new(DiskBackedScopedResolver::new(
             config,
@@ -934,6 +938,7 @@ mod integration_tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_budget("alice", "USD", Decimal::from(100))],
+            model_spend: None,
         }
     }
 

@@ -177,7 +177,7 @@ pub fn trusted_branch_name(project_name: &str, root_task_id: &str) -> String {
 /// Paths print unquoted (`core.quotePath=false`): a quoted `"caf\303\251.txt"`
 /// would come back from a phone as a pathspec that matches nothing.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = Command::new(runtime_core::process::git_program())
         .arg("-C")
         .arg(dir)
         .args(["-c", "core.quotePath=false"])
@@ -220,25 +220,288 @@ fn write_record(runs_root: &Path, record: &TrustedRunWorkspace) -> Result<(), St
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// The repository root of `path`, which must be a non-bare work tree whose
-/// root is `path` itself — a subdirectory of a repo is not a project root.
-pub fn validate_trusted_repo(path: &Path) -> Result<PathBuf, String> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("`{}` is not an existing directory: {error}", path.display()))?;
-    let top = git(&canonical, &["rev-parse", "--show-toplevel"])
-        .map_err(|_| format!("`{}` is not a git repository", canonical.display()))?;
-    let top = PathBuf::from(top)
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if top != canonical {
+/// Make `folder` a git repository with one commit of its current files on
+/// `branch` (the owner asked, from project health). Uses the owner's git
+/// identity when one is configured, else commits as Magician. Refuses a folder
+/// that already is, or is inside, a repository.
+pub fn init_repository(folder: &Path, branch: &str) -> Result<(), String> {
+    if git(folder, &["rev-parse", "--show-toplevel"]).is_ok() {
         return Err(format!(
-            "`{}` is inside the git repository `{}`; a trusted project must be the repository root",
-            canonical.display(),
-            top.display()
+            "`{}` is already inside a git repository",
+            folder.display()
         ));
     }
+    git(folder, &["init", "--quiet", "--initial-branch", branch])?;
+    git(folder, &["add", "--all"])?;
+    let has_identity = git(folder, &["config", "user.email"]).is_ok();
+    let mut commit: Vec<&str> = Vec::new();
+    if !has_identity {
+        commit.extend([
+            "-c",
+            "user.name=Magician",
+            "-c",
+            "user.email=magician@localhost",
+        ]);
+    }
+    commit.extend([
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "Initial commit (made by Magician for VibeDev)",
+    ]);
+    git(folder, &commit)?;
+    Ok(())
+}
+
+/// Whether `branch` exists as a local branch of the repository at `repo`.
+pub fn branch_exists(repo: &Path, branch: &str) -> bool {
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
+}
+
+/// The repository root of `path`, which must be a non-bare work tree whose
+/// root is `path` itself — a subdirectory of a repo is not a project root.
+pub fn validate_trusted_repo(path: &Path) -> Result<PathBuf, TrustedRepoError> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| TrustedRepoError::NotADirectory {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    let top = git(&canonical, &["rev-parse", "--show-toplevel"]).map_err(|_| {
+        TrustedRepoError::NotARepository {
+            path: canonical.clone(),
+        }
+    })?;
+    let top =
+        PathBuf::from(top)
+            .canonicalize()
+            .map_err(|error| TrustedRepoError::NotADirectory {
+                path: canonical.clone(),
+                reason: error.to_string(),
+            })?;
+    if top != canonical {
+        return Err(TrustedRepoError::InsideRepository {
+            path: canonical,
+            root: top,
+        });
+    }
     Ok(canonical)
+}
+
+/// Why a folder cannot be a trusted project's repository. Callers branch on
+/// the kind (project health offers `git init` only for
+/// [`TrustedRepoError::NotARepository`]); the message is for people.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustedRepoError {
+    NotADirectory {
+        path: PathBuf,
+        reason: String,
+    },
+    NotARepository {
+        path: PathBuf,
+    },
+    /// A folder below a repository's root.
+    InsideRepository {
+        path: PathBuf,
+        root: PathBuf,
+    },
+}
+
+impl std::fmt::Display for TrustedRepoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotADirectory { path, reason } => {
+                write!(
+                    f,
+                    "`{}` is not an existing directory: {reason}",
+                    path.display()
+                )
+            },
+            Self::NotARepository { path } => {
+                write!(f, "`{}` is not a git repository", path.display())
+            },
+            Self::InsideRepository { path, root } => write!(
+                f,
+                "`{}` is inside the git repository `{}`; a trusted project must be the \
+                 repository root",
+                path.display(),
+                root.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TrustedRepoError {}
+
+impl From<TrustedRepoError> for String {
+    fn from(error: TrustedRepoError) -> Self {
+        error.to_string()
+    }
+}
+
+/// How a VibeDev coding run will actually work, whatever the project's
+/// `trust` setting says.
+///
+/// One decision, read by both sides that must agree: `run_coding_task`
+/// picks the workspace with it at dispatch, and the coordinator's goal
+/// describes the run with it (so a trusted project that falls back is never
+/// told "no diff approval" while its run raises one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectiveTrustMode {
+    /// The original project folder; every edit is reviewed before apply.
+    Original,
+    /// The chain's own git clone on a `vibedev/…` branch; changes are commits.
+    Trusted,
+    /// A trusted project whose folder cannot back a clone: the run works on a
+    /// sandboxed copy and returns its changes as a diff for review.
+    SandboxedFallback {
+        /// Why, as one clause ("`/x` is not a git repository").
+        reason: String,
+        /// What brings branch runs back, as one clause.
+        remedy: &'static str,
+    },
+    /// A sandboxed project, a plan run, or a chain that started sandboxed.
+    Sandboxed,
+}
+
+impl EffectiveTrustMode {
+    /// The owner-facing note for a fallback run, or `None` otherwise.
+    pub fn fallback_note(&self, project_name: &str) -> Option<String> {
+        match self {
+            Self::SandboxedFallback { reason, remedy } => Some(format!(
+                "Project “{project_name}” is trusted, but {reason}, so this run works on a \
+                 sandboxed copy and returns its changes for review. Branch runs come back once \
+                 {remedy}."
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// The folder a project's runs work on: its absolute `repo_path`, a relative
+/// one under `workspace_root`, or `workspace_root` itself.
+pub fn project_repo_folder(repo_path: Option<&str>, workspace_root: &Path) -> PathBuf {
+    match repo_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty() && *path != ".")
+    {
+        Some(path) if Path::new(path).is_absolute() => PathBuf::from(path),
+        Some(path) => workspace_root.join(path),
+        None => workspace_root.to_path_buf(),
+    }
+}
+
+/// The mode a run of `project` will use.
+///
+/// - `has_run_workspace`: the chain's root already has a trusted workspace
+///   record. A chain keeps the mode it started with, so this wins even if the
+///   project's trust changed since.
+/// - `chain_depth`: turns above this one on the chain (0 for a root). A
+///   follow-up without a record belongs to a chain that ran sandboxed.
+/// - `plan_run`: a Discuss run never starts a clone.
+///
+/// Otherwise a trusted project needs git and a folder that is a repository's
+/// root; without them it falls back with the reason.
+pub fn effective_trust_mode(
+    project: &super::projects::VibeDevProjectRecord,
+    workspace_root: &Path,
+    has_run_workspace: bool,
+    chain_depth: usize,
+    plan_run: bool,
+) -> EffectiveTrustMode {
+    effective_trust_mode_with_git(
+        project,
+        workspace_root,
+        has_run_workspace,
+        chain_depth,
+        plan_run,
+        runtime_core::process::git_available(),
+    )
+}
+
+fn effective_trust_mode_with_git(
+    project: &super::projects::VibeDevProjectRecord,
+    workspace_root: &Path,
+    has_run_workspace: bool,
+    chain_depth: usize,
+    plan_run: bool,
+    git_available: bool,
+) -> EffectiveTrustMode {
+    if has_run_workspace {
+        return EffectiveTrustMode::Trusted;
+    }
+    if project.trust == super::projects::VibeDevProjectTrust::Original && chain_depth == 0 {
+        return EffectiveTrustMode::Original;
+    }
+    if project.trust != super::projects::VibeDevProjectTrust::Trusted || chain_depth > 0 || plan_run
+    {
+        return EffectiveTrustMode::Sandboxed;
+    }
+    if !git_available {
+        return EffectiveTrustMode::SandboxedFallback {
+            reason: "this machine has no git Magician can run".to_string(),
+            remedy: "git is installed (`make setup-skill-bins` installs the bundled git)",
+        };
+    }
+    let folder = project_repo_folder(project.repo_path.as_deref(), workspace_root);
+    match validate_trusted_repo(&folder) {
+        Ok(_) => EffectiveTrustMode::Trusted,
+        Err(error) => EffectiveTrustMode::SandboxedFallback {
+            remedy: match error {
+                TrustedRepoError::InsideRepository { .. } => {
+                    "the project points at that repository's root folder"
+                },
+                _ => "the folder is a git repository",
+            },
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Whether a sandboxed run can keep its applied changes on a git branch of
+/// the project's folder — the same rule [`validate_trusted_repo`] holds a
+/// trusted project to: git must run here and the folder must be a
+/// repository's root. A folder *inside* a repository gets no branch, because
+/// switching that repository's branch would move files outside the project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectFolderGit {
+    /// The folder is the root of a git repository (canonical path).
+    RepositoryRoot(PathBuf),
+    /// No branch can be made there; why, as one clause.
+    NoBranch(String),
+}
+
+/// [`ProjectFolderGit`] for `folder`, decided server-side.
+pub fn project_folder_git(folder: &Path) -> ProjectFolderGit {
+    project_folder_git_with(folder, runtime_core::process::git_available())
+}
+
+fn project_folder_git_with(folder: &Path, git_available: bool) -> ProjectFolderGit {
+    if !git_available {
+        return ProjectFolderGit::NoBranch("this machine has no git Magician can run".to_string());
+    }
+    match validate_trusted_repo(folder) {
+        Ok(root) => ProjectFolderGit::RepositoryRoot(root),
+        Err(TrustedRepoError::InsideRepository { path, root }) => {
+            ProjectFolderGit::NoBranch(format!(
+                "`{}` is inside the git repository `{}` rather than its root, and switching \
+                 that repository's branch would move files outside the project",
+                path.display(),
+                root.display()
+            ))
+        },
+        Err(error) => ProjectFolderGit::NoBranch(error.to_string()),
+    }
 }
 
 /// Every file on the branch a chain would start from — `base_branch`, else the
@@ -246,7 +509,10 @@ pub fn validate_trusted_repo(path: &Path) -> Result<PathBuf, String> {
 /// so its lanes claim paths that exist.
 pub fn base_branch_files(repo: &Path, base_branch: Option<&str>) -> Result<Vec<String>, String> {
     let repo = validate_trusted_repo(repo)?;
-    let base_ref = match base_branch.map(str::trim).filter(|branch| !branch.is_empty()) {
+    let base_ref = match base_branch
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+    {
         Some(branch) => format!("refs/heads/{branch}^{{commit}}"),
         None => "HEAD^{commit}".to_string(),
     };
@@ -1049,7 +1315,10 @@ pub fn open_pull_request(
         "the repo has no `origin` remote to open a pull request against".to_string()
     })?;
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", workspace.branch);
-    let mut push = operator_command("git", &workspace.workspace_dir);
+    let mut push = operator_command(
+        runtime_core::process::git_program(),
+        &workspace.workspace_dir,
+    );
     push.args(["push", "--quiet", &origin, &refspec]);
     operator_output("git push", push, None, OPERATOR_COMMAND_TIMEOUT)
         .and_then(|output| command_result("git push", output))?;
@@ -1116,7 +1385,7 @@ pub fn is_pull_request_url(value: &str) -> bool {
     })
 }
 
-fn operator_command(program: &str, dir: &Path) -> Command {
+fn operator_command(program: impl AsRef<std::ffi::OsStr>, dir: &Path) -> Command {
     let mut cmd = Command::new(program);
     cmd.current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -2193,13 +2462,156 @@ mod tests {
         let sub = repo.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
         let err = validate_trusted_repo(&sub).unwrap_err();
-        assert!(err.contains("repository root"), "{err}");
+        assert!(
+            matches!(err, TrustedRepoError::InsideRepository { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("repository root"), "{err}");
         let plain = tmp.path().join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        assert!(validate_trusted_repo(&plain)
-            .unwrap_err()
-            .contains("not a git repository"));
+        assert!(matches!(
+            validate_trusted_repo(&plain).unwrap_err(),
+            TrustedRepoError::NotARepository { .. }
+        ));
+        assert!(matches!(
+            validate_trusted_repo(&tmp.path().join("gone")).unwrap_err(),
+            TrustedRepoError::NotADirectory { .. }
+        ));
         assert!(safe_segment("../escape").is_err());
+    }
+
+    use crate::magician_v2::vibedev::projects::VibeDevProjectRecord;
+
+    fn trust_project(trust: &str, repo_path: &Path) -> VibeDevProjectRecord {
+        serde_json::from_value(serde_json::json!({
+            "project_id": "p-1", "name": "Rehearsal", "chat_thread_id": "vibedev",
+            "chat_session_id": "s-1", "created_at_ms": 0, "updated_at_ms": 0,
+            "trust": trust, "repo_path": repo_path.display().to_string()
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn effective_trust_mode_follows_what_the_dispatcher_can_do() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = real_repo(tmp.path());
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let mode =
+            |project: &VibeDevProjectRecord, has_ws: bool, depth: usize, plan: bool, git: bool| {
+                effective_trust_mode_with_git(project, tmp.path(), has_ws, depth, plan, git)
+            };
+
+        let trusted_repo = trust_project("trusted", &repo);
+        assert_eq!(
+            mode(&trusted_repo, false, 0, false, true),
+            EffectiveTrustMode::Trusted
+        );
+        // A plan run or a follow-up of a sandboxed chain never starts a clone.
+        assert_eq!(
+            mode(&trusted_repo, false, 0, true, true),
+            EffectiveTrustMode::Sandboxed
+        );
+        assert_eq!(
+            mode(&trusted_repo, false, 2, false, true),
+            EffectiveTrustMode::Sandboxed
+        );
+
+        let trusted_plain = trust_project("trusted", &plain);
+        let fallback = mode(&trusted_plain, false, 0, false, true);
+        let EffectiveTrustMode::SandboxedFallback { reason, remedy } = &fallback else {
+            panic!("expected a fallback, got {fallback:?}");
+        };
+        assert!(reason.contains("is not a git repository"), "{reason}");
+        assert_eq!(*remedy, "the folder is a git repository");
+        let note = fallback.fallback_note("Rehearsal").unwrap();
+        assert!(
+            note.contains("sandboxed copy") && note.contains("for review"),
+            "{note}"
+        );
+
+        let sub = repo.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let inside = mode(&trust_project("trusted", &sub), false, 0, false, true);
+        assert!(
+            matches!(
+                inside,
+                EffectiveTrustMode::SandboxedFallback {
+                    remedy: "the project points at that repository's root folder",
+                    ..
+                }
+            ),
+            "{inside:?}"
+        );
+
+        let no_git = mode(&trusted_repo, false, 0, false, false);
+        let EffectiveTrustMode::SandboxedFallback { reason, .. } = &no_git else {
+            panic!("expected a fallback, got {no_git:?}");
+        };
+        assert!(reason.contains("no git"), "{reason}");
+
+        // A chain keeps the mode it started with.
+        assert_eq!(
+            mode(&trusted_plain, true, 3, false, false),
+            EffectiveTrustMode::Trusted
+        );
+        let sandboxed = trust_project("sandboxed", &repo);
+        assert_eq!(
+            mode(&sandboxed, false, 0, false, true),
+            EffectiveTrustMode::Sandboxed
+        );
+        assert_eq!(
+            mode(&sandboxed, true, 0, false, true),
+            EffectiveTrustMode::Trusted
+        );
+        assert_eq!(EffectiveTrustMode::Trusted.fallback_note("x"), None);
+    }
+
+    #[test]
+    fn a_project_folder_gets_a_branch_only_at_a_repository_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = real_repo(tmp.path());
+        assert_eq!(
+            project_folder_git_with(&repo, true),
+            ProjectFolderGit::RepositoryRoot(repo.canonicalize().unwrap())
+        );
+
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let ProjectFolderGit::NoBranch(why) = project_folder_git_with(&plain, true) else {
+            panic!("a plain folder has no branch");
+        };
+        assert!(why.contains("is not a git repository"), "{why}");
+
+        let sub = repo.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let ProjectFolderGit::NoBranch(why) = project_folder_git_with(&sub, true) else {
+            panic!("a folder inside a repository has no branch of its own");
+        };
+        assert!(
+            why.contains("inside the git repository") && why.contains("outside the project"),
+            "{why}"
+        );
+
+        let ProjectFolderGit::NoBranch(why) = project_folder_git_with(&repo, false) else {
+            panic!("no git, no branch");
+        };
+        assert!(why.contains("no git"), "{why}");
+    }
+
+    #[test]
+    fn project_repo_folder_resolves_like_a_run() {
+        let ws = Path::new("/ws");
+        assert_eq!(project_repo_folder(None, ws), PathBuf::from("/ws"));
+        assert_eq!(project_repo_folder(Some(" . "), ws), PathBuf::from("/ws"));
+        assert_eq!(
+            project_repo_folder(Some("app"), ws),
+            PathBuf::from("/ws/app")
+        );
+        assert_eq!(
+            project_repo_folder(Some("/abs/app"), ws),
+            PathBuf::from("/abs/app")
+        );
     }
 
     #[test]

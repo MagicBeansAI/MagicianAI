@@ -32,6 +32,11 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import signal
+import atexit
+import threading
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,8 +59,63 @@ DEFAULT_AGY_PROMPT = DEFAULT_VLM_PROMPT.replace(
 )
 
 
-def run(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=True, capture_output=True, text=True)
+_children: set[subprocess.Popen[str]] = set()
+_children_lock = threading.RLock()
+
+
+def stop_child(child: subprocess.Popen[str]) -> None:
+    """Only signal process groups created by this helper, never a supplied PID."""
+    try:
+        if getattr(child, "_ocr_owns_group", False):
+            os.killpg(child.pid, signal.SIGKILL)
+        elif child.poll() is None:
+            child.kill()
+    except ProcessLookupError:
+        pass
+    child.wait()
+
+
+def cleanup_children() -> None:
+    with _children_lock:
+        children = list(_children)
+    for child in children:
+        stop_child(child)
+
+
+atexit.register(cleanup_children)
+
+
+def run(args: list[str], *, prompt: str | None = None,
+        cwd: str | None = None, timeout_secs: int | None = None) -> subprocess.CompletedProcess[str]:
+    # No independent 240s cutoff: absent an explicit deadline, the owning
+    # governed invocation controls cancellation and its run budget.
+    own_group = os.name == "posix" and os.environ.get("MAGICIAN_MANAGED_SHELL") != "1"
+    child = subprocess.Popen(args, stdin=subprocess.PIPE if prompt is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+        cwd=cwd, start_new_session=own_group)
+    child._ocr_owns_group = own_group
+    with _children_lock:
+        _children.add(child)
+    try:
+        try:
+            stdout, stderr = child.communicate(input=prompt, timeout=timeout_secs)
+        except subprocess.TimeoutExpired:
+            stop_child(child)
+            raise RuntimeError(f"{Path(args[0]).name} exceeded the explicitly requested {timeout_secs}s deadline") from None
+        if child.returncode:
+            # Keep the useful CLI diagnostic rather than CalledProcessError's
+            # argv-only string. Do not repeat the prompt or source text.
+            detail = stderr.strip()[-4000:] or "no stderr was supplied"
+            raise RuntimeError(f"{Path(args[0]).name} exited with status {child.returncode}: {detail}")
+        return subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
+    finally:
+        # Also reap helpers a CLI left behind after its final answer.
+        stop_child(child)
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            if pipe is not None:
+                pipe.close()
+        with _children_lock:
+            _children.discard(child)
 
 
 def is_pdf(path: Path) -> bool:
@@ -74,7 +134,7 @@ def tesseract_text(path: Path, language: str) -> str:
 # --- Codex engine -------------------------------------------------------------
 
 
-def codex_text(path: Path, prompt: str | None, model: str) -> str:
+def codex_text(path: Path, prompt: str | None, model: str, timeout_secs: int | None = None) -> str:
     """Run OpenAI Codex CLI in headless mode against a single image file.
 
     The codex CLI attaches images via ``-i FILE`` (repeatable) and writes
@@ -92,11 +152,11 @@ def codex_text(path: Path, prompt: str | None, model: str) -> str:
     ) as f:
         out_path = Path(f.name)
     try:
-        argv = ["codex", "exec", "-i", str(path), "--output-last-message", str(out_path)]
+        argv = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", str(out_path)]
         if model:
             argv.extend(["-m", model])
-        argv.append(prompt_text)
-        subprocess.run(argv, check=True, capture_output=True, text=True, cwd="/tmp")
+        argv.extend(["-i", str(path), "--", "-"])
+        run(argv, prompt=prompt_text, cwd="/tmp", timeout_secs=timeout_secs)
         return out_path.read_text(encoding="utf-8").strip()
     finally:
         try:
@@ -108,7 +168,7 @@ def codex_text(path: Path, prompt: str | None, model: str) -> str:
 # --- Antigravity engine -------------------------------------------------------
 
 
-def agy_text(path: Path, prompt: str | None, model: str) -> str:
+def agy_text(path: Path, prompt: str | None, model: str, timeout_secs: int | None = None) -> str:
     """Run agy CLI in headless mode against a single image/PDF file.
 
     The agy CLI reads attachments via the ``@filename`` syntax inside
@@ -121,16 +181,16 @@ def agy_text(path: Path, prompt: str | None, model: str) -> str:
     picked up as usual. Absolute paths to the image still resolve
     correctly because they don't depend on CWD.
     """
-    prompt_text = (prompt or DEFAULT_AGY_PROMPT).format(target=f"@{path}")
+    prompt_text = (prompt or DEFAULT_AGY_PROMPT).replace("{target}", f"@{path}")
     # cwd is /tmp (not tempfile.gettempdir() — that returns
     # /var/folders/.../T on macOS which may not be in agy's trusted-folder
     # list by default). /tmp is the canonical neutral system dir and has
     # no project-level Antigravity config. We also pass
     # --dangerously-skip-permissions so the call works headlessly.
-    argv = ["agy", "--dangerously-skip-permissions", "--print", prompt_text]
+    argv = ["agy", "--dangerously-skip-permissions", "--print-timeout", "0", "--print", prompt_text]
     if model:
         argv.extend(["--model", model])
-    proc = subprocess.run(argv, check=True, capture_output=True, text=True, cwd="/tmp")
+    proc = run(argv, cwd="/tmp", timeout_secs=timeout_secs)
     return proc.stdout.strip()
 
 
@@ -148,6 +208,7 @@ def ocr_pdf(
     agy_model: str,
     codex_model: str,
     concurrency: int,
+    timeout_secs: int | None = None,
 ) -> tuple[str, int]:
     with tempfile.TemporaryDirectory(prefix="magician-ocr-") as tmp:
         prefix = Path(tmp) / "page"
@@ -168,9 +229,9 @@ def ocr_pdf(
         # around 4–8.
         def one_page(page: Path) -> str:
             if engine == "agy":
-                return agy_text(page, vlm_prompt, agy_model)
+                return agy_text(page, vlm_prompt, agy_model, timeout_secs)
             if engine == "codex":
-                return codex_text(page, vlm_prompt, codex_model)
+                return codex_text(page, vlm_prompt, codex_model, timeout_secs)
             return tesseract_text(page, language)
 
         if engine in ("agy", "codex") and concurrency > 1:
@@ -213,13 +274,14 @@ def extract(args: argparse.Namespace) -> int:
             agy_model=args.agy_model,
             codex_model=args.codex_model,
             concurrency=args.concurrency,
+            timeout_secs=args.timeout_secs,
         )
         method = f"pdf_to_image_ocr:{args.engine}"
     else:
         if args.engine == "agy":
-            text = agy_text(input_path, args.vlm_prompt, args.agy_model)
+            text = agy_text(input_path, args.vlm_prompt, args.agy_model, args.timeout_secs)
         elif args.engine == "codex":
-            text = codex_text(input_path, args.vlm_prompt, args.codex_model)
+            text = codex_text(input_path, args.vlm_prompt, args.codex_model, args.timeout_secs)
         else:
             text = tesseract_text(input_path, args.language).strip()
         pages = 1
@@ -228,6 +290,7 @@ def extract(args: argparse.Namespace) -> int:
     payload: dict[str, object] = {
         "method": method,
         "engine": args.engine,
+        "model_selection": (args.agy_model if args.engine == "agy" else args.codex_model) or "engine_default",
         "pages": pages,
         "chars": len(text),
         "content": text,
@@ -244,8 +307,14 @@ def extract(args: argparse.Namespace) -> int:
 
 
 def _binary_available(name: str) -> bool:
-    proc = subprocess.run(["which", name], capture_output=True, text=True)
-    return proc.returncode == 0 and proc.stdout.strip() != ""
+    return shutil.which(name) is not None
+
+
+def positive_seconds(value: str) -> int:
+    seconds = int(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout-secs must be positive")
+    return seconds
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -286,8 +355,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract_parser.add_argument(
         "--agy-model",
-        default="gemini-2.5-flash",
-        help="Antigravity model name (default: gemini-2.5-flash).",
+        default="",
+        help="Explicit Antigravity model; omitted uses its configured default. Unsupported selections fail with the engine diagnostic.",
     )
     extract_parser.add_argument(
         "--codex-model",
@@ -298,6 +367,8 @@ def build_parser() -> argparse.ArgumentParser:
             "a specific revision."
         ),
     )
+    extract_parser.add_argument("--timeout-secs", type=positive_seconds, default=None,
+        help="Optional explicit per-image deadline. Omitted inherits the owning invocation budget.")
     extract_parser.add_argument("--first-page", type=int)
     extract_parser.add_argument("--last-page", type=int)
     extract_parser.add_argument(
@@ -307,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Parallel page workers for VLM engines (agy, codex) on "
             "PDFs. Default 4; rate-limit ceiling depends on provider tier "
-            "(~8 for gemini-2.5-flash free, similar for codex). "
+            "(consult the selected engine/account limits). "
             "Set to 1 to force sequential."
         ),
     )
@@ -319,6 +390,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if threading.current_thread() is threading.main_thread():
+        def cancelled(signum, _frame):
+            cleanup_children()
+            raise SystemExit(128 + signum)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(signum, cancelled)
     return args.func(args)
 
 

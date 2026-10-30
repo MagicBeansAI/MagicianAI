@@ -7,6 +7,9 @@
 - `magicutor` (default port `3003`)
 - `decision-engine` (optional; Unix socket, managed only when
   `decision-engine.bin` is installed; see below)
+- the macOS desktop tray app (on by default via `supervisor.manage_desktop`;
+  watched and relaunched after a crash, never launched as a child; see
+  [Desktop app](#desktop-app-macos))
 
 ## Quick Start
 
@@ -17,10 +20,14 @@ make run-supervisor
 
 ## Control Plane
 The supervisor exposes a TCP command interface on `127.0.0.1:8081` (default).
+It is unauthenticated, so the supervisor passes its port to Magician
+(`MAGIC_SUPERVISOR_CONTROL_PORT`), which denies it to every agent's OS box and
+`http` tool.
 
 Operator commands (via `supervisor-ctl`): `restart-magician`,
 `restart-magicutor`, `stop-magician`, `stop-magicutor`,
 `restart-decision-engine`, `stop-decision-engine`, `status-decision-engine`,
+`start-desktop`, `stop-desktop`, `restart-desktop`, `status-desktop`,
 `status`, `status-magician`, `status-magicutor`, `host-status`,
 `host-presence-start`, `host-presence-stop`, `host-presence-restart`,
 `health`, and `shutdown` (stops managed services and exits).
@@ -93,6 +100,148 @@ to load.
 Smoke check without the supervisor:
 `decision-engine --config magician-config.yaml --socket /tmp/de.sock`, then
 `curl --unix-socket /tmp/de.sock http://x/health`.
+
+## Desktop app (macOS)
+
+The supervisor watches the desktop tray app ("Magican") and relaunches it
+**only after a crash**; a deliberate Quit stays a quit. Off macOS the desktop
+commands report `unsupported`.
+
+**On or off.** `--manage-desktop=0|1`, else `supervisor.manage_desktop` in the
+runtime `magician-config.yaml` (read once at start, leniently, from
+`--magician-config`; missing or unreadable means on, logged once), else on.
+Restart the supervisor to apply a change. Management also needs macOS and a
+bundle (`--desktop-app`); otherwise `status` says `not_managed` and
+`status-desktop`'s `management` gives the reason. The backend declares the
+`supervisor:` section only so its strict config accepts it.
+
+Flags (server mode; `--flag=value` works too). Unknown arguments, and bad
+values for known flags, are logged and ignored, so a future value never
+crash-loops the supervisor under launchd KeepAlive:
+
+- `--magician-config <path>`: the runtime config; launchers pass it, the
+  supervisor never resolves the runtime root itself.
+- `--manage-desktop[=0|1|true|false]`: bare = on; the next token is taken only
+  when boolean; empty value defers to the config.
+- `--desktop-app <bundle>`: the `.app` launched and watched.
+- `--desktop-launch-at-boot=always|login-item` (default `login-item`): what
+  happens when the boot grace ends without the app.
+- `--desktop-log <path>`: the `open --stdout/--stderr` target.
+- `--desktop-env KEY=VALUE` (repeatable): becomes `open --env KEY=VALUE`.
+- `--desktop-verify-script <path>`: run as `bash <script> <bundle>` before
+  every launch (dev passes `scripts/verify-desktop-debug-app.sh`).
+- `--desktop-quit-marker <path>`: overrides the clean-quit marker, by default
+  `~/Library/Application Support/dev.magician.desktop/desktop-app.quit`
+  (per user, independent of the runtime root, so any launch path writes where
+  the supervisor watches). Supervisor launches pass the watched path to the
+  app as `MAGICIAN_DESKTOP_QUIT_MARKER`.
+
+**Dev wiring.** On macOS `make run-supervisor` (and `make run-all`) passes the
+debug bundle, log, env, preflight, marker and `--desktop-launch-at-boot=always`
+whenever `.local/Magican-Debug.app` is built, plus `--magician-config`.
+`SUPERVISOR_MANAGE_DESKTOP=0|1` adds `--manage-desktop=<value>` for that run.
+
+**Production wiring.** The backend LaunchAgent
+(`ai.magicbeans.magican.backend`, written by Magican Desktop) ends its
+ProgramArguments with `--magician-config <runtime root>/magician-config.yaml`
+and, when the app runs from a stable bundle (not App Translocation, not
+`/Volumes/...`), `--desktop-app <X>.app --desktop-log <runtime
+root>/logs/desktop.log` (boot policy `login-item`). Packaged installs register
+through `scripts/native-runtime-service.py` (`run-native-backend.sh` forwards
+the arguments); the fallback renders the plist with `magic-supervisor.bin
+<args>`. Setup passes `--supervisor-args-json` only when the installed script
+supports it; `start` merges with the recorded arguments, so an argument-less
+re-run keeps them and stays kickstart-only unless launchd's loaded arguments
+differ from the file. Every Desktop launch runs
+`native_runtime::sync_supervisor_arguments`, which rewrites only an existing
+registration's plist (no re-bootstrap, so the backend keeps running; launchd
+applies it at next login or re-registration). Binding rule (Rust and Python):
+this bundle wins when it runs from `/Applications` or `~/Applications` or none
+is recorded; otherwise the recorded one stays, as do other recorded flags and
+the recorded `--magician-config` when none is passed. It does nothing without a
+stable bundle, for another install's or data folder's registration, or when the
+installed script lacks the action.
+
+How it works:
+
+- **LaunchServices only.** Launch is `/usr/bin/open -n -g --stdout <log>
+  --stderr <log> --env ... <bundle>`, as `make run-desktop-tray-debug` does.
+  The app is never a child, because macOS attributes Accessibility, Screen
+  Recording and Microphone grants to the responsible process; so there is no
+  exit status.
+- **Discovery.** Every 3 s (`desktop_poll_interval`) it lists this user's
+  processes running `<bundle>/Contents/MacOS/<CFBundleExecutable>` (libproc).
+  A new pid at the same path (tray **Restart Magican**) is not a crash. It
+  never launches while an instance exists or a launch is in flight, and
+  re-scans right before `open` to adopt one started meanwhile. Preflight and
+  `open` are killed on timeout. The desktop lock is not held across them; an
+  in-flight flag refuses concurrent launches (`status` `starting`), and a
+  launch is abandoned after 180 s. Boot runs in the background and never
+  delays Magicutor or Magician.
+- **Crash vs quit.** Tray **Quit Magican**, `stop-desktop` and
+  `make stop-desktop-tray` write the marker; **Restart Magican** does not.
+  When the process is gone, a marker newer than its start (or the
+  supervisor's launch) is a quit; otherwise a crash, and a fresh
+  `~/Library/Logs/DiagnosticReports/<executable>-*.ips` is logged as evidence.
+  `start-desktop`, `restart-desktop`, the Makefile launch targets and the app's
+  own start delete the marker, so it always means "the last run ended in
+  Quit".
+- **Relaunch budget.** Backoff 2 s, 5 s, 15 s, then 60 s, re-scanning before
+  each; at most `desktop_max_relaunches` (4) per `desktop_relaunch_window`
+  (5 min). A process that does not appear within 45 s of `open` returning
+  counts as a crash. Timers are monotonic; wall time only compares the
+  marker's mtime with the process start. Past the budget: `status` `crashed`,
+  `health_status` `unhealthy`, until `start-desktop`, `restart-desktop` or a
+  manual launch.
+- **Boot.** A running app is adopted. A missing bundle (mid-rebuild) defers
+  the decision until it appears; a failed boot launch retries within the
+  relaunch budget. A quit marker that counts keeps the app closed until
+  `start-desktop`: under `login-item` one newer than system boot
+  (`kern.boottime`), so a Quit survives supervisor restarts; under `always`
+  only one newer than this supervisor's start. Otherwise a 30 s boot grace
+  (`status` `starting`, `health_status` `boot_grace`) lets the app's own login
+  item win the login race (the app has no single-instance guard). When the
+  grace ends without the app, `always` launches it; `login-item` launches only
+  when `~/Library/LaunchAgents/Magican.plist` (tauri-plugin-autostart) exists
+  and is not `Disabled`, else stays idle (`status` `stopped`, `health_status`
+  `login_item_off`, aggregate health unaffected) and crash relaunch starts once
+  the owner opens the app. `start-desktop` during the grace launches at once.
+- **Never a second tray.** Before any launch and again right before `open`,
+  another instance blocks it: a `magician-desktop` / `magician-desktop.bin`
+  process of this user at another path, or a holder of the host gateway port
+  (`MAGICIAN_HOST_GATEWAY_URL` from `--desktop-env` or its env, else 3017).
+  No budget is spent; `status` is `other_instance` and `status-desktop` names
+  it. When it exits, boot or relaunch conditions are re-checked (its Quit
+  writes the same marker).
+- **Replies and shutdown.** `start-desktop` / `restart-desktop` reply once the
+  launch is decided; preflight and `open` continue in the background
+  (`status-desktop` shows the result). On supervisor shutdown (Ctrl+C,
+  SIGTERM, `shutdown`) launches stop before services do, and an in-flight
+  launch is cancelled before `open`. A `start-desktop` overtaken by another
+  instance launches when it exits, regardless of the login-item policy.
+- **Stop.** `stop-desktop` writes the marker, SIGTERMs, waits 5 s, then
+  SIGKILLs. During a launch, or before its process appears, the stop is kept
+  pending and applied as soon as the process appears (dropped after 45 s);
+  meanwhile `start-desktop` / `restart-desktop` refuse. AppleScript quit only
+  hides the app. Supervisor `shutdown` leaves the app running; `make stop-all`
+  stops it via `stop-desktop-tray`.
+
+Status: `status` carries a `desktop` entry in the common shape (`status`
+`running` / `starting` / `crashed` / `stopped` / `not_managed` /
+`misconfigured` / `unsupported`; `health_status` `healthy` / `boot_grace` /
+`login_item_off` / `quit` / `stopped` / `relaunch_pending` / `unhealthy` /
+...; `pid`, `restart_count`, `restart_attempts_in_window`,
+`restart_attempt_window_seconds`, `last_restart`). `status-desktop` adds the
+management reason, phase, bundle, executable, marker path and time, next
+relaunch, in-flight launch, pending stop, last exit, crash report and last
+error. Aggregate `health` fails on `desktop` only while the app is crashed
+(relaunch pending or given up); a missing bundle (`misconfigured` /
+`degraded`) and `other_instance` do not fail it. Raw commands:
+`"StartDesktop"`, `"StopDesktop"`, `"RestartDesktop"`, `"StatusDesktop"`.
+
+Tests: `desktop_app.rs` (decision logic, without launching anything); the
+LaunchAgent arguments in `desktop/src-tauri/src/native_runtime.rs` and
+`scripts/test_source_install.py`.
 
 ## Restart Guard
 

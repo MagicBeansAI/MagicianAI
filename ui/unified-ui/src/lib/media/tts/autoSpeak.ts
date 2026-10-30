@@ -44,6 +44,7 @@ export interface AutoSpeakMessageLike {
 }
 
 export interface AutoSpeakOptions {
+	chatSessionId?: string | null;
 	/** The freshly-arrived tail message id. */
 	tailId: string | null;
 	/** Last id we already auto-spoke — guards against double-fire. */
@@ -88,6 +89,22 @@ function isTutorNarratedSurface(sourceSurface: string | undefined): boolean {
 }
 
 /**
+ * The reply was already spoken where it was produced: the realtime provider on
+ * the call, or the meeting bot in its room. The live-call guard below only sees
+ * this tab's call, so another tab, device or a later visit to the chat would
+ * read the mirrored, voice-origin reply out a second time.
+ */
+function isSpokenElsewhereReply(sourceSurface: string | undefined): boolean {
+	switch (sourceSurface?.trim().toLowerCase()) {
+		case 'realtime_voice':
+		case 'meeting_room':
+			return true;
+		default:
+			return false;
+	}
+}
+
+/**
  * Inspect the freshly-arrived tail message and kick off auto-speak
  * if the rules say to. Returns the new `lastAutoSpokenMessageId`
  * the page should assign — the page owns the variable, this
@@ -112,7 +129,7 @@ export function maybeAutoSpeakTail(opts: AutoSpeakOptions): AutoSpeakDecision {
 	if (opts.tailId.startsWith('streaming-')) return unchanged;
 	const message = opts.resolveMessage(opts.tailId);
 	if (!message || message.direction !== 'assistant') return unchanged;
-	if (isTutorNarratedSurface(message.source_surface)) {
+	if (isTutorNarratedSurface(message.source_surface) || isSpokenElsewhereReply(message.source_surface)) {
 		// Consume the mirrored reply before checking transient focus/provider
 		// state. It must never become eligible for delayed chat narration.
 		return { nextLastAutoSpokenMessageId: opts.tailId };
@@ -149,6 +166,7 @@ export function maybeAutoSpeakTail(opts: AutoSpeakOptions): AutoSpeakDecision {
 		void providerSpeakBlocks(
 			{
 				messageId: message.id,
+				chatSessionId: opts.chatSessionId,
 				blocks,
 				provider: null,
 				voice: null,

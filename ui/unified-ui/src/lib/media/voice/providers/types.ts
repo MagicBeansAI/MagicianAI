@@ -93,6 +93,8 @@ export interface RealtimeUsageBreakdown {
 }
 
 export interface RealtimeProviderCallbacks {
+    /** Actual speaker output; optional visualization must never own playback. */
+    onPlaybackAnalyserChanged?(analyser: AnalyserNode | null): void;
 	/** Physical PCM queue or WebRTC output buffer state, distinct from response.done. */
 	onPlaybackStateChanged?(playing: boolean): void;
 	onSessionConfigured(args: { updateId?: string }): void;
@@ -154,6 +156,7 @@ export interface RealtimeFrontendProvider {
 		descriptor: ProviderDescriptor;
 		mic: MediaStream;
 		playbackEl: HTMLAudioElement;
+        analysisContext?: AudioContext | null;
 		pushToTalkMode: boolean;
 		sessionConfig: ProviderSessionConfig;
 		resume: ProviderResumeContext | null;

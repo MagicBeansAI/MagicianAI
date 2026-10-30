@@ -226,6 +226,7 @@ class TasksViewModel private constructor(
     private var monitorDetailRequest: Job? = null
     private var navigationRequest: Job? = null
     private var realtimeRefresh: Job? = null
+    private val executionControlLoads = mutableMapOf<String, Job>()
     private val graceJobs = mutableMapOf<String, Job>()
 
     init {
@@ -235,6 +236,7 @@ class TasksViewModel private constructor(
                 .catch { /* the repository reconnects; a socket outage never blanks the list */ }
                 .collect { event ->
                     applyRealtimeDetail(event)
+                    if (event.progress) return@collect
                     realtimeRefresh?.cancel()
                     realtimeRefresh = viewModelScope.launch { delay(500); refresh() }
                 }
@@ -672,18 +674,23 @@ class TasksViewModel private constructor(
         }
     }
 
-    fun loadExecutionControls(executionId: String) {
+    fun loadExecutionControls(executionId: String, keepError: Boolean = false) {
         val existing = _state.value.executionControls[executionId]
         if (existing?.loading == true || existing?.busy != null) return
-        viewModelScope.launch {
-            setControl(executionId, (existing ?: ExecutionControlUiState()).copy(loading = true, error = null))
+        setControl(executionId, (existing ?: ExecutionControlUiState()).let {
+            it.copy(loading = true, error = if (keepError) it.error else null)
+        })
+        val load = viewModelScope.launch {
             runSuspendCatching { source.executionControlState(executionId) }
-                .onSuccess { setControl(executionId, ExecutionControlUiState(state = it)) }
-                .onFailure { setControl(executionId, ExecutionControlUiState(error = it.userMessage(
+                .onSuccess { setControl(executionId, (_state.value.executionControls[executionId] ?: ExecutionControlUiState()).copy(loading = false, state = it)) }
+                .onFailure { setControl(executionId, (_state.value.executionControls[executionId] ?: ExecutionControlUiState()).copy(loading = false, error = it.userMessage(
                     "Execution controls unavailable",
                     "Controls could not be loaded. Try again.",
                 ))) }
         }
+        executionControlLoads[executionId] = load
+        // Runs at once if the load already finished, so no entry outlives its job.
+        load.invokeOnCompletion { executionControlLoads.remove(executionId, load) }
     }
 
     fun executionControl(executionId: String, action: ExecutionControlAction, guidance: String? = null) {
@@ -696,14 +703,25 @@ class TasksViewModel private constructor(
         }
         val current = _state.value.executionControls[executionId] ?: ExecutionControlUiState()
         if (current.busy != null) return
+        // Reserve before launching so two taps in the same frame cannot submit twice.
+        setControl(executionId, current.copy(busy = action, error = null))
         viewModelScope.launch {
-            setControl(executionId, current.copy(busy = action, error = null))
             runSuspendCatching { source.executionControl(executionId, action, trimmed.ifEmpty { null }) }
-                .onFailure { setControl(executionId, current.copy(error = it.userMessage(
-                    "Execution action failed",
-                    "The execution was not changed. Try again.",
-                ))) }
-                .onSuccess { loadExecutionControls(executionId); refresh() }
+                .onFailure {
+                    setControl(executionId, (_state.value.executionControls[executionId] ?: current).copy(busy = null, error = it.userMessage(
+                        "Execution action failed",
+                        "The execution was not changed. Try again.",
+                    )))
+                    // A refused action usually means the run moved on; show what it allows now.
+                    loadExecutionControls(executionId, keepError = true)
+                }
+                .onSuccess {
+                    // Loading refuses a busy control; release the completed mutation first.
+                    executionControlLoads.remove(executionId)?.cancel()
+                    setControl(executionId, (_state.value.executionControls[executionId] ?: current).copy(loading = false, busy = null, error = null))
+                    loadExecutionControls(executionId)
+                    refresh()
+                }
         }
     }
 
@@ -755,7 +773,7 @@ class TasksViewModel private constructor(
                         _state.value = _state.value.copy(
                             detail = DetailState(
                                 task.id,
-                                bundle = if (previous != null && it.details != null) it.copy(details = JsonObject(mergeTaskExecutionHistory(previous.bundle?.details, it.details).filterKeys { key -> key != "next_execution_cursor" } + (previous.bundle?.details?.get("next_execution_cursor")?.let { cursor -> mapOf("next_execution_cursor" to cursor) } ?: emptyMap()))) else it,
+                                bundle = (if (previous != null && it.details != null) it.copy(details = JsonObject(mergeTaskExecutionHistory(previous.bundle?.details, it.details).filterKeys { key -> key != "next_execution_cursor" } + (previous.bundle?.details?.get("next_execution_cursor")?.let { cursor -> mapOf("next_execution_cursor" to cursor) } ?: emptyMap()))) else it).withTaskProgress(previous?.bundle),
                                 historyExpanded = previous != null,
                                 selectedExecutionId = resolvedExecution,
                                 preferredAct = preferredAct,
@@ -985,6 +1003,16 @@ class TasksViewModel private constructor(
             refreshOpenMonitorDetail(_state.value.monitorDetail.taskId)
             return
         }
+        if (event.progress) {
+            val current = detail.bundle ?: return
+            val bundle = if (current.progressExecutionId != null) current else current.withTaskProgress()
+            if (bundle.progressExecutionId != null && event.executionId == bundle.progressExecutionId &&
+                event.eventTimestamp - (bundle.observedProgressAt ?: 0) >= 1000) {
+                _state.value = _state.value.copy(detail = detail.copy(bundle = bundle.copy(
+                    observedProgressAt = TaskRunEvidence.latest(bundle.observedProgressAt, event.eventTimestamp))))
+            }
+            return
+        }
         if (event.eventType == "ExecutionPanelDelta" && event.panel != null &&
             detail.selectedExecutionId != null && event.executionId == detail.selectedExecutionId) {
             val bundle = detail.bundle ?: return
@@ -992,7 +1020,7 @@ class TasksViewModel private constructor(
                 bundle = bundle.copy(
                     panel = event.panel,
                     unavailableSections = bundle.unavailableSections - "live run",
-                ),
+                ).withTaskProgress(bundle),
             ))
             return
         }
@@ -1014,7 +1042,7 @@ class TasksViewModel private constructor(
             runSuspendCatching { source.taskDetail(id, selected) }.onSuccess { bundle ->
                 val latest = _state.value.detail
                 if (latest.taskId == id && latest.selectedExecutionId == selected) {
-                    _state.value = _state.value.copy(detail = latest.copy(bundle = if (latest.historyExpanded && bundle.details != null) bundle.copy(details = JsonObject(mergeTaskExecutionHistory(latest.bundle?.details, bundle.details).filterKeys { it != "next_execution_cursor" } + (latest.bundle?.details?.get("next_execution_cursor")?.let { mapOf("next_execution_cursor" to it) } ?: emptyMap()))) else bundle, error = null))
+                    _state.value = _state.value.copy(detail = latest.copy(bundle = (if (latest.historyExpanded && bundle.details != null) bundle.copy(details = JsonObject(mergeTaskExecutionHistory(latest.bundle?.details, bundle.details).filterKeys { it != "next_execution_cursor" } + (latest.bundle?.details?.get("next_execution_cursor")?.let { mapOf("next_execution_cursor" to it) } ?: emptyMap()))) else bundle).withTaskProgress(latest.bundle), error = null))
                 }
             }
         }

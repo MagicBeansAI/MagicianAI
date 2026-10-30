@@ -9,6 +9,7 @@
 //! This module now backs executor-managed escalation paths that need
 //! channel-agnostic human decisions without routing through `agentic-resume`.
 
+mod presentation;
 pub mod service;
 
 pub(crate) use service::ONE_TIME_COLLECTION_MAX_SECS;

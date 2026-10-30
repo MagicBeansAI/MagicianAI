@@ -25,12 +25,14 @@
 	 *   - Install from path — the header form for `path:<abs>` sources.
 	 */
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 	import { timedFetch } from '$lib/shared/fetch';
 	import SkillsEnvironmentPanel from './SkillsEnvironmentPanel.svelte';
 	import SkillEnvEditor from './SkillEnvEditor.svelte';
+	import BrowserSignInButton from '$lib/hitl/BrowserSignInButton.svelte';
 
 	const SETUP_TOKEN_STORAGE_KEY = 'magician:vault:setup-token';
 
@@ -40,6 +42,7 @@
 	type PageTab = CatalogTab | 'environment';
 
 	interface CatalogEntry {
+		auth?: { setup?: { driver: { kind: string } } | null } | null;
 		name: string;
 		description: string;
 		// 'invalid' rows (loader-refused folders) appear under All only.
@@ -82,6 +85,7 @@
 	}
 
 	let skills: CatalogEntry[] = [];
+	let catalogScope = get(scopeIdentityStore);
 	let loading = true;
 	let error: string | null = null;
 	let textFilter = '';
@@ -150,6 +154,7 @@
 	}
 
 	async function loadSkills() {
+		const requestedScope = get(scopeIdentityStore);
 		loading = true;
 		error = null;
 		try {
@@ -169,6 +174,7 @@
 				throw new Error(`server returned ${res.status}`);
 			}
 			const data: CatalogResponse = await res.json();
+			catalogScope = requestedScope;
 			skills = data.skills ?? [];
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -804,6 +810,9 @@
 					{/if}
 					{#if openEnvFor === skill.name}
 						<SkillEnvEditor skill={skill.name} scope={currentScope} />
+					{/if}
+					{#if skill.installed_scopes.includes(currentScope) && ['governed_oauth', 'browser_cli'].includes(skill.auth?.setup?.driver.kind ?? '')}
+						<BrowserSignInButton skill={skill.name} expectedScope={catalogScope} />
 					{/if}
 					{#if skill.invalid}
 						<p class="skill-invalid">Not loadable: {skill.invalid}</p>

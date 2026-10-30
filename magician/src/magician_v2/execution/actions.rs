@@ -243,9 +243,10 @@ impl ExecutableAction {
     /// [`Self::PACK_EVENT_PARAM_KEYS`]: a remote tool's arguments can carry
     /// anything (an address, an order), so only names for *what was asked*
     /// appear, never the payload.
-    const MCP_DETAIL_ARGUMENT_KEYS: [&'static str; 7] = [
+    const MCP_DETAIL_ARGUMENT_KEYS: [&'static str; 8] = [
         "sql",
         "query",
+        "term",
         "prompt",
         "term_queries",
         "semantic_queries",
@@ -259,14 +260,76 @@ impl ExecutableAction {
     /// Which remote tool a governed MCP `call_tool` invoked, and on what:
     /// `metabase-mcp · execute_sql — SELECT …`. Every MCP call is the same
     /// capability (`<pack>__call_tool`), so the timeline otherwise shows the
-    /// same opaque name for a search, a query and a dashboard edit. `None` for
-    /// anything that is not a call_tool.
+    /// same opaque name for a search, a query and a dashboard edit. CLI calls
+    /// show their command and a known subcommand, excluding payload arguments.
     pub fn pack_event_detail(
         capability_name: &str,
         resolved_params: &HashMap<String, serde_json::Value>,
     ) -> Option<String> {
+        for suffix in ["__run", "__exec", "__execute"] {
+            if let Some(pack) = capability_name.strip_suffix(suffix) {
+                let args = resolved_params
+                    .get("args")
+                    .or_else(|| resolved_params.get("argv"))?
+                    .as_array()?;
+                let command = args.first()?.as_str()?;
+                if command.is_empty()
+                    || command.len() > 64
+                    || !command.as_bytes()[0].is_ascii_alphabetic()
+                    || !command
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                {
+                    return None;
+                }
+                let verb = args
+                    .get(1)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|verb| {
+                        matches!(
+                            *verb,
+                            "list"
+                                | "get"
+                                | "show"
+                                | "search"
+                                | "create"
+                                | "generate"
+                                | "update"
+                                | "delete"
+                                | "remove"
+                                | "send"
+                                | "upload"
+                                | "download"
+                                | "status"
+                                | "info"
+                                | "help"
+                                | "login"
+                                | "logout"
+                                | "run"
+                                | "start"
+                                | "stop"
+                                | "wait"
+                                | "select"
+                                | "export"
+                                | "import"
+                                | "query"
+                                | "render"
+                                | "convert"
+                                | "inspect"
+                        )
+                    });
+                return Some(match verb {
+                    Some(verb) => format!("{pack} · {command} {verb}"),
+                    None => format!("{pack} · {command}"),
+                });
+            }
+        }
         let pack = capability_name.strip_suffix("__call_tool")?;
-        let tool = resolved_params.get("name")?.as_str()?.trim();
+        let tool = resolved_params
+            .get("tool_name")
+            .or_else(|| resolved_params.get("name"))?
+            .as_str()?
+            .trim();
         if tool.is_empty() {
             return None;
         }
@@ -1427,6 +1490,34 @@ mod tests {
         assert!(
             ExecutableAction::pack_event_detail("metabase-mcp__status", &HashMap::new()).is_none()
         );
+    }
+
+    #[test]
+    fn governed_details_name_internal_mcp_and_cli_calls_without_argv_payloads() {
+        let params = HashMap::from([
+            ("tool_name".into(), serde_json::json!("search_products")),
+            (
+                "arguments_json".into(),
+                serde_json::json!("{\"query\":\"milk\"}"),
+            ),
+        ]);
+        assert_eq!(
+            ExecutableAction::pack_event_detail("zepto-mcp__call_tool", &params).as_deref(),
+            Some("zepto-mcp · search_products — milk")
+        );
+        let cli = HashMap::from([(
+            "args".into(),
+            serde_json::json!(["generate", "create", "model", "--prompt", "private prompt"]),
+        )]);
+        assert_eq!(
+            ExecutableAction::pack_event_detail("creative__run", &cli).as_deref(),
+            Some("creative · generate create")
+        );
+        let invalid = HashMap::from([(
+            "args".into(),
+            serde_json::json!(["--token", "private token"]),
+        )]);
+        assert!(ExecutableAction::pack_event_detail("creative__run", &invalid).is_none());
     }
 
     #[test]

@@ -106,6 +106,9 @@ pub struct ExecutionPanelDelegationGroup {
 pub struct ExecutionPanelOutputResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Bounded source document for report rendering; summaries stay suitable for listings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

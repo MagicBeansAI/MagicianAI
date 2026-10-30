@@ -381,6 +381,10 @@ pub struct ContextualAssistCancelResponse {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the existing short-lived probe payload inline; allocation changes need profiling."
+)]
 enum BrowserProbeOutcome {
     NotExtensionBrowser,
     Eligible(DetectedAssistTarget),
@@ -891,11 +895,10 @@ async fn probe_browser_contextual_target(
 }
 
 fn state_from_browser_probe(probe: &BrowserProbeResponse) -> String {
-    match probe.state.as_deref() {
-        Some("selection" | "selection-field" | "draft" | "empty-context") => {
-            return probe.state.clone().unwrap_or_default();
-        },
-        _ => {},
+    if let Some("selection" | "selection-field" | "draft" | "empty-context") =
+        probe.state.as_deref()
+    {
+        return probe.state.clone().unwrap_or_default();
     }
 
     let reason = probe
@@ -959,9 +962,8 @@ fn context_text_from_str(value: &str) -> Option<String> {
 /// marker (backend unreachable, booting, or stale) so a down backend is
 /// remembered briefly instead of stalling every menu open on the fetch
 /// timeout — the desktop commonly starts before the backend is serving.
-static BACKEND_ACTION_CATALOG: OnceLock<
-    Mutex<Option<(Instant, Vec<ContextualAssistActionState>)>>,
-> = OnceLock::new();
+type CachedActionCatalog = Option<(Instant, Vec<ContextualAssistActionState>)>;
+static BACKEND_ACTION_CATALOG: OnceLock<Mutex<CachedActionCatalog>> = OnceLock::new();
 const ACTION_CATALOG_TTL: Duration = Duration::from_secs(10 * 60);
 const ACTION_CATALOG_FAILURE_TTL: Duration = Duration::from_secs(30);
 const ACTION_CATALOG_FETCH_TIMEOUT_MS: u64 = 1_500;
@@ -1211,6 +1213,10 @@ pub async fn cancel_contextual_assist_action(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The request keeps action, context, authority and conversation bindings separate."
+)]
 async fn post_contextual_assist_action(
     desktop: &crate::config::MagicianDesktopConfig,
     action: &ContextualAssistActionOption,
@@ -2452,7 +2458,7 @@ mod macos {
     use std::sync::{mpsc, Mutex, Once, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Manager};
     use tracing::warn;
 
     type AXError = i32;
@@ -2693,6 +2699,17 @@ mod macos {
 
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         let focused_app = copy_attribute(system.as_CFTypeRef(), "AXFocusedApplication");
+        // This poll runs on a background worker. Reading our own windows'
+        // accessibility tree from it enters WebKit off the main thread, and
+        // WebKit kills the process for that (2026-10-25: the notch Attention
+        // panel took focus and the desktop app crashed). Nothing to assist in
+        // our own windows anyway.
+        if focused_app
+            .as_ref()
+            .is_some_and(|element| is_own_process(element.as_CFTypeRef()))
+        {
+            return None;
+        }
         let app_name = focused_app
             .as_ref()
             .and_then(|element| copy_string_attribute(element.as_CFTypeRef(), "AXTitle"));
@@ -2713,6 +2730,10 @@ mod macos {
             .and_then(|window| window_capture_rect(app, window.as_CFTypeRef()));
 
         let focused = copy_attribute(system.as_CFTypeRef(), "AXFocusedUIElement")?;
+        // The focused element can be ours when the focused-app read failed.
+        if is_own_process(focused.as_CFTypeRef()) {
+            return None;
+        }
         let pointer_hit = focused_app
             .as_ref()
             .and_then(|element| recent_pointer_element(element.as_CFTypeRef()));
@@ -3020,6 +3041,11 @@ end tell";
 
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         let focused_app = copy_attribute(system.as_CFTypeRef(), "AXFocusedApplication")?;
+        // Never read this app's own accessibility tree off the main thread:
+        // WebKit kills the process for it. Our app is no extension browser.
+        if is_own_process(focused_app.as_CFTypeRef()) {
+            return None;
+        }
         let app_name = copy_string_attribute(focused_app.as_CFTypeRef(), "AXTitle");
         if app_is_excluded(app_name.as_deref(), config)
             || !is_extension_browser_app(app_name.as_deref())
@@ -3139,22 +3165,42 @@ end tell";
             return None;
         }
 
-        let app_name = copy_string_attribute(focused_app.as_CFTypeRef(), "AXTitle")
+        // Our own window comes from Tauri's window API, not Accessibility:
+        // this runs on a worker (hotkey path), and reading this app's own AX
+        // tree off the main thread gets the process killed by WebKit.
+        let app_name = Some(app.package_info().name.clone())
+            .filter(|name| !name.trim().is_empty())
             .or_else(|| Some("Magican Desktop".to_string()));
         if app_is_excluded(app_name.as_deref(), config) {
             return None;
         }
 
-        let focused_window = copy_attribute(focused_app.as_CFTypeRef(), "AXFocusedWindow");
+        let focused_window = app
+            .webview_windows()
+            .into_values()
+            .find(|window| window.is_focused().unwrap_or(false));
         let window_title = focused_window
             .as_ref()
-            .and_then(|window| copy_string_attribute(window.as_CFTypeRef(), "AXTitle"));
-        let window_rect = focused_window
+            .and_then(|window| window.title().ok())
+            .filter(|title| !title.is_empty());
+        let window_rect = focused_window.as_ref().and_then(|window| {
+            let position = window.outer_position().ok()?;
+            let size = window.outer_size().ok()?;
+            (size.width > 0 && size.height > 0).then_some(ContextualAssistCaptureRect {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            })
+        });
+        let (anchor_x, anchor_y) = window_rect
             .as_ref()
-            .and_then(|window| window_capture_rect(app, window.as_CFTypeRef()));
-        let (anchor_x, anchor_y) = focused_window
-            .as_ref()
-            .and_then(|window| window_center_anchor(app, window.as_CFTypeRef()))
+            .map(|rect| {
+                (
+                    rect.x as f64 + rect.width as f64 / 2.0,
+                    rect.y as f64 + rect.height as f64 / 2.0,
+                )
+            })
             .or_else(|| monitor_center_anchor(app))?;
 
         Some(BrowserProbeContext {
@@ -3176,6 +3222,12 @@ end tell";
 
         let system = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateSystemWide()) };
         let focused_app = copy_attribute(system.as_CFTypeRef(), "AXFocusedApplication")?;
+        // Never read this app's own accessibility tree off the main thread
+        // (this runs every poll tick on a worker): WebKit kills the process
+        // for it. Our own windows go through frontmost_tauri_webview_context.
+        if is_own_process(focused_app.as_CFTypeRef()) {
+            return None;
+        }
         let app_name = copy_string_attribute(focused_app.as_CFTypeRef(), "AXTitle");
         if app_is_excluded(app_name.as_deref(), config)
             || !is_browser_or_webview_app(app_name.as_deref())
@@ -3969,9 +4021,7 @@ end tell";
     fn paste_text_into_focused_app_on_main(text: &str) -> Option<PasteboardSnapshot> {
         let pasteboard = NSPasteboard::generalPasteboard();
         let snapshot = PasteboardSnapshot::capture(&pasteboard);
-        if set_pasteboard_text(&pasteboard, text).is_none() {
-            return None;
-        }
+        set_pasteboard_text(&pasteboard, text)?;
         if post_command_v().is_err() {
             snapshot.restore(&pasteboard);
             return None;
@@ -4025,10 +4075,8 @@ end tell";
         {
             return None;
         }
-        match rx.recv_timeout(Duration::from_millis(super::INSERT_MAIN_THREAD_TIMEOUT_MS)) {
-            Ok(token) => token,
-            Err(_) => None,
-        }
+        rx.recv_timeout(Duration::from_millis(super::INSERT_MAIN_THREAD_TIMEOUT_MS))
+            .unwrap_or_default()
     }
 
     pub(super) fn restore_pasteboard_after_insert(
@@ -4050,7 +4098,7 @@ end tell";
             Ok(tracker) => tracker,
             Err(_) => return ModifierGestureResult::None,
         };
-        tracker.track_flags_changed(keycode, KeyCode::OPTION as u16, event.get_flags())
+        tracker.track_flags_changed(keycode, KeyCode::OPTION, event.get_flags())
     }
 
     fn cancel_left_option_tap() {
@@ -4394,7 +4442,7 @@ end tell";
 
         #[test]
         fn left_option_tap_triggers_on_clean_release() {
-            let left_option = KeyCode::OPTION as u16;
+            let left_option = KeyCode::OPTION;
             let mut tracker = ModifierTracker::default();
 
             assert_eq!(
@@ -4413,7 +4461,7 @@ end tell";
 
         #[test]
         fn left_option_tap_cancels_after_regular_keydown() {
-            let left_option = KeyCode::OPTION as u16;
+            let left_option = KeyCode::OPTION;
             let mut tracker = ModifierTracker::default();
 
             assert_eq!(
@@ -4434,8 +4482,8 @@ end tell";
 
         #[test]
         fn left_option_tap_cancels_when_combined_with_other_modifier() {
-            let left_option = KeyCode::OPTION as u16;
-            let left_control = KeyCode::CONTROL as u16;
+            let left_option = KeyCode::OPTION;
+            let left_control = KeyCode::CONTROL;
             let mut tracker = ModifierTracker::default();
 
             assert_eq!(
@@ -4471,7 +4519,7 @@ end tell";
 
         #[test]
         fn second_left_option_press_can_cancel_pending_single_tap() {
-            let left_option = KeyCode::OPTION as u16;
+            let left_option = KeyCode::OPTION;
             let mut tracker = ModifierTracker::default();
 
             assert_eq!(
@@ -4498,7 +4546,7 @@ end tell";
 
         #[test]
         fn modifier_tracker_uses_live_flags_after_reset() {
-            let left_option = KeyCode::OPTION as u16;
+            let left_option = KeyCode::OPTION;
             let mut tracker = ModifierTracker::default();
 
             assert_eq!(
@@ -4523,7 +4571,7 @@ end tell";
 
         #[test]
         fn modifier_tracker_release_without_prior_down_does_not_flip_state() {
-            let left_option = KeyCode::OPTION as u16;
+            let left_option = KeyCode::OPTION;
             let mut tracker = ModifierTracker::default();
 
             assert_eq!(
@@ -4549,8 +4597,10 @@ mod tests {
 
     #[test]
     fn excluded_apps_match_case_insensitively() {
-        let mut config = ContextualAssistConfig::default();
-        config.excluded_apps = vec!["Password Manager".to_string()];
+        let config = ContextualAssistConfig {
+            excluded_apps: vec!["Password Manager".to_string()],
+            ..Default::default()
+        };
 
         assert!(app_is_excluded(Some("password manager"), &config));
         assert!(!app_is_excluded(Some("Safari"), &config));

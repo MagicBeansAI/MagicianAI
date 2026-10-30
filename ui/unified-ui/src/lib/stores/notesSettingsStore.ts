@@ -1,6 +1,11 @@
 import { browser } from '$app/environment';
 import { writable } from 'svelte/store';
 
+/**
+ * `silverbullet` is the persisted id of the notes folder (shown as "Notes");
+ * the id outlived the retired SilverBullet server and is kept so stored
+ * settings, note records and search references stay valid.
+ */
 export type NotesProviderId = 'local_markdown' | 'silverbullet';
 export type TaskNotePublishMode = 'compact' | 'standard' | 'diagnostic';
 
@@ -11,11 +16,8 @@ export interface NotesProviderSettings {
 	local_markdown: {
 		root?: string | null;
 	};
-	silverbullet: {
+	notes_folder: {
 		space_path?: string | null;
-		local_url: string;
-		server_url: string;
-		public_origin?: string | null;
 	};
 	task_publishing: {
 		auto_publish_completed: boolean;
@@ -28,11 +30,8 @@ export interface ResolvedNotesProviderSettings {
 	default_provider: string;
 	fallback_provider: string;
 	local_markdown_root: string;
-	silverbullet_space_path: string;
-	silverbullet_write_safe: boolean;
-	silverbullet_local_url: string;
-	silverbullet_public_origin?: string | null;
-	silverbullet_server_url: string;
+	notes_folder_path: string;
+	notes_folder_write_safe: boolean;
 }
 
 export interface NotesSettingsEnvelope {
@@ -78,10 +77,7 @@ const DEFAULT_SETTINGS: NotesProviderSettings = {
 	default_provider: 'local_markdown',
 	fallback_provider: 'local_markdown',
 	local_markdown: {},
-	silverbullet: {
-		local_url: 'http://127.0.0.1:3021',
-		server_url: 'http://127.0.0.1:3021'
-	},
+	notes_folder: {},
 	task_publishing: {
 		auto_publish_completed: false,
 		default_mode: 'standard',
@@ -115,7 +111,11 @@ function readBoolean(record: Record<string, unknown>, key: string): boolean | un
 }
 
 function normalizeProvider(value: unknown): NotesProviderId {
-	if (value === 'silverbullet' || value === 'silverbullet_space' || value === 'sb') {
+	if (
+		value === 'silverbullet'
+		|| value === 'silverbullet_space'
+		|| value === 'sb'
+	) {
 		return 'silverbullet';
 	}
 	return 'local_markdown';
@@ -128,7 +128,7 @@ function normalizeTaskPublishMode(value: unknown): TaskNotePublishMode {
 function normalizeSettings(raw: unknown): NotesProviderSettings {
 	const root = asRecord(raw) ?? {};
 	const local = asRecord(root.local_markdown) ?? {};
-	const silverbullet = asRecord(root.silverbullet) ?? {};
+	const folder = asRecord(root.notes_folder) ?? {};
 	const taskPublishing = asRecord(root.task_publishing) ?? {};
 	return {
 		enabled: readBoolean(root, 'enabled') ?? DEFAULT_SETTINGS.enabled,
@@ -137,15 +137,8 @@ function normalizeSettings(raw: unknown): NotesProviderSettings {
 		local_markdown: {
 			root: readString(local, 'root') ?? null
 		},
-		silverbullet: {
-			space_path: readString(silverbullet, 'space_path') ?? null,
-			local_url:
-				readString(silverbullet, 'local_url')
-				?? DEFAULT_SETTINGS.silverbullet.local_url,
-			server_url:
-				readString(silverbullet, 'server_url')
-				?? DEFAULT_SETTINGS.silverbullet.server_url,
-			public_origin: readString(silverbullet, 'public_origin') ?? null
+		notes_folder: {
+			space_path: readString(folder, 'space_path') ?? null
 		},
 		task_publishing: {
 			auto_publish_completed:
@@ -174,19 +167,8 @@ function normalizeEnvelope(raw: unknown): NotesSettingsEnvelope | null {
 			default_provider: readString(resolved, 'default_provider') ?? settings.default_provider,
 			fallback_provider: readString(resolved, 'fallback_provider') ?? settings.fallback_provider,
 			local_markdown_root: readString(resolved, 'local_markdown_root') ?? '',
-			silverbullet_space_path: readString(resolved, 'silverbullet_space_path') ?? '',
-			silverbullet_write_safe:
-				readBoolean(resolved, 'silverbullet_write_safe') ?? true,
-			silverbullet_local_url:
-				readString(resolved, 'silverbullet_local_url')
-				?? settings.silverbullet.local_url,
-			silverbullet_public_origin:
-				readString(resolved, 'silverbullet_public_origin')
-				?? settings.silverbullet.public_origin
-				?? null,
-			silverbullet_server_url:
-				readString(resolved, 'silverbullet_server_url')
-				?? DEFAULT_SETTINGS.silverbullet.server_url
+			notes_folder_path: readString(resolved, 'notes_folder_path') ?? '',
+			notes_folder_write_safe: readBoolean(resolved, 'notes_folder_write_safe') ?? true
 		},
 		warnings: Array.isArray(root.warnings)
 			? root.warnings.filter((warning): warning is string => typeof warning === 'string')

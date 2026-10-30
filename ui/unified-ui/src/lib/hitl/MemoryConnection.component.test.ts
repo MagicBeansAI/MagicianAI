@@ -30,7 +30,7 @@ const request: HitlRequest = {
 
 beforeEach(() => {
 	timedFetch.mockReset();
-	timedFetch.mockResolvedValue(new Response(JSON.stringify({ status: 'accepted' }), { status: 200 }));
+	timedFetch.mockResolvedValue(new Response(JSON.stringify({ accepted: true }), { status: 200 }));
 });
 afterEach(() => { resolveAttentionPrompt(null); cleanup(); });
 

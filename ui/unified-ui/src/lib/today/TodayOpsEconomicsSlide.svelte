@@ -7,11 +7,15 @@
 	 * 24-hour spend histogram and the Analytics link.
 	 */
 	import Icon from '$lib/shared/icons/Icon.svelte';
+	import type { PulseSliceName } from '$lib/stores/todayPulseStore';
 	import { formatSpend, spendTone } from '$lib/today/pulseFormat';
 	import { formatDelta, type LlmPulse, type PulseSnapshot } from '$lib/today/pulseQueries';
 	import { avgCostPerCall, formatPerCall, peakSpendHour } from '$lib/today/opsCarousel';
 
 	export let llm: LlmPulse | null | undefined = null;
+	export let loading = false;
+	export let unavailable = false;
+	export let readySlices: ReadonlyArray<PulseSliceName> | null = null;
 	/** The rest of the pulse (coding runs, memories, evals) for the stat grid. */
 	export let pulse: PulseSnapshot | null | undefined = null;
 
@@ -95,6 +99,12 @@
 	$: areaPolygon = `3,${BASELINE_Y} ${trendlinePoints} 124,${BASELINE_Y}`;
 </script>
 
+{#if !llm && (loading || unavailable)}
+    <div class="np-economics-status" role="status" aria-busy={loading}>
+        {#if loading}<span class="loading loading-spinner loading-xs" aria-hidden="true"></span>{:else}<Icon name="info" size={18} />{/if}
+        <span>{loading ? 'Loading model spend…' : 'Model spend is temporarily unavailable.'}</span>
+    </div>
+{:else}
 <div class="np-ledger__panel np-ops-economics">
 	<div class="np-panel__kicker">
 		<div class="kicker-group">
@@ -150,7 +160,7 @@
 			</div>
 			<div class="np-ops-stat">
 				<dt>Coding runs</dt>
-				<dd>{codingRuns.toLocaleString()}</dd>
+				<dd>{readySlices && !readySlices.includes('coding') ? '—' : codingRuns.toLocaleString()}</dd>
 			</div>
 			<div class="np-ops-stat">
 				{#if evalCases > 0}
@@ -158,7 +168,7 @@
 					<dd>{evalPasses}/{evalCases}</dd>
 				{:else}
 					<dt>Memories</dt>
-					<dd>{memories.toLocaleString()}</dd>
+					<dd>{readySlices && !readySlices.includes('memory') ? '—' : memories.toLocaleString()}</dd>
 				{/if}
 			</div>
 		</dl>
@@ -248,7 +258,10 @@
 	</div>
 </div>
 
+{/if}
+
 <style>
+    .np-economics-status {display:flex;align-items:center;gap:0.65rem;min-height:6rem;padding:0.5rem;color:var(--text-secondary);font-size:0.8rem;}
 	.np-ops-economics {
 		display: flex;
 		flex-direction: column;

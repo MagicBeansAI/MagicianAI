@@ -79,7 +79,6 @@
 		<link rel="icon" href="%sveltekit.assets%/favicon.svg" type="image/svg+xml" />
 		<link rel="apple-touch-icon" href="%sveltekit.assets%/apple-touch-icon.png" />
 		<link rel="mask-icon" href="%sveltekit.assets%/safari-pinned-tab.svg" color="#1A1612" />
-		<link rel="manifest" href="%sveltekit.assets%/site.webmanifest" />
 
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 
@@ -161,6 +160,24 @@
 		</script>
 	</head>
 	<body data-sveltekit-preload-data="hover" class="antialiased">
+		<script>
+			// Settings opens behind its skeleton, not a blank page: on a phone the
+			// app's code takes a few seconds over the tunnel. Same markup and
+			// classes as lib/settings/SettingsSkeleton.svelte; the root layout
+			// removes this copy as soon as it runs.
+			(function () {
+				if (!/^\/settings\/?$/.test(location.pathname)) return;
+				var card = '<div class="msk-card"><div class="msk-bar msk-line msk-w30"></div><div class="msk-bar msk-line msk-title msk-w55"></div><div class="msk-bar msk-line msk-w90"></div><div class="msk-bar msk-line msk-w75"></div><div class="msk-bar msk-pill"></div></div>';
+				var chip = '<div class="msk-bar msk-chip"></div>';
+				var el = document.createElement('div');
+				el.id = 'settings-boot-skeleton';
+				el.className = 'msk';
+				el.setAttribute('role', 'status');
+				el.setAttribute('aria-label', 'Loading settings');
+				el.innerHTML = '<div class="msk-in"><div class="msk-bar msk-search"></div><div class="msk-chips">' + chip + chip + chip + chip + '</div><div class="msk-bar msk-heading"></div>' + card + card + card + card + '</div>';
+				document.body.appendChild(el);
+			})();
+		</script>
 		<div style="display: contents">%sveltekit.body%</div>
 
 		<!-- Minimal global styles - Multi-theme support -->
@@ -183,6 +200,61 @@
 			   v5 .layout-v5 owns viewport overflow. Reserving page-level
 			   gutter caused a worse mismatch. Gutter is now reserved on
 			   the actually-scrolling .v5-main container only.) */
+
+			/* Settings skeleton (app.html boot copy + SettingsSkeleton.svelte).
+			   Translucent ink on the page colour, so it reads on every theme and
+			   before app.css arrives. */
+			.msk {
+				position: fixed;
+				inset: 0;
+				z-index: 40;
+				overflow: hidden;
+				padding: 16px;
+				background: var(--bg-base, #fdfcf8);
+			}
+			.msk-in {
+				display: flex;
+				flex-direction: column;
+				gap: 14px;
+				margin: 0 auto;
+				width: min(100%, 760px);
+			}
+			.msk-bar {
+				background: color-mix(in srgb, var(--text-primary, #2d3436) 9%, transparent);
+				border-radius: 8px;
+				overflow: hidden;
+				position: relative;
+			}
+			.msk-bar::after {
+				animation: msk-sheen 1.4s ease-in-out infinite;
+				background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg-base, #fdfcf8) 65%, transparent), transparent);
+				content: '';
+				inset: 0;
+				position: absolute;
+				transform: translateX(-100%);
+			}
+			.msk-search { border-radius: 10px; height: 44px; }
+			.msk-chips { display: flex; gap: 8px; overflow: hidden; }
+			.msk-chip { border-radius: 999px; flex: none; height: 36px; width: 9.5rem; }
+			.msk-heading { height: 24px; margin-top: 8px; width: 55%; }
+			.msk-card {
+				background: var(--bg-card, #ffffff);
+				border: 1px solid color-mix(in srgb, var(--text-primary, #2d3436) 10%, transparent);
+				border-radius: 8px;
+				display: flex;
+				flex-direction: column;
+				gap: 10px;
+				padding: 16px;
+			}
+			.msk-line { height: 11px; }
+			.msk-title { height: 18px; }
+			.msk-w30 { width: 30%; }
+			.msk-w55 { width: 55%; }
+			.msk-w75 { width: 75%; }
+			.msk-w90 { width: 90%; }
+			.msk-pill { border-radius: 6px; height: 32px; width: 7rem; }
+			@keyframes msk-sheen { to { transform: translateX(100%); } }
+			@media (prefers-reduced-motion: reduce) { .msk-bar::after { display: none; } }
 
 			/* Focus styles for accessibility - theme-adaptive */
 			:focus-visible {

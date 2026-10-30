@@ -12,6 +12,9 @@ guide: |
 
   Read this before advancing a long-running program so you do not infer state
   only from the latest task or episode.
+  This reads the calling agent's current goal context, not another agent's
+  programs. A null result does not establish missing programs for a subordinate;
+  use inspect_agent for that agent's configured bindings.
 implementation:
   type: compiled
   provider_name: read_program_state

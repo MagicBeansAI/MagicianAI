@@ -3,6 +3,8 @@ import { beforeEach, afterEach, expect, it, describe, vi } from 'vitest';
 import Page from './RelentlessWorkspace.svelte';
 import { scopeIdentityStore, setCurrentScopeBearerToken } from '$lib/stores/scopeIdentityStore';
 import { request } from './api';
+import { fetchRoutingOverview, type RoutingOverview } from '$lib/stores/modelRoutingStore';
+import type { ModelChoice } from '$lib/llm/modelCatalog';
 import { findReferences, readReference } from './references';
 import { runGroup, runLabel, matchesSearch } from './workspace';
 import { agentList, refreshAgents, type AgentSummary } from '$lib/stores/agentStore';
@@ -18,11 +20,19 @@ import { page } from '$app/stores';
 
 vi.mock('$app/stores', async () => ({ page: (await import('svelte/store')).writable({ url: new URL('http://localhost/work?view=quality'), params: {} }) }));
 vi.mock('./api', async () => ({ ...(await vi.importActual('./api')), request: vi.fn() }));
+vi.mock('$lib/stores/modelRoutingStore', () => ({fetchRoutingOverview:vi.fn()}));
 vi.mock('./references', () => ({findReferences:vi.fn(),readReference:vi.fn()}));
 const profiles = {
-  profiles: [{name:'actor',model:'Draft model',family:'actor',maximum_request_microusd:1}, {name:'critic',model:'Review model',family:'critic',maximum_request_microusd:1}],
+  profiles: [{name:'actor',model:'Draft model',family:'actor',maximum_request_microusd:1}, {name:'critic',model:'Review model',family:'critic',maximum_request_microusd:1}, {name:'actor/low',model:'Draft model',family:'actor',maximum_request_microusd:1}, {name:'critic/low',model:'Review model',family:'critic',maximum_request_microusd:1}, {name:'actor/high',model:'Draft model',family:'actor',maximum_request_microusd:1}, {name:'critic/high',model:'Review model',family:'critic',maximum_request_microusd:1}],
   actor_default:'actor',critic_default:'critic'
 };
+const model = (id: string, label: string): ModelChoice => ({
+  id, label, provider:id==='actor'?'openai':'gemini', connection:id, model:id, installed:true,
+  capabilities:{vision:false,tools:false,computer_use:false,structured_output:true,streaming:true,web_search:false}, limits:null,
+  thinking:{mode:'effort',levels:['low','high'],default:'low'}, choices:{auto:id,low:id+'/low',high:id+'/high'},
+  operation_choices:{auto:id,low:id+'/low',high:id+'/high'}
+});
+const modelOverview = {models:[model('actor','Draft model'),model('critic','Review model')],profiles:profiles.profiles.map(p=>({...p,provider:p.family,class:'api',installed:true,model_selection:{model_id:p.family,thinking:p.name.endsWith('/high')?'high':'auto'}})),operations:[],overrides:{},rule:''} as RoutingOverview;
 const preview = {contract:{goal:'Owner goal'},contract_hash:'reviewed-hash',maximum_attempt_microusd:100,budget_can_admit_attempt:true};
 
 // Existing review fixtures are served through a synthetic paged server. The UI
@@ -64,7 +74,7 @@ function mockApi(handler:(path:string,body?:unknown,signal?:AbortSignal)=>Promis
 
 beforeEach(() => {
   (agentList as Writable<AgentSummary[]>).set([{agent_id:'engineer',name:'Fixture owner',is_primary:true,status:'idle',updated_at:0},{agent_id:'another-owner',status:'idle',updated_at:0}]);
-  vi.clearAllMocks(); scopeIdentityStore.observe('owner','work');
+  vi.clearAllMocks(); vi.mocked(fetchRoutingOverview).mockResolvedValue(modelOverview); scopeIdentityStore.observe('owner','work');
   (page as unknown as { set(value: { url: URL; params: Record<string, string> }): void }).set({ url: new URL('http://localhost/work?view=quality'), params: {} });
   mockApi(async path => path === '/profiles' ? profiles : path === '/preview' ? preview : path === '/proposals' ? {proposals:[]} : {runs:[]});
 });
@@ -77,6 +87,25 @@ describe('owner budget continuation',()=>{
     admission:{task_id:'budget-task'},contract:{goal:'Large owner work',budget:{max_cost_microusd:100000000,max_attempts:25},criteria:[]},
     attempts:[],decisions:[],retained:{champion:null,best_draft:null},spend:{settled_microusd:100000000,reserved_microusd:0},routing:null,owner_approved:null,handoff:null,
     exhausted_limits:limits,budget_continuation:{available:true,reason:null},budget_resets:[],
+  });
+  it('allows the owner to remove only the exhausted cost cap',async()=>{
+    const run=paused({cost:true,time:false,attempts:false});
+    mockApi(async(path,body)=>path==='/profiles'?profiles:path==='/proposals'?{proposals:[]}:path==='/runs'?{runs:[run]}:path===`/runs/${run.id}/budget-resets`?{...run,status:'admitted'}:run);
+    render(Page);
+    await fireEvent.click(await screen.findByRole('button',{name:/Large owner work/}));
+    await fireEvent.input(screen.getByLabelText('New cost allowance (USD)'),{target:{value:'0'}});
+    await fireEvent.click(screen.getByRole('button',{name:'Approve continuation'}));
+    await waitFor(()=>expect(request).toHaveBeenCalledWith('/runs/budget-run/budget-resets',expect.objectContaining({expected_generation:7,expected_contract_hash:'frozen-hash',reset:{cost_microusd:0}}),expect.any(AbortSignal)));
+  });
+  it('lists a removed cap in the reset history as Unlimited, not $0',async()=>{
+    const run={...paused({cost:true,time:false,attempts:false}),budget_resets:[{id:'reset-1',approved_by:'owner',approved_at:'2026-10-01T12:00:00Z',
+      reset:{cost_microusd:0,wall_clock_secs:0,attempts:0},attempts_before:3,spend_before:{settled_microusd:5000000,reserved_microusd:0}}]};
+    mockApi(async path=>path==='/profiles'?profiles:path==='/proposals'?{proposals:[]}:path==='/runs'?{runs:[run]}:run);
+    render(Page);
+    await fireEvent.click(await screen.findByRole('button',{name:/Large owner work/}));
+    const history=(await screen.findByText(/Allowance reset history/)).closest('details')!;
+    expect(history).toHaveTextContent('Unlimited cost Unlimited hours Unlimited attempts');
+    expect(history).not.toHaveTextContent('$0');
   });
   for(const hit of ['cost','time','attempts'] as const){
     it(`approves only the reached ${hit} allowance with exact owner CAS`,async()=>{
@@ -109,12 +138,38 @@ async function prepare() {
   render(Page);
   await fireEvent.click(screen.getByRole('button',{name:'New draft'}));
   await fireEvent.click(screen.getByText('Models and task ownership'));
-  await waitFor(() => expect(screen.getByRole('option',{name:'Draft model · actor'})).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole('button',{name:'Draft model'})).toBeEnabled());
   await fireEvent.input(screen.getByLabelText('What should the draft accomplish?'),{target:{value:'Owner goal'}});
   await fireEvent.input(screen.getByLabelText('What makes the result good enough?'),{target:{value:'Clear complete answer'}});
   await fireEvent.click(screen.getByRole('button',{name:'Review contract and reservation'}));
   await screen.findByRole('button',{name:'Start local draft'});
 }
+
+it('seals thinking choices and requires an explicit independent replacement after changing the draft family', async () => {
+  await prepare();
+  const [draftThinking] = screen.getAllByRole('button',{name:'Set thinking to High'});
+  await fireEvent.click(draftThinking);
+  expect(screen.queryByRole('button',{name:'Start local draft'})).not.toBeInTheDocument();
+  await fireEvent.click(screen.getByRole('button',{name:'Review contract and reservation'}));
+  await waitFor(()=>expect(vi.mocked(request).mock.calls.filter(([path])=>path==='/preview').at(-1)?.[1]).toMatchObject({actor_profile:'actor/high',critic_profiles:['critic','critic','critic']}));
+  await fireEvent.click(screen.getByRole('button',{name:'Draft model'}));
+  await fireEvent.click(screen.getByRole('button',{name:'Review model'}));
+  expect(screen.getByRole('button',{name:'Review contract and reservation'})).toBeDisabled();
+  expect(screen.getByRole('button',{name:'Independent review model'})).toHaveTextContent('Choose an independent model');
+  await fireEvent.click(screen.getByRole('button',{name:'Independent review model'}));
+  await fireEvent.click(screen.getByRole('region',{name:'Independent review model choices'}).querySelector('button')!);
+  expect(screen.getByRole('button',{name:'Review contract and reservation'})).toBeEnabled();
+});
+
+it('blocks guided admission when model metadata is unavailable while retaining owner proposals', async () => {
+  vi.mocked(fetchRoutingOverview).mockRejectedValue(new Error('Catalog unavailable'));
+  render(Page);
+  await fireEvent.click(screen.getByRole('button',{name:'New draft'}));
+  await fireEvent.input(screen.getByLabelText('What should the draft accomplish?'),{target:{value:'Owner goal'}});
+  await fireEvent.input(screen.getByLabelText('What makes the result good enough?'),{target:{value:'Clear answer'}});
+  await waitFor(()=>expect(screen.getByText(/Catalog unavailable/)).toBeInTheDocument());
+  expect(screen.getByRole('button',{name:'Review contract and reservation'})).toBeDisabled();
+});
 
 it('discards reviewed contracts when credentials rotate without a visible workspace change', async () => {
   await prepare();
@@ -134,6 +189,40 @@ it('offers 500 native model calls without changing the owner budget', async () =
   const body=vi.mocked(request).mock.calls.filter(([path])=>path==='/preview').at(-1)?.[1] as Record<string,unknown>;
   expect(body.native_harness).toMatchObject({maximum_physical_calls:500,maximum_iterations:1024});
   expect(body.budget).toMatchObject({max_cost_microusd:100000000,max_wall_clock_secs:86400,max_attempts:25});
+});
+
+it.each(['0',''])('treats %j review limits as unlimited while keeping admission explicit', async value => {
+  await prepare();
+  await fireEvent.click(screen.getByText('Acceptance, limits and handoff'));
+  for (const label of ['Budget ceiling (USD)','Maximum attempts','Time limit (hours)']) {
+    await fireEvent.input(screen.getByLabelText(label),{target:{value}});
+  }
+  expect(screen.queryByRole('button',{name:'Start local draft'})).not.toBeInTheDocument();
+  expect(screen.getByText(/Unlimited attempts · Unlimited hours/)).toBeInTheDocument();
+  await fireEvent.click(screen.getByRole('button',{name:'Review contract and reservation'}));
+  await screen.findByRole('button',{name:'Start local draft'});
+  const body=vi.mocked(request).mock.calls.filter(([path])=>path==='/preview').at(-1)?.[1] as Record<string,unknown>;
+  expect(body.budget).toMatchObject({max_cost_microusd:0,max_wall_clock_secs:0,max_attempts:0});
+  expect(vi.mocked(request).mock.calls.some(([path,payload])=>path==='/runs'&&payload!==undefined)).toBe(false);
+});
+
+it('shows an unlimited agent proposal as unlimited rather than a free review', async () => {
+  const item={proposal:{goal:'Independent report review',actor_profile:'actor',critic_profiles:['critic'],sources:{},criteria:[],budget:{max_cost_microusd:0,max_attempts:0,max_wall_clock_secs:0,plateau_attempts:0}},proposal_hash:'hash',origin:{request_id:'unlimited',agent_id:'author',task_id:'task',execution_id:'execution'}};
+  mockApi(async path=>path==='/profiles'?profiles:path==='/proposals'?{proposals:[item]}:{runs:[]});
+  render(Page);
+  await fireEvent.click(await screen.findByRole('button',{name:'author: Independent report review'}));
+  expect(screen.getByText('budget ceiling').parentElement).toHaveTextContent('Unlimited budget ceiling');
+  expect(screen.getByText('attempts',{exact:true}).parentElement).toHaveTextContent('Unlimited attempts');
+  expect(screen.queryByRole('button',{name:'Start local draft'})).not.toBeInTheDocument();
+});
+
+it('keeps small positive limits positive when converting dollars and hours to integer units', async () => {
+  await prepare();
+  await fireEvent.input(screen.getByLabelText('Budget ceiling (USD)'),{target:{value:'0.0000001'}});
+  await fireEvent.input(screen.getByLabelText('Time limit (hours)'),{target:{value:'0.00001'}});
+  await fireEvent.click(screen.getByRole('button',{name:'Review contract and reservation'}));
+  await screen.findByRole('button',{name:'Start local draft'});
+  expect(vi.mocked(request).mock.calls.filter(([path])=>path==='/preview').at(-1)?.[1]).toMatchObject({budget:{max_cost_microusd:1,max_wall_clock_secs:1}});
 });
 
 it('reviews the native task limits and requires a new review when its owner changes', async () => {
@@ -180,7 +269,7 @@ it('uses a primary hydrated by another consumer of the shared agent store', asyn
   render(Page);
   await fireEvent.click(screen.getByRole('button',{name:'New draft'}));
   await fireEvent.click(screen.getByText('Models and task ownership'));
-  await screen.findByRole('option',{name:'Draft model · actor'});
+  await waitFor(() => expect(screen.getByRole('button',{name:'Draft model'})).toBeEnabled());
   expect(screen.getByLabelText('Owning agent')).toHaveValue('');
   (agentList as Writable<AgentSummary[]>).set([{agent_id:'hydrated-primary',is_primary:true,status:'idle',updated_at:0}]);
   await waitFor(()=>expect(screen.getByLabelText('Owning agent')).toHaveValue('hydrated-primary'));
@@ -543,7 +632,7 @@ it('discards a pending contract response after workspace changes',async () => {
   render(Page);
   await fireEvent.click(screen.getByRole('button',{name:'New draft'}));
   await fireEvent.click(screen.getByText('Models and task ownership'));
-  await waitFor(()=>expect(screen.getByRole('option',{name:'Draft model · actor'})).toBeInTheDocument());
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Draft model'})).toBeEnabled());
   await fireEvent.input(screen.getByLabelText('What should the draft accomplish?'),{target:{value:'Private owner goal'}});
   await fireEvent.input(screen.getByLabelText('What makes the result good enough?'),{target:{value:'Complete'}});
   await fireEvent.click(screen.getByRole('button',{name:'Review contract and reservation'}));
@@ -883,4 +972,21 @@ it("shows the owning task's pending ask in place, with its review link", async (
     expect(dock).toHaveTextContent('Reject draft');
     expect(screen.getByRole('link',{name:'Review draft →'})).toHaveAttribute('href','/work?view=quality&run=review-run');
   } finally { teardownPendingHitlBridge(); }
+});
+
+it('loads the needing-review count on the Tasks tab, unfiltered by any search',async()=>{
+  vi.mocked(request).mockImplementation(async(path:string)=>{
+    if(path==='/profiles')return profiles;
+    if(path.startsWith('/catalog?'))return {items:[],pagination:{total:0,limit:1,offset:0,has_more:false},counts:{brief:2,review:1,attention:1,active:3},agents:[]};
+    if(path.startsWith('/work?'))return {goal_id:null,targets:[],pagination:{total:0,limit:20,offset:0,has_more:false}};
+    return {};
+  });
+  render(Page);
+  await fireEvent.click(screen.getByRole('button',{name:'Tasks'}));
+  expect(await screen.findByText('4 needing review')).toBeInTheDocument();
+  // A workspace switch clears the counts; on Tasks they reload without the catalog page.
+  vi.mocked(request).mockClear();
+  scopeIdentityStore.observe('second-owner','second-workspace');
+  await waitFor(()=>expect(request).toHaveBeenCalledWith('/catalog?limit=1&offset=0&view=inbox',undefined,expect.any(AbortSignal)));
+  expect(await screen.findByText('4 needing review')).toBeInTheDocument();
 });

@@ -81,6 +81,12 @@ struct ObserveView: View {
             .background(theme.backgroundColor.ignoresSafeArea())
             .navigationTitle("Observe")
             .navigationBarTitleDisplayMode(.inline)
+            // Bind the bar to the live palette like Chat/Today/Settings do. The
+            // UIKit proxy/walk update misses a background tab's bar, which would
+            // otherwise keep the launch palette until a relaunch.
+            .toolbarBackground(theme.backgroundColor, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(theme.colorScheme, for: .navigationBar)
             .hamburgerToolbar()
             .fullScreenCover(isPresented: $showThinkingMap) {
                 ThinkingMapView()

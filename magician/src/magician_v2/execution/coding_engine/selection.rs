@@ -375,6 +375,8 @@ pub enum CodingProfileDefinition {
         id: String,
         model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_timeout_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         escalates_to: Vec<String>,
@@ -391,6 +393,8 @@ pub enum CodingProfileDefinition {
         id: String,
         model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_timeout_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         escalates_to: Vec<String>,
@@ -406,6 +410,8 @@ pub enum CodingProfileDefinition {
     AgyCli {
         id: String,
         model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_timeout_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -445,6 +451,7 @@ impl CodingProfileDefinition {
         let definition = Self::GrokAcp {
             id: super::discovery::GROK_DEFAULT_PROFILE_ID.to_string(),
             model: model.into(),
+            reasoning_effort: None,
             turn_timeout_secs: None,
             escalates_to: Vec::new(),
             capabilities: Vec::new(),
@@ -460,6 +467,7 @@ impl CodingProfileDefinition {
         let definition = Self::ClaudeCode {
             id: super::discovery::CLAUDE_DEFAULT_PROFILE_ID.to_string(),
             model: "claude".to_string(),
+            reasoning_effort: None,
             turn_timeout_secs: None,
             escalates_to: Vec::new(),
             capabilities: Vec::new(),
@@ -475,6 +483,7 @@ impl CodingProfileDefinition {
         let definition = Self::AgyCli {
             id: super::discovery::AGY_DEFAULT_PROFILE_ID.to_string(),
             model: "agy".to_string(),
+            reasoning_effort: None,
             turn_timeout_secs: None,
             escalates_to: Vec::new(),
             capabilities: Vec::new(),
@@ -486,6 +495,52 @@ impl CodingProfileDefinition {
         Ok(definition)
     }
 
+    pub fn with_model_settings(
+        mut self,
+        choice_id: String,
+        selected_model: String,
+        effort: Option<String>,
+    ) -> Self {
+        match &mut self {
+            Self::CodexAppServer {
+                id,
+                model,
+                reasoning_effort,
+                ..
+            } => {
+                *id = choice_id;
+                *model = selected_model;
+                if let Some(effort) = effort {
+                    *reasoning_effort = effort;
+                }
+            },
+            Self::GrokAcp {
+                id,
+                model,
+                reasoning_effort,
+                ..
+            }
+            | Self::ClaudeCode {
+                id,
+                model,
+                reasoning_effort,
+                ..
+            }
+            | Self::AgyCli {
+                id,
+                model,
+                reasoning_effort,
+                ..
+            } => {
+                *id = choice_id;
+                *model = selected_model;
+                *reasoning_effort = effort;
+            },
+            Self::Pi { .. } => {},
+        }
+        self
+    }
+
     pub fn engine(&self) -> CodingEngineKind {
         match self {
             Self::Pi { .. } => CodingEngineKind::Pi,
@@ -493,20 +548,6 @@ impl CodingProfileDefinition {
             Self::GrokAcp { .. } => CodingEngineKind::GrokAcp,
             Self::ClaudeCode { .. } => CodingEngineKind::ClaudeCode,
             Self::AgyCli { .. } => CodingEngineKind::AgyCli,
-        }
-    }
-
-    pub fn push_escalation(&mut self, target: impl Into<String>) {
-        let target = target.into();
-        let list = match self {
-            Self::Pi { escalates_to, .. }
-            | Self::CodexAppServer { escalates_to, .. }
-            | Self::GrokAcp { escalates_to, .. }
-            | Self::ClaudeCode { escalates_to, .. }
-            | Self::AgyCli { escalates_to, .. } => escalates_to,
-        };
-        if !list.iter().any(|id| id == &target) {
-            list.push(target);
         }
     }
 
@@ -542,10 +583,16 @@ impl CodingProfileDefinition {
 
     pub fn reasoning_effort(&self) -> Option<&str> {
         match self {
-            Self::Pi { .. }
-            | Self::GrokAcp { .. }
-            | Self::ClaudeCode { .. }
-            | Self::AgyCli { .. } => None,
+            Self::Pi { .. } => None,
+            Self::GrokAcp {
+                reasoning_effort, ..
+            }
+            | Self::ClaudeCode {
+                reasoning_effort, ..
+            }
+            | Self::AgyCli {
+                reasoning_effort, ..
+            } => reasoning_effort.as_deref(),
             Self::CodexAppServer {
                 reasoning_effort, ..
             } => Some(reasoning_effort.as_str()),
@@ -607,14 +654,35 @@ impl CodingProfileDefinition {
                 absorb(&mut hasher, "model", model);
                 absorb(&mut hasher, "reasoning_effort", reasoning_effort);
             },
-            Self::GrokAcp { model, .. } => {
+            Self::GrokAcp {
+                model,
+                reasoning_effort,
+                ..
+            } => {
                 absorb(&mut hasher, "model", model);
+                if let Some(effort) = reasoning_effort {
+                    absorb(&mut hasher, "reasoning_effort", effort);
+                }
             },
-            Self::ClaudeCode { model, .. } => {
+            Self::ClaudeCode {
+                model,
+                reasoning_effort,
+                ..
+            } => {
                 absorb(&mut hasher, "model", model);
+                if let Some(effort) = reasoning_effort {
+                    absorb(&mut hasher, "reasoning_effort", effort);
+                }
             },
-            Self::AgyCli { model, .. } => {
+            Self::AgyCli {
+                model,
+                reasoning_effort,
+                ..
+            } => {
                 absorb(&mut hasher, "model", model);
+                if let Some(effort) = reasoning_effort {
+                    absorb(&mut hasher, "reasoning_effort", effort);
+                }
             },
         }
         let (timeout, capabilities, billing, escalates_to) = match self {
@@ -798,28 +866,6 @@ pub fn constraint_from_requested_choice(
             let floor = catalog_definition(catalog, profile_id)?;
             fixed_constraint_from_profile(floor, catalog, source)
         },
-    }
-}
-
-/// Current cockpit policy until `coding.profiles[].escalates_to` exists.
-pub const LEGACY_COCKPIT_FLOOR_PROFILE_ID: &str = "coding-balanced";
-pub const LEGACY_COCKPIT_PREMIUM_PROFILE_ID: &str = "coding-premium";
-
-/// If both cockpit floor and premium rows exist, pin the one-hop escalation
-/// the composer already documents.
-pub fn apply_legacy_cockpit_escalations(entries: &mut [ProfileCatalogEntry]) {
-    let has_premium = entries
-        .iter()
-        .any(|entry| entry.eligible && entry.definition.id() == LEGACY_COCKPIT_PREMIUM_PROFILE_ID);
-    if !has_premium {
-        return;
-    }
-    for entry in entries {
-        if entry.definition.id() == LEGACY_COCKPIT_FLOOR_PROFILE_ID {
-            entry
-                .definition
-                .push_escalation(LEGACY_COCKPIT_PREMIUM_PROFILE_ID);
-        }
     }
 }
 
@@ -2196,20 +2242,6 @@ mod tests {
             ),
             "{rejected:?}"
         );
-    }
-
-    #[test]
-    fn apply_legacy_cockpit_escalations_pins_balanced_to_premium() {
-        let mut entries = catalog(&[
-            pi("coding-balanced", "cheap", &[]),
-            pi("coding-premium", "expensive", &[]),
-        ]);
-        apply_legacy_cockpit_escalations(&mut entries);
-        let balanced = entries
-            .iter()
-            .find(|entry| entry.definition.id() == "coding-balanced")
-            .expect("floor");
-        assert_eq!(balanced.definition.escalates_to(), ["coding-premium"]);
     }
 
     #[test]

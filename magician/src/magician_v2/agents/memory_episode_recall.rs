@@ -93,7 +93,9 @@ pub fn episode_passage_context(
     hit: &MemoryIndexPassage,
     max_chars: usize,
 ) -> Vec<MemoryIndexPassage> {
-    if !magician_vector_index::episode_candidates::is_native_episode_candidate(candidate)
+    // Only a conversation's long turns expand: any other episode is recalled
+    // whole, from its bounded, cleaned recall text.
+    if !magician_vector_index::episode_candidates::is_conversation_episode_candidate(candidate)
         || max_chars < 80
     {
         return Vec::new();

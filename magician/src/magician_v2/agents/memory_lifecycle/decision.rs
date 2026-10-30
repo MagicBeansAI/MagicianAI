@@ -32,6 +32,7 @@ pub(super) async fn review<F, Fut>(
     incoming: &Source,
     offered: &[Source],
     prompt: String,
+    budget: Duration,
     generate: F,
 ) -> anyhow::Result<text::Reviewed<Review>>
 where
@@ -204,7 +205,11 @@ where
         router,
         OPERATION,
         PROMPT,
-        Duration::from_secs(40),
+        budget,
+        // Owner decision 2026-10-19: the engine settles the pairs it is sure
+        // of; the written reviewer decides the rest instead of the whole
+        // review waiting for an engine that is rarely sure of all of them.
+        text::Unqualified::Generate,
         |heads| {
             let make = generate
                 .lock()

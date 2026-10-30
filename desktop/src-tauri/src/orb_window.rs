@@ -408,6 +408,18 @@ impl OrbWindowRuntime {
         }
     }
 
+    fn update_inbox(&mut self, items: Vec<NotchInboxItem>, total_count: Option<u32>) {
+        let count = total_count.unwrap_or(items.len().min(u32::MAX as usize) as u32);
+        self.inbox_open = crate::notch_inbox_policy::drawer_open_after_refresh(
+            self.inbox_open,
+            self.drawer_view == NotchDrawerView::Attention,
+            self.attention_count,
+            count,
+        );
+        self.attention_count = count;
+        self.inbox_items = items;
+    }
+
     fn set_voice_visible(&mut self, visible: bool) {
         self.voice_visible = visible;
         if !visible {
@@ -602,6 +614,10 @@ fn rect_for(app: &AppHandle, presentation: OrbPresentation) -> Option<OrbRect> {
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The pure geometry calculation keeps monitor bounds and persisted layout inputs explicit."
+)]
 fn rect_for_monitor(
     position: &PhysicalPosition<i32>,
     size: &PhysicalSize<u32>,
@@ -776,8 +792,8 @@ fn notch_metrics_from_visible_top_areas(
         && obscured_width > 24.0
         && obscured_width < screen_width_points;
     NotchMetrics {
-        top_inset_points: has_notch.then_some(top_inset_points).unwrap_or(0.0),
-        notch_width_points: has_notch.then_some(obscured_width).unwrap_or(0.0),
+        top_inset_points: if has_notch { top_inset_points } else { 0.0 },
+        notch_width_points: if has_notch { obscured_width } else { 0.0 },
         has_notch,
     }
 }
@@ -1307,13 +1323,24 @@ fn retarget_notch_panel(app: &AppHandle, window: &tauri::WebviewWindow, url: &st
     let Ok(wanted) = url.parse::<tauri::Url>() else {
         return;
     };
-    let Ok(current) = window.url() else {
+    // The URL this panel was last sent, not `window.url()`: wry unwraps the
+    // web view's URL, which is nil until a load commits, so asking a panel
+    // whose page failed to load (dev server down) panics the whole tray.
+    let current = last_notch_panel_url()
+        .lock()
+        .ok()
+        .and_then(|url| url.clone());
+    let Some(current) = current else {
+        remember_notch_panel_url(&wanted);
+        let _ = window.navigate(wanted);
         return;
     };
     if current.path() != wanted.path() {
+        remember_notch_panel_url(&wanted);
         let _ = window.navigate(wanted);
         return;
     }
+    remember_notch_panel_url(&wanted);
     if current.query() == wanted.query() {
         return;
     }
@@ -1330,8 +1357,23 @@ fn retarget_notch_panel(app: &AppHandle, window: &tauri::WebviewWindow, url: &st
     );
 }
 
+/// The URL the tray last loaded into the notch Attention panel.
+fn last_notch_panel_url() -> &'static std::sync::Mutex<Option<tauri::Url>> {
+    static URL: std::sync::OnceLock<std::sync::Mutex<Option<tauri::Url>>> =
+        std::sync::OnceLock::new();
+    URL.get_or_init(Default::default)
+}
+
+fn remember_notch_panel_url(url: &tauri::Url) {
+    if let Ok(mut current) = last_notch_panel_url().lock() {
+        *current = Some(url.clone());
+    }
+}
+
 fn present_notch_attention_window(app: &AppHandle, url: &str) -> Result<(), String> {
-    let existed = app.get_webview_window(NOTCH_ATTENTION_WINDOW_LABEL).is_some();
+    let existed = app
+        .get_webview_window(NOTCH_ATTENTION_WINDOW_LABEL)
+        .is_some();
     let station = rect_for(app, OrbPresentation::Resting).ok_or("no display for Attention")?;
     let scale = monitor_for_orb(app)
         .map(|m| m.scale_factor())
@@ -1355,6 +1397,7 @@ fn present_notch_attention_window(app: &AppHandle, url: &str) -> Result<(), Stri
             .parse()
             .map_err(|error| format!("invalid Attention URL: {error}"))?;
         crate::magician_auth::admit_attention_ui(app, NOTCH_ATTENTION_WINDOW_LABEL, &url)?;
+        remember_notch_panel_url(&url);
         #[cfg(target_os = "macos")]
         {
             use tauri::{LogicalPosition, LogicalSize, Position, Size};
@@ -3142,10 +3185,10 @@ fn power_source_is_battery() -> bool {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("/usr/bin/pmset").args(["-g", "batt"]).output();
-        return output
+        output
             .ok()
             .and_then(|output| String::from_utf8(output.stdout).ok())
-            .is_some_and(|text| power_report_is_battery(&text));
+            .is_some_and(|text| power_report_is_battery(&text))
     }
     #[cfg(not(target_os = "macos"))]
     false
@@ -3692,9 +3735,8 @@ fn orb_lock(
 }
 
 /// The notify overlay publishes the Attention questions the side notch shows.
-/// A newly arrived id opens the panel. Publishing the same ids again does not
-/// reopen a panel the user closed. The last question leaving closes the
-/// panel. An empty list, on its own, leaves a quiet drawer the user opened.
+/// Arrival updates the badge without opening the drawer. The last question
+/// leaving closes an Attention drawer; a manually opened work list is preserved.
 #[tauri::command]
 pub fn publish_notch_inbox(
     app: AppHandle,
@@ -3704,22 +3746,7 @@ pub fn publish_notch_inbox(
     let (outgoing, attention_only, presentation, intro_open) = {
         let state = app.state::<crate::AppState>();
         let mut runtime = orb_lock(&state)?;
-        let previous: std::collections::HashSet<String> = runtime
-            .inbox_items
-            .iter()
-            .map(|item| item.id.clone())
-            .collect();
-        let count = total_count.unwrap_or(items.len().min(u32::MAX as usize) as u32);
-        let grew = count > runtime.attention_count
-            || items.iter().any(|item| !previous.contains(&item.id));
-        let became_empty = count == 0 && runtime.attention_count > 0;
-        runtime.attention_count = count;
-        runtime.inbox_items = items;
-        if became_empty {
-            runtime.inbox_open = false;
-        } else if grew {
-            runtime.inbox_open = true;
-        }
+        runtime.update_inbox(items, total_count);
         (
             runtime.inbox_items.clone(),
             !runtime.voice_visible,
@@ -3781,7 +3808,10 @@ pub fn publish_notch_runs(app: AppHandle, runs: Vec<NotchRunDot>) -> Result<(), 
             runtime.run_label_open = false;
         }
         runtime.run_dots = runs;
-        (rows_changed, runtime.presentation == OrbPresentation::Resting)
+        (
+            rows_changed,
+            runtime.presentation == OrbPresentation::Resting,
+        )
     };
     emit_current_presentation(&app);
     ensure_notch_pointer_poll(&app);
@@ -4607,7 +4637,10 @@ mod tests {
             "http://127.0.0.1:5173/coding-runs?native_attention=1&notch_attention=1&run=task_a%26b"
         );
         assert_eq!(
-            notch_panel_url("http://127.0.0.1:5173", &NotchDrawerView::Runs { selected: None }),
+            notch_panel_url(
+                "http://127.0.0.1:5173",
+                &NotchDrawerView::Runs { selected: None }
+            ),
             "http://127.0.0.1:5173/coding-runs?native_attention=1&notch_attention=1"
         );
         // Work item dots: a coding run keeps `run=`, a crew or task is `item=`.
@@ -4639,26 +4672,28 @@ mod tests {
 
     #[test]
     fn native_sizes_keep_the_resting_surface_quiet_and_the_wake_surface_generous() {
-        assert!(EDGE_PILL_HEIGHT_PT <= 80.0);
-        assert!(EDGE_PILL_HEIGHT_PT >= 64.0);
-        assert!(NOTCH_STACK_HEIGHT_PT > EDGE_PILL_HEIGHT_PT);
-        assert!(NOTCH_STACK_HEIGHT_PT < 160.0);
-        assert!(NOTCH_DRAWER_WIDTH_PT >= 420.0);
-        assert!(NOTCH_DRAWER_HEIGHT_PT >= 520.0);
-        assert!(NOTCH_DRAWER_HEIGHT_PT <= 640.0);
-        assert_eq!(VOICE_DRAWER_HEIGHT_PT, EDGE_PILL_HEIGHT_PT * 2.0);
-        assert!(VOICE_DRAWER_WIDTH_PT >= 300.0);
-        assert!(VOICE_DRAWER_WIDTH_PT < NOTCH_DRAWER_WIDTH_PT);
-        assert!(VOICE_DRAWER_HEIGHT_PT < NOTCH_DRAWER_HEIGHT_PT);
-        assert_eq!(VOICE_DRAWER_IDLE_MS, 5_000);
-        assert_eq!(DRAWER_SPRING_MS, 260);
-        assert!(DRAWER_EXIT_MS >= DRAWER_SPRING_MS);
-        assert!(DRAWER_EXIT_MS - DRAWER_SPRING_MS <= 40);
-        assert!(EDGE_PEEK_WIDTH_PT < RESTING_MIN_WIDTH_PT);
-        assert!(EDGE_PILL_HEIGHT_PT < EXPANDED_HEIGHT_PT);
-        assert!(EXPANDED_WIDTH_PT >= 360.0);
-        assert!(SPOTLIGHT_WIDTH_PT > EXPANDED_WIDTH_PT);
-        assert!(SPOTLIGHT_HEIGHT_PT > EXPANDED_HEIGHT_PT);
+        const {
+            assert!(EDGE_PILL_HEIGHT_PT <= 80.0);
+            assert!(EDGE_PILL_HEIGHT_PT >= 64.0);
+            assert!(NOTCH_STACK_HEIGHT_PT > EDGE_PILL_HEIGHT_PT);
+            assert!(NOTCH_STACK_HEIGHT_PT < 160.0);
+            assert!(NOTCH_DRAWER_WIDTH_PT >= 420.0);
+            assert!(NOTCH_DRAWER_HEIGHT_PT >= 520.0);
+            assert!(NOTCH_DRAWER_HEIGHT_PT <= 640.0);
+            assert!(VOICE_DRAWER_HEIGHT_PT == EDGE_PILL_HEIGHT_PT * 2.0);
+            assert!(VOICE_DRAWER_WIDTH_PT >= 300.0);
+            assert!(VOICE_DRAWER_WIDTH_PT < NOTCH_DRAWER_WIDTH_PT);
+            assert!(VOICE_DRAWER_HEIGHT_PT < NOTCH_DRAWER_HEIGHT_PT);
+            assert!(VOICE_DRAWER_IDLE_MS == 5_000);
+            assert!(DRAWER_SPRING_MS == 260);
+            assert!(DRAWER_EXIT_MS >= DRAWER_SPRING_MS);
+            assert!(DRAWER_EXIT_MS - DRAWER_SPRING_MS <= 40);
+            assert!(EDGE_PEEK_WIDTH_PT < RESTING_MIN_WIDTH_PT);
+            assert!(EDGE_PILL_HEIGHT_PT < EXPANDED_HEIGHT_PT);
+            assert!(EXPANDED_WIDTH_PT >= 360.0);
+            assert!(SPOTLIGHT_WIDTH_PT > EXPANDED_WIDTH_PT);
+            assert!(SPOTLIGHT_HEIGHT_PT > EXPANDED_HEIGHT_PT);
+        }
     }
 
     #[test]

@@ -21,6 +21,14 @@ pub struct UiPreferences {
     /// that silently follows the operator onto every machine they sign into.
     #[serde(default = "default_composer_permission_mode")]
     pub composer_permission_mode: String,
+    /// The account's app appearance mode — `system`, `day` or `night` — as the
+    /// mobile apps call it. The web has no such mode (its theme id already
+    /// names a variant), so it never writes one; `None` leaves every surface
+    /// on its own mode. This is the second half of theme sync: `theme` carries
+    /// the family's resolved variant, `appearance` carries how the family
+    /// should follow the device's day/night.
+    #[serde(default)]
+    pub appearance: Option<String>,
 }
 
 impl Default for UiPreferences {
@@ -28,6 +36,7 @@ impl Default for UiPreferences {
         Self {
             theme: default_theme(),
             composer_permission_mode: default_composer_permission_mode(),
+            appearance: None,
         }
     }
 }
@@ -38,6 +47,7 @@ impl UiPreferences {
         self.composer_permission_mode =
             normalized_composer_permission_mode(&self.composer_permission_mode)
                 .unwrap_or_else(default_composer_permission_mode);
+        self.appearance = normalized_appearance(self.appearance.as_deref());
         self
     }
 
@@ -85,6 +95,17 @@ fn normalized_theme_id(value: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_string())
+}
+
+/// Only the three modes the mobile pickers offer survive; anything else (an
+/// unknown future value, corruption) clears the field so surfaces keep their
+/// own mode rather than following a value they cannot resolve.
+fn normalized_appearance(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    match trimmed {
+        "system" | "day" | "night" => Some(trimmed.to_string()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -263,5 +284,57 @@ mod tests {
             serde_json::from_str(r#"{"theme":"longhand"}"#).expect("legacy preferences");
         assert_eq!(legacy.composer_permission_mode, COMPOSER_PERMISSION_ASK);
         assert!(!legacy.accepts_in_scope_edits());
+    }
+
+    #[test]
+    fn appearance_keeps_only_the_three_picker_modes() {
+        assert_eq!(
+            UiPreferences {
+                appearance: Some(" night ".to_string()),
+                ..UiPreferences::default()
+            }
+            .normalize()
+            .appearance
+            .as_deref(),
+            Some("night")
+        );
+        assert_eq!(
+            UiPreferences {
+                appearance: Some("system".to_string()),
+                ..UiPreferences::default()
+            }
+            .normalize()
+            .appearance
+            .as_deref(),
+            Some("system")
+        );
+        for unknown in ["always", "", "SYSTEM", "dusk"] {
+            assert_eq!(
+                UiPreferences {
+                    appearance: Some(unknown.to_string()),
+                    ..UiPreferences::default()
+                }
+                .normalize()
+                .appearance,
+                None,
+                "{unknown:?} must not survive normalisation"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preferences_file_written_before_appearance_existed_keeps_none() {
+        let legacy: UiPreferences =
+            serde_json::from_str(r#"{"theme":"sky-dark"}"#).expect("legacy preferences");
+        assert_eq!(legacy.appearance, None);
+        // A web-written file (no appearance) round-trips without inventing one.
+        let saved = UiPreferences {
+            theme: "sky-dark".to_string(),
+            composer_permission_mode: COMPOSER_PERMISSION_ASK.to_string(),
+            appearance: None,
+        };
+        let round: UiPreferences =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).expect("round trip");
+        assert_eq!(round, saved);
     }
 }

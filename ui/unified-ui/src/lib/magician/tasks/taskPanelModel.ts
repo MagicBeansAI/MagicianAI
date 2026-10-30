@@ -43,6 +43,7 @@ import {
 } from './taskAttention';
 import { runsSliceOf, type RunRecord, type TaskPanelRuns } from './taskRuns';
 import { deriveTimeline, runCostRows } from './taskTimeline';
+import { executionProgressAt, latestProgressAt } from './taskProgress';
 import type { QueuedReason } from './taskVerdict';
 import type {
 	PlanProgressEntry,
@@ -116,7 +117,7 @@ export interface TaskSidecarRef {
 }
 
 /** The roles a user-audience output may carry and still be a deliverable. */
-const DELIVERABLE_ROLES = new Set(['primary_task_user', 'user_media']);
+const DELIVERABLE_ROLES = new Set(['primary_task_user', 'user_media', 'user_attachment']);
 
 /**
  * Whether this output belongs among the task's deliverables.
@@ -1232,7 +1233,15 @@ function outputOf(
 	) {
 		return null;
 	}
-	const taskScopedFiles = (taskFiles ?? []).map((file) => ({ ...file, scope: 'task' as const }));
+	const historical = Boolean(executionId && executionId !== (task.activeExecutionId ?? task.executionId));
+	const matchingRun = executionId && runState?.overview.execution_id === executionId ? runState : null;
+	const report = text(matchingRun?.output?.result?.report);
+	const reportNames = new Set(matchingRun?.output?.result?.artifact_names ?? []);
+	const reportFiles = (taskFiles ?? []).filter(file => reportNames.has(file.path.split('/').pop() ?? ''));
+	const reportPath = reportFiles.length === 1 ? reportFiles[0].path : null;
+	const taskScopedFiles = (taskFiles ?? []).map((file) => ({ ...file, scope: 'task' as const,
+		...(report || historical ? {reportSource: file.path === reportPath} : {}) }));
+	const verificationSummary = historical ? matchingRun?.output?.result?.summary : task.completionSummary;
 	return {
 		files: [...taskScopedFiles, ...(selectedRun?.files ?? [])],
 		...(taskFiles === null ? { taskFilesKnown: false } : {}),
@@ -1246,7 +1255,8 @@ function outputOf(
 		// The run's own account of what it did, straight off the task record.
 		// Blank is absence: a summary of `""` is not a report, and rendering it
 		// would open an empty markdown block above the file list.
-		summary: task.completionSummary?.trim() || null,
+		summary: report ?? (verificationSummary?.trim() || null),
+		...(report ? {verificationSummary: verificationSummary?.trim() || null} : {}),
 		provenance: provenanceRows([
 			['Source execution id', task.activeExecutionId ?? task.executionId],
 			// **One directory row, not one row per file.** This was
@@ -1346,11 +1356,10 @@ export function toTaskPanelModel(
 		// to omit a duration rather than approximate it, so every headline that
 		// carries one drops it rather than reporting the wrong number.
 		elapsedMs: null,
-		// The Task 7 field, and the whole reason stall detection can work. Already
-		// parsed by `parseLastProgressAt` (never `parseTimestampToIso`, which
-		// answers *now* for anything unreadable and would make a wedged run
-		// un-stallable); all that is left here is the absence coercion.
-		lastProgressAt: task.lastProgressAt ?? null,
+		// The task row can lag behind visible work. The verdict still describes
+		// the current run when the Run act is showing a historical one.
+		lastProgressAt: latestProgressAt(task.lastProgressAt, executionProgressAt(runState, currentRunIdOf(task))),
+		synthesisPending: task.synthesisPending === true,
 		plan: planOf(task, questions, runState),
 		run: runOf(task, runState, runId),
 		output: outputOf(task, outputs, runState, runId, outputUrlFor),

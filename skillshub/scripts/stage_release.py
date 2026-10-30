@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Stage relocatable skill sources, exact generated binaries and Python locks.
+"""Stage relocatable skill sources, exact native binaries and Python locks.
 
 The release is the pin: no source builds or floating dependency resolution on
-the installation machine. Missing or stale generated artifacts fail packaging.
+the installation machine. Missing or stale pinned artifacts fail packaging.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import struct
 import subprocess
 import re
 
-from generated_tools import verify as verify_generated
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,15 +50,14 @@ def verify(root: Path):
             raise ValueError(f"release tool checksum mismatch: {path}")
         if entry.get("executable") and not os.access(candidate, os.X_OK):
             raise ValueError(f"release tool is not executable: {path}")
-    verify_generated(root)
     print(f"✓ {len(manifest['files'])} pinned release runtime files verified")
 
 
 def seal_signed(root: Path):
     """Update only native artifact hashes after the packager signs them.
 
-    Preserve the unsigned generated digest as provenance. Non-executable pins
-    must still match before sealing, so this cannot hide dependency-lock drift.
+    Non-executable pins must still match before sealing, so signing cannot
+    hide dependency-lock drift.
     """
     manifest = json.loads((root / "release-tools.json").read_text())
     for entry in manifest["files"]:
@@ -68,11 +66,6 @@ def seal_signed(root: Path):
             raise ValueError(f"non-executable release input changed during signing: {entry['path']}")
         if entry.get("executable") and native_target(candidate) != manifest["target"]:
             raise ValueError("signed native artifact target changed")
-    generated_path = root / "metabase/bin/generated.json"
-    generated = json.loads(generated_path.read_text())
-    generated["unsigned_sha256"] = generated.get("unsigned_sha256", generated["sha256"])
-    generated["sha256"] = digest(root / "metabase/bin/metabase-pp-cli")
-    generated_path.write_text(json.dumps(generated, indent=2) + "\n")
     for entry in manifest["files"]:
         entry["sha256"] = digest(root / entry["path"])
     (root / "release-tools.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -80,15 +73,14 @@ def seal_signed(root: Path):
 
 
 def stage(source: Path, dest: Path, target: str, document_binary: Path):
-    verify_generated(source)
     sources = subprocess.check_output(["git", "-C", str(source.parent), "ls-files", "-z", "--", "skillshub/"], text=True)
     paths = set(sources.split("\0")) - {""}
     # Newly added runtime infrastructure may be untracked while a developer
     # validates a candidate release. Enumerate it explicitly, never collect
     # arbitrary untracked files (which can include credentials).
     paths.update("skillshub/" + path for path in (
-        "scripts/verify_runtime.py", "scripts/generated_tools.py", "scripts/link_runtime.py",
-        "scripts/pinned_bin_store.py", "scripts/stage_release.py", "metabase/generator-pin.json"))
+        "scripts/verify_runtime.py", "scripts/link_runtime.py", "scripts/migrate_metabase_mcp.py",
+        "scripts/pinned_bin_store.py", "scripts/stage_release.py", "scripts/shared_skill_bins.py"))
     for relative in sorted(paths):
         if not relative:
             continue
@@ -117,8 +109,6 @@ def stage(source: Path, dest: Path, target: str, document_binary: Path):
         shutil.copy2(origin, output)
         files.append({"path": relative, "sha256": digest(output), "executable": native})
 
-    copy(source / "metabase/bin/metabase-pp-cli", "metabase/bin/metabase-pp-cli", native=True)
-    copy(source / "metabase/bin/generated.json", "metabase/bin/generated.json")
     copy(document_binary, "document-to-markdown/bin/document-to-markdown", native=True)
     copy(source / "browser/bin/agent-browser", "browser/bin/agent-browser", native=True)
     # The existing installer uses this reviewed fork instead of compiling it.

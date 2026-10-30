@@ -57,7 +57,7 @@ export function createMenuKeydown(options: MenuKeydownOptions): (event: Keyboard
 		}
 		if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
 		// Arrow keys inside inputs keep their native behavior (value stepping).
-		if (event.target instanceof HTMLInputElement) return;
+		if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
 		const items = menuFocusableItems(options.getMenuEl(), options.itemSelector);
 		if (items.length === 0) return;
 		event.preventDefault();

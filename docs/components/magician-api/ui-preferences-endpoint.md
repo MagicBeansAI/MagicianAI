@@ -9,9 +9,26 @@ workspace**, never globally.
 | --- | --- | --- |
 | `theme` | Theme id | `sorbet` (was `longhand` until 2026-10-01; a stored value is kept) |
 | `composer_permission_mode` | `ask` or `accept_in_scope` — whether the composer's Do mode prompts before an in-scope file edit | `ask` |
+| `appearance` | `system`, `day` or `night` — the mobile apps' day/night mode, so the theme follows the account across web/iOS/Android | none (absent) |
 
 `GET` also returns `saved`, which is false when the scope has no stored file
 yet, so a client can tell "never chosen" from "chose the default".
+
+## Theme follows the account
+
+The theme record is the account-level choice every surface converges on. The
+web seeds it from its local pick when `saved` is false and adopts it on load
+and focus; the mobile apps do the same on launch/resume, and push every
+explicit pick (family chosen, Day/Night forced). A device following the system
+appearance in `system` mode does NOT rewrite the record on its own day/night
+flip — the record carries choices, not sunsets.
+
+`appearance` is written only by the mobile apps; the web's theme id already
+names a resolved variant, so it never sends one. A record without
+`appearance` (a web-only write) leaves each surface on its own mode; the
+mobile apps then take the family from `theme` and the day/night side from the
+variant itself. Unknown values normalise to absent, so surfaces keep their own
+mode rather than following something they cannot resolve.
 
 ## Partial writes leave the other fields alone
 
@@ -19,7 +36,9 @@ Both fields on `PutUiPreferencesRequest` are `Option`. An absent field is not
 "reset to default", it is "do not touch". That is a correctness requirement,
 not a convenience: the theme store and the composer store write this endpoint
 independently, and a theme save that omitted `composer_permission_mode` must
-not be able to move a *permission* by omission. The reverse holds too.
+not be able to move a *permission* by omission. The reverse holds too, and
+`appearance` follows the same rule (the web omits it; only an explicit value
+in the body can change it).
 
 ## Normalisation fails closed, and happens before the write
 

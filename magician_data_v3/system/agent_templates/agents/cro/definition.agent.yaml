@@ -30,11 +30,10 @@ tools:
 # The CRO can also delegate outreach to the executive-assistant (which also has
 # `browser`); this grant lets it do bounded outreach checks itself.
 - browser
-# Browser transport ceiling. `cdp` attaches to the OWNER's own signed-in Chrome
-# through the magicutor proxy — an officer doing COMPANY work must not act as
-# the owner, so the identity-bearing transport is withheld. Headless and headed
-# launch this agent's own Chrome against a per-work-context profile.
+# CDP permits owner-authorized workflows in existing signed-in accounts.
+# Headless and headed remain available for isolated browsing.
 browser_transports:
+- cdp
 - headless
 - headed
 constraints:

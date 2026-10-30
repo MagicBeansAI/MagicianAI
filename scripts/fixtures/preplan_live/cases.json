@@ -23,7 +23,16 @@
       "expected_min_clarifications": 0,
       "expected_min_replans": 1,
       "approval_sequence": ["reject", "approve"],
-      "answer_rules": [],
+      "answer_rules": [
+        {
+          "contains_any": ["owner", "own drafting", "responsible"],
+          "answer": "The requesting owner drafts the note and an independent reviewer reviews it."
+        },
+        {
+          "contains_any": ["criterion", "criteria", "review completion", "exit"],
+          "answer": "Review passes when the note contains exactly three sentences and the independent reviewer confirms every factual claim is supported."
+        }
+      ],
       "default_answer": "Use the supplied scope and state any remaining assumption explicitly."
     }
   ]

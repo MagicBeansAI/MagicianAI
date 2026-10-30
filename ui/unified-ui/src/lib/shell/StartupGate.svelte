@@ -1,7 +1,10 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
+  import SettingsSkeleton from '$lib/settings/SettingsSkeleton.svelte';
 
   export let enabled = true;
+  /** Show the Settings skeleton while waiting, not the "Starting" message. */
+  export let skeleton = false;
   const dispatch = createEventDispatcher<{ ready: void }>();
   let ready = !enabled;
   let failed = false;
@@ -17,7 +20,12 @@
       dispatch('ready');
     }
 
+    // A probe in flight is never aborted to start another: its catch reads an
+    // abort as an unreachable host and opens the gate.
+    let probing = false;
+
     async function probe(): Promise<void> {
+      probing = true;
       request = new AbortController();
       const timeout = setTimeout(() => request?.abort(), 3000);
       try {
@@ -36,17 +44,37 @@
         return;
       } finally {
         clearTimeout(timeout);
+        probing = false;
       }
       if (!stopped) timer = setTimeout(probe, 500);
     }
 
+    // A hidden native panel (the desktop notch) can have its timers or web
+    // process suspended while it waits, and then show "Starting" long after
+    // the service is ready. Re-check as soon as it is visible or focused.
+    function recheck(): void {
+      if (stopped || ready || failed || probing || document.visibilityState === 'hidden') return;
+      clearTimeout(timer);
+      void probe();
+    }
+
     if (enabled) void probe(); else finish();
-    return () => { stopped = true; clearTimeout(timer); request?.abort(); };
+    document.addEventListener('visibilitychange', recheck);
+    window.addEventListener('focus', recheck);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      request?.abort();
+      document.removeEventListener('visibilitychange', recheck);
+      window.removeEventListener('focus', recheck);
+    };
   });
 </script>
 
 {#if ready}
   <slot />
+{:else if skeleton && !failed}
+  <SettingsSkeleton />
 {:else}
   <main class="startup" role="status" aria-live="polite">
     <h1>{failed ? 'Workspace could not start' : 'Starting your workspace…'}</h1>

@@ -262,7 +262,7 @@ describe('the thread Tasks tab opens the unified task panel', () => {
 			activityItem(task.id, {
 				id: 'log-1',
 				created_at: 1_770_000_030_000,
-				title: 'Ignored, because the metadata names the capability',
+				title: 'Ignored, because the metadata names the model',
 				metadata: { event_type: 'llm.succeeded', capability: 'research', model: 'claude-opus-4' }
 			}),
 			activityItem(task.id, {
@@ -290,7 +290,7 @@ describe('the thread Tasks tab opens the unified task panel', () => {
 		// point of titling them from metadata rather than from the humanized title
 		// the backend sent — the fixture's title is deliberately not either of
 		// these, so a row that fell back to it fails here.
-		expect(await within(panel()).findByText('Thinking with research')).toBeInTheDocument();
+		expect(await within(panel()).findByText('Thinking with claude-opus-4')).toBeInTheDocument();
 		expect(within(panel()).getByText('Calling read_file')).toBeInTheDocument();
 	});
 

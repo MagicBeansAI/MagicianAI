@@ -2,6 +2,7 @@
 use super::*;
 use crate::magician_v2::attention::resurfacing::memory_connections::{
     activity_revision, evidence_text, ConnectionRecord, ConnectionState, ConnectionSurface,
+    MAX_CALLS_PER_HOUR, MAX_DEFERRALS_PER_HOUR,
 };
 
 /// A live connection owns its explanation at read time, independently of a late
@@ -132,6 +133,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_connections_deferred_reviews_release_the_budget_under_their_own_cap() {
+        let store = ResurfacingStore::open_in_temp();
+        // Every deferral releases its decision charge.
+        for index in 0..MAX_DEFERRALS_PER_HOUR {
+            let mut record = reservation(&format!("d{index}"), 10_000);
+            assert!(store
+                .reserve_connection_review("p", "w", &record)
+                .await
+                .unwrap());
+            assert_eq!(
+                store.connection_calls_since("p", "w", 6400).await.unwrap(),
+                1
+            );
+            record.state = ConnectionState::Deferred;
+            store.put_connection("p", "w", &record).await.unwrap();
+            assert_eq!(
+                store.connection_calls_since("p", "w", 6400).await.unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            store
+                .connection_deferrals_since("p", "w", 6400)
+                .await
+                .unwrap(),
+            MAX_DEFERRALS_PER_HOUR
+        );
+        // The deferral cap stops further reviews within the hour although no
+        // decision was charged, so a failing engine cannot spin.
+        assert!(!store
+            .reserve_connection_review("p", "w", &reservation("next", 10_001))
+            .await
+            .unwrap());
+        // A deferred candidate keeps its own hourly hold.
+        assert!(!store
+            .reserve_connection_review("p", "w", &reservation("d0", 10_002))
+            .await
+            .unwrap());
+        // Another scope is unaffected, and the cap clears after the hour.
+        assert!(store
+            .reserve_connection_review("other", "w", &reservation("next", 10_001))
+            .await
+            .unwrap());
+        assert!(store
+            .reserve_connection_review("p", "w", &reservation("next", 13_601))
+            .await
+            .unwrap());
+        // A charged failure still spends the decision budget.
+        let mut failed = reservation("charged", 13_601);
+        assert!(store
+            .reserve_connection_review("p", "w", &failed)
+            .await
+            .unwrap());
+        failed.state = ConnectionState::Failed;
+        store.put_connection("p", "w", &failed).await.unwrap();
+        assert_eq!(
+            store
+                .connection_calls_since("p", "w", 10_001)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn memory_connections_old_generation_cannot_overwrite_new_review() {
         let store = ResurfacingStore::open_in_temp();
         let old = reservation("one", 10_000);
@@ -173,8 +239,10 @@ impl ResurfacingStore {
             let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let previous:Option<(i64,String)>=tx.query_row("SELECT attempted_at,state FROM resurfacing_memory_connections WHERE principal=? AND workspace=? AND candidate_id=?",params![principal,workspace,record.candidate_id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
             if previous.is_some_and(|(at,state)| record.attempted_at-at<3600 || matches!(state.as_str(),"ready"|"published"|"done"|"withdrawing")) {return Ok(false);}
-            let spent:i64=tx.query_row("SELECT COUNT(*) FROM resurfacing_memory_connections WHERE principal=? AND workspace=? AND attempted_at>=?",params![principal,workspace,record.attempted_at-3600],|row|row.get(0))?;
-            if spent>=crate::magician_v2::attention::resurfacing::memory_connections::MAX_CALLS_PER_HOUR as i64 {return Ok(false);}
+            // Deferred reviews ended before any decision: released from the
+            // decision budget, bounded by their own hourly cap.
+            let (spent,deferred):(i64,i64)=tx.query_row("SELECT COALESCE(SUM(state<>'deferred'),0),COALESCE(SUM(state='deferred'),0) FROM resurfacing_memory_connections WHERE principal=? AND workspace=? AND attempted_at>=?",params![principal,workspace,record.attempted_at-3600],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            if spent>=MAX_CALLS_PER_HOUR as i64 || deferred>=MAX_DEFERRALS_PER_HOUR as i64 {return Ok(false);}
             tx.execute("INSERT INTO resurfacing_memory_connections (principal,workspace,candidate_id,attempted_at,state,record_json) VALUES (?,?,?,?,'reviewing',?) ON CONFLICT(principal,workspace,candidate_id) DO UPDATE SET attempted_at=excluded.attempted_at,state=excluded.state,record_json=excluded.record_json",params![principal,workspace,record.candidate_id,record.attempted_at,serde_json::to_string(&record)?])?;
             tx.commit()?;
             Ok(true)
@@ -268,6 +336,8 @@ impl ResurfacingStore {
         }).await?
     }
 
+    /// Reviews charged to the hourly decision budget since `since`. Deferred
+    /// reviews (no decision was produced) are not charged.
     pub async fn connection_calls_since(
         &self,
         principal: &str,
@@ -278,7 +348,23 @@ impl ResurfacingStore {
         let (principal, workspace) = (principal.to_owned(), workspace.to_owned());
         tokio::task::spawn_blocking(move || {
             let conn = store.conn.lock().unwrap_or_else(|p| p.into_inner());
-            Ok(conn.query_row("SELECT COUNT(*) FROM resurfacing_memory_connections WHERE principal=? AND workspace=? AND attempted_at>=?", params![principal,workspace,since], |row| row.get::<_,i64>(0))? as usize)
+            Ok(conn.query_row("SELECT COUNT(*) FROM resurfacing_memory_connections WHERE principal=? AND workspace=? AND attempted_at>=? AND state<>'deferred'", params![principal,workspace,since], |row| row.get::<_,i64>(0))? as usize)
+        }).await?
+    }
+
+    /// Reviews deferred (ended before any decision) since `since`, for the
+    /// separate [`MAX_DEFERRALS_PER_HOUR`] cap.
+    pub async fn connection_deferrals_since(
+        &self,
+        principal: &str,
+        workspace: &str,
+        since: i64,
+    ) -> Result<usize> {
+        let store = self.clone();
+        let (principal, workspace) = (principal.to_owned(), workspace.to_owned());
+        tokio::task::spawn_blocking(move || {
+            let conn = store.conn.lock().unwrap_or_else(|p| p.into_inner());
+            Ok(conn.query_row("SELECT COUNT(*) FROM resurfacing_memory_connections WHERE principal=? AND workspace=? AND attempted_at>=? AND state='deferred'", params![principal,workspace,since], |row| row.get::<_,i64>(0))? as usize)
         }).await?
     }
 

@@ -607,7 +607,7 @@ async fn preview(
             resolved.native_harness = p.setup.native_harness.clone();
             let quote = PreparedTextDraft::maximum_attempt_microusd(api.router(), &resolved);
             match quote { Ok(quote) => match p.contract.hash() {
-                Ok(hash) => HttpResponse::Ok().json(json!({"contract": p.contract, "contract_hash":hash, "maximum_attempt_microusd": quote, "budget_can_admit_attempt": quote <= resolved.budget.max_cost_microusd, "native_harness":p.setup.native_harness,"artifact_review":p.setup.artifact_review,"resolved_specifications":p.setup.specifications,"delivery":"local_draft", "communication":"capture_only"})), Err(e) => failure(e)
+                Ok(hash) => HttpResponse::Ok().json(json!({"contract": p.contract, "contract_hash":hash, "maximum_attempt_microusd": quote, "budget_can_admit_attempt": quote <= resolved.budget.cost_ceiling(), "native_harness":p.setup.native_harness,"artifact_review":p.setup.artifact_review,"resolved_specifications":p.setup.specifications,"delivery":"local_draft", "communication":"capture_only"})), Err(e) => failure(e)
             }, Err(e) => failure(e) }
         },
         Err(e) => failure(e),
@@ -1919,6 +1919,61 @@ mod tests {
     }
 
     #[test]
+    fn quality_accepts_each_qualified_catalog_thinking_choice() {
+        for streaming in [true, false] {
+            let mut config = text_routes();
+            config
+                .profiles
+                .get_mut("actor")
+                .unwrap()
+                .metadata
+                .as_mut()
+                .unwrap()
+                .insert("streaming".into(), json!(streaming));
+            assert!(OperationLlmRouter::new(Some(config))
+                .bounded_route("actor")
+                .is_ok());
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../magician-config.yaml");
+        let config = magician::config::load_magician_config_from_path(&path).unwrap();
+        let router_config = config.router_config().unwrap().clone();
+        let router = OperationLlmRouter::new(Some(router_config.clone()));
+        for id in [
+            "openai/gpt-6.1-sol",
+            "anthropic/claude-sonnet-5-5",
+            "gemini/gemini-3.1-pro-preview",
+        ] {
+            let model = &router_config.catalog.models[id];
+            for level in
+                std::iter::once("auto").chain(model.thinking.levels.iter().map(String::as_str))
+            {
+                let choice = magicllm::catalog::choice_id(id, level);
+                let bounded = router
+                    .bounded_route(&choice)
+                    .unwrap_or_else(|error| panic!("{choice}: {error}"));
+                assert_eq!(bounded.model_pin().model, model.model);
+                assert!(bounded.maximum_microusd() > 0);
+                assert_eq!(bounded.supports_bounded_images(), model.capabilities.vision);
+            }
+        }
+        assert_ne!(
+            router
+                .bounded_route(&magicllm::catalog::choice_id("openai/gpt-6.1-sol", "high"))
+                .unwrap()
+                .model_pin()
+                .family,
+            router
+                .bounded_route(&magicllm::catalog::choice_id(
+                    "anthropic/claude-sonnet-5-5",
+                    "low"
+                ))
+                .unwrap()
+                .model_pin()
+                .family,
+        );
+    }
+
+    #[test]
     fn bounded_native_route_refuses_missing_physical_bounds_and_independence() {
         for missing in ["context", "output", "timeout", "family"] {
             let mut config = text_routes();
@@ -1946,6 +2001,8 @@ mod tests {
             .bounded_route("actor")
             .is_err());
         for (key, value) in [
+            ("streaming", json!("true")),
+            ("streaming", json!({"enabled":true})),
             ("server_web_search", json!(true)),
             ("candidateCount", json!(2)),
             ("gemini_api_mode", json!("interactions")),
@@ -2058,7 +2115,8 @@ mod tests {
             user_request_service: Some(requests.clone()),
             agent_runtime: None,
         });
-        let proposal = text_proposal();
+        let mut proposal = text_proposal();
+        proposal.budget.max_cost_microusd = 50_000_000;
         let args = json!({"proposal":proposal,"__principal":"owner","__workspace":"workspace","__agent_id":"engineer","__task_id":task,"__execution_id":execution});
         let mut catalog_args = args.clone();
         catalog_args["operation"] = json!("profiles");
@@ -2079,6 +2137,17 @@ mod tests {
             .unwrap();
         assert_eq!(first["request_id"], retry["request_id"]);
         assert_eq!(first["admitted"], false);
+        assert_eq!(first["budget_can_admit_attempt"], true);
+        assert_eq!(first["awaiting_owner_review"], true);
+        let stored = requests
+            .list_pending_for_scope("owner", "workspace")
+            .await
+            .pop()
+            .unwrap();
+        let presented = stored.clone().for_presentation();
+        assert_eq!(presented.context["review_href"], first["review_url"]);
+        assert_eq!(presented.context["review_label"], "Review and start");
+        assert!(stored.context.get("review_href").is_none());
         let api = RelentlessApi::new(
             service.workspace().clone(),
             router.clone(),
@@ -2175,6 +2244,29 @@ mod tests {
                 .len(),
             1
         );
+        assert!(api.store(&scope).list().unwrap().is_empty());
+        assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            requests
+                .respond_scoped(
+                    magician::magician_v2::user_requests::UserResponse {
+                        request_id: request_id.into(),
+                        decision: "dismiss".into(),
+                        input: None,
+                        channel: "web".into(),
+                        sensitive: vec![],
+                    },
+                    Some("owner"),
+                    Some("workspace"),
+                )
+                .await,
+            magician::magician_v2::user_requests::ScopedResponseResult::Accepted
+        );
+        let closed = propose_relentless::handle(resources, args).await.unwrap();
+        assert_eq!(closed["status"], "closed");
+        assert_eq!(closed["awaiting_owner_review"], false);
+        assert_eq!(closed["admitted"], false);
+        assert!(api.pending_proposals(&scope).await.unwrap().is_empty());
         assert!(api.store(&scope).list().unwrap().is_empty());
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 0);
     }

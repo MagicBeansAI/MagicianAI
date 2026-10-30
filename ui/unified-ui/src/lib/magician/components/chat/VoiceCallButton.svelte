@@ -67,8 +67,9 @@
 			if (mode === 'realtime' && selectedRealtimeProfile?.mode === 'translation') {
 				setPushToTalkMode(false);
 			}
+			// No thread here: the call joins the chat on screen, which a stale
+			// media-session thread would override.
 			void startVoiceCall({
-				threadId: mediaSession?.thread_id ?? null,
 				mode,
 				realtimeProfile: mode === 'realtime' ? $realtimeVoiceProfileStore : null
 			});

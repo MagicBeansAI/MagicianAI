@@ -26,7 +26,11 @@ Optional environment variables:
 - `WHATSAPP_QR_FILE` (no default; unset means no QR image is written. The bot
   runtime seeds a scope-local path when the bot config does not set one)
 - `WHATSAPP_STATUS_FILE` (connected marker; seeded by the runtime like the QR file)
-- `WHATSAPP_PHONE` (optional; requests pairing-code login for this number)
+- `WHATSAPP_PAIRING_CODE_FILE` (pairing code for "Link with phone number";
+  seeded beside the QR file, written `0600`, removed once connected)
+- `WHATSAPP_PHONE` (requests pairing-code login for this number; Magician passes
+  it for one start from Service accounts — do not keep it in the env file, or
+  every restart asks for a new code). One code is requested per login.
 - `WHATSAPP_SELF_JID` (optional fallback; accepts bare phone numbers, `+`-prefixed
   phone numbers, or full WhatsApp JIDs)
 

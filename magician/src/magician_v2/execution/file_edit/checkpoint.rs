@@ -210,7 +210,7 @@ pub fn git_side_ref_snapshot(
         })
         .collect();
     let git = |index: Option<&std::path::Path>, a: &[&str]| -> Option<std::process::Output> {
-        let mut command = Command::new("git");
+        let mut command = Command::new(runtime_core::process::git_program());
         command.arg("-C").arg(real_path);
         if let Some(idx) = index {
             command.env("GIT_INDEX_FILE", idx);
@@ -278,7 +278,7 @@ pub fn git_restore_to(real_path: &std::path::Path, git_sha: &str) -> bool {
     if git_sha.trim().is_empty() {
         return false;
     }
-    Command::new("git")
+    Command::new(runtime_core::process::git_program())
         .arg("-C")
         .arg(real_path)
         .args(["restore", "--source", git_sha, "--worktree", "--", "."])

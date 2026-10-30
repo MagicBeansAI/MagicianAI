@@ -20,6 +20,7 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
+    time::Instant,
 };
 
 use chrono::NaiveDate;
@@ -32,7 +33,8 @@ use magician::magician_v2::analytics::parquet_maintenance::{
 use magician::magician_v2::artifact_v2::workspace::ArtifactV2Workspace;
 use magicllm::LlmScope;
 
-use super::{duckdb_parquet_source_sql, install_llm_calls_views};
+use super::duckdb_parquet_source_sql;
+use magician::magician_v2::analytics::legacy_llm_compat::install_legacy_llm_views_for_daily_summary;
 
 /// The relation name client SQL reads.
 pub(super) const LLM_COST_DAILY_RELATION: &str = "llm_cost_daily";
@@ -51,7 +53,13 @@ const CREATE_SQL: &str = "CREATE TABLE llm_cost_daily (
     cache_read_tokens BIGINT,
     cache_creation_tokens BIGINT,
     first_call_ms BIGINT,
-    last_call_ms BIGINT
+    last_call_ms BIGINT,
+    root_execution_id VARCHAR,
+    measured_calls BIGINT,
+    priced_calls BIGINT,
+    token_calls BIGINT,
+    cache_read_calls BIGINT,
+    cache_write_calls BIGINT
 )";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +77,12 @@ struct CostDailyRow {
     cache_creation_tokens: i64,
     first_call_ms: Option<i64>,
     last_call_ms: Option<i64>,
+    root_execution_id: Option<String>,
+    measured_calls: i64,
+    priced_calls: i64,
+    token_calls: i64,
+    cache_read_calls: i64,
+    cache_write_calls: i64,
 }
 
 type DayKey = (String, String, NaiveDate);
@@ -85,12 +99,17 @@ pub(super) fn install_llm_cost_daily(
     layout: &ArtifactV2Workspace,
     scope: &LlmScope,
     llm_calls_root: &Path,
+    deadline: Instant,
 ) -> anyhow::Result<()> {
     conn.execute_batch(CREATE_SQL)
         .map_err(|error| anyhow::anyhow!("create llm_cost_daily: {error}"))?;
     let days = partition_days(llm_calls_root)?;
     let mut day_files = HashMap::new();
     for day in &days {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "daily usage preparation deadline exceeded"
+        );
         day_files.insert(
             *day,
             DayFiles::governed(layout, scope, llm_calls_root, *day)?,
@@ -104,7 +123,11 @@ pub(super) fn install_llm_cost_daily(
             .iter()
             .filter_map(|neighbour| day_files.get(neighbour))
             .collect();
-        let rows = day_summary(scope, *day, &window)?;
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "daily usage preparation deadline exceeded"
+        );
+        let rows = day_summary(scope, *day, &window, deadline)?;
         let dt = day.format("%Y-%m-%d").to_string();
         for row in rows.iter() {
             appender
@@ -123,6 +146,12 @@ pub(super) fn install_llm_cost_daily(
                     row.cache_creation_tokens,
                     row.first_call_ms,
                     row.last_call_ms,
+                    row.root_execution_id,
+                    row.measured_calls,
+                    row.priced_calls,
+                    row.token_calls,
+                    row.cache_read_calls,
+                    row.cache_write_calls,
                 ])
                 .map_err(|error| anyhow::anyhow!("append llm_cost_daily row: {error}"))?;
         }
@@ -179,6 +208,7 @@ fn day_summary(
     scope: &LlmScope,
     day: NaiveDate,
     window: &[&DayFiles],
+    deadline: Instant,
 ) -> anyhow::Result<Arc<Vec<CostDailyRow>>> {
     let calls: Vec<PathBuf> = window
         .iter()
@@ -198,7 +228,7 @@ fn day_summary(
             return Ok(Arc::clone(rows));
         }
     }
-    let rows = Arc::new(compute_day(scope, day, &calls, &attempts)?);
+    let rows = Arc::new(compute_day(scope, day, &calls, &attempts, deadline)?);
     lock_summaries().insert(key, (fingerprint, Arc::clone(&rows)));
     Ok(rows)
 }
@@ -218,55 +248,74 @@ fn compute_day(
     day: NaiveDate,
     calls: &[PathBuf],
     attempts: &[PathBuf],
+    deadline: Instant,
 ) -> anyhow::Result<Vec<CostDailyRow>> {
     let conn = duckdb::Connection::open_in_memory()
         .map_err(|error| anyhow::anyhow!("open in-memory DuckDB: {error}"))?;
     configure_analytics_read_connection_checked(&conn, "llm_cost_daily")
         .map_err(|error| anyhow::anyhow!("configure conservative DuckDB limits: {error}"))?;
-    let attempts_sql = (!attempts.is_empty()).then(|| duckdb_parquet_source_sql(attempts));
-    install_llm_calls_views(
-        &conn,
-        &duckdb_parquet_source_sql(calls),
-        attempts_sql.as_deref(),
-        &scope.principal,
-        &scope.workspace,
-        None,
-    )?;
-    let mut statement = conn
-        .prepare(
-            "SELECT task_id, chat_session_id, provider, model, COUNT(*)::BIGINT, \
-                    COALESCE(SUM(cost_usd), 0)::DOUBLE, \
-                    COALESCE(SUM(input_tokens), 0)::BIGINT, \
-                    COALESCE(SUM(output_tokens), 0)::BIGINT, \
-                    COALESCE(SUM(reasoning_tokens), 0)::BIGINT, \
-                    COALESCE(SUM(cache_read_tokens), 0)::BIGINT, \
-                    COALESCE(SUM(cache_creation_tokens), 0)::BIGINT, \
-                    MIN(timestamp_ms)::BIGINT, MAX(timestamp_ms)::BIGINT \
-             FROM llm_calls WHERE CAST(dt AS VARCHAR) = ? \
-             GROUP BY 1, 2, 3, 4",
-        )
-        .map_err(|error| anyhow::anyhow!("prepare llm_cost_daily summary: {error}"))?;
-    let rows = statement
-        .query_map([day.format("%Y-%m-%d").to_string()], |row| {
-            Ok(CostDailyRow {
-                task_id: row.get(0)?,
-                chat_session_id: row.get(1)?,
-                provider: row.get(2)?,
-                model: row.get(3)?,
-                calls: row.get(4)?,
-                cost_usd: row.get(5)?,
-                input_tokens: row.get(6)?,
-                output_tokens: row.get(7)?,
-                reasoning_tokens: row.get(8)?,
-                cache_read_tokens: row.get(9)?,
-                cache_creation_tokens: row.get(10)?,
-                first_call_ms: row.get(11)?,
-                last_call_ms: row.get(12)?,
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    anyhow::ensure!(
+        !remaining.is_zero(),
+        "daily usage preparation deadline exceeded"
+    );
+    super::run_analytics_operation_with_interrupt_timeout(&conn, remaining, || {
+        let attempts_sql = (!attempts.is_empty()).then(|| duckdb_parquet_source_sql(attempts));
+        install_legacy_llm_views_for_daily_summary(
+            &conn,
+            &duckdb_parquet_source_sql(calls),
+            attempts_sql.as_deref(),
+            &scope.principal,
+            &scope.workspace,
+        )?;
+        let mut statement = conn
+            .prepare(
+                "SELECT task_id, chat_session_id, provider, model, COUNT(*)::BIGINT, \
+                        COALESCE(SUM(cost_usd), 0)::DOUBLE, \
+                        COALESCE(SUM(input_tokens), 0)::BIGINT, \
+                        COALESCE(SUM(output_tokens), 0)::BIGINT, \
+                        COALESCE(SUM(reasoning_tokens), 0)::BIGINT, \
+                        COALESCE(SUM(cache_read_tokens), 0)::BIGINT, \
+                        COALESCE(SUM(cache_creation_tokens), 0)::BIGINT, \
+                        MIN(timestamp_ms)::BIGINT, MAX(timestamp_ms)::BIGINT, \
+                        COALESCE(root_execution_id, execution_id), \
+                        COUNT(*) FILTER (WHERE (COALESCE(provider_attempt_count, 1) <> 0 OR response_kind = 'harness_aggregate') AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cost_usd IS NOT NULL))::BIGINT, \
+                        COUNT(*) FILTER (WHERE (COALESCE(provider_attempt_count, 1) <> 0 OR response_kind = 'harness_aggregate') AND cost_usd IS NOT NULL)::BIGINT, \
+                        COUNT(*) FILTER (WHERE (COALESCE(provider_attempt_count, 1) <> 0 OR response_kind = 'harness_aggregate') AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL))::BIGINT, \
+                        COUNT(*) FILTER (WHERE cache_read_tokens IS NOT NULL)::BIGINT, \
+                        COUNT(*) FILTER (WHERE cache_creation_tokens IS NOT NULL)::BIGINT \
+                 FROM llm_calls WHERE CAST(dt AS VARCHAR) = ? \
+                 GROUP BY 1, 2, 3, 4, 14",
+            )
+            .map_err(|error| anyhow::anyhow!("prepare llm_cost_daily summary: {error}"))?;
+        let rows = statement
+            .query_map([day.format("%Y-%m-%d").to_string()], |row| {
+                Ok(CostDailyRow {
+                    task_id: row.get(0)?,
+                    chat_session_id: row.get(1)?,
+                    provider: row.get(2)?,
+                    model: row.get(3)?,
+                    calls: row.get(4)?,
+                    cost_usd: row.get(5)?,
+                    input_tokens: row.get(6)?,
+                    output_tokens: row.get(7)?,
+                    reasoning_tokens: row.get(8)?,
+                    cache_read_tokens: row.get(9)?,
+                    cache_creation_tokens: row.get(10)?,
+                    first_call_ms: row.get(11)?,
+                    last_call_ms: row.get(12)?,
+                    root_execution_id: row.get(13)?,
+                    measured_calls: row.get(14)?,
+                    priced_calls: row.get(15)?,
+                    token_calls: row.get(16)?,
+                    cache_read_calls: row.get(17)?,
+                    cache_write_calls: row.get(18)?,
+                })
             })
-        })
-        .map_err(|error| anyhow::anyhow!("summarise llm_cost_daily: {error}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| anyhow::anyhow!("read llm_cost_daily row: {error}"))
+            .map_err(|error| anyhow::anyhow!("summarise llm_cost_daily: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| anyhow::anyhow!("read llm_cost_daily row: {error}"))
+    })
 }
 
 /// Day partitions under the `llm_calls` root, oldest first.

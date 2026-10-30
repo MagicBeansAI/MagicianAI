@@ -73,7 +73,11 @@ fn repair_from_messages(
                 let ChatMessageContent::Text { text, .. } = &message.content else {
                     return None;
                 };
-                let sanitized = super::service::redact_chat_memory_text(text);
+                // The episode kept only the owner's words; read the stored
+                // message the same way so the two still match.
+                let sanitized = super::service::redact_chat_memory_text(
+                    &super::authored_framing::owner_words(text),
+                );
                 // The compatibility renderer trimmed the source before
                 // clipping. Match that view but retain the complete original.
                 (if truncated {

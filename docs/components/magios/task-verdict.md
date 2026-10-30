@@ -18,7 +18,7 @@ legacy `DeepWorkPanel` view has no remaining callers.
 ## The verdict
 
 One sentence answering *"is this task okay?"*, from state, attention and
-progress. Nine states are checked in a fixed order that **is a priority**: the
+progress. Ten states are checked in a fixed order that **is a priority**: the
 state demanding action wins, so a finished task with an open question reads
 *waiting on you*.
 
@@ -32,13 +32,16 @@ state demanding action wins, so a finished task with an open question reads
 | `queued` | `Queued` | why it has not started: `Not started yet` (pending), `Plan approved, not started yet` (ready), `Working out a plan before it starts` (planning), `Scheduled to start later` (deferred); `Waiting to start` when no reason is known |
 | `paused` | `Paused` | `Ready to resume when you are` |
 | `archived` | `Archived` | `No longer active` |
+| `finalizing` | `Preparing final result` | *(empty — the detail shows a spinner row with elapsed time)* |
 | `finished` | `Finished · 3m 12s` | *(empty — the output summary owns it)* |
+
+`finalizing` is a finished task whose final answer is still being written (`synthesis_pending`); it sits after every state above it and before `finished`, and reverts to `finished` once the flag is 10 minutes old. Android's `TaskVerdict.kt` mirrors it (`Finalizing`, `SynthesisWait`).
 
 The last branch is an **unconditional fall-through**, so an unknown status
 still gets a verdict. Only the `waiting` and `stalled` headlines tick with the
 clock.
 
-`VerdictState` carries a **marker glyph** (all nine distinct, so state never
+`VerdictState` carries a **marker glyph** (all ten distinct, so state never
 rests on colour) and a **severity band**: `waiting`/`stalled` are attention;
 `cancelled`/`queued`/`paused`/`archived` are neutral (a run you stopped is
 okay). Severity is **not** keyed off the `statusColor` helper, which maps task

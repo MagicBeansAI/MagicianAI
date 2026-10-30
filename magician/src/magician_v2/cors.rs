@@ -28,7 +28,7 @@ use actix_web::{
 /// truth for both surfaces so the values cannot drift apart.
 pub const API_CORS_ALLOWED_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 pub const API_CORS_ALLOWED_HEADERS: &str =
-    "Authorization, Content-Type, If-Match, If-None-Match, X-Magician-Device-Id";
+    "Authorization, Content-Type, If-Match, If-None-Match, X-Magician-Device-Id, X-Chat-Session-Id, X-Resource-Authority-Key";
 pub const API_CORS_EXPOSE_HEADERS: &str = "ETag, Location, X-App-Widget-Refresh-After";
 pub const API_CORS_MAX_AGE_SECONDS: &str = "600";
 

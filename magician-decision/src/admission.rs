@@ -111,8 +111,11 @@ impl ModelPermit {
                 health.until = None;
                 health.issue = None;
             },
+            // A provider refusing one request (bad image, over its context)
+            // is not an outage: cooling down would starve every other caller.
             Some(error)
                 if crate::runtime::is_availability_error(error)
+                    && !error.is_request_rejection()
                     && !matches!(
                         error,
                         DecisionError::DispatchFull | DecisionError::DispatchTimeout

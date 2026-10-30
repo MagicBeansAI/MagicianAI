@@ -23,7 +23,7 @@
 //!    background workers start: every store's rows for retired scopes.
 //!
 //! Kept on purpose: `llm_dispatch/*.jsonl` (accounting, aged out by its own
-//! retention), `system/device-actions.jsonl` (audit), and SilverBullet
+//! retention), `system/device-actions.jsonl` (audit), and the notes folder
 //! `spaces/<p>/<w>` (the owner's notes).
 
 use std::collections::BTreeSet;

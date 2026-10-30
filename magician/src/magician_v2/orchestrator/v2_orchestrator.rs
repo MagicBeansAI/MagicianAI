@@ -51,10 +51,10 @@ use crate::magician_v2::{
             delegation_successor_deferred_until, exact_pause_admission_failure,
             execute_agent_cycle, execute_agentically_resume_exact,
             forget_exact_pause_process_authority, protected_delegation_claim_deferred_until,
-            protected_delegation_is_already_consumed, session_id_for_execution, AgenticContext,
-            EnvironmentState, ExecutionPauseKind, FullPauseData, FullPauseStore,
-            OwnerExecutionProfile, OwnershipRuntime, PendingPauseInfo, PromptAgentKind,
-            PromptIdentityContext, StatelessTerminalExecutionLifecycleExclusion, UserInputType,
+            protected_delegation_is_already_consumed, AgenticContext, EnvironmentState,
+            ExecutionPauseKind, FullPauseData, FullPauseStore, OwnerExecutionProfile,
+            OwnershipRuntime, PendingPauseInfo, PromptAgentKind, PromptIdentityContext,
+            StatelessTerminalExecutionLifecycleExclusion, UserInputType,
         },
         build_compiled_registry, AgenticExecutionSummaryRecord, ChildDeliverableSummary,
         MagicutorClient, ScreenshotStorage,
@@ -1341,6 +1341,41 @@ fn apply_agent_definition_execution_constraints(
     ctx.tier_definitions = definition.memory_tiers.clone();
 }
 
+/// The read lineage a child delegated from `parent` starts with, root
+/// first: the parent's own lineage, then the owners suspended on it, then
+/// its active owner (the delegator).
+pub(crate) fn child_read_lineage(parent: &ExecutionRun) -> Vec<String> {
+    let mut lineage = parent.read_lineage.clone();
+    let owners = parent
+        .owner_stack
+        .iter()
+        .chain(std::iter::once(&parent.active_owner_agent_id));
+    for agent in owners {
+        let agent = agent.trim();
+        if !agent.is_empty() && !lineage.iter().any(|known| known == agent) {
+            lineage.push(agent.to_string());
+        }
+    }
+    // The owner's own VibeDev session acts as the admin in its root frame,
+    // and engineers working in that run read as the admin lets them; what
+    // either of them spawns does too.
+    if parent.parent_execution_id.is_none()
+        && parent.task_id.as_deref().is_some_and(|task_id| {
+            crate::magician_v2::execution::goal_workspace_access::is_owner_started_session(
+                &parent.principal,
+                &parent.workspace,
+                task_id,
+            )
+        })
+    {
+        let admin = crate::magician_v2::execution::goal_workspace_access::admin_agent();
+        if !lineage.contains(&admin) {
+            lineage.push(admin);
+        }
+    }
+    lineage
+}
+
 fn apply_persisted_delegation_depth(ctx: &mut AgenticContext, delegation_chain: &[String]) {
     ctx.depth = ctx.depth.max(delegation_chain.len());
 }
@@ -2007,6 +2042,28 @@ impl OwnershipRuntime for MagicianV2Orchestrator {
                 )
             })?,
         );
+        // The owner's personality (saved profile, else its default preset)
+        // rides the identity every decision prompt renders, never the goal
+        // text, which also drives memory relevance.
+        let mut prompt_identity = prompt_identity_for_agent_definition(&definition);
+        if let Some(block) = Box::pin(
+            crate::magician_v2::skills::agent_personality_block_in_scope(
+                layout,
+                principal,
+                workspace,
+                &definition.agent_id,
+                definition.default_personality.as_deref(),
+            ),
+        )
+        .await
+        {
+            let persona = match prompt_identity.base_persona.take() {
+                Some(persona) => format!("{persona}\n\n{block}"),
+                None => block,
+            };
+            prompt_identity.base_persona = Some(persona.clone());
+            prompt_identity.source_agent_persona = Some(persona);
+        }
         let workspace_skills_dir = layout.scope_skills_root(principal, workspace);
         let available_procedure_skills = crate::magician_v2::skills::agent_procedure_skill_catalog(
             &workspace_skills_dir,
@@ -2024,7 +2081,7 @@ impl OwnershipRuntime for MagicianV2Orchestrator {
             ),
             llm_model_override,
             llm_routing_overrides,
-            prompt_identity: Some(prompt_identity_for_agent_definition(&definition)),
+            prompt_identity: Some(prompt_identity),
             delegation_targets,
             merged_agent_tools,
             denied_capability_names: definition
@@ -2426,6 +2483,9 @@ pub struct MagicianV2Orchestrator {
     /// One process-shared L2/L3 runtime for Chat, realtime voice, and
     /// autonomous tasks. Configuration remains fully rollback-gated.
     agent_surface_runtime_config: std::sync::RwLock<crate::config::AgentSurfaceRuntimeConfig>,
+    /// The `agentic:` config section (decide() keep-tail window), copied into
+    /// every executor factory config.
+    agentic_settings: std::sync::RwLock<crate::config::AgenticSettings>,
     surface_plan_cache:
         std::sync::RwLock<crate::magician_v2::execution::flat_loop::SurfacePlanCache>,
     surface_working_sets:
@@ -2801,6 +2861,43 @@ impl MagicianV2Orchestrator {
             None,
             None,
         );
+        // Owner-approved diffs are applied outside any run, and the shell and
+        // coding OS sandboxes are built outside the file executor: all of
+        // them check the read-only roots the agents' file sandbox enforces.
+        {
+            let mut policy = runtime_config.file_sandbox();
+            policy.augment_with_scopes_root(runtime_workspace_layout.base_root());
+            crate::magician_v2::execution::native_executors::register_agent_file_sandbox(policy);
+            crate::magician_v2::execution::native_executors::register_agent_shell_working_dirs(
+                runtime_config.shell_sandbox().allowed_working_dirs,
+            );
+            // Goal workspaces (`goal_workspace_access`): every scope's notes
+            // spaces' `Workspaces/` folders, and any sandbox root named
+            // `Workspaces`, fenced before the first agent runs. Saving notes
+            // settings and each notes tool call register theirs again. Not
+            // in unit tests: the registry is process-wide, and a test's
+            // orchestrator must not fence other tests' shells.
+            #[cfg(not(test))]
+            {
+                let file_sandbox = runtime_config.file_sandbox();
+                let shell_sandbox = runtime_config.shell_sandbox();
+                crate::magician_v2::execution::goal_workspace_access::register_workspaces_roots(
+                    crate::magician_v2::execution::goal_workspace_access::workspaces_roots_in_config(
+                        file_sandbox
+                            .allowed_roots
+                            .iter()
+                            .chain(&file_sandbox.read_only_roots)
+                            .chain(&file_sandbox.extra_writable_roots)
+                            .chain(&shell_sandbox.allowed_working_dirs),
+                    ),
+                );
+                // Every scope's notes spaces now, and again every few seconds
+                // (a scope created later, a provider switched).
+                crate::magician_v2::execution::goal_workspace_access::register_notes_layout(
+                    runtime_workspace_layout.clone(),
+                );
+            }
+        }
         let switch_workspace = runtime_workspace_layout.clone();
         let api_mining_switch = crate::magician_v2::api_mining::switch::ApiMiningSwitch::new(
             true,
@@ -2886,6 +2983,7 @@ impl MagicianV2Orchestrator {
             agent_surface_runtime_config: std::sync::RwLock::new(
                 crate::config::AgentSurfaceRuntimeConfig::default(),
             ),
+            agentic_settings: std::sync::RwLock::new(crate::config::AgenticSettings::default()),
             surface_plan_cache: std::sync::RwLock::new(
                 crate::magician_v2::execution::flat_loop::SurfacePlanCache::new(512),
             ),
@@ -2965,6 +3063,15 @@ impl MagicianV2Orchestrator {
                 None,
             ),
         )
+    }
+
+    /// Install the `agentic:` config section before autonomous executor
+    /// construction. Executors built afterwards carry it into every run.
+    pub fn configure_agentic_settings(&self, settings: crate::config::AgenticSettings) {
+        *self
+            .agentic_settings
+            .write()
+            .expect("agentic_settings lock poisoned") = settings;
     }
 
     /// Configure one bounded surface runtime before Chat and autonomous
@@ -4805,6 +4912,34 @@ impl MagicianV2Orchestrator {
             .map(|entry| entry.value().clone())
     }
 
+    /// Re-register the canonical event scope of a task-backed execution whose
+    /// process-local registration was lost to a restart. `None` for a
+    /// taskless or non-Artifact execution, which keeps its transport-only
+    /// routing.
+    async fn restore_runtime_canonical_event_scope(
+        &self,
+        execution: &ExecutionRun,
+    ) -> Option<CanonicalEventScope> {
+        let task_id = execution.task_id.as_deref()?;
+        let service = self.artifact_v2_service()?;
+        let restored = service
+            .restore_runtime_canonical_scope(
+                &execution.principal,
+                &execution.workspace,
+                task_id,
+                &execution.id,
+            )
+            .await;
+        if restored.is_some() {
+            info!(
+                execution_id = %execution.id,
+                task_id,
+                "[MAGICIAN-V2-ORCHESTRATOR] Restored canonical event scope for a run started after restart"
+            );
+        }
+        restored
+    }
+
     fn emit_runtime_canonical_event(
         &self,
         execution_id: &str,
@@ -5210,6 +5345,11 @@ impl MagicianV2Orchestrator {
                 .agent_surface_runtime_config
                 .read()
                 .expect("agent_surface_runtime_config lock poisoned")
+                .clone(),
+            agentic_settings: self
+                .agentic_settings
+                .read()
+                .expect("agentic_settings lock poisoned")
                 .clone(),
             surface_plan_cache: self
                 .surface_plan_cache
@@ -6270,6 +6410,23 @@ impl MagicianV2Orchestrator {
         .await
     }
 
+    /// Record who delegated down to `execution_id` for goal workspace reads
+    /// (`ExecutionRun::read_lineage`). Server-side only: a verified chat
+    /// delegation's root, and a delegated child inheriting its parent's.
+    pub async fn record_execution_read_lineage(
+        &self,
+        execution_id: &str,
+        read_lineage: &[String],
+    ) -> Result<(), String> {
+        if read_lineage.is_empty() {
+            return Ok(());
+        }
+        self.conversation_store
+            .set_execution_read_lineage(execution_id, read_lineage)
+            .await
+            .map_err(|error| format!("Failed to record read lineage: {error}"))
+    }
+
     /// Create a root execution that carries the authority of the **work that
     /// asked for it**.
     ///
@@ -6562,6 +6719,10 @@ impl MagicianV2Orchestrator {
         parent_execution_id: Option<&str>,
         timeout_secs: Option<u64>,
         delegation_chain: Vec<String>,
+        // Whether the child carries goal workspace reads from its parent's
+        // lineage (`child_read_lineage`). False for an app's agent-tool child:
+        // an app is a trust boundary, so its children read as themselves.
+        inherit_read_lineage: bool,
         // Inherited from the parent's durable `ExecutionRun` like
         // `delegation_chain` — never sourced from model-supplied targets. The
         // generic carrier, so a child of a support-triage or recruiting run
@@ -6592,6 +6753,23 @@ impl MagicianV2Orchestrator {
         // is a way out of the parent's ceiling (§4.2c row 3). A store that
         // dropped it says so here.
         verify_persisted_work_authority(&run, work_authority.as_ref())?;
+        // Goal workspace reads: the child's lineage is built from the parent's
+        // own record (`child_read_lineage`). A lookup or write that fails
+        // leaves the child with fewer reads, never more.
+        if let Some(parent_id) = parent_execution_id.filter(|_| inherit_read_lineage) {
+            match self.conversation_store.get_execution(parent_id).await {
+                Ok(parent) => {
+                    let lineage = child_read_lineage(&parent);
+                    if let Err(error) = self.record_execution_read_lineage(&run.id, &lineage).await
+                    {
+                        warn!(execution_id = %run.id, %error, "[GOAL-WORKSPACES] child read lineage not recorded");
+                    }
+                },
+                Err(error) => {
+                    warn!(execution_id = %run.id, %error, "[GOAL-WORKSPACES] parent read lineage unreadable");
+                },
+            }
+        }
         self.mint_server_owned_fresh_launch_capability(&run);
 
         if let (Some(parent_id), Some(service)) = (parent_execution_id, self.artifact_v2_service())
@@ -8525,7 +8703,10 @@ impl MagicianV2Orchestrator {
     /// - PartialReplan: Incremental plan refinement with current answers
     /// - FullReplan: Complete replanning cycle (batch complete or single question)
     pub async fn resume_workflow(&self, notification: ResumeNotification) -> Result<(), String> {
-        self.resume_workflow_inner(notification, true).await
+        crate::magician_v2::execution::stack_headroom::with_stack_headroom(
+            self.resume_workflow_inner(notification, true),
+        )
+        .await
     }
 
     async fn resume_workflow_inner(
@@ -8619,7 +8800,13 @@ impl MagicianV2Orchestrator {
             return Ok(());
         }
 
-        self.transition_status_from_runtime(&workflow_id, WorkflowEvent::UserResumed)
+        let resume_status = self.get_execution_status(&workflow_id).await?;
+        let resume_event = if resume_status == WaitingState::WaitingUser {
+            WorkflowEvent::AllSlotsAnswered
+        } else {
+            WorkflowEvent::UserResumed
+        };
+        self.transition_status_if_current(&workflow_id, &resume_status, resume_event)
             .await?;
 
         let execution = self
@@ -9807,8 +9994,10 @@ impl MagicianV2Orchestrator {
                     latest.id
                 ));
             }
-            self.resume_workflow_inner(notification.clone(), false)
-                .await?;
+            crate::magician_v2::execution::stack_headroom::with_stack_headroom(
+                self.resume_workflow_inner(notification.clone(), false),
+            )
+            .await?;
             source_turn = self
                 .conversation_store
                 .get_turn(&execution_id, source_turn_id)
@@ -10523,6 +10712,21 @@ impl MagicianV2Orchestrator {
         if new_status != WaitingState::Runnable {
             self.retire_server_owned_fresh_launch_capability(&execution.id);
         }
+        // Terminal settlement also closes abandoned shared browser sessions;
+        // merely releasing their lease would strand the daemon and tabs.
+        if new_status.is_terminal() {
+            let run = execution.id.clone();
+            let principal = execution.principal.clone();
+            let workspace = execution.workspace.clone();
+            let storage = std::path::PathBuf::from(self.runtime_config.storage_path());
+            let magicutor = self.magicutor_client.clone();
+            tokio::spawn(async move {
+                crate::magician_v2::execution::primitive_dispatch::cleanup::cleanup_terminal_run(
+                    &run, &storage, &principal, &workspace, &magicutor, false,
+                )
+                .await;
+            });
+        }
         self.emit_execution_responsibility_changed_for(&execution.id)
             .await;
 
@@ -10669,6 +10873,29 @@ impl MagicianV2Orchestrator {
             new_status,
             reason,
             false,
+            Some(expected),
+        )
+        .await
+    }
+
+    /// Settle the runtime half of an execution whose outcome Artifact V2 has
+    /// already recorded (the orphaned-pause finalizer): runtime status only,
+    /// with every terminal side effect (pause and HITL cleanup, parent wake),
+    /// and only while the execution is still `expected`. Without it the
+    /// execution stayed `WaitingUser` and a delegated child's parent sat in
+    /// `WaitingChildren` with nobody left to wake it.
+    pub(crate) async fn settle_runtime_after_recorded_outcome(
+        &self,
+        execution_id: &str,
+        expected: &WaitingState,
+        new_status: WaitingState,
+        reason: &str,
+    ) -> Result<WaitingState, String> {
+        self.set_execution_status_with_side_effects_internal(
+            execution_id,
+            new_status,
+            reason,
+            true,
             Some(expected),
         )
         .await
@@ -11452,6 +11679,47 @@ impl MagicianV2Orchestrator {
         }
     }
 
+    /// Wake a delegated child's parent after the child's code review closed.
+    ///
+    /// Every child status change that ends a child goes through
+    /// `finalize_execution_status_change`, which wakes the parent. A review is
+    /// the one thing a parked parent also waits on that can change with no
+    /// status change at all: a child can finish while its staged proposal is
+    /// still `Pending`, and the parent stays in `WaitingChildren` behind the
+    /// open-review gate. Whatever closes that review (the owner's
+    /// apply/reject, a forced-failure cleanup) calls this so the parent
+    /// reconciles again.
+    ///
+    /// A child that is still running is skipped: its own terminal transition
+    /// wakes the parent. A root execution has no parent to wake. The wake
+    /// replaces any queued one for the same parent and reconciliation is a
+    /// no-op unless the parent is still waiting, so calling this twice is
+    /// harmless.
+    pub async fn notify_parent_after_child_review_closed(&self, child_execution_id: &str) {
+        let child = match self
+            .conversation_store
+            .get_execution(child_execution_id)
+            .await
+        {
+            Ok(child) => child,
+            Err(V2StorageError::ExecutionNotFound(_)) => return,
+            Err(error) => {
+                warn!(
+                    child_execution_id = %child_execution_id,
+                    %error,
+                    "[MAGICIAN-V2-ORCHESTRATOR] Could not load child after its review closed; retaining a parent reconciliation retry"
+                );
+                self.retain_terminal_child_parent_reconciliation_retry(child_execution_id);
+                return;
+            },
+        };
+        if child.parent_execution_id.is_none() || !child.waiting_state.is_terminal() {
+            return;
+        }
+        self.notify_parent_of_terminal_child_transition(&child)
+            .await;
+    }
+
     // ========================================================================
     // Slot Management
     // ========================================================================
@@ -12106,21 +12374,30 @@ impl MagicianV2Orchestrator {
                     // retired (planning latency P5) this guards agent goal
                     // cycles (scheduled goals, program missions), the only
                     // runs that still plan here outside V3 task planning.
-                    // A V3 task-planning execution (`planexec_`) is exempt: its
-                    // durable planner turns the waiting state into plan questions
-                    // or a draft for approval on the task plan, so it never waits
-                    // silently even when the ask loop created nothing.
+                    // A V3 task-planning execution (`planexec_`) with nothing
+                    // asked stays in Planning instead: the durable planner turns
+                    // the finished plan into a draft for approval that carries
+                    // its unresolved inputs. Entering WaitingUser with no
+                    // question left a clarification resume unable to reach
+                    // PlanningComplete, so it replanned forever.
                     let created_clarifications = question_ids.len();
-                    if created_clarifications == 0 && !is_task_planning_execution(execution_id) {
-                        self.fail_execution_with_visible_reason(
-                            execution_id,
-                            &format!(
-                                "Planning needed {count} answer(s) before it could start, but no \
-                                 question could be delivered, so the run was stopped instead of \
-                                 waiting on a question you cannot see."
-                            ),
-                        )
-                        .await;
+                    if created_clarifications == 0 {
+                        if !is_task_planning_execution(execution_id) {
+                            self.fail_execution_with_visible_reason(
+                                execution_id,
+                                &format!(
+                                    "Planning needed {count} answer(s) before it could start, but \
+                                     no question could be delivered, so the run was stopped \
+                                     instead of waiting on a question you cannot see."
+                                ),
+                            )
+                            .await;
+                            return Ok(());
+                        }
+                        info!(
+                            "[MAGICIAN-V2-ORCHESTRATOR] No upfront question was asked ({} declined); task plan stays in Planning for a draft",
+                            count
+                        );
                         return Ok(());
                     }
 
@@ -12211,6 +12488,12 @@ impl MagicianV2Orchestrator {
                     "[MAGICIAN-V2-ORCHESTRATOR] No upfront questions needed (all deferred or auto-resolved)"
                 );
             }
+        }
+
+        // A task-planning snapshot is a proposal. Only the separate approved
+        // task launch may execute it; clarification recovery must stop here.
+        if is_task_planning_execution(execution_id) {
+            return Ok(());
         }
 
         // Phase 2: Just-In-Time (JIT) clarifications - allow execution to start with JIT inputs unresolved
@@ -12714,7 +12997,7 @@ impl MagicianV2Orchestrator {
                 }
 
                 let controls_before = self.execution_control_fingerprint(&status_lock_ids);
-                let mut active = controls_before
+                let mut active = execution.waiting_state == WaitingState::Executing && controls_before
                     .iter()
                     .find(|(id, _)| id == execution_id)
                     .and_then(|(_, controls)| *controls)
@@ -13063,13 +13346,17 @@ impl MagicianV2Orchestrator {
             );
         }
 
-        let session_id = session_id_for_execution(Some(execution_id));
-        if let Err(error) = self.magicutor_client.delete_session(&session_id).await {
-            warn!(
-                "[MAGICIAN-V2-ORCHESTRATOR] Failed to delete browser session {}: {} (continuing anyway)",
-                session_id, error
-            );
-        }
+        let run = execution.id.clone();
+        let principal = execution.principal.clone();
+        let workspace = execution.workspace.clone();
+        let storage = std::path::PathBuf::from(self.runtime_config.storage_path());
+        let magicutor = self.magicutor_client.clone();
+        tokio::spawn(async move {
+            crate::magician_v2::execution::primitive_dispatch::cleanup::cleanup_terminal_run(
+                &run, &storage, &principal, &workspace, &magicutor, true,
+            )
+            .await;
+        });
         self.drain_captured_tasks_for_execution(execution_id).await;
 
         // NOTE: We intentionally do NOT clear observations on cancel - user may want to see what happened.
@@ -15204,19 +15491,30 @@ impl MagicianV2Orchestrator {
             .durable_artifact_workspace
             .scope_root(&execution.principal, &execution.workspace);
         let store = CodeChangeProposalStore::new(&scope_root);
+        let mut review_closed = false;
         for proposal in store.list_for_task(task_id) {
             if proposal.execution_id.as_deref() == Some(execution_id)
                 && matches!(proposal.status, CodeChangeProposalStatus::Pending)
             {
-                if let Err(error) = store.reject(&proposal.id) {
-                    tracing::warn!(
+                match store.reject(&proposal.id) {
+                    Ok(crate::magician_v2::execution::file_edit::transaction::DecisionTransition::Transitioned(_)) => {
+                        review_closed = true;
+                    },
+                    Ok(_) => {},
+                    Err(error) => tracing::warn!(
                         execution_id = %execution_id,
                         proposal_id = %proposal.id,
                         error = %error,
                         "[DELEGATION] failed to reject orphaned pending proposal on force-terminal"
-                    );
+                    ),
                 }
             }
+        }
+        // A child that is already terminal gets no further status change, so
+        // closing its review is the only signal its parked parent will get.
+        if review_closed {
+            self.notify_parent_after_child_review_closed(execution_id)
+                .await;
         }
     }
 
@@ -16856,6 +17154,11 @@ impl MagicianV2Orchestrator {
         // publication plus Executing -> Paused settlement.
         drop(pause_admission_guards);
         drop(terminal_execution_guards);
+        // Receipt-backed checkpoints become public only after their worker or
+        // terminal projector settles Executing -> Paused. That settlement
+        // needs these status locks too. The committed control-tree fence now
+        // owns pause admission; never hold status locks while waiting for it.
+        status_guards.clear();
 
         // A cooperative stop is not a resumable pause until the exact continuation
         // checkpoint is durable. Never acknowledge success while restart recovery
@@ -16918,9 +17221,12 @@ impl MagicianV2Orchestrator {
             return Err(error);
         }
 
-        // Non-running wait states have no loop finalizer. Persist them while
-        // their status locks are still held, after every running node has a
-        // durable exact continuation checkpoint.
+        // Non-running wait states have no loop finalizer. Reacquire the same
+        // sorted status locks for their checked transitions after every running
+        // node has a durable, publicly resumable continuation checkpoint.
+        for (_, lock) in &status_locks {
+            status_guards.push(lock.clone().lock_owned().await);
+        }
         let mut finalized_waiting = Vec::new();
         let mut waiting_update_error = None;
         for execution in &execution_tree {
@@ -18765,10 +19071,16 @@ impl MagicianV2Orchestrator {
         pause_data: crate::magician_v2::execution::agentic::FullPauseData,
         require_durable: bool,
     ) -> Result<bool, String> {
-        crate::magician_v2::execution::agentic::persist_pause_with_workflow_authority(
-            store,
-            pause_data,
-            require_durable,
+        // Heaped for the same reason as the receipt path below: this future
+        // is one of the largest in the system, and a delegated child that
+        // parks on a review reaches here deep in its parent's stack. Inline,
+        // it overflowed the 2 MiB execution worker (2026-10-19).
+        Box::pin(
+            crate::magician_v2::execution::agentic::persist_pause_with_workflow_authority(
+                store,
+                pause_data,
+                require_durable,
+            ),
         )
         .await
         .map(|(_, receipt_prepared)| receipt_prepared)
@@ -18796,7 +19108,7 @@ impl MagicianV2Orchestrator {
                 harness_pause: pause_state.execution_id.as_deref().and_then(crate::magician_v2::execution::plane::turn_engine::peek_harness_pause_continuation),
                 pause_state: pause_state.clone(),
                 input_type: UserInputType::Confirmation {
-                    confirm_label: Some("Resume".to_string()),
+                    confirm_label: Some(dimension.confirm_label().to_string()),
                     deny_label: Some("Cancel".to_string()),
                     destructive: false,
                 },
@@ -18821,20 +19133,17 @@ impl MagicianV2Orchestrator {
             },
             AgenticOutcome::MaxIterationsReached {
                 pause_state: Some(pause_state),
-                iterations_used,
                 ..
             } => FullPauseData {
                 harness_pause: pause_state.execution_id.as_deref().and_then(crate::magician_v2::execution::plane::turn_engine::peek_harness_pause_continuation),
                 pause_state: pause_state.clone(),
                 input_type: UserInputType::Confirmation {
-                    confirm_label: Some("Resume".to_string()),
+                    confirm_label: Some("Extend and continue".to_string()),
                     deny_label: Some("Cancel".to_string()),
                     destructive: false,
                 },
                 executors: executors.clone().without_manual_pause_signal(),
-                question: Some(format!(
-                    "Max iterations ({iterations_used}) reached. Continue execution?"
-                )),
+                question: Some(crate::magician_v2::execution::agentic::run_budget::iteration_extension_prompt(pause_state)),
                 hint: None,
                 confirmation_action_json: None,
                 secret_approval_challenge_id: None,
@@ -19079,6 +19388,12 @@ impl MagicianV2Orchestrator {
                 );
             }
         }
+        // A zero-iteration legacy checkpoint can name its own source as the
+        // resume address. Merely finding that committed source is never proof
+        // that an owner consumed the pause into a successor.
+        if resume_segment == descriptor.exact_segment_id {
+            return Ok(false);
+        }
         let key = crate::magician_v2::execution::agentic::run_loop::store::ExecutionKey::new(
             descriptor.principal.clone(),
             descriptor.workspace.clone(),
@@ -19311,7 +19626,7 @@ impl MagicianV2Orchestrator {
                 harness_pause: ps.execution_id.as_deref().and_then(crate::magician_v2::execution::plane::turn_engine::peek_harness_pause_continuation),
                             pause_state: ps.clone(),
                             input_type: UserInputType::Confirmation {
-                                confirm_label: Some("Resume".to_string()),
+                                confirm_label: Some(dimension.confirm_label().to_string()),
                                 deny_label: Some("Cancel".to_string()),
                                 destructive: false,
                             },
@@ -19421,7 +19736,6 @@ impl MagicianV2Orchestrator {
             },
             AgenticOutcome::MaxIterationsReached {
                 pause_state: Some(ps),
-                iterations_used,
                 ..
             } => {
                 Box::pin(async move {
@@ -19430,15 +19744,12 @@ impl MagicianV2Orchestrator {
                 harness_pause: ps.execution_id.as_deref().and_then(crate::magician_v2::execution::plane::turn_engine::peek_harness_pause_continuation),
                             pause_state: ps.clone(),
                             input_type: UserInputType::Confirmation {
-                                confirm_label: Some("Resume".to_string()),
+                                confirm_label: Some("Extend and continue".to_string()),
                                 deny_label: Some("Cancel".to_string()),
                                 destructive: false,
                             },
                             executors: executors.clone().without_manual_pause_signal(),
-                            question: Some(format!(
-                                "Max iterations ({}) reached. Continue execution?",
-                                iterations_used
-                            )),
+                            question: Some(crate::magician_v2::execution::agentic::run_budget::iteration_extension_prompt(ps)),
                             hint: None,
                             confirmation_action_json: None,
                             secret_approval_challenge_id: None,
@@ -21834,6 +22145,9 @@ impl MagicianV2Orchestrator {
         }) {
             return Err(SteerExecutionError::NotActive);
         }
+        if execution.waiting_state != WaitingState::Executing {
+            return Err(SteerExecutionError::NotActive);
+        }
         // Driver selection belongs to the execution epoch, not whichever API
         // process a load balancer selected for this request. A foreign
         // stateless worker has no resident controls here, but its sealed epoch
@@ -21878,9 +22192,6 @@ impl MagicianV2Orchestrator {
                 // process. The durable runtime FSM is its active-admission
                 // proof; terminal/parked rows refuse rather than accumulating
                 // redirects no future decision can consume.
-                if execution.waiting_state != WaitingState::Executing {
-                    return Err(SteerExecutionError::NotActive);
-                }
                 // The process-local UUID is not visible to a foreign stateless
                 // holder. Bind admission to the shared runtime FSM epoch so the
                 // API process and whichever worker claims the inbox derive the
@@ -21956,6 +22267,28 @@ impl MagicianV2Orchestrator {
                 !controls.cancellation_token.is_cancelled()
                     && !controls.manual_pause_signal.load(Ordering::SeqCst)
             })
+    }
+
+    /// True while this process owns the execution: it holds live controls
+    /// for it (cancelled or paused controls included — something here still
+    /// owns the run), or touched its runtime row moments ago and has not
+    /// registered controls yet. Divergence repair never settles such a row.
+    pub(crate) fn execution_is_owned_in_this_process(
+        &self,
+        execution_id: &str,
+        runtime_updated_at_ms: i64,
+    ) -> bool {
+        self.active_execution_controls.contains_key(execution_id)
+            || Self::recently_owned_in_this_process(
+                runtime_updated_at_ms,
+                *PROCESS_STARTED_AT_MS,
+                chrono::Utc::now().timestamp_millis(),
+            )
+    }
+
+    /// When this process started, as the recovery sweeps measure it.
+    pub(crate) fn process_started_at_ms() -> i64 {
+        *PROCESS_STARTED_AT_MS
     }
 
     /// Signal only a process-local execution generation already classified as
@@ -24095,6 +24428,25 @@ impl MagicianV2Orchestrator {
                             continue;
                         },
                         Ok(InterruptedRuntimeRecovery::Deferred { reason }) => {
+                            if reason.starts_with("stateless_recovery_authority_uncertain:") {
+                                // The classifier found durable composition but no live
+                                // holder and no unique continuation. It cannot authorize
+                                // replay, and retaining Executing forever is not a
+                                // recovery owner. Recheck under the operator/lifecycle
+                                // fences before settling an explicit interrupted failure.
+                                drop(execution_admission_exclusion.take());
+                                drop(execution_lifecycle_exclusion.take());
+                                match self.fail_ambiguous_interrupted_execution(&execution).await {
+                                    Ok(true) => report.failed_nonrecoverable += 1,
+                                    Ok(false) => report.deferred += 1,
+                                    Err(error) => {
+                                        report.deferred += 1;
+                                        warn!(execution_id = %execution.id, %error,
+                                            "Interrupted ambiguous execution closure remains retryable");
+                                    },
+                                }
+                                continue;
+                            }
                             report.deferred += 1;
                             info!(
                                 execution_id = %execution.id,
@@ -24102,6 +24454,23 @@ impl MagicianV2Orchestrator {
                                 reason,
                                 "[MAGICIAN-V2-ORCHESTRATOR] Interrupted execution retained for its durable lifecycle owner"
                             );
+                            // A visibility-grace deferral names no owner: only
+                            // the clock does. Look again once the grace passes
+                            // instead of waiting for the next restart.
+                            if let Some(not_before_ms) =
+                                crate::magician_v2::artifact_v2::service::deferred_interrupted_recovery_recheck_at_ms(
+                                    &reason,
+                                    execution.updated_at,
+                                    Utc::now().timestamp_millis(),
+                                )
+                            {
+                                service.schedule_deferred_interrupted_runtime_recheck(
+                                    scope.clone(),
+                                    task_id.to_owned(),
+                                    execution.id.clone(),
+                                    not_before_ms,
+                                );
+                            }
                             continue;
                         },
                         Ok(InterruptedRuntimeRecovery::NonRecoverable { reason }) => {
@@ -24293,9 +24662,21 @@ impl MagicianV2Orchestrator {
                         BaseExecutionRecoveryAuthority::Live { .. } => {
                             report.already_owned += 1;
                         },
-                        BaseExecutionRecoveryAuthority::SettlementPending { .. }
-                        | BaseExecutionRecoveryAuthority::Uncertain { .. } => {
+                        BaseExecutionRecoveryAuthority::SettlementPending { .. } => {
                             report.deferred += 1;
+                        },
+                        BaseExecutionRecoveryAuthority::Uncertain { .. } => {
+                            drop(execution_admission_exclusion.take());
+                            drop(execution_lifecycle_exclusion.take());
+                            match self.fail_ambiguous_interrupted_execution(&execution).await {
+                                Ok(true) => report.failed_nonrecoverable += 1,
+                                Ok(false) => report.deferred += 1,
+                                Err(error) => {
+                                    report.deferred += 1;
+                                    warn!(execution_id = %execution.id, %error,
+                                        "Interrupted ambiguous execution closure remains retryable");
+                                },
+                            }
                         },
                         BaseExecutionRecoveryAuthority::RecoverableExact { .. } => {
                             // The exact journal is real durable composition
@@ -24662,6 +25043,158 @@ impl MagicianV2Orchestrator {
                 admission_token,
             },
         ))
+    }
+
+    /// Fail an abandoned execution whose exact segments cannot establish one
+    /// continuation. This closes the runtime, never selects or replays a segment.
+    /// Existing journals, checkpoints and artifacts remain available for a new
+    /// explicitly requested attempt and for inspection of uncertain effects.
+    async fn fail_ambiguous_interrupted_execution(
+        self: &Arc<Self>,
+        observed: &ExecutionRun,
+    ) -> Result<bool, String> {
+        use crate::magician_v2::execution::agentic::run_loop::store::fs::BaseExecutionRecoveryAuthority;
+
+        // Operator tree -> execution lifecycle -> manual admission is the same
+        // order as cancel/resume. Startup must release its earlier lifecycle
+        // exclusion before entering this helper.
+        let admission = self
+            .acquire_delegated_recovery_pause_lifecycle_admission_scoped(
+                &observed.id,
+                &observed.principal,
+                &observed.workspace,
+            )
+            .await?;
+        let _manual_admission = self.acquire_fresh_launch_manual_admission(observed).await?;
+        let current = self
+            .conversation_store
+            .get_execution(&observed.id)
+            .await
+            .map_err(|error| format!("interrupted closure runtime read failed: {error}"))?;
+        if current.principal != observed.principal
+            || current.workspace != observed.workspace
+            || current.task_id != observed.task_id
+            || current.updated_at != observed.updated_at
+            || !matches!(
+                current.waiting_state,
+                WaitingState::Runnable | WaitingState::Executing
+            )
+            || !current.active_delegation_group.is_empty()
+            || self.active_execution_controls.contains_key(&current.id)
+            || admission.pause.resumable()
+            || admission.pause.staged()
+            || self.classify_governed_app_execution(&current).await?
+        {
+            return Ok(false);
+        }
+        let internal_pending = self.full_pause_store_handle().is_some_and(|store| {
+            !store
+                .get_internal_pending_for_execution(&current.id)
+                .is_empty()
+                || store.stateless_terminal_activation_pending_for_execution(&current.id)
+        });
+        if internal_pending {
+            return Ok(false);
+        }
+        let BaseExecutionRecoveryAuthority::Uncertain {
+            reason,
+            exact_segments,
+        } = self
+            .stateless_base_execution_recovery_authority(
+                &current.principal,
+                &current.workspace,
+                &current.id,
+            )
+            .await?
+        else {
+            // A peer may have installed a worker/checkpoint or a terminal
+            // receipt since startup classified this row. Its ownership wins.
+            return Ok(false);
+        };
+        if let Some(generation) =
+            crate::magician_v2::execution::agentic::run_loop::steer_inbox::control_generation(
+                &self.durable_artifact_workspace,
+                &current.principal,
+                &current.workspace,
+                &current.id,
+            )
+            .await?
+        {
+            crate::magician_v2::execution::agentic::run_loop::steer_inbox::supersede_generation_for_terminal(
+                &self.durable_artifact_workspace, &current.principal, &current.workspace,
+                &current.id, &generation, "interrupted-after-restart", 0,
+            ).await?;
+        }
+        let interrupted_message = "Execution was interrupted by a server restart and cannot safely resume automatically. Saved work is preserved; start a new attempt to continue.";
+        let mut summary = self
+            .screenshot_storage
+            .get_execution_summary(&current.id)
+            .await
+            .map_err(|error| format!("interrupted closure summary read failed: {error}"))?
+            .unwrap_or_else(|| AgenticExecutionSummaryRecord {
+                execution_id: current.id.clone(),
+                plan_id: String::new(),
+                step_id: String::new(),
+                outcome: String::new(),
+                iterations_used: 0,
+                artifacts: Vec::new(),
+                duration_ms: 0,
+                summary: String::new(),
+                timestamp: 0,
+                loop_mode: None,
+                loop_detection_type: None,
+                loop_repeated_action: None,
+                loop_recommendation: None,
+                loop_cycle_pattern: None,
+                loop_similarity: None,
+                budget_dimension: None,
+                budget_details: None,
+                cannot_proceed_reason: None,
+                yield_payload: None,
+                child_deliverables: Vec::new(),
+            });
+        summary.outcome = "interrupted_after_restart".to_owned();
+        summary.summary = interrupted_message.to_owned();
+        summary.cannot_proceed_reason = Some(reason.clone());
+        summary.yield_payload = None;
+        summary.timestamp = Utc::now().timestamp_millis();
+        self.persist_execution_summary_record(&summary).await?;
+        let transition = self
+            .transition_status_if_current(
+                &current.id,
+                &current.waiting_state,
+                WorkflowEvent::ExecutionFailed,
+            )
+            .await;
+        let settled = self
+            .conversation_store
+            .get_execution(&current.id)
+            .await
+            .map_err(|error| format!("interrupted closure verification failed: {error}"))?;
+        if settled.waiting_state != WaitingState::Failed {
+            return transition.map(|_| false);
+        }
+        self.resolve_outstanding_hitl_for_execution(&current.id, "interrupted_after_restart");
+        self.clear_pending_pauses_for_execution_checked(&current.id)?;
+        self.retire_server_owned_fresh_launch_capability(&current.id);
+        if let Some(broadcaster) = &self.event_broadcaster {
+            broadcaster.observability_alert(
+                &current.id,
+                "execution_interrupted_after_restart",
+                serde_json::json!({
+                    "reason": reason, "exact_segments": exact_segments,
+                    "message": interrupted_message,
+                    "settled": "ExecutionFailed",
+                }),
+            );
+        }
+        // Release lifecycle exclusion before Artifact projection takes its own
+        // fences. A failed projection remains recoverable from terminal Runtime.
+        drop(_manual_admission);
+        drop(admission);
+        self.maybe_persist_v3_execution_outcome(&current.id, "interrupted restart closure")
+            .await;
+        Ok(true)
     }
 
     /// Conclusively close a stateless Runnable/Executing shell that has no
@@ -25319,6 +25852,11 @@ impl MagicianV2Orchestrator {
         interrupted_recovery: Option<InterruptedPlanRecoveryBinding>,
         resident_interrupted_recovery: bool,
     ) -> Result<(), String> {
+        if is_task_planning_execution(execution_id) {
+            return Err(format!(
+                "planning_only_execution_cannot_run_plan:{execution_id}"
+            ));
+        }
         if plan.steps.is_empty() {
             return Ok(());
         }
@@ -26190,7 +26728,19 @@ impl MagicianV2Orchestrator {
             )
             .with_manual_pause_signal(manual_pause_signal.clone())
             .with_steer_queue(steer_queue.clone());
-        if let Some(scope) = self.runtime_canonical_event_scope(execution_id) {
+        // The scope registry is process-local. A run that starts again after
+        // a restart (a recovered delegated child, a parent continuation) is
+        // not re-registered by its launcher, and without a scope every event
+        // it emits — its asks included — stays transport-only and never
+        // reaches its Artifact events or Attention. Restore it from the task.
+        let canonical_event_scope = match self.runtime_canonical_event_scope(execution_id) {
+            Some(scope) => Some(scope),
+            None => {
+                self.restore_runtime_canonical_event_scope(&persisted_execution)
+                    .await
+            },
+        };
+        if let Some(scope) = canonical_event_scope {
             executors = executors.with_canonical_event_scope(scope);
         }
 
@@ -26377,6 +26927,8 @@ impl MagicianV2Orchestrator {
             // `ctx.coding_coordinator_run` without re-loading the task.
             ctx.coding_coordinator_run = overrides.coding_coordinator_run;
             ctx.vibedev_run = overrides.vibedev_run;
+            ctx.plan_run = overrides.plan_run;
+            ctx.vibedev_autopilot = overrides.vibedev_autopilot;
             // Runtime-only app disclosure authority. This is intentionally
             // absent from pause/task serialization: Artifact V2 re-admits it
             // from current registry/router policy on every launch or resume.
@@ -26387,6 +26939,7 @@ impl MagicianV2Orchestrator {
             // browser session (one Chrome window per chat thread)
             // instead of spawning a fresh window per execution_id.
             ctx.browser_session_id_override = overrides.browser_session_id_override;
+            ctx.browser_tab_label = overrides.browser_tab_label;
             // Prompt identity (agent kind + persona). The chat-inline
             // path threads through here with `trust_context: None`, so
             // line 9462's `with_prompt_identity(prompt_identity)` set
@@ -26477,6 +27030,10 @@ impl MagicianV2Orchestrator {
             }
         }
 
+        // Who delegated down to this execution, from its own record and never
+        // from a pause or checkpoint (`ExecutionRun::read_lineage`). Goal
+        // workspace reads travel down it (`goal_workspace_access::read_delegators_for`).
+        ctx.read_lineage = persisted_execution.read_lineage.clone();
         if ctx.execution_id.is_none() {
             ctx.execution_id = Some(execution_id.to_string());
         }
@@ -28004,6 +28561,34 @@ impl MagicianV2Orchestrator {
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             let mut deliverables: Vec<ChildDeliverableSummary> = progress.disclosed_deliverables();
             let mut last_outcome: Option<AgenticOutcome> = None;
+            // Stages read with the pipeline owner's goal workspace access, and
+            // so does whatever a stage delegates on: the owner joins the run's
+            // read lineage, in this ctx and on the record its children are
+            // built from (`StageGuard::push` clears the owner stack). Only on
+            // a fresh start: once a stage has begun, the run's owner on disk
+            // may be that stage's agent.
+            if progress.next_stage_index == 0
+                && progress.active_stage_index.is_none()
+                && ctx.owner_stack.is_empty()
+            {
+                if let Some(owner) =
+                    crate::magician_v2::execution::goal_workspace_access::acting_agent_for(ctx)
+                {
+                    if !ctx.read_lineage.contains(&owner) {
+                        ctx.read_lineage.push(owner);
+                        if let Err(error) = self
+                            .record_execution_read_lineage(&root_execution_id, &ctx.read_lineage)
+                            .await
+                        {
+                            warn!(
+                                execution_id = %root_execution_id,
+                                %error,
+                                "[GOAL-WORKSPACES] pipeline owner not recorded; stages' children read as themselves"
+                            );
+                        }
+                    }
+                }
+            }
 
             while progress.next_stage_index < stages.len() {
                 let stage_index = progress.next_stage_index;
@@ -31069,24 +31654,35 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
         // self-serve vector on the standard completion path. Derived manifest-
         // authoritatively (scope-agnostic load), so it stays correct for every
         // caller; `false` for non-VibeDev / plan / no-task runs.
-        let (coding_coordinator_run, is_social, vibedev_run) = match task_id.as_deref() {
-            Some(tid) => match self.load_v3_task_record(tid).await? {
-                Some((_scope, task)) => {
-                    let ccr = crate::magician_v2::artifact_v2::models::is_vibedev_coding_build_run(
-                        &task.manifest.ui_thread_id,
-                        &task.manifest.tags,
-                    );
-                    let social = task.manifest.tags.iter().any(|t| t.name == "social");
-                    let vibedev = crate::magician_v2::artifact_v2::models::is_vibedev_cockpit_run(
-                        &task.manifest.ui_thread_id,
-                        &task.manifest.tags,
-                    );
-                    (ccr, social, vibedev)
+        let (coding_coordinator_run, is_social, vibedev_run, vibedev_autopilot, plan_run) =
+            match task_id.as_deref() {
+                Some(tid) => match self.load_v3_task_record(tid).await? {
+                    Some((_scope, task)) => {
+                        let ccr =
+                            crate::magician_v2::artifact_v2::models::is_vibedev_coding_build_run(
+                                &task.manifest.ui_thread_id,
+                                &task.manifest.tags,
+                            );
+                        let social = task.manifest.tags.iter().any(|t| t.name == "social");
+                        let vibedev =
+                            crate::magician_v2::artifact_v2::models::is_vibedev_cockpit_run(
+                                &task.manifest.ui_thread_id,
+                                &task.manifest.tags,
+                            );
+                        let autopilot =
+                            crate::magician_v2::artifact_v2::models::is_vibedev_autopilot_run(
+                                &task.manifest.tags,
+                            );
+                        let plan = crate::magician_v2::artifact_v2::models::is_vibedev_plan_run(
+                            &task.manifest.ui_thread_id,
+                            &task.manifest.tags,
+                        );
+                        (ccr, social, vibedev, autopilot, plan)
+                    },
+                    None => (false, false, false, false, false),
                 },
-                None => (false, false, false),
-            },
-            None => (false, false, false),
-        };
+                None => (false, false, false, false, false),
+            };
 
         let mut overrides =
             crate::magician_v2::agents::autonomous_goal::build_direct_agent_overrides(
@@ -31112,6 +31708,8 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
         );
         overrides.coding_coordinator_run = coding_coordinator_run;
         overrides.vibedev_run = vibedev_run;
+        overrides.plan_run = plan_run;
+        overrides.vibedev_autopilot = vibedev_autopilot;
         if is_social {
             // Hard constraint: disable bash, file, python executions for social networking.
             overrides.allowed_action_types = Some(vec!["tool".to_string()]);
@@ -31261,24 +31859,35 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
         }
         merged_agent_tools.sort_by(|left, right| left.name.cmp(&right.name));
 
-        let (coding_coordinator_run, is_social, vibedev_run) = match task_id.as_deref() {
-            Some(tid) => match self.load_v3_task_record(tid).await? {
-                Some((_scope, task)) => {
-                    let ccr = crate::magician_v2::artifact_v2::models::is_vibedev_coding_build_run(
-                        &task.manifest.ui_thread_id,
-                        &task.manifest.tags,
-                    );
-                    let social = task.manifest.tags.iter().any(|tag| tag.name == "social");
-                    let vibedev = crate::magician_v2::artifact_v2::models::is_vibedev_cockpit_run(
-                        &task.manifest.ui_thread_id,
-                        &task.manifest.tags,
-                    );
-                    (ccr, social, vibedev)
+        let (coding_coordinator_run, is_social, vibedev_run, vibedev_autopilot, plan_run) =
+            match task_id.as_deref() {
+                Some(tid) => match self.load_v3_task_record(tid).await? {
+                    Some((_scope, task)) => {
+                        let ccr =
+                            crate::magician_v2::artifact_v2::models::is_vibedev_coding_build_run(
+                                &task.manifest.ui_thread_id,
+                                &task.manifest.tags,
+                            );
+                        let social = task.manifest.tags.iter().any(|tag| tag.name == "social");
+                        let vibedev =
+                            crate::magician_v2::artifact_v2::models::is_vibedev_cockpit_run(
+                                &task.manifest.ui_thread_id,
+                                &task.manifest.tags,
+                            );
+                        let autopilot =
+                            crate::magician_v2::artifact_v2::models::is_vibedev_autopilot_run(
+                                &task.manifest.tags,
+                            );
+                        let plan = crate::magician_v2::artifact_v2::models::is_vibedev_plan_run(
+                            &task.manifest.ui_thread_id,
+                            &task.manifest.tags,
+                        );
+                        (ccr, social, vibedev, autopilot, plan)
+                    },
+                    None => (false, false, false, false, false),
                 },
-                None => (false, false, false),
-            },
-            None => (false, false, false),
-        };
+                None => (false, false, false, false, false),
+            };
         let mut overrides =
             crate::magician_v2::agents::autonomous_goal::build_direct_agent_overrides(
                 definition,
@@ -31303,6 +31912,8 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
         );
         overrides.coding_coordinator_run = coding_coordinator_run;
         overrides.vibedev_run = vibedev_run;
+        overrides.plan_run = plan_run;
+        overrides.vibedev_autopilot = vibedev_autopilot;
         if is_social {
             overrides.allowed_action_types = Some(vec!["tool".to_owned()]);
         }
@@ -31811,6 +32422,18 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
         // checkpoint open and the executor's bounded checkpoint retrieval fills
         // the missing tiers (it keeps the ones attached here).
         let seed_started = tokio::time::Instant::now();
+        let mut context_progress =
+            crate::magician_v2::context_retrieval::progress::ContextPreparationProgress::start(
+                self.event_broadcaster.clone(),
+                ctx.principal.as_deref(),
+                ctx.workspace.as_deref(),
+                &agent_id,
+                crate::magician_v2::context_retrieval::progress::ContextProgressCorrelation {
+                    task_id: ctx.task_id.clone(),
+                    execution_id: ctx.execution_id.clone(),
+                    ..Default::default()
+                },
+            );
         let deadline = seed_started + RUN_START_MEMORY_SEED_DEADLINE;
 
         let user_request = crate::magician_v2::agents::MemoryRenderRequest::user(&relevance_query)
@@ -31913,6 +32536,7 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
         // Applied in the fixed user → agent → agent_goal order the sequential
         // seed used, so the first-insert-wins candidate map is unchanged.
         let mut incomplete_tiers: Vec<&'static str> = Vec::new();
+        let mut retrieval_backends = std::collections::BTreeSet::new();
         for (tier, seed) in [
             ("user", user_seed),
             ("agent", agent_seed),
@@ -31928,6 +32552,7 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
             };
             match rendered {
                 Ok(result) => {
+                    retrieval_backends.insert(result.retrieval_backend.as_str().to_string());
                     if let Ok(mut injected) = ctx.scratch.injected_memory_candidate_keys.lock() {
                         injected.extend(result.selected_candidate_keys.iter().cloned());
                     }
@@ -31984,6 +32609,19 @@ so do not restate them). Set success_criteria / timeout_secs only when genuinely
             deadline_reached = !incomplete_tiers.is_empty(),
             "Run-start memory seed completed"
         );
+        if let Some(progress) = context_progress.as_mut() {
+            let elapsed_ms = seed_started.elapsed().as_secs_f64() * 1_000.0;
+            progress.finish(
+                &crate::magician_v2::context_retrieval::progress::ContextPreparationTiming {
+                    duration_ms: elapsed_ms,
+                    memory_ms: Some(elapsed_ms),
+                    memory_incomplete: !incomplete_tiers.is_empty(),
+                    retrieval_backends: retrieval_backends.into_iter().collect(),
+                    partial: !incomplete_tiers.is_empty(),
+                    ..Default::default()
+                },
+            );
+        }
         incomplete_tiers.is_empty()
     }
 
@@ -33122,6 +33760,33 @@ mod tests {
         assert!(!none.contains_key("task_id"));
     }
 
+    /// A child's read lineage: the parent's lineage, its suspended owners,
+    /// then its active owner — deduplicated, root first. Magican → Vera →
+    /// Muse gives Muse [Magican, Vera].
+    #[test]
+    fn a_childs_read_lineage_extends_its_parents() {
+        let mut vera = test_execution_run("exec-vera", WaitingState::Executing);
+        vera.active_owner_agent_id = "executive-assistant".into();
+        vera.read_lineage = vec!["personal-assistant".into()];
+        assert_eq!(
+            child_read_lineage(&vera),
+            vec![
+                "personal-assistant".to_string(),
+                "executive-assistant".to_string()
+            ]
+        );
+        // Owners suspended in the parent's run come before its active owner.
+        vera.owner_stack = vec!["cmo".into()];
+        assert_eq!(
+            child_read_lineage(&vera),
+            vec![
+                "personal-assistant".to_string(),
+                "cmo".to_string(),
+                "executive-assistant".to_string()
+            ]
+        );
+    }
+
     fn test_execution_run(id: &str, waiting_state: WaitingState) -> ExecutionRun {
         let now = Utc::now().timestamp_millis();
         ExecutionRun {
@@ -33145,10 +33810,209 @@ mod tests {
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: ExecutionEntryMode::PlanningBacked,
         }
+    }
+
+    async fn seed_interrupted_recovery_test_segment(
+        orchestrator: &MagicianV2Orchestrator,
+        execution: &ExecutionRun,
+        segment: &str,
+        live_until_ms: i64,
+    ) {
+        use crate::magician_v2::execution::agentic::run_loop::{
+            state::{
+                IterationContinuationCheckpoint, LoopSegmentBinding, LoopState, Placement,
+                RunIdentity, WorkerId,
+            },
+            store::{fs::FsLoopStateStore, ExecutionKey, LoopStateStore, Revision},
+        };
+        use crate::magician_v2::execution::agentic::{AgenticPauseState, EnvironmentState};
+
+        let key = ExecutionKey::new(
+            execution.principal.clone(),
+            execution.workspace.clone(),
+            segment.to_owned(),
+        )
+        .unwrap();
+        let mut state = LoopState::new(RunIdentity {
+            execution_id: Some(execution.id.clone()),
+            principal: Some(execution.principal.clone()),
+            workspace: Some(execution.workspace.clone()),
+            ..RunIdentity::default()
+        });
+        state.segment_binding = Some(LoopSegmentBinding {
+            base_execution_id: execution.id.clone(),
+            exact_segment_id: segment.to_owned(),
+            preseed_admission_token: None,
+        });
+        state.placement = Placement::Pinned {
+            worker: WorkerId::new("test-interrupted-holder"),
+            pinned_until_ms: live_until_ms,
+        };
+        let mut pause = AgenticPauseState::new(
+            1,
+            "research",
+            "saved work",
+            EnvironmentState::Uninitialized,
+            String::new(),
+            10,
+            3,
+        );
+        pause.execution_id = Some(execution.id.clone());
+        pause.principal = Some(execution.principal.clone());
+        pause.workspace = Some(execution.workspace.clone());
+        pause.stateless_parked_segment = Some(segment.to_owned());
+        state.continuation_checkpoint =
+            Some(IterationContinuationCheckpoint::try_new(&pause).unwrap());
+        FsLoopStateStore::new(orchestrator.durable_artifact_workspace.base_root())
+            .commit(&key, &state, Revision::INITIAL)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ambiguous_interrupted_execution_closes_stale_controls_and_preserves_saved_work() {
+        use crate::magician_v2::execution::agentic::run_loop::{
+            steer_inbox,
+            store::{fs::FsLoopStateStore, ExecutionKey, LoopStateStore},
+        };
+        let (orchestrator, _, store) = build_orchestrator_with_ask_loop()
+            .await
+            .expect("test runtime");
+        let execution = test_execution_run("interrupted-ambiguous", WaitingState::Executing);
+        store.insert_execution(execution.clone()).await;
+        seed_interrupted_recovery_test_segment(&orchestrator, &execution, "saved-parent", 0).await;
+        assert!(
+            !orchestrator
+                .fail_ambiguous_interrupted_execution(&execution)
+                .await
+                .unwrap(),
+            "a unique recoverable checkpoint must retain its recovery owner"
+        );
+        seed_interrupted_recovery_test_segment(&orchestrator, &execution, "saved-nested", 0).await;
+        steer_inbox::activate_control_generation(
+            &orchestrator.durable_artifact_workspace,
+            "user",
+            "workspace",
+            &execution.id,
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            steer_inbox::durable_operator_control_state(
+                &orchestrator.durable_artifact_workspace,
+                "user",
+                "workspace",
+                &execution.id
+            )
+            .await
+            .unwrap()
+            .can_steer
+        );
+
+        assert!(orchestrator
+            .fail_ambiguous_interrupted_execution(&execution)
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .get_execution(&execution.id)
+                .await
+                .unwrap()
+                .waiting_state,
+            WaitingState::Failed
+        );
+        let controls = orchestrator
+            .execution_tree_control_snapshot(&execution.id)
+            .await
+            .unwrap();
+        assert!(!controls.active);
+        assert!(!controls.capabilities.can_pause);
+        let summary = orchestrator
+            .load_execution_summary_record(&execution.id)
+            .await
+            .unwrap();
+        assert_eq!(summary.outcome, "interrupted_after_restart");
+        assert!(summary.summary.contains("Saved work is preserved"));
+        assert!(
+            !steer_inbox::durable_operator_control_state(
+                &orchestrator.durable_artifact_workspace,
+                "user",
+                "workspace",
+                &execution.id
+            )
+            .await
+            .unwrap()
+            .can_steer
+        );
+        let loops = FsLoopStateStore::new(orchestrator.durable_artifact_workspace.base_root());
+        for segment in ["saved-parent", "saved-nested"] {
+            let key = ExecutionKey::new("user", "workspace", segment).unwrap();
+            assert!(loops
+                .load(&key)
+                .await
+                .unwrap()
+                .unwrap()
+                .state
+                .continuation_checkpoint
+                .is_some());
+        }
+        assert!(orchestrator.execution_control_tree_locks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_interrupted_execution_does_not_close_a_live_or_changed_generation() {
+        let (orchestrator, _, store) = build_orchestrator_with_ask_loop()
+            .await
+            .expect("test runtime");
+        let execution = test_execution_run("interrupted-live-peer", WaitingState::Executing);
+        store.insert_execution(execution.clone()).await;
+        seed_interrupted_recovery_test_segment(&orchestrator, &execution, "old-parent", 0).await;
+        seed_interrupted_recovery_test_segment(
+            &orchestrator,
+            &execution,
+            "live-nested",
+            Utc::now().timestamp_millis() + 60_000,
+        )
+        .await;
+        assert!(!orchestrator
+            .fail_ambiguous_interrupted_execution(&execution)
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .get_execution(&execution.id)
+                .await
+                .unwrap()
+                .waiting_state,
+            WaitingState::Executing
+        );
+
+        let mut stale = execution.clone();
+        stale.updated_at = stale.updated_at.saturating_sub(1);
+        assert!(!orchestrator
+            .fail_ambiguous_interrupted_execution(&stale)
+            .await
+            .unwrap());
+        let mut foreign = execution.clone();
+        foreign.principal = "another-owner".to_owned();
+        assert!(!orchestrator
+            .fail_ambiguous_interrupted_execution(&foreign)
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .get_execution(&execution.id)
+                .await
+                .unwrap()
+                .waiting_state,
+            WaitingState::Executing
+        );
     }
 
     #[test]
@@ -33327,6 +34191,22 @@ mod tests {
             orchestrator.steer_execution(execution_id, &oversized).await,
             Err(SteerExecutionError::MessageTooLong)
         );
+
+        assert_eq!(
+            orchestrator
+                .steer_execution(execution_id, "not running yet")
+                .await,
+            Err(SteerExecutionError::NotActive)
+        );
+        assert!(queue.lock().expect("queue").is_empty());
+        orchestrator
+            .transition_status_from_runtime(execution_id, WorkflowEvent::ReadyToExecute)
+            .await
+            .expect("ready");
+        orchestrator
+            .transition_status_from_runtime(execution_id, WorkflowEvent::ExecutionStart)
+            .await
+            .expect("start");
 
         for index in 0..MAX_PENDING_STEERS {
             assert_eq!(
@@ -33853,6 +34733,7 @@ mod tests {
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -33880,6 +34761,7 @@ mod tests {
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -33955,6 +34837,12 @@ mod tests {
             eprintln!("Skipping test: MagicutorClient native TLS unavailable");
             return;
         };
+        // A durable wake queue keeps the parent wake observable instead of
+        // reconciling inline inside the reject call.
+        let wake_queue = crate::magician_v2::agents::wake_up_queue::WakeUpQueue::new();
+        let wake_dir = tempfile::tempdir().expect("wake persistence dir");
+        wake_queue.set_persist_path(wake_dir.path().join("wake_up_queue.json"));
+        orchestrator.set_wake_up_queue(wake_queue.clone());
         let (_task_dir, v3_service, task_id, parent_id) =
             seed_review_task_shell(&orchestrator, "Orphan review parent").await;
         let child_id = "orphan-reject-child";
@@ -33981,6 +34869,7 @@ mod tests {
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -34009,6 +34898,7 @@ mod tests {
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -34066,6 +34956,15 @@ mod tests {
             matches!(rejected.status, CodeChangeProposalStatus::Rejected),
             "the orphaned proposal should be rejected"
         );
+        // The child was already terminal, so no status change will wake the
+        // parent: closing the review itself queues the parent's wake.
+        let due = wake_queue.drain_due().await;
+        assert_eq!(due.len(), 1, "closing the review wakes the parent: {due:?}");
+        assert_eq!(due[0].execution_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(
+            due[0].kind,
+            crate::magician_v2::agents::wake_up_queue::WakeKind::ChildCompleted
+        );
 
         // ...so the parent is no longer stranded behind the review gate.
         assert!(
@@ -34074,6 +34973,305 @@ mod tests {
                 .await
                 .expect("reconcile should succeed"),
             "the parent should resume once the orphaned review is rejected"
+        );
+    }
+
+    /// A runtime row for the divergence-repair tests, last touched ten
+    /// minutes ago so it does not read as owned by this process.
+    fn divergence_runtime_row(
+        id: &str,
+        task_id: &str,
+        root_execution_id: Option<String>,
+        parent_execution_id: Option<String>,
+        waiting_state: WaitingState,
+        active_delegation_group: Vec<String>,
+    ) -> ExecutionRun {
+        let stale = (Utc::now() - chrono::Duration::minutes(10)).timestamp_millis();
+        ExecutionRun {
+            id: id.to_string(),
+            principal: "user".to_string(),
+            workspace: "workspace".to_string(),
+            task_id: Some(task_id.to_string()),
+            root_execution_id,
+            title: Some(id.to_string()),
+            waiting_state,
+            created_at: stale,
+            updated_at: stale,
+            processing_correlation_id: None,
+            current_stage: None,
+            current_provider: None,
+            escalation_trigger: None,
+            parent_execution_id,
+            child_execution_ids: active_delegation_group.clone(),
+            active_owner_agent_id: "manager".to_string(),
+            owner_stack: Vec::new(),
+            active_delegation_group,
+            timeout_secs: None,
+            delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
+            work_authority: None,
+            paused_from_state: None,
+            entry_mode: ExecutionEntryMode::PlanningBacked,
+        }
+    }
+
+    /// Record `execution_id`'s Artifact outcome as `failed`, written ten
+    /// minutes ago — the record a lost runtime settlement left behind.
+    /// Returns the record's root so the runtime row can mirror its lineage.
+    async fn record_divergent_failed_outcome(
+        service: &Arc<ArtifactV2Service>,
+        task_id: &str,
+        execution_id: &str,
+    ) -> Option<String> {
+        let scope = ScopeRef::system_internal_unauthenticated("user", "workspace");
+        let mut record = V3ReadApi::get_execution(service.as_ref(), &scope, task_id, execution_id)
+            .await
+            .expect("artifact execution record");
+        record.state.status = "failed".to_string();
+        record.state.updated_at = (Utc::now() - chrono::Duration::minutes(10)).to_rfc3339();
+        service
+            .workspace()
+            .write_json_atomic_path(
+                &service.workspace().execution_state_path(
+                    "user",
+                    "workspace",
+                    task_id,
+                    execution_id,
+                ),
+                &record.state,
+            )
+            .await
+            .expect("write the recorded outcome");
+        record.state.root_execution_id
+    }
+
+    /// A parent parked in WaitingChildren on one delegated child whose
+    /// Artifact record already failed while its runtime says `child_state`.
+    async fn seed_divergent_delegated_child(
+        orchestrator: &Arc<MagicianV2Orchestrator>,
+        store: &Arc<TestStore>,
+        title: &str,
+        child_id: &str,
+        child_state: WaitingState,
+    ) -> (TempDir, Arc<ArtifactV2Service>, String, String) {
+        let (task_dir, v3_service, task_id, parent_id) =
+            seed_review_task_shell(orchestrator, title).await;
+        store
+            .insert_execution(divergence_runtime_row(
+                &parent_id,
+                &task_id,
+                Some(parent_id.clone()),
+                None,
+                WaitingState::WaitingChildren,
+                vec![child_id.to_string()],
+            ))
+            .await;
+        store
+            .insert_execution(divergence_runtime_row(
+                child_id,
+                &task_id,
+                Some(parent_id.clone()),
+                Some(parent_id.clone()),
+                child_state.clone(),
+                Vec::new(),
+            ))
+            .await;
+        assert!(v3_service
+            .record_runtime_child_execution_best_effort(
+                &parent_id,
+                child_id,
+                "principal-software-engineer",
+                "Implement change",
+            )
+            .await
+            .expect("record the delegated child in Artifact V3"));
+        let root = record_divergent_failed_outcome(&v3_service, &task_id, child_id).await;
+        store
+            .insert_execution(divergence_runtime_row(
+                child_id,
+                &task_id,
+                root,
+                Some(parent_id.clone()),
+                child_state,
+                Vec::new(),
+            ))
+            .await;
+        (task_dir, v3_service, task_id, parent_id)
+    }
+
+    fn divergence_wake_queue(
+        orchestrator: &Arc<MagicianV2Orchestrator>,
+    ) -> (
+        Arc<crate::magician_v2::agents::wake_up_queue::WakeUpQueue>,
+        TempDir,
+    ) {
+        let wake_queue = crate::magician_v2::agents::wake_up_queue::WakeUpQueue::new();
+        let wake_dir = tempfile::tempdir().expect("wake persistence dir");
+        wake_queue.set_persist_path(wake_dir.path().join("wake_up_queue.json"));
+        orchestrator.set_wake_up_queue(wake_queue.clone());
+        (wake_queue, wake_dir)
+    }
+
+    #[tokio::test]
+    async fn divergence_repair_settles_child_whose_artifact_record_ended_and_wakes_parent() {
+        // Live shape (task_7c2fad53…): the child's Artifact record was
+        // `failed`, its runtime still `WaitingUser`, and the parent sat in
+        // `WaitingChildren` across restarts with nothing to wake it.
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let (wake_queue, _wake_dir) = divergence_wake_queue(&orchestrator);
+        let child_id = "divergent-waiting-user-child";
+        let (_task_dir, v3_service, task_id, parent_id) = seed_divergent_delegated_child(
+            &orchestrator,
+            &store,
+            "Divergent child parent",
+            child_id,
+            WaitingState::WaitingUser,
+        )
+        .await;
+        let scope = ScopeRef::system_internal_unauthenticated("user", "workspace");
+
+        let report = v3_service
+            .repair_runtime_divergence_for_task(&scope, &task_id, 8)
+            .await
+            .expect("divergence repair should run");
+        assert_eq!(report.runtimes_settled, 1, "{report:?}");
+
+        let child = orchestrator
+            .get_execution(child_id)
+            .await
+            .expect("child should load");
+        assert_eq!(child.waiting_state, WaitingState::Failed);
+        let due = wake_queue.drain_due().await;
+        assert_eq!(due.len(), 1, "settling the child wakes its parent: {due:?}");
+        assert_eq!(due[0].execution_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(
+            due[0].kind,
+            crate::magician_v2::agents::wake_up_queue::WakeKind::ChildCompleted
+        );
+
+        // Idempotent: the divergence is gone, so a second pass repairs nothing.
+        let again = v3_service
+            .repair_runtime_divergence_for_task(&scope, &task_id, 8)
+            .await
+            .expect("second pass should run");
+        assert_eq!(again.runtimes_settled, 0, "{again:?}");
+    }
+
+    #[tokio::test]
+    async fn divergence_repair_leaves_paused_or_in_process_runs_untouched() {
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        // Pin the process start before any row is stamped "now", so the
+        // in-process ownership window below is measured against it.
+        let _ = MagicianV2Orchestrator::process_started_at_ms();
+        let (wake_queue, _wake_dir) = divergence_wake_queue(&orchestrator);
+        let child_id = "divergent-durably-paused-child";
+        let (_task_dir, v3_service, task_id, parent_id) = seed_divergent_delegated_child(
+            &orchestrator,
+            &store,
+            "Paused divergent child parent",
+            child_id,
+            WaitingState::Paused,
+        )
+        .await;
+        let scope = ScopeRef::system_internal_unauthenticated("user", "workspace");
+        let mut paused = orchestrator
+            .get_execution(child_id)
+            .await
+            .expect("child should load");
+        // A durable pause is resumable without a pause file: never settled.
+        paused.paused_from_state = Some(WaitingState::Executing);
+        store.insert_execution(paused.clone()).await;
+
+        let report = v3_service
+            .repair_runtime_divergence_for_task(&scope, &task_id, 8)
+            .await
+            .expect("divergence repair should run");
+        assert_eq!(report.repairs(), 0, "{report:?}");
+        assert_eq!(
+            orchestrator
+                .get_execution(child_id)
+                .await
+                .expect("child should load")
+                .waiting_state,
+            WaitingState::Paused
+        );
+
+        // A row this process touched moments ago has a live owner here.
+        let mut owned = paused;
+        owned.waiting_state = WaitingState::WaitingUser;
+        owned.paused_from_state = None;
+        owned.updated_at = Utc::now().timestamp_millis();
+        store.insert_execution(owned).await;
+        let report = v3_service
+            .repair_runtime_divergence_for_task(&scope, &task_id, 8)
+            .await
+            .expect("divergence repair should run");
+        assert_eq!(report.repairs(), 0, "{report:?}");
+        assert_eq!(
+            orchestrator
+                .get_execution(child_id)
+                .await
+                .expect("child should load")
+                .waiting_state,
+            WaitingState::WaitingUser
+        );
+        assert!(
+            wake_queue.drain_due().await.is_empty(),
+            "an untouched child must not wake its parent {parent_id}"
+        );
+    }
+
+    #[tokio::test]
+    async fn divergence_repair_settles_a_root_without_waking_anything() {
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let (wake_queue, _wake_dir) = divergence_wake_queue(&orchestrator);
+        let (_task_dir, v3_service, task_id, root_id) =
+            seed_review_task_shell(&orchestrator, "Divergent root").await;
+        let root = record_divergent_failed_outcome(&v3_service, &task_id, &root_id).await;
+        store
+            .insert_execution(divergence_runtime_row(
+                &root_id,
+                &task_id,
+                root,
+                None,
+                WaitingState::WaitingUser,
+                Vec::new(),
+            ))
+            .await;
+        let scope = ScopeRef::system_internal_unauthenticated("user", "workspace");
+
+        let report = v3_service
+            .repair_runtime_divergence_for_task(&scope, &task_id, 8)
+            .await
+            .expect("divergence repair should run");
+        assert_eq!(report.runtimes_settled, 1, "{report:?}");
+        assert_eq!(report.parents_woken, 0, "{report:?}");
+        assert_eq!(
+            orchestrator
+                .get_execution(&root_id)
+                .await
+                .expect("root should load")
+                .waiting_state,
+            WaitingState::Failed
+        );
+        assert!(
+            wake_queue.drain_due().await.is_empty(),
+            "a root execution has no parent to wake"
         );
     }
 
@@ -34174,6 +35372,35 @@ mod tests {
         apply_task_state_tool_runtime_gating(&catalog, &mut ctx).await;
 
         assert!(ctx.merged_agent_tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn task_planning_resume_cannot_dispatch_plan_only_graphs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (_, orchestrator) =
+            crate::magician_v2::test_support::build_test_artifact_v2_harness(tmp.path());
+        let plan = PlanGraph {
+            steps: vec![PlanStep {
+                id: "proposed".to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            orchestrator
+                .execute_plan_graph("planexec_proposal", &plan, None)
+                .await,
+            Err("planning_only_execution_cannot_run_plan:planexec_proposal".to_owned()),
+        );
+        assert!(orchestrator
+            .conversation_store
+            .get_execution("planexec_proposal")
+            .await
+            .is_err());
+        assert!(orchestrator
+            .execute_plan_graph("exec_ordinary", &PlanGraph::default(), None)
+            .await
+            .is_ok());
     }
 
     #[test]
@@ -34882,6 +36109,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs,
                 delegation_chain,
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -35926,6 +37154,7 @@ tools: []
                 Some("exec-root-1"),
                 Some(300),
                 vec!["personal-assistant".to_string()],
+                true,
                 None,
                 WaitingState::Runnable,
             )
@@ -35953,13 +37182,13 @@ tools: []
     }
 
     #[tokio::test]
-    async fn resume_workflow_full_replan_flushes_session_and_history() {
+    async fn task_planning_resume_full_replan_flushes_session_and_history() {
         use crate::magician_v2::slot_graph::{
             adapters::DeterministicRewriteModel,
             rewriter::{QuestionRewriter, RewriteModel, RewriterConfig},
         };
 
-        let workflow_id = "wf-resume-full";
+        let workflow_id = "planexec_resume_full";
         let store = Arc::new(TestStore::default());
         let store_for_services = Arc::clone(&store) as Arc<dyn V2ConversationStore>;
         store
@@ -35970,7 +37199,7 @@ tools: []
                 task_id: None,
                 root_execution_id: None,
                 title: Some("Test Workflow".to_string()),
-                waiting_state: WaitingState::Planning,
+                waiting_state: WaitingState::WaitingUser,
                 created_at: Utc::now().timestamp_millis(),
                 updated_at: Utc::now().timestamp_millis(),
                 processing_correlation_id: None,
@@ -35984,6 +37213,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36241,6 +37471,7 @@ tools: []
                 active_delegation_group: vec!["child-1".to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36371,6 +37602,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36422,6 +37654,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36488,6 +37721,7 @@ tools: []
                 ],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36522,6 +37756,7 @@ tools: []
                     active_delegation_group: Vec::new(),
                     timeout_secs: None,
                     delegation_chain: Vec::new(),
+                    read_lineage: Vec::new(),
                     work_authority: None,
                     paused_from_state: None,
                     entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36647,6 +37882,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36738,6 +37974,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -36825,6 +38062,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: Some(WaitingState::Executing),
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -37685,6 +38923,179 @@ tools: []
     }
 
     #[tokio::test]
+    async fn manual_pause_wait_releases_status_lock_until_staged_checkpoint_is_public() {
+        use crate::magician_v2::execution::agentic::types::StatelessTerminalPausePreparation;
+        let (orchestrator, _, store) = build_orchestrator_with_ask_loop()
+            .await
+            .expect("test runtime");
+        let root = tempfile::TempDir::new().unwrap();
+        let pause_store = Arc::new(FullPauseStore::with_persistence(root.path()));
+        orchestrator.set_full_pause_store(Arc::clone(&pause_store));
+        let execution_id = "manual-pause-staged-checkpoint";
+        store
+            .insert_execution(test_execution_run(execution_id, WaitingState::Executing))
+            .await;
+        let token = CancellationToken::new();
+        let generation = register_test_controls_with_sealed_generation(
+            &orchestrator,
+            "user",
+            "workspace",
+            execution_id,
+            token.clone(),
+        )
+        .await;
+        let finalizer_runtime = Arc::clone(&orchestrator);
+        let finalizer_store = Arc::clone(&pause_store);
+        let finalizer =
+            tokio::spawn(async move {
+                token.cancelled().await;
+                let executors = finalizer_runtime.build_action_executors_with_router_override(
+                    Some(Arc::new(OperationLlmRouter::new(None))),
+                );
+                let pause = AgenticPauseState::new(
+                    1,
+                    "pause test",
+                    "resume exactly",
+                    EnvironmentState::Uninitialized,
+                    String::new(),
+                    8,
+                    5,
+                )
+                .with_observability(execution_id, "pause-plan", "pause-step")
+                .with_scope("user", "workspace");
+                let outcome = AgenticOutcome::PausedByUser {
+                    pause_state: pause,
+                    iterations_used: 0,
+                };
+                let preparation = StatelessTerminalPausePreparation {
+                    source_revision: 1,
+                    terminal_seq: 2,
+                    worker_id: "pause-test-holder".into(),
+                    lease_fence: 1,
+                    lease_expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+                };
+                let commit = finalizer_runtime
+                    .prepare_stateless_terminal_pause(&executors, &outcome, preparation)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    finalizer_store
+                        .get_pending_for_execution(execution_id)
+                        .is_empty(),
+                    "a staged checkpoint must not become answerable before settlement"
+                );
+                // This is the terminal projector's required ordering: durable
+                // runtime settlement before publishing the checkpoint. Holding the
+                // status lock in the pause waiter deadlocks this transition.
+                finalizer_runtime
+                    .transition_status(execution_id, WorkflowEvent::UserPaused)
+                    .await
+                    .unwrap();
+                assert!(finalizer_store
+                    .activate_exact_stateless_terminal_pause(
+                        "user",
+                        "workspace",
+                        execution_id,
+                        &commit,
+                    )
+                    .unwrap());
+                finalizer_runtime.clear_active_execution_controls(execution_id, generation);
+            });
+        let paused = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            orchestrator.pause_execution_tree(execution_id),
+        )
+        .await;
+        if paused.is_err() {
+            finalizer.abort();
+        }
+        assert!(paused
+            .expect("pause must not wait for its own status lock")
+            .unwrap());
+        finalizer.await.unwrap();
+        let capabilities = orchestrator
+            .execution_tree_control_capabilities(execution_id)
+            .await;
+        assert!(
+            capabilities.can_resume,
+            "success must expose an exact resumable checkpoint"
+        );
+        assert!(!capabilities.can_pause);
+        assert_eq!(
+            store
+                .get_execution(execution_id)
+                .await
+                .unwrap()
+                .paused_from_state,
+            Some(WaitingState::Executing)
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_pause_source_is_not_proof_of_an_adopted_successor() {
+        use crate::magician_v2::execution::agentic::run_loop::state::{
+            TerminalOutcomeProjection, TerminalSettlementDescriptor,
+        };
+        let (orchestrator, _, _) = build_orchestrator_with_ask_loop()
+            .await
+            .expect("test runtime");
+        let execution = test_execution_run("manual-pause-adoption", WaitingState::Executing);
+        seed_interrupted_recovery_test_segment(&orchestrator, &execution, &execution.id, 0).await;
+        let mut descriptor = TerminalSettlementDescriptor {
+            schema_version: 1,
+            principal: execution.principal.clone(),
+            workspace: execution.workspace.clone(),
+            task_id: String::new(),
+            base_execution_id: execution.id.clone(),
+            exact_segment_id: execution.id.clone(),
+            terminal_kind: "paused_by_user".into(),
+            terminal_seq: 2,
+            outcome: TerminalOutcomeProjection {
+                execution_status: "paused_by_user".into(),
+                task_status: "paused".into(),
+                outcome_type: "paused_by_user".into(),
+                outcome_summary: "Paused".into(),
+                iterations_used: Some(0),
+                is_terminal: false,
+                completion_kind: None,
+                open_items: Vec::new(),
+            },
+            waiting_for_user_diff_approval: false,
+            pipeline_loop_state_segment: None,
+            pipeline_stage_settlement: None,
+            pause_key: Some("pause-key".into()),
+            pause_revision: Some("pause-revision".into()),
+            pause_body_sha256: Some("ab".repeat(32)),
+            pause_resume_segment: Some(execution.id.clone()),
+            refinement_successor_segment: None,
+        };
+        assert!(!orchestrator
+            .stateless_terminal_pause_receipt_was_adopted(&descriptor)
+            .await
+            .unwrap());
+        descriptor.pause_resume_segment = Some("manual-pause-adoption-r1".into());
+        assert!(!orchestrator
+            .stateless_terminal_pause_receipt_was_adopted(&descriptor)
+            .await
+            .unwrap());
+        seed_interrupted_recovery_test_segment(
+            &orchestrator,
+            &execution,
+            "manual-pause-adoption-r1",
+            0,
+        )
+        .await;
+        assert!(
+            orchestrator
+                .stateless_terminal_pause_receipt_was_adopted(&descriptor)
+                .await
+                .unwrap(),
+            "a distinct, correctly bound successor retains idempotent replay"
+        );
+    }
+
+    #[tokio::test]
     async fn pause_execution_tree_fails_before_mutation_when_active_child_is_missing() {
         let Some((orchestrator, _session_manager, store)) =
             build_orchestrator_with_ask_loop().await
@@ -37993,6 +39404,7 @@ tools: []
                 ],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38026,6 +39438,7 @@ tools: []
                     active_delegation_group: Vec::new(),
                     timeout_secs: None,
                     delegation_chain: Vec::new(),
+                    read_lineage: Vec::new(),
                     work_authority: None,
                     paused_from_state: None,
                     entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38179,6 +39592,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38269,6 +39683,7 @@ tools: []
                 ],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: Some(WaitingState::WaitingChildren),
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38303,6 +39718,7 @@ tools: []
                     active_delegation_group: Vec::new(),
                     timeout_secs: None,
                     delegation_chain: Vec::new(),
+                    read_lineage: Vec::new(),
                     work_authority: None,
                     paused_from_state: Some(paused_from_state),
                     entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38332,6 +39748,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38395,43 +39812,65 @@ tools: []
         let parent_id = "wf-resume-runnable-parent";
         let child_id = "wf-resume-runnable-child";
         let now = Utc::now().timestamp_millis();
-        let run = |id: &str, parent: Option<&str>, children: Vec<String>, from: WaitingState| ExecutionRun {
-            id: id.to_string(),
-            principal: "user".to_string(),
-            workspace: "workspace".to_string(),
-            task_id: None,
-            root_execution_id: None,
-            title: Some(id.to_string()),
-            waiting_state: WaitingState::Paused,
-            created_at: now,
-            updated_at: now,
-            processing_correlation_id: None,
-            current_stage: None,
-            current_provider: None,
-            escalation_trigger: None,
-            parent_execution_id: parent.map(str::to_string),
-            child_execution_ids: children.clone(),
-            active_owner_agent_id: crate::magician_v2::chat::DEFAULT_AGENT_ID.to_string(),
-            owner_stack: Vec::new(),
-            active_delegation_group: children,
-            timeout_secs: None,
-            delegation_chain: Vec::new(),
-            work_authority: None,
-            paused_from_state: Some(from),
-            entry_mode: ExecutionEntryMode::PlanningBacked,
+        let run = |id: &str, parent: Option<&str>, children: Vec<String>, from: WaitingState| {
+            ExecutionRun {
+                id: id.to_string(),
+                principal: "user".to_string(),
+                workspace: "workspace".to_string(),
+                task_id: None,
+                root_execution_id: None,
+                title: Some(id.to_string()),
+                waiting_state: WaitingState::Paused,
+                created_at: now,
+                updated_at: now,
+                processing_correlation_id: None,
+                current_stage: None,
+                current_provider: None,
+                escalation_trigger: None,
+                parent_execution_id: parent.map(str::to_string),
+                child_execution_ids: children.clone(),
+                active_owner_agent_id: crate::magician_v2::chat::DEFAULT_AGENT_ID.to_string(),
+                owner_stack: Vec::new(),
+                active_delegation_group: children,
+                timeout_secs: None,
+                delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
+                work_authority: None,
+                paused_from_state: Some(from),
+                entry_mode: ExecutionEntryMode::PlanningBacked,
+            }
         };
         store
-            .insert_execution(run(parent_id, None, vec![child_id.to_string()], WaitingState::WaitingChildren))
+            .insert_execution(run(
+                parent_id,
+                None,
+                vec![child_id.to_string()],
+                WaitingState::WaitingChildren,
+            ))
             .await;
-        store.insert_execution(run(child_id, Some(parent_id), Vec::new(), WaitingState::Runnable)).await;
+        store
+            .insert_execution(run(
+                child_id,
+                Some(parent_id),
+                Vec::new(),
+                WaitingState::Runnable,
+            ))
+            .await;
 
         let error = MagicianV2Orchestrator::resume_execution_tree(&orchestrator, parent_id)
             .await
             .expect_err("a child paused from Runnable is not resumable");
-        assert!(error.contains("manual_resume_transaction_member_invalid"), "{error}");
+        assert!(
+            error.contains("manual_resume_transaction_member_invalid"),
+            "{error}"
+        );
         for id in [parent_id, child_id] {
             assert_eq!(
-                store.get_execution(id).await.expect("execution").waiting_state,
+                store
+                    .get_execution(id)
+                    .await
+                    .expect("execution")
+                    .waiting_state,
                 WaitingState::Paused,
                 "{id} stays paused"
             );
@@ -38482,6 +39921,7 @@ tools: []
                 ],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38515,6 +39955,7 @@ tools: []
                     active_delegation_group: Vec::new(),
                     timeout_secs: None,
                     delegation_chain: Vec::new(),
+                    read_lineage: Vec::new(),
                     work_authority: None,
                     paused_from_state: None,
                     entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38627,6 +40068,7 @@ tools: []
                 active_delegation_group: vec![completed_child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38655,6 +40097,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38762,6 +40205,7 @@ tools: []
                 ],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -38803,6 +40247,7 @@ tools: []
                     active_delegation_group: Vec::new(),
                     timeout_secs: None,
                     delegation_chain: Vec::new(),
+                    read_lineage: Vec::new(),
                     work_authority: None,
                     paused_from_state: None,
                     entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39057,6 +40502,7 @@ tools: []
                 active_delegation_group: vec![comic_child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39085,6 +40531,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39195,6 +40642,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39275,6 +40723,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39370,6 +40819,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39397,6 +40847,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39937,6 +41388,7 @@ tools: []
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -39963,6 +41415,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -41927,6 +43380,7 @@ tools: []
                 ],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -41959,6 +43413,7 @@ tools: []
                     active_delegation_group: Vec::new(),
                     timeout_secs: None,
                     delegation_chain: Vec::new(),
+                    read_lineage: Vec::new(),
                     work_authority: None,
                     paused_from_state: None,
                     entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42027,6 +43482,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42055,6 +43511,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42133,6 +43590,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42160,6 +43618,7 @@ tools: []
             active_delegation_group: Vec::new(),
             timeout_secs: Some(1),
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42185,6 +43644,222 @@ tools: []
                 .waiting_state,
             WaitingState::WaitingChildren,
             "queue-backed failed child notification should not bypass the wake watcher"
+        );
+    }
+
+    fn parent_wake_test_execution(
+        id: &str,
+        parent_execution_id: Option<&str>,
+        task_id: Option<&str>,
+        waiting_state: WaitingState,
+        active_delegation_group: Vec<String>,
+    ) -> ExecutionRun {
+        let now = Utc::now().timestamp_millis();
+        ExecutionRun {
+            id: id.to_string(),
+            principal: "user".to_string(),
+            workspace: "workspace".to_string(),
+            task_id: task_id.map(str::to_string),
+            root_execution_id: None,
+            title: Some(id.to_string()),
+            waiting_state,
+            created_at: now,
+            updated_at: now,
+            processing_correlation_id: None,
+            current_stage: None,
+            current_provider: None,
+            escalation_trigger: None,
+            parent_execution_id: parent_execution_id.map(str::to_string),
+            child_execution_ids: active_delegation_group.clone(),
+            active_owner_agent_id: crate::magician_v2::chat::DEFAULT_AGENT_ID.to_string(),
+            owner_stack: Vec::new(),
+            active_delegation_group,
+            timeout_secs: None,
+            delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
+            work_authority: None,
+            paused_from_state: None,
+            entry_mode: ExecutionEntryMode::PlanningBacked,
+        }
+    }
+
+    /// The approval resolutions that finish a parked child (reject fails it,
+    /// apply/approve resumes then completes it) end in the one shared terminal
+    /// seam, which wakes the parent. A root execution has nobody to wake.
+    #[tokio::test]
+    async fn approval_resolutions_that_finish_a_parked_child_wake_its_parent_but_not_a_root() {
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let wake_queue = crate::magician_v2::agents::wake_up_queue::WakeUpQueue::new();
+        let wake_dir = tempfile::tempdir().expect("wake persistence dir");
+        wake_queue.set_persist_path(wake_dir.path().join("wake_up_queue.json"));
+        orchestrator.set_wake_up_queue(wake_queue.clone());
+
+        for (parent_id, child_id) in [
+            ("hitl-reject-parent", "hitl-reject-child"),
+            ("hitl-apply-parent", "hitl-apply-child"),
+        ] {
+            store
+                .insert_execution(parent_wake_test_execution(
+                    parent_id,
+                    None,
+                    None,
+                    WaitingState::WaitingChildren,
+                    vec![child_id.to_string()],
+                ))
+                .await;
+            store
+                .insert_execution(parent_wake_test_execution(
+                    child_id,
+                    Some(parent_id),
+                    None,
+                    WaitingState::WaitingUser,
+                    Vec::new(),
+                ))
+                .await;
+        }
+        store
+            .insert_execution(parent_wake_test_execution(
+                "hitl-root",
+                None,
+                None,
+                WaitingState::WaitingUser,
+                Vec::new(),
+            ))
+            .await;
+
+        // Reject: WaitingUser -> Failed in one hop.
+        assert_eq!(
+            orchestrator
+                .transition_status("hitl-reject-child", WorkflowEvent::ExecutionFailed)
+                .await
+                .expect("reject should fail the child"),
+            WaitingState::Failed
+        );
+        // Apply/approve: resume, then complete.
+        orchestrator
+            .transition_status("hitl-apply-child", WorkflowEvent::ExecutionStart)
+            .await
+            .expect("approve should resume the child");
+        assert_eq!(
+            orchestrator
+                .transition_status("hitl-apply-child", WorkflowEvent::ExecutionComplete)
+                .await
+                .expect("the resumed child should complete"),
+            WaitingState::Completed
+        );
+        // Cancel a parked root.
+        assert_eq!(
+            orchestrator
+                .transition_status("hitl-root", WorkflowEvent::UserCancelled)
+                .await
+                .expect("cancel should end the root"),
+            WaitingState::Cancelled
+        );
+
+        let due = wake_queue.drain_due().await;
+        assert!(due.iter().all(|entry| entry.kind
+            == crate::magician_v2::agents::wake_up_queue::WakeKind::ChildCompleted));
+        let mut woken: Vec<&str> = due
+            .iter()
+            .filter_map(|entry| entry.execution_id.as_deref())
+            .collect();
+        woken.sort_unstable();
+        assert_eq!(
+            woken,
+            vec!["hitl-apply-parent", "hitl-reject-parent"],
+            "each finished child wakes its own parent exactly once; the root wakes nobody"
+        );
+    }
+
+    /// A diff review answered after the child already finished changes no
+    /// status. The review-closed seam wakes that child's parent, once however
+    /// often it is called, and leaves roots and still-running children alone.
+    #[tokio::test]
+    async fn closing_a_finished_childs_review_wakes_its_parent_and_nothing_else() {
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let wake_queue = crate::magician_v2::agents::wake_up_queue::WakeUpQueue::new();
+        let wake_dir = tempfile::tempdir().expect("wake persistence dir");
+        wake_queue.set_persist_path(wake_dir.path().join("wake_up_queue.json"));
+        orchestrator.set_wake_up_queue(wake_queue.clone());
+
+        store
+            .insert_execution(parent_wake_test_execution(
+                "review-parent",
+                None,
+                None,
+                WaitingState::WaitingChildren,
+                vec!["review-child-done".to_string()],
+            ))
+            .await;
+        store
+            .insert_execution(parent_wake_test_execution(
+                "review-child-done",
+                Some("review-parent"),
+                None,
+                WaitingState::Completed,
+                Vec::new(),
+            ))
+            .await;
+        store
+            .insert_execution(parent_wake_test_execution(
+                "review-live-parent",
+                None,
+                None,
+                WaitingState::WaitingChildren,
+                vec!["review-child-live".to_string()],
+            ))
+            .await;
+        store
+            .insert_execution(parent_wake_test_execution(
+                "review-child-live",
+                Some("review-live-parent"),
+                None,
+                WaitingState::WaitingUser,
+                Vec::new(),
+            ))
+            .await;
+        store
+            .insert_execution(parent_wake_test_execution(
+                "review-root",
+                None,
+                None,
+                WaitingState::Completed,
+                Vec::new(),
+            ))
+            .await;
+
+        orchestrator
+            .notify_parent_after_child_review_closed("review-child-done")
+            .await;
+        orchestrator
+            .notify_parent_after_child_review_closed("review-child-done")
+            .await;
+        orchestrator
+            .notify_parent_after_child_review_closed("review-child-live")
+            .await;
+        orchestrator
+            .notify_parent_after_child_review_closed("review-root")
+            .await;
+        orchestrator
+            .notify_parent_after_child_review_closed("review-child-missing")
+            .await;
+
+        let due = wake_queue.drain_due().await;
+        assert_eq!(due.len(), 1, "one parent wake, deduplicated: {due:?}");
+        assert_eq!(due[0].execution_id.as_deref(), Some("review-parent"));
+        assert_eq!(
+            due[0].kind,
+            crate::magician_v2::agents::wake_up_queue::WakeKind::ChildCompleted
         );
     }
 
@@ -42223,6 +43898,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42251,6 +43927,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42313,6 +43990,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42341,6 +44019,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42413,6 +44092,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42441,6 +44121,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42596,6 +44277,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: Some(WaitingState::Executing),
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42817,6 +44499,7 @@ tools: []
                 active_delegation_group: vec![child_id.to_string()],
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: Some(WaitingState::WaitingChildren),
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -42845,6 +44528,7 @@ tools: []
                 active_delegation_group: Vec::new(),
                 timeout_secs: None,
                 delegation_chain: Vec::new(),
+                read_lineage: Vec::new(),
                 work_authority: None,
                 paused_from_state: None,
                 entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -43169,6 +44853,47 @@ tools: []
         assert!(reconstruction.contains("retain_parent_reconciliation_retry"));
     }
 
+    /// Live sweep 2026-10-20: a delegated child deferred at boot for the
+    /// pre-seed visibility grace was never looked at again while the process
+    /// stayed up, and once it ran it journalled every event transport-only
+    /// because its process-local canonical scope was gone.
+    #[test]
+    fn restart_recovery_rechecks_grace_deferrals_and_restores_the_event_scope() {
+        let source = include_str!("v2_orchestrator.rs");
+        let startup = source
+            .split("pub async fn recover_interrupted_runnable_executions")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub async fn wait_for_interrupted_execution_recoveries")
+                    .next()
+            })
+            .expect("startup recovery source");
+        let deferred = startup
+            .find("Interrupted execution retained for its durable lifecycle owner")
+            .expect("deferral branch");
+        let recheck = startup[deferred..]
+            .find("schedule_deferred_interrupted_runtime_recheck")
+            .expect("grace deferral re-check");
+        assert!(startup[deferred..deferred + recheck]
+            .contains("deferred_interrupted_recovery_recheck_at_ms"));
+
+        let direct = source
+            .split("async fn execute_agentic_direct_with_outcome_inner")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("async fn execute_pipeline_single_context")
+                    .next()
+            })
+            .expect("direct execution");
+        let restore = direct
+            .find("restore_runtime_canonical_event_scope(&persisted_execution)")
+            .expect("scope restore for a run started after restart");
+        let attach = direct
+            .find("executors.with_canonical_event_scope(scope)")
+            .expect("scope attached to the run's executors");
+        assert!(restore < attach);
+    }
+
     /// Regression: the planner used to build its strategy context from
     /// `ExecutionContext::default()` (`system/default`), which minted a phantom
     /// `scopes/system/default` tenant on the first atomic-composition call.
@@ -43220,6 +44945,7 @@ tools: []
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: ExecutionEntryMode::PlanningBacked,
@@ -43284,8 +45010,10 @@ tools: []
     }
 
     /// C5: `record_atomic_plan_snapshot` enters `WaitingUser` (`SlotsCreated`)
-    /// only after at least one clarification was created; zero created, or no
-    /// ask loop at all, fails the run with a visible reason.
+    /// only after at least one clarification was created. Zero created, or no
+    /// ask loop at all, fails an agent run with a visible reason; a V3
+    /// task-planning run with none created returns in Planning, so its
+    /// clarification resume reaches PlanningComplete and becomes a draft.
     #[test]
     fn upfront_questions_enter_waiting_user_only_when_one_was_created() {
         let source = include_str!("v2_orchestrator.rs");
@@ -43295,14 +45023,28 @@ tools: []
             .and_then(|tail| tail.split("async fn execution_control_root_key(").next())
             .expect("record_atomic_plan_snapshot body");
         let zero_guard = body
-            .find("if created_clarifications == 0 && !is_task_planning_execution(execution_id) {")
-            .expect("zero-created guard, exempting V3 task planning");
+            .find("if created_clarifications == 0 {")
+            .expect("zero-created guard");
         let slots_created = body
             .find("WorkflowEvent::SlotsCreated")
             .expect("SlotsCreated transition");
         assert!(
             zero_guard < slots_created,
             "the zero-created guard must run before the WaitingUser transition"
+        );
+        let guard_body = &body[zero_guard..slots_created];
+        let task_planning_exit = guard_body
+            .split("if !is_task_planning_execution(execution_id) {")
+            .nth(1)
+            .expect("agent runs fail visibly inside the guard");
+        assert!(
+            task_planning_exit.contains("return Ok(());")
+                && task_planning_exit.contains("fail_execution_with_visible_reason("),
+            "agent runs fail visibly; task planning returns before SlotsCreated"
+        );
+        assert!(
+            guard_body.matches("return Ok(());").count() >= 2,
+            "a task-planning run with nothing asked must return in Planning, never enter WaitingUser"
         );
         let unavailable = body
             .split("Ask Loop API not available")
@@ -43328,7 +45070,7 @@ tools: []
 /// Wall-clock bound on the direct-execution run-start memory seed (scoring
 /// plus every tier render). Measured unbounded at ~18 s before the run's
 /// first decision while the embedding backfill and the applicability judge
-/// were slow; the executor's own checkpoint retrieval (500 ms budget) fills
+/// were slow; the executor's own checkpoint retrieval (configured budget) fills
 /// any tier the seed drops.
 const RUN_START_MEMORY_SEED_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
 

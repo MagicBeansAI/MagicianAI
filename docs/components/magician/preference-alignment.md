@@ -51,9 +51,10 @@ change without building `magician` (shipping still needs a `magician` build).
 |---|---|
 | `intention.rs` (`intention.v1`) | Read-only view over canonical memory, never a second store. `nothing_to_compare` needs `IntentionInventory::is_verified_empty` (complete coverage, nothing eligible). |
 | `classify.rs` | Checks what `outward_dispatch_class` or `consequence_class_for_dispatch` classifies; `PrivateLocal` (incl. opaque file, HTTP, bash, DuckDB) is only steered, and unclassified effects fall through to it. **Published v1 limit:** coverage widens by classifying capabilities, never keywords. |
-| `collect.rs` | `alignment_input.v1`. `action_binding` = `alignment_binding.v1:sha256(stable_confirmation_action_json)` with host `__*` identity removed, so identity a dispatcher injects after admission keeps the binding while any changed argument changes it (`None`, never `""`, if unserializable). `action_facts`: recipients from `resolve_effective_action`, arguments normalized (canonical key order, long strings cut). `build_inputs` batches the whole eligible inventory, explicit first, no top-k. |
+| `collect.rs` | `alignment_input.v1`. `action_binding` = `alignment_binding.v1:sha256(stable_confirmation_action_json)` with host `__*` identity removed, so identity a dispatcher injects after admission keeps the binding while any changed argument changes it (`None`, never `""`, if unserializable). `action_facts`: recipients from `resolve_effective_action`, arguments normalized (canonical key order, long strings cut). `build_inputs` batches the whole eligible inventory, explicit first, no top-k; `check_action` calls it once per lane (below). |
+| `relevance.rs` | Relevance labels for the advisory lane: whether an intention bears on a kind of act (`act_kind`: the act's outward class, else its consequence class), asked of the Decision Engine (`preference_relevance`, "does this preference apply to an act like this?", work-process preferences told not to). Labels are cached in `memory/users/preference_alignment_relevance.json` (`alignment_relevance.v1`, flocked, keyed by intention id, void on a new revision or labeler version). `check_action` drops an advisory intention only on a current "does not apply" label (logged as `advisory_irrelevant`), judges unlabelled ones and labels them in the background (one job per owner scope and act kind, labels saved per chunk; each write from a complete inventory drops labels for ids no longer in it). The blocking lane is never narrowed; an engine that is off or failing labels nothing. |
 | `judge.rs` | One bounded `pinned_json` call on `action_alignment_judge`, strict parse, validator. Every failure (no router, unbound route, missing prompt, timeout, provider error, malformed or rejected answer) is unresolved, unlike `memory_applicability`; verified-empty returns `NothingToCompare` with no call. `JudgeBackend::Scripted` is eval/test-only. `judge_batches` runs batches in parallel; `combine` folds them: cancel > confirmation hold > unresolved > clarification hold > choice hold > nudge > proceed, so a known explicit conflict never becomes a "could not be checked" waiver, and a hold over a failed batch says part was unchecked. Proceed over partial coverage is `Unresolved`. |
-| `service.rs` | `check_action`, the single entry point (mode via `mode_for_scope`) → `NotChecked`, `Proceed`, `ProceedWithNudge`, `Hold`, `Cancel`, `Unresolved`. Telemetry `target: preference_alignment` records mode, classes, coverage, batch count, origin, disposition, failure cause, latency and downgrade, never intentions, arguments or explanations. The same record plus binding hash, generations and admission goes to `memory/users/preference_alignment_log.jsonl` (to `.jsonl.1` at 4 MiB); best effort, a failed append never changes the act. `ActionCheck::ticket` yields an `AdmissionTicket` (binding, origin, generation, mode); shadow tickets are never fenced. |
+| `service.rs` | `check_action`, the single entry point (mode via `mode_for_scope`) → `NotChecked`, `Proceed`, `ProceedWithNudge`, `Hold`, `Cancel`, `Unresolved`. It splits the inventory by authority (`EffectivePolicy::may_make_act_wait`): intentions that can make the act wait (stated or confirmed, or inferred under a choice-based policy) form the blocking lane and count against the task's judge budget; the rest form the advisory lane, judged beside it on the same deadline by `judge_advisory_batches_with` (Decision Engine `action_alignment_advisory`, no generative fallback, no task budget). An advisory batch that cannot be judged is dropped and logged (`advisory_unchecked`), never unresolved, since nothing in it could hold the act; its answers fold in with the usual precedence. Where the act fires (the run's dispatch and the host backstop, `AlignmentEnvironment::late_advisory_notices`) the advisory lane runs as its own task: the act waits `budgets.advisory_grace_ms` (default 1500, 0..=60000, clamped to `foreground_check_ms`) past the blocking answer, and batches still running then finish in the background, where a nudge becomes an owner notice for that act (`Notice::for_decision`) and the log gets a `late_advisory` line (the check line carries `advisory_late`). Prechecks, eval lanes, shadow mode and scripted judges wait for the whole lane, and a lane whose blocking answer holds or stops the act is aborted (`advisory_abandoned`). The owner's cancel in the current turn is asked per judged intention, so when the blocking lane is empty and the request carries owner spans one advisory intention (a relevant one first) is carried onto it (`carried`); its force stays capped by its own evidence, and a judge that cannot answer about it leaves the cancel unchecked rather than holding the act (a spent task budget or partial coverage still holds). Judging every intention on the blocking path held every outward act once the owner had a few hundred inferred preferences. Telemetry `target: preference_alignment` records mode, classes, coverage, batch count, origin, disposition, failure cause, latency and downgrade, never intentions, arguments or explanations. The same record plus binding hash, generations and admission goes to `memory/users/preference_alignment_log.jsonl` (to `.jsonl.1` at 4 MiB); best effort, a failed append never changes the act. `ActionCheck::ticket` yields an `AdmissionTicket` (binding, origin, generation, mode); shadow tickets are never fenced. |
 | `contract.rs` | `alignment_input.v1`, `alignment_decision.v2`, the validator. |
 | `admission.rs` | Content-free `AdmissionRecord` (`alignment_admission.v1`; `decision_origin`: `model_action`, `nothing_to_compare`, `host_exception`, `owner_waiver`, `shadow`, `recovered_committed_batch`; generation, mode, policy version, execution, time), `verify_fence`, consume-once registry by owner, execution, binding (2-minute TTL, 4,096 entries; a dropped or expired entry only costs a second check). |
 | `backstop.rs` | Admission in `execute_action_inner` for paths that skip the loop gate. |
@@ -127,7 +128,8 @@ is unresolved, never proceed.
 **Generation** (`generation.rs`): `memory/users/intention_generation.json`
 beside `knowledge.json` (`intention_generation.v1`: generation, BLAKE3
 fingerprint of the exact `knowledge.json` bytes, `bumped_at`). Bumped under
-the `knowledge.json` flock on every `persist_user_knowledge` write and
+the `knowledge.json` flock on every `persist_user_knowledge` write (which
+fingerprints the bytes it just wrote, `bump_intention_generation_for_written_knowledge_locked`) and
 `forget_memory` deletion; a failed bump is logged, never fails the write (a lost bump or a writer that
 bypasses `persist_user_knowledge` shows as a fingerprint mismatch). Next =
 `max(previous + 1, now in µs)`, never reused, compared for equality only. Read
@@ -136,6 +138,14 @@ value, mismatch → `Stale`, unparseable → `Corrupt`, unreadable →
 `Unreadable`; an error never reads as 0. `reconcile_intention_generation`
 repairs stale or corrupt under the exclusive flock; the inventory calls it
 once.
+
+Under `memory.user_knowledge_bounds` `mode: enforce` the channel activity logs
+(email/chat evidence, channel patterns and feedback) are written to their own
+lane files, not `knowledge.json`, so their two-minute writes no longer bump the
+generation or read as "owner knowledge changed". Records the bounds archive out
+of `knowledge.json` are journalled in the preference history as `retired`, not
+`forgotten` (`history::mark_archived`), so their wording is not erased. See
+[memory lifecycle](memory-lifecycle.md#size-bounds-and-archive).
 
 **Native knowledge** (`sources/native.rs`, source `native_knowledge`), every
 `knowledge.json` tier:
@@ -200,6 +210,10 @@ Eligibility is structural: no topic, similarity or top-k filtering.
   (`memory_lifecycle: superseded`, `supersession_source: owner_restatement`;
   result carries `superseded`). Each passes the same `owner_turn_may_retire`
   guard, so a write with no owner turn naming the rule leaves it in force.
+- The owner turn (`OwnerTurn::new`) keeps only what the owner wrote: framing
+  a surface composed into the turn (`<magician_context>` blocks, e.g. the
+  contextual-writing helper's instructions) is dropped first, so it can never
+  be cited as the owner speaking or saved as an explicit preference.
 
 ## Decision operation and configuration
 
@@ -221,7 +235,7 @@ The generative judge is router operation `action_alignment_judge`
 which is rejected), bound in seed `llm-router.yaml` to
 `gpt61sol-responses-toolsany`, family `safety_and_review` in
 `data/magician_v2/llm_observability/operation-families-v1.json`. Its ~6 s p95
-(P8.8) misses the 4 s foreground budget, hence fallback. Input one variable
+(P8.8) misses the 4 s foreground budget (now 8 s), hence fallback. Input one variable
 `alignment_input` (`alignment_input.v1`; the model never supplies ids); output
 exactly one `alignment_decision.v2`, no prose, ≤2-sentence owner-facing
 explanation, `holding_intentions` for any wait. The prompt teaches
@@ -229,6 +243,15 @@ principles, not keywords; its examples share no scenario with the eval corpus
 (keep it so).
 
 ### Decision Engine
+
+`action_alignment` (blocking lane) asks one item per intention, a whole
+request in one window so `item_concurrency` items run at once (`chunk_size: 1`
+ran them one by one). `action_alignment_advisory` uses the same pack with
+`batch_strategy: shared_chunk`, four intentions per call, and a
+`queue_budget_ms` that queues it behind foreground work. Jev allows 16 calls
+in flight. `preference_relevance` (pack `memory_applicability` 1.0.0, shared
+chunks of eight, background budgets) labels advisory intentions for
+`relevance.rs`.
 
 `decision-engine.yaml` `operations.action_alignment`: pack 1.3.0 (`relation`
 choice per intention, `noul` questions, muting, `owner_decides`), gate on for
@@ -249,7 +272,7 @@ preference_alignment:
   mode: "enforce"           # off | shadow | enforce (code default: off)
   enforce_scopes: []        # [{principal, workspace}] canaries while shadowing
   budgets:
-    foreground_check_ms: 4000
+    foreground_check_ms: 8000
     max_judge_calls_per_task: 40
     max_standing_batch: 24
   holds:
@@ -514,8 +537,8 @@ criticality, model confirmation flag, harness grant rule) is asked once:
 | Android | reason, cited preferences, readback | yes | `magdroid/android/bridge/…/attention/AlignmentDetail.kt`, `magdroid/android/app/…/ui/AlignmentAnswer.kt`, `…/ui/PreferencesPage.kt` |
 | Chat cards, channels | generic prompt, typed choices | no (no token) | `chat/escalation_listener.rs` |
 | Live voice call | generic prompt; cancel, retry, redirect | no | `preference_alignment/voice.rs`, `magician-api/src/voice_control_handler.rs` |
-| Web: Memory → Preferences | owner view; add, edit, confirm, retire, forget; history | yes | `ui/unified-ui/src/lib/preferences/` |
-| iOS: Settings → Preferences → Your preferences | same | yes | `magios/Shared/AlignmentAsk.swift` (`OwnerPreferences`), `Magios/AlignmentAskView.swift` (`OwnerPreferencesView`) |
+| Web: Memory → Preferences | owner view; add, edit, confirm, retire, forget; history; "Review what I've learned" (inferred ones only: confirm or dismiss) | yes | `ui/unified-ui/src/lib/preferences/` |
+| Web: Settings → Agents & safety → Your preferences | counts, linking to Memory → Preferences (the editor); the iOS and Android apps reach it through their embedded web Settings | no | `ui/unified-ui/src/lib/settings/PreferencesLinkCard.svelte` |
 
 Clients keep the act's choices, lasting changes and reply apart, preselect
 nothing, and send typed `choice` or `text` values, never labels. The hold's cancel reads "Cancel the
@@ -555,9 +578,8 @@ intentions, and are not consent: the act is re-proposed and re-judged.
 **Nudges** admit the act and record a private notice (`notices.rs`) with any
 remember offer bound to the intention's revision.
 `GET /preference-alignment/notices` on private surfaces, open count only on shared
-ones; shown on web under Settings → Engines → Preference checks and on iOS
-under Settings → Preferences → Notes from recent checks
-(`PreferenceNotesView`). Remembering one needs the notice's token and the same
+ones; shown on web under Settings → Agents & safety → Preference checks (the phone apps
+show it through their embedded web Settings). Remembering one needs the notice's token and the same
 revision-checked write; a preference changed since is not saved.
 
 ## Owner view and edits
@@ -576,6 +598,8 @@ bearers never; otherwise `403 private_surface_required`.
 
 - `build_view` uses the checks' `collect_inventory` and policy, plus grounds
   (evidence role and source), editability (native only), last-judged time,
+  learned time (`learned_at_ms`, native records only: `memory_saved_at`, else
+  `created_at`, else `updated_at`),
   retired records (with `superseded_by`) and omitted ones with a reason
   (`unknown_lifecycle`, `app_governed`, `unreadable_validity`,
   `duplicate_id`, `unreadable_tier`); eligibility is shared via

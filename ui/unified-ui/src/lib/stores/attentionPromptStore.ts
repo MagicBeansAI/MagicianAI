@@ -11,6 +11,7 @@
  * (themed input modal) and the Deferred — HITL standardization section.
  */
 import type { AlignmentProjection } from '$lib/hitl/alignmentAsk';
+import type { HitlApprovalPreview } from '$lib/hitl/types';
 import { writable, type Readable } from 'svelte/store';
 
 /**
@@ -95,6 +96,9 @@ export interface AttentionPromptConfirmation {
  * whatever the reader wants to add about it.
  */
 export interface AttentionPromptExternalAction {
+	/** A scoped UI handoff, fetched on click; contains no OAuth material. */
+	browserSigninCorrelationId?: string;
+	browserSigninScope?: { principal: string; workspace: string };
 	instructions: string | null;
 	doneLabel: string;
 	/**
@@ -109,6 +113,11 @@ export interface AttentionPromptExternalAction {
 	 * Absent means shown, which is every existing external action.
 	 */
 	showNote?: boolean;
+	/**
+	 * Label of the control that declines the ask (an MCP sign-in's "Not now").
+	 * Absent when the ask offers no decline; the prompt then shows none.
+	 */
+	dismissLabel?: string;
 }
 
 /**
@@ -141,9 +150,12 @@ export interface AttentionPromptFilePath {
  */
 export interface AttentionPromptAuthorization {
 	grant: 'tool' | 'sandbox';
+	godMode?: boolean;
 	subject: string;
 	detail: string | null;
 	roots: string[];
+	/** Exact staged changes accompanying a God-mode file grant. */
+	files?: AttentionPromptDiffFile[];
 	/**
 	 * The grants on offer, in the order the backend listed them.
 	 *
@@ -249,6 +261,13 @@ export interface AttentionPromptRequest {
 	maxSelections?: number;
 	diffApproval?: AttentionPromptDiffApproval;
 	/**
+	 * A confirmation's structured approval card (`schema.approval_preview`):
+	 * who wants to change what, the agent's stated reason, the diff, evidence
+	 * and warnings. When present it replaces `body` (the raw call), which stays
+	 * reachable as `approvalPreview.raw` behind a collapsed details view.
+	 */
+	approvalPreview?: HitlApprovalPreview;
+	/**
 	 * The four payloads the shapes above describe. Each is present for exactly
 	 * its own `kind` and absent otherwise; a shape whose payload did not arrive
 	 * renders the ask and no controls rather than controls that cannot express
@@ -262,6 +281,18 @@ export interface AttentionPromptRequest {
 	 * learn that from a task that sits there.
 	 */
 	planReview?: { taskId: string };
+	/**
+	 * A captured outward send held for the owner's review
+	 * (`escalation_trigger: "outward_review"`). The prompt renders the
+	 * approval preview, then the server's options as buttons — Send, Discard
+	 * and Always allow (whose label names the agent and recipient) — and
+	 * answers with the picked option's id. `deadlineAtMs` is 0 when the review
+	 * does not expire.
+	 */
+	outwardReview?: {
+		options: AttentionPromptChoice[];
+		deadlineAtMs: number;
+	};
 	/**
 	 * Where the thing being asked about can be reviewed (`schema.review_href`),
 	 * rendered as a link beside the answer controls. Navigation only.

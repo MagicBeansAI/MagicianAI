@@ -269,8 +269,8 @@ def load_dotenv(path: Path) -> int:
     return loaded
 
 DEFAULT_PROFILE_NAMES = (
-    "chat-gptterra-responses-vision-toolsauto-fast",
-    "chat-gptterra-responses-vision-toolsauto-thinking",
+    "model/openai/gpt-5.6-terra/none",
+    "model/openai/gpt-5.6-terra/high",
 )
 # Backward-compat alias for the help string (single profile).
 DEFAULT_PROFILE_NAME = DEFAULT_PROFILE_NAMES[0]
@@ -322,7 +322,7 @@ DEFAULT_FINAL_PROMPT = (
 # Names below are stable so the JS renderer in the HTML template can
 # resolve `[chart:<id>]` and `[bucket:<profile>/<scenario>]` citations
 # into clickable chips that scroll/highlight the referenced element.
-INSIGHTS_PROFILE_NAME = "chat-gptterra-responses-vision-toolsauto-thinking"
+INSIGHTS_PROFILE_NAME = "model/openai/gpt-5.6-terra/high"
 
 INSIGHTS_INSTRUCTIONS = """\
 You are analyzing benchmark results from an LLM latency / cost / cache

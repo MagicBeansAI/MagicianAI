@@ -23,6 +23,8 @@ export interface TurnUsageSummary {
 	cacheCreationTokens: number | null;
 	outputTokens: number;
 	callCount: number;
+	/** False when task costs are known but token counts were not reported. */
+	tokensReported?: boolean;
 	/** `null` when no call reported cache figures; the chip then omits it. */
 	hitPct: number | null;
 	/** Summed `cost_usd` (chat calls) / `cost` (task-run calls); `null` when none priced. */

@@ -174,7 +174,12 @@ struct SkillEnvKey {
 
 #[derive(Deserialize)]
 struct SkillOAuthStartResponse {
-    authorization_url: String,
+    #[serde(default)]
+    authorization_url: Option<String>,
+    #[serde(default)]
+    viewer_path: Option<String>,
+    #[serde(default)]
+    ticket: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -218,11 +223,6 @@ struct StoredSetupToken {
     version: u8,
     origin: String,
     token: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RuntimeEnvStatus {
-    active_mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -365,15 +365,13 @@ pub struct CuaDriverSetupResult {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct CodingProfilesResponse {
-    #[serde(default)]
-    profiles: Vec<CodingProfileSnapshot>,
+struct CodingModelCatalog {
+    engines: Vec<CodingEngineSnapshot>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct CodingProfileSnapshot {
-    #[serde(default)]
-    engine: String,
+struct CodingEngineSnapshot {
+    id: String,
     #[serde(default)]
     selectable: bool,
     #[serde(default)]
@@ -703,9 +701,15 @@ fn is_loopback_origin(origin: &str) -> bool {
     })
 }
 
+/// Authenticated engine API calls have fixed destinations. Never forward a
+/// setup token, OTP or configuration body through an HTTP redirect.
+fn engine_api_client() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+}
+
 async fn get_json<T: DeserializeOwned>(app: &AppHandle, path: &str) -> Result<T, String> {
     let url = format!("{}{path}", engine_base_url(app).await);
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -722,7 +726,7 @@ async fn post_json<T: DeserializeOwned, B: Serialize + ?Sized>(
     body: &B,
 ) -> Result<T, String> {
     let url = format!("{}{path}", engine_base_url(app).await);
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -739,7 +743,7 @@ async fn put_json<T: DeserializeOwned, B: Serialize + ?Sized>(
     body: &B,
 ) -> Result<T, String> {
     let url = format!("{}{path}", engine_base_url(app).await);
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -787,7 +791,7 @@ async fn check_setup_access_with_token(app: &AppHandle, token: &str) -> Result<(
         "{}/api/magician/v2/components/admin-access",
         engine_origin(app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -884,8 +888,12 @@ async fn decode_response<T: DeserializeOwned>(response: reqwest::Response) -> Re
         .text()
         .await
         .map_err(|error| format!("Failed to read setup response: {error}"))?;
+    decode_body(status, &body)
+}
+
+fn decode_body<T: DeserializeOwned>(status: reqwest::StatusCode, body: &str) -> Result<T, String> {
     if !status.is_success() {
-        let message = serde_json::from_str::<serde_json::Value>(&body)
+        let message = serde_json::from_str::<serde_json::Value>(body)
             .ok()
             .and_then(|value| {
                 ["message", "error", "details"]
@@ -898,7 +906,7 @@ async fn decode_response<T: DeserializeOwned>(response: reqwest::Response) -> Re
             "Magician setup request failed ({status}): {message}"
         ));
     }
-    serde_json::from_str(&body).map_err(|error| format!("Invalid setup response: {error}"))
+    serde_json::from_str(body).map_err(|error| format!("Invalid setup response: {error}"))
 }
 
 async fn get_optional_qr_data_url(
@@ -1127,7 +1135,7 @@ async fn enrich_skill_profile_status(
             continue;
         };
         match auth.setup.as_ref().map(|setup| &setup.driver) {
-            Some(SetupDriver::GovernedOauth) => {
+            Some(SetupDriver::GovernedOauth | SetupDriver::BrowserCli { .. }) => {
                 if setup_authorized {
                     oauth.push((index, skill.name.clone()));
                 } else {
@@ -1233,7 +1241,7 @@ async fn enrich_skill_profile_status(
             return;
         },
     };
-    let client = match reqwest::Client::builder()
+    let client = match engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
     {
@@ -1348,7 +1356,7 @@ async fn enrich_skill_setup_status(
             return;
         },
     };
-    let client = match reqwest::Client::builder()
+    let client = match engine_api_client()
         .timeout(std::time::Duration::from_secs(15))
         .build()
     {
@@ -1542,7 +1550,7 @@ pub async fn save_onboarding_secret(
     }
     let (state, _) = load_state()?;
     let url = format!("{}/api/magician/v2/runtime/env", engine_origin(&app).await?);
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1565,7 +1573,7 @@ pub async fn save_onboarding_secret(
             "{}/api/magician/v2/bots/{bot_name}/env",
             engine_origin(&app).await?
         );
-        let bot_client = reqwest::Client::builder()
+        let bot_client = engine_api_client()
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|error| format!("Failed to create bot setup client: {error}"))?;
@@ -1645,7 +1653,7 @@ pub async fn save_onboarding_configuration_file(
         "{}/api/magician/v2/components/{component_id}/configuration-file",
         engine_origin(&app).await?,
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1700,7 +1708,7 @@ pub async fn install_onboarding_skill(
         "{}/api/magician/v2/skills/install",
         engine_origin(&app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1726,7 +1734,7 @@ pub async fn uninstall_onboarding_skill(
         "{}/api/magician/v2/skills/{name}/uninstall",
         engine_origin(&app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1756,7 +1764,7 @@ pub async fn save_onboarding_skill_secret(
         "{}/api/magician/v2/skills/catalog/{name}/env",
         engine_origin(&app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1782,7 +1790,7 @@ pub async fn start_onboarding_component_install(
         "{}/api/magician/v2/components/{component_id}/install",
         engine_origin(&app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1799,7 +1807,7 @@ pub async fn get_onboarding_component_install(
         "{}/api/magician/v2/components/installations/{job_id}",
         engine_origin(&app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1896,7 +1904,7 @@ pub async fn configure_onboarding_model_runtime(
     };
 
     let base = engine_origin(&app).await?;
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|error| format!("Failed to create setup client: {error}"))?;
@@ -1947,7 +1955,7 @@ pub async fn get_onboarding_harnesses(app: AppHandle) -> Result<OnboardingHarnes
 
 async fn onboarding_harness_catalog(app: &AppHandle) -> Result<OnboardingHarnessCatalog, String> {
     let (coding, plane) = tokio::try_join!(
-        get_json::<CodingProfilesResponse>(app, "/api/magician/v2/coding/profiles"),
+        get_json::<CodingModelCatalog>(app, "/api/magician/v2/coding/models"),
         get_json::<PlaneEnginesResponse>(app, "/api/magician/v2/plane/engines"),
     )?;
     let definitions = magician_components::setup::harnesses()?;
@@ -1955,9 +1963,9 @@ async fn onboarding_harness_catalog(app: &AppHandle) -> Result<OnboardingHarness
         .into_iter()
         .map(|definition| {
             let coding = coding
-                .profiles
+                .engines
                 .iter()
-                .find(|profile| profile.engine == definition.coding_engine);
+                .find(|engine| engine.id == definition.coding_engine);
             let plane_engine = plane
                 .engines
                 .iter()
@@ -2235,7 +2243,7 @@ async fn get_skill_oauth_snapshot(
     name: String,
 ) -> Result<BotPairingSnapshot, String> {
     let origin = engine_origin(app).await?;
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create account status client: {error}"))?;
@@ -2271,8 +2279,9 @@ fn validate_oauth_authorization_url(target: &str) -> Result<(), String> {
 
 fn open_oauth_authorization_url(target: Zeroizing<String>) -> Result<(), String> {
     validate_oauth_authorization_url(target.as_str())?;
-    open::that(target.as_str())
-        .map_err(|error| format!("Failed to open account authorization: {error}"))
+    open::that(target.as_str()).map_err(|_| {
+        "Failed to open account authorization. Retry from Service accounts.".to_string()
+    })
 }
 
 async fn start_managed_bot_auth(
@@ -2367,7 +2376,7 @@ async fn configure_managed_setup(
         "{}/api/magician/v2/bots/{bot_name}/env",
         engine_origin(app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create account setup client: {error}"))?;
@@ -2406,7 +2415,7 @@ async fn submit_managed_auth_input(
         "{}/api/magician/v2/bots/{bot_name}/auth/input",
         engine_origin(app).await?
     );
-    let client = reqwest::Client::builder()
+    let client = engine_api_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|error| format!("Failed to create account login client: {error}"))?;
@@ -2467,11 +2476,16 @@ pub async fn start_onboarding_skill_auth(
         .auth
         .as_ref()
         .and_then(|auth| auth.setup.as_ref())
-        .is_some_and(|setup| matches!(&setup.driver, SetupDriver::GovernedOauth))
+        .is_some_and(|setup| {
+            matches!(
+                &setup.driver,
+                SetupDriver::GovernedOauth | SetupDriver::BrowserCli { .. }
+            )
+        })
     {
         let name = validate_skill_name(&request.name)?.to_string();
         let origin = engine_origin(&app).await?;
-        let client = reqwest::Client::builder()
+        let client = engine_api_client()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|error| format!("Failed to create account login client: {error}"))?;
@@ -2482,7 +2496,22 @@ pub async fn start_onboarding_skill_auth(
             )),
         )
         .await?;
-        open_oauth_authorization_url(Zeroizing::new(response.authorization_url))?;
+        if let (Some(path), Some(ticket)) = (&response.viewer_path, &response.ticket) {
+            if path != "/api/magician/v2/auth/browser-signin/view"
+                || ticket.len() != 68
+                || !ticket.starts_with("bsi_")
+                || !ticket[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err("Invalid browser sign-in response".to_string());
+            }
+            let mut viewer = tauri::Url::parse(&origin)
+                .and_then(|origin| origin.join(path))
+                .map_err(|_| "Invalid engine sign-in origin".to_string())?;
+            viewer.set_fragment(Some(ticket));
+            open_oauth_authorization_url(Zeroizing::new(viewer.to_string()))?;
+        } else if let Some(url) = response.authorization_url {
+            open_oauth_authorization_url(Zeroizing::new(url))?;
+        }
         return get_skill_oauth_snapshot(&app, name).await;
     }
     let setup = skill
@@ -2502,7 +2531,12 @@ pub async fn get_onboarding_skill_auth(
         .auth
         .as_ref()
         .and_then(|auth| auth.setup.as_ref())
-        .is_some_and(|setup| matches!(&setup.driver, SetupDriver::GovernedOauth))
+        .is_some_and(|setup| {
+            matches!(
+                &setup.driver,
+                SetupDriver::GovernedOauth | SetupDriver::BrowserCli { .. }
+            )
+        })
     {
         let name = validate_skill_name(&request.name)?.to_string();
         return get_skill_oauth_snapshot(&app, name).await;
@@ -2533,6 +2567,127 @@ pub async fn submit_onboarding_skill_auth_input(
     submit_managed_auth_input(&app, request.name, &setup, request.input).await
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct OnboardingProjectAccessRequest {
+    pub bot: String,
+    /// Skip the engine's cached report (after granting the roles elsewhere).
+    #[serde(default)]
+    pub fresh: bool,
+}
+
+/// A Google Workspace account's roles on its OAuth client's Cloud project
+/// (`POST /auth/browser-signin/bot/project-access`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleProjectAccess {
+    #[serde(default)]
+    pub bot: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub email: String,
+    /// `granted`, `missing` or `unknown`.
+    pub status: String,
+    #[serde(default)]
+    pub missing_roles: Vec<String>,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_account: Option<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_url: Option<String>,
+    #[serde(default)]
+    pub can_grant: bool,
+}
+
+/// The engine answers 400 `bot_method_unsupported` for an account that is
+/// not a Google Workspace account: there is no project step to show.
+fn project_access_unsupported(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::BAD_REQUEST
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value.get("error").and_then(serde_json::Value::as_str)
+                    == Some("bot_method_unsupported")
+            })
+}
+
+/// Unknown statuses read as `unknown`; only an https console link is kept,
+/// and only a `missing` report offers a grant.
+fn normalize_project_access(mut report: GoogleProjectAccess) -> GoogleProjectAccess {
+    if !matches!(report.status.as_str(), "granted" | "missing" | "unknown") {
+        report.status = "unknown".to_string();
+    }
+    report.console_url = report
+        .console_url
+        .filter(|url| reqwest::Url::parse(url).is_ok_and(|url| url.scheme() == "https"));
+    report.can_grant = report.can_grant && report.status == "missing";
+    report
+}
+
+async fn send_project_access(
+    app: &AppHandle,
+    suffix: &str,
+    body: serde_json::Value,
+) -> Result<Option<GoogleProjectAccess>, String> {
+    let url = format!(
+        "{}/api/magician/v2/auth/browser-signin/bot/{suffix}",
+        engine_origin(app).await?
+    );
+    // The engine runs gcloud for this (up to 45 s per call).
+    let client = engine_api_client()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|error| format!("Failed to create account setup client: {error}"))?;
+    // The session bearer carries the principal/workspace scope; the engine's
+    // auth middleware engraves it, as for the other managed-bot calls.
+    let response = crate::magician_auth::authorize(client.post(url).json(&body))
+        .send()
+        .await
+        .map_err(|error| format!("Could not check Cloud project access: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read setup response: {error}"))?;
+    if project_access_unsupported(status, &text) {
+        return Ok(None);
+    }
+    decode_body::<GoogleProjectAccess>(status, &text)
+        .map(|report| Some(normalize_project_access(report)))
+}
+
+/// `None` when the account is not a Google Workspace account.
+#[tauri::command]
+pub async fn onboarding_google_project_access(
+    app: AppHandle,
+    request: OnboardingProjectAccessRequest,
+) -> Result<Option<GoogleProjectAccess>, String> {
+    let bot = validate_skill_name(&request.bot)?.to_string();
+    send_project_access(
+        &app,
+        "project-access",
+        serde_json::json!({"bot": bot, "fresh": request.fresh}),
+    )
+    .await
+}
+
+/// Grant the missing roles with the engine computer's gcloud account.
+#[tauri::command]
+pub async fn onboarding_grant_google_project_access(
+    app: AppHandle,
+    request: OnboardingProjectAccessRequest,
+) -> Result<Option<GoogleProjectAccess>, String> {
+    let bot = validate_skill_name(&request.bot)?.to_string();
+    send_project_access(
+        &app,
+        "project-access/grant",
+        serde_json::json!({"bot": bot}),
+    )
+    .await
+}
+
 async fn bot_pairing_snapshot(
     app: &AppHandle,
     subject_id: String,
@@ -2542,9 +2697,9 @@ async fn bot_pairing_snapshot(
     let auth_path = format!("/api/magician/v2/bots/{bot_name}/auth");
     let logs_path = format!("/api/magician/v2/bots/{bot_name}/logs?limit=400");
     let (auth, logs, qr_data_url) = tokio::try_join!(
-        get_json::<serde_json::Value>(&app, &auth_path),
-        get_json::<serde_json::Value>(&app, &logs_path),
-        get_optional_qr_data_url(&app, &bot_name),
+        get_json::<serde_json::Value>(app, &auth_path),
+        get_json::<serde_json::Value>(app, &logs_path),
+        get_optional_qr_data_url(app, &bot_name),
     )?;
     let auth = auth.get("auth").unwrap_or(&auth);
     let status = auth
@@ -2800,6 +2955,7 @@ async fn observe_setup_status(
         SetupDriver::CuaDriver { .. } => desktop_permission_observation("cua_driver", permissions),
         SetupDriver::ModelRuntime { .. }
         | SetupDriver::GovernedOauth
+        | SetupDriver::BrowserCli { .. }
         | SetupDriver::ConfigurationFile { .. } => return None,
     })
 }
@@ -2846,6 +3002,45 @@ fn step_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn setup_api_clients_do_not_forward_credentials_through_redirects() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let destination = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let from = origin.local_addr().unwrap();
+        let target = destination.local_addr().unwrap();
+        let responder = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0 && request.len() < 8192);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            stream.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target}/unexpected-target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        });
+        let response = engine_api_client()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!(
+                "http://{from}/api/magician/v2/components/admin-access"
+            ))
+            .header(SETUP_TOKEN_HEADER, "test-only-setup-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        responder.await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), destination.accept())
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn native_access_requires_a_fresh_granted_observation() {
@@ -3062,9 +3257,11 @@ mod tests {
 
     #[test]
     fn completion_is_bound_to_the_exact_engine_origin() {
-        let mut state = OnboardingState::default();
-        state.completed = true;
-        state.engine_origin = Some("https://engine.example".to_string());
+        let state = OnboardingState {
+            completed: true,
+            engine_origin: Some("https://engine.example".to_string()),
+            ..Default::default()
+        };
         assert!(state_completed_for_origin(&state, "https://engine.example"));
         assert!(!state_completed_for_origin(&state, "https://other.example"));
         assert!(!state_pending_for_origin(&state, "https://engine.example"));
@@ -3182,5 +3379,54 @@ mod tests {
             "icon"
         );
         std::fs::remove_dir_all(root).expect("clean test folder");
+    }
+
+    #[test]
+    fn project_access_skips_non_google_accounts_only() {
+        let unsupported = r#"{"error":"bot_method_unsupported","message":"This account cannot connect that way."}"#;
+        assert!(project_access_unsupported(
+            reqwest::StatusCode::BAD_REQUEST,
+            unsupported
+        ));
+        assert!(!project_access_unsupported(
+            reqwest::StatusCode::CONFLICT,
+            unsupported
+        ));
+        assert!(!project_access_unsupported(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":"bot_request_invalid","message":"The request was not valid."}"#
+        ));
+        let failed = decode_body::<GoogleProjectAccess>(
+            reqwest::StatusCode::CONFLICT,
+            r#"{"error":"project_access_grant_failed","message":"The Cloud project roles could not be granted from this computer."}"#,
+        )
+        .unwrap_err();
+        assert!(failed.contains("could not be granted"));
+    }
+
+    #[test]
+    fn project_access_report_keeps_only_safe_links_and_real_grants() {
+        let report: GoogleProjectAccess = decode_body(
+            reqwest::StatusCode::OK,
+            r#"{"bot":"gmail-work","project_id":"demo","email":"me@example.com","status":"missing",
+                "missing_roles":["roles/pubsub.editor"],"detail":"Missing roles.",
+                "grant_account":"owner@example.com","commands":["gcloud projects add-iam-policy-binding demo"],
+                "console_url":"https://console.cloud.google.com/iam-admin/iam?project=demo","can_grant":true}"#,
+        )
+        .unwrap();
+        let report = normalize_project_access(report);
+        assert!(report.can_grant);
+        assert_eq!(report.missing_roles, vec!["roles/pubsub.editor"]);
+        assert!(report.console_url.is_some());
+
+        let odd = normalize_project_access(GoogleProjectAccess {
+            status: "from_the_future".into(),
+            console_url: Some("javascript:alert(1)".into()),
+            can_grant: true,
+            ..report
+        });
+        assert_eq!(odd.status, "unknown");
+        assert!(odd.console_url.is_none());
+        assert!(!odd.can_grant);
     }
 }

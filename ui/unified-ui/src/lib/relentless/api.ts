@@ -19,6 +19,7 @@ export interface CatalogPage {
 }
 export interface Profile {
   name: string; model: string; family: string; maximum_request_microusd: number;
+  supports_json?: boolean | null;
 }
 export interface ArtifactFiles { files: Record<string,string>; binary_files?: Record<string,{media_type:string;bytes:number;content_hash:string}>; }
 export interface Score { criterion_id: string; outcome: string; score: number | null; confidence: number | null; }
@@ -83,7 +84,7 @@ export interface Run {
   effective_budget?:{max_attempts:number;max_cost_microusd:number;max_wall_clock_secs:number;plateau_attempts:number};
   exhausted_limits?:{cost:boolean;time:boolean;attempts:boolean};
   budget_continuation?:{available:boolean;reason:string|null};
-  budget_usage?:{cost:{allowance_microusd:number;committed_microusd:number;remaining_microusd:number};attempts:{allowance:number;used:number;remaining:number};time:{remaining_secs:number};cumulative:{elapsed_wall_clock_secs:number}};
+  budget_usage?:{cost:{allowance_microusd:number;committed_microusd:number;remaining_microusd:number|null};attempts:{allowance:number;used:number;remaining:number|null};time:{remaining_secs:number|null};cumulative:{elapsed_wall_clock_secs:number}};
   budget_resets?:{id:string;approved_by:string;approved_at:string;reset:{cost_microusd?:number;wall_clock_secs?:number;attempts?:number};attempts_before:number;spend_before:Run['spend']}[];
   admission: { task_id: string };
   contract: { goal: string; budget: { max_attempts: number; max_cost_microusd: number }; criteria: { id: string; kind: string; must_pass: boolean }[]; };
@@ -103,6 +104,10 @@ export interface RunReportView {
 }
 export const terminal = (status: string) => ['accepted','plateau','budget_exhausted','cancelled','failed'].includes(status);
 export const usd = (microusd: number) => (microusd / 1_000_000).toLocaleString(undefined, {style:'currency',currency:'USD',maximumFractionDigits:4});
+/** Apply only to limits: a measured zero cost is still $0. */
+export const costLimit = (microusd?: number | null) => !microusd ? 'Unlimited' : usd(microusd);
+export const countLimit = (value?: number | null) => !value ? 'Unlimited' : String(value);
+
 
 export async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const revision = getCurrentScopeCredentialRevision();

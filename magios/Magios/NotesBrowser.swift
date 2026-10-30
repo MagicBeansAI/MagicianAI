@@ -172,12 +172,14 @@ final class NotesBrowserModel: ObservableObject {
     @Published var searching = false
     @Published var tookMs = 0
 
+    /// Loads the top of the folder tree. It may run alongside the first
+    /// `open(path:)` of a note link, so it never clears that note's status
+    /// and reports its own failure only while nothing else is on screen.
     func loadRoot() async {
         do {
             roots = try await get("notes/tree?path=", as: NoteTreePage.self).entries.map(NoteNode.init)
-            status = ""
         } catch {
-            status = error.localizedDescription
+            if status.isEmpty, document == nil { status = error.localizedDescription }
         }
     }
 
@@ -284,6 +286,11 @@ final class NotesBrowserModel: ObservableObject {
         do {
             document = try await get("notes/file?path=\(encoded(path))", as: NoteDocument.self)
             status = ""
+        } catch is NoteNotFound {
+            // A link to a moved or deleted note: say so, and do not leave the
+            // previous note on screen as if it were the one asked for.
+            document = nil
+            status = "This note was not found. It may have been moved or deleted."
         } catch {
             status = error.localizedDescription
         }
@@ -385,8 +392,11 @@ final class NotesBrowserModel: ObservableObject {
         return request
     }
 
+    private struct NoteNotFound: Error {}
+
     private static func check(_ response: URLResponse) throws {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 404 { throw NoteNotFound() }
         if !(200..<300).contains(status) {
             throw URLError(.badServerResponse)
         }
@@ -460,9 +470,12 @@ private enum NotesFocus: Hashable {
 
 struct NotesBrowserView: View {
     var initialPath: String?
+    /// Set when presented outside SwiftUI (a note link opened over any
+    /// screen); otherwise Close dismisses the SwiftUI presentation.
+    var onClose: (() -> Void)?
     @ObservedObject private var theme = ThemeManager.shared
     @StateObject private var model = NotesBrowserModel()
-    @State private var drawer = true
+    @State private var drawer: Bool
     @State private var confirmFile = false
     @State private var confirmFolder = false
     @State private var editing = false
@@ -470,8 +483,21 @@ struct NotesBrowserView: View {
     @State private var find = ""
     @State private var naming: String?
     @State private var searchTask: Task<Void, Never>?
+    /// True from the first frame until the linked note's request settles, so
+    /// a note link shows "Opening …" rather than the empty notes page.
+    @State private var openingInitial: Bool
     @FocusState private var notesFocus: NotesFocus?
     @Environment(\.dismiss) private var dismiss
+
+    init(initialPath: String? = nil, onClose: (() -> Void)? = nil) {
+        self.initialPath = initialPath
+        self.onClose = onClose
+        let linked = !(initialPath ?? "").isEmpty
+        // Opened on a document (a link or a published note): show it, not
+        // the folder drawer over it.
+        _drawer = State(initialValue: !linked)
+        _openingInitial = State(initialValue: linked)
+    }
 
     var body: some View {
         NavigationView {
@@ -488,7 +514,9 @@ struct NotesBrowserView: View {
                     .accessibilityLabel("Folders")
                     searchField
                         .frame(maxWidth: .infinity)
-                    Button { dismiss() } label: {
+                    Button {
+                        if let onClose { onClose() } else { dismiss() }
+                    } label: {
                         Image(systemName: "xmark")
                             .foregroundStyle(theme.textColor)
                             .frame(width: 32, height: 36)
@@ -543,11 +571,37 @@ struct NotesBrowserView: View {
             }
         }
         .task {
-            await model.loadRoot()
-            if let initialPath, !initialPath.isEmpty {
-                await model.open(path: initialPath)
+            guard let initialPath, !initialPath.isEmpty else {
+                await model.loadRoot()
+                return
             }
+            // The note's own request goes out first and the folder tree loads
+            // beside it, so a link costs one request, not the whole tree first.
+            async let tree: Void = model.loadRoot()
+            await model.open(path: initialPath)
+            openingInitial = false
+            await tree
         }
+    }
+
+    /// A link from one note to another in this workspace opens here, in
+    /// place; any other link takes the app-wide route.
+    private func openNoteLink(_ url: URL) -> OpenURLAction.Result {
+        guard let link = NoteLink.parse(url),
+              case .open(let path) = NoteLinkResolution.resolve(
+                link,
+                active: MagicianAccess.connectionProfile,
+                profiles: MagicianAccess.allProfiles
+              ) else {
+            return NoteLinkRouter.open(url) ? .handled : .systemAction
+        }
+        Task {
+            await model.open(path: path)
+            draft = model.document?.markdown ?? ""
+            editing = false
+            find = ""
+        }
+        return .handled
     }
 
     private func searchHit(_ hit: NoteSearchHit) -> some View {
@@ -761,7 +815,7 @@ struct NotesBrowserView: View {
                     if !editing {
                         noteField("Find in this note", text: $find, focus: .find)
                         if !find.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text("\(noteMatchCount(document.markdown, find)) matches")
+                            Text("\(noteMatchCount(NoteFrontMatter.body(document.markdown), find)) matches")
                                 .font(.footnote)
                                 .foregroundStyle(theme.secondaryTextColor)
                         }
@@ -776,11 +830,25 @@ struct NotesBrowserView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(theme.controlBorderColor))
                     } else if find.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Markdown(document.markdown)
+                        // The reader hides the YAML front matter; Edit and Save
+                        // keep the whole file.
+                        Markdown(NoteFrontMatter.body(document.markdown))
+                            .environment(\.openURL, OpenURLAction { openNoteLink($0) })
                     } else {
-                        Text(highlightedNote(document.markdown, query: find))
+                        Text(highlightedNote(NoteFrontMatter.body(document.markdown), query: find))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                } else if openingInitial, let initialPath {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Opening \(noteFileName(initialPath))…")
+                            .foregroundStyle(theme.secondaryTextColor)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(initialPath)
+                        .font(.footnote)
+                        .foregroundStyle(theme.secondaryTextColor)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Text("Your notes")
                         .font(.title2)

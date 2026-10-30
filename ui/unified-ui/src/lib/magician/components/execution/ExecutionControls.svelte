@@ -38,6 +38,7 @@
 	let loadGeneration = 0;
 	let steerOpen = false;
 	let steerText = '';
+	let disposed = false;
 	let refreshTimers: Array<ReturnType<typeof setTimeout>> = [];
 
 	$: targetExecutionId = executionId?.trim() ?? '';
@@ -117,14 +118,19 @@
 		expectedTarget = targetExecutionId
 	): Promise<boolean> {
 		if (!expectedTarget || expectedTarget !== targetExecutionId || busy) return false;
+		const submittedTargetKey = targetKey;
 		try {
 			await applyExecutionControl(expectedTarget, action, message);
+			if (disposed || submittedTargetKey !== targetKey) return false;
 			showSuccess(successMessage(action));
 			dispatch('changed', { action });
 			if (action === 'pause' || action === 'resume') scheduleSettlementRefreshes();
 			return true;
 		} catch (error) {
+			if (disposed || submittedTargetKey !== targetKey) return false;
 			showError(error instanceof Error ? error.message : `Could not ${action} the run.`);
+			// A refused action usually means the run moved on; show what it allows now.
+			void refreshState(expectedTarget);
 			return false;
 		}
 	}
@@ -141,6 +147,7 @@
 	async function stop(): Promise<void> {
 		if (!state?.can_cancel || busy) return;
 		const confirmedTarget = targetExecutionId;
+		const confirmedTargetKey = targetKey;
 		if (!confirmedTarget) return;
 		const confirmed = await requestConfirmation({
 			title: 'Stop this run?',
@@ -149,7 +156,8 @@
 			destructive: true
 		});
 		if (!confirmed) return;
-		if (confirmedTarget !== targetExecutionId) {
+		if (disposed) return;
+		if (confirmedTargetKey !== targetKey) {
 			showError('The active run changed while confirmation was open. Review it before stopping.');
 			return;
 		}
@@ -157,6 +165,7 @@
 	}
 
 	onDestroy(() => {
+		disposed = true;
 		loadGeneration += 1;
 		for (const timer of refreshTimers) clearTimeout(timer);
 	});

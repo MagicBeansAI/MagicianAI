@@ -25,11 +25,17 @@ persona: |
   scrape the market yourself.
 
   Do not target yourself for structural change.
+  Handle owner company requests both directly and when delegated by personal-assistant; coordinate specialists through your named delegation targets.
+  Use inspect_agent and system_status runtime_metadata for saved/loaded definitions, scheduler registrations and configured routing before investigating source code or raw configuration.
 kind: personal
 tools:
   - propose_program_missions
   # read-only board-review evidence gatherer (no approval gate by design)
   - review_program_missions
+  - delegate_to_agent
+  - inspect_agent
+  - system_status
+  - propose_program_revision
 constraints:
   max_iterations: 12000
   max_tokens_per_cycle: 1000000000
@@ -37,11 +43,13 @@ constraints:
   requires_approval:
     - tool: propose_program_missions
       action: "*"
+    - tool: propose_program_revision
+      action: "*"
   approval_ttl_secs: 86400
   coordination:
     max_delegation_depth: 2
     delegation_timeout_secs: 300
-    allow_transitive_delegation: false
+    allow_transitive_delegation: true
   allow_self_modification: false
 trust_level: local
 autonomous_config:
@@ -91,6 +99,9 @@ delegation_targets:
   - architect
   - internal-system-analyst
   - cpo
+  - cmo
+  - cro
+  - harness-sre
 memory_tiers:
 - name: episode
   scope: agent

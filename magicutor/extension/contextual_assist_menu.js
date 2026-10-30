@@ -1,10 +1,15 @@
 import { MAGICIAN_HOST_GATEWAY_URL } from './config.js';
 
 const MENU_ID = 'magician_contextual_assist';
-const MENU_TITLE = 'Magician';
+const MENU_TITLE = 'Magican';
 const PAGE_MENU_ID = 'magician_contextual_assist_page';
-const PAGE_MENU_TITLE = 'Ask Magician about this page';
+const PAGE_MENU_TITLE = 'Ask Magican about this page';
 const HOST_OPEN_URL = `${MAGICIAN_HOST_GATEWAY_URL}/host/contextual-assist/open`;
+// Pages the page-level entry works on: web pages and local files (static
+// reports, exported HTML). Grounding comes from the desktop's capture, so no
+// page access is needed beyond the URL and title.
+const PAGE_MENU_URL_PATTERNS = ['http://*/*', 'https://*/*', 'file:///*'];
+const PAGE_MENU_URL = /^(https?|file):/i;
 
 let listenerRegistered = false;
 
@@ -43,7 +48,8 @@ export function setupContextualAssistContextMenu() {
             {
                 id: PAGE_MENU_ID,
                 title: PAGE_MENU_TITLE,
-                contexts: ['page']
+                contexts: ['page'],
+                documentUrlPatterns: PAGE_MENU_URL_PATTERNS
             },
             () => {
                 if (chrome.runtime.lastError) {
@@ -156,7 +162,7 @@ async function openContextualAssistFromMenu(info, tab) {    const anchor = await
 
 async function openPageContextualAssist(info, tab) {
     const url = info.pageUrl || tab?.url || null;
-    if (!url || !/^https?:/i.test(url)) {
+    if (!url || !PAGE_MENU_URL.test(url)) {
         return;
     }
     const anchor = await browserWindowCenter(tab);

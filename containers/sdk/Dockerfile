@@ -1,7 +1,7 @@
 # Build once per toolchain/architecture, then reuse for Linux artifact builds.
 # No application source or runtime credentials enter this SDK image.
 FROM node:20-bookworm-slim AS node
-FROM rust:1.92.0-bookworm
+FROM rust:1.95.0-bookworm
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \

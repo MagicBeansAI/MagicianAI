@@ -19,11 +19,11 @@ RUN npx svelte-kit sync && npm run build
 # ---------------------------------------------------------------------------
 # Stage 2: Rust builder — native Linux binaries for the selected image platform
 # ---------------------------------------------------------------------------
-FROM rust:1.92.0-bookworm AS builder
+FROM rust:1.95.0-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential clang cmake libclang-dev libssl-dev pkg-config \
-      protobuf-compiler libprotobuf-dev perl git ca-certificates && rm -rf /var/lib/apt/lists/*
+      protobuf-compiler libprotobuf-dev python3 perl git ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Host ~/.cargo job-gating does not reach an image build. Bound Cargo and
 # native build-system concurrency here as well. This is not an RSS limit.
@@ -69,27 +69,21 @@ RUN --mount=type=cache,id=magician-cargo-registry,target=/usr/local/cargo/regist
 
 # The same independent tool build is also available as containers/tools/Dockerfile
 # for repairing a cached runtime without rebuilding the services or UI.
-FROM golang:1.23.0-bookworm AS go
-FROM rust:1.92.0-bookworm AS skilltools
-COPY --from=go /usr/local/go/ /usr/local/go/
+FROM rust:1.95.0-bookworm AS skilltools
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config libssl-dev python3 perl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 ARG CARGO_BUILD_JOBS=1
 ARG CARGO_PROFILE_RELEASE_LTO=false
 ARG TARGETARCH
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    CARGO_TARGET_DIR=/build/target \
+ENV CARGO_TARGET_DIR=/build/target \
     CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} \
-    CARGO_PROFILE_RELEASE_LTO=${CARGO_PROFILE_RELEASE_LTO} \
-    GOMAXPROCS=1 GOFLAGS=-p=1
+    CARGO_PROFILE_RELEASE_LTO=${CARGO_PROFILE_RELEASE_LTO}
 WORKDIR /build
 COPY . .
 RUN --mount=type=cache,id=magician-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=magician-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=magician-cargo-target-${TARGETARCH},target=/build/target,sharing=locked \
-    --mount=type=cache,id=magician-tools-go-${TARGETARCH},target=/root/go,sharing=locked \
-    --mount=type=cache,id=magician-tools-gocache-${TARGETARCH},target=/root/.cache/go-build,sharing=locked \
     make build-container-skill-tools
 
 # ---------------------------------------------------------------------------
@@ -98,26 +92,28 @@ RUN --mount=type=cache,id=magician-cargo-registry,target=/usr/local/cargo/regist
 # The runtime's `browser` skill ships the VANILLA agent-browser via npm (which
 # carries linux glibc binaries). We overlay the magician-patched build on top.
 # The patch (download fixes + --keep-browser + startup exit diagnostics)
-# is maintained against upstream v0.38.1. Its dependency graph remains
-# pure-Rust/rustls and builds on this stage's Rust 1.92 Bookworm image.
+# is maintained against upstream v0.41.0. Its dependency graph remains
+# pure-Rust/rustls and builds on this stage's Rust 1.95 Bookworm image.
 # See docs/plans/2026-06-23-composed-installer-design.md.
 # Depend on builder so BuildKit cannot compile the two Rust graphs at once.
 # Inherit the explicit job cap and matching glibc/toolchain.
 FROM skilltools AS agentbrowser
-ARG AB_TAG=v0.38.1
+ARG AB_TAG=v0.41.0
 RUN git clone --depth 1 --branch ${AB_TAG} https://github.com/vercel-labs/agent-browser.git /ab
 # The patch path is re-included in .dockerignore (the _vendor/ tree is otherwise excluded).
-COPY skillshub/browser/_vendor/v0.38.1-Magician.0/patches/0001-magician-patches.patch /tmp/ab.patch
+COPY skillshub/browser/_vendor/v0.41.0-Magician.0/patches/0001-magician-patches.patch /tmp/ab.patch
 # cli/ is its own package root (no workspace), so cargo would otherwise write to
 # /ab/cli/target/release/. Pin CARGO_TARGET_DIR=/ab/target so the output lands at
 # /ab/target/release/agent-browser — matching the COPY sources + comment below.
-RUN cd /ab && git apply --3way /tmp/ab.patch && CARGO_TARGET_DIR=/ab/target cargo build --locked --release --manifest-path cli/Cargo.toml
-# -> /ab/target/release/agent-browser  (glibc, patched 0.38.1-Magician.0)
+WORKDIR /ab
+RUN git apply --3way /tmp/ab.patch && CARGO_TARGET_DIR=/ab/target cargo build --locked --release --manifest-path cli/Cargo.toml
+# -> /ab/target/release/agent-browser  (glibc, patched 0.41.0-Magician.0)
 
 # ---------------------------------------------------------------------------
 # Stage 3: Runtime — debian-slim (glibc) with binaries, UI, and seed data
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime-base
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Managed interpreters must be traversable by the final non-root user too.
 # uv's default /root/.local/share/uv/python breaks the skill venv at first boot.
@@ -153,7 +149,7 @@ COPY magicutor/config/ ./magicutor/config/
 # Read-only seed; live runtime state remains in the mounted runtime root.
 COPY magician_data_v3/ ./magician_data_v3/
 
-# Operator / runtime helper scripts (host SilverBullet launch, seed-runtime-root,
+# Operator / runtime helper scripts (seed-runtime-root,
 # Ollama host setup, etc.).
 COPY scripts/ ./scripts/
 
@@ -161,7 +157,6 @@ COPY scripts/ ./scripts/
 COPY skillshub/ ./skillshub/
 ENV MAGICIAN_SKILLSHUB_ROOT=/app/skillshub
 COPY --from=skilltools /out/skill-tools/document-to-markdown /app/skillshub/document-to-markdown/bin/document-to-markdown
-COPY --from=skilltools /out/skill-tools/metabase-pp-cli /app/skillshub/metabase/bin/metabase-pp-cli
 COPY containers/tools/higgsfield-release.json /app/containers/tools/higgsfield-release.json
 # These install pinned Linux artifacts only, never operator account state.
 RUN python3 /app/skillshub/scripts/setup_officecli.py && \
@@ -174,7 +169,7 @@ ENV PATH="/opt/uv/bin:${PATH}"
 RUN set -eux; \
     make -C /app/skillshub setup-node setup-deps setup-skill-bins setup-pdftotext setup-ocr \
       || echo "WARN: some skillshub node/bin deps failed (continuing)"; \
-    ( cd /app/skillshub/browser && npm install --include=optional ) \
+    npm --prefix /app/skillshub/browser install --include=optional \
       || echo "WARN: browser npm install failed (continuing)"; \
     make -C /app/skillshub setup-python \
       || echo "WARN: skillshub python venv partial (continuing)"
@@ -239,7 +234,7 @@ RUN /app/skillshub/.venv/bin/python /app/scripts/verify-container-skill-bins.py
 
 # Runtime root: live data / config / secrets live here, mounted from the host
 # (e.g. `-v ~/MagicianNotes:/data`). The seed (magician_data_v3) is baked above.
-# SilverBullet + Ollama run on the HOST; the container reaches them over the host
+# Ollama runs on the HOST; the container reaches it over the host
 # network (see the `run-container` make target).
 ENV MAGICIAN_ROOT_DIR=/data \
     MAGICIAN_HTTP_HOST=0.0.0.0 \

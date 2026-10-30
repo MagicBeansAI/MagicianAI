@@ -31,7 +31,12 @@
 //! stderr is kept (its
 //! bounded tail) and logged when a turn ends without a reply or with a
 //! failing exit — a CLI's own refusal is printed there, and draining it
-//! away meant a manual repro to see it. Governance is unaffected: every
+//! away meant a manual repro to see it. A CLI's own status, progress and
+//! error events (codex's `error` "Reconnecting… failed to lookup address",
+//! `turn.failed`, a `system`/`api_retry` line, an `is_error` result) are never
+//! the reply: they go to the log and the turn's failure text, and only a
+//! failing exit adds the CLI's last error after the reply so the user sees
+//! why. Governance is unaffected: every
 //! tool call still crosses the plane, whatever the harness prints.
 
 use std::io::{self, Write};
@@ -108,7 +113,6 @@ pub(crate) struct HomeInstall {
     pub home: PathBuf,
     pub endpoint_url: String,
     pub grant: String,
-    pub cwd: PathBuf,
     /// Super god mode, approved: write an unrestricted config.
     pub unrestricted: bool,
 }
@@ -145,6 +149,8 @@ pub(crate) struct OneShotSession {
     turn_usage: Option<HarnessUsage>,
     /// The last exited turn's stderr tail, grant-redacted.
     last_stderr_tail: String,
+    /// The last turn's status and error events, kept out of its reply.
+    last_diagnostics: String,
 }
 
 impl OneShotSession {
@@ -160,7 +166,6 @@ impl OneShotSession {
             home: self.home.clone(),
             endpoint_url: self.endpoint_url.clone(),
             grant: self.grant.clone(),
-            cwd: self.cwd.clone(),
             unrestricted: self.unrestricted,
         };
         (self.spec.env_for)(&install)
@@ -175,7 +180,9 @@ impl OneShotSession {
         // it so the CLI can resume its own session next turn.
         let owns_home = req.native_home.is_none();
         let home = req.native_home.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("magician-plane-{}", uuid::Uuid::new_v4().simple()))
+            crate::magician_v2::execution::plane::grant_channel::private_path(
+                &uuid::Uuid::new_v4().simple().to_string(),
+            )
         });
         let _ = std::fs::create_dir_all(&home);
         chmod_private_dir(&home);
@@ -198,6 +205,7 @@ impl OneShotSession {
             native_session_id: None,
             turn_usage: None,
             last_stderr_tail: String::new(),
+            last_diagnostics: String::new(),
         }
     }
 
@@ -240,6 +248,23 @@ impl OneShotSession {
         reply: TurnReply,
         stop_reason: HarnessStopReason,
     ) -> HarnessTurnSettled {
+        // A CLI that exited cleanly with no reply but reported an error
+        // event did not answer: the turn is refused, with its reason.
+        let stop_reason =
+            if stop_reason == HarnessStopReason::Settled && reply.is_empty() && reply.saw_error {
+                HarnessStopReason::Refused
+            } else {
+                stop_reason
+            };
+        if !reply.diagnostics.is_empty() {
+            tracing::debug!(
+                binary = %self.spec.binary.display(),
+                stop_reason = ?stop_reason,
+                diagnostics = %reply.diagnostics,
+                "one-shot harness status and error events (kept out of the reply)"
+            );
+        }
+        self.last_diagnostics = reply.diagnostics.clone();
         let assistant_text = reply.settle(stop_reason);
         // Tripwire for CLI schema drift: a settled turn in a persistent home
         // should always have learned its id; when it did not, the engine's
@@ -270,7 +295,6 @@ impl OneShotSession {
             home: self.home.clone(),
             endpoint_url: self.endpoint_url.clone(),
             grant: self.grant.clone(),
-            cwd: self.cwd.clone(),
             unrestricted: self.unrestricted,
         };
         if let Err(error) = (self.spec.install_config)(&install) {
@@ -295,12 +319,16 @@ impl OneShotSession {
         // name combined with that would force std onto `fork` instead of
         // `posix_spawn`, so resolve it against the same PATH first (see
         // `runtime_core::process`).
-        let mut command = tokio::process::Command::new(runtime_core::process::resolve_program(
-            self.spec.binary.as_os_str(),
-            None,
-        ));
+        let program = runtime_core::process::resolve_program(self.spec.binary.as_os_str(), None);
+        let mut command = tokio::process::Command::new(&program);
         let mut argv = (self.spec.argv_for_turn)(text, self.resume_id_for_spawn());
-        if self.unrestricted {
+        // An agent fenced from a goal workspace runs this engine in
+        // Magician's box; an engine that sandboxes itself cannot nest its
+        // sandbox inside it (macOS), so it drops its own, as a VibeDev
+        // engine does.
+        let fenced = crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+            .guards_workspaces;
+        if self.unrestricted || fenced {
             if let Some(unrestrict) = self.spec.unrestrict_argv {
                 argv = unrestrict(argv);
             }
@@ -330,6 +358,34 @@ impl OneShotSession {
             };
             argv.splice(index..index, [flag.to_string(), model.to_string()]);
         }
+        let mut fence_env: Vec<(String, String)> = Vec::new();
+        if fenced {
+            let args: Vec<std::ffi::OsString> =
+                argv[1..].iter().map(std::ffi::OsString::from).collect();
+            match crate::magician_v2::execution::shell_box::fence_plane_harness(
+                program.as_os_str(),
+                &args,
+                self.spec.unrestrict_argv.is_some(),
+                vec![self.home.clone(), self.cwd.clone()],
+            ) {
+                crate::magician_v2::execution::shell_box::WorkspaceFence::Boxed(boxed) => {
+                    fence_env = boxed.env.clone();
+                    command = tokio::process::Command::new(&boxed.program);
+                    argv = std::iter::once(String::new())
+                        .chain(
+                            boxed
+                                .args
+                                .iter()
+                                .map(|arg| arg.to_string_lossy().into_owned()),
+                        )
+                        .collect();
+                },
+                crate::magician_v2::execution::shell_box::WorkspaceFence::Refused(reason) => {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, reason));
+                },
+                crate::magician_v2::execution::shell_box::WorkspaceFence::Unfenced => {},
+            }
+        }
         command.args(&argv[1..]);
         if self.spec.use_isolated_home_as_cwd {
             command.current_dir(&self.home);
@@ -354,6 +410,10 @@ impl OneShotSession {
         for (key, value) in self.env_for_install() {
             command.env(key, value);
         }
+        // The box's proxy env, last so nothing above replaces it.
+        for (key, value) in &fence_env {
+            command.env(key, value);
+        }
         apply_claude_child_process_group(&mut command);
         command.spawn()
     }
@@ -365,13 +425,39 @@ impl HarnessSession for OneShotSession {
         &self,
         outcome: &HarnessTurnSettled,
     ) -> Option<Result<(), crate::magician_v2::realtime_events::ServiceFailure>> {
+        // A refused turn whose CLI rejected the pinned model by name is a
+        // model-discovery result (the model is hidden until listed again).
+        if outcome.stop_reason == HarnessStopReason::Refused {
+            let source =
+                crate::magician_v2::execution::coding_engine::model_discovery::source_for_cli_binary(
+                    &self.spec.binary,
+                );
+            if let (Some(source), Some(model)) = (source, self.model.as_deref()) {
+                magicllm::model_discovery::record_rejection(
+                    source,
+                    model,
+                    &format!("{}\n{}", outcome.assistant_text, self.last_stderr_tail),
+                );
+            }
+        }
         outcome.service_health().or_else(|| {
             if outcome.stop_reason != HarnessStopReason::Refused {
                 return None;
             }
-            crate::magician_v2::realtime_events::ServiceFailure::from_error(&self.last_stderr_tail)
+            crate::magician_v2::realtime_events::ServiceFailure::from_error(&self.failure_text())
                 .map(Err)
         })
+    }
+
+    fn failure_text(&self) -> String {
+        match (
+            self.last_diagnostics.trim().is_empty(),
+            self.last_stderr_tail.trim().is_empty(),
+        ) {
+            (true, _) => self.last_stderr_tail.clone(),
+            (false, true) => self.last_diagnostics.clone(),
+            (false, false) => format!("{}\n{}", self.last_diagnostics, self.last_stderr_tail),
+        }
     }
 
     async fn turn(
@@ -384,6 +470,7 @@ impl HarnessSession for OneShotSession {
         self.native_session_id = None;
         self.turn_usage = None;
         self.last_stderr_tail.clear();
+        self.last_diagnostics.clear();
         // A released session is terminal: the grant is revoked (and a home
         // of its own is gone) — a further turn could only spawn a child
         // with no governed path back to the plane. Guards every engine on
@@ -566,7 +653,11 @@ impl HarnessSession for OneShotSession {
                                 sink.emit(&delta);
                                 reply.push_delta(&delta);
                             }
-                            if let Some(text) = extract_text_value(&value) {
+                            // Status, progress and error events are the
+                            // CLI talking about itself, never the reply.
+                            if let Some(diagnostic) = diagnostic_line(&value) {
+                                reply.push_diagnostic(&diagnostic.text, diagnostic.is_error);
+                            } else if let Some(text) = extract_text_value(&value) {
                                 reply.push_text(&text);
                             }
                         },
@@ -691,7 +782,6 @@ impl OneShotSession {
             home: self.home.clone(),
             endpoint_url: self.endpoint_url.clone(),
             grant: self.grant.clone(),
-            cwd: self.cwd.clone(),
             unrestricted: self.unrestricted,
         };
         (self.spec.remove_config)(&install);
@@ -716,7 +806,6 @@ impl Drop for OneShotSession {
             home: self.home.clone(),
             endpoint_url: self.endpoint_url.clone(),
             grant: self.grant.clone(),
-            cwd: self.cwd.clone(),
             unrestricted: self.unrestricted,
         };
         (self.spec.remove_config)(&install);
@@ -743,7 +832,16 @@ struct TurnReply {
     streamed_cut: bool,
     collected: String,
     collected_cut: bool,
+    /// The CLI's status and error events, newest last, bounded to
+    /// [`MAX_DIAGNOSTIC_BYTES`]; never part of the reply.
+    diagnostics: String,
+    /// The last error event's text.
+    last_error: Option<String>,
+    saw_error: bool,
 }
+
+/// How much of a turn's status and error events is kept (the newest).
+const MAX_DIAGNOSTIC_BYTES: usize = 4 * 1024;
 
 impl TurnReply {
     fn push_delta(&mut self, delta: &str) {
@@ -763,6 +861,27 @@ impl TurnReply {
         push_bounded(&mut self.collected, &mut self.collected_cut, text);
     }
 
+    /// A status or error event the CLI printed: logged and kept for the
+    /// failure text, never the reply.
+    fn push_diagnostic(&mut self, text: &str, is_error: bool) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        if is_error {
+            self.saw_error = true;
+            self.last_error = Some(text.to_string());
+        }
+        if !self.diagnostics.is_empty() {
+            self.diagnostics.push('\n');
+        }
+        self.diagnostics.push_str(text);
+        if self.diagnostics.len() > MAX_DIAGNOSTIC_BYTES {
+            let tail = keep_text_tail(&self.diagnostics, MAX_DIAGNOSTIC_BYTES).to_string();
+            self.diagnostics = tail;
+        }
+    }
+
     /// Whether any reply has been read yet, streamed or collected.
     /// Whitespace alone (a stream that only ever sent a newline) is none.
     fn is_empty(&self) -> bool {
@@ -773,7 +892,27 @@ impl TurnReply {
     /// On a failing exit the collected text is kept after the streamed
     /// text — it is the CLI's final error — unless it only repeats what was
     /// streamed (or the head of it, when the bound cut the stream).
-    fn settle(self, stop_reason: HarnessStopReason) -> String {
+    fn settle(mut self, stop_reason: HarnessStopReason) -> String {
+        // A failing exit says why: the CLI's last error event follows the
+        // reply unless the reply already carries it. A settled turn never
+        // shows one.
+        let final_error = (stop_reason == HarnessStopReason::Refused)
+            .then(|| self.last_error.take())
+            .flatten();
+        let text = self.settle_reply(stop_reason);
+        match final_error {
+            Some(error) if !text.contains(&error) => {
+                if text.trim().is_empty() {
+                    error
+                } else {
+                    format!("{text}\n{error}")
+                }
+            },
+            _ => text,
+        }
+    }
+
+    fn settle_reply(self, stop_reason: HarnessStopReason) -> String {
         if self.streamed.trim().is_empty() {
             return self.collected;
         }
@@ -981,6 +1120,9 @@ fn bounded_text(mut text: String) -> String {
 /// whole-document paths. One-shot CLIs do not share a schema; missing a
 /// documented field here is a silent empty chat reply.
 fn extract_text_value(value: &Value) -> Option<String> {
+    if diagnostic_line(value).is_some() {
+        return None;
+    }
     let type_name = value.get("type").and_then(Value::as_str).unwrap_or("");
     let event_name = value.get("event").and_then(Value::as_str).unwrap_or("");
 
@@ -1009,6 +1151,77 @@ fn extract_text_value(value: &Value) -> Option<String> {
         }
     }
     None
+}
+
+/// A status, progress or error event a CLI printed about itself.
+struct DiagnosticLine {
+    text: String,
+    is_error: bool,
+}
+
+/// Event names that mark a line as the CLI's own error.
+const ERROR_EVENT_MARKS: &[&str] = &["error", "fail", "fatal"];
+/// Event names that mark a line as the CLI's own status or progress.
+const STATUS_EVENT_MARKS: &[&str] = &[
+    "warn",
+    "retry",
+    "reconnect",
+    "progress",
+    "status",
+    "notice",
+    "heartbeat",
+    "rate_limit",
+    "debug",
+];
+
+/// Whether a JSON line is the CLI talking about itself rather than
+/// replying: an event whose `type`/`event`/`subtype`/`level` names an error,
+/// failure, warning, retry, reconnect, progress or status (codex `error` and
+/// `turn.failed`, an `is_error` result, Grok's `system`/`api_retry`), a
+/// codex error item, or an untyped "Reconnecting…"/"Retrying…" message.
+/// Every engine on this base reads its reply only from the lines that are
+/// not.
+fn diagnostic_line(value: &Value) -> Option<DiagnosticLine> {
+    let names: Vec<String> = ["type", "event", "subtype", "level", "lvl", "severity"]
+        .iter()
+        .filter_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let marked = |marks: &[&str]| {
+        names
+            .iter()
+            .any(|name| marks.iter().any(|mark| name.contains(mark)))
+    };
+    let error_flag = value.get("is_error").and_then(Value::as_bool) == Some(true);
+    let error_item = value.pointer("/item/type").and_then(Value::as_str) == Some("error");
+    let is_error = error_flag || error_item || marked(ERROR_EVENT_MARKS);
+    let text = [
+        "/error/message",
+        "/message",
+        "/item/message",
+        "/item/text",
+        "/error",
+        "/result",
+        "/text",
+        "/detail",
+        "/msg",
+    ]
+    .iter()
+    .find_map(|pointer| nonempty_str(value.pointer(pointer)));
+    let progress_text = names.is_empty()
+        && text.as_deref().is_some_and(|text| {
+            let lower = text.trim_start().to_ascii_lowercase();
+            ["reconnecting", "retrying", "connecting to", "waiting for"]
+                .iter()
+                .any(|lead| lower.starts_with(lead))
+        });
+    if !(is_error || marked(STATUS_EVENT_MARKS) || progress_text) {
+        return None;
+    }
+    Some(DiagnosticLine {
+        text: text.unwrap_or_else(|| names.join(" ")),
+        is_error,
+    })
 }
 
 fn nonempty_str(value: Option<&Value>) -> Option<String> {
@@ -1090,8 +1303,9 @@ pub(crate) fn seed_named_file(from_home: &Path, into_home: &Path, name: &str) ->
 }
 
 /// Fail closed before a long spawn when the operator has neither a
-/// session file nor the API-key fallback. Codex in particular will 401-
-/// retry until the turn wall-clock if both are missing.
+/// session file nor an API key the CLI may use (`execution.harness_auth`).
+/// Codex in particular will 401-retry until the turn wall-clock if both are
+/// missing.
 pub(crate) fn require_cli_auth(
     env_key: &str,
     dot_dir: &str,
@@ -1102,17 +1316,24 @@ pub(crate) fn require_cli_auth(
     if home.join("auth.json").is_file() {
         return Ok(());
     }
-    if std::env::var(api_key_env)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .is_some()
+    let key_allowed = crate::magician_v2::harness_auth::uses_magician_credentials(label);
+    if key_allowed
+        && std::env::var(api_key_env)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .is_some()
     {
         return Ok(());
     }
-    Err(io::Error::other(format!(
-        "{label} is not signed in ({api_key_env} unset and no auth.json)"
-    )))
+    let remedy = crate::magician_v2::harness_auth::failure::sign_in_remedy(label);
+    Err(io::Error::other(if key_allowed {
+        format!("{label} is not signed in and Magician's {api_key_env} is not set. {remedy}")
+    } else {
+        // `login_first` uses Magician's key only after the owner approves
+        // (`harness_auth::fallback`); `login_only` never does.
+        format!("{label} is not signed in. {remedy}")
+    }))
 }
 
 pub(crate) fn inherit_env(keys: &[&str]) -> Vec<(String, String)> {
@@ -1847,7 +2068,7 @@ mod tests {
                 install_config: record_install,
                 remove_config: |_| {},
                 use_isolated_home_as_cwd: false,
-            unrestrict_argv: None,
+                unrestrict_argv: None,
             };
             let mut install_request = request(Duration::from_secs(10));
             // A home the request hands in outlives the session, so the
@@ -2318,6 +2539,103 @@ mod tests {
         ceiling.push_delta("ok");
         ceiling.push_text("something else");
         assert_eq!(ceiling.settle(HarnessStopReason::TurnBudgetSpent), "ok");
+    }
+
+    /// The per-line routing the turn loop applies.
+    fn route_lines(lines: &[&str]) -> TurnReply {
+        let mut reply = TurnReply::default();
+        for line in lines {
+            let value: Value = serde_json::from_str(line).unwrap();
+            if let Some(diagnostic) = diagnostic_line(&value) {
+                reply.push_diagnostic(&diagnostic.text, diagnostic.is_error);
+            } else if let Some(text) = extract_text_value(&value) {
+                reply.push_text(&text);
+            }
+        }
+        reply
+    }
+
+    /// codex printed "Reconnecting… failed to lookup address" into a chat
+    /// reply during a network outage: a CLI's status and error events are
+    /// never the reply, whichever engine prints them.
+    #[test]
+    fn cli_status_and_error_events_never_become_the_reply() {
+        let codex = route_lines(&[
+            r#"{"type":"thread.started","thread_id":"t1"}"#,
+            r#"{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: failed to lookup address information)"}"#,
+            r#"{"message":"Reconnecting... 2/5"}"#,
+            r#"{"type":"item.completed","item":{"type":"error","message":"stream error, retrying"}}"#,
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Here is the answer."}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}"#,
+        ]);
+        assert!(codex.diagnostics.contains("Reconnecting... 1/5"));
+        assert_eq!(
+            codex.settle(HarnessStopReason::Settled),
+            "Here is the answer."
+        );
+
+        let grok = route_lines(&[
+            r#"{"type":"system","subtype":"api_retry","message":"retrying in 2s"}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"PONG"}"#,
+        ]);
+        assert_eq!(grok.settle(HarnessStopReason::Settled), "PONG");
+
+        let agy = route_lines(&[
+            r#"{"event":"status","message":"connecting"}"#,
+            r#"{"event":"result","result":{"response":"Done"}}"#,
+        ]);
+        assert_eq!(agy.settle(HarnessStopReason::Settled), "Done");
+    }
+
+    /// A failing exit says why with the CLI's last error, not its progress.
+    #[test]
+    fn a_failing_exit_ends_with_the_cli_last_error_only() {
+        let failed = route_lines(&[
+            r#"{"type":"error","message":"Reconnecting... 5/5"}"#,
+            r#"{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized"}}"#,
+        ]);
+        assert!(failed.saw_error);
+        assert_eq!(
+            failed.settle(HarnessStopReason::Refused),
+            "unexpected status 401 Unauthorized"
+        );
+        let grok = route_lines(&[
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Your session has expired. Run `grok login` to sign in again."}"#,
+        ]);
+        assert_eq!(
+            grok.settle(HarnessStopReason::Refused),
+            "Your session has expired. Run `grok login` to sign in again."
+        );
+    }
+
+    /// A CLI that exits 0 with only an error event did not answer: the turn
+    /// is refused with the CLI's reason, and its progress stays in the
+    /// failure text.
+    #[tokio::test]
+    async fn a_clean_exit_with_only_error_events_is_refused_with_the_cli_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_engine(
+            dir.path(),
+            "#!/bin/sh\n\
+             echo '{\"type\":\"error\",\"message\":\"Reconnecting... 1/5\"}'\n\
+             echo '{\"type\":\"turn.failed\",\"error\":{\"message\":\"stream disconnected: failed to lookup address information\"}}'\n\
+             exit 0\n",
+        );
+        let mut session =
+            FakeEngineWithSpec::start_with(spec_with(&binary), &request(Duration::from_secs(10)));
+        let settled = one_turn(&mut session, "go").await;
+        assert_eq!(settled.stop_reason, HarnessStopReason::Refused);
+        assert_eq!(
+            settled.assistant_text,
+            "stream disconnected: failed to lookup address information"
+        );
+        assert!(session.failure_text().contains("Reconnecting... 1/5"));
+        assert_eq!(
+            session.service_health(&settled),
+            Some(Err(
+                crate::magician_v2::realtime_events::ServiceFailure::Unavailable
+            ))
+        );
     }
 
     /// Run one turn on `spec` with a channel sink; the deltas the sink

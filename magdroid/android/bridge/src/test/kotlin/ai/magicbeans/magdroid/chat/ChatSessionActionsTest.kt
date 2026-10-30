@@ -76,4 +76,22 @@ class ChatSessionActionsTest {
         assertEquals("active", decoded.status)
         assertTrue(decoded.isDefaultSession)
     }
+
+    @Test
+    fun `session actions say what they are doing and drop the old chat's paging`() {
+        assertEquals("Deleting…", ChatSessionAction.Delete.progressLabel())
+        ChatSessionAction.entries.forEach { action ->
+            val settled = ChatUiState(
+                messages = listOf(message),
+                activeSessionId = active.id,
+                historyHasMore = true,
+                olderHistoryLoading = true,
+                olderHistoryError = "offline",
+                sessionActionInFlight = action,
+            ).afterSessionAction(action, active.id)
+            assertFalse(settled.historyHasMore)
+            assertFalse(settled.olderHistoryLoading)
+            assertNull(settled.olderHistoryError)
+        }
+    }
 }

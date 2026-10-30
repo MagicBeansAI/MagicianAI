@@ -36,6 +36,13 @@ blocks scheduled and manual harness starts, the steward tick and autofix
 dispatch, clears queued harness triggers across scopes, and requests
 cancellation of active harness cycles.
 
+The stop targets harness cycles only, not a harness agent's VibeDev, chat or
+owner work: it cancels (as a tree) executions whose task has a `harness:` goal
+and no chat session, or that hold a live `harness:`-goal cycle reservation,
+and clears only queued `harness:`-goal triggers. Unreadable provenance is left
+running; `active_cycles_targeted` counts the selection. A per-agent pause still
+stops all of that agent's work.
+
 `MAGICIAN_HARNESS_PAUSED` remains an emergency process/file override; a Crew
 mutation removes it from both live runtime env files. Missing or malformed live
 config fails closed and is reported by the status endpoint, so a config fault

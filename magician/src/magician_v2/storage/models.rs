@@ -211,6 +211,14 @@ pub struct ExecutionRun {
     /// Inherited owner chain for delegated child executions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delegation_chain: Vec<String>,
+    /// Who delegated or handed over down to this execution, root first, for
+    /// goal workspace READS only — never depth, cycle or transitive-delegation
+    /// checks. Set by the server: the verified source when a chat delegation
+    /// or handover starts a root execution; the parent's lineage, suspended
+    /// owners and active owner when a delegated child is created (none for an
+    /// app's agent-tool child); the pipeline owner when a pipeline starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_lineage: Vec<String>,
     /// Authority of the **work** this execution belongs to (§4.2c) — an
     /// engagement, a program, or whichever kind of work is added next.
     ///

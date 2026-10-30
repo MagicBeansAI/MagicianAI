@@ -35,7 +35,8 @@
         "agentic_decision_retry",
         "agentic_ledger_compaction",
         "progress_review",
-        "agent_general"
+        "agent_general",
+        "vibedev_crew_plan"
       ]
     },
     {
@@ -56,7 +57,8 @@
         "agentic_input_interpretation",
         "channel_classify",
         "thinking_map_interpret",
-        "evidence_claims"
+        "evidence_claims",
+        "memory_episode_rerank"
       ]
     },
     {
@@ -178,7 +180,8 @@
         "magician/src/magician_v2/query_analysis/operation_llm_router.rs",
         "magician/src/magician_v2/execution/agentic/decision.rs",
         "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
-        "magician/src/magician_v2/strategy/decomposer.rs"
+        "magician/src/magician_v2/strategy/decomposer.rs",
+        "magician/src/magician_v2/vibedev/crews.rs"
       ],
       "immediate_signals": [
         "parse_valid",
@@ -198,7 +201,8 @@
       "source_paths": [
         "magician/src/magician_v2/query_analysis/operation_llm_router.rs",
         "magician-surfaces/src/thinking_map/llm_router_adapter.rs",
-        "magician/src/magician_v2/memory_applicability.rs"
+        "magician/src/magician_v2/memory_applicability.rs",
+        "magician/src/magician_v2/agents/memory_episode_recall.rs"
       ],
       "immediate_signals": [
         "parse_valid",
@@ -351,5 +355,19 @@
         "used_in_retrieval"
       ]
     }
-  ]
+  ],
+  "unconfigured_operations": {
+    "agentic_decision_predecided": {
+      "kind": "synthetic",
+      "source_path": "magician/src/magician_v2/execution/agentic/run_loop/phases/predecided_decision.rs",
+      "source_marker": "operation: PREDECIDED_OPERATION.into()",
+      "reason": "Caller-decided synthetic assistant turns do not invoke a model or use a default route."
+    },
+    "memory_episode_rerank": {
+      "kind": "explicit_binding_only",
+      "source_path": "magician/src/magician_v2/agents/memory_episode_recall.rs",
+      "source_marker": "router.explicit_binding_for_operation(OPERATION)?",
+      "reason": "Reranking is opt-in; without an explicit binding the deterministic retrieval order is preserved."
+    }
+  }
 }

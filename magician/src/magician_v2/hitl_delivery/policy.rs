@@ -234,6 +234,35 @@ mod tests {
     }
 
     #[test]
+    fn the_machine_ui_host_sits_between_the_owner_link_and_the_mobile_origin() {
+        // A machine moved to new tunnel hostnames rewrites MAGICIAN_UI_HOST;
+        // a link built on it follows the move, while the device origin would
+        // point at the API, which serves no /attention page.
+        let mut config = config_with(HitlCriticalDeliverySettings::default(), &[]);
+        config.mobile_access.public_origin = Some("https://connect.example.ai".into());
+        let machine = Some("https://ui-studio.example.ai".to_string());
+        let settings = &config.hitl.critical_delivery;
+        assert_eq!(
+            settings
+                .owner_link_origin_with(&config.mobile_access, machine.clone())
+                .as_deref(),
+            Some("https://ui-studio.example.ai"),
+            "unset, the machine's UI host beats the device origin",
+        );
+
+        config.hitl.critical_delivery.owner_ui_origin = Some("https://ui.example.ai".into());
+        assert_eq!(
+            config
+                .hitl
+                .critical_delivery
+                .owner_link_origin_with(&config.mobile_access, machine)
+                .as_deref(),
+            Some("https://ui.example.ai"),
+            "an explicit owner link still wins",
+        );
+    }
+
+    #[test]
     fn the_owner_link_origin_overrides_the_mobile_one_and_falls_back_to_it() {
         // One origin serving both is the ordinary case, and the mobile origin
         // is right there. Split them — the device hostname routed to the API,

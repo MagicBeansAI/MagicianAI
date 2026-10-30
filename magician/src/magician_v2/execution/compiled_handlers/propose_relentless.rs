@@ -147,15 +147,27 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         source: "relentless".into(), execution_id: Some(execution_id), task_id: Some(task_id),
         timeout_secs: 86_400, default_on_timeout: "dismiss".into(), created_at: 0, sensitive: None,
     };
+    let request_principal = request.principal.clone();
+    let request_workspace = request.workspace.clone();
     let submission = requests
         .submit_nonblocking_durable(request)
         .await
         .map_err(|e| fail(e.to_string()))?;
+    let pending = requests
+        .pending_request_snapshot(
+            submission.request_id(),
+            Some(&request_principal),
+            Some(&request_workspace),
+        )
+        .await
+        .is_some();
     Ok(
-        json!({"status":"proposed", "request_id":submission.request_id(), "review_url":review_url,
+        json!({"status":if pending { "proposed" } else { "closed" }, "request_id":submission.request_id(), "review_url":review_url,
         "proposal_hash":proposed.proposal_hash, "contract":prepared.contract,
-        "maximum_attempt_microusd":maximum, "budget_can_admit_attempt":maximum<=proposed.proposal.budget.max_cost_microusd,
-        "admitted":false, "communication":"capture_only"}),
+        "maximum_attempt_microusd":maximum, "budget_can_admit_attempt":maximum<=proposed.proposal.budget.cost_ceiling(),
+        "admitted":false, "awaiting_owner_review":pending,
+        "next_step":if pending { "Open review_url to review the exact contract and start the run. Budget validity alone does not start a run." } else { "This proposal is no longer pending. Do not report it as awaiting approval or started; inspect its outcome before proposing a successor." },
+        "communication":"capture_only"}),
     )
 }
 

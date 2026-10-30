@@ -1,4 +1,6 @@
 <script lang="ts">
+	import WorkHelp from '$lib/work/WorkHelp.svelte';
+	import { WORK_HELP } from '$lib/work/help';
 	import { browser } from '$app/environment';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/stores';
@@ -865,7 +867,7 @@
 			harnessRuntime = status;
 		} catch (error) {
 			if (token !== harnessRuntimeRequestToken) return;
-			harnessRuntimeError = error instanceof Error ? error.message : 'Failed to load harness runtime';
+			harnessRuntimeError = error instanceof Error ? error.message : 'Failed to load autopilot runtime';
 		} finally {
 			if (token === harnessRuntimeRequestToken) harnessRuntimeLoading = false;
 		}
@@ -883,14 +885,14 @@
 			updated = true;
 			const warnings = result.warnings ?? [];
 			if (warnings.length > 0) {
-				const message = `Harness state saved, but cleanup was incomplete: ${warnings.join('; ')}`;
+				const message = `Autopilot state saved, but cleanup was incomplete: ${warnings.join('; ')}`;
 				harnessRuntimeError = message;
 				showError(message);
 			} else {
-				showSuccess(`Harness agents turned ${result.enabled ? 'on' : 'off'}`);
+				showSuccess(`Autopilot agents turned ${result.enabled ? 'on' : 'off'}`);
 			}
 		} catch (error) {
-			const message = error instanceof Error ? error.message : 'Failed to update harness runtime';
+			const message = error instanceof Error ? error.message : 'Failed to update autopilot runtime';
 			harnessRuntimeError = message;
 			showError(message);
 		} finally {
@@ -1084,7 +1086,7 @@
 					<span class="crew-masthead__updated">Updated {formatRelativeTime(lastUpdatedAt)}</span>
 				{/if}
 			</div>
-			<h1>Crew Operations</h1>
+			<h2>Crew Operations</h2>
 			<p>Govern autonomous agent execution, inspect organizational delegation, and review fleet performance.</p>
 		</div>
 
@@ -1092,7 +1094,7 @@
 			<button
 				class="crew-button crew-button-secondary"
 				type="button"
-				title="Refresh fleet roster and harness runtime status"
+				title="Refresh fleet roster and autopilot runtime status"
 				disabled={interactionBusy || $agentStoreState.isLoading}
 				on:click={() => { void refreshList(true); void refreshHarnessRuntimeStatus(); }}
 			>
@@ -1126,7 +1128,7 @@
 		class="company-loop-banner"
 		class:company-loop-banner--active={harnessEnabled}
 		class:company-loop-banner--error={Boolean(harnessRuntimeError || harnessRuntime?.config_error)}
-		aria-label="Autonomous Company Loop Control"
+		aria-label="Autonomous Team Routines Control"
 	>
 		<div class="company-loop-banner__main">
 			<div class="company-loop-banner__icon-box" aria-hidden="true">
@@ -1135,7 +1137,7 @@
 			<div class="company-loop-banner__info">
 				<div class="company-loop-banner__title-row">
 					<div class="company-loop-banner__headline">
-						<h2>Company Loop</h2>
+						<h2>Team routines <WorkHelp topic={WORK_HELP.operations} /></h2>
 						<span class={badgeClass(harnessStatusColor)}>{harnessStatusLabel}</span>
 						{#if harnessEnabled}
 							<span class="company-loop-pulse">
@@ -1154,7 +1156,7 @@
 					</div>
 				</div>
 				<p class="company-loop-banner__desc">
-					Autonomous company cadence engine — orchestrates scheduled routines, steward agent cycles, and the executive sequence (CMO → CRO → CPO → CTO → CEO).
+					Run company roles on a shared schedule and inspect the results. Each member’s own schedule has separate controls.
 				</p>
 				{#if harnessRuntimeError || harnessRuntime?.config_error}
 					<div class="company-loop-banner__error-banner" role="alert">
@@ -1182,8 +1184,8 @@
 					type="button"
 					role="switch"
 					aria-checked={harnessEnabled}
-					aria-label={harnessEnabled ? 'Turn off autonomous company loop' : 'Turn on autonomous company loop'}
-					title={harnessEnabled ? 'Turn off autonomous company loop' : 'Turn on autonomous company loop'}
+					aria-label={harnessEnabled ? 'Turn off autonomous team routines' : 'Turn on autonomous team routines'}
+					title={harnessEnabled ? 'Turn off autonomous team routines' : 'Turn on autonomous team routines'}
 					disabled={!harnessRuntime || harnessRuntimeLoading || harnessRuntimeMutating}
 					on:click={toggleHarnessRuntime}
 				>
@@ -1193,7 +1195,7 @@
 
 			<a href="/work?view=operations" class="crew-button crew-button-secondary crew-button-sm">
 				<Icon name="settings" size={14} />
-				<span>Harness Console →</span>
+				<span>Team routines →</span>
 			</a>
 		</div>
 	</section>
@@ -1324,7 +1326,7 @@
 		<section class="crew-roster-view" aria-label="Crew members roster">
 			<!-- Toolbar: Search + Status Filter Chips + Layout Toggle -->
 			<div class="crew-toolbar">
-				<div class="crew-search-box">
+				<div class="crew-search-box search-box">
 					<Icon name="search" size={15} />
 					<input
 						type="search"
@@ -1783,7 +1785,7 @@
 						{delegationGraph.cycleCount} cycle{delegationGraph.cycleCount === 1 ? '' : 's'}
 					</p>
 				</div>
-				<div class="hierarchy-search-box">
+				<div class="hierarchy-search-box search-box">
 					<Icon name="search" size={14} />
 					<input
 						type="search"
@@ -1876,7 +1878,7 @@
 					<h2>Internal Pipeline Agents</h2>
 					<p>Read-only backend pipeline roles used for intent classification, planning, slot extraction, and clarification.</p>
 				</div>
-				<div class="hierarchy-search-box">
+				<div class="hierarchy-search-box search-box">
 					<Icon name="search" size={14} />
 					<input
 						type="search"
@@ -2042,7 +2044,7 @@
 		font-size: 0.76rem;
 	}
 
-	.crew-masthead h1 {
+	.crew-masthead h2 {
 		font-family: var(--font-display, var(--font-primary));
 		font-size: 1.85rem;
 		font-weight: 700;
@@ -2141,7 +2143,7 @@
 
 	.kpi-pulsing-badge {
 		background: color-mix(in srgb, var(--accent-success, #10b981) 15%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--accent-success, #10b981);
 		font-size: 0.7rem;
 		font-weight: 600;
@@ -2150,7 +2152,7 @@
 
 	.kpi-warn-badge {
 		background: color-mix(in srgb, var(--accent-warning, #f59e0b) 15%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--accent-warning, #f59e0b);
 		font-size: 0.7rem;
 		font-weight: 600;
@@ -2159,7 +2161,7 @@
 
 	.kpi-blue-badge {
 		background: color-mix(in srgb, var(--accent-primary) 15%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--accent-primary);
 		font-size: 0.7rem;
 		font-weight: 600;
@@ -2283,7 +2285,7 @@
 	.company-loop-pulse {
 		align-items: center;
 		background: color-mix(in srgb, var(--accent-success, #10b981) 12%, transparent);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--accent-success, #10b981);
 		display: inline-flex;
 		font-size: 0.72rem;
@@ -2399,7 +2401,7 @@
 
 	.tab-count {
 		background: var(--bg-soft);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--text-secondary);
 		font-size: 0.72rem;
 		font-weight: 500;
@@ -2452,20 +2454,36 @@
 		align-items: center;
 		background: var(--bg-card);
 		border: 1px solid var(--border-soft);
-		border-radius: 8px;
+		border-radius: var(--radius-chip, 6px);
 		display: inline-flex;
 		gap: 0.5rem;
 		min-width: 280px;
-		padding: 0.45rem 0.75rem;
+		padding: 0.38rem 0.75rem;
+		min-height: 2rem;
+		box-sizing: border-box;
+		transition: border-color 0.15s ease, box-shadow 0.15s ease;
 	}
 
-	.crew-search-box input {
-		background: transparent;
-		border: none;
+	.crew-search-box:focus-within {
+		border-color: var(--accent-primary);
+		box-shadow: 0 0 0 1px var(--accent-primary);
+	}
+
+	.crew-search-box input,
+	.crew-search-box input:focus,
+	.crew-search-box input:hover {
+		background: transparent !important;
+		background-color: transparent !important;
+		border: 0 !important;
+		outline: none !important;
+		box-shadow: none !important;
 		color: var(--text-primary);
-		font-size: 0.86rem;
-		outline: none;
+		font-size: 0.84rem;
+		padding: 0 !important;
+		border-radius: 0 !important;
 		width: 100%;
+		min-height: auto !important;
+		line-height: 1.2;
 	}
 
 	.crew-search-box input::placeholder {
@@ -2473,32 +2491,60 @@
 	}
 
 	.search-clear {
-		background: transparent;
-		border: none;
+		background: transparent !important;
+		border: 0 !important;
+		outline: none !important;
+		box-shadow: none !important;
 		color: var(--text-muted);
 		cursor: pointer;
 		font-size: 1.1rem;
 		line-height: 1;
-		padding: 0;
+		padding: 0 !important;
+		margin: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: color 0.15s ease;
+	}
+
+	.search-clear:hover {
+		color: var(--text-primary);
 	}
 
 	.hierarchy-search-box {
 		align-items: center;
 		background: var(--bg-card);
 		border: 1px solid var(--border-soft);
-		border-radius: 8px;
+		border-radius: var(--radius-chip, 6px);
 		display: inline-flex;
 		gap: 0.5rem;
 		min-width: 240px;
-		padding: 0.4rem 0.7rem;
+		padding: 0.35rem 0.7rem;
+		min-height: 1.9rem;
+		box-sizing: border-box;
+		transition: border-color 0.15s ease, box-shadow 0.15s ease;
 	}
 
-	.hierarchy-search-box input {
-		background: transparent;
-		border: none;
+	.hierarchy-search-box:focus-within {
+		border-color: var(--accent-primary);
+		box-shadow: 0 0 0 1px var(--accent-primary);
+	}
+
+	.hierarchy-search-box input,
+	.hierarchy-search-box input:focus,
+	.hierarchy-search-box input:hover {
+		background: transparent !important;
+		background-color: transparent !important;
+		border: 0 !important;
+		outline: none !important;
+		box-shadow: none !important;
 		color: var(--text-primary);
 		font-size: 0.84rem;
-		outline: none;
+		padding: 0 !important;
+		border-radius: 0 !important;
+		width: 100%;
+		min-height: auto !important;
+		line-height: 1.2;
 	}
 
 	.crew-filters {
@@ -2512,14 +2558,16 @@
 		align-items: center;
 		background: var(--bg-card);
 		border: 1px solid var(--border-soft);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		color: var(--text-secondary);
 		cursor: pointer;
 		display: inline-flex;
 		font-size: 0.78rem;
 		font-weight: 500;
 		gap: 0.35rem;
-		padding: 0.35rem 0.7rem;
+		padding: 0.22rem 0.62rem;
+		min-height: 1.6rem;
+		box-sizing: border-box;
 		transition: all 0.15s;
 	}
 
@@ -3082,16 +3130,18 @@
 	.crew-button {
 		align-items: center;
 		border: 1px solid transparent;
-		border-radius: 7px;
+		border-radius: var(--radius-chip, 6px);
 		cursor: pointer;
 		display: inline-flex;
 		font-family: inherit;
-		font-size: 0.85rem;
+		font-size: 0.82rem;
 		font-weight: 600;
 		gap: 0.45rem;
 		justify-content: center;
 		line-height: 1;
-		padding: 0.55rem 0.9rem;
+		min-height: 1.85rem;
+		padding: 0.38rem 0.75rem;
+		box-sizing: border-box;
 		text-decoration: none;
 		transition: all 0.15s;
 		white-space: nowrap;
@@ -3135,8 +3185,9 @@
 	}
 
 	.crew-button-sm {
-		font-size: 0.76rem;
-		padding: 0.35rem 0.6rem;
+		font-size: 0.74rem;
+		min-height: 1.55rem;
+		padding: 0.2rem 0.52rem;
 	}
 
 	.crew-badge {
@@ -3186,7 +3237,7 @@
 		align-items: center;
 		background: var(--bg-soft);
 		border: 1px solid var(--border-soft);
-		border-radius: 9999px;
+		border-radius: var(--radius-chip, 6px);
 		cursor: pointer;
 		display: inline-flex;
 		height: 22px;
@@ -3198,7 +3249,7 @@
 
 	.crew-switch span {
 		background: var(--text-secondary);
-		border-radius: 50%;
+		border-radius: 4px;
 		display: block;
 		height: 16px;
 		transform: translateX(0);

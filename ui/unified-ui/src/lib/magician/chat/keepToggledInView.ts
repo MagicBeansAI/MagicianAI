@@ -114,6 +114,9 @@ export function keepToggledInView(container: HTMLElement): { destroy(): void } {
 		const target = event.target instanceof Element ? event.target : null;
 		const toggle = target?.closest(TOGGLE_SELECTOR);
 		if (!toggle || !container.contains(toggle)) return;
+		// A popover does not resize its message. Following the whole answer
+		// here makes the first info click unexpectedly scroll the transcript.
+		if (toggle.hasAttribute('data-popover-trigger')) { stop(); return; }
 		const scope = toggle.closest(SCOPE_SELECTOR);
 		if (!scope) return;
 

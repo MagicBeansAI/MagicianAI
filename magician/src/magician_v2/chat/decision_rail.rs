@@ -8,9 +8,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     llm_service::ChatLlmResponse,
-    models::{ChatLlmTranscriptEntry, TranscriptBlock},
+    models::{
+        ChatLlmTranscriptEntry, ChatSessionFileIndex, ChatSessionFileOrigin, TranscriptBlock,
+    },
 };
-use crate::magician_v2::{decision_host, secrets};
+use crate::magician_v2::{artifact_v2::workspace::ArtifactV2Workspace, decision_host, secrets};
+use std::path::{Path, PathBuf};
 
 /// The Decision Engine refused a proposed call. Returned to the model as that
 /// call's error result, not as a failed turn: a model that called a tool its
@@ -36,6 +39,8 @@ pub(crate) struct ChatDecisionRail {
     plan: ActionPlan,
     consecutive: u32,
     pending: Option<(EngineClient, ActionRequest)>,
+    /// Where the session's tool-output screenshots are stored.
+    session_images: Option<SessionImages>,
 }
 
 pub(crate) enum ChatDecision {
@@ -43,7 +48,9 @@ pub(crate) enum ChatDecision {
     /// Jev could not ground a step: the model proposes under the engine's
     /// system prompt. The engine's planner message is not sent (see the
     /// chat loop), so only the system prompt is kept.
-    Planner { system: String },
+    Planner {
+        system: String,
+    },
     Execute(ToolCall),
 }
 
@@ -122,16 +129,32 @@ impl ChatDecisionRail {
         self.trace_scope = Some(trace);
         self
     }
+    pub(crate) fn with_session_images(
+        mut self,
+        workspace: ArtifactV2Workspace,
+        principal: &str,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Self {
+        self.session_images = Some(SessionImages {
+            outputs: workspace.chat_session_outputs_dir(principal, workspace_id, session_id),
+            index: workspace.chat_session_file_index_path(principal, workspace_id, session_id),
+            workspace,
+        });
+        self
+    }
     pub(crate) fn reset(&mut self) {
         let trace_scope = self.trace_scope.take();
         let agent = self.agent.take();
         let model_calls = self.take_model_calls();
         let health_scope = self.health_scope.take();
+        let session_images = self.session_images.take();
         *self = Self {
             health_scope,
             trace_scope,
             agent,
             model_calls,
+            session_images,
             ..Default::default()
         };
     }
@@ -170,7 +193,11 @@ impl ChatDecisionRail {
         cancel: &CancellationToken,
     ) -> Result<ChatDecision> {
         self.pending = None;
-        let context = context(goal, instructions, history, mode);
+        let mut context = context(goal, instructions, history, mode);
+        if let Some((key, asset)) = self.screenshot(&client, history, cancel).await {
+            context.observation = json!({"state": context.observation, "screenshot": key});
+            context.assets.insert(key, asset);
+        }
         let tools = tools
             .iter()
             .map(|tool| ActionTool {
@@ -406,6 +433,121 @@ pub(crate) fn selected_response(call: ToolCall) -> ChatLlmResponse {
         usage: None,
         telemetry: None,
     }
+}
+
+pub(crate) struct SessionImages {
+    workspace: ArtifactV2Workspace,
+    outputs: PathBuf,
+    index: PathBuf,
+}
+
+impl ChatDecisionRail {
+    /// The newest tool result's screenshot as a decision asset, when this
+    /// locality's route takes images, scaled to the image limits when it is
+    /// too large. The engine is asked only on turns that have one; an image
+    /// that cannot fit is left off and the turn decides from text.
+    async fn screenshot(
+        &self,
+        client: &EngineClient,
+        history: &[ChatLlmTranscriptEntry],
+        cancel: &CancellationToken,
+    ) -> Option<(String, decision_engine_contract::asset::DecisionAsset)> {
+        let images = self.session_images.as_ref()?;
+        let (call_id, inline) = latest_tool_result(history)?;
+        let stored_name = match inline {
+            Some(image) => image.stored_name.clone(),
+            // Chat keeps tool-output images in the session file index, keyed
+            // by the call that produced them.
+            None => {
+                let index: ChatSessionFileIndex =
+                    images.workspace.read_json_path(&images.index).await.ok()?;
+                index
+                    .files
+                    .into_iter()
+                    .filter(|file| {
+                        file.prompt_image
+                            && file.mime_type.starts_with("image/")
+                            && matches!(&file.origin, ChatSessionFileOrigin::ToolOutput {
+                                tool_call_id: Some(id), ..
+                            } if id == call_id)
+                    })
+                    .max_by_key(|file| file.created_at)?
+                    .stored_name
+            },
+        };
+        if Path::new(&stored_name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(stored_name.as_str())
+        {
+            return None;
+        }
+        let operations = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return None,
+            result = client.operations() => result.ok()?,
+        };
+        let policy = operations
+            .operations
+            .iter()
+            .find(|op| op.name == ACTION_OPERATION)?;
+        let accepts = match decision_host::global_decision_locality() {
+            decision_engine_contract::wire::Locality::Local => policy.images_local,
+            decision_engine_contract::wire::Locality::Cloud => policy.images_cloud,
+        };
+        if !accepts {
+            return None;
+        }
+        // The provider's 16 MiB cap applies after scaling, so the capture
+        // itself may be larger.
+        let bytes = images
+            .workspace
+            .read_bounded_path(images.outputs.join(&stored_name), 64 * 1024 * 1024)
+            .await
+            .ok()?;
+        let (asset, note) = crate::magician_v2::decision_screenshot::fit(bytes).await;
+        tracing::info!(
+            operation = ACTION_OPERATION,
+            screenshot = %serde_json::to_string(&note).unwrap_or_default(),
+            "chat decision rail: screenshot"
+        );
+        asset
+    }
+}
+
+/// The newest tool result's call id, with its inline image if it carries
+/// one. A user message after it means the screen may have moved on, so
+/// nothing is returned; an image from an earlier call is never used, since a
+/// later call (a click) may have changed the screen.
+fn latest_tool_result(
+    history: &[ChatLlmTranscriptEntry],
+) -> Option<(&str, Option<&super::models::PromptImageRef>)> {
+    for entry in history.iter().rev() {
+        match entry {
+            ChatLlmTranscriptEntry::ToolResultRich {
+                tool_call_id,
+                content,
+                ..
+            } => {
+                let image = content.iter().rev().find_map(|block| match block {
+                    TranscriptBlock::ImageFile { image }
+                        if image.mime_type.starts_with("image/") =>
+                    {
+                        Some(image)
+                    },
+                    _ => None,
+                });
+                return Some((tool_call_id.as_str(), image));
+            },
+            ChatLlmTranscriptEntry::ToolResult { tool_call_id, .. }
+            | ChatLlmTranscriptEntry::ToolResultProjected { tool_call_id, .. } => {
+                return Some((tool_call_id.as_str(), None));
+            },
+            ChatLlmTranscriptEntry::AssistantTurn { .. } => continue,
+            _ => return None,
+        }
+    }
+    None
 }
 
 pub(crate) fn context(

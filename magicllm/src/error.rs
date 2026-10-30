@@ -122,9 +122,37 @@ pub enum LLMError {
         queued_bytes: u64,
         capacity_bytes: u64,
     },
+    /// The owner-set spend envelope is exhausted for this workload class.
+    /// Raised by the installed [`crate::SpendGate`] before any provider is
+    /// contacted, so it is never a provider fault: dispatch treats it as
+    /// terminal (no retry, no breaker) and the agentic loop parks the run
+    /// until `resets_at_ms` instead of failing it.
+    ///
+    /// The text carries the stable `spend_envelope_exhausted` marker (callers
+    /// that only see a stringified error still recognise it) and renders the
+    /// reset as a date, so no digit run in it can be mistaken for an HTTP
+    /// status by text classifiers.
+    #[error(
+        "spend_envelope_exhausted: autonomous LLM work is paused until the owner-set spend \
+         window resets at {}",
+        spend_reset_label(.resets_at_ms)
+    )]
+    SpendEnvelopeExhausted {
+        /// When the current spend window ends (epoch millis, UTC).
+        resets_at_ms: i64,
+    },
     /// Unexpected failure.
     #[error("unexpected error: {0}")]
     Other(String),
+}
+
+/// Stable marker every [`LLMError::SpendEnvelopeExhausted`] message carries.
+pub const SPEND_ENVELOPE_EXHAUSTED_MARKER: &str = "spend_envelope_exhausted";
+
+fn spend_reset_label(resets_at_ms: &i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*resets_at_ms)
+        .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| "an unknown time".to_owned())
 }
 
 impl Clone for LLMError {
@@ -208,6 +236,9 @@ impl Clone for LLMError {
                 queued_bytes: *queued_bytes,
                 capacity_bytes: *capacity_bytes,
             },
+            Self::SpendEnvelopeExhausted { resets_at_ms } => Self::SpendEnvelopeExhausted {
+                resets_at_ms: *resets_at_ms,
+            },
             Self::Other(s) => Self::Other(s.clone()),
         }
     }
@@ -272,7 +303,8 @@ impl LLMError {
             | Self::DeadlineExceeded
             | Self::QueueFull { .. }
             | Self::RequestTooLarge { .. }
-            | Self::QueueBytesFull { .. }) => safe,
+            | Self::QueueBytesFull { .. }
+            | Self::SpendEnvelopeExhausted { .. }) => safe,
         }
     }
 
@@ -316,6 +348,15 @@ impl LLMError {
             _ => self,
         }
     }
+
+    /// When this error is (or wraps) a spend-envelope refusal, when the
+    /// current spend window ends (epoch millis).
+    pub fn spend_envelope_resets_at_ms(&self) -> Option<i64> {
+        match self.root_cause() {
+            Self::SpendEnvelopeExhausted { resets_at_ms } => Some(*resets_at_ms),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +375,35 @@ mod tests {
             crate::dispatch::classifier::classify(&cloned),
             crate::dispatch::ErrorClass::ParseError
         );
+    }
+
+    #[test]
+    fn spend_envelope_refusal_is_terminal_for_dispatch_and_survives_wrapping() {
+        let error = LLMError::SpendEnvelopeExhausted {
+            resets_at_ms: 1_791_849_600_000,
+        };
+        let text = error.to_string();
+        assert!(text.contains(SPEND_ENVELOPE_EXHAUSTED_MARKER), "{text}");
+        assert!(text.contains("2026-10-13T00:00:00Z"), "{text}");
+        // No digit run long enough to read as an HTTP status.
+        assert!(!text.contains("1791849600000"), "{text}");
+
+        let routed = error
+            .clone()
+            .with_route("p", LLMProviderKind::OpenAI, "gpt-5");
+        assert_eq!(
+            routed.spend_envelope_resets_at_ms(),
+            Some(1_791_849_600_000)
+        );
+        let class = crate::dispatch::classifier::classify(&routed);
+        assert_eq!(class, crate::dispatch::ErrorClass::SpendEnvelope);
+        assert!(!class.is_retriable());
+        // Redaction keeps the typed refusal intact.
+        assert!(matches!(
+            routed.redact_disclosure_details().root_cause(),
+            LLMError::SpendEnvelopeExhausted { .. }
+        ));
+        assert_eq!(LLMError::Timeout.spend_envelope_resets_at_ms(), None);
     }
 
     #[test]

@@ -28,7 +28,8 @@ Task lists, summaries, counts and metadata editors use the V3 task plane:
 - `POST /api/magician/v3/tasks`: create
 - `GET /api/magician/v3/tasks/{id}`
 - `PUT /api/magician/v3/tasks/{id}`
-- `DELETE /api/magician/v3/tasks/{id}`
+- `DELETE /api/magician/v3/tasks/{id}` (409 `task_active` while the run is
+  still finishing shows "This task is still finishing. Try again in a few seconds.")
 - `POST /api/magician/v3/tasks/{id}/plan` and `GET …/plan`
 - `POST /api/magician/v3/tasks/{id}/execute`
 

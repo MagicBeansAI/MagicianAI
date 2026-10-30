@@ -7,6 +7,7 @@
 //! ```text
 //! POST   /api/magician/v2/chat/memory/search      -> search episodes
 //! POST   /api/magician/v2/chat/memory/preference   -> save/remove a preference
+//! POST   /api/magician/v2/chat/memory/duplicates/fold -> report/fold near-duplicates
 //! GET    /api/magician/v2/memory/effect-review    -> shadow/canary/enforced advice
 //! POST   /api/magician/v2/memory/effect-review    -> stay or advance (owner)
 //! ```
@@ -188,6 +189,57 @@ fn resolve_scope_from_headers(headers: &HeaderMap) -> Result<(String, String), H
 // ========================================================================
 // Handlers
 // ========================================================================
+
+/// Request body for `POST /chat/memory/duplicates/fold`.
+#[derive(Debug, Deserialize)]
+pub struct MemoryDuplicateFoldRequest {
+    /// False (the default) reports what would fold without changing memory.
+    #[serde(default)]
+    pub apply: bool,
+}
+
+/// POST /api/magician/v2/chat/memory/duplicates/fold
+///
+/// Owner-triggered lifecycle maintenance: near-duplicate records already
+/// stored (the same claim under key variants or rewordings) fold into their
+/// most-confirmed copy — evidence merged, each other copy superseded, nothing
+/// deleted. A dry run (`apply: false`, the default) only reports the folds.
+pub async fn memory_duplicate_fold_handler(
+    memory_api: web::Data<MemoryApi>,
+    req: HttpRequest,
+    body: web::Json<MemoryDuplicateFoldRequest>,
+) -> impl Responder {
+    let (principal, workspace) = match resolve_scope_from_headers(req.headers()) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    let service = match memory_api
+        .memory_resolver
+        .resolve_for_scope(&principal, &workspace)
+    {
+        Ok(service) => service,
+        Err(error) => {
+            return HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({"status":"error","reason":error.to_string()}))
+        },
+    };
+    match magician::magician_v2::agents::memory_lifecycle::runtime::fold_near_duplicate_records(
+        &service,
+        body.apply,
+        Utc::now(),
+    )
+    .await
+    {
+        Ok(folds) => HttpResponse::Ok().json(serde_json::json!({
+            "status": "ok",
+            "applied": body.apply,
+            "folds": folds,
+            "folded_records": folds.iter().map(|fold| fold.folded.len()).sum::<usize>(),
+        })),
+        Err(error) => HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({"status":"error","reason":error.to_string()})),
+    }
+}
 
 pub async fn memory_source_repair_handler(
     memory_api: web::Data<MemoryApi>,

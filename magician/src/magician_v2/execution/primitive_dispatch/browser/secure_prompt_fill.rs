@@ -569,11 +569,15 @@ async fn run(
         });
     }
     // The user's "use once" is already given when every field is a code the
-    // store bound to this exact origin (the challenge named the destination);
-    // anything else — a prompted field, a password, an unbound code — asks.
-    let confirmation_given = prompted == 0
+    // store bound to this exact origin (the challenge named the destination),
+    // or when the user typed every value into this fill's own prompts, each
+    // of which named the origin, tab and field and said "used once": asking
+    // again after the typing read as the same prompt coming back. A mix —
+    // or a password or code the store holds unbound — asks.
+    let confirmation_given = (prompted == 0
         && !referenced.is_empty()
-        && referenced.iter().all(|item| item.bound_to_origin);
+        && referenced.iter().all(|item| item.bound_to_origin))
+        || (prompted == args.fields.len() && referenced.is_empty());
     if !confirmation_given {
         let request = prompt.request(
             format!("Use these {} fields once on {} (tab {})? This fills the selected fields without saving credentials or submitting the form.", material.len(), target.top_origin, target.tab),

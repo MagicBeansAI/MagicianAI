@@ -56,7 +56,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            MODULE.DEFAULT_EVAL_LLM_PROFILE, "gpt6luna-responses-toolsany"
+            MODULE.DEFAULT_EVAL_LLM_PROFILE, "operation/query_analysis"
         )
         delegated = MODULE.eval_execution_request(
             "candidate-profile", "web-researcher"
@@ -727,7 +727,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
                 {
                     "success": True,
                     "operation": "agentic_decision",
-                    "profile": "gpt6luna-responses-toolsany",
+                    "profile": "operation/query_analysis",
                 }
             ],
             execution_agents=["personal-assistant", "web-researcher"],
@@ -775,7 +775,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
                 {
                     "success": True,
                     "operation": "agentic_decision",
-                    "profile": "gpt6luna-responses-toolsany",
+                    "profile": "operation/query_analysis",
                 }
             ],
             execution_agents=["web-researcher"],
@@ -825,7 +825,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
                 {
                     "success": True,
                     "operation": "agentic_decision",
-                    "profile": "gpt6luna-responses-toolsany",
+                    "profile": "operation/query_analysis",
                 }
             ],
             execution_agents=["web-researcher"],
@@ -931,7 +931,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
         llm_calls = [
             {
                 "operation": "agentic_decision",
-                "profile": "gpt6luna-responses-toolsany",
+                "profile": "operation/query_analysis",
                 "success": True,
                 "input_tokens": 100,
             }
@@ -1176,7 +1176,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
         self.assertIn("- working_set_search", definition)
         self.assertIn("- working_set_read", definition)
         self.assertIn("- research-working-sets", definition)
-        self.assertIn("agentic_decision:\n      profile: gpt6luna-responses-toolsany", definition)
+        self.assertIn("agentic_decision:\n      profile: operation/query_analysis", definition)
         self.assertIn("Use one server-owned path for ordinary research", definition)
         self.assertIn('"common":{"fresh":true,"limit":5}', definition)
         self.assertIn("source-access failure", definition)
@@ -1220,7 +1220,7 @@ class WebResearcherLiveEvalTests(unittest.TestCase):
             "tools": sorted(MODULE.EXPECTED_WEB_RESEARCHER_TOOLS),
             "llm_routing": {
                 "operations": {
-                    "agentic_decision": {"profile": "gpt6luna-responses-toolsany"}
+                    "agentic_decision": {"profile": "operation/query_analysis"}
                 }
             },
         }

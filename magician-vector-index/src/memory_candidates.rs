@@ -334,12 +334,45 @@ pub async fn load_memory_candidate_documents(
     tier_definitions: &[MemoryTierDefinition],
     request: &MemoryCandidateRequest<'_>,
 ) -> Result<Vec<MemoryCandidateDocument>, MemoryStorageError> {
+    load_memory_candidate_documents_with_prepared(
+        storage,
+        agent_id,
+        tier_definitions,
+        request,
+        PreparedCandidateSources::default(),
+    )
+    .await
+}
+
+/// Source documents a caller already holds, so
+/// [`load_memory_candidate_documents_with_prepared`] reads only the rest. A
+/// cache that keeps per-file documents passes the unchanged ones here.
+#[derive(Debug, Default)]
+pub struct PreparedCandidateSources {
+    /// The agent's episode documents, exactly as
+    /// [`crate::episode_candidates::load_episode_candidate_documents`]
+    /// returns them for the same storage and agent. Used in the Agent scope.
+    pub episodes: Option<Vec<MemoryCandidateDocument>>,
+    /// Per-tier documents by tier name, exactly as
+    /// [`tier_candidate_documents`] returns them for the same request.
+    pub tiers: std::collections::HashMap<String, Vec<MemoryCandidateDocument>>,
+}
+
+/// [`load_memory_candidate_documents`], taking prepared sources from the
+/// caller instead of reading them. The cross-source steps (containment,
+/// successor links) still run over the whole set, so the result is the same.
+pub async fn load_memory_candidate_documents_with_prepared(
+    storage: &dyn MemoryStorage,
+    agent_id: &str,
+    tier_definitions: &[MemoryTierDefinition],
+    request: &MemoryCandidateRequest<'_>,
+    mut prepared: PreparedCandidateSources,
+) -> Result<Vec<MemoryCandidateDocument>, MemoryStorageError> {
     let mut candidates = Vec::new();
     if matches!(&request.scope, &TierScope::User) {
         push_user_memory_entries(storage, agent_id, request, &mut candidates).await;
     }
 
-    let renderer = DefaultMemoryRenderer;
     for tier in tier_definitions
         .iter()
         .filter(|tier| same_scope(&tier.scope, &request.scope))
@@ -350,37 +383,12 @@ pub async fn load_memory_candidate_documents(
         {
             continue;
         }
-        let goal_id = if matches!(&tier.scope, &TierScope::AgentGoal) {
-            request.goal_id
-        } else {
-            None
-        };
-        let Some(raw) = storage
-            .load_native_tier_value(agent_id, &tier.name, &tier.scope, goal_id)
-            .await?
-        else {
-            continue;
-        };
-        let data: V3MemoryTierRecord = serde_json::from_value(raw)?;
-        if is_stale(data.last_updated, request.recency_cutoff) {
-            continue;
+        match prepared.tiers.remove(&tier.name) {
+            Some(documents) => candidates.extend(documents),
+            None => {
+                candidates.extend(tier_candidate_documents(storage, agent_id, tier, request).await?)
+            },
         }
-        if tier_record_is_empty(&data.fields) {
-            continue;
-        }
-        let source_path = storage
-            .agent_tier_path(agent_id, &tier.name, &tier.scope, goal_id)
-            .ok();
-        push_tier_entries(
-            storage,
-            agent_id,
-            tier,
-            &data,
-            source_path,
-            &renderer,
-            request,
-            &mut candidates,
-        );
     }
 
     // App memory is indexed only from the destination-owned, sealed
@@ -407,9 +415,15 @@ pub async fn load_memory_candidate_documents(
     // this producer an episode can be indexed but never reach automatic prompt
     // injection, because the prompt snapshot has no matching source candidate.
     if matches!(&request.scope, &TierScope::Agent) {
+        let episodes = match prepared.episodes {
+            Some(episodes) => episodes,
+            None => {
+                crate::episode_candidates::load_episode_candidate_documents(storage, agent_id)
+                    .await?
+            },
+        };
         candidates.extend(
-            crate::episode_candidates::load_episode_candidate_documents(storage, agent_id)
-                .await?
+            episodes
                 .into_iter()
                 .filter(|candidate| !is_stale(candidate.last_updated, request.recency_cutoff)),
         );
@@ -452,6 +466,51 @@ pub async fn load_memory_candidate_documents(
         }
     }
 
+    Ok(candidates)
+}
+
+/// One tier's candidates for `request`: what the tier loop of
+/// [`load_memory_candidate_documents`] adds for `tier`. A function of the tier
+/// file's bytes, the tier definition, the agent and the request, so a caller
+/// may keep the result while the file is unchanged.
+pub async fn tier_candidate_documents(
+    storage: &dyn MemoryStorage,
+    agent_id: &str,
+    tier: &MemoryTierDefinition,
+    request: &MemoryCandidateRequest<'_>,
+) -> Result<Vec<MemoryCandidateDocument>, MemoryStorageError> {
+    let goal_id = if matches!(&tier.scope, &TierScope::AgentGoal) {
+        request.goal_id
+    } else {
+        None
+    };
+    let Some(raw) = storage
+        .load_native_tier_value(agent_id, &tier.name, &tier.scope, goal_id)
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let data: V3MemoryTierRecord = serde_json::from_value(raw)?;
+    if is_stale(data.last_updated, request.recency_cutoff) {
+        return Ok(Vec::new());
+    }
+    if tier_record_is_empty(&data.fields) {
+        return Ok(Vec::new());
+    }
+    let source_path = storage
+        .agent_tier_path(agent_id, &tier.name, &tier.scope, goal_id)
+        .ok();
+    let mut candidates = Vec::new();
+    push_tier_entries(
+        storage,
+        agent_id,
+        tier,
+        &data,
+        source_path,
+        &DefaultMemoryRenderer,
+        request,
+        &mut candidates,
+    );
     Ok(candidates)
 }
 
@@ -562,7 +621,8 @@ fn push_tier_entries(
     }
 
     let rendered = renderer.render(tier, data);
-    let rendered = rendered.trim();
+    let rendered = crate::episode_candidates::user_facing_prose(rendered.trim());
+    let rendered = rendered.as_ref();
     if rendered.is_empty() {
         return;
     }
@@ -604,7 +664,18 @@ fn push_collection_items(
             continue;
         }
         let item_key = item_memory_key(item).unwrap_or_else(|| idx.to_string());
-        let text = format!("{field}: {}", value_to_prompt_text(item));
+        let body = value_to_prompt_text(item);
+        if body.trim().is_empty() {
+            // Nothing user-facing is left of it.
+            continue;
+        }
+        // An object item names itself (`label: value`); a bare value is
+        // introduced by its field.
+        let text = if item.is_object() {
+            body
+        } else {
+            format!("{field}: {body}")
+        };
         let confidence = item_confidence(item);
         let tier_label = format!("{tier_name}.{field}");
         let mut metadata = json!({
@@ -612,6 +683,10 @@ fn push_collection_items(
             "field": field,
             "source_field": source_field,
             "index": idx,
+            "prompt_provenance": item_prompt_provenance(item),
+            "claim_key": item_claim_key(item),
+            "claim_text": item_claim_text(item),
+            "observations": item_observations(item),
             "project_id": item.get("project_id").and_then(Value::as_str),
             "memory_lifecycle": item_lifecycle(item),
             "memory_record_id": item.get("memory_record_id"),
@@ -753,6 +828,7 @@ fn push_user_value_entries(
                 let mut metadata = json!({
                     "candidate_kind": "user_field",
                     "field": field,
+                    "prompt_provenance": item_prompt_provenance(other),
                 });
                 copy_app_source_envelope(other, &mut metadata);
                 stamp_engagement_scope(&mut metadata, &label_for_item(other, inherited));
@@ -1003,42 +1079,213 @@ fn value_is_empty(value: &Value) -> bool {
     }
 }
 
+/// A stored value as recall shows it to a reader — never a window over its
+/// serialised JSON. Strings pass the user-facing-prose gate first: tier
+/// memory written from episodes can carry machine or system text (a handoff
+/// payload, a fenced brief, a runtime marker) with another run's operating
+/// policy, and recall keeps only the prose each string leads with.
 fn value_to_prompt_text(value: &Value) -> String {
-    if value.get("memory_record_id").is_some() {
-        // Evidence/history supports review, not a second set of instructions in
-        // ordinary recall. Present current meaning and its applicability only.
-        let meaning = value.get("value").cloned().unwrap_or_else(|| {
-            Value::Object(
-                value
-                    .as_object()
-                    .into_iter()
-                    .flat_map(|m| m.iter())
-                    .filter(|(key, _)| {
-                        !key.starts_with("memory_")
-                            && !key.starts_with("supersed")
-                            && !matches!(
-                                key.as_str(),
-                                "source_ids" | "source_event_id" | "root_source_id" | "rationale"
-                            )
-                    })
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            )
-        });
-        return json!({"key":value.get("key"),"value":meaning,
-            "kind":value.get("memory_kind"),"context":value.get("memory_context"),
-            "valid_until":value.get("valid_until"),
-            "uncertainty":if item_lifecycle(value)==Some("unresolved") {
-                Some("Unresolved memory conflict. Do not treat this claim as settled current truth.")
-            } else {None}}).to_string();
+    let cleaned = crate::episode_candidates::user_facing_prose_in_value(value);
+    readable_value(cleaned.as_ref())
+}
+
+/// Where an item's own fields say it came from, for the prompt's provenance
+/// label: `ambient_browser`, `evidence_refs` or `source_backed`. The item
+/// renders as a readable line without its evidence fields, so this marker
+/// travels in the candidate's metadata instead.
+fn item_prompt_provenance(item: &Value) -> Option<&'static str> {
+    let raw = item.to_string().to_lowercase();
+    if raw.contains("ambient_browser") || raw.contains("ambient browsing") {
+        Some("ambient_browser")
+    } else if raw.contains("evidence_refs") {
+        Some("evidence_refs")
+    } else if raw.contains("source_id") || raw.contains("rationale") {
+        Some("source_backed")
+    } else {
+        None
     }
+}
+
+/// The key an item's claim is stored under (its `key`, `name` or `title`),
+/// for near-duplicate comparison ([`crate::memory_similarity`]).
+fn item_claim_key(item: &Value) -> Option<&str> {
+    ITEM_LABEL_FIELDS
+        .iter()
+        .find_map(|field| item.get(*field).and_then(Value::as_str))
+}
+
+/// What an item claims, as text: its `value` (or the first of `text`,
+/// `insight`, `summary`, `pattern`, `directive`), or the item itself when it
+/// is a string. For near-duplicate comparison.
+fn item_claim_text(item: &Value) -> Option<String> {
+    if let Value::String(text) = item {
+        return Some(text.clone());
+    }
+    match item.get("value") {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(value) if !value.is_null() => Some(value.to_string()),
+        _ => ["text", "insight", "summary", "pattern", "directive"]
+            .iter()
+            .find_map(|field| item.get(*field).and_then(Value::as_str))
+            .map(str::to_owned),
+    }
+}
+
+/// How many independent observations back an item: its distinct evidence
+/// ids, at least one.
+fn item_observations(item: &Value) -> usize {
+    item.get("memory_evidence")
+        .and_then(Value::as_array)
+        .map(|evidence| {
+            evidence
+                .iter()
+                .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        })
+        .unwrap_or(0)
+        .max(1)
+}
+
+/// Fields that name an item.
+const ITEM_LABEL_FIELDS: [&str; 3] = ["key", "name", "title"];
+/// Fields that date an item; the first present one is shown as "as of".
+const ITEM_DATE_FIELDS: [&str; 6] = [
+    "last_seen",
+    "updated_at",
+    "observed_at",
+    "recorded_at",
+    "created_at",
+    "timestamp",
+];
+
+/// A string as itself, a list as its items joined by `; `, and an object as
+/// one readable line ([`readable_item`]).
+fn readable_value(value: &Value) -> String {
     match value {
-        Value::String(text) => text.clone(),
-        Value::Number(_) | Value::Bool(_) | Value::Null => value.to_string(),
-        Value::Array(_) | Value::Object(_) => {
-            serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
-        },
+        Value::String(text) => text.trim().to_string(),
+        Value::Null => String::new(),
+        Value::Number(_) | Value::Bool(_) => value.to_string(),
+        Value::Array(items) => items
+            .iter()
+            .map(readable_value)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("; "),
+        Value::Object(map) => readable_item(value, map),
     }
+}
+
+/// One tier item as a line: `label (as of <date>; valid until <date>): value`,
+/// then its other reader-facing fields in parentheses (as the line itself when
+/// it has no `value`). The label and the item's dates and status lead the
+/// line, so a renderer that shortens it from the end keeps them. Pipeline
+/// bookkeeping — record ids, supersession, provenance, evidence, rationale,
+/// confidence, containment labels — is review material, not a second set of
+/// instructions in ordinary recall, so it never renders.
+fn readable_item(item: &Value, map: &serde_json::Map<String, Value>) -> String {
+    let label = ITEM_LABEL_FIELDS
+        .iter()
+        .find_map(|field| map.get(*field).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|label| !label.is_empty());
+    let body = map
+        .get("value")
+        .map(readable_value)
+        .filter(|body| !body.is_empty());
+    let mut extras = Vec::new();
+    if let Some(context) = map
+        .get("memory_context")
+        .or_else(|| map.get("context"))
+        .map(readable_value)
+        .filter(|context| !context.is_empty())
+        .filter(|context| {
+            body.as_deref()
+                .is_none_or(|body| !body.contains(context.as_str()))
+        })
+    {
+        extras.push(format!("context: {context}"));
+    }
+    for (field, value) in map {
+        if !is_reader_detail_field(field) {
+            continue;
+        }
+        let text = readable_value(value);
+        if !text.is_empty() {
+            extras.push(format!("{}: {text}", field.replace('_', " ")));
+        }
+    }
+    // A value with nothing user-facing left says nothing; its label and dates
+    // alone are not memory.
+    if body.is_none() && (extras.is_empty() && map.contains_key("value")) {
+        return String::new();
+    }
+    let mut status = Vec::new();
+    if let Some(date) = ITEM_DATE_FIELDS
+        .iter()
+        .find_map(|field| map.get(*field).and_then(Value::as_str))
+        .map(|date| date.trim().get(..10).unwrap_or(date.trim()).to_string())
+        .filter(|date| !date.is_empty())
+    {
+        status.push(format!("as of {date}"));
+    }
+    if let Some(until) = map
+        .get("valid_until")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|until| !until.is_empty())
+    {
+        status.push(format!("valid until {until}"));
+    }
+    if item_lifecycle(item) == Some("unresolved") {
+        status.push("unresolved memory conflict, not settled current truth".to_string());
+    }
+    let status = (!status.is_empty()).then(|| format!("({})", status.join("; ")));
+    let head = match (label, status.as_deref()) {
+        (Some(label), Some(status)) => Some(format!("{label} {status}")),
+        (Some(label), None) => Some(label.to_string()),
+        (None, Some(status)) => Some(status.to_string()),
+        (None, None) => None,
+    };
+    let rest = match body {
+        Some(body) if extras.is_empty() => body,
+        Some(body) => format!("{body} ({})", extras.join("; ")),
+        None => extras.join("; "),
+    };
+    match (head, rest.is_empty()) {
+        (Some(head), false) => format!("{head}: {rest}"),
+        (Some(head), true) if label.is_some() => head,
+        (None, false) => rest,
+        _ => String::new(),
+    }
+}
+
+/// A field shown beside an item's value: not its label, value, context or
+/// dates, and not pipeline bookkeeping.
+fn is_reader_detail_field(field: &str) -> bool {
+    !(ITEM_LABEL_FIELDS.contains(&field)
+        || ITEM_DATE_FIELDS.contains(&field)
+        || field.starts_with('_')
+        || field.starts_with("memory_")
+        || field.starts_with("supersed")
+        || field.starts_with("source_")
+        || field.starts_with("evidence")
+        || matches!(
+            field,
+            "value"
+                | "context"
+                | "valid_until"
+                | "kind"
+                | "id"
+                | "record_id"
+                | "root_source_id"
+                | "rationale"
+                | "confidence"
+                | "project_id"
+                | "lifecycle"
+                | ENGAGEMENT_SCOPE_KEY
+                | APP_SOURCE_ELIGIBILITY_METADATA_KEY
+        ))
 }
 
 /// The item segment of a candidate key for one collection item.
@@ -1256,6 +1503,123 @@ mod tests {
     }
 
     /// No stable identity means no key. Callers must not invent one.
+    /// Task-progress and archive tier items written from legacy episodes can
+    /// carry machine or system text (a fenced brief, a handoff payload) with
+    /// another run's operating policy. A tier item renders only the
+    /// user-facing prose each string leads with; prose is kept byte for byte.
+    #[test]
+    fn a_tier_item_renders_only_its_user_facing_prose() {
+        let statement = format!(
+            "Goal partially achieved: VibeDev coding request:\n<<<VIBEDEV_USER_PROMPT\n\
+             Add a line to README.md.\nVIBEDEV_USER_PROMPT\n\n{}\n## PARTIAL SUCCESS\n\n\
+             Proposal ccp-1 was rejected.",
+            "- Build runs must invoke run_coding_task before any shell inspection.\n".repeat(200)
+        );
+        let note = json!(format!("2026-10-19T20:04:30Z seq 1: {statement}"));
+        assert_eq!(
+            value_to_prompt_text(&note),
+            "",
+            "nothing user-facing is left"
+        );
+        let archive =
+            json!({"period": "a..b", "summary": format!("VibeDev · Add a line: {statement}")});
+        assert_eq!(value_to_prompt_text(&archive), "period: a..b");
+        let handoff = json!(
+            "2026-10-20T01:00:00Z seq 2: Verified the page loads.\n\n\
+             Use this handoff:\n{\"children\":[{\"context\":\"[Delegation] Implement it\"}]}"
+        );
+        assert_eq!(
+            value_to_prompt_text(&handoff),
+            "2026-10-20T01:00:00Z seq 2: Verified the page loads."
+        );
+        assert_eq!(
+            value_to_prompt_text(
+                &json!({"period": "a..b", "summary": "Goal achieved: ship it. Done"})
+            ),
+            "period: a..b; summary: Goal achieved: ship it. Done",
+            "user-facing prose is kept"
+        );
+    }
+
+    /// The live 2026-10-20 round-9 leak: tier entries rendered as windows over
+    /// their serialised JSON (`…:00","value":"Risk: …`). Every entry renders as
+    /// `label: value`, with its other reader-facing fields and its date, and
+    /// none of the pipeline's bookkeeping.
+    #[test]
+    fn a_tier_entry_renders_as_a_readable_line() {
+        assert_eq!(
+            value_to_prompt_text(&json!({
+                "key": "vibedev project-path verification",
+                "last_seen": "2026-10-19T20:07:58Z",
+                "value": "Risk: checking the service repository can make changes look missing."
+            })),
+            "vibedev project-path verification (as of 2026-10-19): Risk: checking the service \
+             repository can make changes look missing."
+        );
+        let preference = json!({
+            "key": "audio_editing_deliverable_preferences",
+            "memory_record_id": "record:19b7",
+            "memory_kind": "preference",
+            "memory_context": "For audio-editing requests",
+            "memory_lifecycle": "unresolved",
+            "source_ids": ["turn:1"],
+            "rationale": "stated twice",
+            "valid_until": null,
+            "value": "For audio-editing requests, the user prefers a finished artifact.",
+            "last_seen": "2026-10-20T00:00:00Z",
+            ENGAGEMENT_SCOPE_KEY: "neutral",
+        });
+        let text = value_to_prompt_text(&preference);
+        assert_eq!(
+            text,
+            "audio_editing_deliverable_preferences (as of 2026-10-20; unresolved memory \
+             conflict, not settled current truth): For audio-editing requests, the user prefers \
+             a finished artifact."
+        );
+        for bookkeeping in [
+            "record:19b7",
+            "turn:1",
+            "stated twice",
+            "neutral",
+            "{",
+            "\"",
+        ] {
+            assert!(
+                !text.contains(bookkeeping),
+                "{bookkeeping:?} rendered: {text}"
+            );
+        }
+        assert_eq!(
+            value_to_prompt_text(&json!({
+                "name": "Priya",
+                "notes": "Prefers WhatsApp for files.",
+                "preferred_channel": "WhatsApp",
+                "last_seen": "2026-09-30T14:14:23.808Z",
+            })),
+            "Priya (as of 2026-09-30): notes: Prefers WhatsApp for files.; preferred \
+             channel: WhatsApp"
+        );
+        // A value with nothing user-facing left is not memory, dated or not.
+        assert_eq!(
+            value_to_prompt_text(&json!({
+                "key": "handoff",
+                "last_seen": "2026-10-20T00:00:00Z",
+                "value": "{\"children\":[]}"
+            })),
+            ""
+        );
+        // Provenance and evidence references are review material.
+        assert_eq!(
+            value_to_prompt_text(&json!({
+                "key": "format",
+                "value": "Prefer concise markdown.",
+                "source_id": "lc_test",
+                "evidence_refs": [{"kind": "work_evidence"}],
+            })),
+            "format: Prefer concise markdown."
+        );
+    }
+
     #[test]
     fn an_item_without_identifying_fields_has_no_key() {
         assert_eq!(item_memory_key(&json!({ "note": "an observation" })), None);

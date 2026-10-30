@@ -1,6 +1,9 @@
 import { initControlPanel } from './control_panel.js';
+import { initLivePreviewPanel } from './live_preview_panel.js';
 import { wireAmbientPairing } from './ambient_pairing.js';
 import { wireMagicianBearerSettings } from './magician_bearer_settings.js';
+import { wireBrowserNameSettings } from './browser_name_settings.js';
+import { wireBridgePrompts } from './bridge_prompts_panel.js';
 import { setupPanelTabs, wireCollapsibleStatus } from './panel_tabs.js';
 
 void initControlPanel({
@@ -10,7 +13,10 @@ void initControlPanel({
 
 setupPanelTabs();
 wireCollapsibleStatus();
+initLivePreviewPanel();
 
 // WEG ambient-capture pairing (P2.1b) — shared with the side panel.
 wireAmbientPairing();
 wireMagicianBearerSettings();
+wireBrowserNameSettings();
+wireBridgePrompts();

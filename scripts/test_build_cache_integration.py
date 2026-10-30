@@ -104,11 +104,43 @@ class BuildRouting(unittest.TestCase):
         _, env = self.plan(["check"])
         self.assertEqual(env["CARGO_TARGET_DIR"], "/other-target")
 
+    def test_clippy_keeps_the_outer_gate_and_real_compiler_protocol(self):
+        gate = self.root / "gate"
+        gate.write_text("#!/bin/sh\nexit 0\n")
+        gate.chmod(0o755)
+        self.env.update(RUSTC_JOB_GATE=str(gate), RUSTC_WRAPPER=str(gate))
+        for args in (["clippy"], ["+stable", "clippy"]):
+            with self.subTest(args=args), patch.object(cache.subprocess, "check_output") as query:
+                command, env = self.plan(args)
+            self.assertEqual(command[0], str(self.mbx))
+            self.assertEqual(env["RUSTC_WRAPPER"], str(gate))
+            self.assertNotIn("RUSTC", env)
+            self.assertNotIn("MAGICIAN_REAL_RUSTC", env)
+            self.assertNotIn("CARGO_TARGET_DIR", env)
+            query.assert_not_called()
+
     def test_queries_and_clean_keep_cargo_semantics(self):
         for args in (["--version"], ["metadata", "--no-deps"], ["clean", "-p", "magician"], ["fmt"]):
             command, env = self.plan(args)
             self.assertEqual(command[0], str(self.cargo))
             self.assertEqual(env["CARGO_TARGET_DIR"], self.env["CARGO_TARGET_DIR"])
+
+    def test_pinned_install_initializes_fresh_compiler_storage(self):
+        temporary = self.root / "fresh-storage" / "compiler-tmp"
+        self.env["MAGICIAN_BUILD_TMPDIR"] = str(temporary)
+        args = ["install", "cargo-audit", "--version", "0.22.2", "--locked"]
+        command, env = self.plan(args)
+        self.assertEqual(command, [str(self.mbx), *args])
+        self.assertTrue(temporary.is_dir())
+        self.assertEqual(env["TMPDIR"], str(temporary))
+
+        # Offline/native fallback still needs the same compiler scratch path.
+        fallback = self.root / "fresh-native" / "compiler-tmp"
+        self.env.update(MAGICIAN_BUILD_CACHE="off", MAGICIAN_BUILD_TMPDIR=str(fallback))
+        command, env = self.plan(args)
+        self.assertEqual(command, [str(self.cargo), *args])
+        self.assertTrue(fallback.is_dir())
+        self.assertEqual(env["TMPDIR"], str(fallback))
 
     def test_required_volume_stops_before_target_or_tmp_writes(self):
         self.env["MAGICIAN_BUILD_REQUIRED_VOLUME"] = str(self.root / "unmounted")

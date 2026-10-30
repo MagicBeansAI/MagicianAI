@@ -1,7 +1,4 @@
-use actix_test::start;
-use actix_web::{web, App};
-use actix_web_actors::ws::Frame;
-use awc::{ws::Message as AwcMessage, Client};
+use actix_web::{web, App, HttpServer};
 use futures::{SinkExt, StreamExt};
 use magicutor::bridge_protocol::{ExtensionRequest, ExtensionResponse};
 use magicutor::{
@@ -9,33 +6,60 @@ use magicutor::{
     MagicutorConfig,
 };
 use serde_json::json;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+struct StopOnDrop(actix_web::dev::ServerHandle);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        drop(self.0.stop(false));
+    }
+}
 
 // End-to-end bridge test with a mocked extension over WebSocket.
 #[actix_rt::test]
 async fn bridge_roundtrip_request_response() {
+    // Keep the bridge's accepted-browser store out of the real data root.
+    std::env::set_var(
+        "MAGICUTOR_BROWSER_STORE_PATH",
+        std::env::temp_dir()
+            .join(format!("magicutor-it-{}", std::process::id()))
+            .join("bridge_browsers.json"),
+    );
     let mut config = MagicutorConfig::default();
     config.bridge.enabled = true;
     config.bridge.auth_token = String::new();
     let config_for_srv = config.clone();
 
-    let srv = start(move || {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = HttpServer::new(move || {
         let config = config_for_srv.clone();
         App::new()
             .app_data(web::Data::new(config.clone()))
             .configure(configure_routes)
-    });
+    })
+    .workers(1)
+    .disable_signals()
+    .listen(listener)
+    .unwrap()
+    .run();
+    let stop = StopOnDrop(server.handle());
+    actix_rt::spawn(server);
 
     // Connect mock extension to bridge.
-    let client = Client::new();
-    let ws_url = srv.url("/bridge/native");
-    let (_resp, mut ws) = client.ws(ws_url).connect().await.expect("ws connect");
+    let ws_url = format!("ws://{address}/bridge/native");
+    let (mut ws, _resp) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), connect_async(ws_url))
+            .await
+            .expect("WebSocket handshake deadline")
+            .expect("ws connect");
 
     // Spawn handler that reads request and responds
     actix_rt::spawn(async move {
         while let Some(Ok(frame)) = ws.next().await {
-            if let Frame::Text(text) = frame {
-                let txt = String::from_utf8_lossy(&text);
-                let env: serde_json::Value = serde_json::from_str(&txt).unwrap();
+            if let Message::Text(text) = frame {
+                let env: serde_json::Value = serde_json::from_str(&text).unwrap();
                 if env["type"] == "request" {
                     let req_id = env["data"]["requestId"].as_str().unwrap().to_string();
                     let resp = ExtensionResponse::success(req_id, json!({"ok": true}));
@@ -44,7 +68,7 @@ async fn bridge_roundtrip_request_response() {
                         "data": resp
                     }))
                     .unwrap();
-                    let _ = ws.send(AwcMessage::Text(payload.into())).await;
+                    let _ = ws.send(Message::Text(payload)).await;
                     break;
                 }
             }
@@ -74,4 +98,5 @@ async fn bridge_roundtrip_request_response() {
     };
     assert!(resp.success);
     assert_eq!(resp.result.unwrap_or_default()["ok"], json!(true));
+    stop.0.stop(false).await;
 }

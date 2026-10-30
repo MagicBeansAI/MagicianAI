@@ -1,8 +1,11 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+
 	import Button from '$lib/magician/components/generative/Button.svelte';
 	import Markdown from '$lib/magician/components/generative/Markdown.svelte';
 
-	import { linkCandidates, rewriteWikiLinks, targetFromHref } from './noteLinks';
+	import { noteBody } from './noteFrontMatter';
+	import { absoluteNoteLink, linkCandidates, rewriteWikiLinks, targetFromHref } from './noteLinks';
 	import { isVoiceNotePath } from './voiceNotePath';
 
 	type Entry = {
@@ -35,15 +38,23 @@
 	let editing = $state(false);
 	let draftMarkdown = $state('');
 	let saving = $state(false);
+	let linkCopied = $state(false);
+	let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let {
 		openPath = '',
 		revision = 0,
-		onPlayVoice = undefined
+		workspace = '',
+		onPlayVoice = undefined,
+		onOpen = undefined
 	}: {
 		openPath?: string;
 		revision?: number;
+		/** The scope workspace these notes belong to; part of every note link. */
+		workspace?: string;
 		onPlayVoice?: (path: string) => void;
+		/** Called with the path of each note the reading pane shows. */
+		onOpen?: (path: string) => void;
 	} = $props();
 
 	let treeRequest = 0;
@@ -306,8 +317,33 @@
 	}
 
 	$effect(() => {
-		if (openPath) void openFile(openPath);
+		// A note the pane already shows (the parent echoing an `onOpen` back)
+		// is not fetched twice.
+		if (openPath && openPath !== untrack(() => file?.relative_path)) void openFile(openPath);
 	});
+
+	$effect(() => {
+		const path = file?.relative_path;
+		if (path) untrack(() => onOpen?.(path));
+	});
+
+	$effect(() => () => {
+		if (copiedTimer) clearTimeout(copiedTimer);
+	});
+
+	async function copyLink(): Promise<void> {
+		if (!file) return;
+		const link = absoluteNoteLink(file.relative_path, workspace);
+		try {
+			if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+			await navigator.clipboard.writeText(link);
+			linkCopied = true;
+			if (copiedTimer) clearTimeout(copiedTimer);
+			copiedTimer = setTimeout(() => (linkCopied = false), 2000);
+		} catch {
+			actionError = `Copy this link: ${link}`;
+		}
+	}
 
 	$effect(() => {
 		const query = findQuery;
@@ -471,6 +507,12 @@
 					{#if editing}
 						<Button label={saving ? 'Saving' : 'Save'} variant="primary" size="sm" disabled={saving} on:click={() => void saveNote()} />
 					{/if}
+					<Button
+						label={linkCopied ? 'Link copied' : 'Copy link'}
+						variant="secondary"
+						size="sm"
+						on:click={() => void copyLink()}
+					/>
 					{#if isVoiceNotePath(file.relative_path) && onPlayVoice}
 						<button type="button" class="icon-button" aria-label="Play recording" onclick={() => file && onPlayVoice?.(file.relative_path)}>
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
@@ -490,7 +532,7 @@
 			{:else}
 				{#key `${file.relative_path}\n${findQuery}`}
 					<div class="prose" bind:this={prose}>
-						<Markdown content={rewriteWikiLinks(file.markdown)} />
+						<Markdown content={rewriteWikiLinks(noteBody(file.markdown))} />
 					</div>
 				{/key}
 			{/if}

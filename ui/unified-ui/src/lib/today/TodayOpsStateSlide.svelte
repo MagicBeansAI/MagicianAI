@@ -14,6 +14,8 @@
 	import { bucketTasks, recentTasks, shortRelativeTime, taskDotTone } from '$lib/today/opsCarousel';
 
 	interface Props {
+        tasksLoading?: boolean;
+        agentsLoading?: boolean;
 		tasks: Task[];
 		agents: AgentSummary[];
 		/** Live running-agent count from the agent store (0 when unknown). */
@@ -23,7 +25,7 @@
 		nowMs: number;
 	}
 
-	let { tasks, agents, runningAgentCount = 0, pulseCompletedToday = 0, nowMs }: Props = $props();
+	let { tasks, agents, tasksLoading = false, agentsLoading = false, runningAgentCount = 0, pulseCompletedToday = 0, nowMs }: Props = $props();
 
 	const buckets = $derived(bucketTasks(tasks, pulseCompletedToday));
 	const total = $derived(buckets.total);
@@ -83,6 +85,9 @@
 	});
 </script>
 
+{#if tasksLoading}
+    <div class="np-ops-status" role="status" aria-busy="true"><span class="loading loading-spinner loading-xs" aria-hidden="true"></span> Loading operations…</div>
+{:else}
 <div class="np-ops-state">
 	<div class="np-ops-state__summary">
 		<div class="np-panel__kicker">
@@ -150,11 +155,13 @@
 			title="{enabledAgents} enabled · {runningAgents} active · {totalAgents} total agents"
 		>
 			<span class="np-ops-state__agents-label">Agents</span>
+            {#if agentsLoading}<span role="status">Loading…</span>{:else}
 			<span>Enabled: <strong>{enabledAgents}</strong></span>
 			<span class="np-ops-state__sep" aria-hidden="true">·</span>
 			<span class:has-active={runningAgents > 0}>Active: <strong>{runningAgents}</strong></span>
 			<span class="np-ops-state__sep" aria-hidden="true">·</span>
 			<span>Total: <strong>{totalAgents}</strong></span>
+            {/if}
 		</p>
 	</div>
 
@@ -183,7 +190,10 @@
 	</div>
 </div>
 
+{/if}
+
 <style>
+    .np-ops-status {display:flex;align-items:center;gap:0.65rem;min-height:6rem;padding:0.5rem;color:var(--text-secondary);font-size:0.8rem;}
 	.np-ops-state {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);

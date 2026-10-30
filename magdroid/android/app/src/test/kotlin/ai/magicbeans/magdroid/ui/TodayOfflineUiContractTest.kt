@@ -4,6 +4,8 @@ import ai.magicbeans.magdroid.net.Failure
 import ai.magicbeans.magdroid.net.FailureKind
 import ai.magicbeans.magdroid.today.TodayUiState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class TodayOfflineUiContractTest {
@@ -33,4 +35,11 @@ class TodayOfflineUiContractTest {
             todayContentMode(TodayUiState(payload = null, loading = false)),
         )
     }
+    @Test fun ready_sections_are_visible_while_the_overview_is_pending() {
+        val state = TodayUiState(payload = null, loading = true, settledSections = setOf("message_followups"))
+        assertEquals(TodayContentMode.Dashboard, todayContentMode(state))
+        assertFalse(state.initiallyLoading("message_followups"))
+        assertTrue(state.initiallyLoading("pulse"))
+    }
+
 }

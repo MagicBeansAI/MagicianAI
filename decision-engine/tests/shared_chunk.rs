@@ -125,6 +125,7 @@ async fn shared_context_is_sent_once_and_demultiplexed_with_one_physical_receipt
                 })
                 .collect(),
         },
+        assets: Default::default(),
     };
     let response = engine.decide(request.clone()).await;
     assert!(response.batch.matches(&request.batch));
@@ -210,6 +211,7 @@ async fn a_chunk_failure_retains_its_receipt_and_recovers_only_unresolved_items(
                 })
                 .collect(),
         },
+        assets: Default::default(),
     };
     let result = engine.decide(request).await;
     assert_eq!(
@@ -304,6 +306,7 @@ async fn low_confidence_in_one_item_recovers_without_overwriting_a_confident_nei
                     })
                     .collect(),
             },
+            assets: Default::default(),
         })
         .await;
     assert_eq!(result.model_calls.len(), 2);
@@ -390,6 +393,7 @@ async fn oversized_item_is_rejected_before_any_shared_model_call() {
                     })
                     .collect(),
             },
+            assets: Default::default(),
         })
         .await;
     assert_eq!(result.batch.items[1].status, ItemStatus::Failed);

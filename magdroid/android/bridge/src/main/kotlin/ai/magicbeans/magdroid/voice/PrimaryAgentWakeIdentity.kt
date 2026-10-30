@@ -1,6 +1,7 @@
 package ai.magicbeans.magdroid.voice
 
 import ai.magicbeans.magdroid.access.MagicianAccess
+import ai.magicbeans.magdroid.identity.ProductIdentity
 import android.content.Context
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -53,6 +54,11 @@ data class PrimaryAgentWakeIdentity(
  * known identity for offline starts, and derive the same `Hey <name>` phrases
  * the backend derives from canonical name plus aliases.
  */
+/** The name the app shows for the primary agent: its name, else an alias, else the product name. */
+fun primaryAgentDisplayName(identity: PrimaryAgentWakeIdentity?): String =
+    identity?.let { (listOf(it.name) + it.aliases).firstNotNullOfOrNull { name -> name.trim().takeIf(String::isNotEmpty) } }
+        ?: ProductIdentity.productName
+
 object PrimaryAgentWakeIdentityStore {
     private const val PREFS = "magdroid_primary_agent_identity_v1"
     private const val KEY_IDENTITY = "identity"

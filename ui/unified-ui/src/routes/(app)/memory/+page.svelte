@@ -114,6 +114,7 @@
 		count?: number;
 		backend?: string;
 		fallback_reason?: string;
+		source_read_failed?: boolean;
 		matches?: MemorySearchMatch[];
 	}
 
@@ -203,6 +204,8 @@
 	let memorySearchError: string | null = null;
 	let memorySearchTookMs: number | null = null;
 	let memorySearchResult: MemorySearchResponse | null = null;
+	let memorySearchRequestId = 0;
+	let memorySearchController: AbortController | null = null;
 
 	// Environment knowledge state
 	let envKnowledgeEntries: EnvironmentKnowledgeEntry[] = [];
@@ -275,6 +278,8 @@
 
 	function clearScopeState(): void {
 		latestRequestId += 1;
+		clearMemorySearch();
+		memoryTierFilter = '';
 		isLoading = false;
 		error = null;
 		agents = [];
@@ -754,22 +759,30 @@
 	async function searchMemory(): Promise<void> {
 		const query = memoryQuery.trim();
 		if (!query || !selectedAgentId || memorySearchBusy) return;
+		resetMemorySearchResults();
+		const requestId = ++memorySearchRequestId;
+		const agentId = selectedAgentId;
+		const scopeKey = currentScopeKey;
+		const controller = new AbortController();
+		memorySearchController = controller;
 		memorySearchBusy = true;
-		memorySearchError = null;
 		const started = performance.now();
+		const isCurrent = () => requestId === memorySearchRequestId && agentId === selectedAgentId && scopeKey === currentScopeKey;
 		try {
 			const response = await timedFetch('/api/magician/v2/memory/search', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				timeoutMs: 60_000,
+				signal: controller.signal,
 				body: JSON.stringify({
 					query,
-					agent_id: selectedAgentId,
+					agent_id: agentId,
 					tier: memoryTierFilter.trim() || undefined,
 					limit: 20
 				})
 			});
 			const data = (await response.json()) as MemorySearchResponse;
+			if (!isCurrent()) return;
 			memorySearchTookMs = Math.round(performance.now() - started);
 			if (!response.ok || data.status === 'error') {
 				memorySearchResult = null;
@@ -778,19 +791,31 @@
 			}
 			memorySearchResult = data;
 		} catch (err) {
+			if (!isCurrent()) return;
 			memorySearchTookMs = Math.round(performance.now() - started);
 			memorySearchResult = null;
 			memorySearchError = err instanceof Error ? err.message : 'Memory search failed';
 		} finally {
-			memorySearchBusy = false;
+			if (isCurrent()) {
+				memorySearchBusy = false;
+				memorySearchController = null;
+			}
 		}
+	}
+
+	function resetMemorySearchResults(): void {
+		memorySearchRequestId += 1;
+		memorySearchController?.abort();
+		memorySearchController = null;
+		memorySearchBusy = false;
+		memorySearchResult = null;
+		memorySearchError = null;
+		memorySearchTookMs = null;
 	}
 
 	function clearMemorySearch(): void {
 		memoryQuery = '';
-		memorySearchResult = null;
-		memorySearchError = null;
-		memorySearchTookMs = null;
+		resetMemorySearchResults();
 	}
 
 	function memoryTabHref(tab: TabKey): string {
@@ -829,15 +854,17 @@
 				total_count: 0
 			}));
 
-			// Honour ?agent_id= from the URL; otherwise just take the first.
-			// No "first with data" preference here — that required walking
-			// every agent's memory, which is what we're trying to avoid.
+			// Prefer normal chat recall without inspecting every agent's tiers.
+			// Explicit URL and current selections still take precedence.
+			const previousAgentId = selectedAgentId;
 			const queryAgentId = ($page.url.searchParams.get('agent_id') || '').trim();
 			if (queryAgentId && agentSnapshots.some((s) => s.agent_id === queryAgentId)) {
 				selectedAgentId = queryAgentId;
 			} else if (!selectedAgentId || !agentSnapshots.some((s) => s.agent_id === selectedAgentId)) {
-				selectedAgentId = agentSnapshots[0]?.agent_id || '';
+				selectedAgentId = agentSnapshots.find((s) => s.agent_id === 'personal-assistant')?.agent_id
+					|| agentSnapshots[0]?.agent_id || '';
 			}
+			if (previousAgentId !== selectedAgentId) resetMemorySearchResults();
 			lastRefreshAt = Date.now();
 			await ensureTabLoaded(activeTab);
 		} catch (err) {
@@ -982,6 +1009,7 @@
 	}
 
 	async function selectAgent(agentId: string): Promise<void> {
+		if (selectedAgentId !== agentId) resetMemorySearchResults();
 		selectedAgentId = agentId;
 		await loadMemoryForSelectedAgent(agentId);
 	}
@@ -1033,6 +1061,7 @@
 	onMount(() => {
 		mounted = true;
 		lastScopeKey = currentScopeKey;
+		return () => resetMemorySearchResults();
 	});
 
 	$: currentScopeKey = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
@@ -1129,6 +1158,14 @@
 			</div>
 		</div>
 		<form class="memory-search-row" on:submit|preventDefault={() => void searchMemory()}>
+			<label class="memory-agent-field">
+				<span class="visually-hidden">Search as agent</span>
+				<select aria-label="Search as agent" value={selectedAgentId} on:change={(event) => void selectAgent(event.currentTarget.value)} disabled={!agents.length}>
+					{#each agents as agent (agent.agent_id)}
+						<option value={agent.agent_id}>{agent.name}</option>
+					{/each}
+				</select>
+			</label>
 			<label class="memory-search-field">
 				<span class="visually-hidden">Search memory</span>
 				<input
@@ -1166,15 +1203,18 @@
 			<p class="memory-search-status">
 				{memorySearchResult.count ?? memorySearchResult.matches?.length ?? 0} result{(memorySearchResult.count ?? 0) === 1 ? '' : 's'}
 				{#if memorySearchResult.backend} · {memorySearchResult.backend}{/if}
-				{#if memorySearchTookMs != null} · {memorySearchTookMs} ms{/if}
-				{#if memorySearchResult.fallback_reason}
-					· {memorySearchResult.fallback_reason}
+				{#if memorySearchTookMs != null}<span title="Total request time, including embedding, retrieval, source checks and ranking."> · {memorySearchTookMs} ms total</span>{/if}
+				{#if memorySearchResult.reason || memorySearchResult.fallback_reason}
+					· {memorySearchResult.reason || memorySearchResult.fallback_reason}
 				{/if}
 			</p>
+			{#if memorySearchResult.status === 'partial' || memorySearchResult.source_read_failed}
+				<p class="alert alert--info" role="status">Some memory sources could not be read. Results may be incomplete.</p>
+			{/if}
 			{#if (memorySearchResult.matches?.length ?? 0) === 0}
 				<div class="empty-state">
 					<h3>No matching memory</h3>
-					<p>Nothing in this agent's memory answered that search.</p>
+					<p>No matching memory available to {selectedSnapshot?.agent_name || selectedAgentId}. Try another agent or search.</p>
 				</div>
 			{:else}
 				<ol class="memory-search-hits">
@@ -1853,6 +1893,7 @@
 	}
 
 	.memory-search-field,
+	.memory-agent-field,
 	.memory-tier-field {
 		position: relative;
 		display: flex;
@@ -1868,7 +1909,12 @@
 		flex: 0 1 12rem;
 	}
 
+	.memory-agent-field {
+		flex: 0 1 12rem;
+	}
+
 	.memory-search-field input,
+	.memory-agent-field select,
 	.memory-tier-field input {
 		box-sizing: border-box;
 		width: 100%;
@@ -2420,6 +2466,7 @@
 		}
 
 		.memory-search-field,
+		.memory-agent-field,
 		.memory-tier-field,
 		.memory-search-row .btn {
 			flex: 1 1 100%;

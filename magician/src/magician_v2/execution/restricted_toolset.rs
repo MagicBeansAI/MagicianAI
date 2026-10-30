@@ -37,7 +37,9 @@
 
 use serde_json::{Map, Value};
 
-use super::restricted_action::{is_dispatch_routing_key, restricted_form_for, RestrictedAction};
+use super::restricted_action::{
+    is_dispatch_routing_key, restricted_form_for, RestrictedAction, SenderKind,
+};
 use crate::magician_v2::agents::outward_actions::{
     capability_can_reach_the_world, capability_only_sends, outward_action_class,
     outward_passthrough_class,
@@ -250,9 +252,12 @@ fn close_passthrough(
 /// - anything outside `allowed_parameters` — `restrict` answers
 ///   `UnknownParameter`;
 /// - every passthrough — `restrict` answers `EscapeHatch`;
-/// - the sender parameters — `restrict` drops whatever the caller supplied and
-///   rebinds the runtime's identity, so offering the field teaches the model to
-///   compose a choice that is silently overwritten.
+/// - the sender-address parameters — `restrict` drops whatever the caller
+///   supplied and rebinds the runtime's identity, so offering the field teaches
+///   the model to compose a choice that is silently overwritten. A profile
+///   selector ([`SenderKind::ProfileAlias`], gmail's `account`) stays: `restrict`
+///   keeps an owner-approved alias and refuses any other, so the model may pick
+///   among the skill's declared accounts or omit it for the default.
 ///
 /// Routing keys (`action` and its spellings) survive: they select which
 /// operation runs rather than parameterising it, and a leaf that lost its own
@@ -276,7 +281,9 @@ fn close_to_allowlist(
         if super::effective_action::is_passthrough_parameter(&lower) {
             return false;
         }
-        if spec.sender_parameters.contains(&lower.as_str()) {
+        if spec.sender_kind == SenderKind::Identity
+            && spec.sender_parameters.contains(&lower.as_str())
+        {
             return false;
         }
         spec.allowed_parameters.contains(&lower.as_str())
@@ -305,14 +312,25 @@ fn close_to_allowlist(
     ToolProjection::Restricted {
         parameters: narrowed_schema(declared, kept, kept_required),
         note: format!(
-            "This act reaches people, so it takes only its bindable form: {}. The sender is bound \
-             by the runtime and cannot be chosen here.",
+            "This act reaches people, so it takes only its bindable form: {}. {}",
             spec.allowed_parameters
                 .iter()
-                .filter(|name| !spec.sender_parameters.contains(name))
+                .filter(|name| {
+                    spec.sender_kind != SenderKind::Identity
+                        || !spec.sender_parameters.contains(name)
+                })
                 .map(|name| format!("`{name}`"))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(", "),
+            match spec.sender_kind {
+                SenderKind::Identity => {
+                    "The sender is bound by the runtime and cannot be chosen here."
+                },
+                SenderKind::ProfileAlias => {
+                    "The sending account must be one the owner approved; omit it to send from \
+                     the default account."
+                },
+            }
         ),
     }
 }
@@ -442,11 +460,11 @@ mod tests {
     /// `extra_args` is the hole: the shipped `gmail` skill declares it on `send`,
     /// so today the model can compose `gmail__send` with raw argv and learns it
     /// was refused only after spending the iteration. The projected schema never
-    /// mentions it. `account` goes too — `restrict` overwrites it with the
-    /// runtime's identity, so offering it teaches the model to choose a mailbox
-    /// it does not get.
+    /// mentions it. `account` stays: it is a profile selector, and `restrict`
+    /// keeps an owner-approved alias (or the contract default when omitted)
+    /// rather than overwriting it, so the model may pick a declared mailbox.
     #[test]
-    fn a_sending_leaf_loses_its_escape_hatch_and_its_sender_field() {
+    fn a_sending_leaf_loses_its_escape_hatch_but_keeps_its_profile_selector() {
         let declared = json!({
             "type": "object",
             "properties": {
@@ -467,6 +485,7 @@ mod tests {
         assert_eq!(
             kept,
             vec![
+                "account".to_string(),
                 "body".to_string(),
                 "cc".to_string(),
                 "reply_to_message_id".to_string(),

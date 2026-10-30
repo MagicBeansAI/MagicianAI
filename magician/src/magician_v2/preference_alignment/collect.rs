@@ -7,7 +7,6 @@
 //! into bounded batches that together cover all of it, so no standing
 //! instruction is silently cut by a top-k (plan §6).
 
-
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -24,7 +23,6 @@ use crate::magician_v2::execution::actions::ExecutableAction;
 /// Version of the action binding. Bumped if the canonical form changes, so a
 /// receipt bound under one form never matches an act under another.
 pub const ALIGNMENT_BINDING_VERSION: &str = "alignment_binding.v1";
-
 
 /// What the host knows about the request a check runs under.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,12 +237,12 @@ pub fn build_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::magician_v2::preference_alignment::intention::{
         Coverage, CoverageStatus, IntentionLifecycle, IntentionSource, StandingGeneration,
         INTENTION_SCHEMA_VERSION,
     };
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn intention(id: &str, kind: IntentionKind, status: AssertionStatus) -> Intention {
         Intention {
@@ -363,9 +361,10 @@ mod tests {
     fn the_binding_ignores_host_identity_but_not_the_act() {
         let pack = |params: HashMap<String, Value>| ExecutableAction::Pack {
             capability_name: "food_delivery".to_string(),
-            implementation: crate::magician_v2::execution::capability::ImplementationType::Compiled {
-                provider_name: "food_delivery".to_string(),
-            },
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "food_delivery".to_string(),
+                },
             resolved_params: params,
         };
         let bare = pack(HashMap::from([("item".to_string(), json!("biryani"))]));

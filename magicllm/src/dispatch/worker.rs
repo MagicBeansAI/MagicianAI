@@ -41,6 +41,9 @@ use super::registry::JobRegistry;
 use super::retry::{decide, RetryDecision};
 use super::types::{JobId, JobState, LocalPrepStat, Priority, TokenSummary, TombstoneReason};
 
+/// How far the worker backstop sits above a provider call's own bound.
+const WATCHDOG_MARGIN_OVER_PROVIDER_BOUND: Duration = Duration::from_secs(60);
+
 /// Context shared with every worker.
 pub struct WorkerContext {
     pub router: Arc<dyn DispatchRouter>,
@@ -548,6 +551,23 @@ async fn process_job(worker_id: usize, ctx: Arc<WorkerContext>, mut job: LlmJob)
         return;
     }
 
+    if job
+        .caller_cancellation
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        tombstone_at_pickup(
+            &ctx,
+            job,
+            TombstoneReason::ExplicitCancel {
+                reason: Some("caller stopped waiting".to_string()),
+            },
+            "caller_abandoned_before_dispatch",
+        )
+        .await;
+        return;
+    }
+
     // 1. Submission-deadline gate.
     if let Some(deadline) = job.submission_deadline {
         if Instant::now() >= deadline {
@@ -639,7 +659,7 @@ async fn process_job(worker_id: usize, ctx: Arc<WorkerContext>, mut job: LlmJob)
     // fire, leaving the in-flight provider call running (and billing). Creating
     // it here closes that window: the `select!` below races this (sticky) token,
     // so a cancel fired any time after this point aborts the call.
-    let cancel_token = ctx.task_state.subscribe_cancel(job.task_ref.as_ref());
+    let cancel_token = job.cancellation_token(ctx.task_state.as_ref());
 
     // Mark in_flight.
     let provider_kind_for_meta = provider_kind.clone();
@@ -930,8 +950,14 @@ async fn run_physical_attempt(
 
     // 6. Watchdog deadline.
     let profile_timeout = resolve_profile_timeout(&*routing_router, &job.request);
+    // A provider call is bounded by its stream watchdog, whose ceiling can
+    // exceed the profile timeout: a long answer that keeps producing runs
+    // past it. The backstop sits above that ceiling so it never drops a
+    // healthy answer the provider itself would still accept.
+    let provider_bound = crate::providers::STREAM_CEILING.max(profile_timeout);
     let watchdog_deadline = Instant::now()
-        + Duration::from_secs_f64(profile_timeout.as_secs_f64() * cfg_snapshot.watchdog_factor);
+        + Duration::from_secs_f64(profile_timeout.as_secs_f64() * cfg_snapshot.watchdog_factor)
+            .max(provider_bound + WATCHDOG_MARGIN_OVER_PROVIDER_BOUND);
 
     // 7. Race provider call against cancel + watchdog.
     // Arm order matters under `biased`: when multiple arms are ready in
@@ -979,7 +1005,8 @@ async fn run_physical_attempt(
         // move-only durable resource permit. Dropping the route future on
         // cancel/shutdown/watchdog would strand Held usage because Drop
         // cannot perform the required async uncertain settlement. The
-        // provider request has its own exact bounded timeout; drain it to
+        // provider request is bounded by its own stream watchdog (up to
+        // `STREAM_CEILING`), which this deadline sits above; drain it to
         // the router settlement boundary, then discard/tombstone the
         // response when cancellation won logically.
         let result = routing_router.route(request_clone).await;
@@ -1669,7 +1696,7 @@ fn park_for_byte_admission(
     );
     let queue = Arc::clone(&ctx.byte_waiters);
     queue.push(ParkedByteJob {
-        task_cancel_token: ctx.task_state.subscribe_cancel(job.task_ref.as_ref()),
+        task_cancel_token: job.cancellation_token(ctx.task_state.as_ref()),
         job,
         ready_at,
         shutdown_reason,
@@ -1757,9 +1784,7 @@ fn spawn_reserved_requeue_at(
 ) {
     let ctx_for_task = Arc::clone(ctx);
     ctx.deferred_tasks.spawn(async move {
-        let task_cancel_token = ctx_for_task
-            .task_state
-            .subscribe_cancel(job.task_ref.as_ref());
+        let task_cancel_token = job.cancellation_token(ctx_for_task.task_state.as_ref());
         loop {
             if let Some(reason) = ctx_for_task.registry.take_cancellation_intent(&job.job_id) {
                 tombstone_at_pickup(&ctx_for_task, job, reason, "cancelled_during_retry_backoff")

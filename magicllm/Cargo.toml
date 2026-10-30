@@ -1,6 +1,6 @@
 [package]
 name = "magicllm"
-version = "0.2.47"
+version = "0.2.55"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Shared multi-provider LLM abstraction for Magician platform services"
@@ -17,7 +17,9 @@ futures-util = "0.3"
 base64 = "0.22"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+webpki-roots = "0.26"
 dashmap = "5"
 ulid = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -28,7 +30,9 @@ blake3 = { workspace = true }
 runtime-core = { path = "../runtime-core" }
 
 [dev-dependencies]
+# Reproduce the host's unified TLS features: the client must choose explicitly.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 serde_yaml = "0.9"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-wiremock = "0.5"
+wiremock = "0.6"
 tempfile = "3.8"

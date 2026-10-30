@@ -150,12 +150,14 @@ impl OllamaProvider {
             .tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 json!({
                     "type": "function",
                     "function": {
                         "name": tool.name,
-                        "description": tool.description,
-                        "parameters": clone_json_value_iteratively(&tool.parameters),
+                        "description": description,
+                        "parameters": clone_json_value_iteratively(&parameters),
                     }
                 })
             })
@@ -266,6 +268,18 @@ impl OllamaProvider {
     }
 
     fn validate_non_streaming_terminal_payload(data: &Value) -> LLMResult<()> {
+        // An HTTP error arrives as `{"error": "..."}`; its text (for example
+        // "prompt is too long") is what callers classify, so it must not be
+        // reported as a payload missing its content.
+        if let Some(error) = data.get("error").filter(|error| !error.is_null()) {
+            return Err(LLMError::Provider {
+                provider: "ollama".to_owned(),
+                message: error
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| error.to_string()),
+            });
+        }
         if data.get("done") == Some(&Value::Bool(false)) {
             // This is an incomplete HTTP exchange, not a malformed caller
             // request or a model-level refusal. Surface it as transport so the
@@ -497,7 +511,7 @@ impl LLMProvider for OllamaProvider {
             let mut body = json!({
                 "model": model,
                 "messages": messages,
-                "stream": false,
+                "stream": true,
             });
             if !request.tools.is_empty() {
                 body["tools"] = Value::Array(Self::map_chat_tools(&request));
@@ -523,7 +537,7 @@ impl LLMProvider for OllamaProvider {
             json!({
                 "model": model,
                 "prompt": prompt,
-                "stream": false,
+                "stream": true,
             })
         };
 
@@ -558,6 +572,18 @@ impl LLMProvider for OllamaProvider {
             &mut body,
             Self::reasoning_requested(request.reasoning.as_ref()),
         );
+        // Catalog effort controls are qualified per model. Existing legacy
+        // requests keep boolean behavior; a named level is sent only when the
+        // resolver selected a native effort model.
+        if let Some(reasoning) = request.reasoning.as_ref().filter(|reasoning| {
+            reasoning.strategy.as_deref() == Some("native_effort") && !reasoning.is_disabled()
+        }) {
+            if let Some(level) = reasoning.effort.as_deref() {
+                body.as_object_mut()
+                    .expect("Ollama request is an object")
+                    .insert("think".into(), Value::String(level.into()));
+            }
+        }
 
         if let Some(keep_alive) = self.keep_alive.as_ref() {
             body.as_object_mut()
@@ -582,27 +608,33 @@ impl LLMProvider for OllamaProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&self.base_url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        // The call streams (`stream: true` above), so a long answer that is
+        // still producing is bounded by progress, not cut at the request
+        // timeout. A local model can be slow to its first token, so the
+        // request timeout still bounds that wait. The records fold back into
+        // the single payload parsed below.
+        let response = super::send_streaming_request(
+            self.client
+                .post(&self.base_url)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
-        let raw_body = read_bounded_response_text(response).await?;
-
-        let payload = parse_provider_json_value(&raw_body)?;
-        drop(raw_body);
+        let status = response.status();
+        let payload = if !status.is_success() || super::is_json_response(&response) {
+            super::read_json_body(response, timeout).await?
+        } else {
+            Self::collect_stream(response, timeout).await?
+        };
         Self::validate_non_streaming_terminal_payload(&payload)?;
+        if !status.is_success() {
+            return Err(LLMError::Provider {
+                provider: self.provider_kind().to_string(),
+                message: format!("Ollama returned HTTP {status}"),
+            });
+        }
 
         let content = match (if chat_api {
             payload
@@ -696,6 +728,100 @@ impl LLMProvider for OllamaProvider {
 }
 
 impl OllamaProvider {
+    /// Fold Ollama's NDJSON records into the payload a non-streaming call
+    /// returns: `response` / `thinking` text and the `message` content,
+    /// thinking and tool calls accumulate; the final `done` record carries
+    /// `done_reason`, the token counts and `context`.
+    async fn collect_stream(response: reqwest::Response, timeout: Duration) -> LLMResult<Value> {
+        let mut reader = super::NdjsonReader::new(response.bytes_stream(), timeout);
+        let mut payload = serde_json::Map::new();
+        let mut message = serde_json::Map::new();
+        let mut done = false;
+        while let Some(line) = reader.next_line().await? {
+            let Value::Object(record) = parse_provider_json_value(&line)? else {
+                continue;
+            };
+            if let Some(error) = record.get("error").filter(|error| !error.is_null()) {
+                return Err(LLMError::Provider {
+                    provider: "ollama".to_owned(),
+                    message: error
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| error.to_string()),
+                });
+            }
+            let mut output = false;
+            for (key, value) in record {
+                if key == "message" {
+                    if let Value::Object(fields) = value {
+                        for (field, value) in fields {
+                            output |= Self::append_streamed(&mut message, field, value);
+                        }
+                    }
+                } else if key == "response" || key == "thinking" {
+                    output |= Self::append_streamed(&mut payload, key, value);
+                } else if !value.is_null() {
+                    if key == "done" && value.as_bool() == Some(true) {
+                        done = true;
+                    }
+                    payload.insert(key, value);
+                }
+            }
+            if output {
+                reader.mark_progress();
+            }
+            if done {
+                break;
+            }
+        }
+        if !done {
+            // Same classification as a non-terminal non-streaming payload.
+            return Err(LLMError::Transport(
+                "Ollama stream ended before its final record".to_string(),
+            ));
+        }
+        if !message.is_empty() {
+            payload.insert("message".to_owned(), Value::Object(message));
+        }
+        Ok(Value::Object(payload))
+    }
+
+    /// Append one streamed field: text concatenates, tool calls extend, any
+    /// other value replaces. Returns whether it was output.
+    fn append_streamed(
+        target: &mut serde_json::Map<String, Value>,
+        key: String,
+        value: Value,
+    ) -> bool {
+        match value {
+            Value::Null => false,
+            Value::String(fragment) => {
+                let output = !fragment.is_empty() && key != "role";
+                match target.get_mut(&key) {
+                    Some(Value::String(existing)) if key != "role" => existing.push_str(&fragment),
+                    _ => {
+                        target.insert(key, Value::String(fragment));
+                    },
+                }
+                output
+            },
+            Value::Array(items) => {
+                let output = !items.is_empty();
+                match target.get_mut(&key) {
+                    Some(Value::Array(existing)) => existing.extend(items),
+                    _ => {
+                        target.insert(key, Value::Array(items));
+                    },
+                }
+                output
+            },
+            value => {
+                target.insert(key, value);
+                false
+            },
+        }
+    }
+
     fn apply_response_format(body: &mut Value, response_format: Option<&LLMResponseFormat>) {
         let Some(response_format) = response_format else {
             return;
@@ -785,6 +911,63 @@ mod tests {
     use super::*;
     use crate::types::LLMToolSpec;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn native_effort_reaches_the_ollama_wire_as_a_named_level() {
+        use wiremock::{
+            matchers::{body_partial_json, method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .and(body_partial_json(
+                json!({"model":"gpt-oss", "think":"high"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model":"gpt-oss", "response":"answer", "done":true,
+                "prompt_eval_count":4, "eval_count":2
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let provider = OllamaProvider::with_base_url(format!("{}/api/generate", server.uri()));
+        let request = LLMRequest {
+            model: "gpt-oss".into(),
+            messages: vec![crate::types::LLMMessage::user("hello")].into(),
+            reasoning: Some(ReasoningConfig {
+                effort: Some("high".into()),
+                strategy: Some("native_effort".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        provider.invoke(request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_http_error_body_surfaces_its_own_message() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": "prompt is too long: 1001 tokens > 1000 maximum"
+            })))
+            .mount(&server)
+            .await;
+        let provider = OllamaProvider::with_base_url(format!("{}/api/chat", server.uri()));
+        let request = LLMRequest {
+            model: "m".into(),
+            messages: vec![crate::types::LLMMessage::user("hello")].into(),
+            ..Default::default()
+        };
+        match provider.invoke(request).await {
+            Err(LLMError::Provider { message, .. }) => {
+                assert_eq!(message, "prompt is too long: 1001 tokens > 1000 maximum");
+            },
+            other => panic!("expected the provider's error text, got {other:?}"),
+        }
+    }
 
     #[test]
     fn think_false_for_non_reasoning_request() {

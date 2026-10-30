@@ -95,6 +95,8 @@ mod tests {
             current_substep_title: None,
             completion_summary: None,
             completion_outcome: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             completion_artifact_names: Vec::new(),
             has_plan: false,
             latest_plan_id: None,

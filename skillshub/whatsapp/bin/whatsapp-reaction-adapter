@@ -38,14 +38,21 @@ async function importWu(relativePath) {
 
 async function main() {
   const [jid, messageId, emoji = ""] = argv.slice(2);
-  const [{ withConnection }, { loadConfig }, { getMessage, deserializeWAMessage }] =
+  const [{ withConnection }, { loadConfig }, { getMessage, deserializeWAMessage }, { daemonIpcAvailable, runAction }] =
     await Promise.all([
       importWu("dist/core/connection.js"),
       importWu("dist/config/schema.js"),
       importWu("dist/core/store.js"),
+      importWu("dist/core/ipc.js"),
     ]);
 
-  loadConfig();
+  const config = loadConfig();
+  if (await daemonIpcAvailable()) {
+    // The bot's IPC socket repairs linked-device reaction keys before dispatch.
+    await runAction("messages.react", { jid, msgId:messageId, emoji }, config);
+    process.stdout.write(JSON.stringify({ ok:true, jid, message_id:messageId, emoji }) + "\n");
+    return;
+  }
   const stored = getMessage(messageId);
   const fromMe = stored ? stored.is_from_me === 1 : false;
   let key = { remoteJid: jid, id: messageId, fromMe };

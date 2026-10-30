@@ -20,8 +20,8 @@ android {
         applicationId = "ai.magicbeans.magican"
         minSdk = 24  // Android 7.0 - required for AccessibilityService.dispatchGesture()
         targetSdk = 34
-        versionCode = 30
-        versionName = "0.6.3"
+        versionCode = 43
+        versionName = "0.6.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

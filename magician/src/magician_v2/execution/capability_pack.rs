@@ -1041,6 +1041,7 @@ fn api_capability_to_pack_definition(cap: &ApiCapability) -> CapabilityPackDefin
         auth: None,
         reliability: None,
         result_projection: None,
+        parameter_constraints: serde_json::Value::Null,
     }
 }
 
@@ -1172,6 +1173,7 @@ mod tests {
                 auth: None,
                 reliability: None,
                 result_projection: None,
+                parameter_constraints: serde_json::Value::Null,
             },
             metadata: CapabilityPackMetadata {
                 source: CapabilityPackSource::Generated,

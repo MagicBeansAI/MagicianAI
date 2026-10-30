@@ -120,7 +120,10 @@ start_container() {
         -p "127.0.0.1:${HOST_PORT_MAGICUTOR}:3003"
         --cpus "$CPU_LIMIT"
         --memory "$MEMORY_LIMIT"
-        -e MAGICIAN_ROOT_DIR=/data)
+        -e MAGICIAN_ROOT_DIR=/data
+        # Magicutor's port is loopback-bound above, so the host extension may
+        # be trusted through the container gateway.
+        -e MAGICUTOR_TRUST_GATEWAY=1)
     if [[ "$RUNTIME" == "docker" ]]; then
         args+=(--restart unless-stopped)
     fi

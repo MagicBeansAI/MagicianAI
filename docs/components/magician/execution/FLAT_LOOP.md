@@ -18,7 +18,7 @@ names; schema via `tool_search`).
 There is no loop-mode toggle. `MagicianConfig` is `#[serde(deny_unknown_fields)]`,
 so a leftover `inner_loop:` key hard-errors at load.
 
-Since decision prompt 1.3.11 / system 1.0.8 (system pin now 1.0.9), owner-input
+Since decision prompt 1.3.11 / system 1.0.8 (pins now 1.3.12 / 1.0.10), owner-input
 guidance reaches beyond visible browser challenges: investigate context and
 evidence, reuse answers, bundle material missing inputs and record reversible
 assumptions within the agreed goal. This is guidance, not input authority or
@@ -114,7 +114,9 @@ token-meter/resource-guard task locals, so it fits the default worker stack.
   `tool_search`-selectable; search is hot so a first-turn lookup does not fall
   through to `shell`/`http` scraping.
 - `conditional_hot_tools(ctx)`: `delegate_to_agent` + `get_agent_details` with
-  delegation targets; `activate_skill` with procedure skills;
+  delegation targets; `activate_skill`/`deactivate_skill` with procedure
+  skills unless denied or withheld by the delegate-only grant gate
+  (`offered_procedure_skill_tools`, shared with the prompt's skill catalog);
   `handover_to_agent` with an authorized handover target.
 - `CODING_HOT_TOOL_NAMES` (`run_coding_task`, `apply_code_proposal`,
   `run_project_checks`, `list_proposals`) are hot only when granted directly
@@ -142,6 +144,10 @@ token-meter/resource-guard task locals, so it fits the default worker stack.
   description 2; `+term` pre-filters).
 
 ### `tool_search` handler
+
+The shared chat/run discovery prompt directs agents to search the governed
+catalog before replacing a capability with scripts or shell PATH probes;
+capabilities outside their grants still require a permitted specialist.
 
 `compiled_handlers/tool_search.rs` → pure `search_response(index, query, max)`:
 `select:A,B` → full schemas; keyword → ranked matches with `how_to_load` (a
@@ -521,8 +527,9 @@ dispatch; failures keep the successful prefix without advancing the cursor.
 `classify_flat_route` uses the **per-agent scoped** `CapabilityRegistry`, so a
 miss means "not granted": it falls to the Compiled/`Unknown` arm and fails with
 `ungranted_capability_error`
-(`flat_loop/dispatch.rs`) naming tool and agent: delegate or finish; do **not**
-retry. Snapshot absence ≠ empty snapshot: a detached harness or
+(`flat_loop/dispatch.rs`) naming tool and agent: delegate, `tool_search` or
+finish; do **not** retry. It, and a pack call with no scoped provider, is an
+`ExecutionError::Refused` (warning, never retried). Snapshot absence ≠ empty snapshot: a detached harness or
 startup-registry fallback without a scoped revision keeps its owner/legacy
 catalog (no shared surface cache, no empty ceiling); a real effective-policy
 snapshot, even tool-free, is authoritative and fail-closed. Trust is checked
@@ -543,9 +550,18 @@ spawn sites reuse it.
 
 ## Keep-tail context window
 
-decide() sees the last 25 assistant/user pairs (`OUTER_VERBATIM_MAX_ITERATIONS`),
-then oldest-first eviction to `OUTER_VERBATIM_TOKEN_BUDGET` = 40,000 tokens
-(ceil(UTF-8 bytes / 2)); the newest pair is never dropped.
+decide() sees the last `agentic.verbatim_history_max_iterations` assistant/user
+pairs (default 40), then oldest-first eviction to
+`agentic.verbatim_history_token_budget` tokens (default 120,000, ceil(UTF-8
+bytes / 2)); the newest pair is never dropped. Both keys are optional, read at
+startup, and floored at 25 pairs / 40,000 tokens. `decision::verbatim_window`
+serves decide(), the Decision Engine rail and the stateless continuation
+checkpoint. `## EXECUTION HISTORY` summarizes the 10 records before the window
+(a non-pack output cut at 200 chars gets a `Result ref:` line) and lists every
+older record in an index, oldest first: iteration, tool, key argument (≤ 120
+chars), outcome and result ref for `read_result`. The index keeps the newest 60
+lines / 12,000 bytes, sits after the summary's 60,000-byte bound and is
+suppressed under an app disclosure guard.
 `history.live_messages` is append-only and round-trips resume unchanged;
 `last_response_id` clears only when the sent prefix changed. There is no second
 model; the unused `op-agentic-ledger-compaction-local` profile must not be
@@ -559,6 +575,13 @@ unrelated.
 Removed; do not revive on the active-task path. `llm-router.yaml` still maps
 `agentic_ledger_compaction`, but nothing dispatches it. Historical
 design.
+
+## Large file reads
+
+`read_file` (`document_spans_v1`, excerpt `/content`) returns a file over
+`max_scalar_bytes` (8,192 for autonomous tasks) as a head excerpt plus
+`full_result_ref`; byte `offset` / `limit` (UTF-8 aligned) return a slice with
+`total_bytes` and `next_offset`. `read_result` cannot page 8–64 KB strings.
 
 ## In-turn parallel reads
 

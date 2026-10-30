@@ -18,9 +18,12 @@ Each platform is a supervised per-scope daemon over `@magician/bot-sdk`
 - `@magician/bot-telegram` — official Telegram bot (Telegraf)
 - `@magician/bot-telegram-self` — Telegram user-bot (tgcli)
 - `@magician/bot-whatsapp` — consumer-account bridge with QR pairing and local reads
-- `@magician/bot-kapso` — public WhatsApp number-webhook bridge. Requires
-  `KAPSO_WEBHOOK_SECRET` and authenticates `X-Webhook-Signature` against the
-  exact raw body before parsing or dispatching an inbound message
+- `@magician/bot-kapso` — public WhatsApp number-webhook bridge. On start it
+  registers `https://${MAGICIAN_WEBHOOK_HOST}/webhook` (or `KAPSO_WEBHOOK_URL`)
+  on the number (active, unbuffered), deactivates other Magician machines'
+  `/webhook` hooks for that number, and verifies `X-Webhook-Signature` over the
+  exact raw body with that registration's secret (`KAPSO_WEBHOOK_SECRET` only
+  without a webhook host, or as the fallback when Kapso is unreachable)
 - `@magician/bot-gmail` — Gmail via `gws` OAuth, multi-account
 - `@magician/bot-agentmail` — AgentMail inbound webhook
 

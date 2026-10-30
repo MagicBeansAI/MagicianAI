@@ -15,6 +15,18 @@ dated, version-stamped heading when a release is published.
 
 ## [Unreleased]
 
+## [0.7.148] - 2026-10-30
+
+- **Chats that last:** Long chats fold older turns into a running summary and can search their full history. `/engine`, `/run-engine` and `/voice-mode` pick engine, model and thinking on web, iOS and Android. Archiving or deleting a thread changes every session on it, and new chats on iOS open on the welcome screen.
+- **Today:** Reading Room cards get an Act menu (reply, open, start a follow-up task with an instruction, snooze, details) on web, iOS and Android. Cards show timestamps and clearer sources, swipe decks page and count reliably, and each section loads on its own, progressively on mobile.
+- **Goals and programs:** Magican sets up private goal workspaces itself, one folder per main goal. A workspace is open only to its listed members and a private goal only to its owner, whatever route an agent takes. The Goals screen lists done and dropped goals only under Closed, and a goal can link a Playbook. Program documents are editable in Work → Programs, with every save restorable, and agents propose revisions to shared documents that show their reason and changed lines until you approve.
+- **Agents and runs:** Answer an agent's question by typing in chat; cancelled questions leave Needs you. Steps appear while they run, long runs keep and can reach what they read, and answers reflect everything a paused run did. A run always ends with an answer and says what blocked it. Agents propose an independent review for work that leaves the house or is hard to undo, read-only folders stay unchangeable, and deleted agents stay deleted.
+- **Memory:** Reviews now take effect, finish quickly after a restart and no longer time out. Repeated and differently spelled memories are stored once, agents recall short summaries instead of raw instructions, and the owner's memory file is bounded by archiving rather than deleting (observe mode until switched on).
+- **Coding and browser:** Coding CLIs (Claude Code, Codex, Grok, Antigravity, Pi 1.3.0) use your own sign-in first and ask before using Magician's API key. VibeDev works in your original folder with exact-diff approval and needs no git. Browser runs name their tab group after the task and use agent-browser 0.41, and deep research runs for up to 35 minutes.
+- **Commerce and inspection:** Installation-owned commerce MCP profiles, Scenes checkout, owner identity claims, automatic bot webhook setup and evidence-preserving answers. Magican delegates runtime checks to Atlas, and God mode HTTP and file searches offer scoped approvals.
+- **Models and speed:** Claude Haiku 5.5 and GPT-6.1 Terra join the pickers, which follow what each provider offers now. Whole-call tool constraints no longer break Anthropic chats, `/llm` analytics load faster, attention asks land in the lane of what they need, and every Attention item carries the exact call to answer it.
+- **Build:** Rust is pinned to 1.95.0 for every target.
+
 ## [0.7.109] - 2026-10-16
 
 - **Work and coding runs:** Follow live work from the desktop notch and phones; runs and paused approvals survive restarts. Cost, time and attempt limits pause for an owner-approved allowance; tracked sends, calendar effects and replies feed follow-through.

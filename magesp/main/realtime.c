@@ -109,6 +109,7 @@ static void auth_headers(esp_http_client_handle_t cl)
         char bearer[112];
         snprintf(bearer, sizeof bearer, "Bearer %s", net_device_token());
         esp_http_client_set_header(cl, "X-Magician-Device-Id", net_device_id());
+        esp_http_client_set_header(cl, "X-Magician-App-Version", net_app_version());
         esp_http_client_set_header(cl, "Authorization", bearer);
     }
 }
@@ -406,8 +407,9 @@ static void spike_task(void *arg)
                       net_cf_id(), net_cf_secret());
     if (net_has_device_token())
         h += snprintf(hdrs + h, sizeof hdrs - h,
-                      "X-Magician-Device-Id: %s\r\nAuthorization: Bearer %s\r\n",
-                      net_device_id(), net_device_token());
+                      "X-Magician-Device-Id: %s\r\nAuthorization: Bearer %s\r\n"
+                      "X-Magician-App-Version: %s\r\n",
+                      net_device_id(), net_device_token(), net_app_version());
 
     const esp_websocket_client_config_t cfg = {
         .uri = url,
@@ -517,8 +519,9 @@ static void control_url(char *url, size_t ucap, char *hdrs, size_t hcap)
                       net_cf_id(), net_cf_secret());
     if (net_has_device_token())
         h += snprintf(hdrs + h, hcap - h,
-                      "X-Magician-Device-Id: %s\r\nAuthorization: Bearer %s\r\n",
-                      net_device_id(), net_device_token());
+                      "X-Magician-Device-Id: %s\r\nAuthorization: Bearer %s\r\n"
+                      "X-Magician-App-Version: %s\r\n",
+                      net_device_id(), net_device_token(), net_app_version());
 }
 
 static esp_websocket_client_handle_t open_control_ws(void)

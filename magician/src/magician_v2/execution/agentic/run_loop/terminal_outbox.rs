@@ -691,7 +691,23 @@ async fn project_claimed_terminal(
             }
             return;
         }
-        cursor.mark_runtime_terminal_settled(watermark);
+        if acceptance
+            == crate::magician_v2::artifact_v2::service::TerminalLoopSettlementAcceptance::DeferredToRefinementSuccessor
+        {
+            // The run continues in its refinement pass. Publish this ending's
+            // events (the in-process arm always did, before the pass ran) but
+            // leave the runtime-settlement mark below the watermark: the debt
+            // stays durable until the refinement commits its own receipt or
+            // stops without one, and a later pass decides which settles.
+            tracing::debug!(
+                execution = %key,
+                watermark,
+                "[LOOP_OUTBOX] first-pass terminal deferred to its running refinement pass"
+            );
+            drop(terminal_settlement_lifecycle_exclusion.take());
+        } else {
+            cursor.mark_runtime_terminal_settled(watermark);
+        }
         if !pause_publication_required {
             // Ordinary and pipeline finals need the fence only through their
             // canonical Artifact/runtime acceptance. Once that durable

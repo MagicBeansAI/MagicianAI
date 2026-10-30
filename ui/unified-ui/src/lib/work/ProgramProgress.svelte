@@ -18,7 +18,7 @@
  }
  function readable(value: unknown): string { return typeof value === 'string' ? value : JSON.stringify(value); }
 </script>
-<article class="program-progress" aria-label={`${member.name} program progress`}>
+<article class="program-progress" aria-label={`${member.name} playbook progress`}>
  <h3><a href={workAgentHref(member.id,$page.url)}>{member.name} →</a></h3>
  <p class="muted">Responsible member{member.version !== null ? ` · definition v${member.version}` : ''}</p>
  <ul aria-label="Configured direction">

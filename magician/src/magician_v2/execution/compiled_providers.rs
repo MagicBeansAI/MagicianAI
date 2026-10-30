@@ -54,6 +54,18 @@ use crate::magician_v2::secrets::{SecretBroker, SecretRuntimeCapabilities};
 use crate::magician_v2::strategy::plan::PlanStep;
 use crate::magician_v2::subprocess_owners;
 
+/// Runtime-owned dispatch context is not part of a tool's public schema.
+/// Keep it available to authorization/dispatch, but out of typed invocations.
+fn public_tool_params(params: &HashMap<String, Value>) -> Value {
+    Value::Object(
+        params
+            .iter()
+            .filter(|(key, _)| !key.starts_with("__"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+}
+
 /// One row per compiled-provider name. `deferred = true` means the
 /// provider's backing instance is wired late — after
 /// `ScopedCapabilityResolver::set_agent_resources(...)` +
@@ -114,6 +126,7 @@ const COMPILED_PROVIDERS: &[(&str, bool)] = &[
     ("publish_task_to_note", true),
     ("update_monitor", true),
     ("propose_program_missions", true),
+    ("propose_program_revision", true),
     ("propose_relentless", true),
     ("review_program_missions", true),
     ("deactivate_skill", true),
@@ -614,6 +627,12 @@ pub fn default_compiled_handler_registry() -> CompiledHandlerRegistry {
         "propose_program_missions",
         crate::compiled_handler!(
             crate::magician_v2::execution::compiled_handlers::propose_program_missions::handle
+        ),
+    );
+    registry.register(
+        "propose_program_revision",
+        crate::compiled_handler!(
+            crate::magician_v2::execution::compiled_handlers::propose_program_revision::handle
         ),
     );
     registry.register(
@@ -1151,7 +1170,7 @@ impl CapabilityProvider for FileCapabilityProvider {
                     crate::magician_v2::execution::compiled_dispatch::current_session_file_sandbox_roots()
                 {
                     if let Ok(guard) = roots.lock() {
-                        sandbox.allowed_roots.extend(guard.iter().cloned());
+                        sandbox.extra_writable_roots.extend(guard.iter().cloned());
                     }
                 }
                 timeout(duration, execute_file_action(file_action, &sandbox))
@@ -1500,10 +1519,36 @@ impl CapabilityProvider for DuckDbCapabilityProvider {
                 // Run the complete guarded operation on the blocking pool. The
                 // native executor includes guard wait time in the deadline and
                 // retains the guard until DuckDB observes any interrupt and exits.
+                // The blocking pool runs outside this task: carry the acting
+                // agent and task folder in, which the goal workspace fence
+                // reads (`native_executors::restrict_duckdb_file_access`).
+                let acting = super::native_executors::ACTING_AGENT
+                    .try_with(Clone::clone)
+                    .ok();
+                let task_root = super::native_executors::TASK_SHELL_ROOT
+                    .try_with(Clone::clone)
+                    .ok();
+                // DuckDB reads whatever its box leaves it: the run's evidence
+                // is fenced like that content (`record_possible_reads`).
+                super::goal_workspace_access::record_possible_reads();
                 let result = tokio::task::spawn_blocking(move || {
-                    super::native_executors::execute_duckdb_action_with_timeout(
-                        &action, &session, duration,
-                    )
+                    let run = || {
+                        super::native_executors::execute_duckdb_action_with_timeout(
+                            &action, &session, duration,
+                        )
+                    };
+                    let rooted = || match task_root {
+                        Some(root) => {
+                            super::native_executors::TASK_SHELL_ROOT.sync_scope(root, run)
+                        },
+                        None => run(),
+                    };
+                    match acting {
+                        Some(agent) => {
+                            super::native_executors::ACTING_AGENT.sync_scope(agent, rooted)
+                        },
+                        None => rooted(),
+                    }
                 })
                 .await;
 
@@ -1708,13 +1753,10 @@ impl CapabilityProvider for TimeMathCapabilityProvider {
             },
         };
 
-        let invocation: TimeMathInvocation = serde_json::from_value(serde_json::Value::Object(
-            resolved_params
-                .clone()
-                .into_iter()
-                .collect::<serde_json::Map<String, serde_json::Value>>(),
-        ))
-        .map_err(|err| ExecutionError::Step(format!("invalid time_math params: {}", err)))?;
+        let invocation: TimeMathInvocation =
+            serde_json::from_value(public_tool_params(resolved_params)).map_err(|err| {
+                ExecutionError::Step(format!("invalid time_math params: {}", err))
+            })?;
 
         let output = execute_time_math(invocation)?;
         Ok(ActionResult::text(output))
@@ -2278,13 +2320,9 @@ impl CapabilityProvider for MeetingCapabilityProvider {
             },
         };
 
-        let invocation: MeetingInvocation = serde_json::from_value(serde_json::Value::Object(
-            resolved_params
-                .clone()
-                .into_iter()
-                .collect::<serde_json::Map<String, serde_json::Value>>(),
-        ))
-        .map_err(|err| ExecutionError::Step(format!("invalid meeting params: {}", err)))?;
+        let invocation: MeetingInvocation =
+            serde_json::from_value(public_tool_params(resolved_params))
+                .map_err(|err| ExecutionError::Step(format!("invalid meeting params: {}", err)))?;
 
         let manager = meeting_manager();
         let out = match invocation.action.trim().to_ascii_lowercase().as_str() {
@@ -2416,9 +2454,7 @@ fn execute_time_math_now(invocation: TimeMathInvocation) -> Result<String, Execu
 }
 
 fn prove_time_math_args(parameters: &HashMap<String, serde_json::Value>) -> bool {
-    let Ok(value) = serde_json::to_value(parameters) else {
-        return false;
-    };
+    let value = public_tool_params(parameters);
     let Ok(invocation) = serde_json::from_value::<TimeMathInvocation>(value) else {
         return false;
     };
@@ -2433,18 +2469,19 @@ fn prove_time_math_args(parameters: &HashMap<String, serde_json::Value>) -> bool
     match operation.as_str() {
         "date_range"
             if parameters.keys().all(|key| {
-                matches!(
-                    key.as_str(),
-                    "operation" | "start_date" | "end_date" | "timezone" | "end_inclusive"
-                )
+                key.starts_with("__")
+                    || matches!(
+                        key.as_str(),
+                        "operation" | "start_date" | "end_date" | "timezone" | "end_inclusive"
+                    )
             }) =>
         {
             execute_time_math_date_range(invocation).is_ok()
         },
         "now"
-            if parameters
-                .keys()
-                .all(|key| matches!(key.as_str(), "operation" | "timezone")) =>
+            if parameters.keys().all(|key| {
+                key.starts_with("__") || matches!(key.as_str(), "operation" | "timezone")
+            }) =>
         {
             parse_time_math_timezone(invocation.timezone.as_deref()).is_ok()
         },
@@ -2830,15 +2867,10 @@ impl CapabilityProvider for AnalyzeImageViaOpenAiCapabilityProvider {
             },
         };
 
-        let invocation: AnalyzeImageViaOpenAiInvocation = serde_json::from_value(Value::Object(
-            resolved_params
-                .clone()
-                .into_iter()
-                .collect::<serde_json::Map<String, Value>>(),
-        ))
-        .map_err(|err| {
-            ExecutionError::Step(format!("invalid analyze_image_via_openai params: {}", err))
-        })?;
+        let invocation: AnalyzeImageViaOpenAiInvocation =
+            serde_json::from_value(public_tool_params(resolved_params)).map_err(|err| {
+                ExecutionError::Step(format!("invalid analyze_image_via_openai params: {}", err))
+            })?;
 
         let output = self.execute_analyze_image_via_openai(invocation).await?;
         Ok(ActionResult::text(output))
@@ -2901,7 +2933,7 @@ impl AnalyzeImageViaOpenAiCapabilityProvider {
         {
             if let Ok(guard) = roots.lock() {
                 effective_sandbox
-                    .allowed_roots
+                    .extra_writable_roots
                     .extend(guard.iter().cloned());
             }
         }
@@ -3221,13 +3253,9 @@ impl CapabilityProvider for ImessageCapabilityProvider {
             },
         };
 
-        let invocation: ImessageInvocation = serde_json::from_value(serde_json::Value::Object(
-            resolved_params
-                .clone()
-                .into_iter()
-                .collect::<serde_json::Map<String, serde_json::Value>>(),
-        ))
-        .map_err(|err| ExecutionError::Step(format!("invalid imessage params: {}", err)))?;
+        let invocation: ImessageInvocation =
+            serde_json::from_value(public_tool_params(resolved_params))
+                .map_err(|err| ExecutionError::Step(format!("invalid imessage params: {}", err)))?;
 
         let sql = normalize_imessage_sql_for_sqlite(&invocation.sql);
         validate_imessage_sql(&sql)?;
@@ -3592,6 +3620,17 @@ fn first_sql_keyword(sql: &str) -> Option<String> {
 // Shell
 // ============================================================================
 
+/// Boot hook for task-owned background shell jobs: install the durable
+/// execution lookup that tells a run's pause (jobs keep running) from its
+/// terminal end (jobs are cancelled), then re-adopt the jobs a previous
+/// Magician process left running.
+pub fn start_shell_job_runtime(store: Arc<dyn crate::magician_v2::storage::V2ConversationStore>) {
+    super::shell_jobs::install_owner_store(store);
+    tokio::spawn(super::shell_jobs::adopt_recorded(
+        crate::magician_v2::process_storage::workspace(),
+    ));
+}
+
 pub struct ShellCapabilityProvider {
     sandbox: ShellSandboxConfig,
     pack_def: Option<CapabilityPackDefinition>,
@@ -3652,6 +3691,46 @@ impl ShellCapabilityProvider {
         timeout_secs: u64,
     ) -> Result<ActionResult, ExecutionError> {
         match action {
+            ExecutableAction::Pack {
+                capability_name,
+                resolved_params,
+                ..
+            } if capability_name == "shell" => {
+                let operation = super::shell_jobs::action_name(resolved_params);
+                if operation == "status" || operation == "cancel" {
+                    return super::shell_jobs::inspect(resolved_params, operation == "cancel")
+                        .await;
+                }
+                let step = PlanStep {
+                    parameters: resolved_params.clone(),
+                    timeout_override_secs: Some(timeout_secs),
+                    ..PlanStep::default()
+                };
+                let ExecutableAction::Bash(action) = lowering::lower_bash_action(&step)? else {
+                    return Err(ExecutionError::AgentActionable(
+                        "Expected shell command".to_string(),
+                    ));
+                };
+                if let Err(error) = self.raw_shell.guard().check(&action.command) {
+                    if !crate::magician_v2::god_mode::active() {
+                        return Err(ExecutionError::Step(error.to_string()));
+                    }
+                }
+                let action = self.confine_cwd(&action);
+                let (action, command) =
+                    super::native_executors::prepare_managed_shell(&action, &self.sandbox).await?;
+                let deadline = if resolved_params
+                    .get("__shell_job_uses_run_timeout")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    crate::config::shell_job_max_duration()
+                        .map(|duration| duration.as_secs().max(1))
+                } else {
+                    Some(timeout_secs)
+                };
+                super::shell_jobs::start(&action, command, deadline).await
+            },
             ExecutableAction::Bash(bash_action) => {
                 // CommandGuard check: block dangerous command patterns and protected paths.
                 // In god mode the same fragments reach `execute_bash_action`,
@@ -3674,42 +3753,30 @@ impl ShellCapabilityProvider {
                 // General (non-coding) flows are byte-equivalent — they keep
                 // inheriting the process CWD (in-repo make/cargo/npm depend on it),
                 // and `search`/`delegation_shell` are separate providers, untouched.
-                let confined_cwd_action = if bash_action.working_dir.is_none()
-                    && crate::magician_v2::execution::coding_engine::coding_context_active()
-                {
-                    self.scope_paths.as_ref().map(|paths| {
-                        let workdir = paths.workdirs_root.clone();
-                        if let Err(e) = std::fs::create_dir_all(&workdir) {
-                            warn!(
-                                "[SHELL] failed to create scope workdir '{}' for coding-run CWD \
-                                 confinement: {}",
-                                workdir.display(),
-                                e
-                            );
-                        }
-                        let mut confined = bash_action.clone();
-                        confined.working_dir = Some(workdir);
-                        confined
-                    })
-                } else {
-                    None
-                };
-                let bash_action = confined_cwd_action.as_ref().unwrap_or(bash_action);
-
-                let duration = std::time::Duration::from_secs(timeout_secs);
-                timeout(
-                    duration,
-                    execute_bash_action(bash_action, &self.sandbox, None, None),
-                )
-                .await
-                .map_err(|_| {
-                    ExecutionError::Step(format!("Shell action timed out after {}s", timeout_secs))
-                })?
+                let mut bash_action = self.confine_cwd(bash_action);
+                bash_action.timeout_secs = bash_action.timeout_secs.or(Some(timeout_secs));
+                // The native executor starts the deadline after authorization.
+                // A second provider timer would also time out the owner's approval.
+                execute_bash_action(&bash_action, &self.sandbox, None, None).await
             },
             _ => Err(ExecutionError::Step(
                 "ShellCapabilityProvider received non-bash action".to_string(),
             )),
         }
+    }
+
+    fn confine_cwd(&self, action: &super::actions::BashAction) -> super::actions::BashAction {
+        let mut action = action.clone();
+        if action.working_dir.is_none() && super::coding_engine::coding_context_active() {
+            if let Some(paths) = self.scope_paths.as_ref() {
+                let workdir = paths.workdirs_root.clone();
+                if let Err(error) = std::fs::create_dir_all(&workdir) {
+                    warn!(path = %workdir.display(), %error, "failed to create scope shell workdir");
+                }
+                action.working_dir = Some(workdir);
+            }
+        }
+        action
     }
 
     /// Run a shell command for auth lifecycle (check / setup / reauth).
@@ -3845,8 +3912,48 @@ impl CapabilityProvider for ShellCapabilityProvider {
     }
 
     fn lower(&self, step: &PlanStep) -> Result<MaybeGatedAction, ExecutionError> {
+        let operation = super::shell_jobs::action_name(&step.parameters);
+        if !matches!(operation, "run" | "status" | "cancel") {
+            return Err(ExecutionError::AgentActionable(
+                "shell action must be run, status or cancel".to_string(),
+            ));
+        }
+        if operation == "run"
+            && step
+                .parameters
+                .get("command")
+                .and_then(Value::as_str)
+                .is_none_or(|command| command.trim().is_empty())
+        {
+            return Err(ExecutionError::AgentActionable(
+                "shell action=run requires a non-empty command".to_string(),
+            ));
+        }
+        let managed = super::shell_jobs::is_background(&step.parameters) || operation != "run";
+        let use_run_timeout = !step.parameters.contains_key("timeout_secs")
+            && !step.parameters.contains_key("timeout")
+            || step
+                .parameters
+                .get(PACK_DEFAULT_TIMEOUT_MARKER)
+                .and_then(Value::as_bool)
+                == Some(true);
         let step = resolve_step_params(&self.pack_def, step)?;
-        let action = lowering::lower_bash_action(&step)?;
+        let action = if managed {
+            let mut params = step.parameters.clone();
+            params.insert(
+                "__shell_job_uses_run_timeout".to_string(),
+                Value::Bool(use_run_timeout),
+            );
+            ExecutableAction::Pack {
+                capability_name: "shell".to_string(),
+                implementation: ImplementationType::Compiled {
+                    provider_name: "shell".to_string(),
+                },
+                resolved_params: params,
+            }
+        } else {
+            lowering::lower_bash_action(&step)?
+        };
         Ok(super::pack_provider::maybe_wrap_with_spend_gate(
             action,
             self.pack_def.as_ref(),
@@ -4104,7 +4211,7 @@ impl CapabilityProvider for DelegationShellProvider {
 // ============================================================================
 
 /// File provider for external file access.
-/// Auto-expands allowed_roots with the file's nearest existing directory ancestor.
+/// Auto-expands the run-time writable roots (`extra_writable_roots`) with the file's nearest existing directory ancestor.
 pub struct DelegationFilesProvider {
     base_sandbox: FileSandboxConfig,
 }
@@ -4165,7 +4272,7 @@ impl CapabilityProvider for DelegationFilesProvider {
             ExecutableAction::File(file_action) => {
                 let mut sandbox = self.base_sandbox.clone();
 
-                // Expand allowed_roots with each file's nearest existing directory ancestor.
+                // Expand the run-time writable roots with each file's nearest existing directory ancestor.
                 for path in Self::extract_paths(file_action) {
                     let mut ancestor = path.to_path_buf();
                     // Walk up until we find an existing DIRECTORY
@@ -4174,10 +4281,20 @@ impl CapabilityProvider for DelegationFilesProvider {
                             break;
                         }
                     }
-                    if ancestor.is_dir() {
+                    // A folder a read-only root governs needs no delegation
+                    // grant: that root already admits reads, and a write
+                    // there gets the read-only refusal, not "ask the owner".
+                    let read_only = super::native_executors::read_only_root_refusal(
+                        &ancestor,
+                        &self.base_sandbox,
+                    )
+                    .is_some();
+                    if ancestor.is_dir() && !read_only {
                         validate_delegation_path(&ancestor)?;
+                        // A run-time root, so it never outranks a read-only
+                        // root (a folder under `programs/` stays read-only).
                         sandbox
-                            .allowed_roots
+                            .extra_writable_roots
                             .push(ancestor.to_string_lossy().to_string());
                     }
                 }
@@ -4358,12 +4475,8 @@ async fn execute_vector_action(
     raw: &std::collections::HashMap<String, serde_json::Value>,
     vector_root: &Path,
 ) -> Result<ActionResult, ExecutionError> {
-    let params: VectorActionParams = serde_json::from_value(serde_json::Value::Object(
-        raw.clone()
-            .into_iter()
-            .collect::<serde_json::Map<String, serde_json::Value>>(),
-    ))
-    .map_err(|e| ExecutionError::Step(format!("invalid vector params: {e}")))?;
+    let params: VectorActionParams = serde_json::from_value(public_tool_params(raw))
+        .map_err(|e| ExecutionError::Step(format!("invalid vector params: {e}")))?;
 
     // Defense-in-depth: re-check Ollama availability at execute time. The
     // catalog filter normally hides this tool when Ollama is down, but the
@@ -4707,12 +4820,8 @@ struct PoolEntry {
 async fn execute_catchup_merge(
     raw: &HashMap<String, serde_json::Value>,
 ) -> Result<ActionResult, ExecutionError> {
-    let params: CatchupMergeParams = serde_json::from_value(serde_json::Value::Object(
-        raw.clone()
-            .into_iter()
-            .collect::<serde_json::Map<String, serde_json::Value>>(),
-    ))
-    .map_err(|e| ExecutionError::Step(format!("invalid catchup_merge params: {e}")))?;
+    let params: CatchupMergeParams = serde_json::from_value(public_tool_params(raw))
+        .map_err(|e| ExecutionError::Step(format!("invalid catchup_merge params: {e}")))?;
 
     let started = std::time::Instant::now();
     let do_cluster = match params.cluster.as_ref() {
@@ -6847,6 +6956,10 @@ fn embedded_compiled_pack_source_table() -> &'static [(&'static str, &'static st
             include_str!("embedded_pack_defs/propose_program_missions.yaml"),
         ),
         (
+            "propose_program_revision",
+            include_str!("embedded_pack_defs/propose_program_revision.yaml"),
+        ),
+        (
             "review_program_missions",
             include_str!("embedded_pack_defs/review_program_missions.yaml"),
         ),
@@ -7338,7 +7451,30 @@ pub fn project_runtime_package_to_pack(
     let validated = validate_skill_runtime_contract(&package.contract)
         .map_err(|error| format!("runtime contract validation failed: {error}"))?;
     if matches!(&package.contract.runtime, RuntimeProtocol::Mcp { .. }) {
-        return project_mcp_runtime_package_to_pack(skill_id, description, guide, package, spend);
+        let source = crate::magician_v2::skills::embedded_extensions::read_bounded_skill_markdown(
+            &resolved_skill_dir.join("SKILL.md"),
+        )
+        .map_err(|_| "governed MCP skill source is unavailable or invalid".to_owned())?;
+        let bindings = tool_runtime_core::manifest_parser::parse_skill_magician_extension(
+            &source,
+            "mcp_bindings",
+        )
+        .map_err(|error| format!("invalid MCP policy bindings: {error}"))?;
+        let oauth_callback_mode =
+            crate::magician_v2::mcp_oauth_binding::mcp_oauth_callback_mode(&source, &package)
+                .map_err(|error| error.message().to_owned())?;
+        let runtime = super::capability::GovernedRuntimeImplementation {
+            mcp_bindings: bindings,
+            oauth_callback_mode,
+            package,
+            actions: None,
+            executable_directory: resolved_skill_dir
+                .join("bin")
+                .is_dir()
+                .then(|| resolved_skill_dir.join("bin")),
+            legacy_secret_environment: None,
+        };
+        return project_mcp_runtime_package_to_pack(skill_id, description, guide, runtime, spend);
     }
     let projected_profile = package.projected_profile_parameter().map(|parameter| {
         (
@@ -7664,6 +7800,8 @@ pub fn project_runtime_package_to_pack(
         parameters: pack_parameters,
         implementation: ImplementationType::Primitive {
             runtime_package: Some(Arc::new(super::capability::GovernedRuntimeImplementation {
+                oauth_callback_mode: None,
+                mcp_bindings: None,
                 package: package.clone(),
                 actions: Some(compiled.clone()),
                 executable_directory,
@@ -7694,6 +7832,7 @@ pub fn project_runtime_package_to_pack(
         auth,
         reliability: None,
         result_projection: None,
+        parameter_constraints: serde_json::Value::Null,
     })
 }
 
@@ -7709,10 +7848,14 @@ fn project_mcp_runtime_package_to_pack(
     skill_id: &str,
     description: &str,
     guide: Option<String>,
-    package: SkillRuntimePackage,
+    runtime: super::capability::GovernedRuntimeImplementation,
     spend: Option<SpendDeclaration>,
 ) -> Result<CapabilityPackDefinition, String> {
-    let projected = project_mcp_catalog(&package)?;
+    if let Some(bindings) = &runtime.mcp_bindings {
+        bindings.validate()?;
+    }
+    let package = &runtime.package;
+    let projected = project_mcp_catalog(package)?;
     let timeout_secs = projected.timeout_secs;
     let native_action_schemas = projected
         .actions
@@ -7732,7 +7875,26 @@ fn project_mcp_runtime_package_to_pack(
             let parameter_overrides = action
                 .parameters
                 .into_iter()
-                .map(|parameter| (parameter.name, parameter.schema))
+                .map(|parameter| {
+                    let mut schema = parameter.schema;
+                    // MCP discovery returns each tool under `name`; the shared
+                    // invocation contract consumes that identifier as tool_name.
+                    if let Some(fields) = schema
+                        .as_object_mut()
+                        .filter(|_| parameter.name == "tool_name")
+                    {
+                        let aliases = fields
+                            .entry("x-magician-grounding-aliases")
+                            .or_insert_with(|| json!([]));
+                        if let Some(aliases) = aliases
+                            .as_array_mut()
+                            .filter(|aliases| !aliases.contains(&json!("name")))
+                        {
+                            aliases.push(json!("name"));
+                        }
+                    }
+                    (parameter.name, schema)
+                })
                 .collect::<HashMap<_, _>>();
             (
                 name,
@@ -7787,12 +7949,7 @@ fn project_mcp_runtime_package_to_pack(
         native_action_schemas,
         parameters: pack_parameters,
         implementation: ImplementationType::Primitive {
-            runtime_package: Some(Arc::new(super::capability::GovernedRuntimeImplementation {
-                package,
-                actions: None,
-                executable_directory: None,
-                legacy_secret_environment: None,
-            })),
+            runtime_package: Some(Arc::new(runtime)),
             provider_name: None,
             intent_description: None,
             command: None,
@@ -7815,6 +7972,7 @@ fn project_mcp_runtime_package_to_pack(
         auth,
         reliability: None,
         result_projection: None,
+        parameter_constraints: serde_json::Value::Null,
     })
 }
 
@@ -8131,7 +8289,7 @@ pub struct SkillLoadFailure {
 
 /// What a skills directory loaded: the packs, the skills (by directory
 /// name) that produced at least one, and every skill that failed.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SkillsDirLoad {
     pub packs: Vec<CapabilityPackDefinition>,
     pub loaded_skills: Vec<String>,
@@ -8142,7 +8300,263 @@ pub fn load_pack_defs_from_skills_dir(skills_dir: &Path) -> Vec<CapabilityPackDe
     load_skills_dir(skills_dir).packs
 }
 
+/// Load a skills directory, parsed once per source fingerprint.
+///
+/// Every scoped capability build (a cold scope, a background revision
+/// candidate, each admitted invocation's isolated resolver) used to re-read
+/// and re-parse every skill in the scope and extra roots — tenths of a second
+/// of synchronous CPU per build. The parsed result is now served from a
+/// process-wide cache keyed by the directory and validated on every call
+/// against a fingerprint of everything the loader reads (see
+/// `skills_dir_fingerprint`): an added, edited, removed or retargeted
+/// skill file rebuilds on the very next call. Canonical skill mutations also
+/// drop the entry eagerly ([`invalidate_skills_dir_cache`],
+/// [`clear_skills_dir_cache`]).
 pub fn load_skills_dir(skills_dir: &Path) -> SkillsDirLoad {
+    skills_dir_load_cache().load(skills_dir)
+}
+
+/// Drop one skills directory's parsed catalog so the next load re-parses
+/// it. Returns whether anything was cached.
+pub fn invalidate_skills_dir_cache(skills_dir: &Path) -> bool {
+    skills_dir_load_cache().invalidate(skills_dir)
+}
+
+/// Drop every cached skills-directory catalog. Returns how many were cached.
+pub fn clear_skills_dir_cache() -> usize {
+    skills_dir_load_cache().clear()
+}
+
+/// How many times this process parsed `skills_dir` (cache misses).
+pub fn skills_dir_parse_count(skills_dir: &Path) -> u64 {
+    skills_dir_load_cache().parse_count(skills_dir)
+}
+
+/// Bound on cached directories (scope roots plus extra roots). Past it the
+/// cache starts over rather than tracking recency.
+const SKILLS_DIR_CACHE_MAX_ENTRIES: usize = 256;
+
+/// What the loader can observe of one contract file (`SKILL.md` or
+/// `tool_schema.yaml`): whether the entry exists without following links
+/// (discovery claims a name on a dangling `SKILL.md`), where a symlink
+/// points, the environment-rewritten path the loader reads, and that file's
+/// size and content digest. Content, not modification time: reading and
+/// hashing the contracts is cheap next to parsing them, an edit within one
+/// timestamp tick is still seen, and a `touch` does not re-parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillContractFingerprint {
+    present: bool,
+    link_target: Option<PathBuf>,
+    resolved: PathBuf,
+    is_file: bool,
+    content: Option<(u64, blake3::Hash)>,
+}
+
+impl SkillContractFingerprint {
+    /// `None` when the file exists but cannot be read: an unreadable source
+    /// is never answered from memory.
+    fn of(path: &Path) -> Option<Self> {
+        let unfollowed = std::fs::symlink_metadata(path).ok();
+        let link_target = unfollowed
+            .as_ref()
+            .filter(|metadata| metadata.file_type().is_symlink())
+            .and_then(|_| std::fs::read_link(path).ok());
+        let resolved = crate::magician_v2::skills::path_rewrite::resolve_skill_path(path);
+        let is_file = std::fs::metadata(&resolved).is_ok_and(|meta| meta.is_file());
+        let content = if is_file {
+            let bytes = std::fs::read(&resolved).ok()?;
+            Some((bytes.len() as u64, blake3::hash(&bytes)))
+        } else {
+            None
+        };
+        Some(Self {
+            present: unfollowed.is_some(),
+            link_target,
+            resolved,
+            is_file,
+            content,
+        })
+    }
+
+    fn is_absent(&self) -> bool {
+        !self.present && !self.is_file
+    }
+}
+
+/// Every input [`load_skills_dir_uncached`] reads for one skill directory.
+/// Beside the two contract files, a governed package's projection depends
+/// on whether `bin/` (beside the resolved `SKILL.md`) is a directory and
+/// whether `config/.env` is a file; their contents are not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillDirFingerprint {
+    name: std::ffi::OsString,
+    /// A real directory, not a symlink to one: discovery (manifests) skips
+    /// symlinked skill directories while the pack walk follows them.
+    real_dir: bool,
+    skill_md: SkillContractFingerprint,
+    tool_schema: SkillContractFingerprint,
+    bin_dir: bool,
+    legacy_env_file: bool,
+}
+
+/// The source fingerprint of one skills directory: the skill directories it
+/// lists (so additions and removals are seen), each one's inputs, and the
+/// environment that rewrites skill paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillsDirFingerprint {
+    skillshub_root_env: Option<std::ffi::OsString>,
+    skills: Vec<SkillDirFingerprint>,
+}
+
+/// Fingerprint everything [`load_skills_dir_uncached`] reads under
+/// `skills_dir`, or `None` when the listing cannot be read completely — an
+/// unreadable source is never answered from memory.
+fn skills_dir_fingerprint(skills_dir: &Path) -> Option<SkillsDirFingerprint> {
+    let entries = std::fs::read_dir(skills_dir).ok()?;
+    let mut skills = Vec::new();
+    for entry in entries {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        // The loader walks directories only, following links.
+        if !path.is_dir() {
+            continue;
+        }
+        let real_dir = entry.file_type().ok()?.is_dir();
+        let skill_md = SkillContractFingerprint::of(&path.join("SKILL.md"))?;
+        let tool_schema = SkillContractFingerprint::of(&path.join("tool_schema.yaml"))?;
+        // A directory with neither contract contributes nothing to the load
+        // (bookkeeping such as `.skill-state`). Its contracts are stat'ed on
+        // every call, so one appearing later is still seen.
+        if skill_md.is_absent() && tool_schema.is_absent() {
+            continue;
+        }
+        let resolved_skill_dir = skill_md
+            .resolved
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.clone());
+        skills.push(SkillDirFingerprint {
+            name: entry.file_name(),
+            real_dir,
+            bin_dir: resolved_skill_dir.join("bin").is_dir(),
+            legacy_env_file: path.join("config/.env").is_file(),
+            skill_md,
+            tool_schema,
+        });
+    }
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(SkillsDirFingerprint {
+        skillshub_root_env: std::env::var_os(
+            crate::magician_v2::skills::path_rewrite::SKILLSHUB_ROOT_ENV,
+        ),
+        skills,
+    })
+}
+
+struct SkillsDirCacheEntry {
+    fingerprint: SkillsDirFingerprint,
+    load: Arc<SkillsDirLoad>,
+}
+
+#[derive(Default)]
+struct SkillsDirCacheState {
+    entries: HashMap<PathBuf, SkillsDirCacheEntry>,
+    parses: HashMap<PathBuf, u64>,
+}
+
+/// Parsed skills directories, each served while its source fingerprint is
+/// unchanged. The parse runs outside the lock; two concurrent misses on one
+/// directory may both parse, and either result is correct.
+#[derive(Default)]
+struct SkillsDirLoadCache {
+    state: std::sync::Mutex<SkillsDirCacheState>,
+}
+
+impl SkillsDirLoadCache {
+    fn lock(&self) -> std::sync::MutexGuard<'_, SkillsDirCacheState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn load(&self, skills_dir: &Path) -> SkillsDirLoad {
+        // Fingerprint BEFORE parsing and store under it: a write racing the
+        // parse leaves a fingerprint the next call no longer matches, so the
+        // worst case is one extra parse, never a stale catalog.
+        let Some(fingerprint) = skills_dir_fingerprint(skills_dir) else {
+            self.note_parse(skills_dir);
+            return load_skills_dir_uncached(skills_dir);
+        };
+        let cached = self
+            .lock()
+            .entries
+            .get(skills_dir)
+            .filter(|entry| entry.fingerprint == fingerprint)
+            .map(|entry| Arc::clone(&entry.load));
+        if let Some(load) = cached {
+            return (*load).clone();
+        }
+        self.note_parse(skills_dir);
+        let load = load_skills_dir_uncached(skills_dir);
+        let mut state = self.lock();
+        if state.entries.len() >= SKILLS_DIR_CACHE_MAX_ENTRIES
+            && !state.entries.contains_key(skills_dir)
+        {
+            state.entries.clear();
+        }
+        state.entries.insert(
+            skills_dir.to_path_buf(),
+            SkillsDirCacheEntry {
+                fingerprint,
+                load: Arc::new(load.clone()),
+            },
+        );
+        load
+    }
+
+    fn note_parse(&self, skills_dir: &Path) {
+        let mut state = self.lock();
+        if state.parses.len() >= SKILLS_DIR_CACHE_MAX_ENTRIES * 4
+            && !state.parses.contains_key(skills_dir)
+        {
+            state.parses.clear();
+        }
+        *state.parses.entry(skills_dir.to_path_buf()).or_default() += 1;
+    }
+
+    fn invalidate(&self, skills_dir: &Path) -> bool {
+        self.lock().entries.remove(skills_dir).is_some()
+    }
+
+    fn clear(&self) -> usize {
+        let mut state = self.lock();
+        let removed = state.entries.len();
+        state.entries.clear();
+        removed
+    }
+
+    fn parse_count(&self, skills_dir: &Path) -> u64 {
+        self.lock().parses.get(skills_dir).copied().unwrap_or(0)
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    fn contains(&self, skills_dir: &Path) -> bool {
+        self.lock().entries.contains_key(skills_dir)
+    }
+}
+
+fn skills_dir_load_cache() -> &'static SkillsDirLoadCache {
+    static CACHE: OnceLock<SkillsDirLoadCache> = OnceLock::new();
+    CACHE.get_or_init(SkillsDirLoadCache::default)
+}
+
+/// Whether the process-wide cache holds a parsed catalog for `skills_dir`.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn skills_dir_cache_contains(skills_dir: &Path) -> bool {
+    skills_dir_load_cache().contains(skills_dir)
+}
+
+fn load_skills_dir_uncached(skills_dir: &Path) -> SkillsDirLoad {
     let mut load = SkillsDirLoad::default();
     let mut packs = Vec::new();
     let mut failures: Vec<SkillLoadFailure> = Vec::new();
@@ -8413,6 +8827,196 @@ fn skill_name_of(skill_dir: &Path) -> String {
         .unwrap_or_default()
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+mod skills_dir_cache_tests {
+    use std::fs;
+
+    use super::*;
+
+    fn write_legacy_skill(skills_dir: &Path, name: &str, description: &str) {
+        let skill = skills_dir.join(name);
+        fs::create_dir_all(&skill).expect("skill dir");
+        fs::write(
+            skill.join("tool_schema.yaml"),
+            format!(
+                "name: {name}\nparameters:\n- name: input\n  required: true\n  param_type: string\n  \
+                 description: Input value\nimplementation:\n  type: primitive\n  command: [\"{name}\"]\n"
+            ),
+        )
+        .expect("tool_schema.yaml");
+        fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n# {name}\n"),
+        )
+        .expect("SKILL.md");
+    }
+
+    fn description_of(load: &SkillsDirLoad, name: &str) -> Option<String> {
+        load.packs
+            .iter()
+            .find(|pack| pack.name == name)
+            .and_then(|pack| pack.description.clone())
+    }
+
+    fn pack_names(load: &SkillsDirLoad) -> Vec<String> {
+        let mut names: Vec<String> = load.packs.iter().map(|pack| pack.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn unchanged_sources_are_parsed_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_legacy_skill(dir.path(), "widget", "first");
+        let cache = SkillsDirLoadCache::default();
+
+        let first = cache.load(dir.path());
+        let second = cache.load(dir.path());
+        let third = cache.load(dir.path());
+
+        assert_eq!(cache.parse_count(dir.path()), 1);
+        assert_eq!(pack_names(&first), vec!["widget".to_string()]);
+        assert_eq!(first.packs, second.packs);
+        assert_eq!(second.packs, third.packs);
+        assert_eq!(first.loaded_skills, third.loaded_skills);
+        // A bookkeeping directory holds no contract and changes nothing.
+        let state_dir = dir.path().join(".skill-state");
+        fs::create_dir_all(&state_dir).unwrap();
+        cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 1);
+    }
+
+    #[test]
+    fn adding_editing_and_removing_a_skill_reparses_on_the_next_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_legacy_skill(dir.path(), "widget", "first");
+        let cache = SkillsDirLoadCache::default();
+        let initial = cache.load(dir.path());
+        assert_eq!(pack_names(&initial), vec!["widget".to_string()]);
+        assert_eq!(cache.parse_count(dir.path()), 1);
+
+        // Added.
+        write_legacy_skill(dir.path(), "gadget", "new");
+        let added = cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 2);
+        assert_eq!(
+            pack_names(&added),
+            vec!["gadget".to_string(), "widget".to_string()]
+        );
+
+        // Edited. (A different size: discovery's own manifest cache is keyed
+        // by size and mtime, so a same-size edit within one timestamp tick
+        // would be this cache re-parsing into a stale manifest.)
+        write_legacy_skill(dir.path(), "widget", "refreshed");
+        let edited = cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 3);
+        assert_eq!(
+            description_of(&edited, "widget").as_deref(),
+            Some("refreshed")
+        );
+
+        // Legacy schema edited.
+        fs::write(
+            dir.path().join("widget").join("tool_schema.yaml"),
+            "name: widget_renamed\nparameters:\n- name: input\n  required: true\n  param_type: string\n  \
+             description: Input value\nimplementation:\n  type: primitive\n  command: [\"widget\"]\n",
+        )
+        .expect("rewrite schema");
+        let renamed = cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 4);
+        assert_eq!(
+            pack_names(&renamed),
+            vec!["gadget".to_string(), "widget_renamed".to_string()]
+        );
+
+        // Removed.
+        fs::remove_dir_all(dir.path().join("gadget")).unwrap();
+        let removed = cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 5);
+        assert_eq!(pack_names(&removed), vec!["widget_renamed".to_string()]);
+
+        // And steady again.
+        cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 5);
+    }
+
+    /// A governed package's projection reads whether `bin/` and
+    /// `config/.env` exist, so their appearance must move the fingerprint.
+    #[test]
+    fn projection_side_inputs_move_the_fingerprint() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_legacy_skill(dir.path(), "widget", "first");
+        let before = skills_dir_fingerprint(dir.path()).expect("fingerprint");
+        assert_eq!(skills_dir_fingerprint(dir.path()).as_ref(), Some(&before));
+
+        let widget = dir.path().join("widget");
+        fs::create_dir_all(widget.join("bin")).unwrap();
+        let with_bin = skills_dir_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(with_bin, before);
+
+        fs::create_dir_all(widget.join("config")).unwrap();
+        fs::write(widget.join("config/.env"), "TOKEN=x\n").unwrap();
+        let with_env = skills_dir_fingerprint(dir.path()).expect("fingerprint");
+        assert_ne!(with_env, with_bin);
+    }
+
+    #[test]
+    fn explicit_invalidation_drops_the_cached_catalog() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_legacy_skill(dir.path(), "widget", "first");
+        let cache = SkillsDirLoadCache::default();
+        cache.load(dir.path());
+        assert!(cache.contains(dir.path()));
+
+        assert!(cache.invalidate(dir.path()));
+        assert!(!cache.contains(dir.path()));
+        assert!(!cache.invalidate(dir.path()), "nothing left to drop");
+        cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 2);
+
+        assert_eq!(cache.clear(), 1);
+        cache.load(dir.path());
+        assert_eq!(cache.parse_count(dir.path()), 3);
+
+        // The process-wide hooks reach the cache `load_skills_dir` serves.
+        // Other tests may clear it concurrently, so only one-way facts are
+        // asserted.
+        load_skills_dir(dir.path());
+        let parses = skills_dir_parse_count(dir.path());
+        invalidate_skills_dir_cache(dir.path());
+        assert!(!skills_dir_cache_contains(dir.path()));
+        load_skills_dir(dir.path());
+        assert!(skills_dir_parse_count(dir.path()) > parses);
+    }
+
+    /// The scope catalog's canonical invalidation (skill install, edit,
+    /// uninstall through the API, the skills-layer repair) also drops the
+    /// parsed skills directory behind it.
+    #[test]
+    fn scope_invalidation_drops_the_scope_skills_dir() {
+        use crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace;
+        use crate::magician_v2::artifact_v2::CapabilityWorkspaceManager;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = CapabilityWorkspaceManager::new(
+            ArtifactV2Workspace::new(temp.path().join("runtime")),
+            temp.path(),
+        );
+        let skills_root = manager
+            .workspace_layout()
+            .scope_skills_root("owner", "default");
+        write_legacy_skill(&skills_root, "widget", "first");
+        load_skills_dir(&skills_root);
+        let parses = skills_dir_parse_count(&skills_root);
+
+        manager.invalidate_scope_pack_defs("owner", "default");
+
+        assert!(!skills_dir_cache_contains(&skills_root));
+        load_skills_dir(&skills_root);
+        assert!(skills_dir_parse_count(&skills_root) > parses);
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -8422,6 +9026,49 @@ mod tests {
     use super::*;
     use crate::magician_v2::execution::ExecutionConfig;
 
+    #[tokio::test]
+    async fn typed_tools_accept_runtime_context_but_reject_unknown_public_arguments() {
+        let provider = TimeMathCapabilityProvider::new();
+        let mut params = HashMap::from([
+            ("operation".into(), json!("now")),
+            ("timezone".into(), json!("UTC")),
+            ("__agent_id".into(), json!("analyst")),
+            ("__principal".into(), json!("owner")),
+            ("__workspace".into(), json!("workspace-a")),
+            ("__task_id".into(), json!("task-1")),
+            ("__execution_id".into(), json!("exec-1")),
+        ]);
+        let action = |params| ExecutableAction::Pack {
+            capability_name: "time_math".into(),
+            implementation: ImplementationType::Compiled {
+                provider_name: "time_math".into(),
+            },
+            resolved_params: params,
+        };
+        let result = provider
+            .execute(&action(params.clone()), None, 5)
+            .await
+            .unwrap();
+        let ActionResult::Text { content } = result else {
+            panic!("text result")
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&content).unwrap()["timezone"],
+            "UTC"
+        );
+        assert_eq!(
+            params["__agent_id"], "analyst",
+            "dispatch context must remain intact"
+        );
+        params.insert("timeznoe".into(), json!("UTC"));
+        assert!(provider
+            .execute(&action(params), None, 5)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("timeznoe"));
+    }
+
     fn vision_provider_for_root(root: &Path) -> AnalyzeImageViaOpenAiCapabilityProvider {
         let mut provider = AnalyzeImageViaOpenAiCapabilityProvider::new();
         provider.file_sandbox = FileSandboxConfig {
@@ -8429,6 +9076,82 @@ mod tests {
             ..FileSandboxConfig::default()
         };
         provider
+    }
+
+    /// `delegation_files` widens the sandbox with each target's nearest
+    /// folder; a folder under a read-only root must not be added, or the
+    /// deeper writable root would outrank the read-only one.
+    #[tokio::test]
+    async fn delegation_files_never_widens_a_read_only_root_into_a_writable_one() {
+        use crate::magician_v2::execution::actions::FileAction;
+        let writable = tempfile::tempdir().expect("writable tempdir");
+        let read_only = tempfile::tempdir().expect("read-only tempdir");
+        let nested = read_only.path().join("archive");
+        std::fs::create_dir(&nested).expect("nested folder");
+        let provider = DelegationFilesProvider::new(FileSandboxConfig {
+            allowed_roots: vec![writable.path().display().to_string()],
+            read_only_roots: vec![read_only.path().display().to_string()],
+            ..FileSandboxConfig::default()
+        });
+        let target = nested.join("program.md");
+        let error = provider
+            .execute(
+                &ExecutableAction::File(FileAction::Write {
+                    path: target.clone(),
+                    content: "rewritten".to_string(),
+                    create_dirs: true,
+                }),
+                None,
+                5,
+            )
+            .await
+            .expect_err("a write under a read-only root stays refused");
+        assert!(
+            error
+                .to_string()
+                .contains("is read-only for agents (read_only_roots)"),
+            "{error}"
+        );
+        assert!(!target.exists());
+    }
+
+    /// The read-only guard leaves ordinary delegation alone: a folder under
+    /// the home directory, outside every configured root, still becomes a
+    /// writable run-time root for the call. Skipped when `HOME` is missing
+    /// or is not its own canonical path (the delegation check compares
+    /// against it as given).
+    #[tokio::test]
+    async fn delegation_files_still_admits_a_normal_folder() {
+        use crate::magician_v2::execution::actions::FileAction;
+        let Some(home) = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.canonicalize().ok().as_ref() == Some(home))
+        else {
+            return;
+        };
+        let folder = tempfile::Builder::new()
+            .prefix(".magician-delegation-test-")
+            .tempdir_in(&home)
+            .expect("delegation folder under home");
+        let configured = tempfile::tempdir().expect("configured root");
+        let provider = DelegationFilesProvider::new(FileSandboxConfig {
+            allowed_roots: vec![configured.path().display().to_string()],
+            ..FileSandboxConfig::default()
+        });
+        let target = folder.path().join("notes.md");
+        provider
+            .execute(
+                &ExecutableAction::File(FileAction::Write {
+                    path: target.clone(),
+                    content: "hello".to_string(),
+                    create_dirs: true,
+                }),
+                None,
+                5,
+            )
+            .await
+            .expect("a normal delegation folder is writable");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello");
     }
 
     #[tokio::test]
@@ -9485,6 +10208,7 @@ mod tests {
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         }
     }
 
@@ -9837,6 +10561,7 @@ mod tests {
             "notify_owner",
             "request_preference_wording",
             "propose_program_missions",
+            "propose_program_revision",
             "propose_relentless",
             "review_program_missions",
             // Company backlog directive (harness action).
@@ -10753,6 +11478,17 @@ Use the bounded record actions.
             assert_eq!(new.parameter_overrides["effort"]["type"], "string");
             assert_eq!(new.parameter_overrides["effort"]["default"], "medium");
         }
+        let mut expected_required = old
+            .required
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if skill_name == "deep-research-with-openai" {
+            // A call can collect an earlier background run by its response id,
+            // so `query` is required only when starting new research.
+            expected_parameters.insert("response_id".to_string());
+            assert_eq!(new.parameter_overrides["response_id"]["type"], "string");
+            expected_required.retain(|parameter| parameter.as_str() != "query");
+        }
         assert_eq!(
             provider_parameters(&new.parameters),
             expected_parameters,
@@ -10762,9 +11498,7 @@ Use the bounded record actions.
             new.required
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>(),
-            old.required
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
+            expected_required
         );
         let normalized_default = |value: Option<&Value>| {
             value.and_then(|value| match value {
@@ -10786,6 +11520,20 @@ Use the bounded record actions.
                 normalized_default(new.parameter_overrides[parameter].get("default")),
                 if skill_name == "deep-research-with-claude" && parameter == "model" {
                     Some("claude-sonnet-5-5".to_string())
+                } else if skill_name == "deep-research-with-openai" && parameter == "model" {
+                    // OpenAI shut down its deep-research models on 2026-07-23.
+                    Some("gpt-6.1-sol".to_string())
+                } else if skill_name == "deep-research-with-openai"
+                    && parameter == "max_poll_attempts"
+                {
+                    Some("2100".to_string())
+                } else if matches!(
+                    skill_name,
+                    "deep-research-with-claude" | "deep-research-with-openai"
+                ) && parameter == "timeout_secs"
+                {
+                    // The runtime timeout parameter follows the 35-minute ceiling.
+                    Some("2100".to_string())
                 } else {
                     normalized_default(old.parameter_overrides[parameter].get("default"))
                 },
@@ -10808,7 +11556,17 @@ Use the bounded record actions.
                 "parameter enum drifted for {parameter}"
             );
         }
-        assert_eq!(new.timeout_secs, old.timeout_secs);
+        // Both research adapters may run for 35 minutes; the frozen legacy
+        // contracts deliberately retain their old, shorter ceilings.
+        let expected_timeout_secs = if matches!(
+            skill_name,
+            "deep-research-with-claude" | "deep-research-with-openai"
+        ) {
+            Some(2100)
+        } else {
+            old.timeout_secs
+        };
+        assert_eq!(new.timeout_secs, expected_timeout_secs);
 
         let ImplementationType::Primitive {
             runtime_package,
@@ -10911,115 +11669,6 @@ Use the bounded record actions.
         ] {
             assert_governed_static_secret_catalog_matches_deprecated(skill, executable, required);
         }
-    }
-
-    #[test]
-    fn metabase_governed_catalog_preserves_all_native_cli_actions() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace root");
-        let governed = load_pack_defs_from_skills_dir(&workspace.join("skillshub"))
-            .into_iter()
-            .find(|pack| pack.name == "metabase")
-            .expect("governed Metabase pack");
-        let frozen = std::fs::read_to_string(
-            workspace.join("magician/tests/fixtures/tool_runtime_legacy_contracts/metabase.yaml"),
-        )
-        .expect("Metabase compatibility contract");
-        let deprecated: CapabilityPackDefinition =
-            serde_yaml::from_str(&frozen).expect("deprecated Metabase pack");
-
-        assert_eq!(governed.native_action_schemas.len(), 101);
-        assert_eq!(
-            governed.native_action_schemas.len(),
-            deprecated.native_action_schemas.len()
-        );
-        let provider_parameters = |parameters: &[String]| {
-            parameters
-                .iter()
-                .filter(|parameter| parameter.as_str() != "timeout_secs")
-                .cloned()
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        for (name, old) in &deprecated.native_action_schemas {
-            let new = governed
-                .native_action_schemas
-                .get(name)
-                .unwrap_or_else(|| panic!("missing governed Metabase action {name}"));
-            assert_eq!(
-                provider_parameters(&new.parameters),
-                provider_parameters(&old.parameters),
-                "parameter drift: {name}"
-            );
-            assert_eq!(
-                new.required
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>(),
-                old.required
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>(),
-                "required drift: {name}"
-            );
-            assert_eq!(new.argv, old.argv, "argv prefix drift: {name}");
-            assert_eq!(
-                new.suffix_args, old.suffix_args,
-                "argv suffix drift: {name}"
-            );
-            assert_eq!(new.timeout_secs, old.timeout_secs, "timeout drift: {name}");
-            for parameter in &old.parameters {
-                let old_schema = &old.parameter_overrides[parameter];
-                let new_schema = &new.parameter_overrides[parameter];
-                assert_eq!(
-                    new_schema.get("type"),
-                    old_schema.get("type"),
-                    "type drift: {name}.{parameter}"
-                );
-                let normalized = |value: Option<&Value>| {
-                    value.map(|value| match value {
-                        Value::String(value) => value.clone(),
-                        other => other.to_string(),
-                    })
-                };
-                assert_eq!(
-                    normalized(new_schema.get("default")),
-                    normalized(old_schema.get("default")),
-                    "default drift: {name}.{parameter}"
-                );
-                let enum_set = |schema: &Value| {
-                    schema.get("enum").and_then(Value::as_array).map(|values| {
-                        values
-                            .iter()
-                            .map(|value| value.to_string())
-                            .collect::<std::collections::BTreeSet<_>>()
-                    })
-                };
-                assert_eq!(
-                    enum_set(new_schema),
-                    enum_set(old_schema),
-                    "enum drift: {name}.{parameter}"
-                );
-            }
-        }
-
-        let ImplementationType::Primitive {
-            runtime_package,
-            env,
-            ..
-        } = &governed.implementation
-        else {
-            panic!("Metabase must remain a direct primitive CLI");
-        };
-        let runtime = runtime_package.as_ref().expect("governed runtime owner");
-        let actions = runtime.cli_actions().expect("CLI action catalog");
-        assert_eq!(actions.execution.executable, "metabase-pp-cli");
-        assert_eq!(
-            actions.execution.command_prefix,
-            ["--json", "--no-input", "--no-color", "--yes"]
-        );
-        assert!(
-            env.is_empty(),
-            "Metabase secrets must not enter compatibility env"
-        );
     }
 
     #[tokio::test]

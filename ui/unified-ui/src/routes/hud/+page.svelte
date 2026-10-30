@@ -1,21 +1,14 @@
-<!--
-  /hud — HUD aesthetic shell around the reusable <ChatPanel/>.
-
-  Two visual states:
-   • COLLAPSED (default on every summon) — no transcript at all. The HUD is
-     just the composer: a command bar.
-   • EXPANDED — the transcript renders flat and readable. Entered either by
-     the toolbar toggle or automatically when a send's reply is going to
-     stream into this surface (see `handleInlineSend`).
-
-  `@brainstorm` / `@tutor` / `@copilot` never expand: each renders its result
-  on its own surface, so the HUD dismisses instead.
-
-  Dismiss resets the state, so the next summon always starts collapsed.
--->
+<!-- /hud is the compact quick-summon composer. Expanding opens the actual
+     /chat app page in the same native window; the root mode controller owns
+     that transition and the app header provides the Compact return. -->
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
+	import { setHudWindowExpanded } from '$lib/shell/hudWindow';
+	import type { ChatSession } from '$lib/stores/chatStore';
+	import { isVibeDevSession, isVibeDevThread, normalizeThreadId } from '$lib/threads/normalizeThreadId';
 	import { installScopedApiFetch } from '$lib/stores/scopeIdentityStore';
 	import { ensureMediaSessionStarted } from '$lib/media/session';
 	import ChatPanel from '$lib/magician/chat/ChatPanel.svelte';
@@ -31,7 +24,8 @@
 	import ThemeSwitcher from '$lib/shared/components/ThemeSwitcher.svelte';
 
 	let isTauri = $state(false);
-	let expanded = $state(false);
+	let windowModeBusy = $state(false);
+	let windowModeError = $state<string | null>(null);
 	/** The HUD's ChatPanel, so a summon can put the caret in the command bar. */
 	/** The HUD's ChatPanel. Method surface the HUD actually uses — the
 	 *  component exports more (attachFiles is invoked from the stage drop
@@ -43,6 +37,7 @@
 	} | null>(null);
 	let unlistenFocus: (() => void) | null = null;
 	let unlistenScreenAsk: (() => void) | null = null;
+	let destroyed = false;
 
 	// Screen capture-and-ask (⇧⌥S): the tray captured the display, staged it
 	// as a chat attachment on today's `screens` session, and summoned this
@@ -128,7 +123,7 @@
 	// origin has to be added — otherwise the orb glides to a point measured
 	// from the wrong corner.
 	async function glideMascotToComposer() {
-		if (!isTauri) return;
+		if (!isTauri || destroyed) return;
 		try {
 			const { invoke } = await import('@tauri-apps/api/core');
 			const { getCurrentWindow, currentMonitor } = await import('@tauri-apps/api/window');
@@ -229,7 +224,6 @@
 					});
 					return;
 				}
-				expanded = false;
 				requestAnimationFrame(() => {
 					void glideMascotToComposer();
 					// The event is named for exactly this and did not do it:
@@ -238,9 +232,11 @@
 					chatPanel?.focusComposer?.();
 				});
 			});
+			if (destroyed) { unlistenFocus(); return; }
 			unlistenScreenAsk = await listen<ScreenAskCapture>('screen-ask-capture', (event) => {
 				screenCapture = event.payload;
 			});
+			if (destroyed) { unlistenScreenAsk(); return; }
 			// Pull any capture staged BEFORE our listener mounted (the chord
 			// that created this very window). Consume-once on the tray side.
 			try {
@@ -253,27 +249,22 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		unlistenFocus?.();
 		unlistenScreenAsk?.();
 		window.removeEventListener('blur', handleWindowBlur);
 	});
 
 	function handleWindowBlur() {
+		if (windowModeBusy) return;
 		const focused = document.activeElement as HTMLElement | null;
 		if (focused && focused !== document.body && typeof focused.blur === 'function') {
 			focused.blur();
 		}
-		// Reset to floating so the next show starts cleanly.
-		// Preserve scroll position — do NOT pin to bottom (the user
-		// explicitly asked for this; they want to see exactly where
-		// they left off when reopening).
-		expanded = false;
 	}
 
 	async function dismiss() {
 		if (!isTauri) return;
-		// Reset so re-open starts in the compact floating view.
-		expanded = false;
 		// Send the mascot back to its docked parking position. Don't
 		// await — the hide_overlay below shouldn't block on it.
 		void dockMascot();
@@ -282,33 +273,45 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
+		if (event.defaultPrevented || $historyDrawerOpen) return;
 		if (event.key === 'Escape') {
 			// An open answer modal owns Escape: it closes the prompt, not the HUD.
 			const target = event.target as HTMLElement | null;
 			if (target?.closest?.('.muij-modal-backdrop')) return;
 			event.preventDefault();
-			// Two-stage ESC:
-			//   1. If HUD is expanded, first press returns it to
-			//      floating (and blurs the composer if it was focused).
-			//   2. If HUD is already floating, ESC dismisses the
-			//      whole HUD window.
-			// Cmd+Z continues to be the single-press dismiss /
-			// toggle via the Tauri global shortcut.
-			if (expanded) {
-				expanded = false;
-				const focused = document.activeElement as HTMLElement | null;
-				if (focused && focused.closest('.composer-shell, .composer-wrap')) {
-					focused.blur();
-				}
-				return;
-			}
 			void dismiss();
 		}
 	}
 
 	function toggleExpanded(event: MouseEvent) {
 		event.stopPropagation();
-		expanded = !expanded;
+		void openAppWindow();
+	}
+
+	async function openAppWindow(href?: string): Promise<void> {
+		if (windowModeBusy) return;
+		windowModeBusy = true;
+		windowModeError = null;
+		try {
+			if (isTauri) {
+				await setHudWindowExpanded(true, href);
+			} else await goto(href ?? `/chat${$page.url.search}`);
+		} catch (error) {
+			windowModeError = `Could not change window size: ${String(error)}`;
+		} finally { windowModeBusy = false; }
+	}
+
+	async function selectHudThread(threadId: string, sessionId?: string): Promise<void> {
+		const query = new URLSearchParams({ thread: normalizeThreadId(threadId) });
+		if (sessionId) query.set('session', sessionId);
+		const href = isVibeDevThread(threadId)
+			? `/vibe${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''}`
+			: `/chat?${query}`;
+		await openAppWindow(href);
+	}
+
+	async function selectHudSession(session: ChatSession): Promise<void> {
+		await selectHudThread(isVibeDevSession(session) ? 'vibedev' : normalizeThreadId(session.ui_thread_id), session.id);
 	}
 
 	function handleFireAndForgetSend() {
@@ -320,7 +323,7 @@
 	// `@brainstorm` / `@tutor` / `@copilot` never reach here: they each own a
 	// surface elsewhere and take the fire-and-forget dismiss above instead.
 	function handleInlineSend() {
-		expanded = true;
+		void openAppWindow();
 	}
 
 	// Click on the transparent stage — i.e. outside the panel — dismisses.
@@ -377,25 +380,22 @@
 -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="hud-stage" onclick={handleStageClick} ondragover={handleStageDragOver} ondrop={handleStageDrop} role="presentation">
-<div class="hud" class:hud--active={expanded}>
+<div class="hud">
+	{#if windowModeError}<p class="hud-error" role="alert">{windowModeError}</p>{/if}
 	<ChatPanel
 		bind:this={chatPanel}
-		threadId={screenCapture?.thread_id ?? null}
+		threadId={$page.url.searchParams.get('thread') ?? screenCapture?.thread_id ?? null}
 		seedStagedAttachments={screenSeeds}
 		fireAndForget="tutor"
 		hud
 		on:fire-and-forget-send={handleFireAndForgetSend}
 		on:inline-send={handleInlineSend}
 	>
-		<!-- HUD chrome, pinned right of the docked ContextPill inside the
-		     composer's dock row. Previously a free-floating `.hud-actions`
-		     cluster positioned at `left: calc(50% + 226px)` — an offset
-		     measured against the floating pill, which no longer exists. -->
-		<svelte:fragment slot="composer-dock">
+		<svelte:fragment slot="composer-attachment-actions">
 			{#if isTauri}
 				<button
 					type="button"
-					class="hud-icon-toggle"
+					class="hud-icon-toggle hud-capture"
 					title={attachBusy ? 'Capturing…' : 'Attach what I was looking at'}
 					aria-label={attachBusy ? 'Capturing screen context' : 'Attach screen context'}
 					disabled={attachBusy}
@@ -417,6 +417,14 @@
 					{/if}
 				</button>
 			{/if}
+		</svelte:fragment>
+
+		<!-- HUD chrome, pinned right of the docked ContextPill inside the
+		     composer's dock row. Previously a free-floating `.hud-actions`
+		     cluster positioned at `left: calc(50% + 226px)` — an offset
+		     measured against the floating pill, which no longer exists. -->
+		<svelte:fragment slot="composer-dock">
+
 			<div class="hud-theme">
 				<ThemeSwitcher iconOnly />
 			</div>
@@ -424,26 +432,17 @@
 			<button
 				type="button"
 				class="hud-icon-toggle"
-				title={expanded ? 'Return to floating HUD' : 'Expand HUD'}
-				aria-label={expanded ? 'Return to floating HUD' : 'Expand HUD'}
-				aria-pressed={expanded}
+				title="Expand HUD"
+				aria-label="Expand HUD"
+				disabled={windowModeBusy}
 				onclick={toggleExpanded}
 			>
-				{#if expanded}
-					<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M6 3v3H3" />
-						<path d="M10 3v3h3" />
-						<path d="M6 13v-3H3" />
-						<path d="M10 13v-3h3" />
-					</svg>
-				{:else}
 					<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 						<path d="M6 3H3v3" />
 						<path d="M10 3h3v3" />
 						<path d="M3 10v3h3" />
 						<path d="M13 10v3h-3" />
 					</svg>
-				{/if}
 			</button>
 		</svelte:fragment>
 	</ChatPanel>
@@ -460,9 +459,13 @@
   actions (delete) dispatch through it.
 -->
 <HistoryDrawer
+	side="left"
 	bind:open={$historyDrawerOpen}
 	threadFilter={$historyDrawerThreadFilter}
 	initialTab={$historyDrawerInitialTab}
+	onSelectSession={selectHudSession}
+	onSelectCodingSession={selectHudSession}
+	onSelectThread={selectHudThread}
 />
 <ConfirmationModalHost />
 <!--
@@ -474,15 +477,15 @@
 
 <style>
 	/* Tauri window is transparent — html/body must let it through. */
-	:global(html),
-	:global(body) {
+	:global(html:has(.hud-stage)),
+	:global(body:has(.hud-stage)) {
 		margin: 0;
 		padding: 0;
 		overflow: hidden;
 		background: transparent !important;
 	}
-	:global(body::before),
-	:global(body::after) {
+	:global(body:has(.hud-stage)::before),
+	:global(body:has(.hud-stage)::after) {
 		content: none !important;
 		display: none !important;
 	}
@@ -620,8 +623,7 @@
 	}
 
 	/* ─── Floating state defaults (chat-main + messages + composer) ─── */
-	/* The chat-main pane is fixed-positioned so we can shrink it to the
-	   top half while floating and expand to full screen on demand. */
+	/* Compact flow: the native window is a popup stage around the composer. */
 	.hud :global(.chat-main) {
 		position: static !important;
 		top: auto;
@@ -640,28 +642,9 @@
 	}
 
 
-	/* ─── Transcript visibility ───
-	   COLLAPSED renders no transcript at all: the HUD is the composer.
-	   EXPANDED renders it flat and unmasked for reading.
-
-	   The previous floating state rendered it tilted (rotateX 15deg) and
-	   masked to 5% alpha at the top — unreadable by design, ~56vh of window,
-	   and the reason backdrop-dismiss needed a coordinate hack. Neither state
-	   wants that now, so the whole 3D treatment is gone: the mask ramp, the
-	   Z-inversion, the `perspective` scene root and its `preserve-3d`
-	   propagation. */
+	/* Reading belongs to the normal /chat page; /hud contains only the composer. */
 	.hud :global(.chat-messages-area) {
 		display: none;
-	}
-
-	.hud--active :global(.chat-messages-area) {
-		display: block;
-		flex: 1 1 auto;
-		min-height: 0;
-		overflow-y: auto;
-		background: transparent !important;
-		padding-top: 12px !important;
-		padding-bottom: 4px !important;
 	}
 
 	/* Composer floats at vertical center while floating. The
@@ -681,6 +664,8 @@
 		pointer-events: auto;
 		z-index: auto;
 		flex: 0 0 auto;
+		/* The panel is the HUD's boundary; omit the chat page's 8px floor gap. */
+		margin-bottom: 0 !important;
 	}
 	/* Chrome-stripping lives in the single `.composer-shell` rule near the top
 	   of this block. This one used to paint `--bg-elevated`, an accent border
@@ -820,19 +805,17 @@
 	}
 
 
-	/* ─── EXPANDED state ─── */
-	/* In the new two-row layout, the chat-main and composer always
-	   occupy the same screen rows regardless of focus state — no
-	   "composer drops down" animation because composer is already
-	   at the bottom. The 3D push + glass backdrop still fire on
-	   expansion for visual feedback, but no layout reflow needed. */
-	.hud--active :global(.chat-main) {
-		/* Bounded so a long transcript scrolls inside the panel rather than
-		   growing it past the stage. The panel's own `max-height` on `.hud`
-		   is the outer guard; this keeps the transcript the part that
-		   scrolls. */
-		max-height: 520px;
+	.hud-error { padding: 8px 16px; color: var(--text-primary); }
+	.hud-icon-toggle {
+		display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+		min-width: 26px; height: 26px; padding: 3px 6px;
+		border: 0; border-radius: var(--radius-sm, 6px); background: transparent;
+		color: var(--text-secondary); cursor: pointer; font-size: 11px;
 	}
+	.hud-capture { width: 20px; min-width: 20px; height: 20px; padding: 0; }
+
+	.hud-icon-toggle:hover { background: var(--bg-soft); color: var(--text-primary); }
+	.hud-icon-toggle:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 
 	/* ─── HUD controls (docked right of the ContextPill) ─── */
 	/* `align-items: center` on every level of the wrapper chain. The dock row

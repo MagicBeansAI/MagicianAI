@@ -66,24 +66,48 @@ $MAGICIAN_ROOT_DIR/client_secret.json      # default: ~/MagicianNotes/client_sec
 That file is gitignored and never leaves your machine. The project ID is read
 out of it, so there is nothing else to configure.
 
-## 5. The Pub/Sub topic
+## 5. Let Gmail publish to the project
 
-<https://console.cloud.google.com/cloudpubsub/topic/list> → **Create topic**.
-Any name; `magician-gmail` is a reasonable one.
+The Gmail bot creates its own Pub/Sub topic on its first run and reuses it
+(the name is kept in the account's `auth/gws-<name>` directory). Gmail
+publishes to it as Google's own service account, so give that account the
+publisher role on the whole project, once:
 
-Then the permission that makes it work. On the topic, **Add principal**:
+<https://console.cloud.google.com/iam-admin/iam> → **Grant access**:
 
 - **Principal:** `gmail-api-push@system.gserviceaccount.com`
 - **Role:** `Pub/Sub Publisher`
 
-This is Google's own service account, and it is how Gmail is allowed to publish
-to your topic. Without it, the watch registers, Gmail tries to publish, and the
-push is silently dropped — again with no error anywhere you would think to look.
+Without it, the watch registers, Gmail tries to publish, and the push is
+silently dropped, with no error anywhere you would think to look. A grant on
+the project covers every topic, including ones created later.
 
-Create a **subscription** on the topic as well; the default pull subscription is
-fine.
+## 6. Roles for every other account
 
-## 6. Connect
+The project owner can do everything. Any other Google account you connect
+(a second mailbox, a shared inbox) bills its API calls to this project and
+creates its watch topic in it, so it needs two roles on the project:
+
+- `Service Usage Consumer`: without it, every call fails with "Caller does not
+  have required permission to use project".
+- `Pub/Sub Editor`: without it, the Gmail bot cannot create its topic and
+  restarts forever.
+
+Setup does this for you:
+
+```bash
+make setup-gws-project-access
+```
+
+It reads each `expected_email` from `operator-config.yaml`, checks the project
+policy with this computer's `gcloud`, and when that `gcloud` account can change
+the policy (the owner can), offers to grant what is missing. Otherwise it prints
+the `gcloud projects add-iam-policy-binding` commands for an owner to run.
+`make setup-all` and the setup wizard run it too, and Service accounts and
+Desktop onboarding show the same check for each connected Google account, with
+a **Grant access** button when this computer can grant.
+
+## 7. Connect
 
 ```bash
 make setup-all
@@ -107,6 +131,11 @@ address has to match exactly.
 **Auth succeeds, no mail ever arrives.** Almost always the Pub/Sub Publisher
 grant in step 5, or the Pub/Sub API not enabled in step 2. Both fail quietly by
 design — Gmail does not report a failed push back to you.
+
+**"Caller does not have required permission to use project", or the Gmail bot
+restarting on `pubsub.topics.create`.** The account is not the project owner and
+lacks the step 6 roles. Run `make setup-gws-project-access`, or use **Grant
+access** under Service accounts.
 
 **It worked, then stopped after a week.** Testing-mode refresh tokens expire
 after seven days. Re-run `make setup-all`, or publish the app.

@@ -4010,7 +4010,10 @@ async fn recent_alignment_checks(log: &std::path::Path, limit: usize) -> Vec<Val
     let mut records = Vec::new();
     for path in [log.with_extension("jsonl.1"), log.to_path_buf()] {
         if let Ok(text) = tokio::fs::read_to_string(&path).await {
-            records.extend(text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()));
+            records.extend(
+                text.lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok()),
+            );
         }
     }
     records.into_iter().rev().take(limit).collect()
@@ -4026,10 +4029,12 @@ async fn alignment_action(
     use crate::magician_v2::preference_alignment::{
         admission, history, policy, redact, view, wording_grant,
     };
-    let step = |what: &str, error: String| ExecutionError::Step(format!("internal_data {what}: {error}"));
+    let step =
+        |what: &str, error: String| ExecutionError::Step(format!("internal_data {what}: {error}"));
     let scope = scope_from_params(params);
-    let resolver =
-        crate::magician_v2::agents::AgentMemoryResolver::with_workspace_layout(workspace_layout.clone());
+    let resolver = crate::magician_v2::agents::AgentMemoryResolver::with_workspace_layout(
+        workspace_layout.clone(),
+    );
     let memory = resolver
         .resolve_for_scope(&scope.principal, &scope.workspace)
         .map_err(|error| step(action, error.to_string()))?;
@@ -5086,7 +5091,9 @@ mod tests {
         let resolver = crate::magician_v2::agents::AgentMemoryResolver::with_workspace_layout(
             workspace.clone(),
         );
-        let memory = resolver.resolve_for_scope("owner", "default").expect("scope");
+        let memory = resolver
+            .resolve_for_scope("owner", "default")
+            .expect("scope");
         memory
             .save_user_knowledge(&json!({"preferences": [
                 {"memory_record_id": "t", "key": "therapy", "value": "Never mention therapy at work"}
@@ -5101,18 +5108,31 @@ mod tests {
             ])
         };
         for action in ["alignment_intentions", "alignment_history"] {
-            let redacted = alignment_action(&workspace, action, &params("exec-a")).await.unwrap();
+            let redacted = alignment_action(&workspace, action, &params("exec-a"))
+                .await
+                .unwrap();
             assert_eq!(redacted["wording"], "redacted", "{action}");
-            assert!(!redacted.to_string().contains("therapy"), "{action}: {redacted}");
+            assert!(
+                !redacted.to_string().contains("therapy"),
+                "{action}: {redacted}"
+            );
         }
-        record_grant(memory.storage(), "exec-a", "req-1", "web", chrono::Utc::now().timestamp_millis())
-            .await
-            .unwrap();
+        record_grant(
+            memory.storage(),
+            "exec-a",
+            "req-1",
+            "web",
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+        .unwrap();
         let granted = alignment_action(&workspace, "alignment_intentions", &params("exec-a"))
             .await
             .unwrap();
         assert_eq!(granted["wording"], "granted");
-        assert!(granted.to_string().contains("Never mention therapy at work"));
+        assert!(granted
+            .to_string()
+            .contains("Never mention therapy at work"));
         let other_run = alignment_action(&workspace, "alignment_intentions", &params("exec-b"))
             .await
             .unwrap();

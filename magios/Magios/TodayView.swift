@@ -117,12 +117,16 @@ struct TodayView: View {
     @StateObject private var viewModel = TodayViewModel()
     @StateObject private var followUpActions = ChannelFollowUpActionClient()
     @StateObject private var theme = ThemeManager.shared
+    @ObservedObject private var primaryAgent = PrimaryAgentSiriAdvertiser.shared
     @State private var selectedItem: TodayItem?
     @State private var selectedTask: TaskStatusModel?
     @State private var selectedResurfacing: ResurfacingCard?
-    @State private var selectedResurfacingActions: ResurfacingCard?
     @State private var selectedBriefing: TodayBriefing?
     @State private var selectedFollowUp: ChannelFollowUp?
+    /// What the follow-up sheet starts on when the deck's Act menu opened it.
+    @State private var followUpIntent: ChannelFollowUpDetailIntent?
+    /// A deck Act-menu resurfacing action that needs the input form.
+    @State private var deckResurfacingInput: TodayDeckResurfacingInput?
     @State private var hiddenExpanded = false
     @State private var wireExpanded = false
     @State private var showingActivity = false
@@ -153,28 +157,34 @@ struct TodayView: View {
                             errorBanner(error)
                         }
 
-                        if viewModel.isLoading && viewModel.payload == nil {
+                        if viewModel.settledSections.isEmpty && viewModel.payload == nil {
                             loadingState
                         } else {
                             // The wire and the lead/slate row read as one status
                             // band, so they sit closer than the page's section gap.
                             VStack(alignment: .leading, spacing: 10) {
-                                TodayRealtimeWireView(
+                                if viewModel.initiallyLoading("activity", "agent_updates") && viewModel.wireItems.isEmpty {
+                                    sectionLoading("Live Wire")
+                                } else { TodayRealtimeWireView(
                                     items: viewModel.wireItems,
                                     count24h: viewModel.wireEventCount24h,
                                     expanded: $wireExpanded,
                                     onOpen: openWire,
                                     onActivity: { showingActivity = true }
                                 )
-                                leadStory.id(Anchor.lead)
+                                }
+                                if viewModel.initiallyLoading("today") && viewModel.payload == nil { sectionLoading("Your day") }
+                                else if viewModel.payload != nil { leadStory.id(Anchor.lead) }
                             }
-                            TodayOperationsCarousel(
+                            if viewModel.initiallyLoading("pulse") && viewModel.pulse == nil { sectionLoading("Operations") }
+                            else { TodayOperationsCarousel(
                                 pulse: viewModel.pulse,
                                 errorMessage: viewModel.sectionErrors["pulse"],
                                 onRetry: viewModel.fetch,
                                 onTasks: { AppActions.shared.requestTask(nil) },
                                 onOpenTask: { AppActions.shared.requestTask($0) }
                             )
+                            }
                             readingRoom.id(Anchor.readingRoom)
                             PinnedAppsTodaySection()
                             AppNativeSlotPageRegion(
@@ -182,9 +192,15 @@ struct TodayView: View {
                                 regions: ["primary", "secondary"],
                                 accessibilityLabel: "Today app widgets"
                             )
-                            briefingsSection.id(Anchor.briefings)
-                            deliveredSection.id(Anchor.delivered)
-                            chronicleSection.id(Anchor.chronicle)
+                            if viewModel.initiallyLoading("briefings") && viewModel.briefings.isEmpty { sectionLoading("Special Reports") }
+                            else { briefingsSection.id(Anchor.briefings) }
+                            if viewModel.initiallyLoading("today") && viewModel.payload == nil {
+                                sectionLoading("Completed Deliverables")
+                                sectionLoading("Chronicle")
+                            } else {
+                                deliveredSection.id(Anchor.delivered)
+                                chronicleSection.id(Anchor.chronicle)
+                            }
                             footer
                         }
                     }
@@ -249,9 +265,11 @@ struct TodayView: View {
                 set: { if $0 == nil { selectedTask = nil } }
             ))
             .sheet(item: $selectedResurfacing, content: resurfacingSheet)
-            .sheet(item: $selectedResurfacingActions, content: resurfacingActionsSheet)
             .sheet(item: $selectedBriefing, content: briefingSheet)
-            .sheet(item: $selectedFollowUp, content: followUpSheet)
+            .sheet(item: $selectedFollowUp, onDismiss: { followUpIntent = nil }, content: followUpSheet)
+            .sheet(item: $deckResurfacingInput) { input in
+                ResurfacingActionInputView(card: input.card, capability: input.capability, viewModel: viewModel)
+            }
             .sheet(isPresented: $showingActivity) {
                 TodayActivitySheet(viewModel: viewModel, search: $activitySearch) { item in
                     showingActivity = false
@@ -294,14 +312,6 @@ struct TodayView: View {
     }
 
     private func resurfacingSheet(_ card: ResurfacingCard) -> some View { ResurfacingDetailView(card: card, viewModel: viewModel) }
-    private func resurfacingActionsSheet(_ card: ResurfacingCard) -> some View {
-        ResurfacingActionsSheet(card: card, viewModel: viewModel) {
-            selectedResurfacingActions = nil
-            DispatchQueue.main.async { selectedResurfacing = card }
-        }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-    }
     private func briefingSheet(_ briefing: TodayBriefing) -> some View { TodayBriefingDetailView(briefing: briefing, viewModel: viewModel) }
 
     private func followUpSheet(_ item: ChannelFollowUp) -> some View {
@@ -319,7 +329,8 @@ struct TodayView: View {
                     viewModel.resolveFollowUp(item, action: action, hint: hint, reason: reason)
                 }
                 selectedFollowUp = nil
-            }
+            },
+            initialIntent: followUpIntent
         )
     }
 
@@ -388,6 +399,19 @@ struct TodayView: View {
 
     // MARK: Reading Room
 
+    private func sectionLoading(_ title: String, height: CGFloat = 100) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small).tint(theme.accentColor)
+                Text("Loading \(title)…").font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+            }
+            RoundedRectangle(cornerRadius: 4).fill(theme.secondaryTextColor.opacity(0.12)).frame(height: 10)
+            RoundedRectangle(cornerRadius: 4).fill(theme.secondaryTextColor.opacity(0.08)).frame(maxWidth: 220).frame(height: 10)
+            Spacer(minLength: 0)
+        }.padding(14).frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+            .background(theme.cardColor).clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     private var readingRoom: some View {
         VStack(alignment: .leading, spacing: 14) {
             // One row: the title shrinks (to ~16pt) before the switch wraps.
@@ -409,9 +433,18 @@ struct TodayView: View {
                         worth: viewModel.visibleResurfacingCards
                     ),
                     isLoadingMore: viewModel.isDeckLoadingMore,
-                    onNeedMore: { viewModel.loadMoreDeckCards() },
+                    forYouLoading: viewModel.initiallyLoading("message_followups"),
+                    worthLoading: viewModel.initiallyLoading("worth_a_look"),
+                    followUpTotal: viewModel.visibleMessageFollowUpTotal,
+                    worthTotal: viewModel.visibleResurfacingTotal,
+                    hasMoreForYou: viewModel.hasMoreMessageFollowUps,
+                    hasMoreWorth: viewModel.hasMoreResurfacing,
+                    pageRevision: viewModel.deckPageRevision,
+                    loadErrors: viewModel.sectionErrors,
+                    onNeedMore: { tab in viewModel.loadMoreDeckCards(followUps: tab != .worth, worth: tab != .forYou) },
                     onAction: performDeckAction,
                     onOpen: openDeckCard,
+                    onAct: runDeckActEntry,
                     onOpenBroadsheet: { withAnimation(.easeInOut(duration: 0.2)) { viewModel.readingRoomMode = .broadsheet } }
                 )
                 if let error = viewModel.sectionErrors["message_followups"] {
@@ -430,7 +463,7 @@ struct TodayView: View {
     private var readingModeSwitcher: some View {
         let total = viewModel.visibleMessageFollowUpTotal + viewModel.visibleResurfacingTotal
         return HStack(spacing: 2) {
-            modeButton("🃏 Brief \(TodayMorningEdition.deckCountLabel(total))", mode: .deck)
+            modeButton("🃏 Brief \(viewModel.initiallyLoading("message_followups", "worth_a_look") ? "…" : TodayMorningEdition.deckCountLabel(total))", mode: .deck)
             modeButton("📰 Broadsheet", mode: .broadsheet)
         }
         .padding(2)
@@ -468,7 +501,10 @@ struct TodayView: View {
             case .useful: verb = "useful"
             case .acknowledge: verb = "acknowledge"
             case .dismiss: verb = "dismiss"
-            case .primary: verb = "approve"
+            case .snooze: verb = "snooze"
+            // Open is a worth-card entry; a follow-up's task always goes
+            // through the instruction step in its detail view.
+            case .open: completion(false); return
             }
             viewModel.resolveFollowUp(item, action: verb, completion: completion)
         case .worth(let worth):
@@ -476,7 +512,9 @@ struct TodayView: View {
             case .useful: viewModel.resolveResurfacing(worth, action: .open, completion: completion)
             case .acknowledge: viewModel.resolveResurfacing(worth, action: .acknowledge, completion: completion)
             case .dismiss: viewModel.resolveResurfacing(worth, action: .dismiss, completion: completion)
-            case .primary:
+            // Resurfacing has no snooze.
+            case .snooze: completion(false)
+            case .open:
                 viewModel.resolveResurfacing(worth, action: .open, completion: completion)
                 openWorthSource(worth)
             }
@@ -485,8 +523,49 @@ struct TodayView: View {
 
     private func openDeckCard(_ card: TodayDeckCard) {
         switch card.source {
-        case .followUp(let item): selectedFollowUp = item
+        case .followUp(let item): openFollowUp(item)
         case .worth(let worth): selectedResurfacing = worth
+        }
+    }
+
+    private func openFollowUp(_ item: ChannelFollowUp, intent: ChannelFollowUpDetailIntent? = nil) {
+        followUpIntent = intent
+        selectedFollowUp = item
+    }
+
+    /// Non-resolving Act-menu entries, each through the flow the detail
+    /// views already use; the card stays on the deck until that flow
+    /// resolves it.
+    private func runDeckActEntry(_ card: TodayDeckCard, _ entry: TodayDeckActEntry) {
+        switch (card.source, entry) {
+        case (.followUp(let item), .channelAction(let descriptor)):
+            openFollowUp(item, intent: .channelAction(descriptor))
+        case (.followUp(let item), .startFollowUpTask):
+            openFollowUp(item, intent: .startFollowUpTask)
+        case (_, .openThread(_, let url)):
+            UIApplication.shared.open(url)
+        case (.worth(let worth), .resurfacing(let capability)):
+            performDeckResurfacing(worth, capability)
+        default:
+            openDeckCard(card)
+        }
+    }
+
+    /// Mirrors `ResurfacingDetailView.handle`: input actions open the
+    /// existing input form; the rest run and land on the detail view, which
+    /// shows the result or error.
+    private func performDeckResurfacing(_ card: ResurfacingCard, _ capability: ResurfacingActionCapability) {
+        switch capability.kind {
+        case .createTask, .createReminder, .share, .saveToMemory:
+            deckResurfacingInput = TodayDeckResurfacingInput(card: card, capability: capability)
+        case .showOriginal:
+            viewModel.fetchResurfacingDetail(card, original: true)
+            selectedResurfacing = card
+        case .viewDetails, .openSource:
+            selectedResurfacing = card
+        default:
+            viewModel.performResurfacingAction(card, kind: capability.kind)
+            selectedResurfacing = card
         }
     }
 
@@ -530,9 +609,11 @@ struct TodayView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 11) {
                         Color.clear.frame(height: 0).id("broadsheet-top")
-                        if !viewModel.isBroadsheetLoaded(tab) && loading {
+                        if !viewModel.isBroadsheetLoaded(tab) && viewModel.sectionErrors["broadsheet:\(tab.rawValue)"] == nil {
                             ProgressView().tint(theme.accentColor)
                                 .frame(maxWidth: .infinity, minHeight: 380)
+                        } else if !viewModel.isBroadsheetLoaded(tab), viewModel.sectionErrors["broadsheet:\(tab.rawValue)"] != nil {
+                            broadsheetEmpty("This section could not be loaded. Retry below.")
                         } else if tab == .forYou {
                             let messages = viewModel.visibleBroadsheetFollowUps
                             if core.isEmpty && messages.isEmpty {
@@ -721,6 +802,9 @@ struct TodayView: View {
                         Spacer(minLength: 4)
                         Image(systemName: "chevron.right").font(.caption2).foregroundColor(theme.secondaryTextColor)
                     }
+                    if let dateline = readingRoomDateline(worth: card) {
+                        Text(dateline).font(.themed(11)).foregroundColor(theme.secondaryTextColor)
+                    }
                     Text(TodayMorningEdition.firstNonEmpty(card.line, card.sourceTitle) ?? "Resurfaced Note")
                         .font(TodayNewsprint.serif(18, weight: .semibold)).foregroundColor(theme.textColor)
                         .lineLimit(3)
@@ -740,12 +824,7 @@ struct TodayView: View {
                 .accessibilityAddTraits(.isButton)
                 TodayHairline().padding(.vertical, 2)
                 HStack(spacing: 6) {
-                    Button { selectedResurfacingActions = card } label: {
-                        Label("Actions", systemImage: "ellipsis.circle")
-                    }
-                    .buttonStyle(TodayCompactActionButtonStyle(tint: theme.accentColor))
-                    .disabled(viewModel.actionItemID != nil)
-                    .accessibilityIdentifier("today-resurfacing-actions-\(card.id)")
+                    actMenu(TodayDeckCard(source: .worth(card)), identifier: "today-resurfacing-act-\(card.id)")
                     // Resurfacing has no snooze; dismissal reasons are the
                     // resurfacing vocabulary only.
                     Menu {
@@ -799,9 +878,9 @@ struct TodayView: View {
                     HStack {
                         TodayKicker(text: dispatchKicker(item), color: theme.accentColor, size: 9)
                         Spacer(minLength: 4)
-                        if let received = item.receivedAt {
-                            Text(TodayViewModel.relativeTime(received)).font(.themed(10)).foregroundColor(theme.secondaryTextColor)
-                        }
+                    }
+                    if let dateline = readingRoomDateline(followUp: item) {
+                        Text(dateline).font(.themed(11)).foregroundColor(theme.secondaryTextColor)
                     }
                     Text(TodayMorningEdition.firstNonEmpty(item.subject) ?? "Untitled Message")
                         .font(TodayNewsprint.serif(18, weight: .semibold)).foregroundColor(theme.textColor)
@@ -826,12 +905,7 @@ struct TodayView: View {
                 .accessibilityAddTraits(.isButton)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        if let action = item.availableActions.first {
-                            Button { selectedFollowUp = item } label: {
-                                Label(action.label, systemImage: action.systemImage)
-                            }
-                            .buttonStyle(TodayCompactActionButtonStyle(tint: theme.accentColor))
-                        }
+                        actMenu(TodayDeckCard(source: .followUp(item)), identifier: "today-message-act-\(item.id)")
                         Button { resolveFollowUp(item, action: "useful") } label: {
                             Label("Useful", systemImage: "hand.thumbsup.fill")
                         }
@@ -862,13 +936,6 @@ struct TodayView: View {
                         }
                         .buttonStyle(TodayCompactActionButtonStyle(tint: theme.dangerColor))
                         .accessibilityIdentifier("today-message-dismiss-reason-\(item.id)")
-                        // A channel follow-up snooze carries no duration on the
-                        // wire: it hides the card from Today (no time picker).
-                        Button { resolveFollowUp(item, action: "snooze") } label: {
-                            Label(Self.followUpSnoozeLabel, systemImage: "clock")
-                        }
-                        .buttonStyle(TodayCompactActionButtonStyle(tint: theme.discoveryColor))
-                        .accessibilityIdentifier("today-message-snooze-\(item.id)")
                     }
                 }
             }
@@ -879,11 +946,42 @@ struct TodayView: View {
         .verifiedAttentionVisibility(item.deliveryBinding)
     }
 
+    /// A channel follow-up snooze carries no duration on the wire: it hides
+    /// the card from Today (no time picker).
     static let followUpSnoozeLabel = "Snooze — hide from Today"
+
+    /// The deck's ⚡ Act menu on a broadsheet row: the same entries and
+    /// handlers, with snooze / Open resolving through the row's optimistic
+    /// calls and every other entry leaving the row in place.
+    private func actMenu(_ card: TodayDeckCard, identifier: String) -> some View {
+        Menu {
+            TodayActMenuItems(entries: card.actEntries,
+                              agentName: primaryAgent.preferredName ?? MagicianAccess.productName,
+                              identifierPrefix: identifier) { runBroadsheetActEntry(card, $0) }
+        } label: {
+            Label("Act", systemImage: "bolt.fill")
+        }
+        .menuOrder(.fixed)
+        .buttonStyle(TodayCompactActionButtonStyle(tint: theme.accentColor))
+        .disabled(viewModel.actionItemID != nil)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func runBroadsheetActEntry(_ card: TodayDeckCard, _ entry: TodayDeckActEntry) {
+        switch (card.source, entry.resolvingAction) {
+        case (.followUp(let item), .snooze?):
+            resolveFollowUp(item, action: "snooze")
+        case (.worth(let worth), .open?):
+            withAnimation(.snappy(duration: 0.22)) { viewModel.resolveResurfacing(worth, action: .open) }
+            openWorthSource(worth)
+        default:
+            runDeckActEntry(card, entry)
+        }
+    }
 
     private func dispatchKicker(_ item: ChannelFollowUp) -> String {
         let provider = item.provider.trimmingCharacters(in: .whitespacesAndNewlines)
-        var parts = ["DISPATCH", provider.isEmpty || provider == "unknown" ? "CORRESPONDENCE" : provider]
+        var parts = ["FOR YOU", provider.isEmpty || provider == "unknown" ? "CORRESPONDENCE" : provider]
         if let sender = TodayMorningEdition.firstNonEmpty(item.sender) { parts.append(sender) }
         return parts.joined(separator: " · ")
     }
@@ -2169,6 +2267,7 @@ private struct ResurfacingDetailView: View {
     let card: ResurfacingCard
     @ObservedObject var viewModel: TodayViewModel
     @StateObject private var theme = ThemeManager.shared
+    @ObservedObject private var primaryAgent = PrimaryAgentSiriAdvertiser.shared
     @Environment(\.dismiss) private var dismiss
     @State private var inputAction: ResurfacingActionCapability?
 
@@ -2220,7 +2319,7 @@ private struct ResurfacingDetailView: View {
                             HStack {
                                 Image(systemName: capability.kind.systemImage)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(capability.label).font(.themed(14, weight: .semibold))
+                                    Text(TodayMorningEdition.resurfacingActionLabel(capability, agentName: agentName)).font(.themed(14, weight: .semibold))
                                     if capability.kind == recommendation?.kind, let recommendation {
                                         Text("Recommended · \(recommendation.rationale)").font(.themed(10)).opacity(0.8).lineLimit(2)
                                     }
@@ -2258,6 +2357,7 @@ private struct ResurfacingDetailView: View {
     }
 
     private var detail: ResurfacingDetail? { viewModel.resurfacingDetails[card.id] }
+    private var agentName: String { primaryAgent.preferredName ?? MagicianAccess.productName }
     private var brief: ResurfacingBrief? { detail?.brief ?? card.brief }
     private var recommendation: ResurfacingRecommendation? { detail?.recommendedAction ?? card.recommendedAction }
     private var capabilities: [ResurfacingActionCapability] {
@@ -2309,263 +2409,6 @@ private struct ResurfacingDetailView: View {
         if route.hasPrefix("/t/") { AppActions.shared.requestThread(source?["thread_id"]?.stringValue ?? String(route.dropFirst(3))); dismiss(); return }
         if route.hasPrefix("/briefing") { AppActions.shared.requestToday(section: .delivered); dismiss(); return }
         if route.hasPrefix("/feed") || route.hasPrefix("/memory") { AppActions.shared.requestToday(section: .changed, activity: true); dismiss() }
-    }
-}
-
-private struct ResurfacingActionsSheet: View {
-    let card: ResurfacingCard
-    @ObservedObject var viewModel: TodayViewModel
-    let onOpenDetail: () -> Void
-
-    @StateObject private var theme = ThemeManager.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var inputAction: ResurfacingActionCapability?
-
-    var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label("Worth a look", systemImage: "sparkles")
-                            .font(.themed(12, weight: .semibold))
-                            .foregroundColor(theme.discoveryColor)
-                        Text(card.line.isEmpty ? card.sourceTitle : card.line)
-                            .font(.themed(20, weight: .bold))
-                            .foregroundColor(theme.textColor)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !card.whyNow.isEmpty {
-                            Text(card.whyNow)
-                                .font(.themed(12, weight: .medium))
-                                .foregroundColor(theme.discoveryColor)
-                        }
-                    }
-
-                    actionSection
-                    feedbackSection
-
-                    if let error = viewModel.sectionErrors["resurfacing:\(card.id)"] {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.themed(12))
-                            .foregroundColor(theme.dangerColor)
-                    }
-                    if let error = viewModel.sectionErrors.first(where: {
-                        $0.key.hasPrefix("resurfacing-action:\(card.id):")
-                    })?.value {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.themed(12))
-                            .foregroundColor(theme.dangerColor)
-                    }
-                }
-                .padding()
-            }
-            .background(theme.backgroundColor.ignoresSafeArea())
-            .navigationTitle("Worth a look actions")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .onAppear {
-                if detail == nil { viewModel.fetchResurfacingDetail(card) }
-            }
-            .sheet(item: $inputAction) {
-                ResurfacingActionInputView(card: card, capability: $0, viewModel: viewModel)
-            }
-        }
-    }
-
-    private var detail: ResurfacingDetail? { viewModel.resurfacingDetails[card.id] }
-    private var recommendation: ResurfacingRecommendation? {
-        detail?.recommendedAction ?? card.recommendedAction
-    }
-    private var capabilities: [ResurfacingActionCapability] {
-        resolvedResurfacingCapabilities(card: card, detail: detail)
-            .filter { $0.kind != .viewDetails }
-    }
-
-    private var actionSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("ACTIONS")
-                .font(.themed(10, weight: .bold))
-                .tracking(1.1)
-                .foregroundColor(theme.secondaryTextColor)
-
-            actionRow(
-                label: "Open full details",
-                systemImage: "doc.text.magnifyingglass",
-                tint: theme.accentColor,
-                identifier: "worth-actions-open-detail-\(card.id)",
-                action: onOpenDetail
-            )
-
-            if viewModel.actionItemID == "resurfacing:\(card.id)" {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading current actions…")
-                        .font(.themed(12))
-                        .foregroundColor(theme.secondaryTextColor)
-                }
-                .padding(.vertical, 4)
-            }
-
-            ForEach(capabilities) { capability in
-                actionRow(
-                    label: capability.label,
-                    detail: capability.kind == recommendation?.kind ? recommendation?.rationale : nil,
-                    systemImage: capability.kind.systemImage,
-                    tint: capability.kind == recommendation?.kind ? theme.discoveryColor : theme.accentColor,
-                    identifier: "worth-actions-capability-\(capability.kind.rawValue)-\(card.id)"
-                ) {
-                    perform(capability)
-                }
-            }
-        }
-    }
-
-    private var feedbackSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("FEEDBACK")
-                .font(.themed(10, weight: .bold))
-                .tracking(1.1)
-                .foregroundColor(theme.secondaryTextColor)
-
-            ForEach(ResurfacingFeedbackAction.allCases) { action in
-                actionRow(
-                    label: action.label,
-                    systemImage: action.systemImage,
-                    tint: feedbackTint(action),
-                    identifier: "worth-actions-\(action.rawValue.replacingOccurrences(of: "open", with: "mark-useful"))-\(card.id)"
-                ) {
-                    withAnimation(.snappy(duration: 0.22)) {
-                        viewModel.resolveResurfacing(card, action: action)
-                    }
-                    dismiss()
-                }
-            }
-            // Resurfacing has no snooze; a dismissal may name one of the
-            // resurfacing reasons.
-            Menu {
-                ForEach(ResurfacingDismissOption.all.filter { $0.code != nil }) { option in
-                    Button(option.label, role: .destructive) {
-                        withAnimation(.snappy(duration: 0.22)) {
-                            viewModel.resolveResurfacing(card, action: .dismiss, reason: option.code)
-                        }
-                        dismiss()
-                    }
-                }
-            } label: {
-                HStack(spacing: 11) {
-                    Image(systemName: "text.badge.xmark").font(.system(size: 15, weight: .semibold)).frame(width: 22)
-                    Text("Dismiss with reason").font(.themed(14, weight: .semibold))
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.down").font(.caption2)
-                }
-                .foregroundColor(theme.dangerColor)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 11)
-                .background(theme.elevatedColor)
-                .clipShape(RoundedRectangle(cornerRadius: 11))
-            }
-            .disabled(viewModel.actionItemID != nil)
-            .accessibilityIdentifier("worth-actions-dismiss-reason-\(card.id)")
-        }
-    }
-
-    private func actionRow(
-        label: String,
-        detail: String? = nil,
-        systemImage: String,
-        tint: Color,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 11) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(label).font(.themed(14, weight: .semibold))
-                    if let detail, !detail.isEmpty {
-                        Text("Recommended · \(detail)")
-                            .font(.themed(10))
-                            .lineLimit(2)
-                            .opacity(0.78)
-                    }
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.caption2)
-            }
-            .foregroundColor(tint)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 11)
-            .background(theme.elevatedColor)
-            .clipShape(RoundedRectangle(cornerRadius: 11))
-        }
-        .buttonStyle(.plain)
-        .disabled(viewModel.actionItemID != nil)
-        .opacity(viewModel.actionItemID == nil ? 1 : 0.55)
-        .accessibilityIdentifier(identifier)
-    }
-
-    private func feedbackTint(_ action: ResurfacingFeedbackAction) -> Color {
-        switch action {
-        case .open: return theme.successColor
-        case .acknowledge: return theme.accentColor
-        case .dismiss: return theme.dangerColor
-        }
-    }
-
-    private func perform(_ capability: ResurfacingActionCapability) {
-        switch capability.kind {
-        case .viewDetails:
-            onOpenDetail()
-        case .showOriginal:
-            viewModel.fetchResurfacingDetail(card, original: true)
-            onOpenDetail()
-        case .openSource:
-            if let raw = detail?.openURL, let url = URL(string: raw) {
-                UIApplication.shared.open(url)
-                dismiss()
-            } else if let route = detail?.sourceRoute {
-                openRoute(route)
-            } else {
-                onOpenDetail()
-            }
-        case .createTask, .createReminder, .share, .saveToMemory:
-            inputAction = capability
-        default:
-            viewModel.performResurfacingAction(card, kind: capability.kind)
-            onOpenDetail()
-        }
-    }
-
-    private func openRoute(_ route: String) {
-        if AppActions.shared.requestWorkRoute(route) { dismiss(); return }
-        if route.hasPrefix("http"), let url = URL(string: route) {
-            UIApplication.shared.open(url)
-            dismiss()
-            return
-        }
-        let source = detail?.source?.objectValue
-        if route.hasPrefix("/tasks") {
-            AppActions.shared.requestTask(source?["task_id"]?.stringValue)
-            dismiss()
-        } else if route.hasPrefix("/t/") {
-            AppActions.shared.requestThread(source?["thread_id"]?.stringValue ?? String(route.dropFirst(3)))
-            dismiss()
-        } else if route.hasPrefix("/briefing") {
-            AppActions.shared.requestToday(section: .delivered)
-            dismiss()
-        } else if route.hasPrefix("/feed") || route.hasPrefix("/memory") {
-            AppActions.shared.requestToday(section: .changed, activity: true)
-            dismiss()
-        } else {
-            onOpenDetail()
-        }
     }
 }
 
@@ -2784,11 +2627,27 @@ private struct ResurfacingActionInputView: View {
     }
 }
 
+/// Where the follow-up detail starts when the deck's Act menu opened it.
+enum ChannelFollowUpDetailIntent: Equatable {
+    /// The optional-instruction editor, ahead of `approve`.
+    case startFollowUpTask
+    /// `begin` this channel action (composer, confirmation or direct commit).
+    case channelAction(ChannelActionDescriptor)
+}
+
+/// A deck Act-menu resurfacing action routed to the existing input form.
+private struct TodayDeckResurfacingInput: Identifiable {
+    let card: ResurfacingCard
+    let capability: ResurfacingActionCapability
+    var id: String { "\(card.id):\(capability.id)" }
+}
+
 struct ChannelFollowUpDetailView: View {
     let item: ChannelFollowUp
     @ObservedObject var client: ChannelFollowUpActionClient
     let onResolved: () -> Void
     let onResolutionRequested: (_ action: String, _ hint: String?, _ reason: String?) -> Void
+    var initialIntent: ChannelFollowUpDetailIntent?
     @StateObject private var theme = ThemeManager.shared
     @Environment(\.dismiss) private var dismiss
     @State private var hint = ""
@@ -2799,6 +2658,9 @@ struct ChannelFollowUpDetailView: View {
     @State private var composeHint = ""
     @State private var directConfirmation: ChannelActionDescriptor?
     @State private var showingWritingStyle = false
+    @State private var appliedInitialIntent = false
+    @State private var scrollAnchor: String?
+    private static let composerAnchor = "channel-composer"
 
     var body: some View {
         NavigationView {
@@ -2841,7 +2703,7 @@ struct ChannelFollowUpDetailView: View {
                                 .foregroundColor(theme.onAccentColor)
                         }
                     } else {
-                        Button { showingHint = true } label: { Label("Do it", systemImage: "bolt.fill").frame(maxWidth: .infinity) }
+                        Button { showingHint = true } label: { Label("Start follow-up task…", systemImage: "bolt.fill").frame(maxWidth: .infinity) }
                             .buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 10)).tint(theme.accentFillColor)
                             .foregroundColor(theme.onAccentColor)
                     }
@@ -2927,6 +2789,7 @@ struct ChannelFollowUpDetailView: View {
                             }
                         }
                         .padding(12).background(theme.surfaceColor).cornerRadius(12)
+                        .id(Self.composerAnchor)
                     }
 
                     if let error = client.error {
@@ -2948,8 +2811,12 @@ struct ChannelFollowUpDetailView: View {
                     }
                     if client.busyKey == "message:\(item.id)" { ProgressView("Fetching message…") }
                     if let message = client.messages[item.id] { messageEvidence(message) }
-                }.padding()
+                }
+                .scrollTargetLayout()
+                .padding()
             }
+            .scrollPosition(id: $scrollAnchor, anchor: .top)
+            .onAppear(perform: applyInitialIntent)
             .background(theme.backgroundColor.ignoresSafeArea())
             .navigationTitle("Follow-up")
             .navigationBarTitleDisplayMode(.inline)
@@ -2988,6 +2855,29 @@ struct ChannelFollowUpDetailView: View {
             }
             if message.evidenceMessages.isEmpty { Text(message.body ?? "Message unavailable or suppressed.").font(.themedMono(.caption)).foregroundColor(theme.secondaryTextColor).textSelection(.enabled) }
         }.padding(11).background(theme.surfaceColor).cornerRadius(11)
+    }
+
+    /// Runs once: the deck's Act menu opens this view on the instruction
+    /// editor or on one channel action, through the same paths as the
+    /// buttons below.
+    private func applyInitialIntent() {
+        guard !appliedInitialIntent, let initialIntent else { return }
+        appliedInitialIntent = true
+        switch initialIntent {
+        case .startFollowUpTask:
+            if !item.reviewRequired { showingHint = true }
+        case .channelAction(let descriptor):
+            // Let the sheet finish presenting before a confirmation dialog
+            // or the composer scroll.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                begin(descriptor)
+                guard descriptor.needsCompose else { return }
+                // Next pass: the composer exists once `composeAction` lands.
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.25)) { scrollAnchor = Self.composerAnchor }
+                }
+            }
+        }
     }
 
     private func begin(_ descriptor: ChannelActionDescriptor) {

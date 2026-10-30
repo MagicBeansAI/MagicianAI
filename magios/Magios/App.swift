@@ -13,6 +13,14 @@ struct MagiosApp: App {
     @State private var mobileConnectionRevision = 0
 
     init() {
+        // Account theme sync starts here — before any view can apply a theme —
+        // so the very first reconcile (handleActivation below) can push. UI
+        // tests never write the real account record.
+        if !isUITestLaunch {
+            ThemeManager.shared.themeSyncSink = { theme, mode in
+                ThemeSync.push(theme: theme, appearance: mode.rawValue)
+            }
+        }
         // UI tests: no animations, so XCUITest's wait-for-idle resolves instantly.
         if isUITestLaunch { UIView.setAnimationsEnabled(false) }
         if !isUITestLaunch {
@@ -52,6 +60,10 @@ struct MagiosApp: App {
                 .onOpenURL { url in
                     handleURL(url)
                 }
+                // Note links (`/notes?path=…&workspace=…`) in any Markdown —
+                // chat replies, task summaries, Attention details — open the
+                // native Notes screen; other links keep the system behavior.
+                .environment(\.openURL, NoteLinkRouter.openURLAction)
                 .onAppear { handleActivation() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { handleActivation() }
@@ -93,6 +105,10 @@ struct MagiosApp: App {
     private func handleActivation() {
         ShareRouter.shared.drainInbox()
         AppActions.shared.consumePendingIntentAction()
+        // The theme follows the account: re-check the stored choice whenever
+        // the app comes forward, as the web does on focus. Fire-and-forget —
+        // a failure leaves the locally saved theme in charge.
+        ThemeSync.reconcile(systemDark: ThemeManager.systemIsDark)
         if let token = TutorOverlayInbox.claimPendingToken() {
             _ = tutorRouter.present(token: token)
         }
@@ -124,6 +140,11 @@ struct MagiosApp: App {
             if let link = try? MobileEnrollmentLink.parse(url.absoluteString) {
                 AppActions.shared.requestMobileConnection(link)
             }
+            return
+        }
+        // magican://notes?path=…&workspace=… — one note in the Notes app.
+        if url.host == "notes" {
+            if !NoteLinkRouter.open(url) { handleActivation() }
             return
         }
         if url.host == "tutor-overlay",

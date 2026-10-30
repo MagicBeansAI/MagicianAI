@@ -15,6 +15,8 @@ struct MonitorsLaneView: View {
 
     let onSelect: (Monitors.ListItemV1) -> Void
     let onCreate: () -> Void
+    /// Inside the All work page's one scroll: no scroll view or refresh of its own.
+    var embedded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,7 +29,19 @@ struct MonitorsLaneView: View {
     private var filterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                Menu("\(vm.pageSize) per page") { ForEach([25, 50, 100, 200], id: \.self) { size in Button("\(size) per page") { Task { await vm.setPageSize(size) } } } }.font(.themed(13)).foregroundColor(themeManager.accentColor)
+                Menu { ForEach([25, 50, 100, 200], id: \.self) { size in Button("\(size) per page") { Task { await vm.setPageSize(size) } } } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "list.number").font(.system(size: 11)).accessibilityHidden(true)
+                        Text("\(vm.pageSize) per page")
+                    }
+                    .font(.themed(13, weight: .medium))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(themeManager.surfaceColor)
+                    .foregroundColor(themeManager.textColor)
+                    .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous).stroke(themeManager.secondaryTextColor.opacity(0.2), lineWidth: 1))
+                }
+                .accessibilityLabel("\(vm.pageSize) per page")
                 ForEach(MonitorsListViewModel.StateFilter.allCases) { filter in
                     chip(filter.title, active: vm.stateFilter == filter) {
                         Task { await vm.setFilter(filter) }
@@ -53,7 +67,7 @@ struct MonitorsLaneView: View {
 
     /// Fixed-size placeholder rows during the first load (no empty-state flash).
     private var loadingState: some View {
-        ScrollView {
+        scrolling {
             LazyVStack(spacing: 10) {
                 ForEach(0..<4, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 14)
@@ -98,7 +112,7 @@ struct MonitorsLaneView: View {
             .accessibilityIdentifier("monitors-retry")
             Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: embedded ? 240 : nil)
     }
 
     private var emptyState: some View {
@@ -133,8 +147,13 @@ struct MonitorsLaneView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// Its own scroll view, unless embedded in a page that already scrolls.
+    @ViewBuilder private func scrolling<C: View>(@ViewBuilder _ body: () -> C) -> some View {
+        if embedded { body() } else { ScrollView { body() } }
+    }
+
     private var list: some View {
-        ScrollView {
+        scrolling {
             LazyVStack(spacing: 10) {
                 if let error = vm.errorMessage {
                     inlineErrorBanner(error)
@@ -157,7 +176,7 @@ struct MonitorsLaneView: View {
         }
         // Pull-to-refresh with a visible spinner; the navigation title is
         // untouched (§9.3.5 — no title swap while refreshing).
-        .refreshable { await vm.reload() }
+        .refreshable { if !embedded { await vm.reload() } }
     }
 
     private func inlineErrorBanner(_ message: String) -> some View {

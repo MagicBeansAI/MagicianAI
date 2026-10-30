@@ -1,10 +1,60 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import FloatingComposerHarness from '../../test/fixtures/FloatingComposerHarness.svelte';
+import FloatingComposer from './FloatingComposer.svelte';
+
+it('shows the chosen model and thinking level on the actual composer chip', () => {
+	render(FloatingComposer, { props: { engineName: 'Magician', profileName: 'GPT Sol', profileModel: 'raw-provider-model-id', profileModelLabel: 'GPT Sol', profileThinkingLabel: 'High' } });
+	const chip = screen.getByRole('button', { name: 'Chat engine: Magician, selection: GPT Sol, thinking: High' });
+	expect(chip).toHaveTextContent('GPT Sol');
+	expect(chip).toHaveTextContent('High');
+	expect(chip).not.toHaveTextContent('raw-provider-model-id');
+});
+
+it.each([
+	{ profileName: 'Opus 5', profileModel: 'opus-5', kind: 'pro', profileFeedback: 'premium' as const },
+	{ profileName: 'Instant', profileModel: 'nano', kind: 'instant', profileFeedback: 'fast' as const },
+	{ profileName: 'GPT-6 Luna', profileModel: 'gpt-6-luna', kind: 'instant', profileFeedback: 'fast' as const },
+	{ profileName: 'Claude Haiku', profileModel: 'claude-haiku-4-5', kind: 'instant', profileFeedback: 'fast' as const },
+	{ profileName: 'Gemini Flash Lite', profileModel: 'gemini-3.5-flash-lite', kind: 'instant', profileFeedback: 'fast' as const },
+	{ profileName: 'DeepSeek Flash', profileModel: 'deepseek-flash', kind: 'instant', profileFeedback: 'fast' as const },
+	{ profileName: 'Grok Build Fast', profileModel: 'grok-4.7-build-fast', kind: 'instant', profileFeedback: 'fast' as const }
+])('keeps $kind model feedback outside the glass composer and attached to its selector', async ({ kind, ...props }) => {
+	const { container, rerender, unmount } = render(FloatingComposer, { props: { profileName: 'GPT Sol', profileModel: 'gpt-sol' } });
+	const anchor = container.querySelector<HTMLElement>('.profile-selection-anchor')!;
+	let left = 300;
+	vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => ({ left, top: 650, width: 180, height: 22 } as DOMRect));
+	await rerender(props);
+	const overlay = document.body.querySelector<HTMLElement>('.profile-selection-burst')!;
+	expect(overlay.parentElement).toBe(document.body);
+	expect(container.contains(overlay)).toBe(false);
+	expect(overlay.querySelector(`.profile-selection-symbol--${kind}`)).not.toBeNull();
+	expect(overlay.style.left).toBe('300px');
+	expect(overlay.style.top).toBe('650px');
+	expect(overlay.style.width).toBe('180px');
+	left = 420;
+	window.dispatchEvent(new Event('resize'));
+	expect(overlay.style.left).toBe('420px');
+	unmount();
+	expect(document.body.contains(overlay)).toBe(false);
+	left = 500;
+	window.dispatchEvent(new Event('resize'));
+	expect(overlay.style.left).toBe('420px');
+});
 
 describe('FloatingComposer send affordance', () => {
+	it.each([
+		{ profileName: 'Provider custom model', profileModel: 'unfamiliar-v1', profileFeedback: 'fast' as const, symbol: 'instant' },
+		{ profileName: 'Provider flagship', profileModel: 'unfamiliar-v2', profileFeedback: 'premium' as const, symbol: 'pro' },
+		{ profileName: 'GPT-6 Luna', profileModel: 'gpt-6-luna', profileFeedback: 'standard' as const, symbol: null }
+	])('uses server feedback $profileFeedback independently of provider/model naming', async ({ symbol, ...props }) => {
+		const { rerender } = render(FloatingComposer, { props: { profileName: 'Initial', profileModel: 'initial-model', profileFeedback: 'standard' } });
+		await rerender(props);
+		if (symbol) expect(document.body.querySelector(`.profile-selection-symbol--${symbol}`)).not.toBeNull();
+		else expect(document.body.querySelector('.profile-selection-burst')).toBeNull();
+	});
 	it('hides the send control while the composer is empty', () => {
 		render(FloatingComposerHarness);
 		expect(screen.queryByRole('button', { name: 'Send message' })).toBeNull();

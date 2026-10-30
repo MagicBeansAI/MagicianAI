@@ -4,7 +4,7 @@
 //! occurrence by default, all when `replace_all: true`), then stages the
 //! resulting diff for operator approval before anything is written. A file
 //! inside the running task's own workdir is edited directly (see
-//! `write_file`).
+//! `write_file`). God mode uses once/session/always file grants for the diff.
 //! Fails if `old_string` is missing, ambiguous (more than one match
 //! without `replace_all`), or equal to `new_string`.
 
@@ -51,16 +51,20 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     if let Some(target) =
         crate::magician_v2::execution::native_executors::path_in_task_workdir(file_path)
     {
-        return Ok(staged_file_edit::edit_task_workdir_file(
-            &target,
-            file_path,
-            old_string,
-            new_string,
-            replace_all,
-        ));
+        if !crate::magician_v2::god_mode::active()
+            || staged_file_edit::task_workdir_write_refusal(&target).is_none()
+        {
+            return Ok(staged_file_edit::edit_task_workdir_file(
+                &target,
+                file_path,
+                old_string,
+                new_string,
+                replace_all,
+            ));
+        }
     }
 
-    let scoped = match staged_file_edit::resolve_path(&resources, &args, file_path) {
+    let scoped = match staged_file_edit::resolve_tool_write_path(&resources, &args, file_path) {
         Ok(path) => path,
         Err(err) => {
             // Out-of-workspace edit: escalate to the sandbox-override HITL (same
@@ -72,14 +76,22 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 if crate::config::external_writes_enabled() {
                     return Err(ExecutionError::PathAccessDenied {
                         paths: vec![file_path.to_string()],
+                        roots_hint: staged_file_edit::staged_write_refusal_hint(&resources, &args),
                     });
                 }
                 // Feature OFF (default): keep out-of-workspace edits scoped.
                 return Ok(json!({
                     "status": "error",
                     "reason": format!(
-                        "{err:#} — edit inside your scoped workspace (out-of-workspace writes are disabled)."
+                        "{err:#} — edit inside your scoped workspace (out-of-workspace writes are disabled){}.",
+                        staged_file_edit::staged_write_refusal_hint(&resources, &args)
                     ),
+                }));
+            }
+            if staged_file_edit::is_read_only_root_denied(&err) {
+                return Ok(json!({
+                    "status": "error",
+                    "reason": format!("Refused `file_path`: {err:#}"),
                 }));
             }
             return Ok(json!({
@@ -129,7 +141,12 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     } else {
         "s"
     };
-    let rationale = if scoped.apply_root.is_some() {
+    let rationale = if scoped.god_mode_override.is_some() {
+        format!(
+            "Replace {count} occurrence{plural} in {}",
+            scoped.absolute_path.display()
+        )
+    } else if scoped.apply_root.is_some() {
         format!(
             "Replace {count} occurrence{plural} in {} [OUTSIDE WORKSPACE — approved external write]",
             scoped.absolute_path.display()
@@ -148,7 +165,9 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             path: scoped.relative_path.clone(),
             new_content: updated,
         },
-    ) {
+    )
+    .await
+    {
         Ok(value) => Ok(value),
         Err(e) => Ok(json!({
             "status": "error",

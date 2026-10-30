@@ -195,8 +195,8 @@ are `gmail`; `agentmail.to` is its own.
   `unavailable` in `last_error` without spawning or moving the cursor.
   `@kapso/cli` lives once in `skillshub/node_modules/.bin`; each call gets the
   workspace's credentials, cwd and isolated `HOME`. Env `KAPSO_API_KEY`,
-  `KAPSO_PHONE_NUMBER_ID`, `KAPSO_BIN`; the bot receiver also needs
-  `KAPSO_WEBHOOK_SECRET` (HMAC over the raw body).
+  `KAPSO_PHONE_NUMBER_ID`, `KAPSO_BIN`; the bot receiver verifies an HMAC over
+  the raw body with the secret of the webhook it registers on start.
 - **AgentMail:** `agentmail --format json inboxes:messages list|get` with
   inbox-scoped `AGENT_MAIL_KEY`; outbound iff `from` is the inbox. Env
   `AGENTMAIL_BIN`, `AGENTMAIL_ACCOUNT_<SLUG>_EMAIL` / `AGENT_MAIL_KEY_<SLUG>`.

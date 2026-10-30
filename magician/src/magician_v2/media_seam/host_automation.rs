@@ -146,6 +146,17 @@ impl HostAutomationProvider {
         self.automation_status().await.available
     }
 
+    /// One status probe answering both "is the desktop host gateway up" and
+    /// "which desktop build is it" (`version`, sent by desktop 0.3.28+;
+    /// `None` from older builds and when the gateway is unreachable).
+    pub async fn gateway_probe(&self) -> HostGatewayProbe {
+        let status = self.automation_status().await;
+        HostGatewayProbe {
+            available: status.available,
+            version: status.version.filter(|v| !v.trim().is_empty()),
+        }
+    }
+
     /// CuaDriver availability is independent of Apple Events permissions.
     /// Older desktop releases reported only the installed `cua_driver` bit.
     pub async fn cua_available(&self) -> bool {
@@ -281,10 +292,19 @@ pub struct AppleScriptResult {
     pub exit_code: i32,
 }
 
+/// What `GET /health` learns from one desktop host gateway probe.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostGatewayProbe {
+    pub available: bool,
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct HostAutomationStatus {
     #[serde(default)]
     available: bool,
+    #[serde(default)]
+    version: Option<String>,
     #[serde(default)]
     cua_driver: bool,
     #[serde(default)]
@@ -454,6 +474,34 @@ mod tests {
             .await;
         let provider = HostAutomationProvider::new(server.uri());
         assert!(provider.gateway_available().await);
+    }
+
+    #[tokio::test]
+    async fn gateway_probe_reads_the_desktop_version_when_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/host/automation/status"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "available": true, "version": "0.3.28" })),
+            )
+            .mount(&server)
+            .await;
+        let probe = HostAutomationProvider::new(server.uri())
+            .gateway_probe()
+            .await;
+        assert_eq!(
+            probe,
+            HostGatewayProbe {
+                available: true,
+                version: Some("0.3.28".to_string())
+            }
+        );
+        // Older desktops send no version; an unreachable gateway is neither up nor versioned.
+        let old = HostAutomationProvider::new("http://127.0.0.1:1")
+            .gateway_probe()
+            .await;
+        assert_eq!(old, HostGatewayProbe::default());
     }
 
     #[tokio::test]

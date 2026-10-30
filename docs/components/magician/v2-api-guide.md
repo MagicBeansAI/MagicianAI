@@ -74,7 +74,7 @@ Prefix `/api/magician/v2`. Control routes (`cancel`, `abort`, `pause`, `resume`,
 | `DELETE /executions/{id}/execution` | Same cancel handler; stops a live agent, keeps the record. |
 | `POST /executions/{id}/pause` | `pause_execution_tree`; succeeds only when every running node has a durable exact-resume checkpoint and is `Paused`. `{ paused: true }`; invalid when not live. |
 | `POST /executions/{id}/resume` | `resume_execution_tree`; validates tree and every required checkpoint before consuming one. `{ resumed: true }`; invalid when not resumable. |
-| `POST /executions/{id}/steer` | `{ "message": "..." }`, FIFO into the next decision turn as additive `[OPERATOR STEER]` guidance. 4 KiB, 16 pending, full `409`. `{ steered: true }`. |
+| `POST /executions/{id}/steer` | `{ "message": "..." }`, FIFO into the next decision turn as additive `[OPERATOR STEER]` guidance. 4 KiB, 16 pending, full `409`; a run that is not executing (queued, planning, waiting, paused) is also `409` with its `waiting_state`. `{ steered: true }`. |
 | `POST /executions/{id}/execution/agentic-continue` | After a max-iterations (or similar) pause. Optional `pause_state_id`, plan/step/agent/goal/cycle keys, `guidance`. Not HITL. |
 | `POST /executions/{id}/execution/agentic-cancel` | Cancel a paused agentic run. |
 | `GET /executions/{id}/execution-summary` | Latest persisted agentic summary `{ execution_id, summary }`. |
@@ -113,9 +113,9 @@ Shared backend for the web client and channel bots: [Consumer Channels](../../co
 | `POST /chat/enroll/cancel` | By one-time `code`, or owner by channel identity. |
 | `GET /chat/enroll/status` | `channel_type` + `channel_address`. |
 | `GET /chat/active` | Get/create active session; optional `channel` + `channel_address`. |
-| `POST /chat/new` | Archive active, create fresh. |
+| `POST /chat/new` | Start a chat on the thread: returns the thread's newest untitled, empty personal chat for the same agent and channel when one exists (user threads; not feature/rotating threads or forced agents), else creates one. |
 | `GET /chat/sessions` | List. |
-| `GET /chat/sessions/{id}` | Session + history. |
+| `GET /chat/sessions/{id}` | Session + history + `turn_state` (latest turn's status; [reconnect contract](chat-sse-streaming.md#turn-state-on-reconnect)). |
 | `PATCH /chat/sessions/{id}` | Metadata. |
 | `GET/POST /chat/sessions/{id}/messages` | List / send (→ `ChatResponse`). |
 | `POST /chat/sessions/{id}/transcript` | Display-only line (`system`); never dispatches; archived `400`. |
@@ -206,7 +206,7 @@ No `/tasks*` under `/api/magician/v2`; `/tasks/counts`, `/tasks/running`, batch 
 
 | Route | Description |
 | --- | --- |
-| `POST /tasks` | Non-empty `description`; optional `title`, `depends_on`, `agent_id`, `schedule`, `save_as_task`. |
+| `POST /tasks` | Non-empty `description`; optional `title`, `depends_on`, `agent_id`, `schedule`, `save_as_task`, `approved` (default `true`: authorizes, never starts). `201` adds `next_step` naming the call that starts it (`/execute`, or `/approve` first); absent when scheduled. |
 | `GET /tasks` | `TaskRecord` projections. |
 | `GET/PUT/DELETE /tasks/{id}` | Read / metadata / cascade delete; `description` cannot be blanked. |
 | `PUT /tasks/{id}/status` | Persists the V3 projection; `pending`/`ready` may reopen a terminal task after settling the root. |
@@ -248,7 +248,8 @@ UI `/presto/bots`; auth: [bot-auth-contract.md](bot-auth-contract.md).
 | Route | Description |
 | --- | --- |
 | `GET /programs` | `{ programs: [{name, title}] }` from `programs/*.md`. |
-| `GET /programs/{name}` | Document + managed `## Missions (CEO)` + `.history/`. `404`/`400` (bare `*.md` only). |
+| `GET /programs/{name}` | Document + managed `## Missions (CEO)` + `.history/` + content `sha256`. `404`/`400` (bare `*.md` only). |
+| `PUT /programs/{name}` | Owner session or the owner's paired iOS/Android app; agent grants refused. `{ content, base_sha256? }`: base is the GET `sha256`, required for an existing program, omitted to create. Replaced content snapshotted to `.history/` first; unchanged saves write nothing. `409 program_changed` + `current_sha256` when the document changed, appeared or vanished since it was read. |
 | `POST /programs/{name}/revert` | `{ snapshot? }` (newest); current content snapshotted first. |
 | `POST/GET /agents` | Create (`201` + `Location`) / list ambient. Surface-only omitted; disabled stay listed for re-enabling. |
 | `GET /agents/health` | Crew health. |
@@ -259,7 +260,7 @@ UI `/presto/bots`; auth: [bot-auth-contract.md](bot-auth-contract.md).
 | `POST /agents/{id}/set-primary` | Primary personal agent. |
 | `POST /agents/{id}/trigger` | Manual goal cycle; disabled/surface-only rejected before persist. |
 | `POST /agents/{id}/pause`, `/resume` | Pause / resume. |
-| `GET/PUT /harness/runtime` | Effective global harness state. PUT `{ "enabled": true\|false }` persists `harness.paused`; disabling clears queued starts, requests cancellation of active cycles, drops `MAGICIAN_HARNESS_PAUSED` from live `.env` / `.env.development`. |
+| `GET/PUT /harness/runtime` | Effective global harness state. PUT `{ "enabled": true\|false }` persists `harness.paused`; disabling clears queued `harness:`-goal starts, cancels only harness cycles ([harness-sre-agent.md](harness-sre-agent.md); `active_cycles_targeted` counts them), drops `MAGICIAN_HARNESS_PAUSED` from live `.env` / `.env.development`. |
 | `GET /harness/cycles` | Recent `harness_cycle_dispatch_outcome` events + tallies. |
 | `GET /harness/anomalies` | Persisted anomalies; optional `status=open\|fix_dispatched\|resolved\|dismissed`. |
 

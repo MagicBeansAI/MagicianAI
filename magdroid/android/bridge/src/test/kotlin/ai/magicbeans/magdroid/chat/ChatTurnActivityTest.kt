@@ -18,6 +18,30 @@ import org.junit.Test
  */
 class ChatTurnActivityTest {
 
+    @Test
+    fun `CLI rows expose the command family without payload arguments`() {
+        assertEquals("creative · generate create", callToolDisplayName("creative__run", buildJsonObject {
+            putJsonArray("args") { add(JsonPrimitive("generate")); add(JsonPrimitive("create")); add(JsonPrimitive("model")); add(JsonPrimitive("--prompt")); add(JsonPrimitive("private prompt")) }
+        }))
+        assertNull(callToolDisplayName("creative__run", buildJsonObject {
+            putJsonArray("args") { add(JsonPrimitive("--token")); add(JsonPrimitive("private token")) }
+        }))
+    }
+
+    @Test
+    fun `context preparation settles one timed row and ignores a late start`() {
+        val sut = ChatTurnActivityAccumulator()
+        sut.ingest(event("context.retrieval.started", mapOf("phase_id" to s("p"))))
+        sut.ingest(event("context.retrieval.completed", mapOf("phase_id" to s("p"), "status" to s("partial"), "duration_ms" to n(123), "summary" to s("Memory search: 100 ms"))))
+        sut.ingest(event("context.retrieval.started", mapOf("phase_id" to s("p"))))
+        val row = sut.snapshot().single()
+        assertEquals("Context prepared (partial)", row.label)
+        assertEquals("done", row.status)
+        assertEquals(123.0, row.durationMs!!, 0.0)
+        assertEquals("Memory search: 100 ms", row.detail)
+        assertNull(row.callUsage)
+    }
+
     private fun event(type: String, payload: Map<String, JsonElement> = emptyMap()) =
         buildJsonObject {
             put("event_type", type)
@@ -584,5 +608,187 @@ class ChatTurnActivityTest {
         assertEquals(1, activityTintSlot("web_fetch"))
         assertEquals(4, activityTintSlot("search"))
         assertEquals(5, activityTintSlot("Step 0"))
+    }
+
+    // ─── Live in-progress model calls (typed LLMRequestSent / LLMRouted / LLMResponseReceived) ───
+
+    private fun correlated(id: String, vararg extra: Pair<String, JsonElement>): Map<String, JsonElement> =
+        mapOf(
+            "execution_id" to s("e1"), "plan_id" to s("p1"), "capability" to s("decision"),
+            "correlation" to buildJsonObject { put("trace_id", "tr-1"); put("llm_call_id", id) },
+        ) + extra
+
+    @Test
+    fun `decision model classification retains measured input with zero output`() {
+        val rows = chatTurnActivityRows(listOf(event("LLMResponseReceived", correlated(
+            "decision-local", "success" to JsonPrimitive(true), "model" to s("local-judge"),
+            "response_kind" to s("decision_model"), "latency_ms" to n(80),
+            "input_tokens" to n(1200), "output_tokens" to n(0), "cost" to n(0),
+            "usage_reported" to JsonPrimitive(true),
+        ))))
+        assertEquals(1, rows.size)
+        assertEquals(1200, rows[0].callUsage?.stepTokens)
+        assertEquals(0.0, rows[0].callUsage?.costUsd)
+        assertTrue(activityRowDetail(rows[0])!!.contains("tok"))
+    }
+
+    @Test
+    fun `unreported decision model usage hides transport placeholder zeroes`() {
+        val usage = readActivityCallUsage(mapOf(
+            "input_tokens" to n(0), "output_tokens" to n(0), "cost" to n(0),
+            "usage_reported" to JsonPrimitive(false),
+            "correlation" to buildJsonObject {
+                put("usage_availability", buildJsonObject { put("tokens", false); put("cost", false) })
+            },
+        ))
+        assertNull(usage.stepTokens)
+        assertNull(usage.inputTokens)
+        assertNull(usage.outputTokens)
+        assertNull(usage.costUsd)
+    }
+
+    @Test
+    fun `a correlated model call is one row from request through route to response`() {
+        val request = event("LLMRequestSent", correlated("call-1", "timestamp" to n(1_700_000_000_000L)))
+        val routed = event(
+            "LLMRouted",
+            correlated("call-1", "model" to s("claude-sonnet"), "provider" to s("anthropic"), "timestamp" to n(1_700_000_000_050L)),
+        )
+        val response = event(
+            "LLMResponseReceived",
+            correlated(
+                "call-1", "success" to JsonPrimitive(true), "latency_ms" to n(1800),
+                "model" to s("claude-sonnet"), "timestamp" to n(1_700_000_001_800L),
+            ),
+        )
+
+        val asked = chatTurnActivityRows(listOf(request))
+        assertEquals(1, asked.size)
+        assertEquals("Thinking…", asked[0].label)
+        assertEquals("running", asked[0].status)
+        assertEquals("llm", asked[0].kind)
+        assertEquals(1_700_000_000_000.0, asked[0].startedAtMs!!, 0.0)
+        assertEquals(1_700_000_000_000.0, activityLiveSinceMs(asked[0])!!, 0.0)
+
+        val choosing = chatTurnActivityRows(listOf(request, routed))
+        assertEquals(1, choosing.size)
+        assertEquals("Thinking with claude-sonnet", choosing[0].label)
+        assertEquals("running", choosing[0].status)
+
+        // Delivered out of order, the response still settles the same row.
+        val done = chatTurnActivityRows(listOf(response, routed, request))
+        assertEquals(1, done.size)
+        assertEquals("Thinking with claude-sonnet", done[0].label)
+        assertEquals("done", done[0].status)
+        assertEquals(1800.0, done[0].durationMs!!, 0.0)
+        assertEquals("1.8s", done[0].detail)
+        assertEquals(1_700_000_000_000.0, done[0].startedAtMs!!, 0.0)
+        assertNull(activityLiveSinceMs(done[0]))
+    }
+
+    @Test
+    fun `a fallback route retitles the running row and names a response that names no model`() {
+        val sut = ChatTurnActivityAccumulator()
+        sut.ingest(event("LLMRequestSent", correlated("call-2", "timestamp" to n(10))))
+        sut.ingest(event("LLMRouted", correlated("call-2", "model" to s("primary"), "timestamp" to n(11))))
+        sut.ingest(event("LLMRouted", correlated("call-2", "model" to s("fallback"), "timestamp" to n(12))))
+        assertEquals("Thinking with fallback", sut.snapshot().single().label)
+
+        sut.ingest(event("LLMResponseReceived", correlated("call-2", "success" to JsonPrimitive(false), "error" to s("boom"), "timestamp" to n(13))))
+        val row = sut.snapshot().single()
+        assertEquals("Thinking with fallback", row.label)
+        assertEquals("failed", row.status)
+        assertEquals("boom", row.detail)
+
+        // A route after the response never reopens the settled row.
+        sut.ingest(event("LLMRouted", correlated("call-2", "model" to s("late"), "timestamp" to n(14))))
+        assertEquals("failed", sut.snapshot().single().status)
+        assertEquals("Thinking with fallback", sut.snapshot().single().label)
+    }
+
+    @Test
+    fun `an older server's id-less request draws nothing and its response stays one row`() {
+        val rows = chatTurnActivityRows(
+            listOf(
+                event("LLMRequestSent", mapOf("execution_id" to s("e1"), "capability" to s("decision"), "timestamp" to n(5))),
+                event(
+                    "LLMResponseReceived",
+                    mapOf("execution_id" to s("e1"), "capability" to s("decision"), "success" to JsonPrimitive(true), "latency_ms" to n(900), "timestamp" to n(6)),
+                ),
+            ),
+        )
+        assertEquals(1, rows.size)
+        assertEquals("Thinking with decision", rows[0].label)
+        assertEquals("done", rows[0].status)
+        assertEquals("900ms", rows[0].detail)
+    }
+
+    @Test
+    fun `two correlated calls in one step stay two rows`() {
+        val rows = chatTurnActivityRows(
+            listOf(
+                event("LLMRequestSent", correlated("a", "step_index" to n(0), "timestamp" to n(20))),
+                event("LLMRequestSent", correlated("b", "step_index" to n(0), "timestamp" to n(20))),
+            ),
+        )
+        assertEquals(2, rows.size)
+        assertTrue(rows.all { it.status == "running" })
+    }
+
+    @Test
+    fun `the chat-side and typed copies of one model call fold into one row, in either order`() {
+        // The server's llm.requested names no call id; llm.succeeded and the typed events do.
+        val requested = event("llm.requested", mapOf("trace_id" to s("t"), "model" to s("gpt-6-luna")))
+        val succeeded = event("llm.succeeded", mapOf(
+            "trace_id" to s("t"), "llm_call_id" to s("call-9"), "model" to s("gpt-6-luna"),
+            "duration_ms" to n(3700.0), "ttft_ms" to n(800.0), "input_tokens" to n(20000), "output_tokens" to n(1000),
+        ))
+        val typed = listOf(
+            event("LLMRequestSent", correlated("call-9", "timestamp" to n(1))),
+            event("LLMRouted", correlated("call-9", "model" to s("gpt-6-luna"), "timestamp" to n(2))),
+            event("LLMResponseReceived", correlated(
+                "call-9", "success" to JsonPrimitive(true), "model" to s("gpt-6-luna"), "latency_ms" to n(3700),
+                "input_tokens" to n(20000), "output_tokens" to n(1000), "timestamp" to n(3),
+            )),
+        )
+        val orders = mapOf(
+            "typed between request and settle" to listOf(requested) + typed + succeeded,
+            "typed after the settle" to listOf(requested, succeeded) + typed,
+            "typed before the chat copy" to typed + listOf(requested, succeeded),
+        )
+        for ((name, events) in orders) {
+            // Ingested as delivered: the replay sort would put the unstamped chat copy first.
+            val sut = ChatTurnActivityAccumulator()
+            events.forEach(sut::ingest)
+            val rows = sut.snapshot()
+            assertEquals(name, 1, rows.size)
+            val row = rows.single()
+            assertEquals(name, "Thinking with gpt-6-luna", row.label)
+            assertEquals(name, "done", row.status)
+            assertEquals(name, 3700.0, row.durationMs!!, 0.0)
+            assertEquals(name, "800ms (3.7s)", row.detail)
+            assertEquals(name, 21000, row.callUsage?.stepTokens)
+            assertTrue(name, activityRowDetail(row)!!.startsWith("800ms (3.7s) · ") && activityRowDetail(row)!!.contains("tok"))
+        }
+    }
+
+    @Test
+    fun `a running tool row carries its start time and a settled one has no live clock`() {
+        val start = event(
+            "AgenticActionStarted",
+            mapOf("call_id" to s("c9"), "target" to s("web_search"), "timestamp" to n(1_700_000_000_000L)),
+        )
+        val running = chatTurnActivityRows(listOf(start)).single()
+        assertEquals(1_700_000_000_000.0, activityLiveSinceMs(running)!!, 0.0)
+        val done = chatTurnActivityRows(
+            listOf(
+                start,
+                event("AgenticActionExecuted", mapOf("call_id" to s("c9"), "target" to s("web_search"), "success" to JsonPrimitive(true), "timestamp" to n(1_700_000_000_500L))),
+            ),
+        ).single()
+        assertEquals("done", done.status)
+        assertNull(activityLiveSinceMs(done))
+        // Reasoning and step rows never tick.
+        assertNull(activityLiveSinceMs(ActivityRow(label = "Reasoning", status = "running", kind = "reasoning", startedAtMs = 1.0)))
     }
 }

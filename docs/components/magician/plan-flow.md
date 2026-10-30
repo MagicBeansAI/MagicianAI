@@ -205,6 +205,12 @@ elicitor → query-rewriter → planner. Each LLM step runs once per turn
   `ClarifiedTask`, no `InterpretedAnswer`, no newer `SlotGraph`;
   `query_rewriter.rs::reusable_elicitation_rewrite`). Resume and replan turns
   still rewrite in that stage.
+- A task plan waits on the owner only for a question the ask loop actually
+  created. When every upfront ask is declined (for example "ask not
+  recommended"), task planning stays in Planning and finishes as a draft for
+  approval that carries the unresolved inputs. Entering WaitingUser with no
+  question made a clarification resume fail `ReadyToExecute` and replan every
+  ~2 minutes.
 - `QuestionRewriter` runs its Conservative and Aggressive passes concurrently
   and scores them in that order (Aggressive replaces Conservative only with a
   strictly higher score). Both win often, so both stay.
@@ -319,7 +325,7 @@ it is **tracked** against the plan
 - The agent reports `step_started` when a tool call begins a planned step, then
   `step_completed`, `step_failed` or `step_skipped` (with a `step_note` when it
   departs), using the plan's step IDs (since prompt `agentic_decision` v1.3.10,
-  pinned at 1.3.11 now, plus a line in the plan block).
+  pinned at 1.3.12 now, plus a line in the plan block).
 - Before a decision's action runs (`apply::gate` →
   `executor.rs::emit_plan_step_boundary_before_dispatch`) the runtime opens the
   step the action works on (the step it completes or fails, else the one it

@@ -1,6 +1,6 @@
 ---
 name: polymarket-search
-version: 0.2.0
+version: 0.2.1
 description: 'Search active prediction markets on Polymarket matching a topic.
 
   Uses Polymarket''s Gamma API — keyless. Returns normalized items
@@ -93,8 +93,10 @@ metadata:
               max_length: 4096
             limit:
               type: integer
-              description: Value for limit.
+              description: Maximum number of active markets to return (1–100).
               default: 10
+              minimum: 1
+              maximum: 100
           timeout_secs: 60
     runtime_catalog:
       categories:
@@ -119,9 +121,17 @@ metadata:
 | Param | Type | Default |
 |---|---|---|
 | `query` | string | (required) |
-| `limit` | int | 10 |
+| `limit` | int, 1–100 | 10 |
 
 (no `days` param — Polymarket's relevant markets are inherently forward-looking, not date-bounded.)
+
+Uses Gamma's [public search](https://docs.polymarket.com/api-reference/search/search-markets-events-and-profiles)
+with the actual query and bounded pagination (up to 10 pages, 25 seconds),
+deduplicating open markets from matching events. It does not scan a global
+top-volume list. A connection reset or timeout retries once over IPv4 within
+the same time budget, retaining TLS verification and configured proxies.
+Provider/network failures return `status: "failed"` and a
+`reason`; an empty successful search is `status: "ok"` with zero items.
 
 ## Output
 
@@ -131,5 +141,5 @@ Per-item engagement: `{volume, liquidity}` (both USD-denominated).
 ## CLI
 
 ```bash
-polymarket-search "presidential election 2028" --limit 5 --pretty
+printf '%s\n' '{"query":"presidential election 2028","limit":5}' | polymarket-search
 ```

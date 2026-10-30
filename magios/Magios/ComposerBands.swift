@@ -210,12 +210,25 @@ struct ComposerErrorBand: View {
 
 /// Plan mode is on: the next send drafts a plan (web `.plan-banner`).
 struct PlanModeBand: View {
+    var body: some View {
+        ComposerModeBand(title: "Plan mode", message: "I'll draft a plan first. Switch to Do for direct execution.")
+            .accessibilityIdentifier("chat-plan-mode-band")
+    }
+}
+
+/// Chat and VibeDev mode panels share theme tint, border, pulse and typography.
+struct ComposerModeBand: View {
+    let title: String
+    let message: String
+    var options: AnyView? = nil
+    var maxLines = 3
     @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
 
     var body: some View {
         ComposerBand(tint: theme.accentColor.opacity(0.08), rule: theme.accentColor.opacity(0.14)) {
+            VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Circle()
                     .fill(theme.accentColor)
@@ -224,16 +237,17 @@ struct PlanModeBand: View {
                     .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulse)
                     .onAppear { pulse = !reduceMotion }
                     .accessibilityHidden(true)
-                (Text("Plan mode").bold() + Text(" — I'll draft a plan first. Switch to Do for direct execution."))
+                (Text(title).bold() + Text(" — " + message))
                     .font(.themed(12))
                     .foregroundColor(theme.accentHoverColor)
-                    .lineLimit(2)
+                    .lineLimit(maxLines).truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 5)
+            if let options { options.padding(.vertical, 6) }
+            }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("chat-plan-mode-band")
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -359,5 +373,24 @@ struct ChatPresenceDot: View {
             .onAppear { phase = moving }
             .onChange(of: moving) { _, now in phase = now }
             .accessibilityHidden(true)
+    }
+}
+
+/// Reveals a mode panel downward inside its own slot, below the context row.
+struct ComposerPanelReveal: ViewModifier {
+    var fraction: CGFloat
+    func body(content: Content) -> some View {
+        content.clipShape(ComposerPanelRevealShape(fraction: fraction))
+    }
+}
+
+private struct ComposerPanelRevealShape: Shape {
+    var fraction: CGFloat
+    var animatableData: CGFloat {
+        get { fraction }
+        set { fraction = newValue }
+    }
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height * min(1, max(0, fraction))))
     }
 }

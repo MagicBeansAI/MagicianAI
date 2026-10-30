@@ -395,17 +395,17 @@ test("Orb settings own an independent cold-start wake switch", () => {
   assert.match(settingsSource, /it never opens the web composer/);
 });
 
-test("desktop settings send shared configuration to the browser", () => {
-  assert.match(settingsSource, /await invoke\("open_app_at", \{ path \}\)/);
-  assert.match(settingsSource, /openWebSettings\("\/settings"\)/);
-  assert.match(settingsSource, /openWebSettings\("\/settings\/model-routing"\)/);
-  assert.match(settingsSource, /Open Web Settings/);
-  assert.match(settingsSource, /Model Routing/);
-  assert.match(settingsSource, /This \{desktopDeviceLabel\}/);
+test("desktop settings show shared configuration in the same window", () => {
+  // The Magican tab switches this window to web Settings; the browser is only
+  // the fallback when the window cannot be signed in.
+  assert.match(settingsSource, /await invoke\("open_shared_settings", \{ section: section \?\? null \}\)/);
+  assert.match(settingsSource, /await invoke\("open_app_at", \{ path: section \? `\/settings#\$\{section\}` : "\/settings" \}\)/);
+  assert.match(settingsSource, /openSharedSettings\("voice"\)/);
+  assert.match(settingsSource, /role="tablist"[\s\S]*This \{desktopDeviceLabel\}[\s\S]*\{PRODUCT_NAME\}/);
+  assert.doesNotMatch(settingsSource, /Open Web Settings/);
   assert.match(settingsSource, /\{#if isMacDesktop\}[\s\S]*<MacosAppPairing/);
   assert.match(settingsSource, /\{#if isMacDesktop\}[\s\S]*<h2>iMessage access<\/h2>/);
   assert.match(settingsSource, /bind:value=\{config\.network\.engine_base_url\}/);
-  assert.match(settingsSource, /voice, notes/);
   assert.doesNotMatch(settingsSource, /<h2>Notes<\/h2>/);
   assert.doesNotMatch(settingsSource, /Audio Engines/);
   assert.doesNotMatch(settingsSource, /<h2>Workspace Storage<\/h2>/);

@@ -84,7 +84,7 @@ export const RESERVED_FIRST_PARTY_ROUTE_ROOTS: ReadonlySet<string> = new Set([
 	'work',
 	'.well-known', '_app', 'about', 'api', 'api-mining', 'approvals', 'apps', 'attention',
 	'briefing', 'budget', 'channels', 'chat', 'claims-review', 'coding-runs', 'contextual-assist', 'crew', 'debug', 'decision-models', 'desk',
-	'dev', 'devsessions', 'draw-overlay', 'evals', 'events', 'evidence', 'feed', 'harness',
+	'dev', 'devsessions', 'draw-overlay', 'embed', 'evals', 'events', 'evidence', 'feed', 'harness',
 	'history', 'home', 'hud', 'internal-tasks', 'llm', 'login', 'manifesto', 'meetings',
 	'memory', 'mirror', 'notes', 'notify-overlay', 'observe', 'privacy', 'resurfacing',
 	'relentless', 'reviews', 'runtime', 'screen-region-picker', 'settings', 'skills', 'square', 'storage',

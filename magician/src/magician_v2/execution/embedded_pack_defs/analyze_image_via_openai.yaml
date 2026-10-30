@@ -1,7 +1,14 @@
 name: analyze_image_via_openai
-description: Vision-analyze a sandbox-authorized local image with an explicitly OpenAI-routed MagicLLM operation. Returns a structured description plus a short voice_summary suitable for spoken delivery.
+description: Inspect a sandbox-authorized local image or rendered document page with OpenAI vision, including layout, clipping, overlap, margins, and visual legibility. Use for visual review; prefer document-to-markdown for document text and OCR for scan transcription. Reuse images already attached to the current vision-capable model. Returns a structured description and voice_summary.
 guide: |-
   Tool name: `analyze_image_via_openai`
+
+  Use for visual questions about rendered document pages, screenshots, charts,
+  and photographs, including clipping, overlap, margins, and legibility. Ask a
+  focused question about the relevant image/page rather than OCRing a whole PDF.
+  If the image is already attached to the current vision-capable model, inspect
+  it directly instead of making another analysis call. For ordinary document
+  text use `document-to-markdown`; for scan transcription use `ocr`.
 
   When to reach for this instead of the general `analyze_image`:
     - You want explicit OpenAI attribution. The dedicated

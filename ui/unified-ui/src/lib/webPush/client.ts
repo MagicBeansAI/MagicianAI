@@ -84,6 +84,19 @@ export async function fetchWebPushConfig(): Promise<WebPushConfig> {
 	return { enabled: body.enabled === true && key.length > 0, vapid_public_key: key || null };
 }
 
+/**
+ * Owner only: create this server's VAPID keys and turn web push on, without a
+ * restart. The private key stays in the server's runtime env; the answer is
+ * the same shape as the config read.
+ */
+export async function setupWebPushKeys(): Promise<WebPushConfig> {
+	const response = await fetch('/api/magician/v2/web-push/vapid', { method: 'POST', cache: 'no-store' });
+	if (!response.ok) throw await readError(response, 'Browser notifications could not be set up');
+	const body = (await response.json()) as Partial<WebPushConfig>;
+	const key = typeof body.vapid_public_key === 'string' ? body.vapid_public_key.trim() : '';
+	return { enabled: body.enabled === true && key.length > 0, vapid_public_key: key || null };
+}
+
 async function existingRegistration(): Promise<ServiceWorkerRegistration | undefined> {
 	return navigator.serviceWorker.getRegistration('/').catch(() => undefined);
 }

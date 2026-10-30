@@ -7804,9 +7804,9 @@ fn valid_base_preseed_admission(
 /// ([`crate::magician_v2::execution::agentic::run_loop::state::pid_has_exited`]).
 fn admission_binds(admission: &BasePreseedAdmission, now_ms: i64) -> bool {
     admission.expires_at_ms > now_ms
-        && !admission.holder_pid.is_some_and(
-            crate::magician_v2::execution::agentic::run_loop::state::pid_has_exited,
-        )
+        && !admission
+            .holder_pid
+            .is_some_and(crate::magician_v2::execution::agentic::run_loop::state::pid_has_exited)
 }
 
 fn renew_base_recovery_admission_locked(
@@ -8538,9 +8538,8 @@ mod tests {
         assert!(!valid_base_preseed_admission(&swapped, "p", "w", "exec_1"));
 
         // The process that claimed it has exited: it excludes nobody.
-        admission.holder_pid = Some(
-            crate::magician_v2::execution::agentic::run_loop::state::exited_pid_for_tests(),
-        );
+        admission.holder_pid =
+            Some(crate::magician_v2::execution::agentic::run_loop::state::exited_pid_for_tests());
         assert!(!admission_binds(&admission, now_ms));
     }
 
@@ -8587,7 +8586,11 @@ mod tests {
             .claim(&key, &next, Duration::from_secs(60))
             .await
             .expect("the next worker takes the run over at once");
-        assert_eq!(taken.fence, dead_lease.fence + 1, "a takeover advances the fence");
+        assert_eq!(
+            taken.fence,
+            dead_lease.fence + 1,
+            "a takeover advances the fence"
+        );
         assert_eq!(
             harness
                 .store()

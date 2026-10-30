@@ -18,15 +18,37 @@ Every human-in-the-loop ask uses one **canonical envelope** and one
 | `mcp_oauth` | MCP OAuth sign-in awaiting its callback | `magician_v2/mcp_oauth.rs::emit_pending` |
 | `bot_auth` | Bot adapter (gmail/whatsapp/telegram/kapso) `NeedsAuth` / `AccountMismatch` | `magician-learning/src/bots/auth_hitl_broker.rs` |
 
+**Attention lanes.** Every projected ask, task-bound or taskless, takes its lane
+from one rule (`feed::attention_lane_for_ask`, mirrored by the web
+`attentionRequestCategory`; iOS and Android render the server lanes):
+a failed row and a `service_health` outage → **Failed**; `approval`,
+`plan_approval`, `diff_approval`, `waiting_for_confirmation` and a confirmation
+naming its `action_type` → **Approvals**; `max_iterations_reached`, a
+`budget`/`max_iterations` pause, `escalation` and a question-less stalled wait →
+**Escalations**; everything else (questions, clarifications, sign-ins,
+`user_request`) → **Requests**. A monitor that lost access is listed under Failed.
+A failure leaves Attention after two hours; an open ask under Failed stays until
+it resolves. When a live ask and its feed row merge on web, the server's lane wins.
+
 Taskless asks (`mcp_oauth`; `user_request` from chat `need_user_input`,
 `envoy.*`, `harness.notify_owner.*`, `memory_*`; `service_health`, `bot_auth`,
 `approval`) project as `runtime_taskless_hitl` (one group per correlation id,
-`metadata.taskless = true`, `metadata.hitl_request` open target; `approval` in the
-approvals lane, the rest in requests) until `hitl.resolved`;
+`metadata.taskless = true`, `metadata.hitl_request` open target) until
+`hitl.resolved`;
 `GET /feed/attention` drops a resolved one and lists one a task-bound row also
 carries only as the task's row; app-owner notifications never project. `mcp_oauth` never publishes an authorization URL:
 `{ "type": "external_action_completed" }` reopens sign-in in the host browser,
-`dismiss` cancels. `GET /bots/auth` (`list_bots_auth`) polls emit
+`dismiss` cancels. The prompt names the service ("Finish connecting Swiggy
+(food) in your browser.", from the binding's provider and endpoint; generic when
+unknown); `input_schema` carries `service_label` and `dismiss_label: "Not now"`.
+Every client's **Not now** posts `{type: "aborted"}`, which cancels the flow and
+resolves the ask `dismissed`. A flow lives ten minutes; its own timer resolves
+the ask `expired`. Live flows are process-local but the pending lifecycle is
+durable, so at boot (`McpOAuthApi::install_shared`) every still-pending
+`mcp_oauth:` ask resolves `expired`
+(`RuntimeTransportBroadcaster::pending_hitl_keys_in_correlation_range`). The
+starting run does not wait: `auth_start` returns `authorization_pending` at
+once. `GET /bots/auth` (`list_bots_auth`) polls emit
 `HitlRequested` / `HitlResolved` on transitions via
 `AuthHitlBroker::record_snapshot`.
 
@@ -40,7 +62,10 @@ carries only as the task's row; app-owner notifications never project. `mcp_oaut
   `metadata.delegation_child = true`); the child stays suspended (parent
   `WaitingChildren`) for every owner-answerable input incl. `otp`, forms and
   diff approval; only tool authorization and sandbox override fail it
-  (`agents::runtime::delegated_waiting_for_user_should_suspend`). Every durable
+  (`agents::runtime::delegated_waiting_for_user_should_suspend`). A diff
+  answered after the child finished wakes the parent via
+  `notify_parent_after_child_review_closed` (`coding-engine-guardrails.md`).
+  Every durable
   ask-state event (`hitl.requested`, `hitl.resolved`, `input.requested`,
   `execution.waiting_for_user`, …) republishes `attention_projection.json`.
 - A `waiting_for_user` execution with no answerable ask becomes a
@@ -48,6 +73,13 @@ carries only as the task's row; app-owner notifications never project. `mcp_oaut
   escalations lane, shown once 60 s old per `stalled_wait_attention_is_due`;
   `metadata.attention_reason`, `metadata.actions = ["cancel", "open_task"]`, `metadata.waiting_since_ms`;
   panel event `run.waiting_without_question`).
+  It also yields to an ask of any descendant execution
+  (`drop_stalled_waits_with_a_descendant_ask`).
+- A pending, unclaimed diff proposal whose staging execution waits on the user
+  is surfaced from the proposal store when its `hitl.requested` is missing
+  (`surface_pending_diff_reviews`): one `input.requested` / `diff_approval`
+  item keyed by the `ccp-…` id, with the respond handle; never a duplicate of
+  the event-built card.
 - A pipeline run outside V3 planning enters `WaitingUser` only with a
   clarification; otherwise, or on a guardrail breach, it fails
   `execution.failed` (`failure_kind: "question_undeliverable"`), settled 2 s
@@ -104,6 +136,47 @@ filters by exact `(principal, workspace)` (`emit_approval_resolved_event` /
 resolver scope only for legacy approvals); otherwise an `anonymous/default`
 overlay card resolved from the web strands
 (`docs/components/unified-ui/notification-overlay.md`).
+
+### Approval previews
+
+A `requires_approval` confirmation for a tool call can carry a structured,
+deterministic approval card instead of the raw call. A compiled tool opts in
+with one row in `APPROVAL_PREVIEW_BUILDERS`
+(`magician/src/magician_v2/execution/approval_preview.rs`): a builder
+`fn(&ApprovalPreviewContext, &args) -> Option<ApprovalPreview>` that reads only
+the call's arguments and read-only scope state (no model call).
+`build_action_confirmation_outcome_with` runs it once, when the pause is
+created, and the result travels as optional data:
+
+- `AgenticPauseState.approval_preview` (the pause record; boxed, display only —
+  an approving resume runs the recorded call that lowers to `action_json`
+  ([approved-call replay](execution/AGENTIC_EXECUTION_DESIGN.md)), never the
+  preview, and it is outside `authorization_hash`);
+- `PendingPauseInfo.confirmation_preview` (the pending-pause listing);
+- `hitl.requested` `input_schema.approval_preview`, whose `prompt` becomes the
+  readable summary (title and change size, warnings, the labelled reason). The
+  raw call stays in `input_schema.action_summary` / `reason`. The V3
+  "Confirmation required" attention card takes the preview and prompt from that
+  canonical row.
+
+`ApprovalPreview` = `{title, why_label?, why?, diff?, evidence[], warnings[],
+notes[]}`; `diff` = `{path, added, removed, hunks[{old_start, old_lines,
+new_start, new_lines, lines[{kind: context|add|remove, text}]}], truncated,
+omitted_changed_lines, unified_diff}` (`line_diff_preview`: two lines of
+context, 200 lines / 16 KiB, long lines cut at 1 KiB). `why` and `evidence` are
+agent-authored plain text. Every field is optional on the wire, so a client
+that does not know it shows the prompt as before. No preview is attached for a
+protected app workflow or a preference alignment hold, and a builder that fails
+leaves the raw call. The paused-execution and chat summaries name a previewed
+action by `title (+N lines, −M lines)`. Registered today:
+`propose_program_revision` ([autonomous agents](autonomous-agents.md#proposing-revisions)).
+
+The native apps read `input_schema.approval_preview` leniently (iOS
+`AttentionViewModel.swift`, Android bridge `attention/ApprovalPreview.kt`): a
+malformed or untitled preview leaves the plain confirmation. Their Attention
+sheets render the web's order (title, warnings, reason, diff, evidence, notes,
+collapsed Raw call) with agent text as plain text; the composer dock hands a
+previewed approval to that sheet instead of answering it inline.
 
 ## Sensitivity contract (secure HITL credentials, P1)
 
@@ -371,8 +444,9 @@ allowed, abort stays abort), used by planning batches of ≥ 2 clarifications.
 Chat `need_user_input` waits on `UserRequestService::ask`
 (`source: "user_request"`). Mobile chat without forms opens Attention (stacked
 fields, Skip / Skip all). Composers post `mode: accept_in_scope` from Accept (in-tree
-edits skip permission HITL; `plan` from Plan); only Autopilot /
-`apply_code_proposal` skips the `diff_approval` park; out-of-tree
+edits skip permission HITL; `plan` from Plan); only a VibeDev Autopilot run (or
+an agent outside VibeDev holding `apply_code_proposal`) skips the
+`diff_approval` park; out-of-tree
 `apply_patch` hunks still prompt.
 
 Integrity: plan approval binds the displayed immutable `plan_id` (edits mint a
@@ -389,8 +463,8 @@ serialized; approval auto-resume needs one exact scoped pause, never a cycle id.
 | `approval` | `ApprovalService::resolve_approval` |
 | `plan_approval` | `ArtifactV2Service::approve_task_plan` / `reject_task_plan` |
 | `clarification` | V3 `submit_task_plan_clarification`; V2 `AskLoopApi::submit_clarification` fallback |
-| `diff_approval` | `CodeChangeProposalStore` apply/reject if a proposal, else `FileEditTransaction` |
-| `agentic` / `inner_loop` / `escalation` (default) | `resume_agentic_execution_with_scope` |
+| `diff_approval` | `CodeChangeProposalStore` apply/reject if a proposal, else `FileEditTransaction`; a live pause then resumes via `resume_agentic_execution_acknowledged_when_admitted` |
+| `agentic` / `inner_loop` / `escalation` (default) | `resume_agentic_execution_acknowledged_when_admitted` |
 
 Legacy URLs (`/approvals/{id}/resolve`, `/user-requests/{id}/respond`,
 `/executions/{id}/agentic-resume`,
@@ -406,12 +480,70 @@ session lookup) and the session holds the `Escalation` card with that
 `request_id`; cards without an action contract open the Attention record,
 never guessing from an option id or label.
 
+Resume-backed answers (`agentic` family; `diff_approval` with a live pause)
+return **202 `{accepted: true, reason: "resume_admitted"}`** once the paused
+run admits the answer, not its outcome; refusals before admission (scope,
+authority, missing pause, retryable fence, re-ask) stay synchronous and later
+pauses/terminals arrive as events. Other sources answer once recorded
+(`plan_approval` from a notification starts `execute_task` without waiting).
+
 Already answered: **410 `pause_state_gone`** (agentic), **409
 `already_resolved`** (clarification, `TriggerError::AlreadyResolved` →
-`task_api_v3`); `respondToHitl` treats both as soft success. `resolved-elsewhere`
+`task_api_v3`; `diff_approval` no longer pending — never applied or resumed
+twice); `respondToHitl` treats both as soft success. `resolved-elsewhere`
 is correlation-scoped (sibling pauses stay). `reask_required` (200,
 `resumed:false`) re-prompts, atomically replacing question, hint, previous
 answer and `pause_state_id` (an unscoped pause may rotate its key).
+
+### Respond handle (`respond`)
+
+Clients do not derive the respond call. Every surface that offers an answer
+carries the server's `HitlRespondHandle` (`magician-core/src/hitl.rs`):
+
+```json
+"respond": {
+  "url": "/api/magician/v2/hitl/vibedev-run-ended%3Atask_1%3Aexec_d278/respond",
+  "method": "POST",
+  "correlation_id": "vibedev-run-ended:task_1:exec_d278",
+  "source": "user_request",
+  "input_type": "choice",
+  "execution_id": "exec_d278",
+  "task_id": "…",
+  "options": [{"id": "acknowledge", "label": "Acknowledge"}],
+  "soft_success_statuses": [409]
+}
+```
+
+A client posts `url` with `{source, input_type, value, channel,
+execution_id?, task_id?, selected_paths?}`, all but `value` / `channel` /
+`selected_paths` from the handle. `task_id` only for `clarification` /
+`plan_approval`; `soft_success_statuses` is `[404, 409, 410]` for `agentic` /
+`escalation`, else `[409]`.
+
+`hitl_respond_handle` alone encodes the id each source arm resolves:
+`agentic` / `escalation` → revision-bound `correlation_id`, else
+`pause_state_id`; `user_request` → `request_id`, else `correlation_id`, else
+`pause_state_id`; `approval` → `approval_id`, else `correlation_id`;
+`diff_approval` → `input_schema.proposal_id` / `transaction_id`; everything
+else → `correlation_id`. `primitive` / `inner_loop` post as `agentic`; an
+unknown source gets no handle.
+
+| Surface | Where |
+|---|---|
+| Attention / feed rows (`/feed/attention`, `/feed/attention/{id}`, `/feed`) | `metadata.respond` and `metadata.hitl_request.respond`, stamped at serve time by `stamp_feed_row_respond_handle` (a stalled wait or failure gets none) |
+| `HitlOpenTarget` (V3 attention, task plan, execution panel) | `respond`, via `HitlOpenTarget::with_respond_handle` |
+| `HitlRequested` WebSocket frames | `data.respond` (`websocket_handler::attach_hitl_respond_handle`) |
+| VibeDev `/vibedev/runs/live` | `notice.respond` (acknowledge), `approval_respond` beside `approval_id` (`apply` / `reject`) |
+| Work live items | `action.respond` on an `approve_diff` action (`WorkAction::approve_diff`); `answer` opens the request and carries none |
+
+Web (`resolveHitlCall`, `hitlCallFromHandle`), iOS
+(`AttentionItem.respondCall`) and Android (`AttentionRequest.respondCall`) post
+the handle when present (per-source derivation is the older-server fallback)
+and ignore one whose URL is not `/api/magician/v2/hitl/…/respond`. Fixture
+`magician/tests/fixtures/hitl/attention_rows.json` (one row per kind;
+`feed::hitl_respond_fixtures`, regenerate with `UPDATE_HITL_FIXTURES=1`) is
+asserted by `respondHandleFixture.test.ts`, `HitlRespondFixtureTests` (iOS) and
+`HitlRespondFixtureTest` (Android), with and without the handle.
 
 ### Planning projection and resolution ordering
 
@@ -577,7 +709,10 @@ checkboxes (`schema.min_selections` / `max_selections`); `text` / `password`
 (`schema.multiline`); `external_action` → choice + notes; `file_path`
 (comma-separated if `schema.multiple`); `guidance` → notes; `diff_approval` →
 `DiffStrip`, `proposal_id` (`CodeChangeProposal`) over `transaction_id`
-(`FileEditTransaction`). Submit maps to `HitlResponseValue`
+(`FileEditTransaction`). A `confirmation` with
+`schema.approval_preview` renders `ApprovalPreviewCard.svelte` (title,
+warnings banner, labelled reason, `DiffStrip` diff, evidence, collapsed "Raw
+call") in place of the body. Submit maps to `HitlResponseValue`
 (`ui/unified-ui/src/lib/hitl/respondToHitl.ts`); on `reask_required` the same
 modal reopens and the row drops only after the next response succeeds.
 
@@ -639,6 +774,8 @@ claim about real accounts, browsers, phones or bots.
    for V3 `attention_id` prefixes, `artifact_v2/progress.rs::attention_message`.
 4. `HitlSource` (`ui/unified-ui/src/lib/hitl/types.ts`) and both
    `KNOWN_HITL_SOURCES` lists (`lib/hitl/adapters.ts`, `lib/attention/model.ts`).
+5. Its id rule in `canonical_hitl_respond_source` / `hitl_respond_handle`
+   (`magician-core/src/hitl.rs`) and a row in the respond-handle fixture.
 
 ## Restart durability
 
@@ -649,7 +786,20 @@ never destroyed); resume calls
 `finalize_orphaned_user_pause_by_execution_id`, so clicking a stuck prompt
 clears it. The finalizer uses `persist_external_execution_outcome` via
 `run_execution_job`, never `_inner` (actix stack overflow; source-scan test),
-holding the scoped pause admission guard across the await.
+holding the scoped pause admission guard across the await, then runs
+`settle_runtime_after_recorded_outcome` (HITL/pause cleanup, parent
+`ChildCompleted` wake).
+
+Runtime/Artifact divergence (`artifact_v2/runtime_divergence.rs`,
+`spawn_runtime_divergence_reconciler`: ~30 s after HTTP is ready, then every
+10 min, ≤ 32 repairs a pass with a resume cursor): per non-terminal, non-app
+task it settles executions whose Artifact record is terminal while the runtime
+is `WaitingUser`/`Paused`/`Sleeping`/`Runnable` (via
+`settle_runtime_after_recorded_outcome`), and wakes once a `WaitingChildren`
+parent whose `active_delegation_group` has all ended. It skips rows this
+process owns or touched/wrote < 120 s ago, resumable/staged pauses,
+`paused_from_state`, `Executing`/`WaitingChildren`/planning states and lineage
+mismatches. Repairs log `[RUNTIME-DIVERGENCE]`.
 
 **1. Durable pending.** `UserRequestService::ask()` writes
 `scopes/<principal>/<workspace>/user_request_pending.json` (atomic
@@ -816,7 +966,20 @@ or `reask_required` restores the row); not an offline outbox.
   `ExecutionError::PathAccessDenied` becomes a `sandbox_override` HITL
   (`input_type` `file_path`); approval adds the root to
   `SESSION_FILE_SANDBOX_ROOTS` for the `read_file` retry. Out-of-workspace
-  **writes** stay an error.
+  **writes** stay an error. Paths under `file_sandbox.read_only_roots` never
+  ask: reads pass, and a write there is a hard refusal. Approved roots join
+  the run-time writable roots, which never outrank a read-only root.
+- **Policy refusals are not faults.** `ExecutionError::Refused` (file
+  policy, repo/runtime-store fences, shell sandbox, governed-runtime input,
+  working-directory and authorization refusals, ungranted/unregistered tools)
+  has no HITL and is not retried: the agent sees the text; log WARN
+  `[EXECUTOR] Non-browser action refused` (faults stay ERROR
+  `Non-browser action error`). Likewise typed, never matched on text:
+  `ExecutionError::AgentActionable` (a tool that ran and exited non-zero, a
+  call that does not lower into its tool's grammar) and `CapabilityFailure`
+  log one bounded WARN line, `returned to the agent`; same text, same retries.
+  A soft `DispatchError::DispatchFailed` delegation rejection logs WARN too;
+  hard dispatch faults stay ERROR.
 - **Budget and max iterations** keep a Continue / Cancel HITL:
   `BudgetExhausted` carries a `pause_state` (`ExecutionPauseKind::Budget`), is
   not `ExecutionFailed`, and does not trip the circuit.
@@ -883,7 +1046,10 @@ an index-usable `IN` list.
 failing service (provider profile, `Decision Engine`, `Decision model:<id>`);
 success clears it, **Dismiss** answers it. Auth, credit and rate-limit failures
 raise at once; unavailable or timed-out only after `UNAVAILABLE_GRACE_MS`
-(2 minutes) without success.
+(2 minutes) without success. Model-catalog drift (a source no longer offering
+catalogued models, or offering uncatalogued ones) raises one ask per source with
+`health_issue: model_catalog_drift`, delivered to a scope on its next model call
+and resolved when the drift clears.
 
 ## Answering on every surface
 

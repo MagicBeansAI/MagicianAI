@@ -65,18 +65,17 @@ use magician::magician_v2::artifact_v2::{CapabilityScopePaths, CapabilityWorkspa
 use magician::magician_v2::content_sources::ContentAcquisitionResolver;
 use magician::magician_v2::execution::primitive_dispatch::cli_template::dispatcher::invalidate_pack_dir_index;
 use magician::magician_v2::execution::{embedded_compiled_pack_defs, ScopedCapabilityResolver};
-use magician::magician_v2::secrets::mcp_oauth_vault::SecretStoreMcpOAuthVault;
+use magician::magician_v2::mcp_oauth_binding::{
+    mcp_endpoint_aliases, mcp_oauth_binding, mcp_oauth_callback_mode, McpOAuthBindingError,
+};
 use magician::magician_v2::skills::loader::{diagnose_skill_dir, SkillDirVerdict};
 use magician::magician_v2::skills::scope_layer;
 use magician::magician_v2::skills::{InferredKind, SkillLoader};
 use magician_components::setup::{self, ResolvedSetup, SetupBinding, SetupDriver};
-use magician_mcp_client::{McpOAuthClientIdentity, McpOAuthCoordinator};
-use tool_runtime_core::credential_profiles::{
-    CanonicalCredentialUrl, CredentialProfileBinding, CredentialProfileKey, CredentialScope,
-};
+use magician_mcp_client::McpOAuthCoordinator;
+use tool_runtime_core::credential_profiles::CredentialScope;
 use tool_runtime_core::manifest::{
-    AuthKind, AuthRequirement, AuthState, CliInteraction, McpTransport, ProfileSelection,
-    RuntimeProtocol,
+    AuthKind, AuthRequirement, AuthState, CliInteraction, ProfileSelection,
 };
 
 use crate::secret_vault_api::SecretVaultApi;
@@ -1651,12 +1650,13 @@ struct SkillOAuthStatusResponse {
     detail: String,
 }
 
-fn skill_oauth_coordinator(
+pub(crate) fn skill_oauth_coordinator(
     req: &HttpRequest,
     api: &SkillsApi,
     vault: &SecretVaultApi,
     oauth_api: &crate::mcp_oauth_api::McpOAuthApi,
     name: &str,
+    endpoint_alias: Option<&str>,
 ) -> Result<(Arc<McpOAuthCoordinator>, CredentialScope), HttpResponse> {
     let Some(skill_dir) = resolve_skill_folder(api, req, name) else {
         return Err(error(
@@ -1722,68 +1722,6 @@ fn skill_oauth_coordinator(
             "this skill does not declare governed OAuth setup",
         ));
     }
-    let provider = package.contract.auth.provider.as_deref().ok_or_else(|| {
-        error(
-            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-            "the skill OAuth provider is not declared",
-        )
-    })?;
-    let profile_alias = match &package.contract.auth.profile_selection {
-        ProfileSelection::Fixed { alias } => alias.clone(),
-        ProfileSelection::Selectable {
-            default: Some(alias),
-        } => alias.clone(),
-        ProfileSelection::None => "default".to_string(),
-        ProfileSelection::Selectable { default: None } | ProfileSelection::Implicit => {
-            return Err(error(
-                actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-                "the skill requires an explicit OAuth profile before setup",
-            ));
-        },
-    };
-    let RuntimeProtocol::Mcp {
-        transport,
-        discovery,
-        ..
-    } = &package.contract.runtime
-    else {
-        return Err(error(
-            actix_web::http::StatusCode::BAD_REQUEST,
-            "governed OAuth setup is available only for remote MCP skills",
-        ));
-    };
-    let McpTransport::StreamableHttp { endpoint } = transport else {
-        return Err(error(
-            actix_web::http::StatusCode::BAD_REQUEST,
-            "governed OAuth setup requires a Streamable HTTP MCP endpoint",
-        ));
-    };
-    let resource_url = if discovery.endpoint_aliases.is_empty() {
-        endpoint.as_str()
-    } else {
-        let alias = discovery.default_endpoint_alias.as_deref().ok_or_else(|| {
-            error(
-                actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-                "the skill requires an MCP endpoint choice before setup",
-            )
-        })?;
-        discovery
-            .endpoint_aliases
-            .get(alias)
-            .map(String::as_str)
-            .ok_or_else(|| {
-                error(
-                    actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-                    "the skill's default MCP endpoint is not declared",
-                )
-            })?
-    };
-    let oauth = discovery.oauth.as_ref().ok_or_else(|| {
-        error(
-            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-            "the skill's MCP OAuth policy is not declared",
-        )
-    })?;
     let (principal, workspace) = vault.resolve_required_scope(req)?;
     let scope = CredentialScope::new(principal, workspace).map_err(|_| {
         error(
@@ -1791,49 +1729,422 @@ fn skill_oauth_coordinator(
             "the authenticated workspace scope is invalid",
         )
     })?;
-    let profile = CredentialProfileKey::new(
-        scope.clone(),
-        provider,
-        profile_alias,
-        CredentialProfileBinding::McpOauth {
-            resource_url: CanonicalCredentialUrl::new(resource_url).map_err(|_| {
-                error(
-                    actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-                    "the skill's MCP resource binding is invalid",
-                )
-            })?,
-            authorization_issuer: CanonicalCredentialUrl::new(&oauth.authorization_issuer)
-                .map_err(|_| {
-                    error(
-                        actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-                        "the skill's OAuth issuer binding is invalid",
-                    )
-                })?,
-        },
+    // The runtime (`governed_mcp::execute_mcp`) builds its binding through the
+    // same helper, so the login saved here is the one a run reads.
+    let callback_mode = mcp_oauth_callback_mode(&source, &package)
+        .map_err(|binding_error| skill_oauth_binding_error(binding_error, endpoint_alias))?;
+    let binding =
+        mcp_oauth_binding(&package, scope.clone(), endpoint_alias, None, callback_mode)
+            .map_err(|binding_error| skill_oauth_binding_error(binding_error, endpoint_alias))?;
+    let scoped_store = vault.scoped_store(req)?;
+    let coordinator = binding
+        .coordinator(scoped_store, oauth_api)
+        .map_err(|oauth_error| {
+            error(
+                actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+                oauth_error.message,
+            )
+        })?;
+    Ok((Arc::new(coordinator), scope))
+}
+
+fn skill_oauth_binding_error(
+    binding_error: McpOAuthBindingError,
+    requested_alias: Option<&str>,
+) -> HttpResponse {
+    let (status, message) = match binding_error {
+        McpOAuthBindingError::NotRemoteMcp => (
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "governed OAuth setup is available only for remote MCP skills",
+        ),
+        McpOAuthBindingError::NotStreamableHttp => (
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "governed OAuth setup requires a Streamable HTTP MCP endpoint",
+        ),
+        McpOAuthBindingError::EndpointAliasUndeclared if requested_alias.is_some() => (
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "this skill does not declare that MCP endpoint",
+        ),
+        McpOAuthBindingError::EndpointAliasUndeclared => (
+            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "the skill's default MCP endpoint is not declared",
+        ),
+        McpOAuthBindingError::EndpointAliasRequired => (
+            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "the skill requires an MCP endpoint choice before setup",
+        ),
+        McpOAuthBindingError::ProfileAliasRequired | McpOAuthBindingError::ProfileImplicit => (
+            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "the skill requires an explicit OAuth profile before setup",
+        ),
+        other => (
+            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+            other.message(),
+        ),
+    };
+    error(status, message)
+}
+
+/// Resolve only an installed skill's trusted setup definition. No executable,
+/// argv, host or credential path is accepted from the requesting client.
+pub(crate) struct BrowserCliSetup {
+    pub setup: ResolvedSetup,
+    pub executable: PathBuf,
+    pub home: PathBuf,
+    pub credential: PathBuf,
+    pub path: std::ffi::OsString,
+}
+
+pub(crate) fn browser_cli_setup(
+    req: &HttpRequest,
+    api: &SkillsApi,
+    name: &str,
+    prepare_home: bool,
+) -> Result<Option<BrowserCliSetup>, HttpResponse> {
+    if let Some(response) = skill_name_guard(name) {
+        return Err(response);
+    }
+    let Some(skill_dir) = resolve_skill_folder(api, req, name) else {
+        return Err(error(
+            actix_web::http::StatusCode::NOT_FOUND,
+            "Skill is not installed in this workspace",
+        ));
+    };
+    let source = std::fs::read_to_string(
+        magician::magician_v2::skills::path_rewrite::resolve_skill_path(
+            &skill_dir.join("SKILL.md"),
+        ),
     )
     .map_err(|_| {
         error(
-            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-            "the skill's OAuth profile binding is invalid",
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "Could not read the installed skill",
         )
     })?;
-    let scoped_store = vault.scoped_store(req)?;
-    let oauth_vault = Arc::new(SecretStoreMcpOAuthVault::new(scoped_store));
-    let coordinator = McpOAuthCoordinator::new(
-        profile,
-        oauth_vault,
-        oauth_api.callback_base_url(),
-        McpOAuthClientIdentity::DynamicPublic,
-    )
-    .and_then(|coordinator| coordinator.with_client_name("Magican MCP Client"))
-    .and_then(|coordinator| coordinator.with_scopes(oauth.scopes.iter().cloned()))
-    .map_err(|oauth_error| {
+    let metadata = tool_runtime_core::manifest_parser::parse_skill_frontmatter::<
+        SkillCatalogFrontmatter,
+    >(&source)
+    .map_err(|_| {
         error(
-            actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
-            oauth_error.message,
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "Invalid skill metadata",
         )
     })?;
-    Ok((Arc::new(coordinator), scope))
+    let Some(binding) = metadata.metadata.magician.setup else {
+        return Ok(None);
+    };
+    let setup = setup::resolve(&binding).map_err(|_| {
+        error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "Invalid skill setup",
+        )
+    })?;
+    let SetupDriver::BrowserCli {
+        executable,
+        credential_file,
+        ..
+    } = &setup.driver
+    else {
+        return Ok(None);
+    };
+    let (principal, workspace) = crate::scope::resolve_required_scope(req.headers(), None)?;
+    let root = api
+        .workspace_layout
+        .base_root()
+        .canonicalize()
+        .map_err(|_| {
+            error(
+                actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Workspace is unavailable",
+            )
+        })?;
+    let relative = api
+        .workspace_layout
+        .scope_root(&principal, &workspace)
+        .join("workdirs/home");
+    let relative = relative
+        .strip_prefix(api.workspace_layout.base_root())
+        .map_err(|_| {
+            error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "Invalid workspace HOME",
+            )
+        })?;
+    let home = root.join(relative);
+    let credential = home.join(credential_file);
+    let mut path = root;
+    for component in credential
+        .parent()
+        .ok_or_else(|| {
+            error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "Invalid credential path",
+            )
+        })?
+        .strip_prefix(&path)
+        .map_err(|_| {
+            error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "Invalid credential path",
+            )
+        })?
+        .components()
+        .collect::<Vec<_>>()
+    {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "Invalid credential path",
+            ));
+        }
+        path.push(component);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !prepare_home => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut builder = std::fs::DirBuilder::new();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                builder.create(&path).map_err(|_| {
+                    self::error(
+                        actix_web::http::StatusCode::BAD_REQUEST,
+                        "Could not create scoped login HOME",
+                    )
+                })?;
+            },
+            _ => {
+                return Err(error(
+                    actix_web::http::StatusCode::BAD_REQUEST,
+                    "Scoped login HOME must not contain symlinks",
+                ))
+            },
+        }
+    }
+    if credential.parent().unwrap().is_dir()
+        && std::fs::read_dir(credential.parent().unwrap())
+            .map_err(|_| {
+                error(
+                    actix_web::http::StatusCode::BAD_REQUEST,
+                    "Login directory unavailable",
+                )
+            })?
+            .any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_type().ok())
+                    .is_none_or(|kind| kind.is_symlink())
+            })
+    {
+        return Err(error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "Login files must not be symlinks",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if std::fs::symlink_metadata(&credential)
+            .is_ok_and(|metadata| metadata.nlink() != 1 || !metadata.is_file())
+        {
+            return Err(error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "Login credentials must be an independent regular file",
+            ));
+        }
+        if prepare_home {
+            std::fs::set_permissions(
+                credential.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .map_err(|_| {
+                error(
+                    actix_web::http::StatusCode::BAD_REQUEST,
+                    "Could not secure the login directory",
+                )
+            })?;
+        }
+    }
+    let executable = [
+        skill_dir.join("bin").join(executable),
+        api.workspace_layout
+            .scope_skills_root(&principal, &workspace)
+            .join(".bin")
+            .join(executable),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .and_then(|path| path.canonicalize().ok())
+    .ok_or_else(|| {
+        error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "Install this skill's CLI before signing in",
+        )
+    })?;
+    // npm entrypoints use /usr/bin/env node. GUI-launched engines may have a
+    // minimal PATH; use the installed skill's reviewed sibling Node runtime.
+    let mut paths = vec![
+        skill_dir.join("bin"),
+        api.workspace_layout
+            .scope_skills_root(&principal, &workspace)
+            .join(".bin"),
+    ];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths).map_err(|_| {
+        error(
+            actix_web::http::StatusCode::BAD_REQUEST,
+            "Invalid skill runtime PATH",
+        )
+    })?;
+    Ok(Some(BrowserCliSetup {
+        setup,
+        executable,
+        home,
+        credential,
+        path,
+    }))
+}
+
+/// One Service-accounts row. A multi-endpoint governed MCP skill lists one
+/// row per declared endpoint alias, because each alias is its own binding.
+pub(crate) struct ServiceAccountRow {
+    pub name: String,
+    pub label: String,
+    pub endpoint_alias: Option<String>,
+    /// `governed_oauth` or `browser_cli`; managed-bot rows are built by
+    /// `browser_signin::bots` from the scope's bot config.
+    pub kind: &'static str,
+}
+
+/// Every installed skill in the request scope that declares a setup binding:
+/// `(skill name, SKILL.md source, binding)`.
+fn installed_setup_bindings(
+    req: &HttpRequest,
+    api: &SkillsApi,
+) -> Result<Vec<(String, String, SetupBinding)>, HttpResponse> {
+    let (principal, workspace) = crate::scope::resolve_required_scope(req.headers(), None)?;
+    let root = api
+        .workspace_layout
+        .scope_skills_root(&principal, &workspace);
+    let mut bindings = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten().take(512) {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if skill_name_guard(&name).is_some() {
+                continue;
+            }
+            let path = magician::magician_v2::skills::path_rewrite::resolve_skill_path(
+                &entry.path().join("SKILL.md"),
+            );
+            if !std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= 256 * 1024) {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let Ok(metadata) = tool_runtime_core::manifest_parser::parse_skill_frontmatter::<
+                SkillCatalogFrontmatter,
+            >(&source) else {
+                continue;
+            };
+            let Some(binding) = metadata.metadata.magician.setup else {
+                continue;
+            };
+            bindings.push((name, source, binding));
+        }
+    }
+    Ok(bindings)
+}
+
+/// Managed-bot setup definitions (`google-workspace`, `telegram-self`,
+/// `whatsapp`) bound by any installed skill in the request scope, once each.
+/// Resolved as templates: the Gmail skills bind `google-workspace` without a
+/// profile, and the profiles come from the scope's `gmail-*` bots.
+pub(crate) fn installed_managed_bot_setups(
+    req: &HttpRequest,
+    api: &SkillsApi,
+) -> Result<Vec<ResolvedSetup>, HttpResponse> {
+    let mut setups: Vec<ResolvedSetup> = Vec::new();
+    for (_, _, binding) in installed_setup_bindings(req, api)? {
+        if setups
+            .iter()
+            .any(|known| known.definition == binding.definition)
+        {
+            continue;
+        }
+        let Ok(setup) = setup::resolve_template(&binding.definition) else {
+            continue;
+        };
+        if matches!(setup.driver, SetupDriver::ManagedBot { .. }) {
+            setups.push(setup);
+        }
+    }
+    setups.sort_by(|a, b| a.definition.cmp(&b.definition));
+    Ok(setups)
+}
+
+pub(crate) fn browser_signin_accounts(
+    req: &HttpRequest,
+    api: &SkillsApi,
+) -> Result<Vec<ServiceAccountRow>, HttpResponse> {
+    let mut accounts = Vec::new();
+    {
+        for (name, source, binding) in installed_setup_bindings(req, api)? {
+            let Ok(setup) = setup::resolve(&binding) else {
+                continue;
+            };
+            match setup.driver {
+                SetupDriver::BrowserCli { .. } => accounts.push(ServiceAccountRow {
+                    name,
+                    label: setup.label,
+                    endpoint_alias: None,
+                    kind: "browser_cli",
+                }),
+                SetupDriver::GovernedOauth => {
+                    let aliases =
+                        tool_runtime_core::manifest_parser::parse_skill_runtime_package(&source)
+                            .ok()
+                            .flatten()
+                            .map(|package| mcp_endpoint_aliases(&package))
+                            .unwrap_or_default();
+                    // The setup label of a governed-OAuth skill is the generic
+                    // "Provider account"; name the service instead.
+                    let service = magician::magician_v2::mcp_oauth::service_display_name(&name)
+                        .unwrap_or_else(|| setup.label.clone());
+                    if aliases.is_empty() {
+                        accounts.push(ServiceAccountRow {
+                            name,
+                            label: service,
+                            endpoint_alias: None,
+                            kind: "governed_oauth",
+                        });
+                    } else {
+                        for alias in aliases {
+                            accounts.push(ServiceAccountRow {
+                                name: name.clone(),
+                                label: format!("{service} ({alias})"),
+                                endpoint_alias: Some(alias),
+                                kind: "governed_oauth",
+                            });
+                        }
+                    }
+                },
+                _ => {},
+            }
+        }
+    }
+    accounts.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.endpoint_alias.cmp(&b.endpoint_alias))
+    });
+    Ok(accounts)
 }
 
 fn skill_oauth_product_error(
@@ -1841,6 +2152,7 @@ fn skill_oauth_product_error(
 ) -> HttpResponse {
     use crate::mcp_oauth_api::McpOAuthProductErrorCode;
     let status = match error_value.code {
+        McpOAuthProductErrorCode::RegistrationFailed => actix_web::http::StatusCode::BAD_GATEWAY,
         McpOAuthProductErrorCode::PendingAuthorizationConflict => {
             actix_web::http::StatusCode::CONFLICT
         },
@@ -1855,6 +2167,34 @@ fn skill_oauth_product_error(
     error(status, error_value.message)
 }
 
+fn skill_oauth_start_response(
+    mut value: serde_json::Value,
+    oauth: &crate::mcp_oauth_api::McpOAuthApi,
+) -> HttpResponse {
+    // Older Desktop clients require authorization_url. New clients prefer the
+    // fixed relative viewer path against their verified engine connection.
+    if let (Some(path), Some(ticket)) = (value["viewer_path"].as_str(), value["ticket"].as_str()) {
+        let origin = match url::Url::parse(oauth.callback_base_url()) {
+            Ok(url) => url.origin().ascii_serialization(),
+            Err(_) => {
+                return error(
+                    actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "Sign-in origin is unavailable",
+                )
+            },
+        };
+        value["authorization_url"] = serde_json::json!(format!("{origin}{path}#{ticket}"));
+    }
+    value["status"] = serde_json::json!(if value["mode"] == "connected" {
+        "ready"
+    } else {
+        "authorization_pending"
+    });
+    HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store"))
+        .json(value)
+}
+
 /// Start one exact governed MCP OAuth binding for native Desktop setup.
 /// The narrow setup-token route returns the provider URL once; tokens and
 /// callback state remain in the engine's scoped vault.
@@ -1864,6 +2204,7 @@ pub async fn start_skill_oauth_handler(
     vault: web::Data<SecretVaultApi>,
     oauth_api: web::Data<crate::mcp_oauth_api::McpOAuthApi>,
     path: web::Path<String>,
+    signin: Option<web::Data<crate::browser_signin::BrowserSignInApi>>,
 ) -> HttpResponse {
     if let Err(response) = vault.require_setup_token(&req) {
         return response;
@@ -1872,11 +2213,43 @@ pub async fn start_skill_oauth_handler(
     if let Some(response) = skill_name_guard(&name) {
         return response;
     }
-    let (coordinator, _scope) = match skill_oauth_coordinator(&req, &api, &vault, &oauth_api, &name)
-    {
-        Ok(result) => result,
+    match browser_cli_setup(&req, &api, &name, true) {
+        Ok(Some(setup)) => {
+            let Some(signin) = signin else {
+                return error(
+                    actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "Browser sign-in is unavailable",
+                );
+            };
+            let (principal, workspace) = match vault.resolve_required_scope(&req) {
+                Ok(scope) => scope,
+                Err(response) => return response,
+            };
+            let scope = match CredentialScope::new(principal, workspace) {
+                Ok(scope) => scope,
+                Err(_) => {
+                    return error(
+                        actix_web::http::StatusCode::FORBIDDEN,
+                        "Invalid login scope",
+                    )
+                },
+            };
+            return match signin.start_cli(scope, &name, setup).await {
+                Ok(value) => skill_oauth_start_response(value, &oauth_api),
+                Err(_) => error(
+                    actix_web::http::StatusCode::BAD_REQUEST,
+                    "CLI sign-in could not start. Finish login on the computer or retry.",
+                ),
+            };
+        },
+        Ok(None) => {},
         Err(response) => return response,
-    };
+    }
+    let (coordinator, scope) =
+        match skill_oauth_coordinator(&req, &api, &vault, &oauth_api, &name, None) {
+            Ok(result) => result,
+            Err(response) => return response,
+        };
     let launch = match oauth_api
         .register_and_begin_for_native_setup(coordinator)
         .await
@@ -1884,12 +2257,169 @@ pub async fn start_skill_oauth_handler(
         Ok(launch) => launch,
         Err(oauth_error) => return skill_oauth_product_error(oauth_error),
     };
+    if let Some(signin) = signin {
+        return match signin.oauth_handoff(
+            scope,
+            launch.pending().correlation_id(),
+            zeroize::Zeroizing::new(launch.authorization_url().to_owned()),
+            &oauth_api,
+        ) {
+            Ok(value) => skill_oauth_start_response(value, &oauth_api),
+            Err(_) => error(
+                actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Browser sign-in is unavailable. Retry from Service accounts.",
+            ),
+        };
+    }
     HttpResponse::Ok()
         .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
         .json(SkillOAuthStartResponse {
             authorization_url: launch.authorization_url().to_owned(),
             status: "authorization_pending",
         })
+}
+
+/// Secret-free credential state of one installed skill account binding.
+pub(crate) struct SkillCredentialState {
+    pub state: AuthState,
+    pub refresh_available: bool,
+    pub detail: &'static str,
+}
+
+fn auth_state_detail(state: AuthState) -> &'static str {
+    match state {
+        AuthState::Ready => "Account login is active",
+        AuthState::Authenticating => "Waiting for account authorization",
+        AuthState::Missing | AuthState::InteractionRequired => "Account login is required",
+        AuthState::Expired => "Account login has expired",
+        AuthState::Revoked => "Account access was revoked",
+        AuthState::IdentityMismatch => "The connected account does not match this profile",
+        AuthState::Denied => "Account authorization was denied",
+        AuthState::Error => "Account login could not be verified",
+        AuthState::Unknown => "Account login status is not available",
+    }
+}
+
+/// Readiness of one installed skill's account: a scoped CLI login for
+/// browser-CLI skills, or the exact governed MCP OAuth binding (the same one
+/// a run uses; `endpoint_alias` picks one alias of a multi-endpoint skill).
+/// Callers own authorization; this never returns credential material.
+pub(crate) async fn skill_credential_state(
+    req: &HttpRequest,
+    api: &SkillsApi,
+    vault: &SecretVaultApi,
+    oauth_api: &crate::mcp_oauth_api::McpOAuthApi,
+    name: &str,
+    endpoint_alias: Option<&str>,
+) -> Result<SkillCredentialState, HttpResponse> {
+    if let Some(response) = skill_name_guard(name) {
+        return Err(response);
+    }
+    if let Some(setup) = browser_cli_setup(req, api, name, false)? {
+        if endpoint_alias.is_some() {
+            return Err(error(
+                actix_web::http::StatusCode::BAD_REQUEST,
+                "this skill does not declare MCP endpoints",
+            ));
+        }
+        let ready = crate::browser_signin::cli_credential_ready(&setup.credential);
+        return Ok(SkillCredentialState {
+            state: if ready {
+                AuthState::Ready
+            } else {
+                AuthState::Missing
+            },
+            refresh_available: false,
+            detail: if ready {
+                "Scoped CLI login is saved; provider access is checked when used"
+            } else {
+                "Account login is required"
+            },
+        });
+    }
+    let (coordinator, scope) =
+        skill_oauth_coordinator(req, api, vault, oauth_api, name, endpoint_alias)?;
+    let binding_id = coordinator.callback_binding_id();
+    let status = match oauth_api.credential_status(&binding_id, &scope).await {
+        Ok(status) => status,
+        Err(oauth_error)
+            if oauth_error.code
+                == crate::mcp_oauth_api::McpOAuthProductErrorCode::AuthorizationNotFound =>
+        {
+            if let Err(register_error) = oauth_api.register_coordinator(Arc::clone(&coordinator)) {
+                if register_error.code
+                    != crate::mcp_oauth_api::McpOAuthProductErrorCode::PendingAuthorizationConflict
+                {
+                    return Err(skill_oauth_product_error(register_error));
+                }
+            }
+            oauth_api
+                .credential_status(&binding_id, &scope)
+                .await
+                .map_err(skill_oauth_product_error)?
+        },
+        Err(oauth_error) => return Err(skill_oauth_product_error(oauth_error)),
+    };
+    Ok(SkillCredentialState {
+        state: status.state,
+        refresh_available: status.refresh_available,
+        detail: auth_state_detail(status.state),
+    })
+}
+
+/// Service-accounts row status. The runtime refreshes an expired login that
+/// still holds a refresh grant, so that row counts as connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AccountStatus {
+    Connected,
+    NeedsSignIn,
+    Authenticating,
+    Unknown,
+}
+
+pub(crate) const ACCOUNT_STATUS_UNAVAILABLE: &str = "Account status is not available right now";
+
+/// Pure mapping from a credential state to the Service-accounts status.
+pub(crate) fn account_status(state: &SkillCredentialState) -> (AccountStatus, &'static str) {
+    match state.state {
+        AuthState::Ready => (AccountStatus::Connected, state.detail),
+        AuthState::Expired if state.refresh_available => (
+            AccountStatus::Connected,
+            "Account login refreshes automatically when used",
+        ),
+        AuthState::Authenticating => (AccountStatus::Authenticating, state.detail),
+        AuthState::Missing
+        | AuthState::InteractionRequired
+        | AuthState::Expired
+        | AuthState::Revoked
+        | AuthState::IdentityMismatch
+        | AuthState::Denied => (AccountStatus::NeedsSignIn, state.detail),
+        AuthState::Error | AuthState::Unknown => (AccountStatus::Unknown, state.detail),
+    }
+}
+
+const ACCOUNT_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Bounded, secret-free Service-accounts status for one row. Any error or a
+/// check slower than three seconds reads as `unknown`.
+pub(crate) async fn skill_account_status(
+    req: &HttpRequest,
+    api: &SkillsApi,
+    vault: &SecretVaultApi,
+    oauth_api: &crate::mcp_oauth_api::McpOAuthApi,
+    name: &str,
+    endpoint_alias: Option<&str>,
+) -> (AccountStatus, &'static str) {
+    match tokio::time::timeout(
+        ACCOUNT_STATUS_TIMEOUT,
+        skill_credential_state(req, api, vault, oauth_api, name, endpoint_alias),
+    )
+    .await
+    {
+        Ok(Ok(state)) => account_status(&state),
+        Ok(Err(_)) | Err(_) => (AccountStatus::Unknown, ACCOUNT_STATUS_UNAVAILABLE),
+    }
 }
 
 /// Return secret-free readiness for one exact governed MCP OAuth binding.
@@ -1904,54 +2434,16 @@ pub async fn get_skill_oauth_status_handler(
         return response;
     }
     let name = path.into_inner();
-    if let Some(response) = skill_name_guard(&name) {
-        return response;
+    match skill_credential_state(&req, &api, &vault, &oauth_api, &name, None).await {
+        Ok(state) => HttpResponse::Ok()
+            .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
+            .json(SkillOAuthStatusResponse {
+                ready: state.state == AuthState::Ready,
+                status: state.state,
+                detail: state.detail.to_string(),
+            }),
+        Err(response) => response,
     }
-    let (coordinator, scope) = match skill_oauth_coordinator(&req, &api, &vault, &oauth_api, &name)
-    {
-        Ok(result) => result,
-        Err(response) => return response,
-    };
-    let binding_id = coordinator.callback_binding_id();
-    let status = match oauth_api.credential_status(&binding_id, &scope).await {
-        Ok(status) => status,
-        Err(oauth_error)
-            if oauth_error.code
-                == crate::mcp_oauth_api::McpOAuthProductErrorCode::AuthorizationNotFound =>
-        {
-            if let Err(register_error) = oauth_api.register_coordinator(Arc::clone(&coordinator)) {
-                if register_error.code
-                    != crate::mcp_oauth_api::McpOAuthProductErrorCode::PendingAuthorizationConflict
-                {
-                    return skill_oauth_product_error(register_error);
-                }
-            }
-            match oauth_api.credential_status(&binding_id, &scope).await {
-                Ok(status) => status,
-                Err(oauth_error) => return skill_oauth_product_error(oauth_error),
-            }
-        },
-        Err(oauth_error) => return skill_oauth_product_error(oauth_error),
-    };
-    let ready = status.state == AuthState::Ready;
-    let detail = match status.state {
-        AuthState::Ready => "Account login is active",
-        AuthState::Authenticating => "Waiting for account authorization",
-        AuthState::Missing | AuthState::InteractionRequired => "Account login is required",
-        AuthState::Expired => "Account login has expired",
-        AuthState::Revoked => "Account access was revoked",
-        AuthState::IdentityMismatch => "The connected account does not match this profile",
-        AuthState::Denied => "Account authorization was denied",
-        AuthState::Error => "Account login could not be verified",
-        AuthState::Unknown => "Account login status is not available",
-    };
-    HttpResponse::Ok()
-        .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
-        .json(SkillOAuthStatusResponse {
-            ready,
-            status: status.state,
-            detail: detail.to_string(),
-        })
 }
 
 /// Register the skills routes under the `/api/magician/v2` scope.
@@ -2723,6 +3215,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
+    use tool_runtime_core::credential_profiles::CredentialProfileBinding;
 
     use std::fs;
 
@@ -3355,7 +3848,7 @@ mod tests {
             .to_http_request();
 
         let (coordinator, scope) =
-            skill_oauth_coordinator(&request, &api, &vault, &oauth_api, "swiggy-mcp")
+            skill_oauth_coordinator(&request, &api, &vault, &oauth_api, "swiggy-mcp", None)
                 .expect("build setup coordinator");
         assert_eq!(scope.principal.as_str(), "test");
         assert_eq!(scope.workspace.as_str(), "test");
@@ -3370,6 +3863,100 @@ mod tests {
         };
         assert_eq!(resource_url.as_str(), "https://mcp.swiggy.com/food");
         assert_eq!(authorization_issuer.as_str(), "https://mcp.swiggy.com/auth");
+
+        // A Service-accounts row for another declared alias binds that
+        // alias's endpoint; an undeclared alias is refused, never guessed.
+        let (instamart, _) = skill_oauth_coordinator(
+            &request,
+            &api,
+            &vault,
+            &oauth_api,
+            "swiggy-mcp",
+            Some("instamart"),
+        )
+        .expect("build per-alias setup coordinator");
+        let CredentialProfileBinding::McpOauth { resource_url, .. } =
+            &instamart.profile_key().binding
+        else {
+            panic!("expected MCP OAuth binding");
+        };
+        assert_eq!(resource_url.as_str(), "https://mcp.swiggy.com/im");
+        assert_ne!(
+            instamart.callback_binding_id(),
+            coordinator.callback_binding_id()
+        );
+        let refused = skill_oauth_coordinator(
+            &request,
+            &api,
+            &vault,
+            &oauth_api,
+            "swiggy-mcp",
+            Some("https://attacker.test"),
+        )
+        .err()
+        .expect("an undeclared alias is refused");
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+        let rows = browser_signin_accounts(&request, &api).expect("list accounts");
+        let aliases: Vec<_> = rows
+            .iter()
+            .filter(|row| row.name == "swiggy-mcp")
+            .map(|row| row.endpoint_alias.as_deref())
+            .collect();
+        assert_eq!(
+            aliases,
+            vec![
+                Some("dineout"),
+                Some("food"),
+                Some("instamart"),
+                Some("scenes")
+            ]
+        );
+    }
+
+    fn credential_state(state: AuthState, refresh_available: bool) -> SkillCredentialState {
+        SkillCredentialState {
+            state,
+            refresh_available,
+            detail: auth_state_detail(state),
+        }
+    }
+
+    #[test]
+    fn account_status_maps_every_credential_state_without_secrets() {
+        assert_eq!(
+            account_status(&credential_state(AuthState::Ready, false)).0,
+            AccountStatus::Connected
+        );
+        let (status, detail) = account_status(&credential_state(AuthState::Expired, true));
+        assert_eq!(status, AccountStatus::Connected);
+        assert!(detail.contains("refreshes"), "{detail}");
+        assert_eq!(
+            account_status(&credential_state(AuthState::Authenticating, false)).0,
+            AccountStatus::Authenticating
+        );
+        for state in [
+            AuthState::Missing,
+            AuthState::InteractionRequired,
+            AuthState::Expired,
+            AuthState::Revoked,
+            AuthState::IdentityMismatch,
+            AuthState::Denied,
+        ] {
+            let (status, detail) = account_status(&credential_state(state, false));
+            assert_eq!(status, AccountStatus::NeedsSignIn, "{state:?}");
+            assert_eq!(detail, auth_state_detail(state));
+        }
+        for state in [AuthState::Error, AuthState::Unknown] {
+            assert_eq!(
+                account_status(&credential_state(state, true)).0,
+                AccountStatus::Unknown
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(AccountStatus::NeedsSignIn).unwrap(),
+            serde_json::json!("needs_sign_in")
+        );
     }
 
     #[actix_rt::test]

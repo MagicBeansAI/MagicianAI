@@ -47,7 +47,7 @@ Fixes from reviewing the consolidated hosts:
 - An open Plan Inspector now follows the URL: it retargets when `selected`
   changes and closes when `plan=open` is removed; closing or switching tasks
   clears plan and run focus.
-- Internal work and Crew cycle drawers no longer offer the inert Plan graph
+- System work and Crew cycle drawers no longer offer the inert Plan graph
   action.
 - Consumed native deep-link targets clear on manual navigation, New work and
   connection changes.
@@ -85,17 +85,17 @@ UI geometry and in-memory behavior only.
 
 ## Scope and preservation
 
-Work replaces Tasks on web, iOS and Android (All work, Needs you, Crew; Programs,
-Quality and Company loop under More). New work opens the existing task form. No
+Work replaces Tasks on web, iOS and Android (All work, Needs you, Crew; Playbooks,
+Quality checks and Team routines under More). New work opens the existing task form. No
 new task store, runner, backend endpoint, configuration or data migration.
 
 | Area | Preservation and qualification approach |
 | --- | --- |
 | Web task/internal/monitor controls | Existing workspaces, task panel and Plan Inspector |
-| Web Crew, Attention, Relentless and operations | Reusable workspaces; Relentless lives in Work → Quality |
+| Web Crew, Attention, Relentless and operations | Reusable workspaces; Relentless lives in Work → More → Quality checks |
 | Native tasks and owner decisions | Existing implementations, wrapped in the Work shell |
 | Native Crew/program/operator/quality | Frozen connection clients, existing write contracts, pinned versions |
-| Programs and OPC | Scoped read/history/restore; `program.md` stays durable direction |
+| Playbooks and OPC | Scoped read/history/restore; `program.md` stays durable direction |
 | Small screens and themes | Full-screen web inspector below 960px; installed theme tokens/fonts |
 
 ## Web checks
@@ -172,7 +172,7 @@ adversarial interactions and request authority. Fixes:
 | Rejected task move showed success | Return the acknowledged result |
 | Tab/Shift+Tab escaped the phone task dialog | Shared focus trap |
 | Android Crew → Quality defaulted to `engineer` | Carry the member through route, filter and draft |
-| Programs used replacement credentials before scope update | Stamp scope/credential identity; check after every await |
+| Playbook reads used replacement credentials before scope update | Stamp scope/credential identity; check after every await |
 | Late restore failure appeared on another program | Bind the error to the original program and scope |
 | Native artifact size checked after full buffering | Stream; reject over 128 MiB before EOF |
 | Smallest header painted the wordmark under controls | Hide the ⌘K hint at ≤420px and the wordmark at ≤385px (`TopBar.svelte`) |
@@ -212,7 +212,7 @@ reviewed paths.
 - The scoped program API supports read/history/restore only; no arbitrary
   document writer exists.
 - Broader OPC domains (engagements, rooms, commitments, envelopes, receipts)
-  keep their API/operator coverage; Company loop adds no UI for them.
+  keep their API/operator coverage; Team routines adds no UI for them.
 - Relentless/provider rollout, outward authority and backend recovery stay
   governed by their own contracts.
 - Remote Work and the explicit specialist allowlist are authorized; root login

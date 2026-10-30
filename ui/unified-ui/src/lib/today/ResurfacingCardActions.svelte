@@ -4,7 +4,7 @@
 	 *
 	 * These used to live inline in `ResurfacingBand`, which meant the canonical
 	 * attention lane could only offer the six server-declared verbs — silently
-	 * dropping create reminder, create task, ask Presto, save to memory, and
+	 * dropping create reminder, create task, ask the agent, save to memory, and
 	 * share draft for anyone served by that lane. Owning them here lets both
 	 * surfaces present the identical set.
 	 *
@@ -16,12 +16,15 @@
 	import { createEventDispatcher, tick } from 'svelte';
 
 	import Icon from '$lib/shared/icons/Icon.svelte';
+	import { agentDisplayName } from '$lib/presentationIdentity';
 	import { showWarning } from '$lib/shared/stores/notifications';
+	import { primaryAgent } from '$lib/stores/agentStore';
 	import ResurfacingActionDialog from './ResurfacingActionDialog.svelte';
 	import { presentResurfacingActionResult } from './resurfacingActionResult';
 	import {
 		isResurfacingDialogAction,
 		mergeResurfacingCapabilities,
+		resurfacingActionDisplayLabel,
 		type ResurfacingDialogActionKind
 	} from './resurfacingPresentation';
 	import {
@@ -118,17 +121,15 @@
 		if (open) open = false;
 	}
 
-	// Ask Presto needs a thread to post into; offering it without one produces a
+	$: agentName = agentDisplayName($primaryAgent);
+
+	// Ask <agent> needs a thread to post into; offering it without one produces a
 	// failure the user cannot act on, so it is filtered out rather than shown.
 	$: capabilities = mergeResurfacingCapabilities(card, detail).filter(
 		(capability) =>
 			!READ_KINDS.has(capability.kind) &&
 			(capability.kind !== 'ask_presto' || Boolean(chatThreadId?.trim()))
 	);
-
-	function label(kind: string): string {
-		return kind.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
-	}
 
 	function newKey(): string {
 		return crypto.randomUUID();
@@ -150,6 +151,13 @@
 			return;
 		}
 		await submit(kind, kind === 'ask_presto' ? { ui_thread_id: chatThreadId } : {}, newKey());
+	}
+
+	/** Run one capability as its own menu item would — dialog kinds open the
+	 *  dialog, read kinds are emitted. Hosts that list the same actions in
+	 *  their own menu (the Today deck's Act menu) call this. */
+	export function startAction(kind: ResurfacingActionKind): void {
+		void run(kind);
 	}
 
 	async function submit(
@@ -227,7 +235,7 @@
 						disabled={disabled || busy}
 						on:click={() => void run(capability.kind)}
 					>
-						{capability.label ?? label(capability.kind)}
+						{resurfacingActionDisplayLabel(capability, agentName)}
 					</button>
 				{/each}
 			</div>

@@ -138,6 +138,12 @@ pub fn misfit_reason(
     request: &DecisionRequest,
     capabilities: &ModelCapabilities,
 ) -> Option<String> {
+    if !request.assets.is_empty() && capabilities.text_only {
+        return Some(format!(
+            "request carries {} image(s), model is text-only",
+            request.assets.len()
+        ));
+    }
     if let Some(max_questions) = capabilities.max_questions {
         if request.questions.len() > max_questions {
             return Some(format!(
@@ -175,6 +181,14 @@ pub fn misfit_reason(
             ));
         }
     }
+    if let Some(max_tokens) = capabilities.max_question_tokens {
+        let estimate = estimate_question_tokens(request);
+        if estimate > max_tokens {
+            return Some(format!(
+                "state plus one question is ~{estimate} tokens, model takes {max_tokens} per question"
+            ));
+        }
+    }
     None
 }
 
@@ -183,9 +197,46 @@ pub fn misfit_reason(
 /// run denser than the usual four characters per token), so a misfit is
 /// caught before the model truncates.
 pub fn estimate_request_tokens(request: &DecisionRequest) -> u64 {
-    let state = serde_json::to_vec(request.state.as_json()).map_or(0, |bytes| bytes.len());
     let questions = serde_json::to_vec(&request.questions).map_or(0, |bytes| bytes.len());
-    ((state + questions) as u64).div_ceil(3)
+    estimate_state_tokens(request) + (questions as u64).div_ceil(3)
+}
+
+/// The same estimate for the state plus its largest single question.
+pub fn estimate_question_tokens(request: &DecisionRequest) -> u64 {
+    let largest = request
+        .questions
+        .iter()
+        .map(|question| serde_json::to_vec(question).map_or(0, |bytes| bytes.len()))
+        .max()
+        .unwrap_or(0);
+    estimate_state_tokens(request) + (largest as u64).div_ceil(3)
+}
+
+/// Images count once per place the state names them, never by their
+/// base64 size. The provider publishes no per-image figure; Jev 1.13 billed
+/// a 1280x800 screenshot at ~2.7k input tokens (2026-10-17), about one token
+/// per 380 pixels, so one per 375 errs high (~6.6k for a full 1568 px square).
+fn estimate_state_tokens(request: &DecisionRequest) -> u64 {
+    let state = serde_json::to_vec(request.state.as_json()).map_or(0, |bytes| bytes.len());
+    let images: u64 = request
+        .assets
+        .iter()
+        .map(|(key, asset)| {
+            let crate::asset::DecisionAsset::Image(image) = asset;
+            let uses = count_mentions(request.state.as_json(), key).max(1);
+            uses * (u64::from(image.width) * u64::from(image.height)).div_ceil(375)
+        })
+        .sum();
+    (state as u64).div_ceil(3) + images
+}
+
+fn count_mentions(value: &serde_json::Value, key: &str) -> u64 {
+    match value {
+        serde_json::Value::String(text) => text.matches(key).count() as u64,
+        serde_json::Value::Array(items) => items.iter().map(|item| count_mentions(item, key)).sum(),
+        serde_json::Value::Object(map) => map.values().map(|item| count_mentions(item, key)).sum(),
+        _ => 0,
+    }
 }
 
 /// Errors that allow another route to serve the request. Admission pressure
@@ -315,6 +366,10 @@ impl DecisionRuntime {
                 "Choice requires candidates".into(),
             ));
         }
+        // A bad image is the caller's fault too; the provider would reject
+        // it after a billed round trip.
+        crate::asset::validate_assets(&request.assets, request.state.as_json())
+            .map_err(|error| DecisionError::InvalidRequest(error.to_string()))?;
         let bound = self
             .operations
             .get(request.operation.as_str())

@@ -1,7 +1,8 @@
 [package]
 name = "magician-bin"
-version = "0.2.29"
+version = "0.2.41"
 edition = "2021"
+default-run = "magician"
 authors = ["MagicBeansAI"]
 description = "The magician server binary, extracted from the magician monolith package"
 license = "MIT OR Apache-2.0"
@@ -10,8 +11,18 @@ license = "MIT OR Apache-2.0"
 name = "magician"
 path = "src/main.rs"
 
+[[bin]]
+name = "chat-context-retrieval-eval"
+path = "src/chat_context_retrieval_eval.rs"
+required-features = ["retrieval-eval"]
+
+[features]
+# Live retrieval must use runtime keychain authority, not dev-dependency fixtures.
+retrieval-eval = []
+
 [dependencies]
 magician = { path = "../magician" }
+magician-vector-index = { path = "../magician-vector-index" }
 magician-storage = { path = "../magician-storage" }
 magician-api = { path = "../magician-api" }
 magician-apps = { path = "../magician-apps" }
@@ -20,6 +31,7 @@ magician-media = { path = "../magician-media" }
 magician-learning = { path = "../magician-learning" }
 magician-chunking = { path = "../magician-chunking" }
 magician-comms = { path = "../magician-comms" }
+magician-components = { path = "../magician-components" }
 runtime-core = { path = "../runtime-core" }
 magicllm = { path = "../magicllm" }
 tool-runtime-core = { workspace = true }
@@ -27,12 +39,13 @@ tool-runtime-core = { workspace = true }
 actix-files = "0.6"
 actix-http = "3.12"
 actix-service = "2"
-actix-web = { version = "4.4", features = ["rustls"] }
+actix-web = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { version = "4.0", features = ["derive"] }
 chrono = { workspace = true }
 libc = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 reqwest = { version = "0.12.28", features = ["json", "stream", "rustls-tls", "multipart", "system-proxy"] }
 duckdb = { version = "=1.10502.0", features = ["bundled", "json", "parquet"] }
 dotenvy = "0.15"

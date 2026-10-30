@@ -93,8 +93,12 @@ Control-tool descriptions and retry feedback advertise only `yield`.
 ## Internal-only Decision variants
 
 - **`Decision::Completed`** — `text_terminal_envelope` when the LLM returns
-  text-only (and text terminals are allowed), and definition-of-done
-  auto-conclude when every durable micro-goal is resolved.
+  text-only (and text terminals are allowed), and the definition-of-done
+  final answer when every durable micro-goal is completed. With any micro-goal
+  blocked, that final answer is a partial `Decision::Yield` instead (blocked
+  requirements in `open[]`, their `blocked_reason`s as blockers; Failed when
+  every requirement is blocked and the model gave no answer); see
+  [Agentic loop termination](../agentic-loop-termination.md#definition-of-done-final-answer).
 - **`Decision::Failed`** — synthetic failure terminal. The apply-phase arm still
   carries owner-stack yield-back, AskUser escalation, and the partial-success
   safety net. The live model terminal is always `Decision::Yield`; evidence/success

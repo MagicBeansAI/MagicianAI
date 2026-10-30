@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -63,6 +64,8 @@ data class AskSurfaceState(
  */
 class AskSurfaceViewModel(app: Application) : AndroidViewModel(app) {
 
+    private val appContext = app.applicationContext
+    private var displayedConnection = ai.magicbeans.magdroid.access.MagicianAccess.connectionSnapshot(appContext)
     private val repository = AttentionRepository(app)
     private val _state = MutableStateFlow(AskSurfaceState())
     val state: StateFlow<AskSurfaceState> = _state.asStateFlow()
@@ -74,13 +77,18 @@ class AskSurfaceViewModel(app: Application) : AndroidViewModel(app) {
         repository.alignmentDetail(correlationId)
 
     fun refresh() {
+        val connection = ai.magicbeans.magdroid.access.MagicianAccess.connectionSnapshot(appContext)
+        if (connection != displayedConnection) {
+            displayedConnection = connection
+            _state.value = AskSurfaceState()
+        }
         if (loading) {
             refreshQueued = true
             return
         }
         loading = true
         viewModelScope.launch {
-            runCatching { repository.feed() }
+            runCatching { repository.pendingFeed() }
                 .onSuccess { feed ->
                     val current = _state.value
                     val open = current.sheet
@@ -138,6 +146,9 @@ class AskSurfaceViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun liveLoop() = coroutineScope {
         refresh()
         launch {
+            ai.magicbeans.magdroid.access.MagicianAccess.activeMachine.collect { refresh() }
+        }
+        launch {
             PendingHitlTracker.changes.drop(1).collectLatest {
                 delay(LIVE_REFRESH_DEBOUNCE_MS)
                 refresh()
@@ -188,6 +199,7 @@ class AskSurfaceViewModel(app: Application) : AndroidViewModel(app) {
                     submitting = null,
                     errors = _state.value.errors + (key to (problem.message ?: "Could not send the answer.")),
                 )
+                refresh()
                 return@launch
             }
             settle(item, notice = outcome)
@@ -227,7 +239,7 @@ class AskSurfaceViewModel(app: Application) : AndroidViewModel(app) {
                 PlanApprovalChoice.ApproveAndRun -> PlanApprovalActions.approveAndRun(
                     taskId = taskId,
                     approve = { post(true) },
-                    startRun = { repository.startRun(it) },
+                    startRun = { repository.startRun(it, request.originConnection) },
                 )
                 PlanApprovalChoice.Review -> return@launch
             }
@@ -243,6 +255,10 @@ class AskSurfaceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun settle(item: AttentionItem, notice: String?) {
+        if (item.originConnection != null && item.originConnection != ai.magicbeans.magdroid.access.MagicianAccess.connectionSnapshot(appContext)) {
+            refresh()
+            return
+        }
         val ids = item.askIds
         ids.forEach(PendingHitlTracker::drop)
         val current = _state.value

@@ -23,6 +23,10 @@ Commands:
   status-magician        - Get Magician status
   status-magicutor       - Get Magicutor status
   status-decision-engine - Get decision engine status
+  start-desktop          - Launch the macOS desktop app (needs --manage-desktop)
+  stop-desktop           - Stop the desktop app (a clean quit: not relaunched)
+  restart-desktop        - Stop, then launch the desktop app
+  status-desktop         - Get desktop app supervision status
   host-status            - Get host gateway status
   host-presence-start    - Start macOS presence host through host gateway
   host-presence-stop     - Stop macOS presence host through host gateway
@@ -86,6 +90,18 @@ case "$1" in
         ;;
     status-decision-engine)
         send_command "Status" "false" | jq '.data.decision_engine' 2>/dev/null || send_command "Status" "false"
+        ;;
+    start-desktop)
+        send_command "StartDesktop" "false"
+        ;;
+    stop-desktop)
+        send_command "StopDesktop" "false"
+        ;;
+    restart-desktop)
+        send_command "RestartDesktop" "false"
+        ;;
+    status-desktop)
+        send_command "StatusDesktop" "false"
         ;;
     host-status)
         send_command "HostGatewayStatus" "false"

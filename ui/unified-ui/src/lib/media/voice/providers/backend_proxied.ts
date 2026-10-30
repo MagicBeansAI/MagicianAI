@@ -43,6 +43,7 @@ interface InternalState {
 	playbackSources: Set<AudioBufferSourceNode>;
 	playbackTimeSec: number;
 	muted: boolean;
+    playbackAnalyser: AnalyserNode | null;
 }
 
 export class BackendProxiedFrontendProvider implements RealtimeFrontendProvider {
@@ -54,6 +55,7 @@ export class BackendProxiedFrontendProvider implements RealtimeFrontendProvider 
 		descriptor: ProviderDescriptor;
 		mic: MediaStream;
 		playbackEl: HTMLAudioElement;
+        analysisContext?: AudioContext | null;
 		pushToTalkMode: boolean;
 		sessionConfig: ProviderSessionConfig;
 		resume: ProviderResumeContext | null;
@@ -94,14 +96,31 @@ export class BackendProxiedFrontendProvider implements RealtimeFrontendProvider 
 		// without making noise on the user's speakers.
 		micNode.connect(captureNode);
 		captureNode.connect(audioCtx.destination);
+		// The context is created after getUserMedia and the control-socket
+		// handshake, outside the click that started the call, so the
+		// browser may start it `suspended`. Suspended, the capture node
+		// never fires and no mic audio is sent. Not awaited: without user
+		// activation `resume()` stays pending rather than rejecting.
+		if (audioCtx.state !== 'running') {
+			audioCtx.resume().catch((err) => {
+				console.warn('[voice] capture AudioContext did not resume', err);
+			});
+		}
 
+        let playbackAnalyser: AnalyserNode | null = null;
+        try {
+            playbackAnalyser = audioCtx.createAnalyser();
+            playbackAnalyser.fftSize = 256;
+        } catch { /* Metering must not prevent a voice call. */ }
+        args.callbacks.onPlaybackAnalyserChanged?.(playbackAnalyser);
 		this.state = {
 			audioCtx,
 			micNode,
 			captureNode,
 			playbackSources: new Set(),
 			playbackTimeSec: audioCtx.currentTime,
-			muted
+			muted,
+            playbackAnalyser
 		};
 		// Resume context replay isn't a frontend concern for
 		// BackendProxied — the orchestrator hands the resume payload
@@ -118,6 +137,7 @@ export class BackendProxiedFrontendProvider implements RealtimeFrontendProvider 
 	}
 
 	disconnect(): void {
+        this.callbacks?.onPlaybackAnalyserChanged?.(null);
 		const s = this.state;
 		this.state = null;
 		this.callbacks = null;
@@ -212,6 +232,9 @@ export class BackendProxiedFrontendProvider implements RealtimeFrontendProvider 
 		const src = s.audioCtx.createBufferSource();
 		src.buffer = audioBuffer;
 		src.connect(s.audioCtx.destination);
+        if (s.playbackAnalyser) {
+            try { src.connect(s.playbackAnalyser); } catch { /* Keep playback independent of metering. */ }
+        }
 		if (s.playbackSources.size === 0) this.callbacks?.onPlaybackStateChanged?.(true);
 		s.playbackSources.add(src);
 		src.onended = () => {

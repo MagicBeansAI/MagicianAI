@@ -19,6 +19,7 @@ use std::{
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::Utc;
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -1478,6 +1479,23 @@ impl CanonicalRawResultStore {
             .await
     }
 
+    /// One scan of a scope's result locators for every chat session in
+    /// `session_ids`. A thread delete uses this for the whole set. An empty
+    /// set does not touch disk.
+    pub async fn cleanup_chat_sessions(
+        &self,
+        scope: &ScopeRef,
+        session_ids: &std::collections::HashSet<String>,
+    ) -> Result<RawResultCleanupReport, CanonicalResultError> {
+        if session_ids.is_empty() {
+            return Ok(RawResultCleanupReport::default());
+        }
+        self.cleanup_owner_matching(scope, |candidate| {
+            matches!(candidate, RawResultOwner::Chat { session_id } if session_ids.contains(session_id))
+        })
+        .await
+    }
+
     /// Remove all execution-scoped and task-root results for a task whose
     /// files are being permanently removed.
     pub async fn cleanup_task(
@@ -1498,7 +1516,7 @@ impl CanonicalRawResultStore {
         predicate: F,
     ) -> Result<RawResultCleanupReport, CanonicalResultError>
     where
-        F: Fn(&RawResultOwner) -> bool,
+        F: Fn(&RawResultOwner) -> bool + Sync,
     {
         let refs_dir = self.refs_dir(scope);
         let entries = self
@@ -1506,22 +1524,44 @@ impl CanonicalRawResultStore {
             .read_dir_path_or_empty(&refs_dir)
             .await
             .map_err(|_| CanonicalResultError::StorageUnavailable)?;
-        let mut report = RawResultCleanupReport::default();
-        for entry in entries {
-            if entry.is_dir || !entry.file_name.ends_with(".json") {
-                continue;
+        // Most refs belong to other owners. Probe small, atomically written
+        // locators with bounded concurrency, without locking those owners.
+        // A matching locator is re-read under its mutation lock before removal.
+        let probes = stream::iter(
+            entries
+                .into_iter()
+                .filter(|entry| !entry.is_dir && entry.file_name.ends_with(".json")),
+        )
+        .map(|entry| {
+            let predicate = &predicate;
+            async move {
+                let reference_id = entry
+                    .file_name
+                    .strip_suffix(".json")
+                    .ok_or(CanonicalResultError::Corrupt)?;
+                let content_ref =
+                    ScopedResultRef::parse(format!("{RESULT_REF_PREFIX}{reference_id}"))
+                        .map_err(|_| CanonicalResultError::Corrupt)?;
+                let locator = self.read_cleanup_locator(scope, &content_ref).await?;
+                Ok::<_, CanonicalResultError>(predicate(&locator.owner).then_some(content_ref))
             }
-            let Some(reference_id) = entry.file_name.strip_suffix(".json") else {
-                continue;
+        })
+        .buffer_unordered(8);
+        let mut probes = Box::pin(probes);
+        let mut report = RawResultCleanupReport::default();
+        while let Some(probe) = probes.next().await {
+            let content_ref = match probe {
+                Ok(Some(content_ref)) => content_ref,
+                Ok(None) => continue,
+                Err(CanonicalResultError::Corrupt) => {
+                    report.corrupt_manifests += 1;
+                    continue;
+                },
+                Err(_) => {
+                    report.failed += 1;
+                    continue;
+                },
             };
-            let content_ref =
-                match ScopedResultRef::parse(format!("{RESULT_REF_PREFIX}{reference_id}")) {
-                    Ok(content_ref) => content_ref,
-                    Err(_) => {
-                        report.corrupt_manifests += 1;
-                        continue;
-                    },
-                };
             let locator_path = self.locator_path(scope, &content_ref)?;
             let _mutation_guards =
                 match self.acquire_result_mutation_lock(scope, &content_ref).await {
@@ -1531,25 +1571,9 @@ impl CanonicalRawResultStore {
                         continue;
                     },
                 };
-            let locator = match self
-                .read_bounded_json::<RawResultLocatorV1>(
-                    locator_path.clone(),
-                    MAX_RESULT_LOCATOR_BYTES,
-                    MAX_RESULT_LOCATOR_NODES,
-                    map_manifest_read_error,
-                )
-                .await
-            {
-                Ok(locator)
-                    if locator.schema_version == RAW_RESULT_SCHEMA_VERSION
-                        && locator.content_ref.as_str() == content_ref.as_str()
-                        && locator.scope_digest == scope_digest(scope)
-                        && is_blake3_digest(&locator.manifest_hash)
-                        && validate_owner(&locator.owner).is_ok() =>
-                {
-                    locator
-                },
-                Ok(_) | Err(CanonicalResultError::Corrupt) => {
+            let locator = match self.read_cleanup_locator(scope, &content_ref).await {
+                Ok(locator) => locator,
+                Err(CanonicalResultError::Corrupt) => {
                     report.corrupt_manifests += 1;
                     continue;
                 },
@@ -1593,6 +1617,30 @@ impl CanonicalRawResultStore {
             }
         }
         Ok(report)
+    }
+
+    async fn read_cleanup_locator(
+        &self,
+        scope: &ScopeRef,
+        content_ref: &ScopedResultRef,
+    ) -> Result<RawResultLocatorV1, CanonicalResultError> {
+        let locator = self
+            .read_bounded_json::<RawResultLocatorV1>(
+                self.locator_path(scope, content_ref)?,
+                MAX_RESULT_LOCATOR_BYTES,
+                MAX_RESULT_LOCATOR_NODES,
+                map_manifest_read_error,
+            )
+            .await?;
+        if locator.schema_version != RAW_RESULT_SCHEMA_VERSION
+            || locator.content_ref.as_str() != content_ref.as_str()
+            || locator.scope_digest != scope_digest(scope)
+            || !is_blake3_digest(&locator.manifest_hash)
+            || validate_owner(&locator.owner).is_err()
+        {
+            return Err(CanonicalResultError::Corrupt);
+        }
+        Ok(locator)
     }
 
     /// System retention sweep. Corrupt manifests are reported and retained for
@@ -3226,6 +3274,69 @@ mod tests {
             retention_class: ResultRetentionClass::ChatLifecycle,
             expires_at_ms: None,
         }
+    }
+
+    #[tokio::test]
+    async fn owner_cleanup_does_not_wait_for_another_owners_result_lock() {
+        let (_temp, workspace, _authority, store) = chat_store(usize::MAX).await;
+        create_chat_owner(&workspace, "chat-2").await;
+        let unrelated = store
+            .materialize(materialize_request(
+                json!({"answer": 1}),
+                "other-owner-call",
+            ))
+            .await
+            .unwrap();
+        let mut owned = materialize_request(json!({"answer": 2}), "deleted-owner-call");
+        owned.owner = chat_owner("chat-2");
+        store.materialize(owned).await.unwrap();
+        let _unrelated_lock = store
+            .acquire_result_mutation_lock(&scope("owner"), &unrelated.content_ref)
+            .await
+            .unwrap();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.cleanup_owner(&scope("owner"), &chat_owner("chat-2")),
+        )
+        .await
+        .expect("cleanup must not acquire an unrelated owner's lock")
+        .unwrap();
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.failed, 0);
+        assert!(store
+            .read_cleanup_locator(&scope("owner"), &unrelated.content_ref)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn cleanup_chat_sessions_removes_only_the_named_sessions() {
+        let (_temp, workspace, _authority, store) = chat_store(usize::MAX).await;
+        let empty = store
+            .cleanup_chat_sessions(&scope("owner"), &std::collections::HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(empty.removed, 0);
+        create_chat_owner(&workspace, "chat-2").await;
+        let kept = store
+            .materialize(materialize_request(json!({"answer": 1}), "keep-call"))
+            .await
+            .unwrap();
+        let mut dropped = materialize_request(json!({"answer": 2}), "drop-call");
+        dropped.owner = chat_owner("chat-2");
+        store.materialize(dropped).await.unwrap();
+        let mut session_ids = std::collections::HashSet::new();
+        session_ids.insert("chat-2".to_string());
+        let report = store
+            .cleanup_chat_sessions(&scope("owner"), &session_ids)
+            .await
+            .unwrap();
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.failed, 0);
+        assert!(store
+            .read_cleanup_locator(&scope("owner"), &kept.content_ref)
+            .await
+            .is_ok());
     }
 
     fn read_context() -> RawResultReadContext {

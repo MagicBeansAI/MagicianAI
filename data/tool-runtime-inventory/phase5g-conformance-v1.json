@@ -14,9 +14,9 @@
   },
   "official_sdk": {
     "crate": "rmcp",
-    "crate_version": "3.1.0",
-    "release_tag": "rmcp-v3.1.0",
-    "git_commit": "1f9358eddca42d3a510c70ae6446dd6548c7c856"
+    "crate_version": "3.7.0",
+    "release_tag": "rmcp-v3.7.0",
+    "git_commit": "5d6a11f2ae022f513aec0f6e0f10f89a57891a7f"
   },
   "official_client_runs": [
     {
@@ -120,7 +120,7 @@
         {
           "path": "Cargo.toml",
           "symbols": [
-            "rmcp = { version = \"=3.1.0\", default-features = false }"
+            "rmcp = { version = \"=3.7.0\", default-features = false }"
           ]
         },
         {

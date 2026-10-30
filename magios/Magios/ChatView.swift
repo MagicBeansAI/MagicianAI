@@ -9,6 +9,9 @@ struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var threadViewModel = ThreadViewModel()
     @State private var inputText: String = ""
+    @State private var suggestionFocusRequest: UUID?
+    @State private var activeDraftKey: String?
+    @State private var chatContextSheet: ChatContextSheet?
     /// The pushed task detail screen (chat card Inspect / Review, task links).
     @State private var detailRoute: TaskDetailRoute?
     /// The Plan Inspector a live card's Review / Plan graph opens.
@@ -33,6 +36,9 @@ struct ChatView: View {
     @State private var floatingDateShown = false
     @State private var floatingDateToken = 0
     @State private var transcriptScrolling = false
+    /// The top row may load an older page only after it scrolled out of
+    /// view since the last load or the open (see `ChatOlderHistoryTrigger`).
+    @State private var olderHistoryArmed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Mic dictation + the web-style auto-send countdown after a transcript lands.
     @StateObject private var dictation = DictationController()
@@ -40,6 +46,7 @@ struct ChatView: View {
     /// Voice-first composer layout: the big tap-or-hold mic is primary by default;
     /// flips to the text composer when the user opts to type.
     @State private var isVoiceMode = true
+    @State private var composerVoiceModeBeforeCall: Bool?
     @State private var typingDuringCall = false
     @State private var autoSendCountdown: Int? = nil
     /// When the pending dictation sends: drives the countdown band's draining bar.
@@ -95,12 +102,29 @@ struct ChatView: View {
         viewModel.currentSessionIdValue.flatMap { threadViewModel.sessionMetadata(for: $0) }
     }
 
+    private var recentWelcomeSessions: [ChatSession] {
+        Array(threadViewModel.sessions.filter {
+            $0.id != viewModel.currentSessionIdValue && $0.internalVoice == nil
+        }.sorted { $0.updatedAt > $1.updatedAt }.prefix(3))
+    }
+
+    private func applySuggestedPrompt(_ prompt: String) {
+        guard !isArchivedSession, !dictation.isRecording, !dictation.isTranscribing else { return }
+        cancelAutoSend()
+        turnFromVoice = false
+        isVoiceMode = false
+        if voiceCall.isActive { typingDuringCall = true }
+        inputText = prompt
+        suggestionFocusRequest = UUID()
+    }
+
     /// An archived conversation opens read-only: no composer, no docks.
     private var isArchivedSession: Bool { currentSession?.status == "archived" }
 
-    /// What this conversation waits on (the ask dock): its unresolved
-    /// escalation cards, then the feed's pending asks scoped to it. An ask
-    /// a realtime resolution named is gone everywhere, here included.
+    /// Every open ask (the ask dock): this conversation's unresolved
+    /// escalation cards and the feed's pending asks scoped to it, then every
+    /// other chat's or run's. An ask a realtime resolution named is gone
+    /// everywhere, here included.
     private var askItems: [ComposerAskItem] {
         let resolvedElsewhere = attention.remotelyResolved
         let escalations = viewModel.messages.compactMap { message -> ChatMessageContentData? in
@@ -119,14 +143,15 @@ struct ChatView: View {
             readOnly: isArchivedSession)
     }
 
-    /// The presence dot beside the session title (web `PresenceOrb`).
+    /// The presence dot beside the session title (web `PresenceOrb`): only
+    /// this conversation's own ask means it needs you.
     private var presence: ChatPresenceState {
         let last = viewModel.messages.last
         let streaming = last.map { !$0.isUser && $0.id.hasPrefix("streaming-")
             && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
         let toolsRunning = viewModel.serverRunning || (last.map { !$0.isUser && $0.activityIsLive } ?? false)
         return ChatPresenceState.derive(
-            hasPendingAsk: !askItems.isEmpty, streaming: streaming,
+            hasPendingAsk: askItems.contains { !$0.elsewhere }, streaming: streaming,
             toolsRunning: toolsRunning, liveTurn: viewModel.isThinking)
     }
 
@@ -149,6 +174,15 @@ struct ChatView: View {
             // while the sheet is open, so it shows in one place at a time.
             if let error = viewModel.queueErrorMessage, !showQueue {
                 ComposerErrorBand(message: error) { viewModel.queueErrorMessage = nil }
+            }
+            if let issue = viewModel.modelSelectionIssue,
+               ["magician", "pi"].contains(viewModel.selectedHarnessEngine) {
+                Text(issue)
+                    .font(.themed(12))
+                    .foregroundStyle(themeManager.dangerColor)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .accessibilityIdentifier("chat-model-selection-issue")
             }
             ConcurrentVoiceStrip(coordinator: concurrentVoice, onReview: { id in
                 threadViewModel.resumeLastSession(preferredSessionId: id) { result in
@@ -186,7 +220,7 @@ struct ChatView: View {
         }
     }
 
-    /// Ask dock → planner dock → (in-flow call panel) → the composer card;
+    /// Ask dock → planner dock → call panel or composer card;
     /// an archived conversation shows its read-only band instead.
     @ViewBuilder
     private var composerStack: some View {
@@ -195,6 +229,7 @@ struct ChatView: View {
         } else {
             ComposerAskDock(
                 items: askItems,
+                originChatTitles: Dictionary(threadViewModel.sessions.map { ($0.id, $0.title ?? "Chat \($0.id.prefix(8))") }, uniquingKeysWith: { first, _ in first }),
                 notice: askNotice,
                 answer: answerAsk,
                 onHandoff: handOffAsk,
@@ -206,15 +241,15 @@ struct ChatView: View {
                 onReply: beginPlanReply,
                 onOpenPlan: { planInspectorRoute = PlanInspectorRoute(taskId: $0.taskId, title: $0.title) }
             )
-            // In flow, so the transcript lifts and the card's own rows
-            // (queue, concurrent voice) stay visible under the call.
+            // The call occupies the composer's slot; its top rows stay available.
             if voiceCall.isActive && !typingDuringCall {
                 VoiceCallPanel(viewModel: voiceCall, handsFreeAvailable: handsFreeAvailable, onTypeMessage: {
                     isVoiceMode = false
                     typingDuringCall = true
-                }, inFlow: true)
+                }, inFlow: true, topRows: AnyView(composerTopRows))
+            } else {
+                composer
             }
-            composer
         }
     }
 
@@ -240,10 +275,11 @@ struct ChatView: View {
             },
             onAttach: { showPhotoPicker = true },
             onCamera: { showCamera = true },
+            executionChatSessionID: viewModel.currentSessionIdValue,
             mentionItems: viewModel.mentionItems,
             stagedAttachments: viewModel.stagedAttachments,
             onRemoveAttachment: { viewModel.removeStagedAttachment($0) },
-            isRecording: dictation.isRecording,
+            isRecording: dictation.isRecording, dictationLevel: { dictation.level },
             isTranscribing: dictation.isTranscribing,
             onTapDictationStart: { handleTapDictationStart() },
             onTapDictationStop: { handleTapDictationStop() },
@@ -255,7 +291,12 @@ struct ChatView: View {
             onHoldEnd: { handleHoldEnd() },
             // Live pill → start the Phase-2 realtime voice call, attached
             // to the current chat thread so the call and chat share history.
-            onLive: { voiceCall.startCall(uiThreadId: viewModel.currentSessionIdValue ?? "") },
+            onLive: {
+                voiceCall.startCall(
+                    uiThreadId: viewModel.currentSessionIdValue ?? "",
+                    chatSessionId: viewModel.currentSessionIdValue
+                )
+            },
             liveEnabled: liveAvailable,
             handsFreeAvailable: handsFreeAvailable,
             voiceCallActive: voiceCall.isCallLive,
@@ -273,8 +314,11 @@ struct ChatView: View {
             commandContext: viewModel.composerCommandContext,
             onCommand: { viewModel.runComposerCommand($0) },
             onCommandOpened: { viewModel.composerCommandOpened($0) },
+            onCommandLevelOpened: { viewModel.composerCommandLevelOpened($0) },
             commandNotice: viewModel.commandNotice,
-            onCommandNoticeDone: { viewModel.commandNotice = nil }
+            onCommandNoticeDone: { viewModel.commandNotice = nil },
+            focusRequest: suggestionFocusRequest,
+            focusOnAppear: voiceCall.isActive && typingDuringCall
         )
     }
 
@@ -335,6 +379,7 @@ struct ChatView: View {
         withAnimation(reduceMotion ? nil : .default) {
             viewModel.composerMode = .plan
             isVoiceMode = false
+            if voiceCall.isActive { typingDuringCall = true }
         }
     }
 
@@ -367,38 +412,30 @@ struct ChatView: View {
                                     Text(error).font(.themed(12)).foregroundColor(themeManager.secondaryTextColor)
                                 }
                                 if viewModel.messages.isEmpty {
-                                    VStack(spacing: 16) {
-                                        Image(systemName: "sparkles")
-                                            .font(.system(size: 40))
-                                            .foregroundColor(themeManager.accentColor)
-                                            .padding(.top, 40)
-
-                                        Text("How can I help you today?")
-                                            .font(.themed(22, weight: .bold))
-                                            .foregroundColor(themeManager.textColor)
-
-                                        // Voice-forward prompt: the primary way in is the
-                                        // tap-or-hold mic. The @ menu and "type instead"
-                                        // in the composer remain the text escape hatch.
-                                        HStack(spacing: 8) {
-                                            Image(systemName: "mic.fill")
-                                                .font(.system(size: 14))
-                                                .foregroundColor(themeManager.accentColor)
-                                            Text("Tap or hold to dictate")
-                                                .font(.themed(15, weight: .medium))
-                                                .foregroundColor(themeManager.secondaryTextColor)
+                                    ChatWelcomeView(
+                                        theme: themeManager,
+                                        readOnly: isArchivedSession,
+                                        enabled: !dictation.isRecording && !dictation.isTranscribing,
+                                        recentSessions: recentWelcomeSessions,
+                                        onSuggest: applySuggestedPrompt,
+                                        onOpenSession: { id in
+                                            cancelAutoSend()
+                                            threadViewModel.selectSession(id)
+                                            viewModel.loadSession(id)
                                         }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 10)
-                                        .background(themeManager.surfaceColor)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                .stroke(themeManager.controlBorderColor, lineWidth: 1)
-                                        )
-                                        .padding(.top, 20)
+                                    )
+                                    .id("chat-welcome")
+                                    .onAppear {
+                                        isAtBottom = true
+                                        showJumpPill = false
+                                        DispatchQueue.main.async {
+                                            if viewModel.messages.isEmpty {
+                                                proxy.scrollTo("chat-welcome", anchor: .top)
+                                            }
+                                        }
                                     }
                                 } else {
+                                    olderHistoryRow
                                     let dayLabels = ChatDateDividers.labels(for: viewModel.messages.map(\.createdAt))
                                     ForEach(Array(viewModel.messages.enumerated()), id: \.element.id) { index, message in
                                         if let label = dayLabels[index] {
@@ -470,8 +507,8 @@ struct ChatView: View {
                                         showJumpPill = false
                                     }
                                     .onDisappear {
-                                        isAtBottom = false
-                                        showJumpPill = true
+                                        isAtBottom = viewModel.messages.isEmpty
+                                        showJumpPill = !viewModel.messages.isEmpty
                                     }
                             }
                             .padding(.horizontal)
@@ -491,11 +528,12 @@ struct ChatView: View {
                         // style). `simultaneousGesture` so message buttons/links still
                         // fire on the same tap.
                         .simultaneousGesture(TapGesture().onEnded {
+                            guard !viewModel.messages.isEmpty else { return }
                             UIApplication.shared.sendAction(
                                 #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                         })
 
-                        if showJumpPill {
+                        if showJumpPill && !viewModel.messages.isEmpty {
                             Button {
                                 viewModel.focusedMessageId = nil
                                 withAnimation {
@@ -532,6 +570,17 @@ struct ChatView: View {
                     .onChange(of: viewModel.messages.count) { _, _ in
                         handleTranscriptGrowth(proxy)
                     }
+                    // An older page landed on top: keep the row that was first
+                    // where the reader left it (unless they went to the bottom).
+                    .onChange(of: viewModel.olderHistoryPrepend) { _, prepend in
+                        guard let prepend, !isAtBottom else { return }
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) { proxy.scrollTo(prepend.anchorMessageId, anchor: .top) }
+                        DispatchQueue.main.async {
+                            withTransaction(transaction) { proxy.scrollTo(prepend.anchorMessageId, anchor: .top) }
+                        }
+                    }
                     // Also scroll when a task status updates its internal steps.
                     .onChange(of: viewModel.messages) { _, _ in
                         handleTranscriptGrowth(proxy)
@@ -543,6 +592,7 @@ struct ChatView: View {
                     // On the stack, not the dock: the dock empties once the
                     // sheet's answer lands, and must not take the sheet with it.
                     .attentionAskSheet($askSheetRow, viewModel: attention)
+                    .followVisibleAsks(attention)
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: askItems.map(\.id))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: plannerDock.dockEntries.map(\.taskId))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: autoSendCountdown != nil)
@@ -557,6 +607,18 @@ struct ChatView: View {
             .toolbarBackground(themeManager.backgroundColor, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(themeManager.colorScheme, for: .navigationBar)
+            .sheet(item: $chatContextSheet) { target in
+                if target.page == .settings, let threadID = target.threadID {
+                    ChatThreadSettings(threadID: threadID, client: target.client, onSaved: threadViewModel.applyThreadUpdate)
+                } else {
+                    ChatSessionDetails(sessionID: target.sessionID, page: target.page, client: target.client)
+                }
+            }
+            .onChange(of: viewModel.currentSessionIdValue) { _, _ in
+                chatContextSheet = nil
+                olderHistoryArmed = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .magicianMobileConnectionDidChange)) { _ in chatContextSheet = nil }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     HamburgerButton()
@@ -582,7 +644,17 @@ struct ChatView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     ChatSessionActionsMenu(
                         chatViewModel: viewModel,
-                        threadViewModel: threadViewModel
+                        threadViewModel: threadViewModel,
+                        hasThreadContext: currentSession != nil,
+                        onOpenContext: { page in
+                            guard let sessionID = viewModel.currentSessionIdValue else { return }
+                            let threadID = currentSession?.uiThreadId
+                            if page == .tasks {
+                                if let threadID { AppActions.shared.requestWork(.init(kind: .thread, recordID: threadID)) }
+                            } else {
+                                chatContextSheet = ChatContextSheet(sessionID: sessionID, threadID: threadID, page: page, client: try? WorkAPIClient.connected())
+                            }
+                        }
                     )
                     .id("chat-session-actions-\(themeManager.themeRevision)")
                 }
@@ -681,11 +753,17 @@ struct ChatView: View {
             }
             .sheet(isPresented: $showQueue) { QueueSheet(viewModel: viewModel) }
         }
-        // The Live-call panel renders in flow above the composer card (see
-        // `composerStack`), so it never hides the card's rows or the
-        // transcript's last message.
+        // Preserve the entry mode even if the owner types during the call.
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: voiceCall.isActive)
-        .onChange(of: voiceCall.isActive) { _, active in if !active { typingDuringCall = false } }
+        .onChange(of: voiceCall.isActive) { _, active in
+            if active {
+                if composerVoiceModeBeforeCall == nil { composerVoiceModeBeforeCall = isVoiceMode }
+            } else {
+                if let previous = composerVoiceModeBeforeCall { isVoiceMode = previous }
+                composerVoiceModeBeforeCall = nil
+                typingDuringCall = false
+            }
+        }
         // Gate the composer "Live" pill on a configured realtime voice provider.
         .task { await fetchLiveAvailability() }
         .onAppear {
@@ -716,7 +794,16 @@ struct ChatView: View {
                 try? await Task.sleep(for: .seconds(8))
             }
         }
-        .onChange(of: viewModel.currentSessionIdValue) { _, _ in concurrentVoice.select(nil) }
+        .onChange(of: viewModel.chatLocalStorageKey, initial: true) { _, key in
+            let store = ChatDraftStore(defaults: .standard)
+            if let activeDraftKey { store.save(inputText, key: activeDraftKey) }
+            activeDraftKey = key
+            inputText = store.read(key)
+            concurrentVoice.select(nil)
+        }
+        .onChange(of: inputText) { _, text in
+            if let activeDraftKey { ChatDraftStore(defaults: .standard).save(text, key: activeDraftKey) }
+        }
         .onChange(of: concurrentVoice.focus?.id, initial: true) { _, id in viewModel.concurrentVoiceTopicSelected = id != nil }
         .onChange(of: concurrentVoice.requests.last?.id) { _, _ in
             // Admission can name a previously untitled voice-only parent.
@@ -780,9 +867,75 @@ struct ChatView: View {
         }
     }
 
+    /// Top of the transcript: the older-history trigger, its spinner, or a
+    /// retry after a failed page. The wrapper's appear/disappear tracks only
+    /// scrolling (not the branch inside), so a landed page cannot re-fire it.
+    private var olderHistoryRow: some View {
+        VStack(spacing: 0) {
+            let state = viewModel.olderHistory
+            if state.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading earlier messages…")
+                        .font(.themed(12))
+                        .foregroundColor(themeManager.secondaryTextColor)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            } else if state.failed {
+                Button {
+                    viewModel.loadOlderMessages()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Couldn't load earlier messages. Retry")
+                    }
+                    .font(.themed(12, weight: .semibold))
+                    .foregroundColor(themeManager.accentColor)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            } else if state.hasMore {
+                // Also a tap target: a transcript that fits on screen never
+                // scrolls the row out and back, so the auto-trigger cannot arm.
+                Button {
+                    viewModel.loadOlderMessages()
+                } label: {
+                    Text("Load earlier messages")
+                        .font(.themed(12))
+                        .foregroundColor(themeManager.secondaryTextColor)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chat-load-earlier")
+            }
+        }
+        .id("older-history-row")
+        .onAppear {
+            guard ChatOlderHistoryTrigger.shouldLoad(
+                armed: olderHistoryArmed, isAtBottom: isAtBottom, state: viewModel.olderHistory) else { return }
+            olderHistoryArmed = false
+            viewModel.loadOlderMessages()
+        }
+        // Scrolled away from the top of a loaded transcript (the open lands
+        // at the bottom): the next return to the top may load one more page.
+        // A chat switch resets the state first, so its teardown never arms.
+        .onDisappear {
+            if viewModel.olderHistory.hasMore && !viewModel.messages.isEmpty { olderHistoryArmed = true }
+        }
+    }
+
     /// A new/updated message arrived: if the user is at the bottom, follow it;
     /// otherwise surface the jump pill instead of yanking their scroll position.
     private func handleTranscriptGrowth(_ proxy: ScrollViewProxy) {
+        guard !viewModel.messages.isEmpty else {
+            isAtBottom = true
+            showJumpPill = false
+            proxy.scrollTo("chat-welcome", anchor: .top)
+            return
+        }
         if isAtBottom && viewModel.focusedMessageId == nil {
             withAnimation { proxy.scrollTo("bottom-anchor", anchor: .bottom) }
         } else {
@@ -797,9 +950,9 @@ struct ChatView: View {
         guard !dictation.isRecording, !dictation.isTranscribing else { return }
         concurrentVoice.captureStarted()
         if audioSettings.archiveChatDictation {
-            dictation.startVoiceNote()
+            dictation.startVoiceNote(chatSessionId: viewModel.currentSessionIdValue)
         } else {
-            dictation.startLive()
+            dictation.startLive(chatSessionId: viewModel.currentSessionIdValue)
         }
     }
 
@@ -822,12 +975,14 @@ struct ChatView: View {
             guard !voiceCall.isActive else { return }
             voiceCall.startCall(
                 uiThreadId: viewModel.currentSessionIdValue ?? "",
+                chatSessionId: viewModel.currentSessionIdValue,
                 engineOverride: .handsFree
             )
         case .realtime:
             guard !voiceCall.isActive else { return }
             voiceCall.startCall(
                 uiThreadId: viewModel.currentSessionIdValue ?? "",
+                chatSessionId: viewModel.currentSessionIdValue,
                 engineOverride: .realtime
             )
         case .dictation:
@@ -892,9 +1047,9 @@ struct ChatView: View {
             SpeechSynthesizer.shared.stop()
         }
         if audioSettings.archiveChatDictation {
-            dictation.startVoiceNote()
+            dictation.startVoiceNote(chatSessionId: viewModel.currentSessionIdValue)
         } else {
-            dictation.startLive()
+            dictation.startLive(chatSessionId: viewModel.currentSessionIdValue)
         }
     }
 
@@ -1197,7 +1352,10 @@ struct MessageBubble: View {
                             // Render the message as-is — the `<speech>` tags stay
                             // present in the content (matching web, which does not
                             // strip them for display). Only TTS extracts segments.
-                            plainTextMessageBubble(message.text)
+                            plainTextMessageBubble(answerDisplay.body)
+                        }
+                        if !message.isUser, let notice = message.turnStatusNotice {
+                            turnStatusLine(notice)
                         }
                         ForEach(message.imageURLs, id: \.self) { url in
                             AuthAsyncImage(urlString: url)
@@ -1214,7 +1372,12 @@ struct MessageBubble: View {
                             )
                         }
                         if !message.isUser && !message.text.isEmpty {
-                            speakButton
+                            HStack(spacing: 4) {
+                                speakButton
+                                if let note = answerDisplay.verification {
+                                    AnswerVerificationInfo(note: note, theme: theme)
+                                }
+                            }
                         }
                     }
 
@@ -1309,8 +1472,43 @@ struct MessageBubble: View {
         }
     }
 
+    private var answerDisplay: AnswerVerificationDisplay {
+        message.isUser ? AnswerVerificationDisplay(body: message.text, verification: nil)
+            : AnswerVerificationDisplay.split(message.verificationSourceText ?? message.text)
+    }
+
+    private func answerBody(_ text: String) -> String {
+        answerDisplay.verification == nil ? text : AnswerVerificationDisplay.split(text).body
+    }
+
+    /// A settled turn's status line in place of a reply: "Stopped" after a
+    /// Stop, or a failed / interrupted line (`ChatTurnState.notice`).
+    private func turnStatusLine(_ notice: String) -> some View {
+        let stopped = notice == ChatTurnState.stoppedNotice
+        return Label(notice, systemImage: stopped ? "stop.circle" : "exclamationmark.triangle")
+            .font(.themed(12, weight: .medium))
+            .foregroundColor(stopped ? theme.secondaryTextColor : theme.warningColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(theme.controlColor)
+            .clipShape(RoundedRectangle(cornerRadius: Lively.bubbleRadius, style: .continuous))
+            .accessibilityIdentifier("chat-turn-status")
+    }
+
     private func plainTextMessageBubble(_ text: String) -> some View {
         Markdown(text)
+            .environment(\.openURL, OpenURLAction { url in
+                if let path = ChatSessionAccounting.outputPath(url.absoluteString), let sessionId {
+                    let connection = Result { try WorkAPIClient.connected() }
+                    Task {
+                        do { try await ChatSessionAccounting.openOnHost(path, session: sessionId, client: connection.get()) }
+                        catch { structuredActionErrorMessage = error.localizedDescription }
+                    }
+                    return .handled
+                }
+                if NoteLinkRouter.open(url.absoluteString) { return .handled }
+                return .systemAction
+            })
             .markdownTextStyle {
                 FontFamily(.custom(theme.fontName))
                 FontSize(14)
@@ -1331,13 +1529,13 @@ struct MessageBubble: View {
                 Text(title)
                     .font(.themed(15, weight: .semibold))
             }
-            if let summary = trimmed(response.summary) {
+            if let summary = trimmed(response.summary.map(answerBody)) {
                 Text(summary)
                     .font(.themed(13))
                     .foregroundColor(theme.secondaryTextColor)
             }
             if response.blocks.isEmpty {
-                let fallback = trimmed(response.plainText) ?? trimmed(message.text)
+                let fallback = trimmed(answerBody(response.plainText)) ?? trimmed(answerDisplay.body)
                 if let fallback {
                     structuredMarkdownBlock(fallback)
                 }
@@ -1374,11 +1572,11 @@ struct MessageBubble: View {
     private func structuredResponseBlock(_ block: ChatStructuredBlock) -> some View {
         switch block.kind {
         case "markdown":
-            if let text = trimmed(block.text) {
+            if let text = trimmed(block.text.map(answerBody)) {
                 structuredMarkdownBlock(text)
             }
         case "text":
-            if let text = trimmed(block.text) {
+            if let text = trimmed(block.text.map(answerBody)) {
                 Text(text)
                     .font(.themed(14))
                     .foregroundColor(message.isUser ? theme.onAccentColor : theme.textColor)
@@ -1386,7 +1584,7 @@ struct MessageBubble: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         case "callout":
-            if let text = trimmed(block.text) {
+            if let text = trimmed(block.text.map(answerBody)) {
                 let tone = structuredResponseToneColor(block.tone)
                 HStack(alignment: .top, spacing: 8) {
                     Text("💬")
@@ -1742,6 +1940,15 @@ struct MessageBubble: View {
             structuredActionErrorMessage = "Cannot open an empty destination."
             return
         }
+        if NoteLinkRouter.open(trimmed) { return }
+        if let path = ChatSessionAccounting.outputPath(trimmed), let sessionId {
+            do {
+                let connection = try WorkAPIClient.connected()
+                try await ChatSessionAccounting.openOnHost(path, session: sessionId, client: connection)
+            }
+            catch { structuredActionErrorMessage = error.localizedDescription }
+            return
+        }
         let destination = classifyActivityLink(trimmed)
         await openResolvedDestination(destination, raw: trimmed)
     }
@@ -1836,6 +2043,18 @@ struct MessageBubble: View {
         return trimmed(path) ?? "Open"
     }
 
+    /// The open target the server recorded for a shortened `artifact_id`
+    /// (`meta.artifact_locators`); nil means parse the id as before.
+    private func structuredArtifactLocator(for artifactId: String?) -> (taskId: String?, relativePath: String)? {
+        guard let artifactId = trimmed(artifactId),
+              let locators = message.structuredResponse?.meta?.artifactLocators else { return nil }
+        for locator in locators where trimmed(locator["artifact_id"]) == artifactId {
+            guard let relativePath = trimmed(locator["relative_path"]) else { return nil }
+            return (trimmed(locator["task_id"]), relativePath)
+        }
+        return nil
+    }
+
     private func structuredArtifactTarget(
         label _: String,
         href: String?,
@@ -1859,6 +2078,14 @@ struct MessageBubble: View {
         if let absPath = trimmed(absolutePath) {
             if let url = URL(string: absPath), url.scheme != nil { return ArtifactRef.direct(url: absPath, mime: nil, name: absPath) }
             return ArtifactRef.sessionOutput(sessionId: sessionId ?? "", relativePath: absPath, mime: nil)
+        }
+        if let locator = structuredArtifactLocator(for: artifactId) {
+            if let taskId = locator.taskId {
+                return ArtifactRef.taskOutput(taskId: taskId, relativePath: locator.relativePath, mime: nil)
+            }
+            if let sid = sessionId {
+                return ArtifactRef.sessionOutput(sessionId: sid, relativePath: locator.relativePath, mime: nil)
+            }
         }
         if let artifactId, artifactId.hasPrefix("magician-artifact:task:") {
             let target = String(artifactId.dropFirst("magician-artifact:task:".count))
@@ -1919,6 +2146,16 @@ struct MessageBubble: View {
         guard !trimmedValue.isEmpty else {
             structuredActionErrorMessage = "Artifact action is missing destination."
             return
+        }
+        if let locator = structuredArtifactLocator(for: trimmedValue) {
+            if let taskId = locator.taskId {
+                openedArtifact = .taskOutput(taskId: taskId, relativePath: locator.relativePath, mime: nil)
+                return
+            }
+            if let sessionId {
+                openedArtifact = .sessionOutput(sessionId: sessionId, relativePath: locator.relativePath, mime: nil)
+                return
+            }
         }
         if trimmedValue.hasPrefix("magician-artifact:task:") {
             let target = String(trimmedValue.dropFirst("magician-artifact:task:".count))
@@ -2106,7 +2343,7 @@ struct MessageBubble: View {
             if active { speech.stop() }
             else {
                 speechPlaybackResult = nil
-                speech.speak(message.text, messageId: message.id, completion: { result in
+                speech.speak(message.text, messageId: message.id, chatSessionId: sessionId, completion: { result in
                     speechPlaybackResult = result
                 })
             }
@@ -2130,6 +2367,131 @@ struct MessageBubble: View {
         .accessibilityValue(active ? (speech.playbackSource?.label ?? "Preparing voice")
             : speechPlaybackResult == .completed ? "Playback complete"
             : speechPlaybackResult == .failed ? "Playback failed" : "")
+    }
+}
+
+/// Web's welcome surface, keeping suggestions as editable drafts.
+private struct ChatWelcomeView: View {
+    @ObservedObject var theme: ThemeManager
+    let readOnly: Bool
+    let enabled: Bool
+    let recentSessions: [ChatSession]
+    let onSuggest: (String) -> Void
+    let onOpenSession: (String) -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private struct Starter: Identifiable {
+        let id: String
+        let label: String
+        let hint: String
+        let prompt: String
+        let icon: String
+    }
+
+    private static let starters = [
+        Starter(id: "flights", label: "Research flights", hint: "Compare fares", prompt: "Find the cheapest Kyoto flights for next month and shortlist the three best options.", icon: "airplane"),
+        Starter(id: "meeting", label: "Catch up on a meeting", hint: "Decisions & next steps", prompt: "What did I miss in yesterday’s design sync? Decisions, and anything I owe people.", icon: "calendar"),
+        Starter(id: "groceries", label: "Restock the groceries", hint: "Stay within budget", prompt: "We’re out of groceries. Order my usual list and stay within my spending limit.", icon: "basket"),
+        Starter(id: "screen", label: "Review my screen time", hint: "See where time went", prompt: "Look at my recent screen observations and summarize where my time went today.", icon: "desktopcomputer"),
+    ]
+
+    private var greeting: String {
+        if readOnly { return "Nothing in this session" }
+        switch Calendar.current.component(.hour, from: Date()) {
+        case ..<12: return "Good morning"
+        case ..<18: return "Good afternoon"
+        default: return "Good evening"
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 8) {
+                    Text(greeting)
+                        .font(.themedDisplay(28, weight: .semibold))
+                        .foregroundStyle(theme.textColor)
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+                if !readOnly {
+                    Text("Pick a start, or say it your way.")
+                        .font(.themed(12)).foregroundStyle(theme.secondaryTextColor)
+                }
+            }
+            .multilineTextAlignment(.center)
+            if !readOnly {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: typeSize.isAccessibilitySize ? 1 : 2), spacing: 10) {
+                    ForEach(Array(Self.starters.enumerated()), id: \.element.id) { index, starter in
+                        starterCard(starter, tint: [theme.accentColor, theme.infoColor, theme.successColor, theme.discoveryColor][index])
+                    }
+                }
+            }
+            if !recentSessions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PICK UP WHERE YOU LEFT OFF")
+                        .font(.themed(10, weight: .semibold)).tracking(1)
+                        .foregroundStyle(theme.secondaryTextColor)
+                        .accessibilityAddTraits(.isHeader)
+                        .padding(.bottom, 4)
+                    ForEach(recentSessions) { session in
+                        Button { onOpenSession(session.id) } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "clock").font(.system(size: 13))
+                                Text(session.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled chat")
+                                    .font(.themed(12)).foregroundStyle(theme.textColor)
+                                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(relativeTime(session.updatedAt)).font(.themed(10)).fixedSize()
+                                Image(systemName: "chevron.right").font(.system(size: 10))
+                            }
+                            .foregroundStyle(theme.secondaryTextColor)
+                            .padding(.horizontal, 12).padding(.vertical, 9)
+                            .frame(minHeight: 44)
+                            .background(theme.cardColor.opacity(0.70), in: RoundedRectangle(cornerRadius: 12))
+                            .contentShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain).disabled(!enabled)
+                        .accessibilityHint("Opens this conversation")
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .accessibilityIdentifier("chat-welcome")
+    }
+
+    private func starterCard(_ starter: Starter, tint: Color) -> some View {
+        Button { onSuggest(starter.prompt) } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: starter.icon)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(tint)
+                    .frame(width: 28, height: 28)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(starter.label).font(.themed(14, weight: .semibold))
+                        .foregroundStyle(theme.textColor).lineLimit(2)
+                    Text(starter.hint).font(.themed(12))
+                        .foregroundStyle(theme.secondaryTextColor).lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .topLeading)
+            .padding(12)
+            .background(theme.cardColor, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(theme.cardBorderColor, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain).disabled(!enabled)
+        .accessibilityLabel(starter.label + ". " + starter.prompt)
+        .accessibilityHint("Fills the message box without sending")
+        .accessibilityIdentifier("chat-starter-" + starter.id)
+    }
+
+    private func relativeTime(_ timestamp: Int) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: Date(timeIntervalSince1970: Double(timestamp) / 1000), relativeTo: Date())
     }
 }
 
@@ -2170,6 +2532,71 @@ private struct TranscriptScrollPhaseObserver: ViewModifier {
             }
         } else {
             content
+        }
+    }
+}
+
+
+// Display-only extraction of the generated leading evidence-check caveat.
+// Never remove numbers or warnings elsewhere in an answer or edit stored text.
+struct AnswerVerificationNote: Equatable {
+    let details: String?
+    static let explanation = "Some parts of this answer could not be confirmed against the available sources."
+}
+
+struct AnswerVerificationDisplay: Equatable {
+    let body: String
+    let verification: AnswerVerificationNote?
+    private static let prefix = try? NSRegularExpression(pattern: #"^\s*(?:>\s*)?⚠\uFE0F?\s*(?:\*\*)?Not fully verified\.(?:\*\*)?[ \t]*"#)
+
+    static func split(_ text: String) -> Self {
+        guard let match = prefix?.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)),
+              let marker = Range(match.range, in: text) else {
+            return Self(body: text, verification: nil)
+        }
+        let rest = String(text[marker.upperBound...]).replacingOccurrences(of: "\r\n", with: "\n")
+        let diagnostic = #"^(?:Magician|Magican)['’]s evidence check could not confirm part of this answer:[ \t]*"#
+        guard let diagnosticRange = rest.range(of: diagnostic, options: .regularExpression) else {
+            return Self(body: rest.trimmingCharacters(in: .whitespacesAndNewlines), verification: AnswerVerificationNote(details: nil))
+        }
+        let separator = rest.range(of: #"\r?\n[ \t]*\r?\n"#, options: .regularExpression)
+        let raw = String(rest[diagnosticRange.upperBound..<(separator?.lowerBound ?? rest.endIndex)])
+        let details = raw.replacingOccurrences(of: #"\\([\\`*{}\[\]()#+.!_>~-])"#, with: "$1", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = separator.map { String(rest[$0.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        return Self(body: body, verification: AnswerVerificationNote(details: details.isEmpty ? nil : details))
+    }
+}
+
+struct AnswerVerificationInfo: View {
+    let note: AnswerVerificationNote
+    @ObservedObject var theme: ThemeManager
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing.toggle() } label: {
+            Image(systemName: "info.circle")
+                .font(.themed(15))
+                .foregroundColor(theme.warningColor)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Not fully verified — view details")
+        .accessibilityHint("Shows what could not be confirmed without changing the answer.")
+        .popover(isPresented: $showing) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Not fully verified").font(.themed(16, weight: .semibold))
+                Text(note.details ?? AnswerVerificationNote.explanation)
+                    .font(.themed(14)).textSelection(.enabled)
+                Button("Done") { showing = false }
+                    .buttonStyle(.bordered).buttonBorderShape(.roundedRectangle(radius: 8))
+                    .font(.themed(14)).tint(theme.accentColor)
+            }
+            .foregroundColor(theme.textColor).padding(16)
+            .frame(idealWidth: 300, maxWidth: 340)
+            .fixedSize(horizontal: false, vertical: true)
+            .presentationBackground(theme.cardColor)
+            .presentationCompactAdaptation(.popover)
         }
     }
 }

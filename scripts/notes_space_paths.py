@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-workspace SilverBullet Space path helpers.
+"""Per-workspace notes folder path helpers.
 
 Keep these rules aligned with magician::notes::coerce_forest_pin_to_workspace_space
 and magician::resource_authority::is_safe_scope_id.

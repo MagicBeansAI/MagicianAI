@@ -5,6 +5,21 @@ this file.
 
 ## [Unreleased]
 
+- 0.1.12: Register `task.answer_progress` for final-answer writing, checking and revision.
+
+### 2026-10-23 — 0.1.11
+
+- Registers `context.retrieval.started` / `context.retrieval.completed` (Pipeline, Info, not user-relevant).
+- `AgenticProviderOutage` (agentic, warn): a decision call is waiting out a provider outage (`attempt`, `max_attempts`, `next_probe_ms`, `error_class`), with a `recovered` marker when it clears.
+
+### 2026-10-20 — 0.1.10
+
+- Register `chat.turn.state_changed` (`Execution`, `Info`, not rendered in chat): a chat turn started or settled.
+
+### 2026-10-20 — 0.1.9
+
+- Register `LLMRouted` / `llm.routed` (`Llm`, `Info`, not user-relevant): the router's provider/model choice for an in-flight call.
+
 ### 2026-10-12 — 0.1.8
 
 - Register `chat.turn.stopped` for turns the chat watchdog stops.
@@ -13,11 +28,6 @@ this file.
 
 - Publish the typed agentic action-start event for client progress.
 
-### 2026-09-06 — 0.1.3 — Typed Task Recipe lifecycle events
+---
 
-- Register the ten recipe replay lifecycle events with shared typed identifiers; wire names are unchanged and the Unified UI taxonomy is synced.
-
-### 2026-08-29 — media and local-transcript telemetry (0.1.2)
-
-- Register media configuration and voice-session lifecycle events.
-- Register content-free local-transcript state, queue, turn and fallback events, with warnings for queue pressure, fallback and exhausted reconnects.
+Older entries: `docs/archive/changelogs/magician-event-taxonomy.md`

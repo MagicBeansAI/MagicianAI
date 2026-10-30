@@ -14,7 +14,7 @@ vi.mock('$app/stores', async () => ({ page: (await import('svelte/store')).writa
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 vi.mock('$lib/stores/confirmationStore', () => ({ requestConfirmation: vi.fn() }));
 const route = page as unknown as { set(value: { url: URL; params: Record<string,string> }): void };
-const document = { name: 'direction.md', title: 'Direction', content: '# Direction\n\nOwner text stays intact.', missions_section: null, history: [{ snapshot: 'direction-previous.md', modified: '2026-10-04T10:00:00Z' }] };
+const document = { name: 'direction.md', title: 'Direction', content: '# Direction\n\nOwner text stays intact.', missions_section: null, sha256: 'base-hash', history: [{ snapshot: 'direction-previous.md', modified: '2026-10-04T10:00:00Z' }] };
 
 beforeEach(() => { vi.clearAllMocks(); scopeIdentityStore.observe('owner', 'work'); route.set({url:new URL('http://localhost/work?view=programs'),params:{}}); });
 afterEach(() => { cleanup(); scopeIdentityStore.reset(); });
@@ -25,7 +25,7 @@ it('opens the full owner document and history with specialist progress links', a
 	expect(await screen.findByRole('link', {name:/Direction/})).toHaveAttribute('href','/work?view=programs&program=direction.md');
 	route.set({url:new URL('http://localhost/work?view=programs&program=direction.md'),params:{}});
 	await screen.findByText('Owner text stays intact.');
-	expect(screen.getByRole('link',{name:'Crew and program progress →'})).toHaveAttribute('href','/work?view=crew');
+	expect(screen.getByRole('link',{name:'Crew and playbook progress →'})).toHaveAttribute('href','/work?view=crew');
 	await fireEvent.click(screen.getByText('Document history · 1'));
 	expect(screen.getByRole('button',{name:'Restore version'})).toBeEnabled();
 });
@@ -58,6 +58,65 @@ it('does not restore a document after scope changes while confirmation is pendin
 	confirm(true);
 	await Promise.resolve();
 	expect(fetch.calls.some(call=>call.url.endsWith('/revert'))).toBe(false);
+});
+
+it('saves an owner edit against the loaded version and shows the saved document', async () => {
+	route.set({url:new URL('http://localhost/work?view=programs&program=direction.md'),params:{}});
+	const saved = {...document,content:'# Direction\n\nSharper direction.',sha256:'new-hash'};
+	let current = document;
+	const fetch = installFetchMock([
+		{match:call => call.url.endsWith('/programs'),handle:()=>jsonResponse({programs:[document]})},
+		{method:'PUT',match:'/programs/direction.md',handle:()=>{ current = saved; return jsonResponse({saved:true,program:'direction.md',created:false,unchanged:false,history_snapshot:'direction-snap.md',sha256:'new-hash'}); }},
+		{method:'GET',match:'/programs/direction.md',handle:()=>jsonResponse(current)}
+	]);
+	render(ProgramsWorkspace);
+	await screen.findByText('Owner text stays intact.');
+	await fireEvent.click(screen.getByRole('button',{name:'Edit'}));
+	const editor = screen.getByLabelText('Markdown for direction.md') as HTMLTextAreaElement;
+	expect(editor.value).toBe(document.content);
+	expect(screen.getByRole('button',{name:'Save'})).toBeDisabled();
+	await fireEvent.input(editor,{target:{value:saved.content}});
+	await fireEvent.click(screen.getByRole('button',{name:'Save'}));
+	await screen.findByText('Sharper direction.');
+	const put = fetch.calls.find(call => call.method === 'PUT');
+	expect(JSON.parse(String(put?.init?.body))).toEqual({content:saved.content,base_sha256:'base-hash'});
+	expect(screen.queryByLabelText('Markdown for direction.md')).not.toBeInTheDocument();
+});
+
+it('keeps the draft and offers a reload when the program changed since it was opened', async () => {
+	route.set({url:new URL('http://localhost/work?view=programs&program=direction.md'),params:{}});
+	installFetchMock([
+		{match:call => call.url.endsWith('/programs'),handle:()=>jsonResponse({programs:[document]})},
+		{method:'PUT',match:'/programs/direction.md',handle:()=>jsonResponse({error:'program_changed',message:'program "direction.md" changed after it was loaded; reload it before saving',current_sha256:'other-hash'},{status:409})},
+		{method:'GET',match:'/programs/direction.md',handle:()=>jsonResponse(document)}
+	]);
+	render(ProgramsWorkspace);
+	await screen.findByText('Owner text stays intact.');
+	await fireEvent.click(screen.getByRole('button',{name:'Edit'}));
+	const editor = screen.getByLabelText('Markdown for direction.md') as HTMLTextAreaElement;
+	await fireEvent.input(editor,{target:{value:'# Direction\n\nMy unsaved thinking.'}});
+	await fireEvent.click(screen.getByRole('button',{name:'Save'}));
+	expect(await screen.findByRole('alert')).toHaveTextContent('changed after it was loaded');
+	expect((screen.getByLabelText('Markdown for direction.md') as HTMLTextAreaElement).value).toBe('# Direction\n\nMy unsaved thinking.');
+	expect(screen.getByRole('button',{name:'Save'})).toBeDisabled();
+	expect(screen.getByRole('button',{name:'Reload latest version'})).toBeEnabled();
+});
+
+it('asks before discarding unsaved edits and keeps editing when declined', async () => {
+	route.set({url:new URL('http://localhost/work?view=programs&program=direction.md'),params:{}});
+	installFetchMock([
+		{match:call => call.url.endsWith('/programs'),handle:()=>jsonResponse({programs:[document]})},
+		{match:'/programs/direction.md',handle:()=>jsonResponse(document)}
+	]);
+	vi.mocked(requestConfirmation).mockResolvedValue(false);
+	render(ProgramsWorkspace);
+	await screen.findByText('Owner text stays intact.');
+	await fireEvent.click(screen.getByRole('button',{name:'Edit'}));
+	await fireEvent.input(screen.getByLabelText('Markdown for direction.md'),{target:{value:'# Changed'}});
+	await fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+	await waitFor(()=>expect(requestConfirmation).toHaveBeenCalledOnce());
+	expect(screen.getByLabelText('Markdown for direction.md')).toBeInTheDocument();
+	expect(screen.getByRole('button',{name:'Restore version',hidden:true})).toBeDisabled();
 });
 
 it('shows a program API failure with a working retry instead of an empty success', async () => {

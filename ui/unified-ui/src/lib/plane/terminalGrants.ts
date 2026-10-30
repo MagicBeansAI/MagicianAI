@@ -5,6 +5,8 @@
 // and the store keeps only its hash; the list payload never carries values.
 
 import { scopedRequestHeaders } from '$lib/stores/scopeIdentityStore';
+import type { ModelChoice, ModelFeedback, ModelSelection } from '$lib/llm/modelCatalog';
+import { chatModelRows } from '$lib/llm/chatModelSelection';
 
 export interface TerminalGrantRow {
 	id: string;
@@ -53,6 +55,9 @@ export interface EngineAvailability {
 	native_tool_posture?: NativeToolPosture;
 	/** Models this engine can be pinned to; `default` lets the CLI choose. */
 	models?: string[];
+	model_feedback?: Record<string, ModelFeedback>;
+	/** Whose credentials a launch uses: `login`, `magician_key` or `none`. */
+	credentials?: string;
 }
 
 export type DecisionMode = 'all_engines' | 'magician_only' | 'off';
@@ -81,12 +86,14 @@ export interface EngineRoster {
 	engines: EngineAvailability[];
 	/** The live process default — what runs think with when no grant pins one. */
 	current: string;
+	/** Agentic flows follow the chat engine (`execution.harness_engine: chat`);
+	 *  `current` is the engine that resolves to right now. */
+	follows_chat?: boolean;
 	/** Who thinks a chat turn (`chat.harness_engine`). */
 	chat_current: string;
 	/** The run engine's model; `undefined` when the CLI picks (`default`). */
 	run_model?: string;
-	/** Optional Magician LLM profile used when Pi drives agentic runs. */
-	run_pi_profile?: string | null;
+	run_model_selection?: ModelSelection | null;
 	/** The chat mouth's model; `undefined` when the CLI picks (`default`). */
 	chat_model?: string;
 	/** Set on the Magician-only stand-in returned when the endpoint answered
@@ -119,9 +126,10 @@ export async function fetchEngineAvailability(
 		decision_mode?: unknown;
 		engines?: unknown;
 		current?: unknown;
+		follows_chat?: unknown;
 		chat_current?: unknown;
 		run_model?: unknown;
-		run_pi_profile?: unknown;
+		run_model_selection?: ModelSelection | null;
 		chat_model?: unknown;
 	} | null;
 	const engines = Array.isArray(roster?.engines)
@@ -139,9 +147,10 @@ export async function fetchEngineAvailability(
 		decision_mode: parseDecisionMode(roster?.decision_mode),
 		engines,
 		current,
+		follows_chat: roster?.follows_chat === true,
 		chat_current,
 		run_model: model_of(roster?.run_model),
-		run_pi_profile: model_of(roster?.run_pi_profile) ?? null,
+		run_model_selection: roster?.run_model_selection,
 		chat_model: model_of(roster?.chat_model)
 	};
 }
@@ -260,8 +269,8 @@ function errorMessage(body: unknown): string | null {
 export async function setRunHarnessEngine(
 	harness_engine: string,
 	harness_model: string = 'default',
-	pi_profile?: string | null
-): Promise<{ engine: string; harness_model: string; pi_profile: string | null }> {
+	model_selection?: ModelSelection | null
+): Promise<{ engine: string; harness_model: string; model_selection: ModelSelection | null }> {
 	const response = await fetch('/api/magician/v2/plane/engine', {
 		method: 'PUT',
 		headers: scopedRequestHeaders({
@@ -271,7 +280,7 @@ export async function setRunHarnessEngine(
 		body: JSON.stringify({
 			harness_engine,
 			harness_model,
-			...(pi_profile !== undefined ? { pi_profile } : {})
+			...(model_selection !== undefined ? { model_selection } : {})
 		}),
 		redirect: 'error'
 	});
@@ -279,32 +288,30 @@ export async function setRunHarnessEngine(
 	if (!response.ok) {
 		throw new Error(errorMessage(body) ?? 'The run engine could not be updated.');
 	}
-	const parsed = (body ?? {}) as { engine?: unknown; harness_model?: unknown; pi_profile?: unknown };
+	const parsed = (body ?? {}) as { engine?: unknown; harness_model?: unknown; model_selection?: ModelSelection | null };
 	return {
 		engine: typeof parsed.engine === 'string' ? parsed.engine : harness_engine,
 		harness_model:
 			typeof parsed.harness_model === 'string' ? parsed.harness_model : harness_model,
-		pi_profile: typeof parsed.pi_profile === 'string' ? parsed.pi_profile : null
+		model_selection: parsed.model_selection === undefined ? model_selection ?? null : parsed.model_selection
 	};
 }
 
-export interface ChatProfileChoice {
-	name: string;
-	provider: string;
-	model: string;
-	is_default?: boolean;
-	is_adaptive?: boolean;
-}
-
-export async function fetchChatProfileChoices(): Promise<ChatProfileChoice[]> {
-	const response = await fetch('/api/magician/v2/chat/profiles', {
+/** An engine's chat catalog (`GET /chat/models?engine=`), the list the
+ * composer's model dropdown shows, read without touching any composer store. */
+export async function fetchChatModelChoices(engine: string, unavailable = 'Model choices are unavailable.') {
+	const options: RequestInit = {
 		headers: scopedRequestHeaders({ Accept: 'application/json' }),
 		cache: 'no-store',
 		redirect: 'error'
-	});
+	};
+	const response = await fetch(`/api/magician/v2/chat/models?engine=${encodeURIComponent(engine)}`, options);
 	const body = await response.json().catch(() => null);
-	if (!response.ok) throw new Error(errorMessage(body) ?? 'Profiles are unavailable.');
-	return Array.isArray((body as { profiles?: unknown } | null)?.profiles)
-		? (body as { profiles: ChatProfileChoice[] }).profiles
-		: [];
+	if (!response.ok) throw new Error(errorMessage(body) ?? unavailable);
+	const models: ModelChoice[] = body?.models ?? [];
+	return { models, profiles: chatModelRows(models, body?.default_selection ?? null) };
+}
+
+export async function fetchPiModelChoices() {
+	return fetchChatModelChoices('pi', 'Coding agent models are unavailable.');
 }

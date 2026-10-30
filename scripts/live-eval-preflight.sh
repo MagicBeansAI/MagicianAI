@@ -45,9 +45,9 @@ OLLAMA_EMBED_URL="${OLLAMA_EMBED_URL:-http://127.0.0.1:11435}"
 GEN_MODEL="${PREFLIGHT_GEN_MODEL:-qwen3.8-ud2-mtp}"
 OPENAI_KEY_ENV="${PREFLIGHT_OPENAI_KEY_ENV:-OPENAI_API_KEY}"
 MAGICIAN_BEARER_TOKEN="${MAGICIAN_BEARER_TOKEN:-}"
-AUTH_HEADERS=()
+AUTH_HEADERS=(-H 'Accept: application/json')
 if [[ -n "$MAGICIAN_BEARER_TOKEN" ]]; then
-  AUTH_HEADERS=(-H "Authorization: Bearer $MAGICIAN_BEARER_TOKEN")
+  AUTH_HEADERS+=(-H "Authorization: Bearer $MAGICIAN_BEARER_TOKEN")
 fi
 
 # Embedding model tag: read from config so it tracks the source of truth.
@@ -159,10 +159,12 @@ check_magician() {
   local code
   code="$(curl -s -o /dev/null -m 8 -w '%{http_code}' \
     "${AUTH_HEADERS[@]}" \
-    "$MAGICIAN_BASE_URL/api/magician/v3/monitors" 2>/dev/null || echo 000)"
+    "$MAGICIAN_BASE_URL/api/magician/v3/monitors" 2>/dev/null || true)"
   if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
     MAG_STATE="ok"; add_row ok "Magician server ($MAGICIAN_BASE_URL)" "up; monitors serving (HTTP $code)" ""
-  elif [[ "$code" == "000" ]]; then
+  elif [[ "$code" == "401" || "$code" == "403" ]]; then
+    MAG_STATE="auth"; add_row warn "Magician server ($MAGICIAN_BASE_URL)" "up; authenticated probe refused (HTTP $code)" "set a valid workspace-scoped MAGICIAN_BEARER_TOKEN"
+  elif [[ "$code" == "000" || -z "$code" ]]; then
     MAG_STATE="bad"; add_row bad "Magician server ($MAGICIAN_BASE_URL)" "not reachable" "make run-supervisor  (or --fix)"
   else
     MAG_STATE="warn"; add_row warn "Magician server ($MAGICIAN_BASE_URL)" "up but monitors not served (HTTP $code) — stale build" "rebuild + restart (--fix)"
@@ -235,7 +237,9 @@ check_magician
 if [[ "$mode" == "fix" ]]; then
   echo "── applying fixes ─────────────────────────────────────────"
   if [[ "$GEN_STATE" != "ok" || "$EMBED_STATE" != "ok" ]]; then fix_ollama; fi
-  if [[ "$MAG_STATE" != "ok" || "$rebuild" == "1" ]]; then fix_magician; fi
+  if [[ "$MAG_STATE" == "auth" ]]; then
+    echo "→ Skipping server rebuild: authentication must be supplied before this probe can qualify it."
+  elif [[ "$MAG_STATE" != "ok" || "$rebuild" == "1" ]]; then fix_magician; fi
   echo "── re-checking ────────────────────────────────────────────"
   ROWS=()
   check_openai_key

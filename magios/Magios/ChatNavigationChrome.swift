@@ -90,6 +90,8 @@ struct ChatNavigationTitle: View {
 struct ChatSessionActionsMenu: View {
     @ObservedObject var chatViewModel: ChatViewModel
     @ObservedObject var threadViewModel: ThreadViewModel
+    var hasThreadContext: Bool
+    var onOpenContext: (ChatContextPage) -> Void
     @ObservedObject private var themeManager = ThemeManager.shared
 
     private var currentSessionId: String? {
@@ -98,6 +100,13 @@ struct ChatSessionActionsMenu: View {
 
     var body: some View {
         Menu {
+            Section {
+                ForEach(ChatContextPage.allCases, id: \.self) { page in
+                    Button(page.title) { onOpenContext(page) }
+                        .disabled(chatViewModel.currentSessionIdValue == nil || ([.tasks, .settings].contains(page) && !hasThreadContext))
+                }
+            }
+            Divider()
             Button {
                 chatViewModel.clearMessages()
             } label: {
@@ -112,12 +121,20 @@ struct ChatSessionActionsMenu: View {
                     Label("Archive session", systemImage: "archivebox")
                 }
 
+                // Leave the chat only once the server confirmed the delete.
                 Button(role: .destructive) {
-                    threadViewModel.deleteSession(currentSessionId)
-                    chatViewModel.startNewSession(nil)
+                    threadViewModel.deleteSession(currentSessionId) { deleted in
+                        if chatViewModel.currentSessionIdValue == deleted {
+                            chatViewModel.startNewSession(nil)
+                        }
+                    }
                 } label: {
-                    Label("Delete session", systemImage: "trash.fill")
+                    Label(
+                        threadViewModel.deletingSessionId == currentSessionId ? "Deleting session…" : "Delete session",
+                        systemImage: "trash.fill"
+                    )
                 }
+                .disabled(threadViewModel.deletingSessionId != nil)
             }
         } label: {
             Image(systemName: "ellipsis")

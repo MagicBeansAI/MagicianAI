@@ -194,7 +194,12 @@ class AttentionViewModel(app: Application) : AndroidViewModel(app) {
                     // while our own answer is in flight: that path owns the
                     // close.
                     val open = _state.value.answering
-                    val settled = open != null && !_state.value.submitting && feed.settledElsewhere(open)
+                    val settled = open != null && !_state.value.submitting &&
+                        if (exactAnswerKey == open.askKey) {
+                            // The exact lookup, not absence from a paged list,
+                            // is authoritative for a deep-linked request.
+                            repository.pendingItem(open.askKey)?.isActionable != true
+                        } else feed.settledElsewhere(open)
                     _state.value = _state.value.copy(
                         feed = feed,
                         loading = false,
@@ -349,7 +354,33 @@ class AttentionViewModel(app: Application) : AndroidViewModel(app) {
     /** Open the answer form, but only for something still waiting. */
     fun openAnswer(item: AttentionItem) {
         if (!item.isActionable) return
+        exactAnswerKey = null
         _state.value = _state.value.copy(answering = item, answerError = null, answerNotice = null)
+    }
+
+    private var exactAnswerKey: String? = null
+    private var openingTarget: String? = null
+    fun openAnswerById(id: String, consumed: () -> Unit) {
+        if (openingTarget == id) return
+        openingTarget = id
+        viewModelScope.launch {
+            try {
+                val item = repository.pendingItem(id)
+                if (openingTarget != id) return@launch
+                if (item?.isActionable == true) {
+                    openAnswer(item)
+                    exactAnswerKey = item.askKey
+                }
+                else _state.value = _state.value.copy(answerNotice = "This request is no longer pending.")
+                consumed()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (problem: Exception) {
+                if (openingTarget == id) _state.value = _state.value.copy(error = problem.message ?: "Could not open this request.")
+            } finally {
+                if (openingTarget == id) openingTarget = null
+            }
+        }
     }
 
     fun closeAnswer() {
@@ -446,7 +477,7 @@ class AttentionViewModel(app: Application) : AndroidViewModel(app) {
                 PlanApprovalChoice.ApproveAndRun -> PlanApprovalActions.approveAndRun(
                     taskId = taskId,
                     approve = { post(true) },
-                    startRun = { repository.startRun(it) },
+                    startRun = { repository.startRun(it, request.originConnection) },
                 )
                 PlanApprovalChoice.Review -> return@launch
             }

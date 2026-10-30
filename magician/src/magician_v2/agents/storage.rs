@@ -22,6 +22,44 @@ use super::trust::TrustPolicyFile;
 static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 const FILE_LOCK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(test)]
+thread_local! {
+    static FILE_LOCK_TIMEOUT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// How long a file-lock acquisition retries before `FileLockTimeout`. Tests
+/// may shorten it for the current thread (a `#[tokio::test]` runs its async
+/// body on that thread) so contention tests fail fast instead of waiting 10 s;
+/// production always uses the default.
+fn file_lock_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = FILE_LOCK_TIMEOUT_OVERRIDE.with(std::cell::Cell::get) {
+        return timeout;
+    }
+    FILE_LOCK_DEFAULT_TIMEOUT
+}
+
+/// Test-only: shorten the file-lock timeout on this thread until the guard
+/// drops.
+#[cfg(test)]
+pub(crate) fn override_file_lock_timeout_for_test(timeout: Duration) -> FileLockTimeoutOverride {
+    let previous = FILE_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.replace(Some(timeout)));
+    FileLockTimeoutOverride { previous }
+}
+
+#[cfg(test)]
+pub(crate) struct FileLockTimeoutOverride {
+    previous: Option<Duration>,
+}
+
+#[cfg(test)]
+impl Drop for FileLockTimeoutOverride {
+    fn drop(&mut self) {
+        FILE_LOCK_TIMEOUT_OVERRIDE.with(|cell| cell.set(self.previous));
+    }
+}
 const FILE_LOCK_RETRY_DELAY_MIN: Duration = Duration::from_millis(10);
 const FILE_LOCK_RETRY_DELAY_MAX: Duration = Duration::from_millis(200);
 
@@ -229,6 +267,196 @@ fn is_scoped_agent_runtime_root(root: &Path) -> bool {
         return false;
     };
     scopes_dir == "scopes"
+}
+
+/// Size, mtime and (where the platform has one) `(dev, inode)` of one
+/// `knowledge.json`. An atomic-rename write differs even at the same size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KnowledgeFileStamp {
+    len: u64,
+    modified_nanos: Option<u128>,
+    identity: Option<(u64, u64)>,
+}
+
+impl KnowledgeFileStamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            Some((metadata.dev(), metadata.ino()))
+        };
+        #[cfg(not(unix))]
+        let identity = None;
+        Self {
+            len: metadata.len(),
+            modified_nanos: metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos()),
+            identity,
+        }
+    }
+}
+
+/// A file modified this recently may change again within the same mtime tick
+/// at the same size and inode, so its stamp proves nothing; such a parse is
+/// never reused. Same rule (and window) as the learning store's procedure
+/// and event-log stamps.
+const KNOWLEDGE_STAMP_SETTLE_NANOS: u128 = 3_000_000_000;
+
+/// Most scopes whose parse is kept at once.
+const MAX_CACHED_KNOWLEDGE_PARSES: usize = 16;
+
+/// Bound on the summed file sizes of kept parses (the parsed trees are a
+/// small multiple of this). Least recently used parses go first; a file
+/// larger than this alone is never kept.
+const MAX_CACHED_KNOWLEDGE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// A parse nobody read for this long is dropped, so scopes that stop being
+/// visited (a finished evaluation scope, say) do not stay resident.
+const KNOWLEDGE_PARSE_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
+
+fn knowledge_mtime_is_racy(modified_nanos: Option<u128>) -> bool {
+    let Some(modified_nanos) = modified_nanos else {
+        return true;
+    };
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    now_nanos.saturating_sub(modified_nanos) < KNOWLEDGE_STAMP_SETTLE_NANOS
+}
+
+/// One kept parse, valid only for `stamp`.
+#[derive(Debug)]
+struct KnowledgeParse {
+    stamp: KnowledgeFileStamp,
+    value: std::sync::Arc<serde_json::Value>,
+    last_used: Instant,
+}
+
+type KnowledgeParseCache = std::collections::HashMap<PathBuf, KnowledgeParse>;
+
+fn knowledge_parse_cache() -> &'static std::sync::Mutex<KnowledgeParseCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<KnowledgeParseCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Remove parses idle for `idle_ttl`, then least recently used ones until at
+/// most `max_entries` remain and their file sizes sum to at most `max_bytes`.
+/// `keep` (the parse being stored) is never removed. The removed trees are
+/// returned so the caller drops them after releasing the lock.
+fn evict_knowledge_parses(
+    cache: &mut KnowledgeParseCache,
+    now: Instant,
+    idle_ttl: Duration,
+    max_entries: usize,
+    max_bytes: u64,
+    keep: Option<&Path>,
+) -> Vec<KnowledgeParse> {
+    let kept = |path: &Path| keep == Some(path);
+    let idle: Vec<PathBuf> = cache
+        .iter()
+        .filter(|(path, parse)| {
+            !kept(path) && now.saturating_duration_since(parse.last_used) >= idle_ttl
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    let mut removed: Vec<KnowledgeParse> =
+        idle.iter().filter_map(|path| cache.remove(path)).collect();
+    loop {
+        let bytes: u64 = cache.values().map(|parse| parse.stamp.len).sum();
+        if cache.len() <= max_entries && bytes <= max_bytes {
+            break;
+        }
+        let Some(oldest) = cache
+            .iter()
+            .filter(|(path, _)| !kept(path))
+            .min_by_key(|(_, parse)| parse.last_used)
+            .map(|(path, _)| path.clone())
+        else {
+            break;
+        };
+        removed.extend(cache.remove(&oldest));
+    }
+    removed
+}
+
+fn cached_knowledge_parse(
+    path: &Path,
+    stamp: KnowledgeFileStamp,
+) -> Option<std::sync::Arc<serde_json::Value>> {
+    let now = Instant::now();
+    let (hit, evicted) = {
+        let mut cache = knowledge_parse_cache().lock().ok()?;
+        let evicted = evict_knowledge_parses(
+            &mut cache,
+            now,
+            KNOWLEDGE_PARSE_IDLE_TTL,
+            MAX_CACHED_KNOWLEDGE_PARSES,
+            MAX_CACHED_KNOWLEDGE_BYTES,
+            None,
+        );
+        let hit = cache
+            .get_mut(path)
+            .filter(|parse| parse.stamp == stamp)
+            .map(|parse| {
+                parse.last_used = now;
+                std::sync::Arc::clone(&parse.value)
+            });
+        (hit, evicted)
+    };
+    // Multi-megabyte trees are dropped after the lock is released.
+    drop(evicted);
+    hit
+}
+
+/// Keep a settled parse. A racy stamp, or a file over the byte bound, drops
+/// the entry instead.
+fn remember_knowledge_parse(
+    path: &Path,
+    stamp: KnowledgeFileStamp,
+    value: std::sync::Arc<serde_json::Value>,
+) {
+    if knowledge_mtime_is_racy(stamp.modified_nanos) || stamp.len > MAX_CACHED_KNOWLEDGE_BYTES {
+        forget_knowledge_parse(path);
+        return;
+    }
+    let now = Instant::now();
+    let released = match knowledge_parse_cache().lock() {
+        Ok(mut cache) => {
+            let replaced = cache.insert(
+                path.to_path_buf(),
+                KnowledgeParse {
+                    stamp,
+                    value,
+                    last_used: now,
+                },
+            );
+            let evicted = evict_knowledge_parses(
+                &mut cache,
+                now,
+                KNOWLEDGE_PARSE_IDLE_TTL,
+                MAX_CACHED_KNOWLEDGE_PARSES,
+                MAX_CACHED_KNOWLEDGE_BYTES,
+                Some(path),
+            );
+            (replaced, evicted)
+        },
+        Err(_) => return,
+    };
+    // Multi-megabyte trees are dropped after the lock is released.
+    drop(released);
+}
+
+fn forget_knowledge_parse(path: &Path) {
+    let removed = knowledge_parse_cache()
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.remove(path));
+    drop(removed);
 }
 
 #[derive(Debug, Clone)]
@@ -690,13 +918,64 @@ impl AgentStorage {
 
     pub async fn load_user_knowledge(&self) -> Result<serde_json::Value, AgentStorageError> {
         let path = self.user_knowledge_path();
-        match self.read_json(&path).await {
-            Ok(val) => Ok(val),
+        let content = match self.read_to_string(&path).await {
+            Ok(content) => content,
             Err(AgentStorageError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-                Ok(serde_json::Value::Object(serde_json::Map::new()))
+                return Ok(serde_json::Value::Object(serde_json::Map::new()));
             },
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        };
+        // The user-knowledge store runs to megabytes; parse it on the blocking
+        // pool rather than an async worker.
+        task::spawn_blocking(move || serde_json::from_str::<serde_json::Value>(&content))
+            .await
+            .map_err(|error| {
+                AgentStorageError::Io(std::io::Error::other(format!(
+                    "user knowledge parse task failed: {error}"
+                )))
+            })?
+            .map_err(AgentStorageError::from)
+    }
+
+    /// [`Self::load_user_knowledge`] for read-only callers, sharing one parse
+    /// while the file is unchanged: the same size, mtime and inode as when it
+    /// was parsed, and settled outside the racy-mtime window. Bytes read while
+    /// the stamp moved are not kept, and every write through
+    /// `AgentMemoryService` drops the entry. Callers that mutate clone it;
+    /// the locked load-modify-save path keeps reading the file itself.
+    pub async fn load_user_knowledge_shared(
+        &self,
+    ) -> Result<std::sync::Arc<serde_json::Value>, AgentStorageError> {
+        let path = self.user_knowledge_path();
+        let Some(stamp) = self.knowledge_file_stamp(&path).await else {
+            forget_knowledge_parse(&path);
+            return self.load_user_knowledge().await.map(std::sync::Arc::new);
+        };
+        if let Some(value) = cached_knowledge_parse(&path, stamp) {
+            return Ok(value);
         }
+        let value = std::sync::Arc::new(self.load_user_knowledge().await?);
+        if self.knowledge_file_stamp(&path).await == Some(stamp) {
+            remember_knowledge_parse(&path, stamp, std::sync::Arc::clone(&value));
+        } else {
+            forget_knowledge_parse(&path);
+        }
+        Ok(value)
+    }
+
+    /// Drop the shared `knowledge.json` parse; called by every write.
+    pub fn forget_user_knowledge_parse(&self) {
+        forget_knowledge_parse(&self.user_knowledge_path());
+    }
+
+    async fn knowledge_file_stamp(&self, path: &Path) -> Option<KnowledgeFileStamp> {
+        let metadata = match self.scoped_workspace_layout() {
+            Some(workspace) => workspace.metadata_path(path).await.ok().flatten()?,
+            None => fs::metadata(path).await.ok()?,
+        };
+        metadata
+            .is_file()
+            .then(|| KnowledgeFileStamp::of(&metadata))
     }
 
     pub async fn load_native_tier_record<T: DeserializeOwned>(
@@ -814,7 +1093,7 @@ impl AgentStorage {
         }
 
         let started = Instant::now();
-        let max_wait = FILE_LOCK_DEFAULT_TIMEOUT;
+        let max_wait = file_lock_timeout();
         let mut retry_delay = FILE_LOCK_RETRY_DELAY_MIN;
         loop {
             match file.try_lock() {
@@ -993,7 +1272,7 @@ impl AgentStorage {
         })??;
 
         let started = Instant::now();
-        let max_wait = FILE_LOCK_DEFAULT_TIMEOUT;
+        let max_wait = file_lock_timeout();
         let mut retry_delay = FILE_LOCK_RETRY_DELAY_MIN;
 
         loop {
@@ -1089,7 +1368,7 @@ impl AgentStorage {
         })??;
 
         let started = Instant::now();
-        let max_wait = FILE_LOCK_DEFAULT_TIMEOUT;
+        let max_wait = file_lock_timeout();
         let mut retry_delay = FILE_LOCK_RETRY_DELAY_MIN;
 
         loop {
@@ -2183,12 +2462,143 @@ impl magician_vector_index::storage_trait::MemoryStorage for AgentStorage {
             .await
             .map_err(Into::into)
     }
+
+    /// Lets the memory-temperature counter write-behind flush this scope's
+    /// overlay after the recording call has returned.
+    fn shared_handle(
+        &self,
+    ) -> Option<std::sync::Arc<dyn magician_vector_index::storage_trait::MemoryStorage>> {
+        Some(std::sync::Arc::new(self.clone()))
+    }
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
     use crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace;
+
+    /// Kept parses are bounded: idle ones expire, then the least recently
+    /// used go until the entry and byte bounds hold; the parse being stored
+    /// is never the one evicted.
+    #[test]
+    fn shared_user_knowledge_parses_are_bounded_by_idleness_size_and_recency() {
+        let start = Instant::now();
+        let parse = |len: u64, used_secs: u64| KnowledgeParse {
+            stamp: KnowledgeFileStamp {
+                len,
+                modified_nanos: Some(1),
+                identity: None,
+            },
+            value: std::sync::Arc::new(serde_json::Value::Null),
+            last_used: start + Duration::from_secs(used_secs),
+        };
+        let fill = || {
+            let mut cache = KnowledgeParseCache::new();
+            cache.insert(PathBuf::from("/a"), parse(10, 0));
+            cache.insert(PathBuf::from("/b"), parse(10, 1));
+            cache.insert(PathBuf::from("/c"), parse(10, 2));
+            cache
+        };
+        let ttl = Duration::from_secs(300);
+        let at = |secs: u64| start + Duration::from_secs(secs);
+
+        // Within bounds and recently used: nothing goes.
+        let mut cache = fill();
+        assert!(evict_knowledge_parses(&mut cache, at(3), ttl, 16, 30, None).is_empty());
+
+        // Over the byte bound: least recently used first.
+        let mut cache = fill();
+        let removed = evict_knowledge_parses(&mut cache, at(3), ttl, 16, 25, None);
+        assert_eq!(removed.len(), 1);
+        assert!(!cache.contains_key(Path::new("/a")));
+
+        // Over the entry bound.
+        let mut cache = fill();
+        evict_knowledge_parses(&mut cache, at(3), ttl, 1, u64::MAX, None);
+        assert_eq!(
+            cache.keys().cloned().collect::<Vec<_>>(),
+            vec![PathBuf::from("/c")]
+        );
+
+        // Idle past the TTL: gone even within every bound.
+        let mut cache = fill();
+        evict_knowledge_parses(&mut cache, at(301), ttl, 16, u64::MAX, None);
+        assert_eq!(
+            cache.keys().cloned().collect::<Vec<_>>(),
+            vec![PathBuf::from("/c")]
+        );
+
+        // The parse being stored survives even as the oldest.
+        let mut cache = fill();
+        evict_knowledge_parses(&mut cache, at(3), ttl, 1, u64::MAX, Some(Path::new("/a")));
+        assert_eq!(
+            cache.keys().cloned().collect::<Vec<_>>(),
+            vec![PathBuf::from("/a")]
+        );
+    }
+
+    /// One parse is shared only for a settled, unchanged stamp. A same-size
+    /// in-place rewrite that restores the mtime is invisible to the stamp,
+    /// which is why every store write also forgets the parse.
+    #[tokio::test]
+    async fn shared_user_knowledge_parse_follows_the_file_stamp() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = AgentStorage::new(tmp.path());
+        storage.ensure_base_layout().await.unwrap();
+        let path = storage.user_knowledge_path();
+        let settle = |at: std::time::SystemTime| {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(at)
+                .unwrap();
+        };
+
+        // Missing: an empty document, never cached.
+        let empty = storage.load_user_knowledge_shared().await.unwrap();
+        assert_eq!(*empty, serde_json::json!({}));
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, br#"{"facts":[{"key":"a","value":"one"}]}"#).unwrap();
+        // Racy: just written, so each read parses afresh.
+        let first = storage.load_user_knowledge_shared().await.unwrap();
+        let second = storage.load_user_knowledge_shared().await.unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &second));
+
+        let settled = std::time::SystemTime::now() - Duration::from_secs(60);
+        settle(settled);
+        let first = storage.load_user_knowledge_shared().await.unwrap();
+        let second = storage.load_user_knowledge_shared().await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(first["facts"][0]["value"], "one");
+
+        // Same size, same inode, mtime restored: the stamp cannot see it...
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .write_all(br#"{"facts":[{"key":"a","value":"two"}]}"#)
+            .unwrap();
+        settle(settled);
+        let stale = storage.load_user_knowledge_shared().await.unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &stale));
+        // ...so writers forget the parse explicitly.
+        storage.forget_user_knowledge_parse();
+        let fresh = storage.load_user_knowledge_shared().await.unwrap();
+        assert_eq!(fresh["facts"][0]["value"], "two");
+
+        // A replacing write changes the stamp (inode, size) by itself.
+        let replacement = br#"{"facts":[{"key":"a","value":"three!"}]}"#;
+        storage
+            .write_bytes_atomic(&path, replacement)
+            .await
+            .unwrap();
+        settle(settled);
+        let replaced = storage.load_user_knowledge_shared().await.unwrap();
+        assert_eq!(replaced["facts"][0]["value"], "three!");
+    }
 
     /// A deleted workspace's missing scope root is never re-created by the
     /// shared layout creator; the default workspace (and any registered one)

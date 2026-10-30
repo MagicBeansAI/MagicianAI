@@ -16,7 +16,7 @@ import { MAGICIAN_API_BASE } from './config.js';
 import { magicianFetch } from './magician_scope.js';
 
 const MENU_ID = 'magician_save_selection_to_notes';
-const MENU_TITLE = 'Save selection to Magician Notes';
+const MENU_TITLE = 'Save selection to Magican Notes';
 
 let listenerRegistered = false;
 

@@ -1,6 +1,6 @@
 [package]
 name = "magician-components"
-version = "0.1.7"
+version = "0.1.10"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Which stack components are present, and what that means for features"

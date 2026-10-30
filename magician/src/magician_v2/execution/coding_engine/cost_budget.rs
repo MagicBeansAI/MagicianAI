@@ -184,6 +184,10 @@ impl CodingCostLedger {
 
     /// Record one finished turn. `None` is a turn whose engine reported no
     /// dollar cost.
+    ///
+    /// This records the run's own cap only. The owner's spend envelope is
+    /// charged once per turn by `run_coding_task`, whether or not the run has
+    /// a cap (and so a ledger at all).
     pub fn record_turn(&self, execution_id: &str, micro_usd: Option<u64>, now_ms: i64) {
         self.mutate(|state| match micro_usd {
             Some(micro_usd) => state.charges.push(CostCharge {

@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Wire declared CLI dependencies into each pack's activation boundary.
+
+Shared npm/Python installs are not on the service PATH. Generate links before
+materializing scopes, preserving pack-owned wrappers and scope-owned skills.
+No account state, credentials or provider calls are involved.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+
+import yaml
+
+# These are OS/package-manager prerequisites, provisioned by the host setup
+# scripts rather than npm/uv. Everything else must come from its pack or the
+# shared software tree: a global CLI can be stale or even launch this pack
+# again (agent-browser launchers), so it cannot repair a missing owned binary.
+HOST_TOOLS = {"awk", "sed", "curl", "jq", "tesseract", "pdftotext", "pdftoppm",
+              "ffmpeg", "ffprobe", "lightpanda"}
+
+
+def scope_removed(skill: Path) -> bool:
+    """The operator's uninstall intent also governs setup's scope repair."""
+    return (skill.parent / ".skill-state" / skill.name / "removed").exists()
+
+
+def declared_bins(skill: Path) -> set[str]:
+    text = (skill / "SKILL.md").read_text()
+    if not text.startswith("---\n"):
+        return set()
+    data = yaml.safe_load(text.split("---", 2)[1]) or {}
+    metadata = (data.get("metadata") or {}).get("magician") or {}
+    contract = metadata.get("runtime_contract") or {}
+    requires = contract.get("requires") or {}
+    bins = set((metadata.get("requires") or {}).get("bins") or [])
+    bins.update(requires.get("bins") or [])
+    if requires.get("entrypoint"):
+        bins.add(requires["entrypoint"])
+    for action in ((metadata.get("runtime_actions") or {}).get("actions") or {}).values():
+        bins.update((action.get("requires") or {}).get("bins") or [])
+        if action.get("executable"):
+            bins.add(action["executable"])
+    for name in bins:
+        if not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\\" in name:
+            raise ValueError(f"{skill.name}: invalid CLI basename {name!r}")
+    return bins
+
+
+def optional_bins(skill: Path) -> set[str]:
+    """Runtime PATH companions do not become mandatory installer dependencies."""
+    text = (skill / "SKILL.md").read_text()
+    data = yaml.safe_load(text.split("---", 2)[1]) if text.startswith("---\n") else {}
+    metadata = ((data or {}).get("metadata") or {}).get("magician") or {}
+    requires = (metadata.get("runtime_contract") or {}).get("requires") or {}
+    companions = set(requires.get("bins") or [])
+    required = set((metadata.get("requires") or {}).get("bins") or [])
+    entrypoint = requires.get("entrypoint")
+    if entrypoint:
+        required.add(entrypoint)
+    elif len(companions) == 1:
+        required.update(companions)
+    actions = metadata.get("runtime_actions") or {}
+    if (actions.get("execution") or {}).get("executable"):
+        required.add(actions["execution"]["executable"])
+    for action in (actions.get("actions") or {}).values():
+        if action.get("executable"):
+            required.add(action["executable"])
+        required.update((action.get("requires") or {}).get("bins") or [])
+    return companions - required
+
+
+class Resolver:
+    def __init__(self, root: Path):
+        self.root = root.absolute()
+        lock = self.root / "package-lock.json"
+        packages = json.loads(lock.read_text()).get("packages", {}) if lock.is_file() else {}
+        self.npm_bins = set()
+        for relative, package in packages.items():
+            bins = package.get("bin") or {}
+            if isinstance(bins, dict):
+                self.npm_bins.update(bins)
+            elif isinstance(bins, str):
+                self.npm_bins.add(relative.rsplit("/", 1)[-1])
+        self.python_bins = {"python", "python3"}
+        directory = self.root / ".venv/bin"
+        if directory.is_dir():
+            self.python_bins.update(p.name for p in directory.iterdir())
+
+    def managed(self, name: str) -> bool:
+        return name == "node" or name in self.npm_bins or name in self.python_bins
+
+    def shared(self, skill: Path, name: str) -> Path | None:
+        # A managed dependency must never silently select a host installation.
+        if name == "node":
+            dirs = [self.root / ".node/bin"]
+        elif name in self.npm_bins:
+            dirs = [self.root / "node_modules/.bin"]
+        else:
+            dirs = [skill / ".venv/bin", self.root / ".venv/bin"]
+        for directory in dirs:
+            candidate = directory / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate.absolute()
+        if name in HOST_TOOLS and not self.managed(name):
+            found = shutil.which(name)
+            if found:
+                return Path(found).absolute()
+        return None
+
+    def required_local(self, skill: Path) -> set[str]:
+        bins = declared_bins(skill) - optional_bins(skill)
+        if bins & self.npm_bins:
+            bins.add("node")
+        return bins
+
+    def expected_bins(self, skill: Path) -> set[str]:
+        bins = declared_bins(skill)
+        if bins & self.npm_bins:
+            bins.add("node")  # npm launchers use /usr/bin/env node.
+        return bins
+
+    def wire(self, skill: Path) -> int:
+        changed = 0
+        for name in sorted(self.expected_bins(skill)):
+            destination = skill / "bin" / name
+            # A real pack-owned wrapper has priority over a shared CLI.
+            if destination.exists() and not destination.is_symlink():
+                continue
+            if destination.is_file() and os.access(destination, os.X_OK) and not self.managed(name):
+                continue
+            source = self.shared(skill, name)
+            if source is None:
+                continue  # Verification reports missing dependencies after setup.
+            if destination.is_symlink() and destination.resolve() == source.resolve():
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            # Unique names allow simultaneous materialization of different scopes.
+            with tempfile.TemporaryDirectory(prefix=".bin-link-", dir=destination.parent) as temporary:
+                link = Path(temporary) / name
+                link.symlink_to(source)
+                os.replace(link, destination)
+            changed += 1
+        return changed
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    args = parser.parse_args()
+    resolver = Resolver(args.root)
+    changed = sum(resolver.wire(p.parent) for p in sorted(args.root.glob("*/SKILL.md")))
+    print(f"✓ {changed} declared CLI links repaired")
+
+
+if __name__ == "__main__":
+    main()

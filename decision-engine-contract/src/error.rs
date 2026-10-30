@@ -28,6 +28,10 @@ pub enum DecisionError {
     #[error("decision model response invalid: {0}")]
     InvalidResponse(String),
 
+    /// The caller built a request no model may take (e.g. an invalid image).
+    #[error("decision request invalid: {0}")]
+    InvalidRequest(String),
+
     /// The declared contract of the plane: an answer outside the supplied
     /// options is an error, never a coerce. Composition may degrade; it
     /// must not silently relabel.
@@ -57,6 +61,19 @@ pub enum DecisionError {
 }
 
 impl DecisionError {
+    /// The provider refused this one request (malformed, too large, over
+    /// the context length). Another model may still take it, but it says
+    /// nothing about the provider's health.
+    pub fn is_request_rejection(&self) -> bool {
+        matches!(
+            self,
+            Self::ProviderStatus {
+                status: 400 | 413 | 415 | 422,
+                ..
+            }
+        )
+    }
+
     /// Content-free provider health classification. Normal model-fit and
     /// confidence escalation must not be presented as an outage.
     pub fn health_reason(&self) -> Option<&'static str> {

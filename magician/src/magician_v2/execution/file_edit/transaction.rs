@@ -327,6 +327,16 @@ pub struct FileEditTransaction {
     /// approved root is still rejected. `None` = the ordinary in-workspace write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply_root: Option<PathBuf>,
+    /// The agent the edits were staged for (runtime identity at staging).
+    /// The apply checks goal workspace access for this agent; `None` (a
+    /// legacy record, a runtime path) is no agent, a non-member of every
+    /// goal workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_by_agent: Option<String>,
+    /// Fail-closed requirement only, never proof of permission. The one-use
+    /// God-mode authority lives in process memory and is bound to this revision.
+    #[serde(default)]
+    pub requires_god_mode: bool,
 }
 
 /// A field that must be *present* and must be a JSON string, whose bytes are
@@ -608,6 +618,8 @@ impl TransactionStore {
             resolved_at: None,
             snapshot_id: None,
             apply_root: None,
+            staged_by_agent: None,
+            requires_god_mode: false,
         };
         self.persist(&txn)?;
         Ok(txn)
@@ -1032,7 +1044,7 @@ impl FileEditTransaction {
     }
 
     /// Stable review revision over scope, task/execution provenance, rationale,
-    /// edits, and apply root. The edits are the exact source of the displayed
+    /// edits, apply root and the staging agent. The edits are the exact source of the displayed
     /// diff payload, including destinations and old/new content hashes.
     ///
     /// Trusted-store integrity: the stage site records this into the in-process
@@ -1047,6 +1059,10 @@ impl FileEditTransaction {
             &self.rationale,
             &self.edits,
             &self.apply_root,
+            // Bound too: the apply judges goal workspace access for this
+            // agent, so an on-disk edit of it must fail the decision closed.
+            &self.staged_by_agent,
+            self.requires_god_mode,
         ))
         .unwrap_or_default();
         blake3::hash(&bytes)

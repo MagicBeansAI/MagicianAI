@@ -9,6 +9,7 @@
   import QuotaBanner from '$lib/shared/components/QuotaBanner.svelte';
   import MobileAppGate from '$lib/shell/MobileAppGate.svelte';
   import StartupGate from '$lib/shell/StartupGate.svelte';
+  import HudRouteGuard from '$lib/shell/HudRouteGuard.svelte';
   import { isMarketingPath } from '$lib/shell/mobileAccess';
   import { appState } from '$lib/shared/stores/app';
   import { themeStore } from '$lib/shared/stores/themeStore';
@@ -87,11 +88,16 @@
     stopContextualAssistTracker?.();
     unsubscribe();
   });
+
+  // app.html shows a static Settings skeleton before any script runs; from
+  // here the gate and the page draw their own (SettingsSkeleton.svelte).
+  if (browser) document.getElementById('settings-boot-skeleton')?.remove();
 </script>
 
 <PublicSiteHead path={$page.url.pathname} />
+<HudRouteGuard />
 
-<StartupGate enabled={!isMarketingPath($page.url.pathname) && !$page.url.pathname.startsWith('/notify-overlay')} on:ready={initializeRuntimeUi}>
+<StartupGate enabled={!isMarketingPath($page.url.pathname) && !$page.url.pathname.startsWith('/notify-overlay')} skeleton={/^\/settings\/?$/.test($page.url.pathname)} on:ready={initializeRuntimeUi}>
 <MobileAppGate>
   <!-- Flash Messages -->
   <QuotaBanner

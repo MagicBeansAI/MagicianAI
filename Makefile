@@ -9,7 +9,7 @@ MAGICIAN_BUILD_CONFIG ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/magician/build
 -include $(MAGICIAN_BUILD_CONFIG)
 include scripts/build-cache-defaults.mk
 
-.PHONY: help ensure-make setup-hooks worktree-add restart-supervisor restart-ui-dev setup-all setup-ui-deps verify-ui-test-deps setup-rust-test-report-deps verify-rust-test-report-deps setup-pi-coding-agent setup-ollama setup-ollama-embedding setup-local-generation-selected run-ollama stop-ollama install setup-bots setup-capability-tools setup-agent-browser agent-browser-source rebuild-agent-browser setup-printing-press setup-metabase-cli setup-kapso-cli setup-higgsfield-cli setup-officecli verify-officecli regen-metabase-cli refresh-metabase-spec setup-skillshub-deps setup-skill-bins setup-skill-system-bins setup-skillshub-python setup-skill-env build-all-release build-all-release-ollama build-magician-release build-all-debug build-magician-debug build-all-dev build-magician-dev replace-magician-bin replace-magicutor-bin replace-supervisor-bin replace-restart-magician replace-restart-magicutor build-bots build-ui check-ui test-ui test-ui-verbose test-magicutor-extension check-bots run-ui-dev stop-ui-dev preview-ui ensure-ui-tunnel serve-ui-tunnel stop-serve-ui-tunnel ensure-tunnel stop-tunnel connect-access connect-setup connect-status connect-local connect-container connect-remote setup-desktop-vosk setup-magios-vosk build-desktop-tray build-desktop-tray-debug run-desktop-tray run-desktop-tray-debug stop-desktop-tray test-desktop-tray run-supervisor stop-supervisor restart-magician restart-magicutor stop-magician stop-magicutor stop-bots stop-macos-audio-engine status-magician status-magicutor restart-magictunnel stop-magictunnel status-magictunnel supervisor-health tail-service-log open-service-log tail-magician-v2-log memory-index-status memory-index-prewarm memory-index-rebuild memory-index-optimize analytics-export analytics-import analytics-reprice-llm generate-media-local-speech-fixtures benchmark-media-recording-stt benchmark-media-offline-audio benchmark-media-vad benchmark-media-stt benchmark-media-tts benchmark-media-diarization test-media-offline-audio-eval verify-media-audio-rollout audio-engine-status audio-model-prewarm audio-model-unload build-macos-audio-engine build-macos-audio-engine-debug build-macos-audio-engine-release build-macos-speech-helper build-macos-speech-helper-debug build-macos-speech-helper-release test-macos-audio-engine test test-verbose test-live-evals test-suite-runner ollama-chunking-readiness ollama-chunking-shadow-eval test-rust test-rust-verbose test-agentic-default-stack test-agent-router test-data-structures test-streaming test-performance test-grpc test-integration test-storage-budgets test-mcp-server test-registry test-capabilities test-tool-skills test-tool-skills-live check-all check-magician check-magic-supervisor check-ollama-chokepoint sccache-stats sccache-clear prune-incremental check-build-space fmt fmt-check clippy clippy-all clean dev-check watch-test docs audit update install-tools build-container build-container-multiarch push-container run-container stop-container test-container test-container-full test-container-tooling qualify-container-release qualify-container-e2e qualify-container-e2e-live measure-container-image release-container release-desktop release-desktop-target release-desktop-signed release-all generate-signing-key export-apple-signing-setup verify-apple-signing-bundle import-apple-signing-setup verify-apple-signing-setup dev-desktop-setup dev-desktop-build dev-update-server dev-container-rebuild cleanup cleanup-tools cleanup-data cleanup-dry-run graph-index graph-index-force graph-check graph-serve graph-serve-bg graph-serve-stop graph-serve-restart event-taxonomy-codegen event-taxonomy-check setup-meet-bot
+.PHONY: help ensure-make setup-hooks worktree-add restart-supervisor restart-ui-dev setup-all setup-ui-deps verify-ui-test-deps setup-rust-test-report-deps verify-rust-test-report-deps setup-pi-coding-agent setup-ollama setup-ollama-embedding setup-local-generation-selected run-ollama stop-ollama install setup-bots setup-capability-tools setup-agent-browser agent-browser-source rebuild-agent-browser setup-kapso-cli setup-higgsfield-cli setup-officecli verify-officecli setup-skillshub-deps setup-skill-bins setup-skill-system-bins setup-skillshub-python setup-skill-env build-all-release build-all-release-ollama build-magician-release build-all-debug build-magician-debug build-all-dev build-magician-dev replace-magician-bin replace-magicutor-bin replace-supervisor-bin replace-restart-magician replace-restart-magicutor build-bots build-ui check-ui test-ui test-ui-verbose test-magicutor-extension check-bots run-ui-dev stop-ui-dev preview-ui ensure-ui-tunnel serve-ui-tunnel stop-serve-ui-tunnel ensure-tunnel stop-tunnel connect-access connect-setup connect-status connect-local connect-container connect-remote setup-desktop-vosk setup-magios-vosk build-desktop-tray build-desktop-tray-debug run-desktop-tray run-desktop-tray-debug stop-desktop-tray test-desktop-tray run-supervisor stop-supervisor restart-magician restart-magicutor stop-magician stop-magicutor stop-bots stop-macos-audio-engine status-magician status-magicutor restart-magictunnel stop-magictunnel status-magictunnel supervisor-health tail-service-log open-service-log tail-magician-v2-log memory-index-status memory-index-prewarm memory-index-rebuild memory-index-optimize memory-user-report memory-compact-user memory-compact-user-apply memory-dedupe-user memory-fold-user-duplicates memory-fold-user-duplicates-apply analytics-export analytics-import analytics-reprice-llm generate-media-local-speech-fixtures benchmark-media-recording-stt benchmark-media-offline-audio benchmark-media-vad benchmark-media-stt benchmark-media-tts benchmark-media-diarization test-media-offline-audio-eval verify-media-audio-rollout audio-engine-status audio-model-prewarm audio-model-unload build-macos-audio-engine build-macos-audio-engine-debug build-macos-audio-engine-release build-macos-speech-helper build-macos-speech-helper-debug build-macos-speech-helper-release test-macos-audio-engine test test-verbose test-live-evals test-suite-runner ollama-chunking-readiness ollama-chunking-shadow-eval test-rust test-rust-verbose test-agentic-default-stack test-agent-router test-data-structures test-streaming test-performance test-grpc test-integration test-storage-budgets test-mcp-server test-registry test-capabilities test-tool-skills test-tool-skills-live check-all check-magician check-magic-supervisor check-ollama-chokepoint sccache-stats sccache-clear prune-incremental check-build-space fmt fmt-check clippy clippy-all clean dev-check watch-test docs audit update install-tools build-container build-container-multiarch push-container run-container stop-container test-container test-container-full test-container-tooling qualify-container-release qualify-container-e2e qualify-container-e2e-live measure-container-image release-container release-desktop release-desktop-target release-desktop-signed release-all generate-signing-key export-apple-signing-setup verify-apple-signing-bundle import-apple-signing-setup verify-apple-signing-setup dev-desktop-setup dev-desktop-build dev-update-server dev-container-rebuild cleanup cleanup-tools cleanup-data cleanup-dry-run graph-index graph-index-force graph-check graph-serve graph-serve-bg graph-serve-stop graph-serve-restart event-taxonomy-codegen event-taxonomy-check setup-meet-bot
 .PHONY: setup-codegraph-mcp
 .PHONY: generate-media-local-speech-fixtures
 .PHONY: setup-decision-models build-decision-engine-release build-decision-engine-mlx-release build-decision-engine-mlx-debug setup-decision-engine-mlx-build replace-decision-engine-bin replace-restart-decision-engine restart-decision-engine stop-decision-engine status-decision-engine
@@ -163,10 +163,10 @@ help:
 	@echo "  # All skill-related setup, build, install, clean lives in skillshub/Makefile."
 	@echo "  # Run \`make -C skillshub help\` to see the full list (setup-deps,"
 	@echo "  # setup-agent-browser, setup-skill-bins, setup-officecli, setup-system-bins, setup-python,"
-	@echo "  # setup-env, setup-gws-accounts, setup-bots, setup-marimo, setup-metabase-cli,"
+	@echo "  # setup-env, setup-gws-accounts, setup-bots, setup-marimo,"
 	@echo "  # install-scope, validate, list, clean, clean-runtime,"
 	@echo "  # verify-agent-browser, agent-browser-source, rebuild-agent-browser,"
-	@echo "  # refresh-metabase-spec, regen-metabase-cli)."
+	@echo "  # browser source builds)."
 	@echo "  # Backward-compat shims here delegate; new flows should call skillshub directly."
 	@echo "  skills-check-scopes      - Read-only: every scope's broken skill bin/ entries + the target that fixes each"
 	@echo "  skills-link-scopes       - Offline repair of every scope's skills layer (links + pinned CLI store), then check"
@@ -205,9 +205,17 @@ help:
 	@echo "UI (Unified Monorepo):"
 	@echo "  build-ui                 - Build unified-ui (/presto primary workspace; /done compatibility)"
 	@echo "  check-ui                 - Type check unified-ui"
+	@echo "  verify-ui-deps           - Verify installed UI/SDK dependencies without reinstalling"
 	@echo "  test-ui                  - Run Unified UI tests with coverage + a clickable HTML report"
 	@echo "  test-envoy-claims-review  - Check Envoy receipts, Claims Review APIs, native UI and app navigation"
 	@echo "  test-ui-verbose          - Run the same UI report flow with verbose terminal output"
+	@echo "  prepare-llm-profile-retirement - Inventory remaining legacy selectors and snapshot inputs"
+	@echo "  migrate-agent-model-pins - Preview versioned agent pin migration (ARGS; --apply requires stopped Magician)"
+	@echo "  test-llm-agent-pin-migration - Test the offline agent migration owner path"
+	@echo "  test-llm-chat-model-api - Check typed API/routing and migration-owner contracts in one build"
+	@echo "  test-llm-runtime-model-catalog - Check config, defaults, VibeDev and cached coding readiness"
+	@echo "  test-llm-channel-models - Check bot model requests and server-owned queue delivery"
+	@echo "  test-llm-script-readers - Check catalog-based eval snapshots and canonical routing fixtures"
 	@echo "  benchmark-media-recording-stt - Directly benchmark Dictation STT providers without Magician (MEDIA_STT_BENCHMARK_ARGS=...)"
 	@echo "  benchmark-media-offline-audio - Directly evaluate cached VAD/STT/TTS/diarization models without Magician"
 	@echo "  test-media-offline-audio-eval - Run provider-free metric, selection, and schema regressions"
@@ -293,6 +301,12 @@ help:
 	@echo "  memory-index-status      - Inspect the scoped LanceDB memory index"
 	@echo "  memory-index-prewarm     - Rebuild the scoped memory index only when stale"
 	@echo "  memory-index-optimize    - Compact and optimize the scoped LanceDB memory index"
+	@echo "  memory-user-report       - Size report for the user-memory file (read-only, no contents)"
+	@echo "  memory-compact-user      - Dry run of the one-time user-memory clean-up (writes nothing)"
+	@echo "  memory-compact-user-apply - Apply the clean-up (backs up first; archive, never delete)"
+	@echo "  memory-dedupe-user       - Dry run: same-meaning user memories + what the write-time fold archives"
+	@echo "  memory-fold-user-duplicates - Dry run: near-duplicate user memories the lifecycle fold would supersede"
+	@echo "  memory-fold-user-duplicates-apply - Fold them (evidence merged, copies superseded, nothing deleted)"
 	@echo "                             Use MEMORY_INDEX_REBUILD_FLAGS=--force to hard-rebuild during prewarm"
 	@echo "  audio-engine-status      - Inspect configured audio engine/model residency (AUDIO_ENGINE=fluid_audio)"
 	@echo "  audio-model-prewarm      - Load AUDIO_MODEL through Magician's managed audio engine"
@@ -632,6 +646,31 @@ DECISION_ENGINE_MLX ?= $(shell [ "$$(uname -s)" = Darwin ] && [ "$$(uname -m)" =
 DESKTOP_TRAY_REPO_BIN ?= magician-desktop.bin
 DESKTOP_TRAY_DEBUG_APP ?= .local/Magican-Debug.app
 DESKTOP_TRAY_DEBUG_APP_BIN ?= $(DESKTOP_TRAY_DEBUG_APP)/Contents/MacOS/magician-desktop.bin
+# Clean-quit marker: the tray's Quit, `make stop-desktop-tray` and
+# `supervisor-ctl stop-desktop` write it; the tray launch targets remove it.
+# A fixed per-user file in the app's support dir (not the runtime root), so
+# every instance writes where the supervisor watches; launches pass it to the
+# app as MAGICIAN_DESKTOP_QUIT_MARKER. The path contains a space: keep quoted.
+DESKTOP_QUIT_MARKER ?= $(HOME)/Library/Application Support/dev.magician.desktop/desktop-app.quit
+# On macOS, run-supervisor always hands magic-supervisor the debug tray bundle
+# (when built) so it can relaunch it after a crash, never after a deliberate
+# Quit, through LaunchServices with the same env as run-desktop-tray-debug.
+# Whether it does is `supervisor.manage_desktop` in the runtime config
+# (default on); SUPERVISOR_MANAGE_DESKTOP=0|1 overrides it for this run.
+# Dev has no login item, so the boot grace always ends in a launch here
+# (`--desktop-launch-at-boot=always`); run-all starts the tray first anyway.
+SUPERVISOR_MANAGE_DESKTOP ?=
+SUPERVISOR_DESKTOP_ARGS = $(if $(and $(filter Darwin,$(shell uname -s)),$(wildcard $(DESKTOP_TRAY_DEBUG_APP_BIN))),$(if $(SUPERVISOR_MANAGE_DESKTOP),--manage-desktop=$(SUPERVISOR_MANAGE_DESKTOP)) \
+	--desktop-app "$(abspath $(DESKTOP_TRAY_DEBUG_APP))" \
+	--desktop-launch-at-boot=always \
+	--desktop-log "$(abspath $(HOST_TRAY_LOG_FILE))" \
+	--desktop-verify-script "$(CURDIR)/scripts/verify-desktop-debug-app.sh" \
+	--desktop-quit-marker "$(DESKTOP_QUIT_MARKER)" \
+	--desktop-env "MAGICIAN_DESKTOP_MANAGE_RUNTIME=$(DESKTOP_MANAGE_RUNTIME)" \
+	--desktop-env "MAGICIAN_PREFIX=$${MAGICIAN_PREFIX:-}" \
+	--desktop-env "MAGICIAN_ROOT_DIR=$(RUNTIME_ROOT_DIR)" \
+	--desktop-env "MAGICIAN_HOST_GATEWAY_URL=$(HOST_GATEWAY_URL)" \
+	$(if $(wildcard $(DESKTOP_VOSK_RUNTIME_DIR)/am/final.mdl),--desktop-env "MAGICIAN_VOSK_MODEL_DIR=$(abspath $(DESKTOP_VOSK_RUNTIME_DIR))",))
 MACOS_SPEECH_HELPER_REPO_BIN ?= magician-macos-speech-helper.bin
 MACOS_MEET_AUDIO_HELPER_REPO_BIN ?= magician-macos-meet-audio.bin
 MACOS_AUDIO_ENGINE_REPO_BIN ?= magician-macos-audio-engine.bin
@@ -1005,11 +1044,11 @@ build-native-backend-debug: event-taxonomy-check component-graph-check presentat
 	"$(MAGICIAN_CARGO)" build -p magician-bin -p magicutor -p magic-supervisor && sleep 1 && ./scripts/replace-debug-bin.sh "$(CARGO_TARGET_DIR)/debug/magician" "$(MAGICIAN_BIN)" && ./scripts/replace-debug-bin.sh "$(CARGO_TARGET_DIR)/debug/magicutor" "$(MAGICUTOR_BIN)" && ./scripts/replace-debug-bin.sh "$(CARGO_TARGET_DIR)/debug/magic-supervisor" "$(SUPERVISOR_BIN)"
 
 # Complete macOS source-install payload, without developer-only builds.
-# Skill-side artifacts (bot dist/, marimo venv, metabase-pp-cli, patched
+# Skill-side artifacts (bot dist/, marimo venv, patched
 # agent-browser) are NOT prereqs here — they're interpreted skill binaries
 # owned by `make setup-all`. Each skillshub setup-* target self-verifies
-# (binary version + signature for agent-browser, --version for printing-
-# press / metabase-pp-cli, etc), so setup IS the verification path.
+# (binary version + signature for agent-browser, pinned CLI versions, etc),
+# so setup IS the verification path.
 ifeq ($(DECISION_ENGINE_MLX),1)
 build-source-debug: export RUSTUP_TOOLCHAIN = $(MLX_RUST_TOOLCHAIN)
 build-source-debug: setup-decision-engine-mlx-build
@@ -1098,8 +1137,9 @@ endif
 
 # The same, with Kev on the GPU (`kev-mlx`; Apple Silicon). kev-rs needs
 # Rust >= 1.95, CMake, and Xcode's Metal Toolchain to compile MLX; the
-# resulting binary needs none of them.
-MLX_RUST_TOOLCHAIN ?= 1.95.0
+# resulting binary needs none of them. Defaults to the repo's pinned channel
+# (rust-toolchain.toml) so MLX builds share artifacts with every other target.
+MLX_RUST_TOOLCHAIN ?= $(shell sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
 setup-decision-engine-mlx-build:
 	@command -v cmake >/dev/null || { echo "❌ cmake not found (brew install cmake, or pip install cmake)"; exit 1; }
 	@xcrun -sdk macosx metal --version >/dev/null 2>&1 || { echo "❌ Metal Toolchain missing: xcodebuild -downloadComponent MetalToolchain"; exit 1; }
@@ -1187,10 +1227,24 @@ publish-showcase-preview:
 showcase-refresh:
 	@node showcase/anatomy/refresh.mjs $(ARGS)
 
-# Type check unified-ui
-check-ui: setup-app-typescript-sdk-deps
+# Type checking must not replace node_modules beneath the live Vite process.
+# Install deliberately with setup-ui-deps; build/check can otherwise poison
+# Vite's cached module graph and leave client-side routes showing 500s.
+verify-ui-deps:
+	@if ! (cd ui/unified-ui && npm ls --depth=0 >/dev/null 2>&1); then \
+		echo "❌ Unified UI dependencies are missing or incompatible. Run 'make setup-ui-deps' before checking."; \
+		exit 1; \
+	fi
+	@if ! npm --prefix sdk/typescript ls --depth=0 >/dev/null 2>&1; then \
+		echo "❌ TypeScript app SDK dependencies are missing or incompatible. Run 'make setup-ui-deps' before checking."; \
+		exit 1; \
+	fi
+
+.PHONY: verify-ui-deps
+
+check-ui: verify-ui-deps
 	@echo "🔍 Type checking unified-ui..."
-	cd ui/unified-ui && npm ci --no-audit --no-fund && npm run check
+	cd ui/unified-ui && npm run check
 	@echo "✅ unified-ui type-checked successfully!"
 
 # Run both Vitest projects: fast Node unit tests and mounted JSDOM/Svelte tests.
@@ -1210,6 +1264,13 @@ verify-ui-test-deps:
 	fi
 
 test-ui: setup-ui-deps
+
+# Use the installed dependency graph during interactive development. This lane
+# shares the ordinary test/report runner without replacing live Vite modules.
+.PHONY: test-ui-installed
+test-ui-installed: verify-ui-deps verify-ui-test-deps
+
+test-ui test-ui-installed:
 	@echo "🧪 Testing unified-ui (unit + mounted component projects)..."
 	@mkdir -p '$(UI_TEST_REPORT_DIR)/results'; \
 		run_id=$$(date '+%Y%m%d-%H%M%S')-$$$$; \
@@ -1497,6 +1558,9 @@ install-source: ## Complete macOS source installation (ARGS=--dry-run previews w
 setup-identity: ## Operator identity layer: prompt + write data-root .env and operator-config values (single writer)
 	@bash scripts/setup-identity.sh
 
+setup-gws-project-access: ## Check/grant each Google account's roles on the OAuth client's Cloud project (Service Usage Consumer, Pub/Sub Editor)
+	@bash scripts/setup-gws-project-access.sh
+
 setup-pi-coding-agent:
 	@bash scripts/setup-pi-coding-agent.sh
 
@@ -1504,7 +1568,7 @@ setup-meet-bot:
 	@bash scripts/setup-meet-bot.sh
 
 # Install Ollama on the HOST + pull the models magician uses (idempotent).
-# SilverBullet + Ollama run on the host; the magician container reaches them over
+# Ollama runs on the host; the magician container reaches it over
 # --network host. Model identities come from magician-config.yaml.
 setup-ollama:
 	@bash scripts/setup-ollama-host.sh
@@ -1706,10 +1770,17 @@ run-desktop-tray-debug:
 		echo "   - Host gateway: $(HOST_GATEWAY_URL)"; \
 		echo "   - Runtime stack management: $(DESKTOP_MANAGE_RUNTIME) (1=container, 0=external/native)"; \
 		echo "   - Runtime log: $(HOST_TRAY_LOG_FILE)"; \
+		HOLDER=$$(lsof -tiTCP:$(HOST_GATEWAY_PORT) -sTCP:LISTEN 2>/dev/null | head -1); \
+		if [ -n "$$HOLDER" ] && ps -p "$$HOLDER" -o comm= 2>/dev/null | grep -q magician-desktop; then \
+			echo "✅ A desktop tray already holds :$(HOST_GATEWAY_PORT) (PID $$HOLDER); not opening another"; \
+			exit 0; \
+		fi; \
+		rm -f "$(DESKTOP_QUIT_MARKER)"; \
 		open -n -g \
 			--stdout "$(abspath $(HOST_TRAY_LOG_FILE))" \
 			--stderr "$(abspath $(HOST_TRAY_LOG_FILE))" \
 			--env "MAGICIAN_DESKTOP_MANAGE_RUNTIME=$(DESKTOP_MANAGE_RUNTIME)" \
+			--env "MAGICIAN_DESKTOP_QUIT_MARKER=$(DESKTOP_QUIT_MARKER)" \
 			--env "MAGICIAN_PREFIX=$${MAGICIAN_PREFIX:-}" \
 			--env "MAGICIAN_ROOT_DIR=$(RUNTIME_ROOT_DIR)" \
 			--env "MAGICIAN_HOST_GATEWAY_URL=$(HOST_GATEWAY_URL)" \
@@ -1733,6 +1804,7 @@ run-desktop-tray-debug:
 stop-desktop-tray:
 	@echo "⏹️  Stopping desktop tray/gateway..."
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		mkdir -p "$$(dirname "$(DESKTOP_QUIT_MARKER)")" && printf 'stopped-by=make stop-desktop-tray\n' > "$(DESKTOP_QUIT_MARKER)" || true; \
 		launchctl remove "$(DESKTOP_TRAY_LAUNCHD_LABEL)" >/dev/null 2>&1 || true; \
 		PIDS=$$( (pgrep -f "$(DESKTOP_TRAY_BIN)" 2>/dev/null; pgrep -f "$(DESKTOP_TRAY_REPO_BIN)" 2>/dev/null; lsof -tiTCP:$(HOST_GATEWAY_PORT) -sTCP:LISTEN 2>/dev/null) | sort -u); \
 		if [ -n "$$PIDS" ]; then \
@@ -1773,10 +1845,19 @@ restart-desktop-tray-debug: stop-desktop-tray
 		exit 1; \
 	fi
 	@echo "🔄 Restarting desktop tray/gateway through LaunchServices..."
+	@for _ in $$(seq 1 10); do \
+		lsof -tiTCP:$(HOST_GATEWAY_PORT) -sTCP:LISTEN >/dev/null 2>&1 || exit 0; \
+		sleep 0.5; \
+	done; \
+	HOLDER=$$(lsof -tiTCP:$(HOST_GATEWAY_PORT) -sTCP:LISTEN 2>/dev/null | head -1); \
+	echo "❌ :$(HOST_GATEWAY_PORT) is still held (PID $$HOLDER) after the stop; not opening a second tray."; \
+	exit 1
+	@rm -f "$(DESKTOP_QUIT_MARKER)"
 	@open -n -g \
 		--stdout "$(abspath $(HOST_TRAY_LOG_FILE))" \
 		--stderr "$(abspath $(HOST_TRAY_LOG_FILE))" \
 		--env "MAGICIAN_DESKTOP_MANAGE_RUNTIME=0" \
+		--env "MAGICIAN_DESKTOP_QUIT_MARKER=$(DESKTOP_QUIT_MARKER)" \
 		--env "MAGICIAN_PREFIX=$${MAGICIAN_PREFIX:-}" \
 		--env "MAGICIAN_ROOT_DIR=$(RUNTIME_ROOT_DIR)" \
 		--env "MAGICIAN_HOST_GATEWAY_URL=$(HOST_GATEWAY_URL)" \
@@ -1905,8 +1986,11 @@ verify-skill-runtime:
 
 test-skill-runtime: test-component-runtime test-setup-runtime
 	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_runtime_setup.py'
+	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_shared_skill_bins.py'
+	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_whatsapp_bins.py'
 	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_scope_bin_store.py'
 	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_skill_render.py'
+	@WU_TEST_PACKAGE_ROOT="$(CURDIR)/skillshub/node_modules/@ibrahimwithi/wu-cli" skillshub/.node/bin/node --test skillshub/whatsapp/tests/native-mcp.test.mjs
 	@python3 -m unittest discover -s skillshub/media-fetch/tests -p 'test_*.py'
 
 # The runtime half of scope-layer repair (magician lib; a full crate build).
@@ -1950,12 +2034,6 @@ rebuild-agent-browser:
 verify-agent-browser:
 	@$(MAKE) -C skillshub verify-agent-browser
 
-setup-printing-press:
-	@$(MAKE) -C skillshub setup-printing-press
-
-setup-metabase-cli:
-	@$(MAKE) -C skillshub setup-metabase-cli
-
 setup-kapso-cli:
 	@$(MAKE) -C skillshub setup-kapso-cli
 
@@ -1975,15 +2053,8 @@ setup-officecli:
 verify-officecli:
 	@$(MAKE) -C skillshub verify-officecli
 
-regen-metabase-cli:
-	@$(MAKE) -C skillshub regen-metabase-cli
-
-refresh-metabase-spec:
-	@$(MAKE) -C skillshub refresh-metabase-spec
-
 setup-capability-tools:
 	@$(MAKE) -C skillshub setup-marimo
-	@$(MAKE) -C skillshub setup-metabase-cli
 
 # Backward-compat shims: skill setup targets that were renamed when moved
 # into skillshub/Makefile. The new names (setup-deps, setup-skill-bins,
@@ -2038,6 +2109,56 @@ memory-index-optimize:
 		exit 1; \
 	fi
 	@./$(MAGICIAN_BIN) memory-index optimize --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)"
+
+# User-memory growth bounds (docs/plans/2026-10-18-user-memory-growth-bounds.md).
+# The report and the compact dry run are read-only; only the -apply target writes.
+memory-user-report:
+	@if [ ! -x "./$(MAGICIAN_BIN)" ]; then \
+		echo "Missing executable: ./$(MAGICIAN_BIN)"; \
+		echo "Run 'make build-magician-debug' first."; \
+		exit 1; \
+	fi
+	@./$(MAGICIAN_BIN) memory-user-report --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)"
+
+memory-compact-user:
+	@if [ ! -x "./$(MAGICIAN_BIN)" ]; then \
+		echo "Missing executable: ./$(MAGICIAN_BIN)"; \
+		echo "Run 'make build-magician-debug' first."; \
+		exit 1; \
+	fi
+	@./$(MAGICIAN_BIN) memory-compact-user --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)"
+
+memory-compact-user-apply:
+	@if [ ! -x "./$(MAGICIAN_BIN)" ]; then \
+		echo "Missing executable: ./$(MAGICIAN_BIN)"; \
+		echo "Run 'make build-magician-debug' first."; \
+		exit 1; \
+	fi
+	@./$(MAGICIAN_BIN) memory-compact-user --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)" --apply
+
+memory-dedupe-user:
+	@if [ ! -x "./$(MAGICIAN_BIN)" ]; then \
+		echo "Missing executable: ./$(MAGICIAN_BIN)"; \
+		echo "Run 'make build-magician-debug' first."; \
+		exit 1; \
+	fi
+	@./$(MAGICIAN_BIN) memory-dedupe-user --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)"
+
+memory-fold-user-duplicates:
+	@if [ ! -x "./$(MAGICIAN_BIN)" ]; then \
+		echo "Missing executable: ./$(MAGICIAN_BIN)"; \
+		echo "Run 'make build-magician-debug' first."; \
+		exit 1; \
+	fi
+	@./$(MAGICIAN_BIN) memory-fold-user-duplicates --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)"
+
+memory-fold-user-duplicates-apply:
+	@if [ ! -x "./$(MAGICIAN_BIN)" ]; then \
+		echo "Missing executable: ./$(MAGICIAN_BIN)"; \
+		echo "Run 'make build-magician-debug' first."; \
+		exit 1; \
+	fi
+	@./$(MAGICIAN_BIN) memory-fold-user-duplicates --principal "$(MEMORY_INDEX_PRINCIPAL)" --workspace "$(MEMORY_INDEX_WORKSPACE)" --apply
 
 # Analytics DuckDB cross-version migration (see
 # docs/runbooks/2026-06-13-analytics-duckdb-version-migration.md). No secrets
@@ -2384,6 +2505,18 @@ test-working-set-live-eval:
 		--output-dir '$(WORKING_SET_LIVE_EVAL_OUTPUT)' \
 		$(WORKING_SET_LIVE_EVAL_ARGS)
 
+FINAL_ANSWER_LIVE_EVAL_OUTPUT ?= $(COVERAGE_BASE_DIR)/evals/final-answer/live
+FINAL_ANSWER_LIVE_EVAL_REPEAT ?= 1
+FINAL_ANSWER_LIVE_EVAL_ARGS ?=
+
+## eval: kind=live requires=provider_keys report=evals/final-answer/live/latest
+## desc: Replays real finished runs' finalization (execution output synthesis, the task-user projection, its claim check and repair) on copies of their tasks with the live router, and checks the published answer keeps the figures the run established
+test-final-answer-live-eval:
+	@"$(MAGICIAN_CARGO)" run --quiet -p magician-bin --example final_answer_live_eval -- \
+		--repeat '$(FINAL_ANSWER_LIVE_EVAL_REPEAT)' \
+		--output-dir '$(FINAL_ANSWER_LIVE_EVAL_OUTPUT)' \
+		$(FINAL_ANSWER_LIVE_EVAL_ARGS)
+
 WORKING_SET_ROUTING_EVAL_OUTPUT ?= $(COVERAGE_BASE_DIR)/evals/working-set-routing/deterministic/latest
 WORKING_SET_ROUTING_LIVE_EVAL_OUTPUT ?= $(COVERAGE_BASE_DIR)/evals/working-set-routing/live/latest
 WORKING_SET_ROUTING_RUNS ?= 1
@@ -2557,7 +2690,7 @@ eval-minimax-cli-live:
 
 CHAT_CONTEXT_RETRIEVAL_EVAL_ARGS ?=
 benchmark-chat-context-retrieval:
-	@"$(MAGICIAN_CARGO)" run --quiet -p magician --example chat_context_retrieval_eval -- $(CHAT_CONTEXT_RETRIEVAL_EVAL_ARGS)
+	@"$(MAGICIAN_CARGO)" run --quiet -p magician-bin --features retrieval-eval --bin chat-context-retrieval-eval -- $(CHAT_CONTEXT_RETRIEVAL_EVAL_ARGS)
 
 ## eval: kind=harness
 ## desc: Run provider-free timing/concurrency/fallback regressions
@@ -2570,12 +2703,12 @@ test-chat-context-retrieval-eval:
 	@"$(MAGICIAN_CARGO)" test -p magician --lib chat_context_retrieval -- --nocapture
 	@"$(MAGICIAN_CARGO)" test -p magician --lib memory_index_maintainer::tests -- --nocapture
 	@"$(MAGICIAN_CARGO)" test -p magician --lib resurfacing:: -- --nocapture
-	@"$(MAGICIAN_CARGO)" test -p magician --example chat_context_retrieval_eval -- --nocapture
+	@"$(MAGICIAN_CARGO)" test -p magician-bin --features retrieval-eval --bin chat-context-retrieval-eval -- --nocapture
 
 ## eval: kind=live requires=ollama report=evals/chat-context-retrieval
 ## desc: Gate live hybrid backends, embedding coalescing, and retrieval latency
 test-chat-context-retrieval-live-eval:
-	@"$(MAGICIAN_CARGO)" run --quiet -p magician --example chat_context_retrieval_eval -- \
+	@"$(MAGICIAN_CARGO)" run --quiet -p magician-bin --features retrieval-eval --bin chat-context-retrieval-eval -- \
 		--runs '$(CHAT_CONTEXT_RETRIEVAL_LIVE_RUNS)' \
 		--warmups '$(CHAT_CONTEXT_RETRIEVAL_LIVE_WARMUPS)' \
 		--procedure-index-wait-secs '$(CHAT_CONTEXT_RETRIEVAL_LIVE_INDEX_WAIT_SECS)' \
@@ -2885,8 +3018,9 @@ run-supervisor:
 	@if [ "$(MAGICIAN_CHAT_TRACE)" = "1" ]; then \
 		echo "   - Chat tracing: ON (per-turn dumps under each chat session's trace dir)"; \
 	fi
+	$(if $(strip $(SUPERVISOR_DESKTOP_ARGS)),@echo "   - Desktop app: $(DESKTOP_TRAY_DEBUG_APP) (relaunched after a crash unless supervisor.manage_desktop is false$(if $(SUPERVISOR_MANAGE_DESKTOP),; override $(SUPERVISOR_MANAGE_DESKTOP)))")
 	@echo ""
-	@RUST_LOG=$(RUST_LOG) MAGICIAN_CHAT_TRACE=$(MAGICIAN_CHAT_TRACE) MAGICIAN_HOST_GATEWAY_URL="$(HOST_GATEWAY_URL)" ./scripts/run-supervisor.sh
+	@RUST_LOG=$(RUST_LOG) MAGICIAN_CHAT_TRACE=$(MAGICIAN_CHAT_TRACE) MAGICIAN_HOST_GATEWAY_URL="$(HOST_GATEWAY_URL)" ./scripts/run-supervisor.sh $(SUPERVISOR_DESKTOP_ARGS)
 
 # Run supervisor with chat tracing enabled — dumps every chat turn's prompt,
 # LLM response, tool calls, and tool results under the session's trace dir.
@@ -3242,12 +3376,21 @@ check-all: check-protoc verify-magios-vosk event-taxonomy-check component-graph-
 	@# magician-comms request it in dev-dependencies), which compiles every
 	@# fixture into magician's plain lib target where nothing calls it. The
 	@# crate root suppresses dead_code there because "unused" carries no
-	@# information in that configuration — so run the DEFAULT build too, which
-	@# is the only place real dead code in magician's production source shows up.
-	"$(MAGICIAN_CARGO)" check -p magician --lib
+	@# information in that configuration — so the DEFAULT build is the only
+	@# place real dead code in magician's production source shows up. It is a
+	@# third full pass over the magician crate, so it runs on request only:
+	@# `make check-all CHECK_DEAD_CODE=1` (or `make check-magician-dead-code`).
+	@if [ "$(CHECK_DEAD_CODE)" = 1 ]; then $(MAKE) --no-print-directory check-magician-dead-code; fi
 	@$(MAKE) check-desktop
 	@$(MAKE) check-ui
 	@$(MAKE) ios-debug-check
+
+# Dead-code check of magician's production library (no test fixtures); see
+# check-all.
+check-magician-dead-code:
+	"$(MAGICIAN_CARGO)" check -p magician --lib
+
+.PHONY: check-magician-dead-code
 
 # Prevent the backend service identity from becoming an assistant, agent,
 # product, or app identity in active prompts and presentation surfaces.
@@ -3272,11 +3415,11 @@ presentation-identity-check:
 # The pure public contract, canonical supported-public operation inventory and
 # current Rust wire types jointly generate schemas, OpenAPI and cross-client
 # fixtures. Route registration consumes the same inventory.
-app-contract-codegen:
+app-contract-codegen: check-protoc
 	@echo "[codegen] regenerating Apps supported-public contract artifacts…"
 	@"$(MAGICIAN_CARGO)" run -p magician-apps --bin app_contract_codegen --quiet -- generate
 
-app-contract-check:
+app-contract-check: check-protoc
 	@"$(MAGICIAN_CARGO)" run -p magician-apps --bin app_contract_codegen --quiet -- check
 	@"$(MAGICIAN_CARGO)" test -p magician-apps --bin app_contract_codegen --quiet
 	@"$(MAGICIAN_CARGO)" test -p magician-api every_supported_public_inventory_entry_is_registered_with_its_method --quiet
@@ -3649,6 +3792,7 @@ trim-changelogs:
 check-links:
 	@python3 scripts/check_markdown_links.py
 	@python3 -m unittest scripts/test_check_markdown_links.py
+	@python3 -m unittest discover -s scripts -p 'test_docs_guard.py'
 
 .PHONY: check-links
 
@@ -4914,9 +5058,13 @@ test-gws-profile-config:
 docs:
 	"$(MAGICIAN_CARGO)" doc --open
 
+.PHONY: clippy-ci
+clippy-ci: ## Check workspace Clippy against reviewed existing warnings
+	@python3 scripts/check_clippy_baseline.py
+
 # Check for security vulnerabilities
 audit:
-	"$(MAGICIAN_CARGO)" audit
+	@python3 scripts/audit_rust_dependencies.py
 
 # Update dependencies
 update:
@@ -4984,10 +5132,8 @@ CONTAINER_SKILL_TOOLS_OUTPUT ?= /out/skill-tools
 build-container-skill-tools:
 	@test "$$(uname -s)" = Linux || { echo "Container skill tools must be built on Linux" >&2; exit 1; }
 	"$(MAGICIAN_CARGO)" build --locked --release -p document-to-markdown-cli --bin document-to-markdown
-	GOMAXPROCS=1 GOFLAGS=-p=1 $(MAKE) -C skillshub setup-metabase-cli PP_GO=/usr/local/go/bin/go
 	mkdir -p "$(CONTAINER_SKILL_TOOLS_OUTPUT)"
 	strip -o "$(CONTAINER_SKILL_TOOLS_OUTPUT)/document-to-markdown" "$(CARGO_TARGET_DIR)/release/document-to-markdown"
-	install -m 0755 skillshub/metabase/bin/metabase-pp-cli "$(CONTAINER_SKILL_TOOLS_OUTPUT)/metabase-pp-cli"
 
 CONTAINER_TOOLS_ENGINE ?= container
 CONTAINER_TOOLS_BASE ?= magician:apple-3651d3eb50-r1
@@ -5019,7 +5165,7 @@ build-container-keyring-image:
 CONTAINER_OCI_ARGS ?= --help
 CONTAINER_ARTIFACT_ARGS ?= --help
 CONTAINER_SDK_ENGINE ?= container
-CONTAINER_SDK_IMAGE ?= magician-build-sdk:rust1.92-bookworm
+CONTAINER_SDK_IMAGE ?= magician-build-sdk:rust1.95-bookworm
 # Cached-layer wrapper repeats inspected limits; omitted Apple flags would use
 # system defaults and can recreate the builder. Artifact VMs default to 2 CPUs.
 CONTAINER_SDK_ARGS ?=
@@ -5126,7 +5272,8 @@ run-container:
 		fi; \
 		container run -d --name $(CONTAINER_NAME) \
 			-v "$${runtime_root}:/data" \
-			-p 3002:3002 -p 3003:3003 \
+			-p 3002:3002 -p 127.0.0.1:3003:3003 \
+			-e MAGICUTOR_TRUST_GATEWAY=1 \
 			-e MAGICIAN_CONTAINER_HOST=host.container.internal \
 			-e MAGICIAN_HOST_GATEWAY_URL=http://host.container.internal:3017 \
 			$(CONTAINER_IMAGE):$(CONTAINER_TAG); \
@@ -5134,7 +5281,8 @@ run-container:
 		if [ "$$(uname -s)" = Darwin ]; then \
 			docker run -d --name $(CONTAINER_NAME) \
 				-v "$${runtime_root}:/data" \
-				-p 3002:3002 -p 3003:3003 \
+				-p 3002:3002 -p 127.0.0.1:3003:3003 \
+				-e MAGICUTOR_TRUST_GATEWAY=1 \
 				-e MAGICIAN_CONTAINER_HOST=host.docker.internal \
 				-e MAGICIAN_HOST_GATEWAY_URL=http://host.docker.internal:3017 \
 				$(CONTAINER_IMAGE):$(CONTAINER_TAG); \
@@ -5837,9 +5985,17 @@ test-ios-live-enrollment:
 test-ios-live-question:
 	@bash scripts/magios-run.sh live-question
 
+.PHONY: test-ios-live-programs
+test-ios-live-programs:
+	@bash scripts/magios-run.sh live-programs
+
 .PHONY: test-magesp-connection
 test-magesp-connection:
 	@python3 scripts/test-magesp-connection.py
+
+.PHONY: test-magesp-conversations
+test-magesp-conversations:
+	@python3 scripts/test_magesp_conversations.py
 
 .PHONY: build-magesp
 build-magesp:
@@ -6276,3 +6432,90 @@ test-decision-metrics-store:
 .PHONY: test-ui-work-browser
 test-ui-work-browser:
 	python3 scripts/qualify-unified-work-browser.py $(ARGS)
+
+# Provider-free model catalog, saved-selection migration and client controls.
+.PHONY: test-llm-model-catalog test-llm-profile-retirement prepare-llm-profile-retirement test-llm-agent-pin-migration migrate-agent-model-pins test-llm-chat-model-api llm-preference-migration-codegen llm-preference-migration-check
+llm-preference-migration-codegen:
+	python3 scripts/llm_preference_migration_codegen.py
+
+llm-preference-migration-check:
+	python3 scripts/llm_preference_migration_codegen.py --check
+
+.PHONY: prepare-llm-alias-free-config test-llm-alias-free-config
+prepare-llm-alias-free-config:
+	python3 scripts/retire_llm_profile_config.py $(ARGS)
+
+test-llm-alias-free-config:
+	python3 -m unittest discover -s scripts -p test_retire_llm_profile_config.py
+
+LLM_RETIRE_CONFIG ?= magician-config.yaml
+LLM_RETIRE_ROOT ?=
+LLM_RETIRE_REPORT ?= /tmp/magician-llm-profile-retirement-inventory.json
+LLM_RETIRE_BACKUP ?=
+prepare-llm-profile-retirement:
+	python3 scripts/prepare_llm_profile_retirement.py --config "$(LLM_RETIRE_CONFIG)" --repo "$(CURDIR)" $(if $(LLM_RETIRE_ROOT),--runtime-root "$(LLM_RETIRE_ROOT)",) --output "$(LLM_RETIRE_REPORT)" $(if $(LLM_RETIRE_BACKUP),--backup-dir "$(LLM_RETIRE_BACKUP)",)
+
+test-llm-profile-retirement:
+	python3 -m unittest discover -s scripts -p test_llm_profile_retirement.py
+
+test-llm-agent-pin-migration:
+	"$(MAGICIAN_CARGO)" test -p magician-api --example migrate_agent_model_pins
+
+.PHONY: test-llm-chat-model-eval-args
+test-llm-chat-model-eval-args:
+	python3 scripts/test_chat_model_args.py
+	python3 scripts/eval-longmemeval-live.py --self-test --output-dir "$(COVERAGE_BASE_DIR)/evals/llm-model-catalog/longmemeval"
+
+test-llm-chat-model-api:
+	"$(MAGICIAN_CARGO)" test -p magician-api --lib --example migrate_agent_model_pins -- \
+		--test-threads=1 chat_api::model_selection::tests \
+		voice_control_handler::tests::voice_chat_choice coding_model_selection::tests \
+		plane_api::tests::pi_model_selection evals_api::tests::web_research_eval_profile_validation \
+		llm_routing_api::tests changes_only_the_owned_pin_and_preserves_the_native_thinking_level \
+		refuses_offline_apply_while_the_service_port_is_listening \
+		offline_apply_refuses_indeterminate_network_errors \
+		owner_update_archives_once_and_stale_sources_are_refused
+
+.PHONY: test-llm-runtime-model-catalog
+test-llm-runtime-model-catalog:
+	"$(MAGICIAN_CARGO)" test -p magician --lib -- --test-threads=1 \
+		config::tests:: harness_default_ vibedev::run_service::tests:: \
+		list_coding_models_reads_the_cached_readiness
+
+.PHONY: test-llm-channel-models
+test-llm-channel-models:
+	cd skillshub && npm run test -w @magician/bot-sdk
+
+.PHONY: test-llm-script-readers
+test-llm-script-readers:
+	python3 -m unittest discover -s scripts -p test_llm_catalog_eval_configs.py
+	python3 -m unittest discover -s scripts -p test_memory_lifecycle_evals.py
+	python3 -m unittest discover -s scripts -p test_preplan_flow_live_eval.py
+	python3 -m unittest discover -s scripts -p test_web_researcher_live_eval.py
+
+# Read-only preview unless ARGS explicitly includes --apply; applying refuses a
+# live API listener and writes through the versioned AgentDefinitionStore owner.
+migrate-agent-model-pins:
+	"$(MAGICIAN_CARGO)" run -p magician-api --example migrate_agent_model_pins -- $(ARGS)
+
+test-llm-model-catalog: test-llm-profile-retirement test-llm-alias-free-config llm-preference-migration-check test-llm-chat-model-eval-args test-llm-channel-models test-llm-script-readers
+	"$(MAGICIAN_CARGO)" test -p magicllm --lib
+	"$(MAGICIAN_CARGO)" test -p magicllm --test gemini4_argon --test provider_http
+	@$(MAKE) test-llm-chat-model-api
+	"$(MAGICIAN_CARGO)" test -p magician-api --test model_catalog -- --test-threads=1
+	@$(MAKE) test-llm-runtime-model-catalog
+	@set -eu; catalog_snapshot=$$(mktemp "$${TMPDIR:-/tmp}/magician-model-catalog.XXXXXX"); \
+	trap 'rm -f "$$catalog_snapshot"' EXIT; \
+	"$(MAGICIAN_CARGO)" run -p magicllm --example inspect_model_catalog -- magician-config.yaml "$$catalog_snapshot"; \
+	LLM_CATALOG_RUST_SNAPSHOT="$$catalog_snapshot" python3 -m unittest discover -s scripts -p test_llm_model_catalog.py
+	@$(MAKE) test-ui-installed UI_TEST_ARGS="src/lib/llm/modelCatalog.test.ts src/lib/llm/chatModelSelection.test.ts src/lib/stores/chatModelTransport.component.test.ts src/lib/stores/codingModelTransport.component.test.ts src/lib/shell/vibe/conversation/submit.test.ts src/lib/stores/chatStore.sessionSelection.component.test.ts src/lib/llm/ThinkingControl.component.test.ts src/lib/llm/ModelSelectionControl.component.test.ts src/lib/stores/chatProfileStore.test.ts src/lib/settings/ModelRoutingPanel.component.test.ts src/lib/settings/ProfileCatalogPanel.component.test.ts src/lib/magician/crew/AgentModelPinsPanel.component.test.ts src/lib/magician/crew/agentModelPins.test.ts src/lib/plane/EnginesPanel.component.test.ts src/lib/shell/FloatingComposer.component.test.ts src/lib/shell/CodingModelPicker.component.test.ts src/lib/shell/VibeComposer.component.test.ts src/lib/shared/anchorPopup.component.test.ts src/lib/magician/chat/next/PresenceOrb.component.test.ts src/lib/settings/SuperGodModeToggle.component.test.ts src/lib/stores/codingProfileStore.test.ts"
+
+.PHONY: test-ios-model-catalog
+test-ios-model-catalog: verify-magios-vosk
+	@xcodebuild -jobs 2 -project magios/Magios.xcodeproj -scheme Magios -configuration Debug \
+		-destination '$(IOS_TEST_DESTINATION)' -derivedDataPath '$(MAGIOS_DEBUG_DERIVED_DATA)' \
+		-only-testing:MagiosTests/ModelAndUtilityTests/testModelCatalogPreservesNativeThinkingChoicesAndLegacySelections \
+		-only-testing:MagiosTests/NetworkingViewModelTests/testChatModelsDecodeAndSelectConfiguredDefault \
+		-only-testing:MagiosTests/VibeDevViewModelTests/testStartRunBodyCarriesTheIdempotencyKeyAndThread \
+		-only-testing:MagiosTests/VibeDevViewModelTests/testCodingModelCatalogKeepsEngineAndThinkingWithoutLegacyRows \
+		-parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test

@@ -5,6 +5,12 @@
 //! only marks candidates surfaced after the shared attention router accepts them
 //! for Worth a look. The store still owns state/cooldown eligibility, so
 //! cooling, surfaced, acted, and dismissed rows are never re-surfaced.
+//! Candidates the router drops because they belong elsewhere (handled,
+//! dismissed, suppressed, stale, or owned by a Follow-up) are held out of the
+//! review window until their content revision changes or a bounded hold
+//! expires, so they cannot pin the top of the window pass after pass. Each
+//! pass writes its attention-funnel events in one batch, with ids keyed on
+//! content so an unchanged decision is recorded once.
 //!
 //! [`run_curation_pass_llm_with_attention`] is the Phase-2 LLM-curated path
 //! layered on top: it hands the top-`cap` candidates' titles + digests to an
@@ -55,7 +61,7 @@ use magician::magician_v2::attention::resurfacing::interaction::{
 use magician::magician_v2::attention::resurfacing::source_refs::{
     parse_comm_source_ref, CommSourceRef,
 };
-use magician::magician_v2::attention::resurfacing::store::ResurfacingStore;
+use magician::magician_v2::attention::resurfacing::store::{ResurfacingStore, RoutingHold};
 use magician::magician_v2::attention::resurfacing::types::{Candidate, CandidateState, SourceKind};
 use uuid::Uuid;
 
@@ -92,6 +98,27 @@ const MIN_NON_RECENCY_SIGNAL: f32 = 0.12;
 /// This keeps "not worth resurfacing right now" out of the immediate queue long
 /// enough for the next curation pass to rotate through lower-ranked candidates.
 const REVIEW_REJECT_COOLDOWN_SECS: i64 = 24 * 60 * 60;
+
+/// Longest hold for a candidate the attention router dropped because it is
+/// already handled elsewhere (owner dismissed, action handled, sensitive or
+/// suppressed, stale revision). A new content revision ends it sooner. Without
+/// a hold these rows stay at the top of the salience window and are re-routed
+/// every pass, starving the reviewable candidates behind them.
+const ROUTING_DROP_HOLD_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// Longest hold while a Follow-up owns the candidate (an active follow-up
+/// already exists, or the router sent it to the Follow-up lane). Resolution of
+/// the follow-up is not observed here, so the row is re-checked daily; a new
+/// content revision ends the hold sooner.
+const ROUTING_FOLLOW_UP_HOLD_SECS: i64 = 24 * 60 * 60;
+
+#[cfg(any(test, feature = "test-fixtures"))]
+thread_local! {
+    /// Number of funnel-event writes the curator issued on this thread. Tests
+    /// use it to prove one pass is one `append_events` call.
+    static RESURFACING_EVENT_WRITES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct CurationRecommendationPolicy {
@@ -135,20 +162,25 @@ pub async fn run_curation_pass_with_attention(
     attention_store: Option<&AttentionFunnelStore>,
     channel_store: Option<&ChannelAssistStore>,
 ) -> Result<Vec<Candidate>> {
-    run_deterministic_curation_pass(
+    let mut events = Vec::new();
+    let result = run_deterministic_curation_pass(
         principal,
         workspace,
         store,
         cap,
         now,
-        attention_store,
+        &mut events,
         channel_store,
         None,
         CurationRecommendationPolicy::disabled(),
     )
-    .await
+    .await;
+    write_resurfacing_events(attention_store, events).await;
+    result
 }
 
+/// `events` collects the pass's attention-funnel events; the public entry
+/// point writes them in one batch when the pass ends.
 #[allow(clippy::too_many_arguments)]
 async fn run_deterministic_curation_pass(
     principal: &str,
@@ -156,7 +188,7 @@ async fn run_deterministic_curation_pass(
     store: &ResurfacingStore,
     cap: usize,
     now: i64,
-    attention_store: Option<&AttentionFunnelStore>,
+    events: &mut Vec<AttentionRouteEvent>,
     channel_store: Option<&ChannelAssistStore>,
     router: Option<&OperationLlmRouter>,
     recommendation_policy: CurationRecommendationPolicy,
@@ -167,7 +199,7 @@ async fn run_deterministic_curation_pass(
         store,
         cap,
         now,
-        attention_store,
+        events,
         channel_store,
         false,
     )
@@ -225,7 +257,7 @@ async fn run_deterministic_curation_pass(
             }
         }
     }
-    record_resurfacing_routed_events(attention_store, principal, workspace, &top, now).await;
+    push_resurfacing_routed_events(events, principal, workspace, &top, now);
     write_memory_why_now_phrasing(principal, workspace, store, &top, now).await;
     Ok(top)
 }
@@ -779,13 +811,93 @@ fn routing_scan_limit(desired: usize) -> usize {
         .min(ROUTING_SCAN_MAX)
 }
 
+/// How long a routing outcome keeps a candidate out of the curator's review
+/// window, or `None` when it should be re-checked next pass. Only outcomes
+/// that mean "this belongs somewhere else, or is already dealt with" hold; a
+/// failed source read or materialization is transient and never holds.
+fn routing_hold_secs(
+    attention_candidate: &AttentionCandidate,
+    outcome: &RouteOutcome,
+) -> Option<i64> {
+    if attention_candidate
+        .metadata
+        .get("exact_message_evidence")
+        .and_then(Value::as_str)
+        == Some("load_failed")
+    {
+        return None;
+    }
+    match outcome {
+        RouteOutcome::Dropped { reason } => match reason {
+            DropReason::OwnerDismissed
+            | DropReason::ActionAlreadyHandled
+            | DropReason::SensitiveOrSuppressed
+            | DropReason::StaleContentRevision => Some(ROUTING_DROP_HOLD_SECS),
+            DropReason::ActiveFollowUpExists => Some(ROUTING_FOLLOW_UP_HOLD_SECS),
+            _ => None,
+        },
+        RouteOutcome::Routed { lane, .. } if *lane != AttentionLane::WorthALook => {
+            Some(ROUTING_FOLLOW_UP_HOLD_SECS)
+        },
+        RouteOutcome::Routed { .. } | RouteOutcome::Traced { .. } => None,
+    }
+}
+
+fn routing_hold_for(
+    candidate: &Candidate,
+    attention_candidate: &AttentionCandidate,
+    outcome: &RouteOutcome,
+    now: i64,
+) -> Option<RoutingHold> {
+    routing_hold_secs(attention_candidate, outcome).map(|secs| RoutingHold {
+        candidate_id: candidate.candidate_id.clone(),
+        content_revision: candidate.content_revision.clone(),
+        hold_until: now.saturating_add(secs),
+    })
+}
+
+/// Apply a pass's routing holds in one store call. Best effort: a failure
+/// leaves the rows in the window (the old behavior) and never fails the pass.
+async fn apply_routing_holds(
+    store: &ResurfacingStore,
+    principal: &str,
+    workspace: &str,
+    holds: &[RoutingHold],
+) {
+    if holds.is_empty() {
+        return;
+    }
+    match store
+        .hold_routing_dropped_candidates(principal, workspace, holds)
+        .await
+    {
+        Ok(held) => debug!(
+            target: LOG_TARGET,
+            requested = holds.len(),
+            held = held.len(),
+            "resurfacing curator held routing-dropped candidates out of the review window"
+        ),
+        Err(error) => warn!(
+            target: LOG_TARGET,
+            requested = holds.len(),
+            error = %error,
+            "failed to hold routing-dropped resurfacing candidates; they stay in the review window"
+        ),
+    }
+}
+
+/// Route the top of the review window and return up to `desired` candidates
+/// the curator may consider. Routing-dropped rows that belong elsewhere are
+/// held out of later windows (one batched store call), and every decision's
+/// funnel events are appended to `events` for the caller to write once.
+#[allow(clippy::too_many_arguments)]
 async fn list_router_accepted_resurfacing_candidates(
     principal: &str,
     workspace: &str,
     store: &ResurfacingStore,
     desired: usize,
     now: i64,
-    attention_store: Option<&AttentionFunnelStore>,
+    events: &mut Vec<AttentionRouteEvent>,
     channel_store: Option<&ChannelAssistStore>,
     defer_semantic_quality_to_model: bool,
 ) -> Result<Vec<Candidate>> {
@@ -801,23 +913,28 @@ async fn list_router_accepted_resurfacing_candidates(
         .list_top_candidates(principal, workspace, now, scan_limit)
         .await?;
     let mut eligible = Vec::new();
+    let mut holds = Vec::new();
     for candidate in candidates {
         if let Some(reason) = candidate_prefilter_drop_reason(&candidate) {
             let attention_candidate = attention_candidate_from_resurfacing(&candidate);
             let outcome = RouteOutcome::Dropped { reason };
-            record_resurfacing_route_event(
-                attention_store,
+            holds.extend(routing_hold_for(
+                &candidate,
+                &attention_candidate,
+                &outcome,
+                now,
+            ));
+            events.extend(resurfacing_route_events(
                 principal,
                 workspace,
                 &candidate,
                 &attention_candidate,
                 &outcome,
                 now,
-            )
-            .await;
+            ));
             continue;
         }
-        let (accepted, outcome, attention_candidate) = route_resurfacing_candidate(
+        let routed = route_resurfacing_candidate(
             principal,
             workspace,
             &candidate,
@@ -826,7 +943,16 @@ async fn list_router_accepted_resurfacing_candidates(
             true,
             false,
         )
-        .await?;
+        .await;
+        let (accepted, outcome, attention_candidate) = match routed {
+            Ok(routed) => routed,
+            Err(error) => {
+                // The pass still fails, but rows already routed this pass keep
+                // their holds instead of pinning the window again next time.
+                apply_routing_holds(store, principal, workspace, &holds).await;
+                return Err(error);
+            },
+        };
         if accepted
             || (defer_semantic_quality_to_model
                 && semantic_quality_drop_can_be_deferred_to_model(&candidate, &outcome))
@@ -836,18 +962,23 @@ async fn list_router_accepted_resurfacing_candidates(
                 break;
             }
         } else {
-            record_resurfacing_route_event(
-                attention_store,
+            holds.extend(routing_hold_for(
+                &candidate,
+                &attention_candidate,
+                &outcome,
+                now,
+            ));
+            events.extend(resurfacing_route_events(
                 principal,
                 workspace,
                 &candidate,
                 &attention_candidate,
                 &outcome,
                 now,
-            )
-            .await;
+            ));
         }
     }
+    apply_routing_holds(store, principal, workspace, &holds).await;
     eligible.truncate(desired);
     Ok(eligible)
 }
@@ -1006,6 +1137,7 @@ pub async fn repair_active_surfaced_candidates(
         .list_active_repair_candidates(principal, workspace, limit)
         .await?;
     let mut result = ActiveRoutingRepairOutcome::default();
+    let mut events = Vec::new();
     for candidate in candidates {
         result.scanned = result.scanned.saturating_add(1);
         if candidate.content_details.is_none() {
@@ -1063,16 +1195,14 @@ pub async fn repair_active_surfaced_candidates(
         {
             Ok(true) => {
                 result.repaired = result.repaired.saturating_add(1);
-                record_resurfacing_route_event(
-                    attention_store,
+                events.extend(resurfacing_route_events(
                     principal,
                     workspace,
                     &candidate,
                     &attention_candidate,
                     &outcome,
                     now,
-                )
-                .await;
+                ));
             },
             Ok(false) => result.skipped_concurrent = result.skipped_concurrent.saturating_add(1),
             Err(error) => {
@@ -1086,6 +1216,7 @@ pub async fn repair_active_surfaced_candidates(
             },
         }
     }
+    write_resurfacing_events(attention_store, events).await;
     if result.failed > 0 {
         anyhow::bail!(
             "active routing repair partially failed: scanned={}, repaired={}, failed={}",
@@ -1688,18 +1819,50 @@ fn salience_confidence(score: f32) -> Option<f32> {
     }
 }
 
-async fn record_resurfacing_route_event(
+/// Write one pass's funnel events in a single `append_events` call (one
+/// transaction, one retention sweep). Event ids are stable for an unchanged
+/// decision, so ids repeated within the pass are collapsed here and ids
+/// repeated across passes are ignored by the store's unique `event_id`.
+/// Best effort: a failure is logged and never fails the pass.
+async fn write_resurfacing_events(
     attention_store: Option<&AttentionFunnelStore>,
+    events: Vec<AttentionRouteEvent>,
+) {
+    let Some(attention_store) = attention_store else {
+        return;
+    };
+    let mut seen = HashSet::new();
+    let events = events
+        .into_iter()
+        .filter(|event| seen.insert(event.event_id.clone()))
+        .collect::<Vec<_>>();
+    if events.is_empty() {
+        return;
+    }
+    #[cfg(any(test, feature = "test-fixtures"))]
+    RESURFACING_EVENT_WRITES.with(|writes| writes.set(writes.get() + 1));
+    let count = events.len();
+    if let Err(error) = attention_store.append_events(events).await {
+        warn!(
+            target: LOG_TARGET,
+            events = count,
+            error = %error,
+            "failed to record attention funnel events for resurfacing pass"
+        );
+    }
+}
+
+/// The funnel events for one candidate's routing decision: per-stage traces
+/// plus the terminal route/drop event (and a surfaced trace when it reached
+/// Worth a look).
+fn resurfacing_route_events(
     principal: &str,
     workspace: &str,
     candidate: &Candidate,
     attention_candidate: &AttentionCandidate,
     outcome: &RouteOutcome,
     now: i64,
-) {
-    let Some(attention_store) = attention_store else {
-        return;
-    };
+) -> Vec<AttentionRouteEvent> {
     let stage = match outcome {
         RouteOutcome::Routed { .. } => AttentionFunnelStage::Routed,
         RouteOutcome::Dropped { .. } => AttentionFunnelStage::Dropped,
@@ -1778,18 +1941,7 @@ async fn record_resurfacing_route_event(
             serde_json::json!({ "trace": "candidate_marked_surfaced" }),
         ));
     }
-    for event in events {
-        let event_id = event.event_id.clone();
-        if let Err(error) = attention_store.append_event(event).await {
-            warn!(
-                target: LOG_TARGET,
-                candidate_id = candidate.candidate_id.as_str(),
-                event_id = %event_id,
-                error = %error,
-                "failed to record attention funnel event for resurfacing candidate"
-            );
-        }
-    }
+    events
 }
 
 fn resurfacing_trace_event(
@@ -1849,6 +2001,22 @@ fn resurfacing_event_metadata(
     })
 }
 
+/// The content a funnel event id is keyed on: the source-native content
+/// revision, or a digest of the title and summary for revisionless sources.
+/// Deliberately NOT `last_scored_at`: the scorer's hourly `decay_all` rewrites
+/// it on every row, which made every repeat of an unchanged decision a new
+/// event. Keyed on content, an identical repeated decision keeps its id (and
+/// the store ignores it), while a change of content or outcome gets a new one.
+fn resurfacing_event_content_key(candidate: &Candidate) -> String {
+    match candidate.content_revision.as_deref() {
+        Some(revision) => format!("rev:{revision}"),
+        None => {
+            let content = format!("{}\x1f{}", candidate.title, candidate.content_digest);
+            format!("digest:{}", blake3::hash(content.as_bytes()).to_hex())
+        },
+    }
+}
+
 fn resurfacing_trace_event_id(
     principal: &str,
     workspace: &str,
@@ -1857,12 +2025,11 @@ fn resurfacing_trace_event_id(
     status: AttentionTraceStatus,
 ) -> String {
     let raw = format!(
-        "resurfacing_trace\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}",
+        "resurfacing_trace\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}",
         principal,
         workspace,
         candidate.candidate_id,
-        candidate.content_revision.as_deref().unwrap_or(""),
-        candidate.last_scored_at,
+        resurfacing_event_content_key(candidate),
         candidate.state.as_str(),
         stage.as_str(),
         status.as_str(),
@@ -1880,12 +2047,11 @@ fn resurfacing_route_event_id(
     outcome: &RouteOutcome,
 ) -> String {
     let raw = format!(
-        "resurfacing_route\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}",
+        "resurfacing_route\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{}",
         principal,
         workspace,
         candidate.candidate_id,
-        candidate.content_revision.as_deref().unwrap_or(""),
-        candidate.last_scored_at,
+        resurfacing_event_content_key(candidate),
         candidate.state.as_str(),
         route_outcome_key(outcome),
     );
@@ -1998,6 +2164,40 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
     recommendation_policy: CurationRecommendationPolicy,
     telemetry: Option<&OperationLlmTelemetryContext>,
 ) -> Result<Vec<Candidate>> {
+    // Every route/drop/surface decision of the pass — including a
+    // deterministic fallback's — lands in one funnel-event batch, written once
+    // however the pass ends.
+    let mut events = Vec::new();
+    let result = run_llm_curation_pass(
+        principal,
+        workspace,
+        store,
+        cap,
+        now,
+        router,
+        &mut events,
+        channel_store,
+        recommendation_policy,
+        telemetry,
+    )
+    .await;
+    write_resurfacing_events(attention_store, events).await;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_llm_curation_pass(
+    principal: &str,
+    workspace: &str,
+    store: &ResurfacingStore,
+    cap: usize,
+    now: i64,
+    router: Option<Arc<OperationLlmRouter>>,
+    events: &mut Vec<AttentionRouteEvent>,
+    channel_store: Option<&ChannelAssistStore>,
+    recommendation_policy: CurationRecommendationPolicy,
+    telemetry: Option<&OperationLlmTelemetryContext>,
+) -> Result<Vec<Candidate>> {
     // No router or unbound op ⇒ deterministic pick (no default-remote surprise).
     let Some(router) = router.as_ref() else {
         debug!(target: LOG_TARGET, "no router — deterministic curation");
@@ -2007,7 +2207,7 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
             store,
             cap,
             now,
-            attention_store,
+            events,
             channel_store,
             None,
             recommendation_policy,
@@ -2025,7 +2225,7 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
             store,
             cap,
             now,
-            attention_store,
+            events,
             channel_store,
             Some(router.as_ref()),
             recommendation_policy,
@@ -2040,7 +2240,7 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
         store,
         review_limit,
         now,
-        attention_store,
+        events,
         channel_store,
         true,
     )
@@ -2090,7 +2290,7 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
                 store,
                 cap,
                 now,
-                attention_store,
+                events,
                 channel_store,
                 Some(router.as_ref()),
                 recommendation_policy,
@@ -2116,7 +2316,7 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
                 store,
                 cap,
                 now,
-                attention_store,
+                events,
                 channel_store,
                 Some(router.as_ref()),
                 recommendation_policy,
@@ -2154,7 +2354,7 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
             store,
             cap,
             now,
-            attention_store,
+            events,
             channel_store,
             Some(router.as_ref()),
             recommendation_policy,
@@ -2197,15 +2397,14 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
             .filter_map(|id| top.iter().find(|candidate| candidate.candidate_id == *id))
             .cloned()
             .collect::<Vec<_>>();
-        record_resurfacing_drop_events(
-            attention_store,
+        push_resurfacing_drop_events(
+            events,
             principal,
             workspace,
             &rejected,
             now,
             DropReason::CuratorDeferred,
-        )
-        .await;
+        );
     }
     if resolved.is_empty() {
         return Ok(Vec::new());
@@ -2279,12 +2478,12 @@ pub async fn run_curation_pass_llm_with_recommendations_and_telemetry(
         c.surface_count += 1;
         out.push(c);
     }
-    record_resurfacing_routed_events(attention_store, principal, workspace, &out, now).await;
+    push_resurfacing_routed_events(events, principal, workspace, &out, now);
     Ok(out)
 }
 
-async fn record_resurfacing_routed_events(
-    attention_store: Option<&AttentionFunnelStore>,
+fn push_resurfacing_routed_events(
+    events: &mut Vec<AttentionRouteEvent>,
     principal: &str,
     workspace: &str,
     candidates: &[Candidate],
@@ -2297,21 +2496,19 @@ async fn record_resurfacing_routed_events(
             reason: RouteReason::NonActionableUsefulContext,
             priority: RoutePriority::Low,
         };
-        record_resurfacing_route_event(
-            attention_store,
+        events.extend(resurfacing_route_events(
             principal,
             workspace,
             candidate,
             &attention_candidate,
             &outcome,
             now,
-        )
-        .await;
+        ));
     }
 }
 
-async fn record_resurfacing_drop_events(
-    attention_store: Option<&AttentionFunnelStore>,
+fn push_resurfacing_drop_events(
+    events: &mut Vec<AttentionRouteEvent>,
     principal: &str,
     workspace: &str,
     candidates: &[Candidate],
@@ -2321,16 +2518,14 @@ async fn record_resurfacing_drop_events(
     for candidate in candidates {
         let attention_candidate = attention_candidate_from_resurfacing(candidate);
         let outcome = RouteOutcome::Dropped { reason };
-        record_resurfacing_route_event(
-            attention_store,
+        events.extend(resurfacing_route_events(
             principal,
             workspace,
             candidate,
             &attention_candidate,
             &outcome,
             now,
-        )
-        .await;
+        ));
     }
 }
 
@@ -2649,11 +2844,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn v2_deadline_materializes_one_follow_up_and_never_surfaces_in_worth_a_look() {
-        let tmp = TempDir::new().unwrap();
-        let channel_store = ChannelAssistStore::open(tmp.path()).unwrap();
-        let message_at = 1_783_209_600_000;
+    /// Seed one distilled Gmail deadline message (a required follow-up) and
+    /// return its resurfacing candidate at the current distill revision.
+    async fn seed_deadline_comm_candidate(
+        channel_store: &ChannelAssistStore,
+        message_at: i64,
+    ) -> Candidate {
         channel_store
             .upsert_thread(
                 "p",
@@ -2761,6 +2957,20 @@ mod tests {
         candidate.content_revision = Some(revision.to_string());
         candidate.title = "Invoice due".to_string();
         candidate.content_digest = summary.to_string();
+        candidate
+    }
+
+    #[tokio::test]
+    async fn v2_deadline_materializes_one_follow_up_and_never_surfaces_in_worth_a_look() {
+        let tmp = TempDir::new().unwrap();
+        let channel_store = ChannelAssistStore::open(tmp.path()).unwrap();
+        let message_at = 1_783_209_600_000;
+        let mut candidate = seed_deadline_comm_candidate(&channel_store, message_at).await;
+        let revision: i64 = candidate
+            .content_revision
+            .as_deref()
+            .and_then(|revision| revision.parse().ok())
+            .expect("seeded distill revision");
 
         let (accepted, outcome, _) = route_resurfacing_candidate(
             "p",
@@ -3186,12 +3396,26 @@ mod tests {
             .unwrap();
 
         let deterministic = list_router_accepted_resurfacing_candidates(
-            "p", "w", &store, 1, 2_000, None, None, false,
+            "p",
+            "w",
+            &store,
+            1,
+            2_000,
+            &mut Vec::new(),
+            None,
+            false,
         )
         .await
         .unwrap();
         let model_review = list_router_accepted_resurfacing_candidates(
-            "p", "w", &store, 1, 2_000, None, None, true,
+            "p",
+            "w",
+            &store,
+            1,
+            2_000,
+            &mut Vec::new(),
+            None,
+            true,
         )
         .await
         .unwrap();
@@ -3750,5 +3974,295 @@ mod tests {
                 candidates[2].candidate_id.clone()
             ]
         );
+    }
+
+    /// A high-salience comm row the router drops as a stale revision (no
+    /// channel store, so no exact message evidence): a stand-in for the rows
+    /// that used to pin the top of the review window on every pass.
+    fn stuck_comm_candidate(i: usize) -> Candidate {
+        let mut candidate = comm_candidate(&format!("stuck-{i}"));
+        candidate.salience_score = 0.9 - i as f32 / 1_000.0;
+        candidate.signals.centrality = candidate.salience_score;
+        candidate
+    }
+
+    fn candidate_ids(candidates: &[Candidate]) -> Vec<String> {
+        candidates
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect()
+    }
+
+    async fn total_funnel_events(attention: &AttentionFunnelStore) -> u64 {
+        attention
+            .observability("p", "w", None, 0)
+            .await
+            .unwrap()
+            .total_events
+    }
+
+    fn resurfacing_event_writes() -> usize {
+        RESURFACING_EVENT_WRITES.with(|writes| writes.get())
+    }
+
+    #[tokio::test]
+    async fn routing_dropped_rows_are_held_so_the_shortlist_reaches_rows_behind_them() {
+        let store = ResurfacingStore::open_in_temp();
+        let stuck = (0..ROUTING_SCAN_MIN)
+            .map(stuck_comm_candidate)
+            .collect::<Vec<_>>();
+        for candidate in &stuck {
+            store.upsert_candidate("p", "w", candidate).await.unwrap();
+        }
+        let reviewable = sample_candidate("reviewable-behind", 0.2);
+        store.upsert_candidate("p", "w", &reviewable).await.unwrap();
+
+        // Pass 1: the whole bounded window is stuck rows, so nothing reaches
+        // the model — but every one of them is held.
+        let mut first_events = Vec::new();
+        let first = list_router_accepted_resurfacing_candidates(
+            "p",
+            "w",
+            &store,
+            1,
+            2_000,
+            &mut first_events,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(first.is_empty());
+        assert_eq!(first_events.len(), ROUTING_SCAN_MIN * 4);
+        for candidate in &stuck {
+            let held = store
+                .get_candidate("p", "w", &candidate.candidate_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                held.state,
+                CandidateState::Candidate,
+                "a hold never changes lifecycle state"
+            );
+            assert_eq!(held.cooldown_until, 2_000 + ROUTING_DROP_HOLD_SECS);
+        }
+
+        // Pass 2, an hour later: held rows are not routed again and the model
+        // shortlist reaches the reviewable row behind them.
+        let mut second_events = Vec::new();
+        let second = list_router_accepted_resurfacing_candidates(
+            "p",
+            "w",
+            &store,
+            1,
+            5_600,
+            &mut second_events,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            candidate_ids(&second),
+            vec![reviewable.candidate_id.clone()]
+        );
+        assert!(second_events.is_empty(), "held rows must not be re-scanned");
+
+        // A new content revision brings a held row straight back...
+        let mut revised = stuck[0].clone();
+        revised.content_revision = Some("8".to_string());
+        store.upsert_candidate("p", "w", &revised).await.unwrap();
+        let window = candidate_ids(
+            &store
+                .list_top_candidates("p", "w", 5_600, ROUTING_SCAN_MAX)
+                .await
+                .unwrap(),
+        );
+        assert!(window.contains(&revised.candidate_id));
+        assert!(!window.contains(&stuck[1].candidate_id));
+
+        // ...and without one the hold simply expires.
+        let expired = candidate_ids(
+            &store
+                .list_top_candidates("p", "w", 2_000 + ROUTING_DROP_HOLD_SECS, ROUTING_SCAN_MAX)
+                .await
+                .unwrap(),
+        );
+        assert!(expired.contains(&stuck[1].candidate_id));
+    }
+
+    #[tokio::test]
+    async fn a_pass_writes_funnel_events_once_and_identical_repeats_add_none() {
+        let tmp = TempDir::new().unwrap();
+        let attention = AttentionFunnelStore::open(tmp.path()).unwrap();
+        let store = ResurfacingStore::open_in_temp();
+        let stuck = (0..3).map(stuck_comm_candidate).collect::<Vec<_>>();
+        for candidate in &stuck {
+            store.upsert_candidate("p", "w", candidate).await.unwrap();
+        }
+        let good = sample_candidate("worth-a-look", 0.5);
+        store.upsert_candidate("p", "w", &good).await.unwrap();
+
+        RESURFACING_EVENT_WRITES.with(|writes| writes.set(0));
+        let surfaced =
+            run_curation_pass_with_attention("p", "w", &store, 1, 2_000, Some(&attention), None)
+                .await
+                .unwrap();
+        assert_eq!(candidate_ids(&surfaced), vec![good.candidate_id.clone()]);
+        assert_eq!(resurfacing_event_writes(), 1, "one append_events per pass");
+        // Three drops × (ingested, extracted, filtered, terminal), plus the
+        // surfaced row's four and its surfaced trace.
+        assert_eq!(total_funnel_events(&attention).await, 3 * 4 + 5);
+
+        // The scorer's hourly decay rewrites every row's `last_scored_at`; an
+        // unchanged decision must keep its event ids anyway. Once the holds
+        // expire the same rows drop for the same reason — no new events.
+        store.decay_all("p", "w", 30.0, 5_000).await.unwrap();
+        let later = 2_000 + ROUTING_DROP_HOLD_SECS;
+        let repeat =
+            run_curation_pass_with_attention("p", "w", &store, 1, later, Some(&attention), None)
+                .await
+                .unwrap();
+        assert!(repeat.is_empty());
+        assert_eq!(resurfacing_event_writes(), 2);
+        assert_eq!(
+            total_funnel_events(&attention).await,
+            3 * 4 + 5,
+            "an identical repeated drop is ignored"
+        );
+
+        // Changed content is a new decision with new ids.
+        let mut revised = stuck[0].clone();
+        revised.content_revision = Some("8".to_string());
+        store.upsert_candidate("p", "w", &revised).await.unwrap();
+        run_curation_pass_with_attention("p", "w", &store, 1, later + 60, Some(&attention), None)
+            .await
+            .unwrap();
+        assert_eq!(resurfacing_event_writes(), 3);
+        assert_eq!(total_funnel_events(&attention).await, 3 * 4 + 5 + 4);
+    }
+
+    #[tokio::test]
+    async fn owner_dismissed_follow_up_is_held_and_never_resurfaces() {
+        use crate::channel_assist::channel::ChannelAssistActor;
+
+        let tmp = TempDir::new().unwrap();
+        let channel_store = ChannelAssistStore::open(tmp.path()).unwrap();
+        let store = ResurfacingStore::open(tmp.path()).unwrap();
+        let message_at = 1_783_209_600_000;
+        let candidate = seed_deadline_comm_candidate(&channel_store, message_at).await;
+        store.upsert_candidate("p", "w", &candidate).await.unwrap();
+        let cooldown_until = |row: Option<Candidate>| row.unwrap().cooldown_until;
+
+        // Pass 1 materializes the Follow-up and hands the row to that lane.
+        let routed_at = message_at / 1000 + 10;
+        let first = list_router_accepted_resurfacing_candidates(
+            "p",
+            "w",
+            &store,
+            1,
+            routed_at,
+            &mut Vec::new(),
+            Some(&channel_store),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(first.is_empty());
+        assert_eq!(
+            cooldown_until(
+                store
+                    .get_candidate("p", "w", &candidate.candidate_id)
+                    .await
+                    .unwrap()
+            ),
+            routed_at + ROUTING_FOLLOW_UP_HOLD_SECS
+        );
+
+        // The owner dismisses that Follow-up.
+        let annotation = channel_store
+            .list_annotations_by_thread_ids(
+                "p",
+                "w",
+                "gmail",
+                "business",
+                &["thread-1".to_string()],
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        channel_store
+            .transition_annotation(
+                "p",
+                "w",
+                &annotation.id,
+                ChannelAnnotationState::Dismissed,
+                ChannelAssistActor::User,
+                None,
+                (routed_at + 60) * 1000,
+            )
+            .await
+            .unwrap();
+
+        // Every later pass drops it as owner-dismissed and holds it again.
+        let mut now = routed_at + ROUTING_FOLLOW_UP_HOLD_SECS;
+        for _ in 0..2 {
+            let mut events = Vec::new();
+            let eligible = list_router_accepted_resurfacing_candidates(
+                "p",
+                "w",
+                &store,
+                1,
+                now,
+                &mut events,
+                Some(&channel_store),
+                true,
+            )
+            .await
+            .unwrap();
+            assert!(eligible.is_empty());
+            assert!(events.iter().any(|event| event.outcome
+                == RouteOutcome::Dropped {
+                    reason: DropReason::OwnerDismissed,
+                }));
+            let row = store
+                .get_candidate("p", "w", &candidate.candidate_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.state, CandidateState::Candidate);
+            assert_eq!(row.cooldown_until, now + ROUTING_DROP_HOLD_SECS);
+            now += ROUTING_DROP_HOLD_SECS;
+        }
+
+        // A full curator pass after the hold expires still never surfaces it,
+        // and the dismissal is never rewritten.
+        let surfaced =
+            run_curation_pass_with_attention("p", "w", &store, 5, now, None, Some(&channel_store))
+                .await
+                .unwrap();
+        assert!(surfaced.is_empty());
+        assert_eq!(
+            store
+                .get_candidate("p", "w", &candidate.candidate_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            CandidateState::Candidate
+        );
+        let annotations = channel_store
+            .list_annotations_by_thread_ids(
+                "p",
+                "w",
+                "gmail",
+                "business",
+                &["thread-1".to_string()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].state, ChannelAnnotationState::Dismissed);
     }
 }

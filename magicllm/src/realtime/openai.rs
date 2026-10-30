@@ -38,17 +38,15 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{
-        client::IntoClientRequest,
-        http::{header::AUTHORIZATION, HeaderValue},
-        Message,
-    },
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::{header::AUTHORIZATION, HeaderValue},
+    Message,
 };
 use tracing::{debug, error, info, warn};
 
 use crate::realtime::provider::RealtimeProvider;
+use crate::realtime::transport::connect as connect_async;
 use crate::realtime::types::{
     AudioStreamChannel, RealtimeAudioControl, RealtimeAudioTopology, RealtimeProviderError,
     RealtimeProviderEvent, RealtimeProviderKind, RealtimeSessionDescriptor,
@@ -1096,11 +1094,14 @@ fn openai_realtime_ws_url(base: &str, model: &str) -> String {
 }
 
 fn openai_realtime_tool_spec(tool: &LLMToolSpec) -> Value {
+    // The Realtime API's acceptance of top-level `anyOf`/`oneOf`/`allOf` is
+    // unmeasured; moving them into the description loses nothing the model needs.
+    let (description, parameters) = crate::tool_schema::project_whole_call_constraints(tool);
     json!({
         "type": "function",
         "name": tool.name.clone(),
-        "description": tool.description.clone(),
-        "parameters": tool.parameters.clone(),
+        "description": description,
+        "parameters": parameters,
     })
 }
 

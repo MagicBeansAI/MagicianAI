@@ -846,6 +846,9 @@ pub(crate) fn projected_app_memory_candidates_are_live(
         principal: AppReference::parse(principal.to_owned())?,
         workspace: AppReference::parse(workspace_name.to_owned())?,
     };
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
     let Some(connection) = open_existing_scoped_registry_read_only(workspace, &scope)? else {
         return Ok(vec![false; candidates.len()]);
     };

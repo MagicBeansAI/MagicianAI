@@ -285,10 +285,11 @@ impl ContainerRuntime for AppleContainerRuntime {
         // Canonical runtime root and private persistent credential mounts.
         args.extend(keyring_args);
 
-        // Port mappings
+        // Port mappings: Magicutor's port on host loopback only (see
+        // `docker::publish_spec`), so its gateway trust covers just the host.
         for (host, container) in &config.ports {
             args.push("-p".to_string());
-            args.push(format!("{}:{}", host, container));
+            args.push(super::docker::publish_spec(*host, *container));
         }
 
         // CPU limit
@@ -304,7 +305,10 @@ impl ContainerRuntime for AppleContainerRuntime {
         }
 
         // Environment variables
-        let env_vars = runtime_env_for_container(config, APPLE_CONTAINER_HOST)?;
+        let mut env_vars = runtime_env_for_container(config, APPLE_CONTAINER_HOST)?;
+        // The Apple container runs on its own network with Magicutor published
+        // on host loopback: its gateway is the host.
+        env_vars.insert("MAGICUTOR_TRUST_GATEWAY".to_string(), "1".to_string());
         for (key, value) in &env_vars {
             args.push("-e".to_string());
             args.push(format!("{}={}", key, value));

@@ -266,4 +266,10 @@ if [ -n "${RUST_MIN_STACK:-}" ]; then
 else
     echo "Using ordinary Rust/Tokio spawned-thread stack defaults"
 fi
-RUST_LOG="${RUST_LOG:-info}" ./magic-supervisor.bin 2>&1 | tee "$LOG_FILE"
+# The supervisor reads `supervisor.manage_desktop` from the runtime config;
+# it never resolves the runtime root itself, so the path is passed here.
+# Further arguments pass through (the desktop watch flags from
+# `make run-supervisor`); a later `--magician-config` wins.
+SUPERVISOR_RUNTIME_ROOT="${MAGICIAN_ROOT_DIR:-${MAGICIAN_STORAGE_PATH:-$HOME/MagicianNotes}}"
+RUST_LOG="${RUST_LOG:-info}" ./magic-supervisor.bin \
+    --magician-config "$SUPERVISOR_RUNTIME_ROOT/magician-config.yaml" "$@" 2>&1 | tee "$LOG_FILE"

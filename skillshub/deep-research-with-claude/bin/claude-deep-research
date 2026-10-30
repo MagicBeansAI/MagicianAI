@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -15,6 +18,18 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_ANSWER_BYTES = 8 * 1024 * 1024
 MAX_SOURCES = 2_000
 MAX_OUTPUT_TOKENS = 64_000
+# The runtime stops the adapter at 2100 s at most; stop a little earlier so the
+# agent gets the findings with a clear reason. A shorter agent-chosen limit is
+# caught as SIGTERM instead (see on_terminate).
+MAX_RUNTIME_SECS = 35 * 60
+RUN_DEADLINE_SECS = MAX_RUNTIME_SECS - 30
+# Longest silence tolerated on the stream; the API sends pings while the
+# server tools run, so a long gap means the connection is gone.
+STREAM_IDLE_SECS = 120
+# A long server-tool turn ends with stop_reason "pause_turn" and is resumed by
+# resending it; this bounds the resumes.
+MAX_CONTINUATIONS = 5
+MAX_ERROR_DETAIL = 300
 DEFAULT_MODEL = "claude-sonnet-5-5"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # These models reject `thinking.type=enabled` + `budget_tokens` (Sonnet 5.5,
@@ -52,10 +67,124 @@ def read_input() -> dict:
     return value
 
 
-def call_anthropic(api_key: str, body: dict) -> dict:
+class ResearchError(Exception):
+    """A failure whose message is safe and useful to hand back to the agent."""
+
+
+class Progress:
+    """Everything gathered so far, so a run that stops early still returns it."""
+
+    def __init__(self, model: str):
+        self.model = model
+        self.usage: dict = {}
+        self.content: list = []  # blocks of finished requests
+        self.blocks: dict = {}  # blocks of the request in flight, by index
+
+    def snapshot(self) -> dict:
+        content = self.content + [self.blocks[index] for index in sorted(self.blocks)]
+        return {"model": self.model, "usage": self.usage, "content": content}
+
+
+# The run in progress, for the SIGTERM handler.
+PROGRESS: Progress | None = None
+
+
+def provider_error_detail(error: urllib.error.HTTPError) -> str:
+    """Anthropic's own error type and message, bounded."""
+    try:
+        body = json.loads(error.read(64 * 1024) or b"{}")
+    except (ValueError, OSError):
+        return ""
+    detail = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(detail, dict):
+        return ""
+    kind = bounded_text(detail.get("type"), 64)
+    message = bounded_text(detail.get("message"), MAX_ERROR_DETAIL)
+    return ": ".join(part for part in (kind, message) if part)
+
+
+def stream_events(response, deadline: float):
+    """Yield the JSON payload of each server-sent event."""
+    total = 0
+    data_lines: list[str] = []
+    while True:
+        if time.monotonic() > deadline:
+            raise ResearchError(f"stopped at the {RUN_DEADLINE_SECS} s limit before it finished")
+        line = response.readline()
+        if not line:
+            return
+        total += len(line)
+        if total > MAX_RESPONSE_BYTES:
+            raise ValueError("provider response exceeds adapter limit")
+        text = line.decode("utf-8").rstrip("\r\n")
+        if text.startswith("data:"):
+            data_lines.append(text[5:].lstrip())
+        elif not text and data_lines:
+            yield json.loads("\n".join(data_lines))
+            data_lines = []
+
+
+def apply_delta(block: dict, delta: dict, partial_json: dict, index: int) -> None:
+    kind = delta.get("type")
+    if kind == "text_delta":
+        block["text"] = block.get("text", "") + delta.get("text", "")
+    elif kind == "thinking_delta":
+        block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+    elif kind == "signature_delta":
+        block["signature"] = block.get("signature", "") + delta.get("signature", "")
+    elif kind == "citations_delta":
+        if not isinstance(block.get("citations"), list):
+            block["citations"] = []
+        block["citations"].append(delta.get("citation"))
+    elif kind == "input_json_delta":
+        partial_json[index] = partial_json.get(index, "") + delta.get("partial_json", "")
+
+
+def read_message(response, deadline: float, blocks: dict | None = None) -> dict:
+    """Rebuild one streamed message (content blocks, stop reason, usage).
+
+    Blocks are built in `blocks` as they stream, so a caller holding it sees
+    the partial message if reading stops early.
+    """
+    message: dict = {"content": [], "usage": {}}
+    blocks = {} if blocks is None else blocks
+    partial_json: dict = {}
+    for event in stream_events(response, deadline):
+        kind = event.get("type")
+        if kind == "message_start":
+            start = event.get("message") or {}
+            message["model"] = start.get("model")
+            message["usage"] = dict(start.get("usage") or {})
+        elif kind == "content_block_start":
+            blocks[event["index"]] = dict(event.get("content_block") or {})
+        elif kind == "content_block_delta":
+            index = event["index"]
+            apply_delta(blocks.setdefault(index, {}), event.get("delta") or {}, partial_json, index)
+        elif kind == "content_block_stop":
+            index = event["index"]
+            if index in partial_json:
+                raw = partial_json.pop(index)
+                blocks[index]["input"] = json.loads(raw) if raw else {}
+        elif kind == "message_delta":
+            message["stop_reason"] = (event.get("delta") or {}).get("stop_reason")
+            message["usage"].update(event.get("usage") or {})
+        elif kind == "error":
+            detail = event.get("error") or {}
+            raise ResearchError("Anthropic stream failed: " + ": ".join(
+                part for part in (bounded_text(detail.get("type"), 64),
+                                  bounded_text(detail.get("message"), MAX_ERROR_DETAIL)) if part))
+        elif kind == "message_stop":
+            break
+    message["content"] = [blocks[index] for index in sorted(blocks)]
+    return message
+
+
+def call_anthropic(api_key: str, body: dict, deadline: float, blocks: dict | None = None) -> dict:
+    """Stream one Messages request, so a long research turn never sits on a
+    single blocking read."""
     request = urllib.request.Request(
         MESSAGES_URL,
-        data=json.dumps(body, separators=(",", ":")).encode(),
+        data=json.dumps({**body, "stream": True}, separators=(",", ":")).encode(),
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -64,14 +193,68 @@ def call_anthropic(api_key: str, body: dict) -> dict:
             "User-Agent": "uuaa/claude-deep-research",
         },
     )
-    with OPENER.open(request, timeout=115) as response:
-        raw = response.read(MAX_RESPONSE_BYTES + 1)
-    if len(raw) > MAX_RESPONSE_BYTES:
-        raise ValueError("provider response exceeds adapter limit")
-    value = json.loads(raw)
-    if not isinstance(value, dict):
-        raise ValueError("provider response is not an object")
-    return value
+    timeout = max(1.0, min(STREAM_IDLE_SECS, deadline - time.monotonic()))
+    with OPENER.open(request, timeout=timeout) as response:
+        return read_message(response, deadline, blocks)
+
+
+def add_usage(total: dict, usage: dict) -> None:
+    for key, value in usage.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            total[key] = total.get(key, 0) + value
+        elif isinstance(value, dict):
+            add_usage(total.setdefault(key, {}), value)
+
+
+def run_research(api_key: str, body: dict, deadline: float, progress: Progress | None = None) -> dict:
+    """Run the research turn, resuming it while the server pauses it."""
+    progress = progress or Progress(body["model"])
+    stop_reason = None
+    for _ in range(MAX_CONTINUATIONS + 1):
+        messages = body["messages"]
+        if progress.content:
+            messages = messages + [{"role": "assistant", "content": progress.content}]
+        progress.blocks = {}
+        message = call_anthropic(api_key, {**body, "messages": messages}, deadline, progress.blocks)
+        progress.content = progress.content + message["content"]
+        progress.blocks = {}
+        add_usage(progress.usage, message.get("usage") or {})
+        progress.model = message.get("model") or progress.model
+        stop_reason = message.get("stop_reason")
+        if stop_reason != "pause_turn":
+            break
+    if stop_reason == "refusal":
+        raise ResearchError("Claude declined to continue the research")
+    result = {**progress.snapshot(), "stop_reason": stop_reason}
+    if stop_reason == "pause_turn":
+        result["incomplete"] = f"the server paused the research more than {MAX_CONTINUATIONS} times"
+    elif stop_reason == "max_tokens":
+        result["incomplete"] = "the answer reached the output token limit"
+    return result
+
+
+def report_partial(progress: Progress | None, reason: str) -> int:
+    """Print what was found before the run stopped, or the reason alone."""
+    if progress is None:
+        return fail(reason)
+    output = normalize(progress.snapshot())
+    if not output["answer"] and not output["sources"]:
+        return fail(reason)
+    output["incomplete"] = reason
+    print(json.dumps(output, ensure_ascii=False))
+    return 0
+
+
+def on_terminate(signum, frame) -> None:
+    """The runtime ends a run that passes its time limit with SIGTERM and
+    SIGKILLs it 200 ms later; hand back the findings in that window."""
+    try:
+        report_partial(PROGRESS, "stopped by its time limit before it finished")
+        sys.stdout.flush()
+    finally:
+        os._exit(0)
 
 
 def normalized_domains(value: str) -> list[str]:
@@ -139,9 +322,14 @@ def normalize(response: dict) -> dict:
                 if isinstance(citation, dict):
                     add_source(sources, citation.get("title"), citation.get("url"))
         elif kind == "web_search_tool_result":
-            for item in block.get("content", []):
+            for item in block.get("content", []) if isinstance(block.get("content"), list) else []:
                 if isinstance(item, dict) and item.get("type") == "web_search_result":
                     add_source(sources, item.get("title"), item.get("url"))
+        elif kind == "web_fetch_tool_result":
+            fetched = block.get("content")
+            if isinstance(fetched, dict) and fetched.get("type") == "web_fetch_result":
+                document = fetched.get("content") if isinstance(fetched.get("content"), dict) else {}
+                add_source(sources, document.get("title"), fetched.get("url"))
     unique: list[dict] = []
     seen: set[str] = set()
     for source in sources:
@@ -167,6 +355,7 @@ def add_source(sources: list[dict], title, url) -> None:
 
 
 def main() -> int:
+    global PROGRESS
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return fail("Anthropic credential is unavailable")
@@ -201,17 +390,29 @@ def main() -> int:
                 "content": "Research the following topic thoroughly. Search the web, read relevant pages, cross-reference claims across sources, and provide a comprehensive answer with citations.\n\nTopic: " + query,
             }],
         }
-        response = call_anthropic(api_key, body)
-        if response.get("error"):
-            return fail("Anthropic rejected the research request")
-        print(json.dumps(normalize(response), ensure_ascii=False))
+        PROGRESS = Progress(model)
+        signal.signal(signal.SIGTERM, on_terminate)
+        response = run_research(api_key, body, time.monotonic() + RUN_DEADLINE_SECS, PROGRESS)
+        output = normalize(response)
+        if response.get("incomplete"):
+            output["incomplete"] = response["incomplete"]
+        print(json.dumps(output, ensure_ascii=False))
         return 0
+    except ResearchError as error:
+        return report_partial(PROGRESS, str(error))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return fail("invalid research input or provider response")
+        return report_partial(PROGRESS, "invalid research input or provider response")
     except urllib.error.HTTPError as error:
-        return fail(f"Anthropic request failed with HTTP {error.code}")
-    except (urllib.error.URLError, TimeoutError):
-        return fail("Anthropic request was unavailable")
+        detail = provider_error_detail(error)
+        return report_partial(PROGRESS, f"Anthropic request failed with HTTP {error.code}"
+                              + (f" ({detail})" if detail else ""))
+    # Python 3.9's socket.timeout is not TimeoutError.
+    except (socket.timeout, TimeoutError):
+        return report_partial(PROGRESS, f"Anthropic stream was silent for {STREAM_IDLE_SECS} s")
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, (socket.timeout, TimeoutError)):
+            return report_partial(PROGRESS, f"Anthropic stream was silent for {STREAM_IDLE_SECS} s")
+        return report_partial(PROGRESS, "Anthropic request was unavailable")
 
 
 if __name__ == "__main__":

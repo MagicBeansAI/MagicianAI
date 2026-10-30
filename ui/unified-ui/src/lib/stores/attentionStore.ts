@@ -9,7 +9,8 @@ import type {
 	FeedItem
 } from '$lib/feed/types';
 import { getV2EventSequence, v2Events, type V2WebSocketEvent } from '$lib/realtime/v2-websocket';
-import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+import { scopeIdentityStore, getCurrentScopeCredentialRevision } from '$lib/stores/scopeIdentityStore';
+import { completePendingFeed } from '$lib/attention/pendingFeed';
 import { timedFetch } from '$lib/shared/fetch';
 
 const POLL_INTERVAL_MS = 15_000;
@@ -217,7 +218,7 @@ function firstScopedItem(payload: FeedAttentionResponse): FeedItem | null {
 
 function currentScopeKey(): string {
 	const scope = get(scopeIdentityStore);
-	return `${scope.principal}:${scope.workspace}`;
+	return `${scope.principal}:${scope.workspace}:${getCurrentScopeCredentialRevision()}`;
 }
 
 function eventMatchesCurrentScope(event: V2WebSocketEvent): boolean {
@@ -380,6 +381,7 @@ export function createAttentionStore() {
 	}
 
 	let activeConsumers = 0;
+	let pendingConsumers = 0;
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 	let realtimeUnsubscribe: (() => void) | null = null;
 	let scopeUnsubscribe: (() => void) | null = null;
@@ -589,10 +591,16 @@ export function createAttentionStore() {
 				// transitions since the last poll. Bot auth requests
 				// flow into `payload.requests` via the V3 attention
 				// summary on the very same fetch — no client-side merge.
-				const [payload, _bot_ping] = await Promise.all([
+				const [head, _bot_ping] = await Promise.all([
 					fetchAttention(emptyFeedCursors(), feedRefreshLimit),
 					pingBotsAuthForBrokerTransition()
 				]);
+				const payload = pendingConsumers > 0
+					? await completePendingFeed(head, async (cursors) => {
+						if (refreshScopeKey !== currentScopeKey()) throw new Error('Attention scope changed.');
+						return fetchAttention({ ...emptyFeedCursors(), ...cursors }, MAX_ATTENTION_FETCH_LIMIT);
+					})
+					: head;
 				if (refreshScopeKey !== currentScopeKey()) {
 					return;
 				}
@@ -777,8 +785,8 @@ export function createAttentionStore() {
 	function startScopeBridge(): void {
 		if (scopeUnsubscribe || !browser) return;
 		lastScopeKey = currentScopeKey();
-		scopeUnsubscribe = scopeIdentityStore.subscribe((scope) => {
-			const scopeKey = `${scope.principal}:${scope.workspace}`;
+		scopeUnsubscribe = scopeIdentityStore.subscribe(() => {
+			const scopeKey = currentScopeKey();
 			if (scopeKey === lastScopeKey) return;
 			lastScopeKey = scopeKey;
 			lastObservedEventSequence = 0;
@@ -811,6 +819,12 @@ export function createAttentionStore() {
 
 	return {
 		subscribe,
+		/** Request complete actionable lanes while a composer is mounted. */
+		followPendingAsks(): () => void {
+			pendingConsumers += 1;
+			if (pendingConsumers === 1 && browser && activeConsumers > 0) void runRefresh();
+			return () => { pendingConsumers = Math.max(0, pendingConsumers - 1); };
+		},
 		/** Bounded lifecycle journal used by exact/deep-linked prompts. Unlike
 		 *  the feed rows, it records resolutions even when the item was never in
 		 *  the capped in-memory page. */

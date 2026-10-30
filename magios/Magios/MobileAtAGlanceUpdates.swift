@@ -397,7 +397,7 @@ final class MobileAtAGlanceUpdates: ObservableObject {
             return
         }
         if authorizationStatus == .denied {
-            statusMessage = "Notifications are off. Settings → Permissions opens iOS Settings so you can allow them."
+            statusMessage = "Notifications are off. Settings → Notifications opens iOS Settings so you can allow them."
             return
         }
         await configureIfAllowed()

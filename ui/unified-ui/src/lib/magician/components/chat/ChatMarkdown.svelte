@@ -86,11 +86,8 @@
 		const response = await timedFetch(endpoint, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			// `absolute_path` is the only field we can supply with high
-			// confidence from raw markdown text — we don't know source/
-			// relative_path. The backend's `resolve_openable_output_path`
-			// validates the path against the scope root and rejects
-			// anything outside (or not session-referenced).
+			// The backend resolves both absolute and mentioned workspace-relative
+			// paths in this session's scope; source is unknown in plain prose.
 			body: JSON.stringify({ absolute_path: absolutePath }),
 		});
 		if (response.ok) return;

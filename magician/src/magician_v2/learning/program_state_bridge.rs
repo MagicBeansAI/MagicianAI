@@ -958,6 +958,7 @@ mod tests {
             section: None,
             title: Some("Revenue".to_string()),
             content: "x".to_string(),
+            sha256: String::new(),
         };
         ProgramRuntimeState::new(
             "anonymous",
@@ -1122,6 +1123,7 @@ mod tests {
             section: None,
             title: Some("Product Ops".to_string()),
             content: "Program".to_string(),
+            sha256: String::new(),
         };
 
         let canonical = canonicalize_spec_from_loaded(spec, loaded).unwrap();
@@ -1143,6 +1145,7 @@ mod tests {
             section: Some("product".to_string()),
             title: None,
             content: "Program".to_string(),
+            sha256: String::new(),
         };
 
         assert!(canonicalize_spec_from_loaded(spec, loaded).is_err());

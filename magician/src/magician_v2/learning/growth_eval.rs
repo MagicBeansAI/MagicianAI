@@ -4106,10 +4106,17 @@ fn load_llm_prompt_analytics(
         let conn = Connection::open_in_memory().context("opening in-memory DuckDB")?;
         configure_analytics_connection_checked(&conn, "growth_eval_llm_calls")
             .context("configuring conservative DuckDB limits for LLM prompt analytics")?;
-        let glob_path = root.join("dt=*/*.parquet");
-        let glob_sql = glob_path.display().to_string().replace('\'', "''");
+        let files = llm_prompt_analytics_files(&root)?;
+        if files.is_empty() {
+            return Ok(LlmPromptAnalyticsSummary::default());
+        }
+        let source_sql = files
+            .iter()
+            .map(|path| format!("'{}'", path.display().to_string().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
         conn.execute_batch(&format!(
-            "CREATE OR REPLACE VIEW llm_calls AS SELECT * FROM read_parquet('{glob_sql}', hive_partitioning = true, union_by_name = true);"
+            "CREATE OR REPLACE VIEW llm_calls AS SELECT * FROM read_parquet([{source_sql}], hive_partitioning = true, union_by_name = true);"
         ))
         .context("creating llm_calls view")?;
         let cutoff_ms = cutoff.timestamp_millis();
@@ -4159,6 +4166,47 @@ fn load_llm_prompt_analytics(
             ..LlmPromptAnalyticsSummary::default()
         },
     }
+}
+
+/// What the old `dt=*/*.parquet` glob read, minus objects a compaction has
+/// retired: the legacy stream through its manifest (a fold leaves its batches
+/// and the prior generation on disk for a grace period, which a glob would
+/// count twice) plus each partition's canonical `part-*` files.
+fn llm_prompt_analytics_files(root: &Path) -> Result<Vec<PathBuf>> {
+    use crate::magician_v2::analytics::parquet_maintenance::{
+        partition_sources, PartitionedDataset,
+    };
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let partition = entry.path();
+        let is_partition = entry.file_type()?.is_dir()
+            && partition
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("dt="));
+        if !is_partition {
+            continue;
+        }
+        files.extend(partition_sources(
+            &partition,
+            PartitionedDataset::LegacyLlmCalls,
+        )?);
+        for file in fs::read_dir(&partition)? {
+            let file = file?;
+            let is_canonical = file.file_type()?.is_file()
+                && file
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("part-") && name.ends_with(".parquet"));
+            if is_canonical {
+                files.push(file.path());
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 fn has_parquet_batches(root: &Path) -> bool {

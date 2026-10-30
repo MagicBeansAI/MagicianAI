@@ -29,6 +29,22 @@ export function clamp(v: number, lo: number, hi: number): number {
 }
 
 /**
+ * A scrubbed progress written into a CSS custom property (`--local`),
+ * rounded to hundredths.
+ *
+ * WebKit keeps style data for every distinct value an inline custom
+ * property takes, and Safari does not give it back. Writing `--local` at
+ * four decimals while the Day track scrolled grew the page process by
+ * ~250 MB per pass through it, every pass, until iOS reloaded the page
+ * just as the Life track began (2026-10-25, measured in the iOS
+ * simulator). Hundredths bound it at 101 values per property; the
+ * steepest reveal ramp (×16) still moves in steps of ~15px of scroll.
+ */
+export function cssProgress(v: number): string {
+	return (Math.round(v * 100) / 100).toFixed(2);
+}
+
+/**
  * Whole-track progress from geometry alone. `top` is the track's
  * getBoundingClientRect().top; the denominator is how far the track can
  * scroll while its sticky stage stays pinned. A degenerate track (shorter

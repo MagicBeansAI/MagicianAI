@@ -583,6 +583,14 @@ impl CapabilityWorkspaceManager {
     /// Drop one scope's cached catalog so the next ask reads the disk.
     /// Returns whether anything was cached.
     pub fn invalidate_scope_pack_defs(&self, principal: &str, workspace: &str) -> bool {
+        // The parsed skills directory behind this catalog goes too, so the
+        // next build re-reads the scope's skills even before its source
+        // fingerprint would have.
+        crate::magician_v2::execution::compiled_providers::invalidate_skills_dir_cache(
+            &self
+                .workspace_layout
+                .scope_skills_root(principal, workspace),
+        );
         let removed = self
             .scope_pack_cache
             .write()

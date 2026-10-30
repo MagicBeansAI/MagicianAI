@@ -35,7 +35,7 @@ vi.mock('$lib/realtime/v2-websocket', () => ({
 }));
 
 import { createAttentionStore } from './attentionStore';
-import { scopeIdentityStore } from './scopeIdentityStore';
+import { scopeIdentityStore, setCurrentScopeBearerToken } from './scopeIdentityStore';
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -112,6 +112,31 @@ function response(body: FeedAttentionResponse): Response {
 }
 
 describe('attentionStore refresh/loadMore serialization', () => {
+	it('loads older pending questions while a composer follows the inbox', async () => {
+		const store = createAttentionStore();
+		attentionFetch.mockResolvedValueOnce(response(payload([item('new')], 'older', null, 2)))
+			.mockResolvedValueOnce(response(payload([item('old')], null, 'older', 2)));
+		const stop = store.followPendingAsks();
+		store.start();
+		try {
+			await vi.waitFor(() => expect(get(store).requests.map((row) => row.id)).toEqual(['new', 'old']));
+			expect(String(attentionFetch.mock.calls[1][0])).toContain('requests_cursor=older');
+			expect(get(store).pages.requests.next_cursor).toBeNull();
+		} finally { stop(); store.stop(); }
+	});
+
+	it('clears old prompts when credentials rotate without changing visible account names', async () => {
+		setCurrentScopeBearerToken('first'); scopeIdentityStore.observe('owner', 'project');
+		const store = createAttentionStore();
+		attentionFetch.mockResolvedValueOnce(response(payload([item('old', { principal: 'owner', workspace: 'project' })], null)));
+		store.start();
+		try {
+			await vi.waitFor(() => expect(get(store).requests[0]?.id).toBe('old'));
+			attentionFetch.mockResolvedValueOnce(response(payload([item('new', { principal: 'owner', workspace: 'project' })], null)));
+			setCurrentScopeBearerToken('second');
+			await vi.waitFor(() => expect(get(store).requests.map((row) => row.id)).toEqual(['new']));
+		} finally { store.stop(); }
+	});
 	beforeEach(() => {
 		attentionFetch.mockReset();
 		realtimeSubscribers.clear();

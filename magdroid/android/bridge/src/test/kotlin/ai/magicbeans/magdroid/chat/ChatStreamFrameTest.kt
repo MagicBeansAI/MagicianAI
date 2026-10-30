@@ -182,7 +182,7 @@ class ChatStreamFrameTest {
         assertEquals(null, event.sessionTitle)
     }
 
-    /** The send body is serialized, so quotes in a profile name cannot break it. */
+    /** The typed send body escapes user text and model identities. */
     @Test
     fun `the send body escapes what it carries`() {
         val body = chatRequestJson.encodeToString(
@@ -190,7 +190,8 @@ class ChatStreamFrameTest {
             SendMessageRequest(
                 text = """he said "hello" \ then left""",
                 chatTurnId = "turn-1",
-                profile = """odd"name""",
+                modelSelection = ChatModelSelection("""provider/odd"name""", "high"),
+                harnessEngine = "magician",
                 attachmentIds = listOf("a1", "a2"),
             ),
         )
@@ -201,7 +202,7 @@ class ChatStreamFrameTest {
         // Round-trips, which hand-built JSON would not have.
         val parsed = chatJson.decodeFromString(SendMessageRequest.serializer(), body)
         assertEquals("""he said "hello" \ then left""", parsed.text)
-        assertEquals("""odd"name""", parsed.profile)
+        assertEquals("""provider/odd"name""", parsed.modelSelection?.modelId)
         assertEquals(listOf("a1", "a2"), parsed.attachmentIds)
         assertEquals("android", parsed.sourceSurface)
         assertEquals("turn-1", parsed.chatTurnId)
@@ -254,20 +255,20 @@ class ChatStreamFrameTest {
     }
 
     @Test
-    fun `a selected chat harness and profile travel together`() {
+    fun `a selected chat harness and model thinking travel together`() {
         val request = chatRequestJson.encodeToString(
             SendMessageRequest.serializer(),
             SendMessageRequest(
                 text = "hello",
                 chatTurnId = "turn-pi",
-                profile = "frontier",
+                modelSelection = ChatModelSelection("openai/gpt-6.1-sol", "high"),
                 harnessEngine = "pi",
-                harnessModel = "default",
             ),
         )
         assertTrue(request.contains("\"harness_engine\":\"pi\""))
-        assertTrue(request.contains("\"harness_model\":\"default\""))
-        assertTrue(request.contains("\"profile\":\"frontier\""))
+        assertFalse(request.contains("\"harness_model\""))
+        assertFalse(request.contains("\"profile\""))
+        assertTrue(request.contains("\"model_selection\":{\"model_id\":\"openai/gpt-6.1-sol\",\"thinking\":\"high\"}"))
     }
 
     @Test

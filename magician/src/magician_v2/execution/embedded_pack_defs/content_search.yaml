@@ -48,6 +48,14 @@ guide: |
   handoff transfers navigation to the existing flat browser agent; the retrieval tool itself
   never creates a nested browser loop. Continue it with the exact returned browser session and
   action/mode fields on every browser call; terminal/cancel cleanup owns that transferred session.
+parameter_constraints:
+  oneOf:
+    - required: [query]
+      properties:
+        query: {type: string, minLength: 1}
+      not: {required: [requests]}
+    - required: [requests]
+      not: {required: [query]}
 parameters:
   - name: requests
     required: false

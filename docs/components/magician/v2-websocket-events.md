@@ -185,7 +185,7 @@ registered `execution_id` but no principal/workspace/task_id is filled from
 ### Per-execution canonical log
 
 `…/scopes/{principal}/{workspace}/tasks/{task_id}/executions/{exec_id}/events.jsonl`:
-`FilesystemRuntimeEventSink` writes all 117 `ArtifactV2EventType` variants
+`FilesystemRuntimeEventSink` writes all 118 `ArtifactV2EventType` variants
 under dotted names (`llm.requested`, `tool.succeeded`,
 `agentic.iteration_started`, `hitl.requested`, …), mapped by
 `map_v2_realtime_event` (`artifact_v2/events.rs`; `HitlRequested` /
@@ -369,7 +369,20 @@ canonical.
   `network_error`), `error_message`.
 - **LLMRequestSent** (agentic loop): `execution_id`, `plan_id`, `step_id?`,
   `step_index?`, `capability` (`page_understanding`, `decision`, …),
-  `request_summary`, `input_tokens_estimate?`, `budget_remaining`.
+  `request_summary`, `input_tokens_estimate?`, `budget_remaining`,
+  `correlation: LlmEventCorrelation?`. The native decision mints its
+  `trace_id` / `llm_call_id` before dispatch and hands them to the router
+  (`PreassignedLlmCallSlot`), so its request, `LLMRouted` and
+  `LLMResponseReceived` share them, and emits the request inline (a journalled
+  record would wait for the call to return). Other emitters leave it `None`.
+  Canonical: `llm.requested` with `llm_call_id`, `trace_id`.
+- **LLMRouted** (router; `Llm` / `Info` / not user-relevant): before each
+  provider attempt that picks a new provider/model (first route, each
+  fallback), only for calls with a preassigned identity (the native decision)
+  owned by an execution and not under an app disclosure guard. Fields: the
+  request's ids, `correlation?`, `provider`, `model`, `profile?`, `timestamp`.
+  Canonical: `llm.routed` (`llm_call_id`, `trace_id`, `provider_attempt_id`,
+  `capability`, `provider`, `model`, `profile`).
 - **InferenceAttempted** (agentic parameter inference): `execution_id`,
   `plan_id`, `step_id?`, `parameter`, `inferred_value?`, `confidence`,
   `reason`, `accepted`.
@@ -413,6 +426,7 @@ Observe-decide-execute loop. Pause **payloads** are on `HitlRequested`; the
 - **AgenticIterationCompleted**: end of every iteration. `duration_ms`,
   `outcome`: `action_executed` / `decision_rejected` / `loop_continue` /
   `terminal` / `paused` / `cancelled`.
+- **AgenticProviderOutage**: a decision call is waiting out a provider outage (`execution_id`, `attempt`, `max_attempts`, `next_probe_ms`, `error_class`, `since_ms`); `recovered: true` when it clears. Warn, visible to the run's scope. When the retries run out on an owner-backed root run, the run pauses: `HitlRequested { source: "agentic", input_schema.pause_kind: "budget", pause_reason: "provider_failure", confirm_label: "Retry", deny_label: "Cancel" }`.
 - **AgenticStepStarted / AgenticStepCompleted / AgenticStepFailed /
   AgenticStepSkipped** (taskplan steps): `execution_id`, `plan_id`, `step_id`,
   `iteration`; Skipped + `reason?`. Started precedes the action, for the step in
@@ -433,9 +447,12 @@ Observe-decide-execute loop. Pause **payloads** are on `HitlRequested`; the
   `tool_name?`, `action_type?`, `element_id?`, `candidates_count?`,
   `raw_decision?`.
 - **AgenticActionStarted**: `iteration`, `action_type`, `target`, `call_id`,
-  `detail?`. Emitted inline (not journalled, which waits for Apply commit) at
-  dispatch, so a long tool call shows while running; `call_id` repeats on
-  `AgenticActionExecuted`. `detail` is a human summary; for a governed MCP
+  `detail?`, `tool_name?` (pack actions). Emitted inline (not journalled,
+  which waits for Apply commit) at dispatch, so a long tool call shows while
+  running; `call_id` repeats on `AgenticActionExecuted`. Canonical:
+  `tool.started` (`call_id`, `target`, `tool_name`, `action_type`,
+  `started_at_ms`; `detail` is not persisted). `detail` is a human summary;
+  for a governed MCP
   `<pack>__call_tool`: `<pack> · <remote tool> — <one allowlisted argument>`
   (`sql`, `query`, `prompt`, `term_queries`, `semantic_queries`, `id`, `uris`),
   never the argument payload.
@@ -443,7 +460,7 @@ Observe-decide-execute loop. Pause **payloads** are on `HitlRequested`; the
   `latency_ms`, `error?`, `call_id?`, `detail?`, for every executed action. A
   failure (provider error or unsuccessful result) has `success: false`, a
   bounded `error` and the success-identical `action_type`/`target`. Canonical:
-  `tool.succeeded` / `tool.failed`.
+  `tool.succeeded` / `tool.failed`, carrying the start's `call_id`.
 - **AgenticClickFallbackUsed** (legacy; browser automation now returns
   failures to the loop): `original_selector`, `original_error`,
   `coordinates: (f64, f64)`, `fallback_success`, `fallback_error?`,
@@ -613,6 +630,10 @@ list. Phones refresh on any `Task*` event, the web task store on Deleted.
 - **FeedItemUpdated**: `principal`, `workspace`, `id`, `task_id?`,
   `ui_thread_id?`, `execution_id?`, `patch: FeedItemPatch`, `timestamp`.
 - **FeedItemRemoved**: the same without `patch`.
+- A task card whose run finished while its final answer is still being
+  written stays `running`, with `metadata.synthesis_pending: true`
+  (`metadata.task_status` already reads `completed`/`failed`), until the
+  answer is published.
 - **ExecutionPanelDelta**: `principal`, `workspace`, `task_id?`,
   `execution_id?`, `state: ExecutionPanelState` (full curated snapshot, not a
   patch).
@@ -650,6 +671,24 @@ turn id and only if the chat has no terminal card for the task yet. Payload
 `output_files`, `synthesis_pending: false`, `completion_kind`,
 `target_agent_id`, `chat_inline_delegate_agent_id`,
 `recovery_origin: "delegate_terminal_watcher"`.
+
+While the task's final answer is still being written (`synthesis_pending`),
+the catch-up instead posts `status: "running"`, `synthesis_pending: true`, no
+summary and no outputs, both as this event and as the `TaskStatusUpdate`, the
+shape the live progress channel posts. The watcher posts the terminal card,
+then `chat.delegate.output_ready` (or `output_failed`), when the answer is
+published. The chat's step list treats this event as `task.status_changed`:
+its "Writing the final answer…" row stays until `output_ready`/`output_failed`.
+
+### Final answer progress `task.answer_progress` (AgentEvent)
+Emitted while a finished run's final answer is produced, at each step:
+`phase` `writing` (the execution output and then the owner's answer are
+written), `checking` (claims checked against the run's evidence) or
+`revising` (unsupported claims repaired). Payload: `task_id`, `execution_id`,
+`phase`, `label` (display text, e.g. "Checking the answer against the
+evidence…"). Live only; not persisted or backfilled. The chat step list shows
+`label` on its "Writing the final answer…" row, which settles when the task's
+terminal status or `chat.delegate.output_ready`/`output_failed` arrives.
 
 ## Observability
 
@@ -757,7 +796,13 @@ Variants:
 - **DecisionShadowAgreement** / **DecisionAccountingGap** (Gap is Warn):
   versioned, content-free memory-classification evidence joined to the
   Decision Model ledger by call id. Required `principal` / `workspace`, `timestamp`;
-  Agreement + `record`; Gap + `operation`, `request_id`, `reason`.
+  Agreement + `record`; Gap + `operation`, `request_id`, `reason`. Primary
+  records also carry optional `failure` (closed code: `timeout`,
+  `engine_unreachable`, `engine_transport`, `engine_status_<code>`,
+  `engine_invalid_reply`, `policy_expired_or_no_budget`, `contract_mismatch`,
+  `unbound`, `no_fitting_model`, `failed`), `model_health` (route model →
+  closed issue code or null) and `budget_ms` (caller budget). Error text is
+  never exported.
 
 ## Operator Feed (Agent Update)
 
@@ -815,7 +860,8 @@ the workspace-bound bearer (`limit` default 200, max 1000, after filters).
 ## Event flow
 
 Agentic loop: `AgenticExecutionStarted`, then per iteration
-`AgenticIterationStarted`, `LLMRequestSent` / `LLMResponseReceived`,
+`AgenticIterationStarted`, `LLMRequestSent` / `LLMRouted` /
+`LLMResponseReceived` (one `llm_call_id`),
 `AgenticPageUnderstanding` (browser), `AgenticDecisionMade`,
 `AgenticActionStarted`, `AgenticActionExecuted`, `AgenticIterationCompleted`.
 A human pause emits the `AgenticWaitingForUser` /

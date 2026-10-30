@@ -17,6 +17,23 @@ values, writes both private runtime env files and provisions the selected
 machine. Use `ARGS=--non-interactive` with preconfigured values in automation,
 or `ARGS=--dry-run` to validate and preview without saving or provisioning.
 
+To move this computer onto a different domain, run `make setup-cloudflare`
+again and confirm the switch, then enter the new zone. Setup saves that zone,
+clears saved hostnames from the previous zone, rebuilds this computer’s tunnel,
+and runs the original shared tunnel script. Restart Magician and pair phones
+again. Kapso and AgentMail register the new webhook when Magician starts. One
+zone is in use at a time. DNS records and Access apps on the previous zone stay
+until each hostname is parked:
+
+```bash
+make machine-tunnel PARK=laptop.old-example.com
+```
+
+The terminal wizard asks the same switch before it re-runs the tunnel step.
+Desktop setup saves the new zone on the account step, then offers the switch
+on the tunnel step. Declining the switch keeps the current zone. If hostnames
+are still pinned to another zone, setup clears them and finishes the move.
+
 Install `cloudflared` (`make setup-all` includes it on macOS), add your domain
 to Cloudflare, and set up a Zero Trust organization. Create an API token scoped
 to your account and zone with these permissions:
@@ -64,9 +81,15 @@ otherwise send pairing and OAuth callbacks to the wrong computer.
 | `ui-laptop.example.com` | Development browser UI on port 5173 | Access email allowlist plus Magician sign-in |
 | `webhook-laptop.example.com` | Kapso and AgentMail callbacks | Provider authentication; no interactive Access login |
 
+Tool-declared public MCP profiles use this computer’s HTTPS hostname at
+`/.well-known/magican/mcp-profiles/<content-hash>.json`. Setup routes only these
+static JSON documents without Access; the API and other paths retain their
+normal authentication. Shopify profile URLs are supplied automatically.
+
 The UI host requires the development UI to be running. The tunnel does not
 replace Magician sign-in or device pairing. Pair devices through Settings after
-setup, and set provider callback URLs to your generated webhook hostname.
+setup. Provider callbacks need no manual step: after a Magician restart the
+Kapso and AgentMail bots register their webhooks on the new webhook hostname.
 Never commit runtime env files, `~/.cloudflared` credentials, tokens, account
 IDs or your deployment hostnames into configuration examples or screenshots.
 

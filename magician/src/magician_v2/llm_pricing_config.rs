@@ -48,7 +48,8 @@ pub fn load_and_install_llm_pricing() {
     };
     match parse_pricing_rows(&raw) {
         Ok(rows) => {
-            let (text, realtime, web_search) = (rows.text.len(), rows.realtime.len(), rows.web_search.len());
+            let (text, realtime, web_search) =
+                (rows.text.len(), rows.realtime.len(), rows.web_search.len());
             magicllm::install_pricing_file(rows);
             info!(
                 text,
@@ -105,7 +106,9 @@ mod tests {
         // Every per-model price lives in the file: the 1970-01-01 launch/base
         // rows plus the dated revisions, the realtime voice models and the
         // web-search fees.
-        assert_eq!(file.text.len(), 148);
+        // Includes the effective-dated Jev 1.14 row alongside Jev 1.13, and
+        // Claude Haiku 5.5 (direct and through OpenRouter).
+        assert_eq!(file.text.len(), 154);
         assert_eq!(file.realtime.len(), 9);
         assert_eq!(file.web_search.len(), 5);
         assert_eq!(file.media.len(), 21);
@@ -263,7 +266,9 @@ mod tests {
         let raw = one_rate_file(
             r#"{"provider": "somefuturelab", "model_prefix": "sf-1", "effective_from": "2026-04-01", "input_per_m": 1.0, "output_per_m": 2.0}"#,
         );
-        let rows = parse_pricing_rows(&raw).expect("unknown provider is not an error").text;
+        let rows = parse_pricing_rows(&raw)
+            .expect("unknown provider is not an error")
+            .text;
         assert_eq!(
             rows[0].provider,
             LLMProviderKind::Custom("somefuturelab".to_string())
@@ -285,7 +290,9 @@ mod tests {
         let raw = one_rate_file(
             r#"{"provider": "openai", "model_prefix": "gpt-5.4", "effective_from": "2026-04-01", "input_per_m": 2.5, "output_per_m": 15.0, "cache_read_per_m": 0.25, "long_context": {"threshold_tokens": 272000, "input_multiplier": 2.0, "output_multiplier": 1.5}}"#,
         );
-        let rows = parse_pricing_rows(&raw).expect("long-context rule parses").text;
+        let rows = parse_pricing_rows(&raw)
+            .expect("long-context rule parses")
+            .text;
         assert_eq!(
             rows[0].long_context,
             Some(LongContextPricing::new(272_000, 2.0, 1.5))

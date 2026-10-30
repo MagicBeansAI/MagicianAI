@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { deriveVerdict, STALL_AFTER_MS, type VerdictInput } from './taskVerdict';
+import {
+	deriveVerdict,
+	STALL_AFTER_MS,
+	SYNTHESIS_STALE_AFTER_MS,
+	type VerdictInput
+} from './taskVerdict';
 
 const base: VerdictInput = {
 	status: 'running',
@@ -435,5 +440,57 @@ describe('deriveVerdict', () => {
 		const v = deriveVerdict({ ...base, status: 'future_status', elapsedMs: 192_000 });
 		expect(v.state).toBe('finished');
 		expect(v.headline).toBe('Finished · 3m 12s');
+	});
+
+	describe('while the final answer is still being written', () => {
+		const synthesizing = { ...base, status: 'finished', synthesisPending: true, elapsedMs: 192_000 };
+
+		it('reads finalizing instead of finished, with the time since the last progress', () => {
+			const v = deriveVerdict({ ...synthesizing, lastProgressAt: 0, now: 40_000 });
+			expect(v.state).toBe('finalizing');
+			expect(v.headline).toBe('Preparing final result · 40s');
+			expect(v.detail).toBe('The work is done; the final answer is being written');
+		});
+
+		it('omits the time rather than inventing one when no progress instant is known', () => {
+			expect(deriveVerdict({ ...synthesizing, lastProgressAt: null }).headline).toBe(
+				'Preparing final result'
+			);
+		});
+
+		it('leaves finished alone when the flag is false or absent', () => {
+			expect(deriveVerdict({ ...synthesizing, synthesisPending: false }).state).toBe('finished');
+			const { synthesisPending: _omitted, ...without } = synthesizing;
+			expect(deriveVerdict(without).state).toBe('finished');
+		});
+
+		it('lets failed, cancelled and waiting win over the flag', () => {
+			expect(deriveVerdict({ ...synthesizing, status: 'failed', error: 'boom' }).state).toBe('failed');
+			expect(deriveVerdict({ ...synthesizing, status: 'cancelled' }).state).toBe('cancelled');
+			expect(
+				deriveVerdict({
+					...synthesizing,
+					attention: { source: 'clarification', summary: null, raisedAt: null }
+				}).state
+			).toBe('waiting');
+		});
+
+		it('does not turn an in-flight or unstarted state into finalizing', () => {
+			expect(deriveVerdict({ ...synthesizing, status: 'running' }).state).toBe('running');
+			expect(deriveVerdict({ ...synthesizing, status: 'queued' }).state).toBe('queued');
+			expect(deriveVerdict({ ...synthesizing, status: 'archived' }).state).toBe('archived');
+		});
+
+		it('stops claiming it once the flag has outlived any plausible synthesis', () => {
+			const justUnder = deriveVerdict({
+				...synthesizing,
+				lastProgressAt: 0,
+				now: SYNTHESIS_STALE_AFTER_MS - 1
+			});
+			expect(justUnder.state).toBe('finalizing');
+			const stale = deriveVerdict({ ...synthesizing, lastProgressAt: 0, now: SYNTHESIS_STALE_AFTER_MS });
+			expect(stale.state).toBe('finished');
+			expect(stale.headline).toBe('Finished · 3m 12s');
+		});
 	});
 });

@@ -420,6 +420,43 @@ fn strip_structured_presentation_value(
     }
 }
 
+/// Add the canonical respond handle to a `HitlRequested` frame as
+/// `data.respond` (`magician_core::hitl::HitlRespondHandle`), so a client posts
+/// the answer the server names instead of deriving the call from `source`.
+/// Done on the frame JSON: the event itself, and the transport log, are
+/// unchanged.
+fn attach_hitl_respond_handle(event: &RuntimeTransportEvent, value: &mut serde_json::Value) {
+    let RuntimeTransportEvent::HitlRequested {
+        correlation_id,
+        source,
+        input_type,
+        input_schema,
+        task_id,
+        execution_id,
+        ..
+    } = event
+    else {
+        return;
+    };
+    let Some(handle) = magician::magician_v2::hitl::hitl_requested_respond_handle(
+        correlation_id,
+        source,
+        input_type,
+        input_schema.as_ref(),
+        task_id.as_deref(),
+        execution_id.as_deref(),
+    )
+    .and_then(|handle| serde_json::to_value(handle).ok()) else {
+        return;
+    };
+    if let Some(data) = value
+        .pointer_mut("/data")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        data.insert("respond".to_string(), handle);
+    }
+}
+
 /// Render one sequenced event as this session's WebSocket frame, or `None`
 /// when the session must not see it (app-owner notifications, other
 /// scopes). Live delivery and resume replay both go through here, so a
@@ -448,6 +485,7 @@ fn render_hub_event_frame(
     }
     let mut value = serde_json::to_value(event)?;
     strip_structured_presentation_value(event, &mut value, supports_structured_presentation);
+    attach_hitl_respond_handle(event, &mut value);
     let classification = classify_transport_event(event, &value);
     let refs = serde_json::to_value(extract_transport_event_refs(&value))?;
     if let Some(frame) = value.as_object_mut() {
@@ -4435,6 +4473,38 @@ mod tests {
                 .expect("no serialization attempted")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn hub_hitl_requested_frame_carries_its_respond_handle() {
+        let requested = RuntimeTransportEvent::HitlRequested {
+            correlation_id: "plan-7".to_string(),
+            source: "plan_approval".to_string(),
+            input_type: "confirmation".to_string(),
+            prompt: "Approve the plan?".to_string(),
+            hint: None,
+            input_schema: None,
+            task_id: Some("task-4".to_string()),
+            execution_id: Some("planexec-4".to_string()),
+            agent_id: None,
+            principal: Some("alpha".to_string()),
+            workspace: Some("prod".to_string()),
+            timestamp: 1,
+        };
+        let item = SequencedTransportEvent {
+            seq: 1,
+            event: Arc::new(requested),
+        };
+        let frame = render_hub_event_frame(&item, "epoch", "alpha", "prod", false)
+            .expect("frame serializes")
+            .expect("visible to its own scope");
+        let frame: serde_json::Value = serde_json::from_str(&frame).expect("frame is JSON");
+        let respond = &frame["data"]["respond"];
+        assert_eq!(respond["url"], "/api/magician/v2/hitl/plan-7/respond");
+        assert_eq!(respond["source"], "plan_approval");
+        assert_eq!(respond["input_type"], "confirmation");
+        assert_eq!(respond["task_id"], "task-4");
+        assert_eq!(respond["execution_id"], "planexec-4");
     }
 
     #[test]

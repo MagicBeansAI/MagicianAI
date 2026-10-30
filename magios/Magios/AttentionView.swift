@@ -7,6 +7,7 @@ struct AttentionView: View {
     @StateObject private var themeManager = ThemeManager.shared
     @State private var activeLane = "all"
     @State private var selected: AttentionItem?
+    @State private var attemptedTarget: String?
     @Environment(\.scenePhase) private var scenePhase
 
     private let laneTitles: [String: String] = [
@@ -108,8 +109,17 @@ struct AttentionView: View {
                 }
             }
             .background(themeManager.backgroundColor.ignoresSafeArea())
-            .navigationTitle(viewModel.showHistory ? "History" : "Attention")
+            // Hosted as Work's "Needs you" view, the bar keeps Work's title;
+            // the view switcher below it names the view.
+            .navigationTitle(viewModel.showHistory ? "History" : (workNavigation == nil ? "Attention" : "Work"))
             .navigationBarTitleDisplayMode(.inline)
+            // Bind the bar to the live palette like Chat/Today/Settings do. This
+            // view's bar is UIKit-proxied only, and the proxy/walk update misses
+            // it while the tab is in the background — leaving the launch palette
+            // on the bar until a relaunch.
+            .toolbarBackground(themeManager.backgroundColor, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(themeManager.colorScheme, for: .navigationBar)
             .navigationBarItems(
                 leading: HStack(spacing: 12) {
                     HamburgerButton()
@@ -140,12 +150,13 @@ struct AttentionView: View {
                 .accessibilityIdentifier("attention-refresh")
             )
             .onChange(of: activeLane) { _, _ in viewModel.bulkNotice = nil }
-            .onAppear { viewModel.fetch(); viewModel.connectRealtime() }
+            .onAppear { viewModel.fetch(); viewModel.connectRealtime(); revealRequestedItemIfAvailable() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { viewModel.fetch() }
             }
             .onDisappear { viewModel.disconnectRealtime() }
             .onReceive(AppActions.shared.$attentionRequestID.dropFirst()) { _ in
+                attemptedTarget = nil
                 revealRequestedItemIfAvailable()
             }
             .onReceive(viewModel.$lanes.dropFirst()) { lanes in
@@ -195,6 +206,19 @@ struct AttentionView: View {
                 if item.isActionable { selected = item }
                 AppActions.shared.consumeAttentionTarget()
                 return
+            }
+        }
+        guard attemptedTarget != target else { return }
+        attemptedTarget = target
+        viewModel.pendingItem(target) { result in
+            guard AppActions.shared.attentionTargetItemID == target else { return }
+            switch result {
+            case .success(let row):
+                if let row, row.isActionable { selected = row }
+                else { viewModel.mutationError = "This request is no longer pending." }
+                AppActions.shared.consumeAttentionTarget()
+            case .failure(let error):
+                viewModel.mutationError = "Could not open this request. \(error.localizedDescription)"
             }
         }
     }

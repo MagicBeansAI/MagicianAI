@@ -17,6 +17,8 @@
 	export let compact = false;
 	export let className = '';
 	export let ariaLabel = 'LLM usage overview';
+	/** Batch lane for the query (see `LiveDataSource.lane`); default lane when unset. */
+	export let lane: string | undefined = undefined;
 
 	let mounted = false;
 	let loading = false;
@@ -24,7 +26,7 @@
 	let data: LlmUsageOverviewData | null = null;
 
 	$: sql = buildLlmUsageOverviewSql(where);
-	$: source = { kind: 'llm_calls_sql' as const, sql };
+	$: source = { kind: 'llm_calls_sql' as const, sql, lane };
 
 	const liveRewirer = createLiveRewirer((dataSource) =>
 		setupLiveDataSource({

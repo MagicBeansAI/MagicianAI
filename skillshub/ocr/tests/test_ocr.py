@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import subprocess
 import sys
 import unittest
@@ -17,14 +19,14 @@ def frontmatter() -> str:
     return SKILL.read_text(encoding="utf-8").split("\n---\n", 1)[0]
 
 
-def declared_bin_blocks() -> list[list[str]]:
+def declared_bin_blocks(text: str | None = None) -> list[list[str]]:
     """Every `bins:` list in the manifest frontmatter, as declared.
 
     Read by indentation rather than through a YAML parser so the tests carry
     no dependency the governed adapter does not already need.
     """
     blocks: list[list[str]] = []
-    lines = frontmatter().splitlines()
+    lines = (frontmatter() if text is None else text).splitlines()
     for index, line in enumerate(lines):
         if line.strip() != "bins:":
             continue
@@ -67,17 +69,31 @@ class GovernedPathContractTests(unittest.TestCase):
                     "by bare name; without it the governed PATH cannot resolve it",
                 )
 
-    def test_the_optional_vlm_engines_stay_undeclared(self):
-        # agy and codex are operator-installed CLIs the runtime neither ships
-        # nor vendors, and the adapter already reports their absence in its own
-        # words. `tesseract` and `pdftoppm` are declared because the runtime
-        # can resolve them and the governed PATH is the only way the child
-        # reaches them; a host without them keeps the skill, because a
-        # companion is never bound as execution authority (see
-        # `governed_executable_directories`).
-        for entries in declared_bin_blocks():
-            self.assertNotIn("agy", entries)
-            self.assertNotIn("codex", entries)
+    def test_vlm_clis_are_reachable_using_only_the_declared_runtime_path(self):
+        runtime = frontmatter().split("runtime_contract:", 1)[1]
+        declared = declared_bin_blocks(runtime)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            directories = {}
+            for engine in ("agy", "codex"):
+                folder = root / engine
+                folder.mkdir()
+                cli = folder / engine
+                cli.write_text("#!" + sys.executable + "\n"
+                    "import sys\nfrom pathlib import Path\n"
+                    "if '--output-last-message' in sys.argv:\n"
+                    " Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('fixture OCR text')\n"
+                    "else: print('fixture OCR text')\n")
+                cli.chmod(0o700)
+                directories[engine] = folder
+            env = {"PATH": os.pathsep.join(str(directories[name]) for name in declared if name in directories),
+                   "HOME": str(root)}
+            for engine in ("agy", "codex"):
+                with self.subTest(engine=engine):
+                    result = subprocess.run([sys.executable, str(BIN), "extract", "--input-file", str(FIXTURE),
+                                             "--engine", engine], env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)["content"], "fixture OCR text")
 
     def test_the_engine_companions_do_not_displace_the_declared_entry_point(self):
         """Naming a second binary obliges the contract to name the first.

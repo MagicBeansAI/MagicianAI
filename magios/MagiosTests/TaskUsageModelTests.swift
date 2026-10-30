@@ -36,19 +36,65 @@ final class TaskUsageModelTests: XCTestCase {
         XCTAssertNil(TaskUsageModel.total(live: nil, snapshot: TaskUsageSnapshot(run: nil, planning: nil)))
     }
 
-    func testLiveRunWinsOverTheSnapshotRunAndPlanningComesFromTheSnapshot() {
+    func testLateSubscriptionUnionsStoredLiveAndAuxiliaryCalls() {
         var ledger = TaskUsageLedger()
-        ledger.setSnapshot(TaskUsageSnapshot(
-            run: TaskUsage(calls: 3, tokens: 3000, costUsd: 0.03),
-            planning: TaskUsage(calls: 2, tokens: 900, costUsd: 0.01)), for: "task-1")
-        XCTAssertEqual(ledger.total(for: "task-1")?.usage, TaskUsage(calls: 5, tokens: 3900, costUsd: 0.04))
-
-        ledger.record(taskId: "task-1", callKey: "a", tokens: 100, costUsd: nil)
-        let total = ledger.total(for: "task-1")
-        XCTAssertEqual(total?.run, TaskUsage(calls: 1, tokens: 100, costUsd: nil))
+        let stored = ["a": TaskCallUsage(tokens: 1000, costUsd: 0.01, executionId: "run")]
+        ledger.setSnapshot(TaskUsageSnapshot(run: TaskUsageModel.sumCalls(stored),
+            planning: TaskUsage(calls: 2, tokens: 900, costUsd: 0.01), executionId: "run", calls: stored), for: "task")
+        ledger.record(taskId: "task", callKey: "a", tokens: 1000, costUsd: nil, executionId: "run")
+        ledger.record(taskId: "task", callKey: "b", tokens: 100, costUsd: nil, executionId: "run")
+        let history = TaskRunEvidence.history(["columns": ["llm_call_id", "input_tokens", "output_tokens", "cost_usd"],
+            "rows": [["a", 800, 200, 0.01], ["judge", 20, 10, 0.002]]], executionId: "run")
+        ledger.setSnapshot(TaskUsageSnapshot(run: TaskUsageModel.sumCalls(history), planning: nil,
+            executionId: "run", calls: history), for: "task")
+        let total = ledger.total(for: "task")
+        XCTAssertEqual(total?.run?.calls, 3)
+        XCTAssertEqual(total?.run?.tokens, 1130)
         XCTAssertEqual(total?.planning?.calls, 2)
-        XCTAssertEqual(total?.usage.calls, 3)
-        XCTAssertEqual(total?.usage.costUsd ?? -1, 0.01, accuracy: 1e-12)
+        XCTAssertEqual(total?.usage.calls, 5)
+        XCTAssertEqual(total?.usage.tokens, 2030)
+        XCTAssertEqual(total?.usage.costUsd ?? -1, 0.022, accuracy: 1e-12)
+    }
+
+    func testReplayedPriceOnlyCallIsEnrichedWithoutDuplicatingIt() {
+        var ledger = TaskUsageLedger()
+        ledger.record(taskId: "task", callKey: "a", tokens: nil, costUsd: 0.01)
+        XCTAssertEqual(TaskUsageFormat.taskLine(ledger.total(for: "task")!.usage), "1 call · tokens unavailable · $0.010")
+        ledger.record(taskId: "task", callKey: "a", tokens: 250, costUsd: nil)
+        XCTAssertEqual(ledger.total(for: "task")?.usage, TaskUsage(calls: 1, tokens: 250, costUsd: 0.01))
+    }
+
+    func testPartialSnapshotsKeepHistoryButNewExecutionsResetIt() {
+        var ledger = TaskUsageLedger()
+        func snapshot(_ root: String, _ at: Double, _ ids: Set<String>) -> TaskUsageSnapshot {
+            let calls = [root: TaskCallUsage(tokens: 100, costUsd: nil, executionId: root)]
+            return TaskUsageSnapshot(run: TaskUsageModel.sumCalls(calls), planning: nil,
+                executionId: root, calls: calls, activityIds: ids, updatedAt: at)
+        }
+        ledger.setSnapshot(snapshot("old", 10, ["a", "b"]), for: "task")
+        ledger.setSnapshot(snapshot("old", 9, ["b"]), for: "task")
+        XCTAssertEqual(ledger.total(for: "task")?.activityCount, 2)
+        ledger.setSnapshot(snapshot("new", 20, ["c"]), for: "task")
+        XCTAssertFalse(ledger.setSnapshot(snapshot("old", 30, ["a"]), for: "task"))
+        XCTAssertFalse(ledger.record(taskId: "task", callKey: "late", tokens: 999, costUsd: nil, executionId: "old"))
+        XCTAssertEqual(ledger.total(for: "task")?.executionId, "new")
+        XCTAssertEqual(ledger.total(for: "task")?.usage.tokens, 100)
+        XCTAssertEqual(ledger.total(for: "task")?.activityCount, 1)
+    }
+
+    func testWorkEvidenceRequiresMatchingRootAndActualWork() {
+        let panel: [String: Any] = ["overview": ["execution_id": "run"], "run": ["activity_log": [
+            ["created_at": 2000, "metadata": ["event_type": "tool.call.started"]],
+            ["created_at": 9000, "metadata": ["event_type": "heartbeat"]],
+            ["created_at": 10000, "metadata": ["event_type": "llm.succeeded", "provider_attempt_count": 0]]]]]
+        XCTAssertEqual(TaskRunEvidence.progressAt(panel, executionId: "run"), Date(timeIntervalSince1970: 2))
+        XCTAssertNil(TaskRunEvidence.progressAt(panel, executionId: "another-run"))
+        XCTAssertFalse(TaskRunEvidence.isProgress("metrics.updated"))
+        let event: [String: Any] = ["event_type": "AgentEvent", "data": ["event": ["event_type": "llm.first_token",
+            "principal": "owner", "workspace": "default", "timestamp": 5000,
+            "payload": ["execution_id": "child", "root_execution_id": "run"]]]]
+        XCTAssertEqual(TaskRunEvidence.progressEvent(event, principal: "owner", workspace: "default")?.0, "run")
+        XCTAssertNil(TaskRunEvidence.progressEvent(event, principal: "other", workspace: "default"))
     }
 
     // MARK: Snapshot from /execution-panel

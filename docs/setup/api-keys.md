@@ -134,17 +134,15 @@ and neither substitutes for the other:
 | How | scan a QR code, like WhatsApp Web | Kapso / Meta Cloud |
 | Costs | **free** — no key at all | **paid**, plus the public tunnel |
 | Who can message it | you, as you | anyone you give the number to |
-| Set up with | the `whatsapp` skill's `login` | `KAPSO_API_KEY` + webhook secret |
+| Set up with | the `whatsapp` skill's `login` | `KAPSO_API_KEY` + `KAPSO_PHONE_NUMBER_ID` |
 
 The first is the agent acting **as you** on a number you already have. The
 second gives it a number of **its own** that other people can message. The
 wizard offers them as two separate capabilities for that reason.
 
-Kapso needs a second value: the number-webhook signing secret from **Kapso →
-Project Settings**. Inbound webhooks fail closed while it is unset, which is
-deliberate — an unsigned inbound message is one anybody could have sent.
-
-WhatsApp also needs the tunnel, because Kapso has to reach your machine.
+WhatsApp also needs the tunnel, because Kapso has to reach your machine. The
+bot registers its webhook on the tunnel host at start and verifies inbound
+messages with that webhook's signing secret, so no secret is copied by hand.
 
 Gmail is not a key at all. It is OAuth, and it has
 [its own guide](google-workspace.md).

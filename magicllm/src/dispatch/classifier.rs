@@ -37,6 +37,7 @@ pub fn classify(err: &LLMError) -> ErrorClass {
         LLMError::Configuration(_) => ErrorClass::Provider4xx,
         LLMError::Serialization(_) => ErrorClass::ParseError,
         LLMError::DeadlineExceeded => ErrorClass::Cancelled,
+        LLMError::SpendEnvelopeExhausted { .. } => ErrorClass::SpendEnvelope,
         LLMError::QueueFull { .. }
         | LLMError::QueueBytesFull { .. }
         | LLMError::RequestTooLarge { .. } => ErrorClass::Unknown,

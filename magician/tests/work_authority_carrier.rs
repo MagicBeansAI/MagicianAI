@@ -376,6 +376,7 @@ fn record_carrying(work_authority: Option<WorkAuthorityRef>) -> ExecutionRun {
         active_delegation_group: Vec::new(),
         timeout_secs: None,
         delegation_chain: Vec::new(),
+        read_lineage: Vec::new(),
         work_authority,
         paused_from_state: None,
         entry_mode: magician::magician_v2::storage::ExecutionEntryMode::PlanningBacked,

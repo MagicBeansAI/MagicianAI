@@ -118,6 +118,16 @@ object MagicianAccess {
     const val HEADER_DEVICE_ID = "X-Magician-Device-Id"
 
     /**
+     * This build's version, `versionName (versionCode)` — e.g. `0.6.13 (40)`.
+     *
+     * Sent wherever [HEADER_DEVICE_ID] is, so the paired machine can show
+     * which build each phone runs (web Settings → Devices). Omitted when the
+     * installed package reports no version name.
+     */
+    const val HEADER_APP_VERSION = "X-Magician-App-Version"
+    private const val MAX_APP_VERSION_HEADER_CHARS = 40
+
+    /**
      * Which dialect this build speaks on the bridge socket.
      *
      * Magician sends work down that connection, so it must know how to frame
@@ -129,6 +139,8 @@ object MagicianAccess {
 
     @Volatile
     private var cached: SharedPreferences? = null
+    @Volatile
+    private var cachedAppVersion: String? = null
     @Volatile
     private var cachedV2: SharedPreferences? = null
     @Volatile
@@ -432,6 +444,7 @@ object MagicianAccess {
         // credentials in a single request.
         val profile = active(context)
         val headers = mutableMapOf(HEADER_DEVICE_ID to profileDeviceId(context, profile))
+        appVersion(context)?.let { headers[HEADER_APP_VERSION] = it }
         val id = profile?.cfAccessClientId.orEmpty().trim()
         val secret = profile?.cfAccessClientSecret.orEmpty().trim()
         if (id.isNotEmpty() && secret.isNotEmpty()) {
@@ -444,6 +457,45 @@ object MagicianAccess {
             headers[HEADER_AUTHORIZATION] = "Bearer $it"
         }
         return headers
+    }
+
+    /**
+     * The [HEADER_APP_VERSION] value for this install, or null when the
+     * package reports no version name.
+     *
+     * Read from PackageManager rather than BuildConfig, which this module does
+     * not share with the app. Cached after the first successful read: the
+     * installed version cannot change while this process lives.
+     */
+    fun appVersion(context: Context): String? {
+        cachedAppVersion?.let { return it }
+        val resolved = runCatching {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val code = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            formatAppVersion(info.versionName, code)
+        }.getOrNull() ?: return null
+        cachedAppVersion = resolved
+        return resolved
+    }
+
+    /**
+     * `versionName (versionCode)`, printable ASCII only and at most 40 chars,
+     * or null when [versionName] is blank — a header value must not carry
+     * control characters, and an empty version says nothing worth sending.
+     */
+    internal fun formatAppVersion(versionName: String?, versionCode: Long): String? {
+        val name = versionName?.trim().orEmpty()
+        if (name.isEmpty()) return null
+        return "$name ($versionCode)"
+            .filter { it in ' '..'~' }
+            .take(MAX_APP_VERSION_HEADER_CHARS)
+            .trim()
+            .takeIf { it.isNotEmpty() }
     }
 
     /** The id this phone presented to [profile]'s machine; the install id when unrecorded. */
@@ -484,6 +536,7 @@ object MagicianAccess {
             HEADER_DEVICE_ID to device,
             HEADER_AUTHORIZATION to "Bearer $token",
         )
+        appVersion(context)?.let { headers[HEADER_APP_VERSION] = it }
         val id = profile.cfAccessClientId.trim()
         val secret = profile.cfAccessClientSecret.trim()
         if (id.isNotEmpty() && secret.isNotEmpty()) {

@@ -25,6 +25,11 @@ const DEFAULT_SDK_COMMAND_NAMES = [
   "clearqueue",
   "queue-clear",
 ] as const;
+// Answered by the backend: `/god` / `/godoff` change god mode only for the
+// verified owner (from anyone else the text goes to the assistant like any
+// message); `/claim <code>` records this chat as an owner identity when the
+// code is a live one the owner minted in Magician.
+const BACKEND_COMMAND_NAMES = ["god", "godoff", "claim"] as const;
 
 export type TelegramTarget = number;
 type TelegramRequestOptions = NonNullable<Parameters<Telegraf["telegram"]["callApi"]>[2]>;
@@ -54,6 +59,7 @@ export class TelegramAdapter implements ChannelAdapter<TelegramTarget> {
     this.dropPendingUpdates = options.dropPendingUpdates ?? false;
     this.allowedCommandNames = new Set([
       ...DEFAULT_SDK_COMMAND_NAMES,
+      ...BACKEND_COMMAND_NAMES,
       ...(options.allowedCommandNames ?? []),
     ].map(normalizeCommandName).filter(Boolean));
   }
@@ -94,8 +100,7 @@ export class TelegramAdapter implements ChannelAdapter<TelegramTarget> {
       // SDK-handled commands pass through as text messages so
       // channel-runtime handles them consistently across all channels.
       // Unknown /commands still get rejected here.
-      const commandName = parseTelegramCommandName(text);
-      if (commandName && !this.allowedCommandNames.has(commandName)) {
+      if (!this.acceptsText(text)) {
         await ctx.reply(this.unknownCommandMessage);
         return;
       }
@@ -117,6 +122,13 @@ export class TelegramAdapter implements ChannelAdapter<TelegramTarget> {
 
   async stop(): Promise<void> {
     this.bot.stop("shutdown");
+  }
+
+  /** Whether an inbound private-chat text is forwarded: plain text, or a
+   *  `/command` the SDK or backend handles. Other commands are refused. */
+  acceptsText(text: string): boolean {
+    const commandName = parseTelegramCommandName(text);
+    return !commandName || this.allowedCommandNames.has(commandName);
   }
 
   resolveRealtimeTarget(channelAddress: string): TelegramTarget | null {

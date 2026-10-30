@@ -181,7 +181,7 @@
 				<strong>{VIBE_LABEL[citizen.vibe] ?? citizen.vibe}</strong>
 			</div>
 			<div>
-				<span>Program</span>
+				<span>Playbook</span>
 				<strong>{guildName ?? citizen.guildId}</strong>
 			</div>
 		</div>

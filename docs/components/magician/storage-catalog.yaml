@@ -24,11 +24,11 @@ measurements:
     Parquet globs, object SDKs, and ambient backend construction via scripts/check_typed_storage_boundaries.py.
     std::fs durable-write adoption remains check-store-durability.
   provisional_plan_bound: 60-120 closure packets
-  owner_count: 93
+  owner_count: 92
   governance_entry_count: 36
   tier1_count: 76
   tier2_count: 12
-  device_local_count: 5
+  device_local_count: 4
   codegraph_audit:
     magician_storage_crate: magician-storage
     storage_runtime: magician-storage/src/runtime.rs
@@ -1473,7 +1473,7 @@ owners:
   capability: notes_provider
   owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
   lifecycle_owner: notes_provider
-  current_layout: SilverBullet space / notes tree (not canonical runtime)
+  current_layout: notes folder spaces/<principal>/<workspace> (not canonical runtime)
   writers:
   - magician/src/magician_v2/artifact_v2/workspace.rs
   readers:
@@ -1484,24 +1484,6 @@ owners:
   legacy_source: *id003
   governance_id: null
   class: external
-- id: silverbullet_space_runtime
-  tier: device_local
-  scope: host
-  capability: domain_repository
-  owner_module: magician/src/magician_v2/artifact_v2/workspace.rs
-  lifecycle_owner: ArtifactV2Workspace::SilverBulletSpaceWorkspaceProvider
-  current_layout: '{space}/.magician/runtime/ (local profile variant)'
-  writers:
-  - magician/src/magician_v2/artifact_v2/workspace.rs
-  readers:
-  - magician/src/magician_v2/artifact_v2/workspace.rs
-  notes: Shipped local profile variant. Track A preserves the Settings control; switching does not
-    move data. Task 16 classifies this as a local profile variant, not remote tenant storage.
-  readiness: *task16_system_ready
-  authority: *id002
-  legacy_source: *id003
-  governance_id: null
-  class: device_local
 - id: runtime_config
   tier: 1
   scope: host
@@ -1860,10 +1842,11 @@ owners:
   capability: domain_repository
   owner_module: magician/src/magician_v2/work_owners/owners.rs
   lifecycle_owner: magician::magician_v2::work_owners
-  current_layout: scopes/{principal}/{workspace}/restricted/{accepted_runtime_launch,task_recipe_replays,execution_routing,plane_attenuation,operator_steers,manual_resume_transactions,delegated_child_recovery,execution_pipeline_rosters,execution_pipeline_progress,pipeline_terminal_settlements,delegation_round_progress,llm_capture}/
+  current_layout: scopes/{principal}/{workspace}/restricted/{accepted_runtime_launch,task_recipe_replays,execution_routing,outward_origins,plane_attenuation,operator_steers,manual_resume_transactions,delegated_child_recovery,execution_pipeline_rosters,execution_pipeline_progress,pipeline_terminal_settlements,delegation_round_progress,llm_capture}/
   writers:
   - magician/src/magician_v2/execution/trusted_store/durable_launch.rs
   - magician/src/magician_v2/execution/trusted_store/durable_routing.rs
+  - magician/src/magician_v2/agents/outward_policy.rs
   - magician/src/magician_v2/execution/trusted_store/durable_attenuation.rs
   - magician/src/magician_v2/execution/agentic/run_loop/steer_inbox.rs
   - magician/src/magician_v2/execution/agentic/run_loop/manual_resume_tx.rs

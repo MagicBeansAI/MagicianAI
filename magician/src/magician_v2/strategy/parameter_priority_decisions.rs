@@ -340,15 +340,20 @@ async fn llm_classify(
             .map(|id| (id, Err("LLM or prompt manager unavailable".to_owned())))
             .collect();
     };
+    // Boxed so the buffered stream moves a pointer per item, and each item's
+    // router call is built on the heap rather than on the planner's stack.
     stream::iter(selected)
-        .map(|id: String| async move {
-            let result = match id.parse::<usize>().ok().and_then(|i| cases.get(i)) {
-                Some(case) => llm_one(router, prompt_manager, context, user_request, case)
-                    .await
+        .map(|id: String| {
+            Box::pin(async move {
+                let result = match id.parse::<usize>().ok().and_then(|i| cases.get(i)) {
+                    Some(case) => crate::off_frame!(
+                        llm_one(router, prompt_manager, context, user_request, case).await
+                    )
                     .map_err(|e| e.to_string()),
-                None => Err("unknown item".to_owned()),
-            };
-            (id, result)
+                    None => Err("unknown item".to_owned()),
+                };
+                (id, result)
+            })
         })
         .buffer_unordered(LLM_CONCURRENCY)
         .collect()

@@ -35,7 +35,9 @@ pub mod memory_prompt_blocks;
 pub mod memory_prompt_snapshot;
 pub mod memory_provenance;
 pub mod outward_actions;
+pub mod outward_policy;
 pub mod outward_receipts;
+pub mod outward_review;
 pub(crate) mod personal_agent_retrieval;
 #[cfg(test)]
 mod presentation_maker_evals;
@@ -56,6 +58,8 @@ pub mod state_machine;
 pub mod storage;
 pub mod trust;
 pub mod types;
+pub mod user_memory_bounds;
+pub mod user_memory_lanes;
 pub mod wake_up_queue;
 
 pub use types::tool_name_matches_block_entry;

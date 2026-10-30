@@ -42,6 +42,7 @@ class VibeDevError(val status: Int, message: String) : Exception(message)
  * [VibeDevRepository].
  */
 interface VibeDevSource {
+    suspend fun runHistory(limit: Int, cursor: String?): VibeDevRunHistory
     suspend fun liveRuns(): VibeDevLiveRuns
     suspend fun projects(): VibeDevProjects
     suspend fun projectRuns(projectId: String, limit: Int, offset: Int, query: String?): VibeDevRunsPage
@@ -54,7 +55,10 @@ interface VibeDevSource {
 
     suspend fun startRun(request: VibeDevRunRequest): VibeDevStartedRun
     suspend fun createProject(name: String, repoPath: String): VibeDevProject
-    suspend fun updateProject(projectId: String, trusted: Boolean?, baseBranch: String?): VibeDevProject
+    suspend fun updateProject(projectId: String, trusted: Boolean?, baseBranch: String?, location: String? = null): VibeDevProject
+    /** `git init` + a first commit in the project folder; the project's health after. */
+    suspend fun gitInit(projectId: String): VibeDevProjectHealth =
+        throw VibeDevError(404, "This Magician cannot set up a git repository yet.")
     suspend fun control(liveTaskId: String, action: String, message: String? = null): VibeDevControlOutcome
 
     suspend fun createCrew(request: VibeDevCrewRequest): VibeDevCrew
@@ -108,6 +112,12 @@ class VibeDevRepository(
 
     // ── Reads ──────────────────────────────────────────────────────────────
 
+    override suspend fun runHistory(limit: Int, cursor: String?): VibeDevRunHistory {
+        val params = mutableListOf("limit" to limit.coerceIn(1, 50).toString())
+        if (cursor != null) params += "cursor" to cursor
+        return get("/vibedev/runs${queryString(params)}", VibeDevRunHistory.serializer())
+    }
+
     override suspend fun liveRuns(): VibeDevLiveRuns =
         get("/vibedev/runs/live", VibeDevLiveRuns.serializer())
 
@@ -144,7 +154,7 @@ class VibeDevRepository(
         get("/vibedev/repos/suggest", VibeDevRepoSuggestions.serializer()).repos
 
     override suspend fun codingProfiles(): List<VibeDevCodingProfile> =
-        get("/coding/profiles", VibeDevCodingProfiles.serializer()).profiles
+        get("/coding/models", VibeDevModelCatalog.serializer()).rows()
 
     override suspend fun workLive(): WorkLive? = try {
         get("/work/live", WorkLive.serializer())
@@ -161,8 +171,25 @@ class VibeDevRepository(
             put("mode", request.mode)
             put("client_run_id", request.clientRunId)
             request.parentTaskId?.let { put("parent_task_id", it); put("threaded", true) }
-            request.codingProfileId?.let { put("coding_profile_id", it) }
+            request.codingChoice?.let { put("coding_choice", vibeDevJson.encodeToJsonElement(VibeDevCodingSelection.serializer(), it)) }
             request.costBudgetUsd?.let { put("cost_budget_usd", it) }
+            put("auto_apply", false)
+            if (request.mode == "discuss") put("agent_id", "cto")
+            if (request.attachments.isNotEmpty()) {
+                put("attachments", kotlinx.serialization.json.buildJsonArray {
+                    request.attachments.forEach { attachment -> attachment.remoteId?.let { id ->
+                        add(buildJsonObject { put("attachment_id", id); put("filename", attachment.name)
+                            put("mime_type", attachment.mimeType ?: "application/octet-stream") })
+                    } }
+                })
+                request.attachmentSessionId?.let { put("attachment_session_id", it) }
+            }
+            if (request.nightly && request.mode == "autopilot" && request.parentTaskId == null) {
+                put("schedule", buildJsonObject {
+                    put("kind", buildJsonObject { put("Cron", buildJsonObject { put("expression", "0 2 * * *"); put("timezone", "UTC") }) })
+                    put("timezone", "UTC"); put("missed_fire_policy", "skip"); put("concurrent_execution_policy", "skip")
+                })
+            }
         }
         return decode(send("/vibedev/runs", HttpMethod.Post, body).second, VibeDevStartedRun.serializer())
     }
@@ -172,15 +199,20 @@ class VibeDevRepository(
         return decode(send("/vibedev/projects", HttpMethod.Post, body).second, VibeDevProjectMutation.serializer()).project
     }
 
-    override suspend fun updateProject(projectId: String, trusted: Boolean?, baseBranch: String?): VibeDevProject {
+    override suspend fun updateProject(projectId: String, trusted: Boolean?, baseBranch: String?, location: String?): VibeDevProject {
         val body = buildJsonObject {
-            trusted?.let { put("trust", if (it) "trusted" else "sandboxed") }
+            if (location != null) put("trust", location) else trusted?.let { put("trust", if (it) "trusted" else "sandboxed") }
             baseBranch?.let { put("base_branch", it) }
         }
         return decode(
             send("/vibedev/projects/${segment(projectId)}", HttpMethod.Patch, body).second,
             VibeDevProjectMutation.serializer(),
         ).project
+    }
+
+    override suspend fun gitInit(projectId: String): VibeDevProjectHealth {
+        val (_, value) = send("/vibedev/projects/${segment(projectId)}/git-init", HttpMethod.Post, null)
+        return VibeDevProjectHealth.decode((value as? JsonObject)?.get("health"))
     }
 
     override suspend fun control(liveTaskId: String, action: String, message: String?): VibeDevControlOutcome {

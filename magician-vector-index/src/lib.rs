@@ -25,6 +25,7 @@ pub mod memory_hot_projections;
 pub mod memory_index;
 pub mod memory_record;
 pub mod memory_renderer;
+pub mod memory_similarity;
 pub mod memory_temperature;
 pub mod memory_tier_health;
 pub mod memory_tiers;
@@ -33,6 +34,7 @@ pub mod query_embed_batcher;
 pub mod query_vector_cache;
 pub mod retrieval_scope;
 pub mod storage_trait;
+pub mod text_bounds;
 pub mod vector_search_mode;
 pub mod vector_toolkit;
 

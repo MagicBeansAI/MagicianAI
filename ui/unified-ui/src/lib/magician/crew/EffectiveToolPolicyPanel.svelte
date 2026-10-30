@@ -310,13 +310,13 @@
 	.policy-controls select:focus-visible, .refresh-button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 	.refresh-button:disabled { opacity: .5; cursor: default; }
 	.policy-facts { flex-wrap: wrap; gap: .4rem .75rem; margin: .85rem 0 .6rem; font-size: .7rem; color: var(--text-secondary); }
-	.surface-badge { color: var(--accent-primary); font-weight: 700; background: var(--accent-primary-soft); border-radius: var(--radius-full, 999px); padding: .23rem .55rem; }
+	.surface-badge { color: var(--accent-primary); font-weight: 700; background: var(--accent-primary-soft); border-radius: var(--radius-chip, 6px); padding: .23rem .55rem; }
 	.cache-badge { color: var(--accent-secondary); font-weight: 650; }
 	.policy-groups { display: grid; gap: .35rem; }
 	details { border-top: 1px solid var(--policy-border); padding-top: .35rem; }
 	summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 30px; border-radius: 5px; cursor: pointer; list-style: none; font-size: .76rem; color: var(--text-secondary); }
 	summary::-webkit-details-marker { display: none; }
-	summary strong { display: grid; place-items: center; min-width: 23px; height: 20px; padding: 0 .3rem; border-radius: var(--radius-full, 999px); background: color-mix(in srgb, var(--text-secondary) 10%, transparent); color: var(--text-primary); font-size: .67rem; }
+	summary strong { display: grid; place-items: center; min-width: 23px; height: 20px; padding: 0 .3rem; border-radius: var(--radius-chip, 6px); background: color-mix(in srgb, var(--text-secondary) 10%, transparent); color: var(--text-primary); font-size: .67rem; }
 	.tool-cloud { display: flex; flex-wrap: wrap; gap: .38rem; padding: .32rem 0 .5rem; }
 	.tool-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; border: 1px solid color-mix(in srgb, var(--accent-primary) 22%, var(--policy-border)); border-radius: 7px; padding: .27rem .47rem; background: color-mix(in srgb, var(--accent-primary) 6%, var(--policy-surface)); color: var(--text-primary); font: 600 .68rem/1.2 var(--font-mono); }
 	.tool-chip.runtime { border-color: color-mix(in srgb, var(--accent-secondary) 30%, var(--policy-border)); background: color-mix(in srgb, var(--accent-secondary) 9%, var(--policy-surface)); }
@@ -329,7 +329,7 @@
 	.structural-list code { overflow-wrap: anywhere; }
 	.structural-list code, .policy-provenance code { font-size: .69rem; }
 	.structural-list small { display: block; margin-top: .25rem; color: var(--text-secondary); overflow-wrap: anywhere; }
-	.approval-badge { border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent); border-radius: var(--radius-full, 999px); padding: .12rem .35rem; font-size: .6rem; color: var(--text-primary); background: var(--color-warning-soft); }
+	.approval-badge { border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent); border-radius: var(--radius-chip, 6px); padding: .12rem .35rem; font-size: .6rem; color: var(--text-primary); background: var(--color-warning-soft); }
 	.transition-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: .45rem; padding: .2rem 0 .55rem; }
 	.transition-grid div { min-width: 0; border-radius: 8px; background: color-mix(in srgb, var(--policy-surface) 78%, transparent); padding: .45rem .55rem; }
 	.transition-grid small { color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; font-size: .59rem; }

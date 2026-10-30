@@ -95,6 +95,7 @@ pub async fn list_user_requests_handler(
         .await
         .into_iter()
         .filter(|request| matches_owner_agent_filter(request, owner_agent_id))
+        .map(UserRequest::for_presentation)
         .collect::<Vec<_>>();
     let history = if query.include_history {
         filter_history_records(

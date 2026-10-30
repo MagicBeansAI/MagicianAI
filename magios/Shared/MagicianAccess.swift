@@ -567,7 +567,7 @@ enum MagicianAccess {
 
     /// The shared Cloudflare service credential is outer-gateway evidence,
     /// not Magician device identity. A separately hosted protected surface
-    /// (for example SilverBullet) may receive this pair, but must never receive
+    /// behind the same gateway may receive this pair, but must never receive
     /// the device id or workspace-bound bearer.
     static func cloudflareAccessHeaders(
         profile: MobileConnectionProfile? = connectionProfile
@@ -586,9 +586,34 @@ enum MagicianAccess {
         var result = cloudflareAccessHeaders(profile: profile)
         if let profile {
             result["X-Magician-Device-Id"] = profile.deviceID
+            if let appVersion = appVersionHeaderValue {
+                result[appVersionHeader] = appVersion
+            }
             result["Authorization"] = "Bearer \(profile.deviceToken)"
         }
         return result
+    }
+
+    /// Sent with the device id so the paired machine can show this app's
+    /// version in web Settings → Devices.
+    static let appVersionHeader = "X-Magician-App-Version"
+
+    /// `"<CFBundleShortVersionString> (<CFBundleVersion>)"`, e.g. `0.4.11 (222)`,
+    /// read once from the running bundle (extensions share the app's version).
+    static let appVersionHeaderValue: String? = makeAppVersionHeaderValue(info: Bundle.main.infoDictionary)
+
+    /// Nil when the short version is missing, so the header is omitted. The
+    /// value keeps only printable ASCII and is capped at 40 characters.
+    static func makeAppVersionHeaderValue(info: [String: Any]?) -> String? {
+        func clean(_ key: String) -> String {
+            let raw = (info?[key] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return String(raw.unicodeScalars.filter { $0.value >= 0x20 && $0.value < 0x7F })
+        }
+        let version = clean("CFBundleShortVersionString")
+        guard !version.isEmpty else { return nil }
+        let build = clean("CFBundleVersion")
+        let value = build.isEmpty ? version : "\(version) (\(build))"
+        return String(value.prefix(40))
     }
 
     /// Browser-equivalent WebSocket offers: a stable application protocol, then

@@ -214,14 +214,15 @@ impl ChatMessage {
         content: ChatMessageContent,
         created_at: i64,
     ) -> Self {
+        let id: String = id.into();
         let presentation = if matches!(&direction, ChatMessageDirection::User) {
             None
         } else {
-            StructuredResponseV1::from_content(&content)
+            StructuredResponseV1::from_content_for_message(&id, &content)
         };
 
         Self {
-            id: id.into(),
+            id,
             session_id: session_id.into(),
             context_origin: None,
             direction,
@@ -299,9 +300,9 @@ impl ChatMessage {
         } else if let Some(presentation) = self.presentation.take() {
             StructuredResponseV1::attach_to_content(&self.content, presentation)
                 .ok()
-                .or_else(|| StructuredResponseV1::from_content(&self.content))
+                .or_else(|| StructuredResponseV1::from_content_for_message(&self.id, &self.content))
         } else {
-            StructuredResponseV1::from_content(&self.content)
+            StructuredResponseV1::from_content_for_message(&self.id, &self.content)
         };
     }
 }
@@ -687,6 +688,21 @@ pub struct ScreenCaptureScreenRect {
 pub struct ChatSessionFileIndex {
     #[serde(default)]
     pub files: Vec<ChatSessionFileRecord>,
+    /// Owner removals prevent task fanout from restoring deleted chat copies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_task_outputs: Vec<ChatSessionTaskOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatSessionTaskOutput {
+    pub task_id: String,
+    pub output_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChatSessionAssetKey {
+    File(String),
+    TaskOutput(ChatSessionTaskOutput),
 }
 
 /// A single option button rendered inside an `Escalation` chat message.

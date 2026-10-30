@@ -555,12 +555,13 @@ describe('TasksWorkspace opens the unified task panel', () => {
 	 */
 	it('follows a live run on its own clock, and moves the verdict with it', async () => {
 		const user = userEvent.setup();
+		const startedAt = Date.now() - 30_000;
 		const task = backendTask('watched', 'running', { title: 'Reindex the corpus' });
 		backend = createTaskAttentionBackend([task]);
 		backend.activityByTask[task.id] = [
 			activityItem(task.id, {
 				id: 'log-1',
-				created_at: 1_770_000_030_000,
+				created_at: startedAt,
 				metadata: { event_type: 'llm.succeeded', capability: 'research' }
 			})
 		];
@@ -578,22 +579,21 @@ describe('TasksWorkspace opens the unified task panel', () => {
 		backend.activityByTask[task.id].push(
 			activityItem(task.id, {
 				id: 'log-2',
-				created_at: 1_770_000_060_000,
+				created_at: startedAt + 10_000,
 				status: 'running',
 				metadata: { event_type: 'tool.started', target: 'read_file' }
 			}),
 			activityItem(task.id, {
 				id: 'log-3',
-				created_at: 1_770_000_090_000,
+				created_at: startedAt + 20_000,
 				metadata: { event_type: 'llm.succeeded', capability: 'research' }
 			})
 		);
 
 		await waitFor(() => expect(act('Run')).toHaveTextContent('3 events'), { timeout: 12_000 });
 
-		// And the verdict, which is read off the task record rather than off the
-		// payload above: the same tick refreshes the row, so the headline cannot sit
-		// at `Running` under a feed that has moved on.
+		// Recent work keeps the verdict Running even when the task-row progress
+		// timestamp lags. The poll also follows the task's canonical status.
 		expect(within(panel()).getByRole('status')).toHaveAttribute('data-verdict-state', 'running');
 		backend.setTaskStatus(task.id, 'waiting_for_user');
 

@@ -116,7 +116,10 @@ mod tests {
         assert_eq!(request.request_type, WORDING_UNLOCK_REQUEST_TYPE);
         assert_eq!(request.execution_id.as_deref(), Some("exec-analyst"));
         assert_eq!(request.default_on_timeout, WORDING_UNLOCK_DECLINE);
-        assert!(request.options.iter().any(|option| option.id == WORDING_UNLOCK_APPROVE));
+        assert!(request
+            .options
+            .iter()
+            .any(|option| option.id == WORDING_UNLOCK_APPROVE));
         assert!(request.question.contains("held twice"));
     }
 

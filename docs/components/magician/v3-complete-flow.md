@@ -532,8 +532,13 @@ working-directory root. Every canonical subdirectory of that task is allowed,
 including execution downloads and nested renders; sibling tasks and symlink
 escapes receive no additional access. A generic shell without an explicit
 working directory defaults to `<task>/workdir/`. The decision prompt names this
-directory and explains how to publish generated files. Coding providers retain
-their explicit coding workspace. Static sandbox roots remain configured.
+directory and explains how to publish generated files. It lists only the task
+folders every file-writing tool accepts (the file executor's checks and the
+`write_file` / `edit_file` staged writers, which take a task path only in its
+workdir), judged by those tools' own code, so it follows any sandbox or layout
+change. A staged write refused outside the scoped workspace names the task
+workdir and the scoped workspace instead of the sandbox roots. Coding providers
+retain their explicit coding workspace. Static sandbox roots remain configured.
 
 **Tool-produced file capture.** After a pack or native shell action completes, the
 executor scans structured results, copies discovered files into both
@@ -571,11 +576,29 @@ deterministic figure checks.
 1. **Corpus.** A `GroundingCorpus` holds the complete evidence: up to 400k
    characters per file, 4M in total and 400 artifacts, all read before any
    prompt budget trims previews.
-   - The task-user path reads every artifact (not just the 30 kept for the
-     synthesis prompt) and every child, source and prior output.
+   - Execution-bound checks (task-user answer, `notify_owner`, Relentless)
+     share `build_execution_grounding_corpus`: every artifact of the execution
+     (not just the 30 in the synthesis prompt) and of its delegates (three
+     levels, 24 executions, a quarter of the budget; children found through
+     outputs and delegation records), the children's returned results, source
+     and prior outputs (agent-written), plus Magician's runtime records:
+     verification-gate verdict, each delegation's agent/child/settled status,
+     and change delivery. A runtime record alone does not make a run checkable.
+   - **Change delivery.** `change_delivery.json` beside the execution
+     (`vibedev::change_delivery::ChangeDeliveryRecord`): mode
+     (`trusted_branch` / `sandboxed_fallback` / `sandboxed`), project folder,
+     git state (`repository_root` / `not_a_repository` / `inside_repository` /
+     `not_a_directory` / `no_git`) with reason, fallback reason, trusted
+     branch. Written by dispatch/resume (`vibedev_run_trust_mode`) and by
+     `run_coding_task` on the engineer's execution; read for the execution and
+     every delegate. "No branch: not a git repository" is grounded only by
+     `not_a_repository`; delegation instructions and a child's self-reported
+     outcome are never evidence.
    - The terminal gate uses every admitted source in full.
    - JSON, including JSON nested in MCP `content[].text`, is flattened to
-     `path = value` lines.
+     `path = value` lines; a claim repeating a value gets that line as exact
+     evidence (a bare `true`/`false`/`null`/`ok` or ≤ 2-char value only when
+     the claim also names its key, e.g. `all_ok=true`).
    - Every artifact's payload metadata is evidence, including the captions,
      OCR text and transcripts of media. Produced files contribute name, type
      and download link.
@@ -590,12 +613,27 @@ deterministic figure checks.
      `1.590` is tried both ways;
    - rounding, percent/fraction, and lakh/crore/thousand/million/billion/
      万/亿 scales;
-   - sums, differences, ratios and percentage changes of located figures.
+   - sums, differences, ratios and percentage changes of located figures;
+   - line totals: a unit value times a count the claim states (`×5`, `5 ×`,
+     `qty 5`), when the count sits beside the unit value in a tool result: on
+     the same line (`$38 (Qty: 5)`) or as a sibling field of the same JSON
+     object (an item's `price` and `quantity`). A count elsewhere in the
+     result (a rating, another item's quantity) derives nothing.
 
    A located figure overrides an `absent` verdict only when it has four or
    more significant digits.
-4. **Per-claim evidence.** Each claim gets:
-   - figure windows, with the table's column names;
+4. **Per-claim evidence.** Each claim gets, in this order, within 3,600
+   characters:
+   - up to two runtime records (change delivery, delegation, verification
+     gate) sharing ≥ 2 words with the claim;
+   - figure windows, with the table's column names (a recurring figure is
+     shown from a result the answer cites, where the claim's label sits);
+   - results the answer cites by `result_ref`, sharing ≥ 2 words with the
+     claim: the two best matches plus the best of each other cited tool, up
+     to three in 1,800 characters, so a claim about several sources sees each;
+   - exact result values the claim repeats, with a small window, each
+     key/value pair once (the same value under another key matches
+     separately);
    - the top IDF-weighted lexical chunks (CJK as bigrams);
    - when the local embedding model answers, the two nearest semantic chunks.
      Vectors are cached per corpus and shared by evidence fingerprint across
@@ -603,6 +641,12 @@ deterministic figure checks.
 5. **Judge.** `task_user_claim_judge` v1.0.0, routed as
    `evidence_precision_judge`, returns `supported`, `contradicted`, `absent`
    or `not_a_claim` per claim, plus `core`.
+   - Observed actions go with every batch. For the task-user answer they are
+     the run-effects ledger (below); without a ledger, and for owner-text
+     checks, they come from `GroundingCorpus::observed_actions`: every tool
+     call of the run and its delegates, counted per tool with one redacted
+     outcome line each (failures marked; recalls and catalogs counted without
+     one). The in-run gate keeps its own list.
    - Batches are up to 16 claims or 56k characters, at most 64 calls, 4 in
      parallel.
    - An unreadable reply is retried once, then split down to single claims.
@@ -625,6 +669,27 @@ deterministic figure checks.
      configured for this project") are evidence recorded by Magician, so an
      answer that reports them is not stripped as unconfirmed.
    - Removing more than half of an answer's claims counts as failing it.
+
+**Run effects.** Every pause/resume segment writes its tool calls into the
+same execution artifact index, and each `tool_call_evidence` record carries an
+`effect` (kind, target, bytes, a result head for shell runs and failures;
+`artifact_v2::run_effects`). `RunEffectsLedger` aggregates the whole index plus
+delegate records: changes and reads grouped by tool, outcome and folder (up to
+8 names, bytes, "N of M read back after their last change"), successful runs
+(newest 12), a count of owner answers (no text) and other calls by tool.
+FAILED calls are labelled and never count as done; an `exists` check is not a
+read-back. Bounds: newest 2,000 records, 200 lines, 8,000 characters; older
+evidence without an effect is read from its file (newest 400, 512 KB each,
+8 MB total). The ledger is the task-user judge's observed actions, the protected bundle
+field `run_effects` for both syntheses (`execution_output_synthesize` 1.2.0,
+`task_user_output_synthesize` 1.1.0) and the grounding repair, and two corpus
+entries: "RUN EFFECTS (recorded by Magician)" (tool-result origin; counts,
+outcomes, bytes, heads; no path, command or time) and "RUN EFFECT PATHS"
+(agent-written origin). Agent-chosen names have control characters and line
+separators folded, so they cannot forge a ledger line. A claim with no
+matching successful call is still `absent`. `task_user_claim_judge` stays
+1.2.0 (the decision engine's `claim_support` reference hashes it), and
+`answer_claim_check.json` lists each statement once per list.
 
 **Hardening (review pass, 2026-10-03).**
 - **Who can prove a figure.** Evidence has an origin. Tool results can prove
@@ -795,6 +860,34 @@ deterministic figure checks.
     the async worker.
   - Delegate ids are validated, and a quarter of the artifact budget is kept
     for child executions.
+  - A completed run that yielded its own answer (a `partial_findings` note
+    from `render_yield_partial_findings`) publishes it (summary plus declared
+    open items) instead of an execution-output synthesis, without the
+    opened-page coverage note; this claim check decides what the evidence
+    supports. A note whose summary is the runtime's requirement status (the
+    model gave no answer) carries no summary and goes to synthesis.
+  - Results cited by the run's terminal notes (`result_ref_v1_…`, resolved
+    through its effect records to their calls) are marked cited. A figure in
+    several results is shown from a cited one, then from the line carrying
+    the claim's label; figures and cited lines precede field and chunk
+    evidence in the claim's budget.
+  - A found figure is also shown with the rest of its result that bears on
+    the claim (`figure_record_lines`, up to 8 lines): lines carrying the
+    claim's distinctive words (in at most 6 of the result's lines), and for
+    a list entry the same field of the list's other entries, each fact once.
+    A cart total is read with what the cart holds even when its item lines
+    sit far from the total.
+  - Synthesis prompts split the artifact preview budget evenly across
+    results (a short one passes its share on), cut long ones at both ends
+    so a closing total survives, and rank the run's terminal notes first.
+  - A grounding repair is told every failing claim with the judge's reason
+    (`repair_feedback`, up to 12), and task-user prompt 1.2.0 makes it an
+    edit: unlisted sentences stay verbatim, only a listed claim's unsupported
+    detail goes, and a supported figure is never downgraded to unverified.
+  - `make test-final-answer-live-eval` replays real runs' finalization with
+    the live router (cases in `data/magician_v2/evals/final_answer/`). Each
+    case dir keeps every claim-judge prompt and response under `judge/`
+    (`MAGICIAN_CLAIM_JUDGE_DUMP_DIR`, read only by evals).
 
 **Owner-facing text outside task answers (2026-10-04, owner decision: full
 check everywhere).** `check_owner_text`
@@ -839,6 +932,14 @@ text that does not go through the task-user finalizer.
 - **`notify_owner`.** A notification sent from a task run is checked against
   that execution's tool results (`load_execution_grounding_corpus`) before it
   goes to Attention and the bots, with the LLM judge (`Llm` mode).
+- **Record of each check.** `notify_owner` and Relentless checks append to
+  the execution's `owner_text_claim_checks.json` (newest 32): surface, user
+  request id (notifications), outcome (`verified` / `supporting_removed` /
+  `caveated`), and each removed or unconfirmed statement with verdict
+  (`unsupported` / `contradicted`) and reason. Chat replies are not recorded.
+- **Delegated work.** `load_execution_grounding_corpus` builds the Corpus
+  above, so a coordinator's briefing is judged against its engineers' tool
+  results.
 - **Relentless.** Reports and accepted drafts are checked against the bound
   execution's tool results before publication, figures only (their content
   already passed Relentless's critics), unless the owner approved those exact
@@ -849,7 +950,10 @@ text that does not go through the task-user finalizer.
 - **Core claims fail:** one repair names them and is checked again. If it
   still fails, a predecessor that passes review is published; otherwise the
   answer goes out with a visible "Not fully verified" caveat quoting the failed
-  claims.
+  claims. Markdown and text get a leading caveat line. HTML stays `text/html`
+  with an escaped `<aside data-magician-caveat="unverified">` first in its
+  body; its readable text (summary, voice) leads with the same caveat
+  paragraph. JSON and other formats are fenced under the caveat.
 - **Judge unavailable** (no router, router down, no evidence): the answer goes
   out with the caveat, saying its figures were checked against the tool
   results.
@@ -868,6 +972,18 @@ its existing callers.
 inferred inline media types. `MAX_SELECTED_ARTIFACTS = 30`
 (`artifact_v2/synthesis.rs`). Promoted media files become
 `audience=user`, `role=user_media` refs on `FinalizedOutputs.media_outputs`.
+
+**Delivered files.** A file the run wrote (`tool_output_file`) and named as
+delivered — in its outcome summary, its verified `task_deliverable` /
+`partial_findings` / `summary_note` notes, or a completed micro-goal of its own
+durable task state — is attached to the answer, never replacing it: the newest
+write of each name, whole-name match ignoring case, digest-checked copy to
+`outputs/delivered/<execution>/<name>`, at most eight, images/audio/video left
+to `user_media`, the published answer's own bytes not attached twice. They are
+`audience=user`, `role=user_attachment` refs on
+`FinalizedOutputs.delivered_file_outputs`, committed with the primary output
+(media is registered after it): the terminal chat card is built from that
+commit and lists them under their own names, newest first, up to eight files.
 
 **Delegation resume.** Task-backed direct runs resume automatically after
 delegated children finish (`WaitingChildren` → synthesized child summary
@@ -919,6 +1035,17 @@ agent globally.
 
 Cycle id: `scope:{hex(principal)}:{hex(workspace)}::{agent_id}::{goal_id}::{trigger_seq}`
 when a scope is present, else `{agent_id}::{goal_id}::{trigger_seq}`.
+
+`trigger_seq` comes from the scoped scheduler entry, but is always allocated
+above the highest sequence already used for the agent/goal: the runtime's
+active, queued and recently completed tuples
+(`AgentRuntime::highest_known_trigger_seq_in_scope`) and stored episodes
+(`AgentMemoryService::highest_episode_trigger_seq`). Deleting an agent drops
+its scheduler entry but not its episodes (scoped memory root), so a re-created
+agent with the same id would otherwise restart at 1 and collide with tuples
+that already ran. Manual triggers use `AgentScheduler::allocate_trigger_seq_above`;
+a cron fire already consumed by `collect_due_cron_triggers` is moved with
+`rebase_consumed_trigger_seq`, which keeps `requeue_due_cron_trigger` matching.
 
 Cancel tokens are keyed by the deterministic automation task id
 `legacy:{agent_id}:{goal_id}` (scoped).
@@ -1075,6 +1202,26 @@ Primary endpoints (`magician-api/src/task_api_v3.rs`, mounted under
 - `GET  /tasks/{id}/plan/clarifications`
 - `GET  /tasks/{id}/plan/clarifications/pending`
 - `GET  /plans/clarifications/pending`
+
+Planning resume receipts use canonical JSON and exact float parsing, so map
+ordering or lost numeric precision cannot invalidate an answer. A fresh answer may supersede an
+unverifiable, unapplied legacy receipt for the same paused state and question;
+its payload is never replayed. Committed receipts retain strict verification.
+Resumed proposals remain planning-only until the separate approved task launch;
+answered questions leave `WaitingUser` before the resumed plan is published,
+and resume polls use stack headroom for deep planning continuations. The durable
+planning-recovery monitor awaits each claim, resume and planning run off its own
+frame, and planning's per-parameter classification boxes each router call, so a
+recovered plan reaches the LLM router within the 2 MiB worker stack (the unboxed
+chain overflowed it and crash-looped the service on restart). Terminal
+tasks (including archived ones) release pending questions and, when the task
+never started a run or was cancelled or archived, a plan's pending approval
+(the plan fails with "Task ended before the plan was approved" and its
+`plan_approval` ask resolves as cancelled; a run that ended beside a re-drafted
+plan keeps it, so the run's own outcome stays on the card), and cannot claim or renew
+planning recovery.
+Full and partial replans carry the accepted answer and its question into the
+planning query, so rebuilding slots preserves the owner's resolved decision.
 
 ---
 
@@ -1411,6 +1558,19 @@ read. Never a hang.
   immediately. Only transient errors (`Runtime`, `ServiceUnavailable`) stay
   deferred. It used to log and drop every failure, leaving the child
   `running` until the parent's durable deadline retired the tree.
+- **A deferral is re-checked without a restart.** A transient child failure
+  (e.g. `stateless_preseed_generation_still_within_visibility_grace`), and a
+  boot-sweep deferral inside the pre-seed visibility grace
+  (`PRESEED_VISIBILITY_GRACE_MS`, 2 min), go to the persistent recovery
+  monitor (`schedule_deferred_interrupted_runtime_recheck`), which re-runs
+  `recover_interrupted_runtime_execution` once the grace has passed and
+  retries with backoff until the run is parked or terminal and projected.
+  Before, the parent sat `WaitingChildren` until the next restart.
+- **A run started after restart gets its event scope back.** The canonical
+  event scope registry is process-local; `execute_agentic_direct_with_outcome_inner`
+  restores a missing one from the task (`restore_runtime_canonical_scope`), so
+  a recovered child's or resumed parent's events — its diff review included —
+  are recorded rather than journalled transport-only.
 - **Routing is compared by endpoint.** `parent_engine` is not sealed
   authority: it is re-derived from the run's pin or the current process
   engine on every load. Recovery and `persist_execution_llm_routing_overrides`
@@ -1511,7 +1671,7 @@ Observation artifacts:
 ```text
 action
   → shell sandbox (mode, network, binaries, blocked fragments, cwd)
-  → file sandbox (mode, allowed_roots, delete_policy)
+  → file sandbox (mode, allowed_roots, read_only_roots, delete_policy)
   → capability schema validation (strict on load)
   → trust level + ApprovalRule evaluation (agent path)
   → allowed | NeedsApproval | blocked
@@ -1521,6 +1681,84 @@ action
 
 Configured in `magician-config.yaml`, enforced in native executor paths
 before filesystem/shell operations.
+
+`execution.file_sandbox` has two kinds of configured root, both resolved
+like the paths checked against them (relative to the process directory,
+symlinks followed, a dangling link resolved to its target):
+
+- `allowed_roots`: agents may read and write.
+- `read_only_roots`: agents may read, check existence and list, and copy
+  from. Every mutation through the file tools is refused: write, append,
+  delete, create_dir, a copy's destination, and either end of a move.
+  Sanctioned writers (`create_note`, `append_note`,
+  `propose_program_revision`, the missions tools) are not file tools.
+
+A path is inside a root when it starts with it, or when one of its existing
+ancestors is the root's own directory (same device and inode), so one folder
+spelled two ways — `~/MagicianNotes` links to `/Volumes/build/…` while the
+case-insensitive volume mounts as `/Volumes/SSD1` — is not "outside". The
+staged writers' workspace and task-workdir checks use the same rule. Inside a task,
+`write_file` and `edit_file` anchor a relative path at the task workdir, as
+`read_file`, the `files` tool and the shell do, so a relative write lands where
+a relative read looks instead of being staged under the scoped workspace.
+
+When a path sits under both kinds, the deepest configured root decides and a
+tie goes to read-only. So a scope's `programs/` listed read-only stays
+read-only under the writable scopes tree, and `<notes space>/Workspaces`
+listed writable stays writable inside a read-only notes space. Run-time
+roots (`extra_writable_roots`: the task workdir, folders the owner approved
+this session, `delegation_files` folders) admit reads and writes only where
+no read-only root applies; they never outrank one.
+
+A mutation is checked at the target a write lands on and, for a delete or
+move, at the directory entry itself (a symlink inside a read-only root
+cannot be removed). A subtree operation (a recursive delete, either
+end of a move, even onto a folder that does not exist yet) is refused when
+any read-only root lies inside it; the runtime-store fence likewise refuses one that would
+take a scope's transaction, proposal or pause records with it.
+
+`native_executors::validate_file_action` applies this to every native file
+action (`files`, `read_file`, binary readers and writers through
+`validate_file_read_path` / `validate_file_write_path`). The staged writers
+(`write_file`, `edit_file`, `apply_patch`) refuse a path under a read-only
+root before they stage a diff (`staged_file_edit::resolve_write_path`), and
+the diff-approval apply (`file_edit::snapshot::apply_transaction`) checks
+every final target again against the boot sandbox the orchestrator
+registers (`native_executors::register_agent_file_sandbox`), so relative
+paths and multi-file patches are covered. A mutation under a read-only root
+is a hard error, `<path> is read-only for agents (read_only_roots) (writable:
+<roots>; read-only: <roots>)`, and never asks the owner to widen the
+sandbox; a staged writer reports it as ``Refused `file_path`: …``. A path
+that cannot be checked is refused. A path outside every root stays the
+recoverable `PathAccessDenied`, and its message lists the roots: `path
+outside allowed file sandbox roots: <path> (writable: <roots>; read-only:
+<roots>)`. `unrestricted` mode skips both lists; god mode may still allow a
+refused action per owner approval, but only once: a write under a
+read-only root or to a hard-linked file never offers a session or always
+grant. An in-place change (write, append, copy onto, an approved Modify) of
+an existing file with more than one hard link is refused when read-only
+roots are configured, because another of its names may be read-only. The task-workdir shortcut of `write_file` /
+`edit_file` resolves symlinks the same way, checks the read-only roots, and
+creates new files with `create_new`, so a planted link cannot carry a write
+out of the workdir; an approved Create does the same.
+
+The shell sandbox is separate: its OS box writes only under
+`allowed_working_dirs`. It also honours `read_only_roots`: no writes and no
+hard links out of them (`ln programs/plan.md Workspaces/plan.md` would give
+a program a writable second name; SBPL `file-link`, a separate read-only
+bwrap mount on Linux), with a writable root inside one re-opened. VibeDev
+engines inherit it in their box, and the coding profile (coding-run spawns,
+`box_harness: false`, and the god-mode override's unboxed shell inside a
+coding run) layers it the same way: the read-only roots after the write
+allows, the run's writable roots inside them re-opened (its write
+allow-list, or without one the agents' allowed roots, the shell's working
+dirs and the task root), all before the live-fence and real-repo denies,
+and again inside the live fence's storage base after its carve-out (the
+read-only parts only: the base itself is never re-opened as a whole). A
+god-mode command the owner approves runs outside the shell box, and super
+god mode launches with no fence. On Linux a read-only root missing when a
+command starts is not mounted (`--ro-bind-try`), so one created during the
+command is fenced only from the next one.
 
 ### 12.2 Trust levels
 
@@ -1690,3 +1928,7 @@ Plan inspection widgets live next to the app routes
 | MUIJ store | `ui/unified-ui/src/lib/stores/muijStore.ts` |
 | WebSocket dispatch | `ui/unified-ui/src/lib/realtime/v2-websocket.ts` |
 | App routes | `ui/unified-ui/src/routes/(app)/` |
+
+Successful task-workdir file writes and edits declare artifact paths for the existing capture pipeline; editable source paths remain distinct from immutable execution copies. Structured tool results include verified `magician_output_files` download references for the model to copy.
+
+Historical planning-usage backfill reads governed Parquet files in bounded groups, with resource limits and deadlines; incomplete scans retain their retry marker. Verified checksums are reused only while file identity, length, mtime and ctime remain unchanged.

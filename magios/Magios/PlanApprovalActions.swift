@@ -207,31 +207,47 @@ enum PlanApprovalActions {
 
 /// The app's client: the same endpoints the rest of the app posts to.
 struct LivePlanApprovalClient: PlanApprovalClient {
-    var session: URLSession = .shared
+    private let session: URLSession
+    private let baseURL: URL
+    private let headers: [String: String]
+    private let profile: MobileConnectionProfile?
+    init(session: URLSession = .shared) {
+        let profile = MagicianAccess.connectionProfile
+        self.profile = profile
+        self.baseURL = profile?.publicOrigin ?? MagicianAccess.baseURL
+        self.headers = MagicianAccess.headers(profile: profile)
+        self.session = session
+    }
+    private var isCurrentConnection: Bool {
+        MagicianAccess.connectionProfile == profile && MagicianAccess.baseURL == baseURL && MagicianAccess.headers() == headers
+    }
 
     private static let pathSegment = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
 
     func respond(_ request: PlanApprovalRequest, confirmed: Bool) async -> PlanApprovalPost {
+        guard isCurrentConnection else { return .failed("Connection changed. Reopen this request before answering.") }
         guard let id = request.correlationId.addingPercentEncoding(withAllowedCharacters: Self.pathSegment),
-              let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/hitl/\(id)/respond")
+              let url = URL(string: "\(baseURL.absoluteString)/api/magician/v2/hitl/\(id)/respond")
         else { return .failed("The response URL is invalid.") }
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        MagicianAccess.authorize(&urlRequest)
+        headers.forEach { urlRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
         urlRequest.httpBody = try? JSONSerialization.data(
             withJSONObject: PlanApprovalActions.respondPayload(request, confirmed: confirmed))
         do {
             let (data, response) = try await session.data(for: urlRequest)
+            guard isCurrentConnection else { return .failed("Connection changed. Reopen this request before answering.") }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             let message = (body?["message"] as? String) ?? (body?["reason"] as? String)
             let posted: PlanApprovalPost
             if (200..<300).contains(status) {
                 posted = body?["accepted"] as? Bool == false || body?["resumed"] as? Bool == false
+                    || (body?["accepted"] as? Bool != true && body?["resumed"] as? Bool != true)
                     ? .failed(message ?? "The answer was not accepted.") : .ok
             } else if status == 409, body?["reason"] as? String == "already_resolved" {
-                posted = .ok
+                posted = .failed("This request was already answered. Refresh the plan before starting a run.")
             } else {
                 posted = .failed(message ?? "The answer failed (HTTP \(status)).")
             }
@@ -245,15 +261,17 @@ struct LivePlanApprovalClient: PlanApprovalClient {
     }
 
     func startRun(taskId: String) async throws {
+        guard isCurrentConnection else { throw URLError(.cancelled) }
         guard let id = taskId.addingPercentEncoding(withAllowedCharacters: Self.pathSegment),
-              let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v3/tasks/\(id)/execute")
+              let url = URL(string: "\(baseURL.absoluteString)/api/magician/v3/tasks/\(id)/execute")
         else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data("{}".utf8)
-        MagicianAccess.authorize(&request)
+        headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         let (data, response) = try await session.data(for: request)
+        guard isCurrentConnection else { throw URLError(.cancelled) }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

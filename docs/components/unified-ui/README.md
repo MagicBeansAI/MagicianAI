@@ -2,8 +2,6 @@
 
 Landing page for `ui/unified-ui` documentation.
 
-**Current development version:** `0.1.41`.
-
 SvelteKit 2 / Svelte 5 frontend for Magician. Product surfaces present as
 **Magican** (`PRODUCT_NAME` from `src/lib/presentationIdentity.ts`, generated
 from `data/presentation_identity.json`). Contact is
@@ -24,7 +22,7 @@ tree.
 - [Theme tokens](theme-tokens.md)
 - [MUIJ / GAUI / native boundaries](muij-native-ui-boundaries.md)
 - [Auth session gate](auth-session-gate.md)
-- [Unified Work](unified-work.md) — tasks, Crew, programs and quality in one workspace
+- [Unified Work](unified-work.md) — tasks, Crew, Playbooks and Quality checks in one workspace
 - [Unified task panel](unified-task-panel.md)
 - [Task and execution UI architecture](threads-tasks-conversion.md)
 - [HITL attention](../magician/hitl-attention.md)
@@ -68,6 +66,14 @@ tree.
 
 ### Chat, voice, HUD, tutor
 
+Chat deletion shows **Deleting…** until server cleanup finishes, prevents repeated
+deletes, and reports failures without removing the row. Opening a conversation
+lands instantly on its newest page; earlier history loads one page at a time
+while preserving the reading position. Message links still open their target.
+Historical activity loads near the viewport or when opened; live activity stays
+subscribed. History timestamps and server-paged ordering refresh on chat activity
+without blanking the list or changing its filters.
+
 - [Chat turn progress](chat-turn-progress.md) — live turn card
 - [Concurrent voice requests](concurrent-voice.md) — independent background questions, coordinated playback, context selection, cancellation
 - [Wake word](wake-word-voice.md) — ambient Orb admission (not a composer button)
@@ -87,8 +93,10 @@ tree.
 - [Observe channel toggles](observe-channel-toggles.md) — `/observe` Mail & chat card
 - [LLM spend breakdown](llm-spend-breakdown.md) — `/llm` Spend
 - [Model routing panel](model-routing-panel.md) — dedicated Settings operation/profile/model routing page and engine-affinity precedence
+- [Settings page](settings.md) — `/settings` categories, sticky nav and scroll-spy, live-filter search, mobile chip bar, `?embed=1`
 - [On-device generation](settings-local-generation.md) — Settings kitty pin (`runtime.ollama.local_generation.selected`) with RAM-tier warnings and an Ollama reload
 - [Plane terminal grants](plane-terminal-grants.md) — Settings `plt_` grants
+- [Budgets](settings-budgets.md) — Settings per-run limit, daily spend limit, today's spend and top-up
 - [Resource Authority key](resource-authority-key.md) — `/budget` admin key
 - [Runtime activity](runtime-activity-view.md) — `/runtime`
 - [Storage activation](storage-activation.md) — `/storage`
@@ -111,7 +119,9 @@ tree.
 | `/coding-runs` | "Work in progress": every work item from `GET /work/live` (`workLiveStore`) — coding runs with Steer, Stop and Open (`LiveRunsStrip`), crews and Work tasks with Open and Follow; the desktop notch side panel shows it when a runs-ear dot is tapped, `?run=` or `?item=` highlighting that item |
 | `/chat` | Rich chat (attachments, grouped task progress, session history) |
 | `/t/[name]/chat`, `/t/[name]/settings` | Thread workspace; bare `/t/[name]` redirects to chat; thread work opens `/work?thread=…` |
-| `/work` | Unified work; Tasks, Monitors and Internal work filters, Needs you, Crew, Programs, Quality and Company loop |
+| `/chat/files`, `/t/[name]/files` | A chat's uploads and task artifacts: sizes, downloads, delete a chat copy |
+| `/chat/models`, `/t/[name]/models` | Per-model calls, tokens, cache and cost for a chat and its delegated work. Refreshes on a viewer-chosen interval (default 1 min, kept per browser) with a countdown, only while the tab is visible (`stores/visiblePoll.ts`) |
+| `/work` | Unified work; Tasks, Monitors and System work filters, Needs you, [Goals and target dates](../../features/goal-workspaces.md#work--goals), Crew, Playbooks, Quality checks and Team routines |
 | `/observe` | Listen / join-as-agent / watch screen |
 | `/reviews`, `/evidence` | Impact reviews and work-evidence inbox |
 | `/claims-review` | Statement register review |
@@ -125,13 +135,13 @@ tree.
 | `/skills`, `/skills/evolution` | Skill/pack catalog and evolution |
 | `/history` | Sessions and threads |
 | `/memory` | User memory + taste proposals |
-| `/notes` | Audio notes and search |
+| `/notes` | Notes, audio notes and search; `/notes?path=…&workspace=…` is the canonical relative note link (switches workspace when the session can, keeps the address bar on the open note, Copy link gives the absolute form; `lib/notes/noteLinks.ts`); the reader hides YAML front matter (`noteFrontMatter.ts`), the editor keeps the whole file |
 | `/triggers` | Trigger inventory |
 | `/budget` | Resource Authority dashboard (`/budget/tokens/[id]`, `/transactions`, `/audit`) |
 | `/llm`, `/llm/queue` | LLM observability and dispatch queue |
 | `/runtime`, `/runtime/resources` | In-flight spans; observe-only local resource governor |
 | `/storage` | Storage sizes, retention, Track B activation |
-| `/settings` | Trust policy, config reload, theme, devices, plane grants |
+| `/settings` | [Eight categories with search](settings.md), ending in About → Versions: trust policy, config reload, theme, devices, plane grants, [harness credentials](../magician/harness-auth.md) (`lib/settings/HarnessAuthPanel.svelte`: signed in / session expired / not signed in with the CLI's reason and remedy; Magician's key only after approval), [budgets](settings-budgets.md) (`lib/settings/BudgetsPanel.svelte`) |
 | `/evals` | Eval-lane dashboard |
 | `/thinking-maps` | Live thinking-map boards |
 | `/feed` | Operator agent-update timeline |
@@ -163,7 +173,9 @@ The v5 TopBar shell is the only `(app)` shell. `(app)/+layout.svelte` mounts
 Chat, Work, Observe, then any tab an installed app declares. Briefing, Apps,
 Reviews and Square stay in the command palette (Square under Jump to; the others
 under Manage). The palette jumps to **Work** (`G T`); its searchable description
-includes Tasks, Crew, Monitors, Internal work, Programs and Quality.
+includes Tasks, Crew, Monitors, System work, Playbooks and Quality checks.
+The left icon rail omits Quality checks and Reviews; Quality checks remains
+under Work and Reviews remains searchable in the command palette.
 
 **Command palette.** The closed palette preloads nothing (agents, tasks,
 sessions, approvals, notes settings); opening it refreshes those stores
@@ -173,10 +185,13 @@ uses `commandFilter` (`src/lib/shell/commandMatch.ts`), not bits-ui's
 subsequence scorer (which ranks unrelated phrases): NFKC-normalised,
 case-folded, whitespace-collapsed; a command matches when the whole query is a
 prefix/substring of its text or every query word is an exact or prefix word of
-it; anything else is hidden. While searching, matches in **Jump to** lead,
-then **Manage**, then every other section by match quality: each item carries
-the keyword `section:<name>` and `commandFilter` adds a section boost, because
-bits-ui orders groups by their best item's score.
+it; anything else is hidden. Root results are filtered before rendering, so
+empty sections, including asynchronously loaded Apps, are omitted. Exact label
+matches lead, followed by label prefixes/word matches, then supporting text and
+IDs. Each section is ordered by its strongest match, with stable section order
+for ties. Svelte owns this root ordering; bits-ui handles keyboard selection and
+filters nested flows. An empty query retains the usual sections and Suggested
+items ranked by use and context.
 
 **Archived items.** Every archivable list reads its archived rows from the
 server, paged (`archived=only`): the history drawer and chat rail have an
@@ -188,10 +203,25 @@ under their own label and its Runs section has an **Archived** toggle whose rows
 open the run in internal tasks, with a server search over all the project's
 archived runs and a page footer like the chat rail's.
 
+The history rail and the history drawer show Archive and Delete on hover for
+every thread except `#general`. The row reads Archiving…, Restoring…, or
+Deleting… until the server finishes. A long thread name stays on one line,
+and the full name is in the tooltip.
+
+The chat history rail marks sessions with current chat/task activity as
+**Working**, separately from selection or active/archived status; a bounded
+snapshot refreshes every three seconds while the rail and browser tab are visible.
+
+Selected God-mode auto-approve controls use the theme's paired primary-button fill and foreground for readable contrast.
+
 **Work in progress.** `/coding-runs` ("Work in progress") lists the owner's
 long-running work: every project's going, waiting and just-ended VibeDev runs
 (`LiveRunsStrip`, `vibeDevLiveRunsStore` over `GET /vibedev/runs/live`) with a
-state dot, Steer in place, Stop after a two-second undo, and Open in `/vibe`;
+state dot, Steer in place, Stop after a two-second undo, and Open in `/vibe`; a
+working run whose `running` turn has no progress for the verdict's
+`STALL_AFTER_MS` reads `Stalled · no progress for …` (`liveRunStalledForMs`); a
+`notice` shows with Acknowledge, and Review (Answer for a `decision`) only on a
+needs-you run;
 then one row per crew and per Work task from `workLiveStore` (`GET /work/live`,
 the summary the phones show) with its state, step and spend, Open (the item's
 `web_path`) and Follow/Unfollow (`POST /work/follow`, `DELETE
@@ -261,6 +291,13 @@ behavior with its next eligible run and latest outcome; App workflow runs appear
 under Internal Tasks with controls linking to Apps (the app lifecycle owner
 rejects generic Stop/Delete).
 
+Steer drafts survive same-run refreshes; responses from a previous execution or credential scope cannot clear the current draft or report success for it.
+
+Composer docks page through every open ask (`completePendingFeed`) with a Work
+plan-review fallback; an answer counts only on `accepted`/`resumed: true`, a
+closed plan approval never starts a run, and a credential change clears pending
+asks.
+
 **MUIJ / GAUI.** Agent-generated and published surfaces render through
 `MuijRenderer.svelte` and the catalog in `componentCatalog.ts`. Stable
 product pages are native Svelte. Live agent documents (`agent.ui.delta`)
@@ -297,7 +334,10 @@ are chosen in Settings and stored in media preferences; the engine picker render
 the backend catalog in arrival order (profile `display_order`, then id).
 
 **HITL.** Canonical envelope `HitlRequested` / `HitlResolved`; respond via
-`POST /api/magician/v2/hitl/{id}/respond` (`src/lib/hitl/`). `/attention`
+`POST /api/magician/v2/hitl/{id}/respond` (`src/lib/hitl/`); every answer path
+posts the server's `respond` handle when present (`readHitlRespondHandle`,
+`hitlCallFromHandle`; see
+[respond handle](../magician/hitl-attention.md#respond-handle-respond)). `/attention`
 is the inbox. TopBar Attention opens the compact center. Other surfaces
 show count + CTA, not response widgets.
 
@@ -569,6 +609,15 @@ restart the dev server afterwards (`make restart-ui-dev`).
 
 ## Relentless draft workspace
 
+Manual Quality drafts use the shared model and thinking controls for drafting
+and independent review. The Quality catalog restricts choices to bounded, priced
+routes; the main catalog supplies model labels, supported thinking steps and
+availability. Changing the draft family requires an explicit independent review
+choice. Missing, unavailable or conflicting choices block guided review without
+replacing the saved values. Preview still seals the generated route handles in
+the existing contract; complete contracts and historical records retain their
+exact contents.
+
 The 2026-10-04 workspace opens on **Needs review** rather than the setup form.
 The inbox contains agent briefs, waiting runs, accepted drafts and attached
 captures awaiting policy review. Search, review-type/status filters, proposing
@@ -641,7 +690,7 @@ owner questions or accepted artifacts.
 Changing the reviewed task context or selected proposal also discards a prior
 complete-contract edit, preventing stale recipes from following new ownership.
 
-**Work → More → Quality and review** previews a generic acceptance contract
+**Work → More → Quality checks** previews a generic acceptance contract
 and its bounded reservation, then creates a task-backed local draft run. The owner supplies a goal, source
 notes and quality requirements. Scope changes clear drafts, cancel pending reads
 and reject responses from the previous credential revision. The run view shows
@@ -651,7 +700,7 @@ renders their exact text side by side; artifact content is never executed as HTM
 Declared binary artifact files show their media type/size and use authenticated
 downloads of exact sealed bytes. Downloads reject a changed workspace credential
 revision. Stored task output links to `/relentless?run=<id>` clicked inside the app
-normalize to Work → Quality and select the matching scoped run, preserving the accepted file set instead of decoding media as text. Shared
+normalize to Work → More → Quality checks and select the matching scoped run, preserving the accepted file set instead of decoding media as text. Shared
 runtime/provider checks remain separate from the isolated UI checks.
 An unfinished actor checkpoint matching the pending attention ID directs the
 owner to the existing task question flow. Infrastructure blockers retain their
@@ -765,8 +814,7 @@ artifact so a run started in the UI becomes reviewable without reopening it.
 
 The shell and login use the shared `BrandStar` mark, selecting light or dark
 assets from the surrounding theme text color. Browser, pinned-tab, home-screen
-and Open Graph icons live under `static/`; `site.webmanifest` supplies regular
-and maskable install icons.
+and Open Graph icons live under `static/`.
 
 Shared HITL adapters preserve the pause storage key separately from the exact
 revision-bound correlation ID. Direct task answers and canonical attention events
@@ -788,11 +836,25 @@ Quality-owned attempts continue to use their reviewed round budget controls.
 
 ## Speaking voices
 
+Dictation shows a Listening timer and microphone waveform; live call controls show a measured microphone/speaker waveform; muted input stays flat, playback follows the audio queue, and reduced-motion settings disable scrolling.
+
 Settings exposes Text to speech voices and Live call engine voices. Composer
 pipeline controls select a speech model and its speaking voice; Call controls
 select a realtime model and its voice. `VoicePersonaPicker` persists partial
 `tts_voices` / `realtime_voices` updates through the scoped media preferences
 API, offers search for large catalogs and a cancellable TTS preview. Browser
-voices retain their device-local controls. See the [voice selection contract](../magician/realtime-media-rails.md#speaking-voice-selection).
+voices retain their device-local controls; those preferences are read and written
+only in the browser, never during server rendering. See the [voice selection contract](../magician/realtime-media-rails.md#speaking-voice-selection).
+
+**Chat auto-speak** (`maybeAutoSpeakTail`, `lib/media/tts/autoSpeak.ts`) reads
+only a reply that lands while the chat is on screen. `ChatPanel` takes the
+tail of each conversation it shows as a baseline, so opening another chat
+(thread switch, `?session=` link, chat tab) never reads its last message. A
+voice-origin reply speaks even with auto-speak off, except replies already
+spoken where they were produced: `realtime_voice` (the call) and
+`meeting_room` (the meeting bot), and tutor/App Copilot narration.
 
 All selectors inside Voice options (pipeline, stage/model, realtime model, persona, and browser voice/speed/pitch) use `AudioChoicePicker`: the LLM profile picker’s compact 28px trigger, theme colors, checked rows, and a bounded searchable popup. Popups are positioned from the trigger’s viewport rectangle, follow scrolling, and flip using their actual height so short menus stay next to the field. Arrow keys skip unavailable choices; Escape returns focus.
+
+VibeDev's composer ask dock matches the project's chat session and every turn of the selected run,
+and includes workspace God approvals while preserving their originating grant scope.

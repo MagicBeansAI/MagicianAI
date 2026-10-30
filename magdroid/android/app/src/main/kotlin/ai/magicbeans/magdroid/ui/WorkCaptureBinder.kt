@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -22,29 +24,32 @@ internal fun WorkCaptureBinder(runId: String, hash: String, taskId: String, push
     val resource = rememberWorkResource("$WORK_QUALITY_API/campaigns?limit=10&offset=${page * 10}")
     val state by resource.state.collectAsStateWithLifecycle(); val scope = rememberCoroutineScope()
     LaunchedEffect(state.identity) { reviewed = false; inspect = false }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("Bind this accepted artifact to a reviewed campaign. Captures are local records; nothing is sent.", color = Muted, fontSize = 14.sp); WorkLink("Inspect exact accepted artifact") { inspect = true }; WorkResourceStatus(state, resource) }
-        items(state.value.workRows("campaigns")) { row ->
+    val campaigns = state.value.workRows("campaigns")
+    WorkPage {
+        item { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            WorkGroup { WorkRow("Inspect exact accepted artifact", icon = Icons.Outlined.FindInPage, value = if (reviewed) "Reviewed" else null) { inspect = true } }
+            WorkFootnote("Bind this accepted artifact to a reviewed campaign. Captures are local records; nothing is sent.")
+        } }
+        workStatusItem(state, resource)
+        if (state.value != null && campaigns.isEmpty()) item { WorkGroup { WorkEmptyState("No capture policies to bind.", icon = Icons.Outlined.Policy) } }
+        items(campaigns) { row ->
             val policy = row.workField("state").workField("campaign")
-            WorkCard {
-                Text(policy.workField("spec").workText("name").orEmpty(), color = Ink, fontSize = 17.sp)
-                WorkRecord(policy)
+            WorkHeaderCard(policy.workField("spec").workText("name").orEmpty(), subtitle = policy.workText("id")) {
                 policy.workField("spec").workRows("targets").filter { it.workText("task_id") == taskId }.forEach { target ->
-                    TextButton(onClick = {
-                        val identity = state.identity; val id = policy.workText("id") ?: return@TextButton
+                    WorkActionRow("Bind local capture · ${target.workText("identity_id")}", Icons.Outlined.Link, enabled = reviewed && !state.busy && policy.workField("revoked_at") == JsonNull) {
+                        val identity = state.identity; val id = policy.workText("id") ?: return@WorkActionRow
                         scope.launch { resource.perform("$WORK_QUALITY_API/campaigns/${WorkRepository.segment(id)}/captures", identity, body = buildJsonObject { put("expected_version", policy.workField("version_hash") ?: JsonNull); put("run_id", runId); put("artifact_hash", hash); put("identity_id", target.workField("identity_id") ?: JsonNull) }) }
-                    }, enabled = reviewed && !state.busy && policy.workField("revoked_at") == JsonNull) { Text("Bind local capture · ${target.workText("identity_id")}", color = Coral) }
+                    }
+                    WorkRowDivider()
                 }
+                WorkRecordRow("Policy record", policy, icon = Icons.Outlined.Article)
             }
         }
-        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { page-- }, enabled = page > 0) { Text("Previous", color = Coral) }; Text("Page ${page + 1}", color = Muted)
-            TextButton(onClick = { page++ }, enabled = state.value.workField("pagination").workBool("has_more")) { Text("Next", color = Coral) }
-        } }
+        if (state.value != null) item { WorkPager(page, state.value.workField("pagination").workBool("has_more"), { page = it }) }
     }
-    if (inspect) Dialog(onDismissRequest = { inspect = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    if (inspect) Dialog(onDismissRequest = { inspect = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Column(Modifier.fillMaxSize().background(Ground).systemBarsPadding()) {
-            WorkLink("‹ Capture") { inspect = false }
+            WorkDetailBar("Accepted artifact", onBack = { inspect = false }, backLabel = "‹ Capture")
             WorkQualityArtifact("$runId/$hash", push, onReviewed = { reviewed = true })
         }
     }

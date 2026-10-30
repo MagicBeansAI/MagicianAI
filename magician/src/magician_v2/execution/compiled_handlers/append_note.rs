@@ -33,6 +33,20 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         target_path: super::notes_shared::text_arg(&args, "target_path"),
     };
 
+    if let Some(target) = request.target_path.as_deref() {
+        if let Some(refused) = super::notes_shared::workspace_refusal(
+            "append_note",
+            &store,
+            &principal,
+            &workspace,
+            target,
+            crate::magician_v2::execution::goal_workspace_access::Op::Write,
+        )
+        .await
+        {
+            return Ok(refused);
+        }
+    }
     match store.append_note(&principal, &workspace, request).await {
         Ok(note) => Ok(super::notes_shared::note_result(note)),
         Err(error) => Ok(super::notes_shared::write_error("append_note", error)),

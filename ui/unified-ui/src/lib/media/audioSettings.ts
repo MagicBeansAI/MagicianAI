@@ -287,9 +287,11 @@ export async function fetchResolvedAudioSurface(
 	for (const [stage, optionId] of Object.entries(options.stageOptions ?? {})) {
 		if (optionId) query.append('stage_option', `${stage}:${optionId}`);
 	}
-	return readJson<ResolvedAudioProfile>(
+	const resolved = await readJson<ResolvedAudioProfile>(
 		await timedFetch(
 			`/api/magician/v2/media/surfaces/${encodeURIComponent(surface)}/resolved?${query.toString()}`
 		)
 	);
+	// The backend omits this list when no stages are degraded.
+	return { ...resolved, degradations: resolved.degradations ?? [] };
 }

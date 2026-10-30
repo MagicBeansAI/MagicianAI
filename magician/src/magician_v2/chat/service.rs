@@ -114,8 +114,8 @@ use crate::{
     },
     magician_v2::{
         agents::{
-            load_memory_candidate_documents,
-            memory_tiers::{MemoryTierDefinition, RenderConfig, RetentionMode, TierScope},
+            memory_prompt_snapshot::load_memory_recall_candidate_documents,
+            memory_tiers::{MemoryTierDefinition, TierScope},
             storage::{sanitize_segment, AgentStorage},
             types::GoalSource,
             ActionSummary, AgentDefinitionStore, AgentMemoryResolver, AgentRuntime, EpisodeOutcome,
@@ -208,7 +208,7 @@ const MAX_CHAT_PROMPT_DUMP_FALLBACK_BYTES: usize = 64 * 1024;
 const MAX_CHAT_PROMPT_DUMP_JSON_DEPTH: usize = 48;
 const MAX_CHAT_PROMPT_DUMP_JSON_NODES: usize = 250_000;
 const MAX_CHAT_PROMPT_DUMP_ERROR_BYTES: usize = 16 * 1024;
-const PROJECTED_CHAT_TASK_OUTPUT_FILES_LIMIT: usize = 4;
+const PROJECTED_CHAT_TASK_OUTPUT_FILES_LIMIT: usize = 8;
 const GOVERNED_TOOL_ARGUMENT_SHAPE_MAX_NODES: usize = 4_096;
 const GOVERNED_LLM_FAILURE_DURABLE_ERROR: &str =
     "governed_app_continuation_failed: details omitted by policy";
@@ -788,6 +788,21 @@ fn settle_chat_loop_end(
     }
 }
 
+/// What the owner reads when the model answered with nothing twice.
+const EMPTY_MODEL_REPLY_NOTICE: &str =
+    "The model sent back an empty reply twice, so this turn ended without an answer. \
+     Please send your message again.";
+
+/// A reply with no text and no tool calls: nothing to show and nothing to
+/// run. Reasoning alone does not count as an answer.
+fn chat_model_reply_is_empty(response: &super::llm_service::ChatLlmResponse) -> bool {
+    response.tool_calls.is_empty()
+        && response
+            .content
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+}
+
 /// Whether the backstop hand-off may call the model. Governed app data (and
 /// local-only app memory) only crosses a provider boundary on the loop's
 /// attested route; such a turn hands off with the deterministic note.
@@ -969,8 +984,7 @@ const CHAT_INLINE_DEFAULT_PERSONA: &str =
     "You are a helpful personal assistant with a natural, conversational style.";
 const CHAT_COMPLETION_OPERATION: &str = "chat_completion";
 const BRAINSTORM_FACILITATION_OPERATION: &str = "brainstorm_facilitation";
-const BRAINSTORM_FACILITATION_FALLBACK_PROFILE: &str =
-    "chat-gpt61sol-responses-vision-toolsauto-fast";
+const BRAINSTORM_FACILITATION_FALLBACK_PROFILE: &str = "model/openai/gpt-6.1-sol/low";
 const KAPSO_ENVOY_CHAT_OPERATION: &str = "kapso_envoy_chat";
 
 fn brainstorm_facilitation_model_is_allowed(provider: &str, model: &str) -> bool {
@@ -1004,69 +1018,12 @@ send `{control_command} <request>` if they want {primary_agent_name} to work on
 it (`@magic <request>` is a legacy alias). When it is worth owner review, include the natural phrase
 "I can flag this for review" in the reply."#;
 
-/// Tool name the LLM calls to self-escalate from the fast variant of an
-/// adaptive profile to the thinking variant. Only injected into the tool
-/// spec list when the effective chat-completion profile is an adaptive
-/// composite; non-adaptive turns never see this name and can't call it.
-pub(crate) const REQUEST_THINKING_MODE_TOOL_NAME: &str = "request_thinking_mode";
-
-/// Fast-mode instruction block appended to the chat outer-loop system
-/// prompt when the effective profile is adaptive. Tells the LLM that it's
-/// running on the fast variant by default and that it should call
-/// `request_thinking_mode` *before* answering when the question genuinely
-/// needs reasoning. The block is dropped after escalation so the thinking
-/// turn doesn't get a contradictory instruction.
-const FAST_MODE_INSTRUCTION_BLOCK: &str = r#"## Reasoning mode
-
-You are currently running on the FAST variant of an adaptive profile —
-no extended reasoning tokens. This is the right default for the vast
-majority of chat turns (chit-chat, lookups, quick edits, short answers).
-
-If — and only if — the user's request genuinely needs careful multi-step
-reasoning (hard math, ambiguous logic, planning over many constraints,
-analyzing a long document, writing non-trivial code), call the
-`request_thinking_mode` tool BEFORE you answer. The runtime will swap to
-the thinking variant of this profile and re-run the turn with full
-reasoning budget. Do not escalate for routine requests — it costs the
-user money and adds latency.
-
-Hard rule: never call `request_thinking_mode` more than once per turn,
-and never call it together with other tools in the same response. The
-response that requests thinking should contain exactly one tool call
-(the escalation) and no assistant text."#;
-
 // The voice-origin speech-tag instruction used to live here as a
 // `const &str` literal. It now lives in
 // `data/magician_v2/prompts/voice_origin_speech_instruction_v1.0.0.json`
 // and is loaded at turn time via `PromptManager` (see the
 // `if voice_origin` branch in `prepare_chat_turn`). Constants live in
 // `magician_v2::prompts::constants::{names, versions}`.
-
-/// Build the `request_thinking_mode` tool spec. The schema accepts a
-/// single optional `reason` string (one-liner shown in the UI's
-/// thinking-mode chip + emitted in the `ThinkingModeActivated` event).
-fn request_thinking_mode_tool_spec() -> LLMToolSpec {
-    LLMToolSpec {
-        name: REQUEST_THINKING_MODE_TOOL_NAME.to_string(),
-        description: "Escalate this turn from the FAST variant of the active adaptive profile to \
-                      its THINKING variant (extended reasoning + larger output budget). Call this \
-                      BEFORE answering, and only when the user's request genuinely needs careful \
-                      multi-step reasoning. The runtime will swap profiles and re-run this turn. \
-                      Do not pair with other tool calls; do not call more than once per turn."
-            .to_string(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "One-line reason for escalating (shown in the chat UI \
-                                    and recorded in observability events). Optional."
-                }
-            },
-            "additionalProperties": false
-        }),
-    }
-}
 
 struct PublicChatAdmissionManager {
     policy: PublicChatPolicyConfig,
@@ -1641,22 +1598,6 @@ struct ChatToolLineageState {
     materialized: bool,
 }
 
-/// Per-turn state captured when the effective chat-completion profile is
-/// an adaptive composite. Lives only for the duration of one
-/// `process_chat_inline_turn` call — adaptive state is *never* persisted
-/// because every user message starts a new turn on the fast variant.
-#[derive(Debug, Clone)]
-struct AdaptiveTurnState {
-    /// Name of the adaptive composite as it appears in
-    /// `LLMRouterConfig::adaptive_profiles` (e.g. `chat-openai-adaptive`).
-    composite_name: String,
-    /// Standard profile name the runtime calls by default this turn.
-    fast_profile: String,
-    /// Standard profile name the runtime swaps to on
-    /// `request_thinking_mode` escalation.
-    thinking_profile: String,
-}
-
 #[derive(Clone)]
 pub struct ChatAgenticRuntime {
     runtime: Arc<AgentRuntime>,
@@ -2097,7 +2038,11 @@ impl crate::magician_v2::context_retrieval::ContextContributionSource for ChatMe
                 evidence_refs: candidate.source_ids.clone(),
                 candidate_count: 1,
                 retrieval_backend: self.retrieval_backend.to_string(),
-                completeness: if candidate.projection_used {
+                // Fair-share budgets and episode passages render one revision
+                // to different text per stage; only the whole source is Complete.
+                completeness: if candidate.projection_used
+                    || candidate.text.trim() != candidate.source_text.trim()
+                {
                     ContextEvidenceCompleteness::Excerpt
                 } else {
                     ContextEvidenceCompleteness::Complete
@@ -2209,6 +2154,55 @@ fn build_dynamic_context_block(
     }
     let body = sections.join("\n\n");
     Some(format!("<context>\n{body}\n</context>"))
+}
+
+/// The owner's stated timezone: a `preferences` entry keyed `timezone`
+/// whose value names an IANA zone (`"Asia/Kolkata (IST, UTC+5:30)"`).
+fn stated_owner_timezone(knowledge: &Value) -> Option<chrono_tz::Tz> {
+    let preferences = knowledge.get("preferences")?.as_array()?;
+    preferences
+        .iter()
+        .rev()
+        .filter(|entry| {
+            entry
+                .get("key")
+                .and_then(Value::as_str)
+                .is_some_and(|key| key.trim().eq_ignore_ascii_case("timezone"))
+        })
+        .filter_map(|entry| entry.get("value").and_then(Value::as_str))
+        .find_map(|value| {
+            value
+                .split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | ';'))
+                .find_map(|token| token.parse::<chrono_tz::Tz>().ok())
+        })
+}
+
+/// One `<context>` line anchoring "today", "tonight" and "what time is it"
+/// to the owner's clock. The chat prompt otherwise carries no date or time,
+/// so the model could not answer either.
+fn owner_local_time_line(
+    stated: Option<chrono_tz::Tz>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    match stated {
+        Some(zone) => {
+            let local = now.with_timezone(&zone);
+            format!(
+                "Owner's local time: {} ({}, the owner's stated timezone, UTC{}).",
+                local.format("%A %-d %B %Y, %H:%M %Z"),
+                zone.name(),
+                local.format("%:z")
+            )
+        },
+        None => {
+            let local = now.with_timezone(&chrono::Local);
+            format!(
+                "Owner's local time: {} (UTC{}, this computer's timezone; the owner has not stated one).",
+                local.format("%A %-d %B %Y, %H:%M"),
+                local.format("%:z")
+            )
+        },
+    }
 }
 
 /// Prepend a dynamic-context block to the latest user-side turn in
@@ -2378,6 +2372,19 @@ fn chat_turn_trace_context(
 /// only ever restrict the caller. What no label may do is the reverse: escape a
 /// room onto an owner surface. That is the property the tests assert.
 pub const MEETING_ROOM_SOURCE_SURFACE: &str = "meeting_room";
+
+/// Whether a turn runs on the public-envoy surface: the configured public
+/// chat source surface, or any session bound to the envoy agent outside a
+/// shared room (the same mapping `validate_forced_agent_session_binding` uses).
+fn public_envoy_turn(
+    public_chat_source: bool,
+    shared_room: bool,
+    agent_id: &str,
+    envoy_agent_id: Option<&str>,
+) -> bool {
+    public_chat_source
+        || (!shared_room && (agent_id == "envoy" || envoy_agent_id == Some(agent_id)))
+}
 
 /// `shared_room` is **server-derived and trusted**, exactly like `public_envoy`
 /// beside it. It must never be computed from `source_surface`, `ui_thread_id`,
@@ -2715,6 +2722,7 @@ fn delegate_terminal_status_event_payload(
     output_files: &[ContentBlockRecord],
     completion_kind: Option<crate::magician_v2::artifact_v2::models::CompletionKind>,
     target_agent_id: &str,
+    synthesis_pending: bool,
 ) -> Value {
     json!({
         "event_id": Uuid::new_v4().to_string(),
@@ -2724,12 +2732,56 @@ fn delegate_terminal_status_event_payload(
         "status": status,
         "summary": summary,
         "output_files": output_files,
-        "synthesis_pending": false,
+        "synthesis_pending": synthesis_pending,
         "completion_kind": completion_kind,
         "target_agent_id": target_agent_id,
         "chat_inline_delegate_agent_id": target_agent_id,
         "recovery_origin": "delegate_terminal_watcher",
     })
+}
+
+fn chat_task_status_snapshot(
+    session: &ChatSession,
+    task: &crate::magician_v2::artifact_v2::models::TaskRecord,
+    output_files: Vec<ContentBlockRecord>,
+    chat_turn_id: Option<&str>,
+) -> ChatMessage {
+    ChatMessage::new(
+        Uuid::new_v4().to_string(),
+        session.id.clone(),
+        ChatMessageDirection::System,
+        ChatMessageContent::TaskStatusUpdate {
+            completion_kind: task.state.completion_kind,
+            task_id: task.manifest.task_id.clone(),
+            status: task.state.status.clone(),
+            display_label: None,
+            summary: Some(format!(
+                "Watching task: {} ({})",
+                task.manifest.title, task.state.status
+            )),
+            // Surface the active execution so the chat card's
+            // "Inspect run →" trigger renders DURING the run (the
+            // frontend gates it on a non-empty `execution_id`), not
+            // only after the terminal snapshot. Mirrors the
+            // resolution in `emit_delegate_terminal_chat_snapshot`.
+            execution_id: task
+                .state
+                .active_root_execution_id
+                .clone()
+                .or_else(|| task.state.latest_root_execution_id.clone())
+                .or_else(|| task.state.last_completed_root_execution_id.clone()),
+            ui_thread_id: Some(task.manifest.ui_thread_id.clone()),
+            output_files,
+            synthesis_pending: task.state.synthesis_pending(),
+            speech_tts: None,
+        },
+        Utc::now().timestamp_millis(),
+    )
+    .with_chat_turn_id(chat_turn_id.map(str::to_string))
+    .with_voice_origin(None)
+    .with_speech_segments(None)
+    .with_source_surface(None)
+    .with_presence_session_id(None)
 }
 
 fn chat_running_task_status_message(
@@ -2929,7 +2981,10 @@ fn find_orphan_delegates_in_jsonl_reader<R: std::io::Read>(
             else {
                 return;
             };
-            if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+            if matches!(
+                status.as_str(),
+                "completed" | "failed" | "cancelled" | "archived"
+            ) {
                 unresolved.remove(&(task_id, execution_id));
             } else {
                 unresolved.insert((task_id, execution_id), descriptor);
@@ -2955,6 +3010,31 @@ async fn find_orphan_delegates_in_jsonl_path(
             "chat-turn JSONL recovery worker failed to join: {error}"
         ))
     })?
+}
+
+/// The browser session override a chat launch hands its runs: the thread's
+/// shared window, marked with this launch so a second task running at the
+/// same time gets its own window (`browser::session_lease`).
+/// Name of the browser tab group for runs a chat launches: the conversation's
+/// title, shortened for the tab strip. A conversation is titled only after its
+/// first turn, so a run that turn launches is named from the message that
+/// started it (`current_user_text`), the text the title is later built from.
+fn chat_browser_tab_label(
+    session: &ChatSession,
+    current_user_text: Option<&str>,
+) -> Option<String> {
+    session.title.as_deref().or(current_user_text).and_then(
+        crate::magician_v2::execution::primitive_dispatch::browser::session::tab_group_label,
+    )
+}
+
+fn chat_browser_launch_override(ui_thread_id: &str) -> String {
+    crate::magician_v2::execution::primitive_dispatch::browser::session_lease::chat_launch_override(
+        &format!(
+            "magician-chat-{}",
+            chat_browser_session_id_segment(ui_thread_id)
+        ),
+    )
 }
 
 /// Sanitise a chat session's `ui_thread_id` for use inside an
@@ -4572,7 +4652,10 @@ fn build_chat_turn_episode(
 ) -> V3EpisodeRecord {
     // Excerpts are compatibility/display views. The sanitized source remains
     // complete so indexing and consolidation can find evidence beyond its head.
-    let user_source = user_text.map(redact_chat_memory_text).unwrap_or_default();
+    // Only what the owner wrote: a surface's own framing is not their words.
+    let user_source = user_text
+        .map(|text| redact_chat_memory_text(&super::authored_framing::owner_words(text)))
+        .unwrap_or_default();
     let assistant_source = redact_chat_memory_text(assistant_text);
     let user_excerpt = bounded_chat_memory_excerpt(&user_source, 4_000);
     let assistant_excerpt = bounded_chat_memory_excerpt(&assistant_source, 4_000);
@@ -5763,18 +5846,17 @@ async fn load_chat_trust_dispatch_policy(
         .for_scope(principal, workspace)
         .storage()
         .trust_policies_path();
+    // Read and digest every turn, parse only when the content changed: the
+    // enforcer is cached by path and content digest.
     let (enforcer, policy_digest) = tokio::task::spawn_blocking(move || {
-        let content = std::fs::read_to_string(trust_policy_path)?;
-        let digest = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let enforcer = crate::magician_v2::agents::TrustPolicyEnforcer::from_yaml_str(&content)?;
-        Ok::<_, crate::magician_v2::agents::TrustPolicyError>((enforcer, digest))
+        crate::magician_v2::agents::trust::load_trust_policy_file_cached(trust_policy_path)
     })
     .await
     .map_err(|error| anyhow::anyhow!("trust_policy_load_join_failed:{error}"))?
     .map_err(|error| anyhow::anyhow!("trust_policy_load_failed:{error}"))?;
     Ok(ChatTrustDispatchPolicy {
         level: definition.trust_level.canonicalized(),
-        enforcer: Arc::new(enforcer),
+        enforcer,
         policy_digest,
     })
 }
@@ -5810,12 +5892,12 @@ fn chat_structural_approval_required(
     arguments: &Value,
     approval_rules: &[crate::magician_v2::agents::types::ApprovalRule],
 ) -> bool {
-    if approval_rules.is_empty()
-        || !matches!(
-            tool_name,
-            "spawn_sub_goal" | "delegate_to_agent" | "handover_to_agent" | "orchestrate_pipeline"
-        )
-    {
+    // No early return on an empty rule set: `agent_requires_approval_for_tool`
+    // also applies the code-owned floors, which no agent authors.
+    if !matches!(
+        tool_name,
+        "spawn_sub_goal" | "delegate_to_agent" | "handover_to_agent" | "orchestrate_pipeline"
+    ) {
         return false;
     }
     let probe_params = arguments
@@ -6556,6 +6638,67 @@ struct ActiveChatRun {
     owner_id: Option<String>,
 }
 
+/// Publishes a chat turn's `running` state when the turn starts and its
+/// settled state when it ends. A turn future dropped before it settles reads
+/// as failed (`interrupted`), never as running forever.
+struct ChatTurnStateGuard {
+    service: Arc<ChatService>,
+    session_id: String,
+    agent_id: String,
+    principal: String,
+    workspace: String,
+    state: Option<super::turn_state::ChatTurnState>,
+}
+
+impl ChatTurnStateGuard {
+    fn begin(service: &Arc<ChatService>, session: &ChatSession, chat_turn_id: &str) -> Self {
+        let state = super::turn_state::ChatTurnState::running(
+            chat_turn_id,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        service.publish_chat_turn_state(
+            &session.id,
+            &session.agent_id,
+            &session.principal,
+            &session.workspace,
+            state.clone(),
+        );
+        Self {
+            service: Arc::clone(service),
+            session_id: session.id.clone(),
+            agent_id: session.agent_id.clone(),
+            principal: session.principal.clone(),
+            workspace: session.workspace.clone(),
+            state: Some(state),
+        }
+    }
+
+    fn settle(&mut self, outcome: super::turn_state::ChatTurnOutcome) {
+        let Some(running) = self.state.take() else {
+            return;
+        };
+        // A watchdog reason noted while the turn ran lives on the stored state.
+        let noted = self
+            .service
+            .chat_turn_state(&self.session_id)
+            .filter(|current| current.chat_turn_id == running.chat_turn_id)
+            .unwrap_or(running);
+        self.service.publish_chat_turn_state(
+            &self.session_id,
+            &self.agent_id,
+            &self.principal,
+            &self.workspace,
+            noted.settled(outcome, chrono::Utc::now().timestamp_millis()),
+        );
+    }
+}
+
+impl Drop for ChatTurnStateGuard {
+    fn drop(&mut self) {
+        self.settle(super::turn_state::ChatTurnOutcome::Interrupted);
+    }
+}
+
 /// Orchestrator for chat mode — coordinates storage, events, agent runtime,
 /// and chat-facing projections.
 pub struct ChatService {
@@ -6641,6 +6784,10 @@ pub struct ChatService {
     /// In-memory only — supervisor restart drops in-flight tokens, which
     /// is fine because the turn future itself does not survive restart.
     active_chat_runs: Arc<DashMap<String, ActiveChatRun>>,
+    /// The latest chat turn's state per session (`turn_state.rs`): what a
+    /// reconnecting client reads to show a turn as running, completed,
+    /// stopped or failed. In-memory like `active_chat_runs`.
+    chat_turn_states: Arc<DashMap<String, super::turn_state::ChatTurnState>>,
     /// Per-session FIFO pending-message queue. Filled when an inbound
     /// chat message arrives while the session has an active run; drained
     /// after the in-flight turn settles (success or `/stop`). Bounded at
@@ -7106,6 +7253,7 @@ impl ChatService {
             ui_thread_service: None,
             chat_runtime_tools: build_chat_runtime_tools(),
             active_chat_runs: Arc::new(DashMap::new()),
+            chat_turn_states: Arc::new(DashMap::new()),
             pending_messages: Arc::new(DashMap::new()),
             pending_queue_credentials: DashMap::new(),
             current_tailed_task_id: Arc::new(DashMap::new()),
@@ -7261,7 +7409,7 @@ impl ChatService {
     /// This is deliberately a read-time safety net in addition to the live
     /// watcher. Watchers are process-local; a restart can strand the display
     /// transcript at `running` while `task_state.json` and the execution record
-    /// correctly say `failed`, `completed`, or `cancelled`. Returning the
+    /// correctly say `failed`, `completed`, `cancelled`, or `archived`. Returning the
     /// repaired row immediately removes zombie spinners for every client, and
     /// emitting it through the canonical chat bus makes the repair durable for
     /// later reads and for a subsequent Reset-to-Ready transition.
@@ -7294,7 +7442,10 @@ impl ChatService {
             // A terminal row already in this response is canonical enough for
             // rendering; the task may since have been reset or re-run, but
             // historical terminal runs must not be rewritten as active.
-            if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+            if matches!(
+                status.as_str(),
+                "completed" | "failed" | "cancelled" | "archived"
+            ) {
                 continue;
             }
         }
@@ -7314,7 +7465,10 @@ impl ChatService {
             else {
                 continue;
             };
-            if matches!(latest_status.as_str(), "completed" | "failed" | "cancelled") {
+            if matches!(
+                latest_status.as_str(),
+                "completed" | "failed" | "cancelled" | "archived"
+            ) {
                 continue;
             }
 
@@ -7340,27 +7494,34 @@ impl ChatService {
                 Ok(task) => {
                     // A task id mentioned in a card is not sufficient
                     // authority to surface another session's result.
-                    if task.manifest.chat_session_id.as_deref() != Some(session.id.as_str()) {
-                        continue;
-                    }
+                    // A scoped, linked card can settle without copying an
+                    // external task's report into this conversation's history.
+                    let owns_result =
+                        task.manifest.chat_session_id.as_deref() == Some(session.id.as_str());
                     let status = task.state.status.clone();
-                    if !matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+                    if !matches!(
+                        status.as_str(),
+                        "completed" | "failed" | "cancelled" | "archived"
+                    ) {
                         continue;
                     }
-                    if !task.state.synthesis_pending_executions.is_empty() {
+                    if status != "archived" && task.state.synthesis_pending() {
                         continue;
                     }
                     let scope = ScopeRef::system_internal_unauthenticated(
                         &session.principal.clone(),
                         &session.workspace.clone(),
                     );
-                    let summary =
+                    let summary = if owns_result {
                         V3ReadApi::get_task_progress_projection(v3.as_ref(), &scope, &task_id)
                             .await
                             .ok()
                             .and_then(|projection| projection.task.summary)
                             .filter(|value| !value.trim().is_empty())
-                            .or_else(|| Some(Self::default_terminal_task_summary(&status)));
+                            .or_else(|| Some(Self::default_terminal_task_summary(&status)))
+                    } else {
+                        Some(Self::default_terminal_task_summary(&status))
+                    };
                     let execution_id = task
                         .state
                         .last_completed_root_execution_id
@@ -7368,9 +7529,12 @@ impl ChatService {
                         .or_else(|| task.state.latest_root_execution_id.clone())
                         .or_else(|| task.state.active_root_execution_id.clone())
                         .or(latest_execution_id.clone());
-                    let output_files =
-                        project_task_outputs_for_chat_session(v3.as_ref(), session, &task_id).await;
-                    let speech_tts = if status == "completed" {
+                    let output_files = if owns_result {
+                        project_task_outputs_for_chat_session(v3.as_ref(), session, &task_id).await
+                    } else {
+                        Vec::new()
+                    };
+                    let speech_tts = if owns_result && status == "completed" {
                         v3.read_voice_speech_summary(&scope, &task_id)
                             .await
                             .and_then(|speech| speech.tts)
@@ -7855,6 +8019,53 @@ impl ChatService {
     pub fn with_ui_thread_service(mut self, service: Arc<UiThreadService>) -> Self {
         self.ui_thread_service = Some(service);
         self
+    }
+
+    /// The UI thread service, when wired (threads, their names and lanes).
+    pub fn ui_threads(&self) -> Option<&Arc<UiThreadService>> {
+        self.ui_thread_service.as_ref()
+    }
+
+    /// Create `thread_id` named `name` in `lane` unless it already exists; an
+    /// existing thread keeps whatever name and lane it has since been given.
+    /// Gives a paired voice terminal a thread of its own, named after it.
+    pub async fn ensure_named_thread(
+        &self,
+        principal: &str,
+        workspace: &str,
+        thread_id: &str,
+        name: &str,
+        lane: HistoryLane,
+    ) -> Result<()> {
+        let Some(threads) = self.ui_thread_service.as_ref() else {
+            return Ok(());
+        };
+        if threads
+            .get_materialized_thread(principal, workspace, thread_id)
+            .await?
+            .is_none()
+        {
+            threads
+                .create_thread_in_lane(principal, workspace, thread_id, name, lane)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// The history lane a thread was filed under, when it is a known thread.
+    pub async fn thread_lane(
+        &self,
+        principal: &str,
+        workspace: &str,
+        thread_id: &str,
+    ) -> Option<HistoryLane> {
+        let threads = self.ui_thread_service.as_ref()?;
+        threads
+            .get_materialized_thread(principal, workspace, thread_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|record| record.history_lane)
     }
 
     pub fn with_user_request_service(
@@ -8504,11 +8715,16 @@ impl ChatService {
             TutorActionResultStatus::Failed => "failed",
         };
         let (marker, product_label, source_surface) = tutor_background_route(&run);
+        // The owner typed none of this: everything after the routing marker is
+        // marked as Magician's, so memory does not learn it as their words.
         let internal_text = format!(
-            "{marker} continue active {product_label} run `{run_id}` after delegated action \
-             result.\n\nDelegated action result: {status_label}.\nRuntime note: \
-             {source_note}\nContinuation reason: \
-             {continuation_reason}\n\n{continuation_instruction}"
+            "{marker} {}",
+            super::authored_framing::wrap(&format!(
+                "Continue active {product_label} run `{run_id}` after delegated action \
+                 result.\n\nDelegated action result: {status_label}.\nRuntime note: \
+                 {source_note}\nContinuation reason: \
+                 {continuation_reason}\n\n{continuation_instruction}"
+            ))
         );
         if let Err(error) = self
             .chat_store
@@ -8965,6 +9181,98 @@ impl ChatService {
     /// [`process_message`] and powers the UI "N queued" indicator.
     pub fn has_active_chat_run(&self, session_id: &str) -> bool {
         self.active_chat_runs.contains_key(session_id)
+    }
+
+    /// A bounded history activity snapshot. Session ownership and task reads
+    /// are both scoped; hidden or foreign sessions never produce a marker.
+    pub async fn working_session_ids(
+        &self,
+        principal: &str,
+        workspace: &str,
+        requested: &HashSet<String>,
+    ) -> Result<HashSet<String>> {
+        let mut authorized = HashSet::new();
+        for id in requested {
+            if let Some(session) = self.get_session(id).await? {
+                if session.principal == principal && session.workspace == workspace {
+                    authorized.insert(id.clone());
+                }
+            }
+        }
+        let requested = &authorized;
+        let mut working = match self.artifact_v2_service.as_ref() {
+            Some(service) if !requested.is_empty() => {
+                service
+                    .working_chat_session_ids(
+                        &ScopeRef::system_internal_unauthenticated(principal, workspace),
+                        requested,
+                    )
+                    .await?
+            },
+            _ => HashSet::new(),
+        };
+        working.extend(
+            requested
+                .iter()
+                .filter(|id| self.has_active_chat_run(id))
+                .cloned(),
+        );
+        Ok(working)
+    }
+
+    /// The session's latest chat turn state, while this process knows it.
+    /// `None` after a restart or before the session's first turn.
+    pub fn chat_turn_state(&self, session_id: &str) -> Option<super::turn_state::ChatTurnState> {
+        self.chat_turn_states
+            .get(session_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Record and emit one turn state change. A settle never overwrites a
+    /// newer turn that already started in the same session (a Stop frees the
+    /// slot before the cancelled turn finishes unwinding); the event still
+    /// goes out, keyed by its own `chat_turn_id`.
+    fn publish_chat_turn_state(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        principal: &str,
+        workspace: &str,
+        state: super::turn_state::ChatTurnState,
+    ) {
+        match self.chat_turn_states.entry(session_id.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(mut current) => {
+                if state.status == super::turn_state::ChatTurnStatus::Running
+                    || current.get().chat_turn_id == state.chat_turn_id
+                {
+                    current.insert(state.clone());
+                }
+            },
+            dashmap::mapref::entry::Entry::Vacant(slot) => {
+                slot.insert(state.clone());
+            },
+        }
+        let mut payload = serde_json::to_value(&state).unwrap_or_else(|_| json!({}));
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("chat_session_id".to_string(), json!(session_id));
+        }
+        self.event_broadcaster.emit_named(
+            super::turn_state::CHAT_TURN_STATE_EVENT,
+            agent_id,
+            Some(principal),
+            Some(workspace),
+            payload,
+        );
+    }
+
+    /// The watchdog's reason for stopping a running turn, kept so the
+    /// settled state says "watchdog", not "the owner pressed Stop".
+    fn note_chat_turn_stop_reason(&self, session_id: &str, chat_turn_id: &str, reason: &str) {
+        if let Some(mut state) = self.chat_turn_states.get_mut(session_id) {
+            if state.chat_turn_id == chat_turn_id {
+                state.reason = Some(reason.to_string());
+            }
+        }
     }
 
     /// Current pending-message queue depth for the session. Returns 0
@@ -10407,6 +10715,7 @@ impl ChatService {
                     ],
                     reference_task_ids: Vec::new(),
                     browser_session_id_override: None,
+                    browser_tab_label: None,
                     invocation_context_override: Some(
                         crate::magician_v2::agents::AgentInvocationContext {
                             principal: job.principal.clone(),
@@ -12017,7 +12326,15 @@ Write a concise owner-facing result with:
         } else {
             crate::magician_v2::execution::plane::chat_turn_parent_engine()
         };
-        crate::off_frame!(
+        // The turn's id is fixed here so its state (`turn_state.rs`) and
+        // every event the body emits name the same turn.
+        let chat_turn_id: String = chat_turn_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("chat-turn-{}", Uuid::new_v4()));
+        let mut turn_state_guard = ChatTurnStateGuard::begin(self, session, &chat_turn_id);
+        let result = crate::off_frame!(
             crate::magician_v2::execution::plane::with_launching_run_engine_pin(
                 Some(launch_pin),
                 crate::magician_v2::query_analysis::parent_engine::with_parent_engine(
@@ -12027,7 +12344,7 @@ Write a concise owner-facing result with:
                         text,
                         prepared_user_turn,
                         profile_override,
-                        chat_turn_id,
+                        Some(chat_turn_id.as_str()),
                         voice_origin,
                         source_surface,
                         public_chat_first_contact_guidance,
@@ -12039,7 +12356,13 @@ Write a concise owner-facing result with:
                 ),
             )
             .await
-        )
+        );
+        turn_state_guard.settle(match &result {
+            Ok(response) if response.cancelled => super::turn_state::ChatTurnOutcome::Cancelled,
+            Ok(_) => super::turn_state::ChatTurnOutcome::Answered,
+            Err(_) => super::turn_state::ChatTurnOutcome::Failed,
+        });
+        result
     }
 
     /// Chat inline turn — synchronous Responses API call with the
@@ -12172,13 +12495,25 @@ Write a concise owner-facing result with:
         let shared_room = source_surface
             .map(str::trim)
             .is_some_and(|surface| surface == MEETING_ROOM_SOURCE_SURFACE);
+        // An envoy-bound session outside a shared room is a public-envoy turn
+        // whatever the client sent, as `validate_forced_agent_session_binding`
+        // decided at bind time. A bot that sends no public-chat source surface
+        // (email) would otherwise run envoy on the plain chat surface, which
+        // envoy refuses. `public_envoy_chat_only` still governs admission,
+        // tools and prompt.
+        let public_envoy_surface = public_envoy_turn(
+            public_envoy_chat_only,
+            shared_room,
+            &agent_id,
+            self.room_agent_id(),
+        );
         let mut invocation = chat_invocation_context_for_turn(
             session,
             source_surface,
             text,
             &chat_turn_id,
             voice_origin,
-            public_envoy_chat_only,
+            public_envoy_surface,
             shared_room,
         );
         // ── The `@vibedev` rail ─────────────────────────────────────────────
@@ -12217,16 +12552,25 @@ Write a concise owner-facing result with:
             invocation.surface,
         ) {
             return crate::off_frame!(
-                Box::pin(self.start_vibedev_rail_run(
-                    session,
-                    text.unwrap_or_default(),
-                    prepared_user_turn,
-                    &chat_turn_id,
-                    source_surface,
-                    presence_session_id,
-                    voice_origin,
-                    coding_choice,
-                ))
+                crate::magician_v2::agents::outward_policy::with_source(
+                    Some(
+                        crate::magician_v2::agents::outward_policy::OutwardSource::root(
+                            &session.principal,
+                            &session.workspace,
+                            crate::magician_v2::agents::outward_policy::OutwardOrigin::OwnerTask,
+                        )
+                    ),
+                    Box::pin(self.start_vibedev_rail_run(
+                        session,
+                        text.unwrap_or_default(),
+                        prepared_user_turn,
+                        &chat_turn_id,
+                        source_surface,
+                        presence_session_id,
+                        voice_origin,
+                        coding_choice,
+                    ))
+                )
                 .await
             );
         }
@@ -12235,7 +12579,7 @@ Write a concise owner-facing result with:
             session.workspace.clone(),
             session.id.clone(),
         );
-        if !public_envoy_chat_only && tutor_lane_exit_requested(text) {
+        if !public_envoy_surface && tutor_lane_exit_requested(text) {
             match crate::off_frame!(
                 self.cancel_active_tutor_run_for_transition(
                     session,
@@ -12263,7 +12607,7 @@ Write a concise owner-facing result with:
                 false,
             );
         }
-        let mut active_tutor_run = if public_envoy_chat_only {
+        let mut active_tutor_run = if public_envoy_surface {
             None
         } else {
             tutor_run_store()
@@ -12325,7 +12669,7 @@ Write a concise owner-facing result with:
         // a lane: ordinary sessions with no already-authorized run remain
         // ordinary chat/realtime voice.
         if invocation.feature_mode == crate::magician_v2::agents::FeatureMode::None
-            && !public_envoy_chat_only
+            && !public_envoy_surface
         {
             if let Some(run) = active_tutor_run.as_ref() {
                 invocation.feature_mode = if run.is_app_copilot() {
@@ -12576,6 +12920,22 @@ Write a concise owner-facing result with:
                 runtime_definition,
                 invocation.feature_mode,
             );
+        // `search_chat_history` recovers detail that context compaction
+        // summarized away, so it is offered only once this session has a
+        // compaction checkpoint; an ordinary chat carries no extra tool.
+        // Decided before `surface_projection_inputs` freezes the runtime
+        // specs, so every rebuild in this turn agrees on it.
+        if chat_runtime_specs
+            .iter()
+            .any(|spec| spec.name == super::history_search::SEARCH_CHAT_HISTORY_TOOL)
+            && !matches!(
+                crate::off_frame!(self.chat_store.get_context_checkpoint(&session.id).await),
+                Ok(Some(_))
+            )
+        {
+            chat_runtime_specs
+                .retain(|spec| spec.name != super::history_search::SEARCH_CHAT_HISTORY_TOOL);
+        }
         // Inject runtime-discovered personality presets into the
         // switch_personality description so the LLM picks a preset on
         // first try without a mode="list" round-trip. Scans
@@ -13025,29 +13385,7 @@ Write a concise owner-facing result with:
             }
         }
 
-        // Adaptive profile detection. The selected operation mapping (or an
-        // explicit `profile_override` arg for ordinary chat) may resolve to an
-        // entry in `LLMRouterConfig::adaptive_profiles` rather than a standard
-        // profile. When it does, the chat-inline runtime:
-        //
-        //   1. swaps the active profile name to the composite's `fast_profile` so the
-        //      underlying LLM call uses the no-reasoning variant by default,
-        //   2. exposes a `request_thinking_mode` tool the LLM can call to self-escalate
-        //      when the request genuinely needs reasoning,
-        //   3. appends `FAST_MODE_INSTRUCTION_BLOCK` to the system prompt so the LLM
-        //      knows it's on the fast variant and how to escalate.
-        //
-        // On escalation the runtime swaps `effective_profile` to the
-        // composite's `thinking_profile`, drops the escalation tool spec,
-        // strips the fast-mode prompt block, and continues the inner loop
-        // — the next LLM call runs with full reasoning budget. Profile
-        // state is per-turn (this function is the only chat invoker), so
-        // the next user message starts fresh on the fast variant
-        // automatically.
-        //
-        // Non-adaptive profiles take the early-out path: `adaptive_state`
-        // stays None and the original `profile_override` flows through
-        // unchanged.
+        // Resolve explicit and governed model settings for this turn.
         let brainstorm_facilitation = agent_id == BRAINSTORM_FACILITATION_AGENT_ID;
         let requested_profile_name: Option<String> = if app_data_turn_active {
             if let Some(profile) = profile_override
@@ -13152,124 +13490,12 @@ Write a concise owner-facing result with:
         } else {
             resolved_profile_name
         };
-        let adaptive_pair: Option<(String, String)> = resolved_profile_name
-            .as_deref()
-            .and_then(|name| self.llm_service.adaptive_pair_for_profile(name));
-        let adaptive_state: Option<AdaptiveTurnState> = match (
-            public_envoy_chat_only,
-            app_data_turn_active,
-            resolved_profile_name.as_ref(),
-            adaptive_pair.as_ref(),
-        ) {
-            (true, _, _, _) | (_, true, _, _) => None,
-            (false, false, Some(name), Some((fast, thinking))) => Some(AdaptiveTurnState {
-                composite_name: name.clone(),
-                fast_profile: fast.clone(),
-                thinking_profile: thinking.clone(),
-            }),
-            _ => None,
-        };
-        let mut effective_profile_name: Option<String> = match &adaptive_state {
-            Some(state) => Some(state.fast_profile.clone()),
-            None if public_envoy_chat_only => adaptive_pair
-                .as_ref()
-                .map(|(fast, _)| fast.clone())
-                .or_else(|| resolved_profile_name.clone()),
-            None => resolved_profile_name.clone(),
-        };
-        let mut thinking_mode_active = false;
-        // Retained independently from `adaptive_state`: selecting a governed
-        // app family intentionally clears adaptive routing, but must not erase
-        // the completion bookend for a thinking mode already activated.
-        let mut thinking_mode_bookend_profile: Option<String> = None;
-        // Defensive: if a future tool catalog ever ships a tool that
-        // happens to be named `request_thinking_mode`, injecting our
-        // escalation tool would produce a duplicate name — providers
-        // either error or pick the last entry. Drop adaptive in that
-        // case rather than corrupt the tool surface; chat keeps
-        // working as a plain fast-profile turn. Today no native
-        // catalog or chat-runtime tool uses this name; this is a
-        // belt-and-braces guard for future drift.
-        let mut adaptive_state = adaptive_state;
-        if tutor_quick_path_active {
-            if let Some(state) = adaptive_state.take() {
-                effective_profile_name = Some(state.fast_profile);
-            }
-        }
-        if adaptive_state.is_some() {
-            let adaptive_spec = request_thinking_mode_tool_spec();
-            let adaptive_native_tool = NativeExecutionTool {
-                name: adaptive_spec.name.clone(),
-                description: adaptive_spec.description.clone(),
-                parameters: adaptive_spec.parameters.clone(),
-                is_control_tool: false,
-            };
-            let extended = snapshot
-                .as_ref()
-                .ok_or_else(|| {
-                    "adaptive escalation requires an effective policy snapshot".to_string()
-                })
-                .and_then(|snapshot| {
-                    crate::magician_v2::execution::agentic::extend_snapshot_with_runtime_tool(
-                        snapshot,
-                        adaptive_native_tool,
-                    )
-                });
-            match extended {
-                Ok(extended_snapshot) => {
-                    tool_specs = extended_snapshot
-                        .provider_specs
-                        .iter()
-                        .map(|tool| LLMToolSpec {
-                            name: tool.name.clone(),
-                            description: tool.description.clone(),
-                            parameters: tool.parameters.clone(),
-                        })
-                        .collect();
-                    allowed_chat_tool_names = extended_snapshot
-                        .dispatch_tool_names
-                        .iter()
-                        .cloned()
-                        .collect();
-                    snapshot = Some(extended_snapshot);
-                    system_prompt.push_str("\n\n");
-                    system_prompt.push_str(FAST_MODE_INSTRUCTION_BLOCK);
-                },
-                Err(error) => {
-                    warn!(
-                        session_id = %session.id,
-                        chat_turn_id = %chat_turn_id,
-                        error = %error,
-                        "[CHAT-INLINE] adaptive runtime control could not enter the effective snapshot; disabling escalation for this turn"
-                    );
-                    adaptive_state = None;
-                    // `effective_profile_name` was already pinned to the
-                    // adaptive pair's fast profile. Keep that concrete profile
-                    // when the optional escalation control cannot be admitted;
-                    // never pass the composite alias as if it were a provider
-                    // profile.
-                },
-            }
-        }
-
-        // Surface the resolved profile + adaptive-mode decision for
-        // every turn. Operators grep `[CHAT-PROFILE]` to see exactly
-        // which profile served a given chat_turn_id without having to
-        // join LLM-call rows to chat history.
+        let mut effective_profile_name = resolved_profile_name;
         info!(
             chat_turn_id = %chat_turn_id,
             session_id = %session.id,
             profile = effective_profile_name.as_deref().unwrap_or("<unset>"),
-            adaptive = adaptive_state.is_some(),
             tutor_quick = tutor_quick_path_active,
-            composite_profile = adaptive_state
-                .as_ref()
-                .map(|s| s.composite_name.as_str())
-                .unwrap_or("-"),
-            thinking_profile = adaptive_state
-                .as_ref()
-                .map(|s| s.thinking_profile.as_str())
-                .unwrap_or("-"),
             "[CHAT-PROFILE] turn start"
         );
 
@@ -13438,6 +13664,8 @@ Write a concise owner-facing result with:
             std::collections::BTreeSet::new();
         let tutor_prompt_active = lane_keeps_tutor_runtime_tools(invocation.feature_mode);
         let mut tutor_continuation_guard_count: usize = 0;
+        // One retry for an empty model reply (`chat_model_reply_is_empty`).
+        let mut empty_model_reply_retried = false;
         // Per-turn progress subscriptions for child executions (pack
         // dispatch, delegate, handover). Tracked so they can be torn
         // down at turn end — see `unsubscribe_turn_subscriptions`.
@@ -13487,6 +13715,14 @@ Write a concise owner-facing result with:
             transcript_context.user_message_id.clone(),
         ))
         .with_agent(agent_id.clone());
+        if let Ok(workspace) = self.artifact_workspace() {
+            chat_decision_rail = chat_decision_rail.with_session_images(
+                workspace.clone(),
+                &session.principal,
+                &session.workspace,
+                &session.id,
+            );
+        }
         // Liveness: a native turn that keeps working runs until its iteration
         // backstop — it has never had a wall clock, and gains none here. It
         // ends early only when it stops progressing: silent with no model or
@@ -14250,7 +14486,10 @@ Write a concise owner-facing result with:
                                             turn_evidence.push((
                                                 format!("{} result", call.tool_name),
                                                 call.content.clone(),
-                                                EvidenceOrigin::ToolResult,
+                                                // Recall replays the chat's own record.
+                                                super::history_search::result_evidence_origin(
+                                                    &call.tool_name,
+                                                ),
                                             ));
                                         }
                                     }
@@ -15102,6 +15341,30 @@ Write a concise owner-facing result with:
             drop(model_work);
 
             if response.tool_calls.is_empty() {
+                // An empty reply (no text, no calls; live 2026-10-20 with
+                // prompt_tokens=0 completion_tokens=0) is not an answer. Ask
+                // again once with the same request; a second empty reply ends
+                // the turn with an explicit notice instead of a blank reply.
+                if chat_model_reply_is_empty(&response) {
+                    if !empty_model_reply_retried {
+                        empty_model_reply_retried = true;
+                        warn!(
+                            session_id = %session.id,
+                            chat_turn_id = %chat_turn_id,
+                            iterations,
+                            "[CHAT-INLINE] model returned an empty reply; retrying once"
+                        );
+                        continue;
+                    }
+                    warn!(
+                        session_id = %session.id,
+                        chat_turn_id = %chat_turn_id,
+                        iterations,
+                        "[CHAT-INLINE] model returned an empty reply twice; ending the turn"
+                    );
+                    response.content = Some(EMPTY_MODEL_REPLY_NOTICE.to_string());
+                    response.provider_state = None;
+                }
                 let mut final_response_content = response.content.clone();
                 if tutor_prompt_active {
                     let scope = TutorRunScope::new(
@@ -15214,169 +15477,6 @@ Write a concise owner-facing result with:
                     deferred_error = Some(e);
                 }
                 break;
-            }
-
-            // Adaptive-profile escalation interceptor. Runs *before* the
-            // assistant tool-call entry is persisted because the
-            // fast-mode response we're about to discard would otherwise
-            // leave an orphan tool-call in history (no matching
-            // tool-result entry — every provider rejects that). On
-            // escalation:
-            //
-            //   1. swap `effective_profile_name` to the thinking variant,
-            //   2. drop the `request_thinking_mode` tool spec so the LLM can't loop on it,
-            //   3. strip the fast-mode instruction block from the system prompt so the
-            //      thinking turn doesn't see a contradictory "you are on the fast variant"
-            //      cue,
-            //   4. emit `ThinkingModeActivated`,
-            //   5. discard the fast-mode assistant turn (don't persist, don't push to
-            //      history) and `continue` the loop.
-            //
-            // The retry uses the *original* user history — from the
-            // thinking model's perspective the user just sent their
-            // message, which is exactly what we want. If the LLM
-            // erroneously paired `request_thinking_mode` with other tool
-            // calls, all of them are discarded; the thinking turn will
-            // re-issue the real tool calls with full reasoning budget.
-            //
-            // Escalation does NOT count toward the iteration backstop
-            // (`turn_max_iterations`, `chat.harness_turn_max_iterations`)
-            // — `iterations -= 1` undoes the increment at the top of
-            // the loop. Without this, an escalation on the final
-            // iteration would `continue` past the loop guard
-            // (`iterations < turn_max_iterations`) without ever
-            // calling the thinking model, leaving the user with the
-            // "I wasn't able to produce a reply for this turn" fallback
-            // even though the runtime decided extended reasoning was
-            // warranted. A misbehaving model can't loop indefinitely
-            // because the escalation tool is removed after the first
-            // call — a structural guarantee that bounds escalations
-            // at exactly 1 per turn regardless of iteration budget.
-            if let Some(escalation_call) = response
-                .tool_calls
-                .iter()
-                .find(|call| call.name == REQUEST_THINKING_MODE_TOOL_NAME)
-            {
-                if let Some(state) = adaptive_state.as_ref() {
-                    if thinking_mode_active {
-                        warn!(
-                            session_id = %session.id,
-                            chat_turn_id = %chat_turn_id,
-                            "[CHAT-INLINE] LLM called request_thinking_mode after already escalating; ignoring duplicate"
-                        );
-                    } else {
-                        // Surface the dropped calls in the warning so
-                        // operators can debug models that violate the
-                        // "don't pair with other tools" prompt rule.
-                        // Behavior is unchanged — the thinking turn
-                        // re-plans from the user's original message
-                        // with full context, so the model can re-issue
-                        // any actually-needed tools.
-                        let paired_calls: Vec<&str> = response
-                            .tool_calls
-                            .iter()
-                            .filter(|call| call.name != REQUEST_THINKING_MODE_TOOL_NAME)
-                            .map(|call| call.name.as_str())
-                            .collect();
-                        if !paired_calls.is_empty() {
-                            warn!(
-                                session_id = %session.id,
-                                chat_turn_id = %chat_turn_id,
-                                paired_calls = ?paired_calls,
-                                "[CHAT-INLINE] LLM paired request_thinking_mode with other tool calls; \
-                                 discarded — thinking turn will re-plan from user message"
-                            );
-                        }
-                        thinking_mode_active = true;
-                        effective_profile_name = Some(state.thinking_profile.clone());
-                        info!(
-                            chat_turn_id = %chat_turn_id,
-                            session_id = %session.id,
-                            thinking_profile = %state.thinking_profile,
-                            composite_profile = %state.composite_name,
-                            "[CHAT-PROFILE] escalated to thinking profile"
-                        );
-                        if let Some(current_snapshot) = snapshot.as_ref() {
-                            match crate::magician_v2::execution::agentic::remove_snapshot_runtime_tool(
-                                current_snapshot,
-                                REQUEST_THINKING_MODE_TOOL_NAME,
-                            ) {
-                                Ok(reduced_snapshot) => {
-                                    tool_specs = reduced_snapshot
-                                        .provider_specs
-                                        .iter()
-                                        .map(|tool| LLMToolSpec {
-                                            name: tool.name.clone(),
-                                            description: tool.description.clone(),
-                                            parameters: tool.parameters.clone(),
-                                        })
-                                        .collect();
-                                    allowed_chat_tool_names = reduced_snapshot
-                                        .dispatch_tool_names
-                                        .iter()
-                                        .cloned()
-                                        .collect();
-                                    snapshot = Some(reduced_snapshot);
-                                },
-                                Err(error) => {
-                                    warn!(
-                                        session_id = %session.id,
-                                        chat_turn_id = %chat_turn_id,
-                                        error = %error,
-                                        "[CHAT-INLINE] failed to remove adaptive control from policy snapshot; failing the turn closed"
-                                    );
-                                    deferred_error = Some(anyhow!(error));
-                                    break;
-                                },
-                            }
-                        }
-                        if let Some(stripped) = system_prompt
-                            .strip_suffix(FAST_MODE_INSTRUCTION_BLOCK)
-                            .map(|head| head.trim_end_matches('\n').to_string())
-                        {
-                            system_prompt = stripped;
-                        }
-                        let reason = if governed_app_persistence_closed {
-                            None
-                        } else {
-                            escalation_call
-                                .arguments
-                                .get("reason")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.trim())
-                                .filter(|s| !s.is_empty())
-                                .map(|s| s.to_string())
-                        };
-                        self.event_broadcaster.emit(
-                            crate::magician_v2::realtime_events::RuntimeTransportEvent::ThinkingModeActivated {
-                                execution_id: chat_turn_id.clone(),
-                                principal: Some(session.principal.clone()),
-                                workspace: Some(session.workspace.clone()),
-                                chat_session_id: Some(session.id.clone()),
-                                chat_turn_id: chat_turn_id.clone(),
-                                adaptive_profile: state.composite_name.clone(),
-                                fast_profile: state.fast_profile.clone(),
-                                thinking_profile: state.thinking_profile.clone(),
-                                reason,
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                            },
-                        );
-                        // Completion is a bookend only for an activation that
-                        // actually crossed the event boundary. In particular,
-                        // snapshot-removal failures above must not synthesize a
-                        // completion for an activation the UI never observed.
-                        thinking_mode_bookend_profile = Some(state.composite_name.clone());
-                        iterations = iterations.saturating_sub(1);
-                        continue;
-                    }
-                } else {
-                    warn!(
-                        session_id = %session.id,
-                        chat_turn_id = %chat_turn_id,
-                        tool_name = %escalation_call.name,
-                        "[CHAT-INLINE] LLM called request_thinking_mode but current profile is not adaptive; treating as no-op"
-                    );
-                }
             }
 
             let stored_calls: Vec<crate::magician_v2::chat::models::StoredToolCall> = response
@@ -15820,34 +15920,7 @@ Write a concise owner-facing result with:
                                                     let next_snapshot = if activates_app_data
                                                         && app_data_profile.is_none()
                                                     {
-                                                        Err(anyhow!(
-                                                            "selected app-data tools require a configured `{APP_DATA_PROCESSING_OPERATION}` profile"
-                                                        ))
-                                                    } else if activates_app_data {
-                                                        // App data has a dedicated processing
-                                                        // profile and cannot retain an adaptive
-                                                        // control that could switch away from it.
-                                                        Ok(Arc::clone(&prospective.policy_snapshot))
-                                                    } else if adaptive_state.is_some()
-                                                        && !thinking_mode_active
-                                                    {
-                                                        let spec =
-                                                            request_thinking_mode_tool_spec();
-                                                        let control = NativeExecutionTool {
-                                                            name: spec.name,
-                                                            description: spec.description,
-                                                            parameters: spec.parameters,
-                                                            is_control_tool: false,
-                                                        };
-                                                        crate::magician_v2::execution::agentic::extend_snapshot_with_runtime_tool(
-                                                            &prospective.policy_snapshot,
-                                                            control,
-                                                        )
-                                                        .map_err(|error| {
-                                                            anyhow!(
-                                                                "failed to retain adaptive control after tool-family load: {error}"
-                                                            )
-                                                        })
+                                                        Err(anyhow!("selected app-data tools require a configured `{APP_DATA_PROCESSING_OPERATION}` profile"))
                                                     } else {
                                                         Ok(Arc::clone(&prospective.policy_snapshot))
                                                     };
@@ -15860,7 +15933,7 @@ Write a concise owner-facing result with:
                                                                 )
                                                             } else {
                                                                 format!(
-                                                                    "Could not retain adaptive controls in the selected tool family: {error:#}"
+                                                                    "Could not activate the selected tool family: {error:#}"
                                                                 )
                                                             };
                                                             result = json!({
@@ -15936,22 +16009,6 @@ Write a concise owner-facing result with:
                                                                 {
                                                                     effective_profile_name =
                                                                         Some(profile.clone());
-                                                                    adaptive_state = None;
-                                                                    thinking_mode_active = false;
-                                                                    if let Some(stripped) =
-                                                                        system_prompt
-                                                                            .strip_suffix(
-                                                                                FAST_MODE_INSTRUCTION_BLOCK,
-                                                                            )
-                                                                            .map(|head| {
-                                                                                head.trim_end_matches(
-                                                                                    '\n',
-                                                                                )
-                                                                                .to_string()
-                                                                            })
-                                                                    {
-                                                                        system_prompt = stripped;
-                                                                    }
                                                                     info!(
                                                                         chat_turn_id = %chat_turn_id,
                                                                         session_id = %session.id,
@@ -16174,6 +16231,18 @@ Write a concise owner-facing result with:
                 } else {
                     summarize_chat_tool_result_for_event(&tool_result)
                 };
+                if success && matches!(call.name.as_str(), "create_task" | "run_task") {
+                    let mut task_ids = Vec::new();
+                    collect_task_ids(&tool_result, &mut task_ids);
+                    self.subscribe_chat_owned_tasks(
+                        session,
+                        &agent_id,
+                        &task_ids,
+                        Some(&chat_turn_id),
+                    )
+                    .heap_boxed()
+                    .await;
+                }
                 drop(tool_work);
                 // A successful call to a loaded deferred tool makes its family
                 // the most recently used, so an over-limit select evicts a
@@ -16342,7 +16411,9 @@ Write a concise owner-facing result with:
                     turn_evidence.push((
                         format!("{} result", call.name),
                         tool_result.to_string(),
-                        EvidenceOrigin::ToolResult,
+                        // Recall replays the chat's own record, earlier
+                        // answers included: shown to the judge, never proof.
+                        super::history_search::result_evidence_origin(&call.name),
                     ));
                 }
                 let projection_contract = capability_snapshot_for_turn
@@ -16648,26 +16719,6 @@ Write a concise owner-facing result with:
             }
         }
 
-        // Adaptive-profile bookend. When the LLM escalated to thinking
-        // mode somewhere in the loop above, emit `ThinkingModeCompleted`
-        // so the UI can drop the "Thinking mode" chip from the chat
-        // input. Emitted unconditionally on turn end (success, error,
-        // or loop-exhausted) — paired with `ThinkingModeActivated` so
-        // the UI's per-turn-id chip state always closes out.
-        if let Some(adaptive_profile) = thinking_mode_bookend_profile {
-            self.event_broadcaster.emit(
-                crate::magician_v2::realtime_events::RuntimeTransportEvent::ThinkingModeCompleted {
-                    execution_id: chat_turn_id.clone(),
-                    principal: Some(session.principal.clone()),
-                    workspace: Some(session.workspace.clone()),
-                    chat_session_id: Some(session.id.clone()),
-                    chat_turn_id: chat_turn_id.clone(),
-                    adaptive_profile,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                },
-            );
-        }
-
         if (turn_cancelled || cancel_token.is_cancelled()) && !governed_effect_settled_after_cancel
         {
             if let Some(cause) = liveness_stop {
@@ -16682,6 +16733,7 @@ Write a concise owner-facing result with:
                     stall_seconds = turn_stall_seconds,
                     "[CHAT-INLINE] turn ended by the liveness watchdog"
                 );
+                self.note_chat_turn_stop_reason(&session.id, &chat_turn_id, cause.reason());
                 self.event_broadcaster.emit_named(
                     "chat.turn.stopped",
                     &agent_id,
@@ -17074,6 +17126,8 @@ Write a concise owner-facing result with:
         let assistant_text = self
             .checked_chat_reply(
                 session,
+                Some(&chat_turn_id),
+                !local_only_app_memory_rendered,
                 text,
                 assistant_text,
                 std::mem::take(&mut turn_evidence),
@@ -17410,8 +17464,8 @@ Write a concise owner-facing result with:
         // a seam-owned lookup (`VibeDevCodingCatalog::from_coding_settings`)
         // fed from the service's capability snapshot, which only it holds.
         rail_input.coding_catalog =
-            crate::magician_v2::vibedev::run_service::VibeDevCodingCatalog::from_coding_settings(
-                &resources.magician_config_snapshot().coding,
+            crate::magician_v2::vibedev::run_service::VibeDevCodingCatalog::from_config(
+                &resources.magician_config_snapshot(),
             );
         let outcome = run_service
             .start_build(rail_input, move |task_id| async move {
@@ -17966,6 +18020,41 @@ Write a concise owner-facing result with:
         .map_err(|error| anyhow::anyhow!("chat prompt execution runtime join failed: {error}"))?
     }
 
+    /// The owner's stated timezone for a scope, re-read from the user
+    /// knowledge store at most every five minutes (the store is megabytes,
+    /// and every chat turn asks).
+    async fn stated_owner_timezone_cached(
+        &self,
+        principal: &str,
+        workspace: &str,
+    ) -> Option<chrono_tz::Tz> {
+        type Cached = (std::time::Instant, Option<chrono_tz::Tz>);
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<(String, String), Cached>>> =
+            std::sync::OnceLock::new();
+        const TTL: Duration = Duration::from_secs(300);
+        let cache = CACHE.get_or_init(Default::default);
+        let key = (principal.to_string(), workspace.to_string());
+        if let Some((read_at, zone)) = cache.lock().ok()?.get(&key) {
+            if read_at.elapsed() < TTL {
+                return *zone;
+            }
+        }
+        let service = self
+            .memory_resolver
+            .as_ref()?
+            .resolve_for_scope(principal, workspace)
+            .ok()?;
+        let zone = service
+            .load_user_knowledge()
+            .await
+            .ok()
+            .and_then(|knowledge| stated_owner_timezone(&knowledge));
+        if let Ok(mut cache) = cache.lock() {
+            cache.insert(key, (std::time::Instant::now(), zone));
+        }
+        zone
+    }
+
     async fn render_chat_outer_loop_prompt(
         &self,
         session: &ChatSession,
@@ -18176,6 +18265,24 @@ Write a concise owner-facing result with:
                     .unwrap_or_default(),
                 definition,
             );
+            let mut context_progress =
+                crate::magician_v2::context_retrieval::progress::ContextPreparationProgress::start(
+                    Some(Arc::clone(&self.event_broadcaster)),
+                    Some(&session.principal),
+                    Some(&session.workspace),
+                    agent_id,
+                    crate::magician_v2::context_retrieval::progress::ContextProgressCorrelation {
+                        chat_session_id: Some(session.id.clone()),
+                        chat_turn_id: self
+                            .chat_turn_states
+                            .get(&session.id)
+                            .filter(|state| {
+                                state.status == super::turn_state::ChatTurnStatus::Running
+                            })
+                            .map(|state| state.chat_turn_id.clone()),
+                        ..Default::default()
+                    },
+                );
             let staged = measure_staged_chat_context_retrieval_with_fast(
                 fast_memory_future,
                 memory_tiers_future,
@@ -18187,6 +18294,12 @@ Write a concise owner-facing result with:
                 retrieval_cancellation.unwrap_or_default(),
             )
             .await?;
+            if let Some(progress) = context_progress.as_mut() {
+                let observation = crate::magician_v2::context_retrieval::ContextRetrievalObservation::from_outcome(
+                    crate::magician_v2::context_retrieval::ContextRetrievalCheckpoint::ChatTurn,
+                    context_budget_ms, &staged.canonical);
+                progress.finish(&(&observation).into());
+            }
             (
                 merge_fast_and_hybrid_memory_blocks(staged.fast_memory, staged.hybrid_memory),
                 staged.procedures,
@@ -18272,9 +18385,18 @@ Write a concise owner-facing result with:
             .await
             .unwrap_or_default();
 
-        let agent_personality = default_personality
-            .map(|name| format!("Personality preset: {name}"))
-            .unwrap_or_default();
+        // The active personality (saved profile, else the definition's
+        // default preset) is pinned here in full; memory ranking skips it.
+        let agent_personality = crate::off_frame!(
+            self.agent_personality_block(
+                &session.principal,
+                &session.workspace,
+                agent_id,
+                default_personality,
+            )
+            .await
+        )
+        .unwrap_or_default();
 
         let mut final_persona = agent_persona.to_string();
         // Whether a turn carries the personal-tutor prompt block is the
@@ -18424,13 +18546,16 @@ Write a concise owner-facing result with:
         // block is empty (cold session, no memory, no delegates) we skip
         // the context block entirely — adding an empty envelope would
         // waste a turn pair on something that says nothing.
+        let owner_time = owner_local_time_line(
+            self.stated_owner_timezone_cached(&session.principal, &session.workspace)
+                .await,
+            chrono::Utc::now(),
+        );
         let dynamic_context = build_dynamic_context_block(
             &delegate_targets_block,
             &memory_tiers_block,
             &procedure_memory_block,
-            "", // environment_knowledge — currently always empty, kept as a
-            // slot so future workspace-knowledge plumbing can hand it in
-            // without changing this signature.
+            &owner_time,
             &recent_session_files_block,
         );
 
@@ -19370,6 +19495,86 @@ Write a concise owner-facing result with:
         overlay_target: OverlayTarget,
         screen_capture_contexts: &[ScreenCaptureAttachmentContext],
         registry_for_turn: Option<&Arc<CapabilityRegistry>>,
+        calling_profile_name: Option<&str>,
+        chat_turn_id: Option<&str>,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
+        authorization_revision: Option<&ChatTurnAuthorizationRevision>,
+        result_authority_revision: &str,
+        agent_approval_rules: &[crate::magician_v2::agents::types::ApprovalRule],
+        chat_trust_policy: Option<&ChatTrustDispatchPolicy>,
+        denied_tool_params: Option<&HashMap<String, HashMap<String, Vec<String>>>>,
+        policy_snapshot: Option<
+            &crate::magician_v2::execution::agentic::EffectiveToolPolicySnapshot,
+        >,
+        invocation_context_override: Option<&crate::magician_v2::agents::AgentInvocationContext>,
+        allowed_tool_names: &HashSet<String>,
+        allowed_delegation_target_ids: &HashSet<String>,
+        allowed_handover_target_ids: &HashSet<String>,
+        feature_mode: crate::magician_v2::agents::FeatureMode,
+        governed_app_policy: Option<&crate::magician_v2::apps::records::AppDataHandlingPolicy>,
+        app_result_guard: &mut Option<compiled_dispatch::CompiledAppResultGuard>,
+        requires_executor_policy_path: bool,
+    ) -> Value {
+        use crate::magician_v2::agents::outward_policy::{self, OutwardOrigin, OutwardSource};
+        let invocation = invocation_context_override
+            .or_else(|| policy_snapshot.map(|snapshot| &snapshot.invocation));
+        let origin = invocation
+            .filter(|context| {
+                context.principal == session.principal
+                    && context.workspace == session.workspace
+                    && context.target_agent_id == agent_id
+            })
+            .map(|context| OutwardOrigin::for_invocation(Some(context)))
+            .unwrap_or_default();
+        outward_policy::with_source(
+            Some(OutwardSource::root(
+                &session.principal,
+                &session.workspace,
+                origin,
+            )),
+            Box::pin(self.dispatch_chat_tool_call_under_outward_source(
+                session,
+                agent_id,
+                call,
+                active_subscription_ids,
+                assistant_turn_text,
+                current_user_text,
+                overlay_target,
+                screen_capture_contexts,
+                registry_for_turn,
+                calling_profile_name,
+                chat_turn_id,
+                cancel_token,
+                authorization_revision,
+                result_authority_revision,
+                agent_approval_rules,
+                chat_trust_policy,
+                denied_tool_params,
+                policy_snapshot,
+                invocation_context_override,
+                allowed_tool_names,
+                allowed_delegation_target_ids,
+                allowed_handover_target_ids,
+                feature_mode,
+                governed_app_policy,
+                app_result_guard,
+                requires_executor_policy_path,
+            )),
+        )
+        .await
+    }
+
+    async fn dispatch_chat_tool_call_under_outward_source(
+        &self,
+        session: &ChatSession,
+        agent_id: &str,
+        call: &LLMToolCall,
+        active_subscription_ids: &mut Vec<String>,
+        assistant_turn_text: Option<&str>,
+        current_user_text: Option<&str>,
+        overlay_target: OverlayTarget,
+        screen_capture_contexts: &[ScreenCaptureAttachmentContext],
+        registry_for_turn: Option<&Arc<CapabilityRegistry>>,
         // Exact physical profile used for the model response containing this
         // tool call. Security-sensitive compiled handlers attest it against
         // the live app-platform trust catalog; absent identity fails closed.
@@ -19741,9 +19946,7 @@ Write a concise owner-facing result with:
                     .cloned()
                     .map(|m| m.into_iter().collect())
                     .unwrap_or_default();
-                let gated_compiled_tool = if agent_approval_rules.is_empty() {
-                    false
-                } else {
+                let gated_compiled_tool = {
                     let constraints = crate::magician_v2::agents::types::AgentConstraints {
                         requires_approval: agent_approval_rules.to_vec(),
                         ..Default::default()
@@ -20787,10 +20990,7 @@ Write a concise owner-facing result with:
         // Every run rooted on this chat thread — pack calls, delegations,
         // handovers — shares one browser window, keyed on the thread, so a
         // follow-up call sees the page the previous one left.
-        let browser_session_id_override = Some(format!(
-            "magician-chat-{}",
-            chat_browser_session_id_segment(&session.ui_thread_id)
-        ));
+        let browser_session_id_override = Some(chat_browser_launch_override(&session.ui_thread_id));
         // Secrets this turn collected through `need_user_input` travel into the
         // sub-run as flagged inputs; the run vaults them at entry and the model
         // keeps using the placeholders it was given.
@@ -20912,6 +21112,7 @@ Write a concise owner-facing result with:
             cancel_token.clone(),
             accept_in_scope,
             browser_session_id_override,
+            chat_browser_tab_label(session, current_user_text),
             seeded_sensitive_inputs,
             alignment_owner_turn,
             dispatch,
@@ -21265,14 +21466,18 @@ Write a concise owner-facing result with:
             Outcome::WaitingForConfirmation {
                 action_summary,
                 reason,
+                pause_state,
                 ..
             } => {
-                summary = format!("Paused for confirmation: {action_summary}");
-                pause = Some((
-                    format!("Confirm: {action_summary}"),
-                    None,
-                    Some(reason.clone()),
-                ));
+                // A tool with an approval preview is named by it: the raw
+                // call can be a whole document on one line.
+                let shown = pause_state
+                    .approval_preview
+                    .as_deref()
+                    .map(crate::magician_v2::execution::approval_preview::approval_preview_summary_line)
+                    .unwrap_or_else(|| action_summary.clone());
+                summary = format!("Paused for confirmation: {shown}");
+                pause = Some((format!("Confirm: {shown}"), None, Some(reason.clone())));
             },
             Outcome::CannotProceed { reason, .. } => {
                 // The reason is what the calling model needs to recover; the
@@ -21727,11 +21932,8 @@ Write a concise owner-facing result with:
 /// Build the `create_task` response — the agentic core that creates
 /// the task and returns its identifiers. Free function so chat-side
 /// dispatch and the autonomous compiled handler share the same
-/// implementation. No chat-specific side effects (status cards,
-/// fan-out subscriptions, termination watchers) — those flow through
-/// `subscribe_to_task_for_chat`, which the chat LLM should call after
-/// `create_task` if it wants the task surfaced live in the
-/// conversation.
+/// implementation. Chat dispatch attaches the resulting task's progress;
+/// the compiled handler has no chat-specific side effects.
 #[allow(clippy::too_many_arguments)]
 
 impl ChatService {
@@ -21893,7 +22095,7 @@ impl ChatService {
         let current_status = task.state.status.clone();
         if matches!(
             current_status.as_str(),
-            "completed" | "failed" | "cancelled"
+            "completed" | "failed" | "cancelled" | "archived"
         ) {
             // Terminal — no live stream to attach. Return the status
             // snapshot so the LLM can summarize the result without a
@@ -21967,42 +22169,7 @@ impl ChatService {
         } else {
             Vec::new()
         };
-        let summary_card = ChatMessage::new(
-            Uuid::new_v4().to_string(),
-            session.id.clone(),
-            ChatMessageDirection::System,
-            ChatMessageContent::TaskStatusUpdate {
-                completion_kind: task.state.completion_kind,
-                task_id: task_id.to_string(),
-                status: current_status.clone(),
-                display_label: None,
-                summary: Some(format!(
-                    "Watching task: {} ({})",
-                    task.manifest.title, current_status
-                )),
-                // Surface the active execution so the chat card's
-                // "Inspect run →" trigger renders DURING the run (the
-                // frontend gates it on a non-empty `execution_id`), not
-                // only after the terminal snapshot. Mirrors the
-                // resolution in `emit_delegate_terminal_chat_snapshot`.
-                execution_id: task
-                    .state
-                    .active_root_execution_id
-                    .clone()
-                    .or_else(|| task.state.latest_root_execution_id.clone())
-                    .or_else(|| task.state.last_completed_root_execution_id.clone()),
-                ui_thread_id: Some(task.manifest.ui_thread_id.clone()),
-                output_files: output_files.clone(),
-                synthesis_pending: !task.state.synthesis_pending_executions.is_empty(),
-                speech_tts: None,
-            },
-            Utc::now().timestamp_millis(),
-        )
-        .with_chat_turn_id(None)
-        .with_voice_origin(None)
-        .with_speech_segments(None)
-        .with_source_surface(None)
-        .with_presence_session_id(None);
+        let summary_card = chat_task_status_snapshot(session, &task, output_files.clone(), None);
         if let Err(error) = self.persist_display_message(session, summary_card).await {
             warn!(
                 task_id,
@@ -22071,20 +22238,25 @@ impl ChatService {
                 let memory_service = resolver
                     .resolve_for_scope(&session.principal, &session.workspace)
                     .ok()?;
-                let tier_def = Self::personality_profile_tier_definition();
-                let record = memory_service
-                    .load_native_tier(caller_agent_id, &tier_def, None)
+                // Same resolution as the caller's own pinned block: saved
+                // profile, else its definition's default preset.
+                let caller_default = self
+                    .persona_provider
+                    .get_persona_scoped(&session.principal, &session.workspace, caller_agent_id)
                     .await
-                    .ok()
-                    .flatten()?;
-                let get = |key: &str| -> String {
-                    record
-                        .fields
-                        .get(key)
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default()
-                };
+                    .and_then(|persona| persona.default_personality);
+                let dirs = self
+                    .personality_skill_search_dirs(&session.principal, &session.workspace)
+                    .unwrap_or_default();
+                let search: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+                let fields = crate::magician_v2::skills::resolve_agent_personality_fields(
+                    &memory_service,
+                    &search,
+                    caller_agent_id,
+                    caller_default.as_deref(),
+                )
+                .await?;
+                let get = |key: &str| -> String { fields.get(key).cloned().unwrap_or_default() };
                 let active = get("active_mode");
                 let voice = get("voice");
                 if voice.is_empty() {
@@ -22274,7 +22446,10 @@ impl ChatService {
                         Err(_) => continue,
                     };
                     let terminal = task.state.status.clone();
-                    if !matches!(terminal.as_str(), "completed" | "failed" | "cancelled") {
+                    if !matches!(
+                        terminal.as_str(),
+                        "completed" | "failed" | "cancelled" | "archived"
+                    ) {
                         continue;
                     }
                     self.emit_synthetic_delegate_terminal(
@@ -22597,7 +22772,7 @@ impl ChatService {
                             }
                         }
                         let status = task.state.status.as_str();
-                        if matches!(status, "completed" | "failed" | "cancelled") {
+                        if matches!(status, "completed" | "failed" | "cancelled" | "archived") {
                             break status.to_string();
                         }
                     },
@@ -22644,6 +22819,11 @@ impl ChatService {
                 },
             )
             .await;
+
+            // Archival abandons the run; there is no final synthesis to wait for.
+            if terminal_status_str == "archived" {
+                return;
+            }
 
             // Phase 2: poll `SynthesisReadiness` until Ready / Failed
             // / deadline / TaskNotFound. Bounded by a 5m synthesis-
@@ -22806,8 +22986,7 @@ impl ChatService {
                                 // IS for their own execution.
                                 let is_our_failure =
                                     !execution_id.is_empty() && failed_eid == execution_id;
-                                let any_synthesis_pending =
-                                    !task.state.synthesis_pending_executions.is_empty();
+                                let any_synthesis_pending = task.state.synthesis_pending();
                                 if !is_our_failure && any_synthesis_pending {
                                     saw_terminal_with_pending = true;
                                     continue;
@@ -23553,6 +23732,7 @@ impl ChatService {
             "completed" => "Execution completed.".to_string(),
             "failed" => "Execution failed.".to_string(),
             "cancelled" => "Execution cancelled.".to_string(),
+            "archived" => "Task archived; it is no longer running.".to_string(),
             other => format!("Execution ended with status {other}."),
         }
     }
@@ -23604,7 +23784,7 @@ impl ChatService {
                     execution_id: message_execution_id,
                     ..
                 } if message_task_id == task_id
-                    && matches!(status.as_str(), "completed" | "failed" | "cancelled")
+                    && matches!(status.as_str(), "completed" | "failed" | "cancelled" | "archived")
                     && execution_id.map_or(true, |expected| {
                         message_execution_id.as_deref() == Some(expected)
                     })
@@ -23640,9 +23820,13 @@ impl ChatService {
             else {
                 return false;
             };
-            if message_task_id != task_id
-                || !matches!(status.as_str(), "completed" | "failed" | "cancelled")
-            {
+            if message_task_id != task_id {
+                return false;
+            }
+            if status == "archived" {
+                return true;
+            }
+            if !matches!(status.as_str(), "completed" | "failed" | "cancelled") {
                 return false;
             }
             if !output_files.is_empty() {
@@ -23652,6 +23836,85 @@ impl ChatService {
                 .as_deref()
                 .is_some_and(|value| !Self::stale_or_generic_terminal_summary(status, value))
         })
+    }
+
+    /// The catch-up card for a task whose work is done while its final answer
+    /// is still being written: `running` with `synthesis_pending`, the same
+    /// shape the live progress channel posts, so every client keeps showing
+    /// "Preparing final result" instead of a finished card.
+    fn emit_delegate_synthesis_pending_snapshot(
+        broadcaster: &RuntimeTransportBroadcaster,
+        session: &ChatSession,
+        task: &crate::magician_v2::artifact_v2::models::TaskRecord,
+        fallback_execution_id: Option<&str>,
+        turn: DelegateTerminalTurn<'_>,
+    ) {
+        const STATUS: &str = "running";
+        let execution_id = task
+            .state
+            .last_completed_root_execution_id
+            .clone()
+            .or_else(|| task.state.latest_root_execution_id.clone())
+            .or_else(|| task.state.active_root_execution_id.clone())
+            .or_else(|| fallback_execution_id.map(str::to_string));
+        let real_turn_id = turn.chat_turn_id.filter(|turn_id| {
+            !crate::magician_v2::realtime_events::is_synthetic_chat_task_turn_id(turn_id)
+        });
+        if let (Some(turn_id), true) = (real_turn_id, turn.emit_status_event) {
+            let target_agent_id = turn
+                .target_agent_id
+                .map(str::to_string)
+                .unwrap_or_else(|| task.manifest.agent_id.clone());
+            let payload = delegate_terminal_status_event_payload(
+                turn_id,
+                &task.manifest.task_id,
+                execution_id.as_deref(),
+                STATUS,
+                None,
+                &[],
+                None,
+                &target_agent_id,
+                true,
+            );
+            broadcaster.emit_named(
+                RuntimeAgentEventType::ChatDelegateStatusChanged.as_str(),
+                &target_agent_id,
+                Some(&session.principal),
+                Some(&session.workspace),
+                payload,
+            );
+        }
+        let message = ChatMessage::new(
+            Uuid::new_v4().to_string(),
+            session.id.clone(),
+            ChatMessageDirection::System,
+            ChatMessageContent::TaskStatusUpdate {
+                completion_kind: None,
+                task_id: task.manifest.task_id.clone(),
+                status: STATUS.to_string(),
+                display_label: None,
+                summary: None,
+                execution_id,
+                ui_thread_id: Some(task.manifest.ui_thread_id.clone()),
+                output_files: Vec::new(),
+                synthesis_pending: true,
+                speech_tts: None,
+            },
+            Utc::now().timestamp_millis(),
+        )
+        .with_chat_turn_id(real_turn_id.map(str::to_string))
+        .with_voice_origin(None)
+        .with_speech_segments(None)
+        .with_source_surface(None)
+        .with_presence_session_id(None);
+        broadcaster.emit_transport_only(RuntimeTransportEvent::ChatMessageReceived {
+            session_id: session.id.clone(),
+            message,
+            principal: Some(session.principal.clone()),
+            workspace: Some(session.workspace.clone()),
+            origin_channel: Some(session.origin_channel.clone()),
+            timestamp: Utc::now().timestamp_millis(),
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -23705,7 +23968,29 @@ impl ChatService {
             .map(|task| task.state.status.clone())
             .or_else(|| fallback_status.map(str::to_string))
             .unwrap_or_else(|| "completed".to_string());
-        if !matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+        if !matches!(
+            status.as_str(),
+            "completed" | "failed" | "cancelled" | "archived"
+        ) {
+            return;
+        }
+        // The work is done but the final answer is still being written. Say
+        // so, as the live progress channel does (status held at `running`,
+        // `synthesis_pending`), instead of settling the card as finished
+        // for the whole synthesis. The watcher's Phase 2 posts the terminal
+        // card when the answer is published.
+        if status != "archived"
+            && task
+                .as_ref()
+                .is_some_and(|task| task.state.synthesis_pending())
+        {
+            Self::emit_delegate_synthesis_pending_snapshot(
+                broadcaster,
+                &session,
+                task.as_ref().expect("task with synthesis pending"),
+                fallback_execution_id,
+                turn,
+            );
             return;
         }
 
@@ -23764,6 +24049,7 @@ impl ChatService {
                 &output_files,
                 completion_kind,
                 &target_agent_id,
+                false,
             );
             broadcaster.emit_named(
                 RuntimeAgentEventType::ChatDelegateStatusChanged.as_str(),
@@ -24382,10 +24668,8 @@ impl ChatService {
             // instead of spawning a fresh window per `execution_id`.
             // See `primitive/browser/session.rs::sanitize_session_id`
             // for the character whitelist these ids must satisfy.
-            let browser_session_id_override = Some(format!(
-                "magician-chat-{}",
-                chat_browser_session_id_segment(&session.ui_thread_id)
-            ));
+            let browser_session_id_override =
+                Some(chat_browser_launch_override(&session.ui_thread_id));
             let invocation_context_override = Some(chat_child_invocation_context(
                 session,
                 agent_id,
@@ -24406,6 +24690,7 @@ impl ChatService {
                     extra_tags: extra_tags.clone(),
                     reference_task_ids: reference_task_ids.clone(),
                     browser_session_id_override: browser_session_id_override.clone(),
+                    browser_tab_label: chat_browser_tab_label(session, current_user_text),
                     invocation_context_override: invocation_context_override.clone(),
                     authorization_revision: Some(authorization_revision.clone()),
                     launch_gate: Some(batch_launch_gate.clone()),
@@ -24422,6 +24707,7 @@ impl ChatService {
                     extra_tags: extra_tags.clone(),
                     reference_task_ids: reference_task_ids.clone(),
                     browser_session_id_override: browser_session_id_override.clone(),
+                    browser_tab_label: chat_browser_tab_label(session, current_user_text),
                     invocation_context_override: invocation_context_override.clone(),
                     authorization_revision: Some(authorization_revision.clone()),
                     launch_gate: Some(batch_launch_gate.clone()),
@@ -25046,10 +25332,10 @@ impl ChatService {
                     // Share the chat thread's Chrome window with the
                     // handed-over agent so the live browser state
                     // survives the agent boundary.
-                    browser_session_id_override: Some(format!(
-                        "magician-chat-{}",
-                        chat_browser_session_id_segment(&session.ui_thread_id)
+                    browser_session_id_override: Some(chat_browser_launch_override(
+                        &session.ui_thread_id,
                     )),
+                    browser_tab_label: chat_browser_tab_label(session, None),
                     invocation_context_override: Some(chat_child_invocation_context(
                         session,
                         agent_id,
@@ -25292,10 +25578,10 @@ impl ChatService {
                     reference_task_ids: reference_task_ids.clone(),
                     // Sub-goals run under the chat thread; share its
                     // Chrome window with the parent and siblings.
-                    browser_session_id_override: Some(format!(
-                        "magician-chat-{}",
-                        chat_browser_session_id_segment(&session.ui_thread_id)
+                    browser_session_id_override: Some(chat_browser_launch_override(
+                        &session.ui_thread_id,
                     )),
+                    browser_tab_label: chat_browser_tab_label(session, None),
                     invocation_context_override: Some(invocation_context_override),
                     authorization_revision: None,
                     launch_gate: None,
@@ -25317,10 +25603,8 @@ impl ChatService {
 /// Build the `run_task` response — the agentic core that starts an
 /// execution. Free function so chat-side dispatch and the autonomous
 /// compiled handler share the same implementation. No chat-specific
-/// side effects (kickoff cards, progress subscriptions) — those flow
-/// through `subscribe_to_task_for_chat`, which the chat LLM should
-/// call after `run_task` if it wants the task surfaced live in the
-/// conversation.
+/// side effects (kickoff cards, progress subscriptions); chat dispatch
+/// attaches the resulting task automatically.
 
 impl ChatService {
     /// `describe_agents` — read-only depth probe for one or more
@@ -25765,6 +26049,7 @@ pub async fn rank_memory_candidates_hybrid(
     user_tier_filter: Option<&str>,
     retrieval_scope: &crate::magician_v2::agents::RetrievalScope,
 ) -> (Vec<RankedMemoryCandidate>, MemoryRetrievalMeta) {
+    let recall_started = std::time::Instant::now();
     // Try the lancedb-derived hybrid index. Falls back cleanly:
     // - No definition store wired → keyword-only.
     // - Hybrid retrieval errors (transient I/O, embedder unavailable) →
@@ -25815,6 +26100,8 @@ pub async fn rank_memory_candidates_hybrid(
         },
         None => (None, Some("no_definition_store_attached".to_string())),
     };
+    let index_scoring_ms = recall_started.elapsed().as_secs_f64() * 1_000.0;
+    let candidate_load_started = std::time::Instant::now();
     let backend = if indexed_scores.is_some() {
         "lancedb_hybrid"
     } else {
@@ -25833,8 +26120,8 @@ pub async fn rank_memory_candidates_hybrid(
     let mut all_candidates: Vec<MemoryCandidateDocument> = Vec::new();
     let mut source_read_failed = false;
     if tier_filter.is_none() || user_tier_filter.is_some() {
-        match load_memory_candidate_documents(
-            memory_service.storage(),
+        match load_memory_recall_candidate_documents(
+            memory_service,
             agent_id,
             &definition.memory_tiers,
             &MemoryCandidateRequest {
@@ -25842,13 +26129,13 @@ pub async fn rank_memory_candidates_hybrid(
                 goal_id: None,
                 recency_cutoff: None,
                 include_environment_knowledge: true,
-                retrieval_scope: retrieval_scope.clone(),
+                retrieval_scope: crate::magician_v2::agents::RetrievalScope::Unbound,
                 isolated_user_root: isolated_user_root.clone(),
             },
         )
         .await
         {
-            Ok(candidates) => all_candidates.extend(candidates),
+            Ok(candidates) => all_candidates.extend(candidates.iter().cloned()),
             Err(error) => {
                 source_read_failed = true;
                 warn!(
@@ -25866,8 +26153,8 @@ pub async fn rank_memory_candidates_hybrid(
         None => true,
     };
     if should_load_agent_scope {
-        match load_memory_candidate_documents(
-            memory_service.storage(),
+        match load_memory_recall_candidate_documents(
+            memory_service,
             agent_id,
             &definition.memory_tiers,
             &MemoryCandidateRequest {
@@ -25875,13 +26162,13 @@ pub async fn rank_memory_candidates_hybrid(
                 goal_id: None,
                 recency_cutoff: None,
                 include_environment_knowledge: true,
-                retrieval_scope: retrieval_scope.clone(),
+                retrieval_scope: crate::magician_v2::agents::RetrievalScope::Unbound,
                 isolated_user_root: isolated_user_root.clone(),
             },
         )
         .await
         {
-            Ok(candidates) => all_candidates.extend(candidates),
+            Ok(candidates) => all_candidates.extend(candidates.iter().cloned()),
             Err(error) => {
                 source_read_failed = true;
                 warn!(
@@ -25914,6 +26201,31 @@ pub async fn rank_memory_candidates_hybrid(
                     continue;
                 }
             }
+            // One source-validated snapshot for this tier's complete goal set.
+            // Caching each tiny goal separately would evict the shared user
+            // and agent snapshots on every search.
+            match load_memory_recall_candidate_documents(
+                memory_service,
+                agent_id,
+                std::slice::from_ref(tier),
+                &MemoryCandidateRequest {
+                    scope: TierScope::AgentGoal,
+                    goal_id: None,
+                    recency_cutoff: None,
+                    include_environment_knowledge: true,
+                    retrieval_scope: crate::magician_v2::agents::RetrievalScope::Unbound,
+                    isolated_user_root: isolated_user_root.clone(),
+                },
+            )
+            .await
+            {
+                Ok(candidates) => {
+                    all_candidates.extend(candidates.iter().cloned());
+                    continue;
+                },
+                Err(error) => warn!(agent_id, tier = %tier.name, error = %error,
+                    "memory goal snapshot unavailable; reading individual goals"),
+            }
             let goal_ids = match magician_vector_index::memory_index::discover_goal_ids_for_tier(
                 memory_service.storage(),
                 agent_id,
@@ -25937,7 +26249,7 @@ pub async fn rank_memory_candidates_hybrid(
                 },
             };
             for goal_id in goal_ids {
-                match load_memory_candidate_documents(
+                match magician_vector_index::memory_candidates::load_memory_candidate_documents(
                     memory_service.storage(),
                     agent_id,
                     std::slice::from_ref(tier),
@@ -25946,7 +26258,7 @@ pub async fn rank_memory_candidates_hybrid(
                         goal_id: Some(&goal_id),
                         recency_cutoff: None,
                         include_environment_knowledge: true,
-                        retrieval_scope: retrieval_scope.clone(),
+                        retrieval_scope: crate::magician_v2::agents::RetrievalScope::Unbound,
                         isolated_user_root: isolated_user_root.clone(),
                     },
                 )
@@ -25978,8 +26290,8 @@ pub async fn rank_memory_candidates_hybrid(
     // §5A.2 containment over the WHOLE candidate universe, tiers and episodes
     // alike.
     //
-    // `load_memory_candidate_documents` already filtered everything it
-    // produced. Episodes are the reason this second pass exists: they live on
+    // Cached documents remain engagement-independent. Apply containment
+    // over episodes and every tier before ranking. Episodes live on
     // their own disk surface (`memory/agents/<id>/episodes/*.json`), are
     // assembled by `episode_candidate_document`, and never pass through the
     // canonical extraction path — so a filter that lived only there would let
@@ -25989,6 +26301,10 @@ pub async fn rank_memory_candidates_hybrid(
     // for a corpus nobody has labelled.
     crate::magician_v2::agents::retain_candidates_for_scope(retrieval_scope, &mut all_candidates);
 
+    let candidate_load_ms = candidate_load_started.elapsed().as_secs_f64() * 1_000.0;
+    let candidate_count = all_candidates.len();
+    let ranking_started = std::time::Instant::now();
+
     let context_candidates = all_candidates.iter().filter(|candidate| {
         candidate.semantic_memory_type == crate::magician_v2::agents::SemanticMemoryType::Episode
             && !crate::magician_v2::agents::memory_temperature::memory_candidate_has_superseded_lifecycle(candidate)
@@ -25996,6 +26312,11 @@ pub async fn rank_memory_candidates_hybrid(
 
     let mut ranked: Vec<RankedMemoryCandidate> = Vec::new();
     let mut passages = std::collections::BTreeMap::new();
+    let passage_lookup_started = std::time::Instant::now();
+    let passage_lookup = indexed_scores
+        .as_ref()
+        .map(magician_vector_index::memory_index::MemoryIndexPassageLookup::new);
+    let passage_lookup_ms = passage_lookup_started.elapsed().as_secs_f64() * 1_000.0;
     for candidate in all_candidates {
         if !candidate_matches_tier_filter(&candidate, tier_filter, user_tier_filter) {
             continue;
@@ -26005,13 +26326,9 @@ pub async fn rank_memory_candidates_hybrid(
         let hybrid_score = indexed_scores
             .as_ref()
             .and_then(|scores| scores.get(&index_score_key).copied());
-        let passage = indexed_scores
+        let passage = passage_lookup
             .as_ref()
-            .and_then(|scores| {
-                magician_vector_index::memory_index::memory_candidate_index_hit_passage(
-                    &candidate, scores,
-                )
-            })
+            .and_then(|lookup| lookup.passage(&candidate))
             .unwrap_or_else(|| {
                 magician_vector_index::memory_index::memory_candidate_query_passage(
                     &candidate, query,
@@ -26036,6 +26353,12 @@ pub async fn rank_memory_candidates_hybrid(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    tracing::info!(target: "memory_index", index_scoring_ms, candidate_load_ms,
+        ranking_and_passages_ms = ranking_started.elapsed().as_secs_f64() * 1_000.0,
+        passage_lookup_ms, candidates = candidate_count, matched = ranked.len(), backend,
+        total_ms = recall_started.elapsed().as_secs_f64() * 1_000.0,
+        "Memory recall pipeline timing");
 
     (
         ranked,
@@ -26244,6 +26567,39 @@ async fn merge_user_memory_tier_fields_inner(
             });
         },
     };
+    // Activity logs (email/chat evidence, channel patterns and feedback) go to
+    // their own lane files under `memory.user_knowledge_bounds` enforce; the
+    // main file and its lock are not touched. See `agents::user_memory_lanes`.
+    if let Some(lane) = crate::magician_v2::agents::user_memory_lanes::Lane::for_tier(tier_name) {
+        let settings = crate::magician_v2::agents::user_memory_bounds::current_settings();
+        if settings.lanes_active() {
+            let rows = match user_memory_fields_to_array(tier_name, fields) {
+                Value::Array(rows) => rows,
+                _ => Vec::new(),
+            };
+            return match Box::pin(crate::magician_v2::agents::user_memory_lanes::upsert_rows(
+                memory_service.storage(),
+                lane,
+                rows,
+                &settings,
+                Utc::now(),
+            ))
+            .await
+            {
+                Ok(_) => json!({
+                    "status": "ok",
+                    "scope": "user",
+                    "tier": tier_name,
+                    "store": "lane",
+                    "fields_updated": fields.keys().cloned().collect::<Vec<_>>(),
+                }),
+                Err(error) => json!({
+                    "status": "error",
+                    "reason": format!("user memory lane write failed: {error}"),
+                }),
+            };
+        }
+    }
     let _flock =
         match crate::magician_v2::agents::storage::AgentStorage::acquire_file_lock_exclusive(
             &memory_service.storage().user_knowledge_path(),
@@ -26282,13 +26638,51 @@ async fn merge_user_memory_tier_fields_inner(
             superseded = supersede_restated_claims(items, fields, Utc::now());
         }
     }
+    // Retention drops the oldest entries of an appending writer; they go to
+    // the restorable archive first, never straight to nowhere.
+    let mut retained_out = Vec::new();
     if let Some((key_prefix, max_entries)) = retention {
-        merged = prune_user_memory_entries_by_prefix(merged, key_prefix, max_entries);
+        let (kept, dropped) = prune_user_memory_entries_by_prefix(merged, key_prefix, max_entries);
+        merged = kept;
+        if !dropped.is_empty() {
+            let now = Utc::now();
+            let section = normalized_user_memory_tier_name(tier_name)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| tier_name.to_string());
+            retained_out = dropped
+                .into_iter()
+                .map(|item| {
+                    crate::magician_v2::agents::user_memory_bounds::archive::ArchiveEntry::new(
+                        &section,
+                        "retention",
+                        item,
+                        None,
+                        now,
+                    )
+                })
+                .collect();
+            let settings = crate::magician_v2::agents::user_memory_bounds::current_settings();
+            if let Err(error) = Box::pin(
+                crate::magician_v2::agents::user_memory_bounds::archive::append_batch(
+                    &memory_service.storage().user_root(),
+                    &retained_out,
+                    now,
+                    settings.archive.compress_after_months,
+                ),
+            )
+            .await
+            {
+                return json!({
+                    "status": "error",
+                    "reason": format!("user memory archive write failed: {error}"),
+                });
+            }
+        }
     }
     write_json_path(&mut knowledge, tier_name, merged);
 
     match memory_service
-        .persist_user_knowledge_as(&knowledge, "memory_tool")
+        .persist_user_knowledge_archived_as(&knowledge, "memory_tool", &retained_out)
         .await
     {
         Ok(()) if superseded > 0 => json!({
@@ -26436,10 +26830,15 @@ pub async fn remove_user_memory_tier_field(
 
 /// Keep only the newest `max` entries (by `updated_at` — RFC3339 strings sort
 /// chronologically) whose `key` starts with `prefix`; everything else passes
-/// through untouched, preserving array order.
-fn prune_user_memory_entries_by_prefix(merged: Value, prefix: &str, max: usize) -> Value {
+/// through untouched, preserving array order. Returns the kept collection and
+/// the entries it dropped (the caller archives them).
+fn prune_user_memory_entries_by_prefix(
+    merged: Value,
+    prefix: &str,
+    max: usize,
+) -> (Value, Vec<Value>) {
     let Some(items) = merged.as_array() else {
-        return merged;
+        return (merged, Vec::new());
     };
     let mut matching: Vec<(usize, String)> = items
         .iter()
@@ -26459,20 +26858,20 @@ fn prune_user_memory_entries_by_prefix(merged: Value, prefix: &str, max: usize) 
         })
         .collect();
     if matching.len() <= max {
-        return merged;
+        return (merged, Vec::new());
     }
     matching.sort_by(|a, b| a.1.cmp(&b.1)); // oldest first
     let drop: std::collections::HashSet<usize> = matching[..matching.len() - max]
         .iter()
         .map(|(idx, _)| *idx)
         .collect();
-    Value::Array(
-        items
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| !drop.contains(idx))
-            .map(|(_, item)| item.clone())
-            .collect(),
+    let (dropped, kept): (Vec<_>, Vec<_>) = items
+        .iter()
+        .enumerate()
+        .partition(|(idx, _)| drop.contains(idx));
+    (
+        Value::Array(kept.into_iter().map(|(_, item)| item.clone()).collect()),
+        dropped.into_iter().map(|(_, item)| item.clone()).collect(),
     )
 }
 
@@ -26653,6 +27052,8 @@ impl ChatService {
     async fn checked_chat_reply(
         &self,
         session: &ChatSession,
+        chat_turn_id: Option<&str>,
+        allow_delivery_review: bool,
         user_text: Option<&str>,
         reply: String,
         evidence: Vec<(
@@ -26682,13 +27083,21 @@ impl ChatService {
         // The reply is waiting on this: figures are checked in code and the
         // remaining claims go to the decision engine, not the LLM judge.
         let router = self.operation_llm_router.as_ref().map(|router| {
-            router.with_scope_context(Some(magicllm::LlmScope::new(
-                session.principal.clone(),
-                session.workspace.clone(),
-            )))
+            let mut owner = magicllm::dispatch::TaskRef::task(session.id.clone())
+                .with_chat_session(session.id.clone())
+                .with_agent(session.agent_id.clone())
+                .with_scope(session.principal.clone(), session.workspace.clone());
+            owner.chat_turn_id = chat_turn_id.map(str::to_owned);
+            router
+                .with_scope_context(Some(magicllm::LlmScope::new(
+                    session.principal.clone(),
+                    session.workspace.clone(),
+                )))
+                .with_task_context(Some(owner))
         });
         let review = match router.as_ref() {
             Some(router) => OwnerTextReview::Engine(ClaimSupportEngine {
+                allow_delivery_review,
                 router,
                 principal: &session.principal,
                 workspace: &session.workspace,
@@ -26725,7 +27134,6 @@ impl ChatService {
             crate::magician_v2::artifact_v2::synthesis::strip_unverified_caveat(&reply)
         )
     }
-
     fn build_assistant_text_message(
         session_id: &str,
         text: String,
@@ -27272,6 +27680,40 @@ impl ChatService {
         }
     }
 
+    /// Full registered inventory for an already-authorized session. Callers
+    /// authorize scope before reading; this does not include scratch files.
+    pub async fn session_files(&self, session: &ChatSession) -> Result<Vec<ChatSessionFileRecord>> {
+        Ok(self.load_session_file_index(session).await?.files)
+    }
+
+    pub async fn session_file_inventory(
+        &self,
+        session: &ChatSession,
+    ) -> Result<ChatSessionFileIndex> {
+        self.load_session_file_index(session).await
+    }
+
+    /// The owner API authorizes the session and task lineage before calling.
+    pub async fn delete_session_asset(
+        &self,
+        session: &ChatSession,
+        asset: &super::models::ChatSessionAssetKey,
+    ) -> Result<()> {
+        let _admission = self.lock_session_admission(&session.id).await;
+        if self.has_active_chat_run(&session.id)
+            || self
+                .pending_messages
+                .get(&session.id)
+                .is_some_and(|queue| !queue.is_empty())
+        {
+            anyhow::bail!("chat_files_busy");
+        }
+        let _turn = self.lock_session_turn(&session.id).await;
+        self.chat_store
+            .delete_session_asset(&session.id, asset)
+            .await
+    }
+
     async fn load_session_file_index(&self, session: &ChatSession) -> Result<ChatSessionFileIndex> {
         let workspace = self.artifact_workspace()?;
         let path = workspace.chat_session_file_index_path(
@@ -27777,9 +28219,12 @@ impl ChatService {
             &session.workspace,
             &session.id,
         );
-        let _lifecycle_guard = acquire_chat_session_lifecycle_guard(workspace, session)
-            .await
-            .context("Failed to lock chat session lifecycle for attachment")?;
+        let (_lifecycle_guard, current_session) =
+            super::storage::acquire_chat_session_lifecycle_guard_with_metadata(workspace, session)
+                .await
+                .context("Failed to lock chat session lifecycle for attachment")?;
+        self.ensure_session_writable(&current_session).await?;
+        let session = &current_session;
         workspace
             .ensure_chat_session_workspace(&session.principal, &session.workspace, &session.id)
             .await
@@ -29432,7 +29877,6 @@ impl ChatService {
         label: Option<String>,
         screen_capture: Option<ScreenCaptureAttachmentContext>,
     ) -> Result<ChatSessionFileRecord> {
-        let _session_turn_guard = self.lock_session_turn(session_id).await;
         let session = self
             .chat_store
             .get_session(session_id)
@@ -29763,6 +30207,98 @@ impl ChatService {
         Ok(())
     }
 
+    /// Markdown often names a file relative to its goal workspace rather than
+    /// to a chat output directory. Resolve exact paths only, within this
+    /// owner's scope, and never choose between two matching workspaces.
+    async fn resolve_mentioned_relative_path(
+        &self,
+        session: &ChatSession,
+        relative: &str,
+    ) -> Result<PathBuf> {
+        use std::path::Component;
+        if relative.contains('\\')
+            || !Path::new(relative)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            anyhow::bail!("Invalid relative_path");
+        }
+        let mut before_id = None;
+        let mut mentioned = false;
+        loop {
+            let (messages, more) = self
+                .chat_store
+                .get_messages_paginated(&session.id, 200, before_id.as_deref())
+                .await?;
+            if messages.iter().any(|message| {
+                Self::message_text_segments(message)
+                    .iter()
+                    .any(|text| text.contains(relative))
+            }) {
+                mentioned = true;
+                break;
+            }
+            if messages.is_empty() || !more {
+                break;
+            }
+            before_id = messages.first().map(|message| message.id.clone());
+        }
+        if !mentioned {
+            anyhow::bail!("Path is outside allowed output roots");
+        }
+
+        let layout = self.artifact_workspace()?;
+        let mut roots = vec![layout.chat_session_outputs_dir(
+            &session.principal,
+            &session.workspace,
+            &session.id,
+        )];
+        let notes =
+            crate::magician_v2::notes::NotesSettingsStore::with_workspace_layout(layout.clone());
+        for root in notes
+            .note_provider_roots(&session.principal, &session.workspace)
+            .await?
+        {
+            roots.push(root.clone());
+            let workspaces = root.join("Workspaces");
+            if let Ok(mut entries) = fs::read_dir(&workspaces).await {
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_dir()
+                        && !crate::magician_v2::notes::is_observation_internal_directory(
+                            &entry.file_name(),
+                        )
+                    {
+                        roots.push(entry.path());
+                    }
+                }
+            }
+        }
+        Self::unique_existing_relative_path(&roots, relative).await
+    }
+
+    async fn unique_existing_relative_path(roots: &[PathBuf], relative: &str) -> Result<PathBuf> {
+        let mut matches = std::collections::BTreeSet::new();
+        for root in roots {
+            let Ok(canonical_root) = fs::canonicalize(root).await else {
+                continue;
+            };
+            let Ok(path) = fs::canonicalize(root.join(relative)).await else {
+                continue;
+            };
+            // A symlink must not escape the root that supplied the match.
+            if path.starts_with(canonical_root) {
+                matches.insert(path);
+            }
+        }
+        if matches.len() > 1 {
+            anyhow::bail!("Ambiguous relative path; use the full workspace path");
+        }
+        matches
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("Output path not found"))
+    }
+
     pub async fn resolve_openable_output_path(
         &self,
         session_id: &str,
@@ -29782,6 +30318,14 @@ impl ChatService {
         let requested_absolute_path = absolute_path
             .map(str::trim)
             .filter(|value| !value.is_empty());
+        if let Some(relative) =
+            requested_absolute_path.filter(|path| !Path::new(path).is_absolute())
+        {
+            let path = self
+                .resolve_mentioned_relative_path(&session, relative)
+                .await?;
+            return Ok((session, path));
+        }
         let fallback_relative_path = match (
             source,
             relative_path
@@ -29828,7 +30372,11 @@ impl ChatService {
 
         let mut saw_outside_allowed_root = false;
         for (resolved_path, requested_absolute_path) in candidates {
-            let canonical = Self::canonicalize_existing_or_parent(&resolved_path).await?;
+            let canonical = match fs::canonicalize(&resolved_path).await {
+                Ok(path) => path,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).context("Failed to resolve output path"),
+            };
             let mut within_allowed_root = false;
             for root in &allowed_roots {
                 let canonical_root = match fs::canonicalize(root).await {
@@ -30407,6 +30955,25 @@ impl ChatService {
             )
             .await?;
         }
+        // A new personal chat on a thread that already has an untitled one
+        // nobody has written in yet is that chat: reuse it rather than leave
+        // another empty session behind each time "new chat" is pressed.
+        if history_lane == HistoryLane::Personal
+            && force_agent_id.is_none()
+            && !super::storage::thread_rotates_sessions(ui_thread_id)
+        {
+            if let Some(empty) = self
+                .reusable_empty_session(
+                    &existing_sessions,
+                    ui_thread_id,
+                    origin,
+                    &preferred_agent_id,
+                )
+                .await
+            {
+                return Ok(empty);
+            }
+        }
         // Feature/rotation threads keep one rolling session per exact agent.
         // Another agent on the same thread is a sibling authority boundary,
         // not a duplicate. User chat threads persist until archived manually.
@@ -30455,6 +31022,49 @@ impl ChatService {
             .await;
 
         Ok(session)
+    }
+
+    /// The thread's newest active personal session for this agent and
+    /// channel that has no title and no messages, if any.
+    async fn reusable_empty_session(
+        &self,
+        sessions: &[ChatSession],
+        ui_thread_id: &str,
+        origin: &ChatChannel,
+        agent_id: &str,
+    ) -> Option<ChatSession> {
+        let mut candidates: Vec<&ChatSession> = sessions
+            .iter()
+            .filter(|session| {
+                session.status == ChatSessionStatus::Active
+                    && session.ui_thread_id == ui_thread_id
+                    && session.agent_id == agent_id
+                    && session.effective_history_lane() == HistoryLane::Personal
+                    && session.origin_channel.channel_type == origin.channel_type
+                    && session.origin_channel.address == origin.address
+                    && session
+                        .title
+                        .as_deref()
+                        .is_none_or(|title| title.trim().is_empty())
+            })
+            .collect();
+        candidates.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        for session in candidates {
+            // A turn in flight has not written its first message yet.
+            if self.chat_turn_state(&session.id).is_some() {
+                continue;
+            }
+            match self.chat_store.get_messages(&session.id, 1).await {
+                Ok(messages) if messages.is_empty() => return Some(session.clone()),
+                Ok(_) => {},
+                Err(error) => warn!(
+                    session_id = %session.id,
+                    error = %error,
+                    "[CHAT] could not read a session's messages; not reusing it"
+                ),
+            }
+        }
+        None
     }
 
     async fn validate_forced_agent_session_binding(
@@ -30525,6 +31135,46 @@ impl ChatService {
     pub async fn get_session(&self, session_id: &str) -> Result<Option<ChatSession>> {
         Ok(self.chat_store.get_session(session_id).await?.filter(|session| !matches!(session.internal_voice,
             Some(crate::magician_v2::chat::voice_requests::InternalVoiceSession::Coordinator { .. }))))
+    }
+
+    /// Reactivate a VibeDev project's parked conversation before writing to it.
+    ///
+    /// The cockpit parks (archives) every other project's session when the
+    /// owner picks a project — that is its pointer. A message sent into a
+    /// parked session (an `@vibedev` turn included) is the owner working in
+    /// that project again, so it is reactivated the same way picking it in the
+    /// cockpit would, instead of the send being refused. Only an archived
+    /// session in the VibeDev thread that a live project still points at
+    /// qualifies; anything else answers `None` and keeps its refusal.
+    pub async fn reactivate_parked_vibedev_project_session(
+        &self,
+        session: &ChatSession,
+    ) -> Result<Option<ChatSession>> {
+        use crate::magician_v2::vibedev::projects::{
+            live_vibedev_project_points_at_session, VIBEDEV_THREAD_ID,
+        };
+        if session.status != ChatSessionStatus::Archived
+            || session.ui_thread_id != VIBEDEV_THREAD_ID
+        {
+            return Ok(None);
+        }
+        let Some(service) = self.artifact_v2_service.as_ref() else {
+            return Ok(None);
+        };
+        let scope_root = service
+            .workspace()
+            .scope_root(&session.principal, &session.workspace);
+        if !live_vibedev_project_points_at_session(&scope_root, &session.id) {
+            return Ok(None);
+        }
+        self.chat_store
+            .update_session_status(&session.id, "active")
+            .await?;
+        info!(
+            session_id = %session.id,
+            "[CHAT] reactivated a VibeDev project's parked conversation for a new message"
+        );
+        self.get_session(&session.id).await
     }
 
     /// List all sessions for a principal/workspace.
@@ -30740,22 +31390,72 @@ impl ChatService {
     }
 
     fn personality_profile_tier_definition() -> MemoryTierDefinition {
-        MemoryTierDefinition {
-            name: "personality_profile".to_string(),
-            scope: TierScope::Agent,
-            description: "Active personality configuration".to_string(),
-            schema: Default::default(),
-            render: RenderConfig {
-                format: "compact_summary".to_string(),
-                template: concat!(
-                    "Voice: {voice} | Expression: {expression_bias} | ",
-                    "Triggers: {expression_triggers} | ",
-                    "Suppression: {suppression_rules} | Mode: {active_mode}"
-                )
-                .to_string(),
-            },
-            retention: RetentionMode::Forever,
+        crate::magician_v2::skills::personality_profile_tier_definition()
+    }
+
+    /// Personality-mode skill search path for a scope, highest precedence
+    /// first. `None` without a capability workspace.
+    fn personality_skill_search_dirs(
+        &self,
+        principal: &str,
+        workspace: &str,
+    ) -> Option<Vec<PathBuf>> {
+        let layout = self.capability_workspace.as_ref()?.workspace_layout();
+        let mut dirs = vec![layout.scope_skills_root(principal, workspace)];
+        dirs.extend(crate::magician_v2::config_extras::extra_skills_dirs());
+        Some(dirs)
+    }
+
+    /// The pinned personality block for `agent_id`: its saved
+    /// `personality_profile`, else `default_personality`'s preset.
+    pub async fn agent_personality_block(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+        default_personality: Option<&str>,
+    ) -> Option<String> {
+        let memory_service = self
+            .memory_resolver
+            .as_ref()?
+            .resolve_for_scope(principal, workspace)
+            .ok()?;
+        let dirs = self
+            .personality_skill_search_dirs(principal, workspace)
+            .unwrap_or_default();
+        let search: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        let fields = crate::magician_v2::skills::resolve_agent_personality_fields(
+            &memory_service,
+            &search,
+            agent_id,
+            default_personality,
+        )
+        .await?;
+        crate::magician_v2::skills::render_personality_block(&fields)
+    }
+
+    /// The voice bullets of an installed personality preset, for surfaces
+    /// where the user picks the personality per request.
+    pub fn personality_preset_guidance(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+    ) -> Option<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
         }
+        let dirs = self.personality_skill_search_dirs(principal, workspace)?;
+        let search: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
+        let spec = crate::magician_v2::skills::lookup_personality_mode(
+            &search,
+            &name.to_ascii_lowercase(),
+        )?;
+        let lines = crate::magician_v2::skills::personality_bullet_lines(
+            &crate::magician_v2::skills::personality_spec_to_fields(&spec),
+        );
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     /// Seed the `personality_profile` memory tier with the default personality
@@ -31401,6 +32101,11 @@ impl ChatService {
                 definition.as_ref(),
                 crate::magician_v2::agents::FeatureMode::None,
             );
+        // The realtime catalog belongs to a binding, not to one compacted
+        // chat transcript; native chat compaction is not its owner (voice
+        // rotation is). Keep transcript recall off the voice catalog.
+        chat_runtime_specs
+            .retain(|spec| spec.name != super::history_search::SEARCH_CHAT_HISTORY_TOOL);
         let workspace_skills_dir = self
             .artifact_v2_service
             .as_ref()
@@ -31650,28 +32355,39 @@ impl ChatService {
         &history[start..]
     }
 
-    /// The chat outer-loop prompt is rendered with voice-appropriate
-    /// fixed values (empty active_playbook and no current user text).
-    /// Prior ledger turns are passed into the prompt renderer for
-    /// procedure relevance, and the realtime session itself receives
-    /// the same context as replay items from the voice compactor on
-    /// `session.ready`.
-    pub async fn render_voice_session_context(
+    /// The policy snapshot id of the call's voice catalog, without rendering
+    /// the outer-loop prompt. GPT-Live installs its own mouth prompt and keeps
+    /// only this id (it authorizes `delegate_to_chat`), so rendering the full
+    /// prompt held `session.ready` on a memory retrieval of up to the chat
+    /// deadline whose result was discarded.
+    pub async fn voice_session_policy_snapshot_id(
         &self,
         principal: &str,
         workspace: &str,
         agent_id: &str,
         chat_session_id: &str,
-        provider_supports_turn_context_gate: bool,
-        // Server-minted by `voice_source_surface` from the registered media
-        // session. Prompt authority is selected from this and the resolved
-        // agent — never from the chat session's thread name.
         source_surface: Option<&str>,
-    ) -> Result<VoiceSessionContext> {
-        let call_surface = voice_invocation_surface(source_surface);
-        let per_turn_context_configured = realtime_turn_context_is_active();
-        let per_turn_context_enabled =
-            per_turn_context_configured && provider_supports_turn_context_gate;
+    ) -> Result<Option<String>> {
+        let (_, bundle) = self
+            .load_voice_session_catalog_bundle(
+                principal,
+                workspace,
+                agent_id,
+                chat_session_id,
+                voice_invocation_surface(source_surface),
+            )
+            .await?;
+        Ok(bundle.policy_snapshot_id)
+    }
+
+    async fn load_voice_session_catalog_bundle(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+        chat_session_id: &str,
+        call_surface: crate::magician_v2::agents::InvocationSurface,
+    ) -> Result<(ChatSession, VoiceCatalogBundle)> {
         let session = self
             .chat_store
             .get_session(chat_session_id)
@@ -31696,6 +32412,40 @@ impl ChatService {
                 workspace,
                 agent_id,
                 Some(chat_session_id),
+                call_surface,
+            )
+            .await?;
+        Ok((session, bundle))
+    }
+
+    /// The chat outer-loop prompt is rendered with voice-appropriate
+    /// fixed values (empty active_playbook and no current user text).
+    /// Prior ledger turns are passed into the prompt renderer for
+    /// procedure relevance, and the realtime session itself receives
+    /// the same context as replay items from the voice compactor on
+    /// `session.ready`.
+    pub async fn render_voice_session_context(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+        chat_session_id: &str,
+        provider_supports_turn_context_gate: bool,
+        // Server-minted by `voice_source_surface` from the registered media
+        // session. Prompt authority is selected from this and the resolved
+        // agent — never from the chat session's thread name.
+        source_surface: Option<&str>,
+    ) -> Result<VoiceSessionContext> {
+        let call_surface = voice_invocation_surface(source_surface);
+        let per_turn_context_configured = realtime_turn_context_is_active();
+        let per_turn_context_enabled =
+            per_turn_context_configured && provider_supports_turn_context_gate;
+        let (session, bundle) = self
+            .load_voice_session_catalog_bundle(
+                principal,
+                workspace,
+                agent_id,
+                chat_session_id,
                 call_surface,
             )
             .await?;
@@ -33441,7 +34191,7 @@ impl ChatService {
                     .touch_tool(&projection.working_set_key, &call.name);
             }
         }
-        // Voice/external `create_task` runs through the compiled handler, which
+        // Voice/external task operations run through the compiled handler, which
         // does not have ChatService's subscription machinery. Attach that task
         // here so its TaskStatusUpdate card and activity render in the ledger.
         // Structural task-spawning tools (`orchestrate_pipeline` and
@@ -33452,16 +34202,16 @@ impl ChatService {
         // The spawned task id sits in a different place per tool/form (top-level
         // `task_id`; nested under `full_result.preview`; an array of
         // `delegations[].task_id`), so we collect every `task_id` from the
-        // result. `subscribe_external_spawned_tasks` then gates each on
+        // result. `subscribe_chat_owned_tasks` then gates each on
         // `manifest.chat_session_id == this session` + non-terminal before
         // subscribing — that gate is what keeps the scrape safe (it cannot attach
         // a foreign or stale task's card, which was the reverted per-task
         // tagger's failure mode).
-        if call.name == "create_task" {
+        if matches!(call.name.as_str(), "create_task" | "run_task") {
             let mut task_ids = Vec::new();
             collect_task_ids(&value, &mut task_ids);
             if !task_ids.is_empty() {
-                self.subscribe_external_spawned_tasks(&session, agent_id, &task_ids, chat_turn_id)
+                self.subscribe_chat_owned_tasks(&session, agent_id, &task_ids, chat_turn_id)
                     .heap_boxed()
                     .await;
             }
@@ -33586,11 +34336,9 @@ impl ChatService {
     }
 
     /// Subscribe the chat session to each task in `task_ids` that genuinely
-    /// belongs to this session and is still live. Used by the voice/external
-    /// dispatch path so tasks spawned by `create_task` / `orchestrate_pipeline`
-    /// / `delegate_to_agent` render their `TaskStatusUpdate` cards in the
-    /// thread — including internally-delegated tasks, which were previously
-    /// invisible because only `create_task` was handled.
+    /// belongs to this session. Text chat and voice/external dispatch reuse
+    /// this passive attachment after `create_task` / `run_task`; unlike an
+    /// explicit tail it never queues the owner's next chat message.
     ///
     /// Two gates make scraping task ids out of a tool result safe:
     ///   1. `manifest.chat_session_id == session.id` — only tasks that actually
@@ -33598,14 +34346,14 @@ impl ChatService {
     ///      result (e.g. a reference to an unrelated/older task) is skipped, so
     ///      this can't re-surface a foreign task's card (the failure mode of
     ///      the reverted per-task tagger).
-    ///   2. non-terminal — there's no live stream to tail on an already-final
-    ///      task; subscribing would render a frozen/stale card.
+    ///   2. non-terminal — already-final tasks get a catch-up card without a
+    ///      progress subscription.
     ///
     /// Subscriptions are registered long-lived
     /// (`register_chat_task_subscription`) so a multi-minute orchestration
     /// keeps updating its card after the spawning turn ends; the
     /// termination watcher detaches on terminal status.
-    async fn subscribe_external_spawned_tasks(
+    async fn subscribe_chat_owned_tasks(
         &self,
         session: &ChatSession,
         agent_id: &str,
@@ -33626,7 +34374,7 @@ impl ChatService {
                     debug!(
                         task_id = %task_id,
                         error = %error,
-                        "[CHAT-SERVICE] external task subscribe: get_task failed (skipping)"
+                        "[CHAT-SERVICE] task subscribe: get_task failed (skipping)"
                     );
                     continue;
                 },
@@ -33635,14 +34383,24 @@ impl ChatService {
                 debug!(
                     task_id = %task_id,
                     chat_session_id = %session.id,
-                    "[CHAT-SERVICE] external task subscribe: task not owned by this chat session (skipping)"
+                    "[CHAT-SERVICE] task subscribe: task not owned by this chat session (skipping)"
                 );
                 continue;
+            }
+            let output_files =
+                project_task_outputs_for_chat_session(service.as_ref(), session, task_id).await;
+            let card = chat_task_status_snapshot(session, &task, output_files, chat_turn_id);
+            if let Err(error) = self.persist_display_message(session, card).await {
+                warn!(task_id, %error, "automatic task progress card could not be saved");
             }
             if matches!(
                 task.state.status.as_str(),
                 "completed" | "failed" | "cancelled"
-            ) {
+            ) || self
+                .chat_task_subscriptions
+                .get(&session.id)
+                .is_some_and(|tasks| tasks.contains_key(task_id))
+            {
                 continue;
             }
             // Re-point the task's chat fanout to this durable chat session.
@@ -33662,7 +34420,7 @@ impl ChatService {
                 warn!(
                     task_id = %task_id,
                     chat_session_id = %session.id,
-                    "[CHAT-SERVICE] external task subscribe returned empty (card may not render)"
+                    "[CHAT-SERVICE] task progress subscription unavailable (snapshot card saved)"
                 );
                 continue;
             }
@@ -35106,6 +35864,7 @@ fn episode_candidate_projection(
         outcome_remaining: episode.outcome_remaining.clone(),
         task_title: episode.task_title.clone(),
         task_description: episode.task_description.clone(),
+        task_intent: episode.task_intent.clone(),
         task_id: episode.task_id.clone(),
         strategy_summary: episode.strategy_summary.clone(),
         context_at_start: episode.context_at_start.clone(),
@@ -38350,7 +39109,7 @@ async fn load_task_user_summary_inner(
     // summary card shows the real result instead of the generic "Execution
     // completed." fallback. Markdown / plain text are used verbatim.
     let body = if path.extension().and_then(|ext| ext.to_str()) == Some("html") {
-        crate::magician_v2::execution::compiled_handlers::web_fetch::strip_html_to_text(&raw)
+        crate::magician_v2::artifact_v2::synthesis::html_answer_readable_text(&raw)
     } else {
         raw
     };
@@ -38779,6 +39538,7 @@ pub async fn build_get_task_details_response(
             json!({
                 "status": "ok",
                 "task_id": task.manifest.task_id,
+                "task_url": crate::magician_v2::ui_links::task_record_href(&task, None),
                 "title": task.manifest.title,
                 "description": task.manifest.description,
                 "status_value": task.state.status,
@@ -38873,11 +39633,17 @@ pub async fn project_task_outputs_for_chat_session(
             selected.push(output.clone());
         }
     }
+    // Newest first: outputs are appended as runs finish, so with the cap the
+    // latest run's files win over files an earlier run left behind.
     for output in task_outputs
         .outputs
         .iter()
+        .rev()
         .filter(|output| output.audience == "user")
     {
+        if selected.len() >= PROJECTED_CHAT_TASK_OUTPUT_FILES_LIMIT {
+            break;
+        }
         if selected
             .iter()
             .any(|candidate| candidate.output_id == output.output_id)
@@ -38885,9 +39651,6 @@ pub async fn project_task_outputs_for_chat_session(
             continue;
         }
         selected.push(output.clone());
-        if selected.len() >= PROJECTED_CHAT_TASK_OUTPUT_FILES_LIMIT {
-            break;
-        }
     }
     if selected.is_empty() {
         return Vec::new();
@@ -38970,6 +39733,13 @@ pub async fn project_task_outputs_for_chat_session(
     let mut new_output_paths = Vec::new();
     let mut new_records = Vec::new();
     for output in selected {
+        if index
+            .removed_task_outputs
+            .iter()
+            .any(|removed| removed.task_id == task_id && removed.output_id == output.output_id)
+        {
+            continue;
+        }
         // Phase 2 — idempotent re-projection. If a prior projection
         // already materialized this `(task_id, output.output_id)` pair,
         // skip the copy + index insert and surface the existing entry
@@ -39516,6 +40286,18 @@ mod tests {
         journal.push_str(&later_resolved);
         journal.push('\n');
         journal.push_str(&terminal);
+        journal.push('\n');
+        journal.push_str(&delegate_status_event(
+            "task-archived",
+            "exec-archived",
+            "running",
+        ));
+        journal.push('\n');
+        journal.push_str(&delegate_status_event(
+            "task-archived",
+            "exec-archived",
+            "archived",
+        ));
 
         let reader = TinyChunkReader {
             inner: std::io::Cursor::new(journal.as_bytes()),
@@ -39722,6 +40504,7 @@ mod tests {
         };
         let expected_index = ChatSessionFileIndex {
             files: vec![expected.clone()],
+            ..Default::default()
         };
         let mut published = expected_index.clone();
 
@@ -39752,7 +40535,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn automatic_task_cards_are_session_scoped_and_do_not_block_chat() {
+        let (service, store, session, temp_dir) =
+            create_test_service(Arc::new(MockChatLlmClient::default())).await;
+        let (artifacts, _orchestrator) =
+            build_test_artifact_v2_harness(&temp_dir.path().join("artifact-v2"));
+        let input = CreateTaskInput {
+            principal: session.principal.clone(),
+            workspace: session.workspace.clone(),
+            title: "Chat-started work".to_string(),
+            description: "Show its progress without a separate subscribe call".to_string(),
+            agent_id: session.agent_id.clone(),
+            goal_id: None,
+            ui_thread_id: session.ui_thread_id.clone(),
+            priority: None,
+            due_date: None,
+            tags: Vec::new(),
+            created_by: "agentic_compiled".to_string(),
+            depends_on: Vec::new(),
+            approved: true,
+            schedule: None,
+            output_mode: TaskOutputMode::Accumulate,
+            chat_session_id: Some(session.id.clone()),
+            lifecycle: TaskLifecycle::Persistent,
+            sync_mode: TaskSyncMode::Deferred,
+        };
+        let own = artifacts
+            .create_task(input.clone())
+            .await
+            .expect("own task");
+        let live = artifacts
+            .create_task(CreateTaskInput {
+                title: "Ongoing chat work".to_string(),
+                ..input.clone()
+            })
+            .await
+            .expect("live task");
+        let foreign = artifacts
+            .create_task(CreateTaskInput {
+                title: "Another conversation's work".to_string(),
+                chat_session_id: Some("other-chat".to_string()),
+                ..input
+            })
+            .await
+            .expect("other chat's task");
+        let scope =
+            ScopeRef::system_internal_unauthenticated(&session.principal, &session.workspace);
+        artifacts
+            .update_task_status(&scope, &own.manifest.task_id, "failed")
+            .await
+            .expect("task finished before attachment");
+        let service = service.with_artifact_v2_service(artifacts);
+        // `persist_display_message` only emits `ChatMessageReceived`; in
+        // production `ChatStoreSink` is the sole chat-store writer. Stand in
+        // for its message projection here, subscribed before the emit so no
+        // card is lost in the spawn race.
+        let mut chat_bus = service.event_broadcaster.subscribe();
+        let drain_store = Arc::clone(&store);
+        let _chat_store_drain = tokio::spawn(async move {
+            loop {
+                match chat_bus.recv().await {
+                    Ok(RuntimeTransportEvent::ChatMessageReceived {
+                        session_id,
+                        message,
+                        ..
+                    }) => {
+                        let _ = drain_store.append_message(&session_id, message).await;
+                    },
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        service
+            .subscribe_chat_owned_tasks(
+                &session,
+                &session.agent_id,
+                &[
+                    own.manifest.task_id.clone(),
+                    live.manifest.task_id.clone(),
+                    foreign.manifest.task_id,
+                ],
+                Some("origin-turn"),
+            )
+            .await;
+        // Cards reach the store through the chat-store sink, which projects
+        // `ChatMessageReceived` asynchronously: wait for it (bounded) rather
+        // than reading the instant the subscribe call returns.
+        let mut messages = Vec::new();
+        for _ in 0..100 {
+            messages = store
+                .get_messages_paginated(&session.id, 50, None)
+                .await
+                .expect("chat messages")
+                .0;
+            let landed = messages
+                .iter()
+                .filter(|message| {
+                    matches!(
+                        &message.content,
+                        ChatMessageContent::TaskStatusUpdate { .. }
+                    )
+                })
+                .count();
+            if landed >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let cards: Vec<_> = messages
+            .iter()
+            .filter(|message| {
+                matches!(
+                    &message.content,
+                    ChatMessageContent::TaskStatusUpdate { .. }
+                )
+            })
+            .collect();
+        assert_eq!(cards.len(), 2, "a foreign task must not be surfaced");
+        assert!(cards
+            .iter()
+            .all(|card| card.chat_turn_id.as_deref() == Some("origin-turn")));
+        assert!(cards.iter().any(|card| matches!(
+            &card.content,
+            ChatMessageContent::TaskStatusUpdate { task_id, status, .. }
+                if task_id == &own.manifest.task_id && status == "failed"
+        )));
+        assert!(cards.iter().any(|card| matches!(
+            &card.content,
+            ChatMessageContent::TaskStatusUpdate { task_id, status, .. }
+                if task_id == &live.manifest.task_id && status == &live.state.status
+        )));
+        assert!(!service.has_active_tail(&session.id));
+    }
+
+    #[tokio::test]
     async fn chat_history_read_reconciles_terminal_internal_task_and_does_not_duplicate_it() {
+        assert_chat_history_reconciles_terminal_task("failed", true).await;
+    }
+
+    #[tokio::test]
+    async fn chat_history_read_settles_archived_planning_task_and_does_not_duplicate_it() {
+        assert_chat_history_reconciles_terminal_task("archived", true).await;
+    }
+
+    #[tokio::test]
+    async fn chat_history_read_settles_external_task_without_copying_its_private_output() {
+        assert_chat_history_reconciles_terminal_task("archived", false).await;
+        assert_chat_history_reconciles_terminal_task("completed", false).await;
+    }
+
+    async fn assert_chat_history_reconciles_terminal_task(
+        terminal_status: &str,
+        owns_result: bool,
+    ) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let (artifact_service, _orchestrator) =
             build_test_artifact_v2_harness(&temp_dir.path().join("artifact-v2"));
@@ -39784,12 +40720,32 @@ mod tests {
                 approved: true,
                 schedule: None,
                 output_mode: TaskOutputMode::Accumulate,
-                chat_session_id: Some(session.id.clone()),
+                chat_session_id: owns_result.then(|| session.id.clone()),
                 lifecycle: TaskLifecycle::Internal,
                 sync_mode: TaskSyncMode::Deferred,
             })
             .await
             .expect("internal task");
+        if !owns_result {
+            use crate::magician_v2::artifact_v2::service::{
+                WriteUserOutputBody, WriteUserOutputDirectInput,
+            };
+            artifact_service
+                .write_user_output_direct(
+                    &ScopeRef::system_internal_unauthenticated(
+                        &session.principal,
+                        &session.workspace,
+                    ),
+                    &task.manifest.task_id,
+                    WriteUserOutputDirectInput {
+                        media_type: "text/markdown".to_string(),
+                        body: WriteUserOutputBody::Text("OTHER-CHAT-PRIVATE-REPORT".to_string()),
+                        dashboard_theme: None,
+                    },
+                )
+                .await
+                .expect("external task output fixture");
+        }
         artifact_service
             .update_task_status(
                 &ScopeRef::system_internal_unauthenticated(
@@ -39797,7 +40753,7 @@ mod tests {
                     &session.workspace.clone(),
                 ),
                 &task.manifest.task_id,
-                "failed",
+                terminal_status,
             )
             .await
             .expect("terminal task");
@@ -39818,7 +40774,7 @@ mod tests {
             ChatMessageContent::TaskStatusUpdate {
                 completion_kind: None,
                 task_id: task.manifest.task_id.clone(),
-                status: "running".to_string(),
+                status: "planning".to_string(),
                 display_label: Some("web-researcher".to_string()),
                 summary: Some("Execution is running.".to_string()),
                 execution_id: Some("exec-recovered".to_string()),
@@ -39844,15 +40800,29 @@ mod tests {
             task_id,
             execution_id,
             synthesis_pending,
+            summary,
+            output_files,
+            speech_tts,
             ..
         } = &repaired[1].content
         else {
             panic!("expected terminal task card");
         };
         assert_eq!(task_id, &task.manifest.task_id);
-        assert_eq!(status, "failed");
+        assert_eq!(status, terminal_status);
         assert_eq!(execution_id.as_deref(), Some("exec-recovered"));
         assert!(!synthesis_pending);
+        if !owns_result {
+            assert_eq!(
+                summary.as_deref(),
+                Some(ChatService::default_terminal_task_summary(terminal_status).as_str())
+            );
+            assert!(output_files.is_empty());
+            assert!(speech_tts.is_none());
+            assert!(!serde_json::to_string(&repaired)
+                .unwrap()
+                .contains("OTHER-CHAT-PRIVATE-REPORT"));
+        }
         assert_eq!(repaired[1].chat_turn_id.as_deref(), Some("turn-recovered"));
 
         // A terminal row already present in durable history wins over an older
@@ -40009,6 +40979,7 @@ mod tests {
             &[],
             None,
             "web-researcher",
+            false,
         );
         for key in [
             "event_id",
@@ -40030,6 +41001,23 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .starts_with("chat-task-"));
+    }
+
+    #[test]
+    fn delegate_status_payload_carries_a_pending_final_answer() {
+        let payload = delegate_terminal_status_event_payload(
+            "turn-1",
+            "task-1",
+            Some("exec-1"),
+            "running",
+            None,
+            &[],
+            None,
+            "web-researcher",
+            true,
+        );
+        assert_eq!(payload["status"], "running");
+        assert_eq!(payload["synthesis_pending"], true);
     }
 
     #[test]
@@ -40599,6 +41587,42 @@ mod tests {
             )
             .await
             .expect("the tool the model was told it now has is callable");
+    }
+
+    /// GPT-Live records the catalog snapshot without rendering the chat
+    /// prompt, so its call is not held on memory retrieval. `delegate_to_chat`
+    /// is authorized against that id, so it must be the id the full render
+    /// advertises for the same call.
+    #[tokio::test]
+    async fn the_snapshot_only_voice_path_advertises_the_full_render_snapshot() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (service, owner_session_id, _room_session_id) =
+            catalog_parity_harness(temp.path()).await;
+        let rendered = service
+            .render_voice_session_context(
+                "anonymous",
+                "default",
+                DEFAULT_AGENT_ID,
+                &owner_session_id,
+                false,
+                None,
+            )
+            .await
+            .expect("full voice render");
+        let expected = rendered
+            .policy_snapshot_id
+            .expect("a bound owner call carries a snapshot id");
+        let snapshot_only = service
+            .voice_session_policy_snapshot_id(
+                "anonymous",
+                "default",
+                DEFAULT_AGENT_ID,
+                &owner_session_id,
+                None,
+            )
+            .await
+            .expect("snapshot-only path");
+        assert_eq!(snapshot_only.as_deref(), Some(expected.as_str()));
     }
 
     /// A Chat surface projection built the way a Chat turn builds it, from
@@ -42594,8 +43618,8 @@ execution:
     }
 
     /// `new_memory_episode` leaves `task_title`, `task_id`, `task_description`,
-    /// `strategy_summary`, `context_at_start` and `observations` empty, and the
-    /// first four of those feed the composed search text. A fixture that left
+    /// `task_intent`, `strategy_summary`, `context_at_start` and `observations`
+    /// empty, and all but `task_id` feed the composed search text. A fixture that left
     /// them unset would let a `serde(rename)` on any of them pass both pinning
     /// tests while forking the content hash in production, so the fixture sets
     /// every field the text composition reads.
@@ -42629,6 +43653,7 @@ execution:
         record.task_title = Some("ship the fix".to_string());
         record.task_id = Some("task_abc".to_string());
         record.task_description = Some("a longer description of the task".to_string());
+        record.task_intent = Some("the bounded intent of the task".to_string());
         record.strategy_summary = Some("adaptive".to_string());
         record.context_at_start = Some("started from a clean tree".to_string());
         record.observations = vec!["an observation".to_string()];
@@ -45024,6 +46049,54 @@ implementation:
     /// Public envoy stays ahead of the room arm, and that ordering is the
     /// fail-closed choice: envoy is tool-free by definition, so if a turn were
     /// somehow both, the stricter surface must win.
+    /// An email guest's bot sends no public-chat source surface. The envoy
+    /// binding alone must still give the turn a surface envoy accepts; a
+    /// plain chat surface was refused with `agent_not_surface_eligible`.
+    #[test]
+    fn an_envoy_bound_turn_without_a_public_chat_source_runs_as_public_envoy() {
+        use crate::magician_v2::agents::InvocationSurface;
+        let mut session = test_kapso_session();
+        session.agent_id = "envoy".to_string();
+        session.origin_channel.channel_type = "agentmail".to_string();
+        assert!(public_envoy_turn(false, false, "envoy", Some("envoy")));
+        assert!(public_envoy_turn(
+            false,
+            false,
+            "front-desk",
+            Some("front-desk")
+        ));
+        let invocation = chat_invocation_context_for_turn(
+            &session,
+            None,
+            Some("hello"),
+            "turn-email-guest",
+            false,
+            public_envoy_turn(false, false, &session.agent_id, Some("envoy")),
+            false,
+        );
+        assert_eq!(invocation.surface, InvocationSurface::PublicEnvoy);
+    }
+
+    /// The envoy binding never turns an owner's agent, or a shared meeting
+    /// room bound to envoy, into a public-envoy turn.
+    #[test]
+    fn only_an_envoy_binding_outside_a_shared_room_implies_public_envoy() {
+        assert!(!public_envoy_turn(
+            false,
+            false,
+            "personal-assistant",
+            Some("envoy")
+        ));
+        assert!(!public_envoy_turn(false, false, "personal-assistant", None));
+        assert!(!public_envoy_turn(false, true, "envoy", Some("envoy")));
+        assert!(public_envoy_turn(
+            true,
+            true,
+            "personal-assistant",
+            Some("envoy")
+        ));
+    }
+
     #[test]
     fn public_envoy_still_outranks_a_shared_room() {
         use crate::magician_v2::agents::InvocationSurface;
@@ -46241,6 +47314,90 @@ implementation:
         assert!(entry.contains("path:"));
     }
 
+    #[tokio::test]
+    async fn mentioned_workspace_paths_resolve_exactly_and_fail_closed() {
+        let (service, store, session, temp) =
+            create_test_service(Arc::new(MockChatLlmClient::default())).await;
+        let (artifacts, _orchestrator) =
+            build_test_artifact_v2_harness(&temp.path().join("artifacts"));
+        let notes = crate::magician_v2::notes::NotesSettingsStore::with_workspace_layout(
+            artifacts.workspace().clone(),
+        );
+        let envelope = notes
+            .load_envelope(&session.principal, &session.workspace)
+            .await
+            .expect("notes settings");
+        let root = PathBuf::from(&envelope.resolved.local_markdown_root);
+        let file = root.join("Workspaces/Novel/Pages/Chapter-Map.md");
+        fs::create_dir_all(file.parent().unwrap()).await.unwrap();
+        fs::write(&file, "chapter map").await.unwrap();
+        let service = service.with_artifact_v2_service(artifacts);
+        store
+            .append_message(
+                &session.id,
+                ChatMessage::new(
+                    "map-message".to_string(),
+                    session.id.clone(),
+                    ChatMessageDirection::Assistant,
+                    ChatMessageContent::Text {
+                        text: "Saved `Pages/Chapter-Map.md` in the Novel workspace".to_string(),
+                        plan_reply: None,
+                    },
+                    1,
+                ),
+            )
+            .await
+            .expect("saved message");
+        let (_, resolved) = service
+            .resolve_openable_output_path(&session.id, None, None, Some("Pages/Chapter-Map.md"))
+            .await
+            .expect("workspace file");
+        assert_eq!(resolved, fs::canonicalize(&file).await.unwrap());
+        assert!(service
+            .resolve_openable_output_path(&session.id, None, None, Some("Pages/unmentioned.md"))
+            .await
+            .is_err());
+        assert!(service
+            .resolve_openable_output_path(&session.id, None, None, Some("../Chapter-Map.md"))
+            .await
+            .is_err());
+        let missing = file.with_file_name("missing.md");
+        assert!(
+            service
+                .resolve_openable_output_path(&session.id, None, None, missing.to_str())
+                .await
+                .is_err(),
+            "a missing file must not silently become its containing folder"
+        );
+        let duplicate = root.join("Workspaces/Other/Pages/Chapter-Map.md");
+        fs::create_dir_all(duplicate.parent().unwrap())
+            .await
+            .unwrap();
+        fs::write(duplicate, "other map").await.unwrap();
+        assert!(service
+            .resolve_openable_output_path(&session.id, None, None, Some("Pages/Chapter-Map.md"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Ambiguous relative path"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_output_paths_cannot_escape_their_root_through_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        fs::create_dir(&root).await.unwrap();
+        let outside = temp.path().join("secret.md");
+        fs::write(&outside, "private").await.unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link.md")).unwrap();
+        assert!(
+            ChatService::unique_existing_relative_path(&[root], "link.md")
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn stale_capture_cleanup_detects_persisted_attachment_references() {
         let message = ChatService::build_attachment_message(
@@ -46264,6 +47421,76 @@ implementation:
             &message,
             "different-screen.png"
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn attachments_do_not_wait_for_a_chat_turn_and_recheck_archival_under_the_fence() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let (artifact_service, _orchestrator) =
+            build_test_artifact_v2_harness(&temp_dir.path().join("artifact-v2"));
+        let store = Arc::new(FileChatStore::with_workspace_layout(
+            artifact_service.workspace().clone(),
+        ));
+        let session = store
+            .get_or_create_active_session(
+                "user",
+                "workspace",
+                "thread",
+                &ChatChannel::web(),
+                DEFAULT_AGENT_ID,
+            )
+            .await
+            .expect("session");
+        let chat_store: Arc<dyn ChatStore> = store.clone();
+        let service = ChatService::new(
+            chat_store,
+            ChatLlmService::new(Arc::new(MultiLLMService::new(
+                HashMap::new(),
+                HashMap::new(),
+            ))),
+            Arc::new(PromptManager::new(Arc::new(DummyPromptStore))),
+            Arc::new(RuntimeTransportBroadcaster::new(32)),
+        )
+        .with_artifact_v2_service(artifact_service);
+        let turn = service.lock_session_turn(&session.id).await;
+        let (first, second) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                service.store_attachment(&session.id, "first.txt", "text/plain", b"first"),
+                service.store_attachment(&session.id, "second.txt", "text/plain", b"second"),
+            )
+        })
+        .await
+        .expect("uploads must finish while the turn is held");
+        let first = first.expect("first upload");
+        let second = second.expect("second upload");
+        assert_ne!(first.id, second.id);
+        let files = service.session_files(&session).await.expect("file index");
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().any(|file| file.id == first.id));
+        assert!(files.iter().any(|file| file.id == second.id));
+        drop(turn);
+
+        // The caller's metadata can become stale while it waits for storage.
+        store
+            .update_session_status(&session.id, "archived")
+            .await
+            .expect("archive");
+        let error = service
+            .register_attachment(&session, "late.txt", "text/plain", b"late", None, None)
+            .await
+            .expect_err("the fence must reload archived metadata");
+        assert!(
+            error.to_string().to_lowercase().contains("archived"),
+            "{error}"
+        );
+        assert_eq!(
+            service
+                .session_files(&session)
+                .await
+                .expect("retained index")
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -47366,10 +48593,6 @@ implementation:
             Vec::new()
         }
 
-        fn adaptive_pair_for_profile(&self, _profile_name: &str) -> Option<(String, String)> {
-            None
-        }
-
         fn default_profile_for_operation(&self, _operation_key: &str) -> Option<String> {
             None
         }
@@ -47859,6 +49082,61 @@ implementation:
         assert_eq!(fresh.agent_id, "research-agent");
         // Option B: an explicit new session no longer archives the prior one.
         assert_eq!(prior_reloaded.status, ChatSessionStatus::Active);
+    }
+
+    /// "New chat" on a thread whose newest chat is untitled and empty returns
+    /// that chat instead of leaving another empty one behind; a chat with a
+    /// message or a title is never reused.
+    #[tokio::test]
+    async fn new_session_reuses_an_untitled_empty_chat_on_the_thread() {
+        let llm = Arc::new(MockChatLlmClient::default());
+        let (service, store, _session, _tmp) =
+            create_test_service_with_agents(llm, &["research-agent"]).await;
+        let web = ChatChannel::web();
+        let new_chat = || service.new_session("user", "workspace", "empty-thread", &web);
+
+        let first = new_chat().await.expect("first chat");
+        let again = new_chat().await.expect("second press");
+        assert_eq!(again.id, first.id, "an empty untitled chat is reused");
+
+        store
+            .append_message(
+                &first.id,
+                ChatMessage::new(
+                    "hello".to_string(),
+                    first.id.clone(),
+                    ChatMessageDirection::User,
+                    ChatMessageContent::Text {
+                        text: "Hello".to_string(),
+                        plan_reply: None,
+                    },
+                    1,
+                ),
+            )
+            .await
+            .expect("first message");
+        let fresh = new_chat().await.expect("after a message");
+        assert_ne!(fresh.id, first.id, "a chat with messages is not reused");
+
+        store
+            .update_session_title(&fresh.id, "Planning")
+            .await
+            .expect("title");
+        let titled_skipped = new_chat().await.expect("after a title");
+        assert_ne!(titled_skipped.id, fresh.id, "a titled chat is not reused");
+        assert_ne!(titled_skipped.id, first.id);
+
+        // Another channel's empty chat on the same thread is its own chat.
+        let other_channel = service
+            .new_session(
+                "user",
+                "workspace",
+                "empty-thread",
+                &ChatChannel::new("telegram", "4242"),
+            )
+            .await
+            .expect("telegram chat");
+        assert_ne!(other_channel.id, titled_skipped.id);
     }
 
     #[tokio::test]
@@ -51252,6 +52530,10 @@ metadata:
     struct BackstopLlm {
         handoff: BackstopHandoffScript,
         answer_on_call: Option<usize>,
+        /// Calls that come back empty: no text, no tool calls, zero usage.
+        empty_on_calls: Vec<usize>,
+        /// A call that never returns; signals `entered` once in flight.
+        block_on_call: Option<(usize, Arc<tokio::sync::Notify>)>,
         tool_calls_made: AtomicUsize,
         handoff_calls: Mutex<Vec<BackstopHandoffCall>>,
         plain_generate_calls: AtomicUsize,
@@ -51274,6 +52556,8 @@ metadata:
             Self {
                 handoff,
                 answer_on_call: None,
+                empty_on_calls: Vec::new(),
+                block_on_call: None,
                 tool_calls_made: AtomicUsize::new(0),
                 handoff_calls: Mutex::new(Vec::new()),
                 plain_generate_calls: AtomicUsize::new(0),
@@ -51297,10 +52581,6 @@ metadata:
 
         fn list_chat_profile_warnings(&self) -> Vec<ChatProfileWarning> {
             Vec::new()
-        }
-
-        fn adaptive_pair_for_profile(&self, _profile_name: &str) -> Option<(String, String)> {
-            None
         }
 
         fn default_profile_for_operation(&self, _operation_key: &str) -> Option<String> {
@@ -51412,6 +52692,26 @@ metadata:
             *self.loop_tool_names.lock().expect("loop tool names lock") =
                 tools.iter().map(|tool| tool.name.clone()).collect();
             let step = self.tool_calls_made.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some((_, entered)) = self
+                .block_on_call
+                .as_ref()
+                .filter(|(blocked, _)| *blocked == step)
+            {
+                entered.notify_one();
+                std::future::pending::<()>().await;
+            }
+            if self.empty_on_calls.contains(&step) {
+                return Ok(ChatLlmResponse {
+                    content: Some(String::new()),
+                    tool_calls: Vec::new(),
+                    provider_state: None,
+                    reasoning_text: None,
+                    usage: Some(
+                        crate::magician_v2::query_analysis::multi_llm_service::LLMUsage::default(),
+                    ),
+                    telemetry: None,
+                });
+            }
             if self.answer_on_call == Some(step) {
                 return Ok(ChatLlmResponse {
                     content: Some(format!("All done on step {step}.")),
@@ -51627,6 +52927,223 @@ metadata:
         assert_eq!(text, "All done on step 3.");
     }
 
+    /// A backstop-LLM service plus its session, for turns a test drives itself.
+    async fn backstop_service(
+        llm: Arc<BackstopLlm>,
+    ) -> (Arc<ChatService>, Arc<FileChatStore>, ChatSession, TempDir) {
+        let (service, store, session, tmp) =
+            create_test_service(Arc::new(MockChatLlmClient::default())).await;
+        let service = Arc::new(
+            service
+                .with_llm_client(llm)
+                .with_turn_max_iterations(Some(5)),
+        );
+        (service, store, session, tmp)
+    }
+
+    /// A turn whose client stream went away (receiver dropped before the
+    /// first token) still finishes: the reply is persisted for the
+    /// transcript and the turn state reads `completed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_whose_client_stream_dropped_still_completes_and_persists() {
+        let _guard = crate::magician_v2::execution::plane::chat_turn::CHAT_SNAPSHOT_TEST_GUARD
+            .lock()
+            .await;
+        let mut llm = BackstopLlm::new(Some("never used"));
+        llm.answer_on_call = Some(2);
+        let (service, store, session, tmp) = backstop_service(Arc::new(llm)).await;
+        // Display persistence is a bus subscriber, independent of the SSE
+        // receiver. Wire the same sink as boot before dropping that receiver.
+        let (artifacts, orchestrator) =
+            build_test_artifact_v2_harness(&tmp.path().join("artifacts"));
+        let router = ExecutionProgressRouter::with_workspace_layout(
+            artifacts.workspace().clone(),
+            Arc::clone(&artifacts),
+            orchestrator,
+        )
+        .await
+        .expect("progress router");
+        let chat_store: Arc<dyn ChatStore> = store.clone();
+        let broadcaster = Arc::clone(&service.event_broadcaster);
+        let channel = Arc::new(crate::magician_v2::progress_channel_seam::ChatChannel::new(
+            Arc::clone(&chat_store),
+            Arc::clone(&broadcaster),
+            artifacts,
+        ));
+        let sink = crate::magician_v2::chat::chat_store_sink::ChatStoreSink::new(
+            chat_store,
+            broadcaster,
+            router,
+            channel,
+        )
+        .spawn();
+        let (tx, rx) = tokio::sync::mpsc::channel::<StreamDelta>(256);
+        drop(rx);
+        let response = service
+            .process_message_streaming_with_mode_on_execution_runtime(
+                &session.id,
+                Some("read the docs"),
+                &[],
+                tx,
+                None,
+                ChatMessageMode::Ask,
+                None,
+                None,
+                Some("chat-turn-dropped-client"),
+                false,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("inline turn");
+        assert!(!response.cancelled);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let messages = store.get_messages(&session.id, 50).await.expect("messages");
+                if messages.iter().any(|message| {
+                    message.chat_turn_id.as_deref() == Some("chat-turn-dropped-client")
+                        && message.content.text_content() == Some("All done on step 2.")
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the sink persists the reply despite the disconnected SSE client");
+        let state = service.chat_turn_state(&session.id).expect("turn state");
+        assert_eq!(state.chat_turn_id, "chat-turn-dropped-client");
+        assert_eq!(
+            state.status,
+            crate::magician_v2::chat::turn_state::ChatTurnStatus::Completed
+        );
+        assert!(state.ended_at.is_some());
+        assert!(!service.has_active_chat_run(&session.id));
+        sink.abort();
+        let _ = sink.await;
+    }
+
+    /// While a turn runs its state reads `running`; the owner's Stop still
+    /// cancels it at once, and it settles as `stopped` / `user_stop`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_explicit_stop_cancels_the_turn_and_reads_as_user_stop() {
+        let _guard = crate::magician_v2::execution::plane::chat_turn::CHAT_SNAPSHOT_TEST_GUARD
+            .lock()
+            .await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let mut llm = BackstopLlm::new(Some("never used"));
+        llm.block_on_call = Some((1, Arc::clone(&entered)));
+        let (service, _store, session, _tmp) = backstop_service(Arc::new(llm)).await;
+        let turn = {
+            let service = Arc::clone(&service);
+            let session_id = session.id.clone();
+            tokio::spawn(async move {
+                let (tx, _rx) = tokio::sync::mpsc::channel::<StreamDelta>(256);
+                service
+                    .process_message_streaming_with_mode_on_execution_runtime(
+                        &session_id,
+                        Some("work"),
+                        &[],
+                        tx,
+                        None,
+                        ChatMessageMode::Ask,
+                        None,
+                        None,
+                        Some("chat-turn-stopped"),
+                        false,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            })
+        };
+        entered.notified().await;
+        let running = service.chat_turn_state(&session.id).expect("running state");
+        assert_eq!(running.chat_turn_id, "chat-turn-stopped");
+        assert_eq!(
+            running.status,
+            crate::magician_v2::chat::turn_state::ChatTurnStatus::Running
+        );
+
+        assert!(service.cancel_chat_run(&session.id).await.expect("stop"));
+        let response = tokio::time::timeout(Duration::from_secs(10), turn)
+            .await
+            .expect("the stopped turn returns promptly")
+            .expect("turn task")
+            .expect("turn result");
+        assert!(response.cancelled);
+        let state = service.chat_turn_state(&session.id).expect("settled state");
+        assert_eq!(
+            state.status,
+            crate::magician_v2::chat::turn_state::ChatTurnStatus::Stopped
+        );
+        assert_eq!(
+            state.reason.as_deref(),
+            Some(crate::magician_v2::chat::turn_state::USER_STOP_REASON)
+        );
+    }
+
+    /// An empty model reply (no text, no calls, zero usage) is asked again
+    /// once; the retry's answer is the turn's reply.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_empty_model_reply_is_retried_once() {
+        let mut llm = BackstopLlm::new(Some("never used"));
+        llm.empty_on_calls = vec![1];
+        llm.answer_on_call = Some(2);
+        let llm = Arc::new(llm);
+        let BackstopTurn { text, .. } = backstop_run_turn(Arc::clone(&llm), 5).await;
+
+        assert_eq!(llm.tool_calls_made.load(Ordering::SeqCst), 2);
+        assert_eq!(text, "All done on step 2.");
+    }
+
+    /// Two empty replies in a row end the turn with an explicit notice, not
+    /// a blank or partial reply, and no third call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_empty_model_reply_ends_the_turn_with_a_notice() {
+        let mut llm = BackstopLlm::new(Some("never used"));
+        llm.empty_on_calls = vec![1, 2];
+        let llm = Arc::new(llm);
+        let BackstopTurn {
+            text, transcript, ..
+        } = backstop_run_turn(Arc::clone(&llm), 5).await;
+
+        assert_eq!(llm.tool_calls_made.load(Ordering::SeqCst), 2);
+        assert!(llm.handoff_calls().is_empty());
+        assert_eq!(text, EMPTY_MODEL_REPLY_NOTICE);
+        assert!(matches!(
+            transcript.last(),
+            Some(ChatLlmTranscriptEntry::AssistantTurn { text: Some(persisted), .. })
+                if persisted == EMPTY_MODEL_REPLY_NOTICE
+        ));
+    }
+
+    #[test]
+    fn an_empty_model_reply_has_no_text_and_no_calls() {
+        let reply = |content: Option<&str>, calls: usize| ChatLlmResponse {
+            content: content.map(str::to_string),
+            tool_calls: (0..calls)
+                .map(|n| LLMToolCall {
+                    id: format!("c{n}"),
+                    name: BACKSTOP_PROBE_TOOL.to_string(),
+                    arguments: serde_json::json!({}),
+                })
+                .collect(),
+            provider_state: None,
+            reasoning_text: Some("thinking".to_string()),
+            usage: None,
+            telemetry: None,
+        };
+        assert!(chat_model_reply_is_empty(&reply(None, 0)));
+        assert!(chat_model_reply_is_empty(&reply(Some("  \n"), 0)));
+        assert!(!chat_model_reply_is_empty(&reply(Some("hi"), 0)));
+        assert!(!chat_model_reply_is_empty(&reply(None, 1)));
+    }
+
     /// A Stop during the hand-off call ends it without a provider answer.
     #[tokio::test]
     async fn the_backstop_hand_off_respects_cancellation() {
@@ -51712,5 +53229,41 @@ metadata:
         let mut exhausted = false;
         settle_chat_loop_end(&mut final_text, &mut spin_stop, &mut exhausted, 2, 4);
         assert!(!exhausted);
+    }
+}
+
+#[cfg(test)]
+mod owner_local_time_tests {
+    use super::{owner_local_time_line, stated_owner_timezone};
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    #[test]
+    fn a_stated_timezone_preference_names_the_owners_zone() {
+        let knowledge = json!({"preferences": [
+            {"key": "report_style", "value": "use the source timezone"},
+            {"key": "Timezone", "value": "Asia/Kolkata (IST, UTC+5:30); owner lives in Bengaluru"}
+        ]});
+        assert_eq!(
+            stated_owner_timezone(&knowledge),
+            Some(chrono_tz::Asia::Kolkata)
+        );
+        assert_eq!(stated_owner_timezone(&json!({"preferences": []})), None);
+        assert_eq!(
+            stated_owner_timezone(&json!({"preferences": [{"key": "timezone", "value": "IST"}]})),
+            None
+        );
+    }
+
+    #[test]
+    fn the_context_line_carries_the_owners_local_date_and_time() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 25, 10, 45, 0)
+            .unwrap();
+        assert_eq!(
+            owner_local_time_line(Some(chrono_tz::Asia::Kolkata), now),
+            "Owner's local time: Sunday 25 October 2026, 16:15 IST (Asia/Kolkata, the owner's stated timezone, UTC+05:30)."
+        );
+        assert!(owner_local_time_line(None, now).contains("the owner has not stated one"));
     }
 }

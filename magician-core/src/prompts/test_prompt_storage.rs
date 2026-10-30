@@ -206,7 +206,7 @@ mod tests {
             .await
             .expect("current agentic decision prompt");
 
-        assert_eq!(prompt.version, "1.3.11");
+        assert_eq!(prompt.version, "1.3.12");
         assert!(prompt.content.contains("`step_started`"));
         assert!(prompt.content.contains("`step_skipped`"));
         assert!(prompt.content.contains("canonical `none` action"));
@@ -236,7 +236,7 @@ mod tests {
             )
             .await
             .expect("current agentic decision system prompt");
-        assert_eq!(system_prompt.version, "1.0.9");
+        assert_eq!(system_prompt.version, "1.0.10");
         // The owner taste profile rides the system prompt because it is the
         // cache-stable prefix; the slot renders empty when no profile exists.
         assert!(system_prompt.content.contains("{taste_profile_section}"));

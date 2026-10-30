@@ -273,7 +273,9 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 project_id
             ),
             edit,
-        ) {
+        )
+        .await
+        {
             Ok(mut value) => {
                 if let Some(obj) = value.as_object_mut() {
                     obj.insert("project_id".to_string(), Value::String(project_id));

@@ -16,12 +16,17 @@ use crate::{
         ContextReuseStrategy,
     },
     error::{LLMError, LLMResult},
-    pricing::{active_table, compute_cost_with_server_web_search_at, usd_to_microusd_ceil},
+    pricing::{
+        active_table, compute_cost_with_server_web_search_at, server_web_search_cost_per_call_at,
+        try_compute_cost_at, usd_to_microusd_ceil,
+    },
     provider::LLMProvider,
     providers::{
         openai_meta::{resolve_openai_api_mode, OpenAIApiSelection},
         OpenAIChatProvider, OpenAIResponsesProvider,
     },
+    spend_gate::{installed_spend_gate, SpendGate, SpendSettlement, DEFAULT_OUTPUT_CEILING_TOKENS},
+    trace::LlmTraceContext,
     types::{
         clone_json_value_iteratively, EmbeddingRequest, EmbeddingResponse, LLMRequest, LLMResponse,
         LLMResponseFormat, LlmPhysicalAttemptObservation, LlmPhysicalAttemptPlan, LlmRouteIdentity,
@@ -41,6 +46,10 @@ pub struct MultiLLMRouter {
     /// Kind-wide providers retained for embedders/tests that register one
     /// provider implementation for every profile of a kind.
     providers: HashMap<LLMProviderKind, Arc<dyn LLMProvider>>,
+    /// Spend gate scoped to this router. `None` falls back to the
+    /// process-wide gate the host installs at bootstrap
+    /// ([`crate::install_spend_gate`]); with neither, spend is not gated.
+    spend_gate: Option<Arc<dyn SpendGate>>,
 }
 
 fn with_last_attempted_route(error: LLMError, route: Option<&LlmRouteIdentity>) -> LLMError {
@@ -62,7 +71,22 @@ impl MultiLLMRouter {
             config,
             profile_providers: HashMap::new(),
             providers: HashMap::new(),
+            spend_gate: None,
         })
+    }
+
+    /// Gate this router's provider attempts with `gate` instead of the
+    /// process-wide one (embedders and tests).
+    pub fn set_spend_gate(&mut self, gate: Arc<dyn SpendGate>) {
+        self.spend_gate = Some(gate);
+    }
+
+    /// The gate in force: this router's own, else the process-wide one. One
+    /// atomic load and an `Arc` clone — no lock, no I/O.
+    fn effective_spend_gate(&self) -> Option<Arc<dyn SpendGate>> {
+        self.spend_gate
+            .clone()
+            .or_else(|| installed_spend_gate().cloned())
     }
 
     /// Registers a provider implementation. Existing entries with the same key are replaced.
@@ -115,6 +139,17 @@ impl MultiLLMRouter {
                 .is_some_and(|profile| self.providers.contains_key(&profile.provider))
     }
 
+    /// JSON output capability of the exact registered client, without a call.
+    /// An unavailable client is unknown rather than an affirmative capability.
+    pub fn profile_supports_json_output(&self, profile_name: &str) -> Option<bool> {
+        let profile = self.config.profiles.get(profile_name)?;
+        let provider = self
+            .profile_providers
+            .get(profile_name)
+            .or_else(|| self.providers.get(&profile.provider))?;
+        Some(provider.capabilities(&profile.model).json_mode)
+    }
+
     /// Returns the profile configured for the provided operation (or the default profile).
     pub fn profile_for_operation(&self, operation: &str) -> Option<&LLMProfile> {
         self.config.get_profile_for_operation(operation)
@@ -131,6 +166,11 @@ impl MultiLLMRouter {
     /// error, not a request for the generation default profile (which would
     /// route vectors at a chat model). The profile's model is authoritative —
     /// it is what makes an embedding provider swap a config edit.
+    ///
+    /// The spend gate admits the call under the request's workload class
+    /// (system work without a trace context) and settles it after success
+    /// with an estimated input token count. A model the pricing table prices
+    /// at $0 (local Ollama) is neither refused nor charged.
     pub async fn embed_for_operation(
         &self,
         operation: &str,
@@ -171,7 +211,33 @@ impl MultiLLMRouter {
                     "no provider registered for embedding profile `{profile_name}`"
                 ))
             })?;
-        provider.embed(request).await
+        let started_at_ms = Utc::now().timestamp_millis();
+        let spend_gate = self.effective_spend_gate().filter(|_| {
+            !crate::pricing::model_is_free_at(&profile.provider, &request.model, started_at_ms)
+        });
+        let Some(gate) = spend_gate else {
+            return provider.embed(request).await;
+        };
+        gate.admit_embedding(&request, &profile.provider)?;
+        // Embedding responses carry no usage: charge the inputs at the
+        // conservative one-token-per-two-bytes preflight ratio.
+        let input_tokens = request
+            .inputs
+            .iter()
+            .map(|input| ConservativeOllamaEstimator.estimate_serialized_bytes(input.as_bytes()))
+            .fold(0u32, u32::saturating_add);
+        let trace = request.metadata.trace_context.clone();
+        let response = provider.embed(request).await?;
+        settle_embedding_spend(
+            &gate,
+            trace.as_ref(),
+            operation,
+            &profile.provider,
+            &profile.model,
+            input_tokens,
+            started_at_ms,
+        );
+        Ok(response)
     }
 
     /// Health probe against the provider bound to an explicitly-mapped
@@ -204,8 +270,7 @@ impl MultiLLMRouter {
         provider.health_check().await
     }
 
-    /// Returns the concrete profile name selected for an operation, resolving
-    /// adaptive composites to the transport-level fast profile.
+    /// Returns the concrete route selected for an operation.
     pub fn profile_name_for_operation(&self, operation: &str) -> Option<String> {
         let selected = self
             .config
@@ -216,7 +281,6 @@ impl MultiLLMRouter {
             })
             .map(str::to_string)
             .unwrap_or_else(|| self.config.default_profile.clone());
-        let selected = resolve_adaptive_to_fast(&self.config, &selected);
         self.config
             .profiles
             .contains_key(&selected)
@@ -231,7 +295,6 @@ impl MultiLLMRouter {
     /// profile that the transport will actually call.
     pub fn profile_for_request(&self, request: &LLMRequest) -> Option<&LLMProfile> {
         if let Some(profile_name) = router_profile_override(request.extra_value()) {
-            let profile_name = resolve_adaptive_to_fast(&self.config, &profile_name);
             return self.config.profiles.get(profile_name.as_str());
         }
 
@@ -251,7 +314,6 @@ impl MultiLLMRouter {
                         .to_string()
                 })
                 .unwrap_or_else(|| self.config.default_profile.clone());
-            let current_profile = resolve_adaptive_to_fast(&self.config, &current_profile);
             let preferred_model = router_preserve_request_model(request.extra_value())
                 .then(|| request.model.trim())
                 .filter(|model| !model.is_empty());
@@ -356,19 +418,7 @@ impl MultiLLMRouter {
                     .to_string()
             })
             .unwrap_or_else(|| self.config.default_profile.clone());
-        // Adaptive composites at the operation_mapping or
-        // default_profile layer transparently resolve to the
-        // composite's `fast_profile` here. The chat-side runtime is the
-        // adaptive-aware caller and pre-resolves to a concrete
-        // standard profile before dispatch; non-adaptive callers
-        // (autonomous loops, inner-loop, capability probes) see the
-        // fast variant and never need to know about the composite.
-        current_profile = resolve_adaptive_to_fast(&self.config, &current_profile);
         if let Some(profile_name) = requested_profile {
-            // Allow `router_profile_override` itself to name an
-            // adaptive composite — useful for callers that pass the
-            // user-selected profile directly without resolving first.
-            let profile_name = resolve_adaptive_to_fast(&self.config, &profile_name);
             if !self.config.profiles.contains_key(profile_name.as_str()) {
                 return Err(LLMError::Configuration(format!(
                     "requested profile `{}` is not configured",
@@ -499,7 +549,7 @@ impl MultiLLMRouter {
             );
 
             let mut adjusted_request = base_request.clone();
-            apply_profile_defaults(profile, &mut adjusted_request, preserve_request_model);
+            apply_profile_defaults(profile, &mut adjusted_request, preserve_request_model)?;
             enforce_disclosure_route(&current_profile, profile, &adjusted_request)
                 .await
                 .map_err(|error| with_last_attempted_route(error, last_attempted_route.as_ref()))?;
@@ -605,6 +655,17 @@ impl MultiLLMRouter {
                 }
             }
 
+            // Owner-set spend envelope: refuse this physical attempt before
+            // anything reserves resources or contacts a provider. Every
+            // fallback hop is admitted on its own.
+            let spend_gate = self.effective_spend_gate();
+            if let Some(gate) = spend_gate.as_ref() {
+                gate.admit(&adjusted_request, &provider_kind)
+                    .map_err(|error| {
+                        with_last_attempted_route(error, last_attempted_route.as_ref())
+                    })?;
+            }
+
             debug!(
                 operation = %operation,
                 trace_id = trace_id.as_deref().unwrap_or(""),
@@ -695,6 +756,7 @@ impl MultiLLMRouter {
             }
             let content_capture_sink = adjusted_request.metadata.content_capture_sink.clone();
             let content_capture_context = adjusted_request.metadata.trace_context.clone();
+            let spend_output_ceiling = adjusted_request.max_output_tokens;
             content_capture_sink.observe(crate::types::LlmContentCaptureEvent::EffectiveRequest {
                 request: &adjusted_request,
                 profile: &current_profile,
@@ -822,17 +884,22 @@ impl MultiLLMRouter {
                     response.into_json_bounded()
                 },
                 (Err(error), Some(permit), Some(_plan)) => {
-                    permit
-                        .settle(LlmPhysicalAttemptObservation::outcome_uncertain(
+                    let observation = if is_definitive_provider_rejection(&error) {
+                        LlmPhysicalAttemptObservation::definitive_rejection(
                             provider_dispatch_started_at_ms,
                             physical_completed_at_ms,
-                        ))
-                        .await
-                        .map_err(|_| {
-                            LLMError::Validation(
-                                "resource-bound LLM uncertain settlement failed closed".to_owned(),
-                            )
-                        })?;
+                        )
+                    } else {
+                        LlmPhysicalAttemptObservation::outcome_uncertain(
+                            provider_dispatch_started_at_ms,
+                            physical_completed_at_ms,
+                        )
+                    };
+                    permit.settle(observation).await.map_err(|_| {
+                        LLMError::Validation(
+                            "resource-bound LLM uncertain settlement failed closed".to_owned(),
+                        )
+                    })?;
                     Err(error)
                 },
                 (Ok(mut response), None, _) => {
@@ -922,6 +989,16 @@ impl MultiLLMRouter {
                             .usage
                             .as_ref()
                             .and_then(|usage| usage.prompt_tokens),
+                    );
+                    settle_spend(
+                        spend_gate.as_ref(),
+                        content_capture_context.as_ref(),
+                        &operation,
+                        &provider_kind,
+                        &model_name,
+                        spend_output_ceiling,
+                        provider_dispatch_started_at_ms,
+                        &response,
                     );
                     return Ok(response);
                 },
@@ -1097,12 +1174,7 @@ impl MultiLLMRouter {
                     .to_string()
             })
             .unwrap_or_else(|| self.config.default_profile.clone());
-        // Mirror the non-streaming path: collapse adaptive composites
-        // to their `fast_profile` so this transport layer never has to
-        // know about adaptive routing.
-        current_profile = resolve_adaptive_to_fast(&self.config, &current_profile);
         if let Some(profile_name) = requested_profile {
-            let profile_name = resolve_adaptive_to_fast(&self.config, &profile_name);
             if !self.config.profiles.contains_key(profile_name.as_str()) {
                 return Err(LLMError::Configuration(format!(
                     "requested profile `{}` is not configured",
@@ -1163,7 +1235,7 @@ impl MultiLLMRouter {
         };
 
         let mut adjusted_request = base_request;
-        apply_profile_defaults(profile, &mut adjusted_request, preserve_request_model);
+        apply_profile_defaults(profile, &mut adjusted_request, preserve_request_model)?;
         enforce_disclosure_route(&current_profile, profile, &adjusted_request).await?;
         normalize_context_reuse_for_profile(profile, &mut adjusted_request, false);
         strip_router_only_extra(&mut adjusted_request);
@@ -1183,6 +1255,15 @@ impl MultiLLMRouter {
             provider.capabilities(&adjusted_request.model),
         );
         enforce_capabilities(&capabilities, &adjusted_request)?;
+
+        // Owner-set spend envelope: refuse the stream before any provider is
+        // contacted (the streaming path has no fallback hops).
+        let spend_gate = self.effective_spend_gate();
+        if let Some(gate) = spend_gate.as_ref() {
+            gate.admit(&adjusted_request, &provider_kind)?;
+        }
+        let spend_output_ceiling = adjusted_request.max_output_tokens;
+        let spend_started_at_ms = Utc::now().timestamp_millis();
 
         // Check streaming config gate — fall back to synchronous invoke when
         // the profile has not opted in to streaming.
@@ -1247,6 +1328,16 @@ impl MultiLLMRouter {
                     provider_attempt_index,
                 },
             );
+            settle_spend(
+                spend_gate.as_ref(),
+                content_capture_context.as_ref(),
+                &operation,
+                &provider_kind,
+                &model,
+                spend_output_ceiling,
+                spend_started_at_ms,
+                &response,
+            );
             let _ = tx.send(StreamDelta::Done(response)).await;
             return Ok(());
         }
@@ -1261,6 +1352,31 @@ impl MultiLLMRouter {
         );
 
         let model = adjusted_request.model.clone();
+        // One spend settlement for this attempt however the stream ends; see
+        // [`StreamSpend`]. A model priced at $0 (local Ollama) is not metered,
+        // so it is not drained after its consumer leaves either.
+        let stream_spend = spend_gate
+            .filter(|_| {
+                !crate::pricing::model_is_free_at(&provider_kind, &model, spend_started_at_ms)
+            })
+            .map(|gate| {
+                Arc::new(StreamSpend {
+                    gate,
+                    trace: adjusted_request.metadata.trace_context.clone(),
+                    operation: operation.clone(),
+                    provider: provider_kind.clone(),
+                    model: model.clone(),
+                    max_output_tokens: spend_output_ceiling,
+                    started_at_ms: spend_started_at_ms,
+                    estimated_input_tokens: estimate_stream_input_tokens(
+                        &adjusted_request,
+                        profile.context_window_tokens,
+                    ),
+                    output_bytes: std::sync::atomic::AtomicU64::new(0),
+                    provider_failed: std::sync::atomic::AtomicBool::new(false),
+                    settled: std::sync::atomic::AtomicBool::new(false),
+                })
+            });
         let provider_attempt_index = adjusted_request.metadata.record_provider_attempt();
         let content_capture_sink = adjusted_request.metadata.content_capture_sink.clone();
         let content_capture_context = adjusted_request.metadata.trace_context.clone();
@@ -1278,8 +1394,48 @@ impl MultiLLMRouter {
             model,
         };
         let forwarding_identity = identity.clone();
+        let forward_spend = stream_spend.clone();
         let mut forward = tokio::spawn(async move {
-            while let Some(delta) = provider_rx.recv().await {
+            // Once the consumer goes away (a failed send, or its receiver
+            // closing while the provider is silent), a metered stream keeps
+            // draining without forwarding until the provider's final response
+            // arrives or `drain_deadline` passes, so the attempt settles its
+            // real usage; an unmetered one stops at once.
+            let mut consumer_gone = false;
+            let mut drain_deadline: Option<tokio::time::Instant> = None;
+            loop {
+                let next = match drain_deadline {
+                    None => {
+                        let next = tokio::select! {
+                            next = provider_rx.recv() => Some(next),
+                            () = tx.closed() => None,
+                        };
+                        match next {
+                            Some(next) => next,
+                            None => {
+                                consumer_gone = true;
+                                if forward_spend.is_none() {
+                                    break;
+                                }
+                                drain_deadline =
+                                    Some(tokio::time::Instant::now() + ABANDONED_STREAM_DRAIN);
+                                continue;
+                            },
+                        }
+                    },
+                    Some(deadline) => {
+                        match tokio::time::timeout_at(deadline, provider_rx.recv()).await {
+                            Ok(next) => next,
+                            Err(_) => break,
+                        }
+                    },
+                };
+                let Some(delta) = next else {
+                    break;
+                };
+                if let Some(spend) = forward_spend.as_ref() {
+                    spend.observe(&delta);
+                }
                 let delta = match delta {
                     StreamDelta::Done(mut response) => {
                         response.route_identity = Some(forwarding_identity.clone());
@@ -1306,16 +1462,36 @@ impl MultiLLMRouter {
                                 provider_attempt_index,
                             },
                         );
+                        if let Some(spend) = forward_spend.as_ref() {
+                            spend.settle_response(&response);
+                        }
                         StreamDelta::Done(response)
                     },
                     other => other,
                 };
-                if tx.send(delta).await.is_err() {
+                let done = matches!(delta, StreamDelta::Done(_));
+                if !consumer_gone && tx.send(delta).await.is_err() {
+                    consumer_gone = true;
+                    if forward_spend.is_none() {
+                        break;
+                    }
+                    drain_deadline = Some(tokio::time::Instant::now() + ABANDONED_STREAM_DRAIN);
+                }
+                if consumer_gone && done {
                     break;
                 }
             }
-            Ok::<(), LLMError>(())
+            Ok::<bool, LLMError>(consumer_gone)
         });
+        // A provider failure before any output is not charged; the flag is set
+        // before this function drops its meter handle.
+        let note_provider_result = |result: &LLMResult<()>| {
+            if result.is_err() {
+                if let Some(spend) = stream_spend.as_ref() {
+                    spend.mark_provider_failed();
+                }
+            }
+        };
         let mut provider_call = Box::pin(provider.invoke_stream(adjusted_request, provider_tx));
         tokio::select! {
             biased;
@@ -1327,8 +1503,19 @@ impl MultiLLMRouter {
                 // boundary. Returning here drops (and therefore cancels) a
                 // provider future which emitted that invalid terminal value
                 // but remained pending afterward.
-                forward_result?;
-                provider_call.await.map_err(|error| {
+                let consumer_gone = forward_result?;
+                let result = if consumer_gone {
+                    // Nobody reads the stream any more: give the provider a
+                    // bounded moment to wind down, then drop (cancel) it.
+                    match tokio::time::timeout(ABANDONED_STREAM_DRAIN, &mut provider_call).await {
+                        Ok(result) => result,
+                        Err(_) => Ok(()),
+                    }
+                } else {
+                    (&mut provider_call).await
+                };
+                note_provider_result(&result);
+                result.map_err(|error| {
                     let error = error.with_route(
                         identity.profile.clone(),
                         identity.provider.clone(),
@@ -1342,6 +1529,7 @@ impl MultiLLMRouter {
                 })
             },
             result = &mut provider_call => {
+                note_provider_result(&result);
                 let result = result.map_err(|error| {
                     let error = error.with_route(
                         identity.profile.clone(),
@@ -1357,7 +1545,7 @@ impl MultiLLMRouter {
                 let forward_result = forward.await.map_err(|error| {
                     LLMError::Other(format!("stream response forwarding task failed: {error}"))
                 })?;
-                result.and(forward_result)
+                result.and(forward_result.map(|_consumer_gone| ()))
             },
         }
     }
@@ -1441,23 +1629,13 @@ fn effective_capabilities_for_request(
 }
 
 fn validate_config(config: &LLMRouterConfig) -> LLMResult<()> {
-    // Default profile must resolve to either a standard or an adaptive
-    // composite. Adaptive composites resolve down to a standard via
-    // `fast_profile`, so either is fine at this layer.
-    if !config.profiles.contains_key(&config.default_profile)
-        && !config
-            .adaptive_profiles
-            .contains_key(&config.default_profile)
-    {
+    if !config.profiles.contains_key(&config.default_profile) {
         return Err(LLMError::Configuration(format!(
-            "default profile `{}` missing from router configuration (checked `profiles` and `adaptive_profiles`)",
+            "default route `{}` is missing",
             config.default_profile
         )));
     }
 
-    // Validate every profile name an operation could resolve to —
-    // including alternatives like `when_has_images`. Each branch must
-    // exist in `profiles` OR in `adaptive_profiles`.
     if let Err(errors) = config.validate_operation_metadata() {
         return Err(LLMError::Configuration(format!(
             "operation catalog metadata invalid: {}",
@@ -1484,24 +1662,14 @@ fn validate_config(config: &LLMRouterConfig) -> LLMResult<()> {
             },
         }
         for profile_name in candidates {
-            if !config.profiles.contains_key(profile_name)
-                && !config.adaptive_profiles.contains_key(profile_name)
-            {
+            if !config.profiles.contains_key(profile_name) {
                 return Err(LLMError::Configuration(format!(
-                    "operation mapping references unknown profile `{profile_name}` (checked `profiles` and `adaptive_profiles`)"
+                    "operation mapping references unknown route `{profile_name}`"
                 )));
             }
         }
     }
 
-    // Adaptive profile self-validation — references must exist in
-    // `profiles`, must not nest, and must differ from each other.
-    if let Err(errors) = config.validate_adaptive_profiles() {
-        return Err(LLMError::Configuration(format!(
-            "adaptive profile configuration invalid: {}",
-            errors.join("; ")
-        )));
-    }
     for (profile_name, profile) in &config.profiles {
         validate_context_contract(config, profile_name, profile)?;
 
@@ -1711,6 +1879,7 @@ fn validate_config(config: &LLMRouterConfig) -> LLMResult<()> {
                     | LLMProviderKind::Yutori
                     | LLMProviderKind::Xai
                     | LLMProviderKind::Sarvam
+                    | LLMProviderKind::Ollama
             )
         {
             return Err(LLMError::Configuration(format!(
@@ -1860,7 +2029,11 @@ fn enforce_capabilities(capabilities: &LLMCapability, request: &LLMRequest) -> L
     Ok(())
 }
 
-fn apply_profile_defaults(profile: &LLMProfile, request: &mut LLMRequest, preserve_model: bool) {
+fn apply_profile_defaults(
+    profile: &LLMProfile,
+    request: &mut LLMRequest,
+    preserve_model: bool,
+) -> LLMResult<()> {
     let existing_model = request.model.trim().to_string();
     if preserve_model && !existing_model.is_empty() {
         request.model = existing_model;
@@ -1889,14 +2062,7 @@ fn apply_profile_defaults(profile: &LLMProfile, request: &mut LLMRequest, preser
     }
 
     if request.reasoning.is_none() {
-        if let Some(defaults) = &profile.reasoning {
-            request.reasoning = Some(ReasoningConfig {
-                effort: Some(defaults.effort.clone()),
-                max_reasoning_tokens: defaults.max_reasoning_tokens,
-                strategy: defaults.strategy.clone(),
-                summary: defaults.summary.clone(),
-            });
-        }
+        request.reasoning = crate::catalog::request_reasoning_defaults(profile);
     }
 
     if let Some(metadata) = profile.metadata.as_ref() {
@@ -1905,7 +2071,11 @@ fn apply_profile_defaults(profile: &LLMProfile, request: &mut LLMRequest, preser
             .filter(|(key, _)| {
                 !matches!(
                     key.as_str(),
-                    "fallback_profile" | "context_window_tokens" | "chunking" | "model_family"
+                    "fallback_profile"
+                        | "context_window_tokens"
+                        | "chunking"
+                        | "model_family"
+                        | crate::catalog::CATALOG_SETTINGS_KEY
                 )
             })
             .collect::<Vec<_>>();
@@ -1916,6 +2086,25 @@ fn apply_profile_defaults(profile: &LLMProfile, request: &mut LLMRequest, preser
             };
 
             for (key, value) in provider_metadata {
+                let unlocked_tool_default = key == "tool_choice"
+                    && profile
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get(crate::catalog::CATALOG_SETTINGS_KEY))
+                        .is_some_and(|settings| {
+                            !settings
+                                .get("locked_metadata")
+                                .and_then(Value::as_array)
+                                .is_some_and(|keys| {
+                                    keys.iter().any(|key| key.as_str() == Some("tool_choice"))
+                                })
+                        });
+                if unlocked_tool_default {
+                    extras
+                        .entry(key.clone())
+                        .or_insert_with(|| clone_json_value_iteratively(value));
+                    continue;
+                }
                 extras.insert(key.clone(), clone_json_value_iteratively(value));
             }
 
@@ -1924,6 +2113,7 @@ fn apply_profile_defaults(profile: &LLMProfile, request: &mut LLMRequest, preser
             }
         }
     }
+    crate::catalog::resolve_request_settings(profile, request)
 }
 
 /// Reconcile a caller's reuse intent with the physical profile selected by the
@@ -2188,6 +2378,434 @@ fn committed_physical_attempt_observation(
     .map_err(LLMError::Validation)
 }
 
+/// A provider error that proves nothing billable was generated: a typed HTTP
+/// client rejection other than 408 (request timeout) and 429 (rate limit).
+/// Timeouts, transport failures, 5xx and untyped provider messages stay
+/// uncertain because the remote outcome cannot be ruled out.
+fn is_definitive_provider_rejection(error: &LLMError) -> bool {
+    matches!(
+        error.root_cause(),
+        LLMError::ProviderStatus { status, .. }
+            if (400..500).contains(status) && *status != 408 && *status != 429
+    )
+}
+
+/// Charge one successful provider response to the spend gate.
+///
+/// The exact cost comes from the active pricing table at the attempt's start,
+/// plus the per-call fee of any provider-executed web search. When the model is
+/// unpriced, or the provider reported no usage, the exact cost is left `None`
+/// and the gate decides how to charge it. A `None` gate (the default) is a
+/// no-op, so routers without an envelope behave as before.
+#[allow(clippy::too_many_arguments)]
+fn settle_spend(
+    gate: Option<&Arc<dyn SpendGate>>,
+    trace: Option<&LlmTraceContext>,
+    operation: &str,
+    provider: &LLMProviderKind,
+    model: &str,
+    max_output_tokens: Option<u32>,
+    started_at_ms: i64,
+    response: &LLMResponse,
+) {
+    let Some(gate) = gate else {
+        return;
+    };
+    let search_fee_usd = response
+        .raw_response
+        .as_deref()
+        .map(|raw| {
+            crate::server_web_search::web_search_call_count(provider, raw) as f64
+                * server_web_search_cost_per_call_at(provider, started_at_ms)
+        })
+        .unwrap_or(0.0);
+    settle_spend_usage(
+        gate,
+        trace,
+        operation,
+        provider,
+        model,
+        max_output_tokens
+            .map(u64::from)
+            .unwrap_or(DEFAULT_OUTPUT_CEILING_TOKENS),
+        started_at_ms,
+        response.usage.as_ref(),
+        search_fee_usd,
+    );
+}
+
+/// Price `usage` (plus `extra_fee_usd`) from the active table as of
+/// `started_at_ms` and settle it with `gate` under the trace's class and
+/// scope. The exact cost is `None` when the model is unpriced or there is no
+/// usage, and the gate decides how to charge it.
+#[allow(clippy::too_many_arguments)]
+fn settle_spend_usage(
+    gate: &Arc<dyn SpendGate>,
+    trace: Option<&LlmTraceContext>,
+    operation: &str,
+    provider: &LLMProviderKind,
+    model: &str,
+    output_ceiling_tokens: u64,
+    started_at_ms: i64,
+    usage: Option<&crate::types::TokenUsage>,
+    extra_fee_usd: f64,
+) {
+    let priced_micro_usd = usage
+        .and_then(|usage| try_compute_cost_at(provider, model, usage, started_at_ms))
+        .and_then(|usd| usd_to_microusd_ceil(usd + extra_fee_usd));
+    let (workload, principal, workspace) = match trace {
+        Some(context) => (
+            crate::spend_gate::workload_of_trace(context),
+            context.scope.principal.as_str(),
+            context.scope.workspace.as_str(),
+        ),
+        None => (
+            Default::default(),
+            crate::trace::RESERVED_SYSTEM_PRINCIPAL,
+            crate::trace::RESERVED_SYSTEM_WORKSPACE,
+        ),
+    };
+    gate.settle(&SpendSettlement {
+        workload,
+        principal,
+        workspace,
+        operation,
+        provider,
+        model,
+        at_ms: started_at_ms,
+        priced_micro_usd,
+        usage,
+        output_ceiling_tokens,
+    });
+}
+
+/// How long a stream whose consumer went away keeps draining the provider for
+/// the final response that carries the real usage, and then how long the
+/// router waits for the provider call to wind down before dropping (and so
+/// cancelling) it. Past either bound the attempt settles an estimate.
+const ABANDONED_STREAM_DRAIN: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(300)
+} else {
+    std::time::Duration::from_secs(10)
+};
+
+/// Flat input-token charge for one image, audio or document payload in an
+/// unfinished stream's estimate: roughly what providers bill for a full-size
+/// image (Anthropic ~1,600 tokens for ~1.15 MP), not its encoded bytes.
+const STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK: u64 = 1_600;
+
+/// Ceiling on an unfinished stream's input estimate when the profile declares
+/// no context window.
+const STREAM_INPUT_ESTIMATE_CAP_TOKENS: u32 = 200_000;
+
+/// A string at least this long with no whitespace near its start is an
+/// encoded binary payload (base64 image data), not text.
+const BINARY_PAYLOAD_MIN_BYTES: usize = 16 * 1024;
+
+/// Input tokens an unfinished stream is charged: the request's text at the
+/// conservative two-bytes-per-token preflight ratio, each image, audio or
+/// document payload (inline blocks, data URLs, base64 strings inside tool
+/// JSON, request media) at [`STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK`], capped at
+/// the profile's context window or [`STREAM_INPUT_ESTIMATE_CAP_TOKENS`].
+fn estimate_stream_input_tokens(request: &LLMRequest, context_window_tokens: Option<u32>) -> u32 {
+    use crate::types::ContentBlock;
+    let mut tally = StreamInputTally::default();
+    if request.messages.is_empty() {
+        if let Some(prompt) = request
+            .extra
+            .as_deref()
+            .and_then(|extra| extra.get("prompt"))
+            .and_then(Value::as_str)
+        {
+            tally.text(prompt);
+        }
+    }
+    for message in request.messages.iter() {
+        // Role marker and separator.
+        tally.add(12);
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text } => tally.text(text),
+                ContentBlock::Image { caption, .. } => {
+                    tally.media();
+                    if let Some(caption) = caption {
+                        tally.text(caption);
+                    }
+                },
+                ContentBlock::ImageUrl { prompt, .. } => {
+                    tally.media();
+                    if let Some(prompt) = prompt {
+                        tally.text(prompt);
+                    }
+                },
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    tally.add(id.len().saturating_add(name.len()));
+                    tally.json(arguments);
+                },
+                ContentBlock::ToolResult {
+                    tool_call_id,
+                    content,
+                } => {
+                    tally.add(tool_call_id.len());
+                    tally.json(content);
+                },
+                ContentBlock::Json { value } => tally.json(value),
+            }
+        }
+    }
+    if request.media.is_some() {
+        tally.media();
+    }
+    if let Some(media) = request.input_media.as_deref() {
+        for item in media {
+            tally.media();
+            if let Some(description) = item.description.as_deref() {
+                tally.text(description);
+            }
+        }
+    }
+    if let Some(LLMResponseFormat::JsonSchema { schema }) = request.response_format_value() {
+        tally.json(schema);
+    }
+    for tool in request.tools.iter() {
+        tally.add(tool.name.len().saturating_add(tool.description.len()));
+        tally.json(&tool.parameters);
+    }
+    let tokens = tally.bytes.div_ceil(2).saturating_add(
+        tally
+            .media_blocks
+            .saturating_mul(STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK),
+    );
+    u32::try_from(tokens)
+        .unwrap_or(u32::MAX)
+        .min(context_window_tokens.unwrap_or(STREAM_INPUT_ESTIMATE_CAP_TOKENS))
+}
+
+/// Text bytes and media payloads counted by [`estimate_stream_input_tokens`].
+#[derive(Default)]
+struct StreamInputTally {
+    bytes: u64,
+    media_blocks: u64,
+}
+
+impl StreamInputTally {
+    fn add(&mut self, bytes: usize) {
+        self.bytes = self.bytes.saturating_add(bytes as u64);
+    }
+
+    fn media(&mut self) {
+        self.media_blocks = self.media_blocks.saturating_add(1);
+    }
+
+    fn text(&mut self, text: &str) {
+        if is_binary_payload(text) {
+            self.media();
+        } else {
+            self.add(text.len());
+        }
+    }
+
+    /// Approximate compact-JSON length, walked with a heap stack (request
+    /// JSON is depth-bounded already, but this never recurses).
+    fn json(&mut self, root: &Value) {
+        let mut pending = vec![root];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Null | Value::Bool(_) => self.add(5),
+                Value::Number(_) => self.add(8),
+                Value::String(text) => {
+                    self.add(2);
+                    self.text(text);
+                },
+                Value::Array(items) => {
+                    self.add(items.len().saturating_add(2));
+                    pending.extend(items.iter());
+                },
+                Value::Object(entries) => {
+                    self.add(2);
+                    for (key, item) in entries {
+                        self.add(key.len().saturating_add(4));
+                        pending.push(item);
+                    }
+                },
+            }
+        }
+    }
+}
+
+/// A data URL, or a long string with no whitespace near its start (base64).
+fn is_binary_payload(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.starts_with(b"data:") {
+        let head = &bytes[..bytes.len().min(256)];
+        if head.windows(8).any(|window| window == b";base64,") {
+            return true;
+        }
+    }
+    bytes.len() >= BINARY_PAYLOAD_MIN_BYTES && !bytes[..1024].iter().any(u8::is_ascii_whitespace)
+}
+
+/// Spend settlement for one streaming provider attempt: it settles exactly
+/// once, whichever way the attempt ends.
+///
+/// The final `Done` response settles its real usage
+/// ([`Self::settle_response`]). Any other ending (the consumer went away and
+/// the drain ran out, the provider failed after producing output, the routing
+/// future was cancelled) settles when the last holder drops the meter: an
+/// estimate from the request's input size and the output streamed so far,
+/// priced like a real response. A provider failure before any output is not
+/// charged, the same as a failed non-streaming call.
+struct StreamSpend {
+    gate: Arc<dyn SpendGate>,
+    trace: Option<LlmTraceContext>,
+    operation: String,
+    provider: LLMProviderKind,
+    model: String,
+    max_output_tokens: Option<u32>,
+    started_at_ms: i64,
+    estimated_input_tokens: u32,
+    output_bytes: std::sync::atomic::AtomicU64,
+    provider_failed: std::sync::atomic::AtomicBool,
+    settled: std::sync::atomic::AtomicBool,
+}
+
+impl StreamSpend {
+    /// Count the output a delta carries; an `Error` delta marks the attempt
+    /// as failed by the provider.
+    fn observe(&self, delta: &StreamDelta) {
+        use std::sync::atomic::Ordering;
+        let bytes = match delta {
+            StreamDelta::Token(text) => text.len(),
+            StreamDelta::ToolCallDelta {
+                name,
+                arguments_chunk,
+                ..
+            } => name.as_ref().map_or(0, String::len) + arguments_chunk.len(),
+            StreamDelta::ReasoningDelta { delta, .. }
+            | StreamDelta::ToolCallArgsDelta { delta, .. } => delta.len(),
+            StreamDelta::ToolCallStart { tool_name, .. } => tool_name.len(),
+            StreamDelta::Error(_) => {
+                self.provider_failed.store(true, Ordering::Release);
+                0
+            },
+            _ => 0,
+        };
+        if bytes > 0 {
+            self.output_bytes.fetch_add(bytes as u64, Ordering::AcqRel);
+        }
+    }
+
+    fn mark_provider_failed(&self) {
+        self.provider_failed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Settle the provider's final response, unless the attempt already
+    /// settled.
+    fn settle_response(&self, response: &LLMResponse) {
+        if self.settled.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        settle_spend(
+            Some(&self.gate),
+            self.trace.as_ref(),
+            &self.operation,
+            &self.provider,
+            &self.model,
+            self.max_output_tokens,
+            self.started_at_ms,
+            response,
+        );
+    }
+
+    /// Settle an attempt that ended without its final response, unless it
+    /// already settled.
+    fn settle_unfinished(&self) {
+        use std::sync::atomic::Ordering;
+        if self.settled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let output_bytes = self.output_bytes.load(Ordering::Acquire);
+        if output_bytes == 0 && self.provider_failed.load(Ordering::Acquire) {
+            return;
+        }
+        // The Ollama preflight's conservative ratio: one token per two UTF-8
+        // bytes, capped at what the request allowed.
+        let produced = u32::try_from(output_bytes.div_ceil(2)).unwrap_or(u32::MAX);
+        let completion = self
+            .max_output_tokens
+            .map_or(produced, |ceiling| produced.min(ceiling));
+        let usage = crate::types::TokenUsage {
+            prompt_tokens: Some(self.estimated_input_tokens),
+            completion_tokens: Some(completion),
+            total_tokens: Some(self.estimated_input_tokens.saturating_add(completion)),
+            ..Default::default()
+        };
+        debug!(
+            operation = %self.operation,
+            provider = %self.provider,
+            model = %self.model,
+            estimated_input_tokens = self.estimated_input_tokens,
+            estimated_output_tokens = completion,
+            "stream ended without its final response; settling estimated spend"
+        );
+        settle_spend_usage(
+            &self.gate,
+            self.trace.as_ref(),
+            &self.operation,
+            &self.provider,
+            &self.model,
+            self.max_output_tokens
+                .map(u64::from)
+                .unwrap_or(DEFAULT_OUTPUT_CEILING_TOKENS),
+            self.started_at_ms,
+            Some(&usage),
+            0.0,
+        );
+    }
+}
+
+impl Drop for StreamSpend {
+    fn drop(&mut self) {
+        self.settle_unfinished();
+    }
+}
+
+/// Charge one successful embedding call to the spend gate. Embedding
+/// responses report no usage, so the input tokens are the router's
+/// conservative estimate and there is no output.
+fn settle_embedding_spend(
+    gate: &Arc<dyn SpendGate>,
+    trace: Option<&LlmTraceContext>,
+    operation: &str,
+    provider: &LLMProviderKind,
+    model: &str,
+    input_tokens: u32,
+    started_at_ms: i64,
+) {
+    let usage = crate::types::TokenUsage {
+        prompt_tokens: Some(input_tokens),
+        completion_tokens: Some(0),
+        total_tokens: Some(input_tokens),
+        ..Default::default()
+    };
+    settle_spend_usage(
+        gate,
+        trace,
+        operation,
+        provider,
+        model,
+        0,
+        started_at_ms,
+        Some(&usage),
+        0.0,
+    );
+}
+
 /// Enforce the non-serializable disclosure route fence against the router's
 /// own immutable profile snapshot immediately before provider invocation.
 /// This check runs on every fallback hop and on the streaming path.
@@ -2281,23 +2899,6 @@ fn router_preserve_request_model(extra: Option<&Value>) -> bool {
         .unwrap_or(false)
 }
 
-/// Map an adaptive composite name to its `fast_profile`. Returns `name`
-/// unchanged if it's not in `adaptive_profiles`. Used at the router's
-/// transport layer so adaptive-unaware code paths (autonomous loops,
-/// capability probes, inner-loop dispatch) get the concrete fast
-/// variant without needing to know that the configured default is a
-/// composite. Adaptive-aware callers — currently only
-/// `process_chat_inline_turn` — pre-resolve to a standard profile name
-/// before dispatch, so the resolve here is a structural no-op for
-/// them.
-fn resolve_adaptive_to_fast(config: &LLMRouterConfig, name: &str) -> String {
-    config
-        .adaptive_profiles
-        .get(name)
-        .map(|adaptive| adaptive.fast_profile.clone())
-        .unwrap_or_else(|| name.to_string())
-}
-
 fn select_profile_for_provider(
     config: &LLMRouterConfig,
     provider: &LLMProviderKind,
@@ -2337,13 +2938,18 @@ fn select_profile_for_provider(
 }
 
 fn strip_router_only_extra(request: &mut LLMRequest) {
-    const ROUTER_ONLY_KEYS: [&str; 6] = [
+    // Catalog profiles carry `model_family` in their metadata, and callers
+    // that copy a profile's params into `extra` (chat streaming) would
+    // otherwise forward it: OpenAI rejects it as an unknown parameter.
+    const ROUTER_ONLY_KEYS: [&str; 8] = [
         "router_profile_override",
         "router_provider_override",
         "router_required_provider_kind",
         "router_preserve_model",
         "context_window_tokens",
         "chunking",
+        "model_family",
+        crate::catalog::CATALOG_SETTINGS_KEY,
     ];
     let contains_router_state = request
         .extra_value()
@@ -2882,6 +3488,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn json_output_inspection_uses_the_exact_client_without_invoking_it() {
+        let mut config = LLMRouterConfig::default();
+        config.default_profile = "critic".into();
+        config.profiles.insert(
+            "critic".into(),
+            sample_profile(LLMProviderKind::DeepSeek, "deepseek-flash"),
+        );
+        let mut router = MultiLLMRouter::new(config).unwrap();
+        assert_eq!(router.profile_supports_json_output("critic"), None);
+        let provider = Arc::new(CapturingProvider::new(LLMProviderKind::DeepSeek));
+        router
+            .register_profile_provider("critic", provider.clone())
+            .unwrap();
+        assert_eq!(router.profile_supports_json_output("critic"), Some(false));
+        assert_eq!(router.profile_supports_json_output("missing"), None);
+        assert!(provider.requests.lock().unwrap().is_empty());
+    }
+
+    /// Chat streaming copies a catalog profile's params into `extra`; the
+    /// router-only keys among them never reach the provider.
+    #[test]
+    fn router_only_extra_keys_never_reach_the_provider() {
+        let mut request = sample_request("gpt-6.1-sol");
+        request.set_extra(json!({"model_family": "gpt", "verbosity": "low"}));
+        strip_router_only_extra(&mut request);
+        assert_eq!(request.extra_value(), Some(&json!({"verbosity": "low"})));
+
+        request.set_extra(json!({"model_family": "gpt"}));
+        strip_router_only_extra(&mut request);
+        assert!(request.extra_value().is_none());
+    }
+
     fn disclosure_guard(profile_name: &str, profile: &LLMProfile) -> LlmDisclosureGuard {
         let cohort = transport_cohort_fingerprint(
             &profile.provider,
@@ -3082,11 +3721,11 @@ mod tests {
         let profile = sample_profile(LLMProviderKind::OpenAI, "gpt-5.6-terra");
 
         let mut request = sample_request("custom-model");
-        apply_profile_defaults(&profile, &mut request, true);
+        apply_profile_defaults(&profile, &mut request, true).unwrap();
         assert_eq!(request.model, "custom-model");
 
         let mut request = sample_request("custom-model");
-        apply_profile_defaults(&profile, &mut request, false);
+        apply_profile_defaults(&profile, &mut request, false).unwrap();
         assert_eq!(request.model, "gpt-5.6-terra");
     }
 
@@ -3099,7 +3738,7 @@ mod tests {
         )]));
 
         let mut request = sample_request("gpt-5.6-terra");
-        apply_profile_defaults(&profile, &mut request, false);
+        apply_profile_defaults(&profile, &mut request, false).unwrap();
         let caps = effective_capabilities_for_request(
             &profile,
             &request,
@@ -3119,7 +3758,7 @@ mod tests {
         )]));
 
         let mut request = sample_request("gpt-5");
-        apply_profile_defaults(&profile, &mut request, false);
+        apply_profile_defaults(&profile, &mut request, false).unwrap();
         request.modality = LLMModality::Vision;
         let caps = effective_capabilities_for_request(
             &profile,
@@ -3727,6 +4366,933 @@ mod tests {
         assert_eq!(model, "actual-stream-model");
         assert!(matches!(error.root_cause(), LLMError::Provider { .. }));
         assert!(rx.recv().await.is_none());
+    }
+
+    /// Records what the router asked of a spend gate, and refuses on demand.
+    #[derive(Default)]
+    struct RecordingGate {
+        refuse_with_reset_ms: Option<i64>,
+        admitted: Mutex<Vec<(crate::trace::LlmWorkloadClass, String)>>,
+        settled: Mutex<Vec<RecordedSettlement>>,
+        /// `(prompt_tokens, completion_tokens)` of each settlement's usage.
+        settled_tokens: Mutex<Vec<Option<(Option<u32>, Option<u32>)>>>,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct RecordedSettlement {
+        workload: crate::trace::LlmWorkloadClass,
+        principal: String,
+        workspace: String,
+        model: String,
+        priced_micro_usd: Option<u64>,
+        usage_reported: bool,
+        output_ceiling_tokens: u64,
+    }
+
+    impl SpendGate for RecordingGate {
+        fn admit(&self, request: &LLMRequest, _provider: &LLMProviderKind) -> LLMResult<()> {
+            self.admitted.lock().unwrap().push((
+                crate::spend_gate::workload_of(request),
+                request.model.clone(),
+            ));
+            match self.refuse_with_reset_ms {
+                Some(resets_at_ms) => Err(LLMError::SpendEnvelopeExhausted { resets_at_ms }),
+                None => Ok(()),
+            }
+        }
+
+        fn settle(&self, settlement: &SpendSettlement<'_>) {
+            self.settled.lock().unwrap().push(RecordedSettlement {
+                workload: settlement.workload,
+                principal: settlement.principal.to_string(),
+                workspace: settlement.workspace.to_string(),
+                model: settlement.model.to_string(),
+                priced_micro_usd: settlement.priced_micro_usd,
+                usage_reported: settlement.usage.is_some(),
+                output_ceiling_tokens: settlement.output_ceiling_tokens,
+            });
+            self.settled_tokens.lock().unwrap().push(
+                settlement
+                    .usage
+                    .map(|usage| (usage.prompt_tokens, usage.completion_tokens)),
+            );
+        }
+    }
+
+    struct UsageProvider {
+        usage: Option<crate::types::TokenUsage>,
+    }
+
+    impl UsageProvider {
+        fn response(&self) -> LLMResponse {
+            LLMResponse {
+                text: Some(Arc::<str>::from("ok")),
+                usage: self.usage.clone(),
+                ..LLMResponse::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for UsageProvider {
+        fn provider_kind(&self) -> LLMProviderKind {
+            LLMProviderKind::OpenAI
+        }
+
+        fn capabilities(&self, _model: &str) -> LLMCapability {
+            LLMCapability {
+                modalities: vec![LLMModality::Text],
+                tool_calling: true,
+                streaming: true,
+                ..LLMCapability::default()
+            }
+        }
+
+        async fn invoke(&self, _request: LLMRequest) -> LLMResult<LLMResponse> {
+            Ok(self.response())
+        }
+
+        async fn invoke_stream(
+            &self,
+            _request: LLMRequest,
+            tx: mpsc::Sender<StreamDelta>,
+        ) -> LLMResult<()> {
+            let _ = tx.send(StreamDelta::Done(self.response())).await;
+            Ok(())
+        }
+    }
+
+    fn gated_router(
+        model: &str,
+        streaming: bool,
+        provider: Arc<dyn LLMProvider>,
+        gate: Arc<RecordingGate>,
+    ) -> MultiLLMRouter {
+        gated_router_for(LLMProviderKind::OpenAI, model, streaming, provider, gate)
+    }
+
+    fn gated_router_for(
+        kind: LLMProviderKind,
+        model: &str,
+        streaming: bool,
+        provider: Arc<dyn LLMProvider>,
+        gate: Arc<RecordingGate>,
+    ) -> MultiLLMRouter {
+        let mut config = LLMRouterConfig::default();
+        config.default_profile = "gated".to_string();
+        config
+            .operation_mapping
+            .insert("test".to_string(), "gated".into());
+        let mut profile = sample_profile(kind, model);
+        profile.metadata = Some(HashMap::from([(
+            "streaming".to_string(),
+            Value::Bool(streaming),
+        )]));
+        config.profiles.insert("gated".to_string(), profile);
+        let mut router = MultiLLMRouter::new(config).expect("router");
+        router.register_provider(provider);
+        router.set_spend_gate(gate);
+        router
+    }
+
+    fn request_in_class(class: crate::trace::LlmWorkloadClass) -> LLMRequest {
+        let mut request = sample_request("placeholder-model");
+        request.metadata.set_trace_context(LlmTraceContext::new(
+            crate::trace::LlmScope::new("owner", "default"),
+            class,
+        ));
+        request
+    }
+
+    #[tokio::test]
+    async fn a_refusing_spend_gate_stops_the_call_before_any_provider_is_contacted() {
+        let capturing = Arc::new(CapturingProvider::new(LLMProviderKind::OpenAI));
+        let captured = capturing.requests.clone();
+        let gate = Arc::new(RecordingGate {
+            refuse_with_reset_ms: Some(1_791_849_600_000),
+            ..RecordingGate::default()
+        });
+        let router = gated_router("gpt-5", false, capturing, gate.clone());
+
+        let error = router
+            .route(request_in_class(
+                crate::trace::LlmWorkloadClass::AutonomousTask,
+            ))
+            .await
+            .expect_err("the gate refuses");
+        assert_eq!(error.spend_envelope_resets_at_ms(), Some(1_791_849_600_000));
+        assert_eq!(
+            crate::dispatch::classifier::classify(&error),
+            crate::dispatch::ErrorClass::SpendEnvelope
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "no provider attempt may follow a refusal"
+        );
+        assert!(gate.settled.lock().unwrap().is_empty(), "nothing to settle");
+        // The gate saw the hop's effective model and the request's class.
+        assert_eq!(
+            *gate.admitted.lock().unwrap(),
+            vec![(
+                crate::trace::LlmWorkloadClass::AutonomousTask,
+                "gpt-5".to_string()
+            )]
+        );
+
+        // Streaming is gated the same way.
+        let (tx, mut rx) = mpsc::channel(4);
+        let streaming = gated_router(
+            "gpt-5",
+            true,
+            Arc::new(CapturingProvider::new(LLMProviderKind::OpenAI)),
+            Arc::new(RecordingGate {
+                refuse_with_reset_ms: Some(7),
+                ..RecordingGate::default()
+            }),
+        );
+        let error = streaming
+            .route_stream(request_in_class(crate::trace::LlmWorkloadClass::Memory), tx)
+            .await
+            .expect_err("the gate refuses a stream too");
+        assert_eq!(error.spend_envelope_resets_at_ms(), Some(7));
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_successful_call_settles_its_priced_cost_under_its_class_and_scope() {
+        let usage = crate::types::TokenUsage {
+            prompt_tokens: Some(1_000_000),
+            completion_tokens: Some(200_000),
+            ..Default::default()
+        };
+        let expected = usd_to_microusd_ceil(
+            try_compute_cost_at(
+                &LLMProviderKind::OpenAI,
+                "gpt-5",
+                &usage,
+                Utc::now().timestamp_millis(),
+            )
+            .expect("gpt-5 is priced"),
+        )
+        .unwrap();
+        assert!(expected > 0);
+
+        for streaming in [false, true] {
+            let gate = Arc::new(RecordingGate::default());
+            let router = gated_router(
+                "gpt-5",
+                streaming,
+                Arc::new(UsageProvider {
+                    usage: Some(usage.clone()),
+                }),
+                gate.clone(),
+            );
+            let request = request_in_class(crate::trace::LlmWorkloadClass::Memory);
+            if streaming {
+                let (tx, mut rx) = mpsc::channel(8);
+                router.route_stream(request, tx).await.expect("stream");
+                let mut done = false;
+                while let Some(delta) = rx.recv().await {
+                    done |= matches!(delta, StreamDelta::Done(_));
+                }
+                assert!(done);
+            } else {
+                router.route(request).await.expect("call");
+            }
+            assert_eq!(
+                *gate.settled.lock().unwrap(),
+                vec![RecordedSettlement {
+                    workload: crate::trace::LlmWorkloadClass::Memory,
+                    principal: "owner".to_string(),
+                    workspace: "default".to_string(),
+                    model: "gpt-5".to_string(),
+                    priced_micro_usd: Some(expected),
+                    usage_reported: true,
+                    // The profile's `max_output_tokens`.
+                    output_ceiling_tokens: 256,
+                }],
+                "streaming = {streaming}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unpriced_model_or_missing_usage_settles_as_unpriced_for_the_gate_to_estimate() {
+        // A model no pricing row covers.
+        let usage = crate::types::TokenUsage {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(10),
+            ..Default::default()
+        };
+        assert!(!crate::pricing::model_is_priced_at(
+            &LLMProviderKind::OpenAI,
+            "gpt-9-not-in-any-table",
+            Utc::now().timestamp_millis()
+        ));
+        let gate = Arc::new(RecordingGate::default());
+        let router = gated_router(
+            "gpt-9-not-in-any-table",
+            false,
+            Arc::new(UsageProvider { usage: Some(usage) }),
+            gate.clone(),
+        );
+        router
+            .route(request_in_class(crate::trace::LlmWorkloadClass::Scheduled))
+            .await
+            .expect("call");
+        // A priced model whose provider reported no usage at all.
+        let silent = Arc::new(RecordingGate::default());
+        gated_router(
+            "gpt-5",
+            false,
+            Arc::new(UsageProvider { usage: None }),
+            silent.clone(),
+        )
+        .route(request_in_class(crate::trace::LlmWorkloadClass::Scheduled))
+        .await
+        .expect("call");
+        for (gate, usage_reported) in [(gate, true), (silent, false)] {
+            let settled = gate.settled.lock().unwrap();
+            assert_eq!(settled.len(), 1);
+            assert_eq!(settled[0].priced_micro_usd, None);
+            assert_eq!(settled[0].usage_reported, usage_reported);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_without_a_trace_context_is_system_work_and_no_gate_changes_nothing() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = gated_router(
+            "gpt-5",
+            false,
+            Arc::new(UsageProvider { usage: None }),
+            gate.clone(),
+        );
+        router
+            .route(sample_request("placeholder-model"))
+            .await
+            .expect("call");
+        assert_eq!(
+            gate.settled.lock().unwrap()[0].workload,
+            crate::trace::LlmWorkloadClass::System
+        );
+        assert_eq!(gate.settled.lock().unwrap()[0].principal, "system");
+
+        // Without any gate (and none installed in this test binary) the
+        // router behaves exactly as before.
+        let mut config = LLMRouterConfig::default();
+        config.default_profile = "plain".to_string();
+        config.profiles.insert(
+            "plain".to_string(),
+            sample_profile(LLMProviderKind::OpenAI, "gpt-5"),
+        );
+        let mut plain = MultiLLMRouter::new(config).expect("router");
+        plain.register_provider(Arc::new(UsageProvider { usage: None }));
+        assert!(plain
+            .route(sample_request("placeholder-model"))
+            .await
+            .is_ok());
+    }
+
+    /// What [`ScriptedStreamProvider`] streams before its ending.
+    const PARTIAL_OUTPUT: &str = "partial output";
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum StreamEnding {
+        /// A pause, a second token, then the final response with usage.
+        FinishAfterPause,
+        /// The provider fails after the first token.
+        FailAfterOutput,
+        /// The provider fails before any output.
+        FailBeforeOutput,
+        /// The provider never finishes.
+        Hang,
+    }
+
+    struct ScriptedStreamProvider {
+        kind: LLMProviderKind,
+        ending: StreamEnding,
+    }
+
+    impl ScriptedStreamProvider {
+        fn usage() -> crate::types::TokenUsage {
+            crate::types::TokenUsage {
+                prompt_tokens: Some(1_000),
+                completion_tokens: Some(50),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for ScriptedStreamProvider {
+        fn provider_kind(&self) -> LLMProviderKind {
+            self.kind.clone()
+        }
+
+        fn capabilities(&self, _model: &str) -> LLMCapability {
+            LLMCapability {
+                modalities: vec![LLMModality::Text, LLMModality::Vision],
+                tool_calling: true,
+                streaming: true,
+                ..LLMCapability::default()
+            }
+        }
+
+        async fn invoke(&self, _request: LLMRequest) -> LLMResult<LLMResponse> {
+            Err(LLMError::Other(
+                "the scripted provider only streams".to_string(),
+            ))
+        }
+
+        async fn invoke_stream(
+            &self,
+            _request: LLMRequest,
+            tx: mpsc::Sender<StreamDelta>,
+        ) -> LLMResult<()> {
+            if self.ending == StreamEnding::FailBeforeOutput {
+                return Err(LLMError::Other("refused before any output".to_string()));
+            }
+            let _ = tx
+                .send(StreamDelta::Token(PARTIAL_OUTPUT.to_string()))
+                .await;
+            match self.ending {
+                StreamEnding::FinishAfterPause => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let _ = tx
+                        .send(StreamDelta::Token(" and the rest".to_string()))
+                        .await;
+                    let _ = tx
+                        .send(StreamDelta::Done(LLMResponse {
+                            text: Some(Arc::<str>::from("partial output and the rest")),
+                            usage: Some(Self::usage()),
+                            ..LLMResponse::default()
+                        }))
+                        .await;
+                    Ok(())
+                },
+                StreamEnding::FailAfterOutput | StreamEnding::FailBeforeOutput => {
+                    Err(LLMError::Other("connection reset mid-stream".to_string()))
+                },
+                StreamEnding::Hang => std::future::pending().await,
+            }
+        }
+    }
+
+    fn scripted_stream_router(ending: StreamEnding, gate: Arc<RecordingGate>) -> MultiLLMRouter {
+        gated_router(
+            "gpt-5",
+            true,
+            Arc::new(ScriptedStreamProvider {
+                kind: LLMProviderKind::OpenAI,
+                ending,
+            }),
+            gate,
+        )
+    }
+
+    fn priced_scripted_usage() -> u64 {
+        usd_to_microusd_ceil(
+            try_compute_cost_at(
+                &LLMProviderKind::OpenAI,
+                "gpt-5",
+                &ScriptedStreamProvider::usage(),
+                Utc::now().timestamp_millis(),
+            )
+            .expect("gpt-5 is priced"),
+        )
+        .unwrap()
+    }
+
+    /// The tokens an unfinished scripted stream is charged for its output.
+    fn partial_output_tokens() -> u32 {
+        (PARTIAL_OUTPUT.len() as u32).div_ceil(2)
+    }
+
+    #[tokio::test]
+    async fn a_completed_stream_settles_its_final_response_exactly_once() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = scripted_stream_router(StreamEnding::FinishAfterPause, gate.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        let consumer = async {
+            let mut done = false;
+            while let Some(delta) = rx.recv().await {
+                done |= matches!(delta, StreamDelta::Done(_));
+            }
+            done
+        };
+        let (result, done) = tokio::join!(
+            router.route_stream(request_in_class(crate::trace::LlmWorkloadClass::Memory), tx),
+            consumer
+        );
+        result.expect("stream");
+        assert!(done);
+        assert_eq!(
+            *gate.settled_tokens.lock().unwrap(),
+            vec![Some((Some(1_000), Some(50)))],
+            "the real usage, once"
+        );
+        assert_eq!(
+            gate.settled.lock().unwrap()[0].priced_micro_usd,
+            Some(priced_scripted_usage())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_whose_consumer_left_before_done_still_settles_the_real_usage_once() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = scripted_stream_router(StreamEnding::FinishAfterPause, gate.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        // The consumer reads the first token and goes away; the provider keeps
+        // streaming (and billing) after it.
+        let consumer = async move {
+            let first = rx.recv().await;
+            drop(rx);
+            first
+        };
+        let (result, first) = tokio::join!(
+            router.route_stream(
+                request_in_class(crate::trace::LlmWorkloadClass::AutonomousTask),
+                tx
+            ),
+            consumer
+        );
+        result.expect("an abandoned stream is not an error");
+        assert!(matches!(first, Some(StreamDelta::Token(_))));
+        assert_eq!(
+            *gate.settled_tokens.lock().unwrap(),
+            vec![Some((Some(1_000), Some(50)))],
+            "the drain reaches Done and settles its usage, once"
+        );
+        assert_eq!(
+            gate.settled.lock().unwrap()[0].priced_micro_usd,
+            Some(priced_scripted_usage())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_stream_that_never_finishes_settles_an_estimate_once_within_the_drain() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = scripted_stream_router(StreamEnding::Hang, gate.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        let consumer = async move {
+            let first = rx.recv().await;
+            drop(rx);
+            first
+        };
+        let started = std::time::Instant::now();
+        let (result, first) = tokio::join!(
+            router.route_stream(
+                request_in_class(crate::trace::LlmWorkloadClass::AutonomousTask),
+                tx
+            ),
+            consumer
+        );
+        result.expect("an abandoned stream is not an error");
+        assert!(matches!(first, Some(StreamDelta::Token(_))));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a provider that never finishes is cancelled after the bounded drain"
+        );
+        let settled = gate.settled_tokens.lock().unwrap().clone();
+        assert_eq!(settled.len(), 1, "settled once: {settled:?}");
+        let (prompt, completion) = settled[0].expect("an estimated usage");
+        assert!(prompt.is_some_and(|tokens| tokens > 0), "input is charged");
+        assert_eq!(completion, Some(partial_output_tokens()));
+        assert!(
+            gate.settled.lock().unwrap()[0].priced_micro_usd.is_some(),
+            "a priced model prices the estimate"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_after_partial_output_settles_an_estimate_once() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = scripted_stream_router(StreamEnding::FailAfterOutput, gate.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        let consumer = async {
+            let mut deltas = 0usize;
+            while rx.recv().await.is_some() {
+                deltas += 1;
+            }
+            deltas
+        };
+        let (result, deltas) = tokio::join!(
+            router.route_stream(
+                request_in_class(crate::trace::LlmWorkloadClass::Scheduled),
+                tx
+            ),
+            consumer
+        );
+        result.expect_err("the provider failed");
+        assert_eq!(deltas, 1, "the partial output reached the consumer");
+        let settled = gate.settled_tokens.lock().unwrap().clone();
+        assert_eq!(settled.len(), 1, "settled once: {settled:?}");
+        let (prompt, completion) = settled[0].expect("an estimated usage");
+        assert!(prompt.is_some_and(|tokens| tokens > 0));
+        assert_eq!(completion, Some(partial_output_tokens()));
+        assert_eq!(
+            gate.settled.lock().unwrap()[0].workload,
+            crate::trace::LlmWorkloadClass::Scheduled
+        );
+
+        // A provider that fails before producing anything is not charged,
+        // the same as a failed non-streaming call.
+        let untouched = Arc::new(RecordingGate::default());
+        let router = scripted_stream_router(StreamEnding::FailBeforeOutput, untouched.clone());
+        let (tx, mut rx) = mpsc::channel(8);
+        router
+            .route_stream(
+                request_in_class(crate::trace::LlmWorkloadClass::Scheduled),
+                tx,
+            )
+            .await
+            .expect_err("the provider failed");
+        assert!(rx.recv().await.is_none());
+        assert!(untouched.settled.lock().unwrap().is_empty());
+        assert_eq!(untouched.admitted.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_stream_settles_an_estimate_once() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = Arc::new(scripted_stream_router(StreamEnding::Hang, gate.clone()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let routing = tokio::spawn({
+            let router = router.clone();
+            async move {
+                router
+                    .route_stream(
+                        request_in_class(crate::trace::LlmWorkloadClass::AutonomousTask),
+                        tx,
+                    )
+                    .await
+            }
+        });
+        assert!(matches!(rx.recv().await, Some(StreamDelta::Token(_))));
+        routing.abort();
+        assert!(routing.await.is_err(), "the routing task was cancelled");
+        // The forwarding task settles once the cancelled provider call is gone.
+        for _ in 0..200 {
+            if !gate.settled_tokens.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(rx.recv().await.is_none(), "the stream closes");
+        let settled = gate.settled_tokens.lock().unwrap().clone();
+        assert_eq!(settled.len(), 1, "settled once: {settled:?}");
+        assert_eq!(
+            settled[0].expect("an estimated usage").1,
+            Some(partial_output_tokens())
+        );
+    }
+
+    /// The first token reaches a consumer that then leaves; the provider
+    /// hangs, so the attempt settles from the bounded drain's estimate.
+    async fn abandon_after_first_token(router: &MultiLLMRouter, request: LLMRequest) {
+        let (tx, mut rx) = mpsc::channel(8);
+        let consumer = async move {
+            let first = rx.recv().await;
+            drop(rx);
+            first
+        };
+        let (result, first) = tokio::join!(router.route_stream(request, tx), consumer);
+        result.expect("an abandoned stream is not an error");
+        assert!(matches!(first, Some(StreamDelta::Token(_))));
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_image_stream_charges_images_at_a_flat_rate_not_their_bytes() {
+        let gate = Arc::new(RecordingGate::default());
+        let router = scripted_stream_router(StreamEnding::Hang, gate.clone());
+        let mut request = request_in_class(crate::trace::LlmWorkloadClass::InteractiveTask);
+        request.messages = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::text("what is on this screen?"),
+                // A ~1 MB screenshot: ~500k tokens at the text byte ratio.
+                ContentBlock::Image {
+                    data: vec![0u8; 1_000_000],
+                    media_type: "image/png".to_string(),
+                    caption: None,
+                },
+            ],
+        }]
+        .into();
+        abandon_after_first_token(&router, request).await;
+        let settled = gate.settled_tokens.lock().unwrap().clone();
+        assert_eq!(settled.len(), 1, "settled once: {settled:?}");
+        let prompt = settled[0].expect("an estimated usage").0.expect("input");
+        assert!(
+            (STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK as u32..2_000).contains(&prompt),
+            "the text plus one flat image charge, got {prompt}"
+        );
+    }
+
+    #[test]
+    fn the_stream_input_estimate_skips_encoded_payloads_and_is_capped() {
+        let text_only = {
+            let mut request = sample_request("gpt-5");
+            request.messages = vec![LLMMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::text("x".repeat(1_000))],
+            }]
+            .into();
+            estimate_stream_input_tokens(&request, None)
+        };
+        // 1,000 text bytes plus the role marker, at two bytes a token.
+        assert_eq!(text_only, 506);
+
+        let base64 = "A".repeat(200_000);
+        let mut request = sample_request("gpt-5");
+        request.messages = vec![
+            LLMMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ImageUrl {
+                    url: format!("data:image/png;base64,{base64}"),
+                    prompt: None,
+                }],
+            },
+            LLMMessage {
+                role: MessageRole::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    content: json!({
+                        "screenshot": {"type": "base64", "data": base64},
+                        "data_url": format!("data:image/png;base64,{base64}"),
+                    }),
+                }],
+            },
+        ]
+        .into();
+        let estimate = estimate_stream_input_tokens(&request, None);
+        let media = 3 * STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK as u32;
+        assert!(
+            (media..media + 100).contains(&estimate),
+            "three flat media charges and a little JSON, got {estimate}"
+        );
+
+        // A long text history is capped at the context window, else 200k.
+        let mut huge = sample_request("gpt-5");
+        huge.messages = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::text("word ".repeat(400_000))],
+        }]
+        .into();
+        assert_eq!(estimate_stream_input_tokens(&huge, Some(128_000)), 128_000);
+        assert_eq!(
+            estimate_stream_input_tokens(&huge, None),
+            STREAM_INPUT_ESTIMATE_CAP_TOKENS
+        );
+    }
+
+    #[tokio::test]
+    async fn a_free_local_stream_is_not_metered_or_drained() {
+        for ending in [StreamEnding::FinishAfterPause, StreamEnding::Hang] {
+            let gate = Arc::new(RecordingGate::default());
+            let router = gated_router_for(
+                LLMProviderKind::Ollama,
+                "qwen3:8b",
+                true,
+                Arc::new(ScriptedStreamProvider {
+                    kind: LLMProviderKind::Ollama,
+                    ending,
+                }),
+                gate.clone(),
+            );
+            assert!(crate::pricing::model_is_free_at(
+                &LLMProviderKind::Ollama,
+                "qwen3:8b",
+                Utc::now().timestamp_millis()
+            ));
+            let started = std::time::Instant::now();
+            abandon_after_first_token(
+                &router,
+                request_in_class(crate::trace::LlmWorkloadClass::AutonomousTask),
+            )
+            .await;
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            assert_eq!(gate.admitted.lock().unwrap().len(), 1, "still admitted");
+            assert!(
+                gate.settled.lock().unwrap().is_empty(),
+                "a $0 local stream is never charged"
+            );
+        }
+    }
+
+    struct EmbedProvider {
+        kind: LLMProviderKind,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for EmbedProvider {
+        fn provider_kind(&self) -> LLMProviderKind {
+            self.kind.clone()
+        }
+
+        fn capabilities(&self, _model: &str) -> LLMCapability {
+            LLMCapability::default()
+        }
+
+        async fn invoke(&self, _request: LLMRequest) -> LLMResult<LLMResponse> {
+            Err(LLMError::Other(
+                "the embed provider only embeds".to_string(),
+            ))
+        }
+
+        async fn embed(&self, request: EmbeddingRequest) -> LLMResult<EmbeddingResponse> {
+            self.calls.lock().unwrap().push(request.model.clone());
+            Ok(EmbeddingResponse {
+                embeddings: request.inputs.iter().map(|_| vec![0.0, 1.0]).collect(),
+            })
+        }
+    }
+
+    fn embedding_router(
+        kind: LLMProviderKind,
+        model: &str,
+        gate: Arc<RecordingGate>,
+    ) -> (MultiLLMRouter, Arc<Mutex<Vec<String>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut config = LLMRouterConfig::default();
+        config.default_profile = "embed".to_string();
+        config
+            .operation_mapping
+            .insert("memory_embed".to_string(), "embed".into());
+        config
+            .profiles
+            .insert("embed".to_string(), sample_profile(kind.clone(), model));
+        let mut router = MultiLLMRouter::new(config).expect("router");
+        router.register_provider(Arc::new(EmbedProvider {
+            kind,
+            calls: calls.clone(),
+        }));
+        router.set_spend_gate(gate);
+        (router, calls)
+    }
+
+    /// Two inputs of 11 and 4 bytes: 6 + 2 estimated tokens.
+    fn embedding_request(class: Option<crate::trace::LlmWorkloadClass>) -> EmbeddingRequest {
+        let mut metadata = RequestMetadata {
+            operation: "memory_embed".to_string(),
+            ..Default::default()
+        };
+        if let Some(class) = class {
+            metadata.set_trace_context(LlmTraceContext::new(
+                crate::trace::LlmScope::new("owner", "default"),
+                class,
+            ));
+        }
+        EmbeddingRequest {
+            model: "placeholder".to_string(),
+            inputs: vec!["hello world".to_string(), "abcd".to_string()],
+            truncate: false,
+            keep_alive: None,
+            options: None,
+            timeout_ms: None,
+            metadata,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_embedding_is_admitted_under_its_class_and_settled_on_its_estimated_input() {
+        let gate = Arc::new(RecordingGate::default());
+        let (router, calls) = embedding_router(
+            LLMProviderKind::OpenAI,
+            "text-embedding-3-small",
+            gate.clone(),
+        );
+        let response = router
+            .embed_for_operation(
+                "memory_embed",
+                embedding_request(Some(crate::trace::LlmWorkloadClass::Memory)),
+            )
+            .await
+            .expect("embed");
+        assert_eq!(response.embeddings.len(), 2);
+        assert_eq!(*calls.lock().unwrap(), vec!["text-embedding-3-small"]);
+        assert_eq!(
+            *gate.admitted.lock().unwrap(),
+            vec![(
+                crate::trace::LlmWorkloadClass::Memory,
+                "text-embedding-3-small".to_string()
+            )]
+        );
+        let settled = gate.settled.lock().unwrap().clone();
+        assert_eq!(settled.len(), 1);
+        assert_eq!(settled[0].workload, crate::trace::LlmWorkloadClass::Memory);
+        assert_eq!(settled[0].principal, "owner");
+        assert!(settled[0].usage_reported);
+        assert_eq!(
+            settled[0].output_ceiling_tokens, 0,
+            "embeddings have no output"
+        );
+        assert_eq!(
+            *gate.settled_tokens.lock().unwrap(),
+            vec![Some((Some(8), Some(0)))]
+        );
+
+        // Without a trace context the call is system work.
+        let system = Arc::new(RecordingGate::default());
+        let (router, _) = embedding_router(
+            LLMProviderKind::OpenAI,
+            "text-embedding-3-small",
+            system.clone(),
+        );
+        router
+            .embed_for_operation("memory_embed", embedding_request(None))
+            .await
+            .expect("embed");
+        assert_eq!(
+            system.admitted.lock().unwrap()[0].0,
+            crate::trace::LlmWorkloadClass::System
+        );
+        assert_eq!(system.settled.lock().unwrap()[0].principal, "system");
+    }
+
+    #[tokio::test]
+    async fn a_refused_embedding_never_reaches_the_provider() {
+        let gate = Arc::new(RecordingGate {
+            refuse_with_reset_ms: Some(42),
+            ..RecordingGate::default()
+        });
+        let (router, calls) = embedding_router(
+            LLMProviderKind::OpenAI,
+            "text-embedding-3-small",
+            gate.clone(),
+        );
+        let error = router
+            .embed_for_operation(
+                "memory_embed",
+                embedding_request(Some(crate::trace::LlmWorkloadClass::Memory)),
+            )
+            .await
+            .expect_err("the gate refuses");
+        assert_eq!(error.spend_envelope_resets_at_ms(), Some(42));
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(gate.settled.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_free_local_embedding_is_neither_refused_nor_charged() {
+        let gate = Arc::new(RecordingGate {
+            refuse_with_reset_ms: Some(42),
+            ..RecordingGate::default()
+        });
+        let (router, calls) =
+            embedding_router(LLMProviderKind::Ollama, "nomic-embed-text", gate.clone());
+        router
+            .embed_for_operation(
+                "memory_embed",
+                embedding_request(Some(crate::trace::LlmWorkloadClass::Memory)),
+            )
+            .await
+            .expect("a $0 local model is never refused");
+        assert_eq!(*calls.lock().unwrap(), vec!["nomic-embed-text"]);
+        assert!(gate.admitted.lock().unwrap().is_empty());
+        assert!(gate.settled.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

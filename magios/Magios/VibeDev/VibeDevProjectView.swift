@@ -32,7 +32,12 @@ struct VibeDevProjectView: View {
         .refreshable { await model.refresh() }
         .navigationTitle(model.project?.name ?? "Project")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbarBackground(theme.backgroundColor, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) { VibeDevBackButton() }
+                .roundedSquareToolbarBackground()
+        }
         .safeAreaInset(edge: .bottom) {
             VibeDevBottomBar {
                 if model.isTrusted {
@@ -66,13 +71,15 @@ struct VibeDevProjectView: View {
                     .font(.themedDisplay(20, weight: .semibold))
                     .foregroundStyle(theme.textColor)
                 Spacer()
-                if let project = model.project { VibeDevTrustBadge(trusted: project.isTrusted) }
+                if let project = model.project { VibeDevTrustBadge(location: project.trust) }
             }
             if let project = model.project {
                 VibeDevKeyValues(rows: [
                     ("Repo", project.repoLabel.isEmpty ? "—" : project.repoLabel),
                     ("Base", project.baseBranch ?? (project.isTrusted ? "current branch" : "—")),
                 ])
+                VibeDevProjectHealthBanner(health: project.health, projectID: project.projectId,
+                                           context: model.context) { Task { await model.refresh() } }
             }
         }
         .vibeDevCard()
@@ -174,7 +181,7 @@ struct VibeDevRunRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            VibeDevStateDot(run: row.state)
+            VibeDevStateDot(run: row.state, partlyDone: row.isPartlyDone)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
                     .font(.themedDisplay(14, weight: .semibold))
@@ -184,11 +191,18 @@ struct VibeDevRunRowView: View {
                     if let lane = row.link?.lane { VibeDevTag(text: "\(lane) lane") }
                     Text(row.turnCount == 1 ? "1 turn" : "\(row.turnCount) turns")
                     Text("·")
-                    Text(row.state.label)
+                    Text(row.stateLabel)
+                        .foregroundStyle(row.isPartlyDone ? theme.warningColor : theme.secondaryTextColor)
                 }
                 .font(.themed(12))
                 .foregroundStyle(theme.secondaryTextColor)
                 .vibeDevLineLimit(1)
+                if let open = row.openItemLine {
+                    Text(open)
+                        .font(.themed(12))
+                        .foregroundStyle(theme.warningColor)
+                        .vibeDevLineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(VibeDevTime.age(since: row.updatedDate))

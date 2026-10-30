@@ -42,6 +42,28 @@ use super::models::{
 const MAX_RECENT_TOOL_OUTPUT_REFERENCES: usize = 5;
 const MAX_RECENT_TOOL_OUTPUT_IMAGES: usize = 3;
 
+/// Appended to a text reply the provider stopped at its output-token cap
+/// (after the provider's own larger-budget retry), so a partial answer is
+/// never shown as the whole one.
+pub(crate) const OUTPUT_LIMIT_CUT_OFF_NOTICE: &str =
+    "_This reply was cut off: it reached the model's output limit before it finished. \
+     Ask me to continue, or to answer in smaller parts._";
+
+/// The reply text to keep: unchanged, or with the cut-off notice when the
+/// provider stopped it at the output cap. An empty reply stays empty so the
+/// empty-reply retry still sees it.
+fn reply_text_marking_output_cut_off(text: Option<&str>, cut_off: bool) -> Option<String> {
+    let text = text?;
+    if cut_off && !text.trim().is_empty() {
+        Some(format!(
+            "{}\n\n{OUTPUT_LIMIT_CUT_OFF_NOTICE}",
+            text.trim_end()
+        ))
+    } else {
+        Some(text.to_owned())
+    }
+}
+
 /// Response from the chat LLM service that includes both text and tool calls.
 #[derive(Debug, Clone)]
 pub struct ChatLlmResponse {
@@ -446,6 +468,7 @@ fn forbid_tool_use(overrides: &mut Option<ChatCompletionRequestOverrides>) {
 pub struct ChatLlmService {
     llm_service: Arc<MultiLLMService>,
     workspace_layout: Option<ArtifactV2Workspace>,
+    context_compactor: Option<super::context_compaction::ChatContextCompactor>,
 }
 
 #[async_trait]
@@ -457,15 +480,8 @@ pub trait ChatLlmClient: Send + Sync {
     fn list_chat_profiles(&self) -> Vec<ChatProfileInfo>;
     fn list_chat_profile_warnings(&self) -> Vec<ChatProfileWarning>;
 
-    /// Look up the (fast, thinking) standard-profile pair behind an
-    /// adaptive composite, or `None` for standard / unknown names.
-    /// Trait method so the chat-inline runtime can call this through
-    /// the `dyn ChatLlmClient` it owns.
-    fn adaptive_pair_for_profile(&self, profile_name: &str) -> Option<(String, String)>;
-
     /// Operation-mapped default profile name for the given operation
-    /// key. Used by the chat runtime to detect adaptive composites
-    /// when no explicit `profile_override` was supplied.
+    /// key, used when no explicit model selection was supplied.
     fn default_profile_for_operation(&self, operation_key: &str) -> Option<String>;
 
     /// The LOCAL arm regardless of locality mode — for contracts pinned to
@@ -573,7 +589,142 @@ impl ChatLlmService {
         Self {
             llm_service,
             workspace_layout: None,
+            context_compactor: None,
         }
+    }
+
+    pub fn with_context_compaction(
+        mut self,
+        config: super::context_compaction::ChatHistoryConfig,
+        store: Arc<dyn super::storage::ChatStore>,
+        broadcaster: Arc<crate::magician_v2::realtime_events::RuntimeTransportBroadcaster>,
+    ) -> Self {
+        self.context_compactor = Some(super::context_compaction::ChatContextCompactor::new(
+            config,
+            store,
+            Arc::clone(&self.llm_service),
+            broadcaster,
+        ));
+        self
+    }
+
+    /// The hard admission check sees the final rendered messages, including
+    /// loaded images/file injections and tool schemas, not a character count of
+    /// visible chat bubbles. Raw canonical history is never mutated.
+    async fn prepare_request(
+        &self,
+        system: &str,
+        history: &[ChatLlmTranscriptEntry],
+        tools: &[LLMToolSpec],
+        context: Option<&ChatTranscriptContext>,
+        profile: Option<&str>,
+        guard: Option<magicllm::LlmDisclosureGuard>,
+    ) -> Result<BuiltChatRequest> {
+        let Some(compactor) = self.context_compactor.as_ref().filter(|c| c.config.enabled) else {
+            return Ok(self.build_request(system, history, context, profile).await);
+        };
+        let view = compactor
+            .project(
+                history,
+                system,
+                tools,
+                context,
+                profile,
+                false,
+                guard.clone(),
+            )
+            .await?;
+        let built = self
+            .build_request(system, view.as_ref(), context, profile)
+            .await;
+        let budget = self
+            .llm_service
+            .chat_input_budget(profile, compactor.config.safety_margin_tokens)?;
+        if super::context_compaction::estimated_tokens(&built.messages)?
+            .saturating_add(super::context_compaction::estimated_tokens(tools)?)
+            <= budget
+        {
+            return Ok(built);
+        }
+        let view = compactor
+            .project(history, system, tools, context, profile, true, guard)
+            .await?;
+        let built = self
+            .build_request(system, view.as_ref(), context, profile)
+            .await;
+        anyhow::ensure!(super::context_compaction::estimated_tokens(&built.messages)?
+            .saturating_add(super::context_compaction::estimated_tokens(tools)?) <= budget,
+            "chat context: current images, files or active turn exceed this model's input budget; original transcript retained");
+        Ok(built)
+    }
+
+    async fn complete_with_context(
+        &self,
+        system: &str,
+        history: &[ChatLlmTranscriptEntry],
+        tools: Vec<LLMToolSpec>,
+        context: Option<&ChatTranscriptContext>,
+        profile: Option<&str>,
+        no_tool_use: bool,
+    ) -> Result<(ChatCompletionResponse, bool)> {
+        let capabilities = self.profile_capabilities(history, profile);
+        for attempt in 0..2 {
+            let mut built = self
+                .prepare_request(system, history, &tools, context, profile, None)
+                .await?;
+            if capabilities.is_openai_responses_family() {
+                let anchor = built
+                    .request_overrides
+                    .as_ref()
+                    .and_then(|o| o.extra.as_ref())
+                    .and_then(|v| v.get("openai_previous_response_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                built.request_overrides =
+                    Self::build_openai_responses_request_overrides(anchor, !tools.is_empty());
+            }
+            if no_tool_use {
+                forbid_tool_use(&mut built.request_overrides);
+            }
+            Self::attach_trace_context(&mut built, context);
+            let repair = built.tool_protocol_repair_checkpoint_required;
+            let result = if let Some(profile) = profile {
+                self.llm_service
+                    .generate_chat_completion_with_profile(
+                        profile,
+                        built.messages,
+                        tools.clone(),
+                        built.request_overrides,
+                    )
+                    .await
+            } else {
+                self.llm_service
+                    .generate_chat_completion_with_tools(
+                        &LLMOperation::ChatCompletion,
+                        built.messages,
+                        tools.clone(),
+                        built.request_overrides,
+                    )
+                    .await
+            };
+            match result {
+                Ok(response) => return Ok((response, repair)),
+                Err(error)
+                    if attempt == 0 && super::context_compaction::is_context_overflow(&error) =>
+                {
+                    let Some(compactor) =
+                        self.context_compactor.as_ref().filter(|c| c.config.enabled)
+                    else {
+                        return Err(error);
+                    };
+                    compactor
+                        .project(history, system, &tools, context, profile, true, None)
+                        .await?;
+                },
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded context recovery returns on its second attempt")
     }
 
     pub fn with_workspace_layout(mut self, workspace_layout: ArtifactV2Workspace) -> Self {
@@ -586,19 +737,9 @@ impl ChatLlmService {
         self.llm_service.list_chat_profiles()
     }
 
-    /// Look up the (fast, thinking) pair for an adaptive composite
-    /// profile. Returns `None` for standard profiles or unknown names.
-    /// Used by `process_chat_inline_turn` to detect that the effective
-    /// profile is adaptive and to swap profile names on escalation.
-    pub fn adaptive_pair_for_profile(&self, profile_name: &str) -> Option<(String, String)> {
-        self.llm_service.adaptive_pair(profile_name)
-    }
-
     /// Operation-mapped default profile name for the given operation
     /// key. `process_chat_inline_turn` calls this with `"chat_completion"`
-    /// when the caller passed no `profile_override`, so adaptive
-    /// composites configured as the default still trip the
-    /// `adaptive_pair_for_profile` check.
+    /// when the caller passed no model selection override.
     pub fn default_profile_for_operation(&self, operation_key: &str) -> Option<String> {
         self.llm_service
             .default_profile_for_operation(operation_key)
@@ -2298,65 +2439,120 @@ explicitly asks for a fresh one.]",
         disclosure_guard: Option<magicllm::LlmDisclosureGuard>,
     ) -> Result<bool> {
         let capabilities = self.profile_capabilities(history, profile_override);
-        let mut built_request = self
-            .build_request(system_prompt, history, transcript_context, profile_override)
-            .await;
-        if capabilities.is_openai_responses_family() {
-            built_request.request_overrides = Self::build_openai_responses_request_overrides(
-                built_request
+        for attempt in 0..2 {
+            let mut built = self
+                .prepare_request(
+                    system_prompt,
+                    history,
+                    &tools,
+                    transcript_context,
+                    profile_override,
+                    disclosure_guard.clone(),
+                )
+                .await?;
+            if capabilities.is_openai_responses_family() {
+                let anchor = built
                     .request_overrides
                     .as_ref()
-                    .and_then(|overrides| overrides.extra.as_ref())
-                    .and_then(Value::as_object)
-                    .and_then(|extra| extra.get("openai_previous_response_id"))
+                    .and_then(|o| o.extra.as_ref())
+                    .and_then(|v| v.get("openai_previous_response_id"))
                     .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                !tools.is_empty(),
-            );
+                    .map(str::to_owned);
+                built.request_overrides =
+                    Self::build_openai_responses_request_overrides(anchor, !tools.is_empty());
+            }
+            Self::attach_trace_context(&mut built, transcript_context);
+            if let Some(guard) = disclosure_guard.clone() {
+                built
+                    .request_overrides
+                    .get_or_insert_with(Default::default)
+                    .disclosure_guard = Some(guard);
+            }
+            let repair = built.tool_protocol_repair_checkpoint_required;
+            let (attempt_tx, mut attempt_rx) = tokio::sync::mpsc::channel(64);
+            let forward = async {
+                let mut emitted = false;
+                let mut stream_error = None;
+                while let Some(delta) = attempt_rx.recv().await {
+                    if let StreamDelta::Error(error) = delta {
+                        stream_error = Some(error);
+                    } else {
+                        emitted = true;
+                        if tx.send(delta).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                (emitted, stream_error)
+            };
+            let invoke = async {
+                if let Some(profile) = profile_override {
+                    self.llm_service
+                        .generate_chat_completion_streaming_with_profile(
+                            profile,
+                            built.messages,
+                            tools.clone(),
+                            attempt_tx,
+                            built.request_overrides,
+                        )
+                        .await
+                } else {
+                    self.llm_service
+                        .generate_chat_completion_streaming(
+                            &LLMOperation::ChatCompletion,
+                            built.messages,
+                            tools.clone(),
+                            attempt_tx,
+                            built.request_overrides,
+                        )
+                        .await
+                }
+            };
+            // Joined futures: cancellation drops both the provider and relay.
+            // A recoverable admission error never flashes as a terminal UI error.
+            let (result, (emitted, stream_error)) = tokio::join!(invoke, forward);
+            let result = match (result, stream_error.as_ref()) {
+                (Ok(()), Some(error)) => Err(anyhow::anyhow!("provider stream failed: {error}")),
+                (result, _) => result,
+            };
+            match result {
+                Ok(()) => return Ok(repair),
+                Err(error)
+                    if attempt == 0
+                        && !emitted
+                        && super::context_compaction::is_context_overflow(&error) =>
+                {
+                    let Some(compactor) =
+                        self.context_compactor.as_ref().filter(|c| c.config.enabled)
+                    else {
+                        if let Some(message) = stream_error {
+                            let _ = tx.send(StreamDelta::Error(message)).await;
+                        }
+                        return Err(error);
+                    };
+                    // Only a rejected model request is repeated. No tool dispatch
+                    // occurs inside this boundary, and canonical results stay put.
+                    compactor
+                        .project(
+                            history,
+                            system_prompt,
+                            &tools,
+                            transcript_context,
+                            profile_override,
+                            true,
+                            disclosure_guard.clone(),
+                        )
+                        .await?;
+                },
+                Err(error) => {
+                    if let Some(error) = stream_error {
+                        let _ = tx.send(StreamDelta::Error(error)).await;
+                    }
+                    return Err(error);
+                },
+            }
         }
-        Self::attach_trace_context(&mut built_request, transcript_context);
-        if let Some(guard) = disclosure_guard {
-            built_request
-                .request_overrides
-                .get_or_insert_with(ChatCompletionRequestOverrides::default)
-                .disclosure_guard = Some(guard);
-        }
-        let repair_checkpoint_required = built_request.tool_protocol_repair_checkpoint_required;
-        let messages = built_request.messages;
-
-        debug!(
-            "[CHAT-LLM] Generating streaming response for ChatCompletion, messages_count={}, \
-             history_len={}, tools_count={}",
-            messages.len(),
-            history.len(),
-            tools.len()
-        );
-
-        if let Some(profile) = profile_override {
-            self.llm_service
-                .generate_chat_completion_streaming_with_profile(
-                    profile,
-                    messages,
-                    tools,
-                    tx,
-                    built_request.request_overrides,
-                )
-                .await
-                .context("Streaming ChatCompletion with profile override failed")?;
-        } else {
-            self.llm_service
-                .generate_chat_completion_streaming(
-                    &LLMOperation::ChatCompletion,
-                    messages,
-                    tools,
-                    tx,
-                    built_request.request_overrides,
-                )
-                .await
-                .context("Streaming ChatCompletion LLM call failed")?;
-        }
-
-        Ok(repair_checkpoint_required)
+        unreachable!("bounded context recovery returns on its second attempt")
     }
 }
 
@@ -2371,16 +2567,6 @@ impl ChatLlmClient for ChatLlmService {
 
     fn list_chat_profile_warnings(&self) -> Vec<ChatProfileWarning> {
         self.llm_service.list_chat_profile_warnings()
-    }
-
-    fn adaptive_pair_for_profile(&self, profile_name: &str) -> Option<(String, String)> {
-        // Call the inner `MultiLLMService` directly to avoid relying on
-        // inherent-vs-trait method resolution. Both have the same name
-        // here; `self.adaptive_pair_for_profile(...)` resolves to the
-        // inherent today, but a future refactor that drops the
-        // inherent (or adds a different default) would silently
-        // recurse forever.
-        self.llm_service.adaptive_pair(profile_name)
     }
 
     fn default_profile_for_operation(&self, operation_key: &str) -> Option<String> {
@@ -2409,54 +2595,16 @@ impl ChatLlmClient for ChatLlmService {
         profile_override: Option<&str>,
     ) -> Result<ChatLlmResponse> {
         let capabilities = self.profile_capabilities(history, profile_override);
-        let mut built_request = self
-            .build_request(system_prompt, history, transcript_context, profile_override)
-            .await;
-        Self::attach_trace_context(&mut built_request, transcript_context);
-        let repair_checkpoint_required = built_request.tool_protocol_repair_checkpoint_required;
-        let messages = built_request.messages;
-
-        debug!(
-            "[CHAT-LLM] Generating response for ChatCompletion, messages_count={}, history_len={}",
-            messages.len(),
-            history.len(),
-        );
-
-        let response = if let Some(profile) = profile_override {
-            let resp = self
-                .llm_service
-                .generate_chat_completion_with_profile(
-                    profile,
-                    messages,
-                    Vec::new(),
-                    built_request.request_overrides,
-                )
-                .await
-                .context("ChatCompletion with profile override failed")?;
-            // ChatCompletionResponse -> LLMResponse-like: take content
-            resp
-        } else {
-            let resp = self
-                .llm_service
-                .generate_chat_completion_with_tools(
-                    &LLMOperation::ChatCompletion,
-                    messages,
-                    Vec::new(),
-                    built_request.request_overrides,
-                )
-                .await
-                .context("ChatCompletion LLM call failed")?;
-            resp
-        };
-
-        debug!(
-            "[CHAT-LLM] ChatCompletion response length={}",
-            response
-                .content
-                .as_ref()
-                .map(|value| value.len())
-                .unwrap_or(0)
-        );
+        let (response, repair_checkpoint_required) = self
+            .complete_with_context(
+                system_prompt,
+                history,
+                Vec::new(),
+                transcript_context,
+                profile_override,
+                false,
+            )
+            .await?;
 
         let mut provider_state = Self::assistant_provider_state_from_owned_raw_response(
             response.raw_response,
@@ -2492,61 +2640,16 @@ impl ChatLlmClient for ChatLlmService {
         profile_override: Option<&str>,
     ) -> Result<ChatLlmResponse> {
         let capabilities = self.profile_capabilities(history, profile_override);
-        let mut built_request = self
-            .build_request(system_prompt, history, transcript_context, profile_override)
-            .await;
-        if capabilities.is_openai_responses_family() {
-            built_request.request_overrides = Self::build_openai_responses_request_overrides(
-                built_request
-                    .request_overrides
-                    .as_ref()
-                    .and_then(|overrides| overrides.extra.as_ref())
-                    .and_then(Value::as_object)
-                    .and_then(|extra| extra.get("openai_previous_response_id"))
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                !tools.is_empty(),
-            );
-        }
-        Self::attach_trace_context(&mut built_request, transcript_context);
-        let repair_checkpoint_required = built_request.tool_protocol_repair_checkpoint_required;
-        let messages = built_request.messages;
-
-        debug!(
-            "[CHAT-LLM] Generating response with tools for ChatCompletion, messages_count={}, \
-             history_len={}, tools_count={}",
-            messages.len(),
-            history.len(),
-            tools.len()
-        );
-
-        let response: ChatCompletionResponse = if let Some(profile) = profile_override {
-            self.llm_service
-                .generate_chat_completion_with_profile(
-                    profile,
-                    messages,
-                    tools,
-                    built_request.request_overrides,
-                )
-                .await
-                .context("ChatCompletion with profile override failed")?
-        } else {
-            self.llm_service
-                .generate_chat_completion_with_tools(
-                    &LLMOperation::ChatCompletion,
-                    messages,
-                    tools,
-                    built_request.request_overrides,
-                )
-                .await
-                .context("ChatCompletion with tools LLM call failed")?
-        };
-
-        debug!(
-            "[CHAT-LLM] ChatCompletion response content_len={}, tool_calls={}",
-            response.content.as_ref().map(|c| c.len()).unwrap_or(0),
-            response.tool_calls.len()
-        );
+        let (response, repair_checkpoint_required) = self
+            .complete_with_context(
+                system_prompt,
+                history,
+                tools,
+                transcript_context,
+                profile_override,
+                false,
+            )
+            .await?;
 
         let mut provider_state = Self::assistant_provider_state_from_owned_raw_response(
             response.raw_response,
@@ -2589,58 +2692,16 @@ impl ChatLlmClient for ChatLlmService {
         } else {
             Vec::new()
         };
-        let mut built_request = self
-            .build_request(system_prompt, history, transcript_context, profile_override)
-            .await;
-        if capabilities.is_openai_responses_family() {
-            built_request.request_overrides = Self::build_openai_responses_request_overrides(
-                built_request
-                    .request_overrides
-                    .as_ref()
-                    .and_then(|overrides| overrides.extra.as_ref())
-                    .and_then(Value::as_object)
-                    .and_then(|extra| extra.get("openai_previous_response_id"))
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                !tools.is_empty(),
-            );
-        }
-        if !tools.is_empty() {
-            forbid_tool_use(&mut built_request.request_overrides);
-        }
-        Self::attach_trace_context(&mut built_request, transcript_context);
-        let repair_checkpoint_required = built_request.tool_protocol_repair_checkpoint_required;
-        let messages = built_request.messages;
-
-        debug!(
-            "[CHAT-LLM] Generating final no-tool-use response, messages_count={}, \
-             history_len={}, tools_advertised={}",
-            messages.len(),
-            history.len(),
-            tools.len()
-        );
-
-        let response: ChatCompletionResponse = if let Some(profile) = profile_override {
-            self.llm_service
-                .generate_chat_completion_with_profile(
-                    profile,
-                    messages,
-                    tools,
-                    built_request.request_overrides,
-                )
-                .await
-                .context("Final no-tool-use ChatCompletion with profile override failed")?
-        } else {
-            self.llm_service
-                .generate_chat_completion_with_tools(
-                    &LLMOperation::ChatCompletion,
-                    messages,
-                    tools,
-                    built_request.request_overrides,
-                )
-                .await
-                .context("Final no-tool-use ChatCompletion LLM call failed")?
-        };
+        let (response, repair_checkpoint_required) = self
+            .complete_with_context(
+                system_prompt,
+                history,
+                tools,
+                transcript_context,
+                profile_override,
+                true,
+            )
+            .await?;
 
         let mut provider_state = Self::assistant_provider_state_from_owned_raw_response(
             response.raw_response,
@@ -2722,6 +2783,8 @@ impl ChatLlmClient for ChatLlmService {
 
         let final_response =
             captured.ok_or_else(|| anyhow::anyhow!("Streaming completed without a Done delta"))?;
+        let output_cut_off =
+            final_response.stopped_at_output_limit() && final_response.tool_calls.is_empty();
         let telemetry = self.llm_service.build_chat_completion_telemetry(
             profile_override,
             final_response.usage.as_ref(),
@@ -2750,7 +2813,10 @@ impl ChatLlmClient for ChatLlmService {
         );
 
         Ok(ChatLlmResponse {
-            content: final_response.text.as_deref().map(str::to_owned),
+            content: reply_text_marking_output_cut_off(
+                final_response.text.as_deref(),
+                output_cut_off,
+            ),
             tool_calls: Self::into_owned_shared_tool_calls(final_response.tool_calls),
             provider_state,
             reasoning_text: final_response.reasoning_text.as_deref().map(str::to_owned),
@@ -2828,6 +2894,42 @@ mod tests {
     };
 
     use crate::magician_v2::query_analysis::multi_llm_service::MultiLLMService;
+
+    /// A reply stopped at the output cap says so; a whole reply, and an empty
+    /// one (left for the empty-reply retry), stay as they are.
+    #[test]
+    fn a_reply_cut_off_at_the_output_cap_says_so() {
+        let marked = reply_text_marking_output_cut_off(Some("Here is the plan:\n- one\n"), true)
+            .expect("text");
+        assert_eq!(
+            marked,
+            format!("Here is the plan:\n- one\n\n{OUTPUT_LIMIT_CUT_OFF_NOTICE}")
+        );
+        assert_eq!(
+            reply_text_marking_output_cut_off(Some("Done."), false).as_deref(),
+            Some("Done.")
+        );
+        assert_eq!(
+            reply_text_marking_output_cut_off(Some("  "), true).as_deref(),
+            Some("  ")
+        );
+        assert_eq!(reply_text_marking_output_cut_off(None, true), None);
+
+        let mut response = magicllm::LLMResponse::default();
+        response.finish_reason = Some("incomplete".to_string());
+        response.raw_response = Some(Arc::new(
+            json!({ "incomplete_details": { "reason": "max_output_tokens" } }),
+        ));
+        assert!(response.stopped_at_output_limit());
+        response.raw_response = Some(Arc::new(
+            json!({ "incomplete_details": { "reason": "content_filter" } }),
+        ));
+        assert!(!response.stopped_at_output_limit());
+        response.finish_reason = Some("length".to_string());
+        assert!(response.stopped_at_output_limit());
+        response.finish_reason = Some("stop".to_string());
+        assert!(!response.stopped_at_output_limit());
+    }
 
     /// The final-answer call keeps existing overrides (the Responses
     /// continuation keys) and adds the canonical `tool_choice: none`.
@@ -3598,6 +3700,7 @@ mod tests {
                 source_task_id: None,
                 created_at: 42,
             }],
+            ..Default::default()
         };
         fs::write(
             workspace.chat_session_file_index_path(&principal, &scope, &session_id),
@@ -3741,6 +3844,7 @@ mod tests {
                 source_task_id: None,
                 created_at: 42,
             }],
+            ..Default::default()
         };
         fs::write(
             workspace.chat_session_file_index_path(&principal, &scope, &session_id),

@@ -1,10 +1,13 @@
 name: list_tasks
 description: List tasks in the current scope. Optional `status_filter` narrows to a single lifecycle status (running / planning / paused / completed / failed / cancelled / pending).
-version: "1.0.0"
+version: "1.0.1"
 guide: |
   Tool name: `list_tasks`
 
-  Returns `[{task_id, title, status, agent_id, ui_thread_id}]` for the
+  Link users to the returned `task_url` in Work. Do not invent task-detail
+  paths; the canonical UI route is `/work?selected=<task_id>`.
+
+  Returns `[{task_id, task_url, title, status, agent_id, ui_thread_id}]` for the
   active scope. Use to answer "what tasks do I have?" or to find a
   task_id before calling `get_task_details` / `refine_task` /
   `update_task` / `stop_task` / `delete_task`.

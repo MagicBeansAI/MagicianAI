@@ -89,6 +89,16 @@ requirements from the journal's governed hands.
   resume and cleared after; the successor seed hands over the prior segment's
   speculative-phase terminal fence (`rebind_terminal_fence_to_successor`), never
   control or manual-pause fences.
+- The refinement gap verdict is taken before the first pass's terminal commits:
+  a `Success` the wrapper will refine seals a receipt naming the refinement
+  segment (`refinement_successor_segment`), which settles nothing while the
+  pass runs. The refinement's receipt settles the run with the merged outcome
+  the wrapper returns — a refinement ending `CannotProceed`/`Failed` settles as
+  the first pass's `Success`, `Partial`, with the unclosed gaps as an open item
+  — and if the pass never commits a receipt (error, or a crash; boot recovery
+  defers to the projector) the first-pass receipt settles the run. A read-only
+  (plan) run that delivered output is never refined, and a refinement pass that
+  cannot run keeps the first pass's outcome (WARN, no failure).
 - Parent cancellation reaches the grant's child token; revoking a turn does not
   cancel its parent. Grants are revoked on startup failure and turn completion.
 
@@ -104,7 +114,10 @@ requirements from the journal's governed hands.
   textual and fits the bounded preview; a large or binary deliverable is
   published exactly as accepted. It also appends every other small textual note
   the execution filed under a verified digest (in filing order) that the
-  published text lacks; notes failing any check are left out.
+  published text lacks; notes failing any check are left out. Neither side is
+  repeated when one already contains the other (a harness yield's summary is
+  its deliverable plus narration), and an HTML page deliverable (bare or one
+  fenced block) is published as the page.
 - `publishes_verified_bytes_unchanged` is the one predicate the execution output
   and task-user projections use to decide whether to digest-check the file or
   read composed text; the task-user projection reads the execution output

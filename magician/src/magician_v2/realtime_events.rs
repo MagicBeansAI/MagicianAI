@@ -16,7 +16,7 @@ pub use event_hub::{
     EventHub, HubResumeOutcome, HubResyncReason, HubSubscription, SequencedTransportEvent,
     EVENT_HUB_REPLAY_CAPACITY,
 };
-pub use service_health::ServiceFailure;
+pub use service_health::{MemoryIndexRebuildNotice, ServiceDetail, ServiceFailure};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -46,7 +46,7 @@ use crate::magician_v2::json_traversal::{
 use crate::magician_v2::{
     agents::storage::{AgentStorage, FileLockGuard},
     artifact_v2::{
-        events::attach_projected_source_identity,
+        events::{attach_projected_source_identity, ArtifactV2EventType},
         map_v2_realtime_event,
         workspace::{
             ensure_private_workspace_file_path_identity,
@@ -1185,6 +1185,43 @@ pub enum RuntimeTransportEvent {
         input_tokens_estimate: Option<usize>,
         /// Budget remaining before this call
         budget_remaining: f64,
+        /// The logical call this request opens. Its `trace_id` /
+        /// `llm_call_id` are the ones the same call's `LLMRouted` and
+        /// `LLMResponseReceived` carry, so a surface can show the call as
+        /// in flight and close exactly that row when it settles. The native
+        /// agentic decision mints the identity before dispatch; emitters
+        /// that cannot know it yet leave this `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation: Option<LlmEventCorrelation>,
+        timestamp: i64,
+    },
+
+    /// The router chose a provider and model for a logical call and is about
+    /// to start the provider request. Emitted once per physical attempt that
+    /// changes the route — the first attempt, and again when a fallback moves
+    /// the call to another provider/model — so a surface can say which model
+    /// is thinking while the call is still running. Same correlation as the
+    /// call's `LLMRequestSent` / `LLMResponseReceived`.
+    LLMRouted {
+        execution_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        plan_id: String,
+        step_id: Option<String>,
+        step_index: Option<usize>,
+        /// What capability is being requested
+        capability: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        correlation: Option<LlmEventCorrelation>,
+        /// Provider name, lowercase (e.g. "anthropic", "openai")
+        provider: String,
+        /// Model the provider is being asked for
+        model: String,
+        /// Router profile that resolved to this provider/model
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
         timestamp: i64,
     },
 
@@ -1305,11 +1342,8 @@ pub enum RuntimeTransportEvent {
         timestamp: i64,
     },
 
-    /// Adaptive profile escalated from fast → thinking variant. Emitted
-    /// when the LLM called `request_thinking_mode` on an adaptive profile.
-    /// UI surfaces this as a "Thinking mode" chip on the chat-input until
-    /// the next user message ends the turn. `chat_turn_id` carries the
-    /// per-turn correlation id so the UI can scope the chip to one turn.
+    /// Historical adaptive activation, retained for stored event decoding.
+    /// Current model/default selection no longer emits this event.
     ThinkingModeActivated {
         execution_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1328,9 +1362,7 @@ pub enum RuntimeTransportEvent {
         timestamp: i64,
     },
 
-    /// Adaptive profile reverted to fast mode at turn end. Emitted by
-    /// the chat-inline runtime when a thinking-escalated turn finishes
-    /// so the UI can clear the chip.
+    /// Historical adaptive completion, retained for stored event decoding.
     ThinkingModeCompleted {
         execution_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1461,6 +1493,36 @@ pub enum RuntimeTransportEvent {
         timestamp: i64,
     },
 
+    /// An agentic run's provider is down (breaker open, 5xx, transport) and the
+    /// run is waiting out a backoff before it probes again; or, with
+    /// `recovered`, the provider answered and the wait is over. Emitted once per
+    /// wait, never as a failed iteration. Observability only.
+    AgenticProviderOutage {
+        execution_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        /// Failed provider calls in this streak, this one included. On a
+        /// recovery, the streak that just ended.
+        attempt: usize,
+        /// Provider failures after which the run fails (`OUTAGE_MAX_RETRIES + 1`).
+        max_attempts: usize,
+        /// Wait before the next probe; 0 once recovered.
+        next_probe_ms: u64,
+        /// `circuit_open`, `timeout`, `queue_full`, `transport`,
+        /// `retries_exhausted`, `http_5xx` or `provider_outage`; empty once
+        /// recovered.
+        error_class: String,
+        /// How long the outage has lasted, estimated from the waits already
+        /// scheduled (the run keeps no outage timestamp).
+        since_ms: u64,
+        /// True when the provider answered and the streak ended.
+        #[serde(default)]
+        recovered: bool,
+        timestamp: i64,
+    },
+
     /// Multimodal page understanding completed
     AgenticPageUnderstanding {
         execution_id: String,
@@ -1552,6 +1614,11 @@ pub enum RuntimeTransportEvent {
         /// allowlisted arguments).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+        /// The capability being called, for a pack action (the same name
+        /// `AgenticDecisionMade.tool_name` carries). `None` for built-in
+        /// file/http/bash/duckdb actions, whose `target` already names them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
         timestamp: i64,
     },
 
@@ -3032,6 +3099,7 @@ taxonomies! {
     LLMAnalysisCompleted => (Llm, Info, false),
     LLMAnalysisFailed => (Llm, Error, true),
     LLMRequestSent => (Llm, Info, false),
+    LLMRouted => (Llm, Info, false),
     LLMResponseReceived => (Llm, Info, false),
     InferenceAttempted => (Llm, Info, false),
     ThinkingModeActivated => (Llm, Info, true),
@@ -3047,6 +3115,7 @@ taxonomies! {
     AgenticStepFailed => (Agentic, Error, true),
     AgenticStepSkipped => (Agentic, Info, true),
     AgenticStepStuckWarning => (Agentic, Warn, true),
+    AgenticProviderOutage => (Agentic, Warn, true),
     AgenticPageUnderstanding => (Agentic, Info, false),
     AgenticDecisionMade => (Agentic, Decision, true),
     AgenticActionStarted => (Agentic, Info, true),
@@ -5377,6 +5446,42 @@ impl HitlLifecycleDiskReducer {
             })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|error| hitl_reducer_error("failed to read scoped pending keys", error))
+    }
+
+    /// Pending generic keys in one correlation-id range across every scope.
+    /// Unscoped on purpose: a boot-time owner (MCP OAuth) closes the asks an
+    /// earlier process left for any owner. Bounded by `limit`.
+    fn generic_pending_keys_in_correlation_range(
+        &self,
+        lower: &str,
+        upper: &str,
+        limit: usize,
+    ) -> Result<Vec<HitlLifecycleKey>, ArtifactV2Error> {
+        self.validate_durable_files()?;
+        let mut statement = self
+            .connection()?
+            .prepare_cached(
+                "SELECT principal, workspace, correlation_id FROM lifecycle
+             WHERE correlation_id >= ?1 AND correlation_id < ?2 AND state = ?3
+             ORDER BY principal, workspace, correlation_id LIMIT ?4",
+            )
+            .map_err(|error| {
+                hitl_reducer_error("failed to prepare pending range discovery", error)
+            })?;
+        let rows = statement
+            .query_map(
+                params![lower, upper, HITL_REDUCER_GENERIC_PENDING, limit as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .map_err(|error| hitl_reducer_error("failed to discover pending range", error))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| hitl_reducer_error("failed to read pending range keys", error))
     }
 
     fn connection(&self) -> Result<&Connection, ArtifactV2Error> {
@@ -10913,6 +11018,50 @@ impl RuntimeTransportBroadcaster {
         self.emit_scoped_or_unscoped(event_type, agent_id, principal, workspace, payload);
     }
 
+    /// Persist context timings for registered task executions and fan them out
+    /// through the same scoped chat/task transport as ordinary work events.
+    pub(crate) fn emit_context_preparation(
+        &self,
+        completed: bool,
+        agent_id: &str,
+        principal: &str,
+        workspace: &str,
+        payload: serde_json::Value,
+    ) {
+        let event_type = if completed {
+            ArtifactV2EventType::ContextRetrievalCompleted
+        } else {
+            ArtifactV2EventType::ContextRetrievalStarted
+        };
+        if let Some(scope) = payload
+            .get("execution_id")
+            .and_then(|id| id.as_str())
+            .and_then(|id| self.lookup_canonical_event_scope(id))
+        {
+            if scope.principal != principal
+                || scope.workspace != workspace
+                || payload.get("task_id").and_then(|id| id.as_str()) != Some(scope.task_id.as_str())
+            {
+                return;
+            }
+            if let Some(sink) = self
+                .runtime_canonical_event_sink
+                .read()
+                .expect("runtime_canonical_event_sink lock poisoned")
+                .clone()
+            {
+                sink.emit(scope, event_type, payload.clone());
+            }
+        }
+        self.emit_named(
+            event_type.as_str(),
+            agent_id,
+            Some(principal),
+            Some(workspace),
+            payload,
+        );
+    }
+
     fn emit_scoped_or_unscoped(
         &self,
         event_type: &str,
@@ -11293,6 +11442,45 @@ impl RuntimeTransportBroadcaster {
             })
             .collect();
         Ok((requests, next))
+    }
+
+    /// Every scoped key whose request is still pending with a correlation id
+    /// in `[lower, upper)`, across all scopes, from this process's registry
+    /// and the durable lifecycle authority (which startup does not hydrate).
+    /// Bounded by `limit`. Used at boot to close asks whose owner state lived
+    /// only in the previous process.
+    pub fn pending_hitl_keys_in_correlation_range(
+        &self,
+        lower: &str,
+        upper: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String)>, ArtifactV2Error> {
+        let mut keys = BTreeSet::new();
+        for entry in self.pending_hitl_requests.iter() {
+            let (_, _, id) = entry.key();
+            if id.as_str() >= lower && id.as_str() < upper && keys.len() < limit {
+                keys.insert(entry.key().clone());
+            }
+        }
+        if let Some(path) = self
+            .hitl_lifecycle_persistence
+            .as_ref()
+            .and_then(|persistence| persistence.authority_path.as_deref())
+        {
+            let authority = HitlLifecycleDiskReducer::open_authority(path)?;
+            if !authority.authority_is_ready()? {
+                return Err(ArtifactV2Error::Runtime(
+                    "pending lifecycle authority is not ready".into(),
+                ));
+            }
+            for key in authority.generic_pending_keys_in_correlation_range(lower, upper, limit)? {
+                if keys.len() >= limit {
+                    break;
+                }
+                keys.insert(key);
+            }
+        }
+        Ok(keys.into_iter().collect())
     }
 
     /// Prove that the authoritative resolved state for this exact scoped key
@@ -15409,6 +15597,98 @@ mod tests {
         assert_eq!(legacy.prompt_projection_mode, None);
     }
 
+    #[test]
+    fn llm_request_correlation_is_wire_visible_and_historical_requests_still_parse() {
+        let correlation = LlmEventCorrelation::direct(
+            "principal-a",
+            "workspace-a",
+            magicllm::LlmWorkloadClass::AutonomousTask,
+        );
+        let event = RuntimeTransportEvent::LLMRequestSent {
+            execution_id: "exec-1".to_string(),
+            principal: Some("principal-a".to_string()),
+            workspace: Some("workspace-a".to_string()),
+            plan_id: "plan-1".to_string(),
+            step_id: Some("step-1".to_string()),
+            step_index: None,
+            capability: "decision".to_string(),
+            request_summary: "Deciding next action for iteration 1".to_string(),
+            input_tokens_estimate: None,
+            budget_remaining: 0.0,
+            correlation: Some(correlation.clone()),
+            timestamp: 1,
+        };
+        let mut encoded = serde_json::to_value(&event).expect("serialize request");
+        assert_eq!(encoded["event_type"], "LLMRequestSent");
+        assert_eq!(
+            encoded["data"]["correlation"]["llm_call_id"],
+            correlation.llm_call_id.as_str()
+        );
+        assert_eq!(
+            encoded["data"]["correlation"]["trace_id"],
+            correlation.trace_id.as_str()
+        );
+
+        encoded["data"]
+            .as_object_mut()
+            .expect("request data object")
+            .remove("correlation");
+        let historical: RuntimeTransportEvent =
+            serde_json::from_value(encoded).expect("a request without correlation still parses");
+        assert!(matches!(
+            historical,
+            RuntimeTransportEvent::LLMRequestSent {
+                correlation: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn llm_routed_serializes_under_its_variant_name_with_route_and_correlation() {
+        let correlation = LlmEventCorrelation::direct(
+            "principal-a",
+            "workspace-a",
+            magicllm::LlmWorkloadClass::AutonomousTask,
+        );
+        let event = RuntimeTransportEvent::LLMRouted {
+            execution_id: "exec-1".to_string(),
+            principal: Some("principal-a".to_string()),
+            workspace: Some("workspace-a".to_string()),
+            plan_id: "plan-1".to_string(),
+            step_id: Some("step-1".to_string()),
+            step_index: None,
+            capability: "decision".to_string(),
+            correlation: Some(correlation.clone()),
+            provider: "anthropic".to_string(),
+            model: "claude-test".to_string(),
+            profile: Some("default".to_string()),
+            timestamp: 2,
+        };
+        let encoded = serde_json::to_value(&event).expect("serialize routed");
+        assert_eq!(encoded["event_type"], "LLMRouted");
+        let data = &encoded["data"];
+        assert_eq!(data["execution_id"], "exec-1");
+        assert_eq!(data["capability"], "decision");
+        assert_eq!(data["provider"], "anthropic");
+        assert_eq!(data["model"], "claude-test");
+        assert_eq!(data["profile"], "default");
+        assert_eq!(
+            data["correlation"]["llm_call_id"],
+            correlation.llm_call_id.as_str()
+        );
+        let decoded: RuntimeTransportEvent =
+            serde_json::from_value(encoded).expect("round-trip routed");
+        assert!(matches!(decoded, RuntimeTransportEvent::LLMRouted { .. }));
+        assert!(!event.taxonomy().user_relevant);
+        assert!(event_visible_to_scope(&event, "principal-a", "workspace-a"));
+        assert!(!event_visible_to_scope(
+            &event,
+            "principal-b",
+            "workspace-a"
+        ));
+    }
+
     fn activity_started_with(
         workload_class: Option<&str>,
         agent_id: Option<&str>,
@@ -15742,6 +16022,11 @@ pub fn event_visible_to_scope(
             workspace: Some(event_workspace),
             ..
         }
+        | RuntimeTransportEvent::LLMRouted {
+            principal: Some(event_principal),
+            workspace: Some(event_workspace),
+            ..
+        }
         | RuntimeTransportEvent::LLMResponseReceived {
             principal: Some(event_principal),
             workspace: Some(event_workspace),
@@ -15982,6 +16267,11 @@ pub fn event_visible_to_scope(
             workspace: Some(event_workspace),
             ..
         }
+        | RuntimeTransportEvent::AgenticProviderOutage {
+            principal: Some(event_principal),
+            workspace: Some(event_workspace),
+            ..
+        }
         | RuntimeTransportEvent::HitlRequested {
             principal: Some(event_principal),
             workspace: Some(event_workspace),
@@ -16084,6 +16374,7 @@ pub fn event_visible_to_scope(
         | RuntimeTransportEvent::AgentCycleCompleted { .. }
         | RuntimeTransportEvent::AgentTriggered { .. }
         | RuntimeTransportEvent::LLMRequestSent { .. }
+        | RuntimeTransportEvent::LLMRouted { .. }
         | RuntimeTransportEvent::LLMResponseReceived { .. }
         | RuntimeTransportEvent::InferenceAttempted { .. }
         | RuntimeTransportEvent::ThinkingModeActivated { .. }
@@ -16117,6 +16408,7 @@ pub fn event_visible_to_scope(
         | RuntimeTransportEvent::ParameterDiscoveryFailed { .. }
         | RuntimeTransportEvent::ParameterResolutionProgress { .. }
         | RuntimeTransportEvent::AgenticStepStuckWarning { .. }
+        | RuntimeTransportEvent::AgenticProviderOutage { .. }
         | RuntimeTransportEvent::HitlRequested { .. }
         | RuntimeTransportEvent::HitlResolved { .. }
         | RuntimeTransportEvent::CriticalRequestAlert { .. }

@@ -92,7 +92,7 @@ pub fn install_prefix_pre_exists() -> bool {
 pub fn service_registration_exists() -> bool {
     #[cfg(target_os = "macos")]
     {
-        return macos_service_path().is_ok_and(|path| path.is_file());
+        macos_service_path().is_ok_and(|path| path.is_file())
     }
     #[cfg(target_os = "linux")]
     {
@@ -369,16 +369,26 @@ pub async fn prepare_runtime_and_start(runtime_root: &Path) -> Result<(), String
     seed_runtime_root(&prefix, runtime_root)?;
     #[cfg(target_os = "macos")]
     if prefix.join("scripts/native-runtime-service.py").is_file() {
-        return command_success(
-            Command::new(runtime_core::process::resolve_program(
-                std::ffi::OsStr::new("python3"),
-                None,
-            ))
-            .arg(prefix.join("scripts/native-runtime-service.py"))
+        let script = prefix.join("scripts/native-runtime-service.py");
+        let mut command = Command::new(runtime_core::process::resolve_program(
+            std::ffi::OsStr::new("python3"),
+            None,
+        ));
+        command
+            .arg(&script)
             .args(["start", "--prefix"])
             .arg(&prefix)
             .arg("--data-dir")
-            .arg(runtime_root),
+            .arg(runtime_root);
+        // An older installed package's script does not know the flag and
+        // would fail argparse; register without supervisor arguments then.
+        if script_supports(&script, "--supervisor-args-json") {
+            command
+                .arg("--supervisor-args-json")
+                .arg(supervisor_args_json(runtime_root)?);
+        }
+        return command_success(
+            &mut command,
             "register and start the native backend with the reviewed data folder",
         )
         .await;
@@ -746,7 +756,13 @@ fn seed_runtime_root(prefix: &Path, runtime_root: &Path) -> Result<(), String> {
         .map_err(|error| format!("Could not create {}: {error}", runtime_root.display()))?;
     crate::container::seed_runtime_config_if_missing(runtime_root)?;
     let seed = prefix.join("share/seed");
+    // Same list as scripts/cleanup.sh's native_reseed_root; the decision
+    // engine reads decision-engine.yaml, and native-runtime-service.py
+    // `start` requires it. Never `.env.development` from `.env.example`: both
+    // env loaders read it first and never overwrite, so its empty `KEY=`
+    // lines would shadow the owner's keys in `.env`.
     for (source_name, destination_name) in [
+        ("decision-engine.yaml", "decision-engine.yaml"),
         (".env.example", ".env"),
         ("operator-config.template.yaml", "operator-config.yaml"),
     ] {
@@ -774,8 +790,19 @@ async fn register_and_start_service(prefix: &Path, runtime_root: &Path) -> Resul
         fs::create_dir_all(parent)
             .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
     }
-    fs::write(&service_path, render_macos_service(prefix, runtime_root))
-        .map_err(|error| format!("Could not write {}: {error}", service_path.display()))?;
+    // Re-registering keeps what the existing registration records (merged by
+    // the same rule as the launch-time sync).
+    let candidate = current_supervisor_args(runtime_root);
+    let args = fs::read_to_string(&service_path)
+        .ok()
+        .and_then(|existing| recorded_fallback_args(&existing, prefix, runtime_root))
+        .map(|recorded| merge_with_this_app(&recorded, &candidate))
+        .unwrap_or(candidate);
+    fs::write(
+        &service_path,
+        render_macos_service(prefix, runtime_root, &args),
+    )
+    .map_err(|error| format!("Could not write {}: {error}", service_path.display()))?;
     let domain = format!("gui/{}", unsafe { libc::geteuid() });
     let target = format!("{domain}/{SERVICE_ID}");
     let _ = Command::new("launchctl")
@@ -851,6 +878,301 @@ async fn register_and_start_service(prefix: &Path, runtime_root: &Path) -> Resul
     )
     .await?;
     ensure_service_started().await
+}
+
+/// `<X>.app` when `executable` runs from `<X>.app/Contents/MacOS/<bin>` at a
+/// stable location. A translocated copy (Gatekeeper's randomized
+/// `/private/var/folders/.../AppTranslocation/...`), a mounted image
+/// (`/Volumes/...`) or a bare binary is not a place to relaunch from.
+#[cfg(any(target_os = "macos", test))]
+fn app_bundle_of(executable: &Path) -> Option<PathBuf> {
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let text = bundle.to_string_lossy();
+    if text.contains("/AppTranslocation/") || text.starts_with("/Volumes/") {
+        return None;
+    }
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle
+            .extension()
+            .is_some_and(|extension| extension == "app"))
+    .then(|| bundle.to_path_buf())
+}
+
+/// Whether an installed `native-runtime-service.py` knows `feature` (a flag
+/// or action), so an older package's script is never handed one it rejects.
+#[cfg(target_os = "macos")]
+fn script_supports(script: &Path, feature: &str) -> bool {
+    fs::read_to_string(script).is_ok_and(|text| text.contains(feature))
+}
+
+/// `--flag value`, `--flag=value` and bare `--flag` items, in order.
+#[cfg(any(target_os = "macos", test))]
+fn split_flags(args: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut items = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let token = &args[index];
+        let flag = token.split('=').next().unwrap_or_default().to_string();
+        let paired = token.starts_with("--")
+            && !token.contains('=')
+            && args
+                .get(index + 1)
+                .is_some_and(|next| !next.starts_with("--"));
+        if paired {
+            items.push((flag, vec![token.clone(), args[index + 1].clone()]));
+            index += 2;
+        } else {
+            items.push((flag, vec![token.clone()]));
+            index += 1;
+        }
+    }
+    items
+}
+
+/// An app installed in `/Applications` or `~/Applications`.
+#[cfg(any(target_os = "macos", test))]
+fn is_applications_bundle(bundle: &Path, home: Option<&Path>) -> bool {
+    bundle.starts_with("/Applications")
+        || home.is_some_and(|home| bundle.starts_with(home.join("Applications")))
+}
+
+/// The supervisor arguments to record, given the recorded ones and this
+/// launch's candidate. The config path follows the candidate when it has one.
+/// The candidate's `--desktop-app` (and log) wins when it runs from
+/// `/Applications` or `~/Applications`, or when no existing bundle is
+/// recorded; otherwise the recorded one is kept, so a worktree debug build or
+/// a stale copy never steals the binding and an installed app reclaims it.
+/// Every other recorded flag (a hand-added `--manage-desktop=0`, a future
+/// flag) is kept. `scripts/native-runtime-service.py` applies the same rule.
+#[cfg(any(target_os = "macos", test))]
+fn merge_supervisor_args(
+    recorded: &[String],
+    candidate: &[String],
+    bundle_exists: impl Fn(&Path) -> bool,
+    preferred: impl Fn(&Path) -> bool,
+) -> Vec<String> {
+    let value = |args: &[String], flag: &str| {
+        args.windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+    };
+    let config =
+        value(candidate, "--magician-config").or_else(|| value(recorded, "--magician-config"));
+    let recorded_bundle = value(recorded, "--desktop-app");
+    let candidate_bundle = value(candidate, "--desktop-app");
+    let candidate_wins = candidate_bundle.as_deref().is_some_and(|bundle| {
+        preferred(Path::new(bundle))
+            || recorded_bundle
+                .as_deref()
+                .is_none_or(|recorded| !bundle_exists(Path::new(recorded)))
+    });
+    let (bundle, log) = if candidate_wins {
+        (candidate_bundle, value(candidate, "--desktop-log"))
+    } else {
+        (recorded_bundle, value(recorded, "--desktop-log"))
+    };
+    let mut merged = Vec::new();
+    if let Some(config) = config {
+        merged.extend(["--magician-config".to_string(), config]);
+    }
+    if let Some(bundle) = bundle {
+        merged.extend(["--desktop-app".to_string(), bundle]);
+        if let Some(log) = log {
+            merged.extend(["--desktop-log".to_string(), log]);
+        }
+    }
+    for (flag, tokens) in split_flags(recorded) {
+        if !matches!(
+            flag.as_str(),
+            "--magician-config" | "--desktop-app" | "--desktop-log"
+        ) {
+            merged.extend(tokens);
+        }
+    }
+    merged
+}
+
+/// The recorded supervisor arguments of the fallback plist, when it runs this
+/// installation's `magic-supervisor.bin` for `runtime_root`.
+#[cfg(target_os = "macos")]
+fn recorded_fallback_args(
+    existing: &str,
+    prefix: &Path,
+    runtime_root: &Path,
+) -> Option<Vec<String>> {
+    let bound_root = format!(
+        "<key>MAGICIAN_ROOT_DIR</key><string>{}</string>",
+        xml_escape(&runtime_root.display().to_string())
+    );
+    let (_, recorded) = plist_program_arguments(existing)?;
+    let binary = prefix.join("magic-supervisor.bin").display().to_string();
+    (existing.contains(&bound_root) && recorded.first() == Some(&binary))
+        .then(|| recorded[1..].to_vec())
+}
+
+#[cfg(target_os = "macos")]
+fn merge_with_this_app(recorded: &[String], candidate: &[String]) -> Vec<String> {
+    let home = dirs::home_dir();
+    merge_supervisor_args(
+        recorded,
+        candidate,
+        |bundle| bundle.is_dir(),
+        |bundle| is_applications_bundle(bundle, home.as_deref()),
+    )
+}
+
+/// The `<string>` items of the plist's ProgramArguments array.
+#[cfg(any(target_os = "macos", test))]
+fn plist_program_arguments(plist: &str) -> Option<(String, Vec<String>)> {
+    let after_key = plist.split_once("<key>ProgramArguments</key>")?.1;
+    let array_start = after_key.find("<array>")?;
+    let array_end = after_key.find("</array>")?;
+    let array = &after_key[array_start..array_end + "</array>".len()];
+    let items = array
+        .split("<string>")
+        .skip(1)
+        .filter_map(|item| {
+            item.split_once("</string>")
+                .map(|(value, _)| xml_unescape(value))
+        })
+        .collect();
+    Some((array.to_string(), items))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// magic-supervisor arguments for the macOS LaunchAgent: the runtime config
+/// it reads `supervisor.manage_desktop` from, and, when this app runs from a
+/// bundle, that bundle and its stdout/stderr log, so the supervisor can
+/// relaunch the app after a crash (never after its Quit). No preflight
+/// script in production.
+#[cfg(any(target_os = "macos", test))]
+fn supervisor_args(runtime_root: &Path, bundle: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        "--magician-config".to_string(),
+        runtime_root
+            .join("magician-config.yaml")
+            .display()
+            .to_string(),
+    ];
+    if let Some(bundle) = bundle {
+        args.extend([
+            "--desktop-app".to_string(),
+            bundle.display().to_string(),
+            "--desktop-log".to_string(),
+            runtime_root.join("logs/desktop.log").display().to_string(),
+        ]);
+    }
+    args
+}
+
+#[cfg(target_os = "macos")]
+fn current_supervisor_args(runtime_root: &Path) -> Vec<String> {
+    let bundle = std::env::current_exe()
+        .ok()
+        .map(|exe| fs::canonicalize(&exe).unwrap_or(exe))
+        .and_then(|exe| app_bundle_of(&exe));
+    supervisor_args(runtime_root, bundle.as_deref())
+}
+
+#[cfg(target_os = "macos")]
+fn supervisor_args_json(runtime_root: &Path) -> Result<String, String> {
+    serde_json::to_string(&current_supervisor_args(runtime_root))
+        .map_err(|error| format!("Could not encode the supervisor arguments: {error}"))
+}
+
+/// macOS, on Desktop launch: record current supervisor arguments in an
+/// existing LaunchAgent (the runtime config path; this bundle and its log
+/// unless another existing bundle is already recorded). Only the plist file is
+/// rewritten, never re-bootstrapped: the running backend is not restarted, and
+/// launchd loads the new arguments at the next login or re-registration.
+/// Skipped when this app runs from no stable bundle (translocated, a mounted
+/// image, a bare binary), when the registration belongs to another
+/// installation or data folder, or when the installed script predates the
+/// action. Returns whether it was rewritten. Other platforms: no-op.
+pub async fn sync_supervisor_arguments(runtime_root: &Path) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let candidate = current_supervisor_args(runtime_root);
+        if !candidate.iter().any(|arg| arg == "--desktop-app") {
+            return Ok(false);
+        }
+        let prefix = install_prefix();
+        let script = prefix.join("scripts/native-runtime-service.py");
+        if script.is_file() {
+            if !script_supports(&script, "sync-supervisor-args") {
+                static NOTED: std::sync::Once = std::sync::Once::new();
+                NOTED.call_once(|| {
+                    tracing::debug!(
+                        "Installed native-runtime-service.py predates sync-supervisor-args; leaving the LaunchAgent as is"
+                    )
+                });
+                return Ok(false);
+            }
+            let output = Command::new(runtime_core::process::resolve_program(
+                std::ffi::OsStr::new("python3"),
+                None,
+            ))
+            .arg(&script)
+            .args(["sync-supervisor-args", "--prefix"])
+            .arg(&prefix)
+            .arg("--data-dir")
+            .arg(runtime_root)
+            .arg("--supervisor-args-json")
+            .arg(supervisor_args_json(runtime_root)?)
+            .output()
+            .await
+            .map_err(|error| format!("Could not update the backend LaunchAgent: {error}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Could not update the backend LaunchAgent: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            return Ok(String::from_utf8_lossy(&output.stdout).trim() == "updated");
+        }
+        let service_path = macos_service_path()?;
+        let Ok(existing) = fs::read_to_string(&service_path) else {
+            return Ok(false);
+        };
+        let Some(recorded) = recorded_fallback_args(&existing, &prefix, runtime_root) else {
+            return Ok(false);
+        };
+        let Some((array, _)) = plist_program_arguments(&existing) else {
+            return Ok(false);
+        };
+        let binary = prefix.join("magic-supervisor.bin").display().to_string();
+        let merged = merge_with_this_app(&recorded, &candidate);
+        if merged == recorded {
+            return Ok(false);
+        }
+        let new_array = format!(
+            "<array>{}</array>",
+            std::iter::once(&binary)
+                .chain(merged.iter())
+                .map(|arg| format!("<string>{}</string>", xml_escape(arg)))
+                .collect::<String>()
+        );
+        fs::write(&service_path, existing.replacen(&array, &new_array, 1))
+            .map_err(|error| format!("Could not write {}: {error}", service_path.display()))?;
+        Ok(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = runtime_root;
+        Ok(false)
+    }
 }
 
 pub async fn ensure_service_started() -> Result<(), String> {
@@ -982,10 +1304,10 @@ pub async fn stop_service() -> Result<(), String> {
         {
             return Ok(());
         }
-        return Err(format!(
+        Err(format!(
             "Could not stop the native Magician backend: {}",
             String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        ))
     }
     #[cfg(target_os = "linux")]
     {
@@ -1013,6 +1335,132 @@ pub async fn stop_service() -> Result<(), String> {
         }
         Ok(())
     }
+}
+
+/// A data root that is a symlink whose target was removed (cleanup deletes
+/// the canonical target and leaves the link): recreate the target directory
+/// so seeding writes through the owner's chosen layout. The link is kept.
+fn ensure_root_target(runtime_root: &Path) -> Result<(), String> {
+    let Ok(meta) = fs::symlink_metadata(runtime_root) else {
+        return Ok(());
+    };
+    if !meta.file_type().is_symlink() || runtime_root.exists() {
+        return Ok(());
+    }
+    let link = fs::read_link(runtime_root).map_err(|error| {
+        format!(
+            "Could not read the link {}: {error}",
+            runtime_root.display()
+        )
+    })?;
+    let target = if link.is_absolute() {
+        link
+    } else {
+        runtime_root
+            .parent()
+            .map(|parent| parent.join(&link))
+            .unwrap_or(link)
+    };
+    fs::create_dir_all(&target)
+        .map_err(|error| format!("Could not recreate {}: {error}", target.display()))
+}
+
+/// Clear a `launchctl disable` override left by `stop_service` (macOS).
+async fn clear_disable_override() {
+    #[cfg(target_os = "macos")]
+    {
+        let target = format!("gui/{}/{}", unsafe { libc::geteuid() }, SERVICE_ID);
+        let _ = Command::new("launchctl")
+            .args(["enable", &target])
+            .output()
+            .await;
+    }
+}
+
+/// Re-seed a runtime root whose files were removed under the native service
+/// (Desktop's "only data" cleanup) and start the service again: the native
+/// launcher does not seed a missing `magician-config.yaml`, so the backend
+/// would crash-loop on an empty root. A seeding failure is reported, the
+/// disable override is always cleared, and the service is still started when
+/// a usable config exists.
+pub async fn reseed_and_start(runtime_root: &Path) -> Result<(), String> {
+    let seeded = ensure_root_target(runtime_root)
+        .and_then(|()| seed_runtime_root(&install_prefix(), runtime_root));
+    clear_disable_override().await;
+    let started = if seeded.is_ok() || runtime_root.join("magician-config.yaml").is_file() {
+        ensure_service_started().await
+    } else {
+        Err("not started: the runtime root has no magician-config.yaml".to_string())
+    };
+    match (seeded, started) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(seeding), Ok(())) => Err(format!(
+            "seeding failed ({seeding}); the backend was started with the existing config"
+        )),
+        (Ok(()), Err(start)) => Err(start),
+        (Err(seeding), Err(start)) => Err(format!("seeding failed ({seeding}); {start}")),
+    }
+}
+
+/// The runtime root the registered native service actually uses: the
+/// LaunchAgent's `MAGICIAN_ROOT_DIR` (macOS), the systemd unit's
+/// `Environment` (Linux), or the logon-task launcher's `$env:` value
+/// (Windows). None when nothing is registered or it cannot be read.
+pub fn registered_runtime_root() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let text = fs::read_to_string(macos_service_path().ok()?).ok()?;
+        root_from_macos_plist(&text)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let text = fs::read_to_string(linux_service_path().ok()?).ok()?;
+        root_from_systemd_unit(&text)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let text = fs::read_to_string(windows_launcher_path(&install_prefix())).ok()?;
+        root_from_windows_launcher(&text)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+/// `MAGICIAN_ROOT_DIR` from a LaunchAgent plist, as written by Desktop or by
+/// `native-runtime-service.py` (plistlib indents the `<string>`).
+#[cfg(any(target_os = "macos", test))]
+fn root_from_macos_plist(text: &str) -> Option<PathBuf> {
+    let after_key = text.split_once("<key>MAGICIAN_ROOT_DIR</key>")?.1;
+    let after_open = after_key.trim_start().strip_prefix("<string>")?;
+    let value = after_open.split_once("</string>")?.0;
+    (!value.is_empty()).then(|| PathBuf::from(xml_unescape(value)))
+}
+
+/// `MAGICIAN_ROOT_DIR` from `Environment="MAGICIAN_ROOT_DIR=..."` in the unit.
+#[cfg(any(target_os = "linux", test))]
+fn root_from_systemd_unit(text: &str) -> Option<PathBuf> {
+    text.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix("Environment=\"MAGICIAN_ROOT_DIR=")?
+            .strip_suffix('"')?;
+        (!value.is_empty())
+            .then(|| PathBuf::from(value.replace("\\\"", "\"").replace("\\\\", "\\")))
+    })
+}
+
+/// `MAGICIAN_ROOT_DIR` from `$env:MAGICIAN_ROOT_DIR = '...'` in the launcher.
+#[cfg(any(target_os = "windows", test))]
+fn root_from_windows_launcher(text: &str) -> Option<PathBuf> {
+    text.lines().find_map(|line| {
+        let value = line
+            .trim()
+            .strip_prefix("$env:MAGICIAN_ROOT_DIR = '")?
+            .strip_suffix('\'')?;
+        (!value.is_empty()).then(|| PathBuf::from(value.replace("''", "'")))
+    })
 }
 
 pub async fn unregister_service() -> Result<(), String> {
@@ -1055,6 +1503,16 @@ pub async fn unregister_service() -> Result<(), String> {
         {
             let _ = Command::new("systemctl")
                 .args(["--user", "daemon-reload"])
+                .output()
+                .await;
+        }
+        // stop_service left a `launchctl disable` override; clear it so a
+        // later install is not silently disabled.
+        #[cfg(target_os = "macos")]
+        {
+            let target = format!("gui/{}/{}", unsafe { libc::geteuid() }, SERVICE_ID);
+            let _ = Command::new("launchctl")
+                .args(["enable", &target])
                 .output()
                 .await;
         }
@@ -1240,8 +1698,12 @@ exit $LASTEXITCODE\n"
     )
 }
 
-fn render_macos_service(prefix: &Path, runtime_root: &Path) -> String {
+fn render_macos_service(prefix: &Path, runtime_root: &Path, supervisor_args: &[String]) -> String {
     let executable = xml_escape(&prefix.join("magic-supervisor.bin").display().to_string());
+    let program_arguments = std::iter::once(executable)
+        .chain(supervisor_args.iter().map(|arg| xml_escape(arg)))
+        .map(|arg| format!("<string>{arg}</string>"))
+        .collect::<String>();
     let working = xml_escape(&prefix.display().to_string());
     let runtime = xml_escape(&runtime_root.display().to_string());
     let path = xml_escape(&service_path_env(prefix));
@@ -1256,7 +1718,7 @@ fn render_macos_service(prefix: &Path, runtime_root: &Path) -> String {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>{SERVICE_ID}</string>
-  <key>ProgramArguments</key><array><string>{executable}</string></array>
+  <key>ProgramArguments</key><array>{program_arguments}</array>
   <key>WorkingDirectory</key><string>{working}</string>
   <key>EnvironmentVariables</key><dict>
     <key>MAGICIAN_ROOT_DIR</key><string>{runtime}</string>
@@ -1385,10 +1847,19 @@ mod tests {
     fn service_specs_keep_paths_and_runtime_ownership_explicit() {
         let prefix = Path::new("/Users/Test Person/.magician");
         let root = Path::new("/Users/Test Person/MagicianNotes");
-        let macos = render_macos_service(prefix, root);
+        let macos = render_macos_service(prefix, root, &[]);
         assert!(macos.contains(SERVICE_ID));
         assert!(macos.contains("magic-supervisor.bin"));
         assert!(macos.contains("MAGICIAN_ROOT_DIR"));
+        let with_desktop = render_macos_service(
+            prefix,
+            root,
+            &supervisor_args(root, Some(Path::new("/Applications/Magican & Co.app"))),
+        );
+        assert!(with_desktop.contains(
+            "<array><string>/Users/Test Person/.magician/magic-supervisor.bin</string><string>--magician-config</string><string>/Users/Test Person/MagicianNotes/magician-config.yaml</string><string>--desktop-app</string><string>/Applications/Magican &amp; Co.app</string><string>--desktop-log</string><string>/Users/Test Person/MagicianNotes/logs/desktop.log</string></array>"
+        ));
+        assert_ne!(macos, with_desktop, "changed arguments are plist drift");
         let linux = render_linux_service(prefix, root);
         assert!(linux.contains("[Service]"));
         assert!(linux.contains("Restart=on-failure"));
@@ -1401,6 +1872,228 @@ mod tests {
         assert!(windows.contains("MAGICIAN_ROOT_DIR"));
         assert!(windows.contains("MAGICIAN_HOST_GATEWAY_URL"));
         assert!(windows.contains("native-supervisor.log"));
+    }
+
+    #[test]
+    fn unstable_locations_are_never_recorded_as_the_desktop_bundle() {
+        assert_eq!(
+            app_bundle_of(Path::new(
+                "/private/var/folders/x/AppTranslocation/ABC/d/Magican.app/Contents/MacOS/magician-desktop"
+            )),
+            None
+        );
+        assert_eq!(
+            app_bundle_of(Path::new(
+                "/Volumes/Magican/Magican.app/Contents/MacOS/magician-desktop"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn another_bundle_never_steals_an_existing_binding() {
+        let s = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        let recorded = s(&[
+            "--magician-config",
+            "/data/magician-config.yaml",
+            "--desktop-app",
+            "/Applications/Magican.app",
+            "--desktop-log",
+            "/data/logs/desktop.log",
+        ]);
+        let debug = s(&[
+            "--magician-config",
+            "/data/magician-config.yaml",
+            "--desktop-app",
+            "/repo/.local/Magican-Debug.app",
+            "--desktop-log",
+            "/data/logs/desktop.log",
+        ]);
+        assert_eq!(
+            merge_supervisor_args(&recorded, &debug, |_| true, |_| false),
+            recorded,
+            "the recorded bundle still exists: kept"
+        );
+        assert_eq!(
+            merge_supervisor_args(&recorded, &debug, |_| false, |_| false),
+            debug,
+            "the recorded bundle is gone: this one takes over"
+        );
+        assert_eq!(
+            merge_supervisor_args(&s(&[]), &debug, |_| true, |_| false),
+            debug,
+            "nothing recorded yet"
+        );
+        let mut stale = recorded.clone();
+        stale[3] = "/Users/me/Downloads/Magican.app".to_string();
+        stale.extend(s(&[
+            "--manage-desktop=0",
+            "--desktop-launch-at-boot",
+            "always",
+        ]));
+        let installed = merge_supervisor_args(
+            &stale,
+            &recorded,
+            |_| true,
+            |bundle| is_applications_bundle(bundle, Some(Path::new("/Users/me"))),
+        );
+        assert_eq!(
+            installed[..6],
+            recorded[..],
+            "an /Applications app reclaims the binding"
+        );
+        assert_eq!(
+            installed[6..],
+            s(&["--manage-desktop=0", "--desktop-launch-at-boot", "always"])[..],
+            "hand-added and future flags survive"
+        );
+        assert_eq!(
+            merge_supervisor_args(&stale, &[], |_| true, |_| false),
+            stale,
+            "no candidate keeps everything, including --magician-config"
+        );
+        assert!(is_applications_bundle(
+            Path::new("/Users/me/Applications/Magican.app"),
+            Some(Path::new("/Users/me"))
+        ));
+    }
+
+    #[test]
+    fn only_the_program_arguments_are_compared_and_replaced() {
+        let prefix = Path::new("/Users/Test Person/.magician");
+        let root = Path::new("/Users/Test Person/MagicianNotes");
+        let plist = render_macos_service(
+            prefix,
+            root,
+            &supervisor_args(root, Some(Path::new("/Applications/Magican & Co.app"))),
+        );
+        let (array, items) = plist_program_arguments(&plist).expect("arguments");
+        assert!(array.starts_with("<array>") && array.ends_with("</array>"));
+        assert_eq!(
+            items[0],
+            "/Users/Test Person/.magician/magic-supervisor.bin"
+        );
+        assert_eq!(items[4], "/Applications/Magican & Co.app", "unescaped");
+    }
+
+    #[test]
+    fn the_desktop_bundle_is_passed_only_when_running_from_one() {
+        assert_eq!(
+            app_bundle_of(Path::new(
+                "/Applications/Magican.app/Contents/MacOS/magician-desktop"
+            )),
+            Some(PathBuf::from("/Applications/Magican.app"))
+        );
+        assert_eq!(
+            app_bundle_of(Path::new("/repo/target/debug/magician-desktop")),
+            None
+        );
+        assert_eq!(
+            app_bundle_of(Path::new("/repo/Contents/MacOS/magician-desktop")),
+            None
+        );
+        let root = Path::new("/data");
+        assert_eq!(
+            supervisor_args(root, None),
+            vec!["--magician-config", "/data/magician-config.yaml"]
+        );
+        assert_eq!(
+            supervisor_args(root, Some(Path::new("/Applications/Magican.app")))[2..],
+            [
+                "--desktop-app",
+                "/Applications/Magican.app",
+                "--desktop-log",
+                "/data/logs/desktop.log"
+            ]
+        );
+    }
+
+    #[test]
+    fn reseeding_restores_every_shipped_seed_without_overwriting() {
+        let temporary = tempfile::tempdir().expect("temp dir");
+        let prefix = temporary.path().join("prefix");
+        let seed = prefix.join("share/seed");
+        fs::create_dir_all(&seed).expect("seed dir");
+        fs::write(seed.join("decision-engine.yaml"), "engine: seed\n").expect("write");
+        fs::write(seed.join(".env.example"), "KEY=seed\n").expect("write");
+        fs::write(
+            seed.join("operator-config.template.yaml"),
+            "operator: seed\n",
+        )
+        .expect("write");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(&root).expect("root");
+        fs::write(root.join(".env"), "KEY=owner\n").expect("write");
+        seed_runtime_root(&prefix, &root).expect("seeded");
+        for name in [
+            "magician-config.yaml",
+            "llm-router.yaml",
+            "decision-engine.yaml",
+            "operator-config.yaml",
+        ] {
+            assert!(root.join(name).is_file(), "{name} seeded");
+        }
+        assert!(
+            !root.join(".env.development").exists(),
+            "an empty-keyed .env.development would shadow the owner's .env"
+        );
+        assert!(root.join("logs").is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join(".env")).expect("read"),
+            "KEY=owner\n",
+            "existing files are kept"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_root_link_gets_its_target_back_and_keeps_the_link() {
+        let temporary = tempfile::tempdir().expect("temp dir");
+        let target = temporary.path().join("ssd/MagicianNotes");
+        let link = temporary.path().join("MagicianNotes");
+        std::os::unix::fs::symlink(&target, &link).expect("link");
+        assert!(!link.exists(), "dangling");
+        ensure_root_target(&link).expect("recreated");
+        assert!(target.is_dir());
+        assert!(fs::symlink_metadata(&link)
+            .expect("meta")
+            .file_type()
+            .is_symlink());
+        ensure_root_target(temporary.path()).expect("a plain directory is left alone");
+    }
+
+    #[test]
+    fn the_registered_runtime_root_is_read_back_from_each_service_format() {
+        let prefix = Path::new("/Users/Test Person/.magician");
+        let root = Path::new("/Users/Test Person/Magician & \"Notes\"");
+        assert_eq!(
+            root_from_macos_plist(&render_macos_service(prefix, root, &[])),
+            Some(root.to_path_buf())
+        );
+        let plistlib_style =
+            "<dict>\n\t\t<key>MAGICIAN_ROOT_DIR</key>\n\t\t<string>/data/notes</string>\n</dict>";
+        assert_eq!(
+            root_from_macos_plist(plistlib_style),
+            Some(PathBuf::from("/data/notes"))
+        );
+        assert_eq!(
+            root_from_systemd_unit(&render_linux_service(prefix, root)),
+            Some(root.to_path_buf())
+        );
+        let windows_root = Path::new(r"C:\Users\O'Brien\MagicianNotes");
+        assert_eq!(
+            root_from_windows_launcher(&render_windows_launcher(
+                Path::new(r"C:\Users\O'Brien\.magician"),
+                windows_root
+            )),
+            Some(windows_root.to_path_buf())
+        );
+        assert_eq!(root_from_macos_plist("<plist></plist>"), None);
     }
 
     #[test]

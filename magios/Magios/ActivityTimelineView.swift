@@ -169,6 +169,7 @@ struct ActivityTimelineView: View {
                             if index > 0 { StepHairline(leadingInset: ActivityTimelineRow.textInset) }
                             ActivityTimelineRow(
                                 row: row,
+                                isLive: isLive,
                                 theme: theme,
                                 onPathAction: performPathAction,
                                 onOpenResult: openResult
@@ -200,6 +201,7 @@ struct ActivityTimelineView: View {
         .sheet(isPresented: $showAll) {
             ActivityLogSheet(
                 rows: rows,
+                isLive: isLive,
                 sessionId: sessionId,
                 theme: theme,
                 onPathAction: performPathAction,
@@ -279,6 +281,7 @@ struct ActivityTimelineView: View {
     }
 
     private func openActivityURL(_ url: URL) -> OpenURLAction.Result {
+        if NoteLinkRouter.open(url) { return .handled }
         switch classifyActivityLink(url.absoluteString) {
         case .external(let raw):
             guard let target = URL(string: raw) else { return .discarded }
@@ -363,8 +366,28 @@ struct ActivityTimelineView: View {
     }
 }
 
+/// The live elapsed clock of a step that is still running: an LLM call or a
+/// tool call of a live turn, counted from its start event in whole seconds
+/// (`TaskTimelineFormatting.elapsed`). Nil once the row settles (it then shows
+/// its measured duration), once the turn is no longer live, or without a start
+/// time.
+enum ActivityLiveClock {
+    static func ticks(_ row: ActivityRow, isLive: Bool) -> Bool {
+        isLive && row.status == .running && row.durationMs == nil
+            && (row.kind == .llm || row.kind == .tool) && row.startedAtMs != nil
+    }
+
+    static func label(_ row: ActivityRow, isLive: Bool, now: Date) -> String? {
+        guard ticks(row, isLive: isLive), let startedAtMs = row.startedAtMs else { return nil }
+        return TaskTimelineFormatting.elapsed(
+            since: Date(timeIntervalSince1970: startedAtMs / 1_000), now: now
+        )
+    }
+}
+
 private struct ActivityTimelineRow: View {
     let row: ActivityRow
+    var isLive = false
     @ObservedObject var theme: ThemeManager
     let onPathAction: (String, ActivityPathAction) -> Void
     let onOpenResult: (ActivityRow) -> Void
@@ -391,6 +414,18 @@ private struct ActivityTimelineRow: View {
                             .font(.themedMono(Lively.stepMetaSize))
                             .monospacedDigit()
                             .foregroundColor(theme.secondaryTextColor)
+                    } else if ActivityLiveClock.ticks(row, isLive: isLive) {
+                        // Only this label re-renders each second, and only
+                        // while the call runs; settling swaps in its duration.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let elapsed = ActivityLiveClock.label(row, isLive: isLive, now: context.date) {
+                                Text(elapsed)
+                                    .font(.themedMono(Lively.stepMetaSize))
+                                    .monospacedDigit()
+                                    .foregroundColor(theme.secondaryTextColor)
+                                    .accessibilityLabel("Running for \(elapsed)")
+                            }
+                        }
                     }
                 }
 
@@ -498,6 +533,7 @@ private struct ActivityTimelineRow: View {
 
 private struct ActivityLogSheet: View {
     let rows: [ActivityRow]
+    let isLive: Bool
     let sessionId: String?
     @ObservedObject var theme: ThemeManager
     let onPathAction: (String, ActivityPathAction) -> Void
@@ -514,6 +550,7 @@ private struct ActivityLogSheet: View {
                         if index > 0 { StepHairline(leadingInset: ActivityTimelineRow.textInset) }
                         ActivityTimelineRow(
                             row: row,
+                            isLive: isLive,
                             theme: theme,
                             onPathAction: onPathAction,
                             onOpenResult: openResult

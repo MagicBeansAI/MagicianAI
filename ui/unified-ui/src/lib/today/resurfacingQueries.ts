@@ -51,6 +51,7 @@ import {
 	type CanonicalAttentionProjectionScope,
 	type CrossLaneReconciliationUnavailableReason
 } from '$lib/attention/canonicalAttentionProjection';
+import { askAgentLabel } from './resurfacingPresentation';
 
 export type ResurfacingAction = 'open' | 'acknowledge' | 'dismiss' | 'owner_work';
 
@@ -136,6 +137,7 @@ export interface ResurfacingRecommendation {
 }
 
 export interface ResurfacingCard {
+	surfaced_at?: number | null;
 	candidate_id: string;
 	/** Curator line. The structured brief remains authoritative for facts. */
 	line: string;
@@ -789,12 +791,12 @@ function mapOriginal(value: unknown): ResurfacingOriginalContent | null {
 	}
 }
 
-export function actionLabel(kind: ResurfacingActionKind): string {
+export function actionLabel(kind: ResurfacingActionKind, agentName?: string | null): string {
 	switch (kind) {
 		case 'view_details': return 'Details';
 		case 'open_source': return 'Open source';
 		case 'show_original': return 'Original';
-		case 'ask_presto': return 'Ask Presto';
+		case 'ask_presto': return askAgentLabel(agentName);
 		case 'create_task': return 'Create task';
 		case 'create_reminder': return 'Create reminder';
 		case 'share': return 'Share';
@@ -866,6 +868,7 @@ export function mapResurfacingPayload(
 			: null;
 		out.push({
 			candidate_id: candidateId,
+			...(Object.prototype.hasOwnProperty.call(record, 'surfaced_at') ? { surfaced_at: asOptionalMs(record.surfaced_at) } : {}),
 			line: asString(record.line),
 			why_now: asString(record.why_now),
 			source_title: asString(record.source_title),
@@ -1079,6 +1082,7 @@ async function getJson(url: string): Promise<unknown> {
 }
 
 export interface FetchResurfacingTodayOptions {
+	includeDiagnostics?: boolean;
 	limit?: number;
 	offset?: number;
 	cursor?: ResurfacingCursor | null;
@@ -1090,6 +1094,7 @@ export async function fetchResurfacingTodayPage(
 ): Promise<ResurfacingPage> {
 	const params = new URLSearchParams();
 	const scope = getCurrentScopeIdentity();
+	if (typeof options.includeDiagnostics === 'boolean') params.set('include_diagnostics', String(options.includeDiagnostics));
 	if (typeof options.limit === 'number' && Number.isFinite(options.limit)) {
 		params.set('limit', String(Math.max(1, Math.floor(options.limit))));
 	}

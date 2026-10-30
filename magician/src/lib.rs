@@ -48,6 +48,12 @@ macro_rules! off_frame {
     };
 }
 
+/// The Magician core version (this crate's) — what people mean by "the
+/// Magician backend". `magician-api` and `magician-bin` carry their own crate
+/// versions; `GET /health` reports this one as `version` and the rest under
+/// `versions`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod config; // Configuration types
 pub mod error; // Error types
 pub mod magician_core; // Shared initialization builder

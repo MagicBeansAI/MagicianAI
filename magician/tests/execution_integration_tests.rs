@@ -18,6 +18,8 @@ fn unrestricted_file_sandbox() -> FileSandboxConfig {
     FileSandboxConfig {
         mode: FileSandboxMode::Unrestricted,
         allowed_roots: vec![],
+        read_only_roots: vec![],
+        extra_writable_roots: Vec::new(),
         allow_delete: true,
     }
 }

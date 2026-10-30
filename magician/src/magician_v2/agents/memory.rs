@@ -306,16 +306,29 @@ impl AgentMemoryService {
 
     /// Live-resolve app-sourced memory envelopes against the scoped app store.
     /// Ordinary documents without an envelope are omitted from the map.
-    pub async fn app_memory_prompt_eligibility(
+    pub async fn app_memory_prompt_eligibility<M: std::borrow::Borrow<serde_json::Value>>(
         &self,
-        metadatas: impl IntoIterator<Item = serde_json::Value>,
+        metadatas: impl IntoIterator<Item = M>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> std::collections::HashMap<String, bool> {
         let workspace = self.storage.workspace_layout().cloned();
         let scoped = self
             .scoped_memory_scope()
             .map(|(principal, workspace)| (principal.to_owned(), workspace.to_owned()));
-        let metadatas = metadatas.into_iter().collect::<Vec<_>>();
+        let metadatas = metadatas
+            .into_iter()
+            .filter_map(|metadata| {
+                let metadata = metadata.borrow();
+                crate::magician_v2::apps::memory_bridge::parse_source_eligibility_envelope(metadata)
+                    .is_some()
+                    .then(|| metadata.clone())
+            })
+            .collect::<Vec<_>>();
+        // Ordinary file-backed claims have no app authority to resolve. Avoid
+        // reopening the registry and loading destination projections for them.
+        if metadatas.is_empty() {
+            return std::collections::HashMap::new();
+        }
         let metadata_for_contributions = metadatas.clone();
         let mut eligibility = tokio::task::spawn_blocking(move || {
             crate::magician_v2::apps::memory_store::resolve_prompt_app_memory_eligibility_batch(
@@ -1164,6 +1177,19 @@ impl AgentMemoryService {
         self.storage.load_user_knowledge().await.map_err(Into::into)
     }
 
+    /// Read-only [`Self::load_user_knowledge`] that reuses the parse while
+    /// `knowledge.json` is unchanged (see
+    /// [`AgentStorage::load_user_knowledge_shared`]). Every write through this
+    /// service drops it.
+    pub async fn load_user_knowledge_shared(
+        &self,
+    ) -> Result<std::sync::Arc<Value>, AgentMemoryError> {
+        self.storage
+            .load_user_knowledge_shared()
+            .await
+            .map_err(Into::into)
+    }
+
     /// Persist the user-knowledge store, refusing a tree deeper than the
     /// process-wide retained-JSON contract.
     ///
@@ -1196,16 +1222,35 @@ impl AgentMemoryService {
     {
         let path = self.storage.user_knowledge_path();
         let _flock = AgentStorage::acquire_file_lock_exclusive(&path).await?;
-        let mut knowledge = self.load_user_knowledge().await?;
+        let knowledge = self.load_user_knowledge().await?;
+        // Keep the document as loaded: the preference history diffs against
+        // it, so the write below need not re-read and re-parse the file while
+        // the exclusive lock is held. The store runs to megabytes, so the copy
+        // is made off the async workers.
+        let (mut knowledge, before) = task::spawn_blocking(move || {
+            let before = knowledge.clone();
+            (knowledge, before)
+        })
+        .await
+        .map_err(|error| {
+            AgentMemoryError::Io(std::io::Error::other(format!(
+                "user knowledge snapshot task failed: {error}"
+            )))
+        })?;
         if mutate(&mut knowledge)? {
-            self.persist_user_knowledge(&knowledge).await?;
+            self.persist_user_knowledge_replacing(knowledge, Some(before))
+                .await?;
         }
         Ok(())
     }
 
     /// [`Self::update_user_knowledge`] recorded in the preference history as
     /// written `via` this path, unless the caller already named the writer.
-    pub async fn update_user_knowledge_as<F>(&self, via: &str, mutate: F) -> Result<(), AgentMemoryError>
+    pub async fn update_user_knowledge_as<F>(
+        &self,
+        via: &str,
+        mutate: F,
+    ) -> Result<(), AgentMemoryError>
     where
         F: FnOnce(&mut Value) -> Result<bool, AgentMemoryError>,
     {
@@ -1218,7 +1263,11 @@ impl AgentMemoryService {
 
     /// [`Self::persist_user_knowledge`] recorded in the preference history as
     /// written `via` this path, unless the caller already named the writer.
-    pub async fn persist_user_knowledge_as(&self, value: &Value, via: &str) -> Result<(), AgentMemoryError> {
+    pub async fn persist_user_knowledge_as(
+        &self,
+        value: &Value,
+        via: &str,
+    ) -> Result<(), AgentMemoryError> {
         crate::magician_v2::preference_alignment::actor::with_default_actor(
             crate::magician_v2::preference_alignment::actor::WriteActor::via(via),
             self.persist_user_knowledge(value),
@@ -1238,39 +1287,114 @@ impl AgentMemoryService {
     /// Write `knowledge.json` with no lock. Only for a caller that already
     /// holds `acquire_file_lock_exclusive` on this path.
     pub async fn persist_user_knowledge(&self, value: &Value) -> Result<(), AgentMemoryError> {
-        // Iterative, so measuring depth cannot itself exhaust the stack.
-        let metrics = crate::magician_v2::json_traversal::inspect_json(value);
-        if metrics.max_depth > crate::magician_v2::json_traversal::MAX_RETAINED_JSON_DEPTH {
-            return Err(AgentMemoryError::Validation(format!(
-                "user knowledge nests {} levels, above the retained-JSON limit of {}",
-                metrics.max_depth,
-                crate::magician_v2::json_traversal::MAX_RETAINED_JSON_DEPTH
-            )));
-        }
+        self.persist_user_knowledge_replacing(value.clone(), None)
+            .await
+    }
+
+    /// [`Self::persist_user_knowledge`] given the document this write replaces
+    /// when the caller already has it (`None` reads it from disk). The depth
+    /// check, serialisation and preference-history diff of this
+    /// multi-megabyte document run on the blocking pool, and the generation
+    /// fingerprint is taken from the bytes written here, so the exclusive lock
+    /// is held for one write rather than a write plus two re-reads.
+    async fn persist_user_knowledge_replacing(
+        &self,
+        value: Value,
+        before: Option<Value>,
+    ) -> Result<(), AgentMemoryError> {
+        self.persist_user_knowledge_bounded(value, before, std::collections::BTreeSet::new())
+            .await
+    }
+
+    /// [`Self::persist_user_knowledge_as`] for a caller that already moved
+    /// records out of the document into the user-memory archive (the
+    /// learning bridge, retention pruning, the one-time clean-up). Those
+    /// records are journalled as retired, not forgotten. No lock is taken.
+    pub async fn persist_user_knowledge_archived_as(
+        &self,
+        value: &Value,
+        via: &str,
+        archived: &[super::user_memory_bounds::archive::ArchiveEntry],
+    ) -> Result<(), AgentMemoryError> {
+        let archived = super::user_memory_bounds::archived_intention_ids(archived);
+        crate::magician_v2::preference_alignment::actor::with_default_actor(
+            crate::magician_v2::preference_alignment::actor::WriteActor::via(via),
+            self.persist_user_knowledge_bounded(value.clone(), None, archived),
+        )
+        .await
+    }
+
+    /// The one write path for `knowledge.json`. The size bounds
+    /// (`memory.user_knowledge_bounds`) run first: under `mode: enforce`
+    /// records leaving the file are archived before it is written.
+    async fn persist_user_knowledge_bounded(
+        &self,
+        value: Value,
+        before: Option<Value>,
+        mut archived: std::collections::BTreeSet<String>,
+    ) -> Result<(), AgentMemoryError> {
         self.ensure_base_layout().await?;
         // The preference history diffs the document this write replaces. An
         // unreadable previous file reads as empty, so its records show as added.
-        let before = self
+        let before = match before {
+            Some(before) => before,
+            None => self
+                .storage
+                .load_user_knowledge()
+                .await
+                .unwrap_or(Value::Null),
+        };
+        // Boxed: this sits on every knowledge write path; keep its state out
+        // of the callers' futures.
+        let (value, bounded) =
+            Box::pin(super::user_memory_bounds::bound_write(&self.storage, value))
+                .await
+                .map_err(AgentMemoryError::Io)?;
+        archived.extend(bounded.archived_intention_ids());
+        let (bytes, changes) = task::spawn_blocking(move || {
+            // Iterative, so measuring depth cannot itself exhaust the stack.
+            let metrics = crate::magician_v2::json_traversal::inspect_json(&value);
+            if metrics.max_depth > crate::magician_v2::json_traversal::MAX_RETAINED_JSON_DEPTH {
+                return Err(AgentMemoryError::Validation(format!(
+                    "user knowledge nests {} levels, above the retained-JSON limit of {}",
+                    metrics.max_depth,
+                    crate::magician_v2::json_traversal::MAX_RETAINED_JSON_DEPTH
+                )));
+            }
+            let bytes = serde_json::to_vec_pretty(&value)?;
+            let mut changes =
+                crate::magician_v2::preference_alignment::history::diff_intentions(&before, &value);
+            crate::magician_v2::preference_alignment::history::mark_archived(
+                &mut changes,
+                &archived,
+            );
+            Ok((bytes, changes))
+        })
+        .await
+        .map_err(|error| {
+            AgentMemoryError::Io(std::io::Error::other(format!(
+                "user knowledge serialisation task failed: {error}"
+            )))
+        })??;
+        let written = self
             .storage
-            .load_user_knowledge()
-            .await
-            .unwrap_or(Value::Null);
-        self.storage
-            .write_json_atomic(self.storage.user_knowledge_path(), value)
-            .await?;
+            .write_bytes_atomic(self.storage.user_knowledge_path(), &bytes)
+            .await;
+        // Whatever the outcome, no reader may keep the pre-write parse.
+        self.storage.forget_user_knowledge_parse();
+        written?;
         // Under the caller's flock, like the generation bump below. A failed
         // append is logged; the knowledge write already happened.
-        let changes =
-            crate::magician_v2::preference_alignment::history::diff_intentions(&before, value);
         if !changes.is_empty() {
             let actor = crate::magician_v2::preference_alignment::actor::current_actor();
-            if let Err(error) = crate::magician_v2::preference_alignment::history::append_changes_locked(
-                &self.storage,
-                &changes,
-                &actor,
-                chrono::Utc::now().timestamp_millis(),
-            )
-            .await
+            if let Err(error) =
+                crate::magician_v2::preference_alignment::history::append_changes_locked(
+                    &self.storage,
+                    &changes,
+                    &actor,
+                    chrono::Utc::now().timestamp_millis(),
+                )
+                .await
             {
                 warn!(error = %error, "preference history append failed after a user knowledge write");
             }
@@ -1280,8 +1404,9 @@ impl AgentMemoryService {
         // logged, not returned — the reader detects it by fingerprint and
         // reports the generation stale rather than trusting it.
         if let Err(error) =
-            crate::magician_v2::preference_alignment::generation::bump_intention_generation_locked(
+            crate::magician_v2::preference_alignment::generation::bump_intention_generation_for_written_knowledge_locked(
                 &self.storage,
+                &bytes,
             )
             .await
         {
@@ -2484,6 +2609,35 @@ impl AgentMemoryService {
             .is_empty())
     }
 
+    /// Highest trigger sequence any stored episode of this agent/goal carries,
+    /// or `None` when the goal has no episodes.
+    ///
+    /// Episodes live under the scoped memory root, apart from the agent
+    /// definition and the scheduler entry, so they outlive an agent's
+    /// deletion. A re-created agent with the same id starts its scheduler
+    /// counter from zero, and `has_episode_for_trigger` would then match the
+    /// old agent's episodes; trigger allocation uses this value as a floor so
+    /// a fresh trigger never reuses a recorded tuple.
+    ///
+    /// `execution_terminal` records are skipped: their `trigger_seq` is the
+    /// completion time in milliseconds, not an allocated sequence, so counting
+    /// them would jump every agent's next trigger to a timestamp.
+    pub async fn highest_episode_trigger_seq(
+        &self,
+        agent_id: &str,
+        goal_id: &str,
+    ) -> Result<Option<u64>, AgentMemoryError> {
+        validate_non_empty("agent_id", agent_id)?;
+        validate_non_empty("goal_id", goal_id)?;
+        Ok(self
+            .load_native_episodes_filtered(agent_id, Some(goal_id), None)
+            .await?
+            .iter()
+            .filter(|episode| episode.record_type != "execution_terminal")
+            .map(|episode| episode.trigger_seq)
+            .max())
+    }
+
     pub async fn append_correction(
         &self,
         agent_id: &str,
@@ -3605,6 +3759,68 @@ mod tests {
         }
         assert_eq!(normalize_sensitivity(None), "unknown");
         assert_eq!(normalize_sensitivity(Some("  Financial ")), "financial");
+    }
+
+    #[tokio::test]
+    async fn highest_episode_trigger_seq_is_per_goal_and_none_when_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_base_path(tmp.path());
+        assert_eq!(
+            service
+                .highest_episode_trigger_seq("agent-1", "g1")
+                .await
+                .unwrap(),
+            None
+        );
+        for (goal_id, seq) in [("g1", 2), ("g1", 9), ("g1", 4), ("g2", 40)] {
+            let episode = sample_episode("agent-1", goal_id, seq, &format!("ep-{goal_id}-{seq}"));
+            append_test_episode(&service, "agent-1", &episode).await;
+        }
+
+        assert_eq!(
+            service
+                .highest_episode_trigger_seq("agent-1", "g1")
+                .await
+                .unwrap(),
+            Some(9)
+        );
+        assert_eq!(
+            service
+                .highest_episode_trigger_seq("agent-1", "g2")
+                .await
+                .unwrap(),
+            Some(40)
+        );
+        assert_eq!(
+            service
+                .highest_episode_trigger_seq("agent-1", "g3")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn highest_episode_trigger_seq_ignores_execution_terminal_timestamps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = AgentMemoryService::with_base_path(tmp.path());
+        append_test_episode(
+            &service,
+            "agent-1",
+            &sample_episode("agent-1", "g1", 3, "ep-3"),
+        )
+        .await;
+        let mut terminal = sample_episode("agent-1", "g1", 1_792_300_319_804, "exec_1");
+        terminal.record_type = "execution_terminal".to_string();
+        append_test_episode(&service, "agent-1", &terminal).await;
+
+        assert_eq!(
+            service
+                .highest_episode_trigger_seq("agent-1", "g1")
+                .await
+                .unwrap(),
+            Some(3)
+        );
     }
 
     #[tokio::test]

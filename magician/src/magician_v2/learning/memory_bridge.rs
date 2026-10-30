@@ -16,8 +16,17 @@ use super::{
 };
 
 const MIN_EXPLICIT_MEMORY_CONFIDENCE: f64 = 0.70;
-const MAX_USER_TIER_ITEMS: usize = 500;
+// No per-tier size cap here. This bridge used to drain the oldest entries
+// above 500, which silently deleted owner memory (a 2,097-entry `workflows`
+// tier would have lost ~1,600 records on its next promotion). Section sizes
+// are bounded centrally on every `knowledge.json` write, archive first:
+// `agents::user_memory_bounds` (docs/archive/plans/2026-10-18-user-memory-growth-bounds.md).
+/// Promotion audit rows kept in `knowledge.json`. Every row is also appended
+/// to `memory/users/archive/learning_promotions.jsonl`, so trimming loses
+/// nothing; under `memory.user_knowledge_bounds` enforce the main file keeps
+/// only the last [`ENFORCED_PROMOTION_AUDIT_ITEMS`].
 const MAX_PROMOTION_AUDIT_ITEMS: usize = 200;
+const ENFORCED_PROMOTION_AUDIT_ITEMS: usize = 20;
 const USER_MEMORY_KNOWLEDGE_RELATIVE_PATH: &str = "memory/users/knowledge.json";
 const LEARNING_MEMORY_BRIDGE_SOURCE: &str = "learning_memory_bridge";
 
@@ -474,23 +483,81 @@ impl LearningMemoryBridge {
                     }
                 }));
             }
-
-            if items.len() > MAX_USER_TIER_ITEMS {
-                let drop_count = items.len() - MAX_USER_TIER_ITEMS;
-                items.drain(0..drop_count);
-            }
         }
 
-        append_learning_promotion_audit(
+        // The records this promotion replaces go to the restorable archive
+        // (all of them; the audit row keeps at most five copies).
+        let bounds = crate::magician_v2::agents::user_memory_bounds::current_settings();
+        let archived_at = Utc::now();
+        let replaced: Vec<_> = superseded
+            .iter()
+            .map(|item| {
+                crate::magician_v2::agents::user_memory_bounds::archive::ArchiveEntry::new(
+                    &spec.target_tier,
+                    "learning_promotion_replaced",
+                    item.clone(),
+                    None,
+                    archived_at,
+                )
+            })
+            .collect();
+        let user_root = memory_service.storage().user_root();
+        crate::magician_v2::agents::user_memory_bounds::archive::append_batch(
+            &user_root,
+            &replaced,
+            archived_at,
+            bounds.archive.compress_after_months,
+        )
+        .await
+        .context("archiving the records a learning promotion replaces")?;
+
+        let (audit_row, drained) = append_learning_promotion_audit(
             &mut knowledge,
             candidate,
             spec,
             &now,
             &superseded,
             removed_count,
+            if bounds.enforcing() {
+                ENFORCED_PROMOTION_AUDIT_ITEMS
+            } else {
+                MAX_PROMOTION_AUDIT_ITEMS
+            },
         )?;
+        // The new row, and every row trimmed from the main file that the
+        // archive does not already hold, go to the archive before the trimmed
+        // document is written. If that fails the write stops here, so the
+        // trimmed rows stay in `knowledge.json`.
+        let already = {
+            let root = user_root.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::magician_v2::agents::user_memory_bounds::compact::archived_promotion_ids(
+                    &root,
+                )
+            })
+            .await
+            .context("reading the archived promotion audit")?
+        };
+        let mut audit_lines: Vec<Value> = drained
+            .into_iter()
+            .filter(|row| {
+                !already.contains(
+                    &crate::magician_v2::agents::user_memory_bounds::compact::promotion_identity(
+                        row,
+                    ),
+                )
+            })
+            .collect();
+        audit_lines.push(audit_row);
+        crate::magician_v2::agents::user_memory_bounds::archive::append_values(
+            &user_root,
+            crate::magician_v2::agents::user_memory_bounds::archive::LEARNING_PROMOTIONS_FILE,
+            &audit_lines,
+        )
+        .await
+        .context("archiving the learning promotion audit; nothing written")?;
         memory_service
-            .persist_user_knowledge_as(&knowledge, "learning")
+            .persist_user_knowledge_archived_as(&knowledge, "learning", &replaced)
             .await?;
 
         Ok(UserMemoryWriteOutcome {
@@ -801,7 +868,8 @@ fn append_learning_promotion_audit(
     now: &str,
     superseded: &[Value],
     removed_count: usize,
-) -> Result<()> {
+    keep: usize,
+) -> Result<(Value, Vec<Value>)> {
     let root = knowledge
         .as_object_mut()
         .ok_or_else(|| anyhow!("user knowledge root was not an object"))?;
@@ -823,7 +891,7 @@ fn append_learning_promotion_audit(
     let promotions = promotions
         .as_array_mut()
         .ok_or_else(|| anyhow!("user knowledge _meta.learning_promotions was not an array"))?;
-    promotions.push(json!({
+    let row = json!({
         "candidate_id": candidate.id,
         "candidate_type": candidate.candidate_type.as_str(),
         "target_tier": spec.target_tier,
@@ -833,12 +901,16 @@ fn append_learning_promotion_audit(
         "superseded_count": superseded.len(),
         "removed_count": removed_count,
         "superseded": superseded.iter().take(5).cloned().collect::<Vec<_>>(),
-    }));
-    if promotions.len() > MAX_PROMOTION_AUDIT_ITEMS {
-        let drop_count = promotions.len() - MAX_PROMOTION_AUDIT_ITEMS;
-        promotions.drain(0..drop_count);
-    }
-    Ok(())
+    });
+    promotions.push(row.clone());
+    // Returned for the caller to archive before this document is written.
+    let drained = if promotions.len() > keep {
+        let drop_count = promotions.len() - keep;
+        promotions.drain(0..drop_count).collect()
+    } else {
+        Vec::new()
+    };
+    Ok((row, drained))
 }
 
 fn emit_memory_route_row(
@@ -879,4 +951,188 @@ pub fn log_memory_route_error(candidate_id: &str, error: &anyhow::Error) {
         error = %error,
         "Learning memory candidate routing failed"
     );
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    use crate::magician_v2::agents::user_memory_bounds::{
+        archive, with_settings, MagicianMemoryBoundsSettings, UserKnowledgeBoundsMode,
+    };
+    use crate::magician_v2::agents::AgentMemoryResolver;
+
+    fn candidate() -> LearningCandidate {
+        let now = Utc::now();
+        LearningCandidate {
+            id: "cand-standup".into(),
+            scope: LearningScope::new("p", "w"),
+            candidate_type: LearningCandidateType::MemoryProcedure,
+            state: LearningCandidateState::Approved,
+            title: "Standup notes".into(),
+            summary: "Post notes after standup".into(),
+            rationale: "Seen across several runs".into(),
+            proposed_change: json!({}),
+            proposed_target: None,
+            confidence: Some(0.8),
+            source_agent_id: None,
+            source_task_id: None,
+            source_execution_id: None,
+            source_chat_session_id: None,
+            event_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+            risk_level: LearningRiskLevel::Low,
+            review_required: false,
+            review_reason: None,
+            review_policy: json!({}),
+            promotion_target: None,
+            promotion_policy: json!({}),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn spec() -> MemoryPromotionSpec {
+        MemoryPromotionSpec {
+            target_scope: "user".into(),
+            target_tier: "workflows".into(),
+            operation: MemoryOperation::Upsert,
+            key: "standup-notes".into(),
+            value: json!("Post notes in the team channel after standup"),
+            explicit_user_request: false,
+            explicit_user_correction: false,
+            replaces_key: None,
+        }
+    }
+
+    /// Audit rows trimmed from the main file reach the archive first, once.
+    #[tokio::test]
+    async fn trimmed_promotion_audit_rows_are_archived_once() {
+        let root = tempfile::tempdir().unwrap();
+        let service = AgentMemoryResolver::new(root.path())
+            .resolve_for_scope("p", "w")
+            .unwrap();
+        let existing: Vec<Value> = (0..205)
+            .map(|i| json!({"candidate_id":format!("old-{i}"),"promoted_at":format!("2026-09-01T00:00:{:02}Z", i % 60),"seq":i}))
+            .collect();
+        service
+            .save_user_knowledge(&json!({"_meta":{"learning_promotions": existing}}))
+            .await
+            .unwrap();
+        let bridge = LearningMemoryBridge::new(ArtifactV2Workspace::new(root.path()));
+        let mut second = spec();
+        second.key = "second-key".into();
+        for spec in [spec(), second] {
+            bridge
+                .write_user_memory(&service, &candidate(), &spec)
+                .await
+                .unwrap();
+        }
+        let document = service.load_user_knowledge().await.unwrap();
+        let kept = document["_meta"]["learning_promotions"].as_array().unwrap();
+        assert_eq!(kept.len(), MAX_PROMOTION_AUDIT_ITEMS);
+        let audit = std::fs::read_to_string(
+            archive::archive_dir(&service.storage().user_root())
+                .join(archive::LEARNING_PROMOTIONS_FILE),
+        )
+        .unwrap();
+        let rows: Vec<Value> = audit
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        // 207 rows in all: 200 kept in the file, the 7 oldest in the archive
+        // (plus the two new rows, which are always archived).
+        let archived_old: Vec<i64> = rows
+            .iter()
+            .filter_map(|row| row.get("seq").and_then(Value::as_i64))
+            .collect();
+        assert_eq!(archived_old, (0..7).collect::<Vec<_>>());
+        assert_eq!(rows.len(), 9);
+        let identities: std::collections::BTreeSet<String> = rows
+            .iter()
+            .map(crate::magician_v2::agents::user_memory_bounds::compact::promotion_identity)
+            .collect();
+        assert_eq!(identities.len(), rows.len(), "no row archived twice");
+        // Every original row is either kept or archived.
+        for i in 0..205_i64 {
+            assert!(
+                archived_old.contains(&i) || kept.iter().any(|row| row["seq"] == i),
+                "row {i} lost"
+            );
+        }
+    }
+
+    /// A learning promotion into a 2,000-record section deletes nothing: the
+    /// record it replaces is archived, the section cap archives only
+    /// unprotected records, and every original is live or archived.
+    #[tokio::test]
+    async fn a_promotion_into_a_crowded_section_deletes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let service = AgentMemoryResolver::new(root.path())
+            .resolve_for_scope("p", "w")
+            .unwrap();
+        let mut items: Vec<Value> = (0..1990)
+            .map(|i| {
+                json!({"key":format!("wf-{i}"),"value":format!("Step {i}"),
+                    "source_type":"inferred","updated_at":"2026-09-01T00:00:00+00:00"})
+            })
+            .collect();
+        items.extend((0..9).map(|i| {
+            json!({"key":format!("owner-{i}"),"value":format!("Owner rule {i}"),
+                "source_type":"explicit_user_statement","updated_at":"2026-08-01T00:00:00+00:00"})
+        }));
+        items.push(json!({"key":"standup-notes","value":"Old wording",
+            "source_type":"inferred","updated_at":"2026-08-01T00:00:00+00:00"}));
+        service
+            .save_user_knowledge(&json!({ "workflows": items }))
+            .await
+            .unwrap();
+
+        let mut enforce = MagicianMemoryBoundsSettings::default();
+        enforce.mode = UserKnowledgeBoundsMode::Enforce;
+        let bridge = LearningMemoryBridge::new(ArtifactV2Workspace::new(root.path()));
+        with_settings(enforce, async {
+            bridge
+                .write_user_memory(&service, &candidate(), &spec())
+                .await
+                .unwrap();
+        })
+        .await;
+
+        let document = service.load_user_knowledge().await.unwrap();
+        let live = document["workflows"].as_array().unwrap();
+        assert_eq!(live.len(), 600);
+        let user_root = service.storage().user_root();
+        let archived: Vec<archive::ArchiveEntry> = archive::month_files(&user_root)
+            .iter()
+            .flat_map(|path| archive::read_file(path).unwrap().0)
+            .collect();
+        // 2,000 originals + 1 new record, every one live or archived.
+        assert_eq!(live.len() + archived.len(), 2001);
+        assert_eq!(
+            archived
+                .iter()
+                .filter(|e| e.reason == "learning_promotion_replaced")
+                .count(),
+            1
+        );
+        for i in 0..9 {
+            let key = format!("owner-{i}");
+            assert!(live.iter().any(|item| item["key"] == key.as_str()));
+        }
+        assert!(live
+            .iter()
+            .any(|item| item["value"] == "Post notes in the team channel after standup"));
+        assert_eq!(
+            document["_meta"]["learning_promotions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let audit = std::fs::read_to_string(
+            archive::archive_dir(&user_root).join(archive::LEARNING_PROMOTIONS_FILE),
+        )
+        .unwrap();
+        assert_eq!(audit.lines().count(), 1);
+    }
 }

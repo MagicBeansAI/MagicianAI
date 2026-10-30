@@ -1142,7 +1142,8 @@ async fn memory_decision_owner_live_replay() -> anyhow::Result<()> {
                                 let after = memory.load_native_tier(case_agent, &tier, None).await?.ok_or_else(||anyhow::anyhow!("conflict tier missing"))?;
                                 let facts = after.fields["facts"].as_array().ok_or_else(||anyhow::anyhow!("conflict facts missing"))?;
                                 let qualified = qualified_conflict_probe;
-                                anyhow::ensure!(outcome.reviewed == 1 && outcome.superseded == usize::from(qualified) && outcome.missing_decisions == usize::from(!qualified),
+                                // An unqualified answer is an engine abstention: remembered, not retried.
+                                anyhow::ensure!(outcome.reviewed == 1 && outcome.superseded == usize::from(qualified) && outcome.missing_decisions == 0 && outcome.abstained == usize::from(!qualified),
                                     "restricted {expected} owner outcome mismatch: {outcome:?}");
                                 let superseded_index = if expected == "replace_existing" { 0 } else { 1 };
                                 anyhow::ensure!(facts.len() == 2 && facts[0]["value"] == existing && facts[1]["value"] == incoming
@@ -1201,8 +1202,11 @@ async fn memory_decision_owner_live_replay() -> anyhow::Result<()> {
                                 let mut revocation_events = bus.subscribe();
                                 let outcome = consolidator.run_contradiction_sweep_for_agent(&definition, agent, chrono::Utc::now()).await?;
                                 let after = memory.load_native_tier(agent, &tier, None).await?.ok_or_else(||anyhow::anyhow!("revocation tier missing"))?;
-                                anyhow::ensure!(outcome.reviewed == 1 && outcome.superseded == 0 && outcome.missing_decisions == 1
-                                    && after.fields["facts"] == destructive_cases[0]["before"],
+                                // Revoked qualification leaves an unqualified answer: an abstention that
+                                // may mark the pair reviewed, but never changes either fact.
+                                anyhow::ensure!(outcome.reviewed == 1 && outcome.superseded == 0 && outcome.missing_decisions == 0 && outcome.abstained == 1
+                                    && after.fields["facts"].as_array().zip(destructive_cases[0]["before"].as_array()).is_some_and(|(after, before)|
+                                        after.len() == before.len() && after.iter().zip(before).all(|(a, b)| a["value"] == b["value"] && a.get("memory_lifecycle").is_none())),
                                     "revoked authority applied cached supersession: {outcome:?}");
                                 let record = std::iter::from_fn(|| revocation_events.try_recv().ok())
                                     .filter_map(|event|match event {

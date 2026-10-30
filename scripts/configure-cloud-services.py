@@ -19,6 +19,14 @@ CLOUD_FIELDS = (
     ('MAGICIAN_UI_ACCESS_EMAILS', 'Browser Access emails (comma-separated)', False),
     ('CLOUDFLARE_API_TOKEN', 'Scoped Cloudflare API token', True),
 )
+# Saved hostnames win over the zone. A domain switch has to drop them so both
+# tunnel provisioners derive names on the new zone.
+HOST_KEYS = (
+    'MAGICIAN_WEBHOOK_HOST',
+    'MAGICIAN_UI_HOST',
+    'MAGICIAN_CONNECT_HOST',
+    'MAGICIAN_MOBILE_PUBLIC_ORIGIN',
+)
 CLARITY_KEY = 'MAGICIAN_CLARITY_PROJECT_ID'
 WEBSITE_CLARITY_KEY = 'PUBLIC_CLARITY_PROJECT_ID'
 
@@ -78,6 +86,54 @@ def write_values(root, updates):
                 os.unlink(temp)
 
 
+def hostname(value):
+    text = value.strip()
+    if '://' in text:
+        text = text.split('://', 1)[1]
+    return text.split('/', 1)[0].split(':', 1)[0].rstrip('.').lower()
+
+
+def on_zone(host, zone):
+    zone = zone.lower().rstrip('.')
+    return bool(host) and (host == zone or host.endswith('.' + zone))
+
+
+def stale_hostnames(root, zone):
+    """Hostnames still pinned to a domain other than `zone`, in first-seen order."""
+    found = []
+    for name in ('.env.development', '.env'):
+        for value in file_values(root / name, set(HOST_KEYS)).values():
+            value = value.strip()
+            if value and not on_zone(hostname(value), zone) and value not in found:
+                found.append(value)
+    return found
+
+
+def remove_keys(root, keys):
+    """Drop settings from both private env files. Absent files stay absent."""
+    keys = set(keys)
+    for name in ('.env', '.env.development'):
+        path = root / name
+        if not path.is_file():
+            continue
+        kept = []
+        for line in path.read_text().splitlines():
+            match = re.match(r'^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=', line)
+            if not match or match[1] not in keys:
+                kept.append(line)
+        fd, temp = tempfile.mkstemp(prefix=name + '.', dir=root)
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                stream.write('\n'.join(kept) + ('\n' if kept else ''))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temp, 0o600)
+            os.replace(temp, path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+
+
 def validate_cloud(values):
     missing = [key for key, _, _ in CLOUD_FIELDS if not values.get(key, '').strip()]
     if missing:
@@ -108,13 +164,24 @@ def configure(root, *, cloud=False, clarity=False, interactive=False, dry=False,
         keys.add(WEBSITE_CLARITY_KEY if website else CLARITY_KEY)
     values = values_at(root, keys)
     updates = {}
+    moving = []
     if cloud:
         print('Cloudflare uses your domain and scoped token. See docs/setup/cloudflare.md.')
+        current = values.get('MAGICIAN_TUNNEL_ZONE', '').strip()
+        if interactive and current:
+            print('Cloudflare zone is ' + current + '.')
+            switch = input('Switch this computer to a different domain? [y/N] ').strip().lower()
+            if switch in ('y', 'yes'):
+                entered = input('New Cloudflare zone (example.com): ').strip()
+                if not entered:
+                    raise ValueError('A domain switch needs the new zone')
+                values['MAGICIAN_TUNNEL_ZONE'] = entered
         for key, label, secret in CLOUD_FIELDS:
             if not values.get(key) and interactive:
                 values[key] = (getpass.getpass if secret else input)(label + ': ').strip()
         validate_cloud(values)
         updates.update({key: values[key] for key, _, _ in CLOUD_FIELDS})
+        moving = stale_hostnames(root, values['MAGICIAN_TUNNEL_ZONE'])
     if clarity:
         project_key = WEBSITE_CLARITY_KEY if website else CLARITY_KEY
         print('Clarity is optional website session recording.' if website else 'Clarity is optional session recording, including app screens. It sends usage to Microsoft.')
@@ -129,17 +196,30 @@ def configure(root, *, cloud=False, clarity=False, interactive=False, dry=False,
         print('Would save selected settings in both private runtime env files; no values are printed.')
         if cloud and not configure_only:
             print('Would provision this machine’s Cloudflare Tunnel and Access through the existing script.')
+        if moving:
+            print('Would move every tunnel onto ' + values['MAGICIAN_TUNNEL_ZONE'] + ' and clear saved hostnames: ' + ', '.join(moving) + '.')
+            print('Would run the original shared tunnel script as well. Old DNS records stay until each hostname is parked.')
         return
     if updates:
         write_values(root, updates)
         print('Saved selected settings in private .env and .env.development files.')
+    if moving:
+        remove_keys(root, HOST_KEYS)
+        print('Cleared saved hostnames from the previous domain: ' + ', '.join(moving) + '.')
     if cloud and not configure_only:
         bash = shutil.which('bash')
         if not bash:
             raise ValueError('bash is required for Cloudflare provisioning')
         child_env = dict(os.environ, MAGICIAN_ROOT_DIR=str(root))
         child_env.update({key: values[key] for key, _, _ in CLOUD_FIELDS})
+        if moving:
+            for key in HOST_KEYS:
+                child_env.pop(key, None)
         runner([bash, str(REPO / 'scripts/ensure-machine-tunnel.sh'), values['MAGICIAN_MACHINE_NAME'], '--install'], env=child_env, check=True)
+        if moving:
+            runner([bash, str(REPO / 'scripts/ensure-magician-tunnel.sh')], env=child_env, check=True)
+            print('Tunnels now follow ' + values['MAGICIAN_TUNNEL_ZONE'] + '. Restart Magician and pair phones again. Kapso and AgentMail register the new webhook when Magician starts.')
+            print('Old DNS records and Access apps stay. Park one leftover hostname with: make machine-tunnel PARK=<hostname>')
     if clarity:
         if website:
             print('Website recording configuration saved for the next website build; app recording is unchanged.')

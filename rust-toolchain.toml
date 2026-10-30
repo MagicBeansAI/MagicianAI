@@ -1,0 +1,9 @@
+# One compiler for every build in this checkout. Artifacts from different
+# rustc versions are never reused, so a target that switched toolchains (the
+# MLX decision engine needs >= 1.95) recompiled `magician` from scratch for
+# every other target. CI, the Dockerfiles, `MLX_RUST_TOOLCHAIN` and the Clippy
+# baseline follow this channel; change them together.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
+components = ["clippy", "rustfmt", "rust-src", "rust-analyzer", "llvm-tools"]

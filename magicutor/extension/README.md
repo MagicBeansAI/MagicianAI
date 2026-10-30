@@ -17,6 +17,28 @@ This Chrome extension lets Magicutor's CDP proxy automate the user's normal Chro
   establishment single-flight, deduplicates reconnect timers, applies bounded
   backoff/jitter, and ignores stale socket callbacks after a replacement bridge
   generation becomes active.
+- **Several Browsers**: up to four browsers or profiles share the bridge. The
+  handshake carries a per-install `browser_id` and secret `browser_key` (both
+  random, kept in `chrome.storage.local`; the key is sent only in the handshake
+  and never shown) and a label (the browser brand, or the name set under
+  Settings → Browser name). The panel shows “Connected as Comet (2 of 4)”, “All
+  4 browser slots are in use” when other browsers hold every slot, or
+  “Reconnecting: previous connection still open” while Magicutor still holds
+  this browser's old socket (or a copied profile shares this identity). A
+  reconnect proving the key replaces this browser's own quiet socket; it never
+  displaces another browser. Runs started from this panel are pinned to this
+  browser, and “use this tab” binds send `browserId`.
+- **Pairing**: a browser Magicutor has not accepted yet shows “Connect this
+  browser to Magician?” (Accept / Decline) in the popup and side panel and a
+  `!` toolbar badge. Accept sends `browser_consent`; Decline disconnects and
+  the extension stays disconnected (no reconnect, not even from the health
+  alarm) until the owner clicks Connect. The decision is kept in
+  `chrome.storage.local` (`magican_bridge_consent_v1`); a remote accept or
+  revoke from Magician updates it.
+- **Browser choice cards**: when an attended run could use several accepted
+  browsers, each shows “Use this browser for '<task>'?” with Accept and
+  Always use this browser. The first answer anywhere wins; the other cards
+  disappear, and a card that is never withdrawn expires with its timeout.
 - **Event Streaming**: Real-time browser events (tab/window creation, navigation, etc.)
 - **Side Panel Controls**: Persistent control surface for running, monitoring, and cancelling automation through Magician's active execution cancellation APIs
 - **Popup Fallback**: Full popup UI remains available if side panel action wiring is unavailable

@@ -1,6 +1,6 @@
 //! Phase 3 trust policy enforcer scaffolding.
 
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -75,6 +75,79 @@ impl TrustPolicyEnforcer {
     pub fn has_level_exact(&self, level: &str) -> bool {
         self.policies.iter().any(|p| p.level == level)
     }
+}
+
+/// Bound on cached trust policy files (one per scope). Past it the cache
+/// starts over rather than tracking recency.
+const TRUST_POLICY_CACHE_MAX_ENTRIES: usize = 256;
+
+#[derive(Default)]
+struct TrustPolicyCacheState {
+    /// Path -> (content digest, enforcer parsed from that content).
+    entries: std::collections::HashMap<std::path::PathBuf, (String, Arc<TrustPolicyEnforcer>)>,
+    parses: std::collections::HashMap<std::path::PathBuf, u64>,
+}
+
+fn trust_policy_cache() -> std::sync::MutexGuard<'static, TrustPolicyCacheState> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<TrustPolicyCacheState>> =
+        std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Read a trust policy file and return its enforcer with the hex blake3
+/// digest of its content, parsing the YAML only when that content changed.
+///
+/// Chat reads the scope's policy on every turn. The file is still read each
+/// time — a few KB, and the digest is part of the turn's policy identity —
+/// but the parse and validation are served from a cache keyed by path and
+/// content digest, so an edit (any byte) is seen on the next call and an
+/// unchanged file shares one `Arc`. A file that fails to read or parse fails
+/// exactly as an uncached load would.
+pub fn load_trust_policy_file_cached(
+    path: impl AsRef<Path>,
+) -> Result<(Arc<TrustPolicyEnforcer>, String), TrustPolicyError> {
+    let path = path.as_ref();
+    let content = fs::read_to_string(path)?;
+    let digest = blake3::hash(content.as_bytes()).to_hex().to_string();
+    let cached = trust_policy_cache()
+        .entries
+        .get(path)
+        .filter(|(cached_digest, _)| *cached_digest == digest)
+        .map(|(_, enforcer)| Arc::clone(enforcer));
+    if let Some(enforcer) = cached {
+        return Ok((enforcer, digest));
+    }
+    let parsed = TrustPolicyEnforcer::from_yaml_str(&content);
+    let mut cache = trust_policy_cache();
+    *cache.parses.entry(path.to_path_buf()).or_default() += 1;
+    let enforcer = Arc::new(parsed?);
+    if cache.entries.len() >= TRUST_POLICY_CACHE_MAX_ENTRIES && !cache.entries.contains_key(path) {
+        cache.entries.clear();
+        cache.parses.clear();
+    }
+    cache
+        .entries
+        .insert(path.to_path_buf(), (digest.clone(), Arc::clone(&enforcer)));
+    Ok((enforcer, digest))
+}
+
+/// Drop one trust policy file's parsed enforcer. Returns whether one was
+/// cached. Not needed for correctness (every load compares the content
+/// digest); for callers that want the next load to parse.
+pub fn invalidate_trust_policy_cache(path: impl AsRef<Path>) -> bool {
+    trust_policy_cache().entries.remove(path.as_ref()).is_some()
+}
+
+/// How many times this process parsed the trust policy at `path`.
+pub fn trust_policy_parse_count(path: impl AsRef<Path>) -> u64 {
+    trust_policy_cache()
+        .parses
+        .get(path.as_ref())
+        .copied()
+        .unwrap_or(0)
 }
 
 impl TrustPolicyFile {
@@ -261,6 +334,75 @@ fn validate_tool_action_patterns(
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
+
+    const ALLOW_ALL: &str = r#"
+trust_policies:
+  - level: reviewed
+    allow:
+      - tool: "*"
+        action: "*"
+"#;
+
+    const DENY_REPORT_EMAIL: &str = r#"
+trust_policies:
+  - level: reviewed
+    allow:
+      - tool: "*"
+        action: "*"
+    deny:
+      - tool: report
+        action: email
+"#;
+
+    const BROKEN: &str = "trust_policies: [unclosed\n";
+
+    #[test]
+    fn cached_trust_policy_parses_once_and_again_after_an_edit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("trust_policies.yaml");
+        fs::write(&path, ALLOW_ALL).expect("write policy");
+        let reviewed = TrustLevel("reviewed".to_string());
+
+        let (first, first_digest) = load_trust_policy_file_cached(&path).expect("load");
+        let (second, second_digest) = load_trust_policy_file_cached(&path).expect("load");
+        assert_eq!(trust_policy_parse_count(&path), 1);
+        assert!(Arc::ptr_eq(&first, &second), "one shared Arc");
+        assert_eq!(first_digest, second_digest);
+        assert_eq!(
+            first_digest,
+            blake3::hash(ALLOW_ALL.as_bytes()).to_hex().to_string()
+        );
+        assert!(first.is_allowed(&reviewed, "report", "email"));
+
+        fs::write(&path, DENY_REPORT_EMAIL).expect("edit policy");
+        let (edited, edited_digest) = load_trust_policy_file_cached(&path).expect("load");
+        assert_eq!(trust_policy_parse_count(&path), 2);
+        assert_ne!(edited_digest, first_digest);
+        assert!(!edited.is_allowed(&reviewed, "report", "email"));
+
+        assert!(invalidate_trust_policy_cache(&path));
+        load_trust_policy_file_cached(&path).expect("load");
+        assert_eq!(trust_policy_parse_count(&path), 3);
+    }
+
+    #[test]
+    fn cached_trust_policy_fails_like_an_uncached_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("trust_policies.yaml");
+        fs::write(&path, ALLOW_ALL).expect("write policy");
+        load_trust_policy_file_cached(&path).expect("load");
+
+        fs::write(&path, BROKEN).expect("break policy");
+        assert!(matches!(
+            load_trust_policy_file_cached(&path),
+            Err(TrustPolicyError::Yaml(_))
+        ));
+        fs::remove_file(&path).expect("remove policy");
+        assert!(matches!(
+            load_trust_policy_file_cached(&path),
+            Err(TrustPolicyError::Io(_))
+        ));
+    }
 
     #[test]
     fn deny_rule_takes_precedence_over_allow() {

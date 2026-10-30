@@ -2235,7 +2235,7 @@
 		align-items: center;
 		gap: 0.4rem;
 		padding: 0.2rem 0.6rem;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		background: var(--bg-card);
 		border: 1px solid var(--border-soft);
 		font-family: var(--font-mono);
@@ -2276,18 +2276,19 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.38rem;
+		gap: 0.35rem;
 		max-width: 100%;
-		min-height: 2.1rem;
-		padding: 0.42rem 0.82rem;
+		min-height: 1.75rem;
+		padding: 0.22rem 0.65rem;
 		border: 1px solid transparent;
-		border-radius: 8px;
+		border-radius: var(--radius-chip, 6px);
 		font: inherit;
-		font-size: 0.82rem;
+		font-size: 0.78rem;
 		font-weight: 500;
 		line-height: 1.2;
 		cursor: pointer;
 		text-decoration: none;
+		box-sizing: border-box;
 		transition:
 			background 0.15s ease,
 			border-color 0.15s ease,
@@ -2320,9 +2321,9 @@
 		color: var(--color-warning, #d97706);
 	}
 	:global(.action-button--sm) {
-		min-height: 1.85rem;
-		padding: 0.3rem 0.65rem;
-		font-size: 0.76rem;
+		min-height: 1.55rem;
+		padding: 0.16rem 0.52rem;
+		font-size: 0.72rem;
 	}
 
 	.notice {
@@ -2362,16 +2363,18 @@
 	.chip {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.35rem;
+		gap: 0.32rem;
 		border: 1px solid color-mix(in srgb, var(--chip-color) 35%, var(--border-soft));
 		background: var(--bg-card);
 		color: var(--text-primary);
-		border-radius: 999px;
-		padding: 0.18rem 0.62rem;
-		font-size: 0.74rem;
+		border-radius: var(--radius-chip, 6px);
+		min-height: 1.45rem;
+		padding: 0.12rem 0.52rem;
+		font-size: 0.72rem;
 		font-weight: 500;
 		font-family: inherit;
 		cursor: pointer;
+		box-sizing: border-box;
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 		transition: all 0.15s ease;
 	}
@@ -2461,7 +2464,7 @@
 
 	.metric--pinned {
 		border: 1px solid var(--accent-primary);
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		padding: 0.1rem 0.55rem;
 		background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-card));
 		cursor: pointer;
@@ -2538,7 +2541,7 @@
 		font-family: var(--font-mono);
 		font-weight: 600;
 		padding: 0.05rem 0.4rem;
-		border-radius: 999px;
+		border-radius: 4px;
 		background: var(--bg-soft);
 		color: var(--text-secondary);
 	}
@@ -2611,7 +2614,7 @@
 		font-family: var(--font-mono);
 		font-weight: 600;
 		padding: 0.04rem 0.35rem;
-		border-radius: 999px;
+		border-radius: 4px;
 		background: var(--bg-soft);
 		color: var(--text-secondary);
 	}
@@ -2747,7 +2750,7 @@
 		font-family: var(--font-mono);
 		font-weight: 600;
 		padding: 0.05rem 0.45rem;
-		border-radius: 999px;
+		border-radius: 4px;
 		background: var(--bg-soft);
 		color: var(--text-secondary);
 	}
@@ -2965,7 +2968,7 @@
 
 	.tag {
 		flex: none;
-		border-radius: 999px;
+		border-radius: 4px;
 		padding: 0.02rem 0.4rem;
 		font-size: 0.9em;
 		background: var(--bg-soft);

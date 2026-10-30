@@ -130,6 +130,7 @@ impl JournalIndex {
             CREATE TABLE IF NOT EXISTS records(sequence INTEGER PRIMARY KEY, record_key TEXT NOT NULL,
                 checksum TEXT NOT NULL, segment TEXT NOT NULL, byte_offset INTEGER NOT NULL, byte_length INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS record_key_lookup ON records(record_key);
+            CREATE INDEX IF NOT EXISTS records_by_segment ON records(segment);
             CREATE TABLE IF NOT EXISTS segments(name TEXT PRIMARY KEY, indexed_bytes INTEGER NOT NULL,
                 file_bytes INTEGER NOT NULL, stamp TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, state TEXT NOT NULL);

@@ -10,10 +10,13 @@ import type { AttentionStoreState } from '$lib/stores/attentionStore';
 import type { TaskPanelModel } from '$lib/magician/tasks/UnifiedTaskPanel.svelte';
 import {
 	collectPendingAsks,
+	composerAsks,
 	createPendingAsksStore,
+	isDismissOnlyAsk,
 	mergeTaskPanelAsks,
 	pendingAsksForTask,
-	pendingAsksForThread
+	pendingAsksForThread,
+	type PendingAsk
 } from './pendingAsks';
 
 const REVIEW_HREF = '/work?view=quality&run=run-1&task=task-relentless';
@@ -146,7 +149,155 @@ describe('collectPendingAsks', () => {
 	});
 });
 
+describe('composerAsks (every question, wherever the reader is)', () => {
+	it('lists every open question, this conversation\'s first, and marks which belong here', () => {
+		const entry = { ...liveEntry(), correlation_id: 'chat-ask-1' };
+		const payload = (entry.raw as { data: Record<string, unknown> }).data;
+		payload.correlation_id = 'chat-ask-1';
+		payload.request_id = 'chat-ask-1';
+		payload.scope = { principal: 'owner', workspace: 'default' };
+		payload.input_type = 'confirmation';
+		payload.input_schema = {
+			request_type: 'need_user_input',
+			context: { chat_session_id: 'chat-1', chat_turn_id: 'turn-1' }
+		};
+		// A chat question (chat-1) and a task question whose feed row names `research`.
+		const asks = collectPendingAsks([entry], feed([relentlessReviewRow()]));
+		const chatAsk = asks.find((ask) => ask.taskId === null)!.target.id;
+
+		const inResearch = composerAsks(asks, 'research');
+		expect(inResearch.targets.map((target) => target.id)).toEqual(['req-review-1', chatAsk]);
+		expect([...inResearch.here]).toEqual(['req-review-1']);
+
+		const inChat = composerAsks(asks, 'general', { chatSessionId: 'chat-1' });
+		expect(inChat.targets.map((target) => target.id)).toEqual([chatAsk, 'req-review-1']);
+		expect([...inChat.here]).toEqual([chatAsk]);
+
+		// Elsewhere entirely: everything is still listed, nothing is "here".
+		const elsewhere = composerAsks(asks, 'another-thread', { chatSessionId: 'chat-9' });
+		expect(elsewhere.targets).toHaveLength(2);
+		expect(elsewhere.here.size).toBe(0);
+	});
+
+	it("keeps another chat's question elsewhere, even in the same thread", () => {
+		const chatAsk = (id: string, session: string, thread: string) => {
+			const entry = { ...liveEntry(), correlation_id: id };
+			const payload = (entry.raw as { data: Record<string, unknown> }).data;
+			payload.correlation_id = id;
+			payload.request_id = id;
+			payload.scope = { principal: 'owner', workspace: 'default', thread_id: thread };
+			payload.input_type = 'confirmation';
+			payload.input_schema = {
+				request_type: 'need_user_input',
+				context: { chat_session_id: session, chat_turn_id: `turn-${id}` }
+			};
+			return entry;
+		};
+		const asks = collectPendingAsks(
+			[chatAsk('ask-a', 'chat-a', 'general'), chatAsk('ask-b', 'chat-b', 'general'), chatAsk('ask-r', 'chat-r', 'research')],
+			feed()
+		);
+		const inA = composerAsks(asks, 'general', { chatSessionId: 'chat-a' });
+		expect([...inA.here]).toEqual(['ask-a']);
+		expect(inA.targets[0].id).toBe('ask-a');
+		// The shared default thread alone never makes another chat's ask local.
+		expect(composerAsks(asks, 'general').here.size).toBe(0);
+		// A named thread still gathers asks when no chat session is on screen.
+		expect([...composerAsks(asks, 'research').here]).toEqual(['ask-r']);
+		// Another chat in that named thread does not take its question.
+		expect(composerAsks(asks, 'research', { chatSessionId: 'chat-other' }).here.size).toBe(0);
+	});
+
+	it('leaves a dismiss-only notice to Attention, out of every composer', () => {
+		const ask = (id: string, options: { id: string; label: string }[]): PendingAsk => ({
+			target: {
+				id,
+				source: 'service_health',
+				input_type: 'choice',
+				prompt: 'Decision Engine is unavailable',
+				input_schema: { type: 'choice', options },
+				identifiers: { correlation_id: id },
+				scope: { thread_id: 'research' }
+			} as HitlOpenTarget,
+			taskId: null,
+			threadId: 'research',
+			at: 1
+		});
+		const notice = ask('notice', [{ id: 'dismiss', label: 'Dismiss' }]);
+		const question = ask('question', [{ id: 'dismiss', label: 'Dismiss' }, { id: 'retry', label: 'Retry' }]);
+		const selection = composerAsks([notice, question], 'research');
+		expect(selection.targets.map((target) => target.id)).toEqual(['question']);
+		expect(isDismissOnlyAsk(notice.target)).toBe(true);
+		expect(isDismissOnlyAsk(question.target)).toBe(false);
+	});
+
+	it("reads the asking chat from the feed row's scope, as Android does", () => {
+		const row = relentlessReviewRow();
+		const metadata = row.metadata as { hitl_request: { scope: Record<string, unknown> } };
+		metadata.hitl_request.scope.chat_session_id = 'chat-b';
+		const asks = collectPendingAsks([], feed([row]));
+		// Same thread, another chat: elsewhere; its own chat: here.
+		expect(composerAsks(asks, 'research', { chatSessionId: 'chat-a' }).here.size).toBe(0);
+		expect([...composerAsks(asks, 'research', { chatSessionId: 'chat-b' }).here]).toEqual(['req-review-1']);
+	});
+
+	it('leaves a plan approval the planner dock offers here to the planner dock', () => {
+		const asks = collectPendingAsks([], feed([relentlessReviewRow()]));
+		const planAsk = { ...asks[0], target: { ...asks[0].target, source: 'plan_approval' as const } };
+		expect(composerAsks([planAsk], 'research', { planApprovalTaskIds: new Set(['task-relentless']) }).targets).toEqual([]);
+		// Elsewhere it is still answerable from the dock.
+		expect(composerAsks([planAsk], 'general', { planApprovalTaskIds: new Set(['other-task']) }).targets).toHaveLength(1);
+	});
+});
+
 describe('pendingAsksForThread (composer dock)', () => {
+	it('shows a taskless chat question by its session without guessing a thread', () => {
+		const entry = liveEntry();
+		const payload = (entry.raw as { data: Record<string, unknown> }).data;
+		payload.scope = { principal: 'owner', workspace: 'default' };
+		payload.input_type = 'confirmation';
+		payload.input_schema = {
+			request_type: 'need_user_input',
+			context: { chat_session_id: 'chat-1', chat_turn_id: 'turn-1' }
+		};
+		const asks = collectPendingAsks([entry], feed());
+		expect(asks).toHaveLength(1);
+		expect(asks[0].threadId).toBeNull();
+		expect(asks[0].taskId).toBeNull();
+		expect(pendingAsksForThread(asks, 'general', { chatSessionId: 'chat-1' })).toHaveLength(1);
+		expect(pendingAsksForThread(asks, 'general', { chatSessionId: 'chat-2' })).toEqual([]);
+		expect(pendingAsksForThread(asks, 'general')).toEqual([]);
+	});
+
+	it('shows a workspace God-mode approval in every composer while retaining its origin', () => {
+		const entry = liveEntry();
+		const payload = (entry.raw as { data: Record<string, unknown> }).data;
+		payload.scope = { principal: 'owner', workspace: 'default', thread_id: 'general' };
+		payload.input_schema = {
+			request_type: 'sandbox_override',
+			options: [{ id: 'allow_once', label: 'Allow once' }, { id: 'deny', label: 'Deny' }],
+			context: { god_mode: true, chat_session_id: 'chat-1' }
+		};
+		const asks = collectPendingAsks([entry], feed());
+		expect(pendingAsksForThread(asks, 'research')).toHaveLength(1);
+		expect(pendingAsksForThread(asks, 'another-chat')).toHaveLength(1);
+		expect(pendingAsksForThread(asks, 'general')).toHaveLength(1);
+		// VibeDev uses its project session and run turns, without a named chat thread.
+		expect(pendingAsksForThread(asks, '', { threadTaskIds: new Set(['turn-1', 'turn-2']) })).toHaveLength(1);
+        expect(asks[0].target.input_schema?.context).toMatchObject({ chat_session_id: 'chat-1' });
+	});
+
+	it('shows VibeDev turn and project-session questions without unrelated runs', () => {
+		const asks = collectPendingAsks([], feed([relentlessReviewRow()]));
+		expect(pendingAsksForThread(asks, '', { threadTaskIds: new Set(['task-relentless']) })).toHaveLength(1);
+		expect(pendingAsksForThread(asks, '', { threadTaskIds: new Set(['other-run']) })).toEqual([]);
+		const projectAsk = { ...asks[0], taskId: null, threadId: null, target: {
+			...asks[0].target, input_schema: { ...asks[0].target.input_schema, context: { chat_session_id: 'project-chat' } }
+		} };
+		expect(pendingAsksForThread([projectAsk], '', { chatSessionId: 'project-chat' })).toHaveLength(1);
+		expect(pendingAsksForThread([projectAsk], '', { chatSessionId: 'other-chat' })).toEqual([]);
+	});
+
 	it('shows a task-only ask in the thread its feed row names', () => {
 		const asks = collectPendingAsks([liveEntry()], feed([relentlessReviewRow()]));
 		expect(pendingAsksForThread(asks, 'Research').map((target) => target.id)).toEqual(['req-review-1']);

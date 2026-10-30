@@ -33,6 +33,9 @@ use crate::magician_v2::artifact_v2::workspace::{
 pub const ACCESS_JWT_HEADER: &str = "Cf-Access-Jwt-Assertion";
 pub const MOBILE_DEVICE_ID_HEADER: &str = "X-Magician-Device-Id";
 pub const LEGACY_ANDROID_DEVICE_ID_HEADER: &str = "X-Magdroid-Device";
+/// The app build a paired device runs (`0.4.11 (222)`), recorded on its
+/// pairing for Settings → Devices. Diagnostic only; never authorizes anything.
+pub const MOBILE_APP_VERSION_HEADER: &str = "X-Magician-App-Version";
 const ACCESS_CLIENT_ID_HEADER: &str = "CF-Access-Client-Id";
 const ACCESS_CLIENT_SECRET_HEADER: &str = "CF-Access-Client-Secret";
 const MOBILE_ENROLLMENT_EXCHANGE_PATH: &str = "/api/magician/v2/devices/enrollment/exchange";
@@ -263,10 +266,42 @@ pub enum AccessError {
     KeysUnavailable(String),
 }
 
+/// The Access applications whose assertions this server accepts: the API
+/// host's (`MAGICIAN_CF_ACCESS_AUD`, required) and the UI hosts' that proxy
+/// to it (`MAGICIAN_CF_ACCESS_UI_AUD`, optional). A browser on the dev UI host
+/// (`ui-<machine>.<zone>`, its own email-login app) reaches the API through
+/// that host's proxy, so its assertion names the UI app; with only the API
+/// audience accepted, every sign-in there was refused. Either value may be a
+/// comma-separated list. `None` without an API audience: a UI audience alone
+/// would admit UI traffic while leaving the API host unchecked.
+fn access_audiences(api: Option<&str>, ui: Option<&str>) -> Option<Vec<String>> {
+    fn split(value: Option<&str>) -> Vec<String> {
+        value
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+    let mut audiences = split(api);
+    if audiences.is_empty() {
+        return None;
+    }
+    for audience in split(ui) {
+        if !audiences.contains(&audience) {
+            audiences.push(audience);
+        }
+    }
+    Some(audiences)
+}
+
 /// Verifies Access assertions against Cloudflare's published signing keys.
 pub struct AccessVerifier {
     issuer: String,
-    audience: String,
+    /// The API host's Access application, then any UI hosts' applications
+    /// whose requests the dev UI proxies here.
+    audiences: Vec<String>,
     mode: AccessMode,
     http: reqwest::Client,
     cache: RwLock<Option<(Vec<Jwk>, Instant)>>,
@@ -285,10 +320,10 @@ impl AccessVerifier {
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())?;
-        let audience = std::env::var("MAGICIAN_CF_ACCESS_AUD")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())?;
+        let audiences = access_audiences(
+            std::env::var("MAGICIAN_CF_ACCESS_AUD").ok().as_deref(),
+            std::env::var("MAGICIAN_CF_ACCESS_UI_AUD").ok().as_deref(),
+        )?;
 
         let mode = match std::env::var("MAGICIAN_CF_ACCESS_MODE")
             .unwrap_or_default()
@@ -306,7 +341,7 @@ impl AccessVerifier {
 
         Some(Arc::new(Self {
             issuer,
-            audience,
+            audiences,
             mode,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -385,7 +420,7 @@ impl AccessVerifier {
         // token choose its algorithm is how `alg: none` and HMAC-confusion
         // attacks work.
         let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-        validation.set_audience(&[self.audience.as_str()]);
+        validation.set_audience(&self.audiences);
         validation.set_issuer(&[self.issuer.as_str()]);
         validation.validate_exp = true;
         validation.validate_nbf = true;
@@ -511,10 +546,16 @@ pub async fn verify_access_middleware(
                     "mobile credential verifier is unavailable",
                 )
             })?;
+        let app_version = req
+            .headers()
+            .get(MOBILE_APP_VERSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let device = pairing
-            .authenticate_mobile(
+            .authenticate_mobile_reporting(
                 &device_id,
                 &device_token,
+                app_version.as_deref(),
                 chrono::Utc::now().timestamp_millis(),
             )
             .await
@@ -702,6 +743,24 @@ mod tests {
             "principal": principal,
             "workspace": workspace,
         }))
+    }
+
+    #[test]
+    fn accepted_audiences_need_the_api_app_and_add_ui_apps() {
+        assert_eq!(access_audiences(None, Some("ui-aud")), None);
+        assert_eq!(access_audiences(Some("  "), Some("ui-aud")), None);
+        assert_eq!(
+            access_audiences(Some(" api-aud "), None),
+            Some(vec!["api-aud".to_string()])
+        );
+        assert_eq!(
+            access_audiences(Some("api-aud"), Some("ui-aud, other-ui ,,api-aud")),
+            Some(vec![
+                "api-aud".to_string(),
+                "ui-aud".to_string(),
+                "other-ui".to_string()
+            ])
+        );
     }
 
     #[test]

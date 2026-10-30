@@ -12,6 +12,7 @@ pub mod engine;
 pub mod engine_pin;
 pub mod engines;
 pub mod grant;
+pub mod grant_channel;
 pub mod input;
 pub mod mouth_bridge;
 pub mod run_ownership;
@@ -67,7 +68,7 @@ pub use terminal_session::{
     scoped_runless_executors, take_runless_executors, TerminalSession,
 };
 pub use turn_engine::{
-    harness_engine_snapshot, install_harness_engine_snapshot, resolve_turn_engine, run_engine_for,
-    run_engine_for_pin, run_parent_engine, run_parent_engine_for_pin, settings_pin,
-    HarnessEngineSnapshot, TurnEngine,
+    follows_chat_engine, harness_engine_follows_chat, harness_engine_snapshot,
+    install_harness_engine_snapshot, resolve_turn_engine, run_engine_for, run_engine_for_pin,
+    run_parent_engine, run_parent_engine_for_pin, settings_pin, HarnessEngineSnapshot, TurnEngine,
 };

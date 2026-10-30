@@ -2,49 +2,48 @@
 
 ## [Unreleased]
 
-### 2026-10-15 — 0.4.3 (build 207)
+- A new or cleared chat opens on the welcome screen (suggestions and recent chats) instead of a stored "I am Sam" greeting, which kept the transcript from ever being empty.
+- Composer `/engine` and `/run-engine` go engine → model → thinking level (the model dropdown's catalog; Settings → Agentic flows for runs) and show the current choice; new `/voice-mode` picks Live, Dictate or Hands-free.
 
-- "Magician at work" Live Activity for coding runs, crews and Work tasks, with Approve from the lock screen and Follow for a per-item activity.
-- An archived task's chat card settles as "Archived" instead of reading "Running".
-- **VibeDev** companion in the left menu: Now (crew questions, approvals, crews, live runs with Steer/Stop) and Projects, with searchable runs, turn timelines, changed files and folding diffs, and dictation in the New run, Follow up, crew and Steer sheets. Destructive actions offer a two-second Undo; screens refresh live and show stale data offline. The coding-runs Live Activity opens VibeDev (`magican://vibe`).
-- Coding-runs Live Activity on the lock screen with push updates and push-to-start (iOS 17.2+); diff approvals can be answered directly. VoiceOver labels and actions, wrapping at accessibility text sizes, 44 pt targets, and an offline cache.
-- VibeDev fixes: undo-window actions are sent even after leaving the screen; only one Live Activity runs and failed starts retry; stale reads no longer overwrite newer turns; refresh keeps paged runs; failed approvals are reported; offline caches are per machine, account and workspace.
-- More VibeDev fixes: the Live Activity and its push routes follow the machine in use and are cleaned up on switch or forget; route removals cannot remove a newer activity's route; run screens show turns while events keep arriving over a slow connection; Forget removes the machine at once and sends its route removals in the background, giving up after 10 seconds.
+### 2026-10-30 — 0.4.14 (build 225)
 
-### 2026-10-12 — 0.4.2 (build 206)
+- Chat shows **Compacting conversation · k/N**, pages long histories and marks sessions being deleted; Today cards share an **⚡ Act** menu; Goals splits Open and Closed; Today publishes pulse slices independently.
+- Chat's context step shows **Compacting conversation · k/N** and its result, and marks a failed compaction as failed.
+- Chat loads earlier messages as you scroll to the top of a long conversation, and History shows **Deleting…** on a session until the delete finishes, then keeps times and order fresh while chats run.
+- Reading Room deck and Broadsheet cards share one **⚡ Act** menu with the card's own actions (reply, reminders, open in the app, a follow-up task that asks for your instruction first, snooze, Worth actions); deck cards also get a **Details ›** link, and **Ask Presto** now names your agent.
+- Goals lists only open goals, with an **Open | Closed** switch; open goals have **Mark done** and closed goals **Reopen**. The All work summary counts only open goals. A workspace whose goals are all closed is listed only under Closed.
+- Today publishes pulse slices independently, omits full-universe card diagnostics, and distinguishes unavailable values from zero.
+- With notifications denied, the status message points to **Settings → Notifications** (the old Permissions section is gone).
 
-- Filled buttons pick a readable text colour; Internal work refreshes on navigation; a selected tag keeps the Today filter.
-- Asks are answerable in place in the composer and on task detail; Relentless reviews show Approve/Reject and Review draft.
-- Fixed: development-signed Release builds register the correct APNs environment, so the server no longer drops their tokens.
-- Answer simple asks from the notification (Approve/Reject, up to four options, or a text reply); answering needs an unlocked phone. Questions stay hidden until unlock unless the new "Show questions on lock screen" setting is on.
-- Settings explains how iOS Show Previews affects push questions; push answering logs content-free diagnostics.
+### 2026-10-28 — 0.4.13 (build 224)
 
-### 2026-10-04 — 0.4.1
+- Today restores Reading Room timestamps and source labels, distinguishes loaded cards from totals, and fixes deck paging and progressive loading.
 
-- Paired-machine selection, refreshed theme, task and attention surfaces, tree-layout thinking maps and new icon/launch assets (build 205); speech/timer and remote reliability fixes.
+- Live voice recovers stopped capture; Live and dictation show measured waveforms with smooth composer resizing, and either side of the mode control opens modes and Settings.
+- In a Live call the mic mode is a clear **Open mic | Hold to talk** switch with the active mode highlighted; Open mic shows a round mute button, Hold to talk a wide hold button, and the status line and composer strip name the mode.
+- The God modes menu offers **Auto-approve this chat**: God mode then asks only before deletes, root and code a command does not show.
+- An MCP sign-in in Attention offers **Not now**, which cancels the sign-in and closes the ask everywhere.
+- Chat artifacts with long output paths open again.
+- Settings → Service accounts shows each account's status with **Reconnect**, and multi-endpoint services sign in per endpoint.
+- Settings → Service accounts connects Google Workspace, Telegram and WhatsApp from the phone (code, pairing code, QR or Google sign-in); rows missing a tool or keys read **Unavailable**.
+- Deleting a task that is still finishing shows "This task is still finishing. Try again in a few seconds." instead of a raw error.
 
-## 2026-09-30 — v0.4.0 (build 203): Observe Command Deck, Tasks parity, voice
+### 2026-10-26 — 0.4.12 (build 223)
 
-### Voice notes and voice settings
+- Chat and VibeDev composer model chips show the selected thinking level beside the model, as on web.
+- A send an agent made that was held for review (an email or message to someone outside) now shows its preview in Attention with **Send**, **Discard** and **Always allow <agent> to send to <recipient>**, plus the recipient and when the review expires; the composer ask dock opens it there instead of offering Approve/Reject.
 
-- Dictation in an idle chat is an ordinary chat turn again.
-- Voice settings choices open a scrollable list, so every entry is reachable.
+### 2026-10-25 — 0.4.11 (build 222)
 
-### Observe Command Deck
+- Notices you can only dismiss (a service-health notice, an expired notice) no longer appear in the chat or VibeDev composer; Attention still lists them.
+- Magican settings has a Refresh button on the right of its navigation bar; it reloads the page, or retries after a failed load (the same action as Retry).
+- Settings → Help & about shows the Magician core version for Magician backend, plus Magician API, Magicutor and Desktop versions when the paired machine reports them; the Connection service rows show the same versions. The app's own row now reads "Magican iOS".
+- The app sends its version with each request to the paired machine, so web Settings → Devices can show which build each iPhone runs.
 
-- Observe matches the web Command Deck: status row, KPI cards switching Now, Sources, Audio and Notes, and live captures.
-- Now has a capture launchpad, Upcoming, widget slots and Recent captures; Sources shows device and web sources; Audio picks meeting and listening profiles.
-- `magican://observe?pane=…` deep links; screen share no longer starts the mic on return.
-- Fixed: Send bot failures show an error; Share screen has a title field; Today swipe cards no longer block page scrolling on iOS 18+; app widget slots no longer flash "temporarily unavailable".
+### 2026-10-25 — 0.4.10 (build 221)
 
-### Tasks web parity
-
-- Task cards show Result, Publish to Notes, Reset only for tasks that ran, and a readable recurring cadence.
-- Task detail separates deliverables from intermediate artifacts, groups delegated children, and shows run durations.
-
-## 2026-09-28 — v0.3.0 (build 202): Today is the Morning Edition
-
-- Today matches the web Morning Edition: greeting, realtime wire, lead story, operations carousel, Reading Room with Morning Brief deck and Broadsheet, and briefing, deliverable and digest sections.
+- The composer ask dock no longer shows another chat's question as this chat's own when both sit in the shared General thread, so typed text answers only this chat's question; one model call no longer shows as two step rows.
+- Settings keeps only this iPhone's settings — Voice & audio, Notifications, Keyboard, Connection, Help & about — with search. **Magican settings** at the top opens the shared web Settings inside the app (sign in once; the app remembers it), which now holds Budgets, Harness credentials, Your preferences, notes from preference checks, storage and speaking voices. Searching for one of those leads to Magican settings.
 
 ---
 

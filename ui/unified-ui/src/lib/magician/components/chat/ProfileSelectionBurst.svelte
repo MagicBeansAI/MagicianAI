@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import { rootPortal } from '$lib/shared/rootPortal';
+	import type { ModelFeedback } from '$lib/llm/modelCatalog';
 
 	export let profileName: string | null = null;
 	export let profileModel: string | null = null;
-	export let profileAdaptiveTier: string | null = null;
+	export let feedback: ModelFeedback | null = null;
 
 	type BurstKind = 'pro' | 'instant';
 
@@ -24,10 +26,38 @@
 	let lastProfileKey = '';
 	let nextParticleId = 1;
 	let particles: Particle[] = [];
+	let burstKind: BurstKind | null = null;
 	const cleanupTimers: ReturnType<typeof setTimeout>[] = [];
+	let anchor: HTMLSpanElement;
 
-	$: profileKey = `${profileName ?? ''}::${profileModel ?? ''}::${profileAdaptiveTier ?? ''}`;
-	$: burstKind = classifyProfileBurst(profileName, profileModel, profileAdaptiveTier);
+	function floatingLayer(node: HTMLElement): { destroy(): void } {
+		const portal = rootPortal(node);
+		const position = () => {
+			const rect = anchor.getBoundingClientRect();
+			node.style.left = `${rect.left}px`;
+			node.style.top = `${rect.top}px`;
+			node.style.width = `${rect.width}px`;
+			node.style.height = `${rect.height}px`;
+		};
+		position();
+		const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
+		observer?.observe(anchor);
+		const shell = anchor.closest('.composer-shell');
+		if (shell) observer?.observe(shell);
+		window.addEventListener('resize', position);
+		window.addEventListener('scroll', position, true);
+		window.visualViewport?.addEventListener('resize', position);
+		return { destroy() {
+			observer?.disconnect();
+			window.removeEventListener('resize', position);
+			window.removeEventListener('scroll', position, true);
+			window.visualViewport?.removeEventListener('resize', position);
+			portal.destroy();
+		} };
+	}
+
+	$: profileKey = `${profileName ?? ''}::${profileModel ?? ''}`;
+	$: burstKind = feedback === 'fast' ? 'instant' : feedback === 'premium' ? 'pro' : null;
 	$: if (mounted && profileKey !== lastProfileKey) {
 		const previousProfileKey = lastProfileKey;
 		lastProfileKey = profileKey;
@@ -44,37 +74,6 @@
 	onDestroy(() => {
 		for (const timer of cleanupTimers) clearTimeout(timer);
 	});
-
-	function classifyProfileBurst(
-		name: string | null,
-		model: string | null,
-		tier: string | null
-	): BurstKind | null {
-		const normalized = `${name ?? ''} ${model ?? ''} ${tier ?? ''}`.toLowerCase();
-		const normalizedTier = tier?.toLowerCase() ?? '';
-		if (
-			normalizedTier === 'instant'
-			|| /(^|[^a-z0-9])instant([^a-z0-9]|$)/.test(normalized)
-			|| /(^|[^a-z0-9])nano([^a-z0-9]|$)/.test(normalized)
-		) {
-			return 'instant';
-		}
-		if (
-			/(^|[^a-z0-9])pro([^a-z0-9]|$)/.test(normalized)
-			|| /(^|[^a-z0-9])opus([^a-z0-9]|$)/.test(normalized)
-			|| normalized.includes('gpt-5.5')
-			|| normalized.includes('gpt55')
-			|| normalized.includes('gpt-6-astra')
-			|| normalized.includes('astra')
-			|| normalized.includes('fable')
-			|| normalized.includes('opus-5')
-			|| normalizedTier === 'advanced'
-			|| normalizedTier === 'frontier'
-		) {
-			return 'pro';
-		}
-		return null;
-	}
 
 	function emitBurst(kind: BurstKind): void {
 		const count = kind === 'instant' ? 11 : 13;
@@ -109,7 +108,9 @@
 	}
 </script>
 
-<span class="profile-selection-burst" aria-hidden="true">
+<span class="profile-selection-anchor" bind:this={anchor} aria-hidden="true"></span>
+{#if particles.length > 0}
+<span class="profile-selection-burst" use:floatingLayer aria-hidden="true">
 	{#each particles as particle (particle.id)}
 		<span
 			class="profile-selection-symbol profile-selection-symbol--{particle.kind}"
@@ -117,14 +118,22 @@
 		>{particle.kind === 'instant' ? '⚡︎' : '$'}</span>
 	{/each}
 </span>
+{/if}
 
 <style>
-	.profile-selection-burst {
+	.profile-selection-anchor {
 		position: absolute;
 		inset: 0;
+		pointer-events: none;
+	}
+
+	.profile-selection-burst {
+		/* Escape the composer's backdrop-filter stacking context and draw
+		   above the model popup (940), without intercepting its controls. */
+		position: fixed;
 		overflow: visible;
 		pointer-events: none;
-		z-index: 4;
+		z-index: 1100;
 	}
 
 	.profile-selection-symbol {

@@ -48,7 +48,7 @@ export async function listProgramMembers(signal: AbortSignal): Promise<ProgramMe
 export async function readProgramMember(member: ProgramMember, signal: AbortSignal): Promise<ProgramMember> {
  try {
   const response = await timedFetch(`/api/magician/v2/agents/${encodeURIComponent(member.id)}/harness-overview`,{signal});
-  if (!response.ok) throw new Error(`Program progress unavailable (${response.status}).`);
+  if (!response.ok) throw new Error(`Playbook progress unavailable (${response.status}).`);
   return {...member,overview:record(await response.json())};
  } catch (error) {
   if (signal.aborted) throw error;

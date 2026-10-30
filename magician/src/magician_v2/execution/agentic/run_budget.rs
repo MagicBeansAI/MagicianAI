@@ -1,6 +1,6 @@
 //! Per-run budgets: which ceilings a run carries, and the owner's grants.
 //!
-//! Plan: `docs/plans/2026-10-03-slash-commands-and-run-budgets.md`.
+//! Plan: `docs/archive/plans/2026-10-03-slash-commands-and-run-budgets.md`.
 //!
 //! A run is budgeted by who thinks it. A **native** run (`magician` engine)
 //! keeps its agent's cumulative token meter (`max_tokens_per_cycle`) and the
@@ -9,6 +9,13 @@
 //! engine) re-sends its whole context every decision, so a token meter sized
 //! for the native loop runs out in a handful of steps; it carries no token
 //! meter and the harness USD ceiling (`execution.budgets.harness_max_cost_usd`).
+//!
+//! Both are now only runaway valves. Money is budgeted across all autonomous
+//! work by the owner-set spend envelope (`spend_envelope`, default $250 a
+//! UTC day); while that envelope is enforced a native run installs **no**
+//! token meter either, because the meter counts cached tokens and so tracks
+//! context resend, not money. `AgentConstraints.max_tokens_per_cycle` stays in
+//! the schema and `llm_tokens_used` keeps counting for display.
 //!
 //! The owner widens one run with **grants**, kept in `budget_grants.json`
 //! beside the execution. The grant record is deliberately outside the
@@ -330,7 +337,7 @@ pub fn append_budget_grant(path: &Path, grant: BudgetGrant) -> std::io::Result<V
     Ok(grants)
 }
 
-fn grant_totals_for_context(ctx: &AgenticContext) -> BudgetGrantTotals {
+pub(super) fn grant_totals_for_context(ctx: &AgenticContext) -> BudgetGrantTotals {
     budget_grants_path_for_context(ctx)
         .map(|path| BudgetGrantTotals::of(&load_budget_grants(&path)))
         .unwrap_or_default()
@@ -385,13 +392,29 @@ pub fn effective_cost_cap_from(
 }
 
 /// `base + Σ add_tokens` for a native run; none for a harness run, a run with
-/// no meter, or an unlimited grant.
+/// no meter, an unlimited grant, or while the spend envelope is enforced (the
+/// meter tracks context resend, not money).
 pub fn effective_token_limit_from(
     harness: bool,
     base: Option<u64>,
     totals: &BudgetGrantTotals,
 ) -> Option<u64> {
-    if harness || totals.unlimited {
+    effective_token_limit_with(
+        crate::magician_v2::spend_envelope::supersedes_token_meter(),
+        harness,
+        base,
+        totals,
+    )
+}
+
+/// [`effective_token_limit_from`] with the envelope's state passed in.
+pub fn effective_token_limit_with(
+    envelope_governs: bool,
+    harness: bool,
+    base: Option<u64>,
+    totals: &BudgetGrantTotals,
+) -> Option<u64> {
+    if envelope_governs || harness || totals.unlimited {
         return None;
     }
     base.map(|base| base.saturating_add(totals.add_tokens))
@@ -423,9 +446,157 @@ fn context_execution_id(ctx: &AgenticContext) -> Option<&str> {
         .or(ctx.legacy_execution_id.as_deref())
 }
 
-/// An ordinary task's wall-clock allowance is renewable by its owner. A
-/// delegated active-work ceiling, sealed controller attempt or app
+fn iteration_grants_in_pause(pause: &AgenticPauseState, grants: &[BudgetGrant]) -> u64 {
+    pause
+        .loop_protective_state
+        .as_ref()
+        .and_then(|state| state.iteration_grants_applied)
+        .unwrap_or_else(|| {
+            grants
+                .iter()
+                .filter(|grant| grant.granted_at <= pause.paused_at)
+                .map(|grant| grant.add_iterations.unwrap_or(0))
+                .fold(0, u64::saturating_add)
+        })
+}
+
+pub fn iteration_extension_size(pause: &AgenticPauseState) -> usize {
+    pause
+        .loop_protective_state
+        .as_ref()
+        .and_then(|state| state.iteration_budget_base)
+        .unwrap_or_else(|| {
+            pause
+                .continuation_frames
+                .last()
+                .map(|frame| frame.remaining_iterations)
+                .unwrap_or(pause.max_iterations)
+                .max(pause.max_iterations)
+        })
+        .max(1)
+}
+
+pub fn iteration_extension_prompt(pause: &AgenticPauseState) -> String {
+    // Parked wakes ran no work, so they are not reported as allowance used.
+    let used = pause
+        .iteration
+        .saturating_sub(parked_iteration_refunds_in_pause(pause));
+    format!("Iteration allowance reached ({} used). Approve another allowance of up to {} iterations and continue this run from its saved progress?",
+        pause.iteration_offset.saturating_add(used), iteration_extension_size(pause))
+}
+
+/// Whether an iteration that did no work may be handed back
+/// (`LoopProtectiveState::parked_iteration_refunds`): a spend-envelope park,
+/// or a decision call that failed with a provider error and is retried. A
+/// sealed controller attempt keeps the frozen limit its recipe admitted, and
+/// an app contract's limit is not the owner's to widen, so neither is
+/// refunded.
+pub(super) fn refunds_parked_iterations(ctx: &AgenticContext) -> bool {
+    ctx.controller_attempt_hash.is_none() && ctx.app_disclosure_guard.is_none()
+}
+
+/// The iteration bound both drivers hold a segment to: its allowance plus the
+/// iterations spend-envelope parks and provider-error retries handed back.
+/// `ctx.max_iterations` itself is never raised for a refund.
+pub(super) fn iteration_ceiling(
+    ctx: &AgenticContext,
+    protective: &super::types::LoopProtectiveState,
+) -> usize {
+    ctx.max_iterations
+        .saturating_add(protective.parked_iteration_refunds)
+}
+
+/// Refunds a pause's segment was granted and had not yet folded into a limit.
+pub(super) fn parked_iteration_refunds_in_pause(pause: &AgenticPauseState) -> usize {
+    pause
+        .loop_protective_state
+        .as_ref()
+        .map_or(0, |state| state.parked_iteration_refunds)
+}
+
+/// Whether `pause` is the owner question raised when the model provider kept
+/// failing (`BudgetDimension::ProviderFailure`). Its Cancel ends the run as
+/// cancelled; its Retry resumes with the provider retry budgets reset.
+pub(super) fn is_provider_failure_pause(pause: &AgenticPauseState) -> bool {
+    pause
+        .loop_protective_state
+        .as_ref()
+        .is_some_and(|state| state.provider_failure_pause)
+}
+
+/// Whether a run whose provider retries ran out pauses for its owner instead
+/// of failing. The same runs that own a renewable wall clock: an ordinary
+/// task-backed root run. A delegated child, a sealed controller attempt and an
+/// app contract fail as before, so the parent or controller decides.
+pub(super) fn pauses_on_provider_failure(ctx: &AgenticContext) -> bool {
+    is_owner_renewable_task_run(ctx)
+}
+
+/// Called only after the owner confirms an iteration-limit pause. A retry of
+/// that answer sees the recorded grant, and cannot mint a second allowance.
+pub(super) fn record_iteration_continuation_grant(
+    ctx: &AgenticContext,
+    pause: &AgenticPauseState,
+) -> Result<(), String> {
+    if ctx.controller_attempt_hash.is_some()
+        || pause.controller_attempt_hash.is_some()
+        || pause.iteration < pause.max_iterations
+    {
+        return Ok(());
+    }
+    if ctx.app_disclosure_guard.is_some() || pause.app_disclosure_checkpoint.is_some() {
+        return Err("This iteration limit belongs to an app contract; an ordinary run grant cannot extend it".to_string());
+    }
+    let path = budget_grants_path_for_context(ctx)
+        .ok_or_else(|| "An iteration extension requires a durable execution owner".to_string())?;
+    let grants = load_budget_grants(&path);
+    if BudgetGrantTotals::of(&grants).add_iterations > iteration_grants_in_pause(pause, &grants) {
+        return Ok(());
+    }
+    append_budget_grant(
+        &path,
+        BudgetGrant {
+            granted_at: Utc::now(),
+            add_cost_usd: None,
+            add_tokens: None,
+            add_iterations: Some(
+                u64::try_from(iteration_extension_size(pause)).unwrap_or(u64::MAX),
+            ),
+            add_duration_secs: None,
+            unlimited: false,
+            source: Some(CONTINUE_GRANT_SOURCE.into()),
+        },
+    )
+    .map(|_| ())
+    .map_err(|error| format!("Could not record the approved iteration extension: {error}"))
+}
+
+/// Whether this is an ordinary task-backed run whose wall clock belongs to its
+/// owner. A delegated active-work ceiling, sealed controller attempt or app
 /// contract is separate authority and keeps its hard deadline.
+pub(super) fn is_owner_renewable_task_run(ctx: &AgenticContext) -> bool {
+    // A delegated child inherits its parent's task id and may carry no work
+    // budget of its own (its target declared neither a timeout nor a depth), so
+    // the budget alone does not mark it. A child sits below depth 0 or under a
+    // root execution other than itself.
+    let delegated_child = ctx.depth > 0
+        || matches!(
+            (ctx.root_execution_id.as_deref(), context_execution_id(ctx)),
+            (Some(root), Some(own)) if root != own
+        );
+    !delegated_child
+        && ctx.work_budget_secs.is_none()
+        && ctx.controller_attempt_hash.is_none()
+        && ctx.app_disclosure_guard.is_none()
+        && ctx
+            .task_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+        && context_execution_id(ctx).is_some_and(|id| !id.trim().is_empty())
+}
+
+/// An ordinary task's wall-clock allowance is renewable by its owner (see
+/// [`is_owner_renewable_task_run`]).
 ///
 /// Use the segment's captured deadline, including a recovered remainder;
 /// rereading configuration here would misreport a run admitted under an older
@@ -437,15 +608,7 @@ pub(super) fn owner_duration_budget_at_deadline(
     deadline: Option<std::time::Instant>,
     now: std::time::Instant,
 ) -> Option<super::types::BudgetDimension> {
-    if ctx.work_budget_secs.is_some()
-        || ctx.controller_attempt_hash.is_some()
-        || ctx.app_disclosure_guard.is_some()
-        || !ctx
-            .task_id
-            .as_deref()
-            .is_some_and(|id| !id.trim().is_empty())
-        || !context_execution_id(ctx).is_some_and(|id| !id.trim().is_empty())
-    {
+    if !is_owner_renewable_task_run(ctx) {
         return None;
     }
     let limit = deadline?.saturating_duration_since(execution_start);
@@ -461,10 +624,41 @@ pub(super) fn owner_duration_budget_at_deadline(
 /// the token meter this run owns to `base + Σ add_tokens` (lifting it on an
 /// unlimited grant), and publishes the live snapshot the budget API reads.
 /// Returns the token snapshot (`used`, `limit`) and the cost ceiling.
+///
+/// `parked_iteration_refunds` is the segment's
+/// `LoopProtectiveState::parked_iteration_refunds`: the published iteration
+/// limit is the ceiling the loop actually holds the run to
+/// ([`iteration_ceiling`]), as [`live_budget_from_pause`] reports it.
 pub fn refresh_running_budget(
     ctx: &AgenticContext,
     cost_used_usd: f64,
     iteration: usize,
+    parked_iteration_refunds: usize,
+) -> (Option<(u64, u64)>, Option<f64>) {
+    refresh_running_budget_with_harness_tokens(
+        ctx,
+        cost_used_usd,
+        0,
+        iteration,
+        parked_iteration_refunds,
+    )
+}
+
+/// [`refresh_running_budget`] that also reports the tokens the run's harness
+/// turns returned (`LoopProtectiveState::cumulative_harness_tokens`).
+///
+/// A harness run installs no token meter (it is budgeted by cost), so its
+/// usage otherwise showed `tokens_used: 0` however much the turn read. With no
+/// meter the published count is the largest of the run's own counter, this
+/// tally and what was already published for the execution, so a refresh that
+/// does not carry the tally (the iteration-top checks) cannot erase it. When a
+/// meter applies it stays authoritative: harness turns charge it directly.
+pub fn refresh_running_budget_with_harness_tokens(
+    ctx: &AgenticContext,
+    cost_used_usd: f64,
+    harness_tokens: u64,
+    iteration: usize,
+    parked_iteration_refunds: usize,
 ) -> (Option<(u64, u64)>, Option<f64>) {
     let harness = is_harness_run(ctx);
     let totals = grant_totals_for_context(ctx);
@@ -480,11 +674,24 @@ pub fn refresh_running_budget(
             base_tokens: ctx.max_tokens_per_cycle,
             plane_cost_ceiling: ctx.max_cost_usd,
             cost_used_usd,
-            tokens_used: tokens.map(|(used, _)| used).unwrap_or(ctx.llm_tokens_used),
+            tokens_used: match tokens {
+                Some((used, _)) => used,
+                None => ctx.llm_tokens_used.max(harness_tokens).max(
+                    live_run_budget(execution_id)
+                        .map(|published| published.tokens_used)
+                        .unwrap_or(0),
+                ),
+            },
             iterations_used: ctx
                 .iteration_offset
                 .saturating_add(iteration.saturating_sub(1)),
-            iterations_limit: ctx.iteration_offset.saturating_add(ctx.max_iterations),
+            // Iterations refunded to a park or a provider-error retry count
+            // as used (the loop ran them) and raise the limit by the same
+            // amount, so used never reads past the limit.
+            iterations_limit: ctx
+                .iteration_offset
+                .saturating_add(ctx.max_iterations)
+                .saturating_add(parked_iteration_refunds),
         };
         persist_run_budget_snapshot(ctx, &snapshot);
         publish_live_run_budget(execution_id, snapshot);
@@ -505,8 +712,8 @@ pub fn refresh_running_budget(
 ///   cumulative spend is retained. A delegated parent ceiling is never widened.
 /// - **Duration.** An exhausted active-time remainder gets a recorded fresh
 ///   allowance. Explicit time grants apply once at the next resume.
-/// - **Iterations.** Grants recorded since the pause raise the resumed
-///   segment's ceiling.
+/// - **Iterations.** Unused owner grants raise the resumed ceiling once,
+///   including grants recorded before the pause.
 pub fn apply_budget_grants_on_resume(
     ctx: &mut AgenticContext,
     pause_state: &AgenticPauseState,
@@ -525,16 +732,24 @@ pub fn apply_budget_grants_on_resume(
     let harness = is_harness_run(ctx);
     let totals = BudgetGrantTotals::of(&grants);
 
-    let since_pause: u64 = grants
-        .iter()
-        .filter(|grant| grant.granted_at > pause_state.paused_at)
-        .map(|grant| grant.add_iterations.unwrap_or(0))
-        .fold(0u64, u64::saturating_add);
-    if since_pause > 0 {
+    let applied = ctx
+        .resume_loop_protective
+        .as_ref()
+        .and_then(|state| state.iteration_grants_applied)
+        .unwrap_or_else(|| iteration_grants_in_pause(pause_state, &grants));
+    let additional = totals.add_iterations.saturating_sub(applied);
+    if additional > 0 {
         ctx.max_iterations = ctx
             .max_iterations
-            .saturating_add(usize::try_from(since_pause).unwrap_or(usize::MAX));
+            .saturating_add(usize::try_from(additional).unwrap_or(usize::MAX));
     }
+    let protective = ctx
+        .resume_loop_protective
+        .get_or_insert_with(Default::default);
+    protective.iteration_grants_applied = Some(totals.add_iterations);
+    protective
+        .iteration_budget_base
+        .get_or_insert(iteration_extension_size(pause_state));
 
     if let (Some(base), Some(limit)) = (
         ctx.max_tokens_per_cycle,
@@ -853,9 +1068,22 @@ pub fn live_budget_from_pause(pause: &AgenticPauseState, harness: bool) -> LiveR
             .as_ref()
             .map(|state| state.cumulative_run_cost_usd)
             .unwrap_or(0.0),
-        tokens_used: pause.llm_tokens_used,
+        // A harness run has no meter, so its tokens live in the protective
+        // tally; a metered run already counted harness turns in the meter.
+        tokens_used: pause.llm_tokens_used.max(
+            pause
+                .loop_protective_state
+                .as_ref()
+                .map(|state| state.cumulative_harness_tokens)
+                .unwrap_or(0),
+        ),
         iterations_used: pause.iteration_offset.saturating_add(pause.iteration),
-        iterations_limit: pause.iteration_offset.saturating_add(pause.max_iterations),
+        // `pause.iteration` counts parked wakes too; their refunds raise the
+        // limit by the same amount, so used never reads past the limit.
+        iterations_limit: pause
+            .iteration_offset
+            .saturating_add(pause.max_iterations)
+            .saturating_add(parked_iteration_refunds_in_pause(pause)),
     }
 }
 
@@ -883,6 +1111,7 @@ mod tests {
             configure_execution_budgets(&ExecutionBudgetSettings {
                 native_max_cost_usd: native,
                 harness_max_cost_usd: harness,
+                ..ExecutionBudgetSettings::default()
             });
             Self {
                 previous,
@@ -911,6 +1140,46 @@ mod tests {
         ctx.task_id = Some("task_budget".to_string());
         ctx.execution_id = Some(execution_id.to_string());
         ctx
+    }
+
+    #[test]
+    fn the_token_meter_stands_down_while_the_spend_envelope_governs() {
+        let none = BudgetGrantTotals::default();
+        let grant = BudgetGrantTotals {
+            add_tokens: 500,
+            ..BudgetGrantTotals::default()
+        };
+        // Envelope not enforced: the meter is exactly what it was.
+        assert_eq!(
+            effective_token_limit_with(false, false, Some(1_000), &none),
+            Some(1_000)
+        );
+        assert_eq!(
+            effective_token_limit_with(false, false, Some(1_000), &grant),
+            Some(1_500)
+        );
+        // Envelope enforced: no meter, whatever the agent declared or was
+        // granted. (Cached tokens make the meter a context-resend counter.)
+        assert_eq!(
+            effective_token_limit_with(true, false, Some(1_000), &none),
+            None
+        );
+        assert_eq!(
+            effective_token_limit_with(true, false, Some(1_000), &grant),
+            None
+        );
+        // The unchanged exits stay unchanged.
+        assert_eq!(
+            effective_token_limit_with(false, true, Some(1_000), &none),
+            None
+        );
+        assert_eq!(effective_token_limit_with(false, false, None, &none), None);
+        // And the public form follows the process envelope, which no unit test
+        // installs: the meter keeps its old behaviour there.
+        assert_eq!(
+            effective_token_limit_from(false, Some(1_000), &none),
+            Some(1_000)
+        );
     }
 
     #[test]
@@ -982,13 +1251,17 @@ mod tests {
         orphan.task_id = None;
         let mut no_identity = ctx.clone();
         no_identity.execution_id = None;
+        let mut deeper = ctx.clone();
+        deeper.depth = 1;
+        let mut under_a_root = ctx.clone();
+        under_a_root.root_execution_id = Some("exec-of-the-parent-root".into());
         let mut pipeline = ctx.clone();
         pipeline.pipeline_loop_state_segment =
             Some(super::super::types::PipelineLoopStateSegment {
                 stage_index: 0,
                 attempt: 1,
             });
-        for bounded in [delegated, sealed, orphan, no_identity] {
+        for bounded in [delegated, deeper, under_a_root, sealed, orphan, no_identity] {
             let mut protective = LoopProtectiveState::default();
             assert!(owner_duration_budget_at_deadline(
                 &bounded,
@@ -1018,6 +1291,34 @@ mod tests {
         .is_some());
     }
 
+    /// Only an ordinary task-backed root run is left without the default wall
+    /// clock; a delegated child, a sealed attempt and an app run keep theirs.
+    #[test]
+    fn only_an_ordinary_task_backed_root_run_loses_the_default_wall_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut root = pinned_ctx(dir.path(), "codex", "no_wall_clock");
+        assert!(is_owner_renewable_task_run(&root));
+        // A rerun's root is itself, not a parent.
+        root.root_execution_id = context_execution_id(&root).map(str::to_owned);
+        assert!(is_owner_renewable_task_run(&root));
+
+        let mut delegated = root.clone();
+        delegated.work_budget_secs = Some(120);
+        let mut deeper = root.clone();
+        deeper.depth = 1;
+        let mut under_a_root = root.clone();
+        under_a_root.root_execution_id = Some("exec-of-the-parent-root".into());
+        let mut sealed = root.clone();
+        sealed.controller_attempt_hash = Some("sealed-contract".into());
+        let mut orphan = root.clone();
+        orphan.task_id = None;
+        let mut no_identity = root.clone();
+        no_identity.execution_id = None;
+        for bounded in [delegated, deeper, under_a_root, sealed, orphan, no_identity] {
+            assert!(!is_owner_renewable_task_run(&bounded));
+        }
+    }
+
     #[test]
     fn long_run_usage_display_survives_cold_restart_without_resetting_rounds() {
         let dir = tempfile::tempdir().unwrap();
@@ -1026,7 +1327,7 @@ mod tests {
         ctx.llm_tokens_used = 42;
         let grants_path = budget_grants_path_for_context(&ctx).unwrap();
         std::fs::create_dir_all(grants_path.parent().unwrap()).unwrap();
-        refresh_running_budget(&ctx, 7.125, 3);
+        refresh_running_budget(&ctx, 7.125, 3, 0);
         let before = live_run_budget("cold_usage").unwrap();
         assert_eq!(before.iterations_used, 10);
         append_budget_grant(
@@ -1061,6 +1362,97 @@ mod tests {
         assert!(persisted_run_budget(&usage_path, "different_execution").is_none());
     }
 
+    /// Iterations handed back to a park or a provider-error retry raise the
+    /// published limit to the bound the loop actually holds the run to
+    /// (`iteration_ceiling`), as the paused display does
+    /// (`live_budget_from_pause`), so used never reads past the limit.
+    #[test]
+    fn the_live_iteration_limit_includes_refunded_iterations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = pinned_ctx(dir.path(), "codex", "refunded_limit");
+        ctx.max_iterations = 20;
+        let protective = LoopProtectiveState {
+            parked_iteration_refunds: 6,
+            ..Default::default()
+        };
+        refresh_running_budget(&ctx, 0.0, 25, protective.parked_iteration_refunds);
+        let live = live_run_budget("refunded_limit").unwrap();
+        assert_eq!(live.iterations_used, 24);
+        assert_eq!(live.iterations_limit, 26);
+        assert_eq!(
+            live.iterations_limit,
+            ctx.iteration_offset + iteration_ceiling(&ctx, &protective)
+        );
+    }
+
+    /// The provider-failure owner question is raised only by the runs that own
+    /// a renewable wall clock; the rest fail so their parent or controller
+    /// decides. The pause is recognised by its persisted marker.
+    #[test]
+    fn only_an_owner_backed_root_run_pauses_on_provider_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = pinned_ctx(dir.path(), "codex", "provider_failure_root");
+        assert!(pauses_on_provider_failure(&root));
+        let mut deeper = root.clone();
+        deeper.depth = 1;
+        let mut under_a_root = root.clone();
+        under_a_root.root_execution_id = Some("exec-of-the-parent-root".into());
+        let mut sealed = root.clone();
+        sealed.controller_attempt_hash = Some("sealed-contract".into());
+        let mut orphan = root.clone();
+        orphan.task_id = None;
+        for bounded in [deeper, under_a_root, sealed, orphan] {
+            assert!(!pauses_on_provider_failure(&bounded));
+        }
+
+        let mut pause = token_pause(&root, 0);
+        assert!(!is_provider_failure_pause(&pause));
+        pause.loop_protective_state = Some(LoopProtectiveState {
+            provider_failure_pause: true,
+            ..Default::default()
+        });
+        assert!(is_provider_failure_pause(&pause));
+    }
+
+    /// A harness run has no token meter: the harness turn's reported tokens
+    /// and cost reach the run's usage, and later checks that carry no tally
+    /// (the iteration-top refreshes) never erase them.
+    #[test]
+    fn harness_run_usage_records_the_turns_reported_tokens_and_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = pinned_ctx(dir.path(), "pi", "harness_usage");
+        let grants_path = budget_grants_path_for_context(&ctx).unwrap();
+        std::fs::create_dir_all(grants_path.parent().unwrap()).unwrap();
+        assert!(execution_token_budget_snapshot().is_none());
+
+        refresh_running_budget_with_harness_tokens(&ctx, 0.25, 16_143, 1, 0);
+        let live = live_run_budget("harness_usage").unwrap();
+        assert!(live.harness);
+        assert_eq!(live.tokens_used, 16_143);
+        assert_eq!(live.cost_used_usd, 0.25);
+
+        refresh_running_budget(&ctx, 0.25, 2, 0);
+        assert_eq!(
+            live_run_budget("harness_usage").unwrap().tokens_used,
+            16_143
+        );
+        let usage_path = grants_path.with_file_name(BUDGET_USAGE_FILE);
+        let cold = persisted_run_budget(&usage_path, "harness_usage").unwrap();
+        assert_eq!(cold.tokens_used, 16_143);
+        assert_eq!(cold.cost_used_usd, 0.25);
+
+        let mut pause = token_pause(&ctx, 0);
+        pause.loop_protective_state = Some(LoopProtectiveState {
+            cumulative_run_cost_usd: 0.25,
+            cumulative_harness_tokens: 16_143,
+            ..Default::default()
+        });
+        let paused = live_budget_from_pause(&pause, true);
+        assert_eq!(paused.tokens_used, 16_143);
+        assert_eq!(paused.cost_used_usd, 0.25);
+        live_registry().lock().unwrap().remove("harness_usage");
+    }
+
     #[test]
     fn long_run_usage_checkpoint_never_recreates_a_reclaimed_execution_scope() {
         let dir = tempfile::tempdir().unwrap();
@@ -1068,7 +1460,7 @@ mod tests {
         let path = budget_grants_path_for_context(&ctx)
             .unwrap()
             .with_file_name(BUDGET_USAGE_FILE);
-        refresh_running_budget(&ctx, 1.0, 1);
+        refresh_running_budget(&ctx, 1.0, 1, 0);
         assert!(!path.parent().unwrap().exists());
         assert!(persisted_run_budget(&path, "missing_scope").is_none());
         live_registry().lock().unwrap().remove("missing_scope");
@@ -1080,7 +1472,7 @@ mod tests {
         let ctx = pinned_ctx(dir.path(), "codex", "paused_last_charge");
         let path = budget_grants_path_for_context(&ctx).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        refresh_running_budget(&ctx, 7.0, 4);
+        refresh_running_budget(&ctx, 7.0, 4, 0);
         let mut pause = token_pause(&ctx, 0);
         pause.iteration = 4;
         pause.loop_protective_state = Some(LoopProtectiveState {
@@ -1400,7 +1792,7 @@ mod tests {
             1_000_000,
             async {
                 // Iteration N: exhausted.
-                let (tokens, _) = refresh_running_budget(&ctx, 1.0, 5);
+                let (tokens, _) = refresh_running_budget(&ctx, 1.0, 5, 0);
                 assert_eq!(tokens, Some((1_000_000, 1_000_000)));
 
                 // The owner grants while the run is going.
@@ -1415,7 +1807,7 @@ mod tests {
                 .unwrap();
 
                 // Iteration N+1 sees it.
-                let (tokens, cost) = refresh_running_budget(&ctx, 1.0, 6);
+                let (tokens, cost) = refresh_running_budget(&ctx, 1.0, 6, 0);
                 assert_eq!(tokens, Some((1_000_000, 2_000_000)));
                 assert_eq!(
                     execution_token_budget_snapshot(),
@@ -1437,7 +1829,7 @@ mod tests {
                     }),
                 )
                 .unwrap();
-                let (tokens, cost) = refresh_running_budget(&ctx, 1.0, 7);
+                let (tokens, cost) = refresh_running_budget(&ctx, 1.0, 7, 0);
                 assert_eq!(tokens, Some((1_000_000, u64::MAX)));
                 assert_eq!(cost, None);
             },
@@ -1452,7 +1844,7 @@ mod tests {
         let mut child = pinned_ctx(dir.path(), "magician", "exec_child");
         child.max_tokens_per_cycle = Some(10);
         with_owned_execution_token_meter(Some("exec_root".to_string()), 0, 500, async {
-            let (tokens, _) = refresh_running_budget(&child, 0.0, 1);
+            let (tokens, _) = refresh_running_budget(&child, 0.0, 1, 0);
             assert_eq!(tokens, Some((0, 500)));
         })
         .await;
@@ -1473,6 +1865,139 @@ mod tests {
         pause.max_tokens_per_cycle = ctx.max_tokens_per_cycle;
         pause.llm_tokens_used = used;
         pause
+    }
+
+    fn iteration_pause(ctx: &AgenticContext) -> AgenticPauseState {
+        let mut pause = token_pause(ctx, 42);
+        pause.iteration = 12_000;
+        pause.max_iterations = 12_000;
+        pause.loop_protective_state = Some(LoopProtectiveState {
+            iteration_budget_base: Some(12_000),
+            iteration_grants_applied: Some(0),
+            cumulative_run_cost_usd: 7.125,
+            remaining_max_duration_ms: Some(5000),
+            ..Default::default()
+        });
+        pause
+    }
+
+    #[test]
+    fn iteration_approval_is_durable_and_retried_resumes_do_not_compound_it() {
+        let _defaults = BudgetDefaults::set(BudgetCapUsd::Usd(15.0), BudgetCapUsd::Usd(100.0));
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = pinned_ctx(dir.path(), "codex", "iteration_continue");
+        let pause = iteration_pause(&ctx);
+        ctx.max_iterations = 0;
+        ctx.llm_tokens_used = 42;
+        ctx.resume_loop_protective = pause.loop_protective_state.clone();
+        for _ in 0..2 {
+            record_iteration_continuation_grant(&ctx, &pause).unwrap();
+            apply_budget_grants_on_resume(&mut ctx, &pause, false);
+            assert_eq!(ctx.max_iterations, 12_000);
+            assert_eq!(ctx.llm_tokens_used, 42);
+            let state = ctx.resume_loop_protective.as_ref().unwrap();
+            assert_eq!(state.cumulative_run_cost_usd, 7.125);
+            assert_eq!(state.remaining_max_duration_ms, Some(5000));
+        }
+        let path = budget_grants_path_for_context(&ctx).unwrap();
+        let grants = load_budget_grants(&path);
+        assert_eq!(grants.len(), 1);
+        let totals = BudgetGrantTotals::of(&grants);
+        assert_eq!(totals.add_iterations, 12_000);
+        assert_eq!(
+            (
+                totals.add_cost_usd,
+                totals.add_tokens,
+                totals.add_duration_secs
+            ),
+            (0.0, 0, 0)
+        );
+        let mut cold = ctx.clone();
+        cold.max_iterations = 0;
+        cold.resume_loop_protective = pause.loop_protective_state.clone();
+        record_iteration_continuation_grant(&cold, &pause).unwrap();
+        apply_budget_grants_on_resume(&mut cold, &pause, false);
+        assert_eq!(cold.max_iterations, 12_000);
+        assert_eq!(load_budget_grants(&path).len(), 1);
+
+        let mut next_pause = pause.clone();
+        next_pause.iteration_offset = 12_000;
+        next_pause.loop_protective_state = cold.resume_loop_protective.clone();
+        cold.max_iterations = 0;
+        record_iteration_continuation_grant(&cold, &next_pause).unwrap();
+        apply_budget_grants_on_resume(&mut cold, &next_pause, false);
+        assert_eq!(cold.max_iterations, 12_000);
+        assert_eq!(load_budget_grants(&path).len(), 2);
+        assert_eq!(grant_totals_for_context(&cold).add_iterations, 24_000);
+        assert_eq!(
+            live_budget_from_pause(&next_pause, true).iterations_used,
+            24_000
+        );
+        assert!(iteration_extension_prompt(&next_pause).contains("24000 used"));
+    }
+
+    #[test]
+    fn unrelated_answers_cannot_grant_exhausted_iterations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = pinned_ctx(dir.path(), "codex", "iteration_no_approval");
+        let pause = iteration_pause(&ctx);
+        ctx.max_iterations = 0;
+        ctx.resume_loop_protective = pause.loop_protective_state.clone();
+        apply_budget_grants_on_resume(&mut ctx, &pause, false);
+        assert_eq!(ctx.max_iterations, 0);
+        assert_eq!(grant_totals_for_context(&ctx).add_iterations, 0);
+    }
+
+    #[test]
+    fn preapproved_iterations_are_consumed_once_even_if_granted_before_the_pause() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = pinned_ctx(dir.path(), "codex", "iteration_preapproved");
+        let path = budget_grants_path_for_context(&ctx).unwrap();
+        append_budget_grant(
+            &path,
+            owner_grant(BudgetGrantRequest {
+                add_iterations: Some(50),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let pause = iteration_pause(&ctx);
+        ctx.max_iterations = 0;
+        ctx.resume_loop_protective = pause.loop_protective_state.clone();
+        for _ in 0..2 {
+            record_iteration_continuation_grant(&ctx, &pause).unwrap();
+            apply_budget_grants_on_resume(&mut ctx, &pause, false);
+            assert_eq!(ctx.max_iterations, 50);
+        }
+        assert_eq!(load_budget_grants(&path).len(), 1);
+    }
+
+    #[test]
+    fn iteration_grant_record_failure_cannot_silently_extend_a_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = pinned_ctx(dir.path(), "codex", "iteration_corrupt");
+        let pause = iteration_pause(&ctx);
+        ctx.max_iterations = 0;
+        let path = budget_grants_path_for_context(&ctx).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ damaged").unwrap();
+        assert!(record_iteration_continuation_grant(&ctx, &pause).is_err());
+        assert_eq!(ctx.max_iterations, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ damaged");
+    }
+
+    #[test]
+    fn ordinary_iteration_continue_cannot_widen_controller_owned_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = pinned_ctx(dir.path(), "codex", "iteration_sealed");
+        let mut pause = iteration_pause(&ctx);
+        ctx.controller_attempt_hash = Some("a".repeat(64));
+        pause.controller_attempt_hash = ctx.controller_attempt_hash.clone();
+        ctx.max_iterations = 0;
+        record_iteration_continuation_grant(&ctx, &pause).unwrap();
+        apply_budget_grants_on_resume(&mut ctx, &pause, true);
+        assert_eq!(ctx.max_iterations, 0);
+        assert!(budget_grants_path_for_context(&ctx).is_none());
     }
 
     #[test]

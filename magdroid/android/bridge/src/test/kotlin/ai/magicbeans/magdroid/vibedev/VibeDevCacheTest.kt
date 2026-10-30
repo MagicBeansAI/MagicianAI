@@ -31,11 +31,14 @@ class VibeDevCacheTest {
                 )),
             ),
         )
+        val historySnapshot = snapshot.copy(history = VibeDevRunHistory(
+            listOf(VibeDevLiveRun("old", "old", "p1", workLocation = "original")), true, "next"))
         assertNull(store.loadNow())
-        store.saveNow(snapshot, 1234)
+        store.saveNow(historySnapshot, 1234)
         val loaded = store.loadNow()!!
         assertEquals(1234, loaded.savedAtMs)
-        assertEquals(snapshot, loaded.value)
+        assertEquals(historySnapshot, loaded.value)
+        assertEquals("next", loaded.value.history?.nextCursor)
         assertEquals(VibeDevRunState.Working, loaded.value.runs[1].state)
 
         val turns = VibeDevRunTurns("r1", "p1", "Shop", "Search", "running", trusted = true, branch = "vibedev/x",

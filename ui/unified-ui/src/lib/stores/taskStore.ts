@@ -20,6 +20,7 @@ import { getV2EventSequence, v2Events, type V2WebSocketEvent } from '$lib/realti
 import { showError } from '$lib/shared/stores/notifications';
 import { scopeIdentityStore, scopedRequestHeaders } from '$lib/stores/scopeIdentityStore';
 import { coordinateExecutionControl } from '$lib/magician/execution/controlClient';
+import { latestProgressAt, taskProgressSignalOf, type TaskProgressSignal } from '$lib/magician/tasks/taskProgress';
 
 // =============================================================================
 // Helpers
@@ -355,6 +356,12 @@ export interface Task {
     // 0/undefined means it is eligible for explicit convert-to-monitor.
     monitorRevision?: number;
 
+    /** `partial` when a completed run left requirements open (often behind a
+     *  blocker): show it as "Partly done", not a plain success. */
+    completionKind?: 'full' | 'partial';
+    /** The open requirements of a partial completion. */
+    openItems?: string[];
+
     /**
      * This task's run is holding a staged code-change proposal that is still
      * `Pending`, so it is waiting on someone to approve or reject the diff.
@@ -594,6 +601,8 @@ export function isTaskPlanVersionConflict(payload: unknown): boolean {
         || message?.startsWith('task_plan_version_mismatch:') === true
         || message?.startsWith('task_plan_already_resolved:') === true;
 }
+
+export const TASK_STILL_FINISHING_MESSAGE = 'This task is still finishing. Try again in a few seconds.';
 
 export async function readTaskApiError(response: Response, fallbackMessage: string): Promise<Error> {
     let message = `${fallbackMessage} (${response.status})`;
@@ -963,6 +972,22 @@ function findTaskById(tasks: Task[], taskId: string): Task | undefined {
     return tasks.find((task) => task.id === taskId);
 }
 
+/** Work observed for this run can be newer than the task-row projection. */
+export function taskWithProgress(task: Task, signal: TaskProgressSignal): Task {
+    const scope = get(scopeIdentityStore);
+    if (signal.principal !== scope.principal || signal.workspace !== scope.workspace
+        || signal.executionId !== (task.activeExecutionId ?? task.executionId)) return task;
+    // The root execution identifies this run; a delegated child may carry
+    // its own task id while still advancing this root.
+    const latest = latestProgressAt(task.lastProgressAt, signal.at);
+    return latest !== null && latest !== task.lastProgressAt ? { ...task, lastProgressAt: latest } : task;
+}
+
+export function mergeTaskProgress(existing: Task | undefined, next: Task): Task {
+    if (!existing || !next.executionId || next.executionId !== existing.executionId) return next;
+    return { ...next, lastProgressAt: latestProgressAt(existing.lastProgressAt, next.lastProgressAt) ?? undefined };
+}
+
 function ensureMutableTask(task: Task | undefined, operation: string): Task {
     if (!task) throw new Error('Task not found');
     if (task.readOnly) {
@@ -1297,11 +1322,14 @@ function createTaskStore() {
             if (events.length === 0) return;
 
             let shouldRefresh = false;
+            const progress: TaskProgressSignal[] = [];
             let nextSequence = lastObservedEventSequence;
             for (const event of events) {
                 const sequence = getV2EventSequence(event);
                 if (sequence <= lastObservedEventSequence) continue;
                 nextSequence = Math.max(nextSequence, sequence);
+                const signal = taskProgressSignalOf(event);
+                if (signal) progress.push(signal);
                 if (isScopedTaskRefreshEvent(event)) {
                     shouldRefresh = true;
                 }
@@ -1309,6 +1337,16 @@ function createTaskStore() {
 
             if (nextSequence <= lastObservedEventSequence) return;
             lastObservedEventSequence = nextSequence;
+
+            if (progress.length > 0) {
+                const state = get({ subscribe });
+                const tasks = state.tasks.map(task => progress.reduce(taskWithProgress, task));
+                if (tasks.some((task, index) => task !== state.tasks[index])) {
+                    update(current => ({ ...current, tasks, filteredTasks: computeFilteredTasks(
+                        tasks, current.filter, current.searchQuery, current.pendingCompletions, current.laneAnswer
+                    ) }));
+                }
+            }
 
             if (shouldRefresh) {
                 scheduleRefresh();
@@ -1499,6 +1537,11 @@ function createTaskStore() {
             // that a human is blocking a run, and the indicator it drives is
             // one no reader should see on a task that is fine.
             awaitingDiffApproval: t.awaiting_diff_approval === true,
+            completionKind:
+                t.completion_kind === 'partial' ? 'partial' : t.completion_kind === 'full' ? 'full' : undefined,
+            openItems: Array.isArray(t.open_items)
+                ? (t.open_items as unknown[]).filter((item): item is string => typeof item === 'string')
+                : undefined,
             dependsOn: (t.depends_on as string[]) || [],
             approved: (t.approved as boolean) ?? true,
             isBlocked: (t.is_blocked as boolean) ?? false,
@@ -1559,7 +1602,7 @@ function createTaskStore() {
         next: Task,
         pendingCompletions: Set<string>
     ): Task {
-        let merged = next;
+        let merged = mergeTaskProgress(existing, next);
         if (existing) {
             const existingPlanSteps = existing.planSteps?.length ? existing.planSteps : undefined;
             const shouldPreservePlanEnrichment =
@@ -1576,7 +1619,7 @@ function createTaskStore() {
                     )
                 );
             merged = {
-                ...next,
+                ...merged,
                 ...(shouldPreservePlanEnrichment && existingPlanSteps
                     ? {
                         planSteps: existingPlanSteps,
@@ -2455,7 +2498,12 @@ function createTaskStore() {
                     method: 'DELETE'
                 });
                 if (!response.ok) {
-                    throw await readTaskApiError(response, 'Failed to delete task');
+                    const error = await readTaskApiError(response, 'Failed to delete task');
+                    // 409 `task_active`: the run is still finishing (e.g. writing outputs).
+                    if (response.status === 409 && error.message.includes('task_active')) {
+                        throw new Error(TASK_STILL_FINISHING_MESSAGE);
+                    }
+                    throw error;
                 }
             } catch (error) {
                 console.error('Failed to delete task:', error);
@@ -3074,6 +3122,9 @@ function createTaskStore() {
             );
 
             try {
+                if (currentTaskScopeKey() !== scopeKey) {
+                    throw new Error('Your workspace changed — reopen the task there to run it.');
+                }
                 const response = await scopedTaskFetch(`/api/magician/v3/tasks/${taskId}/execute`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3509,7 +3560,8 @@ function createTaskStore() {
                                 // left to the list poll: the selected task is the one
                                 // whose stall the panel is reporting, and a stale
                                 // progress instant over-reports silence.
-                                lastProgressAt: parseLastProgressAt(flattened.last_progress_at),
+                                lastProgressAt: latestProgressAt(parseLastProgressAt(flattened.last_progress_at),
+                                    resolveTaskExecutionId(flattened) === t.executionId ? t.lastProgressAt : null) ?? undefined,
                             }
                             : t
                     );

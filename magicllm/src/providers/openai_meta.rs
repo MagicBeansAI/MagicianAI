@@ -152,12 +152,13 @@ pub fn request_requires_openai_responses(request: &LLMRequest) -> bool {
             .and_then(|extra| extra.get("openai_previous_response_id"))
             .and_then(Value::as_str)
             .is_some()
-        || (request.metadata.operation == "chat_completion" && !request.tools.is_empty())
         || request_messages_require_openai_responses(request)
 }
 
 pub fn request_prefers_openai_responses(request: &LLMRequest) -> bool {
-    request.stream || request_requires_openai_responses(request)
+    request.stream
+        || request_requires_openai_responses(request)
+        || (request.metadata.operation == "chat_completion" && !request.tools.is_empty())
 }
 
 fn request_messages_require_openai_responses(request: &LLMRequest) -> bool {
@@ -291,6 +292,40 @@ mod tests {
         assert_eq!(resolution.requested_mode, OpenAIApiMode::Chat);
         assert_eq!(resolution.selected_api, OpenAIApiSelection::Chat);
         assert_eq!(resolution.source, OpenAIApiModeSource::OpenAIApiMode);
+    }
+
+    #[test]
+    fn explicit_chat_accepts_text_tools_while_auto_still_prefers_responses() {
+        let mut request = LLMRequest::default();
+        request.metadata.operation = "chat_completion".to_string();
+        request.tools = vec![crate::types::LLMToolSpec {
+            name: "lookup".to_string(),
+            description: "Read a synthetic record".to_string(),
+            parameters: json!({"type": "object", "properties": {}}),
+        }]
+        .into();
+        request.extra = Some(json!({"openai_api_mode": "chat"}).into());
+        assert!(!request_requires_openai_responses(&request));
+        assert_eq!(
+            resolve_openai_api_mode(&request).selected_api,
+            OpenAIApiSelection::Chat
+        );
+
+        request.extra = Some(json!({"openai_api_mode": "auto"}).into());
+        assert!(request_prefers_openai_responses(&request));
+        assert_eq!(
+            resolve_openai_api_mode(&request).selected_api,
+            OpenAIApiSelection::Responses
+        );
+
+        request.extra = Some(
+            json!({
+                "openai_api_mode": "chat",
+                "openai_previous_response_id": "resp_checkpoint"
+            })
+            .into(),
+        );
+        assert!(request_requires_openai_responses(&request));
     }
 
     #[test]

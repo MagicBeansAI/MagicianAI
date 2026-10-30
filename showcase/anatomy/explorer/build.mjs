@@ -137,7 +137,7 @@ const processes = [
     lines: ["magician-config.yaml", "llm-router.yaml", "tool-runtime-config.yaml", "decision-engine.yaml"].reduce((s, f) => s + fileLines(f), 0),
     children: [
       { ...leaf("cfg:magician-config.yaml", "magician-config.yaml", "config", fileLines("magician-config.yaml"), { role: `${configKeys.length} top-level keys` }), children: configKeys.map((key) => leaf(`cfg:key:${key}`, key, "key", keyLines(key))) },
-      leaf("cfg:llm-router.yaml", "llm-router.yaml", "config", fileLines("llm-router.yaml"), { role: "router profiles and operation mapping, spliced into the main config" }),
+      leaf("cfg:llm-router.yaml", "llm-router.yaml", "config", fileLines("llm-router.yaml"), { role: "provider connections, model capabilities, workload assignments and typed fallbacks, spliced into the main config" }),
       leaf("cfg:tool-runtime-config.yaml", "tool-runtime-config.yaml", "config", fileLines("tool-runtime-config.yaml"), { role: "skill registry roots and semantic search, passed as --config" }),
       leaf("cfg:decision-engine.yaml", "decision-engine.yaml", "config", fileLines("decision-engine.yaml"), { role: "decision-engine models, tiers and operations" }),
     ],

@@ -45,6 +45,7 @@ fn sentiment(text: &str) -> DecisionRequest {
             instructions: Instruction::Text("What is the sentiment of the message?".into()),
             criteria,
         })],
+        assets: Default::default(),
     }
 }
 
@@ -116,6 +117,7 @@ async fn nouls_and_scores_are_well_formed_and_directional() {
                 ],
             }),
         ],
+        assets: Default::default(),
     };
     let started = Instant::now();
     let response = model.evaluate(request).await.expect("evaluates");
@@ -267,6 +269,7 @@ async fn matches_the_reference_runtime() {
                 other => DecisionState::from_json(other.clone()),
             },
             questions: questions.clone(),
+            assets: Default::default(),
         };
         let config = model.agent_config().clone();
         let rows =

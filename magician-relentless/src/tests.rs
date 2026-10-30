@@ -565,12 +565,55 @@ fn admission_rejects_unresolved_ambiguous_and_nonfinite_contracts() {
             7 => p.review.score_quorum = 4,
             8 => p.critics[0].criteria.push("invented".into()),
             9 => p.critics[0].model = Some(model("actor")),
-            10 => p.budget.max_cost_microusd = 0,
+            10 => p.budget.max_wall_clock_secs = u64::MAX,
             11 => p.sources.push(p.sources[0].clone()),
             _ => unreachable!(),
         }
         assert!(p.validate().is_err(), "fault {fault}");
     }
+}
+
+#[test]
+fn omitted_and_zero_budget_limits_are_unlimited_but_positive_caps_still_apply() {
+    let partial: Budget = serde_json::from_value(serde_json::json!({"max_attempts": 2})).unwrap();
+    assert_eq!(partial.max_cost_microusd, 0);
+    assert_eq!(partial.attempt_ceiling(), 2);
+    assert_eq!(partial.cost_ceiling(), u64::MAX);
+    assert_eq!(
+        partial.deadline_at(chrono::Utc::now()).unwrap(),
+        chrono::DateTime::<chrono::Utc>::MAX_UTC
+    );
+    for invalid in [
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!("unlimited"),
+    ] {
+        assert!(
+            serde_json::from_value::<Budget>(serde_json::json!({"max_cost_microusd":invalid}))
+                .is_err()
+        );
+    }
+    let mut value = serde_json::to_value(proposal()).unwrap();
+    value.as_object_mut().unwrap().remove("budget");
+    let definition: DefinitionOfDone = serde_json::from_value(value).unwrap();
+    assert_eq!(definition.budget, Budget::default());
+    let c: FrozenContract = definition.try_into().unwrap();
+    let candidate = reviewed(&c, "below-target", 0.5, true);
+    let mut context = budget(100);
+    context.spent_and_reserved_microusd = 9_000_000;
+    let prior = Retained {
+        plateau_count: 100,
+        ..Default::default()
+    };
+    let next = decide(&c, &prior, &candidate, &context).unwrap();
+    assert_eq!(next.kind, DecisionKind::KeepAndRetry);
+    let next = decide(&c, &next.retained, &candidate, &context).unwrap();
+    assert_eq!(next.kind, DecisionKind::RevertAndRetry);
+    context.cancelled = true;
+    assert_eq!(
+        decide(&c, &prior, &candidate, &context).unwrap().kind,
+        DecisionKind::Cancelled
+    );
 }
 
 #[test]

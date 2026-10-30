@@ -10,6 +10,7 @@
 		enableWebPush,
 		fetchWebPushConfig,
 		readWebPushState,
+		setupWebPushKeys,
 		type WebPushConfig,
 		type WebPushState
 	} from '$lib/webPush/client';
@@ -32,6 +33,19 @@
 	onMount(() => {
 		void refresh();
 	});
+
+	async function setUp(): Promise<void> {
+		busy = true;
+		error = null;
+		try {
+			config = await setupWebPushKeys();
+			pushState = await readWebPushState(config).catch(() => 'off' as const);
+		} catch (caught) {
+			error = caught instanceof Error ? caught.message : 'Browser notifications could not be set up';
+		} finally {
+			busy = false;
+		}
+	}
 
 	async function refresh(): Promise<void> {
 		error = null;
@@ -95,7 +109,10 @@
 	{:else if pushState === 'desktop-app'}
 		<p class="meta">The desktop app shows questions in its own notch; browser notifications are not used here.</p>
 	{:else if pushState === 'server-disabled'}
-		<p class="meta">Web push is not configured on this Magician server (no VAPID key), so there is nothing to turn on.</p>
+		<p class="meta">
+			This Magician server has no notification keys yet. Set them up once to send browser
+			notifications from this server; the private key stays on the server.
+		</p>
 	{:else if pushState === 'blocked'}
 		<p class="meta">Notifications are blocked for this site. Allow them in the browser's site settings, then come back.</p>
 	{/if}
@@ -108,6 +125,10 @@
 		{#if pushState === 'on'}
 			<button type="button" disabled={busy} onclick={() => void disable()}>
 				{busy ? 'Turning off…' : 'Turn off'}
+			</button>
+		{:else if pushState === 'server-disabled'}
+			<button class="primary" type="button" disabled={busy} onclick={() => void setUp()}>
+				{busy ? 'Setting up…' : 'Set up browser notifications'}
 			</button>
 		{:else if pushState === 'off'}
 			<button class="primary" type="button" disabled={busy || !config} onclick={() => void enable()}>

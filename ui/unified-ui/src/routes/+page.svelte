@@ -112,35 +112,23 @@
 	<HeroSplit {actionLabel} {actionHref} {dark} />
 	<FilmDialog />
 
+	<!-- Power this personal must answer to you arrives right after the first
+	     viewport: before the day begins, establishing vault secrets, chosen
+	     models and human control as the foundational prerequisite. -->
+	<TrustReveal />
+
+	<DayTrack />
+
+	<!-- Explore Magican: seven deep-dive feature stations over the dusk-town
+	     backdrop. -->
 	<LandingField>
 		<HowTrack />
 	</LandingField>
 
-	<DayTrack />
-
-	<!-- THE CLOSING MONTAGE, closing: devices working while people live, only
-	     once the day has actually earned it. It used to sit second, right
-	     after the hero, with nothing behind it yet — a closing argument
-	     opening the film.
-
-	     THE PAYOFF NOW BRACKETS IT (2026-08-17). `Greeting`'s standalone
-	     swap ("Love what you do." <-> "Do what you love.") used to sit
-	     after TrustReveal, paying off only once trust had been earned.
-	     It is retired from that position — `LifeTrack.svelte` now asks
-	     "Love what you do?" itself, once, right as the montage opens, lets
-	     it fade before the footage takes over, and answers with "Go. Do
-	     what you love." once the montage has run long enough to have
-	     earned it, lively for as long as the reel keeps playing under it.
-	     See LifeTrack.svelte's own header comment. `Greeting.svelte` stays
-	     on disk, unmounted — deletion is a separate pass. -->
+	<!-- Go do what you love: the montage animation with people living their
+	     lives while devices work untouched, bracketed by "Love what you do?"
+	     and "Go. Do what you love." -->
 	<LifeTrack />
-
-
-	<!-- The hook raises exactly one objection — "it knows all that?" — and this
-	     is where it gets answered. The three promises define the proposition,
-	     then the concrete trust mechanisms pay for it. The payoff has already
-	     landed, inside the montage above — trust is what's left to earn. -->
-	<TrustReveal />
 
 	<!-- Trust asks the reader to believe the claims; this shows the machine
 	     behind them, opened up, and hands the curious a live model of it. -->

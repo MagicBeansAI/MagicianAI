@@ -1,7 +1,7 @@
 ---
 name: "deep-research-with-claude"
-version: 0.2.1
-description: "Long-form research via Claude with web search, web fetch, and extended thinking. Pick when the user wants a deep investigation but you prefer Claude's reasoning style — narrative answers with cited evidence and inline cross-referencing. Cheaper and faster than `deep-research-with-openai` but typically less exhaustive on very large topics."
+version: 0.2.4
+description: "Long-form research via Claude with web search, web fetch, and extended thinking. Pick when the user wants a deep investigation but you prefer Claude's reasoning style — narrative answers with cited evidence and inline cross-referencing. Cheaper and faster than `deep-research-with-openai` but typically less exhaustive on very large topics. Each run gets at most 35 minutes (`timeout_secs` up to 2100); split bigger research into several narrower runs. A run stopped by its limit or an error returns what it found so far, marked `incomplete`."
 metadata:
   magician:
     # The one HTTPS host this skill reaches when an app runs it in the
@@ -20,10 +20,12 @@ metadata:
       action: run
       input:
         query: "What is the Rust programming language?"
+        timeout_secs: 600
       expect:
         min_items: 1
         items_pointer: "/sources"
         require_pointers: ["/answer"]
+        # This short health probe is separate from the 35-minute workload cap.
         max_latency_ms: 600000
         max_cost_microunits: 2000000
         # Ceilings are commodity-scoped. This one bounds real money; the
@@ -41,7 +43,7 @@ metadata:
         stdin: {mode: required, sensitivity: private}
         working_directory: {mode: denied}
         limits:
-          timeout_secs: 120
+          timeout_secs: 2100
           stdin_bytes: 65536
           stdout_bytes: 20971520
           stderr_bytes: 2097152
@@ -58,7 +60,7 @@ metadata:
       input_delivery: canonical_json_stdin
       actions:
         run:
-          description: Run a bounded Claude web-research investigation.
+          description: Run one Claude web-research investigation of at most 35 minutes; split bigger research into several runs. A run that stops early returns its findings so far with an `incomplete` reason.
           parameters:
             query:
               type: string
@@ -111,14 +113,15 @@ Long-form research with Claude Sonnet 5.5's web_search + web_fetch + adaptive th
 CAPABILITY:
 - Synchronous — Claude runs internal `web_search` + `web_fetch` in a loop with adaptive thinking at the chosen `effort` (default `medium`).
 - Reads full pages, cross-references claims.
-- Single Anthropic call (with internal tool use).
+- One streamed Anthropic call (with internal tool use), resumed when the server pauses a long tool loop.
 
 OUTPUT:
-- `{ answer, citations: [{ url, title, snippet }], thinking? }`.
+- `{ answer, sources: [{ title, url }], model, usage, thinking_preview?, incomplete? }`.
+- `incomplete` names why a run stopped early (its time limit, an error, the output limit); `answer` and `sources` then hold what it found before stopping.
 - Citations align with `[1]`-style markers in the answer.
 
 LIMITS & COST:
-- Medium-high latency (tens of seconds to a few minutes).
+- Medium-high latency (tens of seconds to a few minutes). A run gets at most 35 minutes; it stops at about 34.5 minutes, or at a shorter `timeout_secs`, and returns its findings so far.
 - Anthropic API quota; cheaper than OpenAI deep research.
 - Bounded by Claude's max-tokens-per-call — for truly massive surveys prefer deep-research-with-openai.
 

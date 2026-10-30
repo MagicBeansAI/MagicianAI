@@ -1,6 +1,6 @@
 /** Work composes existing records; route state never substitutes for their identity. */
 export const WORK_ROUTE = '/work';
-export const WORK_VIEWS = ['all', 'needs-you', 'crew', 'programs', 'quality', 'operations'] as const;
+export const WORK_VIEWS = ['all', 'needs-you', 'goals', 'crew', 'programs', 'quality', 'operations'] as const;
 export type WorkView = (typeof WORK_VIEWS)[number];
 
 export function resolveWorkView(params: URLSearchParams): WorkView {
@@ -157,9 +157,17 @@ export function canonicalWorkHref(href: string): string {
    else params.set('type', 'internal');
    target = `${WORK_ROUTE}?${params}`;
   } else {
-   const thread = path.match(/^\/t\/([^/]+)\/tasks$/);
+   const task = path.match(/^\/tasks\/([^/]+)$/);
+   const thread = path.match(/^\/t\/([^/]+)\/tasks(?:\/([^/]+))?$/);
    const member = path.match(/^\/crew\/([^/]+)(?:\/(rules|memory\/([^/]+)))?$/);
-   if (thread) target = workThreadHref(decodeURIComponent(thread[1]), url.searchParams);
+   if (task || thread) {
+    const params = new URLSearchParams(url.searchParams);
+    const selected = task?.[1] ?? thread?.[2];
+    // A path identifies the task; an obsolete/conflicting selected query
+    // must not send the user to a different record.
+    if (selected) params.set('selected', decodeURIComponent(selected));
+    target = thread ? workThreadHref(decodeURIComponent(thread[1]), params) : legacyTasksWorkHref(params);
+   }
    else if (member) target = legacyCrewWorkHref(url.searchParams, decodeURIComponent(member[1]),
     member[2] === 'rules' ? 'rules' : member[3] ? 'memory' : undefined,
     member[3] ? decodeURIComponent(member[3]) : undefined);
@@ -174,21 +182,22 @@ export function canonicalWorkHref(href: string): string {
 export function resolvedWorkTaskHref(taskId: string, resolved: string, source?: string): string {
  const destination = new URL(resolved, 'https://work.invalid');
  if (source) {
-  const original = new URL(source, 'https://work.invalid');
+  const original = new URL(canonicalWorkHref(source), 'https://work.invalid');
   if (original.origin === destination.origin &&
    (original.pathname === '/tasks' || ((original.pathname === '/work' || original.pathname === '/work/') && resolveWorkView(original.searchParams) === 'all'))) {
    const kind = destination.searchParams.get('type');
    destination.search = original.search;
+   destination.hash = original.hash;
    destination.searchParams.delete('view'); destination.searchParams.delete('type');
    if (kind) destination.searchParams.set('type', kind);
   }
  }
  destination.searchParams.set('selected', taskId);
- return `${destination.pathname}${destination.search}`;
+ return `${destination.pathname}${destination.search}${destination.hash}`;
 }
 export function isTaskSelectionHref(href: string): boolean {
  try {
-  const url = new URL(href, 'https://work.invalid');
+  const url = new URL(canonicalWorkHref(href), 'https://work.invalid');
   return url.origin === 'https://work.invalid' && ((url.pathname === '/tasks' && url.searchParams.get('type') !== 'monitors') ||
    ((url.pathname === '/work' || url.pathname === '/work/') && resolveWorkView(url.searchParams) === 'all' &&
     !url.searchParams.has('view') && url.searchParams.has('selected') && url.searchParams.get('type') !== 'monitors'));

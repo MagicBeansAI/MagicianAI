@@ -9,9 +9,13 @@
 	export let godMode: boolean | null = null;
 	/** The orb is the chat's god-mode switch: clicking asks to toggle it. */
 	export let godToggleable = false;
+	export let variant: 'chat' | 'dev' = 'chat';
+	export let modeMenuOpen: boolean | null = null;
 
 	const dispatch = createEventDispatcher<{ toggleGodMode: void }>();
-	$: tipText = godMode ? `${presenceLabel(state)} · God mode on` : presenceLabel(state);
+	$: stateLabel = variant === 'dev' ? presenceLabel(state).replace('Magician', 'Dev') : presenceLabel(state);
+	$: modeLabel = variant === 'dev' ? 'Super god mode' : 'God mode';
+	$: tipText = godMode ? `${stateLabel} · ${modeLabel} on` : stateLabel;
 
 	/** How long the tooltip announces a state change on its own. */
 	const AUTO_TIP_MS = 2500;
@@ -39,17 +43,23 @@
 <button
 	type="button"
 	class="cn-presence-switch"
+	class:dev={variant === 'dev'}
 	disabled={!godToggleable}
 	aria-pressed={godMode === true}
-	aria-label={godMode ? 'God mode is on for this chat. Turn it off' : 'God mode is off for this chat. Turn it on'}
-	title={godToggleable ? (godMode ? 'God mode on: click to turn off' : 'Click to turn on god mode for this chat') : undefined}
+	aria-label={variant === 'dev' ? `${stateLabel}. ${godMode ? 'Super god mode is on. Turn it off' : 'Open super god mode controls'}` : godMode ? 'God mode is on for this chat. Turn it off' : 'God mode is off for this chat. Turn it on'}
+	aria-haspopup={variant === 'dev' && !godMode ? 'menu' : undefined}
+	aria-expanded={modeMenuOpen ?? undefined}
+	title={godToggleable ? (variant === 'dev' ? `${stateLabel} · ${godMode ? 'Super god mode on: click to turn off' : 'Click for super god mode'}` : godMode ? 'God mode on: click to turn off' : 'Click to turn on god mode for this chat') : undefined}
 	data-testid="god-mode-switch"
 	on:click={() => dispatch('toggleGodMode')}
+	on:focus={() => (hovering = true)}
+	on:blur={() => (hovering = false)}
 >
 <span
 	class="cn-presence"
 	data-testid="presence-orb"
 	data-state={state}
+	data-variant={variant}
 	data-god={godMode ? 'on' : 'off'}
 	role="status"
 	on:mouseenter={() => (hovering = true)}
@@ -63,22 +73,36 @@
 	<span class="cn-presence__core" aria-hidden="true"></span>
 	<!-- The live region announces its text content; an aria-label change is
 	     not reliably announced. -->
-	<span class="cn-presence__label">{presenceLabel(state)}</span>
+	<span class="cn-presence__label">{stateLabel}</span>
 </span>
 </button>
 
 <style>
 	.cn-presence-switch {
+		--presence-primary: var(--accent-primary);
+		--presence-soft: var(--accent-primary-soft);
+		--presence-tint-1: var(--tint-1);
+		--presence-tint-2: var(--tint-2);
+		--presence-tint-3: var(--tint-3);
+		--presence-tint-5: var(--tint-5);
 		all: unset;
 		display: inline-grid;
 		border-radius: 50%;
 		cursor: pointer;
 	}
+	.cn-presence-switch.dev {
+		--presence-primary: var(--accent-secondary);
+		--presence-soft: var(--accent-secondary-soft);
+		--presence-tint-1: var(--accent-secondary-soft);
+		--presence-tint-2: var(--accent-secondary);
+		--presence-tint-3: var(--color-info-soft);
+		--presence-tint-5: var(--color-info);
+	}
 	.cn-presence-switch:disabled {
 		cursor: default;
 	}
 	.cn-presence-switch:focus-visible {
-		outline: 2px solid var(--accent-primary);
+		outline: 2px solid var(--presence-primary);
 		outline-offset: 2px;
 	}
 
@@ -178,11 +202,11 @@
 		height: 100%;
 		background: conic-gradient(
 			from 0deg,
-			var(--accent-primary),
-			var(--tint-1),
-			var(--tint-3),
-			var(--tint-5),
-			var(--accent-primary)
+			var(--presence-primary),
+			var(--presence-tint-1),
+			var(--presence-tint-3),
+			var(--presence-tint-5),
+			var(--presence-primary)
 		);
 		/* Hollow ring: keep a 3px band. */
 		-webkit-mask: radial-gradient(circle, transparent 58%, #000 60%);
@@ -194,7 +218,7 @@
 	.cn-presence__core {
 		width: 16px;
 		height: 16px;
-		background: radial-gradient(circle at 35% 30%, var(--tint-1), var(--tint-2));
+		background: radial-gradient(circle at 35% 30%, var(--presence-soft), var(--presence-primary));
 		box-shadow: 0 0 0 0 transparent;
 		transition:
 			background var(--dur-base) ease,
@@ -214,15 +238,15 @@
 	}
 	[data-state='thinking'] .cn-presence__core {
 		transform: scale(0.8);
-		background: radial-gradient(circle at 35% 30%, var(--tint-2), var(--accent-primary-soft));
+		background: radial-gradient(circle at 35% 30%, var(--presence-soft), var(--presence-primary));
 	}
 
 	/* working: faster accent pulse glow. */
 	[data-state='working'] .cn-presence__core {
 		background: radial-gradient(
 			circle at 35% 30%,
-			var(--accent-primary-soft),
-			var(--accent-primary)
+			var(--presence-soft),
+			var(--presence-primary)
 		);
 		animation: cn-presence-pulse calc(var(--dur-slow) * 2) ease-in-out infinite;
 	}
@@ -253,10 +277,10 @@
 	@keyframes cn-presence-pulse {
 		0%,
 		100% {
-			box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-primary) 45%, transparent);
+			box-shadow: 0 0 0 0 color-mix(in srgb, var(--presence-primary) 45%, transparent);
 		}
 		50% {
-			box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-primary) 0%, transparent);
+			box-shadow: 0 0 0 5px color-mix(in srgb, var(--presence-primary) 0%, transparent);
 		}
 	}
 

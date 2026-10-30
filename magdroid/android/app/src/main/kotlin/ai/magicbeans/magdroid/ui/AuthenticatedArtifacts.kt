@@ -1,6 +1,7 @@
 package ai.magicbeans.magdroid.ui
 
 import ai.magicbeans.magdroid.access.MagicianAccess
+import ai.magicbeans.magdroid.access.MagicianConnectionSnapshot
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -26,13 +27,14 @@ internal object AuthenticatedArtifacts {
     private const val MAX_ARTIFACT_BYTES = 128L * 1024L * 1024L
     private const val MAX_CACHED_ARTIFACTS = 24
 
-    suspend fun open(context: Context, url: String, filename: String? = null, mimeType: String? = null) {
+    suspend fun open(context: Context, url: String, filename: String? = null, mimeType: String? = null, expectedConnection: MagicianConnectionSnapshot? = MagicianAccess.connectionSnapshot(context)) {
         safely(context, "open") {
-            openChecked(context, url, filename, mimeType)
+            openChecked(context, url, filename, mimeType, expectedConnection)
         }
     }
 
-    private suspend fun openChecked(context: Context, url: String, filename: String?, mimeType: String?) {
+    private suspend fun openChecked(context: Context, url: String, filename: String?, mimeType: String?, expectedConnection: MagicianConnectionSnapshot?) {
+        check(expectedConnection == MagicianAccess.connectionSnapshot(context)) { "Connection changed. Reopen the file." }
         if (!isMagicianUrl(context, url)) {
             withContext(Dispatchers.Main) {
                 context.startActivity(
@@ -42,8 +44,9 @@ internal object AuthenticatedArtifacts {
             }
             return
         }
-        val artifact = download(context, url, filename, mimeType)
+        val artifact = download(context, url, filename, mimeType, expectedConnection)
         withContext(Dispatchers.Main) {
+            check(expectedConnection == MagicianAccess.connectionSnapshot(context)) { "Connection changed. Reopen the file." }
             context.startActivity(
                 Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(artifact.uri, artifact.mimeType)
@@ -99,7 +102,14 @@ internal object AuthenticatedArtifacts {
         rawUrl: String,
         requestedFilename: String?,
         requestedMimeType: String?,
+        expectedConnection: MagicianConnectionSnapshot? = MagicianAccess.connectionSnapshot(context),
     ): CachedArtifact = withContext(Dispatchers.IO) {
+        val snapshot = expectedConnection ?: error("Connection changed. Reopen the file.")
+        check(snapshot == MagicianAccess.connectionSnapshot(context)) { "Connection changed. Reopen the file." }
+        val origin = URL(snapshot.baseUrl)
+        val target = URL(rawUrl)
+        check(origin.protocol.equals(target.protocol, ignoreCase = true) && origin.host.equals(target.host, ignoreCase = true)
+            && effectivePort(origin) == effectivePort(target)) { "Connection changed. Reopen the file." }
         val connection = URL(rawUrl).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "GET"
@@ -108,7 +118,7 @@ internal object AuthenticatedArtifacts {
             connection.instanceFollowRedirects = false
             connection.connectTimeout = 15_000
             connection.readTimeout = 60_000
-            MagicianAccess.headers(context).forEach(connection::setRequestProperty)
+            snapshot.headers.forEach(connection::setRequestProperty)
             val status = connection.responseCode
             if (status !in 200..299) {
                 throw IllegalStateException("artifact download rejected ($status)")
@@ -157,6 +167,7 @@ internal object AuthenticatedArtifacts {
                 ?: MimeTypeMap.getSingleton()
                     .getMimeTypeFromExtension(destination.extension.lowercase())
                 ?: "application/octet-stream"
+            check(snapshot == MagicianAccess.connectionSnapshot(context)) { "Connection changed. Reopen the file." }
             CachedArtifact(
                 uri = FileProvider.getUriForFile(
                     context,

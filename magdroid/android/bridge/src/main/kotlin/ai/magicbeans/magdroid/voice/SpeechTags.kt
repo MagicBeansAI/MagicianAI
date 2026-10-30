@@ -1,5 +1,7 @@
 package ai.magicbeans.magdroid.voice
 
+import ai.magicbeans.magdroid.chat.splitAnswerVerification
+
 /**
  * The `<speech>` protocol, shared with the web and iOS.
  *
@@ -21,8 +23,11 @@ object SpeechTags {
      * should still be speakable.
      */
     fun spokenText(raw: String): String {
-        val bodies = bodies(raw)
-        return if (bodies.isEmpty()) raw.trim() else bodies.joined()
+        val display = splitAnswerVerification(raw)
+        val bodies = bodies(display.body)
+        val spoken = if (bodies.isEmpty()) display.body.trim() else bodies.joined()
+        return if (display.verification == null) spoken
+        else listOf(spoken, "Some findings remain unverified.").filter(String::isNotBlank).joinToString(" ")
     }
 
     fun hasSpeech(raw: String): Boolean = bodies(raw).isNotEmpty()

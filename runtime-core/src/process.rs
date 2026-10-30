@@ -83,6 +83,116 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
+/// Names the git binary Magician runs for its own git work, overriding the
+/// lookup in [`git_program`].
+pub const GIT_PROGRAM_ENV: &str = "MAGICIAN_GIT";
+
+/// Where Magician's own git came from, for status lines and project health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitSource {
+    /// `MAGICIAN_GIT`.
+    Override,
+    /// The host's git on PATH.
+    System,
+    /// The standalone git the `dugite` skill ships under skillshub.
+    Bundled,
+    /// None of the above: the path names no executable.
+    Missing,
+}
+
+/// The git binary Magician runs itself: trusted workspaces, checkpoints,
+/// pull requests, a project's git init.
+///
+/// `MAGICIAN_GIT` wins. Then the host's git, because it carries the owner's
+/// credential helpers for push. On macOS `/usr/bin/git` is only a shim that
+/// asks to install the developer tools, so it counts only when they are
+/// installed. Then the bundled git from the `dugite` skill
+/// (`<skillshub>/dugite/bin/git`, or its npm install), so a host without git
+/// still has one. Always an absolute path when one exists, so a spawn that
+/// touches `PATH` stays on `posix_spawn`.
+pub fn git_program() -> PathBuf {
+    resolve_git().0
+}
+
+/// [`git_program`] and where it came from.
+pub fn resolve_git() -> (PathBuf, GitSource) {
+    let override_path = std::env::var_os(GIT_PROGRAM_ENV).filter(|value| !value.is_empty());
+    let system = resolve_program(OsStr::new("git"), None);
+    let skillshub = std::env::var_os("MAGICIAN_SKILLSHUB_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|dir| dir.join("skillshub"))
+        });
+    pick_git(
+        override_path.map(PathBuf::from),
+        system,
+        &macos_developer_dirs(),
+        skillshub.as_deref(),
+    )
+}
+
+/// Whether Magician has a git to run at all.
+pub fn git_available() -> bool {
+    resolve_git().1 != GitSource::Missing
+}
+
+fn pick_git(
+    override_path: Option<PathBuf>,
+    system: PathBuf,
+    developer_dirs: &[PathBuf],
+    skillshub: Option<&Path>,
+) -> (PathBuf, GitSource) {
+    if let Some(path) = override_path {
+        return (path, GitSource::Override);
+    }
+    let system_works = is_executable_file(&system)
+        && (!cfg!(target_os = "macos")
+            || system != Path::new("/usr/bin/git")
+            || developer_dirs
+                .iter()
+                .any(|dir| is_executable_file(&dir.join("usr/bin/git"))));
+    if system_works {
+        return (system, GitSource::System);
+    }
+    let bundled = skillshub.and_then(|hub| {
+        [
+            hub.join("dugite/bin/git"),
+            hub.join("node_modules/dugite/git/bin/git"),
+        ]
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+    });
+    match bundled {
+        // Canonical, so git finds its helpers beside the real binary.
+        Some(path) => (
+            std::fs::canonicalize(&path).unwrap_or(path),
+            GitSource::Bundled,
+        ),
+        None => (system, GitSource::Missing),
+    }
+}
+
+/// Where macOS keeps the developer tools the `/usr/bin/git` shim forwards to,
+/// read without running `xcode-select` (the shim itself would offer a
+/// install dialog).
+fn macos_developer_dirs() -> Vec<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::var_os("DEVELOPER_DIR").filter(|value| !value.is_empty()) {
+        dirs.push(PathBuf::from(dir));
+    }
+    if let Ok(dir) = std::fs::read_link("/var/db/xcode_select_link") {
+        dirs.push(dir);
+    }
+    dirs.push(PathBuf::from("/Library/Developer/CommandLineTools"));
+    dirs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +369,50 @@ mod tests {
             resolve_program_str("tool", Some(&search)),
             resolve_program(OsStr::new("tool"), Some(OsStr::new(&search)))
         );
+    }
+
+    #[test]
+    fn git_override_wins() {
+        let (path, source) = pick_git(
+            Some(PathBuf::from("/opt/git")),
+            PathBuf::from("/usr/bin/git"),
+            &[],
+            None,
+        );
+        assert_eq!(
+            (path, source),
+            (PathBuf::from("/opt/git"), GitSource::Override)
+        );
+    }
+
+    #[test]
+    fn a_working_system_git_comes_before_the_bundled_one() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let system = write_file(temp.path(), "git", 0o755);
+        let hub = temp.path().join("skillshub");
+        fs::create_dir_all(hub.join("dugite/bin")).expect("mkdir");
+        write_file(&hub.join("dugite/bin"), "git", 0o755);
+        let (path, source) = pick_git(None, system.clone(), &[], Some(&hub));
+        assert_eq!((path, source), (system, GitSource::System));
+    }
+
+    #[test]
+    fn without_a_system_git_the_bundled_one_is_used() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hub = temp.path().join("skillshub");
+        fs::create_dir_all(hub.join("node_modules/dugite/git/bin")).expect("mkdir");
+        let bundled = write_file(&hub.join("node_modules/dugite/git/bin"), "git", 0o755);
+        let missing = temp.path().join("bin/git");
+        let (path, source) = pick_git(None, missing, &[], Some(&hub));
+        assert_eq!(source, GitSource::Bundled);
+        assert_eq!(path, fs::canonicalize(bundled).expect("canonical"));
+    }
+
+    #[test]
+    fn no_git_anywhere_is_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("bin/git");
+        let (path, source) = pick_git(None, missing.clone(), &[], Some(temp.path()));
+        assert_eq!((path, source), (missing, GitSource::Missing));
     }
 }

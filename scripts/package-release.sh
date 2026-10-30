@@ -135,9 +135,8 @@ import re, sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-# The three things an install always invokes: start the stack, seed a fresh
-# runtime root, and check the result.
-stack = ["run-supervisor.sh", "run-native-backend.sh", "seed-silverbullet-space.sh", "install-verify.sh", "native-runtime-service.py", "setup-skill-runtime.sh", "setup-bot-runtime.sh", "setup-media-tools.sh", "setup-bundled-browser.sh"]
+# The things an install always invokes: start the stack and check the result.
+stack = ["run-supervisor.sh", "run-native-backend.sh", "install-verify.sh", "native-runtime-service.py", "setup-skill-runtime.sh", "setup-bot-runtime.sh", "setup-media-tools.sh", "setup-bundled-browser.sh"]
 
 # Plus whatever the component graph says its install steps run. Read from the
 # graph rather than listed here, so a component added with a `script:` ships

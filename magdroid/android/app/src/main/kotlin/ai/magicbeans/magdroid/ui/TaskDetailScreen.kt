@@ -1,12 +1,15 @@
 package ai.magicbeans.magdroid.ui
 
+import ai.magicbeans.magdroid.tasks.withTaskProgress
 import ai.magicbeans.magdroid.access.MagicianAccess
+import ai.magicbeans.magdroid.chat.splitAnswerVerification
 import ai.magicbeans.magdroid.work.WorkWebContext
 import ai.magicbeans.magdroid.work.WorkSpecialist
 import ai.magicbeans.magdroid.work.WorkSection
 import ai.magicbeans.magdroid.tasks.ActCapabilities
 import ai.magicbeans.magdroid.tasks.ActSummaries
 import ai.magicbeans.magdroid.tasks.ExecutionControlAction
+import ai.magicbeans.magdroid.tasks.LiveElapsed
 import ai.magicbeans.magdroid.tasks.PlanApprovalChoice
 import ai.magicbeans.magdroid.tasks.PlanInspectorRoute
 import ai.magicbeans.magdroid.tasks.TaskPlanMarker
@@ -19,9 +22,12 @@ import ai.magicbeans.magdroid.tasks.PlanSteps
 import ai.magicbeans.magdroid.tasks.PlanSummaryInput
 import ai.magicbeans.magdroid.tasks.PlanningEntry
 import ai.magicbeans.magdroid.tasks.RunSummaryInput
+import ai.magicbeans.magdroid.tasks.SynthesisWait
 import ai.magicbeans.magdroid.tasks.TaskActs
+import ai.magicbeans.magdroid.tasks.TaskActivityCalls
 import ai.magicbeans.magdroid.tasks.TaskAttention
 import ai.magicbeans.magdroid.tasks.TaskAttentionSource
+import ai.magicbeans.magdroid.tasks.TaskCompletion
 import ai.magicbeans.magdroid.tasks.TaskDelegationGroup
 import ai.magicbeans.magdroid.tasks.TaskDetailAct
 import ai.magicbeans.magdroid.tasks.TaskDetailAction
@@ -197,7 +203,8 @@ internal fun TaskDetailScreen(
         androidx.lifecycle.viewmodel.compose.viewModel()
     val askState by askSurface.state.collectAsStateWithLifecycle()
     FollowAskSurface(askSurface)
-    val panelAsks = projection?.panelAsks.orEmpty()
+    val askConnection = remember(viewModel) { ai.magicbeans.magdroid.access.MagicianAccess.connectionSnapshot(context) }
+    val panelAsks = projection?.panelAsks.orEmpty().map { it.copy(originConnection = askConnection) }
     val taskAsks = remember(askState.feed, askState.settled, panelAsks, taskId) {
         ai.magicbeans.magdroid.attention.AskSurfaces.forTask(askState.feed, taskId, panelAsks, askState.settled)
     }
@@ -452,10 +459,10 @@ private fun rememberMinuteClock(): Long {
 
 /** Verdict state → dot tone (iOS `TaskDetailVerdictLine.tone`). Exhaustive. */
 internal fun verdictTone(state: TaskVerdictState): StatusTone = when (state) {
-    TaskVerdictState.Running -> StatusTone.Running
+    TaskVerdictState.Running, TaskVerdictState.Finalizing -> StatusTone.Running
     TaskVerdictState.Waiting -> StatusTone.Waiting
     TaskVerdictState.Failed -> StatusTone.Failed
-    TaskVerdictState.Stalled, TaskVerdictState.Paused -> StatusTone.Partial
+    TaskVerdictState.Stalled, TaskVerdictState.Paused, TaskVerdictState.PartlyDone -> StatusTone.Partial
     TaskVerdictState.Cancelled, TaskVerdictState.Archived -> StatusTone.Cancelled
     TaskVerdictState.Queued -> StatusTone.NotStarted
     TaskVerdictState.Finished -> StatusTone.Done
@@ -615,6 +622,40 @@ private fun DetailNotice(text: String, tint: Color, icon: ImageVector) {
         Icon(icon, null, tint = tint, modifier = Modifier.size(17.dp))
         Spacer(Modifier.width(8.dp))
         Text(text, color = Ink, fontSize = 13.sp, modifier = Modifier.weight(1f))
+    }
+}
+
+/**
+ * The Output section while the final answer is still being written
+ * (`synthesis_pending`): a spinner, the label and an elapsed clock, ticking on
+ * the same once-a-second clock as the running step rows. [baselineMillis] is
+ * when the execution ended; a screen that has no end time counts from when it
+ * first saw the flag. Past [SynthesisWait.STALE_AFTER_MILLIS] it stops spinning
+ * and shows a neutral notice instead, because a client must not spin forever
+ * on a flag that never clears.
+ */
+@Composable
+private fun SynthesisProgressRow(baselineMillis: Long?) {
+    val observedAt = remember { System.currentTimeMillis() }
+    val start = baselineMillis ?: observedAt
+    val now = rememberLiveNowMillis(start)
+    if (SynthesisWait.isStale(start, now)) {
+        DetailNotice(
+            "The final result is taking longer than expected. It will appear here when it is ready.",
+            Muted, Icons.Outlined.Description,
+        )
+        return
+    }
+    Row(
+        Modifier.fillMaxWidth().background(Coral.copy(alpha = .10f), RoundedCornerShape(10.dp)).padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Coral)
+        Spacer(Modifier.width(8.dp))
+        Text("Preparing final result", color = Ink, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        LiveElapsed.text(start, now)?.let {
+            Text(it, color = Muted, fontSize = 12.sp, fontFamily = LocalMagicanFontFamilies.current.mono, maxLines = 1)
+        }
     }
 }
 
@@ -843,13 +884,13 @@ private fun OutputBody(projection: TaskDetailProjection) {
     val files = projection.outputGroups.deliverables
     val previewed = TaskDetailRules.defaultPreview(files, { it.mediaType }, { it.relativePath })
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        projection.resultSummary?.let { MarkdownText(it, color = Ink, fontSize = 15.sp, lineHeight = 21.sp) }
+        projection.resultSummary?.let { TaskAnswerSummary(it) }
         if (projection.synthesisPending) {
-            DetailNotice("The run finished; its output is still being written up.", Coral, Icons.Outlined.Description)
+            SynthesisProgressRow(projection.synthesisBaselineMillis)
         } else if (projection.synthesisFailed) {
             DetailNotice("Writing up the output failed. Retry it from the ⋯ menu.", activePalette.danger, Icons.Outlined.ErrorOutline)
         }
-        if (files.isEmpty()) {
+        if (files.isEmpty() && !projection.synthesisPending) {
             Text(
                 if (projection.resultSummary == null) "No output yet." else "No files were delivered.",
                 color = Muted, fontSize = 14.sp,
@@ -926,7 +967,11 @@ private fun OutputPreview(file: TaskOutputFile, url: String?) {
             }
             if (bitmap == null) failed = true
         } else {
-            text = String(bytes, Charsets.UTF_8).lines().take(PREVIEW_LINES).joinToString("\n")
+            val raw = String(bytes, Charsets.UTF_8)
+            // An HTML file previews as its text, not its markup.
+            val html = file.mediaType?.substringBefore(';')?.trim().equals("text/html", ignoreCase = true) ||
+                file.relativePath.endsWith(".html", ignoreCase = true)
+            text = (if (html) taskSummaryMarkdown(raw) else raw).lines().take(PREVIEW_LINES).joinToString("\n")
         }
     }
     val shape = RoundedCornerShape(8.dp)
@@ -1002,6 +1047,23 @@ private suspend fun fetchPreviewBytes(context: android.content.Context, url: Str
 
 // Run
 
+/** Run and Result share chat's verification popup and block Markdown layout. */
+@Composable
+internal fun TaskAnswerSummary(text: String) {
+    val display = remember(text) { splitAnswerVerification(text) }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        display.verification?.let { note ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Summary", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                AnswerVerificationInfo(note)
+            }
+        }
+        if (display.body.isNotEmpty()) {
+            MarkdownText(taskSummaryMarkdown(display.body), color = Ink, fontSize = 14.sp, lineHeight = 20.sp)
+        }
+    }
+}
+
 @Composable
 private fun RunBody(projection: TaskDetailProjection, task: TaskV3, viewModel: TasksViewModel) {
     var showAll by remember { mutableStateOf(false) }
@@ -1061,7 +1123,7 @@ private fun RunBody(projection: TaskDetailProjection, task: TaskV3, viewModel: T
                 }
             }
         }
-        projection.runSummary?.takeIf(String::isNotBlank)?.let { MarkdownText(it, color = Ink, fontSize = 14.sp, lineHeight = 19.sp) }
+        projection.runSummary?.takeIf(String::isNotBlank)?.let { TaskAnswerSummary(it) }
         if (events.isEmpty()) {
             Text(if (selected == null) "Not started yet." else "No activity recorded yet.", color = Muted, fontSize = 14.sp)
         } else {
@@ -1247,13 +1309,22 @@ private fun RunEventRow(event: DetailActivity, origin: Long?, delegatedAgent: St
                         delegatedAgent?.let { "${event.title} · $it" } ?: event.title,
                         style = livelyStepTitleStyle(), fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f),
                     )
+                    val liveSince = event.liveSinceMillis
                     val at = event.atMillis
                     val whenText = if (at != null && origin != null && at >= origin) {
                         TaskVerdict.durationIfKnown((at - origin) / 1_000.0)?.let { "+$it" }
                     } else {
                         at?.let(::activityClock) ?: event.timestamp
                     }
-                    whenText?.let {
+                    if (liveSince != null) {
+                        // A call in flight shows how long it has been running, live.
+                        Spacer(Modifier.width(6.dp))
+                        LiveElapsedText(
+                            liveSince,
+                            style = livelyStepMetaStyle(activePalette.info),
+                            fontFamily = LocalMagicanFontFamilies.current.mono,
+                        )
+                    } else whenText?.let {
                         Spacer(Modifier.width(6.dp))
                         Text(it, style = livelyStepMetaStyle(), fontFamily = LocalMagicanFontFamilies.current.mono)
                     }
@@ -1580,6 +1651,11 @@ private class TaskDetailProjection(
     private val resultOutcome = result.text("outcome")?.takeIf(String::isNotBlank)
         ?: taskState.text("completion_outcome")?.takeIf(String::isNotBlank)
         ?: seed.completionOutcome?.takeIf(String::isNotBlank)
+    /** The detail `state`'s `completion_kind` / `open_items`, else the list row's. */
+    private val completionKind = (taskState["completion_kind"] ?: taskRecord["completion_kind"])
+        ?.let(TaskCompletion::kind) ?: seed.completionKind
+    private val openItems = (taskState["open_items"] ?: taskRecord["open_items"])
+        ?.let(TaskCompletion::openItems)?.takeIf { it.isNotEmpty() } ?: seed.openItems
     val executionError = selected.text("error_message") ?: debug.text("latest_error_message")
     val planStatus = plan.text("status") ?: seed.planStatus
     val planId = plan.text("plan_id") ?: selected.text("plan_id") ?: seed.latestPlanId
@@ -1597,6 +1673,17 @@ private class TaskDetailProjection(
     private val selectedStartedAt = selected.text("started_at")
     private val selectedEndedAt = selected.text("ended_at")
     private val runEnded = TaskDetailRules.runHasEnded(selectedStatus, selectedEndedAt)
+
+    /**
+     * When the run whose answer is being written ended, for the "Preparing
+     * final result" clock. Null (the row then counts from when it first saw the
+     * flag) when the wire gave no end, or when an older run than the latest root
+     * one is selected, whose end says nothing about the pending synthesis.
+     */
+    val synthesisBaselineMillis: Long? = TaskTimeline.parseMillis(selectedEndedAt)?.takeIf {
+        val latest = taskState.text("latest_root_execution_id") ?: seed.latestRootExecutionId
+        latest == null || selectedExecutionId == null || latest == selectedExecutionId
+    }
     val stepRows: List<PlanStepRow> = bundle.panel?.let { PlanSteps.rows(it, runEnded) }.orEmpty()
     val planningEntries: List<PlanningEntry> = bundle.panel?.let { PlanProgress.entries(it) }.orEmpty()
     val usageTotal = bundle.panel?.let { TaskUsageModel.total(null, TaskUsageModel.usageSnapshot(it)) }
@@ -1606,30 +1693,39 @@ private class TaskDetailProjection(
     }
     val planSteps = TaskDetailRules.planSteps(planGraphSteps, stepRows, runStepNames)
 
+    /** Whether the selected run is still live; a running row's clock ticks only then. */
+    private val runIsLive = TaskDetailRules.isActive(selectedStatus ?: status)
+
     val activity: List<DetailActivity> =
         (runSection.array("activity_log").ifEmpty { runSection.array("recent_activity") }.ifEmpty { debug.array("timeline") })
-            .mapIndexed { index, element ->
-                val row = element as? JsonObject ?: JsonObject(emptyMap())
+            .map { element -> element as? JsonObject ?: JsonObject(emptyMap()) }
+            // Planning's own rows belong to the Plan act's planning activity,
+            // not the run; oldest first, so offsets read +40s, +3m, …
+            .filterNot { row -> (row.obj("metadata").text("execution_id") ?: row.text("execution_id") ?: "").startsWith("planexec_") }
+            .sortedBy { row -> wireInstantMillis(row["created_at"]) ?: wireInstantMillis(row["timestamp"]) ?: Long.MAX_VALUE }
+            // One row per call: a call's requested / routed / settled rows fold into one.
+            .let(TaskActivityCalls::fold)
+            .mapIndexed { index, call ->
+                val row = call.row
                 val metadata = row.obj("metadata").orEmpty()
-                val input = metadata.double("input_tokens")
-                val outputTokens = metadata.double("output_tokens")
+                val billed = call.settled?.obj("metadata") ?: metadata
+                val input = billed.double("input_tokens")
+                val outputTokens = billed.double("output_tokens")
                 DetailActivity(
                     id = row.text("id") ?: "activity-$index",
-                    title = activityTitle(metadata.text("event_type"), metadata.text("target") ?: metadata.text("tool_name"), row.text("title")),
-                    body = row.text("summary") ?: row.text("message"),
+                    title = TaskActivityCalls.title(call),
+                    body = row.text("summary") ?: row.text("message") ?: call.start?.text("summary"),
                     status = row.text("status") ?: row.text("severity") ?: "info",
                     timestamp = row.text("created_at") ?: row.text("timestamp"),
-                    model = metadata.text("model"),
-                    cost = metadata.double("cost_usd") ?: metadata.double("cost"),
+                    model = call.model,
+                    cost = billed.double("cost_usd") ?: billed.double("cost"),
                     tokens = if (input == null && outputTokens == null) null else ((input ?: 0.0) + (outputTokens ?: 0.0)).toInt(),
                     executionId = metadata.text("execution_id") ?: row.text("execution_id"),
                     atMillis = wireInstantMillis(row["created_at"]) ?: wireInstantMillis(row["timestamp"]),
                     attribution = PlanStepAttribution.of(row),
+                    liveSinceMillis = if (runIsLive && call.running) call.startedAtMillis else null,
                 )
             }
-            // Planning's own rows belong to the Plan act's planning activity,
-            // not the run; oldest first, so offsets read +40s, +3m, …
-            .filterNot { (it.executionId ?: "").startsWith("planexec_") }
             .sortedBy { it.atMillis ?: Long.MAX_VALUE }
     val timelineOrigin: Long? = wireInstantMillis(selected["started_at"]) ?: activity.firstNotNullOfOrNull { it.atMillis }
 
@@ -1746,8 +1842,12 @@ private class TaskDetailProjection(
         totalSteps = totalSteps,
         currentStepLabel = currentStepLabel,
         elapsedSeconds = elapsedSeconds,
-        lastProgressAtMillis = wireInstantMillis(taskState["last_progress_at"]),
+        lastProgressAtMillis = ai.magicbeans.magdroid.tasks.TaskRunEvidence.latest(
+            wireInstantMillis(taskState["last_progress_at"]), bundle.withTaskProgress().observedProgressAt),
         nowMillis = nowMillis,
+        completionKind = completionKind,
+        openItems = openItems,
+        synthesisPending = synthesisPending,
     ))
 
     val hasPlan = !isExecutionOnly && (seed.hasPlan || planStatus != null || planId != null || !planMarkdown.isNullOrBlank() || hasPlanGraph)
@@ -1762,7 +1862,7 @@ private class TaskDetailProjection(
             resultSummary != null || resultOutcome != null),
     ))
 
-    private val live = TaskDetailRules.isActive(selectedStatus ?: status)
+    private val live = runIsLive
 
     val planSummary: String = ActSummaries.planSummary(PlanSummaryInput(
         status = TaskPlanStatus.fromWire(planStatus),
@@ -1805,6 +1905,8 @@ private class TaskDetailProjection(
         synthesisFailedExecutionId = synthesisFailedExecutionId,
         completionSummary = resultSummary,
         completionOutcome = resultOutcome,
+        completionKindWire = completionKind?.let { JsonPrimitive(it) } ?: seed.completionKindWire,
+        openItemsWire = if (openItems.isEmpty()) seed.openItemsWire else JsonArray(openItems.map { JsonPrimitive(it) }),
     )
 }
 
@@ -1821,6 +1923,8 @@ private data class DetailActivity(
     val atMillis: Long? = null,
     /** Off-plan attribution: the plan step this row was recorded on, or outside the plan. */
     val attribution: PlanStepAttribution = PlanStepAttribution.NONE,
+    /** When a call still running on a live run began; its row shows a ticking elapsed clock. */
+    val liveSinceMillis: Long? = null,
 )
 
 private data class DetailQuestion(
@@ -1843,16 +1947,6 @@ private fun parseRecentRuns(value: JsonElement?): List<DetailExecution> = value.
     val row = element as? JsonObject ?: return@mapNotNull null
     val id = row.text("execution_id") ?: return@mapNotNull null
     DetailExecution(id, row.text("status") ?: "unknown", row.text("started_at"), row.text("ended_at"), row.text("error_message"))
-}
-
-private fun activityTitle(event: String?, tool: String?, fallback: String?): String = when (event) {
-    "tool.succeeded" -> tool?.let { "$it returned" } ?: fallback ?: "Tool returned"
-    "tool.failed" -> tool?.let { "$it failed" } ?: fallback ?: "Tool failed"
-    "tool.started", "tool.requested" -> tool?.let { "Using $it" } ?: fallback ?: "Using a tool"
-    "llm.requested" -> "Thinking"
-    "llm.succeeded" -> "Model responded"
-    "llm.failed" -> "Model failed"
-    else -> fallback ?: event?.replace('.', ' ') ?: "Activity"
 }
 
 private fun JsonObject?.obj(key: String): JsonObject? = this?.get(key) as? JsonObject

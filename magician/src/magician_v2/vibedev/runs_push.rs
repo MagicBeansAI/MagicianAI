@@ -29,8 +29,8 @@ use crate::magician_v2::mobile_push::{
     CodingRunsPush, MobilePushDispatcher, PushRegistration, WorkItemPush, WorkSummaryFields,
     WorkSummaryNext,
 };
-use crate::magician_v2::work_live::{self, WorkItem, WorkLive, WorkState};
 use crate::magician_v2::realtime_events::RuntimeTransportEvent;
+use crate::magician_v2::work_live::{self, WorkItem, WorkLive, WorkState};
 
 /// How often dirty summaries are recomputed.
 const PUSH_TICK: Duration = Duration::from_secs(4);
@@ -169,7 +169,11 @@ pub fn summarize(
 
 /// The summary phones show, from a scope's work summary
 /// (`work_live::scope_work_live`). `previous` is the last summary delivered.
-pub fn summarize_work(live: &WorkLive, previous: Option<&CodingRunsPush>, now_ms: i64) -> CodingRunsPush {
+pub fn summarize_work(
+    live: &WorkLive,
+    previous: Option<&CodingRunsPush>,
+    now_ms: i64,
+) -> CodingRunsPush {
     let counts = live.counts;
     let featured = live.featured.as_ref();
     let headline = featured.map(WorkItem::headline).unwrap_or_default();
@@ -298,7 +302,9 @@ async fn push_followed_items(
     live: &WorkLive,
     sent: &mut HashMap<String, (WorkItemPush, Instant)>,
 ) {
-    let routes = dispatcher.work_item_registrations(principal, workspace).await;
+    let routes = dispatcher
+        .work_item_registrations(principal, workspace)
+        .await;
     let route_ids: HashSet<String> = routes.iter().map(|route| route.id.clone()).collect();
     sent.retain(|id, _| route_ids.contains(id));
     let items: HashMap<&str, &WorkItem> = live
@@ -328,7 +334,8 @@ async fn push_followed_items(
             .into_iter()
             .filter(|route| {
                 sent.get(&route.id).is_none_or(|(last, at)| {
-                    !last.same_content(&push) || (!push.ended && now.duration_since(*at) >= HEARTBEAT)
+                    !last.same_content(&push)
+                        || (!push.ended && now.duration_since(*at) >= HEARTBEAT)
                 })
             })
             .collect();
@@ -455,7 +462,8 @@ pub fn spawn_coding_runs_pusher(
                     }
                     continue;
                 };
-                push_followed_items(&dispatcher, principal, workspace, &live, &mut items_sent).await;
+                push_followed_items(&dispatcher, principal, workspace, &live, &mut items_sent)
+                    .await;
                 let previous = scopes.get(key);
                 let summary = summarize_work(
                     &live,
@@ -531,11 +539,16 @@ mod tests {
             status: "running".to_string(),
             step: step.map(str::to_string),
             summary: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             turns: 1,
             started_at: "2026-10-13T09:00:00Z".to_string(),
             cost_usd: None,
             approval_id: None,
+            approval_respond: None,
             approval_task_id: None,
+            waiting_kind: None,
+            notice: None,
             crew_id: lane.map(|_| "crew".to_string()),
             lane: lane.map(str::to_string),
             updated_at: "2026-10-13T09:10:00Z".to_string(),

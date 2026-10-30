@@ -257,6 +257,10 @@ where
         return rejected;
     };
     let registration_id = registration.id;
+    // The task block holds the job behind a pointer, so building it costs the
+    // caller's (often already deep) stack one pointer, not a copy of whatever
+    // the job closure captured.
+    let job = Box::new(job);
     let task: std::pin::Pin<Box<dyn Future<Output = T> + Send>> = Box::pin(async move {
         // Captured before spawn: abort-before-first-poll still drops this guard
         // and retires the reservation from the shutdown registry.
@@ -266,7 +270,7 @@ where
         // doing this at the scheduler root prevents first-use timing from
         // determining whether an otherwise ordinary execution stack survives.
         crate::magician_v2::secrets::injection::warm_provider_sanitizer();
-        Box::pin(job()).await
+        Box::pin((*job)()).await
     });
     let spawned = handle.spawn(task);
     if registry.publish_abort_handle(registration_id, spawned.abort_handle()) {

@@ -88,3 +88,27 @@ describe('thread creation authority across staged requests', () => {
 		expect(get(threadStore).activeThread?.id).toBe('research');
 	});
 });
+
+describe('thread archive and delete timeouts', () => {
+	it('keeps an archive or delete open long enough to finish every session', async () => {
+		const timeouts: number[] = [];
+		const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+			timeouts.push(ms);
+			return new AbortController().signal;
+		});
+		try {
+			installFetchMock([
+				{ method: 'PATCH', match: `${path}/research`, handle: () => jsonResponse({ thread: { ...thread, archived: true } }) },
+				{ method: 'DELETE', match: `${path}/research`, handle: () => new Response(null, { status: 204 }) },
+				{ method: 'GET', match: path, handle: () => jsonResponse({ threads: [thread] }) }
+			]);
+
+			expect(await threadStore.updateThread('research', { archived: true })).toMatchObject({ id: 'research', archived: true });
+			expect(await threadStore.updateThread('research', { name: 'Research notes' })).toMatchObject({ id: 'research' });
+			expect(await threadStore.deleteThread('research')).toBe(true);
+			expect(timeouts).toEqual([600_000, 30_000, 30_000, 30_000, 600_000, 30_000]);
+		} finally {
+			timeout.mockRestore();
+		}
+	});
+});

@@ -125,6 +125,7 @@ fn request(engine: &Engine, delays: &[u64]) -> DecideRequest {
                 })
                 .collect(),
         },
+        assets: Default::default(),
     }
 }
 #[tokio::test]

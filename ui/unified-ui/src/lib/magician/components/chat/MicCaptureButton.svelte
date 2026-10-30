@@ -14,6 +14,9 @@
 -->
 <script lang="ts">
 	import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+	import { getContext } from 'svelte';
+	import { MEDIA_CHAT_SESSION, type MediaChatSession } from '$lib/media/chatScope';
+	const mediaChatSession = getContext<MediaChatSession | undefined>(MEDIA_CHAT_SESSION);
 
 	import {
 		isMicCaptureSupported,
@@ -41,6 +44,7 @@
 	} from '$lib/media/types';
 	import SurfaceAudioProfileControl from '$lib/media/SurfaceAudioProfileControl.svelte';
 	import VoiceOrb from '$lib/media/VoiceOrb.svelte';
+	import VoiceActivityWaveform from '$lib/media/voice/VoiceActivityWaveform.svelte';
 
 	export let disabled: boolean = false;
 	export let compact: boolean = false;
@@ -223,8 +227,10 @@
 		});
 	}
 
+	let captureChatSessionId: string | null = null;
 	async function start(): Promise<void> {
 		if (!available || disabled || recording || pendingAudio !== null) return;
+		captureChatSessionId = mediaChatSession?.() ?? null;
 		beginConcurrentVoiceCapture();
 		errorMessage = null;
 		archiveError = null;
@@ -429,6 +435,7 @@
 					mimeType: audio.mimeType,
 					filename: makeRecordedAudioFile(audio).name,
 					messageId: id ?? undefined,
+					chatSessionId: captureChatSessionId,
 					language: browserLanguage,
 					signal: controller.signal
 				},
@@ -582,8 +589,11 @@
 				</span>
 			{/if}
 		</button>
-		{#if recording && !expanded}
-			<span class="mic-capture__elapsed" aria-live="polite">{formatDuration(elapsedMs)}</span>
+		{#if recording}
+			<div class="mic-capture__activity">
+				<span role="status">Listening <span aria-hidden="true">{formatDuration(elapsedMs)}</span></span>
+				<VoiceActivityWaveform active listening inputAnalyser={recorder?.analyser ?? null} />
+			</div>
 		{/if}
 		{#if recording && archiveThisCapture}
 			<span class="mic-capture__saving" aria-live="polite">Saving to Audio Notes</span>
@@ -638,6 +648,7 @@
 
 <style>
 	.mic-capture {
+		position: relative;
 		display: inline-flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -707,10 +718,26 @@
 		opacity: 0.55;
 		cursor: not-allowed;
 	}
-	.mic-capture__elapsed {
+	.mic-capture__activity {
+		position: absolute;
+		bottom: calc(100% + 8px);
+		right: 0;
+		z-index: 2;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		width: max-content;
+		max-width: calc(100vw - 48px);
+		padding: 5px 10px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm, 8px);
+		background: var(--bg-elevated, #fff);
+		color: var(--text-primary);
+		box-shadow: var(--shadow-sm);
+		font-size: 12px;
 		font-variant-numeric: tabular-nums;
-		font-size: 0.78rem;
-		color: var(--theme-color-foreground-muted, #6b7280);
+		white-space: nowrap;
+		pointer-events: none;
 	}
 	.mic-capture__saving {
 		font-size: 0.72rem;

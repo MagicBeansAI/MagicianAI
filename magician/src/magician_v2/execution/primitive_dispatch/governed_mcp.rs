@@ -12,15 +12,13 @@ use std::{
 };
 
 use magician_mcp_client::{
-    project_mcp_catalog, McpClient, McpClientConfig, McpOAuthClientIdentity, McpOAuthCoordinator,
-    McpToolCallOutcome, McpToolCallResult, McpTransportConfig, StreamableHttpTransportConfig,
+    project_mcp_catalog, McpClient, McpClientConfig, McpOAuthCoordinator, McpToolCallOutcome,
+    McpToolCallResult, McpTransportConfig, StreamableHttpTransportConfig,
 };
 use rust_decimal::Decimal;
 use serde_json::{json, Map, Value};
 use tool_runtime_core::{
-    credential_profiles::{
-        CanonicalCredentialUrl, CredentialProfileBinding, CredentialProfileKey, CredentialScope,
-    },
+    credential_profiles::CredentialScope,
     manifest::{
         ApprovalClass, AuthKind, McpCommercePolicy, McpJsonBooleanCondition, McpMoneyUnit,
         McpToolRiskClass, McpTransport, PolicyFloor, ProfileSelection, RuntimeProtocol,
@@ -36,10 +34,11 @@ use super::{
 use crate::magician_v2::{
     execution::capability::GovernedRuntimeImplementation,
     mcp_oauth::McpOAuthApi,
+    mcp_oauth_binding::{mcp_oauth_binding, McpOAuthBindingError},
     resource_authority::spend_session::{
         admit, MissingBudgetPolicy, SpendAdmission, SpendHold, SpendIntent, SpendOwnerPolicy,
     },
-    secrets::{mcp_oauth_vault::SecretStoreMcpOAuthVault, SecretAuditEvent, SecretStore},
+    secrets::{SecretAuditEvent, SecretStore},
     user_requests::{RequestOption, UserRequest},
 };
 
@@ -56,6 +55,7 @@ pub(crate) async fn dispatch_governed_mcp(
     action_id: String,
     arguments: Value,
     exec_ctx: PrimitiveExecCtx,
+    scope_paths: Option<crate::magician_v2::artifact_v2::capabilities::CapabilityScopePaths>,
 ) -> Result<PrimitiveToolResult, String> {
     let audit_store = exec_ctx
         .secret_store
@@ -88,11 +88,14 @@ pub(crate) async fn dispatch_governed_mcp(
             action_id.clone(),
             arguments,
             exec_ctx,
+            scope_paths,
         )
         .await
     };
     let outcome = if cancelled_before_dispatch {
         "cancelled"
+    } else if result.as_ref().is_ok_and(is_dispatch_unknown) {
+        "dispatch_unknown"
     } else if result.is_ok() {
         "succeeded"
     } else {
@@ -137,13 +140,14 @@ async fn execute_mcp(
     action_id: String,
     arguments: Value,
     exec_ctx: PrimitiveExecCtx,
+    scope_paths: Option<crate::magician_v2::artifact_v2::capabilities::CapabilityScopePaths>,
 ) -> Result<PrimitiveToolResult, String> {
     let started = Instant::now();
     if runtime.actions.is_some() {
         return Err("governed MCP package unexpectedly contains CLI actions".to_owned());
     }
     let package = &runtime.package;
-    let validated = validate_skill_runtime_contract(&package.contract)
+    validate_skill_runtime_contract(&package.contract)
         .map_err(|_| "governed MCP contract validation failed".to_owned())?;
     let RuntimeProtocol::Mcp {
         transport,
@@ -153,66 +157,126 @@ async fn execute_mcp(
     else {
         return Err("governed MCP executor received a non-MCP package".to_owned());
     };
-    let McpTransport::StreamableHttp { endpoint: base } = transport else {
+    if let McpTransport::Stdio { executable, args } = transport {
+        let paths = scope_paths
+            .as_ref()
+            .ok_or("governed stdio MCP requires scoped filesystem authority")?;
+        let config = super::mcp_stdio::client_config(&runtime, &exec_ctx, paths, executable, args)?;
+        return execute_connected_mcp(
+            &runtime,
+            &capability_id,
+            &action_id,
+            into_bounded_object(arguments)?,
+            &exec_ctx,
+            config,
+            None,
+            None,
+            started,
+        )
+        .await;
+    }
+    if !matches!(transport, McpTransport::StreamableHttp { .. }) {
         return Err("governed remote MCP execution currently requires Streamable HTTP".to_owned());
-    };
+    }
+    if package.contract.auth.kind == AuthKind::None {
+        // This is an explicitly public endpoint, never an OAuth fallback. Keep
+        // scope, catalog policy, approvals, resources and audit on the same path.
+        required_mcp_scope(&exec_ctx)?;
+        let mut arguments = into_bounded_object(arguments)?;
+        let (selected, _) = take_binding_selectors(package, discovery, &mut arguments)?;
+        let binding =
+            super::public_mcp::public_mcp_binding(&package.contract, selected.as_deref())?;
+        match action_id.as_str() {
+            "status" | "auth_start" | "clear_auth" => {
+                let public_profile = match prepare_public_profile(&runtime, &exec_ctx) {
+                    Ok(Some(url)) => {
+                        json!({"status":"published", "url":url, "reachability_verified":false})
+                    },
+                    Ok(None) => Value::Null,
+                    Err(reason) => json!({"status":"setup_required", "reason":reason}),
+                };
+                return success(
+                    started,
+                    json!({
+                        "action": action_id, "status": "authentication_not_required",
+                        "authorization_started": false, "connection_verified": false,
+                        "public_profile": public_profile
+                    }),
+                );
+            },
+            "list_tools" | "call_tool" => {},
+            _ => return Err("governed MCP action is unavailable".to_owned()),
+        }
+        let credential_binding = json!({"endpoint": binding.endpoint, "profile": null});
+        return execute_connected_mcp(
+            &runtime,
+            &capability_id,
+            &action_id,
+            arguments,
+            &exec_ctx,
+            binding.config,
+            binding.alias.as_deref(),
+            Some(&credential_binding),
+            started,
+        )
+        .await;
+    }
     if package.contract.auth.kind != AuthKind::OAuthSession {
         return Err("governed remote MCP execution requires an OAuth session".to_owned());
     }
-    let oauth = discovery
-        .oauth
-        .as_ref()
-        .ok_or_else(|| "governed remote MCP OAuth policy is unavailable".to_owned())?;
+    if discovery.oauth.is_none() {
+        return Err("governed remote MCP OAuth policy is unavailable".to_owned());
+    }
     let mut arguments = into_bounded_object(arguments)?;
-    let endpoint = select_endpoint(package, discovery, base, &mut arguments)?;
-    let profile_alias = select_profile(package, &mut arguments)?;
+    let (endpoint_alias, profile_alias) =
+        take_binding_selectors(package, discovery, &mut arguments)?;
     let (principal, workspace) = required_mcp_scope(&exec_ctx)?;
     let scope = CredentialScope::new(principal, workspace)
         .map_err(|_| "governed MCP scope is invalid".to_owned())?;
-    let provider = package
-        .contract
-        .auth
-        .provider
-        .as_deref()
-        .ok_or_else(|| "governed MCP provider binding is unavailable".to_owned())?;
-    let profile = CredentialProfileKey::new(
+    // Connect (Settings -> Service accounts) builds its binding through the
+    // same helper, so a run finds exactly the login Connect saved.
+    let binding = mcp_oauth_binding(
+        package,
         scope.clone(),
-        provider,
-        profile_alias,
-        CredentialProfileBinding::McpOauth {
-            resource_url: CanonicalCredentialUrl::new(&endpoint.url)
-                .map_err(|_| "governed MCP resource binding is invalid".to_owned())?,
-            authorization_issuer: CanonicalCredentialUrl::new(&oauth.authorization_issuer)
-                .map_err(|_| "governed MCP issuer binding is invalid".to_owned())?,
-        },
+        endpoint_alias.as_deref(),
+        profile_alias.as_deref(),
+        runtime.oauth_callback_mode,
     )
-    .map_err(|_| "governed MCP profile binding is invalid".to_owned())?;
+    .map_err(binding_error)?;
+    let credential_binding =
+        json!({"endpoint":binding.endpoint_url,"profile":binding.profile_alias});
     let store = exec_ctx
         .secret_store
         .clone()
         .ok_or_else(|| "governed MCP credential vault is unavailable".to_owned())?;
-    let vault = Arc::new(SecretStoreMcpOAuthVault::new(Arc::clone(&store)));
     let oauth_api = McpOAuthApi::shared()
         .ok_or_else(|| "governed MCP OAuth callback broker is unavailable".to_owned())?;
     let coordinator = Arc::new(
-        McpOAuthCoordinator::new(
-            profile,
-            vault,
-            oauth_api.callback_base_url(),
-            McpOAuthClientIdentity::DynamicPublic,
-        )
-        .and_then(|coordinator| coordinator.with_client_name("Magican MCP Client"))
-        .and_then(|coordinator| coordinator.with_scopes(oauth.scopes.iter().cloned()))
-        .map_err(|error| format!("governed MCP OAuth configuration failed: {}", error.message))?,
+        binding
+            .coordinator(Arc::clone(&store), &oauth_api)
+            .map_err(|error| {
+                format!("governed MCP OAuth configuration failed: {}", error.message)
+            })?,
     );
     match action_id.as_str() {
         "status" => {
-            register_coordinator(&oauth_api, Arc::clone(&coordinator))?;
-            let status = coordinator
-                .status()
+            // A pending flow already owns its exact coordinator. Status must
+            // observe that binding without replacing it or starting a new flow.
+            if let Err(error) = oauth_api.register_coordinator(Arc::clone(&coordinator)) {
+                if error.code
+                    != crate::magician_v2::mcp_oauth::McpOAuthProductErrorCode::PendingAuthorizationConflict
+                {
+                    return Err(format!("governed MCP OAuth registration failed: {}", error.message));
+                }
+            }
+            let status = oauth_api
+                .credential_status(&coordinator.callback_binding_id(), &scope)
                 .await
                 .map_err(|error| format!("governed MCP status failed: {}", error.message))?;
-            return success(started, json!({"action": "status", "status": status}));
+            return success(
+                started,
+                json!({"action": "status", "status": status, "authorization_started": false}),
+            );
         },
         "auth_start" => {
             let pending = oauth_api
@@ -249,13 +313,82 @@ async fn execute_mcp(
         .await
         .map_err(|error| format!("governed MCP authorization is required: {}", error.message))?;
     let mut config = McpClientConfig::new(McpTransportConfig::StreamableHttp(
-        StreamableHttpTransportConfig::new(endpoint.url.clone()).with_bearer_token(bearer),
+        StreamableHttpTransportConfig::new(binding.endpoint_url.clone()).with_bearer_token(bearer),
     ));
     if let Some(timeout) = limits.timeout_secs {
         let timeout = u64::from(timeout);
         config.connect_timeout = Duration::from_secs(timeout.min(120));
-        config.request_timeout = Duration::from_secs(timeout.min(600));
+        config.request_timeout =
+            Duration::from_secs(timeout.min(super::MAX_MCP_REQUEST_TIMEOUT_SECS));
     }
+    execute_connected_mcp(
+        &runtime,
+        &capability_id,
+        &action_id,
+        arguments,
+        &exec_ctx,
+        config,
+        binding.endpoint_alias.as_deref(),
+        Some(&credential_binding),
+        started,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_connected_mcp(
+    runtime: &GovernedRuntimeImplementation,
+    capability_id: &str,
+    action_id: &str,
+    mut arguments: Map<String, Value>,
+    exec_ctx: &PrimitiveExecCtx,
+    config: McpClientConfig,
+    endpoint_alias: Option<&str>,
+    credential_binding: Option<&Value>,
+    started: Instant,
+) -> Result<PrimitiveToolResult, String> {
+    let package = &runtime.package;
+    let validated = validate_skill_runtime_contract(&package.contract)
+        .map_err(|_| "governed MCP contract validation failed".to_owned())?;
+    let RuntimeProtocol::Mcp { discovery, .. } = &package.contract.runtime else {
+        return Err("governed MCP runtime is unavailable".into());
+    };
+    let (principal, workspace) = required_mcp_scope(exec_ctx)?;
+    if let Some(bindings) = &runtime.mcp_bindings {
+        bindings.validate()?;
+    }
+    let public_profile_url = if action_id == "call_tool" {
+        prepare_public_profile(runtime, exec_ctx)?
+    } else {
+        None
+    };
+    let quote_credential = match &config.transport {
+        McpTransportConfig::StreamableHttp(http) => http
+            .bearer_token
+            .as_ref()
+            .map(|token| token.session_fingerprint()),
+        _ => None,
+    };
+    let quote_account = blake3::hash(
+        &serde_json::to_vec(&json!({
+            "principal":principal,"workspace":workspace,"capability":capability_id,
+            "endpoint_alias":endpoint_alias,"credential_binding":credential_binding,
+        }))
+        .map_err(|_| "MCP quote account cannot be pinned")?,
+    )
+    .to_hex()
+    .to_string();
+    let quote_scope = blake3::hash(
+        &serde_json::to_vec(&json!({
+            "principal": principal, "workspace": workspace, "capability": capability_id,
+            "endpoint_alias": endpoint_alias, "credential_binding": credential_binding,
+            "credential_session": quote_credential, "contract": package.contract,
+            "bindings": runtime.mcp_bindings
+        }))
+        .map_err(|_| "MCP cart quote scope cannot be pinned")?,
+    )
+    .to_hex()
+    .to_string();
     let mut client = McpClient::connect(config)
         .await
         .map_err(|error| format!("governed MCP connection failed: {error}"))?;
@@ -315,6 +448,18 @@ async fn execute_mcp(
         return success(started, result);
     }
 
+    if action_id == "status" {
+        let _ = client.close().await;
+        return success(
+            started,
+            json!({"action":"status", "status":"connected", "tools":catalog.tools().len()}),
+        );
+    }
+    if action_id != "call_tool" {
+        let _ = client.close().await;
+        return Err("MCP action is unavailable for this transport".into());
+    }
+
     let tool_name = match take_required_string(&mut arguments, "tool_name") {
         Ok(tool_name) => tool_name,
         Err(error) => {
@@ -324,8 +469,8 @@ async fn execute_mcp(
     };
     let arguments_json =
         take_optional_string(&mut arguments, "arguments_json").unwrap_or_else(|| "{}".to_owned());
-    let remote_arguments = match parse_arguments_json(&arguments_json) {
-        Ok(arguments) => arguments,
+    let mut remote_arguments = match parse_arguments_json(&arguments_json) {
+        Ok(arguments) => Value::Object(arguments),
         Err(error) => {
             let _ = client.close().await;
             return Err(error);
@@ -341,9 +486,56 @@ async fn execute_mcp(
             "governed MCP tool is not present in the projected discovery snapshot".to_owned(),
         );
     };
-    let checkout = discovery.commerce.as_ref().is_some_and(|commerce| {
-        is_checkout_tool(commerce, tool.remote_id().remote_name(), &remote_arguments)
+    if let (Some(profile), Some(profile_url)) = (
+        runtime
+            .mcp_bindings
+            .as_ref()
+            .and_then(|b| b.public_profile.as_ref()),
+        public_profile_url.as_deref(),
+    ) {
+        if let Err(error) = profile.bind(&mut remote_arguments, profile_url) {
+            let _ = client.close().await;
+            return Err(error);
+        }
+    }
+    if let Err(error) = super::mcp_stdio::bind_paths(
+        runtime,
+        exec_ctx,
+        tool.remote_id().remote_name(),
+        &mut remote_arguments,
+    ) {
+        let _ = client.close().await;
+        return Err(error);
+    }
+    let Some(native_arguments) = remote_arguments.as_object() else {
+        let _ = client.close().await;
+        return Err("governed MCP arguments must remain a JSON object".into());
+    };
+    let tool_bindings = runtime
+        .mcp_bindings
+        .as_ref()
+        .and_then(|b| b.tools.get(tool.remote_id().remote_name()));
+    let quote_binding = tool_bindings
+        .and_then(|b| b.commerce_quote.as_ref())
+        .filter(|b| b.applies(endpoint_alias));
+    let checkout_binding = tool_bindings
+        .and_then(|b| b.commerce_checkout.as_ref())
+        .filter(|b| b.applies(endpoint_alias));
+    let quoted_endpoint = runtime.mcp_bindings.as_ref().is_some_and(|bindings| {
+        bindings.tools.values().any(|binding| {
+            binding
+                .commerce_quote
+                .as_ref()
+                .is_some_and(|quote| quote.applies(endpoint_alias))
+        })
     });
+    let checkout = discovery.commerce.as_ref().is_some_and(|commerce| {
+        is_checkout_tool(commerce, tool.remote_id().remote_name(), native_arguments)
+    });
+    if quoted_endpoint && checkout && checkout_binding.is_none() {
+        let _ = client.close().await;
+        return Err("this endpoint requires a locally reviewed quote binding for checkout".into());
+    }
     if let Err(error) = validate_dynamic_tool_policy(
         &package.contract.policy_floor,
         tool.policy(),
@@ -372,8 +564,49 @@ async fn execute_mcp(
         .max()
         .copied()
         .unwrap_or(ApprovalClass::Ordinary);
-    if required_approval != ApprovalClass::Ordinary
-        && !request_tool_approval(
+    // Duration grants cover a reviewed MCP action in normal and God modes.
+    // Checkout retains its amount/transaction-bound approval on every dispatch.
+    let approval_session = (!requires_one_shot_approval(required_approval, checkout))
+        .then(|| crate::magician_v2::god_mode::tool_approval_session(exec_ctx))
+        .flatten();
+    let approved = if required_approval == ApprovalClass::Ordinary && !checkout {
+        true
+    } else if let Some(session) = approval_session {
+        let integration_binding = serde_json::to_string(
+            &json!({"contract":package.contract,"bindings":runtime.mcp_bindings,
+                "credentials":credential_binding,"endpoint_alias":endpoint_alias}),
+        )
+        .map_err(|_| "MCP integration cannot be pinned for approval")?;
+        let policy_binding = serde_json::to_string(&json!({"integration":integration_binding,
+                "tool":tool.model_definition(),"risk":tool.policy().risk(),
+                "approvals":tool.policy().required_approvals()}))
+        .map_err(|_| "MCP policy cannot be pinned for approval")?;
+        let account = credential_binding
+            .and_then(|value| value.get("profile"))
+            .and_then(Value::as_str);
+        let label_parts: Vec<_> = [endpoint_alias, account].into_iter().flatten().collect();
+        let integration_label = if label_parts.is_empty() {
+            capability_id.to_owned()
+        } else {
+            format!("{capability_id} ({})", label_parts.join(" / "))
+        };
+        crate::magician_v2::god_mode::authorize_tool_approval(
+            &session,
+            crate::magician_v2::god_mode::GodAction::Mcp {
+                capability: capability_id,
+                tool: tool.remote_id().remote_name(),
+                policy_binding: &policy_binding,
+                integration_binding: &integration_binding,
+                integration_label: &integration_label,
+                arguments: &remote_arguments,
+                summary: intent_summary.trim(),
+            },
+            exec_ctx,
+        )
+        .await
+        .is_ok()
+    } else {
+        request_tool_approval(
             &exec_ctx,
             principal,
             workspace,
@@ -381,16 +614,85 @@ async fn execute_mcp(
             tool.remote_id().remote_name(),
             required_approval,
             intent_summary.trim(),
+            &remote_arguments,
             discovery.commerce.as_ref().filter(|_| checkout),
             &arguments,
-            endpoint.alias.as_deref(),
+            endpoint_alias,
         )
         .await
-    {
+    };
+    if !approved {
         let _ = client.close().await;
         return Err("governed MCP action was not approved".to_owned());
     }
 
+    if exec_ctx
+        .cancellation_token
+        .as_ref()
+        .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    {
+        let _ = client.close().await;
+        return Err("governed MCP operation was cancelled before tool dispatch".into());
+    }
+
+    let outward = match super::mcp_stdio::prepare_outward(
+        runtime,
+        exec_ctx,
+        capability_id,
+        tool.remote_id().remote_name(),
+        &remote_arguments,
+    )
+    .await
+    {
+        Ok(outward) => outward,
+        Err(error) => {
+            let _ = client.close().await;
+            return Err(error);
+        },
+    };
+    if outward.as_ref().is_some_and(|outward| outward.captured) {
+        let _ = client.close().await;
+        return success(
+            started,
+            json!({"status":"prepared", "captured":true, "sent":false}),
+        );
+    }
+    // From here an uncaptured outward act is marked dispatching: the request
+    // may leave at any point below. Every failure after this line settles the
+    // act explicitly, and one that may follow the send answers with the
+    // non-retry envelope — a plain `Err` reads as retryable and sends twice.
+    let Value::Object(remote_arguments) = remote_arguments else {
+        let _ = client.close().await;
+        let error = "governed MCP arguments must remain a JSON object";
+        if let Some(outward) = outward {
+            outward.settle_not_sent(error);
+        }
+        return Err(error.into());
+    };
+    let quote_arguments = quote_binding.map(|_| Value::Object(remote_arguments.clone()));
+    // Every unclassified or side-effecting call can change a provider cart,
+    // including newly discovered actions covered by a whole-tool grant.
+    let mut quote_update = if quote_binding.is_some()
+        || (quoted_endpoint && !checkout && tool.policy().risk() != McpToolRiskClass::ReadOnly)
+    {
+        match super::mcp_commerce::begin_quote_update(
+            &exec_ctx.storage_base_path,
+            &quote_account,
+            &quote_scope,
+            tool.remote_id().remote_name(),
+        ) {
+            Ok(update) => Some(update),
+            Err(error) => {
+                let _ = client.close().await;
+                if let Some(outward) = outward {
+                    outward.settle_not_sent(&error);
+                }
+                return Err(error);
+            },
+        }
+    } else {
+        None
+    };
     let outcome = if let Some(commerce) = discovery.commerce.as_ref().filter(|_| checkout) {
         call_commerce_tool(
             &mut client,
@@ -398,31 +700,227 @@ async fn execute_mcp(
             tool,
             remote_arguments,
             commerce,
-            endpoint.alias.as_deref(),
+            endpoint_alias,
             &arguments,
             &exec_ctx,
             &capability_id,
+            checkout_binding,
+            &quote_scope,
+            &quote_account,
         )
         .await
     } else {
+        // A local refusal by the client (tool not in the snapshot, argument or
+        // request limits, no continuation slot) never left. Once the request
+        // was handed to the transport, a failure cannot say whether the
+        // remote acted on it.
         client
-            .call_tool(tool.remote_id(), remote_arguments)
+            .call_tool_reporting_dispatch(tool.remote_id(), remote_arguments)
             .await
-            .map_err(|error| format!("governed MCP tool call failed: {error}"))
-    };
-    let projected = match outcome {
-        Ok(outcome) => project_call_outcome(outcome),
-        Err(error) => {
-            let _ = client.close().await;
-            return Err(error);
-        },
+            .map_err(|(error, sent)| tool_call_error(&error, sent))
     };
     let _ = client.close().await;
-    let result = projected?;
+    let (mut result, outward) = match read_back_call(started, outcome, outward, checkout) {
+        ReadBack::Projected { result, outward } => (result, outward),
+        ReadBack::Finished(finished) => return finished,
+    };
+    if let (Some(binding), Some(native_arguments), Some(update)) =
+        (quote_binding, quote_arguments, quote_update.as_mut())
+    {
+        let recorded = if result.get("remote_error").and_then(Value::as_bool) == Some(false) {
+            super::mcp_commerce::record_quote(
+                update,
+                binding,
+                &native_arguments,
+                &super::mcp_bindings::native_documents(&result),
+            )
+        } else {
+            Err("cart tool did not complete successfully".into())
+        };
+        result["commerce_quote"] = match recorded {
+            Ok(id) => json!({"status":"ready", "cart_id":id, "expires_in_secs":600}),
+            Err(error) => json!({"status":"unavailable", "reason":error}),
+        };
+    }
+    if let Some(binding) = runtime
+        .mcp_bindings
+        .as_ref()
+        .and_then(|b| b.tools.get(tool.remote_id().remote_name()))
+    {
+        super::mcp_bindings::redact_result(&mut result, &binding.redact_fields);
+    }
+    // An outward act or a checkout has reached the remote by now: the message
+    // may be sent, the order may be placed. Neither may come back retryable.
+    let outward_sent = outward.is_some() || checkout;
+    if let Some(outward) = outward {
+        outward.settle(&result);
+    }
+    let artifacts = super::mcp_stdio::result_artifacts(
+        runtime,
+        exec_ctx,
+        tool.remote_id().remote_name(),
+        &result,
+    );
+    let mut completed = match success(
+        started,
+        json!({"action":"call_tool", "status":"ok", "result":result,
+        "artifacts":artifacts.iter().map(|artifact| json!({"path":artifact.original_path,"mime":artifact.content_type})).collect::<Vec<_>>() }),
+    ) {
+        Ok(completed) => completed,
+        // The act is settled above; only this envelope failed. The send
+        // happened, so the answer must still not read as retryable.
+        Err(error) if outward_sent => {
+            tracing::error!(%error, capability_id, checkout, "governed MCP outward or checkout result envelope failed after dispatch; do not retry");
+            return unreadable_outward_success(started, &error);
+        },
+        Err(error) => return Err(error),
+    };
+    completed.artifacts = artifacts;
+    Ok(completed)
+}
+
+fn prepare_public_profile(
+    runtime: &GovernedRuntimeImplementation,
+    exec_ctx: &PrimitiveExecCtx,
+) -> Result<Option<String>, String> {
+    let Some(profile) = runtime
+        .mcp_bindings
+        .as_ref()
+        .and_then(|b| b.public_profile.as_ref())
+    else {
+        return Ok(None);
+    };
+    // Initialized from this engine's reviewed public origin, including for
+    // anonymous MCPs. The caller cannot choose a host or another identity.
+    let broker = McpOAuthApi::shared().ok_or("public MCP profile origin is unavailable")?;
+    let callback = url::Url::parse(broker.callback_base_url())
+        .map_err(|_| "public MCP profile origin is invalid")?;
+    profile
+        .publish(
+            &exec_ctx.storage_base_path,
+            &callback.origin().ascii_serialization(),
+        )
+        .map(Some)
+}
+
+/// Where a tool call failed relative to its request leaving this process.
+enum ToolCallError {
+    /// Refused locally; the request never left.
+    NotSent(String),
+    /// The request was handed to the transport. The remote may have acted on it.
+    Unknown(String),
+}
+
+/// Classify a client `call_tool` failure by whether the request was sent
+/// (`McpClient::call_tool_reporting_dispatch`).
+fn tool_call_error(error: &magician_mcp_client::McpClientError, sent: bool) -> ToolCallError {
+    let message = format!("governed MCP tool call failed: {error}");
+    if sent {
+        ToolCallError::Unknown(message)
+    } else {
+        ToolCallError::NotSent(message)
+    }
+}
+
+/// The read-back of a call whose request may have left.
+enum ReadBack {
+    /// A projected result, with the outward attempt still to settle against it.
+    Projected {
+        result: Value,
+        outward: Option<super::mcp_stdio::OutwardAttempt>,
+    },
+    /// No result can be read back; this is the call's answer.
+    Finished(Result<PrimitiveToolResult, String>),
+}
+
+/// Project a call's outcome, or settle the outward attempt when no result can
+/// be read back.
+///
+/// A refusal before the send (`NotSent`) is always a plain `Err`; with an
+/// outward attempt it also records the act failed. A failure after the request
+/// may have left — a transport error, a reservation commit/rollback failure
+/// after a checkout's final call, or a result the remote produced that exceeds
+/// the local size limit — answers with the non-retry envelope whenever the
+/// request was an outward act (recorded as unknown) or a `checkout` (the order
+/// may exist, outward binding or not). Any other call keeps the plain `Err` it
+/// always had.
+fn read_back_call(
+    started: Instant,
+    outcome: Result<McpToolCallOutcome, ToolCallError>,
+    outward: Option<super::mcp_stdio::OutwardAttempt>,
+    checkout: bool,
+) -> ReadBack {
+    let error = match outcome {
+        Ok(outcome) => match project_call_outcome(outcome) {
+            Ok(result) => return ReadBack::Projected { result, outward },
+            // The remote answered; only reading its answer back failed.
+            Err(error) => ToolCallError::Unknown(error),
+        },
+        Err(error) => error,
+    };
+    ReadBack::Finished(match (outward, error) {
+        (None, ToolCallError::Unknown(error)) if checkout => {
+            tracing::error!(%error, "governed MCP checkout result unreadable after the final call; do not retry");
+            unreadable_outward_success(started, &error)
+        },
+        (None, ToolCallError::NotSent(error) | ToolCallError::Unknown(error)) => Err(error),
+        (Some(outward), ToolCallError::NotSent(error)) => {
+            outward.settle_not_sent(&error);
+            Err(error)
+        },
+        (Some(outward), ToolCallError::Unknown(error)) => {
+            outward.settle_unknown(&error);
+            unreadable_outward_success(started, &error)
+        },
+    })
+}
+
+/// The envelope for an outward call or checkout that may have left but whose
+/// result could not be read back.
+///
+/// It must say neither "done" nor "failed":
+///
+/// - Not done: `outcome` is `unknown` and `sent` is `unknown`, the top-level
+///   `status` is `dispatch_unknown` rather than `ok`, and there is no
+///   `remote_error: false` asserting the remote succeeded, so no layer reads it
+///   as a delivered message or a placed order.
+/// - Not failed: it is still a successful `PrimitiveToolResult`. A
+///   `success: false` result is folded into an agent-actionable failure
+///   (`capability_invoker::fold_primitive_result`), which reads as "the send
+///   failed" and invites the model to send again; a plain `Err` may be retried
+///   automatically. The churn steer flags `status: error|failed` and
+///   `remote_error: true`, which this deliberately never carries.
+fn unreadable_outward_projection(error: &str) -> Value {
+    json!({
+        "outcome": "unknown",
+        "sent": "unknown",
+        "retry": false,
+        "continuation": "dispatch_unknown",
+        "error": error,
+        "note": "the MCP call may already have been accepted (a message sent or an order placed), but its result could not be read back; its outcome is unknown, so do not retry it automatically and do not report it as done — check with the provider or the owner first"
+    })
+}
+
+fn unreadable_outward_success(
+    started: Instant,
+    error: &str,
+) -> Result<PrimitiveToolResult, String> {
     success(
         started,
-        json!({"action": "call_tool", "status": "ok", "result": result}),
+        json!({"action":"call_tool", "status":"dispatch_unknown",
+            "result":unreadable_outward_projection(error), "artifacts":[]}),
     )
+}
+
+/// Whether a governed-MCP answer is the dispatch-unknown envelope, so the
+/// terminal audit names it rather than calling it a success.
+fn is_dispatch_unknown(result: &PrimitiveToolResult) -> bool {
+    result
+        .parsed_json
+        .as_ref()
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+        == Some("dispatch_unknown")
 }
 
 /// Record one governed-MCP execution.
@@ -455,6 +953,36 @@ fn record_mcp_audit(
         .map_err(|_| "governed MCP audit failed".to_owned())
 }
 
+fn requires_one_shot_approval(approval: ApprovalClass, checkout: bool) -> bool {
+    checkout || approval == ApprovalClass::CommerceCheckout
+}
+
+#[cfg(test)]
+mod approval_duration_tests {
+    use super::*;
+
+    #[test]
+    fn transaction_approval_never_uses_a_duration_grant() {
+        assert!(!requires_one_shot_approval(
+            ApprovalClass::ConditionalExternalSideEffect,
+            false
+        ));
+        assert!(requires_one_shot_approval(
+            ApprovalClass::ConditionalExternalSideEffect,
+            true
+        ));
+        assert!(requires_one_shot_approval(
+            ApprovalClass::CommerceCheckout,
+            false
+        ));
+        assert!(requires_one_shot_approval(
+            ApprovalClass::CommerceCheckout,
+            true
+        ));
+        assert!(requires_one_shot_approval(ApprovalClass::Ordinary, true));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn request_tool_approval(
     exec_ctx: &PrimitiveExecCtx,
@@ -464,6 +992,7 @@ async fn request_tool_approval(
     remote_tool: &str,
     approval: ApprovalClass,
     intent_summary: &str,
+    remote_arguments: &Value,
     commerce: Option<&McpCommercePolicy>,
     controls: &Map<String, Value>,
     endpoint_alias: Option<&str>,
@@ -487,7 +1016,8 @@ async fn request_tool_approval(
             id: String::new(),
             request_type: "mcp_tool_approval".to_owned(),
             question: format!(
-                "Approve this action once?\n\n{summary}\nTool: {remote_tool}{amount_line}"
+                "Approve this action once?\n\n{summary}\nTool: {remote_tool}{amount_line}\n\nArguments:\n{}",
+                serde_json::to_string_pretty(remote_arguments).unwrap_or_default()
             ),
             options: vec![
                 RequestOption {
@@ -509,6 +1039,7 @@ async fn request_tool_approval(
                 "remote_tool": remote_tool,
                 "approval_class": approval,
                 "intent_summary": summary,
+                "arguments": remote_arguments,
                 "endpoint_alias": endpoint_alias,
                 "reviewed_amount": amount,
                 "owner_agent_id": exec_ctx.agent_id.clone(),
@@ -550,61 +1081,63 @@ fn into_bounded_object(value: Value) -> Result<Map<String, Value>, String> {
         .ok_or_else(|| "governed MCP arguments must be an object".to_owned())
 }
 
-struct SelectedEndpoint {
-    url: String,
-    alias: Option<String>,
-}
-
-fn select_endpoint(
+/// Remove the model-selectable endpoint/profile choices from the call
+/// arguments. The binding itself is built by `mcp_oauth_binding`, shared with
+/// Service-accounts Connect.
+fn take_binding_selectors(
     package: &tool_runtime_core::manifest_parser::SkillRuntimePackage,
     discovery: &tool_runtime_core::manifest::McpDiscoveryPolicy,
-    base: &str,
     arguments: &mut Map<String, Value>,
-) -> Result<SelectedEndpoint, String> {
-    if discovery.endpoint_aliases.is_empty() {
-        return Ok(SelectedEndpoint {
-            url: base.to_owned(),
-            alias: None,
-        });
-    }
-    let parameter = package
-        .catalog
-        .mcp_endpoint_parameter
-        .as_deref()
-        .unwrap_or("endpoint_alias");
-    let selected = take_optional_string(arguments, parameter)
-        .or_else(|| discovery.default_endpoint_alias.clone())
-        .ok_or_else(|| "governed MCP endpoint alias is required".to_owned())?;
-    let url = discovery
-        .endpoint_aliases
-        .get(&selected)
-        .cloned()
-        .ok_or_else(|| "governed MCP endpoint alias is not declared".to_owned())?;
-    Ok(SelectedEndpoint {
-        url,
-        alias: Some(selected),
-    })
-}
-
-fn select_profile(
-    package: &tool_runtime_core::manifest_parser::SkillRuntimePackage,
-    arguments: &mut Map<String, Value>,
-) -> Result<String, String> {
-    match &package.contract.auth.profile_selection {
-        ProfileSelection::Fixed { alias } => Ok(alias.clone()),
-        ProfileSelection::Selectable { default } => {
+) -> Result<(Option<String>, Option<String>), String> {
+    let endpoint_alias = if discovery.endpoint_aliases.is_empty() {
+        None
+    } else {
+        let parameter = package
+            .catalog
+            .mcp_endpoint_parameter
+            .as_deref()
+            .unwrap_or("endpoint_alias");
+        take_optional_string(arguments, parameter)
+    };
+    let profile_alias = match &package.contract.auth.profile_selection {
+        ProfileSelection::Selectable { .. } => {
             let parameter = package
                 .projected_profile_parameter()
                 .ok_or_else(|| "governed MCP profile parameter is unavailable".to_owned())?;
             take_optional_string(arguments, parameter.name)
-                .or_else(|| default.clone())
-                .ok_or_else(|| "governed MCP profile alias is required".to_owned())
         },
-        ProfileSelection::None => Ok("default".to_owned()),
-        ProfileSelection::Implicit => {
-            Err("governed MCP OAuth requires an explicit local profile".to_owned())
+        ProfileSelection::Fixed { .. } | ProfileSelection::None | ProfileSelection::Implicit => {
+            None
         },
+    };
+    Ok((endpoint_alias, profile_alias))
+}
+
+fn binding_error(error: McpOAuthBindingError) -> String {
+    match error {
+        McpOAuthBindingError::NotRemoteMcp | McpOAuthBindingError::NotStreamableHttp => {
+            "governed remote MCP execution currently requires Streamable HTTP"
+        },
+        McpOAuthBindingError::ProviderMissing => "governed MCP provider binding is unavailable",
+        McpOAuthBindingError::OAuthPolicyMissing => {
+            "governed remote MCP OAuth policy is unavailable"
+        },
+        McpOAuthBindingError::CallbackPolicyInvalid => {
+            "governed MCP browser sign-in callback policy is invalid"
+        },
+        McpOAuthBindingError::EndpointAliasRequired => "governed MCP endpoint alias is required",
+        McpOAuthBindingError::EndpointAliasUndeclared => {
+            "governed MCP endpoint alias is not declared"
+        },
+        McpOAuthBindingError::ProfileAliasRequired => "governed MCP profile alias is required",
+        McpOAuthBindingError::ProfileImplicit => {
+            "governed MCP OAuth requires an explicit local profile"
+        },
+        McpOAuthBindingError::ResourceInvalid => "governed MCP resource binding is invalid",
+        McpOAuthBindingError::IssuerInvalid => "governed MCP issuer binding is invalid",
+        McpOAuthBindingError::ProfileInvalid => "governed MCP profile binding is invalid",
     }
+    .to_owned()
 }
 
 fn take_required_string(arguments: &mut Map<String, Value>, name: &str) -> Result<String, String> {
@@ -783,42 +1316,130 @@ async fn call_commerce_tool(
     controls: &Map<String, Value>,
     exec_ctx: &PrimitiveExecCtx,
     capability_id: &str,
-) -> Result<McpToolCallOutcome, String> {
+    checkout_binding: Option<&super::mcp_commerce::CheckoutBinding>,
+    quote_scope: &str,
+    quote_account: &str,
+) -> Result<McpToolCallOutcome, ToolCallError> {
+    // Everything up to the final `call_tool` is a local refusal: the order
+    // request has not left.
     if final_tool.policy().risk() != McpToolRiskClass::Commerce {
-        return Err(
+        return Err(ToolCallError::NotSent(
             "checkout-like MCP tool is not declared as commerce by local policy".to_owned(),
-        );
+        ));
     }
     let declared = controls
         .get(&policy.amount_parameter)
         .and_then(decimal_from_value)
-        .filter(|amount| *amount > Decimal::ZERO)
-        .ok_or_else(|| "checkout-like MCP call requires a positive reviewed amount".to_owned())?;
-    let declared_minor = (declared * Decimal::from(100u32)).round_dp(0);
+        .filter(|amount| {
+            *amount > Decimal::ZERO || checkout_binding.is_some() && *amount == Decimal::ZERO
+        })
+        .ok_or_else(|| {
+            ToolCallError::NotSent(
+                "checkout-like MCP call requires a positive reviewed amount".to_owned(),
+            )
+        })?;
+    let raw_minor = declared.checked_mul(Decimal::from(100u32)).ok_or_else(|| {
+        ToolCallError::NotSent("checkout amount exceeds local numeric bounds".into())
+    })?;
+    if checkout_binding.is_some() && !raw_minor.fract().is_zero() {
+        return Err(ToolCallError::NotSent(
+            "checkout amount must use whole minor currency units".into(),
+        ));
+    }
+    let declared_minor = raw_minor.round_dp(0);
     if policy
         .max_order_minor
         .is_some_and(|maximum| declared_minor > Decimal::from(maximum))
     {
-        return Err("checkout-like MCP call exceeds the local per-order ceiling".to_owned());
+        return Err(ToolCallError::NotSent(
+            "checkout-like MCP call exceeds the local per-order ceiling".to_owned(),
+        ));
     }
 
-    let verified_minor =
-        verify_live_cart(client, catalog, policy, endpoint_alias, declared_minor).await?;
-    let reservation = reserve_commerce(
-        exec_ctx,
-        capability_id,
-        &policy.commodity,
-        verified_minor / Decimal::from(100u32),
-    )
-    .await?;
-    let call = client.call_tool(final_tool.remote_id(), arguments).await;
+    let native_arguments = Value::Object(arguments.clone());
+    let mut quote_claim = checkout_binding
+        .map(|binding| {
+            super::mcp_commerce::claim_quote(
+                &exec_ctx.storage_base_path,
+                quote_account,
+                quote_scope,
+                binding,
+                &native_arguments,
+                declared_minor,
+            )
+        })
+        .transpose()
+        .map_err(ToolCallError::NotSent)?;
+    let verified_minor = if let Some(claim) = quote_claim.as_mut() {
+        claim.amount_minor
+    } else {
+        verify_live_cart(client, catalog, policy, endpoint_alias, declared_minor)
+            .await
+            .map_err(ToolCallError::NotSent)?
+    };
+    let reservation = if verified_minor.is_zero() {
+        // Only an explicitly bound, native zero-price quote can reach here.
+        CommerceReservation { hold: None }
+    } else {
+        match reserve_commerce(
+            exec_ctx,
+            capability_id,
+            &policy.commodity,
+            verified_minor / Decimal::from(100u32),
+        )
+        .await
+        {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if let Some(claim) = quote_claim.as_mut() {
+                    super::mcp_commerce::release_claim(claim);
+                }
+                return Err(ToolCallError::NotSent(error));
+            },
+        }
+    };
+    let call = client
+        .call_tool_reporting_dispatch(final_tool.remote_id(), arguments)
+        .await;
+    // A client-side refusal before the send placed no order: release the hold
+    // and refuse plainly. Past the send, a settlement failure cannot undo it.
+    if let Err((error, false)) = &call {
+        if let Some(claim) = quote_claim.as_mut() {
+            super::mcp_commerce::release_claim(claim);
+        }
+        let error = tool_call_error(error, false);
+        if let Err(rollback) = reservation.rollback().await {
+            tracing::error!(%rollback, "checkout hold could not be released after a refusal before send");
+        }
+        return Err(error);
+    }
+    let mut call = call.map_err(|(error, _)| error);
+    if let (Some(binding), Ok(McpToolCallOutcome::Complete(result))) = (checkout_binding, &mut call)
+    {
+        if !result.is_error {
+            match super::mcp_commerce::checkout_succeeded(
+                binding,
+                &super::mcp_commerce::documents(result),
+            ) {
+                Some(true) => {},
+                Some(false) => result.is_error = true,
+                None => {
+                    reservation.commit().await.map_err(ToolCallError::Unknown)?;
+                    return Err(ToolCallError::Unknown("checkout returned no verifiable success indicator; check the existing order before retrying".into()));
+                },
+            }
+        }
+    }
     match call {
         Ok(McpToolCallOutcome::Complete(result)) if result.is_error => {
-            reservation.rollback().await?;
+            reservation
+                .rollback()
+                .await
+                .map_err(ToolCallError::Unknown)?;
             Ok(McpToolCallOutcome::Complete(result))
         },
         Ok(outcome @ McpToolCallOutcome::Complete(_)) => {
-            reservation.commit().await?;
+            reservation.commit().await.map_err(ToolCallError::Unknown)?;
             Ok(outcome)
         },
         Ok(outcome @ (McpToolCallOutcome::InputRequired(_) | McpToolCallOutcome::Task(_))) => {
@@ -829,20 +1450,14 @@ async fn call_commerce_tool(
         },
         Err(error) => {
             // Once the final request is sent, a transport error is ambiguous.
-            // Commit the hold and return a non-retry success so the app/chat
-            // layer cannot dispatch a second checkout.
-            reservation.commit().await?;
-            Ok(McpToolCallOutcome::Complete(McpToolCallResult {
-                result_type: "text".to_owned(),
-                content: vec![json!({
-                    "outcome": "complete",
-                    "ambiguous_transport": true,
-                    "note": "governed MCP checkout outcome is ambiguous after dispatch; the operation may already have been accepted, so do not retry it automatically",
-                    "error": error.to_string(),
-                })],
-                structured_content: None,
-                is_error: false,
-            }))
+            // Commit the hold (the order may exist) and answer through the
+            // dispatch-unknown envelope (`read_back_call` with `checkout`), so
+            // the app/chat layer neither dispatches a second checkout nor
+            // reports this one as placed.
+            reservation.commit().await.map_err(ToolCallError::Unknown)?;
+            Err(ToolCallError::Unknown(format!(
+                "governed MCP checkout outcome is ambiguous after dispatch: {error}"
+            )))
         },
     }
 }
@@ -1075,26 +1690,32 @@ fn decimal_from_value(value: &Value) -> Option<Decimal> {
 }
 
 struct CommerceReservation {
-    hold: SpendHold,
+    hold: Option<SpendHold>,
 }
 
 impl CommerceReservation {
     async fn commit(self) -> Result<(), String> {
-        self.hold
-            .commit(None)
+        let Some(hold) = self.hold else {
+            return Ok(());
+        };
+        hold.commit(None)
             .await
             .map_err(|_| "commerce reservation commit failed".to_owned())
     }
 
     async fn rollback(self) -> Result<(), String> {
-        self.hold
-            .rollback()
+        let Some(hold) = self.hold else {
+            return Ok(());
+        };
+        hold.rollback()
             .await
             .map_err(|_| "commerce reservation rollback failed".to_owned())
     }
 
     async fn persist(&self) {
-        self.hold.persist().await;
+        if let Some(hold) = &self.hold {
+            hold.persist().await;
+        }
     }
 }
 
@@ -1169,7 +1790,7 @@ async fn reserve_commerce(
         },
     })?;
     match admission {
-        SpendAdmission::Reserved(hold) => Ok(CommerceReservation { hold }),
+        SpendAdmission::Reserved(hold) => Ok(CommerceReservation { hold: Some(hold) }),
         SpendAdmission::Uncounted => {
             Err("checkout blocked because Resource Authority is unavailable".to_owned())
         },
@@ -1263,6 +1884,281 @@ mod tests {
         assert_eq!(value["remote_error"], false);
         assert_eq!(value["continuation"], "input_required");
         assert!(value["note"].as_str().unwrap().contains("do not retry"));
+    }
+
+    /// An outward act exactly as `prepare_outward` leaves it for a live send:
+    /// prepared, dispatching, then dispatch-unknown awaiting its receipt.
+    fn dispatched_outward_attempt(
+        root: &std::path::Path,
+    ) -> (
+        crate::magician_v2::evidence::OutwardAssertionStore,
+        crate::magician_v2::evidence::OutwardScope,
+        String,
+        super::super::mcp_stdio::OutwardAttempt,
+    ) {
+        use crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace;
+        use crate::magician_v2::evidence::{OutwardAssertionStore, OutwardScope};
+
+        let store = OutwardAssertionStore::new(ArtifactV2Workspace::new(root));
+        let scope = OutwardScope::new("anonymous", "default");
+        let binding: super::super::mcp_bindings::McpOutwardBinding = serde_json::from_value(
+            json!({"channel": "whatsapp", "provider": "whatsapp", "recipients": ["/to"]}),
+        )
+        .expect("outward binding");
+        let act = store
+            .prepare_dispatch(
+                &scope,
+                "whatsapp",
+                "send_message",
+                binding.channel,
+                "agent",
+                br#"{"to":"a@s.whatsapp.net","text":"hi"}"#,
+                vec!["a@s.whatsapp.net".to_owned()],
+                None,
+                binding.consequence_class,
+                "t0",
+            )
+            .expect("prepare");
+        let act_ref = act.outward_act_ref;
+        store
+            .mark_dispatching(&scope, &act_ref, "t1")
+            .expect("dispatching");
+        store
+            .mark_dispatch_unknown(
+                &scope,
+                &act_ref,
+                "MCP dispatched; awaiting a provider receipt",
+                "t1",
+            )
+            .expect("dispatch unknown");
+        let reader = OutwardAssertionStore::new(ArtifactV2Workspace::new(root));
+        let attempt = super::super::mcp_stdio::OutwardAttempt::for_test(
+            store,
+            scope.clone(),
+            act_ref.clone(),
+            binding,
+        );
+        (reader, scope, act_ref, attempt)
+    }
+
+    fn oversize_outcome() -> McpToolCallOutcome {
+        McpToolCallOutcome::Complete(McpToolCallResult {
+            result_type: "result".to_owned(),
+            content: vec![json!({
+                "type": "text",
+                "text": "x".repeat(MAX_RESULT_JSON_BYTES + 1)
+            })],
+            structured_content: None,
+            is_error: false,
+        })
+    }
+
+    fn assert_non_retry_envelope(answer: ReadBack) {
+        let ReadBack::Finished(answer) = answer else {
+            panic!("no result can be read back, so the call must be finished here");
+        };
+        let answer =
+            answer.expect("a possible outward send must never come back as a retryable error");
+        // Not a failure: `success: false` folds into an agent-actionable
+        // "failed", which invites the model to send again.
+        assert!(answer.success);
+        assert!(is_dispatch_unknown(&answer));
+        let value = answer.parsed_json.as_ref().expect("envelope");
+        // Not a success either: nothing in it reads as done.
+        assert_eq!(value["status"], "dispatch_unknown");
+        assert_ne!(value["status"], "ok");
+        assert_eq!(value["result"]["outcome"], "unknown");
+        assert_eq!(value["result"]["sent"], "unknown");
+        assert_eq!(value["result"]["retry"], false);
+        assert!(value["result"].get("remote_error").is_none());
+        assert_eq!(value["result"]["continuation"], "dispatch_unknown");
+        assert!(value["result"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("do not retry"));
+        // The agent reads stdout; it carries the same answer.
+        let stdout: Value = serde_json::from_str(&answer.stdout).expect("stdout json");
+        assert_eq!(&stdout, value);
+    }
+
+    /// The remote accepted the send and answered with more than the local
+    /// limit allows. Retrying would send the message again, so the answer is
+    /// the non-retry envelope and the act is recorded as an open question.
+    #[test]
+    fn an_oversize_result_after_an_outward_send_never_invites_a_retry() {
+        use crate::magician_v2::evidence::OutwardActStatus;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (reader, scope, act_ref, attempt) = dispatched_outward_attempt(tmp.path());
+        let before = reader.load_act_history(&scope, &act_ref).unwrap().len();
+
+        let answer = read_back_call(Instant::now(), Ok(oversize_outcome()), Some(attempt), false);
+        if let ReadBack::Finished(Ok(completed)) = &answer {
+            let error = completed.parsed_json.as_ref().unwrap()["result"]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(error.contains("size limit"), "{error}");
+        }
+        assert_non_retry_envelope(answer);
+
+        let history = reader.load_act_history(&scope, &act_ref).unwrap();
+        assert_eq!(
+            history.len(),
+            before + 1,
+            "the read-back failure is recorded explicitly"
+        );
+        assert_eq!(history.last(), Some(&OutwardActStatus::DispatchUnknown));
+        let act = reader.load_act(&scope, &act_ref).unwrap().unwrap();
+        assert_eq!(act.status, OutwardActStatus::DispatchUnknown);
+        assert!(act.provider_message_id.is_none());
+
+        // With no outward act in flight the same failure stays an ordinary error.
+        assert!(matches!(
+            read_back_call(Instant::now(), Ok(oversize_outcome()), None, false),
+            ReadBack::Finished(Err(error)) if error.contains("size limit")
+        ));
+    }
+
+    #[test]
+    fn a_transport_error_after_an_outward_send_never_invites_a_retry() {
+        use crate::magician_v2::evidence::OutwardActStatus;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (reader, scope, act_ref, attempt) = dispatched_outward_attempt(tmp.path());
+        assert_non_retry_envelope(read_back_call(
+            Instant::now(),
+            Err(ToolCallError::Unknown(
+                "governed MCP tool call failed: broken pipe".into(),
+            )),
+            Some(attempt),
+            false,
+        ));
+        assert_eq!(
+            reader.load_act(&scope, &act_ref).unwrap().unwrap().status,
+            OutwardActStatus::DispatchUnknown
+        );
+    }
+
+    #[test]
+    fn a_refusal_before_the_send_fails_the_act_and_stays_an_error() {
+        use crate::magician_v2::evidence::OutwardActStatus;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (reader, scope, act_ref, attempt) = dispatched_outward_attempt(tmp.path());
+        assert!(matches!(
+            read_back_call(
+                Instant::now(),
+                Err(ToolCallError::NotSent("cart could not be verified".into())),
+                Some(attempt),
+                false,
+            ),
+            ReadBack::Finished(Err(_))
+        ));
+        assert_eq!(
+            reader.load_act(&scope, &act_ref).unwrap().unwrap().status,
+            OutwardActStatus::Failed
+        );
+    }
+
+    /// A checkout's final call reached the remote and the order may have been
+    /// placed; the answer is larger than the local limit. With no outward
+    /// binding at all, a retryable error would place a second order, so the
+    /// answer is the non-retry envelope.
+    #[test]
+    fn an_oversize_result_after_a_checkout_never_invites_a_retry() {
+        let answer = read_back_call(Instant::now(), Ok(oversize_outcome()), None, true);
+        if let ReadBack::Finished(Ok(completed)) = &answer {
+            let error = completed.parsed_json.as_ref().unwrap()["result"]["error"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(error.contains("size limit"), "{error}");
+        }
+        assert_non_retry_envelope(answer);
+
+        // A reservation commit/rollback failure after the final call is the same.
+        assert_non_retry_envelope(read_back_call(
+            Instant::now(),
+            Err(ToolCallError::Unknown(
+                "commerce reservation commit failed".into(),
+            )),
+            None,
+            true,
+        ));
+
+        // A refusal before the final call never left: it stays an error.
+        assert!(matches!(
+            read_back_call(
+                Instant::now(),
+                Err(ToolCallError::NotSent(
+                    "checkout-like MCP call exceeds the local per-order ceiling".into()
+                )),
+                None,
+                true,
+            ),
+            ReadBack::Finished(Err(_))
+        ));
+    }
+
+    /// The client refuses some calls before anything is sent (tool outside the
+    /// snapshot, argument/request limits, no continuation slot). Those placed no
+    /// message and no order: the act is failed and the answer an ordinary
+    /// error. Only a failure after the request left is an open question.
+    #[test]
+    fn a_client_refusal_before_send_fails_the_act_and_a_transport_failure_does_not() {
+        use crate::magician_v2::evidence::OutwardActStatus;
+        use magician_mcp_client::McpClientError;
+
+        for refusal in [
+            McpClientError::ToolNotDiscovered,
+            McpClientError::ContinuationCapacityExceeded,
+        ] {
+            assert!(matches!(
+                tool_call_error(&refusal, false),
+                ToolCallError::NotSent(_)
+            ));
+            let tmp = tempfile::tempdir().expect("temp dir");
+            let (reader, scope, act_ref, attempt) = dispatched_outward_attempt(tmp.path());
+            assert!(matches!(
+                read_back_call(
+                    Instant::now(),
+                    Err(tool_call_error(&refusal, false)),
+                    Some(attempt),
+                    false,
+                ),
+                ReadBack::Finished(Err(_))
+            ));
+            assert_eq!(
+                reader.load_act(&scope, &act_ref).unwrap().unwrap().status,
+                OutwardActStatus::Failed
+            );
+            // A checkout refused by the client placed no order either.
+            assert!(matches!(
+                read_back_call(
+                    Instant::now(),
+                    Err(tool_call_error(&refusal, false)),
+                    None,
+                    true
+                ),
+                ReadBack::Finished(Err(_))
+            ));
+        }
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let (reader, scope, act_ref, attempt) = dispatched_outward_attempt(tmp.path());
+        let timeout = tool_call_error(&McpClientError::CallTimeout, true);
+        assert!(matches!(timeout, ToolCallError::Unknown(_)));
+        assert_non_retry_envelope(read_back_call(
+            Instant::now(),
+            Err(timeout),
+            Some(attempt),
+            false,
+        ));
+        assert_eq!(
+            reader.load_act(&scope, &act_ref).unwrap().unwrap().status,
+            OutwardActStatus::DispatchUnknown
+        );
     }
 
     #[test]

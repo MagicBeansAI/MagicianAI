@@ -19,12 +19,11 @@ pub enum SystemOwner {
     DeviceLocalImessage,
     DeviceLocalWhatsapp,
     NotesProvider,
-    SilverbulletSpaceRuntime,
     EvalsRuns,
 }
 
 impl SystemOwner {
-    pub const ALL: [SystemOwner; 15] = [
+    pub const ALL: [SystemOwner; 14] = [
         Self::SecretVault,
         Self::ResourceAuthority,
         Self::Programs,
@@ -39,7 +38,6 @@ impl SystemOwner {
         Self::DeviceLocalImessage,
         Self::DeviceLocalWhatsapp,
         Self::NotesProvider,
-        Self::SilverbulletSpaceRuntime,
     ];
 
     pub const TENANT: [SystemOwner; 7] = [
@@ -59,11 +57,10 @@ impl SystemOwner {
         Self::RuntimeConfig,
     ];
 
-    pub const DEVICE: [SystemOwner; 4] = [
+    pub const DEVICE: [SystemOwner; 3] = [
         Self::DeviceLocalImessage,
         Self::DeviceLocalWhatsapp,
         Self::NotesProvider,
-        Self::SilverbulletSpaceRuntime,
     ];
 
     pub fn id(self) -> &'static str {
@@ -82,7 +79,6 @@ impl SystemOwner {
             Self::DeviceLocalImessage => "device_local_imessage",
             Self::DeviceLocalWhatsapp => "device_local_whatsapp",
             Self::NotesProvider => "notes_provider",
-            Self::SilverbulletSpaceRuntime => "silverbullet_space_runtime",
         }
     }
 
@@ -102,7 +98,6 @@ impl SystemOwner {
             Self::DeviceLocalImessage => "device_local/imessage.marker",
             Self::DeviceLocalWhatsapp => "device_local/whatsapp.marker",
             Self::NotesProvider => "notes/note.md",
-            Self::SilverbulletSpaceRuntime => "silverbullet/.magician/runtime/marker",
         }
     }
 
@@ -148,9 +143,6 @@ impl SystemOwner {
             Self::DeviceLocalImessage => parts == ["device_local", "imessage.marker"],
             Self::DeviceLocalWhatsapp => parts == ["device_local", "whatsapp.marker"],
             Self::NotesProvider => prefix(&parts, &["notes"], 2),
-            Self::SilverbulletSpaceRuntime => {
-                prefix(&parts, &["silverbullet", ".magician", "runtime"], 4)
-            },
         }
     }
 

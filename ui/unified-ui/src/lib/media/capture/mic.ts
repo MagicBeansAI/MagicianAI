@@ -88,10 +88,14 @@ export async function startMicRecording(): Promise<RecordingHandle> {
 			analyser.smoothingTimeConstant = 0.7;
 			const source = audioCtx.createMediaStreamSource(stream);
 			source.connect(analyser);
+			if (audioCtx.state === 'suspended') {
+				void audioCtx.resume().catch(() => { /* Recording remains available without metering. */ });
+			}
 		}
 	} catch {
 		// WebAudio init can fail on some restricted contexts. Recording
 		// itself still works without it; the orb just won't react.
+		void audioCtx?.close().catch(() => {});
 		audioCtx = null;
 		analyser = null;
 	}

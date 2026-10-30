@@ -11,6 +11,7 @@ use crate::scope::{resolve_optional_principal, resolve_required_workspace};
 use magician::magician_v2::agents::{FeatureMode, InvocationSurface};
 use magician::magician_v2::artifact_v2::models::{TaskLifecycle, TaskOutputMode, TaskSyncMode};
 use magician::magician_v2::artifact_v2::{ArtifactV2Error, ArtifactV2Service, CreateTaskInput};
+use magician::magician_v2::chat::authored_framing;
 use magician::magician_v2::chat::lane_seam::{
     THINKING_MAP_PRODUCT_SOURCE_KEY, THINKING_MAP_THREAD_ID,
 };
@@ -598,6 +599,12 @@ pub async fn contextual_writing_action_handler(
         Err(response) => return response,
     };
 
+    let outward_scope =
+        magician::magician_v2::artifact_v2::ScopeRef::system_internal_unauthenticated(
+            &principal, &workspace,
+        );
+    let outward_source = crate::task_api_v3::owner_task_outward_source(&req, &outward_scope).await;
+
     if let Err(message) = validate_request(&body) {
         return HttpResponse::BadRequest().json(json!({ "error": message }));
     }
@@ -761,7 +768,16 @@ pub async fn contextual_writing_action_handler(
         }));
     }
 
-    let prompt = build_contextual_writing_prompt(&body, screenshot_attachment_id.as_deref());
+    let personality_guidance = chat_api.chat_service.personality_preset_guidance(
+        &principal,
+        &workspace,
+        &body.context.personality,
+    );
+    let prompt = build_contextual_writing_prompt(
+        &body,
+        screenshot_attachment_id.as_deref(),
+        personality_guidance.as_deref(),
+    );
     // Use the client-supplied turn id when present (so it can tail turn events),
     // else mint one — exact parity with chat's `chat_turn_id` semantics.
     let chat_turn_id = body
@@ -819,14 +835,17 @@ pub async fn contextual_writing_action_handler(
         .filter(|_| body.action.creates_task)
     {
         Some(draft_text) => {
-            match create_task_from_contextual_draft(
-                artifact_service.get_ref(),
-                &session,
-                &principal,
-                &workspace,
-                &thread_id,
-                &agent_id,
-                draft_text,
+            match magician::magician_v2::agents::outward_policy::with_source(
+                outward_source,
+                create_task_from_contextual_draft(
+                    artifact_service.get_ref(),
+                    &session,
+                    &principal,
+                    &workspace,
+                    &thread_id,
+                    &agent_id,
+                    draft_text,
+                ),
             )
             .await
             {
@@ -1050,6 +1069,7 @@ fn screenshot_attachment_context(
 fn build_contextual_writing_prompt(
     request: &ContextualWritingRequest,
     screenshot_attachment_id: Option<&str>,
+    personality_guidance: Option<&str>,
 ) -> String {
     let mut lines = Vec::new();
     lines.push("Contextual writing request.".to_string());
@@ -1067,6 +1087,12 @@ fn build_contextual_writing_prompt(
         "Selected personality: {}",
         request.context.personality.trim()
     ));
+    // The selected preset's voice, so the draft follows the user's pick
+    // rather than the writing agent's own default personality.
+    if let Some(guidance) = personality_guidance.filter(|text| !text.trim().is_empty()) {
+        lines.push("Write this draft in the selected personality's voice:".to_string());
+        lines.push(guidance.trim().to_string());
+    }
     lines.push(format!(
         "Target text kind: {}",
         request.routing.target_text_kind.trim()
@@ -1131,15 +1157,15 @@ fn build_contextual_writing_prompt(
         lines.push("\nText context:".to_string());
         lines.push(text.to_string());
     }
-    if let Some(user_prompt) = request
+    // Everything but the owner's guidance is Magician's framing: memory must
+    // not learn the helper's instructions or the page's text as the owner's
+    // words (`authored_framing`).
+    let framing_before = std::mem::take(&mut lines);
+    let guidance = request
         .user_prompt
         .as_deref()
         .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        lines.push("\nUser guidance:".to_string());
-        lines.push(user_prompt.to_string());
-    }
+        .filter(|v| !v.is_empty());
     if let Some(visual) = request.visual_context.as_ref() {
         lines.push("\nVisual context policy:".to_string());
         lines.push(format!(
@@ -1164,7 +1190,16 @@ fn build_contextual_writing_prompt(
                 .to_string(),
         );
     }
-    lines.join("\n")
+    let mut prompt = authored_framing::wrap(&framing_before.join("\n"));
+    if let Some(guidance) = guidance {
+        prompt.push_str("\n\nUser guidance:\n");
+        prompt.push_str(guidance);
+    }
+    if !lines.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&authored_framing::wrap(&lines.join("\n")));
+    }
+    prompt
 }
 
 fn response_from_chat(
@@ -1709,15 +1744,25 @@ mod tests {
     fn contextual_writing_prompt_includes_action_source_and_text() {
         let mut request = base_request("improve_draft", true);
         request.user_prompt = Some("make it warmer but still concise".to_string());
-        let prompt = build_contextual_writing_prompt(&request, Some("attachment-1"));
+        let prompt = build_contextual_writing_prompt(
+            &request,
+            Some("attachment-1"),
+            Some("- **Voice:** polished and precise"),
+        );
 
         assert!(prompt.contains("Action intent: improve_draft"));
         assert!(prompt.contains("Selected personality: professional"));
+        assert!(prompt.contains("- **Voice:** polished and precise"));
         assert!(prompt.contains("Source key: app:Notes"));
         assert!(prompt.contains("hello"));
         assert!(prompt.contains("User guidance:"));
         assert!(prompt.contains("make it warmer but still concise"));
         assert!(prompt.contains("Screenshot attachment id: attachment-1"));
+        // Memory sees only the owner's guidance, never the helper's framing.
+        assert_eq!(
+            authored_framing::owner_words(&prompt),
+            "User guidance:\nmake it warmer but still concise"
+        );
     }
 
     #[test]

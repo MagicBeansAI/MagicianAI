@@ -170,14 +170,17 @@
 
 	{#if envelope}
 		{#each envelope.warnings as warning (warning)}
-			<p class="alert warn">{warning}</p>
+			<p class="alert warn">
+				{warning}
+				{#if warning.includes('no owner identity')}<a href="#owner-identities">Claim an owner identity</a>{/if}
+			</p>
 		{/each}
 
 		<div class="grid">
 			<fieldset class="group">
 				<legend>Channels, in preference order</legend>
 				{#if knownChannels.length === 0}
-					<p class="empty">No channel has an owner identity yet. Add one under <code>envoy.owner_identities</code> (or its env var) and refresh.</p>
+					<p class="empty">No channel has an owner identity yet. <a href="#owner-identities">Claim one from WhatsApp or Telegram</a> (or set <code>envoy.owner_identities</code> / its env var by hand) and refresh.</p>
 				{/if}
 				{#each knownChannels as channel (channel)}
 					{@const enabled = draft.enabled_channels.includes(channel)}
@@ -194,7 +197,7 @@
 							<strong>{channel}</strong>
 						</label>
 						<span class="addresses">
-							{#if info.addresses.length}{info.addresses.join(', ')}{:else if !info.hasOwner}<span class="chip warn">no owner identity</span>{:else}—{/if}
+							{#if info.addresses.length}{info.addresses.join(', ')}{:else if !info.hasOwner}<span class="chip warn">no owner identity</span> <a class="claim-link" href="#owner-identities">claim it</a>{:else}—{/if}
 						</span>
 						{#if status?.channels_last_claimed_ms[channel]}
 							<span class="chip">bot seen {when(status.channels_last_claimed_ms[channel])}</span>
@@ -289,6 +292,7 @@
 		border-radius: 8px;
 		display: flex;
 		flex-direction: column;
+		font-size: 0.88rem;
 		gap: 1rem;
 		padding: 1rem;
 	}
@@ -311,6 +315,12 @@
 	h2 {
 		color: var(--text-primary);
 		font-size: 1.05rem;
+	}
+	/* The card's description, at the size the other Settings cards use. */
+	.header p:not(.overline) {
+		color: var(--text-secondary);
+		font-size: 0.92rem;
+		line-height: 1.5;
 	}
 	.empty,
 	.meta {
@@ -356,12 +366,15 @@
 	.grid {
 		display: grid;
 		gap: 1rem;
-		grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
 	}
 	.group {
 		border: 1px solid var(--border-soft);
 		border-radius: 6px;
 		display: flex;
+		/* A fieldset defaults to min-inline-size: min-content, which lets the
+		   delivery table stretch the card instead of scrolling in .table-wrap. */
+		min-width: 0;
 		flex-direction: column;
 		gap: 0.5rem;
 		padding: 0.75rem;
@@ -372,17 +385,30 @@
 		font-weight: 600;
 		padding: 0 0.25rem;
 	}
-	.channel,
-	.row {
+	.channel {
 		align-items: center;
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
 	}
+	/* A radio or checkbox stays beside its text; the text wraps instead. */
+	.row {
+		align-items: flex-start;
+		display: flex;
+		gap: 0.5rem;
+	}
+	.row > input[type='radio'],
+	.row > input[type='checkbox'] {
+		flex: none;
+		margin-top: 0.2rem;
+	}
 	.channel label {
 		align-items: center;
 		display: inline-flex;
 		gap: 0.4rem;
+	}
+	.claim-link {
+		font-size: 0.78rem;
 	}
 	.addresses {
 		color: var(--text-secondary);

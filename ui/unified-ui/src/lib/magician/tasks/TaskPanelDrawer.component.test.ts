@@ -569,8 +569,8 @@ describe('TaskPanelDrawer reads output previews for every surface', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Preview report.md' }));
 
 		await waitFor(() => expect(previewOf(container)).toHaveAttribute('data-preview-status', 'ready'));
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toBe(REPORT_URL);
+		const reportReads = fetchMock.mock.calls.filter(call => String((call as unknown[])[0]) === REPORT_URL);
+		expect(reportReads).toHaveLength(1);
 		expect(previewOf(container)?.textContent).toContain('Revenue rose.');
 		expect(previewOf(container)?.textContent).not.toContain('Reading report.md');
 	});

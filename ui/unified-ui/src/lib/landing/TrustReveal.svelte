@@ -8,11 +8,10 @@
      What remains is the part the road does NOT cover: who the thing answers
      to, and the three concrete mechanisms behind that. -->
 
-<section class="tr" aria-label="Trust">
-	<!-- Capability and the three promises now arrive first. This section can
-	     therefore answer the natural objection directly: power this personal
-	     is acceptable only when its secrets, boundaries and actions answer to
-	     the person it serves. -->
+<section class="tr" id="landing-trust" aria-label="Trust">
+	<!-- Trust arrives right after the hero: power this personal is acceptable
+	     only when its secrets, boundaries and actions answer to the person
+	     it serves. -->
 	<p class="tr-restore">Power this personal must answer to you.</p>
 	<p class="tr-lede">
 		A system this personal will know your messages, your money, your plans. That only works if it

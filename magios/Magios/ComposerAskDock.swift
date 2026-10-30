@@ -1,16 +1,17 @@
 import SwiftUI
 import UIKit
 
-/// The questions this conversation is waiting on, above the composer card
-/// (web `ComposerAskDock.svelte` + `HitlPromptFields.svelte`): one at a time
-/// with a "1 of N" switcher, every simple answer in place (choices,
+/// Every open question, above the composer card (web `ComposerAskDock.svelte`
+/// + `HitlPromptFields.svelte`), so the reader answers wherever they are: one
+/// at a time with a "1 of N" switcher, every simple answer in place (choices,
 /// confirm/deny, plain text, plan approval), and secrets, grants, forms and
 /// diff reviews handed to the focused Attention surface.
 ///
-/// The items come from this chat session: its own unresolved escalation
+/// This conversation's questions come first: its own unresolved escalation
 /// cards, plus the Attention feed's pending asks scoped to this session /
 /// thread (the hitl scope or the feed row's own `ui_thread_id`) or owned by a
-/// task known to belong to this thread. Answering posts through the existing
+/// task known to belong to this thread. Every other feed ask follows, its
+/// card saying where it came from. Answering posts through the existing
 /// respond paths (`ChatViewModel.respondToEscalation`, `AttentionViewModel`),
 /// both of which drop the ask from `PendingHitlTracker`, so it clears from
 /// every surface.
@@ -74,8 +75,11 @@ struct HitlReviewLink: Equatable {
         let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.href = href
         self.label = trimmed.isEmpty ? "Review" : trimmed
-        guard workTarget != nil || externalURL != nil else { return nil }
+        guard workTarget != nil || noteLink != nil || externalURL != nil else { return nil }
     }
+
+    /// A Magician Notes document the link names, if any.
+    var noteLink: NoteLink? { NoteLink.parse(href) }
 
     /// The native Work destination the link names, if any.
     var workTarget: WorkNavigationTarget? { WorkNavigationTarget.parse(href) }
@@ -87,10 +91,12 @@ struct HitlReviewLink: Equatable {
         return url
     }
 
-    /// Open it: the Work router first, else the browser.
+    /// Open it: the Work router first, then the Notes screen, else the browser.
     func open() {
         if let target = workTarget {
             AppActions.shared.requestWork(target)
+        } else if NoteLinkRouter.open(href) {
+            return
         } else if let url = externalURL {
             UIApplication.shared.open(url)
         }
@@ -110,6 +116,10 @@ struct ComposerAskItem: Identifiable, Equatable {
     let source: ComposerAskSource
     /// What to review before answering ("Review draft").
     var review: HitlReviewLink? = nil
+    var files: [AttentionDiffFile] = []
+    /// Raised outside this conversation: its card says where it came from
+    /// (`ComposerAskModel.origin`).
+    var elsewhere = false
 }
 
 enum ComposerAskModel {
@@ -136,7 +146,9 @@ enum ComposerAskModel {
         let options = content.options ?? []
         let sensitive = content.inputSchema?.sensitive != nil
         let form: ComposerAskForm
-        if let handoff = handoffLabel(inputType: inputType, sensitive: sensitive) {
+        if content.inputSchema?.requiresReview == true {
+            form = .handoff("Review in Attention →")
+        } else if let handoff = handoffLabel(inputType: inputType, sensitive: sensitive) {
             form = .handoff(handoff)
         } else if ChatHitlResponseComposer.needsCanonicalAttentionFallback(
             inputType: inputType, options: options,
@@ -172,7 +184,8 @@ enum ComposerAskModel {
     static func isApprove(_ id: String) -> Bool { id == "approve" }
     static func isReject(_ id: String) -> Bool { id == "reject" }
 
-    /// A pending Attention feed ask.
+    /// A pending Attention feed ask. Every surface's: the composers skip a
+    /// dismiss-only notice in [items], the task card does not.
     static func item(attention item: AttentionItem) -> ComposerAskItem? {
         guard item.isActionable, !item.isStalledWait else { return nil }
         let inputType = item.inputType
@@ -191,6 +204,12 @@ enum ComposerAskModel {
         } else if item.alignment != nil {
             // A preference alignment hold is answered where its reason shows
             // (`AlignmentAskView`): a bare confirm here would consent unseen.
+            form = .handoff("Review in Attention →")
+        } else if item.approvalPreview != nil || item.isOutwardReview {
+            // A previewed approval (a proposed document revision) is decided
+            // where its diff, warnings and reason show, never unseen here.
+            // An outward-send review goes there too, card or not: its three
+            // choices (and the remembered grant) are not a confirm pair.
             form = .handoff("Review in Attention →")
         } else if let handoff = handoffLabel(inputType: inputType, sensitive: item.isSensitive) {
             form = .handoff(handoff)
@@ -212,7 +231,7 @@ enum ComposerAskModel {
                 } else {
                     form = .choices(options.map {
                         ComposerAskChoice(id: $0.id, label: $0.label, action: .option($0),
-                                          prominent: isApprove($0.id), destructive: isReject($0.id))
+                                          prominent: isApprove($0.id), destructive: isReject($0.id) || (item.isGodMode && $0.id == "deny"))
                     })
                 }
             default:
@@ -222,27 +241,89 @@ enum ComposerAskModel {
         return ComposerAskItem(
             id: item.correlationId, prompt: item.prompt, hint: nonEmpty(item.metadata?.hint),
             from: item.delegatedFromLabel, taskId: item.owningTaskId, form: form, source: .attention(item),
-            review: item.reviewLink)
+            review: item.reviewLink, files: item.isGodMode ? item.diffFiles : [])
     }
 
     /// Whether a feed ask belongs to this conversation: scoped to the session
     /// or thread (the hitl scope, or the feed row's own `ui_thread_id` — an
     /// ask from Relentless / quality work carries only that and its task), or
     /// owned by a task known to belong to this thread.
+    /// A god-mode grant is workspace-wide, so it belongs everywhere.
     static func belongs(_ item: AttentionItem, sessionId: String?, threadId: String?, chatTaskIds: Set<String>) -> Bool {
+        if item.isGodMode { return true }
+        return belongsHere(item, sessionId: sessionId, threadId: threadId, chatTaskIds: chatTaskIds)
+    }
+
+    /// Raised by this conversation (web `askBelongsHere`): `belongs` without
+    /// the god-mode rule. The dock lists it first, with no origin line.
+    /// A chat's question belongs to that chat only, so another session's
+    /// question is never here, whatever its thread or task.
+    static func belongsHere(_ item: AttentionItem, sessionId: String?, threadId: String?, chatTaskIds: Set<String>) -> Bool {
+        if let sameChat = sameChatSession(item, sessionId: sessionId) { return sameChat }
         if belongsToThread(item, sessionId: sessionId, threadId: threadId) { return true }
         if let task = item.owningTaskId, chatTaskIds.contains(task) { return true }
         return false
     }
 
-    /// Scoped to the session or thread by the ask's own stamps.
+    /// Scoped to the session or thread by the ask's own stamps. Every
+    /// untitled chat shares the default `general` thread, so that thread
+    /// alone never places an ask here (as on Android and web).
     static func belongsToThread(_ item: AttentionItem, sessionId: String?, threadId: String?) -> Bool {
+        if let sameChat = sameChatSession(item, sessionId: sessionId) { return sameChat }
         let scope = item.metadata?.hitlRequest?.scope ?? [:]
-        if let sessionId, !sessionId.isEmpty, (scope["session_id"] ?? nil) == sessionId { return true }
-        guard let threadId, !threadId.isEmpty else { return false }
+        if let sessionId, !sessionId.isEmpty, originSessionId(item) == sessionId { return true }
+        guard let threadId, !threadId.isEmpty, !isSharedThread(threadId) else { return false }
         return (scope["thread_id"] ?? nil) == threadId
             || (scope["ui_thread_id"] ?? nil) == threadId
             || item.uiThreadId == threadId
+    }
+
+    /// The chat session an ask was raised in, by its own stamps.
+    static func originSessionId(_ item: AttentionItem) -> String? {
+        let scope = item.metadata?.hitlRequest?.scope ?? [:]
+        let origin = item.chatSessionId ?? item.schema?.context?.chatSessionId
+            ?? (scope["chat_session_id"] ?? nil) ?? (scope["session_id"] ?? nil)
+        return origin?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Whether an ask stamped with its chat session was raised in this one;
+    /// nil when either side is unknown. Only a chat stamp counts: a bare
+    /// scope `session_id` may name a run.
+    static func sameChatSession(_ item: AttentionItem, sessionId: String?) -> Bool? {
+        let scope = item.metadata?.hitlRequest?.scope ?? [:]
+        guard let current = nonEmpty(sessionId),
+              let origin = nonEmpty(item.chatSessionId ?? item.schema?.context?.chatSessionId
+                  ?? (scope["chat_session_id"] ?? nil))
+        else { return nil }
+        return origin == current
+    }
+
+    /// The thread every untitled chat shares.
+    static func isSharedThread(_ threadId: String) -> Bool {
+        threadId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "general"
+    }
+
+    /// The chat or run an ask was raised in, else its task, else a background
+    /// run (web `ComposerAskDock` `originLabel`).
+    static func originPlace(chatId: String?, session: String?, taskId: String?, chatTitles: [String: String]) -> String {
+        let chatId = chatId ?? ""
+        let chat = chatTitles[chatId] ?? (!chatId.isEmpty ? "Chat \(chatId.prefix(8))"
+            : taskId.map { "task \($0.prefix(13))" } ?? "background run")
+        let run = session.flatMap { $0.hasPrefix("run:") ? String($0.dropFirst(4).prefix(8)) : nil }
+        return run.map { "Run \($0) · \(chat)" } ?? chat
+    }
+
+    /// "From <chat or task> · <agent>" for an ask raised outside this
+    /// conversation. Nil for this conversation's own, and for a god-mode
+    /// grant, whose card names where it was requested itself.
+    static func origin(of item: ComposerAskItem, chatTitles: [String: String]) -> String? {
+        guard item.elsewhere, case .attention(let row) = item.source, !row.isGodMode else { return nil }
+        let context = row.schema?.context
+        let scope = row.metadata?.hitlRequest?.scope ?? [:]
+        let place = originPlace(chatId: originSessionId(row), session: context?.session,
+                                taskId: row.owningTaskId, chatTitles: chatTitles)
+        let agent = nonEmpty(context?.agentId) ?? nonEmpty(scope["agent_id"] ?? nil)
+        return "From \(place)\(agent.map { " · \($0)" } ?? "")"
     }
 
     /// The tasks known to belong to this conversation: the chat's task cards,
@@ -289,9 +370,11 @@ enum ComposerAskModel {
         return out
     }
 
-    /// Everything this conversation waits on, chat cards first (transcript
-    /// order), then feed asks; deduped by correlation id. A plan approval the
-    /// planner dock already offers is left to it, and an archived (read-only)
+    /// Every open ask, so the reader answers wherever they are (web
+    /// `composerAsks`): this conversation's first — chat cards (transcript
+    /// order), then its feed asks — then every other feed ask, marked
+    /// `elsewhere`; deduped by correlation id. A plan approval the planner
+    /// dock already offers is left to it, and an archived (read-only)
     /// conversation asks nothing.
     static func items(
         chatEscalations: [ChatMessageContentData],
@@ -303,23 +386,44 @@ enum ComposerAskModel {
         readOnly: Bool
     ) -> [ComposerAskItem] {
         guard !readOnly else { return [] }
+        let chatItems = chatEscalations.compactMap { item(chat: $0) }
+        let threadTasks = threadTaskIds(chatTaskIds: chatTaskIds, chatItems: chatItems, attention: attention,
+                                        sessionId: sessionId, threadId: threadId)
+        var canonical = attention.compactMap { row -> (AttentionItem, ComposerAskItem)? in
+            // A notice the reader can only dismiss is Attention's, not a composer's.
+            guard !row.isDismissOnly, var ask = item(attention: row) else { return nil }
+            if case .choices(let choices) = ask.form,
+               choices.contains(where: { if case .plan = $0.action { return true } else { return false } }),
+               let task = ask.taskId, plannerTaskIds.contains(task) { return nil }
+            ask.elsewhere = !belongsHere(row, sessionId: sessionId, threadId: threadId, chatTaskIds: threadTasks)
+            return (row, ask)
+        }
         var seen = Set<String>()
         var out: [ComposerAskItem] = []
         for content in chatEscalations {
-            guard let item = item(chat: content), seen.insert(item.id).inserted else { continue }
-            out.append(item)
+            guard let ask = item(chat: content) else { continue }
+            let aliases = Set([content.correlationId, content.pauseStateId, content.requestId, ask.id]
+                .compactMap { nonEmpty($0) })
+            guard seen.isDisjoint(with: aliases) else { continue }
+            if let index = canonical.firstIndex(where: { !$0.0.askIdentifiers.isDisjoint(with: aliases) }) {
+                let (row, canonicalAsk) = canonical.remove(at: index)
+                // A card in this transcript is this conversation's own.
+                var richer = canonicalAsk
+                richer.elsewhere = false
+                seen.formUnion(row.askIdentifiers)
+                seen.formUnion(aliases)
+                out.append(richer)
+            } else {
+                seen.formUnion(aliases)
+                out.append(ask)
+            }
         }
-        let threadTasks = threadTaskIds(chatTaskIds: chatTaskIds, chatItems: out, attention: attention,
-                                        sessionId: sessionId, threadId: threadId)
-        for row in attention where belongs(row, sessionId: sessionId, threadId: threadId, chatTaskIds: threadTasks) {
-            guard let item = item(attention: row) else { continue }
-            if case .choices(let choices) = item.form,
-               choices.contains(where: { if case .plan = $0.action { return true } else { return false } }),
-               let task = item.taskId, plannerTaskIds.contains(task) { continue }
-            guard seen.insert(item.id).inserted else { continue }
-            out.append(item)
+        for (row, ask) in canonical {
+            guard seen.isDisjoint(with: row.askIdentifiers) else { continue }
+            seen.formUnion(row.askIdentifiers)
+            out.append(ask)
         }
-        return out
+        return out.filter { !$0.elsewhere } + out.filter(\.elsewhere)
     }
 
     // MARK: Switcher
@@ -347,6 +451,7 @@ enum ComposerAskModel {
     /// The chat respond path's submission for a reply, or nil when the reply
     /// cannot be expressed for this card.
     static func submission(for content: ChatMessageContentData, reply: ComposerAskReply) -> ChatHitlSubmission? {
+        guard content.inputSchema?.requiresReview != true else { return nil }
         let inputType = content.hitlInputType
         switch reply {
         case .text(let text):
@@ -425,6 +530,23 @@ extension View {
     }
 }
 
+private struct VisibleAskRefresh: ViewModifier {
+    @ObservedObject var attention: AttentionViewModel
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        content.task(id: scenePhase) {
+            if scenePhase == .active { await attention.followVisibleAsks() }
+        }
+    }
+}
+
+extension View {
+    func followVisibleAsks(_ attention: AttentionViewModel) -> some View {
+        modifier(VisibleAskRefresh(attention: attention))
+    }
+}
+
 private struct AttentionFeedKey: EnvironmentKey {
     static let defaultValue: AttentionViewModel? = nil
 }
@@ -450,6 +572,7 @@ enum ComposerAskPlacement {
 
 struct ComposerAskDock: View {
     let items: [ComposerAskItem]
+    var originChatTitles: [String: String] = [:]
     var disabled = false
     /// A failure reported by the feed after an optimistic answer (the ask
     /// comes back with it).
@@ -466,6 +589,7 @@ struct ComposerAskDock: View {
 
     @ObservedObject private var theme = ThemeManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var activeId: String?
     @State private var text = ""
     @State private var busyChoice: String?
@@ -491,38 +615,35 @@ struct ComposerAskDock: View {
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: active?.id)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: acknowledged?.id)
-        .onChange(of: active?.id) { _, _ in text = "" }
+        .onChange(of: active?.id, initial: true) { _, id in
+            activeId = id
+            text = ""
+        }
         // An answered ask that left the list is forgotten, so one that comes
         // back (a failed optimistic post) shows again.
         .onChange(of: items.map(\.id)) { _, ids in answered.formIntersection(ids) }
     }
 
+    private func godRequest(_ item: ComposerAskItem) -> AttentionItem? {
+        if case .attention(let row) = item.source, row.isGodMode { return row }
+        return nil
+    }
+
     private func card(_ item: ComposerAskItem, answeredState: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             header(item, answeredState: answeredState)
-            Text(item.prompt)
-                .font(.themed(14))
-                .foregroundColor(answeredState ? theme.secondaryTextColor : theme.textColor)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineLimit(answeredState ? 2 : 6)
             if !answeredState {
-                if let hint = item.hint {
-                    Text(hint).font(.themed(12)).foregroundColor(theme.secondaryTextColor).lineLimit(3)
+                ComposerAskBoundedScroll(maxHeight: verticalSizeClass == .compact ? 80 : 180) {
+                    reviewContent(item, answeredState: false)
                 }
-                if let review = item.review {
-                    Button { onReview(review) } label: {
-                        Label(review.label, systemImage: "arrow.up.right.square")
-                    }
-                    .buttonStyle(ChipStyle())
-                    .frame(minHeight: Lively.tapMin)
-                    .accessibilityIdentifier("composer-ask-review")
-                }
+            } else {
+                reviewContent(item, answeredState: answeredState)
+            }
+            if !answeredState {
                 controls(item)
                 if let message = (error?.id == item.id ? error?.message : nil) ?? notice {
-                    Text(message)
-                        .font(.themed(12))
-                        .foregroundColor(theme.dangerColor)
-                        .accessibilityIdentifier("composer-ask-error")
+                    Text(message).font(.themed(12)).foregroundColor(theme.dangerColor)
+                        .lineLimit(3).accessibilityIdentifier("composer-ask-error")
                 }
             }
         }
@@ -541,6 +662,44 @@ struct ComposerAskDock: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(answeredState ? "Answered" : "Waiting on you")
         .accessibilityIdentifier(placement == .composer ? "composer-ask-dock" : "task-ask-card")
+    }
+
+    private func reviewContent(_ item: ComposerAskItem, answeredState: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let row = godRequest(item) {
+                let context = row.schema?.context
+                let origin = ComposerAskModel.originPlace(chatId: context?.chatSessionId, session: context?.session,
+                                                          taskId: nil, chatTitles: originChatTitles)
+                Text("Requested in \(origin)\(context?.agentId.map { " · \($0)" } ?? ""). This session refers to that originating chat or run.")
+                    .font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !answeredState, let origin = ComposerAskModel.origin(of: item, chatTitles: originChatTitles) {
+                // A question from another chat or run says where it came from.
+                Text(origin).font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("composer-ask-origin")
+            }
+            Text(item.prompt).font(.themed(14))
+                .foregroundColor(answeredState ? theme.secondaryTextColor : theme.textColor)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(answeredState ? 2 : nil)
+            if !answeredState {
+                if let hint = item.hint {
+                    Text(hint).font(.themed(12)).foregroundColor(theme.secondaryTextColor).lineLimit(3)
+                }
+                if let review = item.review {
+                    Button { onReview(review) } label: { Label(review.label, systemImage: "arrow.up.right.square") }
+                        .buttonStyle(ChipStyle()).frame(minHeight: Lively.tapMin)
+                        .accessibilityIdentifier("composer-ask-review")
+                }
+                ForEach(item.files) { file in
+                    DisclosureGroup(file.path) {
+                        Text(file.unifiedDiff ?? "").font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
     }
 
     private var cornerRadius: CGFloat {
@@ -562,6 +721,13 @@ struct ComposerAskDock: View {
                 Text(from).font(.themed(12)).foregroundColor(theme.secondaryTextColor).lineLimit(1)
             }
             Spacer(minLength: 4)
+            if !answeredState {
+                Button("Review") { onHandoff(item) }
+                    .font(.themed(12, weight: .medium))
+                    .buttonStyle(.plain)
+                    .foregroundColor(theme.accentColor)
+                    .accessibilityIdentifier("composer-ask-review-full")
+            }
             if !answeredState, let position = ComposerAskModel.position(of: item.id, in: visible) {
                 HStack(spacing: 2) {
                     switchButton("chevron.left", label: "Previous question", delta: -1)
@@ -624,25 +790,38 @@ struct ComposerAskDock: View {
                 .disabled(disabled || busyChoice != nil || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         case .choices(let choices):
-            ComposerAskFlow(spacing: 6) {
-                ForEach(choices) { choice in
-                    Button {
-                        if case .plan(.review) = choice.action {
-                            if let task = item.taskId { onReviewPlan(task) }
-                        } else {
-                            send(item, .choice(choice), key: choice.id)
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            if busyChoice == choice.id { ProgressView().controlSize(.mini) }
-                            Text(choice.label)
-                        }
-                        .foregroundColor(choice.destructive && !choice.prominent ? theme.dangerColor : nil)
+            if let row = godRequest(item), !GodGrantScope.grouped(row.grantOptions).isEmpty {
+                GodModeGrantControls(options: row.grantOptions, disabled: disabled || busyChoice != nil) { id in
+                    guard let choice = choices.first(where: { $0.id == id }) else { return }
+                    send(item, .choice(choice), key: id)
+                }.id(item.id)
+            } else {
+            ComposerAskBoundedScroll(maxHeight: verticalSizeClass == .compact ? 110 : 220) {
+                choiceControls(item, choices: choices)
+            }
+            }
+        }
+    }
+
+    private func choiceControls(_ item: ComposerAskItem, choices: [ComposerAskChoice]) -> some View {
+        ComposerAskFlow(spacing: 6) {
+            ForEach(choices) { choice in
+                Button {
+                    if case .plan(.review) = choice.action {
+                        if let task = item.taskId { onReviewPlan(task) }
+                    } else {
+                        send(item, .choice(choice), key: choice.id)
                     }
-                    .buttonStyle(ChipStyle(prominent: choice.prominent))
-                    .disabled(disabled || busyChoice != nil)
-                    .accessibilityIdentifier("composer-ask-choice-\(choice.id)")
+                } label: {
+                    HStack(spacing: 4) {
+                        if busyChoice == choice.id { ProgressView().controlSize(.mini) }
+                        Text(choice.label)
+                    }
+                    .foregroundColor(choice.destructive && !choice.prominent ? theme.dangerColor : nil)
                 }
+                .buttonStyle(ChipStyle(prominent: choice.prominent))
+                .disabled(disabled || busyChoice != nil)
+                .accessibilityIdentifier("composer-ask-choice-\(choice.id)")
             }
         }
     }
@@ -658,6 +837,10 @@ struct ComposerAskDock: View {
                 error = (item.id, failure)
                 return
             }
+            // Feed answers are optimistic: its view model removes the row and
+            // restores it on failure. A local tombstone could hide that retry
+            // forever if remove/restore coalesced into the same SwiftUI frame.
+            if case .attention = item.source { text = ""; return }
             answered.insert(item.id)
             text = ""
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { acknowledged = item }
@@ -665,6 +848,88 @@ struct ComposerAskDock: View {
             withAnimation(reduceMotion ? nil : .easeIn(duration: 0.2)) {
                 if acknowledged?.id == item.id { acknowledged = nil }
             }
+        }
+    }
+}
+
+/// Measure the content at the available phone width, then cap its viewport.
+/// Short asks keep their natural height; long arguments and option lists scroll
+/// independently so neither can push the decision controls off screen.
+private struct ComposerAskBoundedScroll<Content: View>: View {
+    let maxHeight: CGFloat
+    let content: Content
+    @State private var contentHeight: CGFloat = 32
+
+    init(maxHeight: CGFloat, @ViewBuilder content: () -> Content) {
+        self.maxHeight = maxHeight
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: ComposerAskContentHeight.self, value: geometry.size.height)
+                })
+        }
+        .frame(height: min(maxHeight, max(1, contentHeight)))
+        .onPreferenceChange(ComposerAskContentHeight.self) { height in
+            if height.isFinite, height > 0, abs(contentHeight - height) > 0.5 {
+                contentHeight = height
+            }
+        }
+    }
+}
+
+private struct ComposerAskContentHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Shared by the composer and focused Attention review. Details scroll, decisions do not.
+struct GodModeGrantControls: View {
+    let options: [AttentionGrantOption]
+    var disabled = false
+    var answer: (String) -> Void
+    @State private var selectedId = ""
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    private var scopes: [GodGrantScope] { GodGrantScope.grouped(options) }
+    private var selected: GodGrantScope? { scopes.first { $0.id == selectedId } ?? scopes.first }
+
+    var body: some View {
+        if let scope = selected {
+            VStack(alignment: .leading, spacing: 6) {
+                Picker("Grant scope", selection: Binding(get: { scope.id }, set: { selectedId = $0 })) {
+                    ForEach(scopes) { Text($0.label).tag($0.id) }
+                }.pickerStyle(.menu).disabled(disabled)
+                ScrollView {
+                    Text(scope.detail).font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxHeight: verticalSizeClass == .compact ? 32 : 48)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { buttons(scope) }
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) { buttons(scope) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func buttons(_ scope: GodGrantScope) -> some View {
+        ForEach([AttentionGrantOption(id: "deny", label: "Deny"),
+                 AttentionGrantOption(id: "allow_once", label: "Allow once"),
+                 AttentionGrantOption(id: scope.sessionId, label: "This session"),
+                 AttentionGrantOption(id: scope.alwaysId, label: "Always")].filter { offered in options.contains { $0.id == offered.id } }) { choice in
+            Button { answer(choice.id) } label: {
+                Text(choice.label).fixedSize(horizontal: true, vertical: true)
+            }
+            .buttonStyle(ChipStyle(prominent: choice.id == "deny"))
+            .disabled(disabled)
+            .accessibilityIdentifier("god-grant-\(choice.id)")
         }
     }
 }
@@ -680,8 +945,12 @@ struct TaskDetailAskSection: View {
     let taskId: String
     /// The execution panel's own asks for this task (`TaskDetailSnapshot.askRows`).
     let panelRows: [AttentionItem]
+    /// VibeDev lists every open ask, its turns' and project conversation's
+    /// first. Task detail keeps its narrower task-only default.
+    var vibeDevTaskIds: Set<String>? = nil
+    var chatSessionId: String? = nil
     /// A plan approval's Review: open the plan.
-    var onReviewPlan: (String) -> Void = { _ in }
+    var onReviewPlan: ((String) -> Void)? = nil
     /// After an answer posts: re-read the panel so its row settles too.
     var onAnswered: () -> Void = {}
 
@@ -689,10 +958,10 @@ struct TaskDetailAskSection: View {
 
     var body: some View {
         if let sharedFeed {
-            TaskAskCard(taskId: taskId, panelRows: panelRows, attention: sharedFeed,
+            TaskAskCard(taskId: taskId, panelRows: panelRows, vibeDevTaskIds: vibeDevTaskIds, chatSessionId: chatSessionId, attention: sharedFeed,
                         onReviewPlan: onReviewPlan, onAnswered: onAnswered)
         } else {
-            OwnedFeedTaskAskCard(taskId: taskId, panelRows: panelRows,
+            OwnedFeedTaskAskCard(taskId: taskId, panelRows: panelRows, vibeDevTaskIds: vibeDevTaskIds, chatSessionId: chatSessionId,
                                  onReviewPlan: onReviewPlan, onAnswered: onAnswered)
         }
     }
@@ -701,12 +970,14 @@ struct TaskDetailAskSection: View {
 private struct OwnedFeedTaskAskCard: View {
     let taskId: String
     let panelRows: [AttentionItem]
-    let onReviewPlan: (String) -> Void
+    let vibeDevTaskIds: Set<String>?
+    let chatSessionId: String?
+    let onReviewPlan: ((String) -> Void)?
     let onAnswered: () -> Void
     @StateObject private var attention = AttentionViewModel()
 
     var body: some View {
-        TaskAskCard(taskId: taskId, panelRows: panelRows, attention: attention,
+        TaskAskCard(taskId: taskId, panelRows: panelRows, vibeDevTaskIds: vibeDevTaskIds, chatSessionId: chatSessionId, attention: attention,
                     onReviewPlan: onReviewPlan, onAnswered: onAnswered)
     }
 }
@@ -714,18 +985,26 @@ private struct OwnedFeedTaskAskCard: View {
 private struct TaskAskCard: View {
     let taskId: String
     let panelRows: [AttentionItem]
+    let vibeDevTaskIds: Set<String>?
+    let chatSessionId: String?
     @ObservedObject var attention: AttentionViewModel
-    let onReviewPlan: (String) -> Void
+    let onReviewPlan: ((String) -> Void)?
     let onAnswered: () -> Void
     @State private var sheetRow: AttentionItem?
     @State private var awaitingFeed = false
+    @State private var fallbackPlanRoute: PlanInspectorRoute?
 
     private var feedRows: [AttentionItem] {
         attention.items("all").filter { !attention.isAnsweredElsewhere($0) }
     }
 
     private var items: [ComposerAskItem] {
-        ComposerAskModel.taskItems(taskId: taskId, panelRows: panelRows, feed: feedRows,
+        if let vibeDevTaskIds {
+            return ComposerAskModel.items(chatEscalations: [], attention: feedRows,
+                sessionId: chatSessionId, threadId: nil, chatTaskIds: vibeDevTaskIds,
+                plannerTaskIds: [], readOnly: false)
+        }
+        return ComposerAskModel.taskItems(taskId: taskId, panelRows: panelRows, feed: feedRows,
                                    isSettled: { attention.isSettled($0) })
     }
 
@@ -745,11 +1024,15 @@ private struct TaskAskCard: View {
                     if panelOnly(row) { attention.vouchPending(row) }
                     sheetRow = row
                 },
-                onReviewPlan: onReviewPlan,
+                onReviewPlan: { task in
+                    if let onReviewPlan { onReviewPlan(task) }
+                    else { fallbackPlanRoute = PlanInspectorRoute(taskId: task) }
+                },
                 placement: .taskPanel)
         }
         .attentionAskSheet($sheetRow, viewModel: attention)
-        .onAppear { attention.fetch() }
+        .planInspectorHost($fallbackPlanRoute)
+        .followVisibleAsks(attention)
         .onChange(of: sheetRow?.id) { old, new in
             // The focused sheet closed: if it answered, the panel catches up.
             if old != nil, new == nil { onAnswered() }
@@ -774,7 +1057,7 @@ struct ComposerAskFlow: Layout {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
         for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
+            let size = measured(view, width: width)
             if x > 0, x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
             x += size.width + spacing
             widest = max(widest, x - spacing)
@@ -786,11 +1069,28 @@ struct ComposerAskFlow: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
         for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
+            let size = measured(view, width: bounds.width)
             if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
             view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+
+    private func measured(_ view: LayoutSubview, width: CGFloat) -> CGSize {
+        let ideal = view.sizeThatFits(.unspecified)
+        return ideal.width > width
+            ? view.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            : ideal
+    }
+}
+
+extension AttentionItem {
+    /// A notice whose only answer is Dismiss (a service-health notice, an
+    /// expired notice): nothing to decide, so the chat and VibeDev composers
+    /// leave it to Attention (web `isDismissOnlyAsk`, Android `isDismissOnly`).
+    var isDismissOnly: Bool {
+        guard options.count == 1, let only = options.first else { return false }
+        return only.id == "dismiss" && only.requiresInput != true
     }
 }

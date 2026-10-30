@@ -78,30 +78,27 @@ native_action_schemas:
   append:
     description: |
       Append row values to a cloud Google Sheet through Presto's own
-      Workspace identity. Typed params enforce required `spreadsheet`
-      and `range`.
+      Workspace identity via `spreadsheets values append`. Typed params
+      enforce required `params` and `json`.
     argv:
     - sheets
-    - +append
-    parameters:
-    - spreadsheet
-    - range
+    - spreadsheets
     - values
+    - append
+    parameters:
+    - params
+    - json
     - extra_args
     required:
-    - spreadsheet
-    - range
-    - values
+    - params
+    - json
     parameter_overrides:
-      spreadsheet:
+      params:
         type: string
-        description: Target spreadsheet ID. Maps to `--spreadsheet`.
-      range:
+        description: JSON object with spreadsheetId, range (A1 notation, e.g. `Sheet1!A:D`) and valueInputOption (RAW or USER_ENTERED). Maps to `--params`.
+      json:
         type: string
-        description: A1-notation range to append into (e.g. `Sheet1!A:D`). Maps to `--range`.
-      values:
-        type: string
-        description: Comma-separated row values (or JSON array, depending on +append helper semantics). Maps to `--values`.
+        description: JSON ValueRange body with values as an array of rows, optionally majorDimension. Maps to `--json`.
       extra_args:
         type: array
         items:
@@ -109,14 +106,11 @@ native_action_schemas:
         description: Escape hatch — extra argv tokens.
     arg_mappings:
     - type: flag
-      flag: --spreadsheet
-      param: spreadsheet
+      flag: --params
+      param: params
     - type: flag
-      flag: --range
-      param: range
-    - type: flag
-      flag: --values
-      param: values
+      flag: --json
+      param: json
     - type: passthrough
       param: extra_args
   spreadsheets_get:

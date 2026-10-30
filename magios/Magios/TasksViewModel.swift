@@ -12,7 +12,7 @@ enum TaskLane: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .tasks: return "Tasks"
         case .monitors: return "Monitors"
-        case .internalTasks: return "Internal"
+        case .internalTasks: return "System work"
         }
     }
 }
@@ -184,6 +184,9 @@ final class ExecutionControlViewModel: ObservableObject {
     private let session: URLSession
     private let onChanged: () -> Void
     private let coordinator: ExecutionControlCoordinator
+    private let connectionBaseURL: URL
+    private let connectionHeaders: [String: String]
+    private let currentConnectionCheck: () -> Bool
     private let instanceId = UUID()
     private var requestGeneration: UInt64 = 0
     private var lastHostRefreshToken: String?
@@ -206,11 +209,20 @@ final class ExecutionControlViewModel: ObservableObject {
 
     init(executionId: String, session: URLSession,
          coordinator: ExecutionControlCoordinator,
+         currentConnectionCheck: (() -> Bool)? = nil,
          onChanged: @escaping () -> Void = {}) {
         self.executionId = executionId
         self.session = session
         self.coordinator = coordinator
         self.onChanged = onChanged
+        let profile = MagicianAccess.connectionProfile
+        let origin = profile?.publicOrigin ?? MagicianAccess.baseURL
+        let headers = MagicianAccess.headers(profile: profile)
+        self.connectionBaseURL = origin
+        self.connectionHeaders = headers
+        self.currentConnectionCheck = currentConnectionCheck ?? {
+            MagicianAccess.baseURL == origin && MagicianAccess.headers() == headers
+        }
     }
 
     func refresh(hostToken: String, coordination: ExecutionControlCoordinationSnapshot) {
@@ -263,6 +275,10 @@ final class ExecutionControlViewModel: ObservableObject {
 
     @discardableResult
     func perform(_ action: ExecutionControlAction, message: String? = nil) -> Bool {
+        guard currentConnectionCheck() else {
+            errorMessage = "Connection changed. Reopen this run before updating it."
+            return false
+        }
         if action == .steer {
             let guidance = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !guidance.isEmpty else {
@@ -287,6 +303,7 @@ final class ExecutionControlViewModel: ObservableObject {
             var actionError: Error?
             do {
                 try await send(action, message: message)
+                try requireCurrentConnection()
                 onChanged()
             } catch {
                 actionError = error
@@ -316,6 +333,7 @@ final class ExecutionControlViewModel: ObservableObject {
         var request = try makeRequest(suffix: "control-state", method: "GET")
         request.timeoutInterval = 10
         let (data, response) = try await session.data(for: request)
+        try requireCurrentConnection()
         try validate(response: response, data: data, action: "load execution controls")
         return try JSONDecoder().decode(ExecutionControlState.self, from: data)
     }
@@ -332,20 +350,29 @@ final class ExecutionControlViewModel: ObservableObject {
     }
 
     private func makeRequest(suffix: String, method: String) throws -> URLRequest {
+        try requireCurrentConnection()
         let pathSegmentCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         guard let encodedExecutionId = executionId.addingPercentEncoding(
             withAllowedCharacters: pathSegmentCharacters
         ) else {
             throw URLError(.badURL)
         }
-        let urlString = "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/executions/\(encodedExecutionId)/\(suffix)"
+        let urlString = "\(connectionBaseURL.absoluteString)/api/magician/v2/executions/\(encodedExecutionId)/\(suffix)"
         guard let url = URL(string: urlString) else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url)
-        MagicianAccess.authorize(&request)
+        request.allHTTPHeaderFields = connectionHeaders
         request.httpMethod = method
         return request
+    }
+
+    private func requireCurrentConnection() throws {
+        guard currentConnectionCheck() else {
+            throw NSError(domain: "ExecutionControls", code: 0, userInfo: [
+                NSLocalizedDescriptionKey: "Connection changed. Reopen this run before updating it."
+            ])
+        }
     }
 
     private func validate(response: URLResponse, data: Data, action: String) throws {
@@ -1428,6 +1455,11 @@ final class TasksViewModel: ObservableObject {
     private static func taskMutationError(data: Data?, status: Int, fallback: String) -> String {
         if let data, !data.isEmpty {
             if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                // 409 `task_active`: the run is still finishing (e.g. writing outputs).
+                if (object["code"] as? String) == "task_active"
+                    || ((object["error"] as? String)?.hasPrefix("task_active:") ?? false) {
+                    return "This task is still finishing. Try again in a few seconds."
+                }
                 if let message = (object["error"] ?? object["message"] ?? object["detail"]) as? String,
                    !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return message

@@ -42,7 +42,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -152,47 +157,95 @@ object LiveTaskPlanGlyph {
  * stored panel snapshots in one [TaskUsageLedger], republished as a revision
  * so the card's usage line and the turn chip recompose when it changes.
  */
+data class TaskUsageScope(val key: String, val principal: String, val workspace: String)
+
 class TaskUsageStore(private val ledger: TaskUsageLedger = TaskUsageLedger()) {
     private val _revision = MutableStateFlow(0L)
     val revision: StateFlow<Long> = _revision.asStateFlow()
     private val loaded = mutableSetOf<String>()
-
-    /** The fetch [loadSnapshot] reads with; set once by the app. */
+    private val inFlight = mutableSetOf<String>()
+    private var currentScope = "local"
+    private val reads = Semaphore(2)
+    @Volatile var scopeProvider: (() -> TaskUsageScope)? = null
     @Volatile var fetch: LiveTaskJsonFetch? = null
+    @Volatile var historyFetch: (suspend (String) -> JsonObject?)? = null
 
-    fun total(taskId: String): TaskUsageTotal? = synchronized(ledger) { ledger.total(taskId) }
-
-    /** A panel the caller already fetched (the live card's poll). */
-    fun apply(panel: JsonObject, taskId: String) {
-        val changed = synchronized(ledger) { ledger.apply(panel, taskId) }
-        if (changed) _revision.value += 1
-    }
-
-    fun record(taskId: String, callKey: String, tokens: Int?, costUsd: Double?) {
-        val changed = synchronized(ledger) { ledger.record(taskId, callKey, tokens, costUsd) }
-        if (changed) _revision.value += 1
-    }
-
-    /**
-     * Read a task's stored usage once per [phase] (`planned`, `running`,
-     * `done`, `turn-live`, `turn`): a settled card reads its final figure
-     * once, never on every recomposition. False when already read or no
-     * fetch is installed.
-     */
-    suspend fun loadSnapshot(taskId: String, phase: String, through: LiveTaskJsonFetch? = null): Boolean {
-        val read = through ?: fetch ?: return false
-        if (!synchronized(loaded) { loaded.add("$taskId::$phase") }) return false
-        val panel = read("/tasks/${LiveTaskCardClient.segment(taskId)}/execution-panel") ?: run {
-            synchronized(loaded) { loaded.remove("$taskId::$phase") }
-            return false
+    private fun ensureScope(): String = synchronized(ledger) {
+        val next = scopeProvider?.invoke()?.key ?: "local"
+        if (next != currentScope) {
+            currentScope = next; ledger.clear(); loaded.clear(); inFlight.clear(); _revision.value += 1
         }
-        apply(panel, taskId)
-        return true
+        next
     }
+    fun total(taskId: String): TaskUsageTotal? { ensureScope(); return synchronized(ledger) { ledger.total(taskId) } }
 
-    companion object {
-        val shared = TaskUsageStore()
+    fun apply(panel: JsonObject, taskId: String, history: Map<String, ai.magicbeans.magdroid.tasks.TaskCallUsage> = emptyMap()) {
+        ensureScope()
+        val snapshot = ai.magicbeans.magdroid.tasks.TaskUsageModel.usageSnapshot(panel)
+        val calls = ai.magicbeans.magdroid.tasks.TaskUsageModel.mergeCalls(snapshot.calls, history)
+        val changed = synchronized(ledger) { ledger.setSnapshot(snapshot.copy(calls = calls,
+            run = ai.magicbeans.magdroid.tasks.TaskUsageModel.sumCalls(calls)), taskId) }
+        if (changed) _revision.value += 1
     }
+    fun record(taskId: String, callKey: String, tokens: Int?, costUsd: Double?, executionId: String? = null) {
+        ensureScope()
+        if (synchronized(ledger) { ledger.record(taskId, callKey, tokens, costUsd, executionId) }) _revision.value += 1
+    }
+    fun ingest(event: JsonObject) {
+        ensureScope()
+        val scope = scopeProvider?.invoke() ?: return
+        val data = event["data"].jObj() ?: return
+        val inner = if (event["event_type"].jText() == "AgentEvent") data["event"].jObj() else null
+        val payload = inner?.get("payload").jObj() ?: data
+        if ((payload["principal"] ?: inner?.get("principal") ?: data["principal"]).jText() != scope.principal ||
+            (payload["workspace"] ?: inner?.get("workspace") ?: data["workspace"]).jText() != scope.workspace) return
+        if (event["event_type"].jText() == "ExecutionPanelDelta") {
+            val panel = data["state"].jObj() ?: return
+            val task = data["task_id"].jText() ?: return
+            apply(panel, task); return
+        }
+        val type = inner?.get("event_type").jText() ?: event["event_type"].jText()
+        if (type !in setOf("llm.succeeded", "LLMResponseReceived")) return
+        val correlation = payload["correlation"].jObj()
+        val number = ai.magicbeans.magdroid.tasks.TaskUsageModel::number
+        if (number(payload["provider_attempt_count"] ?: correlation?.get("provider_attempt_count")) == 0.0) return
+        val call = (payload["llm_call_id"] ?: correlation?.get("llm_call_id")).jText() ?: return
+        val execution = (payload["root_execution_id"] ?: correlation?.get("root_execution_id") ?: payload["execution_id"] ?: correlation?.get("execution_id")).jText()
+        val tasks = synchronized(ledger) { ledger.snapshots.filterValues { execution != null && it.executionId == execution }.keys.toMutableSet() }
+        (payload["task_id"] ?: correlation?.get("task_id")).jText()?.let(tasks::add)
+        val available = (payload["usage_availability"] ?: correlation?.get("usage_availability")).jObj()
+        fun denied(value: JsonElement?) = (value as? JsonPrimitive)?.booleanOrNull == false
+        if (denied(payload["usage_reported"])) return
+        val input = if (denied(available?.get("tokens"))) null else number(payload["input_tokens"])
+        val output = if (denied(available?.get("tokens"))) null else number(payload["output_tokens"])
+        val cost = if (denied(available?.get("cost"))) null else number(payload["cost_usd"] ?: payload["cost"])
+        tasks.forEach { record(it, call, if (input == null && output == null) null else ((input ?: 0.0) + (output ?: 0.0)).toInt(), cost, execution) }
+    }
+    suspend fun loadSnapshot(taskId: String, phase: String, through: LiveTaskJsonFetch? = null): Boolean {
+        val expected = ensureScope()
+        val read = through ?: fetch ?: return false
+        val key = "$taskId::$phase"
+        if (!synchronized(ledger) { if (key in loaded || taskId in inFlight) false else { loaded.add(key); inFlight.add(taskId); true } }) return false
+        try { return reads.withPermit {
+            if (ensureScope() != expected) return@withPermit false
+            val panel = read("/tasks/${LiveTaskCardClient.segment(taskId)}/execution-panel") ?: run {
+                synchronized(ledger) { if (currentScope == expected) loaded.remove(key) }; return@withPermit false
+            }
+            if (ensureScope() != expected) return@withPermit false
+            apply(panel, taskId)
+            val execution = ai.magicbeans.magdroid.tasks.TaskRunEvidence.executionId(panel)
+            val history = execution?.let { historyFetch?.invoke(it) }
+            if (execution != null && history != null && ensureScope() == expected) {
+                apply(panel, taskId, ai.magicbeans.magdroid.tasks.TaskRunEvidence.history(history, execution))
+            }
+            true
+        } } catch (error: Exception) {
+            synchronized(ledger) { if (currentScope == expected) loaded.remove(key) }
+            if (error is CancellationException) throw error
+            return false
+        } finally { synchronized(ledger) { if (currentScope == expected) inFlight.remove(taskId) } }
+    }
+    companion object { val shared = TaskUsageStore() }
 }
 
 /**
@@ -320,15 +373,38 @@ class LiveTaskCardClient(
     private val client: HttpClient,
     private val baseUrl: () -> String,
     private val headers: () -> Map<String, String>,
+    private val identity: () -> Pair<String, String> = { "anonymous" to "default" },
 ) : PlanApprovalClient {
 
     /** `GET /api/magician/v3{path}`; null on any failure. */
-    suspend fun json(v3Path: String): JsonObject? = try {
-        val response = client.get("${root()}/api/magician/v3$v3Path") { authorize() }
-        if (response.status.isSuccess()) parse(response.bodyAsText()) else null
-    } catch (error: Exception) {
-        if (error is CancellationException) throw error
-        null
+    suspend fun json(v3Path: String): JsonObject? {
+        val origin = runCatching { root() }.getOrNull() ?: return null
+        val auth = headers().toMap(); val scope = identity()
+        return try {
+            val response = client.get("$origin/api/magician/v3$v3Path") { auth.forEach { (name, value) -> header(name, value) } }
+            if (origin == root() && auth == headers() && scope == identity() && response.status.isSuccess()) parse(response.bodyAsText()) else null
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            null
+        }
+    }
+
+    suspend fun callHistory(executionId: String): JsonObject? {
+        val origin = runCatching { root() }.getOrNull() ?: return null
+        val auth = headers().toMap(); val scope = identity()
+        val id = "'" + executionId.replace("'", "''") + "'"
+        val sql = "SELECT llm_call_id, input_tokens, output_tokens, cost_usd FROM llm_calls WHERE (root_execution_id = $id OR execution_id = $id) AND COALESCE(provider_attempt_count, 1) <> 0"
+        return try {
+            val response = client.post("$origin/api/magician/v2/analytics/llm_calls/query?principal=${segment(scope.first)}&workspace=${segment(scope.second)}") {
+                auth.forEach { (name, value) -> header(name, value) }
+                contentType(ContentType.Application.Json)
+                setBody(kotlinx.serialization.json.buildJsonObject { put("sql", JsonPrimitive(sql)) }.toString())
+            }
+            if (origin == root() && auth == headers() && scope == identity() && response.status.isSuccess()) parse(response.bodyAsText()) else null
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            null
+        }
     }
 
     /** `POST /v3/tasks/{id}/execute`. Null on success, else what went wrong. */
@@ -484,9 +560,15 @@ class LiveTaskCardClient(
                     },
                     baseUrl = { MagicianAccess.baseUrl(app) },
                     headers = { MagicianAccess.headers(app) },
+                    identity = { MagicianAccess.principal(app) to MagicianAccess.workspace(app) },
                 ).also { created ->
                     instance = created
                     TaskUsageStore.shared.fetch = created::json
+                    TaskUsageStore.shared.historyFetch = created::callHistory
+                    TaskUsageStore.shared.scopeProvider = {
+                        TaskUsageScope(MagicianAccess.baseUrl(app) + "|" + MagicianAccess.principal(app) + "|" + MagicianAccess.workspace(app) + "|" + MagicianAccess.headers(app).toSortedMap().toString(),
+                            MagicianAccess.principal(app), MagicianAccess.workspace(app))
+                    }
                 }
             }
         }

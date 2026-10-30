@@ -1,5 +1,8 @@
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
+import { chatProfileStore, type ChatProfileStore } from './chatProfileStore';
+import { scopeIdentityStore } from './scopeIdentityStore';
+import { typedChatModelRequest } from '$lib/llm/chatModelSelection';
 
 export interface ChatHarnessPreference {
 	engine: string;
@@ -51,40 +54,92 @@ function sameChoice(a: ChatHarnessPreference | null, b: ChatHarnessPreference): 
 	return !!a && a.engine === b.engine && a.model === b.model;
 }
 
-function createChatHarnessPreferenceStore() {
+export function createChatHarnessPreferenceStore() {
+	let sessionKey: string | null = null;
+	const preferenceKey = () => sessionKey ? `${STORAGE_KEY}.${sessionKey}` : STORAGE_KEY;
+	const basisKey = () => sessionKey ? `${SERVER_BASIS_KEY}.${sessionKey}` : SERVER_BASIS_KEY;
 	const { subscribe, set } = writable<ChatHarnessPreference>(readStored(STORAGE_KEY) ?? DEFAULT_CHOICE);
 	let chosen = false;
+	// A chat with no pick of its own shows (and sends) the browser-wide pick.
+	// That inherited pick counts as chosen — reconciling must not overwrite it
+	// with the server engine — but it keeps following the browser default.
+	let inheritsDefault = false;
 	if (browser) {
 		try { chosen = localStorage.getItem(STORAGE_KEY) !== null; }
 		catch { /* Keep the preference for this page. */ }
 	}
+	let removeStorageListener = () => {};
 	if (browser) {
-		window.addEventListener('storage', (event) => {
-			if (event.key === STORAGE_KEY) {
+		const storageListener = (event: StorageEvent) => {
+			if (event.key === preferenceKey()) {
 				chosen = event.newValue !== null;
+				inheritsDefault = false;
 				set(parseChoice(event.newValue) ?? DEFAULT_CHOICE);
+			} else if (inheritsDefault && event.key === STORAGE_KEY) {
+				followDefault(parseChoice(event.newValue));
 			}
-		});
+		};
+        window.addEventListener('storage', storageListener);
+        removeStorageListener = () => window.removeEventListener('storage', storageListener);
 	}
+	/** Show the browser-wide pick in a chat without a pick of its own. */
+	const followDefault = (choice: ChatHarnessPreference | null) => {
+		chosen = !!choice;
+		set(choice ?? DEFAULT_CHOICE);
+	};
 	const select = (engine: string, model = 'default') => {
 		chosen = true;
+		inheritsDefault = false;
 		const choice = { engine, model };
 		set(choice);
-		writeStored(STORAGE_KEY, choice);
+		writeStored(preferenceKey(), choice);
 	};
 	/** Adopt the server's chat engine as this browser's choice and remember it
 	 *  as the basis later local picks are made against. */
 	const adoptServer = (engine: string, model = 'default') => {
 		const server = { engine, model };
-		writeStored(SERVER_BASIS_KEY, server);
+		writeStored(basisKey(), server);
 		select(server.engine, server.model);
 	};
 	return {
 		subscribe,
+        destroy: () => removeStorageListener(),
 		select,
 		adoptServer,
-		/** Whether this browser holds a choice of its own. A browser without one
-		 *  sends none, so the server's default applies. */
+		updateDefault: (engine: string, model = 'default') => {
+			writeStored(STORAGE_KEY, { engine, model });
+			if (!sessionKey) adoptServer(engine, model);
+			else if (!chosen || inheritsDefault) {
+				inheritsDefault = true;
+				followDefault({ engine, model });
+			}
+		},
+		/** The browser-wide pick changed in this page (`/engine` for this
+		 *  browser): a chat that inherits it shows the new one. */
+		defaultChanged: (choice: ChatHarnessPreference) => {
+			if (!sessionKey) followDefault(choice);
+			else if (!chosen || inheritsDefault) {
+				inheritsDefault = true;
+				followDefault(choice);
+			}
+		},
+		/** A composer choice belongs to its scoped chat. Defaults remain available
+		 * for new chats; changing one session never rewrites another's choice. */
+		activateSession: (key: string | null) => {
+			if (sessionKey === key) return;
+			sessionKey = key;
+			const saved = readStored(preferenceKey());
+			const inherited = sessionKey && !saved ? readStored(STORAGE_KEY) : null;
+			// The composer shows the browser-wide pick for a chat without its
+			// own, so that pick is the one sent — and not replaced by the
+			// server engine on the next roster reconcile.
+			inheritsDefault = !!sessionKey && !saved;
+			chosen = !!(saved ?? inherited);
+			set(saved ?? inherited ?? DEFAULT_CHOICE);
+		},
+		/** Whether this composer has a pick to send: the chat's own, or the
+		 *  browser-wide one it inherits. Without either it sends none, so the
+		 *  server's default applies. */
 		isChosen: () => chosen,
 		/** Reconcile with the roster: follow the server when this browser has no
 		 *  pick or the server's engine changed since the pick was made, then fall
@@ -96,13 +151,21 @@ function createChatHarnessPreferenceStore() {
 			// what is installed: keep the pick until a real answer arrives.
 			if (roster.unavailable) return;
 			const server = { engine: roster.chat_current, model: roster.chat_model ?? 'default' };
-			const basis = readStored(SERVER_BASIS_KEY);
-			if (!chosen || (basis && !sameChoice(basis, server))) {
+			const basis = readStored(basisKey());
+			if (inheritsDefault) {
+				// A chat without its own pick tracks the browser default (which
+				// the app shell reconciles under the unscoped basis); it is never
+				// pinned to the server engine here. With no browser pick either,
+				// it shows the server engine and sends none.
+				const current = readStored(STORAGE_KEY);
+				if (current) followDefault(current);
+				else set(server);
+			} else if (!chosen || (!sessionKey && basis && !sameChoice(basis, server))) {
 				adoptServer(server.engine, server.model);
 			} else if (!basis) {
 				// A pick from before the basis existed: keep it, and start
 				// tracking the server from here.
-				writeStored(SERVER_BASIS_KEY, server);
+				writeStored(basisKey(), server);
 			}
 			const selected = get({ subscribe });
 			const available = roster.engines.find(
@@ -121,25 +184,82 @@ function createChatHarnessPreferenceStore() {
 	};
 }
 
+export type ChatHarnessPreferenceStore = ReturnType<typeof createChatHarnessPreferenceStore>;
+
 export const chatHarnessPreferenceStore = createChatHarnessPreferenceStore();
 
-/** The composer's chat choice as this client sends it with every turn it
- *  starts — typed, from the command palette, or spoken on a voice call — so
- *  one client never thinks with two engines. `null` when this browser has no
- *  choice of its own: it then sends none and the server's default applies.
- *  `profile` rides only for the engines that read a Magician profile. */
-export function composerChatChoice(profile?: string | null): {
-	engine: string;
-	model: string;
-	profile?: string;
-} | null {
-	if (!chatHarnessPreferenceStore.isChosen()) return null;
-	const { engine, model } = get(chatHarnessPreferenceStore);
+/** A mounted chat composer's own (per-chat) stores. */
+export interface ChatComposerStores {
+	harness: ChatHarnessPreferenceStore;
+	profiles: ChatProfileStore;
+}
+interface OpenComposer extends ChatComposerStores {
+	sessionId: string | null;
+}
+const openComposers: OpenComposer[] = [];
+const sharedComposer: ChatComposerStores = { harness: chatHarnessPreferenceStore, profiles: chatProfileStore };
+
+/** A chat panel registers its private stores so the paths that do not hold
+ *  them — sends from the chat bubble, command palette or war room, `/engine`,
+ *  and `chat.engine.updated` — reach the composer the person is looking at.
+ *  `setSession` follows the chat the panel shows. */
+export function registerChatComposer(stores: ChatComposerStores): {
+	setSession: (sessionId: string | null) => void;
+	unregister: () => void;
+} {
+	const entry: OpenComposer = { ...stores, sessionId: null };
+	openComposers.push(entry);
 	return {
-		engine,
-		model,
-		...(profile && (engine === 'magician' || engine === 'pi') ? { profile } : {})
+		setSession: (sessionId) => { entry.sessionId = sessionId; },
+		unregister: () => {
+			const index = openComposers.indexOf(entry);
+			if (index >= 0) openComposers.splice(index, 1);
+		}
 	};
+}
+
+/** The stores a send into `sessionId` should read: the most recently mounted
+ *  panel showing that chat, otherwise the browser-wide stores. */
+export function chatComposerFor(sessionId: string | null | undefined): ChatComposerStores {
+	if (sessionId) {
+		for (let index = openComposers.length - 1; index >= 0; index -= 1) {
+			if (openComposers[index].sessionId === sessionId) return openComposers[index];
+		}
+	}
+	return sharedComposer;
+}
+
+/** The browser-wide pick changed in this page: every open composer whose
+ *  chat inherits it shows the new one; chats with their own pick keep it. */
+export function notifyChatHarnessDefaultChanged(choice: ChatHarnessPreference): void {
+	for (const composer of openComposers) composer.harness.defaultChanged(choice);
+}
+
+type ComposerChoiceReader = () => Record<string, unknown> | null;
+const composers = new Map<string, ComposerChoiceReader>();
+function composerKey(thread: string): string {
+    const scope = get(scopeIdentityStore);
+    return JSON.stringify([scope.principal, scope.workspace, thread]);
+}
+/** Voice takes the initiating composer's choice once, without sharing mutable
+ * per-chat stores. An older unmount cannot unregister a replacement composer. */
+export function registerChatComposerChoice(thread: string, reader: ComposerChoiceReader): () => void {
+    const key = composerKey(thread);
+    composers.set(key, reader);
+    return () => { if (composers.get(key) === reader) composers.delete(key); };
+}
+
+/** Voice and typed turns preserve the same engine/model/thinking choice. */
+export function composerChatChoice(profile?: string | null, thread?: string): Record<string, unknown> | null {
+    const reader = thread ? composers.get(composerKey(thread)) : undefined;
+    if (reader) return reader();
+    if (!chatHarnessPreferenceStore.isChosen()) return null;
+    const { engine, model } = get(chatHarnessPreferenceStore);
+    const state = get(chatProfileStore);
+    if (['magician', 'pi'].includes(engine) && (state.isLoading || state.selectionError)) {
+        throw new Error(state.selectionError ?? 'Model choices are still loading.');
+    }
+    return typedChatModelRequest(state.models, state.profiles, profile, engine, model);
 }
 
 /** `chat.engine.updated`: the server's chat engine changed (Settings' "default
@@ -160,5 +280,8 @@ export function handleChatEngineUpdatedEnvelope(envelope: {
 		typeof payload?.chat_model === 'string' && payload.chat_model.trim()
 			? payload.chat_model.trim()
 			: 'default';
-	chatHarnessPreferenceStore.adoptServer(engine, model);
+	// Global Settings updates change the default; existing session picks stay
+	// pinned, and open chats that inherit the default follow it.
+	chatHarnessPreferenceStore.updateDefault(engine, model);
+	for (const composer of openComposers) composer.harness.updateDefault(engine, model);
 }

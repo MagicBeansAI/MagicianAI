@@ -32,10 +32,10 @@ use super::grok_contract::{
 use super::jsonl::{append_bounded_utf8, read_bounded_jsonl_value, BoundedJsonlError};
 use super::selection::CodingContinuationRef;
 use super::{
-    harness_command, harness_own_sandbox_off, harness_unrestricted, require_outer_fence, without_flags, CodingEngineAdapter, CodingEngineEvent,
-    CodingEngineEventKind, CodingEngineEventSink, CodingEngineKind, CodingEngineRequest,
-    CodingEngineRunResult, CodingFenceError, CodingLiveSessionReporter, CodingTurnUsage,
-    CodingUsage,
+    harness_command, harness_own_sandbox_off, harness_unrestricted, require_outer_fence,
+    without_flags, CodingEngineAdapter, CodingEngineEvent, CodingEngineEventKind,
+    CodingEngineEventSink, CodingEngineKind, CodingEngineRequest, CodingEngineRunResult,
+    CodingFenceError, CodingLiveSessionReporter, CodingTurnUsage, CodingUsage,
 };
 
 const JSONRPC: &str = "2.0";
@@ -222,6 +222,11 @@ fn spawn_agent(
         .into_iter()
         .map(OsString::from)
         .collect();
+    args.extend(super::factory::native_model_args(
+        request.grok.model.as_deref(),
+        request.grok.effort.as_deref(),
+        "--reasoning-effort",
+    )?);
     // Inside Magician's Seatbelt fence Grok's own sandbox cannot apply (a
     // nested `sandbox_apply` is refused and Grok will not start); Magician's
     // fence stands in for it.
@@ -272,11 +277,14 @@ fn spawn_agent(
             .iter()
             .map(|(key, value)| (key.clone(), value.clone())),
     );
-    let filtered = filter_grok_child_env(
+    let mut filtered = filter_grok_child_env(
         inherited
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
+    if !crate::magician_v2::harness_auth::uses_magician_credentials("grok") {
+        filtered.remove("XAI_API_KEY");
+    }
     for (key, value) in filtered {
         command.env(key, value);
     }
@@ -292,6 +300,7 @@ fn spawn_agent(
         }
     }
     harness.apply_env();
+    super::original_edits::apply_env(request, &mut harness.command);
     let command = &mut harness.command;
     apply_grok_child_process_group(command);
     command.spawn().with_context(|| {
@@ -2934,15 +2943,23 @@ mod tests {
     fn a_restricted_turn_refuses_to_fall_back_to_the_owner_grok_home() {
         let whole = include_str!("grok.rs");
         let start = whole.find("\nfn spawn_agent(").expect("spawn_agent");
-        let end = start + whole[start..].find("\nstruct OwnedGrokChild").expect("end of spawn_agent");
+        let end = start
+            + whole[start..]
+                .find("\nstruct OwnedGrokChild")
+                .expect("end of spawn_agent");
         let spawn = &whole[start..end];
         // Fail closed: no `if let Some(home)` fallback to the owner's home.
-        assert!(spawn.contains("magician_grok_home().ok_or_else("), "{spawn}");
+        assert!(
+            spawn.contains("magician_grok_home().ok_or_else("),
+            "{spawn}"
+        );
         assert!(!spawn.contains("if let Some(home) = super::grok_contract::magician_grok_home()"));
         // HOME moves with GROK_HOME, compat imports off.
         assert!(spawn.contains("grok_contained_env(home)"));
         // Resolved once, before the box is built from the same home.
-        assert!(spawn.find("magician_grok_home()").unwrap() < spawn.find("harness_command(").unwrap());
+        assert!(
+            spawn.find("magician_grok_home()").unwrap() < spawn.find("harness_command(").unwrap()
+        );
         assert_eq!(spawn.matches("magician_grok_home()").count(), 1);
     }
 

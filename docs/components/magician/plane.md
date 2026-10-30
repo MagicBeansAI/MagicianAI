@@ -34,6 +34,11 @@ capture slot. A grant with no live executors advertises an empty catalog.
 `tools/call` enforces the same hot + grant-loaded projection as `tools/list`:
 tiering is authorization, not only discoverability.
 
+A plan (Discuss) run's grant (`ctx.plan_run`) applies
+`execution/plan_run_policy.rs` ([vibedev-rail](vibedev-rail.md)): `permits`
+filters names and `tools/call` refuses the lowered action before approval
+capture; `governed_execute_tail` backstops captured and elicited calls.
+
 `tool_search` is grant-scoped (durable terminal grants included) over the
 engraved workspace's embedded + installed-tool index, never another
 workspace's. A hot name missing from that snapshot (`inspect_agent` when
@@ -123,7 +128,7 @@ is an arm of the event select, so it also stops a silent harness.
 
 | Engine | Shape | Native-tool posture | Streaming / resume |
 | --- | --- | --- | --- |
-| `pi` | Pinned Pi 0.87.1 RPC driver (shared with VibeDev), `agent_settled` boundary | Tools, extensions, skills, templates, context files, themes off; only bundled `magician-plane.js` | Native session in private Plane home |
+| `pi` | Pinned Pi 1.3.0 RPC driver (shared with VibeDev), `agent_settled` boundary | Tools, extensions (built-in MCP, codemode and tool search included), skills, templates, context files, themes off; only bundled `magician-plane.js` | Native session in private Plane home |
 | `claude_code` | Warm stream-json, `--include-partial-messages` | `--tools ""` + `--strict-mcp-config` (stripped) | `text_delta`; `--resume` |
 | `codex` | One-shot `codex exec --json`, isolated `CODEX_HOME`, `bearer_token_env_var` | `-c sandbox_mode="read-only"` (also on `exec resume`), `--disable shell_tool`/`unified_exec` (sandboxed) | No deltas (`exec --json` emits completed items only), settles as one chunk; `codex exec resume <id>` |
 | `codex_app_server` | `coding_engine` driver (`CodexAppServerAdapter::run_turn_spawned`), `CodexLaunchProfile::PlaneHarness`, child per turn | Read-only sandbox, same isolated `config.toml` (sandboxed) | Per-delta text tap (`CodingEngineRequest::text_delta_sink`); `thread/resume` in persistent `CODEX_HOME` |
@@ -167,7 +172,8 @@ is an arm of the event select, so it also stops a silent harness.
   total), older ones as transcript text on cold replay.
 - `magician-plane.js` registers hot MCP tools plus a dispatcher for
   `tool_search`-loaded tools before the first prompt; the grant sits in a
-  private file. Pi is not in the terminal-grant picker (no MCP client).
+  private file. Pi is not in the terminal-grant picker: its own MCP client is
+  turned off, so it reaches MCP only through this bridge.
 - **Credentials**: the version probe uses the same isolated env. With a
   Magician profile only its key is forwarded (a private model entry omits the
   operator's `auth.json`/`models.json`); without one, Pi uses those files
@@ -196,7 +202,10 @@ is an arm of the event select, so it also stops a silent harness.
   re-sends its whole context every decision); each settled turn's
   CLI-reported `cost_usd` counts against
   `execution.budgets.harness_max_cost_usd` (default $100, `"unlimited"`) plus
-  owner grants. No reported cost charges nothing. See
+  owner grants. No reported cost charges nothing. The turn's reported tokens
+  add to a display tally (`cumulative_harness_tokens`, kept across a pause);
+  the decide phase publishes `budget_usage` on every exit, so a one-turn
+  harness run records its cost and tokens. See
   [agentic budgets](execution/AGENTIC_EXECUTION_DESIGN.md#budgets).
 - Background text operations can follow Pi through `op-harness-pi` (operator's
   installed Pi CLI and credentials); local,
@@ -213,7 +222,10 @@ executors and tool-call bound. `NeedsApproval` becomes
 
 **Work controls.** Owned Work turns capture `yield` and `need_user_input` like
 Magician; dispositions come from the yield's completed/open/blocker fields, and
-plain final text is only a partial deliverable. Terminal callers cannot see
+plain final text is only a partial deliverable. A turn that settles on a final
+answer without any control, on a resumable session, is first asked once per run
+(a `HarnessCheckpoint` carrying the nudge) to `yield` its completion record
+(`turn_engine::completion_record_nudge_due`). Terminal callers cannot see
 these controls. Owner-input pauses persist session/home metadata; answers go
 through the shared sensitive-input formatter. Cold root-owner recovery may
 carry metadata-only native continuations through the signed exact-body
@@ -259,6 +271,11 @@ counters.
   `shell` off the nesting floor for a live harness turn whose chat or run has
   it on, listed without a search; terminal grants keep the floor. See
   [god-mode.md](god-mode.md).
+- **Coding floor**: only an agent that owns `run_coding_task` itself gets it
+  (`grant::coding_lifts_floor`), not a lead inheriting it from engineers. A
+  harness lead's identity line lists its delegation targets and their tools,
+  and `tool_search` for a target's floored tool returns
+  `owned_by_other_agents` (route `delegate_to_agent`).
 - **Decision Engine** (`decision.mode` covering the harness engine): each call
   is checked first at the dispatcher (`dispatch::decision_engine_refusal`), one
   `ResolvePlanner` step against the listed entry; rejection or an unreachable
@@ -378,7 +395,8 @@ recovered runs keep their pin. Rule: **inherit the parent unless something names
 - **Pauses**: `AgenticPauseState.run_engine_pin` and `harness_engine` join the
   pause's authorization hash when present (older pauses keep their hash).
 - **Not pinned**: turn limits, the plane endpoint. Background operations follow
-  the engine family (`op-harness-<engine>`), not the harness model.
+  the engine family (`op-harness-<engine>`), not the harness model, only when
+  that CLI is on its own sign-in ([harness credentials](harness-auth.md)).
 - **Coding tasks** without `coding_profile` map the pin
   (`inherited_coding_choice`): `pi` → the coding profile whose `llm_profile`
   is the pin's; other engines → their counterpart if `adapter_spec_for_engine`
@@ -506,7 +524,9 @@ root is a scratch directory.
 | `plane.spawned_bare.hot`, `plane.terminal.hot` | empty = lists in `execution::plane::catalog` | Non-empty replaces; a `spawned_bare.hot` overlay only picks hot allowlisted names; dropping `tool_search` disables deferred loading |
 | `execution.harness_engine` | `magician` | `magician` \| `claude_code` \| `codex` \| `codex_app_server` \| `grok` \| `agy` \| `pi` |
 | `execution.harness_turn_max_tool_calls`, `execution.harness_turn_max_seconds` | 12000, 86400 | Internal slice bounds (Magician-run scale) |
+| `execution.harness_turn_idle_seconds` | 3600 (0 = default) | A harness CLI silent this long (no output, no Magician tool call in flight) ends its turn as stalled; read at boot and on settings reload |
 | `execution.harness_model` | `default` | Model the run's harness uses (`default` = the CLI's) |
+| `execution.harness_auth` | `mode: login_first` | Whose credentials the CLIs use; see [harness credentials](harness-auth.md) |
 | `execution.pi_profile` | unset | Pi agentic profile |
 | `chat.harness_engine`, `chat.harness_model` | `magician`, `default` | Chat mouth (`default` = the CLI's model) |
 | `chat.harness_turn_stall_seconds` | 300 (0 = no stall stop) | No-progress bound (native and decision rail) |

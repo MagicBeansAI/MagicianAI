@@ -27,11 +27,24 @@ fn cloud_services_are_optional_and_share_typed_configuration() {
         matches!(&cloud.probe, crate::ProbeSpec::HttpConfigured { path, headers, files, .. }
         if path == "/health" && headers.len() == 2 && files.iter().all(|file| file.starts_with("/tmp/data/")))
     );
+    let crate::InstallAction::Make { again, .. } = &cloud.install else {
+        panic!("tunnel installer missing");
+    };
+    assert_eq!(
+        again.as_deref(),
+        Some("Switch this computer to a different domain and rebuild every tunnel?")
+    );
     let config = graph.component("cloudflare-configuration").unwrap();
     let crate::InstallAction::Manual { secrets, .. } = &config.install else {
         panic!("configuration inputs missing");
     };
     assert_eq!(secrets.len(), 5);
+    let crate::InstallAction::Manual { steps, .. } = &config.install else {
+        panic!("configuration steps missing");
+    };
+    assert!(steps
+        .iter()
+        .any(|step| step.contains("original shared tunnel") && step.contains("parked")));
     assert_eq!(
         secrets
             .iter()

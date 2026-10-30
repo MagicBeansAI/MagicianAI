@@ -321,6 +321,15 @@ pub trait WorkerHost: Send {
     /// entry, and nothing else here writes through it.
     fn context_mut(&mut self) -> &mut AgenticContext;
 
+    /// The iteration the committed cursor may not pass: the context's
+    /// allowance plus any iterations a spend-envelope park handed back
+    /// (`LoopProtectiveState::parked_iteration_refunds`). The resident loop
+    /// reads the same bound (`run_budget::iteration_ceiling`). A host with no
+    /// protective bundle has no refunds.
+    fn iteration_ceiling(&self) -> usize {
+        self.context().max_iterations
+    }
+
     /// Whether this run's ephemeral secret scope currently holds a user-typed
     /// secret — Decision 4's input to [`LoopState::for_commit`].
     fn holds_user_typed_ephemeral_secret(&self) -> bool;
@@ -1819,7 +1828,7 @@ async fn advance_under_lease(
     }
 
     // ── ITERATION CEILING ───────────────────────────────────────────────────
-    let max_iterations = host.context().max_iterations;
+    let max_iterations = host.iteration_ceiling();
     if state.cursor.iteration > max_iterations {
         return Advanced::IterationCeiling {
             iteration: state.cursor.iteration,
@@ -3296,7 +3305,23 @@ async fn commit_boundary(
     // ResolveCheckpoint remains the phase-local reconstruction source in
     // between. Refreshing here after every phase would repeatedly serialize the
     // same bounded history and turn a long run's checkpoint I/O quadratic.
-    if !ends_run && matches!(phase, Phase::Apply | Phase::Epilogue) {
+    //
+    // A Retry exit refreshes too. Its wait (a provider backoff, or a spend-
+    // envelope park of up to ten minutes) sits between this commit and the
+    // Epilogue that would otherwise refresh, and the phase changed protective
+    // state the run must keep through it: the retry counters and the parked
+    // wake's iteration refund (`LoopProtectiveState::parked_iteration_refunds`).
+    // A restart in that gap restores from this checkpoint; the older one would
+    // drop the refund and stop the run at its ceiling right after the park.
+    // Retry exits are bounded by the retry budgets and the park interval, so
+    // this adds no per-iteration I/O.
+    let retry_exit = matches!(
+        step,
+        RecordedStep::Exited {
+            boundary: RecordedBoundary::Retry { .. },
+        }
+    );
+    if !ends_run && (matches!(phase, Phase::Apply | Phase::Epilogue) || retry_exit) {
         state.continuation_checkpoint = match host.continuation_checkpoint(iteration) {
             Ok(checkpoint) => Some(checkpoint),
             Err(reason) => return Advanced::ExecutionFailed { reason },

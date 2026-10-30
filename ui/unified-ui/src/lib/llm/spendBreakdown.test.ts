@@ -12,9 +12,13 @@ const BOUNDS: LocalDayBoundaries = {
 	todayStartMs: 2000,
 	tomorrowStartMs: 3000
 };
+// 2026-10-30T10:17:42.123Z; the anchor rounds up to 10:18:00.000.
+const ANCHOR_MS = Date.UTC(2026, 9, 30, 10, 17, 42, 123);
+const ANCHOR_MINUTE_MS = Date.UTC(2026, 9, 30, 10, 18, 0, 0);
+const DAY = 86_400_000;
 
 describe('buildSpendBreakdownQueries', () => {
-	const specs = buildSpendBreakdownQueries(BOUNDS);
+	const specs = buildSpendBreakdownQueries(BOUNDS, ANCHOR_MS);
 	const pick = (window: string, dimension: string) =>
 		specs.find((s) => s.window === window && s.dimension === dimension);
 
@@ -32,13 +36,27 @@ describe('buildSpendBreakdownQueries', () => {
 		expect(sql).not.toContain('INTERVAL');
 	});
 
-	it('windows 7d and 30d as rolling INTERVAL windows off now()', () => {
-		expect(pick('7d', 'model')!.sql).toContain(
-			'timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 7 DAYS)'
-		);
-		expect(pick('30d', 'model')!.sql).toContain(
-			'timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS)'
-		);
+	it('windows 7d and 30d as rolling literal epoch-ms bounds off the minute anchor', () => {
+		expect(pick('7d', 'model')!.sql).toContain(`timestamp_ms > ${ANCHOR_MINUTE_MS - 7 * DAY} `);
+		expect(pick('30d', 'model')!.sql).toContain(`timestamp_ms > ${ANCHOR_MINUTE_MS - 30 * DAY} `);
+		for (const spec of specs) {
+			expect(spec.sql).not.toContain('INTERVAL');
+			expect(spec.sql).not.toContain('now()');
+		}
+	});
+
+	it('routes today to the short-window batch lane and 7d/30d to the default lane', () => {
+		expect(pick('today', 'operation')!.lane).toBe('short-window');
+		expect(pick('today', 'model')!.lane).toBe('short-window');
+		for (const window of ['7d', '30d']) {
+			expect(pick(window, 'operation')!.lane).toBeUndefined();
+			expect(pick(window, 'model')!.lane).toBeUndefined();
+		}
+	});
+
+	it('produces identical SQL for anchors in the same minute', () => {
+		const later = buildSpendBreakdownQueries(BOUNDS, ANCHOR_MS + 10_000);
+		expect(later.map((s) => s.sql)).toEqual(specs.map((s) => s.sql));
 	});
 
 	it('groups each spec by its dimension column, aliased to label, only for paid calls', () => {

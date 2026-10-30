@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "esp_app_desc.h"
 #include "esp_event.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -87,6 +88,7 @@ const char *net_cf_id(void)     { return s_cfid; }
 const char *net_cf_secret(void) { return s_cfsec; }
 bool        net_has_cf_token(void) { return s_cfid[0] && s_cfsec[0]; }
 const char *net_device_id(void)     { return s_devid; }
+const char *net_app_version(void)   { return esp_app_get_description()->version; }
 const char *net_device_token(void)  { return s_devtok; }
 bool        net_has_device_token(void) { return s_devtok[0] != 0; }
 bool        net_dark_theme(void)       { return s_dark; }
@@ -849,6 +851,7 @@ static bool backend_reachable(int *status_out)
     snprintf(bearer, sizeof bearer, "Bearer %s", s_devtok);
     esp_http_client_set_header(cl, "Authorization", bearer);
     esp_http_client_set_header(cl, "X-Magician-Device-Id", s_devid);
+    esp_http_client_set_header(cl, "X-Magician-App-Version", net_app_version());
     esp_http_client_set_header(cl, "Accept", "application/json");
     bool ready = false;
     if (esp_http_client_open(cl, 0) == ESP_OK) {

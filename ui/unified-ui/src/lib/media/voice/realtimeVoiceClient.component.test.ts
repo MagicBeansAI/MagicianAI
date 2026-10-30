@@ -1,10 +1,12 @@
 import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ModelChoice } from '$lib/llm/modelCatalog';
 import { mediaSessionStore } from '$lib/media/store';
 import { defaultCapabilities, defaultPermissions } from '$lib/media/types';
 import { screenLockStateStore } from './screenLock';
 import { chatHarnessPreferenceStore } from '$lib/stores/chatHarnessPreferenceStore';
+import { chatProfileStore } from '$lib/stores/chatProfileStore';
 import type { RealtimeFrontendProvider, RealtimeProviderCallbacks } from './providers';
 import type { VoiceAddressingConfig } from './voiceAddressing';
 import { MockWebSocket, settleMicrotasks } from '../../../test/browser';
@@ -25,6 +27,22 @@ const provider = vi.hoisted(() => ({
 }));
 const notifications = vi.hoisted(() => ({ showError: vi.fn() }));
 const concurrentInput = vi.hoisted(() => ({ settled: vi.fn() }));
+const shownChat = vi.hoisted(() => ({
+	state: {
+		activeSessionId: null as string | null,
+		viewingArchivedId: null as string | null,
+		sessions: [] as Array<Record<string, unknown>>
+	}
+}));
+
+vi.mock('$lib/stores/chatStore', () => ({
+	chatStore: {
+		subscribe(run: (value: typeof shownChat.state) => void) {
+			run(shownChat.state);
+			return () => {};
+		}
+	}
+}));
 
 vi.mock('./concurrentVoice', async () => {
 	const actual = await vi.importActual<typeof import('./concurrentVoice')>('./concurrentVoice');
@@ -53,8 +71,32 @@ import {
 	stopVoiceCall,
 	voiceCallStore,
 	voiceMicAnalyser,
+    voicePlaybackAnalyser,
 	voiceTranscriptStore
 } from './realtimeVoiceClient';
+
+const chatModel: ModelChoice = {
+	id: 'voice/model', label: 'Voice model', model: 'voice-model', provider: 'openai', connection: 'openai',
+	limits: null,
+	capabilities: { vision: false, tools: true, streaming: true, computer_use: false, structured_output: false, web_search: false },
+	thinking: { mode: 'effort', levels: ['low'], default: 'low' },
+	choices: { auto: 'voice-auto', low: 'voice-low' }
+};
+
+/** Magician and Pi voice starts refuse to send until the composer catalog has loaded. */
+async function loadComposerModels(): Promise<void> {
+	vi.stubGlobal('fetch', vi.fn(async (request: string | URL | Request) => {
+		if (String(request).includes('/chat/models?engine=')) {
+			return Response.json({
+				models: [chatModel],
+				default_selection: { model_id: chatModel.id, thinking: 'auto' }
+			});
+		}
+		return new Response('not found', { status: 404 });
+	}));
+	await chatProfileStore.load('magician');
+	vi.unstubAllGlobals();
+}
 
 const track = { stop: vi.fn(), getSettings: vi.fn(() => ({ echoCancellation: true })) };
 
@@ -155,8 +197,10 @@ beforeEach(async () => {
 	mediaSessionStore.clear();
 	screenLockStateStore.set('unknown');
 	chatHarnessPreferenceStore.select('magician');
+	shownChat.state = { activeSessionId: null, viewingArchivedId: null, sessions: [] };
 	MockWebSocket.instances = [];
 	vi.clearAllMocks();
+	await loadComposerModels();
 	track.stop.mockClear();
 	Object.defineProperty(navigator, 'mediaDevices', {
 		configurable: true,
@@ -211,6 +255,23 @@ describe('realtime voice lifecycle', () => {
 		expect(concurrentInput.settled).toHaveBeenCalledOnce();
 	});
 
+	it('joins the chat on screen, not whichever chat of its thread was active last', async () => {
+		shownChat.state = {
+			activeSessionId: 'chat-tab-2',
+			viewingArchivedId: null,
+			sessions: [
+				{ id: 'chat-tab-1', ui_thread_id: 'general', status: 'active' },
+				{ id: 'chat-tab-2', ui_thread_id: 'research', status: 'active' }
+			]
+		};
+		const socket = await startAndOpen();
+
+		expect(JSON.parse(String(socket.send.mock.calls[0]?.[0])).payload).toMatchObject({
+			ui_thread_id: 'research',
+			chat_session_id: 'chat-tab-2'
+		});
+	});
+
 	it('opens one scoped control socket and becomes connected after session.ready', async () => {
 		const socket = await startAndOpen();
 
@@ -223,12 +284,16 @@ describe('realtime voice lifecycle', () => {
 			payload: {
 				ui_thread_id: 'general',
 				thread_id: 'general',
+				chat_session_id: null,
 				voice_mode: 'realtime',
 				concurrent_requests: true,
 				turn_boundary: 'push_to_talk',
 				echo_cancellation: true,
 				require_voice_prefix: false,
-				chat_choice: { engine: 'magician', model: 'default' }
+				chat_choice: {
+					harness_engine: 'magician',
+					model_selection: { model_id: 'voice/model', thinking: 'auto' }
+				}
 			}
 		});
 
@@ -244,12 +309,24 @@ describe('realtime voice lifecycle', () => {
 		expect(get(voiceMicAnalyser)).toBe(analyser);
 	});
 
+    it('publishes playback metering only for the active call and clears it on hangup', async () => {
+        const socket = await startAndOpen();
+        await makeProviderReady(socket);
+        const callbacks = providerCallbacks();
+        const meter = {} as AnalyserNode;
+        callbacks.onPlaybackAnalyserChanged?.(meter);
+        expect(get(voicePlaybackAnalyser)).toBe(meter);
+        await stopVoiceCall();
+        expect(get(voicePlaybackAnalyser)).toBeNull();
+        callbacks.onPlaybackAnalyserChanged?.(meter);
+        expect(get(voicePlaybackAnalyser)).toBeNull();
+    });
 	it("carries the composer's chat engine so the call's chat turns think with it", async () => {
 		chatHarnessPreferenceStore.select('claude_code', 'opus');
 		const socket = await startAndOpen();
 		expect(JSON.parse(String(socket.send.mock.calls[0]?.[0])).payload.chat_choice).toEqual({
-			engine: 'claude_code',
-			model: 'opus'
+			harness_engine: 'claude_code',
+			harness_model: 'opus'
 		});
 	});
 
@@ -732,6 +809,8 @@ describe('realtime voice lifecycle', () => {
 		vi.useFakeTimers();
 		const socket = await startAndOpen();
 		await makeProviderReady(socket);
+        const originalChoice = JSON.parse(String(socket.send.mock.calls[0]?.[0])).payload.chat_choice;
+        chatHarnessPreferenceStore.select('claude_code', 'opus');
 
 		socket.serverClose();
 		await settleMicrotasks(4);
@@ -746,6 +825,7 @@ describe('realtime voice lifecycle', () => {
 		replacement.open();
 		await settleMicrotasks(5);
 		expect(JSON.parse(String(replacement.send.mock.calls[0]?.[0])).kind).toBe('session.start');
+        expect(JSON.parse(String(replacement.send.mock.calls[0]?.[0])).payload.chat_choice).toEqual(originalChoice);
 		await makeProviderReady(replacement);
 		expect(get(voiceCallStore).state).toBe('connected');
 		expect(track.stop).not.toHaveBeenCalled();

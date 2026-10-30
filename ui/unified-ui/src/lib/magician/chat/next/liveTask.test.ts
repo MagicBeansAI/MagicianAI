@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChatMessage, ChatRenderTaskExecutionGroup } from '$lib/stores/chatStore';
-import { storeStatusForCard, toLiveTaskView } from './liveTask';
+import { storeStatusForCard, SYNTHESIS_STALE_MS, toLiveTaskView } from './liveTask';
 
 const T0 = 1_760_000_000_000;
 
@@ -47,6 +47,28 @@ function group(executionId: string, updates: ChatMessage[]): ChatRenderTaskExecu
 }
 
 describe('toLiveTaskView', () => {
+    it.each(['running', 'paused'])('stops an obsolete %s card when the current task is ready again', (status) => {
+        const view = toLiveTaskView(taskMessage('m', status), [], 'ready');
+        expect(view.status).toBe('queued');
+        expect(view.reason).toBeUndefined();
+    });
+
+    it('does not apply an older ready task state to a newer execution', () => {
+        expect(storeStatusForCard({ status: 'ready', executionId: 'old-run' }, 'new-run')).toBeUndefined();
+        expect(storeStatusForCard({ status: 'ready', executionId: 'current-run' }, 'current-run')).toBe('ready');
+        expect(storeStatusForCard({ status: 'pending', activeExecutionId: 'current-run' }, 'current-run')).toBe('pending');
+    });
+
+    it('does not let a not-started store row without a run override a card that names its run', () => {
+        // A freshly created task: the store has not caught up with the run yet.
+        for (const status of ['ready', 'pending']) {
+            expect(storeStatusForCard({ status }, 'run-x')).toBeUndefined();
+            expect(storeStatusForCard({ status, executionId: '  ' }, 'run-x')).toBeUndefined();
+        }
+        // A terminal status with no run id still settles a card it cannot tell apart.
+        expect(storeStatusForCard({ status: 'completed' }, 'run-x')).toBe('completed');
+    });
+
 	it('reads a draft plan as waiting for review, not as running', () => {
 		const view = toLiveTaskView(taskMessage('m1', 'draft'), []);
 		expect(view.status).toBe('waiting');
@@ -66,8 +88,17 @@ describe('toLiveTaskView', () => {
 		expect(lagging.verb).toBe('Plan approved, not started');
 		expect(lagging.reason).toBeUndefined();
 
-		// A message that has moved on (a run started) is not overridden.
-		expect(toLiveTaskView(taskMessage('m2', 'running'), [], 'ready').status).toBe('running');
+		// A message that has moved on (a run started) is not overridden by a
+		// ready store row that does not name that run.
+		const started = taskMessage('m2', 'running', { executionId: 'run-x' });
+		const fresh = toLiveTaskView(started, [], storeStatusForCard({ status: 'ready' }, 'run-x'));
+		expect(fresh.status).toBe('running');
+		expect(fresh.terminal).toBe(false);
+		// A current, matching ready state (the run was cancelled) settles it.
+		const cancelled = storeStatusForCard({ status: 'ready', executionId: 'run-x' }, 'run-x');
+		expect(toLiveTaskView(started, [], cancelled).status).toBe('queued');
+		// A card without a run id cannot be told apart: the store wins.
+		expect(toLiveTaskView(taskMessage('m3', 'running'), [], 'ready').status).toBe('queued');
 	});
 
 	it('reads an approved or unplanned task as not started, never as running', () => {
@@ -232,6 +263,48 @@ describe('toLiveTaskView', () => {
 		const view = toLiveTaskView(taskMessage('m', 'running', { synthesisPending: true }), []);
 		expect(view.terminal).toBe(false);
 		expect(view.currentStep).toBe('Preparing final result');
+	});
+
+	it('settles a synthesizing card whose flag outlived any plausible synthesis', () => {
+		const synth = taskMessage('m', 'running', { synthesisPending: true, createdAt: T0 });
+		// Without a clock the flag is taken as live, however old the message.
+		expect(toLiveTaskView(synth, []).terminal).toBe(false);
+		expect(toLiveTaskView(synth, [], undefined, T0 + SYNTHESIS_STALE_MS - 1).terminal).toBe(false);
+
+		const stale = toLiveTaskView(synth, [], undefined, T0 + SYNTHESIS_STALE_MS);
+		expect(stale.terminal).toBe(true);
+		expect(stale.status).toBe('completed');
+		expect(stale.currentStep).toBeUndefined();
+	});
+
+	it('times the stale cutoff off the latest update of any run, not the first message', () => {
+		const old = taskMessage('r1', 'running', { executionId: 'e1', createdAt: T0 });
+		const fresh = taskMessage('r2', 'running', {
+			executionId: 'e1',
+			createdAt: T0 + SYNTHESIS_STALE_MS,
+			synthesisPending: true
+		});
+		const view = toLiveTaskView(fresh, [group('e1', [old, fresh])], undefined, T0 + SYNTHESIS_STALE_MS + 1_000);
+		expect(view.terminal).toBe(false);
+	});
+
+	it('keeps a failed synthesizing card failed once the flag goes stale', () => {
+		const failed = taskMessage('m', 'failed', { synthesisPending: true, createdAt: T0 });
+		const view = toLiveTaskView(failed, [], undefined, T0 + SYNTHESIS_STALE_MS);
+		expect(view.status).toBe('failed');
+	});
+
+	it('storeStatusForCard does not settle a card on a terminal status that is still synthesizing', () => {
+		const updatedAt = new Date(T0).toISOString();
+		const task = { status: 'completed', synthesisPending: true, updatedAt };
+		expect(storeStatusForCard(task, undefined, T0 + 1_000)).toBeUndefined();
+		// The flag never cleared: the store's terminal status stands.
+		expect(storeStatusForCard(task, undefined, T0 + SYNTHESIS_STALE_MS)).toBe('completed');
+		// No update time to age it by: the flag is taken as live.
+		expect(storeStatusForCard({ status: 'completed', synthesisPending: true }, undefined, T0)).toBeUndefined();
+		// Only a terminal status is held back; a running one passes through.
+		expect(storeStatusForCard({ status: 'running', synthesisPending: true }, undefined, T0)).toBe('running');
+		expect(storeStatusForCard({ status: 'completed', synthesisPending: false }, undefined, T0)).toBe('completed');
 	});
 
 	it('maps a paused task to waiting on the user', () => {

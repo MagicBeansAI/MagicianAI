@@ -9,6 +9,20 @@ afterEach(() => {
 });
 
 describe('PresenceOrb', () => {
+	it.each(['idle', 'thinking', 'working', 'needs-you'] as const)('shares the %s animation with a distinct Dev identity', (state) => {
+		render(PresenceOrb, { state, variant: 'dev', godToggleable: true });
+		expect(screen.getByRole('status')).toHaveTextContent(state === 'needs-you' ? 'Dev needs you' : `Dev is ${state}`);
+		expect(screen.getByRole('status')).toHaveAttribute('data-variant', 'dev');
+		expect(screen.getByRole('status')).toHaveAttribute('data-state', state);
+		expect(screen.getByRole('button', { name: /Open super god mode controls/ })).toHaveAttribute('aria-haspopup', 'menu');
+	});
+	it('delegates the Dev mode action to its owner without changing mode itself', async () => {
+		const toggle = vi.fn();
+		render(PresenceOrb, { props: { variant: 'dev', state: 'working', godMode: true, godToggleable: true }, events: { toggleGodMode: toggle } });
+		await fireEvent.click(screen.getByRole('button', { name: /Super god mode is on. Turn it off/ }));
+		expect(toggle).toHaveBeenCalledOnce();
+		expect(screen.getByTestId('presence-orb')).toHaveAttribute('data-god', 'on');
+	});
 	it.each([
 		['idle', 'Magician is idle'],
 		['thinking', 'Magician is thinking'],

@@ -64,6 +64,49 @@ final class NetworkingViewModelTests: XCTestCase {
         XCTAssertEqual(outer["CF-Access-Client-Secret"], "secret")
         XCTAssertNil(outer["X-Magician-Device-Id"])
         XCTAssertNil(outer["Authorization"])
+        XCTAssertNil(outer[MagicianAccess.appVersionHeader])
+    }
+
+    func testAppVersionHeaderTravelsOnlyWithDeviceIdentity() throws {
+        let profile = try MobileConnectionProfile(
+            publicOrigin: XCTUnwrap(URL(string: "https://ios.example.com")),
+            principal: "profile-principal",
+            workspace: "profile-workspace",
+            deviceID: "device",
+            deviceToken: "token"
+        )
+        let expected = MagicianAccess.makeAppVersionHeaderValue(info: Bundle.main.infoDictionary)
+        XCTAssertEqual(MagicianAccess.headers(profile: profile)[MagicianAccess.appVersionHeader], expected)
+
+        var request = URLRequest(url: URL(string: "https://ios.example.com/api/magician/v2/tasks")!)
+        MagicianAccess.authorize(&request, principal: profile.principal, workspace: profile.workspace, profile: profile)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Magician-App-Version"), expected)
+
+        var external = URLRequest(url: URL(string: "https://example.com")!)
+        MagicianAccess.authorize(&external, principal: profile.principal, workspace: profile.workspace, profile: profile)
+        XCTAssertNil(external.value(forHTTPHeaderField: "X-Magician-App-Version"))
+        XCTAssertNil(MagicianAccess.headers(profile: nil)[MagicianAccess.appVersionHeader])
+    }
+
+    func testAppVersionHeaderValueFormatsAndBoundsTheBundleVersion() {
+        XCTAssertEqual(
+            MagicianAccess.makeAppVersionHeaderValue(info: [
+                "CFBundleShortVersionString": "0.4.11", "CFBundleVersion": "222",
+            ]),
+            "0.4.11 (222)"
+        )
+        XCTAssertEqual(MagicianAccess.makeAppVersionHeaderValue(info: ["CFBundleShortVersionString": "0.4.11"]), "0.4.11")
+        XCTAssertNil(MagicianAccess.makeAppVersionHeaderValue(info: ["CFBundleShortVersionString": "  ", "CFBundleVersion": "222"]))
+        XCTAssertNil(MagicianAccess.makeAppVersionHeaderValue(info: ["CFBundleVersion": "222"]))
+        XCTAssertNil(MagicianAccess.makeAppVersionHeaderValue(info: nil))
+        XCTAssertEqual(
+            MagicianAccess.makeAppVersionHeaderValue(info: ["CFBundleShortVersionString": "0.4.11\u{2011}β", "CFBundleVersion": "2\n22"]),
+            "0.4.11 (222)"
+        )
+        let long = MagicianAccess.makeAppVersionHeaderValue(info: [
+            "CFBundleShortVersionString": String(repeating: "9", count: 60), "CFBundleVersion": "1",
+        ])
+        XCTAssertEqual(long?.count, 40)
     }
 
     func testLegacyCredentialRotationCannotInventAnUnenrolledHost() {
@@ -137,7 +180,7 @@ final class NetworkingViewModelTests: XCTestCase {
                 captured = try JSONSerialization.jsonObject(with: body) as! [String: Any]
                 XCTAssertEqual(request.url?.path, "/api/magician/v2/hitl/corr/respond")
                 postSeen.fulfill()
-                return (response(for: request), Data())
+                return (response(for: request), jsonData(["accepted": true]))
             }
             refreshSeen.fulfill()
             return (response(for: request), jsonData(["requests": [], "approvals": [], "escalations": [], "failed": [], "running": []]))
@@ -648,15 +691,51 @@ final class NetworkingViewModelTests: XCTestCase {
         XCTAssertEqual(sut.tauriState, .notReported)
     }
 
+    func testHealthVersionsPreferTheNestedCoreVersionsAndToleratePartialBodies() throws {
+        let current = try XCTUnwrap(HealthVersions(data: jsonData([
+            "status": "ok", "service": "magician",
+            "version": "0.7.146", "api_version": "0.3.67",
+            "magician": "healthy", "magicutor_status": "healthy", "tauri_status": "healthy",
+            "versions": [
+                "magician": "0.7.146", "magician_api": "0.3.67",
+                "magicutor": "0.1.94", "desktop": "0.3.28",
+            ],
+        ])))
+        XCTAssertEqual(current, HealthVersions(
+            magician: "0.7.146", magicianAPI: "0.3.67", magicutor: "0.1.94", desktop: "0.3.28"
+        ))
+
+        // Offline components arrive as null or not at all; unknown keys are ignored.
+        let partial = try XCTUnwrap(HealthVersions(data: Data("""
+        {"version":"0.7.146","versions":{"magician":"0.7.150","magicutor":null,"desktop":"","future":{"x":1}},"extra":[1]}
+        """.utf8)))
+        XCTAssertEqual(partial.magician, "0.7.150")
+        XCTAssertNil(partial.magicianAPI)
+        XCTAssertNil(partial.magicutor)
+        XCTAssertNil(partial.desktop)
+
+        // Older servers send only `version`, and status keys are never read as versions.
+        let older = try XCTUnwrap(HealthVersions(data: jsonData([
+            "status": "ok", "version": "0.3.67", "magicutor": "online", "tauri": "healthy",
+        ])))
+        XCTAssertEqual(older, HealthVersions(magician: "0.3.67"))
+
+        // A malformed `versions` value or a non-object body does not fail the rest.
+        let odd = try XCTUnwrap(HealthVersions(data: Data(#"{"version":7,"api_version":"0.3.67","versions":"n/a"}"#.utf8)))
+        XCTAssertEqual(odd, HealthVersions(magicianAPI: "0.3.67"))
+        XCTAssertNil(HealthVersions(data: Data("[]".utf8)))
+        XCTAssertNil(HealthVersions(data: Data("not json".utf8)))
+    }
+
     func testChatViewModelLocalStateDoesNotNeedNetwork() {
         let sut = ChatViewModel(networkSession: mockSession(), connectsOnInit: false)
-        XCTAssertEqual(sut.messages.count, 1)
+        XCTAssertTrue(sut.messages.isEmpty)
         sut.messages.append(ChatMessage(id: "delete-me", isUser: true, text: "Hi", type: .text))
         sut.deleteMessage("delete-me")
         XCTAssertFalse(sut.messages.contains { $0.id == "delete-me" })
+        sut.messages.append(ChatMessage(id: "clear-me", isUser: true, text: "Hi", type: .text))
         sut.clearMessages()
-        XCTAssertEqual(sut.messages.count, 1)
-        XCTAssertTrue(sut.messages[0].text.contains("Sam"))
+        XCTAssertTrue(sut.messages.isEmpty)
 
         let attachment = StagedAttachment(id: UUID(), remoteId: nil, filename: "a.txt", mime: "text/plain", thumbnail: nil, uploading: true)
         sut.stagedAttachments = [attachment]
@@ -666,34 +745,227 @@ final class NetworkingViewModelTests: XCTestCase {
         XCTAssertNil(sut.currentSessionIdValue)
     }
 
-    func testChatProfilesDecodeAndSelectDefault() {
+    func testChatModelsDecodeAndSelectConfiguredDefault() {
+        let keys = ["magios.chat.profile", ChatModelPreference.storageKey, "magios.chat.harnessEngine", ChatViewModel.localStorageKey(origin: MagicianAccess.baseURL.absoluteString, principal: MagicianAccess.principal, workspace: MagicianAccess.workspace, session: nil) + "|" + ChatModelPreference.storageKey]
+        let original = keys.map { UserDefaults.standard.object(forKey: $0) }
+        for key in keys { UserDefaults.standard.removeObject(forKey: key) }
+        defer {
+            for (key, value) in zip(keys, original) {
+                if let value { UserDefaults.standard.set(value, forKey: key) }
+                else { UserDefaults.standard.removeObject(forKey: key) }
+            }
+        }
         MockURLProtocol.handler = { request in
-            XCTAssertTrue(request.url!.path.hasSuffix("chat/profiles"))
-            return (response(for: request), jsonData(["profiles": [
-                ["name": "fast", "provider": "test", "model": "small", "is_default": false,
-                 "supports_user_image_inputs": false, "is_adaptive": true,
-                 "adaptive_description": "Starts fast and escalates when needed.",
-                 "adaptive_tier": "instant"],
-                ["name": "best", "provider": "test", "model": "large", "is_default": true]
-            ]]))
+            XCTAssertTrue(request.url!.path.hasSuffix("chat/models"))
+            XCTAssertEqual(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "engine" })?.value, "magician")
+            return (response(for: request), jsonData([
+                "models": [
+                    ["id": "test/small", "provider": "test", "connection": "test", "model": "small", "label": "Small",
+                     "capabilities": ["vision": false], "thinking": ["mode": "none", "levels": []], "choices": ["auto": "small-auto"]],
+                    ["id": "test/large", "provider": "test", "connection": "test", "model": "large", "label": "Large",
+                     "capabilities": ["vision": true], "thinking": ["mode": "none", "levels": []], "choices": ["auto": "large-auto"]]
+                ],
+                "default_selection": ["model_id": "test/large", "thinking": "auto"]
+            ]))
         }
         let sut = ChatViewModel(networkSession: mockSession(), connectsOnInit: false)
         let published = expectation(description: "profiles")
         sut.$profiles.dropFirst().sink { if $0.count == 2 { published.fulfill() } }.store(in: &cancellables)
         sut.fetchProfiles()
         wait(for: [published], timeout: 2)
-        XCTAssertEqual(sut.selectedProfile, "best")
-        XCTAssertEqual(sut.profiles.first?.isAdaptive, true)
-        XCTAssertEqual(sut.profiles.first?.adaptiveTier, "instant")
-        XCTAssertEqual(sut.profiles.first?.adaptiveDescription, "Starts fast and escalates when needed.")
+        XCTAssertEqual(sut.selectedProfile, "large-auto")
+        XCTAssertEqual(sut.profiles.last?.modelSelection, ChatModelSelection(modelId: "test/large", thinking: "auto"))
         XCTAssertEqual(sut.profiles.first?.supportsUserImageInputs, false)
-        XCTAssertNil(sut.profiles.last?.isAdaptive)
+        XCTAssertNil(UserDefaults.standard.object(forKey: "magios.chat.profile"))
     }
 
     private func threadJSON(id: String, sort: Int, lane: String = "personal") -> [String: Any] {
         ["principal": "local", "workspace": "default", "id": id, "name": id,
          "archived": false, "sort_order": sort, "history_lane": lane,
          "created_at": 1, "updated_at": 1]
+    }
+
+    // MARK: Session delete feedback
+
+    func testSessionDeleteShowsDeletingUntilTheServerAnswersAndBlocksASecond() throws {
+        var deletes: [String] = []
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "DELETE" {
+                deletes.append(request.url!.lastPathComponent)
+                return (response(for: request, status: 204), Data())
+            }
+            return (response(for: request), jsonData(["sessions": [], "total": 0]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.sessions = try [sessionJSON(id: "s1", updated: 2), sessionJSON(id: "s2", updated: 1)].map {
+            try JSONDecoder().decode(ChatSession.self, from: jsonData($0))
+        }
+        sut.activeSessionId = "s1"
+        var deleted: [String] = []
+
+        sut.deleteSession("s1") { deleted.append($0) }
+        XCTAssertEqual(sut.deletingSessionId, "s1")
+        XCTAssertTrue(deleted.isEmpty, "the open chat must not move before the server answers")
+        sut.deleteSession("s2") { deleted.append($0) }
+        XCTAssertEqual(sut.deletingSessionId, "s1")
+
+        waitUntil { sut.deletingSessionId == nil }
+        XCTAssertEqual(deletes, ["s1"])
+        XCTAssertEqual(deleted, ["s1"])
+        XCTAssertNil(sut.activeSessionId)
+    }
+
+    func testFailedSessionDeleteKeepsTheRowAndShowsTheError() throws {
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "DELETE" {
+                return (response(for: request, status: 500), jsonData(["error": "Delete failed"]))
+            }
+            XCTFail("a failed delete must not refetch the list")
+            return (response(for: request), Data())
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.sessions = [try JSONDecoder().decode(ChatSession.self, from: jsonData(sessionJSON(id: "s1", updated: 2)))]
+        var deleted = false
+
+        sut.deleteSession("s1") { _ in deleted = true }
+        waitUntil { sut.deletingSessionId == nil }
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(sut.errorMessage, "Delete failed")
+        XCTAssertEqual(sut.sessions.map(\.id), ["s1"])
+    }
+
+    func testThreadArchiveShowsArchivingUntilTheServerAnswers() {
+        var patches = 0
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "PATCH" {
+                patches += 1
+                XCTAssertEqual(request.timeoutInterval, ThreadViewModel.threadMutationTimeout)
+                return (response(for: request), Data("{}".utf8))
+            }
+            return (response(for: request), jsonData(["sessions": [], "total": 0]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.activeThreadId = "travel"
+        sut.archiveThread("general")
+        XCTAssertNil(sut.mutatingThreadId)
+
+        sut.archiveThread("travel")
+        XCTAssertEqual(sut.mutatingThreadId, "travel")
+        XCTAssertEqual(sut.mutatingThreadLabel, "Archiving…")
+        XCTAssertEqual(sut.activeThreadId, "travel")
+        sut.deleteThread("plans")
+        XCTAssertEqual(sut.mutatingThreadId, "travel")
+
+        waitUntil { sut.mutatingThreadId == nil }
+        XCTAssertEqual(patches, 1)
+        XCTAssertNil(sut.mutatingThreadLabel)
+        XCTAssertEqual(sut.activeThreadId, "general")
+
+        sut.unarchiveThread("travel")
+        XCTAssertEqual(sut.mutatingThreadLabel, "Restoring…")
+        waitUntil { sut.mutatingThreadId == nil }
+        XCTAssertEqual(patches, 2)
+    }
+
+    func testThreadDeleteShowsDeletingUntilTheServerAnswers() {
+        var deletes = 0
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "DELETE" {
+                deletes += 1
+                XCTAssertEqual(request.timeoutInterval, ThreadViewModel.threadMutationTimeout)
+                return (response(for: request, status: 204), Data())
+            }
+            return (response(for: request), jsonData(["sessions": [], "total": 0]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.activeThreadId = "travel"
+        sut.deleteThread("travel")
+        XCTAssertEqual(sut.mutatingThreadId, "travel")
+        XCTAssertEqual(sut.mutatingThreadLabel, "Deleting…")
+        XCTAssertEqual(sut.activeThreadId, "travel")
+
+        waitUntil { sut.mutatingThreadId == nil }
+        XCTAssertEqual(deletes, 1)
+        XCTAssertNil(sut.mutatingThreadLabel)
+        XCTAssertEqual(sut.activeThreadId, "general")
+    }
+
+    func testFailedThreadArchiveClearsTheRowAndShowsTheError() {
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "PATCH" {
+                return (response(for: request, status: 500), jsonData(["error": "Archive failed"]))
+            }
+            XCTFail("a failed archive must not refetch the list")
+            return (response(for: request), Data())
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.archiveThread("travel")
+        waitUntil { sut.mutatingThreadId == nil }
+        XCTAssertNil(sut.mutatingThreadLabel)
+        XCTAssertEqual(sut.errorMessage, "Archive failed")
+    }
+
+    // MARK: Live history refresh
+
+    func testOnlyAWorkingFlipOfASessionOnBothPollsRefreshes() {
+        let ids: Set<String> = ["a", "b"]
+        XCTAssertFalse(ThreadViewModel.activityChangeNeedsRefresh(
+            previous: nil, currentIds: ids, currentWorking: ["a"]))
+        XCTAssertFalse(ThreadViewModel.activityChangeNeedsRefresh(
+            previous: (ids, ["a"]), currentIds: ids, currentWorking: ["a"]))
+        XCTAssertTrue(ThreadViewModel.activityChangeNeedsRefresh(
+            previous: (ids, ["a"]), currentIds: ids, currentWorking: []))
+        XCTAssertTrue(ThreadViewModel.activityChangeNeedsRefresh(
+            previous: (ids, []), currentIds: ids, currentWorking: ["b"]))
+        // "c" only scrolled onto the page: not a change.
+        XCTAssertFalse(ThreadViewModel.activityChangeNeedsRefresh(
+            previous: (ids, ["a"]), currentIds: ["a", "c"], currentWorking: ["a", "c"]))
+    }
+
+    func testQuietRefreshWaitsAPollCycleAfterTheLastOne() {
+        let now = Date()
+        XCTAssertEqual(ThreadViewModel.quietRefreshDelay(since: nil, now: now), 0.25)
+        XCTAssertEqual(ThreadViewModel.quietRefreshDelay(since: now.addingTimeInterval(-1), now: now), 2, accuracy: 0.001)
+        XCTAssertEqual(ThreadViewModel.quietRefreshDelay(since: now.addingTimeInterval(-10), now: now), 0.25)
+    }
+
+    @MainActor
+    func testWorkingFlipRefetchesThePageWithoutBlankingIt() async throws {
+        var working = ["a"]
+        var listFetches = 0
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/chat/activity") == true {
+                return (response(for: request), jsonData(["working_session_ids": working]))
+            }
+            listFetches += 1
+            return (response(for: request), jsonData([
+                "sessions": [self.sessionJSON(id: "a", updated: 9), self.sessionJSON(id: "b", updated: 1)],
+                "total": 2
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.sessions = try [sessionJSON(id: "b", updated: 5), sessionJSON(id: "a", updated: 1)].map {
+            try JSONDecoder().decode(ChatSession.self, from: jsonData($0))
+        }
+
+        await sut.refreshActivity()
+        XCTAssertEqual(sut.workingSessionIds, ["a"])
+        working = []
+        await sut.refreshActivity()
+
+        XCTAssertFalse(sut.isLoading)
+        XCTAssertEqual(sut.sessions.map(\.id), ["b", "a"], "rows stay until the refetch lands")
+        let refreshed = expectation(description: "quiet refetch landed")
+        func poll() {
+            if sut.sessions.first?.id == "a" { refreshed.fulfill(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+        }
+        poll()
+        await fulfillment(of: [refreshed], timeout: 3)
+        XCTAssertEqual(listFetches, 1)
+        XCTAssertFalse(sut.isLoading)
+        XCTAssertNil(sut.errorMessage)
     }
 
     private func sessionJSON(

@@ -29,7 +29,7 @@ use super::{
 };
 
 const STDERR_CAPTURE_LIMIT: usize = 128 * 1024;
-const PI_RPC_REQUIRED_VERSION: &str = "0.87.1";
+const PI_RPC_REQUIRED_VERSION: &str = "1.3.0";
 const PI_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The event that authoritatively closes a Pi prompt. This is deliberately a
@@ -71,6 +71,14 @@ fn parse_pi_version_output(output: &str) -> Result<Version> {
         })
         .next()
         .ok_or_else(|| anyhow!("could not parse Pi version from `{}`", output.trim()))
+}
+
+/// Magicllm's provider name as Pi spells it.
+fn pi_provider_name(provider: &str) -> &str {
+    match provider {
+        "gemini" => "google",
+        other => other,
+    }
 }
 
 fn turn_boundary_for_pi_version(version: &Version) -> Result<PiTurnBoundary> {
@@ -196,7 +204,16 @@ impl PiCodingEngineAdapter {
         // extensions, skills and context files beside Magician's bridge.
         let unrestricted = request.pi.plane_harness && request.pi.plane_unrestricted;
         if unrestricted {
-            tracing::warn!(engine = "pi", "[SUPER-GOD] harness launched with no restrictions");
+            tracing::warn!(
+                engine = "pi",
+                "[SUPER-GOD] harness launched with no restrictions"
+            );
+        }
+        // Pi 1.x ships an MCP client as a built-in extension that connects the
+        // operator's `mcp.json` servers. Magician's tools reach Pi only
+        // through its own bridge, so every governed launch turns it off.
+        if !unrestricted {
+            args.push("--no-mcp".to_string());
         }
         if request.pi.plane_harness && !unrestricted {
             args.extend(
@@ -250,21 +267,23 @@ impl PiCodingEngineAdapter {
                 args.push("--continue".to_string());
             }
         }
-        if let Some(provider) = request
-            .pi
-            .provider
-            .as_deref()
-            .filter(|provider| !provider.is_empty())
-        {
-            args.push("--provider".to_string());
-            args.push(provider.to_string());
-        }
+        // Pi 1.x refuses `--provider` without `--model`, and names Gemini
+        // `google`.
         if let Some(model) = request
             .pi
             .model
             .as_deref()
             .filter(|model| !model.is_empty())
         {
+            if let Some(provider) = request
+                .pi
+                .provider
+                .as_deref()
+                .filter(|provider| !provider.is_empty())
+            {
+                args.push("--provider".to_string());
+                args.push(pi_provider_name(provider).to_string());
+            }
             args.push("--model".to_string());
             args.push(model.to_string());
         }
@@ -850,13 +869,39 @@ impl PiSession {
         // Plane harness turns keep the coding profile: Magician's own tools
         // carry their fences there.
         let mut harness = if request.pi.plane_harness {
-            super::HarnessCommand {
-                command: super::os_sandbox_command_with(
+            // Outside a coding run the coding profile passes through, so the
+            // goal workspace fence applies here on its own.
+            let fence = if super::coding_context_active() {
+                super::super::shell_box::WorkspaceFence::Unfenced
+            } else {
+                super::super::shell_box::fence_plane_harness(
                     adapter.binary.as_os_str(),
                     &pi_args,
-                    super::engine_allowances(super::CodingEngineKind::Pi),
-                ),
-                env: Vec::new(),
+                    false,
+                    Vec::new(),
+                )
+            };
+            match fence {
+                super::super::shell_box::WorkspaceFence::Boxed(boxed) => {
+                    let mut command = Command::new(&boxed.program);
+                    command.args(&boxed.args);
+                    super::HarnessCommand {
+                        command,
+                        env: boxed.env,
+                    }
+                },
+                super::super::shell_box::WorkspaceFence::Refused(reason) => super::HarnessCommand {
+                    command: super::refused_launch(&reason),
+                    env: Vec::new(),
+                },
+                super::super::shell_box::WorkspaceFence::Unfenced => super::HarnessCommand {
+                    command: super::os_sandbox_command_with(
+                        adapter.binary.as_os_str(),
+                        &pi_args,
+                        super::engine_allowances(super::CodingEngineKind::Pi),
+                    ),
+                    env: Vec::new(),
+                },
             }
         } else {
             super::harness_command(
@@ -891,6 +936,7 @@ impl PiSession {
         // so the fence value is authoritative.
         command.env("GIT_CEILING_DIRECTORIES", &request.scope_root);
         harness.apply_env();
+        super::original_edits::apply_env(request, &mut harness.command);
 
         let mut child = harness.command.spawn().with_context(|| {
             format!(
@@ -959,7 +1005,7 @@ impl PiSession {
     }
 
     /// Drain events until Pi's negotiated session-level boundary. For the
-    /// reviewed 0.87.1 contract this is `agent_settled`; `agent_end` is always
+    /// reviewed 1.3.0 contract this is `agent_settled`; `agent_end` is always
     /// intermediate even when `willRetry` is false because a queued
     /// continuation or post-run compaction can still follow it. Returns
     /// every observed event.
@@ -1518,7 +1564,7 @@ mod tests {
     fn command_args_default_to_rpc_no_session() {
         let adapter = PiCodingEngineAdapter::default();
         let args = adapter.command_args(&request());
-        assert_eq!(args, vec!["--mode", "rpc", "--no-session"]);
+        assert_eq!(args, vec!["--mode", "rpc", "--no-mcp", "--no-session"]);
     }
 
     #[test]
@@ -1530,6 +1576,7 @@ mod tests {
         req.pi.extension_paths = vec![PathBuf::from("/private/bridge.js")];
         let args = PiCodingEngineAdapter::default().command_args(&req);
         for flag in [
+            "--no-mcp",
             "--no-builtin-tools",
             "--no-extensions",
             "--no-skills",
@@ -1563,6 +1610,7 @@ mod tests {
             vec![
                 "--mode",
                 "rpc",
+                "--no-mcp",
                 "--session-dir",
                 "/tmp/pi-sessions",
                 "--name",
@@ -1589,6 +1637,7 @@ mod tests {
             vec![
                 "--mode",
                 "rpc",
+                "--no-mcp",
                 "--session-dir",
                 "/tmp/pi-sessions",
                 "--name",
@@ -1605,7 +1654,7 @@ mod tests {
         req.pi.resume_recent = true;
         let args = adapter.command_args(&req);
         // No session-dir → nothing to continue; stays the default no-session shape.
-        assert_eq!(args, vec!["--mode", "rpc", "--no-session"]);
+        assert_eq!(args, vec!["--mode", "rpc", "--no-mcp", "--no-session"]);
     }
 
     #[test]
@@ -1620,6 +1669,7 @@ mod tests {
             vec![
                 "--mode",
                 "rpc",
+                "--no-mcp",
                 "--no-session",
                 "--extension",
                 "/tmp/citizen.js",
@@ -1627,6 +1677,29 @@ mod tests {
                 "/tmp/persona.md",
             ]
         );
+    }
+
+    #[test]
+    fn provider_needs_a_model_and_uses_pi_names() {
+        let adapter = PiCodingEngineAdapter::default();
+        let mut req = request();
+        req.pi.provider = Some("gemini".to_string());
+        let args = adapter.command_args(&req);
+        assert!(!args.iter().any(|arg| arg == "--provider"), "{args:?}");
+        req.pi.model = Some("gemini-3.1-pro-preview".to_string());
+        let args = adapter.command_args(&req);
+        assert!(args
+            .windows(4)
+            .any(|w| w == ["--provider", "google", "--model", "gemini-3.1-pro-preview"]));
+    }
+
+    #[test]
+    fn unrestricted_plane_keeps_pis_own_mcp() {
+        let mut req = request();
+        req.pi.plane_harness = true;
+        req.pi.plane_unrestricted = true;
+        let args = PiCodingEngineAdapter::default().command_args(&req);
+        assert!(!args.iter().any(|arg| arg == "--no-mcp"), "{args:?}");
     }
 
     #[test]
@@ -1667,15 +1740,14 @@ mod tests {
     #[test]
     fn accepts_only_the_reviewed_pi_rpc_version() {
         assert_eq!(
-            turn_boundary_for_pi_version(&Version::new(0, 87, 1)).unwrap(),
+            turn_boundary_for_pi_version(&Version::new(1, 3, 0)).unwrap(),
             PiTurnBoundary::AgentSettled
         );
         for unsupported in [
-            Version::new(0, 79, 2),
-            Version::new(0, 83, 0),
-            Version::new(0, 87, 0),
-            Version::new(0, 87, 2),
-            Version::parse("0.87.1-beta.1").unwrap(),
+            Version::new(0, 87, 1),
+            Version::new(1, 2, 0),
+            Version::new(1, 3, 1),
+            Version::parse("1.3.0-beta.1").unwrap(),
         ] {
             let error = turn_boundary_for_pi_version(&unsupported).unwrap_err();
             assert!(error.to_string().contains(PI_RPC_REQUIRED_VERSION));
@@ -1847,13 +1919,13 @@ mod tests {
         assert!(error.to_string().contains("before agent_settled"));
     }
 
-    /// A real Pi 0.87.1 RPC session (image prompt → bash tool call → answer),
-    /// recorded against `gpt-5.6-terra` by driving `pi --mode rpc` the way
+    /// A real Pi 1.3.0 RPC session (image prompt → bash tool call → answer),
+    /// recorded against `gpt-5.6-luna` by driving `pi --mode rpc` the way
     /// this adapter does. Pins the wire shapes the upgrade depends on.
-    const PI_RPC_SESSION_0_87_1: &str = include_str!("fixtures/pi_rpc_session_0.87.1.jsonl");
+    const PI_RPC_SESSION_1_3_0: &str = include_str!("fixtures/pi_rpc_session_1.3.0.jsonl");
 
     fn recorded_session() -> Vec<Value> {
-        PI_RPC_SESSION_0_87_1
+        PI_RPC_SESSION_1_3_0
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).expect("fixture line is JSON"))
@@ -1861,7 +1933,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_recorded_pi_0_87_1_turn_settles_once_and_carries_its_deltas_and_usage() {
+    async fn a_recorded_pi_1_3_0_turn_settles_once_and_carries_its_deltas_and_usage() {
         let session = recorded_session();
         let turn: Vec<Value> = session
             .iter()
@@ -1884,7 +1956,13 @@ mod tests {
             .iter()
             .filter_map(|event| event.text_delta.as_deref())
             .collect();
-        assert_eq!(text.trim(), "DONE");
+        assert_eq!(text.trim(), "pi-rpc-ok");
+        // 1.1 added `aborted` to `agent_settled`; a finished run says false.
+        let settled = session
+            .iter()
+            .find(|raw| raw.get("type").and_then(Value::as_str) == Some("agent_settled"))
+            .expect("fixture settles");
+        assert_eq!(settled.get("aborted"), Some(&Value::Bool(false)));
         // 0.84 dropped `assistantMessageEvent.partial`; the cumulative usage now
         // rides the top-level `usage` of every message_update.
         let streamed_usage = session
@@ -1916,7 +1994,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_pi_0_87_1_query_responses_are_successful() {
+    fn recorded_pi_1_3_0_query_responses_are_successful() {
         let session = recorded_session();
         for command in ["get_session_stats", "get_state", "get_last_assistant_text"] {
             let response = session
@@ -1925,6 +2003,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("fixture has a {command} response"));
             ensure_success_response(response, command).unwrap();
         }
+        // 0.99 added a disposition to prompt responses; it stays additive.
+        let prompt = session
+            .iter()
+            .find(|event| event.get("command").and_then(Value::as_str) == Some("prompt"))
+            .expect("fixture has a prompt response");
+        ensure_success_response(prompt, "prompt").unwrap();
+        assert_eq!(prompt.pointer("/data/disposition"), Some(&json!("started")));
     }
 
     /// F1 live conformance harness (opt-in). Confirms the source-extracted Pi

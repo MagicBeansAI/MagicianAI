@@ -331,15 +331,51 @@ def audit(repo_root: Path) -> dict[str, Any]:
 
     configured_operations = operation_mapping_keys(repo_root / "magician-config.yaml")
     assigned_operations = set(assigned)
+    code_keys = production_operation_keys(repo_root)
+    unconfigured = families.get("unconfigured_operations", {})
+    if not isinstance(unconfigured, dict):
+        errors.append("unconfigured_operations must be an object")
+        unconfigured = {}
+    optional_operations: set[str] = set()
+    synthetic_operations: set[str] = set()
+    for operation, declaration in unconfigured.items():
+        if not isinstance(declaration, dict):
+            errors.append(f"{operation}: unconfigured operation must have a declaration")
+            continue
+        kind = declaration.get("kind")
+        if kind == "explicit_binding_only":
+            optional_operations.add(operation)
+            if operation not in assigned_operations:
+                errors.append(f"{operation}: optional model operation needs a validator family")
+        elif kind == "synthetic":
+            synthetic_operations.add(operation)
+            if operation in assigned_operations:
+                errors.append(f"{operation}: synthetic operation cannot enter a model family")
+        else:
+            errors.append(f"{operation}: unknown unconfigured operation kind {kind!r}")
+        if operation in configured_operations:
+            errors.append(f"{operation}: unconfigured operation now has a default mapping")
+        if not str(declaration.get("reason", "")).strip():
+            errors.append(f"{operation}: unconfigured operation needs a reason")
+        source_path = str(declaration.get("source_path", ""))
+        sites = {path for path, _ in code_keys.get(operation, [])}
+        if sites != {source_path}:
+            errors.append(f"{operation}: unconfigured operation source sites changed: {sorted(sites)}")
+        source = repo_root / source_path
+        marker = str(declaration.get("source_marker", ""))
+        if kind == "explicit_binding_only" and "explicit_binding_for_operation(" not in marker:
+            errors.append(f"{operation}: optional operation needs an explicit-binding guard marker")
+        if not source.is_file() or not marker or marker not in source.read_text(encoding="utf-8"):
+            errors.append(f"{operation}: unconfigured operation source marker is missing")
+
     if missing := sorted(configured_operations - assigned_operations):
         errors.append(f"operation-family contract is missing configured operations: {missing}")
-    if extra := sorted(assigned_operations - configured_operations):
+    if extra := sorted(assigned_operations - configured_operations - optional_operations):
         errors.append(f"operation-family contract has unknown operations: {extra}")
 
     # Production-code closure: an operation key that exists only in Rust never
     # enters the checks above and silently rides the router default profile.
-    code_keys = production_operation_keys(repo_root)
-    if unmapped := sorted(set(code_keys) - assigned_operations):
+    if unmapped := sorted(set(code_keys) - assigned_operations - synthetic_operations):
         for key in unmapped:
             sites = ", ".join(f"{path}:{line}" for path, line in code_keys[key][:3])
             errors.append(

@@ -125,6 +125,9 @@ window cycle.
   closed drawer unless a new item arrives, and resolving the last question
   closes the drawer but keeps the tray ear. Review destinations open the full
   browser workspace through the app router while the notch inbox stays put.
+  Switching what the panel shows compares against the URL the tray last sent
+  it, never the web view's own URL: that is nil until a load commits, and asking
+  for it after a failed load (dev server down) panicked the tray.
   Voice summon hides the inbox and returning restores it. A debug build loads the panel from its devUrl, which
   Tauri treats as local, so `capabilities/attention-panel-local.json` grants
   the Attention windows close and `open_application_path`; a remote UI gets

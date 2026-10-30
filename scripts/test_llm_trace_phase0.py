@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,12 +30,90 @@ baseline_module = load_script(
 
 
 class CoverageContractTests(unittest.TestCase):
+    def audit_with_family_change(self, change):
+        original_load = audit_module.load_json
+
+        def load(path):
+            value = original_load(path)
+            if path.name == "operation-families-v1.json":
+                change(value)
+            return value
+
+        with patch.object(audit_module, "load_json", side_effect=load):
+            return audit_module.audit(REPO_ROOT)
+
     def test_repository_contract_is_complete(self) -> None:
         result = audit_module.audit(REPO_ROOT)
         self.assertEqual(result["errors"], [], json.dumps(result, indent=2))
         self.assertEqual(result["status"], "passed")
         self.assertGreaterEqual(result["entry_count"], 15)
         self.assertGreaterEqual(result["operation_count"], 60)
+
+    def test_unconfigured_operation_declarations_fail_closed(self) -> None:
+        rerank = "memory_episode_rerank"
+        synthetic = "agentic_decision_predecided"
+        cases = [
+            (
+                lambda value: value["unconfigured_operations"][rerank].update(
+                    source_marker="router.explicit_binding_for_operation(REMOVED)?"
+                ),
+                "source marker is missing",
+            ),
+            (
+                lambda value: value["unconfigured_operations"][rerank].update(
+                    source_marker='pub const OPERATION: &str = "memory_episode_rerank";'
+                ),
+                "explicit-binding guard marker",
+            ),
+            (
+                lambda value: value["unconfigured_operations"][rerank].update(
+                    source_path="magician/src/magician_v2/query_analysis/operation_llm_router.rs"
+                ),
+                "source sites changed",
+            ),
+            (
+                lambda value: value["families"][0]["operations"].append(synthetic),
+                "synthetic operation cannot enter a model family",
+            ),
+            (
+                lambda value: next(
+                    family for family in value["families"] if rerank in family["operations"]
+                )["operations"].remove(rerank),
+                "optional model operation needs a validator family",
+            ),
+        ]
+        # These cases mutate only contract metadata; scan the unchanged Rust once.
+        keys = audit_module.production_operation_keys(REPO_ROOT)
+        with patch.object(audit_module, "production_operation_keys", return_value=keys):
+            for change, expected in cases:
+                with self.subTest(expected=expected):
+                    result = self.audit_with_family_change(change)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertTrue(any(expected in error for error in result["errors"]), result)
+
+    def test_unconfigured_operations_cannot_silently_acquire_default_routes(self) -> None:
+        configured = audit_module.operation_mapping_keys(REPO_ROOT / "magician-config.yaml")
+        with patch.object(
+            audit_module, "operation_mapping_keys",
+            return_value=configured | {"memory_episode_rerank", "agentic_decision_predecided"},
+        ):
+            result = audit_module.audit(REPO_ROOT)
+        self.assertEqual(result["status"], "failed")
+        for operation in ("memory_episode_rerank", "agentic_decision_predecided"):
+            self.assertIn(
+                f"{operation}: unconfigured operation now has a default mapping", result["errors"]
+            )
+
+    def test_unclassified_code_operations_still_fail_the_audit(self) -> None:
+        keys = audit_module.production_operation_keys(REPO_ROOT)
+        keys["new_unclassified_operation"] = [("magician/src/lib.rs", 1)]
+        with patch.object(audit_module, "production_operation_keys", return_value=keys):
+            result = audit_module.audit(REPO_ROOT)
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(any(
+            "new_unclassified_operation" in error and "absent" in error
+            for error in result["errors"]
+        ), result)
 
     def test_phase1_coverage_ledger_does_not_retain_pre_adapter_gap_claims(self) -> None:
         ledger = json.loads(

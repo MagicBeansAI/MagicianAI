@@ -1,4 +1,5 @@
 #include "voice.h"
+#include "conv.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -192,16 +193,38 @@ static void run_turn(void)
     /* Multipart assembled by hand so the exact byte count is known up front:
        the staged file is what makes a real Content-Length possible, and a
        chunked body would give the server no length at all. */
-    char pre[640];
+    /* The thread and chat chosen on the Conversations page, if any. A pick is
+       marked so the server honours it even when it is #general; with no pick
+       the server files the turn in this device's own thread. */
+    bool picked = false;
+    const char *thread = conv_turn_thread(&picked);
+    const char *session = conv_turn_session();
+    /* Fixed text is 164 bytes; a 36-character session id brings it to 200. */
+    char extra[320] = "";
+    if (picked)
+        snprintf(extra, sizeof extra,
+            "--" BOUNDARY "\r\n"
+            "Content-Disposition: form-data; name=\"thread_choice\"\r\n\r\npicked\r\n"
+            "%s%s%s",
+            session[0] ? "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"chat_session_id\"\r\n\r\n" : "",
+            session,
+            session[0] ? "\r\n" : "");
+    char pre[900];
     const int pre_len = snprintf(pre, sizeof pre,
         "--" BOUNDARY "\r\n"
         "Content-Disposition: form-data; name=\"source_surface\"\r\n\r\nesp_terminal\r\n"
         "--" BOUNDARY "\r\n"
         "Content-Disposition: form-data; name=\"thread_id\"\r\n\r\n%s\r\n"
+        "%s"
         "--" BOUNDARY "\r\n"
         "Content-Disposition: form-data; name=\"file\"; filename=\"utterance.wav\"\r\n"
         "Content-Type: audio/wav\r\n\r\n",
-        net_thread());
+        thread, extra);
+    if (pre_len < 0 || pre_len >= (int)sizeof pre) {
+        /* A cut-off part header would swallow the audio into another field. */
+        fail("request header too long");
+        return;
+    }
     const char *post = "\r\n--" BOUNDARY "--\r\n";
     const int post_len = (int)strlen(post);
 
@@ -223,6 +246,7 @@ static void run_turn(void)
         char bearer[112];
         snprintf(bearer, sizeof bearer, "Bearer %s", net_device_token());
         esp_http_client_set_header(cl, "X-Magician-Device-Id", net_device_id());
+        esp_http_client_set_header(cl, "X-Magician-App-Version", net_app_version());
         esp_http_client_set_header(cl, "Authorization", bearer);
     }
 
@@ -378,7 +402,7 @@ static void speak(const char *text)
     static char esc[1400];
     json_escape(text, esc, sizeof esc);
     const int body_len = snprintf(body, sizeof body,
-                                  "{\"text\":\"%s\",\"format\":\"wav\"}", esc);
+                                  "{\"text\":\"%s\",\"format\":\"wav\",\"wav_encoding\":\"pcm16\"}", esc);
 
     char url[192];
     snprintf(url, sizeof url, "%s" API_PREFIX "/media/tts/synthesize", net_base_url());
@@ -399,6 +423,7 @@ static void speak(const char *text)
         char bearer[112];
         snprintf(bearer, sizeof bearer, "Bearer %s", net_device_token());
         esp_http_client_set_header(cl, "X-Magician-Device-Id", net_device_id());
+        esp_http_client_set_header(cl, "X-Magician-App-Version", net_app_version());
         esp_http_client_set_header(cl, "Authorization", bearer);
     }
 
@@ -560,10 +585,38 @@ static void speak(const char *text)
              total, total * 1000 / (rate * 2), (unsigned)strlen(text));
 }
 
+/* One network action other than a turn (the Conversations page's list and
+   new-thread requests), run on this worker so it never overlaps a turn: two
+   TLS sessions do not fit in this device's heap. */
+static void (*volatile s_job)(void);
+
+bool voice_run_job(void (*job)(void))
+{
+    if (s_kick == NULL || job == NULL || s_job != NULL) return false;
+    if (s_state == TURN_SENDING || s_state == TURN_THINKING || s_state == TURN_SPEAKING) return false;
+    s_job = job;
+    xSemaphoreGive(s_kick);
+    return true;
+}
+
 static void turn_worker(void *arg)
 {
     for (;;) {
         xSemaphoreTake(s_kick, portMAX_DELAY);
+        void (*job)(void) = s_job;
+        if (job) {
+            net_set_busy(true);
+            job();
+            s_job = NULL;
+            net_set_busy(false);
+            /* A turn submitted while the job ran shares this wake-up; take
+               the kick it gave too, or the loop would upload it twice. */
+            if (s_state != TURN_SENDING) continue;
+            xSemaphoreTake(s_kick, 0);
+        } else if (s_state != TURN_SENDING) {
+            /* A kick with no job and no pending turn is stale. */
+            continue;
+        }
         net_set_busy(true);
         ESP_LOGI(TAG, "turn start; free heap %u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
@@ -578,7 +631,7 @@ static void turn_worker(void *arg)
 void voice_init(void)
 {
     s_kick = xSemaphoreCreateBinary();
-    if (s_kick == NULL || xTaskCreate(turn_worker, "turn", 6144, NULL, 4, NULL) != pdPASS) {
+    if (s_kick == NULL || xTaskCreate(turn_worker, "turn", 6656, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "could not create the turn worker (free heap %u)",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         s_kick = NULL;
@@ -623,6 +676,7 @@ void voice_note_event(const char *event_type, const char *detail)
         char bearer[112];
         snprintf(bearer, sizeof bearer, "Bearer %s", net_device_token());
         esp_http_client_set_header(cl, "X-Magician-Device-Id", net_device_id());
+        esp_http_client_set_header(cl, "X-Magician-App-Version", net_app_version());
         esp_http_client_set_header(cl, "Authorization", bearer);
     }
     esp_http_client_set_post_field(cl, payload, len);

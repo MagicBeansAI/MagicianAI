@@ -270,7 +270,7 @@ impl AppAndroidAuthorityOwner {
         }
         if resolved_anchor
             .as_ref()
-            .map_or(true, |anchor| anchor.pending.is_none())
+            .is_none_or(|anchor| anchor.pending.is_none())
             && staged_path.exists()
         {
             remove_regular_file_if_present(&staged_path)?;
@@ -1030,7 +1030,7 @@ impl AppAndroidAuthorityOwner {
         if self
             .pending_bootstrap
             .as_ref()
-            .map_or(true, |pending| pending.request != *request)
+            .is_none_or(|pending| pending.request != *request)
             || status.desktop_identity_key_id != request.desktop_identity_key_id
             || status.desktop_identity_public_key_hex != request.desktop_identity_public_key_hex
             || status.desktop_identity_digest != request.desktop_identity_digest
@@ -1571,7 +1571,7 @@ impl AppAndroidAuthorityOwner {
         #[cfg(test)]
         {
             let _ = account;
-            return Ok(self.test_anchor.clone());
+            Ok(self.test_anchor.clone())
         }
         #[cfg(not(test))]
         {
@@ -1598,7 +1598,7 @@ impl AppAndroidAuthorityOwner {
         {
             let _ = account;
             self.test_anchor = Some(anchor.clone());
-            return Ok(());
+            Ok(())
         }
         #[cfg(not(test))]
         {
@@ -1729,6 +1729,10 @@ fn apply_receipt(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Recovery keeps each durable candidate and owner-scope proof explicit."
+)]
 fn recover_document(
     anchor: Option<AndroidOwnerAnchor>,
     main: Option<Vec<u8>>,

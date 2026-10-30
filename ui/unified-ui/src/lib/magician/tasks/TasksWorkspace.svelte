@@ -2060,7 +2060,15 @@
 					updateFilterInUrl(activeFilter, $taskStore.selectedTaskId, null);
 				}
 			}}
-		/>
+		>
+			{#if !threadContextId}
+				<div class="tasks-archived-toggle">
+					<button type="button" aria-pressed={showArchived} on:click={() => (showArchived = !showArchived)}>
+						{showArchived ? '← Back to tasks' : 'Archived tasks'}
+					</button>
+				</div>
+			{/if}
+		</TaskFilterToolbar>
 		{/if}
 	<!-- Relative layer around the task list: the page-level TaskCardMenu is
 	     positioned absolute in here (anchored under the card's ⋯ trigger),
@@ -2142,13 +2150,6 @@
 		surface with one pager and not the other reads as a rendering fault. And the
 		numbers come from `taskPagerProps`, so they cannot disagree.
 	-->
-	{#if !threadContextId}
-		<div class="tasks-archived-toggle">
-			<button type="button" aria-pressed={showArchived} on:click={() => (showArchived = !showArchived)}>
-				{showArchived ? '← Back to tasks' : 'Archived tasks'}
-			</button>
-		</div>
-	{/if}
 	{#if taskPageTotal > TASKS_PAGE_SIZES[0] && !showArchived}
 		<div class="tasks-pager tasks-pager--top">
 			<!--
@@ -2429,8 +2430,12 @@
 		/* Drop top padding so the sticky toolbar sits flush at the scroll viewport
 		   top — otherwise the 1.35rem padding-top from .presto-gaui-page becomes
 		   a transparent gap above the toolbar where scrolled content bleeds through. */
-		padding-top: 0;
-		padding-bottom: var(--attention-bar-offset, 0px);
+		padding: 0 1.45rem var(--attention-bar-offset, 0px);
+	}
+
+	:global(.tasks-page-layout--v5 .tasks-toolbar-v5) {
+		padding-left: 0;
+		padding-right: 0;
 	}
 
 	.tasks-list-column {
@@ -2657,23 +2662,33 @@
 	 */
 
 	.tasks-archived-toggle {
-		display: flex;
-		justify-content: flex-end;
-		margin: 0 0 0.5rem;
+		display: inline-flex;
+		align-items: center;
+		margin-left: 12px;
 	}
 	.tasks-archived-toggle button {
 		font: inherit;
-		font-size: 0.8rem;
-		padding: 0.3rem 0.75rem;
+		font-size: 0.78rem;
+		font-weight: 500;
+		line-height: 1;
+		min-height: 26px;
+		padding: 0 8px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.12));
-		border-radius: 999px;
-		background: transparent;
-		color: var(--text-muted, #777);
+		border-radius: var(--radius-chip, 6px);
+		background: var(--bg-card);
+		color: var(--text-secondary, #777);
 		cursor: pointer;
+		white-space: nowrap;
+		box-sizing: border-box;
+		transition: all 0.15s ease;
 	}
 	.tasks-archived-toggle button[aria-pressed='true'],
 	.tasks-archived-toggle button:hover {
 		color: var(--text-primary, #1a1a1a);
 		border-color: var(--accent-primary, #c2502a);
+		background: var(--accent-primary-soft);
 	}
 </style>

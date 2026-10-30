@@ -67,7 +67,10 @@ export interface ResurfacingQueue {
 	candidate_pool: number;
 	pending: number;
 	eligible: number;
+	/** Candidate-state rows on an ordinary cooldown (e.g. model deferrals). */
 	cooling: number;
+	/** Candidate-state rows held by a curator routing hold (they belong elsewhere). */
+	routing_held: number;
 	surfaced: number;
 	acted: number;
 	dismissed: number;
@@ -231,6 +234,7 @@ function emptyQueue(): ResurfacingQueue {
 		pending: 0,
 		eligible: 0,
 		cooling: 0,
+		routing_held: 0,
 		surfaced: 0,
 		acted: 0,
 		dismissed: 0,
@@ -332,6 +336,7 @@ export function mapObservabilityPayload(json: unknown): ResurfacingObservability
 		pending: asNum(queueRaw.pending ?? funnel.pending),
 		eligible: asNum(queueRaw.eligible ?? queueRaw.pending ?? funnel.eligible),
 		cooling: asNum(queueRaw.cooling ?? funnel.cooling),
+		routing_held: asNum(queueRaw.routing_held),
 		surfaced: asNum(queueRaw.surfaced ?? funnel.surfaced),
 		acted: asNum(queueRaw.acted ?? funnel.by_state.acted),
 		dismissed: asNum(queueRaw.dismissed ?? funnel.by_state.dismissed),

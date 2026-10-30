@@ -76,6 +76,10 @@ impl AppMacosHostState {
     }
 
     #[allow(dead_code)] // Wired by the runtime/desktop pairing slice.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Verifier installation keeps the independently validated key, permit and binary proofs explicit."
+    )]
     pub(crate) fn install_verifier(
         &mut self,
         key_id: String,
@@ -607,10 +611,10 @@ impl AppMacosElementBinding {
 }
 
 /// One row of a fresh CuaDriver 0.28 `elements[]` array, by index.
-fn app_macos_fresh_element<'a>(
-    elements: &'a [Value],
+fn app_macos_fresh_element(
+    elements: &[Value],
     element_index: u32,
-) -> Option<&'a serde_json::Map<String, Value>> {
+) -> Option<&serde_json::Map<String, Value>> {
     let mut matches = elements
         .iter()
         .filter_map(Value::as_object)
@@ -623,10 +627,10 @@ fn app_macos_fresh_element<'a>(
 
 /// A fresh element an action may target: not menu chrome. Menu rows have no
 /// element fence, so a menu item's index is never proven stable.
-fn app_macos_fresh_target<'a>(
-    elements: &'a [Value],
+fn app_macos_fresh_target(
+    elements: &[Value],
     element_index: u32,
-) -> Option<&'a serde_json::Map<String, Value>> {
+) -> Option<&serde_json::Map<String, Value>> {
     app_macos_fresh_element(elements, element_index).filter(|element| {
         !element
             .get("role")

@@ -2,6 +2,7 @@ import { debuggerSessions } from './background_state.js';
 import { handleLivePreviewDebuggerDetach } from './live_preview_background.js';
 import { sendCdpEventToBridge } from './bridge.js';
 import { sendDebuggerCommand } from './debugger_actions.js';
+import { forgetSetup } from './debugger_setup.js';
 
 // High-frequency CDP notifications that agent-browser's request/response model
 // never consumes (it re-queries the DOM/CSS on demand via getDocument/snapshot).
@@ -98,10 +99,13 @@ function forgetTab(tabId) {
  * Returns null for binary content, oversized bodies, or any CDP error —
  * magicutor's fallback path then applies and records its own reason.
  */
-async function captureResponseBodyNow(tabId, requestId) {
+async function captureResponseBodyNow(tabId, requestId, sessionId = null) {
     try {
+        // An iframe's request lives in its own child session; asking the tab's
+        // main session for it fails with "No resource with given identifier".
         const result = await sendDebuggerCommand({
             tabId,
+            ...(sessionId ? { sessionId } : {}),
             method: 'Network.getResponseBody',
             params: { requestId }
         });
@@ -129,6 +133,10 @@ function setupDebuggerListeners() {
         if (source.tabId) {
             debuggerSessions.delete(source.tabId);
             forgetTab(source.tabId);
+            // A closed tab's setup has nothing to replay into. Other reasons
+            // keep it: the CDP session may still re-attach, and its own
+            // detach_debugger clears it.
+            if (reason === 'target_closed') forgetSetup(source.tabId).catch(() => {});
             handleLivePreviewDebuggerDetach(source.tabId, reason);
         }
     });
@@ -136,6 +144,15 @@ function setupDebuggerListeners() {
     chrome.debugger.onEvent.addListener(async (source, method, params) => {
         if (!source.tabId) return;
         const tabId = source.tabId;
+        // Set for events from an auto-attached child target (an OOPIF iframe),
+        // absent for the tab's own page. The proxy needs it to label the event
+        // with the right CDP session: without it a cross-site iframe's events
+        // and the page's own `Page.loadEventFired` were indistinguishable.
+        const sessionId = source.sessionId || null;
+        // Request ids are per target, so a child session's ids get their own key.
+        const requestKey = params?.requestId && sessionId
+            ? `${sessionId}:${params.requestId}`
+            : params?.requestId;
 
         // Forward every chrome.debugger event to the magicutor CDP proxy so
         // agent-browser receives the canonical CDP event stream
@@ -154,17 +171,17 @@ function setupDebuggerListeners() {
         // Remember which requests are XHR/fetch so `loadingFinished` (which
         // carries no resourceType) knows whether a body is worth fetching.
         if (method === 'Network.responseReceived') {
-            rememberRequestType(tabId, params?.requestId, params?.type);
+            rememberRequestType(tabId, requestKey, params?.type);
         } else if (method === 'Network.loadingFailed') {
             // Never completed — no body will exist; just release the entry.
-            takeRequestType(tabId, params?.requestId);
+            takeRequestType(tabId, requestKey);
         } else if (method === 'Network.loadingFinished') {
-            const resourceType = takeRequestType(tabId, params?.requestId);
+            const resourceType = takeRequestType(tabId, requestKey);
             if (resourceType && params?.requestId) {
                 // Fetch before forwarding: this is the whole point — Chrome
                 // still has the buffer right now. Only XHR/fetch reach here, so
                 // navigation-critical events are never delayed by this await.
-                const body = await captureResponseBodyNow(tabId, params.requestId);
+                const body = await captureResponseBodyNow(tabId, params.requestId, sessionId);
                 if (body !== null) {
                     // Non-standard param, read by magicutor's trace capture and
                     // ignored by CDP clients that do not know it. Deliberately
@@ -174,14 +191,14 @@ function setupDebuggerListeners() {
                     sendCdpEventToBridge(tabId, method, {
                         ...params,
                         magicutorResponseBody: body
-                    });
+                    }, sessionId);
                     return;
                 }
             }
         }
 
         // Fire-and-forget; the bridge function silently no-ops if disconnected.
-        sendCdpEventToBridge(tabId, method, params);
+        sendCdpEventToBridge(tabId, method, params, sessionId);
     });
 }
 

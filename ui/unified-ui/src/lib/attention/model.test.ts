@@ -6,6 +6,7 @@ import {
 	attentionBusRow,
 	attentionFeedRow,
 	attentionCategoryCountsFromTotals,
+	attentionRequestCategory,
 	attentionFeedLanesForCategory,
 	attentionRowAliases,
 	attentionRowCategory,
@@ -206,13 +207,34 @@ describe('Attention row model', () => {
 		expect(
 			attentionRowOperationalCategory(row({ source: 'clarification', failed: true }))
 		).toBe('failed');
-		expect(attentionFeedLanesForCategory('failed')).toEqual(['requests', 'failed']);
+		expect(attentionRowOperationalCategory(row({ source: 'service_health' }))).toBe('failed');
+		expect(attentionFeedLanesForCategory('failed')).toEqual(['failed']);
 		expect(attentionFeedLanesForCategory('all')).toEqual([
 			'requests',
 			'approvals',
 			'escalations',
 			'failed'
 		]);
+	});
+
+	it('lanes a live ask by what it asks for, as the server does', () => {
+		const schema = (value: Record<string, unknown>) => value as HitlRequest['schema'];
+		expect(attentionRequestCategory(request())).toBe('requests');
+		expect(attentionRequestCategory(request({ source: 'service_health' }))).toBe('failed');
+		expect(attentionRequestCategory(request({ schema: schema({ pause_kind: 'budget' }) }))).toBe('escalations');
+		expect(attentionRequestCategory(request({ schema: schema({ pause_kind: 'max_iterations' }) }))).toBe('escalations');
+		expect(attentionRequestCategory(request({ input_type: 'confirmation', schema: schema({ action_type: 'send_email' }) })))
+			.toBe('approvals');
+		expect(attentionRequestCategory(request({ input_type: 'confirmation' }))).toBe('requests');
+	});
+
+	it('takes the lane of the server row that carries the same ask', () => {
+		const [merged] = mergeAttentionRows(
+			[row({ category: 'requests' })],
+			[attentionFeedRow(feedItem(), 'approvals')]
+		);
+		expect(merged.origin).toBe('bus');
+		expect(merged.category).toBe('approvals');
 	});
 
 	it('builds category counters from server totals instead of loaded rows', () => {

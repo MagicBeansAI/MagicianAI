@@ -87,8 +87,8 @@ const MAX_WEB_RESEARCH_SOURCES: usize = 8;
 const MAX_WEB_RESEARCH_SOURCE_CHARS: usize = 40_000;
 /// Default eval-only cost rail. Callers may select another configured named
 /// profile for comparisons. Production evidence grading keeps its route.
-const DEFAULT_WEB_RESEARCH_EVAL_LLM_PROFILE: &str = "gpt6luna-responses-toolsany";
-const MAX_EVAL_LLM_PROFILE_CHARS: usize = 128;
+const DEFAULT_WEB_RESEARCH_EVAL_LLM_PROFILE: &str = "operation/query_analysis";
+const MAX_EVAL_LLM_PROFILE_CHARS: usize = 512;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
 
@@ -455,7 +455,7 @@ fn valid_eval_llm_profile(profile: &str) -> bool {
     !profile.is_empty()
         && profile.chars().count() <= MAX_EVAL_LLM_PROFILE_CHARS
         && profile.chars().enumerate().all(|(index, ch)| {
-            ch.is_ascii_alphanumeric() || (index > 0 && matches!(ch, '.' | '_' | ':' | '-'))
+            ch.is_ascii_alphanumeric() || (index > 0 && matches!(ch, '.' | '_' | ':' | '-' | '/'))
         })
 }
 
@@ -1329,8 +1329,9 @@ mod tests {
         assert!(valid_eval_llm_profile("candidate.profile:v2_tools-any"));
         assert!(!valid_eval_llm_profile(""));
         assert!(!valid_eval_llm_profile(" profile"));
-        assert!(!valid_eval_llm_profile("profile/name"));
-        assert!(!valid_eval_llm_profile(&"x".repeat(129)));
+        assert!(valid_eval_llm_profile("model/openai/gpt-6-luna/medium"));
+        assert!(!valid_eval_llm_profile("/profile/name"));
+        assert!(!valid_eval_llm_profile(&"x".repeat(513)));
     }
 
     fn store_run(api: &EvalsApi, principal: &str, lane: &str, run_id: &str, started: i64) {

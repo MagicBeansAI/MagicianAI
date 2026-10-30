@@ -113,9 +113,9 @@ glibc 2.36 ELF; the SDK container is an explicit fallback.
 
 ## Repairing a cached base's missing tool executables
 
-`make build-container-tools-image` layers the document converter, Metabase CLI,
+`make build-container-tools-image` layers the document converter,
 OfficeCLI and Higgsfield onto an existing runtime image. It compiles only the
-standalone document adapter and generated Metabase CLI (one Cargo/Go job,
+standalone document adapter (one Cargo job,
 persistent caches) and installs pinned, checksum-verified OfficeCLI and
 Higgsfield releases; no account state or provider calls. The main Dockerfile
 includes the same steps for clean builds.
@@ -143,7 +143,7 @@ Apple host-forwarding detection (needs PyYAML).
 For already built and qualified executables,
 `make build-container-prebuilt-tools-image` packages their exact bytes. Prepare
 an isolated SSD1 context with `prebuilt-skill-tools/{agent-browser,
-document-to-markdown,metabase-pp-cli,higgsfield,officecli,SHA256SUMS}` (the
+document-to-markdown,higgsfield,officecli,SHA256SUMS}` (the
 checksum file lists all five), plus `containers/tools/prebuilt.Dockerfile`,
 `scripts/verify-container-skill-bins.py`, and the CUA skill's `SKILL.md` and
 `bin/macos-ui-controller`, preserving paths. No runtime data or credentials.

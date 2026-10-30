@@ -17,6 +17,7 @@ struct Fake {
     /// Components whose probe cannot answer.
     unknown: Vec<String>,
     confirm_answer: bool,
+    confirm_defaults: Vec<bool>,
     /// Whether this pretends to be a checkout. Default true, because that is
     /// what every existing test meant before packages could install anything.
     checkout: bool,
@@ -37,6 +38,7 @@ impl Fake {
             failing: Vec::new(),
             unknown: Vec::new(),
             confirm_answer: true,
+            confirm_defaults: Vec::new(),
             checkout: true,
             ran: Vec::new(),
             asked: Vec::new(),
@@ -93,6 +95,9 @@ impl Effects for Fake {
     fn run_make(&mut self, target: &str) -> Result<(), String> {
         self.ran.push(target.to_string());
         if self.failing.iter().any(|t| t == target) {
+            if let Some(ids) = self.installs.get(target) {
+                self.present.extend(ids.clone());
+            }
             return Err("exit 2".into());
         }
         if let Some(ids) = self.installs.get(target) {
@@ -116,7 +121,8 @@ impl Effects for Fake {
     fn open(&mut self, target: &str) {
         self.opened.push(target.to_string());
     }
-    fn confirm(&mut self, _question: &str, _default: bool) -> bool {
+    fn confirm(&mut self, _question: &str, default: bool) -> bool {
+        self.confirm_defaults.push(default);
         self.confirm_answer
     }
     fn probe(&mut self, component_id: &str) -> Observed {
@@ -178,6 +184,53 @@ fn a_component_already_present_is_not_installed_again() {
     );
 }
 
+fn macos() -> magician_components::Host {
+    magician_components::Host {
+        os: "macos".into(),
+        arch: "arm64".into(),
+        memory_gb: 36,
+    }
+}
+
+#[test]
+fn a_present_tunnel_step_reruns_only_after_its_switch_prompt() {
+    let g = graph();
+    let mut fake = Fake::new(&["cloudflare-tunnel"])
+        .target_provides("setup-cloudflare", &["cloudflare-tunnel"]);
+    let reports = Engine::on_host(
+        &g,
+        &mut fake,
+        usable(&["cloudflare-configuration"]),
+        macos(),
+    )
+    .run(&["cloudflare-tunnel".into()]);
+    assert_eq!(fake.confirm_defaults, vec![false]);
+    assert_eq!(fake.ran, vec!["setup-cloudflare".to_string()]);
+    assert_eq!(
+        outcome(&reports, "cloudflare-tunnel"),
+        StepOutcome::Installed
+    );
+}
+
+#[test]
+fn declining_the_tunnel_switch_leaves_a_present_tunnel_alone() {
+    let g = graph();
+    let mut fake = Fake::new(&["cloudflare-tunnel"]).declines_everything();
+    let reports = Engine::on_host(
+        &g,
+        &mut fake,
+        usable(&["cloudflare-configuration"]),
+        macos(),
+    )
+    .run(&["cloudflare-tunnel".into()]);
+    assert_eq!(fake.confirm_defaults, vec![false]);
+    assert!(fake.ran.is_empty(), "{:?}", fake.ran);
+    assert_eq!(
+        outcome(&reports, "cloudflare-tunnel"),
+        StepOutcome::AlreadyThere
+    );
+}
+
 #[test]
 fn the_probe_decides_success_not_the_exit_code() {
     // The target exits zero and changes nothing. An installer that trusted the
@@ -203,9 +256,8 @@ fn a_target_that_works_is_verified_by_the_probe() {
 }
 
 #[test]
-fn a_failing_target_is_still_probed_and_does_not_stop_the_run() {
-    // A target can fail having already done the part that matters, and one
-    // component failing must not cost the ones beside it.
+fn a_failing_target_does_not_stop_independent_steps() {
+    // One component failing must not cost the ones beside it.
     let g = graph();
     let mut fake = Fake::new(&[])
         .target_fails("setup-ollama-embedding")
@@ -224,6 +276,21 @@ fn a_failing_target_is_still_probed_and_does_not_stop_the_run() {
         StepOutcome::Installed,
         "the next component must still be attempted"
     );
+}
+
+#[test]
+fn an_installer_failure_cannot_be_hidden_by_a_present_probe() {
+    let g = graph();
+    let mut fake = Fake::new(&[])
+        .target_fails("setup-bundled-browser")
+        .target_provides("setup-bundled-browser", &["bundled-browser"]);
+    let reports = Engine::new(&g, &mut fake, usable(&["skill-runtime", "bot-runtime"]))
+        .run(&["bundled-browser".into()]);
+    assert!(fake.present.iter().any(|id| id == "bundled-browser"));
+    assert!(matches!(
+        outcome(&reports, "bundled-browser"),
+        StepOutcome::NotVerified { .. }
+    ));
 }
 
 #[test]

@@ -947,9 +947,7 @@ async fn reengage_orb_listen(app: &AppHandle) -> Result<bool, String> {
     let Some((audio_tx, control_tx, sequence)) = existing else {
         return Ok(false);
     };
-    if let Err(error) = send_live_ptt_control(&control_tx, LivePttControlCommand::Engage).await {
-        return Err(error);
-    }
+    send_live_ptt_control(&control_tx, LivePttControlCommand::Engage).await?;
     let capture_result = {
         let state = app.state::<crate::AppState>();
         let mut voice = state.voice_hotkeys.lock().await;
@@ -2281,7 +2279,7 @@ async fn engage_live_ptt(
                         },
                     );
                 } else {
-                    emit_voice_note_state(&ws_app, "live_ptt_error", &error, Some(sequence));
+                    emit_voice_note_state(&ws_app, "live_ptt_error", error, Some(sequence));
                     let _ = set_voice_visual(&ws_app, "failed").await;
                     let _ = show_voice_bubble(&ws_app, &format!("Live PTT failed: {error}")).await;
                 }
@@ -3774,6 +3772,10 @@ fn live_ptt_session_start_payload(
     payload
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "One voice turn owns distinct session, transport and cancellation channels."
+)]
 async fn run_live_ptt_control_loop(
     app: AppHandle,
     session_id: String,
@@ -6164,7 +6166,7 @@ mod tests {
     fn playback_prebuffers_and_recovers_without_dropping_late_samples() {
         let mut queue = PlaybackQueueState::new(1_000);
         queue.begin_segment();
-        queue.push_samples(std::iter::repeat(7).take(179));
+        queue.push_samples(std::iter::repeat_n(7, 179));
         assert_eq!(queue.pop_sample(), 0);
         assert_eq!(queue.samples.len(), 179);
 
@@ -6176,7 +6178,7 @@ mod tests {
         assert_eq!(queue.pop_sample(), 0);
         assert_eq!(queue.underrun_events, 1);
 
-        queue.push_samples(std::iter::repeat(9).take(180));
+        queue.push_samples(std::iter::repeat_n(9, 180));
         assert_eq!(queue.pop_sample(), 9);
     }
 
@@ -6196,7 +6198,7 @@ mod tests {
     fn next_segment_does_not_pause_a_buffered_previous_tail() {
         let mut queue = PlaybackQueueState::new(1_000);
         queue.begin_segment();
-        queue.push_samples(std::iter::repeat(21).take(180));
+        queue.push_samples(std::iter::repeat_n(21, 180));
         assert_eq!(queue.pop_sample(), 21);
         queue.end_segment();
 
@@ -6209,7 +6211,7 @@ mod tests {
     fn semantic_tts_chunks_remain_one_gapless_playback_span() {
         let mut queue = PlaybackQueueState::new(1_000);
         queue.begin_segment();
-        queue.push_samples(std::iter::repeat(31).take(400));
+        queue.push_samples(std::iter::repeat_n(31, 400));
         for _ in 0..300 {
             assert_eq!(queue.pop_sample(), 31);
         }
@@ -6217,7 +6219,7 @@ mod tests {
         // The next semantic segment is appended while the same logical
         // response is active: no second prebuffer and no zero sample between
         // the two voices/emotions.
-        queue.push_samples(std::iter::repeat(32).take(400));
+        queue.push_samples(std::iter::repeat_n(32, 400));
         for _ in 0..100 {
             assert_eq!(queue.pop_sample(), 31);
         }
@@ -6663,35 +6665,33 @@ mod tests {
         // Noise only: the floor settles on it and the turn ends as no speech
         // at the follow-up window, not as 45 s of speech.
         let mut empty_room = AmbientDictationSilenceGate::new(Duration::from_secs(8));
-        let (tick, boundary) = drive_gate(&mut empty_room, std::iter::repeat(noise).take(100), 0);
+        let (tick, boundary) = drive_gate(&mut empty_room, std::iter::repeat_n(noise, 100), 0);
         assert_eq!(boundary, Some(AmbientDictationBoundary::NoSpeech));
         assert_eq!(tick, 80, "no speech at exactly follow_up_seconds");
 
         // Noise, a two-second question, noise: the turn closes 1.1 s after the
         // question, not at the cap.
         let mut question = AmbientDictationSilenceGate::new(Duration::from_secs(8));
-        let levels = std::iter::repeat(noise)
-            .take(10)
-            .chain(std::iter::repeat(0.2).take(20))
-            .chain(std::iter::repeat(noise).take(30));
+        let levels = std::iter::repeat_n(noise, 10)
+            .chain(std::iter::repeat_n(0.2, 20))
+            .chain(std::iter::repeat_n(noise, 30));
         let (tick, boundary) = drive_gate(&mut question, levels, 0);
         assert_eq!(boundary, Some(AmbientDictationBoundary::SpeechComplete));
         assert_eq!(tick, 30 + 11, "closes after the trailing-silence window");
 
         // A short pause inside a sentence does not end the turn.
         let mut pause = AmbientDictationSilenceGate::new(Duration::from_secs(8));
-        let levels = std::iter::repeat(noise)
-            .take(5)
-            .chain(std::iter::repeat(0.2).take(10))
-            .chain(std::iter::repeat(noise).take(6))
-            .chain(std::iter::repeat(0.2).take(10));
+        let levels = std::iter::repeat_n(noise, 5)
+            .chain(std::iter::repeat_n(0.2, 10))
+            .chain(std::iter::repeat_n(noise, 6))
+            .chain(std::iter::repeat_n(0.2, 10));
         let (_, boundary) = drive_gate(&mut pause, levels, 0);
         assert_eq!(boundary, None);
 
         // Speech never raises the floor: a long monologue that starts the
         // instant the wake phrase ends keeps counting for its whole length.
         let mut monologue = AmbientDictationSilenceGate::new(Duration::from_secs(8));
-        let (_, boundary) = drive_gate(&mut monologue, std::iter::repeat(0.2).take(300), 0);
+        let (_, boundary) = drive_gate(&mut monologue, std::iter::repeat_n(0.2, 300), 0);
         assert_eq!(boundary, None);
         assert!(monologue.speech_threshold() < 0.2);
 
@@ -6699,9 +6699,7 @@ mod tests {
         // calibration window, yet the lull after it still finds the floor and
         // the turn closes within a few seconds instead of at the 45 s cap.
         let mut eager = AmbientDictationSilenceGate::new(Duration::from_secs(8));
-        let levels = std::iter::repeat(0.2)
-            .take(20)
-            .chain(std::iter::repeat(noise).take(200));
+        let levels = std::iter::repeat_n(0.2, 20).chain(std::iter::repeat_n(noise, 200));
         let (tick, boundary) = drive_gate(&mut eager, levels, 0);
         assert_eq!(boundary, Some(AmbientDictationBoundary::SpeechComplete));
         assert!(

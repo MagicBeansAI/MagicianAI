@@ -24,13 +24,23 @@ and include workflow time through persistence. See
   callers without a startup barrier start normally.
 - The worker resumes shared [memory lifecycle](../magician/memory-lifecycle.md)
   reviews and durable clarification answers. The preference endpoint saves to
-  canonical memory before recording its episode.
+  canonical memory before recording its episode. On the connection worker's
+  minute tick the lifecycle pass is timed and recorded as its own
+  `memory_lifecycle` run kind, before and apart from `memory_connections`;
+  both omit idle ticks so the bounded run history keeps the other kinds, and
+  a repeating failure writes one row per 15 minutes per scope unless its
+  message changes.
+- Resurfacing items for notes open by the canonical relative note link
+  (`/notes?path=…&workspace=…`), never a notes-server URL.
 - The resurfacing worker reconciles bounded
   [memory connections](../magician/memory-connections.md): it resolves current
   sources through the interaction registry and delivers advice through Worth a
   look, For you or durable HITL. Questions only request clarification;
   responses never authorize an inferred action. Late curation cannot overwrite
-  a live connection's explanation, and withdrawal survives restarts.
+  a live connection's explanation, and withdrawal survives restarts. A review
+  that ends before any decision is `deferred`: it is not charged to the hourly
+  review budget, it ends the pass, and its own hourly cap applies. Its root
+  cause is logged (debug, warn on a repeat within the hour).
 - The [memory connection live evaluator](../magician/memory-connections-evaluation.md)
   drives the production worker with an optional observation callback in
   disposable scopes; ordinary passes attach no observer.
@@ -60,6 +70,10 @@ empty success. Server-owned principal/workspace and agent visibility rules
 apply. `make test-memory-recall` covers old-source recall, compatibility and
 scope isolation.
 
+The scoped `POST /chat/memory/duplicates/fold` endpoint lists (`apply:false`,
+default) or makes the near-duplicate folds; see
+[memory lifecycle](../magician/memory-lifecycle.md).
+
 The scoped `POST /chat/memory/sources/repair` endpoint defaults to assessment
 (`apply:false`) against the retained chat owner. `apply:true` performs
 conservative idempotent source repair through the memory owner; responses
@@ -82,6 +96,16 @@ same database with its configured limits.
   DuckDB opens through `database_file_path(..., ChannelAssistDuckdb)`;
   `/storage` inventory uses the same kit helpers. Device-local
   iMessage/WhatsApp ingest stays outside the kit.
+- The evidence, feedback and pattern bridges write once per pass (one call
+  per tier, carrying every `(account, day)` group or topic), not once per
+  group. Under `memory.user_knowledge_bounds` `mode: enforce` the shared write
+  path sends those tiers to their own lane files
+  (`memory/users/lanes/<name>.json`), where a later slice of a day is combined
+  into its row and a replayed pass changes nothing; otherwise they still land
+  in `knowledge.json`. The lane store recomputes the bridges' `summary`
+  headlines (`user_memory_lanes::{evidence_summary, feedback_summary}`); tests
+  pin that both render the same text. See
+  [memory lifecycle](../magician/memory-lifecycle.md#size-bounds-and-archive).
 - iMessage ingest (`channel_assist::ingest_imessage`) opens `chat.db` directly
   when macOS allows it. When macOS refuses (Full Disk Access is judged on
   whatever launched Magician), sync, distill fetches and verification reads go
@@ -98,6 +122,7 @@ same database with its configured limits.
 - The mail-assist DuckDB throttles `CHECKPOINT` after committed writes. If
   another write transaction is active DuckDB refuses it; the WAL already holds
   the bytes, so the store defers, reports success and logs at debug.
+- The storage snapshot drops raw LLM-call part files on days older than yesterday once the compact is verified; today and yesterday keep them ([governed reads](../magician/storage-governance.md#governed-reads-must-consume-compaction-output)).
 - Storage inventory includes the workspace's encrypted App store, using the
   App policy and maintenance descriptors from
   `magician_v2::storage_governance` (integrity, checkpoint/optimization,
@@ -154,7 +179,10 @@ The crate is split into the **product lane** and the **substrate**
   `magician_v2::resurfacing_seam`. This crate keeps the comms-coupled worker,
   curator, action service, interaction registry, corpus source adapter, and
   the three mail-fed attention workers (historical bootstrap, semantic
-  extraction backfill, rank recompute). See
+  extraction backfill, rank recompute). The curator holds router-dropped
+  candidates that belong elsewhere out of its review window (holds collected
+  before a routing error are still applied) and writes each pass's funnel
+  events in one batch. See
   [resurfacing.md](../magician/resurfacing.md).
 
 ## Ingest CLIs are resolved before spawn

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
+	import { createEventDispatcher, tick } from 'svelte';
+	import { clickOutside } from '$lib/shared/clickOutside';
 	import VoiceControl from '$lib/magician/components/chat/VoiceControl.svelte';
 	import SuperGodModeToggle from '$lib/settings/SuperGodModeToggle.svelte';
 	import MentionTextarea from '$lib/magician/chat/MentionTextarea.svelte';
@@ -10,6 +11,7 @@
 	import CodingEnginePicker from './CodingEnginePicker.svelte';
 	import ComposerTalkCodeSwitch from './ComposerTalkCodeSwitch.svelte';
 	import type { CodingProfile } from '$lib/stores/codingProfileStore';
+	import type { PresenceState } from '$lib/magician/chat/next/presence';
 
 	type VibeComposerMode = 'fresh' | 'follow_up';
 	type VibeComposerActiveRun = {
@@ -40,6 +42,8 @@
 	export let preparingSession = false;
 	export let activeRun: VibeComposerActiveRun | null = null;
 	export let activeProjectName: string | null = null;
+	export let canDeleteRun = false;
+	export let presenceState: PresenceState = 'idle';
 	/** Studio intent for the NEXT submit. When set, the composer shows a
 	 *  Build/Discuss/Autopilot segment next to send and labels the send button by
 	 *  mode — so "what happens when I hit enter" is obvious. Null hides it (legacy). */
@@ -61,6 +65,7 @@
 		attachFiles: { files: File[] };
 		removeAttachment: { attachmentId: string };
 		newRun: void;
+		deleteRun: void;
 		openRail: void;
 		input: void;
 		costBudgetChange: { budget: number | null };
@@ -73,6 +78,24 @@
 	let fileInputEl: HTMLInputElement;
 	let imageInputEl: HTMLInputElement;
 	let dragActive = false;
+	let runMenuOpen = false;
+	let runMenuTrigger: HTMLButtonElement;
+	let runMenu: HTMLDivElement;
+	$: if (!canDeleteRun) runMenuOpen = false;
+
+	async function toggleRunMenu(): Promise<void> {
+		runMenuOpen = !runMenuOpen;
+		if (runMenuOpen) {
+			await tick();
+			runMenu?.querySelector<HTMLButtonElement>('button')?.focus();
+		}
+	}
+	function handleMenuKeydown(event: KeyboardEvent): void {
+		if (!runMenuOpen || event.key !== 'Escape') return;
+		event.preventDefault();
+		runMenuOpen = false;
+		runMenuTrigger?.focus();
+	}
 
 	// `@`-mention picker state, bound from <MentionTextarea> (which owns the state
 	// machine). The composer renders its own picker dock from these.
@@ -170,6 +193,7 @@
 	}
 </script>
 
+<svelte:window on:keydown={handleMenuKeydown} />
 
 <section
 	class="vibe-composer"
@@ -211,10 +235,6 @@
 				aria-label="Open runs and projects drawer"
 			>
 				<span class="vibe-context-pill__project">
-					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-						<line x1="9" y1="3" x2="9" y2="21"/>
-					</svg>
 					<span>{activeProjectName || 'Projects'}</span>
 				</span>
 				<span class="vibe-context-pill__sep">/</span>
@@ -229,15 +249,27 @@
 				</svg>
 			</button>
 
-			<button
-				type="button"
-				class="vibe-context-pill__new"
-				aria-label="New run"
-				on:click={() => dispatch('newRun')}
-				title="Start a fresh coding run"
-			>
-				New run
-			</button>
+			<div class="vibe-composer__dock-actions" role="group" aria-label="Run actions">
+				<button type="button" class="dock-btn" aria-label="New run" title="Start a fresh coding run" on:click={() => dispatch('newRun')}>
+					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+				</button>
+				<button type="button" class="dock-btn" aria-label="Open left panel" title="Runs and projects" on:click={() => dispatch('openRail')}>
+					<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></svg>
+				</button>
+				{#if canDeleteRun}
+					<div class="run-menu-wrap" use:clickOutside={{ enabled: runMenuOpen, handler: () => runMenuOpen = false }}>
+						<button type="button" class="dock-btn" aria-label="Run options" title="Run options" aria-haspopup="menu" aria-expanded={runMenuOpen} bind:this={runMenuTrigger} on:click={toggleRunMenu}>
+							<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></svg>
+						</button>
+						{#if runMenuOpen}
+							<div class="run-menu" role="menu" aria-label="Run options" bind:this={runMenu}>
+								<button type="button" role="menuitem" on:click={() => { runMenuOpen = false; dispatch('deleteRun'); }}>Delete run</button>
+							</div>
+						{/if}
+					</div>
+				{/if}
+				<SuperGodModeToggle orb labelled presenceState={busy && presenceState === 'idle' ? 'thinking' : presenceState} />
+			</div>
 		</div>
 
 		{#if studioMode === 'discuss'}
@@ -465,10 +497,6 @@
 
 			<span class="spacer vibe-composer__spacer"></span>
 
-			<!-- Super god mode (debug): start/stop from the composer, like the
-			     chat composer's god-mode orb. Global; Settings shows it too. -->
-			<SuperGodModeToggle />
-
 			<CodingEnginePicker
 				compact={true}
 				{profiles}
@@ -638,25 +666,15 @@
 		transform: translateY(1px);
 	}
 
-	.vibe-context-pill__new {
-		font-family: var(--font-mono);
-		font-size: 9.5px;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		padding: 2px 7px;
-		border-radius: 4px;
-		background: transparent;
-		color: var(--text-muted, #888);
-		border: 0;
-		cursor: pointer;
-		transition: background 120ms ease, color 120ms ease;
-		flex-shrink: 0;
-	}
-
-	.vibe-context-pill__new:hover {
-		background: var(--bg-soft, rgba(0, 0, 0, 0.05));
-		color: var(--text-primary, #1a1a1a);
-	}
+	/* Keep title-bar actions on one line; the run menu opens above them. */
+	.vibe-composer__dock-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: auto; }
+	.dock-btn { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted, #888); cursor: pointer; }
+	.dock-btn:hover { background: var(--bg-soft, #8881); color: var(--text-primary); }
+	.dock-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+	.run-menu-wrap { position: relative; display: flex; }
+	.run-menu { position: absolute; bottom: calc(100% + 6px); right: 0; min-width: 160px; padding: 4px; border: 1px solid var(--border-soft, #8884); border-radius: 10px; background: var(--bg-elevated, #fff); box-shadow: var(--shadow-lg); z-index: 100; }
+	.run-menu button { display: block; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--color-error, #c0392b); font-family: var(--font-primary); font-size: 12.5px; text-align: left; cursor: pointer; }
+	.run-menu button:hover, .run-menu button:focus-visible { background: var(--bg-soft, #8881); }
 
 	.discuss-banner,
 	.autopilot-banner {

@@ -1,4 +1,5 @@
 import { parseNumericDuckDbValue } from '$lib/magician/components/generative/chartUtil';
+import { rollingWindowPredicate } from '$lib/llm/queryWindow';
 
 export interface LlmUsageOverviewData {
 	spendUsd: number | null;
@@ -19,9 +20,13 @@ export function buildLlmUsageOverviewSql(where: string): string {
 	);
 }
 
-export function llmUsageWindowWhere(days: number): string {
+/**
+ * Rolling `days` window ending at `nowMs`, as a literal epoch-ms bound (the
+ * server prunes only from a literal; see `$lib/llm/queryWindow`).
+ */
+export function llmUsageWindowWhere(days: number, nowMs: number = Date.now()): string {
 	const safeDays = Number.isFinite(days) ? Math.max(1, Math.floor(days)) : 7;
-	return `timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL ${safeDays} DAYS)`;
+	return rollingWindowPredicate(safeDays, nowMs);
 }
 
 export function parseLlmUsageOverview(

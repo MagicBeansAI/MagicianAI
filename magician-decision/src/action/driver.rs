@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use decision_engine_contract::action::{
-    ActionOrigin, ActionPhase, ActionPlan, ActionRequest, ActionResponse, ActionVerdict,
-    ACTION_OPERATION,
+    ActionCandidateFingerprint, ActionDiagnostics, ActionOrigin, ActionPhase, ActionPlan,
+    ActionRequest, ActionResponse, ActionVerdict, ACTION_OPERATION,
 };
 use decision_engine_contract::wire::CONTRACT_VERSION;
 use serde_json::json;
@@ -65,6 +65,10 @@ async fn decide_inner(
 ) -> ActionResponse {
     let started = Instant::now();
     let mut reply = ActionResponse {
+        diagnostics: ActionDiagnostics {
+            stage: "preselection".into(),
+            ..Default::default()
+        },
         model_calls: Vec::new(),
         contract_version: CONTRACT_VERSION,
         snapshot: request.snapshot.clone(),
@@ -121,6 +125,7 @@ async fn decide_inner(
                 steps: request.plan.steps.iter().skip(1).cloned().collect(),
             },
         };
+        reply.diagnostics.stage = "planner_validation".into();
         reply.reason = "planner_resolved".into();
         reply.latency_ms = started.elapsed().as_millis() as u64;
         return reply;
@@ -166,11 +171,37 @@ async fn decide_inner(
     }
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(operation.action_timeout_ms);
-    let candidates = candidates::prepare_candidates(&request);
+    let prepared = candidates::prepare_candidate_set(&request);
+    reply.diagnostics.tools_without_candidates = prepared.tools_without_candidates;
+    reply.diagnostics.candidates_truncated = prepared.truncated;
+    let candidates = prepared.candidates;
+    reply.diagnostics.candidates = candidates
+        .iter()
+        .map(|candidate| ActionCandidateFingerprint {
+            id: candidate.id.clone(),
+            call_sha256: format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&candidate.call).expect("call serializes"))
+            ),
+        })
+        .collect();
     if candidates.is_empty() {
         fallback("no_grounded_candidates", &mut reply);
         return reply;
     }
+    if candidates.iter().all(|candidate| {
+        request
+            .context
+            .evidence
+            .iter()
+            .rev()
+            .find_map(|evidence| evidence.call.as_ref())
+            == Some(&candidate.call)
+    }) {
+        fallback("repeats_last_step", &mut reply);
+        return reply;
+    }
+    reply.diagnostics.stage = "selection".into();
     let state = DecisionState::from_json(json!({
         "task": {
             "goal": request.context.goal,
@@ -194,6 +225,10 @@ async fn decide_inner(
             return reply;
         },
     };
+    // Screenshots restrict the route to models that see images; with none
+    // available the rail falls back to the planner, never to a text model
+    // reading a bare reference.
+    built.assets = request.context.assets.clone();
     let mut options: Vec<_> = candidates
         .iter()
         .map(|candidate| {
@@ -242,6 +277,13 @@ async fn decide_inner(
     };
     reply.model = Some(response.model.clone());
     reply.usage = Some(response.usage);
+    let answer = response.answer(&QuestionId::new("next_action"));
+    let confidence = answer.and_then(|a| a.choice_confidence());
+    let selected = answer.and_then(|a| a.choice_option()).map(|id| id.as_str());
+    reply.diagnostics.choice_confidence = confidence.filter(|v| v.is_finite());
+    reply.diagnostics.selected_option = selected
+        .filter(|id| *id == "need_planner" || candidates.iter().any(|c| c.id == *id))
+        .map(str::to_owned);
     if !operation.gate.enabled {
         fallback("shadow_only", &mut reply);
         return reply;
@@ -250,14 +292,16 @@ async fn decide_inner(
         fallback("model_thresholds_unset", &mut reply);
         return reply;
     };
-    let answer = response.answer(&QuestionId::new("next_action"));
-    let confidence = answer.and_then(|a| a.choice_confidence());
-    let selected = answer.and_then(|a| a.choice_option()).map(|id| id.as_str());
-    if !finite_probability(
-        confidence,
-        threshold(&thresholds, "next_action_confidence", 0.9),
-    ) {
-        fallback("insufficient_confidence_or_evidence", &mut reply);
+    let minimum_confidence = threshold(&thresholds, "next_action_confidence", 0.9);
+    reply.diagnostics.choice_threshold =
+        minimum_confidence.is_finite().then_some(minimum_confidence);
+    // An explicit abstention needs no confidence to safely ask the planner.
+    if selected == Some("need_planner") {
+        fallback("model_requested_planner", &mut reply);
+        return reply;
+    }
+    if !finite_probability(confidence, minimum_confidence) {
+        fallback("next_action_confidence_below_threshold", &mut reply);
         return reply;
     }
     let Some(candidate) = candidates
@@ -281,6 +325,7 @@ async fn decide_inner(
         fallback("repeats_last_step", &mut reply);
         return reply;
     }
+    reply.diagnostics.stage = "selected_call_review".into();
     // Structured questions are independent. Ground the guard questions in
     // the exact chosen call in a second evaluation, never an implicit choice.
     review
@@ -337,20 +382,29 @@ async fn decide_inner(
             .output_tokens
             .saturating_add(reviewed.usage.output_tokens);
     }
+    let evidence = number(&reviewed, "evidence_sufficient");
+    let applicable = number(&reviewed, "action_applicable");
+    reply.diagnostics.evidence_sufficient = evidence.filter(|v| v.is_finite());
+    reply.diagnostics.action_applicable = applicable.filter(|v| v.is_finite());
     let Some(review_thresholds) = runtime.thresholds_for(ACTION_OPERATION, &reviewed.model) else {
         fallback("review_model_thresholds_unset", &mut reply);
         return reply;
     };
-    if !finite_probability(
-        number(&reviewed, "evidence_sufficient"),
-        threshold(&review_thresholds, "evidence_sufficient", 0.9),
-    ) || !finite_probability(
-        number(&reviewed, "action_applicable"),
-        threshold(&review_thresholds, "action_applicable", 0.9),
-    ) {
-        fallback("insufficient_confidence_or_evidence", &mut reply);
+    let evidence_minimum = threshold(&review_thresholds, "evidence_sufficient", 0.9);
+    let applicability_minimum = threshold(&review_thresholds, "action_applicable", 0.9);
+    reply.diagnostics.evidence_threshold = evidence_minimum.is_finite().then_some(evidence_minimum);
+    reply.diagnostics.applicability_threshold = applicability_minimum
+        .is_finite()
+        .then_some(applicability_minimum);
+    if !finite_probability(evidence, evidence_minimum) {
+        fallback("evidence_sufficiency_below_threshold", &mut reply);
         return reply;
     }
+    if !finite_probability(applicable, applicability_minimum) {
+        fallback("action_applicability_below_threshold", &mut reply);
+        return reply;
+    }
+    reply.diagnostics.stage = "validation".into();
     // Recheck the exact complete call after selection, against this request's
     // catalog. This check also bounds the arguments copied out of evidence.
     if validation::validate_call(&candidate.call, &request.tools).is_err() {
@@ -375,6 +429,7 @@ async fn decide_inner(
         confidence,
         continuation,
     };
+    reply.diagnostics.stage = "complete".into();
     reply.reason = "structured_selection".into();
     reply.latency_ms = started.elapsed().as_millis() as u64;
     reply

@@ -91,6 +91,35 @@ impl OperatorProfileAdapter {
         })
     }
 
+    /// The enabled profile aliases the operator registered for this contract's
+    /// provider and storage namespace — the owner-approved mailboxes an
+    /// autonomous act may name. Reads only alias, provider, namespace and the
+    /// disabled flag; identities and unrelated configuration are never kept.
+    pub fn enabled_aliases(
+        &self,
+        source: &str,
+    ) -> Result<std::collections::BTreeSet<String>, OperatorProfileAdapterError> {
+        validate_source(source)?;
+        let projection: OperatorConfigProjection = serde_yaml::from_str(source)
+            .map_err(|_| OperatorProfileAdapterError::InvalidConfiguration)?;
+        if projection.tool_runtime_profiles.len() > MAX_PROFILES_PER_SCOPE {
+            return Err(OperatorProfileAdapterError::TooManyProfiles);
+        }
+        let mut aliases = std::collections::BTreeSet::new();
+        for profile in projection.tool_runtime_profiles {
+            if profile.provider != self.provider
+                || profile.storage_namespace != self.storage_namespace
+                || profile.disabled
+            {
+                continue;
+            }
+            let alias = CredentialProfileAlias::new(profile.alias)
+                .map_err(|_| OperatorProfileAdapterError::InvalidProfile)?;
+            aliases.insert(alias.as_str().to_owned());
+        }
+        Ok(aliases)
+    }
+
     pub fn normalize(
         &self,
         source: &str,
@@ -385,6 +414,27 @@ tool_runtime_profiles:
         let rendered = format!("{set:?}");
         assert!(!rendered.contains("NEVER_PROJECT_THIS"));
         assert!(!rendered.contains(fixture._root.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn enabled_aliases_lists_only_this_provider_and_namespace() {
+        let source = r#"
+secrets: {token: NEVER_PROJECT_THIS}
+tool_runtime_profiles:
+  - {provider: mail-provider, storage_namespace: mail, alias: work, expected_identity: owner@example.com}
+  - {provider: mail-provider, storage_namespace: mail, alias: personal}
+  - {provider: mail-provider, storage_namespace: mail, alias: retired, disabled: true}
+  - {provider: mail-provider, storage_namespace: other, alias: presto}
+  - {provider: other-provider, storage_namespace: mail, alias: chat}
+"#;
+        let aliases = OperatorProfileAdapter::from_contract(&contract("mail-provider", "mail"))
+            .unwrap()
+            .enabled_aliases(source)
+            .unwrap();
+        assert_eq!(
+            aliases.into_iter().collect::<Vec<_>>(),
+            vec!["personal".to_string(), "work".to_string()]
+        );
     }
 
     #[test]

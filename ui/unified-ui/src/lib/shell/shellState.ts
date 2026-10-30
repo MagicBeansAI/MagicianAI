@@ -19,6 +19,8 @@ import { writable } from 'svelte/store';
 
 export const commandPaletteOpen = writable<boolean>(false);
 
+// Preserve the rail width across Chat, Settings and Files navigation.
+export const chatHistoryExpanded = writable(true);
 export const historyDrawerOpen = writable<boolean>(false);
 export const historyDrawerThreadFilter = writable<string | null>(null);
 export const historyDrawerInitialTab = writable<'sessions' | 'threads'>('sessions');

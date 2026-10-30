@@ -1,11 +1,18 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import PermissionChecklist from "./PermissionChecklist.svelte";
   import MacosAppPairing from "./MacosAppPairing.svelte";
   import AndroidAppsAuthority from "./AndroidAppsAuthority.svelte";
   import AppMemoryContributions from "./AppMemoryContributions.svelte";
+  import DesktopSettingsNav from "./DesktopSettingsNav.svelte";
+  import {
+    DESKTOP_SETTINGS_CATEGORIES,
+    cardMatches,
+    categoryForHash,
+    normalizeSettingsQuery,
+  } from "./desktopSettingsIndex.js";
   import { HOST_APP_NAME, PRODUCT_NAME } from "./presentationIdentity.generated.js";
   import { shortcutIntent } from "../orb/orbUiModel.js";
   import {
@@ -212,7 +219,6 @@
     skills?: SkillListEntry[];
   }
 
-  type SettingsTab = "settings" | "keyMappings" | "envMapping" | "environment";
 
   interface HotkeyMappingItem {
     id: string;
@@ -255,7 +261,27 @@
   let voiceTestResult = $state<VoiceRecordingTestResult | null>(null);
   let voiceTestError = $state("");
   let mediaProviderSnapshot = $state<MediaProviderSnapshot | null>(null);
-  let activeTab = $state<SettingsTab>("settings");
+  // Navigation and search over the cards on this page. Every card stays
+  // rendered; search hides non-matching cards with CSS so their state stays.
+  let settingsContent: HTMLDivElement | undefined = $state();
+  let settingsQuery = $state("");
+  let presentCards = $state(new Set<string>());
+  let matchingCards = $state(new Set<string>());
+  let activeCategory = $state(DESKTOP_SETTINGS_CATEGORIES[0].id);
+  let spyPausedUntil = 0;
+  const searching = $derived(normalizeSettingsQuery(settingsQuery) !== "");
+  const navCategories = $derived(
+    DESKTOP_SETTINGS_CATEGORIES.map((category) => ({
+      id: category.id,
+      label: category.label,
+      count: category.cards.filter(
+        (card) => presentCards.has(card.id) && (!searching || matchingCards.has(card.id)),
+      ).length,
+    })),
+  );
+  const matchCount = $derived(
+    searching ? navCategories.reduce((sum, category) => sum + category.count, 0) : null,
+  );
   let hotkeyMappings = $state<HotkeyMappingsResponse | null>(null);
   let hotkeyMappingsLoading = $state(false);
   let hotkeyMappingsError = $state("");
@@ -1203,14 +1229,133 @@
     }
   }
 
-  async function openWebSettings(path: "/settings" | "/settings/model-routing") {
+  /** Switch this window to shared (web) Settings, optionally at a section. */
+  async function openSharedSettings(section?: string) {
     webSettingsError = "";
     try {
-      await invoke("open_app_at", { path });
+      await invoke("open_shared_settings", { section: section ?? null });
     } catch (e) {
-      webSettingsError = `Could not open web settings: ${e}`;
+      // Without a selected server the window cannot be signed in; the browser
+      // still opens the same page.
+      webSettingsError = `Could not show ${PRODUCT_NAME} settings here (${e}); opened them in the browser.`;
+      try {
+        await invoke("open_app_at", { path: section ? `/settings#${section}` : "/settings" });
+      } catch (browserError) {
+        webSettingsError = `Could not open ${PRODUCT_NAME} settings: ${browserError}`;
+      }
     }
   }
+
+  function categoryLabel(id: string): string {
+    return DESKTOP_SETTINGS_CATEGORIES.find((category) => category.id === id)?.label ?? id;
+  }
+
+  function cardHidden(id: string): boolean {
+    return searching && !matchingCards.has(id);
+  }
+
+  function categoryHidden(id: string): boolean {
+    return searching && (navCategories.find((category) => category.id === id)?.count ?? 0) === 0;
+  }
+
+  async function refreshSettingsMatches(query: string) {
+    await tick();
+    if (!settingsContent) return;
+    const present = new Set<string>();
+    const matching = new Set<string>();
+    for (const category of DESKTOP_SETTINGS_CATEGORIES) {
+      for (const card of category.cards) {
+        const element = settingsContent.querySelector<HTMLElement>(`[data-settings-card="${card.id}"]`);
+        if (!element) continue;
+        present.add(card.id);
+        if (cardMatches(card, query, element.textContent ?? "")) matching.add(card.id);
+      }
+    }
+    presentCards = present;
+    matchingCards = matching;
+    // A search that empties the highlighted category moves the highlight to
+    // the first category that still has matches.
+    const visible = (id: string) =>
+      DESKTOP_SETTINGS_CATEGORIES.find((category) => category.id === id)?.cards.some(
+        (card) => present.has(card.id) && matching.has(card.id),
+      ) ?? false;
+    if (normalizeSettingsQuery(query) && !visible(activeCategory)) {
+      activeCategory = DESKTOP_SETTINGS_CATEGORIES.find((category) => visible(category.id))?.id ?? activeCategory;
+    }
+  }
+
+  // Cards render once the config loads, so presence follows it too.
+  $effect(() => {
+    const query = settingsQuery;
+    void config;
+    void settingsContent;
+    void refreshSettingsMatches(query);
+  });
+
+  function scrollBehavior(): ScrollBehavior {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  }
+
+  function selectCategory(id: string) {
+    const section = document.getElementById(id);
+    if (!section) return;
+    activeCategory = id;
+    spyPausedUntil = Date.now() + 900;
+    section.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+  }
+
+  function jumpToFirstMatch() {
+    const first = DESKTOP_SETTINGS_CATEGORIES.flatMap((category) => category.cards).find(
+      (card) => presentCards.has(card.id) && (!searching || matchingCards.has(card.id)),
+    );
+    const element = first
+      ? settingsContent?.querySelector<HTMLElement>(`[data-settings-card="${first.id}"]`)
+      : null;
+    if (!first || !element) return;
+    activeCategory = categoryForHash(first.id) ?? activeCategory;
+    spyPausedUntil = Date.now() + 900;
+    element.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+    element.classList.remove("settings-item-flash");
+    void element.offsetWidth;
+    element.classList.add("settings-item-flash");
+  }
+
+  // Scroll-spy: the active category is the last one whose top has passed a
+  // third of the window height, or the last one at the bottom of the page.
+  function trackActiveCategory(): () => void {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      if (!settingsContent || Date.now() < spyPausedUntil) return;
+      const sections = [...settingsContent.querySelectorAll<HTMLElement>(".settings-category")].filter(
+        (section) => section.offsetParent !== null,
+      );
+      if (sections.length === 0) return;
+      const line = window.innerHeight / 3;
+      let current = sections[0];
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= line) current = section;
+      }
+      const lastRect = sections[sections.length - 1].getBoundingClientRect();
+      if (lastRect.bottom <= window.innerHeight + 2 && lastRect.top < window.innerHeight) {
+        current = sections[sections.length - 1];
+      }
+      activeCategory = current.id;
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    document.addEventListener("scroll", schedule, { capture: true, passive: true });
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      document.removeEventListener("scroll", schedule, { capture: true });
+      window.removeEventListener("resize", schedule);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }
+
+  onMount(() => trackActiveCategory());
 
   function isHealthy(value: unknown): boolean {
     return value === "Healthy";
@@ -1287,917 +1432,1032 @@
         </section>
       </div>
     {:else}
-      <section class="card web-settings-card" aria-labelledby="web-settings-title">
-        <div>
-          <p class="settings-kicker">Shared settings</p>
-          <h2 id="web-settings-title">{PRODUCT_NAME} settings on the web</h2>
-          <p class="section-desc">
-            Manage your account, workspace, trust rules, model routing, voice, notes,
-            storage, and connected devices in the browser. Keep permissions, local runtime,
-            shortcuts, the Orb, and other controls for this {desktopDeviceLabel} here.
-          </p>
-          {#if webSettingsError}
-            <p class="inline-notice error" role="alert">{webSettingsError}</p>
+      <div class="window-tabs" role="tablist" aria-label="Settings">
+        <button type="button" role="tab" aria-selected="true" class="active">This {desktopDeviceLabel}</button>
+        <button type="button" role="tab" aria-selected="false" onclick={() => openSharedSettings()}>{PRODUCT_NAME}</button>
+      </div>
+      {#if webSettingsError}
+        <p class="inline-notice error" role="alert">{webSettingsError}</p>
+      {/if}
+
+      <div class="settings-body">
+        <DesktopSettingsNav
+          categories={navCategories}
+          activeId={activeCategory}
+          bind:query={settingsQuery}
+          {matchCount}
+          onselect={selectCategory}
+          onsubmit={jumpToFirstMatch}
+        />
+
+        <div class="settings-content" bind:this={settingsContent}>
+          <div class="settings-save-bar" role="toolbar" aria-label="Settings actions">
+            <span
+              class="save-message"
+              class:visible={saveMessage !== ""}
+              role="status"
+              aria-live="polite"
+            >{saveMessage}</span>
+            <button class="primary" onclick={saveSettings} disabled={saving}>
+              {saving ? "Saving..." : "Save Settings"}
+            </button>
+          </div>
+
+          {#if searching && matchCount === 0}
+            <div class="card settings-search-empty" role="status">
+              <h2>No settings match “{settingsQuery.trim()}”</h2>
+              <p class="section-desc">Try another word, or <button class="link-button" type="button" onclick={() => (settingsQuery = "")}>clear the search</button>. Shared {PRODUCT_NAME} settings are in the {PRODUCT_NAME} tab.</p>
+            </div>
           {/if}
-        </div>
-        <div class="web-settings-actions">
-          <button class="primary" type="button" onclick={() => openWebSettings("/settings")}>
-            Open Web Settings
-          </button>
-          <button class="secondary" type="button" onclick={() => openWebSettings("/settings/model-routing")}>
-            Model Routing
-          </button>
-        </div>
-      </section>
 
-      <nav class="settings-tabs" aria-label="Settings sections">
-        <button
-          class:active={activeTab === "settings"}
-          onclick={() => (activeTab = "settings")}
-          type="button"
-        >
-          This {desktopDeviceLabel}
-        </button>
-        <button
-          class:active={activeTab === "keyMappings"}
-          onclick={() => (activeTab = "keyMappings")}
-          type="button"
-        >
-          Key Mappings
-        </button>
-        <button
-          class:active={activeTab === "envMapping"}
-          onclick={() => (activeTab = "envMapping")}
-          type="button"
-        >
-          Env Map
-        </button>
-        <button
-          class:active={activeTab === "environment"}
-          onclick={() => (activeTab = "environment")}
-          type="button"
-        >
-          Environment
-        </button>
-      </nav>
-
-      {#if activeTab === "settings"}
-        <div class="settings-save-bar" role="toolbar" aria-label="Settings actions">
-          <span
-            class="save-message"
-            class:visible={saveMessage !== ""}
-            role="status"
-            aria-live="polite"
-          >{saveMessage}</span>
-          <button class="primary" onclick={saveSettings} disabled={saving}>
-            {saving ? "Saving..." : "Save Settings"}
-          </button>
-        </div>
-        <div class="sections">
-        <!-- Permissions -->
-        <PermissionChecklist />
-
-        {#if isMacDesktop}
-          <!-- Owner-mediated typed macOS app observation -->
-          <MacosAppPairing magicianPort={config.network.magician_port} />
-        {/if}
-
-        <!-- Which scope this tray's bearer operates in -->
-        <section class="card">
-          <h2>Signed-in scope</h2>
-          {#if sessionOrigin}<p class="section-desc">Server: <code>{sessionOrigin}</code></p>{/if}
-          {#if sessionScope}
-            <p class="section-desc">
-              Signed in as <strong>{sessionScope.identity}</strong> in workspace
-              <strong>{sessionScope.workspace}</strong> — scope
-              <code>{sessionScope.principal}/{sessionScope.workspace}</code>.
-              This desktop session is saved securely for this server.
-            </p>
-            <button onclick={signOutDesktop} disabled={sessionBusy}>Sign out of desktop</button>
-          {:else if sessionScopeChecked}
-            <p class="section-desc">
-              Sign in to connect desktop features to this server. Your session is
-              saved in the system credential store; your password is not saved.
-            </p>
-            <form onsubmit={signInDesktop}>
-              <div class="field-row">
-                <div class="field">
-                  <label for="desktop-session-username">Username</label>
-                  <input id="desktop-session-username" autocomplete="username" bind:value={sessionUsername} required disabled={sessionBusy} />
-                </div>
-                <div class="field">
-                  <label for="desktop-session-password">Password</label>
-                  <input id="desktop-session-password" type="password" autocomplete="current-password" bind:value={sessionPassword} required disabled={sessionBusy} />
-                </div>
-              </div>
-              <button type="submit" class="primary" disabled={sessionBusy}>{sessionBusy ? "Signing in…" : "Sign in to desktop"}</button>
-            </form>
-          {:else}
-            <p class="section-desc">Resolving session…</p>
-          {/if}
-          {#if sessionError}<p role="alert">{sessionError}</p>{/if}
-        </section>
-
-        <!-- Owner-mediated app memory promotion -->
-        <AppMemoryContributions magicianPort={config.network.magician_port} />
-
-        {#if isMacDesktop}
-          <!-- iMessage is a macOS-only host capability. -->
-          <section class="card">
-            <h2>iMessage access</h2>
-            <p class="section-desc">
-              Reading your iMessage history needs <strong>Full Disk Access</strong> on {HOST_APP_NAME}
-              background process; sending messages needs <strong>Automation → Messages</strong> on this
-              desktop app.
-            </p>
-            <PermissionChecklist only={["full_disk_access", "automation_messages"]} />
-          </section>
-        {/if}
-
-        <!-- Network -->
-        <section class="card">
-          <h2>Network</h2>
-          <div class="field">
-            <label for="engine-base-url">Backend URL</label>
-            <input
-              id="engine-base-url"
-              type="url"
-              bind:value={config.network.engine_base_url}
-              placeholder={`http://127.0.0.1:${config.network.magician_port}`}
-              spellcheck="false"
-            />
-            <p class="field-help">
-              Leave blank for the local backend, or enter the HTTPS URL of an approved remote backend. Desktop credentials remain isolated per server origin.
-            </p>
-          </div>
-          <div class="connect-route-panel">
-            <div class="connect-route-heading">
-              <div>
-                <strong>Remote device route</strong>
-                <p class="field-help">
-                  Phones using Remote keep the stable endpoint <code>{connectRouteStatus?.public_origin ?? "connect.<your-zone>"}</code>. Choose which healthy Magician backend receives its API traffic.
-                </p>
-              </div>
-              {#if connectRouteStatus}
-                <span class="route-pill">Active: {connectRouteStatus.selected_backend}</span>
-              {/if}
-            </div>
-            <div class="field">
-              <label for="connect-route-target">Remote traffic target</label>
-              <select id="connect-route-target" bind:value={connectRouteTarget} disabled={connectRouteBusy}>
-                <option value="local">Backend on this computer</option>
-                <option value="container">Local backend container</option>
-                <option value="remote">Remote backend server or container</option>
-              </select>
-            </div>
-            {#if connectRouteTarget === "remote"}
-              <div class="field">
-                <label for="connect-route-remote-url">Remote backend origin</label>
-                <input
-                  id="connect-route-remote-url"
-                  type="url"
-                  bind:value={connectRouteRemoteUrl}
-                  placeholder="https://engine.example.com"
-                  autocomplete="url"
-                  spellcheck="false"
-                  disabled={connectRouteBusy}
-                />
-                <p class="field-help">
-                  Enter the backend's direct HTTPS origin. Do not enter {connectRouteStatus?.public_origin ?? "the public connection URL"}, which would create a routing loop.
-                </p>
-              </div>
-            {/if}
-            {#if connectRouteStatus}
-              <div class="connect-route-health" aria-label="Remote device route targets">
-                <span>This computer <strong>{connectRouteStatus.local_health}</strong></span>
-                <span>Local container <strong>{connectRouteStatus.container_health}</strong></span>
-                <span>Remote server <strong>{connectRouteStatus.remote_health}</strong></span>
-              </div>
-              <p class="field-help">{connectRouteStatus.management_message}</p>
-            {/if}
-            {#if connectRouteMessage}<p class="inline-notice success" role="status">{connectRouteMessage}</p>{/if}
-            {#if connectRouteError}<p class="inline-notice error" role="alert">{connectRouteError}</p>{/if}
-            <div class="connect-route-actions">
-              <button class="secondary compact" type="button" onclick={() => loadConnectRouteStatus(true)} disabled={connectRouteBusy}>Refresh</button>
-              <button
-                class="primary"
-                type="button"
-                onclick={applyConnectRoute}
-                disabled={connectRouteBusy || !connectRouteStatus?.management_available || (connectRouteTarget === "remote" && !connectRouteRemoteUrl.trim())}
-              >
-                {connectRouteBusy ? "Verifying and switching…" : "Use this route"}
-              </button>
-            </div>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="magician-port">Magician backend port</label>
-              <input id="magician-port" type="number" bind:value={config.network.magician_port}
-                     min="1024" max="65535" />
-            </div>
-            <div class="field">
-              <label for="magicutor-port">Magicutor Port</label>
-              <input id="magicutor-port" type="number" bind:value={config.network.magicutor_port}
-                     min="1024" max="65535" />
-            </div>
-          </div>
-        </section>
-
-        <!-- Resources -->
-        <section class="card">
-          <h2>Resources</h2>
-          <div class="field-row">
-            <div class="field">
-              <label for="cpu">CPU Cores</label>
-              <input id="cpu" type="number" bind:value={config.container.cpu_cores}
-                     min="1" max="16" step="0.5" />
-            </div>
-            <div class="field">
-              <label for="memory">Memory (GB)</label>
-              <input id="memory" type="number" bind:value={config.container.memory_gb}
-                     min="1" max="64" />
-            </div>
-          </div>
-        </section>
-
-        <!-- Ambient Orb -->
-        <section class="card orb-settings-card">
-          <div class="orb-settings-heading">
-            <div>
-              <h2>Ambient Orb</h2>
-              <p class="section-desc">A voice-aware presence on this {desktopDeviceLabel}. Saved changes apply immediately.</p>
-            </div>
-            <span class="orb-preview" aria-hidden="true"></span>
-          </div>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.orb.enabled} />
-              Keep the Orb ready
-            </label>
-          </div>
-          <div class="toggle-row orb-wake-toggle">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.orb.wake_enabled} />
-              Let the wake phrase summon the Orb
-            </label>
-            <p class="field-help">
-              Off by default. Hold Left ⌥ to talk; a double-tap of the same key still opens Quick Automate. When this is on, the phrase works even while the Orb is hidden or listening is stopped. A recognized phrase summons and starts the Orb; it never opens the web composer.
-            </p>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="orb-voice-mode">Conversation Mode</label>
-              <select
-                id="orb-voice-mode"
-                bind:value={config.orb.voice_mode}
-                onchange={markOrbVoiceModeSeeded}
-              >
-                <option value="dictation">Dictation · record, understand, reply</option>
-                <option value="hands_free">Hands-free · FluidAudio pipeline</option>
-                <option value="realtime">Live · realtime provider</option>
-              </select>
-              <p class="field-help">Hold Left ⌥ to talk, then let go. Dictation records that hold. Hands-free and Live use the same hold. Live keeps its connection after you let go, so the next hold skips the first-time setup. This device-local choice is seeded once from backend voice settings and controls the Orb only.</p>
-            </div>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="orb-hotkey">Summon Shortcut</label>
-              <input
-                id="orb-hotkey"
-                class:shortcut-recording={recordingOrbHotkey}
-                type="text"
-                value={recordingOrbHotkey ? "Press your shortcut…" : config.orb.hotkey}
-                placeholder="Alt+Space"
-                readonly
-                onfocus={() => setOrbHotkeyRecording(true)}
-                onblur={() => setOrbHotkeyRecording(false)}
-                onkeydown={captureOrbHotkey}
-              />
-              <p class="field-help">Click, then press a chord. Delete clears it; Escape cancels. Default: ⌥Space. Saving rejects collisions.</p>
-            </div>
-            <div class="field">
-              <label for="orb-leash">Listening Window</label>
-              <select id="orb-leash" bind:value={config.orb.leash_minutes}>
-                <option value={30}>30 minutes</option>
-                <option value={60}>1 hour</option>
-                <option value={120}>2 hours</option>
-                <option value={240}>4 hours</option>
-              </select>
-            </div>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="orb-phrases">Wake Phrases</label>
-              <textarea
-                id="orb-phrases"
-                rows="2"
-                value={config.orb.wake_phrases.join(", ")}
-                oninput={(event) => setOrbWakePhrases(event.currentTarget.value)}
-                placeholder="hey assistant"
-                spellcheck="false"
-              ></textarea>
-              <p class="field-help">Comma or line separated. The first phrase drives the Orb-only native listener today.</p>
-            </div>
-            <div class="field">
-              <label for="orb-follow-up">Follow-up Window (seconds)</label>
-              <input id="orb-follow-up" type="number" min="1" max="60" bind:value={config.orb.follow_up_seconds} />
-            </div>
-          </div>
-          <div class="toggle-grid">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.orb.auto_expand_on_wake} />
-              Arrive at center screen when listening starts, then settle to the side
-            </label>
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.orb.armed_on_battery} />
-              Keep wake listening ready on battery power
-            </label>
-          </div>
-          <div class="settings-group">
-            <div class="settings-group-header">
-              <h3>Conversation Routing</h3>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label for="voice-thread">Default Conversation Thread</label>
-                <input
-                  id="voice-thread"
-                  type="text"
-                  bind:value={config.voice.default_thread_id}
-                  placeholder="general"
-                  spellcheck="false"
-                />
-                <p class="field-help">Used when the Orb starts without an existing conversation context.</p>
-              </div>
-              <div class="field">
-                <button class="secondary" type="button" onclick={() => openWebSettings("/settings")}>
-                Choose speaking voices
-              </button>
-              <p class="field-help">Choose TTS and realtime voices in shared Web Settings. Saved voices also apply to the Orb.</p>
-              <label for="live-profile">Realtime Voice Engine</label>
-                {#if liveEngineOptions.length > 0}
-                  <select id="live-profile" bind:value={config.voice.live_ptt_realtime_profile}>
-                    {#if config.voice.live_ptt_realtime_profile && !liveEngineOptions.some((option) => option.profile_id === config?.voice.live_ptt_realtime_profile)}
-                      <option value={config.voice.live_ptt_realtime_profile}>
-                        {config.voice.live_ptt_realtime_profile} · no longer offered by the backend
-                      </option>
-                    {/if}
-                    {#each liveEngineOptions as option (option.profile_id)}
-                      <option value={option.profile_id} disabled={!option.available}>
-                        {liveEngineOptionLabel(option)}
-                      </option>
-                    {/each}
-                  </select>
-                  <p class="field-help">The engine the Orb's Live conversation mode calls, fetched from the backend's realtime catalog. Greyed entries are missing a credential on the backend.</p>
-                {:else}
-                  <input
-                    id="live-profile"
-                    type="text"
-                    bind:value={config.voice.live_ptt_realtime_profile}
-                    placeholder="voice_realtime_openai_backend"
-                    spellcheck="false"
-                  />
-                  <p class="field-help">The backend's realtime catalog could not be fetched, so this is the profile id as configured there.</p>
-                {/if}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Audio privacy and host-native diagnostics -->
-        <section class="card">
-          <h2>Audio Privacy &amp; Diagnostics</h2>
-          <p class="section-desc">
-            Control host-native playback and artifact retention, or verify the desktop microphone and speech helper.
-          </p>
-          <div class="settings-group">
-            <div class="settings-group-header">
-              <h3>Privacy &amp; Playback</h3>
-            </div>
-            <div class="toggle-grid">
-              <label class="toggle-label">
-                <input type="checkbox" bind:checked={config.voice.retain_voice_note_audio} />
-                Retain raw recorded audio artifacts
-              </label>
-              <label class="toggle-label">
-                <input type="checkbox" bind:checked={config.voice.output_muted} />
-                Mute assistant audio output
-              </label>
+          <section id="privacy" class="settings-category" class:filtered-out={categoryHidden("privacy")} aria-labelledby="settings-category-privacy">
+            <h2 class="settings-category-title" id="settings-category-privacy">{categoryLabel("privacy")}</h2>
+            <div class="settings-item" data-settings-card="permissions" class:filtered-out={cardHidden("permissions")}>
+              <!-- Permissions -->
+              <PermissionChecklist />
             </div>
             {#if isMacDesktop}
-              <div class="voice-test-panel">
-                <div class="voice-test-copy">
-                  <p class="voice-test-title">macOS STT Record Test</p>
-                  <p class="field-help">
-                    Records 3 seconds in the tray app, plays the clip back locally, then transcribes it with the macOS Speech helper.
-                  </p>
-                </div>
-                <button class="secondary" onclick={runVoiceRecordingTest} disabled={voiceTestRunning}>
-                  {voiceTestRunning ? "Testing..." : "Record Test"}
-                </button>
+              <div class="settings-item" data-settings-card="app-observation" class:filtered-out={cardHidden("app-observation")}>
+                <!-- Owner-mediated typed macOS app observation -->
+                <MacosAppPairing magicianPort={config.network.magician_port} />
               </div>
-              {#if voiceTestError}
-                <div class="voice-test-result voice-test-error">
-                  <p>{voiceTestError}</p>
+            {/if}
+            <div class="settings-item" data-settings-card="app-memory" class:filtered-out={cardHidden("app-memory")}>
+              <!-- Owner-mediated app memory promotion -->
+              <AppMemoryContributions magicianPort={config.network.magician_port} />
+            </div>
+            {#if isMacDesktop}
+              <div class="settings-item" data-settings-card="imessage" class:filtered-out={cardHidden("imessage")}>
+                <!-- iMessage is a macOS-only host capability. -->
+                <section class="card">
+                  <h2>iMessage access</h2>
+                  <p class="section-desc">
+                    Reading your iMessage history needs <strong>Full Disk Access</strong> on {HOST_APP_NAME}
+                    background process; sending messages needs <strong>Automation → Messages</strong> on this
+                    desktop app.
+                  </p>
+                  <PermissionChecklist only={["full_disk_access", "automation_messages"]} />
+                </section>
+              </div>
+            {/if}
+            <div class="settings-item" data-settings-card="screen-capture" class:filtered-out={cardHidden("screen-capture")}>
+              <!-- Screen Capture shortcuts -->
+              <section class="card">
+                <h2>Screen Capture</h2>
+                <p class="section-desc">
+                  Global chords for the screen capture-and-ask features. Tauri syntax
+                  (e.g. <code>Shift+Alt+S</code>); leave a field empty to disable that
+                  chord. Changes apply immediately — no restart.
+                </p>
+                <div class="field">
+                  <label for="screen-ask-shortcut">Screenshot &amp; Ask</label>
+                  <input
+                    id="screen-ask-shortcut"
+                    type="text"
+                    bind:value={config.general.screen_ask_shortcut}
+                    placeholder="e.g. Shift+Alt+S"
+                    spellcheck="false"
+                  />
                 </div>
-              {/if}
-              {#if voiceTestResult}
-                <div class="voice-test-result">
-                  <div class="voice-test-grid">
-                    <span>Input</span>
-                    <strong>{voiceTestResult.input_label}</strong>
-                    <span>Captured</span>
-                    <strong>{Math.round(voiceTestResult.audio_bytes / 1024)} KB · {voiceTestResult.duration_ms} ms</strong>
-                    <span>Playback</span>
-                    <strong>
-                      {voiceTestResult.playback_ok
-                        ? `OK${voiceTestResult.playback_duration_ms ? ` · ${voiceTestResult.playback_duration_ms} ms` : ""}`
-                        : voiceTestResult.playback_error}
-                    </strong>
-                    <span>STT</span>
-                    <strong>
-                      {voiceTestResult.transcription_error
-                        ? voiceTestResult.transcription_error
-                        : `${voiceTestResult.stt_model ?? "macOS Speech"}${voiceTestResult.language ? ` · ${voiceTestResult.language}` : ""}`}
-                    </strong>
+                <div class="field">
+                  <label for="screen-region-shortcut">Region &amp; Ask</label>
+                  <input
+                    id="screen-region-shortcut"
+                    type="text"
+                    bind:value={config.general.screen_region_shortcut}
+                    placeholder="e.g. Shift+Alt+A"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="field">
+                  <label for="screen-clip-shortcut">Clip &amp; Ask</label>
+                  <input
+                    id="screen-clip-shortcut"
+                    type="text"
+                    bind:value={config.general.screen_clip_shortcut}
+                    placeholder="e.g. Shift+Alt+R"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="field">
+                  <label for="screen-watch-shortcut">Watch Screen</label>
+                  <input
+                    id="screen-watch-shortcut"
+                    type="text"
+                    bind:value={config.general.screen_watch_shortcut}
+                    placeholder="e.g. Shift+Alt+W"
+                    spellcheck="false"
+                  />
+                </div>
+              </section>
+            </div>
+            <div class="settings-item" data-settings-card="audio-privacy" class:filtered-out={cardHidden("audio-privacy")}>
+              <!-- Audio privacy and host-native diagnostics -->
+              <section class="card">
+                <h2>Audio Privacy &amp; Diagnostics</h2>
+                <p class="section-desc">
+                  Control host-native playback and artifact retention, or verify the desktop microphone and speech helper.
+                </p>
+                <div class="settings-group">
+                  <div class="settings-group-header">
+                    <h3>Privacy &amp; Playback</h3>
                   </div>
-                  {#if voiceTestResult.transcript}
-                    <p class="voice-test-transcript">{voiceTestResult.transcript}</p>
+                  <div class="toggle-grid">
+                    <label class="toggle-label">
+                      <input type="checkbox" bind:checked={config.voice.retain_voice_note_audio} />
+                      Retain raw recorded audio artifacts
+                    </label>
+                    <label class="toggle-label">
+                      <input type="checkbox" bind:checked={config.voice.output_muted} />
+                      Mute assistant audio output
+                    </label>
+                  </div>
+                  {#if isMacDesktop}
+                    <div class="voice-test-panel">
+                      <div class="voice-test-copy">
+                        <p class="voice-test-title">macOS STT Record Test</p>
+                        <p class="field-help">
+                          Records 3 seconds in the tray app, plays the clip back locally, then transcribes it with the macOS Speech helper.
+                        </p>
+                      </div>
+                      <button class="secondary" onclick={runVoiceRecordingTest} disabled={voiceTestRunning}>
+                        {voiceTestRunning ? "Testing..." : "Record Test"}
+                      </button>
+                    </div>
+                    {#if voiceTestError}
+                      <div class="voice-test-result voice-test-error">
+                        <p>{voiceTestError}</p>
+                      </div>
+                    {/if}
+                    {#if voiceTestResult}
+                      <div class="voice-test-result">
+                        <div class="voice-test-grid">
+                          <span>Input</span>
+                          <strong>{voiceTestResult.input_label}</strong>
+                          <span>Captured</span>
+                          <strong>{Math.round(voiceTestResult.audio_bytes / 1024)} KB · {voiceTestResult.duration_ms} ms</strong>
+                          <span>Playback</span>
+                          <strong>
+                            {voiceTestResult.playback_ok
+                              ? `OK${voiceTestResult.playback_duration_ms ? ` · ${voiceTestResult.playback_duration_ms} ms` : ""}`
+                              : voiceTestResult.playback_error}
+                          </strong>
+                          <span>STT</span>
+                          <strong>
+                            {voiceTestResult.transcription_error
+                              ? voiceTestResult.transcription_error
+                              : `${voiceTestResult.stt_model ?? "macOS Speech"}${voiceTestResult.language ? ` · ${voiceTestResult.language}` : ""}`}
+                          </strong>
+                        </div>
+                        {#if voiceTestResult.transcript}
+                          <p class="voice-test-transcript">{voiceTestResult.transcript}</p>
+                        {/if}
+                      </div>
+                    {/if}
                   {/if}
                 </div>
-              {/if}
-            {/if}
-          </div>
-          <p class="field-help">
-            Muting assistant audio keeps transcripts and Orb status visible. The recording test may require microphone and Speech Recognition permission.
-          </p>
-        </section>
-
-        {#if isMacDesktop}
-          <!-- Contextual Assist currently depends on AppKit focus and Option-key gestures. -->
-          <section class="card">
-          <h2>Contextual Assist</h2>
-          <p class="section-desc">
-            Host-native writing and task affordance for selected text and
-            focused writable fields. Use a single left Option tap to open the
-            menu centered in the focused window when an eligible target is
-            active; double left Option continues to open the main overlay.
-            Generation and insertion are wired later; the trigger surface is
-            enabled by default.
-          </p>
-          <div class="toggle-grid">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.contextual_assist.enabled} />
-              Enable Contextual Assist
-            </label>
-            <label class="toggle-label">
-              <input
-                type="checkbox"
-                bind:checked={config.contextual_assist.show_on_selected_text}
-                disabled={!config.contextual_assist.enabled}
-              />
-              Enable selected text targets
-            </label>
-            <label class="toggle-label">
-              <input
-                type="checkbox"
-                bind:checked={config.contextual_assist.show_in_writable_fields}
-                disabled={!config.contextual_assist.enabled}
-              />
-              Enable writable field targets
-            </label>
-          </div>
-          <div class="field">
-            <label for="contextual-personality">Default Personality</label>
-            <select
-              id="contextual-personality"
-              bind:value={config.contextual_assist.default_personality}
-              disabled={!config.contextual_assist.enabled}
-            >
-              {#each contextualPersonalityOptions as option}
-                <option value={option.id}>{option.label}</option>
-              {/each}
-            </select>
-            <p class="field-help">The expanded assist palette can switch personality before generation. Installed personalities are loaded from the workspace-scoped skills catalog.</p>
-            {#if contextualPersonalitiesLoading}
-              <p class="field-help">Loading workspace personalities...</p>
-            {:else if contextualPersonalitiesError}
-              <p class="inline-notice warning">{contextualPersonalitiesError}</p>
-            {/if}
-          </div>
-          <div class="field">
-            <label for="contextual-excluded-apps">Excluded Apps</label>
-            <input
-              id="contextual-excluded-apps"
-              type="text"
-              value={config.contextual_assist.excluded_apps.join(", ")}
-              disabled={!config.contextual_assist.enabled}
-              placeholder="Optional, comma-separated app names"
-              oninput={(event) => {
-                setContextualAssistExcludedApps((event.currentTarget as HTMLInputElement).value);
-              }}
-            />
-            <p class="field-help">Native app matching suppresses the left-Option menu in matching apps.</p>
-          </div>
-          <div class="voice-test-panel">
-            <div class="voice-test-copy">
-              <p class="voice-test-title">Surface Preview</p>
-              <p>Open the compact assist menu. Action buttons are intentionally placeholders.</p>
-            </div>
-            <button class="secondary" onclick={openContextualAssistPreview}>
-              Preview
-            </button>
-          </div>
-          </section>
-        {/if}
-
-        <!-- General -->
-        <section class="card">
-          <h2>General</h2>
-          <div class="field">
-            <label for="image">Container Image</label>
-            <input id="image" type="text" bind:value={config.general.container_image} />
-          </div>
-          <div class="field">
-            <label for="runtime-root">Local engine data folder</label>
-            <input id="runtime-root" type="text" bind:value={config.general.runtime_root} placeholder="~/MagicianNotes" spellcheck="false" />
-            <p class="field-help">Used by a desktop-managed local container. Remote engines keep their data on the server.</p>
-          </div>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input
-                type="checkbox"
-                bind:checked={config.general.manage_runtime_stack}
-                disabled={isWindowsDesktop}
-              />
-              Manage a local container backend
-            </label>
-            <p class="field-help">
-              {#if isWindowsDesktop}
-                Windows uses a remote backend in this release. Set its URL in Network; host CUA and the browser extension continue to run locally.
-              {:else}
-                Disable this when the desktop should connect to a separately managed local or remote backend.
-              {/if}
-            </p>
-          </div>
-          {#if isMacDesktop}
-            <div class="field">
-              <label for="overlay-gesture">Quick Overlay Gesture</label>
-              <select id="overlay-gesture" bind:value={config.general.quick_overlay_gesture}>
-                <option value="Double Left Option">Double Left ⌥</option>
-                <option value="Double Right Option">Double Right ⌥</option>
-                <option value="Disabled">Disabled</option>
-              </select>
-              <p class="field-help">Double-tap to summon the quick overlay. Needs Input Monitoring permission (same as the push-to-talk gesture).</p>
-            </div>
-          {/if}
-          <div class="field">
-            <label for="overlay-shortcut">Quick Overlay Shortcut (optional)</label>
-            <input
-              id="overlay-shortcut"
-              type="text"
-              bind:value={config.general.quick_overlay_shortcut}
-              placeholder="Optional, e.g. CmdOrCtrl+Shift+Space"
-              spellcheck="false"
-            />
-            <p class="field-help">Optional global chord for the quick overlay. Tauri syntax, e.g. <code>CmdOrCtrl+Shift+Space</code>.</p>
-          </div>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.general.launch_at_login} />
-              Launch at login
-            </label>
-          </div>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.general.notifications_enabled} />
-              Show notifications
-            </label>
-          </div>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.general.prevent_sleep} />
-              Prevent this {desktopDeviceLabel} from sleeping while app is open
-            </label>
-          </div>
-        </section>
-
-        <!-- Screen Capture shortcuts -->
-        <section class="card">
-          <h2>Screen Capture</h2>
-          <p class="section-desc">
-            Global chords for the screen capture-and-ask features. Tauri syntax
-            (e.g. <code>Shift+Alt+S</code>); leave a field empty to disable that
-            chord. Changes apply immediately — no restart.
-          </p>
-          <div class="field">
-            <label for="screen-ask-shortcut">Screenshot &amp; Ask</label>
-            <input
-              id="screen-ask-shortcut"
-              type="text"
-              bind:value={config.general.screen_ask_shortcut}
-              placeholder="e.g. Shift+Alt+S"
-              spellcheck="false"
-            />
-          </div>
-          <div class="field">
-            <label for="screen-region-shortcut">Region &amp; Ask</label>
-            <input
-              id="screen-region-shortcut"
-              type="text"
-              bind:value={config.general.screen_region_shortcut}
-              placeholder="e.g. Shift+Alt+A"
-              spellcheck="false"
-            />
-          </div>
-          <div class="field">
-            <label for="screen-clip-shortcut">Clip &amp; Ask</label>
-            <input
-              id="screen-clip-shortcut"
-              type="text"
-              bind:value={config.general.screen_clip_shortcut}
-              placeholder="e.g. Shift+Alt+R"
-              spellcheck="false"
-            />
-          </div>
-          <div class="field">
-            <label for="screen-watch-shortcut">Watch Screen</label>
-            <input
-              id="screen-watch-shortcut"
-              type="text"
-              bind:value={config.general.screen_watch_shortcut}
-              placeholder="e.g. Shift+Alt+W"
-              spellcheck="false"
-            />
-          </div>
-        </section>
-
-        <!-- Updates -->
-        <section class="card">
-          <h2>Updates</h2>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.updates.auto_check} />
-              Automatically check for updates
-            </label>
-          </div>
-          <div class="toggle-row">
-            <label class="toggle-label">
-              <input type="checkbox" bind:checked={config.updates.auto_update_container} />
-              Automatically apply container updates
-            </label>
-          </div>
-          <button class="secondary" onclick={checkUpdates}>Check for Updates Now</button>
-        </section>
-
-        <!-- Uninstall -->
-        <section class="card danger-zone">
-          <h2>Uninstall</h2>
-          <p class="section-desc">Remove {PRODUCT_NAME} components from your system. Only artifacts installed by {PRODUCT_NAME} will be removed — pre-existing tools are left in place.</p>
-
-          <div class="uninstall-actions">
-            <button class="danger" onclick={() => requestUninstall("tools-and-data")} disabled={uninstalling}>
-              {uninstalling ? "Removing..." : "Remove Everything"}
-            </button>
-            <div class="uninstall-secondary">
-              <button class="secondary" onclick={() => requestUninstall("only-tools")} disabled={uninstalling}>
-                Remove Tools Only
-              </button>
-              <button class="secondary" onclick={() => requestUninstall("only-data")} disabled={uninstalling}>
-                Remove Data Only
-              </button>
-            </div>
-          </div>
-          <p class="hint"><strong>Remove Everything</strong> — container, runtime tools, and data directories.<br/>
-            <strong>Remove Tools Only</strong> — container and runtime tools; keeps your data.<br/>
-            <strong>Remove Data Only</strong> — data directories; keeps tools for reinstall.</p>
-        </section>
-        </div>
-
-      {:else if activeTab === "keyMappings"}
-        <div class="sections">
-          <section class="card key-mappings-card">
-            <div class="card-header-row">
-              <div>
-                <h2>Key Mappings</h2>
-                <p class="section-desc">
-                  Current desktop triggers and typed composer commands for writing assistant, voice, quick automate, tutor, copilot, and screen capture.
+                <p class="field-help">
+                  Muting assistant audio keeps transcripts and Orb status visible. The recording test may require microphone and Speech Recognition permission.
                 </p>
+              </section>
+            </div>
+          </section>
+
+          <section id="orb" class="settings-category" class:filtered-out={categoryHidden("orb")} aria-labelledby="settings-category-orb">
+            <h2 class="settings-category-title" id="settings-category-orb">{categoryLabel("orb")}</h2>
+            <div class="settings-item" data-settings-card="ambient-orb" class:filtered-out={cardHidden("ambient-orb")}>
+              <!-- Ambient Orb -->
+              <section class="card orb-settings-card">
+                <div class="orb-settings-heading">
+                  <div>
+                    <h2>Ambient Orb</h2>
+                    <p class="section-desc">A voice-aware presence on this {desktopDeviceLabel}. Saved changes apply immediately.</p>
+                  </div>
+                  <span class="orb-preview" aria-hidden="true"></span>
+                </div>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.orb.enabled} />
+                    Keep the Orb ready
+                  </label>
+                </div>
+                <div class="toggle-row orb-wake-toggle">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.orb.wake_enabled} />
+                    Let the wake phrase summon the Orb
+                  </label>
+                  <p class="field-help">
+                    Off by default. Hold Left ⌥ to talk; a double-tap of the same key still opens Quick Automate. When this is on, the phrase works even while the Orb is hidden or listening is stopped. A recognized phrase summons and starts the Orb; it never opens the web composer.
+                  </p>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="orb-voice-mode">Conversation Mode</label>
+                    <select
+                      id="orb-voice-mode"
+                      bind:value={config.orb.voice_mode}
+                      onchange={markOrbVoiceModeSeeded}
+                    >
+                      <option value="dictation">Dictation · record, understand, reply</option>
+                      <option value="hands_free">Hands-free · FluidAudio pipeline</option>
+                      <option value="realtime">Live · realtime provider</option>
+                    </select>
+                    <p class="field-help">Hold Left ⌥ to talk, then let go. Dictation records that hold. Hands-free and Live use the same hold. Live keeps its connection after you let go, so the next hold skips the first-time setup. This device-local choice is seeded once from backend voice settings and controls the Orb only.</p>
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="orb-hotkey">Summon Shortcut</label>
+                    <input
+                      id="orb-hotkey"
+                      class:shortcut-recording={recordingOrbHotkey}
+                      type="text"
+                      value={recordingOrbHotkey ? "Press your shortcut…" : config.orb.hotkey}
+                      placeholder="Alt+Space"
+                      readonly
+                      onfocus={() => setOrbHotkeyRecording(true)}
+                      onblur={() => setOrbHotkeyRecording(false)}
+                      onkeydown={captureOrbHotkey}
+                    />
+                    <p class="field-help">Click, then press a chord. Delete clears it; Escape cancels. Default: ⌥Space. Saving rejects collisions.</p>
+                  </div>
+                  <div class="field">
+                    <label for="orb-leash">Listening Window</label>
+                    <select id="orb-leash" bind:value={config.orb.leash_minutes}>
+                      <option value={30}>30 minutes</option>
+                      <option value={60}>1 hour</option>
+                      <option value={120}>2 hours</option>
+                      <option value={240}>4 hours</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="orb-phrases">Wake Phrases</label>
+                    <textarea
+                      id="orb-phrases"
+                      rows="2"
+                      value={config.orb.wake_phrases.join(", ")}
+                      oninput={(event) => setOrbWakePhrases(event.currentTarget.value)}
+                      placeholder="hey assistant"
+                      spellcheck="false"
+                    ></textarea>
+                    <p class="field-help">Comma or line separated. The first phrase drives the Orb-only native listener today.</p>
+                  </div>
+                  <div class="field">
+                    <label for="orb-follow-up">Follow-up Window (seconds)</label>
+                    <input id="orb-follow-up" type="number" min="1" max="60" bind:value={config.orb.follow_up_seconds} />
+                  </div>
+                </div>
+                <div class="toggle-grid">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.orb.auto_expand_on_wake} />
+                    Arrive at center screen when listening starts, then settle to the side
+                  </label>
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.orb.armed_on_battery} />
+                    Keep wake listening ready on battery power
+                  </label>
+                </div>
+                <div class="settings-group">
+                  <div class="settings-group-header">
+                    <h3>Conversation Routing</h3>
+                  </div>
+                  <div class="field-row">
+                    <div class="field">
+                      <label for="voice-thread">Default Conversation Thread</label>
+                      <input
+                        id="voice-thread"
+                        type="text"
+                        bind:value={config.voice.default_thread_id}
+                        placeholder="general"
+                        spellcheck="false"
+                      />
+                      <p class="field-help">Used when the Orb starts without an existing conversation context.</p>
+                    </div>
+                    <div class="field">
+                      <button class="secondary" type="button" onclick={() => openSharedSettings("voice")}>
+                      Choose speaking voices
+                    </button>
+                    <p class="field-help">Opens Voice &amp; calls in the {PRODUCT_NAME} tab. Saved voices also apply to the Orb.</p>
+                    <label for="live-profile">Realtime Voice Engine</label>
+                      {#if liveEngineOptions.length > 0}
+                        <select id="live-profile" bind:value={config.voice.live_ptt_realtime_profile}>
+                          {#if config.voice.live_ptt_realtime_profile && !liveEngineOptions.some((option) => option.profile_id === config?.voice.live_ptt_realtime_profile)}
+                            <option value={config.voice.live_ptt_realtime_profile}>
+                              {config.voice.live_ptt_realtime_profile} · no longer offered by the backend
+                            </option>
+                          {/if}
+                          {#each liveEngineOptions as option (option.profile_id)}
+                            <option value={option.profile_id} disabled={!option.available}>
+                              {liveEngineOptionLabel(option)}
+                            </option>
+                          {/each}
+                        </select>
+                        <p class="field-help">The engine the Orb's Live conversation mode calls, fetched from the backend's realtime catalog. Greyed entries are missing a credential on the backend.</p>
+                      {:else}
+                        <input
+                          id="live-profile"
+                          type="text"
+                          bind:value={config.voice.live_ptt_realtime_profile}
+                          placeholder="voice_realtime_openai_backend"
+                          spellcheck="false"
+                        />
+                        <p class="field-help">The backend's realtime catalog could not be fetched, so this is the profile id as configured there.</p>
+                      {/if}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+            {#if isMacDesktop}
+              <div class="settings-item" data-settings-card="contextual-assist" class:filtered-out={cardHidden("contextual-assist")}>
+                <!-- Contextual Assist currently depends on AppKit focus and Option-key gestures. -->
+                <section class="card">
+                <h2>Contextual Assist</h2>
+                <p class="section-desc">
+                  Host-native writing and task affordance for selected text and
+                  focused writable fields. Use a single left Option tap to open the
+                  menu centered in the focused window when an eligible target is
+                  active; double left Option continues to open the main overlay.
+                  Generation and insertion are wired later; the trigger surface is
+                  enabled by default.
+                </p>
+                <div class="toggle-grid">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.contextual_assist.enabled} />
+                    Enable Contextual Assist
+                  </label>
+                  <label class="toggle-label">
+                    <input
+                      type="checkbox"
+                      bind:checked={config.contextual_assist.show_on_selected_text}
+                      disabled={!config.contextual_assist.enabled}
+                    />
+                    Enable selected text targets
+                  </label>
+                  <label class="toggle-label">
+                    <input
+                      type="checkbox"
+                      bind:checked={config.contextual_assist.show_in_writable_fields}
+                      disabled={!config.contextual_assist.enabled}
+                    />
+                    Enable writable field targets
+                  </label>
+                </div>
+                <div class="field">
+                  <label for="contextual-personality">Default Personality</label>
+                  <select
+                    id="contextual-personality"
+                    bind:value={config.contextual_assist.default_personality}
+                    disabled={!config.contextual_assist.enabled}
+                  >
+                    {#each contextualPersonalityOptions as option}
+                      <option value={option.id}>{option.label}</option>
+                    {/each}
+                  </select>
+                  <p class="field-help">The expanded assist palette can switch personality before generation. Installed personalities are loaded from the workspace-scoped skills catalog.</p>
+                  {#if contextualPersonalitiesLoading}
+                    <p class="field-help">Loading workspace personalities...</p>
+                  {:else if contextualPersonalitiesError}
+                    <p class="inline-notice warning">{contextualPersonalitiesError}</p>
+                  {/if}
+                </div>
+                <div class="field">
+                  <label for="contextual-excluded-apps">Excluded Apps</label>
+                  <input
+                    id="contextual-excluded-apps"
+                    type="text"
+                    value={config.contextual_assist.excluded_apps.join(", ")}
+                    disabled={!config.contextual_assist.enabled}
+                    placeholder="Optional, comma-separated app names"
+                    oninput={(event) => {
+                      setContextualAssistExcludedApps((event.currentTarget as HTMLInputElement).value);
+                    }}
+                  />
+                  <p class="field-help">Native app matching suppresses the left-Option menu in matching apps.</p>
+                </div>
+                <div class="voice-test-panel">
+                  <div class="voice-test-copy">
+                    <p class="voice-test-title">Surface Preview</p>
+                    <p>Open the compact assist menu. Action buttons are intentionally placeholders.</p>
+                  </div>
+                  <button class="secondary" onclick={openContextualAssistPreview}>
+                    Preview
+                  </button>
+                </div>
+                </section>
               </div>
-              <button class="secondary" onclick={() => loadHotkeyMappings(true)} disabled={hotkeyMappingsLoading}>
-                {hotkeyMappingsLoading ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            {#if hotkeyMappingsError}
-              <div class="inline-notice error">{hotkeyMappingsError}</div>
             {/if}
+          </section>
 
-            <div class="key-mapping-meta">
-              <span>Live from desktop runtime</span>
-              <strong>Updated {hotkeyLastUpdatedLabel()}</strong>
+          <section id="engine" class="settings-category" class:filtered-out={categoryHidden("engine")} aria-labelledby="settings-category-engine">
+            <h2 class="settings-category-title" id="settings-category-engine">{categoryLabel("engine")}</h2>
+            <div class="settings-item" data-settings-card="signed-in-scope" class:filtered-out={cardHidden("signed-in-scope")}>
+              <!-- Which scope this tray's bearer operates in -->
+              <section class="card">
+                <h2>Signed-in scope</h2>
+                {#if sessionOrigin}<p class="section-desc">Server: <code>{sessionOrigin}</code></p>{/if}
+                {#if sessionScope}
+                  <p class="section-desc">
+                    Signed in as <strong>{sessionScope.identity}</strong> in workspace
+                    <strong>{sessionScope.workspace}</strong> — scope
+                    <code>{sessionScope.principal}/{sessionScope.workspace}</code>.
+                    This desktop session is saved securely for this server.
+                  </p>
+                  <button onclick={signOutDesktop} disabled={sessionBusy}>Sign out of desktop</button>
+                {:else if sessionScopeChecked}
+                  <p class="section-desc">
+                    Sign in to connect desktop features to this server. Your session is
+                    saved in the system credential store; your password is not saved.
+                  </p>
+                  <form onsubmit={signInDesktop}>
+                    <div class="field-row">
+                      <div class="field">
+                        <label for="desktop-session-username">Username</label>
+                        <input id="desktop-session-username" autocomplete="username" bind:value={sessionUsername} required disabled={sessionBusy} />
+                      </div>
+                      <div class="field">
+                        <label for="desktop-session-password">Password</label>
+                        <input id="desktop-session-password" type="password" autocomplete="current-password" bind:value={sessionPassword} required disabled={sessionBusy} />
+                      </div>
+                    </div>
+                    <button type="submit" class="primary" disabled={sessionBusy}>{sessionBusy ? "Signing in…" : "Sign in to desktop"}</button>
+                  </form>
+                {:else}
+                  <p class="section-desc">Resolving session…</p>
+                {/if}
+                {#if sessionError}<p role="alert">{sessionError}</p>{/if}
+              </section>
             </div>
+            <div class="settings-item" data-settings-card="network" class:filtered-out={cardHidden("network")}>
+              <!-- Network -->
+              <section class="card">
+                <h2>Network</h2>
+                <div class="field">
+                  <label for="engine-base-url">Backend URL</label>
+                  <input
+                    id="engine-base-url"
+                    type="url"
+                    bind:value={config.network.engine_base_url}
+                    placeholder={`http://127.0.0.1:${config.network.magician_port}`}
+                    spellcheck="false"
+                  />
+                  <p class="field-help">
+                    Leave blank for the local backend, or enter the HTTPS URL of an approved remote backend. Desktop credentials remain isolated per server origin.
+                  </p>
+                </div>
+                <div class="connect-route-panel">
+                  <div class="connect-route-heading">
+                    <div>
+                      <strong>Remote device route</strong>
+                      <p class="field-help">
+                        Phones using Remote keep the stable endpoint <code>{connectRouteStatus?.public_origin ?? "connect.<your-zone>"}</code>. Choose which healthy Magician backend receives its API traffic.
+                      </p>
+                    </div>
+                    {#if connectRouteStatus}
+                      <span class="route-pill">Active: {connectRouteStatus.selected_backend}</span>
+                    {/if}
+                  </div>
+                  <div class="field">
+                    <label for="connect-route-target">Remote traffic target</label>
+                    <select id="connect-route-target" bind:value={connectRouteTarget} disabled={connectRouteBusy}>
+                      <option value="local">Backend on this computer</option>
+                      <option value="container">Local backend container</option>
+                      <option value="remote">Remote backend server or container</option>
+                    </select>
+                  </div>
+                  {#if connectRouteTarget === "remote"}
+                    <div class="field">
+                      <label for="connect-route-remote-url">Remote backend origin</label>
+                      <input
+                        id="connect-route-remote-url"
+                        type="url"
+                        bind:value={connectRouteRemoteUrl}
+                        placeholder="https://engine.example.com"
+                        autocomplete="url"
+                        spellcheck="false"
+                        disabled={connectRouteBusy}
+                      />
+                      <p class="field-help">
+                        Enter the backend's direct HTTPS origin. Do not enter {connectRouteStatus?.public_origin ?? "the public connection URL"}, which would create a routing loop.
+                      </p>
+                    </div>
+                  {/if}
+                  {#if connectRouteStatus}
+                    <div class="connect-route-health" aria-label="Remote device route targets">
+                      <span>This computer <strong>{connectRouteStatus.local_health}</strong></span>
+                      <span>Local container <strong>{connectRouteStatus.container_health}</strong></span>
+                      <span>Remote server <strong>{connectRouteStatus.remote_health}</strong></span>
+                    </div>
+                    <p class="field-help">{connectRouteStatus.management_message}</p>
+                  {/if}
+                  {#if connectRouteMessage}<p class="inline-notice success" role="status">{connectRouteMessage}</p>{/if}
+                  {#if connectRouteError}<p class="inline-notice error" role="alert">{connectRouteError}</p>{/if}
+                  <div class="connect-route-actions">
+                    <button class="secondary compact" type="button" onclick={() => loadConnectRouteStatus(true)} disabled={connectRouteBusy}>Refresh</button>
+                    <button
+                      class="primary"
+                      type="button"
+                      onclick={applyConnectRoute}
+                      disabled={connectRouteBusy || !connectRouteStatus?.management_available || (connectRouteTarget === "remote" && !connectRouteRemoteUrl.trim())}
+                    >
+                      {connectRouteBusy ? "Verifying and switching…" : "Use this route"}
+                    </button>
+                  </div>
+                </div>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="magician-port">Magician backend port</label>
+                    <input id="magician-port" type="number" bind:value={config.network.magician_port}
+                           min="1024" max="65535" />
+                  </div>
+                  <div class="field">
+                    <label for="magicutor-port">Magicutor Port</label>
+                    <input id="magicutor-port" type="number" bind:value={config.network.magicutor_port}
+                           min="1024" max="65535" />
+                  </div>
+                </div>
+              </section>
+            </div>
+            <div class="settings-item" data-settings-card="resources" class:filtered-out={cardHidden("resources")}>
+              <!-- Resources -->
+              <section class="card">
+                <h2>Resources</h2>
+                <div class="field-row">
+                  <div class="field">
+                    <label for="cpu">CPU Cores</label>
+                    <input id="cpu" type="number" bind:value={config.container.cpu_cores}
+                           min="1" max="16" step="0.5" />
+                  </div>
+                  <div class="field">
+                    <label for="memory">Memory (GB)</label>
+                    <input id="memory" type="number" bind:value={config.container.memory_gb}
+                           min="1" max="64" />
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
 
-            {#if hotkeyMappings}
-              <div class="key-mapping-groups">
-                {#each hotkeyMappings.groups as group}
-                  <div class="key-mapping-group">
-                    <h3>{group.label}</h3>
-                    <div class="key-mapping-list">
-                      {#each group.items as item}
-                        <div class="key-mapping-row" class:disabled={!item.active}>
-                          <div class="key-mapping-main">
-                            <div class="key-mapping-title-row">
-                              <strong>{item.label}</strong>
-                              <span class="key-status" class:active={item.active}>
-                                {item.active ? "Active" : "Disabled"}
+          <section id="general" class="settings-category" class:filtered-out={categoryHidden("general")} aria-labelledby="settings-category-general">
+            <h2 class="settings-category-title" id="settings-category-general">{categoryLabel("general")}</h2>
+            <div class="settings-item" data-settings-card="general-options" class:filtered-out={cardHidden("general-options")}>
+              <!-- General -->
+              <section class="card">
+                <h2>General</h2>
+                <div class="field">
+                  <label for="image">Container Image</label>
+                  <input id="image" type="text" bind:value={config.general.container_image} />
+                </div>
+                <div class="field">
+                  <label for="runtime-root">Local engine data folder</label>
+                  <input id="runtime-root" type="text" bind:value={config.general.runtime_root} placeholder="~/MagicianNotes" spellcheck="false" />
+                  <p class="field-help">Used by a desktop-managed local container. Remote engines keep their data on the server.</p>
+                </div>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input
+                      type="checkbox"
+                      bind:checked={config.general.manage_runtime_stack}
+                      disabled={isWindowsDesktop}
+                    />
+                    Manage a local container backend
+                  </label>
+                  <p class="field-help">
+                    {#if isWindowsDesktop}
+                      Windows uses a remote backend in this release. Set its URL in Network; host CUA and the browser extension continue to run locally.
+                    {:else}
+                      Disable this when the desktop should connect to a separately managed local or remote backend.
+                    {/if}
+                  </p>
+                </div>
+                {#if isMacDesktop}
+                  <div class="field">
+                    <label for="overlay-gesture">Quick Overlay Gesture</label>
+                    <select id="overlay-gesture" bind:value={config.general.quick_overlay_gesture}>
+                      <option value="Double Left Option">Double Left ⌥</option>
+                      <option value="Double Right Option">Double Right ⌥</option>
+                      <option value="Disabled">Disabled</option>
+                    </select>
+                    <p class="field-help">Double-tap to summon the quick overlay. Needs Input Monitoring permission (same as the push-to-talk gesture).</p>
+                  </div>
+                {/if}
+                <div class="field">
+                  <label for="overlay-shortcut">Quick Overlay Shortcut (optional)</label>
+                  <input
+                    id="overlay-shortcut"
+                    type="text"
+                    bind:value={config.general.quick_overlay_shortcut}
+                    placeholder="Optional, e.g. CmdOrCtrl+Shift+Space"
+                    spellcheck="false"
+                  />
+                  <p class="field-help">Optional global chord for the quick overlay. Tauri syntax, e.g. <code>CmdOrCtrl+Shift+Space</code>.</p>
+                </div>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.general.launch_at_login} />
+                    Launch at login
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.general.notifications_enabled} />
+                    Show notifications
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.general.prevent_sleep} />
+                    Prevent this {desktopDeviceLabel} from sleeping while app is open
+                  </label>
+                </div>
+              </section>
+            </div>
+            <div class="settings-item" data-settings-card="updates" class:filtered-out={cardHidden("updates")}>
+              <!-- Updates -->
+              <section class="card">
+                <h2>Updates</h2>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.updates.auto_check} />
+                    Automatically check for updates
+                  </label>
+                </div>
+                <div class="toggle-row">
+                  <label class="toggle-label">
+                    <input type="checkbox" bind:checked={config.updates.auto_update_container} />
+                    Automatically apply container updates
+                  </label>
+                </div>
+                <button class="secondary" onclick={checkUpdates}>Check for Updates Now</button>
+              </section>
+            </div>
+            <div class="settings-item" data-settings-card="uninstall" class:filtered-out={cardHidden("uninstall")}>
+              <!-- Uninstall -->
+              <section class="card danger-zone">
+                <h2>Uninstall</h2>
+                <p class="section-desc">Remove {PRODUCT_NAME} components from your system. Only artifacts installed by {PRODUCT_NAME} will be removed — pre-existing tools are left in place.</p>
+
+                <div class="uninstall-actions">
+                  <button class="danger" onclick={() => requestUninstall("tools-and-data")} disabled={uninstalling}>
+                    {uninstalling ? "Removing..." : "Remove Everything"}
+                  </button>
+                  <div class="uninstall-secondary">
+                    <button class="secondary" onclick={() => requestUninstall("only-tools")} disabled={uninstalling}>
+                      Remove Tools Only
+                    </button>
+                    <button class="secondary" onclick={() => requestUninstall("only-data")} disabled={uninstalling}>
+                      Remove Data Only
+                    </button>
+                  </div>
+                </div>
+                <p class="hint"><strong>Remove Everything</strong> — container, runtime tools, and data directories.<br/>
+                  <strong>Remove Tools Only</strong> — container and runtime tools; keeps your data.<br/>
+                  <strong>Remove Data Only</strong> — data directories; keeps tools for reinstall.</p>
+              </section>
+            </div>
+          </section>
+
+          <section id="keys" class="settings-category" class:filtered-out={categoryHidden("keys")} aria-labelledby="settings-category-keys">
+            <h2 class="settings-category-title" id="settings-category-keys">{categoryLabel("keys")}</h2>
+            <div class="settings-item" data-settings-card="key-mappings" class:filtered-out={cardHidden("key-mappings")}>
+              <section class="card key-mappings-card">
+                <div class="card-header-row">
+                  <div>
+                    <h2>Key Mappings</h2>
+                    <p class="section-desc">
+                      Current desktop triggers and typed composer commands for writing assistant, voice, quick automate, tutor, copilot, and screen capture.
+                    </p>
+                  </div>
+                  <button class="secondary" onclick={() => loadHotkeyMappings(true)} disabled={hotkeyMappingsLoading}>
+                    {hotkeyMappingsLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+
+                {#if hotkeyMappingsError}
+                  <div class="inline-notice error">{hotkeyMappingsError}</div>
+                {/if}
+
+                <div class="key-mapping-meta">
+                  <span>Live from desktop runtime</span>
+                  <strong>Updated {hotkeyLastUpdatedLabel()}</strong>
+                </div>
+
+                {#if hotkeyMappings}
+                  <div class="key-mapping-groups">
+                    {#each hotkeyMappings.groups as group}
+                      <div class="key-mapping-group">
+                        <h3>{group.label}</h3>
+                        <div class="key-mapping-list">
+                          {#each group.items as item}
+                            <div class="key-mapping-row" class:disabled={!item.active}>
+                              <div class="key-mapping-main">
+                                <div class="key-mapping-title-row">
+                                  <strong>{item.label}</strong>
+                                  <span class="key-status" class:active={item.active}>
+                                    {item.active ? "Active" : "Disabled"}
+                                  </span>
+                                </div>
+                                <p>{item.description}</p>
+                                {#if item.note}
+                                  <span class="key-note">{item.note}</span>
+                                {/if}
+                              </div>
+                              <div class="key-mapping-trigger">
+                                <span>Trigger</span>
+                                <code>{item.trigger}</code>
+                              </div>
+                              <div class="key-mapping-source">
+                                <span>Source</span>
+                                <strong>{item.source}</strong>
+                              </div>
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {:else if hotkeyMappingsLoading}
+                  <p class="section-desc">Loading key mappings...</p>
+                {:else}
+                  <button class="primary" onclick={() => loadHotkeyMappings(true)}>Load Key Mappings</button>
+                {/if}
+              </section>
+            </div>
+            <div class="settings-item" data-settings-card="env-map" class:filtered-out={cardHidden("env-map")}>
+              <section class="card env-map-card">
+                <div class="card-header-row">
+                  <div>
+                    <h2>Environment Mapping</h2>
+                    <p class="section-desc">
+                      Config-owned settings and their environment override names.
+                    </p>
+                  </div>
+                  <button class="secondary" onclick={loadEnvironment} disabled={envLoading}>
+                    {envLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+
+                {#if envSnapshot}
+                  <div class="env-meta">
+                    <div>
+                      <span>Mode</span>
+                      <strong>{envSnapshot.mode}</strong>
+                    </div>
+                    <div>
+                      <span>File</span>
+                      <code>{envSnapshot.path}</code>
+                    </div>
+                    <div>
+                      <span>Status</span>
+                      <strong>{envSnapshot.exists ? "Found" : "Will be created"}</strong>
+                    </div>
+                  </div>
+                {/if}
+
+                {#if envError}
+                  <div class="inline-notice error">{envError}</div>
+                {/if}
+
+                {#if envSnapshot}
+                  <div class="key-mapping-meta">
+                    <span>Known variables</span>
+                    <strong>{envKnownEntryCount()}</strong>
+                  </div>
+                  <div class="env-map-groups">
+                    {#each envKnownCategories() as category}
+                      <div class="env-category">
+                        <h4>{category}</h4>
+                        <div class="env-map-list">
+                          {#each envMappingEntriesForCategory(category) as entry}
+                            <div
+                              class="env-map-row"
+                              class:override-active={entry.present && !entry.empty}
+                              class:env-only={!entry.config_path}
+                            >
+                              <div class="env-map-main">
+                                <strong>{entry.label}</strong>
+                                <code>{entry.key}</code>
+                                <span>{entry.description}</span>
+                              </div>
+                              <div class="env-map-config">
+                                <span>Config path</span>
+                                <code>{envConfigPath(entry)}</code>
+                              </div>
+                              <div class="env-map-state">
+                                <span>Precedence</span>
+                                <strong>{envMappingStatusLabel(entry)}</strong>
+                              </div>
+                            </div>
+                          {/each}
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {:else if envLoading}
+                  <p class="section-desc">Loading environment mapping...</p>
+                {:else}
+                  <button class="primary" onclick={loadEnvironment}>Load Environment Mapping</button>
+                {/if}
+              </section>
+            </div>
+            <div class="settings-item" data-settings-card="environment" class:filtered-out={cardHidden("environment")}>
+              <section class="card env-card">
+                <div class="card-header-row">
+                  <div>
+                    <h2>Environment</h2>
+                    <p class="section-desc">
+                      Edit the active env file used for this desktop run. Values are applied after the runtime is restarted.
+                    </p>
+                  </div>
+                  <button class="secondary" onclick={loadEnvironment} disabled={envLoading}>
+                    {envLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+
+                {#if envSnapshot}
+                  <div class="env-meta">
+                    <div>
+                      <span>Mode</span>
+                      <strong>{envSnapshot.mode}</strong>
+                    </div>
+                    <div>
+                      <span>File</span>
+                      <code>{envSnapshot.path}</code>
+                    </div>
+                    <div>
+                      <span>Status</span>
+                      <strong>{envSnapshot.exists ? "Found" : "Will be created"}</strong>
+                    </div>
+                  </div>
+                {/if}
+
+                {#if envMessage}
+                  <div class="inline-notice success">{envMessage}</div>
+                {/if}
+                {#if envError}
+                  <div class="inline-notice error">{envError}</div>
+                {/if}
+
+                {#if envSnapshot}
+                  <div class="settings-group">
+                    <div class="settings-group-header">
+                      <h3>Known Variables</h3>
+                    </div>
+                    {#each envKnownCategories() as category}
+                      <div class="env-category">
+                        <h4>{category}</h4>
+                        <div class="env-list">
+                          {#each envEntriesForCategory(category) as entry}
+                            <div class="env-row" class:missing={!entry.present}>
+                              <div class="env-key">
+                                <strong>{entry.label}</strong>
+                                <code>{entry.key}</code>
+                                <span>{entry.description}</span>
+                              </div>
+                              <div class="env-value">
+                                {#if envEditing[entry.key] !== undefined}
+                                  <input
+                                    type="text"
+                                    bind:value={envEditing[entry.key]}
+                                    spellcheck="false"
+                                    autocomplete="off"
+                                  />
+                                  <div class="env-actions">
+                                    <button
+                                      class="primary compact"
+                                      onclick={() => saveEnvKey(entry.key)}
+                                      disabled={envSavingKey === entry.key}
+                                    >
+                                      {envSavingKey === entry.key ? "Saving..." : "Save"}
+                                    </button>
+                                    <button class="secondary compact" onclick={() => cancelEnvEdit(entry.key)}>
+                                      Cancel
+                                    </button>
+                                  </div>
+                                {:else}
+                                  <code class:secret-value={entry.secret && !envIsRevealed(entry.key)}>
+                                    {envValueForDisplay(entry)}
+                                  </code>
+                                  <div class="env-actions">
+                                    {#if entry.present}
+                                      {#if envIsRevealed(entry.key)}
+                                        <button class="secondary compact" onclick={() => hideEnvKey(entry.key)}>
+                                          Hide
+                                        </button>
+                                      {:else}
+                                        <button class="secondary compact" onclick={() => revealEnvKey(entry.key)}>
+                                          Reveal
+                                        </button>
+                                      {/if}
+                                      <button class="secondary compact" onclick={() => copyEnvKey(entry.key)}>
+                                        Copy
+                                      </button>
+                                    {/if}
+                                    <button class="secondary compact" onclick={() => startEnvEdit(entry)}>
+                                      Edit
+                                    </button>
+                                    {#if entry.present}
+                                      <button
+                                        class="danger compact"
+                                        onclick={() => removeEnvKey(entry.key)}
+                                        disabled={envSavingKey === entry.key}
+                                      >
+                                        Remove
+                                      </button>
+                                    {/if}
+                                  </div>
+                                {/if}
+                              </div>
+                              <span
+                                class="env-status"
+                                class:set={entry.present && !entry.empty}
+                                class:empty={entry.empty}
+                              >
+                                {envStatusLabel(entry)}
                               </span>
                             </div>
-                            <p>{item.description}</p>
-                            {#if item.note}
-                              <span class="key-note">{item.note}</span>
-                            {/if}
-                          </div>
-                          <div class="key-mapping-trigger">
-                            <span>Trigger</span>
-                            <code>{item.trigger}</code>
-                          </div>
-                          <div class="key-mapping-source">
-                            <span>Source</span>
-                            <strong>{item.source}</strong>
-                          </div>
+                          {/each}
                         </div>
-                      {/each}
+                      </div>
+                    {/each}
+                  </div>
+
+                  <div class="settings-group">
+                    <div class="settings-group-header">
+                      <h3>Add Variable</h3>
+                    </div>
+                    <div class="env-add-row">
+                      <div class="field">
+                        <label for="new-env-key">Key</label>
+                        <input
+                          id="new-env-key"
+                          type="text"
+                          bind:value={newEnvKey}
+                          placeholder="CUSTOM_API_KEY"
+                          spellcheck="false"
+                          autocomplete="off"
+                        />
+                      </div>
+                      <div class="field">
+                        <label for="new-env-value">Value</label>
+                        <input
+                          id="new-env-value"
+                          type="text"
+                          bind:value={newEnvValue}
+                          placeholder="value"
+                          spellcheck="false"
+                          autocomplete="off"
+                        />
+                      </div>
+                      <button
+                        class="primary env-add-button"
+                        onclick={addEnvKey}
+                        disabled={!envKeyIsValid(newEnvKey) || envSavingKey === newEnvKey.trim()}
+                      >
+                        Add
+                      </button>
                     </div>
                   </div>
-                {/each}
-              </div>
-            {:else if hotkeyMappingsLoading}
-              <p class="section-desc">Loading key mappings...</p>
-            {:else}
-              <button class="primary" onclick={() => loadHotkeyMappings(true)}>Load Key Mappings</button>
-            {/if}
-          </section>
-        </div>
-      {:else if activeTab === "envMapping"}
-        <div class="sections">
-          <section class="card env-map-card">
-            <div class="card-header-row">
-              <div>
-                <h2>Environment Mapping</h2>
-                <p class="section-desc">
-                  Config-owned settings and their environment override names.
-                </p>
-              </div>
-              <button class="secondary" onclick={loadEnvironment} disabled={envLoading}>
-                {envLoading ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
 
-            {#if envSnapshot}
-              <div class="env-meta">
-                <div>
-                  <span>Mode</span>
-                  <strong>{envSnapshot.mode}</strong>
-                </div>
-                <div>
-                  <span>File</span>
-                  <code>{envSnapshot.path}</code>
-                </div>
-                <div>
-                  <span>Status</span>
-                  <strong>{envSnapshot.exists ? "Found" : "Will be created"}</strong>
-                </div>
-              </div>
-            {/if}
-
-            {#if envError}
-              <div class="inline-notice error">{envError}</div>
-            {/if}
-
-            {#if envSnapshot}
-              <div class="key-mapping-meta">
-                <span>Known variables</span>
-                <strong>{envKnownEntryCount()}</strong>
-              </div>
-              <div class="env-map-groups">
-                {#each envKnownCategories() as category}
-                  <div class="env-category">
-                    <h4>{category}</h4>
-                    <div class="env-map-list">
-                      {#each envMappingEntriesForCategory(category) as entry}
-                        <div
-                          class="env-map-row"
-                          class:override-active={entry.present && !entry.empty}
-                          class:env-only={!entry.config_path}
-                        >
-                          <div class="env-map-main">
-                            <strong>{entry.label}</strong>
-                            <code>{entry.key}</code>
-                            <span>{entry.description}</span>
-                          </div>
-                          <div class="env-map-config">
-                            <span>Config path</span>
-                            <code>{envConfigPath(entry)}</code>
-                          </div>
-                          <div class="env-map-state">
-                            <span>Precedence</span>
-                            <strong>{envMappingStatusLabel(entry)}</strong>
-                          </div>
-                        </div>
-                      {/each}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {:else if envLoading}
-              <p class="section-desc">Loading environment mapping...</p>
-            {:else}
-              <button class="primary" onclick={loadEnvironment}>Load Environment Mapping</button>
-            {/if}
-          </section>
-        </div>
-      {:else if activeTab === "environment"}
-        <div class="sections">
-          <section class="card env-card">
-            <div class="card-header-row">
-              <div>
-                <h2>Environment</h2>
-                <p class="section-desc">
-                  Edit the active env file used for this desktop run. Values are applied after the runtime is restarted.
-                </p>
-              </div>
-              <button class="secondary" onclick={loadEnvironment} disabled={envLoading}>
-                {envLoading ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-
-            {#if envSnapshot}
-              <div class="env-meta">
-                <div>
-                  <span>Mode</span>
-                  <strong>{envSnapshot.mode}</strong>
-                </div>
-                <div>
-                  <span>File</span>
-                  <code>{envSnapshot.path}</code>
-                </div>
-                <div>
-                  <span>Status</span>
-                  <strong>{envSnapshot.exists ? "Found" : "Will be created"}</strong>
-                </div>
-              </div>
-            {/if}
-
-            {#if envMessage}
-              <div class="inline-notice success">{envMessage}</div>
-            {/if}
-            {#if envError}
-              <div class="inline-notice error">{envError}</div>
-            {/if}
-
-            {#if envSnapshot}
-              <div class="settings-group">
-                <div class="settings-group-header">
-                  <h3>Known Variables</h3>
-                </div>
-                {#each envKnownCategories() as category}
-                  <div class="env-category">
-                    <h4>{category}</h4>
-                    <div class="env-list">
-                      {#each envEntriesForCategory(category) as entry}
-                        <div class="env-row" class:missing={!entry.present}>
-                          <div class="env-key">
-                            <strong>{entry.label}</strong>
-                            <code>{entry.key}</code>
-                            <span>{entry.description}</span>
-                          </div>
-                          <div class="env-value">
-                            {#if envEditing[entry.key] !== undefined}
-                              <input
-                                type="text"
-                                bind:value={envEditing[entry.key]}
-                                spellcheck="false"
-                                autocomplete="off"
-                              />
-                              <div class="env-actions">
-                                <button
-                                  class="primary compact"
-                                  onclick={() => saveEnvKey(entry.key)}
-                                  disabled={envSavingKey === entry.key}
-                                >
-                                  {envSavingKey === entry.key ? "Saving..." : "Save"}
-                                </button>
-                                <button class="secondary compact" onclick={() => cancelEnvEdit(entry.key)}>
-                                  Cancel
-                                </button>
-                              </div>
-                            {:else}
-                              <code class:secret-value={entry.secret && !envIsRevealed(entry.key)}>
-                                {envValueForDisplay(entry)}
-                              </code>
-                              <div class="env-actions">
-                                {#if entry.present}
+                  <details class="settings-group advanced-env">
+                    <summary>Additional Variables ({envAdditionalEntries().length})</summary>
+                    {#if envAdditionalEntries().length === 0}
+                      <p class="field-help">No custom variables are present in the active env file.</p>
+                    {:else}
+                      <div class="env-list compact-list">
+                        {#each envAdditionalEntries() as entry}
+                          <div class="env-row">
+                            <div class="env-key">
+                              <strong>{entry.key}</strong>
+                              <span>{entry.description}</span>
+                            </div>
+                            <div class="env-value">
+                              {#if envEditing[entry.key] !== undefined}
+                                <input
+                                  type="text"
+                                  bind:value={envEditing[entry.key]}
+                                  spellcheck="false"
+                                  autocomplete="off"
+                                />
+                                <div class="env-actions">
+                                  <button
+                                    class="primary compact"
+                                    onclick={() => saveEnvKey(entry.key)}
+                                    disabled={envSavingKey === entry.key}
+                                  >
+                                    {envSavingKey === entry.key ? "Saving..." : "Save"}
+                                  </button>
+                                  <button class="secondary compact" onclick={() => cancelEnvEdit(entry.key)}>
+                                    Cancel
+                                  </button>
+                                </div>
+                              {:else}
+                                <code class:secret-value={entry.secret && !envIsRevealed(entry.key)}>
+                                  {envValueForDisplay(entry)}
+                                </code>
+                                <div class="env-actions">
                                   {#if envIsRevealed(entry.key)}
                                     <button class="secondary compact" onclick={() => hideEnvKey(entry.key)}>
                                       Hide
@@ -2210,11 +2470,9 @@
                                   <button class="secondary compact" onclick={() => copyEnvKey(entry.key)}>
                                     Copy
                                   </button>
-                                {/if}
-                                <button class="secondary compact" onclick={() => startEnvEdit(entry)}>
-                                  Edit
-                                </button>
-                                {#if entry.present}
+                                  <button class="secondary compact" onclick={() => startEnvEdit(entry)}>
+                                    Edit
+                                  </button>
                                   <button
                                     class="danger compact"
                                     onclick={() => removeEnvKey(entry.key)}
@@ -2222,141 +2480,29 @@
                                   >
                                     Remove
                                   </button>
-                                {/if}
-                              </div>
-                            {/if}
-                          </div>
-                          <span
-                            class="env-status"
-                            class:set={entry.present && !entry.empty}
-                            class:empty={entry.empty}
-                          >
-                            {envStatusLabel(entry)}
-                          </span>
-                        </div>
-                      {/each}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-
-              <div class="settings-group">
-                <div class="settings-group-header">
-                  <h3>Add Variable</h3>
-                </div>
-                <div class="env-add-row">
-                  <div class="field">
-                    <label for="new-env-key">Key</label>
-                    <input
-                      id="new-env-key"
-                      type="text"
-                      bind:value={newEnvKey}
-                      placeholder="CUSTOM_API_KEY"
-                      spellcheck="false"
-                      autocomplete="off"
-                    />
-                  </div>
-                  <div class="field">
-                    <label for="new-env-value">Value</label>
-                    <input
-                      id="new-env-value"
-                      type="text"
-                      bind:value={newEnvValue}
-                      placeholder="value"
-                      spellcheck="false"
-                      autocomplete="off"
-                    />
-                  </div>
-                  <button
-                    class="primary env-add-button"
-                    onclick={addEnvKey}
-                    disabled={!envKeyIsValid(newEnvKey) || envSavingKey === newEnvKey.trim()}
-                  >
-                    Add
-                  </button>
-                </div>
-              </div>
-
-              <details class="settings-group advanced-env">
-                <summary>Additional Variables ({envAdditionalEntries().length})</summary>
-                {#if envAdditionalEntries().length === 0}
-                  <p class="field-help">No custom variables are present in the active env file.</p>
-                {:else}
-                  <div class="env-list compact-list">
-                    {#each envAdditionalEntries() as entry}
-                      <div class="env-row">
-                        <div class="env-key">
-                          <strong>{entry.key}</strong>
-                          <span>{entry.description}</span>
-                        </div>
-                        <div class="env-value">
-                          {#if envEditing[entry.key] !== undefined}
-                            <input
-                              type="text"
-                              bind:value={envEditing[entry.key]}
-                              spellcheck="false"
-                              autocomplete="off"
-                            />
-                            <div class="env-actions">
-                              <button
-                                class="primary compact"
-                                onclick={() => saveEnvKey(entry.key)}
-                                disabled={envSavingKey === entry.key}
-                              >
-                                {envSavingKey === entry.key ? "Saving..." : "Save"}
-                              </button>
-                              <button class="secondary compact" onclick={() => cancelEnvEdit(entry.key)}>
-                                Cancel
-                              </button>
-                            </div>
-                          {:else}
-                            <code class:secret-value={entry.secret && !envIsRevealed(entry.key)}>
-                              {envValueForDisplay(entry)}
-                            </code>
-                            <div class="env-actions">
-                              {#if envIsRevealed(entry.key)}
-                                <button class="secondary compact" onclick={() => hideEnvKey(entry.key)}>
-                                  Hide
-                                </button>
-                              {:else}
-                                <button class="secondary compact" onclick={() => revealEnvKey(entry.key)}>
-                                  Reveal
-                                </button>
+                                </div>
                               {/if}
-                              <button class="secondary compact" onclick={() => copyEnvKey(entry.key)}>
-                                Copy
-                              </button>
-                              <button class="secondary compact" onclick={() => startEnvEdit(entry)}>
-                                Edit
-                              </button>
-                              <button
-                                class="danger compact"
-                                onclick={() => removeEnvKey(entry.key)}
-                                disabled={envSavingKey === entry.key}
-                              >
-                                Remove
-                              </button>
                             </div>
-                          {/if}
-                        </div>
-                        <span class="env-status set">Set</span>
+                            <span class="env-status set">Set</span>
+                          </div>
+                        {/each}
                       </div>
-                    {/each}
-                  </div>
-                {/if}
-              </details>
+                    {/if}
+                  </details>
 
-              <p class="field-help">
-                The editor preserves comments and ordering where possible. Existing running processes keep their current environment until restarted.
-              </p>
-            {:else if envLoading}
-              <p class="section-desc">Loading environment...</p>
-            {:else}
-              <button class="primary" onclick={loadEnvironment}>Load Environment</button>
-            {/if}
+                  <p class="field-help">
+                    The editor preserves comments and ordering where possible. Existing running processes keep their current environment until restarted.
+                  </p>
+                {:else if envLoading}
+                  <p class="section-desc">Loading environment...</p>
+                {:else}
+                  <button class="primary" onclick={loadEnvironment}>Load Environment</button>
+                {/if}
+              </section>
+            </div>
           </section>
         </div>
-      {/if}
+      </div>
     {/if}
   {:else}
     <div class="loading">
@@ -2456,9 +2602,127 @@
     display: flex;
     flex-direction: column;
     padding: 24px;
-    max-width: 680px;
+    max-width: 1100px;
     margin: 0 auto;
     gap: 20px;
+  }
+
+  .window-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+  }
+
+  .window-tabs button {
+    min-height: 32px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 14px;
+    cursor: pointer;
+  }
+
+  .window-tabs button:hover {
+    color: var(--text);
+  }
+
+  .window-tabs button.active {
+    background: color-mix(in srgb, var(--accent) 22%, var(--bg-card));
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+    color: var(--text);
+    cursor: default;
+  }
+
+  .settings-body {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  .settings-content {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    min-width: 0;
+  }
+
+  .settings-category {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+    scroll-margin-top: 64px;
+  }
+
+  .settings-category-title {
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-display-local);
+    font-size: 18px;
+    font-weight: 700;
+    padding-bottom: 8px;
+  }
+
+  .settings-item {
+    border-radius: var(--radius, 8px);
+    min-width: 0;
+    scroll-margin-top: 64px;
+  }
+
+  /* Search hides cards (and empty categories) without unmounting them. */
+  .filtered-out {
+    display: none !important;
+  }
+
+  .settings-item:global(.settings-item-flash) {
+    animation: settings-item-flash 1.6s ease-out;
+  }
+
+  @keyframes settings-item-flash {
+    0%,
+    35% {
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 3px transparent;
+    }
+  }
+
+  .link-button {
+    background: none;
+    border: 0;
+    color: var(--accent-light, var(--accent));
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+    text-decoration: underline;
+  }
+
+  @media (max-width: 819px) {
+    .settings-body {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+    }
+
+    .settings-category,
+    .settings-item {
+      scroll-margin-top: 110px;
+    }
+
+    /* The category bar holds the top edge; saving moves to the bottom. */
+    .settings-save-bar {
+      top: auto;
+      bottom: 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 0;
+      box-shadow: 0 -10px 18px -18px rgba(0, 0, 0, 0.8);
+    }
   }
 
   .settings-header {
@@ -2508,64 +2772,6 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-  }
-
-  .settings-tabs {
-    display: inline-flex;
-    align-self: flex-start;
-    gap: 4px;
-    padding: 4px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--surface) 86%, var(--bg-subtle));
-  }
-
-  .settings-tabs button {
-    min-height: 30px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 13px;
-    font-weight: 600;
-    padding: 0 12px;
-    cursor: pointer;
-  }
-
-  .settings-tabs button.active {
-    background: var(--accent);
-    color: #fff;
-  }
-
-  .web-settings-card {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-    background:
-      linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 68%),
-      var(--bg-card);
-  }
-
-  .web-settings-card h2 {
-    margin: 2px 0 6px;
-  }
-
-  .settings-kicker {
-    margin: 0;
-    color: var(--accent-light, var(--accent));
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .web-settings-actions {
-    display: flex;
-    flex: 0 0 auto;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 156px;
   }
 
   .card h2 {
@@ -3440,17 +3646,6 @@
       grid-template-columns: 1fr;
     }
 
-    .web-settings-card {
-      align-items: stretch;
-      flex-direction: column;
-    }
-
-    .web-settings-actions {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      min-width: 0;
-    }
-
     .env-meta,
     .env-row,
     .env-add-row,
@@ -3461,15 +3656,6 @@
 
     .env-status {
       justify-self: start;
-    }
-
-    .settings-tabs {
-      width: 100%;
-      flex-wrap: wrap;
-    }
-
-    .settings-tabs button {
-      flex: 1 1 auto;
     }
 
     .card-header-row {

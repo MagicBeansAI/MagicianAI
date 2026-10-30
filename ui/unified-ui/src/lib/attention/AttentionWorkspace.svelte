@@ -16,7 +16,9 @@
 	 * Click any row → `respondToHitl(request)` opens the global
 	 * `AttentionPromptModal`, POSTs
 	 * canonically to `/api/magician/v2/hitl/{cid}/respond` with the
-	 * per-source dispatcher routing.
+	 * per-source dispatcher routing. A pending agentic choice or plain
+	 * confirmation also shows its answers as buttons on the row
+	 * (`attentionQuickChoices`); one click posts the same response.
 	 *
 	 */
 	import { get } from 'svelte/store';
@@ -701,6 +703,21 @@
 		}
 	}
 
+	/** One-click answer from a row's own buttons; refills the page like a prompt answer. */
+	async function chooseRowOption(
+		event: CustomEvent<{ row: AttentionDisplayRow; choiceId: string }>
+	): Promise<void> {
+		inboxRemovalsInFlight += 1;
+		try {
+			const result = await itemController.choose(event.detail.row, event.detail.choiceId);
+			if (result.status === 'resolved') {
+				await reconcileInboxAfterRemoval();
+			}
+		} finally {
+			inboxRemovalsInFlight -= 1;
+		}
+	}
+
 	/** Approve every pending code change on screen, then refill what they left. */
 	async function approveAllDiffs(): Promise<void> {
 		inboxRemovalsInFlight += 1;
@@ -857,6 +874,8 @@
 		skillEvolutionActionKey={$attentionActionState.skillEvolutionActionKey}
 		rollbackActionKey={$attentionActionState.rollbackActionKey}
 		stalledActionKey={$attentionActionState.stalledActionKey}
+		quickChoices
+		choosingKey={$attentionActionState.choosingKey}
 		showSearch={false}
 		showFilters={false}
 		skeletonRows={8}
@@ -864,6 +883,7 @@
 		on:skillaction={runSkillAction}
 		on:rollbackdecision={runRollbackDecision}
 		on:cancelstalled={cancelStalledWait}
+		on:choose={chooseRowOption}
 	>
 		<svelte:fragment slot="before-list">
 			{#if liveMeetings.length > 0 && activeCategory === 'all'}
@@ -1057,8 +1077,10 @@
 	}
 	.attention-page--compact .attention-page__search {
 		width: 100%;
-		font-size: 0.8125rem;
-		padding: 0.4375rem 0.625rem;
+		min-height: 0;
+		height: 1.875rem;
+		font-size: 0.75rem;
+		padding: 0.25rem 0.5625rem;
 	}
 	.attention-page--compact .attention-page__close,
 	.attention-page--compact .attention-page__view-btn,

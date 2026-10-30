@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+
 ## [Unreleased]
+
+- New macOS desktop-app watch (on by default, `--manage-desktop=0|1`) relaunches the tray app after a crash but not after Quit, via `start-desktop` / `stop-desktop` / `restart-desktop` / `status-desktop`.
+
+## [0.1.10] - 2026-10-23
+
+- Pass `MAGIC_SUPERVISOR_CONTROL_PORT` to Magician, which denies the unauthenticated control port to agents.
+- Opt-in `MAGICIAN_MALLOC_STACK_LOGGING` (and `_DIR`) enables macOS malloc stack logging for the backend on each supervised restart.
 
 ## [0.1.9] - 2026-10-06
 

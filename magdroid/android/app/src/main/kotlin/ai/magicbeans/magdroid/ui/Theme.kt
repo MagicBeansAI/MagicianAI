@@ -193,8 +193,13 @@ data class Palette(
     val washStops: List<Color> get() = wash ?: listOf(background, surface)
 }
 
-/** Rec. 709 luma, the same rule iOS uses to decide a theme is dark. */
-private fun Color.luminance(): Float = 0.2126f * red + 0.7152f * green + 0.0722f * blue
+/**
+ * Rec. 601 luma (0.299 / 0.587 / 0.114), the exact weights iOS's
+ * `ThemeManager.luminance(of:)` uses to decide a theme is dark — the two
+ * clients must classify a palette identically or their derived colours
+ * (borders, light/dark semantic variants) drift apart.
+ */
+private fun Color.luminance(): Float = 0.299f * red + 0.587f * green + 0.114f * blue
 
 /** A family is one identity with two variants; Settings lists families. */
 data class ThemeFamily(val name: String, val light: String, val dark: String) {
@@ -699,6 +704,17 @@ class ThemeStore private constructor(context: Context) {
     )
     val mode: StateFlow<AppearanceMode> = _mode.asStateFlow()
 
+    /** Whether this install has met the account's theme record once already
+     * (see [ThemeSync]): the first encounter may declare the local choice;
+     * afterwards the account's stored choice always wins. */
+    private val _accountSeeded = MutableStateFlow(store.getBoolean(KEY_ACCOUNT_SEEDED, false))
+    val accountSeeded: Boolean get() = _accountSeeded.value
+
+    fun markAccountSeeded() {
+        _accountSeeded.value = true
+        store.edit().putBoolean(KEY_ACCOUNT_SEEDED, true).apply()
+    }
+
     fun setFamily(id: String) {
         _familyId.value = id
         store.edit().putString(KEY_FAMILY, id).apply()
@@ -712,6 +728,7 @@ class ThemeStore private constructor(context: Context) {
     companion object {
         private const val KEY_FAMILY = "family"
         private const val KEY_MODE = "mode"
+        private const val KEY_ACCOUNT_SEEDED = "account_seeded"
 
         @Volatile
         private var instance: ThemeStore? = null

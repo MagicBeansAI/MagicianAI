@@ -498,7 +498,8 @@ pub(crate) async fn export_autonomous_tool_result(
         Ok(root) => root,
         Err(error) => return fail("export_unavailable", error.to_string()),
     };
-    let directory = root.join("workdir").join(EXPORTS_DIR);
+    let workdir = root.join("workdir");
+    let directory = workdir.join(EXPORTS_DIR);
     if let Err(error) = std::fs::create_dir_all(&directory) {
         return fail("export_unavailable", error.to_string());
     }
@@ -520,12 +521,13 @@ pub(crate) async fn export_autonomous_tool_result(
         _ => None,
     };
     let path_text = path.display().to_string();
-    let workspace_path = scope_relative_path(ctx, &path);
+    let workspace_path = Path::new(EXPORTS_DIR).join(&file_name);
     Ok(ActionResult::text(
         json!({
             "status": "ok",
             "path": path_text,
-            "workspace_path": workspace_path,
+            "workspace_path": workspace_path.to_string_lossy(),
+            "workspace_root": workdir,
             "bytes": content.len(),
             "sha256": sha256,
             "value_type": json_type_name(&value),
@@ -533,30 +535,14 @@ pub(crate) async fn export_autonomous_tool_result(
             "preview": preview,
             "preview_truncated": content.chars().count() > PREVIEW_CHARS,
             "how_to_use": format!(
-                "Work on the file with shell, duckdb, marimo or read_file (absolute `path`); tools \
-                 that take a workspace-relative file argument (jq, csvkit, …) need `workspace_path`. \
+                "Use `path` (absolute) or `workspace_path` (relative to this task's workdir) \
+                 with file tools and governed CLI/MCP file arguments such as jq's input_file. \
                  To send its contents as any tool argument without retyping, pass \
                  {{\"{FILE_KEY}\": \"{path_text}\"}} (add \"format\": \"json\" to send parsed JSON)."
             ),
         })
         .to_string(),
     ))
-}
-
-/// The export's path relative to this scope's root — the form governed CLI
-/// tools accept for workspace file arguments. `None` outside the scope root.
-fn scope_relative_path(ctx: &AgenticContext, path: &Path) -> Option<String> {
-    let scope_root = crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace::new(
-        ctx.storage_base_path.clone(),
-    )
-    .scope_root(ctx.principal.as_deref()?, ctx.workspace.as_deref()?)
-    .canonicalize()
-    .ok()?;
-    path.canonicalize()
-        .ok()?
-        .strip_prefix(&scope_root)
-        .ok()
-        .map(|relative| relative.to_string_lossy().into_owned())
 }
 
 fn render_export(

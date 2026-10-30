@@ -31,4 +31,31 @@ describe('StudioStage first-run controls', () => {
 		await user.click(cliButton);
 		expect(get(vibeStudioStore).terminalOpen).toBe(true);
 	});
+
+	it('offers no Apply-all for a finished run that only carries a briefing', () => {
+		vibeStudioStore.setStageTab('diff');
+		const briefing = {
+			id: 'vibedev-run-ended:task_1:exec_1',
+			source: 'user_request' as const,
+			input_type: 'choice' as const,
+			schema: {
+				request_type: 'harness.notify_owner.briefing',
+				options: [{ id: 'acknowledge', label: 'Acknowledge' }]
+			},
+			prompt: 'Owner briefing: Autopilot run finished: Pi\n\nAutopilot run finished: Pi. Open it.',
+			scope: { task_id: 'task_1' },
+			identifiers: { request_id: 'vibedev-run-ended:task_1:exec_1' }
+		};
+		render(StudioStage, {
+			firstRun: false,
+			orderedDiffRows: [],
+			orderedOtherRows: [
+				{ key: briefing.id, entry: { correlation_id: briefing.id, at: 0 }, request: briefing }
+			]
+		});
+
+		expect(screen.queryByRole('button', { name: 'Apply all changes' })).not.toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Acknowledge' })).toBeEnabled();
+		expect(screen.getByText('Autopilot run finished: Pi. Open it.')).toBeInTheDocument();
+	});
 });

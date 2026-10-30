@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import Combine
 @testable import Magician
 
 final class MockURLProtocol: URLProtocol {
@@ -60,15 +61,15 @@ final class DeferredMockURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
-func makeMockSession() -> URLSession {
+func makeMockSession(chatCatalogFixture: Bool = false) -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
-    configuration.protocolClasses = [MockURLProtocol.self]
+    configuration.protocolClasses = chatCatalogFixture ? [ChatCatalogFixtureURLProtocol.self, MockURLProtocol.self] : [MockURLProtocol.self]
     return URLSession(configuration: configuration)
 }
 
-func makeDeferredMockSession() -> URLSession {
+func makeDeferredMockSession(chatCatalogFixture: Bool = false) -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
-    configuration.protocolClasses = [DeferredMockURLProtocol.self]
+    configuration.protocolClasses = chatCatalogFixture ? [ChatCatalogFixtureURLProtocol.self, DeferredMockURLProtocol.self] : [DeferredMockURLProtocol.self]
     return URLSession(configuration: configuration)
 }
 
@@ -100,5 +101,44 @@ extension XCTestCase {
         let expectation = expectation(description: "main queue drained")
         DispatchQueue.main.async { expectation.fulfill() }
         wait(for: [expectation], timeout: 2)
+    }
+}
+
+/// Streaming fixtures exercise the same typed model gate as production chat.
+/// Catalog requests stay independent of each test's strict stream/event handler.
+final class ChatCatalogFixtureURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.path.hasSuffix("/chat/models") == true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let catalog: [String: Any] = [
+            "models": [["id": "fixture/chat", "provider": "fixture", "connection": "fixture", "model": "chat", "label": "Fixture chat",
+                "thinking": ["mode": "none", "levels": []], "choices": ["auto": "fixture-auto"]]],
+            "default_selection": ["model_id": "fixture/chat", "thinking": "auto"]]
+        client?.urlProtocol(self, didReceive: response(for: request), cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: jsonData(catalog))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+extension XCTestCase {
+    func prepareChatModelCatalog(_ model: ChatViewModel, file: StaticString = #filePath, line: UInt = #line) {
+        guard ["magician", "pi"].contains(model.selectedHarnessEngine) else { return }
+        let selection = ChatModelSelection(modelId: "fixture/chat", thinking: "auto")
+        UserDefaults.standard.set(try! JSONEncoder().encode(selection), forKey: model.chatLocalStorageKey + "|" + ChatModelPreference.storageKey)
+        let ready = expectation(description: "typed chat model catalog ready")
+        var fulfilled = false
+        var observation: AnyCancellable?
+        observation = model.$selectedProfile.dropFirst().sink { route in
+            if !fulfilled, route == "fixture-auto" {
+                fulfilled = true
+                DispatchQueue.main.async { ready.fulfill() }
+            }
+        }
+        model.fetchProfiles()
+        wait(for: [ready], timeout: 5)
+        observation?.cancel()
+        model.selectedProfile = "fixture-auto"
+        XCTAssertNil(model.modelSelectionIssue, file: file, line: line)
     }
 }

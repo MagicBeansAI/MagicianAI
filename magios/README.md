@@ -3,6 +3,8 @@
 Magios is the ubiquitous native iOS companion for Magican. It connects to the
 Magician backend service while presenting the configured agents by their own
 names.
+Chat and task Steps show paired context-preparation timings and partial or cancelled outcomes.
+Chat and VibeDev use a bare shield icon for God modes, sized like attachment controls, with the current mode retained in its accessibility label.
 It bypasses traditional "app" mechanics by relying entirely on OS-level integrations: Siri, Shortcuts, the Action Button, and the Dynamic Island.
 
 **Version:** 0.4.1 (build 205) - see `CHANGELOG.md`.
@@ -35,15 +37,32 @@ falling back to the product name, **Magican**.
   seconds while it is, and ends it when nothing is going. Follow on a run, crew
   or task (`FollowedItemActivity`) gives that item its own activity, moved by
   `work_item` pushes, until it ends (at most three).
-- **VibeDev (`Magios/VibeDev/`):** the left menu's VibeDev entry (after Notes,
-  with a needs-you badge) opens a companion for coding runs: Now (crew questions,
-  runs waiting on approval, VibeDev crews, live runs with swipe Steer/Stop),
-  Projects, a project's crews and paged runs, a run's turns with server-folded
-  timelines, changed files and `UnifiedDiffView`, and sheets for new runs,
-  follow-ups, crews and steering (dictation mic, two-second Undo on destructive
-  actions). `magican://vibe` opens it; the "Magician at work" activity links there.
-  `VibeDevFixtureTests` decode the shared fixtures in
-  `magician/tests/fixtures/vibedev/`.
+- **VibeDev (`Magios/VibeDev/`):** the left menu opens one cross-project,
+  activity-ordered run history from cursor-paginated `GET /vibedev/runs`. Rows
+  include project, repository, admitted location and per-run attention counts.
+  The inline header offers Projects, New project and More; pull down to refresh.
+  More controls the persisted Magician at work Live Activity preference: Off
+  ends its summary and removes update/push-to-start routes in the registration
+  queue, while badges and explicitly followed work keep updating.
+  New run offers a themed welcome with starters that prefill a draft (Explore
+  selects Discuss) and opens the shared Chat composer; ended runs retain it for follow-ups
+  with recorded model settings and fixed project/work location. The shared
+  model picker holds engine/model/thinking. Project and work location selectors
+  sit above the input. Build, Discuss and Autopilot share Chat’s mode
+  segment styling; Discuss shows its read-only guidance, and Autopilot exposes
+  budget and a new-run-only nightly schedule at 02:00 UTC. The same voice/mute
+  and Live controls, attachment previews and file/photo/camera uploads use the
+  project’s chat session. Below the project/workspace row, mode guidance uses
+  Chat Plan’s shared theme-accent band and respects reduced motion. Multiline
+  text input has a keyboard Done action that does not send. Project details
+  retain crew creation and paged runs;
+  run details show turns, timelines, changed files and `UnifiedDiffView`.
+  New project and run controls offer Original folder, Isolated workspace and
+  Isolated branch, independently of Super god mode. Original-folder edits use
+  the shared exact-diff approval dock with once, session and persistent grants;
+  follow-ups keep their admitted location. `magican://vibe` opens the companion.
+  Dictation and two-second Undo remain available. `VibeDevFixtureTests` decode
+  the shared fixtures in `magician/tests/fixtures/vibedev/` on the host simulator.
 - **Share Extension (`MagiosShare`, “Magican”):** Durably adds shared text, URLs, images, and files
   to Chat.
 - **Action Extension (`MagiosAction`, “Magican Assist”):** Adapts to one selected text, webpage,
@@ -52,6 +71,11 @@ falling back to the product name, **Magican**.
   task-backed Internal execution (no planning pipeline), use headless browser first with headed
   fallback, and return a **Working / Check Status in Magican** handoff that selects the Internal tasks
   lane and opens the exact run. These backing records do not appear as user commitments in Tasks.
+
+Work uses **Playbooks**, **Autopilot**, **Team routines**, **Quality checks** and
+**System work** consistently with the other clients. Info buttons beside Work
+views and related settings open themed explanations with separate tap targets.
+See the [shared Work vocabulary](../docs/components/unified-ui/unified-work.md#work-vocabulary).
 
 ## Notes
 
@@ -71,6 +95,20 @@ Notes are Markdown files in the workspace notes folder (fresh default
 `~/MagicianNotes/MagicanNotes/spaces/<principal>/<workspace>`). Magician reads
 and writes that folder itself. See the
 [Notes provider guide](../docs/components/magician/notes-provider.md).
+
+## Answer verification notes
+
+Assistant replies and task Run, Result and History summaries move generated
+“Not fully verified” paragraphs into a themed info popover. Its icon sits beside
+chat playback or in the task summary header. The saved reason is visible on the first tap;
+answer text, tables and numbers remain readable. This is display-only: stored
+messages, sharing and speech retain the original caveat.
+Extraction uses the original message paragraphs, because structured plain-text
+projections can flatten the caveat and answer into one paragraph.
+Task summaries use the same theme font, readable Markdown and full-width leading
+alignment as chat; extracting a note preserves the answer's paragraph boundaries.
+HTML-only summaries become native headings, paragraphs and lists without running
+scripts or loading remote content. Mixed Markdown/code examples stay as written.
 
 ## Voice Notes
 
@@ -121,6 +159,8 @@ and [canonical client architecture](../docs/components/magios/thinking-map-canon
 
 ## Today, Chat & Attention (web parity)
 The primary surfaces are native SwiftUI ports of the web unified-ui experience.
+The planner's filled approval action explicitly uses the theme's on-accent text color.
+Composer approval chips keep compact visuals and full touch targets; failed or settled feed rows cannot become questions.
 Cards, notices, badges, swipe actions, and filled controls share semantic theme
 tokens for their surfaces, borders, status hues, and contrast-safe foregrounds;
 feature views should not introduce fixed white/gray/status colors for ordinary UI.
@@ -131,8 +171,18 @@ All 22 variants use the same four typography roles as Web: Outfit for brand
 marks, each theme's display family for navigation chrome, its body family for
 ordinary text, and its mono family for technical data. The app bundles every
 referenced family, so theme changes do not depend on a font download.
-The Settings roadmap is likewise pending-only: shipped capabilities move to
-How to Use and release notes instead of lingering as checked or stale rows.
+Settings keeps only this iPhone's own settings (Voice & audio, Notifications,
+Keyboard, Connection, Help & about) in one searchable list with bold section
+headings. A chip bar pinned under the search field jumps to a section and
+highlights the one in view; during a search it lists only sections with
+matches. The list's top row,
+Magican settings, opens the paired machine's shared web Settings inside the app
+(budgets, preferences, speaking voices, harness credentials, storage and the
+rest); sign in once with the web account there.
+Settings → How to Use is a searchable, section-filtered guide to shipped screens
+and controls. Expand a topic for its steps; searching reveals matching instructions.
+It covers Chat and run inspection, Work, VibeDev, voice, Today, Attention,
+Observe, Notes, Thinking Map, Apps, settings, keyboard, sharing and iOS entry points.
 
 Today app widgets follow the core lanes, briefings and Activity, matching Android.
 Optional widget/pinned-app regions keep a concrete SwiftUI lifecycle host while
@@ -292,7 +342,7 @@ read-back succeeds.
 Magios keeps one paired profile per Magician machine (Keychain
 `mobileConnectionProfilesV2`, migrated once from the single
 `mobileConnectionProfileV1` profile, which stays read-only for one release).
-Scanning another machine's QR adds it and makes it active; Settings → Machines
+Scanning another machine's QR adds it and makes it active; Settings → Connection
 switches between paired machines without re-pairing, forgets one, and lists
 the active machine's registry machines that still need their own QR. All
 `MagicianAccess` accessors read the active profile. Details:
@@ -369,7 +419,8 @@ opt-in XCTest against its real backend. Set `MAGIOS_DEVICE_ID` and
 `MAGIOS_LIVE_TEST_HOST` (hostname only); use `MAGIOS_DERIVED_DATA` and
 `MAGIOS_SPM_DIR` to reuse the device build on the external build volume.
 It verifies the host in Settings before sending a unique chat prompt, then checks
-the reply after an app restart. It uses one build job, no retries or fixtures,
+the reply after an app restart, accepting the marker with an optional terminal
+period. It uses one build job, no retries or fixtures,
 and retains screenshots in a timestamped `.xcresult` under DerivedData
 (`MAGIOS_LIVE_TEST_RESULT` overrides that path). This invokes the configured
 inference provider and leaves synthetic messages in the test runtime. The live
@@ -589,3 +640,4 @@ follows the card corners and a subtle divider separates it from the input.
 Send options is a compact caret beside Send, with no extra row above the draft.
 Queue action controls use the selected theme; iOS also themes the sheet list and
 navigation bar, with global queue actions in an overflow menu.
+Models allows cold usage-history preparation before rendering cumulative figures.

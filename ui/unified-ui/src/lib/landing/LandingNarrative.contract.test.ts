@@ -11,13 +11,13 @@ function position(source: string): number {
 }
 
 describe('root landing narrative', () => {
-	it('moves from proposition to proof to freedom to trust to manifesto to action', () => {
+	it('moves from proposition to trust to day to proof to freedom to how-it-works to manifesto to action', () => {
 		const order = [
 			position('<HeroSplit'),
-			position('<HowTrack'),
-			position('<DayTrack />'),
-			position('<LifeTrack />'),
 			position('<TrustReveal />'),
+			position('<DayTrack />'),
+			position('<HowTrack'),
+			position('<LifeTrack />'),
 			position('<HowItWorks'),
 			position('<ManifestoExcerpt'),
 			position('<WhatItTakes />'),

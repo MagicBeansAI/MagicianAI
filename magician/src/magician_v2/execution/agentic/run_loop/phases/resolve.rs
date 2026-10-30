@@ -22,7 +22,8 @@
 //! transient-provider path records a history entry, asks for a backoff and
 //! **breaks** — the run continues and the model decides again. Two lines of
 //! condition away, the same path **returns** `AgenticOutcome::Failed` once the
-//! retry budget is spent — the run is over. Each of the eleven was classified at
+//! retry budget is spent — the run is over (an owner-backed root run instead
+//! returns a resumable provider-failure pause that asks its owner to retry). Each of the eleven was classified at
 //! its own site rather than from a summary table, because nothing about getting
 //! it backwards produces a compile error: a run would simply end early, or fail
 //! to end at all.
@@ -48,21 +49,28 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::decide::DecideOutput;
-use crate::magician_v2::execution::agentic::decision::Decision;
+use crate::magician_v2::execution::agentic::decision::{
+    failing_provider_route, outage_error_class, Decision, DecisionErrorKind,
+};
 use crate::magician_v2::execution::agentic::executor::{
-    begin_agentic_tool_lineage, browser_observation_history_action,
-    build_action_confirmation_outcome, check_control_decision_loop_pressure,
-    conclude_budget_exhausted, conclude_work_budget_reached, context_work_budget_elapsed_ms,
-    context_work_budget_reached, control_decision_action, decision_starts_new_work,
-    emit_agentic_tool_consumption, enforce_action_trust_policy, finish_agentic_tool_lineage,
-    finish_cancelled_agentic_execution, lifecycle_structural_action_requiring_approval,
-    persist_paused_execution_summary, push_task_control_iteration,
+    begin_agentic_tool_lineage, build_action_confirmation_outcome,
+    check_control_decision_loop_pressure, conclude_budget_exhausted,
+    conclude_budget_exhausted_before_iteration, conclude_work_budget_reached,
+    context_work_budget_elapsed_ms, context_work_budget_reached, control_decision_action,
+    decision_starts_new_work, emit_agentic_tool_consumption, enforce_action_trust_policy,
+    finish_agentic_tool_lineage, finish_cancelled_agentic_execution,
+    lifecycle_structural_action_requiring_approval, outage_budget_minutes, outage_retry_backoff,
+    outage_scheduled_wait_ms, persist_paused_execution_summary, push_task_control_iteration,
     refresh_owner_profile_for_decision, refresh_trust_dispatch_guard_for_decision,
-    reset_decision_continuation_after_authority_change, runtime_execution_id,
-    stable_confirmation_action_json, synthetic_outer_assistant_turn_from_decision,
-    take_matching_approved_confirmation, transient_retry_backoff,
-    validate_action_against_allowlists, ActionExecutors, AgenticToolLineageState, HeapAwaitExt,
-    TrustDispatchGuard, MAX_TRANSIENT_RETRIES,
+    rejected_decision_history_action, reset_decision_continuation_after_authority_change,
+    runtime_execution_id, stable_confirmation_action_json,
+    synthetic_outer_assistant_turn_from_decision, take_matching_approved_confirmation,
+    transient_retry_backoff, transport_scope, validate_action_against_allowlists, ActionExecutors,
+    AgenticToolLineageState, HeapAwaitExt, TrustDispatchGuard, MAX_TRANSIENT_RETRIES,
+    OUTAGE_MAX_RETRIES,
+};
+use crate::magician_v2::execution::agentic::run_budget::{
+    pauses_on_provider_failure, refunds_parked_iterations,
 };
 use crate::magician_v2::execution::agentic::run_loop::outcome::{
     BoundaryOutcome, Phase, PhaseStep,
@@ -72,6 +80,159 @@ use crate::magician_v2::execution::agentic::types::{
     AgenticOutcome, ApprovedConfirmationAction, BudgetDimension, EnvironmentState,
     ExecutionHistory, IterationRecord, LoopProtectiveState,
 };
+use crate::magician_v2::RuntimeTransportEvent;
+
+/// Announces one outage wait. Out of line so the event, which is large, does not
+/// widen the frame of the resolve phase's future.
+#[inline(never)]
+fn announce_provider_outage(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    iteration: usize,
+    attempt: usize,
+    backoff: std::time::Duration,
+    error_class: &'static str,
+) {
+    if !ctx.has_observability() {
+        return;
+    }
+    let (principal, workspace) = transport_scope(ctx);
+    super::outbox::journal_and_emit(
+        ctx,
+        executors,
+        iteration,
+        Phase::Resolve,
+        RuntimeTransportEvent::AgenticProviderOutage {
+            execution_id: runtime_execution_id(ctx),
+            principal,
+            workspace,
+            attempt,
+            max_attempts: OUTAGE_MAX_RETRIES + 1,
+            next_probe_ms: u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
+            error_class: error_class.to_string(),
+            since_ms: outage_scheduled_wait_ms(attempt - 1),
+            recovered: false,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
+}
+
+/// Closes the `AgenticProviderOutage` waits after `retries` failed calls in a
+/// row. The run keeps no outage marker, so a recovered transient streak
+/// announces itself too; a surface that never saw an outage ignores it.
+#[inline(never)]
+fn announce_provider_recovered(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    iteration: usize,
+    retries: usize,
+) {
+    if !ctx.has_observability() {
+        return;
+    }
+    let (principal, workspace) = transport_scope(ctx);
+    super::outbox::journal_and_emit(
+        ctx,
+        executors,
+        iteration,
+        Phase::Resolve,
+        RuntimeTransportEvent::AgenticProviderOutage {
+            execution_id: runtime_execution_id(ctx),
+            principal,
+            workspace,
+            attempt: retries,
+            max_attempts: OUTAGE_MAX_RETRIES + 1,
+            next_probe_ms: 0,
+            error_class: String::new(),
+            since_ms: outage_scheduled_wait_ms(retries),
+            recovered: true,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        },
+    );
+}
+
+/// The longest last-error text the owner's provider-failure question quotes.
+const PROVIDER_FAILURE_ERROR_CHARS: usize = 160;
+
+/// The provider retries ran out on a run that pauses for its owner
+/// (`run_budget::pauses_on_provider_failure`). There is no fallback model:
+/// the run checkpoints the iterations it completed and asks the owner to
+/// retry or cancel, through the same resumable budget pause and
+/// `HitlRequested` card a spent budget raises (`BudgetDimension::
+/// ProviderFailure`, confirm label "Retry"). No answer leaves it paused.
+///
+/// The bundle the pause persists has both provider retry counters at zero,
+/// so Retry resumes with a fresh outage and transient budget, and carries
+/// `provider_failure_pause`, so Cancel settles the run as cancelled. Out of
+/// line so the pause does not widen the frame of the resolve phase's future.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+async fn pause_for_provider_failure(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    history: &ExecutionHistory,
+    loop_protective: &mut LoopProtectiveState,
+    approved_confirmation_actions: &[ApprovedConfirmationAction],
+    observed_state: EnvironmentState,
+    execution_start: &Instant,
+    iteration: usize,
+    attempts: usize,
+    outage: bool,
+    error: &anyhow::Error,
+) -> AgenticOutcome {
+    // What the retries before this attempt were scheduled to wait.
+    let waited_ms = if outage {
+        outage_scheduled_wait_ms(attempts.saturating_sub(1))
+    } else {
+        (1..attempts)
+            .map(|n| u64::try_from(transient_retry_backoff(n).as_millis()).unwrap_or(u64::MAX))
+            .fold(0, u64::saturating_add)
+    };
+    let route = failing_provider_route(error)
+        .or_else(|| ctx.llm_model_override.clone())
+        .or_else(|| {
+            ctx.run_engine_pin
+                .as_ref()
+                .filter(|pin| pin.engine != "magician")
+                .map(|pin| match pin.harness_model.as_str() {
+                    "" | "default" => pin.engine.clone(),
+                    model => format!("{}/{model}", pin.engine),
+                })
+        })
+        .unwrap_or_else(|| "the model provider".to_string());
+    let root = error.root_cause().to_string();
+    let mut short_error: String = root.chars().take(PROVIDER_FAILURE_ERROR_CHARS).collect();
+    if short_error.len() < root.len() {
+        short_error.push('…');
+    }
+    warn!(
+        "[DECISION-PROVIDER-FAILURE] iteration {}: {} failed provider calls ({}) — pausing for the owner to retry or cancel. Last error: {:#}",
+        iteration, attempts, route, error
+    );
+    loop_protective.outage_retry_count = 0;
+    loop_protective.transient_retry_count = 0;
+    loop_protective.provider_failure_pause = true;
+    conclude_budget_exhausted_before_iteration(
+        ctx,
+        executors,
+        Some((iteration, Phase::Resolve)),
+        history,
+        observed_state,
+        BudgetDimension::ProviderFailure {
+            route,
+            error: short_error,
+            attempts,
+            waited_secs: waited_ms / 1_000,
+        },
+        // The failed call did no work: the pause checkpoints the iterations
+        // before it, so Retry runs this iteration again.
+        iteration,
+        execution_start,
+        loop_protective,
+        approved_confirmation_actions,
+    )
+    .await
+}
 
 /// What `Apply` reads from `Resolve`.
 ///
@@ -161,7 +322,12 @@ pub(in crate::magician_v2::execution::agentic) async fn run(
             // A clean decision means the provider recovered — reset the
             // transient-retry budget (P0.3) so an earlier hiccup doesn't
             // linger and prematurely abort a later, unrelated one.
-            loop_protective.transient_retry_count = 0;
+            let retries_before_recovery =
+                std::mem::take(&mut loop_protective.transient_retry_count)
+                    + std::mem::take(&mut loop_protective.outage_retry_count);
+            if retries_before_recovery > 0 {
+                announce_provider_recovered(ctx, executors, iteration, retries_before_recovery);
+            }
             // P2.1: the buffered steer has now been folded into this
             // decision's prompt exactly once — clear it so it isn't
             // re-applied on subsequent turns. A FAILED decision keeps the
@@ -653,8 +819,20 @@ async fn resolve_decision_error(
     // the driver to wait before the next turn so we don't hammer a
     // failing provider. Only genuine ParseFailure / Permanent errors
     // count toward the parse-abort.
-    let error_kind =
-        crate::magician_v2::execution::agentic::decision::classify_decision_error(&e);
+    //
+    // The owner's spend envelope being spent is the one transient condition
+    // that is neither the model being stuck nor a provider fault, and it must
+    // not spend the provider-recovery budget below: it PARKS the run. The
+    // call never reached a provider (so the stateful chain below is intact
+    // and nothing is added to the history), no retry or abort counter moves,
+    // and the wait is until the spend window resets, polled every few minutes
+    // so an owner grant wakes the run too. Waiting spends nothing.
+    let parked_wait = crate::magician_v2::spend_envelope::park_wait_for_error(&e);
+    let error_kind = if parked_wait.is_some() {
+        crate::magician_v2::execution::agentic::decision::DecisionErrorKind::Transient
+    } else {
+        crate::magician_v2::execution::agentic::decision::classify_decision_error(&e)
+    };
     // Reset any stateful provider chain on a failed decision.
     // A decision that failed to parse/lower (e.g. an unparseable
     // `yield`) came from a provider response that holds a
@@ -663,55 +841,159 @@ async fn resolve_decision_error(
     // subsequent turn because the stored tool protocol is
     // incomplete. Dropping the chain makes the next turn a clean,
     // self-contained bootstrap so the model can re-decide.
-    history.last_response_id = None;
-    crate::magician_v2::execution::agentic::decision::keep_local_turn(
-        ctx, history, false, None,
-    );
-
-    if matches!(
-        error_kind,
-        crate::magician_v2::execution::agentic::decision::DecisionErrorKind::Transient
-    ) {
-        loop_protective.transient_retry_count += 1;
-        if loop_protective.transient_retry_count > MAX_TRANSIENT_RETRIES {
-            warn!(
-                "[DECISION-TRANSIENT-ERROR] {} transient decision errors — provider not recovering, aborting execution. Last error: {}",
-                loop_protective.transient_retry_count, e
-            );
-            return PhaseStep::ends_run(AgenticOutcome::Failed {
-                reason: format!(
-                    "Aborted: {} consecutive transient decision errors (provider not recovering). Last error: {}",
-                    loop_protective.transient_retry_count, e
-                ),
-                last_state: observed_state,
-                iterations_used: iteration,
-            });
-        }
-        let backoff = transient_retry_backoff(loop_protective.transient_retry_count);
-        warn!(
-            "[DECISION-TRANSIENT-ERROR] iteration {}: {} (transient attempt {}/{}) — backing off {:?} then retrying",
-            iteration, e, loop_protective.transient_retry_count, MAX_TRANSIENT_RETRIES, backoff
+    if parked_wait.is_none() {
+        history.last_response_id = None;
+        crate::magician_v2::execution::agentic::decision::keep_local_turn(
+            ctx, history, false, None,
         );
-        history.iterations.push(IterationRecord {
-            iteration,
-            timestamp: chrono::Utc::now(),
-            state_before: EnvironmentState::Uninitialized,
-            action: browser_observation_history_action(),
-            result: ActionResultRecord {
-                success: false,
-                output: Some(format!("DECISION TRANSIENT ERROR: {}", e)),
-                error: Some(e.to_string()),
-                duration_ms: 0,
-                outcome_category: Some(ActionOutcomeCategory::Failed),
-                api_replay_used: None,
-                api_replay_time_ms: None,
-                browser_fallback_reason: None,
-                tool_result_projection: None,
-            },
-            state_after: EnvironmentState::Uninitialized,
-            verification: None,
-            llm_reasoning: None,
-        });
+    }
+
+    // A provider that is DOWN (`Outage`) shares the branch and its single
+    // `Retry` producer, with a long capped backoff and its own budget; it
+    // pushes no failed record, because identical failures would trip the
+    // repeat-failure stuck detector and end the run without a model call.
+    // A spent owner spend envelope is neither: the run parks until the window
+    // resets (or a grant arrives) and no retry/abort counter moves.
+    if let Some(retry_cap) = error_kind.retry_cap() {
+        let outage = error_kind == DecisionErrorKind::Outage;
+        let backoff = if let Some(parked) = parked_wait {
+            warn!(
+                "[SPEND-ENVELOPE] iteration {}: spend envelope exhausted — parking this run for {:?} before it decides again",
+                iteration, parked
+            );
+            // A parked wake still leaves the iteration through the boundary,
+            // and both drivers count every boundary. Hand the iteration back
+            // so waiting for the window does not spend the run's allowance.
+            // Counted on the protective bundle, never by raising
+            // `ctx.max_iterations`: the bundle rides every pause record and
+            // continuation checkpoint (the Retry boundary below refreshes the
+            // checkpoint, so a restart mid-park keeps the refund), and the
+            // resident loop and the durable ceiling both read
+            // `run_budget::iteration_ceiling`. A sealed controller attempt or
+            // an app contract keeps its fixed limit, so neither is refunded.
+            if crate::magician_v2::execution::agentic::run_budget::refunds_parked_iterations(ctx) {
+                loop_protective.parked_iteration_refunds =
+                    loop_protective.parked_iteration_refunds.saturating_add(1);
+            }
+            parked
+        } else {
+            // Outage and transient failures draw on separate budgets: a run of
+            // 429s must not use up (or advance the backoff of) a later outage,
+            // nor an outage cut short the throttling that follows it.
+            let counter = if outage {
+                &mut loop_protective.outage_retry_count
+            } else {
+                &mut loop_protective.transient_retry_count
+            };
+            *counter += 1;
+            let attempt = *counter;
+            if attempt > retry_cap {
+                // An owner-backed root run asks its owner instead of failing
+                // (no fallback model). A delegated child, a controller attempt
+                // or an app contract fails, so its parent or controller decides.
+                if pauses_on_provider_failure(ctx) {
+                    return PhaseStep::ends_run(
+                        pause_for_provider_failure(
+                            ctx,
+                            executors,
+                            history,
+                            loop_protective,
+                            approved_confirmation_actions,
+                            observed_state,
+                            execution_start,
+                            iteration,
+                            attempt,
+                            outage,
+                            &e,
+                        )
+                        .heap_boxed()
+                        .await,
+                    );
+                }
+                let reason = if outage {
+                    warn!(
+                        "[DECISION-OUTAGE] {} provider failures — outage persisted, aborting execution. Last error: {}",
+                        attempt, e
+                    );
+                    format!(
+                        "Aborted: provider outage persisted after {} tries over ~{} min. Last error: {}",
+                        attempt,
+                        outage_budget_minutes(),
+                        format_args!("{e:#}")
+                    )
+                } else {
+                    warn!(
+                        "[DECISION-TRANSIENT-ERROR] {} transient decision errors — provider not recovering, aborting execution. Last error: {}",
+                        attempt, e
+                    );
+                    format!(
+                        "Aborted: {} consecutive transient decision errors (provider not recovering). Last error: {}",
+                        attempt, e
+                    )
+                };
+                return PhaseStep::ends_run(AgenticOutcome::Failed {
+                    reason,
+                    last_state: observed_state,
+                    iterations_used: iteration,
+                });
+            }
+            // The failed call did no work, so the retry hands its iteration
+            // back the way a park does: riding out an outage or throttling
+            // does not spend the run's allowance. Same eligibility as a park.
+            if refunds_parked_iterations(ctx) {
+                loop_protective.parked_iteration_refunds =
+                    loop_protective.parked_iteration_refunds.saturating_add(1);
+            }
+            let backoff = if outage {
+                outage_retry_backoff(attempt)
+            } else {
+                transient_retry_backoff(attempt)
+            };
+            if outage {
+                warn!(
+                    "[DECISION-OUTAGE] iteration {}: {} (outage attempt {}/{}) — backing off {:?} then retrying",
+                    iteration,
+                    e,
+                    attempt,
+                    retry_cap + 1,
+                    backoff
+                );
+                announce_provider_outage(
+                    ctx,
+                    executors,
+                    iteration,
+                    attempt,
+                    backoff,
+                    outage_error_class(&e),
+                );
+            } else {
+                warn!(
+                    "[DECISION-TRANSIENT-ERROR] iteration {}: {} (transient attempt {}/{}) — backing off {:?} then retrying",
+                    iteration, e, attempt, MAX_TRANSIENT_RETRIES, backoff
+                );
+                history.iterations.push(IterationRecord {
+                    iteration,
+                    timestamp: chrono::Utc::now(),
+                    state_before: EnvironmentState::Uninitialized,
+                    action: rejected_decision_history_action(),
+                    result: ActionResultRecord {
+                        success: false,
+                        output: Some(format!("DECISION TRANSIENT ERROR: {e:#}")),
+                        error: Some(e.to_string()),
+                        duration_ms: 0,
+                        outcome_category: Some(ActionOutcomeCategory::Failed),
+                        api_replay_used: None,
+                        api_replay_time_ms: None,
+                        browser_fallback_reason: None,
+                        tool_result_projection: None,
+                    },
+                    state_after: EnvironmentState::Uninitialized,
+                    verification: None,
+                    llm_reasoning: None,
+                });
+            }
+            backoff
+        };
         // The wait is requested, not taken. An in-place sleep
         // holds whoever owns the executor for the whole backoff,
         // which is wrong for a worker and wrong for a foreign
@@ -735,7 +1017,7 @@ async fn resolve_decision_error(
         iteration,
         timestamp: chrono::Utc::now(),
         state_before: EnvironmentState::Uninitialized,
-        action: browser_observation_history_action(),
+        action: rejected_decision_history_action(),
         result: ActionResultRecord {
             success: false,
             output: Some(format!("DECISION PARSE FAILED: {e:#}")),
@@ -771,3 +1053,7 @@ async fn resolve_decision_error(
     // EXIT: Advance — decision parse failure, below the abort limit
     return PhaseStep::exits(BoundaryOutcome::Advance);
 }
+
+#[cfg(test)]
+#[path = "resolve_outage_tests.rs"]
+mod outage_tests;

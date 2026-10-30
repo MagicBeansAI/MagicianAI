@@ -88,6 +88,74 @@ make showcase-refresh ARGS="--min-lines 800"   # widen the uncovered-modules lis
 
 What it cannot do is write meaning. A new feature (its places, tour and narration) is still a hand edit in `data/features-*.json`; the report says where one is missing.
 
+### Catalog content
+
+Model selection and routing tours use the shared capability catalog: typed
+engine/model/thinking choices, generated workload routes and assignment fallbacks.
+Auto follows defaults; Off requires a qualified native control. Realtime voice
+presets remain separate. Screenshot decision inputs are labeled experimental
+and retain image bounds, model-capability and locality constraints; the tour
+covers host-side scaling, chat-rail screenshots, the send-once rule and the
+planner model's carried screenshot. Playbooks (shared context,
+approval-gated agent revisions, owner editing in Work → Playbooks) have their
+own feature. Work feature names and tour captions follow the [shared Work
+vocabulary](../../docs/components/unified-ui/unified-work.md#work-vocabulary);
+source symbols, feature IDs, API/configuration keys and filenames retain their
+technical names. Goals have a separate tour covering note-backed trees,
+owner-approved workspace setup, agent membership and private goals. The Web
+offers creation and target-date edits; phone goal trees remain read-only.
+Web goal creation can link an existing Playbook. Goal rows distinguish missing
+Playbook documents from catalog lookup failures; linking supplies direction
+without starting work. Several sub-goals can connect a main goal to several
+Playbooks using the current note schema.
+All work introduces folding Goals and Playbooks summaries above the task feed.
+
+Chat recovery distinguishes a dropped client connection from an interrupted
+backend process; it does not promise that inline turns survive a server restart.
+The desktop tour connects the compact HUD to the full app pages. Native help
+describes How to Use rather than a roadmap, and verification notes in chat and
+task Run panels use an info popup with the saved reason visible immediately.
+VibeDev covers read-only Discuss, project health and branch-versus-diff delivery.
+
+Browser tours cover choosing paired extension browsers, per-launch window
+leases and optional final-submission review. Spending tours distinguish the
+shared model envelope from action limits and explain parked autonomous work.
+Account setup covers managed-bot sign-in, Google project roles and owner channel
+claims. Approval tours describe captured-send review, exact script grants and
+the limits of automatic approval. These describe implemented behavior; proposed
+channel-native HITL delivery changes remain outside the shipped feature claims.
+
+Voice tours cover calls bound to the selected chat, duplicate-speech prevention,
+shared Open mic / Hold to talk controls and the Android live-call panel. Task
+tours cover active-run controls in chat, delivered file attachments and evidence
+context for reported totals. The settings-scope audit remains a plan rather
+than a claim about changed settings authority.
+
+History tours distinguish Working activity from active/archived lifecycle.
+Mobile and voice tours cover editable welcome starters, saved voice selection,
+composer restoration and measured audio waveforms. Memory tours explain bounded,
+content-checked prompt snapshots and reuse across retrieval deadlines.
+
+Today tours cover Reading Room source/date labels, Morning Brief cursor paging
+and loaded/server totals, and incremental phone loading that preserves content
+during refresh. Pulse queries publish independently; Operations and Economics
+distinguish loading, unavailable spend and a returned zero. Reading Room card
+reads can omit optional health scans while retaining canonical decisions and
+delivery bindings.
+
+Engine credential tours distinguish CLI sign-in from Magician's API keys and
+the approval needed for a paid-key retry. Provider tours describe streaming and
+progress deadlines, including calls collected into a complete reply. Model
+examples follow the shipped catalog; pricing comes from reported usage and the
+effective-dated rate table. Trace compaction preserves a verified compact and
+late-arriving records before pruning covered raw files; after pruning, that
+compact is required storage rather than a disposable cache.
+
+Feature descriptions explain current behavior and cite source owners. Rebuilds
+refresh counts and pointers; they do not turn CI repairs or rollout receipts into
+features. The Rust extractor reads metadata through `make cargo`, using the
+repository's build routing.
+
 **Provenance.** The hover card on every box ends with where it came from:
 - the crate version (crates only);
 - the newest commit touching any file beneath the box, with its date and time;
@@ -142,11 +210,10 @@ there is no extra runtime module or CDN request. Paper uses magnetic ink
 filaments with traveling gold charges, Sorbet flowing iridescent ribbons, and
 Blueprint sparse electric-blue particle currents with soft tails. The light
 themes bend their flow around the pointer and reveal stronger ink/color there;
-these effects are owner-accepted and frozen during the dark-theme revisions.
+these effects use theme-specific palettes.
 Night uses teal fluid light: a small feedback texture advects cursor velocity
 and dye, leaving a curling wake that fades after movement. Both dark themes
-remain quiet away from the pointer. The rejected pipes, grid/dials and polygon
-forms have been removed. Leaving the page or window clears the pointer halo;
+remain quiet away from the pointer. Leaving the page or window clears the pointer halo;
 the fluid wake dissipates. Theme transitions blend palettes and drawings.
 
 The backdrop has its own antialiased canvas, capped at 30 draws/second and

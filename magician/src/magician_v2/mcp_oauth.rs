@@ -24,6 +24,7 @@ use magician_mcp_client::{
 use parking_lot::Mutex;
 use serde_json::json;
 use tokio::{process::Command, sync::OwnedSemaphorePermit};
+use tokio_util::sync::CancellationToken;
 use tool_runtime_core::credential_profiles::CredentialScope;
 use url::{Host, Url};
 use zeroize::Zeroizing;
@@ -39,8 +40,23 @@ const CALLBACK_BINDING_ID_BYTES: usize = 64;
 const CALLBACK_FLOW_ID_BYTES: usize = 32;
 const MAX_CALLBACK_QUERY_BYTES: usize = 32 * 1024;
 const CALLBACK_SOURCE: &str = "mcp_oauth";
+/// Bound on the sign-in asks one boot closes after a restart.
+const MAX_ORPHAN_RETIREMENTS: usize = 1_024;
+const ORPHAN_RETIREMENT_ATTEMPTS: usize = 6;
+const ORPHAN_RETIREMENT_RETRY: Duration = Duration::from_secs(10);
 
 static SHARED_MCP_OAUTH_API: OnceLock<Arc<McpOAuthApi>> = OnceLock::new();
+
+/// Callback origin selected by the reviewed tool manifest. The engine owns the
+/// listener port, callback route and OAuth state for every mode.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthCallbackMode {
+    #[default]
+    Loopback,
+    LoopbackLocalhost,
+    PublicWhenAvailable,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpOAuthProductErrorCode {
@@ -55,6 +71,7 @@ pub enum McpOAuthProductErrorCode {
     ScopeUpgradeNotRequired,
     BrowserUnavailable,
     CallbackRejected,
+    RegistrationFailed,
     ProviderUnavailable,
 }
 
@@ -82,6 +99,9 @@ pub struct McpOAuthPendingHandle {
 }
 
 impl McpOAuthPendingHandle {
+    pub fn correlation_id(&self) -> String {
+        correlation_id(&self.binding_id, &self.flow_id, &self.attempt_id)
+    }
     pub fn browser_opened(&self) -> bool {
         self.browser_opened
     }
@@ -103,7 +123,8 @@ impl fmt::Debug for McpOAuthPendingHandle {
 ///
 /// The URL is deliberately neither serializable nor printable. A setup-token
 /// gated API may hand it to Magican Desktop, whose Rust process opens it in the
-/// user's browser; it must never enter model, audit, or generic event payloads.
+/// user's browser. An authenticated owner/paired-phone handoff may also receive
+/// it directly; it must never enter model, audit, or generic event payloads.
 pub struct McpOAuthNativeSetupLaunch {
     pending: McpOAuthPendingHandle,
     authorization_url: Zeroizing<String>,
@@ -143,6 +164,11 @@ trait ProductOAuthLiveFlow: Send + Sync {
 trait ProductOAuthCoordinator: Send + Sync {
     fn binding_id(&self) -> String;
     fn scope(&self) -> CredentialScope;
+    /// Human name of the service being connected ("Swiggy (food)"), shown in
+    /// the sign-in ask so the owner can tell one provider from another.
+    fn service_label(&self) -> Option<String> {
+        None
+    }
     async fn begin(&self) -> Result<Arc<dyn ProductOAuthLiveFlow>, CoordinatorBeginFailure>;
     async fn begin_scope_upgrade(
         &self,
@@ -165,6 +191,7 @@ trait ProductOAuthCoordinator: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoordinatorBeginFailure {
     Conflict,
+    RegistrationFailed,
     Unavailable,
 }
 
@@ -233,6 +260,63 @@ impl SdkOAuthCoordinator {
     }
 }
 
+/// Owner-facing service name from the exact credential binding: the provider
+/// id without its `-mcp` suffix, title-cased, plus the resource endpoint's
+/// final path segment when it names a sub-service (`swiggy-mcp` at
+/// `…/food` → "Swiggy (food)"). Transport-ish segments (`mcp`, `sse`, a
+/// version) are left out, so `metabase-mcp` at `…/api/mcp` → "Metabase".
+/// The owner-facing name of an MCP provider or skill (`swiggy-mcp` →
+/// `Swiggy`), shared by sign-in asks and the Service accounts list.
+pub fn service_display_name(provider: &str) -> Option<String> {
+    let base = provider
+        .strip_suffix("-mcp")
+        .or_else(|| provider.strip_suffix("_mcp"))
+        .unwrap_or(provider);
+    let words = base
+        .split(['-', '_', '.'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+fn service_label_for(provider: &str, resource_url: Option<&str>) -> Option<String> {
+    let base = provider
+        .strip_suffix("-mcp")
+        .or_else(|| provider.strip_suffix("_mcp"))
+        .unwrap_or(provider);
+    let name = service_display_name(provider)?;
+    let segment = resource_url
+        .and_then(|url| Url::parse(url).ok())
+        .and_then(|url| {
+            let last = url
+                .path_segments()?
+                .filter(|segment| !segment.is_empty())
+                .last()?
+                .to_ascii_lowercase();
+            Some(last)
+        })
+        .filter(|segment| {
+            (2..=16).contains(&segment.len())
+                && segment.bytes().all(|byte| byte.is_ascii_lowercase())
+                && !matches!(
+                    segment.as_str(),
+                    "mcp" | "sse" | "api" | "stream" | "http" | "rpc" | "v" | "server"
+                )
+                && !base.eq_ignore_ascii_case(segment)
+        });
+    Some(match segment {
+        Some(segment) => format!("{name} ({segment})"),
+        None => name,
+    })
+}
+
 #[async_trait]
 impl ProductOAuthCoordinator for SdkOAuthCoordinator {
     fn binding_id(&self) -> String {
@@ -241,6 +325,18 @@ impl ProductOAuthCoordinator for SdkOAuthCoordinator {
 
     fn scope(&self) -> CredentialScope {
         self.scope.clone()
+    }
+
+    fn service_label(&self) -> Option<String> {
+        let profile = self.coordinator.profile_key();
+        let resource_url = match &profile.binding {
+            tool_runtime_core::credential_profiles::CredentialProfileBinding::McpOauth {
+                resource_url,
+                ..
+            } => Some(resource_url.as_str()),
+            _ => None,
+        };
+        service_label_for(profile.provider.as_str(), resource_url)
     }
 
     async fn begin(&self) -> Result<Arc<dyn ProductOAuthLiveFlow>, CoordinatorBeginFailure> {
@@ -397,7 +493,151 @@ struct LiveFlow {
     flow: Arc<dyn ProductOAuthLiveFlow>,
     scope: CredentialScope,
     expires_at: Instant,
+    viewers: CancellationToken,
     _capacity: OwnedSemaphorePermit,
+}
+
+impl Drop for LiveFlow {
+    fn drop(&mut self) {
+        self.viewers.cancel();
+    }
+}
+
+fn viewer_deadline(expires_at: Instant) -> CancellationToken {
+    let token = CancellationToken::new();
+    let deadline = token.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = deadline.cancelled() => {},
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(expires_at)) => deadline.cancel(),
+        }
+    });
+    token
+}
+
+/// How often an expired flow whose callback was still in flight is checked
+/// again, and how many times, before lazy sweeping takes over.
+const EXPIRY_RECHECK: Duration = Duration::from_secs(5);
+const EXPIRY_RECHECK_LIMIT: usize = 60;
+
+/// Settle a flow's ask the moment its lifetime runs out. Expiry used to be
+/// lazy (only the next registry call swept it), so an untouched ask stayed
+/// open indefinitely. The task holds only weak references, so it keeps neither
+/// the flow's capacity permit nor the registry alive, and it ends early when
+/// the flow settles first (settling cancels the flow's viewer token).
+fn arm_expiry_sweep(
+    registry: &Arc<Mutex<RegistryState>>,
+    broadcaster: &Arc<RuntimeTransportBroadcaster>,
+    key: RouteKey,
+    live: &Arc<LiveFlow>,
+) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let registry = Arc::downgrade(registry);
+    let broadcaster = Arc::downgrade(broadcaster);
+    let flow = Arc::downgrade(live);
+    let settled = live.viewers.clone();
+    let deadline = tokio::time::Instant::from_std(live.expires_at);
+    runtime.spawn(async move {
+        tokio::select! {
+            _ = settled.cancelled() => {},
+            _ = tokio::time::sleep_until(deadline) => {},
+        }
+        // `viewer_deadline` cancels the same token at the deadline, so only a
+        // cancellation before it means the flow settled on its own.
+        if tokio::time::Instant::now() < deadline {
+            return;
+        }
+        for _ in 0..EXPIRY_RECHECK_LIMIT {
+            let (Some(registry), Some(broadcaster)) = (registry.upgrade(), broadcaster.upgrade())
+            else {
+                return;
+            };
+            if !flow_is_registered(&registry, &key, &flow) {
+                return;
+            }
+            sweep_expired_flows(&registry, &broadcaster);
+            if !flow_is_registered(&registry, &key, &flow) {
+                return;
+            }
+            drop((registry, broadcaster));
+            // A callback in flight owns the flow; look again once it settles.
+            tokio::time::sleep(EXPIRY_RECHECK).await;
+        }
+    });
+}
+
+fn flow_is_registered(
+    registry: &Mutex<RegistryState>,
+    key: &RouteKey,
+    flow: &std::sync::Weak<LiveFlow>,
+) -> bool {
+    registry
+        .lock()
+        .live_flows
+        .get(key)
+        .is_some_and(|live| std::ptr::eq(Arc::as_ptr(live), flow.as_ptr()))
+}
+
+fn sweep_expired_flows(registry: &Mutex<RegistryState>, broadcaster: &RuntimeTransportBroadcaster) {
+    let expired = {
+        let now = Instant::now();
+        let mut state = registry.lock();
+        state
+            .consumed_callbacks
+            .retain(|_, expires_at| *expires_at > now);
+        let keys = state
+            .live_flows
+            .iter()
+            .filter(|(key, flow)| flow.expires_at <= now && !state.callback_inflight.contains(*key))
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| take_live_flow(&mut state, &key).map(|flow| (key, flow)))
+            .collect::<Vec<_>>()
+    };
+    for (key, flow) in expired {
+        emit_resolved_event(
+            broadcaster,
+            &key,
+            flow.flow.attempt_id(),
+            &flow.scope,
+            "expired",
+            None,
+        );
+        drop(flow);
+    }
+}
+
+fn emit_resolved_event(
+    broadcaster: &RuntimeTransportBroadcaster,
+    key: &RouteKey,
+    attempt_id: &str,
+    scope: &CredentialScope,
+    outcome: &str,
+    decision: Option<&str>,
+) {
+    broadcaster.emit(RuntimeTransportEvent::HitlResolved {
+        correlation_id: correlation_id(&key.binding_id, &key.flow_id, attempt_id),
+        source: CALLBACK_SOURCE.to_owned(),
+        outcome: outcome.to_owned(),
+        decision: decision.map(str::to_owned),
+        task_id: None,
+        execution_id: None,
+        agent_id: None,
+        principal: Some(scope.principal.as_str().to_owned()),
+        workspace: Some(scope.workspace.as_str().to_owned()),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    });
+}
+
+fn take_live_flow(state: &mut RegistryState, key: &RouteKey) -> Option<Arc<LiveFlow>> {
+    let live = state.live_flows.remove(key);
+    if let Some(live) = &live {
+        live.viewers.cancel();
+    }
+    live
 }
 
 #[derive(Default)]
@@ -408,6 +648,7 @@ struct RegistryState {
     callback_inflight: HashSet<RouteKey>,
     consumed_callbacks: HashMap<RouteKey, Instant>,
     live_flows: HashMap<RouteKey, Arc<LiveFlow>>,
+    completed_correlations: HashMap<String, (CredentialScope, Instant)>,
 }
 
 struct BeginReservation {
@@ -499,6 +740,8 @@ pub struct McpOAuthApi {
     broadcaster: Arc<RuntimeTransportBroadcaster>,
     live_flow_ttl: Duration,
     callback_base_url: String,
+    loopback_callback_base_url: String,
+    localhost_callback_base_url: String,
 }
 
 impl McpOAuthApi {
@@ -539,6 +782,10 @@ impl McpOAuthApi {
         };
         let mut api = Self::new(broadcaster);
         api.callback_base_url = format!("{origin}/api/magician/v2/auth/mcp/oauth/callback");
+        api.loopback_callback_base_url =
+            format!("http://127.0.0.1:{port}/api/magician/v2/auth/mcp/oauth/callback");
+        api.localhost_callback_base_url =
+            format!("http://localhost:{port}/api/magician/v2/auth/mcp/oauth/callback");
         Ok(api)
     }
 
@@ -547,11 +794,100 @@ impl McpOAuthApi {
         &self.callback_base_url
     }
 
+    pub fn callback_base_url_for(&self, declared_mode: Option<OAuthCallbackMode>) -> &str {
+        match declared_mode.unwrap_or_default() {
+            OAuthCallbackMode::Loopback => &self.loopback_callback_base_url,
+            OAuthCallbackMode::LoopbackLocalhost => &self.localhost_callback_base_url,
+            OAuthCallbackMode::PublicWhenAvailable => &self.callback_base_url,
+        }
+    }
+
+    /// Trusted UI-only material; never put it in HITL events or model output.
+    pub fn launch_for_correlation(
+        &self,
+        correlation: &str,
+        scope: &CredentialScope,
+    ) -> Result<Zeroizing<String>, McpOAuthProductError> {
+        let correlation = parse_correlation_id(correlation)?;
+        self.sweep_expired();
+        let state = self.registry.lock();
+        let live = state
+            .live_flows
+            .get(&correlation.route)
+            .ok_or_else(authorization_not_live)?;
+        if live.scope != *scope {
+            return Err(scope_mismatch());
+        }
+        if live.flow.attempt_id() != correlation.attempt_id {
+            return Err(authorization_not_live());
+        }
+        Ok(Zeroizing::new(live.flow.browser_url().to_owned()))
+    }
+
+    pub fn correlation_is_live(&self, correlation: &str, scope: &CredentialScope) -> bool {
+        self.launch_for_correlation(correlation, scope).is_ok()
+    }
+
+    /// One private controller's child token. Stopping a viewer cannot cancel
+    /// its OAuth flow; dismissing or settling the flow cancels every viewer.
+    pub fn viewer_cancellation(
+        &self,
+        correlation: &str,
+        scope: &CredentialScope,
+    ) -> Result<CancellationToken, McpOAuthProductError> {
+        let correlation = parse_correlation_id(correlation)?;
+        self.sweep_expired();
+        let state = self.registry.lock();
+        let live = state
+            .live_flows
+            .get(&correlation.route)
+            .ok_or_else(authorization_not_live)?;
+        if live.scope != *scope {
+            return Err(scope_mismatch());
+        }
+        if live.flow.attempt_id() != correlation.attempt_id || live.viewers.is_cancelled() {
+            return Err(authorization_not_live());
+        }
+        Ok(live.viewers.child_token())
+    }
+
+    pub fn correlation_completed(&self, correlation: &str, scope: &CredentialScope) -> bool {
+        self.registry
+            .lock()
+            .completed_correlations
+            .get(correlation)
+            .is_some_and(|(owner, expires)| owner == scope && *expires > Instant::now())
+    }
+
     /// Install the process callback broker used by governed MCP dispatch.
     /// Installation is single-assignment so a later caller cannot replace live
     /// OAuth flow authority with a different registry.
     pub fn install_shared(api: Arc<Self>) -> Result<(), Arc<Self>> {
-        SHARED_MCP_OAUTH_API.set(api)
+        SHARED_MCP_OAUTH_API.set(Arc::clone(&api))?;
+        // Installation happens once per process, at boot: close the sign-in
+        // asks an earlier process left behind, off the startup path.
+        // The lifecycle authority can still be opening, so a failed listing
+        // is retried a few times before lazy retirement (answering the card)
+        // remains the fallback.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                for attempt in 0..ORPHAN_RETIREMENT_ATTEMPTS {
+                    if attempt > 0 {
+                        tokio::time::sleep(ORPHAN_RETIREMENT_RETRY).await;
+                    }
+                    let api = Arc::clone(&api);
+                    let listed =
+                        tokio::task::spawn_blocking(move || api.retire_orphaned_pending_asks())
+                            .await
+                            .ok()
+                            .flatten();
+                    if listed.is_some() {
+                        break;
+                    }
+                }
+            });
+        }
+        Ok(())
     }
 
     /// Obtain the already-installed process callback broker. Runtime dispatch
@@ -574,6 +910,10 @@ impl McpOAuthApi {
             live_flow_ttl,
             callback_base_url: "http://127.0.0.1:3002/api/magician/v2/auth/mcp/oauth/callback"
                 .to_owned(),
+            loopback_callback_base_url:
+                "http://127.0.0.1:3002/api/magician/v2/auth/mcp/oauth/callback".to_owned(),
+            localhost_callback_base_url:
+                "http://localhost:3002/api/magician/v2/auth/mcp/oauth/callback".to_owned(),
         }
     }
 
@@ -596,13 +936,58 @@ impl McpOAuthApi {
         &self,
         coordinator: Arc<McpOAuthCoordinator>,
     ) -> Result<McpOAuthNativeSetupLaunch, McpOAuthProductError> {
-        let (pending, authorization_url) = self
-            .begin_with_mode(Arc::new(SdkOAuthCoordinator::new(coordinator)), false)
-            .await?;
+        self.begin_native_with(Arc::new(SdkOAuthCoordinator::new(coordinator)))
+            .await
+    }
+
+    async fn begin_native_with(
+        &self,
+        coordinator: Arc<dyn ProductOAuthCoordinator>,
+    ) -> Result<McpOAuthNativeSetupLaunch, McpOAuthProductError> {
+        let binding = coordinator.binding_id();
+        let scope = coordinator.scope();
+        if let Some(existing) = self.existing_native_launch(&binding, &scope)? {
+            return Ok(existing);
+        }
+        let (pending, authorization_url) = match self.begin_with_mode(coordinator, false).await {
+            Ok(launch) => launch,
+            Err(error) if error.code == McpOAuthProductErrorCode::PendingAuthorizationConflict => {
+                return self.existing_native_launch(&binding, &scope)?.ok_or(error);
+            },
+            Err(error) => return Err(error),
+        };
         Ok(McpOAuthNativeSetupLaunch {
             pending,
             authorization_url: authorization_url.ok_or_else(provider_unavailable)?,
         })
+    }
+
+    fn existing_native_launch(
+        &self,
+        binding: &str,
+        scope: &CredentialScope,
+    ) -> Result<Option<McpOAuthNativeSetupLaunch>, McpOAuthProductError> {
+        self.sweep_expired();
+        let state = self.registry.lock();
+        let Some((route, live)) = state
+            .live_flows
+            .iter()
+            .find(|(route, _)| route.binding_id == binding)
+        else {
+            return Ok(None);
+        };
+        if live.scope != *scope {
+            return Err(scope_mismatch());
+        }
+        Ok(Some(McpOAuthNativeSetupLaunch {
+            pending: McpOAuthPendingHandle {
+                binding_id: route.binding_id.clone(),
+                flow_id: route.flow_id.clone(),
+                attempt_id: live.flow.attempt_id().to_owned(),
+                browser_opened: false,
+            },
+            authorization_url: Zeroizing::new(live.flow.browser_url().to_owned()),
+        }))
     }
 
     /// Register an exact coordinator without starting a new flow. Profile-catalog
@@ -712,10 +1097,14 @@ impl McpOAuthApi {
         let (coordinator, reservation) = self.reserve_lifecycle(binding_id, scope)?;
         let binding_id = binding_id.to_owned();
         let scope = scope.clone();
+        let registry = Arc::clone(&self.registry);
         tokio::spawn(async move {
             let _reservation = reservation;
             match coordinator.refresh().await {
                 Ok(audit) => {
+                    if audit.current_state != tool_runtime_core::manifest::AuthState::Ready {
+                        forget_completion_receipts(&registry, &binding_id, &scope);
+                    }
                     record_lifecycle_audit(&binding_id, &scope, &audit);
                     Ok(audit)
                 },
@@ -739,10 +1128,12 @@ impl McpOAuthApi {
         let (coordinator, reservation) = self.reserve_lifecycle(binding_id, scope)?;
         let binding_id = binding_id.to_owned();
         let scope = scope.clone();
+        let registry = Arc::clone(&self.registry);
         tokio::spawn(async move {
             let _reservation = reservation;
             match coordinator.invalidate_definitive_rejection().await {
                 Ok(audit) => {
+                    forget_completion_receipts(&registry, &binding_id, &scope);
                     record_lifecycle_audit(&binding_id, &scope, &audit);
                     Ok(audit)
                 },
@@ -771,10 +1162,12 @@ impl McpOAuthApi {
         let (coordinator, reservation) = self.reserve_lifecycle(binding_id, scope)?;
         let binding_id = binding_id.to_owned();
         let scope = scope.clone();
+        let registry = Arc::clone(&self.registry);
         tokio::spawn(async move {
             let _reservation = reservation;
             match coordinator.logout_local().await {
                 Ok(audit) => {
+                    forget_completion_receipts(&registry, &binding_id, &scope);
                     record_lifecycle_audit(&binding_id, &scope, &audit);
                     Ok(audit)
                 },
@@ -818,19 +1211,37 @@ impl McpOAuthApi {
             binding_id: binding_id.to_owned(),
             flow_id: flow_id.clone(),
         };
+        let expires_at = Instant::now() + self.live_flow_ttl;
         let live = Arc::new(LiveFlow {
             flow,
             scope: scope.clone(),
-            expires_at: Instant::now() + self.live_flow_ttl,
+            expires_at,
+            viewers: viewer_deadline(expires_at),
             _capacity: capacity,
         });
-        reservation.commit(key, Arc::clone(&live))?;
-        self.emit_pending(binding_id, &flow_id, &attempt_id, scope, false);
+        let service_label = coordinator.service_label();
+        reservation.commit(key.clone(), Arc::clone(&live))?;
+        self.emit_pending(
+            binding_id,
+            &flow_id,
+            &attempt_id,
+            scope,
+            false,
+            service_label.as_deref(),
+        );
+        arm_expiry_sweep(&self.registry, &self.broadcaster, key, &live);
         record_lifecycle_audit(binding_id, scope, &audit);
         let browser_opened = match self.launcher.open(live.flow.browser_url()).await {
             Ok(()) => true,
             Err(_) => {
-                self.emit_pending(binding_id, &flow_id, &attempt_id, scope, true);
+                self.emit_pending(
+                    binding_id,
+                    &flow_id,
+                    &attempt_id,
+                    scope,
+                    true,
+                    service_label.as_deref(),
+                );
                 false
             },
         };
@@ -919,15 +1330,17 @@ impl McpOAuthApi {
             binding_id: binding_id.clone(),
             flow_id: flow_id.clone(),
         };
+        let expires_at = Instant::now() + self.live_flow_ttl;
         let live = Arc::new(LiveFlow {
             flow,
             scope: scope.clone(),
-            expires_at: Instant::now() + self.live_flow_ttl,
+            expires_at,
+            viewers: viewer_deadline(expires_at),
             _capacity: capacity,
         });
         let authorization_url =
             (!launch_browser).then(|| Zeroizing::new(live.flow.browser_url().to_owned()));
-        reservation.commit(key, Arc::clone(&live))?;
+        reservation.commit(key.clone(), Arc::clone(&live))?;
         // The scoped HITL lifecycle admits one request per correlation id and
         // refuses any later request carrying different content for the same
         // key, so a second publication describing the launch failure would be
@@ -944,7 +1357,15 @@ impl McpOAuthApi {
             &attempt_id,
             &scope,
             launch_browser && !browser_opened,
+            coordinator.service_label().as_deref(),
         );
+        // A fast browser callback can settle the flow while the OS opener is
+        // still returning. Its first resolution may predate HITL admission.
+        // Reconcile after publishing so no completed sign-in leaves a live ask.
+        self.reconcile_published_pending(&key, &attempt_id, &scope);
+        // Armed only after the ask is published, so its expiry can never
+        // reach subscribers ahead of the request it closes.
+        arm_expiry_sweep(&self.registry, &self.broadcaster, key, &live);
         Ok((
             McpOAuthPendingHandle {
                 binding_id,
@@ -971,6 +1392,17 @@ impl McpOAuthApi {
             return Err(scope_mismatch());
         }
         Ok(Arc::clone(&entry.coordinator))
+    }
+
+    fn reconcile_published_pending(&self, key: &RouteKey, attempt: &str, scope: &CredentialScope) {
+        let correlation = correlation_id(&key.binding_id, &key.flow_id, attempt);
+        if !self.correlation_is_live(&correlation, scope) {
+            if self.correlation_completed(&correlation, scope) {
+                self.emit_resolved(key, attempt, scope, "responded", Some("authenticated"));
+            } else {
+                self.emit_resolved(key, attempt, scope, "expired", None);
+            }
+        }
     }
 
     fn reserve_registered_begin(
@@ -1115,13 +1547,15 @@ impl McpOAuthApi {
                     Some(&expected_attempt),
                     result,
                     true,
+                    None,
                 )
             },
             CallbackTarget::Restart(coordinator, scope) => {
                 let result = coordinator
                     .complete_after_restart_query(binding_id, flow_id, query)
                     .await;
-                self.finish_completion(key, scope, None, result, false)
+                let service_label = coordinator.service_label();
+                self.finish_completion(key, scope, None, result, false, service_label)
             },
         }
     }
@@ -1224,7 +1658,7 @@ impl McpOAuthApi {
                 return Err(provider_unavailable());
             },
         }
-        let removed = self.registry.lock().live_flows.remove(&key);
+        let removed = take_live_flow(&mut self.registry.lock(), &key);
         drop(removed);
         self.emit_resolved(
             &key,
@@ -1243,13 +1677,32 @@ impl McpOAuthApi {
         known_attempt_id: Option<&str>,
         result: Result<String, CoordinatorCompletionFailure>,
         was_live: bool,
+        service_label: Option<String>,
     ) -> Result<(), McpOAuthProductError> {
         match result {
             Ok(attempt_id) => {
                 validate_route_component(&attempt_id, CALLBACK_FLOW_ID_BYTES)?;
                 let removed = {
                     let mut state = self.registry.lock();
-                    let removed = state.live_flows.remove(&key);
+                    // Success and removal are atomic to remote viewers.
+                    state
+                        .completed_correlations
+                        .retain(|_, (_, expires)| *expires > Instant::now());
+                    if state.completed_correlations.len() >= MAX_CONSUMED_CALLBACKS {
+                        if let Some(oldest) = state
+                            .completed_correlations
+                            .iter()
+                            .min_by_key(|(_, (_, expires))| *expires)
+                            .map(|(id, _)| id.clone())
+                        {
+                            state.completed_correlations.remove(&oldest);
+                        }
+                    }
+                    state.completed_correlations.insert(
+                        correlation_id(&key.binding_id, &key.flow_id, &attempt_id),
+                        (scope.clone(), Instant::now() + self.live_flow_ttl),
+                    );
+                    let removed = take_live_flow(&mut state, &key);
                     remember_consumed_callback(
                         &mut state.consumed_callbacks,
                         key.clone(),
@@ -1263,7 +1716,14 @@ impl McpOAuthApi {
                     // process that began it, so this process holds no pending
                     // lifecycle record and the resolution below would be
                     // refused as unrequested. Restore the request first.
-                    self.emit_pending(&key.binding_id, &key.flow_id, &attempt_id, &scope, false);
+                    self.emit_pending(
+                        &key.binding_id,
+                        &key.flow_id,
+                        &attempt_id,
+                        &scope,
+                        false,
+                        service_label.as_deref(),
+                    );
                 }
                 self.emit_resolved(
                     &key,
@@ -1278,7 +1738,7 @@ impl McpOAuthApi {
             Err(CoordinatorCompletionFailure::Unavailable) => Err(provider_unavailable()),
             Err(CoordinatorCompletionFailure::NotFound) => {
                 if was_live {
-                    let removed = self.registry.lock().live_flows.remove(&key);
+                    let removed = take_live_flow(&mut self.registry.lock(), &key);
                     drop(removed);
                     if let Some(attempt_id) = known_attempt_id {
                         self.emit_resolved(&key, attempt_id, &scope, "expired", None);
@@ -1287,7 +1747,7 @@ impl McpOAuthApi {
                 Err(authorization_not_found())
             },
             Err(CoordinatorCompletionFailure::Terminal) => {
-                let removed = self.registry.lock().live_flows.remove(&key);
+                let removed = take_live_flow(&mut self.registry.lock(), &key);
                 drop(removed);
                 if let Some(attempt_id) = known_attempt_id {
                     self.emit_resolved(&key, attempt_id, &scope, "cancelled", Some("failed"));
@@ -1302,28 +1762,59 @@ impl McpOAuthApi {
     }
 
     fn sweep_expired(&self) {
-        let expired = {
-            let now = Instant::now();
-            let mut state = self.registry.lock();
-            state
-                .consumed_callbacks
-                .retain(|_, expires_at| *expires_at > now);
-            let keys = state
-                .live_flows
-                .iter()
-                .filter(|(key, flow)| {
-                    flow.expires_at <= now && !state.callback_inflight.contains(*key)
-                })
-                .map(|(key, _)| key.clone())
-                .collect::<Vec<_>>();
-            keys.into_iter()
-                .filter_map(|key| state.live_flows.remove(&key).map(|flow| (key, flow)))
-                .collect::<Vec<_>>()
+        sweep_expired_flows(&self.registry, &self.broadcaster);
+    }
+
+    /// Close every sign-in ask an earlier process left pending. Live flows
+    /// exist only in memory, so an ask published before a restart can never
+    /// complete, yet its durable pending lifecycle kept the Attention card
+    /// open until the owner answered it. Runs once at boot (`install_shared`);
+    /// returns how many asks it closed, or `None` when they could not be listed.
+    pub fn retire_orphaned_pending_asks(&self) -> Option<usize> {
+        let prefix = format!("{CALLBACK_SOURCE}:");
+        let upper = format!("{CALLBACK_SOURCE};");
+        let keys = match self.broadcaster.pending_hitl_keys_in_correlation_range(
+            &prefix,
+            &upper,
+            MAX_ORPHAN_RETIREMENTS,
+        ) {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "[MCP-OAUTH] could not list sign-in asks left by an earlier process"
+                );
+                return None;
+            },
         };
-        for (key, flow) in expired {
-            self.emit_resolved(&key, flow.flow.attempt_id(), &flow.scope, "expired", None);
-            drop(flow);
+        let mut retired = 0;
+        for (principal, workspace, correlation) in keys {
+            let Ok(parsed) = parse_correlation_id(&correlation) else {
+                continue;
+            };
+            let Ok(scope) = CredentialScope::new(principal, workspace) else {
+                continue;
+            };
+            if self.correlation_is_live(&correlation, &scope) {
+                continue;
+            }
+            emit_resolved_event(
+                &self.broadcaster,
+                &parsed.route,
+                &parsed.attempt_id,
+                &scope,
+                "expired",
+                None,
+            );
+            retired += 1;
         }
+        if retired > 0 {
+            tracing::info!(
+                retired,
+                "[MCP-OAUTH] closed sign-in asks left open by an earlier process"
+            );
+        }
+        Some(retired)
     }
 
     fn emit_pending(
@@ -1333,22 +1824,36 @@ impl McpOAuthApi {
         attempt_id: &str,
         scope: &CredentialScope,
         browser_launch_failed: bool,
+        service_label: Option<&str>,
     ) {
         let hint = if browser_launch_failed {
             "The browser could not be opened automatically. Open this request to try again."
         } else {
             "This request closes automatically when sign-in succeeds."
         };
+        let service_label = service_label
+            .map(str::trim)
+            .filter(|label| !label.is_empty());
+        let prompt = match service_label {
+            Some(label) => format!("Finish connecting {label} in your browser."),
+            None => "Finish connecting this service in your browser.".to_owned(),
+        };
+        let mut input_schema = json!({
+            "instructions": "Complete sign-in here, or open it on the computer. This request closes only after the provider confirms the connection, and expires after ten minutes.",
+            "done_label": "Open on computer",
+            "dismiss_label": "Not now",
+            "browser_signin": true
+        });
+        if let (Some(label), Some(object)) = (service_label, input_schema.as_object_mut()) {
+            object.insert("service_label".to_owned(), json!(label));
+        }
         self.broadcaster.emit(RuntimeTransportEvent::HitlRequested {
             correlation_id: correlation_id(binding_id, flow_id, attempt_id),
             source: CALLBACK_SOURCE.to_owned(),
             input_type: "external_action".to_owned(),
-            prompt: "Finish connecting this service in your browser.".to_owned(),
+            prompt,
             hint: Some(hint.to_owned()),
-            input_schema: Some(json!({
-                "instructions": "Complete sign-in in the browser window. If it did not open, use the button below to try again.",
-                "done_label": "Open sign-in again"
-            })),
+            input_schema: Some(input_schema),
             task_id: None,
             execution_id: None,
             agent_id: None,
@@ -1366,19 +1871,22 @@ impl McpOAuthApi {
         outcome: &str,
         decision: Option<&str>,
     ) {
-        self.broadcaster.emit(RuntimeTransportEvent::HitlResolved {
-            correlation_id: correlation_id(&key.binding_id, &key.flow_id, attempt_id),
-            source: CALLBACK_SOURCE.to_owned(),
-            outcome: outcome.to_owned(),
-            decision: decision.map(str::to_owned),
-            task_id: None,
-            execution_id: None,
-            agent_id: None,
-            principal: Some(scope.principal.as_str().to_owned()),
-            workspace: Some(scope.workspace.as_str().to_owned()),
-            timestamp: chrono::Utc::now().timestamp_millis(),
-        });
+        emit_resolved_event(&self.broadcaster, key, attempt_id, scope, outcome, decision);
     }
+}
+
+fn forget_completion_receipts(
+    registry: &Mutex<RegistryState>,
+    binding: &str,
+    scope: &CredentialScope,
+) {
+    registry
+        .lock()
+        .completed_correlations
+        .retain(|correlation, (owner, _)| {
+            owner != scope
+                || parse_correlation_id(correlation).is_ok_and(|id| id.route.binding_id != binding)
+        });
 }
 
 fn record_lifecycle_audit(
@@ -1547,10 +2055,19 @@ fn validate_callback_query(value: &str) -> Result<(), McpOAuthProductError> {
 }
 
 fn map_begin_failure(error: McpOAuthCoordinatorError) -> CoordinatorBeginFailure {
-    if error.code == McpOAuthCoordinatorErrorCode::PendingAuthorizationConflict {
-        CoordinatorBeginFailure::Conflict
-    } else {
-        CoordinatorBeginFailure::Unavailable
+    // SDK/provider diagnostics can contain authorization URLs or credentials.
+    // Only the reviewed failure class enters product errors and ordinary logs.
+    if error.code != McpOAuthCoordinatorErrorCode::PendingAuthorizationConflict {
+        tracing::warn!(error_code = ?error.code, "MCP OAuth could not start");
+    }
+    match error.code {
+        McpOAuthCoordinatorErrorCode::PendingAuthorizationConflict => {
+            CoordinatorBeginFailure::Conflict
+        },
+        McpOAuthCoordinatorErrorCode::RegistrationFailed => {
+            CoordinatorBeginFailure::RegistrationFailed
+        },
+        _ => CoordinatorBeginFailure::Unavailable,
     }
 }
 
@@ -1586,6 +2103,7 @@ fn map_completion_failure(error: McpOAuthCoordinatorError) -> CoordinatorComplet
 fn map_product_begin_failure(error: CoordinatorBeginFailure) -> McpOAuthProductError {
     match error {
         CoordinatorBeginFailure::Conflict => pending_conflict(),
+        CoordinatorBeginFailure::RegistrationFailed => registration_failed(),
         CoordinatorBeginFailure::Unavailable => provider_unavailable(),
     }
 }
@@ -1706,6 +2224,13 @@ const fn provider_unavailable() -> McpOAuthProductError {
     )
 }
 
+const fn registration_failed() -> McpOAuthProductError {
+    McpOAuthProductError::new(
+        McpOAuthProductErrorCode::RegistrationFailed,
+        "MCP OAuth client registration failed before browser sign-in could start; retry later or use the provider's approved client setup",
+    )
+}
+
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -1790,7 +2315,7 @@ mod tests {
         attempt_id: String,
         scope: CredentialScope,
         begin_count: AtomicUsize,
-        begin_failure: bool,
+        begin_failure: Option<CoordinatorBeginFailure>,
         refresh_count: AtomicUsize,
         completion: Arc<AtomicU8>,
         cancel_count: Arc<AtomicUsize>,
@@ -1811,7 +2336,7 @@ mod tests {
                 attempt_id: "e".repeat(CALLBACK_FLOW_ID_BYTES),
                 scope: CredentialScope::new(principal, "default").expect("scope"),
                 begin_count: AtomicUsize::new(0),
-                begin_failure: false,
+                begin_failure: None,
                 refresh_count: AtomicUsize::new(0),
                 completion: Arc::new(AtomicU8::new(0)),
                 cancel_count: Arc::new(AtomicUsize::new(0)),
@@ -1838,8 +2363,8 @@ mod tests {
 
         async fn begin(&self) -> Result<Arc<dyn ProductOAuthLiveFlow>, CoordinatorBeginFailure> {
             self.begin_count.fetch_add(1, Ordering::SeqCst);
-            if self.begin_failure {
-                return Err(CoordinatorBeginFailure::Unavailable);
+            if let Some(failure) = self.begin_failure {
+                return Err(failure);
             }
             if let Some(started) = &self.begin_started {
                 started.notify_one();
@@ -1979,6 +2504,66 @@ mod tests {
     }
 
     #[test]
+    fn mobile_origin_does_not_change_loopback_only_provider_callbacks() {
+        let seed: serde_yaml::Value = serde_yaml::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../magician-config.yaml"
+        )))
+        .expect("shipped YAML");
+        let _: crate::config::BrowserSignInConfig =
+            serde_yaml::from_value(seed["browser_signin"].clone()).expect("shipped host settings");
+        let api = McpOAuthApi::new_with_callback_origin(
+            Arc::new(RuntimeTransportBroadcaster::new(4)),
+            4317,
+            Some("https://computer.example.com"),
+        )
+        .unwrap();
+        for (provider, expected) in [
+            (
+                "swiggy-mcp",
+                "http://127.0.0.1:4317/api/magician/v2/auth/mcp/oauth/callback",
+            ),
+            (
+                "zepto-mcp",
+                "http://localhost:4317/api/magician/v2/auth/mcp/oauth/callback",
+            ),
+            (
+                "metabase-mcp",
+                "https://computer.example.com/api/magician/v2/auth/mcp/oauth/callback",
+            ),
+        ] {
+            let source = std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../skillshub")
+                    .join(provider)
+                    .join("SKILL.md"),
+            )
+            .expect("shipped skill");
+            let package = tool_runtime_core::manifest_parser::parse_skill_runtime_package(&source)
+                .expect("runtime package")
+                .expect("governed skill");
+            let declared =
+                crate::magician_v2::mcp_oauth_binding::mcp_oauth_callback_mode(&source, &package)
+                    .expect("tool callback declaration");
+            assert_eq!(api.callback_base_url_for(declared), expected);
+        }
+        assert_eq!(
+            api.callback_base_url_for(None),
+            "http://127.0.0.1:4317/api/magician/v2/auth/mcp/oauth/callback"
+        );
+    }
+
+    #[test]
+    fn callback_policy_cannot_be_overridden_in_server_config() {
+        assert!(
+            serde_json::from_value::<crate::config::BrowserSignInConfig>(json!({
+                "callback_modes": {"custom-mcp": "loopback_localhost"}
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn callback_base_accepts_reviewed_https_origin_and_rejects_unsafe_origins() {
         let broadcaster = Arc::new(RuntimeTransportBroadcaster::new(4));
         let api = McpOAuthApi::new_with_callback_origin(
@@ -2003,6 +2588,99 @@ mod tests {
             Some("https://connect.example.com/untrusted"),
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn native_setup_reopens_the_exact_pending_flow_even_at_capacity() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, _events) = api(Arc::clone(&launcher), 1, LIVE_FLOW_TTL);
+        let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+        let first = api
+            .begin_native_with(coordinator.clone())
+            .await
+            .expect("first sign-in");
+        let reopened = api
+            .begin_native_with(coordinator.clone())
+            .await
+            .expect("resume the same sign-in");
+        assert_eq!(
+            first.pending().correlation_id(),
+            reopened.pending().correlation_id()
+        );
+        assert_eq!(first.authorization_url(), reopened.authorization_url());
+        assert_eq!(coordinator.begin_count.load(Ordering::SeqCst), 1);
+        assert!(launcher.opened.lock().is_empty());
+        let other = Arc::new(FakeCoordinator::new('a', 'b', "another-owner"));
+        assert_eq!(
+            api.begin_native_with(other).await.unwrap_err().code,
+            McpOAuthProductErrorCode::ScopeMismatch
+        );
+    }
+
+    #[tokio::test]
+    async fn dismissing_oauth_stops_viewers_even_if_another_context_holds_the_flow() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, _events) = api(launcher, 1, LIVE_FLOW_TTL);
+        let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+        let scope = coordinator.scope.clone();
+        let launch = api.begin_native_with(coordinator).await.unwrap();
+        let correlation = launch.pending().correlation_id();
+        let first = api.viewer_cancellation(&correlation, &scope).unwrap();
+        let second = api.viewer_cancellation(&correlation, &scope).unwrap();
+        first.cancel();
+        assert!(api.correlation_is_live(&correlation, &scope));
+        assert!(!second.is_cancelled());
+        let held = api
+            .registry
+            .lock()
+            .live_flows
+            .values()
+            .next()
+            .cloned()
+            .unwrap();
+        api.dismiss_correlation(&correlation, &scope).await.unwrap();
+        assert!(second.is_cancelled());
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn viewer_deadlines_do_not_wait_for_registry_maintenance() {
+        let token = viewer_deadline(Instant::now() + Duration::from_millis(20));
+        tokio::time::timeout(Duration::from_secs(2), token.cancelled())
+            .await
+            .expect("viewer deadline");
+    }
+
+    #[tokio::test]
+    async fn logout_and_rejection_remove_stale_connected_receipts() {
+        for logout in [true, false] {
+            let launcher = Arc::new(FakeBrowserLauncher::default());
+            let (api, _events) = api(launcher, 1, LIVE_FLOW_TTL);
+            let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+            let scope = coordinator.scope.clone();
+            let launch = api.begin_native_with(coordinator).await.unwrap();
+            let correlation = launch.pending().correlation_id();
+            let viewer = api.viewer_cancellation(&correlation, &scope).unwrap();
+            api.complete_callback(
+                &launch.pending.binding_id,
+                &launch.pending.flow_id,
+                "code=secret&state=opaque",
+            )
+            .await
+            .unwrap();
+            assert!(viewer.is_cancelled());
+            assert!(api.correlation_completed(&correlation, &scope));
+            if logout {
+                api.logout_local(&launch.pending.binding_id, &scope)
+                    .await
+                    .unwrap();
+            } else {
+                api.invalidate_definitive_rejection(&launch.pending.binding_id, &scope)
+                    .await
+                    .unwrap();
+            }
+            assert!(!api.correlation_completed(&correlation, &scope));
+        }
     }
 
     #[tokio::test]
@@ -2060,13 +2738,38 @@ mod tests {
         let launcher = Arc::new(FakeBrowserLauncher::default());
         let (api, _events) = api(launcher, 2, LIVE_FLOW_TTL);
         let mut coordinator = FakeCoordinator::new('a', 'b', "owner");
-        coordinator.begin_failure = true;
+        coordinator.begin_failure = Some(CoordinatorBeginFailure::Unavailable);
         api.begin_with(Arc::new(coordinator))
             .await
             .expect_err("begin failure");
         let state = api.registry.lock();
         assert!(state.coordinators.is_empty());
         assert!(state.starting_bindings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registration_failure_stays_distinct_without_opening_or_publishing_signin() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, mut events) = api(Arc::clone(&launcher), 2, LIVE_FLOW_TTL);
+        let mut coordinator = FakeCoordinator::new('a', 'b', "owner");
+        coordinator.begin_failure = Some(map_begin_failure(McpOAuthCoordinatorError {
+            code: McpOAuthCoordinatorErrorCode::RegistrationFailed,
+            message: "https://provider.example/register?client_secret=canary-secret",
+        }));
+        let error = api
+            .begin_with(Arc::new(coordinator))
+            .await
+            .expect_err("registration fails before a browser flow exists");
+        assert_eq!(error.code, McpOAuthProductErrorCode::RegistrationFailed);
+        assert!(error.message.contains("client registration"));
+        assert!(!error.message.contains("canary-secret"));
+        assert!(!error.message.contains("provider.example"));
+        assert!(launcher.opened.lock().is_empty());
+        assert!(events.try_recv().is_err());
+        let state = api.registry.lock();
+        assert!(state.coordinators.is_empty());
+        assert!(state.starting_bindings.is_empty());
+        assert!(state.live_flows.is_empty());
     }
 
     #[tokio::test]
@@ -2529,6 +3232,177 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_untouched_ask_expires_on_time_without_another_registry_call() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, mut events) = api(launcher, 1, Duration::from_millis(200));
+        let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+        let correlation = correlation_id(
+            &coordinator.binding_id,
+            &coordinator.flow_id,
+            &coordinator.attempt_id,
+        );
+        api.begin_with(coordinator).await.expect("begin");
+        assert!(matches!(
+            events.try_recv().expect("pending"),
+            RuntimeTransportEvent::HitlRequested { .. }
+        ));
+        // Nothing touches the registry again; the flow's own timer settles it.
+        let resolved = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("expiry arrives on time")
+            .expect("event");
+        match resolved {
+            RuntimeTransportEvent::HitlResolved {
+                correlation_id,
+                outcome,
+                ..
+            } => {
+                assert_eq!(correlation_id, correlation);
+                assert_eq!(outcome, "expired");
+            },
+            other => panic!("expected an expiry, got {other:?}"),
+        }
+        assert!(api.registry.lock().live_flows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_settled_flow_never_publishes_a_late_expiry() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, mut events) = api(launcher, 1, Duration::from_millis(200));
+        let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+        let scope = coordinator.scope.clone();
+        let correlation = correlation_id(
+            &coordinator.binding_id,
+            &coordinator.flow_id,
+            &coordinator.attempt_id,
+        );
+        api.begin_with(coordinator).await.expect("begin");
+        let _ = events.try_recv().expect("pending");
+        api.dismiss_correlation(&correlation, &scope)
+            .await
+            .expect("dismiss");
+        let dismissed =
+            serde_json::to_string(&events.try_recv().expect("dismissed")).expect("dismissed JSON");
+        assert!(dismissed.contains("dismissed"));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(events.try_recv().is_err(), "no expiry after a dismissal");
+    }
+
+    #[tokio::test]
+    async fn boot_retires_sign_in_asks_an_earlier_process_left_pending() {
+        let broadcaster = Arc::new(RuntimeTransportBroadcaster::new(64));
+        let mut events = broadcaster.subscribe();
+        let earlier = McpOAuthApi::with_dependencies(
+            Arc::clone(&broadcaster),
+            Arc::new(FakeBrowserLauncher::default()),
+            1,
+            LIVE_FLOW_TTL,
+        );
+        let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+        let correlation = correlation_id(
+            &coordinator.binding_id,
+            &coordinator.flow_id,
+            &coordinator.attempt_id,
+        );
+        earlier.begin_with(coordinator).await.expect("begin");
+        let _ = events.try_recv().expect("pending");
+        // The process that owns the live flow never retires its own ask.
+        assert_eq!(earlier.retire_orphaned_pending_asks(), Some(0));
+        assert!(events.try_recv().is_err());
+
+        let rebooted = McpOAuthApi::with_dependencies(
+            Arc::clone(&broadcaster),
+            Arc::new(FakeBrowserLauncher::default()),
+            1,
+            LIVE_FLOW_TTL,
+        );
+        assert_eq!(rebooted.retire_orphaned_pending_asks(), Some(1));
+        match events.try_recv().expect("expiry") {
+            RuntimeTransportEvent::HitlResolved {
+                correlation_id,
+                outcome,
+                ..
+            } => {
+                assert_eq!(correlation_id, correlation);
+                assert_eq!(outcome, "expired");
+            },
+            other => panic!("expected an expiry, got {other:?}"),
+        }
+        assert_eq!(rebooted.retire_orphaned_pending_asks(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn sign_in_asks_name_the_service_and_offer_not_now() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, mut events) = api(launcher, 1, LIVE_FLOW_TTL);
+        let scope = FakeCoordinator::new('a', 'b', "owner").scope;
+        let binding = "a".repeat(CALLBACK_BINDING_ID_BYTES);
+        let flow = "b".repeat(CALLBACK_FLOW_ID_BYTES);
+        let attempt = "c".repeat(CALLBACK_FLOW_ID_BYTES);
+        api.emit_pending(
+            &binding,
+            &flow,
+            &attempt,
+            &scope,
+            false,
+            Some("Swiggy (food)"),
+        );
+        match events.try_recv().expect("pending") {
+            RuntimeTransportEvent::HitlRequested {
+                prompt,
+                input_schema,
+                ..
+            } => {
+                assert_eq!(prompt, "Finish connecting Swiggy (food) in your browser.");
+                let schema = input_schema.expect("schema");
+                assert_eq!(schema["service_label"], "Swiggy (food)");
+                assert_eq!(schema["dismiss_label"], "Not now");
+                assert_eq!(schema["done_label"], "Open on computer");
+                assert_eq!(schema["browser_signin"], true);
+            },
+            other => panic!("expected a request, got {other:?}"),
+        }
+
+        let other_flow = "d".repeat(CALLBACK_FLOW_ID_BYTES);
+        api.emit_pending(&binding, &other_flow, &attempt, &scope, false, None);
+        match events.try_recv().expect("pending") {
+            RuntimeTransportEvent::HitlRequested {
+                prompt,
+                input_schema,
+                ..
+            } => {
+                assert_eq!(prompt, "Finish connecting this service in your browser.");
+                let schema = input_schema.expect("schema");
+                assert!(schema.get("service_label").is_none());
+                assert_eq!(schema["dismiss_label"], "Not now");
+            },
+            other => panic!("expected a request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn service_labels_come_from_the_provider_and_its_endpoint() {
+        assert_eq!(
+            service_label_for("swiggy-mcp", Some("https://mcp.swiggy.com/food")).as_deref(),
+            Some("Swiggy (food)")
+        );
+        assert_eq!(
+            service_label_for("metabase-mcp", Some("https://metabase.example.com/api/mcp"))
+                .as_deref(),
+            Some("Metabase")
+        );
+        assert_eq!(
+            service_label_for("zepto-mcp", Some("https://mcp.zepto.co/zepto")).as_deref(),
+            Some("Zepto")
+        );
+        assert_eq!(
+            service_label_for("google_drive", None).as_deref(),
+            Some("Google Drive")
+        );
+        assert_eq!(service_label_for("-mcp", None), None);
+    }
+
+    #[tokio::test]
     async fn exact_binding_refresh_survives_caller_cancellation_and_remains_single_flight() {
         let launcher = Arc::new(FakeBrowserLauncher::default());
         let (api, _events) = api(launcher, 2, LIVE_FLOW_TTL);
@@ -2587,6 +3461,38 @@ mod tests {
         api.refresh_binding(&binding, &scope)
             .await
             .expect("refresh after cancellation");
+    }
+
+    #[tokio::test]
+    async fn pending_flow_status_preserves_its_coordinator_and_enforces_scope() {
+        let launcher = Arc::new(FakeBrowserLauncher::default());
+        let (api, _events) = api(Arc::clone(&launcher), 2, LIVE_FLOW_TTL);
+        let coordinator = Arc::new(FakeCoordinator::new('a', 'b', "owner"));
+        let binding = coordinator.binding_id.clone();
+        let scope = coordinator.scope.clone();
+        api.begin_with(coordinator.clone()).await.expect("begin");
+
+        let replacement = Arc::new(FakeCoordinator::new('a', 'c', "owner"));
+        let conflict = api
+            .register_with(replacement.clone())
+            .expect_err("pending owner");
+        assert_eq!(
+            conflict.code,
+            McpOAuthProductErrorCode::PendingAuthorizationConflict
+        );
+        api.credential_status(&binding, &scope)
+            .await
+            .expect("status while pending");
+        let other_scope = CredentialScope::new("other", "default").expect("scope");
+        let mismatch = api
+            .credential_status(&binding, &other_scope)
+            .await
+            .expect_err("scope mismatch");
+        assert_eq!(mismatch.code, McpOAuthProductErrorCode::ScopeMismatch);
+        assert_eq!(coordinator.begin_count.load(Ordering::SeqCst), 1);
+        assert_eq!(replacement.begin_count.load(Ordering::SeqCst), 0);
+        assert_eq!(launcher.opened.lock().len(), 1);
+        assert_eq!(api.registry.lock().live_flows.len(), 1);
     }
 
     #[tokio::test]

@@ -88,14 +88,26 @@ fn normalize(text: &str) -> String {
     let cleaned: String = text
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '\'' || c == ' ' { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' || c == ' ' {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
     let mut words: Vec<&str> = cleaned.split_whitespace().collect();
     // Courtesy words around a command do not change it.
-    while words.first().is_some_and(|word| matches!(*word, "please" | "ok" | "okay")) {
+    while words
+        .first()
+        .is_some_and(|word| matches!(*word, "please" | "ok" | "okay"))
+    {
         words.remove(0);
     }
-    while words.last().is_some_and(|word| matches!(*word, "please" | "thanks")) {
+    while words
+        .last()
+        .is_some_and(|word| matches!(*word, "please" | "thanks"))
+    {
         words.pop();
     }
     words.join(" ")
@@ -113,7 +125,10 @@ fn spoken_forms(id: &str) -> &'static [&'static str] {
             "do not run the action",
         ],
         "retry" => &["check the action again", "try the check again"],
-        "use_alternative" => &["do something else instead", "do something else for the action"],
+        "use_alternative" => &[
+            "do something else instead",
+            "do something else for the action",
+        ],
         "keep_as_is" => &["keep my preference", "don't change my preference"],
         _ => &[],
     }
@@ -198,7 +213,10 @@ impl VoiceReview {
 
     /// Whether a [`VOICE_REVIEW_CLOSED`] payload closes this review.
     pub fn closed_by(&self, payload: &Value) -> bool {
-        match (&self.execution_id, payload.get("execution_id").and_then(Value::as_str)) {
+        match (
+            &self.execution_id,
+            payload.get("execution_id").and_then(Value::as_str),
+        ) {
             (Some(mine), Some(closed)) => mine == closed,
             // A review that does not know its run closes on any resolution.
             (None, _) => true,
@@ -241,7 +259,8 @@ impl VoiceReview {
 
     /// Whether `now_ms` is past the ask's answer window.
     pub fn expired(&self, now_ms: i64) -> bool {
-        self.deadline_at_ms.is_some_and(|deadline| now_ms > deadline)
+        self.deadline_at_ms
+            .is_some_and(|deadline| now_ms > deadline)
     }
 
     /// Read a finalized utterance against this review. Only one of a
@@ -327,7 +346,11 @@ pub fn voice_answer_sink() -> Option<Arc<dyn VoiceReviewAnswerSink>> {
 }
 
 /// The structured log line for a spoken answer. Content-free.
-pub fn voice_answer_log(review: &VoiceReview, choice_id: &str, outcome: &VoiceAnswerOutcome) -> Value {
+pub fn voice_answer_log(
+    review: &VoiceReview,
+    choice_id: &str,
+    outcome: &VoiceAnswerOutcome,
+) -> Value {
     json!({
         "kind": "voice_answer",
         "ask_id": review.ask_id,
@@ -343,7 +366,9 @@ pub fn voice_answer_log(review: &VoiceReview, choice_id: &str, outcome: &VoiceAn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::magician_v2::preference_alignment::ask::{AlignmentAsk, CoveredGate, CoveredRequirement};
+    use crate::magician_v2::preference_alignment::ask::{
+        AlignmentAsk, CoveredGate, CoveredRequirement,
+    };
     use crate::magician_v2::preference_alignment::contract::ResolutionChoice;
 
     fn ask() -> AlignmentAsk {
@@ -368,16 +393,26 @@ mod tests {
     #[test]
     fn a_call_hears_only_the_choices_that_neither_consent_nor_remember() {
         let review = review();
-        let ids: Vec<_> = review.choices.iter().map(|choice| choice.id.as_str()).collect();
+        let ids: Vec<_> = review
+            .choices
+            .iter()
+            .map(|choice| choice.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["use_alternative", "cancel"]);
         let message = review.message();
         assert_eq!(message.kind, VOICE_REVIEW_REQUESTED);
-        assert_eq!(VoiceReview::from_payload(&message.payload), Some(review.clone()));
+        assert_eq!(
+            VoiceReview::from_payload(&message.payload),
+            Some(review.clone())
+        );
         let said = review.announcement();
         assert!(said.contains(GENERIC_ASK_TEXT));
         assert!(!said.contains("pref-1"));
         assert!(said.contains("\"do something else instead\" or \"cancel the action\""));
-        assert!(!said.contains("Allow this once"), "consent is never offered aloud");
+        assert!(
+            !said.contains("Allow this once"),
+            "consent is never offered aloud"
+        );
     }
 
     #[test]
@@ -388,7 +423,10 @@ mod tests {
         }]);
         let review =
             VoiceReview::from_hitl("k~ask-7", &combined.hitl_input_schema("pack")).expect("review");
-        assert!(review.choices.iter().all(|choice| choice.id != "allow_once"));
+        assert!(review
+            .choices
+            .iter()
+            .all(|choice| choice.id != "allow_once"));
     }
 
     #[test]
@@ -405,8 +443,14 @@ mod tests {
             review.match_utterance("do something else instead"),
             VoiceUtterance::Choice(choice) if choice.id == "use_alternative"
         ));
-        assert_eq!(review.match_utterance("Yes, go ahead"), VoiceUtterance::Consent);
-        assert_eq!(review.match_utterance("allow this once"), VoiceUtterance::Consent);
+        assert_eq!(
+            review.match_utterance("Yes, go ahead"),
+            VoiceUtterance::Consent
+        );
+        assert_eq!(
+            review.match_utterance("allow this once"),
+            VoiceUtterance::Consent
+        );
         // Ordinary speech that mentions a choice answers nothing.
         assert_eq!(
             review.match_utterance("cancel my 3pm meeting and order dinner"),
@@ -424,7 +468,9 @@ mod tests {
         let schema = ask().hitl_input_schema("pack");
         assert!(VoiceReview::from_hitl("exec-1:plan:step", &schema).is_none());
         assert!(VoiceReview::from_hitl("exec-1:plan:step~other", &schema).is_none());
-        assert!(VoiceReview::from_hitl("k~ask-7", &json!({"escalation_trigger": "approval"})).is_none());
+        assert!(
+            VoiceReview::from_hitl("k~ask-7", &json!({"escalation_trigger": "approval"})).is_none()
+        );
         let mut payload = review().message().payload;
         payload["correlation_id"] = json!("k~someone-else");
         assert!(VoiceReview::from_payload(&payload).is_none());

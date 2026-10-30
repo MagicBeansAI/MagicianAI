@@ -69,7 +69,7 @@ use magician::magician_v2::{
     chat::{
         models::{
             ChatChannel, ChatLlmTranscriptEntry, ChatMessage, ChatMessageContent,
-            ChatMessageDirection, ChatMessageMode, StoredToolCall,
+            ChatMessageDirection, ChatMessageMode, ChatSession, ChatSessionStatus, StoredToolCall,
         },
         service::{
             ChatService, ExternalToolCatalogUpdate, RealtimeTurnContext, VoiceSessionContext,
@@ -189,10 +189,8 @@ struct CallState {
     last_output_tokens: u64,
     /// Running audio+text realtime token totals for this call, for USD cost.
     session_usage: RealtimeUsage,
-    /// Resolved chat session id for this call. Set on first
-    /// `get_or_create_active_session` call (lazily, inside
-    /// `chat_session_id_for_call`) so the next rotate / compaction /
-    /// transcript-ingest skips re-resolving against the store.
+    /// Chat session frozen before provider creation, shared by metering,
+    /// rotation, compaction and transcript ingestion for this call.
     chat_session_id: Option<String>,
     /// Exact effective-policy snapshot advertised when this realtime
     /// session received its tool catalog. Every external tool call must
@@ -387,6 +385,22 @@ fn voice_call_agent_id(
     } else {
         Ok(VOICE_CHAT_AGENT_ID.to_string())
     }
+}
+
+/// A chat a client asked the call to join is used only when it is this
+/// owner's open chat with the call's agent. A branch made for a concurrent
+/// voice request is never the call's own chat.
+fn requested_chat_session_is_usable(
+    session: &ChatSession,
+    principal: &str,
+    workspace: &str,
+    agent_id: &str,
+) -> bool {
+    session.principal == principal
+        && session.workspace == workspace
+        && session.agent_id == agent_id
+        && session.status == ChatSessionStatus::Active
+        && session.internal_voice.is_none()
 }
 
 /// A room must not become the scope's voice speaker. Cockpit diffs with no
@@ -911,6 +925,7 @@ impl VoiceOrchestrator {
         source_surface: String,
         ui_thread_id: String,
         thread_id: Option<String>,
+        chat_session_id: Option<String>,
         realtime_profile_name: Option<String>,
         hands_free: bool,
         concurrent_requests: bool,
@@ -1094,73 +1109,143 @@ impl VoiceOrchestrator {
             .as_ref()
             .and_then(|profile_id| realtime_voices.get(profile_id))
             .cloned();
-        let mut descriptor = provider
-            .create_session(
-                &principal,
-                &workspace,
-                &voice_session_id,
-                thread_id.as_deref(),
-                preferred_voice.as_deref(),
+        // Freeze the conversation before any speech provider is started. A
+        // later active-chat switch must not move this call's transcripts or bill.
+        let resolving_since_ms = Utc::now().timestamp_millis();
+        // The chat the caller is showing wins. A thread can hold several
+        // active chats (chat tabs), so "the thread's active chat" alone can
+        // land the call's transcripts in a different tab.
+        let requested_chat = match chat_session_id.as_deref() {
+            Some(requested) => {
+                let session = self.chat_store.get_session(requested).await.ok().flatten();
+                let usable = session.filter(|session| {
+                    requested_chat_session_is_usable(
+                        session,
+                        &principal,
+                        &workspace,
+                        &chat_agent_id,
+                    )
+                });
+                if usable.is_none() {
+                    warn!(
+                        voice_session_id = %voice_session_id,
+                        requested_chat_session_id = %requested,
+                        "[VOICE-ORCHESTRATOR] requested chat is not an open chat of this owner and agent; using the thread's active chat"
+                    );
+                }
+                usable
+            },
+            None => None,
+        };
+        let chat_session = match requested_chat {
+            Some(session) => session,
+            None => self
+                .chat_store
+                .get_or_create_active_session(
+                    &principal,
+                    &workspace,
+                    &ui_thread_id,
+                    &ChatChannel::new("voice", voice_session_id.clone()),
+                    &chat_agent_id,
+                )
+                .await
+                .map_err(|error| OrchestratorError::Io(error.to_string()))?,
+        };
+        // Transcripts, rotation and the thread's history follow the chat.
+        let ui_thread_id = chat_session.ui_thread_id.clone();
+        // A chat this call had to create is removed again if the call never starts.
+        let created_for_call =
+            chat_session.created_at >= resolving_since_ms && !chat_session.is_default_session;
+        let chat_session_id = chat_session.id;
+        let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(
+            principal.clone(),
+            workspace.clone(),
+        )
+        .with_chat_session(Some(chat_session_id.clone()));
+        let started: Result<_, OrchestratorError> = async {
+            let mut descriptor = magician::magician_v2::media_seam::metering::with_media_meter_scope(
+                meter_scope,
+                provider.create_session(
+                    &principal,
+                    &workspace,
+                    &voice_session_id,
+                    thread_id.as_deref(),
+                    preferred_voice.as_deref(),
+                ),
             )
             .await?;
-        apply_preferred_realtime_voice(
-            &mut descriptor,
-            &profile.provider,
-            preferred_voice.as_deref(),
-        );
-        if hands_free {
-            descriptor.half_duplex = Some(half_duplex);
-        }
-        // `open_proxied_audio` consumes the descriptor's value, so apply the
-        // native per-call boundary before opening the provider channel.
-        apply_turn_detection_override(
-            &mut descriptor,
-            hands_free,
-            turn_detection_override.as_deref(),
-        );
+            apply_preferred_realtime_voice(
+                &mut descriptor,
+                &profile.provider,
+                preferred_voice.as_deref(),
+            );
+            if hands_free {
+                descriptor.half_duplex = Some(half_duplex);
+            }
+            // `open_proxied_audio` consumes the descriptor's value, so apply the
+            // native per-call boundary before opening the provider channel.
+            apply_turn_detection_override(
+                &mut descriptor,
+                hands_free,
+                turn_detection_override.as_deref(),
+            );
 
-        if govern_owner_voice {
-            let credential = self.app_owner_session_credential.as_ref().ok_or_else(|| {
-                OrchestratorError::NotConfigured(
-                    "authenticated governed voice lost its owner credential".to_string(),
-                )
-            })?;
-            let profile_name = resolved_realtime_profile_name.as_deref().ok_or_else(|| {
-                OrchestratorError::NotConfigured(
-                    "authenticated governed voice lost its selected realtime profile".to_string(),
-                )
-            })?;
-            let topology = match descriptor.topology {
-                RealtimeAudioTopology::BackendProxied => "backend_proxied",
-                RealtimeAudioTopology::DirectPeerToPeer => "direct_peer_to_peer",
-            };
-            let effective_base_url =
-                magician::magician_v2::apps::processing_boundary::effective_realtime_voice_base_url(
-                    profile.provider.as_str(),
-                    profile.base_url.as_deref(),
-                )
-                .ok_or_else(|| {
+            if govern_owner_voice {
+                let credential = self.app_owner_session_credential.as_ref().ok_or_else(|| {
                     OrchestratorError::NotConfigured(
-                        "authenticated governed voice provider endpoint is not exact".to_string(),
+                        "authenticated governed voice lost its owner credential".to_string(),
                     )
                 })?;
-            if !governed_profile_matches_descriptor_provider(&profile.provider, descriptor.provider)
-                || !self.chat_service.attest_realtime_voice_route(
-                    profile_name,
-                    &profile.provider,
-                    &descriptor.model,
-                    Some(effective_base_url),
-                    topology,
-                )
-            {
-                credential.invalidate();
-                let _ = provider.close_session(&descriptor).await;
-                return Err(OrchestratorError::NotConfigured(
-                    "authenticated governed voice provider route changed during session mint"
-                        .to_string(),
-                ));
+                let profile_name = resolved_realtime_profile_name.as_deref().ok_or_else(|| {
+                    OrchestratorError::NotConfigured(
+                        "authenticated governed voice lost its selected realtime profile".to_string(),
+                    )
+                })?;
+                let topology = match descriptor.topology {
+                    RealtimeAudioTopology::BackendProxied => "backend_proxied",
+                    RealtimeAudioTopology::DirectPeerToPeer => "direct_peer_to_peer",
+                };
+                let effective_base_url =
+                    magician::magician_v2::apps::processing_boundary::effective_realtime_voice_base_url(
+                        profile.provider.as_str(),
+                        profile.base_url.as_deref(),
+                    )
+                    .ok_or_else(|| {
+                        OrchestratorError::NotConfigured(
+                            "authenticated governed voice provider endpoint is not exact".to_string(),
+                        )
+                    })?;
+                if !governed_profile_matches_descriptor_provider(&profile.provider, descriptor.provider)
+                    || !self.chat_service.attest_realtime_voice_route(
+                        profile_name,
+                        &profile.provider,
+                        &descriptor.model,
+                        Some(effective_base_url),
+                        topology,
+                    )
+                {
+                    credential.invalidate();
+                    let _ = provider.close_session(&descriptor).await;
+                    return Err(OrchestratorError::NotConfigured(
+                        "authenticated governed voice provider route changed during session mint"
+                            .to_string(),
+                    ));
+                }
             }
+            Ok(descriptor)
         }
+        .await;
+        let mut descriptor = match started {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                if created_for_call {
+                    if let Err(cleanup) = self.chat_store.delete_session(&chat_session_id).await {
+                        warn!(chat_session_id, %cleanup, "Could not remove the chat of a voice call that never started");
+                    }
+                }
+                return Err(error);
+            },
+        };
 
         let now_ms = Utc::now().timestamp_millis();
         let provider_label = provider_label_from_descriptor(&descriptor);
@@ -1193,6 +1278,15 @@ impl VoiceOrchestrator {
         let (downstream_tx, downstream_rx) = mpsc::unbounded_channel();
         self.downstream_fanout
             .register(voice_session_id.clone(), downstream_tx);
+        self.downstream_fanout
+            .link_chat_session(voice_session_id.clone(), chat_session_id.clone());
+        if voice_call_announces_scope(&source_surface) {
+            self.downstream_fanout.link_scope(
+                voice_session_id.clone(),
+                principal.clone(),
+                workspace.clone(),
+            );
+        }
 
         let max_session_duration_secs = descriptor.max_session_duration_secs;
 
@@ -1248,7 +1342,7 @@ impl VoiceOrchestrator {
             last_input_tokens: 0,
             last_output_tokens: 0,
             session_usage: RealtimeUsage::default(),
-            chat_session_id: None,
+            chat_session_id: Some(chat_session_id),
             policy_snapshot_id: None,
             proactive_rotation_task: None,
             audio_channel,
@@ -1618,6 +1712,16 @@ impl VoiceOrchestrator {
                 .as_ref()
                 .map(|usage| compute_realtime_cost(&model, usage))
                 .unwrap_or(0.0);
+            // Browser/chat realtime voice talks to the provider directly, so
+            // the router never sees it: count the turn toward the owner's
+            // spend envelope here. The owner is in the call, so it is
+            // foreground work: counted, never refused mid-call.
+            magician::magician_v2::spend_envelope::charge_external(
+                magicllm::LlmWorkloadClass::ForegroundChat,
+                &state.principal,
+                &state.workspace,
+                turn_cost,
+            );
             let session_cost = usage
                 .as_ref()
                 .map(|_| compute_realtime_cost(&model, &state.session_usage))
@@ -1874,6 +1978,7 @@ impl VoiceOrchestrator {
                 state.profile.provider.clone(),
                 state.app_owner_session_credential.clone(),
                 state.governed_history_capture_disabled,
+                state.chat_session_id.clone(),
             )
         };
         let (
@@ -1890,6 +1995,7 @@ impl VoiceOrchestrator {
             profile_provider,
             app_owner_session_credential,
             governed_history_capture_disabled,
+            chat_session_id,
         ) = snapshot;
         if let Some(credential) = app_owner_session_credential.as_ref() {
             credential.invalidate();
@@ -1919,15 +2025,22 @@ impl VoiceOrchestrator {
             }),
         );
 
-        match provider
-            .create_session(
+        let meter_scope = magician::magician_v2::media_seam::metering::MediaMeterScope::new(
+            principal.clone(),
+            workspace.clone(),
+        )
+        .with_chat_session(chat_session_id);
+        match magician::magician_v2::media_seam::metering::with_media_meter_scope(
+            meter_scope,
+            provider.create_session(
                 &principal,
                 &workspace,
                 &voice_session_id,
                 thread_id.as_deref(),
                 preferred_voice.as_deref(),
-            )
-            .await
+            ),
+        )
+        .await
         {
             Ok(mut descriptor) => {
                 descriptor.half_duplex = half_duplex;
@@ -3537,6 +3650,53 @@ impl VoiceOrchestrator {
         Ok(context)
     }
 
+    /// The voice catalog's policy snapshot id alone, recorded on the call as
+    /// [`Self::session_context`] records it. For providers that install their
+    /// own prompt (GPT-Live), so the call does not wait on a prompt render and
+    /// memory retrieval whose output it would discard.
+    pub async fn session_policy_snapshot(&self) -> Result<Option<String>, OrchestratorError> {
+        let (principal, workspace, call_agent_id, call_source_surface, app_owner_credential) = {
+            let guard = self.state.lock().await;
+            let state = guard.as_ref().ok_or(OrchestratorError::NotStarted)?;
+            (
+                state.principal.clone(),
+                state.workspace.clone(),
+                state.chat_agent_id.clone(),
+                state.source_surface.clone(),
+                state.app_owner_execution_credential.clone(),
+            )
+        };
+        let chat_session_id = self.chat_session_id_for_call().await?;
+        let snapshot_future = self.chat_service.voice_session_policy_snapshot_id(
+            &principal,
+            &workspace,
+            &call_agent_id,
+            &chat_session_id,
+            Some(&call_source_surface),
+        );
+        let policy_snapshot_id =
+            magician::magician_v2::chat::service::scope_app_owner_execution_credential(
+                app_owner_credential.clone(),
+                snapshot_future,
+            )
+            .await
+            .map_err(|err| OrchestratorError::Io(err.to_string()))?;
+        if app_owner_credential.as_ref().is_some_and(|credential| {
+            !self
+                .chat_service
+                .revalidate_realtime_voice_owner_credential(credential)
+        }) {
+            return Err(OrchestratorError::NotConfigured(
+                "authenticated governed voice profile changed while rendering session context"
+                    .to_string(),
+            ));
+        }
+        let mut guard = self.state.lock().await;
+        let state = guard.as_mut().ok_or(OrchestratorError::NotStarted)?;
+        state.policy_snapshot_id = policy_snapshot_id.clone();
+        Ok(policy_snapshot_id)
+    }
+
     pub async fn prepare_realtime_turn_context(
         &self,
         text: &str,
@@ -3916,6 +4076,36 @@ fn voice_takeover_feature_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chat(principal: &str, agent_id: &str, status: &str) -> ChatSession {
+        serde_json::from_value(json!({
+            "id": "chat-tab-2",
+            "principal": principal,
+            "workspace": "default",
+            "agent_id": agent_id,
+            "ui_thread_id": "general",
+            "origin_channel": {"channel_type": "web"},
+            "status": status,
+            "created_at": 1,
+            "updated_at": 2
+        }))
+        .expect("chat session")
+    }
+
+    #[test]
+    fn a_call_joins_the_chat_its_client_shows_only_when_that_chat_is_the_owners_open_chat() {
+        let usable = |session: &ChatSession| {
+            requested_chat_session_is_usable(session, "owner", "default", VOICE_CHAT_AGENT_ID)
+        };
+        assert!(usable(&chat("owner", VOICE_CHAT_AGENT_ID, "active")));
+        assert!(!usable(&chat(
+            "someone-else",
+            VOICE_CHAT_AGENT_ID,
+            "active"
+        )));
+        assert!(!usable(&chat("owner", "loom", "active")));
+        assert!(!usable(&chat("owner", VOICE_CHAT_AGENT_ID, "archived")));
+    }
 
     #[test]
     fn a_room_without_envoy_does_not_seat_the_personal_assistant() {

@@ -11,7 +11,7 @@
   {
    "id": "desktop",
    "name": "Magican Desktop (Tauri tray app)",
-   "role": "The menu-bar app on your computer. It installs or connects to the backend, shows the Orb, HUD and voice, and lends the server this computer's screen, browser, automation and Messages.",
+   "role": "The menu-bar companion with quick chat, an expandable full app window, the Orb and voice. It installs or connects to the backend and lends it this computer's screen, browser, automation and Messages.",
    "languages": [
     "Rust",
     "Svelte",
@@ -110,7 +110,7 @@
   {
    "id": "web-ui",
    "name": "Unified UI (web app)",
-   "role": "The main browser app: chat, tasks, Today, settings and more. It also renders the desktop HUD.",
+   "role": "The main browser app: Chat, Work with Goals and Playbooks, Notes, Today and settings. The desktop uses the same app pages and a compact HUD.",
    "languages": [
     "Svelte",
     "TypeScript",
@@ -193,7 +193,7 @@
   {
    "id": "ios",
    "name": "Magios (Magican for iPhone)",
-   "role": "The iPhone app with chat, Today, Attention and voice, plus Siri, widgets, a keyboard, Share and Action extensions, and screen broadcast.",
+   "role": "The iPhone app with Chat, Work, Goals, Notes, Today, Attention, voice and a How to Use guide, plus Siri, widgets, a keyboard, Share and Action extensions, and screen broadcast.",
    "languages": [
     "Swift"
    ],
@@ -270,7 +270,7 @@
   {
    "id": "android",
    "name": "Magdroid (Magican for Android)",
-   "role": "The Android app with chat, tasks, notes and voice. App Pilot lets the agent observe and operate apps on the phone.",
+   "role": "The Android app with Chat, Work, Goals, Notes, voice and a How to Use guide. App Pilot lets the agent observe and operate apps on the enrolled phone.",
    "languages": [
     "Kotlin",
     "C++",
@@ -1197,7 +1197,7 @@
   {
    "id": "public-webhook-and-ui-tunnel",
    "name": "Public webhook and dev-UI ingress (single named tunnel)",
-   "summary": "An opt-in persistent named Cloudflare tunnel (MAGICIAN_ENABLE_FUNNEL=1) runs as a brew service in browser-login mode or as a token connector. It maps webhook.<zone> to the Kapso receiver on :3010, which forwards to magician :3002. This host must never be behind Access, because providers cannot log in. ui.<zone> maps to :5173 and should be behind Access; HTTPS is needed for mic and voice on phones. A notes.<zone> route is also managed. The tunnel stays up across stop-all.",
+   "summary": "An opt-in persistent named Cloudflare tunnel (MAGICIAN_ENABLE_FUNNEL=1) runs as a brew service in browser-login mode or as a token connector. It maps webhook.<zone> to the Kapso receiver on :3010, which forwards to magician :3002. This host must never be behind Access, because providers cannot log in. ui.<zone> maps to :5173 and should be behind Access; HTTPS is needed for mic and voice on phones. Notes open at /notes in the authenticated app and need no separate notes hostname. The tunnel stays up across stop-all.",
    "placement": {
     "cloudflared": "the machine running the stack",
     "kapso / agentmail webhook receivers": "bot processes on :3010 / :3011 (native or container-mapped)",
@@ -1232,7 +1232,8 @@
     "docs/quickstart.md:157-222",
     "Makefile:2790-2801",
     "Makefile:2834-2848",
-    "scripts/ensure-magician-tunnel.sh:1-30"
+    "scripts/ensure-magician-tunnel.sh:1-30",
+    "scripts/ensure-magician-tunnel.sh:172-174 (Notes use the app sign-in; no separate notes ingress)"
    ]
   },
   {

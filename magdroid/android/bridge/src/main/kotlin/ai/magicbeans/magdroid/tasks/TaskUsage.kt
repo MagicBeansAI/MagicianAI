@@ -30,68 +30,77 @@ data class TaskUsage(
     val tokens: Int,
     /** Null until a call reports a price. */
     val costUsd: Double?,
+    val tokensReported: Boolean = true,
 ) {
     /** `this + other`; the cost stays null only when neither side was priced. */
     fun adding(other: TaskUsage): TaskUsage = TaskUsage(
         calls = calls + other.calls,
         tokens = tokens + other.tokens,
         costUsd = if (costUsd == null && other.costUsd == null) null else (costUsd ?: 0.0) + (other.costUsd ?: 0.0),
+        tokensReported = tokensReported || other.tokensReported,
     )
 
     companion object {
-        val ZERO = TaskUsage(0, 0, null)
+        val ZERO = TaskUsage(0, 0, null, false)
     }
 }
 
 /** What one `/execution-panel` payload states: its run and its planning. */
-data class TaskUsageSnapshot(val run: TaskUsage?, val planning: TaskUsage?)
+data class TaskUsageSnapshot(val run: TaskUsage?, val planning: TaskUsage?,
+    val executionId: String? = null, val calls: Map<String, TaskCallUsage> = emptyMap(),
+    val activityIds: Set<String>? = null, val updatedAt: Double = 0.0)
+
+data class TaskCallUsage(val tokens: Int?, val costUsd: Double?, val executionId: String? = null) {
+    fun enriched(next: TaskCallUsage) = TaskCallUsage(next.tokens ?: tokens, next.costUsd ?: costUsd, next.executionId ?: executionId)
+}
 
 /** The figure a task shows: run + planning, and the two parts for its accessibility label. */
-data class TaskUsageTotal(val usage: TaskUsage, val run: TaskUsage?, val planning: TaskUsage?)
+data class TaskUsageTotal(val usage: TaskUsage, val run: TaskUsage?, val planning: TaskUsage?, val executionId: String? = null, val activityCount: Int? = null)
 
 object TaskUsageModel {
     /** `a + b`, where null is "nothing yet" (web `add`). */
     fun add(a: TaskUsage?, b: TaskUsage): TaskUsage = (a ?: TaskUsage.ZERO).adding(b)
 
     /** The usage an `/execution-panel` payload states (web `usageSnapshotFrom`). */
-    fun usageSnapshot(panel: JsonObject): TaskUsageSnapshot =
-        TaskUsageSnapshot(run = runUsage(panel), planning = planningUsage(panel))
-
-    /**
-     * The run's activity (`run.activity_log`, else `run.recent_activity`)
-     * summed the way web `runCost` sums the Run act's rows — a row is a call
-     * when it reported any of the four token figures, its tokens are input +
-     * output, and its price (`cost_usd`, else the older `cost`) counts only on
-     * `llm.*` rows. Null when no row reported tokens or a price.
-     */
-    fun runUsage(panel: JsonObject): TaskUsage? {
+    fun usageSnapshot(panel: JsonObject): TaskUsageSnapshot {
+        val executionId = TaskRunEvidence.executionId(panel)
         val run = panel["run"].jObj()
-        val log = run?.get("activity_log").jObjects().orEmpty()
-        val activity = log.ifEmpty { run?.get("recent_activity").jObjects().orEmpty() }
-        var calls = 0
-        var tokens = 0
-        var reportedTokens = false
-        var cost: Double? = null
+        val full = run?.get("activity_log").jObjects().orEmpty()
+        val activity = full.ifEmpty { run?.get("recent_activity").jObjects().orEmpty() }
+        val calls = linkedMapOf<String, TaskCallUsage>()
+        val ids = linkedSetOf<String>()
         for (item in activity) {
             val meta = item["metadata"].jObj() ?: JsonObject(emptyMap())
-            val input = number(meta["input_tokens"])
-            val output = number(meta["output_tokens"])
-            val cacheRead = number(meta["cache_read_tokens"])
-            val cacheCreation = number(meta["cache_creation_tokens"])
-            if (input != null || output != null || cacheRead != null || cacheCreation != null) {
-                reportedTokens = true
-                calls += 1
-                tokens += ((input ?: 0.0) + (output ?: 0.0)).toInt()
-            }
-            val eventType = meta["event_type"].jStr() ?: ""
-            if (eventType.startsWith("llm.")) {
-                val price = number(meta["cost_usd"]) ?: number(meta["cost"])
-                if (price != null && price >= 0) cost = (cost ?: 0.0) + price
-            }
+            val correlation = meta["correlation"].jObj()
+            val type = meta["event_type"].jStr().orEmpty()
+            val rawId = meta["llm_call_id"].jStr() ?: correlation?.get("llm_call_id").jStr()
+            val itemId = item["id"].jStr()
+            (rawId?.let { "llm-call:$it" } ?: itemId)?.let(ids::add)
+            if (!type.startsWith("llm.") && type != "LLMResponseReceived") continue
+            if (number(meta["provider_attempt_count"] ?: correlation?.get("provider_attempt_count")) == 0.0) continue
+            val availability = meta["usage_availability"].jObj()
+            if ((meta["usage_reported"] as? JsonPrimitive)?.booleanOrNull == false) continue
+            val input = if ((availability?.get("tokens") as? JsonPrimitive)?.booleanOrNull == false) null else number(meta["input_tokens"])
+            val output = if ((availability?.get("tokens") as? JsonPrimitive)?.booleanOrNull == false) null else number(meta["output_tokens"])
+            val cost = if ((availability?.get("cost") as? JsonPrimitive)?.booleanOrNull == false) null else number(meta["cost_usd"]) ?: number(meta["cost"])
+            val hasCache = number(meta["cache_read_tokens"]) != null || number(meta["cache_creation_tokens"]) != null
+            if (input == null && output == null && cost == null && !hasCache) continue
+            val id = rawId ?: itemId ?: continue
+            val call = TaskCallUsage(if (input == null && output == null) null else ((input ?: 0.0) + (output ?: 0.0)).toInt(), cost?.takeIf { it >= 0 }, executionId)
+            calls[id] = calls[id]?.enriched(call) ?: call
         }
-        if (!reportedTokens && cost == null) return null
-        return TaskUsage(calls, tokens, cost)
+        return TaskUsageSnapshot(sumCalls(calls), planningUsage(panel), executionId, calls, ids,
+            number(panel["overview"].jObj()?.get("updated_at")) ?: 0.0)
     }
+
+    fun runUsage(panel: JsonObject): TaskUsage? = usageSnapshot(panel).run
+
+    fun sumCalls(calls: Map<String, TaskCallUsage>): TaskUsage? = calls.values.fold(null as TaskUsage?) { total, call ->
+        add(total, TaskUsage(1, call.tokens ?: 0, call.costUsd, call.tokens != null))
+    }
+
+    fun mergeCalls(base: Map<String, TaskCallUsage>, next: Map<String, TaskCallUsage>): Map<String, TaskCallUsage> =
+        base.toMutableMap().apply { next.forEach { (id, call) -> this[id] = this[id]?.enriched(call) ?: call } }
 
     /**
      * Each `debug.planning_timeline` row with `tokens` or `cost_usd` is one
@@ -106,18 +115,23 @@ object TaskUsageModel {
             val priced = number(entry["cost_usd"])
             if (tokens == null && priced == null) continue
             val calls = number(entry["llm_calls"])?.let { maxOf(1, it.toInt()) } ?: 1
-            planning = add(planning, TaskUsage(calls, (tokens ?: 0.0).toInt(), priced))
+            planning = add(planning, TaskUsage(calls, (tokens ?: 0.0).toInt(), priced, tokens != null))
         }
         return planning
     }
 
     /**
-     * The task's total: the live run when calls were recorded, else the
-     * snapshot's run; planning always from the snapshot (planning calls are
-     * not on the task's event stream). Null when nothing reported usage.
+     * Aggregate-only compatibility: retain the stored baseline. Production
+     * totals merge individual call IDs in the ledger before reaching here.
      */
     fun total(live: TaskUsage?, snapshot: TaskUsageSnapshot?): TaskUsageTotal? {
-        val run = if (live != null && live.calls > 0) live else snapshot?.run
+        val stored = snapshot?.run
+        val run = when {
+            stored == null -> live
+            live == null -> stored
+            else -> TaskUsage(maxOf(stored.calls, live.calls), maxOf(stored.tokens, live.tokens),
+                listOfNotNull(stored.costUsd, live.costUsd).maxOrNull(), stored.tokensReported || live.tokensReported)
+        }
         val planning = snapshot?.planning
         val usage = add(run, planning ?: TaskUsage.ZERO)
         if (usage.calls == 0 && usage.costUsd == null) return null
@@ -136,33 +150,58 @@ object TaskUsageModel {
  * and republishes it on change.
  */
 class TaskUsageLedger {
-    private val seen = mutableSetOf<String>()
-    private val liveByTask = linkedMapOf<String, TaskUsage>()
+    private val liveCalls = linkedMapOf<String, MutableMap<String, TaskCallUsage>>()
+    private val retired = mutableMapOf<String, MutableSet<String>>()
     private val snapshotsByTask = linkedMapOf<String, TaskUsageSnapshot>()
-
-    val live: Map<String, TaskUsage> get() = liveByTask.toMap()
+    val live: Map<String, TaskUsage> get() = liveCalls.mapNotNull { (id, calls) -> TaskUsageModel.sumCalls(calls)?.let { id to it } }.toMap()
     val snapshots: Map<String, TaskUsageSnapshot> get() = snapshotsByTask.toMap()
 
-    /** Record one finished model call of a task's run, once per [callKey]. False for a replayed call. */
-    fun record(taskId: String, callKey: String, tokens: Int?, costUsd: Double?): Boolean {
-        if (!seen.add("$taskId::$callKey")) return false
-        liveByTask[taskId] = TaskUsageModel.add(liveByTask[taskId], TaskUsage(1, tokens ?: 0, costUsd))
+    fun clear() { liveCalls.clear(); retired.clear(); snapshotsByTask.clear() }
+
+    fun record(taskId: String, callKey: String, tokens: Int?, costUsd: Double?, executionId: String? = null): Boolean {
+        if (tokens == null && costUsd == null) return false
+        if (executionId != null && retired[taskId]?.contains(executionId) == true) return false
+        val calls = liveCalls.getOrPut(taskId) { linkedMapOf() }
+        val old = calls[callKey]
+        val call = TaskCallUsage(tokens, costUsd, executionId)
+        val next = old?.enriched(call) ?: call
+        if (next == old) return false
+        calls[callKey] = next
         return true
     }
 
-    /** Store a task's panel snapshot; false when it is unchanged. */
     fun setSnapshot(snapshot: TaskUsageSnapshot, taskId: String): Boolean {
-        if (snapshotsByTask[taskId] == snapshot) return false
-        snapshotsByTask[taskId] = snapshot
+        val previous = snapshotsByTask[taskId]
+        var next = snapshot
+        if (previous != null) {
+            if (next.executionId == null && previous.executionId != null) return false
+            if (next.executionId != null && retired[taskId]?.contains(next.executionId) == true) return false
+            if (previous.executionId != next.executionId) {
+                if (next.updatedAt < previous.updatedAt) return false
+                previous.executionId?.let { retired.getOrPut(taskId) { mutableSetOf() }.add(it) }
+                liveCalls[taskId]?.entries?.removeAll { it.value.executionId != next.executionId }
+            } else {
+                val calls = if (next.updatedAt < previous.updatedAt) TaskUsageModel.mergeCalls(next.calls, previous.calls)
+                    else TaskUsageModel.mergeCalls(previous.calls, next.calls)
+                next = next.copy(calls = calls, run = TaskUsageModel.sumCalls(calls) ?: next.run ?: previous.run,
+                    planning = next.planning ?: previous.planning,
+                    activityIds = previous.activityIds?.plus(next.activityIds.orEmpty()) ?: next.activityIds,
+                    updatedAt = maxOf(previous.updatedAt, next.updatedAt))
+            }
+        }
+        if (previous == next) return false
+        snapshotsByTask[taskId] = next
         return true
     }
 
-    /** A panel the caller already fetched (the live card's poll). */
-    fun apply(panel: JsonObject, taskId: String): Boolean =
-        setSnapshot(TaskUsageModel.usageSnapshot(panel), taskId)
+    fun apply(panel: JsonObject, taskId: String): Boolean = setSnapshot(TaskUsageModel.usageSnapshot(panel), taskId)
 
-    fun total(taskId: String): TaskUsageTotal? =
-        TaskUsageModel.total(liveByTask[taskId], snapshotsByTask[taskId])
+    fun total(taskId: String): TaskUsageTotal? {
+        val snapshot = snapshotsByTask[taskId]
+        val live = liveCalls[taskId].orEmpty().filterValues { snapshot?.executionId == null || it.executionId == null || it.executionId == snapshot.executionId }
+        val run = TaskUsageModel.sumCalls(TaskUsageModel.mergeCalls(live, snapshot?.calls.orEmpty()))
+        return TaskUsageModel.total(run, snapshot)?.copy(executionId = snapshot?.executionId, activityCount = snapshot?.activityIds?.size)
+    }
 }
 
 /** The turn chip's figures: the turn's own model calls plus every task the turn started. */
@@ -173,6 +212,7 @@ data class TurnUsageSummary(
     val costUsd: Double?,
     /** Tasks this turn started (`create_task` / `run_task`), priced or not yet. */
     val spawnedTasks: Int,
+    val tokensReported: Boolean = true,
 ) {
     val tokens: Int get() = inputTokens + outputTokens
 }
@@ -206,6 +246,7 @@ object TurnUsage {
             outputTokens = output ?: 0,
             costUsd = cost,
             spawnedTasks = 0,
+            tokensReported = reported > 0,
         )
     }
 
@@ -214,10 +255,11 @@ object TurnUsage {
         val base = own(rows)
         val taskIds = spawnedTaskIds(rows)
         if (taskIds.isEmpty()) return base
-        var summary = base ?: TurnUsageSummary(0, 0, 0, null, 0)
+        var summary = base ?: TurnUsageSummary(0, 0, 0, null, 0, false)
         for (usage in taskIds.mapNotNull(taskUsage).map { it.usage }) {
             summary = summary.copy(
                 calls = summary.calls + usage.calls,
+                tokensReported = summary.tokensReported || usage.tokensReported,
                 outputTokens = summary.outputTokens + usage.tokens,
                 costUsd = usage.costUsd?.let { (summary.costUsd ?: 0.0) + it } ?: summary.costUsd,
             )
@@ -291,7 +333,7 @@ object TaskUsageFormat {
     /** The live card's line: `3 calls · 12.3k tok · $0.04`; null with no calls. */
     fun taskLine(usage: TaskUsage): String? {
         if (usage.calls <= 0) return null
-        return listOfNotNull(calls(usage.calls), "${compactTokens(usage.tokens)} tok", usd(usage.costUsd))
+        return listOfNotNull(calls(usage.calls), if (usage.tokensReported) "${compactTokens(usage.tokens)} tok" else "tokens unavailable", usd(usage.costUsd))
             .joinToString(" · ")
     }
 
@@ -299,7 +341,7 @@ object TaskUsageFormat {
     fun taskAccessibilityLabel(total: TaskUsageTotal): String {
         val usage = total.usage
         val parts = mutableListOf(
-            "${usage.calls} model call${if (usage.calls == 1) "" else "s"}, ${usage.tokens} tokens" +
+            "${usage.calls} model call${if (usage.calls == 1) "" else "s"}, " + (if (usage.tokensReported) "${usage.tokens} tokens" else "tokens unavailable") +
                 (spokenUsd(usage.costUsd)?.let { ", $it" } ?: ""),
         )
         total.planning?.let { parts.add("Planning: ${calls(it.calls)}" + (spokenUsd(it.costUsd)?.let { c -> ", $c" } ?: "")) }
@@ -313,18 +355,18 @@ object TaskUsageFormat {
     fun turnLine(summary: TurnUsageSummary): String? {
         if (summary.calls <= 0 && summary.costUsd == null) return null
         val tasks = summary.spawnedTasks.takeIf { it > 0 }?.let { "incl. $it task${if (it == 1) "" else "s"}" }
-        return listOfNotNull(calls(summary.calls), "${tokenCount(summary.tokens)} tok", usd(summary.costUsd), tasks)
+        return listOfNotNull(calls(summary.calls), if (summary.tokensReported) "${tokenCount(summary.tokens)} tok" else "tokens unavailable", usd(summary.costUsd), tasks)
             .joinToString(" · ")
     }
 
     /** The turn chip's short form for a narrow header: `12k tok · $0.04`. */
     fun turnShortLine(summary: TurnUsageSummary): String? {
         if (summary.calls <= 0 && summary.costUsd == null) return null
-        return listOfNotNull("${tokenCount(summary.tokens)} tok", usd(summary.costUsd)).joinToString(" · ")
+        return listOfNotNull(if (summary.tokensReported) "${tokenCount(summary.tokens)} tok" else "tokens unavailable", usd(summary.costUsd)).joinToString(" · ")
     }
 
     fun turnAccessibilityLabel(summary: TurnUsageSummary): String {
-        var label = "${summary.calls} model call${if (summary.calls == 1) "" else "s"}, ${summary.tokens} tokens"
+        var label = "${summary.calls} model call${if (summary.calls == 1) "" else "s"}, " + if (summary.tokensReported) "${summary.tokens} tokens" else "tokens unavailable"
         spokenUsd(summary.costUsd)?.let { label += ", $it" }
         if (summary.spawnedTasks > 0) {
             label += ", including ${summary.spawnedTasks} task${if (summary.spawnedTasks == 1) "" else "s"} this turn started"

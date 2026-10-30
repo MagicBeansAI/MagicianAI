@@ -31,6 +31,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.delay
 import androidx.compose.ui.unit.dp
@@ -59,6 +66,13 @@ fun AttentionScreen(
     onOpenSettings: (() -> Unit)? = null,
     /** Open a task on its Plan tab, for a plan approval's Review. */
     onReviewPlan: (String) -> Unit = onOpenTask,
+    /**
+     * Opens the side drawer. Non-null only when hosted as the Attention tab,
+     * which then draws this bar itself (menu left; History and Refresh right,
+     * as iOS's Attention bar). Work's "Needs you" view passes nothing and
+     * keeps Work's own bar and its bound Refresh.
+     */
+    onMenu: (() -> Unit)? = null,
 ) {
     val viewModel: AttentionViewModel = viewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -85,7 +99,11 @@ fun AttentionScreen(
         val id = requested ?: return@LaunchedEffect
         val item = state.items.firstOrNull { candidate ->
             candidate.id == id || candidate.request(candidate.metadata).correlationId == id
-        } ?: return@LaunchedEffect
+        }
+        if (item == null) {
+            viewModel.openAnswerById(id) { AttentionDeepLinks.consume(id) }
+            return@LaunchedEffect
+        }
         AttentionDeepLinks.consume(id)
         if (item.isActionable) viewModel.openAnswer(item)
     }
@@ -119,19 +137,18 @@ fun AttentionScreen(
     Column(Modifier.fillMaxSize()) {
         // A mode, not a lane. History is not a category of pending work, and
         // sitting it in the lane row would make it look like one more thing to
-        // do rather than a record of things already done.
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                if (state.showHistory) "Answered" else "Needs you",
-                color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
+        // do rather than a record of things already done — so it lives in the
+        // bar, next to Refresh, exactly where iOS keeps it.
+        onMenu?.let { openMenu ->
+            AttentionTopBar(
+                showHistory = state.showHistory,
+                busy = if (state.showHistory) state.historyLoading else state.loading,
+                onMenu = openMenu,
+                onToggleHistory = { viewModel.showHistory(!state.showHistory) },
+                onRefresh = {
+                    if (state.showHistory) viewModel.showHistory(true) else viewModel.refresh()
+                },
             )
-            TextButton(onClick = { viewModel.showHistory(!state.showHistory) }) {
-                Text(if (state.showHistory) "Back" else "History", color = Coral, fontSize = 13.sp)
-            }
         }
 
         if (state.showHistory) {
@@ -287,6 +304,61 @@ fun AttentionScreen(
 }
 
 /**
+ * The Attention tab's own bar, as iOS draws it: the menu on the left, the
+ * title centred, History and Refresh on the right. It replaces the in-page
+ * "Needs you / History" row, which read as one more thing to do instead of a
+ * record of things already done.
+ */
+@Composable
+private fun AttentionTopBar(
+    showHistory: Boolean,
+    busy: Boolean,
+    onMenu: () -> Unit,
+    onToggleHistory: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    Box(
+        Modifier.fillMaxWidth().background(Ground).statusBarsPadding().height(TASK_HEADER_HEIGHT_DP.dp)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Centred on the bar, clear of the actions on either side.
+        Text(
+            if (showHistory) "History" else "Attention",
+            color = Ink, fontSize = TASK_HEADER_TITLE_FONT_SP.sp, fontWeight = FontWeight.SemiBold,
+            maxLines = 1, modifier = Modifier.padding(horizontal = 100.dp).semantics { heading() }
+        )
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Outlined.Menu, contentDescription = "Chats", tint = Ink)
+            }
+        }
+        Row(
+            Modifier.fillMaxSize().padding(end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.End,
+        ) {
+            // A clock while the feed is showing (iOS's `clock`), the list once
+            // history is — the same flip iOS's toggle makes.
+            IconButton(onClick = onToggleHistory, enabled = !busy) {
+                Icon(
+                    if (showHistory) Icons.AutoMirrored.Outlined.List else Icons.Outlined.History,
+                    contentDescription = if (showHistory) "Back to attention" else "Attention history",
+                    tint = Ink,
+                )
+            }
+            IconButton(onClick = onRefresh, enabled = !busy) {
+                if (busy) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Coral)
+                } else {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = Ink)
+                }
+            }
+        }
+    }
+}
+
+/**
  * The form for answering one waiting item.
  *
  * Draws the same input kinds the chat escalation card does, through the same
@@ -311,6 +383,8 @@ internal fun AnswerSheet(
     loadAlignmentDetail: suspend (String) -> ai.magicbeans.magdroid.attention.AlignmentDetailOutcome =
         { ai.magicbeans.magdroid.attention.AlignmentDetailOutcome.Unavailable },
 ) {
+    val compactGod = request.isGodMode && ai.magicbeans.magdroid.attention.godGrantScopes(request.grantOptions).isNotEmpty()
+    val boundedChoice = request.renderKind == "choice" && !request.isSensitive && request.approvalPreview == null
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -325,9 +399,12 @@ internal fun AnswerSheet(
             onPlanChoice = onPlanChoice,
             onOpenReview = onOpenReview,
             loadAlignmentDetail = loadAlignmentDetail,
+            showPrompt = !compactGod,
+            boundedChoiceReview = boundedChoice,
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .then(if (compactGod || boundedChoice) Modifier.heightIn(max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.8f).dp)
+                    else Modifier.verticalScroll(rememberScrollState()))
                 .padding(horizontal = 18.dp)
                 .padding(bottom = 30.dp),
         )
@@ -355,6 +432,8 @@ internal fun AskAnswerForm(
         { ai.magicbeans.magdroid.attention.AlignmentDetailOutcome.Unavailable },
     /** Inline surfaces draw the prompt in their own header. */
     showPrompt: Boolean = true,
+    /** A focused choice sheet keeps its complete review separate from its choices. */
+    boundedChoiceReview: Boolean = false,
     modifier: Modifier = Modifier.fillMaxWidth(),
 ) {
     var typed by remember(request.correlationId) { mutableStateOf("") }
@@ -417,40 +496,11 @@ internal fun AskAnswerForm(
         modifier,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        request.chainLabel?.let {
-            Text(it.uppercase(), color = Coral, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-        // A delegated child's ask, surfaced on the parent task. Naming the
-        // agent says whose question it is; the answer goes to the child.
-        request.fromLabel?.let {
-            Text(it.uppercase(), color = Secondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-        if (showPrompt) {
-            Text(request.prompt, color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        }
-        request.hint?.takeIf { it.isNotBlank() && it != request.prompt }?.let {
-            Text(it, color = Secondary, fontSize = 12.sp)
-        }
-
-        // The thing being asked about. The server sends a link and its own
-        // label with the request; both were decoded here and neither was
-        // shown, so answering meant deciding without being able to look.
-        // An app route (a Relentless review's `/work?view=quality&run=…`)
-        // opens in Work; anything else opens in the browser.
-        request.reviewHref?.takeIf { it.isNotBlank() }?.let { href ->
-            val context = androidx.compose.ui.platform.LocalContext.current
-            TextButton(
-                onClick = { onOpenReview?.invoke(href) ?: openAskReview(context, href) },
-                contentPadding = PaddingValues(0.dp),
-            ) {
-                // The server's own wording when it sent one. "View source"
-                // is iOS's fallback and says the least that is still true.
-                Text(
-                    request.reviewLabel?.takeIf { it.isNotBlank() } ?: "View source",
-                    color = Coral, fontSize = 13.sp,
-                )
-            }
-        }
+        AskRequestReview(
+            request, showPrompt, onOpenReview,
+            modifier = if (boundedChoiceReview) Modifier.weight(1f, fill = false)
+                .heightIn(max = 180.dp).verticalScroll(rememberScrollState()) else Modifier,
+        )
 
         if (request.sensitive != null) {
             // What will happen to the value, the window when there is one,
@@ -553,7 +603,34 @@ internal fun AskAnswerForm(
             }
 
             "tool_authorization", "sandbox_override" -> {
-                GrantBlock(request)
+                val scopes = if (request.isGodMode) ai.magicbeans.magdroid.attention.godGrantScopes(request.grantOptions) else emptyList()
+                if (scopes.isNotEmpty()) {
+                    // One scroll region for every file and the complete rationale;
+                    // the scope picker and decision controls stay outside it.
+                    Column(Modifier.fillMaxWidth().then(if (!showPrompt) Modifier.weight(1f, fill = false) else Modifier)
+                        .heightIn(max = 120.dp).verticalScroll(rememberScrollState())) {
+                        Text(request.prompt, color = Ink, fontSize = 13.sp)
+                        request.godFiles.forEach { file ->
+                            Text(file.path, color = Ink, fontSize = 12.sp)
+                            Text(file.unifiedDiff, color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        }
+                        GrantBlock(request)
+                    }
+                    GodModeGrantControls(request, scopes, submitting, onSubmit)
+                } else {
+                // The command, staged changes and rationale scroll; Deny and the
+                // allow buttons stay below them, however long the command is.
+                Column(Modifier.fillMaxWidth().then(if (!showPrompt) Modifier.weight(1f, fill = false) else Modifier)
+                    .heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
+                    if (request.godFiles.isNotEmpty()) {
+                        Text("Staged changes", color = Ink, fontWeight = FontWeight.SemiBold)
+                        request.godFiles.forEach { file ->
+                            Text(file.path, color = Ink, fontSize = 12.sp)
+                            Text(file.unifiedDiff, color = Ink, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        }
+                    }
+                    GrantBlock(request)
+                }
                 val deny = request.grantDenyOption
                     ?: ai.magicbeans.magdroid.attention.AttentionGrantOption("deny", "Deny")
                 EscalationSubmit(
@@ -586,9 +663,35 @@ internal fun AskAnswerForm(
                         )
                     }
                 }
+                }
             }
 
             "external_action" -> {
+                if (request.source == ai.magicbeans.magdroid.attention.MCP_OAUTH_SOURCE) {
+                    BrowserSignInButton(correlationId = request.correlationId, expected = request.originConnection)
+                    // Declining is an answer, not a close: it posts an abort, the
+                    // computer cancels the sign-in, and the ask leaves every surface.
+                    request.externalDismissLabel?.let { dismissLabel ->
+                        Text(
+                            dismissLabel,
+                            color = if (submitting) Muted else Ink,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    if (submitting) Modifier
+                                    else Modifier.clickable {
+                                        onSubmit(
+                                            ai.magicbeans.magdroid.chat.HitlResponseValue.Aborted("owner_declined"),
+                                        )
+                                    },
+                                )
+                                .padding(vertical = 9.dp),
+                        )
+                    }
+                }
                 // An authorize page (mcp_oauth) is opened here rather than
                 // described: the owner finishes there, then says so below.
                 request.externalUrl?.let { url ->
@@ -640,26 +743,15 @@ internal fun AskAnswerForm(
                         )
                     }
                 }
-                MagicianTextField(
-                    value = typed,
-                    onValueChange = { typed = it },
-                    enabled = !submitting,
-                    maxLines = 4,
-                    placeholder = {
-                        Text("Optional note…", color = Muted, fontSize = 13.sp)
-                    },
-                    textStyle = LocalTextStyle.current.copy(color = Ink, fontSize = 13.sp),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                EscalationSubmit(
-                    enabled = !submitting,
-                    label = request.externalDoneLabel,
-                ) {
-                    onSubmit(
-                        ai.magicbeans.magdroid.chat.HitlResponseValue.ExternalActionCompleted(
-                            typed.trim().ifEmpty { null },
-                        ),
+                if (request.source != ai.magicbeans.magdroid.attention.MCP_OAUTH_SOURCE) {
+                    MagicianTextField(
+                        value = typed, onValueChange = { typed = it }, enabled = !submitting,
+                        maxLines = 4, placeholder = { Text("Optional note…", color = Muted, fontSize = 13.sp) },
+                        textStyle = LocalTextStyle.current.copy(color = Ink, fontSize = 13.sp), modifier = Modifier.fillMaxWidth(),
                     )
+                    EscalationSubmit(enabled = !submitting, label = request.externalDoneLabel) {
+                        onSubmit(ai.magicbeans.magdroid.chat.HitlResponseValue.ExternalActionCompleted(typed.trim().ifEmpty { null }))
+                    }
                 }
             }
 
@@ -683,6 +775,14 @@ internal fun AskAnswerForm(
                     alignment = requireNotNull(request.alignment),
                     submitting = submitting,
                     loadDetail = loadAlignmentDetail,
+                    onSubmit = onSubmit,
+                )
+            } else if (request.outwardReview != null) {
+                // A captured send: Send / Discard / Always allow, posted as
+                // the chosen id. The preview above shows what and to whom.
+                OutwardReviewButtons(
+                    review = requireNotNull(request.outwardReview),
+                    submitting = submitting,
                     onSubmit = onSubmit,
                 )
             } else if (PlanApprovalActions.isPlanApproval(request.source, request.inputType)) {
@@ -841,7 +941,11 @@ internal fun AskAnswerForm(
                 }
             }
 
-            else -> request.options.forEach { option ->
+            else -> if (request.options.isNotEmpty()) Column(
+                Modifier.fillMaxWidth().then(if (boundedChoiceReview)
+                    Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState()) else Modifier),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) { request.options.forEach { option ->
                 EscalationOptionRow(
                     option = option,
                     selected = false,
@@ -849,7 +953,7 @@ internal fun AskAnswerForm(
                     enabled = !submitting,
                     onClick = { send(option) },
                 )
-            }
+            } }
         }
 
         error?.let { Text(it, color = Coral, fontSize = 12.sp) }
@@ -859,9 +963,67 @@ internal fun AskAnswerForm(
     }
 }
 
+/** Full review text scrolls independently of the decision controls. */
+@Composable
+private fun AskRequestReview(
+    request: ai.magicbeans.magdroid.attention.AttentionRequest,
+    showPrompt: Boolean,
+    onOpenReview: ((String) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    if (!showPrompt && request.chainLabel == null && request.fromLabel == null &&
+        request.hint.isNullOrBlank() && request.approvalPreview == null && request.reviewHref.isNullOrBlank()) return
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        request.chainLabel?.let {
+            Text(it.uppercase(), color = Coral, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+        // A delegated child's ask, surfaced on the parent task. Naming the
+        // agent says whose question it is; the answer goes to the child.
+        request.fromLabel?.let {
+            Text(it.uppercase(), color = Secondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+        if (showPrompt) {
+            // A previewed approval leads with its title; the server's prompt
+            // only restates the card below in prose.
+            Text(request.headline, color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+        request.hint?.takeIf { it.isNotBlank() && it != request.prompt && it != request.headline }?.let {
+            Text(it, color = Secondary, fontSize = 12.sp)
+        }
+        // The gated tool's structured approval card: the change, the agent's
+        // reason, evidence and warnings in place of the raw call, which stays
+        // behind "Raw call". Approve / Reject below are unchanged.
+        request.approvalPreview?.let { preview ->
+            ApprovalPreviewCard(preview, request.approvalRawCall)
+        }
+
+        // The thing being asked about. The server sends a link and its own
+        // label with the request; both were decoded here and neither was
+        // shown, so answering meant deciding without being able to look.
+        // An app route (a Relentless review's `/work?view=quality&run=…`)
+        // opens in Work; anything else opens in the browser.
+        request.reviewHref?.takeIf { it.isNotBlank() }?.let { href ->
+            val context = androidx.compose.ui.platform.LocalContext.current
+            TextButton(
+                onClick = { onOpenReview?.invoke(href) ?: openAskReview(context, href) },
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                // The server's own wording when it sent one. "View source"
+                // is iOS's fallback and says the least that is still true.
+                Text(
+                    request.reviewLabel?.takeIf { it.isNotBlank() } ?: "View source",
+                    color = Coral, fontSize = 13.sp,
+                )
+            }
+        }
+
+    }
+}
+
 /**
  * Open an ask's review link. An app route goes through Work deep-link routing
- * (`/work?view=quality&run=…&task=…` lands on that Quality run); an absolute
+ * (`/work?view=quality&run=…&task=…` lands on that Quality run), a note link
+ * (`/notes?path=…`) opens the native Notes screen; an absolute
  * URL, or a path the app does not route, opens in the browser against the
  * paired host. Returns true when the link was routed in-app.
  */
@@ -869,6 +1031,8 @@ internal fun openAskReview(context: android.content.Context, href: String): Bool
     val link = href.trim()
     if (link.isEmpty()) return false
     if (WorkDeepLinks.accept(link)) return true
+    // A note link opens the native Notes screen (the shell shows it).
+    if (NoteLinks.accept(context, link)) return true
     val absolute = if (link.startsWith("http://") || link.startsWith("https://")) {
         link
     } else {
@@ -885,6 +1049,43 @@ internal fun openAskReview(context: android.content.Context, href: String): Bool
     return false
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GodModeGrantControls(
+    request: ai.magicbeans.magdroid.attention.AttentionRequest,
+    scopes: List<ai.magicbeans.magdroid.attention.GodGrantScope>,
+    submitting: Boolean,
+    onSubmit: (ai.magicbeans.magdroid.chat.HitlResponseValue) -> Unit,
+) {
+    var selectedId by remember(request.correlationId) { mutableStateOf(scopes.first().id) }
+    var expanded by remember(request.correlationId) { mutableStateOf(false) }
+    val selected = scopes.firstOrNull { it.id == selectedId } ?: scopes.first()
+    Box {
+        OutlinedButton(onClick = { expanded = true }, enabled = !submitting,
+            shape = MagicanButtonShape, modifier = Modifier.fillMaxWidth()) {
+            Text("Grant scope: ${selected.label}")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            scopes.forEach { scope ->
+                DropdownMenuItem(text = { Text(scope.label) }, onClick = { selectedId = scope.id; expanded = false })
+            }
+        }
+    }
+    Text(selected.detail, color = Ink, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+        modifier = Modifier.fillMaxWidth().heightIn(max = 48.dp).verticalScroll(rememberScrollState()))
+    FlowRow(modifier = Modifier.fillMaxWidth().heightIn(max = 144.dp).verticalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val choices = listOf("deny" to "Deny", "allow_once" to "Allow once", selected.sessionId to "This session", selected.alwaysId to "Always")
+        choices.filter { (id, _) -> request.grantOptions.any { it.id == id } }.forEach { (id, label) ->
+            StackChip(label,
+                onClick = { onSubmit(ai.magicbeans.magdroid.chat.HitlResponseValue.Choice(id)) },
+                enabled = !submitting,
+                prominent = id == "deny",
+            )
+        }
+    }
+}
+
 @Composable
 private fun GrantBlock(request: ai.magicbeans.magdroid.attention.AttentionRequest) {
     Column(
@@ -895,7 +1096,11 @@ private fun GrantBlock(request: ai.magicbeans.magdroid.attention.AttentionReques
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(
-            if (request.grantKind == "sandbox") "SANDBOX OVERRIDE REQUESTED" else "TOOL AUTHORIZATION REQUESTED",
+            when {
+                request.isOriginalFolderEdit -> "ORIGINAL FOLDER EDIT"
+                request.grantKind == "sandbox" -> "SANDBOX OVERRIDE REQUESTED"
+                else -> "TOOL AUTHORIZATION REQUESTED"
+            },
             color = Danger,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -1409,6 +1614,54 @@ private fun PlanApprovalButtons(
             enabled = !submitting,
             modifier = Modifier.fillMaxWidth(),
         ) { onChoice(PlanApprovalChoice.ApproveAndRun) }
+    }
+}
+
+/**
+ * A captured outward send: Send · Discard, then the lasting grant under them
+ * in the server's own words ("Always allow ambassador to send to a@b.com").
+ *
+ * Send is this exact message to these recipients, once. The grant also sends
+ * it, so it is drawn quieter than Send rather than as a second primary.
+ */
+@Composable
+private fun OutwardReviewButtons(
+    review: ai.magicbeans.magdroid.attention.OutwardReview,
+    submitting: Boolean,
+    onSubmit: (ai.magicbeans.magdroid.chat.HitlResponseValue) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        review.recipientsLine?.let { Text(it, color = Ink, fontSize = 13.sp) }
+        review.viaLine?.let { Text(it, color = Muted, fontSize = 12.sp) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PlanChoiceButton(
+                label = review.discardLabel,
+                fill = Danger.copy(alpha = 0.12f),
+                ink = Danger,
+                enabled = !submitting,
+                modifier = Modifier.weight(1f),
+            ) { onSubmit(review.discardAnswer()) }
+            PlanChoiceButton(
+                label = review.sendLabel,
+                fill = AccentFill,
+                ink = OnAccent,
+                enabled = !submitting,
+                modifier = Modifier.weight(1f),
+            ) { onSubmit(review.sendAnswer()) }
+        }
+        review.alwaysAllowAnswer()?.let { grant ->
+            PlanChoiceButton(
+                label = requireNotNull(review.alwaysAllowLabel),
+                fill = Color.Transparent,
+                ink = Coral,
+                border = BorderStroke(1.dp, Coral.copy(alpha = 0.6f)),
+                enabled = !submitting,
+                modifier = Modifier.fillMaxWidth(),
+            ) { onSubmit(grant) }
+        }
+        ai.magicbeans.magdroid.attention.outwardReviewExpiresLine(review.deadlineAtMs)?.let {
+            Text(it, color = Muted, fontSize = 12.sp)
+        }
     }
 }
 

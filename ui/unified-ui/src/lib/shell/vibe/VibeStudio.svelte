@@ -21,6 +21,8 @@
 	import { createMenuKeydown, menuFocusableItems } from '$lib/shared/menuKeydown';
 	import { agentDisplayName } from '$lib/presentationIdentity';
 	import VibeComposer from '$lib/shell/VibeComposer.svelte';
+	import ComposerAskDock from '$lib/magician/chat/ComposerAskDock.svelte';
+	import { composerAsks, pendingAsks } from '$lib/attention/pendingAsks';
 	import { buildTaskMentionItems } from '$lib/magician/chat/composerMentions';
 	import StudioRail from '$lib/shell/vibe/rail/StudioRail.svelte';
 	import AppOptionsPanel from '$lib/shell/vibe/AppOptionsPanel.svelte';
@@ -42,7 +44,8 @@
 		type VibeDevDeploySettings,
 		type VibeDevProject
 	} from '$lib/stores/vibeDevProjectStore';
-	import { ensurePendingHitlBridge } from '$lib/stores/pendingHitlStore';
+	import { ensurePendingHitlBridge, pendingHitlEntries } from '$lib/stores/pendingHitlStore';
+	import { derivePresence } from '$lib/magician/chat/next/presence';
 	import { codingSpineStore } from '$lib/stores/codingSpineStore';
 	import { vibeStudioStore } from '$lib/stores/vibeStudioStore';
 	import { vibeDevRunsStore } from '$lib/stores/vibeDevRunsStore';
@@ -68,6 +71,8 @@
 		rejectDiffFile,
 		approveAll,
 		respondToVibeRow,
+		acknowledgeVibeNotice,
+		isPendingDiffRow,
 		autoApplyEligibleDiffs,
 		resetAutoApplyMemo,
 		historicalProposalRows,
@@ -180,10 +185,11 @@
 				noScroll: true
 			});
 		}
-		const initialQ = get(page).url.searchParams.get('q');
+		const initialQ = get(page).url.searchParams.get('draft') ?? get(page).url.searchParams.get('q');
 		if (initialQ) {
 			if (!prompt.trim()) prompt = initialQ;
 			const params = new URLSearchParams(get(page).url.searchParams);
+			params.delete('draft');
 			params.delete('q');
 			const query = params.toString();
 			void goto(query ? `/vibe?${query}` : '/vibe', {
@@ -414,11 +420,14 @@
 	}
 
 	$: runChainIds = buildVibeRunChainIds(activeVibeTask, allVibeDevTasks);
-	$: projectTrusted = activeVibeProject?.trust === 'trusted';
-	$: trustedRootTaskId = projectTrusted ? chainRootTaskId(activeVibeTask, allVibeDevTasks) : null;
+	$: selectedRunRoot = chainRootTaskId(activeVibeTask, allVibeDevTasks);
+	$: workLocationMode = activeVibeTask ? (activeVibeProject?.run_links?.[selectedRunRoot ?? '']?.work_location?.mode ?? (activeVibeProject?.trust === 'trusted' ? 'trusted' : 'sandboxed')) : (activeVibeProject?.trust ?? 'sandboxed');
+	$: projectTrusted = workLocationMode === 'trusted';
+	$: trustedRootTaskId = activeVibeTask ? chainRootTaskId(activeVibeTask, allVibeDevTasks) : null;
 
 	// ── HITL (run-scoped) ──────────────────────────────────────────────────────
 	$: action = $hitlActionState;
+	$: vibeComposerAsks = composerAsks($pendingAsks, '', { chatSessionId: sessionId, threadTaskIds: runChainIds });
 	// Merge live pending diffs with durable historical proposal rows (a finished
 	// run whose resolved diffs left the pending store, hydrated on open). Live
 	// wins per proposal. DISPLAY-only — `proposalDiffRows` (auto-apply) stays
@@ -447,6 +456,8 @@
 	function reviewDiffInStage(proposalId: string | null): void {
 		const row = proposalId ? diffRowsByProposal.get(proposalId) : undefined;
 		stageFocusDiffPath = row?.request.schema.files?.[0]?.path ?? null;
+		// A collapsed stage would swallow the tab switch: open it first.
+		vibeStudioStore.toggleStage(true);
 		vibeStudioStore.setStageTab('diff');
 	}
 
@@ -516,6 +527,12 @@
 	$: taskTerminal =
 		!!activeVibeTask &&
 		['completed', 'failed', 'cancelled', 'canceled', 'skipped'].includes(activeVibeTask.status);
+	$: codingPresence = derivePresence({
+		hasPendingHitl: $pendingHitlEntries.some(entry => Boolean(entry.task_id && runChainIds.has(entry.task_id))),
+		liveTurn: dispatching || loadingNewTurn || runSynthesizing || streamReconnecting,
+		streaming: false,
+		toolsRunning: runLive || runSynthesizing
+	});
 
 	// FIX #6b — a fresh terminal run that engaged NO coding pipeline (the RCA
 	// coordinator self-serve case, which the server-side success-gate now
@@ -550,7 +567,12 @@
 	// resolved diffs left the pending store. Gated on `taskTerminal` so a LIVE
 	// run keeps its actionable live HITL rows (no read-only historical overlay);
 	// passing null clears the historical rows. Self-guards per-task internally.
-	$: void hydrateRunProposals(taskTerminal ? activeVibeTask?.id ?? null : null);
+	// A run parked on review also hydrates: its pending proposals may have no
+	// live HITL row (a delegated child that finished), and pending rows render
+	// actionable (live rows still win per proposal).
+	$: void hydrateRunProposals(
+		taskTerminal || activeVibeTask?.awaitingDiffApproval ? activeVibeTask?.id ?? null : null
+	);
 
 	// The live run's control id — the newest non-terminal card's task (or
 	// shadow) id; null when nothing is in flight. The backend registered this
@@ -890,7 +912,7 @@
 	// function's internal reactive reads, so `submitBlocker` would compute once at init
 	// (empty prompt → "Enter a coding request") and never update as you type — leaving Send
 	// permanently disabled. Naming the deps here makes Svelte recompute on each change.
-	$: submitBlocker = computeSubmitBlocker(
+	$: submitBlocker = (!canSteer ? profileState.error ?? (profileState.isLoading ? 'Coding model choices are still loading.' : null) : null) ?? computeSubmitBlocker(
 		prompt,
 		dispatching,
 		$vibeDevProjectStore.isLoading,
@@ -1102,6 +1124,9 @@
 				referenceTaskIds
 			};
 			const { taskId, isFollowUp, scheduled } = await submitCodingRun(trimmed, ctx);
+			// Run links contain the admitted work location, independent of later
+			// project defaults. Hydrate that snapshot before opening the new run.
+			await vibeDevProjectStore.load();
 			// The seed is consumed by this run.
 			seedContent = null;
 			seedLabel = '';
@@ -1272,7 +1297,7 @@
 	let settingsOpen = false;
 	let settingsNameDraft = '';
 	let settingsPreviewDraft = '';
-	let settingsTrustedDraft = false;
+	let settingsTrustDraft: 'sandboxed' | 'trusted' | 'original' = 'sandboxed';
 	let settingsBaseBranchDraft = '';
 	let settingsSaving = false;
 	let deploySettings: VibeDevDeploySettings | null = null;
@@ -1286,7 +1311,7 @@
 		if (!activeVibeProject) return;
 		settingsNameDraft = activeVibeProject.name ?? '';
 		settingsPreviewDraft = activeVibeProject.preview_url ?? '';
-		settingsTrustedDraft = activeVibeProject.trust === 'trusted';
+		settingsTrustDraft = activeVibeProject.trust ?? 'sandboxed';
 		settingsBaseBranchDraft = activeVibeProject.base_branch ?? '';
 		settingsSaving = false;
 		deploySettings = null;
@@ -1430,12 +1455,12 @@
 		const patch: {
 			name?: string;
 			preview_url?: string;
-			trust?: 'sandboxed' | 'trusted';
+			trust?: 'sandboxed' | 'trusted' | 'original';
 			base_branch?: string;
 		} = {};
 		if (name && name !== project.name) patch.name = name;
 		if (previewUrl !== (project.preview_url ?? '')) patch.preview_url = previewUrl;
-		const trust = settingsTrustedDraft ? 'trusted' : 'sandboxed';
+		const trust = settingsTrustDraft;
 		if (trust !== (project.trust ?? 'sandboxed')) patch.trust = trust;
 		const baseBranch = settingsBaseBranchDraft.trim();
 		if (baseBranch !== (project.base_branch ?? '')) patch.base_branch = baseBranch;
@@ -1556,8 +1581,11 @@
 	const onRejectDiff = (e: CustomEvent<{ request: HitlRequest }>) => void resolveDiff(e.detail.request, 'reject');
 	const onApplyFile = (e: CustomEvent<{ request: HitlRequest; path: string }>) => void applyDiffFile(e.detail.request, e.detail.path);
 	const onRejectFile = (e: CustomEvent<{ request: HitlRequest; path: string }>) => void rejectDiffFile(e.detail.request, e.detail.path);
-	const onApproveAll = () => void approveAll(orderedDiffRows);
+	// Apply-all applies only proposals still waiting; durable rows of a finished
+	// run are already resolved.
+	const onApproveAll = () => void approveAll(orderedDiffRows.filter(isPendingDiffRow));
 	const onRespond = (e: CustomEvent<{ row: VibeRow }>) => void respondToVibeRow(e.detail.row);
+	const onAcknowledge = (e: CustomEvent<{ row: VibeRow }>) => void acknowledgeVibeNotice(e.detail.row);
 	function onToggleAutoApply(e: CustomEvent<{ value: boolean }>): void {
 		vibeStudioStore.setAutoApply(e.detail.value);
 		if (e.detail.value) resetAutoApplyMemo();
@@ -1772,6 +1800,12 @@
 				>
 					App options
 				</button>
+				{#if activeVibeProject}
+					<button type="button" class="conversation__app-options" on:click={openProjectSettings}
+						title="Choose where new runs work. Existing runs keep their original location.">
+						Work location: {workLocationMode === 'original' ? 'Original folder' : workLocationMode === 'trusted' ? 'Isolated branch' : 'Isolated workspace'}
+					</button>
+				{/if}
 				<div
 					class="conversation__save-as-task"
 					title="Off: this run stays in the cockpit only (internal). On: save it to Work."
@@ -1784,6 +1818,7 @@
 				</div>
 				<span class="conversation__save-hint">Saved runs appear in Work and survive this studio.</span>
 			</div>
+            <ComposerAskDock targets={vibeComposerAsks.targets} here={vibeComposerAsks.here} />
 			<VibeComposer
 				bind:this={composerEl}
 				bind:value={prompt}
@@ -1811,6 +1846,8 @@
 				submitting={dispatching}
 				uploading={attachmentUploading}
 				activeRun={activeRunSummary}
+				canDeleteRun={Boolean(activeVibeTask)}
+				presenceState={codingPresence}
 				activeProjectName={activeVibeProject?.name ?? null}
 				on:openRail={() => vibeStudioStore.toggleRail(true)}
 				on:costBudgetChange={(e) => vibeStudioStore.setCostBudget(e.detail.budget)}
@@ -1820,6 +1857,7 @@
 				on:attachFiles={(e) => void uploadFiles(e.detail.files)}
 				on:removeAttachment={(e) => removeAttachment(e.detail.attachmentId)}
 				on:newRun={startFresh}
+				on:deleteRun={() => { if (activeVibeTask) void deleteRunTask(activeVibeTask.id); }}
 				on:setStudioMode={(e) => vibeStudioStore.setMode(e.detail)}
 				on:input={() => (voicePrefix = null)}
 				on:micCapture={(e) => void uploadFiles([e.detail.file])}
@@ -1862,6 +1900,7 @@
 		on:applyFile={onApplyFile}
 		on:rejectFile={onRejectFile}
 		on:respond={onRespond}
+		on:acknowledge={onAcknowledge}
 	/>
 
 	<TerminalDrawer
@@ -1942,18 +1981,17 @@
 					/>
 				</label>
 				<div class="settings-trust">
-					<Checkbox
-						label="Trusted repo — runs work on their own git branch"
-						checked={settingsTrustedDraft}
-						on:change={(event) => (settingsTrustedDraft = event.detail.checked)}
-					/>
-					<p class="settings-trust__hint">
-						Each conversation gets its own clone and <code>vibedev/…</code> branch, may use git, and
-						commits as it goes. Your checkout is never touched; nothing lands until you merge or open a
-						pull request. Requires the repo folder to be a git repository root. Conversations already
-						started keep their mode.
-					</p>
-					{#if settingsTrustedDraft}
+                    <div class="settings-field">
+                        <span>Work location</span>
+                        <span class="settings-location" role="group" aria-label="Work location">
+                            {#each ([['original', 'Original folder'], ['sandboxed', 'Isolated workspace'], ['trusted', 'Isolated branch']] as const) as [mode, label]}
+                                <button type="button" class="mg-chip-action" aria-pressed={settingsTrustDraft === mode}
+                                    on:click={() => settingsTrustDraft = mode}>{label}</button>
+                            {/each}
+                        </span>
+                    </div>
+                    <p class="settings-trust__hint">Original folder uses your current branch and uncommitted files. Each edit shows its exact diff, with Allow once, Allow this session and Allow always. Work location is independent of Super god mode. Existing runs keep their location.</p>
+					{#if settingsTrustDraft === 'trusted'}
 						<label class="settings-field">
 							<span>Base branch</span>
 							<input
@@ -2129,6 +2167,14 @@
 		animation: studio-rise 0.12s ease;
 	}
 	.settings-panel {
+		/* The modal sits outside .studio and needs the same theme aliases. */
+		--vibe-accent: var(--accent-primary);
+		--vibe-surface: var(--bg-card);
+		--vibe-page-surface: var(--bg-surface);
+		--vibe-text: var(--text-primary);
+		--vibe-text-muted: var(--text-muted);
+		--vibe-border: var(--border-soft);
+		--vibe-border-strong: var(--border-default);
 		width: min(560px, 100%);
 		max-height: min(88vh, 48rem);
 		overflow: auto;
@@ -2158,6 +2204,8 @@
 		line-height: 1.45;
 		color: var(--vibe-text-muted, var(--text-muted));
 	}
+	.settings-location { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+	.settings-location button[aria-pressed="true"] { background: color-mix(in srgb, var(--vibe-accent) 16%, var(--bg-card)); border-color: var(--vibe-accent); }
 	.settings-field {
 		display: flex;
 		flex-direction: column;
@@ -2547,7 +2595,7 @@
 
 	.conversation__save-row {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		flex-wrap: wrap;
 		gap: 0.45rem;
 		margin: 0 auto 0.4rem;
@@ -2555,10 +2603,10 @@
 	}
 	.conversation__app-options {
 		border: 1px solid var(--vibe-border, var(--border-soft));
-		background: transparent;
+		background: var(--bg-surface);
 		color: var(--text-secondary);
-		border-radius: 999px;
-		padding: 0.15rem 0.65rem;
+		border-radius: var(--radius-sm, 6px);
+		padding: 0.25rem 0.6rem;
 		font-size: var(--text-xs);
 		font-weight: 650;
 		cursor: pointer;
@@ -2971,9 +3019,6 @@
 		}
 	}
 	@media (max-height: 860px) {
-		.conversation__composer {
-			padding: 0 0 4px;
-		}
 		.conversation__save-row {
 			margin-bottom: 0.25rem;
 		}

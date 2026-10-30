@@ -965,13 +965,18 @@
 
 	.action-btn {
 		font-family: var(--font-primary);
-		font-size: 0.74rem;
-		padding: 0.28rem 0.6rem;
+		font-size: 0.72rem;
+		min-height: 1.55rem;
+		padding: 0.16rem 0.52rem;
 		border: 1px solid var(--border-soft);
 		background: var(--bg-card);
 		color: var(--text-primary);
-		border-radius: 8px;
+		border-radius: var(--radius-chip, 6px);
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
 		transition: background 140ms ease, border-color 140ms ease;
 	}
 
@@ -1021,12 +1026,17 @@
 	.chip {
 		font-family: var(--font-mono);
 		font-size: 0.66rem;
-		padding: 0.18rem 0.5rem;
+		min-height: 1.45rem;
+		padding: 0.12rem 0.45rem;
 		border: 1px solid var(--border-soft);
 		background: transparent;
 		color: var(--text-primary);
-		border-radius: 999px;
+		border-radius: var(--radius-chip, 6px);
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
 		transition: background 140ms ease, border-color 140ms ease;
 	}
 
@@ -1057,12 +1067,14 @@
 	.inline-label select,
 	.esc-filters input[type='text'] {
 		font-family: var(--font-mono);
-		font-size: 0.74rem;
-		padding: 0.24rem 0.45rem;
+		font-size: 0.72rem;
+		min-height: 1.55rem;
+		padding: 0.14rem 0.4rem;
 		border: 1px solid var(--border-soft);
 		background: var(--bg-card);
 		color: var(--text-primary);
-		border-radius: 6px;
+		border-radius: var(--radius-chip, 6px);
+		box-sizing: border-box;
 	}
 
 	.esc-filters input[type='text'] {

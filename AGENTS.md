@@ -47,8 +47,19 @@ Primary docs: `README.md`, `docs/quickstart.md`, `docs/testing.md`,
   `build-all-release-verified` target no longer exists).
 - For local development and runtime validation, use `make build-all-debug`.
 - Prefer `Makefile` targets whenever equivalent commands exist (`make help` first).
-- For compile checks, use `make check-all` instead of build targets for quicker feedback.
-- Run `build-*` targets only when binaries are needed.
+- For the edit/compile loop, use `make build-magician-debug`: it compiles the
+  `magician` crate once and type-checks as it goes. `make check-all` is the
+  pre-commit gate, not the fast path: `--all-targets` compiles `magician` twice
+  (the library and its unit-test build) and then checks desktop, UI and iOS.
+  A check's output is never reused by a build, so do not run `check-all` before
+  a build. Its production dead-code pass is opt-in
+  (`make check-all CHECK_DEAD_CODE=1`, or `make check-magician-dead-code`); CI
+  runs it.
+- The Rust toolchain is pinned in `rust-toolchain.toml` (1.95.0). CI, the
+  Dockerfiles, `MLX_RUST_TOOLCHAIN` and the Clippy baseline follow it; change
+  them together. Do not set `RUSTUP_TOOLCHAIN` for a single target (`FAST=1`'s
+  nightly excepted): another rustc never reuses these artifacts, so the next
+  build recompiles `magician` from scratch.
 - Run every Cargo-backed command (check, build, test, clippy, doc, nextest,
   run) through `make`, so it goes through mr-boxington (mbx): a shared
   compile cache plus managed target dirs reused across worktrees, with the
@@ -118,6 +129,11 @@ Primary docs: `README.md`, `docs/quickstart.md`, `docs/testing.md`,
 - Staged docs enforcement: `python3 scripts/docs_guard.py --staged`
 - Reminder-only check: `make docs-remind`
 - Behavior-bearing code changes must include matching docs updates in owned paths.
+- Every five commits, and before handoff, review the commits and uncommitted
+  changes, trimming docs/changelogs that duplicate information or read as work logs.
+  Keep durable architecture, contracts, usage and curated release changes; keep
+  run receipts outside canonical docs. Evaluate product changes for `showcase/anatomy/` and update its source-backed
+  features and tours when capabilities or behavior change.
 
 ## Browser Automation
 

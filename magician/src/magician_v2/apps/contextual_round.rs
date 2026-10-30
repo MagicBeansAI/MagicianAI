@@ -224,6 +224,15 @@ pub struct AppRoundSummary {
     pub reserved: AppRoundUsage,
 }
 
+impl AppRoundSummary {
+    /// At least one participant failed and none produced a result (committed,
+    /// quiet or awaiting commit). Excluded and deferred participants never
+    /// count as success or failure.
+    pub fn every_participant_failed(&self) -> bool {
+        self.failed > 0 && self.committed == 0 && self.quiet == 0 && self.awaiting_commit == 0
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AppRoundError {
     #[error("invalid contextual round identity or checkpoint")]
@@ -966,6 +975,48 @@ mod tests {
             AppRoundParticipantState::Prepared { mutation_key, .. } => mutation_key.clone(),
             _ => panic!("draft must remain prepared until an owner receipt exists"),
         }
+    }
+
+    #[test]
+    fn a_round_fails_only_when_participants_failed_and_none_succeeded() {
+        let all_failed = AppRoundSummary {
+            considered: 4,
+            selected: 3,
+            failed: 2,
+            deferred: 1,
+            excluded: 1,
+            ..Default::default()
+        };
+        assert!(all_failed.every_participant_failed());
+        for succeeded in [
+            AppRoundSummary {
+                committed: 1,
+                ..all_failed
+            },
+            AppRoundSummary {
+                quiet: 1,
+                ..all_failed
+            },
+            AppRoundSummary {
+                awaiting_commit: 1,
+                ..all_failed
+            },
+        ] {
+            assert!(!succeeded.every_participant_failed());
+        }
+        // Nobody eligible, or everyone deferred, is a quiet round, not a failure.
+        assert!(!AppRoundSummary {
+            considered: 2,
+            excluded: 2,
+            ..Default::default()
+        }
+        .every_participant_failed());
+        assert!(!AppRoundSummary {
+            selected: 2,
+            deferred: 2,
+            ..Default::default()
+        }
+        .every_participant_failed());
     }
 
     #[test]

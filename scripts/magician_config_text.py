@@ -1,6 +1,6 @@
 """Read `magician-config.yaml` complete, with its router tables spliced in.
 
-The router's `profiles` and `operation_mapping` live in a sibling
+The router's model `catalog` and `operation_mapping` live in a sibling
 `llm-router.yaml` rather than in the config itself — together they were roughly
 4,000 of the config's 6,200 lines, and they are the only parts edited at
 anything like that cadence.
@@ -31,7 +31,7 @@ ROUTER_TABLES_FILE = "llm-router.yaml"
 def config_has_inline_router_tables(config_text: str) -> bool:
     """Whether the text already carries a router table itself.
 
-    Either `profiles` or `operation_mapping` counts. The two always move
+    `catalog`, retired profile tables, or `operation_mapping` counts. The tables move
     together in a real config, and accepting either lets a synthetic fixture
     that exercises only one of them parse without inventing a sibling file.
 
@@ -60,7 +60,8 @@ def config_has_inline_router_tables(config_text: str) -> bool:
             in_router = line.startswith("  router:")
             continue
         if in_router and (
-            line.startswith("    profiles:") or line.startswith("    operation_mapping:")
+            line.startswith("    profiles:") or line.startswith("    adaptive_profiles:")
+            or line.startswith("    operation_mapping:") or line.startswith("    catalog:")
         ):
             return True
     return False
@@ -85,7 +86,7 @@ def splice_router_tables_into(config_text: str, tables_text: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def read_config_text(config_path: str | Path) -> str:
+def read_config_text(config_path: str | Path, *, expand_catalog: bool = True) -> str:
     """The complete config document, tables included.
 
     The tables are resolved as a sibling of the config actually being read,
@@ -94,17 +95,25 @@ def read_config_text(config_path: str | Path) -> str:
     """
     config_path = Path(config_path)
     config_text = config_path.read_text(encoding="utf-8")
-    if config_has_inline_router_tables(config_text):
-        return config_text
-    tables_path = config_path.parent / ROUTER_TABLES_FILE
-    if not tables_path.exists():
-        raise FileNotFoundError(
-            f"{tables_path} is missing; {config_path} does not carry its router "
-            "tables inline and cannot be read without them"
-        )
-    return splice_router_tables_into(
-        config_text, tables_path.read_text(encoding="utf-8")
-    )
+    if not config_has_inline_router_tables(config_text):
+        tables_path = config_path.parent / ROUTER_TABLES_FILE
+        if not tables_path.exists():
+            raise FileNotFoundError(
+                f"{tables_path} is missing; {config_path} does not carry its router "
+                "tables inline and cannot be read without them"
+            )
+        config_text = splice_router_tables_into(config_text, tables_path.read_text(encoding="utf-8"))
+    if expand_catalog:
+        import yaml
+        from llm_catalog_config import materialize_router
+        parsed = yaml.safe_load(config_text)
+        router = parsed.get("llm", {}).get("router") if isinstance(parsed, dict) else None
+        if isinstance(router, dict):
+            expanded = materialize_router(router)
+            if "catalog" in router:
+                parsed["llm"]["router"] = expanded
+                return yaml.safe_dump(parsed, sort_keys=False, width=100)
+    return config_text
 
 
 def _tables_body(tables_text: str) -> str:

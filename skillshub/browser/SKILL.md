@@ -7704,8 +7704,9 @@ agent-browser CLI subcommand, and must not be placed in `batch.commands`:
 `secure_prompt_fill({"top_origin":"https://example.com","fields":[{"field_name":"username","css":"#username"},{"field_name":"password","css":"#password"}]})`
 
 Discover stable, unique CSS selectors before calling it; snapshot `@refs` are
-not accepted. The runtime privately prompts for every field and asks for **Use
-once** confirmation. The tool fills the bound document without enrolling the
+not accepted. The runtime privately prompts for every field; the values the
+user types there are used once without a further question (stored material
+that is not bound to this origin still asks for **Use once**). The tool fills the bound document without enrolling the
 values, invoking form submission, or returning credentials to you. Use the
 configured local CDP session; unsupported transports/frames require a human
 external-action handoff. Do not fall back to asking for credentials in chat,
@@ -7725,7 +7726,10 @@ placeholder — the runtime splits the code itself; you never see a digit. A
 one-time code is reserved for this exact origin, spent as the fill starts,
 and never filled twice; if the
 receipt says `material_unavailable`, the code expired or was already used —
-ask the user for a fresh one. A password the user gave for a specific origin
+ask the user for a fresh one. A receipt with `not_filled` fields and an
+error such as `stale_target` or `unsupported_target` delivered nothing:
+re-check the page and call again. `uncertain` fields may already hold the
+value: read the field (without echoing it) before any new attempt. A password the user gave for a specific origin
 fills only on that origin (`material_unavailable`, `bound to …` elsewhere).
 After a fill that delivered a secret, `screenshot`, `pdf` and `record` are
 withheld until the page has demonstrably moved on: a navigation command

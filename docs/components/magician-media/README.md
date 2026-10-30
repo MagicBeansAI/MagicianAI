@@ -11,6 +11,9 @@ google/macos/minimax/openai), and the work-module stores `scheduling`,
 the scheduling reader and the obligation-sweep worker. Negotiation offer
 bindings and frozen reply Work provenance persist across cold reads.
 
+Gemini Live streaming STT shares MagicLLM's explicitly configured TLS WebSocket
+connector, preserving certificate checks when multiple crypto backends are enabled.
+
 The crate uses the monolith's compiler recursion limit (256) to prove `Send`
 for delegated chat futures (resolves E0275; no runtime effect). `media_rails`
 re-exports `sarvam_tts_default_voice` with the Sarvam STT/TTS providers.
@@ -40,6 +43,9 @@ Installed macOS voices arrive through the host speech status probe.
 
 ## Calls and concurrency
 
+Priced voice, meeting and speech calls count toward the shared spend envelope;
+live owner calls remain foreground work and are never cut off by that envelope.
+
 The macOS Speech STT provider opts into the bounded artifact-review port. Its
 configuration hash binds the exact model and literal loopback gateway URL; the
 path permits no proxy, redirect, credentials, query or fragment. A separate
@@ -65,6 +71,7 @@ start work and speak the prompt back as a result.
 
 ## Realtime voice engines
 
+- Calls bind their chat before provider creation and retain it through rotation; nested speech chains inherit billing lineage only within the same principal/workspace. A chat created for a call that then fails to start is deleted again.
 - The realtime turn-context render is boxed (`Box::pin`) where the voice
   orchestrator and the chat service's select await it, so its future does not
   sit on the caller's stack.
@@ -132,13 +139,19 @@ production paths:
 * the **provider type layer**: `MediaProviderRegistry`, STT/VAD/diarization
   traits and events, cached/configured/OpenAI TTS, streaming STT types
   (re-exported as `media_seam::providers`);
-* the **runtime-config cluster**: `AudioRuntimeConfigManager`, preferences
+* the **runtime-config cluster**: `AudioRuntimeConfigManager` (writes only
+  the changed `media:` values back, keeping the owner's comments), preferences
   store, streaming fallback, diarized streaming, and `vad_gate` pipeline
   resolution (`AudioPipelineServices` is installed at boot, so its field types
   must be nameable by the lib);
 * vocabulary: meeting thread identity/continuity (`binding`), browser join,
   audio surfaces/profiles, voice fanout, speech segments, host automation,
   dev-server detection, runtime validation.
+
+Host automation's `HostAutomationProvider::gateway_probe()` reads the
+desktop host gateway's `GET /host/automation/status` once for both
+availability and the desktop build's `version` (desktop 0.3.28+); `GET /health`
+reports it as `versions.desktop`.
 
 The crate re-exports it flat (`magician_media::*`) and under
 `media_rails::meeting::*` / `media_rails::providers::*`, and owns the concrete
@@ -213,7 +226,9 @@ first-party API and the meetings app. See
   keyed by the scope's capability auth root, so one scope's calendar is never
   served to another. gws is resolved with
   `runtime_core::process::resolve_program` against the child's scoped PATH
-  (stays on `posix_spawn`).
+  (stays on `posix_spawn`). The profile's `cloudsdk` directory is created
+  owner-only (0700), because the governed runtime refuses a profile
+  directory that group or other can read.
 - `media_seam::meeting_capture_reservation`: a process-global lock an
   app-initiated start holds across its liveness probe and the start, so two
   signed starts cannot both see "nothing live". First-party starts do not take

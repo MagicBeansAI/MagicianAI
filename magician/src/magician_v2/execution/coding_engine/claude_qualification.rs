@@ -305,7 +305,10 @@ mod tests {
             let mut evidence = clean_evidence();
             evidence.init["plugins"] = plugins.clone();
             let receipt = qualify_from_claude_evidence(evidence);
-            assert!(claude_is_selectable(receipt.readiness), "{plugins}: {receipt:?}");
+            assert!(
+                claude_is_selectable(receipt.readiness),
+                "{plugins}: {receipt:?}"
+            );
         }
     }
 

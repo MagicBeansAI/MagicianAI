@@ -1,5 +1,263 @@
 import SwiftUI
 
+private extension SystemVoiceLaunchMode {
+    var composerLabel: String { self == .dictation ? "Dictation" : label }
+    var composerIcon: String {
+        switch self {
+        case .dictation: "mic.fill"
+        case .realtime: "waveform"
+        case .handsFree: "headphones"
+        }
+    }
+}
+
+/// Shared card and field styling for Chat and the VibeDev companion.
+struct ComposerCard<Content: View>: View {
+    var accented = false
+    var privilegeLabel: String?
+    let content: Content
+    @ObservedObject private var theme = ThemeManager.shared
+
+    init(accented: Bool = false, privilegeLabel: String? = nil, @ViewBuilder content: () -> Content) {
+        self.accented = accented
+        self.privilegeLabel = privilegeLabel
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+            .background(theme.surfaceColor)
+            .clipShape(RoundedRectangle(cornerRadius: Lively.composerRadius))
+            .background {
+                if privilegeLabel != nil {
+                    RoundedRectangle(cornerRadius: Lively.composerRadius + 4)
+                        .fill(LinearGradient(colors: [theme.accentColor.opacity(0.34), theme.discoveryColor.opacity(0.26), theme.infoColor.opacity(0.24)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .padding(-4).blur(radius: 14).allowsHitTesting(false)
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: Lively.composerRadius)
+                .stroke(accented || privilegeLabel != nil ? theme.accentColor.opacity(0.4) : theme.secondaryTextColor.opacity(0.2), lineWidth: 1))
+            .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, 6)
+    }
+}
+
+struct ComposerInputStyle: ViewModifier {
+    @ObservedObject private var theme = ThemeManager.shared
+
+    func body(content: Content) -> some View {
+        content.lineLimit(1...5).font(theme.font(16)).foregroundColor(theme.textColor)
+            .keyboardType(.default).textInputAutocapitalization(.sentences).submitLabel(.return)
+            .padding(.horizontal, 10).frame(minHeight: 36, alignment: .center)
+    }
+}
+
+struct ComposerKeyboardToolbar: ToolbarContent {
+    var onDismiss: () -> Void = {}
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .keyboard) {
+            Spacer()
+            Button {
+                onDismiss()
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            } label: { Label("Done", systemImage: "keyboard.chevron.compact.down") }
+            .accessibilityLabel("Hide keyboard")
+        }
+    }
+}
+
+struct ComposerSelectorLabel: View {
+    let title: String
+    var icon = "sparkles"
+    var highlighted = false
+    var maxWidth: CGFloat = 180
+    var showsCaret = true
+    var truncationMode: Text.TruncationMode = .middle
+    /// Selected thinking level tag (web `pp-badge`), e.g. "Auto" or "High"; nil hides it.
+    var thinking: String? = nil
+    @ObservedObject private var theme = ThemeManager.shared
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 12))
+                .foregroundColor(highlighted ? theme.accentColor : theme.textColor)
+            Text(title).font(.themedMono(10, weight: .medium)).lineLimit(1)
+                .truncationMode(truncationMode).frame(maxWidth: maxWidth)
+            if let thinking {
+                Text(thinking.uppercased()).font(.themed(8, weight: .semibold)).tracking(0.3).lineLimit(1)
+                    .foregroundColor(theme.accentColor)
+                    .padding(.horizontal, 4)
+                    .background(theme.accentColor.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .stroke(theme.accentColor.opacity(0.28), lineWidth: 1))
+                    .fixedSize()
+            }
+            if showsCaret { Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)) }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(theme.surfaceColor).foregroundColor(theme.textColor)
+        .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
+            .stroke(highlighted ? theme.accentColor.opacity(0.5) : theme.secondaryTextColor.opacity(0.2), lineWidth: 1))
+    }
+}
+
+struct ComposerVoiceControlStyle: ViewModifier {
+    var active = false
+    @ObservedObject private var theme = ThemeManager.shared
+    func body(content: Content) -> some View {
+        content.foregroundColor(active ? theme.accentColor : theme.secondaryTextColor)
+            .background(active ? theme.accentColor.opacity(0.12) : theme.secondaryTextColor.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
+                .stroke(active ? theme.accentColor.opacity(0.4) : theme.secondaryTextColor.opacity(0.25), lineWidth: 1))
+            .frame(height: 42)
+    }
+}
+
+/// The same dictation/typing dock is used by Chat and VibeDev.
+struct ComposerVoiceHero: View {
+    let isRecording: Bool
+    let isTranscribing: Bool
+    let partialTranscript: String
+    var inputMode: SystemVoiceLaunchMode = .dictation
+    var available = true
+    var archiveDictation = false
+    var holdToSend = true
+    var micIdentifier = "chat-voice-mic"
+    var typingIdentifier = "chat-type-instead"
+    let onTapDictationStart: () -> Void
+    let onTapDictationStop: () -> Void
+    let onHoldStart: () -> Void
+    let onHoldEnd: () -> Void
+    let onKeyboard: () -> Void
+    let leading: AnyView
+    let trailing: AnyView
+    @ObservedObject private var themeManager = ThemeManager.shared
+    @State private var holding = false
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            // Live transcript / status line above the mic.
+            if isRecording && !partialTranscript.isEmpty {
+                Text(partialTranscript)
+                    .font(themeManager.font(15))
+                    .foregroundColor(themeManager.textColor)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity)
+            } else if isTranscribing {
+                Text("Transcribing…")
+                    .font(.themed(13, weight: .medium))
+                    .foregroundColor(themeManager.accentColor)
+            }
+            if archiveDictation {
+                Label(
+                    isRecording || isTranscribing
+                        ? "Saving this dictation in Audio Notes"
+                        : "Keep dictation recordings is on",
+                    systemImage: "waveform.badge.plus"
+                )
+                    .font(.themed(11, weight: .medium))
+                    .foregroundColor(themeManager.accentColor)
+                    .accessibilityIdentifier("chat-audio-note-disclosure")
+            }
+
+            // The big mic sits dead-center in the dock. It lives in its own centered
+            // layer while the flanking controls (mute left, Live right) are overlaid
+            // on top, so their differing widths can never shift the mic off-center.
+            ZStack {
+                // Centered big mic.
+                ZStack {
+                    // Animated pulse ring while recording.
+                    if isRecording {
+                        Circle()
+                            .stroke(themeManager.dangerColor.opacity(0.35), lineWidth: 3)
+                            .frame(width: 84, height: 84)
+                            .scaleEffect(pulse ? 1.25 : 0.95)
+                            .opacity(pulse ? 0.0 : 0.8)
+                            .animation(.easeOut(duration: 1.0).repeatForever(autoreverses: false), value: pulse)
+                    }
+                    Circle()
+                        .fill(isRecording ? themeManager.dangerColor : themeManager.accentFillColor)
+                        .frame(width: 72, height: 72)
+                        .shadow(color: (isRecording ? themeManager.dangerColor : themeManager.accentColor).opacity(0.35), radius: 10, y: 3)
+                    Image(systemName: isTranscribing ? "waveform" : inputMode.composerIcon)
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundColor(themeManager.onAccentColor)
+                        .symbolEffect(.pulse, isActive: isRecording)
+                }
+                .scaleEffect(holding ? 0.92 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: holding)
+                .contentShape(Circle())
+                // Once capture is active this is only a stop control. Keeping the
+                // dual tap/hold recognizer attached while recording makes an
+                // externally started capture depend on gesture-local press state.
+                // A direct tap gives widget, Shortcut, and in-app starts the same
+                // deterministic finalization action.
+                .modifier(ActiveDictationInteraction(
+                    holding: $holding,
+                    isRecording: isRecording,
+                    dictation: inputMode == .dictation,
+                    onTapStart: onTapDictationStart,
+                    onTapStop: onTapDictationStop,
+                    onHoldStart: onHoldStart,
+                    onHoldEnd: onHoldEnd
+                ))
+                .disabled(isTranscribing || (!isRecording && !available))
+                .accessibilityLabel(isRecording ? "Stop dictation" : inputMode == .dictation ? "Talk" : "Start \(inputMode.composerLabel)")
+                .accessibilityHint(isRecording
+                    ? "Tap to finish dictation."
+                    : inputMode == .dictation ? "Tap or hold to dictate. Release after holding to finish." : "Starts the selected \(inputMode.composerLabel) conversation.")
+                .accessibilityAddTraits(.startsMediaSession)
+                .accessibilityIdentifier(micIdentifier)
+                .onChange(of: isRecording) { _, rec in pulse = rec }
+
+                // Flanking controls overlaid so they never push the mic off-center.
+                HStack {
+                    leading
+                    Spacer()
+                    trailing
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            // Hint + a lightweight "type instead" affordance.
+            HStack(spacing: 4) {
+                Text(micInteractionHint)
+                    .font(.themed(12, weight: .medium))
+                    .foregroundColor(themeManager.secondaryTextColor)
+                if !isRecording {
+                    Text("·").foregroundColor(themeManager.secondaryTextColor)
+                    Button(action: { onKeyboard() }) {
+                        Text("type instead")
+                            .font(.themed(12, weight: .semibold))
+                            .foregroundColor(themeManager.accentColor)
+                    }
+                    .accessibilityIdentifier(typingIdentifier)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+    }
+
+    private var micInteractionHint: String {
+        if holding { return holdToSend ? "Listening — release to send" : "Listening — release to finish" }
+        if isRecording { return "Listening — tap to finish" }
+        if !available { return "\(inputMode.composerLabel) is unavailable" }
+        if inputMode != .dictation { return "Tap to start \(inputMode.composerLabel)" }
+        return archiveDictation
+            ? "Tap or hold to dictate · recording is saved"
+            : "Tap or hold to dictate"
+    }
+
+}
+
 enum ComposerMode: Equatable {
     case ask
     case acceptInScope
@@ -102,10 +360,13 @@ struct ComposerView: View {
     var onStop: () -> Void
     var onAttach: () -> Void
     var onCamera: () -> Void
+    var executionChatSessionID: String? = nil
+    var showChatGodMode = true
     var mentionItems: [ComposerMentionItem] = []
     var stagedAttachments: [StagedAttachment] = []
     var onRemoveAttachment: (UUID) -> Void = { _ in }
     var isRecording: Bool = false
+    var dictationLevel: () -> Float = { 0 }
     var isTranscribing: Bool = false
     /// Tap dictation has explicit start/finish callbacks. The gesture decides
     /// from the recording state captured at touch-down, so a stop tap cannot be
@@ -140,10 +401,26 @@ struct ComposerView: View {
     var commandContext: ComposerCommandContext = ComposerCommandContext()
     var onCommand: (ComposerCommandAction) -> Void = { _ in }
     var onCommandOpened: (ComposerCommandId) -> Void = { _ in }
+    /// An engine's models opened under `/engine` or `/run-engine`.
+    var onCommandLevelOpened: (ComposerCommandLevel) -> Void = { _ in }
     var commandNotice: ComposerCommandNotice? = nil
     var onCommandNoticeDone: () -> Void = {}
 
+    /// VibeDev supplies its run context and modes while retaining Chat's input,
+    /// attachment previews and voice settings controls.
+    var topPanel: AnyView? = nil
+    var modeControl: AnyView? = nil
+    var modelControl: AnyView? = nil
+    var inputPlaceholder: String? = nil
+    var sendEnabled = true
+    var holdToSend = true
+    var supportsChatCommands = true
+    var focusRequest: UUID? = nil
+    var focusOnAppear = false
+
     @StateObject private var themeManager = ThemeManager.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var privilegeLabel: String?
     @ObservedObject private var audio = AudioSettings.shared
     @ObservedObject private var primaryAgent = PrimaryAgentSiriAdvertiser.shared
     @FocusState private var isFocused: Bool
@@ -151,10 +428,6 @@ struct ComposerView: View {
     @State private var mentionMatches: [ComposerMentionItem] = []
     /// Where the `/` picker is (command list, or a command's options).
     @State private var commandState = ComposerCommandState()
-    /// True after a deliberate press has crossed the hold-to-talk threshold.
-    @State private var holding = false
-    /// Drives the animated recording pulse ring on the big mic.
-    @State private var pulse = false
     /// When the Live pill is tapped while no realtime voice provider is configured,
     /// briefly surface an "unavailable" hint in place of the label.
     @State private var showLiveUnavailable = false
@@ -164,8 +437,12 @@ struct ComposerView: View {
     private let voiceDockControlHeight: CGFloat = 42
 
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespaces).isEmpty
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || stagedAttachments.contains { $0.remoteId != nil }
+    }
+
+    private var canSubmit: Bool {
+        sendEnabled && !stagedAttachments.contains { $0.uploading || $0.failed }
     }
 
     /// True when the active profile is empty/default — drives the chip's adaptive
@@ -198,10 +475,20 @@ struct ComposerView: View {
             if !commandRows.isEmpty { commandPicker } else if !mentionMatches.isEmpty { mentionPicker }
 
             // The composer card.
-            VStack(spacing: 0) {
+            ComposerCard(accented: mode != .ask, privilegeLabel: privilegeLabel) {
+              VStack(spacing: 0) {
+                if let topPanel { topPanel.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 6) }
                 if let voiceQueue { voiceQueue }
                 VStack(alignment: .leading, spacing: 6) {
                     if !stagedAttachments.isEmpty { attachmentStrip }
+                    if isRecording {
+                        HStack(spacing: 10) {
+                            Text("Listening").font(.themed(12)).foregroundColor(themeManager.secondaryTextColor)
+                            VoiceActivityWaveform(level: dictationLevel)
+                        }.frame(maxWidth: .infinity)
+                            .transition(.opacity)
+                            .accessibilityIdentifier("dictation-feedback")
+                    }
 
                     // Primary input area: the big tap-or-hold mic (voice-hero) OR the
                     // existing multi-line text field + Send/Stop (text mode).
@@ -214,8 +501,9 @@ struct ComposerView: View {
                     // Second row: secondary tools, reachable in BOTH modes.
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
-                            modeToggle
+                            if let modeControl { modeControl } else { modeToggle }
                             Divider().frame(height: 16).background(themeManager.secondaryTextColor.opacity(0.3))
+                            ComposerExecutionModes(sessionID: executionChatSessionID, showChatMode: showChatGodMode)
                             toolButton("paperclip", action: onAttach)
                             toolButton("camera", action: onCamera)
                             // Voice controls (mute/auto-speak, Live, mic) live in the voice
@@ -223,28 +511,30 @@ struct ComposerView: View {
                             // row entirely: the mic moves into the trailing send slot (mic
                             // when the field is empty, Send once you type), and mute/Live are
                             // hidden — they're voice-only concerns.
-                            profileChip
+                            if let modelControl { modelControl } else { profileChip }
                         }
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
                 .padding(.bottom, 6)
+              }
             }
-            .background(themeManager.surfaceColor)
-            .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: Self.cornerRadius)
-                    .stroke(mode == .ask ? themeManager.secondaryTextColor.opacity(0.2) : themeManager.accentColor.opacity(0.4), lineWidth: 1)
-            )
-            .padding(.horizontal, Self.horizontalInset)
-            .padding(.top, 2)
-            .padding(.bottom, 6)
         }
         // No band behind the card: the chat's wash shows around it. The card's
         // own border carries the mode.
         // A draft restored with a trailing `@…` opens the picker straight away.
-        .onAppear { recomputeMentions() }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: isRecording)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: isTranscribing)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: partialTranscript)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.24), value: showVoiceHero)
+        .onPreferenceChange(ComposerPrivilegePreference.self) { privilegeLabel = $0 }
+        .onAppear {
+            recomputeMentions()
+            if focusOnAppear { isFocused = true }
+        }
+        .onChange(of: focusRequest) { _, _ in isVoiceMode = false; isFocused = true }
+        .toolbar { ComposerKeyboardToolbar { isFocused = false } }
         .sheet(isPresented: $showProfilePicker) {
             ChatProfilePickerSheet(
                 profiles: profiles,
@@ -255,6 +545,7 @@ struct ComposerView: View {
                 theme: themeManager
             )
             .presentationDetents([.medium, .large])
+            .presentationContentInteraction(.scrolls)
             .presentationDragIndicator(.visible)
             .presentationBackground(themeManager.backgroundColor)
         }
@@ -280,140 +571,27 @@ struct ComposerView: View {
     /// The dominant tap-or-hold mic. A quick tap toggles dictation; a deliberate
     /// hold preserves walkie-talkie capture and sends when released.
     private var voiceHero: some View {
-        VStack(spacing: 10) {
-            // Live transcript / status line above the mic.
-            if isRecording && !partialTranscript.isEmpty {
-                Text(partialTranscript)
-                    .font(themeManager.font(15))
-                    .foregroundColor(themeManager.textColor)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity)
-            } else if isTranscribing {
-                Text("Transcribing…")
-                    .font(.themed(13, weight: .medium))
-                    .foregroundColor(themeManager.accentColor)
-            }
-            if audio.archiveChatDictation {
-                Label(
-                    isRecording || isTranscribing
-                        ? "Saving this dictation in Audio Notes"
-                        : "Keep dictation recordings is on",
-                    systemImage: "waveform.badge.plus"
-                )
-                    .font(.themed(11, weight: .medium))
-                    .foregroundColor(themeManager.accentColor)
-                    .accessibilityIdentifier("chat-audio-note-disclosure")
-            }
-
-            // The big mic sits dead-center in the dock. It lives in its own centered
-            // layer while the flanking controls (mute left, Live right) are overlaid
-            // on top, so their differing widths can never shift the mic off-center.
-            ZStack {
-                // Centered big mic.
-                ZStack {
-                    // Animated pulse ring while recording.
-                    if isRecording {
-                        Circle()
-                            .stroke(themeManager.dangerColor.opacity(0.35), lineWidth: 3)
-                            .frame(width: 84, height: 84)
-                            .scaleEffect(pulse ? 1.25 : 0.95)
-                            .opacity(pulse ? 0.0 : 0.8)
-                            .animation(.easeOut(duration: 1.0).repeatForever(autoreverses: false), value: pulse)
-                    }
-                    Circle()
-                        .fill(isRecording ? themeManager.dangerColor : themeManager.accentFillColor)
-                        .frame(width: 72, height: 72)
-                        .shadow(color: (isRecording ? themeManager.dangerColor : themeManager.accentColor).opacity(0.35), radius: 10, y: 3)
-                    Image(systemName: isTranscribing ? "waveform" : "mic.fill")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(themeManager.onAccentColor)
-                        .symbolEffect(.pulse, isActive: isRecording)
-                }
-                .scaleEffect(holding ? 0.92 : 1.0)
-                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: holding)
-                .contentShape(Circle())
-                // Once capture is active this is only a stop control. Keeping the
-                // dual tap/hold recognizer attached while recording makes an
-                // externally started capture depend on gesture-local press state.
-                // A direct tap gives widget, Shortcut, and in-app starts the same
-                // deterministic finalization action.
-                .modifier(ActiveDictationInteraction(
-                    holding: $holding,
-                    isRecording: isRecording,
-                    onTapStart: onTapDictationStart,
-                    onTapStop: onTapDictationStop,
-                    onHoldStart: onHoldStart,
-                    onHoldEnd: onHoldEnd
-                ))
-                .disabled(isTranscribing)
-                .accessibilityLabel(isRecording ? "Stop dictation" : "Talk")
-                .accessibilityHint(isRecording
-                    ? "Tap to finish dictation."
-                    : "Tap or hold to dictate. Release after holding to send.")
-                .accessibilityAddTraits(.startsMediaSession)
-                .accessibilityIdentifier("chat-voice-mic")
-                .onChange(of: isRecording) { _, rec in pulse = rec }
-
-                // Flanking controls overlaid so they never push the mic off-center.
-                HStack {
-                    voiceOptionsControl
-                    Spacer()
-                    liveButton
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            // Hint + a lightweight "type instead" affordance.
-            HStack(spacing: 4) {
-                Text(micInteractionHint)
-                    .font(.themed(12, weight: .medium))
-                    .foregroundColor(themeManager.secondaryTextColor)
-                if !isRecording {
-                    Text("·").foregroundColor(themeManager.secondaryTextColor)
-                    Button(action: { withAnimation { isVoiceMode = false }; isFocused = true }) {
-                        Text("type instead")
-                            .font(.themed(12, weight: .semibold))
-                            .foregroundColor(themeManager.accentColor)
-                    }
-                    .accessibilityIdentifier("chat-type-instead")
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-    }
-
-    private var micInteractionHint: String {
-        if holding { return "Listening — release to send" }
-        if isRecording { return "Listening — tap to finish" }
-        return audio.archiveChatDictation
-            ? "Tap or hold to dictate · recording is saved"
-            : "Tap or hold to dictate"
+        ComposerVoiceHero(isRecording: isRecording, isTranscribing: isTranscribing, partialTranscript: partialTranscript,
+            inputMode: audio.composerVoiceMode, available: composerModeAvailable(audio.composerVoiceMode),
+            archiveDictation: audio.archiveChatDictation, holdToSend: holdToSend,
+            onTapDictationStart: startComposerVoice, onTapDictationStop: onTapDictationStop,
+            onHoldStart: onHoldStart, onHoldEnd: onHoldEnd,
+            onKeyboard: { withAnimation { isVoiceMode = false }; isFocused = true },
+            leading: AnyView(voiceOptionsControl), trailing: AnyView(liveButton))
     }
 
     /// The existing text composer: multi-line field + Send/Stop, unchanged, plus a
     /// small mic affordance that flips back to voice-hero.
     private var textComposerRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField(placeholder, text: $text, axis: .vertical)
+            TextField(inputPlaceholder ?? placeholder, text: $text, axis: .vertical)
                 .accessibilityIdentifier("chat-composer")
-                .lineLimit(1...5)
-                .font(themeManager.font(16))
-                .foregroundColor(themeManager.textColor)
                 .focused($isFocused)
-                // (No keyboard-accessory "hide" button — the keyboard has its own
-                // dismiss key, and tapping the chat area dismisses it too.)
                 .onChange(of: text) {
-                    ComposerCommands.sync(text: text, state: &commandState)
+                    if supportsChatCommands { ComposerCommands.sync(text: text, state: &commandState) }
                     recomputeMentions()
                 }
-                .padding(.horizontal, 10)
-                // Match the Send button's height so a single-line field reads
-                // as tall as (and lines up with) the button; the text stays
-                // vertically centered and the field still grows to 5 lines.
-                .frame(minHeight: 36, alignment: .center)
+                .modifier(ComposerInputStyle())
             if canSend, mode != .plan { sendOptionsMenu }
             trailingComposerButton
         }
@@ -434,7 +612,7 @@ struct ComposerView: View {
                 .contentShape(Rectangle())
         }
         .tint(themeManager.accentColor)
-        .disabled(queueMutationInFlight)
+        .disabled(queueMutationInFlight || !canSubmit)
         .accessibilityLabel("Send options")
         .accessibilityIdentifier("chat-send-options")
     }
@@ -553,25 +731,7 @@ struct ComposerView: View {
     }
 
     private func modeButton(_ label: String, _ value: ComposerMode) -> some View {
-        let selected = mode == value
-        return Button(action: { withAnimation { mode = value } }) {
-            Text(label)
-                .font(.themedMono(10, weight: .semibold))
-                .tracking(0.6)
-                .padding(.horizontal, 10)
-                .foregroundColor(selected ? themeManager.onAccentColor : themeManager.secondaryTextColor)
-                .background(
-                    RoundedRectangle(cornerRadius: Self.modeSegmentRadius, style: .continuous)
-                        .fill(selected ? themeManager.accentFillColor : Color.clear)
-                        .frame(height: Self.modeSegmentHeight)
-                )
-                .frame(height: Self.modeSegmentHeight + 4)
-                // The row stays compact; the touch target still reaches ~44 pt.
-                .contentShape(Rectangle().inset(by: -10))
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel(label)
+        ComposerModeSegment(label: label, selected: mode == value) { withAnimation { mode = value } }
     }
 
     private func toolButton(_ system: String, action: @escaping () -> Void) -> some View {
@@ -615,52 +775,59 @@ struct ComposerView: View {
         audio.liveVoiceEngine == .realtime ? "Live" : "Hands-free"
     }
 
-    /// Split Live control: the primary action starts the locally selected setup;
-    /// the chevron opens the iOS-only voice settings sheet at call setup.
+    /// The right-hand selector chooses what the central voice button starts.
     private var liveButton: some View {
-        HStack(spacing: 0) {
-            Button(action: startSelectedLiveMode) {
-                HStack(spacing: 4) {
-                    Image(systemName: audio.liveVoiceEngine == .realtime
-                        ? "dot.radiowaves.left.and.right"
-                        : "waveform")
-                        .font(.system(size: 11))
-                    Text(showLiveUnavailable ? "Unavailable" : selectedLiveModeLabel)
-                        .font(.themed(11, weight: .semibold))
-                }
-                .padding(.leading, 8)
-                .padding(.trailing, 6)
-                .frame(height: voiceDockControlHeight)
+        Menu {
+            ForEach(SystemVoiceLaunchMode.allCases) { mode in
+                Button {
+                    audio.composerVoiceMode = mode
+                    if mode != .dictation { audio.liveVoiceEngine = mode == .realtime ? .realtime : .handsFree }
+                } label: {
+                    Label(mode.composerLabel + (audio.composerVoiceMode == mode ? " ✓" : ""), systemImage: mode.composerIcon)
+                }.disabled(!composerModeAvailable(mode))
             }
-            .disabled(voiceCallActive)
-
-            Rectangle()
-                .fill(themeManager.secondaryTextColor.opacity(0.22))
-                .frame(width: 1, height: 18)
-
+            Divider()
             Button {
-                voiceSettingsSection = .session
+                voiceSettingsSection = audio.composerVoiceMode == .dictation ? .dictation : .session
             } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
+                Label("Settings", systemImage: "gearshape")
+            }
+            .accessibilityIdentifier("voice-mode-settings")
+        } label: {
+            HStack(spacing: 0) {
+                HStack(spacing: 4) {
+                    Image(systemName: audio.composerVoiceMode.composerIcon).font(.system(size: 11))
+                    Text(audio.composerVoiceMode.composerLabel).font(.themed(10, weight: .semibold))
+                }.padding(.leading, 8).padding(.trailing, 6).frame(height: voiceDockControlHeight)
+                Rectangle().fill(themeManager.secondaryTextColor.opacity(0.22)).frame(width: 1, height: 18)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
                     .frame(width: 27, height: voiceDockControlHeight)
             }
-            .disabled(voiceCallActive)
-            .accessibilityLabel("Live call settings")
-            .accessibilityHint("Opens mode, model, and turn-taking settings")
-            .accessibilityIdentifier("voice-settings-session")
+            .contentShape(Rectangle())
         }
+        .accessibilityLabel("Voice mode: \(audio.composerVoiceMode.composerLabel)")
+        .accessibilityHint("Choose Live, Dictation, Hands-free or Settings")
+        .accessibilityIdentifier("voice-mode-selector")
         .buttonStyle(.plain)
-        .foregroundColor(themeManager.secondaryTextColor)
-        .background(themeManager.secondaryTextColor.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
-                .stroke(themeManager.secondaryTextColor.opacity(0.25), lineWidth: 1)
-        )
-        .opacity(selectedLiveModeAvailable ? 1.0 : 0.55)
-        .frame(height: voiceDockControlHeight)
-        .accessibilityElement(children: .contain)
+        .modifier(ComposerVoiceControlStyle())
+        .disabled(voiceCallActive || isRecording || isTranscribing)
+    }
+
+    private func composerModeAvailable(_ mode: SystemVoiceLaunchMode) -> Bool {
+        switch mode {
+        case .dictation: true
+        case .realtime: liveEnabled && selectedRealtimeProfile?.available == true
+        case .handsFree: handsFreeAvailable
+        }
+    }
+
+    private func startComposerVoice() {
+        guard composerModeAvailable(audio.composerVoiceMode) else { return }
+        if audio.composerVoiceMode == .dictation { onTapDictationStart() }
+        else {
+            audio.liveVoiceEngine = audio.composerVoiceMode == .realtime ? .realtime : .handsFree
+            startSelectedLiveMode()
+        }
     }
 
     private func startSelectedLiveMode() {
@@ -708,57 +875,28 @@ struct ComposerView: View {
             .accessibilityHint("Opens reply, dictation, and voice settings")
             .accessibilityIdentifier("voice-settings-replies")
         }
-        .foregroundColor(repliesEnabled
-            ? themeManager.accentColor
-            : themeManager.secondaryTextColor)
-        .background(repliesEnabled
-            ? themeManager.accentColor.opacity(0.12)
-            : themeManager.secondaryTextColor.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
-                .stroke(
-                    repliesEnabled
-                        ? themeManager.accentColor.opacity(0.4)
-                        : themeManager.secondaryTextColor.opacity(0.25),
-                    lineWidth: 1
-                )
-        )
-        .frame(height: voiceDockControlHeight)
+        .modifier(ComposerVoiceControlStyle(active: repliesEnabled))
+    }
+
+    /// Web parity (`ChatPanel` `profileThinkingLabel`): the chip carries the
+    /// selected thinking level for a catalog model that has thinking.
+    private var profileChipThinking: String? {
+        let selection = activeChatProfile?.modelSelection
+        let model = profiles.compactMap(\.modelChoice).first(where: { $0.id == selection?.modelId })
+        return ChatThinkingControl.chatChipLabel(engine: selectedHarnessEngine, model: model, selection: selection)
     }
 
     private var profileChip: some View {
         Button(action: { showProfilePicker = true }) {
-            HStack(spacing: 4) {
-                Image(systemName: isDefaultProfileSelected ? "sparkles" : "sparkles.rectangle.stack.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(isDefaultProfileSelected ? themeManager.textColor : themeManager.accentColor)
-                if (selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi"), activeChatProfile?.isAdaptive == true {
-                    ChatProfileTag(text: "Adaptive", color: themeManager.accentColor)
-                }
-                if (selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi"), let tier = activeChatProfile?.adaptiveTier, !tier.isEmpty {
-                    ChatProfileTag(text: tier, color: chatProfileTierColor(tier, theme: themeManager))
-                }
-                Text("\(selectedHarnessEngine == "claude_code" ? "Claude Code" : selectedHarnessEngine.replacingOccurrences(of: "_", with: " ")) · \(selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi" ? (activeChatProfile?.name ?? "Default") : selectedHarnessModel)")
-                    .font(.themedMono(10, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 180)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10))
-            }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(themeManager.surfaceColor)
-            .foregroundColor(themeManager.textColor)
-            .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous)
-                    .stroke((isDefaultProfileSelected ? themeManager.secondaryTextColor.opacity(0.2) : themeManager.accentColor.opacity(0.5)), lineWidth: 1)
-            )
+            ComposerSelectorLabel(
+                title: "\(selectedHarnessEngine == "claude_code" ? "Claude Code" : selectedHarnessEngine.replacingOccurrences(of: "_", with: " ")) · \(selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi" ? (activeChatProfile?.model ?? "Default") : selectedHarnessModel)",
+                icon: isDefaultProfileSelected ? "sparkles" : "sparkles.rectangle.stack.fill",
+                highlighted: !isDefaultProfileSelected,
+                thinking: profileChipThinking)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Chat engine: \(selectedHarnessEngine); choice: \(selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi" ? (activeChatProfile?.name ?? "Default") : selectedHarnessModel)")
-        .accessibilityHint("Opens the chat engine and profile picker")
+        .accessibilityLabel(ChatThinkingControl.chipAccessibilityLabel("Chat engine: \(selectedHarnessEngine); model: \(selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi" ? (activeChatProfile?.model ?? "Default") : selectedHarnessModel)", thinking: profileChipThinking))
+        .accessibilityHint("Opens the chat engine and model picker")
     }
 
     /// Trailing action in text mode. Thinking → Stop; something to send → Send;
@@ -786,13 +924,13 @@ struct ComposerView: View {
                     .background(themeManager.accentFillColor)
                     .clipShape(RoundedRectangle(cornerRadius: Lively.chipRadius, style: .continuous))
             }
-            .disabled(queueMutationInFlight)
+            .disabled(queueMutationInFlight || !canSubmit)
             .accessibilityLabel(isThinking ? "Queue message" : "Send")
             .accessibilityIdentifier("chat-send")
         } else if !voiceCallActive {
             // Empty field: the mic takes the send slot and flips to the voice-hero.
             Button(action: { isFocused = false; withAnimation { isVoiceMode = true } }) {
-                Image(systemName: "mic.fill")
+                Image(systemName: audio.composerVoiceMode.composerIcon)
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(themeManager.onAccentColor)
                     .frame(width: 36, height: 36)
@@ -959,16 +1097,29 @@ struct ComposerView: View {
 
 extension ComposerView {
     var commandRows: [ComposerCommandRow] {
-        ComposerCommands.rows(text: text, state: commandState, context: commandContext)
+        ComposerCommands.rows(text: text, state: commandState, context: commandRowsContext)
+    }
+
+    /// The host's context plus `/voice-mode`'s, which this view owns: the
+    /// mode and the same availability the voice-mode menu uses.
+    private var commandRowsContext: ComposerCommandContext {
+        var context = commandContext
+        context.voiceMode = ComposerVoiceMode(rawValue: audio.composerVoiceMode.rawValue)
+        context.voiceModesAvailable = Set(SystemVoiceLaunchMode.allCases.filter(composerModeAvailable)
+            .compactMap { ComposerVoiceMode(rawValue: $0.rawValue) })
+        return context
     }
 
     /// Send, unless the composer holds exactly a command: that opens the
-    /// command's options instead (commands never reach the model).
+    /// command's options instead. An open level (`/engine pi son`) keeps the
+    /// picker. Commands never reach the model.
     func send() {
-        if let id = ComposerCommands.exactCommand(text) {
+        guard canSend && canSubmit else { return }
+        if supportsChatCommands, let id = ComposerCommands.exactCommand(text) {
             openCommand(id)
             return
         }
+        if supportsChatCommands, ComposerCommands.holdsSend(text, state: commandState) { return }
         onSend()
     }
 
@@ -981,6 +1132,11 @@ extension ComposerView {
         switch row.action {
         case .open(let id):
             openCommand(id)
+        case .openModels(let engine):
+            text = ComposerCommands.openModels(engine: engine, state: &commandState)
+            if let level = commandState.stack.last { onCommandLevelOpened(level) }
+        case .openThinking(let engine, let modelId):
+            text = ComposerCommands.openThinking(engine: engine, modelId: modelId, state: &commandState)
         case .back:
             text = ComposerCommands.back(state: &commandState)
         case .toggleEngineScope:
@@ -989,7 +1145,7 @@ extension ComposerView {
             text = ComposerCommands.pickTask(taskId: taskId, title: title, state: &commandState)
         case .none:
             break
-        case .setChatEngine, .setRunEngine, .grantBudget, .setBudgetDefault:
+        case .setChatEngine, .setRunEngine, .setLoopModel, .setVoiceMode, .grantBudget, .setBudgetDefault:
             commandState = ComposerCommandState()
             text = ""
             onCommand(row.action)
@@ -1012,7 +1168,7 @@ extension ComposerView {
 
     private var commandListHeight: CGFloat {
         let rows = commandRows.reduce(CGFloat(0)) { total, row in
-            total + 36 + ((row.detail ?? "").isEmpty ? 0 : 16)
+            total + 36 + ((row.detail ?? "").isEmpty ? 0 : 16) + (row.badge == "Note" ? 18 : 0)
         }
         return min(260, rows)
     }
@@ -1039,7 +1195,8 @@ extension ComposerView {
                             Text(row.label)
                                 .font(.themed(14, weight: .medium))
                                 .foregroundColor(row.action == .none ? themeManager.secondaryTextColor : themeManager.textColor)
-                                .lineLimit(1)
+                                // A note ("Now: Magician · GPT-6.1 Sol …") may need a second line.
+                                .lineLimit(row.badge == "Note" ? 2 : 1)
                             if let detail = row.detail, !detail.isEmpty {
                                 Text(detail)
                                     .font(.themed(11))
@@ -1550,7 +1707,7 @@ private struct VoiceSettingsSheet: View {
                     .padding(14)
                     .modifier(VoiceSettingsGroupStyle(theme: theme))
             } else {
-                VoiceSelectionPicker(title: "Realtime model", selected: audio.realtimeVoiceProfile ?? "",
+                VoiceSelectionPicker(title: "Realtime model", selected: audio.realtimeVoiceProfile,
                     options: audio.realtimeVoiceProfiles.map { VoiceSelectionOption(id: $0.id, label: $0.label, available: $0.available) }) { id in
                     if let profile = audio.realtimeVoiceProfiles.first(where: { $0.id == id }) { _ = audio.selectRealtimeVoiceProfile(profile) }
                 }
@@ -1829,63 +1986,45 @@ private struct ChatProfilePickerSheet: View {
     @Binding var selectedHarnessModel: String
     @ObservedObject var theme: ThemeManager
 
-    private var adaptiveProfiles: [ChatProfile] {
-        profiles.filter { $0.isAdaptive == true }
+    private var models: [ChatModelChoice] { profiles.compactMap(\.modelChoice) }
+    private var selection: ChatModelSelection? {
+        profiles.first(where: { $0.name == selectedProfile })?.modelSelection
+            ?? profiles.first(where: { $0.isDefault == true })?.modelSelection
+    }
+    private var activeModel: ChatModelChoice? { models.first(where: { $0.id == selection?.modelId }) }
+
+    private func selectModel(_ id: String, thinking: String? = nil) {
+        guard let model = models.first(where: { $0.id == id }) else { return }
+        if let route = ComposerModelCatalogControls.route(for: model, selection: selection, thinking: thinking) { selectedProfile = route }
     }
 
-    private var standardProfiles: [ChatProfile] {
-        profiles.filter { $0.isAdaptive != true }
+    private var modelControls: some View {
+        ComposerModelCatalogControls(models: models, selection: selection, theme: theme) { id, level in
+            selectModel(id, thinking: level)
+        }
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Engine").font(.themed(11, weight: .bold)).foregroundColor(theme.secondaryTextColor)
-                        ForEach(chatHarnesses) { engine in
-                            Button {
-                                selectedHarnessEngine = engine.name
-                            } label: {
-                                HStack {
-                                    Text(engine.name.replacingOccurrences(of: "_", with: " "))
-                                    Spacer()
-                                    if engine.name == selectedHarnessEngine { Image(systemName: "checkmark.circle.fill") }
-                                }
-                                .foregroundColor(theme.textColor)
-                                .padding(12)
-                                .background(theme.surfaceColor)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
+                VStack(alignment: .leading, spacing: 16) {
+                    ModelCatalogPicker(title: "Engine", selected: selectedHarnessEngine,
+                        options: chatHarnesses.map { VoiceSelectionOption(id: $0.name, label: HarnessCredentialsLabel.engineName(
+                            Self.engineLabel($0.name), engine: $0.name, credentials: $0.credentials)) }) {
+                        selectedHarnessEngine = $0
                     }
                     if selectedHarnessEngine == "magician" || selectedHarnessEngine == "pi" {
-                        if !adaptiveProfiles.isEmpty {
-                            profileGroup(title: "Adaptive", profiles: adaptiveProfiles)
-                        }
-                        if !standardProfiles.isEmpty {
-                            profileGroup(title: "Standard", profiles: standardProfiles)
+                        if !models.isEmpty {
+                            modelControls
+                        } else {
+                            Text("Model choices are unavailable.")
+                                .font(.themed(12)).foregroundColor(theme.secondaryTextColor)
                         }
                     } else {
                         let models = chatHarnesses.first(where: { $0.name == selectedHarnessEngine })?.availableModels ?? ["default"]
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Model").font(.themed(11, weight: .bold)).foregroundColor(theme.secondaryTextColor)
-                            ForEach(models, id: \.self) { model in
-                                Button {
-                                    selectedHarnessModel = model
-                                    dismiss()
-                                } label: {
-                                    HStack {
-                                        Text(model == "default" ? "Harness default" : model)
-                                        Spacer()
-                                        if model == selectedHarnessModel { Image(systemName: "checkmark.circle.fill") }
-                                    }
-                                    .foregroundColor(theme.textColor)
-                                    .padding(12)
-                                    .background(theme.surfaceColor)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                                }
-                            }
+                        ModelCatalogPicker(title: "Model", selected: selectedHarnessModel,
+                            options: models.map { VoiceSelectionOption(id: $0, label: $0 == "default" ? "Engine default" : $0) }) {
+                            selectedHarnessModel = $0
                         }
                     }
                 }
@@ -1893,7 +2032,7 @@ private struct ChatProfilePickerSheet: View {
                 .padding(.vertical, 12)
             }
             .background(theme.backgroundColor)
-            .navigationTitle("Chat engine and profile")
+            .navigationTitle("Chat engine and model")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -1906,136 +2045,101 @@ private struct ChatProfilePickerSheet: View {
         .sensoryFeedback(.selection, trigger: selectedProfile)
     }
 
-    private func profileGroup(title: String, profiles: [ChatProfile]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.themed(11, weight: .bold))
-                .foregroundColor(theme.secondaryTextColor)
-                .textCase(.uppercase)
-                .padding(.horizontal, 4)
-
-            VStack(spacing: 0) {
-                ForEach(profiles.indices, id: \.self) { index in
-                    profileRow(profiles[index])
-                    if index < profiles.count - 1 {
-                        Divider().background(theme.cardBorderColor)
-                    }
-                }
-            }
-            .background(theme.surfaceColor)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(theme.cardBorderColor, lineWidth: 1)
-            )
-        }
-    }
-
-    private func profileRow(_ profile: ChatProfile) -> some View {
-        let selected = profile.name == selectedProfile
-            || (selectedProfile.isEmpty && profile.isDefault == true)
-
-        return Button {
-            selectedProfile = profile.name
-            dismiss()
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        Text(profile.name)
-                            .font(.themed(15, weight: .semibold))
-                            .foregroundColor(theme.textColor)
-                            .lineLimit(1)
-                        if profile.isDefault == true {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(theme.warningColor)
-                                .accessibilityLabel("Default")
-                        }
-                        Spacer(minLength: 8)
-                        if selected {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(theme.accentColor)
-                                .accessibilityHidden(true)
-                        }
-                    }
-
-                    if profile.isAdaptive == true || profile.adaptiveTier?.isEmpty == false {
-                        HStack(spacing: 6) {
-                            if profile.isAdaptive == true {
-                                ChatProfileTag(text: "Adaptive", color: theme.accentColor)
-                            }
-                            if let tier = profile.adaptiveTier, !tier.isEmpty {
-                                ChatProfileTag(text: tier, color: chatProfileTierColor(tier, theme: theme))
-                            }
-                        }
-                    }
-
-                    if let model = profile.model, !model.isEmpty {
-                        Text(model)
-                            .font(.themedMono(11))
-                            .foregroundColor(theme.secondaryTextColor)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    if let description = profile.adaptiveDescription, !description.isEmpty {
-                        Text(description)
-                            .font(.themed(12))
-                            .foregroundColor(theme.secondaryTextColor)
-                            .lineLimit(2)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(selected ? theme.accentColor.opacity(0.08) : Color.clear)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(profileAccessibilityLabel(profile))
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func profileAccessibilityLabel(_ profile: ChatProfile) -> String {
-        [
-            profile.name,
-            profile.isDefault == true ? "default" : nil,
-            profile.isAdaptive == true ? "adaptive" : nil,
-            profile.adaptiveTier,
-            profile.model
-        ]
-        .compactMap { $0 }
-        .joined(separator: ", ")
+    private static func engineLabel(_ id: String) -> String {
+        ["magician": "Magician", "pi": "Pi", "claude_code": "Claude Code",
+         "codex": "Codex", "codex_app_server": "Codex App Server", "grok": "Grok", "agy": "Antigravity"][id]
+            ?? id.replacingOccurrences(of: "_", with: " ")
     }
 }
 
-private struct ChatProfileTag: View {
-    @ObservedObject private var theme = ThemeManager.shared
+struct ComposerModelCatalogControls: View {
+    let models: [ChatModelChoice]
+    let selection: ChatModelSelection?
+    @ObservedObject var theme: ThemeManager
+    let onSelect: (String, String?) -> Void
+    private var activeModel: ChatModelChoice? { models.first(where: { $0.id == selection?.modelId }) }
+    static func route(for model: ChatModelChoice, selection: ChatModelSelection?, thinking: String? = nil) -> String? {
+        model.choices[thinking ?? selection?.thinking ?? "auto"] ?? model.choices["auto"]
+    }
 
-    let text: String
-    let color: Color
 
     var body: some View {
-        Text(text.uppercased())
-            .font(theme.font(9, weight: .semibold))
-            .foregroundColor(color)
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 3, style: .continuous).stroke(color.opacity(0.36), lineWidth: 1))
+        VStack(alignment: .leading, spacing: 12) {
+            ModelCatalogPicker(title: "Model", selected: activeModel?.id ?? "",
+                options: models.map { VoiceSelectionOption(id: $0.id, label: $0.label, detail: $0.providerDisplayName, available: $0.installed != false) }) {
+                onSelect($0, nil)
+            }
+            if let model = activeModel {
+                Text("\(model.providerDisplayName)\(model.limits.map { " · \($0.contextWindowTokens / 1000)K context" } ?? "")")
+                    .font(.themed(11)).foregroundColor(theme.secondaryTextColor)
+                ModelThinkingControl(control: model.thinking, level: selection?.thinking ?? "auto", theme: theme) { onSelect(model.id, $0) }
+            }
+        }
+        .padding(16).background(theme.surfaceColor)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
+
 }
 
-private func chatProfileTierColor(_ tier: String, theme: ThemeManager) -> Color {
-    switch tier.lowercased() {
-    case "instant": return theme.successColor
-    case "normal": return theme.infoColor
-    case "advanced": return theme.discoveryColor
-    default: return theme.secondaryTextColor
+/// A themed box opens a full-height, searchable list. Freeze the choices when
+/// opening it so parent catalog/selection refreshes cannot reset an active scroll.
+struct ModelCatalogPicker: View {
+    private struct PresentedChoices: Identifiable {
+        let id = UUID()
+        let selected: String
+        let options: [VoiceSelectionOption]
+    }
+
+    let title: String
+    let selected: String
+    let options: [VoiceSelectionOption]
+    var showsLabel = true
+    let onSelect: (String) -> Void
+    @ObservedObject private var theme = ThemeManager.shared
+    @State private var presentedChoices: PresentedChoices?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if showsLabel {
+                Text(title).font(.themed(11, weight: .bold)).foregroundColor(theme.secondaryTextColor)
+            }
+            Button {
+                presentedChoices = PresentedChoices(selected: selected, options: options)
+            } label: {
+                HStack(spacing: 10) {
+                    Text(options.first(where: { $0.id == selected })?.label ?? (selected.isEmpty ? "Choose \(title.lowercased())" : "Unavailable choice · saved"))
+                        .font(.themed(14)).foregroundColor(theme.textColor).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(theme.secondaryTextColor)
+                }
+                .padding(.horizontal, 12).frame(minHeight: 44)
+                .background(theme.controlColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(theme.controlBorderColor, lineWidth: 1))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(options.isEmpty)
+            .accessibilityLabel(title)
+            .accessibilityValue(options.first(where: { $0.id == selected })?.label ?? selected)
+        }
+        .sheet(item: $presentedChoices) { choices in
+            NavigationStack {
+                VoiceSelectionList(title: title, selected: choices.selected, options: choices.options) { id in
+                    onSelect(id)
+                }
+                .toolbar { ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { presentedChoices = nil }
+                        .foregroundColor(theme.accentColor)
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.roundedRectangle(radius: 8))
+                }.roundedSquareToolbarBackground() }
+            }
+            .presentationDetents([.large])
+            .presentationContentInteraction(.scrolls)
+            .presentationDragIndicator(.visible)
+            .presentationBackground(theme.backgroundColor)
+            .preferredColorScheme(theme.forcedColorScheme)
+        }
     }
 }
 
@@ -2173,13 +2277,16 @@ private struct MicInteraction: ViewModifier {
 private struct ActiveDictationInteraction: ViewModifier {
     @Binding var holding: Bool
     let isRecording: Bool
+    var dictation = true
     let onTapStart: () -> Void
     let onTapStop: () -> Void
     let onHoldStart: () -> Void
     let onHoldEnd: () -> Void
 
     func body(content: Content) -> some View {
-        if MicInteractionPolicy.usesDirectStop(
+        if !dictation && !isRecording {
+            content.onTapGesture(perform: onTapStart)
+        } else if MicInteractionPolicy.usesDirectStop(
             isRecording: isRecording,
             holdActive: holding
         ) {
@@ -2194,5 +2301,107 @@ private struct ActiveDictationInteraction: ViewModifier {
                 onHoldEnd: onHoldEnd
             ))
         }
+    }
+}
+
+/// Native stepped or binary control shared by chat and crew model assignments.
+struct ModelThinkingControl: View {
+    let control: ChatThinkingControl
+    let level: String
+    @ObservedObject var theme: ThemeManager
+    let onSelect: (String) -> Void
+    @State private var previewIndex: Double?
+    private var selectedIndex: Int {
+        control.levels.firstIndex(of: level == "auto" ? control.defaultLevel ?? "" : level) ?? 0
+    }
+    private var displayedLevel: String {
+        guard let previewIndex, !control.levels.isEmpty else { return level }
+        return control.levels[min(max(Int(previewIndex.rounded()), 0), control.levels.count - 1)]
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+                if control.mode != "none", !control.levels.isEmpty {
+                    HStack {
+                        Text("Thinking").font(.themed(13, weight: .semibold))
+                        Spacer()
+                        Button("Auto") { previewIndex = nil; onSelect("auto") }
+                            .font(.themed(12, weight: .semibold))
+                            .foregroundColor(displayedLevel == "auto" ? theme.accentColor : theme.textColor)
+                            .padding(.horizontal, 10).padding(.vertical, 7)
+                            .background(displayedLevel == "auto" ? theme.accentColor.opacity(0.14) : theme.controlColor,
+                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(displayedLevel == "auto" ? theme.accentColor : theme.controlBorderColor, lineWidth: 1))
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(displayedLevel == "auto" ? .isSelected : [])
+                    }
+                    Text(displayedLevel == "auto" ? (control.defaultLevel.map { "Default · \(ChatThinkingControl.label($0))" } ?? "Engine default") : ChatThinkingControl.label(displayedLevel))
+                        .font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+                    if control.mode == "toggle" {
+                        Toggle("Thinking enabled", isOn: Binding(
+                            get: { (level == "auto" ? control.defaultLevel : level) != "none" },
+                            set: { onSelect($0 ? "on" : "none") }
+                        )).tint(theme.accentColor)
+                    } else if control.levels.count > 1 {
+                        Slider(value: Binding(
+                            get: { previewIndex ?? Double(selectedIndex) },
+                            set: { previewIndex = $0 }
+                        ), in: 0...Double(control.levels.count - 1), step: 1, onEditingChanged: { editing in
+                            if !editing, previewIndex != nil {
+                                onSelect(displayedLevel)
+                                previewIndex = nil
+                            }
+                        })
+                        .tint(theme.accentColor)
+                        .accessibilityLabel("Thinking level")
+                        .accessibilityValue(displayedLevel == "auto" ? (control.defaultLevel.map { "Auto · \(ChatThinkingControl.label($0))" } ?? "Auto · engine default") : ChatThinkingControl.label(displayedLevel))
+                        .accessibilityAdjustableAction { direction in
+                            let next = direction == .increment ? selectedIndex + 1 : selectedIndex - 1
+                            previewIndex = nil
+                            onSelect(control.levels[min(max(next, 0), control.levels.count - 1)])
+                        }
+                        HStack(spacing: 2) {
+                            ForEach(control.levels, id: \.self) { option in
+                                Button {
+                                    previewIndex = nil
+                                    onSelect(option)
+                                } label: {
+                                    Text(ChatThinkingControl.label(option))
+                                        .font(.themed(11, weight: displayedLevel == option ? .semibold : .regular))
+                                        .lineLimit(1).minimumScaleFactor(0.7)
+                                        .frame(maxWidth: .infinity, minHeight: 36)
+                                        .foregroundColor(displayedLevel == option ? theme.accentColor : theme.secondaryTextColor)
+                                        .background(displayedLevel == option ? theme.accentColor.opacity(0.12) : Color.clear,
+                                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Set thinking to \(ChatThinkingControl.label(option))")
+                                .accessibilityAddTraits(displayedLevel == option ? .isSelected : [])
+                            }
+                        }
+                    }
+                    Text("Higher thinking can improve difficult answers and take more time.")
+                        .font(.themed(11)).foregroundColor(theme.secondaryTextColor)
+                }
+        }
+        .onChange(of: level) { _, _ in previewIndex = nil }
+        .onChange(of: control.levels) { _, _ in previewIndex = nil }
+    }
+}
+
+/// Shared dimensions, typography, selection and accessibility for composer modes.
+struct ComposerModeSegment: View {
+    let label: String
+    let selected: Bool
+    let onSelect: () -> Void
+    @ObservedObject private var theme = ThemeManager.shared
+    var body: some View {
+        Button(action: onSelect) {
+            Text(label).font(.themedMono(10, weight: .semibold)).tracking(0.6).padding(.horizontal, 10)
+                .foregroundStyle(selected ? theme.onAccentColor : theme.secondaryTextColor)
+                .background(RoundedRectangle(cornerRadius: Lively.chipRadius - 1.5, style: .continuous)
+                    .fill(selected ? theme.accentFillColor : .clear).frame(height: 26))
+                .frame(height: 30).contentShape(Rectangle().inset(by: -10))
+        }.buttonStyle(.plain).accessibilityLabel(label).accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

@@ -226,6 +226,8 @@ pub fn project_coding_profiles(
                 "supports_user_image_inputs": row.supports_user_image_inputs,
                 "is_default": row.is_default,
                 "description": row.description,
+                "model_selection": row.model_selection,
+                "model_choice": row.model_choice,
                 "engine": "pi",
                 "selectable": true,
                 "readiness": "ready",
@@ -728,7 +730,10 @@ pub(crate) fn probe_grok_version_in_background(
 /// ambiguous and signed-out engines are still refused.
 pub fn super_god_runs(readiness: &str) -> bool {
     crate::magician_v2::god_mode::super_active()
-        && matches!(readiness, "ready" | "unqualified" | "incompatible" | "checking")
+        && matches!(
+            readiness,
+            "ready" | "unqualified" | "incompatible" | "checking"
+        )
 }
 
 pub fn current_grok_readiness() -> GrokReadinessSnapshot {
@@ -1057,7 +1062,12 @@ fn overlay_claude_auth(
 }
 
 fn claude_has_auth(config: &MagicianClaudeSettings, search: &ClaudeSearchPaths) -> bool {
-    if config.use_api_key {
+    if claude_oauth_present(search) && !config.use_api_key {
+        return true;
+    }
+    if config.use_api_key
+        || crate::magician_v2::harness_auth::uses_magician_credentials("claude_code")
+    {
         return claude_api_key_present(search);
     }
     claude_oauth_present(search)
@@ -1704,7 +1714,8 @@ fn agy_has_auth(config: &MagicianAgySettings, search: &AgySearchPaths) -> bool {
     if agy_oauth_present(search) {
         return true;
     }
-    config.use_api_key && agy_api_key_present(search)
+    (config.use_api_key || crate::magician_v2::harness_auth::uses_magician_credentials("agy"))
+        && agy_api_key_present(search)
 }
 
 fn agy_oauth_present(search: &AgySearchPaths) -> bool {
@@ -2260,7 +2271,9 @@ fn overlay_grok_auth(
 }
 
 fn grok_has_auth(search: &GrokSearchPaths) -> bool {
-    grok_auth_file_present(search) || grok_api_key_present(search)
+    grok_auth_file_present(search)
+        || (crate::magician_v2::harness_auth::uses_magician_credentials("grok")
+            && grok_api_key_present(search))
 }
 
 fn grok_auth_file_present(search: &GrokSearchPaths) -> bool {
@@ -2582,6 +2595,8 @@ mod tests {
             supports_user_image_inputs: true,
             is_default: true,
             description: None,
+            model_selection: None,
+            model_choice: None,
         };
         let rows = project_coding_profiles(
             &[pi],
@@ -2889,13 +2904,27 @@ mod tests {
             env: Some(vec![("XAI_API_KEY".to_string(), key.to_string())]),
             ..isolated_grok_search()
         };
-        let snapshot = overlay_or_probe_grok_version(
-            resolve_grok_readiness(&grok_settings(true, None), &search),
-            &grok_settings(true, None),
-            &search,
-        );
+        let probe = || {
+            overlay_or_probe_grok_version(
+                resolve_grok_readiness(&grok_settings(true, None), &search),
+                &grok_settings(true, None),
+                &search,
+            )
+        };
+        // The key counts only where Magician's keys are allowed: `magician`
+        // mode, or after the owner approves (never silently under login_first).
+        let mut keys = crate::config::HarnessAuthSettings::default();
+        keys.mode = crate::config::HarnessAuthMode::Magician;
+        let snapshot =
+            crate::magician_v2::harness_auth::test_override::with_sign_in(keys, |_| false, probe);
         assert_eq!(snapshot.readiness, GrokReadiness::Ready);
         assert!(snapshot.selectable);
+        let login_first = crate::magician_v2::harness_auth::test_override::with_sign_in(
+            crate::config::HarnessAuthSettings::default(),
+            |_| false,
+            probe,
+        );
+        assert_eq!(login_first.readiness, GrokReadiness::AuthRequired);
         let dir_s = dir.path().to_string_lossy().into_owned();
         assert_public_omits_secrets(&snapshot, &[key, &dir_s]);
     }
@@ -3095,50 +3124,60 @@ mod tests {
     }
 
     #[test]
-    fn list_coding_profiles_reads_the_grok_snapshot() {
+    fn list_coding_models_reads_the_cached_readiness() {
         let web = include_str!("../../../../../magician-api/src/web_api.rs");
+        let endpoint = &web[web
+            .find("pub async fn list_coding_models(")
+            .expect("model endpoint")..];
+        let endpoint_end = endpoint
+            .find("\n    /// POST /api/magician/v2/coding/engines")
+            .expect("endpoint boundary");
+        assert!(endpoint[..endpoint_end].contains("self.coding_model_rows(agent_resources)"));
+        assert!(endpoint[..endpoint_end].contains("coding_model_selection::model_catalog"));
         let start = web
-            .find("pub async fn list_coding_profiles")
-            .expect("list_coding_profiles");
+            .find("    fn coding_model_rows(")
+            .expect("readiness projection");
         let rest = &web[start..];
-        let end = rest.find("\n    pub async fn ").unwrap_or(rest.len());
+        let end = rest
+            .find("\n    /// GET /api/magician/v2/coding/models")
+            .expect("projection boundary");
         let body = &rest[..end];
         assert!(
             body.contains("observe_grok_readiness"),
-            "GET /coding/profiles must observe filesystem + cached Grok overlays"
+            "GET /coding/models must observe filesystem + cached Grok overlays"
         );
         assert!(
             body.contains("observe_claude_readiness"),
-            "GET /coding/profiles must observe filesystem Claude readiness"
+            "GET /coding/models must observe filesystem Claude readiness"
         );
         assert!(
             body.contains("observe_agy_readiness"),
-            "GET /coding/profiles must observe filesystem Agy readiness"
+            "GET /coding/models must observe filesystem Agy readiness"
         );
         assert!(body.contains("project_coding_profiles"));
         assert!(
             !body.contains("probe_grok_cli_version"),
-            "GET /coding/profiles must not spawn grok --version"
+            "GET /coding/models must not spawn grok --version"
         );
         assert!(
             !body.contains("overlay_or_probe"),
-            "GET /coding/profiles must not probe Grok version"
+            "GET /coding/models must not probe Grok version"
         );
         assert!(
             !body.contains("current_grok_readiness"),
-            "GET /coding/profiles must observe, not only read the last published snapshot"
+            "GET /coding/models must observe, not only read the last published snapshot"
         );
         assert!(
             !body.contains("refresh_grok_readiness"),
-            "GET /coding/profiles must not refresh/probe Grok on the Actix worker"
+            "GET /coding/models must not refresh/probe Grok on the Actix worker"
         );
         assert!(
             !body.contains("probe_grok_cli_version"),
-            "GET /coding/profiles must not mention probe_grok_cli_version"
+            "GET /coding/models must not mention probe_grok_cli_version"
         );
         assert!(
             !body.contains("grok_qualify_over_stdio"),
-            "GET /coding/profiles must not ACP-initialize"
+            "GET /coding/models must not ACP-initialize"
         );
         assert!(!body.contains("attest_grok_isolation"));
     }

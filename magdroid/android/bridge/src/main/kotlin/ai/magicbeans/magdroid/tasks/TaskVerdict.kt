@@ -27,7 +27,12 @@ data class TaskAttention(
     val raisedAtMillis: Long? = null,
 )
 
-enum class TaskVerdictState { Waiting, Failed, Stalled, Running, Paused, Cancelled, Queued, Archived, Finished }
+/**
+ * [PartlyDone]: completed with `completion_kind == "partial"`, requirements still open.
+ * [Finalizing]: the work is done but the final answer is still being written
+ * (`synthesis_pending`).
+ */
+enum class TaskVerdictState { Waiting, Failed, Stalled, Running, Paused, Cancelled, Queued, Archived, Finalizing, Finished, PartlyDone }
 enum class TaskVerdictSeverity { Attention, Failure, Progress, Neutral, Success }
 
 data class TaskVerdictValue(
@@ -36,9 +41,9 @@ data class TaskVerdictValue(
     val detail: String,
 ) {
     val severity: TaskVerdictSeverity get() = when (state) {
-        TaskVerdictState.Waiting, TaskVerdictState.Stalled -> TaskVerdictSeverity.Attention
+        TaskVerdictState.Waiting, TaskVerdictState.Stalled, TaskVerdictState.PartlyDone -> TaskVerdictSeverity.Attention
         TaskVerdictState.Failed -> TaskVerdictSeverity.Failure
-        TaskVerdictState.Running -> TaskVerdictSeverity.Progress
+        TaskVerdictState.Running, TaskVerdictState.Finalizing -> TaskVerdictSeverity.Progress
         TaskVerdictState.Paused, TaskVerdictState.Cancelled,
         TaskVerdictState.Queued, TaskVerdictState.Archived -> TaskVerdictSeverity.Neutral
         TaskVerdictState.Finished -> TaskVerdictSeverity.Success
@@ -83,7 +88,30 @@ data class TaskVerdictInput(
     val nowMillis: Long = System.currentTimeMillis(),
     /** Why a `queued` task has not started; null reads `Waiting to start`. */
     val queuedFor: QueuedReason? = null,
+    /** A finished task's `completion_kind` (`full` | `partial`); partial reads Partly done. */
+    val completionKind: String? = null,
+    /** A partial completion's `open_items`; the first is the verdict's detail line. */
+    val openItems: List<String> = emptyList(),
+    /**
+     * The work is done but its final answer is still being written
+     * (`synthesis_pending`). Only changes a would-be finished verdict: failed,
+     * waiting, cancelled and the live states all outrank it.
+     */
+    val synthesisPending: Boolean = false,
 )
+
+/**
+ * The client side of `synthesis_pending`: when to stop spinning. The backend
+ * heals a stuck synthesis (startup reconciler, failure path), but a client must
+ * not spin forever on a flag that never clears.
+ */
+object SynthesisWait {
+    const val STALE_AFTER_MILLIS = 10 * 60 * 1_000L
+
+    /** True once the flag has been pending for more than ten minutes since [baselineMillis]. */
+    fun isStale(baselineMillis: Long, nowMillis: Long): Boolean =
+        nowMillis - baselineMillis > STALE_AFTER_MILLIS
+}
 
 /** Exact Android mirror of the shared web/iOS task verdict and act ordering. */
 object TaskVerdict {
@@ -167,6 +195,20 @@ object TaskVerdict {
             TaskVerdictState.Archived, "Archived", "No longer active",
         )
         val took = durationIfKnown(input.elapsedSeconds)
+        // After every state above, so a failure, an ask or a cancel still wins;
+        // before Finished / PartlyDone so the screen never says "Finished"
+        // while the answer is not there yet.
+        if (input.synthesisPending) return TaskVerdictValue(
+            TaskVerdictState.Finalizing,
+            "Preparing final result",
+            took?.let { "The work finished in $it; the answer is being written" }
+                ?: "The work finished; the answer is being written",
+        )
+        if (input.completionKind == "partial") return TaskVerdictValue(
+            TaskVerdictState.PartlyDone,
+            took?.let { "${TaskCompletion.PARTLY_DONE} · $it" } ?: TaskCompletion.PARTLY_DONE,
+            TaskCompletion.openLine(input.openItems) ?: "Finished with requirements still open",
+        )
         return TaskVerdictValue(
             TaskVerdictState.Finished,
             took?.let { "Finished · $it" } ?: "Finished",
@@ -220,7 +262,8 @@ object TaskVerdict {
             TaskVerdictState.Waiting, TaskVerdictState.Queued -> TaskDetailAct.Plan
             TaskVerdictState.Failed, TaskVerdictState.Stalled, TaskVerdictState.Running,
             TaskVerdictState.Paused, TaskVerdictState.Cancelled -> TaskDetailAct.Run
-            TaskVerdictState.Archived, TaskVerdictState.Finished -> TaskDetailAct.Output
+            TaskVerdictState.Archived, TaskVerdictState.Finalizing, TaskVerdictState.Finished,
+            TaskVerdictState.PartlyDone -> TaskDetailAct.Output
         }
         if (preferred in acts) return preferred
         val from = TaskDetailAct.entries.indexOf(preferred)

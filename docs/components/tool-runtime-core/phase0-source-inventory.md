@@ -1,5 +1,7 @@
 # Tool Runtime Phase 0A Source Inventory
 
+This frozen inventory includes the retired Metabase CLI; current access uses `metabase-mcp`.
+
 This report is generated from the canonical schema-backed tool-skill source. It contains only allowlisted identifiers and counts: credential values, lifecycle command bodies, arbitrary defaults, and skill prose are never copied into this artifact.
 
 ## Summary

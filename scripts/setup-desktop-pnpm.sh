@@ -39,7 +39,10 @@ esac
 
 verify_command() {
   local actual
-  actual="$("$@" --version 2>/dev/null || true)"
+  if ! actual="$("$@" --version)"; then
+    echo "✗ desktop pnpm failed to start: $*" >&2
+    return 1
+  fi
   if [ "$actual" != "$PNPM_VERSION" ]; then
     echo "✗ desktop pnpm $PNPM_VERSION is required; command reported '${actual:-unavailable}'." >&2
     return 1

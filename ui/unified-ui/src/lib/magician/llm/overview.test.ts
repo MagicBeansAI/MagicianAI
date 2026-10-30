@@ -32,9 +32,13 @@ describe('LLM usage overview', () => {
 		});
 	});
 
-	it('bounds the standalone overview window', () => {
-		expect(llmUsageWindowWhere(7)).toContain('INTERVAL 7 DAYS');
-		expect(llmUsageWindowWhere(0)).toContain('INTERVAL 1 DAYS');
-		expect(llmUsageWindowWhere(Number.NaN)).toContain('INTERVAL 7 DAYS');
+	it('bounds the standalone overview window with a literal epoch-ms lower bound', () => {
+		const now = Date.UTC(2026, 9, 30, 10, 17, 42, 123);
+		const minute = Date.UTC(2026, 9, 30, 10, 18, 0, 0);
+		const day = 86_400_000;
+		expect(llmUsageWindowWhere(7, now)).toBe(`timestamp_ms > ${minute - 7 * day}`);
+		expect(llmUsageWindowWhere(0, now)).toBe(`timestamp_ms > ${minute - day}`);
+		expect(llmUsageWindowWhere(Number.NaN, now)).toBe(`timestamp_ms > ${minute - 7 * day}`);
+		expect(llmUsageWindowWhere(7)).not.toContain('INTERVAL');
 	});
 });

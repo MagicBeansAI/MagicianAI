@@ -47,9 +47,10 @@ use tool_runtime_core::{
     },
     credential_lifecycle_observation::{
         evaluate_lifecycle_status, CredentialLifecycleCommandObservation,
-        CredentialLifecycleObservationError, CredentialLifecycleStatusResult,
-        CredentialLifecycleTermination, MAX_LIFECYCLE_OBSERVATION_STDERR_BYTES,
-        MAX_LIFECYCLE_OBSERVATION_STDOUT_BYTES, MAX_LIFECYCLE_OBSERVATION_TOTAL_BYTES,
+        CredentialLifecycleObservationError, CredentialLifecycleObservationErrorCode,
+        CredentialLifecycleStatusResult, CredentialLifecycleTermination,
+        MAX_LIFECYCLE_OBSERVATION_STDERR_BYTES, MAX_LIFECYCLE_OBSERVATION_STDOUT_BYTES,
+        MAX_LIFECYCLE_OBSERVATION_TOTAL_BYTES,
     },
     credential_materialization::CredentialRedactedOutput,
     manifest::CliInteraction,
@@ -219,7 +220,22 @@ impl GovernedCredentialLifecycleExecutor {
             result.stderr(),
         )
         .map_err(observation_failed)?;
-        let status = evaluate_lifecycle_status(plan, &observation).map_err(observation_failed)?;
+        let status = evaluate_lifecycle_status(plan, &observation).map_err(|error| {
+            if error.code == CredentialLifecycleObservationErrorCode::MalformedOutput {
+                // Structure only: letters become `a` and digits `0`, so the
+                // shape of an unparsable status (a banner line before the JSON,
+                // a truncated document) is diagnosable without its content.
+                tracing::warn!(
+                    termination = ?result.termination(),
+                    stdout_bytes = result.stdout().len(),
+                    stdout_shape = %output_shape(result.stdout(), 200),
+                    stderr_bytes = result.stderr().len(),
+                    stderr_shape = %output_shape(result.stderr(), 200),
+                    "governed lifecycle status output is not the declared format"
+                );
+            }
+            observation_failed(error)
+        })?;
         Ok((result, status))
     }
 
@@ -1318,13 +1334,36 @@ const fn plan_mismatch() -> GovernedLifecycleExecutorError {
     )
 }
 
+/// Content-free outline of process output for diagnostics.
+fn output_shape(bytes: &[u8], limit: usize) -> String {
+    bytes
+        .iter()
+        .take(limit)
+        .map(|byte| match byte {
+            b'a'..=b'z' | b'A'..=b'Z' => 'a',
+            b'0'..=b'9' => '0',
+            b'\n' => '⏎',
+            b' '..=b'~' => *byte as char,
+            _ => '^',
+        })
+        .collect()
+}
+
+/// Keep which part of the status contract failed. The observation error is
+/// value- and path-free (a code, a static field and a static message), so
+/// it is safe to carry to the run and the log.
 fn observation_failed(
-    _error: CredentialLifecycleObservationError,
+    error: CredentialLifecycleObservationError,
 ) -> GovernedLifecycleExecutorError {
+    tracing::warn!(
+        code = ?error.code,
+        field = error.field,
+        "governed lifecycle output did not satisfy its declared status contract"
+    );
     GovernedLifecycleExecutorError::new(
         GovernedLifecycleExecutorErrorCode::ObservationFailed,
-        "credential_lifecycle.observation",
-        "the governed lifecycle output did not satisfy its declared status contract",
+        error.field,
+        error.message,
     )
 }
 

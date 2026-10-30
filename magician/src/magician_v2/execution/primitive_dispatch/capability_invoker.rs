@@ -20,7 +20,7 @@ use tracing::instrument;
 use super::{
     cli_template::CliTemplateDispatcher,
     exec_ctx::PrimitiveExecCtx,
-    governed_runtime::{admit_governed_route, dispatch_governed_runtime},
+    governed_runtime::{admit_governed_route, dispatch_governed_runtime, governed_dispatch_error},
     runner::{PrimitiveDispatcher, PrimitiveToolResult},
 };
 use crate::magician_v2::{
@@ -475,7 +475,9 @@ async fn invoke_cli_template_capability(
                 brokered_workspace_paths,
             )
             .await
-            .map_err(ExecutionError::Step)?,
+            // A refusal (input, working directory or authorization not
+            // admitted) stays agent-actionable; anything else is a fault.
+            .map_err(governed_dispatch_error)?,
             DispatchOwner::Legacy(dispatcher) => dispatcher
                 .dispatch(&action_owned, &arguments_owned)
                 .await
@@ -629,7 +631,9 @@ pub(crate) fn fold_primitive_result(
         } else {
             format!("`{pack_name}__{action}` failed")
         };
-        return Err(ExecutionError::Step(message));
+        // The tool ran and reported its own failure: the agent reads it and
+        // acts on it (a warning at the executor), not a runtime fault.
+        return Err(ExecutionError::AgentActionable(message));
     }
     Ok(ActionResult::Text {
         content: result.stdout,
@@ -703,6 +707,7 @@ mod tests {
                 auth: None,
                 reliability: None,
                 result_projection: None,
+                parameter_constraints: serde_json::Value::Null,
             },
         );
         registry
@@ -765,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unbounded_failure_envelope_remains_an_opaque_step_error() {
+    fn malformed_or_unbounded_failure_envelope_remains_an_opaque_tool_failure() {
         for stderr in [
             r#"{"ok":false,"error":{"code":"NOT-STABLE","message":"bad"}}"#.to_string(),
             format!(
@@ -783,7 +788,8 @@ mod tests {
                 },
             )
             .unwrap_err();
-            assert!(matches!(error, ExecutionError::Step(_)));
+            assert!(matches!(error, ExecutionError::AgentActionable(_)));
+            assert!(error.to_string().starts_with("step execution failed: "));
         }
     }
 

@@ -80,6 +80,11 @@ struct TaskV3: Codable, Identifiable, Equatable {
     let completionOutcome: String?
     /// Artifacts the latest run named as its result. Absent = empty.
     let completionArtifactNames: [String]
+    /// `full` / `partial` once the task completed (absent on older records;
+    /// unknown values read as absent). See `TaskCompletion`.
+    let completionKind: String?
+    /// What a partial completion left undone. Absent = empty.
+    let openItems: [String]
     /// Internal-lane recurring schedule, when the payload carries one.
     let recurringSchedule: JSONValue?
     let hasPlan: Bool
@@ -120,6 +125,8 @@ struct TaskV3: Codable, Identifiable, Equatable {
         case completionSummary = "completion_summary"
         case completionOutcome = "completion_outcome"
         case completionArtifactNames = "completion_artifact_names"
+        case completionKind = "completion_kind"
+        case openItems = "open_items"
         case recurringSchedule = "recurring_schedule"
         case hasPlan = "has_plan"
         case chatSessionId = "chat_session_id"
@@ -156,6 +163,9 @@ struct TaskV3: Codable, Identifiable, Equatable {
         completionArtifactNames = artifactNames
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let completion = TaskCompletion.decode(c, kind: .completionKind, items: .openItems)
+        completionKind = completion.kind
+        openItems = completion.openItems
         recurringSchedule = try? c.decodeIfPresent(JSONValue.self, forKey: .recurringSchedule)
         hasPlan = (try? c.decode(Bool.self, forKey: .hasPlan)) ?? false
         planStatus = try? c.decodeIfPresent(String.self, forKey: .planStatus)
@@ -194,7 +204,14 @@ struct TaskV3: Codable, Identifiable, Equatable {
             .contains(status.lowercased())
     }
 
+    /// Completed with requirements still open (`completion_kind: partial`).
+    var isPartlyDone: Bool { TaskCompletion.isPartlyDone(status: status, kind: completionKind) }
+
+    /// "Open: <first open item>" for a partly-done task, else nil.
+    var openItemLine: String? { isPartlyDone ? TaskCompletion.openLine(openItems) : nil }
+
     var statusLabel: String {
+        if isPartlyDone { return TaskCompletion.partlyDoneLabel }
         switch status {
         case "pending": return "Pending"
         case "planning": return "Planning"
@@ -211,6 +228,7 @@ struct TaskV3: Codable, Identifiable, Equatable {
 
     var statusColor: Color {
         let theme = ThemeManager.shared
+        if isPartlyDone { return theme.warningColor }
         switch status {
         case "running", "planning": return theme.infoColor
         case "completed": return theme.successColor

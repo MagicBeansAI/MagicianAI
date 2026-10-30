@@ -16,6 +16,14 @@ mod config {
     use crate::magician_v2;
 }
 
+// turn_engine reads the chat harness snapshot through `super::chat_turn`.
+mod chat_turn {
+    pub use magician::magician_v2::execution::plane::chat_turn::*;
+}
+
+// Only part of this production file is exercised here; the rest is used by
+// the runtime, not dead.
+#[allow(dead_code)]
 #[path = "../../magician/src/magician_v2/execution/plane/turn_engine.rs"]
 mod turn_engine;
 

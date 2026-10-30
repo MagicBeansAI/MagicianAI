@@ -6,7 +6,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -3074,11 +3074,16 @@ pub(super) async fn refresh_owner_profile_for_decision(
             let snapshot = {
                 let resolver = Arc::clone(resolver);
                 let (principal, workspace) = (principal.to_string(), workspace.to_string());
-                run_on_agentic_scheduler_root(ctx, executors, "scope capability refresh", move || async move {
-                    resolver
-                        .capability_snapshot_for_scope(&principal, &workspace)
-                        .map_err(|error| anyhow!("scope_capability_refresh_failed:{error}"))
-                })
+                run_on_agentic_scheduler_root(
+                    ctx,
+                    executors,
+                    "scope capability refresh",
+                    move || async move {
+                        resolver
+                            .capability_snapshot_for_scope(&principal, &workspace)
+                            .map_err(|error| anyhow!("scope_capability_refresh_failed:{error}"))
+                    },
+                )
                 .await?
             };
             executors.set_scope_capability_registry(Some(Arc::clone(&snapshot.registry)));
@@ -3246,7 +3251,11 @@ impl crate::magician_v2::context_retrieval::ContextContributionSource for OwnerM
                 evidence_refs: candidate.source_ids.clone(),
                 candidate_count: 1,
                 retrieval_backend: "task_memory".to_string(),
-                completeness: if candidate.projection_used {
+                // Only the whole source is Complete: stages cut one revision
+                // to different lengths or passages.
+                completeness: if candidate.projection_used
+                    || candidate.text.trim() != candidate.source_text.trim()
+                {
                     ContextEvidenceCompleteness::Excerpt
                 } else {
                     ContextEvidenceCompleteness::Complete
@@ -3797,6 +3806,18 @@ pub(super) async fn hydrate_prompt_context_after_owner_transition_with_cancellat
             ctx.task_prompt_context_hydration_count.saturating_add(1);
         return;
     };
+    let mut context_progress =
+        crate::magician_v2::context_retrieval::progress::ContextPreparationProgress::start(
+            executors.event_broadcaster.clone(),
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            ctx.agent_id.as_deref().unwrap_or_default(),
+            crate::magician_v2::context_retrieval::progress::ContextProgressCorrelation {
+                task_id: ctx.task_id.clone(),
+                execution_id: ctx.execution_id.clone(),
+                ..Default::default()
+            },
+        );
     let fast_stage = crate::magician_v2::context_retrieval::ContextStageDescriptor::new(
         crate::magician_v2::context_retrieval::ContextStageKind::FastMemory,
         0,
@@ -3865,12 +3886,15 @@ pub(super) async fn hydrate_prompt_context_after_owner_transition_with_cancellat
             return;
         },
     };
-    crate::magician_v2::context_retrieval::ContextRetrievalObservation::from_outcome(
+    let context_observation = crate::magician_v2::context_retrieval::ContextRetrievalObservation::from_outcome(
         crate::magician_v2::context_retrieval::ContextRetrievalCheckpoint::AutonomousTaskCheckpoint,
         context_budget_ms,
         &staged.canonical,
-    )
-    .emit();
+    );
+    context_observation.emit();
+    if let Some(progress) = context_progress.as_mut() {
+        progress.finish(&(&context_observation).into());
+    }
     tracing::info!(
         agent_id = ?ctx.agent_id,
         task_id = ?ctx.task_id,
@@ -5415,6 +5439,8 @@ pub struct ActionExecutors {
     /// Unified surface-runtime rollout and the same bounded L2/L3 stores used
     /// by Chat and realtime voice. Off/disabled preserves the legacy task path.
     pub agent_surface_runtime_config: AgentSurfaceRuntimeConfig,
+    /// The `agentic:` config section, copied into each execution context.
+    pub agentic_settings: crate::config::AgenticSettings,
     pub surface_plan_cache: crate::magician_v2::execution::flat_loop::SurfacePlanCache,
     pub surface_working_sets: crate::magician_v2::execution::flat_loop::SurfaceWorkingSetStore,
 
@@ -5722,6 +5748,7 @@ impl ActionExecutors {
             quality_tools: None,
             capability_scope_resolver: None,
             agent_surface_runtime_config: AgentSurfaceRuntimeConfig::default(),
+            agentic_settings: crate::config::AgenticSettings::default(),
             surface_plan_cache: crate::magician_v2::execution::flat_loop::SurfacePlanCache::new(
                 512,
             ),
@@ -6000,6 +6027,12 @@ impl ActionExecutors {
         self.agent_surface_runtime_config = config;
         self.surface_plan_cache = plan_cache;
         self.surface_working_sets = working_sets;
+        self
+    }
+
+    /// Install the `agentic:` config section (keep-tail window).
+    pub fn with_agentic_settings(mut self, settings: crate::config::AgenticSettings) -> Self {
+        self.agentic_settings = settings;
         self
     }
 
@@ -6745,7 +6778,7 @@ fn truncate_artifact_preview_bytes(data: &[u8], max_chars: usize) -> String {
     }
 }
 
-fn try_build_delegated_tool_output_file_entry(artifact: &Artifact) -> Option<String> {
+fn tool_output_file_reference(artifact: &Artifact) -> Option<Value> {
     if artifact.content_type != "application/json" {
         return None;
     }
@@ -6796,10 +6829,46 @@ fn try_build_delegated_tool_output_file_entry(artifact: &Artifact) -> Option<Str
         "execution_download_url": header.execution_download_url,
     });
 
+    Some(payload)
+}
+
+fn try_build_delegated_tool_output_file_entry(artifact: &Artifact) -> Option<String> {
+    let payload = tool_output_file_reference(artifact)?;
     Some(format!(
         "{DELEGATED_TOOL_OUTPUT_FILE_PREFIX}{}",
         serde_json::to_string(&payload).ok()?
     ))
+}
+
+/// The delegation-result entries written here are what a parent's next
+/// `input_artifact_ids` may quote; the dispatcher resolves them by the name
+/// they carry (`FilesystemExecutionArtifactIndexStore::resolve_input_artifact_references`).
+#[cfg(test)]
+mod delegation_summary_reference_tests {
+    use super::*;
+
+    #[test]
+    fn every_summary_entry_form_names_its_artifact_for_the_dispatcher() {
+        use crate::magician_v2::artifact_v2::execution_artifacts::summary_artifact_reference_name;
+        let inline =
+            delegation_summary_artifact_entry(&Artifact::text("notes.md", "body".to_owned()));
+        assert_eq!(
+            summary_artifact_reference_name(&inline).as_deref(),
+            Some("notes.md")
+        );
+        let mut materialized = Artifact::text("report.md", "body".to_owned());
+        materialized.materialized_path = Some("/tmp/outputs/report.md".to_owned());
+        let file = delegation_summary_artifact_entry(&materialized);
+        assert_eq!(
+            summary_artifact_reference_name(&file).as_deref(),
+            Some("report.md")
+        );
+        let partial = format!("partial:{}", "partial_findings.md");
+        assert_eq!(
+            summary_artifact_reference_name(&partial).as_deref(),
+            Some("partial_findings.md")
+        );
+    }
 }
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
@@ -6862,6 +6931,50 @@ pub(super) async fn merge_prior_delegation_result_artifacts(
     }
 
     merge_artifact_names(artifacts, &summary.artifacts);
+}
+
+/// Whether the refinement wrapper will commission a pass after this
+/// completion — the `refinement_pending` flag on `AgenticExecutionCompleted`.
+///
+/// It must be exactly the refinement decision: the persistent journal drops a
+/// completion marked pending on the promise that the refinement's completion
+/// follows. So it requires what the decision requires — this completion is on
+/// the segment the wrapper armed (`refinement_gate_segment`), it is a success,
+/// and every exit `refinement_gaps_if_warranted` takes is taken here too. The
+/// summary names artifacts by reference (`inline:`, `tool_output_file:`, …);
+/// they are resolved to names first, and the summary lists at least every
+/// artifact the outcome carries, so a gap it reports is a gap the decision
+/// sees.
+fn refinement_will_follow_completion(
+    ctx: &AgenticContext,
+    summary: &AgenticExecutionSummaryRecord,
+) -> bool {
+    use crate::magician_v2::artifact_v2::execution_artifacts::summary_artifact_reference_name;
+
+    if !matches!(
+        summary.outcome.as_str(),
+        "goal_achieved" | "goal_achieved_partial" | "success"
+    ) || ctx.refinement_gate_segment.as_deref()
+        != Some(loop_state_address(ctx, &summary.execution_id).as_str())
+        || ctx.predecided_call.is_some()
+        || summary_reached_work_budget(summary)
+        || ctx.refinement_pass_index >= MAX_REFINEMENT_PASSES
+        || ctx.app_disclosure_guard.is_some()
+        || ctx.initial_url.is_some()
+        || ctx.coding_coordinator_run
+        || ctx.task_id.as_deref().filter(|s| !s.is_empty()).is_none()
+        || ctx.expected_artifact_declarations.is_empty()
+        || read_only_run_delivered_its_output(ctx, summary.artifacts.len())
+    {
+        return false;
+    }
+    let names = summary
+        .artifacts
+        .iter()
+        .map(|entry| summary_artifact_reference_name(entry).unwrap_or_else(|| entry.clone()))
+        .collect::<Vec<_>>();
+    !missing_declaration_names_by_artifact_name(&ctx.expected_artifact_declarations, &names)
+        .is_empty()
 }
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
@@ -6940,20 +7053,7 @@ pub(super) async fn emit_and_persist_agentic_completion(
         // coding-coordinator, disclosure-guard and no-missing-artifact exits),
         // a partial with nothing to refine had its ONLY terminal dropped and
         // the execution never finished in the log.
-        let refinement_pending = refinement_pass_index == 0
-            && summary.outcome == "goal_achieved_partial"
-            && !summary_reached_work_budget(&summary)
-            && refinement_pass_index < MAX_REFINEMENT_PASSES
-            && ctx.app_disclosure_guard.is_none()
-            && ctx.initial_url.is_none()
-            && !ctx.coding_coordinator_run
-            && ctx.task_id.as_deref().filter(|s| !s.is_empty()).is_some()
-            && !ctx.expected_artifact_declarations.is_empty()
-            && !missing_declaration_names_by_artifact_name(
-                &ctx.expected_artifact_declarations,
-                &summary.artifacts,
-            )
-            .is_empty();
+        let refinement_pending = refinement_will_follow_completion(ctx, &summary);
         journal_and_emit_at(
             ctx,
             executors,
@@ -7336,6 +7436,7 @@ fn build_paused_execution_summary(
             action_summary,
             reason,
             iterations_used,
+            pause_state,
             ..
         } => Some(build_agentic_execution_summary(
             ctx,
@@ -7344,7 +7445,17 @@ fn build_paused_execution_summary(
             *iterations_used,
             Vec::new(),
             duration_ms,
-            format!("Paused for confirmation: {}. {}", action_summary, reason),
+            // A tool with an approval preview is summarized by it: the raw
+            // call can be a whole document on one line.
+            match pause_state.approval_preview.as_deref() {
+                Some(preview) => format!(
+                    "Paused for confirmation: {}",
+                    crate::magician_v2::execution::approval_preview::approval_preview_summary_line(
+                        preview
+                    )
+                ),
+                None => format!("Paused for confirmation: {}. {}", action_summary, reason),
+            },
             None,
             None,
             None,
@@ -7442,11 +7553,18 @@ fn build_paused_execution_summary(
             *iterations_completed,
             Vec::new(),
             duration_ms,
-            format!(
-                "Paused after reaching the {} budget limit ({} iterations completed)",
-                budget_dimension_label(dimension),
-                iterations_completed
-            ),
+            if matches!(dimension, BudgetDimension::ProviderFailure { .. }) {
+                format!(
+                    "Paused because the model provider kept failing ({} iterations completed); waiting for the owner to retry or cancel",
+                    iterations_completed
+                )
+            } else {
+                format!(
+                    "Paused after reaching the {} budget limit ({} iterations completed)",
+                    budget_dimension_label(dimension),
+                    iterations_completed
+                )
+            },
             None,
             None,
             None,
@@ -7700,6 +7818,8 @@ struct ToolOutputFileArtifactContent {
     content_type: String,
     size_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    content_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     execution_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     task_id: Option<String>,
@@ -7748,6 +7868,11 @@ struct ToolCallEvidenceArtifactContent {
     success: bool,
     latency_ms: u64,
     produced_at: chrono::DateTime<chrono::Utc>,
+    /// What the call did (kind, target, bytes; a result head for shell runs
+    /// and failures), so the run-effects ledger reads every segment's calls
+    /// from the index without opening each evidence file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect: Option<crate::magician_v2::artifact_v2::run_effects::RunEffect>,
 }
 
 /// Fire-and-forget registration of durable artifact after a successful file
@@ -7979,16 +8104,210 @@ pub(super) fn refresh_task_filesystem_notice(ctx: &AgenticContext, executors: &A
         return;
     }
     if let Ok(mut knowledge) = ctx.scratch.supplemental_environment_knowledge.lock() {
-        const MARKER: &str = "## TASK FILE WORKSPACE";
-        if !knowledge.contains(MARKER) {
-            knowledge.push_str(&format!(
-                "\n\n{MARKER}\nTask directory: {}\nDefault shell working directory: {}\n\
-                 Use this task hierarchy for downloads and generated files. Its subdirectories are allowed shell working directories. \
-                 To publish generated files, return JSON outputs/exports entries containing path and content_type (the file's MIME type). Legacy output_path/output_file declarations are also accepted. \
-                 Return absolute paths when using an explicit working directory.\n",
-                root.display(), workdir.display(),
+        if !knowledge.contains(TASK_FILE_WORKSPACE_MARKER) {
+            knowledge.push_str(&task_filesystem_notice(
+                &root,
+                &workdir,
+                &effective_file_sandbox(executors),
             ));
         }
+    }
+}
+
+const TASK_FILE_WORKSPACE_MARKER: &str = "## TASK FILE WORKSPACE";
+
+/// This run's file sandbox as the file executors apply it: the configured
+/// policy plus the roots the owner approved this session.
+pub(super) fn effective_file_sandbox(executors: &ActionExecutors) -> FileSandboxConfig {
+    let mut sandbox = executors.file_sandbox.clone();
+    sandbox
+        .extra_writable_roots
+        .extend(executors.grants.sandbox_roots());
+    sandbox
+}
+
+/// The task directory's subdirectories split into those every file-writing
+/// tool may write (the working directory first) and the rest, judged by each
+/// tool's own checks for a call dispatched in this task. Never a fixed list:
+/// the note and refusal hints built from it follow any change to the sandbox,
+/// its roots, the staged writers' rule or the task layout. A task-root
+/// `outputs/` the file executor admits is still refused by `write_file`, and
+/// naming it sent agents to a folder their tool refused.
+fn task_dirs_by_write_access(
+    root: &Path,
+    workdir: &Path,
+    sandbox: &FileSandboxConfig,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        // Hidden folders are the runtime's own bookkeeping, never a place to
+        // send an agent.
+        .filter(|path| {
+            path.is_dir()
+                && !path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        })
+        .collect();
+    dirs.sort();
+    dirs.sort_by_key(|dir| dir.as_path() != workdir);
+    dirs.into_iter().partition(|dir| {
+        crate::magician_v2::execution::native_executors::every_file_tool_may_write(
+            root,
+            &dir.join(".magician-write-check"),
+            sandbox,
+        )
+    })
+}
+
+fn task_filesystem_notice(root: &Path, workdir: &Path, sandbox: &FileSandboxConfig) -> String {
+    let (writable, refused) = task_dirs_by_write_access(root, workdir, sandbox);
+    let writable_line = if writable.is_empty() {
+        format!(
+            "No folder in this task directory is writable by your file tools; they may write only within{}.",
+            crate::magician_v2::execution::native_executors::file_sandbox_roots_hint(sandbox)
+        )
+    } else {
+        format!(
+            "Inside this task directory your file tools may write only in: {}.",
+            writable
+                .iter()
+                .map(|dir| dir.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let refused_line = if refused.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Magician writes the others itself, and your file tools are refused there: {}.",
+            refused
+                .iter()
+                .filter_map(|dir| dir.file_name())
+                .map(|name| format!("{}/", name.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    // Every run in this task may write its workdir (`task_file_sandbox` adds
+    // it to any sandbox); a delegate's sandbox may be narrower than this
+    // run's, so the workdir is the folder to hand it.
+    let workdir_line = if writable.first().is_some_and(|dir| dir.as_path() == workdir) {
+        format!(
+            "Put downloads and generated files in {}: every file tool in this task, a delegate's \
+             included, may write there, while a delegate's sandbox may be narrower than yours \
+             elsewhere. ",
+            workdir.display()
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "\n\n{TASK_FILE_WORKSPACE_MARKER}\nTask directory: {}\nDefault shell working directory: {}\n\
+         {workdir_line}{writable_line}{refused_line} Governed CLI and MCP file arguments also resolve \
+         relative paths against this task's workdir; use an explicit absolute path for an existing \
+         scope-workdirs file. Never send a file tool or a delegate to a folder \
+         they are refused. To publish a generated file, return JSON outputs/exports entries containing \
+         its path and content_type (the file's MIME type); writing into a folder does not publish it. \
+         Legacy output_path/output_file declarations are also accepted. Return absolute paths when \
+         using an explicit working directory.\n",
+        root.display(),
+        workdir.display(),
+    )
+}
+
+/// For a file-tool refusal of a path inside this run's task directory: where
+/// the task lets the agent write instead, from the same check as the
+/// workspace note, so the agent recovers in one step.
+fn task_write_refusal_hint(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    paths: &[String],
+) -> Option<String> {
+    let root = task_filesystem_root(ctx, executors)?;
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+    if !paths
+        .iter()
+        .map(Path::new)
+        .any(|path| path.starts_with(&root) || path.starts_with(&canonical))
+    {
+        return None;
+    }
+    let (writable, _) = task_dirs_by_write_access(
+        &root,
+        &root.join("workdir"),
+        &effective_file_sandbox(executors),
+    );
+    let dir = writable.first()?;
+    Some(format!(
+        " This task's file tools may write in {}: save the file there and publish it by returning \
+         it in your outputs (path and content_type).",
+        dir.display()
+    ))
+}
+
+#[cfg(test)]
+mod task_workspace_notice_tests {
+    use super::*;
+
+    /// The note lists what every file-writing tool itself would admit, so it
+    /// follows the sandbox, the staged writers' rule and the task layout; it is
+    /// never a fixed list.
+    #[test]
+    fn the_task_workspace_note_follows_the_file_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("task_1");
+        for sub in ["workdir", "outputs", "state", ".journal"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+        let workdir = root.join("workdir");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let mut sandbox = FileSandboxConfig {
+            mode: FileSandboxMode::WorkspaceWrite,
+            allowed_roots: vec![elsewhere.display().to_string()],
+            ..FileSandboxConfig::default()
+        };
+
+        // A dispatched call may write the task's workdir and nothing else in it.
+        let (writable, refused) = task_dirs_by_write_access(&root, &workdir, &sandbox);
+        assert_eq!(writable, vec![workdir.clone()]);
+        assert_eq!(refused, vec![root.join("outputs"), root.join("state")]);
+        let note = task_filesystem_notice(&root, &workdir, &sandbox);
+        assert!(
+            note.contains(&format!("may write only in: {}.", workdir.display())),
+            "{note}"
+        );
+        assert!(
+            note.contains(&format!(
+                "Put downloads and generated files in {}:",
+                workdir.display()
+            )),
+            "{note}"
+        );
+        // Hidden bookkeeping folders are never listed.
+        assert!(note.contains("refused there: outputs/, state/."), "{note}");
+        assert!(!note.contains(".journal"), "{note}");
+
+        // A sandbox that admits `outputs/` is not enough: `write_file` still
+        // takes a task path only in the workdir, so the note never offers it.
+        sandbox
+            .extra_writable_roots
+            .push(root.join("outputs").display().to_string());
+        let (writable, _) = task_dirs_by_write_access(&root, &workdir, &sandbox);
+        assert_eq!(writable, vec![workdir.clone()]);
+
+        // A read-only sandbox admits no folder at all.
+        sandbox.mode = FileSandboxMode::ReadOnly;
+        let note = task_filesystem_notice(&root, &workdir, &sandbox);
+        assert!(
+            note.contains("No folder in this task directory is writable"),
+            "{note}"
+        );
     }
 }
 
@@ -9165,6 +9484,20 @@ pub struct PendingPauseInfo {
     /// the user-facing projection drops it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alignment_ask: Option<crate::magician_v2::preference_alignment::ask::AlignmentAsk>,
+    /// When a review-before-sending pause settles unanswered as discarded
+    /// (`OutwardReview::deadline_at_ms`), so the sweep finds it after a
+    /// restart without taking its body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outward_review_deadline_ms: Option<i64>,
+    /// The structured approval card of a confirmation pause
+    /// (`AgenticPauseState::approval_preview`): title, the agent's stated
+    /// reason, a capped diff, evidence and warnings. Absent for a protected
+    /// app workflow, a preference alignment hold, a tool without a preview
+    /// builder, and records written before it existed — clients then show
+    /// `confirmation_action_summary` as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_preview:
+        Option<Box<crate::magician_v2::execution::approval_preview::ApprovalPreview>>,
 }
 
 impl std::fmt::Debug for PendingPauseInfo {
@@ -9226,6 +9559,8 @@ impl PendingPauseInfo {
             pause_kind: None,
             alignment_hold: false,
             alignment_ask: None,
+            outward_review_deadline_ms: None,
+            confirmation_preview: None,
         }
     }
 
@@ -16692,6 +17027,17 @@ impl FullPauseStore {
             pause_kind: pause_data.pause_kind.clone(),
             alignment_hold: pause_data.pause_state.alignment_ask.is_some(),
             alignment_ask: pause_data.pause_state.alignment_ask.clone(),
+            outward_review_deadline_ms: pause_data
+                .pause_state
+                .outward_review
+                .as_ref()
+                .map(|review| review.deadline_at_ms),
+            confirmation_preview: if protected_app || pause_data.pause_state.alignment_ask.is_some()
+            {
+                None
+            } else {
+                pause_data.pause_state.approval_preview.clone()
+            },
         }
     }
 
@@ -16878,6 +17224,17 @@ impl FullPauseStore {
             pause_kind: pause_data.pause_kind.clone(),
             alignment_hold: pause_data.pause_state.alignment_ask.is_some(),
             alignment_ask: pause_data.pause_state.alignment_ask.clone(),
+            outward_review_deadline_ms: pause_data
+                .pause_state
+                .outward_review
+                .as_ref()
+                .map(|review| review.deadline_at_ms),
+            confirmation_preview: if protected_app || pause_data.pause_state.alignment_ask.is_some()
+            {
+                None
+            } else {
+                pause_data.pause_state.approval_preview.clone()
+            },
         }
     }
 
@@ -17371,6 +17728,13 @@ impl FullPauseStore {
         self.data.contains_key(key)
     }
 
+    /// A copy of a live pause, consuming nothing: for checks an answer must
+    /// pass before it has side effects (a diff approval proves the pause's
+    /// resume authority before the change is applied).
+    pub fn peek(&self, key: &str) -> Option<FullPauseData> {
+        self.data.get(key).map(|entry| entry.value().clone())
+    }
+
     /// The preference alignment ask of a live pause, with the pause's owner
     /// scope and ask identity, for the owner-private read (P6). Read-only:
     /// it claims and consumes no resume authority.
@@ -17451,6 +17815,62 @@ impl FullPauseStore {
             }
         }
         holds.into_iter().map(|(_, snapshot)| snapshot).collect()
+    }
+
+    /// Review-before-sending pauses past their deadline, live and persisted:
+    /// `(execution_id, hitl_correlation_id, principal, workspace)`. The sweep
+    /// answers each as discarded (`agents::outward_review`).
+    pub fn expired_outward_reviews(
+        &self,
+        now_ms: i64,
+    ) -> Vec<(String, String, Option<String>, Option<String>)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut expired = Vec::new();
+        let live: Vec<String> = self
+            .data
+            .iter()
+            .filter(|entry| {
+                entry
+                    .value()
+                    .pause_state
+                    .outward_review
+                    .as_ref()
+                    .is_some_and(|review| review.deadline_at_ms < now_ms)
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in live {
+            let Some(entry) = self.data.get(&key) else {
+                continue;
+            };
+            let state = &entry.value().pause_state;
+            if let Some(execution_id) = state.execution_id.clone().filter(|id| !id.is_empty()) {
+                seen.insert(key.clone());
+                expired.push((
+                    execution_id,
+                    state.hitl_correlation_id(),
+                    state.principal.clone(),
+                    state.workspace.clone(),
+                ));
+            }
+        }
+        for pending in self.persisted_pending_snapshot() {
+            if seen.contains(&pending.key)
+                || !pending
+                    .outward_review_deadline_ms
+                    .is_some_and(|deadline| deadline < now_ms)
+            {
+                continue;
+            }
+            seen.insert(pending.key.clone());
+            expired.push((
+                pending.execution_id.clone(),
+                pending.hitl_correlation_id.clone(),
+                pending.principal.clone(),
+                pending.workspace.clone(),
+            ));
+        }
+        expired
     }
 
     /// Get the number of stored pause entries.
@@ -17824,6 +18244,18 @@ impl FullPauseStore {
                     pause_kind: pause_data.pause_kind.clone(),
                     alignment_hold: pause_data.pause_state.alignment_ask.is_some(),
                     alignment_ask: pause_data.pause_state.alignment_ask.clone(),
+                    outward_review_deadline_ms: pause_data
+                        .pause_state
+                        .outward_review
+                        .as_ref()
+                        .map(|review| review.deadline_at_ms),
+                    confirmation_preview: if protected_app
+                        || pause_data.pause_state.alignment_ask.is_some()
+                    {
+                        None
+                    } else {
+                        pause_data.pause_state.approval_preview.clone()
+                    },
                 },
             );
         }
@@ -21723,6 +22155,64 @@ fn emit_hitl_requested_for_diff_approval(
     );
 }
 
+/// The readable prompt for a confirmation that carries an approval preview:
+/// what the HITL prompt (notifications, clients without preview rendering)
+/// shows instead of the raw call. Plain text; agent-authored parts are
+/// labelled as such.
+fn approval_preview_prompt_text(
+    preview: &crate::magician_v2::execution::approval_preview::ApprovalPreview,
+) -> String {
+    let mut out =
+        crate::magician_v2::execution::approval_preview::approval_preview_summary_line(preview);
+    for warning in &preview.warnings {
+        out.push_str("\n\nWarning: ");
+        out.push_str(&warning.message);
+    }
+    if let Some(why) = preview.why.as_deref() {
+        out.push_str("\n\n");
+        out.push_str(preview.why_label.as_deref().unwrap_or("Why"));
+        out.push_str(": ");
+        out.push_str(why);
+    }
+    out
+}
+
+/// The structured approval card for a gated action, when its tool registered a
+/// preview builder. Never for a protected app workflow, whose card names
+/// nothing. Read-only and deterministic; a builder that fails yields `None`
+/// and the card keeps the raw call.
+pub(super) fn approval_preview_for_pause(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    action: &ExecutableAction,
+) -> Option<crate::magician_v2::execution::approval_preview::ApprovalPreview> {
+    if ctx.app_disclosure_guard.is_some() {
+        return None;
+    }
+    let agent_id = ctx
+        .active_owner_agent_id
+        .as_deref()
+        .or(ctx.agent_id.as_deref());
+    let agent_display_name = ctx
+        .owner_definition
+        .as_deref()
+        .filter(|definition| {
+            definition.agent_id.is_empty() || Some(definition.agent_id.as_str()) == agent_id
+        })
+        .map(|definition| definition.name.as_str());
+    let preview_ctx = crate::magician_v2::execution::approval_preview::ApprovalPreviewContext {
+        artifact_workspace: &executors.artifact_v2_workspace,
+        principal: ctx.principal.as_deref(),
+        workspace: ctx.workspace.as_deref(),
+        agent_id,
+        agent_display_name,
+    };
+    crate::magician_v2::execution::approval_preview::approval_preview_for_action(
+        &preview_ctx,
+        action,
+    )
+}
+
 /// Phase H2 — emit canonical `HitlRequested` for the agentic confirmation
 /// pause kind (legacy `AgenticWaitingForConfirmation`). Confirmations
 /// carry no input_schema beyond the action summary + reason; both are
@@ -21742,13 +22232,53 @@ fn emit_hitl_requested_for_agentic_confirmation(
     // generic prompt and the ask's public projection only. The owner-private
     // reason stays in the pause record (plan §10.1, P5.6).
     alignment_ask: Option<&crate::magician_v2::preference_alignment::ask::AlignmentAsk>,
+    // The gated tool's structured approval card, when it registered one
+    // (`execution::approval_preview`). Published as
+    // `input_schema.approval_preview`; the prompt becomes its readable text
+    // and the raw call stays in `input_schema.action_summary`/`reason`.
+    approval_preview: Option<&crate::magician_v2::execution::approval_preview::ApprovalPreview>,
+) {
+    emit_hitl_requested_for_agentic_confirmation_with(
+        ctx,
+        executors,
+        at,
+        correlation_id,
+        action_summary,
+        reason,
+        action_type,
+        alignment_ask,
+        approval_preview,
+        None,
+    );
+}
+
+/// [`emit_hitl_requested_for_agentic_confirmation`] for a pause that may hold
+/// a captured send for review: the review adds `escalation_trigger`, the three
+/// `options` and its `outward_review` record to `input_schema`.
+#[allow(clippy::too_many_arguments)]
+fn emit_hitl_requested_for_agentic_confirmation_with(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    at: PhaseAddress,
+    correlation_id: &str,
+    action_summary: &str,
+    reason: &str,
+    action_type: &str,
+    alignment_ask: Option<&crate::magician_v2::preference_alignment::ask::AlignmentAsk>,
+    approval_preview: Option<&crate::magician_v2::execution::approval_preview::ApprovalPreview>,
+    outward_review: Option<&crate::magician_v2::agents::outward_review::OutwardReview>,
 ) {
     let (principal, workspace) = transport_scope(ctx);
     let protected_app = ctx.app_disclosure_guard.is_some();
+    // Neither a protected app workflow nor a preference alignment hold
+    // carries a preview onto this shared event.
+    let approval_preview = approval_preview.filter(|_| !protected_app && alignment_ask.is_none());
     let prompt = if protected_app {
         "Protected app workflow requires confirmation".to_owned()
     } else if alignment_ask.is_some() {
         crate::magician_v2::preference_alignment::ask::GENERIC_ASK_TEXT.to_owned()
+    } else if let Some(preview) = approval_preview {
+        approval_preview_prompt_text(preview)
     } else {
         format!("{}\n\n{}", action_summary, reason)
     };
@@ -21762,11 +22292,22 @@ fn emit_hitl_requested_for_agentic_confirmation(
         // attention pipeline alerts the owner with the expiry.
         ask.hitl_input_schema(action_type)
     } else {
-        serde_json::json!({
+        let mut schema = serde_json::json!({
             "action_type": action_type,
             "action_summary": action_summary,
             "reason": reason,
-        })
+        });
+        if let (Some(preview), Some(record)) = (approval_preview, schema.as_object_mut()) {
+            if let Ok(value) = serde_json::to_value(preview) {
+                record.insert("approval_preview".to_string(), value);
+            }
+        }
+        if let (Some(review), Some(record)) = (outward_review, schema.as_object_mut()) {
+            if let Some(fields) = review.hitl_fields().as_object() {
+                record.extend(fields.clone());
+            }
+        }
+        schema
     };
     journal_and_emit_at(
         ctx,
@@ -22941,6 +23482,19 @@ async fn execute_with_durable_continuations(
     .map_err(|error| anyhow!("durable continuation task failed to join: {error}"))?
 }
 
+fn parent_iterations_after_nested_work(
+    remaining: usize,
+    parent_offset: usize,
+    child_total: usize,
+    additional: u64,
+) -> (usize, usize) {
+    let total = child_total.max(parent_offset);
+    let remaining = remaining
+        .saturating_add(usize::try_from(additional).unwrap_or(usize::MAX))
+        .saturating_sub(total.saturating_sub(parent_offset));
+    (remaining, total)
+}
+
 async fn execute_with_durable_continuations_inner(
     mut ctx: AgenticContext,
     initial_state: EnvironmentState,
@@ -23014,13 +23568,32 @@ async fn execute_with_durable_continuations_inner(
             frame.goal, frame.kind, child_result, frame.action_history_summary
         );
         ctx.success_criteria = frame.success_criteria;
-        ctx.max_iterations = frame.remaining_iterations.max(1);
+        let grant_total = super::run_budget::grant_totals_for_context(&ctx).add_iterations;
+        let parent_applied = frame
+            .loop_protective_state
+            .as_ref()
+            .and_then(|state| state.iteration_grants_applied);
+        let (parent_remaining, parent_offset) = match parent_applied {
+            Some(applied) => parent_iterations_after_nested_work(
+                frame.remaining_iterations,
+                frame.iteration_offset,
+                ctx.iteration_offset
+                    .saturating_add(outcome.iterations_used()),
+                grant_total.saturating_sub(applied),
+            ),
+            // Legacy frames did not record cumulative grant accounting.
+            None => (frame.remaining_iterations.max(1), frame.iteration_offset),
+        };
+        ctx.max_iterations = parent_remaining;
         ctx.max_repeated_actions = frame.max_repeated_actions;
         // The child pause carried the child's protection bundle. Resume the
         // parent with the bundle captured when the frame was pushed, rather
         // than defaulting its loop/cost/retry history on the next segment.
         ctx.resume_loop_protective = frame.loop_protective_state;
-        ctx.iteration_offset = frame.iteration_offset;
+        ctx.resume_loop_protective
+            .get_or_insert_with(Default::default)
+            .iteration_grants_applied = Some(grant_total);
+        ctx.iteration_offset = parent_offset;
         ctx.depth = frame.depth;
         ctx.work_budget_secs = frame.work_budget_secs;
         ctx.work_budget_consumed_ms = restored_parent_budget_consumed_ms;
@@ -23061,8 +23634,18 @@ fn apply_resume_budget_grants(
     ctx: &mut AgenticContext,
     pause_state: &AgenticPauseState,
     owner_budget_continue: bool,
-) {
+    owner_iteration_continue: bool,
+) -> Result<()> {
+    if owner_iteration_continue {
+        super::run_budget::record_iteration_continuation_grant(ctx, pause_state)
+            .map_err(anyhow::Error::msg)?;
+    }
+    // Retry on a provider-failure pause is not a budget continuation: it
+    // re-runs the failed call and must not mint a fresh time or cost allowance.
+    let owner_budget_continue =
+        owner_budget_continue && !super::run_budget::is_provider_failure_pause(pause_state);
     super::run_budget::apply_budget_grants_on_resume(ctx, pause_state, owner_budget_continue);
+    Ok(())
 }
 
 fn take_durable_segment_context(ctx: &mut AgenticContext) -> AgenticContext {
@@ -23902,7 +24485,7 @@ pub(super) fn handle_repeated_failed_action_rejection(
         iteration,
         timestamp: chrono::Utc::now(),
         state_before: EnvironmentState::Uninitialized,
-        action: browser_observation_history_action(),
+        action: rejected_decision_history_action(),
         result: ActionResultRecord {
             success: false,
             output: Some(rejection_reason.to_string()),
@@ -23945,7 +24528,7 @@ pub(super) fn handle_terminal_evidence_rejection(
         iteration,
         timestamp: chrono::Utc::now(),
         state_before: EnvironmentState::Uninitialized,
-        action: browser_observation_history_action(),
+        action: rejected_decision_history_action(),
         result: ActionResultRecord {
             success: false,
             output: Some(rejection_reason.to_string()),
@@ -24213,7 +24796,7 @@ pub(super) fn terminal_grounding_route(
     let absent = matches!(verdict.unsupported_kind, Some(UnsupportedKind::Absent));
     if absent && evidence.coverage_is_incomplete() {
         return TerminalGroundingRoute::Caveat(format!(
-            "Unverified against opened-page evidence: {} ({} retrieval(s) produced content the \
+            "{OPENED_PAGE_COVERAGE_CAVEAT} {} ({} retrieval(s) produced content the \
              verifier could not see; coverage: {})",
             verdict.reason.trim(),
             evidence.non_admissible_retrievals,
@@ -24248,6 +24831,16 @@ fn claim_eligible_opened_evidence_values<'a>(
     fn visit<'a>(value: &'a serde_json::Value, found: &mut Vec<&'a serde_json::Value>) {
         match value {
             serde_json::Value::Object(object) => {
+                // The authoritative lane can be nested under a tool/projection
+                // wrapper. Prefer it even when empty; model-authored eval data
+                // must not supply its own opened-page attestation.
+                if let Some(evidence) = object.get("evidence").and_then(serde_json::Value::as_array)
+                {
+                    for item in evidence {
+                        visit(item, found);
+                    }
+                    return;
+                }
                 let claim_eligible = object
                     .get("claim_eligible")
                     .and_then(serde_json::Value::as_bool)
@@ -24311,7 +24904,21 @@ fn terminal_grounding_source_key(opened: &serde_json::Value, serialized: &str) -
             .map(str::trim)
             .filter(|source| !source.is_empty())
         {
-            return format!("url:{}", normalize_terminal_source_url(source));
+            let mut key = format!("url:{}", normalize_terminal_source_url(source));
+            // Chunks of one source are complementary evidence, not successive
+            // versions of the whole page. Deduping on URL alone erased all
+            // but the last working-set chunk before the terminal review.
+            if let (Some(index), Some(hash)) = (
+                opened
+                    .get("chunk_index")
+                    .and_then(serde_json::Value::as_u64),
+                opened
+                    .get("content_hash")
+                    .and_then(serde_json::Value::as_str),
+            ) {
+                key.push_str(&format!(":chunk:{index}:{hash}"));
+            }
+            return key;
         }
     }
 
@@ -25592,17 +26199,39 @@ fn goal_reached_has_sufficient_evidence(
     if !has_substantive_evidence {
         return false;
     }
-    history.iterations.iter().any(|record| {
-        record.result.success
-            && record
+    history
+        .iterations
+        .iter()
+        .any(iteration_is_a_harness_observation)
+}
+
+/// An iteration the harness itself observed, which a narrative may rest on:
+/// a substantive successful result (text of ≥30 chars, or a structured
+/// projection whatever its length — an empty listing is a finding), or a
+/// refusal one of the harness's own rails issued (`Refused: …`, e.g. the
+/// goal-workspace fence). A refusal is a deterministic fact about the world
+/// the run asked about, not a self-attestation; a transport or runtime error
+/// is not evidence of anything. Pure observation/control calls and records
+/// the harness contradicted never count.
+fn iteration_is_a_harness_observation(record: &IterationRecord) -> bool {
+    if is_low_information_action_for_partial_success(&record.action)
+        || iteration_carries_negative_harness_signal(record)
+    {
+        return false;
+    }
+    if record.result.success {
+        return record.result.tool_result_projection.is_some()
+            || record
                 .result
                 .output
                 .as_deref()
-                .map(|out| out.trim().chars().count() >= 30)
-                .unwrap_or(false)
-            && !is_low_information_action_for_partial_success(&record.action)
-            && !iteration_carries_negative_harness_signal(record)
-    })
+                .is_some_and(|out| out.trim().chars().count() >= 30);
+    }
+    record
+        .result
+        .error
+        .as_deref()
+        .is_some_and(|error| error.trim_start().starts_with("Refused:"))
 }
 
 /// Change 2 (evidence-gated "done"): a record the harness itself contradicted
@@ -25714,44 +26343,220 @@ async fn open_durable_micro_goals(
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
 // callers out of this file before it moves the helpers, so these widen first.
-/// Definition-of-done signal: true when the durable task state tracks at least
-/// one micro-goal AND every micro-goal is resolved (`completed`/`blocked`).
+/// Definition-of-done signal: `Some(goals)` when the durable task state tracks
+/// at least one micro-goal AND every micro-goal is resolved
+/// (`completed`/`blocked`); the goals carry their descriptions and
+/// `blocked_reason`s for the run's final no-tools turn.
 ///
 /// Distinct from `open_durable_micro_goals(..).is_empty()`, which is ALSO true
 /// when the task tracks no durable state at all — here we require real
 /// micro-goals so a task that simply isn't using durable tracking (or one whose
 /// synthesized baseline still has the `in_progress` `mg_initial` goal) is never
-/// "concluded". The orchestrator uses this to stop a run the moment its tracked
-/// requirements are all closed, instead of paying for more LLM turns that
-/// re-verify already-resolved state. The `Decision::Completed` success gate
-/// (`terminal_success_rejection`) re-checks the same micro-goal condition, so
-/// this can never force a false completion.
-pub(super) async fn all_durable_micro_goals_resolved(
+/// "concluded". The orchestrator uses this to end a run the moment its tracked
+/// requirements are all closed: one final model turn with tools disabled
+/// writes the answer (`decision::definition_of_done_terminal`), instead of more
+/// tool turns that re-verify already-resolved state. The terminal still passes
+/// the same success gates (`terminal_success_rejection`) a model-issued one
+/// must, so this can never force a false completion.
+///
+/// Only a state THIS execution wrote counts. The orchestrator preloads a
+/// task's last durable state into `ctx.task_state`, so a recurring task, a
+/// retry or a follow-up whose previous run resolved everything would
+/// otherwise conclude on iteration 1 having done nothing.
+pub(super) async fn resolved_durable_micro_goals(
     ctx: &AgenticContext,
     executors: &ActionExecutors,
-) -> bool {
+) -> Option<Vec<super::decision::ResolvedMicroGoal>> {
+    if runtime_execution_id_opt(ctx).is_some_and(|id| {
+        !crate::magician_v2::execution::shell_jobs::running_for_execution(id).is_empty()
+    }) {
+        return None;
+    }
     if ctx.app_disclosure_guard.is_some() {
-        return false;
+        return None;
+    }
+    if !durable_task_state_written_by_this_execution(ctx, executors).await {
+        return None;
     }
     let state = match load_persisted_durable_task_state(ctx, executors).await {
         Ok(Some(state)) => state,
-        _ => return false,
+        _ => return None,
     };
-    let Some(micro_goals) = state
-        .get("micro_goals")
-        .and_then(serde_json::Value::as_array)
+    super::decision::resolved_micro_goals_in_state(&state)
+}
+
+/// Whether the task's durable task state was last written by this execution
+/// (its frontmatter's `source_execution_id`, the check output synthesis
+/// makes too). An untasked run is never preloaded: its state can only be
+/// what this execution recorded or carried across its own pause. Fails
+/// closed on a missing, unreadable or foreign state.
+async fn durable_task_state_written_by_this_execution(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+) -> bool {
+    let Some(task_id) = ctx
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|task_id| !task_id.is_empty())
+        .map(str::to_string)
+    else {
+        return true;
+    };
+    let (Some(principal), Some(workspace)) = (ctx.principal.clone(), ctx.workspace.clone()) else {
+        return false;
+    };
+    let this_execution: Vec<String> = [
+        runtime_execution_id_opt(ctx).map(str::to_string),
+        ctx.execution_id.clone(),
+        ctx.legacy_execution_id.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if this_execution.is_empty() {
+        return false;
+    }
+    let artifact_workspace = executors.artifact_v2_workspace.clone();
+    run_on_agentic_scheduler_root(
+        ctx,
+        executors,
+        "durable task-state provenance",
+        move || async move {
+            let store = crate::magician_v2::artifacts::durable_store::open_local_durable_artifacts(
+                &artifact_workspace,
+                &principal,
+                &workspace,
+            )?;
+            let name = format!("{task_id}.json");
+            if !store.exists("task_state", &name) {
+                return Ok(false);
+            }
+            let (frontmatter, _body) = store.read("task_state", &name).await?;
+            Ok(frontmatter
+                .source_execution_id
+                .is_some_and(|writer| this_execution.contains(&writer)))
+        },
+    )
+    .await
+    .unwrap_or(false)
+}
+
+/// The definition-of-done signal the decision reads: the micro-goal verdict
+/// (`micro_goals_resolved`, already `false` after a rejected conclusion),
+/// held back from `Met` (the final no-tools answer turn) while the run still
+/// owes its owner a final report.
+///
+/// Micro-goals track the work. A delegating coordinator's last micro-goal
+/// closes when its child's verified result comes back, so a coordinator whose
+/// policy also asks it to report afterwards was concluded on resume with the
+/// report unsent — the VibeDev Autopilot lead of 2026-10-20 ended 85 ms after
+/// its engineer applied the change, without a model call, and the owner got
+/// only the server's generic run-ended notice.
+pub(super) async fn definition_of_done_signal(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    micro_goals_resolved: bool,
+) -> super::decision::DefinitionOfDone {
+    use super::decision::DefinitionOfDone;
+    if !micro_goals_resolved {
+        return DefinitionOfDone::Open;
+    }
+    if owner_final_report_outstanding(ctx, executors).await {
+        DefinitionOfDone::OwnerReportOutstanding
+    } else {
+        DefinitionOfDone::Met
+    }
+}
+
+/// Whether this execution is the one its run's policy makes responsible for
+/// a final owner report. Read from server-stamped context only, never from
+/// goal text: a VibeDev Autopilot run (`autopilot` task tag, stamped by the
+/// service as `vibedev_autopilot`) is unattended and its directive requires
+/// exactly one final `notify_owner` status.
+///
+/// Only the run's coordinator owes it. The engineers it delegates to run on
+/// the same task and carry the same flag, but report to the coordinator: a
+/// spawned child has a persisted delegation chain (`depth > 0`) and a root
+/// execution other than its own, and an in-context delegate sits on a
+/// non-empty owner stack. A Discuss (plan) run owes no report.
+pub(super) fn run_owes_owner_final_report(ctx: &AgenticContext) -> bool {
+    if !ctx.vibedev_autopilot || ctx.plan_run || ctx.app_disclosure_guard.is_some() {
+        return false;
+    }
+    if ctx.depth > 0 || !ctx.owner_stack.is_empty() {
+        return false;
+    }
+    if let (Some(root), Some(own)) = (
+        ctx.root_execution_id.as_deref(),
+        runtime_execution_id_opt(ctx),
+    ) {
+        if root != own {
+            return false;
+        }
+    }
+    ctx.task_id
+        .as_deref()
+        .is_some_and(|task_id| !task_id.trim().is_empty())
+}
+
+/// How far back the filed-report check reads the owner's request history; the
+/// same bound the run-ended notice uses (`vibedev::run_terminal_notice`).
+const OWNER_FINAL_REPORT_LOOKBACK: usize = 500;
+
+/// Whether one of `requests` is this run's own `notify_owner` report: the
+/// request type `notify_owner` files, on this task, from this execution. A
+/// request with no execution id is matched on the task alone.
+fn owner_final_report_filed<'a>(
+    requests: impl IntoIterator<Item = &'a UserRequest>,
+    task_id: &str,
+    execution_ids: &[&str],
+) -> bool {
+    requests.into_iter().any(|request| {
+        request.request_type.starts_with("harness.notify_owner.")
+            && request.task_id.as_deref() == Some(task_id)
+            && request
+                .execution_id
+                .as_deref()
+                .map_or(true, |execution| execution_ids.contains(&execution))
+    })
+}
+
+/// A run that owes its owner a final report and has not filed it. The durable
+/// owner-request store is the record — the history in hand starts empty on a
+/// resumed segment, so a report sent before the pause would not show there.
+/// Without a request service or a scope the report cannot be checked (nor
+/// filed); the fast path is kept and the run-ended notice remains the backstop.
+async fn owner_final_report_outstanding(ctx: &AgenticContext, executors: &ActionExecutors) -> bool {
+    if !run_owes_owner_final_report(ctx) {
+        return false;
+    }
+    let Some(requests) = executors.user_request_service.as_ref() else {
+        return false;
+    };
+    let identity = executors.run_identity.get();
+    let principal = ctx.principal.as_deref().or(identity.principal.as_deref());
+    let workspace = ctx.workspace.as_deref().or(identity.workspace.as_deref());
+    let (Some(principal), Some(workspace), Some(task_id)) =
+        (principal, workspace, ctx.task_id.as_deref())
     else {
         return false;
     };
-    if micro_goals.is_empty() {
+    let execution_ids: Vec<&str> = runtime_execution_id_opt(ctx)
+        .into_iter()
+        .chain(identity.execution_id.as_deref())
+        .collect();
+    let pending = requests.list_pending_for_scope(principal, workspace).await;
+    if owner_final_report_filed(pending.iter(), task_id, &execution_ids) {
         return false;
     }
-    micro_goals.iter().all(|goal| {
-        matches!(
-            goal.get("status").and_then(serde_json::Value::as_str),
-            Some("completed") | Some("blocked")
-        )
-    })
+    let history =
+        requests.list_history_for_scope(principal, workspace, Some(OWNER_FINAL_REPORT_LOOKBACK));
+    !owner_final_report_filed(
+        history.iter().map(|record| &record.request),
+        task_id,
+        &execution_ids,
+    )
 }
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
@@ -25834,6 +26639,14 @@ async fn terminal_success_rejection_inner(
     clean_completion_claim: bool,
     prospective_task_state: Option<&Value>,
 ) -> Option<String> {
+    if let Some(execution_id) =
+        runtime_execution_id_opt(ctx).filter(|_| ctx.depth == 0 && clean_completion_claim)
+    {
+        let jobs = crate::magician_v2::execution::shell_jobs::running_for_execution(execution_id);
+        if !jobs.is_empty() {
+            return Some(format!("Task-owned shell jobs are still running: {}. Use shell action=status with job_id (wait_secs up to 30), or cancel them before finishing.", jobs.join(", ")));
+        }
+    }
     // A parent resumed after its delegated children finished terminates on
     // their work: its successor history holds no successful iteration of its
     // own (the round's spawn is not a record, and every record since is a
@@ -25938,6 +26751,7 @@ fn enrich_pause_state_from_context(ctx: &AgenticContext, pause_state: &mut Agent
         pause_state.owner_stack = ctx.owner_stack.clone();
     }
     pause_state.spend_token_ids = ctx.spend_token_ids.clone();
+    pause_state.read_lineage = ctx.read_lineage.clone();
     pause_state.work_authority = ctx.work_authority.clone();
     pause_state.chat_session_id = ctx.chat_session_id.clone();
     pause_state.preserve_initial_tool_scope = ctx.preserve_initial_tool_scope;
@@ -25996,6 +26810,8 @@ fn enrich_pause_state_from_context(ctx: &AgenticContext, pause_state: &mut Agent
     // a Build coordinator that pauses keeps the guardrails armed on resume.
     pause_state.coding_coordinator_run = ctx.coding_coordinator_run;
     pause_state.vibedev_run = ctx.vibedev_run;
+    pause_state.plan_run = ctx.plan_run;
+    pause_state.vibedev_autopilot = ctx.vibedev_autopilot;
 }
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
@@ -26069,8 +26885,55 @@ pub(super) fn lifecycle_structural_action_requiring_approval<'a>(
 /// exactly; serializing a `HashMap` directly can otherwise produce a different
 /// string when the model re-emits the same action after resume.
 pub(crate) fn stable_confirmation_action_json(action: &ExecutableAction) -> Result<String> {
-    let value = serde_json::to_value(action)?;
+    let mut value = serde_json::to_value(action)?;
+    value.sort_all_objects();
     Ok(serde_json::to_string(&value)?)
+}
+
+/// The model's tool call behind a confirmation's gated action: the call in
+/// the last assistant turn whose lowering serializes to exactly
+/// `action_json`. `None` when no call does — a decision made without a native
+/// tool call, a call `Resolve` rewrote, an empty token — and the approving
+/// resume then re-decides and matches as before. Requiring the match is what
+/// keeps an approval from ever replaying a different call than the one the
+/// owner saw.
+pub(super) fn confirmation_replay_call(
+    history: &ExecutionHistory,
+    action_json: &str,
+) -> Option<AgenticAssistantToolCallRecord> {
+    use crate::magician_v2::execution::agentic::native_lowering::lower_native_tool_call;
+    use crate::magician_v2::execution::agentic::native_types::{
+        ExecutionToolCall, NativeDecisionOutcome,
+    };
+    if action_json.is_empty() {
+        return None;
+    }
+    // An alignment hold's token is a receipt: a purpose prefix on the same
+    // canonical action token.
+    let action_json = crate::magician_v2::preference_alignment::receipts::canonical_of(action_json)
+        .unwrap_or(action_json);
+    let turn = history.assistant_turns.last()?;
+    turn.tool_calls
+        .iter()
+        .find(|call| {
+            let lowered = lower_native_tool_call(&ExecutionToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            });
+            let NativeDecisionOutcome::Valid(envelope) = lowered else {
+                return false;
+            };
+            let Decision::Execute { candidates, .. } = &envelope.decision else {
+                return false;
+            };
+            candidates
+                .candidates
+                .first()
+                .and_then(|candidate| stable_confirmation_action_json(&candidate.action).ok())
+                .is_some_and(|json| json == action_json)
+        })
+        .cloned()
 }
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
@@ -26112,6 +26975,7 @@ pub(super) fn build_action_confirmation_outcome(
         loop_protective,
         approved_confirmation_actions,
         None,
+        None,
     )
 }
 
@@ -26143,6 +27007,8 @@ pub(super) fn build_action_confirmation_outcome_with(
     loop_protective: &LoopProtectiveState,
     approved_confirmation_actions: &[ApprovedConfirmationAction],
     alignment_ask: Option<crate::magician_v2::preference_alignment::ask::AlignmentAsk>,
+    // A captured send held for the owner's review (`agents::outward_review`).
+    outward_review: Option<crate::magician_v2::agents::outward_review::OutwardReview>,
 ) -> AgenticOutcome {
     let mut pause_state = build_full_pause_state(
         iteration,
@@ -26160,6 +27026,18 @@ pub(super) fn build_action_confirmation_outcome_with(
             .unwrap_or_else(|| pause_state.storage_key());
         ask
     });
+    // The gated tool's structured approval card (title, the agent's reason,
+    // a capped diff, warnings), computed once here so every surface reads the
+    // same record.
+    pause_state.approval_preview = approval_preview_for_pause(ctx, executors, action).map(Box::new);
+    // A review card shows the send itself: who, to whom, what.
+    if let Some(review) = outward_review {
+        pause_state.approval_preview = Some(Box::new(review.preview()));
+        pause_state.outward_review = Some(Box::new(review));
+    }
+    // The model's call behind the gated action, so an approving resume can
+    // replay exactly it (`run_loop::phases::approved_replay`).
+    pause_state.confirmation_replay_call = confirmation_replay_call(history, &action_json);
 
     if ctx.has_observability() || ctx.has_agent_routing() {
         let (principal, workspace) = transport_scope(ctx);
@@ -26186,7 +27064,7 @@ pub(super) fn build_action_confirmation_outcome_with(
     // C1: the canonical ask is announced for every persisted pause;
     // the gate above guards only the legacy twin.
     // Phase H2 — canonical dual-emit carries the HITL payload.
-    emit_hitl_requested_for_agentic_confirmation(
+    emit_hitl_requested_for_agentic_confirmation_with(
         ctx,
         executors,
         at,
@@ -26195,6 +27073,8 @@ pub(super) fn build_action_confirmation_outcome_with(
         &reason,
         action.action_type_name(),
         pause_state.alignment_ask.as_ref(),
+        pause_state.approval_preview.as_deref(),
+        pause_state.outward_review.as_deref(),
     );
 
     AgenticOutcome::WaitingForConfirmation {
@@ -26217,6 +27097,45 @@ pub(super) fn build_action_confirmation_outcome_with(
 /// flaky provider or upstream rate-limit doesn't count as a "the model is
 /// stuck" signal.
 pub(super) const MAX_TRANSIENT_RETRIES: usize = 5;
+
+/// Waits a run takes through a provider outage before it fails. Shares
+/// `LoopProtectiveState::transient_retry_count` with the transient budget, so a
+/// failure is the `OUTAGE_MAX_RETRIES + 1`-th one in a row.
+pub(super) const OUTAGE_MAX_RETRIES: usize = 6;
+const OUTAGE_BACKOFF_BASE_SECS: u64 = 15;
+const OUTAGE_BACKOFF_CAP_SECS: u64 = 300;
+
+/// The scheduled wait before the `n`-th outage retry (1-based) without jitter:
+/// 15, 30, 60, 120, 240, then 300 s (about 13 minutes in total).
+fn outage_backoff_base_secs(n: usize) -> u64 {
+    let exp = n.saturating_sub(1).min(16) as u32;
+    OUTAGE_BACKOFF_BASE_SECS
+        .saturating_mul(1u64 << exp)
+        .min(OUTAGE_BACKOFF_CAP_SECS)
+}
+
+/// Backoff for the `n`-th outage retry: the capped exponential base plus a
+/// deterministic jitter of under 3 s so concurrent runs do not probe a
+/// recovering provider in lockstep. The base is already at most five minutes,
+/// well inside the journal's one-hour retry clamp.
+pub(super) fn outage_retry_backoff(n: usize) -> std::time::Duration {
+    let jitter_ms = (n as u64).wrapping_mul(1_300) % 3_000;
+    std::time::Duration::from_millis(outage_backoff_base_secs(n) * 1_000 + jitter_ms)
+}
+
+/// Time the scheduled waits of the first `retries` outage retries add up to.
+/// An estimate of how long the outage has lasted: the run keeps no timestamp
+/// of its own.
+pub(super) fn outage_scheduled_wait_ms(retries: usize) -> u64 {
+    (1..=retries)
+        .map(|n| outage_backoff_base_secs(n) * 1_000)
+        .sum()
+}
+
+/// The `~N min` the full outage budget lasts, for the failure message.
+pub(super) fn outage_budget_minutes() -> u64 {
+    outage_scheduled_wait_ms(OUTAGE_MAX_RETRIES).div_ceil(60_000)
+}
 
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
 // callers out of this file before it moves the helpers, so these widen first.
@@ -26349,6 +27268,85 @@ fn executor_user_request_scope(
     ))
 }
 
+/// Governed CLI skills authorize a whole reviewed package, including its other
+/// actions and inert argv. This is called only after explicit denies and the
+/// per-call plan-mode gate, and never grants shell or bypasses runtime fences.
+async fn ask_governed_cli_authorization(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    action: &ExecutableAction,
+) -> Option<UserRequestEscalationDecision> {
+    use crate::magician_v2::execution::capability::ImplementationType;
+    use crate::magician_v2::execution::primitive_dispatch::PrimitiveExecCtx;
+    use crate::magician_v2::god_mode;
+
+    let ExecutableAction::Pack {
+        capability_name,
+        resolved_params,
+        ..
+    } = action
+    else {
+        return None;
+    };
+    let registry = executors.effective_capability_registry_snapshot()?;
+    let capability = capability_name
+        .split_once("__")
+        .map_or(capability_name.as_str(), |(pack, _)| pack);
+    let definition = registry
+        .get_pack_definition(capability)
+        .or_else(|| registry.get_pack_definition(capability_name))?;
+    let ImplementationType::Primitive {
+        runtime_package: Some(runtime),
+        ..
+    } = definition.implementation
+    else {
+        return None;
+    };
+    if !matches!(
+        runtime.package.contract.runtime,
+        tool_runtime_core::manifest::RuntimeProtocol::Cli { .. }
+    ) {
+        return None;
+    }
+    let (service, principal, workspace, execution_id) =
+        executor_user_request_scope(ctx, executors)?;
+    let profile_parameter = runtime.package.projected_profile_parameter();
+    let profile = profile_parameter.and_then(|parameter| resolved_params.get(parameter.name));
+    let binding = serde_json::to_string(&json!({
+        "contract":runtime.package.contract,"actions":runtime.package.actions,
+        "profile":profile,"executable_directory":runtime.executable_directory,
+    }))
+    .ok()?;
+    let primitive = PrimitiveExecCtx {
+        principal: Some(principal),
+        workspace: Some(workspace),
+        execution_id: Some(execution_id),
+        task_id: ctx.task_id.clone(),
+        chat_session_id: ctx.chat_session_id.clone(),
+        agent_id: ctx.agent_id.clone(),
+        user_request_service: Some(service),
+        ..PrimitiveExecCtx::default_for_runtime()
+    };
+    let session = god_mode::tool_approval_session(&primitive)?;
+    let arguments = json!(resolved_params);
+    let allowed = god_mode::authorize_tool_approval(
+        &session,
+        god_mode::GodAction::Capability {
+            capability,
+            policy_binding: &binding,
+            arguments: &arguments,
+            summary: "Allow this governed CLI skill to continue.",
+        },
+        &primitive,
+    )
+    .await
+    .is_ok();
+    Some(if allowed {
+        UserRequestEscalationDecision::AllowOnce
+    } else {
+        UserRequestEscalationDecision::Deny
+    })
+}
 async fn ask_tool_authorization_via_user_request_service(
     ctx: &AgenticContext,
     executors: &ActionExecutors,
@@ -27261,15 +28259,26 @@ fn authorize_direct_action_preflight<'a>(
                     "The agent wants to use tool '{}'. Allow this action?\n\nParameters: {}",
                     full_tool_id, params_summary
                 );
-                if let Some(decision) = ask_tool_authorization_via_user_request_service(
+                let decision = match ask_governed_cli_authorization(
                     ctx,
                     executors,
-                    &full_tool_id,
-                    &params_summary,
-                    &question,
+                    action_for_history,
                 )
                 .await
                 {
+                    Some(decision) => Some(decision),
+                    None => {
+                        ask_tool_authorization_via_user_request_service(
+                            ctx,
+                            executors,
+                            &full_tool_id,
+                            &params_summary,
+                            &question,
+                        )
+                        .await
+                    },
+                };
+                if let Some(decision) = decision {
                     match decision {
                         UserRequestEscalationDecision::AllowOnce => {},
                         UserRequestEscalationDecision::AllowAlways => {
@@ -27569,6 +28578,8 @@ fn action_may_sandbox_hitl(action: &ExecutableAction, executors: &ActionExecutor
     let unrestricted = matches!(executors.file_sandbox.mode, FileSandboxMode::Unrestricted);
     let mut roots = executors.file_sandbox.allowed_roots.clone();
     roots.extend(executors.grants.sandbox_roots());
+    // Reads there pass and writes there are hard refusals: neither asks.
+    roots.extend(executors.file_sandbox.read_only_roots.iter().cloned());
     extracted_paths_may_sandbox_hitl(&extracted_action_fs_paths(action), unrestricted, &roots)
 }
 
@@ -27645,10 +28656,7 @@ fn file_sandbox_direct_action_preflight<'a>(
             return Ok(None);
         }
 
-        let mut effective_sandbox = executors.file_sandbox.clone();
-        effective_sandbox
-            .allowed_roots
-            .extend(executors.grants.sandbox_roots());
+        let effective_sandbox = effective_file_sandbox(executors);
         let outside_roots = file_action_outside_allowed_roots(file_action, &effective_sandbox)
             .map_err(|error| anyhow!(error.to_string()))?;
         if outside_roots.is_empty() {
@@ -27985,6 +28993,27 @@ fn execute_direct_path_core_body<'a>(
             }
         }
 
+        // An owner-approved send (review before sending): bind its pass to
+        // this attempt now, while the call is still the one they approved.
+        // Preparation below fills in secrets and credentials, and the capture
+        // check at dispatch takes the pass by `effect_id`.
+        if let (Some(principal), Some(workspace), Some(execution_id), Some(effect_id)) = (
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            ctx.execution_id.as_deref(),
+            effect_id,
+        ) {
+            if let Ok(json) = stable_confirmation_action_json(&first_candidate.action) {
+                crate::magician_v2::agents::outward_review::arm_for_dispatch(
+                    principal,
+                    workspace,
+                    execution_id,
+                    &json,
+                    effect_id,
+                    Utc::now().timestamp_millis(),
+                );
+            }
+        }
         let prepared_action = match prepare_action_with_secrets(
             &action,
             first_candidate.credential_id.as_deref(),
@@ -28443,7 +29472,7 @@ pub(super) fn execute_direct_path_on_scheduler_root<'a>(
 fn path_access_denied_paths(err: &anyhow::Error) -> Option<Vec<String>> {
     use crate::magician_v2::execution::error::ExecutionError;
     match err.downcast_ref::<ExecutionError>() {
-        Some(ExecutionError::PathAccessDenied { paths }) if !paths.is_empty() => {
+        Some(ExecutionError::PathAccessDenied { paths, .. }) if !paths.is_empty() => {
             Some(paths.clone())
         },
         _ => None,
@@ -28633,6 +29662,12 @@ fn execute_direct_path_post_setup_tail<'a>(
                 target,
                 call_id: action_call_id.clone(),
                 detail: action_event_detail(&action),
+                tool_name: match &action {
+                    ExecutableAction::Pack {
+                        capability_name, ..
+                    } => Some(capability_name.clone()),
+                    _ => None,
+                },
                 timestamp: Utc::now().timestamp_millis(),
             });
         }
@@ -29292,14 +30327,19 @@ fn execute_direct_path_post_setup_tail<'a>(
                 }
 
                 if let Some(diff_pause) = diff_approval_pause_from_action_result(action_result) {
+                    // Holding `apply_code_proposal` is not permission to skip
+                    // the owner's review: inside VibeDev only an Autopilot run
+                    // self-applies. An attended run (its delegated engineers
+                    // included) parks so the Diff tab and Attention get the ask.
                     let agent_can_self_apply = ctx
                         .merged_agent_tools
                         .iter()
-                        .any(|tool| tool.name == "apply_code_proposal");
+                        .any(|tool| tool.name == "apply_code_proposal")
+                        && (!ctx.vibedev_run || ctx.vibedev_autopilot);
                     if agent_can_self_apply {
                         debug!(
-                            "[AGENTIC] Skipping diff_approval park; agent can call \
-                             apply_code_proposal"
+                            "[AGENTIC] Skipping diff_approval park; agent may self-apply \
+                             (Autopilot or outside VibeDev)"
                         );
                     } else {
                         let pause_state = build_full_pause_state(
@@ -29574,7 +30614,14 @@ fn execute_direct_path_post_setup_tail<'a>(
                 // A failure text is an observation too: scrubbed with the run's
                 // delivered set before it is logged, journalled or shown to the
                 // model (a login script that echoes the password it was fed).
-                let reason = scrub_with_delivered_values(executors, &e.to_string());
+                let mut reason = scrub_with_delivered_values(executors, &e.to_string());
+                // A refused write inside the task names where the task lets
+                // the agent write instead, so it recovers in one step.
+                if let Some(hint) = path_access_denied_paths(e)
+                    .and_then(|paths| task_write_refusal_hint(ctx, executors, &paths))
+                {
+                    reason.push_str(&hint);
+                }
                 if app_labeled_result.is_none() {
                     let _ = capture_tool_call_evidence_artifact(
                         &action_for_history,
@@ -29650,10 +30697,30 @@ fn execute_direct_path_post_setup_tail<'a>(
                     }));
                 }
 
-                error!(
-                    "[EXECUTOR] Non-browser action error in {}ms: {}",
-                    duration_ms, reason
-                );
+                if matches!(
+                    e.downcast_ref::<crate::magician_v2::execution::error::ExecutionError>(),
+                    Some(crate::magician_v2::execution::error::ExecutionError::Refused(_))
+                ) {
+                    // A policy refusal is the agent's to act on, not a fault.
+                    warn!(
+                        "[EXECUTOR] Non-browser action refused in {}ms: {}",
+                        duration_ms, reason
+                    );
+                } else if action_error_is_agent_actionable(e) {
+                    // The tool ran and reported failure (or the call did not
+                    // fit its grammar); the agent sees the full text and
+                    // decides. Expected and handled, so not an ERROR.
+                    warn!(
+                        "[EXECUTOR] Non-browser action failed in {}ms; returned to the agent: {}",
+                        duration_ms,
+                        agent_actionable_log_line(&reason)
+                    );
+                } else {
+                    error!(
+                        "[EXECUTOR] Non-browser action error in {}ms: {}",
+                        duration_ms, reason
+                    );
+                }
                 journal_failed_action(
                     ctx,
                     executors,
@@ -29779,14 +30846,22 @@ async fn run_single_delegate_in_context(
         kind: AgenticContinuationKind::InContextDelegation,
         goal: ctx.goal.clone(),
         success_criteria: ctx.success_criteria.clone(),
-        remaining_iterations: ctx.max_iterations.saturating_sub(iteration).max(1),
+        // Parked-wake refunds are part of the parent's bound; they move into
+        // the frame's allowance and leave its bundle, so the pop restores them
+        // once (`parent_iterations_after_nested_work`).
+        remaining_iterations: super::run_budget::iteration_ceiling(ctx, loop_protective)
+            .saturating_sub(iteration)
+            .max(1),
         max_repeated_actions: ctx.max_repeated_actions,
         iteration_offset: ctx.iteration_offset.saturating_add(iteration),
         depth: ctx.depth,
         work_budget_secs: ctx.work_budget_secs,
         work_budget_consumed_ms: context_work_budget_elapsed_ms(ctx),
         nested_work_budget_baseline_ms: 0,
-        loop_protective_state: Some(loop_protective.clone()),
+        loop_protective_state: Some(LoopProtectiveState {
+            parked_iteration_refunds: 0,
+            ..loop_protective.clone()
+        }),
         step_id: ctx.step_id.clone(),
         pending_inputs: ctx.pending_inputs.clone(),
         resolved_inputs: ctx.resolved_inputs.clone(),
@@ -30158,6 +31233,7 @@ pub(super) async fn handle_delegate_to_agent_decision(
                         &reason,
                         "delegate_to_agent",
                         None,
+                        None,
                     );
 
                     let action_json =
@@ -30353,7 +31429,6 @@ pub(super) async fn handle_delegate_to_agent_decision(
             }));
         },
         Err(dispatch_err) => {
-            error!("[DELEGATION] Dispatch error: {:?}", dispatch_err);
             let err_msg = format!("{:?}", dispatch_err);
             // A HARD dispatch error — the dispatcher is unavailable, an internal
             // runtime fault, or the run was cancelled — cannot be fixed by
@@ -30367,6 +31442,17 @@ pub(super) async fn handle_delegate_to_agent_decision(
                     | super::delegation_dispatch::DispatchError::Runtime(_)
                     | super::delegation_dispatch::DispatchError::SpawnInterrupted(_)
             );
+            if hard {
+                error!("[DELEGATION] Dispatch error: {:?}", dispatch_err);
+            } else {
+                // A rejected request (unknown target, missing input
+                // artifact, …) goes back to the model to re-target: expected
+                // and handled, so not an ERROR.
+                warn!(
+                    "[DELEGATION] Dispatch rejected; returned to the agent to re-target: {:?}",
+                    dispatch_err
+                );
+            }
 
             history.iterations.push(IterationRecord {
                 iteration,
@@ -30594,6 +31680,10 @@ fn token_trigrams(tokens: &[String]) -> std::collections::HashSet<String> {
 /// actions, so it actually fires.
 fn is_low_information_action_for_partial_success(action: &ExecutableAction) -> bool {
     match action {
+        // A rejected decision ran nothing.
+        ExecutableAction::Pack {
+            capability_name, ..
+        } if capability_name == REJECTED_DECISION_CAPABILITY => true,
         // Pure browser inspection — observe / snapshot / screenshot are
         // mechanical state reads, not work the user asked for.
         ExecutableAction::Pack {
@@ -30662,6 +31752,89 @@ fn is_low_information_action_for_partial_success(action: &ExecutableAction) -> b
 ///   before the wall.
 ///
 /// The output is markdown shaped for direct inclusion in the user-facing
+/// How `render_yield_partial_findings` opens a body, and the sections it
+/// writes after the yield's summary, in order.
+const YIELD_PARTIAL_FINDINGS_HEADING: &str =
+    "## PARTIAL SUCCESS — completed work and remaining gaps\n\n";
+const YIELD_PARTIAL_FINDINGS_SECTIONS: [&str; 4] = [
+    "### COMPLETED\n",
+    "### BLOCKED / REMAINING\n",
+    "### BLOCKER DETAILS\n",
+    "### NEXT STEP HINT\n",
+];
+
+/// Opens the open item the terminal grounding check adds when it could not
+/// see the evidence behind a draft (`terminal_grounding_route`, the bounded
+/// repair in `apply`).
+pub const OPENED_PAGE_COVERAGE_CAVEAT: &str = "Unverified against opened-page evidence:";
+
+/// The owner-facing answer inside a `render_yield_partial_findings` body: the
+/// yield's own summary, then what it left open. The completed list (its
+/// evidence refs are for the claim check) and the blocker details repeat the
+/// summary; the opened-page coverage note is Magician's verification
+/// bookkeeping, superseded by the task-user claim check. `None` for any other
+/// body — the `cannot_proceed` safety net harvests tool excerpts, not an
+/// answer — or a summary too short to stand as one.
+pub fn yield_partial_findings_answer(body: &str) -> Option<String> {
+    const MIN_ANSWER_CHARS: usize = 40;
+    let rest = body.strip_prefix(YIELD_PARTIAL_FINDINGS_HEADING)?;
+    // A body without a summary opens straight on its first section.
+    let section_at = |name: &str| {
+        if rest.starts_with(name) {
+            Some(0)
+        } else {
+            rest.find(&format!("\n{name}")).map(|index| index + 1)
+        }
+    };
+    let summary_end = YIELD_PARTIAL_FINDINGS_SECTIONS
+        .iter()
+        .filter_map(|name| section_at(*name))
+        .min()
+        .unwrap_or(rest.len());
+    let summary = rest[..summary_end].trim();
+    if summary.chars().count() < MIN_ANSWER_CHARS || is_runtime_requirement_status(summary) {
+        return None;
+    }
+    let open: Vec<&str> = section_at(YIELD_PARTIAL_FINDINGS_SECTIONS[1])
+        .map(|start| {
+            let body = &rest[start + YIELD_PARTIAL_FINDINGS_SECTIONS[1].len()..];
+            let end = YIELD_PARTIAL_FINDINGS_SECTIONS
+                .iter()
+                .filter_map(|name| body.find(&format!("\n{name}")))
+                .min()
+                .unwrap_or(body.len());
+            body[..end]
+                .lines()
+                .filter_map(|line| line.strip_prefix("- "))
+                .map(str::trim)
+                .filter(|item| !item.is_empty() && !item.starts_with(OPENED_PAGE_COVERAGE_CAVEAT))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut answer = summary.to_string();
+    if !open.is_empty() {
+        answer.push_str("\n\n**Still open**\n");
+        for item in open {
+            answer.push_str("- ");
+            answer.push_str(item);
+            answer.push('\n');
+        }
+    }
+    Some(answer)
+}
+
+/// Whether a summary is only the runtime's requirement status
+/// (`decision::definition_of_done_status_lines`): every line `COMPLETED: …`
+/// or `BLOCKED: …`. A note written before `summary_is_runtime_status`
+/// existed still carries one as its summary.
+fn is_runtime_requirement_status(summary: &str) -> bool {
+    summary
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(|line| line.starts_with("COMPLETED: ") || line.starts_with("BLOCKED: "))
+}
+
 /// Render a `partial_findings.md` body from a structured Yield
 /// payload's `PartialSuccess` disposition. Mirrors the format that
 /// `extract_partial_success_summary` produces from the legacy
@@ -30672,9 +31845,14 @@ fn is_low_information_action_for_partial_success(action: &ExecutableAction) -> b
 pub fn render_yield_partial_findings(
     payload: &crate::magician_v2::execution::agentic::yield_decision::YieldDecision,
 ) -> String {
-    let mut buf = String::from("## PARTIAL SUCCESS — completed work and remaining gaps\n\n");
-    buf.push_str(payload.summary.trim());
-    buf.push_str("\n\n");
+    let mut buf = String::from(YIELD_PARTIAL_FINDINGS_HEADING);
+    // A runtime status summary only repeats the sections below. Leaving it
+    // out keeps `yield_partial_findings_answer` from publishing it as the
+    // run's own answer; finalization then writes one from the evidence.
+    if !payload.summary_is_runtime_status {
+        buf.push_str(payload.summary.trim());
+        buf.push_str("\n\n");
+    }
 
     if !payload.completed.is_empty() {
         buf.push_str("### COMPLETED\n");
@@ -30879,6 +32057,28 @@ pub(super) fn extract_partial_success_summary(
     Some(out)
 }
 
+/// Presentation-only continuity. This never supplies evidence to a success
+/// gate or loads data outside the context's current task/authority.
+pub(super) fn with_checkpoint_findings(
+    ctx: &AgenticContext,
+    partial: Option<String>,
+) -> Option<String> {
+    if ctx.task_id.is_none() || ctx.app_disclosure_guard.is_some() {
+        return partial;
+    }
+    let saved = ctx
+        .task_id
+        .as_deref()
+        .zip(ctx.task_state.as_deref())
+        .and_then(|(task, state)| {
+            crate::magician_v2::artifact_v2::result_delivery::partial_findings_for_task(task, state)
+        });
+    match (saved, partial) {
+        (Some(saved), Some(partial)) => Some(format!("{saved}\n\n{partial}")),
+        (Some(saved), None) => Some(saved),
+        (None, partial) => partial,
+    }
+}
 const WORK_BUDGET_PARTIAL_ARTIFACT_TYPE: &str = "work_budget_partial";
 const WORK_BUDGET_PARTIAL_ARTIFACT_NAME: &str = "work_budget_partial.md";
 
@@ -30923,10 +32123,11 @@ pub(super) async fn conclude_work_budget_reached(
         })
         .unwrap_or_else(|| {
             format!(
-                "## Work budget reached\n\n{boundary_reason}\n\nNo substantive tool output had \
-                 been produced before this boundary."
+                "## Work budget reached\n\n{boundary_reason}\n\nAvailable findings and their source references are retained in the run's artifacts."
             )
         });
+
+    let partial_text = with_checkpoint_findings(ctx, Some(partial_text)).unwrap_or_default();
 
     let mut partial_artifact = crate::magician_v2::execution::agentic::types::Artifact::text(
         WORK_BUDGET_PARTIAL_ARTIFACT_NAME,
@@ -30972,7 +32173,6 @@ pub(super) async fn conclude_work_budget_reached(
         artifacts: final_artifacts,
     }
 }
-
 // `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
 // callers out of this file before it moves the helpers, so these widen first.
 /// Bound on the parent progress handed to a sub-goal, and on the child's last
@@ -31036,6 +32236,18 @@ fn sub_goal_outcome_detail(outcome: &AgenticOutcome) -> Option<String> {
         }
     }
     (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// A same-owner sub-goal spends the parent's allowance. Child work is charged
+/// by `skip_iterations` on return; time and cost remain cumulative too.
+fn sub_goal_iteration_allowance(
+    parent_max: usize,
+    parent_iteration: usize,
+    _estimate: usize,
+) -> usize {
+    parent_max
+        .saturating_sub(parent_iteration)
+        .saturating_sub(1)
 }
 
 pub(super) async fn handle_spawn_sub_goal_decision(
@@ -31152,11 +32364,12 @@ pub(super) async fn handle_spawn_sub_goal_decision(
         return Ok(ExecutePathControl::Continue);
     }
 
-    let iterations_remaining = ctx
-        .max_iterations
-        .saturating_sub(iteration)
-        .saturating_sub(1);
-    let allowed_budget = std::cmp::min(budget_iterations, iterations_remaining);
+    // Model-authored planning estimates must not create approval boundaries.
+    let allowed_budget = sub_goal_iteration_allowance(
+        super::run_budget::iteration_ceiling(ctx, loop_protective),
+        iteration,
+        budget_iterations,
+    );
     if allowed_budget == 0 {
         let reject_msg = "Cannot spawn sub-goal: No iterations budget remaining in parent.";
         warn!("[SUB-GOAL] {}", reject_msg);
@@ -31283,6 +32496,7 @@ pub(super) async fn handle_spawn_sub_goal_decision(
                         &reason,
                         "spawn_sub_goal",
                         None,
+                        None,
                     );
 
                     let action_json =
@@ -31320,14 +32534,22 @@ pub(super) async fn handle_spawn_sub_goal_decision(
         kind: AgenticContinuationKind::SameOwnerSubGoal,
         goal: ctx.goal.clone(),
         success_criteria: ctx.success_criteria.clone(),
-        remaining_iterations: ctx.max_iterations.saturating_sub(iteration).max(1),
+        // Parked-wake refunds are part of the parent's bound; they move into
+        // the frame's allowance and leave its bundle, so the pop restores them
+        // once (`parent_iterations_after_nested_work`).
+        remaining_iterations: super::run_budget::iteration_ceiling(ctx, loop_protective)
+            .saturating_sub(iteration)
+            .max(1),
         max_repeated_actions: ctx.max_repeated_actions,
         iteration_offset: ctx.iteration_offset.saturating_add(iteration),
         depth: ctx.depth,
         work_budget_secs: ctx.work_budget_secs,
         work_budget_consumed_ms: parent_work_budget_consumed_ms,
         nested_work_budget_baseline_ms: parent_work_budget_consumed_ms,
-        loop_protective_state: Some(loop_protective.clone()),
+        loop_protective_state: Some(LoopProtectiveState {
+            parked_iteration_refunds: 0,
+            ..loop_protective.clone()
+        }),
         step_id: ctx.step_id.clone(),
         pending_inputs: ctx.pending_inputs.clone(),
         resolved_inputs: ctx.resolved_inputs.clone(),
@@ -31366,6 +32588,12 @@ pub(super) async fn handle_spawn_sub_goal_decision(
     sub_ctx.depth += 1;
     sub_ctx.continuation_frames.push(parent_continuation);
     sub_ctx.max_iterations = allowed_budget;
+    sub_ctx.iteration_offset = ctx.iteration_offset.saturating_add(iteration);
+    let child_protective = sub_ctx
+        .resume_loop_protective
+        .get_or_insert_with(Default::default);
+    child_protective.iteration_budget_base = loop_protective.iteration_budget_base;
+    child_protective.iteration_grants_applied = loop_protective.iteration_grants_applied;
     sub_ctx.step_id = Some(format!(
         "{}_sub_{}",
         ctx.step_id.as_deref().unwrap_or("step"),
@@ -31660,7 +32888,10 @@ pub(super) async fn handle_spawn_sub_goal_decision(
             });
 
             *current_state = new_state;
-            let remaining_in_parent = ctx.max_iterations.saturating_sub(iteration);
+            // Against the same ceiling the child's allowance came from, so
+            // parked refunds the child used are not spent again by the parent.
+            let remaining_in_parent = super::run_budget::iteration_ceiling(ctx, loop_protective)
+                .saturating_sub(iteration);
             loop_protective.skip_iterations = iterations_used
                 .saturating_sub(1)
                 .min(remaining_in_parent.saturating_sub(1));
@@ -31763,7 +32994,11 @@ pub(super) async fn finish_cancelled_agentic_execution(
     if manual_pause_requested {
         let outcome = AgenticOutcome::PausedByUser {
             pause_state: build_full_pause_state(
-                iterations_used,
+                // A claimed first turn already has a committed source cursor.
+                // As with a budget stop, resume needs a distinct address even
+                // when no complete iteration ran. Later turns retain the
+                // completed-work count instead of consuming an extra turn.
+                pause_checkpoint_before_iteration(observed_iteration, at),
                 ctx,
                 &current_state,
                 history,
@@ -32031,6 +33266,40 @@ async fn execute_agentically_with_refinement(
     if budgeted_ctx.work_budget_segment_started_at.is_none() {
         budgeted_ctx.work_budget_segment_started_at = Some(Instant::now());
     }
+    // A refinement pass continues this run; it does not reopen a finished one.
+    // Under the stateless driver the pass's committed terminal carries the
+    // settlement receipt that closes the runtime execution (and hands a
+    // delegated child's result to its parent) within milliseconds — before
+    // this function could take the gap verdict below. So the verdict is also
+    // taken at the terminal commit, for exactly the segment this pass runs
+    // under: a `Success` with gaps this wrapper will refine publishes no
+    // receipt, the execution stays open, and the refinement segment's own
+    // terminal settles it. `None` for an exact-recovery segment, whose key is
+    // not the derived one.
+    let gate_segment = runtime_execution_id_opt(&budgeted_ctx)
+        .and_then(|execution_id| chain_closure_segment(&budgeted_ctx, execution_id));
+    budgeted_ctx.refinement_gate_segment = gate_segment;
+    // While this wrapper runs, a first-pass receipt that handed its settlement
+    // to the refinement pass is held unsettled by the terminal projector. The
+    // guard is dropped on every exit — return, error, cancellation — and its
+    // drop wakes the projector, which then settles from whichever receipt
+    // owns the run. A crash drops it too, by ending the process.
+    let _refinement_in_flight = match (
+        budgeted_ctx
+            .principal
+            .as_deref()
+            .filter(|value| !value.trim().is_empty()),
+        budgeted_ctx
+            .workspace
+            .as_deref()
+            .filter(|value| !value.trim().is_empty()),
+        budgeted_ctx.refinement_gate_segment.as_deref(),
+    ) {
+        (Some(principal), Some(workspace), Some(segment)) => Some(
+            super::run_loop::state::RefinementInFlight::enter(principal, workspace, segment),
+        ),
+        _ => None,
+    };
     // Type-erase and heap-own the nested core future. Without this boundary the
     // refinement wrapper, cycle wrapper, coding-context wrapper, and the large
     // core executor are one monomorphized poll chain. In debug builds that chain
@@ -32077,8 +33346,12 @@ async fn execute_agentically_with_refinement(
         "refinement_pass_commissioned"
     );
 
-    let refined_ctx =
+    let mut refined_ctx =
         build_refinement_context(&budgeted_ctx, &first_artifacts, &missing_declarations);
+    // The refinement segment's receipt settles the run with what this wrapper
+    // returns, so it carries what the first pass delivered.
+    refined_ctx.refinement_first_pass =
+        refinement_first_pass_record(&refined_ctx, &first_outcome, &missing_declarations);
     // A refinement pass is the same run continued on a new segment, exactly
     // as a delegation successor is, and the first pass's committed terminal
     // left a speculative-phase fence in this execution's steer inbox bound to
@@ -32090,7 +33363,12 @@ async fn execute_agentically_with_refinement(
     // declared artifact they had not filed. Hand the fence to the refinement
     // segment the way the successor seed does; control and manual-pause
     // fences are an operator's and are never handed over.
-    hand_terminal_fence_to_continuation_segment(&refined_ctx, executors).await?;
+    //
+    // A pass that cannot run to an outcome keeps the first pass's: see
+    // `first_outcome_when_refinement_could_not_run`.
+    if let Err(error) = hand_terminal_fence_to_continuation_segment(&refined_ctx, executors).await {
+        return first_outcome_when_refinement_could_not_run(&budgeted_ctx, first_outcome, error);
+    }
     let second_execution: Pin<Box<dyn Future<Output = Result<AgenticOutcome>> + Send + '_>> =
         Box::pin(execute_agentically(
             &refined_ctx,
@@ -32098,7 +33376,12 @@ async fn execute_agentically_with_refinement(
             executors,
             cancellation_token,
         ));
-    let second_outcome = second_execution.await?;
+    let second_outcome = match second_execution.await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return first_outcome_when_refinement_could_not_run(&budgeted_ctx, first_outcome, error)
+        },
+    };
     // Read from the SECOND pass rather than from the merge, because the receipt
     // is a statement about the segment `refined_ctx` ran under and the reader
     // pairs it with that segment's own committed terminal.
@@ -32106,7 +33389,19 @@ async fn execute_agentically_with_refinement(
     // and is deliberately not the same question.
     close_chain_if_this_segment_succeeded(&refined_ctx, executors, &second_outcome).await;
 
-    let merged = merge_refinement_outcomes(first_outcome, second_outcome);
+    if !matches!(second_outcome, AgenticOutcome::Success { .. })
+        && !refinement_second_pass_stands(&second_outcome)
+    {
+        warn!(
+            target: "magician::metrics::refinement_not_closed",
+            task_id = ?ctx.task_id,
+            agent_id = ?ctx.agent_id,
+            pass_outcome = second_outcome.outcome_type(),
+            missing = %missing_declarations.join(","),
+            "refinement_pass_ended_without_closing_gaps; the first pass's result settles the run"
+        );
+    }
+    let merged = merge_refinement_outcomes(first_outcome, second_outcome, &missing_declarations);
     if let AgenticOutcome::Success { artifacts, .. } = &merged {
         let still_missing =
             missing_declaration_names(&refined_ctx.expected_artifact_declarations, artifacts);
@@ -32195,10 +33490,85 @@ fn refinement_gaps_if_warranted(
     let AgenticOutcome::Success { artifacts, .. } = outcome else {
         return None;
     };
+    if read_only_run_delivered_its_output(ctx, artifacts.len()) {
+        return None;
+    }
     Some(missing_declaration_names(
         &ctx.expected_artifact_declarations,
         artifacts,
     ))
+}
+
+/// Whether a read-only run has already produced everything it could.
+///
+/// A read-only run (`ctx.plan_run`: a Discuss run and the engineers it
+/// delegates to) writes nothing — `plan_run_policy` admits no file or shell
+/// write — so the only artifacts it can produce are outputs carried by its own
+/// terminal decision. Once that terminal delivered output, a declared name it
+/// did not use is not missing work: the deliverable was filed under another
+/// name, and a refinement pass would re-run the whole read-only exploration to
+/// re-emit it under the declared one. A read-only `Success` that delivered
+/// nothing stays refinable: a pass can still deliver the artifact as output.
+/// `produced` is the number of artifacts the terminal carried.
+fn read_only_run_delivered_its_output(ctx: &AgenticContext, produced: usize) -> bool {
+    ctx.plan_run && produced > 0
+}
+
+/// The declared-artifact gaps this segment's `Success` terminal leaves for
+/// the refinement wrapper to close, when this is the segment the wrapper armed
+/// ([`AgenticContext::refinement_gate_segment`]).
+///
+/// `Some` means the wrapper will commission a refinement pass from this
+/// terminal, so the terminal must not settle the execution yet: the stateless
+/// host seals a receipt that names the refinement segment as its successor
+/// (`TerminalSettlementDescriptor::refinement_successor_segment`). The
+/// refinement segment's own receipt settles the run; this one settles it only
+/// if the pass never commits one. The verdict is
+/// [`refinement_gaps_if_warranted`] itself, so it cannot disagree with the
+/// wrapper's. Any other segment — a nested sub-goal, a resumed or recovered
+/// segment, a pipeline stage, the refinement pass — answers `None` and settles
+/// as it always did.
+fn refinement_gaps_deferring_settlement(
+    ctx: &AgenticContext,
+    segment: &str,
+    outcome: &AgenticOutcome,
+) -> Option<Vec<String>> {
+    if ctx.refinement_gate_segment.as_deref() != Some(segment) {
+        return None;
+    }
+    refinement_gaps_if_warranted(ctx, outcome).filter(|missing| !missing.is_empty())
+}
+
+/// What the run returns when its commissioned refinement pass could not run
+/// to an outcome (the fence handoff failed, or the pass's driver errored).
+///
+/// The first pass already succeeded, and a refinement is extra work on top of
+/// it, so the first outcome stands: the error is logged at WARN with its
+/// reason, and the run settles from that outcome as if no refinement had
+/// been commissioned — the caller from the returned outcome, and the first
+/// pass's receipt once this wrapper's in-flight guard drops — never as a
+/// failed run, and never by force-failing a delegated child whose work is
+/// done. The one error that is
+/// passed through is the stateless terminal-settlement signal, which means the
+/// pass DID commit a receipt-backed terminal and its lifecycle owns the
+/// settlement.
+fn first_outcome_when_refinement_could_not_run(
+    ctx: &AgenticContext,
+    first_outcome: AgenticOutcome,
+    error: anyhow::Error,
+) -> Result<AgenticOutcome> {
+    if super::run_loop::is_terminal_settlement_pending_error(&error.to_string()) {
+        return Err(error);
+    }
+    warn!(
+        task_id = ?ctx.task_id,
+        agent_id = ?ctx.agent_id,
+        execution_id = %runtime_execution_id(ctx),
+        pass = ctx.refinement_pass_index + 1,
+        reason = %error,
+        "[REFINEMENT] the refinement pass could not run; keeping the first pass's outcome"
+    );
+    Ok(first_outcome)
 }
 
 fn missing_declaration_names(
@@ -32304,6 +33674,9 @@ fn build_refinement_context(
     refined.scratch.continuation_section_fingerprints =
         Arc::new(std::sync::Mutex::new(BTreeMap::new()));
     refined.refinement_pass_index = original.refinement_pass_index + 1;
+    // The refinement segment's terminal is the run's outcome and settles it;
+    // the gate armed for the first pass's segment is not this pass's.
+    refined.refinement_gate_segment = None;
 
     let produced_names: Vec<&str> = first_artifacts
         .iter()
@@ -32336,15 +33709,48 @@ fn build_refinement_context(
     refined
 }
 
-/// Merge first-pass and second-pass outcomes into a single
-/// AgenticOutcome. Artifact merge is `first ∪ second` deduped by
-/// name, second-pass wins on collision (refinement is by definition
-/// the more authoritative attempt). Iteration counts accumulate.
+/// Whether a refinement pass's own outcome is the run's outcome as it stands,
+/// rather than something to fold into the first pass.
 ///
-/// Precondition: refinement is only commissioned when the first
-/// outcome is `Success`, so the `first` match is the only branch
-/// that fires in practice. The fallthrough returns `second` defensively.
-fn merge_refinement_outcomes(first: AgenticOutcome, second: AgenticOutcome) -> AgenticOutcome {
+/// A pause or wait (`requires_continuation`) means the run is not over — the
+/// refinement pass's receipt published that pause and the run resumes from
+/// it. A cancellation is the owner's decision about the whole run. Every
+/// other ending (`Success`, `CannotProceed`, `Failed`, `LoopDetected`, a
+/// non-resumable budget or iteration stop) folds into the first pass's
+/// `Success` through [`merge_refinement_outcomes`].
+fn refinement_second_pass_stands(second: &AgenticOutcome) -> bool {
+    second.requires_continuation()
+        || matches!(
+            second,
+            AgenticOutcome::Failed { reason, .. }
+                if matches!(reason.as_str(), "Execution cancelled" | "Execution cancelled by user")
+        )
+}
+
+/// Merge first-pass and second-pass outcomes into the one outcome the run
+/// returns AND settles with — the refinement segment's terminal receipt
+/// projects exactly this (see [`refinement_settlement_outcome`]).
+///
+/// - Second pass `Success`: artifacts are `first ∪ second` deduped by name,
+///   second wins on collision; completion is the lesser of the two; open items
+///   and iterations accumulate.
+/// - Second pass ended any other final way: the first pass's `Success` stands,
+///   downgraded to `Partial` with one open item naming the declared artifacts
+///   the refinement did not produce and how it ended, so the outcome says the
+///   gaps were not closed. Iterations accumulate.
+/// - Second pass paused, waited or was cancelled
+///   ([`refinement_second_pass_stands`]): the second outcome, unchanged.
+///
+/// The first outcome is always `Success` (refinement is only commissioned
+/// from one); anything else returns `second` defensively.
+fn merge_refinement_outcomes(
+    first: AgenticOutcome,
+    second: AgenticOutcome,
+    missing: &[String],
+) -> AgenticOutcome {
+    if refinement_second_pass_stands(&second) {
+        return second;
+    }
     let AgenticOutcome::Success {
         completion: first_completion,
         open: first_open,
@@ -32387,23 +33793,119 @@ fn merge_refinement_outcomes(first: AgenticOutcome, second: AgenticOutcome) -> A
             }
         },
         non_success => {
-            // Refinement returned non-Success (e.g., cannot_proceed
-            // mid-refinement). Fall back to the first-pass artifacts
-            // so we don't lose what already worked.
-            warn!(
-                "[REFINEMENT] second pass returned non-Success ({}); preserving first-pass \
-                 artifacts",
-                non_success.outcome_type()
-            );
+            // The refinement did not close its gaps. What the first pass
+            // delivered still stands, and the outcome says what is missing.
+            let mut open = first_open;
+            open.push(refinement_not_closed_note(&non_success, missing));
             AgenticOutcome::Success {
-                completion: crate::magician_v2::execution::agentic::types::CompletionKind::Full,
-                open: Vec::new(),
+                completion: crate::magician_v2::execution::agentic::types::CompletionKind::Partial,
+                open,
                 final_state: first_final_state,
-                iterations_used: first_iters,
+                iterations_used: first_iters.saturating_add(non_success.iterations_used()),
                 artifacts: first_artifacts,
             }
         },
     }
+}
+
+/// The open item a refinement pass that did not close its gaps leaves on the
+/// settled outcome.
+fn refinement_not_closed_note(second: &AgenticOutcome, missing: &[String]) -> String {
+    let missing = if missing.is_empty() {
+        "(none named)".to_string()
+    } else {
+        missing.join(", ")
+    };
+    let reason = match second {
+        AgenticOutcome::Failed { reason, .. } | AgenticOutcome::CannotProceed { reason, .. } => {
+            format!(": {}", bounded_note_reason(reason))
+        },
+        _ => String::new(),
+    };
+    format!(
+        "Refinement pass ended {}{reason}; declared artifact(s) not produced: {missing}",
+        second.outcome_type()
+    )
+}
+
+fn bounded_note_reason(reason: &str) -> String {
+    const MAX_CHARS: usize = 300;
+    let trimmed = reason.trim();
+    if trimmed.chars().count() <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let mut out = trimmed.chars().take(MAX_CHARS).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+/// What the first pass delivered, for the refinement pass's context
+/// ([`AgenticContext::refinement_first_pass`]). Bound to the refinement
+/// context's own segment. Artifact bytes are dropped: settlement needs only
+/// names, kinds and counts, and the wrapper keeps the real artifacts.
+fn refinement_first_pass_record(
+    refined_ctx: &AgenticContext,
+    first: &AgenticOutcome,
+    missing: &[String],
+) -> Option<Arc<super::types::RefinementFirstPass>> {
+    let AgenticOutcome::Success {
+        completion,
+        open,
+        iterations_used,
+        artifacts,
+        ..
+    } = first
+    else {
+        return None;
+    };
+    let execution_id = runtime_execution_id_opt(refined_ctx)?;
+    Some(Arc::new(super::types::RefinementFirstPass {
+        segment: derived_loop_state_address(refined_ctx, execution_id),
+        completion: *completion,
+        open: open.clone(),
+        iterations_used: *iterations_used,
+        artifacts: artifacts
+            .iter()
+            .map(|artifact| {
+                let mut header = artifact.clone();
+                header.data = Vec::new();
+                header
+            })
+            .collect(),
+        missing: missing.to_vec(),
+    }))
+}
+
+/// The outcome a refinement segment's terminal receipt settles the run with,
+/// when it is not the segment's own outcome: the same merge
+/// [`execute_agentically_with_refinement`] returns, so the durable settlement
+/// and the returned outcome cannot disagree. `None` for every segment other
+/// than the refinement pass's own, and when the pass's outcome stands
+/// ([`refinement_second_pass_stands`]).
+fn refinement_settlement_outcome(
+    ctx: &AgenticContext,
+    segment: &str,
+    outcome: &AgenticOutcome,
+) -> Option<AgenticOutcome> {
+    let first = ctx
+        .refinement_first_pass
+        .as_deref()
+        .filter(|first| first.segment == segment)?;
+    if refinement_second_pass_stands(outcome) {
+        return None;
+    }
+    let first_outcome = AgenticOutcome::Success {
+        completion: first.completion,
+        open: first.open.clone(),
+        final_state: EnvironmentState::Uninitialized,
+        iterations_used: first.iterations_used,
+        artifacts: first.artifacts.clone(),
+    };
+    Some(merge_refinement_outcomes(
+        first_outcome,
+        outcome.clone(),
+        &first.missing,
+    ))
 }
 
 /// Clone an environment for the provider-facing decision task without copying
@@ -32612,8 +34114,13 @@ pub(super) fn schedule_agentic_decision_job(
     side_call_telemetry: Option<
         crate::magician_v2::analytics::operation_llm_telemetry::OperationLlmTelemetryContext,
     >,
-    definition_of_done_met: bool,
+    definition_of_done_signal: super::decision::DefinitionOfDone,
+    definition_of_done: Option<Vec<super::decision::ResolvedMicroGoal>>,
     operator_steer: &[String],
+    carried_screenshot: Option<(
+        crate::magician_v2::slot_graph::extraction::ImageData,
+        String,
+    )>,
 ) -> Result<
     ScheduledRootResult<Result<(Decision, super::native_integration::NativeDecisionMetadata)>>,
 > {
@@ -32662,8 +34169,10 @@ pub(super) fn schedule_agentic_decision_job(
                 native_adapter.as_ref(),
                 Some(&telemetry_slot),
                 side_call_telemetry.as_ref(),
-                definition_of_done_met,
+                definition_of_done_signal,
+                definition_of_done.as_deref(),
                 &operator_steer,
+                carried_screenshot.clone(),
             )
             .heap_boxed()
             .await
@@ -32751,7 +34260,7 @@ impl ControllerPauseContinuation {
                 .iteration_offset
                 .checked_add(pause.iteration)
                 .context("controller continuation iteration overflow")?,
-            maximum_iterations: upgraded_pause_iteration_budget(pause),
+            maximum_iterations: remaining_pause_iteration_budget(pause),
             guard,
         })
     }
@@ -32832,6 +34341,18 @@ async fn execute_agentically_scoped(
     let owned_executors = executors.clone();
     let execution_id = runtime_execution_id_opt(ctx).map(ToString::to_string);
     let execution_token_meter = CapturedExecutionTokenMeter::current();
+    // The job's inputs travel behind one pointer: the context, state and
+    // executors are large, and every layer between here and the spawned task
+    // (this frame, `run_execution_job`, the spawner and its task block) keeps
+    // its own debug-build stack copy of whatever the closure captures by value.
+    // A delegated child starts this deep on its worker, and those copies
+    // overflowed the 2 MiB stack (2026-10-20 crash reports).
+    let job_input = Box::new((
+        owned_ctx,
+        initial_state,
+        owned_executors,
+        cancellation_token,
+    ));
     let outcome =
         crate::magician_v2::execution::runtime_boundary::run_execution_job(move || async move {
             execution_token_meter
@@ -32846,6 +34367,8 @@ async fn execute_agentically_scoped(
                     // several copies of a by-value `AgenticOutcome` per layer
                     // overflowed the 2 MiB worker before the loop began.
                     Box::pin(async move {
+                        let (owned_ctx, initial_state, owned_executors, cancellation_token) =
+                            *job_input;
                         execute_agentically_scoped_on_execution_runtime(
                             owned_ctx,
                             initial_state,
@@ -33300,6 +34823,8 @@ async fn execute_agentically_run(
 ) -> Result<AgenticOutcome> {
     let ctx = &mut owned_ctx;
     let executors = &owned_executors;
+    let _shell_jobs_lifetime = runtime_execution_id_opt(ctx)
+        .map(crate::magician_v2::execution::shell_jobs::RunLifetime::enter);
 
     // Exact retry composition starts from a retained PlacementRetry body, but
     // the exact LoopState may contain a later committed owner transition. Read
@@ -33423,7 +34948,16 @@ async fn execute_agentically_run(
         }
     }
 
-    for iteration in resume_iteration..=ctx.max_iterations {
+    // The bound is re-read every turn, not fixed by a range: a turn the spend
+    // envelope parked hands its iteration back through
+    // `LoopProtectiveState::parked_iteration_refunds` (the parked arm of
+    // `resolve_decision_error`), so waiting for a budget window does not spend
+    // the run's allowance. The durable driver's ceiling reads the same bound
+    // (`WorkerHost::iteration_ceiling`).
+    let mut next_iteration = resume_iteration;
+    while next_iteration <= super::run_budget::iteration_ceiling(ctx, &loop_protective) {
+        let iteration = next_iteration;
+        next_iteration += 1;
         // A completed action's full browser capture is useful only until its
         // verification/result record has been formed. Keeping those DOM/CDP
         // screenshot, and Merkle-node buffers in every historical pre/post
@@ -33526,6 +35060,7 @@ async fn execute_agentically_run(
                 ctx,
                 loop_protective.cumulative_run_cost_usd,
                 iteration,
+                loop_protective.parked_iteration_refunds,
             );
         if execution_driver == super::run_loop::ExecutionDriver::Inprocess {
             if let Some((used, limit)) = iteration_token_budget {
@@ -33534,7 +35069,9 @@ async fn execute_agentically_run(
                     // "Continue execution?" pause with partial findings preserved,
                     // mirroring MaxIterationsReached — not a progress-discarding hard
                     // `ExecutionFailed`.
-                    return Ok(conclude_budget_exhausted(
+                    // Checked before this iteration does any work, so the pause
+                    // records the completed iterations and Continue re-runs this one.
+                    return Ok(conclude_budget_exhausted_before_iteration(
                         ctx,
                         executors,
                         // `None`: the driver's own pre-phase token-ceiling check runs
@@ -33566,7 +35103,8 @@ async fn execute_agentically_run(
             // (Task 6b). See `run_budget::effective_cost_cap_from`.
             if let Some(cap) = iteration_cost_cap {
                 if loop_protective.cumulative_run_cost_usd >= cap {
-                    return Ok(conclude_budget_exhausted(
+                    // Before any work, like the token check above.
+                    return Ok(conclude_budget_exhausted_before_iteration(
                         ctx,
                         executors,
                         // `None`: the driver's own pre-phase cost-ceiling check runs
@@ -33864,8 +35402,12 @@ async fn execute_agentically_run(
     );
 
     // Build resumable pause state so orchestrator can offer continue/cancel.
+    // The checkpoint is every iteration this segment ran, parked wakes
+    // included, so the resumed key (`iteration_offset + iteration`) is past
+    // all of them. The refunds ride the bundle, so the remaining budget
+    // (`remaining_pause_iteration_budget`) is still zero.
     let pause_state = build_full_pause_state(
-        ctx.max_iterations,
+        super::run_budget::iteration_ceiling(ctx, &loop_protective),
         ctx,
         &current_state,
         &history,
@@ -33888,16 +35430,18 @@ async fn execute_agentically_run(
     let max_iter_correlation_id = pause_state.hitl_correlation_id();
     let max_iter_timestamp = Utc::now().timestamp_millis();
     // An admitted outer controller owns the frozen limit and subsequent
-    // artifact review. Ordinary continuation must not mint another budget
-    // or leave a public resume prompt after that attempt has settled.
-    if ctx.controller_attempt_hash.is_none() {
+    // artifact review, and an app contract's limit is not the owner's to
+    // widen. Ordinary continuation must not mint another budget or leave a
+    // public resume prompt for either (`iteration_limit_offers_continuation`).
+    let offers_continuation = iteration_limit_offers_continuation(ctx, &pause_state);
+    if offers_continuation {
         executors.emit_event(RuntimeTransportEvent::AgenticMaxIterationsReached {
             execution_id: runtime_execution_id(ctx),
             principal: principal.clone(),
             workspace: workspace.clone(),
             plan_id: ctx.plan_id.clone().unwrap_or_default(),
             step_id: ctx.step_id.clone().unwrap_or_default(),
-            iterations_used: ctx.max_iterations,
+            iterations_used: ctx.iteration_offset.saturating_add(ctx.max_iterations),
             pause_state_id: Some(max_iter_pause_state_id.clone()),
             agent_id: ctx.agent_id.clone(),
             goal_id: ctx.goal_id.clone(),
@@ -33915,10 +35459,7 @@ async fn execute_agentically_run(
             correlation_id: max_iter_correlation_id,
             source: "agentic".to_string(),
             input_type: "confirmation".to_string(),
-            prompt: format!(
-                "Reached max iterations ({}) without completing the goal. Continue or cancel?",
-                ctx.max_iterations
-            ),
+            prompt: super::run_budget::iteration_extension_prompt(&pause_state),
             hint: if ctx.app_disclosure_guard.is_some() || ctx.goal.is_empty() {
                 None
             } else {
@@ -33926,7 +35467,10 @@ async fn execute_agentically_run(
             },
             input_schema: Some(serde_json::json!({
                 "pause_kind": "max_iterations",
-                "iterations_used": ctx.max_iterations,
+                "confirm_label": "Extend and continue",
+                "deny_label": "Cancel",
+                "extension_iterations": super::run_budget::iteration_extension_size(&pause_state),
+                "iterations_used": ctx.iteration_offset.saturating_add(ctx.max_iterations),
                 "plan_id": ctx.plan_id.clone().unwrap_or_default(),
                 "step_id": ctx.step_id.clone().unwrap_or_default(),
             })),
@@ -33942,10 +35486,10 @@ async fn execute_agentically_run(
     let outcome = AgenticOutcome::MaxIterationsReached {
         last_state: current_state,
         iterations_used: ctx.max_iterations,
-        pause_state: ctx.controller_attempt_hash.is_none().then_some(pause_state),
+        pause_state: offers_continuation.then_some(pause_state),
     };
     // A resumable pause: the run's secrets stay for the continuation.
-    if ctx.controller_attempt_hash.is_none() {
+    if offers_continuation {
         keep_ephemeral_scope_for_continuation(&mut _ephemeral_secret_scope);
     }
     // Surface partial work in the persisted summary so the user sees
@@ -33962,6 +35506,7 @@ async fn execute_agentically_run(
             ctx.max_iterations
         ),
     );
+    let partial_findings = with_checkpoint_findings(ctx, partial_findings);
     persist_paused_execution_summary_with_partial(
         ctx,
         executors,
@@ -34259,6 +35804,11 @@ async fn build_run_setup(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = ctx.browser_session_id_override.clone();
+        *executors
+            .browser_run
+            .tab_label
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = ctx.browser_tab_label.clone();
     }
     update_executor_primitive_prompt_context(executors, ctx)
         .heap_boxed()
@@ -34291,6 +35841,7 @@ async fn build_run_setup(
         .min(u128::from(u64::MAX)) as u64;
 
     ctx.agent_surface_runtime_config = executors.agent_surface_runtime_config.clone();
+    ctx.agentic_settings = executors.agentic_settings.clone();
 
     let capability_snapshot_started = Instant::now();
     let (scoped_registry, scoped_tool_index, scoped_revision, scoped_app_origin_tools) = match (
@@ -34406,6 +35957,10 @@ async fn build_run_setup(
     // defaulted. `take` (not clone) drains the carry so a context cloned
     // forward into a nested segment cannot re-seed it.
     let mut loop_protective = ctx.resume_loop_protective.take().unwrap_or_default();
+    loop_protective
+        .iteration_budget_base
+        .get_or_insert(ctx.max_iterations.max(1));
+    loop_protective.iteration_grants_applied.get_or_insert(0);
     // Deliberately NOT bundled/persisted: this buffer is folded verbatim into
     // the next decision prompt, so restoring it from an on-disk record would
     // make a tampered pause an prompt-injection vector. A steer that was
@@ -34496,6 +36051,12 @@ async fn build_run_setup(
     let max_duration = match loop_protective.remaining_max_duration_ms {
         Some(remaining_ms) => Some(Duration::from_millis(remaining_ms)),
         None if coding_execution => crate::config::coding_execution_max_duration(),
+        // A task-backed root run is bounded by liveness (stall watchdog,
+        // budgets, outage retries), not a wall clock. Delegated children,
+        // sealed and app runs keep the default deadline.
+        None if super::run_budget::is_owner_renewable_task_run(ctx) => {
+            crate::config::task_run_max_duration()
+        },
         None => crate::config::agentic_max_duration(),
     };
     let deadline = max_duration.map(|d| execution_start + d);
@@ -35489,11 +37050,21 @@ pub(crate) fn loop_state_address(ctx: &AgenticContext, execution_id: &str) -> St
 /// was requested. Keeping it separate prevents an active address inherited by
 /// a cloned refinement/child context from becoming that invocation's key.
 fn derived_loop_state_address(ctx: &AgenticContext, execution_id: &str) -> String {
+    derived_loop_state_address_at_pass(ctx, execution_id, ctx.refinement_pass_index)
+}
+
+/// [`derived_loop_state_address`] for refinement pass `refinement_pass` of the
+/// same context — the address `build_refinement_context` gives the next pass.
+fn derived_loop_state_address_at_pass(
+    ctx: &AgenticContext,
+    execution_id: &str,
+    refinement_pass: u32,
+) -> String {
     let mut address = loop_state_execution_id(
         execution_id,
         ctx.iteration_offset,
         &loop_state_nesting(ctx),
-        ctx.refinement_pass_index,
+        refinement_pass,
     );
     if let Some(segment) = ctx.pipeline_loop_state_segment {
         address.push_str(&format!("-s{}-a{}", segment.stage_index, segment.attempt));
@@ -35763,11 +37334,10 @@ impl StatelessArm {
         pause.approved_confirmation_actions = approved_confirmation_actions.to_vec();
         pause.stateless_parked_segment = Some(self.key.execution_id().to_owned());
         pause.stateless_retry_due_at = None;
-        pause.live_messages = super::decision::compact_live_messages(
-            &pause.live_messages,
-            super::decision::OUTER_VERBATIM_MAX_ITERATIONS,
-            super::decision::OUTER_VERBATIM_TOKEN_BUDGET,
-        );
+        // Same window decide() reads, so the resumed run sees what it saw.
+        let (max_pairs, token_budget) = super::decision::verbatim_window(ctx);
+        pause.live_messages =
+            super::decision::compact_live_messages(&pause.live_messages, max_pairs, token_budget);
         state.continuation_checkpoint = Some(
             super::run_loop::state::IterationContinuationCheckpoint::try_new(&pause).map_err(
                 |reason| {
@@ -36602,7 +38172,10 @@ impl StatelessArm {
                         let wake_at = chrono::DateTime::<Utc>::from_timestamp_millis(until_ms)
                             .filter(|deadline| *deadline > now)
                             .unwrap_or_else(|| now + chrono::Duration::seconds(1));
-                        let continuation = self.placement_continuation(host, wake_at).heap_boxed().await?;
+                        let continuation = self
+                            .placement_continuation(host, wake_at)
+                            .heap_boxed()
+                            .await?;
                         return Ok(IterationStep::RunEnded(Box::new(
                             AgenticOutcome::Sleeping {
                                 wake_at,
@@ -36650,7 +38223,10 @@ impl StatelessArm {
                         %wake_at,
                         "[LOOP_WORKER] foreign placement pin remains live; scheduling exact-key retry"
                     );
-                    let continuation = self.placement_continuation(host, wake_at).heap_boxed().await?;
+                    let continuation = self
+                        .placement_continuation(host, wake_at)
+                        .heap_boxed()
+                        .await?;
                     return Ok(IterationStep::RunEnded(Box::new(
                         AgenticOutcome::Sleeping {
                             wake_at,
@@ -36867,8 +38443,7 @@ impl StatelessArm {
         // a no-op. `continue_resumed_execution` recognizes this
         // reserved input and asks `StatelessArm::new` to reclaim the
         // source exactly once.
-        let input_id =
-            stateless_effect_resolution_input_id(self.key.execution_id(), &effect_id);
+        let input_id = stateless_effect_resolution_input_id(self.key.execution_id(), &effect_id);
         let protected_app = host.ctx.app_disclosure_guard.is_some();
         let question = if protected_app {
             "A previously started protected-app action has no conclusive completion \
@@ -36933,8 +38508,7 @@ impl StatelessArm {
         // Use the store key, not a parallel derivation, so this
         // continuation cannot accidentally answer a sibling nested,
         // pipeline, refinement, or resume segment.
-        pause_state.stateless_parked_segment =
-            Some(self.key.execution_id().to_string());
+        pause_state.stateless_parked_segment = Some(self.key.execution_id().to_string());
         let pause_state_id = pause_state.storage_key();
 
         if host.ctx.has_observability() || host.ctx.has_agent_routing() {
@@ -37457,6 +39031,9 @@ fn overlay_exact_continuation_context_before_setup(
     ctx.invocation_context_override = pause.invocation_context_override.clone();
     ctx.continuation_frames = pause.continuation_frames.clone();
     ctx.spend_token_ids = pause.spend_token_ids.clone();
+    // `read_lineage` is not overlaid: it widens goal workspace reads, and
+    // this continuation is not hash-checked. Setup hydrated it from the
+    // run's own record.
     ctx.prior_environment_knowledge = pause.prior_environment_knowledge.clone();
     ctx.prior_procedure_memory = pause.prior_procedure_memory.clone();
     ctx.task_state = if pause.app_disclosure_checkpoint.is_some() {
@@ -37470,6 +39047,8 @@ fn overlay_exact_continuation_context_before_setup(
     ctx.chat_inline = pause.chat_inline;
     ctx.coding_coordinator_run = pause.coding_coordinator_run;
     ctx.vibedev_run = pause.vibedev_run;
+    ctx.plan_run = pause.plan_run;
+    ctx.vibedev_autopilot = pause.vibedev_autopilot;
     ctx.stable_goal_hash = pause.stable_goal_hash.clone();
     ctx.artifact_chain_id = pause.artifact_chain_id.clone();
     ctx.root_execution_id = pause.root_execution_id.clone();
@@ -37587,6 +39166,8 @@ fn restore_exact_iteration_continuation(
     ctx.chat_inline = pause.chat_inline;
     ctx.coding_coordinator_run = pause.coding_coordinator_run;
     ctx.vibedev_run = pause.vibedev_run;
+    ctx.plan_run = pause.plan_run;
+    ctx.vibedev_autopilot = pause.vibedev_autopilot;
     ctx.stable_goal_hash = pause.stable_goal_hash.clone();
     ctx.artifact_chain_id = pause.artifact_chain_id.clone();
     // The checkpoint's pre-decided call and how it settled (fenced and hashed
@@ -37993,10 +39574,13 @@ impl<'a> InProcessWorkerHost<'a> {
                 self.ctx,
                 self.loop_protective.cumulative_run_cost_usd,
                 iteration,
+                self.loop_protective.parked_iteration_refunds,
             );
         if let Some((used, limit)) = stateless_token_budget {
             if used >= limit {
-                let outcome = conclude_budget_exhausted(
+                // No work of this iteration has dispatched yet: checkpoint the
+                // completed iterations (`pause_checkpoint_before_iteration`).
+                let outcome = conclude_budget_exhausted_before_iteration(
                     self.ctx,
                     self.executors,
                     Some((iteration, phase)),
@@ -38022,7 +39606,7 @@ impl<'a> InProcessWorkerHost<'a> {
         if let Some(limit_dollars) = stateless_cost_cap {
             let used_dollars = self.loop_protective.cumulative_run_cost_usd;
             if used_dollars >= limit_dollars {
-                let outcome = conclude_budget_exhausted(
+                let outcome = conclude_budget_exhausted_before_iteration(
                     self.ctx,
                     self.executors,
                     Some((iteration, phase)),
@@ -38655,6 +40239,10 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
         &mut *self.ctx
     }
 
+    fn iteration_ceiling(&self) -> usize {
+        super::run_budget::iteration_ceiling(&*self.ctx, &*self.loop_protective)
+    }
+
     /// Decision 4's input, from the store that owns the answer.
     ///
     /// `SecretStore::ephemeral_scope_holds_user_typed_secret` is keyed by the
@@ -39056,6 +40644,7 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                     self.ctx,
                     self.loop_protective.cumulative_run_cost_usd,
                     entry.iteration,
+                    self.loop_protective.parked_iteration_refunds,
                 );
                 tokens.is_some_and(|(used, limit)| used >= limit)
                     || cost_cap
@@ -39174,11 +40763,10 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
         pause.approved_confirmation_actions = self.approved_confirmation_actions.clone();
         pause.stateless_parked_segment = Some(exact_segment.to_string());
         pause.stateless_retry_due_at = None;
-        pause.live_messages = super::decision::compact_live_messages(
-            &pause.live_messages,
-            super::decision::OUTER_VERBATIM_MAX_ITERATIONS,
-            super::decision::OUTER_VERBATIM_TOKEN_BUDGET,
-        );
+        // Same window decide() reads, so the resumed run sees what it saw.
+        let (max_pairs, token_budget) = super::decision::verbatim_window(self.ctx);
+        pause.live_messages =
+            super::decision::compact_live_messages(&pause.live_messages, max_pairs, token_budget);
         super::run_loop::state::IterationContinuationCheckpoint::try_new(&pause)
     }
 
@@ -39228,6 +40816,41 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
         if identity.task_id.is_none() && identity.execution_id.is_none() {
             return Ok(None);
         }
+        // A `Success` the refinement wrapper is about to refine is not this
+        // execution's outcome: the refinement pass continues the same run. A
+        // receipt here would settle the execution Completed (and release a
+        // delegated child's result to its parent) before the pass starts, and
+        // the pass would then find no active durable generation at its first
+        // Decide. So the receipt names the refinement segment as its
+        // successor: the projector publishes this ending's events but settles
+        // nothing while the refinement runs, the refinement's own receipt
+        // settles the run once committed, and if the pass never commits one
+        // (it errored, or the process died mid-refinement) this receipt
+        // settles the run with the first pass's `Success` — at the next
+        // projector pass, or at boot.
+        let refinement_successor =
+            refinement_gaps_deferring_settlement(self.ctx, key.execution_id(), outcome).map(
+                |missing| {
+                    let execution_id = runtime_execution_id(self.ctx);
+                    let successor = derived_loop_state_address_at_pass(
+                        self.ctx,
+                        &execution_id,
+                        self.ctx.refinement_pass_index.saturating_add(1),
+                    );
+                    info!(
+                        execution = %key,
+                        terminal = ?terminal,
+                        missing = %missing.join(","),
+                        successor = %successor,
+                        "[REFINEMENT] this pass ended with declared-artifact gaps the refinement \
+                         pass will close; its receipt hands settlement to that pass"
+                    );
+                    successor
+                },
+            );
+        // A refinement segment settles the run with what the wrapper returns:
+        // the first pass merged with this one.
+        let settled_outcome = refinement_settlement_outcome(self.ctx, key.execution_id(), outcome);
         let service = self.executors.artifact_v2_service.as_ref().ok_or_else(|| {
             "task-backed stateless terminal has no Artifact settlement owner".to_owned()
         })?;
@@ -39239,6 +40862,8 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                 terminal,
                 terminal_seq,
                 outcome,
+                settled_outcome.as_ref(),
+                refinement_successor.as_deref(),
                 self.executors,
                 self.ctx.app_disclosure_guard.is_some(),
                 source_revision,
@@ -39362,9 +40987,22 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
             .cancellation_token
             .as_ref()
             .is_some_and(CancellationToken::is_cancelled);
-        if local_control_is_closing
-            || policy == super::run_loop::driver_worker::TerminalSteerPolicy::RuntimeClosure
-        {
+        // A controller-owned attempt can fail while its task root continues
+        // into review or revision. Preserve the exact phase fence for that
+        // handoff; a genuine cancellation still closes the control epoch.
+        let closes_runtime = policy
+            == super::run_loop::driver_worker::TerminalSteerPolicy::RuntimeClosure
+            && (local_control_is_closing
+                || self
+                    .ctx
+                    .controller_attempt_hash
+                    .as_deref()
+                    .is_none_or(|hash| hash.trim().is_empty())
+                || self
+                    .durably_cancelled()
+                    .await
+                    .map_err(|error| error.to_string())?);
+        if local_control_is_closing || closes_runtime {
             let Some(control_generation) =
                 runtime.stateless_control_generation(&execution_id).await?
             else {
@@ -39534,7 +41172,7 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
             .controls
             .set_shell_stream_iteration(iteration);
 
-        let steer_consume_receipt = self.claim_durable_operator_steers(&entry).await?;
+        let mut steer_consume_receipt = self.claim_durable_operator_steers(&entry).await?;
 
         // LEFTOVERS FIRST, and this is not tidying — it is the address contract.
         //
@@ -39710,6 +41348,7 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                     self.executors,
                     self.history,
                     self.loop_protective,
+                    self.approved_confirmation_actions.as_slice(),
                     observed_state,
                     self.pending_operator_steer.as_slice(),
                     self.cancellation_token.as_ref(),
@@ -39718,6 +41357,28 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                 )
                 .heap_boxed()
                 .await?;
+                if decided.decision_result.is_err() {
+                    if let Some(receipt) = steer_consume_receipt.take() {
+                        let (principal, workspace) = self
+                            .ctx
+                            .principal
+                            .as_deref()
+                            .zip(self.ctx.workspace.as_deref())
+                            .ok_or_else(|| anyhow!("operator steer retry lost its scope"))?;
+                        let execution_id = runtime_execution_id(self.ctx);
+                        let source_segment = loop_state_address(self.ctx, &execution_id);
+                        super::run_loop::steer_inbox::retry_failed_decision(
+                            &self.executors.artifact_v2_workspace,
+                            principal,
+                            workspace,
+                            &execution_id,
+                            &source_segment,
+                            &receipt,
+                        )
+                        .await
+                        .map_err(|error| anyhow!("operator steer retry failed: {error}"))?;
+                    }
+                }
                 let checkpoint = if !RESOLVE_CHECKPOINT_PUBLICATION_SUPPORTED {
                     None
                 } else if holds_user_typed_ephemeral_secret {
@@ -39807,6 +41468,7 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                             )
                         },
                     };
+                let failed_decision = decided.decision_result.is_err();
                 match phases::resolve::run(
                     self.ctx,
                     self.executors,
@@ -39833,7 +41495,19 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                         report
                     },
                     PhaseStep::Exit(boundary) => PhaseReport::exits(boundary),
-                    PhaseStep::Return(outcome) => Self::ended_run(outcome),
+                    PhaseStep::Return(outcome) => {
+                        // Retrying retains guidance, but exhausted retries must
+                        // still terminate. Otherwise the retained inbox would
+                        // redirect this failure into endless new Decide turns.
+                        let policy = failed_decision.then(|| {
+                            super::run_loop::driver_worker::TerminalSteerPolicy::for_runtime_closure(outcome.as_ref())
+                        });
+                        let mut report = Self::ended_run(outcome);
+                        if let Some(policy) = policy {
+                            report.terminal_steer_policy = policy;
+                        }
+                        report
+                    },
                 }
             },
 
@@ -40133,6 +41807,7 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                     self.ctx,
                     self.loop_protective.cumulative_run_cost_usd,
                     iteration,
+                    self.loop_protective.parked_iteration_refunds,
                 );
                 tokens.is_some_and(|(used, limit)| used >= limit)
                     || cost_cap
@@ -40390,6 +42065,7 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
                 self.ctx,
                 self.loop_protective.cumulative_run_cost_usd,
                 iteration,
+                self.loop_protective.parked_iteration_refunds,
             );
             tokens.is_some_and(|(used, limit)| used >= limit)
                 || cost_cap
@@ -41742,6 +43418,49 @@ fn agentic_llm_event_correlation_from_receipt(
     Some(correlation)
 }
 
+/// Mint the identity of the decision call this iteration is about to make,
+/// and the correlation its `LLMRequestSent` carries.
+///
+/// The router puts these ids on the call's trace context
+/// (`MultiLlmAgentAdapter::with_preassigned_decision_call`), so the call's
+/// request, `LLMRouted` and `LLMResponseReceived` all share one `trace_id` /
+/// `llm_call_id`. The trace root is the execution root, as
+/// `OperationLlmRouter::route_request` derives it for task-scoped calls. No
+/// provider attempt exists yet, so the correlation names none.
+pub(super) fn agentic_decision_call_identity(
+    ctx: &AgenticContext,
+    principal: Option<&str>,
+    workspace: Option<&str>,
+    iteration: usize,
+    capability: &str,
+) -> (
+    crate::magician_v2::query_analysis::operation_llm_router::PreassignedLlmCallIdentity,
+    Option<crate::magician_v2::realtime_events::LlmEventCorrelation>,
+) {
+    let mut context = magicllm::LlmTraceContext::new(
+        magicllm::LlmScope::new(principal.unwrap_or_default(), workspace.unwrap_or_default()),
+        magicllm::LlmWorkloadClass::AutonomousTask,
+    );
+    let trace_root = ctx
+        .root_execution_id
+        .clone()
+        .unwrap_or_else(|| runtime_execution_id(ctx));
+    if !trace_root.is_empty() && trace_root.trim() == trace_root {
+        context.trace_id = trace_root;
+    }
+    use crate::magician_v2::query_analysis::operation_llm_router::PreassignedLlmCallIdentity;
+    let identity = PreassignedLlmCallIdentity {
+        trace_id: context.trace_id.clone(),
+        llm_call_id: context.llm_call_id.clone(),
+        capability: Some(capability.to_string()),
+    };
+    let receipt = magicllm::LlmTraceReceipt::direct_with_attempt_count(context, 0);
+    let correlation = agentic_llm_event_correlation_from_receipt(
+        &receipt, ctx, principal, workspace, iteration, None,
+    );
+    (identity, correlation)
+}
+
 /// Persist a paused-execution summary, optionally appending a
 /// partial-success findings block to the persisted `summary` field.
 ///
@@ -41802,6 +43521,7 @@ fn budget_dimension_label(dimension: &BudgetDimension) -> &'static str {
         BudgetDimension::LlmCalls { .. } => "LLM-call",
         BudgetDimension::Tokens { .. } => "token",
         BudgetDimension::Actions { .. } => "per-action",
+        BudgetDimension::ProviderFailure { .. } => "provider",
     }
 }
 
@@ -41841,8 +43561,101 @@ pub(super) async fn conclude_budget_exhausted(
     loop_protective: &LoopProtectiveState,
     approved_confirmation_actions: &[ApprovedConfirmationAction],
 ) -> AgenticOutcome {
-    let pause_state = build_full_pause_state(
+    conclude_budget_exhausted_at_checkpoint(
+        ctx,
+        executors,
+        at,
+        history,
+        last_state,
+        dimension,
         iteration,
+        iteration.saturating_sub(1),
+        execution_start,
+        loop_protective,
+        approved_confirmation_actions,
+    )
+    .await
+}
+
+/// Checkpoint completed work for a manual interruption or a budget stop before
+/// the next iteration, with a distinct address for a claimed first turn.
+///
+/// Resume treats `AgenticPauseState::iteration` as completed work and gives
+/// the continued segment `max_iterations - iteration`, so recording the
+/// not-yet-run `iteration` charged every such pause one iteration, and a
+/// cost/token stop on the final iteration resumed with none: the owner
+/// approved the extension and was asked again at once, about iterations.
+///
+/// Floored at one under a claimed phase (`at` is `Some`). That phase's cursor
+/// is already committed under this segment's loop-state key, and the resumed
+/// segment is keyed `iteration_offset + pause.iteration`
+/// (`park_resume_address`), so a checkpoint of zero on iteration one would
+/// re-mint this very key and claim the cursor it left — the collision
+/// `phases::resolve`'s cancellation arm documents. The resident loop's
+/// pre-phase check (`at` is `None`) commits nothing under its key before
+/// `advance_iteration`, so it records the true count, as its pre-phase
+/// cancel and work-budget arms already do.
+fn pause_checkpoint_before_iteration(iteration: usize, at: PhaseAddress) -> usize {
+    let completed = iteration.saturating_sub(1);
+    if at.is_some() {
+        completed.max(1)
+    } else {
+        completed
+    }
+}
+
+/// [`conclude_budget_exhausted`] for a check that runs before `iteration`
+/// starts any work: the pause checkpoints the completed iterations
+/// ([`pause_checkpoint_before_iteration`]), so Continue re-runs `iteration`
+/// rather than skipping it.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn conclude_budget_exhausted_before_iteration(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    at: PhaseAddress,
+    history: &ExecutionHistory,
+    last_state: EnvironmentState,
+    dimension: BudgetDimension,
+    iteration: usize,
+    execution_start: &Instant,
+    loop_protective: &LoopProtectiveState,
+    approved_confirmation_actions: &[ApprovedConfirmationAction],
+) -> AgenticOutcome {
+    conclude_budget_exhausted_at_checkpoint(
+        ctx,
+        executors,
+        at,
+        history,
+        last_state,
+        dimension,
+        pause_checkpoint_before_iteration(iteration, at),
+        iteration.saturating_sub(1),
+        execution_start,
+        loop_protective,
+        approved_confirmation_actions,
+    )
+    .await
+}
+
+/// The body both budget conclusions share. `checkpoint_iteration` is written
+/// as `AgenticPauseState::iteration` (what resume counts as spent);
+/// `iterations_completed` is what the outcome and summary report.
+#[allow(clippy::too_many_arguments)]
+async fn conclude_budget_exhausted_at_checkpoint(
+    ctx: &AgenticContext,
+    executors: &ActionExecutors,
+    at: PhaseAddress,
+    history: &ExecutionHistory,
+    last_state: EnvironmentState,
+    dimension: BudgetDimension,
+    checkpoint_iteration: usize,
+    iterations_completed: usize,
+    execution_start: &Instant,
+    loop_protective: &LoopProtectiveState,
+    approved_confirmation_actions: &[ApprovedConfirmationAction],
+) -> AgenticOutcome {
+    let pause_state = build_full_pause_state(
+        checkpoint_iteration,
         ctx,
         &last_state,
         history,
@@ -41866,6 +43679,17 @@ pub(super) async fn conclude_budget_exhausted(
             (used.to_string(), limit.to_string())
         },
         BudgetDimension::Actions { used, limit, .. } => (used.to_string(), limit.to_string()),
+        BudgetDimension::ProviderFailure {
+            attempts,
+            waited_secs,
+            ..
+        } => (attempts.to_string(), format!("{waited_secs}s")),
+    };
+    let provider_failure = matches!(dimension, BudgetDimension::ProviderFailure { .. });
+    let pause_reason = if provider_failure {
+        "provider_failure"
+    } else {
+        "budget"
     };
 
     // Dedicated event + canonical HitlRequested dual-emit, mirroring the
@@ -41888,7 +43712,7 @@ pub(super) async fn conclude_budget_exhausted(
                     workspace: workspace.clone(),
                     plan_id: ctx.plan_id.clone().unwrap_or_default(),
                     step_id: ctx.step_id.clone().unwrap_or_default(),
-                    iterations_used: iteration,
+                    iterations_used: checkpoint_iteration,
                     pause_state_id: Some(pause_state_id.clone()),
                     agent_id: ctx.agent_id.clone(),
                     goal_id: ctx.goal_id.clone(),
@@ -41915,6 +43739,10 @@ pub(super) async fn conclude_budget_exhausted(
                 },
                 input_schema: Some(serde_json::json!({
                     "pause_kind": "budget",
+                    "pause_reason": pause_reason,
+                    "confirm_label": dimension.confirm_label(),
+                    "deny_label": "Cancel",
+                    "budget_dimension": dimension,
                     "used": used_str.clone(),
                     "limit": limit_str.clone(),
                     "plan_id": ctx.plan_id.clone().unwrap_or_default(),
@@ -41933,7 +43761,7 @@ pub(super) async fn conclude_budget_exhausted(
     let outcome = AgenticOutcome::BudgetExhausted {
         dimension,
         last_state,
-        iterations_completed: iteration.saturating_sub(1),
+        iterations_completed,
         actions_completed: history.iterations.len(),
         pause_state: ctx.controller_attempt_hash.is_none().then_some(pause_state),
     };
@@ -41942,8 +43770,13 @@ pub(super) async fn conclude_budget_exhausted(
     let duration_ms = execution_start.elapsed().as_millis() as u64;
     let partial_findings = extract_partial_success_summary(
         history,
-        &format!("Reached budget limit ({} of {})", used_str, limit_str),
+        &if provider_failure {
+            "Paused: the model provider kept failing".to_string()
+        } else {
+            format!("Reached budget limit ({} of {})", used_str, limit_str)
+        },
     );
+    let partial_findings = with_checkpoint_findings(ctx, partial_findings);
     persist_paused_execution_summary_with_partial(
         ctx,
         executors,
@@ -42316,6 +44149,16 @@ pub(super) fn restore_context_from_pause(
     // Cross-iteration protective state. `None` on pre-migration records,
     // which then resume with the pre-fix behaviour of restarting counters.
     ctx.resume_loop_protective = pause_state.loop_protective_state.clone();
+    // The paused segment's parked-wake refunds are already folded into the
+    // resumed limit (`remaining_pause_iteration_budget`); carrying them too
+    // would apply them twice.
+    //
+    // The provider-failure marker answers one pause's Cancel; the resumed
+    // segment is past it.
+    if let Some(protective) = ctx.resume_loop_protective.as_mut() {
+        protective.parked_iteration_refunds = 0;
+        protective.provider_failure_pause = false;
+    }
     ctx.prior_environment_knowledge = pause_state.prior_environment_knowledge.clone();
 
     // Restore task/execution identifiers
@@ -42349,6 +44192,8 @@ pub(super) fn restore_context_from_pause(
     // (#1-#4) stay armed for the remainder of a paused-then-resumed Build run.
     ctx.coding_coordinator_run = pause_state.coding_coordinator_run;
     ctx.vibedev_run = pause_state.vibedev_run;
+    ctx.plan_run = pause_state.plan_run;
+    ctx.vibedev_autopilot = pause_state.vibedev_autopilot;
     if let Some(chain_id) = pause_state.artifact_chain_id.clone() {
         ctx = ctx.with_artifact_chain_id(chain_id);
     }
@@ -42428,6 +44273,11 @@ pub(super) fn restore_context_from_pause(
         );
     }
     ctx.spend_token_ids = pause_state.spend_token_ids.clone();
+    // Tamper-checked with the pause (`authorization_hash`). The run's record,
+    // hydrated at setup, stays the source; the pause only fills it in.
+    if ctx.read_lineage.is_empty() {
+        ctx.read_lineage = pause_state.read_lineage.clone();
+    }
     // The pause blob's work carrier is tamper-checked: it participates in
     // `authorization_hash`, verified before this restore runs.
     ctx.work_authority = pause_state.work_authority.clone();
@@ -42487,18 +44337,36 @@ fn delegation_resume_segment(pause_data: &FullPauseData) -> Result<Option<String
         .ok_or_else(|| anyhow!("delegation checkpoint is missing its exact successor segment"))
 }
 
-const AGENTIC_ITERATION_CEILING: usize = 4000;
-
-fn upgraded_pause_iteration_budget(pause_state: &AgenticPauseState) -> usize {
-    if pause_state.controller_attempt_hash.is_some() {
-        return pause_state
-            .max_iterations
-            .saturating_sub(pause_state.iteration);
-    }
+/// Restoring a checkpoint grants no work. An explicit owner continuation
+/// records and applies additional iterations through the grant ledger.
+///
+/// The paused segment's parked-wake refunds are part of the bound it ran
+/// under (`run_budget::iteration_ceiling`), and `pause_state.iteration` counts
+/// those wakes, so they are folded in here. The resumed segment starts with
+/// no refunds (`restore_context_from_pause` zeroes the carried counter), so a
+/// refund is applied once, to the segment that parked.
+fn remaining_pause_iteration_budget(pause_state: &AgenticPauseState) -> usize {
     pause_state
         .max_iterations
-        .max(AGENTIC_ITERATION_CEILING)
+        .saturating_add(super::run_budget::parked_iteration_refunds_in_pause(
+            pause_state,
+        ))
         .saturating_sub(pause_state.iteration)
+}
+
+/// Whether a run that exhausted its iterations is offered "Extend and
+/// continue". Approving that offer records an iteration grant
+/// (`run_budget::record_iteration_continuation_grant`), which refuses an app
+/// contract's limit outright, so offering it there could only fail the
+/// resume. App-contract runs therefore settle the limit the way a sealed
+/// controller attempt does: no resumable pause, no public prompt.
+fn iteration_limit_offers_continuation(
+    ctx: &AgenticContext,
+    pause_state: &AgenticPauseState,
+) -> bool {
+    ctx.controller_attempt_hash.is_none()
+        && ctx.app_disclosure_guard.is_none()
+        && pause_state.app_disclosure_checkpoint.is_none()
 }
 
 fn legacy_pause_preserves_execution_route(
@@ -42764,6 +44632,7 @@ async fn continue_resumed_execution(
     runtime_ceiling_ms: Option<u64>,
     controller_continuation: Option<Arc<ControllerPauseContinuation>>,
     owner_budget_continue: bool,
+    owner_iteration_continue: bool,
 ) -> Result<AgenticOutcome> {
     if let Some(failure) = paused_execution_routing_failure(pause_state).await {
         return Ok(failure);
@@ -42792,14 +44661,19 @@ async fn continue_resumed_execution(
         pause_state,
         &enhanced_goal,
         &pause_state.success_criteria,
-        upgraded_pause_iteration_budget(pause_state),
+        remaining_pause_iteration_budget(pause_state),
     );
     if let Some(continuation) = controller_continuation {
         enhanced_ctx.physical_resource_guard = Some(continuation.guard.clone());
         enhanced_ctx.controller_pause_continuation = Some(continuation);
         validate_controller_attempt_entry(&enhanced_ctx)?;
     }
-    apply_resume_budget_grants(&mut enhanced_ctx, pause_state, owner_budget_continue);
+    apply_resume_budget_grants(
+        &mut enhanced_ctx,
+        pause_state,
+        owner_budget_continue,
+        owner_iteration_continue,
+    )?;
     cap_resumed_context_runtime(&mut enhanced_ctx, runtime_ceiling_ms);
     drop(enhanced_goal);
     append_answered_ask_to_restored_conversation(
@@ -42990,12 +44864,12 @@ async fn execute_agentically_continue_inner(
         &pause_state,
         &enhanced_goal,
         &pause_state.success_criteria,
-        pause_state.max_iterations.max(AGENTIC_ITERATION_CEILING), // Fresh full budget
+        remaining_pause_iteration_budget(&pause_state),
     );
     drop(enhanced_goal);
     // Explicit owner continuation grants exhausted allowances, preserving
     // prior usage and all correctness/retry protection.
-    apply_resume_budget_grants(&mut enhanced_ctx, &pause_state, true);
+    apply_resume_budget_grants(&mut enhanced_ctx, &pause_state, true, true)?;
     cap_resumed_context_runtime(&mut enhanced_ctx, runtime_ceiling_ms);
     enhanced_ctx.provisioned_secret_access_enabled =
         provisioned_secret_access_enabled_for_executors(executors);
@@ -43119,7 +44993,7 @@ async fn execute_agentically_resume_exact_inner(
     let pause_state = &pause_data.pause_state;
 
     let executors = pause_data.executors.clone();
-    let remaining_iterations = upgraded_pause_iteration_budget(pause_state);
+    let remaining_iterations = remaining_pause_iteration_budget(pause_state);
 
     let resumed_goal = build_exact_resumed_goal(pause_state);
     let mut enhanced_ctx = restore_context_from_pause(
@@ -43150,7 +45024,8 @@ async fn execute_agentically_resume_exact_inner(
         &mut enhanced_ctx,
         pause_state,
         pause_data.pause_kind == Some(ExecutionPauseKind::Budget),
-    );
+        pause_data.pause_kind == Some(ExecutionPauseKind::MaxIterations),
+    )?;
     cap_resumed_context_runtime(&mut enhanced_ctx, runtime_ceiling_ms);
     // Approvals granted before the pause and never spent.
     //
@@ -43842,7 +45717,7 @@ pub(crate) fn execute_controller_pause_resume_with_validation(
     llm_service: Arc<OperationLlmRouter>,
     guard: magicllm::LlmPhysicalResourceGuard,
     cancellation_token: CancellationToken,
-    runtime_ceiling_ms: u64,
+    runtime_ceiling_ms: Option<u64>,
 ) -> Pin<Box<dyn Future<Output = Result<(Box<ResumeResult>, String)>> + Send>> {
     Box::pin(async move {
         // Large re-ask bodies remain boxed across the existing runtime and
@@ -43874,7 +45749,7 @@ pub(crate) fn execute_controller_pause_resume_with_validation(
                 pause,
                 &pause.goal,
                 &pause.success_criteria,
-                upgraded_pause_iteration_budget(pause),
+                remaining_pause_iteration_budget(pause),
             );
             let resumed_segment = loop_state_address(
                 &resumed_context,
@@ -43897,7 +45772,7 @@ pub(crate) fn execute_controller_pause_resume_with_validation(
                 Some(llm_service),
                 Some(cancellation_token),
                 None,
-                Some(runtime_ceiling_ms),
+                runtime_ceiling_ms,
                 None,
                 Some(continuation),
             );
@@ -43961,7 +45836,7 @@ async fn validate_controller_pause_source(
         pause,
         &pause.goal,
         &pause.success_criteria,
-        upgraded_pause_iteration_budget(pause),
+        remaining_pause_iteration_budget(pause),
     );
     validate_exact_iteration_continuation_authority(
         &context,
@@ -44205,7 +46080,7 @@ async fn execute_approved_harness_action(
         &pause_data.pause_state,
         &pause_data.pause_state.goal,
         &pause_data.pause_state.success_criteria,
-        upgraded_pause_iteration_budget(&pause_data.pause_state),
+        remaining_pause_iteration_budget(&pause_data.pause_state),
     );
     let executors = &pause_data.executors;
     let trust_guard = match refresh_trust_dispatch_guard_for_decision(&mut ctx, executors) {
@@ -44432,6 +46307,12 @@ async fn execute_agentically_resume_with_validation_inner(
         },
         None => user_response,
     };
+    // Review before sending: Send and Always allow approve the call below;
+    // Discard (or an expired review) continues the run told nothing was sent.
+    let user_response = match pause_data.pause_state.outward_review.as_deref() {
+        Some(review) => resolve_outward_review(&pause_data, review, user_response),
+        None => user_response,
+    };
 
     if let (UserInputType::Confirmation { .. }, None) = (
         &pause_data.input_type,
@@ -44439,9 +46320,18 @@ async fn execute_agentically_resume_with_validation_inner(
     ) {
         if let UserInputValue::Confirmation { confirmed } = &user_response.value {
             if !confirmed {
+                // Cancel on a provider-failure pause is the owner ending the
+                // run, so it settles as cancelled (the reason the
+                // orchestrator reads as `UserCancelled`), not as a failure.
+                let reason =
+                    if super::run_budget::is_provider_failure_pause(&pause_data.pause_state) {
+                        "Execution cancelled by user"
+                    } else {
+                        "User rejected confirmation request"
+                    };
                 return Ok(fail_resume_and_retire_secrets(
                     &pause_data,
-                    "User rejected confirmation request".to_string(),
+                    reason.to_string(),
                 ));
             }
 
@@ -44505,6 +46395,14 @@ async fn execute_agentically_resume_with_validation_inner(
                         approved_confirmation_actions.push(ApprovedConfirmationAction {
                             action_json,
                             owner_snapshot,
+                            // The first `Decide` replays the call the owner
+                            // approved rather than asking the model to
+                            // re-emit it byte for byte.
+                            replay_call_json: pause_data
+                                .pause_state
+                                .confirmation_replay_call
+                                .as_ref()
+                                .and_then(|call| serde_json::to_string(call).ok()),
                         });
                     } else {
                         warn!(
@@ -44938,6 +46836,7 @@ async fn execute_agentically_resume_with_validation_inner(
             runtime_ceiling_ms,
             controller_continuation,
             pause_data.pause_kind == Some(ExecutionPauseKind::Budget),
+            pause_data.pause_kind == Some(ExecutionPauseKind::MaxIterations),
         ));
     let outcome_result = continuation_future.await;
     info!(
@@ -44998,7 +46897,7 @@ fn ephemeral_secret_scope_id_for_pause(pause_state: &AgenticPauseState) -> Strin
         pause_state,
         &pause_state.goal,
         &pause_state.success_criteria,
-        upgraded_pause_iteration_budget(pause_state),
+        remaining_pause_iteration_budget(pause_state),
     );
     ephemeral_secret_scope_id(&ctx)
 }
@@ -45314,12 +47213,18 @@ async fn resume_alignment_hold(
                     approved_confirmation_actions.push(ApprovedConfirmationAction {
                         action_json: canonical.to_string(),
                         owner_snapshot: owner_snapshot.clone(),
+                        replay_call_json: None,
                     });
                 }
             }
             approved_confirmation_actions.push(ApprovedConfirmationAction {
                 action_json,
                 owner_snapshot,
+                replay_call_json: pause_data
+                    .pause_state
+                    .confirmation_replay_call
+                    .as_ref()
+                    .and_then(|call| serde_json::to_string(call).ok()),
             });
             AlignmentResume::Continue(None)
         },
@@ -46626,6 +48531,7 @@ fn build_secret_approval_waiting_outcome(
         &reason,
         candidate.action.action_type_name(),
         None,
+        None,
     );
 
     Ok(AgenticOutcome::WaitingForConfirmation {
@@ -46897,9 +48803,12 @@ pub(crate) fn vault_durable_pause_response(
     mut response: UserInputResponse,
     store: Option<&crate::magician_v2::secrets::SecretStore>,
 ) -> Result<UserInputResponse> {
+    let review_choice = pause.pause_state.outward_review.is_some()
+        && matches!(response.value, UserInputValue::Choice { .. });
     ensure!(
-        response.input_type == pause.input_type
-            && response.value.matches_input_type(&pause.input_type),
+        review_choice
+            || (response.input_type == pause.input_type
+                && response.value.matches_input_type(&pause.input_type)),
         "owner answer does not match the requested input type"
     );
     let scope_id = ephemeral_secret_scope_id_for_pause(&pause.pause_state);
@@ -47608,6 +49517,17 @@ fn validate_action_against_policy_snapshot(
         ));
     }
 
+    // A plan (Discuss) run is read-only: refuse any call the plan-run policy
+    // does not classify as read-only, arguments included. The plane's
+    // `tools/call` asks the same predicate of the same lowered action.
+    if ctx.plan_run {
+        if let Some(refusal) =
+            crate::magician_v2::execution::plan_run_policy::action_refusal(action)
+        {
+            return Some(refusal);
+        }
+    }
+
     if let Some(policy_name) = executable_action_policy_name(action) {
         match ctx.policy_dispatch_tool_names.lock() {
             Ok(guard) => {
@@ -48203,6 +50123,14 @@ pub(super) fn build_primitive_exec_ctx(
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
         )
+        .with_browser_tab_label(
+            executors
+                .browser_run
+                .tab_label
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
         .with_browser_engine(executors.browser_engine.clone())
         .with_browser_capture_limit_bytes(executors.browser_capture_limit_bytes)
         .with_browser_cdp_url(executors.browser_cdp_url.clone())
@@ -48228,8 +50156,30 @@ pub(super) fn build_primitive_exec_ctx(
         .with_artifact_workspace(Some(executors.artifact_v2_workspace.clone()))
 }
 
-// `pub(super)` so `run_loop::phases` can call it. The phase extraction moves
-// callers out of this file before it moves the helpers, so these widen first.
+/// Capability name of [`rejected_decision_history_action`].
+pub(super) const REJECTED_DECISION_CAPABILITY: &str = "decision_rejected";
+
+/// The history action of an iteration whose decision was rejected before
+/// any tool ran (a failed or invalid decision, a refused repeat, a rejected
+/// terminal). It names that, so the model's replayed history, the owner's
+/// failure summary and the repeat-call guard never see a call the model did
+/// not make: a browser `observe` placeholder once had a no-browser task
+/// report "the recorded repeated action was pack:browser(command=observe)".
+/// `pub(super)` so `run_loop::phases` can call it.
+pub(super) fn rejected_decision_history_action() -> ExecutableAction {
+    ExecutableAction::Pack {
+        capability_name: REJECTED_DECISION_CAPABILITY.to_string(),
+        implementation: crate::magician_v2::execution::capability::ImplementationType::Compiled {
+            provider_name: REJECTED_DECISION_CAPABILITY.to_string(),
+        },
+        resolved_params: HashMap::from([(
+            "note".to_string(),
+            json!("No tool ran: this decision was rejected before dispatch."),
+        )]),
+    }
+}
+
+#[cfg(test)]
 pub(super) fn browser_observation_history_action() -> ExecutableAction {
     ExecutableAction::Pack {
         capability_name: "browser".to_string(),
@@ -48238,6 +50188,72 @@ pub(super) fn browser_observation_history_action() -> ExecutableAction {
         },
         resolved_params: HashMap::from([("command".to_string(), json!("observe"))]),
     }
+}
+
+/// A flat dispatch error as the executor's `anyhow` error: a policy refusal
+/// stays typed, so the error chokepoint logs it as the agent's to act on (a
+/// warning) instead of a fault; every other variant is rendered to text as
+/// before. The text is identical either way.
+fn flat_dispatch_error(
+    error: crate::magician_v2::execution::error::ExecutionError,
+) -> anyhow::Error {
+    use crate::magician_v2::execution::error::ExecutionError;
+    match error {
+        typed @ (ExecutionError::Refused(_)
+        | ExecutionError::AgentActionable(_)
+        | ExecutionError::CapabilityFailure { .. }) => anyhow::Error::new(typed),
+        other => anyhow!("{other}"),
+    }
+}
+
+/// Whether an action error is an answer the agent reads and acts on — a policy
+/// refusal, a tool that ran and reported its own failure, a declared capability
+/// failure envelope — rather than a fault of the runtime. Those are logged as a
+/// warning; everything else stays an error.
+fn action_error_is_agent_actionable(error: &anyhow::Error) -> bool {
+    use crate::magician_v2::execution::error::ExecutionError;
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<ExecutionError>(),
+            Some(
+                ExecutionError::Refused(_)
+                    | ExecutionError::AgentActionable(_)
+                    | ExecutionError::CapabilityFailure { .. }
+            )
+        )
+    })
+}
+
+/// One bounded log line for an agent-actionable failure: tool stderr (a CLI's
+/// whole usage text) belongs in the agent's observation, not the server log.
+fn agent_actionable_log_line(reason: &str) -> String {
+    const MAX_CHARS: usize = 300;
+    let mut lines = reason.lines().filter(|line| !line.trim().is_empty());
+    let first = lines.next().unwrap_or_default().trim();
+    let more = lines.count();
+    let mut line: String = first.chars().take(MAX_CHARS).collect();
+    if first.chars().count() > MAX_CHARS {
+        line.push('…');
+    }
+    if more > 0 {
+        line.push_str(&format!(" (+{more} more line(s) returned to the agent)"));
+    }
+    line
+}
+
+/// The answer to a call for a tool no provider is registered for in this
+/// agent's scoped registry — a name the model invented or one it was never
+/// granted. It is the agent's to act on, so it is a refusal (a warning, not an
+/// error) that tells it what to do instead. The original text leads, so
+/// matchers on "No provider registered" keep working; "no such tool" is the
+/// harness's missing-tool anomaly marker.
+fn unregistered_tool_refusal(capability_name: &str) -> anyhow::Error {
+    let message = format!(
+        "No provider registered for pack capability '{capability_name}': no such tool is \
+         available to this agent. Do not call it again; use `tool_search` to find a tool you \
+         have, or delegate the work to an agent that has it."
+    );
+    anyhow::Error::new(crate::magician_v2::execution::error::ExecutionError::Refused(message))
 }
 
 /// Classify the outcome of a single compiled-pack dispatch attempt
@@ -48249,6 +50265,8 @@ pub(super) fn browser_observation_history_action() -> ExecutableAction {
 ///   short error excerpt for `retry_on` pattern matching.
 /// - `Err(Configuration(_))` → `PermanentFailure` — retrying a misconfigured
 ///   capability does not change anything.
+/// - `Err(PathAccessDenied { .. })` / `Err(Refused(_))` → `PermanentFailure`,
+///   typed — the same call gets the same answer until something changes.
 /// - Any other `Err(_)` → `RetryableFailure` — likely transient (network, rate
 ///   limit, timeout). The retry policy's `retry_on` patterns gate whether we
 ///   actually retry.
@@ -48305,6 +50323,19 @@ fn classify_pack_dispatch_outcome(
             );
             AttemptOutcome::PermanentFailure(Err(anyhow::Error::new(path_denied)))
         },
+        // A policy refusal is answered the same way on every attempt, so it is
+        // not retried, and it stays typed so the executor chokepoint logs it
+        // as the agent's to act on (a warning) rather than a fault.
+        Err(refused @ crate::magician_v2::execution::error::ExecutionError::Refused(_)) => {
+            warn!(
+                target: "magician::metrics::pack_dispatch_failure",
+                pack = %capability_name,
+                attempt,
+                error = %refused,
+                "pack_dispatch_refused"
+            );
+            AttemptOutcome::PermanentFailure(Err(anyhow::Error::new(refused)))
+        },
         Err(other) => {
             let message = other.to_string();
             warn!(
@@ -48323,6 +50354,105 @@ fn classify_pack_dispatch_outcome(
                 error_message: message,
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod refusal_routing_tests {
+    use super::*;
+    use crate::magician_v2::execution::agentic::scheduler::AttemptOutcome;
+    use crate::magician_v2::execution::error::ExecutionError;
+
+    fn is_refusal(error: &anyhow::Error) -> bool {
+        matches!(
+            error.downcast_ref::<ExecutionError>(),
+            Some(ExecutionError::Refused(_))
+        )
+    }
+
+    /// A pack's policy refusal reaches the executor chokepoint typed (so it is
+    /// logged as a warning) and is not retried; a fault keeps its retry.
+    #[test]
+    fn a_pack_refusal_is_permanent_and_typed_while_a_fault_stays_retryable() {
+        let refused = ExecutionError::Refused("Delete operations are disabled".to_owned());
+        match classify_pack_dispatch_outcome(1, "files", Err(refused)) {
+            AttemptOutcome::PermanentFailure(Err(error)) => {
+                assert!(is_refusal(&error), "{error}");
+                assert_eq!(error.to_string(), "refused: Delete operations are disabled");
+            },
+            _ => panic!("a refusal must be a typed permanent failure"),
+        }
+        let fault = ExecutionError::Step("connection reset".to_owned());
+        match classify_pack_dispatch_outcome(1, "http", Err(fault)) {
+            AttemptOutcome::RetryableFailure {
+                result: Err(error), ..
+            } => {
+                assert!(!is_refusal(&error), "{error}")
+            },
+            _ => panic!("a fault keeps its retry"),
+        }
+    }
+
+    /// Flat dispatch keeps a refusal typed and every other error as the same
+    /// text it always produced.
+    #[test]
+    fn flat_dispatch_keeps_refusals_typed_and_faults_as_text() {
+        let refused = flat_dispatch_error(ExecutionError::Refused("not admitted".to_owned()));
+        assert!(is_refusal(&refused));
+        assert_eq!(refused.to_string(), "refused: not admitted");
+        let fault = flat_dispatch_error(ExecutionError::Step("worker failed".to_owned()));
+        assert!(!is_refusal(&fault));
+        assert_eq!(fault.to_string(), "step execution failed: worker failed");
+    }
+
+    /// Live 2026-10-20: `git diff` outside a repository (a tool that ran and
+    /// exited non-zero) and a call that did not lower into its tool's grammar
+    /// were logged as ERROR with the CLI's whole usage text. Both are answers
+    /// the agent acts on: typed through flat dispatch, a one-line warning, and
+    /// the same text the agent always saw. Runtime faults stay errors.
+    #[test]
+    fn tool_reported_failures_are_agent_actionable_and_faults_are_not() {
+        let tool_failure = flat_dispatch_error(ExecutionError::AgentActionable(
+            "warning: Not a git repository.\nusage: git diff --no-index\n\n  -p  patch".to_owned(),
+        ));
+        assert!(action_error_is_agent_actionable(&tool_failure));
+        assert_eq!(
+            tool_failure.to_string(),
+            "step execution failed: warning: Not a git repository.\nusage: git diff --no-index\n\n  -p  patch"
+        );
+        assert_eq!(
+            agent_actionable_log_line(&tool_failure.to_string()),
+            "step execution failed: warning: Not a git repository. (+2 more line(s) returned to the agent)"
+        );
+        let envelope = flat_dispatch_error(ExecutionError::CapabilityFailure {
+            code: "unsupported".to_owned(),
+            message: "scanned PDF".to_owned(),
+        });
+        assert!(action_error_is_agent_actionable(&envelope));
+        let refused = flat_dispatch_error(ExecutionError::Refused("not admitted".to_owned()));
+        assert!(action_error_is_agent_actionable(&refused));
+        let fault = flat_dispatch_error(ExecutionError::Step("worker failed".to_owned()));
+        assert!(!action_error_is_agent_actionable(&fault));
+        assert!(!action_error_is_agent_actionable(&anyhow!("disk full")));
+        let long = "x".repeat(400);
+        assert_eq!(agent_actionable_log_line(&long).chars().count(), 301);
+    }
+
+    /// Live 2026-10-19: a model called `activate_skill`, which the agent's
+    /// scoped registry had no provider for, and the answer was logged as an
+    /// ERROR. It is the agent's to act on: a refusal that keeps the old text
+    /// first and says to look the tool up.
+    #[test]
+    fn a_call_for_an_unregistered_tool_is_a_refusal_pointing_at_tool_search() {
+        let error = unregistered_tool_refusal("activate_skill");
+        assert!(is_refusal(&error), "{error}");
+        let text = error.to_string();
+        assert!(
+            text.contains("No provider registered for pack capability 'activate_skill'"),
+            "{text}"
+        );
+        assert!(text.contains("no such tool"), "{text}");
+        assert!(text.contains("`tool_search`"), "{text}");
     }
 }
 
@@ -48632,19 +50762,28 @@ pub(crate) fn execute_action<'a>(
         // machine still lives on the heap exactly as it did before this wrapper
         // existed and no caller pays for it on a Tokio worker stack.
         let inner: Pin<Box<dyn Future<Output = Result<ActionResult>> + Send + 'a>> =
-            Box::pin(execute_action_inner(
-                action,
-                executors,
-                session_id,
-                tool_index,
-                tool_search_allowed_names,
-                ctx,
-                trust_guard,
-                cancellation_token,
-                effect_id,
-                coding_invocation_id,
-                coding_resume_session_id,
-                action_invocation_ref,
+            Box::pin(crate::magician_v2::agents::outward_policy::with_source(
+                ctx.principal
+                    .as_deref()
+                    .zip(ctx.workspace.as_deref())
+                    .zip(ctx.task_id.as_deref())
+                    .map(|((p, w), task)| {
+                        crate::magician_v2::agents::outward_policy::OutwardSource::task(p, w, task)
+                    }),
+                Box::pin(execute_action_inner(
+                    action,
+                    executors,
+                    session_id,
+                    tool_index,
+                    tool_search_allowed_names,
+                    ctx,
+                    trust_guard,
+                    cancellation_token,
+                    effect_id,
+                    coding_invocation_id,
+                    coding_resume_session_id,
+                    action_invocation_ref,
+                )),
             ));
         let mut result = if let Some(liveness) = protected_pause_claim_liveness.as_ref() {
             tokio::select! {
@@ -48758,6 +50897,392 @@ fn classify_outward_dispatch(action: &ExecutableAction) -> Option<(String, Strin
     let class =
         outward_actions::outward_dispatch_class(capability_name, &action_token, resolved_params)?;
     Some((capability_name.clone(), action_token, class))
+}
+
+fn outward_layout(
+    executors: &ActionExecutors,
+) -> &crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace {
+    executors
+        .artifact_v2_service
+        .as_ref()
+        .map(|service| service.workspace())
+        .unwrap_or(&executors.artifact_v2_workspace)
+}
+
+fn outward_reference_fingerprint(
+    original: &ExecutableAction,
+    resolved: &ExecutableAction,
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+) -> Option<String> {
+    let (
+        ExecutableAction::Pack {
+            resolved_params: original,
+            ..
+        },
+        ExecutableAction::Pack {
+            resolved_params: resolved,
+            ..
+        },
+    ) = (original, resolved)
+    else {
+        return None;
+    };
+    crate::magician_v2::agents::outward_review::reference_fingerprint(
+        outward_layout(executors),
+        ctx.principal.as_deref()?,
+        ctx.workspace.as_deref()?,
+        &serde_json::to_value(original).ok()?,
+        &serde_json::to_value(resolved).ok()?,
+    )
+    .ok()
+    .flatten()
+}
+
+/// Whether the owner has always allowed this run's agent to send through
+/// `capability` to everyone `effective` reaches. An act with an open-ended
+/// argument list is never covered: who it reaches cannot be bound.
+fn recipient_grant_covers(
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+    capability: &str,
+    effective: &crate::magician_v2::execution::EffectiveAction,
+) -> bool {
+    use crate::magician_v2::agents::outward_review;
+    let (Some(principal), Some(workspace), Some(agent_id)) = (
+        ctx.principal.as_deref(),
+        ctx.workspace.as_deref(),
+        ctx.agent_id.as_deref(),
+    ) else {
+        return false;
+    };
+    effective.is_bindable()
+        && outward_review::all_granted(
+            &outward_review::grants_path(outward_layout(executors), principal, workspace),
+            agent_id,
+            capability,
+            &effective.recipients,
+        )
+}
+
+/// The review card for a send its context would capture, when the owner
+/// asked to review captured sends (`agents::outward_review`). `None` lets the
+/// act go on to dispatch, which captures, refuses or sends as before: not
+/// outward, not captured, review off, force capture, an approval's pass
+/// already waiting for this call, or a standing grant covering it.
+pub(super) async fn outward_review_for(
+    action: &ExecutableAction,
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+) -> Option<crate::magician_v2::agents::outward_review::OutwardReview> {
+    use crate::magician_v2::agents::{outward_policy, outward_review};
+    let settings = outward_policy::settings()?;
+    if !settings.review_captured_sends || settings.force_capture_only {
+        return None;
+    }
+    let (capability, action_token, class) = classify_outward_dispatch(action)?;
+    let ExecutableAction::Pack {
+        resolved_params, ..
+    } = action
+    else {
+        return None;
+    };
+    let (principal, workspace, execution_id) = (
+        ctx.principal.as_deref()?,
+        ctx.workspace.as_deref()?,
+        ctx.execution_id.as_deref()?,
+    );
+    let captured = outward_policy::capture_for_task(
+        outward_layout(executors),
+        Some(principal),
+        Some(workspace),
+        ctx.task_id.as_deref(),
+    )
+    .await
+    .ok()?;
+    let disposition =
+        outward_actions::outward_disposition(&capability, &action_token, resolved_params, captured);
+    if !matches!(disposition, OutwardDisposition::Capture(_)) {
+        return None;
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    // The card shows what will be sent: data passed by reference is filled in
+    // the way dispatch fills it. Content that cannot be read here is named
+    // as such on the card rather than shown empty.
+    let has_refs = super::value_refs::action_has_value_refs(action);
+    let resolved = if has_refs {
+        super::value_refs::substitute_value_refs(action, ctx, executors, None)
+            .heap_boxed()
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let shown = resolved.as_ref().unwrap_or(action);
+    let reference_fingerprint = has_refs.then(|| {
+        resolved
+            .as_ref()
+            .and_then(|resolved| outward_reference_fingerprint(action, resolved, executors, ctx))
+            .unwrap_or_else(|| "unresolved".into())
+    });
+    if stable_confirmation_action_json(action).is_ok_and(|json| {
+        // An unreadable reference cannot prove it still contains the approved
+        // value. Once readable, changed data needs its own review.
+        (!has_refs
+            || reference_fingerprint
+                .as_deref()
+                .is_some_and(|binding| binding != "unresolved"))
+            && outward_review::has_bound_waiver(
+                principal,
+                workspace,
+                execution_id,
+                &json,
+                reference_fingerprint.as_deref(),
+                now_ms,
+            )
+    }) {
+        return None;
+    }
+    let effective = effective_for_dispatch(shown, &capability, &action_token)?;
+    if review_grants_apply() && recipient_grant_covers(executors, ctx, &capability, &effective) {
+        return None;
+    }
+    let (subject, excerpt) = match shown {
+        ExecutableAction::Pack {
+            resolved_params, ..
+        } => outward_review::message_parts(resolved_params),
+        _ => (None, None),
+    };
+    let sending_account = outward_sending_account(shown, &capability, executors, ctx);
+    Some(outward_review::OutwardReview {
+        capability,
+        action: action_token,
+        class: class.as_str().to_string(),
+        recipients: effective.recipients,
+        agent_id: ctx.agent_id.clone().unwrap_or_default(),
+        deadline_at_ms: now_ms + outward_review::REVIEW_DEADLINE_MS,
+        subject,
+        excerpt,
+        content_by_reference: has_refs && resolved.is_none(),
+        reference_fingerprint,
+        sending_account,
+    })
+}
+
+/// The mailbox a profile-selector send goes out from, for the review card:
+/// the alias the act names, or `default (<alias>)` when it names none. `None`
+/// for a capability whose sender is the transport or the runtime identity.
+fn outward_sending_account(
+    action: &ExecutableAction,
+    capability: &str,
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+) -> Option<String> {
+    use crate::magician_v2::execution::restricted_action::{restricted_form_for, SenderKind};
+    let spec = restricted_form_for(capability)?;
+    if spec.sender_kind != SenderKind::ProfileAlias {
+        return None;
+    }
+    let ExecutableAction::Pack {
+        resolved_params, ..
+    } = action
+    else {
+        return None;
+    };
+    let named = spec.sender_parameters.iter().find_map(|parameter| {
+        resolved_params
+            .iter()
+            .find(|(key, _)| key.trim().eq_ignore_ascii_case(parameter))
+            .and_then(|(_, value)| value.as_str())
+            .map(str::trim)
+            .filter(|alias| !alias.is_empty())
+            .map(str::to_string)
+    });
+    Some(match named {
+        Some(alias) => alias,
+        None => match approved_sender_profiles(executors, ctx, capability).default_alias() {
+            Some(default) => format!("default ({default})"),
+            None => "default".to_string(),
+        },
+    })
+}
+
+/// Standing grants belong to review: with "Just record it" every captured
+/// send is recorded, granted or not. Force capture lifts nothing.
+fn review_grants_apply() -> bool {
+    crate::magician_v2::agents::outward_policy::settings()
+        .is_some_and(|settings| settings.review_captured_sends && !settings.force_capture_only)
+}
+
+/// Whether a follow-up riding in a batch might need the owner's review. Kept
+/// out of the batch, it is re-issued as next turn's primary, where the full
+/// check (origin, grants, pass) runs. Without this a batched send was
+/// captured without asking.
+pub(super) fn outward_review_may_apply(action: &ExecutableAction) -> bool {
+    review_grants_apply() && classify_outward_dispatch(action).is_some()
+}
+
+/// Whether the owner's review lifts capture for this dispatch: their Send on
+/// this exact call (a one-time pass, consumed here) or a standing grant for
+/// this agent and every recipient. Force capture is never lifted.
+fn review_lifts_capture(
+    reviewed_action: &ExecutableAction,
+    resolved_action: &ExecutableAction,
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+    capability: &str,
+    effective: Option<&crate::magician_v2::execution::EffectiveAction>,
+    effect_id: Option<&str>,
+) -> bool {
+    use crate::magician_v2::agents::{outward_policy, outward_review};
+    if outward_policy::settings().is_none_or(|settings| settings.force_capture_only) {
+        return false;
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    let reference_fingerprint =
+        outward_reference_fingerprint(reviewed_action, resolved_action, executors, ctx);
+    // The pass the direct path armed for this attempt before it prepared the
+    // call; the call's own JSON for a path that dispatches it unprepared.
+    if effect_id.is_some_and(|effect_id| {
+        outward_review::take_armed(
+            effect_id,
+            ctx.principal.as_deref().unwrap_or_default(),
+            ctx.workspace.as_deref().unwrap_or_default(),
+            ctx.execution_id.as_deref().unwrap_or_default(),
+            reference_fingerprint.as_deref(),
+            now_ms,
+        )
+    }) {
+        return true;
+    }
+    let passed = match (
+        ctx.principal.as_deref(),
+        ctx.workspace.as_deref(),
+        ctx.execution_id.as_deref(),
+        stable_confirmation_action_json(reviewed_action),
+    ) {
+        (Some(principal), Some(workspace), Some(execution_id), Ok(json)) => {
+            outward_review::take_bound_waiver(
+                principal,
+                workspace,
+                execution_id,
+                &json,
+                reference_fingerprint.as_deref(),
+                now_ms,
+            )
+        },
+        _ => false,
+    };
+    passed
+        || (review_grants_apply()
+            && effective.is_some_and(|effective| {
+                recipient_grant_covers(executors, ctx, capability, effective)
+            }))
+}
+
+/// The owner's answer to a review-before-sending pause, as the resume reads
+/// it. Send and Always allow become an approval of the held call and register
+/// its one-time pass (Always allow also records the standing grant). Discard,
+/// an unknown choice, or an answer after the deadline becomes a note the run
+/// continues with; nothing is sent. Free text passes through as the owner's
+/// instruction, and nothing is sent either.
+fn resolve_outward_review(
+    pause_data: &FullPauseData,
+    review: &crate::magician_v2::agents::outward_review::OutwardReview,
+    response: UserInputResponse,
+) -> UserInputResponse {
+    use crate::magician_v2::agents::outward_review::{self, OPTION_ALWAYS_ALLOW, OPTION_SEND};
+    let answer = match &response.value {
+        UserInputValue::Choice { selected_id, .. } => selected_id.trim().to_string(),
+        UserInputValue::Confirmation { confirmed: true } => OPTION_SEND.to_string(),
+        UserInputValue::Confirmation { confirmed: false } => {
+            outward_review::OPTION_DISCARD.to_string()
+        },
+        _ => return response,
+    };
+    let now_ms = Utc::now().timestamp_millis();
+    let expired = now_ms > review.deadline_at_ms;
+    let state = &pause_data.pause_state;
+    let scope = (
+        state.principal.as_deref(),
+        state.workspace.as_deref(),
+        state.execution_id.as_deref(),
+        pause_data.confirmation_action_json.as_deref(),
+    );
+    let sending = !expired && (answer == OPTION_SEND || answer == OPTION_ALWAYS_ALLOW);
+    let (Some(principal), Some(workspace), Some(execution_id), Some(action_json)) = scope else {
+        if sending {
+            warn!("[OUTWARD-REVIEW] approved send has no scope or call to bind; not sent");
+        }
+        return UserInputResponse::new(
+            response.input_type.clone(),
+            UserInputValue::Text {
+                value: review.discard_note(expired),
+            },
+        )
+        .with_answer_channel(response.answer_channel.clone());
+    };
+    if !sending {
+        info!(
+            capability = %review.capability,
+            agent_id = %review.agent_id,
+            expired,
+            "[OUTWARD-REVIEW] send discarded"
+        );
+        return UserInputResponse::new(
+            response.input_type.clone(),
+            UserInputValue::Text {
+                value: review.discard_note(expired),
+            },
+        )
+        .with_answer_channel(response.answer_channel.clone());
+    }
+    if answer == OPTION_ALWAYS_ALLOW && !review.agent_id.is_empty() {
+        let path = outward_review::grants_path(
+            outward_layout(&pause_data.executors),
+            principal,
+            workspace,
+        );
+        if let Err(error) = outward_review::grant(
+            &path,
+            &review.agent_id,
+            &review.capability,
+            &review.recipients,
+            now_ms,
+        ) {
+            // The send the owner approved still goes; only the standing
+            // grant is missing, so the next one asks again.
+            warn!(error = %error, "[OUTWARD-REVIEW] could not record the always-allow grant");
+        }
+    }
+    // A legacy review has no resolved-value binding. It must not authorize
+    // reference contents that were never bound to what the owner saw.
+    let reference_fingerprint = review.reference_fingerprint.clone().or_else(|| {
+        serde_json::from_str::<ExecutableAction>(action_json)
+            .ok()
+            .filter(super::value_refs::action_has_value_refs)
+            .map(|_| "unresolved".to_string())
+    });
+    outward_review::register_bound_waiver(
+        principal,
+        workspace,
+        execution_id,
+        action_json,
+        reference_fingerprint,
+        now_ms,
+    );
+    info!(
+        capability = %review.capability,
+        agent_id = %review.agent_id,
+        always = answer == OPTION_ALWAYS_ALLOW,
+        "[OUTWARD-REVIEW] owner approved send"
+    );
+    UserInputResponse::new(
+        response.input_type.clone(),
+        UserInputValue::Confirmation { confirmed: true },
+    )
+    .with_answer_channel(response.answer_channel.clone())
 }
 
 /// Which channel a disclosure record should name for this outward class.
@@ -49544,6 +52069,12 @@ async fn app_containment_for_direct_owner_turn(
 /// names: `restrict` REFUSES an unknown or duplicated parameter rather than
 /// dropping it. What it rewrites is the sender, and only the sender.
 ///
+/// A profile-selector sender (gmail/calendar `account`) is not rebound to the
+/// agent id — that is not a mailbox, and binding it failed every send's profile
+/// selection. `approved_profiles` (see [`approved_sender_profiles`]) decides:
+/// an approved alias is kept, an absent one stays absent for the contract
+/// default, anything else is refused.
+///
 /// `Ok(None)` means there is nothing to substitute — not a Pack, so nothing
 /// was bound.
 fn outward_bound_dispatch(
@@ -49551,9 +52082,10 @@ fn outward_bound_dispatch(
     ctx: &AgenticContext,
     capability: &str,
     action_token: &str,
+    approved_profiles: &crate::magician_v2::execution::restricted_action::ApprovedSenderProfiles,
 ) -> Result<Option<HashMap<String, Value>>, String> {
     use crate::magician_v2::execution::restricted_action::{
-        restrict, restricted_form_for, SenderIdentity,
+        restrict_with_profiles, restricted_form_for, SenderIdentity,
     };
 
     let ExecutableAction::Pack {
@@ -49611,13 +52143,66 @@ fn outward_bound_dispatch(
         },
     };
 
-    match restrict(capability, action_token, resolved_params, &sender) {
+    match restrict_with_profiles(
+        capability,
+        action_token,
+        resolved_params,
+        &sender,
+        approved_profiles,
+    ) {
         Ok(bound) => Ok(Some(bound.params)),
         Err(error) => Err(format!(
             "NOT SENT — this outward action was refused. {}",
             error.guidance(restricted_form_for(capability))
         )),
     }
+}
+
+/// The owner-approved profile aliases a [`SenderKind::ProfileAlias`] sender
+/// may name for `capability`: the skill's declared profile enum ∩ the enabled
+/// operator profiles registered for its provider, read from the governed
+/// package the live registry holds. Empty (so any named alias is refused, and
+/// an omitted one takes the contract default) for every other sender kind, or
+/// when the package or operator profiles cannot be read.
+///
+/// [`SenderKind::ProfileAlias`]: crate::magician_v2::execution::restricted_action::SenderKind::ProfileAlias
+fn approved_sender_profiles(
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+    capability: &str,
+) -> crate::magician_v2::execution::restricted_action::ApprovedSenderProfiles {
+    use crate::magician_v2::execution::{
+        capability::ImplementationType,
+        restricted_action::{restricted_form_for, ApprovedSenderProfiles, SenderKind},
+    };
+    let Some(spec) = restricted_form_for(capability) else {
+        return ApprovedSenderProfiles::default();
+    };
+    if spec.sender_kind != SenderKind::ProfileAlias {
+        return ApprovedSenderProfiles::default();
+    }
+    let runtime = executors
+        .effective_capability_registry_snapshot()
+        .and_then(|registry| registry.get_pack_definition(spec.capability))
+        .and_then(|pack| match pack.implementation {
+            ImplementationType::Primitive {
+                runtime_package, ..
+            } => runtime_package,
+            _ => None,
+        });
+    let Some(runtime) = runtime else {
+        warn!(
+            capability = spec.capability,
+            "outward sender profiles: no governed package, so a named account will be refused"
+        );
+        return ApprovedSenderProfiles::default();
+    };
+    let (aliases, default_alias) =
+        crate::magician_v2::execution::primitive_dispatch::approved_sender_profile_aliases(
+            &runtime.package,
+            &ctx.storage_base_path,
+        );
+    ApprovedSenderProfiles::new(aliases, default_alias)
 }
 
 /// The acting agent's OWN capability grant, as this execution resolved it.
@@ -50337,7 +52922,7 @@ async fn execute_pack_dispatch(
                 )
                 .heap_boxed()
                 .await
-                .map_err(|e| anyhow!("{e}"));
+                .map_err(flat_dispatch_error);
             }
         }
     }
@@ -50608,6 +53193,15 @@ async fn execute_pack_dispatch(
                 enriched_params.insert(
                     "__coding_resume_session_id".to_string(),
                     serde_json::json!(resume_session_id),
+                );
+            }
+            // A plan (Discuss) run: runtime-stamped for the same reason as the
+            // two keys above, so `run_coding_task` runs plan-only from the
+            // run's own flag, whatever the model passed or omitted.
+            if ctx.plan_run {
+                enriched_params.insert(
+                    crate::magician_v2::execution::plan_run_policy::PLAN_RUN_PARAM.to_string(),
+                    serde_json::json!(true),
                 );
             }
             let runtime_invocation = runtime_invocation_context_for_dispatch(ctx);
@@ -51694,16 +54288,18 @@ async fn execute_pack_dispatch(
                             path_denied @ crate::magician_v2::execution::error::ExecutionError::PathAccessDenied {
                                 ..
                             } => anyhow::Error::new(path_denied),
+                            // A policy refusal stays typed (logged as the
+                            // agent's to act on, not as a fault).
+                            refused @ crate::magician_v2::execution::error::ExecutionError::Refused(
+                                _,
+                            ) => anyhow::Error::new(refused),
                             other => {
                                 anyhow!("Pack capability '{}' failed: {}", capability_name, other)
                             },
                         })
             }
         } else {
-            Err(anyhow!(
-                "No provider registered for pack capability '{}'",
-                capability_name
-            ))
+            Err(unregistered_tool_refusal(capability_name))
         }
     } else {
         Err(anyhow!(
@@ -51800,6 +54396,9 @@ async fn execute_action_inner(
     action_invocation_ref: &str,
 ) -> Result<ActionResult> {
     executors.clear_app_labeled_tool_result(action_invocation_ref);
+    // The call as the run loop saw it, before value references are filled in:
+    // the form an owner's review approved and its one-time pass names.
+    let reviewed_action = action;
 
     // Data by reference (`value_refs`): `{"$ref": …}` / `{"$file": …}` markers
     // are replaced with the complete values first, so every gate below judges
@@ -51969,11 +54568,20 @@ async fn execute_action_inner(
         // Still a refusal, never a silent restriction: `restrict` rejects an
         // unknown or duplicated parameter rather than dropping it, so nothing
         // the agent composed is quietly removed. What the bound form rewrites
-        // is the sender — `inbox_id`, `account` — which is replaced with the
-        // runtime's identity precisely so the agent cannot choose it. Keeping
+        // is the sender address — `inbox_id` — which is replaced with the
+        // runtime's identity precisely so the agent cannot choose it; a
+        // profile selector (`account`) is kept only when it names an
+        // owner-approved mailbox, and refused otherwise. Keeping
         // only pass/fail here meant that replacement was computed and thrown
         // away, and the model's value was what actually went out.
-        let bound = match outward_bound_dispatch(action, ctx, &capability, &action_token) {
+        let approved_profiles = approved_sender_profiles(executors, ctx, &capability);
+        let bound = match outward_bound_dispatch(
+            action,
+            ctx,
+            &capability,
+            &action_token,
+            &approved_profiles,
+        ) {
             Ok(bound) => bound,
             Err(refusal) => {
                 warn!(
@@ -52131,13 +54739,56 @@ async fn execute_action_inner(
         // the same resolved params `classify_outward_dispatch` above used, or
         // an argv-passthrough dispatch it correctly classified as outward
         // could come back `NotOutward` here and skip capture entirely.
+        let captured = match crate::magician_v2::agents::outward_policy::capture_for_task(
+            executors
+                .artifact_v2_service
+                .as_ref()
+                .map(|service| service.workspace())
+                .unwrap_or(&executors.artifact_v2_workspace),
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            ctx.task_id.as_deref(),
+        )
+        .await
+        {
+            Ok(captured) => captured,
+            Err(error) => {
+                return Ok(refuse_outward(
+                    executors,
+                    ctx,
+                    outward_act_ref.as_deref(),
+                    &error,
+                    "NOT SENT — task origin could not be verified; no live fallback was used."
+                        .into(),
+                    effect_id,
+                ))
+            },
+        };
         let disposition = outward_actions::outward_disposition(
             &capability,
             &action_token,
             dispatch_resolved_params,
-            outward_actions::outward_capture_only(),
+            captured,
         );
-        if matches!(disposition, OutwardDisposition::Capture(_)) {
+        let reviewed_live = matches!(disposition, OutwardDisposition::Capture(_))
+            && review_lifts_capture(
+                reviewed_action,
+                action,
+                executors,
+                ctx,
+                &capability,
+                effective.as_ref(),
+                effect_id,
+            );
+        if reviewed_live {
+            warn!(
+                capability = %capability,
+                action = %action_token,
+                agent_id = ctx.agent_id.as_deref().unwrap_or("unknown"),
+                "[OUTWARD-REVIEW] owner approved this send; capture lifted"
+            );
+        }
+        if matches!(disposition, OutwardDisposition::Capture(_)) && !reviewed_live {
             warn!(
                 capability = %capability,
                 action = %action_token,
@@ -52727,10 +55378,8 @@ async fn execute_action_inner(
                 let started = Instant::now();
                 let timeout = executors.step_timeout_override_secs.unwrap_or(90);
                 let duration = std::time::Duration::from_secs(timeout);
-                let mut effective_sandbox = executors.file_sandbox.clone();
-                effective_sandbox
-                    .allowed_roots
-                    .extend(executors.grants.sandbox_roots());
+                // Owner grants never outrank a read-only root.
+                let effective_sandbox = effective_file_sandbox(executors);
                 let result = tokio::time::timeout(
                     duration,
                     execute_file_action(file_action, &effective_sandbox).heap_boxed(),
@@ -52870,6 +55519,47 @@ async fn execute_action_inner(
                 "SleepUntil should not reach execute_action_dispatch"
             )))),
         };
+    // Always scoped, task root or not: the goal workspace fences read the
+    // acting agent from here (the active owner first, so a delegated child
+    // that kept its parent's agent id acts as itself; an owner-started
+    // VibeDev session's root frame acts as the admin).
+    let dispatch_future = crate::magician_v2::execution::native_executors::ACTING_AGENT.scope(
+        crate::magician_v2::execution::goal_workspace_access::acting_agent_for(ctx),
+        dispatch_future,
+    );
+    // Delegation carries read access: what the agents that delegated to this
+    // one may read, it may read too (never write).
+    let dispatch_future = crate::magician_v2::execution::native_executors::READ_DELEGATORS.scope(
+        crate::magician_v2::execution::goal_workspace_access::read_delegators_for(ctx),
+        dispatch_future,
+    );
+    // Goal workspace reads are recorded against this execution's own folder,
+    // not the shared task folder a delegated child works in.
+    let evidence_root = match (
+        ctx.principal.as_deref(),
+        ctx.workspace.as_deref(),
+        runtime_execution_id_opt(ctx),
+    ) {
+        (Some(principal), Some(workspace), Some(execution_id)) => {
+            Some(executors.artifact_v2_workspace.runtime_execution_dir(
+                principal,
+                workspace,
+                ctx.task_id.as_deref(),
+                execution_id,
+            ))
+        },
+        _ => None,
+    };
+    let dispatch_future = async move {
+        match evidence_root {
+            Some(root) => {
+                crate::magician_v2::execution::native_executors::EVIDENCE_ROOT
+                    .scope(root, dispatch_future)
+                    .await
+            },
+            None => dispatch_future.await,
+        }
+    };
     let mut action_result = if let Some(root) = task_filesystem_root(ctx, executors) {
         crate::magician_v2::execution::native_executors::TASK_SHELL_ROOT
             .scope(root, dispatch_future)
@@ -54184,8 +56874,8 @@ fn is_explicit_tool_output_file_key(
 ) -> bool {
     let key = key.to_ascii_lowercase();
     match key.as_str() {
-        "output_path" | "output_file" | "export_path" | "wav_path" | "mp3_path"
-        | "manifest_path" => true,
+        "output_path" | "output_file" | "export_path" | "artifact_path" | "wav_path"
+        | "mp3_path" | "manifest_path" => true,
         "file" => has_output_metadata,
         "path" => within_output_container,
         _ => false,
@@ -54497,7 +57187,7 @@ async fn capture_accepted_owner_input_evidence(
         pause,
         &pause.goal,
         &pause.success_criteria,
-        upgraded_pause_iteration_budget(pause),
+        remaining_pause_iteration_budget(pause),
     );
     let action = ExecutableAction::Pack {
         capability_name: "need_user_input".into(),
@@ -54595,6 +57285,12 @@ async fn capture_tool_call_evidence_artifact(
             &known_replacements,
         ),
         MAX_TOOL_CALL_EVIDENCE_RESULT_BYTES,
+    );
+    // From the same redacted payload and preview the evidence file stores.
+    let effect = crate::magician_v2::artifact_v2::run_effects::effect_from_evidence(
+        &action_payload,
+        &result_preview,
+        success,
     );
     let evidence = json!({
         "schema": TOOL_CALL_EVIDENCE_SCHEMA,
@@ -54736,6 +57432,7 @@ async fn capture_tool_call_evidence_artifact(
         success,
         latency_ms,
         produced_at: Utc::now(),
+        effect,
     };
     let payload_value = match serde_json::to_value(&payload) {
         Ok(value) => value,
@@ -55211,6 +57908,17 @@ async fn capture_pack_action_artifacts_projection(
     };
     let mut rewrites = HashMap::new();
     let mut artifacts = Vec::new();
+    let Ok(runtime_root) = std::fs::canonicalize(workspace.base_root()) else {
+        return CapturedPackActionArtifacts::default();
+    };
+    let admitted_roots: Vec<_> = task_roots
+        .iter()
+        .filter(|root| {
+            std::fs::symlink_metadata(root)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        })
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect();
 
     for (index, original_path) in discovered_paths.iter().enumerate() {
         let Ok(source_path) = resolve_tool_output_path(original_path, working_dir.as_deref())
@@ -55225,6 +57933,16 @@ async fn capture_pack_action_artifacts_projection(
         }
         let source_canonical =
             std::fs::canonicalize(&source_path).unwrap_or_else(|_| source_path.clone());
+        // Runtime state never inherits the broad repository/temp allowance.
+        // This also applies when the whole runtime root is under /tmp in tests
+        // or a development installation, and follows symlinks before deciding.
+        if source_canonical.starts_with(&runtime_root)
+            && !admitted_roots
+                .iter()
+                .any(|root| source_canonical.starts_with(root))
+        {
+            continue;
+        }
         let Ok(source_metadata) = tokio::fs::metadata(&source_canonical).await else {
             continue;
         };
@@ -55324,6 +58042,7 @@ async fn capture_pack_action_artifacts_projection(
             )
             .await,
             size_bytes: metadata.len(),
+            content_sha256: sha256_for_file(&execution_path).await.ok(),
             execution_id: Some(target.execution_id.clone()),
             task_id: Some(target.task_id.clone()),
             plan_id: ctx.plan_id.clone(),
@@ -55547,7 +58266,7 @@ async fn capture_pack_action_artifacts_projection(
         };
     }
 
-    let Some(rewritten_output) =
+    let Some(mut rewritten_output) =
         rewrite_tool_output_file_paths(parsed_output.value, false, &rewrites)
     else {
         return CapturedPackActionArtifacts {
@@ -55555,6 +58274,18 @@ async fn capture_pack_action_artifacts_projection(
             rewritten_result: None,
         };
     };
+    if let Some(object) = rewritten_output.as_object_mut() {
+        let references: Vec<Value> = artifacts
+            .iter()
+            .filter_map(tool_output_file_reference)
+            .collect();
+        if !references.is_empty() {
+            // Runtime-owned references come from the verified producer index,
+            // alongside the editable source path and immutable copied paths.
+            // The model can copy a real URL instead of constructing one.
+            object.insert("magician_output_files".to_owned(), Value::Array(references));
+        }
+    }
     let rewritten_result =
         match rewritten_tool_output_json(tool_label, parsed_output.envelope, rewritten_output) {
             Ok(rewritten) => Some(rewritten),
@@ -55791,6 +58522,7 @@ async fn capture_pack_action_inline_result_artifact(
         ),
         content_type: "application/json".to_string(),
         size_bytes: metadata.len(),
+        content_sha256: sha256_for_file(&execution_path).await.ok(),
         execution_id: Some(target.execution_id.clone()),
         task_id: Some(target.task_id.clone()),
         plan_id: ctx.plan_id.clone(),
@@ -56680,6 +59412,38 @@ pub(super) fn candidate_targets_iframe(
 
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
+    #[test]
+    fn internal_subgoals_do_not_turn_planning_estimates_into_approval_caps() {
+        for estimate in [0, 1, 12, 40, usize::MAX] {
+            assert_eq!(
+                super::sub_goal_iteration_allowance(12000, 17, estimate),
+                11982
+            );
+        }
+        assert_eq!(super::sub_goal_iteration_allowance(20, 18, 12), 1);
+        assert_eq!(super::sub_goal_iteration_allowance(20, 19, 12), 0);
+        assert_eq!(super::sub_goal_iteration_allowance(20, 99, 12), 0);
+    }
+
+    #[test]
+    fn resumed_nested_work_charges_parent_iterations_and_applies_extensions_once() {
+        assert_eq!(
+            super::parent_iterations_after_nested_work(15, 5, 11, 0),
+            (9, 11)
+        );
+        assert_eq!(
+            super::parent_iterations_after_nested_work(15, 5, 33, 14),
+            (1, 33)
+        );
+        assert_eq!(
+            super::parent_iterations_after_nested_work(15, 5, 40, 20),
+            (0, 40)
+        );
+        assert_eq!(
+            super::parent_iterations_after_nested_work(15, 5, 60, 20),
+            (0, 60)
+        );
+    }
 
     use super::*;
     use crate::magician_v2::prompt_identity::PromptIdentityContext;
@@ -57342,16 +60106,13 @@ mod tests {
         pause.max_iterations = 6;
         pause.iteration = 2;
         pause.controller_attempt_hash = Some("a".repeat(64));
-        assert_eq!(upgraded_pause_iteration_budget(&pause), 4);
+        assert_eq!(remaining_pause_iteration_budget(&pause), 4);
         pause.iteration = 6;
-        assert_eq!(upgraded_pause_iteration_budget(&pause), 0);
+        assert_eq!(remaining_pause_iteration_budget(&pause), 0);
         pause.iteration = 7;
-        assert_eq!(upgraded_pause_iteration_budget(&pause), 0);
+        assert_eq!(remaining_pause_iteration_budget(&pause), 0);
         pause.controller_attempt_hash = None;
-        assert_eq!(
-            upgraded_pause_iteration_budget(&pause),
-            AGENTIC_ITERATION_CEILING - 7
-        );
+        assert_eq!(remaining_pause_iteration_budget(&pause), 0);
     }
 
     #[derive(Debug)]
@@ -57455,7 +60216,7 @@ mod tests {
                 Arc::new(OperationLlmRouter::new(None)),
                 guard.clone(),
                 CancellationToken::new(),
-                1_000,
+                Some(1_000),
             )
             .await
             .err()
@@ -59215,6 +61976,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn manual_pause_during_first_turn_has_a_distinct_resume_segment() {
+        let root = tempfile::tempdir().unwrap();
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager());
+        for (offset, observed) in [(0, 1), (7, 1), (0, 4)] {
+            let mut ctx = AgenticContext::new("pause test", "resume saved work")
+                .with_iteration_offset(offset);
+            ctx.storage_base_path = root.path().to_owned();
+            ctx.execution_id = Some("manual-pause-first-turn".into());
+            ctx.principal = Some("owner".into());
+            ctx.workspace = Some("workspace".into());
+            let source = derived_loop_state_address(&ctx, "manual-pause-first-turn");
+            ctx.stateless_active_segment = Some(source.clone());
+            let outcome = finish_cancelled_agentic_execution(
+                &ctx,
+                &executors,
+                Some((observed, super::super::run_loop::outcome::Phase::Apply)),
+                EnvironmentState::Uninitialized,
+                &ExecutionHistory::new(),
+                &Instant::now(),
+                observed - 1,
+                observed,
+                true,
+                &LoopProtectiveState::default(),
+                &[],
+            )
+            .await;
+            let AgenticOutcome::PausedByUser {
+                pause_state,
+                iterations_used,
+            } = outcome
+            else {
+                panic!("manual cancellation must preserve a continuation");
+            };
+            assert_eq!(
+                iterations_used,
+                observed - 1,
+                "completion accounting stays truthful"
+            );
+            assert_eq!(pause_state.iteration, (observed - 1).max(1));
+            assert_eq!(
+                pause_state.stateless_parked_segment.as_deref(),
+                Some(source.as_str())
+            );
+            let successor = park_resume_address(&pause_state).unwrap();
+            assert_ne!(
+                successor, source,
+                "resume must never reopen its source cursor"
+            );
+            let restored =
+                restore_context_from_pause(&pause_state, "pause test", "resume saved work", 8);
+            assert_eq!(
+                derived_loop_state_address(&restored, "manual-pause-first-turn"),
+                successor
+            );
+        }
+    }
+
     #[test]
     fn clearing_the_deadline_never_writes_an_empty_bundle() {
         // The `deadline_at`-only bundle. Pristine-ness is judged on what is
@@ -59767,6 +62587,7 @@ mod tests {
         let mut approved = vec![ApprovedConfirmationAction {
             action_json: action_json.clone(),
             owner_snapshot: owner_ctx.current_owner_snapshot().expect("owner snapshot"),
+            replay_call_json: None,
         }];
 
         assert!(!take_matching_approved_confirmation(
@@ -59796,6 +62617,7 @@ mod tests {
         let mut approved = vec![ApprovedConfirmationAction {
             action_json: String::new(),
             owner_snapshot: owner_ctx.current_owner_snapshot().expect("owner snapshot"),
+            replay_call_json: None,
         }];
 
         assert!(!take_matching_approved_confirmation(
@@ -60181,6 +63003,7 @@ mod tests {
             action_json: stable_confirmation_action_json(&approved_action)
                 .expect("serialize approved action"),
             owner_snapshot: ctx.current_owner_snapshot().expect("owner snapshot"),
+            replay_call_json: None,
         }];
         let re_emitted = pack(vec![
             ("rush", json!(true)),
@@ -62528,6 +65351,7 @@ mod tests {
                 active_owner_agent_id: "agent-under-test".to_string(),
                 owner_stack: Vec::new(),
             },
+            replay_call_json: None,
         }
     }
 
@@ -63581,7 +66405,7 @@ mod tests {
             .expect("owner-aware exact continuation precomposition");
         let setup = execute.find("build_run_setup(").expect("run setup");
         let outer_loop = execute
-            .find("for iteration in resume_iteration..=ctx.max_iterations")
+            .find("while next_iteration <= super::run_budget::iteration_ceiling(ctx, &loop_protective)")
             .expect("cursor-aware outer loop");
         let compaction = execute
             .find("compact_completed_history_for_retention")
@@ -64167,6 +66991,385 @@ mod tests {
         .expect("the refinement segment's Prepare reopens the fence it inherited");
     }
 
+    fn refinement_fixture_context() -> AgenticContext {
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        ctx.principal = Some("principal".to_string());
+        ctx.workspace = Some("workspace".to_string());
+        ctx.execution_id = Some("execution-1".to_string());
+        ctx.task_id = Some("task-1".to_string());
+        ctx.expected_artifact_declarations =
+            vec![crate::magician_v2::agents::types::ArtifactDeclaration::simple("report.md")];
+        ctx
+    }
+
+    fn refinement_fixture_success(names: &[&str]) -> AgenticOutcome {
+        AgenticOutcome::Success {
+            completion: crate::magician_v2::execution::agentic::types::CompletionKind::Full,
+            open: Vec::new(),
+            final_state: EnvironmentState::Uninitialized,
+            iterations_used: 3,
+            artifacts: names
+                .iter()
+                .map(|name| Artifact::text(*name, "content"))
+                .collect(),
+        }
+    }
+
+    /// The live failure: the first pass's committed `Success` settled the
+    /// execution Completed, so the refinement segment's first Decide found no
+    /// active durable generation to claim operator steers under. The gap
+    /// verdict is now taken at that commit for the armed segment, so the
+    /// first pass's receipt hands settlement to the refinement segment, the
+    /// execution stays open under its generation, and the refinement
+    /// segment's Prepare and Decide claim both pass on the inherited fence.
+    #[tokio::test]
+    async fn a_refinement_segment_passes_decide_s_steer_claim_under_the_stateless_driver() {
+        use crate::magician_v2::execution::agentic::run_loop::steer_inbox;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace::new(
+            temp.path().join("workspace"),
+        );
+        steer_inbox::activate_control_generation(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            "controls-a",
+        )
+        .await
+        .expect("control generation");
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager())
+                .with_artifact_v2_workspace(workspace.clone());
+
+        // The wrapper arms the gate for the segment the first pass runs under.
+        let mut original = refinement_fixture_context();
+        original.refinement_gate_segment = chain_closure_segment(&original, "execution-1");
+        assert_eq!(
+            original.refinement_gate_segment.as_deref(),
+            Some("execution-1")
+        );
+        let first = refinement_fixture_success(&["notes.md"]);
+
+        // The first pass's terminal leaves the run open for the refinement.
+        assert_eq!(
+            refinement_gaps_deferring_settlement(&original, "execution-1", &first),
+            Some(vec!["report.md".to_string()]),
+            "a Success the wrapper will refine must not settle the execution"
+        );
+        steer_inbox::admit_terminal_boundary(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            "controls-a",
+            "execution-1",
+            9,
+            None,
+        )
+        .await
+        .expect("the first pass admits its terminal boundary");
+
+        let refined = build_refinement_context(&original, &[], &["report.md".to_string()]);
+        assert_eq!(refined.refinement_gate_segment, None);
+        assert!(
+            refinement_gaps_deferring_settlement(&refined, "execution-1-p1", &first).is_none(),
+            "the refinement segment's own terminal settles the run"
+        );
+        hand_terminal_fence_to_continuation_segment(&refined, &executors)
+            .await
+            .expect("the refinement segment takes over the fence");
+        steer_inbox::reopen_after_nonterminal_boundary(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            "execution-1-p1",
+            1,
+        )
+        .await
+        .expect("the refinement segment's Prepare reopens the fence");
+
+        // Decide: the unsettled execution still names its generation, and the
+        // refinement segment claims under it.
+        let generation =
+            steer_inbox::control_generation(&workspace, "principal", "workspace", "execution-1")
+                .await
+                .expect("generation read");
+        assert_eq!(generation.as_deref(), Some("controls-a"));
+        let claimed = steer_inbox::claim(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            "controls-a",
+            "execution-1-p1",
+            1,
+        )
+        .await
+        .expect("the refinement segment's Decide claims operator steers");
+        assert!(claimed.is_none(), "no operator input was queued");
+    }
+
+    /// Only the armed segment's terminal defers settlement, and only when the
+    /// wrapper's own verdict would refine it. Every other ending settles.
+    #[test]
+    fn only_the_armed_segment_s_refinable_success_defers_settlement() {
+        let mut ctx = refinement_fixture_context();
+        let gaps = refinement_fixture_success(&["notes.md"]);
+        assert!(
+            refinement_gaps_deferring_settlement(&ctx, "execution-1", &gaps).is_none(),
+            "an unarmed context (no refinement wrapper) settles as before"
+        );
+
+        ctx.refinement_gate_segment = Some("execution-1".to_string());
+        assert_eq!(
+            refinement_gaps_deferring_settlement(&ctx, "execution-1", &gaps),
+            Some(vec!["report.md".to_string()])
+        );
+        assert!(
+            refinement_gaps_deferring_settlement(&ctx, "execution-1-r3", &gaps).is_none(),
+            "a different segment of the same run settles as before"
+        );
+        let complete = refinement_fixture_success(&["report.md"]);
+        assert!(refinement_gaps_deferring_settlement(&ctx, "execution-1", &complete).is_none());
+        let failed = AgenticOutcome::Failed {
+            reason: "boom".to_string(),
+            last_state: EnvironmentState::Uninitialized,
+            iterations_used: 1,
+        };
+        assert!(refinement_gaps_deferring_settlement(&ctx, "execution-1", &failed).is_none());
+    }
+
+    /// A read-only run can produce artifacts only as outputs of its terminal
+    /// decision, so once it delivered output a declared name it did not use is
+    /// not a gap a second read-only pass could close.
+    #[test]
+    fn a_read_only_run_that_delivered_output_is_not_refined() {
+        let mut ctx = refinement_fixture_context();
+        let delivered = refinement_fixture_success(&["summary-and-plan.md"]);
+        assert!(
+            refinement_gaps_if_warranted(&ctx, &delivered).is_some(),
+            "fixture: a writable run with a missing declaration is refined"
+        );
+
+        ctx.plan_run = true;
+        assert!(refinement_gaps_if_warranted(&ctx, &delivered).is_none());
+
+        let nothing = refinement_fixture_success(&[]);
+        assert_eq!(
+            refinement_gaps_if_warranted(&ctx, &nothing),
+            Some(vec!["report.md".to_string()]),
+            "a read-only run that delivered nothing can still deliver the artifact as output"
+        );
+    }
+
+    /// A refinement pass that cannot run keeps the first pass's successful
+    /// outcome instead of failing the run (or force-failing a delegated child
+    /// whose work is done). Only the stateless settlement signal passes through.
+    #[test]
+    fn a_refinement_that_cannot_run_keeps_the_first_outcome() {
+        let ctx = refinement_fixture_context();
+        let kept = first_outcome_when_refinement_could_not_run(
+            &ctx,
+            refinement_fixture_success(&["notes.md"]),
+            anyhow::anyhow!(
+                "execution_driver_stateless: phase Decide of principal/workspace/execution-1-p1 \
+                 failed (attempt 1): execution_driver_stateless: operator steer claim found no \
+                 active durable execution generation"
+            ),
+        )
+        .expect("the first outcome stands");
+        let AgenticOutcome::Success { artifacts, .. } = kept else {
+            panic!("the first pass's Success must be kept");
+        };
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["notes.md"]
+        );
+
+        let pending = first_outcome_when_refinement_could_not_run(
+            &ctx,
+            refinement_fixture_success(&["notes.md"]),
+            anyhow::anyhow!(
+                "{}execution-1-p1",
+                crate::magician_v2::execution::agentic::run_loop::TERMINAL_SETTLEMENT_PENDING_ERROR
+            ),
+        );
+        assert!(
+            pending.is_err(),
+            "a committed refinement terminal's lifecycle owns the settlement"
+        );
+    }
+
+    fn refined_fixture_with_first_pass(first: &AgenticOutcome) -> AgenticContext {
+        let mut original = refinement_fixture_context();
+        original.refinement_gate_segment = Some("execution-1".to_string());
+        let missing = vec!["report.md".to_string()];
+        let mut refined = build_refinement_context(&original, &[], &missing);
+        refined.refinement_first_pass = refinement_first_pass_record(&refined, first, &missing);
+        refined
+    }
+
+    /// A refinement pass that ends `CannotProceed` must not settle the run as
+    /// failed: its receipt projects the first pass's `Success` (declaring the
+    /// unclosed gap open), and that projection is exactly what the wrapper
+    /// returns.
+    #[test]
+    fn a_failed_refinement_pass_settles_completed_with_the_first_pass_outcome() {
+        use crate::magician_v2::artifact_v2::models::ExecutionOutcomeSnapshot;
+        let first = refinement_fixture_success(&["notes.md"]);
+        let refined = refined_fixture_with_first_pass(&first);
+        assert_eq!(
+            refined
+                .refinement_first_pass
+                .as_deref()
+                .map(|record| record.segment.as_str()),
+            Some("execution-1-p1")
+        );
+        let failed_pass = AgenticOutcome::CannotProceed {
+            reason: "the declared file cannot be written in this run".to_string(),
+            last_state: EnvironmentState::Uninitialized,
+            iterations_used: 2,
+        };
+
+        let settled = refinement_settlement_outcome(&refined, "execution-1-p1", &failed_pass)
+            .expect("a refinement segment settles the merged outcome");
+        let snapshot = ExecutionOutcomeSnapshot::from_agentic_outcome(&settled);
+        assert_eq!(snapshot.execution_status, "completed");
+        assert_eq!(snapshot.task_status, "completed");
+        assert!(snapshot.is_terminal);
+        assert_eq!(
+            snapshot.completion_kind,
+            Some(crate::magician_v2::execution::agentic::types::CompletionKind::Partial)
+        );
+        assert!(
+            snapshot
+                .open_items
+                .iter()
+                .any(|item| item.contains("cannot_proceed") && item.contains("report.md")),
+            "the settled outcome says the refinement did not close its gap: {:?}",
+            snapshot.open_items
+        );
+        let AgenticOutcome::Success { artifacts, .. } = &settled else {
+            panic!("the first pass's Success settles the run");
+        };
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["notes.md"]
+        );
+
+        // The receipt's projection is the wrapper's returned outcome.
+        let returned = merge_refinement_outcomes(
+            first.clone(),
+            failed_pass.clone(),
+            &["report.md".to_string()],
+        );
+        let returned_snapshot = ExecutionOutcomeSnapshot::from_agentic_outcome(&returned);
+        assert_eq!(
+            returned_snapshot.execution_status,
+            snapshot.execution_status
+        );
+        assert_eq!(returned_snapshot.outcome_summary, snapshot.outcome_summary);
+        assert_eq!(returned_snapshot.open_items, snapshot.open_items);
+        assert_eq!(returned_snapshot.iterations_used, snapshot.iterations_used);
+    }
+
+    /// Only the refinement segment's own final ending is merged. A pause or a
+    /// cancellation stands as the run's state, and every other segment
+    /// settles its own outcome.
+    #[test]
+    fn only_a_refinement_segment_s_final_ending_settles_merged() {
+        let first = refinement_fixture_success(&["notes.md"]);
+        let refined = refined_fixture_with_first_pass(&first);
+        let closed = refinement_fixture_success(&["report.md"]);
+        let merged = refinement_settlement_outcome(&refined, "execution-1-p1", &closed)
+            .expect("a successful refinement settles the merged outcome");
+        let AgenticOutcome::Success { artifacts, .. } = &merged else {
+            panic!("merged Success");
+        };
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["notes.md", "report.md"]
+        );
+
+        assert!(
+            refinement_settlement_outcome(&refined, "execution-1-p1-f2", &closed).is_none(),
+            "a nested segment inside the pass settles its own outcome"
+        );
+        let cancelled = AgenticOutcome::Failed {
+            reason: "Execution cancelled".to_string(),
+            last_state: EnvironmentState::Uninitialized,
+            iterations_used: 1,
+        };
+        assert!(refinement_settlement_outcome(&refined, "execution-1-p1", &cancelled).is_none());
+        assert!(matches!(
+            merge_refinement_outcomes(first, cancelled, &["report.md".to_string()]),
+            AgenticOutcome::Failed { .. }
+        ));
+        assert!(
+            refinement_settlement_outcome(&refinement_fixture_context(), "execution-1-p1", &closed)
+                .is_none(),
+            "a context without a first-pass record settles as before"
+        );
+    }
+
+    /// The `refinement_pending` flag on the first pass's completion event is
+    /// the refinement decision: armed segment, success, a declared artifact
+    /// missing once summary references are resolved to names.
+    #[test]
+    fn refinement_pending_matches_the_refinement_decision() {
+        let executors = test_executors_with_decision_fixtures(Vec::<String>::new());
+        let summary = |ctx: &AgenticContext, outcome: &str, artifacts: &[&str]| {
+            build_agentic_execution_summary(
+                ctx,
+                &executors,
+                outcome,
+                1,
+                artifacts.iter().map(|entry| entry.to_string()).collect(),
+                10,
+                "done",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        let mut ctx = refinement_fixture_context();
+        let gap = summary(&ctx, "goal_achieved", &["inline:notes.md|text/plain"]);
+        assert!(
+            !refinement_will_follow_completion(&ctx, &gap),
+            "no wrapper armed this segment, so no refinement follows"
+        );
+
+        ctx.refinement_gate_segment = Some("execution-1".to_string());
+        assert!(refinement_will_follow_completion(&ctx, &gap));
+        let closed = summary(&ctx, "goal_achieved", &["inline:report.md|text/plain|body"]);
+        assert!(!refinement_will_follow_completion(&ctx, &closed));
+        let failed = summary(&ctx, "cannot_proceed", &[]);
+        assert!(!refinement_will_follow_completion(&ctx, &failed));
+
+        let refined = build_refinement_context(&ctx, &[], &["report.md".to_string()]);
+        let pass_one = summary(&refined, "goal_achieved", &["inline:notes.md|text/plain"]);
+        assert!(
+            !refinement_will_follow_completion(&refined, &pass_one),
+            "the refinement pass's completion is final"
+        );
+    }
+
     /// A run that pauses for a person admits a terminal boundary on the
     /// segment that paused, and the answer resumes it on a fresh `-r1`
     /// segment. That segment's Prepare must find the fence handed to it, or
@@ -64716,7 +67919,7 @@ mod tests {
         let resume = source
             .split("fn delegation_resume_segment")
             .nth(1)
-            .and_then(|tail| tail.split("const AGENTIC_ITERATION_CEILING").next())
+            .and_then(|tail| tail.split("fn remaining_pause_iteration_budget").next())
             .expect("delegation successor selector source");
         assert!(resume.contains("park_resume_address"));
         assert!(
@@ -64759,7 +67962,10 @@ mod tests {
         let drive = source
             .split("let mut resume_iteration = 1;")
             .nth(1)
-            .and_then(|tail| tail.split("for iteration in resume_iteration").next())
+            .and_then(|tail| {
+                tail.split("let mut next_iteration = resume_iteration;")
+                    .next()
+            })
             .expect("exact restoration seam");
         let seed_before_restore = drive
             .find("seed_declared_successor_before_restore")
@@ -67549,6 +70755,161 @@ mod tests {
         ctx
     }
 
+    /// The coordinator of a VibeDev Autopilot run, as the service stamps it.
+    fn autopilot_coordinator_context() -> AgenticContext {
+        let mut ctx = scoped_execution_context();
+        ctx.task_id = Some("task-autopilot".to_string());
+        ctx.root_execution_id = Some("exec-1".to_string());
+        ctx.vibedev_run = true;
+        ctx.vibedev_autopilot = true;
+        ctx
+    }
+
+    fn owner_report_request(task_id: &str, execution_id: Option<&str>) -> UserRequest {
+        UserRequest {
+            id: String::new(),
+            request_type: "harness.notify_owner.briefing".to_string(),
+            question: "Owner briefing: Autopilot finished".to_string(),
+            options: vec![RequestOption {
+                id: "acknowledge".to_string(),
+                label: "Acknowledge".to_string(),
+                requires_input: false,
+            }],
+            principal: "principal-a".to_string(),
+            workspace: "workspace-a".to_string(),
+            context: serde_json::json!({ "kind": "briefing", "severity": "info" }),
+            source: "harness".to_string(),
+            execution_id: execution_id.map(str::to_string),
+            task_id: Some(task_id.to_string()),
+            timeout_secs: 86_400,
+            default_on_timeout: "acknowledge".to_string(),
+            created_at: 0,
+            sensitive: None,
+        }
+    }
+
+    /// Live 2026-10-20: the Autopilot lead resumed after its engineer's
+    /// verified result closed the last micro-goal and was concluded with no
+    /// model call, so its required `notify_owner` report was never sent. Until
+    /// that report is filed it gets a turn with its tools; once filed, `Met`
+    /// (the final no-tools answer turn) is back.
+    #[tokio::test]
+    async fn an_autopilot_coordinator_reports_before_definition_of_done_concludes() {
+        use super::super::decision::DefinitionOfDone;
+        let broadcaster = Arc::new(RuntimeTransportBroadcaster::new(32));
+        let requests = Arc::new(UserRequestService::new(Arc::clone(&broadcaster)));
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager())
+                .with_user_request_service(Arc::clone(&requests));
+        let ctx = autopilot_coordinator_context();
+
+        assert!(run_owes_owner_final_report(&ctx));
+        assert_eq!(
+            definition_of_done_signal(&ctx, &executors, true).await,
+            DefinitionOfDone::OwnerReportOutstanding,
+            "the lead's verified delegation must not conclude the run before it reports"
+        );
+        assert_eq!(
+            definition_of_done_signal(&ctx, &executors, false).await,
+            DefinitionOfDone::Open,
+            "open micro-goals leave the decision to the model as before"
+        );
+
+        // A report another task's run filed does not count as this run's.
+        requests
+            .submit_nonblocking(owner_report_request("task-other", Some("exec-1")))
+            .await
+            .expect("submit unrelated report");
+        assert_eq!(
+            definition_of_done_signal(&ctx, &executors, true).await,
+            DefinitionOfDone::OwnerReportOutstanding
+        );
+
+        requests
+            .submit_nonblocking(owner_report_request("task-autopilot", Some("exec-1")))
+            .await
+            .expect("submit the run's own report");
+        assert_eq!(
+            definition_of_done_signal(&ctx, &executors, true).await,
+            DefinitionOfDone::Met,
+            "once the run's own report is filed the final answer turn ends it"
+        );
+    }
+
+    /// Ordinary delegations keep the definition-of-done ending: an attended run,
+    /// a Discuss run, and the Autopilot run's own engineers (spawned or
+    /// in-context) owe the owner no report of their own.
+    #[tokio::test]
+    async fn runs_without_an_owner_report_obligation_keep_the_definition_of_done_shortcut() {
+        use super::super::decision::DefinitionOfDone;
+        let broadcaster = Arc::new(RuntimeTransportBroadcaster::new(32));
+        let requests = Arc::new(UserRequestService::new(Arc::clone(&broadcaster)));
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager())
+                .with_user_request_service(Arc::clone(&requests));
+
+        let mut attended = autopilot_coordinator_context();
+        attended.vibedev_autopilot = false;
+        let mut plan = autopilot_coordinator_context();
+        plan.plan_run = true;
+        let mut spawned_engineer = autopilot_coordinator_context();
+        spawned_engineer.depth = 1;
+        let mut child_execution = autopilot_coordinator_context();
+        child_execution.root_execution_id = Some("exec-root".to_string());
+        let mut in_context_delegate = autopilot_coordinator_context();
+        in_context_delegate.owner_stack = vec!["cto".to_string()];
+        let mut no_task = autopilot_coordinator_context();
+        no_task.task_id = None;
+
+        for (label, ctx) in [
+            ("attended", attended),
+            ("plan", plan),
+            ("spawned engineer", spawned_engineer),
+            ("child execution", child_execution),
+            ("in-context delegate", in_context_delegate),
+            ("no task", no_task),
+        ] {
+            assert!(!run_owes_owner_final_report(&ctx), "{label}");
+            assert_eq!(
+                definition_of_done_signal(&ctx, &executors, true).await,
+                DefinitionOfDone::Met,
+                "{label}"
+            );
+        }
+
+        // No request service: the report can be neither checked nor filed,
+        // so the fast path stays and the run-ended notice is the backstop.
+        let bare =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager());
+        assert_eq!(
+            definition_of_done_signal(&autopilot_coordinator_context(), &bare, true).await,
+            DefinitionOfDone::Met
+        );
+    }
+
+    #[test]
+    fn an_owner_report_counts_only_for_its_own_task_and_execution() {
+        let own = owner_report_request("task-a", Some("exec-1"));
+        let other_execution = owner_report_request("task-a", Some("exec-2"));
+        let untagged = owner_report_request("task-a", None);
+        let mut question = owner_report_request("task-a", Some("exec-1"));
+        question.request_type = "tool_authorization".to_string();
+
+        assert!(owner_final_report_filed([&own], "task-a", &["exec-1"]));
+        assert!(!owner_final_report_filed([&own], "task-b", &["exec-1"]));
+        assert!(!owner_final_report_filed(
+            [&other_execution],
+            "task-a",
+            &["exec-1"]
+        ));
+        assert!(owner_final_report_filed([&untagged], "task-a", &["exec-1"]));
+        assert!(!owner_final_report_filed(
+            [&question],
+            "task-a",
+            &["exec-1"]
+        ));
+    }
+
     async fn build_screenshot_storage_with_registered_execution(
         tempdir: &tempfile::TempDir,
         execution_id: &str,
@@ -67786,6 +71147,92 @@ mod tests {
         assert_eq!(summary.iterations_used, 4);
         assert!(summary.summary.contains("Paused for confirmation"));
         assert!(summary.summary.contains("Delete selected node"));
+    }
+
+    #[test]
+    fn paused_confirmation_summary_and_pending_listing_use_the_approval_preview() {
+        use crate::magician_v2::execution::approval_preview::{line_diff_preview, ApprovalPreview};
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager());
+        let ctx = AgenticContext::new("Cycle goal", "Cycle success").with_observability(
+            "thread-preview",
+            "plan-preview",
+            "step-preview",
+        );
+        let preview = ApprovalPreview {
+            title: "Mira wants to change `facts.md`".to_string(),
+            why_label: Some("Why (agent's words)".to_string()),
+            why: Some("a fact changed".to_string()),
+            diff: Some(line_diff_preview("facts.md", "a\nb\n", "a\nc\n")),
+            evidence: Vec::new(),
+            warnings: Vec::new(),
+            notes: Vec::new(),
+        };
+        let mut pause_state = test_pause_state();
+        pause_state.approval_preview = Some(Box::new(preview.clone()));
+        let raw_call = format!(
+            "pack:propose_program_revision(content=\"{}\")",
+            "x".repeat(4096)
+        );
+        let outcome = AgenticOutcome::WaitingForConfirmation {
+            action_summary: raw_call.clone(),
+            reason: "Plane approval gate ended the harness turn.".to_string(),
+            action_type: "pack".to_string(),
+            action_json: "{}".to_string(),
+            secret_approval_challenge_id: None,
+            secret_approval_request: None,
+            pause_state,
+            iterations_used: 2,
+        };
+        let summary = build_paused_execution_summary(&ctx, &executors, &outcome, 10)
+            .expect("summary should be built");
+        assert_eq!(
+            summary.summary,
+            "Paused for confirmation: Mira wants to change `facts.md` (+1 lines, −1 lines)"
+        );
+        assert!(!summary.summary.contains("xxxx"));
+
+        // The pending-pause listing carries it as an optional field.
+        let mut pending = PendingPauseInfo::for_test(
+            "pause-1",
+            "exec-1",
+            UserInputType::Confirmation {
+                confirm_label: None,
+                deny_label: None,
+                destructive: false,
+            },
+        );
+        let json = serde_json::to_value(&pending).unwrap();
+        assert!(json.get("confirmation_preview").is_none());
+        pending.confirmation_preview = Some(Box::new(preview.clone()));
+        let json = serde_json::to_value(&pending).unwrap();
+        assert_eq!(
+            json["confirmation_preview"]["title"],
+            "Mira wants to change `facts.md`"
+        );
+        let back: PendingPauseInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.confirmation_preview.as_deref(), Some(&preview));
+    }
+
+    #[test]
+    fn approval_preview_prompt_text_is_readable_and_labels_the_agents_words() {
+        use crate::magician_v2::execution::approval_preview::{
+            line_diff_preview, ApprovalPreview, ApprovalPreviewWarning,
+        };
+        let preview = ApprovalPreview {
+            title: "Mira wants to change `facts.md`".to_string(),
+            why_label: Some("Why (agent's words)".to_string()),
+            why: Some("a fact changed".to_string()),
+            diff: Some(line_diff_preview("facts.md", "a\n", "b\n")),
+            evidence: Vec::new(),
+            warnings: vec![ApprovalPreviewWarning::new("stale_base", "Doc changed.")],
+            notes: Vec::new(),
+        };
+        assert_eq!(
+            approval_preview_prompt_text(&preview),
+            "Mira wants to change `facts.md` (+1 lines, −1 lines)\n\nWarning: Doc \
+             changed.\n\nWhy (agent's words): a fact changed"
+        );
     }
 
     #[tokio::test]
@@ -68365,6 +71812,95 @@ trust_policies:
         }
     }
 
+    #[tokio::test]
+    async fn artifact_receipts_promote_task_files_with_provenance_without_widening_access() {
+        let storage = tempfile::tempdir().unwrap();
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager())
+                .with_taskplan_base_path(storage.path().join("storage"));
+        let workspace = &executors.artifact_v2_workspace;
+        let scope = ScopeRef::system_internal_unauthenticated("owner", "workspace-a");
+        let workdir = workspace
+            .task_dir("owner", "workspace-a", "task-1")
+            .join("workdir");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let file = workdir.join("evidence.json");
+        let bytes = b"{\"observed\":true}";
+        std::fs::write(&file, bytes).unwrap();
+        let foreign = workspace
+            .task_dir("owner", "workspace-b", "task-2")
+            .join("secret.json");
+        std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        std::fs::write(&foreign, b"private").unwrap();
+        let private = workspace
+            .scope_root("owner", "workspace-a")
+            .join("secrets.json");
+        std::fs::write(&private, b"private").unwrap();
+        #[cfg(unix)]
+        let alias = {
+            let alias = workdir.join("private-alias.json");
+            std::os::unix::fs::symlink(&private, &alias).unwrap();
+            alias
+        };
+        let action = ExecutableAction::Pack {
+            capability_name: "shell".into(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "shell".into(),
+                },
+            resolved_params: HashMap::from([("working_dir".into(), json!(workdir))]),
+        };
+        let mut declarations = vec![
+            json!({"artifact_path": file, "content_type": "application/json"}),
+            json!({"artifact_path": foreign, "content_type": "application/json"}),
+            json!({"artifact_path": private, "content_type": "application/json"}),
+        ];
+        #[cfg(unix)]
+        declarations.push(json!({"artifact_path": alias, "content_type": "application/json"}));
+        let mut result = ActionResult::text(json!({"artifacts": declarations}).to_string());
+        let mut ctx = AgenticContext::new("inspect", "evidence");
+        ctx.principal = Some("owner".into());
+        ctx.workspace = Some("workspace-a".into());
+        ctx.task_id = Some("task-1".into());
+        ctx.execution_id = Some("exec-1".into());
+        ctx.agent_id = Some("analyst".into());
+        let captured =
+            capture_pack_action_artifacts(&action, &mut result, &ctx, &executors, None, 1).await;
+        assert_eq!(captured.len(), 1);
+        let records = FilesystemExecutionArtifactIndexStore::new(workspace.clone())
+            .list_artifacts(&scope, "task-1", "exec-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            records.len(),
+            1,
+            "private and foreign declarations must not be registered"
+        );
+        let payload = &records[0].payload;
+        assert_eq!(payload["agent_id"], "analyst");
+        assert_eq!(
+            payload["content_sha256"],
+            format!("{:x}", Sha256::digest(bytes))
+        );
+        assert!(payload["task_download_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("/api/magician/v3/tasks/task-1/outputs/"));
+        assert_eq!(
+            std::fs::read(payload["execution_absolute_path"].as_str().unwrap()).unwrap(),
+            bytes
+        );
+        let ActionResult::Text { content } = result else {
+            panic!("text result")
+        };
+        let rewritten: Value = serde_json::from_str(&content).unwrap();
+        assert_ne!(rewritten["artifacts"][0]["artifact_path"], json!(file));
+        assert_eq!(rewritten["artifacts"][1]["artifact_path"], json!(foreign));
+        assert_eq!(rewritten["artifacts"][2]["artifact_path"], json!(private));
+        #[cfg(unix)]
+        assert_eq!(rewritten["artifacts"][3]["artifact_path"], json!(alias));
+    }
+
     #[test]
     fn collect_tool_output_file_paths_ignores_disallowed_absolute_paths() {
         let cwd = std::env::current_dir().expect("cwd");
@@ -68689,6 +72225,88 @@ trust_policies:
         assert!(persisted_prompt_artifact_exists(&record));
     }
 
+    #[tokio::test]
+    async fn capture_pack_action_artifacts_registers_file_edits_without_retargeting_the_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager())
+                .with_taskplan_base_path(temp.path().join("storage"));
+        let mut ctx = AgenticContext::new("goal", "criteria");
+        ctx.principal = Some("owner".to_owned());
+        ctx.workspace = Some("workspace".to_owned());
+        ctx.task_id = Some("task-report".to_owned());
+        ctx.execution_id = Some("exec-report".to_owned());
+        let source = executors
+            .artifact_v2_workspace
+            .task_dir("owner", "workspace", "task-report")
+            .join("workdir/report.md");
+        let action = ExecutableAction::Pack {
+            capability_name: "files__write_file".to_owned(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "files".to_owned(),
+                },
+            resolved_params: HashMap::new(),
+        };
+        let mut snapshots = Vec::new();
+        for iteration in 0..2 {
+            let payload = if iteration == 0 {
+                crate::magician_v2::execution::compiled_handlers::staged_file_edit::write_task_workdir_file(&source, "report.md", "# First report", true)
+            } else {
+                crate::magician_v2::execution::compiled_handlers::staged_file_edit::edit_task_workdir_file(&source, "report.md", "First", "Final", false)
+            };
+            assert_eq!(payload["applied"], true);
+            let mut result = ActionResult::text(
+                crate::magician_v2::execution::agentic::shell_tool::wrap_output(
+                    &serde_json::to_string(&payload).unwrap(),
+                    "files",
+                    &crate::magician_v2::execution::agentic::shell_tool::ContentType::ToolOutput,
+                ),
+            );
+            let artifacts =
+                capture_pack_action_artifacts(&action, &mut result, &ctx, &executors, None, 0)
+                    .await;
+            assert_eq!(artifacts.len(), 1);
+            let rewritten = extract_wrapped_tool_output_json(&result).unwrap();
+            assert_eq!(rewritten["file_path"], "report.md");
+            assert_eq!(
+                rewritten["absolute_path"],
+                source.to_string_lossy().as_ref()
+            );
+            let copied = rewritten["artifacts"][0]["path"].as_str().unwrap();
+            assert!(std::path::Path::new(copied).is_file());
+            assert_ne!(copied, source.to_string_lossy());
+            let reference = &rewritten["magician_output_files"][0];
+            assert_eq!(reference["display_name"], "report.md");
+            let download = reference["task_download_url"].as_str().unwrap();
+            let name = download
+                .strip_prefix("/api/magician/v3/tasks/task-report/outputs/")
+                .unwrap();
+            let served = executors
+                .artifact_v2_workspace
+                .task_outputs_dir("owner", "workspace", "task-report")
+                .join(name);
+            assert_eq!(
+                std::fs::read(served).unwrap(),
+                std::fs::read(copied).unwrap()
+            );
+            assert!(reference["execution_download_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/api/magician/v3/executions/exec-report/artifacts/outputs/"));
+            snapshots.push(copied.to_owned());
+        }
+        assert_ne!(snapshots[0], snapshots[1]);
+        assert_eq!(
+            std::fs::read_to_string(&snapshots[0]).unwrap(),
+            "# First report"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&snapshots[1]).unwrap(),
+            "# Final report"
+        );
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "# Final report");
+    }
     #[tokio::test]
     async fn capture_pack_action_artifacts_rewrites_history_to_execution_paths() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -69682,6 +73300,315 @@ trust_policies:
         assert_eq!(outcome.iterations_used(), 1);
     }
 
+    /// A scoped run whose durable task state already has every micro-goal
+    /// resolved (one `blocked` when `blocked`), scripted with `responses`.
+    /// Returns the run and the scripted queue, so a test can read what the
+    /// final turn was asked.
+    async fn definition_of_done_run(
+        blocked: bool,
+        responses: Vec<ExecutionNativeResponse>,
+    ) -> (
+        ScopedLoopRun,
+        Arc<crate::magician_v2::execution::TestNativeResponseQueue>,
+    ) {
+        let mut run = scoped_loop_run(
+            "Prepare the proposal",
+            "The proposal is delivered",
+            Vec::<&str>::new(),
+        )
+        .heap_boxed()
+        .await;
+        let queue = Arc::new(crate::magician_v2::execution::TestNativeResponseQueue::new(
+            responses,
+        ));
+        run.executors = run.executors.with_native_adapter(Arc::new(
+            crate::magician_v2::execution::MultiLlmAgentAdapter::new_with_test_native_queue(
+                Arc::clone(&queue),
+            ),
+        ));
+        let (status, reason) = if blocked {
+            (
+                "blocked",
+                serde_json::json!("File reads are sandbox denied."),
+            )
+        } else {
+            ("completed", serde_json::Value::Null)
+        };
+        run.ctx.task_state = Some(
+            serde_json::json!({
+                "task_id": "task-dod",
+                "goal": "Prepare the proposal",
+                "status": "in_progress",
+                "micro_goals": [
+                    {"id": "template", "status": "completed", "description": "Read the template."},
+                    {
+                        "id": "programs",
+                        "status": status,
+                        "description": "Read the program documents.",
+                        "blocked_reason": reason,
+                    },
+                ],
+            })
+            .to_string(),
+        );
+        (run, queue)
+    }
+
+    fn text_native_response(text: Option<&str>) -> ExecutionNativeResponse {
+        let mut response = ExecutionNativeResponse::unadmitted(Vec::new());
+        response.text = text.map(str::to_string);
+        response.finish_reason = Some("stop".to_string());
+        response
+    }
+
+    fn outcome_artifact_text(outcome: &AgenticOutcome, artifact_type: &str) -> Option<String> {
+        let AgenticOutcome::Success { artifacts, .. } = outcome else {
+            return None;
+        };
+        artifacts
+            .iter()
+            .find(|artifact| artifact.artifact_type.as_deref() == Some(artifact_type))
+            .map(|artifact| String::from_utf8_lossy(&artifact.data).into_owned())
+    }
+
+    /// Every micro-goal completed: the run does not conclude silently. It
+    /// takes one final model turn, told that tools are disabled, and that
+    /// turn's text is the run's answer.
+    #[tokio::test]
+    async fn definition_of_done_takes_a_final_answer_turn() {
+        let answer = "FINAL_ANSWER_MARKER: the proposed goal tree, its owners and sources.";
+        let (run, queue) = definition_of_done_run(false, vec![text_native_response(Some(answer))])
+            .heap_boxed()
+            .await;
+        let outcome = execute_agentically(
+            &run.ctx,
+            EnvironmentState::Shell(ShellState::default()),
+            &run.executors,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let final_turns = queue
+            .prompts()
+            .iter()
+            .filter(|prompt| prompt.contains("FINAL ANSWER (tools are disabled for this turn)"))
+            .count();
+        assert_eq!(final_turns, 1, "exactly one final no-tools turn");
+        assert!(
+            queue
+                .tool_choices()
+                .contains(&Some(serde_json::json!({"type": "none"}))),
+            "the final turn forbids tool calls on the request itself: {:?}",
+            queue.tool_choices()
+        );
+        assert!(
+            matches!(
+                outcome,
+                AgenticOutcome::Success {
+                    completion: crate::magician_v2::execution::agentic::types::CompletionKind::Full,
+                    ..
+                }
+            ),
+            "got {outcome:?}"
+        );
+        assert_eq!(
+            outcome_artifact_text(&outcome, "task_deliverable").as_deref(),
+            Some(answer)
+        );
+    }
+
+    /// A blocked micro-goal: the terminal is partial, the blocked requirement
+    /// is open, and what blocked it reaches the published findings.
+    #[tokio::test]
+    async fn definition_of_done_with_a_blocked_goal_ends_partial() {
+        let answer = "FINAL_ANSWER_MARKER: the tree, built from the evidence that was readable.";
+        let (run, _queue) = definition_of_done_run(true, vec![text_native_response(Some(answer))])
+            .heap_boxed()
+            .await;
+        let outcome = execute_agentically(
+            &run.ctx,
+            EnvironmentState::Shell(ShellState::default()),
+            &run.executors,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let AgenticOutcome::Success {
+            completion, open, ..
+        } = &outcome
+        else {
+            panic!("expected a partial success, got {outcome:?}");
+        };
+        assert_eq!(
+            *completion,
+            crate::magician_v2::execution::agentic::types::CompletionKind::Partial
+        );
+        assert_eq!(open, &vec!["Read the program documents.".to_string()]);
+        let findings =
+            outcome_artifact_text(&outcome, "partial_findings").expect("partial findings artifact");
+        assert!(findings.contains(answer), "{findings}");
+        assert!(
+            findings.contains("File reads are sandbox denied."),
+            "{findings}"
+        );
+    }
+
+    /// A task's previous run leaves its resolved durable state behind, and the
+    /// orchestrator preloads it into `ctx.task_state`. That state is not this
+    /// execution's: with empty history it must not end the run on iteration 1.
+    /// Only a state this execution last wrote counts.
+    #[tokio::test]
+    async fn definition_of_done_ignores_a_state_another_execution_wrote() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager());
+        executors.artifact_v2_workspace =
+            crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace::new(root.path());
+        let state = serde_json::json!({
+            "task_id": "task-preloaded",
+            "micro_goals": [
+                {"id": "template", "status": "completed", "description": "Read the template."},
+            ],
+        })
+        .to_string();
+        let write_state = |writer: &str| {
+            let dir = executors
+                .artifact_v2_workspace
+                .durable_artifacts_root("p", "w")
+                .join("task_state");
+            std::fs::create_dir_all(&dir).expect("task_state dir");
+            std::fs::write(
+                dir.join("task-preloaded.json"),
+                format!(
+                    "---\nnamespace: task_state\nname: task-preloaded.json\n\
+                     created_by: task_state_provider\nlast_updated_by: task_state_provider\n\
+                     last_updated: 2026-10-19T18:26:53Z\nsource_execution_id: {writer}\n---\n{state}"
+                ),
+            )
+            .expect("write task state");
+        };
+        let mut ctx = AgenticContext::new("Prepare the proposal", "The proposal is delivered");
+        ctx.task_id = Some("task-preloaded".to_string());
+        ctx.principal = Some("p".to_string());
+        ctx.workspace = Some("w".to_string());
+        ctx.execution_id = Some("exec-this".to_string());
+        // Preloaded, as `preload_task_state_for_direct_execution` does.
+        ctx.task_state = Some(state.clone());
+
+        assert!(
+            resolved_durable_micro_goals(&ctx, &executors)
+                .await
+                .is_none(),
+            "no durable state of this execution's: not done"
+        );
+        write_state("exec-previous");
+        assert!(
+            resolved_durable_micro_goals(&ctx, &executors)
+                .await
+                .is_none(),
+            "the previous execution's resolved state is not this run's work"
+        );
+        write_state("exec-this");
+        assert_eq!(
+            resolved_durable_micro_goals(&ctx, &executors)
+                .await
+                .map(|goals| goals.len()),
+            Some(1)
+        );
+    }
+
+    /// The definition-of-done turn carries the turn's operator steer ahead of
+    /// the final-answer directive, and sends `tool_choice: none`.
+    #[tokio::test]
+    async fn definition_of_done_turn_carries_the_operator_steer() {
+        let answer = "FINAL_ANSWER_MARKER: the tree, with the steer honoured.";
+        let (run, queue) = definition_of_done_run(false, vec![text_native_response(Some(answer))])
+            .heap_boxed()
+            .await;
+        let goals = super::super::decision::resolved_micro_goals_in_state(
+            &serde_json::from_str(run.ctx.task_state.as_deref().expect("task state"))
+                .expect("task state JSON"),
+        )
+        .expect("resolved");
+        let (decision, _) = super::super::decision::decide_next_action(
+            &run.ctx,
+            &EnvironmentState::Shell(ShellState::default()),
+            &ExecutionHistory::new(),
+            None,
+            &run.executors.llm_service,
+            &run.executors.prompt_manager,
+            None,
+            None,
+            run.executors.native_adapter.as_ref(),
+            None,
+            None,
+            super::super::decision::DefinitionOfDone::Met,
+            Some(goals.as_slice()),
+            &["STEER_MARKER: keep it to one page".to_string()],
+            None,
+        )
+        .heap_boxed()
+        .await
+        .expect("the final turn decides");
+
+        assert!(matches!(
+            decision,
+            super::super::decision::Decision::Completed { .. }
+        ));
+        let prompts = queue.prompts();
+        let prompt = prompts.last().expect("the final turn was asked");
+        let steer = prompt
+            .find("STEER_MARKER")
+            .expect("steer reaches the final turn");
+        let directive = prompt
+            .find("FINAL ANSWER (tools are disabled for this turn)")
+            .expect("the directive");
+        assert!(steer < directive, "steer comes before the directive");
+        assert_eq!(
+            queue.tool_choices().last().cloned().flatten(),
+            Some(serde_json::json!({"type": "none"}))
+        );
+    }
+
+    /// The final turn returns nothing usable: the terminal is built from the
+    /// micro-goals. The note lists each requirement in its sections; the
+    /// status list is not written as an answer finalization could publish.
+    #[tokio::test]
+    async fn definition_of_done_final_turn_failure_concludes_from_the_micro_goals() {
+        let (run, _queue) = definition_of_done_run(true, vec![text_native_response(None)])
+            .heap_boxed()
+            .await;
+        let outcome = execute_agentically(
+            &run.ctx,
+            EnvironmentState::Shell(ShellState::default()),
+            &run.executors,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let findings = outcome_artifact_text(&outcome, "partial_findings")
+            .unwrap_or_else(|| panic!("expected partial findings, got {outcome:?}"));
+        assert!(
+            findings.contains("### COMPLETED\n- Read the template.\n"),
+            "{findings}"
+        );
+        assert!(
+            findings.contains("### BLOCKED / REMAINING\n- Read the program documents.\n"),
+            "{findings}"
+        );
+        assert!(
+            findings.contains("Read the program documents. — File reads are sandbox denied."),
+            "{findings}"
+        );
+        assert!(
+            super::yield_partial_findings_answer(&findings).is_none(),
+            "a status list is not the run's answer: {findings}"
+        );
+    }
+
     /// Explicit long-horizon qualification for the ordinary Tokio worker-stack
     /// policy. Kept out of the routine suite because it intentionally drives a
     /// thousand complete decide/execute/history iterations; the Makefile's
@@ -70106,13 +74033,19 @@ execution:
         .heap_boxed()
         .await;
         let executors = run.executors;
+        // This test measures the stack a deep resume needs, not the iteration
+        // arithmetic. Restoring a checkpoint grants no work (the resumed
+        // segment gets `max_iterations - iteration`), and approving a budget
+        // pause extends that budget, not the iteration allowance. So the pause
+        // carries spare iterations: 24 spent of 48, leaving the resumed run
+        // room for the decision that completes it.
         let mut pause_state = AgenticPauseState::new(
             24,
             "Summarize the latest news",
             "A concise sourced summary is returned",
             EnvironmentState::Shell(ShellState::default()),
             "Twenty-four prior research iterations completed before the budget pause",
-            24,
+            48,
             5,
         );
         pause_state.live_messages = (1..=24)
@@ -70230,6 +74163,56 @@ execution:
                 assert!(wrapper.contains("forget_exact_pause_process_authority"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_failed_decision_retries_with_the_same_operator_guidance() {
+        let mut run = scoped_loop_run("Test goal", "Goal is achieved", Vec::<&str>::new())
+            .heap_boxed()
+            .await;
+        let queue = Arc::new(crate::magician_v2::execution::TestNativeResponseQueue::new(
+            vec![
+                ExecutionNativeResponse::unadmitted(Vec::new()),
+                native_response_from_decision_fixture(
+                    r#"{"decision":"goal_reached","evidence":"done","artifacts":[]}"#,
+                ),
+            ],
+        ));
+        run.executors = run.executors.with_native_adapter(Arc::new(
+            crate::magician_v2::execution::MultiLlmAgentAdapter::new_with_test_native_queue(
+                Arc::clone(&queue),
+            ),
+        ));
+        super::super::run_loop::steer_inbox::enqueue(
+            &run.executors.artifact_v2_workspace,
+            SCOPED_LOOP_PRINCIPAL,
+            SCOPED_LOOP_WORKSPACE,
+            run.ctx.execution_id.as_deref().expect("execution"),
+            SCOPED_LOOP_GENERATION,
+            "RETRY_STEER_MARKER: use the attached requirements",
+        )
+        .await
+        .expect("enqueue");
+        let outcome = execute_agentically(
+            &run.ctx,
+            EnvironmentState::Shell(ShellState::default()),
+            &run.executors,
+            None,
+        )
+        .await
+        .expect("run");
+        assert!(matches!(outcome, AgenticOutcome::Success { .. }));
+        assert!(
+            outcome.iterations_used() >= 2,
+            "the failed decision must cross a loop boundary"
+        );
+        let prompts = queue.prompts();
+        assert!(prompts.len() >= 2, "the unusable first decision must retry");
+        assert!(prompts[0].contains("RETRY_STEER_MARKER"));
+        assert!(
+            prompts[1].contains("RETRY_STEER_MARKER"),
+            "a committed failed decision must not consume the sealed guidance"
+        );
     }
 
     async fn steer_drained_by_running_loop_inner() {
@@ -70364,13 +74347,17 @@ execution:
 
         let denied = anyhow::Error::new(ExecutionError::PathAccessDenied {
             paths: vec!["/outside/repo".to_string()],
+            roots_hint: String::new(),
         });
         assert_eq!(
             path_access_denied_paths(&denied),
             Some(vec!["/outside/repo".to_string()])
         );
 
-        let empty = anyhow::Error::new(ExecutionError::PathAccessDenied { paths: Vec::new() });
+        let empty = anyhow::Error::new(ExecutionError::PathAccessDenied {
+            paths: Vec::new(),
+            roots_hint: String::new(),
+        });
         assert!(path_access_denied_paths(&empty).is_none());
         assert!(path_access_denied_paths(&anyhow!("ordinary provider failure")).is_none());
     }
@@ -71174,6 +75161,217 @@ execution:
         }
     }
 
+    /// The provider-failure pause asks on the canonical budget card, with
+    /// Retry / Cancel rather than "Extend and continue", and Cancel on it is
+    /// the owner cancelling the run.
+    #[tokio::test]
+    async fn a_provider_failure_pause_asks_the_owner_to_retry_or_cancel() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = AgenticContext::new("bounded work", "declared result");
+        ctx.storage_base_path = temp.path().to_owned();
+        ctx.principal = Some("owner".into());
+        ctx.workspace = Some("workspace".into());
+        ctx.task_id = Some("task-provider-failure".into());
+        ctx.execution_id = Some("provider-failure-root".into());
+        let bus =
+            Arc::new(crate::magician_v2::realtime_events::RuntimeTransportBroadcaster::new(32));
+        let mut events = bus.subscribe();
+        let mut executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager());
+        executors.event_broadcaster = Some(bus);
+        let protective = LoopProtectiveState {
+            provider_failure_pause: true,
+            ..LoopProtectiveState::default()
+        };
+        let dimension = BudgetDimension::ProviderFailure {
+            route: "openai/gpt-test".into(),
+            error: "provider unavailable".into(),
+            attempts: OUTAGE_MAX_RETRIES + 1,
+            waited_secs: outage_scheduled_wait_ms(OUTAGE_MAX_RETRIES) / 1_000,
+        };
+        let prompt = dimension.continue_prompt();
+        assert_eq!(
+            prompt,
+            "The model provider kept failing (openai/gpt-test: provider unavailable) for about 13 minutes. Retry this run from where it stopped, or cancel it?"
+        );
+        let outcome = conclude_budget_exhausted_before_iteration(
+            &ctx,
+            &executors,
+            None,
+            &ExecutionHistory::new(),
+            EnvironmentState::Uninitialized,
+            dimension,
+            4,
+            &Instant::now(),
+            &protective,
+            &[],
+        )
+        .await;
+        let AgenticOutcome::BudgetExhausted {
+            pause_state: Some(pause_state),
+            ..
+        } = outcome
+        else {
+            panic!("an owner-backed provider failure is a resumable pause");
+        };
+        assert_eq!(pause_state.iteration, 3);
+        assert!(super::super::run_budget::is_provider_failure_pause(
+            &pause_state
+        ));
+
+        let mut schema = None;
+        while let Ok(event) = events.try_recv() {
+            if let RuntimeTransportEvent::HitlRequested {
+                prompt: asked,
+                input_schema,
+                ..
+            } = event
+            {
+                assert_eq!(asked, prompt);
+                schema = input_schema;
+            }
+        }
+        let schema = schema.expect("the owner is asked through the canonical HITL card");
+        assert_eq!(schema["pause_kind"], "budget");
+        assert_eq!(schema["pause_reason"], "provider_failure");
+        assert_eq!(schema["confirm_label"], "Retry");
+        assert_eq!(schema["deny_label"], "Cancel");
+    }
+
+    #[tokio::test]
+    async fn a_budget_stop_before_an_iteration_checkpoints_only_completed_work() {
+        // The token and cost checks run before an iteration does any work, and
+        // resume counts `pause.iteration` as spent. Checkpointing the not-yet-run
+        // iteration cost every such pause one iteration, and a cost stop on the
+        // final iteration resumed with none: Continue extended the cost ceiling
+        // and the run asked again at once, about iterations.
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx =
+            AgenticContext::new("bounded work", "declared result").with_max_iterations(24);
+        ctx.storage_base_path = temp.path().to_owned();
+        ctx.principal = Some("owner".into());
+        ctx.workspace = Some("workspace".into());
+        ctx.execution_id = Some("budget-final-iteration".into());
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager());
+        let outcome = conclude_budget_exhausted_before_iteration(
+            &ctx,
+            &executors,
+            None,
+            &ExecutionHistory::new(),
+            EnvironmentState::Uninitialized,
+            BudgetDimension::Cost {
+                used_dollars: 5.0,
+                limit_dollars: 5.0,
+            },
+            24,
+            &Instant::now(),
+            &LoopProtectiveState::default(),
+            &[],
+        )
+        .await;
+        let AgenticOutcome::BudgetExhausted {
+            iterations_completed,
+            pause_state: Some(pause_state),
+            ..
+        } = outcome
+        else {
+            panic!("an ordinary run's budget stop is a resumable pause");
+        };
+        assert_eq!(iterations_completed, 23);
+        assert_eq!(pause_state.iteration, 23);
+        assert_eq!(
+            remaining_pause_iteration_budget(&pause_state),
+            1,
+            "the final iteration never ran, so Continue must still be able to run it"
+        );
+    }
+
+    #[test]
+    fn a_claimed_phase_budget_stop_never_checkpoints_iteration_zero() {
+        use super::super::run_loop::outcome::Phase;
+        // The resident pre-phase check commits nothing under its key, so it
+        // records the true count, zero included.
+        assert_eq!(pause_checkpoint_before_iteration(1, None), 0);
+        assert_eq!(pause_checkpoint_before_iteration(24, None), 23);
+        // A claimed phase's cursor is committed under `iteration_offset`; a
+        // zero checkpoint would hand the resume that same segment key.
+        assert_eq!(
+            pause_checkpoint_before_iteration(1, Some((1, Phase::Prepare))),
+            1
+        );
+        assert_eq!(
+            pause_checkpoint_before_iteration(24, Some((24, Phase::Apply))),
+            23
+        );
+    }
+
+    #[test]
+    fn an_app_contracts_iteration_limit_is_not_offered_an_extension_it_cannot_record() {
+        let mut ctx = AgenticContext::new("protected goal", "criteria");
+        let mut pause = test_pause_state();
+        pause.iteration = pause.max_iterations;
+        assert!(iteration_limit_offers_continuation(&ctx, &pause));
+
+        // "Extend and continue" records an iteration grant, which an app
+        // contract refuses; offering it would only fail the resume.
+        let guard = app_disclosure_test_guard("app-local", 'a');
+        pause.app_disclosure_checkpoint = Some(guard.checkpoint());
+        ctx.app_disclosure_guard = Some(guard);
+        assert!(
+            super::super::run_budget::record_iteration_continuation_grant(&ctx, &pause).is_err()
+        );
+        assert!(!iteration_limit_offers_continuation(&ctx, &pause));
+        // A serialized checkpoint alone (no fresh guard yet) is the same contract.
+        ctx.app_disclosure_guard = None;
+        assert!(!iteration_limit_offers_continuation(&ctx, &pause));
+
+        // Same treatment as a sealed controller attempt.
+        let mut controller = AgenticContext::new("bounded work", "declared result");
+        controller.controller_attempt_hash = Some("a".repeat(64));
+        assert!(!iteration_limit_offers_continuation(
+            &controller,
+            &test_pause_state()
+        ));
+    }
+
+    #[test]
+    fn parked_iteration_refunds_resume_once_into_the_next_segment() {
+        // Ten allowed, three parked wakes handed back, twelve iterations run:
+        // one remains. The pause keeps the limit it was given; the refunds ride
+        // the bundle.
+        let mut pause = test_pause_state();
+        pause.max_iterations = 10;
+        pause.iteration = 12;
+        pause.loop_protective_state = Some(LoopProtectiveState {
+            parked_iteration_refunds: 3,
+            ..LoopProtectiveState::default()
+        });
+        let remaining = remaining_pause_iteration_budget(&pause);
+        assert_eq!(remaining, 1);
+
+        // The resumed segment's limit already holds them, so its bundle starts
+        // with none: carrying both would apply the refund twice.
+        let resumed =
+            restore_context_from_pause(&pause, &pause.goal, &pause.success_criteria, remaining);
+        assert_eq!(resumed.max_iterations, 1);
+        assert_eq!(
+            resumed
+                .resume_loop_protective
+                .as_ref()
+                .map(|state| state.parked_iteration_refunds),
+            Some(0)
+        );
+        // The paused record itself is untouched.
+        assert_eq!(
+            pause
+                .loop_protective_state
+                .as_ref()
+                .map(|state| state.parked_iteration_refunds),
+            Some(3)
+        );
+    }
+
     #[test]
     fn controller_attempts_obsolete_limit_pause_retirement_is_exact() {
         for kind in [
@@ -71830,6 +76028,80 @@ execution:
                 .prompt_projection_mode
                 .as_deref(),
             Some("rebootstrap")
+        );
+    }
+
+    #[test]
+    fn decision_request_correlation_names_the_call_its_response_reports() {
+        let mut ctx =
+            AgenticContext::new("goal", "done").with_observability("exec-1", "plan-1", "step-1");
+        ctx.principal = Some("principal-a".to_string());
+        ctx.workspace = Some("workspace-a".to_string());
+        ctx.task_id = Some("task-1".to_string());
+        ctx.root_execution_id = Some("root-1".to_string());
+
+        let (identity, request_correlation) = agentic_decision_call_identity(
+            &ctx,
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            3,
+            "decision",
+        );
+        let request_correlation = request_correlation.expect("scoped request correlation");
+        assert_eq!(
+            identity.trace_id, "root-1",
+            "the trace root is the execution root, as the router derives it"
+        );
+        assert_eq!(identity.capability.as_deref(), Some("decision"));
+        assert_eq!(request_correlation.trace_id, identity.trace_id);
+        assert_eq!(request_correlation.llm_call_id, identity.llm_call_id);
+        assert_eq!(
+            request_correlation.provider_attempt_id, None,
+            "no provider attempt exists when the request is announced"
+        );
+        assert_eq!(
+            request_correlation.iteration_id.as_deref(),
+            Some("exec-1:step-1:3")
+        );
+
+        // The context the router builds for that call carries the preassigned
+        // ids (`OperationLlmRouter::route_request`), and the response event is
+        // correlated from its receipt.
+        let mut routed = magicllm::LlmTraceContext::new(
+            magicllm::LlmScope::new("principal-a", "workspace-a"),
+            magicllm::LlmWorkloadClass::AutonomousTask,
+        );
+        routed.trace_id = identity.trace_id.clone();
+        routed.llm_call_id = identity.llm_call_id.clone();
+        let telemetry = crate::magician_v2::slot_graph::extraction::LlmCallTelemetry {
+            trace_receipt: Some(magicllm::LlmTraceReceipt::direct(routed)),
+            ..Default::default()
+        };
+        let response_correlation = agentic_llm_event_correlation(
+            &telemetry,
+            &ctx,
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            3,
+            None,
+        )
+        .expect("scoped response correlation");
+        assert_eq!(response_correlation.trace_id, request_correlation.trace_id);
+        assert_eq!(
+            response_correlation.llm_call_id,
+            request_correlation.llm_call_id
+        );
+
+        let (next, _) = agentic_decision_call_identity(
+            &ctx,
+            ctx.principal.as_deref(),
+            ctx.workspace.as_deref(),
+            4,
+            "decision",
+        );
+        assert_ne!(
+            next.llm_call_id, identity.llm_call_id,
+            "each decision call is its own logical call"
         );
     }
 
@@ -74222,6 +78494,58 @@ TUTOR_ACTION_RESULT: {"run_id":"tutor-1","status":"succeeded|failed","evidence":
     }
 
     #[test]
+    fn terminal_grounding_preserves_distinct_chunks_of_one_opened_source() {
+        let make = |index, text| {
+            serde_json::json!({
+                "canonical_url": "https://example.org/report",
+                "chunk_index": index, "content_hash": format!("hash-{index}"),
+                "fetch_status": "partial", "evidence_role": "opened_page",
+                "claim_eligible": true, "text": text,
+            })
+        };
+        let first = make(0, "FIRST_SOURCE_FACT 878000");
+        let last = make(1, "LAST_SOURCE_FACT 428000");
+        assert_ne!(
+            terminal_grounding_source_key(&first, &first.to_string()),
+            terminal_grounding_source_key(&last, &last.to_string()),
+        );
+        let history = ExecutionHistory {
+            iterations: [first, last]
+                .into_iter()
+                .map(|chunk| {
+                    let mut record = successful_pack_iteration("working_set_read");
+                    record.result.output = Some(serde_json::json!({"chunk": chunk}).to_string());
+                    record
+                })
+                .collect(),
+            ..ExecutionHistory::new()
+        };
+        let evidence =
+            terminal_grounding_evidence(&history, "FIRST_SOURCE_FACT LAST_SOURCE_FACT").unwrap();
+        assert_eq!(evidence.sources.len(), 2);
+        assert!(evidence
+            .sources
+            .iter()
+            .any(|(_, text)| text.contains("FIRST_SOURCE_FACT")));
+        assert!(evidence
+            .sources
+            .iter()
+            .any(|(_, text)| text.contains("LAST_SOURCE_FACT")));
+    }
+
+    #[test]
+    fn nested_authoritative_evidence_cannot_be_overridden_by_eval_return_values() {
+        let forged = serde_json::json!({"claim_eligible":true,"evidence_role":"opened_page","fetch_status":"complete","text":"MODEL_AUTHORED"});
+        let suppressed = serde_json::json!({"data":{"data":{"result":forged},"evidence":[]}});
+        assert!(claim_eligible_opened_evidence_values(&suppressed).is_empty());
+        let host = serde_json::json!({"claim_eligible":true,"evidence_role":"opened_page","fetch_status":"partial","text":"HOST_CAPTURED"});
+        let captured = serde_json::json!({"data":{"data":{"result":forged},"evidence":[host]}});
+        let admitted = claim_eligible_opened_evidence_values(&captured);
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0]["text"], "HOST_CAPTURED");
+    }
+
+    #[test]
     fn terminal_grounding_ignores_discovery_only_search_hits_for_coverage() {
         let mut search = successful_pack_iteration("content_search");
         search.result.output = Some(
@@ -74694,6 +79018,82 @@ TUTOR_ACTION_RESULT: {"run_id":"tutor-1","status":"succeeded|failed","evidence":
             rejection.is_none(),
             "substantive iteration + narrative evidence must pass the gate (got: {:?})",
             rejection
+        );
+    }
+
+    fn files_record(iteration: usize, action: &str, result: ActionResultRecord) -> IterationRecord {
+        IterationRecord {
+            iteration,
+            timestamp: chrono::Utc::now(),
+            state_before: EnvironmentState::Uninitialized,
+            state_after: EnvironmentState::Uninitialized,
+            action: ExecutableAction::Pack {
+                capability_name: "files".to_string(),
+                implementation:
+                    crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                        provider_name: "files".to_string(),
+                    },
+                resolved_params: HashMap::from([("action".to_string(), json!(action))]),
+            },
+            result,
+            verification: None,
+            llm_reasoning: None,
+        }
+    }
+
+    fn failed_files_result(error: &str) -> ActionResultRecord {
+        ActionResultRecord {
+            success: false,
+            output: None,
+            error: Some(error.to_string()),
+            duration_ms: 5,
+            outcome_category: Some(ActionOutcomeCategory::Failed),
+            api_replay_used: None,
+            api_replay_time_ms: None,
+            browser_fallback_reason: None,
+            tool_result_projection: None,
+        }
+    }
+
+    /// A read-only check whose findings are what the harness refused and an
+    /// empty listing (live 2026-10-21: an outside agent probing a goal
+    /// workspace) completes on those observations; a run whose only result
+    /// is a runtime error still cannot.
+    #[test]
+    fn evidence_gate_accepts_a_refusal_the_harness_itself_issued() {
+        let mut ctx = AgenticContext::new("Report what you can read", "Access report");
+        ctx.task_id = Some("task-789".to_string());
+        let narrative = "README.md: refused, not a member of the Magican workspace. \
+                         Workspaces/: listed, zero entries.";
+
+        let mut history = ExecutionHistory::new();
+        history.iterations.push(files_record(
+            1,
+            "read",
+            failed_files_result(
+                "Refused: `Workspaces/Magican/README.md` is in a goal workspace this agent is \
+                 not a member of.",
+            ),
+        ));
+        let mut listing = failed_files_result("");
+        listing.success = true;
+        listing.error = None;
+        listing.output = Some("[]".to_string());
+        history.iterations.push(files_record(2, "list", listing));
+        assert!(
+            goal_reached_rejection_reason(&ctx, &history, Some(narrative), &[], true).is_none(),
+            "a refusal the harness issued is an observation the narrative may rest on"
+        );
+
+        let mut errored = ExecutionHistory::new();
+        errored.iterations.push(files_record(
+            1,
+            "read",
+            failed_files_result("step execution failed: connection reset by peer"),
+        ));
+        assert!(
+            goal_reached_rejection_reason(&ctx, &errored, Some(narrative), &[], true).is_some(),
+            "a runtime error backs nothing"
         );
     }
 
@@ -78068,9 +82468,15 @@ TUTOR_ACTION_RESULT: {"run_id":"tutor-1","status":"succeeded|failed","evidence":
             resolved_params: params,
         };
 
-        let bound = outward_bound_dispatch(&action, &ctx, "agentmail-send", "send")
-            .expect("a bindable act is not refused")
-            .expect("a Pack carries a bound form");
+        let bound = outward_bound_dispatch(
+            &action,
+            &ctx,
+            "agentmail-send",
+            "send",
+            &crate::magician_v2::execution::restricted_action::ApprovedSenderProfiles::default(),
+        )
+        .expect("a bindable act is not refused")
+        .expect("a Pack carries a bound form");
 
         assert_eq!(
             bound.get("inbox_id"),
@@ -78084,6 +82490,55 @@ TUTOR_ACTION_RESULT: {"run_id":"tutor-1","status":"succeeded|failed","evidence":
             "recipients must be canonical at dispatch, or the act is screened in one spelling \
              and sent in another"
         );
+    }
+
+    /// The live failure: `gmail__send` from `executive-assistant` bound
+    /// `account = "executive-assistant"`, which names no profile, so profile
+    /// selection failed on every autonomous send. The agent id must never
+    /// become the mailbox: absent stays absent (contract default), an approved
+    /// alias is kept, anything else is refused before dispatch.
+    #[test]
+    fn a_gmail_send_never_binds_the_agent_id_as_its_account() {
+        use crate::magician_v2::execution::{
+            capability::ImplementationType, restricted_action::ApprovedSenderProfiles,
+        };
+
+        let mut ctx = ctx_carrying(None, &["gmail"], &[]);
+        ctx.agent_id = Some("executive-assistant".to_string());
+        let approved =
+            ApprovedSenderProfiles::new(["business", "personal", "work"], Some("work".to_string()));
+        let send = |account: Option<&str>| {
+            let mut params = HashMap::new();
+            params.insert("to".to_string(), json!("a@example.test"));
+            params.insert("subject".to_string(), json!("hi"));
+            params.insert("body".to_string(), json!("hello"));
+            if let Some(account) = account {
+                params.insert("account".to_string(), json!(account));
+            }
+            ExecutableAction::Pack {
+                capability_name: "gmail__send".to_string(),
+                implementation: ImplementationType::Compiled {
+                    provider_name: "test".to_string(),
+                },
+                resolved_params: params,
+            }
+        };
+
+        let absent = outward_bound_dispatch(&send(None), &ctx, "gmail", "send", &approved)
+            .expect("no account is the contract default")
+            .expect("a Pack carries a bound form");
+        assert_eq!(absent.get("account"), None);
+
+        let work = outward_bound_dispatch(&send(Some("work")), &ctx, "gmail", "send", &approved)
+            .expect("an approved account is kept")
+            .expect("a Pack carries a bound form");
+        assert_eq!(work.get("account"), Some(&json!("work")));
+
+        let refusal =
+            outward_bound_dispatch(&send(Some("evil@x.test")), &ctx, "gmail", "send", &approved)
+                .expect_err("an unapproved account is refused, not rebound");
+        assert!(refusal.contains("`work`"), "{refusal}");
+        assert!(!refusal.contains("executive-assistant"), "{refusal}");
     }
 
     fn ctx_carrying(
@@ -78813,5 +83268,110 @@ mod terminal_artifact_download_tests {
         // A path whose bytes differ from what was yielded gets no link.
         std::fs::write(outputs.join("other.md"), "different").unwrap();
         assert_eq!(name(outputs.join("other.md")), None);
+    }
+}
+
+#[cfg(test)]
+mod yield_partial_findings_answer_tests {
+    use super::{
+        render_yield_partial_findings, yield_partial_findings_answer, OPENED_PAGE_COVERAGE_CAVEAT,
+    };
+    use crate::magician_v2::execution::agentic::yield_decision::YieldDecision;
+
+    fn rendered(summary: &str, open: &[&str]) -> String {
+        let payload: YieldDecision = serde_json::from_value(serde_json::json!({
+            "summary": summary,
+            "completed": ["Prepared the shop cart. Evidence: result_ref_v1_aa."],
+            "open": open,
+            "blockers": [{"kind": "data_missing", "description": "no numeric cutoff"}],
+            "next_step_hint": "ask the provider",
+        }))
+        .expect("yield payload");
+        render_yield_partial_findings(&payload)
+    }
+
+    #[test]
+    fn a_rendered_yield_gives_back_its_summary_and_the_agents_open_items() {
+        let summary = "| Platform | Final payable |\n|---|---:|\n| Shop A | **$211** |\n\n### Shop A\nFree delivery at $199.";
+        let caveat = format!("{OPENED_PAGE_COVERAGE_CAVEAT} no admissible opened-page evidence");
+        let body = rendered(
+            summary,
+            &[
+                "Obtain Shop B's exact free-delivery cutoff.",
+                caveat.as_str(),
+            ],
+        );
+        let answer = yield_partial_findings_answer(&body).expect("answer");
+        assert!(answer.starts_with(summary), "{answer}");
+        assert!(answer.contains("**Still open**\n- Obtain Shop B's exact free-delivery cutoff.\n"));
+        assert!(!answer.contains(OPENED_PAGE_COVERAGE_CAVEAT), "{answer}");
+        assert!(!answer.contains("result_ref_v1_"), "{answer}");
+        assert!(!answer.contains("no numeric cutoff"), "{answer}");
+        assert!(!answer.contains("ask the provider"), "{answer}");
+    }
+
+    #[test]
+    fn only_a_yield_body_with_a_real_summary_is_an_answer() {
+        assert!(yield_partial_findings_answer(&rendered("Done.", &[])).is_none());
+        assert!(yield_partial_findings_answer(
+            "## PARTIAL SUCCESS — completed work preserved\n\nSome sections of the goal completed."
+        )
+        .is_none());
+        let answer = yield_partial_findings_answer(&rendered(
+            "Both carts are prepared and no order was placed anywhere.",
+            &[],
+        ))
+        .expect("answer");
+        assert_eq!(
+            answer,
+            "Both carts are prepared and no order was placed anywhere."
+        );
+    }
+
+    /// When the model gave no answer, the runtime's own requirement status is
+    /// not an answer: the body still lists every requirement, but finalization
+    /// must write the answer from the evidence instead of publishing it.
+    #[test]
+    fn a_runtime_status_summary_is_never_the_runs_answer() {
+        let mut payload: YieldDecision = serde_json::from_value(serde_json::json!({
+            "summary": "COMPLETED: Wrote the strategy memo.\nBLOCKED: Verify the filing — source unavailable",
+            "completed": ["Wrote the strategy memo."],
+            "open": ["Verify the filing"],
+            "blockers": [{"kind": "other", "description": "Verify the filing — source unavailable"}],
+        }))
+        .expect("yield payload");
+        payload.summary_is_runtime_status = true;
+        let body = render_yield_partial_findings(&payload);
+        assert!(
+            body.contains("### COMPLETED\n- Wrote the strategy memo.\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("### BLOCKED / REMAINING\n- Verify the filing\n"),
+            "{body}"
+        );
+        assert!(!body.contains("COMPLETED: Wrote"), "{body}");
+        assert!(yield_partial_findings_answer(&body).is_none(), "{body}");
+
+        // A note saved before the flag existed carries the status list as
+        // its summary; it is recognised by its shape.
+        payload.summary_is_runtime_status = false;
+        let saved = render_yield_partial_findings(&payload);
+        assert!(
+            saved.contains("COMPLETED: Wrote the strategy memo."),
+            "{saved}"
+        );
+        assert!(yield_partial_findings_answer(&saved).is_none(), "{saved}");
+    }
+
+    /// A model cannot mark its own summary as runtime status.
+    #[test]
+    fn a_yield_call_cannot_claim_runtime_status() {
+        let payload: YieldDecision = serde_json::from_value(serde_json::json!({
+            "summary": "The memo is done.",
+            "summary_is_runtime_status": true,
+        }))
+        .expect("yield payload");
+        assert!(!payload.summary_is_runtime_status);
     }
 }

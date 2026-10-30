@@ -396,6 +396,28 @@ fn validate_micro_goal(value: &Value, label: &str) -> Result<(), String> {
             "{label}.evidence_refs must be non-empty when status=completed"
         ));
     }
+    if let Some(summary) = map.get("result_summary").filter(|value| !value.is_null()) {
+        let summary = summary
+            .as_str()
+            .ok_or_else(|| format!("{label}.result_summary must be text"))?;
+        if summary.chars().count()
+            > crate::magician_v2::artifact_v2::result_delivery::MAX_FINDING_CHARS
+        {
+            return Err(format!(
+                "{label}.result_summary exceeds the finding checkpoint limit"
+            ));
+        }
+        if !summary.trim().is_empty()
+            && !valid_evidence_refs(
+                map.get("result_evidence_refs")
+                    .or_else(|| map.get("evidence_refs")),
+            )
+        {
+            return Err(format!(
+                "{label}.result_summary requires observed evidence_refs"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -629,7 +651,7 @@ fn lift_model_micro_goal(
     } else {
         status
     };
-    Some(json!({
+    let mut goal = json!({
         "id": id,
         "description": description,
         "status": status,
@@ -637,7 +659,12 @@ fn lift_model_micro_goal(
         "blocked_reason": blocked_reason,
         "created_at": now,
         "updated_at": now,
-    }))
+    });
+    if let Some(summary) = value.get("result_summary").and_then(Value::as_str) {
+        goal["result_summary"] = json!(summary);
+        goal["result_evidence_refs"] = goal["evidence_refs"].clone();
+    }
+    Some(goal)
 }
 
 /// The model's micro-goal list under either name.
@@ -811,6 +838,9 @@ pub fn normalize_model_task_state_patch(
                         {
                             op["evidence_refs"] = lifted["evidence_refs"].clone();
                         }
+                        if let Some(summary) = lifted.get("result_summary") {
+                            op["result_summary"] = summary.clone();
+                        }
                         ops.push(op);
                     },
                     _ => ops.push(json!({ "op": "upsert_micro_goal", "value": lifted })),
@@ -835,6 +865,17 @@ pub fn normalize_model_task_state_patch(
         }
     }
     (Value::Object(out), normalization)
+}
+
+fn freeze_finding_refs(goal: &mut Value) {
+    if goal.get("result_summary").and_then(Value::as_str).is_some()
+        && goal.get("result_evidence_refs").is_none()
+    {
+        goal["result_evidence_refs"] = goal
+            .get("evidence_refs")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+    }
 }
 
 pub fn apply_durable_task_state_patch(
@@ -876,6 +917,11 @@ pub fn apply_durable_task_state_patch(
     }
 
     let mut next = current.clone();
+    if let Some(goals) = next.get_mut("micro_goals").and_then(Value::as_array_mut) {
+        for goal in goals {
+            freeze_finding_refs(goal);
+        }
+    }
     let now = Utc::now().to_rfc3339();
     for (idx, op_value) in ops.iter().enumerate() {
         let label = format!("DurableTaskStatePatch.ops[{idx}]");
@@ -910,10 +956,16 @@ pub fn apply_durable_task_state_patch(
                     .insert("status".to_string(), Value::String(status.to_string()));
             },
             "upsert_micro_goal" => {
-                let value = op
+                let mut value = op
                     .get("value")
                     .ok_or_else(|| format!("{label}.value is required"))?
                     .clone();
+                if value.get("result_summary").is_some() {
+                    value["result_evidence_refs"] = value
+                        .get("evidence_refs")
+                        .cloned()
+                        .unwrap_or_else(|| json!([]));
+                }
                 validate_micro_goal(&value, &format!("{label}.value"))?;
                 let next_id = value.get("id").and_then(Value::as_str).unwrap_or_default();
                 let next_status = value
@@ -930,6 +982,14 @@ pub fn apply_durable_task_state_patch(
                         .and_then(Value::as_str)
                         .unwrap_or("pending");
                     ensure_forward_micro_goal_transition(current_status, next_status)?;
+                    let mut value = value;
+                    if value.get("result_summary").is_none() {
+                        for key in ["result_summary", "result_evidence_refs"] {
+                            if let Some(saved) = existing.get(key) {
+                                value[key] = saved.clone();
+                            }
+                        }
+                    }
                     *existing = value;
                     set_updated_at(existing, &now);
                 } else {
@@ -960,6 +1020,15 @@ pub fn apply_durable_task_state_patch(
                 ensure_forward_micro_goal_transition(current_status, status)?;
                 let goal_map = object_mut(goal, "MicroGoal")?;
                 goal_map.insert("status".to_string(), Value::String(status.to_string()));
+                if let Some(summary) = op.get("result_summary") {
+                    goal_map.insert("result_summary".to_string(), summary.clone());
+                    let refs = op
+                        .get("evidence_refs")
+                        .or_else(|| goal_map.get("evidence_refs"))
+                        .cloned()
+                        .unwrap_or_else(|| json!([]));
+                    goal_map.insert("result_evidence_refs".to_string(), refs);
+                }
                 if let Some(evidence_refs) = op.get("evidence_refs") {
                     goal_map.insert("evidence_refs".to_string(), evidence_refs.clone());
                 }
@@ -1033,6 +1102,7 @@ pub fn close_durable_task_state(
     let now = Utc::now().to_rfc3339();
     let goals = micro_goals_mut(&mut next)?;
     for goal in goals {
+        freeze_finding_refs(goal);
         let status = goal
             .get("status")
             .and_then(Value::as_str)
@@ -1428,5 +1498,99 @@ mod tests {
         );
         validate_durable_task_state(&state, Some("task_1")).expect("valid");
         assert_eq!(state["micro_goals"][0]["id"], json!("mg_initial"));
+    }
+    #[test]
+    fn authored_findings_keep_original_refs_across_status_changes_and_storage_compaction() {
+        let mut state = synthesize_durable_task_state(
+            "finding-task",
+            &"long request ".repeat(1000),
+            "Deliver a comparison",
+            None,
+        );
+        let patch = json!({"ops":[{"op":"set_micro_goal_status", "id":"mg_initial", "value":"in_progress",
+            "result_summary":"System A preserves named memory blocks. Switching was not verified.",
+            "evidence_refs":["result_ref_v1_original"]}]});
+        let (patch, _) = normalize_model_task_state_patch(&patch, &state, "finding-task");
+        state = apply_durable_task_state_patch(&state, &patch, "finding-task").unwrap();
+        let original = state["micro_goals"][0]["result_evidence_refs"].clone();
+        let patch = json!({"ops":[{"op":"set_micro_goal_status", "id":"mg_initial", "value":"blocked",
+            "evidence_refs":["result_ref_v1_later_unrelated"]}]});
+        let (patch, _) = normalize_model_task_state_patch(&patch, &state, "finding-task");
+        state = apply_durable_task_state_patch(&state, &patch, "finding-task").unwrap();
+        assert_eq!(state["micro_goals"][0]["result_evidence_refs"], original);
+        let (compacted, changed) = compact_durable_task_state_for_storage(&state, 4000).unwrap();
+        assert!(changed);
+        assert_eq!(
+            compacted["micro_goals"][0]["result_summary"],
+            state["micro_goals"][0]["result_summary"]
+        );
+        assert_eq!(
+            compacted["micro_goals"][0]["result_evidence_refs"],
+            original
+        );
+        let recovered: Value =
+            serde_json::from_str(&serde_json::to_string(&compacted).unwrap()).unwrap();
+        assert!(
+            crate::magician_v2::artifact_v2::result_delivery::partial_findings_markdown(&recovered)
+                .unwrap()
+                .contains("named memory blocks")
+        );
+    }
+
+    #[test]
+    fn finding_summary_requires_observed_refs_and_is_bounded() {
+        let mut state = synthesize_durable_task_state("finding-task", "Compare", "Report", None);
+        state["micro_goals"][0]["result_summary"] = json!("A claim without evidence");
+        assert!(validate_durable_task_state(&state, Some("finding-task")).is_err());
+        state["micro_goals"][0]["evidence_refs"] = json!(["planned:will research"]);
+        assert!(validate_durable_task_state(&state, Some("finding-task")).is_err());
+        state["micro_goals"][0]["evidence_refs"] = json!(["tool_call_evidence:observed"]);
+        state["micro_goals"][0]["result_summary"] = json!("x".repeat(801));
+        assert!(validate_durable_task_state(&state, Some("finding-task")).is_err());
+    }
+
+    #[test]
+    fn create_and_upsert_normalization_preserve_finding_checkpoints() {
+        let proposed = json!({"micro_goals":[{"id":"memory","description":"Compare memory","status":"in_progress",
+            "result_summary":"Memory blocks survive a session restart.","evidence_refs":["tool_call_evidence:memory"]}]});
+        let (state, _) = normalize_model_proposed_task_state(
+            &proposed,
+            "finding-task",
+            "Compare memory",
+            "Give differences",
+            None,
+        );
+        assert_eq!(
+            state["micro_goals"][0]["result_summary"],
+            "Memory blocks survive a session restart."
+        );
+        assert_eq!(
+            state["micro_goals"][0]["result_evidence_refs"],
+            json!(["tool_call_evidence:memory"])
+        );
+    }
+
+    #[test]
+    fn terminal_close_retains_the_original_refs_of_a_raw_finding_checkpoint() {
+        let mut state = synthesize_durable_task_state("finding-task", "Compare", "Report", None);
+        state["micro_goals"][0]["status"] = json!("in_progress");
+        state["micro_goals"][0]["result_summary"] = json!("A qualified source finding");
+        state["micro_goals"][0]["evidence_refs"] = json!(["tool_call_evidence:original"]);
+        let closed = close_durable_task_state(
+            &state,
+            "finding-task",
+            "completed",
+            &[json!("tool_call_evidence:terminal")],
+            "Work completed",
+        )
+        .unwrap();
+        assert_eq!(
+            closed["micro_goals"][0]["result_evidence_refs"],
+            json!(["tool_call_evidence:original"])
+        );
+        assert_eq!(
+            closed["micro_goals"][0]["evidence_refs"],
+            json!(["tool_call_evidence:terminal"])
+        );
     }
 }

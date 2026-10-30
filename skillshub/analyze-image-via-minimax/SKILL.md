@@ -1,8 +1,10 @@
 ---
 name: analyze-image-via-minimax
-version: 0.2.2
-description: Vision-analyze an image via MiniMax's VLM through the vendored `mmx vision describe` CLI.
-  Returns a structured description plus a short voice_summary suitable for spoken delivery.
+version: 0.2.3
+description: Inspect an image or rendered document page via MiniMax vision, including layout, clipping,
+  overlap, margins, and visual legibility. Use for visual review; prefer document-to-markdown for document
+  text and OCR for scan transcription. Reuse images already attached to the current vision-capable model.
+  Returns a structured description and voice_summary through the vendored mmx CLI.
 compatibility: Requires a vault-secret MiniMax API key and the `mmx` CLI vendored via skillshub's npm workspace.
   Network call to api.minimax.io.
 metadata:
@@ -109,21 +111,12 @@ metadata:
       input_delivery: canonical_json_stdin
       actions:
         run:
-          description: 'Vision-analyze an image via MiniMax''s VLM through the vendored
-
-            `mmx vision describe` CLI. Returns a structured `description`
-
-            plus a short `voice_summary` suitable for spoken delivery.
-
-            Same input/output contract as `analyze_image_via_openai`;
-
-            pick this for MiniMax-attributed vision (cost shaping, locale,
-
-            regulatory preference) or as a fallback when OpenAI''s
-
-            content-filter declines a benign image.
-
-            '
+          description: >-
+            Inspect an image or rendered document page with MiniMax vision for
+            layout, clipping, overlap, margins, or legibility. Use image analysis
+            for visual review and OCR for transcription. Inspect an image already
+            attached to the current vision-capable model directly. Honor explicit
+            provider choices. Returns description and voice_summary.
           parameters:
             image_ref:
               type: string
@@ -166,6 +159,11 @@ output contract — so the agent can A/B compare or fall back without
 changing call shape.
 
 ## When to use this skill
+
+Use image analysis for visual layout or legibility review of a rendered page;
+OCR is for transcription. If the image is already attached to the current
+vision-capable model, inspect it directly. Reuse extracted text for ordinary
+document reading; do not send the whole document through vision to check one page.
 
 Reach for this when:
 

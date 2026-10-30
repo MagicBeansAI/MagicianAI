@@ -6,9 +6,13 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.http.HttpHeaders
 import io.ktor.http.headersOf
+import io.ktor.http.content.TextContent
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -31,6 +35,39 @@ import java.util.concurrent.atomic.AtomicInteger
  * Turn activity is a REST read plus the realtime hub.
  */
 class ChatStreamingTransportTest {
+    @Test
+    fun `model catalog and transport use typed selections without profile aliases`() = runBlocking {
+        val posted = mutableListOf<kotlinx.serialization.json.JsonObject>()
+        val client = HttpClient(MockEngine { request ->
+            when {
+                request.url.encodedPath.endsWith("/chat/models") -> {
+                    assertEquals("pi", request.url.parameters["engine"])
+                    respond("""{"models":[{"id":"custom/model","label":"Custom model","choices":{"auto":"opaque-auto","high":"opaque-high"}}],"default_selection":{"model_id":"custom/model","thinking":"auto"}}""",
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                }
+                else -> {
+                    posted += Json.parseToJsonElement((request.body as TextContent).text).jsonObject
+                    if (request.url.encodedPath.endsWith("/queue")) respond("""{"queued":{"id":"queued-typed"}}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                    else respond("event: token\ndata: {\"text\":\"Answer\"}\n\n", headers = headersOf(HttpHeaders.ContentType, "text/event-stream"))
+                }
+            }
+        })
+        val repository = repository(client)
+        try {
+            val rows = repository.models("pi").rows()
+            val selection = rows.single { it.name == "opaque-high" }.modelSelection
+            repository.send("session", "Stream", "turn", modelSelection = selection, harnessEngine = "pi", harnessModel = "default").first()
+            assertEquals("queued-typed", repository.enqueue("session", SendMessageRequest("Queued", "queue-turn", modelSelection = selection, harnessEngine = "pi")))
+            assertEquals(2, posted.size)
+            for (body in posted) {
+                assertEquals("\"pi\"", body["harness_engine"].toString())
+                assertEquals("\"custom/model\"", body["model_selection"]?.jsonObject?.get("model_id").toString())
+                assertEquals("\"high\"", body["model_selection"]?.jsonObject?.get("thinking").toString())
+                assertTrue(!body.containsKey("profile") && !body.containsKey("harness_model"))
+            }
+        } finally { repository.close() }
+    }
+
     @Test
     fun `cancelled voice preference reads propagate cancellation instead of becoming load errors`() = runBlocking {
         val client = HttpClient(MockEngine { throw kotlinx.coroutines.CancellationException("voice panel closed") })
@@ -181,6 +218,70 @@ class ChatStreamingTransportTest {
             }
         } finally {
             hubScope.cancel()
+            repository.close()
+        }
+    }
+
+    /** The server may keep the turn (`continue_on_disconnect`); the end says it was a drop. */
+    @Test
+    fun `a stream that closes without done is marked dropped`() = runBlocking {
+        val client = HttpClient(MockEngine {
+            respond(
+                "event: token\ndata: {\"text\":\"Half\"}\n\n",
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+        val repository = repository(client)
+        try {
+            val events = withTimeout(3_000) { repository.send("session", "Hello", "turn").toList() }
+            assertEquals(ChatStreamEvent.Token("Half"), events.first())
+            assertEquals(ChatStreamEvent.Done(dropped = true), events.last())
+        } finally {
+            repository.close()
+        }
+    }
+
+    @Test
+    fun `a session read carries its latest turn state`() = runBlocking {
+        val client = HttpClient(MockEngine { request ->
+            assertEquals("/api/magician/v2/chat/sessions/session-1", request.url.encodedPath)
+            respond(
+                """{"session":{"id":"session-1"},"messages":[{"id":"m1","direction":"user",
+                "content":{"type":"text","text":"research this"},"chat_turn_id":"turn-1"}],
+                "turn_state":{"chat_turn_id":"turn-1","status":"running","started_at":42}}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        })
+        val repository = repository(client)
+        try {
+            val snapshot = repository.conversationSnapshot("session-1")
+            assertEquals(listOf("m1"), snapshot.messages.map { it.id })
+            assertTrue(snapshot.turnState.supported)
+            val state = snapshot.turnState.state!!
+            assertEquals("turn-1", state.chatTurnId)
+            assertTrue(state.running)
+            assertEquals("session-1", state.sessionId)
+        } finally {
+            repository.close()
+        }
+    }
+
+    @Test
+    fun `a queue read carries the latest turn state`() = runBlocking {
+        val client = HttpClient(MockEngine { request ->
+            assertEquals("/api/magician/v2/chat/sessions/session-1/queue", request.url.encodedPath)
+            respond(
+                """{"queued":[],"active":false,"session_id":"session-1","turn_state":{"chat_turn_id":"turn-1",
+                "status":"stopped","started_at":1,"ended_at":2,"reason":"user_stop"}}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        })
+        val repository = repository(client)
+        try {
+            val queue = repository.queueSnapshot("session-1")
+            assertTrue(queue.turnState.state!!.stoppedByUser)
+            assertEquals(2L, queue.turnState.state!!.endedAtMs)
+        } finally {
             repository.close()
         }
     }

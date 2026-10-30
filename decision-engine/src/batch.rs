@@ -66,6 +66,9 @@ impl EngineState {
         if let Err(error) = request.batch.validate_identity() {
             return reject(reply, error);
         }
+        if !request.assets.is_empty() {
+            return reject(reply, "classification batches do not carry images");
+        }
         if request.batch.expected_policy_revision != self.revision {
             return reject(reply, "policy revision changed");
         }
@@ -187,6 +190,7 @@ impl EngineState {
                     state,
                     choice_candidates: item.choice_candidates.clone(),
                     locality: request.locality,
+                    assets: Default::default(),
                 };
                 let request_id = request.batch.request_id.clone();
                 let dispatched = &dispatched[index];

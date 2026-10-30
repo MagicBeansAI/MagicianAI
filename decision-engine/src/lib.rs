@@ -346,6 +346,16 @@ impl EngineState {
                 .map(|bound| bound.route.iter().map(|entry| entry.name.clone()).collect())
                 .unwrap_or_default()
         };
+        let images = |runtime: Option<&Arc<DecisionRuntime>>, name: &str| -> bool {
+            runtime
+                .and_then(|runtime| runtime.bound_operation(name))
+                .is_some_and(|bound| {
+                    bound
+                        .route
+                        .iter()
+                        .any(|entry| !entry.model.capabilities().text_only)
+                })
+        };
         let operations = self
             .config
             .operations
@@ -376,6 +386,8 @@ impl EngineState {
                 sees_body: operation.sees_body,
                 route_local: route(self.local.as_ref(), name),
                 route_cloud: route(self.cloud.as_ref(), name),
+                images_local: images(self.local.as_ref(), name),
+                images_cloud: images(self.cloud.as_ref(), name),
             })
             .collect();
         OperationsResponse {
@@ -425,6 +437,7 @@ impl EngineState {
             Ok(built) => built,
             Err(error) => return reply(error_status(&error), None, None, Some(error.to_string())),
         };
+        built.assets = request.assets;
         for (question, options) in &request.choice_candidates {
             let options: Vec<(OptionId, String)> = options
                 .iter()
@@ -465,7 +478,9 @@ async fn action(engine: web::Data<Engine>, body: web::Json<ActionRequest>) -> Ht
 /// The engine's routes, for the server and for in-process tests.
 pub fn routes(config: &mut web::ServiceConfig) {
     config
-        .app_data(web::JsonConfig::default().limit(8 * 1024 * 1024))
+        // Image requests carry base64 screenshots; the provider's own body
+        // cap is 32 MiB, so the hop to the engine must not be the tighter one.
+        .app_data(web::JsonConfig::default().limit(32 * 1024 * 1024))
         .route(
             decision_engine_contract::settings::SETTINGS_PATH,
             web::get().to(settings::get),

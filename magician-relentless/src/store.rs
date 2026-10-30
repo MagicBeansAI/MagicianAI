@@ -341,10 +341,15 @@ impl RunState {
             .rev()
             .find(|g| g.reset.cost_microusd.is_some())
         {
-            budget.max_cost_microusd = grant
-                .prior_cost(&self.budget)?
-                .checked_add(grant.reset.cost_microusd.expect("filtered"))
-                .context("approved cost ceiling overflow")?;
+            let allowance = grant.reset.cost_microusd.expect("filtered");
+            budget.max_cost_microusd = if allowance == 0 {
+                0
+            } else {
+                grant
+                    .prior_cost(&self.budget)?
+                    .checked_add(allowance)
+                    .context("approved cost ceiling overflow")?
+            };
         }
         if let Some(grant) = self
             .budget_resets
@@ -352,10 +357,15 @@ impl RunState {
             .rev()
             .find(|g| g.reset.attempts.is_some())
         {
-            budget.max_attempts = grant
-                .attempts_before
-                .checked_add(grant.reset.attempts.expect("filtered"))
-                .context("approved attempt ceiling overflow")?;
+            let allowance = grant.reset.attempts.expect("filtered");
+            budget.max_attempts = if allowance == 0 {
+                0
+            } else {
+                grant
+                    .attempts_before
+                    .checked_add(allowance)
+                    .context("approved attempt ceiling overflow")?
+            };
         }
         if let Some(grant) = self
             .budget_resets
@@ -377,9 +387,9 @@ impl RunState {
         }
         let budget = self.effective_budget()?;
         Ok(ExhaustedLimits {
-            attempts: self.attempts.len() as u64 >= u64::from(budget.max_attempts),
+            attempts: self.attempts.len() as u64 >= u64::from(budget.attempt_ceiling()),
             time: now >= self.deadline_at,
-            cost: self.budget.spend()?.total()? >= budget.max_cost_microusd,
+            cost: self.budget.spend()?.total()? >= budget.cost_ceiling(),
         })
     }
 
@@ -445,9 +455,9 @@ impl RunState {
             )?)
             .context("cumulative elapsed allowance overflow")?;
         Ok(serde_json::json!({
-            "cost":{"allowance_microusd":cost_max,"committed_microusd":used,"remaining_microusd":cost_max.saturating_sub(used)},
-            "attempts":{"allowance":attempts_max,"used":attempts_used,"remaining":u64::from(attempts_max).saturating_sub(attempts_used)},
-            "time":{"started_at":start,"deadline_at":self.deadline_at,"remaining_secs":(self.deadline_at-now).num_seconds().max(0)},
+            "cost":{"allowance_microusd":cost_max,"committed_microusd":used,"unlimited":cost_max==0,"remaining_microusd":(cost_max>0).then(||cost_max.saturating_sub(used))},
+            "attempts":{"allowance":attempts_max,"used":attempts_used,"unlimited":attempts_max==0,"remaining":(attempts_max>0).then(||u64::from(attempts_max).saturating_sub(attempts_used))},
+            "time":{"started_at":start,"deadline_at":self.deadline_at,"unlimited":self.deadline_at==DateTime::<Utc>::MAX_UTC,"remaining_secs":(self.deadline_at!=DateTime::<Utc>::MAX_UTC).then(||(self.deadline_at-now).num_seconds().max(0))},
             "cumulative":{"attempts":self.attempts.len(),"spend":self.budget.spend()?,"elapsed_wall_clock_secs":(now-self.started_at).num_seconds().max(0),"time_allowance_used_secs":consumed_seconds},
         }))
     }
@@ -602,7 +612,7 @@ impl RunState {
                     .context("budget stop context missing")?;
                 if let Some(cost) = reset.cost_microusd {
                     ensure!(
-                        cost >= pause.required_microusd,
+                        cost == 0 || cost >= pause.required_microusd,
                         "new cost allowance cannot fund the bounded next attempt"
                     );
                 }
@@ -619,12 +629,18 @@ impl RunState {
                     prior_allowance_ids: self.budget.allowances().keys().cloned().collect(),
                 };
                 if let Some(seconds) = reset.wall_clock_secs {
-                    let deadline = now
-                        .checked_add_signed(
-                            Duration::try_seconds(i64::try_from(seconds)?)
-                                .context("time allowance overflow")?,
-                        )
-                        .context("approved deadline overflow")?;
+                    let deadline = super::contract::Budget {
+                        max_wall_clock_secs: seconds,
+                        ..Default::default()
+                    }
+                    .deadline_at(now)?;
+                    let deadline = if seconds == 0 {
+                        self.admission
+                            .not_after
+                            .map_or(deadline, |ceiling| ceiling.min(deadline))
+                    } else {
+                        deadline
+                    };
                     ensure!(
                         self.admission
                             .not_after
@@ -889,7 +905,7 @@ impl RunState {
                         ensure!(matches!(prior.settlement, Settlement::NotPerformed { .. }) && replacement.id != *previous_operation_id && replacement.class == OperationClass::Actor && replacement.input_hash == prior.intent.input_hash && replacement.maximum_cost_microusd == prior.intent.maximum_cost_microusd, "actor recovery requires proof of no dispatch and unchanged frozen input/quote");
                         self.budget.reserve(
                             replacement.clone(),
-                            self.effective_budget()?.max_cost_microusd,
+                            self.effective_budget()?.cost_ceiling(),
                         )?;
                         self.current_attempt()?.actor_operation_id = replacement.id.clone();
                     },
@@ -903,14 +919,14 @@ impl RunState {
                             .checked_add(1)
                             .context("attempt count overflow")?;
                         ensure!(
-                            number <= budget_ceiling.max_attempts
+                            number <= budget_ceiling.attempt_ceiling()
                                 && actor.class == OperationClass::Actor,
                             "attempt ceiling or wrong adapter class"
                         );
                         self.budget.reserve_attempt(
                             actor.clone(),
                             review.clone(),
-                            budget_ceiling.max_cost_microusd,
+                            budget_ceiling.cost_ceiling(),
                         )?;
                         self.attempts.push(Attempt {
                             number,
@@ -1166,7 +1182,7 @@ impl RunState {
                         // funds this replacement within the same run ceiling.
                         self.budget.reserve(
                             replacement.clone(),
-                            self.effective_budget()?.max_cost_microusd,
+                            self.effective_budget()?.cost_ceiling(),
                         )?;
                         self.current_attempt()?
                             .critic_operations
@@ -1231,7 +1247,7 @@ impl RunState {
                             "waiting run cannot admit productive work"
                         );
                         self.budget
-                            .reserve(operation.clone(), budget_ceiling.max_cost_microusd)?;
+                            .reserve(operation.clone(), budget_ceiling.cost_ceiling())?;
                     },
                     RunEvent::OperationSettled {
                         operation_id,
@@ -1358,14 +1374,13 @@ impl RunState {
                         ensure!(
                             self.status == RunStatus::Admitted
                                 && (self.attempts.len() as u64
-                                    >= u64::from(budget_ceiling.max_attempts)
+                                    >= u64::from(budget_ceiling.attempt_ceiling())
                                     || self
                                         .budget
                                         .spend()?
                                         .total()?
                                         .checked_add(*required_microusd)
-                                        .is_none_or(|cost| cost
-                                            > budget_ceiling.max_cost_microusd)),
+                                        .is_none_or(|cost| cost > budget_ceiling.cost_ceiling())),
                             "no attempt/cost ceiling prevents admission"
                         );
                         self.status = RunStatus::BudgetExhausted;
@@ -1375,15 +1390,15 @@ impl RunState {
                             stopped_at: now,
                             limits: ExhaustedLimits {
                                 attempts: self.attempts.len() as u64
-                                    >= u64::from(budget.max_attempts),
+                                    >= u64::from(budget.attempt_ceiling()),
                                 time: false,
-                                cost: self.budget.spend()?.total()? >= budget.max_cost_microusd
+                                cost: self.budget.spend()?.total()? >= budget.cost_ceiling()
                                     || self
                                         .budget
                                         .spend()?
                                         .total()?
                                         .checked_add(*required_microusd)
-                                        .is_none_or(|cost| cost > budget.max_cost_microusd),
+                                        .is_none_or(|cost| cost > budget.cost_ceiling()),
                             },
                             required_microusd: *required_microusd,
                         });
@@ -1399,7 +1414,7 @@ impl RunState {
             },
         }
         ensure!(
-            self.budget.spend()?.total()? <= self.effective_budget()?.max_cost_microusd,
+            self.budget.spend()?.total()? <= self.effective_budget()?.cost_ceiling(),
             "cumulative ledger exceeds its approved cost window"
         );
         self.last_committed_at = now.max(self.last_committed_at);
@@ -2634,12 +2649,10 @@ impl RunStore {
                 && valid_hash(&admission.source_hash),
             "invalid owner admission provenance"
         );
-        let deadline_at = first
-            .committed_at
-            .checked_add_signed(Duration::seconds(i64::try_from(
-                contract.definition().budget.max_wall_clock_secs,
-            )?))
-            .context("deadline overflow")?;
+        let deadline_at = contract
+            .definition()
+            .budget
+            .deadline_at(first.committed_at)?;
         let deadline_at = admission
             .not_after
             .map_or(deadline_at, |ceiling| ceiling.min(deadline_at));

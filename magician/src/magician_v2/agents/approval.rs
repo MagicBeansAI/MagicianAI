@@ -56,6 +56,14 @@ impl ApprovalGate {
         let mut pending = Vec::new();
 
         for step in &plan.steps {
+            if let Some(rule) = code_required_approval(step) {
+                pending.push(PendingApproval {
+                    step_id: step.id.clone(),
+                    action_description: step.goal.clone(),
+                    matched_rule: rule,
+                });
+                continue;
+            }
             for rule in &constraints.requires_approval {
                 if rule_matches(rule, step) {
                     pending.push(PendingApproval {
@@ -77,6 +85,75 @@ impl ApprovalGate {
             }
         }
     }
+}
+
+/// Code-owned approval floors use the same interpreter in chat and tasks.
+/// A whole-tool grant must not turn a new destructive/account-management
+/// action into an unreviewed operation. Existing approval replay/durations
+/// and God-mode handling remain responsible for satisfying the gate.
+fn code_required_approval(step: &ExecutionStep) -> Option<ApprovalRule> {
+    let tool = pack_tool_for_approval(step.tool.as_deref()?);
+    let action = step.action_type.as_deref().unwrap_or_default();
+    if !pack_has_code_floor(&tool) {
+        return None;
+    }
+    let required = match action {
+        "group_create" | "group_join" | "group_rename" | "group_leave" | "message_delete"
+        | "messages_import" | "db_reindex" | "db_vacuum" => true,
+        "media_prune" => step.params.get("dry_run").and_then(Value::as_bool) == Some(false),
+        // Full native CLI access remains available. This is an approval
+        // classification, not a command whitelist: unknown/new operations
+        // are askable instead of silently gaining administrative authority.
+        "run" => whatsapp_run_requires_approval(&step.params),
+        _ => false,
+    };
+    required.then(|| ApprovalRule {
+        tool,
+        action: ActionPattern::Single(action.to_owned()),
+        when: None,
+        ttl_secs: None,
+    })
+}
+
+/// Packs with any code-owned approval floor in `code_required_approval`.
+fn pack_has_code_floor(tool: &str) -> bool {
+    tool == "whatsapp"
+}
+
+/// Whether any step of `plan` reaches a code-owned approval floor, whatever the
+/// agent's own `requires_approval` rules say.
+///
+/// A gate site may skip the interpreter when the agent authored no rules — that
+/// keeps an ungated run from paying for a standing-consent lookup per action —
+/// but it must still run it when this is true. Most agents author no rules, so
+/// a site that skips on empty rules alone never sees the floor at all.
+pub fn plan_hits_code_approval_floor(plan: &ExecutionPlan) -> bool {
+    plan.steps
+        .iter()
+        .any(|step| code_required_approval(step).is_some())
+}
+
+fn whatsapp_run_requires_approval(params: &HashMap<String, Value>) -> bool {
+    let Some(command) = params.get("command").and_then(Value::as_str) else {
+        return true;
+    };
+    let mut tokens = command.split_whitespace();
+    let head = tokens.next().unwrap_or_default();
+    let action = tokens.next().unwrap_or_default();
+    let read = match (head, action) {
+        ("status" | "doctor", "" | "--json" | "--help") => true,
+        (_, "--help") | ("--help" | "--version", "") => true,
+        ("messages", "list" | "search")
+        | ("chats" | "dms", "list" | "search")
+        | ("contacts", "list" | "search" | "info")
+        | ("groups", "list" | "info" | "participants")
+        | ("communities", "list")
+        | ("config", "constraints" | "path")
+        | ("enrich", "status")
+        | ("remote", "list") => true,
+        _ => false,
+    };
+    !read
 }
 
 fn rule_matches(rule: &ApprovalRule, step: &ExecutionStep) -> bool {
@@ -158,7 +235,50 @@ pub fn pack_tool_for_approval(capability_name: &str) -> String {
 /// Derive the rule-`action` token for a capability (`Pack`) action.
 /// Prefers an explicit discriminator param (`action` / `action_type` /
 /// `operation` / `tool_name`), then the `__`-suffix, then `execute`.
+///
+/// One exception, for the code-owned floor (`code_required_approval`): a CLI
+/// dispatcher runs the operation its tool NAME selects and never reads a
+/// discriminator param. So when the `__`-suffix reaches a floor and the
+/// declared token does not, the suffix wins — otherwise
+/// `whatsapp__run {"command":"groups leave …","action":"status"}` would read as
+/// `status` everywhere this token is used (executor gate, chat routing, plane,
+/// pause reconstruction, trust policy) while `groups leave` still runs. A
+/// declared token that reaches a floor itself is kept, so the floor holds when
+/// either the suffix or a param names a floored operation.
 pub fn pack_action_for_approval(
+    capability_name: &str,
+    resolved_params: &HashMap<String, Value>,
+) -> String {
+    let declared = declared_pack_action_for_approval(capability_name, resolved_params);
+    let Some(suffix) = capability_name
+        .split_once("__")
+        .map(|(_, action)| normalize_approval_action_token(action.trim()))
+        .filter(|suffix| !suffix.is_empty() && *suffix != declared)
+    else {
+        return declared;
+    };
+    let tool = pack_tool_for_approval(capability_name);
+    if !pack_has_code_floor(&tool) {
+        return declared;
+    }
+    let floored = |action: &str| {
+        code_required_approval(&ExecutionStep {
+            id: format!("approval-floor-probe-{capability_name}"),
+            goal: capability_name.to_string(),
+            tool: Some(tool.clone()),
+            action_type: Some(action.to_string()),
+            params: resolved_params.clone(),
+        })
+        .is_some()
+    };
+    if floored(&suffix) && !floored(&declared) {
+        suffix
+    } else {
+        declared
+    }
+}
+
+fn declared_pack_action_for_approval(
     capability_name: &str,
     resolved_params: &HashMap<String, Value>,
 ) -> String {
@@ -214,9 +334,6 @@ pub fn agent_requires_approval_for_tool(
     tool_name: &str,
     resolved_params: &HashMap<String, Value>,
 ) -> bool {
-    if constraints.requires_approval.is_empty() {
-        return false;
-    }
     let (tool, action) = tool_action_for_approval(tool_name, resolved_params);
     let step = ExecutionStep {
         id: format!("approval-probe-{tool_name}"),
@@ -225,10 +342,11 @@ pub fn agent_requires_approval_for_tool(
         action_type: Some(action),
         params: resolved_params.clone(),
     };
-    constraints
-        .requires_approval
-        .iter()
-        .any(|rule| rule_matches(rule, &step))
+    code_required_approval(&step).is_some()
+        || constraints
+            .requires_approval
+            .iter()
+            .any(|rule| rule_matches(rule, &step))
 }
 
 /// Returns `true` when the agent's `constraints.requires_approval` rules
@@ -244,9 +362,6 @@ pub fn agent_requires_approval_for_pack_tool(
     tool_name: &str,
     resolved_params: &HashMap<String, Value>,
 ) -> bool {
-    if constraints.requires_approval.is_empty() {
-        return false;
-    }
     let step = ExecutionStep {
         id: format!("approval-probe-{tool_name}"),
         goal: tool_name.to_string(),
@@ -254,10 +369,11 @@ pub fn agent_requires_approval_for_pack_tool(
         action_type: Some(pack_action_for_approval(tool_name, resolved_params)),
         params: resolved_params.clone(),
     };
-    constraints
-        .requires_approval
-        .iter()
-        .any(|rule| rule_matches(rule, &step))
+    code_required_approval(&step).is_some()
+        || constraints
+            .requires_approval
+            .iter()
+            .any(|rule| rule_matches(rule, &step))
 }
 
 /// Conservative catalog-level projection for a structural action.  Conditions
@@ -677,6 +793,269 @@ mod tests {
     use super::*;
     use crate::magician_v2::agents::types::{ActionPattern, AgentConstraints, ApprovalRule};
     use serde_json::json;
+
+    #[test]
+    fn whatsapp_native_run_writes_are_askable_while_reads_stay_ordinary() {
+        let constraints = AgentConstraints::default();
+        for command in [
+            "groups create Friends",
+            "groups rename 123@g.us New",
+            "groups leave 123@g.us",
+            "messages send 123@g.us --poll Lunch --options Pizza,Sushi",
+            "config allow 123@g.us",
+            "messages import export.jsonl",
+            "media prune",
+            "db vacuum",
+            "remote add vps user@host",
+            "sync pull",
+            "future-command next",
+        ] {
+            let params = HashMap::from([("command".into(), json!(command))]);
+            assert!(
+                agent_requires_approval_for_tool(&constraints, "whatsapp__run", &params),
+                "{command}"
+            );
+            assert!(
+                agent_requires_approval_for_pack_tool(&constraints, "whatsapp__run", &params),
+                "{command}"
+            );
+            let plan = ExecutionPlan {
+                plan_id: "native-cli".into(),
+                steps: vec![ExecutionStep {
+                    id: "run".into(),
+                    goal: command.into(),
+                    tool: Some("whatsapp".into()),
+                    action_type: Some("run".into()),
+                    params,
+                }],
+            };
+            assert!(matches!(
+                ApprovalGate.check(&plan, &constraints),
+                ApprovalResult::NeedsApproval { .. }
+            ));
+        }
+        for command in [
+            "status --json",
+            "--help",
+            "messages list 123@g.us --json",
+            "messages search \"some text\" --json",
+            "groups list --live --json",
+            "config constraints",
+            "enrich status --json",
+        ] {
+            let params = HashMap::from([("command".into(), json!(command))]);
+            assert!(
+                !agent_requires_approval_for_tool(&constraints, "whatsapp__run", &params),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn whatsapp_management_uses_the_same_code_approval_in_chat_and_plans() {
+        let constraints = AgentConstraints::default();
+        for action in [
+            "group_create",
+            "group_join",
+            "group_rename",
+            "group_leave",
+            "message_delete",
+            "messages_import",
+            "db_reindex",
+            "db_vacuum",
+        ] {
+            let tool = format!("whatsapp__{action}");
+            let params = HashMap::new();
+            assert!(agent_requires_approval_for_tool(
+                &constraints,
+                &tool,
+                &params
+            ));
+            assert!(agent_requires_approval_for_pack_tool(
+                &constraints,
+                &tool,
+                &params
+            ));
+            let plan = ExecutionPlan {
+                plan_id: "approval-parity".into(),
+                steps: vec![ExecutionStep {
+                    id: "step".into(),
+                    goal: action.into(),
+                    tool: Some("whatsapp".into()),
+                    action_type: Some(action.into()),
+                    params,
+                }],
+            };
+            assert!(matches!(
+                ApprovalGate.check(&plan, &constraints),
+                ApprovalResult::NeedsApproval { .. }
+            ));
+        }
+    }
+
+    /// The CLI dispatcher runs the operation the tool NAME selects and never
+    /// reads a discriminator param, so a param cannot steer a floored act
+    /// around the floor — while a param that itself names a floored operation
+    /// still floors.
+    #[test]
+    fn a_discriminator_param_cannot_steer_a_floored_tool_name_around_the_floor() {
+        let constraints = AgentConstraints::default();
+        for key in ["action", "action_type", "operation", "tool_name"] {
+            let params = HashMap::from([
+                ("command".to_string(), json!("groups leave 123@g.us")),
+                (key.to_string(), json!("status")),
+            ]);
+            assert_eq!(
+                pack_action_for_approval("whatsapp__run", &params),
+                "run",
+                "{key}"
+            );
+            assert_eq!(
+                tool_action_for_approval("whatsapp__run", &params),
+                ("whatsapp".to_string(), "run".to_string()),
+                "{key}"
+            );
+            assert!(
+                agent_requires_approval_for_tool(&constraints, "whatsapp__run", &params),
+                "{key}"
+            );
+            assert!(
+                agent_requires_approval_for_pack_tool(&constraints, "whatsapp__run", &params),
+                "{key}"
+            );
+            let plan = ExecutionPlan {
+                plan_id: "steer".into(),
+                steps: vec![ExecutionStep {
+                    id: "run".into(),
+                    goal: "leave".into(),
+                    tool: Some(pack_tool_for_approval("whatsapp__run")),
+                    action_type: Some(pack_action_for_approval("whatsapp__run", &params)),
+                    params: params.clone(),
+                }],
+            };
+            assert!(matches!(
+                ApprovalGate.check(&plan, &constraints),
+                ApprovalResult::NeedsApproval { .. }
+            ));
+
+            let group_leave = HashMap::from([(key.to_string(), json!("status"))]);
+            assert!(
+                agent_requires_approval_for_pack_tool(
+                    &constraints,
+                    "whatsapp__group_leave",
+                    &group_leave
+                ),
+                "{key}"
+            );
+        }
+
+        // A param naming a floored operation floors even under a free name.
+        let declared = HashMap::from([("tool_name".to_string(), json!("group_leave"))]);
+        assert_eq!(
+            pack_action_for_approval("whatsapp__call_tool", &declared),
+            "group_leave"
+        );
+        assert!(agent_requires_approval_for_tool(
+            &constraints,
+            "whatsapp__call_tool",
+            &declared
+        ));
+
+        // Nothing floored on either side: the declared token is unchanged and
+        // nothing starts asking.
+        let read = HashMap::from([
+            ("command".to_string(), json!("groups list --json")),
+            ("action".to_string(), json!("status")),
+        ]);
+        assert_eq!(pack_action_for_approval("whatsapp__run", &read), "status");
+        assert!(!agent_requires_approval_for_tool(
+            &constraints,
+            "whatsapp__run",
+            &read
+        ));
+        // Other packs keep preferring the declared token.
+        let zepto = HashMap::from([("tool_name".to_string(), json!("create_order"))]);
+        assert_eq!(
+            pack_action_for_approval("zepto-mcp__call_tool", &zepto),
+            "create_order"
+        );
+    }
+
+    #[test]
+    fn floor_probe_names_exactly_the_steps_the_gate_floors() {
+        let step = |action: &str, params: HashMap<String, Value>| ExecutionStep {
+            id: action.into(),
+            goal: action.into(),
+            tool: Some("whatsapp".into()),
+            action_type: Some(action.into()),
+            params,
+        };
+        let plan = |steps: Vec<ExecutionStep>| ExecutionPlan {
+            plan_id: "floor-probe".into(),
+            steps,
+        };
+        let floored = plan(vec![step("group_leave", HashMap::new())]);
+        assert!(plan_hits_code_approval_floor(&floored));
+        let leave_cli = plan(vec![step(
+            "run",
+            HashMap::from([("command".into(), json!("groups leave 123@g.us"))]),
+        )]);
+        assert!(plan_hits_code_approval_floor(&leave_cli));
+        // Not floored: an ordinary send, a read through the native CLI, and a
+        // non-WhatsApp tool whose action shares a floored name.
+        for free in [
+            plan(vec![step("send", HashMap::new())]),
+            plan(vec![step(
+                "run",
+                HashMap::from([("command".into(), json!("groups list --json"))]),
+            )]),
+            plan(vec![ExecutionStep {
+                tool: Some("telegram".into()),
+                ..step("group_leave", HashMap::new())
+            }]),
+        ] {
+            assert!(!plan_hits_code_approval_floor(&free));
+            assert!(matches!(
+                ApprovalGate.check(&free, &AgentConstraints::default()),
+                ApprovalResult::Approved(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn whatsapp_prune_preview_is_free_but_deletion_requires_approval() {
+        let constraints = AgentConstraints::default();
+        for params in [
+            HashMap::new(),
+            HashMap::from([("dry_run".into(), Value::Bool(true))]),
+        ] {
+            assert!(!agent_requires_approval_for_tool(
+                &constraints,
+                "whatsapp__media_prune",
+                &params
+            ));
+        }
+        let params = HashMap::from([("dry_run".into(), Value::Bool(false))]);
+        assert!(agent_requires_approval_for_pack_tool(
+            &constraints,
+            "whatsapp__media_prune",
+            &params
+        ));
+        for action in [
+            "messages_count",
+            "messages_context",
+            "messages_export",
+            "send",
+            "react",
+            "history_backfill",
+        ] {
+            assert!(!agent_requires_approval_for_tool(
+                &constraints,
+                &format!("whatsapp__{action}"),
+                &HashMap::new()
+            ));
+        }
+    }
 
     #[test]
     fn check_flags_matching_steps_for_approval() {

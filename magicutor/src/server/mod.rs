@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod browser_store;
 pub mod cdp_proxy;
 pub mod cdp_scope_alias;
 pub mod contextual_assist;

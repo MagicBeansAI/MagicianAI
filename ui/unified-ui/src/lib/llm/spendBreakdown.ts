@@ -8,8 +8,10 @@
  *
  * Day-boundary contract mirrors `pulseQueries`: "today" is the LOCAL calendar
  * day, inlined as epoch-ms numeric literals (SQL does no timezone math). The
- * rolling 7d/30d windows use DuckDB's `now()`. This module has no `Date.now()`;
- * callers inject the clock via `localDayBoundaries`.
+ * rolling 7d/30d windows are literal epoch-ms lower bounds too, anchored on the
+ * injected `anchorMs` (`$lib/llm/queryWindow`) — the server prunes only from a
+ * literal bound. This module has no `Date.now()`; callers inject the clock via
+ * `localDayBoundaries` and the anchor.
  *
  * Chunk-summary parity: `COALESCE(provider_attempt_count, 1) <> 0` excludes
  * `logical_chunk_summary` bookkeeping aggregates (their real chunk calls are
@@ -18,6 +20,7 @@
  */
 
 import type { LocalDayBoundaries } from '$lib/today/pulseQueries';
+import { LLM_SHORT_WINDOW_LANE, rollingWindowPredicate } from './queryWindow';
 
 export type SpendWindow = 'today' | '7d' | '30d';
 export type SpendDimension = 'operation' | 'model';
@@ -26,6 +29,8 @@ export interface SpendQuerySpec {
 	window: SpendWindow;
 	dimension: SpendDimension;
 	sql: string;
+	/** Batch lane: `today` runs in the short-window lane, 7d/30d in the default one. */
+	lane?: string;
 }
 
 export interface SpendRow {
@@ -37,12 +42,11 @@ export interface SpendRow {
 /** Excludes chunk-summary bookkeeping rows (see module doc). */
 const REAL_CALL = "(COALESCE(provider_attempt_count, 1) <> 0 OR response_kind = 'harness_aggregate')";
 
-function windowPredicate(window: SpendWindow, b: LocalDayBoundaries): string {
+function windowPredicate(window: SpendWindow, b: LocalDayBoundaries, anchorMs: number): string {
 	if (window === 'today') {
 		return `timestamp_ms >= ${b.todayStartMs} AND timestamp_ms < ${b.tomorrowStartMs}`;
 	}
-	const days = window === '7d' ? 7 : 30;
-	return `timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL ${days} DAYS)`;
+	return rollingWindowPredicate(window === '7d' ? 7 : 30, anchorMs);
 }
 
 /**
@@ -69,29 +73,40 @@ function dimensionExpr(dimension: SpendDimension): string {
 function breakdownSql(
 	window: SpendWindow,
 	dimension: SpendDimension,
-	b: LocalDayBoundaries
+	b: LocalDayBoundaries,
+	anchorMs: number
 ): string {
 	const bucket = dimensionExpr(dimension);
 	return (
 		`SELECT ${bucket} AS label, SUM(cost_usd) AS spend, COUNT(*) AS calls ` +
 		`FROM llm_calls ` +
-		`WHERE ${windowPredicate(window, b)} AND ${REAL_CALL} ` +
+		`WHERE ${windowPredicate(window, b, anchorMs)} AND ${REAL_CALL} ` +
 		`GROUP BY ${bucket} HAVING SUM(cost_usd) > 0 ORDER BY spend DESC`
 	);
 }
 
 /**
  * The six spend-breakdown queries: {today, 7d, 30d} x {operation, model}. The
- * caller wires each through `setupLiveDataSource({ kind: 'llm_calls_sql' })`;
- * same-kind sources auto-batch into one `/query_batch` request (cap 8 >= 6).
+ * caller wires each through `setupLiveDataSource({ kind: 'llm_calls_sql', lane })`;
+ * same-kind, same-lane sources auto-batch into one `/query_batch` request, so
+ * the two `today` queries ride the short-window batch and the four 7d/30d
+ * queries the default one. `anchorMs` ends the rolling 7d/30d windows.
  */
-export function buildSpendBreakdownQueries(b: LocalDayBoundaries): SpendQuerySpec[] {
+export function buildSpendBreakdownQueries(
+	b: LocalDayBoundaries,
+	anchorMs: number
+): SpendQuerySpec[] {
 	const windows: SpendWindow[] = ['today', '7d', '30d'];
 	const dimensions: SpendDimension[] = ['operation', 'model'];
 	const specs: SpendQuerySpec[] = [];
 	for (const window of windows) {
 		for (const dimension of dimensions) {
-			specs.push({ window, dimension, sql: breakdownSql(window, dimension, b) });
+			specs.push({
+				window,
+				dimension,
+				sql: breakdownSql(window, dimension, b, anchorMs),
+				lane: window === 'today' ? LLM_SHORT_WINDOW_LANE : undefined
+			});
 		}
 	}
 	return specs;

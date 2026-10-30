@@ -25,7 +25,8 @@
 		choice: 'input[type="radio"]',
 		multi_choice: 'input[type="checkbox"]',
 		confirmation: '.hitl-decision',
-		external_action: '.hitl-fields textarea, .hitl-fields .hitl-external-link, .hitl-fields .hitl-decision button',
+		// Never the sign-in's "Not now": focus must not land on the decline.
+		external_action: '.hitl-fields textarea, .hitl-fields .hitl-external-link, .hitl-fields .hitl-decision:not(.hitl-decision--dismiss) button',
 		authorization: '.hitl-decision__deny',
 		diff_approval: '.diff-approval',
 		form: '.hitl-fields input, .hitl-fields textarea'
@@ -54,12 +55,16 @@
 	 * See `docs/components/unified-ui/unified-task-panel.md`.
 	 */
 	import { createEventDispatcher, onDestroy } from 'svelte';
+	import { godGrantScopes } from './godGrantScopes';
 
 	import Button from '$lib/magician/components/generative/Button.svelte';
 	import Input from '$lib/magician/components/generative/Input.svelte';
 	import TextArea from '$lib/magician/components/generative/TextArea.svelte';
 	import DiffStrip from '$lib/shell/DiffStrip.svelte';
 	import AlignmentAskFields from './AlignmentAskFields.svelte';
+	import BrowserSignInButton from './BrowserSignInButton.svelte';
+	import ApprovalPreviewCard from './ApprovalPreviewCard.svelte';
+	import HitlDetails from './HitlDetails.svelte';
 	import {
 		PROMPT_HAS_OWN_ACTIONS,
 		type AttentionPromptChoice,
@@ -96,6 +101,7 @@
 
 	let textValue = '';
 	let selectedChoiceId = '';
+	let selectedGrantScopeId = '';
 	let selectedMultiChoiceIds: string[] = [];
 	let choiceInputValue = '';
 	let formValues: Record<string, string> = {};
@@ -118,6 +124,7 @@
 		// Decisions require an explicit selection: a confirmation or an
 		// authorization must never arrive with the affirmative already chosen.
 		selectedChoiceId = '';
+		selectedGrantScopeId = '';
 		selectedMultiChoiceIds = [];
 		choiceInputValue = '';
 		formValues = {};
@@ -163,6 +170,44 @@
 
 	function isMaskedField(sensitive: string | undefined): boolean {
 		return sensitive === 'password' || sensitive === 'otp' || sensitive === 'other';
+	}
+
+	/**
+	 * A captured send's review options in display order: any standing grant
+	 * (Always allow) first, then Discard, then Send last in the primary slot.
+	 * Ids the card does not know are shown as grants — outline, never primary.
+	 */
+	function outwardOrdered(options: AttentionPromptChoice[]): {
+		grants: AttentionPromptChoice[];
+		decisions: AttentionPromptChoice[];
+	} {
+		const grants = options.filter((option) => option.id !== 'send' && option.id !== 'discard');
+		const decisions = ['discard', 'send']
+			.map((id) => options.find((option) => option.id === id))
+			.filter((option): option is AttentionPromptChoice => !!option);
+		return { grants, decisions };
+	}
+
+	/** "Expires in 6 days · Nov 1, 3:04 PM", or "Expired …" once past. */
+	function outwardExpiryLabel(deadlineAtMs: number, now: number): string {
+		const absolute = new Date(deadlineAtMs).toLocaleString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+		const delta = deadlineAtMs - now;
+		if (delta <= 0) return `Expired ${absolute} — it was not sent`;
+		const minutes = Math.ceil(delta / 60_000);
+		const hours = Math.floor(delta / 3_600_000);
+		const days = Math.floor(delta / 86_400_000);
+		const relative =
+			days >= 1
+				? `in ${days} ${days === 1 ? 'day' : 'days'}`
+				: hours >= 1
+					? `in ${hours} h`
+					: `in ${minutes} min`;
+		return `Expires ${relative} · ${absolute}`;
 	}
 
 	function deadlineLabel(seconds: number): string {
@@ -414,6 +459,9 @@
 		: 'deny';
 	$: authorizationDeny = authorizationOptions.find((option) => option.id === authorizationDenyId) ?? null;
 	$: authorizationGrants = authorizationOptions.filter((option) => option.id !== authorizationDenyId);
+	$: grantScopes = request.authorization?.godMode ? godGrantScopes(authorizationOptions) : [];
+	$: if (!grantScopes.some((scope) => scope.id === selectedGrantScopeId)) selectedGrantScopeId = grantScopes[0]?.id ?? '';
+	$: grantScope = grantScopes.find((scope) => scope.id === selectedGrantScopeId);
 
 	/**
 	 * The path field's own label, built from the two schema fields that were on
@@ -438,8 +486,10 @@
 			The ask's own supporting text. It sits above the controls rather than
 			beside them because on a re-ask it is the reason the question came back,
 			and a reader who does not read it answers the same way twice.
+			A long hint is what the ask is about (a proposal to approve) and opens
+			under "Details" as Markdown.
 		-->
-		<p class="hitl-hint">{request.hint}</p>
+		<HitlDetails text={request.hint} />
 	{/if}
 
 	{#if request.review}
@@ -591,7 +641,57 @@
 					on:click={() => answer({ kind: 'choice', choiceId: 'approve_run' })}
 				/>
 			</div>
+		{:else if request.outwardReview}
+			{@const outwardReview = request.outwardReview}
+			<!--
+				A captured outward send, paused for the owner. The preview says who
+				it goes to and what it says; the server's options follow, laid out
+				like a plan approval: the standing grant on the left (its label names
+				the agent and recipient, verbatim), Discard and Send on the right with
+				Send in the primary slot. Each posts its own id.
+			-->
+			{#if request.approvalPreview}
+				<ApprovalPreviewCard preview={request.approvalPreview} />
+			{/if}
+			{#if outwardReview.deadlineAtMs > 0}
+				<p class="hitl-outward-expiry">{outwardExpiryLabel(outwardReview.deadlineAtMs, nowMs)}</p>
+			{/if}
+			<div class="hitl-decision hitl-decision--plan hitl-decision--outward">
+				{#each outwardOrdered(outwardReview.options).grants as option (option.id)}
+					<Button
+						label={option.label}
+						variant="outline"
+						size="sm"
+						disabled={busy}
+						title={option.description ?? ''}
+						ariaLabel={option.label}
+						className="hitl-outward-option"
+						on:click={() => answer({ kind: 'choice', choiceId: option.id })}
+					/>
+				{/each}
+				<span class="hitl-decision__spacer" aria-hidden="true"></span>
+				{#each outwardOrdered(outwardReview.options).decisions as option (option.id)}
+					<Button
+						label={option.label}
+						variant={option.id === 'send' ? 'primary' : 'secondary'}
+						size="sm"
+						disabled={busy}
+						title={option.description ?? ''}
+						ariaLabel={option.label}
+						className="hitl-outward-option"
+						on:click={() => answer({ kind: 'choice', choiceId: option.id })}
+					/>
+				{/each}
+			</div>
 		{:else}
+		{#if request.approvalPreview}
+			<!--
+				The gated tool's structured approval card: who wants to change what,
+				the agent's reason, the diff, evidence and warnings — in place of the
+				raw call, which stays in a collapsed details view.
+			-->
+			<ApprovalPreviewCard preview={request.approvalPreview} />
+		{/if}
 		<div class="hitl-decision" data-destructive={request.confirmation?.destructive ? 'yes' : null}>
 			<Button
 				label={request.confirmation?.denyLabel ?? 'No'}
@@ -610,6 +710,19 @@
 		</div>
 		{/if}
 	{:else if request.kind === 'authorization'}
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex (Scrollable review regions need keyboard focus.) -->
+		<div class="authorization-review" role="region" aria-label="Permission details" tabindex="0">
+		{#if request.authorization?.files?.length}
+			<DiffStrip
+				diff={{ files: request.authorization.files }}
+				lifecycle="pending"
+				title="Staged changes"
+				showStats={true}
+				autoExpandFirst={true}
+				showLineNumbers={true}
+				wrapLongLines={true}
+			/>
+		{/if}
 		<!--
 			A grant of permission, and the one block here that is styled to stop a
 			reader rather than to help them along. What is being authorized is
@@ -639,6 +752,17 @@
 				</ul>
 			{/if}
 		</div>
+		</div>
+		<div class="authorization-controls">
+		{#if grantScope}
+			<label class="grant-scope-picker">Grant scope
+				<select bind:value={selectedGrantScopeId} disabled={busy}>
+					{#each grantScopes as scope (scope.id)}<option value={scope.id}>{scope.label}</option>{/each}
+				</select>
+			</label>
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users need to scroll the complete scope.) -->
+			<p class="grant-scope-detail" role="region" aria-label="Scope for session and always grants" aria-live="polite" tabindex="0">{grantScope.detail}</p>
+		{/if}
 		<!--
 			**The refusal first and in the primary slot**, then every grant the ask
 			actually offers, in the order the backend listed them. A tool
@@ -658,6 +782,12 @@
 					on:click={() => answer({ kind: 'choice', choiceId: authorizationDeny.id })}
 				/>
 			{/if}
+			{#if grantScope}
+				{#each [{ id: 'allow_once', label: 'Allow once' }, { id: grantScope.sessionId, label: 'This session' }, { id: grantScope.alwaysId, label: 'Always' }].filter((grant) => authorizationOptions.some((option) => option.id === grant.id)) as grant (grant.id)}
+					<Button label={grant.label} variant="outline" size="sm" disabled={busy}
+						on:click={() => answer({ kind: 'choice', choiceId: grant.id })} />
+				{/each}
+			{:else}
 			{#each authorizationGrants as grant (grant.id)}
 				<Button
 					label={grant.label}
@@ -668,8 +798,28 @@
 					on:click={() => answer({ kind: 'choice', choiceId: grant.id })}
 				/>
 			{/each}
+			{/if}
+		</div>
 		</div>
 	{:else if request.kind === 'external_action'}
+		{#if request.externalAction?.browserSigninCorrelationId}
+			<BrowserSignInButton correlationId={request.externalAction.browserSigninCorrelationId} expectedScope={request.externalAction.browserSigninScope}>
+				<svelte:fragment slot="trailing">
+					{#if request.externalAction.dismissLabel}
+						<!-- Declining still posts an answer and cancels the sign-in flow. -->
+						<span class="hitl-decision hitl-decision--dismiss hitl-signin-dismiss">
+							<Button
+								label={request.externalAction.dismissLabel}
+								variant="outline"
+								size="sm"
+								disabled={busy}
+								on:click={() => answer({ kind: 'choice', choiceId: 'dismiss' })}
+							/>
+						</span>
+					{/if}
+				</svelte:fragment>
+			</BrowserSignInButton>
+		{/if}
 		<!--
 			`instructions` is the whole content of this input type and was on the
 			schema, unread, in every surface. Without it the reader got a bare
@@ -700,6 +850,7 @@
 				ariaLabel="Note"
 			/>
 		{/if}
+		{#if !request.externalAction?.browserSigninCorrelationId}
 		<div class="hitl-decision">
 			<Button
 				label={request.externalAction?.doneLabel ?? "I've completed this"}
@@ -714,6 +865,7 @@
 					})}
 			/>
 		</div>
+		{/if}
 	{:else if request.kind === 'choice' && request.choices}
 		<div class="choice-list" role="radiogroup">
 			{#each request.choices as choice (choice.id)}
@@ -919,7 +1071,20 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
+		min-width: 0;
+		min-height: 0;
 	}
+	.authorization-review {
+		min-height: 0;
+		max-height: var(--hitl-review-max-height, min(32dvh, 360px));
+		overflow: auto;
+		overscroll-behavior: contain;
+		flex: 1 1 auto;
+	}
+	.authorization-controls { flex: 0 0 auto; display: grid; gap: 0.4rem; min-width: 0; position: sticky; bottom: 0; z-index: 2; background: var(--bg-card); padding-top: 0.4rem; }
+	.grant-scope-picker { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem; }
+	.grant-scope-picker select { min-width: 0; flex: 1; padding: 0.35rem; color: var(--text-primary); background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 6px; }
+	.grant-scope-detail { margin: 0; max-height: 4.5rem; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; font: 0.75rem/1.4 var(--font-mono); }
 
 	.sensitive-banner {
 		display: flex;
@@ -994,14 +1159,7 @@
 		padding: 0;
 	}
 
-	.hitl-hint {
-		margin: 0;
-		font-size: 0.78rem;
-		line-height: 1.45;
-		color: var(--text-secondary);
-		white-space: pre-wrap;
-	}
-
+	.hitl-decision.hitl-signin-dismiss { display: contents; }
 	.hitl-review-link {
 		align-self: flex-start;
 		display: inline-flex;
@@ -1046,9 +1204,17 @@
 	   reader's eye finds the decision in the same place either way. */
 	.hitl-decision {
 		display: flex;
+		flex-wrap: wrap;
+		flex-shrink: 0;
+		position: sticky;
+		bottom: 0;
+		z-index: 1;
+		background: var(--bg-card);
+		padding-block: 0.25rem;
 		justify-content: flex-end;
 		gap: 0.5rem;
 	}
+	.hitl-decision :global(button) { flex: 0 0 auto; max-width: 100%; min-height: 32px; }
 
 	/* Review on the left, the three decisions on the right; wraps on narrow
 	   surfaces (the task panel's ask) rather than squeezing the labels. */
@@ -1059,6 +1225,19 @@
 
 	.hitl-decision__spacer {
 		flex: 1 1 auto;
+	}
+
+	/* The standing-grant label names an agent and a recipient and can run
+	   long; let it wrap inside its button rather than push the row wide. */
+	.hitl-decision--outward :global(.hitl-outward-option) {
+		white-space: normal;
+		text-align: start;
+	}
+
+	.hitl-outward-expiry {
+		margin: 0;
+		color: var(--text-secondary);
+		font-size: 0.78rem;
 	}
 
 	/* ── the grant block ──────────────────────────────────────────────────
@@ -1118,7 +1297,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.75rem;
-		max-height: min(68vh, 720px);
+		min-height: 0;
+		max-height: var(--hitl-review-max-height, min(40dvh, 500px));
 		overflow: auto;
 		padding-right: 0.15rem;
 	}

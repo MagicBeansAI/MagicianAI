@@ -1,9 +1,17 @@
 package ai.magicbeans.magdroid.chat
 
 import ai.magicbeans.magdroid.voice.SpeechTags
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
@@ -45,6 +53,11 @@ data class ChatSession(
 data class ChatSessionDetail(
     val session: ChatSession = ChatSession(),
     val messages: List<ChatMessageDto> = emptyList(),
+    /**
+     * Whether messages older than the first embedded one exist. Absent on an
+     * older server; [resolveHistoryHasMore] then guesses from a full page.
+     */
+    @SerialName("has_more") val hasMore: Boolean? = null,
 )
 
 /** Session-creating endpoints answer with the session wrapped. */
@@ -292,7 +305,21 @@ data class ChatInputSchema(
     val type: String? = null,
     val placeholder: String? = null,
     val sensitive: SensitiveSpec? = null,
-)
+    @SerialName("approval_preview") val approvalPreview: kotlinx.serialization.json.JsonElement? = null,
+    val alignment: kotlinx.serialization.json.JsonElement? = null,
+    @SerialName("action_type") val actionTypeRaw: kotlinx.serialization.json.JsonElement? = null,
+    @SerialName("destructive") val destructiveRaw: kotlinx.serialization.json.JsonElement? = null,
+    @SerialName("protected") val protectedRaw: kotlinx.serialization.json.JsonElement? = null,
+    @SerialName("allow_other") val allowOtherRaw: kotlinx.serialization.json.JsonElement? = null,
+) {
+    private fun flagged(value: kotlinx.serialization.json.JsonElement?): Boolean =
+        (value as? kotlinx.serialization.json.JsonPrimitive)?.content == "true"
+    val allowOther: Boolean get() = flagged(allowOtherRaw)
+    val requiresReview: Boolean get() = flagged(destructiveRaw) || flagged(protectedRaw) ||
+        (actionTypeRaw != null && actionTypeRaw != kotlinx.serialization.json.JsonNull) ||
+        (approvalPreview != null && approvalPreview != kotlinx.serialization.json.JsonNull) ||
+        (alignment != null && alignment != kotlinx.serialization.json.JsonNull)
+}
 
 /**
  * How an ask with the given widget type and classification is rendered.
@@ -549,6 +576,9 @@ data class EscalationCard(
     val escalationType: String? = null,
     /** Why the last answer did not land. */
     val error: String? = null,
+    val taskId: String? = null,
+    val requiresReview: Boolean = false,
+    val allowOther: Boolean = false,
 )
 
 /** A message as the screen holds it, streaming or settled. */
@@ -601,9 +631,15 @@ data class ChatMessage(
      * and floating date pill read it; null never opens a day.
      */
     val createdAtMs: Long? = null,
-    /** Local user echo awaiting its server-assigned message id. */
     val originalAnswer: OriginalAnswerLink? = null,
     val linkedAnswerTarget: Boolean = false,
+    /**
+     * A local row awaiting its persisted copy: the user's echo, or the
+     * assistant bubble a turn draws before its reply is stored. The persisted
+     * reply replaces such a bubble whatever state the stream left it in — a
+     * clean drop leaves it neither streaming nor failed, and matching only
+     * those drew the late reply under an empty bubble.
+     */
     val optimistic: Boolean = false,
     /**
      * Set on an `escalation_resolved` row: the ask it settles. The transcript
@@ -664,6 +700,12 @@ sealed interface ChatStreamEvent {
         val sessionTitle: String? = null,
         val queuedPosition: Int? = null,
         val cancelled: Boolean = false,
+        /**
+         * The stream ended without a `done` frame. The turn itself may still
+         * be running on the server (`continue_on_disconnect`); only its
+         * `turn_state` can say.
+         */
+        val dropped: Boolean = false,
     ) : ChatStreamEvent
     /** A frame this screen does not render. Kept explicit so it is a decision. */
     data class Ignored(val event: String) : ChatStreamEvent
@@ -710,9 +752,32 @@ data class StructuredBlock(
     val title: String? = null,
     val text: String? = null,
     val tone: String? = null,
-    /** Rows for `key_values`, entries for `list`, files for `artifacts`. */
-    val items: List<Map<String, String>> = emptyList(),
+    /**
+     * Rows for `key_values`, entries for `list`, files for `artifacts`. Values
+     * are read loosely: an artifact's `size` arrives as a number, and a strict
+     * String decode of it failed the whole reply.
+     */
+    val items: List<@Serializable(with = LooseStringMapSerializer::class) Map<String, String>> = emptyList(),
 )
+
+/** A JSON object read as text values: strings as-is, other primitives by their
+ *  literal (`1024`, `true`), nested values as JSON, `null` dropped. */
+object LooseStringMapSerializer : KSerializer<Map<String, String>> {
+    private val delegate = MapSerializer(String.serializer(), JsonElement.serializer())
+    override val descriptor: SerialDescriptor = delegate.descriptor
+
+    override fun deserialize(decoder: Decoder): Map<String, String> =
+        decoder.decodeSerializableValue(delegate).mapNotNull { (key, value) ->
+            when {
+                value is JsonNull -> null
+                value is JsonPrimitive -> key to value.content
+                else -> key to value.toString()
+            }
+        }.toMap()
+
+    override fun serialize(encoder: Encoder, value: Map<String, String>) =
+        encoder.encodeSerializableValue(delegate, value.mapValues { JsonPrimitive(it.value) })
+}
 
 /** One coalesced step of what the agent did, for the chat turn's Steps section. */
 @Serializable
@@ -743,6 +808,8 @@ data class ActivityRow(
     val toolName: String? = null,
     /** The accumulator's coalescing key (`task::<id>` for a delegated task's row). */
     val key: String? = null,
+    /** When a model or tool call began (epoch ms), for a running row's live elapsed clock. */
+    val startedAtMs: Double? = null,
 )
 
 /**
@@ -873,7 +940,93 @@ data class StagedAttachment(
     }
 }
 
-/** A chat profile the composer can switch between. */
+@Serializable
+data class ChatModelSelection(
+    @SerialName("model_id") val modelId: String = "",
+    val thinking: String = "auto",
+)
+
+@Serializable
+data class ChatThinkingControl(
+    val mode: String = "none",
+    val levels: List<String> = emptyList(),
+    @SerialName("default") val defaultLevel: String? = null,
+)
+
+@Serializable
+data class ChatModelLimits(
+    @SerialName("context_window_tokens") val contextWindowTokens: Int = 0,
+)
+
+@Serializable
+data class ChatModelCapabilities(val vision: Boolean = false)
+
+@Serializable
+data class ChatModelChoice(
+    val id: String = "",
+    val provider: String = "",
+    val connection: String = "",
+    val model: String = "",
+    val label: String = "",
+    val thinking: ChatThinkingControl = ChatThinkingControl(),
+    val choices: Map<String, String> = emptyMap(),
+    @SerialName("operation_choices") val operationChoices: Map<String, String>? = null,
+    val installed: Boolean = true,
+    val limits: ChatModelLimits? = null,
+    val capabilities: ChatModelCapabilities = ChatModelCapabilities(),
+) {
+    val providerDisplayName: String get() = when (provider) {
+        "openai" -> "OpenAI"
+        "anthropic" -> "Anthropic"
+        "gemini" -> "Gemini"
+        "deepseek" -> "DeepSeek"
+        "minimax" -> "MiniMax"
+        "xai" -> "xAI"
+        "sarvam" -> "Sarvam"
+        "ollama" -> "Ollama"
+        "yutori" -> "Yutori"
+        "openrouter" -> "OpenRouter"
+        "harness-claude_code" -> "Claude Code"
+        "harness-codex" -> "Codex"
+        "harness-grok" -> "Grok"
+        "harness-agy" -> "Antigravity"
+        "harness-pi" -> "Pi"
+        else -> provider
+    }
+}
+
+/** Web `thinkingLabel` (`modelCatalog.ts`): known levels get a display name, anything else stays raw. */
+fun thinkingLevelLabel(level: String): String = when (level) {
+    "auto" -> "Auto"
+    "none" -> "Off"
+    "on" -> "On"
+    "minimal" -> "Minimal"
+    "low" -> "Low"
+    "medium" -> "Medium"
+    "high" -> "High"
+    "xhigh" -> "Extra high"
+    "max" -> "Max"
+    "ultra" -> "Ultra"
+    else -> level
+}
+
+/**
+ * The thinking tag on a composer model chip (web `ComposerModelChip` `thinking`):
+ * shown only for a catalog model whose thinking mode is not `none`, with the
+ * selected level defaulting to `auto`. VibeDev's coding chip uses this directly.
+ */
+fun modelChipThinkingLabel(model: ChatModelChoice?, selection: ChatModelSelection?): String? =
+    model?.takeIf { it.thinking.mode != "none" }?.let { thinkingLevelLabel(selection?.thinking ?: "auto") }
+
+/** Chat composer rule (web `ChatPanel` `profileThinkingLabel`): only the catalog engines `magician` and `pi`. */
+fun chatComposerThinkingLabel(engine: String, model: ChatModelChoice?, selection: ChatModelSelection?): String? =
+    if (engine == "magician" || engine == "pi") modelChipThinkingLabel(model, selection) else null
+
+/** The chip's spoken label: `<label>, thinking: High` when a thinking tag is shown (web aria-label). */
+fun modelChipAccessibilityLabel(label: String, thinking: String?): String =
+    if (thinking != null) "$label, thinking: $thinking" else label
+
+/** Internal route compatibility plus server-owned model selection metadata. */
 @Serializable
 data class ChatProfile(
     val name: String = "",
@@ -881,10 +1034,9 @@ data class ChatProfile(
     val provider: String? = null,
     val model: String? = null,
     @SerialName("is_default") val isDefault: Boolean = false,
-    @SerialName("is_adaptive") val isAdaptive: Boolean = false,
-    @SerialName("adaptive_description") val adaptiveDescription: String? = null,
-    @SerialName("adaptive_tier") val adaptiveTier: String? = null,
     val description: String? = null,
+    @SerialName("model_selection") val modelSelection: ChatModelSelection? = null,
+    @SerialName("model_choice") val modelChoice: ChatModelChoice? = null,
 ) {
     fun display(): String = label?.takeIf { it.isNotBlank() } ?: name
 
@@ -893,11 +1045,58 @@ data class ChatProfile(
 }
 
 @Serializable
-data class ChatProfileList(
-    val profiles: List<ChatProfile> = emptyList(),
-    val items: List<ChatProfile> = emptyList(),
+data class ChatModelCatalog(
+    val models: List<ChatModelChoice> = emptyList(),
+    @SerialName("default_selection") val defaultSelection: ChatModelSelection? = null,
 ) {
-    fun all(): List<ChatProfile> = profiles.ifEmpty { items }
+    fun rows(): List<ChatProfile> = models.flatMap { model -> model.choices.map { (thinking, route) ->
+        val selection = ChatModelSelection(model.id, thinking)
+        ChatProfile(name = route, provider = model.provider, model = model.model,
+            isDefault = selection == defaultSelection, modelSelection = selection,
+            modelChoice = model.takeIf { thinking == "auto" })
+    } }
+}
+
+/** A one-time legacy selection migration; typed model/thinking is authoritative. */
+data class ChatModelPreferenceResolution(
+    val route: String,
+    val selection: ChatModelSelection? = null,
+    val issue: String? = null,
+)
+
+object ChatModelPreference {
+    const val storageKey = "modelSelection"
+    const val unavailableRoute = "__unavailable_model_selection__"
+    const val unavailableMessage = "Your saved model choice is unavailable. Choose a model to continue."
+
+    fun resolve(profiles: List<ChatProfile>, legacyId: String, saved: ChatModelSelection?): ChatModelPreferenceResolution {
+        val previous = profiles.firstOrNull { it.name == legacyId }
+        val selection = saved ?: previous?.modelSelection ?: LegacyLlmSelections.chatSelection(legacyId)
+        if (selection != null) {
+            val route = profiles.mapNotNull { it.modelChoice }
+                .firstOrNull { it.id == selection.modelId }?.choices?.get(selection.thinking)
+            return if (route != null && profiles.any { it.name == route }) {
+                ChatModelPreferenceResolution(route, selection)
+            } else ChatModelPreferenceResolution(unavailableRoute, selection, unavailableMessage)
+        }
+        if (legacyId.isNotEmpty()) return ChatModelPreferenceResolution(
+            legacyId, issue = if (previous == null) unavailableMessage else null,
+        )
+        val initial = profiles.firstOrNull { it.isDefault }
+            ?: return ChatModelPreferenceResolution("", issue = "Choose a model to continue.")
+        return resolve(profiles, initial.name, initial.modelSelection)
+    }
+
+    fun requestFields(selection: ChatModelSelection?, engine: String, nativeModel: String): JsonObject = buildJsonObject {
+        put("harness_engine", engine)
+        if (engine in setOf("magician", "pi")) {
+            require(selection != null && selection.modelId.isNotBlank() && selection.thinking.isNotBlank()) { unavailableMessage }
+            put("model_selection", buildJsonObject {
+                put("model_id", selection.modelId)
+                put("thinking", selection.thinking)
+            })
+        } else put("harness_model", nativeModel)
+    }
 }
 
 @Serializable
@@ -905,14 +1104,26 @@ data class ChatHarnessOption(
     val name: String = "magician",
     val installed: Boolean = false,
     val models: List<String> = listOf("default"),
-)
+    /** Whose credentials it runs on: `login`, `magician_key` or `none`; absent for `magician`. */
+    @SerialName("credentials") val credentialsWire: JsonElement? = null,
+) {
+    /** The `credentials` string, read leniently: any other shape is no label. */
+    val credentials: String? get() = (credentialsWire as? JsonPrimitive)?.takeIf { it.isString }?.content
+}
 
 @Serializable
 data class ChatHarnessRoster(
     val engines: List<ChatHarnessOption> = emptyList(),
-    /** The run engine (`execution.harness_engine`) and its model. */
+    /** The run engine (`execution.harness_engine`) as it resolves now, and its model. */
     val current: String? = null,
     @kotlinx.serialization.SerialName("run_model") val runModel: String? = null,
+    /** Pi's background-run model; null when Pi uses its default. */
+    @SerialName("run_model_selection") val runModelSelection: ChatModelSelection? = null,
+    /** Agentic flows follow the chat engine ("Same as Chat"); [current] is what that resolves to. */
+    @SerialName("follows_chat") val followsChat: Boolean = false,
+    /** The server's chat engine (`chat.harness_engine`) and its model: what clients with no pick use. */
+    @SerialName("chat_current") val chatCurrent: String? = null,
+    @SerialName("chat_model") val chatModel: String? = null,
 )
 
 /**
@@ -997,10 +1208,13 @@ fun ChatMessageDto.project(index: Int): ChatMessage {
                     options = content.options,
                     correlationId = content.hitlCorrelationId(),
                     executionId = content.executionId,
+                    taskId = content.taskId,
                     inputType = content.inputType,
                     escalationType = content.escalationType,
                     sensitive = content.inputSchema?.sensitive,
                     placeholder = content.inputSchema?.placeholder,
+                    requiresReview = content.inputSchema?.requiresReview == true,
+                    allowOther = content.inputSchema?.allowOther == true,
                     resolved = content.resolved == true || content.type == "escalation_resolved",
                 ),
             )
@@ -1096,13 +1310,13 @@ enum class ChatDoPermission(val mode: ChatComposerMode) {
     }
 }
 
-/** The body of a send. Serialized, so a quote in a profile name cannot break it. */
+/** Typed model/thinking admission; native CLI engines keep their own model field. */
 @Serializable
 data class SendMessageRequest(
     val text: String,
     @SerialName("chat_turn_id") val chatTurnId: String,
     @SerialName("source_surface") val sourceSurface: String = "android",
-    val profile: String? = null,
+    @SerialName("model_selection") val modelSelection: ChatModelSelection? = null,
     @SerialName("harness_engine") val harnessEngine: String? = null,
     @SerialName("harness_model") val harnessModel: String? = null,
     @SerialName("attachment_ids") val attachmentIds: List<String> = emptyList(),
@@ -1304,6 +1518,28 @@ data class ServiceHealthStack(
      * "Offline" for a service the endpoint never claimed to be watching.
      */
     val supervisorVersion: String? = null,
+    /**
+     * The magician-api crate's version, reported beside the core version.
+     *
+     * Older servers sent the API crate's version as `version`; newer ones send
+     * the Magician core version there and this one separately. Null when the
+     * server predates the split.
+     */
+    val apiVersion: String? = null,
+)
+
+/**
+ * The `versions` block of root `/health`: one entry per component.
+ *
+ * Every field is optional. Older servers omit the block, and a component that
+ * is not deployed (Magicutor, the desktop gateway) comes back null or absent.
+ */
+@Serializable
+data class ServiceVersions(
+    val magician: String? = null,
+    @SerialName("magician_api") val magicianApi: String? = null,
+    val magicutor: String? = null,
+    val desktop: String? = null,
 )
 
 /** Root `/health`, shared with iOS; dependencies are reported by Magician. */
@@ -1320,21 +1556,31 @@ data class ServiceHealthBody(
     @SerialName("supervisor_version") val supervisorVersion: String? = null,
     val supervisor: String? = null,
     @SerialName("tauri_version") val tauriVersion: String? = null,
+    // Newer servers: `version` is the Magician core version, `api_version` the
+    // magician-api crate's, and `versions` names every component. All
+    // optional, so a body from an older server still decodes.
+    @SerialName("api_version") val apiVersion: String? = null,
+    val versions: ServiceVersions? = null,
 ) {
     fun stack(): ServiceHealthStack = ServiceHealthStack(
-        magician = health(magician ?: "healthy", version),
-        magicutor = health(magicutorStatus, magicutorVersion),
-        desktop = health(tauriStatus, tauriVersion),
+        magician = health(magician ?: "healthy", present(versions?.magician) ?: present(version)),
+        magicutor = health(magicutorStatus, present(versions?.magicutor) ?: present(magicutorVersion)),
+        desktop = health(tauriStatus, present(versions?.desktop) ?: present(tauriVersion)),
         supervisorVersion = supervisorVersion ?: supervisor,
+        apiVersion = present(versions?.magicianApi) ?: present(apiVersion),
     )
 
+    private fun present(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)
+
+    // The version rides every state: a server that names a component's version
+    // knows which build is installed even while that component is down.
     private fun health(raw: String?, version: String? = null): ServiceHealth = when (
         raw?.trim()?.lowercase()
     ) {
         "healthy", "online", "ok", "ready" -> ServiceHealth(true, version)
         "offline", "unhealthy", "unreachable", "failed", "error" ->
-            ServiceHealth(false, detail = "Offline")
-        else -> ServiceHealth(false, detail = "Not reported")
+            ServiceHealth(false, version, detail = "Offline")
+        else -> ServiceHealth(false, version, detail = "Not reported")
     }
 }
 
@@ -1370,4 +1616,9 @@ data class QueuedTextMessage(val id: String, val text: String? = null,
         }
 }
 @Serializable
-data class ChatQueueSnapshot(val queued: List<QueuedTextMessage> = emptyList(), val active: Boolean = false)
+data class ChatQueueSnapshot(
+    val queued: List<QueuedTextMessage> = emptyList(),
+    val active: Boolean = false,
+    /** The session's latest turn (`turn_state`), read off the same body by [ChatRepository.queueSnapshot]. */
+    @kotlinx.serialization.Transient val turnState: ChatTurnStateReport = ChatTurnStateReport.UNSUPPORTED,
+)

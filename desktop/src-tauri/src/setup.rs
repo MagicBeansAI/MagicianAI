@@ -9,6 +9,8 @@ use tracing::{info, warn};
 use crate::config::{ensure_data_dirs, save_config, MagicianDesktopConfig};
 use crate::container::{ContainerConfig, ContainerRuntime, ContainerStatus};
 
+type ProgressCallback = Box<dyn Fn(f32, &str) + Send + Sync>;
+
 /// Where the Magician engine for this desktop lives.
 ///
 /// This is deliberately more explicit than inferring placement from a URL and
@@ -841,9 +843,8 @@ pub async fn execute_native_setup(
 
     install_host_prerequisites(app, SetupPlacement::NativeInstall)
         .await
-        .map_err(|error| {
-            emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-            error
+        .inspect_err(|error| {
+            emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
         })?;
 
     emit_progress(
@@ -871,9 +872,8 @@ pub async fn execute_native_setup(
             }
         }
     };
-    let package = result.map_err(|error| {
-        emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-        error
+    let package = result.inspect_err(|error| {
+        emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
     })?;
 
     emit_progress(
@@ -894,9 +894,8 @@ pub async fn execute_native_setup(
     );
     crate::native_runtime::prepare_runtime_and_start(&runtime_root)
         .await
-        .map_err(|error| {
-            emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-            error
+        .inspect_err(|error| {
+            emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
         })?;
 
     emit_progress(
@@ -906,15 +905,13 @@ pub async fn execute_native_setup(
     );
     wait_for_health(&config.engine_url("/health"), Duration::from_secs(120))
         .await
-        .map_err(|error| {
-            emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-            error
+        .inspect_err(|error| {
+            emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
         })?;
     wait_for_health("http://127.0.0.1:3003/health", Duration::from_secs(120))
         .await
-        .map_err(|error| {
-            emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-            error
+        .inspect_err(|error| {
+            emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
         })?;
     if from_source {
         let verifier = crate::native_runtime::install_prefix().join("scripts/install-verify.sh");
@@ -995,9 +992,8 @@ pub async fn execute_setup(
 
     install_host_prerequisites(app, SetupPlacement::ManagedContainer)
         .await
-        .map_err(|error| {
-            emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-            error
+        .inspect_err(|error| {
+            emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
         })?;
 
     // macOS owns runtime setup. Linux and Windows require a working Docker
@@ -1016,7 +1012,7 @@ pub async fn execute_setup(
         );
         info!("Setup: installing runtime '{}'", runtime.name());
 
-        let progress_cb: Box<dyn Fn(f32, &str) + Send + Sync> = {
+        let progress_cb: ProgressCallback = {
             let app_clone = app.clone();
             Box::new(move |p, msg| {
                 let _ = app_clone.emit(
@@ -1051,7 +1047,7 @@ pub async fn execute_setup(
             &format!("Pulling {}...", image),
         );
 
-        let progress_cb: Box<dyn Fn(f32, &str) + Send + Sync> = {
+        let progress_cb: ProgressCallback = {
             let app_clone = app.clone();
             Box::new(move |p, msg| {
                 let _ = app_clone.emit(
@@ -1113,26 +1109,23 @@ pub async fn execute_setup(
             runtime
                 .prepare_keyring(&container_config)
                 .await
-                .map_err(|error| {
-                    emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-                    error
+                .inspect_err(|error| {
+                    emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
                 })?;
             info!("Setup: replacing existing container so configuration changes take effect");
             if status == ContainerStatus::Running || status == ContainerStatus::Restarting {
                 runtime
                     .stop(&config.general.container_name)
                     .await
-                    .map_err(|error| {
-                        emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-                        error
+                    .inspect_err(|error| {
+                        emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
                     })?;
             }
             runtime
                 .remove(&config.general.container_name)
                 .await
-                .map_err(|error| {
-                    emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-                    error
+                .inspect_err(|error| {
+                    emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
                 })?;
             sleep(Duration::from_millis(500)).await;
         }
@@ -1150,9 +1143,8 @@ pub async fn execute_setup(
                 runtime
                     .start_existing(&config.general.container_name)
                     .await
-                    .map_err(|error| {
-                        emit_progress(SetupStep::Failed(error.clone()), 0.0, &error);
-                        error
+                    .inspect_err(|error| {
+                        emit_progress(SetupStep::Failed(error.clone()), 0.0, error);
                     })?;
             },
             ContainerStatus::NotFound => {

@@ -5,7 +5,7 @@
 //!
 //! The executor's sandbox-override HITL (`ask_sandbox_override_via_user_request_service`,
 //! executor.rs) fires only when the file dispatch chokepoint sees the *recoverable*
-//! `ExecutionError::PathAccessDenied` variant. The fix made `ensure_path_allowed`
+//! `ExecutionError::PathAccessDenied` variant. The fix made `ensure_path_permitted`
 //! (native_executors.rs) return `PathAccessDenied` for a pure out-of-roots miss —
 //! distinct from the hard `ExecutionError::Step` used for read-only / delete-policy /
 //! repo-fence violations, which must NOT escalate.
@@ -34,6 +34,8 @@ async fn out_of_sandbox_read_is_recoverable_path_access_denied() {
     let sandbox = FileSandboxConfig {
         mode: FileSandboxMode::WorkspaceWrite,
         allowed_roots: vec![allowed.path().display().to_string()],
+        read_only_roots: Vec::new(),
+        extra_writable_roots: Vec::new(),
         allow_delete: true,
     };
 
@@ -47,7 +49,7 @@ async fn out_of_sandbox_read_is_recoverable_path_access_denied() {
         .expect_err("read outside allowed roots must be denied");
 
     match err {
-        ExecutionError::PathAccessDenied { paths } => {
+        ExecutionError::PathAccessDenied { paths, .. } => {
             assert!(
                 !paths.is_empty(),
                 "PathAccessDenied must name the offending path so the HITL can offer it for approval"
@@ -67,17 +69,19 @@ async fn out_of_sandbox_read_is_recoverable_path_access_denied() {
 }
 
 /// Contrast guard: a read-only *policy* violation (a mutating action under
-/// `FileSandboxMode::ReadOnly`) must remain a HARD `ExecutionError::Step`, NOT
+/// `FileSandboxMode::ReadOnly`) must remain a HARD `ExecutionError::Refused`, NOT
 /// the recoverable `PathAccessDenied`. Only the pure out-of-roots case escalates
 /// to a sandbox-override HITL; policy denials stay terminal. If this regressed to
 /// `PathAccessDenied`, read-only writes would wrongly offer an "approve" prompt.
 #[tokio::test]
-async fn read_only_policy_violation_stays_hard_step_not_escalatable() {
+async fn read_only_policy_violation_stays_refused_not_escalatable() {
     let allowed = tempfile::TempDir::new().expect("Failed to create allowed temp dir");
 
     let sandbox = FileSandboxConfig {
         mode: FileSandboxMode::ReadOnly,
         allowed_roots: vec![allowed.path().display().to_string()],
+        read_only_roots: Vec::new(),
+        extra_writable_roots: Vec::new(),
         allow_delete: true,
     };
 
@@ -94,7 +98,7 @@ async fn read_only_policy_violation_stays_hard_step_not_escalatable() {
         .expect_err("mutating action under read-only sandbox must be blocked");
 
     assert!(
-        matches!(err, ExecutionError::Step(_)),
-        "read-only policy denial must stay a hard Step (non-escalatable), got: {err:?}"
+        matches!(err, ExecutionError::Refused(_)),
+        "read-only policy denial must stay Refused (non-escalatable), got: {err:?}"
     );
 }

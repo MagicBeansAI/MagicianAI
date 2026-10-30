@@ -231,17 +231,16 @@ async fn tier_replay_current(
     if snapshot.mapping != "tier_evidence_distill" || spec.producer != snapshot.producer {
         return false;
     }
-    let Ok(knowledge) = service.load_user_knowledge().await else {
-        return false;
-    };
-    let Some(tier) = crate::magician_v2::chat::service::normalized_user_memory_tier_name(spec.tier)
+    // The same rows the distiller reads (`load_producer_rows`).
+    let settings = crate::magician_v2::agents::user_memory_bounds::current_settings();
+    let Ok(entries) = super::tier_distill_run::load_producer_rows(service, &spec, &settings).await
     else {
         return false;
     };
-    let Some(entries) = knowledge.get(tier.as_str()).and_then(Value::as_array) else {
+    if entries.is_empty() {
         return false;
-    };
-    let Some(current) = cluster_tier_entries(entries, &spec)
+    }
+    let Some(current) = cluster_tier_entries(&entries, &spec)
         .into_iter()
         .find(|cluster| {
             cluster.slug == snapshot.cluster.slug && cluster.day == snapshot.cluster.day

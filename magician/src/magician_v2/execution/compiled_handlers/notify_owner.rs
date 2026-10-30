@@ -14,16 +14,24 @@ use crate::magician_v2::user_requests::{RequestOption, UserRequest};
 
 use super::shared::{require_scope_str, scope_arg_str};
 
+/// The claim check of a notification sent from a task run, with the run it
+/// was checked against, or `None` outside a task run.
+struct CheckedNotification {
+    task_id: String,
+    execution_id: String,
+    check: crate::magician_v2::artifact_v2::synthesis::OwnerTextCheck,
+}
+
 async fn checked_notification(
     resources: &AgentResources,
     principal: &str,
     workspace: &str,
     args: &Value,
     message: &str,
-) -> Option<String> {
+) -> Option<CheckedNotification> {
     use crate::magician_v2::artifact_v2::{
         service::ScopeRef,
-        synthesis::{check_owner_text, load_execution_grounding_corpus, OwnerTextReview},
+        synthesis::{check_owner_text_detailed, load_execution_grounding_corpus, OwnerTextReview},
     };
     let task_id = scope_arg_str(args, "__task_id")?;
     let execution_id = scope_arg_str(args, "__execution_id")?;
@@ -49,14 +57,19 @@ async fn checked_notification(
         },
         _ => OwnerTextReview::Figures,
     };
-    check_owner_text(
+    let check = check_owner_text_detailed(
         Arc::new(corpus),
         message,
         "",
         review,
         "notify_owner_grounding",
     )
-    .await
+    .await;
+    Some(CheckedNotification {
+        task_id,
+        execution_id,
+        check,
+    })
 }
 
 pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value, ExecutionError> {
@@ -138,7 +151,13 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // run's tool results first and goes out under the caveat if it does not
     // verify.
     let checked = checked_notification(&resources, &principal, &workspace, &args, message).await;
-    let message = checked.as_deref().unwrap_or(message);
+    let message = checked
+        .as_ref()
+        .and_then(|checked| checked.check.text.as_deref())
+        .unwrap_or(message);
+    let scope = crate::magician_v2::artifact_v2::service::ScopeRef::system_internal_unauthenticated(
+        &principal, &workspace,
+    );
 
     let request = UserRequest {
         id: String::new(),
@@ -176,6 +195,21 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             }));
         },
     };
+
+    // What the check removed or left unconfirmed, and why, kept on the run
+    // (`owner_text_claim_checks.json`) for the request it changed.
+    if let Some(checked) = checked.as_ref() {
+        crate::magician_v2::artifact_v2::synthesis::record_owner_text_check(
+            &resources.artifact_workspace,
+            &scope,
+            &checked.task_id,
+            &checked.execution_id,
+            "notify_owner",
+            Some(submission.request_id()),
+            &checked.check,
+        )
+        .await;
+    }
 
     Ok(json!({
         "status": "queued",

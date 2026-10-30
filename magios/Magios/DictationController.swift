@@ -17,7 +17,39 @@ import os
 /// through the scoped Notes provider.
 /// Realtime duplex voice (WebRTC) remains a separate transport.
 final class DictationController: NSObject, ObservableObject {
-    @Published var isRecording = false
+    private var mediaChatSessionId: String?
+    @Published var isRecording = false {
+        didSet { isRecording ? startLevelMeter() : stopLevelMeter() }
+    }
+    @Published private(set) var level: Float = 0
+    private let captureLevel = OSAllocatedUnfairLock<Float>(initialState: 0)
+    private var levelTimer: Timer?
+
+    private func startLevelMeter() {
+        stopLevelMeter()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self, self.isRecording else { return }
+            if let recorder = self.recorder {
+                recorder.updateMeters()
+                self.level = min(1, max(0, (recorder.averagePower(forChannel: 0) + 50) / 50))
+            } else if self.ambientMic != nil {
+                self.level = min(1, max(0, (self.ambientPCM.averagePowerDB + 50) / 50))
+            } else {
+                self.level = self.captureLevel.withLock { $0 }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        levelTimer = timer
+    }
+
+    private func stopLevelMeter() {
+        levelTimer?.invalidate()
+        levelTimer = nil
+        level = 0
+        captureLevel.withLock { $0 = 0 }
+    }
+
+    deinit { levelTimer?.invalidate() }
     @Published var isTranscribing = false
     /// Live on-device partials, updated on the main queue while streaming. Empty for
     /// the file→cloud path (no partials there).
@@ -265,7 +297,7 @@ final class DictationController: NSObject, ObservableObject {
         ]
         do {
             let rec = try AVAudioRecorder(url: url, settings: settings)
-            rec.isMeteringEnabled = false
+            rec.isMeteringEnabled = true
             guard rec.record() else {
                 try? FileManager.default.removeItem(at: url)
                 releaseSession()
@@ -511,8 +543,9 @@ final class DictationController: NSObject, ObservableObject {
     /// because the alternative is three yields racing three capture paths, and the
     /// orb says which of their own actions closed the window.
     @MainActor
-    func startLive() {
+    func startLive(chatSessionId: String? = nil) {
         guard captureRoute == .idle, !isRecording, !isTranscribing else { return }
+        mediaChatSessionId = chatSessionId
         ambientRail.yield(AmbientYieldReason.dictationStarted)
         shouldArchiveCurrentCapture = false
         voiceNoteCapturedAt = nil
@@ -527,8 +560,9 @@ final class DictationController: NSObject, ObservableObject {
     /// outbox on stop, transcribed through the selected STT route, and uploaded
     /// to the scoped Notes provider without delaying the composer or auto-send.
     @MainActor
-    func startVoiceNote() {
+    func startVoiceNote(chatSessionId: String? = nil) {
         guard captureRoute == .idle, !isRecording, !isTranscribing else { return }
+        mediaChatSessionId = chatSessionId
         ambientRail.yield(AmbientYieldReason.dictationStarted)
         shouldArchiveCurrentCapture = true
         voiceNoteCapturedAt = nil
@@ -558,6 +592,7 @@ final class DictationController: NSObject, ObservableObject {
             onStarted(false)
             return
         }
+        mediaChatSessionId = nil
         cancelAmbientMetering()
         shouldArchiveCurrentCapture = false
         voiceNoteCapturedAt = nil
@@ -666,7 +701,14 @@ final class DictationController: NSObject, ObservableObject {
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true
         let node = engine.inputNode
+        let meter = captureLevel
         node.installTap(onBus: 0, bufferSize: 1024, format: node.outputFormat(forBus: 0)) { buffer, _ in
+            if let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 {
+                var sum: Float = 0
+                for i in 0..<Int(buffer.frameLength) { sum += samples[i] * samples[i] }
+                let value = voiceDisplayLevel((sum / Float(buffer.frameLength)).squareRoot())
+                meter.withLock { $0 = value }
+            }
             request.append(buffer)
         }
         engine.prepare()
@@ -1017,6 +1059,7 @@ final class DictationController: NSObject, ObservableObject {
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         MagicianAccess.authorize(&request)
+        if let mediaChatSessionId { request.setValue(mediaChatSessionId, forHTTPHeaderField: "X-Chat-Session-Id") }
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(upload.filename)\"\r\n".data(using: .utf8)!)

@@ -22,7 +22,7 @@ class LifecycleLaneTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config = self.root / "owner/magician-config.yaml"
         self.config.parent.mkdir()
-        self.config.write_text("llm:\n  router:\n    profiles:\n      alpha: {provider: openai, model: candidate-a}\n      beta: {provider: anthropic, model: candidate-b}\n    operation_mapping:\n"+
+        self.config.write_text("llm:\n  router:\n    catalog:\n      connections:\n        openai: {provider: openai}\n        anthropic: {provider: anthropic}\n      models:\n        candidate-a: {connection: openai, model: candidate-a}\n        candidate-b: {connection: anthropic, model: candidate-b}\n      assignments:\n        alpha: {model: candidate-a}\n        beta: {model: candidate-b}\n    operation_mapping:\n"+
                                "".join(f"      {op}: alpha\n" for op in lane.OPERATIONS))
         (self.config.parent / "system").mkdir()
         self.overrides = self.config.parent / "system/llm_routing_overrides.json"
@@ -59,6 +59,19 @@ class LifecycleLaneTests(unittest.TestCase):
         report=json.loads((self.root/"reports/runs/first/report.json").read_text())
         self.assertEqual(report["status"],"failed")
         self.assertIn("Unknown configured profile",report["error"])
+
+    def test_split_catalog_snapshots_preserve_both_source_files_and_remain_readable(self):
+        main, tables = self.config.read_text().split("    catalog:", 1)
+        self.config.write_text(main)
+        sibling = self.config.with_name("llm-router.yaml")
+        sibling.write_text("    catalog:" + tables)
+        original = self.config.read_bytes(), sibling.read_bytes()
+        snapshots = lane.snapshot_configs(self.config, ["alpha"], self.root / "private")
+        snapshot = snapshots[0][1]
+        self.assertEqual(snapshot.read_bytes(), original[0])
+        self.assertEqual(snapshot.with_name("llm-router.yaml").read_bytes(), original[1])
+        self.assertIn('candidate-a', lane.read_config_text(snapshot))
+        self.assertEqual(snapshot.with_name("llm-router.yaml").stat().st_mode & 0o777, 0o600)
 
     def test_failed_then_passing_profiles_both_retained_and_reruns_are_immutable(self):
         def fake(command, **_):

@@ -24,14 +24,29 @@ impl<T> Reviewed<T> {
         self.guard.as_ref().is_none_or(|g| g.current())
     }
 }
+/// What a gated review does with items the engine was not confident about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unqualified {
+    /// Defer the whole review: no LLM classification fallback.
+    Defer,
+    /// The text model decides them. The confident engine answers stay locked
+    /// in its prompt and are applied over its output, so only the items the
+    /// engine could not settle are the model's call.
+    Generate,
+}
+
 struct Generated<T> {
     value: T,
     response: SimplifiedLLMResponse,
     elapsed_ms: u64,
 }
 
-/// The generator receives locked decision heads only when all items qualified.
-/// Partial fallback already produces the whole mixed output and is reused once.
+/// The generator receives the qualified decision heads locked. With
+/// [`Unqualified::Defer`] that happens only when every item qualified; with
+/// [`Unqualified::Generate`] it also decides the rest (all of them when none
+/// qualified). Partial fallback already produces the whole mixed output and is
+/// reused once.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn review<T, G, F, P, L, A>(
     input: runner::Input,
     lookup: PolicyLookup,
@@ -39,6 +54,7 @@ pub(crate) async fn review<T, G, F, P, L, A>(
     mapping: &str,
     prompt_version: &str,
     budget: Duration,
+    unqualified: Unqualified,
     generate: G,
     parse: P,
     labels: L,
@@ -77,7 +93,11 @@ where
     )
     .await;
     let heads = outcome.current_answers();
-    if outcome.incumbent.is_none() && heads.len() != expected_items {
+    let gated = outcome.authority.is_some();
+    if outcome.incumbent.is_none()
+        && heads.len() != expected_items
+        && !(gated && unqualified == Unqualified::Generate)
+    {
         if let Some(observation) = &outcome.observation {
             observation.complete(None, false, false, started.elapsed());
         }
@@ -85,7 +105,8 @@ where
             "memory decision deferred: incomplete engine answers; no LLM classification fallback"
         );
     }
-    let generated_text = outcome.incumbent.is_none() && !heads.is_empty();
+    let generated_text = outcome.incumbent.is_none()
+        && (!heads.is_empty() || (gated && unqualified == Unqualified::Generate));
     let mut generated = match outcome.incumbent {
         Some(result) => result?,
         None if generated_text => {
@@ -113,7 +134,11 @@ where
         ))
     });
     let mut origins = outcome.origins;
-    let guard = if !heads.is_empty() && guard.as_ref().is_some_and(|g| g.current()) {
+    let guard = if heads.is_empty() {
+        // Nothing qualified: the text model's review stands alone.
+        origins.clear();
+        None
+    } else if guard.as_ref().is_some_and(|g| g.current()) {
         if let Err(error) = apply(&mut generated.value, &heads) {
             if let Some(o) = outcome.observation {
                 o.complete(text_receipt, generated_text, false, started.elapsed());

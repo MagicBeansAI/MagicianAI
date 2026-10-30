@@ -55,7 +55,27 @@ The proxy mediates between agent-browser's WebSocket and the extension's `chrome
 
 Both go into `CdpSession.sessions: HashMap<String, i32>` (sessionId → tabId) so any inbound command resolves to the right tab. The `iframe_session_ids: HashSet<String>` discriminator records which of those ids are iframe-origin — only those get forwarded as the `sessionId` field on the `debugger_command` bridge message. Main-tab commands forward without a sessionId; Chrome targets the tab's implicit main session, which is what we want.
 
+Events take the reverse path. `debugger.js` sends `{tabId, sessionId?, method, params}`, where `sessionId` is `source.sessionId`, set only for a child target's events. The proxy's `event_session_id` keeps a child's id. It labels the tab's own events with the main-tab uuid and never picks an iframe session of the same tab. Otherwise the page's load events reach the client under an iframe's session, and agent-browser's `open` times out on a loaded page.
+
+A service-worker restart loses the in-memory `debuggerSessions`. The next command then re-attaches lazily in `sendDebuggerCommand`, and Chrome resets every domain. `debugger_setup.js` records each tab's main-session setup commands (`*.enable`, `Page.setLifecycleEventsEnabled`, `Target.setAutoAttach`, bindings, emulation overrides) in `chrome.storage.local`. That survives both a worker restart and an extension reload, which also detaches every tab. `runtime.onStartup` clears the record, because tab ids restart with the browser. That re-attach replays them before running the command, so the client's session keeps receiving events. `detach_debugger`, and a closed tab, clear the record.
+
+Task-tab ownership (`automation_tabs.js`) is one queue that `list_tabs`, `create_window`, `create_tab` and `close_session_tabs` all wait on. Each `chrome.storage.session` call in it has an 8 s deadline. A reader waits at most 4 s for queued changes, then reads what is stored, so one hung call fails its own step with a named error instead of blocking every tab action. The record lives in `chrome.storage.local` so it survives an extension reload or update, and `runtime.onStartup` clears it.
+
 Mistakes here are operator-visible: a previous version of this filter forwarded every registered sessionId, including the proxy-minted main-tab uuid, and Chrome's debugger rejected every command with `-32001 "Session with given id not found"`. The fix sits in `update_iframe_sessions_from_event` (registration) and the `forward_session_id` filter in the main command handler.
+
+## Where Task Tabs Open
+
+`automation_surface.js` runs the fallback chain for `create_window`. The proxy sends `surface` from `bridge.automation_surface`, with `focused: false` and an optional `label` from the CDP URL's `?label=`.
+
+1. **`in_window`**: needs `chrome.tabGroups` and a normal last-focused window. The task gets a background tab there, in a group titled `✱ <label>` (at most 28 characters, a colour fixed per session). After the eager attach, `create_window` turns on focus emulation (`Emulation.setFocusEmulationEnabled`, `Page.setWebLifecycleState: active`). It then checks that the page reports visible and draws a frame. A failure moves the tab to a window of its own.
+2. **`own_window_group`**: a window of its own that does not take focus, with its tabs in the same kind of group.
+3. **`own_window`**: that window without a group, where groups are unavailable.
+
+The proxy also sends the emulation in its post-attach setup for every task tab. `debugger_setup.js` therefore replays it after a worker restart or reload. Without emulation, a background tab is hidden: animation frames stop, timers slow to one a second, and load events go missing.
+
+The bridge health alarm rechecks in-window tabs every 30 s. A tab that no longer renders moves to its own window. New task tabs (`create_tab`) and popups join the group wherever it is. In the owner's window they never take the active tab, and a popup that opened in front gives the owner their tab back. Magician names the group through `?label=` (the conversation's title for a chat run, else the task's title). The execution poller appends ⏸ while the task waits and ✓ when it is done, and names a group Magician left unnamed after the run's agent. `close_session_tabs` with `keepTabs` ungroups the handed-off tabs. Group records live in `chrome.storage.local`, cleared on browser startup.
+
+The proxy records each thread's chosen surface. An `in_window` thread's cached window is the owner's, so it counts as live only while one of the thread's own tabs is.
 
 ## Active Extension Surfaces
 

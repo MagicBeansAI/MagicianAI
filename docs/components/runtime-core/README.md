@@ -9,6 +9,10 @@ installer paths and headless Linux detection. See [CUA setup](../scripts/cua-set
 `fair_queue::FairLane<T>` provides bounded owner-round-robin scheduling shared
 by the LLM dispatcher and Decision Model dispatcher, including cancellation removal.
 
+`process::git_program` is the git Magician runs for its own git work: `MAGICIAN_GIT`, else a
+working host git (on macOS only with the developer tools installed), else the `dugite` skill's
+bundled git.
+
 ## Canonical References
 
 - [Runtime Core](runtime-core.md) — traits, prompt categories, tool catalog

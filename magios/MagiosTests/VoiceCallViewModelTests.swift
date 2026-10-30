@@ -1,4 +1,7 @@
 import os
+import AVFoundation
+import SwiftUI
+import UIKit
 import XCTest
 @testable import Magician
 
@@ -10,6 +13,101 @@ import XCTest
 /// real teardown does to the shared session.
 @MainActor
 final class VoiceCallViewModelTests: XCTestCase {
+    func testWaveformStillDrawsWhenParentRefreshesFasterThanItsMeter() async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousWindow = scene.windows.first { $0.isKeyWindow }
+        let meter = WaveformLevelFixture()
+        let host = UIHostingController(rootView: WaveformRefreshFixture(meter: meter).ignoresSafeArea())
+        host.safeAreaRegions = []
+        host.view.backgroundColor = .white
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 148, height: 24)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        host.view.frame = window.bounds
+        window.layoutIfNeeded()
+        defer { window.isHidden = true; previousWindow?.makeKey() }
+        func pixels() throws -> Data {
+            let image = UIGraphicsImageRenderer(size: window.bounds.size).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let snapshot = XCTAttachment(image: image)
+            snapshot.name = "Waveform level \(meter.level)"
+            snapshot.lifetime = .keepAlways
+            add(snapshot)
+            return try XCTUnwrap(image.cgImage?.dataProvider?.data) as Data
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        let silence = try pixels()
+        let updates = Task { @MainActor in
+            while !Task.isCancelled {
+                meter.level = meter.level < 0.7 ? 0.9 : 0.6
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        defer { updates.cancel() }
+        try await Task.sleep(for: .milliseconds(700))
+        let speech = try pixels()
+        XCTAssertEqual(silence.count, speech.count)
+        XCTAssertGreaterThan(zip(silence, speech).filter { $0 != $1 }.count, 100,
+                             "The waveform must visibly respond even under frequent parent updates")
+    }
+
+    func testDeviceCaptureResumesAfterHardwareGraphStops() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Requires a physical microphone")
+        #else
+        let graph = AVAudioEngine()
+        let audio = VoiceAudioEngine(audioEngine: graph)
+        let firstFrame = expectation(description: "Cold capture produces PCM")
+        let recoveredFrame = expectation(description: "Capture resumes after graph change")
+        let phase = OSAllocatedUnfairLock(initialState: 0)
+        try audio.start(session: .release) { data in
+            guard !data.isEmpty else { return }
+            let current = phase.withLock { value -> Int in
+                let previous = value
+                if value == 0 || value == 2 { value += 1 }
+                return previous
+            }
+            if current == 0 { firstFrame.fulfill() }
+            if current == 2 { recoveredFrame.fulfill() }
+        }
+        defer { audio.stop(session: .release) }
+        await fulfillment(of: [firstFrame], timeout: 4)
+        graph.stop()
+        phase.withLock { $0 = 2 }
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: graph)
+        await fulfillment(of: [recoveredFrame], timeout: 4)
+        XCTAssertTrue(graph.isRunning)
+        #endif
+    }
+
+    func testCaptureWatchdogRecoversMissingFramesOnceButAcceptsSilence() {
+        var health = VoiceCaptureHealth(startedAt: 10)
+        XCTAssertFalse(health.check(lastFrameAt: nil, now: 11.9))
+        XCTAssertTrue(health.check(lastFrameAt: nil, now: 12))
+        XCTAssertFalse(health.check(lastFrameAt: nil, now: 15))
+        var healthy = VoiceCaptureHealth(startedAt: 10)
+        // A zero-amplitude buffer still updates the frame timestamp.
+        XCTAssertFalse(healthy.check(lastFrameAt: 14.9, now: 15))
+        XCTAssertTrue(healthy.check(lastFrameAt: 14.9, now: 17))
+    }
+
+    func testDisplayMeterShowsSpeechWithoutInventingAudio() {
+        XCTAssertEqual(voiceDisplayLevel(0), 0)
+        XCTAssertEqual(voiceDisplayLevel(.nan), 0)
+        XCTAssertEqual(voiceDisplayLevel(0.01), 0.2, accuracy: 0.001)
+        XCTAssertEqual(voiceDisplayLevel(0.1), 0.6, accuracy: 0.001)
+        XCTAssertEqual(voiceDisplayLevel(1), 1)
+    }
+
+    func testCaptureFailureIsSurfacedThroughTheCallTransport() {
+        let call = VoiceCallViewModel(mode: .inApp)
+        call.wireAudioPaths()
+        call.engine.onCaptureFailure?("Microphone could not resume")
+        XCTAssertEqual(call.client.phase, .failed)
+        XCTAssertEqual(call.errorMessage, "Microphone could not resume")
+    }
 
     func testSurfaceEngineOverrideWinsWithoutChangingTheChatDefault() {
         XCTAssertEqual(
@@ -896,5 +994,17 @@ final class VoiceCallViewModelTests: XCTestCase {
         var gate = Gate()
         XCTAssertFalse(gate.drop(Data([1, 2])))
         XCTAssertNil(gate.release())
+    }
+}
+
+private final class WaveformLevelFixture: ObservableObject {
+    @Published var level: Float = 0
+}
+
+private struct WaveformRefreshFixture: View {
+    @ObservedObject var meter: WaveformLevelFixture
+    var body: some View {
+        let _ = meter.level
+        VoiceActivityWaveform { meter.level }
     }
 }

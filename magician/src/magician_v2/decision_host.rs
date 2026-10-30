@@ -266,7 +266,16 @@ pub(crate) fn emit_model_event(mut event: super::realtime_events::RuntimeTranspo
         .unwrap_or_else(|p| p.into_inner())
         .upgrade()
     {
-        bus.emit_transport_only(event);
+        if matches!(
+            event,
+            super::realtime_events::RuntimeTransportEvent::LLMResponseReceived { .. }
+        ) {
+            // Physical model receipts belong in the execution history as well
+            // as the live stream. Other health/shadow messages are ephemeral.
+            bus.emit(event);
+        } else {
+            bus.emit_transport_only(event);
+        }
     }
 }
 
@@ -291,6 +300,19 @@ pub(crate) async fn action_with_telemetry(
     let (client, request) = (client.clone(), request.clone());
     tokio::spawn(async move {
         let response = client.action(&request).await?;
+        tracing::info!(
+            target: "magician::decision_action",
+            snapshot = %response.snapshot,
+            principal = %scope.scope.principal,
+            workspace = %scope.scope.workspace,
+            task_id = ?scope.task_id,
+            execution_id = ?scope.execution_id,
+            chat_session_id = ?scope.chat_session_id,
+            reason = %response.reason,
+            latency_ms = response.latency_ms,
+            diagnostics = %serde_json::to_string(&response.diagnostics).unwrap_or_default(),
+            "action selection receipt"
+        );
         super::analytics::decision_model_telemetry::record(
             &scope,
             &response.model_calls,
@@ -312,12 +334,24 @@ pub fn report_health(
     service: &str,
     result: Result<(), super::realtime_events::ServiceFailure>,
 ) {
+    report_health_with_detail(principal, workspace, service, result, None);
+}
+
+/// [`report_health`] whose notice carries a harness CLI's own reason and a
+/// remedy (`ServiceDetail`).
+pub fn report_health_with_detail(
+    principal: &str,
+    workspace: &str,
+    service: &str,
+    result: Result<(), super::realtime_events::ServiceFailure>,
+    detail: Option<&super::realtime_events::ServiceDetail>,
+) {
     let bus = HEALTH_BROADCASTER
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .upgrade();
     if let Some(bus) = bus {
-        bus.report_service_health(principal, workspace, service, result);
+        bus.report_service_health_with_detail(principal, workspace, service, result, detail);
     }
 }
 

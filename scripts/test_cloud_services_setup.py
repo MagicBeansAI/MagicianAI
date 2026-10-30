@@ -141,6 +141,106 @@ class CloudServicesSetupTests(unittest.TestCase):
             self.assertEqual(setup.main(), 0)
         self.assertFalse(self.root.exists())
 
+    def saved(self, name='.env'):
+        return setup.file_values(self.root / name)
+
+    def test_same_zone_keeps_saved_hostnames_and_dispatches_once(self):
+        hosts = {
+            'MAGICIAN_WEBHOOK_HOST': 'webhook.example.com',
+            'MAGICIAN_UI_HOST': 'https://ui.example.com:443/app',
+            'MAGICIAN_CONNECT_HOST': 'connect.example.com',
+            'MAGICIAN_MOBILE_PUBLIC_ORIGIN': 'https://laptop.example.com',
+        }
+        setup.write_values(self.root, dict(self.values, KEEP='owner-value', **hosts))
+        calls = []
+        with patch.object(setup.shutil, 'which', return_value='/bin/bash'), patch.dict(os.environ, dict(self.values, **hosts)):
+            setup.configure(self.root, cloud=True, runner=lambda args, **kw: calls.append((args, kw)))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][0][1].endswith('ensure-machine-tunnel.sh'))
+        self.assertEqual(calls[0][1]['env']['MAGICIAN_UI_HOST'], hosts['MAGICIAN_UI_HOST'])
+        for name in ('.env', '.env.development'):
+            saved = self.saved(name)
+            self.assertEqual(saved['KEEP'], 'owner-value')
+            self.assertEqual(saved['MAGICIAN_UI_HOST'], hosts['MAGICIAN_UI_HOST'])
+
+    def test_zone_switch_clears_stale_hostnames_and_rebuilds_both_tunnels(self):
+        old_hosts = {
+            'MAGICIAN_WEBHOOK_HOST': 'webhook.old.example',
+            'MAGICIAN_UI_HOST': 'ui.old.example',
+            'MAGICIAN_CONNECT_HOST': 'connect.old.example',
+            'MAGICIAN_MOBILE_PUBLIC_ORIGIN': 'https://laptop.old.example',
+        }
+        setup.write_values(self.root, dict(self.values, MAGICIAN_TUNNEL_ZONE='old.example', KEEP='owner-value', **old_hosts))
+        calls = []
+        output = io.StringIO()
+        with patch.object(setup.shutil, 'which', return_value='/bin/bash'), patch.dict(os.environ, dict(self.values, **old_hosts)), contextlib.redirect_stdout(output):
+            setup.configure(self.root, cloud=True, runner=lambda args, **kw: calls.append((args, kw)))
+        self.assertEqual([Path(call[0][1]).name for call in calls], ['ensure-machine-tunnel.sh', 'ensure-magician-tunnel.sh'])
+        self.assertEqual(calls[0][0][-2:], ['fixture-laptop', '--install'])
+        text = output.getvalue()
+        self.assertNotIn(self.values['CLOUDFLARE_API_TOKEN'], text)
+        self.assertIn('webhook.old.example', text)
+        self.assertIn('make machine-tunnel PARK=<hostname>', text)
+        self.assertIn('Restart Magician', text)
+        for call in calls:
+            for key in setup.HOST_KEYS:
+                self.assertNotIn(key, call[1]['env'])
+            self.assertEqual(call[1]['env']['MAGICIAN_TUNNEL_ZONE'], 'example.com')
+        for name in ('.env', '.env.development'):
+            saved = self.saved(name)
+            self.assertEqual(saved['KEEP'], 'owner-value')
+            self.assertEqual(saved['MAGICIAN_TUNNEL_ZONE'], 'example.com')
+            self.assertEqual((self.root / name).stat().st_mode & 0o777, 0o600)
+            for key in setup.HOST_KEYS:
+                self.assertNotIn(key, saved)
+
+    def test_dry_run_reports_a_zone_switch_without_writing_or_dispatching(self):
+        setup.write_values(self.root, dict(self.values, MAGICIAN_TUNNEL_ZONE='old.example', MAGICIAN_MOBILE_PUBLIC_ORIGIN='https://laptop.old.example/health'))
+        before = {name: (self.root / name).read_bytes() for name in ('.env', '.env.development')}
+        output = io.StringIO()
+        with patch.dict(os.environ, self.values), contextlib.redirect_stdout(output):
+            setup.configure(self.root, cloud=True, dry=True, runner=lambda *args, **kw: self.fail('unexpected dispatch'))
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
+        text = output.getvalue()
+        self.assertIn('Would move every tunnel onto example.com', text)
+        self.assertIn('Would run the original shared tunnel script', text)
+        self.assertIn('https://laptop.old.example/health', text)
+
+    def test_interactive_switch_asks_for_the_new_zone(self):
+        setup.write_values(self.root, dict(self.values, MAGICIAN_TUNNEL_ZONE='old.example', MAGICIAN_WEBHOOK_HOST='webhook.old.example'))
+        calls = []
+        with patch.object(setup.shutil, 'which', return_value='/bin/bash'), patch('builtins.input', side_effect=['y', 'other.example']), contextlib.redirect_stdout(io.StringIO()):
+            setup.configure(self.root, cloud=True, interactive=True, runner=lambda args, **kw: calls.append(args))
+        self.assertEqual([Path(call[1]).name for call in calls], ['ensure-machine-tunnel.sh', 'ensure-magician-tunnel.sh'])
+        self.assertEqual(self.saved()['MAGICIAN_TUNNEL_ZONE'], 'other.example')
+        self.assertNotIn('MAGICIAN_WEBHOOK_HOST', self.saved())
+
+    def test_interactive_switch_rejects_an_empty_zone_before_writing(self):
+        setup.write_values(self.root, dict(self.values, MAGICIAN_TUNNEL_ZONE='old.example', MAGICIAN_WEBHOOK_HOST='webhook.old.example'))
+        before = {name: (self.root / name).read_bytes() for name in ('.env', '.env.development')}
+        with patch('builtins.input', side_effect=['yes', '']), self.assertRaisesRegex(ValueError, 'needs the new zone'):
+            setup.configure(self.root, cloud=True, interactive=True, runner=lambda *args, **kw: self.fail('unexpected dispatch'))
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in before})
+
+    def test_declining_a_switch_keeps_hostnames_that_already_match(self):
+        setup.write_values(self.root, dict(self.values, MAGICIAN_WEBHOOK_HOST='webhook.example.com'))
+        calls = []
+        with patch.object(setup.shutil, 'which', return_value='/bin/bash'), patch('builtins.input', return_value='n'):
+            setup.configure(self.root, cloud=True, interactive=True, runner=lambda args, **kw: calls.append(args))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][1].endswith('ensure-machine-tunnel.sh'))
+        self.assertEqual(self.saved()['MAGICIAN_WEBHOOK_HOST'], 'webhook.example.com')
+
+    def test_declining_a_switch_finishes_a_half_moved_zone(self):
+        setup.write_values(self.root, dict(self.values, MAGICIAN_WEBHOOK_HOST='webhook.old.example', KEEP='owner-value'))
+        calls = []
+        with patch.object(setup.shutil, 'which', return_value='/bin/bash'), patch('builtins.input', return_value='n'), contextlib.redirect_stdout(io.StringIO()):
+            setup.configure(self.root, cloud=True, interactive=True, runner=lambda args, **kw: calls.append(args))
+        self.assertEqual([Path(call[1]).name for call in calls], ['ensure-machine-tunnel.sh', 'ensure-magician-tunnel.sh'])
+        self.assertEqual(self.saved()['KEEP'], 'owner-value')
+        self.assertEqual(self.saved()['MAGICIAN_TUNNEL_ZONE'], 'example.com')
+        self.assertNotIn('MAGICIAN_WEBHOOK_HOST', self.saved())
+
     def test_core_preparation_saves_only_explicit_inputs(self):
         with patch.dict(os.environ, {'MAGICIAN_ENABLE_FUNNEL': '1', 'MAGICIAN_TUNNEL_ZONE': 'example.com', 'MAGICIAN_ROOT_DIR': str(self.root)}), patch.object(setup.sys, 'argv', ['setup', '--from-environment']):
             self.assertEqual(setup.main(), 0)

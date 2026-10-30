@@ -21,6 +21,12 @@ the card's one `/api/magician/v3/events` backfill request, folds into a keyed ro
 Rows coalesce by a stable key (`step:<step_id>`, `iter:<n>`, tool keys,
 `tutor:<run>:…`), so updates land in place.
 
+Context preparation pairs by `phase_id`, showing total elapsed time and the
+memory/procedure split. Typed Decision Engine responses use the same measured
+token, cache and cost details as named LLM responses.
+Decision Engine receipts persist in registered task histories for replay and
+do not change execution status.
+
 ## Next variant
 
 `variant="next"` (default `'classic'`) is presentation only: the same rows render
@@ -55,7 +61,7 @@ branch of `handleEvent`; it never feeds row status or settling. The row → stag
 mapping (`toStageRows`, `toolTarget`) lives in
 `src/lib/magician/chat/next/stageRows.ts`, shared with `RequestActivityCard`.
 With nothing running, the stage chip is a `--radius-chip` label: `Waiting on your
-input` when a row is `waiting`, else `Finishing…`. The `.chat-turn-progress`
+input` when a row is `waiting`, else `Finishing…`. A `task.status_changed` with `synthesis_pending` opens a running `Writing the final answer…` row (`synth:<task_id>`, timer from the event ts) that `execution.completed` does not close; the terminal status closes it. The `.chat-turn-progress`
 wrapper and the "Working… / Waiting on you" head render in both variants.
 Covered by `ChatTurnProgress.component.test.ts` and
 `TurnStage.component.test.ts`.
@@ -113,8 +119,10 @@ connections per host.
   `llm.failed` / `LLMResponseReceived` names a model (`model`, else
   `harness_model`, else `provider`), the row takes the answering model
   (`llmModelLabel.ts`); a settled event naming none keeps the running label.
-  `ChatTurnProgress` relabels a finished call "Response ready", and the task
-  timeline keeps the capability title with the answering model on its meta line.
+  `ChatTurnProgress` relabels a finished chat call "Response ready", and the
+  task timeline titles the row with the answering model too.
+- **Typed calls, one row** keyed by `correlation.llm_call_id`, with a live
+  `m:ss` while running: see `chat-next.md` ("Live in-progress steps").
 - **Delegated task rows.** A `task::<id>` row settles on a terminal
   `chat.delegate.status_changed` / `task.status_changed` /
   `chat.delegate.output_ready`. When `live` flips false while such a row still

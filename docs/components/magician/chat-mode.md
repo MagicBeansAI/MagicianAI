@@ -34,6 +34,67 @@ The install-aware Settings → Engines picker (`PUT /plane/chat-engine`) writes 
 YAML key and reloads the live snapshot. See [plane.md](plane.md) and
 the chat-turn plan.
 
+## Bounded model context
+
+Native chat checks the concrete model's input budget before every request,
+including tool-loop continuations and final synthesis. `llm.chat_history` controls
+proactive compaction (75% trigger, 50% target, eight recent turns preferred).
+Past 70% (`background_trigger_ratio`) a background run folds older history off
+the turn, so the in-turn trigger rarely has work left; a turn that fits never
+waits on it. One chat starts at most one background run per 2 minutes (10 after
+a failed one). A turn that must compact while a background run holds the chat
+answers from its current view if that fits the model, and otherwise shows
+**Waiting for conversation compaction**.
+
+A compaction reduces older tool results and tool-call arguments above
+`tool_result_keep_bytes` (2 KB) to head and tail with the number of the entry that
+holds the full text, without an LLM; tool output is most of a long agent
+transcript. Summary sources get the same secret redaction as provider replay, and
+projected results are summarized from their provider-safe value. Each summarizer call is sized to the input window of the model routed for
+`chat_history_compaction` (the smallest along its fallbacks, less the running
+summary and the prompt), with no separate size setting, so a long chat folds in
+one or two calls on a large-window model rather than dozens. Calls are planned up front: the step reads **Compacting conversation · k/N**
+and ends as **Conversation compacted**. Each compaction logs its entries, source
+and trimmed bytes, calls and duration. Checkpoints are kept in stored-transcript
+positions: the turn's request may carry heal fillers and stripped continuations
+after a failed turn, extra context on the latest user entry, and unsaved entries
+of the current turn; compaction maps between the two and declines, before any
+LLM call, when they differ in any other way. A governed tool result matches its
+stored placeholder by call id; only the turn's own user message may carry extra
+context. A compacted chat can recover exact details with `search_chat_history`
+(search, or read one entry by number); the handoff mentions the tool only on
+turns that offer it.
+
+The exact history wins whenever it fits under the trigger, even over a saved
+handoff (for example after switching the chat to a larger model). Summarizer
+fragments are sized to the smallest input window along the summary route and its
+fallback chain, read fresh on every compaction, so any model may be chosen for
+either role. Compaction never fails a turn: if that route cannot hold one fragment
+plus the handoff, older entries are omitted with a published note. If a summary
+call or publishing fails mid-run, a turn whose history still fits the model uses
+it in full (**Compaction deferred**); otherwise it answers from the part already
+summarized plus an unpublished "omitted" note. The next turn retries. A summary
+over `summary_max_bytes` is cut at a character boundary rather than discarded.
+The model catalog supplies limits; output capacity and a safety margin are
+reserved. Final admission also counts rendered images, injected files and tools.
+
+The canonical transcript and visible timeline remain complete. A scoped,
+versioned `llm_history/context_checkpoint.json` stores an incremental handoff and
+its source-prefix hash; history edits, clear/rollback and stale writers cannot
+silently apply an unrelated checkpoint. Summaries retain requirements,
+corrections, findings, uncertainties and artifact references as historical data,
+never as permission. Whole tool exchanges and the current user turn stay exact.
+Older provider continuations are reset when the context changes.
+
+`chat_history_compaction` is an independently routed LLM operation; its calls
+retain chat/turn cost attribution and show a **Compacting conversation** context
+step. Disclosure-guarded inputs retain their approved physical route. An input
+context-overflow rejection receives at most one compact-and-retry; completed
+tools are not dispatched again. Failed compaction preserves the original history;
+a current turn that cannot fit yields a recoverable error. Web, mobile and
+channel callers using native chat share this backend behavior. Voice rotation
+and storage-file consolidation remain separate owners.
+
 ## Two-tier execution model
 
 1. **Inline tool**: synchronous (MCP tools, `list_tasks`, `read_file`,
@@ -58,7 +119,9 @@ debug runs) lives under `internal_tasks/`, listed on `/internal-tasks` and
 `CreateExecutionRequest.debug: true` writes `created_by: "__system__"` so
 `task_is_user_visible` hides it (still Persistent).
 
-**Tailing.** Outside-born tasks are not shown by default.
+**Tailing.** Chat-created or started tasks automatically attach progress and a
+status card to their originating conversation without queueing new messages.
+Outside-born tasks are not shown by default.
 `subscribe_to_task(task_id)` (personal agent only) attaches one live stream
 (`GET/POST/DELETE /api/magician/v2/chat/sessions/{id}/tailed-task`). Tailing an
 ephemeral task queues inbound messages in `pending_messages` until it settles;
@@ -74,13 +137,13 @@ inserts require `active_chat_runs.contains_key(session_id)`).
 `apply_synthesis_pending_status_guard` holds status at "running" while
 `ChatChannel` stamps `synthesis_pending` and delays teardown; the landed card
 carries the user summary, `output_files` and optional `speech_tts`. History
-reads reconcile non-terminal cards against V3 (terminal wins; deleted internal
+reads reconcile non-terminal cards against V3 (including archived tasks; externally linked tasks settle without importing their reports; deleted internal
 tasks render cancelled); startup orphan recovery repairs the activity stream and
 the durable card; terminal dedupe includes the
 execution id and closes execution-owned HITL.
 `create_task` takes `reference_task_ids` (always persistent, no lifecycle
 overrides);
-delegate/handover/pack/`spawn_sub_goal` take them for Internal work. Terminal
+delegate/handover/pack/`spawn_sub_goal` take them for System work. Terminal
 finalization emits `role=continuation_context`. Procedure-skill names are
 canonical slugs, resolved literally. Plan:
 `docs/archive/plans/2026-05-21-chat-native-task-progress.md`.
@@ -173,6 +236,9 @@ tool-less call for the same profile
 - **Stalled**: no progress for `chat.harness_turn_stall_seconds` (default 300)
   with no model or tool call in flight. Cancels like Stop, persists a notice,
   emits `chat.turn.stopped` with `reason: turn_stalled`.
+- **Empty reply**: no text and no tool calls (seen with zero usage) is retried
+  once with the same request; a second one ends the turn with a notice
+  ("The model sent back an empty reply twice…") instead of a blank reply.
 - **Spinning**: same tool+arguments fingerprint with the same outcome (error
   class, or result fingerprint on success) 3 times in a row adds a
   `repeated_failure_note`; a 4th ends the turn with an honest `final_text`. A
@@ -199,7 +265,20 @@ sidecar when the canonical output fits V1's envelope
 (`magician/src/magician_v2/chat/presentation.rs`, schema
 `magician.structured_response`); `plain_text` projects semantic `content`. A
 supplied sidecar is kept only if it equals the deterministic projection;
-otherwise it is replaced; over-bound output omits it (never truncated).
+otherwise it is replaced; an over-bound body (`plain_text`, markdown, callout
+text) omits it and is never truncated. Derived display fields are bounded to
+their validator budgets first: titles, the top-level summary and labels are cut
+on a UTF-8 boundary with `…`; an artifact or provenance id over 160 bytes
+becomes a prefix plus `~` and a 16-hex blake3 digest of the full id; an
+oversized MIME type or size, or a non-http(s) source link, is dropped from the
+card. A shortened artifact id cannot be parsed back into its target, so
+`meta.artifact_locators` carries `{artifact_id, task_id?, relative_path}` for
+it (output-relative path up to 2 KiB, else omitted); clients open the locator
+and parse `artifact_id` only when none matches. Locators sit in `meta` because
+older iOS rejects unknown artifact-item keys and older Android decodes item
+values as strings; all clients ignore unknown `meta` keys. A projection that
+still fails warns once per message id per process (naming the field), then
+logs at debug.
 Artifact targets name a session output or scoped task output, never filesystem
 paths. HITL and task-tail cards stay specialized.
 
@@ -232,10 +311,18 @@ revision, retention, cursor and content hash. Reconstruction v1 uses determinist
 Memory and procedure context start concurrently behind the shared staged
 coordinator under `agent_surface_runtime.context_retrieval.chat`: fast immutable
 memory, hybrid memory and procedures each have their own
-completed/empty/error/timed-out state. A slow sibling cannot erase completed
+completed/empty/error/timed-out state. Chat and autonomous tasks default to an 8s
+overall budget; realtime voice retains 300ms. A slow sibling cannot erase completed
 evidence, cancellation clears turn-bound values, and completion order never
-changes merge order. Conflicting content for the same source identity, revision and
-completeness is rejected as `evidence_revision_conflict`.
+changes merge order. Two complete renderings of the same source identity and
+revision that disagree are rejected as `evidence_revision_conflict`. A memory
+rendered shorter than its source, or as a passage, is an excerpt; excerpts of one
+revision may differ between stages and merge to one deterministic winner.
+
+Each chat turn's `<context>` also carries the owner's local date and time. The
+zone is the owner's stated `timezone` preference when it names an IANA zone
+(re-read at most every five minutes), else this computer's zone, said as such.
+The chat prompt has no other date or time.
 
 ### Interrupted tool-history recovery
 
@@ -270,6 +357,18 @@ and `hi i think you have access...`, migration-only); new user-created history
 is Personal, product callers stamp Automated. `#general`'s original session
 carries `is_default_session`: the store restores it to Active and rejects
 archive/delete/move.
+
+Archiving a thread archives every session on that thread. Restoring it brings
+those sessions back, including on `screens`, `tabs`, and `vibedev`, where
+opening a new session would otherwise archive its siblings. Deleting a thread
+deletes those sessions. Status changes and session removal run a few at a time,
+each session on its own lock. Tool-result files for the thread's sessions are
+removed in one locator scan before the thread row is tombstoned, and the same
+scan removes only those sessions' files. A retry finishes a delete whose row is
+already tombstoned. `#general` cannot be archived or deleted. A session
+the runtime still owns (internal voice, or the locked default session) stays
+as it is. The history row stays on Archiving…, Restoring…, or Deleting… until
+that request finishes.
 
 `GET /api/magician/v2/chat/sessions` and `GET /api/magician/v2/ui-threads`
 accept `history_lane`, `q`, `limit`, `offset` (omit for the legacy full list).
@@ -405,6 +504,14 @@ owner's Chrome (CDP) the daemon exits without `Browser.close` and Magicutor's
 only when asked (`keep_browser_window_open`, `keep_browser_cdp_connection_alive`)
 or paused; the next task on the thread opens a fresh one.
 
+Each chat launch marks its override (`magician-chat-<thread>~<launch>`) and
+every run it spawns inherits it, so a launch's runs form one family
+(`browser::session_lease`). A launch gets the thread's shared window when no
+other launch holds it, else its own (`magician-chat-<thread>-t<launch>`); a
+claim none of its runs ever used lapses after 5 minutes. A paused run keeps its
+hold, and a window closes only with the last run holding it, so two concurrent
+tasks never drive each other's tabs.
+
 ### Public contacts and message content
 
 `FilePublicContactProfileStore` (`chat/public_contact_profile.rs`) persists
@@ -447,9 +554,31 @@ is a five-second local host gateway or realtime-client event, never a task.
 only: session/thread archive-delete-switch, `get_current_chat_context`,
 `record_chat_teaching_feedback`, `get_task_details_for_chat`,
 `subscribe_to_task_for_chat`, `describe_agents_for_chat`, `list_tools_for_chat`,
-`read_result`, plus Tutor/App Copilot tools (`start_tutor_run`, …) when the lane
-keeps them. Untrusted agents get no session/thread or spawn/delegate/handover
-controls. `record_chat_teaching_feedback` reads `target_tier` unscoped
+`read_result`, `search_chat_history`, plus Tutor/App Copilot tools
+(`start_tutor_run`, …) when the lane keeps them.
+
+`search_chat_history` (`history_search.rs`, read-only, bridged) is offered only
+once the session has a compaction checkpoint, and never on the realtime voice
+catalog. It searches the current session's canonical transcript, including the
+summarized prefix: `query` terms must all appear (case-insensitive, `"quoted
+phrases"` stay whole), `limit` 1–20 (default 8). The tool's own calls and results
+are not searched. Matches rank by term hits weighted down for long entries, then
+recency, and return `entry`, `kind` (`user`/`assistant`/`tool_result`),
+`tool_name`, a snippet (160–1024 bytes, sharing a 6 KiB answer budget) and
+`compacted`, with `total_entries`, `more_matches` and `omitted_for_size`.
+`entry=<n>` (not combined with `query`) reads one entry a page at a time:
+`max_bytes` defaults to and caps at 6 KiB of JSON-encoded text, `offset` pages
+on, and the answer carries `offset`, `next_offset` (null at the end) and
+`truncated`, so a result never exceeds the chat projection's 8 KiB string limit.
+`compacted`/`compacted_through` appear only while the checkpoint matches the
+transcript; the preserved current user entry is not compacted. Text passes the
+provider-bound credential sanitizer before matching or snippets (whole entries up
+to 64 KiB and all JSON; ±4 KiB windows around hits in longer prose), so a search
+cannot confirm a redacted value. Governed app results are withheld; each entry is
+rendered through at most 2 MiB. Recalled text is the chat's own record: it enters
+reply grounding as agent-written evidence, never as tool proof.
+
+Untrusted agents get no session/thread or spawn/delegate/handover controls. `record_chat_teaching_feedback` reads `target_tier` unscoped
 (`learning::teaching::unscoped_tier`): `user.knowledge` names `knowledge`.
 
 **Heavy work leaves the run's frame.** A run's decision chain already uses
@@ -501,6 +630,9 @@ Selection never calls `activate_skill` or a control API.
 
 ## Transport bus and per-chat-turn events
 
+Owner-result cleanup probes bounded locator metadata concurrently and locks only
+matching results, rechecking scope and ownership under lock before removal.
+
 All progress/chat/agent events flow over `RuntimeTransportBroadcaster`; sinks
 `subscribe()` synchronously **before** `tokio::spawn`.
 
@@ -517,7 +649,8 @@ All progress/chat/agent events flow over `RuntimeTransportBroadcaster`; sinks
 
 `GET .../turns/{cid}/events` returns the last 1 MiB
 (`CHAT_TURN_EVENTS_TAIL_MAX_BYTES`), at most `limit` newest rows (default 50),
-`truncated`, and whole-file own-call `usage`
+`truncated`, and whole-file own-call `usage` (a bounded incremental cache skips
+nested debug payloads and resets on file replacement or truncation)
 ([magician-api](../magician-api/README.md)); `.../events/stream` replays disk
 then live, deduped by `event_id`. The old `/api/magician/v3/events?chat_turn_id=…`
 filter is gone.
@@ -611,10 +744,21 @@ behind one launch gate and released only after every child is admitted.
 
 `personality_mode` on `delegate_to_agent` / `handover_to_agent`
 (`ChatService::resolve_personality_directive`): omitted / `default` / `none` /
-`off` / `inherit` → none; `current` → caller's `personality_profile`; an
-installed personality-mode skill → that preset for one cycle. It rides
-`GoalTaskOptions.personality_directive`, prepended at LLM dispatch (never in
-`task.title` / `task.description`); non-noop modes tag the task `voice:<mode>`.
+`off` / `inherit` → no override; `current` → the caller's resolved
+personality; an installed personality-mode skill → that preset for one cycle.
+It rides `GoalTaskOptions.personality_directive`, prepended at LLM dispatch
+(never in `task.title` / `task.description`); non-noop modes tag the task
+`voice:<mode>`.
+
+An agent's personality is resolved by `skills::resolve_agent_personality_fields`:
+its saved `personality_profile` tier (read whether or not `memory_tiers`
+declares it), else its `default_personality` preset. The block is pinned in
+full: the chat system prompt's `{agent_personality}`, and the owner profile's
+identity, which every task decision prompt renders (never the goal text,
+which drives memory relevance). Memory ranking skips the tier's summary.
+Final task-output synthesis does not carry it.
+Contextual writing adds the user's selected preset's voice to the request.
+Channel reply drafts are written for the owner and carry no agent personality.
 
 `find_agents_for_capability` returns reachable agents matching owned skill/pack or id/name/alias
 (`web_research` finds `web-researcher`). A target's `required_capability`
@@ -632,7 +776,16 @@ with plan target metadata is rejected.
 
 ## Media and outputs
 
-Attachments upload to the session outputs store first; attachment-aware
+Deleting a chat file removes only the chat's copy (409 while messages run or
+are queued); the removal is remembered so task updates do not restore it, and
+the task original stays under Work. Voice and dictation charges go to the
+originating chat: a call fixes its chat before the provider starts, and STT/TTS
+requests may name it with `X-Chat-Session-Id`, checked against the caller's
+scope (the chat id carries through nested speech only within one tenant).
+
+Attachments upload to the session outputs store without waiting for an active
+turn; lifecycle and file-index locks serialize publication and recheck archival.
+Attachment-aware
 (including attachment-only) sends persist one
 canonical `UserTurn` plus display messages.
 `GET /api/magician/v2/chat/sessions/{id}/outputs/{path}` serves HTML / PDF / SVG
@@ -647,7 +800,7 @@ thinking. OpenAI Responses and xAI Grok (`provider: xai`, a Responses-family
 replay via `is_openai_responses_family`, vision gated by
 `XaiProvider::model_supports_vision`) continue via `previous_response_id`.
 Clearing messages clears `llm_history`. MiniMax is text-only for attachments.
-`GET /chat/profiles` lists rich-chat-safe profiles, flagging image input.
+`GET /chat/models?engine=magician|pi` lists eligible models, native thinking choices and image-input capabilities.
 
 Retention follows `GoalTaskOptions.lifecycle` (`internal` swept with the
 session, `persistent` kept; `track_as_task` promotes), not
@@ -689,6 +842,10 @@ allowlists, screen-draw grant widening and voice takeover also stay in the
 service. Oracles: `magician/tests/lane_admission_oracles.rs`.
 
 ## Context Retrieval Latency
+
+Chat and task checkpoints allow up to eight seconds for context retrieval;
+voice keeps its short budget. The scoped Steps row records total elapsed time,
+memory search and procedure timings, including partial or cancelled work.
 
 Memory and procedure retrieval share one semantic query (no ownership, scope or
 audit identity). In-flight embeddings coalesce; a success is kept 25 ms (key: endpoint, model, dimensions, embedding context, batch-token
@@ -746,7 +903,8 @@ any other mapping falls back to `chat-gpt61sol-responses-vision-toolsauto-fast`.
   agent.
 - Public Envoy chat clears the native catalogue; Envoy's definition also denies
   `search_memory`.
-- Chat omits autonomous-only `yield` / `need_user_input`.
+- Chat offers `need_user_input` (durable question and resume); `yield` stays
+  task-only, and realtime voice asks in its spoken reply.
 - DuckDB `spawn_blocking` cannot be cancelled by future drop.
 
 ## Accept-in-scope is a per-scope preference, not per-session state
@@ -757,7 +915,8 @@ pack sub-executions. That map is one-turn, in-memory carry-through: each send
 overwrites it and `clear_chat_session_state` must remove it, or a stale bit
 outlives the session. The durable preference is
 `UiPreferences::composer_permission_mode` (per principal + workspace, default
-and fallback `ask`); sibling `UiPreferences::theme` defaults and normalises to `sorbet`. See
+and fallback `ask`); sibling `UiPreferences::theme` defaults and normalises to `sorbet`, and the
+optional `appearance` keeps only `system`, `day` or `night`. See
 [composer permission mode](../unified-ui/composer-permission-mode.md) (what it
 waives is narrower than the name) and
 [the endpoint contract](../magician-api/ui-preferences-endpoint.md).

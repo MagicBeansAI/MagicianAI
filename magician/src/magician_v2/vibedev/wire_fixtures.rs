@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use super::crews::{CrewLane, CrewMode, CrewStatus, LaneRole, LaneStatus, VibeDevCrew};
-use super::live_runs::{LiveRun, LiveRunState};
+use super::live_runs::{LiveRun, LiveRunNotice, LiveRunState, WaitingKind};
 use super::run_detail::{
     fold_timeline, ChangedFile, FilePatch, RepoSuggestion, RunChanges, RunTurn, RunTurns,
     TurnTimeline,
@@ -64,12 +64,23 @@ fn live_run(id: &str, title: &str, state: LiveRunState, lane: Option<&str>) -> L
         step: (state == LiveRunState::Working).then(|| "Editing src/api/auth/codes.ts".to_string()),
         summary: (state == LiveRunState::Done)
             .then(|| "Search uses a trigram index: 900 ms to 38 ms.".to_string()),
+        completion_kind: None,
+        open_items: Vec::new(),
         turns: 1,
         started_at: "2026-10-13T09:12:00Z".to_string(),
         cost_usd: (state == LiveRunState::Done).then_some(0.88),
         approval_id: (state == LiveRunState::NeedsYou)
             .then(|| "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30".to_string()),
+        approval_respond: (state == LiveRunState::NeedsYou)
+            .then(|| {
+                super::live_runs::diff_review_respond_handle(
+                    "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+                )
+            })
+            .flatten(),
         approval_task_id: None,
+        waiting_kind: (state == LiveRunState::NeedsYou).then_some(WaitingKind::DiffReview),
+        notice: None,
         crew_id: lane.map(|_| "crew_7f3a".to_string()),
         lane: lane.map(str::to_string),
         updated_at: "2026-10-13T09:41:00Z".to_string(),
@@ -98,6 +109,35 @@ fn live_runs_fixture() {
             LiveRunState::Done,
             None,
         ),
+        // An Autopilot run that ended and filed its owner briefing: done, with
+        // a notice to acknowledge, never needs-you.
+        LiveRun {
+            summary: Some("Bumped the Pi engine to 1.3.0.".to_string()),
+            cost_usd: Some(0.42),
+            waiting_kind: Some(WaitingKind::Notice),
+            notice: Some(LiveRunNotice {
+                request_id: "vibedev-run-ended:task_report:exec_d278".to_string(),
+                option_id: "acknowledge".to_string(),
+                title: Some("Autopilot run finished: Pi 1.3.0 live test".to_string()),
+                message:
+                    "Autopilot run finished: Pi 1.3.0 live test. Open it to review the result."
+                        .to_string(),
+                severity: Some("info".to_string()),
+                respond: super::live_runs::notice_respond_handle(
+                    "vibedev-run-ended:task_report:exec_d278",
+                    "acknowledge",
+                    "Acknowledge",
+                    Some("exec_d278"),
+                ),
+                created_at_ms: 0,
+            }),
+            ..live_run(
+                "task_report",
+                "Pi 1.3.0 live test",
+                LiveRunState::Done,
+                None,
+            )
+        },
     ];
     let counts = super::live_runs::state_counts(&runs);
     let counts: std::collections::BTreeMap<_, _> = counts.into_iter().collect();
@@ -113,6 +153,7 @@ fn run_turns_fixture() {
         title: "VibeDev · Speed up product search".to_string(),
         status: "completed".to_string(),
         trusted: true,
+        work_location: None,
         branch: Some("vibedev/shop-search01".to_string()),
         crew_id: None,
         lane: None,
@@ -126,9 +167,12 @@ fn run_turns_fixture() {
                 updated_at: "2026-10-13T09:17:00Z".to_string(),
                 summary: Some("Search uses a trigram index: 900 ms to 38 ms.".to_string()),
                 engine: Some("codex".to_string()),
+                coding_route_id: None,
                 cost_usd: Some(0.61),
                 commit: Some("4be1c09d2a7f".to_string()),
                 files_changed: Some(2),
+                completion_kind: None,
+                open_items: Vec::new(),
             },
             RunTurn {
                 task_id: "task_search_2".to_string(),
@@ -139,9 +183,12 @@ fn run_turns_fixture() {
                 updated_at: "2026-10-13T09:24:00Z".to_string(),
                 summary: None,
                 engine: Some("codex".to_string()),
+                coding_route_id: None,
                 cost_usd: None,
                 commit: None,
                 files_changed: None,
+                completion_kind: None,
+                open_items: Vec::new(),
             },
         ],
     };

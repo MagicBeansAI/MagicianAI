@@ -63,6 +63,26 @@ describe('MicCaptureButton push-to-talk', () => {
 		vi.useRealTimers();
 	});
 
+	it('shows measured listening feedback only while recording', async () => {
+		const meter = {
+			context: { state: 'running' }, fftSize: 256, frequencyBinCount: 128,
+			getByteTimeDomainData: (bytes: Uint8Array) => {
+				bytes.forEach((_, index) => { bytes[index] = Math.round(128 + 20 * Math.sin(index / 5)); });
+			},
+			getByteFrequencyData: (bytes: Uint8Array) => bytes.fill(64)
+		};
+		mic.startMicRecording.mockResolvedValue({ stop: mic.stop, cancel: mic.cancel, analyser: meter });
+		const { container } = render(MicCaptureButton, { props: { compact: true } });
+		await fireEvent.click(micButton());
+		await vi.advanceTimersByTimeAsync(150);
+		expect(screen.getByRole('status')).toHaveTextContent('Listening');
+		const heights = Array.from(container.querySelectorAll<HTMLElement>('.voice-waveform span'), (bar) => parseFloat(bar.style.height));
+		expect(Math.max(...heights)).toBeGreaterThan(2);
+		await fireEvent.click(screen.getByRole('button', { name: 'Stop recording voice note' }));
+		expect(screen.queryByRole('status')).not.toBeInTheDocument();
+		expect(container.querySelector('.voice-waveform')).toBeNull();
+	});
+
 	it('starts capturing once the press passes the hold threshold', async () => {
 		render(MicCaptureButton, { props: { compact: true } });
 		const btn = micButton();

@@ -44,6 +44,31 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         target_dir: super::notes_shared::text_arg(&args, "target_dir"),
     };
 
+    // Where the note would land: a goal workspace the acting agent may not
+    // write is refused before the provider creates anything (`create_note`
+    // also creates missing folders, a new workspace among them).
+    let slug = crate::magician_v2::notes::slugify(&request.title);
+    let probe = format!(
+        "{}/{}.md",
+        request.target_dir.as_deref().unwrap_or("Inbox"),
+        if slug.is_empty() {
+            "untitled"
+        } else {
+            slug.as_str()
+        }
+    );
+    if let Some(refused) = super::notes_shared::workspace_refusal(
+        "create_note",
+        &store,
+        &principal,
+        &workspace,
+        &probe,
+        crate::magician_v2::execution::goal_workspace_access::Op::Write,
+    )
+    .await
+    {
+        return Ok(refused);
+    }
     match store.create_note(&principal, &workspace, request).await {
         Ok(note) => Ok(super::notes_shared::note_result(note)),
         Err(error) => Ok(super::notes_shared::write_error("create_note", error)),

@@ -17,6 +17,8 @@ pub mod recipe_compile_hook;
 pub mod recipe_replay_hook;
 pub(crate) mod recipe_replay_receipt;
 pub mod reducer;
+pub mod result_delivery;
+pub mod run_effects;
 pub mod scheduler;
 pub mod service;
 pub mod spoken_hitl_log;
@@ -40,7 +42,9 @@ pub use events::{
     RuntimeCanonicalEventReceipt, RuntimeCanonicalEventSink, CANONICAL_UI_THREAD_ID_FIELD,
     SOURCE_EVENT_REF_FIELD,
 };
-pub use execution_artifacts::FilesystemExecutionArtifactIndexStore;
+pub use execution_artifacts::{
+    FilesystemExecutionArtifactIndexStore, ResolvedInputArtifactReferences,
+};
 pub use memory::{
     FilesystemV3EpisodeRecorder, RecordedEpisode, V3EpisodeProvenance, V3EpisodeRecord,
     V3EpisodeRecorder, V3EpisodeRecordingContext, V3MemoryTierRecord,
@@ -73,8 +77,8 @@ pub use synthesis::{
     EventSnippet, ExecutionOutputSynthesisBundle, ExecutionOutputSynthesizer,
     FilesystemArtifactV2BundleBuilder, OutputEvidence, PlanSynthesisContext,
     PromptManagerExecutionOutputSynthesizer, PromptManagerTaskUserOutputSynthesizer,
-    SynthesisDependencies, SynthesisPromptSpec, TaskUserOutputSynthesisBundle,
-    TaskUserOutputSynthesizer,
+    SynthesisDependencies, SynthesisPromptSpec, SynthesisSourceEvidence, SynthesisSourceExcerpt,
+    TaskUserOutputSynthesisBundle, TaskUserOutputSynthesizer,
 };
 pub use task_writes::TaskWriteReconciler;
 pub use working_sets::{

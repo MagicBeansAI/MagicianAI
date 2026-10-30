@@ -26,6 +26,9 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.mapNotNull
@@ -90,7 +93,7 @@ interface TodayDataSource {
     suspend fun crew(nowMs: Long = System.currentTimeMillis()): TodayCrew
     suspend fun briefings(limit: Int = 8): List<TodayBriefing>
     suspend fun briefingRender(surfaceId: String): TodayBriefingRender
-    suspend fun pulse(previous: TodayPulse? = null): TodayPulse
+    suspend fun pulse(previous: TodayPulse? = null, onPartial: ((TodayPulse) -> Unit)? = null): TodayPulse
 
     suspend fun setVisibility(item: TodayItem?, itemId: String, action: String, snoozeMinutes: Int? = null)
     suspend fun executeTodayAction(endpoint: String): String
@@ -160,7 +163,7 @@ class TodayRepository(private val context: Context) : TodayDataSource {
 
     override suspend fun resurfacing(limit: Int, cursor: ResurfacingCursor?, offset: Int?): ResurfacingPage =
         client.get("${v2()}/channel-assist/resurfacing/today") {
-            authorize(); parameter("limit", limit.coerceIn(1, 50))
+            authorize(); parameter("include_diagnostics", false); parameter("limit", limit.coerceIn(1, 50))
             cursor?.let {
                 parameter("cursor_surfaced_at", it.surfacedAt)
                 parameter("cursor_score", it.score)
@@ -173,7 +176,7 @@ class TodayRepository(private val context: Context) : TodayDataSource {
 
     override suspend fun followUps(limit: Int, cursor: String?): ChannelFollowUpPage =
         client.get("${v2()}/channel-assist/follow-ups") {
-            authorize(); parameter("limit", limit.coerceIn(1, 50)); cursor?.let { parameter("cursor", it) }
+            authorize(); parameter("include_diagnostics", false); parameter("limit", limit.coerceIn(1, 50)); cursor?.let { parameter("cursor", it) }
         }.decode(ChannelFollowUpPage.serializer(), "load message follow-ups")
 
     override suspend fun feed(limit: Int): List<TodayActivityItem> = client.get("${v2()}/feed") {
@@ -389,22 +392,32 @@ class TodayRepository(private val context: Context) : TodayDataSource {
         return response
     }
 
-    override suspend fun pulse(previous: TodayPulse?): TodayPulse = coroutineScope {
+    override suspend fun pulse(previous: TodayPulse?, onPartial: ((TodayPulse) -> Unit)?): TodayPulse = coroutineScope {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
         val yesterday = LocalDate.now(zone).minusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         val tomorrow = LocalDate.now(zone).plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        val llm = async { captured { query("/analytics/llm_calls/query", llmSql(yesterday, today, tomorrow)) } }
-        val coding = async { captured { query("/analytics/query", codingSql(today, tomorrow)) } }
-        val memory = async { captured { query("/analytics/memory_events/query", memorySql(today, tomorrow)) } }
-        val tasks = async { captured { client.get("${v3()}/tasks") { authorize() }.json("load completed tasks") } }
-        val llmResult = llm.await(); val codingResult = coding.await(); val memoryResult = memory.await(); val taskResult = tasks.await()
-        var result = previous ?: TodayPulse()
+        var result = (previous ?: TodayPulse(availableSlices = emptySet())).copy(pendingSlices = setOf("llm", "coding", "memory", "tasks"))
         var successful = 0
-        llmResult.getOrNull()?.let { result = applyLlmPulse(result, it); successful++ }
-        codingResult.getOrNull()?.let { result = result.copy(codingRunsToday = cell(it, 0, "n").toInt()); successful++ }
-        memoryResult.getOrNull()?.let { result = applyMemoryPulse(result, it); successful++ }
-        taskResult.getOrNull()?.let { root ->
+        val publication = Mutex()
+        suspend fun publish(slice: String, response: Result<(TodayPulse) -> TodayPulse>) {
+            publication.withLock {
+                response.onSuccess { apply ->
+                    result = apply(result).copy(availableSlices = result.availableSlices + slice)
+                    successful++
+                }
+                result = result.copy(pendingSlices = result.pendingSlices - slice)
+                onPartial?.invoke(result)
+            }
+        }
+        val llm = async { publish("llm", captured { query("/analytics/llm_calls/query", llmSql(yesterday, today, tomorrow)) }
+            .map { response -> { prior: TodayPulse -> applyLlmPulse(prior, response) } }) }
+        val coding = async { publish("coding", captured { query("/analytics/query", codingSql(today, tomorrow)) }
+            .map { response -> { prior: TodayPulse -> prior.copy(codingRunsToday = cell(response, 0, "n").toInt()) } }) }
+        val memory = async { publish("memory", captured { query("/analytics/memory_events/query", memorySql(today, tomorrow)) }
+            .map { response -> { prior: TodayPulse -> applyMemoryPulse(prior, response) } }) }
+        val tasks = async { publish("tasks", captured { client.get("${v3()}/tasks") { authorize() }.json("load completed tasks") }
+            .map { root -> { prior: TodayPulse ->
             val rows = when (root) {
                 is JsonArray -> root
                 is JsonObject -> root["tasks"] as? JsonArray ?: JsonArray(emptyList())
@@ -418,11 +431,12 @@ class TodayRepository(private val context: Context) : TodayDataSource {
                 val updated = row["updated_at"].text()?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() } ?: return@forEach
                 if (updated in today until tomorrow) completedToday++ else if (updated in yesterday until today) completedYesterday++
             }
-            result = result.copy(
+            prior.copy(
                 tasksCompletedToday = completedToday, tasksCompletedYesterday = completedYesterday, taskBuckets = buckets,
                 recentTasks = recentTaskLines(rows),
             )
-        }
+            } }) }
+        awaitAll(llm, coding, memory, tasks)
         if (successful == 0) throw TodayApiError("Today's pulse is temporarily unavailable.")
         result
     }

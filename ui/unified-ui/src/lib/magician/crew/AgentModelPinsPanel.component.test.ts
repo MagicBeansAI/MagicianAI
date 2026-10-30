@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
@@ -19,16 +19,25 @@ const routing = {
 		{ name: 'grok47-responses-vision-toolsany-rhigh', provider: 'xai', model: 'grok-4.7', class: 'api', installed: true, selectable: true },
 		{ name: 'chat-openai-adaptive-normal', provider: 'adaptive', model: 'adaptive composite', class: 'api', installed: true, selectable: false }
 	],
+	models: [
+		{ id: 'sol', label: 'GPT Sol', provider: 'openai', connection: 'openai', model: 'gpt-sol', limits: null,
+			capabilities: { vision: true, tools: true }, thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+			choices: { auto: 'model/openai/gpt-sol/auto', high: 'model/openai/gpt-sol/high' } },
+		{ id: 'grok', label: 'Grok', provider: 'xai', connection: 'xai', model: 'grok-4.7', limits: null,
+			capabilities: { vision: true, tools: true }, thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+			choices: { auto: 'model/xai/grok-4.7/auto', high: 'model/xai/grok-4.7/high' } }
+	],
 	operations: [],
 	overrides: {},
 	driving_engines: { chat: null, run: null }
 };
 
 const coding = {
-	profiles: [
-		{ id: 'auto', label: 'Auto', is_default: false, supports_user_image_inputs: false },
-		{ id: 'coding-premium', label: 'GPT-6.1 Sol coding', is_default: false, supports_user_image_inputs: true }
-	]
+	models: [{ id: 'sol', engine: 'pi', label: 'GPT Sol coding', provider: 'openai', connection: 'openai', model: 'gpt-sol', limits: null,
+		capabilities: { vision: true, tools: true }, thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+		choices: { auto: 'pi/model/sol/auto', low: 'pi/model/sol/low', high: 'pi/model/sol/high' } }],
+	engines: [{ id: 'pi', selectable: true, readiness: 'ready' }],
+	default_selection: null
 };
 
 describe('AgentModelPinsPanel', () => {
@@ -36,29 +45,26 @@ describe('AgentModelPinsPanel', () => {
 		const { calls } = installFetchMock([
 			{ method: 'GET', match: '/api/magician/v2/agents/senior-software-developer', handle: () => jsonResponse(agentRecord(null)) },
 			{ method: 'GET', match: '/api/magician/v2/llm/routing', handle: () => jsonResponse(routing) },
-			{ method: 'GET', match: '/api/magician/v2/coding/profiles', handle: () => jsonResponse(coding) },
+			{ method: 'GET', match: '/api/magician/v2/coding/models', handle: () => jsonResponse(coding) },
 			{
 				method: 'PATCH',
 				match: '/api/magician/v2/agents/senior-software-developer',
 				handle: () =>
 					jsonResponse(
-						agentRecord({ planning: { profile: 'grok47-responses-vision-toolsany-rhigh', provider: '', model: '' } }, 7)
+						agentRecord({ planning: { profile: 'model/xai/grok-4.7/auto', provider: '', model: '' } }, 7)
 					)
 			}
 		]);
 
 		render(AgentModelPinsPanel, { agentId: 'senior-software-developer' });
 
-		const planning = (await screen.findByLabelText('Decisions & planning')) as HTMLSelectElement;
+		const planning = await screen.findByRole('button', { name: 'Decisions & planning' });
 		expect(screen.getByText(/no model is pinned/i)).toBeTruthy();
-		const optionValues = Array.from(planning.options).map((option) => option.value);
-		expect(optionValues).toContain('grok47-responses-vision-toolsany-rhigh');
-		expect(optionValues).not.toContain('chat-openai-adaptive-normal');
-		const codingSelect = screen.getByLabelText('Coding engine model') as HTMLSelectElement;
-		expect(Array.from(codingSelect.options).map((option) => option.value)).not.toContain('auto');
+		expect(screen.getByRole('button', { name: 'Coding engine model' })).toBeTruthy();
 
 		const user = userEvent.setup();
-		await user.selectOptions(planning, 'grok47-responses-vision-toolsany-rhigh');
+		await user.click(planning);
+		await user.click(within(screen.getByRole('region', { name: 'Decisions & planning choices' })).getByRole('button', { name: 'Grok' }));
 		await user.click(screen.getByRole('button', { name: 'Save pins' }));
 
 		await waitFor(() => expect(calls.some((call) => call.method === 'PATCH')).toBe(true));
@@ -66,10 +72,36 @@ describe('AgentModelPinsPanel', () => {
 		expect(new Headers(patch?.init?.headers).get('If-Match')).toBe('v6');
 		expect(JSON.parse(String(patch?.init?.body))).toEqual({
 			llm_routing: {
-				planning: { profile: 'grok47-responses-vision-toolsany-rhigh', provider: '', model: '' }
+				planning: { profile: 'model/xai/grok-4.7/auto', provider: '', model: '' }
 			}
 		});
 		expect(await screen.findByText(/1 pin overrides global routing/i)).toBeTruthy();
+	});
+
+	it('assigns a model with Auto through the concrete operation handle', async () => {
+		const model = {
+			id: 'sol', label: 'GPT Sol', provider: 'openai', connection: 'openai', model: 'gpt-sol', limits: null,
+			capabilities: { tools: true }, thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+			choices: { auto: 'opaque-auto', low: 'opaque-low', high: 'opaque-high' },
+			operation_choices: { auto: 'opaque-initial', low: 'opaque-low', high: 'opaque-high' }
+		};
+		const { calls } = installFetchMock([
+			{ method: 'GET', match: '/api/magician/v2/agents/senior-software-developer', handle: () => jsonResponse(agentRecord({ planning: { profile: routing.profiles[0].name } })) },
+			{ method: 'GET', match: '/api/magician/v2/llm/routing', handle: () => jsonResponse({ ...routing, models: [model] }) },
+			{ method: 'GET', match: '/api/magician/v2/coding/models', handle: () => jsonResponse(coding) },
+			{ method: 'PATCH', match: '/api/magician/v2/agents/senior-software-developer', handle: () => jsonResponse(agentRecord({ planning: { profile: 'opaque-initial' } }, 7)) }
+		]);
+		render(AgentModelPinsPanel, { agentId: 'senior-software-developer' });
+		const user = userEvent.setup();
+		const select = await screen.findByRole('button', { name: 'Decisions & planning' });
+		expect(select.textContent).toContain('gpt-6.1-sol · openai · saved');
+		await user.click(select);
+		await user.click(within(screen.getByRole('region', { name: 'Decisions & planning choices' })).getByRole('button', { name: 'GPT Sol' }));
+		expect(screen.getByRole('slider', { name: 'Thinking level' })).toBeTruthy();
+		await user.click(screen.getByRole('button', { name: 'Save pins' }));
+		await waitFor(() => expect(calls.some(call => call.method === 'PATCH')).toBe(true));
+		expect(JSON.parse(String(calls.find(call => call.method === 'PATCH')?.init?.body)))
+			.toEqual({ llm_routing: { planning: { profile: 'opaque-initial', provider: '', model: '' } } });
 	});
 
 	it('clears every pin by removing the routing block', async () => {
@@ -80,7 +112,7 @@ describe('AgentModelPinsPanel', () => {
 				handle: () => jsonResponse({ ...agentRecord({ coding_profile: 'coding-premium' }), definition: { agent_id: 'principal-software-engineer', llm_routing: { coding_profile: 'coding-premium' } } })
 			},
 			{ method: 'GET', match: '/api/magician/v2/llm/routing', handle: () => jsonResponse(routing) },
-			{ method: 'GET', match: '/api/magician/v2/coding/profiles', handle: () => jsonResponse(coding) },
+			{ method: 'GET', match: '/api/magician/v2/coding/models', handle: () => jsonResponse(coding) },
 			{
 				method: 'PATCH',
 				match: '/api/magician/v2/agents/principal-software-engineer',

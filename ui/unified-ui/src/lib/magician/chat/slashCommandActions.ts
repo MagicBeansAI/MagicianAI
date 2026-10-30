@@ -3,12 +3,21 @@
 // never sent as a chat message. Contract: docs/plans/2026-10-03-slash-commands-
 // and-run-budgets.md.
 
+import { get } from 'svelte/store';
 import { scopedRequestHeaders } from '$lib/stores/scopeIdentityStore';
-import { chatHarnessPreferenceStore } from '$lib/stores/chatHarnessPreferenceStore';
+import {
+	chatHarnessPreferenceStore,
+	notifyChatHarnessDefaultChanged,
+	type ChatHarnessPreferenceStore
+} from '$lib/stores/chatHarnessPreferenceStore';
 import { setChatHarnessEngine, setRunHarnessEngine } from '$lib/plane/terminalGrants';
+import { setOperationModel } from '$lib/stores/modelRoutingStore';
+import { saveMediaPreferences } from '$lib/media/preferences';
+import type { ChatProfileStore } from '$lib/stores/chatProfileStore';
 import {
 	engineDisplayName,
 	formatBudgetCap,
+	voiceModeLabel,
 	type BudgetCap,
 	type BudgetDefaults,
 	type SlashAction,
@@ -45,7 +54,7 @@ function errorMessageFrom(body: unknown): string | null {
 	return null;
 }
 
-async function budgetRequest(path: string, init: RequestInit, fallback: string): Promise<unknown> {
+export async function budgetRequest(path: string, init: RequestInit, fallback: string): Promise<unknown> {
 	let response: Response;
 	try {
 		response = await fetch(path, {
@@ -172,9 +181,22 @@ export interface SlashConfirmation {
 export interface SlashActionDeps {
 	/** Current defaults, so a PUT can carry both caps. */
 	budgetDefaults?: BudgetDefaults | null;
+	/** The issuing chat panel's own engine store. Its composer shows the
+	 *  pick at once; the browser-wide store is updated as well. */
+	chatHarness?: Pick<ChatHarnessPreferenceStore, 'select' | 'adoptServer'> | null;
+	/** The issuing chat panel's model store (the one its dropdown writes). A
+	 *  Magician/Pi pick from `/engine` lands there; without it only the
+	 *  engine changes. */
+	chatProfiles?: Pick<ChatProfileStore, 'subscribe' | 'ensureLoaded' | 'selectModel'> | null;
 }
 
-function engineLabel(engine: string, model: string): string {
+/** Magician's own loop decides with this Model routing operation; Settings →
+ *  Agentic flows edits the same mapping (`EnginesPanel` `LOOP_OPERATION`). */
+export const LOOP_OPERATION = 'agentic_decision';
+
+function engineLabel(engine: string, model: string, modelLabel?: string): string {
+	if (engine === 'chat') return 'Same as Chat';
+	if (modelLabel) return `${engineDisplayName(engine)} · ${modelLabel}`;
 	return `${engineDisplayName(engine)}${model && model !== 'default' ? ` · ${model}` : ''}`;
 }
 
@@ -183,25 +205,69 @@ function engineLabel(engine: string, model: string): string {
 export async function runSlashAction(action: SlashAction, deps: SlashActionDeps = {}): Promise<SlashConfirmation> {
 	switch (action.type) {
 		case 'chat-engine': {
+			const composer = deps.chatHarness && deps.chatHarness !== chatHarnessPreferenceStore ? deps.chatHarness : null;
 			if (action.scope === 'device') {
 				chatHarnessPreferenceStore.select(action.engine, action.model);
+				// Open chats that inherit the browser pick follow it; the chat
+				// the command came from takes it as its own.
+				notifyChatHarnessDefaultChanged({ engine: action.engine, model: action.model });
+				composer?.select(action.engine, action.model);
+				if (action.selection && deps.chatProfiles) {
+					// As the composer dropdown does: the engine first, then the
+					// model from that engine's catalog.
+					const profiles = deps.chatProfiles;
+					const selection = action.selection;
+					await profiles.ensureLoaded(action.engine);
+					if (!get(profiles).models.some((model) => model.id === selection.model_id)) {
+						throw new Error(get(profiles).selectionError ?? 'That model is no longer offered. Choose another one.');
+					}
+					profiles.selectModel(selection);
+				}
 				return {
-					title: `Chat engine: ${engineLabel(action.engine, action.model)}`,
+					title: `Chat engine: ${engineLabel(action.engine, action.model, action.modelLabel)}`,
 					message: 'For this browser. Other clients keep their own choice.'
 				};
 			}
 			const saved = await setChatHarnessEngine(action.engine, action.model);
-			chatHarnessPreferenceStore.adoptServer(saved.chat_current, saved.chat_model ?? action.model);
+			const savedModel = saved.chat_model ?? action.model;
+			chatHarnessPreferenceStore.adoptServer(saved.chat_current, savedModel);
+			notifyChatHarnessDefaultChanged({ engine: saved.chat_current, model: savedModel });
+			composer?.adoptServer(saved.chat_current, savedModel);
 			return {
-				title: `Chat engine: ${engineLabel(saved.chat_current, saved.chat_model ?? action.model)}`,
+				title: `Chat engine everywhere: ${engineLabel(saved.chat_current, saved.chat_model ?? action.model)}`,
 				message: 'Default for every client.'
 			};
 		}
 		case 'run-engine': {
-			const saved = await setRunHarnessEngine(action.engine, action.model);
+			// `selection: null` is sent as JSON null: it clears the coding
+			// agent's run model. Absent, the body carries no `model_selection`.
+			const saved = action.selection !== undefined
+				? await setRunHarnessEngine(action.engine, action.model, action.selection)
+				: await setRunHarnessEngine(action.engine, action.model);
 			return {
-				title: `Run engine: ${engineLabel(saved.engine, saved.harness_model)}`,
+				title: `Agentic flows: ${engineLabel(saved.engine, saved.harness_model, action.modelLabel)}`,
 				message: 'New task runs use it.'
+			};
+		}
+		case 'run-loop-model': {
+			// Settings → Agentic flows: the loop model is the `agentic_decision`
+			// mapping, which only steers runs that Magician drives.
+			if (action.pinMagician) await setRunHarnessEngine('magician');
+			await setOperationModel(LOOP_OPERATION, action.selection);
+			return {
+				title: `Agentic flows: Magician · ${action.modelLabel}`,
+				message: action.pinMagician
+					? 'New task runs think with Magician and decide with this model.'
+					: 'New task runs decide with this model.'
+			};
+		}
+		case 'voice-mode': {
+			// Where the voice switch writes: the backend preference, applied to
+			// `voiceModeStore` at once and rolled back if the save fails.
+			await saveMediaPreferences({ voice_mode: action.mode });
+			return {
+				title: `Voice mode: ${voiceModeLabel(action.mode)}`,
+				message: 'The voice button uses it.'
 			};
 		}
 		case 'task-budget': {

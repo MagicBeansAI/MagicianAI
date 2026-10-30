@@ -20,8 +20,14 @@ from PIL import Image
 
 
 API_ORIGIN = "https://api.openai.com/v1/images/"
-MODELS = {"gpt-image-2", "gpt-image-2-2026-04-21"}
-PRICING_VERSION = "openai-standard-2026-10-10-gpt-image-2"
+# GPT Image 2.5 ships two variants at the same token rates. OpenAI recommends
+# Sunburst where editing precision matters and Flare for everyday generation,
+# so each action defaults to its recommended variant; callers may pick either.
+MODELS = {"gpt-image-2.5-flare", "gpt-image-2.5-flare-2026-09-08",
+          "gpt-image-2.5-sunburst", "gpt-image-2.5-sunburst-2026-09-08"}
+DEFAULT_MODELS = {"generate": "gpt-image-2.5-flare", "edit": "gpt-image-2.5-sunburst"}
+QUALITIES = {"auto", "low", "medium", "high", "xhigh", "max"}
+PRICING_VERSION = "openai-standard-2026-10-17-gpt-image-2.5"
 # USD / million tokens equals integer micro-USD / token. Direct Images API
 # inputs have no cached discount. Keep this tariff separate from model input.
 TOKEN_RATES = {"text_input": 5, "image_input": 8, "image_output": 30}
@@ -59,7 +65,7 @@ def parse_input(action, raw):
         if not isinstance(args.get(key), str) or not args[key].strip() or len(args[key]) > limit:
             raise ValueError("Missing or invalid image parameter")
     for key, default, options in [
-        ("model", "gpt-image-2", MODELS), ("quality", "auto", {"auto", "low", "medium", "high"}),
+        ("model", DEFAULT_MODELS[action], MODELS), ("quality", "auto", QUALITIES),
         ("output_format", "png", FORMATS), ("background", "auto", {"auto", "opaque", "transparent"}),
     ]:
         args.setdefault(key, default)
@@ -74,7 +80,7 @@ def parse_input(action, raw):
         if (width % 16 or height % 16 or max(width, height) > 3840
                 or max(width, height) > 3 * min(width, height)
                 or not 655360 <= width * height <= 8294400):
-            raise ValueError("Image size exceeds GPT Image 2 limits")
+            raise ValueError("Image size exceeds GPT Image 2.5 limits")
     if args["background"] == "transparent" and args["output_format"] == "jpeg":
         raise ValueError("Transparent images require PNG or WebP")
     if Path(args["output_path"]).suffix.lower() not in FORMATS[args["output_format"]][2]:
@@ -148,7 +154,7 @@ def multipart(fields, files):
 
 
 def accounting(value):
-    """Retain valid usage; price only a complete, consistent GPT Image 2 receipt."""
+    """Retain valid usage; price only a complete, consistent GPT Image 2.5 receipt."""
     usage = {}
     if not isinstance(value, dict):
         return usage, None

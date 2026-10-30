@@ -52,15 +52,7 @@
   let error = $state<string>("");
   let stopContextualAssistTracker: (() => void) | null = null;
 
-  onMount(async () => {
-    const path = window.location.pathname;
-    if (path === "/orb") {
-      view = "orb";
-      return;
-    }
-    view = path === "/setup" ? "setup" : "settings";
-    stopContextualAssistTracker = startContextualAssistWebviewTracker();
-
+  async function mirrorAppTheme(): Promise<void> {
     // Mirror the app theme: apply the current snapshot, then track live changes.
     try {
       applyAppTheme(await invoke<AppThemeSnapshot>("get_app_theme"));
@@ -70,6 +62,21 @@
     } catch {
       /* not in a themed shell — fall back to the static stylesheet */
     }
+  }
+
+  onMount(async () => {
+    const path = window.location.pathname;
+    if (path === "/orb") {
+      view = "orb";
+      // The Orb's voice drawer follows the app theme too; the window itself
+      // stays transparent (OrbSurface forces it).
+      await mirrorAppTheme();
+      return;
+    }
+    view = path === "/setup" ? "setup" : "settings";
+    stopContextualAssistTracker = startContextualAssistWebviewTracker();
+
+    await mirrorAppTheme();
 
     try {
       const result = await invoke<StatusResponse>("get_status");

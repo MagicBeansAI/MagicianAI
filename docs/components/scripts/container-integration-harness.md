@@ -110,10 +110,15 @@ container run -d --name magician-integration-test \
   -v "$INTEGRATION_DIR/runtime:/data" \
   -v "$INTEGRATION_DIR/share:$INTEGRATION_DIR/share" \
   -e MAGICIAN_ROOT_DIR=/data \
+  -e MAGICUTOR_TRUST_GATEWAY=1 \
   -e MAGICIAN_CONTAINER_HOST=host.container.internal \
   -e MAGICIAN_HOST_GATEWAY_URL=http://127.0.0.1:3017 \
   magician:integration-test
 ```
+
+`MAGICUTOR_TRUST_GATEWAY=1` lets the host extension reach the container's
+Magicutor through the loopback-only `13003` publish (see "Container trusted
+peers" in the scripts README); without it Magicutor trusts only loopback.
 
 Choose an unused name and ports, and configure Magican to manage that container
 on the test ports; its private exec relay supplies guest loopback port 3017.

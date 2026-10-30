@@ -11,8 +11,10 @@
  */
 
 import { browser } from '$app/environment';
+import { mediaChatHeaders } from '$lib/media/chatScope';
 
 export interface TranscribeOptions {
+	chatSessionId?: string | null;
 	audio: Blob;
 	filename?: string;
 	mimeType?: string;
@@ -52,6 +54,7 @@ export interface StreamingTranscribeCallbacks {
 
 export async function transcribeAudio(opts: TranscribeOptions): Promise<TranscribeResult> {
 	if (!browser) throw new Error('transcribeAudio called outside the browser');
+	const headers = mediaChatHeaders(opts.chatSessionId);
 	const formData = new FormData();
 	const upload = await prepareAudioUpload(opts);
 	const file = new File([upload.audio], upload.filename, {
@@ -70,6 +73,7 @@ export async function transcribeAudio(opts: TranscribeOptions): Promise<Transcri
 
 	const response = await fetch(url, {
 		method: 'POST',
+		headers,
 		body: formData,
 		signal: opts.signal
 	});
@@ -96,6 +100,7 @@ export async function transcribeAudioStreaming(
 	callbacks: StreamingTranscribeCallbacks
 ): Promise<TranscribeResult> {
 	if (!browser) throw new Error('transcribeAudioStreaming called outside the browser');
+	const headers = mediaChatHeaders(opts.chatSessionId);
 	const formData = new FormData();
 	const upload = await prepareAudioUpload(opts);
 	const file = new File([upload.audio], upload.filename, {
@@ -114,6 +119,7 @@ export async function transcribeAudioStreaming(
 
 	const response = await fetch(url, {
 		method: 'POST',
+		headers,
 		body: formData,
 		signal: opts.signal
 	});

@@ -55,8 +55,8 @@ WEB_RESEARCHER_AGENT_ID = "web-researcher"
 # Keep live-eval spend bounded without changing production routing. Luna is the
 # default, but callers may select any configured named profile for comparisons.
 # The same profile is applied to the V3 task execution and the eval-only judge.
-DEFAULT_EVAL_LLM_PROFILE = "gpt6luna-responses-toolsany"
-LLM_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+DEFAULT_EVAL_LLM_PROFILE = "operation/query_analysis"
+LLM_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,511}$")
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "canceled"}
 # The agentic loop's own terminal, in both spellings the runtime emits.
 AGENTIC_TERMINAL_EVENT_TYPES = {"agentic.execution.completed", "agentic.execution_completed"}
@@ -2696,7 +2696,7 @@ def validate_agent_contract(cases: list[dict[str, Any]]) -> list[Gate]:
         ),
         Gate(
             "contract.bounded_luna_decision_profile",
-            "agentic_decision:\n      profile: gpt6luna-responses-toolsany" in researcher,
+            f"agentic_decision:\n      profile: {DEFAULT_EVAL_LLM_PROFILE}" in researcher,
             "web-researcher agentic_decision uses governed Luna medium reasoning",
         ),
         Gate(
@@ -2797,7 +2797,7 @@ def validate_runtime_agent_contract(client: Client) -> list[Gate]:
         ),
         Gate(
             "runtime_contract.bounded_luna_decision_profile",
-            profile == "gpt6luna-responses-toolsany",
+            profile == DEFAULT_EVAL_LLM_PROFILE,
             f"profile={profile or '<unset>'}",
         ),
         Gate(

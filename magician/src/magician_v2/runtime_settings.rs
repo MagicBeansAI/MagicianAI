@@ -10,6 +10,12 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+mod yaml_edit;
+
+pub use yaml_edit::{
+    apply_yaml_changes, has_top_level_key, set_yaml_path, yaml_value_changes, YamlChange,
+};
+
 #[derive(Debug, Clone)]
 pub struct RuntimeSettingsPaths {
     pub runtime_root: PathBuf,
@@ -69,7 +75,7 @@ pub fn update_env_file(path: &Path, updates: &[(&str, Option<String>)]) -> std::
     if updates.is_empty() {
         return Ok(());
     }
-    // Same lost-update hazard `write_top_level_yaml_block` documents: env
+    // Same lost-update hazard `config_file_lock` documents: env
     // files have concurrent read-modify-write writers (the runtime env API,
     // per-skill env API, vibedev and harness settings) on a multithreaded
     // server, so the whole span holds the per-path lock.
@@ -151,14 +157,14 @@ pub fn quote_env_value(value: &str) -> String {
 
 /// One lock per config file, for the life of the process.
 ///
-/// `magician-config.yaml` has four independent writers: three top-level block
-/// replacements (`media`, `vibedev_deploy`, and the settings endpoint) plus
-/// `WorkspaceStorageSettingsStore::save`, which deserializes the whole config,
-/// swaps its `workspace_storage` section and re-serializes. Every one of them is
-/// a read-modify-write over the entire file, and none of them held a lock — so
-/// two settings changes to *different sections* each read the same file and each
-/// wrote their own whole version. The later write took the file, and the other
-/// section silently reverted to what it was before.
+/// `magician-config.yaml` has many independent settings writers (media,
+/// vibedev deploy, harness pause, engine switches, decision mode, budgets,
+/// workspace storage, privacy, critical delivery, ...). Each is a
+/// read-modify-write over the whole file, and before this lock two changes to
+/// *different sections* could each read the same file and each write their
+/// own version: the later write took the file, and the other section silently
+/// reverted. Writers now change only their own lines ([`write_yaml_section`]),
+/// and still do the read-edit-write under this lock.
 ///
 /// Keyed by path so a test writing its own config never waits on the real one.
 /// `std::sync::Mutex` because both writers are synchronous here — the async
@@ -175,16 +181,68 @@ pub fn config_file_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     std::sync::Arc::clone(registry.entry(path.to_path_buf()).or_default())
 }
 
-pub fn write_top_level_yaml_block(path: &Path, key: &str, block: &str) -> std::io::Result<()> {
-    // Guards read -> replace -> write. All three block writers come through
-    // here, so locking here covers them without each caller remembering to.
+/// Writes what changed between `before` and `after` — two serializations of
+/// the value at `section` — into the YAML file at `path`, changing only the
+/// lines of the values that differ. Comments, unknown keys, key order and
+/// untouched values stay byte for byte; equal values leave the file alone.
+///
+/// Every runtime-config settings writer comes through here (or through
+/// [`apply_yaml_section`] when it already holds the file lock), so locking
+/// here covers them without each caller remembering to.
+pub fn write_yaml_section<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    section: &[&str],
+    before: &T,
+    after: &T,
+) -> std::io::Result<()> {
+    write_yaml_section_seeded(path, section, before, after, None)
+}
+
+/// [`write_yaml_section`], first writing `seed` — a whole top-level block
+/// carrying explanatory comments — when the file has no `section` block yet.
+pub fn write_yaml_section_seeded<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    section: &[&str],
+    before: &T,
+    after: &T,
+    seed: Option<&str>,
+) -> std::io::Result<()> {
     let lock = config_file_lock(path);
     let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let original = std::fs::read_to_string(path)?;
-    let next = replace_top_level_yaml_block(&original, key, block);
+    let next = apply_yaml_section_seeded(&original, section, before, after, seed)?;
+    if next == original {
+        return Ok(());
+    }
     write_text_file_atomic(path, &next, None)
 }
 
+/// The text-only half of [`write_yaml_section`], for writers that hold the
+/// config lock themselves or publish the file another way.
+pub fn apply_yaml_section<T: serde::Serialize + ?Sized>(
+    contents: &str,
+    section: &[&str],
+    before: &T,
+    after: &T,
+) -> std::io::Result<String> {
+    apply_yaml_section_seeded(contents, section, before, after, None)
+}
+
+pub fn apply_yaml_section_seeded<T: serde::Serialize + ?Sized>(
+    contents: &str,
+    section: &[&str],
+    before: &T,
+    after: &T,
+    seed: Option<&str>,
+) -> std::io::Result<String> {
+    let before = serde_yaml::to_value(before).map_err(std::io::Error::other)?;
+    let after = serde_yaml::to_value(after).map_err(std::io::Error::other)?;
+    apply_yaml_changes(contents, section, &before, &after, seed)
+}
+
+/// Replaces (or appends) a whole top-level block. Settings writers use
+/// [`write_yaml_section`] instead; this remains for seeding a block that does
+/// not exist yet and for building test fixtures.
 pub fn replace_top_level_yaml_block(contents: &str, key: &str, block: &str) -> String {
     let lines = contents.split_inclusive('\n').collect::<Vec<_>>();
     let start = lines
@@ -296,7 +354,68 @@ pub fn write_text_file_atomic(
 
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
-    use super::replace_top_level_yaml_block;
+    use super::{replace_top_level_yaml_block, set_yaml_path, write_yaml_section};
+
+    /// One scalar under a top-level block, `value` already YAML.
+    fn set_nested_yaml_scalar(contents: &str, top: &str, key: &str, value: Option<&str>) -> String {
+        let value = value.map(|text| serde_yaml::from_str::<serde_yaml::Value>(text).unwrap());
+        set_yaml_path(contents, &[top, key], value.as_ref()).unwrap()
+    }
+
+    const CONFIG: &str = "# top comment\nexecution:\n  # which engine thinks a run\n  harness_engine: magician  # owner note\n  harness_model: default\n  harness_auth:\n    # login first\n    mode: login_first\nchat:\n  harness_engine: magician\n";
+
+    #[test]
+    fn setting_a_nested_scalar_keeps_every_comment() {
+        let updated = set_nested_yaml_scalar(CONFIG, "execution", "harness_engine", Some("pi"));
+        assert_eq!(
+            updated,
+            CONFIG.replace(
+                "harness_engine: magician  # owner note",
+                "harness_engine: pi  # owner note"
+            )
+        );
+    }
+
+    #[test]
+    fn a_missing_nested_key_is_added_at_the_end_of_its_block() {
+        let updated = set_nested_yaml_scalar(CONFIG, "execution", "pi_profile", Some("openai"));
+        assert!(
+            updated.contains("    mode: login_first\n  pi_profile: openai\nchat:\n"),
+            "{updated}"
+        );
+        assert!(updated.contains("# which engine thinks a run"));
+    }
+
+    #[test]
+    fn removing_a_nested_key_drops_only_its_lines() {
+        let with_profile =
+            set_nested_yaml_scalar(CONFIG, "execution", "pi_profile", Some("openai"));
+        assert_eq!(
+            set_nested_yaml_scalar(&with_profile, "execution", "pi_profile", None),
+            CONFIG
+        );
+        assert_eq!(
+            set_nested_yaml_scalar(CONFIG, "execution", "pi_profile", None),
+            CONFIG
+        );
+    }
+
+    #[test]
+    fn only_the_named_block_changes() {
+        let updated = set_nested_yaml_scalar(CONFIG, "chat", "harness_engine", Some("claude_code"));
+        assert!(updated.contains("  harness_engine: magician  # owner note\n"));
+        assert!(updated.ends_with("chat:\n  harness_engine: claude_code\n"));
+    }
+
+    #[test]
+    fn a_missing_block_is_appended() {
+        let updated =
+            set_nested_yaml_scalar("enabled: true\n", "chat", "harness_model", Some("default"));
+        assert_eq!(
+            updated,
+            "enabled: true\n\nchat:\n  harness_model: default\n"
+        );
+    }
 
     #[test]
     fn replaces_inline_top_level_yaml_block_without_duplicating_the_key() {
@@ -309,6 +428,35 @@ mod tests {
         assert_eq!(
             updated,
             "enabled: true\nmedia:\n  surface_profiles:\n    default_mapping: {}\nfrontend:\n  host: 127.0.0.1\n"
+        );
+    }
+
+    #[derive(serde::Serialize, Clone)]
+    struct Harness {
+        paused: bool,
+        shared_program_docs: Vec<String>,
+    }
+
+    #[test]
+    fn a_section_write_changes_only_the_changed_lines_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        let original = "harness:\n  # owner: pause on weekends\n  paused: false  # flip me\n  experimental_knob: 7\n  shared_program_docs:\n  - facts.md\nchat:\n  harness_engine: magician\n";
+        std::fs::write(&path, original).unwrap();
+        let before = Harness {
+            paused: false,
+            shared_program_docs: vec!["facts.md".to_string()],
+        };
+        write_yaml_section(&path, &["harness"], &before, &before).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let after = Harness {
+            paused: true,
+            ..before.clone()
+        };
+        write_yaml_section(&path, &["harness"], &before, &after).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original.replace("paused: false  # flip me", "paused: true  # flip me")
         );
     }
 }

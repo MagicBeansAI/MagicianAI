@@ -501,10 +501,10 @@ mod macos {
         if std::env::var_os("DISPLAY").is_some() {
             return Ok(());
         }
-        let display = std::env::var("MEET_BOT_DISPLAY").unwrap_or_else(|_| ":99".to_string());
+        let display_name = std::env::var("MEET_BOT_DISPLAY").unwrap_or_else(|_| ":99".to_string());
         let bin = std::env::var("MEET_BOT_XVFB_BIN").unwrap_or_else(|_| "Xvfb".to_string());
         let mut child = std::process::Command::new(&bin)
-            .args([&display, "-screen", "0", "1280x720x24"])
+            .args([&display_name, "-screen", "0", "1280x720x24"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -519,7 +519,7 @@ mod macos {
         if let Ok(Some(status)) = child.try_wait() {
             if !status.success() {
                 info!(
-                    %display,
+                    display = %display_name,
                     "meet-join: Xvfb exited; assuming the display is already up"
                 );
             }
@@ -534,7 +534,7 @@ mod macos {
             engine
                 .env
                 .entry("DISPLAY".to_string())
-                .or_insert_with(|| display.clone());
+                .or_insert_with(|| display_name.clone());
         }
         Ok(())
     }

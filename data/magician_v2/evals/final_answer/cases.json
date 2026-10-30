@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "id": "grocery_cart_partial_quotes",
+      "note": "Partial run (Instamart cutoff unknown) whose agent answer had both final payables; the published answer said neither was established (2026-10-27).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_dd232e484b0f49f9950351ff416df14f",
+      "execution_id": "exec_807ccb42c0cd436dbc5cbf5f3d7b3063",
+      "must_contain": ["₹211", "₹213", "₹199"],
+      "must_not_contain": ["Not fully verified", "not established", "Do not treat"]
+    },
+    {
+      "id": "metabase_database_listing",
+      "note": "Read-only data task: the owner asked for the 11 visible Metabase databases' names only; the answer is the list (2026-10-26).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_c7556f952138458cb0bdb3a157e9f3a8",
+      "execution_id": "exec_caf1a8ca2bbb4e038ed220034b4aa860",
+      "must_contain": ["ak_clickhouse_ak_db_2", "prod-readonly-bifrost", "Sample Database"],
+      "must_not_contain": ["Not fully verified"]
+    },
+    {
+      "id": "pdf_ocr_award_not_offer",
+      "note": "OCR task: the PDF was an award recognition, not an offer letter; published clean (2026-10-26).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_10915fb8726f4067bc35a5f798e4de05",
+      "execution_id": "exec_e2d1e394691e4fe380a2115e1c3cfb31",
+      "must_contain": ["ExampleCo", "2022"],
+      "must_not_contain": ["Not fully verified"]
+    },
+    {
+      "id": "creative_intro_drafts",
+      "note": "Creative task: four intro drafts in a named Markdown file with measured lengths; published clean (2026-10-23).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_4494cb5082e845bba1fd34c0b2e6beae",
+      "execution_id": "exec_b0cad68206d14f2b950dd6567453e2d2",
+      "must_contain": ["magican_intro_drafts.md", "208", "186"],
+      "must_not_contain": ["Not fully verified"]
+    },
+    {
+      "id": "email_send_failed_honestly",
+      "note": "Outward action that failed: the answer must not claim the email was sent (2026-10-26).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_05f387a75c28483687f3ee6d7e9ce35b",
+      "execution_id": "exec_8f6dc68723914306868d297b0c1e01de",
+      "must_contain": ["not"],
+      "must_not_contain": ["Not fully verified", "sent successfully", "was sent.", "has been sent"]
+    },
+    {
+      "id": "hn_launch_research_partial",
+      "note": "Partial research run that saved a report; published clean with its limits stated (2026-10-23).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_4005f61466604bce89985b593530a2bf",
+      "execution_id": "exec_135dd7579d964337a5b038b6a3237ac1",
+      "must_contain": [["hn_launch_research.md", "research memo"]],
+      "must_not_contain": ["Not fully verified"]
+    },
+    {
+      "id": "anthropic_s1_strategy_checklist",
+      "note": "Partial research run whose final yield was rejected; the runtime's COMPLETED:/BLOCKED: requirement list was published instead of the 46 KB memo it wrote (2026-10-27).",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_3ca6de9898754b4c8fbbe7c77d1ca9ad",
+      "execution_id": "exec_82d9c362ed8340f2982c71fbcb96e55e",
+      "must_contain": [["anthropic_s1_magican_strategy.md", "strategy memo", "Magican"]],
+      "must_not_contain": ["COMPLETED: ", "BLOCKED: "]
+    },
+    {
+      "id": "negative_grocery_wrong_payable",
+      "note": "Negative: the agent's answer is altered to a Zepto payable of ₹231; the cart says ₹211. It must not publish as verified.",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_dd232e484b0f49f9950351ff416df14f",
+      "execution_id": "exec_807ccb42c0cd436dbc5cbf5f3d7b3063",
+      "alter_answer": [{"from": "₹211", "to": "₹231"}],
+      "must_flag": ["₹231"]
+    },
+    {
+      "id": "negative_metabase_invented_name",
+      "note": "Negative: the agent's list is altered to name a database the tool never returned. It must not publish as verified.",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_c7556f952138458cb0bdb3a157e9f3a8",
+      "execution_id": "exec_caf1a8ca2bbb4e038ed220034b4aa860",
+      "alter_answer": [{"from": "Sample Database", "to": "Payroll Warehouse"}],
+      "must_flag": ["Payroll Warehouse"]
+    },
+    {
+      "id": "negative_ocr_wrong_year",
+      "note": "Negative: the agent's answer is altered to a 2019 award; the OCR read 2022. It must not publish as verified.",
+      "principal": "anonymous",
+      "workspace": "default",
+      "task_id": "task_10915fb8726f4067bc35a5f798e4de05",
+      "execution_id": "exec_e2d1e394691e4fe380a2115e1c3cfb31",
+      "alter_answer": [{"from": "2022", "to": "2019"}],
+      "must_flag": ["2019"]
+    }
+  ]
+}

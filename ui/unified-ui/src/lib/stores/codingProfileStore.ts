@@ -1,8 +1,48 @@
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
-import { timedFetch } from '$lib/shared/fetch';
+import type { ModelChoice, ModelSelection } from '$lib/llm/modelCatalog';
+import { migrateLegacyCodingSelection } from '$lib/llm/legacySelections';
+import { fetchCodingModelRows, typedCodingModelChoice } from '$lib/llm/codingModelSelection';
 
 const SELECTED_CODING_PROFILE_STORAGE_KEY = 'magician.coding.selectedProfile';
+const SELECTED_CODING_MODEL_STORAGE_KEY = 'magician.coding.modelSelection';
+
+export type SavedCodingSelection = { kind: 'auto' } | ({ kind: 'model'; engine: string } & ModelSelection);
+
+export function decodeSavedCodingSelection(raw: string | null): SavedCodingSelection | null {
+	if (!raw) return null;
+	try {
+		const value = JSON.parse(raw);
+		if (value?.kind === 'auto') return { kind: 'auto' };
+		if (value?.kind === 'model' && typeof value.engine === 'string' && value.engine.trim()
+			&& typeof value.model_id === 'string' && value.model_id.trim()
+			&& typeof value.thinking === 'string' && value.thinking.trim()) {
+			return { kind: 'model', engine: value.engine, model_id: value.model_id, thinking: value.thinking };
+		}
+	} catch { /* Retain malformed preferences until an explicit new choice. */ }
+	return null;
+}
+
+export function savedCodingSelection(profiles: readonly CodingProfile[], id: string | null): SavedCodingSelection | null {
+	if (isAutoCodingChoiceId(id)) return { kind: 'auto' };
+	const row = profiles.find(profile => profile.id === id);
+	return row?.engine && row.model_selection ? { kind: 'model', engine: row.engine, ...row.model_selection } : null;
+}
+
+export function resolveSelectedCodingProfile(
+	profiles: readonly CodingProfile[], current: string | null, saved: SavedCodingSelection | null
+): string | null {
+	const choice = saved ?? savedCodingSelection(profiles, current) ?? migrateLegacyCodingSelection(current);
+	if (choice?.kind === 'auto') return AUTO_CODING_CHOICE_ID;
+	if (choice?.kind === 'model') {
+		const route = profiles.find(profile => profile.engine === choice.engine && profile.model_choice?.id === choice.model_id)
+			?.model_choice?.choices[choice.thinking];
+		return route && profiles.some(profile => profile.id === route && profile.engine === choice.engine)
+			? route : '__unavailable_coding_selection__';
+	}
+	// Never replace a missing saved choice with a configured default.
+	return current ?? profiles.find(profile => profile.is_default)?.id ?? null;
+}
 
 /** Client-only picker sentinel. Never sent as `profile_id`. */
 export const AUTO_CODING_CHOICE_ID = 'auto';
@@ -13,6 +53,8 @@ export interface CodingProfile {
 	llm_profile?: string;
 	provider?: string;
 	model?: string;
+	model_selection?: ModelSelection | null;
+	model_choice?: ModelChoice | null;
 	supports_user_image_inputs: boolean;
 	is_default: boolean;
 	description?: string | null;
@@ -22,6 +64,8 @@ export interface CodingProfile {
 	reason?: string | null;
 	/** Grok only: what its MCP gateway can reach outside Magician. */
 	gateway?: CodingEngineGateway | null;
+	/** Whose credentials a launch uses: `login`, `magician_key` or `none`. */
+	credentials?: string;
 }
 
 export interface CodingEngineGateway {
@@ -31,9 +75,7 @@ export interface CodingEngineGateway {
 	listed: boolean;
 }
 
-export type VibeDevCodingChoiceWire =
-	| { kind: 'auto' }
-	| { kind: 'profile'; profile_id: string };
+export type VibeDevCodingChoiceWire = SavedCodingSelection;
 
 /** Composer only shows rows that are selectable. Missing `selectable` is Pi. */
 export function selectableCodingProfiles(profiles: CodingProfile[]): CodingProfile[] {
@@ -67,7 +109,7 @@ export function autoCodingProfile(named: CodingProfile[]): CodingProfile {
 	return {
 		id: AUTO_CODING_CHOICE_ID,
 		label: 'Auto',
-		description: 'Coordinator may choose any eligible engine or profile',
+		description: 'Coordinator may choose any eligible engine or model',
 		supports_user_image_inputs: named.some((profile) => profile.supports_user_image_inputs),
 		is_default: false,
 		selectable: true,
@@ -98,9 +140,19 @@ const CODING_ENGINE_NOTES: Record<string, string> = {
 	agy_cli: 'Antigravity CLI with your Google login.'
 };
 
-/** One line on what an engine is and whose login it runs on. */
-export function codingEngineNote(engine: string | null | undefined): string | null {
-	return engine ? (CODING_ENGINE_NOTES[engine] ?? null) : null;
+/** One line on what an engine is and whose credentials it runs on. */
+export function codingEngineNote(
+	engine: string | null | undefined,
+	credentials?: string | null
+): string | null {
+	if (!engine) return null;
+	if (engine !== 'pi' && credentials === 'magician_key') {
+		return `${codingEngineLabel(engine)} with Magician’s provider key (Settings → Harness credentials).`;
+	}
+	if (credentials === 'none') {
+		return `${codingEngineLabel(engine)} is not signed in, and Magician’s keys are off for it.`;
+	}
+	return CODING_ENGINE_NOTES[engine] ?? null;
 }
 
 /**
@@ -159,12 +211,16 @@ export function groupCodingProfilesByEngine(profiles: CodingProfile[]): CodingPr
 }
 
 export function codingChoiceFromSelection(
-	selected: string | null | undefined
+	selected: string | null | undefined,
+	profiles?: readonly CodingProfile[]
 ): VibeDevCodingChoiceWire | null {
 	const id = selected?.trim();
 	if (!id) return null;
-	if (isAutoCodingChoiceId(id)) return { kind: 'auto' };
-	return { kind: 'profile', profile_id: id };
+	if (profiles) return typedCodingModelChoice(profiles, id);
+	const state = get(codingProfileStore);
+	if (state.error || state.isLoading) throw new Error(state.error ?? 'Coding model choices are still loading.');
+	if (!state.profiles.some(profile => profile.id === id)) throw new Error('Choose an available coding model to continue.');
+	return typedCodingModelChoice(state.profiles, id);
 }
 
 /** Chat/voice show the coding picker only for an explicit `@vibedev` draft. */
@@ -182,13 +238,26 @@ function loadPersistedSelection(): string | null {
 	}
 }
 
-function persistSelection(id: string | null): void {
+function persistedModelSelection(): { saved: SavedCodingSelection | null; invalid: boolean } {
+	if (!browser) return { saved: null, invalid: false };
+	try {
+		const raw = localStorage.getItem(SELECTED_CODING_MODEL_STORAGE_KEY);
+		const saved = decodeSavedCodingSelection(raw);
+		return { saved, invalid: raw !== null && saved === null };
+	} catch { return { saved: null, invalid: false }; }
+}
+
+function persistSelection(id: string | null, profiles: readonly CodingProfile[]): void {
 	if (!browser) return;
 	try {
 		if (id) {
-			localStorage.setItem(SELECTED_CODING_PROFILE_STORAGE_KEY, id);
+			const selection = savedCodingSelection(profiles, id);
+			if (!selection) return;
+			localStorage.setItem(SELECTED_CODING_MODEL_STORAGE_KEY, JSON.stringify(selection));
+			localStorage.removeItem(SELECTED_CODING_PROFILE_STORAGE_KEY);
 		} else {
 			localStorage.removeItem(SELECTED_CODING_PROFILE_STORAGE_KEY);
+			localStorage.removeItem(SELECTED_CODING_MODEL_STORAGE_KEY);
 		}
 	} catch {
 		// Storage can be unavailable in private windows. The backend
@@ -197,6 +266,7 @@ function persistSelection(id: string | null): void {
 }
 
 function createCodingProfileStore() {
+	let loadGeneration = 0;
 	const { subscribe, set, update } = writable<{
 		profiles: CodingProfile[];
 		blocked: CodingProfile[];
@@ -207,40 +277,31 @@ function createCodingProfileStore() {
 		profiles: [],
 		blocked: [],
 		selected: loadPersistedSelection(),
-		isLoading: false,
+		isLoading: true,
 		error: null
 	});
 
 	return {
 		subscribe,
 		load: async () => {
+			const generation = ++loadGeneration;
 			update((state) => ({ ...state, isLoading: true, error: null }));
 			try {
 				const currentSelected = get({ subscribe }).selected ?? loadPersistedSelection();
-				const response = await timedFetch('/api/magician/v2/coding/profiles');
-				if (!response.ok) throw new Error(`HTTP ${response.status}`);
-				const body = await response.json();
-				const profiles = pickerCodingProfiles(body.profiles ?? []);
-				const blocked = blockedCodingProfiles(body.profiles ?? []);
-				const namedDefault =
-					profiles.find((profile) => profile.is_default && !isAutoCodingChoiceId(profile.id))
-						?.id ??
-					profiles.find((profile) => !isAutoCodingChoiceId(profile.id))?.id ??
-					null;
-				const selected =
-					isAutoCodingChoiceId(currentSelected) &&
-					profiles.some((profile) => isAutoCodingChoiceId(profile.id))
-						? AUTO_CODING_CHOICE_ID
-						: currentSelected &&
-							  profiles.some(
-									(profile) =>
-										profile.id === currentSelected && !isAutoCodingChoiceId(profile.id)
-							  )
-							? currentSelected
-							: namedDefault;
-				persistSelection(selected);
-				set({ profiles, blocked, selected, isLoading: false, error: null });
+				const { rows } = await fetchCodingModelRows();
+				if (generation !== loadGeneration) return;
+				const profiles = pickerCodingProfiles(rows);
+				const blocked = blockedCodingProfiles(rows);
+				const { saved, invalid } = persistedModelSelection();
+				const selected = invalid ? '__unavailable_coding_selection__'
+					: resolveSelectedCodingProfile(profiles, currentSelected, saved);
+				const error = selected && !profiles.some(profile => profile.id === selected)
+					? 'Your saved coding model choice is unavailable. Choose an engine and model to continue.'
+					: !selected ? 'Choose an engine and model to continue.' : null;
+				if (!error) persistSelection(selected, profiles);
+				set({ profiles, blocked, selected, isLoading: false, error });
 			} catch (error) {
+				if (generation !== loadGeneration) return;
 				update((state) => ({
 					...state,
 					isLoading: false,
@@ -249,8 +310,11 @@ function createCodingProfileStore() {
 			}
 		},
 		select: (id: string) => {
-			persistSelection(id);
-			update((state) => ({ ...state, selected: id }));
+			const profiles = get({ subscribe }).profiles;
+			if (!profiles.some(profile => profile.id === id)) return;
+			const selected = resolveSelectedCodingProfile(profiles, id, null);
+			persistSelection(selected, profiles);
+			update((state) => ({ ...state, selected, error: null }));
 		},
 		getSelected: (): string | null => get({ subscribe }).selected
 	};

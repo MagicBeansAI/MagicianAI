@@ -32,6 +32,10 @@ guide: |
     missing note may still exist. Never report "you have no note about X" on a
     truncated scan.
   - `open_url` is where the owner can open it; `path` is what to show them.
+    `open_url` is the note's canonical Magican link, a RELATIVE link of the
+    form `/notes?path=…&workspace=…`. Copy it exactly (for example as
+    `[Title](/notes?path=…&workspace=…)`); never add a host, turn it into a
+    `file://` path, or point at any other notes server.
 
   `provider` normally stays omitted so every configured root is searched — a
   note written while a provider was down lives in the fallback, and restricting

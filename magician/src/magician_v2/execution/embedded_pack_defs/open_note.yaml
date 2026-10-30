@@ -5,7 +5,12 @@ guide: |
   Tool name: `open_note`
 
   Resolves one note by its path inside the owner's Notes space and returns the
-  URL that opens it, plus which provider it actually lives in.
+  link that opens it, plus which provider it actually lives in.
+
+  `open_url` is the note's canonical Magican link, a RELATIVE link of the
+  form `/notes?path=…&workspace=…`. Copy it exactly (for example as
+  `[Title](/notes?path=…&workspace=…)`); never add a host, turn it into a
+  `file://` path, or point at any other notes server.
 
   Use it when you are about to point the owner at a note — after writing one,
   or when they ask where something is. Giving them a link beats naming a file.
@@ -19,9 +24,9 @@ guide: |
   `retryable` false — that means the path is wrong, not that the space is down,
   so re-check the path rather than calling again.
 
-  `open_url` can be null even on success when the provider cannot express a
-  link for that page. `absolute_path` is still correct, so fall back to telling
-  the owner the path rather than presenting a null link.
+  `open_url` is null for a file the Notes page cannot open (an attachment
+  rather than a Markdown note). Then tell the owner the `path` rather than
+  presenting a null link; never hand them `absolute_path` as a link.
 
   This tool does NOT search. If you do not already know the path, you cannot
   discover it here.

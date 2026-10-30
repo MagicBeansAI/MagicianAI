@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::config::MagicianMediaSettings;
-use crate::magician_v2::runtime_settings::write_top_level_yaml_block;
+use crate::magician_v2::runtime_settings::write_yaml_section;
 
 use super::audio_surface::{
     AudioEngineConfig, AudioEngineStartupPolicy, AudioModelDownloadPolicy, AudioProfileSource,
@@ -261,11 +261,12 @@ impl AudioRuntimeConfigManager {
         providers: Arc<MediaProviderRegistry>,
         config_path: Option<PathBuf>,
     ) -> Result<Self, AudioConfigError> {
+        let configured = config_path.as_ref().map(|_| settings.clone());
         let (settings, migrated) = prepare_settings(settings, providers.as_ref());
         let snapshot = Arc::new(build_snapshot(settings, providers.as_ref())?);
         if migrated {
-            if let Some(path) = config_path.as_deref() {
-                persist_media_settings(path, &snapshot.source_settings)?;
+            if let (Some(path), Some(configured)) = (config_path.as_deref(), configured.as_ref()) {
+                persist_media_settings(path, configured, &snapshot.source_settings)?;
             }
         }
         Ok(Self {
@@ -485,7 +486,7 @@ impl AudioRuntimeConfigManager {
             .write()
             .map_err(|_| AudioConfigError::LockPoisoned)?;
         if let Some(path) = self.config_path.as_deref() {
-            persist_media_settings(path, &next.source_settings)?;
+            persist_media_settings(path, &current.source_settings, &next.source_settings)?;
         }
         *target = Arc::clone(&next);
         Ok(next)
@@ -2091,17 +2092,14 @@ fn ensure_live_media_revision(path: &Path, expected: &str) -> Result<(), AudioCo
     Ok(())
 }
 
+/// Writes only the `media:` values that differ between `before` (what the
+/// file held) and `after`; the owner's comments and other lines stay.
 fn persist_media_settings(
     path: &Path,
-    settings: &MagicianMediaSettings,
+    before: &MagicianMediaSettings,
+    after: &MagicianMediaSettings,
 ) -> Result<(), AudioConfigError> {
-    #[derive(Serialize)]
-    struct MediaBlock<'a> {
-        media: &'a MagicianMediaSettings,
-    }
-    let block = serde_yaml::to_string(&MediaBlock { media: settings })
-        .map_err(|error| AudioConfigError::Persistence(error.to_string()))?;
-    write_top_level_yaml_block(path, "media", block.trim_end())
+    write_yaml_section(path, &["media"], before, after)
         .map_err(|error| AudioConfigError::Persistence(error.to_string()))
 }
 
@@ -2870,6 +2868,49 @@ surface_profiles:
                 .get(&AudioSurface::Listening)
                 .map(String::as_str),
             Some(MIGRATED_LISTENING_PROFILE_ID)
+        );
+    }
+
+    #[test]
+    fn persisting_media_changes_only_the_changed_values_and_keeps_comments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("magician-config.yaml");
+        let original = "# owner header\nmedia:\n  # keep me: tuned by hand\n  engines: {}\nfrontend:\n  host: 127.0.0.1\n";
+        std::fs::write(&path, original).expect("seed");
+        let before = MagicianMediaSettings::default();
+        persist_media_settings(&path, &before, &before).expect("no-op persist");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), original);
+
+        let mut after = before.clone();
+        after
+            .surface_profiles
+            .default_mapping
+            .insert(AudioSurface::Dictation, "my-dictation".to_string());
+        persist_media_settings(&path, &before, &after).expect("persist");
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            written
+                .starts_with("# owner header\nmedia:\n  # keep me: tuned by hand\n  engines: {}\n"),
+            "{written}"
+        );
+        assert!(
+            written.ends_with("frontend:\n  host: 127.0.0.1\n"),
+            "{written}"
+        );
+        assert!(
+            !written.contains("tts:"),
+            "unchanged sections stay unwritten: {written}"
+        );
+        let document: serde_yaml::Value = serde_yaml::from_str(&written).expect("parses");
+        let media: MagicianMediaSettings =
+            serde_yaml::from_value(document["media"].clone()).expect("media section");
+        assert_eq!(
+            media
+                .surface_profiles
+                .default_mapping
+                .get(&AudioSurface::Dictation)
+                .map(String::as_str),
+            Some("my-dictation")
         );
     }
 

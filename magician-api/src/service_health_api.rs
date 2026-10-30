@@ -9,7 +9,14 @@
 //! - `status` / `service` / `version` are preserved for existing consumers
 //!   (iOS `VersionInfo`, the desktop tray's own health aggregator which reads
 //!   `status`, and the unified-ui vite dev-proxy readiness probe).
-//! - `magician` / `magicutor_status` / `tauri_status` are new; the iOS pill reads
+//! - `version` is the Magician CORE version (`magician::VERSION`). Until
+//!   2026-10-25 it was this crate's own version, so every app's "Magician
+//!   backend" row showed the API crate (0.3.x) instead of Magician (0.7.x);
+//!   that number moved to `api_version`.
+//! - `versions` names each part of the stack: `magician`, `magician_api`, and
+//!   `magicutor` / `desktop` as those services report themselves (`null` when
+//!   offline or too old to say).
+//! - `magician` / `magicutor_status` / `tauri_status`; the iOS pill reads
 //!   `magicutor_status`/`tauri_status == "healthy"` (`"offline"` otherwise).
 //!
 //! Both dependency probes are short-timeout and fail-soft: a slow or down
@@ -41,23 +48,37 @@ pub struct ServiceHealthConfig {
 /// `cfg` is optional so a missing registration degrades to "magicutor offline"
 /// rather than a 500.
 pub async fn service_health_handler(cfg: Option<web::Data<ServiceHealthConfig>>) -> HttpResponse {
-    let magicutor_ok = match cfg.as_ref() {
-        Some(cfg) => probe_magicutor(&cfg.magicutor_base_url).await,
-        None => false,
+    let magicutor_probe = async {
+        match cfg.as_ref() {
+            Some(cfg) => probe_magicutor(&cfg.magicutor_base_url).await,
+            None => MagicutorProbe::default(),
+        }
     };
-
-    let tauri_ok = HostAutomationProvider::new(host_gateway_url_from_env())
-        .gateway_available()
-        .await;
+    let host_gateway = HostAutomationProvider::new(host_gateway_url_from_env());
+    let gateway_probe = host_gateway.gateway_probe();
+    let (magicutor, gateway) = tokio::join!(magicutor_probe, gateway_probe);
 
     HttpResponse::Ok().json(json!({
         "status": "ok",
         "service": "magician",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": magician::VERSION,
+        "api_version": env!("CARGO_PKG_VERSION"),
+        "versions": {
+            "magician": magician::VERSION,
+            "magician_api": env!("CARGO_PKG_VERSION"),
+            "magicutor": magicutor.version,
+            "desktop": gateway.version,
+        },
         "magician": "healthy",
-        "magicutor_status": health_word(magicutor_ok),
-        "tauri_status": health_word(tauri_ok),
+        "magicutor_status": health_word(magicutor.ok),
+        "tauri_status": health_word(gateway.available),
     }))
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MagicutorProbe {
+    ok: bool,
+    version: Option<String>,
 }
 
 fn health_word(ok: bool) -> &'static str {
@@ -68,8 +89,9 @@ fn health_word(ok: bool) -> &'static str {
     }
 }
 
-/// Best-effort GET `{base}/health` (Magicutor serves its own `/health`).
-async fn probe_magicutor(base_url: &str) -> bool {
+/// Best-effort GET `{base}/health` (Magicutor serves its own `/health`, whose
+/// JSON carries its `version`).
+async fn probe_magicutor(base_url: &str) -> MagicutorProbe {
     let url = format!("{}/health", base_url.trim_end_matches('/'));
     match reqwest::Client::new()
         .get(&url)
@@ -77,9 +99,25 @@ async fn probe_magicutor(base_url: &str) -> bool {
         .send()
         .await
     {
-        Ok(response) => response.status().is_success(),
-        Err(_) => false,
+        Ok(response) if response.status().is_success() => {
+            let version = response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| reported_version(&body));
+            MagicutorProbe { ok: true, version }
+        },
+        _ => MagicutorProbe::default(),
     }
+}
+
+/// A service's self-reported `version`, when it is a short plain string.
+fn reported_version(body: &serde_json::Value) -> Option<String> {
+    body.get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && v.len() <= 40)
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -103,7 +141,12 @@ mod tests {
         // Backward-compatible fields existing consumers rely on.
         assert_eq!(json["status"], "ok");
         assert_eq!(json["service"], "magician");
-        assert!(json["version"].is_string());
+        // `version` is Magician's own, not this API crate's.
+        assert_eq!(json["version"], magician::VERSION);
+        assert_eq!(json["api_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["versions"]["magician"], magician::VERSION);
+        assert_eq!(json["versions"]["magician_api"], env!("CARGO_PKG_VERSION"));
+        assert!(json["versions"]["magicutor"].is_null());
 
         // New service fields; magicutor is deterministically offline with no cfg.
         assert_eq!(json["magician"], "healthy");
@@ -113,6 +156,18 @@ mod tests {
             json["tauri_status"].as_str(),
             Some("healthy") | Some("offline")
         ));
+    }
+
+    #[test]
+    fn reported_version_takes_only_a_short_plain_string() {
+        assert_eq!(
+            reported_version(&json!({"version": "0.1.94"})).as_deref(),
+            Some("0.1.94")
+        );
+        assert_eq!(reported_version(&json!({"version": " "})), None);
+        assert_eq!(reported_version(&json!({"version": 3})), None);
+        assert_eq!(reported_version(&json!({"version": "x".repeat(41)})), None);
+        assert_eq!(reported_version(&json!({})), None);
     }
 
     #[test]

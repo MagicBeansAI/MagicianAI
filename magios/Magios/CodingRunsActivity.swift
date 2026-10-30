@@ -37,6 +37,26 @@ import UIKit
 @MainActor
 final class CodingRunsActivity {
     static let shared = CodingRunsActivity()
+    nonisolated static let enabledKey = "magician.work.liveActivity.enabled"
+
+    var isEnabled: Bool { UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true }
+
+    /// Only the summary activity is optional; work reads, badges and followed
+    /// items keep updating. Route deletion shares the PUT queue so an in-flight
+    /// registration cannot restore notifications after the switch is off.
+    func setEnabled(_ enabled: Bool) {
+        guard enabled != isEnabled else { return }
+        UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
+        if enabled {
+            observeRemotePush()
+            registerStartToken()
+            refresh()
+        } else {
+            newestAppliedPoll = tick()
+            reconcile()
+            removeDisabledRoutes()
+        }
+    }
 
     nonisolated init() {}
 
@@ -179,7 +199,7 @@ final class CodingRunsActivity {
 
     private func apply(_ state: CodingRunsActivityAttributes.ContentState, from origin: String, sentAt: UInt64) {
         // A read of the machine switched away from must not restart the activity.
-        guard origin == MagicianAccess.activeOrigin,
+        guard isEnabled, origin == MagicianAccess.activeOrigin,
               CodingRunsPoll.isCurrent(sentAt: sentAt, newestApplied: newestAppliedPoll) else { return }
         newestAppliedPoll = sentAt
         reconcile()
@@ -237,6 +257,11 @@ final class CodingRunsActivity {
         if let started, Self.isRunning(started), !running.contains(where: { $0.id == started.id }) {
             running.append(started)
         }
+        guard isEnabled else {
+            end(with: lastState ?? .init(working: 0, needsYou: 0), dismissalPolicy: .immediate)
+            for extra in running where !retiredIDs.contains(extra.id) { retire(extra) }
+            return
+        }
         let keep = CodingRunsAdoption.survivor(
             tracked: activity?.id,
             running: running.map(\.id),
@@ -273,6 +298,7 @@ final class CodingRunsActivity {
     /// Make `adopted` the one this app updates, and register its token. A
     /// different running activity tracked until now is retired.
     private func track(_ adopted: Activity<CodingRunsActivityAttributes>) {
+        guard isEnabled else { retire(adopted); return }
         guard activity?.id != adopted.id else { return }
         if let previous = activity, Self.isRunning(previous) {
             retire(previous)
@@ -315,7 +341,7 @@ final class CodingRunsActivity {
     /// running activity, and keep the revision for the DELETE that ends it.
     /// Only ever called from the route queue.
     private func putActivityRoute(_ token: Data, for id: String) async {
-        guard let tracked = activity, tracked.id == id, Self.isRunning(tracked),
+        guard isEnabled, let tracked = activity, tracked.id == id, Self.isRunning(tracked),
               let origin = MagicianAccess.activeOrigin else { return }
         do {
             let route = try await MobilePushRegistrationClient.registerWithRetry(token: token, kind: .codingRuns)
@@ -350,7 +376,7 @@ final class CodingRunsActivity {
     /// already holds it: when iOS issues one, on activation, and after a
     /// machine switch.
     private func registerStartToken() {
-        guard MobilePushBuildSupport.remoteNotificationsEnabled, !startRegistrationQueued,
+        guard isEnabled, MobilePushBuildSupport.remoteNotificationsEnabled, !startRegistrationQueued,
               let token = startToken, let origin = MagicianAccess.activeOrigin,
               startRoute?.token != token || startRoute?.origin != origin else { return }
         startRegistrationQueued = true
@@ -366,7 +392,7 @@ final class CodingRunsActivity {
 
     /// Only ever called from the route queue.
     private func putStartRoute() async -> Bool {
-        guard let token = startToken, let origin = MagicianAccess.activeOrigin,
+        guard isEnabled, let token = startToken, let origin = MagicianAccess.activeOrigin,
               startRoute?.token != token || startRoute?.origin != origin else { return false }
         await deleteStartRoute(off: origin)
         do {
@@ -391,6 +417,20 @@ final class CodingRunsActivity {
             expectedRevision: route.revision,
             profile: profile
         )
+    }
+
+    private func removeDisabledRoutes() {
+        guard MobilePushBuildSupport.remoteNotificationsEnabled else { return }
+        enqueueRoute {
+            guard !self.isEnabled else { return }
+            await self.deleteActivityRoute()
+            if self.startRoute != nil {
+                await self.deleteStartRoute(off: nil)
+            } else {
+                // Also remove a route registered before this app launch.
+                await MobilePushRegistrationClient.unregisterWithRetry(kind: .codingRunsStart)
+            }
+        }
     }
 
     /// Run route PUTs and DELETEs one at a time, in the order asked: a
@@ -510,6 +550,7 @@ final class CodingRunsActivity {
         if MobilePushBuildSupport.remoteNotificationsEnabled {
             enqueueRoute { await CodingRunsActivity.shared.deleteStartRoute(off: origin) }
             registerStartToken()
+            if !isEnabled { removeDisabledRoutes() }
         }
         refresh()
     }
@@ -518,6 +559,7 @@ final class CodingRunsActivity {
     /// Safe to call again; launch and every foreground call it.
     func observeRemotePush() {
         observeConnection()
+        if !isEnabled { reconcile(); removeDisabledRoutes() }
         guard MobilePushBuildSupport.remoteNotificationsEnabled, adoptTask == nil else { return }
         reconcile()
         adoptTask = Task {

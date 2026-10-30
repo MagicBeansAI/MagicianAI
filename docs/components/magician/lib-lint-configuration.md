@@ -32,10 +32,10 @@ test-only is unused by construction.
 
 42 of the 55 genuine warnings are `dead_code`/`unused_imports`, so this attribute
 hides them in the unified build — and would hide *new* production dead code
-there too. `make check-all` therefore runs `cargo check -p magician --lib`
-alongside the workspace build. The feature-off build is the only place real dead
-code in magician's production source appears, so it has to run somewhere CI
-watches.
+there too. CI therefore runs `make check-magician-dead-code`
+(`cargo check -p magician --lib`) after Clippy; locally it joins `check-all` with
+`CHECK_DEAD_CODE=1`. The feature-off build is the only place real dead code in
+magician's production source appears, so it has to run somewhere CI watches.
 
 If you are looking for dead code in this crate, use that command, not the
 workspace build.

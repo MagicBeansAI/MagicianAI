@@ -31,8 +31,8 @@
 //! sending for months and the phase-2 plan's regression bar is that Task 6
 //! changes *how* the cockpit starts a build and never *what* it starts. They are
 //! two arrangements of shared blocks inside one assembler, not two assemblers,
-//! and `the_cockpit_build_description_is_byte_identical_to_the_client_assembler`
-//! pins the cockpit's against the string the client used to produce.
+//! and `the_cockpit_build_description_is_pinned_byte_for_byte` pins the
+//! cockpit's layout (it began as the string the client used to produce).
 //!
 //! ## The two properties the description must keep
 //!
@@ -55,8 +55,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use serde::Deserialize;
 
 use crate::config::MagicianCodingSettings;
 use crate::magician_v2::agents::runtime::{
@@ -193,75 +191,27 @@ pub const VIBEDEV_RUN_FOLLOW_UP_MAX_AGE_HOURS: i64 = 12;
 /// Internally tagged unit variants do not honour `deny_unknown_fields` (serde
 /// ignores leftover keys on `Auto`). The struct probe below is the actual
 /// fail-closed boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "RawClientVibeDevCodingChoice")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientVibeDevCodingChoice {
     Auto,
     Profile { profile_id: String },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawClientVibeDevCodingChoice {
-    kind: String,
-    #[serde(default)]
-    profile_id: Option<String>,
-}
-
-impl TryFrom<RawClientVibeDevCodingChoice> for ClientVibeDevCodingChoice {
-    type Error = String;
-
-    fn try_from(raw: RawClientVibeDevCodingChoice) -> Result<Self, Self::Error> {
-        match raw.kind.as_str() {
-            "auto" => {
-                if raw.profile_id.is_some() {
-                    return Err("coding_choice kind auto cannot include profile_id".to_string());
-                }
-                Ok(Self::Auto)
-            },
-            "profile" => Ok(Self::Profile {
-                profile_id: raw.profile_id.unwrap_or_default(),
-            }),
-            other => Err(format!("unknown coding_choice kind `{other}`")),
-        }
-    }
-}
-
 impl ClientVibeDevCodingChoice {
-    /// Convert a client payload into the internal choice. An empty named
-    /// profile is treated as omitted so the configured default still applies.
-    pub fn into_internal(self) -> Option<VibeDevCodingChoice> {
+    /// The API already validated model/engine/effort and constructed the route.
+    /// Keep explicit choices explicit; admission refuses unknown routes.
+    pub fn into_internal(self) -> VibeDevCodingChoice {
         match self {
-            Self::Auto => Some(VibeDevCodingChoice::Auto),
-            Self::Profile { profile_id } => {
-                let profile_id = vibedev_line_break_free(&profile_id);
-                let profile_id = profile_id.trim();
-                if profile_id.is_empty() {
-                    None
-                } else {
-                    Some(VibeDevCodingChoice::Profile {
-                        profile_id: profile_id.to_string(),
-                    })
-                }
-            },
+            Self::Auto => VibeDevCodingChoice::Auto,
+            Self::Profile { profile_id } => VibeDevCodingChoice::Profile { profile_id },
         }
     }
 }
 
-/// Prefer the explicit client `coding_choice` object. A legacy
-/// `coding_profile_id` string still maps to a named pin.
-pub fn coding_choice_from_client_fields(
+pub fn coding_choice_from_client(
     choice: Option<ClientVibeDevCodingChoice>,
-    legacy_profile_id: Option<&str>,
 ) -> Option<VibeDevCodingChoice> {
-    if let Some(choice) = choice {
-        return choice.into_internal();
-    }
-    legacy_profile_id
-        .map(vibedev_line_break_free)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(|profile_id| VibeDevCodingChoice::Profile { profile_id })
+    choice.map(ClientVibeDevCodingChoice::into_internal)
 }
 
 /// The digest token for an optional choice.
@@ -363,6 +313,16 @@ pub struct VibeDevCodingCatalog {
 }
 
 impl VibeDevCodingCatalog {
+    pub fn from_config(config: &crate::config::MagicianConfig) -> Self {
+        let mut catalog = Self::from_coding_settings(&config.coding);
+        let generated = crate::magician_v2::execution::coding_engine::catalog::entries(
+            config.router_config(),
+            &catalog.entries,
+        );
+        catalog.entries.extend(generated);
+        catalog
+    }
+
     pub fn from_coding_settings(coding: &MagicianCodingSettings) -> Self {
         let default_profile_id = coding
             .default_profile
@@ -370,16 +330,7 @@ impl VibeDevCodingCatalog {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .or_else(|| {
-                coding.profiles.iter().find_map(|profile| {
-                    profile
-                        .enabled
-                        .then(|| profile.id.trim())
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_string)
-                })
-            })
-            .unwrap_or_else(|| VIBEDEV_COCKPIT_FLOOR_PROFILE.to_string());
+            .unwrap_or_default();
         let mut entries = coding
             .profiles
             .iter()
@@ -397,9 +348,6 @@ impl VibeDevCodingCatalog {
                 ProfileCatalogEntry::new(definition, profile.enabled).ok()
             })
             .collect::<Vec<_>>();
-        crate::magician_v2::execution::coding_engine::selection::apply_legacy_cockpit_escalations(
-            &mut entries,
-        );
         append_ready_codex_catalog_entry(&mut entries);
         append_ready_grok_catalog_entry(&mut entries);
         append_ready_claude_catalog_entry(&mut entries, coding);
@@ -441,7 +389,11 @@ fn append_ready_codex_catalog_entry(entries: &mut Vec<ProfileCatalogEntry>) {
         .and_then(|receipt| receipt.model.zip(receipt.reasoning_effort));
     // Unqualified there is no receipt to name the model: the owner's own
     // Codex default stands in.
-    let fallback = || (!snapshot.selectable).then(owner_codex_default_model).flatten();
+    let fallback = || {
+        (!snapshot.selectable)
+            .then(owner_codex_default_model)
+            .flatten()
+    };
     let Some((model, effort)) = qualified.or_else(fallback) else {
         return;
     };
@@ -494,7 +446,9 @@ fn codex_config_default_model(text: &str) -> Option<(String, String)> {
             _ => {},
         }
     }
-    let effort = effort.or(legacy_effort).unwrap_or_else(|| "medium".to_string());
+    let effort = effort
+        .or(legacy_effort)
+        .unwrap_or_else(|| "medium".to_string());
     Some((model?, effort))
 }
 
@@ -1049,7 +1003,7 @@ pub async fn vibedev_run_task_description(
 ) -> String {
     match build.cockpit.as_ref() {
         // Synchronous, because none of the cockpit's prose is store-backed yet
-        // (see the section header below); the rail's renders three templates.
+        // (see the section header below); the rail's renders store templates.
         Some(cockpit) => vibedev_cockpit_task_description(build, cockpit, parent),
         None => vibedev_rail_task_description(build, parent).await,
     }
@@ -1067,11 +1021,11 @@ pub async fn vibedev_run_task_description(
 /// * for a Discuss run, the plan directive.
 ///
 /// **No implementation "Execution policy" block.** A build run gets the
-/// server-authoritative `vibedev_execution_policy` appended to its goal at
-/// execution start (`artifact_v2/service.rs`, gated on the same
-/// `is_vibedev_coding_build_run` signal), so composing one here would be a
-/// second copy that could drift — and, on a Discuss run, would contradict the
-/// plan directive.
+/// server-authoritative `vibedev_execution_policy` and its change-delivery
+/// block appended to its goal at execution start (`artifact_v2/service.rs`,
+/// gated on the same `is_vibedev_coding_build_run` signal), so composing one
+/// here would be a second copy that could drift — and, on a Discuss run, would
+/// contradict the plan directive.
 ///
 /// ## Why the continuation block sits ABOVE the fenced prompt
 ///
@@ -1132,7 +1086,7 @@ async fn vibedev_rail_task_description(
     {
         lines.push(format!("Project preview URL: {preview_url}"));
     }
-    lines.push(vibedev_run_project_context_prose().await);
+    lines.push(vibedev_run_project_context_prose(build.mode).await);
     if build.is_plan() {
         lines.push(String::new());
         lines.push(vibedev_run_plan_directive_prose().await);
@@ -1140,18 +1094,66 @@ async fn vibedev_rail_task_description(
     lines.join("\n")
 }
 
-/// Prose half of the project-context block. Store-backed with a compiled
-/// fallback so a missing template degrades the *guidance*, never the contract
-/// lines assembled above it.
-async fn vibedev_run_project_context_prose() -> String {
-    const FALLBACK: &str = "- Pass this repo_path to run_coding_task so the coding engine starts in the selected project directory inside the shadow workspace.\n- Do not use delegation_files as the implementation working-directory mechanism; run_coding_task owns the repo cwd.\n- Build runs must invoke run_coding_task before any shell/file pre-inspection.\n- Use delegation_shell/delegation_files after the first run_coding_task call only for verification, git/build checks, or when run_coding_task reports missing context.\n- Verify file changes against the `real_working_dir` returned in the run_coding_task result, NOT your own shell/repo root.\n- Keep new runs and follow-ups scoped to this VibeDev project unless the user explicitly switches projects.";
-    crate::magician_v2::prompts::rendered_prompt_or(
-        prompt_names::VIBEDEV_RAIL_PROJECT_CONTEXT,
-        prompt_versions::VIBEDEV_RAIL_PROJECT_CONTEXT,
-        HashMap::new(),
-        FALLBACK,
-    )
-    .await
+/// One store-backed prose template and the compiled text it degrades to when
+/// the store cannot render it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VibeDevRailProse {
+    name: &'static str,
+    version: &'static str,
+    fallback: &'static str,
+}
+
+impl VibeDevRailProse {
+    async fn render(self) -> String {
+        crate::magician_v2::prompts::rendered_prompt_or(
+            self.name,
+            self.version,
+            HashMap::new(),
+            self.fallback,
+        )
+        .await
+    }
+}
+
+/// Guidance that holds for every run, whatever its mode. Nothing mode-specific
+/// belongs here — that is what keeps a Discuss run free of build-only lines
+/// without anything having to recognise and rewrite them after render.
+const VIBEDEV_RAIL_CONTEXT_SHARED: VibeDevRailProse = VibeDevRailProse {
+    name: prompt_names::VIBEDEV_RAIL_PROJECT_CONTEXT,
+    version: prompt_versions::VIBEDEV_RAIL_PROJECT_CONTEXT,
+    fallback: "- Pass this repo_path to run_coding_task so the coding engine starts in the selected project directory inside the shadow workspace.\n- Do not use delegation_files as the implementation working-directory mechanism; run_coding_task owns the repo cwd.\n- Use delegation_shell/delegation_files after the first run_coding_task call only for verification, git/build checks, or when run_coding_task reports missing context.\n- Verify file changes against the `real_working_dir` returned in the run_coding_task result, NOT your own shell/repo root.\n- Keep new runs and follow-ups scoped to this VibeDev project unless the user explicitly switches projects.",
+};
+
+/// A build (or Autopilot) run's half of the mode-specific guidance.
+const VIBEDEV_RAIL_CONTEXT_BUILD: VibeDevRailProse = VibeDevRailProse {
+    name: prompt_names::VIBEDEV_RAIL_PROJECT_CONTEXT_BUILD,
+    version: prompt_versions::VIBEDEV_RAIL_PROJECT_CONTEXT_BUILD,
+    fallback: "- Build runs must invoke run_coding_task before any shell/file pre-inspection.",
+};
+
+/// A Discuss run's half. Same wording as the cockpit's [`VIBEDEV_CONTEXT_PLAN_LINES`].
+const VIBEDEV_RAIL_CONTEXT_PLAN: VibeDevRailProse = VibeDevRailProse {
+    name: prompt_names::VIBEDEV_RAIL_PROJECT_CONTEXT_PLAN,
+    version: prompt_versions::VIBEDEV_RAIL_PROJECT_CONTEXT_PLAN,
+    fallback: "- Discuss runs call run_coding_task once with plan_only: true before any other inspection; the coding engine only reads the project and writes the plan.\n- Success = run_coding_task returned a plan. A Discuss run stages no proposal and changes no file.",
+};
+
+/// The mode-specific template a run renders. Exhaustive on purpose: a new mode
+/// has to say which guidance it gets.
+fn vibedev_rail_context_mode_prose(mode: DispatchMode) -> VibeDevRailProse {
+    match mode {
+        DispatchMode::Plan => VIBEDEV_RAIL_CONTEXT_PLAN,
+        DispatchMode::Build | DispatchMode::Autopilot => VIBEDEV_RAIL_CONTEXT_BUILD,
+    }
+}
+
+/// Prose half of the project-context block: the mode's own guidance, then the
+/// shared prose. Store-backed with compiled fallbacks so a missing template
+/// degrades the *guidance*, never the contract lines assembled above it.
+async fn vibedev_run_project_context_prose(mode: DispatchMode) -> String {
+    let mode_prose = vibedev_rail_context_mode_prose(mode).render().await;
+    let shared = VIBEDEV_RAIL_CONTEXT_SHARED.render().await;
+    format!("{mode_prose}\n{shared}")
 }
 
 /// The continuation block: the machine-read parent line, what the agent needs
@@ -1206,7 +1208,7 @@ async fn vibedev_run_follow_up_context_prose() -> String {
 }
 
 async fn vibedev_run_plan_directive_prose() -> String {
-    const FALLBACK: &str = "Planning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):\n- Produce a concrete written plan. Do NOT modify files or stage code proposals.\n- Make ONE plan_only run_coding_task call (read-only; the `plan` tag also forces plan_only at the handler). Do NOT re-run it or start a second planning pass.\n- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.\n- As soon as that one call returns the plan, YIELD with it as your completed result.";
+    const FALLBACK: &str = "Planning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):\n- Produce a concrete written plan. Do NOT modify files or stage code proposals.\n- Make ONE run_coding_task call with `plan_only: true` (read-only; this task's server-set `plan` tag also forces plan mode, so pass no tag and need no schema check). Do NOT re-run it or start a second planning pass.\n- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.\n- As soon as that one call returns the plan, YIELD with it as your completed result.";
     crate::magician_v2::prompts::rendered_prompt_or(
         prompt_names::VIBEDEV_RAIL_PLAN_DIRECTIVE,
         prompt_versions::VIBEDEV_RAIL_PLAN_DIRECTIVE,
@@ -1221,10 +1223,17 @@ async fn vibedev_run_plan_directive_prose() -> String {
 // Everything from here to `VibeDevRunStarted` is a port of
 // `ui/unified-ui/src/lib/shell/vibe/conversation/submit.ts`'s
 // `buildCodingTaskDescription`, plus the three `vibeStudioStore` blocks it
-// called into. The port is **byte-for-byte**: this is the description the
-// owner's daily-driver cockpit has been sending for months, nothing here is an
-// improvement on it, and `the_cockpit_build_description_is_byte_identical_to_
-// the_client_assembler` pins the two representative shapes so it stays that way.
+// called into. The port began **byte-for-byte**: this is the description the
+// owner's daily-driver cockpit has been sending for months, and
+// `the_cockpit_build_description_is_pinned_byte_for_byte` (with its Discuss
+// twin) pins the two representative shapes, so any change to it is deliberate.
+//
+// One deliberate departure: **nothing here says how a build's changes land.**
+// Staging a `CodeChangeProposal` vs committing on a trusted branch depends on
+// the mode the run's coding will use, which is decided at execution start, so
+// the coordinator's one change-delivery block is appended there
+// (`artifact_v2::service::vibedev_change_delivery_block`). The description
+// states only the owner's review *preference* and mode-neutral success.
 //
 // Three things about the port are easy to get wrong and are called out where
 // they happen: the *empty* string is a line (the client joins an array, and an
@@ -1241,10 +1250,6 @@ async fn vibedev_run_plan_directive_prose() -> String {
 // convergence: after this change the cockpit's prose exists in exactly ONE
 // place, which is what the plan asked for. The store move is its own change.
 
-/// `vibeStudioStore.escalationPolicyLine`'s cheap floor.
-const VIBEDEV_COCKPIT_FLOOR_PROFILE: &str = "coding-balanced";
-/// …and the premium profile it escalates to.
-const VIBEDEV_COCKPIT_PREMIUM_PROFILE: &str = "coding-premium";
 /// `trimOneLine(detail, 180)`'s cap, and its fallback.
 const VIBEDEV_COCKPIT_SUMMARY_MAX_CHARS: usize = 180;
 const VIBEDEV_COCKPIT_NO_SUMMARY: &str = "No summary yet.";
@@ -1288,8 +1293,7 @@ fn vibedev_cockpit_task_description(
             "- Use the managed Pi-backed run_coding_task flow for file changes.".to_string(),
             "- Preserve the Original VibeDev user prompt verbatim when delegating to a coding engineer.".to_string(),
             "- The coding engineer should invoke run_coding_task as its first tool call; do not ask it to pre-inspect files with shell/files first.".to_string(),
-            vibedev_cockpit_escalation_policy_line(build.coding_choice.as_ref()),
-            "- Stage code changes as CodeChangeProposal diff_approval items.".to_string(),
+            vibedev_cockpit_choice_policy_line(build.coding_choice.as_ref()),
         ]);
     }
     // The four trailing elements are ALWAYS pushed, empty or not. Skipping an
@@ -1334,19 +1338,54 @@ fn vibedev_cockpit_project_context_block(build: &StartVibeDevBuild) -> Vec<Strin
     {
         lines.push(format!("Project preview URL: {preview_url}"));
     }
+    // The mode's lines are chosen here, before anything is rendered: a Discuss
+    // run never has the build-only lines to begin with, so nothing has to find
+    // and rewrite them afterwards.
+    let mode_lines = vibedev_cockpit_context_mode_lines(build.mode);
     lines.extend(
         [
             "- Pass this repo_path to run_coding_task so Pi starts in the selected project directory inside the shadow workspace.",
             "- Do not use delegation_files as the implementation working-directory mechanism; run_coding_task owns the repo cwd.",
-            "- Build runs must invoke run_coding_task before any shell/file pre-inspection. Pass the original VibeDev user prompt, repo_path, project context, constraints, and attachments into run_coding_task; Pi owns repo inspection inside its shadow workspace.",
+            mode_lines.invoke,
             "- Use delegation_shell/delegation_files after the first run_coding_task call only for verification, git/build checks, or when run_coding_task reports missing context.",
             "- Verify file changes against the `real_working_dir` returned in the run_coding_task result — NOT your own shell/repo root. delegation_shell/delegation_files are rooted at the service repository and will NOT see the project working directory, so a file run_coding_task wrote can look \"missing\" if you check there.",
-            "- Success = run_coding_task returned a staged proposal whose files[].path touch the intended file(s). A pending OR an applied proposal both satisfy this — do NOT re-delegate to \"re-confirm\" the file at the repo root (that loops forever).",
+            mode_lines.success,
             "- Keep new runs and follow-ups scoped to this VibeDev project unless the user explicitly switches projects.",
         ]
         .map(str::to_string),
     );
     lines
+}
+
+/// The cockpit project-context lines that hold for only one mode, at the two
+/// positions the client's `projectContextBlock` put them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VibeDevCockpitModeLines {
+    invoke: &'static str,
+    success: &'static str,
+}
+
+/// A build (or Autopilot) run's lines. The success line names no delivery
+/// mechanism: what the result carries (a proposal, or branch commits) is the
+/// change-delivery block's to say.
+const VIBEDEV_CONTEXT_BUILD_LINES: VibeDevCockpitModeLines = VibeDevCockpitModeLines {
+    invoke: "- Build runs must invoke run_coding_task before any shell/file pre-inspection. Pass the original VibeDev user prompt, repo_path, project context, constraints, and attachments into run_coding_task; Pi owns repo inspection inside its shadow workspace.",
+    success: "- Success = run_coding_task's result shows the change touching the intended file(s) — do NOT re-delegate to \"re-confirm\" the file at the repo root (that loops forever).",
+};
+
+/// A Discuss run's lines. A plan run changes nothing, so the build lines would
+/// contradict its read-only directive (they once read "stage a proposal").
+const VIBEDEV_CONTEXT_PLAN_LINES: VibeDevCockpitModeLines = VibeDevCockpitModeLines {
+    invoke: "- Discuss runs call run_coding_task once with plan_only: true before any other inspection; the coding engine only reads the project and writes the plan.",
+    success: "- Success = run_coding_task returned a plan. A Discuss run stages no proposal and changes no file.",
+};
+
+/// Exhaustive on purpose: a new mode has to say which lines it gets.
+fn vibedev_cockpit_context_mode_lines(mode: DispatchMode) -> VibeDevCockpitModeLines {
+    match mode {
+        DispatchMode::Plan => VIBEDEV_CONTEXT_PLAN_LINES,
+        DispatchMode::Build | DispatchMode::Autopilot => VIBEDEV_CONTEXT_BUILD_LINES,
+    }
 }
 
 /// `seedContextBlock`. Empty content contributes nothing at all — not a blank
@@ -1453,7 +1492,7 @@ fn vibedev_cockpit_follow_up_context_block(
             ],
             (true, false) => vec![
                 "- IMPLEMENT THE PLAN: the parent produced an approved PLAN (its plan.md output). Read it in full FIRST and treat it as the source of intent — implement it faithfully rather than re-planning.",
-                "- Stage the implementation as CodeChangeProposal diff_approval items (this is a build run).",
+                "- This is a build run: implement the plan's changes.",
                 "- Treat the real workspace as source of truth.",
             ],
             (false, true) => vec![
@@ -1555,18 +1594,25 @@ fn vibedev_cockpit_format_bytes(size: Option<u64>) -> String {
     }
 }
 
-/// `vibeStudioStore.policyPromptLine()`.
+/// Port of the cockpit's former client `vibeStudioStore.policyPromptLine()`.
 ///
 /// The mode wins over the toggle: Discuss and Autopilot each have exactly one
 /// line, and only an attended Build reads `auto_apply`. That is why
 /// `setMode` forces the toggle off for the other two client-side — the prose
 /// and the enforcement must not be able to disagree.
+///
+/// A Build line states the owner's review **preference** only, in words true
+/// of both delivery modes: on a trusted branch run the owner reviews and merges
+/// the branch; on a sandboxed run the owner's review applies the proposal. The
+/// mechanics (stage, apply, or neither) are the change-delivery block's.
+/// The Autopilot line is mode-neutral the same way: unattended, self-verified,
+/// iterated to green, reported — never *how* the changes land.
 fn vibedev_cockpit_policy_prompt_line(mode: DispatchMode, auto_apply: bool) -> &'static str {
     match mode {
         DispatchMode::Plan => "- Discuss mode: this is a read-only request. Explain, plan, or review — do NOT modify files or stage code proposals.",
-        DispatchMode::Autopilot => "- VibeDev Autopilot is enabled: this is an unattended run — apply your own proposals (apply_code_proposal), self-verify with run_project_checks, iterate until green on a dedicated branch (never main), and report the final status with notify_owner. Do not block on routine review.",
-        DispatchMode::Build if auto_apply => "- VibeDev auto-apply is enabled for proposal-backed code diffs; keep changes focused and reviewable.",
-        DispatchMode::Build => "- VibeDev manual review is enabled; wait for approval before applying proposals.",
+        DispatchMode::Autopilot => "- VibeDev Autopilot is enabled: this is an unattended run — land your own changes, self-verify with run_project_checks, iterate until green, and report the final status with notify_owner. Do not block on routine review.",
+        DispatchMode::Build if auto_apply => "- VibeDev auto-apply is enabled: keep changes focused and reviewable.",
+        DispatchMode::Build => "- VibeDev manual review is enabled: the owner reviews the changes before they land.",
     }
 }
 
@@ -1575,7 +1621,7 @@ fn vibedev_cockpit_policy_prompt_line(mode: DispatchMode, auto_apply: bool) -> &
 /// share this one string.
 pub const VIBEDEV_COST_BUDGET_LINE_PREFIX: &str = "- Cost budget: $";
 
-/// `vibeStudioStore.costBudgetLine()`. `$` + two decimals, or nothing.
+/// Port of the cockpit's former client `vibeStudioStore.costBudgetLine()`. `$` + two decimals, or nothing.
 fn vibedev_cockpit_cost_budget_line(budget: Option<f64>) -> String {
     let Some(budget) = budget else {
         return String::new();
@@ -1611,31 +1657,17 @@ pub fn parse_vibedev_cost_budget_usd(description: &str) -> Option<f64> {
 /// The floor is the request's own [`VibeDevCodingChoice`]. This line must not
 /// be a second policy: `run_coding_task` enforces the digest-pinned constraint.
 /// Auto may still propose `coding_profile`; Magician validates it.
-fn vibedev_cockpit_escalation_policy_line(choice: Option<&VibeDevCodingChoice>) -> String {
+fn vibedev_cockpit_choice_policy_line(choice: Option<&VibeDevCodingChoice>) -> String {
     match choice {
         Some(VibeDevCodingChoice::Auto) => {
             "- Coding profile is Auto for this request. You may propose coding_profile on run_coding_task; Magician validates it against the pinned constraint. This line is not the allowed list."
                 .to_string()
         }
         Some(VibeDevCodingChoice::Profile { profile_id }) => {
-            let floor = if profile_id.is_empty() {
-                VIBEDEV_COCKPIT_FLOOR_PROFILE.to_string()
-            } else {
-                vibedev_line_break_free(profile_id)
-            };
-            if floor == VIBEDEV_COCKPIT_PREMIUM_PROFILE {
-                format!(
-                    "- This request is pinned to coding_profile: {VIBEDEV_COCKPIT_PREMIUM_PROFILE}. Magician enforces that pin on every run_coding_task; do not pass a different coding_profile."
-                )
-            } else if floor == VIBEDEV_COCKPIT_FLOOR_PROFILE {
-                format!(
-                    "- This request is pinned to coding_profile: {floor}. Magician allows the configured one-hop to {VIBEDEV_COCKPIT_PREMIUM_PROFILE}. You may pass coding_profile: {VIBEDEV_COCKPIT_PREMIUM_PROFILE} for a genuinely hard step or one that has failed twice; Magician rejects anything else."
-                )
-            } else {
-                format!(
-                    "- This request is pinned to coding_profile: {floor}. Magician enforces that named pin on every run_coding_task. The pin is not an engine switch; do not pass a different coding_profile as authority."
-                )
-            }
+            let floor = vibedev_line_break_free(profile_id);
+            format!(
+                "- This request is pinned to coding_profile: {floor}. Magician enforces that named pin on every run_coding_task. The pin is not an engine switch; do not pass a different coding_profile as authority."
+            )
         }
         None => {
             "- This request uses the configured default coding profile. Magician already pinned it; do not pass coding_profile to choose an engine."
@@ -1644,25 +1676,31 @@ fn vibedev_cockpit_escalation_policy_line(choice: Option<&VibeDevCodingChoice>) 
     }
 }
 
-/// `vibeStudioStore.autopilotDirectiveBlock()`.
+/// Port of the cockpit's former client `vibeStudioStore.autopilotDirectiveBlock()`.
+///
+/// Mode-neutral: it says *what* an unattended run does (iterate to green,
+/// report once) and never *how* its changes land. Applying proposals on a
+/// dugite-made branch (sandboxed) vs commits on the chain's `vibedev/…` branch
+/// (trusted) is the change-delivery block's, chosen at execution start
+/// (`artifact_v2::service::vibedev_change_delivery_block`).
 fn vibedev_cockpit_autopilot_directive_block(mode: DispatchMode) -> &'static str {
     if mode != DispatchMode::Autopilot {
         return "";
     }
     concat!(
         "\nAutopilot policy (UNATTENDED — the owner has closed the session and will review on return):",
-        "\n- This is an UNATTENDED autopilot run. Do NOT pause for routine approval. The owner has pre-authorized you to apply your own changes and iterate to completion. Only stop to escalate if you are genuinely blocked.",
-        "\n- Before delegating any coding, create a dedicated work branch off the current HEAD with dugite (name it autopilot/<short-task-slug>). Never commit to or modify main — main must stay untouched.",
-        "\n- Delegate implementation to the right engineer with this loop instruction, verbatim: \"After each run_coding_task, immediately call apply_code_proposal with the returned proposal_id to apply your own change to the working tree, then call run_project_checks to run build/test/lint. If any check fails, read the diagnostics, make a focused fix, and repeat. Continue until all checks pass (green) or you reach 12 coding iterations. Do not wait for human approval at any point.\"",
-        "\n- When the engineer returns green (or exhausts iterations), commit the accumulated work to the branch with dugite and capture the branch name and a `git diff --stat` summary for the morning review.",
-        "\n- Report exactly one final status with notify_owner: success → kind=briefing severity=info (\"Autopilot finished: <task>. Checks green. Branch <name>, <N> files changed. Review & merge when ready.\"); not green → kind=escalation severity=warning (\"Autopilot needs you: <task>. Stopped on <reason>. Branch <name> has the partial work.\").",
+        "\n- This is an UNATTENDED autopilot run. Do NOT pause for routine approval. The owner has pre-authorized you to land your own changes and iterate to completion. Only stop to escalate if you are genuinely blocked. How the changes land is stated once, at the end of this goal.",
+        "\n- Never commit to a repository's main branch. Where the changes land (a branch, or the project folder when it has no git) is stated once, at the end of this goal.",
+        "\n- Delegate implementation to the right engineer with this loop instruction, verbatim: \"After each run_coding_task, call run_project_checks to run build/test/lint on the change. If any check fails, read the diagnostics, make a focused fix, and repeat. Continue until all checks pass (green) or you reach 12 coding iterations. Do not wait for human approval at any point.\"",
+        "\n- When the engineer returns green (or exhausts iterations), capture where the work landed and a summary of the files changed for the morning review.",
+        "\n- Report exactly one final status with notify_owner: success → kind=briefing severity=info (\"Autopilot finished: <task>. Checks green. <Where it landed>, <N> files changed. Review when ready.\"); not green → kind=escalation severity=warning (\"Autopilot needs you: <task>. Stopped on <reason>. <Where it landed> has the partial work.\").",
         "\n- If owner cross-channel delivery is configured, ALSO delegate_to_agent(personal-assistant) with a one-line recap so the owner gets the same status over their preferred channel (WhatsApp/email).",
         "\n- Respect the task iteration budget. If you cannot make progress, stop and escalate rather than loop.",
         "\n- Respect the cost budget stated in the Execution policy above: after each run_coding_task read session_stats.cost (cumulative USD), prefer the cheap profile as you approach the budget, and STOP + report rather than exceed it.",
     )
 }
 
-/// `vibeStudioStore.planDirectiveBlock()`.
+/// Port of the cockpit's former client `vibeStudioStore.planDirectiveBlock()`.
 ///
 /// Note this is **not** the rail's `vibedev_rail_plan_directive`: the two say
 /// the same thing in different words, and this is the one the cockpit's Discuss
@@ -1674,13 +1712,16 @@ fn vibedev_cockpit_plan_directive_block(mode: DispatchMode) -> &'static str {
     concat!(
         "\nPlanning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):",
         "\n- Produce a concrete written plan. Do NOT modify files or stage code proposals.",
-        "\n- Make ONE plan_only run_coding_task call (read-only — it stages NO diff and captures your plan as the run output; the `plan` tag also forces plan_only at the handler). Do NOT re-run it or start a second planning pass.",
+        "\n- Make ONE run_coding_task call with `plan_only: true` (read-only — it stages NO diff and captures your plan as the run output). Call it directly: this task's `plan` tag is set by the server and forces plan mode, so you pass no tag and need no schema check. Do NOT re-run it or start a second planning pass.",
         "\n- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.",
         "\n- As soon as that one call returns the plan, YIELD with it as your completed result (a substantive completed item / artifact) — never an empty yield, and never additional planning turns.",
     )
 }
 
-/// `vibeStudioStore.visualSelfCorrectDirectiveBlock(projectIsVisual)`.
+/// Port of the cockpit's former client `vibeStudioStore.visualSelfCorrectDirectiveBlock(projectIsVisual)`.
+///
+/// States the goal (look, fix, check, look again) without naming how a fix
+/// lands — that is the change-delivery block's.
 fn vibedev_cockpit_visual_self_correct_block(
     mode: DispatchMode,
     visual_self_correct: bool,
@@ -1693,7 +1734,7 @@ fn vibedev_cockpit_visual_self_correct_block(
         "\nVisual self-correction (opt-in — SEE what you build, do not fly blind):",
         "\n- After a change that affects the rendered UI, call screenshot_preview { project_id } to capture the running preview. If it returns ok=false (no preview running), start the dev server first; if the change is NOT visual (config, backend, tests), SKIP visual self-correction entirely.",
         "\n- Feed the screenshot back as a critic: call run_coding_task with attachment_ids set to the returned attachment_id and attachment_session_id set to the returned attachment_session_id, instructing it to compare the rendered screenshot against the goal and fix what looks wrong — broken layout, overflow, misalignment, poor spacing/contrast, missing or clipped content.",
-        "\n- Then apply_code_proposal + run_project_checks, and screenshot_preview again to confirm the fix landed visually.",
+        "\n- Then run_project_checks, and screenshot_preview again to confirm the fix landed visually.",
         "\n- HARD CAP: at most 3 visual passes per change. Stop when it looks right or the cap is reached — never loop on cosmetics. This needs a coding profile that supports image inputs; if a run reports it does not, skip the visual loop and say so.",
     )
 }
@@ -2228,6 +2269,14 @@ where
     // Everything that used to arrive as a separate argument now arrives on the
     // one input type, so a caller cannot pass a scope that disagrees with the
     // session it names.
+    // A project whose folder is gone or no longer a repository cannot run;
+    // say so before anything is created, instead of letting the coding agent
+    // discover it mid-run and work around it.
+    if let Some(reason) =
+        super::projects::project_health(&build.project).blocking_reason(&build.project.name)
+    {
+        return Err(VibeDevRunStartError::Failed(reason));
+    }
     let scope = &build.scope;
     let chat_session_id = build.chat_session_id.as_str();
     let chat_turn_id = build.chat_turn_id.as_str();
@@ -2381,10 +2430,16 @@ where
     };
     let task_id = task.manifest.task_id.clone();
     // The pin, where the client put it: after the task exists, before dispatch.
-    // Nothing to unwind if this itself fails — `record_vibedev_run_on_project`
-    // logs and swallows, exactly as the client's own pin is not fatal.
+    // New admissions require the location record before any engine can start.
     let plan_for_rollback = claimed.task_plan.clone().unwrap_or_else(|| plan.clone());
-    record_vibedev_run_on_project(service, scope, &plan_for_rollback, &task_id).await;
+    if let Err(error) =
+        record_vibedev_run_on_project(service, scope, &plan_for_rollback, &task_id).await
+    {
+        rollback_undispatched_vibedev_run(service, scope, &plan_for_rollback, &task_id).await;
+        let reason = format!("could not pin the run's work location: {error}");
+        settle_intent_failure(&store, &claimed, &reason);
+        return Err(VibeDevRunStartError::Failed(reason));
+    }
 
     match start(task_id.clone()).await {
         Ok(execution_id) => {
@@ -2450,6 +2505,17 @@ pub(crate) async fn vibedev_run_task_plan(
         // Pinned so the NEXT turn in this conversation can compare projects
         // without reading one back out of a task description.
         project_id: build.project.project_id.clone(),
+        work_location: match parent {
+            Some(parent) => build
+                .project
+                .run_links
+                .get(&parent.task_id)
+                .and_then(|link| link.work_location.clone()),
+            None => Some(super::projects::VibeDevWorkLocation {
+                mode: build.project.trust,
+                repo_path: build.project.repo_path.clone(),
+            }),
+        },
         parent_task_id: parent.map(|parent| parent.task_id.clone()),
         // Stored rather than re-derived: the parent's status can change between
         // admission and a restart, and `ensure_task_with_id` compares
@@ -2663,20 +2729,19 @@ pub fn vibedev_run_idempotency_key(
 /// rail carries no [`DispatchCockpitPlan`] and so can never reach the pin, which
 /// is how "a chat aside does not move what the cockpit is looking at" survives.
 ///
-/// Best-effort, like the client's: a record that fails leaves a run that
-/// started and a cockpit pointing at the previous one, which is recoverable by
-/// clicking the run. Failing the whole turn over it would be worse.
+/// New plans must durably record their admitted work location before dispatch.
+/// Legacy plans without a location retain their best-effort bookkeeping.
 async fn record_vibedev_run_on_project(
     service: &Arc<ArtifactV2Service>,
     scope: &ScopeRef,
     plan: &DispatchTaskPlan,
     task_id: &str,
-) {
+) -> Result<(), String> {
     let pinned = vibedev_run_pinned_project_id(plan);
     let Some(project_id) =
         pinned.or_else(|| Some(plan.project_id.as_str()).filter(|id| !id.is_empty()))
     else {
-        return;
+        return Ok(());
     };
     let scope_root = service
         .workspace()
@@ -2696,7 +2761,27 @@ async fn record_vibedev_run_on_project(
             %error,
             "[VIBEDEV-RAIL] could not record the run on its project"
         );
+        if plan.work_location.is_some() {
+            return Err(error.to_string());
+        }
     }
+    if plan.parent_task_id.is_none() {
+        if let Some(location) = plan
+            .work_location
+            .as_ref()
+            .filter(|l| l.mode == super::projects::VibeDevProjectTrust::Original)
+        {
+            let workspace_root = service
+                .workspace()
+                .capability_home_root(scope.principal(), scope.workspace());
+            let repo = super::trusted_workspace::project_repo_folder(
+                location.repo_path.as_deref(),
+                &workspace_root,
+            );
+            super::original_workspace::ensure(&scope_root, task_id, project_id, &repo)?;
+        }
+    }
+    Ok(())
 }
 
 /// The typed link an admitted plan gives its run.
@@ -2710,6 +2795,7 @@ fn vibedev_run_link(
             .filter(|value| !value.is_empty())
     };
     crate::magician_v2::vibedev::projects::VibeDevRunLink {
+        work_location: plan.work_location.clone(),
         parent_task_id: text(plan.parent_task_id.as_ref()),
         crew_id: text(cockpit.map(|cockpit| &cockpit.crew_id)),
         lane: text(cockpit.map(|cockpit| &cockpit.lane)),
@@ -3181,18 +3267,6 @@ where
                     {
                         Ok(task) => {
                             recreated = true;
-                            // A rebuilt cockpit run re-pins the pointer the
-                            // admission would have set, so a project whose
-                            // pointer was lost with the task gets it back.
-                            if let Some(plan) = claimed.task_plan.as_ref() {
-                                record_vibedev_run_on_project(
-                                    service,
-                                    &scope,
-                                    plan,
-                                    &claimed.task_id,
-                                )
-                                .await;
-                            }
                             task
                         },
                         Err(create_error) => {
@@ -3228,6 +3302,22 @@ where
                 }
                 outcome.already_running += 1;
                 continue;
+            }
+
+            // Recover the pin even when the task survived the crash but its
+            // work-location write did not. Never dispatch with an unpinned mode.
+            if let Some(plan) = claimed.task_plan.as_ref() {
+                if let Err(error) =
+                    record_vibedev_run_on_project(service, &scope, plan, &claimed.task_id).await
+                {
+                    settle_intent_failure(
+                        &store,
+                        &claimed,
+                        &format!("could not pin recovered work location: {error}"),
+                    );
+                    outcome.settled_terminally += 1;
+                    continue;
+                }
             }
 
             // **A scheduled cockpit run must not be started here.** It is
@@ -3346,6 +3436,7 @@ fn vibedev_run_rollback_plan(intent: &DispatchIntent, scope: &ScopeRef) -> Dispa
             owner_agent_id: String::new(),
             mode: DispatchMode::Build,
             project_id: String::new(),
+            work_location: None,
             parent_task_id: None,
             reference_task_ids: Vec::new(),
             coding_choice: None,
@@ -3687,30 +3778,6 @@ mod tests {
                 .is_err(),
             "an unknown variant is rejected rather than silently defaulted"
         );
-        assert!(
-            serde_json::from_str::<ClientVibeDevCodingChoice>(
-                r#"{"kind":"auto","engine":"codex"}"#
-            )
-            .is_err(),
-            "unknown fields on the client boundary fail closed"
-        );
-        let auto =
-            serde_json::from_str::<ClientVibeDevCodingChoice>(r#"{"kind":"auto"}"#).expect("auto");
-        assert_eq!(auto.into_internal(), Some(VibeDevCodingChoice::Auto));
-        assert_eq!(
-            coding_choice_from_client_fields(
-                Some(ClientVibeDevCodingChoice::Auto),
-                Some("ignored")
-            ),
-            Some(VibeDevCodingChoice::Auto),
-            "the explicit object wins over a leftover profile string"
-        );
-        assert_eq!(
-            coding_choice_from_client_fields(None, Some("coding-balanced")),
-            Some(VibeDevCodingChoice::Profile {
-                profile_id: "coding-balanced".to_string(),
-            })
-        );
     }
 
     /// A supplied choice is on the admitted plan, so a restart rebuilds the run
@@ -3818,7 +3885,13 @@ mod tests {
             )
             .expect("claude entry"),
         );
-        let claude = catalog.entries.last().expect("claude").definition.id().to_string();
+        let claude = catalog
+            .entries
+            .last()
+            .expect("claude")
+            .definition
+            .id()
+            .to_string();
         let entries = &catalog.entries;
         assert_eq!(
             omitted_choice_profile(Some(pin("magician")), || pin("claude_code"), entries),
@@ -3853,7 +3926,10 @@ mod tests {
             None,
             "a model inside a table is not the default"
         );
-        assert_eq!(codex_config_default_model("# model = \"x\"\nmodel = \"\"\n"), None);
+        assert_eq!(
+            codex_config_default_model("# model = \"x\"\nmodel = \"\"\n"),
+            None
+        );
     }
 
     /// With a catalog, an omitted choice is pinned as fixed configured-default
@@ -3864,6 +3940,7 @@ mod tests {
         let (service, orchestrator) =
             crate::magician_v2::test_support::build_test_artifact_v2_harness(temp.path());
         drop(orchestrator);
+        write_project_store(&service, &scope());
         let run_service = VibeDevRunService::new(Arc::clone(&service));
         let mut build = input("fix the footer", None);
         build.coding_catalog = test_coding_catalog();
@@ -3943,6 +4020,7 @@ mod tests {
         let (service, orchestrator) =
             crate::magician_v2::test_support::build_test_artifact_v2_harness(temp.path());
         drop(orchestrator);
+        write_project_store(&service, &scope());
         let run_service = VibeDevRunService::new(Arc::clone(&service));
 
         let first = run_service
@@ -4042,8 +4120,9 @@ mod tests {
         }
     }
 
-    /// Every line the cockpit's project-context block emitted, after the
-    /// machine-read lines. Transcribed from `projectContextBlock`.
+    /// Every line the cockpit's project-context block emits, after the
+    /// machine-read lines. Transcribed from `projectContextBlock`, except the
+    /// success line, which no longer names a delivery mechanism.
     fn client_project_context_prose() -> Vec<&'static str> {
         vec![
             "- Pass this repo_path to run_coding_task so Pi starts in the selected project directory inside the shadow workspace.",
@@ -4051,26 +4130,256 @@ mod tests {
             "- Build runs must invoke run_coding_task before any shell/file pre-inspection. Pass the original VibeDev user prompt, repo_path, project context, constraints, and attachments into run_coding_task; Pi owns repo inspection inside its shadow workspace.",
             "- Use delegation_shell/delegation_files after the first run_coding_task call only for verification, git/build checks, or when run_coding_task reports missing context.",
             "- Verify file changes against the `real_working_dir` returned in the run_coding_task result — NOT your own shell/repo root. delegation_shell/delegation_files are rooted at the service repository and will NOT see the project working directory, so a file run_coding_task wrote can look \"missing\" if you check there.",
-            "- Success = run_coding_task returned a staged proposal whose files[].path touch the intended file(s). A pending OR an applied proposal both satisfy this — do NOT re-delegate to \"re-confirm\" the file at the repo root (that loops forever).",
+            "- Success = run_coding_task's result shows the change touching the intended file(s) — do NOT re-delegate to \"re-confirm\" the file at the repo root (that loops forever).",
             "- Keep new runs and follow-ups scoped to this VibeDev project unless the user explicitly switches projects.",
         ]
     }
 
-    /// `vibeStudioStore.visualSelfCorrectDirectiveBlock(true)` — one element of
-    /// the client's array, and it starts with its own blank line.
-    const CLIENT_VISUAL_BLOCK: &str = "\nVisual self-correction (opt-in — SEE what you build, do not fly blind):\n- After a change that affects the rendered UI, call screenshot_preview { project_id } to capture the running preview. If it returns ok=false (no preview running), start the dev server first; if the change is NOT visual (config, backend, tests), SKIP visual self-correction entirely.\n- Feed the screenshot back as a critic: call run_coding_task with attachment_ids set to the returned attachment_id and attachment_session_id set to the returned attachment_session_id, instructing it to compare the rendered screenshot against the goal and fix what looks wrong — broken layout, overflow, misalignment, poor spacing/contrast, missing or clipped content.\n- Then apply_code_proposal + run_project_checks, and screenshot_preview again to confirm the fix landed visually.\n- HARD CAP: at most 3 visual passes per change. Stop when it looks right or the cap is reached — never loop on cosmetics. This needs a coding profile that supports image inputs; if a run reports it does not, skip the visual loop and say so.";
+    /// The same block for a Discuss run, transcribed rather than derived from
+    /// the build lines, so the pin cannot pass by rewriting them the same way
+    /// the code does.
+    fn discuss_project_context_prose() -> Vec<&'static str> {
+        vec![
+            "- Pass this repo_path to run_coding_task so Pi starts in the selected project directory inside the shadow workspace.",
+            "- Do not use delegation_files as the implementation working-directory mechanism; run_coding_task owns the repo cwd.",
+            "- Discuss runs call run_coding_task once with plan_only: true before any other inspection; the coding engine only reads the project and writes the plan.",
+            "- Use delegation_shell/delegation_files after the first run_coding_task call only for verification, git/build checks, or when run_coding_task reports missing context.",
+            "- Verify file changes against the `real_working_dir` returned in the run_coding_task result — NOT your own shell/repo root. delegation_shell/delegation_files are rooted at the service repository and will NOT see the project working directory, so a file run_coding_task wrote can look \"missing\" if you check there.",
+            "- Success = run_coding_task returned a plan. A Discuss run stages no proposal and changes no file.",
+            "- Keep new runs and follow-ups scoped to this VibeDev project unless the user explicitly switches projects.",
+        ]
+    }
 
-    /// Pins the cockpit description shape. Stage 1f changed the escalation
-    /// line from a second policy ("pass coding_profile on each call") to
-    /// informational context about the committed pin. The rest of the array
-    /// is still the port of `buildCodingTaskDescription`.
+    /// The mode-specific project-context lines a description must not carry
+    /// for the other mode. Fragments shared by the store text and the compiled
+    /// fallbacks, so these hold whichever one rendered.
+    const BUILD_ONLY_CONTEXT: [&str; 2] = [
+        "- Build runs must invoke run_coding_task",
+        "- Success = run_coding_task's result shows the change",
+    ];
+    const PLAN_ONLY_CONTEXT: [&str; 2] = [
+        "- Discuss runs call run_coding_task once with plan_only: true",
+        "- Success = run_coding_task returned a plan.",
+    ];
+
+    /// The cockpit chooses its mode lines by `build.mode` — every mode, not
+    /// just the two the byte pins cover.
+    #[test]
+    fn the_cockpit_project_context_lines_follow_the_mode() {
+        for mode in [
+            DispatchMode::Build,
+            DispatchMode::Autopilot,
+            DispatchMode::Plan,
+        ] {
+            let lines = vibedev_cockpit_project_context_block(&cockpit_input(
+                "fix the footer",
+                mode,
+                cockpit(),
+            ));
+            let (wanted, banned) = if mode == DispatchMode::Plan {
+                (VIBEDEV_CONTEXT_PLAN_LINES, VIBEDEV_CONTEXT_BUILD_LINES)
+            } else {
+                (VIBEDEV_CONTEXT_BUILD_LINES, VIBEDEV_CONTEXT_PLAN_LINES)
+            };
+            for line in [wanted.invoke, wanted.success] {
+                assert!(
+                    lines.iter().any(|candidate| candidate == line),
+                    "{mode:?} is missing {line:?}:\n{lines:#?}"
+                );
+            }
+            for line in [banned.invoke, banned.success] {
+                assert!(
+                    !lines.iter().any(|candidate| candidate == line),
+                    "{mode:?} carries the other mode's {line:?}:\n{lines:#?}"
+                );
+            }
+            let block = lines.join("\n");
+            let banned_fragments = if mode == DispatchMode::Plan {
+                BUILD_ONLY_CONTEXT
+            } else {
+                PLAN_ONLY_CONTEXT
+            };
+            for fragment in banned_fragments {
+                assert!(
+                    !block.contains(fragment),
+                    "{mode:?} carries {fragment:?}:\n{block}"
+                );
+            }
+        }
+    }
+
+    /// The rail's description, end to end: a build or Autopilot run reads the
+    /// build guidance and none of the Discuss lines; a Discuss run reads the
+    /// Discuss lines and none of the build-only ones.
+    #[tokio::test]
+    async fn the_rail_project_context_follows_the_mode() {
+        for mode in [
+            DispatchMode::Build,
+            DispatchMode::Autopilot,
+            DispatchMode::Plan,
+        ] {
+            let mut build = input("fix the footer", None);
+            build.mode = mode;
+            let description = vibedev_run_task_description(&build, None).await;
+            // The rail's build guidance is the invoke line alone: its success
+            // criteria arrive with the change-delivery block at execution start.
+            let (wanted, banned): (&[&str], &[&str]) = if mode == DispatchMode::Plan {
+                (&PLAN_ONLY_CONTEXT[..], &BUILD_ONLY_CONTEXT[..])
+            } else {
+                (&BUILD_ONLY_CONTEXT[..1], &PLAN_ONLY_CONTEXT[..])
+            };
+            for fragment in wanted {
+                assert!(
+                    description.contains(fragment),
+                    "{mode:?} is missing {fragment:?}:\n{description}"
+                );
+            }
+            for fragment in banned {
+                assert!(
+                    !description.contains(fragment),
+                    "{mode:?} carries the other mode's {fragment:?}:\n{description}"
+                );
+            }
+        }
+    }
+
+    /// The rail's mode guidance is a *template choice*, made from the mode: a
+    /// Discuss run renders the plan template and a build or Autopilot run the
+    /// build one. Each named template exists in the store at its pinned
+    /// version and says what its mode needs.
+    #[tokio::test]
+    async fn the_rail_mode_guidance_comes_from_the_mode_template() {
+        assert_eq!(
+            vibedev_rail_context_mode_prose(DispatchMode::Plan),
+            VIBEDEV_RAIL_CONTEXT_PLAN
+        );
+        assert_eq!(
+            VIBEDEV_RAIL_CONTEXT_PLAN.name,
+            prompt_names::VIBEDEV_RAIL_PROJECT_CONTEXT_PLAN
+        );
+        for mode in [DispatchMode::Build, DispatchMode::Autopilot] {
+            assert_eq!(
+                vibedev_rail_context_mode_prose(mode),
+                VIBEDEV_RAIL_CONTEXT_BUILD
+            );
+        }
+        assert_eq!(
+            VIBEDEV_RAIL_CONTEXT_BUILD.name,
+            prompt_names::VIBEDEV_RAIL_PROJECT_CONTEXT_BUILD
+        );
+
+        for (prose, wanted) in [
+            (VIBEDEV_RAIL_CONTEXT_PLAN, &PLAN_ONLY_CONTEXT[..]),
+            (VIBEDEV_RAIL_CONTEXT_BUILD, &BUILD_ONLY_CONTEXT[..1]),
+        ] {
+            let stored = crate::magician_v2::prompts::rendered_prompt(
+                prose.name,
+                prose.version,
+                HashMap::new(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{} v{} must render from the store: {error}",
+                    prose.name, prose.version
+                )
+            });
+            for text in [stored.as_str(), prose.fallback] {
+                for fragment in wanted {
+                    assert!(
+                        text.contains(fragment),
+                        "{} is missing {fragment:?}:\n{text}",
+                        prose.name
+                    );
+                }
+            }
+        }
+
+        // A Discuss run's prose is the plan template over the shared prose —
+        // the build template is never rendered for it, so nothing in it can
+        // reach a plan run.
+        let plan_prose = vibedev_run_project_context_prose(DispatchMode::Plan).await;
+        assert_eq!(
+            plan_prose,
+            format!(
+                "{}\n{}",
+                VIBEDEV_RAIL_CONTEXT_PLAN.render().await,
+                VIBEDEV_RAIL_CONTEXT_SHARED.render().await
+            )
+        );
+    }
+
+    /// The guard that replaced the text swap. The shared prose is rendered for
+    /// **every** mode, so it is the one place a store edit could put a
+    /// build-only line in front of a Discuss run — and the swap that used to
+    /// catch that matched one exact wording, so a reworded line got through.
+    /// The rule is structural instead: mode-specific guidance lives only in
+    /// the mode templates, and the shared prose (store and fallback) carries
+    /// none of either mode's lines.
+    #[tokio::test]
+    async fn the_shared_rail_prose_carries_no_mode_specific_guidance() {
+        let shared_store = crate::magician_v2::prompts::rendered_prompt(
+            VIBEDEV_RAIL_CONTEXT_SHARED.name,
+            VIBEDEV_RAIL_CONTEXT_SHARED.version,
+            HashMap::new(),
+        )
+        .await
+        .expect("the shared project-context prose renders from the store");
+
+        let mut mode_lines = Vec::new();
+        for prose in [VIBEDEV_RAIL_CONTEXT_BUILD, VIBEDEV_RAIL_CONTEXT_PLAN] {
+            let stored = crate::magician_v2::prompts::rendered_prompt(
+                prose.name,
+                prose.version,
+                HashMap::new(),
+            )
+            .await
+            .expect("a mode template renders from the store");
+            mode_lines.extend(stored.lines().map(str::to_string));
+            mode_lines.extend(prose.fallback.lines().map(str::to_string));
+        }
+
+        for shared in [shared_store.as_str(), VIBEDEV_RAIL_CONTEXT_SHARED.fallback] {
+            for line in &mode_lines {
+                assert!(
+                    !shared.contains(line.as_str()),
+                    "mode-specific guidance belongs in its mode template, not the shared prose: {line:?}"
+                );
+            }
+            for fragment in BUILD_ONLY_CONTEXT.iter().chain(PLAN_ONLY_CONTEXT.iter()) {
+                assert!(
+                    !shared.contains(fragment),
+                    "the shared prose carries mode-specific {fragment:?}:\n{shared}"
+                );
+            }
+            for line in shared.lines() {
+                assert!(
+                    !line.starts_with("- Build runs") && !line.starts_with("- Discuss runs"),
+                    "a line addressed to one mode is in the shared prose: {line:?}"
+                );
+            }
+        }
+    }
+
+    /// `vibeStudioStore.visualSelfCorrectDirectiveBlock(true)` — one element of
+    /// the client's array, and it starts with its own blank line. Its "Then"
+    /// line no longer names how a fix lands (the change-delivery block does).
+    const CLIENT_VISUAL_BLOCK: &str = "\nVisual self-correction (opt-in — SEE what you build, do not fly blind):\n- After a change that affects the rendered UI, call screenshot_preview { project_id } to capture the running preview. If it returns ok=false (no preview running), start the dev server first; if the change is NOT visual (config, backend, tests), SKIP visual self-correction entirely.\n- Feed the screenshot back as a critic: call run_coding_task with attachment_ids set to the returned attachment_id and attachment_session_id set to the returned attachment_session_id, instructing it to compare the rendered screenshot against the goal and fix what looks wrong — broken layout, overflow, misalignment, poor spacing/contrast, missing or clipped content.\n- Then run_project_checks, and screenshot_preview again to confirm the fix landed visually.\n- HARD CAP: at most 3 visual passes per change. Stop when it looks right or the cap is reached — never loop on cosmetics. This needs a coding profile that supports image inputs; if a run reports it does not, skip the visual loop and say so.";
+
+    /// Pins the cockpit description shape — the server's text, byte for byte.
+    /// Stage 1f changed the escalation line from a second policy ("pass
+    /// coding_profile on each call") to informational context about the
+    /// committed pin; the change-delivery split took the staging line out of
+    /// the Execution policy and made the review line a preference, because how
+    /// the changes land is decided at execution start. The rest of the array is
+    /// still the port of `buildCodingTaskDescription`.
     ///
     /// Two shapes, because they exercise opposite halves: a **build** run has
     /// the Execution policy block and the visual directive and no plan
     /// directive; a **Discuss** run has the plan directive and neither of the
     /// other two.
     #[tokio::test]
-    async fn the_cockpit_build_description_is_byte_identical_to_the_client_assembler() {
+    async fn the_cockpit_build_description_is_pinned_byte_for_byte() {
         let mut expected = vec![
             "VibeDev coding request:".to_string(),
             "Original VibeDev user prompt:".to_string(),
@@ -4102,10 +4411,9 @@ mod tests {
                 "- Use the managed Pi-backed run_coding_task flow for file changes.",
                 "- Preserve the Original VibeDev user prompt verbatim when delegating to a coding engineer.",
                 "- The coding engineer should invoke run_coding_task as its first tool call; do not ask it to pre-inspect files with shell/files first.",
-                "- This request is pinned to coding_profile: coding-balanced. Magician allows the configured one-hop to coding-premium. You may pass coding_profile: coding-premium for a genuinely hard step or one that has failed twice; Magician rejects anything else.",
-                "- Stage code changes as CodeChangeProposal diff_approval items.",
-                // policyPromptLine()
-                "- VibeDev manual review is enabled; wait for approval before applying proposals.",
+                "- This request is pinned to coding_profile: coding-balanced. Magician enforces that named pin on every run_coding_task. The pin is not an engine switch; do not pass a different coding_profile as authority.",
+                // policyPromptLine() — the review preference, no mechanics.
+                "- VibeDev manual review is enabled: the owner reviews the changes before they land.",
                 // costBudgetLine() — EMPTY, and an empty element is still a line.
                 "",
                 // autopilotDirectiveBlock() — empty.
@@ -4128,7 +4436,7 @@ mod tests {
 
     #[test]
     fn escalation_line_is_informational_for_auto_premium_and_omitted() {
-        let auto = vibedev_cockpit_escalation_policy_line(Some(&VibeDevCodingChoice::Auto));
+        let auto = vibedev_cockpit_choice_policy_line(Some(&VibeDevCodingChoice::Auto));
         assert!(auto.contains("Auto"), "{auto}");
         assert!(
             auto.contains("Magician validates"),
@@ -4139,7 +4447,7 @@ mod tests {
             "must not be a second policy: {auto}"
         );
 
-        let premium = vibedev_cockpit_escalation_policy_line(Some(&VibeDevCodingChoice::Profile {
+        let premium = vibedev_cockpit_choice_policy_line(Some(&VibeDevCodingChoice::Profile {
             profile_id: "coding-premium".to_string(),
         }));
         assert!(
@@ -4151,7 +4459,7 @@ mod tests {
             "{premium}"
         );
 
-        let omitted = vibedev_cockpit_escalation_policy_line(None);
+        let omitted = vibedev_cockpit_choice_policy_line(None);
         assert!(omitted.contains("configured default"), "{omitted}");
         assert!(
             !omitted.contains("Pass the chosen coding_profile"),
@@ -4161,7 +4469,7 @@ mod tests {
 
     /// The Discuss half of the same pin.
     #[tokio::test]
-    async fn the_cockpit_discuss_description_is_byte_identical_to_the_client_assembler() {
+    async fn the_cockpit_discuss_description_is_pinned_byte_for_byte() {
         let mut expected = vec![
             "VibeDev planning request:".to_string(),
             "Original VibeDev user prompt:".to_string(),
@@ -4176,8 +4484,10 @@ mod tests {
             "Project repo path: apps/site (scoped workspace subfolder)".to_string(),
             "run_coding_task repo_path: apps/site".to_string(),
         ];
+        // The server's one deliberate departure from the client: a Discuss run
+        // gets its own invoke and success lines in place of the build ones.
         expected.extend(
-            client_project_context_prose()
+            discuss_project_context_prose()
                 .into_iter()
                 .map(str::to_string),
         );
@@ -4193,7 +4503,7 @@ mod tests {
         expected.push(String::new());
         // planDirectiveBlock()
         expected.push(
-            "\nPlanning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):\n- Produce a concrete written plan. Do NOT modify files or stage code proposals.\n- Make ONE plan_only run_coding_task call (read-only — it stages NO diff and captures your plan as the run output; the `plan` tag also forces plan_only at the handler). Do NOT re-run it or start a second planning pass.\n- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.\n- As soon as that one call returns the plan, YIELD with it as your completed result (a substantive completed item / artifact) — never an empty yield, and never additional planning turns."
+            "\nPlanning approach (Discuss — read-only, NO code changes, the PLAN is the deliverable):\n- Produce a concrete written plan. Do NOT modify files or stage code proposals.\n- Make ONE run_coding_task call with `plan_only: true` (read-only — it stages NO diff and captures your plan as the run output). Call it directly: this task's `plan` tag is set by the server and forces plan mode, so you pass no tag and need no schema check. Do NOT re-run it or start a second planning pass.\n- Structure the plan: objective, approach, key decisions, risks/unknowns, and the concrete files/areas to change when it is built.\n- As soon as that one call returns the plan, YIELD with it as your completed result (a substantive completed item / artifact) — never an empty yield, and never additional planning turns."
                 .to_string(),
         );
         // visualSelfCorrectDirectiveBlock — empty in Discuss, whatever the toggle

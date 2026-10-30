@@ -275,6 +275,7 @@ struct PlanInspectorScreen: View {
                     .frame(maxWidth: .infinity, minHeight: Lively.tapMin)
             }
             .buttonStyle(.borderedProminent).tint(theme.accentFillColor)
+            .foregroundStyle(theme.onAccentColor)
             .accessibilityIdentifier("plan-approve-and-run")
         }
         .font(.themed(14, weight: .semibold))

@@ -245,3 +245,134 @@ fn a_period_ceiling_failure_defers_the_next_fire_to_the_period_end() {
         .unwrap();
     assert_eq!(next_due_at, "2026-10-01T00:19:00.000000Z");
 }
+
+#[test]
+fn failed_run_delay_doubles_per_failure_up_to_a_day_and_never_below_the_interval() {
+    assert_eq!(failed_run_delay_seconds(540, 0).unwrap(), 540);
+    assert_eq!(failed_run_delay_seconds(540, 1).unwrap(), 540);
+    assert_eq!(failed_run_delay_seconds(540, 2).unwrap(), 1_080);
+    assert_eq!(failed_run_delay_seconds(540, 7).unwrap(), 34_560);
+    assert_eq!(failed_run_delay_seconds(540, 64).unwrap(), 34_560);
+    assert_eq!(failed_run_delay_seconds(3_600, 7).unwrap(), 86_400);
+    assert_eq!(failed_run_delay_seconds(172_800, 5).unwrap(), 172_800);
+}
+
+#[test]
+fn consecutive_failed_runs_back_off_and_a_completed_run_restores_the_interval() {
+    // A round whose every participant fails now ends `failed`. Relaunching it
+    // on the 9-minute interval repeats the same failure all day, so each
+    // further failure in a row doubles the wait; a completed run resets it.
+    let (_root, mut db) =
+        crate::magician_v2::apps::registry::tests::background_scheduler_database_fixture();
+    let install = AppInstallationId::parse("install_legacy").unwrap();
+    let behavior = AppName::parse("ambient_turn").unwrap();
+    db.execute("INSERT INTO app_behavior_heads (installation_id, behavior_id, installation_generation,
+        package_revision_ref, schema_revision, grant_revision, behavior_digest, state, revision, fence,
+        effective_interval_seconds, next_due_at, available_at, updated_at, period_started_at,
+        period_seconds, max_starts_per_period, accepted_count, attempt_count, period_starts, consecutive_failures) VALUES ('install_legacy',
+        'ambient_turn', 1, 'package:1', 1, 1, ?1, 'idle', 1, 0, 540, '2026-09-17T19:00:00Z', '2026-09-17T19:00:00Z',
+        '2026-09-17T18:51:00Z', '2026-09-17T18:00:00Z', 3600, 60, 1, 1, 1, 0)", [AppDigest::blake3(b"test").as_str()]).unwrap();
+    let head = |db: &rusqlite::Connection| -> (String, i64) {
+        db.query_row(
+            "SELECT next_due_at, consecutive_failures FROM app_behavior_heads WHERE installation_id = 'install_legacy' AND behavior_id = 'ambient_turn'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    let rounds = [
+        (
+            "round-1",
+            "failed",
+            "2026-09-17T19:00:00Z",
+            "2026-09-17T19:09:00.000000Z",
+            1,
+        ),
+        (
+            "round-2",
+            "failed",
+            "2026-09-17T19:10:00Z",
+            "2026-09-17T19:28:00.000000Z",
+            2,
+        ),
+        (
+            "round-3",
+            "failed",
+            "2026-09-17T19:30:00Z",
+            "2026-09-17T20:06:00.000000Z",
+            3,
+        ),
+        (
+            "round-4",
+            "completed",
+            "2026-09-17T20:10:00Z",
+            "2026-09-17T20:19:00.000000Z",
+            0,
+        ),
+    ];
+    for (id, status, completed_at, expected_next, expected_failures) in rounds {
+        let mut run = observation(id, status, 0);
+        let completed_at = parse_timestamp(completed_at).unwrap();
+        run.completed_at = Some(completed_at);
+        persist_recurring_observation(&mut db, &install, &behavior, 540, run, completed_at)
+            .unwrap();
+        assert_eq!(
+            head(&db),
+            (expected_next.to_owned(), expected_failures),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn a_period_ceiling_error_stops_showing_once_its_period_has_ended() {
+    let mut parked = reduce_observation(None, observation("round-1", "completed", 0));
+    parked.latest.error = Some("period_resource_ceiling:monthly_tokens".to_owned());
+    parked.latest.deferred_until = Some(parse_timestamp("2026-10-01T00:00:00Z").unwrap());
+    let ceiling = Some("period_resource_ceiling:monthly_tokens".to_owned());
+    let during = parse_timestamp("2026-09-20T00:00:00Z").unwrap();
+    let after = parse_timestamp("2026-10-30T00:00:00Z").unwrap();
+
+    // While parked, the ceiling is the honest reason.
+    assert_eq!(
+        recurring_health_last_error("idle", ceiling.clone(), &parked, during),
+        ceiling
+    );
+    // Once the period rolled, neither the run record nor the head's copy of
+    // that same string is shown.
+    assert_eq!(
+        recurring_health_last_error("idle", ceiling.clone(), &parked, after),
+        None
+    );
+    assert_eq!(
+        recurring_health_last_error("idle", None, &parked, after),
+        None
+    );
+    // A different, current head reason still shows.
+    assert_eq!(
+        recurring_health_last_error(
+            "blocked",
+            Some("workflow_launch_blocked".to_owned()),
+            &parked,
+            after
+        ),
+        Some("workflow_launch_blocked".to_owned())
+    );
+    // An ordinary failed run still surfaces its own error.
+    let mut failed = reduce_observation(None, observation("round-2", "failed", 0));
+    failed.latest.error = Some("workflow_execution_failed".to_owned());
+    assert_eq!(
+        recurring_health_last_error("idle", None, &failed, after),
+        Some("workflow_execution_failed".to_owned())
+    );
+    // A blocked head keeps its own reason over the run's.
+    assert_eq!(
+        recurring_health_last_error(
+            "blocked",
+            Some("workflow_launch_blocked".to_owned()),
+            &failed,
+            after
+        ),
+        Some("workflow_launch_blocked".to_owned())
+    );
+}

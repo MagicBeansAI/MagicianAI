@@ -14,6 +14,33 @@ use super::{
     CodingEngineKind,
 };
 
+/// Per-turn model controls are separate argv entries, never shell text.
+/// Historical default placeholders leave the owner's CLI model unchanged.
+pub fn native_model_args(
+    model: Option<&str>,
+    effort: Option<&str>,
+    effort_flag: &str,
+) -> anyhow::Result<Vec<std::ffi::OsString>> {
+    let mut args = Vec::new();
+    if let Some(model) =
+        model.filter(|model| !matches!(*model, "default" | "claude" | "agy" | "grok-build"))
+    {
+        anyhow::ensure!(
+            !model.is_empty() && !model.starts_with('-') && !model.chars().any(char::is_control),
+            "invalid coding model"
+        );
+        args.extend(["--model".into(), model.into()]);
+    }
+    if let Some(effort) = effort.filter(|effort| *effort != "auto") {
+        anyhow::ensure!(
+            matches!(effort, "low" | "medium" | "high" | "xhigh" | "max"),
+            "unsupported native coding effort"
+        );
+        args.extend([effort_flag.into(), effort.into()]);
+    }
+    Ok(args)
+}
+
 #[derive(Debug, Clone)]
 pub struct PiCodingOptions {
     pub binary: PathBuf,
@@ -147,6 +174,7 @@ impl Default for CodexCodingOptions {
 /// adapters never have to ignore them.
 #[derive(Debug, Clone, Default)]
 pub struct GrokTurnOptions {
+    pub effort: Option<String>,
     pub resume_session_id: Option<String>,
     pub model: Option<String>,
     pub mode: GrokTurnMode,
@@ -188,6 +216,8 @@ impl Default for GrokCodingOptions {
 /// Per-turn Claude Code options. Kept off Pi/Codex/Grok/Agy fields.
 #[derive(Debug, Clone, Default)]
 pub struct ClaudeTurnOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub resume_session_id: Option<String>,
     pub mode: ClaudeTurnMode,
 }
@@ -234,6 +264,8 @@ impl Default for ClaudeCodingOptions {
 /// Per-turn Agy options. Kept off Pi/Codex/Grok/Claude fields.
 #[derive(Debug, Clone, Default)]
 pub struct AgyTurnOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
     pub resume_session_id: Option<String>,
     pub mode: AgyTurnMode,
 }

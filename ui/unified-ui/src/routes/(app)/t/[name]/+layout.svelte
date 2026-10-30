@@ -3,13 +3,14 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { get, writable } from 'svelte/store';
-	import Badge from '$lib/magician/components/generative/Badge.svelte';
+	import ThreadSessionBar from '$lib/threads/ThreadSessionBar.svelte';
+	import ChatWorkspacePage from '$lib/threads/ChatWorkspacePage.svelte';
 	import { v2Events } from '$lib/realtime/v2-websocket';
 	import { loadAgents, personalAgentList } from '$lib/stores/agentStore';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+	import { chatStore } from '$lib/stores/chatStore';
 	import { taskStore } from '$lib/stores/taskStore';
 	import { threadStore } from '$lib/stores/threadStore';
-	import { workThreadHref } from '$lib/work/routes';
 	import { normalizeThreadId } from '$lib/threads/normalizeThreadId';
 	import { setThreadPageContext, type ThreadPageState } from '$lib/threads/threadPageContext';
 
@@ -26,6 +27,7 @@
 	let threadName = normalizeThreadId(get(page).params.name);
 	let loadingThread = false;
 	let threadError: string | null = null;
+	let activeTab: 'chat' | 'tasks' | 'settings' | 'files' | 'models' = 'chat';
 
 	$: currentScopeKey = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
 	$: threadDetail =
@@ -36,27 +38,17 @@
 	$: threadDisplayMode = (threadDetail?.display_mode ??
 		$threadStore.threads.find((thread) => thread.id === threadName)?.display_mode ??
 		'chat') as 'chat' | 'dev';
-	$: threadTasks = $taskStore.tasks.filter(
-		(task) => normalizeThreadId(task.uiThreadId) === threadName
-	);
-	$: threadCounts = {
-		running: threadTasks.filter((task) => task.status === 'running' || task.status === 'planning')
-			.length,
-		// Split, and named for what they count: Attention lists open requests
-		// for the user, never failed tasks, so one "needs action" badge over
-		// paused + failed read as phantom attention items.
-		waiting: threadTasks.filter((task) => task.status === 'paused').length,
-		failed: threadTasks.filter((task) => task.status === 'failed').length,
-		total: threadTasks.length
-	};
 
 	$: pathname = $page.url.pathname;
-	$: activeTab = pathname.endsWith('/tasks')
+	$: activeTab = pathname.endsWith('/models') ? 'models' : pathname.endsWith('/files') ? 'files' : pathname.endsWith('/tasks')
 		? 'tasks'
 		: pathname.endsWith('/settings')
 			? 'settings'
 			: 'chat';
-	$: threadBase = `/t/${encodeURIComponent(threadName)}`;
+
+    $: viewedId = $chatStore.viewingArchivedId ?? $chatStore.activeSessionId;
+    $: viewedSession = $chatStore.sessions.find(session => session.id === viewedId);
+    $: shellSessionId = $page.url.searchParams.get('session') || (viewedSession && normalizeThreadId(viewedSession.ui_thread_id) === threadName ? viewedId : null);
 
 	// Publish shell state to child routes.
 	const threadPageStore = writable<ThreadPageState>({
@@ -157,52 +149,23 @@
 	}}
 />
 
-<div class="thread-page">
-	<nav class="thread-bar">
-		<span class="thread-bar__title">#{threadDisplayName}</span>
-		<span class="thread-bar__sep">·</span>
-		<a class="thread-bar__tab" class:active={activeTab === 'chat'} href={`${threadBase}/chat`}>
-			Chat
-		</a>
-		<a class="thread-bar__tab" class:active={activeTab === 'tasks'} href={workThreadHref(threadName)}>
-			Tasks <span class="thread-bar__count">{threadCounts.total}</span>
-		</a>
-		<a
-			class="thread-bar__tab"
-			class:active={activeTab === 'settings'}
-			href={`${threadBase}/settings`}
-		>
-			Settings
-		</a>
-		<div class="thread-bar__badges">
-			{#if threadCounts.running > 0}
-				<Badge text={`${threadCounts.running} running`} color="info" />
-			{/if}
-			{#if threadCounts.waiting > 0}
-				<a class="thread-bar__badge-link" href={workThreadHref(threadName)}>
-					<Badge text={`${threadCounts.waiting} waiting`} color="warning" />
-				</a>
-			{/if}
-			{#if threadCounts.failed > 0}
-				<a class="thread-bar__badge-link" href={workThreadHref(threadName)}>
-					<Badge text={`${threadCounts.failed} failed`} color="error" />
-				</a>
-			{/if}
-		</div>
-	</nav>
-
-	{#if threadError}
-		<p class="thread-error">{threadError}</p>
+<div class="thread-page" class:thread-page--chat-workspace={activeTab !== 'tasks'}>
+	{#if activeTab === 'settings' || activeTab === 'files' || activeTab === 'models'}
+		<ChatWorkspacePage threadId={threadName}>
+			<ThreadSessionBar slot="header" threadId={threadName} threadName={threadDisplayName} {activeTab} sessionId={shellSessionId} tasks={$taskStore.tasks} />
+			{#if threadError}<p class="thread-error">{threadError}</p>{/if}
+			<slot />
+		</ChatWorkspacePage>
+	{:else}
+		{#if activeTab === 'tasks'}
+			<ThreadSessionBar threadId={threadName} threadName={threadDisplayName} {activeTab} sessionId={shellSessionId} tasks={$taskStore.tasks} />
+		{/if}
+		{#if threadError}<p class="thread-error">{threadError}</p>{/if}
+		<slot />
 	{/if}
-
-	<slot />
 </div>
 
 <style>
-	.thread-bar__badge-link {
-		text-decoration: none;
-	}
-
 	.thread-page {
 		width: 100%;
 		height: calc(100vh - 4rem);
@@ -213,79 +176,11 @@
 		padding: 0.5rem 1rem 0;
 	}
 
-	.thread-bar {
-		display: flex;
-		align-items: center;
-		/* Left-aligned: the floating chat ContextPill owns the top-center zone,
-		   so centered tabs end up hidden behind it. Badges stay pinned right. */
-		justify-content: flex-start;
-		gap: 0.15rem;
-		position: relative;
-		border-bottom: 1px solid var(--border-soft, #eee4dc);
-		padding-bottom: 0.35rem;
-	}
-
-	.thread-bar__title {
-		font-size: 0.9rem;
-		font-weight: 700;
-		color: var(--text-primary, #2d3436);
-		white-space: nowrap;
-	}
-
-	.thread-bar__sep {
-		color: var(--text-muted, #8f9799);
-		margin: 0 0.2rem;
-	}
-
-	.thread-bar__tab {
-		position: relative;
-		padding: 0.3rem 0.65rem;
-		border: none;
-		background: none;
-		font-family: var(--font-primary);
-		font-size: 0.78rem;
-		font-weight: 600;
-		color: var(--text-muted, #8f9799);
-		cursor: pointer;
-		transition: color 0.15s;
-		white-space: nowrap;
-		text-decoration: none;
-	}
-
-	.thread-bar__tab:hover {
-		color: var(--text-primary, #2d3436);
-	}
-
-	.thread-bar__tab.active {
-		color: var(--accent-primary, #ff6b6b);
-	}
-
-	.thread-bar__tab.active::after {
-		content: '';
-		position: absolute;
-		bottom: -0.4rem;
-		left: 0.25rem;
-		right: 0.25rem;
-		height: 2px;
-		background: var(--accent-primary, #ff6b6b);
-		border-radius: 2px 2px 0 0;
-	}
-
-	.thread-bar__count {
-		font-size: 0.65rem;
-		font-weight: 700;
-		margin-left: 0.2rem;
-		opacity: 0.7;
-	}
-
-	.thread-bar__badges {
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-		position: absolute;
-		right: 0;
-		top: 50%;
-		transform: translateY(-50%);
+	.thread-page--chat-workspace {
+		height: 100%;
+		min-height: 0;
+		gap: 0;
+		padding: 0;
 	}
 
 	.thread-error {
@@ -295,19 +190,5 @@
 		background: var(--color-error-soft, rgba(255, 107, 107, 0.14));
 		border: 1px solid var(--color-error, #ff6b6b);
 		color: var(--text-secondary, #5f6668);
-	}
-
-	@media (max-width: 900px) {
-		.thread-bar {
-			flex-wrap: wrap;
-		}
-
-		.thread-bar__badges {
-			position: static;
-			transform: none;
-			width: 100%;
-			justify-content: center;
-			margin-top: 0.25rem;
-		}
 	}
 </style>

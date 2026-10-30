@@ -33,7 +33,7 @@ use lancedb::{
         IndexConfig, IndexType,
     },
     query::{ExecutableQuery, QueryBase, Select},
-    table::OptimizeAction,
+    table::{OptimizeAction, OptimizeOptions},
     Table,
 };
 use serde::{Deserialize, Serialize};
@@ -130,7 +130,9 @@ const DEFAULT_OLLAMA_WARMUP_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_OLLAMA_MAX_BATCH_CHARS: usize = 6_000;
 const DEFAULT_OLLAMA_SINGLE_BATCH_RETRIES: usize = 2;
 const DEFAULT_OLLAMA_RETRY_BACKOFF_MS: u64 = 1_500;
-const DEFAULT_LANCEDB_RETRIEVAL_TIMEOUT_MS: u64 = 750;
+pub const DEFAULT_LANCEDB_RETRIEVAL_TIMEOUT_MS: u64 = 3_000;
+static LANCEDB_RETRIEVAL_TIMEOUT_MS: AtomicU64 =
+    AtomicU64::new(DEFAULT_LANCEDB_RETRIEVAL_TIMEOUT_MS);
 const DEFAULT_LANCEDB_HEALTH_CHECK_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_LANCEDB_OPTIMIZE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_MEMORY_INDEX_WRITE_LOCK_TIMEOUT_MS: u64 = 120_000;
@@ -1644,6 +1646,84 @@ pub async fn optimize_scope_memory_index(
     })
 }
 
+/// Benchmark seam for `examples/lance_hybrid_search_bench.rs`, not an API:
+/// embed a prompt query against an index manifest the way a lookup does.
+#[doc(hidden)]
+pub async fn benchmark_embed_prompt_query(
+    manifest: &MemoryIndexManifest,
+    query: &str,
+) -> Result<(String, Vec<f32>)> {
+    let expanded = expand_memory_retrieval_query(query);
+    let embedding = embed_query_for_manifest(&expanded, manifest).await?;
+    Ok((expanded, embedding))
+}
+
+/// Benchmark seam: one request-path hybrid search (vector and full-text
+/// legs, fused) with a precomputed embedding and the chat prompt predicate,
+/// as `score_lancedb_hybrid_index` runs it after embedding. Returns the hit
+/// count; leg timings are logged as for a live lookup.
+#[doc(hidden)]
+pub async fn benchmark_lancedb_hybrid_search(
+    index_dir: &Path,
+    manifest: &MemoryIndexManifest,
+    expanded_query: &str,
+    embedding: &[f32],
+    agent_id: &str,
+) -> Result<usize> {
+    let predicate = memory_index_containment_predicate(
+        &memory_index_prompt_visibility_predicate(agent_id),
+        &crate::retrieval_scope::RetrievalScope::Unbound,
+    );
+    let (hits, _) = search_lancedb_hybrid(
+        index_dir,
+        expanded_query,
+        chunk_search_limit(MEMORY_INDEX_SEARCH_LIMIT),
+        embedding,
+        Some(&predicate),
+        &memory_index_generation_token(manifest),
+        crate::vector_search_mode::vector_search_snapshot().0,
+        Instant::now(),
+        Duration::from_secs(300),
+    )
+    .await?;
+    Ok(hits.len())
+}
+
+/// Benchmark seam: active fragment and row counts of an index directory.
+#[doc(hidden)]
+pub async fn benchmark_lancedb_table_stats(index_dir: &Path) -> Result<Option<(usize, usize)>> {
+    let Some(table) = open_existing_lancedb_memory_table(index_dir).await? else {
+        return Ok(None);
+    };
+    let stats = table.stats().await?;
+    Ok(Some((stats.fragment_stats.num_fragments, stats.num_rows)))
+}
+
+/// Benchmark seam: the compaction `optimize_scope_memory_index` runs, on an
+/// index directory the caller owns (a copy), without the scope locks.
+#[doc(hidden)]
+pub async fn benchmark_optimize_lancedb(index_dir: &Path) -> Result<()> {
+    let table = open_existing_lancedb_memory_table(index_dir)
+        .await?
+        .context("no LanceDB memory table to optimize")?;
+    table.optimize(OptimizeAction::All).await?;
+    invalidate_lance_table_pool(index_dir);
+    Ok(())
+}
+
+/// Read the active dataset layout, excluding retained historical data files.
+/// Diagnostics must not infer fragmentation from directory file counts.
+pub async fn scope_memory_index_fragment_count(
+    storage: &dyn MemoryStorage,
+) -> Result<Option<usize>> {
+    let Some(table) =
+        open_existing_lancedb_memory_table(&storage.memory_lancedb_index_dir()).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(table.stats().await?.fragment_stats.num_fragments))
+}
+
 pub async fn inspect_scope_memory_index(
     storage: &dyn MemoryStorage,
     definition_store: &dyn DefinitionLookup,
@@ -2282,12 +2362,15 @@ async fn score_fresh_memory_hybrid_index_uncached(
     // paths do not take the process-wide journal lock. `pass_through` restores
     // the locked file snapshot. Manifest/file freshness is still inspect_fast,
     // which does not take that mutex.
+    let started = std::time::Instant::now();
     let before = retrieval_journal_view(storage).await?;
+    let journal_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let status = if verify_canonical_freshness {
         inspect_scope_memory_index(storage, definition_store).await?
     } else {
         inspect_scope_memory_index_fast(storage).await?
     };
+    let inspected_ms = started.elapsed().as_secs_f64() * 1_000.0;
     if !memory_index_status_allows_snapshot_overlay(&status, before.pending()) {
         if memory_index_stale_reason_is_transient_lancedb(&status.reason) {
             anyhow::bail!(
@@ -2332,6 +2415,7 @@ async fn score_fresh_memory_hybrid_index_uncached(
     let index_dir = storage.memory_lancedb_index_dir();
     let generation = published_hybrid_index_generation(storage.root())
         .unwrap_or_else(|| memory_index_generation_token(manifest));
+    let search_started_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let (scores, served_ann_fallback) = score_lancedb_hybrid_index(
         &index_dir,
         query,
@@ -2342,6 +2426,7 @@ async fn score_fresh_memory_hybrid_index_uncached(
         settings,
     )
     .await?;
+    let searched_ms = started.elapsed().as_secs_f64() * 1_000.0;
     // The canonical tier files are always the source of truth. A journaled
     // write must therefore never inherit a relevance boost earned by the old
     // contents of the same candidate. At the same time, invalidating the
@@ -2380,6 +2465,13 @@ async fn score_fresh_memory_hybrid_index_uncached(
     }
     let scores = retain_unaffected_memory_index_scores(scores, &affected_candidate_keys);
     let scores = bind_memory_index_scores_to_revisions(scores, &manifest.source_hashes)?;
+    tracing::info!(target: "memory_index",
+        journal_ms,
+        inspect_ms = inspected_ms - journal_ms,
+        prepare_ms = search_started_ms - inspected_ms,
+        search_ms = searched_ms - search_started_ms,
+        pending_overlay_ms = started.elapsed().as_secs_f64() * 1_000.0 - searched_ms,
+        "Hybrid memory scoring phase timing");
     Ok(MemoryHybridIndexScoreResult {
         scores: Some(scores),
         fallback_reason: None,
@@ -3252,6 +3344,7 @@ async fn replace_lancedb_index_dir(index_dir: &Path, record_batch: RecordBatch) 
 struct InvalidateLancePoolOnDrop {
     index_dir: PathBuf,
     armed: bool,
+    invalidate_scores: bool,
 }
 
 impl InvalidateLancePoolOnDrop {
@@ -3259,6 +3352,7 @@ impl InvalidateLancePoolOnDrop {
         Self {
             index_dir: index_dir.to_path_buf(),
             armed: false,
+            invalidate_scores: false,
         }
     }
 
@@ -3271,6 +3365,10 @@ impl Drop for InvalidateLancePoolOnDrop {
     fn drop(&mut self) {
         if self.armed {
             invalidate_lance_table_pool(&self.index_dir);
+            if self.invalidate_scores {
+                notify_vector_search_ranking_changed();
+                invalidate_hybrid_results_for_lancedb_dir(&self.index_dir);
+            }
         }
     }
 }
@@ -3422,11 +3520,8 @@ async fn merge_existing_lancedb_index(
             "LanceDB memory index post-merge index maintenance failed"
         );
     }
-    let optimize = MemoryLanceDbOptimizeReport::not_attempted(
-        "explicit_maintenance_only",
-        mutated_rows,
-        chunks.len() as u64,
-    );
+    let optimize =
+        maintain_lancedb_scalar_indexes(&table, index_dir, mutated_rows, chunks.len() as u64).await;
     Ok(Some(MemoryLanceDbWriteReport {
         mode: "merge".to_string(),
         chunk_count: chunks.len(),
@@ -3546,11 +3641,9 @@ async fn write_lancedb_index_delta(
             "LanceDB memory index post-delta index maintenance failed"
         );
     }
-    let optimize = MemoryLanceDbOptimizeReport::not_attempted(
-        "explicit_maintenance_only",
-        mutated_rows,
-        total_chunk_count as u64,
-    );
+    let optimize =
+        maintain_lancedb_scalar_indexes(&table, &index_dir, mutated_rows, total_chunk_count as u64)
+            .await;
     drop(invalidate_pool);
     Ok(Some(MemoryLanceDbWriteReport {
         mode: "source_delta".to_string(),
@@ -3885,15 +3978,18 @@ async fn score_lancedb_hybrid_index(
     generation: &str,
     settings: VectorSearchSettings,
 ) -> Result<(BTreeMap<String, f32>, bool)> {
+    let wrapper_started = Instant::now();
     let expanded_query = expand_memory_retrieval_query(query_text);
     let embedding = embed_query_for_manifest(&expanded_query, manifest)
         .await
         .context("embedding memory query for LanceDB hybrid search")?;
+    let embedding_ms = elapsed_ms(wrapper_started);
     let timeout_duration = lancedb_retrieval_timeout();
     let index_dir = index_dir.to_path_buf();
     let search_limit = chunk_search_limit(limit);
     let predicate = predicate.map(str::to_string);
     let generation = generation.to_string();
+    let dispatch_started = Instant::now();
     let (hits, served_ann_fallback) = run_lancedb_search_at_scheduler_root_with_timeout(
         timeout_duration,
         "LanceDB memory hybrid index",
@@ -3905,8 +4001,9 @@ async fn score_lancedb_hybrid_index(
                 // queued request can't block past the retrieval budget (falls back to
                 // keyword). Embedding stays before the timeout (a separate LLM call).
                 let _permit = acquire_lance_search_permit().await;
+                let admission_ms = elapsed_ms(dispatch_started);
                 let search_started = Instant::now();
-                search_lancedb_hybrid(
+                let result = search_lancedb_hybrid(
                     &index_dir,
                     &expanded_query,
                     search_limit,
@@ -3917,11 +4014,19 @@ async fn score_lancedb_hybrid_index(
                     search_started,
                     timeout_duration,
                 )
-                .await
+                .await;
+                tracing::info!(target: "memory_index", admission_ms,
+                    search_ms = elapsed_ms(search_started),
+                    "Hybrid memory search admission and execution timing");
+                result
             })
         }),
     )
     .await?;
+    tracing::info!(target: "memory_index", embedding_ms,
+        lance_job_ms = elapsed_ms(dispatch_started),
+        total_ms = elapsed_ms(wrapper_started),
+        "Hybrid memory index wrapper timing");
     Ok((aggregate_chunk_hits_by_candidate(hits), served_ann_fallback))
 }
 
@@ -4025,10 +4130,18 @@ async fn acquire_lance_search_permit() -> Option<LanceSearchPermit> {
     })
 }
 
+/// Install the validated runtime search budget. Emergency env overrides keep
+/// precedence; embedding retains its separate caller-owned deadline.
+pub fn set_lancedb_retrieval_timeout_ms(timeout_ms: u64) {
+    LANCEDB_RETRIEVAL_TIMEOUT_MS.store(timeout_ms.max(1), Ordering::Release);
+}
+
 fn lancedb_retrieval_timeout() -> Duration {
     read_positive_u64_env(&["MAGICIAN_MEMORY_LANCEDB_RETRIEVAL_TIMEOUT_MS"])
         .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_millis(DEFAULT_LANCEDB_RETRIEVAL_TIMEOUT_MS))
+        .unwrap_or_else(|| {
+            Duration::from_millis(LANCEDB_RETRIEVAL_TIMEOUT_MS.load(Ordering::Acquire))
+        })
 }
 
 fn lancedb_health_check_timeout() -> Duration {
@@ -4243,6 +4356,44 @@ pub struct MemoryIndexPassage {
     pub chunk_index: usize,
 }
 
+/// Select each revision's best chunk once for a batch of canonical candidates.
+/// Text is still hydrated from the candidate at lookup time.
+pub struct MemoryIndexPassageLookup<'a> {
+    best: BTreeMap<&'a str, (usize, f32)>,
+}
+
+impl<'a> MemoryIndexPassageLookup<'a> {
+    pub fn new(scores: &'a BTreeMap<String, f32>) -> Self {
+        let mut best = BTreeMap::<&str, (usize, f32)>::new();
+        for (key, score) in scores {
+            let Some((parent, index)) = parse_passage_score_key(key) else {
+                continue;
+            };
+            if !score.is_finite() || *score <= 0.0 {
+                continue;
+            }
+            best.entry(parent)
+                .and_modify(|current| {
+                    if score
+                        .total_cmp(&current.1)
+                        .then_with(|| current.0.cmp(&index))
+                        .is_gt()
+                    {
+                        *current = (index, *score);
+                    }
+                })
+                .or_insert((index, *score));
+        }
+        Self { best }
+    }
+
+    pub fn passage(&self, candidate: &MemoryCandidateDocument) -> Option<MemoryIndexPassage> {
+        let expected = memory_candidate_index_score_key(candidate);
+        let &(index, _) = self.best.get(expected.as_str())?;
+        memory_candidate_passage_at(candidate, index)
+    }
+}
+
 pub fn memory_candidate_index_hit_passage(
     candidate: &MemoryCandidateDocument,
     scores: &BTreeMap<String, f32>,
@@ -4259,6 +4410,13 @@ pub fn memory_candidate_index_hit_passage(
                 .total_cmp(&right.1)
                 .then_with(|| right.0.cmp(&left.0))
         })?;
+    memory_candidate_passage_at(candidate, index)
+}
+
+fn memory_candidate_passage_at(
+    candidate: &MemoryCandidateDocument,
+    index: usize,
+) -> Option<MemoryIndexPassage> {
     let text = memory_candidate_index_text(candidate);
     let ranges = memory_candidate_chunk_ranges(candidate, &text);
     let range = ranges.get(index)?;
@@ -4584,15 +4742,21 @@ fn memory_index_chunk_ranges(text: &str) -> Vec<MemoryIndexChunkRange> {
 
     let mut offsets = text.char_indices().map(|(idx, _)| idx).collect::<Vec<_>>();
     offsets.push(text.len());
+    let chars = text.chars().collect::<Vec<_>>();
     let mut ranges = Vec::new();
     let mut start = 0usize;
     while start < char_count {
         let end = (start + MEMORY_INDEX_CHUNK_TARGET_CHARS).min(char_count);
+        // A passage is recalled text: it starts and ends on whole words, the
+        // way every recall bound does. The chunk overlap covers the few
+        // characters an edge gives up.
+        let (aligned_start, aligned_end) =
+            crate::text_bounds::word_aligned_window(&chars, start, end);
         ranges.push(MemoryIndexChunkRange {
-            char_start: start,
-            char_end: end,
-            byte_start: offsets[start],
-            byte_end: offsets[end],
+            char_start: aligned_start,
+            char_end: aligned_end,
+            byte_start: offsets[aligned_start],
+            byte_end: offsets[aligned_end],
         });
         if end == char_count {
             break;
@@ -4823,7 +4987,7 @@ async fn execute_flat_vector_search(
     predicate: Option<&str>,
 ) -> Result<Vec<String>> {
     let started = Instant::now();
-    let keys = execute_vector_knn(table, embedding, limit, predicate, true, 1).await?;
+    let keys = execute_vector_knn(table, embedding, limit, predicate, true, 1, None).await?;
     hol_stats::record_vector_leg_times(Some(elapsed_ms(started)), None);
     Ok(keys)
 }
@@ -4835,7 +4999,7 @@ fn remaining_search_budget(started: Instant, budget: Duration) -> Option<Duratio
 }
 
 /// Observe-only ANN compare must not delay the already-served flat+FTS
-/// hybrid. Cap the extra wait so a 750ms retrieval budget cannot spend
+/// hybrid. Cap the extra wait so a configured retrieval budget cannot spend
 /// hundreds of milliseconds on a score that is never returned.
 const MAX_SHADOW_OBSERVE: Duration = Duration::from_millis(50);
 /// Leave this much of the outer Lance timeout so a slow IVF query can
@@ -4881,6 +5045,7 @@ async fn record_ann_shadow_compare_if_budget(
             predicate,
             false,
             settings.nprobes,
+            None,
         ),
     )
     .await;
@@ -4932,12 +5097,27 @@ async fn execute_ann_vector_search(
     let started = Instant::now();
     let ann_result = tokio::time::timeout(
         ivf_budget,
-        execute_vector_knn(table, embedding, shortlist, predicate, false, nprobes),
+        execute_vector_knn(
+            table,
+            embedding,
+            shortlist,
+            predicate,
+            false,
+            nprobes,
+            Some(limit),
+        ),
     )
     .await;
     let ann_ms = elapsed_ms(started);
-    let shortlisted = match ann_result {
-        Ok(Ok(keys)) if !keys.is_empty() => keys,
+    match ann_result {
+        Ok(Ok(keys)) if !keys.is_empty() => {
+            hol_stats::record_vector_leg_times(None, Some(ann_ms));
+            Ok(VectorLegResult {
+                keys,
+                ann_fallback: false,
+                run_shadow_observe: false,
+            })
+        },
         Ok(Ok(_)) => {
             hol_stats::record_ann_fallback();
             hol_stats::record_vector_leg_times(None, Some(ann_ms));
@@ -4981,61 +5161,6 @@ async fn execute_ann_vector_search(
                 run_shadow_observe: false,
             });
         },
-    };
-    let rerank_budget = remaining_search_budget(search_started, search_budget);
-    let reranked = match rerank_budget {
-        Some(budget) => {
-            tokio::time::timeout(
-                budget,
-                exact_rerank_ann_candidates(table, embedding, &shortlisted, limit, predicate),
-            )
-            .await
-        },
-        None => {
-            hol_stats::record_ann_fallback();
-            hol_stats::record_vector_leg_times(None, Some(ann_ms));
-            return Ok(VectorLegResult {
-                keys: Vec::new(),
-                ann_fallback: true,
-                run_shadow_observe: false,
-            });
-        },
-    };
-    match reranked {
-        Ok(Ok(keys)) => {
-            hol_stats::record_vector_leg_times(None, Some(ann_ms));
-            Ok(VectorLegResult {
-                keys,
-                ann_fallback: false,
-                run_shadow_observe: false,
-            })
-        },
-        Ok(Err(error)) => {
-            warn!(
-                target: "memory_index",
-                error = %error,
-                "ANN exact rerank failed; falling back to flat KNN"
-            );
-            hol_stats::record_ann_fallback();
-            fallback_ann_to_flat(
-                table,
-                embedding,
-                limit,
-                predicate,
-                search_started,
-                search_budget,
-            )
-            .await
-        },
-        Err(_) => {
-            hol_stats::record_ann_fallback();
-            hol_stats::record_vector_leg_times(None, Some(ann_ms));
-            Ok(VectorLegResult {
-                keys: Vec::new(),
-                ann_fallback: true,
-                run_shadow_observe: false,
-            })
-        },
     }
 }
 
@@ -5068,6 +5193,7 @@ async fn execute_vector_knn(
     predicate: Option<&str>,
     bypass_index: bool,
     nprobes: usize,
+    rerank_limit: Option<usize>,
 ) -> Result<Vec<String>> {
     let mut query = table
         .query()
@@ -5082,6 +5208,13 @@ async fn execute_vector_knn(
     } else {
         query.nprobes(nprobes.max(1))
     };
+    if rerank_limit.is_some() {
+        // Keep the same ANN shortlist, but let Lance fetch its original vectors
+        // by row ID and compute exact distances inside the native query. A second
+        // `chunk_key IN (...)` query scans the tail again and copies every vector
+        // into Rust. A refine factor of 1 still reranks the entire shortlist.
+        query = query.refine_factor(1);
+    }
     let batches = query
         .limit(limit.max(1))
         .select(Select::columns(&[
@@ -5094,6 +5227,9 @@ async fn execute_vector_knn(
         .try_collect::<Vec<_>>()
         .await
         .context("collecting LanceDB memory vector results")?;
+    if let Some(limit) = rerank_limit {
+        return ranked_candidate_keys_from_batches(&batches, limit);
+    }
     Ok(candidate_keys_from_batches(&batches))
 }
 
@@ -5112,57 +5248,24 @@ fn candidate_keys_from_batches(batches: &[RecordBatch]) -> Vec<String> {
     keys
 }
 
-async fn exact_rerank_ann_candidates(
-    table: &Table,
-    query: &[f32],
-    shortlist: &[String],
+fn ranked_candidate_keys_from_batches(
+    batches: &[RecordBatch],
     limit: usize,
-    predicate: Option<&str>,
 ) -> Result<Vec<String>> {
-    if shortlist.is_empty() {
-        return Ok(Vec::new());
-    }
-    let filter = key_in_predicate(shortlist, predicate, MEMORY_LANCEDB_CHUNK_KEY_COLUMN);
-    let batches = table
-        .query()
-        .only_if(filter)
-        .select(Select::columns(&[
-            MEMORY_LANCEDB_CHUNK_KEY_COLUMN,
-            MEMORY_LANCEDB_VECTOR_COLUMN,
-        ]))
-        .execute()
-        .await
-        .context("fetching embeddings for ANN exact rerank")?
-        .try_collect::<Vec<_>>()
-        .await
-        .context("collecting embeddings for ANN exact rerank")?;
-
     let mut ranked: Vec<(f32, String)> = Vec::new();
     for batch in batches {
-        let Some(keys) = string_column(&batch, MEMORY_LANCEDB_CHUNK_KEY_COLUMN) else {
-            continue;
-        };
-        let Some(vectors) = batch
-            .column_by_name(MEMORY_LANCEDB_VECTOR_COLUMN)
-            .and_then(|column| column.as_any().downcast_ref::<FixedSizeListArray>())
-        else {
-            continue;
-        };
+        let keys = string_column(batch, MEMORY_LANCEDB_CHUNK_KEY_COLUMN)
+            .context("missing chunk keys in refined ANN results")?;
+        let distances = batch
+            .column_by_name(MEMORY_LANCEDB_DISTANCE_COLUMN)
+            .and_then(|column| column.as_any().downcast_ref::<Float32Array>())
+            .context("missing exact distances in refined ANN results")?;
         for row in 0..batch.num_rows() {
-            if keys.is_null(row) {
+            if keys.is_null(row) || distances.is_null(row) {
                 continue;
             }
-            let Some(vector) = fixed_size_f32_row(vectors, row) else {
-                continue;
-            };
-            ranked.push((
-                l2_squared_distance(query, &vector),
-                keys.value(row).to_string(),
-            ));
+            ranked.push((distances.value(row), keys.value(row).to_string()));
         }
-    }
-    if ranked.is_empty() {
-        anyhow::bail!("ANN exact rerank fetched no embeddings");
     }
     ranked.sort_by(|left, right| {
         left.0
@@ -5179,6 +5282,7 @@ fn candidate_key_in_predicate(keys: &[String], extra: Option<&str>) -> String {
     key_in_predicate(keys, extra, MEMORY_LANCEDB_CANDIDATE_KEY_COLUMN)
 }
 
+#[cfg(test)]
 fn key_in_predicate(keys: &[String], extra: Option<&str>, column: &str) -> String {
     let mut unique = Vec::new();
     let mut seen = HashSet::new();
@@ -5199,6 +5303,7 @@ fn key_in_predicate(keys: &[String], extra: Option<&str>, column: &str) -> Strin
     }
 }
 
+#[cfg(test)]
 fn fixed_size_f32_row(list: &FixedSizeListArray, row: usize) -> Option<Vec<f32>> {
     if list.is_null(row) {
         return None;
@@ -5239,27 +5344,40 @@ async fn search_lancedb_hybrid(
     // directory epoch, so RRF cannot fuse a pre-invalidate snapshot with a
     // post-invalidate open. A cold pool still opens twice; a warm pool none.
     let (vector_guard, fts_guard) = checkout_search_table_pair(index_dir, generation).await?;
+    let table_checkout_ms = elapsed_ms(search_started);
     let vector_table = vector_guard.clone_table();
     let fts_table = fts_guard.clone_table();
     let joined = tokio::try_join!(
-        search_lancedb_vector_on_table_with(
-            settings,
-            &vector_table,
-            embedding,
-            limit,
-            predicate,
-            search_started,
-            search_budget,
-            false,
-        ),
-        search_lancedb_fts_on_table(&fts_table, query_text, limit, predicate),
+        async {
+            let started = Instant::now();
+            let result = search_lancedb_vector_on_table_with(
+                settings,
+                &vector_table,
+                embedding,
+                limit,
+                predicate,
+                search_started,
+                search_budget,
+                false,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>((result, elapsed_ms(started)))
+        },
+        async {
+            let started = Instant::now();
+            let hits =
+                search_lancedb_fts_on_table(&fts_table, query_text, limit, predicate).await?;
+            Ok::<_, anyhow::Error>((hits, elapsed_ms(started)))
+        },
     );
-    let (vector_leg, fts_hits) = match joined {
+    let ((vector_leg, vector_ms), (fts_hits, fts_ms)) = match joined {
         Ok(legs) => legs,
         Err(error) => return Err(error),
     };
     let vector_keys = vector_leg.keys;
     let served_ann_fallback = vector_leg.ann_fallback;
+    tracing::info!(target: "memory_index", table_checkout_ms, vector_ms, fts_ms,
+        served_ann_fallback, "Hybrid memory search leg timing");
     let run_shadow_observe = vector_leg.run_shadow_observe;
     drop((vector_table, fts_table));
     vector_guard.recycle();
@@ -5267,7 +5385,7 @@ async fn search_lancedb_hybrid(
     if run_shadow_observe {
         // Observe-only: do not delay the already-served flat+FTS hybrid.
         // DataFusion polls are not reliably cancelled by tokio::time::timeout,
-        // so awaiting here can still blow the outer 750ms budget.
+        // so awaiting here can still blow the outer configured budget.
         let index_dir = index_dir.to_path_buf();
         let generation = generation.to_string();
         let embedding = embedding.to_vec();
@@ -5559,6 +5677,71 @@ async fn ensure_lancedb_memory_indexes(table: &Table, index_dir: &Path) -> Resul
     }
     ensure_lancedb_ivf_pq(table, index_dir, &existing_indexes).await;
     Ok(())
+}
+
+/// Keep scalar search off a growing flat-scan tail. This is index-only work
+/// under the writer's existing locks: no compaction, pruning or re-embedding.
+/// IVF maintenance remains explicit because quantizing new rows can change
+/// ANN recall. Small tails accumulate before another delta index is built.
+async fn maintain_lancedb_scalar_indexes(
+    table: &Table,
+    index_dir: &Path,
+    mutated_rows: u64,
+    current_rows: u64,
+) -> MemoryLanceDbOptimizeReport {
+    let mut report = MemoryLanceDbOptimizeReport::not_attempted(
+        "scalar_tail_below_threshold",
+        mutated_rows,
+        current_rows,
+    );
+    let threshold = (current_rows / 20).clamp(128, 1024) as usize;
+    let result: Result<()> = async {
+        let mut names = Vec::new();
+        let mut max_parts = 0;
+        for index in table.list_indices().await? {
+            if !matches!(index.index_type, IndexType::BTree | IndexType::FTS) {
+                continue;
+            }
+            let Some(stats) = table.index_stats(&index.name).await? else {
+                continue;
+            };
+            if stats.num_unindexed_rows >= threshold {
+                max_parts = max_parts.max(stats.num_indices.unwrap_or(1));
+                names.push(index.name);
+            }
+        }
+        if names.is_empty() {
+            return Ok(());
+        }
+        report.attempted = true;
+        report.reason = Some("scalar_unindexed_tail".to_string());
+        // Bound delta fan-out. Keep the base index until eight parts accumulate,
+        // rather than rewriting the complete index on every small merge.
+        let options = if max_parts >= 8 {
+            OptimizeOptions::merge(8)
+        } else {
+            OptimizeOptions::append()
+        }
+        .index_names(names);
+        let mut invalidate = InvalidateLancePoolOnDrop::for_dir(index_dir);
+        invalidate.invalidate_scores = true;
+        invalidate.arm();
+        let optimized = timeout(
+            lancedb_optimize_timeout(),
+            table.optimize(OptimizeAction::Index(options)),
+        )
+        .await;
+        // The guard also invalidates scores if a partial commit is cancelled.
+        optimized.context("scalar memory index maintenance timed out")??;
+        report.completed = true;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        warn!(target: "memory_index", error = %error, "Scalar memory index maintenance failed; unindexed rows remain searchable");
+        report.error = Some(format!("{error:#}"));
+    }
+    report
 }
 
 async fn ensure_lancedb_ivf_pq(table: &Table, index_dir: &Path, existing_indexes: &[IndexConfig]) {
@@ -6609,6 +6792,13 @@ async fn acquire_memory_embedding_provider_permit(
     Ok(permit)
 }
 
+/// What an empty memory text is embedded as. Ollama (0.32 and 0.40) answers
+/// an empty input string with HTTP 400 "Input content cannot be empty", which
+/// failed the whole batch and, with it, every incremental index write until an
+/// explicit rebuild — so one empty chunk kept hybrid retrieval disabled.
+/// Whitespace is accepted; the chunk keeps its own (uninformative) vector.
+const EMPTY_EMBEDDING_INPUT_STAND_IN: &str = " ";
+
 fn plan_ollama_logical_embedding_inputs(
     texts: &[String],
     max_physical_input_bytes: usize,
@@ -6619,6 +6809,11 @@ fn plan_ollama_logical_embedding_inputs(
     let mut physical_inputs = Vec::new();
     let mut physical_owner_indexes = Vec::new();
     for (logical_index, text) in texts.iter().enumerate() {
+        if text.is_empty() {
+            physical_inputs.push(EMPTY_EMBEDDING_INPUT_STAND_IN.to_string());
+            physical_owner_indexes.push(logical_index);
+            continue;
+        }
         for segment in split_ollama_embedding_input(text, max_physical_input_bytes)? {
             physical_inputs.push(segment);
             physical_owner_indexes.push(logical_index);
@@ -7558,6 +7753,49 @@ mod tests {
             confidence: None,
             text: text.to_string(),
             metadata_json: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn memory_recall_prepared_passages_preserve_scores_ties_and_revision_binding() {
+        let text = format!(
+            "{} Last source passage.",
+            "Unicode source 話題. ".repeat(900)
+        );
+        let mut candidate = test_candidate("passage-lookup", &text);
+        candidate.content_hash = hash_bytes(text.as_bytes());
+        let last = build_memory_index_chunks(&[candidate.clone()]).len() - 1;
+        assert!(last > 0);
+        let parent = memory_candidate_index_score_key(&candidate);
+        let mut noise = BTreeMap::new();
+        for i in 0..512 {
+            noise.insert(passage_score_key(&format!("unrelated:{i}:☕"), i % 4), 0.8);
+        }
+        let mut cases = Vec::new();
+        let mut scores = noise.clone();
+        scores.insert(parent.clone(), 2.0); // Parent relevance is not a chunk vote.
+        scores.insert(passage_score_key(&parent, 0), 0.9);
+        scores.insert(passage_score_key(&parent, last), 0.9);
+        cases.push((scores.clone(), Some(0)));
+        scores.insert(passage_score_key(&parent, last), 1.0);
+        cases.push((scores.clone(), Some(last)));
+        scores.insert(passage_score_key(&parent, usize::MAX), 5.0);
+        cases.push((scores, None)); // Do not rescue an invalid winning chunk.
+        for (i, score) in [f32::NAN, f32::INFINITY, -1.0, 0.0].into_iter().enumerate() {
+            noise.insert(passage_score_key(&parent, i), score);
+        }
+        cases.push((noise, None));
+        let mut changed = candidate.clone();
+        changed.content_hash = "changed-canonical-revision".into();
+        for (scores, expected) in cases {
+            let lookup = MemoryIndexPassageLookup::new(&scores);
+            let passage = lookup.passage(&candidate);
+            assert_eq!(passage.as_ref().map(|p| p.chunk_index), expected);
+            assert_eq!(
+                passage,
+                memory_candidate_index_hit_passage(&candidate, &scores)
+            );
+            assert!(lookup.passage(&changed).is_none());
         }
     }
 
@@ -8569,6 +8807,20 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cannot hold the UTF-8 character"));
+    }
+
+    #[test]
+    fn an_empty_memory_text_is_never_sent_to_ollama_as_an_empty_input() {
+        let texts = vec!["abc".to_string(), String::new(), "xy".to_string()];
+        let plan = plan_ollama_logical_embedding_inputs(&texts, 4).unwrap();
+
+        assert!(plan.physical_inputs.iter().all(|input| !input.is_empty()));
+        assert_eq!(plan.physical_owner_indexes, vec![0, 1, 2]);
+        assert_eq!(plan.physical_inputs[1], EMPTY_EMBEDDING_INPUT_STAND_IN);
+        // The empty text still gets its own logical vector.
+        let physical = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![0.6, 0.8]];
+        let logical = aggregate_ollama_logical_embeddings(&plan, &physical, 2).unwrap();
+        assert_eq!(logical.len(), 3);
     }
 
     #[test]
@@ -9673,6 +9925,267 @@ mod tests {
             "ann mode with IVF must not silently fall back to flat"
         );
         crate::reset_vector_search_for_tests();
+    }
+
+    #[tokio::test]
+    async fn vector_search_native_refine_preserves_manual_shortlist_ranking() {
+        let _lock = crate::VECTOR_SEARCH_TEST_LOCK.lock().await;
+        crate::reset_vector_search_for_tests();
+        let (_tmp, table, _) = vector_search_fixture().await;
+        let varied: Vec<_> = (0..80)
+            .map(|i| {
+                let mut candidate = test_candidate(&format!("quantized-{i}"), "varied vector");
+                candidate.agent_id = Some(if i % 2 == 0 { "keeper" } else { "other" }.to_string());
+                candidate
+            })
+            .collect();
+        let varied_chunks = build_memory_index_chunks(&varied);
+        let vectors: Vec<Vec<f32>> = (0..80)
+            .map(|i| {
+                (0..4)
+                    .map(|axis| ((i * 37 + axis * 11) % 97) as f32 / 97.0)
+                    .collect()
+            })
+            .collect();
+        let batch = lancedb_record_batch(&varied, &varied_chunks, &vectors, 4).unwrap();
+        table
+            .add(record_batch_reader(batch))
+            .execute()
+            .await
+            .unwrap();
+        create_tiny_ivf_pq(&table).await;
+        // Include both indexed rows and a newly appended, unindexed row.
+        let mut added = test_candidate("new-nearest", "new vector");
+        added.agent_id = Some("keeper".to_string());
+        let added = vec![added];
+        let chunks = build_memory_index_chunks(&added);
+        let batch = lancedb_record_batch(&added, &chunks, &[vec![0.9, 0.1, 0.0, 0.0]], 4).unwrap();
+        table
+            .add(record_batch_reader(batch))
+            .execute()
+            .await
+            .unwrap();
+        for query in [
+            [1.0_f32, 0.0, 0.0, 0.0],
+            [0.37, 0.61, 0.17, 0.53],
+            [-0.23, 0.41, 0.67, 0.19],
+        ] {
+            for predicate in [None, Some("agent_id = 'keeper'")] {
+                let shortlist = execute_vector_knn(&table, &query, 12, predicate, false, 1, None)
+                    .await
+                    .unwrap();
+                let batches = table
+                    .query()
+                    .only_if(key_in_predicate(
+                        &shortlist,
+                        predicate,
+                        MEMORY_LANCEDB_CHUNK_KEY_COLUMN,
+                    ))
+                    .select(Select::columns(&[
+                        MEMORY_LANCEDB_CHUNK_KEY_COLUMN,
+                        MEMORY_LANCEDB_VECTOR_COLUMN,
+                    ]))
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap();
+                let mut manual = Vec::new();
+                for batch in batches {
+                    let keys = string_column(&batch, MEMORY_LANCEDB_CHUNK_KEY_COLUMN).unwrap();
+                    let vectors = batch
+                        .column_by_name(MEMORY_LANCEDB_VECTOR_COLUMN)
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<FixedSizeListArray>()
+                        .unwrap();
+                    for row in 0..batch.num_rows() {
+                        manual.push((
+                            l2_squared_distance(&query, &fixed_size_f32_row(vectors, row).unwrap()),
+                            keys.value(row).to_string(),
+                        ));
+                    }
+                }
+                manual.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then_with(|| a.1.cmp(&b.1)));
+                let expected: Vec<_> = manual.into_iter().take(3).map(|(_, key)| key).collect();
+                let native = execute_vector_knn(&table, &query, 12, predicate, false, 1, Some(3))
+                    .await
+                    .unwrap();
+                assert_eq!(native, expected, "predicate {predicate:?}");
+            }
+        }
+        crate::reset_vector_search_for_tests();
+    }
+
+    #[tokio::test]
+    async fn vector_search_scalar_maintenance_preserves_rows_and_ivf() {
+        let _lock = crate::VECTOR_SEARCH_TEST_LOCK.lock().await;
+        crate::reset_vector_search_for_tests();
+        let (tmp, table, _) = vector_search_fixture().await;
+        create_tiny_ivf_pq(&table).await;
+        let index_dir = tmp.path().join("lancedb");
+        let idle = maintain_lancedb_scalar_indexes(&table, &index_dir, 0, 16).await;
+        assert!(!idle.attempted);
+        let added: Vec<_> = (0..128)
+            .map(|i| test_candidate(&format!("tail-{i}"), "uniquetailtoken"))
+            .collect();
+        let chunks = build_memory_index_chunks(&added);
+        let batch = lancedb_record_batch(
+            &added,
+            &chunks,
+            &vec![vec![1.0, 0.0, 0.0, 0.0]; chunks.len()],
+            4,
+        )
+        .unwrap();
+        table
+            .add(record_batch_reader(batch))
+            .execute()
+            .await
+            .unwrap();
+        let indexes = table.list_indices().await.unwrap();
+        let vector_name = &indexes
+            .iter()
+            .find(|i| i.index_type == IndexType::IvfPq)
+            .unwrap()
+            .name;
+        let vector_before = table.index_stats(vector_name).await.unwrap().unwrap();
+        assert_eq!(vector_before.num_unindexed_rows, 128);
+        let report = maintain_lancedb_scalar_indexes(&table, &index_dir, 128, 144).await;
+        assert!(report.completed, "{report:?}");
+        assert!(!report.compaction_ran && !report.prune_ran);
+        assert_eq!(table.count_rows(None).await.unwrap(), 144);
+        let vector_after = table.index_stats(vector_name).await.unwrap().unwrap();
+        assert_eq!(
+            vector_after, vector_before,
+            "scalar maintenance must not quantize the vector tail"
+        );
+        for index in indexes
+            .iter()
+            .filter(|i| matches!(i.index_type, IndexType::BTree | IndexType::FTS))
+        {
+            assert_eq!(
+                table
+                    .index_stats(&index.name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .num_unindexed_rows,
+                0
+            );
+        }
+        let hits = search_lancedb_fts_on_table(&table, "uniquetailtoken", 144, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 128, "all appended rows must remain searchable");
+        let idle = maintain_lancedb_scalar_indexes(&table, &index_dir, 0, 144).await;
+        assert!(
+            !idle.attempted,
+            "a second pass must not rewrite covered indexes"
+        );
+        crate::reset_vector_search_for_tests();
+    }
+
+    /// Run against a private table copy, never the live writer's dataset.
+    async fn legacy_vector_search_for_benchmark(table: &Table, vector: &[f32]) -> Vec<String> {
+        let shortlist = execute_vector_knn(table, vector, 2048, None, false, 20, None)
+            .await
+            .unwrap();
+        let batches = table
+            .query()
+            .only_if(key_in_predicate(
+                &shortlist,
+                None,
+                MEMORY_LANCEDB_CHUNK_KEY_COLUMN,
+            ))
+            .select(Select::columns(&[
+                MEMORY_LANCEDB_CHUNK_KEY_COLUMN,
+                MEMORY_LANCEDB_VECTOR_COLUMN,
+            ]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let mut ranked = Vec::new();
+        for batch in batches {
+            let keys = string_column(&batch, MEMORY_LANCEDB_CHUNK_KEY_COLUMN).unwrap();
+            let vectors = batch
+                .column_by_name(MEMORY_LANCEDB_VECTOR_COLUMN)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                ranked.push((
+                    l2_squared_distance(vector, &fixed_size_f32_row(vectors, row).unwrap()),
+                    keys.value(row).to_string(),
+                ));
+            }
+        }
+        ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then_with(|| a.1.cmp(&b.1)));
+        ranked.into_iter().take(512).map(|(_, key)| key).collect()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires MAGICIAN_LANCE_BENCH_DIR and MAGICIAN_LANCE_BENCH_VECTOR"]
+    async fn vector_search_private_snapshot_benchmark() {
+        let dir = PathBuf::from(env::var("MAGICIAN_LANCE_BENCH_DIR").unwrap());
+        let vector: Vec<f32> = serde_json::from_slice(
+            &std::fs::read(env::var("MAGICIAN_LANCE_BENCH_VECTOR").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let table = open_existing_lancedb_memory_table(&dir)
+            .await
+            .unwrap()
+            .unwrap();
+        for phase in ["before_maintenance", "after_scalar_maintenance"] {
+            if phase == "after_scalar_maintenance" {
+                let rows = table.count_rows(None).await.unwrap();
+                let started = Instant::now();
+                let report = maintain_lancedb_scalar_indexes(&table, &dir, 0, rows as u64).await;
+                println!(
+                    "scalar_maintenance ms={} report={report:?}",
+                    elapsed_ms(started)
+                );
+                assert!(report.error.is_none());
+            }
+            // Independent handles retain their old dataset snapshot until
+            // reopened, just as the production pool must after maintenance.
+            let fts_table = open_existing_lancedb_memory_table(&dir)
+                .await
+                .unwrap()
+                .unwrap();
+            for run in 0..4 {
+                let started = Instant::now();
+                let (native, fts) = tokio::try_join!(
+                    execute_vector_knn(&table, &vector, 2048, None, false, 20, Some(512)),
+                    search_lancedb_fts_on_table(&fts_table, "browser connection", 512, None),
+                )
+                .unwrap();
+                println!(
+                    "native_hybrid phase={phase} run={run} ms={} vector_hits={} fts_hits={}",
+                    elapsed_ms(started),
+                    native.len(),
+                    fts.len()
+                );
+                assert_eq!(native.len(), 512);
+                let started = Instant::now();
+                let (legacy, _) = tokio::join!(
+                    legacy_vector_search_for_benchmark(&table, &vector),
+                    search_lancedb_fts_on_table(&fts_table, "browser connection", 512, None)
+                );
+                println!(
+                    "legacy_hybrid phase={phase} run={run} ms={}",
+                    elapsed_ms(started)
+                );
+                assert_eq!(
+                    legacy, native,
+                    "same shortlist and exact ranking in phase {phase}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

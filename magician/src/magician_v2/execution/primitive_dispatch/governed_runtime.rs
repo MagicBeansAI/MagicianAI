@@ -7,6 +7,7 @@
 //! CLI-template dispatcher after governed dispatch has been selected.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::Read,
@@ -108,6 +109,253 @@ pub(crate) fn admit_governed_route() -> GovernedRouteAdmission {
     GovernedRouteAdmission(())
 }
 
+/// Marks a governed dispatch error as a refusal of the requested action — the
+/// input, working directory or authorization was not admitted, nothing was
+/// dispatched, and the agent can act on the answer — rather than a fault of
+/// the runtime. The decision is taken where the error is produced, from the
+/// runtime's typed code; the dispatch functions keep their `String` error
+/// type, so the prefix carries it to the single conversion point
+/// [`governed_dispatch_error`]. It equals [`ExecutionError::Refused`]'s own
+/// display prefix, so the text the agent and the log see is unchanged by the
+/// conversion.
+///
+/// [`ExecutionError::Refused`]: crate::magician_v2::execution::error::ExecutionError::Refused
+pub(super) const GOVERNED_REFUSAL_PREFIX: &str = "refused: ";
+
+/// A governed dispatch error that refuses the requested action (see
+/// [`GOVERNED_REFUSAL_PREFIX`]). The original message is kept verbatim after
+/// the prefix, so substring matchers on it keep working.
+pub(super) fn governed_refusal(message: impl Into<String>) -> String {
+    format!("{GOVERNED_REFUSAL_PREFIX}{}", message.into())
+}
+
+/// The one conversion of a governed dispatch error into the execution error
+/// surface: a refusal becomes [`ExecutionError::Refused`] (logged as a
+/// warning, not retried), everything else stays a [`ExecutionError::Step`]
+/// fault.
+///
+/// [`ExecutionError::Refused`]: crate::magician_v2::execution::error::ExecutionError::Refused
+/// [`ExecutionError::Step`]: crate::magician_v2::execution::error::ExecutionError::Step
+pub(super) fn governed_dispatch_error(
+    message: String,
+) -> crate::magician_v2::execution::error::ExecutionError {
+    use crate::magician_v2::execution::error::ExecutionError;
+    match message.strip_prefix(GOVERNED_REFUSAL_PREFIX) {
+        Some(refusal) => ExecutionError::Refused(refusal.to_owned()),
+        None => ExecutionError::Step(message),
+    }
+}
+
+/// Whether the execution contract refused the request the agent made (its
+/// arguments, stdin, working directory or timeout) rather than failing on its
+/// own policy or the runtime's material. Exhaustive on purpose: a new code
+/// must be classified, not defaulted.
+fn admission_rejection_is_refusal(
+    code: tool_runtime_core::governed_execution::GovernedExecutionContractErrorCode,
+) -> bool {
+    use tool_runtime_core::governed_execution::GovernedExecutionContractErrorCode as Code;
+    match code {
+        Code::TooManyArguments
+        | Code::InvalidArgument
+        | Code::ArgumentsTooLarge
+        | Code::StdinDenied
+        | Code::StdinRequired
+        | Code::StdinTooLarge
+        | Code::WorkingDirectoryDenied
+        | Code::InvalidWorkingDirectory
+        | Code::InvalidTimeout => true,
+        Code::UnsupportedProtocol
+        | Code::InvalidLocalPolicy
+        | Code::StdinReservedForCredential
+        | Code::MaterializedStdinMissing
+        | Code::MaterializedStdinUnexpected => false,
+    }
+}
+
+/// `message` for an admission rejection, marked as a refusal when the typed
+/// code says the request itself was not admitted.
+fn admission_rejection(
+    message: String,
+    code: tool_runtime_core::governed_execution::GovernedExecutionContractErrorCode,
+) -> String {
+    if admission_rejection_is_refusal(code) {
+        governed_refusal(message)
+    } else {
+        message
+    }
+}
+
+/// Whether the coordinator refused the call before dispatch on authorization
+/// policy (denied, or awaiting an approval this lane cannot give). Every other
+/// code — including `ExecutionAuthorityFailed`, which is the exact executable
+/// or working-directory binding (an executable that is missing, unsafe or
+/// changed is an install fault; a model-chosen working directory is settled
+/// and refused with its own message before admission) — stays a fault, as
+/// does anything that may already have been dispatched.
+fn settlement_failure_is_refusal(
+    code: tool_runtime_core::governed_execution_coordinator::GovernedExecutionCoordinatorErrorCode,
+    dispatch: tool_runtime_core::governed_execution::GovernedExecutionDispatch,
+) -> bool {
+    use tool_runtime_core::governed_execution_coordinator::GovernedExecutionCoordinatorErrorCode;
+    type Code = GovernedExecutionCoordinatorErrorCode;
+    if dispatch != tool_runtime_core::governed_execution::GovernedExecutionDispatch::NotDispatched {
+        return false;
+    }
+    match code {
+        Code::AuthorizationDenied | Code::ApprovalRequired => true,
+        Code::InvalidCallContext
+        | Code::ContractMismatch
+        | Code::UnsupportedCredentialTarget
+        | Code::AuthorizationUnavailable
+        | Code::InvalidAuthorizationEvidence
+        | Code::Cancelled
+        | Code::TimedOut
+        | Code::ProfileAuthorityUnavailable
+        | Code::CredentialPreparationFailed
+        | Code::CredentialMaterializationFailed
+        | Code::ExecutionAuthorityFailed
+        | Code::ProcessFailed
+        | Code::ResultSealingFailed
+        | Code::AuditFailed
+        | Code::ReentrantExecution
+        | Code::InternalFailure => false,
+    }
+}
+
+/// `"<lane> execution failed before settlement (<code>, <dispatch>)"`, marked
+/// as a refusal when [`settlement_failure_is_refusal`] says so. The text is
+/// the one this lane always produced.
+fn settlement_failure(
+    lane: &str,
+    error: tool_runtime_core::governed_execution_coordinator::GovernedExecutionCoordinatorError,
+) -> String {
+    let message = format!(
+        "{lane} execution failed before settlement ({:?}, {:?})",
+        error.code,
+        error.dispatch()
+    );
+    if settlement_failure_is_refusal(error.code, error.dispatch()) {
+        governed_refusal(message)
+    } else {
+        message
+    }
+}
+
+#[cfg(test)]
+mod refusal_classification_tests {
+    use super::*;
+    use crate::magician_v2::execution::error::ExecutionError;
+    use tool_runtime_core::{
+        governed_execution::{GovernedExecutionContractErrorCode, GovernedExecutionDispatch},
+        governed_execution_coordinator::GovernedExecutionCoordinatorErrorCode,
+    };
+
+    /// Live 2026-10-19: dugite's rejected working directory was logged as an
+    /// ERROR although the agent had only asked for a folder the contract does
+    /// not admit. Each refusal of the request is `Refused`, with its text kept.
+    #[test]
+    fn request_admission_rejections_are_refusals_with_their_text_kept() {
+        for code in [
+            GovernedExecutionContractErrorCode::InvalidWorkingDirectory,
+            GovernedExecutionContractErrorCode::WorkingDirectoryDenied,
+            GovernedExecutionContractErrorCode::InvalidArgument,
+            GovernedExecutionContractErrorCode::TooManyArguments,
+            GovernedExecutionContractErrorCode::ArgumentsTooLarge,
+            GovernedExecutionContractErrorCode::StdinDenied,
+            GovernedExecutionContractErrorCode::StdinRequired,
+            GovernedExecutionContractErrorCode::StdinTooLarge,
+            GovernedExecutionContractErrorCode::InvalidTimeout,
+        ] {
+            let text = format!("governed runtime invocation was rejected ({code:?})");
+            match governed_dispatch_error(admission_rejection(text.clone(), code)) {
+                ExecutionError::Refused(message) => assert_eq!(message, text),
+                other => panic!("{code:?} must be a refusal, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn contract_and_material_admission_failures_stay_faults() {
+        for code in [
+            GovernedExecutionContractErrorCode::UnsupportedProtocol,
+            GovernedExecutionContractErrorCode::InvalidLocalPolicy,
+            GovernedExecutionContractErrorCode::StdinReservedForCredential,
+            GovernedExecutionContractErrorCode::MaterializedStdinMissing,
+            GovernedExecutionContractErrorCode::MaterializedStdinUnexpected,
+        ] {
+            let text = format!("governed runtime invocation was rejected ({code:?})");
+            match governed_dispatch_error(admission_rejection(text.clone(), code)) {
+                ExecutionError::Step(message) => assert_eq!(message, text),
+                other => panic!("{code:?} must stay a fault, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn authorization_denials_before_dispatch_are_refusals() {
+        for code in [
+            GovernedExecutionCoordinatorErrorCode::AuthorizationDenied,
+            GovernedExecutionCoordinatorErrorCode::ApprovalRequired,
+        ] {
+            assert!(settlement_failure_is_refusal(
+                code,
+                GovernedExecutionDispatch::NotDispatched
+            ));
+            // Once something may have run, it is no longer a clean refusal.
+            for dispatch in [
+                GovernedExecutionDispatch::Dispatched,
+                GovernedExecutionDispatch::UnknownAfterDispatch,
+            ] {
+                assert!(!settlement_failure_is_refusal(code, dispatch), "{code:?}");
+            }
+        }
+    }
+
+    /// `ExecutionAuthorityFailed` binds the exact executable and working
+    /// directory: a missing, unsafe or changed executable is an install fault,
+    /// and a model-chosen working directory is refused with its own message
+    /// before admission. So it stays an error, as do the runtime's own faults.
+    #[test]
+    fn infrastructure_settlement_failures_stay_faults() {
+        for code in [
+            GovernedExecutionCoordinatorErrorCode::ExecutionAuthorityFailed,
+            GovernedExecutionCoordinatorErrorCode::ProcessFailed,
+            GovernedExecutionCoordinatorErrorCode::CredentialPreparationFailed,
+            GovernedExecutionCoordinatorErrorCode::CredentialMaterializationFailed,
+            GovernedExecutionCoordinatorErrorCode::ProfileAuthorityUnavailable,
+            GovernedExecutionCoordinatorErrorCode::AuthorizationUnavailable,
+            GovernedExecutionCoordinatorErrorCode::AuditFailed,
+            GovernedExecutionCoordinatorErrorCode::InternalFailure,
+            GovernedExecutionCoordinatorErrorCode::TimedOut,
+            GovernedExecutionCoordinatorErrorCode::Cancelled,
+        ] {
+            assert!(
+                !settlement_failure_is_refusal(code, GovernedExecutionDispatch::NotDispatched),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_prefix_is_the_only_thing_that_makes_a_refusal() {
+        assert!(matches!(
+            governed_dispatch_error("governed runtime worker failed".to_owned()),
+            ExecutionError::Step(message) if message == "governed runtime worker failed"
+        ));
+        let refusal = governed_refusal("governed runtime input rejected: bad argument");
+        // What the agent and the log see is the same text either way.
+        assert_eq!(
+            governed_dispatch_error(refusal.clone()).to_string(),
+            refusal
+        );
+        assert!(matches!(
+            governed_dispatch_error(refusal),
+            ExecutionError::Refused(message)
+                if message == "governed runtime input rejected: bad argument"
+        ));
+    }
+}
+
 /// One span per governed execution — the whole credential-prepare, spawn,
 /// run and audit sequence, including the MCP hand-off.
 ///
@@ -155,6 +403,7 @@ pub(super) async fn dispatch_governed_runtime(
             action_id,
             arguments,
             exec_ctx,
+            Some(scope_paths),
         )
         .await;
     }
@@ -193,7 +442,7 @@ pub(super) async fn dispatch_governed_runtime(
             .ok_or("work-module action unavailable")?;
         let normalized = normalize_runtime_controls(&runtime.package, arguments)?;
         let lowered = lower_typed_action_invocation(action, &normalized)
-            .map_err(|e| format!("work-module input rejected: {e}"))?;
+            .map_err(|e| governed_refusal(format!("work-module input rejected: {e}")))?;
         if action
             .effective_policy
             .required_approvals
@@ -231,19 +480,43 @@ pub(super) async fn dispatch_governed_runtime(
             lifecycle_cancellation.cancel();
         })
     });
+    // The blocking worker loses the task-locals that say who acts and in
+    // which task folder; the goal workspace checks inside it need both.
+    let acting_agent = crate::magician_v2::execution::native_executors::ACTING_AGENT
+        .try_with(Clone::clone)
+        .ok();
+    let task_root = crate::magician_v2::execution::native_executors::TASK_SHELL_ROOT
+        .try_with(Clone::clone)
+        .ok();
+    // The governed child reads whatever its working directory and arguments
+    // reach: the run's evidence is fenced like that content.
+    crate::magician_v2::execution::goal_workspace_access::record_possible_reads();
     let result = tokio::task::spawn_blocking(move || {
-        dispatch_governed_runtime_blocking(
-            runtime.as_ref(),
-            admission,
-            &capability_id,
-            &action_id,
-            arguments,
-            &exec_ctx,
-            &scope_paths,
-            &brokered_workspace_paths,
-            &cancellation,
-            &lifecycle_cancellation,
-        )
+        let run = move || {
+            dispatch_governed_runtime_blocking(
+                runtime.as_ref(),
+                admission,
+                &capability_id,
+                &action_id,
+                arguments,
+                &exec_ctx,
+                &scope_paths,
+                &brokered_workspace_paths,
+                &cancellation,
+                &lifecycle_cancellation,
+            )
+        };
+        let run = move || match task_root {
+            Some(root) => crate::magician_v2::execution::native_executors::TASK_SHELL_ROOT
+                .sync_scope(root, run),
+            None => run(),
+        };
+        match acting_agent {
+            Some(agent) => {
+                crate::magician_v2::execution::native_executors::ACTING_AGENT.sync_scope(agent, run)
+            },
+            None => run(),
+        }
     })
     .await;
     if let Some(watcher) = watcher {
@@ -329,6 +602,8 @@ fn dispatch_governed_runtime_blocking(
     lifecycle_cancellation: &CredentialLifecycleProcessCancellation,
 ) -> Result<PrimitiveToolResult, String> {
     let started = Instant::now();
+    let bound_runtime = bind_scoped_runtime_environment(runtime, &scope_paths.home_root);
+    let runtime = bound_runtime.as_ref();
     let audit_store = exec_ctx
         .secret_store
         .as_deref()
@@ -386,37 +661,31 @@ fn dispatch_governed_runtime_blocking(
     let scope_root = authority
         .resolve_scope_root(&scope)
         .map_err(|_| "governed runtime scope root is unavailable".to_owned())?;
-    if let Some(root) = exec_ctx.governed_work_root.as_deref() {
-        if !brokered_workspace_paths.is_empty() {
-            return Err("quality work root cannot mix broker-owned paths".to_owned());
-        }
-        for (name, parameter) in &action.parameters {
-            if let TypedActionParameter::WorkspacePath { access, .. } = parameter {
-                if let Some(value) = normalized
-                    .as_object_mut()
-                    .and_then(|values| values.get_mut(name))
-                {
-                    let raw = value
-                        .as_str()
-                        .ok_or_else(|| "quality workspace path must be text".to_owned())?;
-                    *value = Value::String(
-                        bind_scoped_workspace_path(root, raw, *access)?
-                            .to_string_lossy()
-                            .into_owned(),
-                    );
-                }
-            }
-        }
-    } else {
-        bind_workspace_path_parameters(
-            action,
-            &mut normalized,
-            &scope_root,
-            brokered_workspace_paths,
-        )?;
+    if exec_ctx.governed_work_root.is_some() && !brokered_workspace_paths.is_empty() {
+        return Err("quality work root cannot mix broker-owned paths".to_owned());
     }
+    bind_workspace_path_parameters(
+        action,
+        &mut normalized,
+        &scope_root,
+        brokered_workspace_paths,
+        exec_ctx,
+    )?;
     let mut lowered = lower_typed_action_invocation(action, &normalized)
-        .map_err(|error| format!("governed runtime input rejected: {error}"))?;
+        .map_err(|error| governed_refusal(format!("governed runtime input rejected: {error}")))?;
+    // Magician does not own the governed spawn, so no OS box holds it: an
+    // argument naming goal workspace content the acting agent may not read
+    // (or a folder holding it) is refused before launch. The working
+    // directory is checked where each route settles it.
+    governed_goal_workspace_check(
+        lowered
+            .working_directory
+            .as_deref()
+            .map(Path::new)
+            .filter(|path| path.is_absolute())
+            .or(exec_ctx.governed_work_root.as_deref()),
+        &lowered.arguments,
+    )?;
     if exec_ctx.governed_work_root.is_some() {
         if !matches!(&validated.contract().runtime, RuntimeProtocol::Cli { working_directory, .. }
             if working_directory.mode == WorkingDirectoryMode::Workspace)
@@ -476,17 +745,36 @@ fn dispatch_governed_runtime_blocking(
         return Err("governed runtime auth kind is not migrated yet".to_owned());
     }
 
-    let auth_root = authority
-        .resolve_auth_root(&scope)
-        .map_err(|_| "governed runtime auth root is unavailable".to_owned())?;
+    let auth_root = authority.resolve_auth_root(&scope).map_err(|error| {
+        governed_step_failure(
+            "governed runtime auth root is unavailable",
+            error.code,
+            error.field,
+        )
+    })?;
 
     let config_source = operator_config_source(exec_ctx)?;
     let legacy = OperatorProfileAdapter::from_contract(&package.contract)
-        .map_err(|_| "governed runtime profile adapter is invalid".to_owned())?
+        .map_err(|error| {
+            governed_step_failure("governed runtime profile adapter is invalid", error, "")
+        })?
         .normalize(&config_source, scope.clone(), &authority)
-        .map_err(|_| "governed runtime profile configuration is invalid".to_owned())?;
-    let registry = LocalCredentialProfileRegistry::open(scope.clone(), auth_root, legacy)
-        .map_err(|_| "governed runtime profile registry is unavailable".to_owned())?;
+        .map_err(|error| {
+            governed_step_failure(
+                "governed runtime profile configuration is invalid",
+                error,
+                "",
+            )
+        })?;
+    let registry = LocalCredentialProfileRegistry::open(scope.clone(), auth_root, legacy).map_err(
+        |error| {
+            governed_step_failure(
+                "governed runtime profile registry is unavailable",
+                error.code,
+                error.field,
+            )
+        },
+    )?;
     let selection_request = CredentialProfileSelectionRequest::new(
         scope.clone(),
         package.contract.auth.provider.as_deref(),
@@ -494,9 +782,25 @@ fn dispatch_governed_runtime_blocking(
         &package.contract.auth.profile_selection,
         lowered.profile.as_deref(),
     )
-    .map_err(|_| "governed runtime profile selection is invalid".to_owned())?;
-    let initial_selection = select_credential_profile(&registry, &selection_request)
-        .map_err(|_| "governed runtime profile selection failed".to_owned())?;
+    .map_err(|error| {
+        profile_selection_failure(
+            "governed runtime profile selection is invalid",
+            error,
+            package,
+            &registry,
+            &scope,
+        )
+    })?;
+    let initial_selection =
+        select_credential_profile(&registry, &selection_request).map_err(|error| {
+            profile_selection_failure(
+                "governed runtime profile selection failed",
+                error,
+                package,
+                &registry,
+                &scope,
+            )
+        })?;
     let initial_status = initial_selection
         .selected_profile()
         .ok_or_else(|| "governed runtime requires a selected profile".to_owned())?;
@@ -506,7 +810,20 @@ fn dispatch_governed_runtime_blocking(
     )?;
     let profile_root = authority
         .resolve_profile_root(initial_status.key(), profile_directory)
-        .map_err(|_| "governed runtime profile path is unavailable".to_owned())?;
+        .map_err(|error| {
+            governed_step_failure(
+                "governed runtime profile path is unavailable",
+                error.code,
+                error.field,
+            )
+        })?;
+    // The lifecycle binding and the credential filesystem require every
+    // injected profile-auth sub-directory to exist owner-only (exactly 0700).
+    // A CLI or an older Magician that created one with the default umask
+    // (0755) made every call fail binding; heal it before binding.
+    if let Ok(root) = profile_root.revalidated_path() {
+        prepare_profile_auth_subdirectories(&package.contract, root, capability_id);
+    }
     let executable_directories = governed_executable_directories(exec_ctx, runtime, scope_paths)?;
     let baseline = ChildEnvironmentBaseline::portable_cli();
     let status_baseline_values = baseline_values(
@@ -522,7 +839,13 @@ fn dispatch_governed_runtime_blocking(
         initial_status.key(),
         CredentialLifecycleOperation::Status,
     )
-    .map_err(|_| "governed runtime status plan is unavailable".to_owned())?;
+    .map_err(|error| {
+        governed_step_failure(
+            "governed runtime status plan is unavailable",
+            error.code,
+            error.field,
+        )
+    })?;
     let status_invocation = CredentialLifecycleInvocation::bind(
         base_validated,
         status_plan.clone(),
@@ -530,13 +853,25 @@ fn dispatch_governed_runtime_blocking(
         &baseline,
         status_baseline_values,
     )
-    .map_err(|_| "governed runtime status binding failed".to_owned())?;
+    .map_err(|error| {
+        governed_step_failure(
+            "governed runtime status binding failed",
+            error.code,
+            error.field,
+        )
+    })?;
     let (status_process, observed) = GovernedCredentialLifecycleExecutor::execute_status_for_plan(
         &status_plan,
         &status_invocation,
         lifecycle_cancellation,
     )
-    .map_err(|_| "governed runtime profile status check failed".to_owned())?;
+    .map_err(|error| {
+        governed_step_failure(
+            "governed runtime profile status check failed",
+            error.code,
+            error.field,
+        )
+    })?;
     record_lifecycle_audit(
         audit_store,
         capability_id,
@@ -566,7 +901,13 @@ fn dispatch_governed_runtime_blocking(
             initial_status.key(),
             CredentialLifecycleOperation::Login,
         )
-        .map_err(|_| "governed runtime login plan is unavailable".to_owned())?;
+        .map_err(|error| {
+            governed_step_failure(
+                "governed runtime login plan is unavailable",
+                error.code,
+                error.field,
+            )
+        })?;
         let login_invocation = CredentialLifecycleInvocation::bind(
             base_validated,
             login_plan,
@@ -583,7 +924,13 @@ fn dispatch_governed_runtime_blocking(
                     .environment,
             )?,
         )
-        .map_err(|_| "governed runtime login binding failed".to_owned())?;
+        .map_err(|error| {
+            governed_step_failure(
+                "governed runtime login binding failed",
+                error.code,
+                error.field,
+            )
+        })?;
         // P4 (secure-HITL CLI lane): the login hook's PTY prompts the skill
         // declared are answered from material the run already holds — a
         // password or a one-time code the user gave through HITL — and never
@@ -708,27 +1055,54 @@ fn dispatch_governed_runtime_blocking(
     }
 
     let ready_status =
-        CredentialProfileStatus::new(initial_status.metadata().clone(), observed.state())
-            .map_err(|_| "governed runtime verified profile status is invalid".to_owned())?;
+        CredentialProfileStatus::new(initial_status.metadata().clone(), observed.state()).map_err(
+            |error| {
+                governed_step_failure(
+                    "governed runtime verified profile status is invalid",
+                    error.code,
+                    error.field,
+                )
+            },
+        )?;
     let verified_registry = VerifiedProfileRegistry {
         base: &registry,
         ready: ready_status.clone(),
     };
     let ready_selection = select_credential_profile(&verified_registry, &selection_request)
-        .map_err(|_| "governed runtime verified profile selection failed".to_owned())?;
+        .map_err(|error| {
+            profile_selection_failure(
+                "governed runtime verified profile selection failed",
+                error,
+                package,
+                &verified_registry,
+                &scope,
+            )
+        })?;
     let preparation = CredentialPreparationPlan::new(
         scope,
         effective_contract.auth.kind,
         &ready_selection,
         Vec::new(),
     )
-    .map_err(|_| "governed runtime credential preparation failed".to_owned())?;
+    .map_err(|error| {
+        governed_step_failure(
+            "governed runtime credential preparation failed",
+            error.code,
+            error.field,
+        )
+    })?;
     let injection = CredentialInjectionPlan::compile(
         validated,
         &preparation,
         ChildEnvironmentBaseline::portable_cli(),
     )
-    .map_err(|_| "governed runtime credential injection failed".to_owned())?;
+    .map_err(|error| {
+        governed_step_failure(
+            "governed runtime credential injection failed",
+            error.code,
+            error.field,
+        )
+    })?;
     let values = baseline_values(
         injection.baseline(),
         &executable_directories,
@@ -755,24 +1129,26 @@ fn dispatch_governed_runtime_blocking(
             execution_policy,
         )
         .map_err(|_| "governed runtime execution contract failed".to_owned())?;
-    let admitted_cwd = exec_ctx.governed_work_root.clone().or_else(|| {
-        lowered
-            .working_directory
-            .as_ref()
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    });
+    let (admitted_cwd, requested_cwd) = settle_workspace_working_directory(
+        contract_working_directory_mode(validated),
+        lowered.working_directory,
+        exec_ctx,
+        &scope_root,
+    )?;
     let intent = execution_contract
         .admit(GovernedExecutionRequest::new(
             lowered.arguments,
             lowered.stdin.map(String::into_bytes),
-            lowered.working_directory,
+            requested_cwd,
             Some(lowered.timeout_secs),
         ))
         .map_err(|error| {
-            format!(
-                "governed runtime invocation was rejected ({:?})",
-                error.code
+            admission_rejection(
+                format!(
+                    "governed runtime invocation was rejected ({:?})",
+                    error.code
+                ),
+                error.code,
             )
         })?;
     let envelope_id = governed_call_id("tool", exec_ctx);
@@ -784,6 +1160,7 @@ fn dispatch_governed_runtime_blocking(
             .map_err(|_| "governed runtime working directory changed".to_owned())?
             .to_path_buf(),
     };
+    governed_goal_workspace_check(Some(cwd.as_path()), &[])?;
     let working_directory =
         GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, cwd)
             .map_err(|_| "governed runtime working directory is unavailable".to_owned())?;
@@ -814,13 +1191,7 @@ fn dispatch_governed_runtime_blocking(
     let mut audit = ProductAuditSink { store: audit_store };
     let settlement = invocation
         .execute_batch(&mut authorizer, &mut resolver, &mut audit, cancellation)
-        .map_err(|error| {
-            format!(
-                "governed runtime execution failed before settlement ({:?}, {:?})",
-                error.code,
-                error.dispatch()
-            )
-        })?;
+        .map_err(|error| settlement_failure("governed runtime", error))?;
     let result = settlement.result();
     Ok(governed_batch_result(
         exec_ctx,
@@ -916,9 +1287,13 @@ fn dispatch_implicit_cli_runtime(
                 .environment,
         ),
     )?;
-    let (working_directory, normalized_working_directory, _actual_working_directory) =
+    let (working_directory, normalized_working_directory, actual_working_directory) =
         implicit_cli_working_directory(validated, lowered.working_directory.take(), exec_ctx)?;
     lowered.working_directory = normalized_working_directory;
+    // The implicit working directory is Magician's own (it may be the notes
+    // root): refused to an agent when it holds goal workspace content that
+    // agent may not read, since no OS box holds this child.
+    governed_goal_workspace_check(actual_working_directory.as_deref(), &lowered.arguments)?;
     if !lowered.runtime_controls.is_empty() {
         return Err("governed batch CLI has unconsumed runtime controls".to_owned());
     }
@@ -943,9 +1318,12 @@ fn dispatch_implicit_cli_runtime(
         lowered.working_directory,
         Some(lowered.timeout_secs),
     );
-    let intent = execution_contract
-        .admit(request)
-        .map_err(|_| "governed implicit CLI invocation was rejected".to_owned())?;
+    let intent = execution_contract.admit(request).map_err(|error| {
+        admission_rejection(
+            "governed implicit CLI invocation was rejected".to_owned(),
+            error.code,
+        )
+    })?;
     let scratch = CredentialScratchAuthority::open_or_create(&scope_root)
         .map_err(|_| "governed implicit CLI scratch authority is unavailable".to_owned())?;
     let filesystem = GovernedCredentialFilesystemRequest::new(&scratch, None);
@@ -996,13 +1374,7 @@ fn dispatch_implicit_cli_runtime(
     let mut audit = ProductAuditSink { store: audit_store };
     let settlement = invocation
         .execute_batch(&mut authorizer, resolver, &mut audit, cancellation)
-        .map_err(|error| {
-            format!(
-                "governed implicit CLI execution failed before settlement ({:?}, {:?})",
-                error.code,
-                error.dispatch()
-            )
-        })?;
+        .map_err(|error| settlement_failure("governed implicit CLI", error))?;
     let result = settlement.result();
     Ok(governed_batch_result(
         exec_ctx,
@@ -1122,24 +1494,26 @@ fn dispatch_profile_free_cli_runtime(
             execution_policy,
         )
         .map_err(|_| "governed runtime execution contract failed".to_owned())?;
-    let admitted_cwd = exec_ctx.governed_work_root.clone().or_else(|| {
-        lowered
-            .working_directory
-            .as_ref()
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    });
+    let (admitted_cwd, requested_cwd) = settle_workspace_working_directory(
+        contract_working_directory_mode(validated),
+        lowered.working_directory,
+        exec_ctx,
+        &scope_root,
+    )?;
     let intent = execution_contract
         .admit(GovernedExecutionRequest::new(
             lowered.arguments,
             lowered.stdin.map(String::into_bytes),
-            lowered.working_directory,
+            requested_cwd,
             Some(lowered.timeout_secs),
         ))
         .map_err(|error| {
-            format!(
-                "governed runtime invocation was rejected ({:?})",
-                error.code
+            admission_rejection(
+                format!(
+                    "governed runtime invocation was rejected ({:?})",
+                    error.code
+                ),
+                error.code,
             )
         })?;
 
@@ -1158,6 +1532,7 @@ fn dispatch_profile_free_cli_runtime(
                         .map_err(|_| "governed runtime working directory changed".to_owned())?
                         .to_path_buf(),
                 };
+                governed_goal_workspace_check(Some(cwd.as_path()), &[])?;
                 Some(
                     GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, cwd)
                         .map_err(|_| {
@@ -1221,13 +1596,7 @@ fn dispatch_profile_free_cli_runtime(
     let mut audit = ProductAuditSink { store: audit_store };
     let settlement = invocation
         .execute_batch(&mut authorizer, resolver, &mut audit, cancellation)
-        .map_err(|error| {
-            format!(
-                "governed runtime execution failed before settlement ({:?}, {:?})",
-                error.code,
-                error.dispatch()
-            )
-        })?;
+        .map_err(|error| settlement_failure("governed runtime", error))?;
     let result = settlement.result();
     Ok(governed_batch_result(
         exec_ctx,
@@ -1305,6 +1674,7 @@ fn bind_workspace_path_parameters(
     input: &mut Value,
     scope_root: &ScopedPath,
     brokered: &BTreeMap<String, BrokeredWorkspacePath>,
+    exec_ctx: &PrimitiveExecCtx,
 ) -> Result<(), String> {
     let values = input
         .as_object_mut()
@@ -1320,8 +1690,6 @@ fn bind_workspace_path_parameters(
         .map_err(|_| "governed workspace path root changed".to_owned())?;
     let scope_root = fs::canonicalize(scope_root)
         .map_err(|_| "governed workspace path root is unavailable".to_owned())?;
-    let mut workspace_root = None;
-
     for (name, parameter) in &action.parameters {
         let TypedActionParameter::WorkspacePath { access, .. } = parameter else {
             if brokered.contains_key(name) {
@@ -1341,29 +1709,246 @@ fn bind_workspace_path_parameters(
         let resolved = if let Some(binding) = brokered.get(name) {
             bind_brokered_workspace_path(raw, *access, binding)?
         } else {
-            if workspace_root.is_none() {
-                workspace_root = Some(resolve_workspace_file_root(&scope_root)?);
-            }
-            let root = workspace_root
-                .as_deref()
-                .ok_or_else(|| "governed workspace file root is unavailable".to_owned())?;
-            bind_scoped_workspace_path(root, raw, *access)?
+            bind_runtime_workspace_path(&scope_root, exec_ctx, raw, *access)?
         };
         *value = Value::String(resolved.to_string_lossy().into_owned());
     }
     Ok(())
 }
 
+/// File arguments share the task workdir used by native file tools. Without
+/// a task they retain the scope's workdirs root. An explicit absolute path may
+/// select an existing scope file; relative paths never search another root.
+/// A Quality work root remains exclusive. All roots come from runtime identity.
+pub(super) fn bind_runtime_workspace_path(
+    scope_root: &Path,
+    exec_ctx: &PrimitiveExecCtx,
+    raw: &str,
+    access: WorkspacePathAccess,
+) -> Result<PathBuf, String> {
+    let path = Path::new(raw);
+    if raw.contains('\\')
+        || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return Err("workspace path must be normalized without traversal".to_owned());
+    }
+    let root = if let Some(root) = &exec_ctx.governed_work_root {
+        root.clone()
+    } else {
+        if exec_ctx.task_id.is_some() && exec_ctx.task_work_root.is_none() && !path.is_absolute() {
+            return Err("task file root is unavailable; refusing to resolve a task-relative path in scope workdirs".to_owned());
+        }
+        let scope = fs::canonicalize(scope_root)
+            .map_err(|_| "governed workspace scope root is unavailable".to_owned())?;
+        let task = exec_ctx
+            .task_work_root
+            .as_deref()
+            .map(|root| {
+                if !fs::symlink_metadata(root)
+                    .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+                {
+                    return Err("task file root must be an existing real directory".to_owned());
+                }
+                let task = fs::canonicalize(root)
+                    .map_err(|_| "task file root is unavailable".to_owned())?;
+                if !super::super::native_executors::relative_within(&task, &scope)
+                    .is_some_and(|relative| !relative.as_os_str().is_empty())
+                {
+                    return Err("task file root escaped its scope".to_owned());
+                }
+                Ok(task)
+            })
+            .transpose()?;
+        match task {
+            Some(task)
+                if !path.is_absolute()
+                    || super::super::native_executors::relative_within(path, &task).is_some() =>
+            {
+                task
+            },
+            _ => resolve_workspace_file_root(&scope)?,
+        }
+    };
+    let relative = if path.is_absolute() {
+        super::super::native_executors::relative_within(path, &root).ok_or_else(|| {
+            format!(
+                "workspace path is outside the admitted file root {}",
+                root.display()
+            )
+        })?
+    } else {
+        path.to_path_buf()
+    };
+    let relative = relative.to_str().ok_or("workspace path must be UTF-8")?;
+    bind_scoped_workspace_path(&root, relative, access)
+        .map_err(|error| format!("{error}; file paths resolve within {}", root.display()))
+}
+
 /// The running task's workdir as a workspace-mode working directory, when it
 /// is an existing directory inside this scope. A skill that writes a relative
 /// output then lands in the task instead of the scope root.
 fn task_work_root(exec_ctx: &PrimitiveExecCtx, scope_root: &ScopedPath) -> Option<PathBuf> {
-    let workdir = fs::canonicalize(exec_ctx.task_work_root.as_ref()?).ok()?;
+    let workdir = exec_ctx.task_work_root.as_ref()?;
+    if !fs::symlink_metadata(workdir)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
+        return None;
+    }
+    let workdir = fs::canonicalize(workdir).ok()?;
     let scope = fs::canonicalize(scope_root.revalidated_path().ok()?).ok()?;
-    (workdir.is_dir() && workdir.starts_with(&scope)).then_some(workdir)
+    super::super::native_executors::relative_within(&workdir, &scope)
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|_| workdir)
 }
 
-fn resolve_workspace_file_root(scope_root: &Path) -> Result<PathBuf, String> {
+/// The working-directory mode a validated CLI contract runs in (`Denied` for
+/// a non-CLI contract, which never reaches a CLI dispatch).
+fn contract_working_directory_mode(
+    validated: tool_runtime_core::manifest_validation::ValidatedSkillRuntimeContract<'_>,
+) -> WorkingDirectoryMode {
+    match &validated.contract().runtime {
+        RuntimeProtocol::Cli {
+            working_directory, ..
+        } => working_directory.mode,
+        RuntimeProtocol::Mcp { .. } => WorkingDirectoryMode::Denied,
+    }
+}
+
+/// Where a workspace-mode CLI call runs, settled before admission: the folder
+/// bound as the call's root (`None`: the dispatcher's default) and the
+/// relative descendant of it the execution request still names.
+///
+/// A quality work root, or a contract that does not run in the workspace,
+/// leaves the request exactly as it was. Otherwise see
+/// [`resolve_workspace_working_directory`].
+fn settle_workspace_working_directory(
+    mode: WorkingDirectoryMode,
+    requested: Option<String>,
+    exec_ctx: &PrimitiveExecCtx,
+    scope_root: &ScopedPath,
+) -> Result<(Option<PathBuf>, Option<String>), String> {
+    if let Some(root) = exec_ctx.governed_work_root.clone() {
+        return Ok((Some(root), requested));
+    }
+    if mode != WorkingDirectoryMode::Workspace {
+        return Ok((None, requested));
+    }
+    let scope = scope_root
+        .revalidated_path()
+        .map_err(|_| "governed runtime working directory changed".to_owned())?
+        .to_path_buf();
+    let default_root = task_work_root(exec_ctx, scope_root).unwrap_or_else(|| scope.clone());
+    let granted: Vec<PathBuf> = exec_ctx
+        .session_file_sandbox_roots
+        .as_ref()
+        .and_then(|roots| {
+            roots
+                .lock()
+                .ok()
+                .map(|roots| roots.iter().map(PathBuf::from).collect())
+        })
+        .unwrap_or_default();
+    let (root, descendant) =
+        resolve_workspace_working_directory(requested.as_deref(), &default_root, &scope, &granted)?;
+    Ok((Some(root), descendant))
+}
+
+/// A workspace-mode `cwd` as `(root, descendant)`. The core admits only a
+/// bounded relative descendant of the bound root, so every other spelling a
+/// model sends is settled here instead of failing with a bare
+/// `InvalidWorkingDirectory` (`.`, an absolute path) or
+/// `ExecutionAuthorityFailed` (a relative folder that is not there):
+///
+/// - nothing, `""` or `.` → `default_root` (the task's workdir, else the scope
+///   root);
+/// - a relative path that exists below `default_root` → that descendant;
+/// - a relative path that does not, but names a folder below the scope's
+///   capability home (`workdirs/home`, the base a VibeDev project's relative
+///   `repo_path` resolves against) → that folder as the root;
+/// - an absolute path → that folder (canonical) as the root, when it is inside
+///   `default_root`, the scope's `workdirs`, a live VibeDev project folder of
+///   this scope, or a folder the owner granted this session (`granted`).
+///
+/// Anything else is refused with a message saying what is accepted.
+fn resolve_workspace_working_directory(
+    requested: Option<&str>,
+    default_root: &Path,
+    scope_root: &Path,
+    granted: &[PathBuf],
+) -> Result<(PathBuf, Option<String>), String> {
+    let Some(requested) = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != ".")
+    else {
+        return Ok((default_root.to_path_buf(), None));
+    };
+    let refused = || {
+        governed_refusal(format!(
+            "working directory `{requested}` is not usable: pass the absolute path of a folder \
+             in this workspace (a VibeDev project's folder, the task's working folder, or a \
+             folder the owner granted), a relative folder below the task's working folder, or \
+             no working directory to run in the task's working folder"
+        ))
+    };
+    let path = Path::new(requested);
+    let capability_home = scope_root.join("workdirs").join("home");
+    if path.is_absolute() {
+        let canonical = fs::canonicalize(path).map_err(|_| refused())?;
+        if !canonical.is_dir() {
+            return Err(refused());
+        }
+        let projects = crate::magician_v2::vibedev::projects::read_vibedev_projects(scope_root)
+            .into_iter()
+            .filter(|project| !project.archived)
+            .map(|project| {
+                crate::magician_v2::vibedev::trusted_workspace::project_repo_folder(
+                    project.repo_path.as_deref(),
+                    &capability_home,
+                )
+            });
+        let authorized = [default_root.to_path_buf()]
+            .into_iter()
+            .chain(resolve_workspace_file_root(scope_root).ok())
+            .chain(projects)
+            .chain(granted.iter().cloned())
+            .filter_map(|root| fs::canonicalize(root).ok())
+            .any(|root| canonical.starts_with(root));
+        return if authorized {
+            Ok((canonical, None))
+        } else {
+            Err(refused())
+        };
+    }
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => components.push(part.to_str().ok_or_else(refused)?),
+            Component::CurDir => {},
+            _ => return Err(refused()),
+        }
+    }
+    if components.is_empty() {
+        return Ok((default_root.to_path_buf(), None));
+    }
+    let relative = components.join("/");
+    if default_root.join(&relative).is_dir() {
+        return Ok((default_root.to_path_buf(), Some(relative)));
+    }
+    if let (Ok(home), Ok(folder)) = (
+        fs::canonicalize(&capability_home),
+        fs::canonicalize(capability_home.join(&relative)),
+    ) {
+        if folder.is_dir() && folder.starts_with(&home) {
+            return Ok((folder, None));
+        }
+    }
+    Err(refused())
+}
+
+pub(super) fn resolve_workspace_file_root(scope_root: &Path) -> Result<PathBuf, String> {
     let canonical_scope_root = fs::canonicalize(scope_root)
         .map_err(|_| "governed workspace scope root is unavailable".to_owned())?;
     if !fs::metadata(&canonical_scope_root).is_ok_and(|metadata| metadata.is_dir()) {
@@ -1521,7 +2106,9 @@ fn implicit_cli_working_directory(
         return if requested.is_none() {
             Ok((None, None, None))
         } else {
-            Err("governed implicit CLI working directory is denied".to_owned())
+            Err(governed_refusal(
+                "governed implicit CLI working directory is denied",
+            ))
         };
     }
     if mode != WorkingDirectoryMode::Workspace {
@@ -1530,7 +2117,9 @@ fn implicit_cli_working_directory(
 
     if let Some(admitted) = exec_ctx.governed_work_root.as_deref() {
         if requested.is_some() {
-            return Err("quality work root cannot select another working directory".to_owned());
+            return Err(governed_refusal(
+                "quality work root cannot select another working directory",
+            ));
         }
         let root = GovernedWorkingDirectoryRoot::open(mode, admitted)
             .map_err(|_| "governed quality workspace is unsafe".to_owned())?;
@@ -1554,17 +2143,29 @@ fn implicit_cli_working_directory(
     }
     let requested_path = Path::new(&requested);
     if !requested_path.is_absolute() {
-        let actual = fs::canonicalize(current.join(&requested))
-            .map_err(|_| "governed implicit CLI requested workspace is unavailable".to_owned())?;
+        let actual = fs::canonicalize(current.join(&requested)).map_err(|_| {
+            governed_refusal("governed implicit CLI requested workspace is unavailable")
+        })?;
+        if let Some(refusal) =
+            crate::magician_v2::execution::goal_workspace_access::refusal_for_current(
+                &actual,
+                crate::magician_v2::execution::goal_workspace_access::Op::Read,
+            )
+        {
+            return Err(refusal);
+        }
         let root = GovernedWorkingDirectoryRoot::open(mode, &current)
             .map_err(|_| "governed implicit CLI workspace is unsafe".to_owned())?;
         return Ok((Some(root), Some(requested), Some(actual)));
     }
 
-    let canonical = fs::canonicalize(requested_path)
-        .map_err(|_| "governed implicit CLI requested workspace is unavailable".to_owned())?;
+    let canonical = fs::canonicalize(requested_path).map_err(|_| {
+        governed_refusal("governed implicit CLI requested workspace is unavailable")
+    })?;
     if canonical != requested_path {
-        return Err("governed implicit CLI requested workspace is not canonical".to_owned());
+        return Err(governed_refusal(
+            "governed implicit CLI requested workspace is not canonical",
+        ));
     }
     let mut authorized = canonical == current || canonical.starts_with(&current);
     if !authorized {
@@ -1572,7 +2173,7 @@ fn implicit_cli_working_directory(
             .session_file_sandbox_roots
             .as_ref()
             .ok_or_else(|| {
-                "governed implicit CLI requested workspace is not authorized".to_owned()
+                governed_refusal("governed implicit CLI requested workspace is not authorized")
             })?
             .lock()
             .map_err(|_| "governed implicit CLI workspace authority is unavailable".to_owned())?;
@@ -1583,11 +2184,34 @@ fn implicit_cli_working_directory(
         });
     }
     if !authorized {
-        return Err("governed implicit CLI requested workspace is not authorized".to_owned());
+        return Err(governed_refusal(
+            "governed implicit CLI requested workspace is not authorized",
+        ));
+    }
+    // An approved folder never opens a goal workspace the acting agent may
+    // not read (`goal_workspace_access`).
+    if let Some(refusal) = crate::magician_v2::execution::goal_workspace_access::refusal_for_current(
+        &canonical,
+        crate::magician_v2::execution::goal_workspace_access::Op::Read,
+    ) {
+        return Err(refusal);
     }
     let root = GovernedWorkingDirectoryRoot::open(mode, &canonical)
         .map_err(|_| "governed implicit CLI requested workspace is unsafe".to_owned())?;
     Ok((Some(root), None, Some(canonical)))
+}
+
+/// Refuse a governed child whose working directory or arguments reach goal
+/// workspace content the acting agent may not read
+/// (`goal_workspace_access::unboxed_process_refusal`).
+fn governed_goal_workspace_check(cwd: Option<&Path>, arguments: &[String]) -> Result<(), String> {
+    match crate::magician_v2::execution::goal_workspace_access::unboxed_process_refusal(
+        cwd,
+        arguments.iter().map(String::as_str),
+    ) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
 }
 
 fn apply_effective_policy(base: &mut PolicyFloor, effective: &EffectiveActionPolicy) {
@@ -1626,7 +2250,13 @@ fn operator_config_source(exec_ctx: &PrimitiveExecCtx) -> Result<Zeroizing<Strin
     if let Some(source) = &exec_ctx.governed_operator_config_source {
         return Ok(Zeroizing::new(source.to_string()));
     }
-    let runtime = exec_ctx.storage_base_path.join("operator-config.yaml");
+    operator_config_source_at(&exec_ctx.storage_base_path)
+}
+
+/// The operator configuration the governed runtime reads under one storage
+/// root: the runtime file, or the checkout's seed when the runtime has none.
+fn operator_config_source_at(storage_base_path: &Path) -> Result<Zeroizing<String>, String> {
+    let runtime = storage_base_path.join("operator-config.yaml");
     let path = if runtime.is_file() {
         runtime
     } else {
@@ -1643,6 +2273,374 @@ fn operator_config_source(exec_ctx: &PrimitiveExecCtx) -> Result<Zeroizing<Strin
     fs::read_to_string(path)
         .map(Zeroizing::new)
         .map_err(|_| "governed runtime operator configuration is unreadable".to_owned())
+}
+
+/// A governed-runtime failure message that keeps the runtime's typed
+/// diagnostic instead of discarding it. Every `code`/`field` passed here comes
+/// from a tool-runtime-core (or Magician lifecycle-executor) error documented
+/// as path-, value-, argv- and output-free, so the text is safe for the model,
+/// the log and the run record. The code is also logged, so a failure is never
+/// reduced to a bare "failed".
+fn governed_step_failure(context: &str, code: impl std::fmt::Debug, field: &str) -> String {
+    let code = diagnostic_code_name(&format!("{code:?}"));
+    tracing::warn!(
+        step = context,
+        code = %code,
+        field = field,
+        "governed runtime step failed"
+    );
+    if field.is_empty() {
+        format!("{context} ({code})")
+    } else {
+        format!("{context} ({code} at `{field}`)")
+    }
+}
+
+/// `ProfileNotFound` → `profile_not_found`: the snake_case spelling the
+/// runtime's own serialized diagnostics use.
+fn diagnostic_code_name(debug: &str) -> String {
+    let mut name = String::with_capacity(debug.len() + 8);
+    for (index, character) in debug.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                name.push('_');
+            }
+            name.push(character.to_ascii_lowercase());
+        } else {
+            name.push(character);
+        }
+    }
+    name
+}
+
+/// A profile-selection failure the model can act on: for a missing, unknown,
+/// malformed or disabled profile it names the valid aliases (the skill's
+/// declared profile enum ∩ the enabled profiles registered for its provider),
+/// so the next call can succeed instead of repeating the same choice.
+fn profile_selection_failure(
+    context: &str,
+    error: tool_runtime_core::profile_selection::CredentialProfileSelectionError,
+    package: &SkillRuntimePackage,
+    registry: &dyn CredentialProfileRegistry,
+    scope: &CredentialScope,
+) -> String {
+    use tool_runtime_core::profile_selection::CredentialProfileSelectionErrorCode as Code;
+    let message = governed_step_failure(context, error.code, error.field);
+    if !matches!(
+        error.code,
+        Code::ProfileNotFound
+            | Code::MissingProfileSelection
+            | Code::InvalidRequestedProfile
+            | Code::ProfileDisabled
+    ) {
+        return message;
+    }
+    let parameter = package
+        .projected_profile_parameter()
+        .map(|parameter| parameter.name)
+        .unwrap_or("profile");
+    let provider = package
+        .contract
+        .auth
+        .provider
+        .as_deref()
+        .unwrap_or_default();
+    let registered = registry
+        .snapshot(scope)
+        .map(|snapshot| {
+            snapshot
+                .profiles()
+                .iter()
+                .filter(|profile| {
+                    profile.key().provider.as_str() == provider
+                        && profile.metadata().availability()
+                            == tool_runtime_core::credential_profiles::CredentialProfileAvailability::Enabled
+                })
+                .map(|profile| profile.key().alias.as_str().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let valid = selectable_profile_aliases(package, registered);
+    if valid.is_empty() {
+        format!(
+            "{message}: no `{parameter}` profile is configured for this tool; ask the owner to \
+             register one"
+        )
+    } else {
+        format!(
+            "{message}: `{parameter}` must be one of {}, or omitted for the default",
+            valid
+                .iter()
+                .map(|alias| format!("`{alias}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+/// Registered aliases narrowed to the skill's declared profile enum, when it
+/// declares one (the enum is the model-facing set; the registry stays the
+/// authority for whether an alias exists). Sorted and deduplicated.
+fn selectable_profile_aliases(
+    package: &SkillRuntimePackage,
+    registered: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let declared = package
+        .projected_profile_parameter()
+        .and_then(|parameter| parameter.enum_values)
+        .filter(|values| !values.is_empty());
+    registered
+        .into_iter()
+        .filter(|alias| declared.is_none_or(|values| values.contains(alias)))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The profile aliases an autonomous outward act may name for this package's
+/// selectable profile, with the contract default: the declared profile enum ∩
+/// the enabled operator profiles registered for its provider and storage
+/// namespace. Empty when the package has no selectable profile or the operator
+/// profiles cannot be read, so the outward gate then refuses any named alias
+/// (fail closed) while an omitted one still takes the contract default.
+pub(crate) fn approved_sender_profile_aliases(
+    package: &SkillRuntimePackage,
+    storage_base_path: &Path,
+) -> (Vec<String>, Option<String>) {
+    let default_alias = match &package.contract.auth.profile_selection {
+        ProfileSelection::Selectable { default } => default.clone(),
+        _ => return (Vec::new(), None),
+    };
+    let registered = OperatorProfileAdapter::from_contract(&package.contract)
+        .map_err(|error| diagnostic_code_name(&format!("{error:?}")))
+        .and_then(|adapter| {
+            let source = operator_config_source_at(storage_base_path)?;
+            adapter
+                .enabled_aliases(&source)
+                .map_err(|error| diagnostic_code_name(&format!("{error:?}")))
+        });
+    match registered {
+        Ok(registered) => (
+            selectable_profile_aliases(package, registered),
+            default_alias,
+        ),
+        Err(reason) => {
+            tracing::warn!(
+                reason = %reason,
+                "outward sender profiles unavailable; a named account will be refused"
+            );
+            (Vec::new(), default_alias)
+        },
+    }
+}
+
+/// What preparing one injected profile-auth sub-directory did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateProfileDirectory {
+    AlreadyPrivate,
+    Created,
+    Tightened,
+    /// Left untouched: a symlink, not a directory, another owner, owner bits
+    /// missing, or a component that would leave the profile root.
+    Refused,
+}
+
+/// Make every `profile_auth_root` sub-path the contract injects (gws's
+/// `cloudsdk`) an owner-only directory before the lifecycle binding inspects
+/// it: create a missing one 0700, and tighten an existing one this user owns
+/// whose group/other bits are set (gcloud, gws or an older Magician created it
+/// with the default umask). Best-effort — the runtime's own inspection stays
+/// the authority and still refuses anything this left alone — and logged by
+/// sub-path only, never by host path.
+fn prepare_profile_auth_subdirectories(
+    contract: &tool_runtime_core::manifest::SkillRuntimeContract,
+    profile_root: &Path,
+    capability_id: &str,
+) {
+    for injection in &contract.auth.injections {
+        let tool_runtime_core::manifest::InjectionSource::ProfileAuthRoot { path } =
+            &injection.source
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let sub_path = path.join("/");
+        match ensure_private_profile_subdirectory(profile_root, path) {
+            Ok(PrivateProfileDirectory::AlreadyPrivate) => {},
+            Ok(PrivateProfileDirectory::Created) => tracing::info!(
+                capability = capability_id,
+                sub_path = %sub_path,
+                "created owner-only profile auth directory"
+            ),
+            Ok(PrivateProfileDirectory::Tightened) => tracing::warn!(
+                capability = capability_id,
+                sub_path = %sub_path,
+                "tightened profile auth directory to 0700 (group/other access was set)"
+            ),
+            Ok(PrivateProfileDirectory::Refused) => tracing::warn!(
+                capability = capability_id,
+                sub_path = %sub_path,
+                "profile auth directory left untouched (symlink, foreign owner or not a directory)"
+            ),
+            Err(error) => tracing::warn!(
+                capability = capability_id,
+                sub_path = %sub_path,
+                error_kind = ?error.kind(),
+                "profile auth directory could not be prepared"
+            ),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn ensure_private_profile_subdirectory(
+    profile_root: &Path,
+    components: &[String],
+) -> std::io::Result<PrivateProfileDirectory> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    // Strictly inside the root: each component one normal path segment.
+    let inside = !components.is_empty()
+        && components.iter().all(|component| {
+            let mut parts = Path::new(component).components();
+            matches!(parts.next(), Some(Component::Normal(_))) && parts.next().is_none()
+        });
+    if !inside {
+        return Ok(PrivateProfileDirectory::Refused);
+    }
+    // SAFETY: `geteuid` has no preconditions and touches no Rust memory; it is
+    // read only to compare directory ownership with this process's owner.
+    let owner = unsafe { libc::geteuid() };
+    let mut outcome = PrivateProfileDirectory::AlreadyPrivate;
+    let mut current = profile_root.to_path_buf();
+    for component in components {
+        current.push(component);
+        let mut created = false;
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Ok(PrivateProfileDirectory::Refused);
+            },
+            Ok(_) => {},
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // One level at a time, so every parent was checked above.
+                fs::DirBuilder::new().mode(0o700).create(&current)?;
+                created = true;
+            },
+            Err(error) => return Err(error),
+        }
+        // Never follow a link swapped in after the check: open the directory
+        // itself and change its mode through that handle.
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(&current)?;
+        let metadata = directory.metadata()?;
+        if metadata.uid() != owner {
+            return Ok(PrivateProfileDirectory::Refused);
+        }
+        let mode = metadata.mode() & 0o7777;
+        if mode != 0o700 {
+            // Only ever remove access: a directory whose owner lacks rwx is
+            // not ours to repair.
+            if !created && mode & 0o700 != 0o700 {
+                return Ok(PrivateProfileDirectory::Refused);
+            }
+            directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+            if !created {
+                outcome = PrivateProfileDirectory::Tightened;
+            }
+        }
+        if created && outcome == PrivateProfileDirectory::AlreadyPrivate {
+            outcome = PrivateProfileDirectory::Created;
+        }
+    }
+    Ok(outcome)
+}
+
+#[cfg(not(unix))]
+fn ensure_private_profile_subdirectory(
+    _profile_root: &Path,
+    _components: &[String],
+) -> std::io::Result<PrivateProfileDirectory> {
+    Ok(PrivateProfileDirectory::AlreadyPrivate)
+}
+
+#[cfg(all(test, unix))]
+mod private_profile_directory_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::{ensure_private_profile_subdirectory, PrivateProfileDirectory};
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    }
+
+    fn private_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_world_readable_cloudsdk_directory_is_tightened_to_0700() {
+        let root = private_root();
+        let cloudsdk = root.path().join("cloudsdk");
+        std::fs::create_dir(&cloudsdk).unwrap();
+        std::fs::set_permissions(&cloudsdk, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let outcome =
+            ensure_private_profile_subdirectory(root.path(), &["cloudsdk".to_string()]).unwrap();
+        assert_eq!(outcome, PrivateProfileDirectory::Tightened);
+        assert_eq!(mode(&cloudsdk), 0o700);
+
+        let again =
+            ensure_private_profile_subdirectory(root.path(), &["cloudsdk".to_string()]).unwrap();
+        assert_eq!(again, PrivateProfileDirectory::AlreadyPrivate);
+    }
+
+    #[test]
+    fn a_missing_cloudsdk_directory_is_created_owner_only() {
+        let root = private_root();
+        let outcome =
+            ensure_private_profile_subdirectory(root.path(), &["cloudsdk".to_string()]).unwrap();
+        assert_eq!(outcome, PrivateProfileDirectory::Created);
+        assert_eq!(mode(&root.path().join("cloudsdk")), 0o700);
+    }
+
+    #[test]
+    fn a_symlinked_directory_is_refused_and_its_target_untouched() {
+        let root = private_root();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join("cloudsdk")).unwrap();
+
+        let outcome =
+            ensure_private_profile_subdirectory(root.path(), &["cloudsdk".to_string()]).unwrap();
+        assert_eq!(outcome, PrivateProfileDirectory::Refused);
+        assert_eq!(
+            mode(&target),
+            0o755,
+            "a symlink target must never be chmod'ed"
+        );
+    }
+
+    #[test]
+    fn a_component_leaving_the_profile_root_is_refused() {
+        let root = private_root();
+        for escape in ["..", "/tmp", "a/b", "."] {
+            let outcome =
+                ensure_private_profile_subdirectory(root.path(), &[escape.to_string()]).unwrap();
+            assert_eq!(outcome, PrivateProfileDirectory::Refused, "{escape}");
+        }
+    }
 }
 
 fn record_lifecycle_audit(
@@ -1695,14 +2693,14 @@ fn snapshot_target_executables(actions: &CompiledActionCatalog) -> BTreeSet<&str
 /// place, from its real path, beside its real siblings. Nothing about it is
 /// ever copied, so snapshot-safety is not a question that applies to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecutableRole {
+pub(super) enum ExecutableRole {
     /// An action can name this binary, so it can become the snapshot target.
     SnapshotTarget,
     /// Declared only so the child's PATH can reach it; never snapshotted.
     PathCompanion,
 }
 
-fn governed_executable_directory(
+pub(super) fn governed_executable_directory(
     exec_ctx: &PrimitiveExecCtx,
     runtime: &GovernedRuntimeImplementation,
     scope_paths: &CapabilityScopePaths,
@@ -1742,6 +2740,37 @@ fn governed_executable_directory(
         }
     }
     Err("governed runtime executable directory is unavailable".to_owned())
+}
+
+/// Resolve only runtime-owned scope placeholders in reviewed fixed values.
+/// Ordinary CLI-owned logins keep their existing HOME; an opt-in package can
+/// share its workspace state with another transport without consulting host state.
+fn bind_scoped_runtime_environment<'a>(
+    runtime: &'a GovernedRuntimeImplementation,
+    home: &Path,
+) -> Cow<'a, GovernedRuntimeImplementation> {
+    const PLACEHOLDER: &str = "{scope_workdirs_home}";
+    if !runtime
+        .package
+        .contract
+        .requires
+        .environment
+        .values()
+        .any(|value| value.contains(PLACEHOLDER))
+    {
+        return Cow::Borrowed(runtime);
+    }
+    let home = home.to_string_lossy();
+    let mut bound = runtime.clone();
+    for value in bound.package.contract.requires.environment.values_mut() {
+        *value = value.replace(PLACEHOLDER, &home);
+    }
+    if let Some(actions) = bound.actions.as_mut() {
+        for value in actions.execution.environment.values_mut() {
+            *value = value.replace(PLACEHOLDER, &home);
+        }
+    }
+    Cow::Owned(bound)
 }
 
 fn governed_executable_directories(
@@ -1836,7 +2865,13 @@ fn reviewed_executable_directory(
             ancestor.starts_with(package_authority) && ancestor.join("package.json").is_file()
         })
     });
-    if let Some(package_root) = package_root {
+    // A skill's own `bin/` entry is not inside the package it links to, so the
+    // containment search above finds no root for it. When the link lands in an
+    // installed npm package, that package's own native artifact is still the
+    // answer: a launcher such as `run-gws.js` requires `./binary` next to it and
+    // fails once copied alone into the snapshot.
+    let redirect_root = package_root.or_else(|| installed_package_root(&resolved));
+    if let Some(package_root) = redirect_root {
         let standalone_root = package_root.join("node_modules/.bin_real");
         if fs::canonicalize(&standalone_root).ok().as_deref() == Some(standalone_root.as_path()) {
             let standalone = standalone_root.join(executable_name);
@@ -1902,6 +2937,26 @@ fn reviewed_executable_directory(
         },
         ExecutableRole::PathCompanion => Some(directory),
     }
+}
+
+/// The npm package that installed `launcher`: its nearest `package.json`
+/// ancestor, when that directory is laid out as `node_modules/<name>` or
+/// `node_modules/@scope/<name>`.
+fn installed_package_root(launcher: &Path) -> Option<&Path> {
+    let root = launcher
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.join("package.json").is_file())?;
+    let is_node_modules =
+        |directory: &Path| directory.file_name() == Some(std::ffi::OsStr::new("node_modules"));
+    let parent = root.parent()?;
+    let scoped = parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('@'));
+    let installed =
+        is_node_modules(parent) || (scoped && parent.parent().is_some_and(is_node_modules));
+    installed.then_some(root)
 }
 
 /// Locate one standalone native executable shipped below an installed package
@@ -2613,6 +3668,85 @@ mod tests {
 
     use super::*;
 
+    /// A workspace-mode `cwd` is settled before admission (live 2026-10-19: a
+    /// VibeDev Autopilot coordinator passed its project's folder name, then
+    /// `.`, and dugite failed with `ExecutionAuthorityFailed` and
+    /// `InvalidWorkingDirectory` without saying why).
+    #[test]
+    fn a_workspace_cwd_resolves_to_an_authorized_folder_or_says_what_is_accepted() {
+        let tmp = TempDir::new().unwrap();
+        let scope = fs::canonicalize(tmp.path()).unwrap().join("scope");
+        let task = scope.join("internal_tasks").join("t-1").join("workdir");
+        let project = scope.join("workdirs").join("home").join("pi_live_test");
+        let outside = fs::canonicalize(tmp.path()).unwrap().join("outside");
+        let registered = fs::canonicalize(tmp.path()).unwrap().join("owner-repo");
+        for dir in [
+            task.join("out"),
+            project.clone(),
+            outside.clone(),
+            registered.clone(),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let resolve = |requested: Option<&str>, granted: &[PathBuf]| {
+            resolve_workspace_working_directory(requested, &task, &scope, granted)
+        };
+
+        // Nothing, `.` or blank: the task's own folder.
+        for requested in [None, Some("."), Some(" ")] {
+            assert_eq!(resolve(requested, &[]).unwrap(), (task.clone(), None));
+        }
+        // A folder below it stays a relative descendant for the core to admit.
+        assert_eq!(
+            resolve(Some("./out"), &[]).unwrap(),
+            (task.clone(), Some("out".to_string()))
+        );
+        // A VibeDev project's bare folder name resolves in the capability
+        // home, the base its relative `repo_path` uses.
+        assert_eq!(
+            resolve(Some("pi_live_test"), &[]).unwrap(),
+            (project.clone(), None)
+        );
+        // An absolute folder in the scope's workdirs is bound as the root.
+        let absolute = project.display().to_string();
+        assert_eq!(
+            resolve(Some(&absolute), &[]).unwrap(),
+            (project.clone(), None)
+        );
+
+        // Escapes, missing folders and unauthorized absolute paths are refused
+        // with a message that says what is accepted.
+        let outside_path = outside.display().to_string();
+        for requested in ["../escape", "missing", outside_path.as_str()] {
+            let error = resolve(Some(requested), &[]).unwrap_err();
+            assert!(error.contains("is not usable"), "{error}");
+            assert!(error.contains("absolute path"), "{error}");
+        }
+        // …unless the owner granted that folder this session…
+        assert_eq!(
+            resolve(Some(&outside_path), &[outside.clone()]).unwrap(),
+            (outside.clone(), None)
+        );
+        // …or it is a live VibeDev project's folder in this scope.
+        let store = crate::magician_v2::vibedev::projects::vibedev_project_store_path(&scope);
+        fs::create_dir_all(store.parent().unwrap()).unwrap();
+        fs::write(
+            &store,
+            serde_json::json!({"projects": [{
+                "project_id": "p-1", "name": "Owner repo", "chat_thread_id": "vibedev",
+                "chat_session_id": "s-1", "created_at_ms": 0, "updated_at_ms": 0,
+                "repo_path": registered.display().to_string()
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let registered_path = registered.display().to_string();
+        assert_eq!(
+            resolve(Some(&registered_path), &[]).unwrap(),
+            (registered.clone(), None)
+        );
+    }
+
     // ---- P4 Task 4.5: the CLI lane answers declared prompts from the run's
     // material and reports a typed challenge otherwise ------------------------
 
@@ -2886,6 +4020,200 @@ mod tests {
         .is_err());
     }
 
+    fn task_path_fixture() -> (TempDir, PathBuf, PrimitiveExecCtx) {
+        let temp = tempfile::tempdir().unwrap();
+        let scope = fs::canonicalize(temp.path()).unwrap().join("scope");
+        let task = scope.join("internal_tasks/current/workdir");
+        fs::create_dir_all(&task).unwrap();
+        fs::create_dir_all(scope.join("workdirs")).unwrap();
+        let ctx = PrimitiveExecCtx::default_for_runtime().with_task_work_root(Some(task));
+        (temp, scope, ctx)
+    }
+
+    #[test]
+    fn runtime_file_inputs_use_task_paths_and_explicit_scope_paths_without_searching() {
+        let (_temp, scope, ctx) = task_path_fixture();
+        let task = ctx.task_work_root.as_ref().unwrap();
+        fs::write(task.join("review.pdf"), b"task PDF").unwrap();
+        fs::write(scope.join("workdirs/review.pdf"), b"scope PDF").unwrap();
+        fs::write(scope.join("workdirs/scope-only.pdf"), b"scope only").unwrap();
+        for raw in [
+            "review.pdf".to_owned(),
+            task.join("review.pdf").display().to_string(),
+        ] {
+            let path =
+                bind_runtime_workspace_path(&scope, &ctx, &raw, WorkspacePathAccess::ReadFile)
+                    .unwrap();
+            assert_eq!(fs::read(path).unwrap(), b"task PDF");
+        }
+        let scoped = scope.join("workdirs/review.pdf");
+        assert_eq!(
+            bind_runtime_workspace_path(
+                &scope,
+                &ctx,
+                scoped.to_str().unwrap(),
+                WorkspacePathAccess::ReadFile
+            )
+            .unwrap(),
+            scoped
+        );
+        let error = bind_runtime_workspace_path(
+            &scope,
+            &ctx,
+            "scope-only.pdf",
+            WorkspacePathAccess::ReadFile,
+        )
+        .unwrap_err();
+        assert!(error.contains(&task.display().to_string()), "{error}");
+        assert!(bind_runtime_workspace_path(
+            &scope,
+            &ctx,
+            "scope-only.pdf",
+            WorkspacePathAccess::CreateFile
+        )
+        .unwrap()
+        .starts_with(task));
+        let no_task = PrimitiveExecCtx::default_for_runtime();
+        assert_eq!(
+            bind_runtime_workspace_path(
+                &scope,
+                &no_task,
+                "review.pdf",
+                WorkspacePathAccess::ReadFile
+            )
+            .unwrap(),
+            scoped
+        );
+    }
+
+    #[test]
+    fn runtime_file_inputs_refuse_sibling_tasks_private_state_and_symlink_escape() {
+        let (_temp, scope, ctx) = task_path_fixture();
+        let task = ctx.task_work_root.as_ref().unwrap();
+        for relative in ["internal_tasks/sibling/workdir", "auth"] {
+            fs::create_dir_all(scope.join(relative)).unwrap();
+            fs::write(scope.join(relative).join("secret.json"), b"private").unwrap();
+            assert!(bind_runtime_workspace_path(
+                &scope,
+                &ctx,
+                scope.join(relative).join("secret.json").to_str().unwrap(),
+                WorkspacePathAccess::ReadFile
+            )
+            .is_err());
+        }
+        symlink(scope.join("auth"), task.join("linked")).unwrap();
+        for raw in [
+            "../secret.json".to_owned(),
+            "linked/secret.json".to_owned(),
+            task.join("linked/secret.json").display().to_string(),
+            task.join("../workdir/linked/secret.json")
+                .display()
+                .to_string(),
+        ] {
+            assert!(
+                bind_runtime_workspace_path(&scope, &ctx, &raw, WorkspacePathAccess::ReadFile)
+                    .is_err(),
+                "{raw}"
+            );
+        }
+        assert!(bind_runtime_workspace_path(
+            &scope,
+            &ctx,
+            "linked/new.json",
+            WorkspacePathAccess::CreateFile
+        )
+        .is_err());
+        let missing = ctx
+            .clone()
+            .with_task_work_root(Some(scope.join("internal_tasks/missing/workdir")));
+        assert!(bind_runtime_workspace_path(
+            &scope,
+            &missing,
+            "anything.json",
+            WorkspacePathAccess::CreateFile
+        )
+        .is_err());
+        let no_root = PrimitiveExecCtx::default_for_runtime().with_scope(
+            Some("owner".into()),
+            Some("default".into()),
+            Some("current".into()),
+        );
+        assert!(bind_runtime_workspace_path(
+            &scope,
+            &no_root,
+            "review.json",
+            WorkspacePathAccess::CreateFile,
+        )
+        .unwrap_err()
+        .contains("task file root is unavailable"));
+    }
+
+    #[test]
+    fn runtime_file_inputs_keep_quality_root_exclusive() {
+        let (_temp, scope, mut ctx) = task_path_fixture();
+        let quality = tempfile::tempdir().unwrap();
+        let quality_root = fs::canonicalize(quality.path()).unwrap();
+        fs::write(quality_root.join("review.json"), b"{}").unwrap();
+        fs::write(scope.join("workdirs/review.json"), b"{}").unwrap();
+        ctx.governed_work_root = Some(quality_root.clone());
+        assert_eq!(
+            bind_runtime_workspace_path(&scope, &ctx, "review.json", WorkspacePathAccess::ReadFile)
+                .unwrap(),
+            quality_root.join("review.json")
+        );
+        assert!(bind_runtime_workspace_path(
+            &scope,
+            &ctx,
+            scope.join("workdirs/review.json").to_str().unwrap(),
+            WorkspacePathAccess::ReadFile
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn jq_typed_file_input_accepts_a_task_export_for_relative_and_absolute_paths() {
+        let fixture = Fixture::new();
+        let task = fixture
+            .scope_paths
+            .capabilities_root
+            .join("internal_tasks/current/workdir");
+        fs::create_dir_all(task.join("exports")).unwrap();
+        let input = task.join("exports/receipt.json");
+        fs::write(&input, b"{\"id\":\"receipt\"}").unwrap();
+        let package =
+            parse_skill_runtime_package(include_str!("../../../../../skillshub/jq/SKILL.md"))
+                .unwrap()
+                .unwrap();
+        let actions = tool_runtime_core::action_overrides::compile_typed_action_overrides(
+            "jq",
+            validate_skill_runtime_contract(&package.contract).unwrap(),
+            package.actions.as_ref().unwrap(),
+        )
+        .unwrap();
+        let authority = ScopedPathAuthority::open(fixture.storage.join("scopes")).unwrap();
+        let root = authority
+            .resolve_scope_root(&CredentialScope::new("owner", "default").unwrap())
+            .unwrap();
+        let ctx = PrimitiveExecCtx::default_for_runtime().with_task_work_root(Some(task));
+        for raw in [
+            "exports/receipt.json".to_owned(),
+            input.display().to_string(),
+        ] {
+            let mut args = serde_json::json!({"expression": ".id", "input_file": raw});
+            bind_workspace_path_parameters(
+                &actions.actions["run"],
+                &mut args,
+                &root,
+                &BTreeMap::new(),
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(args["input_file"], input.to_string_lossy().as_ref());
+            let lowered = lower_typed_action_invocation(&actions.actions["run"], &args).unwrap();
+            assert!(lowered.arguments.contains(&input.display().to_string()));
+        }
+    }
+
     #[test]
     fn brokered_workspace_path_is_exact_read_only_authority() {
         let root = tempfile::tempdir().unwrap();
@@ -3003,10 +4331,6 @@ mod tests {
     const VEO_GENERATION_PACK: (&str, &str) = (
         "video-generation-via-veo",
         include_str!("../../../../../skillshub/video-generation-via-veo/SKILL.md"),
-    );
-    const METABASE_PACK: (&str, &str) = (
-        "metabase",
-        include_str!("../../../../../skillshub/metabase/SKILL.md"),
     );
     const TELEGRAM_PACK: (&str, &str) = (
         "telegram",
@@ -3435,6 +4759,49 @@ metadata:
         }
     }
 
+    /// The gmail shape: a skill's own `bin/gws` links to the shared install's
+    /// `@googleworkspace/cli/run-gws.js`, which requires `./binary` beside it.
+    /// Copied alone into the snapshot it died with "Cannot find module", so the
+    /// status check saw empty stdout. The package's `.bin_real` artifact is the
+    /// snapshot target instead.
+    #[test]
+    fn skill_bin_link_into_an_installed_package_uses_its_standalone_artifact() {
+        let root = tempfile::tempdir().expect("temp root");
+        let package = root.path().join("node_modules/@vendor/cli");
+        let skill_bin = root.path().join("skill/bin");
+        fs::create_dir_all(package.join("node_modules/.bin_real")).expect("standalone bin");
+        fs::create_dir_all(&skill_bin).expect("skill bin");
+        fs::write(
+            package.join("package.json"),
+            b"{\"name\":\"@vendor/cli\"}\n",
+        )
+        .expect("package metadata");
+        fs::write(
+            package.join("run.js"),
+            b"#!/usr/bin/env node\nrequire('./binary')\n",
+        )
+        .expect("launcher");
+        fs::write(
+            package.join("node_modules/.bin_real/fixture-cli"),
+            b"\xcf\xfa\xed\xfe standalone",
+        )
+        .expect("standalone executable");
+        symlink(package.join("run.js"), skill_bin.join("fixture-cli")).expect("skill link");
+
+        assert_eq!(
+            reviewed_executable_directory(
+                &skill_bin,
+                "fixture-cli",
+                ExecutableRole::SnapshotTarget
+            ),
+            Some(
+                fs::canonicalize(package.join("node_modules/.bin_real"))
+                    .expect("canonical standalone bin")
+            ),
+            "the launcher's own native artifact is snapshotted, not the launcher"
+        );
+    }
+
     /// One PATH build over a package that names a companion this host does not
     /// have, and over a package whose entry point is the missing one.
     ///
@@ -3479,6 +4846,64 @@ metadata:
         )
     }
 
+    #[test]
+    fn scoped_runtime_environment_keeps_transports_in_the_requested_workspace() {
+        let package = parse_skill_runtime_package(&companion_probe_package("probe-cli"))
+            .expect("probe parses")
+            .expect("probe package");
+        let mut package = package;
+        package.contract.requires.environment.insert(
+            "CLI_STATE_HOME".to_owned(),
+            "{scope_workdirs_home}/.state".to_owned(),
+        );
+        package
+            .contract
+            .requires
+            .environment
+            .insert("LITERAL".to_owned(), "kept".to_owned());
+        let actions = tool_runtime_core::action_overrides::compile_typed_action_overrides(
+            "companion-probe",
+            validate_skill_runtime_contract(&package.contract).expect("probe contract"),
+            package.actions.as_ref().expect("probe actions"),
+        )
+        .expect("probe actions compile");
+        let runtime = GovernedRuntimeImplementation {
+            oauth_callback_mode: None,
+            mcp_bindings: None,
+            package,
+            actions: Some(actions),
+            executable_directory: None,
+            legacy_secret_environment: None,
+        };
+        for home in ["/scope one/workdirs/home", "/scope two/workdirs/home"] {
+            let bound = bind_scoped_runtime_environment(&runtime, Path::new(home));
+            let expected = format!("{home}/.state");
+            assert_eq!(
+                bound.package.contract.requires.environment["CLI_STATE_HOME"],
+                expected
+            );
+            assert_eq!(
+                bound.cli_actions().unwrap().execution.environment["CLI_STATE_HOME"],
+                expected
+            );
+            assert_eq!(
+                bound.package.contract.requires.environment["LITERAL"],
+                "kept"
+            );
+            validate_skill_runtime_contract(&bound.package.contract).unwrap();
+        }
+        assert_eq!(
+            runtime.package.contract.requires.environment["CLI_STATE_HOME"],
+            "{scope_workdirs_home}/.state"
+        );
+        let mut unbound = runtime;
+        unbound.package.contract.requires.environment.clear();
+        assert!(matches!(
+            bind_scoped_runtime_environment(&unbound, Path::new("/unused")),
+            Cow::Borrowed(_)
+        ));
+    }
+
     fn companion_probe_directories(
         entrypoint: &str,
         executable_directory: PathBuf,
@@ -3496,6 +4921,8 @@ metadata:
         )
         .expect("probe actions compile");
         let runtime = GovernedRuntimeImplementation {
+            oauth_callback_mode: None,
+            mcp_bindings: None,
             package,
             actions: Some(actions),
             executable_directory: Some(executable_directory),
@@ -3600,11 +5027,17 @@ metadata:
             .expect("magician/ has a parent")
             .join("skillshub");
         for skill in ["awk", "jq", "sed"] {
-            assert!(
-                !skillshub.join(skill).join("bin").exists(),
-                "{skill} must not reintroduce a wrapper now that the runtime \
-                 executes sealed system binaries in place"
-            );
+            // Setup's declared-CLI wiring (`shared_skill_bins.py`) may link the
+            // host tool into `bin/`; only a wrapper file in its place is a
+            // regression.
+            let entry = skillshub.join(skill).join("bin").join(skill);
+            if let Ok(metadata) = std::fs::symlink_metadata(&entry) {
+                assert!(
+                    metadata.file_type().is_symlink(),
+                    "{skill} must not reintroduce a wrapper now that the runtime \
+                     executes sealed system binaries in place"
+                );
+            }
 
             let system_bin = Path::new("/usr/bin");
             if !system_bin.join(skill).is_file() {
@@ -4030,30 +5463,6 @@ printf '{"success":true,"output_path":"outputs/v.mp4","model":"fixture"}\n'
             )
             .unwrap();
             fs::set_permissions(&veo_generation, fs::Permissions::from_mode(0o700)).unwrap();
-            let metabase = bin.join("metabase-pp-cli");
-            fs::write(
-                &metabase,
-                r#"#!/bin/sh
-if [ "$METABASE_BASE_URL" != "https://metabase.example" ]; then printf 'base url missing\n' >&2; exit 9; fi
-if [ "$METABASE_API_KEY" != "canary-metabase-secret" ]; then printf 'api key missing\n' >&2; exit 9; fi
-case "$*" in
-  "--json --no-input --no-color --yes table list --term active --can-query false --data-source 12 --select id,name")
-    printf '{"data":[{"id":12,"name":"active"}]}\n'
-    ;;
-  "--json --no-input --no-color --yes dataset parameter-search needle --stdin")
-    input=$(cat)
-    if [ "$input" != '{"field":1}' ]; then printf 'stdin mismatch\n' >&2; exit 8; fi
-    printf '{"data":["value"]}\n'
-    ;;
-  *)
-    printf 'argv mismatch: %s\n' "$*" >&2
-    exit 8
-    ;;
-esac
-"#,
-            )
-            .unwrap();
-            fs::set_permissions(&metabase, fs::Permissions::from_mode(0o700)).unwrap();
             let legacy_root = canonical_root.join("legacy-secret-env");
             fs::create_dir_all(&legacy_root).unwrap();
             fs::set_permissions(&legacy_root, fs::Permissions::from_mode(0o700)).unwrap();
@@ -4196,22 +5605,6 @@ esac
             );
         }
 
-        fn provision_metabase_secrets(&self, principal: &str, action: &str) {
-            let allowed_tool = format!("metabase:{action}");
-            self.provision_static_secret(
-                principal,
-                "METABASE_BASE_URL",
-                "https://metabase.example",
-                &allowed_tool,
-            );
-            self.provision_static_secret(
-                principal,
-                "METABASE_API_KEY",
-                "canary-metabase-secret",
-                &allowed_tool,
-            );
-        }
-
         fn provision_telegram_secret(&self, principal: &str) {
             self.provision_static_secret(
                 principal,
@@ -4304,6 +5697,8 @@ esac
             dispatch_governed_runtime(
                 admit_governed_route(),
                 Arc::new(GovernedRuntimeImplementation {
+                    oauth_callback_mode: None,
+                    mcp_bindings: None,
                     package,
                     actions: Some(actions),
                     executable_directory: None,
@@ -4832,49 +6227,6 @@ esac
     }
 
     #[tokio::test]
-    async fn metabase_direct_cli_preserves_boolean_argv_and_action_owned_stdin_ordering() {
-        let fixture = Fixture::new();
-        fixture.provision_metabase_secrets("owner", "table_list");
-        let result = fixture
-            .run_action(
-                METABASE_PACK.0,
-                METABASE_PACK.1,
-                "table_list",
-                serde_json::json!({
-                    "term": "active",
-                    "can_query": false,
-                    "data_source": 12,
-                    "extra_args": ["--select", "id,name"]
-                }),
-                "unused@example.com",
-                None,
-            )
-            .await
-            .expect("Metabase typed argv execution");
-        assert!(result.success);
-        assert_eq!(result.parsed_json.unwrap()["data"][0]["id"], 12);
-
-        fixture.provision_metabase_secrets("owner", "dataset_parameter_search");
-        let result = fixture
-            .run_action(
-                METABASE_PACK.0,
-                METABASE_PACK.1,
-                "dataset_parameter_search",
-                serde_json::json!({
-                    "args": ["needle"],
-                    "stdin": "{\"field\":1}"
-                }),
-                "unused@example.com",
-                None,
-            )
-            .await
-            .expect("Metabase action-owned stdin execution");
-        assert!(result.success);
-        assert_eq!(result.parsed_json.unwrap()["data"][0], "value");
-        assert!(!result.stdout.contains("canary-metabase-secret"));
-    }
-
-    #[tokio::test]
     async fn implicit_cli_owned_session_preserves_home_native_argv_and_approved_workspace() {
         let fixture = Fixture::new();
         let workspace = fs::canonicalize(fixture._root.path().join("coding-workspace")).unwrap();
@@ -4948,8 +6300,9 @@ esac
                 )
                 .await
                 .expect_err("manifest-owned argument policy must fail before launch");
+            // A refusal of the agent's input, not a runtime fault.
             assert!(
-                error.starts_with("governed runtime input rejected:"),
+                error.starts_with("refused: governed runtime input rejected:"),
                 "{error}"
             );
             assert!(!error.contains("auth"));
@@ -4979,7 +6332,7 @@ esac
             .expect_err("unapproved absolute workspace");
         assert_eq!(
             error,
-            "governed implicit CLI requested workspace is not authorized"
+            "refused: governed implicit CLI requested workspace is not authorized"
         );
         assert!(!workspace.join(".cli-owned-ran").exists());
     }

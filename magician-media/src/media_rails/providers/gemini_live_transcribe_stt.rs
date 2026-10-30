@@ -16,8 +16,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
+
+use magicllm::realtime::transport::connect as connect_async;
 
 use super::streaming_stt::{
     AudioChunk, StreamAudioFormat, StreamSampleFormat, StreamingSttCapabilities, StreamingSttEvent,

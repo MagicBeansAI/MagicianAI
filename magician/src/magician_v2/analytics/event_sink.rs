@@ -355,10 +355,12 @@ impl AnalyticsEventSink {
 
     async fn sweep_retention(pool: &Arc<DuckDbPool>) {
         let pool = Arc::clone(pool);
-        let result = magician_core::blocking_admission::spawn_blocking_admitted(move || -> anyhow::Result<usize> {
-            let conn = pool.write_connection();
-            trim_events_retention(&conn, Self::RETENTION_MIN_ROWS_PER_EVENT_TYPE)
-        })
+        let result = magician_core::blocking_admission::spawn_blocking_admitted(
+            move || -> anyhow::Result<usize> {
+                let conn = pool.write_connection();
+                trim_events_retention(&conn, Self::RETENTION_MIN_ROWS_PER_EVENT_TYPE)
+            },
+        )
         .await;
 
         match result {
@@ -530,10 +532,14 @@ fn write_events_parquet(analytics_root: &Path, events: &[AnalyticsEvent]) -> any
         }
         app.flush().context("flushing events_batch appender")?;
     }
-    let path_sql = path.display().to_string().replace('\'', "''");
-    conn.execute_batch(&format!(
-        "COPY events_batch TO '{path_sql}' (FORMAT PARQUET, COMPRESSION 'zstd');"
-    ))
+    // Staged, fsynced and renamed: `batch_<ulid>.parquet` only ever names a
+    // complete object, so a crash mid-`COPY` cannot leave a zero-byte batch.
+    super::parquet_maintenance::copy_to_parquet_durably(
+        &conn,
+        "events_batch",
+        "FORMAT PARQUET, COMPRESSION 'zstd'",
+        &path,
+    )
     .with_context(|| format!("copying events_batch to {}", path.display()))?;
     crate::magician_v2::dataset_owners::publish_written_parquet(&path)
         .with_context(|| format!("publishing events parquet {}", path.display()))?;
@@ -652,5 +658,24 @@ CREATE TABLE IF NOT EXISTS events (
             .unwrap();
         assert_eq!(bot_log_count, 3);
         assert_eq!(log_count, 2);
+    }
+
+    /// A batch is staged, fsynced and renamed: nothing but the published
+    /// object remains, and a dead writer's staging file is invisible to the
+    /// readers (the rebuild glob and the compaction source listing).
+    #[test]
+    fn events_parquet_write_leaves_no_staging_and_staging_is_invisible() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let event = AnalyticsEvent::log("info", "hello", "events_test");
+        let partition = temporary
+            .path()
+            .join("events")
+            .join(format!("dt={}", event.timestamp.format("%Y-%m-%d")));
+        write_events_parquet(temporary.path(), &[event]).expect("write events parquet");
+        crate::magician_v2::analytics::parquet_maintenance::assert_published_without_staging(
+            &partition,
+            crate::magician_v2::analytics::parquet_maintenance::PartitionedDataset::Events,
+            1,
+        );
     }
 }

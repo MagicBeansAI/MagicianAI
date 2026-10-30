@@ -52,6 +52,7 @@ fn request(words: usize, questions: usize, options: usize, frame: usize) -> Deci
         pack_id: "sweep".into(),
         pack_version: "1".into(),
         state: DecisionState::from_text(state(words, frame)),
+        assets: BTreeMap::new(),
         questions: (0..questions)
             .map(|q| {
                 Question::Choice(ChoiceQuestion {

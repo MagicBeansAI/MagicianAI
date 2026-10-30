@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 
 use actix_web::http::header::{self, HeaderValue};
-use actix_web::web::{Bytes, Json};
+use actix_web::web::{self, Bytes, Json};
 use actix_web::{HttpRequest, HttpResponse};
 use futures_util::Stream;
 use futures_util::{FutureExt, StreamExt};
@@ -25,7 +25,9 @@ use tokio_stream::wrappers::ReceiverStream;
 
 mod decision_metrics;
 mod decision_routing;
-pub use decision_metrics::{decision_metrics_cases, decision_metrics_get, decision_metrics_review};
+pub use decision_metrics::{
+    decision_metrics_cases, decision_metrics_get, decision_metrics_health, decision_metrics_review,
+};
 pub use decision_routing::{
     plane_decision_routing_get_handler, plane_decision_routing_put_handler,
 };
@@ -36,7 +38,7 @@ mod run_input;
 use elicitation::{CallState, ClientCapabilities, MAX_ACTIVE_CALLS};
 use uuid::Uuid;
 
-use magician::config::{load_magician_config_from_path, MagicianChatTurnSettings, PlaneConfig};
+use magician::config::{load_magician_config_from_path, PlaneConfig};
 use magician::magician_v2::auth::middleware::AuthRuntime;
 use magician::magician_v2::auth::sessions::SESSION_TOKEN_PREFIX;
 use magician::magician_v2::auth::workspace_registry;
@@ -50,9 +52,7 @@ use magician::magician_v2::execution::plane::{
 use magician::magician_v2::query_analysis::parent_engine::{
     engine_family_from_client_name, normalize_parent_engine,
 };
-use magician::magician_v2::runtime_settings::{
-    runtime_settings_paths, write_top_level_yaml_block, yaml_string,
-};
+use magician::magician_v2::runtime_settings::{runtime_settings_paths, write_yaml_section};
 
 // Optional GET notifications have one receiver per authenticated MCP session.
 // Elicitation requests and results always use their original POST stream.
@@ -699,7 +699,11 @@ pub(crate) fn owner_identity(
 /// `GET /api/magician/v2/plane/engines` — the harness roster with
 /// on-this-machine install status, so surfaces offer only what the operator
 /// can actually run. `magician` (the forced pin) is always available.
-pub async fn plane_engines_handler() -> HttpResponse {
+pub async fn plane_engines_handler(
+    resources: Option<
+        web::Data<Arc<magician::magician_v2::execution::agent_resources::AgentResources>>,
+    >,
+) -> HttpResponse {
     let mut engines: Vec<Value> =
         magician::magician_v2::execution::plane::roster_with_install_status()
             .into_iter()
@@ -707,11 +711,15 @@ pub async fn plane_engines_handler() -> HttpResponse {
                 let posture = magician::magician_v2::execution::plane::harness_engine_for(name)
                     .map(|engine| engine.capabilities().native_tool_posture.as_str())
                     .unwrap_or("live");
-                json!({
+                let mut row = json!({
                     "name": name,
                     "installed": installed,
                     "native_tool_posture": posture,
-                })
+                });
+                if let Some(label) = magician::magician_v2::harness_auth::credential_label(name) {
+                    row["credentials"] = json!(label);
+                }
+                row
             })
             .collect();
     engines.push(json!({
@@ -739,16 +747,48 @@ pub async fn plane_engines_handler() -> HttpResponse {
             ],
             "agy" => vec![
                 "default",
-                "gemini-3.7-flash-low",
-                "gemini-3.7-flash-medium",
-                "gemini-3.7-flash-high",
+                "gemini-3.8-flash-low",
+                "gemini-3.8-flash-medium",
+                "gemini-3.8-flash-high",
             ],
             _ => vec!["default"],
         }
     };
+    let config = resources
+        .as_ref()
+        .map(|resources| resources.magician_config_snapshot());
+    let native_models = magician::magician_v2::execution::coding_engine::catalog::models(
+        config.as_ref().and_then(|config| config.router_config()),
+    );
     for engine in engines.iter_mut() {
         let name = engine["name"].as_str().unwrap_or_default().to_string();
         engine["models"] = json!(models_for(&name));
+        let coding_name = match name.as_str() {
+            "grok" => "grok_acp",
+            "agy" => "agy_cli",
+            other => other,
+        };
+        // Runtime discovery: a model the CLI no longer offers leaves the
+        // picker list (named in `unavailable_models`); one it offers that the
+        // catalog lacks is already among `native_models`.
+        let catalog_models = native_models
+            .iter()
+            .filter(|model| model.engine == coding_name && model.offered())
+            .map(|model| model.choice.model.as_str())
+            .collect::<Vec<_>>();
+        if !catalog_models.is_empty() {
+            engine["models"] = json!(catalog_models);
+        }
+        engine["unavailable_models"] = json!(native_models
+            .iter()
+            .filter(|model| model.engine == coding_name && !model.offered())
+            .map(|model| model.choice.model.as_str())
+            .collect::<Vec<_>>());
+        engine["model_feedback"] = json!(native_models
+            .iter()
+            .filter(|model| model.engine == coding_name)
+            .map(|model| (&model.choice.model, model.choice.feedback))
+            .collect::<std::collections::BTreeMap<_, _>>());
     }
     let snapshot = magician::magician_v2::execution::plane::harness_engine_snapshot();
     let chat = magician::magician_v2::execution::plane::chat_harness_snapshot();
@@ -756,10 +796,12 @@ pub async fn plane_engines_handler() -> HttpResponse {
         "decision_mode": magician::magician_v2::decision_host::decision_mode(),
         "engines": engines,
         "current": snapshot.engine,
+        // The Settings choice is "same as chat"; `current` is what it resolves to.
+        "follows_chat": magician::magician_v2::execution::plane::harness_engine_follows_chat(),
         "chat_current": magician::magician_v2::execution::plane::coerce_chat_mouth_engine(&chat.engine),
         "chat_model": chat.harness_model,
         "run_model": snapshot.harness_model,
-        "run_pi_profile": snapshot.pi_profile,
+        "run_model_selection": snapshot.pi_profile.as_deref().and_then(|route| config.as_ref()?.router_config()?.profiles.get(route)).and_then(magicllm::catalog::selection_for_profile),
         "turn_max_seconds": snapshot.turn_max_seconds,
         "turn_max_tool_calls": snapshot.turn_max_tool_calls,
         "chat_turn_max_seconds": chat.turn_max_seconds,
@@ -767,66 +809,48 @@ pub async fn plane_engines_handler() -> HttpResponse {
     }))
 }
 
-/// Serialize the execution settings as the `execution:` block. Round-trips
-/// the typed struct so no field can be dropped by a hand-rendered subset
-/// (the section carries sandboxes and failure modes beyond the engine
-/// keys); comments in the block are surrendered, as with the chat writer.
-fn render_execution_config_block(settings: &magician::config::MagicianExecutionSettings) -> String {
-    let body = serde_yaml::to_string(settings).unwrap_or_default();
-    let indented: Vec<String> = body
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| format!("  {line}"))
-        .collect();
-    format!("execution:\n{}", indented.join("\n"))
-}
-
-fn render_chat_config_block(settings: &MagicianChatTurnSettings) -> String {
-    [
-        "chat:".to_string(),
-        "  # Who thinks a chat turn. `magician` is today's LLM mouth.".to_string(),
-        "  # Roster names (pi, claude_code, codex, grok, agy, codex_app_server) replace"
-            .to_string(),
-        "  # the mouth; native-tool strip is per-engine (stripped or sandboxed).".to_string(),
-        format!(
-            "  harness_engine: {}",
-            yaml_string(&settings.harness_engine)
-        ),
-        format!("  harness_model: {}", yaml_string(&settings.harness_model)),
-        format!(
-            "  harness_turn_max_tool_calls: {}",
-            settings.harness_turn_max_tool_calls
-        ),
-        format!(
-            "  harness_turn_max_seconds: {}",
-            settings.harness_turn_max_seconds
-        ),
-        format!(
-            "  harness_turn_stall_seconds: {}",
-            settings.harness_turn_stall_seconds
-        ),
-        "  # Iteration backstop for a native chat turn; liveness is the real stop.".to_string(),
-        "  # Reaching it ends the turn with a hand-off reply. 0 = default (200).".to_string(),
-        format!(
-            "  harness_turn_max_iterations: {}",
-            settings.harness_turn_max_iterations
-        ),
-        "  # Kill switch: fully specified chat pack calls run without a model;".to_string(),
-        "  # false = always model-driven.".to_string(),
-        format!(
-            "  chat_pack_direct_dispatch: {}",
-            settings.chat_pack_direct_dispatch
-        ),
-    ]
-    .join("\n")
-}
-
+/// Whether `name` can think a chat turn: `magician` or a roster harness.
 fn launchable_chat_engine(name: &str) -> bool {
     name == "magician"
         || matches!(
             magician::magician_v2::execution::plane::resolve_turn_engine(Some(name)),
             magician::magician_v2::execution::plane::TurnEngine::Harness(_)
         )
+}
+
+fn requested_pi_model_route(
+    body: &Value,
+    router: Option<&magicllm::LLMRouterConfig>,
+) -> Result<Option<Option<String>>, String> {
+    if body.get("pi_profile").is_some() {
+        return Err("Pi profile input is retired; send model_selection".into());
+    }
+    let Some(value) = body.get("model_selection") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(Some(None));
+    }
+    if body["harness_engine"] != "pi" {
+        return Err("A model selection requires the Pi engine".into());
+    }
+    let selection: magicllm::catalog::ModelSelection = serde_json::from_value(value.clone())
+        .map_err(|error| format!("Invalid model selection: {error}"))?;
+    let router = router.ok_or("The model catalog is unavailable")?;
+    let model = router
+        .catalog
+        .models
+        .get(&selection.model_id)
+        .filter(|model| model.coding && model.selectable && !model.embedding)
+        .ok_or("This model is not qualified for Pi")?;
+    if selection.thinking != "auto" && !model.thinking.levels.contains(&selection.thinking) {
+        return Err("This thinking level is unavailable for the selected model".into());
+    }
+    let route = magicllm::catalog::choice_id(&selection.model_id, &selection.thinking);
+    if !router.profiles.contains_key(&route) {
+        return Err("This model selection has no concrete route".into());
+    }
+    Ok(Some(Some(route)))
 }
 
 /// `PUT /api/magician/v2/plane/engine` — persist `execution.harness_engine`
@@ -852,7 +876,10 @@ pub async fn plane_engine_put_handler(
             "message": "name who thinks each loop iteration; `magician` is the built-in path"
         }));
     }
-    if !launchable_chat_engine(harness_engine) {
+    // `chat`: agentic flows think with whatever the chat engine is, resolved
+    // live, so there is no engine of its own to check here.
+    let follows_chat = magician::magician_v2::execution::plane::follows_chat_engine(harness_engine);
+    if !follows_chat && !launchable_chat_engine(harness_engine) {
         return HttpResponse::BadRequest().json(json!({
             "error": "harness_engine_not_launchable",
             "message": format!(
@@ -860,7 +887,7 @@ pub async fn plane_engine_put_handler(
             ),
         }));
     }
-    if harness_engine != "magician" {
+    if !follows_chat && harness_engine != "magician" {
         let installed = magician::magician_v2::execution::plane::roster_with_install_status()
             .into_iter()
             .any(|(name, installed)| name == harness_engine && installed);
@@ -879,27 +906,6 @@ pub async fn plane_engine_put_handler(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .unwrap_or("default");
-    let pi_profile_update = body.get("pi_profile").map(|value| {
-        if value.is_null() {
-            Ok(None)
-        } else {
-            value
-                .as_str()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .map(|name| Some(name.to_string()))
-                .ok_or("pi_profile must be a non-empty profile name or null")
-        }
-    });
-    let pi_profile_update = match pi_profile_update.transpose() {
-        Ok(update) => update,
-        Err(message) => {
-            return HttpResponse::BadRequest().json(json!({
-                "error": "invalid_pi_profile", "message": message,
-            }))
-        },
-    };
-
     let paths = runtime_settings_paths();
     let mut config = match load_magician_config_from_path(&paths.config_path) {
         Ok(config) => config,
@@ -910,8 +916,14 @@ pub async fn plane_engine_put_handler(
             }))
         },
     };
-    if let Some(update) = pi_profile_update {
-        config.execution.pi_profile = update;
+    let before = config.execution.clone();
+    match requested_pi_model_route(&body, config.router_config()) {
+        Ok(Some(update)) => config.execution.pi_profile = update,
+        Ok(None) => {},
+        Err(message) => {
+            return HttpResponse::BadRequest()
+                .json(json!({"error":"invalid_model_selection","message":message}))
+        },
     }
     if let Some(name) = config
         .execution
@@ -921,7 +933,7 @@ pub async fn plane_engine_put_handler(
     {
         let resolved = config
             .router_config()
-            .ok_or_else(|| anyhow::anyhow!("Magician has no configured LLM profiles"))
+            .ok_or_else(|| anyhow::anyhow!("The model catalog is unavailable"))
             .and_then(|router| {
                 magician::magician_v2::query_analysis::multi_llm_service::resolve_pi_profile_config(
                     router, name,
@@ -929,16 +941,19 @@ pub async fn plane_engine_put_handler(
             });
         if let Err(error) = resolved {
             return HttpResponse::BadRequest().json(json!({
-                "error": "invalid_pi_profile", "message": error.to_string(),
+                "error": "invalid_model_selection", "message": error.to_string(),
             }));
         }
     }
     config.execution.harness_engine = harness_engine.to_string();
     config.execution.harness_model = harness_model.to_string();
-    if let Err(error) = write_top_level_yaml_block(
+    // Only the switched values are written: re-rendering the block from its
+    // struct dropped every comment the owner kept under `execution:`.
+    if let Err(error) = write_yaml_section(
         &paths.config_path,
-        "execution",
-        &render_execution_config_block(&config.execution),
+        &["execution"],
+        &before,
+        &config.execution,
     ) {
         return HttpResponse::InternalServerError().json(json!({
             "error": "config_unwritable",
@@ -950,15 +965,18 @@ pub async fn plane_engine_put_handler(
     snapshot.engine = config.execution.harness_engine.clone();
     snapshot.harness_model = config.execution.harness_model.clone();
     snapshot.pi_profile = config.execution.pi_profile.clone();
+    snapshot.follows_chat = follows_chat;
     magician::magician_v2::execution::plane::install_harness_engine_snapshot(snapshot);
-    // The run engine is the primary affinity driver (owner rule 2026-08-31).
+    // The run engine is the primary affinity driver (owner rule 2026-08-31);
+    // following chat, that is the chat engine it resolves to right now.
+    let affinity = magician::magician_v2::execution::plane::harness_engine_snapshot().engine;
     magician::magician_v2::query_analysis::operation_llm_router::set_harness_affinity(Some(
-        harness_engine,
+        affinity.as_str(),
     ));
     HttpResponse::Ok().json(json!({
         "engine": config.execution.harness_engine,
         "harness_model": config.execution.harness_model,
-        "pi_profile": config.execution.pi_profile,
+        "model_selection": config.execution.pi_profile.as_deref().and_then(|route| config.router_config()?.profiles.get(route)).and_then(magicllm::catalog::selection_for_profile),
     }))
 }
 
@@ -1018,6 +1036,7 @@ pub async fn plane_chat_engine_put_handler(
             }))
         },
     };
+    let before = config.chat.clone();
     config.chat.harness_engine = harness_engine.to_string();
     let harness_model = body
         .get("harness_model")
@@ -1026,11 +1045,7 @@ pub async fn plane_chat_engine_put_handler(
         .filter(|model| !model.is_empty())
         .unwrap_or("default");
     config.chat.harness_model = harness_model.to_string();
-    if let Err(error) = write_top_level_yaml_block(
-        &paths.config_path,
-        "chat",
-        &render_chat_config_block(&config.chat),
-    ) {
+    if let Err(error) = write_yaml_section(&paths.config_path, &["chat"], &before, &config.chat) {
         return HttpResponse::InternalServerError().json(json!({
             "error": "config_unwritable",
             "message": format!("failed to update {}: {error}", paths.config_path.display()),
@@ -1238,6 +1253,20 @@ pub async fn plane_grants_revoke_handler(
     }
 }
 
+/// A run grant bound to its harness turn's channel is refused anywhere
+/// else: on the API port, straight to the plane-only listener, or on another
+/// session's channel (`plane::grant_channel`). A stolen grant is useless to
+/// the process that stole it.
+fn grant_off_its_channel(req: &HttpRequest, token: &str) -> Option<HttpResponse> {
+    let local = req.app_config().local_addr().port();
+    (!magician::magician_v2::execution::plane::grant_channel::admits(
+        token,
+        req.peer_addr(),
+        Some(local),
+    ))
+    .then(|| HttpResponse::Unauthorized().json(json!({"error": "grant_not_on_its_channel"})))
+}
+
 pub async fn plane_mcp_handler(
     req: HttpRequest,
     body: Json<Value>,
@@ -1249,6 +1278,9 @@ pub async fn plane_mcp_handler(
         Some(token) => token,
         None => return HttpResponse::Unauthorized().json(json!({"error": "missing_grant"})),
     };
+    if let Some(refused) = grant_off_its_channel(&req, &token) {
+        return refused;
+    }
     let mut grant = match resolve_plane_grant(&token, auth.as_ref().map(|d| d.get_ref())).await {
         Ok(Some(grant)) => grant,
         Ok(None) => {
@@ -1537,6 +1569,9 @@ pub async fn plane_mcp_sse_handler(
         Some(token) => token,
         None => return HttpResponse::Unauthorized().json(json!({"error": "missing_grant"})),
     };
+    if let Some(refused) = grant_off_its_channel(&req, &token) {
+        return refused;
+    }
     match resolve_plane_grant(&token, auth.as_ref().map(|d| d.get_ref())).await {
         Ok(Some(_)) => {},
         Ok(None) => {
@@ -1599,6 +1634,9 @@ pub async fn plane_mcp_delete_handler(
         Some(token) => token,
         None => return HttpResponse::Unauthorized().json(json!({"error": "missing_grant"})),
     };
+    if let Some(refused) = grant_off_its_channel(&req, &token) {
+        return refused;
+    }
     match resolve_plane_grant(&token, auth.as_ref().map(|d| d.get_ref())).await {
         Ok(Some(_)) => {},
         Ok(None) => {
@@ -1650,6 +1688,50 @@ mod tests {
     use actix_web::test as actix_test;
     use actix_web::{http::StatusCode, web, App};
     use magician::magician_v2::execution::plane::PlaneGrant;
+
+    #[test]
+    fn pi_model_selection_requires_a_qualified_model_and_keeps_auto_explicit() {
+        let router: magicllm::LLMRouterConfig = serde_json::from_value(json!({
+            "catalog": {
+                "connections":{"openai":{"provider":"openai"}},
+                "models":{
+                    "sol":{"connection":"openai","model":"gpt-6.1-sol","label":"Sol","coding":true,
+                        "limits":{"context_window_tokens":1050000,"max_output_tokens":128000},
+                        "capabilities":{"tools":true},"thinking":{"mode":"effort","levels":["low","high"],"default":"low"}},
+                    "not-qualified":{"connection":"openai","model":"another-model","label":"Not qualified",
+                        "limits":{"context_window_tokens":128000,"max_output_tokens":16384}}
+                }
+            },"default_profile":"model/sol/auto"
+        })).unwrap();
+        for thinking in ["auto", "high"] {
+            let body = json!({"harness_engine":"pi","model_selection":{"model_id":"sol","thinking":thinking}});
+            assert_eq!(
+                requested_pi_model_route(&body, Some(&router)).unwrap(),
+                Some(Some(format!("model/sol/{thinking}")))
+            );
+        }
+        assert_eq!(
+            requested_pi_model_route(
+                &json!({"harness_engine":"pi","model_selection":null}),
+                Some(&router)
+            )
+            .unwrap(),
+            Some(None)
+        );
+        assert_eq!(
+            requested_pi_model_route(&json!({"harness_engine":"pi"}), Some(&router)).unwrap(),
+            None
+        );
+        for body in [
+            json!({"harness_engine":"magician","model_selection":{"model_id":"sol"}}),
+            json!({"harness_engine":"pi","model_selection":{"model_id":"not-qualified"}}),
+            json!({"harness_engine":"pi","model_selection":{"model_id":"missing"}}),
+            json!({"harness_engine":"pi","model_selection":{"model_id":"sol","thinking":"none"}}),
+            json!({"harness_engine":"pi","pi_profile":"old","model_selection":{"model_id":"sol"}}),
+        ] {
+            assert!(requested_pi_model_route(&body, Some(&router)).is_err());
+        }
+    }
 
     /// One JSON-RPC POST at the door: `initialize` (the session id comes back
     /// in the header) or a call on an established session. A macro: the actix
@@ -1905,8 +1987,12 @@ mod tests {
                 let canonical = index
                     .get(name)
                     .expect("every hot tool has a canonical definition");
-                assert_eq!(tool["inputSchema"], canonical.parameters_schema, "{name}");
-                assert_eq!(tool["description"], canonical.description, "{name}");
+                let (description, schema) = magicllm::tool_schema::project_schema(
+                    &canonical.description,
+                    &canonical.parameters_schema,
+                );
+                assert_eq!(&tool["inputSchema"], schema.as_ref(), "{name}");
+                assert_eq!(tool["description"], description.as_ref(), "{name}");
             }
         }
         assert!(tools.iter().all(|tool| tool["name"] != "read_file"));
@@ -1974,9 +2060,15 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == "read_file")
             .unwrap();
+        let read_file = index.get("read_file").unwrap();
         assert_eq!(
-            loaded["inputSchema"],
-            index.get("read_file").unwrap().parameters_schema
+            &loaded["inputSchema"],
+            magicllm::tool_schema::project_schema(
+                &read_file.description,
+                &read_file.parameters_schema
+            )
+            .1
+            .as_ref()
         );
         let other: Value = actix_test::read_body_json(rpc!(
             app,
@@ -2183,27 +2275,6 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-    }
-
-    #[test]
-    fn render_chat_config_block_names_the_engine() {
-        let block = render_chat_config_block(&MagicianChatTurnSettings {
-            harness_engine: "claude_code".to_string(),
-            harness_model: "default".to_string(),
-            harness_turn_max_tool_calls: 4000,
-            harness_turn_max_seconds: 2400,
-            harness_turn_stall_seconds: 300,
-            harness_turn_max_iterations: 120,
-            chat_pack_direct_dispatch: false,
-        });
-        assert!(block.starts_with("chat:"));
-        assert!(block.contains("harness_engine: claude_code"));
-        assert!(block.contains("harness_turn_max_tool_calls: 4000"));
-        // The writer hand-renders the block: a key it omits is erased from
-        // the config file by the next chat-engine switch.
-        assert!(block.contains("harness_turn_stall_seconds: 300"));
-        assert!(block.contains("harness_turn_max_iterations: 120"));
-        assert!(block.contains("chat_pack_direct_dispatch: false"));
     }
 
     #[test]

@@ -531,8 +531,8 @@ async fn allow_once_fires_exactly_once_and_a_lost_response_retry_fires_nothing()
         "enforce",
         vec![
             order_decision("chicken biryani"),
-            // Resumed: the agent proposes the same order again.
-            order_decision("chicken biryani"),
+            // Resumed: the allowed order is replayed without asking the
+            // model, which then sees it placed and finishes.
             DONE.to_string(),
             // The retried resume: the same order once more.
             order_decision("chicken biryani"),
@@ -582,22 +582,28 @@ async fn an_answer_for_one_order_does_not_cover_a_changed_order() {
         "enforce",
         vec![
             order_decision("chicken biryani"),
-            // Resumed: the agent widens the act.
+            // Resumed: the allowed order is replayed, then the agent widens
+            // the act.
             order_decision("mutton biryani"),
         ],
     )
     .await;
     let pause_data = hold(&alignment).await;
     let resumed = resume(pause_data, UserInputValue::Confirmation { confirmed: true }).await;
-    assert!(
-        matches!(
-            resumed,
-            ResumeResult::Continue(AgenticOutcome::WaitingForConfirmation { .. })
-        ),
-        "the changed order is held again: {}",
-        describe(&resumed)
+    match &resumed {
+        ResumeResult::Continue(AgenticOutcome::WaitingForConfirmation { action_json, .. }) => {
+            assert!(
+                action_json.contains("mutton biryani"),
+                "the changed order is held again: {action_json}"
+            );
+        },
+        other => panic!("the changed order is held again: {}", describe(other)),
+    }
+    assert_eq!(
+        alignment.executions.load(Ordering::SeqCst),
+        1,
+        "only the order the owner allowed ran"
     );
-    assert_eq!(alignment.executions.load(Ordering::SeqCst), 0);
     assert_eq!(alignment.judge.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -665,8 +671,8 @@ async fn an_order_needing_approval_and_review_is_asked_once_and_one_answer_settl
         "enforce",
         vec![
             order_decision("chicken biryani"),
-            // Resumed: the agent proposes the same order again.
-            order_decision("chicken biryani"),
+            // Resumed: the allowed order is replayed without asking the
+            // model, which then sees it placed and finishes.
             DONE.to_string(),
         ],
     )
@@ -744,7 +750,8 @@ async fn a_shadow_check_never_joins_the_approval_ask() {
         "shadow",
         vec![
             order_decision("chicken biryani"),
-            order_decision("chicken biryani"),
+            // Resumed: the approved order is replayed without asking the
+            // model, which then sees it placed and finishes.
             DONE.to_string(),
         ],
     )
@@ -879,6 +886,7 @@ async fn the_shared_hitl_event_carries_no_preference_detail() {
         "This order includes meat, and you asked to be checked first.",
         "pack",
         Some(&ask),
+        None,
     );
     let mut seen = false;
     while let Ok(event) = events.try_recv() {

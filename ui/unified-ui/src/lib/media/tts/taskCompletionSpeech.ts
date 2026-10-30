@@ -30,6 +30,7 @@ import { voiceCallStore } from '$lib/media/voice/realtimeVoiceClient';
  *  import with `chatStore` (which imports this module). */
 interface TaskCompletionMessageLike {
 	id: string;
+	session_id?: string;
 	content?: {
 		type?: string;
 		status?: string;
@@ -64,7 +65,7 @@ function resolveCompletionTts(): CompletionTtsSelection | null {
 	return { state, selection };
 }
 
-let pendingRefocusSpeech: { messageId: string; text: string } | null = null;
+let pendingRefocusSpeech: { messageId: string; text: string; chatSessionId?: string } | null = null;
 let visibilityListenerBound = false;
 const spokenCompletionKeys = new Set<string>();
 const MAX_SPOKEN_COMPLETION_KEYS = 512;
@@ -96,7 +97,7 @@ function bindVisibilityFlush(): void {
 		// Re-check the gates at refocus time — a call may have started, or the
 		// user may have muted auto-speak, since the notification fired.
 		if (isVoiceCallActive()) return;
-		speakTaskText(queued.messageId, queued.text);
+		speakTaskText(queued.messageId, queued.text, queued.chatSessionId);
 	});
 }
 
@@ -125,7 +126,7 @@ function notifyDesktop(title: string, body: string): void {
 	}
 }
 
-function speakTaskText(messageId: string, text: string): void {
+function speakTaskText(messageId: string, text: string, chatSessionId?: string): void {
 	const resolved = resolveCompletionTts();
 	if (!resolved) return;
 	const { state, selection } = resolved;
@@ -139,6 +140,7 @@ function speakTaskText(messageId: string, text: string): void {
 		void providerSpeakBlocks(
 			{
 				messageId,
+				chatSessionId,
 				blocks: [{ text }],
 				provider: null,
 				voice: null,
@@ -183,9 +185,9 @@ export function maybeSpeakTaskCompletion(message: TaskCompletionMessageLike): vo
 	if (!claimCompletionSpeech(completionKey)) return;
 	if (typeof document !== 'undefined' && document.hidden) {
 		notifyDesktop('Task complete', text);
-		pendingRefocusSpeech = { messageId, text };
+		pendingRefocusSpeech = { messageId, text, chatSessionId: message.session_id };
 		bindVisibilityFlush();
 		return;
 	}
-	speakTaskText(messageId, text);
+	speakTaskText(messageId, text, message.session_id);
 }

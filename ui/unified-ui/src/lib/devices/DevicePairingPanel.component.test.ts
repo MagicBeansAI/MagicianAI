@@ -83,7 +83,8 @@ describe('DevicePairingPanel', () => {
 					last_seen_ms: 200,
 					client_kind: 'ios',
 					capabilities: ['mobile_client'],
-					automation_review_generation: 0
+					automation_review_generation: 0,
+					app_version: '0.4.11 (222)'
 				}]
 			}), { status: 200, headers: { 'Content-Type': 'application/json' } })
 		);
@@ -92,6 +93,7 @@ describe('DevicePairingPanel', () => {
 		render(DevicePairingPanel);
 
 		expect(await screen.findByText('Current iPhone')).toBeInTheDocument();
+		expect(screen.getByText('Magican iOS 0.4.11 (222)')).toBeInTheDocument();
 		expect(screen.queryByText('No mobile device is connected yet.')).not.toBeInTheDocument();
 		expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 		expect(screen.getByRole('button', { name: 'Connect iPhone' })).toBeInTheDocument();
@@ -139,6 +141,8 @@ describe('DevicePairingPanel', () => {
 		vi.stubGlobal('fetch', fetch);
 		render(DevicePairingPanel);
 		const toggle = await screen.findByRole('checkbox', { name: 'Use Pixel for verification codes' });
+		// A device whose app never reported a version says so instead of guessing.
+		expect(screen.getByText('Version not reported yet — update the app')).toBeInTheDocument();
 		expect(toggle).not.toBeChecked();
 		await userEvent.setup().click(toggle);
 		await waitFor(() => expect(permitted).toEqual({ device_id: 'pixel-1', permitted: true }));

@@ -326,6 +326,10 @@ final class AudioSettings: ObservableObject {
     @Published var systemVoiceLaunchMode: SystemVoiceLaunchMode {
         didSet { store.set(systemVoiceLaunchMode.rawValue, forKey: Keys.systemVoiceLaunchMode) }
     }
+    /// The in-app mic's selected flow, independent of system shortcuts.
+    @Published var composerVoiceMode: SystemVoiceLaunchMode {
+        didSet { store.set(composerVoiceMode.rawValue, forKey: "audio_composer_voice_mode") }
+    }
     /// Ignore open-mic room speech unless it starts with the primary agent's
     /// negotiated "Hey <name or alias>" phrase.
     @Published var requireVoicePrefix: Bool {
@@ -349,7 +353,10 @@ final class AudioSettings: ObservableObject {
     /// Which engine a Live call opens with. These Live-call controls are
     /// device-local: changing iOS never changes Web or backend preferences.
     @Published var liveVoiceEngine: VoiceEngine {
-        didSet { store.set(liveVoiceEngine.rawValue, forKey: Keys.liveVoiceEngine) }
+        didSet {
+            store.set(liveVoiceEngine.rawValue, forKey: Keys.liveVoiceEngine)
+            if composerVoiceMode != .dictation { composerVoiceMode = liveVoiceEngine == .realtime ? .realtime : .handsFree }
+        }
     }
     /// Native Live-call provider profile. The existing backend-proxied GPT mini
     /// remains the device default; selecting Gemini is an explicit local choice.
@@ -410,6 +417,7 @@ final class AudioSettings: ObservableObject {
         systemVoiceLaunchMode = SystemVoiceLaunchMode(
             rawValue: store.string(forKey: Keys.systemVoiceLaunchMode) ?? ""
         ) ?? .dictation
+        composerVoiceMode = SystemVoiceLaunchMode(rawValue: store.string(forKey: "audio_composer_voice_mode") ?? "") ?? .dictation
         requireVoicePrefix = (store.object(forKey: Keys.requireVoicePrefix) as? Bool) ?? true
         // Defaults to the design's canonical long leash rather than the shortest
         // option: the window is explicitly armed by the user each time and its

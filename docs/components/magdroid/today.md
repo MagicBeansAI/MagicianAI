@@ -73,10 +73,13 @@ instances cut from the variable font; a single variable resource renders Bold
 thin on device). Section titles shrink to one line (`FitText`); kickers use
 the theme mono font; colours come from the active palette.
 
+Card reads omit full-universe diagnostic scans. Pulse slices and page sections publish independently as requests finish; first-load placeholders stay visible until that section settles, and refreshes retain existing content.
+Both Reading Room layouts show absolute local receipt/surfacing dates and `For You · source` / `Worth a Look · source` labels; older servers without `surfaced_at` use a labelled reference date when available.
+
 ## Morning Brief deck
 
 The deck interleaves two channel follow-ups, then one worth-a-look card. Tabs
-All / For You / Worth a Look show how many cards are left. The top card sits
+All / For You / Worth a Look show server totals; the caption separates loaded cards from the total. The top card sits
 over up to two preview cards.
 
 | Gesture / button | Follow-up | Worth a look |
@@ -84,8 +87,28 @@ over up to two preview cards.
 | drag right past 95dp (or flick) · `✓ Useful` | `useful` | `open` feedback |
 | drag left past 95dp · `✕ Dismiss` | `dismiss` (no reason) | `dismiss` |
 | `Seen` button | `acknowledge` | `acknowledge` |
-| `⚡ Do it` / `⚡ Open` | `approve` | `open`, then the source (route, URL, or the detail sheet) |
-| tap | message sheet with every follow-up action | resurfacing detail sheet |
+| `⚡ Act` | opens the Act menu (below) | opens the Act menu (below) |
+| tap · `Details ›` | message sheet with every follow-up action | resurfacing detail sheet |
+
+`⚡ Act` (and the card's **Act** accessibility action) only opens a menu of
+the card's real actions (`deckActMenu`); tags are `today-deck-act` and
+`today-deck-act-<id>`.
+
+- **Follow-up:** each `available_actions` entry (the broadsheet compose
+  flow), **Open in <Provider>** when the card has an open URL, **Start
+  follow-up task…** (an optional-instruction dialog; only its confirm sends
+  `approve` with the `hint`), **Snooze — hide from Today** (`snooze`), and
+  **Details**.
+- **Worth a look:** **Open** (`open` feedback, then the source), each card
+  capability except `view_details` / `open_source` (the broadsheet action
+  flow; `requires_input` kinds open the input dialog), and **Details**.
+- `ask_presto` reads **Ask <primary agent>** everywhere in Today (deck menu,
+  broadsheet, detail sheet, input dialog, completion notice), named as Chat
+  names the agent; the wire kind is unchanged.
+- A card leaves the deck only when the chosen action resolves it: approve,
+  snooze and Open fly it out through `triageDeckCard`; compose leaves it once
+  the commit succeeds. Opening the menu, cancelling, Details, or a failed
+  action leaves it on top.
 
 - Only a sideways drag moves the card; a mainly vertical drag scrolls the
   page. A release also commits when its velocity would carry the card past
@@ -99,8 +122,7 @@ over up to two preview cards.
   the card at once, keeps the per-card lock, and records receipts and
   attribution. `triageDeckCard` refuses an already-locked card, which springs
   back. On failure the card is restored and the error dialog shows.
-- With two or fewer cards left, the next follow-up and worth pages are
-  fetched.
+- With four or fewer cards in the selected tab, cursor paging prefetches its next pages. Loading and retry states never appear as a cleared deck; head refreshes retain accumulated pages.
 - Only the top card records an impression.
 
 ## Broadsheet
@@ -120,10 +142,14 @@ ServerPager-style pager: `6–10 of 23 ‹ 2 / 5 ›`.
   generation drops late answers. Pages are reread on the 30 s poll and after
   every card action, so a resolved card is backfilled.
 
-Cards keep their swipe rails and actions, with a mono kicker and serif
-headline. Core `followups` items keep a snooze time picker. Channel
+Cards keep their swipe rails, with a mono kicker and serif headline. Channel
+follow-up and worth-a-look cards carry the deck's **⚡ Act** menu (same
+`deckActMenu` entries and handlers, tags `today-broadsheet-act[-<id>]`) plus
+Useful, Seen and Dismiss…; follow-ups also keep Writing style. Core `followups` items keep a snooze time picker. Channel
 follow-ups have a single **Snooze — hide from Today** with no duration (the
-wire carries none). Resurfacing cards cannot be snoozed; their dismiss reasons
+wire carries none). **Start follow-up task…** (Act menu and message sheet) opens the
+deck's optional-instruction dialog; only its confirm sends `approve` with the
+`hint`. Resurfacing cards cannot be snoozed; their dismiss reasons
 are spam, already_handled, duplicate, delegated and not_relevant.
 
 ## Data

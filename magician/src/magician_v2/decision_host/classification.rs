@@ -322,10 +322,11 @@ impl Participation {
                 latency_ms: 0,
             });
         }
-        if !self.is_current() || budget <= RECEIPT_MARGIN {
-            return Err(client::ClientError::Decode(
-                "classification policy expired or budget exhausted".into(),
-            ));
+        if !self.is_current() {
+            return Err(client::ClientError::NotDispatched("policy_expired"));
+        }
+        if budget <= RECEIPT_MARGIN {
+            return Err(client::ClientError::NotDispatched("budget_exhausted"));
         }
         request.batch.expected_policy_revision = self.revision.clone();
         request.batch.execution_budget_ms = budget
@@ -348,8 +349,11 @@ impl Participation {
             let remaining = until.saturating_duration_since(tokio::time::Instant::now());
             // Expiry or Off before dispatch is not a service outage or an
             // unknown paid attempt. Do not raise an accounting-gap/HITL notice.
-            if remaining <= RECEIPT_MARGIN || super::generation() != generation {
-                return Err(client::ClientError::Timeout);
+            if super::generation() != generation {
+                return Err(client::ClientError::NotDispatched("classification_changed"));
+            }
+            if remaining <= RECEIPT_MARGIN {
+                return Err(client::ClientError::NotDispatched("budget_exhausted"));
             }
             request.batch.execution_budget_ms = remaining
                 .saturating_sub(RECEIPT_MARGIN)

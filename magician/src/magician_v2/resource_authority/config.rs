@@ -38,6 +38,91 @@ pub struct ResourceAuthorityConfig {
     /// agent_id, tool_name, commodity) tuple.
     #[serde(default)]
     pub budgets: Vec<BudgetRow>,
+
+    /// Model spend limits: what every model call may cost per window, in
+    /// total, and per agent run (`docs/plans/2026-10-26-model-spend-in-resource-authority.md`).
+    /// The spend envelope enforces them in memory and posts what it counted
+    /// to the ledger; `None` is a config written before the move, which takes
+    /// the legacy `execution.budgets` values ([`Self::model_spend_or_legacy`]).
+    /// A typed section, not `budgets` rows, so an older binary ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_spend: Option<ModelSpendConfig>,
+}
+
+/// `resource_authority.model_spend`. Every amount is USD: a positive number,
+/// or `unlimited`.
+///
+/// Unknown keys are ignored, like the rest of `resource_authority`, so a
+/// config a later build adds a key to still loads in this one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ModelSpendConfig {
+    /// All model calls in one window (default $250 a day).
+    #[serde(default = "default_window_usd")]
+    pub window_usd: crate::config::BudgetCapUsd,
+    #[serde(default)]
+    pub window: crate::config::SpendEnvelopeWindow,
+    /// All model calls, ever (default unlimited).
+    #[serde(default = "default_unlimited")]
+    pub lifetime_usd: crate::config::BudgetCapUsd,
+    /// One agent run on Magician's own loop (default $100).
+    #[serde(default = "default_run_magician_usd")]
+    pub run_magician_usd: crate::config::BudgetCapUsd,
+    /// One agent run on a coding harness (default $100).
+    #[serde(default = "default_run_harness_usd")]
+    pub run_harness_usd: crate::config::BudgetCapUsd,
+}
+
+fn default_window_usd() -> crate::config::BudgetCapUsd {
+    crate::config::BudgetCapUsd::Usd(crate::config::DEFAULT_SPEND_ENVELOPE_DAILY_USD)
+}
+
+fn default_unlimited() -> crate::config::BudgetCapUsd {
+    crate::config::BudgetCapUsd::Unlimited
+}
+
+fn default_run_magician_usd() -> crate::config::BudgetCapUsd {
+    crate::config::ExecutionBudgetSettings::default().native_max_cost_usd
+}
+
+fn default_run_harness_usd() -> crate::config::BudgetCapUsd {
+    crate::config::ExecutionBudgetSettings::default().harness_max_cost_usd
+}
+
+impl Default for ModelSpendConfig {
+    fn default() -> Self {
+        Self::from_legacy(&crate::config::ExecutionBudgetSettings::default())
+    }
+}
+
+impl ModelSpendConfig {
+    /// The limits a config written before the move expressed in
+    /// `execution.budgets`.
+    pub fn from_legacy(legacy: &crate::config::ExecutionBudgetSettings) -> Self {
+        Self {
+            window_usd: legacy.spend_envelope.daily_usd,
+            window: legacy.spend_envelope.window,
+            lifetime_usd: legacy.spend_envelope.total_usd,
+            run_magician_usd: legacy.native_max_cost_usd,
+            run_harness_usd: legacy.harness_max_cost_usd,
+        }
+    }
+
+    /// `legacy` with these limits in place: the cell the per-run valves and
+    /// the spend envelope read (`crate::config::configure_execution_budgets`).
+    /// Envelope behaviour (`enabled`, `reset_offset_minutes`, `warn_at_pct`,
+    /// `unpriced`) stays in `execution.budgets.spend_envelope`.
+    pub fn apply_to(
+        &self,
+        legacy: &crate::config::ExecutionBudgetSettings,
+    ) -> crate::config::ExecutionBudgetSettings {
+        let mut effective = *legacy;
+        effective.native_max_cost_usd = self.run_magician_usd;
+        effective.harness_max_cost_usd = self.run_harness_usd;
+        effective.spend_envelope.daily_usd = self.window_usd;
+        effective.spend_envelope.window = self.window;
+        effective.spend_envelope.total_usd = self.lifetime_usd;
+        effective
+    }
 }
 
 /// One declarative budget row. Lazily materializes into a `SpendToken`
@@ -96,7 +181,89 @@ impl BudgetScope {
     }
 }
 
+/// Move the model spend limits of a config written before the move into
+/// `resource_authority.model_spend`, once, at a serving boot: the section is
+/// written from the legacy `execution.budgets` values and those limit keys
+/// are removed (envelope behaviour keys stay). A config that already has the
+/// section, or no file, is left alone. The effective limits are checked to be
+/// identical before anything is written. Returns whether it migrated.
+pub fn migrate_model_spend_limits(path: &std::path::Path) -> anyhow::Result<bool> {
+    use crate::magician_v2::runtime_settings::{
+        apply_yaml_section, config_file_lock, set_yaml_path, write_text_file_atomic,
+    };
+    let lock = config_file_lock(path);
+    let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let original = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let document: serde_yaml::Value = serde_yaml::from_str(&original)?;
+    let has_section = document
+        .get("resource_authority")
+        .and_then(|section| section.get("model_spend"))
+        .is_some_and(|section| !section.is_null());
+    if has_section {
+        return Ok(false);
+    }
+    let legacy_in =
+        |document: &serde_yaml::Value| -> anyhow::Result<crate::config::ExecutionBudgetSettings> {
+            Ok(
+                match document
+                    .get("execution")
+                    .and_then(|execution| execution.get("budgets"))
+                {
+                    Some(budgets) if !budgets.is_null() => serde_yaml::from_value(budgets.clone())?,
+                    _ => crate::config::ExecutionBudgetSettings::default(),
+                },
+            )
+        };
+    let legacy = legacy_in(&document)?;
+    let model_spend = ModelSpendConfig::from_legacy(&legacy);
+    let mut next = apply_yaml_section(
+        &original,
+        &["resource_authority", "model_spend"],
+        &None::<ModelSpendConfig>,
+        &Some(model_spend),
+    )?;
+    for key in [
+        &["execution", "budgets", "native_max_cost_usd"][..],
+        &["execution", "budgets", "harness_max_cost_usd"],
+        &["execution", "budgets", "spend_envelope", "daily_usd"],
+        &["execution", "budgets", "spend_envelope", "total_usd"],
+        &["execution", "budgets", "spend_envelope", "window"],
+    ] {
+        let present = key
+            .iter()
+            .try_fold(&document, |value, segment| value.get(*segment))
+            .is_some();
+        if present {
+            next = set_yaml_path(&next, key, None)?;
+        }
+    }
+    let migrated: serde_yaml::Value = serde_yaml::from_str(&next)?;
+    let section: ModelSpendConfig =
+        serde_yaml::from_value(migrated["resource_authority"]["model_spend"].clone())?;
+    anyhow::ensure!(
+        section == model_spend
+            && section.apply_to(&legacy_in(&migrated)?) == model_spend.apply_to(&legacy),
+        "model spend limits did not move intact"
+    );
+    write_text_file_atomic(path, &next, None)?;
+    Ok(true)
+}
+
 impl ResourceAuthorityConfig {
+    /// The model spend limits in force: this section, or the legacy
+    /// `execution.budgets` values a config written before the move holds.
+    pub fn model_spend_or_legacy(
+        &self,
+        legacy: &crate::config::ExecutionBudgetSettings,
+    ) -> ModelSpendConfig {
+        self.model_spend
+            .unwrap_or_else(|| ModelSpendConfig::from_legacy(legacy))
+    }
+
     /// Static validation pass. Catches:
     /// - Duplicate (scope, id, commodity) tuples — ambiguous which row wins.
     /// - `system_ceiling_id` references that don't match any
@@ -189,6 +356,59 @@ pub enum ResourceAuthorityConfigError {
     },
 }
 
+#[cfg(test)]
+mod model_spend_tests {
+    use super::*;
+    use crate::config::BudgetCapUsd;
+
+    #[test]
+    fn legacy_limits_move_into_resource_authority_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        let original = "execution:\n  # valves\n  budgets:\n    native_max_cost_usd: 15\n    harness_max_cost_usd: unlimited\n    spend_envelope:\n      daily_usd: 40\n      window: weekly\n      warn_at_pct: 70\nresource_authority:\n  enabled: true\n  budgets: []\n";
+        std::fs::write(&path, original).unwrap();
+        assert!(migrate_model_spend_limits(&path).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        let section: ModelSpendConfig =
+            serde_yaml::from_value(parsed["resource_authority"]["model_spend"].clone()).unwrap();
+        assert_eq!(section.window_usd, BudgetCapUsd::Usd(40.0));
+        assert_eq!(section.window, crate::config::SpendEnvelopeWindow::Weekly);
+        assert_eq!(section.run_magician_usd, BudgetCapUsd::Usd(15.0));
+        assert_eq!(section.run_harness_usd, BudgetCapUsd::Unlimited);
+        let budgets = &parsed["execution"]["budgets"];
+        assert!(budgets.get("native_max_cost_usd").is_none(), "{text}");
+        assert!(
+            budgets["spend_envelope"].get("daily_usd").is_none(),
+            "{text}"
+        );
+        assert_eq!(
+            budgets["spend_envelope"]["warn_at_pct"],
+            serde_yaml::Value::from(70)
+        );
+        assert!(text.contains("  # valves\n"), "{text}");
+        assert_eq!(parsed["resource_authority"]["enabled"], true);
+        // Once moved, nothing more happens.
+        assert!(!migrate_model_spend_limits(&path).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn a_config_without_budgets_gets_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        std::fs::write(&path, "chat:\n  x: 1\n").unwrap();
+        assert!(migrate_model_spend_limits(&path).unwrap());
+        let parsed: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let section: ModelSpendConfig =
+            serde_yaml::from_value(parsed["resource_authority"]["model_spend"].clone()).unwrap();
+        assert_eq!(section, ModelSpendConfig::default());
+        assert_eq!(section.window_usd, BudgetCapUsd::Usd(250.0));
+        assert!(!migrate_model_spend_limits(&dir.path().join("missing.yaml")).unwrap());
+    }
+}
+
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
@@ -221,6 +441,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_row("owner"), principal_row("owner")],
+            model_spend: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -237,6 +458,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![row],
+            model_spend: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -253,6 +475,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![row],
+            model_spend: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(err, ResourceAuthorityConfigError::EmptyField(_)));
@@ -264,6 +487,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_row("owner")],
+            model_spend: None,
         };
         let row = cfg
             .find_row(BudgetScope::Principal, "owner", "USD")
@@ -281,6 +505,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_row("owner")],
+            model_spend: None,
         };
         assert!(cfg
             .find_row(BudgetScope::Principal, "owner", "usd")
@@ -298,6 +523,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: vec![principal_row("owner"), lower],
+            model_spend: None,
         };
         let err = cfg.validate().unwrap_err();
         assert!(matches!(
@@ -320,6 +546,7 @@ mod tests {
                 carryover: CarryoverPolicy::None,
                 system_ceiling_id: None,
             }],
+            model_spend: None,
         };
         let row = cfg
             .find_row(BudgetScope::Agent, "presto", "usd")
@@ -355,6 +582,7 @@ mod tests {
                     system_ceiling_id: None,
                 },
             ],
+            model_spend: None,
         };
         let row = cfg
             .find_row(BudgetScope::Agent, "presto", "USD")

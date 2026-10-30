@@ -1637,6 +1637,23 @@ pub async fn get_api_mining_settings(
     HttpResponse::Ok().json(api.api_mining_switch.state(&principal, &workspace))
 }
 
+/// Sets `api_mining.enabled` in the runtime config, writing only that value:
+/// the owner's comments and the rest of the block stay as they were.
+fn persist_api_mining_ceiling(
+    path: &std::path::Path,
+    current: &magician::config::ApiMiningConfig,
+    enabled: bool,
+) -> std::io::Result<()> {
+    let mut next = current.clone();
+    next.enabled = enabled;
+    magician::magician_v2::runtime_settings::write_yaml_section(
+        path,
+        &["api_mining"],
+        current,
+        &next,
+    )
+}
+
 /// `PUT /api-mining/settings` — durable scope override or owner-only process
 /// ceiling. Both update the shared live handle before returning.
 pub async fn put_api_mining_settings(
@@ -1680,7 +1697,7 @@ pub async fn put_api_mining_settings(
         },
         ApiMiningSettingsLayer::Process => {
             let path = magician::config::magician_config_path();
-            let mut config = match magician::config::load_magician_config_from_path(&path) {
+            let config = match magician::config::load_magician_config_from_path(&path) {
                 Ok(config) => config,
                 Err(error) => {
                     return HttpResponse::InternalServerError().json(serde_json::json!({
@@ -1689,22 +1706,8 @@ pub async fn put_api_mining_settings(
                     }));
                 },
             };
-            config.api_mining.enabled = body.enabled;
-            let block = match serde_yaml::to_string(&config.api_mining) {
-                Ok(block) => block.trim().trim_start_matches("---").trim().to_owned(),
-                Err(error) => {
-                    return HttpResponse::InternalServerError().json(serde_json::json!({
-                        "error": "api_mining_settings_encode_error",
-                        "message": error.to_string(),
-                    }));
-                },
-            };
-            magician::magician_v2::runtime_settings::write_top_level_yaml_block(
-                &path,
-                "api_mining",
-                &block,
-            )
-            .map(|_| api.api_mining_switch.set_process_enabled(body.enabled))
+            persist_api_mining_ceiling(&path, &config.api_mining, body.enabled)
+                .map(|_| api.api_mining_switch.set_process_enabled(body.enabled))
         },
     };
     match write_result {
@@ -4448,6 +4451,21 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    #[test]
+    fn the_process_ceiling_write_changes_only_the_enabled_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        let original = "api_mining:\n  # owner: keep capture on while testing\n  enabled: true\n  enable_trace_capture: true\nfrontend:\n  host: 127.0.0.1\n";
+        std::fs::write(&path, original).unwrap();
+        let current: magician::config::ApiMiningConfig =
+            serde_yaml::from_str("enabled: true\nenable_trace_capture: true\n").unwrap();
+        super::persist_api_mining_ceiling(&path, &current, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original.replace("  enabled: true\n", "  enabled: false\n")
+        );
+    }
 
     fn sample_sequence(id: &str, origin: &str, n_steps: usize) -> CapabilitySequence {
         let steps: Vec<SequenceStep> = (0..n_steps)

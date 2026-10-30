@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -46,12 +48,12 @@ internal fun WorkReferencePicker(references: List<WorkSourceReference>, onChange
             onChanged(currentReferences + WorkSourceReference("file:${UUID.randomUUID()}", title, "Uploaded file: $title", content))
         }.onFailure { resource.reportError(it.message ?: "Could not read this text document.") }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("References · ${references.size} attached", color = Ink, fontSize = 16.sp)
-        Text("Their contents are frozen when you review the contract.", color = Muted, fontSize = 12.sp)
-        OutlinedTextField(query, { query = it; results = null }, label = { Text("Find a reference") }, enabled = !disabled && !pending, modifier = Modifier.fillMaxWidth())
-        TextButton(onClick = {
-            val provider = state.value.workText("provider") ?: return@TextButton
+    Column(Modifier.fillMaxWidth()) {
+        WorkNote("${references.size} attached. Their contents are frozen when you review the contract.")
+        WorkSearchField("Find a reference", query, { query = it; results = null }, enabled = !disabled && !pending)
+        Spacer(Modifier.height(4.dp))
+        WorkActionRow("Search notes", Icons.Outlined.Search, enabled = !disabled && !pending && query.isNotBlank() && !state.value.workText("provider").isNullOrBlank()) {
+            val provider = state.value.workText("provider") ?: return@WorkActionRow
             val requested = query.trim(); val identity = state.identity
             pending = true; onPending(true)
             scope.launch {
@@ -59,13 +61,16 @@ internal fun WorkReferencePicker(references: List<WorkSourceReference>, onChange
                     if (response != null && query.trim() == requested && !currentDisabled) results = response
                 } finally { pending = false; onPending(false) }
             }
-        }, enabled = !disabled && !pending && query.isNotBlank() && !state.value.workText("provider").isNullOrBlank(), modifier = Modifier.heightIn(min = 48.dp)) { Text("Search notes", color = Coral) }
-        TextButton(onClick = { importer.launch(arrayOf("*/*")) }, enabled = !disabled && !pending, modifier = Modifier.heightIn(min = 48.dp)) { Text("Attach text file", color = Coral) }
-        WorkResourceStatus(state, resource)
+        }
+        WorkRowDivider()
+        WorkActionRow("Attach text file", Icons.Outlined.AttachFile, enabled = !disabled && !pending) { importer.launch(arrayOf("*/*")) }
+        if (state.hasStatus) Box(Modifier.padding(bottom = 8.dp)) { WorkResourceStatus(state, resource) }
         results?.let { found ->
             found.workRows("hits").forEach { hit ->
-                TextButton(onClick = {
-                    val path = hit.workText("relative_path") ?: return@TextButton; val id = hit.workText("source_ref") ?: return@TextButton
+                WorkRowDivider()
+                WorkRow(hit.workText("title") ?: hit.workText("relative_path").orEmpty(), icon = Icons.Outlined.NoteAdd, detail = hit.workText("relative_path"),
+                    accessory = WorkRowAccessory.None, enabled = !disabled && !pending) {
+                    val path = hit.workText("relative_path") ?: return@WorkRow; val id = hit.workText("source_ref") ?: return@WorkRow
                     val identity = state.identity; pending = true; onPending(true)
                     scope.launch {
                         try {
@@ -76,17 +81,22 @@ internal fun WorkReferencePicker(references: List<WorkSourceReference>, onChange
                             }
                         } finally { pending = false; onPending(false) }
                     }
-                }, enabled = !disabled && !pending, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(hit.workText("title") ?: hit.workText("relative_path").orEmpty(), color = Coral) }
-                Text(hit.workText("relative_path").orEmpty(), color = Muted, fontSize = 11.sp)
+                }
             }
-            if (found.workRows("hits").isEmpty()) Text("No matching references.", color = Muted, fontSize = 13.sp)
-            if (found.workBool("more_available") || found.workBool("scan_truncated")) Text("More documents may be available. Narrow the search.", color = Muted, fontSize = 12.sp)
+            if (found.workRows("hits").isEmpty()) { WorkRowDivider(); WorkNote("No matching references.") }
+            if (found.workBool("more_available") || found.workBool("scan_truncated")) WorkNote("More documents may be available. Narrow the search.")
         }
         references.forEach { reference ->
             var expanded by remember(reference.id) { mutableStateOf(false) }
-            WorkLink(reference.title) { expanded = !expanded }
-            if (expanded) { Text(reference.origin, color = Muted, fontSize = 11.sp); SelectionContainer { Text(reference.content, color = Ink, fontSize = 13.sp) } }
-            TextButton(onClick = { onChanged(currentReferences.filter { it.id != reference.id }) }, enabled = !disabled && !pending, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove ${reference.title}", color = Danger) }
+            WorkRowDivider()
+            WorkRow(reference.title, icon = Icons.Outlined.Description, accessory = if (expanded) WorkRowAccessory.Expanded else WorkRowAccessory.Collapsed) { expanded = !expanded }
+            if (expanded) WorkInsetPanel(Modifier.padding(bottom = 8.dp)) {
+                Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(reference.origin, color = Muted, fontSize = 12.sp)
+                    SelectionContainer { Text(reference.content, color = Ink, fontSize = 14.sp, lineHeight = 19.sp) }
+                }
+            }
+            WorkActionRow("Remove ${reference.title}", Icons.Outlined.RemoveCircleOutline, destructive = true, enabled = !disabled && !pending) { onChanged(currentReferences.filter { it.id != reference.id }) }
         }
     }
 }

@@ -5,6 +5,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+enum class ComposerVoiceMode(val wire: String, val label: String) {
+    Dictation("dictation", "Dictation"), Live("realtime", "Live"), HandsFree("hands_free", "Hands-free");
+    companion object { fun from(value: String?) = entries.firstOrNull { it.wire == value } ?: Dictation }
+}
+
 /**
  * Voice preferences that outlive a screen.
  *
@@ -37,6 +42,13 @@ class VoicePrefs private constructor(context: Context) {
 
     private val _liveEngine = MutableStateFlow(LiveVoiceEngine.from(store.getString(LIVE_ENGINE, null)))
     val liveEngine: StateFlow<LiveVoiceEngine> = _liveEngine.asStateFlow()
+    private val _composerVoiceMode = MutableStateFlow(ComposerVoiceMode.from(store.getString("composer_voice_mode", null)))
+    val composerVoiceMode: StateFlow<ComposerVoiceMode> = _composerVoiceMode.asStateFlow()
+    fun setComposerVoiceMode(mode: ComposerVoiceMode) {
+        _composerVoiceMode.value = mode
+        store.edit().putString("composer_voice_mode", mode.wire).apply()
+        if (mode != ComposerVoiceMode.Dictation) setLiveEngine(if (mode == ComposerVoiceMode.Live) LiveVoiceEngine.Realtime else LiveVoiceEngine.HandsFree)
+    }
 
     private val _realtimeProfile = MutableStateFlow(store.getString(REALTIME_PROFILE, null))
     val realtimeProfile: StateFlow<String?> = _realtimeProfile.asStateFlow()
@@ -123,6 +135,11 @@ class VoicePrefs private constructor(context: Context) {
     fun setLiveEngine(engine: LiveVoiceEngine) {
         _liveEngine.value = engine
         store.edit().putString(LIVE_ENGINE, engine.wire).apply()
+        if (_composerVoiceMode.value != ComposerVoiceMode.Dictation) {
+            val mode = if (engine == LiveVoiceEngine.Realtime) ComposerVoiceMode.Live else ComposerVoiceMode.HandsFree
+            _composerVoiceMode.value = mode
+            store.edit().putString("composer_voice_mode", mode.wire).apply()
+        }
     }
 
     fun setRealtimeProfile(id: String) {
@@ -309,5 +326,52 @@ enum class AmbientVoiceMode(val wire: String, val label: String, val built: Bool
 
     companion object {
         fun from(wire: String?): AmbientVoiceMode = entries.firstOrNull { it.wire == wire } ?: Dictation
+    }
+}
+
+/** One catalog/default policy for Chat and VibeDev voice controls. */
+fun VoicePrefs.applyCatalog(catalog: RealtimeVoiceCatalog) {
+    val selected = this.realtimeProfile.value
+    val valid = catalog.profiles.any { it.id == selected && it.nativeAndAvailable }
+    if (!valid) {
+        val fallback = catalog.profiles.firstOrNull {
+            it.id == catalog.defaultProfileId && it.nativeAndAvailable
+        } ?: catalog.profiles.firstOrNull { it.nativeAndAvailable }
+        fallback?.let { this.setRealtimeProfile(it.id) }
+    }
+    val resolvedRealtime = catalog.profiles.firstOrNull {
+        it.id == this.realtimeProfile.value && it.nativeAndAvailable
+    }
+    resolvedRealtime?.let { profile ->
+        val providerPttDefault = profile.mode != "translation" &&
+            profile.turnDetectionMode?.lowercase() == "none"
+        this.seedLivePttOn(providerPttDefault)
+        if (profile.mode == "translation" && this.livePttOn.value) {
+            this.setLivePttOn(false)
+        }
+    }
+    NativeAudioSurface.entries.forEach { surface ->
+        val candidates = catalog.profilesFor(surface)
+        val current = this.audioProfiles.value[surface]
+        val selected = current?.takeIf { id ->
+            candidates.any { it.first == id } && catalog.audioProfileAvailable(surface, id)
+        }
+            ?: catalog.defaultAudioProfiles[surface.wire]?.takeIf { id ->
+                candidates.any { it.first == id } && catalog.audioProfileAvailable(surface, id)
+            }
+            ?: candidates.firstOrNull {
+                catalog.audioProfileAvailable(surface, it.first)
+            }?.first
+        selected?.let { this.setAudioProfile(surface, it) }
+        val profile = selected?.let(catalog.audioProfiles::get) ?: return@forEach
+        this.audioStageOptions.value
+            .filterKeys { (candidateSurface, _) -> candidateSurface == surface }
+            .forEach { (key, optionId) ->
+                val stage = key.second
+                val option = catalog.optionsFor(stage).firstOrNull { it.id == optionId }
+                if (option == null || !profile.supports(option, stage)) {
+                    this.setAudioStageOption(surface, stage, null)
+                }
+            }
     }
 }

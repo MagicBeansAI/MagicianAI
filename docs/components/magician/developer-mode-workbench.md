@@ -364,7 +364,8 @@ whose global environment every program inherits):
   in, `claude` would bill `ANTHROPIC_API_KEY` instead of the operator's
   subscription and `gh` would act as Magician's `GITHUB_TOKEN`;
 - `ALWAYS_SCRUBBED_TERMINAL_ENV_KEYS`: the provider keys `ANTHROPIC_API_KEY`,
-  `XAI_API_KEY` and `OPENAI_API_KEY` (an env key overrides the CLI's own sign-in
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_API_KEY`, `XAI_API_KEY`, `OPENAI_API_KEY`,
+  `CODEX_API_KEY`, `GEMINI_API_KEY` and `GOOGLE_API_KEY` (an env key overrides the CLI's own sign-in
   in `~/.claude`, `~/.grok/auth.json`, `~/.codex`, and this also covers keys the
   service inherited from its launching shell, which the `.env` scrub cannot
   see), plus the build knobs the `Makefile` exports (`CARGO_TARGET_DIR`,

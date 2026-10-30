@@ -127,8 +127,10 @@ internal fun mergeRealtimeMessage(messages: List<ChatMessage>, incoming: ChatMes
         }
         !incoming.fromUser && incoming.kind == MessageKind.Text && incoming.chatTurnId != null -> {
             messages.indexOfFirst {
+                // Any local bubble of the turn: a clean stream drop leaves it
+                // neither streaming nor failed, and the reply still replaces it.
                 !it.fromUser && it.kind == MessageKind.Text &&
-                    (it.streaming || it.failed) && it.chatTurnId == incoming.chatTurnId
+                    (it.streaming || it.failed || it.optimistic) && it.chatTurnId == incoming.chatTurnId
             }
         }
         else -> -1

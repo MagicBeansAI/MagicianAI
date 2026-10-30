@@ -2,6 +2,140 @@ import XCTest
 @testable import Magician
 
 final class AttentionViewModelTests: XCTestCase {
+    @MainActor func testAlreadyClosedAttentionApprovalCannotStartARun() throws {
+        final class Client: PlanApprovalClient {
+            var starts = 0
+            func respond(_ request: PlanApprovalRequest, confirmed: Bool) async -> PlanApprovalPost { .ok }
+            func startRun(taskId: String) async throws { starts += 1 }
+        }
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let target = try JSONDecoder().decode(AttentionItem.self, from: jsonData([
+            "id": "plan", "title": "Approve?", "item_type": "approval", "status": "needs_action",
+            "metadata": ["source": "plan_approval", "input_type": "confirmation", "correlation_id": "plan", "task_id": "task"]
+        ]))
+        vm.lanes["approvals"] = [target]
+        MockURLProtocol.handler = { req in
+            if req.httpMethod == "POST" { return (response(for: req, status: 409), jsonData(["reason": "already_resolved"])) }
+            return (response(for: req), jsonData(["requests": []]))
+        }
+        let client = Client()
+        vm.submitPlanApproval(target, choice: .approveAndRun, client: client)
+        waitUntil { vm.bulkNotice != nil }
+        XCTAssertEqual(client.starts, 0)
+        XCTAssertTrue(vm.items("approvals").isEmpty)
+        XCTAssertNil(vm.mutationError)
+    }
+    func testMissingResponseAcknowledgementRestoresTheQuestion() {
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let target = item(correlationId: "corr-1", inputType: "choice")
+        vm.lanes["requests"] = [target]
+        MockURLProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/user-requests") == true {
+                return (response(for: request), jsonData(["requests": []]))
+            }
+            if request.httpMethod == "POST" { return (response(for: request), jsonData([:])) }
+            return (response(for: request, status: 503), Data())
+        }
+        vm.submitChoice(target, optionId: "yes")
+        waitUntil { vm.pendingCardMutationKeys.isEmpty && !vm.isLoading }
+        XCTAssertEqual(vm.items("requests").map(\.id), [target.id])
+        XCTAssertNotNil(vm.mutationError)
+    }
+    func testExactRequestLookupOpensAQuestionWithoutLoadingInboxPages() {
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let done = expectation(description: "exact request")
+        var gets = 0
+        MockURLProtocol.handler = { req in
+            gets += 1
+            XCTAssertTrue(req.url!.absoluteString.contains("/feed/attention/pause%2Fa%3A1"))
+            return (response(for: req), jsonData(["id": "exact", "title": "Older form", "item_type": "request", "status": "needs_action",
+                "metadata": ["input_type": "form", "pause_state_id": "pause/a:1", "input_schema": ["questions": [["id": "account", "prompt": "Which account?"]]]]]))
+        }
+        vm.pendingItem("pause/a:1") { result in
+            guard case .success(let row) = result, let row else { return XCTFail("exact question must load") }
+            XCTAssertEqual(row.formQuestions.first?.id, "account")
+            XCTAssertFalse(vm.isAnsweredElsewhere(row), "Absence from a paged inbox does not resolve an exact request")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(gets, 1)
+    }
+
+    func testExactRequestFallsBackToTheUnprojectedUserRequestLedger() {
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let done = expectation(description: "ledger fallback")
+        MockURLProtocol.handler = { req in
+            if req.url!.path.contains("/feed/attention/") { return (response(for: req, status: 404), jsonData([:])) }
+            return (response(for: req), jsonData(["requests": [self.pendingQuestion("not-yet-projected")]]))
+        }
+        vm.pendingItem("not-yet-projected") { result in
+            guard case .success(let row) = result, let row else { return XCTFail("ledger question must open") }
+            XCTAssertEqual(row.correlationId, "not-yet-projected")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+    }
+    func testComposerFetchIncludesQuestionsBeyondTheInitialAttentionPage() {
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        var pages = 0
+        var ledgerReads = 0
+        MockURLProtocol.handler = { req in
+            if req.url!.path.hasSuffix("/user-requests") { ledgerReads += 1; return (response(for: req), jsonData(["requests": []])) }
+            if req.url!.path.hasSuffix("/feed/attention") {
+                pages += 1
+                let cursor = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "requests_cursor" }?.value
+                let id = cursor == nil ? "newer" : "older"
+                return (response(for: req), jsonData([
+                    "requests": [["id": id, "title": "Question \(id)", "status": "needs_action", "item_type": "request"]],
+                    "pages": ["requests": cursor == nil ? ["next_cursor": "next/+", "has_more": true] : ["has_more": false]]
+                ]))
+            }
+            return (response(for: req), jsonData(["items": []]))
+        }
+        vm.fetchPendingAsks()
+        waitUntil { !vm.isLoading }
+        XCTAssertEqual(pages, 2)
+        XCTAssertEqual(ledgerReads, 1)
+        XCTAssertEqual(Set(vm.items("requests").map(\.id)), ["newer", "older"])
+    }
+
+    func testPendingQuestionFetchRefusesRepeatedCursorWithoutLooping() {
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        var pages = 0
+        MockURLProtocol.handler = { req in
+            if req.url!.path.hasSuffix("/feed/attention") {
+                pages += 1
+                return (response(for: req), jsonData(["pages": ["requests": ["next_cursor": "same", "has_more": true]]]))
+            }
+            return (response(for: req), jsonData(["items": []]))
+        }
+        vm.fetchPendingAsks()
+        waitUntil { !vm.isLoading }
+        XCTAssertEqual(pages, 2)
+        XCTAssertTrue(vm.loadError?.contains("repeated") == true)
+    }
+
+    func testApprovalFromAnOldConnectionIsRetainedWithoutPostingToTheNewMachine() {
+        var current = true
+        let vm = AttentionViewModel(networkSession: makeMockSession(), currentConnectionCheck: { current })
+        var writes = 0
+        MockURLProtocol.handler = { req in
+            if req.httpMethod == "POST" { writes += 1; return (response(for: req), jsonData(["accepted": true])) }
+            if req.url!.path.hasSuffix("/user-requests") { return (response(for: req), jsonData(["requests": []])) }
+            return (response(for: req), jsonData(["requests": [["id": "approval", "title": "Allow?", "item_type": "request", "status": "needs_action",
+                "metadata": ["source": "agentic", "input_type": "confirmation", "pause_state_id": "ask"]]]]))
+        }
+        vm.fetch()
+        waitUntil { !vm.isLoading }
+        let ask = vm.items("requests")[0]
+        current = false
+        vm.submitConfirmation(ask, confirmed: true)
+        waitUntil { vm.pendingCardMutationKeys.isEmpty }
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(vm.items("requests").first?.id, "approval")
+        XCTAssertTrue(vm.mutationError?.contains("Connection changed") == true)
+    }
+
     override func setUp() {
         super.setUp()
         PendingHitlTracker.shared.reset()
@@ -44,7 +178,7 @@ final class AttentionViewModelTests: XCTestCase {
                 XCTAssertEqual(payload["correlation_id"] as? String, "ledger-choice")
                 XCTAssertEqual((payload["value"] as? [String: Any])?["selected_id"] as? String, "blue")
                 answered = true
-                return (response(for: request), jsonData([:]))
+                return (response(for: request), jsonData(["accepted": true]))
             }
             if request.url?.path.hasSuffix("/user-requests") == true {
                 ledgerReads += 1
@@ -451,6 +585,31 @@ final class AttentionViewModelTests: XCTestCase {
         }
     }
 
+    /// An outward-send review answers with the tool-authorization choice
+    /// shape — `{type: choice, selected_id}` and nothing else — never a bare
+    /// confirm, so Discard and the remembered grant are distinct answers.
+    func testSubmitOutwardReviewPostsTheChoiceShape() {
+        for id in ["send", "discard", "always_allow_recipient"] {
+            assertRespond(expectedValue: ["type": "choice", "selected_id": id]) {
+                $0.submitOutwardReview(self.item(inputType: "confirmation"), optionId: id)
+            }
+        }
+        let vm = AttentionViewModel(networkSession: makeMockSession())
+        let exp = expectation(description: "respond")
+        MockURLProtocol.handler = { req in
+            if req.httpMethod == "POST", req.url!.absoluteString.contains("/hitl/corr-1/respond"),
+               let body = requestBody(req),
+               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let value = json["value"] as? [String: Any] {
+                XCTAssertEqual(Set(value.keys), ["type", "selected_id"], "no other_value rides a review")
+                exp.fulfill()
+            }
+            return (response(for: req), jsonData(["requests": []]))
+        }
+        vm.submitOutwardReview(item(inputType: "confirmation"), optionId: "send")
+        wait(for: [exp], timeout: 2)
+    }
+
     func testSubmitConfirmationPayload() {
         assertRespond(expectedValue: ["type": "confirmation", "confirmed": true]) {
             $0.submitConfirmation(self.item(inputType: "confirmation"), confirmed: true)
@@ -797,6 +956,7 @@ final class AttentionViewModelTests: XCTestCase {
                let value = json["value"] as? [String: Any],
                value["selected_id"] as? String == "apply" {
                 exp.fulfill()
+                return (response(for: req), jsonData(["accepted": true]))
             }
             return (response(for: req), jsonData([:]))
         }
@@ -927,5 +1087,79 @@ final class AttentionViewModelTests: XCTestCase {
                           answers: [["id": "q1", "value": "x"], ["id": "q2", "selected_ids": ["a"]],
                                     ["id": "q3", "skipped": true]])
         }
+    }
+}
+
+/// The HITL respond-handle contract: `magician/tests/fixtures/hitl/attention_rows.json`
+/// holds one Attention row per HITL kind exactly as the server serves it
+/// (pinned by the Rust test `feed::hitl_respond_fixtures`; the web and Android
+/// tests read the same file). Every row must post the call `expect` names —
+/// through its `metadata.respond` handle, and, with the handle stripped (an
+/// older server), through the per-source derivation.
+final class HitlRespondFixtureTests: XCTestCase {
+    private static let fixtureURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // MagiosTests/
+        .deletingLastPathComponent()  // magios/
+        .deletingLastPathComponent()  // repo root
+        .appendingPathComponent("magician/tests/fixtures/hitl/attention_rows.json")
+
+    private func rows() throws -> [[String: Any]] {
+        let data = try Data(contentsOf: Self.fixtureURL)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try XCTUnwrap(root["rows"] as? [[String: Any]])
+    }
+
+    private func check(_ fixture: [String: Any], stripHandle: Bool) throws {
+        let kind = fixture["kind"] as? String ?? "?"
+        var row = try XCTUnwrap(fixture["row"] as? [String: Any], kind)
+        if stripHandle, var metadata = row["metadata"] as? [String: Any] {
+            metadata.removeValue(forKey: "respond")
+            if var hitl = metadata["hitl_request"] as? [String: Any] {
+                hitl.removeValue(forKey: "respond")
+                metadata["hitl_request"] = hitl
+            }
+            row["metadata"] = metadata
+        }
+        let item = try JSONDecoder().decode(AttentionItem.self,
+                                            from: JSONSerialization.data(withJSONObject: row))
+        if stripHandle {
+            XCTAssertNil(item.respondHandle, kind)
+        } else {
+            XCTAssertNotNil(item.respondHandle, "\(kind): the handle decodes")
+        }
+        let answer = try XCTUnwrap(fixture["answer"] as? [String: Any], kind)
+        let expect = try XCTUnwrap(fixture["expect"] as? [String: Any], kind)
+        let body = try XCTUnwrap(expect["body"] as? [String: Any], kind)
+        let call = item.respondCall(value: answer)
+        XCTAssertEqual(call.path, expect["url"] as? String, "\(kind): url")
+        for key in ["source", "input_type", "execution_id", "task_id"] {
+            XCTAssertEqual(call.body[key] as? String, body[key] as? String, "\(kind): \(key)")
+        }
+        XCTAssertEqual(call.body["channel"] as? String, "ios", kind)
+        XCTAssertNotNil(call.body["value"], kind)
+    }
+
+    func testEveryRowPostsTheCallItsHandleNames() throws {
+        let fixtures = try rows()
+        XCTAssertGreaterThanOrEqual(fixtures.count, 10)
+        for fixture in fixtures { try check(fixture, stripHandle: false) }
+    }
+
+    func testRowsFromAnOlderServerResolveTheSameCall() throws {
+        for fixture in try rows() { try check(fixture, stripHandle: true) }
+    }
+
+    func testAnUnusableHandleFallsBackToTheDerivation() throws {
+        let item = try JSONDecoder().decode(AttentionItem.self, from: JSONSerialization.data(withJSONObject: [
+            "id": "i", "title": "Q", "item_type": "escalation", "status": "needs_action",
+            "metadata": [
+                "source": "user_request", "input_type": "choice", "pause_state_id": "ur-1",
+                "respond": ["url": "https://elsewhere.example/x", "correlation_id": "ur-1",
+                            "source": "user_request", "input_type": "choice"]
+            ]
+        ] as [String: Any]))
+        XCTAssertNil(item.respondHandle)
+        XCTAssertEqual(item.respondCall(value: ["type": "choice", "selected_id": "a"]).path,
+                       "/api/magician/v2/hitl/ur-1/respond")
     }
 }

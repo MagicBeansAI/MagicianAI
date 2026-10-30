@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- 0.1.11: GPT-Live calls get ready without waiting for the chat prompt's memory lookup.
+
+- GPT-Live calls get ready without waiting for the chat prompt's memory lookup: Live installs its own prompt and only needs the catalog snapshot that authorizes `delegate_to_chat`, which used to hold `session.ready` for up to 8 seconds.
+
+### 2026-10-24 — 0.1.10
+
+- Realtime calls fix their chat before the provider session starts and keep it through rotation, so voice is charged to the chat it began in; a chat created for a call that fails to start is deleted again.
+
+### 2026-10-23 — 0.1.9
+
+- The voice orchestrator reports token usage so voice turns count toward the owner spend envelope.
+
 ### 2026-10-15 — 0.1.8
 
 - Keep confirmed offer bindings and reply Work provenance across negotiation restarts and rescheduling.
@@ -22,8 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The hands-free realtime voice profile carries the new thinking-level, tool-result scheduling and display-order fields, unset.
 
-### 2026-09-11 — 0.1.1 — GPT Live 1, tool-using voice delegation, Gemini Transcribe
+---
 
-- Voice runs GPT Live 1 alongside GPT Realtime and Gemini Live, delegates to the full tool-using chat turn, and honours a pinned voice from Settings.
-- Fixed: personal voice no longer fails closed on an unattested owner credential.
-- Add Gemini file and streaming speech-to-text providers.
+Older entries: `docs/archive/changelogs/magician-media.md`

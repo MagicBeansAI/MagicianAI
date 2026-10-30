@@ -70,6 +70,8 @@ runtime_root:
   files:
     - magician-bin/src/main.rs
     - magician/src/config.rs
+    # Opt-in live retrieval eval; moved out of examples to use runtime key authority.
+    - magician-bin/src/chat_context_retrieval_eval.rs
     # WhatsApp owner numbers are read from the scope env under the runtime
     # root. The env read stays in workspace::runtime_root_env.
     - magician/src/magician_v2/media_seam/meeting_orchestrator_voice_responder.rs

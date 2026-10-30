@@ -89,6 +89,8 @@ const ACT_FOR_STATE: Record<VerdictState, ActId> = {
 	cancelled: 'run',
 	queued: 'plan',
 	archived: 'output',
+	// The story is still the run until the answer lands; then the result leads.
+	finalizing: 'run',
 	finished: 'output'
 };
 
@@ -187,6 +189,7 @@ const LEAD_FOR_STATE: Record<VerdictState, ActId | null> = {
 	paused: 'run',
 	cancelled: 'run',
 	archived: 'output',
+	finalizing: 'run',
 	finished: 'output'
 };
 

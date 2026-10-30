@@ -239,22 +239,23 @@ impl HarnessTurnSettled {
 }
 
 impl HarnessSessionRequest {
-    /// A successful selected profile cannot recover a different profile's outage.
-    /// Hash profile metadata instead of placing endpoints or credential names in HITL.
+    /// The notice key for this session's service health: one per CLI, so a
+    /// failed sign-in or exhausted account raises one notice whichever model
+    /// label the turns used (`harness:grok`), and `codex_app_server` files
+    /// under `codex`. A Pi turn on a Magician profile runs on that profile's
+    /// credentials, so each profile is its own service; its metadata is
+    /// hashed rather than placing endpoints or credential names in HITL.
     pub fn health_service(&self, engine: &str) -> String {
         use sha2::{Digest, Sha256};
-        let identity = if engine == "pi" {
-            serde_json::json!({"model": self.model, "profile": self.pi_profile})
-        } else {
-            serde_json::json!({"model": self.model})
-        };
-        let digest = format!("{:x}", Sha256::digest(identity.to_string().as_bytes()));
-        let choice = if self.pi_profile.is_some() {
-            "profile"
-        } else {
-            "model"
-        };
-        format!("harness:{engine} [{choice} {}]", &digest[..12])
+        let engine = crate::magician_v2::harness_auth::canonical_engine(engine);
+        match (&self.pi_profile, engine) {
+            (Some(profile), "pi") => {
+                let identity = serde_json::json!({"profile": profile});
+                let digest = format!("{:x}", Sha256::digest(identity.to_string().as_bytes()));
+                format!("harness:pi [profile {}]", &digest[..12])
+            },
+            _ => format!("harness:{engine}"),
+        }
     }
 }
 
@@ -312,6 +313,14 @@ pub trait HarnessSession: Send + Sync {
         outcome.service_health()
     }
 
+    /// What the CLI printed about the last turn beyond its reply: its
+    /// status and error events and stderr tail (bounded, the grant
+    /// redacted). Read to classify and explain a failed turn
+    /// (`harness_auth::failure`); never shown as the reply itself.
+    fn failure_text(&self) -> String {
+        String::new()
+    }
+
     async fn turn(
         &mut self,
         input: &HarnessTurnInput,
@@ -354,11 +363,18 @@ mod mcp_config_tests {
     #[test]
     fn the_plane_server_outlasts_a_silent_coding_turn() {
         let doc = super::mcp_config_document(
-            &super::PlaneEndpoint { url: "http://127.0.0.1:1/mcp".to_string() },
+            &super::PlaneEndpoint {
+                url: "http://127.0.0.1:1/mcp".to_string(),
+            },
             "plt_test",
         );
-        let timeout_ms = doc["mcpServers"]["magician-plane"]["timeout"].as_u64().expect("timeout");
-        assert_eq!(timeout_ms, super::super::engines::PLANE_TOOL_TIMEOUT_SECS * 1000);
+        let timeout_ms = doc["mcpServers"]["magician-plane"]["timeout"]
+            .as_u64()
+            .expect("timeout");
+        assert_eq!(
+            timeout_ms,
+            super::super::engines::PLANE_TOOL_TIMEOUT_SECS * 1000
+        );
         assert!(timeout_ms / 1000 >= crate::config::default_harness_turn_max_seconds());
     }
 }
@@ -436,6 +452,18 @@ mod outcome_contract {
         assert_eq!(turn.service_health(), None);
         turn.stop_reason = HarnessStopReason::Settled;
         assert_eq!(turn.service_health(), Some(Ok(())));
+    }
+
+    /// One engine-level failure is one notice, whichever model label failed.
+    #[test]
+    fn health_service_is_keyed_on_the_engine_not_the_model() {
+        let mut request = HarnessSessionRequest::test();
+        request.model = Some("grok-4".into());
+        let first = request.health_service("grok");
+        request.model = Some("grok-code-fast".into());
+        assert_eq!(request.health_service("grok"), first);
+        assert_eq!(first, "harness:grok");
+        assert_eq!(request.health_service("codex_app_server"), "harness:codex");
     }
 
     #[test]

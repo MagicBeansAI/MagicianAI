@@ -2,6 +2,17 @@ import XCTest
 @testable import Magician
 
 final class ChatTurnActivityTests: XCTestCase {
+    func testContextPreparationKeepsMeasuredDurationAndSettlesAfterReplay() {
+        let sut = ChatTurnActivityAccumulator()
+        sut.ingest(event("context.retrieval.started", ["phase_id":"p"]))
+        sut.ingest(event("context.retrieval.completed", ["phase_id":"p", "status":"partial", "duration_ms":123, "summary":"Memory search: 100 ms"]))
+        sut.ingest(event("context.retrieval.started", ["phase_id":"p"]))
+        XCTAssertEqual(sut.snapshot().count, 1)
+        XCTAssertEqual(sut.snapshot().first?.label, "Context prepared (partial)")
+        XCTAssertEqual(sut.snapshot().first?.durationMs, 123)
+        XCTAssertEqual(sut.snapshot().first?.status, .done)
+        XCTAssertNil(sut.snapshot().first?.callUsage)
+    }
     func testIgnoresInternalAndUnknownEvents() {
         let sut = ChatTurnActivityAccumulator()
         sut.ingest(["event_type": "__events_ready"])
@@ -813,6 +824,14 @@ final class ChatTurnActivityTests: XCTestCase {
         XCTAssertFalse(row?.label.contains("__call_tool") ?? true)
     }
 
+    func testCliLabelNamesTheCommandFamilyWithoutPayloadArguments() {
+        XCTAssertEqual(activityToolDisplay(tool: "creative__run", payload: ["args": ["args": ["generate", "create", "model", "--prompt", "private prompt"]]])?.label,
+                       "creative · generate create")
+        XCTAssertNil(activityToolDisplay(tool: "creative__run", payload: ["args": ["args": ["--token", "private token"]]]))
+        XCTAssertEqual(activityToolDisplay(tool: "groceries__call_tool", payload: ["args": ["tool_name": "search_products", "arguments_json": "{}"]])?.label,
+                       "groceries · search_products")
+    }
+
     func testCallToolLabelComesFromTheRemoteToolNameAndItsQuery() {
         let longSQL = "SELECT id, name, created_at FROM customers WHERE created_at > now() - interval '30 days' ORDER BY created_at DESC"
         let argumentsJSON = String(decoding: try! JSONSerialization.data(withJSONObject: ["sql": longSQL]), as: UTF8.self)
@@ -847,6 +866,200 @@ final class ChatTurnActivityTests: XCTestCase {
         )?.target)
         XCTAssertNil(activityToolDisplay(tool: "metabase-mcp__call_tool", payload: [:]))
         XCTAssertNil(activityToolDisplay(tool: "web_fetch", payload: ["args": ["name": "x"]]))
+    }
+
+    // MARK: Typed LLM calls (flat loop)
+
+    private func typedLLM(_ type: String, call: String?, _ data: [String: Any]) -> [String: Any] {
+        var payload: [String: Any] = [
+            "execution_id": "exec-1", "plan_id": "plan-1", "step_id": "s1",
+            "capability": "reasoning", "timestamp": 1_700_000_000_000
+        ]
+        if let call { payload["correlation"] = ["trace_id": "trace-1", "llm_call_id": call] }
+        payload.merge(data) { _, new in new }
+        return ["event_type": type, "data": payload]
+    }
+
+    func testTypedLLMCallRunsThenRoutesThenSettlesOneRow() {
+        let sut = ChatTurnActivityAccumulator()
+        sut.ingest(typedLLM("LLMRequestSent", call: "llm-1", [:]))
+        var rows = sut.snapshot()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.label, "Thinking…")
+        XCTAssertEqual(rows.first?.status, .running)
+        XCTAssertEqual(rows.first?.startedAtMs, 1_700_000_000_000)
+
+        sut.ingest(typedLLM("LLMRouted", call: "llm-1", [
+            "provider": "anthropic", "model": "claude-test", "profile": "reasoning",
+            "timestamp": 1_700_000_000_050
+        ]))
+        rows = sut.snapshot()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.label, "Thinking with claude-test")
+        XCTAssertEqual(rows.first?.status, .running)
+
+        sut.ingest(typedLLM("LLMResponseReceived", call: "llm-1", [
+            "success": true, "latency_ms": 2_400, "timestamp": 1_700_000_002_400,
+            "input_tokens": 100, "output_tokens": 20
+        ]))
+        rows = sut.snapshot()
+        XCTAssertEqual(rows.count, 1, "the response settles the request's row in place")
+        XCTAssertEqual(rows.first?.label, "Thinking with claude-test", "the routed model stays")
+        XCTAssertEqual(rows.first?.status, .done)
+        XCTAssertEqual(rows.first?.durationMs, 2_400)
+        XCTAssertEqual(rows.first?.callUsage?.callId, "llm-1")
+        XCTAssertEqual(rows.first?.startedAtMs, 1_700_000_000_000, "the clock started at the request")
+    }
+
+    func testTypedLLMResponseNamesTheModelThatAnsweredAndCanFail() {
+        let sut = ChatTurnActivityAccumulator()
+        sut.ingest(typedLLM("LLMRequestSent", call: "a", [:]))
+        sut.ingest(typedLLM("LLMRouted", call: "a", ["model": "primary-model"]))
+        // A fallback re-routes the same call.
+        sut.ingest(typedLLM("LLMRouted", call: "a", ["model": "fallback-model", "timestamp": 1_700_000_000_900]))
+        XCTAssertEqual(sut.snapshot().first?.label, "Thinking with fallback-model")
+        sut.ingest(typedLLM("LLMResponseReceived", call: "a", [
+            "success": false, "error": "rate limited", "model": "answered-model", "timestamp": 1_700_000_001_000
+        ]))
+        let row = sut.snapshot().first
+        XCTAssertEqual(sut.snapshot().count, 1)
+        XCTAssertEqual(row?.label, "Thinking with answered-model")
+        XCTAssertEqual(row?.status, .failed)
+        XCTAssertEqual(row?.tone, .error)
+        XCTAssertEqual(row?.detail, "rate limited")
+    }
+
+    func testDecisionModelClassificationRetainsMeasuredInputWithZeroOutput() {
+        let sut = ChatTurnActivityAccumulator()
+        sut.ingest(typedLLM("LLMResponseReceived", call: "decision-local", [
+            "success": true, "model": "local-judge", "response_kind": "decision_model",
+            "latency_ms": 80, "input_tokens": 1200, "output_tokens": 0,
+            "usage_reported": true, "cost": 0.0,
+            "correlation": ["llm_call_id": "decision-local", "usage_availability": [
+                "tokens": true, "cache_read": false, "cost": true
+            ]]
+        ]))
+        let row = sut.snapshot().first
+        XCTAssertEqual(row?.status, .done)
+        XCTAssertEqual(row?.callUsage?.stepTokens, 1200)
+        XCTAssertEqual(row?.callUsage?.costUsd, 0.0)
+        XCTAssertEqual(row?.durationMs, 80)
+    }
+
+    func testUnreportedDecisionModelUsageDoesNotShowTransportPlaceholderZeroes() {
+        let usage = ActivityCallUsage.read([
+            "input_tokens": 0, "output_tokens": 0, "cost": 0.0, "usage_reported": false,
+            "correlation": ["usage_availability": ["tokens": false, "cost": false]]
+        ])
+        XCTAssertNil(usage.stepTokens)
+        XCTAssertNil(usage.inputTokens)
+        XCTAssertNil(usage.outputTokens)
+        XCTAssertNil(usage.costUsd)
+    }
+
+    func testTypedLLMWithoutCallIdKeepsTheOlderBehaviour() {
+        let sut = ChatTurnActivityAccumulator()
+        sut.ingest(typedLLM("LLMRequestSent", call: nil, [:]))
+        sut.ingest(typedLLM("LLMRouted", call: nil, ["model": "m"]))
+        XCTAssertEqual(sut.snapshot(), [], "an older server's request opens no row")
+        sut.ingest(typedLLM("LLMResponseReceived", call: nil, [
+            "success": true, "latency_ms": 900, "timestamp": 1_700_000_000_900
+        ]))
+        let rows = sut.snapshot()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.label, "Thinking with reasoning")
+        XCTAssertEqual(rows.first?.status, .done)
+    }
+
+    func testIdLessTypedResponseSettlesTheOpenRequestOfItsExecution() {
+        let sut = ChatTurnActivityAccumulator()
+        sut.ingest(typedLLM("LLMRequestSent", call: "open-1", [:]))
+        sut.ingest(typedLLM("LLMResponseReceived", call: nil, [
+            "success": true, "latency_ms": 300, "timestamp": 1_700_000_000_300
+        ]))
+        let rows = sut.snapshot()
+        XCTAssertEqual(rows.count, 1, "no running row is stranded")
+        XCTAssertEqual(rows.first?.status, .done)
+        XCTAssertEqual(rows.first?.durationMs, 300)
+    }
+
+    /// One model call reaches the turn twice: the chat-side `llm.*` events
+    /// (keyed by trace; only `llm.succeeded` names the call id) and the typed
+    /// copies (keyed by call id). Either order renders one row, and the
+    /// chat-side settle's latency and usage survive the typed response.
+    func testChatAndTypedEventsForOneModelCallRenderOneRow() {
+        let requested = event("llm.requested", ["trace_id": "t", "model": "chat.default"])
+        let succeeded = event("llm.succeeded", [
+            "trace_id": "t", "llm_call_id": "call-1", "model": "claude-test",
+            "duration_ms": 2100.0, "ttft_ms": 700.0, "input_tokens": 100, "output_tokens": 20
+        ])
+        let sent = typedLLM("LLMRequestSent", call: "call-1", [:])
+        let routed = typedLLM("LLMRouted", call: "call-1", ["model": "claude-test"])
+        let response = typedLLM("LLMResponseReceived", call: "call-1", [
+            "success": true, "latency_ms": 2_400, "model": "claude-test"
+        ])
+        let orders: [String: [[String: Any]]] = [
+            "typed before the settle": [requested, sent, routed, response, succeeded],
+            "typed after the settle": [requested, succeeded, sent, routed, response],
+            "typed first": [sent, routed, requested, response, succeeded],
+        ]
+        for (name, events) in orders {
+            let sut = ChatTurnActivityAccumulator()
+            events.forEach { sut.ingest($0) }
+            let rows = sut.snapshot()
+            XCTAssertEqual(rows.count, 1, name)
+            XCTAssertEqual(rows.first?.status, .done, name)
+            XCTAssertEqual(rows.first?.label, "Thinking with claude-test", name)
+            XCTAssertEqual(rows.first?.durationMs, 2100, name)
+            XCTAssertEqual(rows.first?.detail, "700ms (2.1s)", name)
+            XCTAssertEqual(rows.first?.callUsage?.callId, "call-1", name)
+            XCTAssertEqual(rows.first?.callUsage?.stepTokens, 120, name)
+            // A reset forgets the alias: the next turn's call opens its own row.
+            sut.reset()
+            sut.ingest(sent)
+            XCTAssertEqual(sut.snapshot().map(\.key), ["system::llm::call::call-1"], name)
+        }
+    }
+
+    func testTypedLLMLifecycleSortsRequestRouteResponseOnATimestampTie() {
+        let response = typedLLM("LLMResponseReceived", call: "t", ["success": true])
+        let routed = typedLLM("LLMRouted", call: "t", ["model": "m"])
+        let request = typedLLM("LLMRequestSent", call: "t", [:])
+        let ordered = ChatViewModel.normalizedActivityEvents([response, routed, request])
+        XCTAssertEqual(ordered.map { $0["event_type"] as? String },
+                       ["LLMRequestSent", "LLMRouted", "LLMResponseReceived"])
+        let sut = ChatTurnActivityAccumulator()
+        ordered.forEach { sut.ingest($0) }
+        XCTAssertEqual(sut.snapshot().map(\.status), [.done])
+        XCTAssertEqual(sut.snapshot().first?.label, "Thinking with m")
+    }
+
+    func testRunningRowsShowALiveClockOnlyWhileTheTurnIsLive() {
+        let start = 1_700_000_000_000.0
+        let running = ActivityRow(key: "k", kind: .llm, label: "Thinking…", detail: nil,
+                                  status: .running, tone: .info, durationMs: nil, startedAtMs: start)
+        let at = { (seconds: Double) in Date(timeIntervalSince1970: start / 1_000 + seconds) }
+        XCTAssertEqual(ActivityLiveClock.label(running, isLive: true, now: at(5.7)), "5s", "whole seconds, never rounded up")
+        XCTAssertEqual(ActivityLiveClock.label(running, isLive: true, now: at(65)), "1m 5s")
+        XCTAssertEqual(ActivityLiveClock.label(running, isLive: true, now: at(-3)), "0s", "a trailing device clock clamps")
+        XCTAssertNil(ActivityLiveClock.label(running, isLive: false, now: at(5)), "a finished turn does not tick")
+
+        var tool = running
+        tool.kind = .tool
+        XCTAssertTrue(ActivityLiveClock.ticks(tool, isLive: true))
+
+        var settled = running
+        settled.status = .done
+        settled.durationMs = 2_100
+        XCTAssertNil(ActivityLiveClock.label(settled, isLive: true, now: at(5)), "a settled row shows its duration")
+
+        var reasoning = running
+        reasoning.kind = .reasoning
+        XCTAssertFalse(ActivityLiveClock.ticks(reasoning, isLive: true))
+
+        var unstamped = running
+        unstamped.startedAtMs = nil
+        XCTAssertFalse(ActivityLiveClock.ticks(unstamped, isLive: true))
     }
 
     func testTintSlotMatchesWebFnv1a() {

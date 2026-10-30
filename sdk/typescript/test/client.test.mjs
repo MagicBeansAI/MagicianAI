@@ -3,6 +3,7 @@ import test from "node:test";
 import { blake3 } from "@noble/hashes/blake3";
 import { bytesToHex } from "@noble/hashes/utils";
 import {
+  APP_SUPPORTED_MANIFEST_FEATURES,
   APP_SUPPORTED_PUBLIC_OPERATIONS,
   APP_SUPPORTED_PUBLIC_DEPRECATIONS,
   MagicianAppsClient,
@@ -26,22 +27,7 @@ function capabilities(overrides = {}) {
     contract_version: "1.5.0",
     supported_protocol_versions: ["1"],
     supported_manifest_schema_versions: ["1.0"],
-    supported_manifest_features: [
-      "typed_entities_v1",
-      "declarative_views_v1",
-      "governed_actions_v1",
-      "immutable_dependencies_v1",
-      "owner_data_plane_v1",
-      "durable_action_runs_v1",
-      "contribution_ports_v1",
-      "attention_lanes_v1",
-      "llm_operations_v1",
-      "custom_surfaces_v1",
-      "app_widgets_v1",
-      "app_behaviors_v1",
-      "app_event_behaviors_v1",
-      "app_owner_notifications_v1",
-    ],
+    supported_manifest_features: [...APP_SUPPORTED_MANIFEST_FEATURES],
     json_schema_dialect: "https://json-schema.org/draft/2020-12/schema",
     limits: {
       max_document_bytes: 1_048_576,
@@ -237,7 +223,7 @@ test("refuses missing, substituted, and additive capability metadata", async () 
   }
 });
 
-test("accepts the 1.5.0 handshake with custom_surfaces_v1 and rejects older servers", async () => {
+test("accepts the 1.5.0 handshake and rejects stale versions or feature sets", async () => {
   let calls = 0;
   const current = new MagicianAppsClient({
     origin: "https://magician.example.test",
@@ -249,6 +235,7 @@ test("accepts the 1.5.0 handshake with custom_surfaces_v1 and rejects older serv
   const accepted = await current.connect();
   assert.equal(accepted.contract_version, "1.5.0");
   assert.ok(accepted.supported_manifest_features.includes("custom_surfaces_v1"));
+  assert.ok(accepted.supported_manifest_features.includes("app_memory_read_v1"));
   assert.equal(calls, 1);
   for (const stale of [
     { contract_version: "1.3.0" },
@@ -258,10 +245,10 @@ test("accepts the 1.5.0 handshake with custom_surfaces_v1 and rejects older serv
         supported_contract_versions: ["1.3.0"],
       },
     },
-    {
+    ...["custom_surfaces_v1", "app_memory_read_v1"].map((missingFeature) => ({
       supported_manifest_features: capabilities().supported_manifest_features
-        .filter((feature) => feature !== "custom_surfaces_v1"),
-    },
+        .filter((feature) => feature !== missingFeature),
+    })),
   ]) {
     const client = new MagicianAppsClient({
       origin: "https://magician.example.test",

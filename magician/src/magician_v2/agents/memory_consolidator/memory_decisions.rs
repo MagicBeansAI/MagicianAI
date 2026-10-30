@@ -632,6 +632,22 @@ impl ConflictDecision {
         self.guard.as_ref().is_none_or(|guard| guard.current())
     }
 }
+/// What one conflict review produced: applicable decisions, plus the pairs the
+/// current engine authority considered and abstained on (answered below its
+/// gate). A pair in neither set failed transiently and stays retryable.
+#[derive(Debug, Default)]
+pub(super) struct ConflictOutcome {
+    pub decisions: HashMap<String, ConflictDecision>,
+    pub abstained: HashSet<String>,
+}
+impl ConflictOutcome {
+    fn decided(decisions: HashMap<String, ConflictDecision>) -> Self {
+        Self {
+            decisions,
+            abstained: HashSet::new(),
+        }
+    }
+}
 const CONFLICT_OPERATION: &str = "memory_conflict_review";
 const CONFLICT_PROJECTION: &str = "memory_conflict_pair_v1";
 
@@ -685,9 +701,9 @@ pub(super) async fn conflict(
     conflicts: &[MemoryConflictReviewCase],
     policy: &ConflictPolicy,
     source: Option<&ConflictReplaySource<'_>>,
-) -> HashMap<String, ConflictDecision> {
+) -> ConflictOutcome {
     if conflicts.is_empty() {
-        return HashMap::new();
+        return ConflictOutcome::default();
     }
     let mapping = if memory_conflict_target_is_high_risk(target) {
         LLMOperation::MemoryConflictReviewHighRisk
@@ -712,14 +728,14 @@ pub(super) async fn conflict(
             .collect()
     };
     let Some((principal, workspace)) = owner.memory_service.scoped_memory_scope() else {
-        return fallback().await;
+        return ConflictOutcome::decided(fallback().await);
     };
     let Some(revision) = policy.reference.clone() else {
-        return fallback().await;
+        return ConflictOutcome::decided(fallback().await);
     };
     let lookup = policy.lookup.clone();
     if !matches!(lookup, PolicyLookup::Participating(_)) || conflicts.len() > 64 {
-        return fallback().await;
+        return ConflictOutcome::decided(fallback().await);
     }
     let started = Instant::now();
     let budget = Budget::from_secs(mapping.timeout_seconds());
@@ -734,7 +750,7 @@ pub(super) async fn conflict(
             12000,
         );
         let Ok(mut value) = serde_json::from_str::<Value>(&raw) else {
-            return fallback().await;
+            return ConflictOutcome::decided(fallback().await);
         };
         if let Some(pair) = value
             .get_mut("conflicts")
@@ -942,8 +958,14 @@ pub(super) async fn conflict(
         ))
     });
     let mut decisions = HashMap::new();
+    let mut abstained = HashSet::new();
     if reference::version(router, mapping.as_str(), CONFLICT_PROJECTION).as_ref() == Some(&revision)
     {
+        for id in outcome.current_abstentions() {
+            if let Some(case) = id.parse::<usize>().ok().and_then(|i| conflicts.get(i)) {
+                abstained.insert(case.conflict_id.clone());
+            }
+        }
         for (id, answers) in outcome.current_answers() {
             let Some(case) = id.parse::<usize>().ok().and_then(|i| conflicts.get(i)) else {
                 continue;
@@ -972,7 +994,11 @@ pub(super) async fn conflict(
                 .map(|(id, decision)| (id, ConflictDecision::incumbent(decision))),
         );
     }
-    decisions
+    abstained.retain(|id| !decisions.contains_key(id));
+    ConflictOutcome {
+        decisions,
+        abstained,
+    }
 }
 
 fn conflict_reference_labels(

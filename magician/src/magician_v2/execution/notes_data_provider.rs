@@ -12,8 +12,10 @@
 //! notes root out of results), and `read_note` resolves a `source_ref` that a
 //! search emitted through `read_observation_note`, which re-confines the path
 //! to the provider root, refuses symlinks and reads markdown only. No caller
-//! ever supplies a host path, and none is ever returned: `open_url` is dropped
-//! because a local provider's link can carry one.
+//! ever supplies a host path, and none is ever returned. `open_url` is the
+//! canonical relative note link (`/notes?path=…&workspace=…`, see
+//! [`crate::magician_v2::notes::note_link`]): no host, no `file://` path, and
+//! opening it still goes through sign-in and scope.
 //!
 //! Read-only (the binder-family invariant): no path here creates, appends to,
 //! publishes or deletes a note, and a compile-time assertion below refuses an
@@ -51,8 +53,9 @@ const MAX_TITLE_BYTES: usize = 512;
 const MAX_MATCHES_PER_HIT: usize = 8;
 const MAX_MATCH_TEXT_BYTES: usize = 512;
 
-/// The providers a notes space can have. A `source_ref` naming anything else
-/// can never resolve, so the proof refuses it up front.
+/// The providers a notes space can have: the fallback folder and the notes
+/// folder (whose persisted id is `silverbullet`). A `source_ref` naming
+/// anything else can never resolve, so the proof refuses it up front.
 const PROVIDERS: &[&str] = &["local_markdown", "silverbullet"];
 
 const ACTIONS: &[&str] = &["search_notes", "read_note"];
@@ -288,7 +291,11 @@ fn admissible_source_ref(source_ref: &str) -> bool {
     let Some((provider, relative_path)) = rest.split_once(':') else {
         return false;
     };
-    PROVIDERS.contains(&provider) && is_readable_note_path(relative_path)
+    // Apps get no goal workspace content: who may read a workspace is
+    // decided per agent (`goal_workspace_access`), and an app is none.
+    PROVIDERS.contains(&provider)
+        && is_readable_note_path(relative_path)
+        && !crate::magician_v2::notes::is_goal_workspace_relative_path(relative_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -323,9 +330,14 @@ impl NotesDataProvider {
                 .map(|limit| limit.clamp(1, MAX_SEARCH_LIMIT) as usize),
             provider: string_param(params, "provider"),
         };
-        let results = self
+        // Goal workspace notes are dropped after ranking, before the limit,
+        // and only counted.
+        let admit = |relative: &str, _absolute: &std::path::Path| {
+            !crate::magician_v2::notes::is_goal_workspace_relative_path(relative)
+        };
+        let (results, withheld) = self
             .store()
-            .search_notes(&scope.principal, &scope.workspace, request)
+            .search_notes_for(&scope.principal, &scope.workspace, request, &admit)
             .await
             .map_err(|error| ExecutionError::Step(format!("notes_data search failed: {error}")))?;
         let hits = results
@@ -338,6 +350,7 @@ impl NotesDataProvider {
                     "provider": hit.provider,
                     "relative_path": hit.relative_path,
                     "title": bounded_text(&hit.title, MAX_TITLE_BYTES),
+                    "open_url": hit.open_url,
                     "modified_at_ms": hit.modified_at_ms,
                     "matched_in_title": hit.matched_in_title,
                     "match_count": hit.match_count,
@@ -356,6 +369,7 @@ impl NotesDataProvider {
         Ok(json!({
             "scope": scope.as_json(),
             "hits": hits,
+            "withheld_count": withheld,
             "scanned_notes": results.scanned_notes,
             // Reported, not hidden: "nothing found" means something different
             // when the scan stopped early or the cap trimmed results.
@@ -384,6 +398,7 @@ impl NotesDataProvider {
                 "provider": note.provider,
                 "relative_path": note.relative_path,
                 "title": bounded_text(&note.title, MAX_TITLE_BYTES),
+                "open_url": note.open_url,
                 "markdown": note.markdown,
                 "modified_at_ms": note.modified_at_ms,
                 "content_hash": note.content_hash,
@@ -581,6 +596,9 @@ mod tests {
             "local_markdown:Inbox/plan.md",
             "notes:local_markdown",
             "notes:local_markdown:Inbox/pl\u{7}an.md",
+            // Apps get no goal workspace content.
+            "notes:local_markdown:Workspaces/Magican/Goals/X/x.md",
+            "notes:silverbullet:workspaces/Magican/README.md",
         ] {
             assert!(!admissible_source_ref(refused), "{refused:?}");
         }
@@ -624,6 +642,41 @@ mod tests {
             !prove_app_notes_args(&search),
             "host paths are never an argument"
         );
+    }
+
+    #[tokio::test]
+    async fn read_note_returns_the_canonical_relative_link_and_no_host_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = ArtifactV2Workspace::new(temp.path());
+        let store = NotesSettingsStore::with_workspace_layout(workspace.clone());
+        store
+            .create_note(
+                "owner",
+                "default",
+                crate::magician_v2::notes::CreateNoteRequest {
+                    title: "Launch plan".to_owned(),
+                    body: "ship it".to_owned(),
+                    provider: None,
+                    target_dir: Some("Inbox".to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+        let provider = NotesDataProvider::new(workspace);
+        let mut read = params("read_note");
+        read.insert(
+            "source_ref".to_owned(),
+            json!("notes:local_markdown:Inbox/launch-plan.md"),
+        );
+        let value = provider.read_note(&read).await.unwrap();
+        assert_eq!(value["present"], json!(true));
+        assert_eq!(
+            value["note"]["open_url"],
+            json!("/notes?path=Inbox%2Flaunch-plan.md&workspace=default")
+        );
+        let rendered = value.to_string();
+        assert!(!rendered.contains("file://"));
+        assert!(!rendered.contains(&temp.path().display().to_string()));
     }
 
     #[test]

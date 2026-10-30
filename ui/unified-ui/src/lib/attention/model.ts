@@ -1,6 +1,7 @@
 import { derived, type Readable } from 'svelte/store';
 
 import type { FeedAttentionTotals, FeedItem } from '$lib/feed/types';
+import { isDetailedHint } from '$lib/hitl/hitlDetails';
 import {
 	hitlDelegationFromMetadata,
 	hitlRequestFromCanonicalEvent,
@@ -10,6 +11,7 @@ import {
 	hitlOpenTargetFromFeedItem,
 	hitlRequestFromOpenTarget
 } from '$lib/attention/openHitlPrompt';
+import { isFreeTextChoiceOption } from '$lib/hitl/freeTextChoice';
 import type { HitlRequest, HitlSource } from '$lib/hitl/types';
 import {
 	pendingHitlEntries,
@@ -183,7 +185,7 @@ export function attentionFeedLanesForCategory(
 		case 'escalations':
 			return ['escalations'];
 		case 'failed':
-			return ['requests', 'failed'];
+			return ['failed'];
 		default:
 			return ATTENTION_FEED_LANES;
 	}
@@ -378,7 +380,7 @@ export function attentionBusRow(entry: HitlPendingEntry): AttentionDisplayRow | 
 	const key = attentionRowDedupeKey(request.identifiers, entry.correlation_id);
 	return {
 		key,
-		category: attentionSourceCategory(request.source),
+		category: attentionRequestCategory(request),
 		source: request.source,
 		prompt: request.prompt,
 		hint: request.hint,
@@ -619,10 +621,20 @@ export function mergeAttentionRows(
 				}
 			}
 		}
+		// The bus row's content wins; the lane is the server's when a feed row
+		// carries the same ask, so the tab and its count agree.
+		let category = winner.category;
+		for (let candidate = busRows.length; candidate < rows.length; candidate += 1) {
+			if (root(candidate) === index && rows[candidate].category) {
+				category = rows[candidate].category;
+				break;
+			}
+		}
+		const withLane = category === winner.category ? winner : { ...winner, category };
 		const withAliases =
-			retainedAliasIds.length === (winner.alias_ids?.length ?? 0)
-				? winner
-				: { ...winner, alias_ids: retainedAliasIds };
+			retainedAliasIds.length === (withLane.alias_ids?.length ?? 0)
+				? withLane
+				: { ...withLane, alias_ids: retainedAliasIds };
 		merged.push(
 			delegatedAgentId && !winner.delegated_agent_id
 				? {
@@ -693,9 +705,25 @@ export function attentionSourceCategory(source: HitlSource): AttentionRowCategor
 			return 'approvals';
 		case 'escalation':
 			return 'escalations';
+		case 'service_health':
+			return 'failed';
 		default:
 			return 'requests';
 	}
+}
+
+/**
+ * The lane of a live ask, mirroring the server's `attention_lane_for_ask`
+ * (`feed/store.rs`): a budget or iteration-limit pause is an escalation, a
+ * confirmation naming its action is an approval, otherwise its source decides.
+ */
+export function attentionRequestCategory(request: HitlRequest): AttentionRowCategory {
+	const schema = (request.schema ?? {}) as Record<string, unknown>;
+	if (schema.pause_kind === 'budget' || schema.pause_kind === 'max_iterations') return 'escalations';
+	if (request.input_type === 'diff_approval') return 'approvals';
+	if (request.input_type === 'confirmation' && typeof schema.action_type === 'string' && schema.action_type.trim())
+		return 'approvals';
+	return attentionSourceCategory(request.source);
 }
 
 export function attentionRowOperationalCategory(
@@ -780,4 +808,69 @@ export function skillEvolutionActionLabel(action: SkillEvolutionGateAction): str
 	if (action === 'dry_run') return 'Dry-run';
 	if (action === 'apply') return 'Apply';
 	return 'Promote';
+}
+
+/** One answer an Attention row offers as its own button. */
+export interface AttentionQuickChoice {
+	/** The id the prompt would report for this answer (`confirm`/`deny` for a confirmation). */
+	id: string;
+	label: string;
+	/** A change/other answer: its words are typed, so the button opens the prompt. */
+	opensPrompt: boolean;
+}
+
+/**
+ * The answers a pending agentic ask offers as one-click buttons on its row,
+ * or none.
+ *
+ * Only `source: "agentic"` — the `need_user_input` pause. `escalation`
+ * (max-iterations, cannot-proceed, loop-detected) spends budget and has its
+ * own continuation endpoint, so it keeps the prompt. A `choice` offers its
+ * options, one per id; a confirmation offers Approve / Deny only on an
+ * allow-list: the producer's explicit `destructive: false`, no tool
+ * `action_type` (an agentic action approval), not a protected app, no preview
+ * card, not a captured send's review. Everything else — other input types,
+ * secret asks, preference holds, rows that open a review — keeps the row click
+ * and its prompt, because that is where the rest of the ask is shown.
+ */
+export function attentionQuickChoices(row: AttentionDisplayRow): AttentionQuickChoice[] {
+	const request = row.request;
+	if (!request || row.failed || row.review_href || row.stalledWait) return [];
+	if (row.skillEvolution || row.rollbackRecommendation) return [];
+	if (request.source !== 'agentic') return [];
+	// An ask that carries what it is about (a proposal under "Details") is
+	// answered from its prompt, where the details show; the row cannot show them.
+	if (isDetailedHint(row.hint)) return [];
+	const schema = request.schema;
+	if (schema.sensitive || schema.alignment || schema.protected === true) return [];
+	if (request.input_type === 'choice') {
+		const seen = new Set<string>();
+		const choices: AttentionQuickChoice[] = [];
+		for (const option of schema.options ?? []) {
+			// A repeated id is one answer; the keyed row list must not see it twice.
+			if (seen.has(option.id)) continue;
+			seen.add(option.id);
+			choices.push({
+				id: option.id,
+				label: option.label,
+				opensPrompt: isFreeTextChoiceOption(option)
+			});
+		}
+		return choices;
+	}
+	if (
+		request.input_type === 'confirmation' &&
+		schema.destructive === false &&
+		!schema.action_type &&
+		!schema.approval_preview &&
+		// A captured send's review has three answers, one of them a standing
+		// grant; a row's Approve / Deny pair cannot express it.
+		schema.escalation_trigger !== 'outward_review'
+	) {
+		return [
+			{ id: 'confirm', label: schema.confirm_label ?? 'Approve', opensPrompt: false },
+			{ id: 'deny', label: schema.deny_label ?? 'Deny', opensPrompt: false }
+		];
+	}
+	return [];
 }

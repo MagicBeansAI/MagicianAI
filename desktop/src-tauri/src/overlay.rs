@@ -70,6 +70,74 @@ const OVERLAY_HUD_HEIGHT: f64 = 760.0;
 const OVERLAY_HUD_MAX_SCREEN_FRACTION: f64 = 0.9;
 const OVERLAY_STATE_EVENT: &str = "overlay-state";
 const OVERLAY_FOCUS_EVENT: &str = "overlay-focus-input";
+const HUD_WINDOW_MODE_EVENT: &str = "hud-window-mode";
+static HUD_EXPANDED: AtomicBool = AtomicBool::new(false);
+static HUD_WINDOW_CHANGING: AtomicBool = AtomicBool::new(false);
+static HUD_WINDOW_TRANSITION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn hud_is_expanded() -> bool {
+    HUD_EXPANDED.load(Ordering::SeqCst)
+}
+
+fn hud_should_dismiss_on_blur(expanded: bool, changing: bool, focused: bool) -> bool {
+    !expanded && !changing && !focused
+}
+
+/// Explicit native entry/return paths alongside the configurable summon gesture.
+pub fn install_hud_window_menu(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    let menu = match app.menu() {
+        Some(menu) => menu,
+        None => Menu::default(app)?,
+    };
+    for item in menu.items()? {
+        if let Some(submenu) = item.as_submenu() {
+            if submenu.text()? == "Window" {
+                submenu.append(&MenuItem::with_id(
+                    app,
+                    "hud-open-window",
+                    "Open Chat Window",
+                    true,
+                    None::<&str>,
+                )?)?;
+                submenu.append(&MenuItem::with_id(
+                    app,
+                    "hud-open-compact",
+                    "Quick Chat",
+                    true,
+                    None::<&str>,
+                )?)?;
+                break;
+            }
+        }
+    }
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        let expanded = match event.id().as_ref() {
+            "hud-open-window" => true,
+            "hud-open-compact" => false,
+            _ => return,
+        };
+        let result = ensure_overlay_window(app)
+            .and_then(|()| set_hud_expanded_window(app, expanded))
+            .and_then(|()| show_overlay_window(app));
+        if let Err(error) = result {
+            warn!(%error, "Could not open chat window");
+        }
+    });
+    Ok(())
+}
+
+fn hud_window_size(expanded: bool, available_width: f64, available_height: f64) -> (f64, f64) {
+    if expanded {
+        (available_width * 0.92, available_height * 0.9)
+    } else {
+        (
+            OVERLAY_HUD_WIDTH.min(available_width * OVERLAY_HUD_MAX_SCREEN_FRACTION),
+            OVERLAY_HUD_HEIGHT.min(available_height * OVERLAY_HUD_MAX_SCREEN_FRACTION),
+        )
+    }
+}
 const CONTEXTUAL_ASSIST_TARGET_EVENT: &str = "contextual-assist-target";
 const CONTEXTUAL_ASSIST_DISPLAY_EVENT: &str = "contextual-assist-display";
 const CONTEXTUAL_ASSIST_DISMISS_REQUEST_EVENT: &str = "contextual-assist-dismiss-request";
@@ -78,6 +146,9 @@ const OVERLAY_MONITOR_INTERVAL_SECS: u64 = 3;
 /// enough to stay clear of tray/shortcut/gateway boot work on the main thread;
 /// short enough that a first summon lands on the warm path.
 const OVERLAY_PREWARM_DELAY: Duration = Duration::from_secs(5);
+/// How long the pre-warm waits for the Vite dev server in debug builds before
+/// giving up and leaving the overlays to build on first summon.
+const OVERLAY_PREWARM_DEV_SERVER_WAIT: Duration = Duration::from_secs(120);
 const DRAW_OVERLAY_MODEL_MAX_SIDE: f64 = 2048.0;
 const DRAW_OVERLAY_MIN_TTL_MS: u64 = 20_000;
 const DRAW_OVERLAY_DEFAULT_TTL_MS: u64 = 60_000;
@@ -443,9 +514,7 @@ fn overlay_route_webview_url(
         // through the custom protocol instead — the same assets the
         // Settings/Logs windows already load in debug — so overlay-latency
         // checks and non-CSS iteration don't pay Vite's on-demand transform.
-        let use_bundled = std::env::var("MAGICIAN_DESKTOP_BUNDLED_OVERLAYS")
-            .is_ok_and(|value| !value.is_empty() && value != "0" && value != "false");
-        if !use_bundled {
+        if overlays_use_dev_server() {
             let url: tauri::Url = dev_url
                 .parse()
                 .map_err(|e| format!("Invalid {route_name} dev URL '{dev_url}': {e}"))?;
@@ -458,6 +527,54 @@ fn overlay_route_webview_url(
     {
         let _ = dev_url;
         bundled_app_url(route_name, app_path)
+    }
+}
+
+/// Debug overlays load from the Vite dev server unless
+/// `MAGICIAN_DESKTOP_BUNDLED_OVERLAYS` asks for the built assets.
+fn overlays_use_dev_server() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        !std::env::var("MAGICIAN_DESKTOP_BUNDLED_OVERLAYS")
+            .is_ok_and(|value| !value.is_empty() && value != "0" && value != "false")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+/// `make run-all` starts Vite alongside the tray, and Vite can take longer
+/// than the pre-warm delay to listen. A WebView built before then keeps its
+/// failed load (the `ensure_*_window` helpers reuse any existing window), so
+/// every later summon shows an empty transparent window. The pre-warm waits
+/// for the dev server and is skipped if it never answers; the first summon
+/// then builds the window cold, as before pre-warming.
+async fn overlay_dev_server_ready() -> bool {
+    if !overlays_use_dev_server() {
+        return true;
+    }
+    let Ok(url) = OVERLAY_HUD_DEV_URL.parse::<tauri::Url>() else {
+        return false;
+    };
+    let (Some(host), Some(port)) = (
+        url.host_str().map(str::to_owned),
+        url.port_or_known_default(),
+    ) else {
+        return false;
+    };
+    let deadline = Instant::now() + OVERLAY_PREWARM_DEV_SERVER_WAIT;
+    loop {
+        if tokio::net::TcpStream::connect((host.as_str(), port))
+            .await
+            .is_ok()
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -515,7 +632,7 @@ pub fn trigger_overlay_toggle(app: &AppHandle) {
         // hidden — either case routes to show.
         let currently_visible = app
             .get_webview_window(OVERLAY_WINDOW_LABEL)
-            .and_then(|w| w.is_visible().ok())
+            .and_then(|w| Some(w.is_visible().ok()? && !w.is_minimized().ok()?))
             .unwrap_or(false);
         let result = if currently_visible {
             hide_overlay_window(&app)
@@ -624,12 +741,23 @@ pub fn initialize_overlay(app: &AppHandle, prewarm_enabled: bool) -> Result<(), 
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(OVERLAY_PREWARM_DELAY).await;
+            if !overlay_dev_server_ready().await {
+                warn!(
+                    "Overlay pre-warm skipped: the Vite dev server did not answer within {:?}; overlays build on first summon",
+                    OVERLAY_PREWARM_DEV_SERVER_WAIT
+                );
+                return;
+            }
             // A summon during the delay already created the window; that race
             // resolves to Ok here. Losing a build race reports an error while
             // the window exists, so log-only is correct either way.
             match ensure_overlay_window(&app) {
                 Ok(()) => info!("HUD WebView ready (pre-warm)"),
                 Err(err) => warn!("HUD WebView pre-warm failed: {}", err),
+            }
+            match ensure_contextual_assist_window(&app) {
+                Ok(()) => info!("Contextual assist WebView ready (pre-warm)"),
+                Err(err) => warn!("Contextual assist WebView pre-warm failed: {}", err),
             }
         });
     }
@@ -693,7 +821,19 @@ pub fn ensure_overlay_window(app: &AppHandle) -> Result<(), String> {
             // the HUD doesn't linger in the background — same UX as
             // Spotlight / a popover.
             WindowEvent::Focused(false) => {
-                let _ = hide_overlay_window(&close_app);
+                // Style changes can queue a blur that arrives after focus was
+                // restored. Consult the native key window before dismissing.
+                let focused = close_app
+                    .get_webview_window(OVERLAY_WINDOW_LABEL)
+                    .and_then(|window| window.is_focused().ok())
+                    .unwrap_or(false);
+                if hud_should_dismiss_on_blur(
+                    hud_is_expanded(),
+                    HUD_WINDOW_CHANGING.load(Ordering::SeqCst),
+                    focused,
+                ) {
+                    let _ = hide_overlay_window(&close_app);
+                }
             },
             _ => {},
         }
@@ -1016,6 +1156,7 @@ fn present_notify_overlay_on_main(app: &AppHandle, shown: bool) -> Result<(), St
 ///      now; this is where they expect the HUD to appear).
 ///   2. Window's last-known monitor (fallback if cursor lookup fails).
 ///   3. Primary monitor (last-resort fallback).
+///
 /// The monitor the cursor is currently over, falling back to primary.
 ///
 /// Manual rect containment rather than `monitor_from_point`, which
@@ -1054,8 +1195,7 @@ fn center_hud_window(app: &AppHandle, window: &tauri::WebviewWindow) {
     let (mut width, mut height) = (OVERLAY_HUD_WIDTH, OVERLAY_HUD_HEIGHT);
     if let Some(monitor) = monitor.as_ref() {
         let screen = monitor.size().to_logical::<f64>(monitor.scale_factor());
-        width = width.min(screen.width * OVERLAY_HUD_MAX_SCREEN_FRACTION);
-        height = height.min(screen.height * OVERLAY_HUD_MAX_SCREEN_FRACTION);
+        (width, height) = hud_window_size(false, screen.width, screen.height);
     }
 
     let _ = window.set_size(tauri::LogicalSize::new(width, height));
@@ -1413,9 +1553,13 @@ pub fn update_contextual_assist_target(
 }
 
 fn emit_contextual_assist_display(app: &AppHandle, display: &str) {
+    let target = current_contextual_assist_target();
     let _ = app.emit(
         CONTEXTUAL_ASSIST_DISPLAY_EVENT,
-        json!({ "display": display }),
+        json!({
+            "display": display,
+            "target": target,
+        }),
     );
 }
 
@@ -1632,7 +1776,9 @@ pub fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
         //
         // Sized BEFORE show() so the WebView lays out at its real size for the
         // first paint rather than reflowing from a stale one.
-        center_hud_window(app, &window);
+        if !hud_is_expanded() {
+            center_hud_window(app, &window);
+        }
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -1726,8 +1872,152 @@ fn show_draw_overlay_window_on_monitor(
 }
 
 pub fn hide_overlay_window(app: &AppHandle) -> Result<(), String> {
+    // An explicit dismiss supersedes any queued mode-change completion.
+    HUD_WINDOW_TRANSITION.fetch_add(1, Ordering::SeqCst);
+    HUD_WINDOW_CHANGING.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window(OVERLAY_WINDOW_LABEL) {
         let _ = window.hide();
+    }
+    if hud_is_expanded() {
+        set_hud_expanded_window(app, false)?;
+    }
+    crate::tray::demote_if_no_foreground_windows(app);
+    Ok(())
+}
+
+/// Tao queues AppKit style/size changes on the main dispatch queue. Restore
+/// visibility/focus behind those changes before re-enabling blur dismissal.
+fn finish_hud_window_transition(
+    app: &AppHandle,
+    window: tauri::WebviewWindow,
+    generation: u64,
+    visible: bool,
+) -> tauri::Result<()> {
+    let finish = move || {
+        if HUD_WINDOW_TRANSITION.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        if visible {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = window.emit(OVERLAY_FOCUS_EVENT, ());
+        }
+        HUD_WINDOW_CHANGING.store(false, Ordering::SeqCst);
+    };
+    app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        {
+            use block2::RcBlock;
+            extern "C" {
+                static _dispatch_main_q: u8;
+                fn dispatch_async(queue: *mut std::ffi::c_void, block: *mut std::ffi::c_void);
+            }
+            let finish = StdMutex::new(Some(finish));
+            let block = RcBlock::new(move || {
+                if let Some(finish) = finish.lock().ok().and_then(|mut work| work.take()) {
+                    finish();
+                }
+            });
+            unsafe {
+                dispatch_async(
+                    std::ptr::addr_of!(_dispatch_main_q).cast_mut().cast(),
+                    RcBlock::as_ptr(&block).cast(),
+                );
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        finish();
+    })
+}
+
+fn set_hud_expanded_window(app: &AppHandle, expanded: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(OVERLAY_WINDOW_LABEL)
+        .ok_or_else(|| "HUD window is not available".to_string())?;
+    let visible = window.is_visible().unwrap_or(false);
+    let generation = HUD_WINDOW_TRANSITION.fetch_add(1, Ordering::SeqCst) + 1;
+    // Set this before changing AppKit decorations/focus: those changes can
+    // generate blur events, which must not dismiss a window being expanded.
+    HUD_WINDOW_CHANGING.store(true, Ordering::SeqCst);
+    let previous = HUD_EXPANDED.swap(expanded, Ordering::SeqCst);
+    let result = (|| -> tauri::Result<()> {
+        if !expanded {
+            window.set_fullscreen(false)?;
+            window.unmaximize()?;
+            window.set_min_size(None::<tauri::LogicalSize<f64>>)?;
+        }
+        // macOS queues decoration changes using the current resizable flag.
+        // Set that flag first so the later style mask keeps the zoom control.
+        window.set_resizable(expanded)?;
+        window.set_decorations(expanded)?;
+        #[cfg(target_os = "macos")]
+        {
+            window.set_title_bar_style(tauri::TitleBarStyle::Visible)?;
+            let native_window = window.clone();
+            app.run_on_main_thread(move || {
+                use objc2::{class, msg_send, runtime::AnyObject};
+                if let Ok(pointer) = native_window.ns_window() {
+                    let ns_window = pointer as *mut AnyObject;
+                    unsafe {
+                        // A transparent launcher must explicitly regain ordinary
+                        // AppKit window chrome when it becomes the full app.
+                        let opaque = objc2::runtime::Bool::new(expanded);
+                        let _: () = msg_send![ns_window, setOpaque: opaque];
+                        let _: () = msg_send![ns_window, setMovable: objc2::runtime::Bool::YES];
+                        let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: objc2::runtime::Bool::NO];
+                        let color: *mut AnyObject = if expanded {
+                            msg_send![class!(NSColor), windowBackgroundColor]
+                        } else {
+                            msg_send![class!(NSColor), clearColor]
+                        };
+                        let _: () = msg_send![ns_window, setBackgroundColor: color];
+                    }
+                }
+            })?;
+        }
+        window.set_title(if expanded {
+            "Magican Chat"
+        } else {
+            "Magican HUD"
+        })?;
+        window.set_minimizable(expanded)?;
+        window.set_maximizable(expanded)?;
+        window.set_always_on_top(!expanded)?;
+        window.set_skip_taskbar(!expanded)?;
+        if expanded {
+            crate::tray::promote_for_foreground_window(app);
+            if let Some(monitor) = cursor_monitor(app, &window) {
+                let scale = monitor.scale_factor();
+                let area = monitor.work_area();
+                let size = area.size.to_logical::<f64>(scale);
+                let origin = area.position.to_logical::<f64>(scale);
+                let (width, height) = hud_window_size(true, size.width, size.height);
+                window.set_min_size(Some(tauri::LogicalSize::new(
+                    640.0_f64.min(width),
+                    480.0_f64.min(height),
+                )))?;
+                window.set_size(tauri::LogicalSize::new(width, height))?;
+                window.set_position(tauri::LogicalPosition::new(
+                    origin.x + (size.width - width) / 2.0,
+                    origin.y + (size.height - height) / 2.0,
+                ))?;
+            }
+        } else {
+            center_hud_window(app, &window);
+        }
+        if window.is_visible()? {
+            window.set_focus()?;
+        }
+        window.emit(HUD_WINDOW_MODE_EVENT, expanded)?;
+        finish_hud_window_transition(app, window.clone(), generation, visible)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        HUD_WINDOW_CHANGING.store(false, Ordering::SeqCst);
+        HUD_EXPANDED.store(previous, Ordering::SeqCst);
+        // Keep the current mode observable if a platform rejects a setter.
+        let _ = window.emit(HUD_WINDOW_MODE_EVENT, hud_is_expanded());
+        return Err(format!("Could not change HUD window mode: {error}"));
     }
     Ok(())
 }
@@ -1761,6 +2051,9 @@ pub fn set_contextual_assist_expanded_window(
 ) -> Result<(), String> {
     ensure_contextual_assist_window(app)?;
     let was_expanded = CONTEXTUAL_ASSIST_EXPANDED.load(Ordering::SeqCst);
+    if was_expanded == expanded {
+        return Ok(());
+    }
     CONTEXTUAL_ASSIST_EXPANDED.store(expanded, Ordering::SeqCst);
     if expanded {
         clear_contextual_assist_manual_grace();
@@ -1773,22 +2066,7 @@ pub fn set_contextual_assist_expanded_window(
         let _ = window.set_shadow(false);
         let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
         let _ = window.set_focusable(expanded);
-        if expanded && was_expanded {
-            if let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) {
-                position_contextual_assist_window_centered_at(
-                    &app,
-                    &window,
-                    (
-                        position.x as f64 + (size.width as f64 / 2.0),
-                        position.y as f64 + (size.height as f64 / 2.0),
-                    ),
-                );
-            } else {
-                position_contextual_assist_window(&app, &window, expanded);
-            }
-        } else {
-            position_contextual_assist_window(&app, &window, expanded);
-        }
+        position_contextual_assist_window(&app, &window, expanded);
         if expanded {
             let _ = window.show();
             let _ = window.unminimize();
@@ -3735,6 +4013,23 @@ pub async fn hide_overlay(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn set_hud_expanded(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    expanded: bool,
+) -> Result<(), String> {
+    if window.label() != OVERLAY_WINDOW_LABEL {
+        return Err("Only the HUD may change its window mode".to_string());
+    }
+    set_hud_expanded_window(&app, expanded)
+}
+
+#[tauri::command]
+pub fn get_hud_expanded() -> bool {
+    hud_is_expanded()
+}
+
+#[tauri::command]
 pub async fn show_contextual_assist(app: AppHandle) -> Result<(), String> {
     show_contextual_assist_window(&app)
 }
@@ -3752,7 +4047,10 @@ pub async fn get_contextual_assist_target(
 
 #[tauri::command]
 pub async fn get_contextual_assist_display(app: AppHandle) -> Result<Value, String> {
-    Ok(json!({ "display": current_contextual_assist_display(&app) }))
+    Ok(json!({
+        "display": current_contextual_assist_display(&app),
+        "target": current_contextual_assist_target(),
+    }))
 }
 
 #[tauri::command]
@@ -4707,6 +5005,28 @@ async fn ensure_success(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_blur_dismissal_ignores_mode_changes_and_stale_focus_events() {
+        assert!(!hud_should_dismiss_on_blur(false, true, false));
+        assert!(!hud_should_dismiss_on_blur(false, false, true));
+        assert!(!hud_should_dismiss_on_blur(true, false, false));
+        assert!(hud_should_dismiss_on_blur(false, false, false));
+    }
+
+    #[test]
+    fn hud_window_modes_fit_the_available_screen() {
+        // Expansion follows the available desktop instead of retaining the
+        // compact stage; small monitors still keep a usable margin.
+        assert_eq!(hud_window_size(false, 1920.0, 1080.0), (1000.0, 760.0));
+        let (width, height) = hud_window_size(true, 1920.0, 1080.0);
+        assert!(width > 1700.0 && width < 1920.0);
+        assert!(height > 950.0 && height < 1080.0);
+        for expanded in [false, true] {
+            let (width, height) = hud_window_size(expanded, 720.0, 500.0);
+            assert!(width <= 720.0 && height <= 500.0);
+        }
+    }
 
     fn assert_close(actual: f64, expected: f64) {
         assert!(

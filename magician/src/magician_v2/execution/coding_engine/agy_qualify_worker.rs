@@ -91,7 +91,8 @@ pub async fn tick_agy_version_worker(
     settings: &MagicianAgySettings,
     search: &AgySearchPaths,
 ) -> AgyReadinessSnapshot {
-    let use_api_key = settings.use_api_key;
+    let use_api_key =
+        settings.use_api_key || crate::magician_v2::harness_auth::uses_magician_credentials("agy");
     tick_agy_qualify_worker(
         settings,
         search,

@@ -61,6 +61,7 @@ const CHAT_TRANSCRIPT_SEGMENT_WIDTH: usize = 12;
 const CHAT_TRANSCRIPT_MAX_ENTRIES_PER_APPEND: usize = 512;
 const CHAT_TRANSCRIPT_MAX_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 const CHAT_TRANSCRIPT_MAX_MANIFEST_BYTES: usize = 256 * 1024;
+const CHAT_CONTEXT_CHECKPOINT_MAX_BYTES: usize = 512 * 1024;
 const CHAT_TRANSCRIPT_MAX_OPEN_TOOL_CALLS: usize = 1_024;
 const CHAT_TRANSCRIPT_MAX_TOOL_CALL_ID_BYTES: usize = 512;
 const CHAT_TRANSCRIPT_MAX_TAIL_ENTRIES: usize = 20_000;
@@ -740,12 +741,12 @@ async fn publish_chat_session_deletion_marker(
     Ok(marker)
 }
 
-async fn load_chat_session_authority_generation(
+async fn load_chat_session_authority(
     workspace_layout: &ArtifactV2Workspace,
     principal: &str,
     workspace: &str,
     session_id: &str,
-) -> Result<String> {
+) -> Result<ChatSession> {
     let current_path = workspace_layout.chat_session_path(principal, workspace, session_id);
     let path = if workspace_layout
         .metadata_path(&current_path)
@@ -771,7 +772,18 @@ async fn load_chat_session_authority_generation(
     {
         return Err(anyhow!("chat-session scope or identity changed"));
     }
-    Ok(chat_session_generation(&projection.session))
+    Ok(projection.session)
+}
+
+async fn load_chat_session_authority_generation(
+    workspace_layout: &ArtifactV2Workspace,
+    principal: &str,
+    workspace: &str,
+    session_id: &str,
+) -> Result<String> {
+    let session =
+        load_chat_session_authority(workspace_layout, principal, workspace, session_id).await?;
+    Ok(chat_session_generation(&session))
 }
 
 async fn rollback_chat_session_deletion_marker(
@@ -931,6 +943,17 @@ pub async fn acquire_chat_session_lifecycle_guard(
     workspace_layout: &ArtifactV2Workspace,
     session: &ChatSession,
 ) -> Result<FileLockGuard> {
+    let (guard, _) =
+        acquire_chat_session_lifecycle_guard_with_metadata(workspace_layout, session).await?;
+    Ok(guard)
+}
+
+/// Return the current metadata under the lifecycle fence, without reacquiring
+/// the ChatStore lock. Writers can recheck archival and thread policy safely.
+pub async fn acquire_chat_session_lifecycle_guard_with_metadata(
+    workspace_layout: &ArtifactV2Workspace,
+    session: &ChatSession,
+) -> Result<(FileLockGuard, ChatSession)> {
     let generation = chat_session_generation(session);
     let guard = acquire_chat_session_lifecycle_guard_for_scope(
         workspace_layout,
@@ -942,20 +965,20 @@ pub async fn acquire_chat_session_lifecycle_guard(
         false,
     )
     .await?;
-    let authority_generation = load_chat_session_authority_generation(
+    let current = load_chat_session_authority(
         workspace_layout,
         &session.principal,
         &session.workspace,
         &session.id,
     )
     .await?;
-    if authority_generation != generation {
+    if chat_session_generation(&current) != generation {
         return Err(anyhow!(
             "Chat session generation disagrees with persisted authority for {}",
             session.id
         ));
     }
-    Ok(guard)
+    Ok((guard, current))
 }
 
 /// Acquire lifecycle authority when a storage writer has only the exact scope
@@ -1203,6 +1226,20 @@ const EXACT_CURSOR_DEFAULT_SCAN_WINDOW: usize = 10_000;
 /// Storage trait for chat session persistence.
 #[async_trait]
 pub trait ChatStore: Send + Sync {
+    async fn get_context_checkpoint(
+        &self,
+        _session_id: &str,
+    ) -> Result<Option<super::context_compaction::ChatContextCheckpoint>> {
+        Ok(None)
+    }
+
+    async fn save_context_checkpoint(
+        &self,
+        _session_id: &str,
+        _checkpoint: &super::context_compaction::ChatContextCheckpoint,
+    ) -> Result<bool> {
+        Err(anyhow!("chat context checkpoint storage is unavailable"))
+    }
     /// Owner maintenance only. Unsupported stores fail closed. File storage
     /// retains its session lifecycle lock through the memory repair write.
     async fn memory_repair_snapshot(
@@ -1414,6 +1451,32 @@ pub trait ChatStore: Send + Sync {
         thread_prefix: &str,
     ) -> Result<Vec<ChatSession>>;
 
+    /// Session ids on one exact thread, without loading every session in the
+    /// workspace. The default filters [`Self::list_sessions`]; file storage
+    /// answers from its index.
+    async fn session_ids_for_thread(
+        &self,
+        principal: &str,
+        workspace: &str,
+        ui_thread_id: &str,
+    ) -> Result<Vec<(String, ChatSessionStatus)>> {
+        let sessions = self.list_sessions(principal, workspace).await?;
+        Ok(sessions
+            .into_iter()
+            .filter(|session| session.ui_thread_id == ui_thread_id)
+            .map(|session| (session.id, session.status))
+            .collect())
+    }
+
+    /// Archive or restore one session without the rolling-thread sibling
+    /// collapse that [`Self::update_session_status`] applies on activate.
+    /// A thread restore must bring every session back, including on `screens`,
+    /// `tabs`, and `vibedev`.
+    async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
+        self.update_session_status(session_id, if archived { "archived" } else { "active" })
+            .await
+    }
+
     /// Lightweight thread listing: one summary per session whose thread starts
     /// with the prefix, newest first over a total `(updated_at, session_id)`
     /// order.
@@ -1475,6 +1538,15 @@ pub trait ChatStore: Send + Sync {
     /// intact (title, thread assignment, etc. are preserved). Returns the
     /// number of messages cleared.
     async fn clear_messages(&self, session_id: &str) -> Result<usize>;
+
+    /// Owner-requested removal of one chat copy, retaining task originals.
+    async fn delete_session_asset(
+        &self,
+        _session_id: &str,
+        _asset: &super::models::ChatSessionAssetKey,
+    ) -> Result<()> {
+        Err(anyhow!("Chat file deletion is unavailable for this store"))
+    }
 
     /// Atomically discard a server-attested screen capture only when no
     /// persisted message references it. The implementation owns the session
@@ -1857,6 +1929,23 @@ impl PrincipalIndex {
         } else {
             entries.push(entry);
         }
+    }
+
+    fn session_ids_for_thread(
+        &self,
+        principal: &str,
+        workspace: &str,
+        ui_thread_id: &str,
+    ) -> Vec<(String, ChatSessionStatus)> {
+        self.sessions
+            .get(&SessionScope::new(principal, workspace, ui_thread_id))
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| (entry.session_id.clone(), entry.status.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn active_session_ids(
@@ -2713,6 +2802,23 @@ impl FileChatStore {
         );
 
         Ok(doc.session)
+    }
+
+    /// Sessions in `ui_thread_id` that session-creation rotation must leave
+    /// active: in the VibeDev thread, the conversations live projects point
+    /// at. Empty for every other thread.
+    fn rotation_pinned_session_ids(
+        &self,
+        principal: &str,
+        workspace: &str,
+        ui_thread_id: &str,
+    ) -> std::collections::HashSet<String> {
+        if ui_thread_id != crate::magician_v2::vibedev::projects::VIBEDEV_THREAD_ID {
+            return std::collections::HashSet::new();
+        }
+        crate::magician_v2::vibedev::projects::live_vibedev_project_session_ids(
+            &self.workspace_layout.scope_root(principal, workspace),
+        )
     }
 
     async fn archive_session_status(&self, session_id: &str) -> Result<()> {
@@ -5501,6 +5607,98 @@ impl FileChatStore {
 
 #[async_trait]
 impl ChatStore for FileChatStore {
+    async fn get_context_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<super::context_compaction::ChatContextCheckpoint>> {
+        let _guard = self.lock_session(session_id).await?;
+        let doc = self.load_document(session_id).await?;
+        let path = self
+            .workspace_layout
+            .chat_session_dir(&doc.session.principal, &doc.session.workspace, session_id)
+            .join("llm_history")
+            .join("context_checkpoint.json");
+        let checkpoint: super::context_compaction::ChatContextCheckpoint = match self
+            .workspace_layout
+            .read_json_bounded_stream_path(&path, CHAT_CONTEXT_CHECKPOINT_MAX_BYTES as u64, 16, 128)
+            .await
+        {
+            Ok(value) => value,
+            Err(ArtifactV2Error::Io(error)) if error.kind() == ErrorKind::NotFound => {
+                return Ok(None)
+            },
+            Err(error) => {
+                warn!(%error, %session_id, "ignoring unreadable chat context checkpoint; canonical history retained");
+                return Ok(None);
+            },
+        };
+        if checkpoint.session_id != session_id
+            || checkpoint.principal != doc.session.principal
+            || checkpoint.workspace != doc.session.workspace
+            || checkpoint.session_generation != chat_session_generation(&doc.session)
+        {
+            return Ok(None);
+        }
+        Ok(Some(checkpoint))
+    }
+
+    async fn save_context_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint: &super::context_compaction::ChatContextCheckpoint,
+    ) -> Result<bool> {
+        let _guard = self.lock_session(session_id).await?;
+        let mut doc = self.load_document(session_id).await?;
+        if checkpoint.session_id != session_id
+            || checkpoint.principal != doc.session.principal
+            || checkpoint.workspace != doc.session.workspace
+        {
+            return Ok(false);
+        }
+        let manifest = self.migrate_legacy_transcript_if_needed(&mut doc).await?;
+        let history = self.load_segmented_transcript(&doc, &manifest).await?;
+        if !checkpoint.matches(&history) {
+            return Ok(false);
+        }
+        let mut checkpoint = checkpoint.clone();
+        checkpoint.session_generation = chat_session_generation(&doc.session);
+        // Entries stored while a (background) compaction ran also predate this
+        // handoff: their provider continuations must not anchor the next
+        // request, or a server-side chain would keep the uncompacted context.
+        checkpoint.reset_provider_before = checkpoint.reset_provider_before.max(history.len());
+        let path = self
+            .workspace_layout
+            .chat_session_dir(&doc.session.principal, &doc.session.workspace, session_id)
+            .join("llm_history")
+            .join("context_checkpoint.json");
+        if let Ok(previous) = self
+            .workspace_layout
+            .read_json_bounded_stream_path::<super::context_compaction::ChatContextCheckpoint, _>(
+                &path,
+                CHAT_CONTEXT_CHECKPOINT_MAX_BYTES as u64,
+                16,
+                128,
+            )
+            .await
+        {
+            if previous.session_generation == checkpoint.session_generation
+                && previous.matches(&history)
+                && previous.revision >= checkpoint.revision
+            {
+                return Ok(false);
+            }
+        }
+        let bytes = serialize_json_bounded(
+            &checkpoint,
+            CHAT_CONTEXT_CHECKPOINT_MAX_BYTES,
+            "chat context checkpoint",
+        )?;
+        self.workspace_layout
+            .write_atomic_path(path, &bytes)
+            .await?;
+        Ok(true)
+    }
+
     async fn memory_repair_snapshot(
         &self,
         session_id: &str,
@@ -5691,9 +5889,17 @@ impl ChatStore for FileChatStore {
         // authority boundary and must not be archived as collateral damage.
         // User chat threads persist all sessions until archived manually.
         if thread_rotates_sessions(ui_thread_id) {
-            let active_session_ids =
-                self.index
-                    .active_session_ids(principal, workspace, ui_thread_id);
+            // A VibeDev project's conversation is not a rolling session: a new
+            // cockpit session (another project created, a session adopted)
+            // must not archive one a live project still points at. Only the
+            // owner's explicit pick parks it (`activate_session_status`).
+            let pinned = self.rotation_pinned_session_ids(principal, workspace, ui_thread_id);
+            let active_session_ids = self
+                .index
+                .active_session_ids(principal, workspace, ui_thread_id)
+                .into_iter()
+                .filter(|session_id| !pinned.contains(session_id))
+                .collect::<Vec<_>>();
             let mut matching_session_ids = Vec::new();
             for session_id in active_session_ids {
                 let matches_agent_and_lane = {
@@ -5846,6 +6052,36 @@ impl ChatStore for FileChatStore {
         search: &str,
     ) -> Result<Vec<ChatSessionSearchCandidate>> {
         Ok(self.index.search_candidates(principal, workspace, search))
+    }
+
+    async fn session_ids_for_thread(
+        &self,
+        principal: &str,
+        workspace: &str,
+        ui_thread_id: &str,
+    ) -> Result<Vec<(String, ChatSessionStatus)>> {
+        Ok(self
+            .index
+            .session_ids_for_thread(principal, workspace, ui_thread_id))
+    }
+
+    async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
+        if archived {
+            return self.archive_session_status(session_id).await;
+        }
+        let session = self
+            .persist_session_status(session_id, ChatSessionStatus::Active)
+            .await?;
+        if let Some(observer) = self.archive_observer() {
+            if let Err(error) = observer.on_session_activated(&session).await {
+                warn!(
+                    error = %error,
+                    session_id = %session_id,
+                    "[CHAT-STORE] Failed to resubscribe restored session"
+                );
+            }
+        }
+        Ok(())
     }
 
     async fn list_sessions_for_thread_prefix(
@@ -6420,6 +6656,60 @@ impl ChatStore for FileChatStore {
             intent.updated_at,
         );
         Ok(total_cleared)
+    }
+
+    async fn delete_session_asset(
+        &self,
+        session_id: &str,
+        asset: &super::models::ChatSessionAssetKey,
+    ) -> Result<()> {
+        use super::models::{ChatSessionAssetKey, ChatSessionTaskOutput};
+        let _guard = self.lock_session(session_id).await?;
+        let doc = self.load_document(session_id).await?;
+        let mut index = self.load_file_index_for_doc(&doc).await?;
+        let records = index
+            .files
+            .iter()
+            .filter(|record| match asset {
+                ChatSessionAssetKey::File(id) => record.id == *id,
+                ChatSessionAssetKey::TaskOutput(output) => {
+                    record.source_task_id.as_deref() == Some(output.task_id.as_str())
+                        && record.source_task_output_id.as_deref()
+                            == Some(output.output_id.as_str())
+                },
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let removed_output = match asset {
+            ChatSessionAssetKey::TaskOutput(output) => Some(output.clone()),
+            ChatSessionAssetKey::File(_) => records.first().and_then(|record| {
+                Some(ChatSessionTaskOutput {
+                    task_id: record.source_task_id.clone()?,
+                    output_id: record.source_task_output_id.clone()?,
+                })
+            }),
+        };
+        if let Some(output) = removed_output {
+            if !index.removed_task_outputs.contains(&output) {
+                let index_path = self.workspace_layout.chat_session_file_index_path(
+                    &doc.session.principal,
+                    &doc.session.workspace,
+                    session_id,
+                );
+                let _index_guard = AgentStorage::acquire_file_lock_exclusive(&index_path).await?;
+                // The session lifecycle fence also excludes uploads/projections.
+                index.removed_task_outputs.push(output);
+                if let Err(error) = self.save_file_index_for_doc(&doc, &index).await {
+                    if self.load_file_index_for_doc(&doc).await? != index {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        // Reuse durable cleanup intents: metadata removal precedes unlink,
+        // and a crash or unlink failure remains recoverable on the next read.
+        self.cleanup_file_records_with_intent_locked(&doc, &records)
+            .await
     }
 
     async fn discard_unreferenced_screen_capture_attachment(
@@ -7699,6 +7989,70 @@ mod tests {
         assert_eq!(replacement_reloaded.status, ChatSessionStatus::Active);
     }
 
+    /// Live 2026-10-20: creating another VibeDev project minted a cockpit
+    /// session whose rotation archived the conversation a live project still
+    /// pointed at, and the next message into it was refused. A session a live
+    /// project points at is not rotated away; an unbound one still is.
+    #[tokio::test]
+    async fn new_vibedev_session_keeps_sessions_live_projects_point_at() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FileChatStore::new(temp_dir.path());
+        let bound = store
+            .new_session("user-1", "ws-1", "vibedev", &ChatChannel::web(), "agent-a")
+            .await
+            .unwrap();
+        let projects_path = crate::magician_v2::vibedev::projects::vibedev_project_store_path(
+            &store.workspace_layout.scope_root("user-1", "ws-1"),
+        );
+        std::fs::create_dir_all(projects_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &projects_path,
+            serde_json::json!({"projects": [{
+                "project_id": "p1",
+                "name": "Pi",
+                "chat_thread_id": "vibedev",
+                "chat_session_id": bound.id,
+                "created_at_ms": 0,
+                "updated_at_ms": 0
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+
+        // Another project's session is minted: the bound one stays open.
+        let unbound = store
+            .new_session("user-1", "ws-1", "vibedev", &ChatChannel::web(), "agent-a")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_session(&bound.id).await.unwrap().unwrap().status,
+            ChatSessionStatus::Active,
+            "a live project's conversation is not rotated away"
+        );
+        // A session no project points at still rotates as before.
+        let newest = store
+            .new_session("user-1", "ws-1", "vibedev", &ChatChannel::web(), "agent-a")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_session(&unbound.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ChatSessionStatus::Archived
+        );
+        assert_eq!(
+            store.get_session(&bound.id).await.unwrap().unwrap().status,
+            ChatSessionStatus::Active
+        );
+        assert_eq!(
+            store.get_session(&newest.id).await.unwrap().unwrap().status,
+            ChatSessionStatus::Active
+        );
+    }
+
     #[tokio::test]
     async fn restoring_feature_session_preserves_other_agent_sibling() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -8818,6 +9172,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_one_chat_asset_preserves_other_files_and_task_originals() {
+        use super::super::models::{ChatSessionAssetKey, ChatSessionTaskOutput};
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FileChatStore::new(temp_dir.path());
+        let session = store
+            .new_session("owner", "workspace", "files", &ChatChannel::web(), "agent")
+            .await
+            .expect("session");
+        let other = store
+            .new_session("owner", "workspace", "other", &ChatChannel::web(), "agent")
+            .await
+            .expect("other session");
+        let mut removed = test_output_record("removed", "removed.txt");
+        removed.source_task_id = Some("task-1".into());
+        removed.source_task_output_id = Some("output-1".into());
+        let retained = test_output_record("retained", "retained.txt");
+        for (chat, records) in [
+            (&session, vec![removed.clone(), retained.clone()]),
+            (&other, vec![removed.clone()]),
+        ] {
+            let doc = store.load_document(&chat.id).await.expect("document");
+            for record in &records {
+                let path = store
+                    .workspace_layout
+                    .chat_session_outputs_dir(&chat.principal, &chat.workspace, &chat.id)
+                    .join(&record.stored_name);
+                store
+                    .workspace_layout
+                    .write_path(path, b"content")
+                    .await
+                    .expect("file");
+            }
+            store
+                .save_file_index_for_doc(
+                    &doc,
+                    &ChatSessionFileIndex {
+                        files: records,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("file index");
+        }
+        let original = store
+            .workspace_layout
+            .task_outputs_dir("owner", "workspace", "task-1")
+            .join("original.txt");
+        store
+            .workspace_layout
+            .write_path(&original, b"original")
+            .await
+            .expect("task original");
+        let key = ChatSessionAssetKey::File(removed.id.clone());
+        store
+            .delete_session_asset(&session.id, &key)
+            .await
+            .expect("delete one file");
+        store
+            .delete_session_asset(&session.id, &key)
+            .await
+            .expect("idempotent retry");
+        let doc = store
+            .load_document(&session.id)
+            .await
+            .expect("updated document");
+        let index = store
+            .load_file_index_for_doc(&doc)
+            .await
+            .expect("updated index");
+        assert_eq!(index.files, vec![retained]);
+        assert_eq!(
+            index.removed_task_outputs,
+            vec![ChatSessionTaskOutput {
+                task_id: "task-1".into(),
+                output_id: "output-1".into()
+            }]
+        );
+        let removed_path = store
+            .workspace_layout
+            .chat_session_outputs_dir("owner", "workspace", &session.id)
+            .join(&removed.stored_name);
+        assert!(store
+            .workspace_layout
+            .metadata_path(&removed_path)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.workspace_layout.read_path(&original).await.unwrap(),
+            b"original"
+        );
+        let other_path = store
+            .workspace_layout
+            .chat_session_outputs_dir("owner", "workspace", &other.id)
+            .join(&removed.stored_name);
+        assert!(store
+            .workspace_layout
+            .metadata_path(other_path)
+            .await
+            .unwrap()
+            .is_some());
+        drop(store);
+        let restarted = FileChatStore::with_index(temp_dir.path())
+            .await
+            .expect("restart");
+        let doc = restarted
+            .load_document(&session.id)
+            .await
+            .expect("restored document");
+        assert_eq!(
+            restarted.load_file_index_for_doc(&doc).await.unwrap(),
+            index
+        );
+    }
+
+    #[tokio::test]
     async fn output_cleanup_intent_recovers_after_every_commit_boundary() {
         let _serial = CHAT_OUTPUT_CLEANUP_TEST_SERIAL
             .get_or_init(|| StdMutex::new(()))
@@ -8857,6 +9327,7 @@ mod tests {
                     &doc,
                     &ChatSessionFileIndex {
                         files: vec![record.clone()],
+                        ..Default::default()
                     },
                 )
                 .await
@@ -8950,6 +9421,7 @@ mod tests {
                 &doc,
                 &ChatSessionFileIndex {
                     files: vec![record.clone()],
+                    ..Default::default()
                 },
             )
             .await
@@ -9026,6 +9498,7 @@ mod tests {
                 &doc,
                 &ChatSessionFileIndex {
                     files: vec![target.clone(), live.clone()],
+                    ..Default::default()
                 },
             )
             .await

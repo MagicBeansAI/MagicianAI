@@ -252,7 +252,11 @@ pub async fn issue(
                 false,
             );
         }
-        if ledger.retired.iter().any(|(ask_id, _)| *ask_id == entry.ask_id) {
+        if ledger
+            .retired
+            .iter()
+            .any(|(ask_id, _)| *ask_id == entry.ask_id)
+        {
             return (IssueOutcome::Retired, false);
         }
         let now_ms = entry.issued_at_ms;
@@ -280,7 +284,9 @@ pub async fn consume(
     // Only a waiver records a generation; an exception never reads one.
     let current_generation = if purpose == AlignmentReceiptPurpose::CheckWaiver {
         match storage_for(resolver, principal, workspace) {
-            Ok(storage) => super::generation::current_intention_generation(&storage).await.ok(),
+            Ok(storage) => super::generation::current_intention_generation(&storage)
+                .await
+                .ok(),
             Err(_) => None,
         }
     } else {
@@ -292,11 +298,9 @@ pub async fn consume(
                 && entry.binding_id == binding_id
                 && entry.execution_id.as_deref() == execution_id
         };
-        if let Some(entry) = ledger
-            .entries
-            .iter_mut()
-            .find(|entry| matches(entry) && entry.consumed_at_ms.is_none() && entry.expires_at_ms > now_ms)
-        {
+        if let Some(entry) = ledger.entries.iter_mut().find(|entry| {
+            matches(entry) && entry.consumed_at_ms.is_none() && entry.expires_at_ms > now_ms
+        }) {
             if let Some(answered_at) = entry.intention_generation {
                 if current_generation != Some(answered_at) {
                     return (ConsumeOutcome::Stale, false);
@@ -345,7 +349,9 @@ mod tests {
         let (p, w) = ("owner", "default");
         let now = 1_000_000;
         assert_eq!(
-            issue(&resolver, p, w, entry("ask-1", "b1", "exec-1", now)).await.unwrap(),
+            issue(&resolver, p, w, entry("ask-1", "b1", "exec-1", now))
+                .await
+                .unwrap(),
             IssueOutcome::Issued
         );
         let take = |execution: &'static str, binding: &'static str| {
@@ -369,9 +375,17 @@ mod tests {
         assert_eq!(take("exec-1", "b2").await, ConsumeOutcome::NotIssued);
         // The waiver purpose does not satisfy an exception, or the reverse.
         assert_eq!(
-            consume(&resolver, p, w, Some("exec-1"), "b1", AlignmentReceiptPurpose::CheckWaiver, now + 1)
-                .await
-                .unwrap(),
+            consume(
+                &resolver,
+                p,
+                w,
+                Some("exec-1"),
+                "b1",
+                AlignmentReceiptPurpose::CheckWaiver,
+                now + 1
+            )
+            .await
+            .unwrap(),
             ConsumeOutcome::NotIssued
         );
         assert_eq!(take("exec-1", "b1").await, ConsumeOutcome::Consumed);
@@ -385,14 +399,20 @@ mod tests {
         let resolver = AgentMemoryResolver::new(tmp.path());
         let now = 5;
         let first = entry("ask-1", "b1", "exec-1", now);
-        assert_eq!(issue(&resolver, "o", "w", first.clone()).await.unwrap(), IssueOutcome::Issued);
+        assert_eq!(
+            issue(&resolver, "o", "w", first.clone()).await.unwrap(),
+            IssueOutcome::Issued
+        );
         assert_eq!(
             issue(&resolver, "o", "w", first.clone()).await.unwrap(),
             IssueOutcome::AlreadyIssued
         );
         let mut other = first;
         other.purpose = AlignmentReceiptPurpose::CheckWaiver;
-        assert_eq!(issue(&resolver, "o", "w", other).await.unwrap(), IssueOutcome::Conflict);
+        assert_eq!(
+            issue(&resolver, "o", "w", other).await.unwrap(),
+            IssueOutcome::Conflict
+        );
     }
 
     #[tokio::test]
@@ -400,7 +420,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let resolver = AgentMemoryResolver::new(tmp.path());
         let now = 10;
-        issue(&resolver, "o", "w", entry("ask-1", "b1", "exec-1", now)).await.unwrap();
+        issue(&resolver, "o", "w", entry("ask-1", "b1", "exec-1", now))
+            .await
+            .unwrap();
         assert_eq!(
             consume(
                 &resolver,
@@ -444,12 +466,16 @@ mod tests {
         // The record of an answered ask was pruned; only its tombstone is left.
         let storage = storage_for(&resolver, p, w).unwrap();
         let path = alignment_ledger_path(&storage);
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
         let mut ledger = LedgerFile::default();
         ledger.retired.push(("ask-0".to_string(), now));
         storage.write_json_atomic(&path, &ledger).await.unwrap();
         assert_eq!(
-            issue(&resolver, p, w, entry("ask-0", "b0", "e", now)).await.unwrap(),
+            issue(&resolver, p, w, entry("ask-0", "b0", "e", now))
+                .await
+                .unwrap(),
             IssueOutcome::Retired
         );
     }

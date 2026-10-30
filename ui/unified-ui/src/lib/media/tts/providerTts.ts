@@ -1,3 +1,4 @@
+import { mediaChatHeaders } from '$lib/media/chatScope';
 /**
  * Provider-backed TTS over the magician
  * `POST /media/tts/synthesize_message` endpoint.
@@ -145,6 +146,7 @@ export function cancelProviderSpeak(reason: 'user' | 'replaced' = 'user'): void 
 }
 
 export interface ProviderSpeakBlocksOptions {
+	chatSessionId?: string | null;
 	messageId: string;
 	blocks: SpeechBlock[];
 	provider?: string | null;
@@ -212,6 +214,7 @@ export async function providerSpeakBlocks(
 		onEnd?.('completed');
 		return;
 	}
+	const headers = mediaChatHeaders(opts.chatSessionId, { 'Content-Type': 'application/json' });
 	// Must happen while the Speak click still has browser user activation.
 	const playbackContext = unlockProviderAudioContext();
 
@@ -518,7 +521,7 @@ export async function providerSpeakBlocks(
 	try {
 		response = await fetch('/api/magician/v2/media/tts/synthesize_message', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers,
 			signal: abortController.signal,
 			body: JSON.stringify({
 				message_id: opts.messageId,

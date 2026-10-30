@@ -48,7 +48,9 @@ pub use manifest::{
     InferredKind, MagicianMetadata, PersonalitySpec, SkillManifest, SkillMetadata, SkillRequires,
 };
 pub use personality_mode::{
-    list_personality_mode_names, lookup_personality_mode, personality_spec_to_fields,
+    agent_personality_block_in_scope, list_personality_mode_names, lookup_personality_mode,
+    personality_bullet_lines, personality_profile_tier_definition, personality_spec_to_fields,
+    render_personality_block, resolve_agent_personality_fields, PERSONALITY_PROFILE_TIER,
 };
 pub use runner::{run_ephemeral, RunContext, RunOutput};
 pub use scope_loader::{

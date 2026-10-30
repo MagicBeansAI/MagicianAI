@@ -1469,6 +1469,7 @@ mod tests {
             pause_revision: None,
             pause_body_sha256: None,
             pause_resume_segment: None,
+            refinement_successor_segment: None,
         };
         let proof = serde_json::to_vec(&(
             "magician.stateless_terminal_settlement.v1",

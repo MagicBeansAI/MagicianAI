@@ -118,6 +118,12 @@ pub struct ActionContext {
     pub observation: Value,
     #[serde(default)]
     pub evidence: Vec<ActionEvidence>,
+    /// Screenshots the observation names by key (see [`crate::asset`]).
+    /// Attach them only when the operation's policy accepts images for the
+    /// host's locality: this struct denies unknown fields, so an older engine
+    /// refuses the request outright.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub assets: std::collections::BTreeMap<String, crate::asset::DecisionAsset>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,8 +203,33 @@ pub struct ActionModelHealth {
     pub issue: Option<String>,
 }
 
+/// Content-free selection receipt. Hashes identify complete calls without
+/// retaining argument values, evidence, user prose or model reasoning.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActionDiagnostics {
+    pub stage: String,
+    pub candidates: Vec<ActionCandidateFingerprint>,
+    pub tools_without_candidates: usize,
+    pub candidates_truncated: bool,
+    pub selected_option: Option<String>,
+    pub choice_confidence: Option<f64>,
+    pub choice_threshold: Option<f64>,
+    pub evidence_sufficient: Option<f64>,
+    pub evidence_threshold: Option<f64>,
+    pub action_applicable: Option<f64>,
+    pub applicability_threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionCandidateFingerprint {
+    pub id: String,
+    pub call_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionResponse {
+    #[serde(default)]
+    pub diagnostics: ActionDiagnostics,
     /// Every physical attempt, including failed retries and review calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_calls: Vec<crate::telemetry::DecisionModelCall>,
@@ -222,6 +253,7 @@ impl ActionResponse {
     pub fn rejected(snapshot: impl Into<String>, reason: impl Into<String>) -> Self {
         let reason = reason.into();
         Self {
+            diagnostics: ActionDiagnostics::default(),
             contract_version: CONTRACT_VERSION,
             model_calls: Vec::new(),
             snapshot: snapshot.into(),
@@ -239,5 +271,19 @@ impl ActionResponse {
 
     pub fn matches(&self, request: &ActionRequest) -> bool {
         self.contract_version == request.contract_version && self.snapshot == request.snapshot
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_action_responses_without_diagnostics_remain_readable() {
+        let response = ActionResponse::rejected("snapshot", "not_authorized");
+        let mut wire = serde_json::to_value(&response).unwrap();
+        wire.as_object_mut().unwrap().remove("diagnostics");
+        let decoded: ActionResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, response);
     }
 }

@@ -63,6 +63,7 @@ final class VibeDevRunModel: ObservableObject {
 
     var rootID: String { turns?.runId ?? requestedID }
     var liveTaskID: String { live?.liveTaskId ?? turns?.latestTurnId ?? requestedID }
+    var askTaskIDs: Set<String> { Set([requestedID, rootID, liveTaskID] + (turns?.turns.map(\.taskId) ?? [])) }
     var isTrusted: Bool { turns?.trusted ?? false }
     var project: VibeDevProject? { turns.flatMap { context.knownProjects[$0.projectId] } }
     var title: String { turns?.displayTitle ?? live?.displayTitle ?? "Run" }
@@ -73,6 +74,16 @@ final class VibeDevRunModel: ObservableObject {
         guard let latest = turns?.turns.last else { return .working }
         return latest.state
     }
+
+    /// The open items when the run ended done with requirements still open:
+    /// the live run's word when there is one, else the latest turn's.
+    var partlyDoneOpenItems: [String]? {
+        guard state == .done else { return nil }
+        if let live { return live.isPartlyDone ? live.openItems : nil }
+        guard let latest = turns?.turns.last, latest.isPartlyDone else { return nil }
+        return latest.openItems
+    }
+    var isPartlyDone: Bool { partlyDoneOpenItems != nil }
 
     var bar: Bar {
         guard turns != nil else { return .none }

@@ -58,6 +58,8 @@ internal data class ActivityTurnRow(
     var callUsage: ActivityCallUsage? = null,
     var spawnedTaskIds: List<String> = emptyList(),
     var toolName: String? = null,
+    /** When the call began (epoch ms), for a running row's live elapsed clock. */
+    var startedAtMs: Double? = null,
 )
 
 internal class ChatTurnActivityAccumulator {
@@ -72,6 +74,14 @@ internal class ChatTurnActivityAccumulator {
      * marks a human summary, which is shown as-is rather than with a verb.
      */
     private val toolDisplayByKey = mutableMapOf<String, Pair<String, Boolean>>()
+    /** The model `LLMRouted` named for a call, for a response that names none. */
+    private val routedModelByKey = mutableMapOf<String, String>()
+    /**
+     * The row each `llm_call_id` lives on. A chat call reaches the bubble
+     * twice — chat-side `llm.*` keyed by trace, typed `LLM*` keyed by call id
+     * — and this folds both copies into one row, in either order.
+     */
+    private val llmKeyByCallId = mutableMapOf<String, String>()
     private var ingestAgentId: String? = null
     private var ingestStartedAtMs: Double? = null
     private var ingestTaskId: String? = null
@@ -85,6 +95,8 @@ internal class ChatTurnActivityAccumulator {
         rowsByKey.clear(); orderedKeys.clear()
         terminalTutorRunIds.clear(); pauseActive = false
         toolDisplayByKey.clear()
+        routedModelByKey.clear()
+        llmKeyByCallId.clear()
     }
 
     /** The rows as the view draws them. */
@@ -107,6 +119,7 @@ internal class ChatTurnActivityAccumulator {
             tone = it.tone.name.lowercase(),
             toolName = it.toolName,
             key = it.key,
+            startedAtMs = it.startedAtMs,
         )
     }
 
@@ -148,6 +161,10 @@ internal class ChatTurnActivityAccumulator {
         if (row.files.isEmpty()) row.files = ingestFiles
         if (rowsByKey[row.key] == null) orderedKeys.add(row.key)
         rowsByKey[row.key] = row
+    }
+
+    private fun drop(key: String) {
+        if (rowsByKey.remove(key) != null) orderedKeys.remove(key)
     }
 
     private fun patch(key: String, mutate: (ActivityTurnRow) -> Unit) {
@@ -278,6 +295,24 @@ internal class ChatTurnActivityAccumulator {
         normalizedAgentId: String,
     ) {
         // ─── HITL answer: settle the waiting pause rows it resolves ───
+        if (eventType == "context.retrieval.started" || eventType == "context.retrieval.completed") {
+            val phase = payload.nonEmpty("phase_id") ?: return
+            val key = "context:$phase"
+            val running = eventType.endsWith(".started")
+            if (running && rowsByKey[key] != null) return
+            val label = when {
+                running -> "Preparing context"
+                payload.string("status") == "cancelled" -> "Context preparation cancelled"
+                payload.string("status") == "partial" -> "Context prepared (partial)"
+                else -> "Context prepared"
+            }
+            upsert(ActivityTurnRow(key = key, kind = "step", label = "$agentPrefix$label",
+                detail = payload.string("summary"), status = if (running) ActivityRowStatus.Running else ActivityRowStatus.Done,
+                tone = ActivityRowTone.Info, durationMs = payload.double("duration_ms")?.takeIf { it.isFinite() && it >= 0 },
+                startedAtMs = rowsByKey[key]?.startedAtMs ?: ingestStartedAtMs))
+            return
+        }
+
         if (isPauseResolvedEvent(outerType, eventType)) {
             settlePauseRows(
                 payload.string("correlation_id")
@@ -304,37 +339,22 @@ internal class ChatTurnActivityAccumulator {
             return
         }
 
-        // Typed flat-loop LLM completions carry no stable call id that can
-        // pair request/response, so each response is one terminal row keyed
-        // by its timestamp, exactly as on web.
-        if (eventType == "LLMResponseReceived") {
-            val capability = payload.string("capability") ?: "model"
-            val succeeded = payload.bool("success") != false
-            val duration = payload.double("latency_ms")
-            val summary = payload.string("decision_summary") ?: payload.string("error")
-            val timestampKey = payload.scalar("timestamp")
-                ?: ingestStartedAtMs?.toString() ?: orderedKeys.size.toString()
-            upsert(
-                ActivityTurnRow(
-                    key = "$normalizedAgentId::llm::$timestampKey",
-                    kind = "llm",
-                    label = "${agentPrefix}Thinking with $capability",
-                    detail = duration?.let(::formatLatency) ?: summary?.let { trimTo(it, 180) },
-                    status = if (succeeded) ActivityRowStatus.Done else ActivityRowStatus.Failed,
-                    tone = if (succeeded) ActivityRowTone.Info else ActivityRowTone.Error,
-                    durationMs = duration,
-                ),
-            )
-            val usage = readActivityCallUsage(payload)
-            patch("$normalizedAgentId::llm::$timestampKey") { it.callUsage = usage }
+        // Typed flat-loop LLM calls. A server that stamps the call's
+        // `correlation.llm_call_id` on its request, route and response gets
+        // one row per call: running from `LLMRequestSent` ("Thinking…"),
+        // retitled by `LLMRouted` once the model is chosen, settled in place
+        // by `LLMResponseReceived`. An older server's request carries no id
+        // and draws nothing, and its response is one terminal row keyed by
+        // its timestamp, exactly as on web.
+        if (eventType == "LLMRequestSent" || eventType == "LLMRouted" || eventType == "LLMResponseReceived") {
+            classifyTypedLlm(eventType, payload, agentPrefix, normalizedAgentId)
             return
         }
-        if (eventType == "LLMRequestSent") return
 
         // ─── LLM lifecycle (coalesced by trace_id or iteration) ───
         if (eventType.startsWith("llm.")) {
             val trace = payload.string("trace_id") ?: payload.int("iteration")?.toString() ?: "llm"
-            val key = "$normalizedAgentId::llm::$trace"
+            val key = chatLlmKey(eventType, payload, "$normalizedAgentId::llm::$trace", normalizedAgentId)
             when (eventType) {
                 "llm.requested" -> {
                     if (rowsByKey[key] != null) return
@@ -344,6 +364,7 @@ internal class ChatTurnActivityAccumulator {
                             key = key, kind = "llm", label = "${agentPrefix}Thinking with $model",
                             detail = null, status = ActivityRowStatus.Running,
                             tone = ActivityRowTone.Info, durationMs = null,
+                            startedAtMs = callStartedAtMs(payload),
                         ),
                     )
                 }
@@ -517,7 +538,7 @@ internal class ChatTurnActivityAccumulator {
                         ActivityTurnRow(
                             key = key, kind = "tool", label = label, detail = detail,
                             status = ActivityRowStatus.Running, tone = ActivityRowTone.Tool,
-                            durationMs = null,
+                            durationMs = null, startedAtMs = callStartedAtMs(payload),
                         ),
                     )
                 }
@@ -851,6 +872,121 @@ internal class ChatTurnActivityAccumulator {
         // Anything else drops silently, same as the web.
     }
 
+    /**
+     * The row key for a chat-side `llm.*` event: the trace/iteration key, or,
+     * when the event names an `llm_call_id`, the row that call already has.
+     * The server's `llm.requested` names no id and `llm.succeeded` does, so a
+     * typed copy that opened its own row first is folded into the trace row
+     * while that row still runs (web `chatLlmKey`).
+     */
+    private fun chatLlmKey(
+        eventType: String,
+        payload: Map<String, JsonElement>,
+        traceKey: String,
+        normalizedAgentId: String,
+    ): String {
+        val callId = activityLlmCallId(payload) ?: return traceKey
+        val aliased = llmKeyByCallId[callId]
+        val key = when {
+            eventType == "llm.requested" -> aliased ?: "$normalizedAgentId::llm::call::$callId"
+            aliased != null && aliased != traceKey && rowsByKey[traceKey]?.status == ActivityRowStatus.Running -> {
+                drop(aliased)
+                traceKey
+            }
+            else -> aliased ?: traceKey
+        }
+        // Only a key that holds (or is about to hold) this call's row: a
+        // first token that patches nothing must not move the typed copy.
+        if (eventType != "llm.first_token" || rowsByKey[key] != null) llmKeyByCallId[callId] = key
+        return key
+    }
+
+    /** `LLMRequestSent` / `LLMRouted` / `LLMResponseReceived`, one row per call when ids allow. */
+    private fun classifyTypedLlm(
+        eventType: String,
+        payload: Map<String, JsonElement>,
+        agentPrefix: String,
+        normalizedAgentId: String,
+    ) {
+        val callKey = activityLlmCallId(payload)?.let { id ->
+            llmKeyByCallId.getOrPut(id) { "$normalizedAgentId::llm::call::$id" }
+        }
+        when (eventType) {
+            "LLMRequestSent" -> {
+                val key = callKey ?: return
+                if (rowsByKey[key] != null) {
+                    // A late request never regresses a routed or settled row.
+                    patch(key) { if (it.startedAtMs == null) it.startedAtMs = callStartedAtMs(payload) }
+                    return
+                }
+                upsert(
+                    ActivityTurnRow(
+                        key = key, kind = "llm", label = "${agentPrefix}Thinking…", detail = null,
+                        status = ActivityRowStatus.Running, tone = ActivityRowTone.Info,
+                        durationMs = null, startedAtMs = callStartedAtMs(payload),
+                    ),
+                )
+            }
+            "LLMRouted" -> {
+                val key = callKey ?: return
+                val model = payload.nonEmpty("model") ?: return
+                // Sent again on a fallback: the latest route names the model.
+                routedModelByKey[key] = model
+                val existing = rowsByKey[key]
+                if (existing == null) {
+                    upsert(
+                        ActivityTurnRow(
+                            key = key, kind = "llm", label = "${agentPrefix}Thinking with $model", detail = null,
+                            status = ActivityRowStatus.Running, tone = ActivityRowTone.Info,
+                            durationMs = null, startedAtMs = callStartedAtMs(payload),
+                        ),
+                    )
+                } else if (existing.status == ActivityRowStatus.Running) {
+                    patch(key) { it.label = "${agentPrefix}Thinking with $model" }
+                }
+            }
+            else -> {
+                val succeeded = payload.bool("success") != false
+                val duration = payload.double("latency_ms")
+                val summary = payload.string("decision_summary") ?: payload.string("error")
+                val timestampKey = payload.scalar("timestamp")
+                    ?: ingestStartedAtMs?.toString() ?: orderedKeys.size.toString()
+                val key = callKey ?: "$normalizedAgentId::llm::$timestampKey"
+                // A row the chat-side settle already closed keeps what it
+                // wrote (time to first token, usage).
+                if (callKey != null && rowsByKey[key]?.let { it.status != ActivityRowStatus.Running } == true) return
+                // The model that answered, else the routed one, else the capability.
+                val model = payload.nonEmpty("model") ?: payload.nonEmpty("harness_model")
+                    ?: routedModelByKey[key] ?: payload.string("capability") ?: "model"
+                val usage = readActivityCallUsage(payload)
+                val settle: (ActivityTurnRow) -> Unit = {
+                    it.label = "${agentPrefix}Thinking with $model"
+                    it.detail = duration?.let(::formatLatency) ?: summary?.let { s -> trimTo(s, 180) }
+                    it.status = if (succeeded) ActivityRowStatus.Done else ActivityRowStatus.Failed
+                    it.tone = if (succeeded) ActivityRowTone.Info else ActivityRowTone.Error
+                    it.durationMs = duration
+                    it.callUsage = usage
+                }
+                if (rowsByKey[key] == null) {
+                    upsert(
+                        ActivityTurnRow(
+                            key = key, kind = "llm", label = "", detail = null,
+                            status = ActivityRowStatus.Done, tone = ActivityRowTone.Info, durationMs = null,
+                        ),
+                    )
+                }
+                patch(key, settle)
+            }
+        }
+    }
+
+    /** When a call began: its own `started_at` stamp, else the event's timestamp. */
+    private fun callStartedAtMs(payload: Map<String, JsonElement>): Double? {
+        val stamped = payload.double("started_at_ms") ?: payload.double("started_at")
+        val millis = stamped?.takeIf { it.isFinite() && it > 0 }?.let { if (it < 10_000_000_000.0) it * 1000 else it }
+        return millis ?: ingestStartedAtMs
+    }
+
     private fun tutorStepLabel(eventType: String): Triple<String, ActivityRowStatus, ActivityRowTone>? =
         when (eventType) {
             "tutor.step.observed" -> Triple("Observed screen", ActivityRowStatus.Done, ActivityRowTone.Info)
@@ -908,12 +1044,13 @@ private fun activityEventDedupeKey(event: JsonObject): String? {
     val agent = inner?.string("agent_id") ?: data?.string("agent_id") ?: ""
     val execution = data?.scalarMember("execution_id").orEmpty()
     // Several actions can share an iteration (and a millisecond); their
-    // `call_id` keeps them apart.
+    // `call_id` keeps them apart, as `llm_call_id` keeps model calls apart.
     val discriminator = (
         data?.scalarMember("iteration")
             ?: data?.scalarMember("step_index")
             ?: data?.scalarMember("call_id")
-        ).orEmpty() + (data?.scalarMember("call_id")?.let { "|$it" }.orEmpty())
+        ).orEmpty() + (data?.scalarMember("call_id")?.let { "|$it" }.orEmpty()) +
+        (data?.let(::activityLlmCallId)?.let { "|llm:$it" }.orEmpty())
     return "$agent|$type|$execution|$discriminator|${activityTimestampMs(event) ?: 0.0}"
 }
 
@@ -1049,9 +1186,17 @@ private fun asJsonObject(element: JsonElement?): JsonObject? = when (element) {
  * any other tool.
  */
 internal fun callToolDisplayName(tool: String, args: JsonObject?): String? {
+    val suffix = listOf("__run", "__exec", "__execute").firstOrNull { tool.endsWith(it) }
+    val argv = (args?.get("args") ?: args?.get("argv")) as? kotlinx.serialization.json.JsonArray
+    val command = (argv?.firstOrNull() as? JsonPrimitive)?.takeIf { it.isString }?.content
+    if (suffix != null && command != null && command.matches(Regex("^[A-Za-z][A-Za-z0-9_-]{0,63}$"))) {
+        val verbs = setOf("list", "get", "show", "search", "create", "generate", "update", "delete", "remove", "send", "upload", "download", "status", "info", "help", "login", "logout", "run", "start", "stop", "wait", "select", "export", "import", "query", "render", "convert", "inspect")
+        val verb = (argv?.getOrNull(1) as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it in verbs }
+        return trimTo("${tool.removeSuffix(suffix)} · $command${verb?.let { " $it" }.orEmpty()}", ACTIVITY_TOOL_LABEL_MAX)
+    }
     if (!tool.endsWith("__call_tool")) return null
     val pack = tool.removeSuffix("__call_tool").trim().ifEmpty { return null }
-    val remote = args?.nonEmptyMember("name") ?: args?.nonEmptyMember("tool_name")
+    val remote = args?.nonEmptyMember("tool_name") ?: args?.nonEmptyMember("name")
     val head = if (remote != null) "$pack · $remote" else pack
     val summary = callToolArgumentSummary(args?.get("arguments_json") ?: args?.get("arguments"))
     return trimTo(if (summary != null) "$head — $summary" else head, ACTIVITY_TOOL_LABEL_MAX)
@@ -1150,26 +1295,39 @@ private fun usageNumber(element: JsonElement?): Double? =
     primitive(element)?.takeIf { !it.isString && it.booleanOrNull == null }
         ?.doubleOrNull?.takeIf { it.isFinite() }
 
+/** A model call's stable id: `llm_call_id`, at the top level or under `correlation`. */
+internal fun activityLlmCallId(payload: Map<String, JsonElement>): String? =
+    payload.nonEmpty("llm_call_id") ?: (payload["correlation"] as? JsonObject)?.nonEmptyMember("llm_call_id")
+
+/**
+ * When a running row's live elapsed clock starts: model and tool rows only,
+ * and only while they run; null otherwise (a settled row shows its duration).
+ */
+fun activityLiveSinceMs(row: ActivityRow): Double? =
+    row.startedAtMs?.takeIf {
+        row.status == ActivityRowStatus.Running.wire && (row.kind == "llm" || row.kind == "tool")
+    }
+
 /** One finished model call's usage, read off its payload (iOS `ActivityCallUsage.read`). */
 internal fun readActivityCallUsage(payload: Map<String, JsonElement>): ActivityCallUsage {
     val correlation = payload["correlation"] as? JsonObject
     val availability = (payload["usage_availability"] ?: correlation?.get("usage_availability")) as? JsonObject
     fun flag(key: String): Boolean? = primitive(availability?.get(key))?.takeIf { !it.isString }?.booleanOrNull
-    val tokensAvailable = flag("tokens") != false
+    val tokensAvailable = flag("tokens") != false && primitive(payload["usage_reported"])?.booleanOrNull != false
     val rawInput = usageNumber(payload["input_tokens"])
     val rawOutput = usageNumber(payload["output_tokens"])
     val input = if (tokensAvailable) rawInput else null
     val output = if (tokensAvailable) rawOutput else null
     val cacheRead = if (flag("cache_read") == false) null else usageNumber(payload["cache_read_tokens"])
     val cacheWrite = if (flag("cache_write") == false) null else usageNumber(payload["cache_creation_tokens"])
-    val callId = payload.nonEmpty("llm_call_id") ?: correlation?.nonEmptyMember("llm_call_id")
+    val callId = activityLlmCallId(payload)
     return ActivityCallUsage(
         callId = callId,
         inputTokens = input?.toInt(),
         outputTokens = output?.toInt(),
         reportedTokens = input != null || output != null || cacheRead != null || cacheWrite != null,
-        stepTokens = if (rawInput == null && rawOutput == null) null else ((rawInput ?: 0.0) + (rawOutput ?: 0.0)).toInt(),
-        costUsd = usageNumber(payload["cost_usd"]) ?: usageNumber(payload["cost"]),
+        stepTokens = if (input == null && output == null) null else ((input ?: 0.0) + (output ?: 0.0)).toInt(),
+        costUsd = if (flag("cost") == false) null else usageNumber(payload["cost_usd"]) ?: usageNumber(payload["cost"]),
     )
 }
 

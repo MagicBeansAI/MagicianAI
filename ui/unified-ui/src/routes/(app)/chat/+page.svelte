@@ -16,6 +16,7 @@
 -->
 <script lang="ts">
 	import ChatPanel from '$lib/magician/chat/ChatPanel.svelte';
+	import { page } from '$app/stores';
 </script>
 
-<ChatPanel />
+<ChatPanel threadId={$page.url.searchParams.get('thread')} />

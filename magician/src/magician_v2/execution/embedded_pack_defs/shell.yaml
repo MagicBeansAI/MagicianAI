@@ -1,13 +1,14 @@
 name: shell
 description: |-
-  Run any bash command on the host. The runtime ships with a baseline toolbelt
+  Run shell commands on the host, with tracked background jobs for long task work.
+  The runtime ships with a baseline toolbelt
   (python3, node, jq, ripgrep, grep, sed, awk, curl, tar, gzip, find, xargs) so
   you can solve a lot more than file plumbing — write inline python/node when no
   dedicated tool/skill fits (image edits, PDF generation, data parsing, HTTP
   calls, light data science, ad-hoc scripts). Reach for `shell` whenever the
   task isn't covered by a specific tool/skill rather than giving up.
 guide: |-
-  Tool name: `shell` (interpreter is bash)
+  Tool name: `shell` (interpreter is `sh -c`; invoke `bash` explicitly for bash-only syntax)
   Primary parameter: `command`
 
   ## Always-available toolbelt
@@ -29,6 +30,7 @@ guide: |-
   Tools below may be on macOS dev boxes but are NOT in the container
   baseline. Probe with `command -v <tool>` first and fall back to inline
   python/node if missing:
+  - **Deadlines**: GNU `timeout` (use this tool's `timeout_secs`, or Python subprocess deadlines)
   - **Media**: `ffmpeg` (video/audio)
   - **PDFs**: `pdftk`, `qpdf`, `gs` (ghostscript)
   - **Office**: `libreoffice --headless`, `pandoc`
@@ -50,8 +52,25 @@ guide: |-
     otherwise plain stdlib.
 
   ## Conventions
+  - Keep generated files in the task workdir. Print a JSON receipt with
+    `artifact_path` (or `output_path`) and `content_type`; the runtime registers
+    and copies admitted outputs into managed artifacts with download references.
+    Return those references instead of copying into protected runtime directories.
   - Use `working_dir` for directory-scoped operations instead of `cd && …`.
-  - Use `timeout_secs` for anything that might hang (network, builds).
+  - Foreground calls default to 60 seconds; an explicit positive `timeout_secs`
+    overrides that default. The owning run's cancellation and time budget still apply.
+  - For long batch work, use a tracked task (`create_task` then `run_task`, or
+    `run_task` to retry an existing unfinished task). Inside that task call shell
+    with `background=true`; it returns a `job_id`. Omit `timeout_secs` for the
+    default 72-hour deadline instead of guessing a short one.
+  - Check with `action=status`, `job_id`, and optional `wait_secs` (up to 30).
+    A running response is normal. Use `action=cancel` to stop an owned job.
+    Jobs keep running while their run is paused and across a backend restart;
+    after a resume, check them by the same `job_id`. They stop when their run
+    finishes or at their deadline, so wait for or cancel them before completing
+    the task. Save checkpoints and output logs in the task workdir. After an
+    interrupted job, retry explicitly from accepted outputs; never assume success.
+  - Do not use `nohup`, `&`, or double-forking to detach workers from the runtime.
   - Keep commands explicit; avoid destructive ops (`rm -rf`, `git reset`,
     `DROP TABLE`) unless the task clearly demands it.
   - `capture_output=true` when subsequent steps need the stdout.
@@ -67,18 +86,40 @@ guide: |-
   - {"command":"python3 -c 'from PIL import Image; im=Image.open(\"in.png\"); im.thumbnail((512,512)); im.save(\"out.png\")'"}
   - {"command":"command -v magick >/dev/null && magick in.jpg -resize 50% out.jpg || python3 -c 'from PIL import Image; Image.open(\"in.jpg\").reduce(2).save(\"out.jpg\")'"}
   - {"command":"node -e 'const u=new URL(process.argv[1]); console.log(u.hostname)' https://example.com/x"}
+parameter_constraints:
+  anyOf:
+    - required: [command]
+      properties:
+        action: {const: run}
+        command: {type: string, minLength: 1}
+    - required: [action, job_id]
+      properties:
+        action: {enum: [status, cancel]}
+        job_id: {type: string, minLength: 1}
 parameters:
-- name: command
-  required: true
+- name: action
   param_type: string
-  description: Shell command to execute
+  default: run
+  description: run (default), status or cancel. status/cancel require job_id instead of command.
+- name: background
+  param_type: boolean
+  default: 'false'
+  description: Start a managed job owned by the current task execution; unavailable in taskless chat.
+- name: job_id
+  param_type: string
+  description: Managed job handle returned by a background run; used by status/cancel.
+- name: wait_secs
+  param_type: integer
+  description: Optional status wait, capped at 30 seconds.
+- name: command
+  param_type: string
+  description: Shell command to execute; required for action=run
 - name: working_dir
   param_type: string
   description: Optional working directory for command execution
 - name: timeout_secs
   param_type: integer
-  description: Optional command timeout in seconds
-  default: '60'
+  description: Optional positive command timeout. Foreground defaults to 60 seconds; background defaults to 72 hours.
 - name: env
   param_type: string
   description: Optional JSON object of environment variables

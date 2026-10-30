@@ -151,18 +151,15 @@ struct TaskDetailOutputBody: View {
         let previewed = TaskDetailLayout.defaultPreview(files)
         VStack(alignment: .leading, spacing: 12) {
             if let summary = snapshot.resultSummary {
-                Markdown(summary)
-                    .markdownTextStyle { ForegroundColor(theme.textColor) }
-                    .textSelection(.enabled)
+                TaskAnswerSummary(text: summary, theme: theme)
             }
             if snapshot.synthesisPending {
-                TaskDetailNotice(text: "The run finished; its output is still being written up.",
-                                 tint: theme.accentColor, icon: "wand.and.stars")
+                TaskSynthesisProgressRow(baseline: snapshot.synthesisBaseline)
             } else if snapshot.synthesisFailedExecutionId != nil {
                 TaskDetailNotice(text: "Writing up the output failed. Retry it from the ⋯ menu.",
                                  tint: theme.dangerColor, icon: "exclamationmark.arrow.triangle.2.circlepath")
             }
-            if files.isEmpty {
+            if files.isEmpty && !snapshot.synthesisPending {
                 Text(snapshot.resultSummary == nil ? "No output yet." : "No files were delivered.")
                     .font(.themed(14))
                     .foregroundColor(theme.secondaryTextColor)
@@ -174,6 +171,53 @@ struct TaskDetailOutputBody: View {
             }
         }
         .accessibilityIdentifier("task-detail-output-body")
+    }
+}
+
+/// The Output section while the final answer is still being written
+/// (`synthesis_pending`): a spinner, the label and an elapsed clock. The clock
+/// is the same 1 s `TimelineView` the running timeline rows use, and the
+/// baseline is when the execution ended; a screen that has no end time counts
+/// from when it first saw the flag. Past `SynthesisWait.staleAfter` it stops
+/// spinning and says so, because the flag is the server's and a client must not
+/// spin forever on one that never clears.
+struct TaskSynthesisProgressRow: View {
+    /// When the execution reached terminal, if the snapshot knows.
+    let baseline: Date?
+    @ObservedObject private var theme = ThemeManager.shared
+    /// Fallback baseline: when this row first appeared.
+    @State private var observedAt = Date()
+
+    var body: some View {
+        let start = baseline ?? observedAt
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            if SynthesisWait.isStale(since: start, now: context.date) {
+                TaskDetailNotice(
+                    text: "The final result is taking longer than expected. It will appear here when it is ready.",
+                    tint: theme.secondaryTextColor, icon: "clock"
+                )
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing final result")
+                        .font(.themed(13))
+                        .foregroundColor(theme.textColor)
+                    Spacer(minLength: 8)
+                    if let elapsed = TaskTimelineFormatting.elapsed(since: start, now: context.date) {
+                        Text(elapsed)
+                            .font(.themed(11, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundColor(theme.secondaryTextColor)
+                            .accessibilityLabel("Preparing for \(elapsed)")
+                    }
+                }
+                .padding(10)
+                .background(theme.accentColor.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .accessibilityIdentifier("task-detail-synthesis-progress")
     }
 }
 
@@ -391,9 +435,7 @@ struct TaskDetailRunBody: View {
                 .accessibilityIdentifier("task-detail-plan-steps")
             }
             if let summary = snapshot.runSummary, !summary.isEmpty {
-                Markdown(summary)
-                    .markdownTextStyle { ForegroundColor(theme.textColor) }
-                    .textSelection(.enabled)
+                TaskAnswerSummary(text: summary, theme: theme)
             }
             if events.isEmpty {
                 Text(snapshot.selectedExecutionId == nil ? "Not started yet." : "No activity recorded yet.")
@@ -412,7 +454,8 @@ struct TaskDetailRunBody: View {
                             delegatedAgent: TaskDelegationTimeline.delegatedAgent(
                                 for: event, delegations: snapshot.delegations),
                             isFirst: event.id == shown.first?.id,
-                            isLast: event.id == shown.last?.id)
+                            isLast: event.id == shown.last?.id,
+                            runActive: !snapshot.runEnded)
                     }
                 }
                 if events.count > shown.count {
@@ -448,7 +491,8 @@ struct TaskDetailRunBody: View {
                     delegatedAgent: TaskDelegationTimeline.delegatedAgent(
                         for: event, delegations: snapshot.delegations),
                     isFirst: event.id == rows.first?.id,
-                    isLast: event.id == rows.last?.id)
+                    isLast: event.id == rows.last?.id,
+                    runActive: !snapshot.runEnded)
             }
         }
         .padding(.leading, PlanStepCheckRow.textInset)
@@ -612,6 +656,8 @@ struct TaskRunEventRow: View {
     var delegatedAgent: String? = nil
     var isFirst = false
     var isLast = false
+    /// The run has not ended: a still-running call shows its live clock.
+    var runActive = false
     @ObservedObject private var theme = ThemeManager.shared
 
     private var tone: StatusDot.Tone {
@@ -643,6 +689,20 @@ struct TaskRunEventRow: View {
                         .foregroundColor(theme.textColor)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
+                    if TaskActivityLiveClock.ticks(event, runActive: runActive) {
+                        // Only this label ticks, and only while the call runs.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let elapsed = TaskActivityLiveClock.label(
+                                event, runActive: runActive, now: context.date
+                            ) {
+                                Text(elapsed)
+                                    .font(.themedMono(Lively.stepMetaSize))
+                                    .foregroundColor(theme.secondaryTextColor)
+                                    .monospacedDigit()
+                                    .accessibilityLabel("Running for \(elapsed)")
+                            }
+                        }
+                    }
                     if let when = TaskTimelineFormatting.offset(event: event.timestamp, origin: origin)
                         ?? TaskTimelineFormatting.wallClock(event.timestamp) {
                         Text(when)

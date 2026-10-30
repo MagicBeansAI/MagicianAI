@@ -303,6 +303,7 @@ mod tests {
         links.insert(
             "b".to_string(),
             VibeDevRunLink {
+                work_location: None,
                 parent_task_id: Some("a".to_string()),
                 crew_id: Some("crew-1".to_string()),
                 lane: None,

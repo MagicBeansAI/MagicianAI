@@ -451,12 +451,26 @@ struct TodayOperationsCarousel: View {
     private func slides(_ pulse: TodayPulse) -> [Slide] {
         [
             Slide(id: "economics", title: "Economics of Operations",
-                  collapsed: AnyView(compactSpend(pulse)), expanded: AnyView(fullSpend(pulse))),
+                  collapsed: pulseSlice(pulse, "llm", AnyView(compactSpend(pulse))), expanded: pulseSlice(pulse, "llm", AnyView(fullSpend(pulse)))),
             Slide(id: "state", title: "State of Operations",
-                  collapsed: AnyView(compactState(pulse)), expanded: AnyView(fullState(pulse))),
+                  collapsed: pulseSlice(pulse, "tasks", AnyView(compactState(pulse))), expanded: pulseSlice(pulse, "tasks", AnyView(fullState(pulse)))),
             Slide(id: "crew", title: "State of the Crew",
                   collapsed: AnyView(compactCrew(pulse)), expanded: AnyView(fullCrew(pulse)))
         ]
+    }
+
+    private func pulseSlice(_ pulse: TodayPulse, _ slice: String, _ content: AnyView) -> AnyView {
+        guard !pulse.availableSlices.contains(slice) else { return content }
+        let label = slice == "llm" ? "model spend" : "operations"
+        return AnyView(HStack(spacing: 8) {
+            if pulse.pendingSlices.contains(slice) {
+                ProgressView().controlSize(.small).tint(theme.accentColor)
+                Text("Loading \(label)…").font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+            } else {
+                Text("\(label.capitalized) is temporarily unavailable.").font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+                Button("Retry", action: onRetry).font(.themed(12))
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading))
     }
 
     private var titles: [String] { ["Economics of Operations", "State of Operations", "State of the Crew"] }
@@ -611,11 +625,11 @@ struct TodayOperationsCarousel: View {
             HStack(spacing: 0) {
                 statCell("Avg / call", TodayMorningEdition.averagePerCall(spend: pulse.spendToday, calls: pulse.callsToday))
                 statCell("Peak hour", TodayMorningEdition.peakHour(pulse.hourlySpend))
-                statCell("Coding runs", "\(pulse.codingRunsToday)")
+                statCell("Coding runs", pulse.availableSlices.contains("coding") ? "\(pulse.codingRunsToday)" : "—")
                 if pulse.evalCasesToday > 0 {
                     statCell("Evals", "\(pulse.evalPassesToday)/\(pulse.evalCasesToday)")
                 } else {
-                    statCell("Memories", "\(pulse.memoriesToday)")
+                    statCell("Memories", pulse.availableSlices.contains("memory") ? "\(pulse.memoriesToday)" : "—")
                 }
             }
             .accessibilityIdentifier("today-ledger-stats")

@@ -22,15 +22,14 @@ struct PublishedTaskNote: Decodable, Identifiable, Equatable {
 
     var id: String { projectionID }
 
-    var destinationURL: URL? {
-        guard let openURL,
-              let url = URL(string: openURL),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https",
-              url.host?.isEmpty == false,
-              url.user == nil,
-              url.password == nil else { return nil }
-        return url
+    /// Where the note opens: always the native Notes screen. `open_url` is
+    /// the canonical `/notes?path=…&workspace=…` link when the server sends
+    /// one; otherwise the note path opens in the current workspace. A web
+    /// origin in `open_url` is never handed to the browser.
+    var noteLink: NoteLink? {
+        if let openURL, let link = NoteLink.parse(openURL), link.origin == nil { return link }
+        let path = notePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : NoteLink(path: path, workspace: nil, origin: nil)
     }
 
     enum CodingKeys: String, CodingKey {

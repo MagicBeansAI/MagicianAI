@@ -20,6 +20,8 @@ selected run's plan-step marks (`planStepRows`), planning activity
 (`planningEntries`), the plan's steps (`planGraphSteps`, from `/plan`
 `plan_graph.steps`) and `planUpdatedAt`.
 
+Task usage merges stored, live and auxiliary model calls by ID within each run and connection scope; unavailable tokens stay unavailable. Real model/tool/child activity advances freshness for the active root, and stale polls cannot move it backward.
+
 ## Navigation
 
 Every entry point pushes a `TaskDetailRoute(taskId:executionId:focus:inspectRun:)`
@@ -38,7 +40,7 @@ calls `openTaskDetail`, and the stack root carries `.taskDetailHost`.
 Work hosts the task workspace and its full detail screen; Today, briefing and
 Chat use the same destinations. `DeepWorkPanel.swift` keeps compatibility
 projection/model helpers but no separate renderer. Manual Work section changes
-and New work clear a consumed deep-link target (so Programs cannot replay an
+and New work clear a consumed deep-link target (so Playbooks cannot replay an
 earlier Crew detail), and specialist stacks reset when their root section
 changes.
 
@@ -92,7 +94,11 @@ summary open. Headers are 44 pt tap targets.
   (`PlanStepActivity` in `PlanProgressModel.swift`,
   `TaskDetailActivity.planStepId` / `offPlan`). The run timeline follows
   (latest 30 events, *Show all* up to 200), titled *All activity* when the run
-  is attributed. A run picked from Technical details shows its own marks and a
+  is attributed. The timeline is one row per call (`TaskActivityCalls.fold`, by
+  `metadata.llm_call_id` / `metadata.call_id`, settled in place; without ids
+  an `llm.requested` folds into the next settled LLM row), LLM rows titled
+  "Thinking with <model>". On a live run a `running` row ticks its elapsed
+  time (`TaskActivityLiveClock`). A run picked from Technical details shows its own marks and a
   *Latest run* chip.
 - **Plan** — the plan's steps; questions waiting, with *Answer in Attention*;
   a draft plan's Reject · Approve · Approve & Run (Approve & Run approves, then
@@ -149,5 +155,6 @@ Output versus Technical details, poll gate, compact-title threshold, menu and
 requests, snapshot fields) and `PlanApprovalActionsTests`.
 
 The bottom tab is **Work**, with no separate Tasks tab. Task and monitor
-deep-link parsing remains for older payloads; new links use Work. Native task,
+deep-link parsing accepts saved `/tasks/<id>` and thread-scoped selections,
+retaining the exact run and Plan focus; new links use `/work?selected=<id>`. Native task,
 plan, output, monitor and Crew detail screens remain.

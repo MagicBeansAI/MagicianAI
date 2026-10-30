@@ -347,7 +347,7 @@ impl ScopedCapabilityResolver {
             .computed_capabilities
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(overlay);
-        self.clear_cache();
+        self.clear_built_snapshots();
     }
 
     fn computed_capability_overlay(
@@ -378,7 +378,7 @@ impl ScopedCapabilityResolver {
             self.cache_singleflight.swap(singleflight, Ordering::AcqRel) != singleflight;
         let changed = limit_changed || ttl_changed || singleflight_changed;
         if changed {
-            self.clear_cache();
+            self.clear_built_snapshots();
             self.cache_build_locks
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -393,7 +393,7 @@ impl ScopedCapabilityResolver {
     /// migrated off `AgentBackend`.
     pub fn set_agent_resources(&self, resources: Arc<AgentResources>) {
         *self.agent_resources.write().unwrap() = Some(resources);
-        self.clear_cache();
+        self.clear_built_snapshots();
     }
 
     /// Snapshot the current agent-resources bundle for handing to
@@ -410,7 +410,7 @@ impl ScopedCapabilityResolver {
     /// `GenericCompiledProvider`.
     pub fn set_compiled_handlers(&self, handlers: Arc<CompiledHandlerRegistry>) {
         *self.compiled_handlers.write().unwrap() = Some(handlers);
-        self.clear_cache();
+        self.clear_built_snapshots();
     }
 
     /// Snapshot the current handler registry. Returns `None` while
@@ -428,7 +428,7 @@ impl ScopedCapabilityResolver {
     /// embeds).
     pub fn set_harness_services(&self, services: HarnessServices) {
         *self.harness_services.write().unwrap() = Some(services);
-        self.clear_cache();
+        self.clear_built_snapshots();
     }
 
     /// Snapshot the current harness services. Returns `None` while
@@ -622,7 +622,22 @@ impl ScopedCapabilityResolver {
         removed
     }
 
+    /// Drop every built snapshot and the parsed skills directories behind
+    /// them. For a change to skill sources or to config the build reads (a
+    /// recipe pack published, a config reload); the source fingerprints
+    /// would see the former anyway, this just makes it immediate.
     pub fn clear_cache(&self) -> usize {
+        super::compiled_providers::clear_skills_dir_cache();
+        self.clear_built_snapshots()
+    }
+
+    /// Drop every built snapshot but keep the parsed skills directories: for
+    /// a change to the runtime objects providers are built with (agent
+    /// resources, handlers, harness services, overlay, cache policy), which
+    /// leaves the skill sources as they were. `with_runtime_policy` installs
+    /// those on a fresh resolver per admitted invocation, so clearing the
+    /// process-wide skills cache here would re-parse every skill per run.
+    fn clear_built_snapshots(&self) -> usize {
         self.workspace_manager.clear_scope_pack_cache();
         let mut cache = self
             .cache
@@ -1611,6 +1626,8 @@ mod tests {
             FileSandboxConfig {
                 mode: runtime_core::FileSandboxMode::WorkspaceWrite,
                 allowed_roots: vec![work.to_string_lossy().into_owned()],
+                read_only_roots: Vec::new(),
+                extra_writable_roots: Vec::new(),
                 allow_delete: false,
             },
             Arc::new(

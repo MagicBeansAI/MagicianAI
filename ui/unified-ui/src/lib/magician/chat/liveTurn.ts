@@ -1,6 +1,13 @@
 import type { ChatMessage } from '$lib/stores/chatStore';
 
-const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const INACTIVE_TASK_STATUSES = new Set([
+	'completed', 'failed', 'cancelled', 'archived', 'ready', 'pending', 'rejected'
+]);
+
+/** Ready is a reusable task with no active run, including after an abort. */
+export function isInactiveTaskTurnStatus(status: string | null | undefined): boolean {
+	return INACTIVE_TASK_STATUSES.has(status?.trim().toLowerCase() ?? '');
+}
 
 export type ChatTurnIdResolver = (message: ChatMessage) => string | null;
 
@@ -10,7 +17,8 @@ export type ChatTurnIdResolver = (message: ChatMessage) => string | null;
  * Task progress is an append-only history, so an old `running` row must not
  * keep a later chat turn alive after the same task emitted a terminal row.
  * We first reduce to the latest row per task, then consider only rows that are
- * non-terminal and have explicit task-local turn provenance. A later update
+ * active and have explicit task-local turn provenance. Ready/pending tasks
+ * have no live run, including after cancellation. A later update
  * may reuse an earlier explicit turn id for the same task, but uncorrelated
  * legacy task cards are never attached to the session's newest user turn.
  */
@@ -21,6 +29,23 @@ export function latestActiveTaskTurnId(
 	 *  although its latest chat row still reads non-terminal. */
 	isSettledElsewhere: (message: ChatMessage) => boolean = () => false
 ): string | null {
+	return latestActiveTaskTurn(messages, resolveTurnId, isSettledElsewhere)?.turnId ?? null;
+}
+
+/** Task statuses that wait on the user rather than run: a paused run (an
+ *  iteration limit, a stop) or a plan awaiting review. */
+const WAITING_ON_USER_TASK_STATUSES = new Set(['paused', 'waiting_for_user', 'waiting_for_confirmation', 'draft']);
+
+export function isTaskWaitingOnUser(status: string | null | undefined): boolean {
+	return WAITING_ON_USER_TASK_STATUSES.has(status?.trim().toLowerCase() ?? '');
+}
+
+/** `latestActiveTaskTurnId`, plus the latest chat status of that task. */
+export function latestActiveTaskTurn(
+	messages: ChatMessage[],
+	resolveTurnId: ChatTurnIdResolver = (message) => message.chat_turn_id?.trim() || null,
+	isSettledElsewhere: (message: ChatMessage) => boolean = () => false
+): { turnId: string; status: string } | null {
 	const latestByTask = new Map<string, ChatMessage>();
 	const latestExplicitTurnByTask = new Map<string, { turnId: string; createdAt: number }>();
 
@@ -45,10 +70,10 @@ export function latestActiveTaskTurnId(
 		}
 	}
 
-	let latest: { turnId: string; createdAt: number } | null = null;
+	let latest: { turnId: string; status: string; createdAt: number } | null = null;
 	for (const [taskId, message] of latestByTask.entries()) {
 		const status = message.content.status?.trim().toLowerCase() ?? '';
-		if (TERMINAL_TASK_STATUSES.has(status) || isSettledElsewhere(message)) continue;
+		if (isInactiveTaskTurnStatus(status) || isSettledElsewhere(message)) continue;
 
 		// Task provenance is stable across its append-only status history.
 		// Some older and cross-surface producers omitted correlation on a
@@ -59,11 +84,11 @@ export function latestActiveTaskTurnId(
 			resolveTurnId(message)?.trim() ?? latestExplicitTurnByTask.get(taskId)?.turnId;
 		if (!turnId) continue;
 		if (!latest || message.created_at >= latest.createdAt) {
-			latest = { turnId, createdAt: message.created_at };
+			latest = { turnId, status, createdAt: message.created_at };
 		}
 	}
 
-	return latest?.turnId ?? null;
+	return latest ? { turnId: latest.turnId, status: latest.status } : null;
 }
 
 /** How long an unanswered user row may still read as a turn in flight. */

@@ -8,11 +8,12 @@ import kotlinx.serialization.Serializable
 import java.io.File
 import java.security.MessageDigest
 
-/** The Now screen's last good read. */
+/** The home screen's last good read, including its first history page. */
 @Serializable
 data class VibeDevNowSnapshot(
     val runs: List<VibeDevLiveRun> = emptyList(),
     val projects: List<VibeDevProject> = emptyList(),
+    val history: VibeDevRunHistory? = null,
 )
 
 @Serializable

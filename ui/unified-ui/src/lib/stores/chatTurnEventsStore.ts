@@ -30,6 +30,7 @@
 import { writable, derived, get, type Readable } from 'svelte/store';
 import { timedFetch } from '$lib/shared/fetch';
 import { eventHub, toHubEvent, type HubEvent } from '$lib/realtime/eventHub';
+import { recordTaskUsageEvent } from '$lib/magician/chat/next/taskUsage';
 
 /** Opaque "raw event" type. The shape is the transport frame
  *  (`{event_type, data}`) — we don't pre-parse here so consumers stay free to
@@ -406,6 +407,7 @@ function appendEvent(chatTurnId: string, event: RawTurnEvent): void {
         return next;
     });
     if (appended) {
+        recordTaskUsageEvent(event);
         // Only refresh the watchdog cursor for genuinely-new events
         // — duplicates from the dedup path don't prove the live feed is
         // still alive. Walk active connections matching this turn id
@@ -631,6 +633,7 @@ export async function fetchEventsPage(
             next.set(chatTurnId, merged);
             return next;
         });
+        for (const event of fetched) recordTaskUsageEvent(event);
         if (serverUsage) recordUsageBaseline(chatTurnId, serverUsage);
         return { count: fetched.length, earliestTs: earliest };
     } catch {

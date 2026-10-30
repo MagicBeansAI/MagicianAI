@@ -13,30 +13,41 @@ use magicllm::{
 };
 use serde_json::{json, Value};
 use wiremock::{
-    matchers::{method, path},
+    matchers::{method, path, query_param},
     Mock, MockServer, ResponseTemplate,
 };
 
 const MODEL: &str = "gemini-4-argon";
+const MODEL_ID: &str = "gemini/gemini-4-argon";
+
+fn route(thinking: &str) -> String {
+    magicllm::catalog::choice_id(MODEL_ID, thinking)
+}
 
 fn profiles() -> HashMap<String, LLMProfile> {
-    // These profiles have no cross-file anchors, so parse the shipped block
-    // directly; the live tests exercise exactly these defaults through routing.
-    let tables = include_str!("../../llm-router.yaml");
-    let start = tables
-        .find("      chat-gemini4-argon-vision-toolsauto-rlow:")
-        .unwrap();
-    let end = tables[start..]
-        .find("      # Gemini tier profiles.")
-        .unwrap()
-        + start;
-    serde_yaml::from_str(&tables[start..end]).unwrap()
+    let text = include_str!("../../magician-config.yaml").replacen(
+        "  router:\n",
+        &format!("  router:\n{}\n", include_str!("../../llm-router.yaml")),
+        1,
+    );
+    let root: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+    let config: LLMRouterConfig = serde_yaml::from_value(root["llm"]["router"].clone()).unwrap();
+    config
+        .catalog
+        .choices()
+        .into_iter()
+        .find(|choice| choice.id == MODEL_ID)
+        .expect("qualified Argon model")
+        .choices
+        .into_values()
+        .map(|name| (name.clone(), config.profiles[&name].clone()))
+        .collect()
 }
 
 fn router(provider: GeminiProvider) -> MultiLLMRouter {
     let mut router = MultiLLMRouter::new(LLMRouterConfig {
         profiles: profiles(),
-        default_profile: "chat-gemini4-argon-vision-toolsauto-rmedium".into(),
+        default_profile: route("auto"),
         ..Default::default()
     })
     .unwrap();
@@ -65,7 +76,7 @@ fn gemini4_argon_profiles_have_supported_limits_and_capabilities() {
         assert_eq!(profile.model, MODEL);
         assert_eq!(profile.max_output_tokens, Some(32_768));
         assert_eq!(profile.context_window_tokens, Some(1_048_576));
-        assert_eq!(profile.timeout_secs, Some(900));
+        assert_eq!(profile.timeout_secs, Some(600));
         assert_eq!(profile.api_key_env.as_deref(), Some("GEMINI_API_KEY"));
         assert!(profile.temperature.is_none());
     }
@@ -75,11 +86,18 @@ fn gemini4_argon_profiles_have_supported_limits_and_capabilities() {
 async fn gemini4_argon_routes_thinking_omits_sampling_and_explicit_cache() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/models/gemini-4-argon:generateContent"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "candidates": [{"content": {"role":"model", "parts":[{"text":"ARGON_OK"}]}, "finishReason":"STOP"}],
-            "usageMetadata": {"promptTokenCount":10,"candidatesTokenCount":3,"thoughtsTokenCount":7,"totalTokenCount":20}
-        })))
+        .and(path("/models/gemini-4-argon:streamGenerateContent"))
+        .and(query_param("alt", "sse"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!(
+                "data: {}\n\n",
+                json!({
+                    "candidates": [{"content": {"role":"model", "parts":[{"text":"ARGON_OK"}]}, "finishReason":"STOP"}],
+                    "usageMetadata": {"promptTokenCount":10,"candidatesTokenCount":3,"thoughtsTokenCount":7,"totalTokenCount":20}
+                })
+            ),
+            "text/event-stream",
+        ))
         .expect(3)
         .mount(&server).await;
     let router = router(GeminiProvider::with_client(
@@ -88,7 +106,7 @@ async fn gemini4_argon_routes_thinking_omits_sampling_and_explicit_cache() {
         server.uri(),
     ));
     for (index, effort) in ["low", "medium", "high"].iter().enumerate() {
-        let profile = format!("chat-gemini4-argon-vision-toolsauto-r{effort}");
+        let profile = route(effort);
         let mut request = request(&profile, "Reply ARGON_OK");
         request.temperature = Some(0.4);
         request.top_p = Some(0.8);
@@ -136,10 +154,7 @@ async fn live_gemini4_argon_profiles_text_and_tool_replay() {
     for effort in ["low", "medium", "high"] {
         let start = Instant::now();
         let response = router
-            .route(request(
-                &format!("chat-gemini4-argon-vision-toolsauto-r{effort}"),
-                "Respond with only ARGON_OK.",
-            ))
+            .route(request(&route(effort), "Respond with only ARGON_OK."))
             .await
             .expect("Argon text request succeeds");
         assert_eq!(response.text.as_deref().map(str::trim), Some("ARGON_OK"));
@@ -160,9 +175,10 @@ async fn live_gemini4_argon_profiles_text_and_tool_replay() {
     }
 
     let mut tool_request = request(
-        "gemini4-argon-vision-toolsany-rhigh",
+        &route("high"),
         "Call lookup_code exactly once, then reply with only the code it returns.",
     );
+    tool_request.set_extra(json!({"router_profile_override":route("high"), "tool_choice":"any"}));
     tool_request.tools = vec![LLMToolSpec {
         name: "lookup_code".into(),
         description: "Return the secret code".into(),
@@ -194,7 +210,7 @@ async fn live_gemini4_argon_profiles_text_and_tool_replay() {
         }],
     });
     tool_request.messages = messages.into();
-    tool_request.set_extra(json!({"router_profile_override":"chat-gemini4-argon-vision-toolsauto-rhigh", "tool_choice":"none"}));
+    tool_request.set_extra(json!({"router_profile_override":route("high"), "tool_choice":"none"}));
     let answer = router
         .route(tool_request)
         .await

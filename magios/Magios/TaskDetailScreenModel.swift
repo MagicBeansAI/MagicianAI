@@ -531,9 +531,12 @@ final class TaskDetailScreenModel: ObservableObject {
             if outputs == nil { unavailable.append("outputs") }
             if details == nil { unavailable.append("execution history") }
         }
-        let parsed = TaskDetailSnapshot.parse(
+        var parsed = TaskDetailSnapshot.parse(
             seed: seed, taskPayload: task, panelPayload: panel, outputsPayload: outputs,
             detailsPayload: details, planPayload: plan, unavailableSections: unavailable)
+        if parsed.progressExecutionId != nil, parsed.progressExecutionId == snapshot?.progressExecutionId {
+            parsed.lastProgressAt = TaskRunEvidence.latest(snapshot?.lastProgressAt, parsed.lastProgressAt)
+        }
         snapshot = parsed
         if selectedExecutionId == nil { selectedExecutionId = parsed.selectedExecutionId }
         realtime?.update(executionId: selectedExecutionId)
@@ -550,6 +553,11 @@ final class TaskDetailScreenModel: ObservableObject {
         realtime?.start(
             executionId: selectedExecutionId,
             onPanelState: { [weak self] panel in self?.applyRealtimePanel(panel) },
+            onProgress: { [weak self] root, at in
+                guard let self, self.connectionCurrent, self.snapshot?.progressExecutionId == root else { return }
+                guard at.timeIntervalSince(self.snapshot?.lastProgressAt ?? .distantPast) >= 1 else { return }
+                self.snapshot?.lastProgressAt = at
+            },
             onResync: { [weak self] in Task { await self?.refresh() } }
         )
     }
@@ -557,8 +565,9 @@ final class TaskDetailScreenModel: ObservableObject {
     func stopRealtime() { realtime?.stop() }
 
     func applyRealtimePanel(_ pushed: [String: Any]) {
-        guard let current = snapshot,
+        guard connectionCurrent, let current = snapshot,
               let updated = current.applyingRealtimePanel(seed: seed, panelPayload: pushed) else { return }
+        panel = pushed
         snapshot = updated
     }
 

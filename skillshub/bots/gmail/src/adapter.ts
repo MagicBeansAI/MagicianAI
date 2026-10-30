@@ -3,9 +3,19 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { prepareEnvoyReply } from "./envoy-reply.js";
+import { appendBounded, isGoogleAuthRejection } from "./auth-rejection.js";
+import {
+  forgetWatchTopic,
+  isWatchActiveLine,
+  parseCreatedTopic,
+  readSavedWatchTopic,
+  reusableTopic,
+  saveWatchTopic,
+  shouldForgetTopic,
+  watchArgs,
+} from "./watch-topic.js";
 
 import {
-  EX_NEEDS_AUTH,
   exitNeedsAuth,
   ResilientProcess,
   parseEmailMailbox,
@@ -63,6 +73,26 @@ const REQUIRED_GWS_SCOPES = [
   "https://www.googleapis.com/auth/pubsub",
 ];
 
+/**
+ * Token errors meaning Google refused the stored refresh token itself, so
+ * the credentials cannot recover without a new sign-in. Anything else (a
+ * timeout, DNS, a 5xx) says nothing about the token and must not purge it.
+ */
+const REJECTED_REFRESH_TOKEN = /invalid_grant|revoked|invalid_client|unauthorized_client/i;
+
+/**
+ * Exit code when the watcher keeps failing for a non-auth reason. Any code
+ * but `EX_NEEDS_AUTH` (79) reaches the supervisor as an unexpected exit; 70
+ * is `EX_SOFTWARE` from BSD `sysexits.h`.
+ */
+const EX_WATCH_FAILING = 70;
+
+interface AuthProblem {
+  reason: string;
+  /** The probe proved the stored credentials can never work again. */
+  credentialsUnusable: boolean;
+}
+
 
 export class GmailAdapter implements ChannelAdapter<string> {
   private handlers?: ChannelAdapterHandlers<string>;
@@ -76,6 +106,17 @@ export class GmailAdapter implements ChannelAdapter<string> {
   private readonly expectedAccount: string | undefined;
   private readonly resilient: ResilientProcess;
   private watchJsonBuffer = "";
+  /** This watcher run saw Google reject the credentials it sent. */
+  private watchAuthRejected = false;
+  private watchStderrTail = "";
+  /** Consecutive watcher runs that ended after Google rejected the credentials. */
+  private authRejectedRuns = 0;
+  /** Saved Pub/Sub topic this watcher run was handed with `--topic`. */
+  private watchReusedTopic: string | undefined;
+  /** Topic gws said it created on this run; saved once the watch is active. */
+  private watchCreatedTopic: string | undefined;
+  private watchActive = false;
+  private watchErrorText = "";
 
   constructor(options: GmailAdapterOptions) {
     this.gwsBinary = options.gwsBinary;
@@ -95,37 +136,38 @@ export class GmailAdapter implements ChannelAdapter<string> {
     this.expectedAccount = process.env.GWS_EXPECTED_EMAIL?.trim() || undefined;
     this.resilient = new ResilientProcess({
       label: "[gmail-bot]",
-      authFailureCodes: [5], // gws exits 5 on missing/invalid credentials
-      // Mid-watch auth failure: bubble it up as a needs-auth exit instead of
-      // re-running the OAuth flow inline (which used to pop a browser
-      // window). The supervisor surfaces the escalation; the operator
-      // clicks Authenticate to recover.
-      onReauth: (shouldPurge) => {
-        if (shouldPurge) {
-          this.purgeStoredCredentials();
-        }
+      // gws exits 2 on missing/expired/invalid credentials. 5 is its
+      // "internal error" (Pub/Sub pull timeouts, token-cache write races),
+      // which a plain watcher restart recovers from.
+      authFailureCodes: [2],
+      // Mid-watch auth failure: re-probe `gws auth status` before asking for
+      // OAuth. A failing probe exits with EX_NEEDS_AUTH so the supervisor
+      // surfaces the escalation (the operator clicks Authenticate); a passing
+      // one just restarts the watcher. `shouldPurge` only permits deleting
+      // credentials the probe proves unusable — never ones it accepts.
+      onReauth: async (shouldPurge) => {
         console.error(
-          `[gmail-bot] auth failure mid-watch — exiting with code ${EX_NEEDS_AUTH} so supervisor can surface 'Authenticate' escalation`,
+          `[gmail-bot] auth failure mid-watch — re-checking credentials before asking for 'Authenticate'`,
         );
-        exitNeedsAuth({
-          provider: "google_workspace",
-          profileLabel: this.profileName,
-          expectedAccount: this.expectedAccount,
-          detail: "session expired or credentials revoked mid-watch",
-        });
+        await this.ensureAuth(shouldPurge);
       },
-      onGiveUp: () => {
-        // Unreachable under the new flow (onReauth above terminates the
-        // process before retries accumulate) but kept as a safety net.
+      // `gws` exit 5 and other non-auth failures restart with a backoff. A
+      // watcher that keeps dying soon after start (e.g. a missing Pub/Sub
+      // topic or permission, or the Gmail API disabled) cannot fix itself:
+      // exit non-zero, which is not the needs-auth code, so Bot Control shows
+      // the bot failing with this reason instead of it restarting silently.
+      onPersistentFailure: (detail) => {
         console.error(
-          "[gmail-bot] persistent auth failure — exiting so the system can surface the problem",
+          `[gmail-bot] gws gmail +watch keeps failing (${detail}); exiting so the supervisor surfaces it. ` +
+            "Check the watch's Pub/Sub topic and permissions, and that the Gmail API is enabled.",
         );
-        exitNeedsAuth({
-          provider: "google_workspace",
-          profileLabel: this.profileName,
-          expectedAccount: this.expectedAccount,
-          detail: "persistent auth failure",
-        });
+        process.exit(EX_WATCH_FAILING);
+      },
+      // Reached when the watcher keeps exiting with code 2 for the whole
+      // retry window while every re-check passed (a failing re-check exits
+      // needs-auth earlier, from onReauth).
+      onGiveUp: () => {
+        void this.giveUpOnAuthExits();
       },
     });
 
@@ -188,61 +230,124 @@ export class GmailAdapter implements ChannelAdapter<string> {
    * anymore — the operator triggers it explicitly via "Authenticate" in Bot
    * Control, which runs `gws auth login` out of process and then restarts
    * the bot.
+   *
+   * `purgeIfUnusable` deletes the stored credentials only after the probe
+   * has run and shown they cannot work (undecryptable, or a refresh token
+   * Google rejected). Credentials the probe accepts are never deleted, nor
+   * are ones it could not judge (e.g. `gws` itself failing or a network
+   * error while refreshing): those may hold a valid refresh token.
    */
-  private async ensureAuth(forcePurge = false): Promise<void> {
-    if (forcePurge) {
-      this.purgeStoredCredentials();
+  private async ensureAuth(purgeIfUnusable = false): Promise<void> {
+    const problem = await this.probeAuth();
+    if (!problem) {
+      console.info("[gmail-bot] gws auth verified");
+      return;
     }
 
+    const { reason } = problem;
+    if (purgeIfUnusable && problem.credentialsUnusable) {
+      console.error(`[gmail-bot] purging unusable stored credentials for ${this.profileName}: ${reason}`);
+      this.purgeStoredCredentials();
+    }
+    console.error(`[gmail-bot] auth required for ${this.profileName}${this.expectedAccount ? ` (${this.expectedAccount})` : ""}: ${reason}`);
+    console.error(
+      `[gmail-bot] click 'Authenticate' in Bot Control to run OAuth (supervisor will restart bot on success)`,
+    );
+    // Account-mismatch errors look like "authenticated as foo@…; expected bar@…".
+    // Capture the actual signed-in account so the attention bar can show
+    // both sides instead of just "needs auth".
+    const mismatchMatch = /authenticated as ([^;]+); expected /.exec(reason);
+    const currentAccount = mismatchMatch?.[1]?.trim() ?? undefined;
+    exitNeedsAuth({
+      provider: "google_workspace",
+      profileLabel: this.profileName,
+      expectedAccount: this.expectedAccount,
+      currentAccount,
+      detail: reason,
+    });
+  }
+
+  /**
+   * The watcher kept exiting with an auth code for the whole retry window.
+   * Needs-auth only when the probe finds the credentials at fault; when it
+   * accepts them, a new sign-in cannot help, and parking the bot on an
+   * 'Authenticate' prompt would hide the real failure. Exit through the
+   * persistent-failure code instead, with the reason in the log.
+   */
+  private async giveUpOnAuthExits(): Promise<void> {
+    // Exits with EX_NEEDS_AUTH when the probe finds a problem.
+    await this.ensureAuth(false);
+    console.error(
+      "[gmail-bot] gws gmail +watch kept exiting with an auth error (code 2) for the whole retry window " +
+        "while 'gws auth status' accepts the credentials; exiting so the supervisor surfaces it. " +
+        "Re-authenticating will not fix this — check the watch's Pub/Sub topic and permissions.",
+    );
+    process.exit(EX_WATCH_FAILING);
+  }
+
+  /** Google rejected the credentials on two watcher runs in a row. */
+  private exitGoogleRejectedCredentials(): never {
+    const reason =
+      "Google rejected the stored credentials (UNAUTHENTICATED) although 'gws auth status' accepts them; sign in again";
+    console.error(`[gmail-bot] auth required for ${this.profileName}${this.expectedAccount ? ` (${this.expectedAccount})` : ""}: ${reason}`);
+    exitNeedsAuth({
+      provider: "google_workspace",
+      profileLabel: this.profileName,
+      expectedAccount: this.expectedAccount,
+      detail: reason,
+    });
+  }
+
+  /** `null` when `gws auth status` reports usable credentials. */
+  private async probeAuth(): Promise<AuthProblem | null> {
+    let status: Record<string, unknown>;
     try {
       const statusJson = await this.execGws(["auth", "status", "--format", "json"]);
-      const status = JSON.parse(statusJson) as Record<string, unknown>;
-      if (status.auth_method === "none" || status.storage === "none") {
-        throw new Error("no credentials stored");
-      }
-      if (status.encryption_valid === false) {
-        throw new Error("encrypted credentials could not be decrypted");
-      }
-      if (status.has_refresh_token === false) {
-        throw new Error("no refresh token stored");
-      }
-      if (status.token_valid === false) {
-        const tokenError =
-          typeof status.token_error === "string" && status.token_error.trim()
-            ? status.token_error.trim()
-            : "token invalid";
-        throw new Error(tokenError);
-      }
-      if (Array.isArray(status.scopes)) {
-        const grantedScopes = status.scopes.filter((scope): scope is string => typeof scope === "string");
-        const missingScopes = REQUIRED_GWS_SCOPES.filter((scope) => !grantedScopes.includes(scope));
-        if (missingScopes.length > 0) {
-          throw new Error(`missing required scopes: ${missingScopes.join(", ")}`);
-        }
-      } else {
-        console.info("[gmail-bot] gws auth status did not report scopes; skipping scope preflight");
-      }
-      this.assertExpectedAccount(status);
-      console.info("[gmail-bot] gws auth verified");
+      status = JSON.parse(statusJson) as Record<string, unknown>;
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.error(`[gmail-bot] auth required for ${this.profileName}${this.expectedAccount ? ` (${this.expectedAccount})` : ""}: ${reason}`);
-      console.error(
-        `[gmail-bot] click 'Authenticate' in Bot Control to run OAuth (supervisor will restart bot on success)`,
-      );
-      // Account-mismatch errors look like "authenticated as foo@…; expected bar@…".
-      // Capture the actual signed-in account so the attention bar can show
-      // both sides instead of just "needs auth".
-      const mismatchMatch = /authenticated as ([^;]+); expected /.exec(reason);
-      const currentAccount = mismatchMatch?.[1]?.trim() ?? undefined;
-      exitNeedsAuth({
-        provider: "google_workspace",
-        profileLabel: this.profileName,
-        expectedAccount: this.expectedAccount,
-        currentAccount,
-        detail: reason,
-      });
+      return { reason: errorReason(error), credentialsUnusable: false };
     }
+
+    if (status.auth_method === "none" || status.storage === "none") {
+      return { reason: "no credentials stored", credentialsUnusable: false };
+    }
+    if (status.encryption_valid === false) {
+      return {
+        reason: "encrypted credentials could not be decrypted",
+        credentialsUnusable: true,
+      };
+    }
+    if (status.has_refresh_token === false) {
+      return { reason: "no refresh token stored", credentialsUnusable: false };
+    }
+    if (status.token_valid === false) {
+      const tokenError =
+        typeof status.token_error === "string" && status.token_error.trim()
+          ? status.token_error.trim()
+          : "token invalid";
+      return {
+        reason: tokenError,
+        credentialsUnusable: REJECTED_REFRESH_TOKEN.test(tokenError),
+      };
+    }
+    if (Array.isArray(status.scopes)) {
+      const grantedScopes = status.scopes.filter((scope): scope is string => typeof scope === "string");
+      const missingScopes = REQUIRED_GWS_SCOPES.filter((scope) => !grantedScopes.includes(scope));
+      if (missingScopes.length > 0) {
+        return {
+          reason: `missing required scopes: ${missingScopes.join(", ")}`,
+          credentialsUnusable: false,
+        };
+      }
+    } else {
+      console.info("[gmail-bot] gws auth status did not report scopes; skipping scope preflight");
+    }
+    try {
+      this.assertExpectedAccount(status);
+    } catch (error) {
+      return { reason: errorReason(error), credentialsUnusable: false };
+    }
+    return null;
   }
 
   /* ---------- gws gmail +watch child process ---------- */
@@ -252,23 +357,48 @@ export class GmailAdapter implements ChannelAdapter<string> {
       return;
     }
 
-    console.info("[gmail-bot] spawning gws gmail +watch --format json");
+    // Reuse the topic an earlier run created (see watch-topic.ts): without
+    // `--topic`, gws creates and leaks a new Pub/Sub topic on every start.
+    const topic = this.configDir
+      ? reusableTopic(readSavedWatchTopic(this.configDir), this.projectId)
+      : undefined;
+    const args = watchArgs(topic);
+    console.info(`[gmail-bot] spawning gws ${args.join(" ")}`);
 
-    const proc = spawn(this.gwsBinary, ["gmail", "+watch", "--format", "json"], {
+    const proc = spawn(this.gwsBinary, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...this.gwsEnv() },
     });
 
     this.watchProcess = proc;
     this.watchJsonBuffer = "";
+    this.watchAuthRejected = false;
+    this.watchStderrTail = "";
+    this.watchReusedTopic = topic;
+    this.watchCreatedTopic = undefined;
+    this.watchActive = false;
+    this.watchErrorText = "";
+    // A watcher that stays up long enough ends the failure streak, so exit-2s
+    // days apart are not counted as consecutive (see `healthyRunMs`).
+    this.resilient.recordStart();
 
     const rl = createInterface({ input: proc.stdout! });
     rl.on("line", (line: string) => {
+      this.observeWatchSetupLine(line);
       void this.handleWatchLine(line);
+    });
+    // gws reports its Pub/Sub setup on either stream.
+    createInterface({ input: proc.stderr! }).on("line", (line: string) => {
+      this.observeWatchSetupLine(line);
     });
 
     proc.stderr?.on("data", (chunk: Buffer) => {
-      const msg = chunk.toString().trim();
+      const text = chunk.toString();
+      this.watchStderrTail = appendBounded(this.watchStderrTail, text);
+      if (isGoogleAuthRejection(this.watchStderrTail)) {
+        this.watchAuthRejected = true;
+      }
+      const msg = text.trim();
       if (msg) {
         logChildProcessStderr("[gmail-bot][gws]", msg);
       }
@@ -280,12 +410,61 @@ export class GmailAdapter implements ChannelAdapter<string> {
         console.info("[gmail-bot] watch process exited after stop");
         return;
       }
+      // A saved topic someone deleted fails every start the same way: drop
+      // it so the restart below lets gws create a fresh one.
+      const reusedTopic = this.watchReusedTopic;
+      if (
+        this.configDir &&
+        shouldForgetTopic({
+          reusedTopic,
+          watchActive: this.watchActive,
+          errorText: this.watchErrorText + this.watchStderrTail,
+        })
+      ) {
+        console.error(
+          `[gmail-bot] saved Pub/Sub topic ${reusedTopic} no longer exists; forgetting it so the next start creates a new one`,
+        );
+        forgetWatchTopic(this.configDir);
+      }
+      // Google refusing the credentials is not a crash a restart can fix,
+      // and `gws auth status` may still accept them (it only checks them
+      // locally). Two runs in a row ending that way mean a new sign-in is
+      // needed: surface it instead of restarting into the same rejection.
+      this.authRejectedRuns = this.watchAuthRejected ? this.authRejectedRuns + 1 : 0;
+      if (this.authRejectedRuns >= 2) {
+        this.exitGoogleRejectedCredentials();
+      }
       void this.resilient.handleExit(code, signal, () => this.spawnWatcher());
     });
 
     proc.on("error", (err) => {
       console.error("[gmail-bot] watch process error", err);
     });
+  }
+
+  /**
+   * Track the watcher's Pub/Sub setup: remember a topic gws creates, and
+   * save it for later runs once the Gmail watch is active on it.
+   */
+  private observeWatchSetupLine(line: string): void {
+    const created = parseCreatedTopic(line);
+    if (created) {
+      this.watchCreatedTopic = created;
+      return;
+    }
+    if (this.watchActive || !isWatchActiveLine(line)) {
+      return;
+    }
+    this.watchActive = true;
+    if (!this.watchCreatedTopic || !this.configDir) {
+      return;
+    }
+    try {
+      saveWatchTopic(this.configDir, this.watchCreatedTopic);
+      console.info(`[gmail-bot] saved Pub/Sub topic ${this.watchCreatedTopic} for later watcher runs`);
+    } catch (error) {
+      console.error(`[gmail-bot] failed to save Pub/Sub topic ${this.watchCreatedTopic}: ${errorReason(error)}`);
+    }
   }
 
   private async handleWatchLine(raw: string): Promise<void> {
@@ -298,6 +477,11 @@ export class GmailAdapter implements ChannelAdapter<string> {
       const code = payload.error.code ?? "unknown";
       const reason = payload.error.reason ?? "unknown";
       const message = payload.error.message ?? "unknown error";
+      const errorText = JSON.stringify(payload.error);
+      this.watchErrorText = appendBounded(this.watchErrorText, `${errorText}\n`);
+      if (isGoogleAuthRejection(errorText)) {
+        this.watchAuthRejected = true;
+      }
       console.error(
         `[gmail-bot] gws watch error (${code}/${reason}): ${message}`,
       );
@@ -535,6 +719,10 @@ function isErrorLikeProcessMessage(message: string): boolean {
     /\bmissing\b/,
     /\bexited with code\b/,
   ].some((pattern) => pattern.test(lower));
+}
+
+function errorReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isGwsErrorPayload(

@@ -6,6 +6,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createConnection } from 'node:net';
+import { tunnelCompression } from './vite-tunnel-compression';
 
 const SOTA_ATTACHMENT_ROUTE = '/tests/sota-download-assets/case-b-attachment-report.csv';
 const MAGICIAN_BACKEND_HOST = '127.0.0.1';
@@ -250,6 +251,13 @@ function staticDirectoryIndex(): Plugin {
 
 export default defineConfig({
 	plugins: [
+		// First, so it wraps every later dev-server response. Tunnel requests only.
+		{
+			name: 'magician-tunnel-compression',
+			configureServer(server) {
+				server.middlewares.use(tunnelCompression);
+			}
+		} satisfies Plugin,
 		sotaAttachmentRoute(),
 		magicianBackendReadinessGuard(),
 		staticDirectoryIndex(),

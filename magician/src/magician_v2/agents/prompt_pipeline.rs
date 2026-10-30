@@ -754,7 +754,7 @@ fn render_episodes(episodes: &[V3EpisodeRecord]) -> String {
                     .map(|ts| ts.to_rfc3339())
                     .unwrap_or_else(|_| episode.completed_at.clone()),
                 status,
-                episode.outcome_summary_text().trim(),
+                episode.recalled_outcome_text().trim(),
                 episode.actions_taken.len()
             )
         })
@@ -901,7 +901,7 @@ fn render_failure_analysis(episodes: Vec<V3EpisodeRecord>) -> String {
     for episode in &recent {
         let mut reason = episode.outcome_error_summary();
         if reason.trim().is_empty() {
-            reason = episode.outcome_summary_text().to_string();
+            reason = episode.recalled_outcome_text();
         }
         let entry = counts.entry(reason.trim().to_string()).or_insert(0);
         *entry += 1;
@@ -934,13 +934,12 @@ fn render_success_patterns(episodes: Vec<V3EpisodeRecord>) -> String {
     let recent = take_recent(succeeded, Some(8));
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for episode in &recent {
+        // Recall text, never the raw record: a strategy or outcome can echo
+        // another run's whole goal and its operating policy.
         let pattern = episode
-            .strategy_summary
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| episode.outcome_summary_text());
-        let entry = counts.entry(pattern.to_string()).or_insert(0);
+            .recalled_strategy_text()
+            .unwrap_or_else(|| episode.recalled_outcome_text());
+        let entry = counts.entry(pattern.trim().to_string()).or_insert(0);
         *entry += 1;
     }
 

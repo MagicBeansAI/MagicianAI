@@ -29,17 +29,35 @@ rather than resolved: which value won would otherwise depend on hash order.
 
 ## The sender is bound, never caller-chosen
 
-§4A.3. Whatever the caller supplied in a sender parameter is discarded and
-rebound from the runtime's view of who is acting, so a compromised agent cannot
-send as somebody else.
+§4A.3. Each form's `sender_kind` decides how its sender parameter is bound, so a
+compromised agent cannot send as somebody else:
 
-- **`agentmail-send`** binds `inbox_id` (the inbox to send from).
-- **`gmail`** binds `account`, the skill's `profile_parameter` (business /
-  personal / work).
+- **`SenderKind::Identity`** — the parameter is a sender address. Whatever the
+  caller supplied is discarded and rebound from the runtime's view of who is
+  acting. **`agentmail-send`** binds `inbox_id` (the inbox to send from).
+- **`SenderKind::ProfileAlias`** — the parameter picks a credential profile
+  (which of the owner's mailboxes sends): **`gmail`** and **`calendar`**
+  `account` (the skill's `profile_parameter`). It is never rebound to the
+  runtime identity (an agent id is not a profile alias).
+  `restrict_with_profiles` keeps an alias in `ApprovedSenderProfiles` in its
+  approved spelling; an omitted alias stays omitted, so the skill's default
+  profile applies; any other value is refused with `SenderProfileNotApproved`,
+  whose guidance names the approved aliases and the default. The approved set
+  (`approved_sender_profile_aliases`) is the skill's declared profile enum
+  intersected with the enabled `tool_runtime_profiles` registered for its
+  provider and namespace in `operator-config.yaml`, read from the governed
+  package in the live capability registry; if unreadable it is empty and every
+  named alias is refused. There is no per-agent mailbox policy; plain
+  `restrict` approves nothing. The outward review card shows
+  `From account: <alias>` or `From account: default (<alias>)`.
 - **`kapso-whatsapp-send`**, **`whatsapp`**, **`telegram`** and
   **`telegram-self`** bind nothing: each transport has one configured identity
   and no caller-settable field (Presto's WhatsApp number, one WhatsApp Web
   session, one bot token from the scoped vault, one MTProto session).
+
+`restricted_toolset` hides an `Identity` sender parameter from the projected
+schema (it is overwritten anyway). It keeps a `ProfileAlias` selector, so the
+model can pick a declared mailbox or leave it out for the default.
 
 A spec that forgot its binding looks exactly like one with nothing to bind, so
 the exempt set is a named list, `SENDER_IS_THE_TRANSPORT`, asserted by
@@ -67,7 +85,7 @@ Current chat-channel forms:
 
 | spec | allowed | recipient | sender |
 |---|---|---|---|
-| `whatsapp` | `jid`, `text`, `reply_to` | `jid` | none — the session is the sender |
+| `whatsapp` | `jid`, text/reply/file/caption, poll question/options | `jid` | none — the session is the sender |
 | `telegram` | `chat_id`, `text` | `chat_id` | none — the bot token is the sender |
 | `telegram-self` | `to`, `message`, `reply_to` | `to` | none — the operator's own session |
 

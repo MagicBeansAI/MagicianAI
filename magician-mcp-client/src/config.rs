@@ -7,7 +7,10 @@ use tokio::sync::mpsc;
 use crate::McpClientError;
 
 const HARD_MAX_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
-const HARD_MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// The longest request a pack may declare (`limits.timeout_secs`, 24 h, the
+/// manifest maximum); a pack that declares none keeps the 60 s default.
+const HARD_MAX_REQUEST_TIMEOUT: Duration =
+    Duration::from_secs(tool_runtime_core::manifest_validation::MAX_RUNTIME_TIMEOUT_SECS as u64);
 const HARD_MAX_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 const HARD_MAX_CONTINUATION_TIMEOUT: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const HARD_MAX_TOOL_COUNT: usize = 4_096;
@@ -51,6 +54,17 @@ impl BearerToken {
 
     pub(crate) fn expose(&self) -> &str {
         &self.0
+    }
+
+    /// Bind short-lived local artifacts to this exact credential without
+    /// exposing it. This is not an account identifier or a durable grant key:
+    /// refresh/re-login deliberately invalidates artifacts from the old token.
+    pub fn session_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"mcp-ephemeral-artifact-credential-v1\0");
+        hash.update(self.0.as_bytes());
+        format!("{:x}", hash.finalize())
     }
 }
 

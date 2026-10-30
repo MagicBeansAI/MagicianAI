@@ -675,7 +675,7 @@ pub struct CreateWorktreeResponse {
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = std::process::Command::new(runtime_core::process::git_program())
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -1096,7 +1096,7 @@ struct DiffFile {
 fn compute_git_diff(dir: &std::path::Path) -> Result<Vec<DiffFile>, String> {
     use std::process::Command;
 
-    let status = Command::new("git")
+    let status = Command::new(runtime_core::process::git_program())
         .args(["diff", "--name-status", "HEAD"])
         .current_dir(dir)
         .output()
@@ -1109,7 +1109,7 @@ fn compute_git_diff(dir: &std::path::Path) -> Result<Vec<DiffFile>, String> {
         ));
     }
 
-    let patch_out = Command::new("git")
+    let patch_out = Command::new(runtime_core::process::git_program())
         .args(["diff", "--unified=3", "HEAD"])
         .current_dir(dir)
         .output()
@@ -1174,7 +1174,7 @@ fn compute_git_diff(dir: &std::path::Path) -> Result<Vec<DiffFile>, String> {
         });
     }
 
-    let untracked = Command::new("git")
+    let untracked = Command::new(runtime_core::process::git_program())
         .args(["ls-files", "-z", "--others", "--exclude-standard"])
         .current_dir(dir)
         .output()

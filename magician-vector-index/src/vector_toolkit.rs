@@ -797,6 +797,16 @@ struct PreparedEmbeddingInputs {
     fragment_weights: Vec<usize>,
 }
 
+/// Ollama answers an empty input string with HTTP 400 "Input content cannot
+/// be empty", failing the whole batch; whitespace is accepted.
+fn non_empty_embedding_input(text: String) -> String {
+    if text.is_empty() {
+        " ".to_string()
+    } else {
+        text
+    }
+}
+
 fn prepare_embedding_inputs(
     texts: &[String],
     context_tokens: Option<u32>,
@@ -810,7 +820,11 @@ fn prepare_embedding_inputs(
     };
     let Some(physical_token_ceiling) = physical_token_ceiling else {
         return Ok(PreparedEmbeddingInputs {
-            inputs: texts.to_vec(),
+            inputs: texts
+                .iter()
+                .cloned()
+                .map(non_empty_embedding_input)
+                .collect(),
             groups: (0..texts.len()).map(|index| index..index + 1).collect(),
             fragment_weights: texts.iter().map(|text| text.len().max(1)).collect(),
         });
@@ -828,7 +842,11 @@ fn prepare_embedding_inputs(
     let mut groups = Vec::with_capacity(texts.len());
     for text in texts {
         let start = inputs.len();
-        inputs.extend(split_semantic_fragments(text, fragment_bytes));
+        inputs.extend(
+            split_semantic_fragments(text, fragment_bytes)
+                .into_iter()
+                .map(non_empty_embedding_input),
+        );
         groups.push(start..inputs.len());
     }
     let fragment_weights = inputs
@@ -2250,6 +2268,20 @@ mod tests {
         assert_eq!(prepared.groups.len(), 2);
         assert!(prepared.groups[0].end <= prepared.groups[1].start);
         assert!(prepared.inputs.iter().all(|fragment| fragment.len() <= 88));
+    }
+
+    #[test]
+    fn an_empty_text_is_never_sent_to_ollama_as_an_empty_input() {
+        let prepared =
+            prepare_embedding_inputs(&["a".to_string(), String::new()], Some(512), Some(512))
+                .unwrap();
+        assert!(prepared.inputs.iter().all(|input| !input.is_empty()));
+        assert_eq!(prepared.groups.len(), 2);
+        assert_eq!(prepared.groups[1].len(), 1);
+        // Without token ceilings too.
+        let unbounded =
+            prepare_embedding_inputs(&["a".to_string(), String::new()], None, None).unwrap();
+        assert!(unbounded.inputs.iter().all(|input| !input.is_empty()));
     }
 
     #[test]

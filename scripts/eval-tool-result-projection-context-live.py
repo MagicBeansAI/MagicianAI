@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 
-TERRA_PROFILE = "chat-gptterra-responses-vision-toolsauto-fast"
+TERRA_PROFILE = "model/openai/gpt-5.6-terra/none"
 MIN_PERFORMANCE_PAIRS = 5
 INSTRUCTIONS = """You are grading one bounded tool/context result. Use only the
 provided evidence. Call submit_evaluation exactly once. Preserve exact statuses

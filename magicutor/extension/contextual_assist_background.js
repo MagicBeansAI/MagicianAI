@@ -69,17 +69,30 @@ function summarizeIneligible(results) {
     return 'content_script_unavailable';
 }
 
+// Whether this browser's window has OS focus. Several browsers can answer a
+// probe; Magicutor prefers the one the user is actually typing in.
+async function windowHasFocus(windowId) {
+    try {
+        const win = await chrome.windows.get(windowId);
+        return win?.focused === true;
+    } catch (_) {
+        return false;
+    }
+}
+
 export async function probeContextualAssist(_params = {}) {
     const tab = await activeTab();
     if (!tab?.id) {
         return { ok: true, eligible: false, reason: 'no_active_tab' };
     }
+    const windowFocused = await windowHasFocus(tab.windowId);
 
     if (!isHttpUrl(tab.url)) {
         return {
             ok: true,
             eligible: false,
             reason: 'unsupported_tab_url',
+            windowFocused,
             tabId: tab.id,
             windowId: tab.windowId,
             url: tab.url || null,
@@ -99,6 +112,7 @@ export async function probeContextualAssist(_params = {}) {
     if (best?.eligible) {
         return {
             ...best,
+            windowFocused,
             tabId: tab.id,
             windowId: tab.windowId,
             tabUrl: tab.url || null,
@@ -112,6 +126,7 @@ export async function probeContextualAssist(_params = {}) {
         ok: true,
         eligible: false,
         reason: summarizeIneligible(results),
+        windowFocused,
         tabId: tab.id,
         windowId: tab.windowId,
         url: tab.url || null,

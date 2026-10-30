@@ -59,7 +59,7 @@ SIDECAR_NAME = "task_summary.json"
 DELIVERABLE_PREFIX = "out_task_user_"
 LLM_INPUT_CAP = 16_000      # cap fed to the local model (latency/context budget)
 VERBATIM_CAP = 4_000        # cap stored when not LLM-summarized
-DEFAULT_PROMPT_REL = "data/magician_v2/prompts/task_summary_system_v1.0.0.json"
+DEFAULT_PROMPT_REL = "data/magician_v2/prompts/task_summary_system_v1.0.1.json"
 PROMPT_FALLBACK = (
     "You are a task assistant. Summarize the completed task's deliverable text "
     "for the requester: 1-2 sentences on what was produced or found, then up to "

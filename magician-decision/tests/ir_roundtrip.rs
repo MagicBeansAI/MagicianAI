@@ -56,6 +56,7 @@ fn sample_request() -> DecisionRequest {
                 criteria: None,
             }),
         ],
+        assets: Default::default(),
     }
 }
 

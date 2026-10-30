@@ -94,7 +94,7 @@
 				<GameStat label="Needs you" value={needsCitizens} tone={needsCitizens > 0 ? 'attention' : 'neutral'} />
 			</div>
 		</GameSection>
-		<GameSection title="Create a task" description="Automatically assign it, or drag the task marker directly onto a crew member or program." compact>
+		<GameSection title="Create a task" description="Automatically assign it, or drag the task marker directly onto a crew member or playbook." compact>
 			<button type="button" class="li__primary" on:click={() => dispatch('quest')}><Icon name="flag" size={15} /> Create task</button>
 		</GameSection>
 		<GameSection title="How work moves" compact>

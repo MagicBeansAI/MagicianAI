@@ -18,6 +18,7 @@ final class TaskActsModelTests: XCTestCase {
     func testPutsTheResultFirstForAFinishedTaskAndKeepsTheRestInLifecycleOrder() {
         XCTAssertEqual(TaskActs.actOrder(state: .finished, acts: all), [.output, .plan, .run])
         XCTAssertEqual(TaskActs.actOrder(state: .archived, acts: all), [.output, .plan, .run])
+        XCTAssertEqual(TaskActs.actOrder(state: .finalizing, acts: all), [.output, .plan, .run])
     }
 
     func testPutsTheLiveRunFirstWhileItRunsAndTheRunFirstOnceItStoppedShort() {

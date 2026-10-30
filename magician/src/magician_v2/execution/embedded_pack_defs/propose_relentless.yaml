@@ -1,11 +1,18 @@
 name: propose_relentless
 description: Propose a frozen definition of done for bounded task artifacts, research and independent review; the owner reviews it before admission.
-version: "1.6.0"
+version: "1.6.2"
 guide: |
   Use from an ordinary active task when independent artifact review and bounded
   revision would help. This creates a durable local owner request and returns
   a review link. It creates no task and dispatches no actor, critic or channel.
   Dismissing or timing out the notice never admits the proposal.
+
+  When to propose: the output leaves the house (applications, decks,
+  outreach, posts), is high-stakes or hard to undo, or counts toward a goal's
+  progress. If it repeats and matters, ask the owner for a recurring review
+  policy instead of proposing each run. Skip internal notes, quick lookups,
+  state and metric tasks, and work cheaper than its review. If done is
+  unclear, ask the owner what done looks like first.
 
   Develop the proposal from the existing task goal, context, prior answers and
   evidence gathered with admitted tools. Explain the result the owner needs,
@@ -36,6 +43,16 @@ guide: |
   and differ in model family from the actor. budget has max_attempts,
   max_wall_clock_secs, max_cost_microusd and plateau_attempts. Human review is
   required or independent; handoff_kind is internal_draft or capture.
+
+  Budget is a maximum allowance, not a fee or estimate. Omit budget, omit an
+  individual limit, or set it to 0 for unlimited. Positive integers cap that
+  dimension: max_attempts, max_wall_clock_secs, max_cost_microusd and
+  plateau_attempts are independent. Cost uses integer microdollars
+  (1 USD = 1,000,000). Unlimited is not zero-cost: independent models can incur
+  usage, including when external/tool charges are zero. Creating a proposal
+  dispatches no model and spends nothing; only owner admission starts work.
+  profiles.budget_defaults are optional suggested limits, not implicit
+  limits on omitted fields. Honor any positive cap the owner specifies.
 
   Omit native_harness for direct text drafting. To propose execution by the
   owning task agent, include native_harness with agent_id (the proposing agent),
@@ -173,6 +190,18 @@ parameters:
     schema:
       type: object
       additionalProperties: true
+      properties:
+        budget:
+          type: object
+          additionalProperties: false
+          properties:
+            max_attempts: {type: integer, minimum: 0, description: "Maximum attempts; omitted or 0 means unlimited."}
+            max_wall_clock_secs: {type: integer, minimum: 0, description: "Elapsed seconds; omitted or 0 means unlimited."}
+            max_cost_microusd:
+              type: integer
+              minimum: 0
+              description: Maximum spending cap in microdollars (1 USD = 1000000); omitted or 0 means unlimited, not free. Proposal creation requires no spending.
+            plateau_attempts: {type: integer, minimum: 0, description: "Attempts without improvement; omitted or 0 disables the plateau stop."}
   - name: guidance_proposal
     param_type: object
     description: Strict procedural guidance and distinct terminal training run IDs; proposal only.

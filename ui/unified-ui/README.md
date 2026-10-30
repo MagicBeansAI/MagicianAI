@@ -20,11 +20,18 @@ openable `/privacy`, `/manifesto`, and `/terms` pages for
 Shell navigation updates:
 - TopBar brand wordmark links to `/chat` as the primary default destination.
 - TopBar primary center tabs: **Chat** (prominent / enlarged), **Work**, **Observe**, and **Today**. VibeDev is accessed via the composer **Talk / Code** toggle.
+- Work page (`/work`):
+  - Work navigation: All work, Needs you, Crew, Goals, Playbooks, Quality checks and Team routines; narrow windows move the later views into **More**, which also holds **Apps and specialist tools →** at every width (guarded by `WorkWorkspace.component.test.ts`).
+  - The All work landing shows compact Goals and Playbooks cards (up to 3 main goals with 2 sub-goals each, up to 4 playbooks). The Goals card reads only what it shows (`COMPACT_GOAL_READ_LIMITS` in `src/lib/work/goals.ts`), stays mounted across the Tasks / Monitors / System work switch and reuses a read from the last minute until **Refresh**.
+  - Goals view (`/work?view=goals`) with parent/child trees, collapsible sub-goals, expand/collapse all, and an inline target-date chip that writes only the note's `target:` field through `PATCH /api/magician/v2/notes/front-matter`; an edit made against an older note revision is refused, and the view reloads and says so.
+  - Section mastheads (`h2` under the Work page `h1`) on Goals, Playbooks, Quality checks, Team routines and Crew.
+  - Rounded square geometry (`var(--radius-chip, 6px)`) applied consistently across all action buttons, selectors, filters, switches, and chips.
+  - Scheduling and delivery follow-through panel (`FollowThroughPanel.svelte`) sits beneath the Team routines anomaly console.
 - TopBar top-right controls streamlined to command palette search (⌘K) and attention alert icon button.
-- A thin, icon-only `LeftRail` provides quick access to Apps (`/apps`), LLM & Models (`/llm`), Memory (`/memory`), Notes (`/notes`), Vault (`/vault`), Resource Authority (`/budget`), Quality & Review (`/work?view=quality`), and Settings (`/settings`).
+- A thin, icon-only `LeftRail` provides quick access to Apps (`/apps`), LLM & Models (`/llm`), Memory (`/memory`), Notes (`/notes`), Vault (`/vault`), Resource Authority (`/budget`), Quality checks (`/work?view=quality`), and Settings (`/settings`).
 - Pinned Account flyout at the bottom of `LeftRail` contains workspace selection, Appearance settings (theme switcher and light/dark mode toggle), About, and Sign out.
 - VibeDev runs & projects rail is fixed on large screens and transforms into an overlay drawer with backdrop on non-large screens (`<= 1280px`).
-- Chat features a collapsible fixed history panel (sessions and threads) on large screens, which transforms into an overlay drawer on non-large screens.
+- Chat features a collapsible fixed history panel (sessions and threads) on large screens, which transforms into an overlay drawer on non-large screens. A non-general thread scopes that session list; the thread chip's clear control drops the filter and lists sessions from every thread. The history drawer uses the same chip.
 - VibeDev sessions and threads open in `/vibe` (`/t/vibedev` redirects there); VibeDev's empty state offers starter prompts and recent runs.
 - Chat (`FloatingComposer`) and VibeDev (`VibeComposer`) share a unified **Talk / Code** segmented switch with seamless View Transitions morphing animation and cross-surface prompt draft preservation.
 
@@ -87,6 +94,9 @@ primary plus a keyboard More menu, and executes task/reminder/share/memory
 operations through revision-bound idempotent dialogs. Ask Presto enters normal
 thread chat with a candidate-only URL and stages the resolved safe brief as an
 editable attachment; it does not copy raw original content or auto-send.
+The `/resurfacing` observability page shows the queue's `routing_held` count
+("held": rows the curator's router handed elsewhere) next to, and never
+inside, `cooling`.
 Progressive attention learning is additive on both Message Follow-ups and
 Worth a look: typed Useful/Acknowledge/Dismiss outcomes can return an auditable
 re-score receipt, each evaluated card can show its learned-versus-baseline rank
@@ -164,6 +174,8 @@ scope, and renders the QR locally. The panel never derives a phone endpoint
 from `window.location` and never receives the durable device token or
 Cloudflare secret. It polls the authoritative roster to show completion,
 platform, capability grants, last seen, and immediate revocation.
+Settings treats an omitted audio degradation list as empty, so a healthy
+profile does not prevent the page from rendering.
 
 ## Routes
 

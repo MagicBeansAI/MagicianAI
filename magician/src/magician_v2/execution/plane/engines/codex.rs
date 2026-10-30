@@ -228,7 +228,9 @@ impl HarnessEngine for CodexExecEngine {
                     ("CODEX_HOME".to_string(), install.home.display().to_string()),
                     (GRANT_ENV_VAR.to_string(), install.grant.clone()),
                 ];
-                env.extend(inherit_env(&["OPENAI_API_KEY"]));
+                if crate::magician_v2::harness_auth::uses_magician_credentials("codex") {
+                    env.extend(inherit_env(&["OPENAI_API_KEY"]));
+                }
                 env
             },
             install_config,
@@ -387,9 +389,13 @@ mod tests {
     /// bounds are the ones that end a turn.
     #[test]
     fn the_plane_server_tool_timeout_outlasts_the_turn_ceiling() {
-        let expected = format!("tool_timeout_sec = {}", super::super::PLANE_TOOL_TIMEOUT_SECS);
+        let expected = format!(
+            "tool_timeout_sec = {}",
+            super::super::PLANE_TOOL_TIMEOUT_SECS
+        );
         assert!(
-            super::super::PLANE_TOOL_TIMEOUT_SECS >= crate::config::default_harness_turn_max_seconds()
+            super::super::PLANE_TOOL_TIMEOUT_SECS
+                >= crate::config::default_harness_turn_max_seconds()
         );
         for unrestricted in [false, true] {
             let config = plane_config_toml("http://127.0.0.1:1/plane/mcp", unrestricted);

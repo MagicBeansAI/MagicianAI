@@ -1,0 +1,21 @@
+{
+  "name": "vibedev_execution_policy",
+  "version": "1.0.2",
+  "content": [
+    "Execution policy:",
+    "- Route implementation through the existing engineering agents.",
+    "- Use the managed Pi-backed run_coding_task flow for file changes.",
+    "- Preserve the Original VibeDev user prompt verbatim when delegating to a coding engineer.",
+    "- The coding engineer's first tool call should be run_coding_task. Do not ask the engineer to inspect files with shell/files before that first Pi run unless repo_path or the request is genuinely missing/ambiguous."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Server-authoritative VibeDev coding-coordinator execution policy. Appended to the goal of every VibeDev Build run (RCA fix #5) so the implementation contract reaches the engineering-manager coordinator even when the cockpit client did not compose it. Mode-agnostic: how the changes land (a staged CodeChangeProposal, or commits on a trusted branch) is stated once by the change-delivery block chosen from the run's effective trust mode (artifact_v2::service::vibedev_change_delivery_block).",
+    "author": "magician",
+    "created_at": "2026-10-20T00:00:00Z",
+    "changelog": "v1.0.2: Drops the 'Stage code changes as CodeChangeProposal diff_approval items.' line; staging is now stated only by the sandboxed change-delivery block, so a trusted branch run is never told both. v1.0.1: Describes the coding path as a managed runtime flow rather than attributing it to the backend service. v1.0.0: Initial relocation of the static VibeDev execution-policy footer from the cockpit client into the prompt store. Hardened to preserve the original VibeDev prompt and force coding delegates through run_coding_task before shell/file pre-inspection.",
+    "tags": ["vibedev", "coding", "execution-policy", "coordinator"],
+    "estimated_tokens": 76
+  }
+}

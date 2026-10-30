@@ -1330,7 +1330,8 @@ const MAX_SESSIONS_PER_SWEEP: usize = 5;
 ///
 /// Only plain text survives. Tool calls and structured payloads are the
 /// machine's side of the conversation, and a directive inferred from them
-/// would be about how Magician worked rather than what the owner wants.
+/// would be about how Magician worked rather than what the owner wants. For
+/// the same reason, framing a surface wrote into a user turn is dropped.
 pub fn transcript_from_messages(
     messages: &[crate::magician_v2::chat::models::ChatMessage],
 ) -> String {
@@ -1339,6 +1340,12 @@ pub fn transcript_from_messages(
         if let crate::magician_v2::chat::models::ChatMessageContent::Text { text, .. } =
             &message.content
         {
+            let text = match message.direction {
+                crate::magician_v2::chat::models::ChatMessageDirection::User => {
+                    crate::magician_v2::chat::authored_framing::owner_words(text)
+                },
+                _ => std::borrow::Cow::Borrowed(text.as_str()),
+            };
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
@@ -1357,7 +1364,15 @@ pub fn transcript_from_messages(
 pub fn transcript_from_turns(turns: &[crate::magician_v2::storage::models::V2Turn]) -> String {
     let mut out = String::new();
     for turn in turns {
-        let trimmed = turn.text.trim();
+        let text = match turn.direction {
+            crate::magician_v2::storage::models::TurnDirection::Inbound => {
+                crate::magician_v2::chat::authored_framing::owner_words(&turn.text)
+            },
+            crate::magician_v2::storage::models::TurnDirection::Outbound => {
+                std::borrow::Cow::Borrowed(turn.text.as_str())
+            },
+        };
+        let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
         }

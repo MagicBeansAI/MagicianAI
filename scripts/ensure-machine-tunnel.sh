@@ -151,6 +151,7 @@ def ingress_for(machine, zone):
         {"hostname": host, "path": "^/host(/.*)?$",
          "service": f"http://localhost:{env('MAGICIAN_CONNECT_GATEWAY_PORT') or 3017}"},
         {"hostname": host, "path": "^/health/?$", "service": api},
+        {"hostname": host, "path": "^/\\.well-known/magican/mcp-profiles/[a-f0-9]{64}\\.json$", "service": api},
         {"hostname": host, "path": "^/api(/.*)?$", "service": api},
         {"service": "http_status:404"},
     ]
@@ -316,6 +317,8 @@ upsert_env_key MAGICIAN_MACHINE_NAME "$MACHINE"
 upsert_env_key MAGICIAN_CONNECT_HOST "$HOST"
 upsert_env_key MAGICIAN_MOBILE_PUBLIC_ORIGIN "https://${HOST}"
 upsert_env_key MAGICIAN_UI_HOST "$UI_HOST"
+# The Kapso and AgentMail bots derive their webhook URLs from this and
+# re-register on start, so nothing else names the webhook host.
 upsert_env_key MAGICIAN_WEBHOOK_HOST "$WEBHOOK_HOST"
 # Per-machine Access object names, so one machine's run never adopts another's.
 upsert_env_key MAGICIAN_CONNECT_ACCESS_APP_NAME "Magican device connection (${MACHINE})"
@@ -347,4 +350,4 @@ done
 log "gating ${UI_HOST} with Cloudflare Access"
 MAGICIAN_UI_HOST="$UI_HOST" MAGICIAN_UI_ACCESS_APP_NAME="Magician Dev UI (${MACHINE})" \
   bash "$ROOT_DIR/scripts/ensure-ui-access.sh"
-log "done. Restart Magician so it advertises https://${HOST} (make restart-magician); re-pair phones and re-point Kapso/agentmail webhooks to https://${WEBHOOK_HOST}."
+log "done. Restart Magician so it advertises https://${HOST} (make restart-magician) and re-pair phones. The Kapso and AgentMail bots register https://${WEBHOOK_HOST} on start (Kapso also retires other machines' hooks for its number)."

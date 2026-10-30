@@ -5,6 +5,9 @@
 	 * where each came from and when a check last used it — with the owner's
 	 * own edits and each preference's history.
 	 *
+	 * "Review what I've learned" narrows it to the preferences Magician
+	 * inferred, a page at a time, to confirm or dismiss.
+	 *
 	 * Edits name the revision on screen. When a preference changed in the
 	 * meantime the screen reloads and says so rather than overwriting it.
 	 */
@@ -12,7 +15,9 @@
 
 	import { hasHydratedScopeBearer } from '$lib/stores/scopeIdentityStore';
 
+	import PreferenceReview from './PreferenceReview.svelte';
 	import PreferenceRow from './PreferenceRow.svelte';
+	import { isLearned } from './preferenceReview';
 	import {
 		addPreference,
 		confirmPreference,
@@ -49,6 +54,7 @@
 	let error = '';
 	let notice = '';
 	let busy = false;
+	let mode: 'all' | 'review' = 'all';
 
 	let newKind: IntentionKind = 'standing_instruction';
 	let newWording = '';
@@ -112,6 +118,11 @@
 			() => retirePreference(event.detail.id, event.detail.revision),
 			'Retired. Checks no longer use it.'
 		);
+	const onDismiss = (event: CustomEvent<Preference>) =>
+		apply(
+			() => retirePreference(event.detail.id, event.detail.revision),
+			'Dismissed. Checks no longer use it; its history is kept.'
+		);
 	const onForget = (event: CustomEvent<Preference>) =>
 		apply(
 			() => forgetPreference(event.detail.id, event.detail.revision),
@@ -128,6 +139,7 @@
 		})();
 	});
 
+	$: learnedCount = (view?.preferences ?? []).filter(isLearned).length;
 	$: grouped = GROUPS.map((group) => ({
 		...group,
 		items: (view?.preferences ?? []).filter((preference) => preference.kind === group.kind)
@@ -152,79 +164,106 @@
 			<p class="muted">Some preferences could not be read; checks treat them with caution.</p>
 		{/if}
 
-		{#each grouped as group (group.kind)}
-			<h4>{group.title}</h4>
-			{#if group.items.length === 0}
-				<p class="muted">{group.empty}</p>
-			{:else}
-				<ul data-testid={`preferences-${group.kind}`}>
-					{#each group.items as preference (preference.id)}
-						<PreferenceRow
-							{preference}
-							{busy}
-							on:edit={onEdit}
-							on:confirm={onConfirm}
-							on:retire={onRetire}
-							on:forget={onForget}
-						/>
-					{/each}
-				</ul>
+		<div class="modes" role="tablist" aria-label="Which preferences">
+			<button
+				type="button"
+				role="tab"
+				aria-selected={mode === 'all'}
+				class:active={mode === 'all'}
+				on:click={() => (mode = 'all')}>All preferences</button
+			>
+			<button
+				type="button"
+				role="tab"
+				aria-selected={mode === 'review'}
+				class:active={mode === 'review'}
+				data-testid="preferences-review-mode"
+				on:click={() => (mode = 'review')}>Review what I've learned ({learnedCount})</button
+			>
+		</div>
+
+		{#if mode === 'review'}
+			<PreferenceReview
+				preferences={view.preferences}
+				{busy}
+				on:confirm={onConfirm}
+				on:dismiss={onDismiss}
+			/>
+		{:else}
+			{#each grouped as group (group.kind)}
+				<h4>{group.title}</h4>
+				{#if group.items.length === 0}
+					<p class="muted">{group.empty}</p>
+				{:else}
+					<ul data-testid={`preferences-${group.kind}`}>
+						{#each group.items as preference (preference.id)}
+							<PreferenceRow
+								{preference}
+								{busy}
+								on:edit={onEdit}
+								on:confirm={onConfirm}
+								on:retire={onRetire}
+								on:forget={onForget}
+							/>
+						{/each}
+					</ul>
+				{/if}
+			{/each}
+
+			<form class="add" on:submit|preventDefault={add} data-testid="preferences-add">
+				<h4>Add a preference</h4>
+				<label>
+					<span class="muted">Kind</span>
+					<select bind:value={newKind}>
+						<option value="standing_instruction">A rule ("check with me before…")</option>
+						<option value="goal">A goal</option>
+						<option value="taste">A taste</option>
+					</select>
+				</label>
+				<label>
+					<span class="muted">In your words</span>
+					<textarea bind:value={newWording} rows="2" data-testid="preferences-add-wording"></textarea>
+				</label>
+				<label>
+					<span class="muted">Short label (optional)</span>
+					<input bind:value={newLabel} />
+				</label>
+				<label>
+					<span class="muted">Only when (optional)</span>
+					<input bind:value={newConditions} placeholder="e.g. ordering for guests" />
+				</label>
+				<button type="submit" class="primary" disabled={busy || !newWording.trim()}>Add</button>
+			</form>
+
+			{#if view.retired.length > 0}
+				<details>
+					<summary>Retired ({view.retired.length})</summary>
+					<ul class="plain">
+						{#each view.retired as retired (retired.id)}
+							<li>
+								<span class="struck">{retired.statement}</span>
+								<span class="muted">
+									· {retired.lifecycle.replace(/_/g, ' ')}{#if retired.supersededBy}, replaced{/if}
+								</span>
+							</li>
+						{/each}
+					</ul>
+				</details>
 			{/if}
-		{/each}
 
-		<form class="add" on:submit|preventDefault={add} data-testid="preferences-add">
-			<h4>Add a preference</h4>
-			<label>
-				<span class="muted">Kind</span>
-				<select bind:value={newKind}>
-					<option value="standing_instruction">A rule ("check with me before…")</option>
-					<option value="goal">A goal</option>
-					<option value="taste">A taste</option>
-				</select>
-			</label>
-			<label>
-				<span class="muted">In your words</span>
-				<textarea bind:value={newWording} rows="2" data-testid="preferences-add-wording"></textarea>
-			</label>
-			<label>
-				<span class="muted">Short label (optional)</span>
-				<input bind:value={newLabel} />
-			</label>
-			<label>
-				<span class="muted">Only when (optional)</span>
-				<input bind:value={newConditions} placeholder="e.g. ordering for guests" />
-			</label>
-			<button type="submit" class="primary" disabled={busy || !newWording.trim()}>Add</button>
-		</form>
-
-		{#if view.retired.length > 0}
-			<details>
-				<summary>Retired ({view.retired.length})</summary>
-				<ul class="plain">
-					{#each view.retired as retired (retired.id)}
-						<li>
-							<span class="struck">{retired.statement}</span>
-							<span class="muted">
-								· {retired.lifecycle.replace(/_/g, ' ')}{#if retired.supersededBy}, replaced{/if}
-							</span>
-						</li>
-					{/each}
-				</ul>
-			</details>
-		{/if}
-
-		{#if view.omitted.length > 0}
-			<details data-testid="preferences-omitted">
-				<summary>Not used by checks ({view.omitted.length})</summary>
-				<ul class="plain">
-					{#each view.omitted as omitted (omitted.id)}
-						<li>
-							<code>{omitted.id}</code>
-							<span class="muted">— {OMITTED_WORDS[omitted.reason] ?? omitted.reason}</span>
-						</li>
-					{/each}
-				</ul>
-			</details>
+			{#if view.omitted.length > 0}
+				<details data-testid="preferences-omitted">
+					<summary>Not used by checks ({view.omitted.length})</summary>
+					<ul class="plain">
+						{#each view.omitted as omitted (omitted.id)}
+							<li>
+								<code>{omitted.id}</code>
+								<span class="muted">— {OMITTED_WORDS[omitted.reason] ?? omitted.reason}</span>
+							</li>
+						{/each}
+					</ul>
+				</details>
+			{/if}
 		{/if}
 	{:else if !error}
 		<p class="muted">Loading your preferences…</p>
@@ -323,5 +362,15 @@
 	}
 	button[type='submit'] {
 		justify-self: start;
+	}
+	.modes {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		margin: 0.3rem 0 0.2rem;
+	}
+	.modes button.active {
+		background: color-mix(in srgb, var(--accent-primary, #ff6b6b) 14%, var(--bg-card, #fff));
+		border-color: var(--accent-primary, #ff6b6b);
 	}
 </style>

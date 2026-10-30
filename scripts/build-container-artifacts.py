@@ -56,7 +56,7 @@ def main():
     parser.add_argument("--cache", type=Path, required=True, help="persistent cache for this source/toolchain/architecture")
     parser.add_argument("--output", type=Path, required=True, help="new artifact tar, not an image")
     parser.add_argument("--engine", choices=("apple", "docker", "native", "zig"), default="zig" if sys.platform == "darwin" else "native")
-    parser.add_argument("--sdk-image", default="magician-build-sdk:rust1.92-bookworm")
+    parser.add_argument("--sdk-image", default="magician-build-sdk:rust1.95-bookworm")
     parser.add_argument("--arch", choices=("arm64", "amd64"), default="arm64" if platform.machine() in ("arm64", "aarch64") else "amd64")
     parser.add_argument("--cpus", type=int, default=2)
     parser.add_argument("--memory", default="12g", help="compile VM limit, independent of runtime's 4g")

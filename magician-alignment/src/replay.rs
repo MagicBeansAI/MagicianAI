@@ -59,7 +59,10 @@ pub fn write_predictions(
     records.retain(|(id, _, _)| by_id.contains_key(id.as_str()));
     records.sort_by(|a, b| a.0.cmp(&b.0));
     std::fs::create_dir_all(out_dir)?;
-    let raw_body: String = records.iter().map(|(_, raw, _)| format!("{raw}\n")).collect();
+    let raw_body: String = records
+        .iter()
+        .map(|(_, raw, _)| format!("{raw}\n"))
+        .collect();
     std::fs::write(out_dir.join("answers.jsonl"), raw_body)?;
     let mut written = Vec::new();
     for threshold in thresholds {
@@ -72,7 +75,9 @@ pub fn write_predictions(
                 let composed = heads
                     .as_ref()
                     .ok_or_else(|| "engine_answer_missing".to_string())
-                    .and_then(|heads| compose(&input, heads, &bars).map_err(|error| error.to_string()));
+                    .and_then(|heads| {
+                        compose(&input, heads, &bars).map_err(|error| error.to_string())
+                    });
                 let mut record = json!({
                     "id": id,
                     "latency_ms": raw["latency_ms"],

@@ -120,8 +120,7 @@ describe('SurfaceAudioProfileControl', () => {
 						revision: 'r1',
 						source: 'configured_default',
 						turn_boundary: 'stt_eou',
-						stages: {},
-						degradations: []
+						stages: {}
 					})
 			},
 			{
@@ -144,7 +143,7 @@ describe('SurfaceAudioProfileControl', () => {
 		const user = userEvent.setup();
 		render(SurfaceAudioProfileControl, {
 			surface: 'meeting',
-			compact: true,
+			compact: false,
 			showStages: true
 		});
 

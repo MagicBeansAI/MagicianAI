@@ -7,6 +7,7 @@
 		fetchGodMode,
 		forgetGodModeGrants,
 		saveGodMode,
+		saveGodModeAutoApprove,
 		saveSuperGodMode,
 		superGodModePoll,
 		type GodModeState,
@@ -62,6 +63,30 @@
 		}
 	}
 
+	async function toggleAuto(): Promise<void> {
+		if (!godState) return;
+		const turningOn = !godState.auto_approve;
+		if (turningOn) {
+			const confirmed = await requestConfirmation({
+				title: 'Auto-approve god mode by default?',
+				message:
+					'Wherever god mode is on, what it would ask you is approved without asking: commands outside the sandbox, files outside the workspace, network and MCP tools. It still asks before anything that deletes (rm -r or -f, find -delete, git reset --hard, git clean, a forced push, a deleting edit), anything run as root (sudo, doas, su), code a command does not show (piped into a shell, from a variable), and the blocked list. Each chat can turn it on or off from the Magician orb. Approvals you already gave are kept.',
+				confirmLabel: 'Turn on auto-approve',
+				destructive: true
+			});
+			if (!confirmed) return;
+		}
+		busy = true;
+		try {
+			godState = await saveGodModeAutoApprove(turningOn);
+			showSuccess(turningOn ? 'Auto-approve is on' : 'Auto-approve is off');
+		} catch (caught) {
+			showError(caught instanceof Error ? caught.message : 'Auto-approve could not be saved.');
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function setSuper(duration: SuperGodModeDuration | null): Promise<void> {
 		if (duration) {
 			const confirmed = await requestConfirmation({
@@ -87,7 +112,7 @@
 
 	async function forget(): Promise<void> {
 		const confirmed = await requestConfirmation({
-			title: 'Forget god mode approvals?',
+			title: 'Forget tool and God-mode approvals?',
 			message: 'Every “this session” and “always” approval is forgotten. Agents ask again next time.',
 			confirmLabel: 'Forget approvals'
 		});
@@ -128,9 +153,10 @@
 			>
 				{busy ? 'Updating…' : godState?.enabled ? 'Turn off' : 'Turn on'}
 			</button>
-			{#if godState && godState.always_grants > 0}
-				<button class="god-button god-button-secondary" type="button" disabled={busy} onclick={forget}>
-					Forget approvals ({godState.always_grants})
+			{#if godState}
+				<button class="god-button god-button-secondary" type="button" disabled={busy} onclick={forget}
+					title="Forget remembered tool permissions and God-mode approvals">
+					Forget approvals{godState.always_grants > 0 ? ` (${godState.always_grants})` : ''}
 				</button>
 			{/if}
 		</div>
@@ -141,6 +167,30 @@
 		this session, or always. Ask / Accept still applies inside the normal sandbox. Commands on the blocked list (like
 		<code>rm -rf /</code>) can only be allowed once. Changing this setting forgets every approval and every chat’s own
 		choice. VibeDev is not affected: its coding engines stay in Magician’s box, and only super god mode below unrestricts them.
+	</div>
+	<div class="auto-approve" class:auto-approve-on={godState?.auto_approve}>
+		<div class="super-god-copy">
+			<h3 id="auto-approve-title">Auto-approve {godState?.auto_approve ? 'is on by default' : 'is off by default'}</h3>
+			<p>
+				Where god mode is on, what it would ask you is approved without asking. It still asks before anything that
+				deletes (<code>rm -rf</code>, <code>find -delete</code>, <code>git reset --hard</code>, a forced push, a
+				deleting edit), anything run as root (<code>sudo</code>, <code>doas</code>), code a command does not show
+				(<code>curl … | sh</code>, <code>$CMD</code>) and the blocked list. Each chat can turn it on or off from the
+				Magician orb. Turning it on or off keeps your approvals.
+			</p>
+		</div>
+		<div class="god-actions">
+			<button
+				class="god-button"
+				class:god-button-danger={godState && !godState.auto_approve}
+				type="button"
+				disabled={!godState || busy}
+				aria-describedby="auto-approve-title"
+				onclick={toggleAuto}
+			>
+				{busy ? 'Updating…' : godState?.auto_approve ? 'Turn off' : 'Turn on'}
+			</button>
+		</div>
 	</div>
 	<div class="super-god" class:super-god-on={$superState?.active}>
 		<div class="super-god-copy">
@@ -224,10 +274,10 @@
 		gap: 0.5rem;
 	}
 	.god-button {
-		background: var(--accent-primary);
+		background: var(--button-primary-bg);
 		border: 1px solid var(--accent-primary);
 		border-radius: 6px;
-		color: var(--accent-on-primary);
+		color: var(--button-primary-color);
 		cursor: pointer;
 		font-weight: 600;
 		padding: 0.45rem 0.9rem;
@@ -267,6 +317,23 @@
 	.super-god-on {
 		border-style: solid;
 		box-shadow: inset 4px 0 0 var(--danger);
+	}
+	.auto-approve {
+		align-items: flex-start;
+		border: 1px dashed var(--warning);
+		border-radius: 6px;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		justify-content: space-between;
+		padding: 0.6rem 0.75rem;
+	}
+	.auto-approve-on {
+		border-style: solid;
+		box-shadow: inset 4px 0 0 var(--warning);
+	}
+	.auto-approve h3 {
+		color: var(--text-primary);
 	}
 	.super-god-copy {
 		flex: 1 1 18rem;

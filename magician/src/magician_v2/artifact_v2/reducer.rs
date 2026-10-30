@@ -1224,19 +1224,27 @@ impl ArtifactV2Reducer for FilesystemArtifactV2Reducer {
                     return Ok(existing);
                 }
             }
-            let current = self
-                .load_execution_record(scope, task_id, &execution.state.execution_id)
-                .await?;
-            if current.state.updated_at != execution.state.updated_at
-                || current.state.status != execution.state.status
-                || current.state.plan_id != execution.state.plan_id
-                || candidate.source_kind == "app_recipe_v1"
+            // A candidate that does not describe this execution is a caller
+            // bug; no reload can fix it, so it is not a retryable conflict.
+            if candidate.source_kind == "app_recipe_v1"
                 || candidate.execution_id != execution.state.execution_id
                 || candidate.task_id != task_id
             {
                 return Err(ArtifactV2Error::InvalidRequest(
-                    "execution_schedule_snapshot_stale".to_owned(),
+                    "execution_schedule_snapshot_candidate_mismatch".to_owned(),
                 ));
+            }
+            let current = self
+                .load_execution_record(scope, task_id, &execution.state.execution_id)
+                .await?;
+            // Optimistic-concurrency check: another writer moved the
+            // execution after the caller derived the candidate from it. The
+            // caller reloads and retries (`is_retryable_conflict`).
+            if current.state.updated_at != execution.state.updated_at
+                || current.state.status != execution.state.status
+                || current.state.plan_id != execution.state.plan_id
+            {
+                return Err(ArtifactV2Error::execution_schedule_snapshot_stale());
             }
             self.commit_task_writes(
                 scope,
@@ -3701,6 +3709,11 @@ impl ArtifactV2Reducer for FilesystemArtifactV2Reducer {
             for media_output in &outputs.media_outputs {
                 Self::upsert_output_ref(&mut task.refs.outputs, media_output.clone());
             }
+            // Files the run wrote and named as delivered — committed with the
+            // answer so the terminal chat card already lists them.
+            for delivered_output in &outputs.delivered_file_outputs {
+                Self::upsert_output_ref(&mut task.refs.outputs, delivered_output.clone());
+            }
             task.refs.updated_at = Some(execution.state.updated_at.clone());
         }
 
@@ -6162,6 +6175,7 @@ mod tests {
                 source_output_ids: Vec::new(),
             }),
             media_outputs: Vec::new(),
+            delivered_file_outputs: Vec::new(),
             task_output_mode: TaskOutputMode::Overwrite,
         };
 
@@ -6534,6 +6548,7 @@ mod tests {
             task_user_output: make_ref("out_task_user", "user"),
             continuation_context_output: None,
             media_outputs: Vec::new(),
+            delivered_file_outputs: Vec::new(),
             task_output_mode: crate::magician_v2::artifact_v2::models::TaskOutputMode::Accumulate,
         };
 
@@ -6962,6 +6977,7 @@ mod tests {
             task_user_output: make_ref("out_task_user", "user"),
             continuation_context_output: None,
             media_outputs: Vec::new(),
+            delivered_file_outputs: Vec::new(),
             task_output_mode: crate::magician_v2::artifact_v2::models::TaskOutputMode::Accumulate,
         };
         reducer
@@ -7027,6 +7043,7 @@ mod tests {
             ),
             continuation_context_output: None,
             media_outputs: Vec::new(),
+            delivered_file_outputs: Vec::new(),
             task_output_mode: TaskOutputMode::Accumulate,
         }
     }
@@ -7171,6 +7188,106 @@ mod tests {
         assert_eq!(
             state.last_completed_root_execution_id.as_deref(),
             Some(exec_id)
+        );
+    }
+
+    /// A file the run named as delivered commits in the same terminal write
+    /// as the answer, so the terminal chat card can already list it.
+    #[tokio::test]
+    async fn delivered_file_outputs_commit_with_the_primary_output() {
+        use crate::magician_v2::artifact_v2::models::DELIVERED_FILE_OUTPUT_ROLE;
+
+        let temp = tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path().join("magician_data_v3"));
+        let reducer = test_reducer(workspace.clone());
+        let scope = test_scope();
+        let task_id = "task-delivered";
+        let exec_id = "exec-delivered";
+        let ts = "2026-10-27T10:00:00Z";
+
+        let mut task = task_record(task_id, ts);
+        let mut execution = execution_record(task_id, exec_id, "running", ts);
+        reducer.reduce_task_created(&task).await.expect("task");
+        reducer
+            .reduce_execution_initialized(&mut task, &execution)
+            .await
+            .expect("init");
+        execution.state.status = "completed".to_string();
+        execution.state.completed_at = Some(ts.to_string());
+
+        let mut outputs = minimal_finalized_outputs(task_id, exec_id, ts);
+        let delivered = OutputRef {
+            output_id: "out_task_user_attachment:tool_output_file:report".to_string(),
+            scope: "task".to_string(),
+            audience: "user".to_string(),
+            role: DELIVERED_FILE_OUTPUT_ROLE.to_string(),
+            relative_path: format!("outputs/delivered/{exec_id}/report.md"),
+            media_type: "text/markdown".to_string(),
+            created_at: ts.to_string(),
+            source_execution_id: Some(exec_id.to_string()),
+            source_plan_id: None,
+            source_output_ids: vec![outputs.task_user_output.output_id.clone()],
+        };
+        outputs.delivered_file_outputs = vec![delivered.clone()];
+        let outcome = ExecutionOutcomeSnapshot {
+            execution_status: "completed".to_string(),
+            task_status: "completed".to_string(),
+            outcome_type: "completed".to_string(),
+            outcome_summary: "Delivered report.md".to_string(),
+            iterations_used: Some(1),
+            is_terminal: true,
+            completion_kind: None,
+            open_items: Vec::new(),
+        };
+        reducer
+            .reduce_execution_terminal(&mut task, &mut execution, &outcome, &outputs)
+            .await
+            .expect("terminal");
+
+        let stored = reducer
+            .load_task_record(&scope, task_id)
+            .await
+            .expect("stored task");
+        assert_eq!(
+            stored.state.primary_user_output_id.as_deref(),
+            Some(outputs.task_user_output.output_id.as_str()),
+            "the answer stays the primary output"
+        );
+        let primary = stored
+            .refs
+            .outputs
+            .iter()
+            .position(|output| output.output_id == outputs.task_user_output.output_id)
+            .expect("primary committed");
+        let attached = stored
+            .refs
+            .outputs
+            .iter()
+            .position(|output| output.output_id == delivered.output_id)
+            .expect("delivered file committed with the answer");
+        assert!(primary < attached, "the attachment follows the answer");
+        assert_eq!(
+            stored.refs.outputs[attached].relative_path,
+            delivered.relative_path
+        );
+
+        // Replaying the same terminal write does not duplicate the attachment.
+        reducer
+            .reduce_execution_terminal(&mut task, &mut execution, &outcome, &outputs)
+            .await
+            .expect("replay");
+        let replayed = reducer
+            .load_task_record(&scope, task_id)
+            .await
+            .expect("replayed task");
+        assert_eq!(
+            replayed
+                .refs
+                .outputs
+                .iter()
+                .filter(|output| output.output_id == delivered.output_id)
+                .count(),
+            1
         );
     }
 

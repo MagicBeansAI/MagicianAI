@@ -27,8 +27,8 @@
 		</div>
 		<ol>
 			<li><strong>Execution pin</strong><span>A durable run keeps any routing sealed into that execution, even if Settings changes later.</span></li>
-			<li><strong>Operation override</strong><span>A profile selected below wins for that operation and applies immediately.</span></li>
-			<li><strong>Active harness engine</strong><span>When chat or execution is driven by a harness, eligible operations without an override follow that harness profile. Operations with a local base profile keep their config mapping.</span></li>
+			<li><strong>Operation override</strong><span>A model and thinking selection below wins for that operation and applies immediately.</span></li>
+			<li><strong>Active harness engine</strong><span>When chat or execution is driven by a harness, eligible operations without an override follow that harness. Operations assigned a local model keep their config mapping.</span></li>
 			<li><strong>Config mapping</strong><span>Otherwise the router uses the operation's local/cloud and request-shape mapping from <code>llm-router.yaml</code>.</span></li>
 		</ol>
 		<p class="boundary">

@@ -9,6 +9,10 @@ It currently supports:
 - plain text inbound messages as ordinary public envoy chat
 - `/magic <request>` control messages for Magician work/control flow
 - `/new` to start a fresh Telegram conversation session
+- `/god` / `/godoff` to turn god mode on or off for this chat (owner only;
+  checked by the backend, plain text from anyone else)
+- `/claim <code>` to record this chat as the owner's Telegram identity, with
+  a one-time code from Magician (Settings → Owner identities)
 - plain text delivery for runtime summaries and task updates
 
 The Magician API credential (`MAGICIAN_BEARER_TOKEN`) is **not** listed

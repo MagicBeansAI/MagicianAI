@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::magician_v2::analytics::duckdb_safety::{
-    analytics_duckdb_guard, configure_analytics_connection_checked,
+    configure_analytics_connection_checked, try_analytics_duckdb_guard_for,
 };
 use crate::magician_v2::analytics::llm_scoped_path::ensure_real_scoped_directory_chain;
 use crate::magician_v2::analytics::llm_trace_recorder::is_content_free_machine_category;
@@ -39,6 +39,11 @@ use crate::magician_v2::transport_log::quarantine_invalid_system_scope;
 /// Flush triggers (whichever fires first).
 const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 const FLUSH_ROW_THRESHOLD: usize = 100;
+/// How long a flush waits for the analytics guard before writing without it.
+/// The guard only spaces DuckDB instances here: a batch is a new file published
+/// by rename, invisible to readers and compactors until complete, and its
+/// staging name is swept only after an hour.
+const WRITE_GUARD_WAIT: Duration = Duration::from_secs(10);
 
 /// One row in the Parquet sink, mirrors the schema in the lakehouse plan.
 #[derive(Debug, Clone)]
@@ -275,7 +280,15 @@ fn write_batch(workspace_layout: &ArtifactV2Workspace, job: &FlushJob) -> Result
 
     // In-memory DuckDB. Single connection. Build a temp table, append rows,
     // COPY to Parquet, drop temp table.
-    let _duckdb_guard = analytics_duckdb_guard();
+    // Held to the end of the write.
+    let duckdb_guard = try_analytics_duckdb_guard_for(WRITE_GUARD_WAIT);
+    if duckdb_guard.is_none() {
+        warn!(
+            target: "analytics::llm_parquet_sink",
+            wait_secs = WRITE_GUARD_WAIT.as_secs(),
+            "analytics guard busy; writing this batch without it"
+        );
+    }
     let conn =
         Connection::open_in_memory().context("opening in-memory DuckDB for parquet write")?;
     configure_analytics_connection_checked(&conn, "llm_calls_parquet_write")
@@ -403,13 +416,15 @@ fn write_batch(workspace_layout: &ArtifactV2Workspace, job: &FlushJob) -> Result
         app.flush().context("flushing llm_calls_batch appender")?;
     }
 
-    let path_sql = parquet_path.display().to_string().replace('\'', "''");
-    let copy_sql = format!(
-        "COPY llm_calls_batch TO '{}' (FORMAT PARQUET, COMPRESSION 'zstd');",
-        path_sql
-    );
-    conn.execute_batch(&copy_sql)
-        .with_context(|| format!("copying llm_calls_batch to {}", parquet_path.display()))?;
+    // Staged, fsynced and renamed: `batch_<ulid>.parquet` only ever names a
+    // complete object, so a crash mid-`COPY` cannot leave a zero-byte batch.
+    super::parquet_maintenance::copy_to_parquet_durably(
+        &conn,
+        "llm_calls_batch",
+        "FORMAT PARQUET, COMPRESSION 'zstd'",
+        &parquet_path,
+    )
+    .with_context(|| format!("copying llm_calls_batch to {}", parquet_path.display()))?;
     crate::magician_v2::dataset_owners::publish_written_parquet(&parquet_path)
         .with_context(|| format!("publishing llm_calls parquet {}", parquet_path.display()))?;
 
@@ -1084,5 +1099,29 @@ mod tests {
         assert!(sentinel.exists());
         assert!(redirected_sentinel.exists());
         assert!(stream.join(format!("dt={old}")).is_symlink());
+    }
+
+    #[test]
+    fn llm_calls_parquet_write_leaves_no_staging_and_staging_is_invisible() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ws = ArtifactV2Workspace::new(tmp.path());
+        let row = row_from_event(&llm_event("e1", "gpt-5.6-sol", None, None)).expect("row");
+        let partition = ws
+            .analytics_llm_calls_root("p", "w")
+            .join(format!("dt={}", partition_date_for(row.timestamp_ms)));
+        write_batch(
+            &ws,
+            &FlushJob {
+                principal: "p".to_string(),
+                workspace: "w".to_string(),
+                rows: vec![row],
+            },
+        )
+        .expect("write_batch");
+        crate::magician_v2::analytics::parquet_maintenance::assert_published_without_staging(
+            &partition,
+            crate::magician_v2::analytics::parquet_maintenance::PartitionedDataset::LegacyLlmCalls,
+            1,
+        );
     }
 }

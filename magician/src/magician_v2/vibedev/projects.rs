@@ -126,6 +126,9 @@ pub struct VibeDevProjectRecord {
 /// A run's typed place in its project.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VibeDevRunLink {
+    /// Location selected at admission, inherited unchanged by follow-ups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_location: Option<VibeDevWorkLocation>,
     /// The run this one continues, as the server validated it at admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_task_id: Option<String>,
@@ -139,8 +142,17 @@ pub struct VibeDevRunLink {
 
 impl VibeDevRunLink {
     pub fn is_empty(&self) -> bool {
-        self.parent_task_id.is_none() && self.crew_id.is_none() && self.lane.is_none()
+        self.work_location.is_none()
+            && self.parent_task_id.is_none()
+            && self.crew_id.is_none()
+            && self.lane.is_none()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VibeDevWorkLocation {
+    pub mode: VibeDevProjectTrust,
+    pub repo_path: Option<String>,
 }
 
 /// Longest crew id a caller may name.
@@ -190,12 +202,243 @@ pub enum VibeDevProjectTrust {
     #[default]
     Sandboxed,
     Trusted,
+    /// Work in the owner's current folder, with edits brokered before apply.
+    Original,
 }
 
 impl VibeDevProjectTrust {
     pub fn is_sandboxed(&self) -> bool {
         *self == Self::Sandboxed
     }
+}
+
+/// How serious a [`ProjectHealthIssue`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectHealthSeverity {
+    /// Runs still start; the owner should know.
+    Warning,
+    /// Runs cannot start until it is fixed.
+    Error,
+}
+
+/// A one-click fix a surface may offer beside an issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHealthAction {
+    /// `git_init`: `POST /vibedev/projects/{id}/git-init`.
+    pub kind: String,
+    pub label: String,
+}
+
+/// One thing wrong with a project: a short title, the explanation with the
+/// fix, and optionally a one-click action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHealthIssue {
+    /// Stable machine code, e.g. `folder_missing`.
+    pub code: String,
+    pub severity: ProjectHealthSeverity,
+    pub title: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ProjectHealthAction>,
+}
+
+impl ProjectHealthIssue {
+    pub fn error(code: &str, title: &str, message: String) -> Self {
+        Self {
+            code: code.to_string(),
+            severity: ProjectHealthSeverity::Error,
+            title: title.to_string(),
+            message,
+            action: None,
+        }
+    }
+    pub fn warning(code: &str, title: &str, message: String) -> Self {
+        Self {
+            code: code.to_string(),
+            severity: ProjectHealthSeverity::Warning,
+            title: title.to_string(),
+            message,
+            action: None,
+        }
+    }
+    fn with_action(mut self, kind: &str, label: &str) -> Self {
+        self.action = Some(ProjectHealthAction {
+            kind: kind.to_string(),
+            label: label.to_string(),
+        });
+        self
+    }
+}
+
+/// What a project's surfaces show: `ok`, `warning` or `error`, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectHealth {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<ProjectHealthIssue>,
+}
+
+impl ProjectHealth {
+    pub fn from_issues(issues: Vec<ProjectHealthIssue>) -> Self {
+        let status = if issues
+            .iter()
+            .any(|issue| issue.severity == ProjectHealthSeverity::Error)
+        {
+            "error"
+        } else if issues.is_empty() {
+            "ok"
+        } else {
+            "warning"
+        };
+        Self {
+            status: status.to_string(),
+            issues,
+        }
+    }
+
+    /// The owner-facing reason a run cannot start, or `None` when it can.
+    pub fn blocking_reason(&self, project_name: &str) -> Option<String> {
+        let errors: Vec<&str> = self
+            .issues
+            .iter()
+            .filter(|issue| issue.severity == ProjectHealthSeverity::Error)
+            .map(|issue| issue.message.as_str())
+            .collect();
+        if errors.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "Project “{project_name}” cannot start a run: {}",
+            errors.join(" ")
+        ))
+    }
+}
+
+/// The health issue for the project's cockpit conversation, from its chat
+/// session's status (`None`: the session does not exist).
+///
+/// Missing: earlier turns are gone, new runs start a fresh conversation (a
+/// warning: runs still start). An archived session is not flagged: picking
+/// another project parks it, the same status as archiving by hand, and a
+/// message sent to it reactivates it.
+pub fn chat_session_health_issue(
+    session_status: Option<&ChatSessionStatus>,
+) -> Option<ProjectHealthIssue> {
+    match session_status {
+        None => Some(ProjectHealthIssue::warning(
+            "chat_session_missing",
+            "Conversation is missing",
+            "Its conversation is missing, so earlier turns are not shown. New runs start a \
+             fresh conversation."
+                .to_string(),
+        )),
+        Some(_) => None,
+    }
+}
+
+/// The project's own health checks (the folder and, for a trusted project, the
+/// repository), independent of chat state. Only a folder the owner chose by
+/// absolute path is checked: scoped workspace folders are Magician's to create.
+/// Each check is one entry here; surfaces and run admission read the result.
+pub fn project_health_issues(project: &VibeDevProjectRecord) -> Vec<ProjectHealthIssue> {
+    let mut issues = Vec::new();
+    let Some(path) = project
+        .repo_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| path.starts_with('/'))
+    else {
+        return issues;
+    };
+    let folder = Path::new(path);
+    if !folder.is_dir() {
+        issues.push(ProjectHealthIssue::error(
+            "folder_missing",
+            "Folder is missing",
+            format!(
+                "Its folder {path} no longer exists. Restore it or point the project at another \
+                 folder in project settings."
+            ),
+        ));
+        return issues;
+    }
+    if let Err(error) = std::fs::read_dir(folder) {
+        issues.push(ProjectHealthIssue::error(
+            "folder_unreadable",
+            "Folder can't be read",
+            format!("Its folder {path} cannot be read ({error}). Check its permissions."),
+        ));
+        return issues;
+    }
+    if project.trust == VibeDevProjectTrust::Trusted && !runtime_core::process::git_available() {
+        issues.push(ProjectHealthIssue::warning(
+            "git_unavailable",
+            "Git isn't available",
+            "It is a trusted project, but this machine has no git Magician can run (neither the \
+             host's nor the bundled one). Runs work on a sandboxed copy and return their changes \
+             for review until git is installed; `make setup-skill-bins` installs the bundled git."
+                .to_string(),
+        ));
+        return issues;
+    }
+    if project.trust == VibeDevProjectTrust::Trusted {
+        match super::trusted_workspace::validate_trusted_repo(folder) {
+            Err(error) => {
+                use super::trusted_workspace::TrustedRepoError;
+                let sandboxed = "Runs work on a sandboxed copy and return their changes for \
+                                 review until then, so branch runs, merge, pull requests and \
+                                 rewind are unavailable.";
+                issues.push(match &error {
+                    TrustedRepoError::InsideRepository { root, .. } => ProjectHealthIssue::warning(
+                        "not_repository_root",
+                        "Folder is inside another repository",
+                        format!(
+                            "It is a trusted project, but its folder is inside the git \
+                             repository {}. Point the project at that repository's root folder. \
+                             {sandboxed}",
+                            root.display()
+                        ),
+                    ),
+                    TrustedRepoError::NotARepository { .. }
+                    | TrustedRepoError::NotADirectory { .. } => ProjectHealthIssue::warning(
+                        "not_a_git_repository",
+                        "Folder isn't a git repository",
+                        format!(
+                            "It is a trusted project, but {error}. Make the folder a git \
+                                 repository to get branch runs back. {sandboxed}"
+                        ),
+                    )
+                    .with_action("git_init", "Make this a git repository"),
+                });
+            },
+            Ok(repo) => {
+                if let Some(branch) = project
+                    .base_branch
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|branch| !branch.is_empty())
+                {
+                    if !super::trusted_workspace::branch_exists(&repo, branch) {
+                        issues.push(ProjectHealthIssue::error(
+                            "base_branch_missing",
+                            "Base branch is missing",
+                            format!(
+                                "Its base branch `{branch}` no longer exists in {path}. Pick \
+                                 another base branch in project settings."
+                            ),
+                        ));
+                    }
+                }
+            },
+        }
+    }
+    issues
+}
+
+/// [`project_health_issues`] as one [`ProjectHealth`].
+pub fn project_health(project: &VibeDevProjectRecord) -> ProjectHealth {
+    ProjectHealth::from_issues(project_health_issues(project))
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -575,6 +818,26 @@ pub fn read_vibedev_projects(scope_root: &Path) -> Vec<VibeDevProjectRecord> {
         .unwrap_or_default()
 }
 
+/// The chat sessions this scope's live (non-archived) projects point at.
+///
+/// Chat storage reads it before rotating the VibeDev thread: minting a new
+/// cockpit session must not archive a conversation a live project still
+/// points at (that archive also drops the session's run-progress
+/// subscriptions and makes the next message into it fail).
+pub fn live_vibedev_project_session_ids(scope_root: &Path) -> HashSet<String> {
+    read_vibedev_projects(scope_root)
+        .into_iter()
+        .filter(|project| !project.archived)
+        .map(|project| project.chat_session_id)
+        .filter(|session_id| !session_id.trim().is_empty())
+        .collect()
+}
+
+/// Does a live project in this scope point at `chat_session_id`?
+pub fn live_vibedev_project_points_at_session(scope_root: &Path, chat_session_id: &str) -> bool {
+    live_vibedev_project_session_ids(scope_root).contains(chat_session_id)
+}
+
 /// Which project does a build started from `chat_session_id` belong to?
 ///
 /// Tier 1 — the project this very chat session drives: the user is looking at
@@ -744,6 +1007,71 @@ mod run_link_tests {
     }
 
     #[test]
+    fn project_health_names_what_blocks_a_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut project = record("Rehearsal");
+        // Scoped folders are Magician's to create.
+        project.repo_path = Some("rehearsal".to_string());
+        assert_eq!(project_health(&project).status, "ok");
+        project.repo_path = Some(temp.path().join("gone").display().to_string());
+        let health = project_health(&project);
+        assert_eq!(health.status, "error");
+        assert_eq!(health.issues[0].code, "folder_missing");
+        assert!(health
+            .blocking_reason("Rehearsal")
+            .is_some_and(|reason| reason.contains("no longer exists")));
+        // An existing folder is enough for a sandboxed project …
+        project.repo_path = Some(temp.path().display().to_string());
+        assert_eq!(project_health(&project).status, "ok");
+        assert_eq!(project_health(&project).blocking_reason("Rehearsal"), None);
+        // … and a trusted one without git runs sandboxed: a warning that
+        // offers `git init`, not a blocker.
+        project.trust = VibeDevProjectTrust::Trusted;
+        let health = project_health(&project);
+        assert_eq!(health.status, "warning");
+        assert_eq!(health.issues[0].code, "not_a_git_repository");
+        assert_eq!(health.issues[0].title, "Folder isn't a git repository");
+        assert_eq!(
+            health.issues[0].action.as_ref().map(|a| a.kind.as_str()),
+            Some("git_init")
+        );
+        assert_eq!(health.blocking_reason("Rehearsal"), None);
+        // Once it is a repository, trusted is healthy.
+        super::super::trusted_workspace::init_repository(temp.path(), "main").expect("git init");
+        assert_eq!(project_health(&project).status, "ok");
+        // A folder below the root is told to point at the root; `git init`
+        // there would nest a second repository.
+        let sub = temp.path().join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        project.repo_path = Some(sub.display().to_string());
+        let health = project_health(&project);
+        assert_eq!(health.issues[0].code, "not_repository_root");
+        assert!(health.issues[0].action.is_none());
+        // The conversation: missing warns; open or parked (archived) is not
+        // flagged, since parking and archiving share one status.
+        assert_eq!(
+            chat_session_health_issue(None).map(|issue| issue.code),
+            Some("chat_session_missing".to_string())
+        );
+        assert_eq!(
+            chat_session_health_issue(Some(&ChatSessionStatus::Archived)),
+            None
+        );
+        assert_eq!(
+            chat_session_health_issue(Some(&ChatSessionStatus::Active)),
+            None
+        );
+        // A warning alone never blocks.
+        let warning = ProjectHealth::from_issues(vec![ProjectHealthIssue::warning(
+            "chat_session_missing",
+            "Conversation is missing",
+            "x".to_string(),
+        )]);
+        assert_eq!(warning.status, "warning");
+        assert_eq!(warning.blocking_reason("p"), None);
+    }
+
+    #[test]
     fn crew_ids_and_lanes_are_validated() {
         assert_eq!(normalize_crew_lane(None, None), Ok((None, None)));
         assert_eq!(normalize_crew_lane(Some("  "), Some(" ")), Ok((None, None)));
@@ -768,6 +1096,7 @@ mod run_link_tests {
         std::fs::write(&path, serde_json::to_vec(&store).expect("json")).expect("write");
 
         let link = VibeDevRunLink {
+            work_location: None,
             parent_task_id: None,
             crew_id: Some("crew-1".to_string()),
             lane: Some("UI".to_string()),

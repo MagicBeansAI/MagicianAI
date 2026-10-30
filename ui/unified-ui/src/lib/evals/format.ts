@@ -230,7 +230,7 @@ export function formatRequirement(requirement: EvalRequirement): string {
  * may well be the cost-bearing sort, and "ready" would be an answer to the
  * wrong question.
  */
-export function runDisabledReason(lane: EvalLane): string | null {
+export function runDisabledReason(lane: EvalLane, modelChoicesValid = true): string | null {
 	if (lane.kind === 'unknown') {
 		return 'Unrunnable: this lane’s `## eval:` annotation is malformed, so nobody declared what kind of run this is.';
 	}
@@ -242,6 +242,9 @@ export function runDisabledReason(lane: EvalLane): string | null {
 	// specific wording.
 	if (lane.parse_error) {
 		return `Unrunnable: this lane’s \`## eval:\` annotation is malformed, so what it declares cannot be trusted — ${lane.parse_error}`;
+	}
+	if (lane.run_options === 'memory_lifecycle' && !modelChoicesValid) {
+		return 'Choose up to three different, available model and thinking combinations.';
 	}
 	if (lane.readiness?.ready) return null;
 

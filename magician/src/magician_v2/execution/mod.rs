@@ -7,6 +7,7 @@ pub mod actions;
 pub mod agent_resources;
 pub mod agent_roster_data_provider;
 pub mod agentic;
+pub mod approval_preview;
 pub mod builtin_action_types;
 pub mod capability;
 pub mod capability_eval;
@@ -26,6 +27,9 @@ pub mod evidence_data_provider;
 pub mod execution_summary;
 pub mod file_edit;
 pub mod flat_loop;
+/// Who may read and write a goal workspace (`Workspaces/<ws>/`).
+pub mod goal_workspace_access;
+mod harness_inspection;
 pub mod harness_provider;
 pub mod inference;
 pub mod interactive_process;
@@ -40,6 +44,7 @@ pub mod native_executors;
 pub mod network_policy;
 pub mod notes_data_provider;
 pub mod pack_provider;
+pub mod plan_run_policy;
 pub mod plane;
 pub mod primitive_dispatch;
 pub mod resource_authority_provider;
@@ -48,6 +53,8 @@ pub mod restricted_toolset;
 pub mod runtime_boundary;
 /// The OS sandbox around shell commands (`shell_sandbox.os_enforce`).
 pub mod shell_box;
+pub(crate) mod shell_jobs;
+pub(crate) mod shell_process;
 // Native App admission and legacy HTTP resume retain measured poll headroom.
 pub mod stack_headroom;
 pub mod tasks_data_provider;
@@ -109,8 +116,9 @@ pub use multi_llm_agent_adapter::MultiLlmAgentAdapter;
 pub use multi_llm_agent_adapter::TestNativeResponseQueue;
 pub use notes_data_provider::{NotesDataProvider, NOTES_DATA_TOOL_NAME};
 pub use restricted_action::{
-    has_restricted_form, is_dispatch_routing_key, restrict, restricted_form_for, BoundDispatch,
-    RestrictedAction, RestrictionError, SenderIdentity,
+    has_restricted_form, is_dispatch_routing_key, restrict, restrict_with_profiles,
+    restricted_form_for, ApprovedSenderProfiles, BoundDispatch, RestrictedAction, RestrictionError,
+    SenderIdentity, SenderKind,
 };
 pub use restricted_toolset::{project_capability_tool, split_capability_leaf, ToolProjection};
 pub use tasks_data_provider::{TasksDataProvider, TASKS_DATA_TOOL_NAME};

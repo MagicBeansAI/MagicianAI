@@ -3,6 +3,14 @@ package ai.magicbeans.magdroid.vibedev
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonPrimitive
+import ai.magicbeans.magdroid.chat.ChatModelChoice
+import ai.magicbeans.magdroid.chat.ChatModelSelection
+import ai.magicbeans.magdroid.tasks.TaskCompletion
 
 /**
  * The VibeDev wire shapes the phone reads.
@@ -54,6 +62,13 @@ data class VibeDevLiveRuns(
 )
 
 @Serializable
+data class VibeDevRunHistory(
+    val runs: List<VibeDevLiveRun> = emptyList(),
+    @SerialName("has_more") val hasMore: Boolean = false,
+    @SerialName("next_cursor") val nextCursor: String? = null,
+)
+
+@Serializable
 data class VibeDevLiveRun(
     @SerialName("run_id") val runId: String,
     /** The task a steer or stop names: the newest turn still going. */
@@ -77,8 +92,33 @@ data class VibeDevLiveRun(
     val lane: String? = null,
     @SerialName("updated_at") val updatedAt: String = "",
     @SerialName("last_progress_at") val lastProgressAt: String? = null,
+    /** The live turn's `completion_kind` / `open_items`, read leniently. */
+    @SerialName("completion_kind") val completionKindWire: JsonElement? = null,
+    @SerialName("open_items") val openItemsWire: JsonElement? = null,
+    /** `diff_review | decision | notice`; absent from older servers. Read leniently. */
+    @SerialName("waiting_kind") val waitingKindWire: String? = null,
+    /** The run's acknowledge-only owner briefing, read leniently ([notice]). */
+    @SerialName("notice") val noticeWire: JsonElement? = null,
+    @SerialName("needs_you_count") val needsYouCount: Int? = null,
+    @SerialName("work_location") val workLocation: String? = null,
+    @SerialName("repo_path") val repoPath: String? = null,
 ) {
     val state: VibeDevRunState get() = VibeDevRunState.from(stateWire)
+
+    /** What the run waits on the owner for; null when nothing does or the kind is unknown. */
+    val waitingKind: VibeDevWaitingKind? get() = VibeDevWaitingKind.from(waitingKindWire)
+
+    /**
+     * An owner briefing (Acknowledge is its only answer). It never makes the
+     * run needs-you: a finished Autopilot run is Done with a notice.
+     */
+    val notice: VibeDevRunNotice? get() = VibeDevRunNotice.from(noticeWire)
+
+    /** Done, but the run left requirements open: "Partly done", never a plain success. */
+    val isPartlyDone: Boolean
+        get() = state == VibeDevRunState.Done && TaskCompletion.kind(completionKindWire) == "partial"
+    val statusLabel: String get() = if (isPartlyDone) TaskCompletion.PARTLY_DONE else state.label
+    val openItemsLine: String? get() = if (isPartlyDone) TaskCompletion.openLine(TaskCompletion.openItems(openItemsWire)) else null
 
     /**
      * Waits on a diff approval this phone can answer. Other asks (a question,
@@ -86,6 +126,39 @@ data class VibeDevLiveRun(
      * Attention; Approve/Reject on them only dead-ended.
      */
     val hasApproval: Boolean get() = !approvalId.isNullOrBlank()
+}
+
+/** What a run waits on the owner for (`waiting_kind`). */
+enum class VibeDevWaitingKind(val wire: String) {
+    DiffReview("diff_review"),
+    Decision("decision"),
+    Notice("notice");
+
+    companion object {
+        fun from(wire: String?): VibeDevWaitingKind? = entries.firstOrNull { it.wire == wire }
+    }
+}
+
+/** An acknowledge-only owner briefing on a run, answered by `POST /hitl/{requestId}/respond`. */
+data class VibeDevRunNotice(
+    val requestId: String,
+    val optionId: String = "acknowledge",
+    val title: String? = null,
+    val message: String,
+    val severity: String? = null,
+) {
+    companion object {
+        /** Null for anything but an object with a request id and some text. */
+        fun from(wire: JsonElement?): VibeDevRunNotice? {
+            val obj = wire as? JsonObject ?: return null
+            fun text(key: String): String? =
+                (obj[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }
+            val requestId = text("request_id") ?: return null
+            val title = text("title")
+            val message = text("message") ?: title ?: return null
+            return VibeDevRunNotice(requestId, text("option_id") ?: "acknowledge", title, message, text("severity"))
+        }
+    }
 }
 
 // ── GET /vibedev/projects ───────────────────────────────────────────────────
@@ -111,10 +184,14 @@ data class VibeDevProject(
     @SerialName("repo_display_path") val repoDisplayPath: String = "",
     @SerialName("repo_absolute_path") val repoAbsolutePath: String = "",
     @SerialName("chat_session_status") val chatSessionStatus: String = "",
+    @SerialName("chat_session_id") val chatSessionId: String? = null,
     @SerialName("created_at_ms") val createdAtMs: Long = 0,
     @SerialName("updated_at_ms") val updatedAtMs: Long = 0,
+    /** `{ status, issues[] }`, read leniently through [health]; absent is ok. */
+    @SerialName("health") val healthWire: JsonElement? = null,
 ) {
     val isTrusted: Boolean get() = trust == "trusted"
+    val health: VibeDevProjectHealth get() = VibeDevProjectHealth.decode(healthWire)
     /** What the cards print for the repository. */
     val repoLabel: String get() = repoDisplayPath.ifBlank { repoPath.orEmpty() }
 }
@@ -190,8 +267,15 @@ data class VibeDevTaskItem(
     val tags: List<VibeDevTag> = emptyList(),
     @SerialName("completion_summary") val completionSummary: String? = null,
     @SerialName("current_step_title") val currentStepTitle: String? = null,
+    /** `full` | `partial`, read leniently ([TaskCompletion.kind]). */
+    @SerialName("completion_kind") val completionKindWire: JsonElement? = null,
+    @SerialName("open_items") val openItemsWire: JsonElement? = null,
 ) {
     val isThreaded: Boolean get() = tags.any { it.name == THREADED_TAG }
+
+    /** Completed with requirements still open. */
+    val isPartlyDone: Boolean get() = TaskCompletion.isPartlyDone(status, TaskCompletion.kind(completionKindWire))
+    val openItems: List<String> get() = TaskCompletion.openItems(openItemsWire)
 
     /** The `Parent task:` line the server folds on when there is no typed link. */
     val parentFromDescription: String?
@@ -216,6 +300,11 @@ data class VibeDevRunRow(
 ) {
     /** The newest turn decides whether the run is still going. */
     val state: VibeDevRunState get() = VibeDevRunState.fromTaskStatus(turns.last().status)
+
+    /** Done, but the newest turn left requirements open: "Partly done", never a plain success. */
+    val isPartlyDone: Boolean get() = state == VibeDevRunState.Done && turns.last().isPartlyDone
+    val statusLabel: String get() = if (isPartlyDone) TaskCompletion.PARTLY_DONE else state.label
+    val openItemsLine: String? get() = if (isPartlyDone) TaskCompletion.openLine(turns.last().openItems) else null
     val updatedAt: String get() = turns.maxOf { it.updatedAt }
 }
 
@@ -280,6 +369,7 @@ data class VibeDevRunTurns(
     @SerialName("project_name") val projectName: String = "",
     val title: String = "",
     val status: String = "",
+    @SerialName("work_location") val workLocation: String? = null,
     val trusted: Boolean = false,
     val branch: String? = null,
     @SerialName("crew_id") val crewId: String? = null,
@@ -302,11 +392,18 @@ data class VibeDevRunTurn(
     @SerialName("updated_at") val updatedAt: String = "",
     val summary: String? = null,
     val engine: String? = null,
+    @SerialName("coding_route_id") val codingRouteId: String? = null,
     @SerialName("cost_usd") val costUsd: Double? = null,
     val commit: String? = null,
     @SerialName("files_changed") val filesChanged: Int? = null,
+    /** `full` | `partial` when the server sends it, read leniently. */
+    @SerialName("completion_kind") val completionKindWire: JsonElement? = null,
+    @SerialName("open_items") val openItemsWire: JsonElement? = null,
 ) {
     val state: VibeDevRunState get() = VibeDevRunState.fromTaskStatus(status)
+    val isPartlyDone: Boolean get() = TaskCompletion.isPartlyDone(status, TaskCompletion.kind(completionKindWire))
+    val openItems: List<String> get() = TaskCompletion.openItems(openItemsWire)
+    val statusLabel: String get() = if (isPartlyDone) TaskCompletion.PARTLY_DONE else state.label
 }
 
 // ── GET /vibedev/runs/{turn}/timeline ───────────────────────────────────────
@@ -365,7 +462,55 @@ data class VibeDevRepoSuggestions(val repos: List<VibeDevRepoSuggestion> = empty
 data class VibeDevRepoSuggestion(val path: String, val name: String = "", val project: String? = null)
 
 @Serializable
-data class VibeDevCodingProfiles(val profiles: List<VibeDevCodingProfile> = emptyList())
+data class VibeDevCodingSelection(
+    val kind: String,
+    val engine: String? = null,
+    @SerialName("model_id") val modelId: String? = null,
+    val thinking: String? = null,
+)
+
+@Serializable
+data class VibeDevCodingEngine(
+    val id: String,
+    val selectable: Boolean,
+    val readiness: String? = null,
+    /** Whose credentials it runs on: `login`, `magician_key` or `none`; absent for `magician`. */
+    @SerialName("credentials") val credentialsWire: JsonElement? = null,
+) {
+    /** The `credentials` string, read leniently: any other shape is no label. */
+    val credentials: String? get() = (credentialsWire as? JsonPrimitive)?.takeIf { it.isString }?.content
+}
+
+@Serializable
+data class VibeDevModelCatalog(
+    val models: List<JsonObject> = emptyList(),
+    val engines: List<VibeDevCodingEngine> = emptyList(),
+    @SerialName("default_selection") val defaultSelection: VibeDevCodingSelection? = null,
+) {
+    fun rows(): List<VibeDevCodingProfile> = models.flatMap { value ->
+        val engine = engines.firstOrNull { it.id == value["engine"]?.jsonPrimitive?.content && it.selectable }
+            ?: return@flatMap emptyList()
+        val model = vibeDevJson.decodeFromJsonElement<ChatModelChoice>(value)
+        model.choices.map { (thinking, route) ->
+            VibeDevCodingProfile(id = route, label = model.label, engine = engine.id, readiness = engine.readiness, credentials = engine.credentials,
+                isDefault = defaultSelection == VibeDevCodingSelection(kind = "model", engine = engine.id, modelId = model.id, thinking = thinking),
+                modelSelection = ChatModelSelection(model.id, thinking), modelChoice = model.takeIf { thinking == "auto" })
+        }
+    } + engines.filter { !it.selectable }.map {
+        VibeDevCodingProfile(id = "unavailable/${it.id}", label = it.id, engine = it.id, selectable = false, readiness = it.readiness, credentials = it.credentials)
+    }
+}
+
+fun codingModelSelection(profiles: List<VibeDevCodingProfile>, route: String?): VibeDevCodingSelection? {
+    val row = if (route == null) profiles.firstOrNull { it.isDefault && it.selectable }
+        else profiles.firstOrNull { it.id == route && it.selectable }
+    val selection = row?.modelSelection
+    val model = profiles.firstOrNull { it.engine == row?.engine && it.modelChoice?.id == selection?.modelId }?.modelChoice
+    require(row?.engine != null && selection != null && model?.choices?.get(selection.thinking) == row.id) {
+        "Choose an available coding engine and model to continue."
+    }
+    return VibeDevCodingSelection(kind = "model", engine = row.engine, modelId = selection.modelId, thinking = selection.thinking)
+}
 
 @Serializable
 data class VibeDevCodingProfile(
@@ -374,7 +519,11 @@ data class VibeDevCodingProfile(
     val engine: String? = null,
     val selectable: Boolean = true,
     val readiness: String? = null,
+    /** The engine's `credentials` (`login` / `magician_key` / `none`), for the picker label. */
+    val credentials: String? = null,
     @SerialName("is_default") val isDefault: Boolean = false,
+    @SerialName("model_selection") val modelSelection: ai.magicbeans.magdroid.chat.ChatModelSelection? = null,
+    @SerialName("model_choice") val modelChoice: ai.magicbeans.magdroid.chat.ChatModelChoice? = null,
 )
 
 @Serializable
@@ -394,8 +543,11 @@ data class VibeDevRunRequest(
     /** One per submission; a retry reuses it, so the server starts one run. */
     val clientRunId: String,
     val parentTaskId: String? = null,
-    val codingProfileId: String? = null,
+    val codingChoice: VibeDevCodingSelection? = null,
     val costBudgetUsd: Double? = null,
+    val attachments: List<ai.magicbeans.magdroid.chat.StagedAttachment> = emptyList(),
+    val attachmentSessionId: String? = null,
+    val nightly: Boolean = false,
 )
 
 /** What the New run sheet sends with its crew switch on. */

@@ -36,19 +36,19 @@ members = [
 exclude = [
     "desktop/src-tauri",
     "kindle",
-    ".cache/agent-browser-src",
-    ".cache/agent-browser-src-v0.33.1",
-    ".cache/agent-browser-src-v0.33.1-magician",
-    ".cache/agent-browser-src-v0.38.1-magician",
-    ".cache/agent-browser-src-v0.38.1-magician/cli",
+    ".cache/agent-browser-src-v0.41.0-magician",
+    ".cache/agent-browser-src-v0.41.0-magician/cli",
 ]
 resolver = "2"
 
 # Common deps shared across magician-family crates. Each member opts in
 # with `dep = { workspace = true, features = [...] }`. The magicutor /
 # magicllm / magic-supervisor / runtime-core / tool-runtime-core crates
-# may pin different versions intentionally and are not migrated here.
+# may pin other dependencies independently.
 [workspace.dependencies]
+# Listeners use HTTP/1; ingress handles TLS when configured. Preserve other defaults
+# without compiling the unused HTTP/2 / server-TLS dependency chain.
+actix-web = { version = "4.13", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "cookies", "unicode", "compat", "ws"] }
 # One reviewed source revision per extracted library; no sibling path overrides.
 # Secure-HITL P2/P4 (2026-09-23): every sibling crate pins the tip of its
 # repository's `main`. A `[patch]` pointing at ../MagicVault-secure-hitl and
@@ -81,6 +81,9 @@ resolver = "2"
 # budget instead of failing its own defaults (which dropped every list-taking
 # governed skill at load). MagicVault needed no change (it never compiles
 # typed actions); its effect crate's default-branch copy moves with it.
+# MagicVault `07a0eab` keeps every package version: the CDP fill adapter reports
+# a failure before the material is sent as `failed` with its code, and only the
+# delivery call and later as `transport_uncertain`.
 # MagicRun `e9a4fdc4` (PR #9) adds 0.1.82's architecture review artifacts
 # (doc version, baseline) that #8 missed; no source change.
 #
@@ -89,10 +92,10 @@ resolver = "2"
 # on tool-runtime-core by version from MagicRun's default branch, resolves the
 # same 0.1.75 magician links instead of an older 0.1.74 beside it.
 tool-runtime-core = { git = "https://github.com/MagicBeansAI/MagicRun.git", rev = "e9a4fdc4d028c5d3e0d2041e4a55bff26edc1bd4" }
-magicvault-core = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "4902803b35211ea2a1dc7e6bdb112cb9da03000f" }
-magicvault-effect = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "4902803b35211ea2a1dc7e6bdb112cb9da03000f" }
-magicvault-protocol = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "4902803b35211ea2a1dc7e6bdb112cb9da03000f" }
-magicvault-primitives = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "4902803b35211ea2a1dc7e6bdb112cb9da03000f" }
+magicvault-core = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "07a0eab4ee6db1e9eb5080049f69afb61c4be15a" }
+magicvault-effect = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "07a0eab4ee6db1e9eb5080049f69afb61c4be15a" }
+magicvault-protocol = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "07a0eab4ee6db1e9eb5080049f69afb61c4be15a" }
+magicvault-primitives = { git = "https://github.com/MagicBeansAI/MagicVault.git", rev = "07a0eab4ee6db1e9eb5080049f69afb61c4be15a" }
 tokio = { version = "1.0" }
 serde = { version = "1.0" }
 serde_json = "1.0"
@@ -106,7 +109,7 @@ uuid = "1.0"
 base64 = "0.22"
 futures-util = "0.3"
 blake3 = "1.0"
-rmcp = { version = "=3.1.0", default-features = false }
+rmcp = { version = "=3.7.0", default-features = false }
 unicode-normalization = "0.1"
 
 [profile.dev]
@@ -144,6 +147,21 @@ opt-level = 3
 # Decision Engine and Magician Rust code keep the normal debug profile.
 [profile.dev.package.mlx-sys]
 debug-assertions = false
+opt-level = 3
+
+# Decision Engine screenshots are decoded and scaled on the agent's step path
+# (a Retina full-page capture is 4160x3200); unoptimized that takes seconds.
+# Only the image crates themselves, so no shared dependency is rebuilt.
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
 opt-level = 3
 
 [profile.release]

@@ -132,6 +132,35 @@ else
   log "  ✓ reusing existing app ${APP_ID}"
 fi
 
+# --- 1b. let the API accept this app's assertions --------------------------
+# The UI host proxies /api to Magician, so every API call from a browser here
+# carries an assertion for THIS Access app. Magician verifies assertions
+# against MAGICIAN_CF_ACCESS_AUD (the API host's app, written by
+# ensure-connect-access.sh) plus MAGICIAN_CF_ACCESS_UI_AUD; without this app's
+# tag in the second, every sign-in through the UI host is refused
+# (InvalidAudience). Merged, never replaced, so other UI hosts' tags survive.
+if [ "$DRYRUN" = 1 ] || [ "$APP_ID" = "DRYRUN" ]; then
+  log "would record this app's audience in MAGICIAN_CF_ACCESS_UI_AUD"
+else
+  APP_AUD="$(cf GET "/accounts/$ACCT/access/apps/$APP_ID" | jq -r '.result.aud // empty')"
+  if [ -z "$APP_AUD" ]; then
+    warn "could not read the Access app's audience; the API will refuse sign-ins through ${UI_HOST}."
+  else
+    for env_file in "$DATA_DIR/.env" "$DATA_DIR/.env.development"; do
+      [ -f "$env_file" ] || continue
+      current="$(grep -E '^[[:space:]]*MAGICIAN_CF_ACCESS_UI_AUD=' "$env_file" | tail -1 | sed -E 's/^[[:space:]]*MAGICIAN_CF_ACCESS_UI_AUD=//; s/^["'"'"']//; s/["'"'"']$//')"
+      case ",${current}," in *",${APP_AUD},"*) continue ;; esac
+      merged="${current:+${current},}${APP_AUD}"
+      tmp="$(mktemp "${env_file}.XXXXXX")"
+      grep -vE '^[[:space:]]*MAGICIAN_CF_ACCESS_UI_AUD=' "$env_file" > "$tmp" || true
+      printf 'MAGICIAN_CF_ACCESS_UI_AUD=%s\n' "$merged" >> "$tmp"
+      chmod 600 "$tmp" 2>/dev/null || true
+      mv "$tmp" "$env_file"
+      log "  recorded the ${UI_HOST} Access audience in ${env_file} (restart Magician to apply)"
+    done
+  fi
+fi
+
 # --- 2. allow policy (interactive email) — create or update ----------------
 log "Ensuring the email allow policy on the app"
 POL_LIST="$(cf GET "/accounts/$ACCT/access/apps/$APP_ID/policies")"

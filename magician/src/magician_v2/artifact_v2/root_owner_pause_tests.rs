@@ -193,6 +193,7 @@ async fn root_owner_pause_fixture_with_review_rules(
                 pause_revision: Some(commit.revision.clone()),
                 pause_body_sha256: Some(commit.body_sha256.clone()),
                 pause_resume_segment: Some(format!("{execution_id}-r1")),
+                refinement_successor_segment: None,
             })
             .unwrap(),
     );

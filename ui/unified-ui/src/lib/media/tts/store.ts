@@ -53,9 +53,9 @@ function normalizePrefs(prefs: Partial<TtsPrefs>): TtsPrefs {
 const VOICE_PREFS_KEY = 'magican-tts-voice-prefs';
 
 function loadLocalVoicePrefs(): Partial<TtsPrefs> {
-	if (typeof localStorage === 'undefined') return {};
+	if (typeof window === 'undefined') return {};
 	try {
-		const raw = localStorage.getItem(VOICE_PREFS_KEY);
+		const raw = window.localStorage.getItem(VOICE_PREFS_KEY);
 		if (!raw) return {};
 		const parsed = JSON.parse(raw) as Partial<TtsPrefs>;
 		const out: Partial<TtsPrefs> = {};
@@ -69,9 +69,9 @@ function loadLocalVoicePrefs(): Partial<TtsPrefs> {
 }
 
 function persistLocalVoicePrefs(prefs: TtsPrefs): void {
-	if (typeof localStorage === 'undefined') return;
+	if (typeof window === 'undefined') return;
 	try {
-		localStorage.setItem(
+		window.localStorage.setItem(
 			VOICE_PREFS_KEY,
 			JSON.stringify({ voiceName: prefs.voiceName, rate: prefs.rate, pitch: prefs.pitch })
 		);

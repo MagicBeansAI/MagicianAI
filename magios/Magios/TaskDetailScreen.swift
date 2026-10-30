@@ -235,9 +235,9 @@ struct TaskDetailScreen: View {
     // MARK: - Header card
 
     private func header(_ snapshot: TaskDetailSnapshot, now: Date) -> some View {
-        let verdict = snapshot.verdict(now: now)
+        let verdict = snapshot.displayVerdict(now: now)
         return VStack(alignment: .leading, spacing: 10) {
-            TaskDetailVerdictLine(verdict: verdict)
+            TaskDetailVerdictLine(verdict: verdict, partlyDone: snapshot.isPartlyDone)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if TaskPlanMarker.hasPlan(snapshot) { TaskPlanGlyph(size: 15) }
                 Text(snapshot.title.isEmpty ? "Untitled task" : snapshot.title)
@@ -334,7 +334,8 @@ struct TaskDetailScreen: View {
     private var compactTitle: some View {
         HStack(spacing: 6) {
             if let snapshot = model.snapshot {
-                StatusDot(tone: TaskDetailVerdictLine.tone(for: snapshot.verdict(now: Date()).state), size: 7)
+                StatusDot(tone: TaskDetailVerdictLine.tone(for: snapshot.verdict(now: Date()).state,
+                                                           partlyDone: snapshot.isPartlyDone), size: 7)
             }
             if let snapshot = model.snapshot, TaskPlanMarker.hasPlan(snapshot) { TaskPlanGlyph(size: 11) }
             Text(model.snapshot?.title ?? route.titleHint ?? "Task")
@@ -454,12 +455,19 @@ private struct HeaderBottomKey: PreferenceKey {
 /// L0: the verdict with its status dot (web `TaskVerdictLine`).
 struct TaskDetailVerdictLine: View {
     let verdict: Verdict
+    /// Completed with open requirements: a finished verdict takes the
+    /// partial (warning) tone instead of done.
+    var partlyDone = false
     @ObservedObject private var theme = ThemeManager.shared
+
+    static func tone(for state: VerdictState, partlyDone: Bool) -> StatusDot.Tone {
+        state == .finished && partlyDone ? .partial : tone(for: state)
+    }
 
     /// Verdict state → dot tone. Exhaustive, so a new state fails to build.
     static func tone(for state: VerdictState) -> StatusDot.Tone {
         switch state {
-        case .running: return .running
+        case .running, .finalizing: return .running
         case .waiting: return .waiting
         case .failed: return .failed
         case .stalled, .paused: return .partial
@@ -471,12 +479,12 @@ struct TaskDetailVerdictLine: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            StatusDot(tone: Self.tone(for: verdict.state), size: 9)
+            StatusDot(tone: Self.tone(for: verdict.state, partlyDone: partlyDone), size: 9)
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             VStack(alignment: .leading, spacing: 2) {
                 Text(verdict.headline)
                     .font(.themed(14, weight: .semibold))
-                    .foregroundColor(StatusDot.color(for: Self.tone(for: verdict.state), in: theme))
+                    .foregroundColor(StatusDot.color(for: Self.tone(for: verdict.state, partlyDone: partlyDone), in: theme))
                 if !verdict.detail.isEmpty {
                     Text(verdict.detail)
                         .font(.themed(13))

@@ -16,8 +16,9 @@ pub struct ExhaustedLimits {
     pub attempts: bool,
 }
 
-/// Missing limits retain their existing window. This is owner authority, not
-/// actor input; constructing the request alone grants no productive work.
+/// Missing reset fields retain their existing window; zero removes that cap.
+/// This is owner authority, not actor input; constructing the request alone
+/// grants no productive work.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetReset {
@@ -38,15 +39,15 @@ impl BudgetReset {
             "select an exhausted allowance to reset"
         );
         ensure!(
-            self.cost_microusd.is_none_or(|n| exhausted.cost && n > 0),
+            self.cost_microusd.is_none_or(|_| exhausted.cost),
             "only an exhausted cost allowance can reset"
         );
         ensure!(
-            self.wall_clock_secs.is_none_or(|n| exhausted.time && n > 0),
+            self.wall_clock_secs.is_none_or(|_| exhausted.time),
             "only an exhausted time allowance can reset"
         );
         ensure!(
-            self.attempts.is_none_or(|n| exhausted.attempts && n > 0),
+            self.attempts.is_none_or(|_| exhausted.attempts),
             "only an exhausted attempt allowance can reset"
         );
         Ok(())

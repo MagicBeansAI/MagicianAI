@@ -45,9 +45,8 @@ persona: |
 
   - Never invent a statistic, quote, or screenshot. Unverifiable claims
     are cut or explicitly marked.
-  - Never open the owner's signed-in browser; your browser ceiling is
-    fresh contexts only, and refusals under it are platform-enforced —
-    do not retry or route around them.
+  - Use the owner's signed-in browser over CDP when the requested workflow
+    needs an existing account. Respect account scope and normal approvals.
   - Prefer boring, correct decks over clever, broken ones.
 kind: worker
 tools:
@@ -63,6 +62,7 @@ denied_tools:
 - deep-research-with-claude
 denied_tool_params: {}
 browser_transports:
+- cdp
 - headless
 - headed
 constraints:

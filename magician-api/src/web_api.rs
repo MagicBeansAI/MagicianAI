@@ -40,7 +40,7 @@ use futures_util::{future::join_all, stream, StreamExt};
 
 use actix_web::{
     http::{header, StatusCode},
-    web, HttpRequest, HttpResponse, Result,
+    web, HttpMessage, HttpRequest, HttpResponse, Result,
 };
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
@@ -117,7 +117,7 @@ use magician::magician_v2::{
     progress_channel_seam::ExecutionProgressRouter,
     query_analysis::operation_llm_router::{OperationRoutingEndpoint, OperationRoutingOverrides},
     runtime_settings::{
-        read_env_file_values, runtime_settings_paths, update_env_file, write_top_level_yaml_block,
+        read_env_file_values, runtime_settings_paths, update_env_file, write_yaml_section_seeded,
         yaml_string,
     },
     storage::{
@@ -940,7 +940,26 @@ async fn reconcile_confirmation_approval_on_resume(
         return Ok(());
     }
 
-    let Some(decision) = approval_decision_from_resume_value(user_value) else {
+    // A review before sending answers with its own choices; they settle an
+    // approval record the same pause carries, as confirm and deny would.
+    // A late Send is a discard at resume, so it rejects here too.
+    let review_decision = match (user_value, pause_data.pause_state.outward_review.as_deref()) {
+        (UserInputValue::Choice { selected_id, .. }, Some(review)) => {
+            use magician::magician_v2::agents::outward_review::{OPTION_ALWAYS_ALLOW, OPTION_SEND};
+            let in_time = chrono::Utc::now().timestamp_millis() <= review.deadline_at_ms;
+            Some(
+                if in_time && (selected_id == OPTION_SEND || selected_id == OPTION_ALWAYS_ALLOW) {
+                    ApprovalDecision::Approve
+                } else {
+                    ApprovalDecision::Reject
+                },
+            )
+        },
+        _ => None,
+    };
+    let Some(decision) =
+        review_decision.or_else(|| approval_decision_from_resume_value(user_value))
+    else {
         return Ok(());
     };
 
@@ -1629,7 +1648,7 @@ fn emit_hitl_requested_for_restored_pause(
     }
     broadcaster.emit(
         magician::magician_v2::realtime_events::RuntimeTransportEvent::HitlRequested {
-            correlation_id: pause_data.pause_state.storage_key(),
+            correlation_id: pause_data.pause_state.hitl_correlation_id(),
             source: "agentic".to_string(),
             input_type: input_type.clone(),
             prompt: if protected_app {
@@ -3025,6 +3044,19 @@ async fn prepare_scheduled_trigger_dispatch(
                 trigger_seq = scheduled.trigger_seq,
                 "Skipping scheduled trigger because definition was not found in scheduled scope"
             );
+            // The agent is gone (deleted, or its directory removed): drop its
+            // schedule so the fire does not recur for a definition that will
+            // never come back under this id. Re-creating the agent registers
+            // its schedule again.
+            if let Ok(scheduler) = agent_api.resolve_scheduler(&principal, &workspace).await {
+                if let Err(error) = scheduler.unregister_agent(agent_id).await {
+                    warn!(
+                        agent_id = %agent_id,
+                        error = %error,
+                        "Failed to unregister the schedule of a missing agent definition"
+                    );
+                }
+            }
             return Ok(None);
         },
         Err(error) => {
@@ -3393,50 +3425,20 @@ async fn scheduled_dispatch_definition_still_exists(
 /// Parse `MAGICIAN_HARNESS_PAUSED` into an explicit override, mirroring
 /// `autofix_env_override`: `Some(true)` for `1/true/yes/on`, `Some(false)` for
 /// `0/false/no/off`, `None` when unset or unrecognized (fall back to config).
+#[cfg(test)]
 fn parse_harness_pause_override(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn harness_pause_env_override() -> Option<bool> {
-    std::env::var("MAGICIAN_HARNESS_PAUSED")
-        .ok()
-        .as_deref()
-        .and_then(parse_harness_pause_override)
+    magician::magician_v2::harness::config::parse_harness_pause_override(value)
 }
 
 fn load_harness_runtime_status() -> HarnessRuntimeStatusResponse {
-    let env_override = harness_pause_env_override();
-    let config_path = magician::config::magician_config_path();
-    let (configured_paused, config_error) =
-        match magician::config::load_magician_config_from_path(&config_path) {
-            Ok(config) => (Some(config.harness.paused), None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-    let (paused, effective_source) = if let Some(overridden) = env_override {
-        (overridden, "environment")
-    } else if let Some(configured) = configured_paused {
-        (configured, "config")
-    } else {
-        // A malformed/missing runtime config must not silently start autonomous
-        // work. The status response carries the parse error for the operator.
-        (true, "config_error")
-    };
-    HarnessRuntimeStatusResponse {
-        enabled: !paused,
-        paused,
-        configured_paused,
-        env_override,
-        effective_source: effective_source.to_string(),
-        config_error,
-    }
+    magician::magician_v2::harness::config::load_harness_runtime_status()
 }
 
+/// The `harness:` block written when the runtime config has none yet, so a
+/// fresh block carries the explanatory comments. An existing block is edited
+/// line by line instead (see `persist_harness_runtime_enabled`).
 fn render_harness_config_block(config: &magician::config::HarnessConfig) -> String {
-    [
+    let mut lines = vec![
         "harness:".to_string(),
         "  # Autonomous company-loop runtime controls. API/UI writes preserve".to_string(),
         "  # these values in the live runtime config; credentials remain in env.".to_string(),
@@ -3447,8 +3449,18 @@ fn render_harness_config_block(config: &magician::config::HarnessConfig) -> Stri
         "  # MAGICIAN_HARNESS_PAUSED remains an emergency override; a UI mutation".to_string(),
         "  # clears it from runtime env files so config becomes authoritative.".to_string(),
         format!("  paused: {}", config.paused),
-    ]
-    .join("\n")
+        "  # Program docs (bare *.md names in each scope's programs/) appended to".to_string(),
+        "  # every program-context cycle; a focus area's shared_programs overrides.".to_string(),
+    ];
+    if config.shared_program_docs.is_empty() {
+        lines.push("  shared_program_docs: []".to_string());
+    } else {
+        lines.push("  shared_program_docs:".to_string());
+        for name in &config.shared_program_docs {
+            lines.push(format!("    - {}", yaml_string(name)));
+        }
+    }
+    lines.join("\n")
 }
 
 fn persist_harness_runtime_enabled(
@@ -3459,13 +3471,10 @@ fn persist_harness_runtime_enabled(
         .map_err(|error| format!("failed to load {}: {error}", paths.config_path.display()))?;
     let configured_paused = !enabled;
     let config_changed = config.harness.paused != configured_paused;
+    let before = config.harness.clone();
     config.harness.paused = configured_paused;
-    write_top_level_yaml_block(
-        &paths.config_path,
-        "harness",
-        &render_harness_config_block(&config.harness),
-    )
-    .map_err(|error| format!("failed to update {}: {error}", paths.config_path.display()))?;
+    write_harness_config_change(&paths.config_path, &before, &config.harness)
+        .map_err(|error| format!("failed to update {}: {error}", paths.config_path.display()))?;
 
     let env_key = "MAGICIAN_HARNESS_PAUSED";
     let process_override_present = std::env::var_os(env_key).is_some();
@@ -3491,6 +3500,22 @@ fn persist_harness_runtime_enabled(
     ))
 }
 
+/// Writes only the `harness:` lines that changed: the owner's comments and
+/// keys stay. A runtime config without the block gets the commented render.
+fn write_harness_config_change(
+    path: &std::path::Path,
+    before: &magician::config::HarnessConfig,
+    after: &magician::config::HarnessConfig,
+) -> std::io::Result<()> {
+    write_yaml_section_seeded(
+        path,
+        &["harness"],
+        before,
+        after,
+        Some(&format!("{}\n", render_harness_config_block(after))),
+    )
+}
+
 /// Global harness pause kill-switch. Config is reloaded per admission so API/UI
 /// changes are live without restart. Environment remains an emergency override.
 /// Config read failures fail closed to avoid unexpected autonomous work.
@@ -3500,7 +3525,9 @@ fn harness_globally_paused() -> bool {
 
 #[cfg(test)]
 mod harness_pause_gate_tests {
-    use super::{parse_harness_pause_override, render_harness_config_block};
+    use super::{
+        parse_harness_pause_override, render_harness_config_block, write_harness_config_change,
+    };
 
     #[test]
     fn env_override_parses_pause_resume_or_none() {
@@ -3519,6 +3546,149 @@ mod harness_pause_gate_tests {
         assert!(block.contains("  autofix_enabled: true"));
         assert!(block.contains("  autofix_agent: senior-software-developer"));
         assert!(block.contains("  paused: true"));
+        assert!(block.contains("  shared_program_docs: []"));
+    }
+
+    #[test]
+    fn rendered_harness_block_round_trips_shared_program_docs() {
+        let mut config = magician::config::HarnessConfig::default();
+        config.shared_program_docs = vec!["positioning.md".to_string(), "facts.md".to_string()];
+        let block = render_harness_config_block(&config);
+
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            harness: magician::config::HarnessConfig,
+        }
+        let parsed: Wrapper = serde_yaml::from_str(&block).expect("rendered block parses");
+        assert_eq!(
+            parsed.harness.shared_program_docs,
+            config.shared_program_docs
+        );
+        assert_eq!(parsed.harness.paused, config.paused);
+    }
+
+    #[test]
+    fn the_pause_toggle_changes_one_line_and_keeps_the_owners_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        let original = "harness:\n  # my own note about the loop\n  autofix_enabled: false\n  autofix_agent: senior-software-developer\n  paused: false  # weekends only\n  shared_program_docs:\n  - facts.md\nchat:\n  harness_engine: magician\n";
+        std::fs::write(&path, original).unwrap();
+        let mut before = magician::config::HarnessConfig::default();
+        before.autofix_enabled = false;
+        before.shared_program_docs = vec!["facts.md".to_string()];
+        let mut after = before.clone();
+        after.paused = true;
+        write_harness_config_change(&path, &before, &after).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original.replace(
+                "paused: false  # weekends only",
+                "paused: true  # weekends only"
+            )
+        );
+    }
+
+    #[test]
+    fn a_config_without_a_harness_block_gets_the_commented_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        std::fs::write(&path, "chat:\n  harness_engine: magician\n").unwrap();
+        let before = magician::config::HarnessConfig::default();
+        let mut after = before.clone();
+        after.paused = true;
+        write_harness_config_change(&path, &before, &after).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with("chat:\n  harness_engine: magician\n\nharness:\n  # Autonomous")
+        );
+        assert!(written.contains("  paused: true\n"), "{written}");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        assert_eq!(parsed["harness"]["paused"], true);
+    }
+}
+
+#[cfg(test)]
+mod program_context_mode_tests {
+    use super::{program_context_mode, shared_program_names, ProgramContextMode};
+    use magician::magician_v2::agents::AgentDefinition;
+
+    fn definition(extra: &str) -> AgentDefinition {
+        let yaml = format!(
+            "agent_id: outward\nname: Outward\npersona: test\ntrust_level: standard\n{extra}"
+        );
+        serde_yaml::from_str(&yaml).expect("definition parses")
+    }
+
+    const FOCUS_WITH_PROGRAM: &str = "autonomous_config:\n  schedule: \"0 * * * *\"\n  \
+         focus_areas:\n    - name: Replies\n      description: answer people\n      \
+         program: replies.md\n      shared_programs: [facts.md]\n    \
+         - name: Idle\n      description: no program\n";
+
+    #[test]
+    fn harness_agents_get_full_program_context() {
+        let def = definition(&format!("harness: {{}}\n{FOCUS_WITH_PROGRAM}"));
+        assert_eq!(
+            program_context_mode(&def, "harness:outward:replies"),
+            ProgramContextMode::FullHarness
+        );
+        // Even a goal with no focus area: harness agents keep today's behaviour.
+        assert_eq!(
+            program_context_mode(&def, "harness:outward:unknown"),
+            ProgramContextMode::FullHarness
+        );
+    }
+
+    #[test]
+    fn harnessless_personal_agents_get_program_only_when_the_focus_area_names_one() {
+        let def = definition(FOCUS_WITH_PROGRAM);
+        assert!(def.harness.is_none());
+        assert_eq!(
+            program_context_mode(&def, "harness:outward:replies"),
+            ProgramContextMode::ProgramOnly
+        );
+        assert_eq!(
+            program_context_mode(&def, "harness:outward:idle"),
+            ProgramContextMode::None
+        );
+        assert_eq!(
+            program_context_mode(&def, "harness:outward:unknown"),
+            ProgramContextMode::None
+        );
+    }
+
+    #[test]
+    fn non_personal_agents_get_no_program_context() {
+        let def = definition("kind: worker\nharness: {}\n");
+        assert_eq!(
+            program_context_mode(&def, "harness:outward:replies"),
+            ProgramContextMode::None
+        );
+    }
+
+    #[test]
+    fn focus_area_shared_programs_override_the_global_list() {
+        let def = definition(FOCUS_WITH_PROGRAM);
+        let areas = &def.autonomous_config.as_ref().expect("config").focus_areas;
+        let global = || vec!["positioning.md".to_string()];
+
+        // Some(list) replaces the global list, without reading it.
+        assert_eq!(
+            shared_program_names(Some(&areas[0]), || panic!("global list must not load")),
+            vec!["facts.md".to_string()]
+        );
+        // None falls back to the global list (also when no focus area matched).
+        assert_eq!(
+            shared_program_names(Some(&areas[1]), global),
+            vec!["positioning.md".to_string()]
+        );
+        assert_eq!(
+            shared_program_names(None, global),
+            vec!["positioning.md".to_string()]
+        );
+        // Some([]) means none.
+        let mut silent = areas[1].clone();
+        silent.shared_programs = Some(Vec::new());
+        assert!(shared_program_names(Some(&silent), global).is_empty());
     }
 }
 
@@ -3854,8 +4024,11 @@ async fn requeue_scheduled_trigger_for_retry(
 async fn dispatch_scheduled_trigger(
     agent_api: &AgentApiServices,
     v2_orchestrator: &Arc<MagicianV2Orchestrator>,
-    scheduled: ScheduledTrigger,
+    mut scheduled: ScheduledTrigger,
 ) {
+    // A scheduler entry restarts from zero when its agent is re-created, while
+    // the old agent's episodes remain; move a colliding fire past them first.
+    magician::off_frame!(rebase_scheduled_trigger_past_used_seqs(agent_api, &mut scheduled).await);
     let mut prepared = match prepare_scheduled_trigger_dispatch(agent_api, &scheduled).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => return,
@@ -4068,6 +4241,35 @@ async fn dispatch_scheduled_trigger(
                     magician::magician_v2::harness::HarnessCycleDispatchOutcome::DroppedReservationChanged,
                     serde_json::json!({ "reason": "active_reservation_changed_before_dispatch" }),
                 );
+                return;
+            }
+            if magician::off_frame!(
+                dispatch_trigger_tuple_already_recorded(agent_api, &prepared).await
+            ) {
+                // The tuple already ran: settle the cycle before a task or
+                // execution is provisioned for it.
+                record_recorded_trigger_tuple_drop(agent_api, &prepared, "before_provision");
+                if let Some(next_dispatch) = complete_cycle_and_take_next_dispatch(
+                    agent_api,
+                    &prepared.principal,
+                    &prepared.workspace,
+                    &prepared.agent_id,
+                    &prepared.goal_id,
+                    &prepared.cycle_id,
+                    true,
+                )
+                .await
+                {
+                    drop(_control_guard);
+                    drop(_agent_lifecycle_exclusion);
+                    launch_manual_trigger_dispatch(
+                        agent_api,
+                        v2_orchestrator,
+                        next_dispatch,
+                        harness_root_permit,
+                    )
+                    .await;
+                }
                 return;
             }
             if let Err(error) = ensure_dispatch_task_backed_root(
@@ -4545,6 +4747,25 @@ async fn run_approval_expiry_sweep(
 /// every 5 minutes.
 const DISABLED_DRAINED_REVISIT: chrono::Duration = chrono::Duration::hours(1);
 
+/// Agent memory sweeps allowed to run at once in one consolidation tick.
+const MEMORY_SWEEP_AGENT_CONCURRENCY: usize = 4;
+
+/// The distinct `(principal, workspace)` scopes of `definitions`, each once,
+/// in a stable order: the scopes whose user-knowledge pass a sweep tick runs.
+fn user_knowledge_pass_scopes(definitions: &[AgentDefinition]) -> Vec<(String, String)> {
+    definitions
+        .iter()
+        .filter_map(|definition| {
+            let principal = definition.principal.as_deref()?.trim();
+            let workspace = definition.workspace.as_deref()?.trim();
+            (!principal.is_empty() && !workspace.is_empty())
+                .then(|| (principal.to_string(), workspace.to_string()))
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 async fn run_memory_consolidation_sweep(
     agent_api: &AgentApiServices,
     v2_orchestrator: &Arc<MagicianV2Orchestrator>,
@@ -4554,6 +4775,9 @@ async fn run_memory_consolidation_sweep(
         return;
     }
 
+    // Never sweep an agent whose definition is gone: the sweep re-creates the
+    // agent's memory files on every tick it runs.
+    let _ = magician::off_frame!(reconcile_runtime_definitions_with_store(agent_api).await);
     let definitions = agent_api.runtime.list_definitions().await;
     if definitions.is_empty() {
         return;
@@ -4574,10 +4798,45 @@ async fn run_memory_consolidation_sweep(
     }
 
     let now = Utc::now();
-    // The Semaphore::new(4) that capped concurrent consolidation sweeps was
-    // removed: the LLM dispatch queue now owns provider back-pressure (its
-    // Background lane + per-provider concurrency caps), so this redundant
-    // outer cap on the sweep is gone.
+
+    // The user-knowledge lifecycle pass belongs to a scope, not to an agent.
+    // It used to run inside every agent's batch sweep, so all ~30 agents of a
+    // scope took the same exclusive lock on the multi-megabyte
+    // `knowledge.json` at once and about half timed out each tick. Run it
+    // once per scope, before the agent sweeps. (The resurfacing worker runs
+    // the same pass, but it can be off; this stays the fallback.)
+    for (principal, workspace) in user_knowledge_pass_scopes(&definitions) {
+        let consolidator =
+            agent_api.resolve_memory_consolidator(Some(&principal), Some(&workspace));
+        match magician::off_frame!(consolidator.run_user_knowledge_pass(now).await) {
+            Ok(summary) => {
+                if !summary.changed_targets.is_empty() || !summary.skipped_targets.is_empty() {
+                    debug!(
+                        principal = %principal,
+                        workspace = %workspace,
+                        reviewed = summary.reviewed,
+                        changed = ?summary.changed_targets,
+                        skipped = ?summary.skipped_targets,
+                        "User knowledge pass finished"
+                    );
+                }
+            },
+            Err(error) => warn!(
+                principal = %principal,
+                workspace = %workspace,
+                error = %error,
+                "User knowledge pass failed"
+            ),
+        }
+    }
+
+    // At most MEMORY_SWEEP_AGENT_CONCURRENCY agent sweeps run at once. This is
+    // for shared memory-file I/O contention (per-agent sweeps still read and
+    // write scope-level files under exclusive locks with a 10 s deadline), not
+    // the old LLM back-pressure reason: the LLM dispatch queue owns provider
+    // back-pressure. A tick that runs long only delays the next one (the
+    // ticker skips missed ticks), it never overlaps it.
+    let sweep_permits = Arc::new(tokio::sync::Semaphore::new(MEMORY_SWEEP_AGENT_CONCURRENCY));
     let mut handles = Vec::new();
     let mut skipped_drained = 0usize;
 
@@ -4601,8 +4860,12 @@ async fn run_memory_consolidation_sweep(
         let agent_api = agent_api.clone();
         let v2_orchestrator = Arc::clone(v2_orchestrator);
         let drained_disabled = Arc::clone(drained_disabled);
+        let sweep_permits = Arc::clone(&sweep_permits);
 
         let handle = tokio::spawn(async move {
+            let Ok(_sweep_permit) = sweep_permits.acquire_owned().await else {
+                return;
+            };
             let scoped_memory_consolidator = match agent_api
                 .resolve_cycle_memory_consolidator(&definition, &agent_id)
                 .await
@@ -6264,6 +6527,79 @@ async fn clear_local_agent_state(
         .unregister_agent(agent_id)
         .await?;
     clear_local_agent_runtime_state(agent_api, principal, workspace, agent_id).await
+}
+
+/// Bring the runtime's in-memory definitions in line with the definition
+/// store, which reads disk: evict every runtime definition whose file is gone
+/// and refresh any whose file changed. Returns the evicted
+/// `principal/workspace/agent_id` triples.
+///
+/// The runtime keeps its own copy of every definition (startup hydration,
+/// create, update), and background loops read that copy:
+/// `run_memory_consolidation_sweep` iterates `runtime.list_definitions()`.
+/// `POST /agents/refresh-definitions` used to clear only the store's cache, so
+/// an agent whose directory was removed out of band answered 404 everywhere
+/// while the sweep kept running for it every tick, re-creating its memory
+/// files. An eviction clears the same local state a delete does (scheduler
+/// entries, queued dispatches, pause flag) under the control gate, and only
+/// after the store confirms the definition is absent; a read error keeps it.
+async fn reconcile_runtime_definitions_with_store(
+    agent_api: &AgentApiServices,
+) -> Vec<(String, String, String)> {
+    let mut evicted = Vec::new();
+    for definition in agent_api.runtime.list_definitions().await {
+        let (Some(principal), Some(workspace)) =
+            (definition.principal.clone(), definition.workspace.clone())
+        else {
+            continue;
+        };
+        let agent_id = definition.agent_id.clone();
+        let definition_store = agent_api.resolve_definition_store(&principal, &workspace);
+        match definition_store.get_definition(&agent_id).await {
+            Ok(Some(record)) => {
+                if record.definition != definition {
+                    agent_api.runtime.upsert_definition(record.definition).await;
+                }
+            },
+            Ok(None) => {
+                let _control_guard = agent_api.control_gate.lock().await;
+                // Re-check under the gate: a create of the same id may have
+                // landed since the first read.
+                if !matches!(definition_store.get_definition(&agent_id).await, Ok(None)) {
+                    continue;
+                }
+                if let Err(error) =
+                    clear_local_agent_state(agent_api, &principal, &workspace, &agent_id).await
+                {
+                    warn!(
+                        principal = %principal,
+                        workspace = %workspace,
+                        agent_id = %agent_id,
+                        error = %error,
+                        "Failed to clear scheduler/runtime state for a definition removed from disk"
+                    );
+                }
+                info!(
+                    principal = %principal,
+                    workspace = %workspace,
+                    agent_id = %agent_id,
+                    "Evicted runtime definition whose definition file is gone"
+                );
+                evicted.push((principal, workspace, agent_id));
+            },
+            Err(error) => warn!(
+                principal = %principal,
+                workspace = %workspace,
+                agent_id = %agent_id,
+                error = %error,
+                "Could not confirm a runtime definition against the definition store; keeping it"
+            ),
+        }
+    }
+    if !evicted.is_empty() {
+        invalidate_agent_list_cache(agent_api).await;
+    }
+    evicted
 }
 
 fn emit_agent_event(
@@ -11577,14 +11913,14 @@ async fn execution_goal_for_manual_dispatch_inner(
         ""
     };
     let Some(prompt_pipeline) = dispatch.definition.prompt_pipeline.as_ref() else {
-        if strategy_hint.is_empty() {
-            return Ok(dispatch.goal_description.clone());
-        }
-        return Ok(format!(
-            "{}\n\nStrategy Preference:\n{}",
-            dispatch.goal_description.trim(),
-            strategy_hint
-        ));
+        // No prompt pipeline: the focus text and strategy hint, then the
+        // program context exactly as the pipeline branches append it. This
+        // branch used to return before `append_harness_program_context`, so a
+        // pipeline-less personal agent whose focus area names a `program:`
+        // ran with no Program Context and no Shared Context at all.
+        let mut goal = goal_without_prompt_pipeline(&dispatch.goal_description, strategy_hint);
+        append_harness_program_context(agent_api, dispatch, &mut goal).await;
+        return Ok(goal);
     };
 
     // P6-T3: Consume feedback injections from previous cycle.
@@ -11653,10 +11989,24 @@ async fn execution_goal_for_manual_dispatch_inner(
     Ok(assembled)
 }
 
+/// The goal head for a definition without a prompt pipeline: the focus text,
+/// plus the strategy hint when one applies. Program context is appended after
+/// it by the caller, as on every other branch.
+fn goal_without_prompt_pipeline(goal_description: &str, strategy_hint: &str) -> String {
+    if strategy_hint.is_empty() {
+        return goal_description.to_string();
+    }
+    format!(
+        "{}\n\nStrategy Preference:\n{}",
+        goal_description.trim(),
+        strategy_hint
+    )
+}
+
 /// Run a git subcommand in `root`, returning trimmed stdout on success (best-effort).
 async fn run_harness_git(root: &std::path::Path, args: &[&str]) -> Option<String> {
     let output = time::timeout(StdDuration::from_secs(2), async {
-        tokio::process::Command::new("git")
+        tokio::process::Command::new(runtime_core::process::git_program())
             .arg("-C")
             .arg(root)
             .args(args)
@@ -11731,16 +12081,85 @@ fn record_harness_program_missing(
 
 const HARNESS_PROGRAM_MISSING_EVENT: &str = "harness_program_missing";
 
+/// How much deterministic program context a cycle receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgramContextMode {
+    /// No program context (non-personal agents, or a personal agent with no
+    /// harness and no program on the resolved focus area).
+    None,
+    /// The program document plus shared context, nothing else: a personal
+    /// agent without `harness:` whose focus area names a `program:` (e.g. an
+    /// outward-facing agent deliberately denied the harness toolset). It gets
+    /// no progress contract, runtime state, anomalies, health, backlog, repo
+    /// state or metrics — it has no harness tools to act on them.
+    ProgramOnly,
+    /// The full harness cycle context (harness-enabled personal agents).
+    FullHarness,
+}
+
+/// Decide the program context for a cycle. Pure, so the gate is unit-tested.
+fn program_context_mode(
+    definition: &magician::magician_v2::agents::AgentDefinition,
+    goal_id: &str,
+) -> ProgramContextMode {
+    if definition.kind != magician::magician_v2::agents::types::AgentKind::Personal {
+        return ProgramContextMode::None;
+    }
+    if definition.harness.is_some() {
+        return ProgramContextMode::FullHarness;
+    }
+    let names_program =
+        magician::magician_v2::agents::resolve_focus_area_for_goal_id(definition, goal_id)
+            .and_then(|focus_area| focus_area.program.as_deref())
+            .is_some_and(|program| !program.trim().is_empty());
+    if names_program {
+        ProgramContextMode::ProgramOnly
+    } else {
+        ProgramContextMode::None
+    }
+}
+
+/// The shared program documents for a cycle: the focus area's override when
+/// it has one (`Some([])` = none), else the global config list. `global` is
+/// only called when needed, so an overriding area never reads the config.
+fn shared_program_names(
+    focus_area: Option<&magician::magician_v2::agents::types::FocusArea>,
+    global: impl FnOnce() -> Vec<String>,
+) -> Vec<String> {
+    match focus_area.and_then(|focus_area| focus_area.shared_programs.as_ref()) {
+        Some(list) => list.clone(),
+        None => global(),
+    }
+}
+
+/// `harness.shared_program_docs`, reloaded per cycle so an edit applies to the
+/// next cycle. A config read failure degrades to no shared context: it is a
+/// supplement to the program, never a reason to block the cycle prompt.
+fn configured_shared_program_docs() -> Vec<String> {
+    let config_path = magician::config::magician_config_path();
+    match magician::config::load_magician_config_from_path(&config_path) {
+        Ok(config) => config.harness.shared_program_docs,
+        Err(error) => {
+            warn!(
+                error = %error,
+                "[API] Failed to load harness.shared_program_docs; cycle runs without shared context"
+            );
+            Vec::new()
+        },
+    }
+}
+
 async fn append_harness_program_context(
     agent_api: &AgentApiServices,
     dispatch: &ManualTriggerDispatch,
     assembled: &mut String,
 ) {
-    // Deterministic program context is only assembled for harness-enabled
-    // personal agents (the C-suite / owner agents that run the meta-harness).
-    if dispatch.definition.kind != magician::magician_v2::agents::types::AgentKind::Personal
-        || dispatch.definition.harness.is_none()
-    {
+    // Deterministic program context is assembled for harness-enabled personal
+    // agents (the C-suite / owner agents that run the meta-harness) in full,
+    // and for harness-less personal agents whose focus area names a program
+    // as the program plus shared context only.
+    let mode = program_context_mode(&dispatch.definition, &dispatch.goal_id);
+    if mode == ProgramContextMode::None {
         return;
     }
 
@@ -11811,15 +12230,66 @@ async fn append_harness_program_context(
         assembled.push_str("\n\n");
     }
     assembled.push_str("## Program Context\n");
+    // The whole-document hash is printed so an agent can propose a revision
+    // against exactly the version it read (`propose_program_revision`).
     if let Some(section) = program.section.as_deref() {
         assembled.push_str(&format!(
-            "Source: {} [{}]\n\n",
-            program.relative_path, section
+            "Source: {} [{}] (sha256 {})\n\n",
+            program.relative_path, section, program.sha256
         ));
     } else {
-        assembled.push_str(&format!("Source: {}\n\n", program.relative_path));
+        assembled.push_str(&format!(
+            "Source: {} (sha256 {})\n\n",
+            program.relative_path, program.sha256
+        ));
     }
     assembled.push_str(program.content.trim());
+
+    // (a.0) Shared context: owner-maintained documents every cycle should
+    // see, not only the cycle whose own program they are.
+    let focus_area = magician::magician_v2::agents::resolve_focus_area_for_goal_id(
+        &dispatch.definition,
+        &dispatch.goal_id,
+    );
+    let shared_names = shared_program_names(focus_area, configured_shared_program_docs);
+    let mut ingested_sources =
+        vec![loader.source_metadata(&dispatch.principal, &dispatch.workspace, &program)];
+    if let Some((block, sources)) =
+        magician::magician_v2::harness::program_doc::load_shared_program_context_with_sources(
+            &agent_api.durable_artifact_workspace,
+            &dispatch.principal,
+            &dispatch.workspace,
+            &shared_names,
+            &program.relative_path,
+        )
+        .await
+    {
+        assembled.push_str("\n\n");
+        assembled.push_str(&block);
+        ingested_sources.extend(sources);
+    }
+
+    if let Err(error) = loader
+        .record_context_ingestion(
+            &dispatch.principal,
+            &dispatch.workspace,
+            &dispatch.definition,
+            &dispatch.goal_id,
+            &dispatch.cycle_id,
+            ingested_sources,
+        )
+        .await
+    {
+        warn!(agent_id = %dispatch.agent_id, error = %error,
+            "[API] Failed to persist program context provenance");
+    }
+
+    // Program-only agents stop here: everything below is harness state that
+    // only the harness toolset can act on.
+    if mode == ProgramContextMode::ProgramOnly {
+        return;
+    }
+
     assembled.push_str(
         "\n\n### Harness Progress Contract\n\
          Do not finish a harness cycle with only a narrative briefing when a concrete \
@@ -14131,7 +14601,34 @@ async fn prepare_manual_trigger_with_store(
         },
     };
 
-    let trigger_seq = match scheduler.allocate_trigger_seq(agent_id, &goal_id).await {
+    // The cycle scope is resolved before a sequence is allocated: the
+    // allocation floor is read from that scope's episodes and runtime state.
+    let (cycle_principal, cycle_workspace) = match required_cycle_scope(&definition, agent_id) {
+        Ok(scope) => scope,
+        Err(error) => {
+            return Err(api_error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "agent_scope_missing",
+                error,
+                Some(serde_json::json!({
+                    "agent_id": agent_id,
+                })),
+            ));
+        },
+    };
+    let used_seq_floor = used_trigger_seq_floor(
+        agent_api,
+        &cycle_principal,
+        &cycle_workspace,
+        agent_id,
+        &goal_id,
+    )
+    .await;
+
+    let trigger_seq = match scheduler
+        .allocate_trigger_seq_above(agent_id, &goal_id, used_seq_floor)
+        .await
+    {
         Ok(seq) => seq,
         Err(SchedulerError::NotRegistered { .. }) => {
             // Auto-register an Idle scheduler entry so manual triggers can
@@ -14147,7 +14644,10 @@ async fn prepare_manual_trigger_with_store(
                     &err,
                 ));
             }
-            match scheduler.allocate_trigger_seq(agent_id, &goal_id).await {
+            match scheduler
+                .allocate_trigger_seq_above(agent_id, &goal_id, used_seq_floor)
+                .await
+            {
                 Ok(seq) => seq,
                 Err(err) => {
                     return Err(trigger_sequence_allocation_error_response(
@@ -14163,19 +14663,7 @@ async fn prepare_manual_trigger_with_store(
         },
     };
 
-    let (principal, workspace) = match required_cycle_scope(&definition, agent_id) {
-        Ok(scope) => scope,
-        Err(error) => {
-            return Err(api_error_response(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "agent_scope_missing",
-                error,
-                Some(serde_json::json!({
-                    "agent_id": agent_id,
-                })),
-            ));
-        },
-    };
+    let (principal, workspace) = (cycle_principal, cycle_workspace);
     let cycle_id = AgentRuntime::cycle_id_for_scope(
         Some(&principal),
         Some(&workspace),
@@ -14301,6 +14789,37 @@ async fn clear_pending_dispatches_for_agent(
     let cleared = agent_api
         .runtime
         .clear_pending_triggers_in_scope(Some(principal), Some(workspace), agent_id)
+        .await;
+    if cleared.is_empty() {
+        return 0;
+    }
+    let mut pending = agent_api.pending_cycle_dispatches.write().await;
+    for reservation in &cleared {
+        pending.remove(&reservation.cycle_id);
+    }
+    cleared.len()
+}
+
+/// Harness runtime stop: drop only this agent's queued harness-goal cycles.
+/// Other queued work of the same agent (a non-harness goal, a chat delegation
+/// admitted through the trigger registry) is not company-loop work and stays
+/// queued.
+async fn clear_pending_harness_dispatches_for_agent(
+    agent_api: &AgentApiServices,
+    principal: &str,
+    workspace: &str,
+    agent_id: &str,
+) -> usize {
+    let cleared = agent_api
+        .runtime
+        .clear_pending_triggers_matching_in_scope(
+            Some(principal),
+            Some(workspace),
+            agent_id,
+            |reservation| {
+                magician::magician_v2::harness::cycle_outcome::is_harness_goal(&reservation.goal_id)
+            },
+        )
         .await;
     if cleared.is_empty() {
         return 0;
@@ -14456,6 +14975,272 @@ async fn abandon_cycle_and_take_next_dispatch_controlled(
     .await
 }
 
+/// Highest trigger sequence already used for this agent/goal in the cycle
+/// scope: the runtime's active, queued and recently completed tuples, and the
+/// persisted episodes.
+///
+/// The scheduler counter is not enough on its own. It lives in the scheduler
+/// entry, which is dropped when an agent is deleted, while the agent's
+/// episodes live under the scoped memory root and survive. A re-created agent
+/// with the same id restarted at `trigger_seq` 1 and was handed tuples its old
+/// episodes already recorded, so the dispatch was dropped as a duplicate after
+/// the API had answered "triggered". Allocation therefore starts above this
+/// floor.
+///
+/// A failed episode read is logged and treated as no episodes, the same
+/// fail-open policy the dispatch-time duplicate check has always used: a
+/// transient read failure must not block every trigger of the agent.
+async fn used_trigger_seq_floor(
+    agent_api: &AgentApiServices,
+    principal: &str,
+    workspace: &str,
+    agent_id: &str,
+    goal_id: &str,
+) -> u64 {
+    let runtime_floor = agent_api
+        .runtime
+        .highest_known_trigger_seq_in_scope(Some(principal), Some(workspace), agent_id, goal_id)
+        .await
+        .unwrap_or(0);
+    let episode_floor = match agent_api
+        .memory_resolver
+        .resolve_for_scope(principal, workspace)
+    {
+        Ok(memory_service) => match memory_service
+            .highest_episode_trigger_seq(agent_id, goal_id)
+            .await
+        {
+            Ok(highest) => highest.unwrap_or(0),
+            Err(error) => {
+                warn!(
+                    agent_id = %agent_id,
+                    goal_id = %goal_id,
+                    error = %error,
+                    "Could not read recorded episode sequences; allocating trigger_seq from runtime state only"
+                );
+                0
+            },
+        },
+        Err(error) => {
+            warn!(
+                agent_id = %agent_id,
+                goal_id = %goal_id,
+                error = %error,
+                "Could not resolve scoped memory; allocating trigger_seq from runtime state only"
+            );
+            0
+        },
+    };
+    runtime_floor.max(episode_floor)
+}
+
+/// Move a consumed cron fire past every sequence already used for its
+/// agent/goal (see [`used_trigger_seq_floor`]). Updates `scheduled` in place
+/// so a later retry rollback still names the tuple the scheduler holds.
+async fn rebase_scheduled_trigger_past_used_seqs(
+    agent_api: &AgentApiServices,
+    scheduled: &mut ScheduledTrigger,
+) {
+    let floor = used_trigger_seq_floor(
+        agent_api,
+        &scheduled.principal,
+        &scheduled.workspace,
+        &scheduled.agent_id,
+        &scheduled.goal_id,
+    )
+    .await;
+    if scheduled.trigger_seq > floor {
+        return;
+    }
+    let scheduler = match agent_api
+        .resolve_scheduler(&scheduled.principal, &scheduled.workspace)
+        .await
+    {
+        Ok(scheduler) => scheduler,
+        Err(error) => {
+            warn!(
+                agent_id = %scheduled.agent_id,
+                goal_id = %scheduled.goal_id,
+                trigger_seq = scheduled.trigger_seq,
+                error = %error,
+                "Could not resolve scheduler to rebase a colliding cron trigger_seq"
+            );
+            return;
+        },
+    };
+    match scheduler
+        .rebase_consumed_trigger_seq(scheduled, floor)
+        .await
+    {
+        Ok(rebased) => {
+            info!(
+                agent_id = %scheduled.agent_id,
+                goal_id = %scheduled.goal_id,
+                consumed_trigger_seq = scheduled.trigger_seq,
+                trigger_seq = rebased,
+                used_seq_floor = floor,
+                "Rebased cron trigger_seq past sequences already used for this agent/goal"
+            );
+            scheduled.trigger_seq = rebased;
+        },
+        Err(error) => warn!(
+            agent_id = %scheduled.agent_id,
+            goal_id = %scheduled.goal_id,
+            trigger_seq = scheduled.trigger_seq,
+            error = %error,
+            "Could not rebase a colliding cron trigger_seq; the dispatch duplicate check will drop it"
+        ),
+    }
+}
+
+/// Whether a stored episode already records this dispatch's trigger tuple,
+/// i.e. the cycle already ran. Read failures are logged and treated as "not
+/// recorded" (the long-standing fail-open policy of this check).
+async fn dispatch_trigger_tuple_already_recorded(
+    agent_api: &AgentApiServices,
+    dispatch: &ManualTriggerDispatch,
+) -> bool {
+    let memory_service = match agent_api
+        .memory_resolver
+        .resolve_for_scope(&dispatch.principal, &dispatch.workspace)
+    {
+        Ok(memory_service) => memory_service,
+        Err(error) => {
+            warn!(
+                agent_id = %dispatch.agent_id,
+                goal_id = %dispatch.goal_id,
+                cycle_id = %dispatch.cycle_id,
+                error = %error,
+                "Duplicate trigger tuple check could not resolve scoped memory; continuing"
+            );
+            return false;
+        },
+    };
+    match memory_service
+        .has_episode_for_trigger(&dispatch.agent_id, &dispatch.goal_id, dispatch.trigger_seq)
+        .await
+    {
+        Ok(found) => found,
+        Err(error) => {
+            warn!(
+                agent_id = %dispatch.agent_id,
+                goal_id = %dispatch.goal_id,
+                cycle_id = %dispatch.cycle_id,
+                trigger_seq = dispatch.trigger_seq,
+                error = %error,
+                "Duplicate trigger tuple check failed; continuing"
+            );
+            false
+        },
+    }
+}
+
+fn record_recorded_trigger_tuple_drop(
+    agent_api: &AgentApiServices,
+    dispatch: &ManualTriggerDispatch,
+    stage: &str,
+) {
+    info!(
+        agent_id = %dispatch.agent_id,
+        goal_id = %dispatch.goal_id,
+        cycle_id = %dispatch.cycle_id,
+        trigger_seq = dispatch.trigger_seq,
+        stage = stage,
+        "Skipping duplicate trigger tuple: episode already exists"
+    );
+    magician::magician_v2::harness::record_harness_cycle_outcome(
+        &harness_cycle_outcome_store(agent_api),
+        &dispatch.principal,
+        &dispatch.workspace,
+        &dispatch.agent_id,
+        &dispatch.goal_id,
+        Some(dispatch.cycle_id.as_str()),
+        Some(dispatch.trigger_seq),
+        magician::magician_v2::harness::HarnessCycleDispatchOutcome::DroppedDuplicate,
+        serde_json::json!({
+            "reason": "episode_already_exists_for_trigger",
+            "trigger_seq": dispatch.trigger_seq,
+            "stage": stage,
+        }),
+    );
+}
+
+/// Refuse a manual dispatch admitted to start now whose tuple an episode
+/// already records, before any task or execution is provisioned for it.
+/// Releases the reservation and returns the 409 the caller must see, instead
+/// of a "triggered" answer for a cycle that will never run.
+async fn refuse_recorded_manual_dispatch(
+    agent_api: &AgentApiServices,
+    dispatch: &ManualTriggerDispatch,
+) -> Option<ManualTriggerOutcome> {
+    if !dispatch_trigger_tuple_already_recorded(agent_api, dispatch).await {
+        return None;
+    }
+    record_recorded_trigger_tuple_drop(agent_api, dispatch, "before_provision");
+    let _ = agent_api
+        .runtime
+        .complete_active_cycle_without_promotion_in_scope(
+            Some(&dispatch.principal),
+            Some(&dispatch.workspace),
+            &dispatch.agent_id,
+            &dispatch.goal_id,
+            &dispatch.cycle_id,
+        )
+        .await;
+    let body = api_error_response(
+        StatusCode::CONFLICT,
+        "duplicate_trigger_tuple",
+        "Trigger tuple already ran: an episode records it, so no cycle was started",
+        Some(serde_json::json!({
+            "agent_id": dispatch.agent_id,
+            "goal_id": dispatch.goal_id,
+            "trigger_seq": dispatch.trigger_seq,
+            "cycle_id": dispatch.cycle_id,
+            "reason": "episode_already_exists_for_trigger",
+        })),
+    );
+    Some(ManualTriggerOutcome::Error {
+        http_status: body.status().as_u16(),
+        body,
+    })
+}
+
+/// Settle an execution that was provisioned for a cycle which is then not
+/// run, so it does not sit in `Planning` forever with nothing driving it.
+async fn settle_unlaunched_cycle_execution(
+    agent_api: &AgentApiServices,
+    v2_orchestrator: &Arc<MagicianV2Orchestrator>,
+    execution_id: &str,
+    reason: &str,
+) {
+    match cancel_execution_with_retries(
+        v2_orchestrator,
+        execution_id,
+        CANCEL_ACTIVE_CYCLE_MAX_ATTEMPTS,
+        CANCEL_ACTIVE_CYCLE_RETRY_DELAY,
+    )
+    .await
+    {
+        Ok(true) => {},
+        Ok(false) => match v2_orchestrator.get_execution(execution_id).await {
+            Ok(execution) if execution.waiting_state.is_terminal() => {},
+            Err(error) if execution_lookup_error_is_missing(&error) => return,
+            Ok(_) | Err(_) => warn!(
+                execution_id = %execution_id,
+                reason = %reason,
+                "Unlaunched cycle execution stayed nonterminal after cancellation"
+            ),
+        },
+        Err(error) => warn!(
+            execution_id = %execution_id,
+            reason = %reason,
+            error = %error,
+            "Failed to cancel unlaunched cycle execution"
+        ),
+    }
+    persist_task_backed_cancelled_execution(agent_api, v2_orchestrator, execution_id).await;
+}
+
 async fn launch_manual_trigger_dispatch(
     agent_api: &AgentApiServices,
     v2_orchestrator: &Arc<MagicianV2Orchestrator>,
@@ -14507,6 +15292,23 @@ async fn launch_manual_trigger_dispatch(
                 .await;
                 return;
             }
+        }
+        if magician::off_frame!(dispatch_trigger_tuple_already_recorded(agent_api, &dispatch).await)
+        {
+            // A promoted dispatch whose tuple already ran: settle the cycle
+            // here, before a task or execution is provisioned for it.
+            record_recorded_trigger_tuple_drop(agent_api, &dispatch, "before_provision");
+            current = complete_cycle_and_take_next_dispatch_controlled(
+                agent_api,
+                &dispatch.principal,
+                &dispatch.workspace,
+                &dispatch.agent_id,
+                &dispatch.goal_id,
+                &dispatch.cycle_id,
+                true,
+            )
+            .await;
+            continue;
         }
         let harness_root_permit =
             match try_admit_harness_root(&dispatch.goal_id, inherited_harness_root_permit.take()) {
@@ -14697,6 +15499,15 @@ fn dispatch_manual_trigger_cycle(
                     magician::magician_v2::harness::HarnessCycleDispatchOutcome::DroppedProvisionFailed,
                     serde_json::json!({ "reason": "missing_scope", "error": error.as_str() }),
                 );
+                magician::off_frame!(
+                    settle_unlaunched_cycle_execution(
+                        &agent_api,
+                        &v2_orchestrator,
+                        &runtime_execution_id,
+                        "missing_scope",
+                    )
+                    .await
+                );
                 let _ = complete_cycle_and_take_next_dispatch_controlled(
                     &agent_api,
                     &dispatch_principal,
@@ -14733,6 +15544,15 @@ fn dispatch_manual_trigger_cycle(
                     magician::magician_v2::harness::HarnessCycleDispatchOutcome::DroppedProvisionFailed,
                     serde_json::json!({ "reason": "memory_service_unavailable", "error": error.as_str() }),
                 );
+                magician::off_frame!(
+                    settle_unlaunched_cycle_execution(
+                        &agent_api,
+                        &v2_orchestrator,
+                        &runtime_execution_id,
+                        "memory_service_unavailable",
+                    )
+                    .await
+                );
                 let _ = complete_cycle_and_take_next_dispatch_controlled(
                     &agent_api, &principal, &workspace, &agent_id, &goal_id, &cycle_id, false,
                 )
@@ -14767,6 +15587,15 @@ fn dispatch_manual_trigger_cycle(
                 Some(trigger_seq),
                 magician::magician_v2::harness::HarnessCycleDispatchOutcome::DroppedPaused,
                 serde_json::json!({ "reason": "agent_paused_before_dispatch" }),
+            );
+            magician::off_frame!(
+                settle_unlaunched_cycle_execution(
+                    &agent_api,
+                    &v2_orchestrator,
+                    &runtime_execution_id,
+                    "agent_paused_before_dispatch",
+                )
+                .await
             );
             let _ = complete_cycle_and_take_next_dispatch_controlled(
                 &agent_api, &principal, &workspace, &agent_id, &goal_id, &cycle_id, false,
@@ -14812,7 +15641,20 @@ fn dispatch_manual_trigger_cycle(
                 serde_json::json!({
                     "reason": "episode_already_exists_for_trigger",
                     "trigger_seq": trigger_seq,
+                    "stage": "dispatch",
                 }),
+            );
+            // Admission already provisioned a task and execution for this
+            // cycle; leaving them would park the execution in Planning with
+            // nothing to drive it.
+            magician::off_frame!(
+                settle_unlaunched_cycle_execution(
+                    &agent_api,
+                    &v2_orchestrator,
+                    &runtime_execution_id,
+                    "episode_already_exists_for_trigger",
+                )
+                .await
             );
             let next_dispatch = complete_cycle_and_take_next_dispatch_controlled(
                 &agent_api, &principal, &workspace, &agent_id, &goal_id, &cycle_id, true,
@@ -15058,6 +15900,9 @@ fn governed_app_generic_lifecycle_refused(execution_id: &str) -> HttpResponse {
     )
 }
 
+/// Cancel every admitted execution of one agent plus each of its active
+/// cycles (agent pause, delete, disable). The harness runtime stop narrows
+/// both sets to harness cycles first; see `stop_active_harness_agents`.
 async fn cancel_active_agent_cycles(
     agent_api: &AgentApiServices,
     v2_orchestrator: &Arc<MagicianV2Orchestrator>,
@@ -15070,8 +15915,33 @@ async fn cancel_active_agent_cycles(
         .runtime
         .active_cycles_for_agent_in_scope(principal, workspace, agent_id)
         .await;
+    cancel_admitted_executions_and_cycles(
+        agent_api,
+        v2_orchestrator,
+        principal,
+        workspace,
+        agent_id,
+        admitted_execution_ids,
+        &active_cycles,
+    )
+    .await
+}
+
+/// Cancel `admitted_execution_ids` plus the executions bound to
+/// `active_cycles` (each as a tree, so delegated descendants go too), then
+/// clear each cycle reservation whose execution settled. Returns `false` when
+/// any execution stayed nonterminal.
+async fn cancel_admitted_executions_and_cycles(
+    agent_api: &AgentApiServices,
+    v2_orchestrator: &Arc<MagicianV2Orchestrator>,
+    principal: &str,
+    workspace: &str,
+    agent_id: &str,
+    admitted_execution_ids: &[String],
+    active_cycles: &[magician::magician_v2::agents::AgentCycleReservation],
+) -> bool {
     let mut execution_ids = admitted_execution_ids.to_vec();
-    for active_cycle in &active_cycles {
+    for active_cycle in active_cycles {
         let Some(execution_id) = active_cycle.execution_id.as_deref() else {
             warn!(
                 agent_id = %agent_id,
@@ -15221,6 +16091,17 @@ async fn stop_active_harness_agents(
         harness_agents.push(key);
     }
     harness_agents.sort();
+    // Task manifests carry the durable provenance that tells a harness cycle
+    // from owner-started work. Without them only live registry cycles qualify.
+    let artifact_v2_service = match resolve_artifact_v2_service(&agent_api.runtime) {
+        Ok(service) => Some(service),
+        Err(error) => {
+            summary.warnings.push(format!(
+                "task provenance is unavailable ({error}); only live harness cycles were targeted"
+            ));
+            None
+        },
+    };
     for (principal, workspace, agent_id) in harness_agents {
         summary.harness_agents_seen += 1;
         let admission = match acquire_agent_lifecycle_mutation_admission(
@@ -15241,16 +16122,47 @@ async fn stop_active_harness_agents(
                 continue;
             },
         };
-        summary.pending_dispatches_cleared +=
-            clear_pending_dispatches_for_agent(agent_api, &principal, &workspace, &agent_id).await;
-        summary.active_cycles_targeted += admission.execution_ids.len();
-        if !cancel_active_agent_cycles(
+        summary.pending_dispatches_cleared += clear_pending_harness_dispatches_for_agent(
+            agent_api, &principal, &workspace, &agent_id,
+        )
+        .await;
+        // The admission lists every nonterminal execution the agent owns:
+        // VibeDev runs it leads, chat work, owner tasks. A harness agent is
+        // still an ordinary agent, so only its harness cycles are stopped.
+        let active_cycles = agent_api
+            .runtime
+            .active_cycles_for_agent_in_scope(&principal, &workspace, &agent_id)
+            .await;
+        let mut admitted = Vec::with_capacity(admission.execution_ids.len());
+        for execution_id in &admission.execution_ids {
+            let provenance = harness_stop_task_provenance(
+                artifact_v2_service.as_deref(),
+                v2_orchestrator,
+                &principal,
+                &workspace,
+                execution_id,
+            )
+            .await;
+            admitted.push((execution_id.clone(), provenance));
+        }
+        let targets = select_harness_stop_targets(&admitted, &active_cycles);
+        info!(
+            %principal,
+            %workspace,
+            %agent_id,
+            admitted = admission.execution_ids.len(),
+            targeted = targets.execution_ids.len(),
+            "Harness runtime stop selected harness cycles; owner-started executions are left running"
+        );
+        summary.active_cycles_targeted += targets.execution_ids.len();
+        if !cancel_admitted_executions_and_cycles(
             agent_api,
             v2_orchestrator,
             &principal,
             &workspace,
             &agent_id,
-            &admission.execution_ids,
+            &targets.execution_ids,
+            &targets.active_cycles,
         )
         .await
         {
@@ -15260,6 +16172,288 @@ async fn stop_active_harness_agents(
         }
     }
     summary
+}
+
+/// The durable facts a harness runtime stop reads from the task an execution
+/// belongs to (a delegated child shares its root's task).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HarnessStopTaskProvenance {
+    goal_id: Option<String>,
+    chat_session_bound: bool,
+}
+
+impl HarnessStopTaskProvenance {
+    fn from_manifest(manifest: &magician::magician_v2::artifact_v2::models::TaskManifest) -> Self {
+        Self {
+            goal_id: manifest.goal_id.clone(),
+            chat_session_bound: manifest.chat_session_id.is_some(),
+        }
+    }
+
+    /// Harness cycles (scheduled or manual focus-area cycles, autofix fixes)
+    /// are created under a `harness:` goal and never from a chat session.
+    /// VibeDev runs, chat delegations and owner tasks fail one or both.
+    fn is_harness_cycle(&self) -> bool {
+        !self.chat_session_bound
+            && self
+                .goal_id
+                .as_deref()
+                .is_some_and(magician::magician_v2::harness::cycle_outcome::is_harness_goal)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HarnessStopTargets {
+    /// Executions to cancel as trees, so a cycle's delegated children go too.
+    execution_ids: Vec<String>,
+    /// Live registry cycles whose reservation clears once their execution settles.
+    active_cycles: Vec<magician::magician_v2::agents::AgentCycleReservation>,
+}
+
+/// Narrow one harness agent's admitted executions and live cycles to harness
+/// cycles. An execution qualifies when its task provenance is a harness cycle
+/// or it is bound to a live `harness:`-goal cycle reservation; chat-bound work
+/// never qualifies. Unknown provenance alone never qualifies, so a lookup
+/// failure leaves owner work running rather than cancelling it.
+fn select_harness_stop_targets(
+    admitted: &[(String, Option<HarnessStopTaskProvenance>)],
+    active_cycles: &[magician::magician_v2::agents::AgentCycleReservation],
+) -> HarnessStopTargets {
+    let chat_bound = |execution_id: &str| {
+        admitted.iter().any(|(admitted_id, provenance)| {
+            admitted_id.as_str() == execution_id
+                && provenance
+                    .as_ref()
+                    .is_some_and(|provenance| provenance.chat_session_bound)
+        })
+    };
+    let harness_cycles = active_cycles
+        .iter()
+        .filter(|cycle| {
+            magician::magician_v2::harness::cycle_outcome::is_harness_goal(&cycle.goal_id)
+                && !cycle
+                    .execution_id
+                    .as_deref()
+                    .is_some_and(|execution_id| chat_bound(execution_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut execution_ids = admitted
+        .iter()
+        .filter(|(_, provenance)| {
+            provenance
+                .as_ref()
+                .is_some_and(HarnessStopTaskProvenance::is_harness_cycle)
+        })
+        .map(|(execution_id, _)| execution_id.clone())
+        .chain(
+            harness_cycles
+                .iter()
+                .filter_map(|cycle| cycle.execution_id.clone()),
+        )
+        .collect::<Vec<_>>();
+    execution_ids.sort();
+    execution_ids.dedup();
+    HarnessStopTargets {
+        execution_ids,
+        active_cycles: harness_cycles,
+    }
+}
+
+/// Read the task provenance of one admitted execution: its own task, else its
+/// root's. `None` when anything is missing or unreadable.
+async fn harness_stop_task_provenance(
+    artifact_v2_service: Option<&ArtifactV2Service>,
+    v2_orchestrator: &Arc<MagicianV2Orchestrator>,
+    principal: &str,
+    workspace: &str,
+    execution_id: &str,
+) -> Option<HarnessStopTaskProvenance> {
+    let artifact_v2_service = artifact_v2_service?;
+    let execution = v2_orchestrator.get_execution(execution_id).await.ok()?;
+    let task_id = match execution.task_id {
+        Some(task_id) => task_id,
+        None => {
+            let root_execution_id = execution
+                .root_execution_id
+                .as_deref()
+                .filter(|root_execution_id| *root_execution_id != execution_id)?;
+            v2_orchestrator
+                .get_execution(root_execution_id)
+                .await
+                .ok()?
+                .task_id?
+        },
+    };
+    let task = artifact_v2_service
+        .get_task(&scope_ref(principal, workspace), &task_id)
+        .await
+        .ok()?;
+    Some(HarnessStopTaskProvenance::from_manifest(&task.manifest))
+}
+
+#[cfg(test)]
+mod harness_stop_target_tests {
+    use super::{select_harness_stop_targets, HarnessStopTaskProvenance};
+    use magician::magician_v2::agents::AgentCycleReservation;
+    use magician::magician_v2::artifact_v2::models::TaskManifest;
+
+    fn manifest(json: serde_json::Value) -> TaskManifest {
+        serde_json::from_value(json).expect("task manifest")
+    }
+
+    fn provenance(goal_id: Option<&str>, chat_session_bound: bool) -> HarnessStopTaskProvenance {
+        HarnessStopTaskProvenance {
+            goal_id: goal_id.map(str::to_owned),
+            chat_session_bound,
+        }
+    }
+
+    fn reservation(goal_id: &str, execution_id: Option<&str>) -> AgentCycleReservation {
+        AgentCycleReservation {
+            cycle_id: format!("cycle-{goal_id}"),
+            principal: Some("anonymous".to_owned()),
+            workspace: Some("default".to_owned()),
+            agent_id: "cto".to_owned(),
+            goal_id: goal_id.to_owned(),
+            trigger: "scheduler".to_owned(),
+            trigger_seq: 1,
+            execution_id: execution_id.map(str::to_owned),
+        }
+    }
+
+    /// The 2026-10-19 regression: `cto` has a harness definition and leads
+    /// every VibeDev run, so the run was in its admission and got cancelled.
+    #[test]
+    fn vibedev_run_led_by_a_harness_agent_is_owner_work() {
+        let vibedev = manifest(serde_json::json!({
+            "task_id": "task_vibedev",
+            "principal": "anonymous",
+            "workspace": "default",
+            "title": "VibeDev follow-up",
+            "description": "VibeDev planning follow-up",
+            "agent_id": "cto",
+            "ui_thread_id": "vibedev",
+            "tags": [{ "id": "vibedev", "name": "vibedev", "color": "#c2502a" }],
+            "created_by": "chat_vibedev_rail",
+            "chat_session_id": "e46b37c5-8545-4445-ae44-54f4f1b1ba20",
+            "lifecycle": "internal",
+            "created_at": "2026-10-19T20:10:48Z",
+            "updated_at": "2026-10-19T20:10:48Z"
+        }));
+        let provenance = HarnessStopTaskProvenance::from_manifest(&vibedev);
+        assert!(!provenance.is_harness_cycle());
+
+        let cycle = manifest(serde_json::json!({
+            "task_id": "task_cycle",
+            "principal": "anonymous",
+            "workspace": "default",
+            "title": "ceo / morning briefing",
+            "description": "Review overnight activity",
+            "agent_id": "ceo",
+            "goal_id": "harness:ceo:morning-briefing",
+            "ui_thread_id": "agent-ceo",
+            "created_by": "agent",
+            "created_at": "2026-09-21T08:24:57Z",
+            "updated_at": "2026-09-21T08:24:57Z"
+        }));
+        assert!(HarnessStopTaskProvenance::from_manifest(&cycle).is_harness_cycle());
+    }
+
+    #[test]
+    fn owner_started_executions_of_a_harness_agent_are_not_targeted() {
+        let admitted = vec![
+            ("exec_vibedev".to_owned(), Some(provenance(None, true))),
+            ("exec_manual_task".to_owned(), Some(provenance(None, false))),
+            (
+                "exec_manual_goal".to_owned(),
+                Some(provenance(Some("weekly-review"), false)),
+            ),
+            (
+                "exec_chat_delegate".to_owned(),
+                Some(provenance(Some("summarize the repo"), true)),
+            ),
+            // A chat-spawned task whose free-text goal happens to look like
+            // the harness namespace is still the owner's.
+            (
+                "exec_chat_lookalike".to_owned(),
+                Some(provenance(Some("harness: explain the loop"), true)),
+            ),
+            ("exec_unknown".to_owned(), None),
+        ];
+        // Chat delegations admit through the same trigger registry.
+        let active_cycles = vec![
+            reservation("summarize the repo", Some("exec_chat_delegate")),
+            reservation("harness: explain the loop", Some("exec_chat_lookalike")),
+            reservation("weekly-review", Some("exec_manual_goal")),
+        ];
+
+        let targets = select_harness_stop_targets(&admitted, &active_cycles);
+
+        assert!(targets.execution_ids.is_empty(), "{targets:?}");
+        assert!(targets.active_cycles.is_empty(), "{targets:?}");
+    }
+
+    #[test]
+    fn harness_cycle_and_its_delegated_child_are_targeted() {
+        let cycle_goal = "harness:cto:architecture-review";
+        let admitted = vec![
+            (
+                "exec_cycle".to_owned(),
+                Some(provenance(Some(cycle_goal), false)),
+            ),
+            // A delegated child shares its root's task, so it carries the
+            // cycle's provenance even after a restart emptied the registry.
+            (
+                "exec-deleg-child".to_owned(),
+                Some(provenance(Some(cycle_goal), false)),
+            ),
+            ("exec_vibedev".to_owned(), Some(provenance(None, true))),
+        ];
+        let active_cycles = vec![
+            reservation(cycle_goal, Some("exec_cycle")),
+            reservation("summarize the repo", Some("exec_vibedev")),
+        ];
+
+        let targets = select_harness_stop_targets(&admitted, &active_cycles);
+
+        assert_eq!(
+            targets.execution_ids,
+            vec!["exec-deleg-child".to_owned(), "exec_cycle".to_owned()]
+        );
+        assert_eq!(
+            targets.active_cycles,
+            vec![reservation(cycle_goal, Some("exec_cycle"))]
+        );
+    }
+
+    #[test]
+    fn live_registry_cycle_counts_without_readable_task_provenance() {
+        let cycle_goal = "harness:ceo:morning-briefing";
+        let admitted = vec![
+            ("exec_live_cycle".to_owned(), None),
+            // A durable orphan cycle from an earlier process: no registry
+            // entry, but its task still names the harness goal.
+            (
+                "exec_orphan_cycle".to_owned(),
+                Some(provenance(Some(cycle_goal), false)),
+            ),
+            ("exec_unreadable".to_owned(), None),
+        ];
+        let active_cycles = vec![
+            reservation(cycle_goal, Some("exec_live_cycle")),
+            // Admitted but not yet bound: stays a reservation to clear later.
+            reservation("harness:ceo:hiring", None),
+        ];
+
+        let targets = select_harness_stop_targets(&admitted, &active_cycles);
+
+        assert_eq!(
+            targets.execution_ids,
+            vec!["exec_live_cycle".to_owned(), "exec_orphan_cycle".to_owned()]
+        );
+        assert_eq!(targets.active_cycles.len(), 2);
+    }
 }
 
 fn should_cancel_active_cycle_after_delete(status: StatusCode) -> bool {
@@ -15376,6 +16570,16 @@ pub(crate) async fn trigger_agent_controlled(
     let _control_guard = agent_api.control_gate.lock().await;
     match prepare_manual_trigger_with_store(agent_api, definition_store, agent_id, request).await {
         Ok((mut dispatch, schedule)) => {
+            // Decide on a recorded duplicate before anything is provisioned:
+            // answering "triggered" and dropping the cycle later left an
+            // execution parked in Planning with nothing to drive it.
+            if matches!(schedule, ManualDispatchSchedule::StartNow) {
+                if let Some(refused) = magician::off_frame!(
+                    refuse_recorded_manual_dispatch(agent_api, &dispatch).await
+                ) {
+                    return refused;
+                }
+            }
             let harness_root_permit = if matches!(schedule, ManualDispatchSchedule::StartNow)
                 && v2_orchestrator.is_some()
             {
@@ -15874,6 +17078,17 @@ fn diff_approval_input_matches_correlation(
 
     proposal_id.as_deref() == Some(correlation_id)
         || transaction_id.as_deref() == Some(correlation_id)
+}
+
+/// `409 {accepted: false, reason: "already_resolved"}` for an answer to a
+/// review that is no longer pending — the soft success web, iOS and Android
+/// read as "answered elsewhere". Nothing is applied, rejected or resumed.
+fn diff_approval_already_resolved_response(source: String) -> HttpResponse {
+    HttpResponse::Conflict().json(RespondHitlResponse {
+        accepted: false,
+        source,
+        reason: Some("already_resolved".to_string()),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16641,16 +17856,8 @@ pub struct AgentPauseResumeResponse {
     pub changed: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct HarnessRuntimeStatusResponse {
-    pub enabled: bool,
-    pub paused: bool,
-    pub configured_paused: Option<bool>,
-    pub env_override: Option<bool>,
-    pub effective_source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_error: Option<String>,
-}
+pub type HarnessRuntimeStatusResponse =
+    magician::magician_v2::harness::config::HarnessRuntimeStatus;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17757,10 +18964,21 @@ impl MagicianV2Api {
             .agent_api
             .resolve_definition_store(&principal, &workspace);
         match definition_store.refresh_all().await {
-            Ok(count) => Ok(HttpResponse::Ok().json(serde_json::json!({
-                "status": "refreshed",
-                "definitions_reloaded": count,
-            }))),
+            Ok(count) => {
+                let evicted = reconcile_runtime_definitions_with_store(&self.agent_api).await;
+                Ok(HttpResponse::Ok().json(serde_json::json!({
+                    "status": "refreshed",
+                    "definitions_reloaded": count,
+                    "definitions_evicted": evicted
+                        .iter()
+                        .map(|(principal, workspace, agent_id)| serde_json::json!({
+                            "principal": principal,
+                            "workspace": workspace,
+                            "agent_id": agent_id,
+                        }))
+                        .collect::<Vec<_>>(),
+                })))
+            },
             Err(err) => Ok(HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("failed to refresh agent definitions: {err}"),
             }))),
@@ -18804,8 +20022,13 @@ impl MagicianV2Api {
             &magician_config.coding,
         );
         live_reloaded.push("coding_budgets".to_string());
-        magician::config::configure_execution_budgets(&magician_config.execution.budgets);
+        magician::config::configure_execution_budgets(
+            &magician::config::effective_execution_budgets(&magician_config),
+        );
         magician::config::configure_quality_round_budget(&magician_config.execution.quality_round);
+        magician::config::configure_harness_turn_idle_seconds(
+            magician_config.execution.harness_turn_idle_seconds,
+        );
         live_reloaded.push("execution_budgets".to_string());
         if let Some(settings) = llm_content_settings {
             settings.reload(magician_config.analytics.llm_trace.clone());
@@ -18825,6 +20048,9 @@ impl MagicianV2Api {
         harness.engine = magician_config.execution.harness_engine.clone();
         harness.harness_model = magician_config.execution.harness_model.clone();
         harness.pi_profile = magician_config.execution.pi_profile.clone();
+        harness.follows_chat = magician::magician_v2::execution::plane::follows_chat_engine(
+            &magician_config.execution.harness_engine,
+        );
         harness.turn_max_tool_calls = magician_config.execution.harness_turn_max_tool_calls;
         harness.turn_max_seconds = magician_config.execution.harness_turn_max_seconds;
         magician::magician_v2::execution::plane::install_harness_engine_snapshot(harness);
@@ -18842,13 +20068,23 @@ impl MagicianV2Api {
         magician::magician_v2::decision_host::configure(&magician_config.decision);
         live_reloaded.push("decision".to_string());
         magician::magician_v2::god_mode::configure(&magician_config.execution.god_mode);
+        magician::magician_v2::harness_auth::configure(
+            &magician_config.execution.harness_auth,
+            &magician_config.coding,
+        );
         live_reloaded.push("execution.god_mode".to_string());
+        live_reloaded.push("execution.harness_auth".to_string());
         magician::magician_v2::god_mode::configure_super(&magician_config.execution.super_god_mode);
         live_reloaded.push("execution.super_god_mode".to_string());
         magician::magician_v2::execution::network_policy::configure(
             &magician_config.execution.network_policy,
         );
         live_reloaded.push("execution.network_policy".to_string());
+        magician::magician_v2::execution::goal_workspace_access::configure(
+            magician_config.execution.goal_workspace_access.enabled,
+            &magician_config.execution.goal_workspace_access.admin_agent,
+        );
+        live_reloaded.push("execution.goal_workspace_access".to_string());
         magician::magician_v2::query_analysis::analysis_path::install(
             magician_config.planning.analysis_path,
         );
@@ -18901,11 +20137,7 @@ impl MagicianV2Api {
         }))
     }
 
-    /// GET /api/magician/v2/coding/profiles
-    pub async fn list_coding_profiles(
-        &self,
-        agent_resources: &AgentResources,
-    ) -> Result<HttpResponse> {
+    fn coding_model_rows(&self, agent_resources: &AgentResources) -> Vec<serde_json::Value> {
         let config = agent_resources.magician_config_snapshot();
         let snapshot = magician::magician_v2::execution::coding_engine::discovery::observe_codex_readiness(
             &config.coding.codex,
@@ -18924,15 +20156,31 @@ impl MagicianV2Api {
             &magician::magician_v2::execution::coding_engine::discovery::AgySearchPaths::production(
             ),
         );
-        Ok(HttpResponse::Ok().json(serde_json::json!({
-            "profiles": magician::magician_v2::execution::coding_engine::discovery::project_coding_profiles(
+        let mut profiles =
+            magician::magician_v2::execution::coding_engine::discovery::project_coding_profiles(
                 &config.coding_profile_catalog(),
                 &snapshot,
                 &grok,
                 &claude,
                 &agy,
-            ),
-        })))
+            );
+        magician::magician_v2::execution::coding_engine::catalog::project(
+            config.router_config(),
+            &mut profiles,
+        );
+        profiles
+    }
+
+    /// GET /api/magician/v2/coding/models
+    pub async fn list_coding_models(
+        &self,
+        agent_resources: &AgentResources,
+    ) -> Result<HttpResponse> {
+        Ok(
+            HttpResponse::Ok().json(crate::coding_model_selection::model_catalog_with_discovery(
+                &self.coding_model_rows(agent_resources),
+            )),
+        )
     }
 
     /// POST /api/magician/v2/coding/engines/codex_app_server/refresh
@@ -20040,7 +21288,26 @@ impl MagicianV2Api {
         // behind one definition-level heap boundary so direct Rust callers,
         // tests, and the Actix adapter all store only a trait-object pointer.
         // The allocation is one per create request on an I/O-bound path.
-        Box::pin(self.create_execution_inner(http_req, req))
+        Box::pin(async move {
+            let scope = http_req.extensions()
+                .get::<magician::magician_v2::auth::middleware::AuthenticatedRequest>()
+                .map(|auth| auth.scope.clone())
+                .or_else(|| http_req.extensions()
+                    .get::<magician::magician_v2::cloudflare_access::VerifiedRequestIdentity>()
+                    .and_then(|identity| identity.workspace().map(|workspace|
+                        magician::magician_v2::artifact_v2::ScopeRef::system_internal_unauthenticated(identity.principal(), workspace))));
+            let outward_source = match scope {
+                Some(scope) => {
+                    crate::task_api_v3::owner_task_outward_source(http_req, &scope).await
+                },
+                None => None,
+            };
+            magician::magician_v2::agents::outward_policy::with_source(
+                outward_source,
+                Box::pin(self.create_execution_inner(http_req, req)),
+            )
+            .await
+        })
     }
 
     async fn create_execution_inner(
@@ -21224,9 +22491,14 @@ impl MagicianV2Api {
                     "max_pending_steers": MAX_PENDING_STEERS,
                 })),
             )),
-            Err(SteerExecutionError::NotActive) => Ok(v2_invalid_request(
-                "No active execution to steer",
-                Some(serde_json::json!({ "execution_id": execution_id })),
+            // A queued, planning, waiting or paused run takes steers only once
+            // it executes; 409 tells the client to refresh its controls.
+            Err(SteerExecutionError::NotActive) => Ok(v2_conflict(
+                "This run is not executing right now; steer it once it is running",
+                Some(serde_json::json!({
+                    "execution_id": execution_id,
+                    "waiting_state": execution_waiting_state_name(&execution.waiting_state),
+                })),
             )),
             Err(SteerExecutionError::QueueUnavailable) => {
                 error!(
@@ -21897,7 +23169,7 @@ impl MagicianV2Api {
             // by value there, so it must stay small rather than embed the
             // resume's whole state (two ~280 KiB frames on the 2026-10-12
             // crash stack).
-            let mut joined = Self::spawn_detached_resume(async move {
+            let joined = Self::spawn_detached_resume(async move {
                 this.resume_agentic_execution_with_scope_boxed(
                     path,
                     req,
@@ -21907,23 +23179,37 @@ impl MagicianV2Api {
                 )
                 .await
             });
-            let admitted = tokio::select! {
-                joined = &mut joined => return Self::response_from_detached_resume(joined),
-                admitted = admitted_rx => admitted,
-            };
-            match admitted {
-                // The loop is running on the answer; the spawned task settles
-                // it without this request.
-                Ok(()) => Ok(HttpResponse::Accepted().json(RespondHitlResponse {
-                    accepted: true,
-                    source,
-                    reason: Some("resume_admitted".to_string()),
-                })),
-                // The sender was dropped before admission: the resume ended
-                // early and its response is the answer.
-                Err(_) => Self::response_from_detached_resume(joined.await),
-            }
+            Self::acknowledge_detached_resume_on_admission(joined, admitted_rx, source).await
         })
+    }
+
+    /// Answer for a detached resume: `202 resume_admitted` the moment its
+    /// answer is admitted to the loop, or the resume's own response when it
+    /// ends first (a re-ask, an abort, a refused or missing pause, any
+    /// admission error), so every refusal still reaches the client
+    /// synchronously. After admission the spawned task owns the run and its
+    /// settlement; nothing here waits for it.
+    async fn acknowledge_detached_resume_on_admission(
+        mut joined: tokio::task::JoinHandle<DetachedResumeResponse>,
+        admitted_rx: tokio::sync::oneshot::Receiver<()>,
+        source: String,
+    ) -> Result<HttpResponse> {
+        let admitted = tokio::select! {
+            joined = &mut joined => return Self::response_from_detached_resume(joined),
+            admitted = admitted_rx => admitted,
+        };
+        match admitted {
+            // The loop is running on the answer; the spawned task settles
+            // it without this request.
+            Ok(()) => Ok(HttpResponse::Accepted().json(RespondHitlResponse {
+                accepted: true,
+                source,
+                reason: Some("resume_admitted".to_string()),
+            })),
+            // The sender was dropped before admission: the resume ended
+            // early and its response is the answer.
+            Err(_) => Self::response_from_detached_resume(joined.await),
+        }
     }
 
     /// Run a resume to completion even when the HTTP client goes away.
@@ -22507,6 +23793,14 @@ impl MagicianV2Api {
                     | UserInputValue::Text { .. }
                     | UserInputValue::Guidance { .. }
             );
+        // So does a review before sending: Send / Discard / Always allow are
+        // choices, and the resume resolves them against the held send.
+        let alignment_reply = alignment_reply
+            || (pause_data.pause_state.outward_review.is_some()
+                && matches!(
+                    user_value,
+                    UserInputValue::Choice { .. } | UserInputValue::Text { .. }
+                ));
         if !alignment_reply && requested_input_type != pause_data.input_type.type_name() {
             // Surface the rejection. Without this, a UI that posts the
             // wrong input_type sees a 400 and the user sees nothing happen
@@ -25002,6 +26296,22 @@ impl MagicianV2Api {
                         &effective_execution_id,
                     )
                     .await;
+                    // The pause was taken above, before the tree cancel, so the
+                    // tree cancel's per-pending-pause `HitlResolved` never sees
+                    // it. Resolve its ask here, under the correlation id its
+                    // `HitlRequested` carried, or Attention keeps the cancelled
+                    // ask (it rebuilds pending asks from the event log).
+                    emit_hitl_resolved_for_agentic_pause(
+                        &self.v2_orchestrator,
+                        Some(pause_data.pause_state.hitl_correlation_id().as_str()),
+                        &effective_execution_id,
+                        pause_data.pause_state.task_id.clone(),
+                        pause_data.pause_state.principal.clone(),
+                        pause_data.pause_state.workspace.clone(),
+                        pause_data.pause_state.agent_id.clone(),
+                        None,
+                        "cancelled",
+                    );
                     if let Some(broadcaster) = self.v2_orchestrator.event_broadcaster() {
                         broadcaster.emit(
                             magician::magician_v2::realtime_events::RuntimeTransportEvent::ExecutionCancelled {
@@ -26117,12 +27427,12 @@ pub async fn reload_magician_config_handler(
     .await
 }
 
-/// GET /api/magician/v2/coding/profiles handler
-pub async fn list_coding_profiles_handler(
+/// GET /api/magician/v2/coding/models handler
+pub async fn list_coding_models_handler(
     api: web::Data<MagicianV2Api>,
     agent_resources: web::Data<Arc<AgentResources>>,
 ) -> Result<HttpResponse> {
-    api.list_coding_profiles(agent_resources.get_ref().as_ref())
+    api.list_coding_models(agent_resources.get_ref().as_ref())
         .await
 }
 
@@ -27538,6 +28848,16 @@ pub async fn respond_hitl_handler(
                             reason: Some("diff_approval_scope_mismatch".to_string()),
                         }));
                     }
+                    // A repeated answer (a double tap, a retry, another
+                    // device) finds the review already decided: it is told so
+                    // before the authority check, whose entry the first
+                    // decision retired, so every client drops the card as
+                    // answered instead of reporting a mismatch.
+                    if proposal.status
+                        != magician::magician_v2::execution::file_edit::proposal::CodeChangeProposalStatus::Pending
+                    {
+                        return Ok(diff_approval_already_resolved_response(body.source));
+                    }
                     let authority_key =
                         magician::magician_v2::execution::trusted_store::TrustedRecordKey {
                             kind: magician::magician_v2::execution::trusted_store::StoreKind::CodeChangeProposal,
@@ -27591,6 +28911,11 @@ pub async fn respond_hitl_handler(
                             source: body.source,
                             reason: Some("diff_approval_scope_mismatch".to_string()),
                         }));
+                    }
+                    if transaction.status
+                        != magician::magician_v2::execution::file_edit::transaction::FileEditStatus::Pending
+                    {
+                        return Ok(diff_approval_already_resolved_response(body.source));
                     }
                     let authority_key =
                         magician::magician_v2::execution::trusted_store::TrustedRecordKey {
@@ -27732,6 +29057,41 @@ pub async fn respond_hitl_handler(
                         "diff_approval_unbound_legacy_record_requires_matching_pause".to_string(),
                     ),
                 }));
+            }
+
+            // The resume below re-checks the pause's authority and refuses a
+            // pause this boot did not stage (forged, or from before a
+            // restart). Check it first: a refused answer must not have
+            // applied the change it was refused for. The resume path then
+            // drops the pause and finalizes the run as usual.
+            if let Some((execution_id, pause_key)) = pending_pause.as_ref() {
+                let refused = api
+                    .full_pause_store()
+                    .peek(pause_key)
+                    .is_some_and(|pause_data| {
+                        verify_elevation_pause_authority(&pause_data).is_err()
+                    });
+                if refused {
+                    drop(_execution_lifecycle_exclusion);
+                    let resume_req = AgenticResumeRequest {
+                        pause_state_id: Some(pause_key.clone()),
+                        plan_id: None,
+                        step_id: None,
+                        input_type: "diff_approval".to_string(),
+                        value: body.value,
+                        agent_id: None,
+                        goal_id: None,
+                        cycle_id: None,
+                        answer_channel: None,
+                    };
+                    return api
+                        .resume_agentic_execution_with_scope(
+                            web::Path::from(execution_id.clone()),
+                            web::Json(resume_req),
+                            Some(request_scope),
+                        )
+                        .await;
+                }
             }
 
             let resolution_reason = match selected.as_str() {
@@ -28159,11 +29519,18 @@ pub async fn respond_hitl_handler(
                     cycle_id: None,
                     answer_channel: None,
                 };
+                // Answer once the decision is admitted to the paused run, not
+                // when that run settles: a resumed coding child can work for
+                // minutes, long past a phone's or a proxy's patience, and a
+                // retry would find the pause consumed. A refused or retryable resume
+                // still answers here, synchronously; after admission the run
+                // continues on its detached task and reports through events.
                 return api
-                    .resume_agentic_execution_with_scope(
+                    .resume_agentic_execution_acknowledged_when_admitted(
                         web::Path::from(execution_id),
                         web::Json(resume_req),
                         Some(request_scope),
+                        body.source,
                     )
                     .await;
             } else if let Some(execution_id) = effective_execution_id {
@@ -28242,6 +29609,14 @@ pub async fn respond_hitl_handler(
                     "diff_approval finalize without live pause",
                 )
                 .await;
+
+                // (d) The review was the last thing a delegated child's parent
+                // waited on. A child that was already terminal gets no status
+                // change here, so the shared review-closed seam wakes the parent
+                // (no-op for a root or a still-running child).
+                api.orchestrator()
+                    .notify_parent_after_child_review_closed(&execution_id)
+                    .await;
             }
 
             Ok(HttpResponse::Ok().json(RespondHitlResponse {
@@ -29476,6 +30851,7 @@ mod tests {
             active_delegation_group: Vec::new(),
             timeout_secs: Some(45),
             delegation_chain: Vec::new(),
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: magician::magician_v2::storage::ExecutionEntryMode::PlanningBacked,
@@ -29937,7 +31313,8 @@ mod tests {
             )
             .await
             .expect("terminal steer response");
-        assert_eq!(steer.status(), StatusCode::BAD_REQUEST);
+        // A run that is not executing refuses steers with 409, like a paused one.
+        assert_eq!(steer.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]
@@ -30449,6 +31826,226 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("1")
         );
+    }
+
+    /// The respond route answers once the decision is admitted to the paused
+    /// run, while that run is still going: the resumed "run" here waits on a
+    /// gate the test opens only after the response is in hand, and it settles
+    /// afterwards on its own task.
+    #[tokio::test]
+    async fn respond_acknowledges_an_admitted_resume_before_the_run_settles() {
+        let (admitted_tx, admitted_rx) = tokio::sync::oneshot::channel::<()>();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
+        let joined = MagicianV2Api::spawn_detached_resume(async move {
+            let _ = admitted_tx.send(());
+            let _ = gate_rx.await;
+            let _ = settled_tx.send(());
+            let settled = HttpResponse::Ok().json(AgenticResumeResponse {
+                resumed: true,
+                status: "completed".to_string(),
+                message: "run settled".to_string(),
+            });
+            Ok::<HttpResponse, actix_web::Error>(settled)
+        });
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(10),
+            MagicianV2Api::acknowledge_detached_resume_on_admission(
+                joined,
+                admitted_rx,
+                "diff_approval".to_string(),
+            ),
+        )
+        .await
+        .expect("respond must not wait for the resumed run to settle")
+        .expect("acknowledgement");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = response_json(response).await;
+        assert_eq!(body["accepted"], true);
+        assert_eq!(body["source"], "diff_approval");
+        assert_eq!(body["reason"], "resume_admitted");
+
+        // The run is still waiting on its gate after the response went out,
+        // and finishes without the request.
+        gate_tx
+            .send(())
+            .expect("the resumed run is still in flight after the acknowledgement");
+        tokio::time::timeout(Duration::from_secs(10), settled_rx)
+            .await
+            .expect("the detached run settles after the response")
+            .expect("settled signal");
+    }
+
+    /// A resume that ends before admission — a missing or already consumed
+    /// pause, a conflict, a retryable fence — answers the request itself,
+    /// synchronously, with its own status and body.
+    #[tokio::test]
+    async fn respond_returns_a_resume_refused_before_admission_synchronously() {
+        let (admitted_tx, admitted_rx) = tokio::sync::oneshot::channel::<()>();
+        let joined = MagicianV2Api::spawn_detached_resume(async move {
+            drop(admitted_tx);
+            Ok::<HttpResponse, actix_web::Error>(api_error_response(
+                StatusCode::GONE,
+                "pause_state_gone",
+                "Pause state was already resolved or expired",
+                None,
+            ))
+        });
+        let response = tokio::time::timeout(
+            Duration::from_secs(10),
+            MagicianV2Api::acknowledge_detached_resume_on_admission(
+                joined,
+                admitted_rx,
+                "diff_approval".to_string(),
+            ),
+        )
+        .await
+        .expect("a refused resume answers promptly")
+        .expect("refusal response");
+        assert_eq!(response.status(), StatusCode::GONE);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], "pause_state_gone");
+
+        let (admitted_tx, admitted_rx) = tokio::sync::oneshot::channel::<()>();
+        let joined = MagicianV2Api::spawn_detached_resume(async move {
+            drop(admitted_tx);
+            let refused = actix_web::error::ErrorServiceUnavailable("resume admission failed");
+            Err::<HttpResponse, actix_web::Error>(refused)
+        });
+        let response = MagicianV2Api::acknowledge_detached_resume_on_admission(
+            joined,
+            admitted_rx,
+            "diff_approval".to_string(),
+        )
+        .await
+        .expect("admission error response");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// A repeated answer to a code review that already has its decision — a
+    /// double tap, a retry after the fast acknowledgement, another device —
+    /// is told `already_resolved` and changes nothing: no apply, no resume.
+    #[tokio::test]
+    async fn repeated_diff_approval_answer_is_already_resolved_without_applying() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, _receiver) = proposal_api_with_broadcaster(tmp.path());
+        let scope_root = api
+            .orchestrator()
+            .artifact_v2_service()
+            .expect("test V3 service should be wired")
+            .workspace()
+            .scope_root("test-principal", "test-workspace");
+        std::fs::create_dir_all(&scope_root).unwrap();
+        let proposals =
+            magician::magician_v2::execution::file_edit::proposal::CodeChangeProposalStore::new(
+                &scope_root,
+            );
+        let proposal = proposals
+            .stage_patch(
+                magician::magician_v2::execution::file_edit::transaction::TransactionScope {
+                    principal: "test-principal".into(),
+                    workspace: "test-workspace".into(),
+                },
+                "repeat answer",
+                "--- a/f.txt\n+++ b/f.txt\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+                "session",
+                Vec::new(),
+            )
+            .expect("stage proposal");
+        // The first answer's decision has landed.
+        proposals.reject(&proposal.id).expect("first decision");
+
+        let api = web::Data::new(api);
+        let request = TestRequest::default()
+            .insert_header(("X-Principal", "test-principal"))
+            .insert_header(("X-Workspace", "test-workspace"))
+            .to_http_request();
+        let response = Box::pin(respond_hitl_handler(
+            api,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            request,
+            web::Path::from(proposal.id.as_str().to_string()),
+            web::Json(RespondHitlRequest {
+                source: "diff_approval".to_string(),
+                value: AgenticResumeValue::Choice {
+                    selected_id: "apply".to_string(),
+                    other_value: None,
+                },
+                input_type: Some("diff_approval".to_string()),
+                channel: "web".to_string(),
+                selected_paths: Vec::new(),
+                execution_id: None,
+                task_id: None,
+            }),
+        ))
+        .await
+        .expect("respond");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_json(response).await;
+        assert_eq!(body["accepted"], false);
+        assert_eq!(body["reason"], "already_resolved");
+        assert_eq!(
+            proposals.load(&proposal.id).unwrap().status,
+            magician::magician_v2::execution::file_edit::proposal::CodeChangeProposalStatus::Rejected,
+            "a repeated answer must not apply the change"
+        );
+    }
+
+    /// The diff-approval arm hands a live pause to the acknowledging resume
+    /// (after releasing its own fence, which the resume re-takes), and a
+    /// decided review is answered `already_resolved` before the authority
+    /// check whose entry the first decision retired.
+    #[test]
+    fn diff_approval_resume_acknowledges_on_admission_and_repeats_are_already_resolved() {
+        let source = include_str!("web_api.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production API source");
+        let diff_start = production
+            .find("\"diff_approval\" => {")
+            .expect("diff-approval dispatch");
+        let diff_end = production[diff_start..]
+            .find("source if is_agentic_runtime_hitl_source(source)")
+            .map(|offset| diff_start + offset)
+            .expect("diff-approval dispatch end");
+        let diff_source = &production[diff_start..diff_end];
+
+        let decided = diff_source
+            .match_indices("diff_approval_already_resolved_response(body.source)")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let authority = diff_source
+            .match_indices(".verify_file_edit_decision(")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(decided.len(), 2, "proposal and transaction targets");
+        assert_eq!(authority.len(), 2, "proposal and transaction targets");
+        assert!(decided[0] < authority[0] && authority[0] < decided[1]);
+        assert!(decided[1] < authority[1]);
+
+        let after_mutation = diff_source
+            .split("let resolution_reason = match selected.as_str()")
+            .nth(1)
+            .expect("diff-approval mutation dispatch");
+        assert!(
+            !after_mutation.contains(".resume_agentic_execution_with_scope("),
+            "the post-decision resume must not hold the request until the run settles"
+        );
+        let release = after_mutation
+            .find("drop(_execution_lifecycle_exclusion);")
+            .expect("fence released before resume");
+        let resume = after_mutation
+            .find(".resume_agentic_execution_acknowledged_when_admitted(")
+            .expect("acknowledging resume");
+        assert!(release < resume);
     }
 
     #[test]
@@ -32104,7 +33701,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_paused_execution_cascades_to_active_children() {
         let tmp = tempfile::tempdir().unwrap();
-        let (api, _receiver) = proposal_api_with_broadcaster(tmp.path());
+        let (api, mut receiver) = proposal_api_with_broadcaster(tmp.path());
         let store = api.orchestrator().conversation_store();
 
         let parent_execution_id = "paused-parent-execution";
@@ -32185,6 +33782,8 @@ mod tests {
             Some("Resume to continue from the same point.".to_string()),
         )
         .with_pause_kind(ExecutionPauseKind::Manual);
+        let correlation_id = pause_data.pause_state.hitl_correlation_id();
+        emit_hitl_requested_for_restored_pause(api.orchestrator(), &parent.id, &pause_data);
         let pause_key = api.full_pause_store().store(pause_data);
 
         let response = api
@@ -32206,6 +33805,35 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["cancelled"], true);
+
+        // The cancelled ask is resolved, so Attention (rebuilt from the event
+        // log) stops listing it. The pause is taken before the tree cancel,
+        // whose own per-pause resolution therefore never sees it.
+        // The setup emits more than the channel holds, so skip past a lag
+        // rather than stop at it.
+        let mut resolved = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(
+                    magician::magician_v2::realtime_events::RuntimeTransportEvent::HitlResolved {
+                        correlation_id,
+                        source,
+                        outcome,
+                        ..
+                    },
+                ) => resolved.push((correlation_id, source, outcome)),
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {},
+                Err(_) => break,
+            }
+        }
+        assert!(
+            resolved.contains(&(
+                correlation_id.clone(),
+                "agentic".to_string(),
+                "cancelled".to_string()
+            )),
+            "cancelling a paused execution must resolve its ask; got {resolved:?}"
+        );
 
         let cancelled_parent = api
             .orchestrator()
@@ -32347,6 +33975,8 @@ tools: []
             current_substep_title: None,
             completion_summary: None,
             completion_outcome: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             completion_artifact_names: Vec::new(),
             has_plan: status == "planning",
             latest_plan_id: None,
@@ -33801,6 +35431,7 @@ tools: []
         let mut definition = sample_agent_definition("agent-a", "Retire Me");
         definition.autonomous_config =
             Some(magician::magician_v2::agents::types::AutonomousConfig {
+                outward_context: None,
                 schedule: "0 9 * * *".to_string(),
                 focus_areas: vec![magician::magician_v2::agents::types::FocusArea {
                     name: "Morning".to_string(),
@@ -33809,6 +35440,7 @@ tools: []
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -33893,6 +35525,7 @@ tools: []
         let mut definition = sample_agent_definition("agent-a", "Retire Me");
         definition.autonomous_config =
             Some(magician::magician_v2::agents::types::AutonomousConfig {
+                outward_context: None,
                 schedule: "0 9 * * *".to_string(),
                 focus_areas: vec![magician::magician_v2::agents::types::FocusArea {
                     name: "Morning".to_string(),
@@ -33901,6 +35534,7 @@ tools: []
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -33986,6 +35620,7 @@ tools: []
         let mut definition = sample_agent_definition("agent-a", "Retire Me");
         definition.autonomous_config =
             Some(magician::magician_v2::agents::types::AutonomousConfig {
+                outward_context: None,
                 schedule: "0 9 * * *".to_string(),
                 focus_areas: vec![magician::magician_v2::agents::types::FocusArea {
                     name: "Morning".to_string(),
@@ -33994,6 +35629,7 @@ tools: []
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -35225,6 +36861,7 @@ tools: []
         let mut definition = sample_agent_definition("agent-a", "Alpha");
         definition.autonomous_config =
             Some(magician::magician_v2::agents::types::AutonomousConfig {
+                outward_context: None,
                 schedule: "* * * * *".to_string(),
                 focus_areas: vec![magician::magician_v2::agents::types::FocusArea {
                     name: "Daily Checkin".to_string(),
@@ -35233,6 +36870,7 @@ tools: []
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 1,
                 max_steps_per_plan: 4,
@@ -36376,6 +38014,7 @@ tools: []
         });
         definition.autonomous_config =
             Some(magician::magician_v2::agents::types::AutonomousConfig {
+                outward_context: None,
                 schedule: "0 0 * * *".to_string(),
                 focus_areas: vec![magician::magician_v2::agents::types::FocusArea {
                     name: "Daily Review".to_string(),
@@ -36384,6 +38023,7 @@ tools: []
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,
@@ -37254,6 +38894,114 @@ output_rules:
         assert_eq!(goal, "Collect data");
     }
 
+    /// A personal agent with no prompt pipeline whose focus area names a
+    /// program gets the Program Context and Shared Context, as every pipeline
+    /// branch does. This branch used to return before appending either.
+    #[tokio::test]
+    async fn execution_goal_without_prompt_pipeline_appends_program_and_shared_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let services = test_agent_api_services(tmp.path());
+        let mut definition: AgentDefinition = serde_yaml::from_str(
+            "agent_id: outward\nname: Outward\npersona: test\ntrust_level: standard\n\
+             autonomous_config:\n  schedule: \"0 * * * *\"\n  focus_areas:\n    \
+             - name: Replies\n      description: answer people\n      program: replies.md\n      \
+             shared_programs: [facts.md]\n",
+        )
+        .expect("definition parses");
+        definition.prompt_pipeline = None;
+        assert!(definition.harness.is_none());
+        let principal = "test-user";
+        let workspace = "outward";
+        let programs = services
+            .durable_artifact_workspace
+            .programs_root(principal, workspace);
+        std::fs::create_dir_all(&programs).unwrap();
+        std::fs::write(
+            programs.join("replies.md"),
+            "# Replies\n\nAnswer within a day.\n",
+        )
+        .unwrap();
+        std::fs::write(programs.join("facts.md"), "# Facts\n\nFounded in 2024.\n").unwrap();
+
+        let trust_policy_storage = services.definition_store.storage().clone();
+        let enforcer = Arc::new(
+            load_trust_policy_enforcer(&trust_policy_storage)
+                .await
+                .unwrap(),
+        );
+        let dispatch = ManualTriggerDispatch {
+            agent_id: "outward".to_string(),
+            principal: principal.to_string(),
+            workspace: workspace.to_string(),
+            goal_id: "harness:outward:replies".to_string(),
+            trigger: "manual".to_string(),
+            trigger_seq: 1,
+            cycle_id: "outward-replies-1".to_string(),
+            runtime_execution_id: None,
+            task_id: None,
+            execution_id: None,
+            definition_version: 1,
+            goal_description: "Focus Area: Replies\n\nanswer people".to_string(),
+            max_iterations: None,
+            trust_level: "standard".to_string(),
+            trust_policies_path: trust_policy_storage.trust_policies_path(),
+            preloaded_trust_enforcer: enforcer,
+            approval_rules: Vec::new(),
+            strategy_summary: String::new(),
+            strategy_hint_enabled: false,
+            llm_routing_overrides: None,
+            workflow_inputs: HashMap::new(),
+            definition,
+        };
+        assert_eq!(
+            super::program_context_mode(&dispatch.definition, &dispatch.goal_id),
+            super::ProgramContextMode::ProgramOnly
+        );
+
+        let goal = execution_goal_for_manual_dispatch(&services, &dispatch)
+            .await
+            .unwrap();
+        assert!(goal.starts_with("Focus Area: Replies"), "{goal}");
+        assert!(goal.contains("## Program Context"), "{goal}");
+        assert!(goal.contains("Answer within a day."), "{goal}");
+        assert!(goal.contains("### Shared Context"), "{goal}");
+        assert!(goal.contains("Founded in 2024."), "{goal}");
+        let receipt = magician::magician_v2::harness::ProgramLoader::new(
+            services.durable_artifact_workspace.clone(),
+        )
+        .read_context_ingestion(principal, workspace, "outward", "harness:outward:replies")
+        .await
+        .unwrap()
+        .expect("prompt assembly records actual program sources");
+        assert_eq!(receipt.sources.len(), 2);
+        assert!(receipt
+            .sources
+            .iter()
+            .any(|source| source.relative_path == "replies.md"));
+        assert!(receipt
+            .sources
+            .iter()
+            .any(|source| source.relative_path == "facts.md"));
+        assert!(!serde_json::to_string(&receipt)
+            .unwrap()
+            .contains("Founded in 2024"));
+        // Program-only: no harness state for an agent without harness tools.
+        assert!(!goal.contains("Harness Progress Contract"), "{goal}");
+        assert_eq!(goal.matches("## Program Context").count(), 1);
+    }
+
+    #[test]
+    fn goal_without_prompt_pipeline_keeps_the_focus_text_and_strategy_hint() {
+        assert_eq!(
+            super::goal_without_prompt_pipeline("Collect data", ""),
+            "Collect data"
+        );
+        assert_eq!(
+            super::goal_without_prompt_pipeline("  Collect data \n", "atomic"),
+            "Collect data\n\nStrategy Preference:\natomic"
+        );
+    }
+
     #[tokio::test]
     async fn execution_goal_for_manual_dispatch_fails_on_required_missing_section() {
         let tmp = tempfile::tempdir().unwrap();
@@ -37913,6 +39661,344 @@ sections:
         assert_eq!(trigger_response.status(), StatusCode::NOT_FOUND);
         let body = response_json(trigger_response).await;
         assert_eq!(body["code"], "agent_definition_not_found");
+    }
+
+    async fn seed_recorded_episodes(
+        memory_service: &AgentMemoryService,
+        agent_id: &str,
+        goal_id: &str,
+        seqs: std::ops::RangeInclusive<u64>,
+    ) {
+        for seq in seqs {
+            memory_service
+                .append_native_episode(
+                    agent_id,
+                    &sample_native_episode_record(
+                        memory_service.scoped_memory_scope(),
+                        agent_id,
+                        goal_id,
+                        seq,
+                        Utc::now() - chrono::Duration::minutes(10),
+                    ),
+                )
+                .await
+                .expect("seed episode should persist");
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_trigger_on_recreated_agent_allocates_seq_past_old_episodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let services = test_agent_api_services(tmp.path());
+        let request = ManualAgentTriggerRequest {
+            goal_id: Some("g1".to_string()),
+            trigger: Some("manual".to_string()),
+        };
+        let _ =
+            create_agent_definition_impl(&services, sample_agent_definition("agent-a", "Alpha"))
+                .await;
+        let first = manual_trigger_agent_impl(&services, "agent-a", request.clone()).await;
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        assert_eq!(response_json(first).await["trigger_seq"], 1);
+
+        // The first agent ran cycles 1..=3; their episodes live under the
+        // scoped memory root, which deleting the agent does not touch.
+        let definition = ensure_agent_loaded_for_api(&services, "agent-a")
+            .await
+            .unwrap();
+        let memory_service = services
+            .resolve_cycle_memory_service(&definition, "agent-a")
+            .expect("agent scope should resolve");
+        seed_recorded_episodes(&memory_service, "agent-a", "g1", 1..=3).await;
+
+        let (deleted, _) = delete_agent_definition_controlled(&services, "agent-a").await;
+        assert!(deleted.status().is_success(), "delete should succeed");
+        let _ =
+            create_agent_definition_impl(&services, sample_agent_definition("agent-a", "Alpha"))
+                .await;
+        assert_eq!(
+            memory_service
+                .highest_episode_trigger_seq("agent-a", "g1")
+                .await
+                .unwrap(),
+            Some(3),
+            "old episodes must still exist for this test to mean anything"
+        );
+
+        // Before the fix the re-created agent's scheduler entry restarted at 1,
+        // and the dispatch later dropped it as a duplicate of the old episode.
+        let (dispatch, schedule) = prepare_manual_trigger(&services, "agent-a", request.clone())
+            .await
+            .expect("re-created agent trigger should be admitted");
+        assert_eq!(schedule, ManualDispatchSchedule::StartNow);
+        assert_eq!(dispatch.trigger_seq, 4);
+        assert!(dispatch.cycle_id.ends_with("::4"));
+        assert!(
+            !dispatch_trigger_tuple_already_recorded(&services, &dispatch).await,
+            "the fresh tuple must not collide with a recorded episode"
+        );
+        assert!(
+            refuse_recorded_manual_dispatch(&services, &dispatch)
+                .await
+                .is_none(),
+            "a fresh tuple must go on to dispatch"
+        );
+        let _ = services
+            .runtime
+            .clear_active_cycle_if_matches_in_scope(
+                Some(&dispatch.principal),
+                Some(&dispatch.workspace),
+                "agent-a",
+                "g1",
+                &dispatch.cycle_id,
+            )
+            .await;
+
+        // Through the API as well: answered "triggered" with a non-colliding seq.
+        let triggered = manual_trigger_agent_impl(&services, "agent-a", request).await;
+        assert_eq!(triggered.status(), StatusCode::ACCEPTED);
+        let body = response_json(triggered).await;
+        assert_eq!(body["status"], "triggered");
+        assert_eq!(body["trigger_seq"], 5);
+    }
+
+    #[tokio::test]
+    async fn manual_dispatch_of_recorded_tuple_is_refused_before_provisioning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let services = test_agent_api_services(tmp.path());
+        let _ =
+            create_agent_definition_impl(&services, sample_agent_definition("agent-a", "Alpha"))
+                .await;
+        let (dispatch, schedule) = prepare_manual_trigger(
+            &services,
+            "agent-a",
+            ManualAgentTriggerRequest {
+                goal_id: Some("g1".to_string()),
+                trigger: Some("manual".to_string()),
+            },
+        )
+        .await
+        .expect("trigger should be admitted");
+        assert_eq!(schedule, ManualDispatchSchedule::StartNow);
+
+        // A genuine duplicate: an episode records this exact tuple (the cycle
+        // already ran) by the time the dispatch is about to be provisioned.
+        let memory_service = services
+            .resolve_cycle_memory_service(&dispatch.definition, "agent-a")
+            .expect("agent scope should resolve");
+        seed_recorded_episodes(
+            &memory_service,
+            "agent-a",
+            "g1",
+            dispatch.trigger_seq..=dispatch.trigger_seq,
+        )
+        .await;
+
+        let refused = refuse_recorded_manual_dispatch(&services, &dispatch)
+            .await
+            .expect("a recorded tuple must be refused");
+        let ManualTriggerOutcome::Error { http_status, body } = refused else {
+            panic!("a recorded tuple must not be accepted as triggered");
+        };
+        assert_eq!(http_status, StatusCode::CONFLICT.as_u16());
+        let body = response_json(body).await;
+        assert_eq!(body["code"], "duplicate_trigger_tuple");
+        assert_eq!(
+            body["details"]["reason"],
+            "episode_already_exists_for_trigger"
+        );
+        assert_ne!(body["status"], "triggered");
+        // The reservation is released, so nothing is left waiting on a cycle
+        // that will never run, and the tuple is remembered as done.
+        assert!(
+            !services
+                .runtime
+                .is_goal_running_in_scope(
+                    Some(&dispatch.principal),
+                    Some(&dispatch.workspace),
+                    "agent-a",
+                    "g1",
+                )
+                .await
+        );
+        assert_eq!(
+            services
+                .runtime
+                .highest_known_trigger_seq_in_scope(
+                    Some(&dispatch.principal),
+                    Some(&dispatch.workspace),
+                    "agent-a",
+                    "g1",
+                )
+                .await,
+            Some(dispatch.trigger_seq)
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_trigger_on_recreated_agent_is_rebased_past_old_episodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let services = test_agent_api_services(tmp.path());
+        let _ =
+            create_agent_definition_impl(&services, sample_agent_definition("agent-a", "Alpha"))
+                .await;
+        // A fresh cron entry (as after re-creating the agent) starts at 0.
+        let scheduler = services.resolve_default_scheduler().await.unwrap();
+        scheduler
+            .register_entry(
+                "agent-a",
+                "g1",
+                SchedulerTriggerRegistration::Cron {
+                    schedule: "0 9 * * *".to_string(),
+                    timezone: "UTC".to_string(),
+                    next_run_at: Some(Utc::now() - chrono::Duration::hours(1)),
+                },
+            )
+            .await
+            .unwrap();
+        let mut scheduled = scheduler
+            .collect_due_cron_triggers(Utc::now())
+            .await
+            .expect("collect_due should succeed")
+            .into_iter()
+            .next()
+            .expect("cron fire should be due");
+        assert_eq!(scheduled.trigger_seq, 1);
+
+        let memory_service = services
+            .memory_resolver
+            .resolve_for_scope(&scheduled.principal, &scheduled.workspace)
+            .expect("scheduled scope should resolve");
+        seed_recorded_episodes(&memory_service, "agent-a", "g1", 1..=3).await;
+
+        rebase_scheduled_trigger_past_used_seqs(&services, &mut scheduled).await;
+        assert_eq!(scheduled.trigger_seq, 4);
+        assert_eq!(
+            scheduler
+                .entry_for_agent_goal("agent-a", "g1")
+                .await
+                .unwrap()
+                .trigger_seq,
+            4
+        );
+
+        let dispatch = prepare_scheduled_trigger_dispatch(&services, &scheduled)
+            .await
+            .expect("scheduled prepare should succeed")
+            .expect("scheduled dispatch should be prepared");
+        assert_eq!(dispatch.trigger_seq, 4);
+        assert!(dispatch.cycle_id.ends_with("::4"));
+        assert!(!dispatch_trigger_tuple_already_recorded(&services, &dispatch).await);
+
+        // A retry rollback still recognises the rebased tuple.
+        requeue_scheduled_trigger_for_retry(&services, &scheduled, "test_requeue").await;
+        assert_eq!(
+            scheduler
+                .entry_for_agent_goal("agent-a", "g1")
+                .await
+                .unwrap()
+                .trigger_seq,
+            3
+        );
+    }
+
+    #[test]
+    fn sweep_runs_the_user_knowledge_pass_once_per_scope_not_per_agent() {
+        let mut definitions = Vec::new();
+        for index in 0..12 {
+            let mut definition = sample_agent_definition(&format!("agent-{index}"), "Agent");
+            definition.principal = Some("anonymous".to_string());
+            definition.workspace = Some("default".to_string());
+            definitions.push(definition);
+        }
+        let mut other = sample_agent_definition("agent-other", "Other");
+        other.principal = Some("anonymous".to_string());
+        other.workspace = Some("second".to_string());
+        definitions.push(other);
+        let mut unscoped = sample_agent_definition("agent-unscoped", "Unscoped");
+        unscoped.principal = None;
+        definitions.push(unscoped);
+
+        assert_eq!(
+            user_knowledge_pass_scopes(&definitions),
+            vec![
+                ("anonymous".to_string(), "default".to_string()),
+                ("anonymous".to_string(), "second".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_evicts_runtime_definitions_whose_files_are_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let services = test_agent_api_services(tmp.path());
+        for agent_id in ["agent-a", "agent-b"] {
+            let _ =
+                create_agent_definition_impl(&services, sample_agent_definition(agent_id, "Alpha"))
+                    .await;
+        }
+        let definition = ensure_agent_loaded_for_api(&services, "agent-a")
+            .await
+            .unwrap();
+        let principal = definition.principal.clone().unwrap();
+        let workspace = definition.workspace.clone().unwrap();
+        let _ = ensure_agent_loaded_for_api(&services, "agent-b")
+            .await
+            .unwrap();
+        let scheduler = services
+            .resolve_scheduler(&principal, &workspace)
+            .await
+            .unwrap();
+        scheduler
+            .register_entry(
+                "agent-a",
+                "g1",
+                SchedulerTriggerRegistration::Cron {
+                    schedule: "0 9 * * *".to_string(),
+                    timezone: "UTC".to_string(),
+                    next_run_at: Some(Utc::now() + chrono::Duration::hours(1)),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Remove agent-a's directory out of band, the way the live probe
+        // agents were removed, then refresh the store.
+        let definition_store = services.resolve_definition_store(&principal, &workspace);
+        let agent_dir = definition_store.storage().agent_dir("agent-a").unwrap();
+        std::fs::remove_dir_all(&agent_dir).expect("agent dir should be removable");
+        definition_store.refresh_all().await.unwrap();
+        assert!(
+            services
+                .runtime
+                .list_definitions()
+                .await
+                .iter()
+                .any(|definition| definition.agent_id == "agent-a"),
+            "a store refresh alone leaves the runtime copy behind (the sweep's source)"
+        );
+
+        let evicted = reconcile_runtime_definitions_with_store(&services).await;
+        assert_eq!(
+            evicted,
+            vec![(principal.clone(), workspace.clone(), "agent-a".to_string())]
+        );
+        let remaining = services.runtime.list_definitions().await;
+        assert!(remaining
+            .iter()
+            .all(|definition| definition.agent_id != "agent-a"));
+        assert!(remaining
+            .iter()
+            .any(|definition| definition.agent_id == "agent-b"));
+        assert!(scheduler
+            .entry_for_agent_goal("agent-a", "g1")
+            .await
+            .is_none());
+
+        // Idempotent: nothing left to evict.
+        assert!(reconcile_runtime_definitions_with_store(&services)
+            .await
+            .is_empty());
     }
 
     #[tokio::test]
@@ -39007,6 +41093,7 @@ sections:
         let services = test_agent_api_services(tmp.path());
         let mut def = sample_agent_definition("auto-test", "Agent");
         def.autonomous_config = Some(magician::magician_v2::agents::types::AutonomousConfig {
+            outward_context: None,
             schedule: "0 9 * * *".to_string(),
             focus_areas: vec![],
             max_tasks_per_cycle: 5,

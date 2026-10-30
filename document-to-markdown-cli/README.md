@@ -26,3 +26,5 @@ ceiling. The shared process owner enforces that limit before exec and reserves
 it against an 8 GiB global governed-memory budget, so at most two worst-case
 AnyDoc conversions run concurrently. This bounds AnyDoc's own decompression and
 document-model allocations without moving parser-specific logic into Magician.
+
+The converter pins AnyDoc 0.2.4 for the patched PDF parser dependency.

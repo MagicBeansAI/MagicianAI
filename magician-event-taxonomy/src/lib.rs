@@ -177,6 +177,8 @@ pub enum RuntimeAgentEventType {
     ReasoningStart,
     ReasoningContent,
     ReasoningEnd,
+    DecisionRailScreenshot,
+    PlannerEarlierScreenshot,
     ToolCallStarted,
     ToolCallArgs,
     ToolCallFinished,
@@ -223,7 +225,14 @@ pub enum RuntimeAgentEventType {
     ChatAgentTurnStatusChanged,
     /// The chat watchdog stopped a stalled turn; the owner can retry it.
     ChatTurnStopped,
+    /// A chat turn started or settled (running/completed/stopped/failed);
+    /// reconnecting clients read the turn's status from it.
+    ChatTurnStateChanged,
     TaskStatusChanged,
+    /// A finished run's final answer is being written, checked against the
+    /// evidence or revised (`phase`); the task card shows the step until the
+    /// answer is published.
+    TaskAnswerProgress,
     TaskActionProgress,
     TaskChildStatusChanged,
     /// A budget grant or resume changed the numbers on a run. Clients refresh
@@ -352,6 +361,8 @@ impl RuntimeAgentEventType {
         Self::ReasoningStart,
         Self::ReasoningContent,
         Self::ReasoningEnd,
+        Self::DecisionRailScreenshot,
+        Self::PlannerEarlierScreenshot,
         Self::ToolCallStarted,
         Self::ToolCallArgs,
         Self::ToolCallFinished,
@@ -384,7 +395,9 @@ impl RuntimeAgentEventType {
         Self::ChatDelegateOutputFailed,
         Self::ChatAgentTurnStatusChanged,
         Self::ChatTurnStopped,
+        Self::ChatTurnStateChanged,
         Self::TaskStatusChanged,
+        Self::TaskAnswerProgress,
         Self::TaskActionProgress,
         Self::TaskChildStatusChanged,
         Self::TaskBudgetUpdated,
@@ -508,6 +521,8 @@ impl RuntimeAgentEventType {
             Self::ReasoningStart => "reasoning.start",
             Self::ReasoningContent => "reasoning.content",
             Self::ReasoningEnd => "reasoning.end",
+            Self::DecisionRailScreenshot => "decision_rail.screenshot",
+            Self::PlannerEarlierScreenshot => "planner.earlier_screenshot",
             Self::ToolCallStarted => "tool.call.started",
             Self::ToolCallArgs => "tool.call.args",
             Self::ToolCallFinished => "tool.call.finished",
@@ -540,7 +555,9 @@ impl RuntimeAgentEventType {
             Self::ChatDelegateOutputFailed => "chat.delegate.output_failed",
             Self::ChatAgentTurnStatusChanged => "chat.agent_turn.status_changed",
             Self::ChatTurnStopped => "chat.turn.stopped",
+            Self::ChatTurnStateChanged => "chat.turn.state_changed",
             Self::TaskStatusChanged => "task.status_changed",
+            Self::TaskAnswerProgress => "task.answer_progress",
             Self::TaskActionProgress => "task.action_progress",
             Self::TaskChildStatusChanged => "task.child.status_changed",
             Self::TaskBudgetUpdated => "task.budget.updated",
@@ -762,6 +779,7 @@ taxonomies! {
     LLMAnalysisCompleted => (Llm, Info, false),
     LLMAnalysisFailed => (Llm, Error, true),
     LLMRequestSent => (Llm, Info, false),
+    LLMRouted => (Llm, Info, false),
     LLMResponseReceived => (Llm, Info, false),
     InferenceAttempted => (Llm, Info, false),
     ThinkingModeActivated => (Llm, Info, true),
@@ -777,6 +795,7 @@ taxonomies! {
     AgenticStepFailed => (Agentic, Error, true),
     AgenticStepSkipped => (Agentic, Info, true),
     AgenticStepStuckWarning => (Agentic, Warn, true),
+    AgenticProviderOutage => (Agentic, Warn, true),
     AgenticPageUnderstanding => (Agentic, Info, false),
     AgenticDecisionMade => (Agentic, Decision, true),
     AgenticActionStarted => (Agentic, Info, true),
@@ -847,6 +866,14 @@ pub const GAUI_EVENT_TAXONOMY: &[(&str, EventTaxonomy)] = &[
     // ─── GAUI canonical events (mirrors ArtifactV2EventType) ──────────
 
     // Pipeline / message lifecycle
+    (
+        "context.retrieval.started",
+        EventTaxonomy::new(EventCategory::Pipeline, EventSeverity::Info, false),
+    ),
+    (
+        "context.retrieval.completed",
+        EventTaxonomy::new(EventCategory::Pipeline, EventSeverity::Info, false),
+    ),
     (
         "message.processing_started",
         EventTaxonomy::new(EventCategory::Pipeline, EventSeverity::Info, true),
@@ -993,6 +1020,12 @@ pub const GAUI_EVENT_TAXONOMY: &[(&str, EventTaxonomy)] = &[
         EventTaxonomy::new(EventCategory::Llm, EventSeverity::Info, false),
     ),
     (
+        // The router chose the provider/model for an in-flight call; pairs
+        // with `llm.requested` by `llm_call_id`.
+        "llm.routed",
+        EventTaxonomy::new(EventCategory::Llm, EventSeverity::Info, false),
+    ),
+    (
         // Fires once per LLM call when the first text token arrives
         // through the streaming consumer. Carries `duration_ms` =
         // time-to-first-token. Chat surfaces use this to show TTFT
@@ -1034,6 +1067,15 @@ pub const GAUI_EVENT_TAXONOMY: &[(&str, EventTaxonomy)] = &[
         EventTaxonomy::new(EventCategory::Tool, EventSeverity::Error, true),
     ),
     // Agentic loop
+    // Screenshot provenance is operator diagnostics; it stays out of chat.
+    (
+        "decision_rail.screenshot",
+        EventTaxonomy::new(EventCategory::Agentic, EventSeverity::Info, false),
+    ),
+    (
+        "planner.earlier_screenshot",
+        EventTaxonomy::new(EventCategory::Agentic, EventSeverity::Info, false),
+    ),
     (
         "agentic.execution_started",
         EventTaxonomy::new(EventCategory::Agentic, EventSeverity::Info, true),
@@ -1601,6 +1643,10 @@ pub const GAUI_EVENT_TAXONOMY: &[(&str, EventTaxonomy)] = &[
         ),
     ),
     (
+        "task.answer_progress",
+        EventTaxonomy::new(EventCategory::Execution, EventSeverity::Info, false),
+    ),
+    (
         "task.action_progress",
         EventTaxonomy::with_render(
             EventCategory::Execution,
@@ -1740,6 +1786,11 @@ pub const GAUI_EVENT_TAXONOMY: &[(&str, EventTaxonomy)] = &[
         // The chat service persists an explanatory assistant message. Keep
         // this lifecycle notice observable without rendering a second notice.
         EventTaxonomy::new(EventCategory::Execution, EventSeverity::Warn, false),
+    ),
+    (
+        "chat.turn.state_changed",
+        // Turn lifecycle state for reconnecting clients; never a chat row.
+        EventTaxonomy::new(EventCategory::Execution, EventSeverity::Info, false),
     ),
     (
         "chat.agent_turn.status_changed",

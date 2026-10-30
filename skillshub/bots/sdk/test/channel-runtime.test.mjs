@@ -1134,7 +1134,7 @@ test("ChannelRuntime handles SDK slash commands on prefix-gated public chat", as
   });
 });
 
-test("ChannelRuntime applies non-control dispatch profile and delivery policy", async () => {
+test("ChannelRuntime applies non-control model selection and delivery policy", async () => {
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({
@@ -1207,7 +1207,8 @@ test("ChannelRuntime applies non-control dispatch profile and delivery policy", 
     controlPrefix: "@magic",
     nonControlMessageBehavior: "dispatch",
     nonControlMessageDispatch: {
-      profile: "chat-gpt6luna-responses-vision-toolsauto-fast",
+      modelSelection: { model_id: "openai/gpt-6.1-luna", thinking: "none" },
+      harnessEngine: "magician",
       sourceSurface: "kapso-envoy-chat",
       allowOutsideWindowTemplate: false,
     },
@@ -1221,10 +1222,11 @@ test("ChannelRuntime applies non-control dispatch profile and delivery policy", 
   });
 
   assert.match(requests[1].url, /control_intent=false/);
-  assert.equal(
-    requests[2].body.profile,
-    "chat-gpt6luna-responses-vision-toolsauto-fast",
-  );
+  assert.deepEqual(requests[2].body.model_selection, {
+    model_id: "openai/gpt-6.1-luna", thinking: "none",
+  });
+  assert.equal(requests[2].body.harness_engine, "magician");
+  assert.equal("profile" in requests[2].body, false);
   assert.equal(requests[2].body.source_surface, "kapso-envoy-chat");
   assert.equal(adapter.sent[0].text, "Hi from envoy chat");
   assert.deepEqual(adapter.sent[0].options, {
@@ -1455,14 +1457,15 @@ test("ChannelRuntime handles explicit connect requests without sending a chat me
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Phase 3 — slash commands + drain loop
+// Slash commands and observation of server-owned queued work
 // ─────────────────────────────────────────────────────────────────────
 
 /** Shared scaffolding: enroll + active-session + send-message responses
  *  the tests below all need, plus a routable fetch helper. */
 function makePhase3Server() {
   const requests = [];
-  const queueState = { items: [] };
+  const queueState = { items: [], active: false, drainOnHistory: true, failReads: false };
+  const committedMessages = [];
   let cancelCount = 0;
   let lastSendResponse = null;
 
@@ -1481,13 +1484,26 @@ function makePhase3Server() {
   const fetchImpl = async (url, init) => {
     const u = String(url);
     const method = init?.method ?? "GET";
-    requests.push({ url: u, method });
+    requests.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
 
     if (u.endsWith("/api/magician/v2/chat/enroll")) {
       return jsonResponse({ enrolled: true, principal: "default" });
     }
     if (u.includes("/api/magician/v2/chat/active?")) {
-      return jsonResponse({ session: baseSession, messages: [] });
+      return jsonResponse({ session: baseSession, messages: [...committedMessages] });
+    }
+    if (method === "GET" && u.includes("/api/magician/v2/chat/sessions/session-1?")) {
+      if (queueState.drainOnHistory) {
+        for (const item of queueState.items) {
+          committedMessages.push({
+            id: `a-${item.id}`, session_id: "session-1", direction: "assistant",
+            content: { type: "text", text: `reply-${item.id}` }, created_at: 4,
+            source_surface: item.source_surface,
+          });
+        }
+        queueState.items = [];
+      }
+      return jsonResponse({ session: baseSession, messages: [...committedMessages] });
     }
     if (
       method === "POST"
@@ -1509,7 +1525,8 @@ function makePhase3Server() {
       return jsonResponse({ cancelled: true, session_id: "session-1" });
     }
     if (method === "GET" && u.includes("/queue?")) {
-      return jsonResponse({ queued: [...queueState.items], session_id: "session-1" });
+      if (queueState.failReads) return jsonResponse({ error: "fixture failure" }, { status: 503 });
+      return jsonResponse({ queued: [...queueState.items], active: queueState.active, session_id: "session-1" });
     }
     if (
       method === "DELETE"
@@ -1539,12 +1556,13 @@ function makePhase3Server() {
     fetchImpl,
     requests,
     queueState,
+    committedMessages,
     counts: () => ({ cancel: cancelCount }),
     setNextSendResponse(r) { lastSendResponse = r; },
   };
 }
 
-function makeRuntime(server) {
+function makeRuntime(server, options = {}) {
   const adapter = new FakeAdapter();
   const runtime = new ChannelRuntime({
     channelType: "telegram",
@@ -1553,6 +1571,7 @@ function makeRuntime(server) {
       baseUrl: "http://localhost:3002",
       fetchImpl: server.fetchImpl,
     }),
+    ...options,
   });
   return { adapter, runtime };
 }
@@ -1638,13 +1657,12 @@ test("normal message gets a queued hint when backend responds with queued receip
   assert.match(hint.text, /Type \/stop/);
 });
 
-test("drain loop replays queued messages after the in-flight turn settles", async () => {
+test("queued replies are observed without resending or deleting the original work", async () => {
   const server = makePhase3Server();
-  // Pre-seed two queued messages — after the user's regular turn finishes,
-  // the drain loop should replay both.
+  // Only the fake server interprets these opaque internal execution handles.
   server.queueState.items = [
-    { id: "q1", session_id: "session-1", text: "queued-1", queued_at: 1 },
-    { id: "q2", session_id: "session-1", text: "queued-2", queued_at: 2 },
+    { id: "q1", session_id: "session-1", text: "queued-1", profile_override: "pi/model/provider-a/model/high", queued_at: 1 },
+    { id: "q2", session_id: "session-1", text: "queued-2", profile_override: "model/provider-b/model/auto", queued_at: 2 },
   ];
   const { adapter, runtime } = makeRuntime(server);
   await runtime.start();
@@ -1658,6 +1676,80 @@ test("drain loop replays queued messages after the in-flight turn settles", asyn
   assert.equal(replies.length, 3, `expected 3 replies (1 + 2 drained); got ${JSON.stringify(adapter.sent)}`);
   // Queue should be empty after drain
   assert.equal(server.queueState.items.length, 0);
+  assert.equal(server.requests.filter(r => r.method === "POST" && r.url.includes("/messages?")).length, 1);
+  assert.equal(server.requests.filter(r => r.method === "DELETE").length, 0);
+  await runtime.stop();
+});
+
+async function waitUntil(predicate) {
+  const deadline = Date.now() + 3_000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, "timed out waiting for a queued reply");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+test("observation waits for claimed work and collects the final reply after the queue empties", async t => {
+  const server = makePhase3Server();
+  server.committedMessages.push({ id: "old", session_id: "session-1", direction: "assistant", content: { type: "text", text: "old history" }, created_at: 1 });
+  server.queueState.active = true;
+  server.setNextSendResponse({ queued: { id: "claimed", position: 1 } });
+  const { adapter, runtime } = makeRuntime(server);
+  t.after(() => runtime.stop());
+  await runtime.start();
+  await adapter.handlers.onTextMessage({ target: "tg:chat-42", channelAddress: "chat-42", text: "queued" });
+  assert.equal(adapter.sent.filter(m => m.text === "old history").length, 0);
+  assert.ok(adapter.sent.some(m => m.text.startsWith("Queued")));
+  server.committedMessages.push({ id: "final", session_id: "session-1", direction: "assistant", content: { type: "text", text: "final reply" }, created_at: 2 });
+  server.queueState.active = false;
+  await waitUntil(() => adapter.sent.some(m => m.text === "final reply"));
+  assert.equal(server.requests.filter(r => r.method === "POST" && r.url.includes("/messages?")).length, 1);
+  assert.equal(server.requests.filter(r => r.method === "DELETE").length, 0);
+});
+
+test("realtime and history observation deliver each queued reply once and preserve channel policy", async t => {
+  const server = makePhase3Server();
+  server.queueState.active = true;
+  server.setNextSendResponse({ queued: { id: "claimed", position: 1 } });
+  const client = new MagicianClient({ baseUrl: "http://localhost:3002", fetchImpl: server.fetchImpl });
+  let emit;
+  client.connectRealtime = listener => { emit = listener; return { close() {} }; };
+  const { adapter, runtime } = makeRuntime(server, {
+    magician: client, enableRealtime: true,
+    nonControlMessageDispatch: { sourceSurface: "telegram-envoy-chat", allowOutsideWindowTemplate: false },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start();
+  await adapter.handlers.onTextMessage({ target: "tg:chat-42", channelAddress: "chat-42", text: "queued" });
+  const message = { id: "final", session_id: "session-1", direction: "assistant", source_surface: "telegram-envoy-chat", content: { type: "text", text: "one reply" }, created_at: 2 };
+  emit({ event_type: "ChatMessageReceived", data: { session_id: "session-1", message } });
+  await waitUntil(() => adapter.sent.some(m => m.text === "one reply"));
+  server.committedMessages.push(message);
+  server.queueState.active = false;
+  await waitUntil(() => server.requests.filter(r => r.url.includes("/sessions/session-1?")).length >= 2);
+  assert.equal(adapter.sent.filter(m => m.text === "one reply").length, 1);
+  assert.deepEqual(adapter.sent.find(m => m.text === "one reply").options, { allowOutsideWindowTemplate: false });
+});
+
+test("stopping observation or failing a queue read never deletes or resubmits work", async () => {
+  for (const failReads of [false, true]) {
+    const server = makePhase3Server();
+    server.queueState.active = true;
+    server.queueState.drainOnHistory = false;
+    server.queueState.failReads = failReads;
+    server.queueState.items.push({ id: "keep", session_id: "session-1", text: "original", queued_at: 1 });
+    server.setNextSendResponse({ queued: { id: "keep", position: 1 } });
+    const { adapter, runtime } = makeRuntime(server);
+    await runtime.start();
+    await adapter.handlers.onTextMessage({ target: "tg:chat-42", channelAddress: "chat-42", text: "queued" });
+    await runtime.stop();
+    const count = server.requests.length;
+    await new Promise(resolve => setTimeout(resolve, 550));
+    assert.equal(server.requests.length, count, "no reads after stop");
+    assert.equal(server.queueState.items[0].id, "keep");
+    assert.equal(server.requests.filter(r => r.method === "POST" && r.url.includes("/messages?")).length, 1);
+    assert.equal(server.requests.filter(r => r.method === "DELETE").length, 0);
+  }
 });
 
 // P3 Task 3.11: a channel never solicits a secret into its transcript.

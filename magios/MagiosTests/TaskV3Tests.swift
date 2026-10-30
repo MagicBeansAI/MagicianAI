@@ -257,4 +257,57 @@ final class TaskV3Tests: XCTestCase {
                             "some_future_field": ["nested": 1], "sync_mode": "async"])
         XCTAssertEqual(t.id, "a")
     }
+
+    // MARK: - Completion kind (completed + partial = "Partly done")
+
+    func testCompletedPartialDecodesAndReadsPartlyDoneInWarning() throws {
+        let t = try decode(["id": "p", "title": "t", "status": "completed",
+                            "completion_kind": "partial",
+                            "open_items": ["  Deploy blocked: missing prod credentials  ", "", NSNull(), 7, "Write docs"]])
+        XCTAssertEqual(t.completionKind, "partial")
+        XCTAssertEqual(t.openItems, ["Deploy blocked: missing prod credentials", "Write docs"])
+        XCTAssertTrue(t.isPartlyDone)
+        XCTAssertEqual(t.statusLabel, "Partly done")
+        XCTAssertEqual(t.statusColor, ThemeManager.shared.warningColor)
+        XCTAssertEqual(t.openItemLine, "Open: Deploy blocked: missing prod credentials · +1 more")
+    }
+
+    func testCompletedFullOrAbsentStaysCompleted() throws {
+        for extra in [["completion_kind": "full"], [:], ["completion_kind": "someday"], ["completion_kind": 3]] as [[String: Any]] {
+            var dict: [String: Any] = ["id": "f", "title": "t", "status": "completed"]
+            dict.merge(extra) { _, new in new }
+            let t = try decode(dict)
+            XCTAssertFalse(t.isPartlyDone, "\(extra)")
+            XCTAssertEqual(t.statusLabel, "Completed", "\(extra)")
+            XCTAssertEqual(t.statusColor, ThemeManager.shared.successColor, "\(extra)")
+            XCTAssertNil(t.openItemLine)
+        }
+        XCTAssertNil(try decode(["id": "u", "title": "t", "status": "completed",
+                                 "completion_kind": "someday"]).completionKind)
+    }
+
+    func testPartialOnANonCompletedStatusIsNotPartlyDone() throws {
+        let t = try decode(["id": "r", "title": "t", "status": "running",
+                            "completion_kind": "partial", "open_items": ["x"]])
+        XCTAssertFalse(t.isPartlyDone)
+        XCTAssertEqual(t.statusLabel, "Running")
+    }
+
+    func testMalformedOpenItemsDecodeAsEmpty() throws {
+        let t = try decode(["id": "m", "title": "t", "status": "completed",
+                            "completion_kind": "PARTIAL", "open_items": "not a list"])
+        XCTAssertEqual(t.completionKind, "partial")
+        XCTAssertEqual(t.openItems, [])
+        XCTAssertEqual(t.statusLabel, "Partly done")
+        XCTAssertNil(t.openItemLine)
+    }
+
+    func testOpenLineFlattensAndTruncates() {
+        XCTAssertNil(TaskCompletion.openLine([]))
+        XCTAssertEqual(TaskCompletion.openLine(["a\n  b"]), "Open: a b")
+        let long = String(repeating: "x", count: 300)
+        let line = try? XCTUnwrap(TaskCompletion.openLine([long]))
+        XCTAssertEqual(line?.count, "Open: ".count + TaskCompletion.openItemMaxChars)
+        XCTAssertTrue(line?.hasSuffix("…") ?? false)
+    }
 }

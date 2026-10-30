@@ -9,6 +9,7 @@ import ai.magicbeans.magdroid.tasks.TaskFilter
 import ai.magicbeans.magdroid.tasks.TaskLane
 import ai.magicbeans.magdroid.tasks.TaskLoadState
 import ai.magicbeans.magdroid.tasks.TaskSortField
+import ai.magicbeans.magdroid.tasks.TaskStatusTone
 import ai.magicbeans.magdroid.tasks.TaskSwipeAction
 import ai.magicbeans.magdroid.tasks.TaskTag
 import ai.magicbeans.magdroid.tasks.TaskV3
@@ -36,6 +37,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -48,6 +50,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Article
@@ -65,6 +68,9 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Checklist
+import androidx.compose.material.icons.outlined.DoneAll
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -100,11 +106,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -193,6 +201,15 @@ class TasksScreenActions {
 
     private var refreshAction: (() -> Unit)? = null
 
+    /** The visible Work view's overflow entries (Goals: Expand all, Collapse all); empty hides the menu. */
+    internal var menu by mutableStateOf<List<WorkBarMenuItem>>(emptyList())
+        private set
+
+    internal fun bindMenu(items: List<WorkBarMenuItem>?) {
+        val next = items.orEmpty()
+        if (next != menu) menu = next
+    }
+
     fun showCreate() {
         if (canCreate) isCreateVisible = true
     }
@@ -217,27 +234,50 @@ class TasksScreenActions {
 @Composable
 fun rememberTasksScreenActions(): TasksScreenActions = remember { TasksScreenActions() }
 
-/** Keep the 52dp toolbar below the status inset, with every control centered. */
+/**
+ * The Work bar on every Work view: navigation leading, "Work" centred, then
+ * Refresh and New work. 52dp below the status inset; every control is a
+ * 48dp target.
+ */
 @Composable
-internal fun TasksTopBar(onMenu: () -> Unit, onCreate: () -> Unit, onRefresh: () -> Unit, canCreate: Boolean = true) {
-    Row(
+internal fun TasksTopBar(onMenu: () -> Unit, onCreate: () -> Unit, onRefresh: () -> Unit, canCreate: Boolean = true, menu: List<WorkBarMenuItem> = emptyList()) {
+    Box(
         Modifier.fillMaxWidth().background(Ground).statusBarsPadding().height(TASK_HEADER_HEIGHT_DP.dp)
             .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        contentAlignment = Alignment.Center,
     ) {
-        IconButton(onClick = onMenu) { Icon(Icons.Outlined.Menu, "Open navigation", tint = Ink) }
-        Text("Work", color = Ink, fontSize = TASK_HEADER_TITLE_FONT_SP.sp,
-            fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        IconButton(onClick = onCreate, enabled = canCreate) { Icon(Icons.Outlined.Add, "New work", tint = if (canCreate) Coral else Muted) }
-        IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Refresh tasks", tint = Coral) }
+        // Centred on the bar, clear of the two action buttons on either side.
+        Text("Work", color = Ink, fontSize = TASK_HEADER_TITLE_FONT_SP.sp, fontWeight = FontWeight.SemiBold,
+            maxLines = 1, modifier = Modifier.padding(horizontal = 100.dp).semantics { heading() })
+        Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onMenu) { Icon(Icons.Outlined.Menu, "Open navigation", tint = Ink) }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Refresh", tint = Coral) }
+            IconButton(onClick = onCreate, enabled = canCreate) { Icon(Icons.Outlined.Add, "New work", tint = if (canCreate) Coral else Muted) }
+            if (menu.isNotEmpty()) Box {
+                var open by remember { mutableStateOf(false) }
+                IconButton(onClick = { open = true }, modifier = Modifier.testTag("work-bar-more")) { Icon(Icons.Outlined.MoreVert, "More actions", tint = Coral) }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = activePalette.elevated) {
+                    menu.forEach { item ->
+                        DropdownMenuItem(
+                            text = { Text(item.label, color = if (item.enabled) Ink else Muted) },
+                            enabled = item.enabled,
+                            onClick = { open = false; item.onClick() },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun TasksScreen(
     viewModel: TasksViewModel = viewModel(),
     actions: TasksScreenActions = rememberTasksScreenActions(),
+    header: (@Composable () -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var actionTask by remember { mutableStateOf<TaskV3?>(null) }
@@ -280,40 +320,49 @@ fun TasksScreen(
                     Text(notice, color = Success, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
-            TasksToolbar(
-                state = state,
-                onSearch = viewModel::setSearch,
-            )
-            LanePicker(state.lane, viewModel::selectLane)
-            if (state.lane == TaskLane.Monitors) {
-                MonitorLane(state, viewModel, onCreate = actions::showCreate)
-            } else {
-                FilterToolbar(state, viewModel)
-                InternalCleanupControls(state, viewModel)
-                StatusLedger(state)
-                HorizontalDivider(color = BorderSoft)
-                TaskLaneContent(
-                    state = state,
-                    listState = taskListState,
-                    onOpen = viewModel::openTask,
-                    onAction = { task, action -> taskAction(viewModel, task, action) },
-                    onMore = { if (it.isAppManaged) viewModel.openTask(it) else actionTask = it },
-                    onSelectCleanup = viewModel::toggleInternalSelection,
-                    onRetrySynthesis = viewModel::retrySynthesis,
-                    onLoadExecutionControls = viewModel::loadExecutionControls,
-                    onExecutionControl = { executionId, action ->
-                        viewModel.executionControl(executionId, action)
-                    },
-                    onDestructive = { task, action ->
-                        when (action) {
-                            TaskSwipeAction.MarkComplete -> viewModel.setStatus(task, "completed")
-                            TaskSwipeAction.MarkNotDone, TaskSwipeAction.Reset -> viewModel.setStatus(task, "ready")
-                            TaskSwipeAction.Cancel, TaskSwipeAction.Delete -> destructive = task to action
+            // One vertical scroll for the whole page: the summary, then the lane tabs and search (pinned
+            // once the summary has scrolled away), then the lane's filters and rows.
+            LazyColumn(modifier = Modifier.fillMaxSize(), state = taskListState) {
+                if (header != null) item(key = "work-header") { header() }
+                stickyHeader(key = "work-sticky") {
+                    Column(Modifier.fillMaxWidth().background(taskWorkspaceColor(activePalette))) {
+                        LanePicker(state.lane, viewModel::selectLane)
+                        TasksToolbar(state = state, onSearch = viewModel::setSearch)
+                    }
+                }
+                if (state.lane == TaskLane.Monitors) {
+                    monitorLaneItems(state, viewModel, onCreate = actions::showCreate)
+                } else {
+                    item(key = "work-filters") {
+                        Column(Modifier.fillMaxWidth().background(taskWorkspaceColor(activePalette))) {
+                            FilterToolbar(state, viewModel)
+                            InternalCleanupControls(state, viewModel)
+                            StatusLedger(state)
+                            HorizontalDivider(color = BorderSoft)
                         }
-                    },
-                    onLoadMore = viewModel::loadMore,
-                    onRetry = viewModel::refresh,
+                    }
+            taskLaneItems(
+                state = state,
+                onOpen = viewModel::openTask,
+                onAction = { task, action -> taskAction(viewModel, task, action) },
+                onMore = { if (it.isAppManaged) viewModel.openTask(it) else actionTask = it },
+                onSelectCleanup = viewModel::toggleInternalSelection,
+                onRetrySynthesis = viewModel::retrySynthesis,
+                onLoadExecutionControls = viewModel::loadExecutionControls,
+                onExecutionControl = { executionId, action ->
+                    viewModel.executionControl(executionId, action)
+                },
+                onDestructive = { task, action ->
+                    when (action) {
+                        TaskSwipeAction.MarkComplete -> viewModel.setStatus(task, "completed")
+                        TaskSwipeAction.MarkNotDone, TaskSwipeAction.Reset -> viewModel.setStatus(task, "ready")
+                        TaskSwipeAction.Cancel, TaskSwipeAction.Delete -> destructive = task to action
+                    }
+                },
+                onLoadMore = viewModel::loadMore,
+                onRetry = viewModel::refresh,
                 )
+                }
             }
         }
     }
@@ -404,7 +453,7 @@ private fun TasksToolbar(
         modifier = Modifier
             .fillMaxWidth()
             .background(taskWorkspaceColor(activePalette))
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = WORK_SCREEN_PADDING_DP.dp, vertical = 6.dp)
             .height(TASK_SEARCH_HEIGHT_DP.dp),
         color = taskControlColor(activePalette),
         shape = RoundedCornerShape(12.dp),
@@ -442,8 +491,9 @@ private fun TasksToolbar(
 private fun LanePicker(selected: TaskLane, onSelect: (TaskLane) -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(taskWorkspaceColor(activePalette))
-            .padding(horizontal = 12.dp, vertical = TASK_LANE_VERTICAL_PADDING_DP.dp),
+            .padding(horizontal = WORK_SCREEN_PADDING_DP.dp, vertical = TASK_LANE_VERTICAL_PADDING_DP.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         TaskLane.entries.forEach { lane ->
             val active = lane == selected
@@ -458,10 +508,16 @@ private fun LanePicker(selected: TaskLane, onSelect: (TaskLane) -> Unit) {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     fontSize = TASK_LANE_FONT_SP.sp,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     modifier = Modifier.padding(vertical = TASK_LANE_ITEM_VERTICAL_PADDING_DP.dp),
                 )
             }
         }
+        WorkHelpButton(when (selected) {
+            TaskLane.Monitors -> ai.magicbeans.magdroid.work.WorkHelpTopic.Monitors
+            TaskLane.Internal -> ai.magicbeans.magdroid.work.WorkHelpTopic.SystemWork
+            else -> ai.magicbeans.magdroid.work.WorkHelpTopic.Tasks
+        })
     }
 }
 
@@ -469,15 +525,16 @@ private fun LanePicker(selected: TaskLane, onSelect: (TaskLane) -> Unit) {
 private fun InternalCleanupControls(state: TasksUiState, viewModel: TasksViewModel) {
     if (state.lane != TaskLane.Internal) return
     var confirm by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-        Row(Modifier.horizontalScroll(rememberScrollState())) {
-            TextButton(onClick = viewModel::toggleInternalSelectionMode, enabled = state.mutatingTaskId == null) { Text(if (state.selectingInternal) "Finish selection" else "Select cleanup") }
+    // The same chips as the filter row above: one control style for the whole toolbar.
+    Column(Modifier.fillMaxWidth().padding(top = 5.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = WORK_SCREEN_PADDING_DP.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            MagicianFilterChip(if (state.selectingInternal) "Finish selection" else "Select cleanup", selected = state.selectingInternal, onClick = viewModel::toggleInternalSelectionMode, leadingIcon = Icons.Outlined.Checklist, enabled = state.mutatingTaskId == null)
             if (state.selectingInternal) {
-                TextButton(onClick = viewModel::selectLoadedInternal, enabled = state.mutatingTaskId == null) { Text("Select loaded") }
-                TextButton(onClick = { confirm = true }, enabled = state.selectedInternalIDs.isNotEmpty() && state.mutatingTaskId == null) { Text("Delete selected (${state.selectedInternalIDs.size})", color = Danger) }
+                MagicianFilterChip("Select loaded", selected = false, onClick = viewModel::selectLoadedInternal, leadingIcon = Icons.Outlined.DoneAll, enabled = state.mutatingTaskId == null)
+                MagicianFilterChip("Delete selected (${state.selectedInternalIDs.size})", selected = false, onClick = { confirm = true }, leadingIcon = Icons.Outlined.DeleteOutline, enabled = state.selectedInternalIDs.isNotEmpty() && state.mutatingTaskId == null, tint = Danger)
             }
         }
-        state.cleanupProgress?.let { Text(it, color = Muted) }
+        state.cleanupProgress?.let { Text(it, color = Muted, fontSize = TASK_CARD_BODY_FONT_SP.sp, modifier = Modifier.padding(horizontal = WORK_SCREEN_PADDING_DP.dp)) }
     }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false }, title = { Text("Delete ${state.selectedInternalIDs.size} selected internal records?") }, text = { Text("App-managed runs are excluded. Failed deletions remain selected for retry.") }, confirmButton = { TextButton(onClick = { confirm = false; viewModel.deleteSelectedInternal() }) { Text("Delete selected records", color = Danger) } }, dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } })
 }
@@ -490,7 +547,7 @@ private fun FilterToolbar(state: TasksUiState, viewModel: TasksViewModel) {
     ) {
         if (state.lane == TaskLane.Tasks) {
             LazyRow(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = WORK_SCREEN_PADDING_DP.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 items(TaskFilter.entries) { filter ->
@@ -505,7 +562,7 @@ private fun FilterToolbar(state: TasksUiState, viewModel: TasksViewModel) {
             }
         }
         Row(
-            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = WORK_SCREEN_PADDING_DP.dp),
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             SortMenu(state, viewModel)
@@ -534,7 +591,7 @@ private fun FilterToolbar(state: TasksUiState, viewModel: TasksViewModel) {
         }
         if (state.lane == TaskLane.Tasks && state.availableTags.isNotEmpty()) {
             LazyRow(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = WORK_SCREEN_PADDING_DP.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 items(state.availableTags) { tag ->
@@ -607,7 +664,7 @@ private fun StatusLedger(state: TasksUiState) {
     if (groups.isEmpty()) return
     LazyRow(
         modifier = Modifier.fillMaxWidth().background(taskWorkspaceColor(activePalette)).padding(bottom = 4.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = WORK_SCREEN_PADDING_DP.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         items(groups) { (label, count) ->
@@ -628,10 +685,8 @@ private fun StatusLedger(state: TasksUiState) {
     }
 }
 
-@Composable
-private fun TaskLaneContent(
+private fun LazyListScope.taskLaneItems(
     state: TasksUiState,
-    listState: LazyListState,
     onOpen: (TaskV3) -> Unit,
     onAction: (TaskV3, TaskCardAction) -> Unit,
     onMore: (TaskV3) -> Unit,
@@ -645,21 +700,18 @@ private fun TaskLaneContent(
 ) {
     val rows = state.visibleTasks()
     if (rows.isEmpty()) {
-        EmptyTaskState(state.activeLoadState, state.lane, state.activeLoadError, onRetry)
+        item(key = "task-empty") { Box(Modifier.fillMaxWidth().height(320.dp)) { EmptyTaskState(state.activeLoadState, state.lane, state.activeLoadError, onRetry) } }
         return
     }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        state = listState,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+    val gutter = Modifier.padding(horizontal = WORK_SCREEN_PADDING_DP.dp, vertical = 4.dp)
+    run {
         state.activeLoadError?.let { error ->
             item(key = "load-error-${state.lane.name}") {
-                TaskLoadErrorBanner(error, onRetry)
+                Box(gutter) { TaskLoadErrorBanner(error, onRetry) }
             }
         }
         items(rows, key = TaskV3::id, contentType = { "task-card" }) { task ->
+          Column(gutter) {
             if (state.lane == TaskLane.Internal && state.selectingInternal) {
                 if (task.canCleanUpInternal) Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = task.id in state.selectedInternalIDs, onCheckedChange = { onSelectCleanup(task) }, enabled = state.mutatingTaskId == null, colors = magicanCheckboxColors()); Text("Select for cleanup", color = Ink) }
                 else Text("App-managed · manage in Apps", color = Muted)
@@ -676,10 +728,11 @@ private fun TaskLaneContent(
                 onExecutionControl = onExecutionControl,
                 onDestructive = onDestructive,
             )
+          }
         }
         val hasMore = if (state.lane == TaskLane.Internal) state.internalHasMore else state.taskHasMore
         if (hasMore) item {
-            OutlinedButton(shape = MagicanButtonShape, onClick = onLoadMore, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(shape = MagicanButtonShape, onClick = onLoadMore, modifier = Modifier.fillMaxWidth().then(gutter)) {
                 if (state.activeLoadState == TaskLoadState.Loading) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(7.dp))
@@ -763,15 +816,19 @@ internal fun MagicianFilterChip(
     modifier: Modifier = Modifier,
     count: Int? = null,
     leadingIcon: ImageVector? = null,
+    enabled: Boolean = true,
+    /** Text colour of an unselected chip (the danger colour for a removal). */
+    tint: Color = Ink,
 ) {
-    val foreground = if (selected) OnAccent else Ink
+    val foreground = if (selected) OnAccent else tint
     Surface(
         color = if (selected) AccentFill else Control,
         contentColor = foreground,
         shape = Lively.chipShape,
         border = if (selected) null else BorderStroke(1.dp, ControlBorder),
         modifier = modifier
-            .selectable(selected = selected, role = Role.Button, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.45f)
+            .selectable(selected = selected, enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics {
                 contentDescription = buildString {
                     append(text)
@@ -796,7 +853,7 @@ internal fun MagicianFilterChip(
                 fontSize = TASK_CHIP_FONT_SP.sp,
                 lineHeight = TASK_CHIP_LINE_HEIGHT_SP.sp,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                maxLines = 1,
+                maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
             count?.let {
                 Text(
@@ -913,7 +970,7 @@ private fun TaskCard(
                     )
                 }
                 if (task.needsAnswer) StatusPill("Answer", Warning)
-                StatusPill(task.statusLabel, taskStatusTint(task.status))
+                StatusPill(task.statusLabel, taskStatusTint(task))
             }
             activityLine?.takeIf(String::isNotBlank)?.let {
                 Text(
@@ -922,6 +979,16 @@ private fun TaskCard(
                     fontSize = TASK_CARD_BODY_FONT_SP.sp,
                     lineHeight = TASK_CARD_BODY_LINE_HEIGHT_SP.sp,
                     maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            task.openItemsLine?.let {
+                Text(
+                    it,
+                    color = Warning,
+                    fontSize = TASK_CARD_BODY_FONT_SP.sp,
+                    lineHeight = TASK_CARD_BODY_LINE_HEIGHT_SP.sp,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1227,12 +1294,16 @@ private fun MetaPill(label: String, tint: Color) {
     )
 }
 
-internal fun taskStatusTint(status: String, palette: Palette = activePalette): Color = when (status.lowercase()) {
-    "running", "planning", "executing" -> palette.info
-    "completed" -> palette.success
-    "failed", "cancelled", "canceled" -> palette.danger
-    "paused", "deferred" -> palette.warning
-    else -> palette.secondaryText
+internal fun taskStatusTint(status: String, palette: Palette = activePalette): Color =
+    taskStatusTint(TaskV3(status = status), palette)
+
+/** The row's chip colour; a completed task that left items open is the warning tone. */
+internal fun taskStatusTint(task: TaskV3, palette: Palette = activePalette): Color = when (task.statusTone) {
+    TaskStatusTone.Active -> palette.info
+    TaskStatusTone.Success -> palette.success
+    TaskStatusTone.Danger -> palette.danger
+    TaskStatusTone.Warning -> palette.warning
+    TaskStatusTone.Neutral -> palette.secondaryText
 }
 
 private fun lifecycleTint(label: String): Color = when (label) {
@@ -1411,7 +1482,7 @@ private fun TaskActionsSheet(
             item { SheetTitle("Task actions", onDismiss) }
             item {
                 Text(currentTask.title.ifBlank { "Untitled task" }, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                StatusPill(currentTask.statusLabel, taskStatusTint(currentTask.status))
+                StatusPill(currentTask.statusLabel, taskStatusTint(currentTask))
             }
             item { OutlinedButton(shape = MagicanButtonShape, onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("Open full task") } }
             item { QuickActions(currentTask, viewModel, busy) }

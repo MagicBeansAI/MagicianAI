@@ -332,6 +332,23 @@ describe('toTaskPanelModel — absence', () => {
 });
 
 describe('toTaskPanelModel — the progress instant', () => {
+	it('does not report stalled while model and tool work continues inside one step', () => {
+		const recent = NOW - 1_000;
+		const active = task({ status: 'running', executionId: 'ex_1', lastProgressAt: NOW - 12 * 60_000 });
+		const state = runState('ex_1', { activity: [{
+			id: 'recent-work', created_at: recent, metadata: { event_type: 'tool.succeeded' }
+		} as FeedItem] });
+		const model = toTaskPanelModel(active, [], state);
+		expect(model.lastProgressAt).toBe(recent);
+		expect(deriveVerdict({ ...model, now: NOW }).state).toBe('running');
+		// A later poll/status row is not evidence of more work.
+		state.run.activity_log![0].metadata = { event_type: 'execution.heartbeat' };
+		expect(deriveVerdict({ ...toTaskPanelModel(active, [], state), now: NOW }).state).toBe('stalled');
+		state.run.activity_log![0].metadata = { event_type: 'tool.succeeded' };
+		state.overview.execution_id = 'historical-exec';
+		expect(deriveVerdict({ ...toTaskPanelModel(active, [], state, 'historical-exec'), now: NOW }).state).toBe('stalled');
+	});
+
 	/**
 	 * Task 7's field, end to end. A wedged run has to be reportable as stalled,
 	 * and a missing instant must not read as one that just moved.
@@ -1387,7 +1404,8 @@ describe('toTaskPanelModel — the Run act timeline', () => {
 		const model = toTaskPanelModel(running, [], runState('ex_1', { activity: [call] }));
 
 		expect(model.run?.timeline).toHaveLength(1);
-		expect(model.run?.timeline?.[0].title).toBe('Thinking with research');
+		// The model names the row when the event carries one. The capability is only the fallback.
+		expect(model.run?.timeline?.[0].title).toBe('Thinking with claude-opus-4');
 		// The act's provenance and the act's rows are about one run, which is the
 		// invariant the id is threaded through the adapter to keep.
 		expect(model.run?.provenance).toContainEqual({ label: 'Execution id', value: 'ex_1' });
@@ -1968,5 +1986,44 @@ describe('deliverables and the other task files', () => {
 				detail: 'Voice speech'
 			}
 		]);
+	});
+});
+
+
+describe('source report in task output', () => {
+	it('never borrows the current report while a historical report is absent or loading', () => {
+		const current = task({executionId:'exec-new',completionSummary:'New run summary'});
+		const files = outputFilesFrom([{relative_path:'outputs/new.html',media_type:'text/html'}]);
+		files[0].reportSource = true;
+		const old = runState('exec-old');
+		old.output.result = {summary:'Old run summary',artifact_names:[]};
+		const model = toTaskPanelModel(current, files, old, 'exec-old');
+		expect(model.output?.summary).toBe('Old run summary');
+		expect(model.output?.files.some(file => file.reportSource)).toBe(false);
+		const loading = toTaskPanelModel(current, files, runState('exec-new'), 'exec-old');
+		expect(loading.output?.summary).toBeNull();
+		expect(loading.output?.files.some(file => file.reportSource)).toBe(false);
+	});
+	it('keeps a historical report paired with its own file and verification', () => {
+		const run = runState('exec-old');
+		run.output.result = {summary:'Old run summary',report:'<h1>Old report</h1>',artifact_names:['old.html']};
+		const files = outputFilesFrom([
+			{relative_path:'outputs/old.html',media_type:'text/html'},
+			{relative_path:'outputs/new.html',media_type:'text/html'}
+		]);
+		files[1].reportSource = true;
+		const model = toTaskPanelModel(task({executionId:'exec-new',completionSummary:'New run summary'}), files, run, 'exec-old');
+		expect(model.output?.summary).toBe('<h1>Old report</h1>');
+		expect(model.output?.verificationSummary).toBe('Old run summary');
+		expect(model.output?.files.filter(file => file.reportSource).map(file => file.path)).toEqual(['outputs/old.html']);
+	});
+	it('reads the formatted report rather than its plain list summary', () => {
+		const run = runState('exec-report');
+		run.output.result = {summary:'Short run summary',report:'<h1>Full report</h1>',artifact_names:[]};
+		const model = toTaskPanelModel(task({completionSummary:'Short task summary',executionId:'exec-report'}), [], run);
+		expect(model.output?.summary).toBe('<h1>Full report</h1>');
+		expect(model.output?.verificationSummary).toBe('Short task summary');
+		run.overview.execution_id = 'exec-stale';
+		expect(toTaskPanelModel(task({completionSummary:'Current summary',executionId:'exec-report'}), [], run).output?.summary).toBe('Current summary');
 	});
 });

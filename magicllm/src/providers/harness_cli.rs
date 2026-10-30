@@ -146,7 +146,7 @@ impl HarnessCliKind {
     }
 
     /// Whether the CLI reads the prompt from stdin when none is passed on
-    /// argv. Claude, Codex, and Pi do (Pi 0.87.1 prepends piped stdin to its
+    /// argv. Claude, Codex, and Pi do (Pi prepends piped stdin to its
     /// initial message). Batch prompts can be large and should not appear in
     /// process arguments; grok/agy were probe-verified argv-only.
     fn reads_stdin(self) -> bool {
@@ -655,10 +655,22 @@ impl LLMProvider for HarnessCliProvider {
         let model_trimmed = request.model.trim();
         let model = (!model_trimmed.is_empty() && model_trimmed != "default")
             .then(|| model_trimmed.to_string());
+        // A CLI that refuses the model by name is a discovery result: the
+        // model is hidden from pickers until the CLI lists it again.
+        let observe = |error: &LLMError| {
+            if let Some(model) = model.as_deref() {
+                crate::model_discovery::record_rejection(
+                    &format!("harness-{}", self.kind.as_str()),
+                    model,
+                    &error.to_string(),
+                );
+            }
+        };
         let output = self
             .run_cli(argv_prompt, stdin_prompt, model.as_deref())
-            .await?;
-        let (text, usage) = self.parse_output(&output)?;
+            .await
+            .inspect_err(observe)?;
+        let (text, usage) = self.parse_output(&output).inspect_err(observe)?;
         Ok(LLMResponse {
             text: Some(std::sync::Arc::from(text.as_str())),
             usage,

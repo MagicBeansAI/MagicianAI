@@ -9,6 +9,9 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { getContext } from 'svelte';
+	import { MEDIA_CHAT_SESSION, type MediaChatSession } from '$lib/media/chatScope';
+	const mediaChatSession = getContext<MediaChatSession | undefined>(MEDIA_CHAT_SESSION);
 
 	import {
 		cancelCurrent as cancelBrowserTts,
@@ -85,6 +88,7 @@
 			void providerSpeakBlocks(
 				{
 					messageId,
+					chatSessionId: mediaChatSession?.() ?? null,
 					blocks: speechBlocks,
 					provider: null,
 					voice: null,

@@ -24,6 +24,8 @@
  * (`emotion=happy`) values — matching the backend parser — so a
  * model that occasionally drops quotes still gets its hints.
  */
+import { splitAnswerVerification } from '$lib/magician/chat/answerVerification';
+
 // Matches either `<speech>` (no attrs) or `<speech attr=… …>`. The
 // attribute string lands in capture group 1, the body in capture
 // group 2. Attributes are parsed in a second pass.
@@ -152,19 +154,34 @@ export function resolveSpeechBlocks(
 	serverSegments: SpeechBlock[] | null | undefined,
 	rawMessage: string | null | undefined
 ): SpeechBlock[] {
+	const display = splitAnswerVerification(rawMessage ?? '');
+	let hasVerification = display.verification !== null;
+	let blocks: SpeechBlock[];
 	if (serverSegments && serverSegments.length > 0) {
-		return serverSegments
-			.map((s) => ({
-				text: s.text.replace(/\s+/g, ' ').trim(),
-				emotion: s.emotion,
-				style: s.style,
-				pace: s.pace,
-				voice_mode: s.voice_mode,
-				emphasis: s.emphasis
-			}))
+		blocks = serverSegments
+			.map((s) => {
+				const segment = splitAnswerVerification(s.text);
+				hasVerification ||= segment.verification !== null;
+				return {
+					text: segment.body.replace(/\s+/g, ' ').trim(),
+					emotion: s.emotion,
+					style: s.style,
+					pace: s.pace,
+					voice_mode: s.voice_mode,
+					emphasis: s.emphasis
+				};
+			})
 			.filter((s) => s.text.length > 0);
+		// Older parsed segments can contain only a flattened diagnostic. The
+		// original body still has paragraph boundaries and the actual findings.
+		if (blocks.length === 0) blocks = extractSpeechBlocks(display.body);
+	} else {
+		blocks = extractSpeechBlocks(display.body);
 	}
-	return extractSpeechBlocks(rawMessage);
+	// Read useful findings first; preserve the qualification without speaking
+	// raw checker diagnostics (which can themselves quote unsupported claims).
+	if (hasVerification) blocks.push({ text: 'Some findings remain unverified.' });
+	return blocks;
 }
 
 /**

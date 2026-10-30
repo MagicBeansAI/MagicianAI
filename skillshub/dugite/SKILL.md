@@ -107,6 +107,11 @@ dugite.run({ "args": ["worktree", "add", "../wt", "-b", "feature"] })
 dugite.run({ "args": ["show", "--stat", "HEAD"], "cwd": "/abs/path/to/repo" })
 ```
 
+`cwd` must be the absolute path of a VibeDev project folder, the task's working
+folder or an owner-granted folder, or a path relative to the task's working
+folder (a bare project folder name also resolves in the workspace home). Omit it
+to use the task's working folder; anything else is refused.
+
 Use this when:
 - The host doesn't have a system `git` (containers, restricted
   delegated CLI sandboxes, fresh CI environments).

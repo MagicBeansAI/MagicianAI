@@ -310,6 +310,11 @@ pub mod names {
     /// The machine-read lines of that block are assembled in Rust; see
     /// `magician_v2::vibedev::rail`.
     pub const VIBEDEV_RAIL_PROJECT_CONTEXT: &str = "vibedev_rail_project_context";
+    /// Mode-specific half of that block, rendered above the shared prose and
+    /// selected by the run's mode — never by matching rendered text. A build
+    /// run gets `_BUILD`, a `#discuss` run gets `_PLAN`, never both.
+    pub const VIBEDEV_RAIL_PROJECT_CONTEXT_BUILD: &str = "vibedev_rail_project_context_build";
+    pub const VIBEDEV_RAIL_PROJECT_CONTEXT_PLAN: &str = "vibedev_rail_project_context_plan";
 
     /// `@vibedev #discuss` planning directive (read-only, plan-as-deliverable).
     pub const VIBEDEV_RAIL_PLAN_DIRECTIVE: &str = "vibedev_rail_plan_directive";
@@ -489,7 +494,9 @@ pub mod versions {
     ///         is empty when no profile note exists, so a deployment without
     ///         one renders byte-identically to v0.0.5 and keeps the same
     ///         prefix-cache behaviour described above.
-    pub const CHAT_OUTER_LOOP_SYSTEM: &str = "0.0.7";
+    /// v0.0.8: asks only for essential missing inputs and leads with
+    ///         supported findings before secondary gaps.
+    pub const CHAT_OUTER_LOOP_SYSTEM: &str = "0.0.8";
     /// v1.0.0: initial capture distiller. Strict over recall — a wrong
     /// directive shapes every future session until the owner notices it.
     /// v1.1.0: adds retraction proposals; the profile is passed in so a
@@ -594,7 +601,9 @@ pub mod versions {
     /// v1.3.11: Investigates before asking for material unavailable facts,
     ///          preferences or authority; bundles questions, reuses answers
     ///          and records reversible assumptions within the agreed goal.
-    pub const AGENTIC_DECISION: &str = "1.3.11";
+    /// v1.3.12: checks essential inputs before costly execution and reuses
+    ///          supplied answers.
+    pub const AGENTIC_DECISION: &str = "1.3.12";
 
     /// Version for agentic decision system prompt.
     /// v1.0.0: Extracted from embedded constant in decision.rs.
@@ -617,7 +626,10 @@ pub mod versions {
     /// rendered prompt byte-identical to v1.0.6.
     /// v1.0.8: Applies the same material-input threshold and answer reuse to
     ///         generic owner questions, beyond visible browser challenges.
-    pub const AGENTIC_DECISION_SYSTEM: &str = "1.0.9";
+    /// v1.0.9: passes large values by reference and reuses earlier results.
+    /// v1.0.10: checks essential inputs before costly execution and keeps
+    ///          concrete findings in partial progress.
+    pub const AGENTIC_DECISION_SYSTEM: &str = "1.0.10";
 
     /// Version for agentic input interpretation prompt
     pub const AGENTIC_INPUT_INTERPRETATION: &str = "1.0.0";
@@ -781,14 +793,19 @@ pub mod versions {
     /// Version for autonomous execution planning system prompt
     pub const AUTONOMOUS_EXECUTION_SYSTEM: &str = "1.0.0";
 
-    /// Version for V3 execution-scoped agent output synthesis prompt
-    pub const EXECUTION_OUTPUT_SYNTHESIZE: &str = "1.0.0";
+    /// Version for V3 execution-scoped agent output synthesis prompt.
+    /// v1.2.0: reports the bundle's `run_effects` (every segment's recorded
+    /// changes, runs and readbacks) as done.
+    pub const EXECUTION_OUTPUT_SYNTHESIZE: &str = "1.3.0";
     /// Version for V3 execution-scoped agent output synthesis system prompt
     pub const EXECUTION_OUTPUT_SYNTHESIZE_SYSTEM: &str = "1.0.1";
-    /// Version for V3 task-scoped user output synthesis prompt
-    pub const TASK_USER_OUTPUT_SYNTHESIZE: &str = "1.0.0";
+    /// Version for V3 task-scoped user output synthesis prompt.
+    /// v1.1.0: reports the bundle's `run_effects` as done.
+    pub const TASK_USER_OUTPUT_SYNTHESIZE: &str = "1.2.0";
     /// Version for the claim-level task-user grounding judge.
-    pub const TASK_USER_CLAIM_JUDGE: &str = "1.2.0";
+    /// v1.2.1: keeps requester targets and attributed premises apart from
+    /// external facts; keeps supported findings under partial coverage.
+    pub const TASK_USER_CLAIM_JUDGE: &str = "1.2.1";
     /// Version for V3 task-scoped user output synthesis system prompt.
     /// v1.3.0: rebalances DEFAULT format selection — text/html is now the
     /// default for substantive deliverables; text/markdown is reserved for
@@ -806,7 +823,8 @@ pub mod versions {
     /// / `studio`). See `data/magician_v2/prompts/task_user_output_synthesize_system_v1.2.0.json`.
     pub const TASK_USER_OUTPUT_SYNTHESIZE_SYSTEM: &str = "1.4.1";
     /// Version for the task-result summarization system prompt.
-    pub const TASK_SUMMARY_SYSTEM: &str = "1.0.0";
+    /// v1.0.1: keeps useful partial findings ahead of coverage limits.
+    pub const TASK_SUMMARY_SYSTEM: &str = "1.0.1";
     /// Version for API Mining Phase 2 workflow compilation system prompt.
     /// v1.0.1: consumes privacy-safe structural sequence projections so raw
     /// request, response, browser, and authentication values never enter an
@@ -892,14 +910,20 @@ pub mod versions {
     /// Version for meeting summary system prompt
     pub const MEETING_SUMMARY_SYSTEM: &str = "1.0.0";
 
-    /// Version for the VibeDev execution-policy footer
-    pub const VIBEDEV_EXECUTION_POLICY: &str = "1.0.1";
+    /// Version for the VibeDev execution-policy footer.
+    /// v1.0.2: mode-agnostic — no staging line; how changes land is the
+    /// change-delivery block's (`artifact_v2::service`).
+    pub const VIBEDEV_EXECUTION_POLICY: &str = "1.0.2";
 
     /// Version for the VibeDev scaffold directive
     pub const VIBEDEV_SCAFFOLD_DIRECTIVE: &str = "1.0.0";
 
     /// Versions for the `@vibedev` chat rail's prose.
-    pub const VIBEDEV_RAIL_PROJECT_CONTEXT: &str = "1.0.0";
+    /// v1.1.0: mode-neutral only; the build-only line moved to
+    /// `VIBEDEV_RAIL_PROJECT_CONTEXT_BUILD`.
+    pub const VIBEDEV_RAIL_PROJECT_CONTEXT: &str = "1.1.0";
+    pub const VIBEDEV_RAIL_PROJECT_CONTEXT_BUILD: &str = "1.0.0";
+    pub const VIBEDEV_RAIL_PROJECT_CONTEXT_PLAN: &str = "1.0.0";
     pub const VIBEDEV_RAIL_PLAN_DIRECTIVE: &str = "1.0.0";
     pub const VIBEDEV_RAIL_FOLLOW_UP_CONTEXT: &str = "1.1.0";
     pub const VIBEDEV_RAIL_REPLY_STARTED: &str = "1.0.0";

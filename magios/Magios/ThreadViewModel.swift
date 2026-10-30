@@ -12,6 +12,7 @@ class ThreadViewModel: ObservableObject {
     @Published var threads: [UiThreadRecord] = []
     @Published var sessions: [ChatSession] = []
     @Published var searchResults: [HistorySearchItem] = []
+    @Published private(set) var workingSessionIds: Set<String> = []
     @Published private(set) var selectedSessionSnapshot: ChatSession? = nil
     @Published private(set) var selectedThreadSnapshot: UiThreadRecord? = nil
     @Published var activeThreadId: String = "general"
@@ -24,6 +25,16 @@ class ThreadViewModel: ObservableObject {
     @Published private(set) var offset: Int = 0
     @Published private(set) var isSearchActive: Bool = false
     @Published private(set) var errorMessage: String? = nil
+    /// The session whose DELETE is in flight: its row reads "Deleting…" and
+    /// every other delete waits until the server answers.
+    @Published private(set) var deletingSessionId: String? = nil
+    /// The thread whose archive, restore, or delete is still waiting on the
+    /// server. One change at a time; the row reads `mutatingThreadLabel`.
+    @Published private(set) var mutatingThreadId: String? = nil
+    @Published private(set) var mutatingThreadLabel: String? = nil
+    /// Archive and delete walk every session on the thread, so they outlive
+    /// the default minute-long URL request.
+    static let threadMutationTimeout: TimeInterval = 600
 
     private let principal = MagicianAccess.principal
     private let workspace = MagicianAccess.workspace
@@ -32,6 +43,11 @@ class ThreadViewModel: ObservableObject {
     private var searchWorkItem: DispatchWorkItem?
     private var fetchGeneration = 0
     private var threadOpenGeneration = 0
+    /// Working ids from the previous activity poll, with the ids it covered.
+    private var lastActivityPoll: (ids: Set<String>, working: Set<String>)?
+    private var quietRefreshScheduled = false
+    private var lastQuietRefreshAt: Date?
+    static let activityPollInterval: TimeInterval = 3
 
     private var base: String { "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2" }
 
@@ -50,6 +66,89 @@ class ThreadViewModel: ObservableObject {
 
     func fetchData() {
         fetchCurrentPage()
+    }
+
+    var visibleSessionIds: [String] {
+        if isLoading || errorMessage != nil { return [] }
+        if isSearchActive { return searchResults.compactMap { $0.session?.id } }
+        return activeTab == "sessions" ? sessions.map(\.id) : []
+    }
+
+    @MainActor func clearActivity() { workingSessionIds = [] }
+
+    /// One small snapshot for the visible page, never a transcript fetch.
+    @MainActor func refreshActivity() async {
+        let generation = fetchGeneration
+        let ids = visibleSessionIds
+        let connection = MagicianAccess.connectionProfile
+        guard !ids.isEmpty, var url = URLComponents(string: "\(base)/chat/activity") else {
+            workingSessionIds = []
+            return
+        }
+        url.queryItems = [URLQueryItem(name: "session_ids", value: ids.joined(separator: ","))]
+        guard let endpoint = url.url else { return }
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 5
+        MagicianAccess.authorize(&request)
+        struct Activity: Decodable { let working_session_ids: [String] }
+        let working: Set<String>
+        do {
+            let (data, response) = try await networkSession.data(for: request)
+            guard !Task.isCancelled else { return }
+            if Self.isSuccessful(response) {
+                working = Set(try JSONDecoder().decode(Activity.self, from: data).working_session_ids).intersection(ids)
+            } else {
+                working = []
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            working = []
+        }
+        guard generation == fetchGeneration, connection == MagicianAccess.connectionProfile else { return }
+        let polledIds = Set(ids)
+        let previous = lastActivityPoll
+        lastActivityPoll = (polledIds, working)
+        workingSessionIds = working
+        if Self.activityChangeNeedsRefresh(
+            previous: previous, currentIds: polledIds, currentWorking: working) {
+            requestQuietRefresh()
+        }
+    }
+
+    /// A session on both polls started or stopped working: its row's time and
+    /// place may have moved. The first poll, and ids that only scrolled in or
+    /// out of the page, are not changes.
+    static func activityChangeNeedsRefresh(
+        previous: (ids: Set<String>, working: Set<String>)?,
+        currentIds: Set<String>,
+        currentWorking: Set<String>
+    ) -> Bool {
+        guard let previous else { return false }
+        let common = previous.ids.intersection(currentIds)
+        return previous.working.intersection(common) != currentWorking.intersection(common)
+    }
+
+    /// Re-read the current page without blanking it, at most once per poll
+    /// cycle; the page, tab, lane and search stay as they are.
+    func requestQuietRefresh() {
+        guard !quietRefreshScheduled else { return }
+        quietRefreshScheduled = true
+        let delay = Self.quietRefreshDelay(since: lastQuietRefreshAt, now: Date())
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.quietRefreshScheduled = false
+            // A visible load already brings fresh rows.
+            guard !self.isLoading else { return }
+            self.lastQuietRefreshAt = Date()
+            self.fetchCurrentPage(quiet: true)
+        }
+    }
+
+    /// A short coalescing delay, stretched so refreshes are a poll apart.
+    static func quietRefreshDelay(since last: Date?, now: Date) -> TimeInterval {
+        let coalesce: TimeInterval = 0.25
+        guard let last else { return coalesce }
+        return max(coalesce, activityPollInterval - now.timeIntervalSince(last))
     }
 
     func selectTab(_ tab: String) {
@@ -126,17 +225,22 @@ class ThreadViewModel: ObservableObject {
         fetchCurrentPage()
     }
 
-    private func fetchCurrentPage() {
+    /// `quiet` keeps the rows, working badges and error on screen and drops
+    /// a failure: a background refresh never blanks the list.
+    private func fetchCurrentPage(quiet: Bool = false) {
         fetchGeneration += 1
         let generation = fetchGeneration
-        isLoading = true
-        errorMessage = nil
+        if !quiet {
+            isLoading = true
+            workingSessionIds = []
+            errorMessage = nil
+        }
         if isSearchActive {
-            fetchHistorySearch(generation: generation)
+            fetchHistorySearch(generation: generation, quiet: quiet)
         } else if activeTab == "threads" {
-            fetchThreads(generation: generation)
+            fetchThreads(generation: generation, quiet: quiet)
         } else {
-            fetchSessions(generation: generation)
+            fetchSessions(generation: generation, quiet: quiet)
         }
     }
 
@@ -161,9 +265,9 @@ class ThreadViewModel: ObservableObject {
         return components.url
     }
 
-    private func fetchHistorySearch(generation: Int) {
+    private func fetchHistorySearch(generation: Int, quiet: Bool = false) {
         guard let url = globalSearchURL() else {
-            finishFailure("Could not build the history-search request.", generation: generation)
+            finishFailure("Could not build the history-search request.", generation: generation, quiet: quiet)
             return
         }
         var request = URLRequest(url: url)
@@ -171,7 +275,7 @@ class ThreadViewModel: ObservableObject {
         networkSession.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
             guard error == nil, let data, Self.isSuccessful(response) else {
-                self.finishFailure(error?.localizedDescription ?? "History search could not be loaded.", generation: generation)
+                self.finishFailure(error?.localizedDescription ?? "History search could not be loaded.", generation: generation, quiet: quiet)
                 return
             }
             do {
@@ -186,14 +290,14 @@ class ThreadViewModel: ObservableObject {
                     self.finishLoad(generation: generation)
                 }
             } catch {
-                self.finishFailure("History search response was invalid.", generation: generation)
+                self.finishFailure("History search response was invalid.", generation: generation, quiet: quiet)
             }
         }.resume()
     }
 
-    private func fetchThreads(generation: Int) {
+    private func fetchThreads(generation: Int, quiet: Bool = false) {
         guard let url = historyURL(path: "ui-threads") else {
-            finishFailure("Could not build the thread-history request.", generation: generation)
+            finishFailure("Could not build the thread-history request.", generation: generation, quiet: quiet)
             return
         }
         var request = URLRequest(url: url)
@@ -201,7 +305,7 @@ class ThreadViewModel: ObservableObject {
         networkSession.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
             guard error == nil, let data, Self.isSuccessful(response) else {
-                self.finishFailure(error?.localizedDescription ?? "Thread history could not be loaded.", generation: generation)
+                self.finishFailure(error?.localizedDescription ?? "Thread history could not be loaded.", generation: generation, quiet: quiet)
                 return
             }
             do {
@@ -214,14 +318,14 @@ class ThreadViewModel: ObservableObject {
                     self.finishLoad(generation: generation)
                 }
             } catch {
-                self.finishFailure("Thread history response was invalid.", generation: generation)
+                self.finishFailure("Thread history response was invalid.", generation: generation, quiet: quiet)
             }
         }.resume()
     }
 
-    private func fetchSessions(generation: Int) {
+    private func fetchSessions(generation: Int, quiet: Bool = false) {
         guard let url = historyURL(path: "chat/sessions") else {
-            finishFailure("Could not build the session-history request.", generation: generation)
+            finishFailure("Could not build the session-history request.", generation: generation, quiet: quiet)
             return
         }
         var request = URLRequest(url: url)
@@ -229,14 +333,14 @@ class ThreadViewModel: ObservableObject {
         networkSession.dataTask(with: request) { [weak self] data, response, error in
             guard let self else { return }
             guard error == nil, let data, Self.isSuccessful(response) else {
-                self.finishFailure(error?.localizedDescription ?? "Session history could not be loaded.", generation: generation)
+                self.finishFailure(error?.localizedDescription ?? "Session history could not be loaded.", generation: generation, quiet: quiet)
                 return
             }
 
             let page = try? JSONDecoder().decode(ChatSessionListResponse.self, from: data)
             let bareSessions = page == nil ? try? JSONDecoder().decode([ChatSession].self, from: data) : nil
             guard let decodedSessions = page?.sessions ?? bareSessions else {
-                self.finishFailure("Session history response was invalid.", generation: generation)
+                self.finishFailure("Session history response was invalid.", generation: generation, quiet: quiet)
                 return
             }
             DispatchQueue.main.async {
@@ -259,9 +363,10 @@ class ThreadViewModel: ObservableObject {
         isLoading = false
     }
 
-    private func finishFailure(_ message: String, generation: Int) {
+    private func finishFailure(_ message: String, generation: Int, quiet: Bool = false) {
         DispatchQueue.main.async {
             guard generation == self.fetchGeneration else { return }
+            guard !quiet else { return }
             self.errorMessage = message
             self.isLoading = false
         }
@@ -298,6 +403,13 @@ class ThreadViewModel: ObservableObject {
         if selectedThreadSnapshot?.id == id { return selectedThreadSnapshot }
         if let thread = threads.first(where: { $0.id == id }) { return thread }
         return searchResults.lazy.compactMap(\.thread).first(where: { $0.id == id })
+    }
+
+    /// Reflect an owner-confirmed settings save in the chat title immediately.
+    func applyThreadUpdate(_ thread: UiThreadRecord) {
+        threads = threads.map { $0.id == thread.id ? thread : $0 }
+        if activeThreadId == thread.id { selectedThreadSnapshot = thread }
+        fetchData()
     }
 
     private func applySelectedSession(_ session: ChatSession) {
@@ -608,51 +720,83 @@ class ThreadViewModel: ObservableObject {
         }
     }
 
-    func deleteSession(_ id: String) {
-        guard !isDefaultSession(id), let url = mutationURL(path: "chat/sessions/\(id)") else { return }
+    /// Delete a session; `onDeleted` runs only after the server confirmed it
+    /// (the caller then leaves the chat if it was the open one). One delete at
+    /// a time: a second request while one is in flight is ignored.
+    func deleteSession(_ id: String, onDeleted: ((String) -> Void)? = nil) {
+        guard deletingSessionId == nil, !isDefaultSession(id),
+              let url = mutationURL(path: "chat/sessions/\(id)") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         MagicianAccess.authorize(&request)
-        sendMutation(request) { [weak self] in
+        deletingSessionId = id
+        sendMutation(request, onFailure: { [weak self] in
+            self?.deletingSessionId = nil
+        }) { [weak self] in
+            self?.deletingSessionId = nil
             if self?.activeSessionId == id {
                 self?.activeSessionId = nil
                 self?.selectedSessionSnapshot = nil
             }
+            onDeleted?(id)
             self?.fetchCurrentPage()
         }
     }
 
     func archiveThread(_ id: String) {
-        guard id != "general" else { return }
-        patchThread(id, archived: true)
+        patchThread(id, archived: true, label: "Archiving…")
     }
 
     func unarchiveThread(_ id: String) {
-        patchThread(id, archived: false)
+        patchThread(id, archived: false, label: "Restoring…")
     }
 
-    private func patchThread(_ id: String, archived: Bool) {
-        guard id != "general", let url = mutationURL(path: "ui-threads/\(id)") else { return }
+    private func patchThread(_ id: String, archived: Bool, label: String) {
+        guard beginThreadMutation(id, label: label),
+              let url = mutationURL(path: "ui-threads/\(id)") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "PATCH"
+        request.timeoutInterval = Self.threadMutationTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         MagicianAccess.authorize(&request)
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["archived": archived])
-        sendMutation(request) { [weak self] in
+        sendMutation(request, onFailure: { [weak self] in
+            self?.clearThreadMutation(id)
+        }) { [weak self] in
+            self?.clearThreadMutation(id)
             if archived, self?.activeThreadId == id { self?.activeThreadId = "general" }
             self?.fetchCurrentPage()
         }
     }
 
     func deleteThread(_ id: String) {
-        guard id != "general", let url = mutationURL(path: "ui-threads/\(id)") else { return }
+        guard beginThreadMutation(id, label: "Deleting…"),
+              let url = mutationURL(path: "ui-threads/\(id)") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
+        request.timeoutInterval = Self.threadMutationTimeout
         MagicianAccess.authorize(&request)
-        sendMutation(request) { [weak self] in
+        sendMutation(request, onFailure: { [weak self] in
+            self?.clearThreadMutation(id)
+        }) { [weak self] in
+            self?.clearThreadMutation(id)
             if self?.activeThreadId == id { self?.activeThreadId = "general" }
             self?.fetchCurrentPage()
         }
+    }
+
+    /// One thread change at a time. `#general` stays locked.
+    private func beginThreadMutation(_ id: String, label: String) -> Bool {
+        guard id != "general", mutatingThreadId == nil else { return false }
+        mutatingThreadId = id
+        mutatingThreadLabel = label
+        return true
+    }
+
+    private func clearThreadMutation(_ id: String) {
+        guard mutatingThreadId == id else { return }
+        mutatingThreadId = nil
+        mutatingThreadLabel = nil
     }
 
     private func mutationURL(path: String, extraQueryItems: [URLQueryItem] = []) -> URL? {
@@ -661,7 +805,11 @@ class ThreadViewModel: ObservableObject {
         return components.url
     }
 
-    private func sendMutation(_ request: URLRequest, onSuccess: @escaping () -> Void) {
+    private func sendMutation(
+        _ request: URLRequest,
+        onFailure: (() -> Void)? = nil,
+        onSuccess: @escaping () -> Void
+    ) {
         errorMessage = nil
         networkSession.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
@@ -669,6 +817,7 @@ class ThreadViewModel: ObservableObject {
                 guard error == nil, Self.isSuccessful(response) else {
                     let serverMessage = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["error"] as? String
                     self.errorMessage = serverMessage ?? error?.localizedDescription ?? "The history action failed."
+                    onFailure?()
                     return
                 }
                 onSuccess()

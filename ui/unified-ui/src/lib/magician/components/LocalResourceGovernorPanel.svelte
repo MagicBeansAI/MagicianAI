@@ -326,18 +326,19 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.38rem;
+    gap: 0.35rem;
     max-width: 100%;
-    min-height: 2.1rem;
-    padding: 0.42rem 0.82rem;
+    min-height: 1.75rem;
+    padding: 0.22rem 0.65rem;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: var(--radius-chip, 6px);
     font: inherit;
-    font-size: 0.82rem;
+    font-size: 0.78rem;
     font-weight: 500;
     line-height: 1.2;
     cursor: pointer;
     text-decoration: none;
+    box-sizing: border-box;
     transition:
       background 0.15s ease,
       border-color 0.15s ease,
@@ -365,16 +366,16 @@
     border-color: var(--border-default);
   }
   :global(.action-button--sm) {
-    min-height: 1.85rem;
-    padding: 0.3rem 0.65rem;
-    font-size: 0.76rem;
+    min-height: 1.55rem;
+    padding: 0.16rem 0.52rem;
+    font-size: 0.72rem;
   }
 
   .severity {
     display: inline-flex;
     align-items: center;
     width: fit-content;
-    border-radius: 999px;
+    border-radius: var(--radius-chip, 6px);
     padding: 0.18rem 0.48rem;
     font-size: 0.72rem;
     font-weight: 700;

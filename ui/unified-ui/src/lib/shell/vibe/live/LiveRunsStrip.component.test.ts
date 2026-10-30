@@ -41,20 +41,38 @@ const rows = [
 		status: 'completed',
 		summary: 'Intro rewritten',
 		turns: 1,
-		updated_at: '2026-10-12T11:50:00Z'
+		updated_at: '2026-10-12T11:50:00Z',
+		// An Autopilot run's owner briefing: a notice, not a review.
+		waiting_kind: 'notice',
+		notice: {
+			request_id: 'vibedev-run-ended:run_c:exec_1',
+			option_id: 'acknowledge',
+			title: 'Autopilot run finished: Rewrite intro',
+			message: 'Autopilot run finished: Rewrite intro. Open it to review the result.',
+			severity: 'info'
+		}
 	}
 ];
 
 let controls: { url: string; body: Record<string, unknown> }[] = [];
+let responds: { url: string; body: Record<string, unknown> }[] = [];
 
 beforeEach(() => {
 	controls = [];
+	responds = [];
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
 			const url = String(request);
 			if (url.includes('/vibedev/runs/live')) {
 				return new Response(JSON.stringify({ runs: rows, counts: {} }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+			if (url.includes('/hitl/') && url.endsWith('/respond')) {
+				responds.push({ url, body: JSON.parse(String(init?.body ?? '{}')) });
+				return new Response(JSON.stringify({ accepted: true }), {
 					status: 200,
 					headers: { 'Content-Type': 'application/json' }
 				});
@@ -90,6 +108,27 @@ describe('LiveRunsStrip', () => {
 
 		await user.click(screen.getByRole('button', { name: 'Review' }));
 		expect(openPath).toHaveBeenCalledWith('/vibe?project=proj&task=run_a');
+	});
+
+	it('shows a finished run\'s briefing as a notice to acknowledge, not a review', async () => {
+		const user = userEvent.setup();
+		render(LiveRunsStrip, { openPath: vi.fn() });
+
+		expect(
+			await screen.findByText('Autopilot run finished: Rewrite intro. Open it to review the result.')
+		).toBeInTheDocument();
+		// Only the needs-you run is reviewed.
+		expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
+
+		await user.click(screen.getByRole('button', { name: 'Acknowledge' }));
+		await waitFor(() => expect(responds).toHaveLength(1));
+		expect(responds[0].url).toContain('/api/magician/v2/hitl/vibedev-run-ended%3Arun_c%3Aexec_1/respond');
+		expect(responds[0].body).toEqual({
+			source: 'user_request',
+			input_type: 'choice',
+			value: { type: 'choice', selected_id: 'acknowledge' },
+			channel: 'web'
+		});
 	});
 
 	it('steers the live turn, not the root', async () => {

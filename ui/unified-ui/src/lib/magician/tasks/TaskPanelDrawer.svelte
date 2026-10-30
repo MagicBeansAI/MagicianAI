@@ -43,6 +43,7 @@
 	import UnifiedTaskPanel from './UnifiedTaskPanel.svelte';
 	import type { TaskPanelFile, TaskPanelModel } from './UnifiedTaskPanel.svelte';
 	import PlanGlyph from './PlanGlyph.svelte';
+	import UsageTotals from '$lib/magician/components/UsageTotals.svelte';
 
 	/** The task, or `null` while nothing has loaded — which is the skeleton below. */
 	export let task: TaskPanelModel | null = null;
@@ -645,6 +646,8 @@
 					{/if}
 				</h2>
 			{/if}
+
+            {#if task}<UsageTotals kind="task" id={task.id} live={['running', 'planning', 'in_progress'].includes(task.status ?? '')} />{/if}
 
 			<!--
 				Hidden rather than restyled when condensed: five lines is a large fraction

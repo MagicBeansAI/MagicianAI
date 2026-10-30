@@ -466,6 +466,82 @@ fn apply_claimed_transaction(
         }
     }
 
+    // A persisted marker can require God mode, never authorize it. Only the
+    // exact boot-local, authenticated revision has a one-use override. An off/on
+    // toggle, changed target, forged JSON, or restart requires a fresh stage.
+    if txn.requires_god_mode {
+        use crate::magician_v2::execution::trusted_store::{
+            process_authority, StoreKind, TrustedRecordKey,
+        };
+        let authority = process_authority()
+            .ok_or_else(|| anyhow!("apply: missing God-mode edit authority; re-stage"))?;
+        let key = TrustedRecordKey {
+            kind: StoreKind::Transaction,
+            principal: txn.scope.principal.clone(),
+            workspace: txn.scope.workspace.clone(),
+            id: txn.id.as_str().to_string(),
+        };
+        let sandbox = crate::magician_v2::execution::native_executors::agent_file_sandbox()
+            .ok_or_else(|| anyhow!("apply: missing file policy for God-mode edit"))?;
+        for absolute in &resolved_paths {
+            if !authority.permits_file_override(&key, txn.content_hash(), absolute) {
+                return Err(anyhow!(
+                    "apply: God-mode edit authority changed or expired; re-stage"
+                ));
+            }
+            crate::magician_v2::execution::native_executors::validate_staged_write_fences(
+                absolute,
+                &sandbox,
+                txn.staged_by_agent.as_deref(),
+            )?;
+        }
+    }
+
+    // Read-only roots bind every staged writer here, where all of them land,
+    // whatever path form or patch layout staged the edit: no target may sit
+    // under one of the agent file sandbox's `read_only_roots`.
+    if let Some(sandbox) = crate::magician_v2::execution::native_executors::agent_file_sandbox() {
+        for absolute in &resolved_paths {
+            if let Some(refusal) =
+                crate::magician_v2::execution::native_executors::read_only_root_refusal(
+                    absolute, &sandbox,
+                )
+            {
+                if !txn.requires_god_mode {
+                    return Err(anyhow!("apply: {refusal}"));
+                }
+            }
+        }
+        // A Modify rewrites the file in place, so every hard link to it
+        // changes too; another of its names may sit in a read-only root.
+        for edit in &txn.edits {
+            if let FileEdit::Modify { path, .. } = edit {
+                if let Some(refusal) =
+                    crate::magician_v2::execution::native_executors::hard_link_refusal(
+                        &workspace_root.join(path),
+                        &sandbox,
+                    )
+                {
+                    return Err(anyhow!("apply: {refusal}"));
+                }
+            }
+        }
+    }
+
+    // Goal workspaces bind the apply too, for the agent that staged the
+    // edit (not the owner approving it): a goal it may not change, a README,
+    // the folder layout, or the notes hybrid index is refused here even when
+    // the stage-time check passed (a link swapped since, a goal made
+    // private). A record without `staged_by_agent` is no agent.
+    for absolute in &resolved_paths {
+        use crate::magician_v2::execution::goal_workspace_access as access;
+        if let Some(refusal) = access::hybrid_index_refusal(absolute).or_else(|| {
+            access::refusal(absolute, access::Op::Write, txn.staged_by_agent.as_deref())
+        }) {
+            return Err(anyhow!("apply: {refusal}"));
+        }
+    }
+
     // 1. Capture snapshot BEFORE any write. If this fails the
     //    transaction stays Pending and no file is touched.
     let snapshot_id = snapshots.capture(transaction_id.as_str(), &resolved_paths)?;
@@ -478,6 +554,22 @@ fn apply_claimed_transaction(
         if let Err(write_err) = apply_one_edit(edit, workspace_root) {
             error = Some(write_err);
             break;
+        }
+    }
+    // The edits wrote by path: check what each target really is now, by
+    // descriptor, for the agent that staged them. A link or folder swapped
+    // between the check above and the write is refused here and the apply
+    // rolls back below.
+    if error.is_none() {
+        for absolute in &resolved_paths {
+            if let Err(refused) = crate::magician_v2::execution::native_executors::verify_path_for(
+                absolute,
+                crate::magician_v2::execution::goal_workspace_access::Op::Write,
+                txn.staged_by_agent.as_deref(),
+            ) {
+                error = Some(anyhow!("apply: {refused}"));
+                break;
+            }
         }
     }
 
@@ -494,6 +586,9 @@ fn apply_claimed_transaction(
                 )));
             },
         }
+    }
+    for absolute in &resolved_paths {
+        crate::magician_v2::execution::goal_workspace_access::invalidate(absolute);
     }
 
     Ok(snapshot_id)
@@ -680,8 +775,17 @@ fn apply_one_edit(edit: &FileEdit, workspace_root: &Path) -> Result<()> {
                         .with_context(|| format!("create parent dir {}", parent.display()))?;
                 }
             }
-            std::fs::write(&abs, content)
-                .with_context(|| format!("create write {}", abs.display()))?;
+            // `create_new` never follows a symlink at the leaf, so a link
+            // planted where the file will be cannot carry the write elsewhere.
+            {
+                use std::io::Write as _;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&abs)
+                    .and_then(|mut file| file.write_all(content.as_bytes()))
+                    .with_context(|| format!("create write {}", abs.display()))?;
+            }
             Ok(())
         },
         FileEdit::Modify {
@@ -876,6 +980,89 @@ mod tests {
             !staging_left,
             "snapshot capture must leave no staging sibling in snapshots/"
         );
+    }
+
+    fn read_only_agent_sandbox(read_only: &Path) -> runtime_core::FileSandboxConfig {
+        runtime_core::FileSandboxConfig {
+            read_only_roots: vec![read_only.display().to_string()],
+            ..runtime_core::FileSandboxConfig::default()
+        }
+    }
+
+    /// Whatever path form staged it, an approved diff never lands under a
+    /// read-only root: a relative path is checked at its final target.
+    #[test]
+    fn apply_refuses_a_relative_target_under_a_read_only_root() {
+        let root = temp_scope();
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("programs")).unwrap();
+        let txns = TransactionStore::new(&root);
+        let snaps = SnapshotStore::new(&root);
+        let txn = txns
+            .stage(
+                scope(),
+                "rewrite a program",
+                vec![ProposedEdit::Create {
+                    path: PathBuf::from("programs/plan.md"),
+                    content: "# Rewritten\n".into(),
+                }],
+                &mut |_| unreachable!("Create doesn't read existing"),
+            )
+            .unwrap();
+
+        let err = crate::magician_v2::execution::native_executors::with_agent_file_sandbox_for_test(
+            read_only_agent_sandbox(&workspace.join("programs")),
+            || apply_transaction(&txns, &snaps, &txn.id, &workspace).unwrap_err(),
+        );
+        assert!(
+            format!("{err:#}").contains("is read-only for agents (read_only_roots)"),
+            "got: {err:#}"
+        );
+        assert!(!workspace.join("programs/plan.md").exists());
+        assert!(matches!(
+            txns.load(&txn.id).unwrap().status,
+            crate::magician_v2::execution::file_edit::transaction::FileEditStatus::Pending
+        ));
+    }
+
+    /// A multi-file patch is anchored at its first file's root; a later file
+    /// that lands under a read-only root fails the whole apply, and nothing
+    /// is written.
+    #[test]
+    fn apply_refuses_a_patch_whose_second_file_is_under_a_read_only_root() {
+        let root = temp_scope();
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(workspace.join("notes")).unwrap();
+        let txns = TransactionStore::new(&root);
+        let snaps = SnapshotStore::new(&root);
+        let txn = txns
+            .stage(
+                scope(),
+                "two files",
+                vec![
+                    ProposedEdit::Create {
+                        path: PathBuf::from("draft.md"),
+                        content: "draft\n".into(),
+                    },
+                    ProposedEdit::Create {
+                        path: PathBuf::from("notes/owner.md"),
+                        content: "planted\n".into(),
+                    },
+                ],
+                &mut |_| unreachable!("Create doesn't read existing"),
+            )
+            .unwrap();
+
+        let err = crate::magician_v2::execution::native_executors::with_agent_file_sandbox_for_test(
+            read_only_agent_sandbox(&workspace.join("notes")),
+            || apply_transaction(&txns, &snaps, &txn.id, &workspace).unwrap_err(),
+        );
+        assert!(
+            format!("{err:#}").contains("owner.md is read-only for agents"),
+            "got: {err:#}"
+        );
+        assert!(!workspace.join("draft.md").exists());
+        assert!(!workspace.join("notes/owner.md").exists());
     }
 
     #[test]
@@ -1114,6 +1301,63 @@ mod tests {
             loaded.status,
             crate::magician_v2::execution::file_edit::transaction::FileEditStatus::Reverted
         ));
+    }
+
+    /// A Modify rewrites the file in place; through a hard link that would
+    /// also change the file's other names, so the apply refuses it.
+    #[cfg(unix)]
+    #[test]
+    fn apply_refuses_to_modify_a_hard_linked_file() {
+        let root = temp_scope();
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let target = workspace.join("plan.md");
+        std::fs::write(&target, "v1").unwrap();
+        let other_name = root.join("program.md");
+        std::fs::hard_link(&target, &other_name).unwrap();
+
+        let txns = TransactionStore::new(&root);
+        let snaps = SnapshotStore::new(&root);
+        let mut existing = std::collections::HashMap::new();
+        existing.insert(target.clone(), "v1".to_string());
+        let txn = txns
+            .stage(
+                scope(),
+                "modify a hard-linked file",
+                vec![ProposedEdit::Modify {
+                    path: PathBuf::from("plan.md"),
+                    new_content: "v2".into(),
+                }],
+                &mut |p| {
+                    let abs = if p.is_absolute() {
+                        p.to_path_buf()
+                    } else {
+                        workspace.join(p)
+                    };
+                    existing
+                        .get(&abs)
+                        .cloned()
+                        .ok_or_else(|| anyhow!("not staged: {}", abs.display()))
+                },
+            )
+            .unwrap();
+
+        let err = crate::magician_v2::execution::native_executors::with_agent_file_sandbox_for_test(
+            read_only_agent_sandbox(&root.join("read-only")),
+            || apply_transaction(&txns, &snaps, &txn.id, &workspace).unwrap_err(),
+        );
+        assert!(
+            format!("{err:#}").contains("agents cannot change hard-linked files"),
+            "got: {err:#}"
+        );
+        assert_eq!(std::fs::read_to_string(&other_name).unwrap(), "v1");
+
+        // Without read-only roots there is nothing to protect: it applies.
+        crate::magician_v2::execution::native_executors::with_agent_file_sandbox_for_test(
+            runtime_core::FileSandboxConfig::default(),
+            || apply_transaction(&txns, &snaps, &txn.id, &workspace).unwrap(),
+        );
+        assert_eq!(std::fs::read_to_string(&other_name).unwrap(), "v2");
     }
 
     #[test]
@@ -1459,5 +1703,84 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert!(paths.contains(&a.as_path()));
         assert!(paths.contains(&b.as_path()));
+    }
+}
+
+/// Goal workspaces at the diff-approval apply: the agent that staged an
+/// edit is judged again, whoever approves it.
+#[cfg(test)]
+mod goal_workspace_apply_tests {
+    use super::*;
+    use crate::magician_v2::execution::file_edit::transaction::{
+        FileEditStatus, ProposedEdit, TransactionScope, TransactionStore,
+    };
+    use crate::magician_v2::execution::goal_workspace_access as access;
+
+    fn stage_secret_rewrite(
+        scope_root: &Path,
+        goals: &Path,
+        staged_by: Option<&str>,
+    ) -> (
+        TransactionStore,
+        crate::magician_v2::execution::file_edit::transaction::TransactionId,
+    ) {
+        let txns = TransactionStore::new(scope_root);
+        let mut txn = txns
+            .stage(
+                TransactionScope {
+                    principal: "owner".into(),
+                    workspace: "default".into(),
+                },
+                "rewrite a goal",
+                vec![ProposedEdit::Modify {
+                    path: PathBuf::from("secret.md"),
+                    new_content: "rewritten\n".into(),
+                }],
+                // The real on-disk content, so the apply's stale-content
+                // guard passes and only the workspace fence can refuse.
+                &mut |path| Ok(std::fs::read_to_string(goals.join(path))?),
+            )
+            .unwrap();
+        txn.staged_by_agent = staged_by.map(str::to_string);
+        txns.persist(&txn).unwrap();
+        (txns, txn.id)
+    }
+
+    #[test]
+    fn the_apply_refuses_a_goal_the_staging_agent_may_not_write() {
+        let fx = access::test_fixture();
+        let goals = fx.root.join("Magican/Goals/X");
+        let scope_root = fx.root.parent().unwrap().join("scope");
+        std::fs::create_dir_all(&scope_root).unwrap();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            for staged_by in [Some("cmo"), Some("ambassador"), None] {
+                let (txns, id) = stage_secret_rewrite(&scope_root, &goals, staged_by);
+                let snaps = SnapshotStore::new(&scope_root);
+                let err = format!(
+                    "{:#}",
+                    apply_transaction(&txns, &snaps, &id, &goals).unwrap_err()
+                );
+                // The workspace fence, not the stale-content guard.
+                assert!(
+                    err.contains("apply: Refused") && !err.contains("changed since stage"),
+                    "{staged_by:?}: {err}"
+                );
+                assert!(matches!(
+                    txns.load(&id).unwrap().status,
+                    FileEditStatus::Pending
+                ));
+            }
+            assert!(std::fs::read_to_string(goals.join("secret.md"))
+                .unwrap()
+                .contains("needle"));
+            let (txns, id) =
+                stage_secret_rewrite(&scope_root, &goals, Some(access::DEFAULT_ADMIN_AGENT));
+            let snaps = SnapshotStore::new(&scope_root);
+            apply_transaction(&txns, &snaps, &id, &goals).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(goals.join("secret.md")).unwrap(),
+                "rewritten\n"
+            );
+        });
     }
 }

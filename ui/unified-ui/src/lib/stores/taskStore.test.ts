@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
+import { scopeIdentityStore } from './scopeIdentityStore';
 import type { Task } from './taskStore';
 import {
 	backendTask,
@@ -40,6 +41,8 @@ import {
 	taskCounts,
 	taskHasExecutablePlan,
 	taskResetStatus,
+	taskWithProgress,
+	mergeTaskProgress,
 	taskStore
 } from './taskStore';
 
@@ -58,6 +61,21 @@ function task(overrides: Partial<Task> = {}): Task {
 		...overrides
 	};
 }
+
+describe('observed task progress', () => {
+	it('keeps work newer than a task-row poll, only for the same execution and scope', () => {
+		const before = task({ executionId: 'exec-1', status: 'running', lastProgressAt: 100 });
+		const signal = { principal: 'anonymous', workspace: 'default', taskId: before.id, executionId: 'exec-1', at: 200 };
+		const observed = taskWithProgress(before, signal);
+		expect(observed.lastProgressAt).toBe(200);
+		expect(mergeTaskProgress(observed, before).lastProgressAt).toBe(200);
+		expect(mergeTaskProgress(observed, { ...before, executionId: 'exec-2' }).lastProgressAt).toBe(100);
+		expect(taskWithProgress(before, { ...signal, principal: 'someone-else' })).toBe(before);
+		expect(taskWithProgress(before, { ...signal, executionId: 'old-exec' })).toBe(before);
+		expect(taskWithProgress(before, { ...signal, taskId: 'child-task' }).lastProgressAt).toBe(200);
+		expect(taskWithProgress(before, { ...signal, at: 50 })).toBe(before);
+	});
+});
 
 describe('task API schedule and provenance normalization', () => {
 	it('serializes cron schedules with backend policies and optional controls', () => {
@@ -567,6 +585,7 @@ describe('chat panel actions for internal tasks', () => {
 	beforeEach(() => taskStore.reset());
 	afterEach(() => {
 		taskStore.reset();
+		scopeIdentityStore.reset();
 		vi.unstubAllGlobals();
 	});
 
@@ -601,6 +620,27 @@ describe('chat panel actions for internal tasks', () => {
 			}
 		};
 	}
+
+	it('does not execute in another workspace after an internal task lookup', async () => {
+		scopeIdentityStore.observe('owner', 'first');
+		let finish!: (response: Response) => void;
+		const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+			if (init?.method === 'POST') {
+				return Promise.resolve(new Response(JSON.stringify({
+					execution: { state: { execution_id: 'wrong-scope-run' } }
+				}), { status: 200 }));
+			}
+			return new Promise<Response>((resolve) => { finish = resolve; });
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		const pending = taskStore.executeTask('internal-task');
+		const outcome = pending.then(() => null, (error: Error) => error);
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+		scopeIdentityStore.observe('owner', 'second');
+		finish(new Response(JSON.stringify({ task: internalTaskEnvelope('ready') }), { status: 200 }));
+		expect(await outcome).toMatchObject({ message: expect.stringContaining('workspace changed') });
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
 
 	it('resets an internal failed task even though it is absent from the normal task list', async () => {
 		const calls: string[] = [];

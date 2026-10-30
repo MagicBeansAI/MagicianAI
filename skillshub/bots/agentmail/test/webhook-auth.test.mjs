@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Webhook } from 'svix';
-import { AgentMailAdapter } from '../dist/adapter.js';
+import { AgentMailAdapter, resolveAgentMailWebhookUrl } from '../dist/adapter.js';
 
 const secret = `whsec_${Buffer.from('local-test-signing-key-not-a-credential').toString('base64')}`;
 
@@ -111,4 +111,11 @@ test('a listener bind failure rejects startup without reporting a ready receiver
     await conflicting?.stop();
     await running.stop();
   }
+});
+
+test('webhook base URL comes from AGENTMAIL_WEBHOOK_URL, else the machine webhook host', () => {
+  assert.equal(resolveAgentMailWebhookUrl({ MAGICIAN_WEBHOOK_HOST: 'webhook-studio.example.com' }), 'https://webhook-studio.example.com');
+  assert.equal(resolveAgentMailWebhookUrl({ MAGICIAN_WEBHOOK_HOST: 'https://webhook-studio.example.com/' }), 'https://webhook-studio.example.com');
+  assert.equal(resolveAgentMailWebhookUrl({ MAGICIAN_WEBHOOK_HOST: 'x.example.com', AGENTMAIL_WEBHOOK_URL: 'https://override.test' }), 'https://override.test');
+  assert.equal(resolveAgentMailWebhookUrl({}), undefined);
 });

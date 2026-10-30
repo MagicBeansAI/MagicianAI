@@ -1,3 +1,5 @@
+import type { ModelSelection } from '$lib/llm/modelCatalog';
+
 /**
  * Per-agent model pins (`llm_routing` on an agent definition).
  *
@@ -40,6 +42,7 @@ export const MODEL_PIN_LANES: ModelPinLaneSpec[] = [
 ];
 
 export interface ModelPinProfileOption {
+	model_selection?: ModelSelection | null;
 	name: string;
 	provider: string;
 	model: string;

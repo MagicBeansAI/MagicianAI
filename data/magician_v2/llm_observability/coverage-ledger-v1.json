@@ -25,7 +25,8 @@
         "magician/src/magician_v2/dispatch_glue/boot.rs": "infrastructure",
         "magician-chunking/src/shadow_eval.rs": "evaluation-and-probe-scripts",
         "magician/src/magician_v2/query_analysis/multi_llm_service.rs": "chat-multi-llm-direct",
-        "magician/src/magician_v2/query_analysis/operation_llm_router.rs": "operation-router"
+        "magician/src/magician_v2/query_analysis/operation_llm_router.rs": "operation-router",
+        "magician/src/magician_v2/preference_alignment/live_eval.rs": "evaluation-and-probe-scripts"
       }
     },
     {

@@ -28,6 +28,54 @@ const PROMPT: &str = "memory_connection_review_v1";
 /// after Jev on a single MLX worker, so at 20 s it started a queued batch with
 /// ~5 s left and timed out under every burst.
 const BUDGET: Duration = Duration::from_secs(60);
+/// Time the review needs after its decision budget: policy revalidation, the
+/// grounding re-parse and the apply-guard check, all local.
+const REVIEW_MARGIN: Duration = Duration::from_secs(5);
+/// Outer bound for one review, derived from the budget the review grants
+/// itself. A caller's own shorter timeout (20 s) cut gate decisions the engine
+/// had been granted 30 s for, recorded them as failures and still charged them.
+/// Every inner wait already honours `BUDGET`, so this only fires when a step
+/// overruns it.
+pub const REVIEW_TIMEOUT: Duration =
+    Duration::from_secs(BUDGET.as_secs() + REVIEW_MARGIN.as_secs());
+
+/// The review ended before any decision existed: no route answered, the
+/// engine returned nothing for the item, or the call never reached a model.
+/// It says nothing about the item, so the caller does not charge it to the
+/// hourly decision budget (and bounds such retries separately).
+///
+/// It wraps its cause and prints it in full (`{}` and `{:#}` alike), so any
+/// log of the error names the root cause, not just the classification.
+#[derive(Debug)]
+pub struct ConnectionDecisionUnavailable {
+    cause: anyhow::Error,
+}
+impl ConnectionDecisionUnavailable {
+    pub fn cause(&self) -> &anyhow::Error {
+        &self.cause
+    }
+}
+impl std::fmt::Display for ConnectionDecisionUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "connection decision unavailable: {:#}", self.cause)
+    }
+}
+// No `source()`: the cause is already in the message, and `{:#}` would print
+// it twice.
+impl std::error::Error for ConnectionDecisionUnavailable {}
+
+/// Whether `error` is a review that failed before producing a decision. A
+/// reply that was produced but rejected (ungrounded, contradictory, policy
+/// changed) is a decision and stays charged.
+pub fn decision_unavailable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ConnectionDecisionUnavailable>()
+        .is_some()
+}
+
+fn mark_unavailable(cause: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(ConnectionDecisionUnavailable { cause })
+}
 /// The source owner re-reads the candidate and all current memory/profile
 /// sources. The replay cannot rely on a captured prompt after revocation.
 pub type ConnectionSourceCheck =
@@ -124,7 +172,8 @@ pub async fn review_connection_with_source_check(
                     Some(SYSTEM),
                     &prompt,
                 )
-                .await?;
+                .await
+                .map_err(mark_unavailable)?;
             if let Some(scope) = router.authoritative_trace_scope() {
                 reference::record_response(
                     &response,
@@ -143,10 +192,11 @@ pub async fn review_connection_with_source_check(
         .zip(policy.reference.clone())
         .filter(|_| prompt.len() <= 16384)
     else {
-        anyhow::ensure!(
-            policy.lookup.allows_incumbent(),
-            "connection decision deferred: missing scope/reference or input bounds"
-        );
+        if !policy.lookup.allows_incumbent() {
+            return Err(mark_unavailable(anyhow::anyhow!(
+                "connection decision deferred: missing scope/reference or input bounds"
+            )));
+        }
         let (connection, response, _) = invoke(BTreeMap::new()).await?;
         return Ok(ConnectionDecisionReview {
             response,
@@ -308,10 +358,19 @@ pub async fn review_connection_with_source_check(
         .get("0")
         .and_then(|a| text::boolean(a, "worth_surfacing").zip(text::choice(a, "surface")));
     let Some(((worth, confidence), (surface, sc))) = accepted else {
+        // An abstention is the engine's decision about this item; any other
+        // unresolved outcome (timeout, admission refusal, unavailable engine)
+        // produced none.
+        let abstained = outcome.abstained.contains("0");
         let (connection, response, _) = outcome.incumbent.ok_or_else(|| {
-            anyhow::anyhow!(
+            let error = anyhow::anyhow!(
                 "connection decision deferred: no complete accepted decision or incumbent result"
-            )
+            );
+            if abstained {
+                error
+            } else {
+                mark_unavailable(error)
+            }
         })??;
         if let Some(o) = outcome.observation {
             o.complete(None, false, true, started.elapsed());
@@ -388,4 +447,42 @@ pub async fn review_connection_with_source_check(
         origin: outcome.origins.get("0").cloned(),
         guard,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_connections_review_timeout_covers_the_budget_the_review_grants() {
+        // The gate decides within BUDGET minus the text reserve; accepted
+        // text then gets the reserve. The outer bound must cover both.
+        let reserve = runner::text_reserve(BUDGET);
+        let gate = BUDGET.saturating_sub(reserve);
+        assert!(REVIEW_TIMEOUT > gate + reserve);
+        assert_eq!(REVIEW_TIMEOUT, BUDGET + REVIEW_MARGIN);
+        assert!(REVIEW_TIMEOUT > Duration::from_secs(20));
+    }
+
+    #[test]
+    fn memory_connections_only_decisionless_failures_are_unavailable() {
+        let marked = mark_unavailable(anyhow::anyhow!("route refused the call"));
+        assert!(decision_unavailable(&marked));
+        // The root cause stays visible in plain and alternate formatting,
+        // exactly once.
+        assert_eq!(
+            format!("{marked}"),
+            "connection decision unavailable: route refused the call"
+        );
+        assert_eq!(format!("{marked:#}"), format!("{marked}"));
+        // Context added further out keeps the mark.
+        assert!(decision_unavailable(&marked.context("review failed")));
+        // A produced but rejected reply is a decision: it stays charged.
+        assert!(!decision_unavailable(
+            &parse_connection("not json", &[]).unwrap_err()
+        ));
+        assert!(!decision_unavailable(&anyhow::anyhow!(
+            "contradictory connection heads"
+        )));
+    }
 }

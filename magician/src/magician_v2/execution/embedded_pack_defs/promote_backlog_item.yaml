@@ -1,8 +1,11 @@
 name: promote_backlog_item
 description: Promote a groomed company-backlog item into assigned execution work; internal by default, with an explicit user-visible commitment option.
-version: "1.2.0"
+version: "1.2.1"
 guide: |
   Tool name: `promote_backlog_item`
+
+  Link users to the returned `task_url` in Work. Do not invent task-detail
+  paths; the canonical UI route is `/work?selected=<task_id>`.
 
   Promote a groomed backlog item into real, assigned execution work. Creates the
   task for `agent_id`, starts it immediately by default, and marks the backlog
@@ -44,7 +47,7 @@ parameters:
     default: true
   - name: user_visible
     param_type: boolean
-    description: Defaults false, keeping autonomous backlog execution in Internal tasks. Set true only when the promoted item is an explicit durable commitment the user should manage in /tasks.
+    description: Defaults false, keeping autonomous backlog execution in Internal tasks. Set true only when the promoted item is an explicit durable commitment the user should manage in /work.
     default: false
 implementation:
   type: compiled

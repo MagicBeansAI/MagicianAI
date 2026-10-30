@@ -1,4 +1,4 @@
-/** Pi 0.87.1 Plane bridge. Loaded explicitly; all native tools are disabled. */
+/** Pi Plane bridge. Loaded explicitly; all native tools and built-in extensions are disabled. */
 import { readFile, writeFile } from "node:fs/promises";
 
 export default async function magicianPlane(pi) {
@@ -32,7 +32,7 @@ export default async function magicianPlane(pi) {
   await rpc("initialize", {
     protocolVersion: "2025-11-25",
     capabilities: {},
-    clientInfo: { name: "magician-pi", version: "0.87.1" },
+    clientInfo: { name: "magician-pi", version: "1.3.0" },
   });
   const listed = await rpc("tools/list", {});
   if (!Array.isArray(listed?.tools)) throw new Error("Magician Plane tools/list failed");

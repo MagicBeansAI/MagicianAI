@@ -275,6 +275,8 @@ fn observe_inventory(path: &str) -> Observed {
     #[derive(serde::Deserialize)]
     struct Inventory {
         schema_version: u32,
+        #[serde(default)]
+        verification_revision: u32,
         files: Vec<InventoryFile>,
     }
     #[derive(serde::Deserialize)]
@@ -282,6 +284,8 @@ fn observe_inventory(path: &str) -> Observed {
         path: String,
         #[serde(default)]
         executable: bool,
+        size_bytes: u64,
+        modified_ns: u64,
     }
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -300,6 +304,11 @@ fn observe_inventory(path: &str) -> Observed {
             "runtime inventory {path} has no supported file list"
         ));
     }
+    if inventory.verification_revision != 2 {
+        return Observed::Absent(format!(
+            "runtime inventory {path} needs a fresh setup verification"
+        ));
+    }
     let root = std::path::Path::new(path)
         .parent()
         .unwrap_or(std::path::Path::new("."));
@@ -314,6 +323,17 @@ fn observe_inventory(path: &str) -> Observed {
                 ))
             },
         };
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos());
+        if metadata.len() != file.size_bytes || modified_ns != Some(u128::from(file.modified_ns)) {
+            return Observed::Absent(format!(
+                "runtime file {} changed; rerun setup verification",
+                candidate.display()
+            ));
+        }
         #[cfg(unix)]
         if file.executable {
             use std::os::unix::fs::PermissionsExt;

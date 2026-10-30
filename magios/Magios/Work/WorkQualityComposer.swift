@@ -43,6 +43,52 @@ struct WorkQualityDraft: Equatable {
     }
 }
 
+/// Model metadata supplies the controls; Quality owns eligibility and family independence.
+struct WorkQualityModels {
+    let routes: [WorkJSON]
+    let catalogRoutes: [WorkJSON]
+    let catalogModels: [ChatModelChoice]
+    init(quality: WorkJSON?, catalog: WorkJSON?) {
+        routes = quality?["profiles"].array ?? []
+        catalogRoutes = catalog?["profiles"].array ?? []
+        catalogModels = (try? JSONDecoder().decode([ChatModelChoice].self, from: Data((catalog?["models"].formatted ?? "[]").utf8))) ?? []
+    }
+    func family(_ route: String) -> String? { routes.first { $0["name"].text == route }?["family"].text }
+    func models(excluding family: String? = nil) -> [ChatModelChoice] {
+        let eligible = Set(routes.filter { family == nil || ($0["family"].text != family && $0["supports_json"].flag != false) }.compactMap { $0["name"].text })
+        return catalogModels.filter { !$0.provider.hasPrefix("harness-") }.compactMap { model in
+            var choices = (model.operationChoices ?? model.choices).filter { eligible.contains($0.value) }
+            var defaultLevel = model.thinking.defaultLevel
+            if choices["auto"] == nil,
+               let assignment = catalogRoutes.first(where: { eligible.contains($0["name"].text ?? "") && $0["model_selection"]["model_id"].text == model.id }),
+               let route = assignment["name"].text {
+                choices["auto"] = route
+                if let level = assignment["model_selection"]["thinking"].text, model.thinking.levels.contains(level) {
+                    choices[level] = route; defaultLevel = level
+                }
+            }
+            guard choices["auto"] != nil else { return nil }
+            return ChatModelChoice(id: model.id, provider: model.provider, connection: model.connection, model: model.model, label: model.label,
+                thinking: ChatThinkingControl(mode: model.thinking.mode, levels: model.thinking.levels.filter { choices[$0] != nil }, defaultLevel: defaultLevel),
+                choices: choices, installed: model.installed, capabilities: model.capabilities, limits: model.limits)
+        }
+    }
+    func selection(_ route: String, models: [ChatModelChoice]) -> ChatModelSelection? {
+        if let model = models.first(where: { $0.choices["auto"] == route }) { return ChatModelSelection(modelId: model.id, thinking: "auto") }
+        if let row = catalogRoutes.first(where: { $0["name"].text == route }),
+           let selected = try? JSONDecoder().decode(ChatModelSelection.self, from: Data(row["model_selection"].formatted.utf8)),
+           models.contains(where: { $0.id == selected.modelId && $0.choices[selected.thinking] != nil }) { return selected }
+        for model in models {
+            if let level = model.choices.first(where: { $0.value == route })?.key { return ChatModelSelection(modelId: model.id, thinking: level) }
+        }
+        return nil
+    }
+    func valid(_ route: String, models: [ChatModelChoice]) -> Bool {
+        guard family(route) != nil, let selected = selection(route, models: models) else { return false }
+        return models.contains { $0.id == selected.modelId && $0.installed != false }
+    }
+}
+
 struct WorkQualityComposer: View {
     var taskID: String? = nil
     var agentID: String? = nil
@@ -50,6 +96,7 @@ struct WorkQualityComposer: View {
     @StateObject private var resource = WorkResource()
     @StateObject private var context = WorkResource()
     @StateObject private var crew = WorkResource()
+    @StateObject private var catalog = WorkResource()
     @State private var referencesPending = false
     @State private var useSourceTask = false
     @State private var draft = WorkQualityDraft()
@@ -74,7 +121,13 @@ struct WorkQualityComposer: View {
         return .object(value)
     }
     private var signature: String { "\(proposal?.formatted ?? advanced)|\(agent)|\(thread)|\(context.value?.formatted ?? "")|\(captureTarget)|\(useSourceTask)" }
-    private var profiles: [WorkJSON] { resource.value?["profiles"].array ?? [] }
+    private var modelCatalog: WorkQualityModels { WorkQualityModels(quality: resource.value, catalog: catalog.value) }
+    private var draftModels: [ChatModelChoice] { modelCatalog.models() }
+    private var reviewModels: [ChatModelChoice] {
+        guard let family = modelCatalog.family(draft.actor) else { return [] }
+        return modelCatalog.models(excluding: family)
+    }
+    private var modelsValid: Bool { modelCatalog.valid(draft.actor, models: draftModels) && modelCatalog.valid(draft.critic, models: reviewModels) }
     private var effectiveTaskID: String? { useSourceTask ? taskID : nil }
     private var canAttachProposal: Bool {
         guard let proposed else { return true }
@@ -84,84 +137,120 @@ struct WorkQualityComposer: View {
     private var canReview: Bool {
         !referencesPending && proposal?.object != nil && !agent.isEmpty && !thread.isEmpty &&
         (effectiveTaskID?.isEmpty != false || (context.value?["task_id"].text == effectiveTaskID && context.value?["can_start"].flag == true && canAttachProposal)) &&
-        (proposed != nil || !advanced.isEmpty || (!draft.goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !draft.rubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !draft.actor.isEmpty && !draft.critic.isEmpty))
+        (proposed != nil || !advanced.isEmpty || (!draft.goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !draft.rubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && modelsValid))
     }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        WorkPage {
                 WorkResourceStatus(resource: resource)
                 if taskID?.isEmpty == false {
-                    WorkCard {
-                        Toggle("Use the existing task", isOn: $useSourceTask).disabled(resource.busy || !canAttachProposal)
-                        Text(useSourceTask ? "Quality uses the reviewed task context and its owning member." : "Creates new work; the proposal origin remains attached as evidence.").font(.themed(13)).foregroundColor(theme.secondaryTextColor)
+                    WorkGroupCard("Task", footer: useSourceTask ? "Quality uses the reviewed task context and its owning member." : "Creates new work; the proposal origin remains attached as evidence.") {
+                        Toggle(isOn: $useSourceTask) { Text("Use the existing task").font(.themed(16)) }
+                            .tint(theme.accentFillColor)
+                            .padding(.vertical, 6).frame(minHeight: WorkMetrics.rowMinHeight)
+                            .disabled(resource.busy || !canAttachProposal)
+                        WorkRowDivider()
+                        WorkRowLabel(title: context.value?["title"].text ?? taskID ?? "", systemImage: "checklist", accessory: .none,
+                                     subtitle: useSourceTask ? "Attached to task" : "Source task")
+                            .accessibilityElement(children: .combine)
+                        if let reason = context.value?["reason"].text { WorkNote(reason, tone: theme.warningColor) }
                     }
                     WorkResourceStatus(resource: context)
-                    WorkCard {
-                        Text(useSourceTask ? "Attached to task" : "Source task").font(.themed(12, weight: .semibold)).foregroundColor(theme.secondaryTextColor)
-                        Text(context.value?["title"].text ?? taskID ?? "").font(.themed(16))
-                        if let reason = context.value?["reason"].text { Text(reason).font(.themed(13)).foregroundColor(theme.warningColor) }
-                    }
                 }
                 if let proposed {
-                    WorkCard { Text("Owner proposal").font(.themed(18, weight: .semibold)); WorkRecordView(value: proposed) }
+                    WorkGroupCard("Owner proposal") { WorkRecordView(value: proposed) }
                 } else {
-                    WorkCard {
+                    WorkGroupCard("Brief") {
                         field("Outcome", text: $draft.goal)
                         field("Source notes", text: $draft.source, multiline: true)
-                        WorkReferencePicker(references: $draft.references, pending: $referencesPending, disabled: !advanced.isEmpty || resource.busy)
                         field("Quality requirements", text: $draft.rubric, multiline: true)
-                        Picker("Actor", selection: $draft.actor) { profileOptions }
-                        Picker("Critic", selection: $draft.critic) { profileOptions }
-                        Stepper("Attempts: \(draft.maxAttempts)", value: $draft.maxAttempts, in: 1...100)
-                        Stepper("Time limit: \(draft.minutes) minutes", value: $draft.minutes, in: 1...1440)
-                        Stepper("Cost ceiling: $\(draft.dollars)", value: $draft.dollars, in: 1...10000)
+                    }
+                    WorkGroupCard("References") {
+                        WorkReferencePicker(references: $draft.references, pending: $referencesPending, disabled: !advanced.isEmpty || resource.busy)
+                    }
+                    WorkGroupCard("Models", footer: modelsValid ? nil : "Choose available draft and review models from different model families. Saved choices stay unchanged until you replace them.") {
+                        WorkResourceStatus(resource: catalog)
+                        modelField("Draft model", route: $draft.actor, models: draftModels)
+                        modelField("Independent review model", route: $draft.critic, models: reviewModels)
+                    }
+                    WorkGroupCard("Budget") {
+                        WorkStepperRow("Attempts", value: $draft.maxAttempts, in: 0...100, display: draft.maxAttempts == 0 ? "Unlimited" : "\(draft.maxAttempts)")
+                        WorkRowDivider()
+                        WorkStepperRow("Time limit", value: $draft.minutes, in: 0...1440, display: draft.minutes == 0 ? "Unlimited" : "\(draft.minutes) min")
+                        WorkRowDivider()
+                        WorkStepperRow("Cost ceiling", value: $draft.dollars, in: 0...10000, display: draft.dollars == 0 ? "Unlimited" : "$\(draft.dollars)")
                     }
                 }
-                WorkCard {
+                WorkGroupCard("Assignment") {
                     WorkResourceStatus(resource: crew)
-                    Picker("Crew member", selection: $agent) {
-                        Text("Choose a member").tag("")
-                        if !agent.isEmpty && !(crew.value?["agents"].array ?? []).contains(where: { $0["definition"]["agent_id"].text == agent }) { Text(agent).tag(agent) }
-                        ForEach(crew.value?["agents"].array ?? [], id: \.formatted) { row in
-                            if let id = row["definition"]["agent_id"].text { Text(row["definition"]["name"].text ?? id).tag(id) }
-                        }
-                    }.disabled(useSourceTask)
+                    WorkFormRow("Crew member") {
+                        Picker("Crew member", selection: $agent) {
+                            Text("Choose a member").tag("")
+                            if !agent.isEmpty && !(crew.value?["agents"].array ?? []).contains(where: { $0["definition"]["agent_id"].text == agent }) { Text(agent).tag(agent) }
+                            ForEach(crew.value?["agents"].array ?? [], id: \.formatted) { row in
+                                if let id = row["definition"]["agent_id"].text { Text(row["definition"]["name"].text ?? id).tag(id) }
+                            }
+                        }.labelsHidden().pickerStyle(.menu).font(.themed(15)).disabled(useSourceTask)
+                    }
+                    WorkRowDivider()
                     field("Thread", text: $thread)
+                }
+                WorkGroupCard("Options") {
                     DisclosureGroup("Optional capture handoff") {
-                        Text("Use an exact campaign, version and identity target from a reviewed capture policy. The contract must request a capture handoff.").font(.themed(13)).foregroundColor(theme.secondaryTextColor)
-                        field("Capture target JSON", text: $captureTarget, multiline: true)
+                        VStack(alignment: .leading, spacing: 0) {
+                            WorkNote("Use an exact campaign, version and identity target from a reviewed capture policy. The contract must request a capture handoff.")
+                            field("Capture target JSON", text: $captureTarget, multiline: true)
+                        }
                     }
+                    .disclosureGroupStyle(WorkDisclosureStyle(systemImage: "tray.and.arrow.down", value: captureTarget.isEmpty ? nil : "Set"))
                     if proposed == nil {
+                        WorkRowDivider()
                         DisclosureGroup("Advanced contract") {
-                            Text("Review a complete contract to configure references, artifact checks, task harness limits and policies.").font(.themed(13)).foregroundColor(theme.secondaryTextColor)
-                            Button("Edit complete contract") { advanced = proposal?.formatted ?? "" }.frame(minHeight: 44)
-                            if !advanced.isEmpty { TextEditor(text: $advanced).font(.themed(12)).frame(minHeight: 240).scrollContentBackground(.hidden).background(theme.cardColor) }
+                            VStack(alignment: .leading, spacing: 0) {
+                                WorkNote("Review a complete contract to configure references, artifact checks, task execution limits and policies.")
+                                WorkButtonRow(title: "Edit complete contract", systemImage: "curlybraces") { advanced = proposal?.formatted ?? "" }
+                                if !advanced.isEmpty {
+                                    TextEditor(text: $advanced).font(.themedMono(12)).frame(minHeight: 240).scrollContentBackground(.hidden)
+                                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                                        .padding(8).workFieldSurface()
+                                }
+                            }
                         }
+                        .disclosureGroupStyle(WorkDisclosureStyle(systemImage: "curlybraces", value: advanced.isEmpty ? nil : "Edited"))
                     }
-                    Button("Review contract") { Task { await review() } }.frame(minHeight: 44).disabled(resource.busy || !canReview)
+                }
+                WorkGroupCard("Review and start") {
+                    WorkButtonRow(title: "Review contract", systemImage: "checkmark.shield") { Task { await review() } }.disabled(resource.busy || !canReview)
                     if let preview, signature == reviewedSignature {
+                        WorkRowDivider()
                         WorkRecordView(value: preview)
-                        Text("Outputs remain local. Approval does not send or submit anything.").font(.themed(13)).foregroundColor(theme.secondaryTextColor)
+                        WorkRowDivider()
+                        WorkNote("Outputs remain local. Approval does not send or submit anything.")
                         if effectiveTaskID?.isEmpty == false {
-                            Stepper("Maximum recurring runs: \(policyRuns)", value: $policyRuns, in: 1...100)
+                            WorkRowDivider()
+                            WorkStepperRow("Maximum recurring runs", value: $policyRuns, in: 1...100)
+                            WorkRowDivider()
                             DatePicker("Policy expires", selection: $policyExpiry, in: Date()..., displayedComponents: [.date, .hourAndMinute])
-                            Button("Approve bounded recurring policy") { Task { await configurePolicy(enabled: true) } }.frame(minHeight: 44).disabled(resource.busy || context.busy)
+                                .font(.themed(16)).padding(.vertical, 6).frame(minHeight: WorkMetrics.rowMinHeight)
+                            WorkRowDivider()
+                            WorkButtonRow(title: "Approve bounded recurring policy", systemImage: "checkmark.seal") { Task { await configurePolicy(enabled: true) } }.disabled(resource.busy || context.busy)
                         }
-                        Button("Start reviewed work") { Task { await start(preview) } }.frame(minHeight: 44)
+                        WorkRowDivider()
+                        WorkButtonRow(title: "Start reviewed work", systemImage: "play.circle") { Task { await start(preview) } }
                             .disabled(resource.busy || preview["budget_can_admit_attempt"].flag != true)
                     }
                 }
                 if useSourceTask && context.value?["policy"] != nil && context.value?["policy"] != .null {
-                    WorkCard {
-                        Text("Current recurring policy").font(.themed(17, weight: .semibold))
+                    WorkGroupCard("Current recurring policy") {
                         WorkRecordView(value: context.value?["policy"] ?? .null)
-                        Button("Disable future quality runs", role: .destructive) { Task { await configurePolicy(enabled: false) } }.frame(minHeight: 44).disabled(context.busy)
+                        WorkRowDivider()
+                        WorkButtonRow(title: "Disable future quality runs", systemImage: "nosign", role: .destructive) { Task { await configurePolicy(enabled: false) } }.disabled(context.busy)
                     }
                 }
-                if let startedRun { NavigationLink("Open started run") { WorkQualityRunDetail(runID: startedRun) }.frame(minHeight: 44) }
-            }.padding(16)
+                if let startedRun {
+                    WorkGroupCard { WorkNavigationRow(title: "Open started run", systemImage: "arrow.triangle.2.circlepath") { WorkQualityRunDetail(runID: startedRun) } }
+                }
         }
-        .foregroundColor(theme.textColor).background(theme.backgroundColor).tint(theme.accentColor)
+        .tint(theme.accentColor)
         .navigationTitle("Quality work").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
         .task {
@@ -170,6 +259,7 @@ struct WorkQualityComposer: View {
             crew.load("/api/magician/v2/agents")
             if let taskID, !taskID.isEmpty { context.load("/api/magician/v2/relentless/task-context/" + WorkAPIClient.segment(taskID)) }
             resource.load("/api/magician/v2/relentless/profiles")
+            catalog.load("/api/magician/v2/llm/routing")
         }
         .onChange(of: context.value) { _, value in
             if useSourceTask, let id = value?["agent_id"].text { agent = id }
@@ -202,19 +292,33 @@ struct WorkQualityComposer: View {
         .onChange(of: policyExpiry) { _, _ in policyID = UUID().uuidString }
         .onChange(of: resource.scopeID) { _, _ in preview = nil; reviewedSignature = ""; startedRun = nil }
     }
-    @ViewBuilder private var profileOptions: some View {
-        Text("Choose profile").tag("")
-        ForEach(profiles, id: \.formatted) { profile in
-            if let name = profile["name"].text { Text(name + " · " + profile["family"].display).tag(name) }
+    private func modelField(_ title: String, route: Binding<String>, models: [ChatModelChoice]) -> some View {
+        let selected = modelCatalog.selection(route.wrappedValue, models: models)
+        let model = models.first { $0.id == selected?.modelId }
+        return VStack(alignment: .leading, spacing: 10) {
+            ModelCatalogPicker(title: title, selected: model?.id ?? route.wrappedValue,
+                options: (model == nil && !route.wrappedValue.isEmpty ? [VoiceSelectionOption(id: route.wrappedValue, label: "Unavailable model · saved", available: false)] : [])
+                    + models.map { VoiceSelectionOption(id: $0.id, label: $0.label, detail: $0.providerDisplayName, available: $0.installed != false) }) { id in
+                if let next = models.first(where: { $0.id == id }) {
+                    let level = selected?.thinking ?? "auto"
+                    if let handle = next.choices[level] ?? next.choices["auto"] { route.wrappedValue = handle }
+                }
+            }
+            if let model {
+                ModelThinkingControl(control: model.thinking, level: selected?.thinking ?? "auto", theme: theme) {
+                    if let handle = model.choices[$0] { route.wrappedValue = handle }
+                }
+            }
         }
+        .padding(.vertical, 10)
+        .disabled(resource.busy || !advanced.isEmpty)
     }
     private func field(_ title: String, text: Binding<String>, multiline: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.themed(12, weight: .semibold)).foregroundColor(theme.secondaryTextColor)
+        WorkFieldRow(title) {
             TextField(title, text: text, axis: multiline ? .vertical : .horizontal)
-                .font(.themed(15)).lineLimit(multiline ? 3...8 : 1...1).padding(10)
-                .background(theme.controlColor, in: RoundedRectangle(cornerRadius: 9))
+                .font(.themed(15)).lineLimit(multiline ? 3...8 : 1...1)
                 .textInputAutocapitalization(.none)
+                .workFieldSurface()
         }
     }
     private func review() async {
@@ -264,24 +368,39 @@ private struct WorkReferencePicker: View {
     @State private var importing = false
     @ObservedObject private var theme = ThemeManager.shared
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("References · \(references.count) attached").font(.themed(16, weight: .semibold))
-            Text("Their contents are frozen when you review the contract.").font(.themed(12)).foregroundColor(theme.secondaryTextColor)
-            TextField("Find a reference", text: $query).textInputAutocapitalization(.never).padding(10).background(theme.controlColor, in: RoundedRectangle(cornerRadius: 8)).disabled(disabled || pending)
-            Button("Search notes") { Task { await search() } }.frame(minHeight: 44).disabled(disabled || pending || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || resource.value?["provider"].text?.isEmpty != false)
-            Button("Attach text file") { importing = true }.frame(minHeight: 44).disabled(disabled || pending)
+        VStack(alignment: .leading, spacing: 0) {
+            WorkNote("\(references.count) attached. Their contents are frozen when you review the contract.")
+            TextField("Find a reference", text: $query).font(.themed(15)).textInputAutocapitalization(.never).autocorrectionDisabled()
+                .workFieldSurface().disabled(disabled || pending)
+                .padding(.bottom, 4)
+            WorkButtonRow(title: "Search notes", systemImage: "magnifyingglass") { Task { await search() } }
+                .disabled(disabled || pending || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || resource.value?["provider"].text?.isEmpty != false)
+            WorkRowDivider()
+            WorkButtonRow(title: "Attach text file", systemImage: "paperclip") { importing = true }.disabled(disabled || pending)
             WorkResourceStatus(resource: resource)
             if let results {
                 ForEach(results["hits"].array ?? [], id: \.formatted) { hit in
-                    Button(hit["title"].text ?? hit["relative_path"].display) { Task { await attach(hit) } }.frame(minHeight: 44).disabled(disabled || pending)
-                    Text(hit["relative_path"].display).font(.themed(11)).foregroundColor(theme.secondaryTextColor)
+                    WorkRowDivider()
+                    Button { Task { await attach(hit) } } label: {
+                        WorkRowLabel(title: hit["title"].text ?? hit["relative_path"].display, systemImage: "doc.badge.plus", accessory: .none, subtitle: hit["relative_path"].display)
+                    }
+                    .buttonStyle(.plain).disabled(disabled || pending)
+                    .accessibilityLabel(hit["title"].text ?? hit["relative_path"].display)
                 }
-                if results["hits"].array?.isEmpty != false { Text("No matching references.").font(.themed(13)) }
-                if results["more_available"].flag == true || results["scan_truncated"].flag == true { Text("More documents may be available. Narrow the search.").font(.themed(12)) }
+                if results["hits"].array?.isEmpty != false { WorkRowDivider(); WorkNote("No matching references.") }
+                if results["more_available"].flag == true || results["scan_truncated"].flag == true { WorkNote("More documents may be available. Narrow the search.") }
             }
             ForEach(references) { reference in
-                DisclosureGroup(reference.title) { Text(reference.origin).font(.themed(11)); Text(reference.content).font(.themed(13)).textSelection(.enabled) }
-                Button("Remove " + reference.title, role: .destructive) { references.removeAll { $0.id == reference.id } }.frame(minHeight: 44).disabled(disabled || pending)
+                WorkRowDivider()
+                DisclosureGroup(reference.title) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(reference.origin).font(.themed(12)).foregroundColor(theme.secondaryTextColor)
+                        Text(reference.content).font(.themed(14)).textSelection(.enabled)
+                    }
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading).workInsetPanel()
+                }
+                .disclosureGroupStyle(WorkDisclosureStyle(systemImage: "doc.text"))
+                WorkButtonRow(title: "Remove " + reference.title, systemImage: "minus.circle", role: .destructive) { references.removeAll { $0.id == reference.id } }.disabled(disabled || pending)
             }
         }.task { resource.load("/api/magician/v2/notes/tree") }
         .onChange(of: resource.scopeID) { _, _ in results = nil; query = ""; pending = false; references = [] }

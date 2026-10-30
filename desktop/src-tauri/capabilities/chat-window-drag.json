@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "chat-window-drag",
+  "description": "Allows the chat window's top bar to begin a user-initiated native drag.",
+  "local": true,
+  "windows": ["overlay"],
+  "remote": {
+    "urls": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"]
+  },
+  "permissions": ["core:window:allow-start-dragging"]
+}

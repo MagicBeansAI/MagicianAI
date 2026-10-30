@@ -46,9 +46,17 @@ const NOTES_SETTINGS_FILE: &str = "settings.json";
 const AUDIO_NOTE_INDEX_DIR: &str = "audio-index";
 const TASK_NOTE_INDEX_DIR: &str = "task-note-index";
 const DEFAULT_PROVIDER_LOCAL: &str = "local_markdown";
-const DEFAULT_PROVIDER_SILVERBULLET: &str = "silverbullet";
-/// Per-workspace SilverBullet Spaces live under `{forest}/spaces/{principal}/{workspace}`.
-const SILVERBULLET_SPACES_DIR: &str = "spaces";
+/// The provider id of the Notes folder: Magician's own Markdown notes, plain
+/// files under `{forest}/spaces/{principal}/{workspace}`.
+///
+/// The string is a persisted identifier, not a product name. It is stored in
+/// settings files, note/audio/task index records, Observe `source_ref`s
+/// (`notes:<provider>:<path>`) and the notes search index keys, so changing it
+/// would orphan every one of those. Old spellings (`sb`, `silverbullet_space`,
+/// `notes`, `notes_folder`) normalize to it.
+const NOTES_FOLDER_PROVIDER: &str = "silverbullet";
+/// Per-workspace notes folders live under `{forest}/spaces/{principal}/{workspace}`.
+const NOTES_SPACES_DIR: &str = "spaces";
 const MAX_TASK_NOTE_EMBED_BYTES: u64 = 128 * 1024;
 const MAX_TASK_NOTE_ASSET_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_TASK_NOTE_ASSET_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
@@ -73,8 +81,12 @@ pub struct NotesSettings {
     pub fallback_provider: String,
     #[serde(default)]
     pub local_markdown: LocalMarkdownNotesSettings,
-    #[serde(default)]
-    pub silverbullet: SilverBulletNotesSettings,
+    /// Where this scope's notes folder lives. Older settings files call this
+    /// section `silverbullet` and may carry `local_url` / `server_url` /
+    /// `public_origin` from the retired SilverBullet sidecar; the alias reads
+    /// them and the unknown URL fields are ignored.
+    #[serde(default, alias = "silverbullet")]
+    pub notes_folder: NotesFolderSettings,
     #[serde(default)]
     pub task_publishing: TaskPublishingSettings,
 }
@@ -86,7 +98,7 @@ impl Default for NotesSettings {
             default_provider: default_provider(),
             fallback_provider: default_fallback_provider(),
             local_markdown: LocalMarkdownNotesSettings::default(),
-            silverbullet: SilverBulletNotesSettings::default(),
+            notes_folder: NotesFolderSettings::default(),
             task_publishing: TaskPublishingSettings::default(),
         }
     }
@@ -150,27 +162,24 @@ fn notes_provider_write_lock() -> &'static Mutex<()> {
 
 impl NotesProviderRegistry {
     fn from_envelope(envelope: &NotesSettingsEnvelope) -> Self {
-        let silverbullet_active = silverbullet_space_is_active(&envelope.settings)
-            && envelope.resolved.silverbullet_write_safe;
+        let notes_folder_active =
+            notes_folder_is_active(&envelope.settings) && envelope.resolved.notes_folder_write_safe;
         Self {
             providers: vec![
                 Box::new(FilesystemNotesProvider::new(
                     DEFAULT_PROVIDER_LOCAL,
-                    "Local Markdown",
+                    "Notes (fallback folder)",
                     PathBuf::from(&envelope.resolved.local_markdown_root),
                     true,
                     true,
                 )),
-                Box::new(
-                    FilesystemNotesProvider::new(
-                        DEFAULT_PROVIDER_SILVERBULLET,
-                        "Notes folder",
-                        PathBuf::from(&envelope.resolved.silverbullet_space_path),
-                        silverbullet_active,
-                        silverbullet_active,
-                    )
-                    .served_from(&envelope.resolved.silverbullet_server_url),
-                ),
+                Box::new(FilesystemNotesProvider::new(
+                    NOTES_FOLDER_PROVIDER,
+                    "Notes",
+                    PathBuf::from(&envelope.resolved.notes_folder_path),
+                    notes_folder_active,
+                    notes_folder_active,
+                )),
             ],
         }
     }
@@ -188,9 +197,7 @@ impl NotesProviderRegistry {
     async fn provider_statuses(&self) -> Vec<NotesProviderStatus> {
         let mut statuses = Vec::with_capacity(self.providers.len());
         for provider in &self.providers {
-            let mut status = provider.status().await;
-            status.health = provider.health().await;
-            statuses.push(status);
+            statuses.push(provider.status().await);
         }
         statuses
     }
@@ -299,12 +306,6 @@ trait NotesProvider: Send + Sync {
         .await
     }
 
-    /// Extra liveness a provider needs beyond its directory. `None` by default:
-    /// a provider is assumed self-contained unless it says otherwise.
-    async fn health(&self) -> Option<NotesProviderHealth> {
-        None
-    }
-
     async fn unavailable_write_reason(&self) -> Option<String> {
         if !self.configured() {
             return Some(format!("notes provider `{}` is not configured", self.id()));
@@ -364,9 +365,6 @@ struct FilesystemNotesProvider {
     root: PathBuf,
     configured: bool,
     create_root_on_write: bool,
-    /// Set only for a provider whose pages are served by something. Its
-    /// presence is what makes a health probe applicable.
-    server_url: Option<String>,
 }
 
 impl FilesystemNotesProvider {
@@ -383,17 +381,7 @@ impl FilesystemNotesProvider {
             root,
             configured,
             create_root_on_write,
-            server_url: None,
         }
-    }
-
-    fn served_from(mut self, server_url: impl Into<String>) -> Self {
-        let server_url = server_url.into();
-        let trimmed = server_url.trim();
-        if !trimmed.is_empty() {
-            self.server_url = Some(trimmed.to_string());
-        }
-        self
     }
 }
 
@@ -401,6 +389,14 @@ impl FilesystemNotesProvider {
 /// destination to readers or to an idempotent retry. The temporary file lives
 /// beside the destination so the final rename stays on one filesystem.
 async fn write_provider_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    publish_provider_file_atomic(path, bytes, true).await
+}
+
+async fn publish_provider_file_atomic(
+    path: &Path,
+    bytes: &[u8],
+    replace: bool,
+) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -423,7 +419,14 @@ async fn write_provider_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Resul
         file.flush().await?;
         file.sync_all().await?;
         drop(file);
-        fs::rename(&temporary, path).await?;
+        if replace {
+            fs::rename(&temporary, path).await?;
+        } else {
+            // Linking publishes the complete file only if the destination is
+            // absent. A concurrent create (or a symlink) must never be replaced.
+            fs::hard_link(&temporary, path).await?;
+            let _ = fs::remove_file(&temporary).await;
+        }
         if let Ok(directory) = fs::File::open(parent).await {
             let _ = directory.sync_all().await;
         }
@@ -466,11 +469,14 @@ impl NotesProvider for FilesystemNotesProvider {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("Inbox");
-        let slug = slugify(&request.title);
+        // A title that already names a Markdown file ("plan.md") keeps that
+        // name rather than gaining a second extension ("plan-md.md").
+        let title = title_without_markdown_extension(&request.title);
+        let slug = slugify(title);
         let file_name = if slug.is_empty() {
-            // Untitled notes follow SilverBullet's default Quick Note layout —
-            // `Inbox/<YYYY-MM-DD>/<HH-MM-SS>.md` in local time — so notes created by
-            // magician and notes created directly in the SB UI land in the same place.
+            // Untitled notes keep the established Quick Note layout —
+            // `Inbox/<YYYY-MM-DD>/<HH-MM-SS>.md` in local time — so new untitled
+            // notes land beside the ones already in the folder.
             let now = chrono::Local::now();
             format!("{}/{}.md", now.format("%Y-%m-%d"), now.format("%H-%M-%S"))
         } else {
@@ -481,32 +487,11 @@ impl NotesProvider for FilesystemNotesProvider {
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let markdown = render_note_markdown(&request.title, &request.body);
+        let markdown = render_note_markdown(title, &request.body);
         write_provider_file_atomic(&abs_path, markdown.as_bytes()).await?;
         Ok(ProviderWriteRef {
             relative_path: rel_path,
             absolute_path: abs_path,
-        })
-    }
-
-    async fn health(&self) -> Option<NotesProviderHealth> {
-        // Only probe a provider the owner actually set up. The resolved server
-        // URL always has a default, so without this an owner who has never
-        // configured SilverBullet would pay a two-second timeout on every
-        // settings load and be shown "not running" for a provider they do not
-        // use — a fault report about nothing.
-        if !self.configured() {
-            return None;
-        }
-        let server_url = self.server_url.as_deref()?;
-        let (server_reachable, server_message) = probe_notes_server(server_url).await;
-        let (cli_available, cli_message) = probe_silverbullet_cli();
-        Some(NotesProviderHealth {
-            server_url: server_url.to_string(),
-            server_reachable,
-            server_message,
-            cli_available,
-            cli_message,
         })
     }
 
@@ -587,16 +572,7 @@ impl NotesSettings {
         self.fallback_provider = normalize_provider_id(&self.fallback_provider)
             .unwrap_or_else(default_fallback_provider);
         self.local_markdown.root = normalize_optional_path(self.local_markdown.root);
-        self.silverbullet.space_path = normalize_optional_path(self.silverbullet.space_path);
-        self.silverbullet.local_url = normalize_url_or_default(
-            self.silverbullet.local_url,
-            default_silverbullet_local_url(),
-        );
-        self.silverbullet.server_url = normalize_browser_origin_or_default(
-            self.silverbullet.server_url,
-            default_silverbullet_server_url(),
-        );
-        self.silverbullet.public_origin = normalize_public_origin(self.silverbullet.public_origin);
+        self.notes_folder.space_path = normalize_optional_path(self.notes_folder.space_path);
         self
     }
 }
@@ -607,35 +583,15 @@ pub struct LocalMarkdownNotesSettings {
     pub root: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SilverBulletNotesSettings {
+/// The notes folder: plain Markdown files Magician reads and writes, browsed
+/// in the web app at `/notes`. Nothing serves it but Magician, so it has a
+/// path and nothing else. Legacy `local_url` / `server_url` / `public_origin`
+/// keys in older settings files are ignored on read and dropped on the next
+/// save.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NotesFolderSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_path: Option<String>,
-    /// Loopback URL used only for sidecar lifecycle and health checks.
-    ///
-    /// This must stay separate from the browser-facing origin: a public
-    /// Cloudflare hostname must never make the launcher bind SilverBullet to a
-    /// public interface or use a remote Access round-trip as local health.
-    #[serde(default = "default_silverbullet_local_url")]
-    pub local_url: String,
-    /// Legacy browser URL retained for backwards-compatible settings files.
-    /// New deployments should set `public_origin`; when present it wins for
-    /// generated note links and user-facing "open notes" actions.
-    #[serde(default = "default_silverbullet_server_url")]
-    pub server_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_origin: Option<String>,
-}
-
-impl Default for SilverBulletNotesSettings {
-    fn default() -> Self {
-        Self {
-            space_path: None,
-            local_url: default_silverbullet_local_url(),
-            server_url: default_silverbullet_server_url(),
-            public_origin: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -653,16 +609,11 @@ pub struct ResolvedNotesProviderSettings {
     pub default_provider: String,
     pub fallback_provider: String,
     pub local_markdown_root: String,
-    pub silverbullet_space_path: String,
+    pub notes_folder_path: String,
     /// False for legacy settings that would make the visible Space contain the
     /// canonical runtime root. Such settings remain inspectable but writes
     /// fall back until a dedicated notes-only subtree is selected.
-    pub silverbullet_write_safe: bool,
-    pub silverbullet_local_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub silverbullet_public_origin: Option<String>,
-    /// Effective browser-facing URL. Kept for older web clients.
-    pub silverbullet_server_url: String,
+    pub notes_folder_write_safe: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,24 +627,6 @@ pub struct NotesProviderStatusResponse {
     pub warnings: Vec<String>,
 }
 
-/// Liveness of the pieces a provider needs beyond its own directory.
-///
-/// A SilverBullet space is a folder, so the filesystem checks above pass
-/// whether or not the SilverBullet server is running — a space can be perfectly
-/// writable while the owner cannot open a single page. `open_url` values point
-/// at that server, so reporting only the directory made "ready" mean less than
-/// it appeared to.
-#[derive(Debug, Clone, Serialize)]
-pub struct NotesProviderHealth {
-    pub server_url: String,
-    pub server_reachable: bool,
-    pub server_message: String,
-    /// The `sb` CLI, used by the optional Phase 7 enhancements. Absent is not a
-    /// fault: nothing in the write path needs it.
-    pub cli_available: bool,
-    pub cli_message: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct NotesProviderStatus {
     pub id: String,
@@ -703,11 +636,6 @@ pub struct NotesProviderStatus {
     pub writable: bool,
     pub root: String,
     pub message: String,
-    /// Present only for a provider that depends on something beyond its own
-    /// directory. `None` on Local Markdown, where the directory is the whole
-    /// story.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health: Option<NotesProviderHealth>,
 }
 
 /// Stable description of the provider roots admitted to the Notes observation
@@ -827,6 +755,39 @@ pub struct NoteFile {
     pub relative_path: String,
     pub title: String,
     pub markdown: String,
+    /// Content revision of `markdown` (`blake3:<hex>`). A writer that edits
+    /// part of a note sends it back as `expected_revision`, so an edit made
+    /// in between (by an agent or another device) is refused, not overwritten.
+    pub revision: String,
+}
+
+/// Content revision of a note's bytes, as [`NoteFile::revision`] reports it.
+pub fn note_content_revision(markdown: &str) -> String {
+    format!("blake3:{}", blake3::hash(markdown.as_bytes()).to_hex())
+}
+
+/// Set or remove top-level keys in a note's YAML front matter.
+///
+/// Values are single-line scalars. Only the named keys change: every other
+/// line of the front matter (keys, order, comments) and the whole body stay
+/// byte-for-byte.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NoteFrontMatterUpdate {
+    #[serde(default)]
+    pub set: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub unset: Vec<String>,
+    /// The [`NoteFile::revision`] the edit was made against.
+    pub expected_revision: String,
+}
+
+/// What a front-matter update did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteFrontMatterOutcome {
+    /// Written (or already as asked); carries the note as it now is.
+    Updated(NoteFile),
+    /// The note changed since `expected_revision`; nothing was written.
+    Conflict { current_revision: String },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -953,7 +914,7 @@ pub struct NoteAssetRef {
 
 /// One durable voice recording plus its human-readable companion page.
 ///
-/// The caller may explicitly request SilverBullet. Provider selection happens
+/// The caller may explicitly request the notes folder. Provider selection happens
 /// once for both files, so an availability transition cannot split the audio
 /// and Markdown page across two note roots.
 #[derive(Debug, Clone)]
@@ -1210,29 +1171,39 @@ impl NotesSettingsStore {
         settings: NotesSettings,
     ) -> std::io::Result<NotesSettingsEnvelope> {
         let path = self.settings_path(principal, workspace)?;
-        validate_silverbullet_network_settings(&settings.silverbullet)?;
-        validate_silverbullet_space_boundary(
-            &settings.silverbullet,
+        validate_notes_folder_boundary(
+            &settings.notes_folder,
             &self.workspace_layout,
             principal,
             workspace,
         )?;
         let mut settings = settings.normalize();
-        if settings.silverbullet.space_path.is_some() {
-            let resolved = path_to_string(&resolve_silverbullet_space_root(
-                &settings.silverbullet,
+        if settings.notes_folder.space_path.is_some() {
+            let resolved = path_to_string(&resolve_notes_folder_root(
+                &settings.notes_folder,
                 principal,
                 workspace,
             ));
-            if settings.silverbullet.space_path.as_deref() != Some(resolved.as_str()) {
-                settings.silverbullet.space_path = Some(resolved);
+            if settings.notes_folder.space_path.as_deref() != Some(resolved.as_str()) {
+                settings.notes_folder.space_path = Some(resolved);
             }
         }
         self.workspace_layout
             .write_json_atomic_path(&path, &settings)
             .await
             .map_err(artifact_v2_error_to_io)?;
-        Ok(self.envelope_for(principal, workspace, path, settings))
+        let envelope = self.envelope_for(principal, workspace, path, settings);
+        // A notes space configured now is fenced from its first agent use.
+        crate::magician_v2::execution::goal_workspace_access::register_notes_spaces(
+            [
+                Some(PathBuf::from(&envelope.resolved.local_markdown_root)),
+                notes_folder_is_active(&envelope.settings)
+                    .then(|| PathBuf::from(&envelope.resolved.notes_folder_path)),
+            ]
+            .into_iter()
+            .flatten(),
+        );
+        Ok(envelope)
     }
 
     pub async fn provider_status(
@@ -1255,9 +1226,9 @@ impl NotesSettingsStore {
     }
 
     /// Resolve the exact provider set behind the first-class Notes observation
-    /// target. Local Markdown is always part of the logical Notes space; a
-    /// configured SilverBullet Space joins it only after passing the same
-    /// notes-only boundary used for writes.
+    /// target. The fallback folder is always part of the logical Notes space; a
+    /// configured notes folder joins it only after passing the same notes-only
+    /// boundary used for writes.
     pub async fn observation_catalog(
         &self,
         principal: &str,
@@ -1282,7 +1253,9 @@ impl NotesSettingsStore {
                 "magician.notes-observation.v1",
                 envelope.settings.enabled,
                 revision_input,
-                envelope.resolved.silverbullet_server_url,
+                // Observed notes carry `open_url`, so the link format is part
+                // of what a subscriber has seen; bump it if the format moves.
+                NOTE_LINK_FORMAT,
             ))
             .unwrap_or_default(),
         )
@@ -1376,6 +1349,33 @@ impl NotesSettingsStore {
         workspace: &str,
         request: NoteSearchRequest,
     ) -> std::io::Result<NoteSearchResults> {
+        self.search_notes_admitting(principal, workspace, request, None)
+            .await
+            .map(|(results, _)| results)
+    }
+
+    /// [`Self::search_notes`] for a caller that may not see every note (an
+    /// agent, an app): ranked matches that `admit(relative_path,
+    /// absolute_path)` refuses are dropped before the limit is applied, and
+    /// counted, never named.
+    pub async fn search_notes_for(
+        &self,
+        principal: &str,
+        workspace: &str,
+        request: NoteSearchRequest,
+        admit: &(dyn Fn(&str, &Path) -> bool + Send + Sync),
+    ) -> std::io::Result<(NoteSearchResults, usize)> {
+        self.search_notes_admitting(principal, workspace, request, Some(admit))
+            .await
+    }
+
+    async fn search_notes_admitting(
+        &self,
+        principal: &str,
+        workspace: &str,
+        request: NoteSearchRequest,
+        admit: Option<&(dyn Fn(&str, &Path) -> bool + Send + Sync)>,
+    ) -> std::io::Result<(NoteSearchResults, usize)> {
         #[cfg(not(test))]
         {
             let _ = self.arm_scope_watch(principal, workspace).await;
@@ -1503,6 +1503,16 @@ impl NotesSettingsStore {
                 .then_with(|| right.hit.modified_at_ms.cmp(&left.hit.modified_at_ms))
                 .then_with(|| left.hit.relative_path.cmp(&right.hit.relative_path))
         });
+        let mut withheld = 0usize;
+        if let Some(admit) = admit {
+            candidates.retain(|candidate| {
+                let admitted = admit(&candidate.hit.relative_path, &candidate.absolute_path);
+                if !admitted {
+                    withheld += 1;
+                }
+                admitted
+            });
+        }
         let more_available = candidates.len() > limit;
         candidates.truncate(limit);
 
@@ -1512,23 +1522,66 @@ impl NotesSettingsStore {
             .into_iter()
             .map(|candidate| {
                 let mut hit = candidate.hit;
-                hit.open_url = provider_open_url(
-                    &hit.provider,
-                    &envelope,
-                    &PathBuf::from(&hit.relative_path),
-                    &candidate.absolute_path,
-                );
+                hit.open_url = note_open_url(&envelope, &PathBuf::from(&hit.relative_path));
                 hit
             })
             .collect::<Vec<_>>();
 
-        Ok(NoteSearchResults {
-            hits,
-            scanned_notes,
-            scan_truncated,
-            query_terms: terms.clone(),
-            more_available,
-        })
+        Ok((
+            NoteSearchResults {
+                hits,
+                scanned_notes,
+                scan_truncated,
+                query_terms: terms.clone(),
+                more_available,
+            },
+            withheld,
+        ))
+    }
+
+    /// The notes space roots behind this scope (the fallback folder, and a
+    /// write-safe notes folder), for callers that must judge a target
+    /// before a provider writes it.
+    pub async fn note_provider_roots(
+        &self,
+        principal: &str,
+        workspace: &str,
+    ) -> std::io::Result<Vec<PathBuf>> {
+        let (_, roots) = self.observation_roots(principal, workspace).await?;
+        Ok(roots.into_iter().map(|root| root.root).collect())
+    }
+
+    /// Every scope's notes space roots, read synchronously from the settings
+    /// files, for the goal workspace fence at boot. A scope whose settings
+    /// cannot be read contributes its default local root.
+    pub fn notes_space_roots_blocking(&self) -> Vec<PathBuf> {
+        let mut spaces = Vec::new();
+        for (principal, workspace) in self.workspace_layout.list_scopes() {
+            let Ok(path) = self.settings_path(&principal, &workspace) else {
+                continue;
+            };
+            let settings = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<NotesSettings>(&bytes).ok())
+                .map(NotesSettings::normalize)
+                .unwrap_or_default();
+            let envelope = self.envelope_for(&principal, &workspace, path, settings);
+            if let Ok(root) =
+                provider_root_snapshot(Path::new(&envelope.resolved.local_markdown_root))
+            {
+                spaces.push(root);
+            }
+            if notes_folder_is_active(&envelope.settings) {
+                if let Ok(root) =
+                    provider_root_snapshot(Path::new(&envelope.resolved.notes_folder_path))
+                {
+                    spaces.push(root);
+                }
+            }
+        }
+        spaces.sort();
+        spaces.dedup();
+        spaces
     }
 
     /// One level of the notes folder. `relative_path` empty is the root.
@@ -1605,13 +1658,18 @@ impl NotesSettingsStore {
     }
 
     /// Read one Markdown note for the in-app reading pane.
+    ///
+    /// `relative_path` is the `path` of a canonical note link
+    /// ([`note_link`]). It resolves in the library root first; a note that a
+    /// provider fallback wrote into the fallback folder is found there next, so
+    /// every link the server hands out opens.
     pub async fn read_note_file(
         &self,
         principal: &str,
         workspace: &str,
         relative_path: &str,
     ) -> std::io::Result<NoteFile> {
-        let (envelope, root) = self.primary_note_root(principal, workspace).await?;
+        let (_envelope, primary) = self.primary_note_root(principal, workspace).await?;
         let relative = safe_relative_path(relative_path)?;
         if !is_markdown_note_path(&relative) {
             return Err(std::io::Error::new(
@@ -1619,6 +1677,29 @@ impl NotesSettingsStore {
                 "only Markdown notes can be opened",
             ));
         }
+        let primary_result = Self::read_note_file_in(&primary, &relative).await;
+        let primary_missing = matches!(
+            &primary_result,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        );
+        if !primary_missing {
+            return primary_result;
+        }
+        let (_, roots) = self.observation_roots(principal, workspace).await?;
+        for root in roots.iter().filter(|root| root.root != primary.root) {
+            match Self::read_note_file_in(root, &relative).await {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                other => return other,
+            }
+        }
+        primary_result
+    }
+
+    async fn read_note_file_in(
+        root: &NotesObservationRoot,
+        relative: &Path,
+    ) -> std::io::Result<NoteFile> {
+        let relative = relative.to_path_buf();
         let canonical_root = fs::canonicalize(&root.root).await?;
         let absolute_path = checked_join(&canonical_root, &relative)?;
         let metadata = fs::symlink_metadata(&absolute_path).await?;
@@ -1644,11 +1725,11 @@ impl NotesSettingsStore {
         let markdown = String::from_utf8(fs::read(&canonical).await?).map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "note is not UTF-8 text")
         })?;
-        let _ = envelope;
         Ok(NoteFile {
-            provider: root.provider,
+            provider: root.provider.clone(),
             relative_path: path_to_string(&relative),
             title: markdown_note_title(&markdown, &relative),
+            revision: note_content_revision(&markdown),
             markdown,
         })
     }
@@ -1660,6 +1741,19 @@ impl NotesSettingsStore {
         workspace: &str,
         folder: &str,
         name: &str,
+    ) -> std::io::Result<NoteFile> {
+        self.create_markdown_note_with_content(principal, workspace, folder, name, None)
+            .await
+    }
+
+    /// Create a complete note in one operation; existing notes are never replaced.
+    pub async fn create_markdown_note_with_content(
+        &self,
+        principal: &str,
+        workspace: &str,
+        folder: &str,
+        name: &str,
+        markdown: Option<&str>,
     ) -> std::io::Result<NoteFile> {
         let (_envelope, root) = self.primary_note_root(principal, workspace).await?;
         let folder = if folder.trim().is_empty() {
@@ -1690,9 +1784,14 @@ impl NotesSettingsStore {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or("Note");
-        let markdown = format!("# {stem}\n\n");
-        write_provider_file_atomic(&absolute, markdown.as_bytes()).await?;
-        self.reindex_primary_notes(principal, workspace).await?;
+        let default_markdown = format!("# {stem}\n\n");
+        publish_provider_file_atomic(
+            &absolute,
+            markdown.unwrap_or(&default_markdown).as_bytes(),
+            false,
+        )
+        .await?;
+        self.reindex_primary_notes(principal, workspace).await;
         self.read_note_file(principal, workspace, &path_to_string(&relative))
             .await
     }
@@ -1723,9 +1822,56 @@ impl NotesSettingsStore {
             ));
         }
         write_provider_file_atomic(&absolute, markdown.as_bytes()).await?;
-        self.reindex_primary_notes(principal, workspace).await?;
+        self.reindex_primary_notes(principal, workspace).await;
         self.read_note_file(principal, workspace, &path_to_string(&relative))
             .await
+    }
+
+    /// Set or remove top-level front-matter keys of one existing note,
+    /// leaving every other byte as it was.
+    ///
+    /// Refuses with [`NoteFrontMatterOutcome::Conflict`] when the note's
+    /// current content is not the revision the caller read, so a field edit
+    /// never overwrites a change made in between. The compare and the write
+    /// happen under the provider write lock.
+    pub async fn update_note_front_matter(
+        &self,
+        principal: &str,
+        workspace: &str,
+        relative_path: &str,
+        update: &NoteFrontMatterUpdate,
+    ) -> std::io::Result<NoteFrontMatterOutcome> {
+        let (_envelope, root) = self.primary_note_root(principal, workspace).await?;
+        let relative = safe_relative_path(relative_path)?;
+        if !is_markdown_note_path(&relative) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "only a Markdown note has front matter to update",
+            ));
+        }
+        let canonical_root = fs::canonicalize(&root.root).await?;
+        let absolute = checked_join(&canonical_root, &relative)?;
+        let changed = {
+            let _guard = notes_provider_write_lock().lock().await;
+            let current = Self::read_note_file_in(&root, &relative).await?;
+            if current.revision != update.expected_revision.trim() {
+                return Ok(NoteFrontMatterOutcome::Conflict {
+                    current_revision: current.revision,
+                });
+            }
+            let edited = apply_front_matter_update(&current.markdown, update)?;
+            if edited == current.markdown {
+                false
+            } else {
+                write_provider_file_atomic(&absolute, edited.as_bytes()).await?;
+                true
+            }
+        };
+        if changed {
+            self.reindex_primary_notes(principal, workspace).await;
+        }
+        let file = Self::read_note_file_in(&root, &relative).await?;
+        Ok(NoteFrontMatterOutcome::Updated(file))
     }
 
     /// Create an empty folder inside the active notes root.
@@ -1751,7 +1897,10 @@ impl NotesSettingsStore {
                 "that folder already exists",
             ));
         }
-        fs::create_dir_all(&absolute).await?;
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::create_dir(&absolute).await?;
         Ok(path_to_string(&relative))
     }
 
@@ -1780,7 +1929,8 @@ impl NotesSettingsStore {
             ));
         }
         fs::remove_file(&absolute).await?;
-        self.reindex_primary_notes(principal, workspace).await
+        self.reindex_primary_notes(principal, workspace).await;
+        Ok(())
     }
 
     /// Delete a folder of notes and drop those notes from the search index.
@@ -1809,10 +1959,30 @@ impl NotesSettingsStore {
         }
         refuse_symlink_inside(&absolute).await?;
         fs::remove_dir_all(&absolute).await?;
-        self.reindex_primary_notes(principal, workspace).await
+        self.reindex_primary_notes(principal, workspace).await;
+        Ok(())
     }
 
-    async fn reindex_primary_notes(&self, principal: &str, workspace: &str) -> std::io::Result<()> {
+    /// Queue a search-index refresh after a write and return without waiting
+    /// for it. The refresh embeds changed notes, and a busy embedder once held
+    /// a one-line front-matter save for five minutes. Search stays correct
+    /// meanwhile: it matches words against a fresh read of the notes and drops
+    /// stored hits for notes that are gone.
+    async fn reindex_primary_notes(&self, principal: &str, workspace: &str) {
+        if let Err(error) = self
+            .schedule_primary_notes_reindex(principal, workspace)
+            .await
+        {
+            // The write itself succeeded; the notes watch catches the index up.
+            tracing::warn!(error = %error, "notes reindex after a write could not be queued");
+        }
+    }
+
+    async fn schedule_primary_notes_reindex(
+        &self,
+        principal: &str,
+        workspace: &str,
+    ) -> std::io::Result<()> {
         let (_, root) = self.primary_note_root(principal, workspace).await?;
         let snapshot = super::notes_search_index::snapshot_for(vec![
             super::notes_search_index::NotesIndexRoot {
@@ -1826,9 +1996,7 @@ impl NotesSettingsStore {
             .scope_root(principal, workspace)
             .join("notes")
             .join("hybrid-index");
-        super::notes_hybrid::refresh_index(&index_dir, &snapshot.notes)
-            .await
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        super::notes_hybrid::schedule_index_refresh(index_dir, snapshot.notes.clone()).await;
         Ok(())
     }
 
@@ -1927,6 +2095,11 @@ impl NotesSettingsStore {
             Ok(path) if is_markdown_note_path(&path) => path,
             _ => return Ok(None),
         };
+        // Observe never emits a goal workspace note; a ref to one (made
+        // before they were excluded) resolves to nothing.
+        if is_goal_workspace_relative_path(relative_path) {
+            return Ok(None);
+        }
         let (envelope, roots) = self.observation_roots(principal, workspace).await?;
         if !envelope.settings.enabled {
             return Err(std::io::Error::new(
@@ -1978,14 +2151,10 @@ impl NotesSettingsStore {
             provider: DEFAULT_PROVIDER_LOCAL.to_string(),
             root: provider_root_snapshot(Path::new(&envelope.resolved.local_markdown_root))?,
         }];
-        if silverbullet_space_is_active(&envelope.settings)
-            && envelope.resolved.silverbullet_write_safe
-        {
+        if notes_folder_is_active(&envelope.settings) && envelope.resolved.notes_folder_write_safe {
             roots.push(NotesObservationRoot {
-                provider: DEFAULT_PROVIDER_SILVERBULLET.to_string(),
-                root: provider_root_snapshot(Path::new(
-                    &envelope.resolved.silverbullet_space_path,
-                ))?,
+                provider: NOTES_FOLDER_PROVIDER.to_string(),
+                root: provider_root_snapshot(Path::new(&envelope.resolved.notes_folder_path))?,
             });
         }
         let mut claimed = BTreeSet::new();
@@ -2013,12 +2182,7 @@ impl NotesSettingsStore {
             fallback_reason: selection.fallback_reason,
             path: path_to_string(&write_ref.relative_path),
             absolute_path: write_ref.absolute_path.display().to_string(),
-            open_url: provider_open_url(
-                selection.provider.id(),
-                &envelope,
-                &write_ref.relative_path,
-                &write_ref.absolute_path,
-            ),
+            open_url: note_open_url(&envelope, &write_ref.relative_path),
         })
     }
 
@@ -2062,12 +2226,7 @@ impl NotesSettingsStore {
             fallback_reason: selection.fallback_reason,
             path: path_to_string(&write_ref.relative_path),
             absolute_path: write_ref.absolute_path.display().to_string(),
-            open_url: provider_open_url(
-                selection.provider.id(),
-                &envelope,
-                &write_ref.relative_path,
-                &write_ref.absolute_path,
-            ),
+            open_url: note_open_url(&envelope, &write_ref.relative_path),
         })
     }
 
@@ -2193,7 +2352,7 @@ impl NotesSettingsStore {
                 provider: provider.id().to_string(),
                 path: path_to_string(&rel_path),
                 absolute_path: abs_path.display().to_string(),
-                open_url: provider_open_url(provider.id(), &envelope, &rel_path, &abs_path),
+                open_url: note_open_url(&envelope, &rel_path),
             }));
         }
         Ok(None)
@@ -2230,7 +2389,7 @@ impl NotesSettingsStore {
                 provider: provider.id().to_string(),
                 path: path_to_string(&rel_path),
                 absolute_path: abs_path.display().to_string(),
-                open_url: provider_open_url(provider.id(), &envelope, &rel_path, &abs_path),
+                open_url: note_open_url(&envelope, &rel_path),
             });
         }
         Err(std::io::Error::new(
@@ -2259,12 +2418,7 @@ impl NotesSettingsStore {
             fallback_reason: selection.fallback_reason,
             path: path_to_string(&write_ref.relative_path),
             absolute_path: write_ref.absolute_path.display().to_string(),
-            open_url: provider_open_url(
-                selection.provider.id(),
-                &envelope,
-                &write_ref.relative_path,
-                &write_ref.absolute_path,
-            ),
+            open_url: note_open_url(&envelope, &write_ref.relative_path),
         })
     }
 
@@ -2289,12 +2443,7 @@ impl NotesSettingsStore {
             fallback_reason: selection.fallback_reason,
             path: path_to_string(&write_ref.relative_path),
             absolute_path: write_ref.absolute_path.display().to_string(),
-            open_url: provider_open_url(
-                selection.provider.id(),
-                &envelope,
-                &write_ref.relative_path,
-                &write_ref.absolute_path,
-            ),
+            open_url: note_open_url(&envelope, &write_ref.relative_path),
             bytes,
         })
     }
@@ -2418,12 +2567,7 @@ impl NotesSettingsStore {
             date,
             tags,
             note_path: path_to_string(&note_write.relative_path),
-            open_url: provider_open_url(
-                selection.provider.id(),
-                &envelope,
-                &note_write.relative_path,
-                &note_write.absolute_path,
-            ),
+            open_url: note_open_url(&envelope, &note_write.relative_path),
             assets: asset_refs,
         };
         self.workspace_layout
@@ -2496,7 +2640,7 @@ impl NotesSettingsStore {
             else {
                 continue;
             };
-            let note = record.note;
+            let note = with_canonical_task_note_link(record.note, workspace);
             if let Some(query) = normalized_query.as_deref() {
                 let haystack = format!(
                     "{} {} {} {} {} {}",
@@ -3072,12 +3216,7 @@ impl NotesSettingsStore {
             note_absolute_path: note_write.absolute_path.display().to_string(),
             audio_path: path_to_string(&audio_write.relative_path),
             audio_absolute_path: audio_write.absolute_path.display().to_string(),
-            open_url: provider_open_url(
-                selection.provider.id(),
-                &envelope,
-                &note_write.relative_path,
-                &note_write.absolute_path,
-            ),
+            open_url: note_open_url(&envelope, &note_write.relative_path),
             bytes,
             content_hash: content_hash.clone(),
         };
@@ -3309,28 +3448,24 @@ impl NotesSettingsStore {
             .as_deref()
             .map(expand_tilde)
             .unwrap_or_else(|| self.default_local_root(principal, workspace));
-        let silverbullet_root =
-            resolve_silverbullet_space_root(&settings.silverbullet, principal, workspace);
-        let silverbullet_public_origin = settings.silverbullet.public_origin.clone();
-        let silverbullet_browser_url = silverbullet_public_origin
-            .clone()
-            .unwrap_or_else(|| settings.silverbullet.server_url.clone());
+        let notes_folder_root =
+            resolve_notes_folder_root(&settings.notes_folder, principal, workspace);
         let mut warnings = Vec::new();
-        let silverbullet_write_safe = validate_silverbullet_space_boundary(
-            &settings.silverbullet,
+        let notes_folder_write_safe = validate_notes_folder_boundary(
+            &settings.notes_folder,
             &self.workspace_layout,
             principal,
             workspace,
         )
         .is_ok();
-        if settings.silverbullet.space_path.is_some() && !silverbullet_write_safe {
+        if settings.notes_folder.space_path.is_some() && !notes_folder_write_safe {
             warnings.push(
                 "The notes folder would expose Magician's runtime storage, so new notes go to the fallback folder until you choose a dedicated notes-only folder or a strict subfolder of one."
                     .to_string(),
             );
         }
         if settings.default_provider != DEFAULT_PROVIDER_LOCAL
-            && settings.default_provider != DEFAULT_PROVIDER_SILVERBULLET
+            && settings.default_provider != NOTES_FOLDER_PROVIDER
         {
             warnings.push(format!(
                 "Unknown notes provider `{}`; writes will use local_markdown fallback.",
@@ -3345,11 +3480,8 @@ impl NotesSettingsStore {
                 default_provider: settings.default_provider.clone(),
                 fallback_provider: settings.fallback_provider.clone(),
                 local_markdown_root: local_root.display().to_string(),
-                silverbullet_space_path: silverbullet_root.display().to_string(),
-                silverbullet_write_safe,
-                silverbullet_local_url: settings.silverbullet.local_url.clone(),
-                silverbullet_public_origin,
-                silverbullet_server_url: silverbullet_browser_url,
+                notes_folder_path: notes_folder_root.display().to_string(),
+                notes_folder_write_safe,
             },
             settings,
             warnings,
@@ -3402,7 +3534,10 @@ impl NotesSettingsStore {
             .read_json_path::<StoredTaskNoteIndexEntry, _>(&path)
             .await
         {
-            Ok(record) => Ok(Some(record)),
+            Ok(mut record) => {
+                record.note = with_canonical_task_note_link(record.note, workspace);
+                Ok(Some(record))
+            },
             Err(ArtifactV2Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ok(None)
             },
@@ -3445,70 +3580,6 @@ fn artifact_v2_error_to_io(error: ArtifactV2Error) -> std::io::Error {
         ArtifactV2Error::Io(error) => error,
         other => std::io::Error::other(other),
     }
-}
-
-/// How long a status request will wait on the notes server.
-///
-/// Bounded because `provider_status` answers a page load: an unreachable server
-/// that accepts the connection and never replies would otherwise hang the
-/// settings screen, turning a diagnostic into the fault it is meant to report.
-const NOTES_SERVER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Probe the notes server for liveness, not for correctness.
-///
-/// Any HTTP response means the server is up and serving, so a 401 or a 404
-/// counts as reachable — the question here is whether the owner's `open_url`
-/// links will resolve at all, not whether a particular page exists or the
-/// caller is authorized.
-async fn probe_notes_server(server_url: &str) -> (bool, String) {
-    let client = match reqwest::Client::builder()
-        .timeout(NOTES_SERVER_PROBE_TIMEOUT)
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => return (false, format!("probe unavailable: {error}")),
-    };
-    match client.get(server_url).send().await {
-        Ok(response) => (
-            true,
-            format!("reachable (HTTP {})", response.status().as_u16()),
-        ),
-        Err(error) if error.is_timeout() => (
-            false,
-            format!(
-                "no response within {}s",
-                NOTES_SERVER_PROBE_TIMEOUT.as_secs()
-            ),
-        ),
-        Err(error) if error.is_connect() => (
-            false,
-            "not running or not accepting connections".to_string(),
-        ),
-        Err(error) => (false, format!("unreachable: {error}")),
-    }
-}
-
-/// Whether the `sb` CLI is on PATH.
-///
-/// Reported, not enforced: nothing in the write path shells out to it, so its
-/// absence is information for the optional CLI enhancements rather than a fault
-/// that should make a healthy space look broken.
-///
-/// Resolved once per process. `which` walks every PATH entry with a `stat` per
-/// candidate, and this runs on the async runtime behind a status GET that the
-/// command palette calls; the process's PATH does not change underneath it.
-fn probe_silverbullet_cli() -> (bool, String) {
-    static SILVERBULLET_CLI: OnceLock<(bool, String)> = OnceLock::new();
-
-    SILVERBULLET_CLI
-        .get_or_init(|| match which::which("sb") {
-            Ok(path) => (true, format!("found at {}", path.display())),
-            Err(_) => (
-                false,
-                "not on PATH; only the optional `sb` CLI enhancements need it".to_string(),
-            ),
-        })
-        .clone()
 }
 
 async fn status_for_provider(
@@ -3573,9 +3644,6 @@ async fn status_for_provider(
         writable,
         root: root.display().to_string(),
         message,
-        // Filesystem facts only. A provider that needs more than its directory
-        // fills this in from `NotesProvider::health`, which knows what that is.
-        health: None,
     }
 }
 
@@ -3664,8 +3732,10 @@ fn normalize_provider_id(value: &str) -> Option<String> {
     }
     match value {
         "local" | "local_markdown" => Some(DEFAULT_PROVIDER_LOCAL.to_string()),
-        "sb" | "silverbullet" | "silverbullet_space" => {
-            Some(DEFAULT_PROVIDER_SILVERBULLET.to_string())
+        // Every spelling of the notes folder, including the retired
+        // SilverBullet names older settings and records carry.
+        "notes" | "notes_folder" | "sb" | "silverbullet" | "silverbullet_space" => {
+            Some(NOTES_FOLDER_PROVIDER.to_string())
         },
         _ => Some(value.to_string()),
     }
@@ -3677,79 +3747,9 @@ fn normalize_optional_path(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn normalize_optional_string(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn normalize_public_origin(value: Option<String>) -> Option<String> {
-    let value = normalize_optional_string(value)?;
-    let mut url = url::Url::parse(&value).ok()?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !matches!(url.path(), "" | "/")
-    {
-        return None;
-    }
-    url.set_path("");
-    Some(url.to_string().trim_end_matches('/').to_string())
-}
-
-fn validate_silverbullet_network_settings(
-    settings: &SilverBulletNotesSettings,
-) -> std::io::Result<()> {
-    let local = url::Url::parse(settings.local_url.trim()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Notes local_url must be an HTTP loopback origin",
-        )
-    })?;
-    let loopback = local
-        .host_str()
-        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
-        .is_some_and(|ip| ip.is_loopback())
-        || local.host_str() == Some("localhost");
-    if local.scheme() != "http"
-        || !loopback
-        || !local.username().is_empty()
-        || local.password().is_some()
-        || local.query().is_some()
-        || local.fragment().is_some()
-        || !matches!(local.path(), "" | "/")
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Notes local_url must be an HTTP loopback origin",
-        ));
-    }
-    if settings
-        .public_origin
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty())
-        && normalize_public_origin(settings.public_origin.clone()).is_none()
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Notes public_origin must be an HTTPS origin without credentials, path, query, or fragment",
-        ));
-    }
-    if normalize_browser_origin_or_default(settings.server_url.clone(), String::new()).is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Notes server_url must be an HTTP(S) origin without credentials, path, query, or fragment",
-        ));
-    }
-    Ok(())
-}
-
-fn silverbullet_space_is_active(settings: &NotesSettings) -> bool {
+fn notes_folder_is_active(settings: &NotesSettings) -> bool {
     settings
-        .silverbullet
+        .notes_folder
         .space_path
         .as_deref()
         .is_some_and(|path| !path.trim().is_empty())
@@ -3767,7 +3767,7 @@ fn path_is_workspace_space(path: &Path, principal: &str, workspace: &str) -> boo
             .and_then(|parent| parent.parent())
             .and_then(|parent| parent.file_name())
             .and_then(|name| name.to_str())
-            == Some(SILVERBULLET_SPACES_DIR)
+            == Some(NOTES_SPACES_DIR)
 }
 
 fn forest_prefix_relative_is_workspace_space(
@@ -3791,7 +3791,7 @@ fn forest_prefix_relative_is_workspace_space(
                 .parent()
                 .and_then(|parent| parent.file_name())
                 .and_then(|name| name.to_str())
-                == Some(SILVERBULLET_SPACES_DIR) =>
+                == Some(NOTES_SPACES_DIR) =>
         {
             true
         },
@@ -3799,15 +3799,13 @@ fn forest_prefix_relative_is_workspace_space(
             if *p == principal
                 && *w == workspace
                 && configured.file_name().and_then(|name| name.to_str())
-                    == Some(SILVERBULLET_SPACES_DIR) =>
+                    == Some(NOTES_SPACES_DIR) =>
         {
             true
         },
-        [dir] if *dir == SILVERBULLET_SPACES_DIR => true,
-        [dir, p] if *dir == SILVERBULLET_SPACES_DIR && *p == principal => true,
-        [dir, p, w] if *dir == SILVERBULLET_SPACES_DIR && *p == principal && *w == workspace => {
-            true
-        },
+        [dir] if *dir == NOTES_SPACES_DIR => true,
+        [dir, p] if *dir == NOTES_SPACES_DIR && *p == principal => true,
+        [dir, p, w] if *dir == NOTES_SPACES_DIR && *p == principal && *w == workspace => true,
         _ => false,
     }
 }
@@ -3819,7 +3817,7 @@ fn pin_has_notes_besides_spaces(configured: &Path) -> bool {
     entries.flatten().any(|entry| {
         let name = entry.file_name();
         name.to_str()
-            .is_none_or(|name| name != ".DS_Store" && name != SILVERBULLET_SPACES_DIR)
+            .is_none_or(|name| name != ".DS_Store" && name != NOTES_SPACES_DIR)
     })
 }
 
@@ -3827,7 +3825,7 @@ fn looks_like_on_disk_notes_forest(configured: &Path) -> bool {
     if pin_has_notes_besides_spaces(configured) {
         return false;
     }
-    let spaces = configured.join(SILVERBULLET_SPACES_DIR);
+    let spaces = configured.join(NOTES_SPACES_DIR);
     let Ok(principals) = std::fs::read_dir(&spaces) else {
         return false;
     };
@@ -3875,8 +3873,8 @@ fn coerce_forest_pin_to_workspace_space(
     workspace: &str,
     scoped_default: PathBuf,
 ) -> PathBuf {
-    let principal = silverbullet_scope_segment(principal);
-    let workspace = silverbullet_scope_segment(workspace);
+    let principal = notes_scope_segment(principal);
+    let workspace = notes_scope_segment(workspace);
     if path_is_workspace_space(&configured, principal, workspace) {
         return configured;
     }
@@ -3886,7 +3884,7 @@ fn coerce_forest_pin_to_workspace_space(
         }
     }
     let from_forest = configured
-        .join(SILVERBULLET_SPACES_DIR)
+        .join(NOTES_SPACES_DIR)
         .join(principal)
         .join(workspace);
     // A missing workspace child must still resolve to that child. Searching the
@@ -3895,7 +3893,7 @@ fn coerce_forest_pin_to_workspace_space(
         return from_forest;
     }
     let from_spaces = configured.join(principal).join(workspace);
-    if configured.file_name().and_then(|name| name.to_str()) == Some(SILVERBULLET_SPACES_DIR)
+    if configured.file_name().and_then(|name| name.to_str()) == Some(NOTES_SPACES_DIR)
         && (from_spaces.is_dir() || !pin_has_notes_besides_spaces(&configured))
     {
         return from_spaces;
@@ -3904,7 +3902,7 @@ fn coerce_forest_pin_to_workspace_space(
         .parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())
-        == Some(SILVERBULLET_SPACES_DIR)
+        == Some(NOTES_SPACES_DIR)
         && configured.file_name().and_then(|name| name.to_str()) == Some(principal)
     {
         let child = configured.join(workspace);
@@ -3915,12 +3913,12 @@ fn coerce_forest_pin_to_workspace_space(
     configured
 }
 
-fn resolve_silverbullet_space_root(
-    settings: &SilverBulletNotesSettings,
+fn resolve_notes_folder_root(
+    settings: &NotesFolderSettings,
     principal: &str,
     workspace: &str,
 ) -> PathBuf {
-    let scoped_default = default_silverbullet_space_path(principal, workspace);
+    let scoped_default = default_notes_folder_path(principal, workspace);
     match settings.space_path.as_deref() {
         Some(path) if !path.trim().is_empty() => coerce_forest_pin_to_workspace_space(
             expand_tilde(path),
@@ -3932,7 +3930,7 @@ fn resolve_silverbullet_space_root(
     }
 }
 
-fn silverbullet_scope_segment(id: &str) -> &str {
+fn notes_scope_segment(id: &str) -> &str {
     if is_safe_scope_id(id) {
         id
     } else {
@@ -3940,15 +3938,15 @@ fn silverbullet_scope_segment(id: &str) -> &str {
     }
 }
 
-fn validate_silverbullet_space_boundary(
-    settings: &SilverBulletNotesSettings,
+fn validate_notes_folder_boundary(
+    settings: &NotesFolderSettings,
     workspace: &ArtifactV2Workspace,
     principal: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    let space = resolve_silverbullet_space_root(settings, principal, workspace_id);
+    let space = resolve_notes_folder_root(settings, principal, workspace_id);
     let space = normalized_absolute_path(&space)?;
-    if silverbullet_space_is_too_broad(&space) {
+    if notes_folder_is_too_broad(&space) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "The notes folder must be a notes-only folder, not HOME or /",
@@ -3966,7 +3964,7 @@ fn validate_silverbullet_space_boundary(
     Ok(())
 }
 
-fn silverbullet_space_is_too_broad(space: &Path) -> bool {
+fn notes_folder_is_too_broad(space: &Path) -> bool {
     if space == Path::new("/") {
         return true;
     }
@@ -4012,34 +4010,6 @@ fn normalized_absolute_path(path: &Path) -> std::io::Result<PathBuf> {
     Ok(resolved)
 }
 
-fn normalize_url_or_default(value: String, default: String) -> String {
-    let value = value.trim().trim_end_matches('/');
-    if value.is_empty() {
-        default
-    } else {
-        value.to_string()
-    }
-}
-
-fn normalize_browser_origin_or_default(value: String, default: String) -> String {
-    let value = value.trim();
-    let Ok(mut url) = url::Url::parse(value) else {
-        return default;
-    };
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !matches!(url.path(), "" | "/")
-    {
-        return default;
-    }
-    url.set_path("");
-    url.to_string().trim_end_matches('/').to_string()
-}
-
 fn expand_tilde(value: &str) -> PathBuf {
     let value = value.trim();
     if value == "~" {
@@ -4055,8 +4025,8 @@ fn expand_tilde(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn default_silverbullet_space_path(principal: &str, workspace: &str) -> PathBuf {
-    resolve_default_silverbullet_space_path(
+fn default_notes_folder_path(principal: &str, workspace: &str) -> PathBuf {
+    resolve_default_notes_folder_path(
         std::env::var_os("MAGICIAN_NOTES_SPACE"),
         Some(crate::magician_v2::process_storage::runtime_root().into_os_string()),
         None,
@@ -4066,7 +4036,7 @@ fn default_silverbullet_space_path(principal: &str, workspace: &str) -> PathBuf 
     )
 }
 
-fn resolve_default_silverbullet_space_path(
+fn resolve_default_notes_folder_path(
     explicit_forest: Option<OsString>,
     runtime_root: Option<OsString>,
     legacy_storage_root: Option<OsString>,
@@ -4090,17 +4060,9 @@ fn resolve_default_silverbullet_space_path(
             .join("MagicanNotes")
     };
     forest
-        .join(SILVERBULLET_SPACES_DIR)
-        .join(silverbullet_scope_segment(principal))
-        .join(silverbullet_scope_segment(workspace))
-}
-
-fn default_silverbullet_local_url() -> String {
-    "http://127.0.0.1:3021".to_string()
-}
-
-fn default_silverbullet_server_url() -> String {
-    "http://127.0.0.1:3021".to_string()
+        .join(NOTES_SPACES_DIR)
+        .join(notes_scope_segment(principal))
+        .join(notes_scope_segment(workspace))
 }
 
 fn default_provider() -> String {
@@ -4563,7 +4525,7 @@ async fn materialize_observation_note(
         return Ok(None);
     }
     let relative = PathBuf::from(&descriptor.relative_path);
-    let open_url = provider_open_url(&descriptor.provider, envelope, &relative, &canonical_path);
+    let open_url = note_open_url(envelope, &relative);
     Ok(Some((
         ObservedMarkdownNote {
             provider: descriptor.provider.clone(),
@@ -4610,7 +4572,16 @@ async fn scan_observation_root(
                 continue;
             }
             if file_type.is_dir() {
-                if !is_observation_internal_directory(&entry.file_name()) {
+                // Goal workspaces stay out of Observe: what it reads feeds
+                // the content store, content search and read, resurfacing and
+                // the taste profile, which every agent reaches. Who may read
+                // a workspace is `goal_workspace_access`'s to decide.
+                let goal_workspaces = directory == canonical_root
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case(GOAL_WORKSPACES_DIR);
+                if !goal_workspaces && !is_observation_internal_directory(&entry.file_name()) {
                     pending.push_back(entry.path());
                 }
                 continue;
@@ -4646,6 +4617,22 @@ async fn scan_observation_root(
         }
     }
     Ok(())
+}
+
+/// The notes-space folder holding goal workspaces
+/// (`execution::goal_workspace_access`).
+const GOAL_WORKSPACES_DIR: &str = "Workspaces";
+
+/// Whether a notes-space relative path is inside the goal workspaces folder.
+pub(crate) fn is_goal_workspace_relative_path(relative_path: &str) -> bool {
+    Path::new(relative_path.trim_start_matches(['/', '\\']))
+        .components()
+        .find_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            Component::CurDir => None,
+            _ => Some(String::new()),
+        })
+        .is_some_and(|first| first.eq_ignore_ascii_case(GOAL_WORKSPACES_DIR))
 }
 
 pub(crate) fn is_observation_internal_directory(name: &std::ffi::OsStr) -> bool {
@@ -4686,6 +4673,18 @@ fn folder_name(name: &str) -> std::io::Result<String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// `title` without a trailing `.md` / `.markdown` (any case), trimmed.
+fn title_without_markdown_extension(title: &str) -> &str {
+    let trimmed = title.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for extension in [".markdown", ".md"] {
+        if lower.ends_with(extension) && trimmed.len() > extension.len() {
+            return trimmed[..trimmed.len() - extension.len()].trim_end();
+        }
+    }
+    trimmed
 }
 
 fn note_file_name(name: &str) -> std::io::Result<String> {
@@ -4746,6 +4745,201 @@ fn bounded_note_markdown(markdown: String) -> String {
     }
 }
 
+/// Longest front-matter value accepted by [`apply_front_matter_update`].
+const MAX_FRONT_MATTER_VALUE_CHARS: usize = 512;
+
+fn front_matter_key_is_valid(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 64
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// A value written as a plain YAML scalar when that reads back as the same
+/// text (a date such as `2026-10-21` stays plain), double-quoted otherwise.
+/// JSON string escapes are valid YAML double-quoted escapes.
+fn front_matter_scalar(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value.trim() == value
+        // YAML indicator characters cannot start a plain scalar.
+        && !value.starts_with(|c: char| "-?:,[]{}#&*!|>'\"%@`".contains(c))
+        && !value.contains(": ")
+        && !value.contains(" #")
+        && !value.ends_with(':');
+    if plain {
+        value.to_string()
+    } else {
+        serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+    }
+}
+
+/// A line without its `\n` / `\r\n` terminator.
+fn front_matter_line_content(line: &str) -> &str {
+    match line.strip_suffix('\n') {
+        Some(rest) => rest.strip_suffix('\r').unwrap_or(rest),
+        None => line,
+    }
+}
+
+/// The top-level key a front-matter line declares, if it declares one.
+/// Indented lines, list items, comments and blank lines declare none.
+fn front_matter_line_key(line: &str) -> Option<&str> {
+    let first = line.chars().next()?;
+    if first.is_whitespace() || matches!(first, '#' | '-') {
+        return None;
+    }
+    let colon = line.find(':')?;
+    let after = &line[colon + 1..];
+    if !(after.is_empty() || after.starts_with([' ', '\t'])) {
+        return None;
+    }
+    let key = line[..colon].trim_end();
+    let key = key
+        .strip_prefix('"')
+        .and_then(|k| k.strip_suffix('"'))
+        .or_else(|| key.strip_prefix('\'').and_then(|k| k.strip_suffix('\'')))
+        .unwrap_or(key);
+    (!key.is_empty()).then_some(key)
+}
+
+/// A line that continues the value of the key above it: indented, or a
+/// block-sequence item at column 0 (`- item`).
+fn front_matter_continuation(line: &str) -> bool {
+    line.starts_with([' ', '\t']) || line == "-" || line.starts_with("- ")
+}
+
+/// Set and remove top-level keys in a note's YAML front matter.
+///
+/// Each key's line and its continuation lines (an indented or list value) are
+/// replaced or dropped; every other line keeps its bytes and order, and the
+/// body after the closing `---` is untouched. A note without front matter gets
+/// a new block when something is set. New lines use the note's own line
+/// ending (`\r\n` or `\n`).
+pub(crate) fn apply_front_matter_update(
+    markdown: &str,
+    update: &NoteFrontMatterUpdate,
+) -> std::io::Result<String> {
+    let invalid = |message: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
+    if update.set.is_empty() && update.unset.is_empty() {
+        return Err(invalid(
+            "a front-matter update must set or unset a key".into(),
+        ));
+    }
+    for key in update.set.keys().chain(update.unset.iter()) {
+        if !front_matter_key_is_valid(key) {
+            return Err(invalid(format!(
+                "front-matter key {key:?} must be 1-64 letters, digits, '_', '-' or '.'"
+            )));
+        }
+    }
+    if let Some(key) = update
+        .unset
+        .iter()
+        .find(|key| update.set.contains_key(*key))
+    {
+        return Err(invalid(format!(
+            "front-matter key {key:?} is both set and unset"
+        )));
+    }
+    for (key, value) in &update.set {
+        if value.chars().count() > MAX_FRONT_MATTER_VALUE_CHARS {
+            return Err(invalid(format!(
+                "front-matter value for {key:?} is too long"
+            )));
+        }
+        if value.chars().any(char::is_control) {
+            return Err(invalid(format!(
+                "front-matter value for {key:?} must be one line of text"
+            )));
+        }
+    }
+
+    let (bom, text) = match markdown.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", markdown),
+    };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let eol = match lines.first() {
+        Some(first) if first.ends_with("\r\n") => "\r\n",
+        _ => "\n",
+    };
+    let opens = lines
+        .first()
+        .is_some_and(|first| front_matter_line_content(first).trim_end() == "---");
+    let entry = |key: &str, value: &str| format!("{key}: {}{eol}", front_matter_scalar(value));
+
+    if !opens {
+        if update.set.is_empty() {
+            return Ok(markdown.to_string());
+        }
+        let mut out = String::with_capacity(markdown.len() + 64);
+        out.push_str(bom);
+        out.push_str("---");
+        out.push_str(eol);
+        for (key, value) in &update.set {
+            out.push_str(&entry(key.as_str(), value.as_str()));
+        }
+        out.push_str("---");
+        out.push_str(eol);
+        out.push_str(text);
+        return Ok(out);
+    }
+
+    let close = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, line)| matches!(front_matter_line_content(line).trim_end(), "---" | "..."))
+        .map(|(index, _)| index)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the note's front matter has no closing '---' line",
+            )
+        })?;
+
+    let mut out = String::with_capacity(markdown.len() + 64);
+    out.push_str(bom);
+    out.push_str(lines[0]);
+    let mut written = BTreeSet::new();
+    let mut index = 1;
+    while index < close {
+        let line = lines[index];
+        let Some(key) = front_matter_line_key(front_matter_line_content(line)) else {
+            out.push_str(line);
+            index += 1;
+            continue;
+        };
+        let touched = update.set.contains_key(key) || update.unset.iter().any(|k| k == key);
+        if !touched {
+            out.push_str(line);
+            index += 1;
+            continue;
+        }
+        if let Some(value) = update.set.get(key) {
+            // The first occurrence takes the new value; a duplicate is dropped
+            // so the note cannot keep two answers for one key.
+            if written.insert(key.to_string()) {
+                out.push_str(&entry(key, value.as_str()));
+            }
+        }
+        index += 1;
+        while index < close && front_matter_continuation(front_matter_line_content(lines[index])) {
+            index += 1;
+        }
+    }
+    for (key, value) in &update.set {
+        if !written.contains(key) {
+            out.push_str(&entry(key.as_str(), value.as_str()));
+        }
+    }
+    for line in &lines[close..] {
+        out.push_str(line);
+    }
+    Ok(out)
+}
+
 fn markdown_note_title(markdown: &str, relative_path: &Path) -> String {
     let heading = markdown.lines().find_map(|line| {
         line.trim()
@@ -4777,56 +4971,82 @@ fn markdown_note_title(markdown: &str, relative_path: &Path) -> String {
     }
 }
 
-fn provider_open_url(
-    provider_id: &str,
-    envelope: &NotesSettingsEnvelope,
-    relative_path: &Path,
-    absolute_path: &Path,
-) -> Option<String> {
-    match provider_id {
-        DEFAULT_PROVIDER_LOCAL => file_open_url(absolute_path),
-        DEFAULT_PROVIDER_SILVERBULLET => {
-            silverbullet_open_url(&envelope.resolved.silverbullet_server_url, relative_path)
-        },
-        _ => None,
+/// A published task page's link, rebuilt on read. Index records written before
+/// links were canonical stored a notes-server URL or a `file://` path; the
+/// stored value is never handed out, so every reader gets today's link.
+fn with_canonical_task_note_link(
+    mut note: TaskNoteIndexEntry,
+    workspace: &str,
+) -> TaskNoteIndexEntry {
+    note.open_url = is_markdown_note_path(Path::new(&note.note_path))
+        .then(|| note_link(&note.note_path, workspace));
+    note
+}
+
+/// Version tag of the canonical note link format, folded into the Observe
+/// catalog revision so subscribers refresh when the link shape changes.
+const NOTE_LINK_FORMAT: &str = "notes-link:v1:/notes?path&workspace";
+
+/// The one canonical link to a note: `/notes?path=<path>&workspace=<workspace>`.
+///
+/// Relative on purpose. Notes are Magician's own files, browsed in the web app
+/// at `/notes`, so a link is valid on whatever origin the owner reached
+/// Magician through (LAN, tunnel, app shell) and carries no host, no `file://`
+/// path and no notes-server origin. `path` is the note's path inside the notes
+/// library, exactly what `/notes?path=` opens; `workspace` names the scope the
+/// note lives in so a shared link opens in the right workspace (or says the
+/// reader is not signed into it). Opening it still goes through sign-in and
+/// scope checks, so the link itself grants nothing.
+///
+/// Both values are encoded the way JavaScript's `encodeURIComponent` encodes
+/// them, so this string is byte-identical to the web app's `noteHref`.
+pub fn note_link(path: &str, workspace: &str) -> String {
+    let path = path.trim().trim_start_matches(['/', '\\']);
+    let workspace = workspace.trim();
+    let mut link = format!("/notes?path={}", encode_uri_component(path));
+    if !workspace.is_empty() {
+        link.push_str("&workspace=");
+        link.push_str(&encode_uri_component(workspace));
     }
+    link
 }
 
-fn file_open_url(path: &Path) -> Option<String> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().ok()?.join(path)
-    };
-    url::Url::from_file_path(absolute)
-        .ok()
-        .map(|url| url.to_string())
+/// `encodeURIComponent`: everything but `A-Z a-z 0-9 - _ . ! ~ * ' ( )` is
+/// percent-encoded as UTF-8 with uppercase hex.
+fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => encoded.push(byte as char),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
 }
 
-fn silverbullet_open_url(server_url: &str, relative_path: &Path) -> Option<String> {
-    let base = server_url.trim().trim_end_matches('/');
-    if base.is_empty() {
+/// The canonical link for a note this scope's providers wrote or found.
+/// Markdown only: the Notes page opens notes, so an asset (an image, a JSON
+/// attachment) gets no link rather than one that would land on an error.
+fn note_open_url(envelope: &NotesSettingsEnvelope, relative_path: &Path) -> Option<String> {
+    if !is_markdown_note_path(relative_path) {
         return None;
     }
-
-    let mut path = path_to_string(relative_path);
-    if let Some(stripped) = path.strip_suffix(".md") {
-        path = stripped.to_string();
-    } else if let Some(stripped) = path.strip_suffix(".markdown") {
-        path = stripped.to_string();
+    let path = path_to_string(relative_path);
+    if path.trim().is_empty() {
+        return None;
     }
-    let encoded = path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(urlencoding::encode)
-        .collect::<Vec<_>>()
-        .join("/");
-
-    if encoded.is_empty() {
-        Some(format!("{base}/"))
-    } else {
-        Some(format!("{base}/{encoded}"))
-    }
+    Some(note_link(&path, &envelope.workspace))
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -4858,6 +5078,71 @@ mod tests {
                 .unwrap();
         }
         store
+    }
+
+    #[tokio::test]
+    async fn create_goal_note_publishes_content_and_never_overwrites() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_with_notes(&temp, &[("Inbox/seed.md", "# Seed")]).await;
+        let body =
+            "---\nmagician_kind: goal\nvisibility: private\nstatus: proposed\n---\n# Launch\n";
+        let note = store
+            .create_markdown_note_with_content(
+                "owner",
+                "default",
+                "Workspaces/Company/Goals/Launch",
+                "Launch",
+                Some(body),
+            )
+            .await
+            .unwrap();
+        assert_eq!(note.markdown, body);
+        let collision = store
+            .create_markdown_note_with_content(
+                "owner",
+                "default",
+                "Workspaces/Company/Goals/Launch",
+                "Launch",
+                Some("replacement"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(collision.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            store
+                .read_note_file("owner", "default", &note.relative_path)
+                .await
+                .unwrap()
+                .markdown,
+            body
+        );
+        assert!(store
+            .create_markdown_note_with_content(
+                "owner",
+                "default",
+                "../outside",
+                "Escape",
+                Some(body)
+            )
+            .await
+            .is_err());
+        assert!(store
+            .read_note_file("another-owner", "default", &note.relative_path)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_note_publication_has_one_winner() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("goal.md");
+        let (left, right) = tokio::join!(
+            publish_provider_file_atomic(&path, b"first complete note", false),
+            publish_provider_file_atomic(&path, b"second complete note", false),
+        );
+        assert_ne!(left.is_ok(), right.is_ok());
+        let body = fs::read_to_string(&path).await.unwrap();
+        assert!(body == "first complete note" || body == "second complete note");
     }
 
     fn search(query: &str) -> NoteSearchRequest {
@@ -5358,10 +5643,12 @@ mod tests {
         assert!(first.items[0]
             .source_ref
             .starts_with("notes:local_markdown:"));
-        assert!(first.items[0]
-            .open_url
-            .as_deref()
-            .is_some_and(|url| url.starts_with("file://")));
+        let expected_link = note_link(&first.items[0].relative_path, "default");
+        assert_eq!(
+            first.items[0].open_url.as_deref(),
+            Some(expected_link.as_str())
+        );
+        assert!(expected_link.starts_with("/notes?path="));
     }
 
     #[tokio::test]
@@ -5882,9 +6169,9 @@ mod tests {
     }
 
     #[test]
-    fn silverbullet_default_space_is_a_strict_child_of_the_magician_root() {
+    fn notes_folder_default_space_is_a_strict_child_of_the_magician_root() {
         assert_eq!(
-            resolve_default_silverbullet_space_path(
+            resolve_default_notes_folder_path(
                 None,
                 Some(OsString::from("/runtime-root")),
                 Some(OsString::from("/legacy-root")),
@@ -5895,7 +6182,7 @@ mod tests {
             PathBuf::from("/runtime-root/MagicanNotes/spaces/alice/work")
         );
         assert_eq!(
-            resolve_default_silverbullet_space_path(
+            resolve_default_notes_folder_path(
                 None,
                 None,
                 Some(OsString::from("/legacy-root")),
@@ -5906,7 +6193,7 @@ mod tests {
             PathBuf::from("/legacy-root/MagicanNotes/spaces/alice/work")
         );
         assert_eq!(
-            resolve_default_silverbullet_space_path(
+            resolve_default_notes_folder_path(
                 Some(OsString::from("/explicit-forest")),
                 Some(OsString::from("/runtime-root")),
                 None,
@@ -5917,7 +6204,7 @@ mod tests {
             PathBuf::from("/explicit-forest/spaces/alice/work")
         );
         assert_eq!(
-            resolve_default_silverbullet_space_path(
+            resolve_default_notes_folder_path(
                 Some(OsString::new()),
                 Some(OsString::from("/runtime-root")),
                 None,
@@ -5930,8 +6217,8 @@ mod tests {
     }
 
     #[test]
-    fn silverbullet_default_space_is_per_workspace() {
-        let home = resolve_default_silverbullet_space_path(
+    fn notes_folder_default_space_is_per_workspace() {
+        let home = resolve_default_notes_folder_path(
             None,
             Some(OsString::from("/runtime-root")),
             None,
@@ -5939,7 +6226,7 @@ mod tests {
             "alice",
             "home",
         );
-        let work = resolve_default_silverbullet_space_path(
+        let work = resolve_default_notes_folder_path(
             None,
             Some(OsString::from("/runtime-root")),
             None,
@@ -5947,7 +6234,7 @@ mod tests {
             "alice",
             "work",
         );
-        let bob = resolve_default_silverbullet_space_path(
+        let bob = resolve_default_notes_folder_path(
             None,
             Some(OsString::from("/runtime-root")),
             None,
@@ -5964,7 +6251,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_silverbullet_roots_do_not_cross_workspaces() {
+    async fn default_notes_folder_roots_do_not_cross_workspaces() {
         let temp = tempfile::tempdir().unwrap();
         let store = NotesSettingsStore::new(temp.path());
         let alice = store
@@ -5977,15 +6264,12 @@ mod tests {
             .expect("bob envelope");
         assert!(alice
             .resolved
-            .silverbullet_space_path
+            .notes_folder_path
             .ends_with("spaces/alice/home"));
-        assert!(bob
-            .resolved
-            .silverbullet_space_path
-            .ends_with("spaces/bob/home"));
+        assert!(bob.resolved.notes_folder_path.ends_with("spaces/bob/home"));
         assert_ne!(
-            alice.resolved.silverbullet_space_path,
-            bob.resolved.silverbullet_space_path
+            alice.resolved.notes_folder_path,
+            bob.resolved.notes_folder_path
         );
     }
 
@@ -6006,11 +6290,8 @@ mod tests {
                     default_provider: "silverbullet".to_string(),
                     fallback_provider: "local_markdown".to_string(),
                     local_markdown: LocalMarkdownNotesSettings::default(),
-                    silverbullet: SilverBulletNotesSettings {
+                    notes_folder: NotesFolderSettings {
                         space_path: Some(forest.display().to_string()),
-                        local_url: default_silverbullet_local_url(),
-                        server_url: default_silverbullet_server_url(),
-                        public_origin: None,
                     },
                     task_publishing: TaskPublishingSettings::default(),
                 },
@@ -6019,17 +6300,17 @@ mod tests {
             .unwrap();
         let expected = forest.join("spaces/alice/work");
         assert_eq!(
-            PathBuf::from(&envelope.resolved.silverbullet_space_path),
+            PathBuf::from(&envelope.resolved.notes_folder_path),
             expected
         );
         assert_eq!(
-            envelope.settings.silverbullet.space_path.as_deref(),
+            envelope.settings.notes_folder.space_path.as_deref(),
             Some(expected.to_str().unwrap())
         );
     }
 
     #[tokio::test]
-    async fn silverbullet_creates_a_missing_workspace_root_on_write() {
+    async fn notes_folder_creates_a_missing_workspace_root_on_write() {
         let temp = tempfile::tempdir().unwrap();
         let store = NotesSettingsStore::new(temp.path());
         let space = temp.path().join("spaces/alice/work");
@@ -6042,11 +6323,8 @@ mod tests {
                     default_provider: "silverbullet".to_string(),
                     fallback_provider: "local_markdown".to_string(),
                     local_markdown: LocalMarkdownNotesSettings::default(),
-                    silverbullet: SilverBulletNotesSettings {
+                    notes_folder: NotesFolderSettings {
                         space_path: Some(space.display().to_string()),
-                        local_url: default_silverbullet_local_url(),
-                        server_url: default_silverbullet_server_url(),
-                        public_origin: None,
                     },
                     task_publishing: TaskPublishingSettings::default(),
                 },
@@ -6151,17 +6429,14 @@ mod tests {
         );
     }
 
-    fn silverbullet_settings_for_space(space: &Path) -> NotesSettings {
+    fn notes_folder_settings_for_space(space: &Path) -> NotesSettings {
         NotesSettings {
             enabled: true,
             default_provider: "silverbullet".to_string(),
             fallback_provider: "local_markdown".to_string(),
             local_markdown: LocalMarkdownNotesSettings::default(),
-            silverbullet: SilverBulletNotesSettings {
+            notes_folder: NotesFolderSettings {
                 space_path: Some(space.display().to_string()),
-                local_url: default_silverbullet_local_url(),
-                server_url: default_silverbullet_server_url(),
-                public_origin: None,
             },
             task_publishing: TaskPublishingSettings::default(),
         }
@@ -6187,11 +6462,11 @@ mod tests {
 
         let store = NotesSettingsStore::new(temp.path());
         store
-            .save("alice", "work", silverbullet_settings_for_space(&forest))
+            .save("alice", "work", notes_folder_settings_for_space(&forest))
             .await
             .unwrap();
         store
-            .save("bob", "home", silverbullet_settings_for_space(&forest))
+            .save("bob", "home", notes_folder_settings_for_space(&forest))
             .await
             .unwrap();
 
@@ -6241,7 +6516,7 @@ mod tests {
             .unwrap();
         fs::write(
             &settings_path,
-            serde_json::to_vec_pretty(&silverbullet_settings_for_space(&forest)).unwrap(),
+            serde_json::to_vec_pretty(&notes_folder_settings_for_space(&forest)).unwrap(),
         )
         .await
         .unwrap();
@@ -6279,14 +6554,11 @@ mod tests {
         .unwrap();
         let store = NotesSettingsStore::new(temp.path());
         store
-            .save("alice", "work", silverbullet_settings_for_space(&space))
+            .save("alice", "work", notes_folder_settings_for_space(&space))
             .await
             .unwrap();
         let envelope = store.load_envelope("alice", "work").await.unwrap();
-        assert_eq!(
-            PathBuf::from(&envelope.resolved.silverbullet_space_path),
-            space
-        );
+        assert_eq!(PathBuf::from(&envelope.resolved.notes_folder_path), space);
         let results = store
             .search_notes("alice", "work", search("visible-here"))
             .await
@@ -6305,14 +6577,11 @@ mod tests {
             .unwrap();
         let store = NotesSettingsStore::new(temp.path());
         store
-            .save("alice", "work", silverbullet_settings_for_space(&space))
+            .save("alice", "work", notes_folder_settings_for_space(&space))
             .await
             .unwrap();
         let envelope = store.load_envelope("alice", "work").await.unwrap();
-        assert_eq!(
-            PathBuf::from(&envelope.resolved.silverbullet_space_path),
-            space
-        );
+        assert_eq!(PathBuf::from(&envelope.resolved.notes_folder_path), space);
         let results = store
             .search_notes("alice", "work", search("still-visible"))
             .await
@@ -6333,14 +6602,11 @@ mod tests {
             .unwrap();
         let store = NotesSettingsStore::new(temp.path());
         store
-            .save("alice", "work", silverbullet_settings_for_space(&space))
+            .save("alice", "work", notes_folder_settings_for_space(&space))
             .await
             .unwrap();
         let envelope = store.load_envelope("alice", "work").await.unwrap();
-        assert_eq!(
-            PathBuf::from(&envelope.resolved.silverbullet_space_path),
-            space
-        );
+        assert_eq!(PathBuf::from(&envelope.resolved.notes_folder_path), space);
         let results = store
             .search_notes("alice", "work", search("still-visible"))
             .await
@@ -6357,7 +6623,7 @@ mod tests {
             .save(
                 "alice",
                 "work",
-                silverbullet_settings_for_space(Path::new("/")),
+                notes_folder_settings_for_space(Path::new("/")),
             )
             .await
             .unwrap_err();
@@ -6449,11 +6715,10 @@ mod tests {
         assert!(note_ref.fallback_reason.is_none());
         assert_eq!(note_ref.path, "Inbox/hello-notes.md");
         assert_eq!(PathBuf::from(note_ref.absolute_path), expected);
-        assert!(note_ref
-            .open_url
-            .as_deref()
-            .unwrap_or_default()
-            .starts_with("file://"));
+        assert_eq!(
+            note_ref.open_url.as_deref(),
+            Some("/notes?path=Inbox%2Fhello-notes.md&workspace=default")
+        );
         let content = fs::read_to_string(&expected).await.unwrap();
         assert!(content.contains("# Hello Notes"));
         assert!(content.contains("Saved body"));
@@ -6514,80 +6779,285 @@ mod tests {
     }
 
     #[test]
-    fn silverbullet_open_url_uses_page_paths_for_markdown() {
+    fn a_title_naming_a_markdown_file_keeps_that_file_name() {
         assert_eq!(
-            silverbullet_open_url(
-                "http://127.0.0.1:3021/",
-                Path::new("Tasks/2026-06-20/task_projection - price-check.md")
-            )
-            .as_deref(),
-            Some("http://127.0.0.1:3021/Tasks/2026-06-20/task_projection%20-%20price-check")
+            title_without_markdown_extension("chat-link.md"),
+            "chat-link"
         );
+        assert_eq!(title_without_markdown_extension(" Plan.Markdown "), "Plan");
         assert_eq!(
-            silverbullet_open_url(
-                "http://127.0.0.1:3021",
-                Path::new("Tasks/2026-06-20/task_projection.assets/result.json")
-            )
-            .as_deref(),
-            Some("http://127.0.0.1:3021/Tasks/2026-06-20/task_projection.assets/result.json")
+            title_without_markdown_extension("Plain title"),
+            "Plain title"
+        );
+        assert_eq!(title_without_markdown_extension(".md"), ".md");
+        assert_eq!(
+            slugify(title_without_markdown_extension("chat-link.md")),
+            "chat-link"
         );
     }
 
+    #[test]
+    fn note_link_is_relative_canonical_and_matches_encode_uri_component() {
+        assert_eq!(
+            note_link("Tasks/2026-06-20/task_projection - price-check.md", "default"),
+            "/notes?path=Tasks%2F2026-06-20%2Ftask_projection%20-%20price-check.md&workspace=default"
+        );
+        // encodeURIComponent leaves `-_.!~*'()` alone and encodes the rest as
+        // UTF-8 with uppercase hex, `&`, `=`, `?`, `#` and `+` included.
+        assert_eq!(
+            note_link("Inbox/a&b=c?d#e+f (draft)!*'~.md", "work space"),
+            "/notes?path=Inbox%2Fa%26b%3Dc%3Fd%23e%2Bf%20(draft)!*'~.md&workspace=work%20space"
+        );
+        assert_eq!(
+            note_link("Ideen/Café ☕.md", "default"),
+            "/notes?path=Ideen%2FCaf%C3%A9%20%E2%98%95.md&workspace=default"
+        );
+        // A leading slash is not part of a library path; an empty workspace
+        // drops the parameter rather than emitting `workspace=`.
+        assert_eq!(note_link("/Inbox/x.md", ""), "/notes?path=Inbox%2Fx.md");
+        let link = note_link("Inbox/x.md", "default");
+        assert!(link.starts_with("/notes?"));
+        assert!(!link.contains("://"));
+    }
+
     #[tokio::test]
-    async fn public_origin_wins_for_links_while_local_url_remains_loopback() {
+    async fn note_writes_return_canonical_links_and_assets_get_none() {
         let temp = tempfile::tempdir().unwrap();
-        let space = temp.path().join("visible-notes");
-        fs::create_dir_all(&space).await.unwrap();
         let store = NotesSettingsStore::new(temp.path());
-        let envelope = store
-            .save(
+        let note = store
+            .create_note(
                 "anonymous",
-                "default",
-                NotesSettings {
-                    enabled: true,
-                    default_provider: "silverbullet".to_string(),
-                    fallback_provider: "local_markdown".to_string(),
-                    local_markdown: LocalMarkdownNotesSettings::default(),
-                    silverbullet: SilverBulletNotesSettings {
-                        space_path: Some(space.display().to_string()),
-                        local_url: "http://127.0.0.1:3021/".to_string(),
-                        server_url: "http://127.0.0.1:3021".to_string(),
-                        public_origin: Some("https://notes.example.com/".to_string()),
-                    },
-                    task_publishing: TaskPublishingSettings::default(),
+                "work",
+                CreateNoteRequest {
+                    title: "Plan Q4".to_string(),
+                    body: "body".to_string(),
+                    provider: None,
+                    target_dir: Some("Projects".to_string()),
                 },
             )
             .await
             .unwrap();
+        assert_eq!(
+            note.open_url.as_deref(),
+            Some("/notes?path=Projects%2Fplan-q4.md&workspace=work")
+        );
 
+        let asset = store
+            .write_asset(
+                "anonymous",
+                "work",
+                WriteNoteAssetRequest {
+                    provider: None,
+                    target_dir: "Projects/plan-q4.assets".to_string(),
+                    file_name: "result.json".to_string(),
+                    bytes: b"{}".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(asset.open_url, None);
+
+        let located = store
+            .resolve_note("anonymous", "work", "Projects/plan-q4.md")
+            .await
+            .unwrap();
+        assert_eq!(located.open_url, note.open_url);
+    }
+
+    #[tokio::test]
+    async fn legacy_silverbullet_settings_read_as_the_notes_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = NotesSettingsStore::new(temp.path());
+        let space = temp.path().join("MagicanNotes/spaces/anonymous/default");
+        fs::create_dir_all(&space).await.unwrap();
+        let settings_path = store.settings_path("anonymous", "default").unwrap();
+        fs::create_dir_all(settings_path.parent().unwrap())
+            .await
+            .unwrap();
+        // Exactly the shape the retired SilverBullet settings UI wrote.
+        let legacy = serde_json::json!({
+            "default_provider": "silverbullet",
+            "enabled": true,
+            "fallback_provider": "local_markdown",
+            "local_markdown": {},
+            "silverbullet": {
+                "local_url": "http://127.0.0.1:3021",
+                "server_url": "http://127.0.0.1:3021",
+                "public_origin": "https://notes.example.com",
+                "space_path": space.display().to_string(),
+            },
+        });
+        fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap())
+            .await
+            .unwrap();
+
+        let envelope = store.load_envelope("anonymous", "default").await.unwrap();
+        assert_eq!(envelope.settings.default_provider, NOTES_FOLDER_PROVIDER);
         assert_eq!(
-            envelope.resolved.silverbullet_local_url,
-            "http://127.0.0.1:3021"
+            envelope.settings.notes_folder.space_path.as_deref(),
+            Some(space.display().to_string().as_str()),
+            "the legacy section must keep pointing at the same folder"
         );
         assert_eq!(
-            envelope.resolved.silverbullet_public_origin.as_deref(),
-            Some("https://notes.example.com")
+            PathBuf::from(&envelope.resolved.notes_folder_path),
+            space,
+            "existing notes stay where they are"
+        );
+        assert!(envelope.resolved.notes_folder_write_safe);
+        let resolved = serde_json::to_value(&envelope.resolved).unwrap();
+        for retired in ["local_url", "server_url", "public_origin"] {
+            assert!(
+                !resolved.to_string().contains(retired),
+                "resolved settings must not expose `{retired}`"
+            );
+        }
+
+        // Saving drops the retired keys and the legacy section name.
+        let saved = store
+            .save("anonymous", "default", envelope.settings.clone())
+            .await
+            .unwrap();
+        let rewritten: serde_json::Value =
+            serde_json::from_slice(&fs::read(&settings_path).await.unwrap()).unwrap();
+        assert!(rewritten.get("silverbullet").is_none());
+        assert_eq!(
+            rewritten["notes_folder"]["space_path"].as_str(),
+            Some(space.display().to_string().as_str())
         );
         assert_eq!(
-            envelope.resolved.silverbullet_server_url,
-            "https://notes.example.com"
+            saved.resolved.notes_folder_path,
+            envelope.resolved.notes_folder_path
+        );
+
+        // Every legacy provider spelling still names the notes folder.
+        for legacy_id in [
+            "sb",
+            "silverbullet",
+            "silverbullet_space",
+            "notes",
+            "notes_folder",
+        ] {
+            assert_eq!(
+                normalize_provider_id(legacy_id).as_deref(),
+                Some(NOTES_FOLDER_PROVIDER)
+            );
+        }
+
+        let note = store
+            .create_note(
+                "anonymous",
+                "default",
+                CreateNoteRequest {
+                    title: "Still here".to_string(),
+                    body: "same folder".to_string(),
+                    provider: None,
+                    target_dir: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(note.provider, NOTES_FOLDER_PROVIDER);
+        assert!(!note.used_fallback);
+        assert!(PathBuf::from(&note.absolute_path).starts_with(&space));
+        assert_eq!(
+            note.open_url.as_deref(),
+            Some("/notes?path=Inbox%2Fstill-here.md&workspace=default")
         );
     }
 
     #[tokio::test]
-    async fn silverbullet_space_can_be_a_dedicated_runtime_subfolder_but_not_serve_runtime() {
+    async fn settings_with_unreadable_legacy_urls_still_load() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = NotesSettingsStore::new(temp.path());
+        let settings_path = store.settings_path("anonymous", "default").unwrap();
+        fs::create_dir_all(settings_path.parent().unwrap())
+            .await
+            .unwrap();
+        // URLs the old validator would have refused must not fail a load or a
+        // save now that nothing reads them.
+        let legacy = serde_json::json!({
+            "default_provider": "sb",
+            "silverbullet": {
+                "local_url": "http://0.0.0.0:3021",
+                "server_url": "javascript:alert(1)",
+                "public_origin": "http://notes.example.com/subpath",
+            },
+        });
+        fs::write(&settings_path, serde_json::to_vec(&legacy).unwrap())
+            .await
+            .unwrap();
+        let envelope = store.load_envelope("anonymous", "default").await.unwrap();
+        assert_eq!(envelope.settings.default_provider, NOTES_FOLDER_PROVIDER);
+        assert!(envelope.settings.notes_folder.space_path.is_none());
+        store
+            .save("anonymous", "default", envelope.settings)
+            .await
+            .expect("legacy URLs are ignored, not validated");
+    }
+
+    #[tokio::test]
+    async fn read_note_file_opens_a_fallback_note_by_its_canonical_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let space = temp.path().join("visible-notes");
+        fs::create_dir_all(&space).await.unwrap();
+        let store = NotesSettingsStore::new(temp.path());
+        store
+            .save(
+                "anonymous",
+                "default",
+                notes_folder_settings_for_space(&space),
+            )
+            .await
+            .unwrap();
+        // Written straight to the fallback folder, as a provider fallback does.
+        let fallback = store
+            .create_note(
+                "anonymous",
+                "default",
+                CreateNoteRequest {
+                    title: "Fallback page".to_string(),
+                    body: "lives in the fallback folder".to_string(),
+                    provider: Some("local_markdown".to_string()),
+                    target_dir: Some("Inbox".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(fallback.provider, "local_markdown");
+        let link = fallback.open_url.clone().unwrap();
+        assert_eq!(
+            link,
+            "/notes?path=Inbox%2Ffallback-page.md&workspace=default"
+        );
+
+        let opened = store
+            .read_note_file("anonymous", "default", &fallback.path)
+            .await
+            .unwrap();
+        assert_eq!(opened.provider, "local_markdown");
+        assert!(opened.markdown.contains("lives in the fallback folder"));
+
+        let missing = store
+            .read_note_file("anonymous", "default", "Inbox/never-written.md")
+            .await
+            .unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn notes_folder_can_be_a_dedicated_runtime_subfolder_but_not_serve_runtime() {
         let temp = tempfile::tempdir().unwrap();
         let store = NotesSettingsStore::new(temp.path());
         let mut settings = NotesSettings::default();
 
-        settings.silverbullet.space_path = Some(temp.path().display().to_string());
+        settings.notes_folder.space_path = Some(temp.path().display().to_string());
         let equal_error = store
             .save("anonymous", "default", settings.clone())
             .await
             .unwrap_err();
         assert_eq!(equal_error.kind(), std::io::ErrorKind::InvalidInput);
 
-        settings.silverbullet.space_path =
+        settings.notes_folder.space_path =
             temp.path().parent().map(|path| path.display().to_string());
         let parent_error = store
             .save("anonymous", "default", settings.clone())
@@ -6602,18 +7072,18 @@ mod tests {
             .join("Notes")
             .display()
             .to_string();
-        settings.silverbullet.space_path = Some(nested_space.clone());
+        settings.notes_folder.space_path = Some(nested_space.clone());
         let saved = store.save("anonymous", "default", settings).await.unwrap();
-        assert!(saved.resolved.silverbullet_write_safe);
+        assert!(saved.resolved.notes_folder_write_safe);
         assert_eq!(
-            saved.settings.silverbullet.space_path.as_deref(),
+            saved.settings.notes_folder.space_path.as_deref(),
             Some(nested_space.as_str()),
         );
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn silverbullet_space_boundary_resolves_symlinks_before_parent_components() {
+    async fn notes_folder_boundary_resolves_symlinks_before_parent_components() {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
@@ -6627,7 +7097,7 @@ mod tests {
         let mut settings = NotesSettings::default();
         // Lexically this resembles <runtime>/links. The OS resolves `alias`
         // first, making alias/.. exactly the canonical runtime root.
-        settings.silverbullet.space_path =
+        settings.notes_folder.space_path =
             Some(links.join("alias").join("..").display().to_string());
         let error = store
             .save("anonymous", "default", settings)
@@ -6637,7 +7107,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_unsafe_silverbullet_space_falls_back_without_rewriting_settings() {
+    async fn legacy_unsafe_notes_folder_falls_back_without_rewriting_settings() {
         let temp = tempfile::tempdir().unwrap();
         let store = NotesSettingsStore::new(temp.path());
         let settings_path = store.settings_path("anonymous", "default").unwrap();
@@ -6647,9 +7117,8 @@ mod tests {
         let settings = NotesSettings {
             default_provider: "silverbullet".to_string(),
             fallback_provider: "local_markdown".to_string(),
-            silverbullet: SilverBulletNotesSettings {
+            notes_folder: NotesFolderSettings {
                 space_path: Some(temp.path().display().to_string()),
-                ..SilverBulletNotesSettings::default()
             },
             ..NotesSettings::default()
         };
@@ -6658,14 +7127,14 @@ mod tests {
             .unwrap();
 
         let envelope = store.load_envelope("anonymous", "default").await.unwrap();
-        assert!(!envelope.resolved.silverbullet_write_safe);
+        assert!(!envelope.resolved.notes_folder_write_safe);
         assert!(envelope
             .warnings
             .iter()
             .any(|warning| warning.contains("would expose Magician's runtime storage")));
         let original_space_path = temp.path().to_string_lossy().to_string();
         assert_eq!(
-            envelope.settings.silverbullet.space_path.as_deref(),
+            envelope.settings.notes_folder.space_path.as_deref(),
             Some(original_space_path.as_str()),
         );
 
@@ -6685,53 +7154,6 @@ mod tests {
         assert_eq!(note.requested_provider, "silverbullet");
         assert_eq!(note.provider, "local_markdown");
         assert!(note.used_fallback);
-    }
-
-    #[tokio::test]
-    async fn settings_reject_public_or_non_loopback_listener_origins() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = NotesSettingsStore::new(temp.path());
-        for (local_url, public_origin) in [
-            ("http://0.0.0.0:3021", Some("https://notes.example.com")),
-            ("http://127.0.0.1:3021", Some("http://notes.example.com")),
-            (
-                "http://127.0.0.1:3021",
-                Some("https://notes.example.com/subpath"),
-            ),
-        ] {
-            let error = store
-                .save(
-                    "anonymous",
-                    "default",
-                    NotesSettings {
-                        silverbullet: SilverBulletNotesSettings {
-                            local_url: local_url.to_string(),
-                            public_origin: public_origin.map(str::to_string),
-                            ..SilverBulletNotesSettings::default()
-                        },
-                        ..NotesSettings::default()
-                    },
-                )
-                .await
-                .unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        }
-
-        let error = store
-            .save(
-                "anonymous",
-                "default",
-                NotesSettings {
-                    silverbullet: SilverBulletNotesSettings {
-                        server_url: "javascript:alert(1)".to_string(),
-                        ..SilverBulletNotesSettings::default()
-                    },
-                    ..NotesSettings::default()
-                },
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[tokio::test]
@@ -6795,7 +7217,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn silverbullet_default_falls_back_to_local_when_not_configured() {
+    async fn notes_folder_default_falls_back_to_local_when_not_configured() {
         let temp = tempfile::tempdir().unwrap();
         let store = NotesSettingsStore::new(temp.path());
         store
@@ -6807,12 +7229,7 @@ mod tests {
                     default_provider: "silverbullet".to_string(),
                     fallback_provider: "local_markdown".to_string(),
                     local_markdown: LocalMarkdownNotesSettings::default(),
-                    silverbullet: SilverBulletNotesSettings {
-                        space_path: None,
-                        local_url: default_silverbullet_local_url(),
-                        server_url: default_silverbullet_server_url(),
-                        public_origin: None,
-                    },
+                    notes_folder: NotesFolderSettings { space_path: None },
                     task_publishing: TaskPublishingSettings::default(),
                 },
             )
@@ -7433,7 +7850,7 @@ mod tests {
                 "anonymous",
                 "default",
                 SaveAudioNoteRequest {
-                    // Exercise the explicit SilverBullet preference and durable
+                    // Exercise the explicit notes-folder preference and durable
                     // local fallback used by mobile capture on a fresh setup.
                     provider: Some("silverbullet".to_string()),
                     note_id: Some("a1b2c3d4-1111-4222-8333-123456789abc".to_string()),
@@ -7889,5 +8306,362 @@ mod tests {
             .path()
             .join("scopes/anonymous/default/notes/space/Audio Notes")
             .exists());
+    }
+}
+
+/// Goal workspaces and the notes layer: Observe never reads them, an agent's
+/// search withholds what it may not read, and the owner's own notes API
+/// still sees everything.
+#[cfg(test)]
+mod goal_workspace_tests {
+    use super::*;
+
+    async fn store_with(temp: &tempfile::TempDir, notes: &[(&str, &str)]) -> NotesSettingsStore {
+        let store = NotesSettingsStore::new(temp.path());
+        for (path, markdown) in notes {
+            store
+                .write_note_markdown(
+                    "owner",
+                    "default",
+                    WriteNoteMarkdownRequest {
+                        provider: Some("local_markdown".into()),
+                        target_path: (*path).into(),
+                        markdown: (*markdown).to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        store
+    }
+
+    const GOAL: &str = "---\nmagician_kind: goal\nowner: user\nvisibility: private\n---\n# Secret plan\n\nneedle\n";
+
+    #[test]
+    fn workspace_relative_paths_are_recognised() {
+        assert!(is_goal_workspace_relative_path(
+            "Workspaces/Magican/README.md"
+        ));
+        assert!(is_goal_workspace_relative_path("./workspaces/Magican"));
+        assert!(is_goal_workspace_relative_path("/Workspaces"));
+        assert!(!is_goal_workspace_relative_path("Inbox/Workspaces.md"));
+        assert!(!is_goal_workspace_relative_path("Projects/Workspaces/x.md"));
+    }
+
+    #[tokio::test]
+    async fn observe_never_reads_a_goal_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_with(
+            &temp,
+            &[
+                ("Inbox/open.md", "# Open\n\nneedle\n"),
+                ("Workspaces/Magican/Goals/X/secret.md", GOAL),
+                (
+                    "Workspaces/Magican/README.md",
+                    "---\nmembers: [cmo]\n---\n# Magican\n",
+                ),
+            ],
+        )
+        .await;
+        let batch = store
+            .discover_observation_notes("owner", "default", 0, 100)
+            .await
+            .unwrap();
+        assert!(batch
+            .items
+            .iter()
+            .any(|note| note.relative_path == "Inbox/open.md"));
+        assert!(
+            batch
+                .items
+                .iter()
+                .all(|note| !is_goal_workspace_relative_path(&note.relative_path)),
+            "{:?}",
+            batch
+                .items
+                .iter()
+                .map(|note| &note.relative_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(store
+            .read_observation_note(
+                "owner",
+                "default",
+                "notes:local_markdown:Workspaces/Magican/Goals/X/secret.md",
+            )
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn an_agent_search_withholds_what_the_owner_search_still_finds() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_with(
+            &temp,
+            &[
+                ("Inbox/open.md", "# Open\n\nneedle\n"),
+                ("Workspaces/Magican/Goals/X/secret.md", GOAL),
+            ],
+        )
+        .await;
+        let search = || NoteSearchRequest {
+            query: "needle".into(),
+            limit: None,
+            provider: None,
+        };
+        let owner = store
+            .search_notes("owner", "default", search())
+            .await
+            .unwrap();
+        assert!(owner
+            .hits
+            .iter()
+            .any(|hit| hit.relative_path == "Workspaces/Magican/Goals/X/secret.md"));
+        let admit = |relative: &str, _absolute: &Path| !is_goal_workspace_relative_path(relative);
+        let (agent, withheld) = store
+            .search_notes_for("owner", "default", search(), &admit)
+            .await
+            .unwrap();
+        assert_eq!(withheld, 1);
+        assert!(agent
+            .hits
+            .iter()
+            .all(|hit| !is_goal_workspace_relative_path(&hit.relative_path)));
+        assert!(agent
+            .hits
+            .iter()
+            .any(|hit| hit.relative_path == "Inbox/open.md"));
+    }
+
+    /// The owner's notes API (tree and file reads behind
+    /// `/api/magician/v2/notes/tree` and `/notes/file`) is not fenced.
+    #[tokio::test]
+    async fn the_owner_notes_api_lists_and_reads_every_goal() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_with(
+            &temp,
+            &[
+                (
+                    "Workspaces/Magican/README.md",
+                    "---\nmembers: [cmo]\n---\n# Magican\n",
+                ),
+                ("Workspaces/Magican/Goals/X/secret.md", GOAL),
+            ],
+        )
+        .await;
+        let tree = store
+            .list_note_tree("owner", "default", "Workspaces/Magican/Goals/X")
+            .await
+            .unwrap();
+        assert!(tree
+            .entries
+            .iter()
+            .any(|entry| entry.name.starts_with("secret")));
+        let file = store
+            .read_note_file("owner", "default", "Workspaces/Magican/Goals/X/secret.md")
+            .await
+            .unwrap();
+        assert!(file.markdown.contains("needle"));
+    }
+}
+
+/// Front-matter field updates: only the named keys change, the body keeps its
+/// bytes, and a stale revision is refused instead of overwriting.
+#[cfg(test)]
+mod front_matter_update_tests {
+    use super::*;
+
+    fn set(key: &str, value: &str) -> NoteFrontMatterUpdate {
+        NoteFrontMatterUpdate {
+            set: [(key.to_string(), value.to_string())].into_iter().collect(),
+            unset: Vec::new(),
+            expected_revision: String::new(),
+        }
+    }
+
+    fn unset(key: &str) -> NoteFrontMatterUpdate {
+        NoteFrontMatterUpdate {
+            set: Default::default(),
+            unset: vec![key.to_string()],
+            expected_revision: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_blank_key_is_filled_without_swallowing_the_next_line() {
+        let md = "---\ntitle: Ship\ntarget:\nowner: ops\n---\n# Ship\n\nbody\n";
+        let out = apply_front_matter_update(md, &set("target", "2026-11-01")).unwrap();
+        assert_eq!(
+            out,
+            "---\ntitle: Ship\ntarget: 2026-11-01\nowner: ops\n---\n# Ship\n\nbody\n"
+        );
+    }
+
+    #[test]
+    fn a_note_without_front_matter_gets_a_new_block() {
+        let md = "# Goal\n\nbody";
+        let out = apply_front_matter_update(md, &set("target", "2026-11-01")).unwrap();
+        assert_eq!(out, "---\ntarget: 2026-11-01\n---\n# Goal\n\nbody");
+        // Unsetting a key that cannot exist changes nothing.
+        assert_eq!(apply_front_matter_update(md, &unset("target")).unwrap(), md);
+        // An empty note still gets a well-formed block.
+        assert_eq!(
+            apply_front_matter_update("", &set("target", "2026-11-01")).unwrap(),
+            "---\ntarget: 2026-11-01\n---\n"
+        );
+    }
+
+    #[test]
+    fn unset_drops_the_key_and_its_continuation_lines_only() {
+        let md = "---\ntitle: A\ntarget: 2026-01-01\n# keep me\nstatus: active\n---\nbody\n";
+        assert_eq!(
+            apply_front_matter_update(md, &unset("target")).unwrap(),
+            "---\ntitle: A\n# keep me\nstatus: active\n---\nbody\n"
+        );
+        let listed = "---\ntarget:\n  - a\n- b\nowner: x\n---\n";
+        assert_eq!(
+            apply_front_matter_update(listed, &unset("target")).unwrap(),
+            "---\nowner: x\n---\n"
+        );
+        let absent = "---\nowner: x\n---\nbody\n";
+        assert_eq!(
+            apply_front_matter_update(absent, &unset("target")).unwrap(),
+            absent
+        );
+    }
+
+    #[test]
+    fn other_keys_order_comments_and_body_are_preserved() {
+        let md = "---\nb: 2 # why\na: 1\nparent: \"[[Main]]\"\n---\n# T\n\ntarget: not front matter\n---\nmore\n";
+        let out = apply_front_matter_update(md, &set("target", "2026-11-01")).unwrap();
+        assert_eq!(
+            out,
+            "---\nb: 2 # why\na: 1\nparent: \"[[Main]]\"\ntarget: 2026-11-01\n---\n# T\n\ntarget: not front matter\n---\nmore\n"
+        );
+        // Replacing in place keeps the key where it was.
+        let replaced = "---\ntarget: 2025-01-01\nowner: me\n---\nx";
+        assert_eq!(
+            apply_front_matter_update(replaced, &set("target", "2026-11-01")).unwrap(),
+            "---\ntarget: 2026-11-01\nowner: me\n---\nx"
+        );
+        // A duplicate key collapses to the one new value.
+        let duplicated = "---\ntarget: a\nowner: me\ntarget: b\n---\n";
+        assert_eq!(
+            apply_front_matter_update(duplicated, &set("target", "2026-11-01")).unwrap(),
+            "---\ntarget: 2026-11-01\nowner: me\n---\n"
+        );
+    }
+
+    #[test]
+    fn crlf_notes_keep_crlf() {
+        let md = "---\r\ntitle: A\r\ntarget: old\r\n---\r\nbody\r\n";
+        assert_eq!(
+            apply_front_matter_update(md, &set("target", "2026-11-01")).unwrap(),
+            "---\r\ntitle: A\r\ntarget: 2026-11-01\r\n---\r\nbody\r\n"
+        );
+        assert_eq!(
+            apply_front_matter_update("# Goal\r\nbody\r\n", &set("target", "2026-11-01")).unwrap(),
+            "---\r\ntarget: 2026-11-01\r\n---\r\n# Goal\r\nbody\r\n"
+        );
+        let blank = "---\r\ntarget:\r\nowner: ops\r\n---\r\n";
+        assert_eq!(
+            apply_front_matter_update(blank, &unset("target")).unwrap(),
+            "---\r\nowner: ops\r\n---\r\n"
+        );
+    }
+
+    #[test]
+    fn values_that_would_not_read_back_are_quoted_and_bad_input_is_refused() {
+        assert_eq!(
+            apply_front_matter_update("---\n---\n", &set("note", "a: b")).unwrap(),
+            "---\nnote: \"a: b\"\n---\n"
+        );
+        let refused = |update: NoteFrontMatterUpdate| {
+            apply_front_matter_update("---\nx: 1\n---\n", &update)
+                .unwrap_err()
+                .kind()
+        };
+        assert_eq!(
+            refused(set("target", "2026-11-01\nowner: evil")),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            refused(set("bad key", "x")),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            refused(NoteFrontMatterUpdate::default()),
+            std::io::ErrorKind::InvalidInput
+        );
+        let mut both = set("target", "2026-11-01");
+        both.unset.push("target".into());
+        assert_eq!(refused(both), std::io::ErrorKind::InvalidInput);
+        let unclosed =
+            apply_front_matter_update("---\ntitle: A\nbody\n", &set("target", "x")).unwrap_err();
+        assert_eq!(unclosed.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn a_stale_revision_is_refused_and_the_note_is_left_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = NotesSettingsStore::new(temp.path());
+        let path = "Workspaces/Acme/Goals/Ship/Ship.md";
+        store
+            .write_note_markdown(
+                "owner",
+                "default",
+                WriteNoteMarkdownRequest {
+                    provider: Some("local_markdown".into()),
+                    target_path: path.into(),
+                    markdown: "---\nmagician_kind: goal\ntarget:\nowner: ops\n---\n# Ship\n".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let read = store
+            .read_note_file("owner", "default", path)
+            .await
+            .unwrap();
+        assert_eq!(read.revision, note_content_revision(&read.markdown));
+
+        let mut update = set("target", "2026-11-01");
+        update.expected_revision = read.revision.clone();
+        let NoteFrontMatterOutcome::Updated(saved) = store
+            .update_note_front_matter("owner", "default", path, &update)
+            .await
+            .unwrap()
+        else {
+            panic!("the current revision must be accepted");
+        };
+        assert_eq!(
+            saved.markdown,
+            "---\nmagician_kind: goal\ntarget: 2026-11-01\nowner: ops\n---\n# Ship\n"
+        );
+        assert_ne!(saved.revision, read.revision);
+
+        // The same edit sent against the old revision is a conflict.
+        let mut stale = unset("target");
+        stale.expected_revision = read.revision.clone();
+        assert_eq!(
+            store
+                .update_note_front_matter("owner", "default", path, &stale)
+                .await
+                .unwrap(),
+            NoteFrontMatterOutcome::Conflict {
+                current_revision: saved.revision.clone(),
+            }
+        );
+        let after = store
+            .read_note_file("owner", "default", path)
+            .await
+            .unwrap();
+        assert_eq!(after.markdown, saved.markdown);
+
+        let missing = store
+            .update_note_front_matter("owner", "default", "Inbox/none.md", &update)
+            .await
+            .unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
     }
 }

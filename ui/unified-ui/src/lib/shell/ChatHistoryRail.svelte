@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import { clickOutside } from '$lib/shared/clickOutside';
 	import { chatStore, type ChatSession } from '$lib/stores/chatStore';
+	import { chatHistoryRevision } from '$lib/shell/chatHistoryRefresh';
 	import { requestConfirmation } from '$lib/stores/confirmationStore';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 	import { threadStore } from '$lib/stores/threadStore';
@@ -17,6 +18,7 @@
 	} from '$lib/threads/normalizeThreadId';
 	import {
 		fetchHistorySearch,
+		fetchWorkingSessionIds,
 		fetchSessionHistory,
 		fetchThreadHistory,
 		type HistoryLane,
@@ -41,12 +43,23 @@
 	let total = 0;
 	let sessions: ChatSession[] = [];
 	let threads: UiThreadRecord[] = [];
+	/** Thread whose archive, restore, or delete is still waiting on the server. */
+	let threadMutation: { id: string; label: string } | null = null;
 	let searchResults: HistorySearchItem[] = [];
 	let isLoading = false;
 	let loadError: string | null = null;
 	let lastLoadKey = '';
+	let lastQueryKey = '';
 	let loadGeneration = 0;
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Thread id whose session filter the reader dismissed. A later thread still scopes. */
+	let dismissedThreadFilter: string | null = null;
+	let workingSessionIds = new Set<string>();
+	let pageVisible = false;
+	let activityKey = '';
+	let activityGeneration = 0;
+	let activityTimer: ReturnType<typeof setTimeout> | undefined;
+	let activityRequest: AbortController | undefined;
 
 	$: activeSessionId = $chatStore.activeSessionId;
 	$: viewingArchivedId = $chatStore.viewingArchivedId;
@@ -58,20 +71,64 @@
 	$: hasPrevious = offset > 0;
 	$: hasNext = offset + PAGE_SIZE < total;
 	$: isGlobalSearch = search.length > 0;
-	$: effectiveLane = activeTab === 'sessions' && threadFilter ? undefined : historyLane;
+	$: sessionThreadFilter =
+		threadFilter && threadFilter !== dismissedThreadFilter ? threadFilter : null;
+	$: effectiveLane = activeTab === 'sessions' && sessionThreadFilter ? undefined : historyLane;
 	$: scopeKey = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
 	$: loadKey = isGlobalSearch
 		? [scopeKey, 'search', search, offset].join('|')
-		: [scopeKey, activeTab, effectiveLane ?? 'thread', threadFilter ?? '', archiveView, offset].join('|');
+		: [scopeKey, activeTab, effectiveLane ?? 'thread', sessionThreadFilter ?? '', archiveView, offset].join('|');
 
-	$: if (loadKey && loadKey !== lastLoadKey) {
-		lastLoadKey = loadKey;
-		void loadHistory();
+	$: refreshKey = `${loadKey}|${$chatHistoryRevision}`;
+	$: if (pageVisible && (expanded || mobileOpen) && loadKey && refreshKey !== lastLoadKey) {
+		const background = loadKey === lastQueryKey && !isLoading;
+		lastQueryKey = loadKey;
+		lastLoadKey = refreshKey;
+		void loadHistory(background);
+	}
+	$: visibleSessionIds = isGlobalSearch
+		? searchResults.flatMap((item) => item.kind === 'session' ? [item.session.id] : [])
+		: sessions.map((session) => session.id);
+	$: nextActivityKey = [scopeKey, pageVisible && (expanded || mobileOpen) && !isLoading && !loadError ? visibleSessionIds.join(',') : ''].join('|');
+	$: if (nextActivityKey !== activityKey) {
+		activityKey = nextActivityKey;
+		stopActivity();
+		if (pageVisible && (expanded || mobileOpen) && !isLoading && !loadError && visibleSessionIds.length) {
+			void pollActivity(visibleSessionIds, activityGeneration);
+		}
 	}
 
-	async function loadHistory(): Promise<void> {
+	function stopActivity(): void {
+		activityGeneration++;
+		clearTimeout(activityTimer);
+		activityRequest?.abort();
+		workingSessionIds = new Set();
+	}
+
+	async function pollActivity(ids: string[], generation: number): Promise<void> {
+		const request = new AbortController();
+		activityRequest = request;
+		try {
+			const working = await fetchWorkingSessionIds(ids, request.signal);
+			if (generation !== activityGeneration) return;
+			workingSessionIds = working;
+		} catch {
+			if (generation !== activityGeneration) return;
+			workingSessionIds = new Set();
+		}
+		if (generation === activityGeneration) activityTimer = setTimeout(() => void pollActivity(ids, generation), 3000);
+	}
+
+	onMount(() => {
+		const updateVisibility = () => { pageVisible = !document.hidden; };
+		updateVisibility();
+		document.addEventListener('visibilitychange', updateVisibility);
+		return () => document.removeEventListener('visibilitychange', updateVisibility);
+	});
+
+	async function loadHistory(background = false): Promise<void> {
 		const generation = ++loadGeneration;
-		isLoading = true;
+		if (!background) isLoading = true;
 		loadError = null;
 		try {
 			if (isGlobalSearch) {
@@ -91,7 +148,7 @@
 					search,
 					limit: PAGE_SIZE,
 					offset,
-					threadId: threadFilter,
+					threadId: sessionThreadFilter,
 					archived: archiveView === 'archived' ? 'only' : 'exclude'
 				});
 				if (generation !== loadGeneration) return;
@@ -115,6 +172,7 @@
 			}
 		} catch (error) {
 			if (generation !== loadGeneration) return;
+			if (background) return;
 			loadError = error instanceof Error ? error.message : 'Could not load history.';
 			sessions = [];
 			threads = [];
@@ -164,6 +222,11 @@
 		lastLoadKey = '';
 	}
 
+	function clearThreadFilter(): void {
+		dismissedThreadFilter = threadFilter;
+		offset = 0;
+	}
+
 	function reloadCurrentPage(): void {
 		lastLoadKey = '';
 	}
@@ -195,6 +258,7 @@
 	}
 
 	async function openSelectedSession(session: ChatSession): Promise<void> {
+		if ($chatStore.deletingSessionIds?.includes(session.id)) return;
 		if (browser && window.innerWidth <= 1280) {
 			mobileOpen = false;
 		}
@@ -263,33 +327,66 @@
 
 	async function deleteSession(sessionId: string, event: Event): Promise<void> {
 		event.stopPropagation();
-		await chatStore.deleteSession?.(sessionId);
-		reloadCurrentPage();
+		if ($chatStore.deletingSessionIds?.includes(sessionId)) return;
+		const requestScope = scopeKey;
+		try {
+			await chatStore.deleteSession(sessionId);
+			if (requestScope === scopeKey) reloadCurrentPage();
+		} catch (error) {
+			if (requestScope === scopeKey) showError(error instanceof Error ? error.message : 'Failed to delete session');
+		}
+	}
+
+	function beginThreadMutation(threadId: string, label: string): boolean {
+		if (threadId === 'general' || threadMutation) return false;
+		threadMutation = { id: threadId, label };
+		return true;
+	}
+
+	function finishThreadMutation(threadId: string): void {
+		if (threadMutation?.id === threadId) threadMutation = null;
 	}
 
 	async function archiveThread(threadId: string, event: Event): Promise<void> {
 		event.stopPropagation();
-		if (threadId === 'general') return;
-		await threadStore.updateThread?.(threadId, { archived: true });
-		reloadCurrentPage();
+		if (!beginThreadMutation(threadId, 'Archiving…')) return;
+		try {
+			const updated = await threadStore.updateThread?.(threadId, { archived: true });
+			if (!updated) {
+				showError(`Could not archive #${threadId}`);
+				return;
+			}
+			reloadCurrentPage();
+		} finally {
+			finishThreadMutation(threadId);
+		}
 	}
 
 	async function restoreThread(threadId: string, event: Event): Promise<void> {
 		event.stopPropagation();
-		await threadStore.updateThread?.(threadId, { archived: false });
-		reloadCurrentPage();
+		if (!beginThreadMutation(threadId, 'Restoring…')) return;
+		try {
+			const updated = await threadStore.updateThread?.(threadId, { archived: false });
+			if (!updated) {
+				showError(`Could not restore #${threadId}`);
+				return;
+			}
+			reloadCurrentPage();
+		} finally {
+			finishThreadMutation(threadId);
+		}
 	}
 
 	async function deleteThread(threadId: string, event: Event): Promise<void> {
 		event.stopPropagation();
-		if (threadId === 'general') return;
+		if (threadId === 'general' || threadMutation) return;
 		const confirmed = await requestConfirmation({
 			title: `Delete #${threadId}?`,
 			message: 'This removes the thread and its chat sessions. Related tasks remain available from Tasks.',
 			confirmLabel: 'Delete',
 			destructive: true
 		});
-		if (!confirmed) return;
+		if (!confirmed || !beginThreadMutation(threadId, 'Deleting…')) return;
 		try {
 			const deleted = await threadStore.deleteThread?.(threadId);
 			if (!deleted) {
@@ -308,6 +405,8 @@
 			}
 		} catch (error) {
 			showError(error instanceof Error ? error.message : `Failed to delete #${threadId}`);
+		} finally {
+			finishThreadMutation(threadId);
 		}
 	}
 
@@ -327,6 +426,7 @@
 
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
+		stopActivity();
 	});
 </script>
 
@@ -434,8 +534,19 @@
 		{/if}
 
 		<div class="controls">
-			{#if !isGlobalSearch && activeTab === 'sessions' && threadFilter}
-				<div class="scope-label" title={`Sessions in #${threadFilter}`}>#{threadFilter}</div>
+			{#if !isGlobalSearch && activeTab === 'sessions' && sessionThreadFilter}
+				<div class="scope-label" title={`Sessions in #${sessionThreadFilter}`}>
+					<span class="scope-label-name">#{sessionThreadFilter}</span>
+					<button
+						type="button"
+						class="scope-clear"
+						aria-label="Show sessions from all threads"
+						title="Show all threads"
+						on:click={clearThreadFilter}
+					>
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+					</button>
+				</div>
 			{:else if !isGlobalSearch}
 				<div class="lane-switch" role="group" aria-label="History source">
 					<button class:active={historyLane === 'personal'} on:click={() => setLane('personal')}>Personal</button>
@@ -493,7 +604,7 @@
 							<div
 								class="item"
 								class:archived={result.session.status === 'archived'}
-								class:active={result.session.id === currentViewId}
+								class:active={result.session.id === currentViewId} aria-busy={!!$chatStore.deletingSessionIds?.includes(result.session.id)} aria-disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)}
 								role="button"
 								tabindex="0"
 								on:click={() => openSelectedSession(result.session)}
@@ -501,49 +612,54 @@
 							>
 								<div class="row1">
 									<span class="dot" class:dim={result.session.status === 'archived'}></span>
-									<span class="title" title={result.session.title || 'Untitled session'}>{result.session.title || 'Untitled session'}</span>
+									<span class="title" title={result.session.title || 'Untitled session'}>{result.session.title || 'Untitled session'}</span>{#if $chatStore.deletingSessionIds?.includes(result.session.id)}<span class="deleting-status" role="status">Deleting…</span>{/if}
+									{#if workingSessionIds.has(result.session.id)}<span class="working-badge" aria-label="Session is working"><i aria-hidden="true"></i>Working</span>{/if}
 									<span class="ts">{formatTimestamp(result.session.updated_at)}</span>
 								</div>
 								<div class="row2">
 									<span class="thread-tag">#{result.session.ui_thread_id || 'general'}</span>
 									<span class="actions">
 										{#if result.session.status === 'archived'}
-											<button class="action" title="Restore" aria-label="Restore session" on:click={(e) => unarchiveSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
+											<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(e) => unarchiveSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
 										{:else if !result.session.is_default_session && !result.session.internal_voice}
-											<button class="action" title="Archive" aria-label="Archive session" on:click={(e) => archiveSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
+											<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(e) => archiveSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
 										{/if}
 										{#if !result.session.is_default_session && !result.session.internal_voice}
-											<button class="action danger" title="Delete" aria-label="Delete session" on:click={(e) => deleteSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
+											<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(e) => deleteSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
 										{/if}
 									</span>
 								</div>
 							</div>
 						{:else}
+							{@const threadName = result.thread.name || result.thread.id}
+							{@const busy = threadMutation?.id === result.thread.id}
 							<div
 								class="item search-thread-item"
 								class:archived={result.thread.archived}
+								aria-busy={busy}
 								role="button"
 								tabindex="0"
-								on:click={() => selectThread(result.thread.id)}
-								on:keydown={(event) => handleItemKeydown(event, () => selectThread(result.thread.id))}
+								on:click={() => { if (!busy) selectThread(result.thread.id); }}
+								on:keydown={(event) => handleItemKeydown(event, () => { if (!busy) selectThread(result.thread.id); })}
 							>
 								<div class="row1">
 									<span class="hash">#</span>
-									<span class="title" title={result.thread.name || result.thread.id}>{result.thread.name || result.thread.id}</span>
+									<span class="title" title={threadName}>{threadName}</span>
+									{#if busy}<span class="deleting-status" role="status">{threadMutation?.label}</span>{/if}
 									<span class="ts">{formatTimestamp(result.thread.updated_at)}</span>
 								</div>
 								<div class="row2">
 									<span class="kind-tag">Thread</span>
-									<span class="actions">
-										{#if result.thread.archived}
-											<button class="action" title="Restore" aria-label="Restore thread" on:click={(e) => restoreThread(result.thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
-										{:else if result.thread.id !== 'general'}
-											<button class="action" title="Archive" aria-label="Archive thread" on:click={(e) => archiveThread(result.thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
-										{/if}
-										{#if result.thread.id !== 'general'}
-											<button class="action danger" title="Delete" aria-label="Delete thread" on:click={(e) => deleteThread(result.thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
-										{/if}
-									</span>
+									{#if result.thread.id !== 'general'}
+										<span class="actions">
+											{#if result.thread.archived}
+												<button disabled={busy} class="action" title="Restore" aria-label="Restore thread" on:click={(e) => restoreThread(result.thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
+											{:else}
+												<button disabled={busy} class="action" title="Archive" aria-label="Archive thread" on:click={(e) => archiveThread(result.thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
+											{/if}
+											<button disabled={busy} class="action danger" title="Delete" aria-label="Delete thread" on:click={(e) => deleteThread(result.thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
+										</span>
+									{/if}
 								</div>
 							</div>
 						{/if}
@@ -557,7 +673,7 @@
 					{#each activeSessions as session (session.id)}
 						<div
 							class="item"
-							class:active={session.id === currentViewId}
+							class:active={session.id === currentViewId} aria-busy={!!$chatStore.deletingSessionIds?.includes(session.id)} aria-disabled={!!$chatStore.deletingSessionIds?.includes(session.id)}
 							role="button"
 							tabindex="0"
 							on:click={() => openSelectedSession(session)}
@@ -565,15 +681,16 @@
 						>
 							<div class="row1">
 								<span class="dot"></span>
-								<span class="title" title={session.title || 'Untitled session'}>{session.title || 'Untitled session'}</span>
+								<span class="title" title={session.title || 'Untitled session'}>{session.title || 'Untitled session'}</span>{#if $chatStore.deletingSessionIds?.includes(session.id)}<span class="deleting-status" role="status">Deleting…</span>{/if}
+								{#if workingSessionIds.has(session.id)}<span class="working-badge" aria-label="Session is working"><i aria-hidden="true"></i>Working</span>{/if}
 								<span class="ts">{formatTimestamp(session.updated_at)}</span>
 							</div>
 							<div class="row2">
 								<span class="thread-tag">#{session.ui_thread_id || 'general'}</span>
 								{#if !session.is_default_session && !session.internal_voice}
 									<span class="actions">
-										<button class="action" title="Archive" aria-label="Archive session" on:click={(e) => archiveSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
-										<button class="action danger" title="Delete" aria-label="Delete session" on:click={(e) => deleteSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
+										<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(e) => archiveSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
+										<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(e) => deleteSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
 									</span>
 								{/if}
 							</div>
@@ -584,7 +701,7 @@
 					{#each archivedSessions as session (session.id)}
 						<div
 							class="item archived"
-							class:active={session.id === currentViewId}
+							class:active={session.id === currentViewId} aria-busy={!!$chatStore.deletingSessionIds?.includes(session.id)} aria-disabled={!!$chatStore.deletingSessionIds?.includes(session.id)}
 							role="button"
 							tabindex="0"
 							on:click={() => openSelectedSession(session)}
@@ -592,15 +709,16 @@
 						>
 							<div class="row1">
 								<span class="dot dim"></span>
-								<span class="title" title={session.title || 'Untitled session'}>{session.title || 'Untitled session'}</span>
+								<span class="title" title={session.title || 'Untitled session'}>{session.title || 'Untitled session'}</span>{#if $chatStore.deletingSessionIds?.includes(session.id)}<span class="deleting-status" role="status">Deleting…</span>{/if}
+								{#if workingSessionIds.has(session.id)}<span class="working-badge" aria-label="Session is working"><i aria-hidden="true"></i>Working</span>{/if}
 								<span class="ts">{formatTimestamp(session.updated_at)}</span>
 							</div>
 							<div class="row2">
 								<span class="thread-tag">#{session.ui_thread_id || 'general'}</span>
 								<span class="actions">
-									<button class="action" title="Restore" aria-label="Restore session" on:click={(e) => unarchiveSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
+									<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(e) => unarchiveSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
 									{#if !session.is_default_session && !session.internal_voice}
-										<button class="action danger" title="Delete" aria-label="Delete session" on:click={(e) => deleteSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
+										<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(e) => deleteSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
 									{/if}
 								</span>
 							</div>
@@ -612,17 +730,31 @@
 					<p class="empty">{archiveView === 'archived' ? 'No archived threads.' : 'No matching threads.'}</p>
 				{:else}
 					{#each threads as thread (thread.id)}
+						{@const threadName = thread.name || thread.id}
+						{@const busy = threadMutation?.id === thread.id}
 						<div
 							class="item thread-item"
 							class:archived={thread.archived}
+							aria-busy={busy}
 							role="button"
 							tabindex="0"
-							on:click={() => selectThread(thread.id)}
-							on:keydown={(event) => handleItemKeydown(event, () => selectThread(thread.id))}
+							on:click={() => { if (!busy) selectThread(thread.id); }}
+							on:keydown={(event) => handleItemKeydown(event, () => { if (!busy) selectThread(thread.id); })}
 						>
 							<span class="hash">#</span>
-							<span class="title" title={thread.name || thread.id}>{thread.name || thread.id}</span>
+							<span class="title" title={threadName}>{threadName}</span>
+							{#if busy}<span class="deleting-status" role="status">{threadMutation?.label}</span>{/if}
 							<span class="ts">{formatTimestamp(thread.updated_at)}</span>
+							{#if thread.id !== 'general'}
+								<span class="actions">
+									{#if thread.archived}
+										<button disabled={busy} class="action" title="Restore" aria-label="Restore thread" on:click={(e) => restoreThread(thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
+									{:else}
+										<button disabled={busy} class="action" title="Archive" aria-label="Archive thread" on:click={(e) => archiveThread(thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
+									{/if}
+									<button disabled={busy} class="action danger" title="Delete" aria-label="Delete thread" on:click={(e) => deleteThread(thread.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>
+								</span>
+							{/if}
 						</div>
 					{/each}
 				{/if}
@@ -672,6 +804,9 @@
 </aside>
 
 <style>
+	.deleting-status { flex-shrink: 0; color: var(--text-muted); font-size: 0.7rem; white-space: nowrap; }
+	.item[aria-busy="true"] .actions { opacity: 1; }
+	.action:disabled { cursor: wait; opacity: 0.5; }
 	.chat-history-backdrop {
 		display: none;
 	}
@@ -945,14 +1080,46 @@
 		height: 28px;
 		display: flex;
 		align-items: center;
-		padding: 0 8px;
+		gap: 4px;
+		padding: 0 4px 0 8px;
 		overflow: hidden;
 		color: var(--text-muted, #777);
 		background: var(--bg-soft, rgba(0, 0, 0, 0.04));
 		border-radius: 6px;
 		font: 10.5px var(--font-mono, monospace);
+	}
+
+	.scope-label-name {
+		min-width: 0;
+		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.scope-clear,
+	.scope-clear:hover,
+	.scope-clear:focus,
+	.scope-clear:focus-visible,
+	.scope-clear:active {
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: 0 !important;
+		outline: none !important;
+		box-shadow: none !important;
+		border-radius: 4px;
+		color: var(--text-muted, #777);
+		background: transparent;
+		cursor: pointer;
+	}
+
+	.scope-clear:hover {
+		color: var(--text-primary, #1a1a1a);
+		background: var(--bg-elevated, #fff);
 	}
 
 	.search-box {
@@ -1092,6 +1259,14 @@
 		opacity: 0.7;
 	}
 
+	.thread-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
 	.row1 {
 		display: flex;
 		align-items: baseline;
@@ -1118,6 +1293,25 @@
 
 	.dot.dim {
 		background: var(--text-faint, #aaa);
+	}
+	.working-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		flex-shrink: 0;
+		padding: 2px 5px;
+		border-radius: 5px;
+		color: var(--accent-primary, #c2502a);
+		background: color-mix(in srgb, var(--accent-primary, #c2502a) 10%, transparent);
+		font-size: 9px;
+		font-weight: 600;
+	}
+	.working-badge i {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: currentColor;
+		box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 12%, transparent);
 	}
 
 	.hash {
@@ -1167,6 +1361,7 @@
 	.actions {
 		margin-left: auto;
 		display: inline-flex;
+		flex-shrink: 0;
 		gap: 2px;
 		opacity: 0;
 	}

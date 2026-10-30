@@ -2,8 +2,8 @@
 //!
 //! Unlike the in-process `actix_web::test::init_service` unit tests inside
 //! `thinking_maps_api.rs`, this suite boots the ACTUAL route stack on a real
-//! bound TCP port via [`actix_test::start`] and drives the full lifecycle over
-//! the wire with a real HTTP client (`awc`, through the returned `TestServer`).
+//! bound HTTP/1 TCP port and drives the full lifecycle over
+//! the wire with a real HTTP client (`reqwest`, through a bound HTTP/1 test server).
 //! A real [`ThinkingMapStore`] persists to a per-test tempdir.
 //!
 //! This is the durable, CI-able proof of the "S3-REST" gate in
@@ -12,7 +12,7 @@
 //! Run with:
 //! `cargo test -p magician --test thinking_map_http_integration_test`
 
-use actix_web::{web, App};
+use actix_web::{web, App, HttpServer};
 use magician::magician_v2::artifact_v2::workspace::ArtifactV2Workspace;
 use magician_api::thinking_maps_api::{configure, ThinkingMapsApi};
 use serde_json::{json, Value};
@@ -41,18 +41,62 @@ fn add_node_op(node_id: &str) -> Value {
     })
 }
 
-/// Boot a real bound-port server backed by a fresh tempdir-backed workspace.
-/// Returns the `TempDir` guard (kept alive for the test) plus the `TestServer`.
-fn start_server() -> (TempDir, actix_test::TestServer) {
+struct TestServer {
+    base: String,
+    client: reqwest::Client,
+    handle: actix_web::dev::ServerHandle,
+}
+
+impl TestServer {
+    fn get(&self, path: impl AsRef<str>) -> reqwest::RequestBuilder {
+        self.client.get(format!("{}{}", self.base, path.as_ref()))
+    }
+
+    fn post(&self, path: impl AsRef<str>) -> reqwest::RequestBuilder {
+        self.client.post(format!("{}{}", self.base, path.as_ref()))
+    }
+
+    fn patch(&self, path: impl AsRef<str>) -> reqwest::RequestBuilder {
+        self.client.patch(format!("{}{}", self.base, path.as_ref()))
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        // stop sends the command before returning its acknowledgement future.
+        drop(self.handle.stop(false));
+    }
+}
+
+/// Boot a bound-port server with an isolated workspace and explicit teardown.
+fn start_server() -> (TempDir, TestServer) {
     let tmp = TempDir::new().expect("tempdir");
     let workspace = ArtifactV2Workspace::new(tmp.path());
-    let srv = actix_test::start(move || {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind test server");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(Arc::new(ThinkingMapsApi::new(
                 workspace.clone(),
             ))))
             .service(web::scope("/api/magician/v2").configure(configure))
-    });
+    })
+    .workers(1)
+    .disable_signals()
+    .listen(listener)
+    .expect("listen")
+    .run();
+    let srv = TestServer {
+        base,
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .http1_only()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap(),
+        handle: server.handle(),
+    };
+    actix_web::rt::spawn(server);
     (tmp, srv)
 }
 
@@ -63,11 +107,12 @@ async fn thinking_map_full_lifecycle_over_http() {
 
     // ── CREATE ──────────────────────────────────────────────────────────────
     // POST /thinking-maps {"title":"canary"} → 201, capture map_id.
-    let mut resp = srv
+    let resp = srv
         .post(BASE)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({ "title": "canary" }))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({ "title": "canary" }))
+        .send()
         .await
         .expect("create request send");
     assert_eq!(resp.status(), 201, "create should be 201");
@@ -87,11 +132,12 @@ async fn thinking_map_full_lifecycle_over_http() {
         "idempotency_key": "i1",
         "base_revision": 0
     });
-    let mut resp = srv
+    let resp = srv
         .post(format!("{map_path}/operations"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&ops_body)
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&ops_body)
+        .send()
         .await
         .expect("apply-ops request send");
     assert_eq!(resp.status(), 200, "apply ops should be 200");
@@ -104,10 +150,10 @@ async fn thinking_map_full_lifecycle_over_http() {
     );
 
     // ── GET → revision 1, node present ─────────────────────────────────────
-    let mut resp = srv
+    let resp = srv
         .get(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("get request send");
@@ -118,11 +164,12 @@ async fn thinking_map_full_lifecycle_over_http() {
 
     // ── IDEMPOTENT REPLAY (same idempotency_key) ───────────────────────────
     // Repeat the SAME operations POST → 200 idempotent_replay, revision still 1.
-    let mut resp = srv
+    let resp = srv
         .post(format!("{map_path}/operations"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&ops_body)
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&ops_body)
+        .send()
         .await
         .expect("idempotent replay request send");
     assert_eq!(resp.status(), 200, "idempotent replay should be 200");
@@ -132,15 +179,16 @@ async fn thinking_map_full_lifecycle_over_http() {
 
     // ── REVISION CONFLICT (stale base_revision, new idempotency_key) ────────
     // → 409 revision_conflict, expected 1, actual 0.
-    let mut resp = srv
+    let resp = srv
         .post(format!("{map_path}/operations"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({
             "operations": [add_node_op("n2")],
             "idempotency_key": "conflict",
             "base_revision": 0
         }))
+        .send()
         .await
         .expect("conflict request send");
     assert_eq!(resp.status(), 409, "stale base_revision should be 409");
@@ -151,15 +199,16 @@ async fn thinking_map_full_lifecycle_over_http() {
 
     // ── APPLY a SECOND valid op at base_revision 1 → 200, revision 2 ────────
     // (so the events log now holds ≥2 events.)
-    let mut resp = srv
+    let resp = srv
         .post(format!("{map_path}/operations"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({
             "operations": [add_node_op("n2")],
             "idempotency_key": "i2",
             "base_revision": 1
         }))
+        .send()
         .await
         .expect("second apply request send");
     assert_eq!(resp.status(), 200);
@@ -170,10 +219,10 @@ async fn thinking_map_full_lifecycle_over_http() {
     // ── EVENTS ─────────────────────────────────────────────────────────────
     // GET /{id}/events?after_seq=0 → 200, array with the applied events in
     // sequence order (2 events).
-    let mut resp = srv
+    let resp = srv
         .get(format!("{map_path}/events?after_seq=0"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("events request send");
@@ -185,10 +234,10 @@ async fn thinking_map_full_lifecycle_over_http() {
     assert_eq!(events_arr[1]["sequence"], 2);
 
     // GET /{id}/events?after_seq=1 → only the later event.
-    let mut resp = srv
+    let resp = srv
         .get(format!("{map_path}/events?after_seq=1"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("events after_seq=1 request send");
@@ -199,10 +248,10 @@ async fn thinking_map_full_lifecycle_over_http() {
     assert_eq!(events_after_arr[0]["sequence"], 2);
 
     // ── REPLAY at_seq=1 → the map as of revision 1 (second node absent) ────
-    let mut resp = srv
+    let resp = srv
         .get(format!("{map_path}/replay?at_seq=1"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("replay request send");
@@ -213,11 +262,12 @@ async fn thinking_map_full_lifecycle_over_http() {
     assert!(replayed["nodes"].get("n2").is_none(), "n2 absent at seq 1");
 
     // ── PATCH title → 200; GET reflects the rename ─────────────────────────
-    let mut resp = srv
+    let resp = srv
         .patch(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({ "title": "canary renamed" }))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({ "title": "canary renamed" }))
+        .send()
         .await
         .expect("patch title request send");
     assert_eq!(resp.status(), 200, "patch title should be 200");
@@ -225,10 +275,10 @@ async fn thinking_map_full_lifecycle_over_http() {
     assert_eq!(patched["outcome"], "applied");
     assert_eq!(patched["map"]["title"], "canary renamed");
 
-    let mut resp = srv
+    let resp = srv
         .get(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("get after patch send");
@@ -236,21 +286,22 @@ async fn thinking_map_full_lifecycle_over_http() {
     assert_eq!(after_patch["title"], "canary renamed");
 
     // ── PATCH lifecycle=archived → 200; LIST reflects it ───────────────────
-    let mut resp = srv
+    let resp = srv
         .patch(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({ "lifecycle": "archived" }))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({ "lifecycle": "archived" }))
+        .send()
         .await
         .expect("patch lifecycle request send");
     assert_eq!(resp.status(), 200, "patch lifecycle should be 200");
     let archived: Value = resp.json().await.expect("archive body json");
     assert_eq!(archived["map"]["lifecycle"], "archived");
 
-    let mut resp = srv
+    let resp = srv
         .get(BASE)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("list request send");
@@ -286,11 +337,12 @@ async fn thinking_map_full_lifecycle_over_http() {
     assert!(preview.get("edges").and_then(Value::as_array).is_some());
 
     // ── PATCH with neither title nor lifecycle → 400 nothing_to_patch ──────
-    let mut resp = srv
+    let resp = srv
         .patch(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({}))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({}))
+        .send()
         .await
         .expect("empty patch request send");
     assert_eq!(resp.status(), 400, "empty patch should be 400");
@@ -301,25 +353,26 @@ async fn thinking_map_full_lifecycle_over_http() {
     // Capture the source head just before the restore for a byte-identical
     // comparison afterwards (the strongest "restore leaves source untouched"
     // assertion).
-    let mut resp = srv
+    let resp = srv
         .get(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("source before restore send");
     let source_before: Value = resp.json().await.expect("source before restore json");
 
     let branch_id = uuid::Uuid::new_v4().to_string();
-    let mut resp = srv
+    let resp = srv
         .post(format!("{map_path}/restore"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({
             "at_sequence": 1,
             "new_map_id": branch_id,
             "new_title": "branch"
         }))
+        .send()
         .await
         .expect("restore request send");
     assert_eq!(resp.status(), 201, "restore should be 201");
@@ -335,10 +388,10 @@ async fn thinking_map_full_lifecycle_over_http() {
     // event-sourced through the reducer and bumps the revision like any op).
     // The restore forks a NEW map and must leave the source's head as-is: n2
     // still present, still archived.
-    let mut resp = srv
+    let resp = srv
         .get(&map_path)
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
         .send()
         .await
         .expect("source after restore send");
@@ -356,9 +409,10 @@ async fn thinking_map_full_lifecycle_over_http() {
 
     // ── MISSING SCOPE (no principal/workspace headers, no body scope) ──────
     // → 400 missing_scope.
-    let mut resp = srv
+    let resp = srv
         .post(BASE)
-        .send_json(&json!({ "title": "no scope" }))
+        .json(&json!({ "title": "no scope" }))
+        .send()
         .await
         .expect("no-scope request send");
     assert_eq!(resp.status(), 400, "missing scope should be 400");
@@ -369,14 +423,16 @@ async fn thinking_map_full_lifecycle_over_http() {
     // The global operation router is unset in this test process, so the
     // handler degrades gracefully. (The map must exist so the 503 — not a 404
     // — is the assertion path.)
-    let mut resp = srv
+    let resp = srv
         .post(format!("{map_path}/interpret"))
-        .insert_header(("X-Principal", "anonymous"))
-        .insert_header(("X-Workspace", "default"))
-        .send_json(&json!({ "text": "let's reconsider", "intent": "break_open" }))
+        .header("X-Principal", "anonymous")
+        .header("X-Workspace", "default")
+        .json(&json!({ "text": "let's reconsider", "intent": "break_open" }))
+        .send()
         .await
         .expect("interpret request send");
     assert_eq!(resp.status(), 503, "interpret without router should be 503");
     let interpret_err: Value = resp.json().await.expect("interpret body json");
     assert_eq!(interpret_err["error"], "llm_unavailable");
+    srv.handle.stop(false).await;
 }

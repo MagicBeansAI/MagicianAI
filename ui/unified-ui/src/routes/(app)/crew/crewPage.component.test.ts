@@ -88,10 +88,10 @@ describe('Crew Page component (crewPage.component.test.ts)', () => {
 		expect(screen.getByText('Total Fleet')).toBeInTheDocument();
 		expect(screen.getByText('Active Now')).toBeInTheDocument();
 		expect(screen.getByText('Needs Attention')).toBeInTheDocument();
-		expect(screen.getByRole('region', { name: 'Autonomous Company Loop Control' })).toBeInTheDocument();
-		expect(screen.getByRole('heading', { name: 'Company Loop', level: 2 })).toBeInTheDocument();
-		expect(screen.getByRole('switch', { name: /autonomous company loop/i })).toBeInTheDocument();
-		expect(screen.getByRole('link', { name: /Harness Console/i })).toBeInTheDocument();
+		expect(screen.getByRole('region', { name: 'Autonomous Team Routines Control' })).toBeInTheDocument();
+		expect(screen.getByRole('heading', { name: /^Team routines/, level: 2 })).toBeInTheDocument();
+		expect(screen.getByRole('switch', { name: /autonomous team routines/i })).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: /Team routines/i })).toBeInTheDocument();
 
 		// Check navigation tabs
 		expect(screen.getByRole('button', { name: /Crew Members/i })).toBeInTheDocument();

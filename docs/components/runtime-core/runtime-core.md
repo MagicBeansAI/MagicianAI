@@ -84,6 +84,11 @@ same task lock must override it: `flock` is per open-file-description, so
 re-acquiring on a second descriptor blocks forever. The file-backed Magician
 store overrides it; see `docs/components/magician/storage-v2-format.md`.
 
+`set_execution_read_lineage(execution_id, read_lineage)` records who
+delegated (or handed over) down to an execution, for goal workspace reads. It
+is **defaulted** to a no-op: a store that keeps no lineage grants no delegated
+reads. The file-backed Magician store writes `ExecutionRun::read_lineage`.
+
 `add_turn_with_id` lets durable accepted-launch recovery prewrite and replay
 one deterministic inbound planning turn. An implementation returns `None` when
 it cannot guarantee exact insertion (the default writes nothing). Otherwise it
@@ -126,7 +131,7 @@ There is no `semantic_search(query, limit)` method and no `SearchResult` type.
 The `RuntimeConfig` trait exposes environment flags that control runtime behavior:
 
 - `consumer_mode_enabled()` — When `true` (Magician config default), forces AtomicComposition strategy and blocks GuidedSearch at all orchestrator entry points. Implementors: `MagicianRuntimeConfig` (reads from config), `TestRuntimeConfig` (returns `false`). Trait default is `false`.
-- `file_sandbox()` — Returns the `FileSandboxConfig` (allowed roots) for file operations. `FileSandboxConfig::augment_with_scopes_root(base_root)` idempotently adds `<base_root>/scopes` to `allowed_roots` — used to grant compiled read handlers (e.g. `read_file`) access to per-scope `durable_artifacts/` under the runtime root.
+- `file_sandbox()` — Returns the `FileSandboxConfig` for file operations: `allowed_roots` (read and write) and `read_only_roots` (read, exists, list and copy-from only; every mutation refused; `#[serde(default)]`, so a missing key is empty), and `extra_writable_roots` (`#[serde(skip)]`: writable roots added at run time, such as the task workdir and owner grants). The deepest configured root containing a path decides and a tie goes to read-only; an extra writable root never outranks a read-only one. `FileSandboxConfig::augment_with_scopes_root(base_root)` idempotently adds `<base_root>/scopes` to `allowed_roots` — used to grant compiled read handlers (e.g. `read_file`) access to per-scope `durable_artifacts/` under the runtime root.
 - `allow_consent_slots()` — Controls whether consent-slot elicitation is permitted (default `false`).
 - `on_failure_mode()` — Returns `"ask_user"` (default) or `"fail"`.
 

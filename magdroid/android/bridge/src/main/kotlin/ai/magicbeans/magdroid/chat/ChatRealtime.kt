@@ -35,6 +35,15 @@ sealed class ChatRealtimeEvent {
         val chatTurnId: String?,
     ) : ChatRealtimeEvent()
 
+    /**
+     * A chat turn started or settled (`chat.turn.state_changed`), wherever it
+     * was sent from and whether or not a stream here still follows it.
+     */
+    data class TurnStateChanged(
+        val sessionId: String?,
+        val state: ChatTurnState,
+    ) : ChatRealtimeEvent()
+
     /** Planning began for a task, which the transcript shows as a status. */
     data class PlanningStarted(
         val taskId: String?,
@@ -163,6 +172,21 @@ internal fun parseChatRealtimeEvent(
             taskId = data.str("task_id"),
             title = data.str("task_title") ?: data.str("title"),
         )
+
+        // Named agent events ride the `AgentEvent` envelope: scope and type
+        // live on the inner event, the fields on its `payload`.
+        "AgentEvent" -> {
+            val inner = data["event"] as? JsonObject ?: return null
+            inner.str("principal")?.let { if (it != principal) return null }
+            inner.str("workspace")?.let { if (it != workspace) return null }
+            when (inner.str("event_type")) {
+                ChatTurnState.EVENT -> {
+                    val state = parseChatTurnState(inner["payload"]) ?: return null
+                    ChatRealtimeEvent.TurnStateChanged(state.sessionId, state)
+                }
+                else -> null
+            }
+        }
 
         "ShellOutputChunk" -> {
             val executionId = data.str("execution_id") ?: return null

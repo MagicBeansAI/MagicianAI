@@ -124,14 +124,48 @@ impl UnknownReviewPolicy {
     }
 }
 
-/// Integer microdollars avoid floating-point budget overshoot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Integer microdollars avoid floating-point budget overshoot. Each omitted or
+/// zero limit is unlimited; positive values are owner-reviewed ceilings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Budget {
     pub max_attempts: u32,
     pub max_wall_clock_secs: u64,
     pub max_cost_microusd: u64,
     pub plateau_attempts: u32,
+}
+
+impl Budget {
+    /// Internal arithmetic bound; keep zero in the frozen owner-facing contract.
+    pub fn cost_ceiling(&self) -> u64 {
+        if self.max_cost_microusd == 0 {
+            u64::MAX
+        } else {
+            self.max_cost_microusd
+        }
+    }
+
+    pub fn attempt_ceiling(&self) -> u32 {
+        if self.max_attempts == 0 {
+            u32::MAX
+        } else {
+            self.max_attempts
+        }
+    }
+
+    pub fn deadline_at(
+        &self,
+        start: chrono::DateTime<chrono::Utc>,
+    ) -> Result<chrono::DateTime<chrono::Utc>> {
+        if self.max_wall_clock_secs == 0 {
+            return Ok(chrono::DateTime::<chrono::Utc>::MAX_UTC);
+        }
+        let duration = chrono::Duration::try_seconds(i64::try_from(self.max_wall_clock_secs)?)
+            .ok_or_else(|| anyhow::anyhow!("wall clock budget overflow"))?;
+        start
+            .checked_add_signed(duration)
+            .ok_or_else(|| anyhow::anyhow!("deadline overflow"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +209,7 @@ pub struct DefinitionOfDone {
     pub collected_source_limits: Option<CollectedSourceLimits>,
     pub score_at_least: Option<f64>,
     pub review: ReviewPolicy,
+    #[serde(default)]
     pub budget: Budget,
 }
 
@@ -311,13 +346,6 @@ impl DefinitionOfDone {
             "invalid review thresholds"
         );
         let budget = &self.budget;
-        ensure!(
-            budget.max_attempts > 0
-                && budget.max_wall_clock_secs > 0
-                && budget.max_cost_microusd > 0
-                && budget.plateau_attempts > 0,
-            "budgets must be positive"
-        );
         ensure!(
             chrono::Duration::try_seconds(i64::try_from(budget.max_wall_clock_secs)?).is_some(),
             "wall clock budget overflow"

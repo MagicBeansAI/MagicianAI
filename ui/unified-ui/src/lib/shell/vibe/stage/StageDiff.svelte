@@ -9,7 +9,12 @@
 	import Checkbox from '$lib/magician/components/generative/Checkbox.svelte';
 	import DiffStrip from '$lib/shell/DiffStrip.svelte';
 	import type { HitlRequest, HitlSource } from '$lib/hitl/types';
-	import type { VibeRow } from '$lib/stores/vibeHitlStore';
+	import {
+		isPendingDiffRow,
+		noticeParts,
+		splitNoticeRows,
+		type VibeRow
+	} from '$lib/stores/vibeHitlStore';
 
 	export let orderedDiffRows: VibeRow[] = [];
 	export let orderedOtherRows: VibeRow[] = [];
@@ -52,7 +57,37 @@
 		applyFile: { request: HitlRequest; path: string };
 		rejectFile: { request: HitlRequest; path: string };
 		respond: { row: VibeRow };
+		acknowledge: { row: VibeRow };
 	}>();
+
+	// Only a pending proposal is reviewed: a durable row of a finished run is
+	// already applied or rejected, and a briefing is a notice, not a decision.
+	$: pendingDiffCount = orderedDiffRows.filter(isPendingDiffRow).length;
+	$: split = splitNoticeRows(orderedOtherRows);
+	$: noticeRows = split.notices;
+	$: decisionRows = split.decisions;
+
+	function resolvedLabel(status: unknown): string {
+		const s = String(status ?? '').toLowerCase();
+		if (s.includes('reject')) return 'Rejected';
+		if (s.includes('partial')) return 'Partially applied';
+		if (s.includes('appl')) return 'Applied';
+		return 'Resolved';
+	}
+	function noticeTitle(row: VibeRow): string | null {
+		const { title, message } = noticeParts(row.request);
+		return title && !message.startsWith(title) ? title : null;
+	}
+	function plural(count: number, word: string): string {
+		return `${count} ${word}${count === 1 ? '' : 's'}`;
+	}
+	$: resolvedDiffCount = orderedDiffRows.length - pendingDiffCount;
+	$: summaryParts = [
+		pendingDiffCount > 0 ? plural(pendingDiffCount, 'change set') : null,
+		resolvedDiffCount > 0 ? plural(resolvedDiffCount, 'resolved change set') : null,
+		decisionRows.length > 0 ? plural(decisionRows.length, 'decision') : null,
+		noticeRows.length > 0 ? plural(noticeRows.length, 'notice') : null
+	].filter((part): part is string => Boolean(part));
 
 	function rowKey(request: HitlRequest): string {
 		return (
@@ -85,15 +120,15 @@
 				on:change={(event) => dispatch('toggleAutoApply', { value: event.detail.checked })}
 			/>
 		</div>
-		<span class="diff-tab__count">
-			{orderedDiffRows.length} change set{orderedDiffRows.length === 1 ? '' : 's'} · {orderedOtherRows.length} decision{orderedOtherRows.length === 1 ? '' : 's'}
-		</span>
-		<button
-			type="button"
-			class="vbtn vbtn--primary"
-			disabled={orderedDiffRows.length === 0 || bulkApplying}
-			on:click={() => dispatch('approveAll')}
-		>{bulkApplying ? 'Applying…' : 'Apply all changes'}</button>
+		<span class="diff-tab__count">{summaryParts.length > 0 ? summaryParts.join(' · ') : 'Nothing to review'}</span>
+		{#if pendingDiffCount > 0}
+			<button
+				type="button"
+				class="vbtn vbtn--primary"
+				disabled={bulkApplying}
+				on:click={() => dispatch('approveAll')}
+			>{bulkApplying ? 'Applying…' : 'Apply all changes'}</button>
+		{/if}
 	</div>
 
 	<div class="diff-tab__scroll">
@@ -103,11 +138,29 @@
 			</div>
 		{/if}
 
+		{#each noticeRows as row (row.key)}
+			{@const title = noticeTitle(row)}
+			<article class="notice-row" aria-label="Notice">
+				<div>
+					<div class="decision-row__source">Notice</div>
+					{#if title}<div class="decision-row__title">{title}</div>{/if}
+					<div class="notice-row__message">{noticeParts(row.request).message}</div>
+				</div>
+				<button
+					type="button"
+					class="vbtn"
+					disabled={actingKeys.has(row.key)}
+					on:click={() => dispatch('acknowledge', { row })}
+				>{actingKeys.has(row.key) ? 'Acknowledging…' : 'Acknowledge'}</button>
+			</article>
+		{/each}
+
 		{#each orderedDiffRows as row, rowIndex (row.key)}
 			{@const request = row.request}
 			{@const files = request.schema.files ?? []}
 			{@const key = rowKey(request)}
-			<article class="diff-card" bind:this={cardEls[rowIndex]}>
+			{@const pending = isPendingDiffRow(row)}
+			<article class="diff-card" class:diff-card--resolved={!pending} bind:this={cardEls[rowIndex]}>
 				<header class="diff-card__head">
 					<div>
 						<div class="diff-card__title">{request.schema.rationale ?? request.prompt}</div>
@@ -115,18 +168,22 @@
 							<span>{files.length} file{files.length === 1 ? '' : 's'}</span>
 							<span>+{diffStat(row, 'additions')} / -{diffStat(row, 'deletions')}</span>
 							<span>{relativeTime(row.entry.at)}</span>
-							<span class="diff-card__sandbox">Sandboxed · 0 to repo</span>
+							{#if pending}<span class="diff-card__sandbox">Sandboxed · 0 to repo</span>{/if}
 						</div>
 					</div>
-					<div class="diff-card__actions">
-						<button type="button" class="vbtn vbtn--ghost" disabled={actingKeys.has(key) || bulkApplying} on:click={() => dispatch('rejectDiff', { request })}>Reject</button>
-						<button type="button" class="vbtn vbtn--primary" disabled={actingKeys.has(key) || bulkApplying} on:click={() => dispatch('applyDiff', { request })}>{actingKeys.has(key) ? 'Applying…' : 'Apply'}</button>
-					</div>
+					{#if pending}
+						<div class="diff-card__actions">
+							<button type="button" class="vbtn vbtn--ghost" disabled={actingKeys.has(key) || bulkApplying} on:click={() => dispatch('rejectDiff', { request })}>Reject</button>
+							<button type="button" class="vbtn vbtn--primary" disabled={actingKeys.has(key) || bulkApplying} on:click={() => dispatch('applyDiff', { request })}>{actingKeys.has(key) ? 'Applying…' : 'Apply'}</button>
+						</div>
+					{:else}
+						<span class="diff-card__status">{resolvedLabel(request.raw?.status)}</span>
+					{/if}
 				</header>
 				<DiffStrip
 					diff={{ files, note: request.schema.proposal_id ?? request.schema.transaction_id ?? key }}
-					lifecycle="pending"
-					title="Staged changes"
+					lifecycle={pending ? 'pending' : 'applied'}
+					title={pending ? 'Staged changes' : 'Changes'}
 					view="split"
 					showStats={true}
 					allowCopy={true}
@@ -137,16 +194,16 @@
 					wordLevelDiff={true}
 					pollIntervalMs={0}
 					truncateLinesThreshold={500}
-					allowPerFileApproval={files.length > 1}
+					allowPerFileApproval={pending && files.length > 1}
 					on:applyFile={(e) => dispatch('applyFile', { request, path: e.detail.file.path })}
 					on:rejectFile={(e) => dispatch('rejectFile', { request, path: e.detail.file.path })}
 				/>
 			</article>
 		{/each}
 
-		{#if orderedOtherRows.length > 0}
+		{#if decisionRows.length > 0}
 			<h3 class="diff-tab__section">Other decisions</h3>
-			{#each orderedOtherRows as row (row.key)}
+			{#each decisionRows as row (row.key)}
 				<article class="decision-row">
 					<div>
 						<div class="decision-row__source">{SOURCE_LABELS[row.request.source] ?? row.request.source}</div>
@@ -260,7 +317,15 @@
 		flex-shrink: 0;
 	}
 
-	.decision-row {
+	.diff-card__status {
+		flex-shrink: 0;
+		color: var(--vibe-text-muted);
+		font-size: 0.76rem;
+		font-weight: 600;
+	}
+
+	.decision-row,
+	.notice-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -281,6 +346,12 @@
 		font-weight: 600;
 		font-size: 0.9rem;
 		line-height: 1.35;
+	}
+	.notice-row__message {
+		color: var(--vibe-text);
+		font-size: 0.84rem;
+		line-height: 1.45;
+		white-space: pre-line;
 	}
 	.decision-row__hint {
 		margin-top: 0.25rem;
@@ -315,7 +386,8 @@
 
 	@media (max-width: 720px) {
 		.diff-card__head,
-		.decision-row {
+		.decision-row,
+		.notice-row {
 			flex-direction: column;
 			align-items: stretch;
 		}

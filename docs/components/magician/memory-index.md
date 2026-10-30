@@ -35,7 +35,8 @@ empty `json_pointer` (the `forget_memory` whole-file marker).
 
 `POST /api/magician/v2/memory/search` and the `search_memory` tool share one
 recall; the Memory page uses it to show scope, tier and semantic type and
-records no temperature use.
+records no temperature use. Its agent selector defaults to Personal Assistant
+when available; displayed milliseconds cover the full request, not Lance alone.
 
 - **Score oracle only.** Chat turns load episodes from disk; the index supplies
   the hybrid score. Unindexed episodes rank by keyword.
@@ -81,6 +82,20 @@ a slow or damaged index cannot change the answer:
    usable); structural deltas or an incompatible or unreadable index select
    direct ranking. Then temperature and hot
    projections, ranking, exact dedup, lane selection and budget packing.
+   Near-duplicate claim comparison prepares tokens once and shortlists by
+   shared words within each semantic tier, preserving first-match order and
+   the existing qualifier, number and strongest-representative rules.
+   Explicit recall caches source-validated candidates without building prompt-only
+   comparison profiles and applies engagement containment before ranking.
+   Goal records share a snapshot per tier rather than one cache entry per goal.
+   Inspection reuses current temperature snapshots; recorded retrieval still
+   follows the durable temperature update path.
+   Ordinary memories skip app-registry
+   eligibility work; app-sourced memories still require live source validation.
+   Revision-bound passage hits are indexed once per batch, preserving scores,
+   chunk tie-breaking and canonical text hydration.
+   Search traces separate embedding, admission, table checkout, FTS and the
+   vector leg (including native exact reranking); the Lance timeout excludes embedding.
 
    Request-path caches (on by default; kill switches in
    [Embedding Provider](#embedding-provider)):
@@ -97,9 +112,10 @@ a slow or damaged index cannot change the answer:
      Lance. Queued same-contract waiters share one `/api/embed` with the
      tightest deadline; a lone miss never waits
      (`embedding_query_batch_window_ms: 3`, `max_items: 8`).
-   - **Vector leg.** ANN shortlists `limit * candidate_multiplier` and reranks
-     by exact L2; missing IVF (not a stale reason), errors or slowness inside
-     the 750 ms Lance timeout fall back to flat or empty vector keys, still
+   - **Vector leg.** ANN shortlists `limit * candidate_multiplier`; Lance reranks
+     those original vectors by exact L2 in the same query, with stable key tie-breaking.
+     Missing IVF (not a stale reason), errors or slowness inside
+     the configured Lance timeout fall back to flat or empty vector keys, still
      fused with FTS. `MAGICIAN_VECTOR_SEARCH=flat` forces KNN; `ann_shadow`
      serves flat and records recall@k off the serve path (probe ≤50 ms).
      Cache keys include `candidate_multiplier` and `nprobes`. Identical
@@ -118,8 +134,15 @@ a slow or damaged index cannot change the answer:
   `lancedb/`; runtime reconciliation is merge-only and otherwise ranks
   directly.
 - **Optimize/compact** runs LanceDB `optimize` (compaction, version pruning,
-  index folding). Runtime never compacts; operators run
-  `memory-index optimize` on a schedule or when status or latency suggests it.
+  index folding). Every incremental merge adds a fragment and search cost grows
+  with the active count (480 fragments: 771 ms p50 against 192 ms once
+  compacted to 2, measured 2026-10-28). The maintainer therefore compacts a
+  healthy scope whose active fragment count exceeds
+  `MAGICIAN_MEMORY_INDEX_OPTIMIZE_FRAGMENTS` (default 64; `0` disables),
+  checking each scope at most every 10 minutes and logging
+  `compacted fragmented memory index`. It runs the same
+  `optimize_scope_memory_index` as `memory-index optimize`, under the same
+  locks; the command remains for manual runs.
 
 A canonical commit is visible at once. Snapshots and indexes may lag, but a
 pending delta removes its old scores before a result returns, and retained
@@ -133,6 +156,16 @@ immutable snapshot of canonical candidates with precomputed lexical features,
 built once per source generation; output is unchanged. Key: storage root,
 agent, scope, goal, environment-memory policy, tier-definition hash. Per-key
 build locks prevent stampedes; readers may briefly hold an old generation.
+Retrieval deadlines do not cancel an in-flight cache build; CPU profiling uses
+an admitted blocking worker. Memory-index events refresh changed warm entries
+under the same per-key lock without resetting their idle expiry.
+
+Stamp changes are checked against memoized BLAKE3 content hashes, so touches
+and identical rewrites retain the snapshot. Real changes reuse unchanged
+episode/tier documents, lexical profiles and pairwise overlap links; user files
+are re-read. The overlap graph falls back to a full build when more than 64
+texts, or a quarter of the set, are new. Build logs report source loading,
+profiling and overlap-graph timings and reuse counts.
 Concurrent renders share one temperature tier map per overlay `Arc` for up to
 30 seconds (`PROMPT_TIER_SNAPSHOT_REUSE`).
 
@@ -143,7 +176,7 @@ Configure under `memory.prompt_snapshot` in `magician-config.yaml`:
 | `enabled` | `true` | False builds per request. |
 | `max_bytes` | `67108864` | 64 MiB estimate. |
 | `max_entries` | `8` | Distinct scope/agent/goal snapshots. |
-| `idle_ttl_secs` | `600` | Idle eviction. |
+| `idle_ttl_secs` | `600` | Idle eviction. The live and seed configs set `86400`, so the first turn after a break does not rebuild. |
 | `refresh_debounce_ms` | `100` | In-process refresh coalescing. |
 
 ## Rebuild And Status APIs
@@ -220,6 +253,11 @@ soft-stale index that `--skip-if-fresh` would skip (for one prewarm:
 `anonymous/default`; override with `MEMORY_INDEX_PRINCIPAL=<principal>` and
 `MEMORY_INDEX_WORKSPACE=<workspace>`.
 
+For a private-copy comparison, set `MAGICIAN_LANCE_BENCH_DIR` to a copied
+Lance directory and `MAGICIAN_LANCE_BENCH_VECTOR` to its query-vector JSON, then
+run `make cargo ARGS="test -p magician-vector-index --lib vector_search_private_snapshot_benchmark -- --ignored --nocapture"`.
+The probe compares legacy/native results and performs scalar maintenance; use a disposable copy.
+
 ## Embedding Provider
 
 Local Ollama embeddings; default model
@@ -273,7 +311,7 @@ Emergency env overrides:
 | `MAGICIAN_MEMORY_EMBEDDING_RETRIES` | `2` | Single-item timeout/429/5xx retries; not queries. |
 | `MAGICIAN_MEMORY_EMBEDDING_RETRY_BACKOFF_MS` | `1500` | Linear backoff base. |
 | `MAGICIAN_MEMORY_EMBEDDING_WARMUP` | `true` | `false` skips rebuild warmup; queries never warm up. |
-| `MAGICIAN_MEMORY_LANCEDB_RETRIEVAL_TIMEOUT_MS` | `750` | FTS/vector budget after the query vector; timeout ranks directly and briefly suspends hybrid. |
+| `MAGICIAN_MEMORY_LANCEDB_RETRIEVAL_TIMEOUT_MS` | `runtime.retrieval.lance_query_timeout_ms` (`3000`) | FTS/vector budget after the query vector; timeout ranks directly and briefly suspends hybrid. |
 | `MAGICIAN_MEMORY_LANCEDB_HEALTH_CHECK_TIMEOUT_MS` | `5000` | Timeout is transient, not corruption. |
 | `MAGICIAN_MEMORY_LANCEDB_OPTIMIZE_TIMEOUT_MS` | `60000` | `memory-index optimize`. |
 | `MAGICIAN_MEMORY_INDEX_WRITE_LOCK_TIMEOUT_MS` | `120000` | Cross-process lock for rebuild, quarantine, replace, merge, optimize. |
@@ -335,6 +373,7 @@ there is no `spawn_blocking` (tune with `LANCE_CPU_THREADS`,
 | `MAGICIAN_MEMORY_INDEX_STARTUP_DELAY_SECS` | `15` | Before first scan. |
 | `MAGICIAN_MEMORY_INDEX_INTERVAL_SECS` | `120` | Scan interval. |
 | `MAGICIAN_MEMORY_INDEX_DEBOUNCE_SECS` | `15` | Quiet time before rebuild. |
+| `MAGICIAN_MEMORY_INDEX_OPTIMIZE_FRAGMENTS` | `64` | Compact a healthy index above this many active fragments; `0` disables. |
 
 - **Empty scope.** Cooldown or suspension clears only after full inspection
   proves zero candidates; bootstrap then writes a stable zero-document
@@ -346,12 +385,23 @@ there is no `spawn_blocking` (tune with `LANCE_CPU_THREADS`,
   allows one half-open retry, success deletes it. Meanwhile hybrid retrieval
   is suspended for the scope; writes and ingestion continue. Startup or
   periodic-audit failures also enqueue the scope for dirty retry.
+- **Rebuild required.** A reconcile that fails only because the manifest
+  shows `index_version_changed`, `schema_version_changed`, `backend_changed`,
+  `embedding_config_changed` or `missing_manifest` (with table data) pauses the
+  scope instead: `memory/index/rebuild-required.json` records the reason and
+  versions, the cooldown is cleared (no failure count, no hourly full
+  inspection), and one `service_health` Attention notice per scope gives
+  `./magician.bin memory-index rebuild --principal <p> --workspace <w>`. Each
+  pass re-reads only the manifest; when a rebuild replaces it the pause lifts
+  and the notice resolves (the rebuild API does this at once). Other failures
+  keep the backoff; runtime still never replaces `lancedb/`.
 - **Stability profile.** Generation on `:11434` (`*local_generation_model`
   pin), embeddings on `:11435` (`keep_alive: -1`, one sequence). The
   commented stability overrides in `magician_data_v3/.env.example` disable
   batch retries (`MAGICIAN_MEMORY_EMBEDDING_RETRIES=0`) and warmup and set
   `MAGICIAN_MEMORY_INDEX_INTERVAL_SECS=21600`,
-  `MAGICIAN_MEMORY_INDEX_DEBOUNCE_SECS=1200`. Query timeouts and 429/5xx
+  `MAGICIAN_MEMORY_INDEX_DEBOUNCE_SECS=15`; longer merge delays also delay
+  result-cache reuse while changes remain pending. Query timeouts and 429/5xx
   suspend hybrid for five minutes; 401/404/model-not-found do not.
 - **Definition hashes** come from YAML bytes, avoiding false
   `source_hashes_changed` from map ordering.
@@ -360,15 +410,18 @@ there is no `spawn_blocking` (tune with `LANCE_CPU_THREADS`,
   stale cache files are harmless.
 - **Repairable read errors** (e.g. `failed to fill whole buffer`, retrieval
   timeout) suspend hybrid for the scope and request merge-only reconcile;
-  corruption that blocks open or merge needs an operator rebuild. Quarantine,
-  rebuild and optimize are explicit, under one mutex and cross-process lock.
+  corruption that blocks open or merge needs an operator rebuild. Quarantine
+  and rebuild are explicit; optimize is explicit or fragment-triggered (above).
+  All run under one mutex and cross-process lock.
   Reconciliation, under the same locks, keeps at most
   `MAX_LANCEDB_QUARANTINE_DIRS` (3) `lancedb.corrupt-*` directories, newest
   first; pruning is best-effort and never fails the reconcile.
 - **Row reuse.** Rows matching `chunk_key`, `row_hash` and
   `embedding_input_hash` are reused (`embedded_rows`, `reused_rows` in the
-  report). Runtime merges never call `optimize`; LanceDB still searches
-  merged unindexed rows.
+  report). Runtime merges maintain scalar indexes once their unindexed tail
+  reaches 5% of rows (bounded to 128–1024), merging delta indexes at eight parts.
+  This never compacts, prunes or re-embeds; IVF maintenance stays explicit to
+  avoid changing ANN recall. Smaller tails remain searchable.
 
 Events: `memory_index_reconcile_started`, `memory_index_reconcile_completed`,
 `memory_index_reconcile_failed` (with `provider`, `model`, `dims`,
@@ -440,7 +493,28 @@ Temperature is an overlay; canonical files are never mutated for it.
   leaf mutators (`sync_*`, `record_*_usage`, `record_*_utility_review`,
   `record_*_supersessions`, `maintain_*`). Wait diagnostics go to
   `magician::metrics::memory_temperature`, tagged `sync`, `prompt_usage`,
-  `outcome_usage`, `utility_review`, `supersessions` or `maintenance`.
+  `outcome_usage`, `utility_review`, `supersessions`, `maintenance`,
+  `full_scope_resync`, `save` or `counter_flush`.
+  Each cycle clones, mutates and serializes (straight to pretty JSON) on the
+  blocking pool and skips the write when nothing changed.
+- **Counter write-behind.** Usage-counter bookkeeping (`record_*_prompt_usage`,
+  `record_*_retrieval_usage`, `record_*_outcome_usage`) is applied to the
+  cached snapshot under the lock, so readers in the process see it at once,
+  and is written by one overlay write per
+  `MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY` (2 s), on the blocking pool.
+  **Crash-loss window:** a process that dies without its shutdown flush loses
+  up to 2 s of retrieved/selected/injected/outcome counts and their
+  `last_*_at` times; nothing else. Sync, utility review (its run ledger),
+  supersessions, maintenance, full-scope resync (and its compaction audit) and
+  `save_*` still write through before returning, and each carries the pending
+  counters exactly once and settles them. A failed flush is logged and keeps
+  the updates, retried by timer with backoff (2 s → 60 s, 6 attempts), then by
+  the next counter update, durable write or shutdown. The replay log (4,096
+  updates per overlay) is used only when another process rewrites the file
+  under pending updates: the next locked cycle replays them onto the new file.
+  Graceful shutdown calls `flush_pending_memory_temperature_writes()` (bounded
+  10 s) after producers quiesce; a storage without
+  `MemoryStorage::shared_handle` writes counters through as before.
 - `render_memory_section` enforces each lane's `max_entries` and `max_chars`.
   The utility reviewer `warn!`s when `operation_llm_router` is absent.
 - Hot projections inject while active and source-hash-matched, keeping the
@@ -488,6 +562,14 @@ reviewed `replace_existing` keeps the old item as
 `memory_lifecycle: superseded` (successor, reason, timestamp) and appends the
 new one; a missing or failed review keeps both, and `UpsertBySimilarity`
 never replaces without one. Reviews emit `memory_conflict_review` rows.
+An identical copy is never reviewed: same durable key from the same field
+(exact under key normalization, never by similarity) and every other field
+equal except provenance and review/supersession bookkeeping. A differing
+`type`, `status`, value or other claim field keeps the pair for the reviewer.
+The copy folds into the active item it repeats instead of being appended (or
+is dropped when a reviewed replacement retired that item in the same merge): larger `evidence_count`/`confidence` (not the sum: the distiller
+re-reads its own tier), earliest `created_at`, `source_episodes`/`merged_from`
+unioned by episode id.
 
 **Consolidation normalization.** Supersession suffixes are stripped from
 active insights (audit fields such as `before` exempt). Wrappers like
@@ -498,9 +580,17 @@ contract take `name`/`title`/`surface`/`summary` as key (newest duplicate
 wins; existing durable state only, under the tier lock); fresh output is
 strictly validated with one schema-repair attempt.
 
-**Contradiction sweep.** A bounded same-key sweep over operational tiers
-reuses the reviewer, supersedes only on explicit replacement and stamps
-kept-both pairs so they are not re-reviewed. Superseded entries are audit-only
+**Contradiction sweep.** A same-key sweep over operational tiers first folds
+identical copies into the earliest one with no model call and no cap, marking
+each copy superseded (`memory_contradiction_sweep_identical_duplicate`, with a
+`superseded_id` unique per fold so byte-identical copies keep distinct
+candidate keys). It
+then reviews at most 48 remaining pairs (batches of 12), supersedes only on
+explicit replacement, and stamps kept-both pairs and engine abstentions
+(answered below the gate: `memory_contradiction_sweep_unresolved`) with the
+decision-policy key, so neither is re-sent until the engine revision or
+reference version changes. A transient failure (timeout, admission refusal,
+failed item, unavailable engine) stamps nothing and is retried next sweep. Superseded entries are audit-only
 (T3, score `0.0`), skipped by prompts and `search_memory`; `/memory` shows
 them. `POST /api/magician/v2/memory/temperature/maintain` triggers the same
 path; its user-memory sweep runs lifecycle reconciliation. A snapshot mismatch or unavailable reviewer keeps both items.
@@ -581,8 +671,7 @@ so shipping it needs a magician rebuild. One read targets the run's single
 agent.
 
 New facts index via `save_native_tier` → journal → `MemoryIndexMaintainer`
-(debounce 15 seconds by default; 20 minutes with the stability profile's
-`MAGICIAN_MEMORY_INDEX_DEBOUNCE_SECS=1200`).
+(15-second debounce by default, including the recommended stability overrides).
 
 ## Internal Data Observability
 
@@ -615,5 +704,6 @@ schema version 11 (chunk rows, collision-safe candidate keys, merge metadata,
 `candidate_key` BTree, contract-bound vectors, revision-bearing source
 hashes; v11 also neutralizes prompt-boundary tags in non-conversation
 episodes); `documents.jsonl` is an auditable `jsonl-direct` sidecar. Any
-older schema rebuilds once (`schema_version_changed`) before accepting source
-deltas.
+older schema needs one explicit `memory-index rebuild` (or
+`POST /api/magician/v2/memory/index/rebuild`) before accepting source deltas;
+until then retrieval stays direct (see *Rebuild required* below).

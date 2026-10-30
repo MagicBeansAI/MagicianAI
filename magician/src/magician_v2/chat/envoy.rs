@@ -39,9 +39,11 @@ use crate::magician_v2::counterparty_consumers::InboundIdentification;
 /// the chat handler defaults a missing `channel_verified` to `true`, so
 /// non-agentmail channels are unaffected.
 ///
-/// Matching is exact-string, so callers must pass a **canonicalized** address
-/// (e.g. E.164 for phone numbers, lower-cased for email). An un-normalized
-/// address can miss the allowlist and be treated — fail-closed — as a guest.
+/// Matching is [`crate::config::owner_identity_matches`]: digits-only for
+/// phone-like addresses on phone channels (kapso, whatsapp, sms, imessage),
+/// case-insensitive for emails, exact otherwise (a Telegram chat id). An
+/// address that still misses the allowlist is treated — fail-closed — as a
+/// guest.
 /// Whether this channel's sender identity was established by something the
 /// CALLER could not forge — readiness review §9 step 6, *"server-supplied
 /// verification, so engagement routing has a real root"*.
@@ -125,6 +127,31 @@ pub fn is_owner(cfg: &EnvoyConfig, channel_type: &str, address: &str, verified: 
         return verified;
     }
     verified && cfg.has_owner_identity(channel_type, address)
+}
+
+/// The control intent an inbound message is routed with.
+///
+/// A verified owner is always in control: every channel bot forwards only
+/// direct chats (Telegram private chats, the Kapso sender's phone, the
+/// WhatsApp self-chat), so an owner-identity match is the owner talking to
+/// Magician one-to-one. Before this, a message without the `/magic` prefix
+/// from the owner's own number went to the guest envoy, which then said it
+/// could not verify who it was talking to. Only the bot's explicit "no prefix"
+/// (`Some(false)`) is promoted; a bot without prefixes reports no intent and
+/// keeps its requested thread. An intent is never authentication: an
+/// unverified or unlisted sender is not promoted.
+pub fn effective_control_intent(
+    cfg: &EnvoyConfig,
+    channel_type: &str,
+    address: &str,
+    verified: bool,
+    control_intent: Option<bool>,
+) -> Option<bool> {
+    if control_intent == Some(false) && is_owner(cfg, channel_type, address, verified) {
+        Some(true)
+    } else {
+        control_intent
+    }
 }
 
 /// Stable per-sender thread id for a guest. Same sender → same thread.
@@ -353,7 +380,9 @@ pub fn resolve_inbound_lane(
 /// - **Non-control** (`control_intent = Some(false)`) is treated as a guest even
 ///   when the sender is allowlisted. This lets agent-owned surfaces like Kapso
 ///   behave as normal envoy conversations unless the owner explicitly invokes a
-///   Magician control prefix.
+///   Magician control prefix. The live inbound seam first runs
+///   [`effective_control_intent`], which promotes a verified owner's
+///   non-control message, so this branch is reached there only by non-owners.
 /// - **Owner** (web, or an allowlisted channel/address, and not explicitly
 ///   non-control) keeps the requested thread and does NOT force an agent
 ///   (`force_agent_id = None`) — owner sessions retain normal preferred-agent
@@ -590,6 +619,28 @@ mod tests {
         assert_eq!(
             route_for_inbound(&cfg(), "kapso", "+15551234567", true, None, "general"),
             ("general".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn a_verified_owner_is_in_control_without_the_prefix() {
+        assert_eq!(
+            effective_control_intent(&cfg(), "kapso", "+15551234567", true, Some(false)),
+            Some(true)
+        );
+        // No prefix configured: no intent to promote.
+        assert_eq!(
+            effective_control_intent(&cfg(), "kapso", "+15551234567", true, None),
+            None
+        );
+        // Not the owner, or not proved: the bot's intent stands.
+        assert_eq!(
+            effective_control_intent(&cfg(), "kapso", "+19998887777", true, Some(false)),
+            Some(false)
+        );
+        assert_eq!(
+            effective_control_intent(&cfg(), "kapso", "+15551234567", false, Some(false)),
+            Some(false)
         );
     }
 

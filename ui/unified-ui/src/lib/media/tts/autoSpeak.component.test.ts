@@ -100,4 +100,15 @@ describe('chat auto-speak audio focus', () => {
 			expect(tts.providerSpeakBlocks).not.toHaveBeenCalled();
 		}
 	);
+
+	it.each(['realtime_voice', 'meeting_room'])(
+		'does not speak a %s reply again: it was already spoken where it was produced',
+		(sourceSurface) => {
+			const message = { ...assistantMessage, source_surface: sourceSurface };
+
+			expect(evaluateMessage(message)).toEqual({ nextLastAutoSpokenMessageId: message.id });
+			expect(tts.speak).not.toHaveBeenCalled();
+			expect(tts.providerSpeakBlocks).not.toHaveBeenCalled();
+		}
+	);
 });

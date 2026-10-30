@@ -124,6 +124,10 @@ pub struct DecisionModelConfig {
     /// Overrides for what the model declares it can do; unset fields keep
     /// the adapter's profile.
     pub capabilities: DecisionCapabilitiesConfig,
+    /// `typesafe`: send `TypeSafe-Danger-Zone-Long-Context: true`, raising
+    /// both context limits to 262k tokens. Slower and less accurate, so
+    /// it is opted into per model entry.
+    pub long_context: bool,
     /// `laya-onnx` / `laya-mlx` / `kev-onnx` / `kev-mlx`: the model folder (as
     /// `make setup-decision-models` lays it out). A relative path is a folder
     /// under `models_dir`; an absolute or `~/…` one is used as is (resolved
@@ -177,6 +181,7 @@ impl Default for DecisionModelConfig {
             timeout_ms: 15_000,
             max_retries: 2,
             capabilities: DecisionCapabilitiesConfig::default(),
+            long_context: false,
             model_dir: None,
             threads: None,
             quantize: None,
@@ -192,6 +197,9 @@ impl Default for DecisionModelConfig {
 pub struct DecisionCapabilitiesConfig {
     pub calibrated: Option<bool>,
     pub max_state_tokens: Option<u64>,
+    pub max_question_tokens: Option<u64>,
+    /// Accept images (System One `assets`). Only hosted Jev does today.
+    pub images: Option<bool>,
     pub max_choice_options: Option<usize>,
     pub max_questions: Option<usize>,
     pub supports_score: Option<bool>,

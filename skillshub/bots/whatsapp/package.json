@@ -15,7 +15,7 @@
     "test": "npm --prefix ../.. run build -w @magician/bot-sdk && tsc -p tsconfig.json && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@ibrahimwithi/wu-cli": "0.1.20",
+    "@ibrahimwithi/wu-cli": "0.3.1",
     "@magician/bot-sdk": "file:../sdk",
     "qrcode": "^1.5.4"
   },

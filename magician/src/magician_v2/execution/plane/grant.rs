@@ -409,9 +409,7 @@ pub(crate) fn plane_call_is_coding(tool: &str, grant: &PlaneGrant) -> bool {
     crate::magician_v2::execution::coding_engine::coding_context_active()
         || coding_lifts_floor(tool, grant)
         || (grant.live_harness_turn
-            && crate::magician_v2::execution::agentic::types::is_vibedev_coding_context(
-                &grant.ctx,
-            ))
+            && crate::magician_v2::execution::agentic::types::is_vibedev_coding_context(&grant.ctx))
 }
 
 /// The count of `tools/call`s a grant is serving, shared by every clone of
@@ -586,6 +584,11 @@ impl PlaneGrant {
             && !god_mode_lifts_floor(tool, self)
             && !coding_lifts_floor(tool, self)
         {
+            return false;
+        }
+        // A plan (Discuss) run is read-only: the same policy the native
+        // catalog applies. Arguments are checked per call at dispatch.
+        if self.ctx.plan_run && !crate::magician_v2::execution::plan_run_policy::admits_tool(tool) {
             return false;
         }
         if self
@@ -1314,6 +1317,7 @@ impl PlaneGrantRegistry {
             registered.grant.mark_revoked();
         }
         forget_runtime(token);
+        super::grant_channel::forget(token.trim());
     }
 }
 
@@ -1377,7 +1381,12 @@ mod tests {
         let mut engineer = test_grant("exec-engineer");
         engineer.live_harness_turn = true;
         engineer.ctx.merged_agent_tools = vec![owned_coding_tool("run_coding_task", None)];
-        for tool in ["delegation_files", "delegation_shell", "read_file", "run_coding_task"] {
+        for tool in [
+            "delegation_files",
+            "delegation_shell",
+            "read_file",
+            "run_coding_task",
+        ] {
             assert!(plane_call_is_coding(tool, &engineer), "{tool}");
         }
 
@@ -1389,8 +1398,10 @@ mod tests {
         // Inherited coding tools alone do not make a coding execution.
         let mut inherits = test_grant("exec-inherits");
         inherits.live_harness_turn = true;
-        inherits.ctx.merged_agent_tools =
-            vec![owned_coding_tool("run_coding_task", Some("junior-software-engineer"))];
+        inherits.ctx.merged_agent_tools = vec![owned_coding_tool(
+            "run_coding_task",
+            Some("junior-software-engineer"),
+        )];
         assert!(!plane_call_is_coding("delegation_files", &inherits));
 
         // A grant outside a live harness turn (a terminal) keeps the ambient flag.
@@ -1404,6 +1415,42 @@ mod tests {
             grant
         };
         assert!(!plane_call_is_coding("delegation_files", &general));
+    }
+
+    /// A plan (Discuss) run's harness turn reaches only what the shared
+    /// plan-run policy admits — the same predicate as the native catalog.
+    #[test]
+    fn a_plan_run_grant_permits_only_admitted_tools() {
+        let mut engineer = test_grant("exec-plan-engineer");
+        engineer.live_harness_turn = true;
+        engineer.catalog_profile = PlaneCatalogProfile::SpawnedBare;
+        engineer.ctx.merged_agent_tools = vec![owned_coding_tool("run_coding_task", None)];
+        for tool in ["delegation_shell", "dugite", "write_file", "edit_file"] {
+            assert!(engineer.permits(tool), "{tool} outside a plan run");
+        }
+
+        engineer.ctx.plan_run = true;
+        for tool in [
+            "delegation_shell",
+            "dugite",
+            "write_file",
+            "edit_file",
+            "http",
+            "run_task",
+            "apply_code_proposal",
+        ] {
+            assert!(!engineer.permits(tool), "{tool} in a plan run");
+        }
+        for tool in [
+            "read_file",
+            "grep",
+            "delegation_files",
+            "tool_search",
+            "delegate_to_agent",
+            "run_coding_task",
+        ] {
+            assert!(engineer.permits(tool), "{tool} in a plan run");
+        }
     }
 
     /// The in-flight count is shared by every clone of a grant and by the
@@ -1426,7 +1473,10 @@ mod tests {
         drop(second);
         assert_eq!(seen.count(), 0);
         plane_grant_registry().revoke(&token).await;
-        assert!(plane_grant_registry().calls_in_flight(&token).await.is_none());
+        assert!(plane_grant_registry()
+            .calls_in_flight(&token)
+            .await
+            .is_none());
     }
 
     /// A delegation the harness asked for is captured on the grant and handed

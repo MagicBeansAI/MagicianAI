@@ -31,6 +31,10 @@ The `create_task` result reports `disposition`: `dispatched` (+ `execution_id`),
 `ready`, or `dispatch_error` (dispatch failed but the task persists and can be
 run later). A dedup hit returns `status: "deduplicated"` instead (see below).
 
+Task create/run/list/details and harness promotion results provide `task_url`
+through `ui_links`: a Work link retaining internal-task identity and, when started,
+the exact execution. Agents should use it instead of constructing UI paths.
+
 The real cross-owner creation path is the harness `promote_backlog_item`, which
 routes cross-owner promotions to an owner-approval lane (not this handler).
 
@@ -39,7 +43,7 @@ routes cross-owner promotions to an owner-approval lane (not this handler).
 Harness execution records are implementation work, not user commitments, so
 harness `create_task` and `promote_backlog_item` create `lifecycle: Internal`
 tasks. Either tool may set `user_visible: true` only when the output is a
-durable commitment the user is expected to manage in `/tasks`. `reassign_task`
+durable commitment the user is expected to manage in `/work`. `reassign_task`
 keeps the original lifecycle, so changing an assignee never changes the
 audience. Normal chat `create_task` stays user-visible when the user asks to
 create or track work.

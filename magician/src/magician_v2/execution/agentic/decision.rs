@@ -79,21 +79,155 @@ pub enum DecisionErrorKind {
     /// A non-retryable, non-parse failure (misconfiguration, permanent provider
     /// rejection, unrecoverable internal error).
     Permanent,
+    /// The provider itself is down: breaker open, 5xx, transport failure, or the
+    /// dispatch queue's own retries gave up. Unlike `Transient` (a 429 or one
+    /// slow call) the next call will most likely fail too, so the run waits a
+    /// long capped backoff on `OUTAGE_MAX_RETRIES` and then fails, instead of
+    /// burning five sub-second retries on a dead provider.
+    Outage,
+}
+
+impl DecisionErrorKind {
+    /// The provider-retry budget (`transient_retry_count` or `outage_retry_count`) this kind draws on,
+    /// or `None` when the error is not a provider-degradation retry.
+    pub(super) fn retry_cap(self) -> Option<usize> {
+        match self {
+            Self::Transient => Some(super::executor::MAX_TRANSIENT_RETRIES),
+            Self::Outage => Some(super::executor::OUTAGE_MAX_RETRIES),
+            Self::ParseFailure | Self::Permanent => None,
+        }
+    }
+}
+
+/// The retries already used on the budget this error draws on: outage
+/// failures and transient ones are counted apart.
+pub(crate) fn provider_retries_used(
+    error: &anyhow::Error,
+    protective: &super::types::LoopProtectiveState,
+) -> usize {
+    match classify_decision_error(error) {
+        DecisionErrorKind::Outage => protective.outage_retry_count,
+        _ => protective.transient_retry_count,
+    }
+}
+
+/// Whether a failed turn goes back to the executor's retry policy: a provider
+/// degradation whose budget (`transient_retry_count`, `retries_used` so far) has
+/// room for the failure Resolve is about to count.
+pub(crate) fn provider_retry_budget_left(error: &anyhow::Error, retries_used: usize) -> bool {
+    classify_decision_error(error)
+        .retry_cap()
+        .is_some_and(|cap| retries_used < cap)
+}
+
+/// Whether that budget is spent, so Resolve will abort on this failure and the
+/// definition-of-done turn has to conclude from its micro-goals instead.
+pub(crate) fn provider_retry_budget_spent(error: &anyhow::Error, retries_used: usize) -> bool {
+    classify_decision_error(error)
+        .retry_cap()
+        .is_some_and(|cap| retries_used >= cap)
+}
+
+/// The outage class of a typed LLM error, or `None` when the provider is not
+/// down but slow or throttled. `RateLimited` and generic `Provider` errors stay
+/// out: a 429 is ordinary `Transient` backoff.
+fn llm_outage_class(error: &magicllm::LLMError) -> Option<&'static str> {
+    use magicllm::LLMError;
+    match error {
+        LLMError::Routed { source, .. } => llm_outage_class(source.as_ref()),
+        LLMError::ProviderUnavailable => Some("circuit_open"),
+        LLMError::Timeout | LLMError::WorkerWatchdog { .. } | LLMError::DeadlineExceeded => {
+            Some("timeout")
+        },
+        LLMError::QueueFull { .. } | LLMError::QueueBytesFull { .. } => Some("queue_full"),
+        LLMError::Transport(_) => Some("transport"),
+        LLMError::AllRetriesExhausted { .. } => Some("retries_exhausted"),
+        LLMError::ProviderStatus { status, .. } if (500..=599).contains(status) => Some("http_5xx"),
+        _ => None,
+    }
+}
+
+/// Short class name for an error [`classify_decision_error`] called an outage,
+/// for the `AgenticProviderOutage` event.
+pub fn outage_error_class(err: &anyhow::Error) -> &'static str {
+    err.chain()
+        .filter_map(|source| source.downcast_ref::<magicllm::LLMError>())
+        .find_map(llm_outage_class)
+        .unwrap_or("provider_outage")
+}
+
+/// `provider/model` of the call `err` came from, when a routed LLM error in
+/// its chain names one. For the owner question a run raises when its provider
+/// retries run out.
+pub fn failing_provider_route(err: &anyhow::Error) -> Option<String> {
+    err.chain()
+        .filter_map(|source| source.downcast_ref::<magicllm::LLMError>())
+        .find_map(|error| match error {
+            magicllm::LLMError::Routed {
+                provider, model, ..
+            } => Some(format!("{provider}/{model}")),
+            _ => None,
+        })
 }
 
 /// Classify a decision-path error by inspecting its (recursively-formatted)
 /// message for transient-provider markers.
 ///
-/// A match on any rate-limit / 429 / 503 / 502 / 504 / timeout / connection
-/// marker is classified [`DecisionErrorKind::Transient`]. A message that names a
+/// A typed provider-down error (see `llm_outage_class`) or its text markers
+/// is [`DecisionErrorKind::Outage`]. A match on any rate-limit / 429 / 503 / 502 /
+/// 504 / timeout / connection marker is [`DecisionErrorKind::Transient`]. A
+/// message that names a
 /// parse/lowering/decode failure is [`DecisionErrorKind::ParseFailure`].
 /// Everything else defaults to [`DecisionErrorKind::Permanent`].
 ///
 /// Text-based on purpose: the decision path returns opaque `anyhow` from many
 /// provider layers, so there is no single typed error to match on structurally.
 pub fn classify_decision_error(err: &anyhow::Error) -> DecisionErrorKind {
+    // A typed LLM error decides first: the dispatch queue's breaker and
+    // retry-exhaustion errors read like ordinary timeouts as text. The chain
+    // already ends at the root cause.
+    if err
+        .chain()
+        .filter_map(|source| source.downcast_ref::<magicllm::LLMError>())
+        .any(|error| llm_outage_class(error).is_some())
+    {
+        return DecisionErrorKind::Outage;
+    }
+
+    // The provider answered and the decision contract rejected the answer
+    // (bad tool arguments, unknown tool, no or several tool calls). The model
+    // must see why and correct it. Its text can quote model-supplied field
+    // names and values (`timeout_secs`, `network`), which the transient
+    // markers below read as a provider fault: a run then retried blind with
+    // a placeholder result, five times, and failed.
+    if crate::magician_v2::execution::multi_llm_agent_adapter::MultiLlmAgentAdapter::validation_failure_from_error(err).is_some() {
+        return DecisionErrorKind::ParseFailure;
+    }
+
     // Include the full source chain so wrapped transport errors are visible.
     let text = format!("{err:#}").to_ascii_lowercase();
+
+    // Text fallback for outages that arrive as opaque strings. Checked before
+    // the transient markers: "returned http 503" would otherwise match "503".
+    const OUTAGE_MARKERS: &[&str] = &[
+        "circuit breaker",
+        "provider unavailable",
+        "returned http 5",
+        "bad gateway",
+        "gateway timeout",
+        "error sending request",
+    ];
+    if OUTAGE_MARKERS.iter().any(|m| text.contains(m)) {
+        return DecisionErrorKind::Outage;
+    }
+
+    // The owner's spend envelope being spent is a wait, not a failure: it
+    // must never reach the permanent/parse paths (a definition-of-done turn
+    // would otherwise conclude the run from its micro-goals). Resolve parks
+    // the run; see `spend_envelope::park_wait_for_error`.
+    if text.contains(magicllm::SPEND_ENVELOPE_EXHAUSTED_MARKER) {
+        return DecisionErrorKind::Transient;
+    }
 
     const TRANSIENT_MARKERS: &[&str] = &[
         "rate limit",
@@ -183,16 +317,15 @@ fn add_memory_sections_to_variables(variables: &mut HashMap<String, String>, ctx
     );
 }
 
+/// A memory section bounded to its prompt cap by whole entries, ending on a
+/// word or sentence boundary and keeping its closing tag — never a raw
+/// character cut, which used to end an entry mid-word and drop the section's
+/// closing tag.
 fn bounded_prompt_section(value: Option<&str>, max_chars: usize) -> String {
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return String::new();
     };
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let mut truncated: String = value.chars().take(max_chars).collect();
-    truncated.push_str("\n...[truncated]");
-    truncated
+    crate::magician_v2::agents::memory_prompt_blocks::bounded_memory_section(value, max_chars)
 }
 use super::types::{
     action_signature, artifact_kind_from_json_header, AgenticAssistantTurnRecord, AgenticContext,
@@ -253,7 +386,8 @@ pub enum Decision {
         /// Used by the executor to reject sub-goals that are paraphrases of
         /// the parent goal rather than genuine decomposition.
         unblocks: String,
-        /// Maximum number of iterations the sub-goal is allowed
+        /// Planning estimate only. The runtime uses the parent's remaining
+        /// iteration allowance and charges child work to that same allowance.
         budget_iterations: usize,
     },
 
@@ -362,11 +496,28 @@ pub async fn decide_next_action(
     native_adapter: &crate::magician_v2::execution::multi_llm_agent_adapter::MultiLlmAgentAdapter,
     telemetry_slot: Option<&LlmTelemetrySlot>,
     side_call_telemetry: Option<&OperationLlmTelemetryContext>,
-    definition_of_done_met: bool,
+    // What the durable task state and the run's owner obligations say about
+    // finishing (executor-side `definition_of_done_signal`). Only
+    // `OwnerReportOutstanding` acts here: the turn keeps its tools and is
+    // steered at that report (`decision_preflight`).
+    definition_of_done_signal: DefinitionOfDone,
+    // Definition-of-done: `Some` when the durable task state tracks
+    // micro-goals, every one is resolved, and the run owes its owner no
+    // report (`DefinitionOfDone::Met`). This turn is then the run's last:
+    // one model turn with tools disabled writes the final answer
+    // (`definition_of_done_terminal`).
+    definition_of_done: Option<&[ResolvedMicroGoal]>,
     // P2.1: operator-steer lines buffered for THIS turn. Folded into the current
     // user prompt (not injected as a standalone user turn) so strict
     // assistant/user alternation is preserved. Empty on turns with no steer.
     operator_steer: &[String],
+    // An earlier screenshot with the caption saying when it was taken and
+    // what ran since. Replaces this state's image, which is then the same
+    // capture or absent.
+    carried_screenshot: Option<(
+        crate::magician_v2::slot_graph::extraction::ImageData,
+        String,
+    )>,
 ) -> Result<(Decision, super::native_integration::NativeDecisionMetadata)> {
     use super::native_integration::native_decision_via_adapter_with_history;
 
@@ -376,7 +527,8 @@ pub async fn decide_next_action(
         native_adapter,
         side_call_telemetry,
         execution_id,
-        definition_of_done_met,
+        definition_of_done_signal,
+        operator_steer,
         false,
     )
     .await?;
@@ -394,10 +546,11 @@ pub async fn decide_next_action(
     // a resumed run continues the same frozen conversation; pre-migration
     // blobs (no persisted conversation) fall back to the summary-into-goal
     // hydration in the resume goal builders.
+    let (verbatim_max_pairs, verbatim_token_budget) = verbatim_window(ctx);
     let mut history_messages = compact_live_messages(
         &history.live_messages,
-        OUTER_VERBATIM_MAX_ITERATIONS,
-        OUTER_VERBATIM_TOKEN_BUDGET,
+        verbatim_max_pairs,
+        verbatim_token_budget,
     );
     guard_provider_tool_result_messages(&mut history_messages, ctx.app_disclosure_guard.is_some())?;
     // Tell the textual `## EXECUTION HISTORY` window how many recent records the
@@ -417,7 +570,10 @@ pub async fn decide_next_action(
     // message is the one the next request re-sends — the shape a cache
     // breakpoint on it needs.
     if history.last_response_id.is_some() {
-        fold_synthetic_turns_into_tool_results(&mut history_messages);
+        fold_loop_issued_turns_into_tool_results(
+            &mut history_messages,
+            &loop_issued_tool_call_ids(history),
+        );
     }
     let projection_replay = autonomous_projection_replay_stats(history, iterations_in_messages);
     if projection_replay.replay_count > 0 || projection_replay.invalid_projection_count > 0 {
@@ -456,7 +612,16 @@ pub async fn decide_next_action(
     .await
     .map_err(|e| anyhow!("Failed to build decision prompt: {}", e))?;
 
-    let images = extract_screenshot(current_state, screenshot_storage, execution_id, history).await;
+    let mut images =
+        extract_screenshot(current_state, screenshot_storage, execution_id, history).await;
+    // An earlier screenshot the caller kept: either this state has none, or
+    // it still holds that same capture after later actions. Either way it is
+    // shown with its caption, never as the current screen.
+    let mut carried_caption = None;
+    if let Some((image, caption)) = carried_screenshot {
+        images = Some(vec![image]);
+        carried_caption = Some(caption);
+    }
     // Image-shape of THIS turn, captured before `images` is moved into the call.
     let current_has_images = images.as_ref().is_some_and(|imgs| !imgs.is_empty());
     // CSS viewport of this observation, so the router can inject `extra.viewport`
@@ -564,6 +729,21 @@ pub async fn decide_next_action(
         }
         native_user_prompt.push_str(&steer_block);
     }
+    if let Some(caption) = carried_caption {
+        native_user_prompt.push_str("\n\n## EARLIER SCREENSHOT\n");
+        native_user_prompt.push_str(&caption);
+        native_user_prompt.push('\n');
+    }
+    let final_answer_directive = definition_of_done.map(definition_of_done_final_answer_directive);
+    if let Some(directive) = final_answer_directive.as_deref() {
+        tracing::info!(
+            target: "agentic.stuck",
+            iterations = history.iterations.len(),
+            goals = definition_of_done.map_or(0, <[ResolvedMicroGoal]>::len),
+            "[DEFINITION-OF-DONE] all durable micro-goals resolved; asking for the final answer with tools disabled"
+        );
+        native_user_prompt.push_str(directive);
+    }
 
     // On Anthropic, mark the end of this turn's text: it is kept verbatim in
     // the conversation (`keep_local_turn`), so the adapter caches it now
@@ -601,6 +781,12 @@ pub async fn decide_next_action(
                 (_, Some(turn)) => turn,
                 (text, None) => text,
             };
+            // The kept turn must not go on forbidding tools: if this final
+            // answer is rejected, the next turn has them again.
+            let text = match final_answer_directive.as_deref() {
+                Some(directive) => text.replace(directive, DEFINITION_OF_DONE_KEPT_TURN_NOTE),
+                None => text,
+            };
             (index, text)
         });
     let native_outcome = native_decision_via_adapter_with_history(
@@ -614,6 +800,7 @@ pub async fn decide_next_action(
         Some(outer_prompt_projection_iteration(ctx, history)),
         previous_response_id,
         viewport,
+        definition_of_done.is_some(),
     )
     .await;
     if let Err(error) = &native_outcome {
@@ -632,6 +819,17 @@ pub async fn decide_next_action(
             }
         }
     }
+    // The final no-tools turn never fails the run: without a usable answer
+    // the terminal is built from the micro-goals themselves.
+    // A retryable provider error (429, timeout, 5xx) goes back to the
+    // executor's transient retry policy instead; `decide.rs` falls back only
+    // once that budget is spent.
+    let native_outcome = match (definition_of_done, native_outcome) {
+        (Some(goals), Err(error)) if classify_decision_error(&error).retry_cap().is_none() => {
+            return Ok(definition_of_done_terminal(ctx, Err(error), goals));
+        },
+        (_, outcome) => outcome,
+    };
     // Provider errors remain opaque operational failures here and are
     // classified by the executor retry policy. A response-contract error keeps
     // its typed source and exact telemetry through the same `anyhow` chain.
@@ -657,25 +855,39 @@ pub async fn decide_next_action(
             *guard = Some(tel.clone());
         }
     }
+    if let Some(goals) = definition_of_done {
+        return Ok(definition_of_done_terminal(
+            ctx,
+            Ok((decision, metadata)),
+            goals,
+        ));
+    }
     Ok((decision, metadata))
 }
 
-/// Phase C — bounded outer-loop verbatim window.
+/// Phase C — bounded outer-loop verbatim window: `(max_pairs, token_budget)`.
 ///
-/// `OUTER_VERBATIM_MAX_ITERATIONS` caps how many of the most recent
-/// iterations are emitted as real assistant / user tool pairs in the
-/// message list. The number is intentionally generous (25) so the model
-/// sees most of a typical execution verbatim while older context is
-/// summarized in the prompt's `## EXECUTION HISTORY` section.
-pub(super) const OUTER_VERBATIM_MAX_ITERATIONS: usize = 25;
-
-/// Snapshot token ceiling for the keep-tail window, in
+/// `max_pairs` caps how many of the most recent iterations are emitted as
+/// real assistant / user tool pairs in the message list; `token_budget` then
+/// evicts oldest pairs first, in
 /// [`magicllm::chunking::ConservativeOllamaEstimator`] units (ceil of UTF-8
-/// bytes / 2). 40_000 tokens is the previous 80_000-byte char budget, so
-/// eviction order for ASCII/JSON is unchanged while the unit matches the
-/// rest of the stack. System prompt, tool schemas, and the current-state
+/// bytes / 2). Both come from the `agentic:` config section
+/// (`verbatim_history_max_iterations`, default 40;
+/// `verbatim_history_token_budget`, default 120_000). The pre-0.7.121 window
+/// (25 pairs / 40_000 tokens, the old 80_000-byte budget) is the floor the
+/// config load enforces. Older turns are summarized in the prompt's
+/// `## EXECUTION HISTORY` section, and anything older than that summary is
+/// listed there by ref. System prompt, tool schemas, and the current-state
 /// block sit outside this snapshot; they are the fixed headroom.
-pub(super) const OUTER_VERBATIM_TOKEN_BUDGET: usize = 40_000;
+///
+/// decide(), the Decision Engine rail and the stateless continuation
+/// checkpoint all use this one window, so a resumed run sees what it saw.
+pub(super) fn verbatim_window(ctx: &AgenticContext) -> (usize, usize) {
+    (
+        ctx.agentic_settings.verbatim_history_max_iterations(),
+        ctx.agentic_settings.verbatim_history_token_budget(),
+    )
+}
 
 /// Render the last `n` iterations as real `Assistant` / `User` message pairs
 /// using provider-native `ContentBlock::ToolCall` / `ContentBlock::ToolResult`
@@ -2124,6 +2336,25 @@ async fn build_work_context_section(ctx: &AgenticContext) -> String {
     )
 }
 
+/// Whether this agent is offered `activate_skill` — the same gates the flat
+/// catalog applies (`flat_loop::catalog::offered_procedure_skill_tools`).
+/// Without a tool index (the degraded full-catalog path) every direct
+/// capability is offered.
+fn procedure_skill_activation_offered(ctx: &AgenticContext) -> bool {
+    if ctx.available_procedure_skills.is_empty() {
+        return false;
+    }
+    let Some(index) = ctx.tool_index.as_ref() else {
+        return true;
+    };
+    let catalog_ctx = super::native_integration::build_catalog_context(ctx);
+    crate::magician_v2::execution::flat_loop::catalog::offered_procedure_skill_tools(
+        &catalog_ctx,
+        index,
+    )
+    .contains(&"activate_skill")
+}
+
 fn build_available_procedure_skills_section(skills: &[(String, String)]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -2476,6 +2707,41 @@ fn loop_step_label(name: &str, arguments: &serde_json::Value) -> String {
 pub(super) fn fold_synthetic_turns_into_tool_results(
     messages: &mut Vec<magicllm::prelude::LLMMessage>,
 ) {
+    fold_loop_issued_turns_into_tool_results(messages, &std::collections::HashSet::new());
+}
+
+/// Tool-call ids of the turns the loop issued without a model call: the ones
+/// `Resolve` keeps the provider chain across (their trace context carries a
+/// `synthetic:` call id — a Decision Engine step, a pre-decided call) plus
+/// the synthetic outer turns. A Decision Engine step names its call
+/// `decision:<iteration>:<tool>`, not [`SYNTHETIC_OUTER_TOOL_CALL_ID`], so
+/// matching the constant alone left those pairs after the chain's tool
+/// result; the continuation suffix then dropped that result and the provider
+/// rejected the turn ("No tool output found for function call …", live
+/// 2026-10-20).
+pub(super) fn loop_issued_tool_call_ids(
+    history: &ExecutionHistory,
+) -> std::collections::HashSet<String> {
+    history
+        .assistant_turns
+        .iter()
+        .filter(|turn| {
+            turn.operation == "agentic_decision_synthetic"
+                || turn
+                    .llm_trace_context
+                    .as_ref()
+                    .is_some_and(|context| context.llm_call_id.starts_with("synthetic:"))
+        })
+        .flat_map(|turn| turn.tool_calls.iter().map(|call| call.id.clone()))
+        .collect()
+}
+
+/// [`fold_synthetic_turns_into_tool_results`], also folding a trailing turn
+/// whose calls are all in `loop_issued` ([`loop_issued_tool_call_ids`]).
+pub(super) fn fold_loop_issued_turns_into_tool_results(
+    messages: &mut Vec<magicllm::prelude::LLMMessage>,
+    loop_issued: &std::collections::HashSet<String>,
+) {
     use magicllm::prelude::{ContentBlock, MessageRole};
     loop {
         let len = messages.len();
@@ -2486,7 +2752,9 @@ pub(super) fn fold_synthetic_turns_into_tool_results(
         let synthetic = assistant.role == MessageRole::Assistant
             && !assistant.content.is_empty()
             && assistant.content.iter().all(|block| match block {
-                ContentBlock::ToolCall { id, .. } => id == SYNTHETIC_OUTER_TOOL_CALL_ID,
+                ContentBlock::ToolCall { id, .. } => {
+                    id == SYNTHETIC_OUTER_TOOL_CALL_ID || loop_issued.contains(id)
+                },
                 ContentBlock::Text { .. } => true,
                 _ => false,
             })
@@ -2762,8 +3030,18 @@ async fn build_decision_prompt_from_manager(
     // section so they land next to the AVAILABLE CAPABILITIES block in
     // the rendered prompt. Both are no-ops when the agent has no skills
     // allowlisted / nothing active.
+    //
+    // The catalog renders only when `activate_skill` is actually offered to
+    // this agent: naming it to an agent that cannot call it invites a call
+    // that can only be refused.
+    let activatable_procedure_skills: &[(String, String)] =
+        if procedure_skill_activation_offered(ctx) {
+            &ctx.available_procedure_skills
+        } else {
+            &[]
+        };
     capabilities_section.push_str(&build_available_procedure_skills_section(
-        &ctx.available_procedure_skills,
+        activatable_procedure_skills,
     ));
     // Snapshot the active skill while holding the mutex briefly; we only
     // need a `Clone` to render. Holding the guard across an `await` /
@@ -2887,6 +3165,71 @@ async fn build_decision_prompt_from_manager(
         .map_err(|e| anyhow!("Failed to load agentic_decision prompt: {}", e))
 }
 
+/// What the durable task state says about finishing this turn, computed
+/// executor-side (it loads the durable state and the owner's requests) and
+/// read by [`decision_preflight`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefinitionOfDone {
+    /// A micro-goal is open, none are tracked, or the success gate just
+    /// rejected a conclusion: the model decides as usual.
+    Open,
+    /// Every tracked micro-goal is resolved and the run owes its owner nothing
+    /// further: the run's last turn writes the final answer with tools
+    /// disabled (`take_definition_of_done_turn`, `definition_of_done_terminal`),
+    /// unless that turn was already taken for this micro-goal set.
+    Met,
+    /// Every tracked micro-goal is resolved, but the run's policy requires a
+    /// final owner report that has not been filed (an unattended VibeDev
+    /// Autopilot coordinator): the model decides, steered at that report.
+    OwnerReportOutstanding,
+}
+
+impl DefinitionOfDone {
+    /// A new operator request needs a normal decision with tools even when
+    /// the previously tracked work was complete. Preserve an owed owner report.
+    pub(crate) fn with_operator_steer(self, steer: &[String]) -> Self {
+        if self == Self::Met && steer.iter().any(|message| !message.trim().is_empty()) {
+            Self::Open
+        } else {
+            self
+        }
+    }
+}
+
+/// The last turn declared a wait: a status check on a runtime-owned shell job
+/// that is still running, or a `SleepUntil`. Polling a declared wait repeats the
+/// same successful action by design, so it is not churn. This is decided by the
+/// kind of action, never by a result fingerprint: four identical successful
+/// `run_coding_task` calls or a read-only streak are still loops.
+fn waiting_on_declared_wait(history: &ExecutionHistory, execution_id: Option<&str>) -> bool {
+    history.iterations.last().is_some_and(|record| {
+        record.result.success
+            && match &record.action {
+                crate::magician_v2::execution::actions::ExecutableAction::SleepUntil { .. } => true,
+                crate::magician_v2::execution::actions::ExecutableAction::Pack {
+                    capability_name,
+                    resolved_params,
+                    ..
+                } if capability_name == "shell"
+                    && crate::magician_v2::execution::shell_jobs::action_name(resolved_params)
+                        == "status" =>
+                {
+                    execution_id.is_some_and(|id| {
+                        resolved_params
+                            .get("job_id")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|job| {
+                                crate::magician_v2::execution::shell_jobs::running_for_execution(id)
+                                    .iter()
+                                    .any(|id| id == job)
+                            })
+                    })
+                },
+                _ => false,
+            }
+    })
+}
+
 /// Execution lifecycle limits shared by every planner. These can terminate an
 /// exhausted run, but never authorize a tool call. With engine-owned planning,
 /// progress recovery is a directive for that planner, not a second model call.
@@ -2896,7 +3239,8 @@ pub(crate) async fn decision_preflight(
     native_adapter: &crate::magician_v2::execution::multi_llm_agent_adapter::MultiLlmAgentAdapter,
     side_call_telemetry: Option<&OperationLlmTelemetryContext>,
     execution_id: Option<&str>,
-    definition_of_done_met: bool,
+    definition_of_done: DefinitionOfDone,
+    operator_steer: &[String],
     engine_owns_planning: bool,
 ) -> Result<(
     Option<(Decision, super::native_integration::NativeDecisionMetadata)>,
@@ -2928,7 +3272,13 @@ pub(crate) async fn decision_preflight(
     // Adversarial progress reviewer: steer lines it injects for THIS turn, folded
     // into the user prompt below alongside any operator steer. See
     // docs/archive/plans/2026-07-11-adversarial-progress-reviewer-plan.md.
-    if let Some(stuck_kind) = detect_stuck_kind(history) {
+    // Waiting for a runtime-owned worker is active work, not read-only churn.
+    // Failed calls and unrelated inspection retain the normal loop safeguards.
+    let on_declared_wait = waiting_on_declared_wait(history, execution_id);
+    // Give new owner guidance a model turn before reapplying the historical
+    // churn stop. Budget, cancellation and policy gates still apply normally.
+    let has_operator_steer = operator_steer.iter().any(|line| !line.trim().is_empty());
+    if let Some(stuck_kind) = (!on_declared_wait && !has_operator_steer).then(|| detect_stuck_kind(history)).flatten() {
         match stuck_kind {
             // Identical-action degenerate loop → keep the existing hard conclude.
             StuckKind::RepeatChurn { .. } => {
@@ -3084,42 +3434,410 @@ pub(crate) async fn decision_preflight(
     // again and again) redirects the model this turn instead of ending the run.
     reviewer_steer_lines.extend(super::churn_steer::goal_churn_steer_lines(history));
 
-    // ─── Definition-of-done auto-conclude ───────────────────────────────
+    // ─── Definition-of-done ─────────────────────────────────────────────
     //
-    // The orchestrator (executor) computed that the durable task state tracks
-    // micro-goals and EVERY one is resolved (completed/blocked). Conclude with
-    // a synthetic success terminal instead of paying for another LLM turn that
-    // would only re-verify already-closed requirements (the "refinement
-    // overdone" pattern). The executor's `Decision::Completed` arm re-runs the
-    // same micro-goal success gate (`terminal_success_rejection`), so this can
-    // never force a false completion — if the gate rejects, the run simply
-    // continues.
-    if definition_of_done_met {
+    // Definition-of-done is not a preflight terminal: it is the run's last
+    // model turn, taken with tools disabled (`definition_of_done_terminal`),
+    // so the run ends with an answer instead of a canned conclusion. The
+    // caller runs that turn for `DefinitionOfDone::Met`.
+    //
+    // Micro-goals track the work, not what the run owes its owner afterwards.
+    // An unattended run whose policy requires a final owner report gets this
+    // turn, with its tools, to send it: concluding here ended a VibeDev
+    // Autopilot lead the moment its engineer's verified result closed the
+    // last micro-goal, 85 ms after resume and with no model call, so the
+    // report the policy asked for was never sent (2026-10-20). Once the report
+    // is filed the signal is `Met` and the final no-tools turn follows.
+    if definition_of_done == DefinitionOfDone::OwnerReportOutstanding {
         tracing::info!(
             target: "agentic.stuck",
             iterations = history.iterations.len(),
-            "[DEFINITION-OF-DONE] all durable micro-goals resolved; concluding without an LLM call"
+            "[DEFINITION-OF-DONE] micro-goals resolved but the owner report is outstanding; deciding with the model"
         );
-        let metadata = super::native_integration::NativeDecisionMetadata::synthetic(
-            "definition_of_done",
-            "All durable task-state micro-goals are resolved (completed/blocked)",
-        );
-        return Ok(Some((
-            Decision::Completed {
-                evidence: Some(
-                    "All tracked task-state micro-goals are resolved (completed/blocked); concluding the run."
-                        .to_string(),
-                ),
-                artifacts: Vec::new(),
-            },
-            metadata,
-        )));
+        reviewer_steer_lines.push(owner_report_outstanding_steer());
     }
-
 
         Ok::<_, anyhow::Error>(None)
     }.await?;
     Ok((terminal, reviewer_steer_lines))
+}
+
+/// One resolved durable task-state micro-goal, as the definition-of-done
+/// turn reads it. Only `completed` and `blocked` goals are ever built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedMicroGoal {
+    pub result_summary: Option<String>,
+    pub evidence_refs: Vec<serde_json::Value>,
+    pub id: String,
+    pub description: String,
+    pub blocked: bool,
+    pub blocked_reason: Option<String>,
+}
+
+/// Bound for one micro-goal field in the final-answer prompt and the
+/// deterministic terminal, so a long `blocked_reason` cannot crowd out the rest.
+const DEFINITION_OF_DONE_FIELD_CHARS: usize = 600;
+
+fn bounded_micro_goal_text(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= DEFINITION_OF_DONE_FIELD_CHARS {
+        return text.to_string();
+    }
+    let mut bounded: String = text.chars().take(DEFINITION_OF_DONE_FIELD_CHARS).collect();
+    bounded.push('…');
+    bounded
+}
+
+impl ResolvedMicroGoal {
+    /// The requirement in words: its description, or its id when it has none.
+    fn label(&self) -> String {
+        let description = self.description.trim();
+        if description.is_empty() {
+            bounded_micro_goal_text(&self.id)
+        } else {
+            bounded_micro_goal_text(description)
+        }
+    }
+
+    fn reason(&self) -> String {
+        self.blocked_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .map(bounded_micro_goal_text)
+            .unwrap_or_else(|| "no reason was recorded".to_string())
+    }
+}
+
+/// The definition-of-done reading of a durable task state: `Some` when it
+/// tracks at least one micro-goal and every one is `completed` or `blocked`.
+/// A state with no micro-goals, or with any `pending`/`in_progress` one (a
+/// fresh baseline's `mg_initial` included), is not done.
+pub(crate) fn resolved_micro_goals_in_state(
+    state: &serde_json::Value,
+) -> Option<Vec<ResolvedMicroGoal>> {
+    let micro_goals = state.get("micro_goals")?.as_array()?;
+    if micro_goals.is_empty() {
+        return None;
+    }
+    micro_goals
+        .iter()
+        .map(|goal| {
+            let blocked = match goal.get("status").and_then(serde_json::Value::as_str)? {
+                "completed" => false,
+                "blocked" => true,
+                _ => return None,
+            };
+            let text = |key: &str| {
+                goal.get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            Some(ResolvedMicroGoal {
+                result_summary: goal
+                    .get("result_summary")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|text| crate::magician_v2::artifact_v2::result_delivery::clip(text, 800)),
+                evidence_refs: crate::magician_v2::artifact_v2::result_delivery::evidence_refs(
+                    goal,
+                ),
+                id: text("id"),
+                description: text("description"),
+                blocked,
+                blocked_reason: Some(text("blocked_reason")).filter(|reason| !reason.is_empty()),
+            })
+        })
+        .collect()
+}
+/// What the kept conversation turn says in place of the final-answer
+/// directive, once that turn is over.
+const DEFINITION_OF_DONE_KEPT_TURN_NOTE: &str =
+    "\n\n[definition-of-done] This turn asked for the final \
+     answer with tools disabled. That applied to this turn only: on any later turn your tools are \
+     available again.";
+
+/// The name the definition-of-done answer is carried under as the run's
+/// `task_deliverable`. The success gates judge the terminal without it
+/// (`apply::artifacts_beyond_the_answer`): it only repeats the answer.
+pub(crate) const DEFINITION_OF_DONE_ANSWER_ARTIFACT: &str = "final_answer.md";
+
+/// `completed[]` for a partial whose every requirement is blocked: the
+/// finished work is the answer itself, already in `summary`.
+const DEFINITION_OF_DONE_ANSWER_ITEM: &str =
+    "Final answer written from the evidence gathered (above).";
+
+/// At most this many definition-of-done turns per run.
+pub(crate) const MAX_DEFINITION_OF_DONE_TURNS: usize = 2;
+
+/// A stable digest of a resolved micro-goal set: ids, statuses, descriptions
+/// and reasons.
+pub(crate) fn definition_of_done_fingerprint(goals: &[ResolvedMicroGoal]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for goal in goals {
+        for part in [
+            goal.id.as_str(),
+            if goal.blocked { "blocked" } else { "completed" },
+            goal.description.as_str(),
+            goal.blocked_reason.as_deref().unwrap_or_default(),
+        ] {
+            hasher.update(part.as_bytes());
+            hasher.update(&[0]);
+        }
+        hasher.update(
+            goal.result_summary
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        hasher.update(
+            serde_json::to_string(&goal.evidence_refs)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        hasher.update(&[1]);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+/// Decide whether this turn is a definition-of-done turn, and record it.
+///
+/// Not after a rejected terminal; never twice for the same micro-goal set
+/// (a tool turn resets the rejection counter, so without the fingerprint a
+/// rejected answer would be retaken every other turn); and at most
+/// [`MAX_DEFINITION_OF_DONE_TURNS`] per run. Both guards live in
+/// `LoopProtectiveState`, which a pause persists.
+pub(crate) fn take_definition_of_done_turn(
+    protective: &mut super::types::LoopProtectiveState,
+    goals: Option<Vec<ResolvedMicroGoal>>,
+) -> Option<Vec<ResolvedMicroGoal>> {
+    let goals = goals?;
+    if protective.consecutive_goal_reached_rejections > 0
+        || protective.definition_of_done_turns >= MAX_DEFINITION_OF_DONE_TURNS
+    {
+        return None;
+    }
+    let fingerprint = definition_of_done_fingerprint(&goals);
+    if protective.definition_of_done_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+        return None;
+    }
+    protective.definition_of_done_turns += 1;
+    protective.definition_of_done_fingerprint = Some(fingerprint);
+    Some(goals)
+}
+
+/// Undo [`take_definition_of_done_turn`] for a turn whose call failed
+/// transiently and goes back to the retry policy: the retry is the same turn.
+pub(crate) fn release_definition_of_done_turn(
+    protective: &mut super::types::LoopProtectiveState,
+    previous_fingerprint: Option<String>,
+) {
+    protective.definition_of_done_turns = protective.definition_of_done_turns.saturating_sub(1);
+    protective.definition_of_done_fingerprint = previous_fingerprint;
+}
+
+/// The instruction appended to the run's last turn. Tools are disabled on the
+/// request itself (`tool_choice: none`); this says what the answer must hold.
+pub(crate) fn definition_of_done_final_answer_directive(goals: &[ResolvedMicroGoal]) -> String {
+    let mut out = String::from(
+        "\n\n## FINAL ANSWER (tools are disabled for this turn)\n\
+         Every tracked requirement of this task is now resolved, so this is the run's last turn. \
+         For this turn only, this overrides the instruction to call a tool in every response: \
+         do not call a tool, and do not write tool calls or JSON as text. Reply with the final \
+         answer for the user, as plain text:\n\
+         - If the task asks for a deliverable (a document, proposal, list, plan, answer or code), \
+         write the deliverable itself, in full, from the evidence already gathered. Do not \
+         describe it or substitute a progress report.\n\
+         - Then say briefly what was found or done.\n\
+         - For each blocked requirement below, say what it needed and exactly what blocked it, \
+         so the user can unblock it.\n\
+         Do not claim anything the evidence in this run does not show.\n\n\
+         Tracked requirements:\n",
+    );
+    for goal in goals {
+        let label = neutralize_boundary_tags(&goal.label());
+        if let Some(summary) = goal.result_summary.as_deref() {
+            out.push_str(&format!("- Saved authored finding (recheck against its sources): {}. Original evidence references: {}\n",
+                neutralize_boundary_tags(&serde_json::to_string(summary).unwrap_or_default()),
+                neutralize_boundary_tags(&serde_json::to_string(&goal.evidence_refs).unwrap_or_default())));
+        }
+        if goal.blocked {
+            out.push_str(&format!(
+                "- [blocked] {label} — blocked by: {}\n",
+                neutralize_boundary_tags(&goal.reason())
+            ));
+        } else {
+            out.push_str(&format!("- [completed] {label}\n"));
+        }
+    }
+    out
+}
+/// The deterministic terminal text when the final turn yields no answer: one
+/// `COMPLETED:` line per completed requirement, one `BLOCKED: … — reason` line
+/// per blocked one.
+pub(crate) fn definition_of_done_status_lines(goals: &[ResolvedMicroGoal]) -> String {
+    goals
+        .iter()
+        .map(|goal| {
+            let status = if goal.blocked {
+                format!("BLOCKED: {} — {}", goal.label(), goal.reason())
+            } else {
+                format!("COMPLETED: {}", goal.label())
+            };
+            match goal.result_summary.as_deref().filter(|_| !goal.evidence_refs.is_empty()) {
+                Some(summary) => format!(
+                    "{status}\nSaved finding (authored, not independently verified): {}\nOriginal evidence references: {}",
+                    serde_json::to_string(summary).unwrap_or_default(),
+                    serde_json::to_string(&goal.evidence_refs).unwrap_or_default(),
+                ),
+                None => status,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Turn the definition-of-done final turn into the run's terminal.
+///
+/// The answer is the model's text when the turn produced one, else the
+/// deterministic status lines. With every requirement completed the terminal
+/// is `Decision::Completed` (the model's answer carried as the run's
+/// `task_deliverable`, so `completed_terminal_summary` publishes it as the
+/// answer); with any requirement blocked it is a partial `Decision::Yield`
+/// whose `open` holds the blocked requirements and whose blockers name what
+/// blocked each one, so `dispose_yield` settles it as `PartialSuccess`.
+pub(crate) fn definition_of_done_terminal(
+    ctx: &AgenticContext,
+    final_turn: Result<(Decision, super::native_integration::NativeDecisionMetadata)>,
+    goals: &[ResolvedMicroGoal],
+) -> (Decision, super::native_integration::NativeDecisionMetadata) {
+    use super::native_integration::NativeDecisionMetadata;
+    use super::yield_decision::{
+        YieldBlocker, YieldBlockerKind, YieldDecision, YieldSelfClassification,
+    };
+
+    let synthetic = || {
+        NativeDecisionMetadata::synthetic(
+            "definition_of_done",
+            "All durable task-state micro-goals are resolved (completed/blocked)",
+        )
+    };
+    let (answer, metadata) = match final_turn {
+        // A text reply lowers to `Completed { evidence }`: that is the answer,
+        // and its turn is the model's own.
+        Ok((Decision::Completed { evidence, .. }, metadata))
+            if evidence
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty()) =>
+        {
+            (evidence.map(|text| text.trim().to_string()), metadata)
+        },
+        Ok((other, metadata)) => {
+            // A provider that does not honour `tool_choice: none` may still
+            // have answered in text beside the call; that text is the answer.
+            // Then a yield's own summary. Only then the micro-goals.
+            let text = metadata
+                .assistant_turn
+                .as_ref()
+                .and_then(|turn| turn.text.clone())
+                .or(match &other {
+                    Decision::Yield { payload } => Some(payload.summary.clone()),
+                    _ => None,
+                })
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty());
+            if text.is_none() {
+                warn!(
+                    target: "agentic.stuck",
+                    execution_id = ctx.execution_id.as_deref().unwrap_or("<none>"),
+                    decision = super::executor::response_kind_from_decision(&other),
+                    "[DEFINITION-OF-DONE] final turn returned no answer; concluding from the micro-goals"
+                );
+            }
+            // Its turn is not recorded (a discarded tool call would have no
+            // result); its usage still is.
+            let mut fallback = synthetic();
+            fallback.telemetry = metadata.telemetry;
+            (text, fallback)
+        },
+        Err(error) => {
+            // A rejected response (a `yield` whose arguments did not parse)
+            // still carries the model's words: they are the answer. Only a
+            // turn with none concludes from the micro-goals.
+            let recovered = MultiLlmAgentAdapter::recovered_answer_from_error(&error);
+            warn!(
+                target: "agentic.stuck",
+                execution_id = ctx.execution_id.as_deref().unwrap_or("<none>"),
+                error = %error,
+                recovered_answer = recovered.is_some(),
+                "[DEFINITION-OF-DONE] final turn failed; {}",
+                if recovered.is_some() {
+                    "keeping the answer its rejected response carried"
+                } else {
+                    "concluding from the micro-goals"
+                }
+            );
+            (recovered, synthetic())
+        },
+    };
+    let from_model = answer.is_some();
+    let answer = answer.unwrap_or_else(|| definition_of_done_status_lines(goals));
+
+    // The model's answer is the run's deliverable; a status list is not.
+    let deliverable: Vec<Artifact> = if from_model {
+        let mut artifact = Artifact::task_deliverable(answer.clone());
+        artifact.name = DEFINITION_OF_DONE_ANSWER_ARTIFACT.to_string();
+        vec![artifact]
+    } else {
+        Vec::new()
+    };
+
+    let blocked: Vec<&ResolvedMicroGoal> = goals.iter().filter(|goal| goal.blocked).collect();
+    if blocked.is_empty() {
+        let artifacts = deliverable;
+        return (
+            Decision::Completed {
+                evidence: Some(answer),
+                artifacts,
+            },
+            metadata,
+        );
+    }
+
+    let mut completed: Vec<String> = goals
+        .iter()
+        .filter(|goal| !goal.blocked)
+        .map(ResolvedMicroGoal::label)
+        .collect();
+    // Every requirement blocked: the model's answer is the finished work (a
+    // short marker, not the answer again — it is already the summary). With
+    // no answer either, nothing was finished: `completed` stays empty and the
+    // yield disposes as Failed, its blockers naming why.
+    if completed.is_empty() && from_model {
+        completed.push(DEFINITION_OF_DONE_ANSWER_ITEM.to_string());
+    }
+    let self_classification = if completed.is_empty() {
+        YieldSelfClassification::Blocked
+    } else {
+        YieldSelfClassification::Partial
+    };
+    let payload = YieldDecision {
+        summary: answer,
+        completed,
+        artifacts: deliverable,
+        open: blocked.iter().map(|goal| goal.label()).collect(),
+        blockers: blocked
+            .iter()
+            .map(|goal| YieldBlocker {
+                kind: YieldBlockerKind::Other,
+                description: format!("{} — {}", goal.label(), goal.reason()),
+            })
+            .collect(),
+        self_classification: Some(self_classification),
+        summary_is_runtime_status: !from_model,
+        ..YieldDecision::default()
+    };
+    (Decision::Yield { payload }, metadata)
 }
 
 /// Preserve the ordinary task/skill/owner context when the engine asks for a planner.
@@ -3139,10 +3857,11 @@ pub(crate) async fn decision_rail_prompt_context(
         .ok()
         .and_then(|skill| skill.clone());
     instructions.push_str(&build_active_procedure_skill_section(active.as_ref()));
+    let (verbatim_max_pairs, verbatim_token_budget) = verbatim_window(ctx);
     let mut messages = compact_live_messages_stepped(
         &history.live_messages,
-        OUTER_VERBATIM_MAX_ITERATIONS,
-        OUTER_VERBATIM_TOKEN_BUDGET,
+        verbatim_max_pairs,
+        verbatim_token_budget,
         RAIL_EVICTION_STEP_PAIRS,
     );
     guard_provider_tool_result_messages(&mut messages, false)?;
@@ -3337,6 +4056,7 @@ const TASK_STATE_ACTION_CONTRACT: &str = concat!(
     "- create: `{\"action\": \"create\", \"reason\": \"…\", \"proposed_taskplan\": {\"micro_goals\": [{\"id\": \"mg_route\", \"description\": \"…\", \"status\": \"pending\"}]}}` — one micro-goal per requirement; choose short stable ids; status is one of pending | in_progress | completed | blocked.\n",
     "- patch: `{\"action\": \"patch\", \"reason\": \"…\", \"patch\": {\"ops\": [{\"op\": \"set_micro_goal_status\", \"id\": \"mg_route\", \"value\": \"completed\", \"evidence_refs\": [\"tool_call_evidence:…\"]}, {\"op\": \"upsert_micro_goal\", \"value\": {\"id\": \"mg_new\", \"description\": \"…\", \"status\": \"pending\"}}, {\"op\": \"set_blocked_reason\", \"id\": \"mg_x\", \"value\": \"…\"}, {\"op\": \"set_status\", \"value\": \"in_progress\"}]}}` — `completed` needs non-empty `evidence_refs`; statuses only move forward (blocked is always allowed).\n",
     "- close: `{\"action\": \"close\", \"reason\": \"…\", \"evidence_refs\": […]}` once every micro-goal is completed or blocked.\n",
+    "- Save concrete findings as `result_summary` (at most 800 characters) on `set_micro_goal_status` or `upsert_micro_goal`, with observed `evidence_refs`. Include useful partial findings before a requirement is complete, together with qualifications; the runtime freezes their original refs. Update at meaningful milestones, not every tool call. Summaries survive pauses and context compaction, but are authored claims, not proof. Keep user deliverables distinct from work steps; ask the existing user-question/HITL flow only when a missing requirement prevents useful progress.\n",
     "- A patch needs at least one op. To narrate progress without changing state, omit `task_state_action` — or send `{\"action\": \"patch\", \"reason\": \"…\", \"patch\": {\"ops\": []}}`, which is kept as a note and changes nothing.\n",
 );
 
@@ -3447,6 +4167,7 @@ fn build_artifact_output_guidance_section(ctx: &AgenticContext) -> String {
         );
     }
 
+    section.push_str(crate::magician_v2::artifact_v2::result_delivery::REQUEST_GUIDANCE);
     section
 }
 
@@ -3990,6 +4711,12 @@ fn detect_stuck_kind(history: &ExecutionHistory) -> Option<StuckKind> {
     None
 }
 
+/// Test seam for sibling modules: whether any stuck detector trips on `history`.
+#[cfg(test)]
+pub(super) fn history_is_stuck(history: &ExecutionHistory) -> bool {
+    detect_stuck_kind(history).is_some()
+}
+
 /// Fallback verdict when the reviewer LLM call fails or its output can't be
 /// parsed. A reviewer outage must not discard a deliverable-capable run, so
 /// force the same bounded synthesis contract used at the hard cap. The
@@ -4055,6 +4782,14 @@ fn reviewer_gate_for_streak(streak: usize) -> ReviewerGate {
 /// intentionally domain-neutral: it describes the output contract, not a
 /// specific business task or example. The normal decision call still has the
 /// full goal, success criteria, and gathered evidence in context.
+/// The run's tracked work is done but its owner has not been told: the one
+/// thing this turn is for. Names no channel or wording of its own — the run's
+/// policy in the goal says how the report reads.
+fn owner_report_outstanding_steer() -> String {
+    "[owner-report-outstanding] The tracked work is resolved, but this unattended run has not sent its final owner report yet. Send it now with notify_owner exactly as the run policy in the goal says: the outcome and checks status, where the work landed (or why there is no branch), and the files changed. Then conclude; do not redo or re-verify the work."
+        .to_string()
+}
+
 fn final_synthesis_recovery_steer() -> String {
     "[final-synthesis-recovery] Stop researching and do not call another inspection/search tool. Use the evidence already collected to produce the requested deliverable itself now. Put the complete user-facing result in the terminal yield's `completed` content (and include any real output artifact already produced); do not substitute a progress report, method summary, or statement that work was done. If the available evidence genuinely cannot support the deliverable, yield an explicit partial result with the exact remaining item in `open` and the concrete blocker instead of claiming completion."
         .to_string()
@@ -4810,6 +5545,10 @@ fn short_error_excerpt(text: &str) -> String {
     }
 }
 
+/// Records older than the verbatim window that `## EXECUTION HISTORY`
+/// summarizes in full; anything older is listed by ref only.
+const SUMMARIZED_HISTORY_RECORDS: usize = 10;
+
 fn build_taskplan_or_history_sections(
     _ctx: &AgenticContext,
     history: &ExecutionHistory,
@@ -4825,7 +5564,19 @@ fn build_taskplan_or_history_sections(
     if _ctx.app_disclosure_guard.is_some() {
         return (String::new(), String::new(), String::new());
     }
-    let history_summary = history.format_for_llm_skip_recent(iterations_in_messages, 10);
+    let mut history_summary =
+        history.format_for_llm_skip_recent(iterations_in_messages, SUMMARIZED_HISTORY_RECORDS);
+    // Records older than the summary would otherwise vanish from the prompt,
+    // refs included. Appended after the summary's own 60 KB bound so that
+    // bound can never cut it; the index carries its own caps.
+    if let Some(index) =
+        history.format_dropped_iteration_index(iterations_in_messages, SUMMARIZED_HISTORY_RECORDS)
+    {
+        if !history_summary.trim().is_empty() {
+            history_summary.push_str("\n\n");
+        }
+        history_summary.push_str(&index);
+    }
     (
         String::new(),
         build_history_section(history_header, history_summary.clone()),
@@ -4844,6 +5595,117 @@ fn build_history_section(header: &str, history_summary: String) -> String {
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operator_steer_reopens_a_completed_goal_set_without_losing_the_owner_report() {
+        let steer = vec!["Check the new requirement before finishing".to_owned()];
+        assert_eq!(
+            DefinitionOfDone::Met.with_operator_steer(&steer),
+            DefinitionOfDone::Open
+        );
+        assert_eq!(
+            DefinitionOfDone::OwnerReportOutstanding.with_operator_steer(&steer),
+            DefinitionOfDone::OwnerReportOutstanding
+        );
+        assert_eq!(
+            DefinitionOfDone::Met.with_operator_steer(&[]),
+            DefinitionOfDone::Met
+        );
+        assert_eq!(
+            DefinitionOfDone::Met.with_operator_steer(&[" \n".to_owned()]),
+            DefinitionOfDone::Met
+        );
+    }
+
+    /// A rejected decision replays as what happened: no tool ran, and why.
+    /// It never claims a browser call the model did not make.
+    #[test]
+    fn a_rejected_decision_replays_as_rejected_not_as_a_browser_call() {
+        use crate::magician_v2::execution::agentic::types::{
+            ActionOutcomeCategory, ActionResultRecord, EnvironmentState,
+        };
+        let reason = "DECISION PARSE FAILED: Execution-native: invalid arguments for 'bash': missing field `command`";
+        let record = IterationRecord {
+            iteration: 1,
+            timestamp: chrono::Utc::now(),
+            state_before: EnvironmentState::Uninitialized,
+            action:
+                crate::magician_v2::execution::agentic::executor::rejected_decision_history_action(),
+            result: ActionResultRecord {
+                success: false,
+                output: Some(reason.to_string()),
+                error: Some(reason.to_string()),
+                duration_ms: 0,
+                outcome_category: Some(ActionOutcomeCategory::Failed),
+                api_replay_used: None,
+                api_replay_time_ms: None,
+                browser_fallback_reason: None,
+                tool_result_projection: None,
+            },
+            state_after: EnvironmentState::Uninitialized,
+            verification: None,
+            llm_reasoning: None,
+        };
+        let (assistant, user) = build_turn_message_pair(None, std::slice::from_ref(&record));
+        let call = format!("{:?}", assistant.content);
+        assert!(call.contains("decision_rejected"), "{call}");
+        assert!(
+            !call.contains("browser") && !call.contains("observe"),
+            "{call}"
+        );
+        assert!(format!("{:?}", user.content).contains("missing field `command`"));
+    }
+
+    /// A rejected decision is the model's to correct, whatever words its
+    /// validation message quotes: retried as a provider hiccup, the model
+    /// never saw why and repeated the same call until the run failed.
+    #[test]
+    fn a_contract_rejection_is_a_parse_failure_even_when_it_quotes_transient_words() {
+        let rejected = crate::magician_v2::execution::multi_llm_agent_adapter::MultiLlmAgentAdapter::contract_failure_for_test(
+            "invalid_tool_arguments",
+            "Execution-native: invalid arguments for 'bash': unknown field `path`, expected one of `command`, `timeout_secs`, `network`",
+        )
+        .context("agentic_decision failed");
+        assert_eq!(
+            classify_decision_error(&rejected),
+            DecisionErrorKind::ParseFailure
+        );
+        assert_eq!(DecisionErrorKind::ParseFailure.retry_cap(), None);
+        // Untyped text with the same words is still a provider fault.
+        assert_eq!(
+            classify_decision_error(&anyhow!("request timeout after 60s")),
+            DecisionErrorKind::Transient
+        );
+    }
+
+    /// A spent spend envelope is a wait, not a failure: every consumer of the
+    /// classifier (the executor's retry policy and both definition-of-done
+    /// fallbacks) must read it as transient, however the error was wrapped
+    /// or stringified on the way up — and parking must be what Resolve does
+    /// with it, not a provider-recovery retry.
+    #[test]
+    fn a_spent_spend_envelope_is_transient_and_parks_instead_of_failing() {
+        let refusal = magicllm::LLMError::SpendEnvelopeExhausted {
+            resets_at_ms: 1_791_849_600_000,
+        };
+        let typed = anyhow::Error::from(refusal.clone()).context("agentic_decision failed");
+        let stringified = anyhow!("{}", refusal);
+        for error in [&typed, &stringified] {
+            assert_eq!(classify_decision_error(error), DecisionErrorKind::Transient);
+            assert!(crate::magician_v2::spend_envelope::is_exhaustion_error(
+                error
+            ));
+        }
+        // An ordinary permanent failure still is one, and does not park.
+        let permanent = anyhow!("the model returned nothing usable");
+        assert_eq!(
+            classify_decision_error(&permanent),
+            DecisionErrorKind::Permanent
+        );
+        assert!(!crate::magician_v2::spend_envelope::is_exhaustion_error(
+            &permanent
+        ));
+    }
 
     fn taste_snapshot(
         injectable: &str,
@@ -5563,6 +6425,136 @@ mod tests {
         }
     }
 
+    /// A read_file record with a stored, projected result — the shape a long
+    /// document-reading run accumulates.
+    fn read_file_iteration(iteration: usize, path: &str, call_id: &str) -> IterationRecord {
+        let mut record = pack_iteration_with_params(
+            iteration,
+            "read_file",
+            std::collections::HashMap::from([("file_path".to_string(), serde_json::json!(path))]),
+        );
+        record.result.tool_result_projection = Some(projection_fixture(call_id, 9_000, 400, 200));
+        record
+    }
+
+    /// Records older than the verbatim window and the ten summarized records
+    /// stay in the prompt as an index line each, carrying the ref read_result
+    /// needs — the run that lost three of thirteen docs had no such line.
+    #[test]
+    fn dropped_iterations_stay_in_the_history_section_by_ref() {
+        let mut history = ExecutionHistory::new();
+        for i in 0..40 {
+            history.iterations.push(read_file_iteration(
+                i,
+                &format!("/notes/doc-{i}.md"),
+                &format!("call-{i}"),
+            ));
+        }
+        let (_, section, summary) = build_taskplan_or_history_sections(
+            &AgenticContext::default(),
+            &history,
+            None,
+            "EXECUTION HISTORY",
+            25,
+        );
+        assert!(section.contains("Earlier iterations"), "{section}");
+        assert!(summary.contains("Earlier iterations"));
+        // 40 records − 25 verbatim − 10 summarized = iterations 0..=4.
+        assert!(section.contains(
+            "- iter 0 · read_file file_path=\"/notes/doc-0.md\" · PARTIAL · ref result-call-0"
+        ));
+        for i in 0..5 {
+            assert!(
+                section.contains(&format!("· ref result-call-{i}\n"))
+                    || section.ends_with(&format!("· ref result-call-{i}")),
+                "iteration {i} must be indexed with its ref"
+            );
+        }
+        for i in 5..40 {
+            assert!(
+                !section.contains(&format!("- iter {i} ·")),
+                "iteration {i} is summarized or verbatim, never indexed"
+            );
+        }
+        // Nothing older than the summary → no index.
+        let mut short = ExecutionHistory::new();
+        for i in 0..30 {
+            short
+                .iterations
+                .push(read_file_iteration(i, "/notes/a.md", &format!("c{i}")));
+        }
+        assert!(short.format_dropped_iteration_index(25, 10).is_none());
+    }
+
+    /// The index keeps the newest lines and stays inside its byte cap,
+    /// saying how many older iterations it left out.
+    #[test]
+    fn dropped_iteration_index_is_bounded() {
+        let mut history = ExecutionHistory::new();
+        for i in 0..200 {
+            history.iterations.push(read_file_iteration(
+                i,
+                &format!("/notes/doc-{i}.md"),
+                &format!("call-{i}"),
+            ));
+        }
+        let index = history
+            .format_dropped_iteration_index(25, 10)
+            .expect("165 dropped records are indexed");
+        let lines: Vec<&str> = index.lines().filter(|l| l.starts_with("- iter ")).collect();
+        assert_eq!(lines.len(), 60, "at most 60 lines");
+        assert!(lines[0].starts_with("- iter 105 ·"), "the newest are kept");
+        assert!(lines[59].starts_with("- iter 164 ·"));
+        assert!(index.contains("(105 earlier iterations not listed)"));
+
+        // Long arguments and refs: the byte cap binds before the line cap.
+        let mut wide = ExecutionHistory::new();
+        for i in 0..200 {
+            wide.iterations.push(read_file_iteration(
+                i,
+                &format!("/notes/{}/doc-{i}.md", "deep".repeat(60)),
+                &format!("{}-{i}", "r".repeat(120)),
+            ));
+        }
+        let index = wide
+            .format_dropped_iteration_index(25, 10)
+            .expect("indexed");
+        let listed = index.lines().filter(|l| l.starts_with("- iter ")).count();
+        assert!(listed < 60, "the byte cap trims oldest lines, got {listed}");
+        assert!(index.len() <= 12_100, "index is {} bytes", index.len());
+        assert!(index.contains("earlier iterations not listed"));
+        assert!(index.lines().last().unwrap().starts_with("- iter 164 ·"));
+    }
+
+    /// A summarized non-pack record whose output is cut at 200 chars still
+    /// names its stored result, so the cut never strands the full value.
+    #[test]
+    fn truncated_summarized_output_keeps_its_result_ref() {
+        let mut record = pack_iteration(1, "unused");
+        record.action = crate::magician_v2::execution::actions::ExecutableAction::Bash(
+            crate::magician_v2::execution::actions::BashAction::new("cat big.txt"),
+        );
+        let long_id = "z".repeat(300);
+        record.result.tool_result_projection = Some(projection_fixture(&long_id, 9_000, 400, 200));
+        let mut history = ExecutionHistory::new();
+        history.iterations.push(record);
+        let rendered = history.format_for_llm(5);
+        assert!(rendered.contains("chars)"), "output was cut: {rendered}");
+        assert!(rendered.contains(&format!(
+            "Result ref: result-{long_id} (read_result for the full result)"
+        )));
+
+        // A short output is shown whole and needs no extra line.
+        let mut short = pack_iteration(1, "unused");
+        short.action = crate::magician_v2::execution::actions::ExecutableAction::Bash(
+            crate::magician_v2::execution::actions::BashAction::new("ls"),
+        );
+        short.result.tool_result_projection = Some(projection_fixture("tiny", 10, 10, 5));
+        let mut history = ExecutionHistory::new();
+        history.iterations.push(short);
+        assert!(!history.format_for_llm(5).contains("Result ref:"));
+    }
+
     #[test]
     fn test_research_search_streak_does_not_synthesize_auto_yield() {
         // The exact bug shape: a long streak of productive searches must NOT trip
@@ -5751,6 +6743,53 @@ mod tests {
         record.result.error =
             Some("step execution failed: command failed with exit code 1: no match".to_string());
         record
+    }
+
+    #[tokio::test]
+    async fn operator_steer_gets_a_decision_before_a_historical_churn_stop() {
+        let ctx = AgenticContext::new("goal", "criteria");
+        let adapter =
+            crate::magician_v2::execution::MultiLlmAgentAdapter::new_with_test_native_responses(
+                Vec::new(),
+            );
+        let mut history = ExecutionHistory::new();
+        for i in 0..STUCK_AUTO_YIELD_THRESHOLD {
+            history
+                .iterations
+                .push(failed_command_iteration(i, "grep -r pattern src"));
+        }
+        let (terminal, _) = decision_preflight(
+            &ctx,
+            &history,
+            &adapter,
+            None,
+            Some("exec-1"),
+            DefinitionOfDone::Open,
+            &[],
+            false,
+        )
+        .await
+        .expect("preflight");
+        assert!(
+            terminal.is_some(),
+            "historical churn still stops without new owner input"
+        );
+        let (terminal, _) = decision_preflight(
+            &ctx,
+            &history,
+            &adapter,
+            None,
+            Some("exec-1"),
+            DefinitionOfDone::Open,
+            &["Use the attached file instead".to_owned()],
+            false,
+        )
+        .await
+        .expect("steered preflight");
+        assert!(
+            terminal.is_none(),
+            "new guidance must reach the model instead of being consumed by a synthetic stop"
+        );
     }
 
     #[test]
@@ -6494,7 +7533,11 @@ mod tests {
     #[test]
     fn keep_tail_never_drops_the_newest_pair() {
         let live = live_window_fixture(6, 30_000);
-        let out = compact_live_messages(&live, OUTER_VERBATIM_MAX_ITERATIONS, 1);
+        let out = compact_live_messages(
+            &live,
+            crate::config::AGENTIC_VERBATIM_HISTORY_DEFAULT_ITERATIONS,
+            1,
+        );
         assert!(
             out.len() >= 2,
             "keep-newest floor must retain at least one pair"
@@ -6589,11 +7632,8 @@ mod tests {
     fn keep_tail_does_not_mutate_the_durable_array() {
         let live = live_window_fixture(30, 50);
         let before = serde_json::to_value(&live).expect("serialize");
-        let _ = compact_live_messages(
-            &live,
-            OUTER_VERBATIM_MAX_ITERATIONS,
-            OUTER_VERBATIM_TOKEN_BUDGET,
-        );
+        let (max_pairs, token_budget) = verbatim_window(&AgenticContext::default());
+        let _ = compact_live_messages(&live, max_pairs, token_budget);
         assert_eq!(
             serde_json::to_value(&live).expect("serialize after"),
             before,
@@ -6624,10 +7664,52 @@ mod tests {
         );
     }
 
+    /// The configured window reaches the builder decide() uses: defaults keep
+    /// 40 pairs where the old constants kept 25, and each override narrows
+    /// it the way the operator asked.
+    #[test]
+    fn verbatim_window_comes_from_the_agentic_config_section() {
+        // ~4 KB per pair → ~2k conservative tokens; 50 pairs ≈ 100k tokens.
+        let live = live_window_fixture(50, 2_000);
+        let kept = |settings: crate::config::AgenticSettings| {
+            let ctx = AgenticContext {
+                agentic_settings: settings,
+                ..AgenticContext::default()
+            };
+            let (max_pairs, token_budget) = verbatim_window(&ctx);
+            compact_live_messages(&live, max_pairs, token_budget).len() / 2
+        };
+        assert_eq!(
+            verbatim_window(&AgenticContext::default()),
+            (40, 120_000),
+            "unset keys take the raised defaults"
+        );
+        assert_eq!(kept(crate::config::AgenticSettings::default()), 40);
+        assert_eq!(
+            kept(crate::config::AgenticSettings {
+                verbatim_history_max_iterations: Some(25),
+                ..Default::default()
+            }),
+            25
+        );
+        let floor_tokens = kept(crate::config::AgenticSettings {
+            verbatim_history_token_budget: Some(crate::config::AGENTIC_VERBATIM_HISTORY_MIN_TOKENS),
+            ..Default::default()
+        });
+        assert!(
+            (1..25).contains(&floor_tokens),
+            "a 40k budget binds before 40 pairs, got {floor_tokens}"
+        );
+    }
+
     #[test]
     fn forty_thousand_token_budget_matches_the_retired_eighty_kb_byte_ceiling() {
         let live = live_window_fixture(6, 30_000);
-        let by_tokens = compact_live_messages(&live, 25, OUTER_VERBATIM_TOKEN_BUDGET);
+        let by_tokens = compact_live_messages(
+            &live,
+            25,
+            crate::config::AGENTIC_VERBATIM_HISTORY_MIN_TOKENS,
+        );
         // Previous char budget was 80_000 bytes. Conservative tokens = ceil(bytes/2),
         // so 40_000 tokens ≡ 80_000 bytes for this ASCII fixture.
         let by_legacy_bytes = {
@@ -6993,5 +8075,727 @@ mod tests {
         ];
         fold_synthetic_turns_into_tool_results(&mut lone);
         assert_eq!(lone.len(), 2);
+    }
+
+    /// Live 2026-10-20: a model turn, then two Decision Engine steps
+    /// (`decision:<iteration>:<tool>` ids), then a continuation from the
+    /// model turn's response. Unfolded, the suffix after the last assistant
+    /// held only the second step's result and the provider rejected the turn
+    /// for the model call's missing output.
+    #[test]
+    fn decision_engine_steps_after_a_model_turn_fold_into_its_tool_result() {
+        use crate::magician_v2::execution::agentic::types::AgenticAssistantToolCallRecord;
+        use magicllm::prelude::ContentBlock;
+
+        let turn = |id: &str, operation: &str, llm_call_id: Option<&str>| {
+            let llm_trace_context = llm_call_id.map(|call_id| {
+                let mut context = magicllm::LlmTraceContext::new(
+                    magicllm::LlmScope::new("anonymous".to_string(), "default".to_string()),
+                    magicllm::LlmWorkloadClass::AutonomousTask,
+                );
+                context.llm_call_id = call_id.to_string();
+                context
+            });
+            AgenticAssistantTurnRecord {
+                iteration: 1,
+                operation: operation.into(),
+                llm_trace_context,
+                text: None,
+                tool_calls: vec![AgenticAssistantToolCallRecord {
+                    id: id.to_string(),
+                    name: "pack".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+                finish_reason: None,
+                prompt_tokens: None,
+                completion_tokens: None,
+                reasoning: None,
+                timestamp: chrono::Utc::now(),
+            }
+        };
+        let mut history = ExecutionHistory::new();
+        history
+            .assistant_turns
+            .push(turn("call_model", "agentic_decision", Some("llm-call-1")));
+        history.assistant_turns.push(turn(
+            "decision:2:apply_code_proposal",
+            "agentic_decision_synthetic",
+            Some("synthetic:tool_action_judge:exec:2"),
+        ));
+        history.assistant_turns.push(turn(
+            "decision:3:run_project_checks",
+            "agentic_decision",
+            Some("synthetic:tool_action_judge:exec:3"),
+        ));
+        let loop_issued = loop_issued_tool_call_ids(&history);
+        assert!(!loop_issued.contains("call_model"));
+        assert!(loop_issued.contains("decision:2:apply_code_proposal"));
+        assert!(loop_issued.contains("decision:3:run_project_checks"));
+
+        let mut messages = vec![
+            tool_call("call_model", "pack"),
+            tool_result("call_model", serde_json::json!({"proposal_id": "p1"})),
+            tool_call("decision:2:apply_code_proposal", "pack"),
+            tool_result(
+                "decision:2:apply_code_proposal",
+                serde_json::json!({"applied": true}),
+            ),
+            tool_call("decision:3:run_project_checks", "pack"),
+            tool_result(
+                "decision:3:run_project_checks",
+                serde_json::json!({"checks": "passed"}),
+            ),
+        ];
+        // The constant-only fold leaves Decision Engine steps in place.
+        let mut constant_only = messages.clone();
+        fold_synthetic_turns_into_tool_results(&mut constant_only);
+        assert_eq!(constant_only.len(), 6);
+
+        fold_loop_issued_turns_into_tool_results(&mut messages, &loop_issued);
+        assert_eq!(messages.len(), 2, "both Decision Engine pairs folded");
+        assert!(
+            matches!(&messages[1].content[0], ContentBlock::ToolResult { tool_call_id, .. } if tool_call_id == "call_model")
+        );
+        let folded: Vec<&str> = messages[1]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(folded.len(), 2, "one text block per folded step");
+        assert!(folded[0].contains("applied"), "{:?}", folded[0]);
+        assert!(folded[1].contains("passed"), "{:?}", folded[1]);
+        assert!(has_safe_continuation_suffix(&messages));
+    }
+
+    /// Resolved micro-goals end the run (with the final no-tools turn the
+    /// caller takes) only when the run owes its owner nothing more. An
+    /// outstanding owner report takes the turn, with tools and steered at that
+    /// report, and an open goal is the model's as usual. No signal is a
+    /// preflight terminal.
+    #[tokio::test]
+    async fn definition_of_done_concludes_only_without_an_outstanding_owner_report() {
+        let ctx = AgenticContext::new("goal", "criteria");
+        let history = ExecutionHistory::new();
+        let adapter =
+            crate::magician_v2::execution::MultiLlmAgentAdapter::new_with_test_native_responses(
+                Vec::new(),
+            );
+        let preflight = |definition_of_done| {
+            decision_preflight(
+                &ctx,
+                &history,
+                &adapter,
+                None,
+                Some("exec-1"),
+                definition_of_done,
+                &[],
+                false,
+            )
+        };
+        let is_owner_steer = |line: &String| line.starts_with("[owner-report-outstanding]");
+
+        let (terminal, steer) = preflight(DefinitionOfDone::OwnerReportOutstanding)
+            .await
+            .expect("preflight");
+        assert!(
+            terminal.is_none(),
+            "an outstanding owner report must reach the model, not a synthetic completion"
+        );
+        let line = steer
+            .iter()
+            .find(|line| is_owner_steer(*line))
+            .expect("the turn is steered at the owner report");
+        assert!(line.contains("notify_owner"), "{line}");
+
+        // `Met` is no preflight terminal: the caller takes the final no-tools
+        // turn (`definition_of_done_terminal`).
+        let (terminal, steer) = preflight(DefinitionOfDone::Met).await.expect("preflight");
+        assert!(terminal.is_none());
+        assert!(!steer.iter().any(is_owner_steer));
+
+        let (terminal, steer) = preflight(DefinitionOfDone::Open).await.expect("preflight");
+        assert!(terminal.is_none());
+        assert!(!steer.iter().any(is_owner_steer));
+    }
+
+    fn definition_of_done_state(goals: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "task_id": "task-dod", "micro_goals": goals })
+    }
+
+    fn dod_goals(blocked: bool) -> Vec<ResolvedMicroGoal> {
+        let (status, reason) = if blocked {
+            (
+                "blocked",
+                serde_json::json!("File reads are sandbox denied."),
+            )
+        } else {
+            ("completed", serde_json::Value::Null)
+        };
+        let state = definition_of_done_state(serde_json::json!([
+            {"id": "read", "status": "completed", "description": "Read the template."},
+            {
+                "id": "programs",
+                "status": status,
+                "description": "Read the program documents.",
+                "blocked_reason": reason,
+            },
+        ]));
+        resolved_micro_goals_in_state(&state).expect("every goal is resolved")
+    }
+
+    fn model_answer(
+        text: &str,
+    ) -> Result<(
+        Decision,
+        super::super::native_integration::NativeDecisionMetadata,
+    )> {
+        Ok((
+            Decision::Completed {
+                evidence: Some(text.to_string()),
+                artifacts: Vec::new(),
+            },
+            super::super::native_integration::NativeDecisionMetadata::synthetic(
+                "agentic_decision",
+                text,
+            ),
+        ))
+    }
+
+    #[test]
+    fn definition_of_done_reads_only_a_fully_resolved_state() {
+        assert!(resolved_micro_goals_in_state(&serde_json::json!({})).is_none());
+        assert!(
+            resolved_micro_goals_in_state(&definition_of_done_state(serde_json::json!([])))
+                .is_none()
+        );
+        assert!(
+            resolved_micro_goals_in_state(&definition_of_done_state(serde_json::json!([
+                {"id": "a", "status": "completed", "description": "A"},
+                {"id": "mg_initial", "status": "in_progress", "description": "B"},
+            ])))
+            .is_none()
+        );
+        let goals = dod_goals(true);
+        assert_eq!(goals.len(), 2);
+        assert!(!goals[0].blocked);
+        assert!(goals[1].blocked);
+        assert_eq!(
+            goals[1].blocked_reason.as_deref(),
+            Some("File reads are sandbox denied.")
+        );
+    }
+
+    #[test]
+    fn definition_of_done_directive_disables_tools_and_names_each_blocker() {
+        let directive = definition_of_done_final_answer_directive(&dod_goals(true));
+        assert!(directive.contains("tools are disabled"));
+        assert!(directive.contains("do not call a tool"));
+        assert!(directive.contains("deliverable itself"));
+        assert!(directive.contains("- [completed] Read the template."));
+        assert!(directive.contains(
+            "- [blocked] Read the program documents. — blocked by: File reads are sandbox denied."
+        ));
+    }
+
+    #[test]
+    fn definition_of_done_fallback_retains_qualified_findings_and_original_refs() {
+        let mut goals = dod_goals(true);
+        goals[1].result_summary =
+            Some("Saved settings enable scheduling; live adoption is unknown.".into());
+        goals[1].evidence_refs = vec![serde_json::json!("tool_call_evidence:settings")];
+        let fallback = definition_of_done_status_lines(&goals);
+        assert!(fallback.contains("live adoption is unknown"));
+        assert!(fallback.contains("tool_call_evidence:settings"));
+        assert!(fallback.contains("authored, not independently verified"));
+        assert!(fallback.contains("BLOCKED: Read the program documents."));
+    }
+
+    /// All requirements completed: the final turn's text is the answer and
+    /// the run's deliverable, and the terminal is a full completion.
+    #[test]
+    fn definition_of_done_final_turn_text_is_the_answer() {
+        let ctx = AgenticContext::new("Draft the proposal", "A proposal exists");
+        let answer = "FINAL_ANSWER_MARKER: the proposed goal tree, with sources and owners.";
+        let (decision, metadata) =
+            definition_of_done_terminal(&ctx, model_answer(answer), &dod_goals(false));
+        let Decision::Completed {
+            evidence,
+            artifacts,
+        } = decision
+        else {
+            panic!("expected Completed, got {decision:?}");
+        };
+        assert_eq!(evidence.as_deref(), Some(answer));
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            artifacts[0].artifact_type.as_deref(),
+            Some("task_deliverable")
+        );
+        assert_eq!(
+            String::from_utf8(artifacts[0].data.clone()).unwrap(),
+            answer
+        );
+        // The model's own turn is kept, not replaced by a synthetic one.
+        assert_eq!(
+            metadata.assistant_turn.map(|turn| turn.operation),
+            Some("agentic_decision".to_string())
+        );
+    }
+
+    /// A blocked requirement makes the terminal a partial: `open` holds it and
+    /// its blocker carries the `blocked_reason`.
+    #[test]
+    fn definition_of_done_with_a_blocked_goal_is_partial() {
+        use super::super::yield_decision::{dispose_yield, YieldDisposition};
+        let ctx = AgenticContext::new("Draft the proposal", "A proposal exists");
+        let answer = "FINAL_ANSWER_MARKER: the tree, built from the readable evidence.";
+        let (decision, _) =
+            definition_of_done_terminal(&ctx, model_answer(answer), &dod_goals(true));
+        let Decision::Yield { payload } = decision else {
+            panic!("expected a partial Yield, got {decision:?}");
+        };
+        assert!(matches!(
+            dispose_yield(&payload),
+            YieldDisposition::PartialSuccess { .. }
+        ));
+        assert_eq!(payload.summary, answer);
+        assert_eq!(payload.completed, vec!["Read the template.".to_string()]);
+        assert_eq!(
+            payload.open,
+            vec!["Read the program documents.".to_string()]
+        );
+        let evidence = super::super::native_lowering::yield_evidence_string(&payload);
+        assert!(
+            evidence.contains("File reads are sandbox denied."),
+            "{evidence}"
+        );
+    }
+
+    /// The final turn fails: the terminal is built from the micro-goals, one
+    /// `COMPLETED:` / `BLOCKED: … — reason` line each.
+    #[test]
+    fn definition_of_done_final_turn_failure_falls_back_to_the_micro_goals() {
+        let ctx = AgenticContext::new("Draft the proposal", "A proposal exists");
+
+        let (decision, metadata) = definition_of_done_terminal(
+            &ctx,
+            Err(anyhow!("provider unavailable")),
+            &dod_goals(false),
+        );
+        let Decision::Completed {
+            evidence,
+            artifacts,
+        } = decision
+        else {
+            panic!("expected Completed, got {decision:?}");
+        };
+        assert_eq!(
+            evidence.as_deref(),
+            Some("COMPLETED: Read the template.\nCOMPLETED: Read the program documents.")
+        );
+        assert!(artifacts.is_empty(), "a status list is not a deliverable");
+        assert_eq!(
+            metadata.assistant_turn.map(|turn| turn.operation),
+            Some("definition_of_done".to_string())
+        );
+
+        // An empty reply is no answer either.
+        let (decision, _) =
+            definition_of_done_terminal(&ctx, model_answer("   "), &dod_goals(true));
+        let Decision::Yield { payload } = decision else {
+            panic!("expected a partial Yield, got {decision:?}");
+        };
+        assert_eq!(
+            payload.summary,
+            "COMPLETED: Read the template.\nBLOCKED: Read the program documents. — File reads are sandbox denied."
+        );
+        assert!(
+            payload.summary_is_runtime_status,
+            "a status list is not the model's answer"
+        );
+        assert_eq!(
+            payload.open,
+            vec!["Read the program documents.".to_string()]
+        );
+    }
+
+    /// A final `yield` rejected for its argument shape still says what the
+    /// model concluded: that is the answer and the deliverable, not the
+    /// micro-goal status list.
+    #[test]
+    fn definition_of_done_keeps_the_answer_a_rejected_yield_carried() {
+        let ctx = AgenticContext::new("Draft the proposal", "A proposal exists");
+        let rejected = MultiLlmAgentAdapter::invalid_arguments_failure_for_test(
+            serde_json::json!({
+                "summary": {"recommendation": "Sell the approval-gated workflow first.", "caveat": "The filing was not verified."},
+                "completed": [{"item": "Wrote the memo"}],
+            }),
+        );
+
+        let (decision, _) = definition_of_done_terminal(&ctx, Err(rejected), &dod_goals(true));
+        let Decision::Yield { payload } = decision else {
+            panic!("expected a partial Yield, got {decision:?}");
+        };
+        assert!(
+            payload
+                .summary
+                .contains("Sell the approval-gated workflow first."),
+            "{}",
+            payload.summary
+        );
+        assert!(
+            payload.summary.contains("The filing was not verified."),
+            "{}",
+            payload.summary
+        );
+        assert!(
+            !payload.summary.contains("COMPLETED:"),
+            "{}",
+            payload.summary
+        );
+        assert!(!payload.summary_is_runtime_status);
+        assert_eq!(
+            payload.artifacts.len(),
+            1,
+            "the model's answer is the deliverable"
+        );
+
+        // A rejected call with no prose in it concludes from the micro-goals.
+        let empty = MultiLlmAgentAdapter::invalid_arguments_failure_for_test(serde_json::json!({
+            "summary": {"rows": [1, 2]},
+        }));
+        let (decision, _) = definition_of_done_terminal(&ctx, Err(empty), &dod_goals(true));
+        let Decision::Yield { payload } = decision else {
+            panic!("expected a partial Yield, got {decision:?}");
+        };
+        assert!(payload.summary_is_runtime_status);
+    }
+
+    #[test]
+    fn definition_of_done_directive_overrides_the_every_turn_tool_rule() {
+        let directive = definition_of_done_final_answer_directive(&dod_goals(false));
+        assert!(directive.contains("overrides the instruction to call a tool in every response"));
+        assert!(directive.contains("do not write tool calls or JSON as text"));
+        assert!(!DEFINITION_OF_DONE_KEPT_TURN_NOTE.contains("Do not call a tool"));
+        assert!(DEFINITION_OF_DONE_KEPT_TURN_NOTE.contains("tools are available again"));
+    }
+
+    /// A rejected definition-of-done answer, then a tool turn (which resets
+    /// the rejection counter), does not buy the same final turn again; a
+    /// changed micro-goal set does, up to the per-run cap.
+    #[test]
+    fn definition_of_done_is_not_retaken_for_the_same_micro_goals() {
+        let mut protective = super::super::types::LoopProtectiveState::default();
+        assert!(take_definition_of_done_turn(&mut protective, Some(dod_goals(false))).is_some());
+        // The terminal was rejected …
+        protective.consecutive_goal_reached_rejections = 1;
+        assert!(take_definition_of_done_turn(&mut protective, Some(dod_goals(false))).is_none());
+        // … and a tool turn reset the counter: the same set is still spent.
+        protective.consecutive_goal_reached_rejections = 0;
+        assert!(take_definition_of_done_turn(&mut protective, Some(dod_goals(false))).is_none());
+        assert_eq!(protective.definition_of_done_turns, 1);
+
+        // A different set earns one more turn, and the cap holds after it.
+        assert!(take_definition_of_done_turn(&mut protective, Some(dod_goals(true))).is_some());
+        let mut third = dod_goals(false);
+        third[0].description = "Read the revised template.".to_string();
+        assert!(take_definition_of_done_turn(&mut protective, Some(third)).is_none());
+        assert_eq!(
+            protective.definition_of_done_turns,
+            MAX_DEFINITION_OF_DONE_TURNS
+        );
+
+        // A transient failure gives its turn back.
+        let mut protective = super::super::types::LoopProtectiveState::default();
+        assert!(take_definition_of_done_turn(&mut protective, Some(dod_goals(false))).is_some());
+        release_definition_of_done_turn(&mut protective, None);
+        assert_eq!(protective.definition_of_done_turns, 0);
+        assert!(take_definition_of_done_turn(&mut protective, Some(dod_goals(false))).is_some());
+    }
+
+    fn all_blocked_goals() -> Vec<ResolvedMicroGoal> {
+        let state = definition_of_done_state(serde_json::json!([
+            {"id": "programs", "status": "blocked", "description": "Read the program documents.", "blocked_reason": "File reads are sandbox denied."},
+        ]));
+        resolved_micro_goals_in_state(&state).expect("resolved")
+    }
+
+    /// Every requirement blocked: with the model's answer the yield is a
+    /// partial whose finished work is a short marker (the answer is the
+    /// summary, not repeated); with no answer nothing was finished and the
+    /// yield disposes as Failed.
+    #[test]
+    fn definition_of_done_with_every_goal_blocked() {
+        use super::super::yield_decision::{dispose_yield, YieldDisposition};
+        let ctx = AgenticContext::new("Draft the proposal", "A proposal exists");
+        let answer = "FINAL_ANSWER_MARKER: nothing could be read; here is what each step needed.";
+
+        let (decision, _) =
+            definition_of_done_terminal(&ctx, model_answer(answer), &all_blocked_goals());
+        let Decision::Yield { payload } = decision else {
+            panic!("expected a Yield, got {decision:?}");
+        };
+        assert!(matches!(
+            dispose_yield(&payload),
+            YieldDisposition::PartialSuccess { .. }
+        ));
+        assert_eq!(payload.summary, answer);
+        assert_eq!(
+            payload.completed,
+            vec![DEFINITION_OF_DONE_ANSWER_ITEM.to_string()]
+        );
+        assert_eq!(
+            payload.artifacts.len(),
+            1,
+            "the model's answer is the deliverable"
+        );
+        assert_eq!(
+            payload.artifacts[0].name,
+            DEFINITION_OF_DONE_ANSWER_ARTIFACT
+        );
+
+        let (decision, _) = definition_of_done_terminal(
+            &ctx,
+            Err(anyhow!("invalid response")),
+            &all_blocked_goals(),
+        );
+        let Decision::Yield { payload } = decision else {
+            panic!("expected a Yield, got {decision:?}");
+        };
+        assert!(payload.completed.is_empty());
+        assert!(payload.artifacts.is_empty());
+        assert!(matches!(
+            dispose_yield(&payload),
+            YieldDisposition::Failed { .. }
+        ));
+    }
+
+    /// A provider that ignored `tool_choice: none` answered beside its call:
+    /// the text is the answer, and the discarded call is not recorded.
+    #[test]
+    fn definition_of_done_uses_text_beside_a_tool_call() {
+        let ctx = AgenticContext::new("Draft the proposal", "A proposal exists");
+        let answer = "FINAL_ANSWER_MARKER: written beside an unwanted call.";
+        let (decision, metadata) = definition_of_done_terminal(
+            &ctx,
+            Ok((
+                Decision::Failed {
+                    reason: "a tool call this turn may not make".to_string(),
+                },
+                super::super::native_integration::NativeDecisionMetadata::synthetic(
+                    "agentic_decision",
+                    answer,
+                ),
+            )),
+            &dod_goals(false),
+        );
+        let Decision::Completed { evidence, .. } = decision else {
+            panic!("expected Completed, got {decision:?}");
+        };
+        assert_eq!(evidence.as_deref(), Some(answer));
+        assert_eq!(
+            metadata.assistant_turn.map(|turn| turn.operation),
+            Some("definition_of_done".to_string())
+        );
+    }
+
+    // ── Provider outage classification ──────────────────────────────────────
+
+    fn context_error(error: magicllm::LLMError) -> anyhow::Error {
+        anyhow::Error::new(error).context("native decision call failed")
+    }
+
+    #[test]
+    fn every_provider_down_llm_error_classifies_as_outage() {
+        use magicllm::LLMError;
+        let down = vec![
+            LLMError::ProviderUnavailable,
+            LLMError::Timeout,
+            LLMError::WorkerWatchdog { factor: 2.0 },
+            LLMError::DeadlineExceeded,
+            LLMError::QueueFull {
+                priority: "foreground",
+                depth: 4,
+                capacity: 4,
+            },
+            LLMError::QueueBytesFull {
+                priority: "foreground",
+                queued_bytes: 8,
+                capacity_bytes: 8,
+            },
+            LLMError::Transport("connection reset by peer".to_string()),
+            LLMError::AllRetriesExhausted {
+                attempts: 6,
+                last_error: "boom".to_string(),
+            },
+            LLMError::ProviderStatus {
+                provider: "anthropic".to_string(),
+                status: 503,
+                body: "overloaded".to_string(),
+            },
+            LLMError::Routed {
+                profile: "chat".to_string(),
+                provider: magicllm::LLMProviderKind::Anthropic,
+                model: "m".to_string(),
+                source: Box::new(LLMError::ProviderUnavailable),
+            },
+        ];
+        for error in down {
+            let label = error.to_string();
+            assert_eq!(
+                classify_decision_error(&context_error(error)),
+                DecisionErrorKind::Outage,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limits_and_client_errors_are_not_outages() {
+        use magicllm::LLMError;
+        assert_eq!(
+            classify_decision_error(&context_error(LLMError::RateLimited { retry_after: None })),
+            DecisionErrorKind::Transient
+        );
+        assert_eq!(
+            classify_decision_error(&context_error(LLMError::ProviderStatus {
+                provider: "openai".to_string(),
+                status: 429,
+                body: "slow down".to_string(),
+            })),
+            DecisionErrorKind::Transient
+        );
+        assert_eq!(
+            classify_decision_error(&context_error(LLMError::ProviderStatus {
+                provider: "openai".to_string(),
+                status: 400,
+                body: "invalid request".to_string(),
+            })),
+            DecisionErrorKind::Permanent
+        );
+        // Untyped timeouts keep their existing meaning.
+        assert_eq!(
+            classify_decision_error(&anyhow!("tool call timed out")),
+            DecisionErrorKind::Transient
+        );
+    }
+
+    #[test]
+    fn opaque_provider_down_text_classifies_as_outage() {
+        for text in [
+            "provider unavailable (circuit breaker open)",
+            "provider `anthropic` returned HTTP 503: upstream down",
+            "502 Bad Gateway",
+            "504 Gateway Timeout",
+            "error sending request for url (https://api.example.com/v1/messages)",
+        ] {
+            assert_eq!(
+                classify_decision_error(&anyhow!("{text}")),
+                DecisionErrorKind::Outage,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn outage_draws_on_its_own_larger_retry_budget() {
+        use crate::magician_v2::execution::agentic::executor::{
+            MAX_TRANSIENT_RETRIES, OUTAGE_MAX_RETRIES,
+        };
+        assert_eq!(
+            DecisionErrorKind::Outage.retry_cap(),
+            Some(OUTAGE_MAX_RETRIES)
+        );
+        assert_eq!(
+            DecisionErrorKind::Transient.retry_cap(),
+            Some(MAX_TRANSIENT_RETRIES)
+        );
+        assert_eq!(DecisionErrorKind::ParseFailure.retry_cap(), None);
+        assert_eq!(DecisionErrorKind::Permanent.retry_cap(), None);
+    }
+
+    /// The definition-of-done turn goes back to the retry policy on an outage,
+    /// and does not conclude from its micro-goals until the outage budget is
+    /// spent: the transient budget (5) is exhausted long before it.
+    #[test]
+    fn definition_of_done_turn_is_released_on_outage_until_the_outage_budget_is_spent() {
+        use crate::magician_v2::execution::agentic::executor::{
+            MAX_TRANSIENT_RETRIES, OUTAGE_MAX_RETRIES,
+        };
+        let outage = context_error(magicllm::LLMError::ProviderUnavailable);
+        let transient = anyhow!("rate limit exceeded");
+        assert!(provider_retry_budget_left(
+            &transient,
+            MAX_TRANSIENT_RETRIES - 1
+        ));
+        assert!(provider_retry_budget_spent(
+            &transient,
+            MAX_TRANSIENT_RETRIES
+        ));
+        assert!(provider_retry_budget_left(&outage, MAX_TRANSIENT_RETRIES));
+        assert!(!provider_retry_budget_spent(&outage, MAX_TRANSIENT_RETRIES));
+        assert!(provider_retry_budget_left(&outage, OUTAGE_MAX_RETRIES - 1));
+        assert!(provider_retry_budget_spent(&outage, OUTAGE_MAX_RETRIES));
+        let permanent = anyhow!("invalid configuration");
+        assert!(!provider_retry_budget_left(&permanent, 0));
+        assert!(!provider_retry_budget_spent(&permanent, 0));
+    }
+
+    // ── Declared waits are not churn ────────────────────────────────────────
+
+    fn sleep_until_iteration(iteration: usize, success: bool) -> IterationRecord {
+        let mut record = pack_iteration(iteration, "unused");
+        record.action = crate::magician_v2::execution::actions::ExecutableAction::SleepUntil {
+            wake_at: chrono::Utc::now(),
+            reason: Some("poll the build".to_string()),
+        };
+        record.result.success = success;
+        record
+    }
+
+    #[test]
+    fn polling_sleep_until_is_a_declared_wait_but_identical_coding_runs_are_not() {
+        let mut polling = ExecutionHistory::new();
+        for i in 0..(NO_PROGRESS_REPEAT_AUTO_YIELD_THRESHOLD + 3) {
+            polling.iterations.push(sleep_until_iteration(i, true));
+        }
+        assert!(
+            waiting_on_declared_wait(&polling, Some("exec-1")),
+            "a successful SleepUntil is a declared wait"
+        );
+
+        // A failed sleep is an error, not a wait.
+        let mut failed = ExecutionHistory::new();
+        failed.iterations.push(sleep_until_iteration(0, false));
+        assert!(!waiting_on_declared_wait(&failed, Some("exec-1")));
+
+        // Four identical successful coding runs stay a loop: decided by the
+        // kind of action, never by a result fingerprint.
+        let mut coding = ExecutionHistory::new();
+        for i in 0..(NO_PROGRESS_REPEAT_AUTO_YIELD_THRESHOLD + 1) {
+            coding.iterations.push(pack_iteration(i, "run_coding_task"));
+        }
+        assert!(!waiting_on_declared_wait(&coding, Some("exec-1")));
+        assert!(matches!(
+            detect_stuck_kind(&coding),
+            Some(StuckKind::RepeatChurn { .. })
+        ));
+
+        // A read-only streak is not a wait either.
+        let read_only = read_only_streak_history(NO_PROGRESS_AUTO_YIELD_THRESHOLD + 1);
+        assert!(!waiting_on_declared_wait(&read_only, Some("exec-1")));
+    }
+
+    /// Outage waits push no iteration record, so the history a run carries
+    /// through any number of them is the history it had.
+    #[test]
+    fn an_unchanged_history_trips_no_stuck_detector() {
+        let mut history = ExecutionHistory::new();
+        history.iterations.push(pack_iteration(0, "web_fetch"));
+        assert!(!history_is_stuck(&history));
+        assert!(!history_is_stuck(&ExecutionHistory::new()));
     }
 }

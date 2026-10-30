@@ -87,10 +87,7 @@ pub async fn submit_concurrent_voice_handler(
     {
         return HttpResponse::BadRequest().json(serde_json::json!({"error":"Use the addressed chat action for attachments or a pending plan answer."}));
     }
-    if let Some(response) = validate_profile_override(api.get_ref(), &body.message) {
-        return response;
-    }
-    let profile = match routed_profile_override(&body.message) {
+    let profile = match routed_profile_override(api.get_ref(), &body.message) {
         Ok(profile) => profile,
         Err(response) => return response,
     };
@@ -109,11 +106,9 @@ pub async fn submit_concurrent_voice_handler(
         context_session_id: body.context_session_id,
         profile,
         mode: body.message.mode,
-        coding_choice:
-            magician::magician_v2::vibedev::run_service::coding_choice_from_client_fields(
-                body.message.coding_choice,
-                None,
-            ),
+        coding_choice: magician::magician_v2::vibedev::run_service::coding_choice_from_client(
+            body.message.coding_choice,
+        ),
         source_surface: "web".to_string(),
         presence_session_id: body.message.presence_session_id,
         executor_id: String::new(),

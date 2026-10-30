@@ -20,7 +20,9 @@ The agent navigates to the login page and supplies field **metadata**:
 Magician resolves one main-frame target before prompting; an optional backend
 `tab_id` picks between tabs on the same origin. Every value, username included,
 uses hidden HITL fields in the authenticated UI; prompts show origin, tab and
-selector. A final **Use once** approval authorizes the fill. **Cancel**,
+selector, and say the value is used once. When the user typed every value
+there, the typing authorizes the fill; otherwise a final **Use once** approval
+does. **Cancel**,
 dismissal, execution cancellation and the 180-second overall deadline discard
 the pending material (`DEADLINE_SECS = 180`, `secure_prompt_fill.rs`). Filling
 never submits the form.
@@ -81,10 +83,10 @@ recorded in the workspace manifest and lockfile:
 
 | Library | Version | Revision |
 | --- | --- | --- |
-| `magicvault-effect` | 0.7.1 | `4902803b35211ea2a1dc7e6bdb112cb9da03000f` |
-| `magicvault-protocol` | 0.7.0 | `4902803b35211ea2a1dc7e6bdb112cb9da03000f` |
-| `magicvault-core` | 0.1.6 | `4902803b35211ea2a1dc7e6bdb112cb9da03000f` |
-| `magicvault-primitives` | 0.1.2 | `4902803b35211ea2a1dc7e6bdb112cb9da03000f` |
+| `magicvault-effect` | 0.7.1 | `07a0eab4ee6db1e9eb5080049f69afb61c4be15a` |
+| `magicvault-protocol` | 0.7.0 | `07a0eab4ee6db1e9eb5080049f69afb61c4be15a` |
+| `magicvault-core` | 0.1.6 | `07a0eab4ee6db1e9eb5080049f69afb61c4be15a` |
+| `magicvault-primitives` | 0.1.2 | `07a0eab4ee6db1e9eb5080049f69afb61c4be15a` |
 
 All four pin one MagicVault revision in the root `Cargo.toml`, with no `[patch]`
 and no machine-specific path dependencies or runtime connections to another
@@ -149,7 +151,9 @@ one-time code the user gave through `need_user_input`.
    elsewhere, expired, consumed or collected for an earlier challenge refuses
    with the store's reason. Fields without a value are prompted.
 3. **Use once** is asked unless every field is a code bound to exactly this
-   origin; the challenge that named the destination already carried consent.
+   origin (the challenge that named the destination already carried consent)
+   or every value was typed into this fill's own prompts (each named origin,
+   tab and field). A mix, or a stored password or unbound code, asks.
 4. Right before consuming, the fill rechecks the page (same single target,
    origin, document). A changed page, declined confirmation, ambiguous target,
    missing sibling material, cancel or deadline releases every reservation

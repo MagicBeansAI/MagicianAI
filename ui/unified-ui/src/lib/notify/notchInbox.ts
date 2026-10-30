@@ -94,7 +94,11 @@ export function inlineKindFor(
 	sensitive: boolean
 ): NotchInline {
 	if (sensitive) return 'open';
-	if (inputType === 'confirmation') return 'confirmation';
+	// A review before sending answers with its own choice ids, which the
+	// notch's confirm/deny post cannot carry: it opens Attention.
+	if (inputType === 'confirmation') {
+		return options.some((option) => option.id === 'send') ? 'open' : 'confirmation';
+	}
 	if (inputType === 'multi_choice' && options.length > 0) return 'multi_choice';
 	if (
 		(inputType === 'choice' ||

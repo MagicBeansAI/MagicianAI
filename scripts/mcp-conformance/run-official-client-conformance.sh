@@ -11,8 +11,8 @@ if [[ ! -x "$runner" ]]; then
 fi
 
 # The official runner is locked by package-lock.json. The SDK checkout is locked to
-# the dereferenced rmcp-v3.1.0 commit so a moved tag cannot change qualification.
-readonly rust_sdk_commit="1f9358eddca42d3a510c70ae6446dd6548c7c856"
+# the dereferenced rmcp-v3.7.0 commit so a moved tag cannot change qualification.
+readonly rust_sdk_commit="5d6a11f2ae022f513aec0f6e0f10f89a57891a7f"
 readonly cargo_root="${CARGO_TARGET_DIR:-${TMPDIR:-/tmp}/magician-cargo-target}"
 readonly cache_dir="${MCP_CONFORMANCE_CACHE_DIR:-$cargo_root/mcp-conformance-sdk-cache}"
 readonly artifact_root="${MCP_CONFORMANCE_ARTIFACT_DIR:-${TMPDIR:-/tmp}/magician-mcp-conformance}"

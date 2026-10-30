@@ -75,7 +75,8 @@ impl DeepSeekProvider {
             modalities,
             reasoning: LLMReasoning::Standard,
             tool_calling: true,
-            json_mode: true,
+            // The Messages transport has no qualified JSON schema mapping.
+            json_mode: false,
             streaming: true,
             computer_use: false,
             web_search: false,
@@ -125,7 +126,7 @@ mod tests {
         assert_eq!(caps.modalities, vec![LLMModality::Text]);
         assert_eq!(caps.reasoning, LLMReasoning::Standard);
         assert!(caps.tool_calling);
-        assert!(caps.json_mode);
+        assert!(!caps.json_mode);
         assert!(caps.streaming);
         assert!(!caps.computer_use);
     }

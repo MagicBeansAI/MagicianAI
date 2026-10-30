@@ -17,10 +17,13 @@
 import {
 	requestAttentionInput,
 	type AttentionPromptKind,
+	type AttentionPromptDiffFile,
 	type AttentionPromptRequest,
 	type AttentionPromptResult
 } from '$lib/stores/attentionPromptStore';
 import { postHitlResponse } from './adapters';
+import { get } from 'svelte/store';
+import { scopeIdentityStore, type ScopeIdentityState } from '$lib/stores/scopeIdentityStore';
 import { alignmentAnswerValue } from './alignmentAsk';
 import type {
 	HitlInputType,
@@ -34,6 +37,13 @@ export interface RespondToHitlOptions {
 	defaultValue?: string;
 }
 
+type ApprovalScope = Pick<ScopeIdentityState, 'principal' | 'workspace'>;
+
+function scopeStillSelected(scope: ApprovalScope): boolean {
+	const current = get(scopeIdentityStore);
+	return current.principal === scope.principal && current.workspace === scope.workspace;
+}
+
 /**
  * Drive a HITL request from prompt to resolved response. Returns the
  * outcome of the POST (or a `cancelled: true` outcome if the operator
@@ -44,7 +54,11 @@ export async function respondToHitl(
 	headers: HeadersInit = {},
 	options: RespondToHitlOptions = {}
 ): Promise<HitlResolveOutcome> {
+	const approvalScope = get(scopeIdentityStore);
 	const result = await requestAttentionInput(promptFor(request, options));
+	if (!scopeStillSelected(approvalScope)) {
+		return { ok: false, status: 0, message: 'Your workspace changed — reopen the request there to answer it.' };
+	}
 	if (!result) {
 		// Dismissing a secret ask is an answer: the pending operation must
 		// cancel (and its custody retire) rather than wait out its window.
@@ -65,7 +79,7 @@ export async function respondToHitl(
 	// Approve & Run: approval does not start a run, so start it once the
 	// approval has landed. The approval stands even if the start fails; the
 	// task's Run is still there, and the error says so.
-	if (outcome.ok) await startRunAfterPlanApproval(request, result);
+	if (outcome.ok && !outcome.alreadyClosed) await startRunAfterPlanApproval(request, result, approvalScope);
 	return outcome;
 }
 
@@ -77,12 +91,20 @@ export async function respondToHitl(
  */
 export async function startRunAfterPlanApproval(
 	request: HitlRequest,
-	result: AttentionPromptResult | null
+	result: AttentionPromptResult | null,
+	approvalScope: ApprovalScope = get(scopeIdentityStore)
 ): Promise<void> {
 	const planTaskId = planReviewTaskId(request);
 	if (!planTaskId || result?.kind !== 'choice' || result.choiceId !== 'approve_run') return;
 	try {
+		const expectedScope = {
+			principal: request.scope.principal ?? approvalScope.principal,
+			workspace: request.scope.workspace ?? approvalScope.workspace
+		};
 		const { taskStore } = await import('$lib/stores/taskStore');
+		if (!scopeStillSelected(expectedScope)) {
+			throw new Error('Your workspace changed — reopen the approved task there to run it.');
+		}
 		await taskStore.executeTask(planTaskId);
 	} catch (error) {
 		const { showError } = await import('$lib/shared/stores/notifications');
@@ -97,6 +119,33 @@ function planReviewTaskId(request: HitlRequest): string | null {
 	if (request.source !== 'plan_approval' || request.input_type !== 'confirmation') return null;
 	const taskId = (request.scope.task_id ?? request.scope.workflow_id ?? '').trim();
 	return taskId || null;
+}
+
+/**
+ * The options a captured outward send's review offers, or `null` when the ask
+ * is not one (`escalation_trigger: "outward_review"` on a confirmation).
+ *
+ * The server's own options, in its order — the Always allow label names the
+ * agent and recipient and is shown as sent. With no options on the payload
+ * the card falls back to Send and Discard, the two answers every review
+ * accepts; a standing grant is never offered on a payload that did not name it.
+ */
+export function outwardReviewOptions(
+	request: HitlRequest
+): Array<{ id: string; label: string; description?: string }> | null {
+	if (request.input_type !== 'confirmation') return null;
+	if (request.schema.escalation_trigger !== 'outward_review') return null;
+	const options = (request.schema.options ?? []).map((option) => ({
+		id: option.id,
+		label: option.label,
+		description: option.description
+	}));
+	return options.length > 0
+		? options
+		: [
+				{ id: 'send', label: 'Send' },
+				{ id: 'discard', label: 'Discard' }
+			];
 }
 
 // ─── Mapping helpers ──────────────────────────────────────────────────
@@ -187,8 +236,25 @@ const PROMPT_KIND: Record<HitlInputType, AttentionPromptKind> = {
 function mapToPromptKind(request: HitlRequest): AttentionPromptKind {
 	const masked = sensitiveKindFor(request);
 	if (masked) return masked;
+	if (godModeContext(request)) return 'authorization';
 	if (request.input_type === 'text' && request.schema.multiline) return 'multiline';
 	return PROMPT_KIND[request.input_type];
+}
+
+function godModeContext(request: HitlRequest): Record<string, unknown> | null {
+	const context = request.schema.context;
+	return request.source === 'user_request' && request.input_type === 'choice'
+		&& context && typeof context === 'object' && !Array.isArray(context)
+		&& context.god_mode === true && request.schema.request_type === 'sandbox_override'
+		? context : null;
+}
+
+function godModeFiles(context: Record<string, unknown> | null): AttentionPromptDiffFile[] {
+	if (!Array.isArray(context?.files)) return [];
+	return context.files.filter((file): file is AttentionPromptDiffFile =>
+		!!file && typeof file === 'object' && typeof file.path === 'string'
+		&& typeof file.status === 'string' && typeof file.unified_diff === 'string'
+		&& typeof file.additions === 'number' && typeof file.deletions === 'number');
 }
 
 /**
@@ -205,8 +271,9 @@ export function promptFor(
 	options: RespondToHitlOptions = {}
 ): Omit<AttentionPromptRequest, 'id'> {
 	const kind = mapToPromptKind(request);
+	const god = godModeContext(request);
 	const isAuthorization =
-		request.input_type === 'tool_authorization' || request.input_type === 'sandbox_override';
+		!!god || request.input_type === 'tool_authorization' || request.input_type === 'sandbox_override';
 	const schemaChoices = request.schema.options?.map((option) => ({
 		id: option.id,
 		label: option.label,
@@ -214,9 +281,20 @@ export function promptFor(
 		requiresInput: option.requires_input
 	}));
 
+	// A confirmation with a structured approval card shows the card instead
+	// of the raw call; the raw call stays on the card for auditing.
+	const schemaPreview =
+		request.input_type === 'confirmation' && !request.schema.alignment
+			? request.schema.approval_preview
+			: undefined;
+	const approvalPreview = schemaPreview
+		? { ...schemaPreview, raw: schemaPreview.raw ?? request.prompt }
+		: undefined;
+
 	return {
 		title: titleFor(request),
-		body: request.prompt,
+		body: approvalPreview ? undefined : request.prompt,
+		approvalPreview,
 		// Carried for the first time. On a re-ask this is the reason the question
 		// came back — a validation message, the previous answer, the retry count —
 		// and every surface used to drop it, so a re-ask arrived looking identical
@@ -252,6 +330,12 @@ export function promptFor(
 			const taskId = planReviewTaskId(request);
 			return taskId ? { taskId } : undefined;
 		})(),
+		outwardReview: (() => {
+			const options = outwardReviewOptions(request);
+			return options
+				? { options, deadlineAtMs: request.schema.outward_review?.deadline_at_ms ?? 0 }
+				: undefined;
+		})(),
 		review: request.schema.review_href
 			? { href: request.schema.review_href, label: request.schema.review_label ?? 'Review' }
 			: undefined,
@@ -276,12 +360,23 @@ export function promptFor(
 		externalAction:
 			request.input_type === 'external_action'
 				? {
+						browserSigninCorrelationId: request.source === 'mcp_oauth'
+							? request.identifiers.correlation_id ?? request.id : undefined,
+						browserSigninScope: request.source === 'mcp_oauth' ? {
+							principal: request.scope.principal ?? get(scopeIdentityStore).principal,
+							workspace: request.scope.workspace ?? get(scopeIdentityStore).workspace
+						} : undefined,
 						instructions: request.schema.instructions ?? null,
 						doneLabel: request.schema.done_label ?? "I've completed this",
 						url: request.schema.url ?? null,
 						// The MCP sign-in responder only retries or dismisses; a
 						// note offered there would be typed and thrown away.
-						showNote: request.source !== 'mcp_oauth'
+						showNote: request.source !== 'mcp_oauth',
+						// Every MCP sign-in can be declined (the respond arm maps an
+						// abort to dismissal); older asks carry no label, so default it.
+						dismissLabel: request.source === 'mcp_oauth'
+							? request.schema.dismiss_label ?? 'Not now'
+							: request.schema.dismiss_label
 					}
 				: undefined,
 		filePath:
@@ -293,16 +388,18 @@ export function promptFor(
 				: undefined,
 		authorization: isAuthorization
 			? {
-					grant: request.input_type === 'sandbox_override' ? 'sandbox' : 'tool',
+					grant: god || request.input_type === 'sandbox_override' ? 'sandbox' : 'tool',
+					godMode: !!god,
+					files: godModeFiles(god),
 					// The thing being authorized, verbatim off the schema. The prompt
 					// sentence is composed around these; a grant made against the
 					// sentence is a grant made against something never shown.
 					subject:
-						(request.input_type === 'sandbox_override'
+						(typeof god?.command === 'string' ? god.command : request.input_type === 'sandbox_override'
 							? request.schema.command
 							: request.schema.tool_name) ?? '',
 					detail:
-						(request.input_type === 'sandbox_override'
+						(typeof god?.violation === 'string' ? god.violation : request.input_type === 'sandbox_override'
 							? request.schema.violation
 							: request.schema.params_summary) ?? null,
 					roots: request.schema.allowed_roots ?? [],
@@ -494,6 +591,14 @@ export function mapPromptResultToHitlValue(
 		}
 		case 'confirmation': {
 			if (result.kind !== 'choice') return null;
+			// A captured send's review answers with the picked option, in the
+			// shape tool authorization posts. A plain confirm/deny from a surface
+			// that shows only the pair falls through to the boolean below, which
+			// the backend reads as send/discard.
+			const outwardOptions = outwardReviewOptions(request);
+			if (outwardOptions?.some((option) => option.id === result.choiceId)) {
+				return { type: 'choice', selected_id: result.choiceId, other_value: null };
+			}
 			const alignment = request.schema.alignment;
 			if (alignment) {
 				// A hold answers with its typed choices. The plain pair a
@@ -518,6 +623,11 @@ export function mapPromptResultToHitlValue(
 			return { type: 'confirmation', confirmed };
 		}
 		case 'external_action': {
+			// "Not now": the owner declines. The MCP sign-in arm cancels the
+			// flow and closes the ask everywhere on an abort.
+			if (result.kind === 'choice' && result.choiceId === 'dismiss') {
+				return { type: 'aborted', reason: 'owner_declined' };
+			}
 			if (result.kind === 'choice') {
 				return {
 					type: 'external_action_completed',

@@ -103,9 +103,22 @@ sessions, the most recently activated wins silently.
   (`task_ownership::choose_owner`), never `personal-assistant`: the lead
   delegates the plan call to an engineer, and the assistant can neither call
   `run_coding_task` nor delegate to one. The lead delegates once; the
-  engineer's `run_coding_task` is forced plan-only by the `plan` tag, and the
-  coding engine runs boxed read-only (Pi included, via
-  `PiTurnOptions.plan_only`), so the repo is not written.
+  engineer gets a short server-written Discuss start
+  (`build_vibedev_coding_delegate_goal`), but enforcement does not rest on
+  text: a cockpit task with the `plan` tag (`is_vibedev_plan_run`) sets
+  `AgenticContext::plan_run` on launch and resume, kept across pauses and
+  inherited by delegates (same task).
+* Plan-run enforcement (`execution/plan_run_policy.rs`) is a fail-closed
+  allowlist: run controls (`yield`, `delegate_to_agent`, `tool_search`,
+  `notify_owner`, …), read-only tools (`read_file`, `grep`, `web_search`,
+  listings), `files`/`delegation_files` with `action` `read`/`exists`/`list`,
+  and `run_coding_task`; everything else (`shell`, `delegation_shell`, `dugite`, `http`,
+  `apply_code_proposal`, `write_file`, future tools) is refused. Catalogs
+  (`build_catalog_context`, `PlaneGrant::permits`) filter by name; dispatch
+  (`validate_action_against_allowlists`, plane `tools/call`) refuses the
+  lowered action, arguments included. `run_coding_task` runs plan-only from
+  the runtime-stamped `__plan_run` (or the tag, or `plan_only`), boxed
+  read-only (Pi via `PiTurnOptions.plan_only`), never in a trusted clone.
 
 ### Control lines
 
@@ -137,7 +150,7 @@ assembler, including the TypeScript one. **Do not unify it with**
 could forge a later end marker and `repo_path`, so each goes through
 `vibedev::run_service::vibedev_line_break_free` (`\n`, `\r`, U+0085, U+2028,
 U+2029 → space, **nothing else changed**, no whitespace collapse: the fields are
-read back as data and pinned by byte-identity tests against the client assembler):
+read back as data and pinned by the byte-for-byte description tests):
 
 | field (post-fence unless noted) | note |
 | --- | --- |
@@ -193,7 +206,8 @@ missing template degrades instead of bricking the rail:
 
 | Prompt | Use |
 | --- | --- |
-| `vibedev_rail_project_context` | Project-context block |
+| `vibedev_rail_project_context` | Project-context block, mode-neutral lines only |
+| `vibedev_rail_project_context_build` / `_plan` | That block's mode lines, picked by `DispatchMode` |
 | `vibedev_rail_plan_directive` | Discuss/plan directive |
 | `vibedev_rail_reply_started` | Ack naming the 32-hex task id |
 | `vibedev_rail_reply_no_project` | No project |
@@ -205,13 +219,53 @@ missing template degrades instead of bricking the rail:
 | `vibedev_rail_reply_ambiguous_project` | No pointer (§2.1) |
 | `vibedev_rail_follow_up_context` | Continuation block (§12) |
 
+Mode lines are chosen by mode, never by rewriting rendered text: the rail
+renders the build or plan template above the shared prose; the cockpit
+(`vibedev_cockpit_project_context_block`) takes them from
+`vibedev_cockpit_context_mode_lines`. A test keeps mode lines out of the shared
+prose.
+
 Spoken `voice_*` prose (`voice_diff_approval_waiting`,
 `voice_verification_{verified,unverified,exhausted}`) has **no** fallback (§13).
 Never in the store: machine-read lines (`VibeDev project:`,
 `run_coding_task repo_path:`) and any "Execution policy" block — builds get the
-server's `vibedev_execution_policy` at execution start (`artifact_v2/service.rs`,
-gated on `is_vibedev_coding_build_run`); a second copy could drift and would
-contradict the plan directive on a plan run.
+server's mode-agnostic `vibedev_execution_policy` (v1.0.2: no staging line) at
+execution start (`artifact_v2/service.rs`, gated on
+`is_vibedev_coding_build_run`); a second copy could drift and would contradict
+the plan directive on a plan run.
+
+How a Build run's changes land is said **once**, by one change-delivery block
+(`vibedev_change_delivery_block`, appended at dispatch and resume) chosen by the
+mode the run will actually use (`trusted_workspace::effective_trust_mode` via
+`vibedev_run_trust_mode`, the same decision `run_coding_task` makes over
+`vibedev_chain_ancestor_ids`), not the project's `trust` flag:
+
+| Mode | Block | Says |
+| --- | --- | --- |
+| `Trusted` | `Trusted project (git branch mode):` | branch commits; no `CodeChangeProposal`, no diff approval; Autopilot: nothing to apply, no branch to make, checks run in the clone |
+| `SandboxedFallback { reason }` | `Trusted project (sandboxed run):` | the reason, then the sandboxed rule |
+| `Sandboxed` / no live project | `Change delivery (sandboxed run):` | stage `CodeChangeProposal` diff_approval items; an attended Build leaves applying to the owner's review (approval or auto-apply); Autopilot applies its own proposals (`apply_code_proposal`) before `run_project_checks`, on a branch only where the folder allows one (below) |
+
+A sandboxed Autopilot run branches only where the folder's git state
+(`trusted_workspace::project_folder_git`, checked at dispatch) allows: at a
+repository root it makes an `autopilot/…` branch with dugite (`cwd` = the
+folder's absolute path) and commits there; otherwise (not a repository, inside
+one, no git, no project) the block names no git step, says why in one clause,
+and asks for the changed files in the `notify_owner` report.
+
+Any of the three heads makes the append idempotent. No other prose (execution
+policy, Build review line, success line, follow-ups, Autopilot directive,
+visual self-correction) states apply or branch mechanics;
+`a_vibedev_build_goal_says_how_changes_land_once_and_never_both_ways` pins every
+layout × review setting × mode × folder git state.
+
+A workspace-mode skill `cwd` (dugite's included) is resolved before admission
+(`resolve_workspace_working_directory`): omitted or `.` → the task's working
+folder; relative → below it; a bare missing folder name → the capability home
+(`workdirs/home`); an absolute path is bound as root only inside the task
+folder, the scope's `workdirs`, a live VibeDev project folder or an
+owner-granted session root. Anything else is refused with a message naming
+what is accepted.
 
 ## 6. One server-owned creation path
 
@@ -267,10 +321,10 @@ the **prose**:
 | `vibeStudioStore.costBudgetLine()` | `cost_budget_usd` | `magician.vibedev.costBudgetUsd` |
 
 **Two layouts, one assembler**: `vibedev_run_task_description` branches on
-whether a `VibeDevCockpitRun` was passed. The cockpit layout is byte-identical to
-the former client `buildCodingTaskDescription`
-(`the_cockpit_build_description_is_byte_identical_to_the_client_assembler`),
-built from compiled constants in `vibedev/run_service.rs`, not the prompt store.
+whether a `VibeDevCockpitRun` was passed. The cockpit layout is pinned byte for
+byte (`the_cockpit_build_description_is_pinned_byte_for_byte`, Discuss twin) and
+never says how changes land (§5); it is built from compiled constants in
+`vibedev/run_service.rs`, not the prompt store.
 Port quirks (commented): an absent optional block is an **empty line**; JS
 `toFixed` rounds ties up (Rust `{:.0}` to even); millisecond-`Z` ISO timestamps.
 `VibeLegacyStudio.svelte` (`?studio=0`, not the default cockpit) keeps its own
@@ -363,8 +417,11 @@ this recorded nothing and fall back to the description line.
 `vibedev::live_runs` serves glance surfaces (desktop notch,
 `GET /vibedev/runs/live`): each open project's running, owner-waiting or
 ended-within-a-window runs, one state each (`run_pages::fold_into_runs`).
-Owner-waiting = a pending request names one of its turns, a diff awaits review,
-or a live turn asks a question. Each row carries the root's `crew_id` and `lane`.
+Owner-waiting (`needs_you`, `waiting_kind` `diff_review` / `decision`) = a diff
+awaits review, a decision request names one of its turns, or a live turn asks a
+question. An acknowledge-only briefing (`user_requests::is_acknowledge_only`) is
+a `notice`, never `needs_you` (in `work_live` too); it keeps an ended run listed
+until acknowledged. Each row carries the root's `crew_id` and `lane`.
 
 ## 8.2 Crews
 

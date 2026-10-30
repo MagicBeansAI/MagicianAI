@@ -168,6 +168,7 @@ denied_tools:
 - calendar
 - sheets
 - whatsapp
+- whatsapp-mcp
 - telegram
 - telegram-self
 - imessage
@@ -175,6 +176,8 @@ denied_tools:
 # Commerce. The company's outward voice never spends.
 - zepto-mcp
 - swiggy-mcp
+- shopify-mcp
+- zomato-mcp
 - treasurer
 - internal_data
 # Reading the public web — a counterparty's site, a public filing, a job
@@ -534,6 +537,10 @@ state_machines: {}
 # Cron is evaluated in UTC. Both areas pin the same program: the charter is the
 # authority for every cycle, not just the one that happens to read mail.
 autonomous_config:
+  # The ambassador speaks for the company to outsiders: its cycles are a
+  # public-facing agent for outward-send policy (Settings -> Outward actions ->
+  # Envoy and public agents), not ordinary autonomous work.
+  outward_context: public_agent
   schedule: "8,38 * * * *"
   focus_areas:
   - name: inbound sweep

@@ -44,11 +44,8 @@ const STRUCTURED_RESPONSE_SCHEMA = "magician.structured_response";
 const STRUCTURED_RESPONSE_VERSION = 1;
 const STRUCTURED_RESPONSE_MAX_BYTES = 32_768;
 
-/** Hard cap on automatic queue drains per `handleTextMessage` invocation.
- *  Matches the backend `MAX_QUEUED_PER_SESSION` so a maxed-out queue can
- *  fully drain in a single drain loop. Defensive bound against runaway
- *  drains if the backend cap ever raises. */
-const DRAIN_MAX_ITERATIONS = 5;
+const QUEUE_OBSERVER_MIN_DELAY_MS = 250;
+const QUEUE_OBSERVER_MAX_DELAY_MS = 2_000;
 
 function disallowedControlCharactersInText(text: string): boolean {
   for (const ch of text) {
@@ -333,6 +330,7 @@ export class ChannelRuntime<TTarget = string, TContext = unknown> {
   private readonly sessionBindings = new Map<string, SessionBinding<TTarget>>();
   private readonly deliveredMessageIds = new Set<string>();
   private readonly activeDeliveries = new Set<string>();
+  private readonly queueObservers = new Map<string, { closed: boolean }>();
   private readonly envoyAttempts = new Map<string, string>();
   private readonly envoyReceipts = new Map<string, EnvoyReceipt>();
   private readonly activeReceiptReports = new Map<string, Promise<void>>();
@@ -445,6 +443,8 @@ export class ChannelRuntime<TTarget = string, TContext = unknown> {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    for (const observer of this.queueObservers.values()) observer.closed = true;
+    this.queueObservers.clear();
     clearTimeout(this.envoyReceiptTimer);
     this.envoyReceiptTimer = undefined;
     if (this.realtimeReconnectTimer) {
@@ -649,12 +649,11 @@ export class ChannelRuntime<TTarget = string, TContext = unknown> {
       messageDispatchOptions,
     );
 
-    // Backend held the message in the per-session pending queue because
-    // a turn was already in flight. Surface the receipt; do NOT replay
-    // here — the drain happens at the end of the current handler when
-    // the in-flight turn settles.
+    // The backend owns queued work and preserves its selected model/engine.
+    // Observe committed replies without resubmitting the user's message.
     if (response.queued) {
       await this.sendText(target, renderQueuedHint(response.queued), deliveryOptions);
+      await this.observePendingQueue(sessionId, identity, target, sessionDetail.messages ?? [], true);
       return;
     }
 
@@ -685,120 +684,70 @@ export class ChannelRuntime<TTarget = string, TContext = unknown> {
       );
     }
 
-    // Drain only when the backend's drain-hint says the queue is
-    // non-empty. Saves one GET per turn for the common case of a
-    // session that never queued anything. `undefined` means "old
-    // backend or unknown" — be conservative and check anyway.
     const depth = response.pending_queue_depth;
     if (depth === undefined || depth > 0) {
-      await this.drainPendingQueue(sessionId, identity, target);
+      await this.observePendingQueue(sessionId, identity, target, sessionDetail.messages ?? [], (depth ?? 0) > 0);
     }
   }
 
-  /** Drain the per-session pending-message queue after a turn settles.
-   *  Pops the oldest queued message, replays it through `sendMessage`,
-   *  delivers the assistant response, and loops until either the queue
-   *  is empty or the drain hits `DRAIN_MAX_ITERATIONS`. */
-  private async drainPendingQueue(
+  /** The server drains its own queue under the original admission fence.
+   *  Realtime handles delivery normally; observation also works when it is
+   *  disabled or disconnected. Neither routing handles nor credentials cross
+   *  back through a second send, and the SDK never deletes queued work. */
+  private async observePendingQueue(
     sessionId: string,
     identity: ChannelIdentity,
     target: TTarget,
+    priorMessages: readonly ChatMessage[],
+    expectedWork: boolean,
   ): Promise<void> {
-    for (let i = 0; i < DRAIN_MAX_ITERATIONS; i++) {
-      const list = await this.magician.listQueuedMessages(sessionId, identity);
-      const next = list.queued[0];
-      if (!next) return;
-
-      // Delete from the backend queue BEFORE replaying so a crash mid-replay
-      // doesn't leave the same message stuck at head of queue forever.
-      // The trade-off (and bounded risk): if the replay sendMessage fails,
-      // the user's message is silently lost. Tracked as an open issue; for
-      // now a `warn` log is emitted on send failure so it's visible.
-      await this.magician.deleteQueuedMessage(sessionId, next.id, identity);
-
-      const replayText = next.text;
-      if (!replayText) {
-        // Attachments-only replay isn't wired yet — skip rather than crash.
-        continue;
+    if (this.stopped || this.queueObservers.has(sessionId)) return;
+    const observer = { closed: false };
+    this.queueObservers.set(sessionId, observer);
+    const seen = new Set(priorMessages.map(message => message.id));
+    let sawWork = expectedWork;
+    let delay = QUEUE_OBSERVER_MIN_DELAY_MS;
+    const finished = () => {
+      if (this.queueObservers.get(sessionId) === observer) this.queueObservers.delete(sessionId);
+    };
+    const step = async (): Promise<boolean> => {
+      const queue = await this.magician.listQueuedMessages(sessionId, identity);
+      if (this.stopped || observer.closed) return false;
+      const active = queue.queued.length > 0 || queue.active === true;
+      if (!active && !sawWork) return false;
+      sawWork ||= active;
+      const detail = await this.magician.getSession(sessionId, identity);
+      if (detail.session.id !== sessionId) throw new Error("Queue observation returned another session");
+      let received = false;
+      for (const message of detail.messages ?? []) {
+        if (this.stopped || observer.closed) return false;
+        if (seen.has(message.id)) continue;
+        await this.deliverChatMessage(target, sessionId, message, this.deliveryOptionsForMessage(message));
+        seen.add(message.id);
+        received = true;
       }
-      const replayDispatchOptions: ChannelMessageDispatchOptions = {
-        ...(next.profile_override ? { profile: next.profile_override } : {}),
-        ...(next.source_surface
-          ? { sourceSurface: next.source_surface }
-          : {}),
-        ...(next.presence_session_id
-          ? { presenceSessionId: next.presence_session_id }
-          : {}),
-        ...(next.sender_display_name
-          ? { senderDisplayName: next.sender_display_name }
-          : {}),
-      };
-      if (
-        next.source_surface
-        && this.nonControlMessageDispatch?.sourceSurface === next.source_surface
-        && this.nonControlMessageDispatch.allowOutsideWindowTemplate !== undefined
-      ) {
-        replayDispatchOptions.allowOutsideWindowTemplate =
-          this.nonControlMessageDispatch.allowOutsideWindowTemplate;
-      }
-      const replayDeliveryOptions =
-        deliveryOptionsForDispatch(replayDispatchOptions);
-
-      let response: ChatResponse;
-      try {
-        response = await this.magician.sendMessage(
-          sessionId,
-          identity,
-          replayText,
-          replayDispatchOptions,
-        );
-      } catch (err) {
-        console.warn(
-          `[bot-sdk] drain replay failed for queued message ${next.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return;
-      }
-
-      if (response.queued) {
-        // Shouldn't normally happen — we just drained the slot. Be
-        // defensive: surface the receipt and stop the drain so we don't
-        // spin on a session that re-enqueues every replay.
-        await this.sendText(
-          target,
-          renderQueuedHint(response.queued),
-          replayDeliveryOptions,
-        );
-        return;
-      }
-
-      const responseDeliveryOptions =
-        response.public_chat_notice?.template_allowed === undefined
-          ? replayDeliveryOptions
-          : {
-              ...replayDeliveryOptions,
-              allowOutsideWindowTemplate:
-                response.public_chat_notice.template_allowed,
-            };
-
-      if (response.assistant_message) {
-        await this.deliverChatMessage(
-          target,
-          sessionId,
-          response.assistant_message,
-          responseDeliveryOptions,
-        );
-      }
-      for (const executed of response.tool_executed ?? []) {
-        await this.deliverChatMessage(
-          target,
-          sessionId,
-          executed,
-          responseDeliveryOptions,
-        );
-      }
+      delay = received ? QUEUE_OBSERVER_MIN_DELAY_MS : Math.min(delay * 2, QUEUE_OBSERVER_MAX_DELAY_MS);
+      return active;
+    };
+    try {
+      if (!(await step())) { finished(); return; }
+    } catch (error) {
+      finished();
+      console.warn("[bot-sdk] Queue observation failed; queued work remains server-owned", error);
+      return;
     }
+    // Do not hold a channel webhook open while another turn or approval waits.
+    void (async () => {
+      while (!this.stopped && !observer.closed) {
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, delay);
+          timer.unref?.();
+        });
+        if (this.stopped || observer.closed || !(await step())) return;
+      }
+    })().catch(error => {
+      console.warn("[bot-sdk] Queue observation failed; queued work remains server-owned", error);
+    }).finally(finished);
   }
 
   private async handleRealtimeEvent(event: MagicianRealtimeEvent): Promise<void> {

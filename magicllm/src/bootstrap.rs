@@ -52,7 +52,9 @@ impl ConfiguredRouter {
     /// Route an embedding request through the configured router. Deliberately
     /// skips `route()`'s valid-trace-context requirement: embedding callers
     /// (vector-index) have no scope/trace plumbed, and embedding telemetry
-    /// stays caller-side (`llm_embeddings` sink lives in magician).
+    /// stays caller-side (`llm_embeddings` sink lives in magician). Spend is
+    /// still gated and counted: the router admits and settles the call with
+    /// the spend gate, as system work when the request carries no trace.
     pub async fn embed_for_operation(
         &self,
         operation: &str,

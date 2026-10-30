@@ -29,14 +29,25 @@ local_min_memory_gb: 16
 models:
   jev:
     queue_capacity: 64
-    queue_max_bytes: 4194304
+    # Screenshot requests run to the provider's 32 MiB body cap.
+    queue_max_bytes: 33554432
     adapter: typesafe
-    model: jev-1.13.0
+    model: jev-1.14.0
     endpoint: https://api.typesafe.ai/v1/systemone
     api_key_env: TYPESAFE_API_KEY
     timeout_ms: 15000
     max_retries: 2
-    max_in_flight: 6
+    # Hosted: the alignment gate fans out one call per intention.
+    max_in_flight: 16
+    # Long context (TypeSafe-Danger-Zone-Long-Context): 262k per request and
+    # per question instead of 64k/32k, so a large tool_action_judge state is
+    # no longer refused with max_tokens_exceeded (slower, less accurate).
+    long_context: true
+    # Jev takes images (provider-experimental); requests with a screenshot
+    # route only to image-capable models. Context: 262k per request and per question
+    # with `long_context: true` above (64k/32k without it).
+    capabilities:
+      images: true
   # Local MLX profiles; install with make setup-decision-models. Unrouted models
   # stay unloaded. Memory fallback uses Kev-4B; empirical qualification remains incomplete.
   laya:
@@ -230,13 +241,15 @@ operations:
       max_request_bytes: 65536
       shadow_budget_ms: 3000
       decision_budget_ms: 3000
+    # No Kev-4B backup (2026-10-25): its single slot is held by background
+    # memory work, so a chat turn's judge waited out its whole budget on it
+    # and the memory stage missed the turn deadline. An item Jev cannot
+    # settle keeps the incoming order.
     routing:
       local:
         primary: jev
-        backup: kev-4b
       cloud:
         primary: jev
-        backup: kev-4b
   memory_attach:
     pack: memory_applicability
     pack_version: 1.0.0
@@ -257,7 +270,8 @@ operations:
         applicable: 0.7
         load_bearing: 0.7
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
     routing:
@@ -285,7 +299,8 @@ operations:
       jev:
         utility: 0.8
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_context_bytes: 32768
@@ -320,7 +335,8 @@ operations:
         priority: 0.7
         score: 0.7
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_item_bytes: 16384
@@ -350,7 +366,8 @@ operations:
       jev:
         resolution: 0.8
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_item_bytes: 16384
@@ -382,7 +399,8 @@ operations:
         promote: 0.7
         importance: 0.7
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_item_bytes: 16384
@@ -422,19 +440,21 @@ operations:
         same_context: 0.7
         explicit_correction: 0.7
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_context_bytes: 32768
       max_item_bytes: 16384
       max_request_bytes: 262144
+    # No Kev-4B backup (owner decision 2026-10-19): on this pack it answered
+    # "duplicate" for 164 of 165 pairs. A pair Jev cannot settle goes to the
+    # written reviewer instead.
     routing:
       local:
         primary: jev
-        backup: kev-4b
       cloud:
         primary: jev
-        backup: kev-4b
   procedure_feedback:
     pack: procedure_feedback
     pack_version: 1.0.0
@@ -455,7 +475,8 @@ operations:
         verdict: 0.7
         deprecation_recommended: 0.8
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_context_bytes: 32768
@@ -488,7 +509,8 @@ operations:
         worth_surfacing: 0.7
         surface: 0.7
     classification:
-      item_concurrency: 1
+      # Primary is hosted Jev: items in a window may run in parallel.
+      item_concurrency: 4
       decision_budget_ms: 30000
       queue_budget_ms: 30000
       max_context_bytes: 32768
@@ -781,12 +803,15 @@ operations:
         muted: 0.5
         owner_decides: 0.5
     classification:
-      # One item per offered intention (max_standing_batch), asked in parallel.
+      # One item per offered intention (max_standing_batch), asked in
+      # parallel: one window holds the whole request (items in a window run
+      # item_concurrency at a time; windows run one after another, so
+      # chunk_size 1 judged 24 intentions one by one, ~7 s).
       max_items: 24
-      chunk_size: 1
-      item_concurrency: 6
+      chunk_size: 24
+      item_concurrency: 12
       shadow_budget_ms: 30000
-      decision_budget_ms: 4000
+      decision_budget_ms: 8000
       max_context_bytes: 16384
       max_item_bytes: 16384
       max_request_bytes: 65536
@@ -795,3 +820,113 @@ operations:
         primary: jev
       cloud:
         primary: jev
+  # Advisory lane (host: preference_alignment::engine_judge): intentions that
+  # cannot make an act wait. Same pack, several per call, queued behind the
+  # blocking lane; an unanswered batch is dropped, never held.
+  # Relevance labels for the preference check (preference_alignment
+  # relevance.rs): does an inferred owner preference bear on a kind of act
+  # (email, message, purchase...)? Background only; labels are cached per
+  # preference revision and act kind, and an unlabelled preference is judged.
+  preference_relevance:
+    pack: memory_applicability
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    batch_strategy: shared_chunk
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      jev:
+        applicable: 0.5
+    classification:
+      # Eight preferences per model call; background, so it waits its turn.
+      max_items: 24
+      chunk_size: 8
+      item_concurrency: 2
+      queue_budget_ms: 60000
+      decision_budget_ms: 60000
+      max_context_bytes: 4096
+      max_item_bytes: 4096
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+      cloud:
+        primary: jev
+  action_alignment_advisory:
+    pack: action_alignment
+    pack_version: 1.3.0
+    sees_body: true
+    allow_remote_when_local: true
+    batch_strategy: shared_chunk
+    shadow:
+      enabled: false
+      compare_against: action_alignment_judge
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      jev:
+        relation: 0.0
+        owner_cancels: 0.5
+        owner_specified: 0.5
+        firm_limit: 0.5
+        same_subject: 0.5
+        muted: 0.5
+        owner_decides: 0.5
+    classification:
+      # Four intentions per model call (shared chunk): 24 offered make six
+      # calls in turn.
+      max_items: 24
+      chunk_size: 4
+      item_concurrency: 6
+      queue_budget_ms: 4000
+      shadow_budget_ms: 30000
+      decision_budget_ms: 8000
+      max_context_bytes: 16384
+      max_item_bytes: 16384
+      max_request_bytes: 65536
+    routing:
+      local:
+        primary: jev
+      cloud:
+        primary: jev
+
+  # Whole-answer coverage is separate from factual claim support.
+  result_delivery:
+    pack: result_delivery
+    pack_version: 1.0.0
+    sees_body: true
+    allow_remote_when_local: true
+    shadow:
+      enabled: false
+      compare_against: evidence_precision_judge
+    gate:
+      enabled: true
+    allow_unqualified_gate: true
+    qualifications: []
+    thresholds_by_model:
+      kev-4b:
+        verdict: 0.85
+      jev:
+        verdict: 0.85
+    classification:
+      max_items: 1
+      chunk_size: 1
+      item_concurrency: 1
+      shadow_budget_ms: 30000
+      decision_budget_ms: 4000
+      queue_budget_ms: 1000
+      max_context_bytes: 4096
+      max_item_bytes: 16384
+      max_request_bytes: 32768
+    routing:
+      local:
+        primary: jev
+        backup: kev-4b
+      cloud:
+        primary: jev
+        backup: kev-4b

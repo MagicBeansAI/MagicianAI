@@ -21,7 +21,7 @@ Running; the fixture never mutates component state directly.
 The task list lives on the **Work** top-bar tab (`/work`; Chat · Work ·
 Observe · Today). Chat's live task card opens the task's progress panel (see
 `chat-next.md`). The command palette's **Work** entry (`G T`, which the
-`(app)` layout also binds as a leader shortcut) under *Jump to* covers tasks, crew, monitors, internal work, programs and
+`(app)` layout also binds as a leader shortcut) under *Jump to* covers tasks, crew, monitors, System work, Playbooks and
 quality review. `TopBar.component.test.ts` holds the nav contract; `CommandPalette.component.test.ts` holds the palette entries.
 
 ## Filter lanes come from the server

@@ -484,6 +484,15 @@
 //!   `executors.native_adapter`, and no sweep so far has traced that trait
 //!   object to a provider. They are the strongest remaining candidates for a
 //!   twenty-second site.
+//! - **In-flight facts, inline on purpose (2026-10-20).** `decide.rs`'s
+//!   `LLMRequestSent` and `executor.rs`'s `AgenticActionStarted` go straight
+//!   through `executors.emit_event`. An accepted record is delivered when its
+//!   phase commits — after the model call or tool it announces has returned —
+//!   so journalling a "this has started" fact makes it arrive together with
+//!   its own settlement. The router's `LLMRouted` (emitted from the provider
+//!   attempt itself) is in the same class. A replay can repeat one of them;
+//!   surfaces pair on `llm_call_id` / `call_id`, so a repeat is a duplicate
+//!   row, not a wrong one.
 //!
 //! ## THE OFF-STACK PAIR, and why the refusal is not the same one as the others
 //!

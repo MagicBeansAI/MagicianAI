@@ -580,6 +580,17 @@ impl AppWorkflowService {
             if !round.is_complete() {
                 return Err(AppWorkflowError::EffectSettlementUnresolved);
             }
+            // A round in which every participant that was tried failed is a
+            // failed run, not a quiet one: the scheduler then records the
+            // failure instead of a clean completion. A period-ceiling marker
+            // left by refused attempts still parks the behavior.
+            if round
+                .summary()
+                .map_err(|_| AppWorkflowError::CorruptBinding)?
+                .every_participant_failed()
+            {
+                return Err(AppWorkflowError::ContextualRoundAllParticipantsFailed);
+            }
             context.fence(scope, &task.task_id).await?;
             let final_context = Box::pin(self.round_queries(
                 scope,

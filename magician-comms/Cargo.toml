@@ -1,6 +1,6 @@
 [package]
 name = "magician-comms"
-version = "0.1.9"
+version = "0.1.13"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "The comms data plane (channel-assist), extracted from the magician monolith"
@@ -16,7 +16,7 @@ magician-media = { path = "../magician-media" }
 magician-surfaces = { path = "../magician-surfaces" }
 magician-vector-index = { path = "../magician-vector-index" }
 
-actix-web = { version = "4.4", features = ["rustls"] }
+actix-web = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -35,7 +35,7 @@ serde_yaml = "0.9"
 serde_json = { workspace = true }
 sha2 = "0.10"
 tempfile = "3.8"
-wiremock = { version = "0.5", optional = true }
+wiremock = { version = "0.6", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = "0.7"
@@ -71,7 +71,7 @@ test-fixtures = ["dep:wiremock", "magician/test-fixtures"]
 [dev-dependencies]
 dotenvy = "0.15"
 magician-chunking = { path = "../magician-chunking" }
-wiremock = "0.5"
+wiremock = "0.6"
 magician = { path = "../magician", features = ["test-fixtures"] }
 tempfile = "3.8"
 actix-rt = "2.9"

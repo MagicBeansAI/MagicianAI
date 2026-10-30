@@ -47,6 +47,7 @@ import type {
 	TaskPanelRun
 } from '$lib/magician/tasks/UnifiedTaskPanel.svelte';
 import type { VerdictAttention } from '$lib/magician/tasks/taskVerdict';
+import { executionProgressAt, latestProgressAt } from '$lib/magician/tasks/taskProgress';
 import { normalizeV3TaskStatus, parseLastProgressAt } from '$lib/stores/taskStore';
 
 import type {
@@ -548,10 +549,13 @@ export function toInternalTaskPanelModel(
 		totalSteps: null,
 		currentStepLabel: null,
 		elapsedMs: runElapsed(execution, now),
-		// Task 7's field, carried on the internal row exactly as it is on a normal
-		// one, so a wedged internal run reports `Stalled · no progress for 6m`
-		// here for the same reason and off the same instant.
-		lastProgressAt: instantOf(task.last_progress_at),
+		lastProgressAt: latestProgressAt(instantOf(task.last_progress_at), executionProgressAt(
+			panel, text(task.active_root_execution_id) ?? text(task.latest_root_execution_id)
+				?? text(execution?.state?.execution_id)
+		)),
+		// The final answer is still being written: the verdict reads `finalizing`
+		// rather than `Finished`.
+		synthesisPending: task.synthesis_pending === true,
 		// **The acceptance test, as a value.** Internal tasks have no plan — the
 		// backend hard-codes `has_plan: false` on every row this surface lists —
 		// so the Plan act is absent rather than empty or disabled, and the panel

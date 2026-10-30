@@ -61,6 +61,11 @@ data class HistorySearchResponse(
     val offset: Int = 0,
 )
 
+@Serializable
+data class SessionActivityResponse(
+    @SerialName("working_session_ids") val workingSessionIds: List<String>,
+)
+
 data class HistoryPage<T>(
     val items: List<T>,
     val total: Int,

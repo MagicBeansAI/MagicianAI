@@ -21,6 +21,7 @@ data class PcmRecording(val wav: ByteArray, val durationMs: Long)
 
 /** One bounded 16 kHz mono PCM capture, with no networking or UI state. */
 class PcmRecorder(private val context: Context) {
+    @Volatile var onLevel: ((Float) -> Unit)? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val recording = AtomicBoolean(false)
     private var audioRecord: AudioRecord? = null
@@ -62,10 +63,12 @@ class PcmRecorder(private val context: Context) {
         recording.set(true)
         readJob = scope.launch {
             val buffer = ByteArray(bufferSize)
+            val meter = MicLevelMeter()
             while (recording.get()) {
                 val count = recorder.read(buffer, 0, buffer.size)
                 when {
                     count > 0 -> {
+                        if (onLevel != null) meter.feed(buffer, count, gateOpen = recording.get())?.let { onLevel?.invoke(it) }
                         val sink = output ?: break
                         if (sink.size() + count > MaxPcmBytes) {
                             failure = "Recording stopped at the 10-minute safety limit."

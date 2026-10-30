@@ -10,19 +10,23 @@ guide: |-
 
   Actions (exactly two):
 
-  - `search_notes {query, limit?, provider?}` searches the notes space (the
-    local markdown folder and, when active, the SilverBullet space). Each hit
-    has a `source_ref`, title, provider-relative path, modified time and up to
-    eight matched lines. `scan_truncated` and `more_available` say when
-    "nothing found" might only mean "not scanned".
+  - `search_notes {query, limit?, provider?}` searches the owner's Notes (the
+    notes folder, plus the fallback folder a provider fallback writes to).
+    Each hit has a `source_ref`, title, provider-relative path, `open_url`,
+    modified time and up to eight matched lines. `scan_truncated` and
+    `more_available` say when "nothing found" might only mean "not scanned".
   - `read_note {source_ref}` reads one note a search returned: its title and
     markdown (capped at 256 KiB by the store). A note that has since moved or
     been deleted is `note: null` with `present: false`.
 
+  `open_url` is the note's canonical relative link
+  (`/notes?path=…&workspace=…`); show it as-is, never with a host added.
+
   `source_ref` is `notes:<provider>:<relative markdown path>`, exactly as a
-  search emits it. Queries need at least two characters, results are capped at
-  50, serialized results fail closed above 768 KiB, and every call has a
-  30-second timeout.
+  search emits it. `silverbullet` is the stored id of the notes folder and
+  `local_markdown` the fallback folder; the ids are opaque. Queries need at
+  least two characters, results are capped at 50, serialized results fail
+  closed above 768 KiB, and every call has a 30-second timeout.
 
   Runtime scope is executor-owned: `__principal` and `__workspace` are injected
   by the runtime. Public principal/workspace values are assertions only and can
@@ -48,7 +52,7 @@ parameters:
     description: Maximum hits, default 10 and capped at 50.
   - name: provider
     param_type: string
-    description: Optional provider to search (local_markdown or silverbullet).
+    description: Optional provider to search (silverbullet = the notes folder, local_markdown = the fallback folder). Normally omitted.
     enum_values:
       - local_markdown
       - silverbullet

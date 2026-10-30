@@ -13,9 +13,9 @@ describe('ManifestoExcerpt', () => {
 		expect(screen.getByRole('heading', { name: 'Personal Intelligence is your asset' })).toBeInTheDocument();
 		expect(screen.getByText('Sunday, 13 September 2026')).toBeInTheDocument();
 		expect(container.textContent).toContain(
-			'The work was finished while everyone else was still discussing it.'
+			'The work finished while everyone else was still discussing it.'
 		);
-		expect(container.textContent).not.toContain('Your company will adapt');
+		expect(container.textContent).not.toContain('Life outside work is no different');
 		expect(screen.getByRole('link', { name: /Continue reading the manifesto/ })).toHaveAttribute(
 			'href',
 			'/manifesto'
@@ -24,19 +24,19 @@ describe('ManifestoExcerpt', () => {
 });
 
 describe('ManifestoBlocks', () => {
-	it('renders It is you who do in bold', () => {
+	it('renders It is you who must in bold', () => {
 		render(ManifestoBlocks, {
 			props: {
 				blocks: [
 					{
 						kind: 'prose',
-						text: 'Keeping you relevant. **It is you who do.**'
+						text: 'Under no obligation to keep you relevant. **It is you who must.**'
 					}
 				]
 			}
 		});
 
-		const strong = screen.getByText('It is you who do.');
+		const strong = screen.getByText('It is you who must.');
 		expect(strong.tagName).toBe('STRONG');
 	});
 
@@ -46,7 +46,7 @@ describe('ManifestoBlocks', () => {
 				blocks: [
 					{
 						kind: 'verse',
-						lines: ['Your personal AI must not.', '**It is yours.**', 'You need to determine.']
+						lines: ['Your personal AI answers to you.', '**It is yours.**', 'You determine.']
 					}
 				]
 			}

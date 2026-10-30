@@ -54,12 +54,16 @@ struct AttentionInputSchema: Codable, Equatable {
     let sensitive: ChatSensitiveSpecData?
     /// The service request type (`secure_browser_input` and friends predate
     /// the spec and are still secret by name).
-    let requestType: String?
+    var requestType: String?
     /// `external_action` / `mcp_oauth` — the page the reader has to open
     /// (an OAuth consent screen for `mcp_oauth`). `authorize_url` is the
     /// payload's older spelling of the same link.
     var url: String? = nil
     var authorizeUrl: String? = nil
+    /// `mcp_oauth` — the decline control's label ("Not now") and the service
+    /// being connected ("Swiggy (food)"). Absent on servers that predate them.
+    var dismissLabel: String? = nil
+    var serviceLabel: String? = nil
     /// The producer's free-form context; only its review link
     /// (`review_href` / `review_label`) is read, leniently.
     var context: HitlReviewContextData? = nil
@@ -67,10 +71,27 @@ struct AttentionInputSchema: Codable, Equatable {
     var escalationTrigger: String? = nil
     /// Public alignment projection; its reason is read privately.
     var alignment: AlignmentProjection? = nil
+    /// `confirmation` — a gated tool call's structured approval card, and the
+    /// raw call it stands in for (kept for the collapsed audit view).
+    /// Every one of these reads leniently: an odd shape is absent, never a
+    /// lost schema.
+    var approvalPreview: ApprovalPreview? = nil
+    /// `confirmation` raised by `escalation_trigger == "outward_review"` — the
+    /// captured send under review (who, through what, and when it lapses).
+    /// Absent on servers that predate review before sending.
+    var outwardReview: OutwardReview? = nil
+    var actionSummaryText: LenientText? = nil
+    var reasonText: LenientText? = nil
+    var actionSummary: String? { actionSummaryText?.value }
+    var reason: String? { reasonText?.value }
 
     enum CodingKeys: String, CodingKey {
         case type, options, placeholder, suggestions, destructive, instructions, multiple, filter
         case command, violation, questions, sensitive, url, context, alignment
+        case approvalPreview = "approval_preview"
+        case outwardReview = "outward_review"
+        case actionSummaryText = "action_summary"
+        case reasonText = "reason"
         case escalationTrigger = "escalation_trigger"
         case requestType = "request_type"
         case authorizeUrl = "authorize_url"
@@ -81,9 +102,240 @@ struct AttentionInputSchema: Codable, Equatable {
         case chainPosition = "chain_position"
         case chainTotal = "chain_total"
         case doneLabel = "done_label"
+        case dismissLabel = "dismiss_label"
+        case serviceLabel = "service_label"
         case toolName = "tool_name"
         case paramsSummary = "params_summary"
         case allowedRoots = "allowed_roots"
+    }
+}
+
+/// A string that never fails the record it sits in: another shape reads as nil.
+struct LenientText: Codable, Equatable {
+    let value: String?
+    init(_ value: String?) { self.value = value }
+    init(from decoder: Decoder) throws { value = try? decoder.singleValueContainer().decode(String.self) }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+}
+
+/// A captured outward send waiting on the owner — `input_schema.outward_review`
+/// on a confirmation whose `escalation_trigger` is `outward_review`
+/// (`docs/plans/2026-10-25-outward-send-review-design.md`, *Contract*).
+/// Display only: what is sent is decided by the choice id posted.
+///
+/// Read field by field and never throws, like `ApprovalPreview`: a field of an
+/// unexpected shape is absent, and a value that is not an object reads as an
+/// empty record rather than a lost schema.
+struct OutwardReview: Codable, Equatable {
+    let capability: String?
+    let action: String?
+    /// The send's class (`message`, …); `class` is a Swift keyword.
+    let sendClass: String?
+    let recipients: [String]
+    let agentId: String?
+    /// Epoch milliseconds; `0` (or absent) means no deadline was stamped.
+    let deadlineAtMs: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case capability, action, recipients
+        case sendClass = "class"
+        case agentId = "agent_id"
+        case deadlineAtMs = "deadline_at_ms"
+    }
+
+    init(capability: String? = nil, action: String? = nil, sendClass: String? = nil,
+         recipients: [String] = [], agentId: String? = nil, deadlineAtMs: Int64 = 0) {
+        self.capability = capability; self.action = action; self.sendClass = sendClass
+        self.recipients = recipients; self.agentId = agentId; self.deadlineAtMs = deadlineAtMs
+    }
+
+    init(from decoder: Decoder) throws {
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { self.init(); return }
+        func text(_ key: CodingKeys) -> String? {
+            guard let value = try? c.decodeIfPresent(String.self, forKey: key) else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        var rawRecipients: [LenientText] = []
+        if let decoded = (try? c.decodeIfPresent([LenientText].self, forKey: .recipients)) ?? nil {
+            rawRecipients = decoded
+        }
+        let recipients: [String] = rawRecipients
+            .compactMap { $0.value?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        // Split up: one chained `??` expression timed out the type checker.
+        var deadline: Int64 = 0
+        if let whole = (try? c.decodeIfPresent(Int64.self, forKey: .deadlineAtMs)) ?? nil {
+            deadline = whole
+        } else if let fraction = (try? c.decodeIfPresent(Double.self, forKey: .deadlineAtMs)) ?? nil,
+                  let rounded = Int64(exactly: fraction.rounded()) {
+            deadline = rounded
+        }
+        self.init(capability: text(.capability), action: text(.action), sendClass: text(.sendClass),
+                  recipients: recipients, agentId: text(.agentId), deadlineAtMs: max(0, deadline))
+    }
+
+    /// When the review lapses (an unanswered review settles as not sent), or
+    /// nil when the server stamped no deadline.
+    var deadline: Date? {
+        deadlineAtMs > 0 ? Date(timeIntervalSince1970: TimeInterval(deadlineAtMs) / 1000) : nil
+    }
+
+    /// The muted expiry line under the choices, or nil without a deadline.
+    func expiryLine(now: Date = Date()) -> String? {
+        guard let deadline else { return nil }
+        if deadline <= now { return "Expired — an unanswered send is discarded." }
+        return "Expires \(deadline.formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    /// "To a@b.com, c@d.com · via gmail" — the recipient and the channel, as
+    /// the server named them. Nil when it named neither.
+    var recipientLine: String? {
+        let to = recipients.isEmpty ? nil : "To " + recipients.joined(separator: ", ")
+        let via = capability.map { "via " + $0 }
+        let parts = [to, via].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// A confirmation's structured approval card — Rust
+/// `execution::approval_preview::ApprovalPreview`, published as
+/// `input_schema.approval_preview`. Display only: the answer is the same
+/// confirmation either way. `why`, `evidence` and the diff lines are
+/// agent-authored plain text and are never rendered as markup.
+///
+/// Every field is optional on the wire and read field by field; a preview
+/// without a title is not usable and the ask renders as it always did.
+struct ApprovalPreview: Codable, Equatable {
+    struct Warning: Codable, Equatable {
+        let code: String
+        let message: String
+    }
+    struct Line: Codable, Equatable {
+        enum Kind: String, Codable { case context, add, remove }
+        let kind: Kind
+        /// Verbatim, indentation included.
+        let text: String
+    }
+    struct Hunk: Codable, Equatable {
+        let oldStart: Int
+        let oldLines: Int
+        let newStart: Int
+        let newLines: Int
+        let lines: [Line]
+        /// `@@ -a,b +c,d @@`
+        var header: String { "@@ -\(oldStart),\(oldLines) +\(newStart),\(newLines) @@" }
+        enum CodingKeys: String, CodingKey {
+            case lines
+            case oldStart = "old_start", oldLines = "old_lines", newStart = "new_start", newLines = "new_lines"
+        }
+    }
+    struct Diff: Codable, Equatable {
+        let path: String
+        /// Totals for the whole change, not only the shown hunks.
+        let added: Int
+        let removed: Int
+        let hunks: [Hunk]
+        let truncated: Bool
+        /// Changed lines past the cap ("N more changed lines not shown").
+        let omittedChangedLines: Int
+        let unifiedDiff: String
+        enum CodingKeys: String, CodingKey {
+            case path, added, removed, hunks, truncated
+            case omittedChangedLines = "omitted_changed_lines"
+            case unifiedDiff = "unified_diff"
+        }
+    }
+
+    let title: String
+    let whyLabel: String?
+    let why: String?
+    let diff: Diff?
+    let evidence: [String]
+    let warnings: [Warning]
+    let notes: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case title, why, diff, evidence, warnings, notes
+        case whyLabel = "why_label"
+    }
+
+    init(title: String, whyLabel: String? = nil, why: String? = nil, diff: Diff? = nil,
+         evidence: [String] = [], warnings: [Warning] = [], notes: [String] = []) {
+        self.title = title; self.whyLabel = whyLabel; self.why = why; self.diff = diff
+        self.evidence = evidence; self.warnings = warnings; self.notes = notes
+    }
+
+    /// Never throws: a field of an unexpected shape is dropped, and a value
+    /// that is not an object reads as an untitled (unusable) preview.
+    init(from decoder: Decoder) throws {
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { self.init(title: ""); return }
+        func text(_ key: CodingKeys) -> String? {
+            guard let value = try? c.decodeIfPresent(String.self, forKey: key) else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : value
+        }
+        func texts(_ key: CodingKeys) -> [String] {
+            ((try? c.decodeIfPresent([LenientText].self, forKey: key)) ?? nil)?
+                .compactMap(\.value).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? []
+        }
+        let warnings = ((try? c.decodeIfPresent([ApprovalPreviewLenient<Warning>].self, forKey: .warnings)) ?? nil)?
+            .compactMap(\.value).filter { !$0.message.isEmpty } ?? []
+        self.init(title: text(.title)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                  whyLabel: text(.whyLabel), why: text(.why),
+                  diff: ((try? c.decodeIfPresent(ApprovalPreviewLenient<Diff>.self, forKey: .diff)) ?? nil)?.value,
+                  evidence: texts(.evidence), warnings: warnings, notes: texts(.notes))
+    }
+
+    /// Whether this preview can stand in for the raw call.
+    var isUsable: Bool { !title.isEmpty }
+    /// "+N lines, −M lines"
+    var changeLabel: String? { diff.map { "+\($0.added) lines, −\($0.removed) lines" } }
+}
+
+/// Decodes `T` or reads as nil, so one odd entry never drops its neighbours.
+struct ApprovalPreviewLenient<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+}
+
+extension ApprovalPreview.Warning {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        message = try c.decode(String.self, forKey: .message)
+        code = (try? c.decodeIfPresent(String.self, forKey: .code)) ?? "warning"
+    }
+}
+
+extension ApprovalPreview.Hunk {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        oldStart = (try? c.decodeIfPresent(Int.self, forKey: .oldStart)) ?? 0
+        oldLines = (try? c.decodeIfPresent(Int.self, forKey: .oldLines)) ?? 0
+        newStart = (try? c.decodeIfPresent(Int.self, forKey: .newStart)) ?? 0
+        newLines = (try? c.decodeIfPresent(Int.self, forKey: .newLines)) ?? 0
+        // An unknown line kind is skipped, never guessed.
+        lines = ((try? c.decodeIfPresent([ApprovalPreviewLenient<ApprovalPreview.Line>].self, forKey: .lines)) ?? nil)?
+            .compactMap(\.value) ?? []
+    }
+}
+
+extension ApprovalPreview.Diff {
+    /// A diff without a path is not usable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        guard !path.isEmpty else { throw DecodingError.dataCorruptedError(forKey: .path, in: c, debugDescription: "empty path") }
+        added = (try? c.decodeIfPresent(Int.self, forKey: .added)) ?? 0
+        removed = (try? c.decodeIfPresent(Int.self, forKey: .removed)) ?? 0
+        hunks = ((try? c.decodeIfPresent([ApprovalPreviewLenient<ApprovalPreview.Hunk>].self, forKey: .hunks)) ?? nil)?
+            .compactMap(\.value) ?? []
+        truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+        omittedChangedLines = (try? c.decodeIfPresent(Int.self, forKey: .omittedChangedLines)) ?? 0
+        unifiedDiff = (try? c.decodeIfPresent(String.self, forKey: .unifiedDiff)) ?? ""
     }
 }
 
@@ -135,6 +387,31 @@ struct AttentionGrantOption: Identifiable, Equatable {
     let label: String
 }
 
+/// Compact controls keep the server's exact scope/duration option ids.
+struct GodGrantScope: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let detail: String
+    let sessionId: String
+    let alwaysId: String
+
+    static func grouped(_ options: [AttentionGrantOption]) -> [Self] {
+        let lasting = options.filter { $0.id != "allow_once" && $0.id != "deny" }
+        guard !lasting.isEmpty, lasting.allSatisfy({ $0.id.range(of: "^(session|always):[^:]+$", options: .regularExpression) != nil }) else { return [] }
+        let labels = ["file": "These files", "folder": "Containing folders", "top": "Top directories", "repository": "This repository",
+                      "exact": "Exact command", "mcp_tool": "This action", "capability": "Whole tool", "prefix": "Command prefix", "program": "Program", "host": "This host",
+                      "any_host": "Any host", "engine_repo": "Engine and repository", "engine": "This engine", "any_harness": "Any harness"]
+        var scopes: [Self] = []
+        for option in lasting where option.id.hasPrefix("session:") {
+            let id = String(option.id.dropFirst("session:".count))
+            guard let always = lasting.first(where: { $0.id == "always:\(id)" }) else { return [] }
+            let detail = option.label.hasPrefix("This session: ") ? String(option.label.dropFirst("This session: ".count)) : option.label
+            scopes.append(Self(id: id, label: labels[id] ?? id, detail: detail, sessionId: option.id, alwaysId: always.id))
+        }
+        return scopes.count * 2 == lasting.count ? scopes : []
+    }
+}
+
 /// The canonical HITL identifiers — the backend nests these under
 /// `metadata.hitl_request.identifiers`, NOT at the top level of metadata.
 struct HitlIdentifiers: Codable, Equatable {
@@ -150,6 +427,83 @@ struct HitlIdentifiers: Codable, Equatable {
     }
 }
 
+/// How to answer one ask, decided by the server (Rust `HitlRespondHandle`):
+/// `metadata.respond` / `metadata.hitl_request.respond` on an Attention row.
+/// When present, the answer is `POST {url}` with `source`, `input_type`,
+/// `execution_id`, `task_id` taken from here — nothing derived per source.
+/// Decoded field by field; an unusable handle decodes as `nil` and the
+/// per-source derivation answers instead (servers that predate it).
+struct HitlRespondHandle: Codable, Equatable {
+    struct Choice: Codable, Equatable {
+        let id: String
+        let label: String?
+    }
+    let url: String
+    let correlationId: String
+    let source: String
+    let inputType: String
+    var executionId: String? = nil
+    var taskId: String? = nil
+    var options: [Choice] = []
+    var softSuccessStatuses: [Int] = [409]
+
+    static let pathPrefix = "/api/magician/v2/hitl/"
+    /// `encodeURIComponent`'s unreserved set, so a derived path matches the server's.
+    static let unreservedPathCharacters = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+
+    enum CodingKeys: String, CodingKey {
+        case url, source, options
+        case correlationId = "correlation_id"
+        case inputType = "input_type"
+        case executionId = "execution_id"
+        case taskId = "task_id"
+        case softSuccessStatuses = "soft_success_statuses"
+    }
+
+    init(url: String, correlationId: String, source: String, inputType: String,
+         executionId: String? = nil, taskId: String? = nil) {
+        self.url = url
+        self.correlationId = correlationId
+        self.source = source
+        self.inputType = inputType
+        self.executionId = executionId
+        self.taskId = taskId
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func text(_ key: CodingKeys) -> String? {
+            let value = (try? c.decodeIfPresent(String.self, forKey: key))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (value?.isEmpty ?? true) ? nil : value
+        }
+        guard let url = text(.url), url.hasPrefix(Self.pathPrefix), url.hasSuffix("/respond"),
+              !url.contains("?"), !url.contains("#"), !url.contains(" "),
+              let correlationId = text(.correlationId),
+              let source = text(.source), let inputType = text(.inputType) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "unusable respond handle"))
+        }
+        self.url = url
+        self.correlationId = correlationId
+        self.source = source
+        self.inputType = inputType
+        executionId = text(.executionId)
+        taskId = text(.taskId)
+        options = (try? c.decodeIfPresent([Choice].self, forKey: .options)) ?? []
+        let statuses = (try? c.decodeIfPresent([Int].self, forKey: .softSuccessStatuses)) ?? []
+        softSuccessStatuses = statuses.isEmpty ? [409] : statuses
+    }
+}
+
+/// One answer, ready to post: the path below the host and the JSON body.
+struct HitlRespondCall {
+    let path: String
+    let body: [String: Any]
+    let softSuccessStatuses: [Int]
+}
+
 /// The whole HITL open-payload the backend stamps at `metadata.hitl_request`.
 ///
 /// A delegated child's ask (C2) and an `mcp_oauth` ask (C4) carry their
@@ -157,6 +511,7 @@ struct HitlIdentifiers: Codable, Equatable {
 /// `prompt`, `input_type`, `input_schema` — flat, not under `identifiers`.
 /// Decoded field by field so one odd field never drops the row.
 struct HitlRequestPayload: Codable, Equatable {
+    var id: String? = nil
     var identifiers: HitlIdentifiers? = nil
     var source: String? = nil
     var inputType: String? = nil
@@ -168,8 +523,10 @@ struct HitlRequestPayload: Codable, Equatable {
     var scopeExecutionId: String? { scope?["execution_id"] ?? nil }
     var prompt: String? = nil
     var inputSchema: AttentionInputSchema? = nil
+    /// The server's respond handle for this target, when it sent one.
+    var respond: HitlRespondHandle? = nil
     enum CodingKeys: String, CodingKey {
-        case identifiers, source, prompt, scope
+        case id, identifiers, source, prompt, scope, respond
         case inputType = "input_type"
         case correlationId = "correlation_id"
         case executionId = "execution_id"
@@ -178,6 +535,7 @@ struct HitlRequestPayload: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? c.decodeIfPresent(String.self, forKey: .id)
         identifiers = try? c.decodeIfPresent(HitlIdentifiers.self, forKey: .identifiers)
         source = try? c.decodeIfPresent(String.self, forKey: .source)
         inputType = try? c.decodeIfPresent(String.self, forKey: .inputType)
@@ -186,22 +544,12 @@ struct HitlRequestPayload: Codable, Equatable {
         scope = try? c.decodeIfPresent([String: String?].self, forKey: .scope)
         prompt = try? c.decodeIfPresent(String.self, forKey: .prompt)
         inputSchema = try? c.decodeIfPresent(AttentionInputSchema.self, forKey: .inputSchema)
+        respond = try? c.decodeIfPresent(HitlRespondHandle.self, forKey: .respond)
     }
 }
 
 /// One staged file in a diff_approval proposal (web `HitlDiffApprovalFile`).
-struct AttentionDiffFile: Codable, Equatable, Identifiable {
-    let path: String
-    let status: String?
-    let additions: Int?
-    let deletions: Int?
-    let unifiedDiff: String?
-    var id: String { path }
-    enum CodingKeys: String, CodingKey {
-        case path, status, additions, deletions
-        case unifiedDiff = "unified_diff"
-    }
-}
+typealias AttentionDiffFile = HitlFileDiffData
 
 /// The free-form `metadata` object attached to a feed item, holding the HITL contract.
 struct AttentionMetadata: Codable, Equatable {
@@ -228,9 +576,11 @@ struct AttentionMetadata: Codable, Equatable {
     /// reached any surface. `actions` names what the card offers.
     var attentionReason: String? = nil
     var actions: [String]? = nil
+    /// The server's respond handle (`metadata.respond`), when it sent one.
+    var respond: HitlRespondHandle? = nil
 
     enum CodingKeys: String, CodingKey {
-        case source, question, hint, options, files, actions
+        case source, question, hint, options, files, actions, respond
         case attentionKind = "attention_kind"
         case inputType = "input_type"
         case inputSchema = "input_schema"
@@ -270,6 +620,7 @@ extension AttentionMetadata {
         delegatedAgentId = try? c.decodeIfPresent(String.self, forKey: .delegatedAgentId)
         attentionReason = try? c.decodeIfPresent(String.self, forKey: .attentionReason)
         actions = try? c.decodeIfPresent([String].self, forKey: .actions)
+        respond = try? c.decodeIfPresent(HitlRespondHandle.self, forKey: .respond)
     }
 }
 
@@ -285,17 +636,25 @@ struct PendingUserRequest: Decodable {
     let options: [EscalationOptionData]?
     let context: Context?
     let createdAt: Double?
+    let requestType: String?
 
     struct Context: Decodable {
         let inputType: String?
         let inputSchema: AttentionInputSchema?
+        let godContext: HitlReviewContextData?
         enum CodingKeys: String, CodingKey {
             case inputType = "input_type", inputSchema = "input_schema"
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            inputType = try? c.decodeIfPresent(String.self, forKey: .inputType)
+            inputSchema = try? c.decodeIfPresent(AttentionInputSchema.self, forKey: .inputSchema)
+            godContext = try? HitlReviewContextData(from: decoder)
         }
     }
     enum CodingKeys: String, CodingKey {
         case id, question, options, context
-        case createdAt = "created_at"
+        case createdAt = "created_at", requestType = "request_type"
     }
 }
 
@@ -316,6 +675,8 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     /// The conversation thread the row belongs to (the feed stamps it on the
     /// row itself): the composer ask dock matches it against its own thread.
     var uiThreadId: String? = nil
+    /// A taskless chat question may carry only this conversation identity.
+    var chatSessionId: String? = nil
 
     init(pending: PendingUserRequest) {
         id = "user-request:\(pending.id)"
@@ -324,10 +685,17 @@ struct AttentionItem: Codable, Identifiable, Equatable {
         itemType = "request"
         status = "needs_action"
         updatedAt = pending.createdAt
+        chatSessionId = pending.context?.godContext?.chatSessionId
+        var schema = pending.context?.inputSchema
+        if pending.requestType == "sandbox_override", pending.context?.godContext?.godMode == true {
+            if schema == nil { schema = try? JSONDecoder().decode(AttentionInputSchema.self, from: Data("{}".utf8)) }
+            schema?.requestType = pending.requestType
+            schema?.context = pending.context?.godContext
+        }
         metadata = AttentionMetadata(
             source: "user_request", attentionKind: "user_request.pending",
             inputType: pending.context?.inputType ?? ((pending.options ?? []).isEmpty ? "text" : "choice"),
-            inputSchema: pending.context?.inputSchema, question: pending.question,
+            inputSchema: schema, question: pending.question,
             hint: nil, options: pending.options, pauseStateId: pending.id,
             hitlRequest: nil, reviewHref: nil, reviewLabel: nil, files: nil
         )
@@ -350,6 +718,7 @@ struct AttentionItem: Codable, Identifiable, Equatable {
         taskId = try? c.decodeIfPresent(String.self, forKey: .taskId)
         executionId = try? c.decodeIfPresent(String.self, forKey: .executionId)
         uiThreadId = try? c.decodeIfPresent(String.self, forKey: .uiThreadId)
+        chatSessionId = try? c.decodeIfPresent(String.self, forKey: .chatSessionId)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -359,6 +728,7 @@ struct AttentionItem: Codable, Identifiable, Equatable {
         case taskId = "task_id"
         case executionId = "execution_id"
         case uiThreadId = "ui_thread_id"
+        case chatSessionId = "chat_session_id"
     }
 
     /// The ask's schema: the row's own, else the one inside `hitl_request`
@@ -426,11 +796,50 @@ struct AttentionItem: Codable, Identifiable, Equatable {
         return inputType
     }
 
+    // MARK: server respond handle
+
+    /// The server's respond handle: `metadata.respond`, else the embedded
+    /// target's. When present it is the whole answer route; the derived
+    /// properties below answer only for servers that predate it.
+    var respondHandle: HitlRespondHandle? { metadata?.respond ?? metadata?.hitlRequest?.respond }
+
+    /// The answer to post: the handle's call when the server sent one, else
+    /// the per-source derivation (web `resolveHitlCall` parity).
+    func respondCall(value: [String: Any], selectedPaths: [String] = [],
+                     channel: String = "ios") -> HitlRespondCall {
+        var body: [String: Any] = ["value": value, "channel": channel]
+        if !selectedPaths.isEmpty { body["selected_paths"] = selectedPaths }
+        if let handle = respondHandle {
+            body["source"] = handle.source
+            body["input_type"] = handle.inputType
+            if let executionId = handle.executionId { body["execution_id"] = executionId }
+            if let taskId = handle.taskId { body["task_id"] = taskId }
+            return HitlRespondCall(path: handle.url, body: body,
+                                   softSuccessStatuses: handle.softSuccessStatuses)
+        }
+        body["source"] = source
+        body["input_type"] = inputType
+        // A delegated child's ask (C2) resumes the CHILD's run, so its
+        // execution id rides the answer; planning sources also name the task
+        // that owns the question.
+        if let executionId = responseExecutionId { body["execution_id"] = executionId }
+        if let taskId = owningTaskId, ["clarification", "plan_approval"].contains(source) {
+            body["task_id"] = taskId
+        }
+        let segment = correlationId.addingPercentEncoding(
+            withAllowedCharacters: HitlRespondHandle.unreservedPathCharacters
+        ) ?? correlationId
+        return HitlRespondCall(path: "\(HitlRespondHandle.pathPrefix)\(segment)/respond", body: body,
+                               softSuccessStatuses: ["agentic", "escalation"].contains(source)
+                                   ? [404, 409, 410] : [409])
+    }
+
     // MARK: derived HITL contract (mirrors web hitlRequestFromFeedItem)
 
     /// Where the response POST is routed (agentic / approval / escalation / user_request / …).
     var source: String {
         if itemType == "approval" { return "approval" }
+        if let s = respondHandle?.source { return s }
         if let s = metadata?.source, !s.isEmpty { return s }
         if let s = metadata?.hitlRequest?.source, !s.isEmpty { return s }
         switch metadata?.attentionKind {
@@ -446,14 +855,26 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     /// The id to POST the response to. correlation_id lives under
     /// `metadata.hitl_request.identifiers`; pause_state_id is a top-level alias.
     var correlationId: String {
+        if let handle = respondHandle { return handle.correlationId }
         let ids = metadata?.hitlRequest?.identifiers
         return ids?.correlationId
             ?? metadata?.hitlRequest?.correlationId
+            ?? metadata?.hitlRequest?.id
             ?? metadata?.pauseStateId
             ?? ids?.pauseStateId
             ?? ids?.requestId
             ?? ids?.approvalId
             ?? "\(id)-hitl"
+    }
+
+    var askIdentifiers: Set<String> {
+        let target = metadata?.hitlRequest
+        let ids = target?.identifiers
+        return Set([id, correlationId, target?.id, target?.correlationId,
+                    ids?.correlationId, ids?.pauseStateId, ids?.approvalId, ids?.requestId,
+                    metadata?.pauseStateId].compactMap { value in
+            value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
     }
 
     /// text / password / choice / multi_choice / confirmation / guidance / diff_approval / …
@@ -476,7 +897,10 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     var placeholder: String { schema?.placeholder ?? "Type your response…" }
     var confirmLabel: String { schema?.confirmLabel ?? "Approve" }
     var denyLabel: String { schema?.denyLabel ?? "Reject" }
-    var isActionable: Bool { !["failed", "running"].contains(itemType) }
+    var isActionable: Bool {
+        !["failed", "running"].contains(itemType)
+            && !["failed", "completed", "cancelled", "canceled", "archived", "resolved", "dismissed", "expired", "running"].contains(status)
+    }
 
     /// Batched-clarification position, e.g. "Step 2 of 3" — nil when not chained.
     var chainLabel: String? {
@@ -502,7 +926,11 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     }
 
     /// Staged files in a diff_approval proposal (empty when whole-proposal only).
-    var diffFiles: [AttentionDiffFile] { metadata?.files ?? [] }
+    var isGodMode: Bool {
+        source == "user_request" && inputType == "choice" && schema?.requestType == "sandbox_override" && schema?.context?.godMode == true
+    }
+    var isOriginalFolderEdit: Bool { isGodMode && schema?.context?.vibeDevEdit == true }
+    var diffFiles: [AttentionDiffFile] { metadata?.files ?? (isGodMode ? schema?.context?.files : nil) ?? [] }
 
     // MARK: the five that used to render as something else
 
@@ -514,6 +942,7 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     /// list, where `Deny` rendered identically to `Allow for This Run` and a
     /// sandbox escape read exactly like "which quarter?".
     var grantKind: String? {
+        if isGodMode { return "sandbox" }
         switch inputType {
         case "tool_authorization": return "tool"
         case "sandbox_override": return "sandbox"
@@ -524,11 +953,13 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     /// What would run, verbatim. Empty when the payload named nothing, which
     /// renders no line rather than an empty box.
     var grantSubject: String {
+        if isGodMode { return schema?.context?.command ?? "" }
         return (grantKind == "sandbox" ? schema?.command : schema?.toolName) ?? ""
     }
 
     /// Why permission is needed, verbatim.
     var grantDetail: String? {
+        if isGodMode { return schema?.context?.violation }
         let value = (grantKind == "sandbox" ? schema?.violation : schema?.paramsSummary) ?? ""
         return value.isEmpty ? nil : value
     }
@@ -567,6 +998,14 @@ struct AttentionItem: Codable, Identifiable, Equatable {
         return value.isEmpty ? nil : value
     }
     var externalDoneLabel: String { schema?.doneLabel ?? (isMcpOAuth ? "I've finished" : "I've completed this") }
+    /// The decline on an MCP sign-in ("Not now"): it posts an abort, which
+    /// cancels the flow on the computer and closes the ask everywhere. Every
+    /// sign-in can be declined, so older asks without the label still get one.
+    var externalDismissLabel: String? {
+        guard isMcpOAuth else { return nil }
+        let value = schema?.dismissLabel ?? ""
+        return value.isEmpty ? "Not now" : value
+    }
 
     /// `file_path` — whether several are wanted, and the filter the ask named.
     var wantsMultiplePaths: Bool { schema?.multiple == true }
@@ -586,6 +1025,70 @@ struct AttentionItem: Codable, Identifiable, Equatable {
     /// `confirmation` — the backend's destructive flag, which bands the decision
     /// and changes nothing about the value posted.
     var isDestructive: Bool { schema?.destructive == true }
+
+    /// A confirmation's structured approval card, when one arrived and is
+    /// usable. A plan approval and a preference alignment hold keep their own
+    /// shapes; without a card the ask renders the prompt as it always did.
+    /// An outward-send review is a confirmation too, so its card (the message
+    /// and recipient) shows here; only its choices differ.
+    var approvalPreview: ApprovalPreview? {
+        guard inputType == "confirmation", alignment == nil,
+              !PlanApprovalActions.isPlanApproval(source: source, inputType: inputType),
+              let preview = schema?.approvalPreview, preview.isUsable else { return nil }
+        return preview
+    }
+
+    // MARK: outward-send review
+
+    /// A captured outward send held for the owner: a confirmation raised by
+    /// `escalation_trigger == "outward_review"`. Answered with a choice id
+    /// (Send / Discard / Always allow), never a bare confirm. A plan approval
+    /// and an alignment hold keep their own shapes even if one carried the
+    /// trigger.
+    var isOutwardReview: Bool {
+        inputType == "confirmation" && alignment == nil
+            && !PlanApprovalActions.isPlanApproval(source: source, inputType: inputType)
+            && schema?.escalationTrigger == "outward_review"
+    }
+    /// The review record (recipients, channel, deadline), when this is one.
+    var outwardReview: OutwardReview? { isOutwardReview ? schema?.outwardReview : nil }
+
+    /// The ids the runtime matches on (contract, not labels).
+    static let outwardSendId = "send"
+    static let outwardDiscardId = "discard"
+    static let outwardAlwaysAllowId = "always_allow_recipient"
+
+    /// Send, Discard and — only when the payload offers it — Always allow,
+    /// in that order, each with the server's label. Matched by **id**: a
+    /// relabelled option changes what the reader sees, never what is posted.
+    /// Send and Discard fall back to their contract ids and plain labels on a
+    /// payload without options; the remembered grant is never invented, for
+    /// the same reason a tool authorization never offers `allow_always` it
+    /// was not given. Options with other ids are not shown.
+    var outwardReviewOptions: (send: AttentionGrantOption, discard: AttentionGrantOption,
+                               alwaysAllow: AttentionGrantOption?)? {
+        guard isOutwardReview else { return nil }
+        func offered(_ id: String, fallback: String) -> AttentionGrantOption? {
+            options.first { $0.id == id }.map { option in
+                let label = option.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                return AttentionGrantOption(id: id, label: label.isEmpty ? fallback : label)
+            }
+        }
+        return (offered(Self.outwardSendId, fallback: "Send")
+                    ?? AttentionGrantOption(id: Self.outwardSendId, label: "Send"),
+                offered(Self.outwardDiscardId, fallback: "Discard")
+                    ?? AttentionGrantOption(id: Self.outwardDiscardId, label: "Discard"),
+                offered(Self.outwardAlwaysAllowId, fallback: "Always allow this recipient"))
+    }
+
+    /// The raw call the card stands in for, for the collapsed audit view:
+    /// `action_summary` and `reason`, else the prompt.
+    var approvalRawCall: String {
+        let parts = [schema?.actionSummary, schema?.reason]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? prompt : parts.joined(separator: "\n\n")
+    }
     var formQuestions: [AttentionFormQuestion] { schema?.questions ?? [] }
 
     /// The `answers` of a `form` response, one entry per question:
@@ -616,7 +1119,7 @@ struct AttentionItem: Codable, Identifiable, Equatable {
         return requestType == "secure_browser_input" || requestType == "secure_browser_confirm"
     }
     /// How the single-value field renders: `otp`, `password`, or the widget type.
-    var renderKind: String { hitlRenderKind(inputType: inputType, sensitiveKind: sensitiveSpec?.kind) }
+    var renderKind: String { isGodMode && !isSensitive ? "sandbox_override" : hitlRenderKind(inputType: inputType, sensitiveKind: sensitiveSpec?.kind) }
     /// The flagged kind of one form field — the spec first, then a question
     /// typed `password`/`otp` for an entry announced before the spec existed.
     func sensitiveFieldKind(_ questionId: String) -> String? {
@@ -813,16 +1316,32 @@ final class AttentionViewModel: ObservableObject {
     /// span is a window size here, never a position.
     private var feedLoadedSpan = 0
     private let networkSession: URLSession
+    private let connectionBaseURL: URL
+    private let connectionHeaders: [String: String]
+    private let connectionProfile: MobileConnectionProfile?
+    private let currentConnectionCheck: (() -> Bool)?
+    private var completeComposerAsks = false
     private let mutationCoordinator: CardMutationCoordinator
     private var mutationCoordinatorCancellable: AnyCancellable?
     private var mutationExpiryCancellable: AnyCancellable?
     private var rollbackOrderLedger = OptimisticCardOrderLedger()
     private var optimisticAttentionLanes: [OptimisticCardKey: Set<String>] = [:]
-    private var base: String { "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2" }
+    private var base: String { "\(connectionBaseURL.absoluteString)/api/magician/v2" }
+    private var isCurrentConnection: Bool {
+        if let currentConnectionCheck { return currentConnectionCheck() }
+        return MagicianAccess.connectionProfile == connectionProfile
+            && MagicianAccess.baseURL == connectionBaseURL && MagicianAccess.headers() == connectionHeaders
+    }
 
     init(networkSession: URLSession = .shared,
-         mutationCoordinator: CardMutationCoordinator? = nil) {
+         mutationCoordinator: CardMutationCoordinator? = nil,
+         currentConnectionCheck: (() -> Bool)? = nil) {
         self.networkSession = networkSession
+        let profile = MagicianAccess.connectionProfile
+        self.connectionProfile = profile
+        self.connectionBaseURL = profile?.publicOrigin ?? MagicianAccess.baseURL
+        self.connectionHeaders = MagicianAccess.headers(profile: profile)
+        self.currentConnectionCheck = currentConnectionCheck
         self.mutationCoordinator = mutationCoordinator
             ?? (isRunningUnderTests ? CardMutationCoordinator() : .shared)
         mutationCoordinatorCancellable = self.mutationCoordinator.objectWillChange
@@ -914,6 +1433,47 @@ final class AttentionViewModel: ObservableObject {
     }
 
     func fetch() { fetch(completion: nil) }
+
+    /// Composer asks are independent of the Attention pages the owner has opened:
+    /// while a dock is visible every fetch reads all pages (reset when the last
+    /// dock goes away, see `followVisibleAsks`).
+    func fetchPendingAsks() { completeComposerAsks = true; fetch() }
+
+    /// Resolve a deep link without depending on the loaded inbox page.
+    func pendingItem(_ id: String, completion: @escaping (Result<AttentionItem?, Error>) -> Void) {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        guard isCurrentConnection, let segment = id.addingPercentEncoding(withAllowedCharacters: allowed),
+              let url = URL(string: "\(base)/feed/attention/\(segment)") else {
+            completion(.failure(URLError(.cancelled))); return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        connectionHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        networkSession.dataTask(with: request) { [weak self] data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let item = data.flatMap { try? JSONDecoder().decode(AttentionItem.self, from: $0) }
+            DispatchQueue.main.async {
+                guard let self, self.isCurrentConnection else { completion(.failure(URLError(.cancelled))); return }
+                if let error { completion(.failure(error)); return }
+                if (200..<300).contains(status), let item {
+                    self.vouchPending(item)
+                    completion(.success(item)); return
+                }
+                guard status == 404, let ledger = URL(string: "\(self.base)/user-requests") else {
+                    completion(.failure(URLError(.badServerResponse))); return
+                }
+                var pendingRequest = URLRequest(url: ledger)
+                pendingRequest.timeoutInterval = 15
+                self.connectionHeaders.forEach { pendingRequest.setValue($0.value, forHTTPHeaderField: $0.key) }
+                self.readJSON(pendingRequest, as: PendingUserRequestsResponse.self) { pending in
+                    guard self.isCurrentConnection, let pending else { completion(.failure(URLError(.badServerResponse))); return }
+                    let row = pending.requests.map(AttentionItem.init(pending:)).first { $0.askIdentifiers.contains(id) }
+                    if let row { self.vouchPending(row) }
+                    completion(.success(row))
+                }
+            }
+        }.resume()
+    }
 
     /// Pull-to-refresh / the nav refresh button: identical fetch, flagged so
     /// the UI can show the spinner only where a human asked for it.
@@ -1283,6 +1843,37 @@ final class AttentionViewModel: ObservableObject {
         }
     }
 
+    // Visible ask surfaces share one live subscription and a missed-event backstop.
+    @MainActor private var askFollowers: Set<UUID> = []
+    @MainActor private var askSubscription: RealtimeHubSubscription?
+
+    @MainActor func followVisibleAsks() async {
+        guard !isRunningUnderTests else { return }
+        let id = UUID()
+        askFollowers.insert(id)
+        if askFollowers.count == 1 {
+            fetchPendingAsks()
+            askSubscription = RealtimeHub.shared.subscribe(
+                onEvent: { [weak self] event in self?.handleRealtimeText(event.text) },
+                onResync: { [weak self] in self?.fetch() })
+        }
+        defer {
+            askFollowers.remove(id)
+            if askFollowers.isEmpty {
+                askSubscription?.cancel()
+                askSubscription = nil
+                // No dock is visible: later fetches read only the loaded inbox pages.
+                completeComposerAsks = false
+            }
+        }
+        do {
+            while !Task.isCancelled {
+                try await Task.sleep(nanoseconds: 30_000_000_000)
+                if askFollowers.first == id { fetch() }
+            }
+        } catch { /* View disappeared or app entered the background. */ }
+    }
+
     // MARK: - Realtime (web parity: live inbox on HITL events)
 
     private var realtimeSubscription: RealtimeHubSubscription?
@@ -1353,7 +1944,7 @@ final class AttentionViewModel: ObservableObject {
     func undismiss(_ item: AttentionItem) { setDismissed(item, path: "undismiss") }
 
     private func setDismissed(_ item: AttentionItem, path: String) {
-        guard let url = URL(string: "\(base)/feed/attention/\(path)") else { return }
+        guard isCurrentConnection, let url = URL(string: "\(base)/feed/attention/\(path)") else { return }
         let mutationKey = "attention:\(item.id)"
         let ticket: OptimisticCardMutationTicket?
         let originalAnchors: [String: OptimisticCardListAnchor]
@@ -1374,7 +1965,7 @@ final class AttentionViewModel: ObservableObject {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        MagicianAccess.authorize(&req)
+        connectionHeaders.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["item_id": item.id])
         networkSession.dataTask(with: req) { [weak self, mutationCoordinator] _, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -1419,6 +2010,7 @@ final class AttentionViewModel: ObservableObject {
     /// There is no ask to answer, so this never touches `/hitl/…/respond`. The
     /// card leaves optimistically and is restored if the cancel fails.
     func cancelStalledExecution(_ item: AttentionItem) {
+        guard isCurrentConnection else { mutationError = "Connection changed. Reopen this request."; return }
         let pathSegment = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         guard let executionId = item.responseExecutionId,
               let encoded = executionId.addingPercentEncoding(withAllowedCharacters: pathSegment),
@@ -1438,7 +2030,7 @@ final class AttentionViewModel: ObservableObject {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        MagicianAccess.authorize(&req)
+        connectionHeaders.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         networkSession.dataTask(with: req) { [weak self, mutationCoordinator] _, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let succeeded = error == nil && (200..<300).contains(status)
@@ -1565,12 +2157,13 @@ final class AttentionViewModel: ObservableObject {
     /// Pull the bounded `/v3/events` HITL backfill (NDJSON) and pair
     /// HitlRequested + HitlResolved by correlation id into resolved rows.
     func fetchHistory() {
+        guard isCurrentConnection else { return }
         historyLoading = true
         guard let url = URL(string: "\(base)/events?category=hitl&backfill_only=true&limit=300") else {
             historyLoading = false; return
         }
         var req = URLRequest(url: url)
-        MagicianAccess.authorize(&req)
+        connectionHeaders.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         networkSession.dataTask(with: req) { [weak self] data, _, _ in
             let rows = data.flatMap { String(data: $0, encoding: .utf8) }.map { Self.parseResolved($0) } ?? []
             DispatchQueue.main.async { self?.historyLoading = false; self?.resolved = rows }
@@ -1620,7 +2213,7 @@ final class AttentionViewModel: ObservableObject {
     private func request(_ urlString: String, includePending: Bool = true,
                          _ completion: @escaping (FeedAttentionResponse?) -> Void) {
         let requestBase = base
-        guard let url = URL(string: urlString),
+        guard isCurrentConnection, let url = URL(string: urlString),
               let pendingURL = URL(string: "\(requestBase)/user-requests") else {
             loadError = "Could not refresh Attention. Check the Magician connection."
             completion(nil)
@@ -1630,30 +2223,90 @@ final class AttentionViewModel: ObservableObject {
         func authorized(_ url: URL) -> URLRequest {
             var request = URLRequest(url: url)
             request.timeoutInterval = 15
-            MagicianAccess.authorize(&request)
+            connectionHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
             return request
         }
         let feedRequest = authorized(url)
         let pendingRequest = authorized(pendingURL)
         readJSON(feedRequest, as: FeedAttentionResponse.self) { [weak self] feed in
-            guard let self, self.base == requestBase else { completion(nil); return }
+            guard let self, self.isCurrentConnection, self.base == requestBase else { completion(nil); return }
             guard let feed else {
                 self.loadError = "Could not refresh Attention. Check the connection and retry."
                 completion(nil)
                 return
             }
             guard includePending else { completion(feed); return }
-            self.readJSON(pendingRequest, as: PendingUserRequestsResponse.self) { [weak self] pending in
-                guard let self, self.base == requestBase else { completion(nil); return }
+            self.completePendingFeed(feed, enabled: self.completeComposerAsks) { [weak self] complete in
+                guard let self, let complete else { completion(nil); return }
+                self.readJSON(pendingRequest, as: PendingUserRequestsResponse.self) { [weak self] pending in
+                guard let self, self.isCurrentConnection, self.base == requestBase else { completion(nil); return }
                 guard let pending else {
                     self.loadError = "Could not load pending questions. Check the connection and retry."
                     completion(nil)
                     return
                 }
                 self.loadError = nil
-                completion(feed.withPendingUserRequests(pending.requests))
+                completion(complete.withPendingUserRequests(pending.requests))
+                }
             }
         }
+    }
+
+    private func completePendingFeed(_ head: FeedAttentionResponse, enabled: Bool,
+                                     completion: @escaping (FeedAttentionResponse?) -> Void) {
+        guard enabled else { completion(head); return }
+        var result = head
+        var cursors = ["requests": head.pages?.requests?.nextCursor,
+                       "approvals": head.pages?.approvals?.nextCursor,
+                       "escalations": head.pages?.escalations?.nextCursor]
+            .compactMapValues { $0?.isEmpty == false ? $0 : nil }
+        var seen = Set<String>()
+        func merge(_ rows: [AttentionItem], _ more: [AttentionItem]) -> [AttentionItem] {
+            var rows = rows
+            var positions = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+            for row in more {
+                if let index = positions[row.id] { rows[index] = row }
+                else { positions[row.id] = rows.count; rows.append(row) }
+            }
+            return rows
+        }
+        func next() {
+            guard isCurrentConnection else { completion(nil); return }
+            guard !cursors.isEmpty else { completion(result); return }
+            for (lane, cursor) in cursors {
+                guard seen.insert("\(lane)\u{0}\(cursor)").inserted else {
+                    loadError = "The server repeated a pending-question cursor. Refresh to retry."
+                    completion(nil); return
+                }
+            }
+            guard var url = URLComponents(string: "\(base)/feed/attention") else { completion(nil); return }
+            url.queryItems = [URLQueryItem(name: "limit", value: "200")]
+                + cursors.sorted(by: { $0.key < $1.key }).map { URLQueryItem(name: "\($0.key)_cursor", value: $0.value) }
+            guard let target = url.url else { completion(nil); return }
+            var request = URLRequest(url: target)
+            request.timeoutInterval = 15
+            connectionHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+            readJSON(request, as: FeedAttentionResponse.self) { page in
+                guard self.isCurrentConnection, let page else { completion(nil); return }
+                if cursors["requests"] != nil {
+                    result.requests = merge(result.requests, page.requests)
+                    result.pages?.requests = page.pages?.requests
+                    cursors["requests"] = (page.pages?.requests?.nextCursor).flatMap { $0.isEmpty ? nil : $0 }
+                }
+                if cursors["approvals"] != nil {
+                    result.approvals = merge(result.approvals, page.approvals)
+                    result.pages?.approvals = page.pages?.approvals
+                    cursors["approvals"] = (page.pages?.approvals?.nextCursor).flatMap { $0.isEmpty ? nil : $0 }
+                }
+                if cursors["escalations"] != nil {
+                    result.escalations = merge(result.escalations, page.escalations)
+                    result.pages?.escalations = page.pages?.escalations
+                    cursors["escalations"] = (page.pages?.escalations?.nextCursor).flatMap { $0.isEmpty ? nil : $0 }
+                }
+                next()
+            }
+        }
+        next()
     }
 
     private func readJSON<T: Decodable>(_ request: URLRequest, as type: T.Type,
@@ -1670,6 +2323,7 @@ final class AttentionViewModel: ObservableObject {
 
     private enum HitlResponseOutcome {
         case resolved
+        case alreadyClosed
         case reask(String)
         case failed(String)
     }
@@ -1677,33 +2331,38 @@ final class AttentionViewModel: ObservableObject {
     /// Low-level HITL response POST. Calls back on the main queue with the
     /// protocol outcome and does not refresh the feed. A validation reask is a
     /// live card, while an already-resolved response is a soft success.
+    @MainActor func launchBrowserSignIn(for item: AttentionItem) async throws -> BrowserSignInLaunch {
+        guard isCurrentConnection, item.isMcpOAuth else { throw BrowserSignInError.unavailable }
+        return try await BrowserSignInLaunch.start(baseURL: connectionBaseURL, headers: connectionHeaders,
+            correlationId: item.correlationId, current: { [weak self] in self?.isCurrentConnection == true })
+    }
+
+    @MainActor func openBrowserSignInOnComputer(for item: AttentionItem) async throws {
+        guard isCurrentConnection, item.isMcpOAuth else { throw BrowserSignInError.unavailable }
+        _ = try await BrowserSignInLaunch.start(baseURL: connectionBaseURL, headers: connectionHeaders,
+            correlationId: item.correlationId, onComputer: true, current: { [weak self] in self?.isCurrentConnection == true })
+    }
+
     private func postResponse(_ item: AttentionItem, value: [String: Any], selectedPaths: [String] = [],
                               completion: @escaping (HitlResponseOutcome) -> Void) {
-        guard let url = URL(string: "\(base)/hitl/\(item.correlationId)/respond") else {
+        // The server's respond handle names the call; the derivation is the
+        // fallback for servers that predate it (`AttentionItem.respondCall`).
+        let call = item.respondCall(value: value, selectedPaths: selectedPaths)
+        guard isCurrentConnection else { completion(.failed("Connection changed. Reopen this request before answering.")); return }
+        guard let url = URL(string: "\(connectionBaseURL.absoluteString)\(call.path)") else {
             DispatchQueue.main.async { completion(.failed("The response URL is invalid.")) }; return
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        MagicianAccess.authorize(&req)
-        var payload: [String: Any] = [
-            "source": item.source,
-            "channel": "ios",
-            "value": value,
-            "input_type": item.inputType,
-            "correlation_id": item.correlationId,
-            "pause_state_id": item.correlationId
-        ]
-        if !selectedPaths.isEmpty { payload["selected_paths"] = selectedPaths }
-        // Web `resolveHitlCall` parity. A delegated child's ask (C2) resumes the
-        // CHILD's run, so its execution id rides the answer; planning sources
-        // also name the task that owns the question.
-        if let executionId = item.responseExecutionId { payload["execution_id"] = executionId }
-        if let taskId = item.owningTaskId, ["clarification", "plan_approval"].contains(item.source) {
-            payload["task_id"] = taskId
-        }
-        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        networkSession.dataTask(with: req) { data, response, error in
+        connectionHeaders.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+        // The ask's id rides along too, as it always has (the respond arm reads
+        // it from the path; older handlers logged it from the body).
+        var body = call.body
+        body["correlation_id"] = item.correlationId
+        body["pause_state_id"] = item.correlationId
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        networkSession.dataTask(with: req) { [weak self] data, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let payload = data.flatMap {
                 try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
@@ -1720,24 +2379,29 @@ final class AttentionViewModel: ObservableObject {
                 if payload?["status"] as? String == "reask_required" {
                     outcome = .reask(message ?? "Please revise your answer.")
                 } else if payload?["accepted"] as? Bool == false
-                            || payload?["resumed"] as? Bool == false {
+                            || payload?["resumed"] as? Bool == false
+                            || (payload?["accepted"] as? Bool != true && payload?["resumed"] as? Bool != true) {
                     outcome = .failed(message ?? "The response was not accepted.")
                 } else {
                     outcome = .resolved
                 }
-            } else if (status == 404 || status == 410)
-                        && (item.source == "agentic" || item.source == "escalation") {
-                outcome = .resolved
+            } else if (status == 404 || status == 410) && call.softSuccessStatuses.contains(status) {
+                outcome = .alreadyClosed
             } else if status == 409, payload?["reason"] as? String == "already_resolved" {
-                outcome = .resolved
+                outcome = .alreadyClosed
             } else {
                 outcome = .failed(message ?? "The response failed (HTTP \(status)).")
             }
             DispatchQueue.main.async {
+                guard let self, self.isCurrentConnection else {
+                    completion(.failed("Connection changed. Reopen this request before answering.")); return
+                }
                 // Idempotent with the eager drop performed by the optimistic
                 // transaction; also keeps direct low-level callers correct.
-                if case .resolved = outcome {
+                switch outcome {
+                case .resolved, .alreadyClosed:
                     PendingHitlTracker.shared.drop(item.correlationId)
+                default: break
                 }
                 completion(outcome)
             }
@@ -1792,8 +2456,10 @@ final class AttentionViewModel: ObservableObject {
 
         postResponse(item, value: value, selectedPaths: selectedPaths) { [weak self, mutationCoordinator] outcome in
             guard let self else {
-                if case .resolved = outcome { mutationCoordinator.succeed(ticket) }
-                else { mutationCoordinator.fail(ticket) }
+                switch outcome {
+                case .resolved, .alreadyClosed: mutationCoordinator.succeed(ticket)
+                default: mutationCoordinator.fail(ticket)
+                }
                 completion?(false)
                 return
             }
@@ -1804,6 +2470,12 @@ final class AttentionViewModel: ObservableObject {
                 self.mutationCoordinator.succeed(ticket)
                 if refreshOnSuccess { self.fetch() }
                 completion?(true)
+            case .alreadyClosed:
+                self.removeAttentionItemRowsOnly(item)
+                self.mutationCoordinator.succeed(ticket)
+                self.showAnsweredElsewhereNotice()
+                if refreshOnSuccess { self.fetch() }
+                completion?(false)
             case .reask(let message):
                 self.mutationCoordinator.fail(ticket)
                 self.optimisticAttentionLanes[coordinatorKey] = nil
@@ -1878,6 +2550,11 @@ final class AttentionViewModel: ObservableObject {
         if let other = otherValue, !other.isEmpty { v["other_value"] = other }
         submit(item, value: v)
     }
+    /// An outward-send review's answer: the same `{type: choice, selected_id}`
+    /// a tool authorization posts, with the option id the owner picked.
+    func submitOutwardReview(_ item: AttentionItem, optionId: String) {
+        submitChoice(item, optionId: optionId)
+    }
     func submitMultiChoice(_ item: AttentionItem, ids: [String]) {
         submit(item, value: ["type": "multi_choice", "selected_ids": ids])
     }
@@ -1903,13 +2580,13 @@ final class AttentionViewModel: ObservableObject {
     /// surface in the v1 canary).
     func fetchAlignmentDetail(_ item: AttentionItem,
                               completion: @escaping (AlignmentDetailOutcome) -> Void) {
-        guard let url = AlignmentAsk.detailURL(base: base, correlationId: item.correlationId) else {
+        guard isCurrentConnection, let url = AlignmentAsk.detailURL(base: base, correlationId: item.correlationId) else {
             DispatchQueue.main.async { completion(.unavailable) }; return
         }
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        MagicianAccess.authorize(&req)
+        connectionHeaders.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         networkSession.dataTask(with: req) { data, response, _ in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let outcome: AlignmentDetailOutcome

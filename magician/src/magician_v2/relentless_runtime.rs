@@ -39,7 +39,7 @@ pub fn text_profile_catalog(router: &OperationLlmRouter) -> Result<serde_json::V
         .context("Model router unavailable")?;
     let mut profiles: Vec<_> = config.profiles.keys().filter_map(|name| router.bounded_route(name).ok().map(|route| {
         let pin = route.model_pin();
-        serde_json::json!({"name":name,"model":pin.model,"family":pin.family,"maximum_request_microusd":route.maximum_microusd(),"supports_images":route.supports_bounded_images()})
+        serde_json::json!({"name":name,"model":pin.model,"family":pin.family,"maximum_request_microusd":route.maximum_microusd(),"supports_images":route.supports_bounded_images(),"supports_json":route.supports_bounded_json()})
     })).collect();
     profiles.sort_by_key(|p| p["name"].as_str().unwrap_or_default().to_owned());
     let default = |operation| {
@@ -50,7 +50,11 @@ pub fn text_profile_catalog(router: &OperationLlmRouter) -> Result<serde_json::V
     };
     Ok(
         serde_json::json!({"profiles":profiles,"actor_default":default("relentless_actor"),"critic_default":default("relentless_critic"),"audio_review_providers":super::relentless_audio::provider_catalog(),
-            "budget_defaults":crate::config::quality_round_budget(), "native_defaults":{"maximum_iterations":super::relentless_actor::default_quality_iterations(),"maximum_physical_calls":super::relentless_actor::default_quality_physical_calls()}}),
+            "budget_defaults":crate::config::quality_round_budget(),
+            "budget_semantics":{"kind":"maximum_spending_ceiling","unit":"microusd","microusd_per_usd":1000000,
+                "proposal_spends":false,"owner_admission_required":true,"omitted_or_zero":"unlimited",
+                "limits":"Positive integers cap max_attempts, max_wall_clock_secs, max_cost_microusd and plateau_attempts independently; omitted or zero limits are unlimited"},
+            "native_defaults":{"maximum_iterations":super::relentless_actor::default_quality_iterations(),"maximum_physical_calls":super::relentless_actor::default_quality_physical_calls()}}),
     )
 }
 
@@ -157,7 +161,7 @@ pub struct TextDraftProposal {
     pub source_files: BTreeMap<String, String>,
     pub score_at_least: Option<f64>,
     pub review: ReviewPolicy,
-    #[serde(default = "crate::config::quality_round_budget")]
+    #[serde(default)]
     pub budget: Budget,
     #[serde(default)]
     pub human_review: HumanReviewMode,
@@ -529,6 +533,10 @@ impl PreparedTextDraft {
         for (index, profile) in proposal.critic_profiles.iter().enumerate() {
             let route = router.bounded_route(profile)?;
             ensure!(
+                route.supports_bounded_json() != Some(false),
+                "artifact critic must support structured JSON verdicts: {profile}"
+            );
+            ensure!(
                 proposal
                     .artifact_review
                     .as_ref()
@@ -640,7 +648,7 @@ impl PreparedTextDraft {
         let actor_maximum = match &proposal.native_harness {
             Some(recipe) => recipe.budgeted_actor_microusd(
                 model_maximum,
-                proposal.budget.max_cost_microusd,
+                proposal.budget.cost_ceiling(),
                 review_headroom,
             )?,
             None => model_maximum,
@@ -1556,6 +1564,19 @@ mod tests {
         assert_eq!(
             PreparedTextDraft::maximum_attempt_microusd(&router, &proposal).unwrap(),
             headroom + 2 * maximum
+        );
+        proposal.budget.max_cost_microusd = 0;
+        assert_eq!(
+            PreparedTextDraft::maximum_attempt_microusd(&router, &proposal).unwrap(),
+            headroom + 2 * maximum
+        );
+        let mut omitted = serde_json::to_value(&proposal).unwrap();
+        omitted.as_object_mut().unwrap().remove("budget");
+        assert_eq!(
+            serde_json::from_value::<TextDraftProposal>(omitted)
+                .unwrap()
+                .budget,
+            Budget::default()
         );
         proposal.native_harness = None;
         assert_eq!(

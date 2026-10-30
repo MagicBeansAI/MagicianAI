@@ -162,11 +162,10 @@ Preload (`preload_task_state_for_direct_execution`) reads
 `load_persisted_durable_task_state` prefers that in-memory copy when it
 parses.
 
-## 16 KB cap
+## 32 KiB cap
 
-`MAX_STATE_BYTES = 16_384` pretty-printed bytes. Sized so an ordinary
-multi-goal state with a terminal partial yield (4–6 KB) fits while a
-runaway graph is refused. `trim_to_fit` first runs
+`MAX_STATE_BYTES = 32_768` pretty-printed bytes admits a bounded task graph
+and short finding checkpoints while refusing runaway state. `trim_to_fit` first runs
 `compact_durable_task_state_for_storage` on valid typed state (head/tail
 compaction with a `…[compacted in task state]…` marker):
 
@@ -177,9 +176,11 @@ compaction with a `…[compacted in task state]…` marker):
 | `blocked_reason`, close/partial summaries | 384 bytes |
 | partial `open` / `blockers` lists | 4 items × 192 bytes |
 
+Optional `result_summary` (800 characters) and its frozen `result_evidence_refs`
+are retained as authored findings, not factual verification.
 Identity, graph, status, timestamps and evidence refs are kept; compaction
 sets `metadata.storage_compacted` / `storage_original_bytes`. Typed state
-still over 16 KB is **refused** rather than dropping the graph. Untyped
+still over 32 KiB is **refused** rather than dropping the graph. Untyped
 JSON falls back to trimming the newest suffix of the largest top-level
 array (keep ≥ 1 element); if nothing fits, the write fails closed.
 
@@ -226,7 +227,7 @@ cursor.
 
 | Constraint | Value |
 | --- | --- |
-| Max size | 16 KB pretty-printed, fail-closed |
+| Max size | 32 KiB pretty-printed, fail-closed |
 | Namespace / name | `task_state` / `{task_id}.json` |
 | Store | Per-scope `DurableArtifactStore` (atomic write, fs2 lock, `ArtifactDomain::Durable`) |
 | Agent-facing write | Inline `task_state_action` on the outer decision |

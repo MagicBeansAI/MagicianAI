@@ -7,6 +7,8 @@
 //! supported, contradicted, absent or not a claim (`verdict`), and is it part
 //! of the answer or a side remark (`core`) — one item per claim, with the
 //! owner's request as shared context.
+//! Whole-answer coverage uses the separate `result_delivery` pack; treating a
+//! delivery proposition as a literal source fact would manufacture omissions.
 //!
 //! There is no incumbent: the engine replaces the LLM judge on this path, so
 //! it only runs gated. A claim the engine does not answer eligibly (low
@@ -30,6 +32,8 @@ use crate::magician_v2::{
 
 pub const DECISION_ID: &str = "claim_support";
 pub const PROJECTION: &str = "claim_support_v1";
+pub const DELIVERY_DECISION_ID: &str = "result_delivery";
+pub const DELIVERY_PROJECTION: &str = "result_delivery_v1";
 /// The LLM operation this pack stands in for (reference identity only).
 const REFERENCE_OPERATION: &str = "evidence_precision_judge";
 /// The caller's whole wait. A gated engine is also capped by the operation's
@@ -46,6 +50,9 @@ const MIN_EVIDENCE_CHARS: usize = 300;
 
 /// Whose reply this is, and the router that names the reference judge.
 pub struct ClaimSupportEngine<'a> {
+    /// Guarded callers may retain ordinary claim checks while declining the
+    /// additional whole-answer delivery projection and auxiliary revision.
+    pub allow_delivery_review: bool,
     pub router: &'a OperationLlmRouter,
     pub principal: &'a str,
     pub workspace: &'a str,
@@ -53,6 +60,8 @@ pub struct ClaimSupportEngine<'a> {
 
 /// One claim and the evidence lines retrieved for it.
 pub struct EngineClaim<'a> {
+    /// Delivery judgements must see the complete candidate, not a cut prefix.
+    pub evidence_must_fit: bool,
     pub id: &'a str,
     pub claim: &'a str,
     pub context: Option<&'a str>,
@@ -82,10 +91,41 @@ pub async fn judge(
     request: &str,
     claims: &[EngineClaim<'_>],
 ) -> Result<BTreeMap<String, EngineJudgement>, String> {
+    judge_operation(engine, DECISION_ID, PROJECTION, request, claims).await
+}
+
+/// Coverage is a relationship between a complete candidate and the requested
+/// outcome, not a factual claim found verbatim in a tool result. Older engines
+/// without this operation leave coverage unreviewed.
+pub async fn judge_delivery(
+    engine: &ClaimSupportEngine<'_>,
+    request: &str,
+    claims: &[EngineClaim<'_>],
+) -> Result<BTreeMap<String, EngineJudgement>, String> {
+    if !engine.allow_delivery_review {
+        return Ok(BTreeMap::new());
+    }
+    judge_operation(
+        engine,
+        DELIVERY_DECISION_ID,
+        DELIVERY_PROJECTION,
+        request,
+        claims,
+    )
+    .await
+}
+
+async fn judge_operation(
+    engine: &ClaimSupportEngine<'_>,
+    operation: &str,
+    projection: &str,
+    request: &str,
+    claims: &[EngineClaim<'_>],
+) -> Result<BTreeMap<String, EngineJudgement>, String> {
     let principal = engine.principal.trim();
     let workspace = engine.workspace.trim();
     if principal.is_empty() || workspace.is_empty() {
-        return Err("claim_support: no owner scope".into());
+        return Err(format!("{operation}: no owner scope"));
     }
     if claims.is_empty() {
         return Ok(BTreeMap::new());
@@ -95,14 +135,14 @@ pub async fn judge(
         REFERENCE_OPERATION,
         versions::TASK_USER_CLAIM_JUDGE,
     )
-    .ok_or("claim_support: the reference judge is not bound")?;
-    let lookup = classification::ready_policy(DECISION_ID, principal, workspace).await;
+    .ok_or_else(|| format!("{operation}: the reference judge is not bound"))?;
+    let lookup = classification::ready_policy(operation, principal, workspace).await;
     let limits = match &lookup {
         PolicyLookup::Participating(p) if p.policy.gate => p.policy.classification.limits.clone(),
-        PolicyLookup::Participating(_) => return Err("claim_support: not gated".into()),
-        PolicyLookup::Disabled => return Err("claim_support: decision engine off".into()),
+        PolicyLookup::Participating(_) => return Err(format!("{operation}: not gated")),
+        PolicyLookup::Disabled => return Err(format!("{operation}: decision engine off")),
         PolicyLookup::Unavailable(failure) => {
-            return Err(format!("claim_support: policy unavailable ({failure:?})"))
+            return Err(format!("{operation}: policy unavailable ({failure:?})"))
         },
     };
     let context = DecisionState::from_json(json!({ "request": clip(request, REQUEST_CHARS) }));
@@ -129,7 +169,7 @@ pub async fn judge(
         items.push(item);
     }
     if items.is_empty() {
-        return Err("claim_support: no claim fits the operation's limits".into());
+        return Err(format!("{operation}: no item fits the operation's limits"));
     }
     let case_id = blake3::hash(&serde_json::to_vec(&(&context, &items)).unwrap_or_default())
         .to_hex()
@@ -141,8 +181,8 @@ pub async fn judge(
             workspace.to_owned(),
         ));
     let input = runner::Input {
-        operation: DECISION_ID.into(),
-        projection_version: PROJECTION.into(),
+        operation: operation.into(),
+        projection_version: projection.into(),
         reference_version,
         case_id,
         context,
@@ -191,7 +231,7 @@ fn project(claim: &EngineClaim<'_>, max_item_bytes: usize) -> Option<(DecisionIt
         if size <= max_item_bytes {
             return Some((item, size));
         }
-        if evidence_chars <= MIN_EVIDENCE_CHARS {
+        if claim.evidence_must_fit || evidence_chars <= MIN_EVIDENCE_CHARS {
             return None;
         }
         evidence_chars = (evidence_chars / 2).max(MIN_EVIDENCE_CHARS);
@@ -229,12 +269,14 @@ mod tests {
     fn claims() -> Vec<EngineClaim<'static>> {
         vec![
             EngineClaim {
+                evidence_must_fit: false,
                 id: "c1",
                 claim: "GMV for September was ₹1,58,92,276.59.",
                 context: None,
                 evidence: "  │ rows[0][1] = 15892276.59",
             },
             EngineClaim {
+                evidence_must_fit: false,
                 id: "c2",
                 claim: "Orders grew 12% month on month.",
                 context: Some("Summary"),
@@ -246,6 +288,7 @@ mod tests {
     async fn run() -> Result<BTreeMap<String, EngineJudgement>, String> {
         let router = test_engine::fixture_router(REFERENCE_OPERATION);
         let engine = ClaimSupportEngine {
+            allow_delivery_review: true,
             router: &router,
             principal: "p",
             workspace: "w",
@@ -319,6 +362,7 @@ mod tests {
     fn evidence_is_cut_to_fit_the_item_limit() {
         let evidence = "│ x = 1\n".repeat(2_000);
         let claim = EngineClaim {
+            evidence_must_fit: false,
             id: "c1",
             claim: "x is 1",
             context: None,
@@ -327,5 +371,88 @@ mod tests {
         let (_, size) = project(&claim, 4_096).expect("fits after cutting");
         assert!(size <= 4_096);
         assert!(project(&claim, 200).is_none());
+    }
+    #[test]
+    fn delivery_review_never_grades_against_a_truncated_candidate() {
+        let claim = EngineClaim {
+            evidence_must_fit: true,
+            id: "delivery_request_1",
+            claim: "The answer delivers the available findings",
+            context: None,
+            evidence: &"source and full answer ".repeat(500),
+        };
+        assert!(project(&claim, 1024).is_none());
+    }
+
+    #[tokio::test]
+    async fn coverage_uses_its_own_operation_and_projection() {
+        let _serial = test_engine::serial().await;
+        let fake =
+            FakeEngine::start(DELIVERY_DECISION_ID, true, &[("verdict", "absent", 0.95)]).await;
+        let router = test_engine::fixture_router(REFERENCE_OPERATION);
+        let engine = ClaimSupportEngine {
+            allow_delivery_review: true,
+            router: &router,
+            principal: "p",
+            workspace: "w",
+        };
+        let claim = EngineClaim {
+            evidence_must_fit: true,
+            id: "delivery_request_1",
+            claim: "The answer conveys available findings",
+            context: None,
+            evidence:
+                "Complete candidate: research saved. Source: Atlas stores persistent memory blocks.",
+        };
+        let outcome = judge_delivery(&engine, "Compare memory", &[claim])
+            .await
+            .unwrap();
+        assert_eq!(outcome["delivery_request_1"].verdict, EngineVerdict::Absent);
+        let request = fake.requests().pop().unwrap();
+        assert_eq!(request.operation, DELIVERY_DECISION_ID);
+        assert_eq!(request.batch.projection_version, DELIVERY_PROJECTION);
+    }
+
+    #[tokio::test]
+    async fn an_older_factual_engine_cannot_supply_a_delivery_verdict() {
+        let _serial = test_engine::serial().await;
+        let fake = FakeEngine::start(DECISION_ID, true, &[("verdict", "absent", 0.95)]).await;
+        let router = test_engine::fixture_router(REFERENCE_OPERATION);
+        let engine = ClaimSupportEngine {
+            allow_delivery_review: true,
+            router: &router,
+            principal: "p",
+            workspace: "w",
+        };
+        assert!(judge_delivery(&engine, "Compare memory", &claims())
+            .await
+            .is_err());
+        assert!(
+            fake.requests().is_empty(),
+            "coverage must not fall back to the factual pack"
+        );
+    }
+
+    #[tokio::test]
+    async fn guarded_replies_never_send_the_whole_answer_to_the_coverage_operation() {
+        let _serial = test_engine::serial().await;
+        let fake = FakeEngine::start(
+            DELIVERY_DECISION_ID,
+            true,
+            &[("verdict", "supported", 0.95)],
+        )
+        .await;
+        let router = test_engine::fixture_router(REFERENCE_OPERATION);
+        let engine = ClaimSupportEngine {
+            allow_delivery_review: false,
+            router: &router,
+            principal: "p",
+            workspace: "w",
+        };
+        assert!(judge_delivery(&engine, "Private request", &claims())
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(fake.requests().is_empty());
     }
 }

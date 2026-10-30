@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+// The governed runtime snapshots this launcher, while wu's package and its
+// relative imports stay together on the reviewed PATH. Upstream owns parsing.
+import { accessSync, constants, realpathSync } from 'node:fs';
+import { delimiter, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+function upstreamEntry() {
+  for (const directory of (process.env.PATH || '').split(delimiter)) {
+    if (!directory) continue;
+    try {
+      const program = resolve(directory, 'wu');
+      accessSync(program, constants.X_OK);
+      return realpathSync(program);
+    } catch { /* Continue through the runtime-owned reviewed PATH. */ }
+  }
+  throw new Error('wu is unavailable on the governed PATH');
+}
+
+try {
+  await import(pathToFileURL(upstreamEntry()).href);
+} catch (error) {
+  process.stderr.write(String(error?.message ?? error) + '\n');
+  process.exitCode = 1;
+}

@@ -68,7 +68,6 @@ secrets:
 
   # Metabase (analytics queries)
   METABASE_BASE_URL: '${METABASE_BASE_URL}'
-  METABASE_API_KEY: '${METABASE_API_KEY}'
 
   #AgentMail
   # Inbox-scoped key for the default account "work" (magican@agentmail.to).
@@ -77,11 +76,10 @@ secrets:
   # secrets named by convention (<NAME> = alias upper-cased, non-alnum -> "_"):
   #   AGENT_MAIL_KEY_<NAME>: am_us_inbox_xxxx
   #   AGENTMAIL_ACCOUNT_<NAME>_EMAIL: <name>@agentmail.to
-  # Public base URL AgentMail can reach (ngrok / magictunnel) — required for
-  # the inbound bot to receive webhooks. When set, the bot self-registers a
-  # webhook at <url>/agentmail-webhook for "message.received".
-  # AGENTMAIL_WEBHOOK_URL: https://your-public-host.example.com
-  # Webhook signing secret (whsec_...) for svix signature verification.
+  # The inbound bot self-registers https://$MAGICIAN_WEBHOOK_HOST/agentmail-webhook
+  # on start (the tunnel scripts write MAGICIAN_WEBHOOK_HOST to the runtime env)
+  # and takes AgentMail's signing secret; no webhook URL belongs here.
+  # Only for a manually registered webhook (whsec_..., Svix verification):
   # AGENTMAIL_WEBHOOK_SECRET: whsec_xxxx
 
   # Bot daemons
@@ -89,7 +87,8 @@ secrets:
   KAPSO_API_KEY: '${KAPSO_API_KEY}'
   KAPSO_PHONE_NUMBER_ID: '${KAPSO_PHONE_NUMBER_ID}'
   KAPSO_PHONE_NUMBER: '${KAPSO_PHONE_NUMBER}'
-  # Number-webhook HMAC secret; required by the public Kapso receiver.
+  # Optional: the bot registers https://$MAGICIAN_WEBHOOK_HOST/webhook on start
+  # and verifies with that webhook's secret; this is only the fallback.
   KAPSO_WEBHOOK_SECRET: '${KAPSO_WEBHOOK_SECRET}'
 
   # Magician runtime URL — bots use this to reach the local Magician

@@ -76,6 +76,8 @@ export MAGICIAN_DISABLE_SYSTEM_PROXY=1
 # migrated.) An explicit override is kept, e.g. `inprocess` to check the
 # rollback driver.
 export MAGICIAN_EXECUTION_DRIVER="${MAGICIAN_EXECUTION_DRIVER:-stateless}"
+# Override inherited runtime roots as well as the legacy storage aliases.
+export MAGICIAN_ROOT_DIR="$test_data_parent/magician_data_v3"
 export MAGICIAN_STORAGE_PATH="$test_data_parent/magician_data_v3"
 export MAGICUTOR_DATA_ROOT="$test_data_parent/magician_data_v3"
 export RUST_TEST_THREADS="$test_threads"

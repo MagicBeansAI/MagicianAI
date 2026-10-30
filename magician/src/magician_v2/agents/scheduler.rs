@@ -275,6 +275,23 @@ impl AgentScheduler {
         agent_id: &str,
         goal_id: &str,
     ) -> Result<u64, SchedulerError> {
+        self.allocate_trigger_seq_above(agent_id, goal_id, 0).await
+    }
+
+    /// Allocate the next trigger sequence, strictly above both the stored
+    /// counter and `floor` (the highest sequence already used elsewhere,
+    /// e.g. by persisted episodes of an earlier agent with the same id).
+    ///
+    /// The counter lives in this scheduler entry, which is dropped when an
+    /// agent is deleted; the episodes that record which tuples already ran
+    /// are not. Allocating from the counter alone hands a re-created agent
+    /// tuples that dedup then refuses.
+    pub async fn allocate_trigger_seq_above(
+        &self,
+        agent_id: &str,
+        goal_id: &str,
+        floor: u64,
+    ) -> Result<u64, SchedulerError> {
         let now = Utc::now();
         let key = self.state_key_for_agent_goal(agent_id, goal_id);
         self.mutate_state(|state| {
@@ -285,17 +302,55 @@ impl AgentScheduler {
                         goal_id: goal_id.to_string(),
                     });
                 };
-                entry.trigger_seq = entry.trigger_seq.checked_add(1).ok_or_else(|| {
-                    SchedulerError::SequenceOverflow {
-                        agent_id: agent_id.to_string(),
-                        goal_id: goal_id.to_string(),
-                    }
-                })?;
+                entry.trigger_seq =
+                    entry.trigger_seq.max(floor).checked_add(1).ok_or_else(|| {
+                        SchedulerError::SequenceOverflow {
+                            agent_id: agent_id.to_string(),
+                            goal_id: goal_id.to_string(),
+                        }
+                    })?;
                 entry.last_triggered = Some(now);
                 entry.trigger_seq
             };
             state.last_tick = Some(now);
             Ok(seq)
+        })
+        .await
+    }
+
+    /// Move a tuple already consumed by `collect_due_cron_triggers` past
+    /// `floor` when it collides with a sequence used elsewhere. Returns the
+    /// sequence the fire must carry; unchanged when it is already above
+    /// `floor`.
+    ///
+    /// When the consumed tuple is still the entry's latest, the entry is
+    /// re-pointed at `floor + 1`, so `requeue_due_cron_trigger` keeps
+    /// recognising the rebased tuple. When another allocation has moved the
+    /// entry on meanwhile, a fresh sequence above both is allocated instead.
+    pub async fn rebase_consumed_trigger_seq(
+        &self,
+        scheduled: &ScheduledTrigger,
+        floor: u64,
+    ) -> Result<u64, SchedulerError> {
+        if scheduled.trigger_seq > floor {
+            return Ok(scheduled.trigger_seq);
+        }
+        let key = self.state_key_for_agent_goal(&scheduled.agent_id, &scheduled.goal_id);
+        self.mutate_state(|state| {
+            let Some(entry) = state.entries.get_mut(&key) else {
+                return Err(SchedulerError::NotRegistered {
+                    agent_id: scheduled.agent_id.clone(),
+                    goal_id: scheduled.goal_id.clone(),
+                });
+            };
+            let next = entry.trigger_seq.max(floor).checked_add(1).ok_or_else(|| {
+                SchedulerError::SequenceOverflow {
+                    agent_id: scheduled.agent_id.clone(),
+                    goal_id: scheduled.goal_id.clone(),
+                }
+            })?;
+            entry.trigger_seq = next;
+            Ok(next)
         })
         .await
     }
@@ -898,6 +953,98 @@ tools: []
         assert_eq!(scheduler.allocate_trigger_seq("a1", "g1").await.unwrap(), 1);
         assert_eq!(scheduler.allocate_trigger_seq("a1", "g1").await.unwrap(), 2);
         assert_eq!(scheduler.allocate_trigger_seq("a1", "g2").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn allocate_trigger_seq_above_skips_past_floor_after_entry_reset() {
+        let (_tmp, scheduler) = scoped_scheduler();
+        register_cron(&scheduler, "a1", "g1", "0 9 * * *", "UTC").await;
+        assert_eq!(scheduler.allocate_trigger_seq("a1", "g1").await.unwrap(), 1);
+
+        // Deleting the agent drops its entry; a re-created agent with the
+        // same id re-registers from zero while its old tuples 1..=3 are
+        // still recorded elsewhere.
+        scheduler.unregister_agent("a1").await.unwrap();
+        register_cron(&scheduler, "a1", "g1", "0 9 * * *", "UTC").await;
+
+        assert_eq!(
+            scheduler
+                .allocate_trigger_seq_above("a1", "g1", 3)
+                .await
+                .unwrap(),
+            4
+        );
+        // The floor is persisted into the counter, and a stale (lower) floor
+        // never moves the counter backwards.
+        assert_eq!(
+            scheduler
+                .allocate_trigger_seq_above("a1", "g1", 2)
+                .await
+                .unwrap(),
+            5
+        );
+        assert_eq!(scheduler.allocate_trigger_seq("a1", "g1").await.unwrap(), 6);
+    }
+
+    #[tokio::test]
+    async fn rebase_consumed_trigger_seq_moves_colliding_cron_fire_past_floor() {
+        let (_tmp, scheduler) = scoped_scheduler();
+        scheduler
+            .register_entry(
+                "a1",
+                "g1",
+                SchedulerTriggerRegistration::Cron {
+                    schedule: "0 9 * * *".to_string(),
+                    timezone: "UTC".to_string(),
+                    next_run_at: Some(Utc::now() - chrono::Duration::minutes(1)),
+                },
+            )
+            .await
+            .unwrap();
+        let scheduled = scheduler
+            .collect_due_cron_triggers(Utc::now())
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("cron fire should be due");
+        assert_eq!(scheduled.trigger_seq, 1);
+
+        // Above the floor: untouched.
+        assert_eq!(
+            scheduler
+                .rebase_consumed_trigger_seq(&scheduled, 0)
+                .await
+                .unwrap(),
+            1
+        );
+
+        let rebased = scheduler
+            .rebase_consumed_trigger_seq(&scheduled, 3)
+            .await
+            .unwrap();
+        assert_eq!(rebased, 4);
+        let entry = scheduler.entry_for_agent_goal("a1", "g1").await.unwrap();
+        assert_eq!(entry.trigger_seq, 4);
+
+        // The rebased tuple is still the entry's latest, so a retry rollback
+        // recognises it.
+        let rebased_trigger = ScheduledTrigger {
+            trigger_seq: rebased,
+            ..scheduled.clone()
+        };
+        assert!(scheduler
+            .requeue_due_cron_trigger(&rebased_trigger, Utc::now())
+            .await
+            .unwrap());
+        assert_eq!(
+            scheduler
+                .entry_for_agent_goal("a1", "g1")
+                .await
+                .unwrap()
+                .trigger_seq,
+            3
+        );
     }
 
     #[tokio::test]

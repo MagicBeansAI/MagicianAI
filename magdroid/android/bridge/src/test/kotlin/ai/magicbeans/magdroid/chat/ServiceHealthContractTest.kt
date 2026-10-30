@@ -105,4 +105,73 @@ class ServiceHealthContractTest {
         assertFalse(stack.magicutor.reachable)
         assertEquals("Not reported", stack.magicutor.detail)
     }
+
+    // ── Split core / API versions ────────────────────────────────────────────
+
+    /**
+     * Newer servers send the Magician core version as `version`, the API
+     * crate's as `api_version`, and every component under `versions`; the
+     * backend row shows the core version, never the API crate's.
+     */
+    @Test
+    fun `versions block names the core, api, magicutor and desktop versions`() {
+        val stack = chatJson.decodeFromString(
+            ServiceHealthBody.serializer(),
+            """{"status":"ok","service":"magician","version":"0.7.146",
+                "api_version":"0.3.67","magician":"healthy",
+                "magicutor_status":"healthy","tauri_status":"healthy",
+                "versions":{"magician":"0.7.146","magician_api":"0.3.67",
+                            "magicutor":"0.1.94","desktop":"0.3.28"}}""",
+        ).stack()
+
+        assertEquals("0.7.146", stack.magician.version)
+        assertEquals("0.3.67", stack.apiVersion)
+        assertEquals("0.1.94", stack.magicutor.version)
+        assertEquals("0.3.28", stack.desktop.version)
+    }
+
+    @Test
+    fun `versions block wins over the top-level version`() {
+        val stack = chatJson.decodeFromString(
+            ServiceHealthBody.serializer(),
+            """{"version":"0.3.67","versions":{"magician":"0.7.146"}}""",
+        ).stack()
+        assertEquals("0.7.146", stack.magician.version)
+    }
+
+    @Test
+    fun `null or absent component versions decode and stay absent`() {
+        val stack = chatJson.decodeFromString(
+            ServiceHealthBody.serializer(),
+            """{"version":"0.7.146","api_version":"0.3.67","magician":"healthy",
+                "versions":{"magician":"0.7.146","magician_api":null,
+                            "magicutor":null}}""",
+        ).stack()
+        assertEquals("0.7.146", stack.magician.version)
+        assertEquals("0.3.67", stack.apiVersion)
+        assertNull(stack.magicutor.version)
+        assertNull(stack.desktop.version)
+    }
+
+    @Test
+    fun `a null versions block is an older server, not an error`() {
+        val stack = chatJson.decodeFromString(
+            ServiceHealthBody.serializer(),
+            """{"version":"0.3.67","api_version":null,"versions":null}""",
+        ).stack()
+        assertEquals("0.3.67", stack.magician.version)
+        assertNull(stack.apiVersion)
+    }
+
+    @Test
+    fun `an offline component keeps the version the server named`() {
+        val stack = chatJson.decodeFromString(
+            ServiceHealthBody.serializer(),
+            """{"version":"0.7.146","magicutor_status":"offline",
+                "versions":{"magicutor":"0.1.94"}}""",
+        ).stack()
+        assertFalse(stack.magicutor.reachable)
+        assertEquals("Offline", stack.magicutor.detail)
+        assertEquals("0.1.94", stack.magicutor.version)
+    }
 }

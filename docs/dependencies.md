@@ -172,7 +172,7 @@ The root [`Dockerfile`](../Dockerfile) is a dependency surface in its own right.
 It pins Rust `1.92` on Debian Bookworm for the main builder and the patched
 agent-browser build, Node `20` on Alpine for the UI, Go `1.23` on Debian
 Bookworm for Go-built tools, the
-agent-browser upstream tag `v0.38.1`, and Debian Bookworm Slim for the runtime.
+agent-browser upstream tag `v0.41.0`, and Debian Bookworm Slim for the runtime.
 [`scripts/install-container-tools.sh`](../scripts/install-container-tools.sh)
 owns the runtime OS packages and downloaded command-line tools layered onto
 that base.

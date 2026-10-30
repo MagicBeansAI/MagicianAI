@@ -1488,12 +1488,14 @@ fn map_start_error(error: AuthError) -> McpOAuthCoordinatorError {
             McpOAuthCoordinatorErrorCode::DiscoveryUnavailable,
             "MCP OAuth discovery is unavailable",
         ),
-        AuthError::InternalError(_) => McpOAuthCoordinatorError::new(
-            McpOAuthCoordinatorErrorCode::PersistenceUnavailable,
-            "MCP OAuth persistence is unavailable",
-        ),
+        AuthError::InternalError(_) | AuthError::CredentialStoreError(_) => {
+            McpOAuthCoordinatorError::new(
+                McpOAuthCoordinatorErrorCode::PersistenceUnavailable,
+                "MCP OAuth persistence is unavailable",
+            )
+        },
         _ => McpOAuthCoordinatorError::new(
-            McpOAuthCoordinatorErrorCode::RegistrationFailed,
+            McpOAuthCoordinatorErrorCode::DiscoveryUnavailable,
             "MCP OAuth authorization could not be started",
         ),
     }
@@ -1872,6 +1874,28 @@ mod tests {
     }
 
     #[test]
+    fn only_registration_errors_are_reported_as_client_registration_failures() {
+        let registration = map_start_error(AuthError::RegistrationFailed("canary-secret".into()));
+        assert_eq!(
+            registration.code,
+            McpOAuthCoordinatorErrorCode::RegistrationFailed
+        );
+        assert!(!registration.message.contains("canary-secret"));
+        let generic = map_start_error(AuthError::AuthorizationFailed("canary-secret".into()));
+        assert_eq!(
+            generic.code,
+            McpOAuthCoordinatorErrorCode::DiscoveryUnavailable
+        );
+        let store = map_start_error(AuthError::CredentialStoreError("canary-secret".into()));
+        assert_eq!(
+            store.code,
+            McpOAuthCoordinatorErrorCode::PersistenceUnavailable
+        );
+        assert!(!generic.message.contains("canary-secret"));
+        assert!(!store.message.contains("canary-secret"));
+    }
+
+    #[test]
     fn secret_and_live_flow_surfaces_are_not_cloneable_or_serializable() {
         assert_not_impl_any!(McpOAuthClientSecret: Clone, Serialize);
         assert_not_impl_any!(McpOAuthAuthorizationStart: Clone, Serialize);
@@ -2158,11 +2182,20 @@ mod tests {
                 .await
                 .expect("refreshed")
                 .granted_scopes,
-            ["read"]
+            ["read", "offline_access"]
         );
         let refresh_request = client.requests().last().expect("refresh request").clone();
         assert!(refresh_request.uri.ends_with("/token"));
         assert!(String::from_utf8_lossy(&refresh_request.body).contains("grant_type=refresh_token"));
+        // The SDK requests the prior scopes plus advertised offline access. An
+        // omitted response scope retains that requested set (RFC 6749 section 6).
+        let refresh_form = url::form_urlencoded::parse(&refresh_request.body)
+            .into_owned()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            refresh_form.get("scope").map(String::as_str),
+            Some("read offline_access")
+        );
 
         let provider_request_count = client.requests().len();
         let logout = coordinator.logout_local().await.expect("logout");

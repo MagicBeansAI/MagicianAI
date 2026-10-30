@@ -6,6 +6,7 @@ import android.content.Context
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.request
@@ -27,7 +28,11 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.io.ByteArrayOutputStream
 
-class WorkRequestError(val status: Int, message: String) : Exception(message)
+/** [body] is the server's JSON error object, when it sent one. */
+open class WorkRequestError(val status: Int, message: String, val body: JsonObject? = null) : Exception(message)
+
+/** The program changed, appeared or vanished after it was opened (409 `program_changed`). */
+class WorkProgramChangedError(message: String, val currentSha256: String?) : WorkRequestError(409, message)
 
 /** Frozen URL and headers: switching machine cannot send a new bearer to the old host. */
 class WorkRepository(
@@ -50,11 +55,20 @@ class WorkRepository(
     fun isCurrentConnection(context: Context): Boolean = connection == MagicianAccess.connectionSnapshot(context)
     override fun close() = client.close()
 
+    /** UI-facing JSON calls keep Ktor types inside the bridge module. */
+    suspend fun readJson(path: String): JsonElement = request(path).first
+    suspend fun postJson(path: String, body: JsonObject): JsonElement = request(path, HttpMethod.Post, body).first
+    suspend fun putJson(path: String, body: JsonObject): JsonElement = request(path, HttpMethod.Put, body).first
+    suspend fun deleteJson(path: String): JsonElement = request(path, HttpMethod.Delete).first
+
     suspend fun request(path: String, method: HttpMethod = HttpMethod.Get,
                                 body: JsonObject? = null, etag: String? = null): Pair<JsonElement, String?> {
         require(path.startsWith("/api/magician/v2/") || (method == HttpMethod.Get && Regex("^/api/magician/v3/tasks/bootstrap__[^/?]+$").matches(path)))
         val response = client.request(connection.baseUrl.trimEnd('/') + path) {
             this.method = method
+            if (path == "/api/magician/v2/analytics/llm_calls/query" && body?.text("sql")?.contains("llm_cost_daily") == true) {
+                timeout { requestTimeoutMillis = 150_000 }
+            }
             connection.headers.forEach { (name, value) -> header(name, value) }
             if (body != null) { contentType(ContentType.Application.Json); setBody(body.toString()) }
             if (etag != null) header("If-Match", etag)
@@ -66,10 +80,18 @@ class WorkRepository(
                 412 -> "This crew member changed elsewhere. Refresh before saving again."
                 else -> (value as? JsonObject)?.text("error") ?: ((value as? JsonObject)?.get("error") as? JsonObject)?.text("message") ?: (value as? JsonObject)?.text("message") ?: "Work request failed (${response.status.value})."
             }
-            throw WorkRequestError(response.status.value, message)
+            throw WorkRequestError(response.status.value, message, value as? JsonObject)
         }
         return (value ?: throw WorkRequestError(0, "This work response could not be read.")) to response.headers["ETag"]
     }
+    /** One GET with its status and JSON body, for callers that read a 404 as absent and word failures themselves (the Goals notes reads). */
+    suspend fun getWithStatus(path: String): Pair<Int, JsonElement?> =
+        try { 200 to request(path).first }
+        catch (error: WorkRequestError) { if (error.status == 0) throw error; error.status to error.body }
+    /** One JSON PATCH with its status and JSON body, for callers that word a 409 themselves (a goal's Mark done and Reopen). */
+    suspend fun patchWithStatus(path: String, body: JsonObject): Pair<Int, JsonElement?> =
+        try { 200 to request(path, HttpMethod.Patch, body).first }
+        catch (error: WorkRequestError) { if (error.status == 0) throw error; error.status to error.body }
     suspend fun file(path: String, maximumBytes: Int = 128 * 1024 * 1024): ByteArray {
         require(path.startsWith("/api/magician/v2/"))
         require(maximumBytes in 1..128 * 1024 * 1024)
@@ -122,6 +144,28 @@ class WorkRepository(
     }
     suspend fun program(name: String): WorkProgramDocument =
         WorkProgramDocument.decode(request("/api/magician/v2/programs/${segment(name)}").first as JsonObject)
+    /**
+     * Owner save of a whole program document. [baseSha256] is the `sha256` of
+     * the version that was opened for editing; a document that changed since
+     * is refused with [WorkProgramChangedError] instead of being overwritten.
+     * Only a signed-in owner session may save, and a refused credential
+     * reports the server's own words.
+     */
+    suspend fun saveProgram(name: String, content: String, baseSha256: String): WorkProgramSaved {
+        require(content.isNotBlank()) { "Write the document before saving." }
+        require(baseSha256.isNotBlank()) { "Reload the program before saving changes." }
+        val value = try {
+            request("/api/magician/v2/programs/${segment(name)}", HttpMethod.Put,
+                buildJsonObject { put("content", content); put("base_sha256", baseSha256) }).first
+        } catch (error: WorkRequestError) {
+            val body = error.body
+            if (error.status == 409 && body?.text("error") == "program_changed") {
+                throw WorkProgramChangedError(body.text("message")?.takeIf(String::isNotBlank) ?: "This program changed after you opened it.", body.text("current_sha256"))
+            }
+            throw body?.text("message")?.takeIf(String::isNotBlank)?.let { WorkRequestError(error.status, it, body) } ?: error
+        }
+        return WorkProgramSaved.decode(value as? JsonObject ?: throw WorkRequestError(0, "This work response could not be read."))
+    }
     suspend fun restoreProgram(name: String, snapshot: String) {
         request("/api/magician/v2/programs/${segment(name)}/revert", HttpMethod.Post,
             buildJsonObject { put("snapshot", snapshot) })

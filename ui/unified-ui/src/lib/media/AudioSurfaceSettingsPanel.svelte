@@ -460,6 +460,7 @@
 		color: var(--text-primary);
 		display: grid;
 		gap: 1rem;
+		grid-template-columns: minmax(0, 1fr);
 		padding: 1rem;
 	}
 
@@ -478,6 +479,7 @@
 	.audio-header,
 	.profile-row,
 	.stage-heading {
+		flex-wrap: wrap;
 		justify-content: space-between;
 	}
 
@@ -640,7 +642,7 @@
 		font: inherit;
 		font-size: 0.82rem;
 		height: 2.25rem;
-		max-width: 26rem;
+		max-width: min(26rem, 100%);
 		padding: 0 1.8rem 0 0.62rem;
 	}
 

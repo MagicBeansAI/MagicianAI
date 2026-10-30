@@ -521,8 +521,8 @@ revalidated before provider I/O. `remote_allowed` permits the owner's approved
 OpenAI processing; a more restrictive source still narrows disclosure.
 
 `app_platform.llm_operations.compose_post` admits the purpose and 1,600 output
-tokens. The `app:compose_post` router mapping selects `op-app-workflow-remote`
-in cloud mode and `op-app-workflow-local` otherwise. Both must remain in the
+tokens. The `app:compose_post` router mapping selects `workload/app_processing/cloud`
+in cloud mode and `workload/app_processing/local` otherwise. Both must remain in the
 trusted processing profile catalog. The repository seed, fallback template and
 live runtime configuration carry the same operation policy. The retained legacy
 `engagement_gate` configuration supports older immutable packages during an

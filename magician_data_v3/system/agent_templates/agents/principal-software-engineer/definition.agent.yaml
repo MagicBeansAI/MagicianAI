@@ -1,5 +1,5 @@
 agent_id: principal-software-engineer
-version: 7
+version: 8
 name: Sage
 aliases:
 - sage
@@ -327,7 +327,7 @@ notification_rules:
   message: Principal engineer task failed — escalation may be needed
 retention: null
 llm_routing:
-  coding_profile: coding-premium
+  coding_profile: pi/model/openai/gpt-6.1-sol/high
 strategy: null
 state_machines: {}
 is_primary: false

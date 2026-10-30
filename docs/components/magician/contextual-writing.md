@@ -94,6 +94,13 @@ screenshotAttachmentId?, provenance, queued? }`.
   and session-title inputs; routing-by-source (`site:{rootUrl}` vs
   `app:{name}` session keys) is client-owned and arrives via
   `routing.sourceKey`.
+- The chat turn the helper composes wraps its own instructions, the source
+  details, the selected text and the visual policy in `<magician_context>`
+  blocks; only `userPrompt` (as `User guidance:`) sits outside them. Memory
+  and learning read the turn through `authored_framing::owner_words`, so they
+  see the owner's guidance and never learn the helper's "return only the draft
+  text" instruction or the page's text as the owner's words
+  ([memory lifecycle](memory-lifecycle.md)).
 - A text-less action is valid only when a screenshot is required
   (`visualContext.screenshot.required`).
 - Thinking Map (Brainstorm) is the one typed feature surface: exact

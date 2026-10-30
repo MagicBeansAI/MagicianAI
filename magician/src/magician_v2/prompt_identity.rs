@@ -46,6 +46,9 @@ pub fn neutralize_boundary_tags(content: &str) -> String {
         "runtime_ledger",
         "user_message",
         "synthesis_bundle",
+        "conversation_handoff",
+        "prior_handoff",
+        "source_fragment",
         // The owner's taste profile block. The note is owner-authored, so the
         // trust argument matches an operator persona — but Slice 2 will move
         // machine-proposed lines into it after approval, and the owner may

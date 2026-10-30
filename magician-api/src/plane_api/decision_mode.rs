@@ -5,7 +5,7 @@ use magician::magician_v2::{
     auth::middleware::AuthRuntime,
     decision_host,
     runtime_settings::{
-        config_file_lock, replace_top_level_yaml_block, runtime_settings_paths,
+        apply_yaml_section, config_file_lock, runtime_settings_paths, set_yaml_path,
         write_text_file_atomic,
     },
 };
@@ -30,18 +30,17 @@ fn save_mode(
     let lock = config_file_lock(path);
     let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
     let mut config = load_magician_config_from_path(path)?;
+    let before = config.decision.clone();
     config.decision.mode = mode;
     let original = std::fs::read_to_string(path)?;
-    let body = serde_yaml::to_string(&config.decision)?;
-    let block = format!(
-        "decision:\n{}\n",
-        body.lines()
-            .map(|line| format!("  {line}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    let next = replace_top_level_yaml_block(&original, "decision", &block);
-    write_text_file_atomic(path, &next, None)?;
+    // Only the changed `decision:` values are written; comments stay.
+    let mut next = apply_yaml_section(&original, &["decision"], &before, &config.decision)?;
+    if next != original {
+        // The former `enabled` boolean is refused beside `mode`: retire it
+        // when the mode is written.
+        next = set_yaml_path(&next, &["decision", "enabled"], None)?;
+        write_text_file_atomic(path, &next, None)?;
+    }
     install(&config.decision);
     Ok(config.decision)
 }
@@ -95,17 +94,18 @@ mod tests {
         config.execution.harness_engine = "pi".into();
         // Full-config serialization deliberately omits router tables. Keep
         // the composed seed intact so this fixture is self-contained.
-        let contents = replace_top_level_yaml_block(
+        let contents = magician::magician_v2::runtime_settings::replace_top_level_yaml_block(
             &magician::config::shipped_repo_config_yaml(),
             "decision",
-            "decision:\n  mode: all_engines\n  socket: /tmp/custom-decision.sock\n  timeout_ms: 3210\n",
+            "decision:\n  # owner: decision notes\n  mode: all_engines\n  socket: /tmp/custom-decision.sock\n  timeout_ms: 3210\n",
         );
-        let contents = replace_top_level_yaml_block(
+        let contents = set_yaml_path(
             &contents,
-            "execution",
-            &super::super::render_execution_config_block(&config.execution),
-        );
-        std::fs::write(&path, contents).unwrap();
+            &["execution", "harness_engine"],
+            Some(&serde_yaml::Value::from("pi")),
+        )
+        .unwrap();
+        std::fs::write(&path, &contents).unwrap();
         for mode in [
             DecisionMode::Off,
             DecisionMode::MagicianOnly,
@@ -126,6 +126,20 @@ mod tests {
                     .harness_engine,
                 "pi"
             );
+            // Only the mode line can differ from what the owner wrote.
+            let written = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(written.lines().count(), contents.lines().count());
+            assert!(written.contains("  # owner: decision notes\n"));
+            let changed: Vec<&str> = contents
+                .lines()
+                .zip(written.lines())
+                .filter(|(old, new)| old != new)
+                .map(|(_, new)| new)
+                .collect();
+            assert!(
+                changed.len() <= 1 && changed.iter().all(|line| line.starts_with("  mode: ")),
+                "{changed:?}"
+            );
         }
         assert!(save_mode(
             &dir.path().join("missing.yaml"),
@@ -133,6 +147,26 @@ mod tests {
             |_| panic!("must not install on failure")
         )
         .is_err());
+    }
+
+    #[test]
+    fn writing_a_mode_retires_the_former_boolean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        let contents = magician::magician_v2::runtime_settings::replace_top_level_yaml_block(
+            &magician::config::shipped_repo_config_yaml(),
+            "decision",
+            "decision:\n  enabled: true  # legacy\n  timeout_ms: 3210\n",
+        );
+        std::fs::write(&path, &contents).unwrap();
+        let saved = save_mode(&path, DecisionMode::Off, |_| {}).unwrap();
+        assert_eq!(saved.mode, DecisionMode::Off);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("enabled: true  # legacy"), "{written}");
+        assert_eq!(
+            load_magician_config_from_path(&path).unwrap().decision.mode,
+            DecisionMode::Off
+        );
     }
 
     #[test]

@@ -323,6 +323,39 @@ impl ResourceLedger {
         self.sum_commodity_accounts_since(&suffix, since, None)
     }
 
+    /// What system ceilings count for `commodity` in `[since, until)`: all
+    /// spend but model spend, which the spend envelope enforces and posts here
+    /// after the fact (`spend_envelope_ledger`). The model token's expense
+    /// account for exactly this commodity is left out, so the two sums always
+    /// match line for line.
+    pub fn ceiling_spent_since_until(
+        &self,
+        commodity: &str,
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> Decimal {
+        let total = match until {
+            Some(until) => self.total_spent_since_until(commodity, since, until),
+            None => self.total_spent_since(commodity, since),
+        };
+        let model_account = format!(
+            "token:{}:expense:{}",
+            crate::magician_v2::spend_envelope_ledger::MODEL_SPEND_TOKEN,
+            commodity
+        );
+        let model: Decimal = self
+            .journal
+            .iter()
+            .filter(|entry| {
+                entry.accrual_date >= since && until.is_none_or(|until| entry.accrual_date < until)
+            })
+            .flat_map(|entry| entry.entries.iter())
+            .filter(|line| line.account == model_account)
+            .map(|line| line.amount.value)
+            .sum();
+        total - model
+    }
+
     /// Total reserved for a commodity since a given timestamp.
     pub fn total_reserved_since(&self, commodity: &str, since: DateTime<Utc>) -> Decimal {
         // Net balance of reserved accounts since the timestamp.

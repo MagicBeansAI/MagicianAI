@@ -1,6 +1,6 @@
 # `@magician/bot-sdk` — Channel Adapter Framework
 
-**Current package version:** `0.3.7`.
+**Current package version:** `0.3.8`.
 
 **This is Magician's adapter framework for new messaging channels.** Implement
 six methods on a typed `ChannelAdapter` interface and the SDK gives you
@@ -51,7 +51,7 @@ and is opaque to the SDK.
 | Tool-call rendering | `formatters.ts` + `sendToolCallExecuted` hook | Pretty-prints tool calls with summaries and channel-appropriate formatting |
 | Task-status rendering | `formatters.ts` + `sendTaskStatusUpdate` hook | Streams task progress updates |
 | File attachments | `ChannelFileAttachment` type | Capability-pack `output_files` (image-gen, video-gen, deep-research PDFs) → real platform attachments; falls back to a URL message when `sendFile` is absent |
-| Resilient process supervision | `resilient-process.ts` (127 LOC) | Process crash recovery, exit-code interpretation |
+| Resilient process supervision | `resilient-process.ts` (159 LOC) | Process crash recovery, exit-code interpretation, streak reset after a healthy run |
 | Scope-awareness | Built into client | `MAGICIAN_BEARER_TOKEN` binds principal/workspace for HTTP, WebSocket, and output downloads; caller scope selectors are never sent. The runtime **injects** this at spawn (a scoped in-memory token, revoked on stop) — bots do not carry one in an env file |
 
 ## Minimal adapter skeleton
@@ -115,6 +115,40 @@ opt in.
 Slash commands such as `/start`, `/new`, `/stop`, `/queue`, and `/clearqueue`
 are handled by the SDK even on prefix-gated public-chat surfaces, so a user can
 manage the session/queue without entering the Magician work-control rail.
+
+## Model selection and queued turns
+
+Ordinary sends omit a model selection and use the backend's configured
+assignment. For an explicit choice, read `client.getChatModels("magician")`
+or `client.getChatModels("pi")`, then pass a catalog model ID and one of that
+model's native thinking levels:
+
+```typescript
+await client.sendMessage(sessionId, identity, text, {
+  harnessEngine: "magician",
+  modelSelection: { model_id: selectedModel.id, thinking: "auto" },
+});
+```
+
+`auto` keeps the model/workload default. Select `none` only when the catalog
+offers it. The backend resolves context, output and reasoning allowances; bots
+do not supply token budgets or route handles. The former `profile` option is
+removed and is rejected for JavaScript callers too. Missing model endpoints or
+profile-only responses require a backend upgrade, with no old-endpoint fallback.
+The default engine's stable wire identifier is `magician`; this protocol value
+is separate from product and assistant display names.
+
+The backend drains queued work with its original model, engine, thinking level,
+attachments and execution credentials. The SDK delivers realtime replies and
+observes committed session messages while queued work remains active, so
+delivery also works without a realtime connection. Both paths share message
+deduplication and channel delivery policy. The SDK never deletes and reposts
+queued messages. `/clearqueue` still explicitly cancels pending messages.
+
+After an SDK upgrade, rebuild all bot bundles and restart the consumers;
+already running Node processes retain their loaded SDK code. Run
+`make test-llm-channel-models` from the repository root for provider-free HTTP,
+queue observation, duplicate-delivery, stop and failure contracts.
 
 ## Per-bot bundling and deploy
 

@@ -34,7 +34,7 @@
       "required": true,
       "default_value": null,
       "examples": [
-        "What was Apnaklub's total GMV on 1 October 2026?"
+        "What was Acme Retail's total GMV on 1 October 2026?"
       ]
     },
     {

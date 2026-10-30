@@ -350,6 +350,13 @@ pub enum PromptCacheConfig {
         ttl: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cached_content: Option<String>,
+        /// The caller re-sends this conversation on every call with new turns
+        /// appended (a chat). Providers that cache only at explicit
+        /// breakpoints (native Anthropic) then also anchor the last completed
+        /// turn, so the history is read back instead of billed in full each
+        /// call. Providers with automatic prefix caching ignore it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        conversation: bool,
     },
     Disabled,
 }
@@ -359,6 +366,7 @@ impl PromptCacheConfig {
         Self::Enabled {
             ttl: None,
             cached_content: None,
+            conversation: false,
         }
     }
 
@@ -366,6 +374,16 @@ impl PromptCacheConfig {
         Self::Enabled {
             ttl: Some(ttl.into()),
             cached_content: None,
+            conversation: false,
+        }
+    }
+
+    /// Caching for a growing conversation; see `Enabled::conversation`.
+    pub fn conversation_with_ttl(ttl: impl Into<String>) -> Self {
+        Self::Enabled {
+            ttl: Some(ttl.into()),
+            cached_content: None,
+            conversation: true,
         }
     }
 
@@ -373,6 +391,7 @@ impl PromptCacheConfig {
         Self::Enabled {
             ttl: None,
             cached_content: Some(name.into()),
+            conversation: false,
         }
     }
 
@@ -392,6 +411,16 @@ impl PromptCacheConfig {
 
     pub fn is_enabled(&self) -> bool {
         matches!(self, Self::Enabled { .. })
+    }
+
+    pub fn is_conversation(&self) -> bool {
+        matches!(
+            self,
+            Self::Enabled {
+                conversation: true,
+                ..
+            }
+        )
     }
 }
 
@@ -721,6 +750,12 @@ pub struct LlmPhysicalAttemptObservation {
     cost_microusd: u64,
     started_at_unix_ms: i64,
     completed_at_unix_ms: i64,
+    /// The provider answered with a definitive client rejection (HTTP 4xx
+    /// other than 408/429) and returned no usable response. The outcome stays
+    /// `OutcomeUncertain` for every generic consumer; a resource owner that
+    /// reads this flag may release the reservation at zero instead of holding
+    /// it for the whole period.
+    definitive_rejection: bool,
 }
 
 impl LlmPhysicalAttemptObservation {
@@ -743,6 +778,7 @@ impl LlmPhysicalAttemptObservation {
             cost_microusd,
             started_at_unix_ms,
             completed_at_unix_ms,
+            definitive_rejection: false,
         })
     }
 
@@ -755,7 +791,23 @@ impl LlmPhysicalAttemptObservation {
             cost_microusd: 0,
             started_at_unix_ms,
             completed_at_unix_ms: completed_at_unix_ms.max(started_at_unix_ms),
+            definitive_rejection: false,
         }
+    }
+
+    /// An uncertain observation that also records a definitive provider
+    /// client rejection. See [`Self::is_definitive_rejection`].
+    pub(crate) fn definitive_rejection(started_at_unix_ms: i64, completed_at_unix_ms: i64) -> Self {
+        Self {
+            definitive_rejection: true,
+            ..Self::outcome_uncertain(started_at_unix_ms, completed_at_unix_ms)
+        }
+    }
+
+    /// True only when the provider definitively rejected the request (HTTP
+    /// 4xx other than 408/429) with no usable response. Counters are zero.
+    pub fn is_definitive_rejection(&self) -> bool {
+        self.definitive_rejection
     }
 
     pub fn outcome(&self) -> LlmPhysicalAttemptOutcome {
@@ -1686,6 +1738,12 @@ pub struct LLMRequest {
     /// copied wholesale into an upstream request body.
     #[serde(skip)]
     pub context_reuse: Option<Arc<crate::context_reuse::ContextReuseConfig>>,
+    /// Request-shape facts of the catalogued model this physical attempt
+    /// resolved to, set by the router for every attempt. `None` means an
+    /// uncatalogued model: adapters then use their model-name fallback.
+    /// Local only; never serialized or sent upstream.
+    #[serde(skip)]
+    pub model_wire: Option<crate::catalog::ModelWire>,
     /// Arbitrary provider-state lane shared across queue/router/retry clones.
     /// Mutation is explicit copy-on-write through [`Self::take_extra_value`]
     /// and [`Self::set_extra`]; ordinary request cloning never traverses the
@@ -2872,6 +2930,7 @@ impl LLMRequest {
             if let PromptCacheConfig::Enabled {
                 ttl,
                 cached_content,
+                ..
             } = prompt_cache
             {
                 bytes = bytes
@@ -2937,6 +2996,7 @@ impl Default for LLMRequest {
             stream: false,
             prompt_cache: None,
             context_reuse: None,
+            model_wire: None,
             extra: None,
             stream_event_sink: StreamEventSink::default(),
             summarisable_blocks: Arc::new(Vec::new()),
@@ -3020,6 +3080,32 @@ pub struct LLMResponse {
 }
 
 impl LLMResponse {
+    /// Whether the provider stopped this response at its output-token cap,
+    /// in any provider's spelling: `length` (chat completions), `max_tokens`
+    /// (Anthropic), `MAX_TOKENS` (Gemini), or a Responses API `incomplete`
+    /// status whose `incomplete_details.reason` names the output cap.
+    pub fn stopped_at_output_limit(&self) -> bool {
+        match self.finish_reason.as_deref() {
+            Some("incomplete") => self
+                .raw_response
+                .as_ref()
+                .and_then(|payload| payload.get("incomplete_details"))
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str)
+                .is_some_and(|reason| {
+                    matches!(
+                        reason,
+                        "max_output_tokens" | "max_completion_tokens" | "max_tokens"
+                    )
+                }),
+            Some(reason) => matches!(
+                reason.to_ascii_lowercase().as_str(),
+                "length" | "max_tokens" | "max_output_tokens" | "token_limit"
+            ),
+            None => false,
+        }
+    }
+
     /// Consume a provider response only after its aggregate arbitrary JSON
     /// lanes pass the provider wire byte/depth/node boundary and the complete
     /// normalized response passes the independent retained-memory ceiling.

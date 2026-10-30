@@ -178,7 +178,7 @@ nothing with the mail correlator.
 | `kapso-whatsapp-send` | `{"messaging_product","contacts":[…],"messages":[{"id","message_status"}]}` | **Yes**, `messages[0].id` (Meta `wamid`) |
 | `gmail`, `presto-gmail` | Gmail API `Message` resource from `gws gmail +send` | **Yes**, `id`, inferred from the API contract, not confirmed live; shape-strict, so another envelope leaves the act unknown |
 | `imessage_send` | `{"status","to","service","stdout","stderr","exit_code"}` | **No**; AppleScript `send` returns no message identity |
-| `whatsapp` `send` | `{"id","timestamp"}` (`wu messages send … --json`) | **Yes**, `id` (Baileys key, not a `wamid`) |
+| `whatsapp` `send` | `{"id","timestamp"}` (native wu text/file/poll CLI) | **Yes**, `id` (Baileys key, not a `wamid`) |
 | `telegram` `send` | `{"ok","method","chat_id","message_id","result":{…}}` | **Yes**, `chat_id` + `message_id` pair (unique only within a chat) |
 | `telegram-self` `send` | `{"channelId","messageId"}` (`tgcli send text … --json`) | **Yes**, pair, under its own provider name |
 | `whatsapp` / `telegram` / `telegram-self` `run` | whatever the command prints | **Never**; free-text escape hatch |
@@ -192,7 +192,7 @@ nothing with the mail correlator.
 send classifies and reaches the whole outward block,
 `resolve_effective_action` can name who it reaches, and it returns a provider
 id. Each has a `RESTRICTED_ACTIONS` entry whose `allowed_parameters` are exactly
-the skill's own (`jid`/`text`/`reply_to`, `chat_id`/`text`,
+the skill's own (`jid`/`text`/`reply_to`/`file_path`/`caption`, `chat_id`/`text`,
 `to`/`message`/`reply_to`) with no sender parameter (the transport fixes the
 sender), and a `RECEIPT_SOURCES` entry on `send`.
 

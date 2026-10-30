@@ -69,6 +69,10 @@ fn migrated_inventory_is_one_validated_drop_in_package_per_skill() {
             "duplicate inventory skill: {skill_id}"
         );
         let active = root.join("skillshub").join(skill_id);
+        if skill_id == "metabase" {
+            assert!(!active.exists(), "the retired CLI must not return");
+            continue;
+        }
         assert!(active.join("SKILL.md").is_file(), "{skill_id}");
         assert!(
             !active.join("tool_schema.yaml").exists(),
@@ -89,7 +93,7 @@ fn migrated_inventory_is_one_validated_drop_in_package_per_skill() {
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
                 // A non-executable file in bin/ is pack data. verify_runtime
-                // already treats metabase's generated.json that way, and
+                // already treats non-executable package data that way, and
                 // requires.bins is the spawn list, not a file inventory.
                 #[cfg(unix)]
                 if entry.metadata().is_ok_and(|meta| {
@@ -115,7 +119,7 @@ fn remote_mcp_packages_use_only_the_generic_sdk_executor() {
     use tool_runtime_core::manifest::{AuthKind, McpTransport, RuntimeProtocol};
 
     let root = workspace_root();
-    for skill_id in ["swiggy-mcp", "zepto-mcp"] {
+    for skill_id in ["swiggy-mcp", "zepto-mcp", "metabase-mcp"] {
         let active = root.join("skillshub").join(skill_id);
         let source = fs::read_to_string(active.join("SKILL.md")).expect("MCP SKILL.md");
         let package = tool_runtime_core::manifest_parser::parse_skill_runtime_package(&source)
@@ -139,7 +143,7 @@ fn remote_mcp_packages_use_only_the_generic_sdk_executor() {
     )
     .expect("generic governed MCP executor")
     .to_ascii_lowercase();
-    for provider_name in ["swiggy", "zepto"] {
+    for provider_name in ["swiggy", "zepto", "metabase"] {
         assert!(
             !executor.contains(provider_name),
             "generic MCP production code names provider {provider_name}"
@@ -170,15 +174,18 @@ fn active_adapter_inventory_names_only_existing_or_materializable_owned_sources(
     );
     // Adapters that a governed `make setup-*` target materializes rather than
     // git carrying them. Each one's presence is verified by its own target
-    // (`setup-metabase-cli`, and `verify-agent-browser`, which `make test-rust`
+    // (`verify-agent-browser`, which `make test-rust`
     // runs), so asserting it again here would only make this test fail on a
     // machine that has not run setup yet. Everything else must be committed
     // source: an adapter that is neither is unreachable on any other machine.
-    let generated_sources = BTreeSet::from([
-        ("metabase", "bin/metabase-pp-cli"),
-        ("browser", "bin/agent-browser"),
-    ]);
+    let generated_sources = BTreeSet::from([("browser", "bin/agent-browser")]);
     for file in files {
+        // The frozen Phase 0 inventory retains this retired adapter as history.
+        if file.skill == "metabase" {
+            assert!(!root.join("skillshub/metabase").exists());
+            assert!(root.join("skillshub/metabase-mcp/SKILL.md").is_file());
+            continue;
+        }
         let active = root.join("skillshub").join(&file.skill).join(&file.path);
         if active.is_file() {
             continue;
@@ -190,16 +197,6 @@ fn active_adapter_inventory_names_only_existing_or_materializable_owned_sources(
             file.path
         );
     }
-    assert!(
-        root.join("skillshub/metabase/scripts/spec.json").is_file(),
-        "the generated Metabase adapter retains its committed source spec"
-    );
-    let skillshub_makefile =
-        fs::read_to_string(root.join("skillshub/Makefile")).expect("skillshub Makefile");
-    assert!(
-        skillshub_makefile.contains("setup-metabase-cli: $(METABASE_PP_BIN)"),
-        "the generated Metabase adapter retains its governed materialization target"
-    );
 }
 
 #[test]

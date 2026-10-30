@@ -256,6 +256,7 @@ pub(in crate::magician_v2::execution::agentic) async fn run_iteration(
             executors,
             history,
             loop_protective,
+            approved_confirmation_actions.as_slice(),
             &mut observed_state,
             pending_operator_steer,
             cancellation_token.as_ref(),

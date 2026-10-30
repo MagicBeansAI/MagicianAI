@@ -36,7 +36,7 @@ pub struct MagicianV2Services {
     ///
     /// When present, orchestration storage must use this layout directly instead
     /// of reinterpreting `RuntimeConfig::storage_path()` as a legacy project
-    /// root. This keeps SilverBullet/custom workspace providers from gaining an
+    /// root. This keeps custom workspace providers from gaining an
     /// accidental nested `magician_data_v3` child.
     pub workspace_layout: Option<ArtifactV2Workspace>,
 

@@ -48,20 +48,66 @@ class TaskUsageTest {
         assertNull(TaskUsageModel.total(live = null, snapshot = TaskUsageSnapshot(run = null, planning = null)))
     }
 
-    @Test fun live_run_wins_over_the_snapshot_run_and_planning_comes_from_the_snapshot() {
+    @Test fun late_subscription_unions_stored_live_and_auxiliary_calls() {
         val ledger = TaskUsageLedger()
-        ledger.setSnapshot(
-            TaskUsageSnapshot(run = TaskUsage(3, 3000, 0.03), planning = TaskUsage(2, 900, 0.01)),
-            "task-1",
-        )
-        assertEquals(TaskUsage(5, 3900, 0.04), ledger.total("task-1")?.usage?.let { it.copy(costUsd = round(it.costUsd)) })
-
-        ledger.record("task-1", "a", 100, null)
-        val total = ledger.total("task-1")
-        assertEquals(TaskUsage(1, 100, null), total?.run)
+        val stored = mapOf("a" to TaskCallUsage(1000, 0.01, "run"))
+        ledger.setSnapshot(TaskUsageSnapshot(TaskUsageModel.sumCalls(stored), TaskUsage(2, 900, 0.01), "run", stored), "task")
+        ledger.record("task", "a", 1000, null, "run")
+        ledger.record("task", "b", 100, null, "run")
+        val history = TaskRunEvidence.history(json("""{"columns":["llm_call_id","input_tokens","output_tokens","cost_usd"],
+            "rows":[["a",800,200,0.01],["judge",20,10,0.002]]}"""), "run")
+        ledger.setSnapshot(TaskUsageSnapshot(TaskUsageModel.sumCalls(history), null, "run", history), "task")
+        val total = ledger.total("task")
+        assertEquals(3, total?.run?.calls)
+        assertEquals(1130, total?.run?.tokens)
         assertEquals(2, total?.planning?.calls)
-        assertEquals(3, total?.usage?.calls)
-        assertEquals(0.01, total?.usage?.costUsd ?: -1.0, 1e-12)
+        assertEquals(5, total?.usage?.calls)
+        assertEquals(2030, total?.usage?.tokens)
+        assertEquals(0.022, total?.usage?.costUsd ?: -1.0, 1e-12)
+    }
+
+    @Test fun replayed_price_only_call_is_enriched_without_duplicating_it() {
+        val ledger = TaskUsageLedger()
+        ledger.record("task", "a", null, 0.01)
+        assertEquals("1 call · tokens unavailable · $0.010", TaskUsageFormat.taskLine(ledger.total("task")!!.usage))
+        ledger.record("task", "a", 250, null)
+        assertEquals(TaskUsage(1, 250, 0.01), ledger.total("task")?.usage)
+    }
+
+    @Test fun partial_snapshots_keep_history_but_new_executions_reset_it() {
+        val ledger = TaskUsageLedger()
+        fun snapshot(root: String, at: Double, ids: Set<String>): TaskUsageSnapshot {
+            val calls = mapOf(root to TaskCallUsage(100, null, root))
+            return TaskUsageSnapshot(TaskUsageModel.sumCalls(calls), null, root, calls, ids, at)
+        }
+        ledger.setSnapshot(snapshot("old", 10.0, setOf("a", "b")), "task")
+        ledger.setSnapshot(snapshot("old", 9.0, setOf("b")), "task")
+        assertEquals(2, ledger.total("task")?.activityCount)
+        ledger.setSnapshot(snapshot("new", 20.0, setOf("c")), "task")
+        assertFalse(ledger.setSnapshot(snapshot("old", 30.0, setOf("a")), "task"))
+        assertFalse(ledger.record("task", "late", 999, null, "old"))
+        assertEquals("new", ledger.total("task")?.executionId)
+        assertEquals(100, ledger.total("task")?.usage?.tokens)
+        assertEquals(1, ledger.total("task")?.activityCount)
+    }
+
+    @Test fun work_evidence_requires_matching_root_and_actual_work() {
+        val panel = json("""{"overview":{"execution_id":"run"},"run":{"activity_log":[
+            {"created_at":2000,"metadata":{"event_type":"tool.call.started"}},
+            {"created_at":9000,"metadata":{"event_type":"heartbeat"}},
+            {"created_at":10000,"metadata":{"event_type":"llm.succeeded","provider_attempt_count":0}}]}}""")
+        assertEquals(2000L, TaskRunEvidence.progressAt(panel, "run"))
+        assertNull(TaskRunEvidence.progressAt(panel, "another-run"))
+        assertFalse(TaskRunEvidence.isProgress("metrics.updated"))
+        val event = json("""{"event_type":"AgentEvent","data":{"event":{"event_type":"llm.first_token",
+            "principal":"owner","workspace":"default","timestamp":5000,
+            "payload":{"execution_id":"child","root_execution_id":"run"}}}}""")
+        assertEquals("run", parseTaskRealtimeEvent(event, "owner", "default")?.executionId)
+        assertNull(parseTaskRealtimeEvent(event, "other", "default"))
+        val first = TaskDetailBundle(panel = panel).withTaskProgress()
+        val stale = TaskDetailBundle(panel = json("""{"overview":{"execution_id":"run"}}""")).withTaskProgress(first)
+        assertEquals(2000L, stale.observedProgressAt)
+        assertNull(TaskDetailBundle(panel = json("""{"overview":{"execution_id":"new"}}""")).withTaskProgress(stale).observedProgressAt)
     }
 
     private fun round(value: Double?): Double? = value?.let { Math.round(it * 1e10) / 1e10 }

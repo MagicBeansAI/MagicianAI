@@ -27,8 +27,7 @@ from typing import Any
 import yaml
 import pathlib
 
-# The router's profiles and operation_mapping live in a sibling
-# `llm-router.yaml`; reading the config file alone yields neither.
+# Catalog facts and operation mappings live in the sibling `llm-router.yaml`.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from magician_config_text import read_config_text  # noqa: E402
 
@@ -53,6 +52,22 @@ ACTIVATION_MANIFEST = (
     REPO_ROOT
     / "data/magician_v2/llm_chunking_evals/activation-manifest-v1.yaml"
 )
+# Frozen read-only translation for this historical v1 evidence manifest only.
+# Current runtime config and dispatch do not admit or resolve these old IDs.
+_MANIFEST_V1_ROUTES = {
+    "op-memory-episode-quality-standard": "workload/memory_episode_quality/baseline",
+    "op-memory-utility-review-local-chunked": "operation/memory_temperature_utility_review",
+    "op-memory-episode-quality-local-chunked": "operation/memory_episode_quality_classification",
+    "op-memory-entity-extraction-fast": "operation/voice_context_compaction",
+    "op-memory-entity-extraction-local-chunked": "operation/memory_entity_extraction",
+    "op-memory-evidence-distillation-fast": "operation/screen_evidence_distill",
+    "op-memory-evidence-distillation-local-chunked": "operation/distill_evidence",
+    "op-memory-environment-extraction-fast": "operation/voice_context_compaction",
+    "op-memory-environment-extraction-local-chunked": "operation/memory_environment_knowledge_extraction",
+    "op-memory-archive-summary-fast": "operation/voice_context_compaction",
+    "op-memory-archive-summary-local-chunked": "operation/memory_archive_summary",
+}
+
 PRODUCTION_MODEL = "qwen3.8-ud2-mtp"
 # The qwen-27b-bonsai candidate was retired; evaluate the production model
 # itself by default (it also loads in stock Ollama, unlike the bonsai GGUF).
@@ -62,47 +77,47 @@ SPECS = (
     (
         "memory_temperature_utility_review",
         "memory_utility_review_v1",
-        "op-memory-utility-review-local-chunked",
+        "operation/memory_temperature_utility_review",
         ("memories",),
     ),
     (
         "memory_episode_quality_classification",
         "memory_episode_quality_v1",
-        "op-memory-episode-quality-local-chunked",
+        "operation/memory_episode_quality_classification",
         ("episode_signals",),
     ),
     (
         "memory_entity_extraction",
         "memory_entities_v1",
-        "op-memory-entity-extraction-local-chunked",
+        "operation/memory_entity_extraction",
         ("entities",),
     ),
     (
         "distill_evidence",
         "evidence_distill_v1",
-        "op-memory-evidence-distillation-local-chunked",
+        "operation/distill_evidence",
         ("proposals",),
     ),
     (
         "memory_environment_knowledge_extraction",
         "memory_environment_v1",
-        "op-memory-environment-extraction-local-chunked",
+        "operation/memory_environment_knowledge_extraction",
         ("environments",),
     ),
     (
         "memory_archive_summary",
         "memory_archive_v1",
-        "op-memory-archive-summary-local-chunked",
+        "operation/memory_archive_summary",
         ("archive_entries", "total_episodes_archived"),
     ),
 )
 BASELINE_PROFILES = {
-    "memory_temperature_utility_review": "op-memory-episode-quality-standard",
-    "memory_episode_quality_classification": "op-memory-episode-quality-standard",
-    "memory_entity_extraction": "op-memory-entity-extraction-fast",
-    "distill_evidence": "op-memory-evidence-distillation-fast",
-    "memory_environment_knowledge_extraction": "op-memory-environment-extraction-fast",
-    "memory_archive_summary": "op-memory-archive-summary-fast",
+    "memory_temperature_utility_review": "workload/memory_episode_quality/baseline",
+    "memory_episode_quality_classification": "workload/memory_episode_quality/baseline",
+    "memory_entity_extraction": "operation/voice_context_compaction",
+    "distill_evidence": "operation/screen_evidence_distill",
+    "memory_environment_knowledge_extraction": "operation/voice_context_compaction",
+    "memory_archive_summary": "operation/voice_context_compaction",
 }
 
 
@@ -284,13 +299,27 @@ def router(config_path: Path) -> dict[str, Any]:
 def materialize_eval_config(
     source: Path, output_dir: Path, local_model: str
 ) -> tuple[Path, list[Path]]:
-    payload = yaml.safe_load(read_config_text(source))
-    profiles = payload["llm"]["router"]["profiles"]
+    profiles = router(source)["profiles"]
+    payload = yaml.safe_load(read_config_text(source, expand_catalog=False))
+    catalog = payload["llm"]["router"]["catalog"]
+    models = catalog["models"]
+    assignments = catalog["assignments"]
+    candidates = {}
     for _operation, _adapter, profile_name, _keys in SPECS:
         profile = profiles.get(profile_name)
         if not profile:
             raise SystemExit(f"{source}: missing candidate profile {profile_name}")
-        profile["model"] = local_model
+        assignment = assignments.get(profile_name)
+        if not assignment or profile.get("provider") != "ollama":
+            raise SystemExit(f"{source}: candidate must be an Ollama assignment: {profile_name}")
+        original = assignment["model"]
+        if original not in candidates:
+            candidate = original + "-eval"
+            if candidate in models:
+                raise SystemExit(f"{source}: candidate model ID already exists: {candidate}")
+            models[candidate] = {**copy.deepcopy(models[original]), "model": local_model}
+            candidates[original] = candidate
+        assignment["model"] = candidates[original]
 
     # A candidate model name can temporarily add a third unique local model to
     # the config (candidate + production generation + embedding). The focused
@@ -400,11 +429,11 @@ def validate_config_surfaces(primary: Path, local_model: str) -> dict[str, Any]:
             errors.append(f"activation manifest: missing {operation}")
             continue
         baseline = BASELINE_PROFILES[operation]
-        if entry.get("candidate_profile") != candidate:
+        if _MANIFEST_V1_ROUTES.get(entry.get("candidate_profile")) != candidate:
             errors.append(f"activation manifest: wrong candidate for {operation}")
-        if entry.get("baseline_profile") != baseline or entry.get("rollback_profile") != baseline:
+        if _MANIFEST_V1_ROUTES.get(entry.get("baseline_profile")) != baseline or _MANIFEST_V1_ROUTES.get(entry.get("rollback_profile")) != baseline:
             errors.append(f"activation manifest: wrong baseline/rollback for {operation}")
-        if entry.get("configured_profile") != candidate:
+        if _MANIFEST_V1_ROUTES.get(entry.get("configured_profile")) != candidate:
             errors.append(f"activation manifest: wrong configured profile for {operation}")
     if manifest.get("status") != "phase7_live_eval_passed_canary_pending":
         errors.append("activation manifest does not describe the verified Phase 7 shadow state")

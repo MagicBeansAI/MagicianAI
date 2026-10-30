@@ -14,51 +14,26 @@ EOF
 }
 
 run_command_status() {
-  local mode
-  mode="$(python3 - "$CONFIG_PATH" <<'PY'
-import re
+  python3 - "$CONFIG_PATH" <<'PY'
 import sys
 from pathlib import Path
+import yaml
 
-text = Path(sys.argv[1]).read_text()
-match = re.search(
-    r"(?m)^privacy:\n  processing:\n    mode:\s*(local|cloud)(?:\s+#.*)?$",
-    text,
-)
-if match is None:
+path = Path(sys.argv[1])
+root = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+mode = root.get('privacy', {}).get('processing', {}).get('mode')
+if mode not in {'local', 'cloud'}:
     raise SystemExit("privacy.processing.mode is missing or invalid")
-print(match.group(1))
+processing = root.get('app_platform', {}).get('processing', {})
+print(f'processing-locality settings in {path}')
+print(f'  privacy.processing.mode: {mode}')
+print(f'  derived app_platform.processing.remote_processing_enabled: {str(mode == "cloud").lower()}')
+for key in ['local_profile', 'remote_profile']:
+    route = processing.get(key, '')
+    present = 'present' if route in processing.get('profiles', {}) else 'missing'
+    print(f'  {key}: {route}')
+    print(f'  processing binding {route}: {present}')
 PY
-)"
-  printf 'processing-locality settings in %s\n' "$CONFIG_PATH"
-  printf '  privacy.processing.mode: %s\n' "$mode"
-  if [[ "$mode" == "cloud" ]]; then
-    printf '  derived app_platform.processing.remote_processing_enabled: true\n'
-  else
-    printf '  derived app_platform.processing.remote_processing_enabled: false\n'
-  fi
-  printf '  local_profile: %s\n' "$(rg -m1 '^[[:space:]]+local_profile:' "$CONFIG_PATH" | awk -F': ' '{print $2}' || true)"
-  printf '  remote_profile: %s\n' "$(rg -m1 '^[[:space:]]+remote_profile:' "$CONFIG_PATH" | awk -F': ' '{print $2}' || true)"
-  # Profiles live in the sibling `llm-router.yaml`, not the config, so look
-  # there when it exists and fall back to the config for a pre-split or
-  # self-contained one.
-  TABLES_PATH="$(dirname "$CONFIG_PATH")/llm-router.yaml"
-  PROFILE_SOURCE="$CONFIG_PATH"
-  if [[ -f "$TABLES_PATH" ]]; then
-    PROFILE_SOURCE="$TABLES_PATH"
-  fi
-  printf '  profiles op-app-workflow-local: '
-  if rg -q '^[[:space:]]{6}op-app-workflow-local:' "$PROFILE_SOURCE"; then
-    echo present
-  else
-    echo missing
-  fi
-  printf '  profiles op-app-workflow-remote: '
-  if rg -q '^[[:space:]]{6}op-app-workflow-remote:' "$PROFILE_SOURCE"; then
-    echo present
-  else
-    echo missing
-  fi
 }
 
 set_processing_mode() {
@@ -68,22 +43,16 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+import yaml
 
 config_path = Path(sys.argv[1])
 mode = sys.argv[2]
-local_profile = "op-app-workflow-local"
-remote_profile = "op-app-workflow-remote"
-
 text = config_path.read_text()
-
-if f"{'    '}local_profile: {local_profile}" not in text:
-    raise SystemExit("local profile key missing in app_platform.processing")
-
-if f"{'    '}remote_profile: {remote_profile}" not in text:
-    raise SystemExit("remote profile key missing in app_platform.processing")
-
-if f"{'      '}{remote_profile}:" not in text:
-    raise SystemExit("remote profile block missing under app_platform.processing.profiles")
+root = yaml.load(text, Loader=yaml.BaseLoader)
+processing = root.get('app_platform', {}).get('processing', {})
+for key in ['local_profile', 'remote_profile']:
+    if not processing.get(key) or processing[key] not in processing.get('profiles', {}):
+        raise SystemExit(f'{key} must name an app_platform.processing binding')
 
 pattern = re.compile(
     r"(?m)^(privacy:\n  processing:\n    mode:\s*)(local|cloud)(\s*(?:#.*)?)$"

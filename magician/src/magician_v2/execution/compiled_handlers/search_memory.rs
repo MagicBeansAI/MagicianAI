@@ -132,6 +132,7 @@ pub async fn search_memory_recall(
     public_meeting_id: Option<&str>,
     surface_untrusted: bool,
 ) -> Value {
+    let recall_started = std::time::Instant::now();
     let limit = limit.clamp(1, 50);
 
     let definition = match definition_store
@@ -178,6 +179,8 @@ pub async fn search_memory_recall(
         retrieval_scope.clone()
     };
 
+    let setup_ms = recall_started.elapsed().as_secs_f64() * 1_000.0;
+    let rank_started = std::time::Instant::now();
     let (ranked, meta) = rank_memory_candidates_hybrid(
         Some(definition_store),
         &principal,
@@ -191,27 +194,58 @@ pub async fn search_memory_recall(
         &rank_scope,
     )
     .await;
+    let rank_ms = rank_started.elapsed().as_secs_f64() * 1_000.0;
+    let overlay_started = std::time::Instant::now();
     let ranked_candidates = ranked
         .iter()
         .map(|ranked| ranked.candidate.clone())
         .collect::<Vec<_>>();
-    let temperature_overlay =
-        match sync_memory_temperature_overlay(memory_service.storage(), &ranked_candidates).await {
-            Ok(overlay) => Some(overlay),
-            Err(error) => {
-                tracing::warn!(
-                    agent_id = %agent_id,
-                    error = %error,
-                    "failed to sync search_memory temperature overlay"
-                );
-                None
-            },
-        };
+    let loaded =
+        magician_vector_index::memory_temperature::load_memory_temperature_overlay_snapshot(
+            memory_service.storage(),
+        )
+        .await;
+    let reusable = !record_retrieval
+        && loaded.as_ref().is_ok_and(|overlay| {
+            magician_vector_index::memory_temperature::memory_temperature_overlay_is_prompt_current(
+                overlay,
+                &ranked_candidates,
+            )
+        });
+    let overlay = if reusable {
+        loaded
+    } else {
+        sync_memory_temperature_overlay(memory_service.storage(), &ranked_candidates)
+            .await
+            .map(Arc::new)
+    };
+    let temperature_overlay = match overlay {
+        Ok(overlay) => Some(overlay),
+        Err(error) => {
+            tracing::warn!(
+                agent_id = %agent_id,
+                error = %error,
+                "failed to sync search_memory temperature overlay"
+            );
+            None
+        },
+    };
+    let effective_tiers = temperature_overlay
+        .as_ref()
+        .filter(|_| !record_retrieval)
+        .map(|overlay| {
+            magician_vector_index::memory_temperature::memory_temperature_tiers_for_prompt_snapshot(
+                overlay,
+                chrono::Utc::now(),
+            )
+        });
+    let overlay_ms = overlay_started.elapsed().as_secs_f64() * 1_000.0;
+    let projection_started = std::time::Instant::now();
     let live_app_memory = memory_service
         .app_memory_prompt_eligibility(
             ranked_candidates
                 .iter()
-                .map(|candidate| candidate.metadata_json.clone()),
+                .map(|candidate| &candidate.metadata_json),
             chrono::Utc::now(),
         )
         .await;
@@ -374,8 +408,7 @@ pub async fn search_memory_recall(
 
     let final_app_memory = memory_service
         .app_memory_prompt_eligibility(
-            top.iter()
-                .map(|ranked| ranked.candidate.metadata_json.clone()),
+            top.iter().map(|ranked| &ranked.candidate.metadata_json),
             chrono::Utc::now(),
         )
         .await;
@@ -410,14 +443,17 @@ pub async fn search_memory_recall(
             } else {
                 "tier_field"
             };
-            let temperature_tier = temperature_overlay
+            let temperature_key = memory_temperature_candidate_key(&candidate);
+            let temperature_tier = effective_tiers.as_ref()
+                .and_then(|tiers| tiers.get(&temperature_key).copied())
+                .or_else(|| temperature_overlay
                 .as_ref()
                 .and_then(|overlay| {
                     overlay
                         .entries
-                        .get(&memory_temperature_candidate_key(&candidate))
+                        .get(&temperature_key)
                         .map(|entry| entry.temperature_tier)
-                })
+                }))
                 .unwrap_or_else(|| default_temperature_tier(candidate.semantic_memory_type));
             let passage = meta.passages.get(
                 &magician_vector_index::memory_index::memory_candidate_index_score_key(&candidate));
@@ -496,6 +532,10 @@ pub async fn search_memory_recall(
             obj.insert("fallback_reason".to_string(), Value::String(reason));
         }
     }
+    tracing::info!(target: "memory_index", setup_ms, rank_ms, overlay_ms,
+        result_processing_ms = projection_started.elapsed().as_secs_f64() * 1_000.0,
+        total_ms = recall_started.elapsed().as_secs_f64() * 1_000.0,
+        record_retrieval, "Memory recall result processing timing");
     response
 }
 

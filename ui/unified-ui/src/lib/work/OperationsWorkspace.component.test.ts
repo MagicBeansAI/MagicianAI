@@ -26,8 +26,8 @@ function backend(first?: Promise<Response>) {
 
 it('dispatches the five existing goals in their reviewed order', async () => {
 	const writes = backend(); render(OperationsWorkspace);
-	await waitFor(() => expect(screen.getByRole('button', { name: 'Run Company Loop' })).toBeEnabled());
-	await fireEvent.click(screen.getByRole('button', { name: 'Run Company Loop' }));
+	await waitFor(() => expect(screen.getByRole('button', { name: 'Start team sequence' })).toBeEnabled());
+	await fireEvent.click(screen.getByRole('button', { name: 'Start team sequence' }));
 	await waitFor(() => expect(writes).toHaveLength(5));
 	expect(writes.map(write => write.body.goal_id)).toEqual([
 		'harness:cmo:content-calendar', 'harness:cro:weekly-gtm-review', 'harness:cpo:backlog-grooming',
@@ -40,8 +40,8 @@ it.each(['workspace', 'credential', 'unmount'])('stops later stages after %s cha
 	let release!: (response: Response) => void;
 	const first = new Promise<Response>(resolve => { release = resolve; });
 	const writes = backend(first); const view = render(OperationsWorkspace);
-	await waitFor(() => expect(screen.getByRole('button', { name: 'Run Company Loop' })).toBeEnabled());
-	await fireEvent.click(screen.getByRole('button', { name: 'Run Company Loop' }));
+	await waitFor(() => expect(screen.getByRole('button', { name: 'Start team sequence' })).toBeEnabled());
+	await fireEvent.click(screen.getByRole('button', { name: 'Start team sequence' }));
 	await waitFor(() => expect(writes).toHaveLength(1));
 	if (change === 'workspace') scopeIdentityStore.observe('other-owner', 'second');
 	else if (change === 'credential') setCurrentScopeBearerToken('rotated-test-credential');
@@ -50,5 +50,5 @@ it.each(['workspace', 'credential', 'unmount'])('stops later stages after %s cha
 	await new Promise(resolve => setTimeout(resolve, 30));
 	expect(writes).toHaveLength(1);
 	expect(screen.queryByText('Started execution old-scope-result')).not.toBeInTheDocument();
-	if (change === 'credential') expect(screen.getByRole('button', { name: 'Run Company Loop' })).toBeEnabled(); // A fresh scoped read completed; the old sequence still dispatched only once.
+	if (change === 'credential') expect(screen.getByRole('button', { name: 'Start team sequence' })).toBeEnabled(); // A fresh scoped read completed; the old sequence still dispatched only once.
 });

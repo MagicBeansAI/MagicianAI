@@ -3,6 +3,7 @@ package ai.magicbeans.magdroid.tasks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -12,9 +13,16 @@ import org.junit.Test
  * `TaskParityContractTest`.
  */
 class TaskVerdictTest {
-    private fun base(status: String, queuedFor: QueuedReason? = null) = TaskVerdictInput(
+    private fun base(
+        status: String,
+        queuedFor: QueuedReason? = null,
+        synthesisPending: Boolean = false,
+        attention: TaskAttention? = null,
+    ) = TaskVerdictInput(
         status = status,
         queuedFor = queuedFor,
+        synthesisPending = synthesisPending,
+        attention = attention,
         currentStep = 4,
         totalSteps = 7,
         currentStepLabel = "Draft the brief",
@@ -90,5 +98,48 @@ class TaskVerdictTest {
         assertEquals("Plan approved, not started yet", ready.detail)
         assertEquals("Not started yet", TaskVerdict.deriveForTaskStatus(base("pending")).detail)
         assertEquals(TaskVerdictState.Finished, TaskVerdict.deriveForTaskStatus(base("completed")).state)
+    }
+
+    @Test fun synthesis_pending_on_a_completed_task_reads_as_finalizing() {
+        val v = TaskVerdict.deriveForTaskStatus(base("completed", synthesisPending = true))
+        assertEquals(TaskVerdictState.Finalizing, v.state)
+        assertEquals("Preparing final result", v.headline)
+        assertEquals(TaskVerdictSeverity.Progress, v.severity)
+    }
+
+    @Test fun synthesis_pending_never_hides_a_failure_a_cancel_or_an_open_ask() {
+        assertEquals(TaskVerdictState.Failed, TaskVerdict.deriveForTaskStatus(base("failed", synthesisPending = true)).state)
+        assertEquals(TaskVerdictState.Cancelled, TaskVerdict.deriveForTaskStatus(base("cancelled", synthesisPending = true)).state)
+        assertEquals(
+            TaskVerdictState.Waiting,
+            TaskVerdict.deriveForTaskStatus(
+                base("completed", synthesisPending = true, attention = TaskAttention(TaskAttentionSource.Approval)),
+            ).state,
+        )
+        assertEquals(TaskVerdictState.Running, TaskVerdict.deriveForTaskStatus(base("running", synthesisPending = true)).state)
+    }
+
+    @Test fun without_the_flag_a_completed_task_still_finishes() {
+        val v = TaskVerdict.deriveForTaskStatus(base("completed", synthesisPending = false))
+        assertEquals(TaskVerdictState.Finished, v.state)
+        assertEquals("Finished · 3m 12s", v.headline)
+    }
+
+    @Test fun finalizing_leads_with_the_output_act() {
+        val all = listOf(TaskDetailAct.Plan, TaskDetailAct.Run, TaskDetailAct.Output)
+        assertEquals(TaskDetailAct.Output, TaskVerdict.defaultOpenAct(TaskVerdictState.Finalizing, all, null))
+        assertEquals(
+            listOf(TaskDetailAct.Output, TaskDetailAct.Plan, TaskDetailAct.Run),
+            TaskActs.actOrder(TaskVerdictState.Finalizing, all),
+        )
+    }
+
+    @Test fun the_wait_goes_stale_only_after_ten_minutes() {
+        val start = 1_000_000L
+        assertFalse(SynthesisWait.isStale(start, start))
+        assertFalse(SynthesisWait.isStale(start, start + 600_000L))
+        assertTrue(SynthesisWait.isStale(start, start + 600_001L))
+        // A device clock behind the server's instant is not stale.
+        assertFalse(SynthesisWait.isStale(start, start - 30_000L))
     }
 }

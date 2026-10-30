@@ -308,8 +308,8 @@ impl FeedStore {
             }
             result
         })
-            .await
-            .with_context(|| format!("feed {label} task panicked"))?
+        .await
+        .with_context(|| format!("feed {label} task panicked"))?
     }
 
     pub async fn materialize_scope(&self, principal: &str, workspace: &str) -> Result<()> {
@@ -1245,6 +1245,31 @@ impl FeedStore {
         recovery_cutoff: Option<i64>,
         items: Vec<FeedItem>,
     ) -> Result<AttentionProjectionReconcile> {
+        self.reconcile_attention_projection_routed(
+            principal,
+            workspace,
+            projection_source,
+            projection_group,
+            source_generation,
+            recovery_cutoff,
+            items.into_iter().map(|item| (lane, item)).collect(),
+        )
+        .await
+    }
+
+    /// [`Self::reconcile_attention_projection`] with a lane per item: one
+    /// task's asks can be a question, an approval gate, an escalation and a
+    /// failure at once. The group, not the lane, owns which rows are stale.
+    pub async fn reconcile_attention_projection_routed(
+        &self,
+        principal: &str,
+        workspace: &str,
+        projection_source: &str,
+        projection_group: &str,
+        source_generation: i64,
+        recovery_cutoff: Option<i64>,
+        items: Vec<(FeedAttentionLane, FeedItem)>,
+    ) -> Result<AttentionProjectionReconcile> {
         let store = self.clone();
         let principal = principal.to_string();
         let workspace = workspace.to_string();
@@ -1255,7 +1280,7 @@ impl FeedStore {
             workspace.clone(),
             "reconcile_attention_projection",
             move || {
-                for item in &items {
+                for (_, item) in &items {
                     if item.principal != principal || item.workspace != workspace {
                         anyhow::bail!(
                             "attention projection item scope does not match reconciliation scope"
@@ -1264,17 +1289,17 @@ impl FeedStore {
                 }
                 let prepared = items
                     .into_iter()
-                    .map(|item| {
+                    .map(|(lane, item)| {
                         let actions_json = serde_json::to_string(&item.actions)
                             .context("serializing attention projection actions")?;
                         let metadata_json = serde_json::to_string(&item.metadata)
                             .context("serializing attention projection metadata")?;
-                        Ok((item, actions_json, metadata_json))
+                        Ok((lane, item, actions_json, metadata_json))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let active_ids = prepared
                     .iter()
-                    .map(|(item, _, _)| item.id.clone())
+                    .map(|(_, item, _, _)| item.id.clone())
                     .collect::<HashSet<_>>();
                 let inner = store.scope_inner(&principal, &workspace)?;
                 let _write_guard = inner.acquire_write_guard()?;
@@ -1331,7 +1356,7 @@ impl FeedStore {
                         ids
                     };
 
-                    for (item, actions_json, metadata_json) in &prepared {
+                    for (lane, item, actions_json, metadata_json) in &prepared {
                         conn.execute(
                             "INSERT INTO feed_attention_items (
                             principal, workspace, id, lane, projection_source, projection_group,
@@ -2068,8 +2093,10 @@ fn attention_lane_filter(
         DuckValue::Text(query.workspace.clone()),
         DuckValue::Text(query.lane.as_db_str().to_string()),
     ];
+    // A failure leaves Attention after its lifespan; an open ask listed
+    // under Failed (a service outage, lost access) stays until it resolves.
     if let Some(since) = failed_since_ms.filter(|_| query.lane == FeedAttentionLane::Failed) {
-        sql.push_str(" AND item.updated_at >= ?");
+        sql.push_str(" AND (item.status <> 'failed' OR item.updated_at >= ?)");
         values.push(DuckValue::BigInt(since));
     }
     if let Some(ui_thread_id) = query.ui_thread_id.as_ref() {
@@ -2222,6 +2249,15 @@ fn attention_lane_from_parts(
 ) -> Option<FeedAttentionLane> {
     match (item_type, status) {
         ("approval", "needs_action") => Some(FeedAttentionLane::Approvals),
+        // A monitor that lost access is broken, not stuck on a decision.
+        ("escalation", "needs_action")
+            if metadata
+                .get("attention_kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("monitor_access_problem") =>
+        {
+            Some(FeedAttentionLane::Failed)
+        },
         ("escalation", "needs_action") => Some(FeedAttentionLane::Escalations),
         ("task" | "approval" | "escalation", "failed") => Some(FeedAttentionLane::Failed),
         ("task", "running") if feed_task_is_currently_active(metadata) => {
@@ -2230,6 +2266,52 @@ fn attention_lane_from_parts(
         ("approval" | "escalation", "running") => Some(FeedAttentionLane::Running),
         _ => None,
     }
+}
+
+/// The Attention lane of an ask by what its HITL source asks for: approve or
+/// deny a gate, help a stuck agent, notice something broken, or answer.
+pub fn attention_lane_for_hitl_source(source: &str) -> FeedAttentionLane {
+    match source {
+        "approval" | "plan_approval" | "diff_approval" => FeedAttentionLane::Approvals,
+        "escalation" => FeedAttentionLane::Escalations,
+        "service_health" => FeedAttentionLane::Failed,
+        _ => FeedAttentionLane::Requests,
+    }
+}
+
+/// The Attention lane of one projected ask, task-bound or taskless. Shared by
+/// every writer so web, iOS and Android list the same row in the same lane.
+pub fn attention_lane_for_ask(item: &FeedItem) -> FeedAttentionLane {
+    let text = |key: &str| item.metadata.get(key).and_then(serde_json::Value::as_str);
+    if item.status == FeedItemStatus::Failed {
+        return FeedAttentionLane::Failed;
+    }
+    match text("attention_kind") {
+        Some("waiting_for_confirmation") => return FeedAttentionLane::Approvals,
+        Some("max_iterations_reached" | "waiting_without_question") => {
+            return FeedAttentionLane::Escalations;
+        },
+        _ => {},
+    }
+    let schema = |key: &str| {
+        item.metadata
+            .get("input_schema")
+            .and_then(|schema| schema.get(key))
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+    };
+    if matches!(schema("pause_kind"), Some("budget" | "max_iterations")) {
+        return FeedAttentionLane::Escalations;
+    }
+    match text("input_type") {
+        Some("diff_approval") => return FeedAttentionLane::Approvals,
+        // A confirmation naming the action it gates is an approval.
+        Some("confirmation") if schema("action_type").is_some() => {
+            return FeedAttentionLane::Approvals;
+        },
+        _ => {},
+    }
+    text("source").map_or(FeedAttentionLane::Requests, attention_lane_for_hitl_source)
 }
 
 fn feed_task_is_currently_active(metadata: &serde_json::Value) -> bool {
@@ -2798,6 +2880,108 @@ mod tests {
         assert_eq!(recent.total, 1);
     }
 
+    #[test]
+    fn each_ask_lands_in_the_lane_of_what_it_asks_for() {
+        let ask = |status: FeedItemStatus, metadata: serde_json::Value| {
+            let mut item = sample_item("alpha", "prod", "ask", 1);
+            item.status = status;
+            item.metadata = metadata;
+            attention_lane_for_ask(&item)
+        };
+        let open = FeedItemStatus::NeedsAction;
+        use FeedAttentionLane::*;
+        for (metadata, lane) in [
+            (
+                serde_json::json!({"attention_kind":"input.requested"}),
+                Requests,
+            ),
+            (serde_json::json!({"source":"clarification"}), Requests),
+            (serde_json::json!({"source":"bot_auth"}), Requests),
+            (serde_json::json!({"source":"service_health"}), Failed),
+            (serde_json::json!({"source":"plan_approval"}), Approvals),
+            (serde_json::json!({"input_type":"diff_approval"}), Approvals),
+            (
+                serde_json::json!({"attention_kind":"waiting_for_confirmation"}),
+                Approvals,
+            ),
+            (
+                serde_json::json!({"input_type":"confirmation","input_schema":{"action_type":"send_email"}}),
+                Approvals,
+            ),
+            (
+                serde_json::json!({"attention_kind":"max_iterations_reached"}),
+                Escalations,
+            ),
+            (
+                serde_json::json!({"source":"agentic","input_schema":{"pause_kind":"budget"}}),
+                Escalations,
+            ),
+        ] {
+            assert_eq!(ask(open.clone(), metadata.clone()), lane, "{metadata}");
+        }
+        assert_eq!(
+            ask(
+                FeedItemStatus::Failed,
+                serde_json::json!({"attention_kind":"agent.cycle.failed"})
+            ),
+            Failed
+        );
+        assert_eq!(
+            attention_lane_from_parts(
+                "escalation",
+                "needs_action",
+                &serde_json::json!({"attention_kind":"monitor_access_problem"})
+            ),
+            Some(Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_ask_under_failed_stays_until_it_resolves() {
+        let tmp = TempDir::new().unwrap();
+        let store = FeedStore::open(tmp.path()).unwrap();
+        let mut outage = sample_item("alpha", "prod", "runtime:hitl:service_health:x", 1_000);
+        outage.item_type = FeedItemType::Escalation;
+        outage.status = FeedItemStatus::NeedsAction;
+        outage.metadata = serde_json::json!({"source":"service_health"});
+        let mut failure = sample_item("alpha", "prod", "v3:attention:failed", 1_000);
+        failure.item_type = FeedItemType::Task;
+        failure.status = FeedItemStatus::Failed;
+        store
+            .reconcile_attention_projection_routed(
+                "alpha",
+                "prod",
+                "test",
+                "group",
+                1,
+                None,
+                vec![
+                    (attention_lane_for_ask(&outage), outage),
+                    (attention_lane_for_ask(&failure), failure),
+                ],
+            )
+            .await
+            .unwrap();
+        let page = store
+            .list_attention_lane_page_since(
+                FeedAttentionPageQuery {
+                    principal: "alpha".to_string(),
+                    workspace: "prod".to_string(),
+                    lane: FeedAttentionLane::Failed,
+                    ui_thread_id: None,
+                    cursor: None,
+                    offset: 0,
+                    limit: 10,
+                    exclude_task_ids: Vec::new(),
+                },
+                Some(5_000),
+            )
+            .await
+            .unwrap();
+        let ids: Vec<&str> = page.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["runtime:hitl:service_health:x"]);
+    }
+
     #[tokio::test]
     async fn old_failure_rows_and_their_dismissals_are_pruned() {
         let tmp = TempDir::new().unwrap();
@@ -2821,7 +3005,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(store.prune_failed_items("alpha", "prod", 5_000).await.unwrap(), 1);
+        assert_eq!(
+            store
+                .prune_failed_items("alpha", "prod", 5_000)
+                .await
+                .unwrap(),
+            1
+        );
         let remaining: Vec<String> = store
             .list_items(FeedQuery {
                 principal: "alpha".to_string(),
@@ -2835,10 +3025,19 @@ mod tests {
             .map(|item| item.id)
             .collect();
         assert!(remaining.contains(&"task:new".to_string()));
-        assert!(remaining.contains(&"task:done".to_string()), "only failures are pruned");
+        assert!(
+            remaining.contains(&"task:done".to_string()),
+            "only failures are pruned"
+        );
         assert!(!remaining.contains(&"task:old".to_string()));
         // Pruning again finds nothing.
-        assert_eq!(store.prune_failed_items("alpha", "prod", 5_000).await.unwrap(), 0);
+        assert_eq!(
+            store
+                .prune_failed_items("alpha", "prod", 5_000)
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

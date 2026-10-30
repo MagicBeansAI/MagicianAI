@@ -56,13 +56,15 @@ internal data class MachineProfile(
 
 /**
  * A paired machine as Settings may show it: no credential leaves the store.
- * [machineName] is the name the machine gave at pairing, when it gave one.
+ * [machineName] is the name the machine gave at pairing, when it gave one;
+ * [workspace] is the workspace this phone is signed in to there.
  */
 data class PairedMachine(
     val origin: String,
     val hostLabel: String,
     val active: Boolean,
     val machineName: String? = null,
+    val workspace: String = "",
 )
 
 /** A machine name as stored and compared: trimmed, or null when blank. */
@@ -102,6 +104,7 @@ internal data class MachineProfileBook(
             hostLabel = profile.hostLabel,
             active = origin == activeOrigin,
             machineName = normalizedMachineName(profile.machineName),
+            workspace = profile.workspace.trim(),
         )
     }
 

@@ -248,11 +248,11 @@ impl ResearchBoundary {
             CollectedReadClaim::Reserved => {},
         }
         let fetcher = PublicHttpFetcher::new(self.policy.fetch_policy()?)?;
-        let remaining = (self.deadline - Utc::now()).to_std().unwrap_or_default();
         let conditional_request = ConditionalHttpRequest::default();
         let fetched = tokio::select! {
             _ = self.cancel.cancelled() => return Err(anyhow::anyhow!("public read cancelled; reservation retained")),
-            fetched = tokio::time::timeout(remaining, fetcher.fetch(&url, &conditional_request)) => fetched.context("public read deadline reached")?,
+            _ = magician_relentless::controller::wait_for_deadline(self.deadline) => return Err(anyhow::anyhow!("public read deadline reached")),
+            fetched = fetcher.fetch(&url, &conditional_request) => fetched,
         };
         let (result, source) = match fetched {
             Ok(PublicHttpFetch::Modified {

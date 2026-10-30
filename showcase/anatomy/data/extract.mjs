@@ -9,9 +9,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..", "..");
 
 const meta = JSON.parse(
-  execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], {
+  execFileSync("make", ["--no-print-directory", "-s", "cargo", "ARGS=metadata --no-deps --format-version 1"], {
     cwd: ROOT,
-    env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(ROOT, "target") },
     maxBuffer: 64 << 20,
   }).toString(),
 );

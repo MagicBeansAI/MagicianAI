@@ -442,3 +442,56 @@ async fn chat_decision_rail_preserves_native_provider_state_for_an_unchanged_sin
     rail.resolve_native(&mut response, &cancel).await.unwrap();
     assert_eq!(response.provider_state, original);
 }
+
+/// Only the newest tool result's image can describe the screen: a later
+/// click, or a new user message, means it may be stale.
+#[test]
+fn only_the_newest_tool_result_names_a_screenshot() {
+    use super::super::models::PromptImageRef;
+    let shot = ChatLlmTranscriptEntry::ToolResultRich {
+        tool_call_id: "shot".into(),
+        tool_name: Some("browser_screenshot".into()),
+        content: vec![TranscriptBlock::ImageFile {
+            image: PromptImageRef {
+                stored_name: "shot.png".into(),
+                mime_type: "image/png".into(),
+                label: None,
+            },
+        }],
+    };
+    let call = |id: &str| ChatLlmTranscriptEntry::AssistantTurn {
+        text: None,
+        tool_calls: vec![StoredToolCall {
+            id: id.into(),
+            name: "browser_click".into(),
+            arguments: json!({}),
+        }],
+        provider_state: None,
+    };
+    let click = ChatLlmTranscriptEntry::ToolResult {
+        tool_call_id: "click".into(),
+        tool_name: Some("browser_click".into()),
+        content: "clicked".into(),
+    };
+
+    let history = vec![call("shot"), shot.clone()];
+    let (id, image) = latest_tool_result(&history).expect("a tool result");
+    assert_eq!(id, "shot");
+    assert_eq!(
+        image.map(|image| image.stored_name.as_str()),
+        Some("shot.png")
+    );
+
+    // A projected result names its call; its image is looked up by that id.
+    let history = vec![call("shot"), shot.clone(), call("click"), click];
+    assert_eq!(latest_tool_result(&history), Some(("click", None)));
+
+    let history = vec![
+        call("shot"),
+        shot,
+        ChatLlmTranscriptEntry::UserText {
+            text: "now sign up".into(),
+        },
+    ];
+    assert!(latest_tool_result(&history).is_none());
+}

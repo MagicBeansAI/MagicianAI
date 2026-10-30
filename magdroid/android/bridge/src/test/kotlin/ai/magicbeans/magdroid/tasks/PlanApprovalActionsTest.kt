@@ -130,11 +130,13 @@ class PlanApprovalActionsTest {
     }
 
     /** Android extra: how the app's HTTP client reads a respond answer (iOS `LivePlanApprovalClient`). */
-    @Test fun a_respond_answer_is_ok_unless_refused_and_already_resolved_counts_as_ok() {
+    @Test fun an_already_answered_approval_cannot_authorize_a_new_run() {
         assertEquals(PlanApprovalPost.Ok, PlanApprovalActions.respondOutcome(200, planObj("accepted" to true)))
+        assertTrue(PlanApprovalActions.respondOutcome(200, null) is PlanApprovalPost.Failed)
+        assertTrue(PlanApprovalActions.respondOutcome(200, planObj()) is PlanApprovalPost.Failed)
         assertEquals(PlanApprovalPost.Failed("Paused elsewhere"),
             PlanApprovalActions.respondOutcome(200, planObj("resumed" to false, "message" to "Paused elsewhere")))
-        assertEquals(PlanApprovalPost.Ok, PlanApprovalActions.respondOutcome(409, planObj("reason" to "already_resolved")))
+        assertTrue(PlanApprovalActions.respondOutcome(409, planObj("reason" to "already_resolved")) is PlanApprovalPost.Failed)
         assertEquals(PlanApprovalPost.Failed("The answer failed (HTTP 500)."), PlanApprovalActions.respondOutcome(500, null))
     }
 

@@ -16,145 +16,88 @@
         <span id="status-caret" aria-hidden="true">▸</span>
     </div>
     <div id="status-details"></div>
+    <div id="bridge-prompts" hidden></div>
 
     <div class="panel-tabs">
         <button class="panel-tab active" data-panel-tab="control" type="button">Control</button>
-        <button class="panel-tab" data-panel-tab="settings" type="button">Settings</button>
         <button class="panel-tab" data-panel-tab="live" type="button">Live</button>
+        <button class="panel-tab" data-panel-tab="status" type="button">Status</button>
+        <button class="panel-tab" data-panel-tab="settings" type="button">Settings</button>
     </div>
 
     <div class="panel-view active" data-panel-view="control">
-        <div class="automation-box">
-            <textarea id="automation-input" placeholder="Describe what you want to get done..."></textarea>
-            <div class="automation-meta">
-                <label>
+        <div class="control-feed-container" id="control-feed-container">
+            <div id="idle-status" class="feed-empty-state">
+                <div class="feed-empty-icon">🪄</div>
+                <div class="feed-empty-title">Ready to Automate</div>
+                <div class="feed-empty-desc">Describe a task below or click a suggestion to start automating in this browser.</div>
+                <div class="feed-suggestions">
+                    <button type="button" class="suggestion-chip" data-prompt="Summarize the main content and takeaways of this page">Summarize page</button>
+                    <button type="button" class="suggestion-chip" data-prompt="Extract key data, contacts, and links from this page">Extract info</button>
+                    <button type="button" class="suggestion-chip" data-prompt="Check all interactive forms and inputs on this page">Audit forms</button>
+                </div>
+            </div>
+
+            <div class="decisions-header" id="decisions-title" style="display: none;">
+                <span class="decisions-header-title">Live Steps & Activity</span>
+            </div>
+            <div id="recent-decisions" class="chat-steps-stream"></div>
+
+            <div id="current-action" class="current-action-card">
+                <div class="action-name">
+                    <div class="spinner"></div>
+                    <span id="current-action-name"></span>
+                </div>
+                <div class="action-details" id="current-action-details"></div>
+            </div>
+        </div>
+
+        <div class="control-bottom-composer">
+            <div class="automation-context-banner" title="Current tab URL">
+                <span class="context-banner-icon">🌐</span>
+                <span class="context-banner-label">Active:</span>
+                <span class="context-banner-url" id="automation-tab-url">Loading...</span>
+            </div>
+
+            <div class="automation-toggles-grid">
+                <label for="automation-include-url" class="toggle-chip" title="Include current tab URL in prompt context">
                     <input type="checkbox" id="automation-include-url" checked>
-                    Include current tab URL
+                    <span class="toggle-chip-label">Include URL</span>
                 </label>
-                <label>
+                <label for="automation-use-tab" class="toggle-chip" title="Perform automation directly inside this tab">
                     <input type="checkbox" id="automation-use-tab">
-                    Use this tab (bind)
+                    <span class="toggle-chip-label">Bind Tab</span>
                 </label>
-                <label>
-                    <input type="checkbox" id="automation-skip-planning" checked disabled>
-                    Skip planning (direct)
+                <label for="automation-skip-planning" class="toggle-chip" title="Direct execution without planning">
+                    <input type="checkbox" id="automation-skip-planning" checked>
+                    <span class="toggle-chip-label">Direct Run</span>
                 </label>
+                <div class="iterations-chip" title="Maximum automation iterations (1-9999)">
+                    <span class="iterations-label">Max Steps:</span>
+                    <input type="number" id="max-iterations" min="1" max="9999" value="40">
+                </div>
             </div>
-            <div class="automation-tab" title="Current tab">
-                Current tab: <span id="automation-tab-url">Loading...</span>
-            </div>
-            <div class="automation-meta">
-                <label>
-                    Max iterations:
-                    <input type="number" id="max-iterations" min="1" max="200" value="40" style="width: 50px; border: 1px solid #ddd; border-radius: 4px; padding: 2px 4px; font-size: 11px;">
-                </label>
-            </div>
-            <div class="button-row">
-                <button id="automation-run" type="button">Let's Do It</button>
-                <button id="automation-resume" type="button">Resume</button>
-                <button id="automation-stop" type="button">Stop</button>
-            </div>
-            <div class="automation-meta" id="stop-options" style="display: none;">
-                <label>
-                    <input type="checkbox" id="automation-cleanup" checked>
-                    Close automation tabs
-                </label>
-            </div>
-            <div id="automation-status"></div>
-        </div>
 
-        <div class="section-title">Current Activity</div>
-        <div id="idle-status">Idle - waiting for commands</div>
-        <div id="current-action">
-            <div class="action-name">
-                <div class="spinner"></div>
-                <span id="current-action-name"></span>
+            <div class="automation-input-container">
+                <textarea id="automation-input" rows="2" placeholder="Describe what you want to get done... (Ctrl+Enter to run)"></textarea>
+                <div class="automation-input-actions">
+                    <div class="button-row">
+                        <button id="automation-run" type="button">Let's Do It</button>
+                        <button id="automation-resume" type="button">Resume</button>
+                        <button id="automation-stop" type="button">Stop</button>
+                    </div>
+                </div>
             </div>
-            <div class="action-details" id="current-action-details"></div>
-        </div>
 
-        <div class="section-title">Stats (this session)</div>
-        <div id="stats">
-            <div class="stat-box">
-                <div class="stat-value" id="stat-total">0</div>
-                <div class="stat-label">Total</div>
+            <div class="automation-meta-footer">
+                <div class="automation-meta" id="stop-options" style="display: none;">
+                    <label class="toggle-chip">
+                        <input type="checkbox" id="automation-cleanup" checked>
+                        <span class="toggle-chip-label">Close automation tabs on stop</span>
+                    </label>
+                </div>
+                <div id="automation-status"></div>
             </div>
-            <div class="stat-box success">
-                <div class="stat-value" id="stat-success">0</div>
-                <div class="stat-label">Success</div>
-            </div>
-            <div class="stat-box failed">
-                <div class="stat-value" id="stat-failed">0</div>
-                <div class="stat-label">Failed</div>
-            </div>
-        </div>
-
-        <div class="section-title" id="decisions-title" style="display: none;">LLM Decisions</div>
-        <div id="recent-decisions"></div>
-
-        <div class="section-title">Recent Actions</div>
-        <div id="recent-actions">
-            <div class="action-item" style="color: #888; justify-content: center;">No actions yet</div>
-        </div>
-
-        <div class="info">
-            <p><strong>Extension ID:</strong> <span id="extension-id"></span></p>
-        </div>
-    </div>
-
-    <div class="panel-view" data-panel-view="settings">
-        <div class="section-title">Settings</div>
-        <div class="automation-box" style="margin-bottom: 12px;">
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                <input type="checkbox" id="setting-visual-overlay" checked>
-                <span style="font-weight: 500;">Enable Visual Overlay</span>
-            </label>
-            <div style="font-size: 10px; color: #666; margin-left: 20px; margin-top: 4px;">
-                Shows animated cursor, clicks, and typing effects during automation.
-            </div>
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 10px;">
-                <input type="checkbox" id="setting-debug-overlay">
-                <span style="font-weight: 500;">Debug Mode</span>
-            </label>
-            <div style="font-size: 10px; color: #666; margin-left: 20px; margin-top: 4px;">
-                Shows overlay even without active automation (for testing).
-            </div>
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 10px;">
-                <input type="checkbox" id="setting-pointer-diagnostics">
-                <span style="font-weight: 500;">Pointer Hit Diagnostics</span>
-            </label>
-            <div style="font-size: 10px; color: #666; margin-left: 20px; margin-top: 4px;">
-                Debug-only drag hit tracing. Captures start/end <code>elementFromPoint</code> data for drag actions.
-            </div>
-        </div>
-
-        <div class="section-title">Magician API bearer</div>
-        <div class="automation-box" style="margin-bottom: 12px;">
-            <div style="font-size: 10px; color: #666; margin-bottom: 6px;">
-                Paste a workspace-bound API token. Magician resolves principal and workspace from this token.
-            </div>
-            <input type="password" id="magician-bearer-token" placeholder="mag_pat_…"
-                style="width: 100%; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; padding: 4px 6px; font-size: 11px;">
-            <div style="display: flex; gap: 8px; margin-top: 6px;">
-                <button id="magician-bearer-save" type="button">Save</button>
-                <button id="magician-bearer-clear" type="button">Clear</button>
-            </div>
-            <div id="magician-bearer-status" style="font-size: 10px; color: #666; margin-top: 4px;"></div>
-        </div>
-
-        <div class="section-title">Ambient capture pairing</div>
-        <div class="automation-box" style="margin-bottom: 12px;">
-            <div style="font-size: 10px; color: #666; margin-bottom: 6px;">
-                Paste the pairing token from the Observe page ("Pair browser") to bind this
-                browser's ambient capture to your account.
-            </div>
-            <input type="text" id="weg-pair-token" placeholder="ctk_…"
-                style="width: 100%; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; padding: 4px 6px; font-size: 11px;">
-            <div style="display: flex; gap: 8px; margin-top: 6px;">
-                <button id="weg-pair-save" type="button">Pair</button>
-                <button id="weg-pair-clear" type="button">Unpair</button>
-            </div>
-            <div id="weg-pair-status" style="font-size: 10px; color: #666; margin-top: 4px;"></div>
         </div>
     </div>
 
@@ -173,6 +116,120 @@
             <div class="live-preview-viewport" id="live-preview-viewport">
                 <img class="live-preview-image" id="live-preview-image" alt="Live automation preview">
             </div>
+        </div>
+    </div>
+
+    <div class="panel-view" data-panel-view="status">
+        <div class="section-title">Session Performance</div>
+        <div id="stats" class="stats-grid">
+            <div class="stat-box">
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-label">Total Actions</div>
+            </div>
+            <div class="stat-box success">
+                <div class="stat-value" id="stat-success">0</div>
+                <div class="stat-label">Successful</div>
+            </div>
+            <div class="stat-box failed">
+                <div class="stat-value" id="stat-failed">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+        </div>
+
+        <div class="section-title">Recent Actions History</div>
+        <div id="recent-actions" class="recent-actions-list">
+            <div class="action-item empty-action-item">No actions yet</div>
+        </div>
+
+        <div class="section-title">Extension Details</div>
+        <div class="info-card">
+            <div class="info-row">
+                <span class="info-label">Extension ID</span>
+                <code class="info-value" id="extension-id"></code>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Version</span>
+                <span class="info-value" id="status-panel-version"></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Manifest</span>
+                <span class="info-value">v3</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel-view" data-panel-view="settings">
+        <div class="section-title">Display & Diagnostics</div>
+        <div class="automation-box settings-card">
+            <div class="setting-item">
+                <div class="setting-info">
+                    <label for="setting-visual-overlay" class="setting-title">Enable Visual Overlay</label>
+                    <div class="setting-desc">Shows animated cursor, clicks, and typing effects during automation.</div>
+                </div>
+                <label class="setting-toggle">
+                    <input type="checkbox" id="setting-visual-overlay" checked>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <label for="setting-debug-overlay" class="setting-title">Debug Mode</label>
+                    <div class="setting-desc">Shows overlay even without active automation (for testing).</div>
+                </div>
+                <label class="setting-toggle">
+                    <input type="checkbox" id="setting-debug-overlay">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="setting-item">
+                <div class="setting-info">
+                    <label for="setting-pointer-diagnostics" class="setting-title">Pointer Hit Diagnostics</label>
+                    <div class="setting-desc">Debug-only drag hit tracing. Captures start/end element data.</div>
+                </div>
+                <label class="setting-toggle">
+                    <input type="checkbox" id="setting-pointer-diagnostics">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="section-title">Browser Name</div>
+        <div class="automation-box settings-card">
+            <div class="setting-desc" style="margin-bottom: 8px;">
+                Several browsers can connect to Magicutor at once. Name this one so it can be told apart (for example "Chrome Work"); leave empty to use default.
+            </div>
+            <input type="text" id="browser-name" maxlength="48" class="settings-input" placeholder="e.g. Chrome Work">
+            <div class="settings-actions">
+                <button id="browser-name-save" type="button" class="btn-primary">Save</button>
+                <button id="browser-name-reset" type="button" class="btn-secondary">Reset</button>
+            </div>
+            <div id="browser-name-status" class="settings-status"></div>
+        </div>
+
+        <div class="section-title">Magican API Bearer</div>
+        <div class="automation-box settings-card">
+            <div class="setting-desc" style="margin-bottom: 8px;">
+                Paste a workspace-bound API token. Magican resolves principal and workspace from this token.
+            </div>
+            <input type="password" id="magician-bearer-token" class="settings-input" placeholder="mag_pat_…">
+            <div class="settings-actions">
+                <button id="magician-bearer-save" type="button" class="btn-primary">Save</button>
+                <button id="magician-bearer-clear" type="button" class="btn-secondary">Clear</button>
+            </div>
+            <div id="magician-bearer-status" class="settings-status"></div>
+        </div>
+
+        <div class="section-title">Ambient Capture Pairing</div>
+        <div class="automation-box settings-card">
+            <div class="setting-desc" style="margin-bottom: 8px;">
+                Paste the pairing token from the Observe page ("Pair browser") to bind this browser's ambient capture to your account.
+            </div>
+            <input type="text" id="weg-pair-token" class="settings-input" placeholder="ctk_…">
+            <div class="settings-actions">
+                <button id="weg-pair-save" type="button" class="btn-primary">Pair</button>
+                <button id="weg-pair-clear" type="button" class="btn-secondary">Unpair</button>
+            </div>
+            <div id="weg-pair-status" class="settings-status"></div>
         </div>
     </div>
 

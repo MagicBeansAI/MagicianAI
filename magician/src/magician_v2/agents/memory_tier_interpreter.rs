@@ -511,11 +511,14 @@ fn map_episode_to_task_value_v3(
     let completed_at = episode.completed_at_dt().unwrap_or_else(|_| Utc::now());
     let started_at = episode.started_at_dt().unwrap_or(completed_at);
     let mut notes = string_list_from_value(existing_fields.get("notes"));
+    // Tier memory is replayed into later prompts, so it keeps the recall
+    // text: bounded, with an echoed goal and its operating policy removed.
+    let outcome = episode.recalled_outcome_text();
     let note = format!(
         "{} seq {}: {}",
         completed_at.to_rfc3339(),
         episode.trigger_seq,
-        episode.outcome_summary_text()
+        outcome
     );
     if notes.last().map(|current| current != &note).unwrap_or(true) {
         notes.push(note);
@@ -541,7 +544,7 @@ fn map_episode_to_task_value_v3(
         "goal_id": episode.goal_id(),
         "status": status,
         "first_seen": first_seen,
-        "context_summary": episode.outcome_summary_text(),
+        "context_summary": outcome,
         "items": items,
         "notes": notes,
     })
@@ -599,9 +602,15 @@ fn append_strategy_record_value_v3(existing: Option<&Value>, episode: &V3Episode
         .unwrap_or_default();
     let record = serde_json::to_value(StrategyRecord {
         goal_id: episode.goal_id().to_string(),
+        // Recall text: a raw strategy can echo the run's whole goal and policy.
         strategy_type: episode
             .strategy_summary
-            .clone()
+            .as_ref()
+            .map(|_| {
+                episode
+                    .recalled_strategy_text()
+                    .unwrap_or_else(|| episode.recalled_outcome_text())
+            })
             .unwrap_or_else(|| "unknown".to_string()),
         succeeded: episode.outcome_is_succeeded(),
         execution_time_ms: episode_duration_ms_v3(episode),
@@ -635,9 +644,11 @@ fn append_archive_summary_value_v3(existing: Option<&Value>, episode: &V3Episode
 }
 
 pub(super) fn archive_summary_for_episode_v3(episode: &V3EpisodeRecord) -> Value {
-    let outcome = episode.outcome_summary_text().trim();
-    let strategy = episode
-        .strategy_summary
+    // Archive memory is replayed into later prompts: recall text only.
+    let recalled_outcome = episode.recalled_outcome_text();
+    let recalled_strategy = episode.recalled_strategy_text();
+    let outcome = recalled_outcome.trim();
+    let strategy = recalled_strategy
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
@@ -673,7 +684,11 @@ pub(super) fn archive_summary_for_episode_v3(episode: &V3EpisodeRecord) -> Value
                 .observations
                 .iter()
                 .map(|observation| observation.trim())
-                .filter(|observation| !observation.is_empty())
+                // Older records copied the raw task description (and its
+                // operating policy) into an observation.
+                .filter(|observation| {
+                    !observation.is_empty() && !observation.starts_with("task_description:")
+                })
                 .take(10)
                 .map(|observation| Value::String(observation.to_string())),
         );

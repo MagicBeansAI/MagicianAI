@@ -85,19 +85,18 @@ pub use executor::{
     execute_agentically_continue, execute_agentically_resume_exact,
     execute_agentically_resume_with_validation, forget_exact_pause_process_authority,
     format_input_type_for_event, sanitize_retry_previous_answer, session_id_for_execution,
-    ActionExecutors, AgenticExecutor, ApiReplayMeta, ExecutionPauseKind, FullPauseData,
-    AlignmentAskSnapshot, FullPauseStore, PauseDurabilityError, PendingPauseInfo, ResumeResult,
-    SerializablePauseData,
-    StatelessTerminalAgentLifecycleExclusion, StatelessTerminalAgentPauseAdmission,
-    StatelessTerminalAgentSetLifecycleExclusion, StatelessTerminalExecutionLifecycleExclusion,
-    StatelessTerminalLifecycleExclusion,
+    ActionExecutors, AgenticExecutor, AlignmentAskSnapshot, ApiReplayMeta, ExecutionPauseKind,
+    FullPauseData, FullPauseStore, PauseDurabilityError, PendingPauseInfo, ResumeResult,
+    SerializablePauseData, StatelessTerminalAgentLifecycleExclusion,
+    StatelessTerminalAgentPauseAdmission, StatelessTerminalAgentSetLifecycleExclusion,
+    StatelessTerminalExecutionLifecycleExclusion, StatelessTerminalLifecycleExclusion,
 };
 // STEP 3 — single-execution-context pipeline. The owner-swap RAII guard used by
 // the orchestrator's `execute_pipeline_single_context` engine to run each stage
 // under its own agent persona/trust on the SAME ExecutionRun. `pub` —
 // internal engine machinery, not part of the public execution surface.
-pub use executor::StageGuard;
 pub use executor::load_tools_for_submitted_plan;
+pub use executor::StageGuard;
 // The definition of *"what name does the dispatch check compare against"*.
 // Re-exported because anything validating a grant has to answer the same
 // question, and the engagement ceiling validator used to answer it by
@@ -109,10 +108,10 @@ pub use executor::executable_action_policy_name;
 pub use executor::{alignment_owner_reply, alignment_reply_needs_consent_surface};
 pub(crate) use executor::{
     approval_step_from_candidate, checked_approval, execute_action,
-    is_interrupted_recovery_already_owned, refresh_trust_dispatch_guard_for_decision,
-    preference_alignment_precheck, stable_confirmation_action_json, DurablePauseCommit,
-    ManualResumeClaimBinding, ManualResumeClaimRenewal, ManualResumeRetirementOutcome,
-    RootOwnerPauseReceiptBinding,
+    is_interrupted_recovery_already_owned, preference_alignment_precheck,
+    refresh_trust_dispatch_guard_for_decision, stable_confirmation_action_json,
+    yield_partial_findings_answer, DurablePauseCommit, ManualResumeClaimBinding,
+    ManualResumeClaimRenewal, ManualResumeRetirementOutcome, RootOwnerPauseReceiptBinding,
 };
 pub use input_interpreter::{try_simple_extraction, AgenticInputInterpreter, InterpretationResult};
 pub use loop_detector::{
@@ -125,10 +124,9 @@ pub use native_types::{
 };
 pub use ownership_runtime::{OwnerExecutionProfile, OwnershipRuntime};
 pub use policy_snapshot::{
-    extend_snapshot_with_runtime_tool, feature_agent_id, feature_surface_is_authorized,
-    parse_leading_feature_invocation, parse_leading_feature_marker, remove_snapshot_runtime_tool,
-    resolve_effective_tool_policy_snapshot, validate_agent_invocation, EffectiveToolPolicySnapshot,
-    SnapshotResolutionInput,
+    feature_agent_id, feature_surface_is_authorized, parse_leading_feature_invocation,
+    parse_leading_feature_marker, resolve_effective_tool_policy_snapshot,
+    validate_agent_invocation, EffectiveToolPolicySnapshot, SnapshotResolutionInput,
 };
 pub use types::{
     is_secret_param_name, parse_redacted_placeholder, redacted_placeholder,

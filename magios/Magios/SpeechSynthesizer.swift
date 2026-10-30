@@ -95,6 +95,7 @@ final class SpeechSynthesizer: NSObject, ObservableObject, AVSpeechSynthesizerDe
     func speak(
         _ text: String,
         messageId: String? = nil,
+        chatSessionId: String? = nil,
         focusPolicy: SpeechFocusPolicy = .respectVoiceCall,
         onStart: (() -> Void)? = nil,
         completion: ((SpeechPlaybackResult) -> Void)? = nil
@@ -118,7 +119,7 @@ final class SpeechSynthesizer: NSObject, ObservableObject, AVSpeechSynthesizerDe
             completion?(.skipped)
             return false
         }
-        let clean = Self.stripMarkdown(SpeechTags.spokenText(text))
+        let clean = Self.spokenReplyText(text)
         guard !clean.isEmpty else {
             completion?(.skipped)
             return false
@@ -132,7 +133,7 @@ final class SpeechSynthesizer: NSObject, ObservableObject, AVSpeechSynthesizerDe
         activeMessageId = messageId
         switch AudioSettings.shared.ttsEngine {
         case .onDevice: speakOnDevice(clean, generation: generation)
-        case .magician: speakViaMagician(clean, generation: generation)
+        case .magician: speakViaMagician(clean, generation: generation, chatSessionId: chatSessionId)
         }
         return true
     }
@@ -172,7 +173,7 @@ final class SpeechSynthesizer: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
     // MARK: Magician (backend TTS → play audio)
 
-    private func speakViaMagician(_ text: String, generation: Int) {
+    private func speakViaMagician(_ text: String, generation: Int, chatSessionId: String?) {
         guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2/media/tts/synthesize") else {
             speakOnDevice(text, generation: generation); return
         }
@@ -180,6 +181,7 @@ final class SpeechSynthesizer: NSObject, ObservableObject, AVSpeechSynthesizerDe
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         MagicianAccess.authorize(&request)
+        if let chatSessionId { request.setValue(chatSessionId, forHTTPHeaderField: "X-Chat-Session-Id") }
         let audio = AudioSettings.shared
         var body: [String: Any] = [
             "text": text
@@ -335,6 +337,14 @@ final class SpeechSynthesizer: NSObject, ObservableObject, AVSpeechSynthesizerDe
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
         completion?(result)
+    }
+
+    /// Read the result before its qualification; leave diagnostic detail in the disclosure.
+    static func spokenReplyText(_ input: String) -> String {
+        let display = AnswerVerificationDisplay.split(input)
+        let spoken = stripMarkdown(SpeechTags.spokenText(display.body))
+        guard display.verification != nil else { return spoken }
+        return [spoken, "Some findings remain unverified."].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     /// Strip common markdown so the reply is spoken as prose, not symbols/code.

@@ -72,6 +72,11 @@ function bindElements() {
     if (version) {
         version.textContent = chrome.runtime.getManifest().version;
     }
+
+    const statusPanelVersion = document.getElementById('status-panel-version');
+    if (statusPanelVersion) {
+        statusPanelVersion.textContent = `v${chrome.runtime.getManifest().version}`;
+    }
 }
 
 function registerCleanup(callback) {
@@ -353,13 +358,24 @@ async function checkStatus() {
         const httpOk = !!response?.http;
         const magicianOk = !!response?.magician;
         const allOk = bridgeOk && httpOk && magicianOk;
+        const bridgeFull = !!(response?.bridge_full ?? response?.bridge_busy) && httpOk && magicianOk;
+        const bridgeIdInUse = !bridgeOk && !bridgeFull && !!response?.bridge_id_in_use && httpOk && magicianOk;
 
         automationServerReady = allOk;
         await updateAutomationControlState();
 
         if (response && allOk) {
             statusDiv.className = 'status connected';
-            statusText.textContent = '✓ Server Ready';
+            statusText.textContent = connectedStatusText(response);
+        } else if (bridgeFull) {
+            statusDiv.className = 'status waiting';
+            statusText.textContent = fullBridgeStatusText(response);
+        } else if (bridgeIdInUse) {
+            // Our previous socket is still open on Magicutor: the reconnect is
+            // admitted once it goes quiet. If this persists, another copy of
+            // this profile is connected under the same extension identity.
+            statusDiv.className = 'status waiting';
+            statusText.textContent = 'Reconnecting: previous connection still open';
         } else {
             statusDiv.className = 'status disconnected';
             statusText.textContent = '✗ Server Offline';
@@ -374,8 +390,8 @@ async function checkStatus() {
             detailsDiv.innerHTML = `
                 <div class="detail-row">
                     <span>Bridge:</span>
-                    <span class="${bridgeOk ? 'ok' : 'err'}">${bridgeOk ? '✓ Connected' : '✗ Disconnected'}</span>
-                </div>
+                    <span class="${bridgeOk ? 'ok' : 'err'}">${bridgeOk ? escapeStatusText(connectedBridgeDetail(response)) : bridgeFull ? escapeStatusText(fullBridgeDetail(response)) : bridgeIdInUse ? 'Waiting for this browser\'s previous connection to close (a copied profile shares this identity if it persists)' : '✗ Disconnected'}</span>
+                </div>${connectedBrowsersRow(response)}
                 <div class="detail-row">
                     <span>Magicutor${magicutorVersion}:</span>
                     <span class="${httpOk ? 'ok' : 'err'}">${httpOk ? '✓ Running' : '✗ Not running'}</span>
@@ -394,6 +410,62 @@ async function checkStatus() {
         automationServerReady = false;
         await updateAutomationControlState();
     }
+}
+
+function escapeStatusText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+}
+
+/** "Connected as Comet (2 of 4)" once Magicutor reports this browser's slot. */
+function connectedStatusText(response) {
+    const label = response?.browser?.label;
+    const slot = response?.slot;
+    const max = response?.max_browsers;
+    if (label && Number.isInteger(slot) && Number.isInteger(max)) {
+        return `✓ Connected as ${label} (${slot} of ${max})`;
+    }
+    return '✓ Server Ready';
+}
+
+function connectedBridgeDetail(response) {
+    const label = response?.browser?.label;
+    const slot = response?.slot;
+    const max = response?.max_browsers;
+    if (label && Number.isInteger(slot) && Number.isInteger(max)) {
+        return `✓ ${label}, slot ${slot} of ${max}`;
+    }
+    return '✓ Connected';
+}
+
+/** Every browser slot is held by other browsers; this one waits for a free slot. */
+function fullBridgeStatusText(response) {
+    const max = response?.max_browsers;
+    return Number.isInteger(max)
+        ? `All ${max} browser slots are in use`
+        : 'Another browser is connected';
+}
+
+function fullBridgeDetail(response) {
+    const max = response?.max_browsers;
+    const count = Array.isArray(response?.browsers) ? response.browsers.length : null;
+    return Number.isInteger(max) && Number.isInteger(count)
+        ? `Full: ${count} of ${max} browsers connected; disconnect one to connect this browser`
+        : 'In use by another browser';
+}
+
+function connectedBrowsersRow(response) {
+    const browsers = Array.isArray(response?.browsers) ? response.browsers : [];
+    if (browsers.length === 0) return '';
+    const names = browsers
+        .map((browser) => `${browser.label || browser.fingerprint || 'Browser'}${browser.default ? ' (default)' : ''}`)
+        .join(', ');
+    return `
+                <div class="detail-row">
+                    <span>Browsers:</span>
+                    <span>${escapeStatusText(names)}</span>
+                </div>`;
 }
 
 async function updateActivity() {
@@ -426,7 +498,11 @@ async function updateActivity() {
             currentActionDetails.title = displayTooltip || details || '';
         } else {
             currentActionDiv.classList.remove('active');
-            idleStatusDiv.classList.remove('hidden');
+            if (activity.recentDecisions && activity.recentDecisions.length > 0) {
+                idleStatusDiv.classList.add('hidden');
+            } else {
+                idleStatusDiv.classList.remove('hidden');
+            }
         }
 
         document.getElementById('stat-total').textContent = activity.stats.total;
@@ -459,36 +535,59 @@ async function updateActivity() {
                 `;
             }).join('');
         } else if (activity.stats.total === 0) {
-            recentActionsDiv.innerHTML = '<div class="action-item" style="color: #888; justify-content: center;">No actions yet</div>';
+            recentActionsDiv.innerHTML = '<div class="action-item empty-action-item">No actions yet</div>';
         }
 
         const decisionsTitle = document.getElementById('decisions-title');
         const decisionsDiv = document.getElementById('recent-decisions');
         if (activity.recentDecisions && activity.recentDecisions.length > 0) {
             decisionsTitle.style.display = '';
-            decisionsDiv.innerHTML = activity.recentDecisions.map((decision) => {
-                const timeStr = new Date(decision.timestamp).toLocaleTimeString();
+            const chronologicalDecisions = [...activity.recentDecisions].reverse();
+            decisionsDiv.innerHTML = chronologicalDecisions.map((decision, index) => {
+                const stepNum = index + 1;
+                const timeStr = new Date(decision.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 const confPct = decision.confidence != null ? `${(decision.confidence * 100).toFixed(0)}%` : '';
                 const safeToolName = escapeHtml(decision.toolName || '');
                 const toolBadge = decision.toolName ? `<span class="decision-tool">${safeToolName}</span>` : '';
                 const safeDecisionType = escapeHtml(decision.decisionType || '');
                 const validTypes = ['execute', 'goal_reached', 'cannot_proceed', 'need_user_input', 'spawn_sub_goal', 'delegate_to_agent', 'delegate_to_agent_async', 'create_task'];
                 const safeTypeClass = validTypes.includes(decision.decisionType) ? decision.decisionType : '';
-                const thinkingHtml = decision.thinking ? `<div class="decision-thinking">${escapeHtml(decision.thinking)}</div>` : '';
+
+                let typeIcon = '⚡';
+                let typeLabel = safeDecisionType;
+                if (decision.decisionType === 'goal_reached') {
+                    typeIcon = '🎯';
+                    typeLabel = 'Goal Reached';
+                } else if (decision.decisionType === 'cannot_proceed') {
+                    typeIcon = '⚠️';
+                    typeLabel = 'Cannot Proceed';
+                } else if (decision.decisionType === 'need_user_input') {
+                    typeIcon = '❓';
+                    typeLabel = 'Needs Input';
+                } else if (decision.decisionType === 'spawn_sub_goal') {
+                    typeIcon = '🔀';
+                    typeLabel = 'Sub-goal';
+                } else if (decision.decisionType === 'execute') {
+                    typeIcon = '⚡';
+                    typeLabel = 'Execute';
+                }
+
+                const thinkingHtml = decision.thinking ? `<div class="decision-thinking"><span class="thinking-icon">💭</span> ${escapeHtml(decision.thinking)}</div>` : '';
                 const evidenceHtml = decision.evidence ? `<div class="decision-detail-label">Evidence</div><div class="decision-detail-value">${escapeHtml(decision.evidence)}</div>` : '';
                 const reasoningHtml = decision.reasoning && decision.reasoning !== decision.thinking
                     ? `<div class="decision-detail-label">Reasoning</div><div class="decision-detail-value">${escapeHtml(decision.reasoning)}</div>`
                     : '';
                 const actionHtml = decision.actionSummary
-                    ? `<div class="decision-detail-label">Action</div><div class="decision-detail-value" style="font-family: monospace;">${escapeHtml(decision.actionSummary)}</div>`
+                    ? `<div class="decision-detail-label">Action</div><div class="decision-detail-value decision-action-text">${escapeHtml(decision.actionSummary)}</div>`
                     : '';
 
                 return `
                     <div class="decision-card ${safeTypeClass}" onclick="this.classList.toggle('expanded')">
                         <div class="decision-header">
-                            <span class="decision-type-badge ${safeTypeClass}">${safeDecisionType}</span>
+                            <span class="decision-step-badge">Step ${stepNum}</span>
+                            <span class="decision-type-badge ${safeTypeClass}"><span class="badge-icon">${typeIcon}</span> ${typeLabel}</span>
                             ${toolBadge}
-                            <span class="decision-confidence">${confPct} ${timeStr}</span>
+                            <span class="decision-confidence">${confPct ? `${confPct} • ` : ''}${timeStr}</span>
                         </div>
                         ${thinkingHtml}
                         <div class="decision-details">
@@ -499,6 +598,14 @@ async function updateActivity() {
                     </div>
                 `;
             }).join('');
+
+            const feedContainer = document.getElementById('control-feed-container');
+            if (feedContainer) {
+                const isNearBottom = feedContainer.scrollHeight - feedContainer.scrollTop - feedContainer.clientHeight < 100;
+                if (isNearBottom) {
+                    feedContainer.scrollTop = feedContainer.scrollHeight;
+                }
+            }
         } else {
             decisionsTitle.style.display = 'none';
             decisionsDiv.innerHTML = '';
@@ -577,30 +684,24 @@ async function updateAutomationControlState() {
     const tabReady = automationTabReady;
 
     if (automationInput) {
-        automationInput.disabled = !serverReady;
+        automationInput.disabled = false;
     }
 
     if (automationRun) {
         automationRun.disabled = !serverReady;
+        automationRun.title = serverReady ? "Start automation (Ctrl+Enter)" : "Server not running - start Magicutor to run";
     }
 
     if (automationIncludeUrl) {
-        automationIncludeUrl.disabled = !serverReady || !tabReady;
-        if (!tabReady) {
-            automationIncludeUrl.checked = false;
-        }
+        automationIncludeUrl.disabled = false;
     }
 
     if (automationUseTab) {
-        automationUseTab.disabled = !serverReady || !tabReady;
-        if (!tabReady) {
-            automationUseTab.checked = false;
-        }
+        automationUseTab.disabled = false;
     }
 
     if (automationSkipPlanning) {
-        automationSkipPlanning.checked = true;
-        automationSkipPlanning.disabled = true;
+        automationSkipPlanning.disabled = false;
     }
 
     const activeExecutionId = await getActiveExecution();
@@ -712,7 +813,6 @@ async function loadActiveTab() {
         }
         if (automationUseTab) {
             automationUseTab.checked = false;
-            automationUseTab.disabled = true;
         }
         automationTabReady = false;
         await updateAutomationControlState();
@@ -977,6 +1077,17 @@ function setupUiListeners() {
 
     addDomListener(settingPointerDiagnostics, 'change', () => {
         void savePointerDiagnosticsState();
+    });
+
+    document.querySelectorAll('.suggestion-chip').forEach((chip) => {
+        addDomListener(chip, 'click', () => {
+            const prompt = chip.getAttribute('data-prompt');
+            if (prompt && automationInput) {
+                automationInput.value = prompt;
+                automationInput.focus();
+                void savePopupState({ goal: prompt });
+            }
+        });
     });
 }
 

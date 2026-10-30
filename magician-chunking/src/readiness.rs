@@ -414,7 +414,7 @@ mod tests {
         let mut router = config.router_config().expect("template router").clone();
         router.operation_mapping.insert(
             "memory_entity_extraction".to_string(),
-            OperationProfileSelector::Simple("op-memory-entity-extraction-fast".to_string()),
+            OperationProfileSelector::Simple("operation/voice_context_compaction".to_string()),
         );
         ensure_builtins_registered();
         let registry = magician::magician_v2::llm_chunking::global_chunk_adapter_registry()

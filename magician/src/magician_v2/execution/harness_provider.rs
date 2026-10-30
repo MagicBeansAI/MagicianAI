@@ -124,9 +124,16 @@ impl CapabilityProvider for HarnessCapabilityProvider {
             },
         };
 
-        let context = HarnessExecutionContext::from_params(&self.services, params)
-            .await
-            .map_err(|error| ExecutionError::Step(format!("{}: {error}", self.tool_name)))?;
+        let context = if matches!(
+            self.tool_name,
+            INSPECT_AGENT_TOOL_NAME | SYSTEM_STATUS_TOOL_NAME
+        ) {
+            HarnessExecutionContext::for_runtime_inspection(&self.services, params, self.tool_name)
+                .await
+        } else {
+            HarnessExecutionContext::from_params(&self.services, params).await
+        }
+        .map_err(|error| ExecutionError::Step(format!("{}: {error}", self.tool_name)))?;
 
         // The tool's future is built in `harness_tool_future`'s own short-lived
         // frame and returned boxed, so this poll frame holds one pointer. Built
@@ -169,7 +176,9 @@ fn harness_tool_future<'a>(
         READ_TRACE_TOOL_NAME => Box::pin(execute_read_trace(services, context, params)),
         LIST_AGENTS_TOOL_NAME => Box::pin(execute_list_agents(services, context)),
         INSPECT_AGENT_TOOL_NAME => Box::pin(execute_inspect_agent(services, context, params)),
-        INSPECT_BACKLOG_DELIVERY_TOOL_NAME => Box::pin(execute_inspect_backlog_delivery(services, context, params)),
+        INSPECT_BACKLOG_DELIVERY_TOOL_NAME => {
+            Box::pin(execute_inspect_backlog_delivery(services, context, params))
+        },
         SYSTEM_STATUS_TOOL_NAME => Box::pin(execute_system_status(services, context, params)),
         EVALUATE_HARNESS_TOOL_NAME => Box::pin(execute_evaluate_harness(services, context, params)),
         READ_PROGRAM_STATE_TOOL_NAME => Box::pin(execute_read_program_state(services, context)),
@@ -180,13 +189,23 @@ fn harness_tool_future<'a>(
         CREATE_AGENT_TOOL_NAME => Box::pin(execute_create_agent(services, context, params)),
         UPDATE_AGENT_TOOL_NAME => Box::pin(execute_update_agent(services, context, params)),
         RETIRE_AGENT_TOOL_NAME => Box::pin(execute_retire_agent(services, context, params)),
-        UPDATE_DELEGATION_TOOL_NAME => Box::pin(execute_update_delegation(services, context, params)),
+        UPDATE_DELEGATION_TOOL_NAME => {
+            Box::pin(execute_update_delegation(services, context, params))
+        },
         CREATE_PROPOSAL_TOOL_NAME => Box::pin(execute_create_proposal(services, context, params)),
         CREATE_DASHBOARD_TOOL_NAME => Box::pin(execute_create_dashboard(services, context, params)),
-        UPDATE_PROGRAM_STATE_TOOL_NAME => Box::pin(execute_update_program_state(services, context, params)),
-        PROPOSE_BACKLOG_ITEM_TOOL_NAME => Box::pin(execute_propose_backlog_item(services, context, params)),
-        PROMOTE_BACKLOG_ITEM_TOOL_NAME => Box::pin(execute_promote_backlog_item(services, context, params)),
-        REVIEW_BACKLOG_DELIVERY_TOOL_NAME => Box::pin(execute_review_backlog_delivery(services, context, params)),
+        UPDATE_PROGRAM_STATE_TOOL_NAME => {
+            Box::pin(execute_update_program_state(services, context, params))
+        },
+        PROPOSE_BACKLOG_ITEM_TOOL_NAME => {
+            Box::pin(execute_propose_backlog_item(services, context, params))
+        },
+        PROMOTE_BACKLOG_ITEM_TOOL_NAME => {
+            Box::pin(execute_promote_backlog_item(services, context, params))
+        },
+        REVIEW_BACKLOG_DELIVERY_TOOL_NAME => {
+            Box::pin(execute_review_backlog_delivery(services, context, params))
+        },
         _ => return None,
     })
 }
@@ -572,11 +591,29 @@ async fn execute_inspect_agent(
     params: &HashMap<String, Value>,
 ) -> Result<Value, ExecutionError> {
     let agent_id = required_param_string(params, "agent_id", INSPECT_AGENT_TOOL_NAME)?;
+    if context.owner_record.definition.harness.is_none()
+        || agent_id == context.owner_record.definition.agent_id
+    {
+        return super::harness_inspection::inspect(
+            services,
+            context,
+            Some(&agent_id),
+            params.get("routing_context"),
+        )
+        .await;
+    }
     context
         .scope
         .require_contains(&agent_id)
         .map_err(|error| ExecutionError::Step(format!("{INSPECT_AGENT_TOOL_NAME}: {error}")))?;
 
+    let runtime_metadata = Box::pin(super::harness_inspection::inspect(
+        services,
+        context,
+        Some(&agent_id),
+        params.get("routing_context"),
+    ))
+    .await?;
     let scoped_store = context.scoped_definition_store(services);
     let record = scoped_store
         .get_definition(&agent_id)
@@ -667,6 +704,7 @@ async fn execute_inspect_agent(
 
     Ok(serde_json::json!({
         "context": build_context_summary(services, context).await,
+        "runtime_metadata": runtime_metadata,
         "agent": {
             "definition": &record.definition,
             "definition_yaml": definition_yaml,
@@ -690,7 +728,34 @@ async fn execute_system_status(
     context: &HarnessExecutionContext,
     params: &HashMap<String, Value>,
 ) -> Result<Value, ExecutionError> {
+    if context.owner_record.definition.harness.is_none()
+        || params
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            == Some(context.owner_record.definition.agent_id.as_str())
+    {
+        let agent_id = params.get("agent_id").and_then(Value::as_str);
+        return super::harness_inspection::inspect(
+            services,
+            context,
+            agent_id,
+            params.get("routing_context"),
+        )
+        .await;
+    }
     let selected_agent_ids = selected_scope_agents(context, params.get("agent_id"))?;
+    let runtime_metadata = Box::pin(super::harness_inspection::inspect(
+        services,
+        context,
+        params
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty()),
+        params.get("routing_context"),
+    ))
+    .await?;
     let scope_ref = ScopeRef::system_internal_unauthenticated(
         &context.principal.clone(),
         &context.workspace.clone(),
@@ -758,6 +823,7 @@ async fn execute_system_status(
 
     Ok(serde_json::json!({
         "context": build_context_summary(services, context).await,
+        "runtime_metadata": runtime_metadata,
         "total_count": statuses.len(),
         "agents": statuses,
     }))
@@ -1260,6 +1326,7 @@ async fn execute_create_task(
 
     Ok(serde_json::json!({
         "context": build_context_summary(services, context).await,
+        "task_url": crate::magician_v2::ui_links::task_record_href(&task, execution.get("execution_id").and_then(Value::as_str)),
         "task": task,
         "execution": execution,
     }))
@@ -1851,6 +1918,7 @@ async fn execute_promote_backlog_item(
     Ok(serde_json::json!({
         "backlog_item_id": item.id,
         "promoted_task_id": task.manifest.task_id,
+        "task_url": crate::magician_v2::ui_links::task_record_href(&task, execution.get("execution_id").and_then(Value::as_str)),
         "task": task,
         "execution": execution,
     }))
@@ -4505,6 +4573,513 @@ tools: []
     }
 
     #[tokio::test]
+    async fn harness_inspection_exposes_runtime_metadata_without_widening_scope() {
+        let tempdir = TempDir::new().unwrap();
+        let services = harness_services_fixture(&tempdir).await;
+        let params = HashMap::from([
+            ("__principal".into(), json!(TEST_PRINCIPAL)),
+            ("__workspace".into(), json!(TEST_WORKSPACE)),
+            ("__agent_id".into(), json!("ceo")),
+            ("agent_id".into(), json!("worker-a")),
+        ]);
+        let context = HarnessExecutionContext::for_runtime_inspection(
+            &services,
+            &params,
+            INSPECT_AGENT_TOOL_NAME,
+        )
+        .await
+        .unwrap();
+        let result = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(result["agent"]["definition"]["agent_id"], "worker-a");
+        let metadata = &result["runtime_metadata"];
+        assert_eq!(metadata["inspection_mode"], "runtime_metadata");
+        assert_eq!(metadata["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(metadata["agents"][0]["runtime"]["definition_loaded"], false);
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["scheduler_available"],
+            false
+        );
+        assert!(metadata.get("configured_router_defaults").is_some());
+
+        let store = context.scoped_definition_store(&services);
+        let saved = store
+            .get_definition("worker-a")
+            .await
+            .unwrap()
+            .unwrap()
+            .definition;
+        services.runtime.upsert_definition(saved.clone()).await;
+        store.storage().write_json_atomic(&store.storage().scheduler_state_path(), &json!({
+            "entries": {
+                "allowed-entry": {
+                    "agent_id": "worker-a", "goal_id": "private-allowed-goal", "task_id": null,
+                    "trigger_seq": 0, "last_triggered": null,
+                    "registration": {"trigger_kind": "cron", "schedule": "30 4,8,13,16 * * *",
+                        "timezone": "UTC", "next_run_at": "2026-10-22T04:30:00Z"}
+                },
+                "outside-entry": {
+                    "agent_id": "worker-b", "goal_id": "private-outside-goal", "task_id": null,
+                    "trigger_seq": 0, "last_triggered": null,
+                    "registration": {"trigger_kind": "event", "pattern": "private-event", "filter": {}}
+                }
+            }, "last_tick": null
+        })).await.unwrap();
+        let result = execute_system_status(&services, &context, &HashMap::new())
+            .await
+            .unwrap();
+        let metadata = &result["runtime_metadata"];
+        assert_eq!(metadata["agents"].as_array().unwrap().len(), 1);
+        assert_eq!(metadata["agents"][0]["agent_id"], "worker-a");
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["matches_saved_definition"],
+            true
+        );
+        assert!(metadata["agents"][0]["runtime"]["definition_loaded_at"].is_string());
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["definition_sha256"],
+            metadata["agents"][0]["saved"]["source"]["definition_sha256"]
+        );
+        assert_eq!(
+            metadata["agents"][0]["saved"]["source"]["file_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert!(metadata["agents"][0]["saved"]["source"]["absolute_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("worker-a/definition.agent.yaml"));
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["registrations"][0]["registration_id"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["registrations"][0]["admission"]["agent_paused"],
+            false
+        );
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["scheduler_source"],
+            "durable_registration_state"
+        );
+        assert_eq!(
+            metadata["agents"][0]["runtime"]["registrations"][0]["trigger"]["schedule"],
+            "30 4,8,13,16 * * *"
+        );
+        assert!(!metadata.to_string().contains("worker-b"));
+        assert!(!metadata.to_string().contains("private-"));
+        assert!(services
+            .runtime
+            .cached_definition_in_scope(TEST_PRINCIPAL, TEST_WORKSPACE, "worker-b")
+            .await
+            .is_none());
+
+        let mut stale = saved;
+        stale.persona = "Old runtime persona".into();
+        services.runtime.upsert_definition(stale).await;
+        let mut selected = params.clone();
+        selected.insert("agent_id".into(), json!(" worker-a "));
+        let result = execute_system_status(&services, &context, &selected)
+            .await
+            .unwrap();
+        assert_eq!(
+            result["runtime_metadata"]["agents"][0]["runtime"]["matches_saved_definition"],
+            false
+        );
+        selected.insert("agent_id".into(), json!("worker-b"));
+        assert!(execute_inspect_agent(&services, &context, &selected)
+            .await
+            .is_err());
+        assert!(execute_system_status(&services, &context, &selected)
+            .await
+            .is_err());
+        assert!(super::super::harness_inspection::inspect(
+            &services,
+            &context,
+            Some("worker-b"),
+            None
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn harness_owner_can_inspect_its_own_metadata_without_self_delegation() {
+        let tempdir = TempDir::new().unwrap();
+        let services = harness_services_fixture(&tempdir).await;
+        let params = HashMap::from([
+            ("__principal".into(), json!(TEST_PRINCIPAL)),
+            ("__workspace".into(), json!(TEST_WORKSPACE)),
+            ("__agent_id".into(), json!("ceo")),
+            ("agent_id".into(), json!("ceo")),
+        ]);
+        let context = HarnessExecutionContext::for_runtime_inspection(
+            &services,
+            &params,
+            INSPECT_AGENT_TOOL_NAME,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !context.scope.contains("ceo"),
+            "self-delegation stays excluded"
+        );
+        for result in [
+            execute_inspect_agent(&services, &context, &params)
+                .await
+                .unwrap(),
+            execute_system_status(&services, &context, &params)
+                .await
+                .unwrap(),
+        ] {
+            assert_eq!(result["inspection_mode"], "runtime_metadata");
+            assert_eq!(result["agents"][0]["agent_id"], "ceo");
+            assert!(
+                result.get("agent").is_none(),
+                "no full private-content branch"
+            );
+        }
+        assert!(!context.scope.contains("ceo"));
+    }
+
+    #[tokio::test]
+    async fn program_inspection_distinguishes_current_sources_from_recorded_prompt_inputs() {
+        let dir = TempDir::new().unwrap();
+        let services = harness_services_fixture(&dir).await;
+        let store = services
+            .definition_store
+            .for_scope(TEST_PRINCIPAL, TEST_WORKSPACE);
+        let owner = store.get_definition("ceo").await.unwrap().unwrap();
+        let mut definition = owner.definition.clone();
+        definition.autonomous_config = Some(
+            serde_json::from_value(json!({
+                "schedule": "0 7 * * *", "focus_areas": [{"name": "review", "description": "Review",
+                    "priority": "medium", "program": "plan.md", "shared_programs": ["facts.md"]}]
+            }))
+            .unwrap(),
+        );
+        let definition = store
+            .update_definition("ceo", definition, owner.version())
+            .await
+            .unwrap()
+            .definition;
+        services.runtime.upsert_definition(definition.clone()).await;
+        let workspace = services.artifact_service.workspace();
+        let programs = workspace.program_specs_root(TEST_PRINCIPAL, TEST_WORKSPACE);
+        tokio::fs::create_dir_all(&programs).await.unwrap();
+        tokio::fs::write(programs.join("plan.md"), "# Plan\nINSTRUCTION_BODY\n")
+            .await
+            .unwrap();
+        tokio::fs::write(programs.join("facts.md"), "# Facts\nPRIVATE_FACTS\n")
+            .await
+            .unwrap();
+        let params = HashMap::from([
+            ("__principal".into(), json!(TEST_PRINCIPAL)),
+            ("__workspace".into(), json!(TEST_WORKSPACE)),
+            ("__agent_id".into(), json!("ceo")),
+            ("agent_id".into(), json!("ceo")),
+        ]);
+        let context = HarnessExecutionContext::for_runtime_inspection(
+            &services,
+            &params,
+            INSPECT_AGENT_TOOL_NAME,
+        )
+        .await
+        .unwrap();
+        let current = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        let program = &current["agents"][0]["runtime"]["programs"][0];
+        assert_eq!(program["source"]["relative_path"], "plan.md");
+        assert_eq!(program["ingestion"]["status"], "not_recorded");
+        assert!(
+            !programs.join(".context_receipts").exists(),
+            "inspection must not fabricate provenance"
+        );
+        assert!(!current.to_string().contains("INSTRUCTION_BODY"));
+        assert!(!current.to_string().contains("PRIVATE_FACTS"));
+        let loader = crate::magician_v2::harness::ProgramLoader::new(workspace.clone());
+        let loaded = loader
+            .load_for_goal(
+                TEST_PRINCIPAL,
+                TEST_WORKSPACE,
+                &definition,
+                Some("harness:ceo:review"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut sources = vec![loader.source_metadata(TEST_PRINCIPAL, TEST_WORKSPACE, &loaded)];
+        sources.extend(
+            crate::magician_v2::harness::program_doc::load_shared_program_context_with_sources(
+                workspace,
+                TEST_PRINCIPAL,
+                TEST_WORKSPACE,
+                &["facts.md".into()],
+                "plan.md",
+            )
+            .await
+            .unwrap()
+            .1,
+        );
+        loader
+            .record_context_ingestion(
+                TEST_PRINCIPAL,
+                TEST_WORKSPACE,
+                &definition,
+                "harness:ceo:review",
+                "cycle-1",
+                sources,
+            )
+            .await
+            .unwrap();
+        let recorded = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        let ingestion = &recorded["agents"][0]["runtime"]["programs"][0]["ingestion"];
+        assert_eq!(ingestion["matches_current_program"], true);
+        assert_eq!(ingestion["matches_current_shared_sources"], true);
+        assert_eq!(ingestion["matches_current_definition"], true);
+        tokio::fs::write(programs.join("facts.md"), "# Facts\nUpdated\n")
+            .await
+            .unwrap();
+        let stale = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(
+            stale["agents"][0]["runtime"]["programs"][0]["ingestion"]["matches_current_program"],
+            true
+        );
+        assert_eq!(
+            stale["agents"][0]["runtime"]["programs"][0]["ingestion"]
+                ["matches_current_shared_sources"],
+            false
+        );
+        let current = store.get_definition("ceo").await.unwrap().unwrap();
+        let mut without_shared = current.definition.clone();
+        without_shared
+            .autonomous_config
+            .as_mut()
+            .unwrap()
+            .focus_areas[0]
+            .shared_programs = Some(Vec::new());
+        let updated = store
+            .update_definition("ceo", without_shared, current.version())
+            .await
+            .unwrap();
+        services.runtime.upsert_definition(updated.definition).await;
+        let removed = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(
+            removed["agents"][0]["runtime"]["programs"][0]["ingestion"]
+                ["matches_current_shared_sources"],
+            false,
+            "removing a shared source also makes the old prompt receipt stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_inspection_without_harness_keeps_control_and_private_content_fenced() {
+        let tempdir = TempDir::new().unwrap();
+        let services = harness_services_fixture(&tempdir).await;
+        let mut observer = owner_definition();
+        observer.agent_id = "personal-assistant".into();
+        observer.harness = None;
+        observer.delegation_targets.clear();
+        observer.tools = vec!["inspect_agent".into(), "system_status".into()];
+        services
+            .definition_store
+            .for_scope(TEST_PRINCIPAL, TEST_WORKSPACE)
+            .create_definition(observer)
+            .await
+            .unwrap();
+        let params = HashMap::from([
+            ("__principal".into(), json!(TEST_PRINCIPAL)),
+            ("__workspace".into(), json!(TEST_WORKSPACE)),
+            ("__agent_id".into(), json!("personal-assistant")),
+            ("agent_id".into(), json!("worker-b")),
+        ]);
+        assert!(HarnessExecutionContext::from_params(&services, &params)
+            .await
+            .is_err());
+        let context = HarnessExecutionContext::for_runtime_inspection(
+            &services,
+            &params,
+            INSPECT_AGENT_TOOL_NAME,
+        )
+        .await
+        .unwrap();
+        assert!(
+            context.scope.target_ids().is_empty(),
+            "inspection must not add delegation targets"
+        );
+        let result = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(result["inspection_mode"], "runtime_metadata");
+        assert_eq!(result["agents"][0]["agent_id"], "worker-b");
+        assert_eq!(result["agents"][0]["runtime"]["definition_loaded"], false);
+        assert_eq!(result["agents"][0]["runtime"]["scheduler_available"], false);
+        assert!(result["agents"][0].get("definition_yaml").is_none());
+        assert!(result["agents"][0].get("recent_tasks").is_none());
+        assert!(result["agents"][0].get("recent_episodes").is_none());
+        // Inspection must not hydrate the cache and disguise missing adoption.
+        assert!(services
+            .runtime
+            .cached_definition_in_scope(TEST_PRINCIPAL, TEST_WORKSPACE, "worker-b")
+            .await
+            .is_none());
+        let scheduler_store = services
+            .definition_store
+            .for_scope(TEST_PRINCIPAL, TEST_WORKSPACE);
+        let scheduler_path = scheduler_store.storage().scheduler_state_path();
+        scheduler_store.storage().write_json_atomic(&scheduler_path, &json!({
+            "entries": {"private-entry": {
+                "agent_id": "worker-b", "goal_id": "private-goal-title", "task_id": "private-task-id",
+                "trigger_seq": 1, "last_triggered": null,
+                "registration": {"trigger_kind": "event", "pattern": "private-event-name", "filter": {"secret": "private-filter"}}
+            }}, "last_tick": null
+        })).await.unwrap();
+        let result = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(result["agents"][0]["runtime"]["scheduler_available"], true);
+        assert_eq!(
+            result["agents"][0]["runtime"]["registrations"][0]["trigger"]["kind"],
+            "event"
+        );
+        assert!(!result.to_string().contains("private-"));
+        scheduler_store
+            .storage()
+            .write_bytes_atomic(&scheduler_path, b"invalid scheduler json")
+            .await
+            .unwrap();
+        let result = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(result["agents"][0]["runtime"]["scheduler_available"], false);
+        assert!(result["agents"][0]["runtime"]["registrations"].is_null());
+        // Read inspection must not repair, reset or overwrite scheduler state.
+        assert_eq!(
+            scheduler_store
+                .storage()
+                .read_to_string(&scheduler_path)
+                .await
+                .unwrap(),
+            "invalid scheduler json"
+        );
+        let saved = services
+            .definition_store
+            .for_scope(TEST_PRINCIPAL, TEST_WORKSPACE)
+            .get_definition("worker-b")
+            .await
+            .unwrap()
+            .unwrap()
+            .definition;
+        services.runtime.upsert_definition(saved.clone()).await;
+        let result = execute_system_status(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(
+            result["agents"][0]["runtime"]["matches_saved_definition"],
+            true
+        );
+        let mut stale = saved;
+        stale.persona = "A stale runtime persona".into();
+        services.runtime.upsert_definition(stale).await;
+        let result = execute_inspect_agent(&services, &context, &params)
+            .await
+            .unwrap();
+        assert_eq!(
+            result["agents"][0]["runtime"]["matches_saved_definition"],
+            false
+        );
+        let mut outside = params.clone();
+        outside.insert("agent_id".into(), json!("other-scope-agent"));
+        let mut other_agent = worker_definition();
+        other_agent.agent_id = "other-scope-agent".into();
+        other_agent.principal = Some("another-owner".into());
+        services
+            .definition_store
+            .for_scope("another-owner", TEST_WORKSPACE)
+            .create_definition(other_agent)
+            .await
+            .unwrap();
+        assert!(execute_inspect_agent(&services, &context, &outside)
+            .await
+            .is_err());
+        let mut worker_caller = params.clone();
+        worker_caller.insert("__agent_id".into(), json!("worker-a"));
+        assert!(HarnessExecutionContext::for_runtime_inspection(
+            &services,
+            &worker_caller,
+            INSPECT_AGENT_TOOL_NAME
+        )
+        .await
+        .is_err());
+        let mut observer = context.owner_record.definition.clone();
+        observer.tools = vec!["time_math".into()];
+        let updated = scheduler_store
+            .update_definition(
+                "personal-assistant",
+                observer,
+                context.owner_record.version(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            HarnessExecutionContext::for_runtime_inspection(
+                &services,
+                &params,
+                INSPECT_AGENT_TOOL_NAME
+            )
+            .await
+            .is_err(),
+            "universal discovery alone must not grant runtime metadata"
+        );
+        let mut observer = updated.definition.clone();
+        observer.tools = vec!["inspect_agent".into(), "system_status".into()];
+        observer.denied_tools = vec!["inspect_agent".into()];
+        scheduler_store
+            .update_definition("personal-assistant", observer, updated.version())
+            .await
+            .unwrap();
+        assert!(
+            HarnessExecutionContext::for_runtime_inspection(
+                &services,
+                &params,
+                INSPECT_AGENT_TOOL_NAME
+            )
+            .await
+            .is_err(),
+            "explicit denial must win over the grant"
+        );
+        assert!(HarnessExecutionContext::for_runtime_inspection(
+            &services,
+            &params,
+            SYSTEM_STATUS_TOOL_NAME
+        )
+        .await
+        .is_ok());
+        // The provider selects the strict constructor for all action tools.
+        let provider = HarnessCapabilityProvider::new(CREATE_TASK_TOOL_NAME, services.clone());
+        let action = ExecutableAction::Pack {
+            capability_name: CREATE_TASK_TOOL_NAME.into(),
+            implementation: ImplementationType::Compiled {
+                provider_name: CREATE_TASK_TOOL_NAME.into(),
+            },
+            resolved_params: params,
+        };
+        assert!(provider.execute(&action, None, 10).await.is_err());
+    }
+
+    #[tokio::test]
     async fn create_task_defaults_goal_id_from_active_harness_context() {
         let tempdir = TempDir::new().expect("tempdir");
         let services = harness_services_fixture(&tempdir).await;
@@ -4581,6 +5156,13 @@ tools: []
             .await
             .expect("task creation should succeed");
         assert_eq!(
+            result["task_url"],
+            json!(format!(
+                "/work?selected={}&type=internal",
+                result["task"]["manifest"]["task_id"].as_str().unwrap()
+            ))
+        );
+        assert_eq!(
             result["task"]["manifest"]["goal_id"],
             json!(current_goal_id),
             "harness-created tasks should inherit the active semantic goal_id by default"
@@ -4596,6 +5178,15 @@ tools: []
         let visible_result = execute_create_task(&services, &context, &params)
             .await
             .expect("explicit user-visible task creation should succeed");
+        assert_eq!(
+            visible_result["task_url"],
+            json!(format!(
+                "/work?selected={}",
+                visible_result["task"]["manifest"]["task_id"]
+                    .as_str()
+                    .unwrap()
+            ))
+        );
         assert_eq!(
             visible_result["task"]["manifest"]["lifecycle"],
             json!("persistent"),
@@ -5440,6 +6031,7 @@ readable_agents:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         }
     }
 

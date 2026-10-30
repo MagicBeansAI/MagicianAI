@@ -434,9 +434,9 @@ fn validate_supported_schema(
     root_kind: SchemaRoot,
     limits: &tool_runtime_core::manifest_synthesis::SynthesizedMcpCatalogLimits,
 ) -> Result<(), ()> {
-    let mut stack = vec![(root, true)];
+    let mut stack = vec![(root, true, Vec::<&Map<String, Value>>::new())];
     let mut schema_nodes = 0usize;
-    while let Some((schema, is_root)) = stack.pop() {
+    while let Some((schema, is_root, mut known_properties)) = stack.pop() {
         schema_nodes = schema_nodes.checked_add(1).ok_or(())?;
         if schema_nodes > limits.max_schema_nodes {
             return Err(());
@@ -464,17 +464,19 @@ fn validate_supported_schema(
                 if !is_portable_schema_property_name(name) {
                     return Err(());
                 }
-                stack.push((child.as_object().ok_or(())?, false));
+                stack.push((child.as_object().ok_or(())?, false, Vec::new()));
             }
+            known_properties.push(properties);
         }
         if let Some(required) = schema.get("required") {
             let required = required.as_array().ok_or(())?;
-            let properties = properties.ok_or(())?;
             let mut names = BTreeSet::new();
             for name in required {
                 let name = name.as_str().ok_or(())?;
                 if !is_portable_schema_property_name(name)
-                    || !properties.contains_key(name)
+                    || !known_properties
+                        .iter()
+                        .any(|properties| properties.contains_key(name))
                     || !names.insert(name)
                 {
                     return Err(());
@@ -484,12 +486,12 @@ fn validate_supported_schema(
         if let Some(value) = schema.get("additionalProperties") {
             match value {
                 Value::Bool(_) => {},
-                Value::Object(child) => stack.push((child, false)),
+                Value::Object(child) => stack.push((child, false, Vec::new())),
                 _ => return Err(()),
             }
         }
         if let Some(value) = schema.get("items") {
-            stack.push((value.as_object().ok_or(())?, false));
+            stack.push((value.as_object().ok_or(())?, false, Vec::new()));
         }
         for keyword in ["anyOf", "oneOf", "allOf"] {
             if let Some(value) = schema.get(keyword) {
@@ -498,12 +500,22 @@ fn validate_supported_schema(
                     return Err(());
                 }
                 for alternative in alternatives {
-                    stack.push((alternative.as_object().ok_or(())?, false));
+                    // Composition constrains the same JSON instance, so its
+                    // required keys can be declared by the enclosing schema.
+                    stack.push((
+                        alternative.as_object().ok_or(())?,
+                        false,
+                        known_properties.clone(),
+                    ));
                 }
             }
         }
         if let Some(value) = schema.get("not") {
-            stack.push((value.as_object().ok_or(())?, false));
+            stack.push((
+                value.as_object().ok_or(())?,
+                false,
+                known_properties.clone(),
+            ));
         }
         let enum_values = if let Some(value) = schema.get("enum") {
             let values = value.as_array().ok_or(())?;
@@ -796,6 +808,9 @@ fn is_stripped_annotation_keyword(value: &str) -> bool {
             | "deprecated"
             | "readOnly"
             | "writeOnly"
+            | "contentEncoding"
+            | "contentMediaType"
+            | "contentSchema"
     )
 }
 
@@ -1096,6 +1111,32 @@ mod tests {
                 .code,
             McpCatalogProjectionErrorCode::UnsupportedOutputSchema
         );
+    }
+
+    #[test]
+    fn composition_required_keys_share_the_instance_but_nested_objects_do_not() {
+        let policy = policy(McpDiscoveryPolicy::default());
+        let schema = json!({"type":"object","properties":{
+            "query":{"type":"string"},
+            "image":{"type":"string","contentEncoding":"base64","contentMediaType":"image/png"}
+        },"anyOf":[{"required":["query"]},{"required":["image"]}]});
+        let catalog = project_mcp_catalog(vec![descriptor("search", schema)], &policy).unwrap();
+        let projected = serde_json::to_value(catalog.tools()[0].model_definition()).unwrap();
+        let text = projected.to_string();
+        assert!(!text.contains("contentEncoding"));
+        assert!(!text.contains("contentMediaType"));
+        assert!(text.contains("required"));
+        for bad in [
+            json!({"type":"object","properties":{"query":{"type":"string"}},"anyOf":[{"required":["unknown"]}]}),
+            json!({"type":"object","properties":{"query":{"type":"string"},"nested":{"type":"object","required":["query"]}}}),
+        ] {
+            assert_eq!(
+                project_mcp_catalog(vec![descriptor("bad", bad)], &policy)
+                    .unwrap_err()
+                    .code,
+                McpCatalogProjectionErrorCode::UnsupportedInputSchema
+            );
+        }
     }
 
     #[test]

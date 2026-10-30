@@ -2050,7 +2050,7 @@
 		align-items: center;
 		min-height: 22px;
 		padding: 2px 8px;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		background: color-mix(in srgb, var(--accent-primary, currentColor) 10%, transparent);
 		color: var(--text-muted, var(--text-secondary, #555));
 		font-size: 11px;
@@ -2080,7 +2080,7 @@
 	.status-pill {
 		display: inline-block;
 		padding: 2px 8px;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		font-size: 11px;
 		font-weight: 500;
 		background: color-mix(in srgb, currentColor 12%, transparent);
@@ -2111,7 +2111,7 @@
 		display: inline-block;
 		margin-left: 6px;
 		padding: 2px 8px;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		font-size: 10px;
 		font-weight: 600;
 		text-transform: lowercase;
@@ -2127,7 +2127,7 @@
 		display: inline-block;
 		margin-left: 6px;
 		padding: 2px 8px;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		font-size: 10px;
 		font-weight: 500;
 		text-transform: lowercase;
@@ -2168,7 +2168,7 @@
 	.lifecycle-pill {
 		display: inline-block;
 		padding: 2px 8px;
-		border-radius: 999px;
+		border-radius: var(--radius-sm, 6px);
 		font-size: 11px;
 		font-weight: 500;
 		background: color-mix(in srgb, currentColor 10%, transparent);

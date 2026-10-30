@@ -29,6 +29,7 @@ pub mod agy_contract;
 pub mod agy_qualification;
 pub mod agy_qualify_worker;
 pub mod budgets;
+pub mod catalog;
 pub mod citizen;
 pub mod claude;
 pub mod claude_contract;
@@ -48,6 +49,8 @@ pub mod grok_qualification;
 pub mod grok_qualify_worker;
 pub mod jsonl;
 pub mod ledger;
+pub mod model_discovery;
+pub mod original_edits;
 pub mod pi;
 pub mod qualification;
 pub mod qualify_worker;
@@ -797,6 +800,27 @@ struct BwrapPolicy {
     /// Files replaced by `/dev/null` (the session bus socket, a keyring
     /// password file).
     hide_files: Vec<PathBuf>,
+    /// The agents' `file_sandbox.read_only_roots`: read-only whatever else is
+    /// allowed, and a separate mount, so a hard link out of one fails
+    /// (EXDEV) and cannot give a program a writable second name. A root
+    /// missing at spawn is skipped (`--ro-bind-try`): one created during the
+    /// spawn is not fenced until the next.
+    read_only: Vec<PathBuf>,
+    /// Without a write allow-list, the writable roots re-opened inside a
+    /// read-only root: the agents' allowed roots, the shell's working dirs,
+    /// the task root. With one, its roots are used instead.
+    legacy_writable: Vec<PathBuf>,
+    /// The goal workspace mounts for the acting agent
+    /// (`goal_workspace_access::bwrap_args_with`), after every other mount.
+    workspace_args: Vec<OsString>,
+    /// The member workspaces those mounts bind back from the host: the
+    /// layering, the real repo and the hidden credentials inside them are
+    /// mounted again after them.
+    workspace_reopened: Vec<PathBuf>,
+    /// Those of them opened only to read, through a delegator
+    /// (`WorkspaceDenies::read_only_dirs`): no layer made again inside one is
+    /// writable.
+    workspace_read_only: Vec<PathBuf>,
 }
 
 /// The `bwrap` argv for one spawn. Pure, so the mount order — the contract,
@@ -805,9 +829,11 @@ struct BwrapPolicy {
 /// bwrap applies mounts in order and a later mount over a path hides earlier
 /// ones beneath it, so: the whole tree read-only (allow-list) or writable
 /// (legacy); `/dev` and a fresh `/proc` (which needs its own PID namespace
-/// without setuid bwrap); the write roots, parents before children; the live
-/// source read-only with the roots inside its storage base re-opened; the
-/// real repo read-only; the hidden credentials last. The network is shared
+/// without setuid bwrap); the write roots, parents before children; the
+/// agents' read-only roots, with the writable roots inside them re-bound;
+/// the live source read-only with the roots inside its storage base
+/// re-opened, then the read-only layering inside that base again; the real
+/// repo read-only; the hidden credentials last. The network is shared
 /// on purpose. A missing write root is skipped (`--bind-try`), never fatal.
 #[cfg(any(target_os = "linux", test))]
 fn bwrap_args(policy: &BwrapPolicy, program: &OsStr, args: &[OsString]) -> Vec<OsString> {
@@ -823,6 +849,22 @@ fn bwrap_args(policy: &BwrapPolicy, program: &OsStr, args: &[OsString]) -> Vec<O
         };
         push(out, "--bind-try", &[&target, &target]);
     }
+    fn layer(out: &mut Vec<OsString>, layers: &[(PathBuf, bool)]) {
+        for (root, read_only) in layers {
+            if *read_only {
+                push(out, "--ro-bind-try", &[root, root]);
+            } else {
+                bind_root(out, root);
+            }
+        }
+    }
+    let layers = super::shell_box::read_only_layers(
+        &policy.read_only,
+        policy
+            .write_allow
+            .as_deref()
+            .unwrap_or(&policy.legacy_writable),
+    );
     let mut out: Vec<OsString> = vec!["--die-with-parent".into(), "--unshare-pid".into()];
     match &policy.write_allow {
         Some(roots) => {
@@ -834,6 +876,10 @@ fn bwrap_args(policy: &BwrapPolicy, program: &OsStr, args: &[OsString]) -> Vec<O
             for root in &roots {
                 bind_root(&mut out, root);
             }
+            // Read-only roots after the write roots, writable roots inside
+            // them re-bound after; all before the live-fence and real-repo
+            // mounts, which no re-bind may undo.
+            layer(&mut out, &layers);
             if let Some((source, base)) = &policy.live_fence {
                 push(&mut out, "--ro-bind", &[source, source]);
                 for root in roots
@@ -848,11 +894,20 @@ fn bwrap_args(policy: &BwrapPolicy, program: &OsStr, args: &[OsString]) -> Vec<O
             push(&mut out, "--bind", &[Path::new("/"), Path::new("/")]);
             push(&mut out, "--dev", &[Path::new("/dev")]);
             push(&mut out, "--proc", &[Path::new("/proc")]);
+            layer(&mut out, &layers);
             if let Some((source, base)) = &policy.live_fence {
                 push(&mut out, "--ro-bind", &[source, source]);
                 push(&mut out, "--bind", &[base, base]);
             }
         },
+    }
+    // The live fence's base mount hid the layering inside the base: it
+    // applies again there.
+    if let Some((_, base)) = &policy.live_fence {
+        layer(
+            &mut out,
+            &super::shell_box::read_only_layers_within(&layers, base),
+        );
     }
     if let Some(real) = &policy.deny_real_repo {
         push(&mut out, "--ro-bind", &[real, real]);
@@ -863,6 +918,42 @@ fn bwrap_args(policy: &BwrapPolicy, program: &OsStr, args: &[OsString]) -> Vec<O
     }
     for file in &policy.hide_files {
         push(&mut out, "--ro-bind", &[Path::new("/dev/null"), file]);
+    }
+    out.extend(policy.workspace_args.iter().cloned());
+    // A member workspace bound back from the host dropped every mount made
+    // inside it above: they apply again there.
+    for member in &policy.workspace_reopened {
+        let read_only_member = policy.workspace_read_only.contains(member);
+        layer(
+            &mut out,
+            &super::shell_box::read_only_layers_within(&layers, member)
+                .into_iter()
+                .filter(|(root, _)| root != member)
+                .map(|(root, read_only)| (root, read_only || read_only_member))
+                .collect::<Vec<_>>(),
+        );
+        if let Some(real) = policy
+            .deny_real_repo
+            .as_ref()
+            .filter(|real| real.starts_with(member))
+        {
+            push(&mut out, "--ro-bind", &[real, real]);
+        }
+        for dir in policy
+            .hide_dirs
+            .iter()
+            .filter(|dir| dir.starts_with(member))
+        {
+            push(&mut out, "--tmpfs", &[dir]);
+            push(&mut out, "--remount-ro", &[dir]);
+        }
+        for file in policy
+            .hide_files
+            .iter()
+            .filter(|file| file.starts_with(member))
+        {
+            push(&mut out, "--ro-bind", &[Path::new("/dev/null"), file]);
+        }
     }
     out.push(OsString::from("--"));
     out.push(program.to_os_string());
@@ -935,6 +1026,72 @@ fn macos_sandbox_profile(
     )
 }
 
+/// SBPL for the read-only layering ([`super::shell_box::read_only_layers`]):
+/// a read-only root denies writes and hard links out of it
+/// (`ln programs/plan.md <shadow>/plan.md` would give a program a writable
+/// second name); a writable root inside one is re-opened for both (a `*`
+/// prefix entry for writes only). The god-mode override's unboxed shell in a
+/// coding context still runs under this profile; super god mode launches
+/// with no profile at all.
+#[cfg(any(target_os = "macos", test, feature = "test-fixtures"))]
+fn sbpl_read_only_layers(layers: &[(PathBuf, bool)]) -> String {
+    let mut rules = String::new();
+    for (root, read_only) in layers {
+        if *read_only {
+            let root = sbpl_escape_path(root);
+            rules.push_str(&format!(
+                "(deny file-write* (subpath \"{root}\"))\n(deny file-link (subpath \"{root}\"))\n"
+            ));
+        } else {
+            rules.push_str(&sbpl_write_allow(root));
+            if !root.to_string_lossy().ends_with('*') {
+                rules.push_str(&format!(
+                    "(allow file-link (subpath \"{}\"))\n",
+                    sbpl_escape_path(root)
+                ));
+            }
+        }
+    }
+    rules
+}
+
+/// Whether the coding profile lets a spawn write at `path`: under the write
+/// allow-list (or, without one, anywhere), with the deepest of those roots
+/// and the agents' read-only roots deciding (a tie goes to read-only).
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn coding_writes_allowed(
+    path: &Path,
+    write_allow: Option<&[PathBuf]>,
+    read_only: &[PathBuf],
+    legacy_writable: &[PathBuf],
+) -> bool {
+    let deepest = |roots: &[PathBuf]| {
+        roots
+            .iter()
+            .map(|root| {
+                let text = root.to_string_lossy();
+                PathBuf::from(text.strip_suffix('*').unwrap_or(&text))
+            })
+            .filter(|root| path.starts_with(root))
+            .map(|root| root.components().count())
+            .max()
+    };
+    let read_only_depth = deepest(read_only);
+    match write_allow {
+        Some(list) => match (deepest(list), read_only_depth) {
+            (Some(writable), Some(read_only)) => writable > read_only,
+            (Some(_), None) => true,
+            _ => false,
+        },
+        None => match read_only_depth {
+            None => true,
+            Some(read_only) => {
+                deepest(legacy_writable).is_some_and(|writable| writable > read_only)
+            },
+        },
+    }
+}
+
 /// Escape a path for an SBPL `#"..."` regex literal.
 #[cfg(any(target_os = "macos", test, feature = "test-fixtures"))]
 fn sbpl_escape_regex(path: &Path) -> String {
@@ -979,7 +1136,7 @@ pub struct SandboxAllowances {
     pub state_paths: Vec<PathBuf>,
 }
 
-#[cfg(any(target_os = "macos", test, feature = "test-fixtures"))]
+#[cfg(any(test, feature = "test-fixtures"))]
 fn macos_sandbox_profile_with(
     live_fence: Option<(&Path, &Path)>,
     deny_real_repo: Option<&Path>,
@@ -987,6 +1144,36 @@ fn macos_sandbox_profile_with(
     allowances: &SandboxAllowances,
     write_allow: Option<&[PathBuf]>,
 ) -> String {
+    macos_sandbox_profile_layered(
+        live_fence,
+        deny_real_repo,
+        home,
+        allowances,
+        write_allow,
+        &[],
+        &[],
+    )
+}
+
+/// [`macos_sandbox_profile_with`] with the agents' `read_only_roots`. The
+/// writable roots re-opened inside one are the write allow-list's, or
+/// without one `legacy_writable` (the agents' allowed roots, the shell's
+/// working dirs, the task root). The layering sits after the write allows
+/// and before the live-fence and real-repo denies, so no re-open undoes
+/// them; it is emitted again inside the live fence's storage base after the
+/// base's carve-out, which would otherwise re-open read-only roots there.
+#[cfg(any(target_os = "macos", test, feature = "test-fixtures"))]
+fn macos_sandbox_profile_layered(
+    live_fence: Option<(&Path, &Path)>,
+    deny_real_repo: Option<&Path>,
+    home: Option<&Path>,
+    allowances: &SandboxAllowances,
+    write_allow: Option<&[PathBuf]>,
+    read_only: &[PathBuf],
+    legacy_writable: &[PathBuf],
+) -> String {
+    let layers =
+        super::shell_box::read_only_layers(read_only, write_allow.unwrap_or(legacy_writable));
     let mut profile = String::from("(version 1)\n(allow default)\n");
     // Write allow-list mode: no writes except the listed roots and the
     // devices every process needs. The live repo source is denied again after
@@ -1002,6 +1189,9 @@ fn macos_sandbox_profile_with(
         for root in roots {
             profile.push_str(&sbpl_write_allow(root));
         }
+    }
+    profile.push_str(&sbpl_read_only_layers(&layers));
+    if let Some(roots) = write_allow {
         if let Some((repo_source_root, sandbox_base)) = live_fence {
             profile.push_str(&format!(
                 "(deny file-write* (subpath \"{}\"))\n",
@@ -1022,6 +1212,13 @@ fn macos_sandbox_profile_with(
             "(deny file-write* (subpath \"{}\"))\n(allow file-write* (subpath \"{}\"))\n",
             sbpl_escape_path(repo_source_root),
             sbpl_escape_path(sandbox_base),
+        ));
+    }
+    // The live fence's base carve-out re-opened its whole base: the
+    // layering inside the base applies again.
+    if let Some((_, sandbox_base)) = live_fence {
+        profile.push_str(&sbpl_read_only_layers(
+            &super::shell_box::read_only_layers_within(&layers, sandbox_base),
         ));
     }
     // Trailing rule (last-match-wins) — fence the run's REAL repo read-only. This
@@ -1193,7 +1390,11 @@ fn os_sandbox_wrap_with(
                 &resolved,
             )
         });
-        let profile = macos_sandbox_profile_with(
+        let read_only_roots =
+            crate::magician_v2::execution::native_executors::agent_read_only_roots();
+        let legacy_writable =
+            crate::magician_v2::execution::native_executors::agent_writable_roots();
+        let profile = macos_sandbox_profile_layered(
             live_fence
                 .as_ref()
                 .map(|(repo, base)| (repo.as_path(), base.as_path())),
@@ -1201,6 +1402,26 @@ fn os_sandbox_wrap_with(
             home.as_deref(),
             &allowances,
             write_allow.as_deref(),
+            &read_only_roots,
+            &legacy_writable,
+        );
+        // Last (last match wins): the notes hybrid index, and the goal
+        // workspaces the acting agent may not reach (a member workspace is
+        // re-opened for writes only where this profile allows them). No
+        // re-open above undoes them.
+        let profile = format!(
+            "{profile}{}{}{}",
+            crate::magician_v2::execution::shell_box::plane_private_rules_outside_sessions(),
+            crate::magician_v2::execution::goal_workspace_access::HYBRID_INDEX_SBPL_RULE,
+            crate::magician_v2::execution::goal_workspace_access::sbpl_rules_with(
+                &crate::magician_v2::execution::goal_workspace_access::denies_for_current(),
+                &|path| coding_writes_allowed(
+                    path,
+                    write_allow.as_deref(),
+                    &read_only_roots,
+                    &legacy_writable
+                ),
+            ),
         );
         let mut wrapped = Vec::with_capacity(args.len() + 3);
         wrapped.push(OsString::from("-p"));
@@ -1243,6 +1464,31 @@ fn os_sandbox_wrap_with(
             hide_files.push(PathBuf::from(password_file));
         }
         hide_files.retain(|path| path.exists());
+        // The notes hybrid index, and the goal workspaces the acting agent
+        // may not reach (mounted last, `goal_workspace_access`).
+        let mut hide_dirs =
+            vault_dirs_to_hide(&crate::magician_v2::process_storage::runtime_root());
+        hide_dirs.extend(
+            crate::magician_v2::execution::goal_workspace_access::hybrid_index_dirs(
+                &crate::magician_v2::process_storage::runtime_root(),
+            ),
+        );
+        // Plane harness sessions' private folders (grant files, homes).
+        let plane_private =
+            crate::magician_v2::execution::shell_box::plane_private_paths_outside_sessions();
+        hide_dirs.extend(plane_private.iter().filter(|path| path.is_dir()).cloned());
+        hide_files.extend(plane_private.into_iter().filter(|path| path.is_file()));
+        let read_only = crate::magician_v2::execution::native_executors::agent_read_only_roots();
+        let legacy_writable =
+            crate::magician_v2::execution::native_executors::agent_writable_roots();
+        let workspace_denies =
+            crate::magician_v2::execution::goal_workspace_access::denies_for_current();
+        let workspace_args = crate::magician_v2::execution::goal_workspace_access::bwrap_args_with(
+            &workspace_denies,
+            &|path| {
+                coding_writes_allowed(path, write_allow.as_deref(), &read_only, &legacy_writable)
+            },
+        );
         let policy = BwrapPolicy {
             write_allow,
             live_fence: live_fence
@@ -1251,8 +1497,13 @@ fn os_sandbox_wrap_with(
             // Tier-1 airtight fence: the run's REAL repo stays read-only even
             // inside a writable root.
             deny_real_repo: deny_real_repo.as_deref().map(resolved),
-            hide_dirs: vault_dirs_to_hide(&crate::magician_v2::process_storage::runtime_root()),
+            hide_dirs,
             hide_files: hide_files.iter().map(|path| resolved(path)).collect(),
+            read_only,
+            legacy_writable,
+            workspace_args,
+            workspace_reopened: workspace_denies.reopened.clone(),
+            workspace_read_only: workspace_denies.read_only_dirs.clone(),
         };
         return (
             bwrap.as_os_str().to_os_string(),
@@ -1325,7 +1576,9 @@ where
 }
 
 fn harness_fence() -> HarnessFence {
-    HARNESS_FENCE.try_with(|fence| *fence).unwrap_or(HarnessFence::Profile)
+    HARNESS_FENCE
+        .try_with(|fence| *fence)
+        .unwrap_or(HarnessFence::Profile)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1379,14 +1632,23 @@ pub fn harness_own_sandbox_off() -> bool {
 /// sessions, auth refresh, caches. Home-relative.
 fn harness_state_dirs(engine: CodingEngineKind) -> &'static [&'static str] {
     match engine {
-        CodingEngineKind::ClaudeCode => &[".claude", ".config/claude", ".local/state/claude", ".local/share/claude"],
+        CodingEngineKind::ClaudeCode => &[
+            ".claude",
+            ".config/claude",
+            ".local/state/claude",
+            ".local/share/claude",
+        ],
         CodingEngineKind::CodexAppServer => &[".codex"],
         CodingEngineKind::Pi => &[".pi"],
         // None: the owner's `~/.grok` holds config, hooks and plugins their
         // own unboxed Grok runs. Only its sign-in is writable (`harness_box`),
         // and Magician's Grok home only in its runtime subdirectories.
         CodingEngineKind::GrokAcp => &[],
-        CodingEngineKind::AgyCli => &[".gemini", ".antigravity", "Library/Application Support/Antigravity"],
+        CodingEngineKind::AgyCli => &[
+            ".gemini",
+            ".antigravity",
+            "Library/Application Support/Antigravity",
+        ],
     }
 }
 
@@ -1409,7 +1671,10 @@ fn harness_box_env(engine: CodingEngineKind) -> &'static [(&'static str, &'stati
 /// its token save timed out after 5 s (`Keyring SaveToken timed out`) and
 /// macOS asked the owner about a keychain it could not find (2026-10-15).
 fn keychain_signin(engine: CodingEngineKind) -> bool {
-    matches!(engine, CodingEngineKind::ClaudeCode | CodingEngineKind::AgyCli)
+    matches!(
+        engine,
+        CodingEngineKind::ClaudeCode | CodingEngineKind::AgyCli
+    )
 }
 
 /// The box for `engine`'s process on this turn. `read_only`: a discuss turn,
@@ -1447,7 +1712,11 @@ fn harness_box(
             // kernel resolves.
             let grok_home = grok_contract::magician_grok_home_dir();
             let grok_home = grok_home.canonicalize().unwrap_or(grok_home);
-            writable.extend(grok_contract::GROK_HOME_WRITABLE_DIRS.iter().map(|dir| grok_home.join(dir)));
+            writable.extend(
+                grok_contract::GROK_HOME_WRITABLE_DIRS
+                    .iter()
+                    .map(|dir| grok_home.join(dir)),
+            );
             writable_regex.push(grok_contract::grok_home_writable_regex(&grok_home));
             // Token refreshes go through the `auth.json` link to the owner's
             // sign-in, and its lock beside it.
@@ -1470,7 +1739,10 @@ fn harness_box(
         CodingEngineKind::ClaudeCode => {
             if let Some(home) = &home {
                 let home = home.canonicalize().unwrap_or_else(|_| home.clone());
-                writable_regex.push(format!("^{}/\\.claude\\.json", regex::escape(&home.to_string_lossy())));
+                writable_regex.push(format!(
+                    "^{}/\\.claude\\.json",
+                    regex::escape(&home.to_string_lossy())
+                ));
             }
         },
         _ => {},
@@ -1490,6 +1762,12 @@ fn harness_box(
         // and save a refreshed token back to it; every other engine keeps it
         // unreadable.
         keychain_readable: keychain_signin(engine),
+        // Goal workspaces the requesting agent may not reach stay closed to
+        // the engine (`goal_workspace_access`).
+        acting_agent_id: request
+            .acting_agent_id
+            .clone()
+            .or_else(crate::magician_v2::execution::native_executors::current_acting_agent),
     }
 }
 
@@ -1542,7 +1820,90 @@ pub fn harness_command(
     request: &CodingEngineRequest,
     read_only: bool,
 ) -> HarnessCommand {
+    if let Some(repo) = request
+        .original_repo
+        .as_ref()
+        .filter(|_| harness_unrestricted())
+    {
+        let acting = request
+            .acting_agent_id
+            .clone()
+            .or_else(crate::magician_v2::execution::native_executors::current_acting_agent);
+        let denies = crate::magician_v2::execution::goal_workspace_access::denies_for_acting(
+            acting.as_deref(),
+        );
+        if denies.guards_workspaces && super::shell_box::linux_harness_isolation_missing() {
+            return HarnessCommand {
+                command: refused_launch(
+                    "Original-folder runs cannot bypass the Linux goal workspace network fence",
+                ),
+                env: Vec::new(),
+            };
+        }
+        return match super::shell_box::wrap_workspace_and_read_only(
+            binary.as_os_str(),
+            args,
+            &denies,
+            true,
+            std::slice::from_ref(repo),
+        ) {
+            Some(boxed) => {
+                let mut command = tokio::process::Command::new(&boxed.program);
+                command.args(&boxed.args);
+                HarnessCommand {
+                    command,
+                    env: boxed.env,
+                }
+            },
+            None => HarnessCommand {
+                command: refused_launch("Original-folder approval needs an OS write fence"),
+                env: Vec::new(),
+            },
+        };
+    }
     if harness_unrestricted() {
+        // Super god mode lifts every fence but goal workspaces (owner
+        // decision 2026-10-20: that fence is always on): an agent a
+        // workspace is fenced from runs under the workspace rules alone.
+        let acting = request
+            .acting_agent_id
+            .clone()
+            .or_else(crate::magician_v2::execution::native_executors::current_acting_agent);
+        let denies = crate::magician_v2::execution::goal_workspace_access::denies_for_acting(
+            acting.as_deref(),
+        );
+        if denies.guards_workspaces && super::shell_box::linux_harness_isolation_missing() {
+            // bwrap cannot hold a harness's network to its own grant channel.
+            return HarnessCommand {
+                command: refused_launch(
+                    "super god mode cannot launch this engine for an agent fenced from a goal workspace on Linux: its network cannot yet be held to its own channel",
+                ),
+                env: Vec::new(),
+            };
+        }
+        if denies.guards_workspaces {
+            return match super::shell_box::wrap_workspace_only(binary.as_os_str(), args, &denies, true) {
+                Some(boxed) => {
+                    tracing::warn!(
+                        target: "coding_engine",
+                        engine = ?engine,
+                        "[SUPER-GOD] engine launched with only the goal workspace fence"
+                    );
+                    let mut command = tokio::process::Command::new(&boxed.program);
+                    command.args(&boxed.args);
+                    HarnessCommand {
+                        command,
+                        env: boxed.env,
+                    }
+                },
+                None => HarnessCommand {
+                    command: refused_launch(
+                        "super god mode cannot launch this engine here: goal workspaces need an OS sandbox for this agent",
+                    ),
+                    env: Vec::new(),
+                },
+            };
+        }
         tracing::warn!(
             target: "coding_engine",
             engine = ?engine,
@@ -1558,6 +1919,21 @@ pub fn harness_command(
     }
     if harness_wrap() == HarnessWrap::Box {
         let harness = harness_box(engine, binary, request, read_only);
+        // On Linux a fenced harness would keep the host network (bwrap cannot
+        // filter ports) and could reach another session's grant channel.
+        if super::shell_box::linux_harness_isolation_missing()
+            && crate::magician_v2::execution::goal_workspace_access::denies_for(
+                harness.acting_agent_id.as_deref(),
+            )
+            .guards_workspaces
+        {
+            return HarnessCommand {
+                command: refused_launch(
+                    "this coding engine may not start for an agent fenced from a goal workspace on Linux: its network cannot yet be held to its own channel",
+                ),
+                env: Vec::new(),
+            };
+        }
         if let Some(boxed) = super::shell_box::wrap_harness(binary.as_os_str(), args, &harness) {
             tracing::info!(
                 target: "coding_engine",
@@ -1580,6 +1956,19 @@ pub fn harness_command(
         command: os_sandbox_command_with(binary.as_os_str(), args, engine_allowances(engine)),
         env: Vec::new(),
     }
+}
+
+/// A command that only reports `message` and fails (exit 126): a launch the
+/// goal workspace fence refuses, for callers that spawn whatever they get.
+pub fn refused_launch(message: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.args([
+        "-c",
+        "printf '%s\\n' \"$1\" >&2; exit 126",
+        "refused",
+        message,
+    ]);
+    command
 }
 
 /// What `engine` may do under the coding profile beyond its default: its own
@@ -1978,6 +2367,12 @@ pub struct CodingEngineRequest {
     /// exactly the information a mid-turn death destroys. `None` = nothing is
     /// listening. Not serialized — a runtime side channel (like `event_sink`).
     pub dispatch_sink: Option<CodingDispatchSink>,
+    /// The agent this turn works for, from runtime identity (never from tool
+    /// arguments): the engine's box keeps out the goal workspaces that agent
+    /// may not reach. `None` = no agent, a non-member of every workspace.
+    pub acting_agent_id: Option<String>,
+    /// Direct original checkout: held read-only even under Super god mode.
+    pub original_repo: Option<PathBuf>,
 }
 
 impl CodingEngineRequest {
@@ -2032,6 +2427,8 @@ impl CodingEngineRequest {
             run_execution_id: None,
             usage_capture: None,
             dispatch_sink: None,
+            acting_agent_id: None,
+            original_repo: None,
         }
     }
 }
@@ -3357,7 +3754,10 @@ mod tests {
             CodingEngineKind::AgyCli,
             CodingEngineKind::Pi,
         ] {
-            assert!(!request.read_only_turn(engine), "{engine:?} builds by default");
+            assert!(
+                !request.read_only_turn(engine),
+                "{engine:?} builds by default"
+            );
         }
         request.codex.mode = factory::CodexTurnMode::Discuss;
         request.grok.mode = factory::GrokTurnMode::Discuss;
@@ -3371,7 +3771,10 @@ mod tests {
             CodingEngineKind::AgyCli,
             CodingEngineKind::Pi,
         ] {
-            assert!(request.read_only_turn(engine), "{engine:?} discuss is read-only");
+            assert!(
+                request.read_only_turn(engine),
+                "{engine:?} discuss is read-only"
+            );
         }
     }
 
@@ -3394,35 +3797,79 @@ mod tests {
     fn a_harness_box_writes_its_copy_and_its_own_state_only() {
         let request = harness_request();
         let build = harness_box(CodingEngineKind::Pi, Path::new("/bin/pi"), &request, false);
-        assert!(build.writable.contains(&PathBuf::from("/scope/coding_engine/worktrees/w1")));
-        assert!(build.writable.contains(&PathBuf::from("/scope/coding_engine/pi_sessions")));
-        assert!(!build.writable.iter().any(|dir| dir.starts_with("/work/real")), "the real repo stays read-only");
-        let discuss = harness_box(CodingEngineKind::ClaudeCode, Path::new("/bin/claude"), &request, true);
-        assert!(!discuss.writable.contains(&PathBuf::from("/scope/coding_engine/worktrees/w1")));
+        assert!(build
+            .writable
+            .contains(&PathBuf::from("/scope/coding_engine/worktrees/w1")));
+        assert!(build
+            .writable
+            .contains(&PathBuf::from("/scope/coding_engine/pi_sessions")));
+        assert!(
+            !build
+                .writable
+                .iter()
+                .any(|dir| dir.starts_with("/work/real")),
+            "the real repo stays read-only"
+        );
+        let discuss = harness_box(
+            CodingEngineKind::ClaudeCode,
+            Path::new("/bin/claude"),
+            &request,
+            true,
+        );
+        assert!(!discuss
+            .writable
+            .contains(&PathBuf::from("/scope/coding_engine/worktrees/w1")));
         if let Some(home) = dirs::home_dir() {
             assert!(discuss.writable.contains(&home.join(".claude")));
-            assert_eq!(discuss.writable_regex.len(), 1, "~/.claude.json and its backups");
+            assert_eq!(
+                discuss.writable_regex.len(),
+                1,
+                "~/.claude.json and its backups"
+            );
         }
     }
 
     #[test]
     fn a_boxed_grok_writes_its_runtime_state_but_not_its_config_or_the_owner_grok() {
         let request = harness_request();
-        let harness = harness_box(CodingEngineKind::GrokAcp, Path::new("/bin/grok"), &request, false);
+        let harness = harness_box(
+            CodingEngineKind::GrokAcp,
+            Path::new("/bin/grok"),
+            &request,
+            false,
+        );
         let grok_home = grok_contract::magician_grok_home_dir();
         let grok_home = grok_home.canonicalize().unwrap_or(grok_home);
         assert!(harness.writable.contains(&grok_home.join("sessions")));
         assert!(harness.writable.contains(&grok_home.join("logs")));
-        assert!(!harness.writable.contains(&grok_home), "the home root holds config, hooks and plugins");
-        assert!(!harness.writable.iter().any(|dir| dir.ends_with("hooks") || dir.ends_with("installed-plugins")));
+        assert!(
+            !harness.writable.contains(&grok_home),
+            "the home root holds config, hooks and plugins"
+        );
+        assert!(!harness
+            .writable
+            .iter()
+            .any(|dir| dir.ends_with("hooks") || dir.ends_with("installed-plugins")));
         if let Some(home) = dirs::home_dir() {
-            assert!(!harness.writable.contains(&home.join(".grok")), "the owner's Grok runs unboxed");
+            assert!(
+                !harness.writable.contains(&home.join(".grok")),
+                "the owner's Grok runs unboxed"
+            );
         }
-        assert!(harness.writable_regex.contains(&grok_contract::grok_home_writable_regex(&grok_home)));
+        assert!(harness
+            .writable_regex
+            .contains(&grok_contract::grok_home_writable_regex(&grok_home)));
         if let Some(owner) = grok_contract::owner_grok_home() {
             let owner = owner.canonicalize().unwrap_or(owner);
-            assert!(harness.writable_regex.contains(&grok_contract::owner_auth_writable_regex(&owner)));
-            assert_eq!(harness.writable_regex.len(), 2, "{:?}", harness.writable_regex);
+            assert!(harness
+                .writable_regex
+                .contains(&grok_contract::owner_auth_writable_regex(&owner)));
+            assert_eq!(
+                harness.writable_regex.len(),
+                2,
+                "{:?}",
+                harness.writable_regex
+            );
         }
         assert!(harness_state_dirs(CodingEngineKind::GrokAcp).is_empty());
     }
@@ -3434,20 +3881,46 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         let request = harness_request();
         let harness = CODING_RUN_REAL_REPO.sync_scope(repo.clone(), || {
-            harness_box(CodingEngineKind::ClaudeCode, Path::new("/bin/claude"), &request, false)
+            harness_box(
+                CodingEngineKind::ClaudeCode,
+                Path::new("/bin/claude"),
+                &request,
+                false,
+            )
         });
         assert_eq!(harness.deny_write, vec![repo.canonicalize().unwrap()]);
-        let unscoped = harness_box(CodingEngineKind::ClaudeCode, Path::new("/bin/claude"), &request, false);
-        assert!(unscoped.deny_write.is_empty(), "no coding run, no real repo to fence");
+        let unscoped = harness_box(
+            CodingEngineKind::ClaudeCode,
+            Path::new("/bin/claude"),
+            &request,
+            false,
+        );
+        assert!(
+            unscoped.deny_write.is_empty(),
+            "no coding run, no real repo to fence"
+        );
     }
 
     #[test]
     fn unrestricted_launches_drop_the_named_flags_and_their_values() {
-        let args: Vec<OsString> = ["-p", "hi", "--setting-sources", "", "--safe-mode", "--disallowedTools", "WebSearch", "--verbose"]
-            .into_iter()
-            .map(OsString::from)
-            .collect();
-        let kept = without_flags(args, &["--safe-mode"], &["--setting-sources", "--disallowedTools"]);
+        let args: Vec<OsString> = [
+            "-p",
+            "hi",
+            "--setting-sources",
+            "",
+            "--safe-mode",
+            "--disallowedTools",
+            "WebSearch",
+            "--verbose",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let kept = without_flags(
+            args,
+            &["--safe-mode"],
+            &["--setting-sources", "--disallowedTools"],
+        );
         assert_eq!(kept, ["-p", "hi", "--verbose"].map(OsString::from).to_vec());
     }
 
@@ -4052,6 +4525,43 @@ mod tests {
             .unwrap_or(BwrapAccess::Hidden)
     }
 
+    /// The goal workspace mounts bind a member workspace back from the host
+    /// last, which drops the mounts made inside it before: its read-only
+    /// roots and hidden folders are mounted again after them.
+    #[test]
+    fn bwrap_masks_inside_a_member_workspace_hold_after_the_workspace_mounts() {
+        let ws = PathBuf::from("/notes/Workspaces/Magican");
+        let policy = BwrapPolicy {
+            read_only: vec![ws.join("Archive")],
+            hide_dirs: vec![ws.join("vault")],
+            workspace_args: [
+                "--tmpfs",
+                "/notes/Workspaces",
+                "--bind-try",
+                "/notes/Workspaces/Magican",
+                "/notes/Workspaces/Magican",
+                "--remount-ro",
+                "/notes/Workspaces",
+            ]
+            .map(OsString::from)
+            .to_vec(),
+            workspace_reopened: vec![ws.clone()],
+            ..BwrapPolicy::default()
+        };
+        let argv = bwrap_args(&policy, OsStr::new("sh"), &[]);
+        let access = |path: &str| bwrap_model(&argv, Path::new(path));
+        assert_eq!(access("/notes/Workspaces/Magican/a.md"), BwrapAccess::Write);
+        assert_eq!(
+            access("/notes/Workspaces/Magican/Archive/a.md"),
+            BwrapAccess::ReadOnly
+        );
+        assert_eq!(
+            access("/notes/Workspaces/Magican/vault/key"),
+            BwrapAccess::Hidden
+        );
+        assert_eq!(access("/notes/Workspaces/Other/a.md"), BwrapAccess::Hidden);
+    }
+
     #[test]
     fn bwrap_allow_list_writes_only_its_roots_and_keeps_the_fences() {
         let home = Path::new("/home/me");
@@ -4079,6 +4589,11 @@ mod tests {
             deny_real_repo: Some(real.clone()),
             hide_dirs: vec![secrets.clone()],
             hide_files: vec![PathBuf::from("/run/user/1000/bus")],
+            read_only: Vec::new(),
+            legacy_writable: Vec::new(),
+            workspace_args: Vec::new(),
+            workspace_reopened: Vec::new(),
+            workspace_read_only: Vec::new(),
         };
         let argv = bwrap_args(
             &policy,
@@ -4139,6 +4654,264 @@ mod tests {
         ] {
             assert_eq!(at(hidden), BwrapAccess::Hidden, "{hidden}\n{text:?}");
         }
+    }
+
+    /// Read-only roots hold in a coding profile, a writable root inside one
+    /// stays writable, a read-only root inside the live fence's storage base
+    /// survives the base's carve-out, and the real repo stays denied last.
+    #[test]
+    fn coding_profile_layers_read_only_roots_and_reopens_nested_writable_ones() {
+        let read_only = [
+            PathBuf::from("/notes"),
+            PathBuf::from("/src/data/scopes/a/b/programs"),
+        ];
+        let write_allow = [
+            PathBuf::from("/work"),
+            PathBuf::from("/notes/Workspaces"),
+            PathBuf::from("/src/data/scopes"),
+        ];
+        let profile = macos_sandbox_profile_layered(
+            Some((Path::new("/src"), Path::new("/src/data"))),
+            Some(Path::new("/code/proj")),
+            None,
+            &SandboxAllowances::default(),
+            Some(&write_allow),
+            &read_only,
+            &[],
+        );
+        let at = |rule: &str| {
+            profile
+                .rfind(rule)
+                .unwrap_or_else(|| panic!("missing {rule} in {profile}"))
+        };
+        let deny_notes = at("(deny file-write* (subpath \"/notes\"))");
+        assert!(profile.contains("(deny file-link (subpath \"/notes\"))"));
+        assert!(deny_notes > at("(allow file-write* (subpath \"/work\"))"));
+        assert!(deny_notes < at("(allow file-write* (subpath \"/notes/Workspaces\"))"));
+        assert!(deny_notes < at("(allow file-link (subpath \"/notes/Workspaces\"))"));
+        // The layering comes before the live fence, and is emitted again
+        // inside the base after the base's re-allow.
+        let deny_source = at("(deny file-write* (subpath \"/src\"))");
+        assert!(deny_notes < deny_source);
+        let programs = at("(deny file-write* (subpath \"/src/data/scopes/a/b/programs\"))");
+        assert!(programs > at("(allow file-write* (subpath \"/src/data/scopes\"))"));
+        assert!(at("(deny file-write* (subpath \"/code/proj\"))") > programs);
+
+        // Without a write allow-list the legacy writable roots are re-opened.
+        let legacy = macos_sandbox_profile_layered(
+            None,
+            None,
+            None,
+            &SandboxAllowances::default(),
+            None,
+            &[PathBuf::from("/notes")],
+            &[
+                PathBuf::from("/notes/Workspaces"),
+                PathBuf::from("/elsewhere"),
+            ],
+        );
+        let deny = legacy
+            .rfind("(deny file-write* (subpath \"/notes\"))")
+            .unwrap();
+        let reopen = legacy
+            .rfind("(allow file-write* (subpath \"/notes/Workspaces\"))")
+            .unwrap();
+        assert!(deny < reopen, "{legacy}");
+        assert!(!legacy.contains("/elsewhere"));
+        // No read-only roots: no layering at all.
+        let plain = macos_sandbox_profile_with(
+            None,
+            Some(Path::new("/code/proj")),
+            None,
+            &SandboxAllowances::default(),
+            Some(&write_allow),
+        );
+        assert!(!plain.contains("file-link"), "{plain}");
+
+        // Regression: a write-allowed ancestor of the live source inside a
+        // read-only root must not re-open the whole storage base.
+        let write_allow = [
+            PathBuf::from("/h/dev"),
+            PathBuf::from("/h/dev/repo/data/scopes/a"),
+        ];
+        let profile = macos_sandbox_profile_layered(
+            Some((Path::new("/h/dev/repo"), Path::new("/h/dev/repo/data"))),
+            None,
+            None,
+            &SandboxAllowances::default(),
+            Some(&write_allow),
+            &[PathBuf::from("/h")],
+            &[],
+        );
+        assert!(
+            !profile.contains("(allow file-write* (subpath \"/h/dev/repo/data\"))"),
+            "{profile}"
+        );
+        assert!(
+            !profile.contains("(allow file-link (subpath \"/h/dev/repo/data\"))"),
+            "{profile}"
+        );
+        assert!(
+            profile
+                .rfind("(deny file-write* (subpath \"/h/dev/repo\"))")
+                .unwrap()
+                > profile
+                    .rfind("(allow file-write* (subpath \"/h/dev\"))")
+                    .unwrap(),
+            "{profile}"
+        );
+    }
+
+    #[test]
+    fn coding_bwrap_layers_read_only_roots_and_reopens_nested_writable_ones() {
+        let policy = BwrapPolicy {
+            write_allow: Some(vec![
+                PathBuf::from("/work"),
+                PathBuf::from("/notes/Workspaces"),
+                PathBuf::from("/src/data/scopes"),
+            ]),
+            live_fence: Some((PathBuf::from("/src"), PathBuf::from("/src/data"))),
+            deny_real_repo: Some(PathBuf::from("/code/proj")),
+            read_only: vec![
+                PathBuf::from("/notes"),
+                PathBuf::from("/src/data/scopes/a/b/programs"),
+            ],
+            ..BwrapPolicy::default()
+        };
+        let argv = bwrap_args(&policy, OsStr::new("sh"), &[]);
+        let access = |path: &str| bwrap_model(&argv, Path::new(path));
+        assert_eq!(access("/notes/plan.md"), BwrapAccess::ReadOnly);
+        assert_eq!(
+            access("/notes/Workspaces/goal/status.md"),
+            BwrapAccess::Write
+        );
+        assert_eq!(
+            access("/src/data/scopes/a/b/programs/plan.md"),
+            BwrapAccess::ReadOnly
+        );
+        assert_eq!(access("/src/data/scopes/a/b/other.md"), BwrapAccess::Write);
+        assert_eq!(access("/src/main.rs"), BwrapAccess::ReadOnly);
+        assert_eq!(access("/code/proj/x"), BwrapAccess::ReadOnly);
+        assert_eq!(access("/work/x"), BwrapAccess::Write);
+
+        let legacy = BwrapPolicy {
+            read_only: vec![PathBuf::from("/notes")],
+            legacy_writable: vec![PathBuf::from("/notes/Workspaces")],
+            ..BwrapPolicy::default()
+        };
+        let argv = bwrap_args(&legacy, OsStr::new("sh"), &[]);
+        let access = |path: &str| bwrap_model(&argv, Path::new(path));
+        assert_eq!(access("/notes/plan.md"), BwrapAccess::ReadOnly);
+        assert_eq!(access("/notes/Workspaces/a.md"), BwrapAccess::Write);
+        assert_eq!(access("/elsewhere/a.md"), BwrapAccess::Write);
+
+        // Regression: a write-allowed ancestor of the live source inside a
+        // read-only root must not re-open the whole storage base.
+        let nested = BwrapPolicy {
+            write_allow: Some(vec![
+                PathBuf::from("/h/dev"),
+                PathBuf::from("/h/dev/repo/data/scopes/a"),
+            ]),
+            live_fence: Some((
+                PathBuf::from("/h/dev/repo"),
+                PathBuf::from("/h/dev/repo/data"),
+            )),
+            read_only: vec![PathBuf::from("/h")],
+            ..BwrapPolicy::default()
+        };
+        let argv = bwrap_args(&nested, OsStr::new("sh"), &[]);
+        let text: Vec<String> = argv
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !text
+                .windows(3)
+                .any(|w| w[0].starts_with("--bind") && w[1] == "/h/dev/repo/data"),
+            "{text:?}"
+        );
+        let access = |path: &str| bwrap_model(&argv, Path::new(path));
+        assert_eq!(access("/h/dev/repo/data/scopes/b/x"), BwrapAccess::ReadOnly);
+        assert_eq!(access("/h/dev/repo/data/scopes/a/x"), BwrapAccess::Write);
+        assert_eq!(access("/h/dev/notes.md"), BwrapAccess::Write);
+        assert_eq!(access("/h/other.md"), BwrapAccess::ReadOnly);
+    }
+
+    /// Live under `sandbox-exec`, through the real profile builder: no hard
+    /// link and no write out of a read-only root; both work inside a
+    /// writable root re-opened within it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn coding_profile_read_only_roots_hold_live() {
+        let launcher = Path::new("/usr/bin/sandbox-exec");
+        if !launcher.exists() {
+            return;
+        }
+        let trivial_ok = std::process::Command::new(launcher)
+            .args([
+                "-p",
+                "(version 1)(allow default)",
+                "/bin/sh",
+                "-c",
+                "exit 0",
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !trivial_ok {
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let notes = root.join("notes");
+        let workspaces = notes.join("Workspaces");
+        write(&notes.join("plan.md"), "plan");
+        write(&workspaces.join("a.md"), "a");
+        let profile = macos_sandbox_profile_layered(
+            None,
+            None,
+            None,
+            &SandboxAllowances::default(),
+            None,
+            &[notes.clone()],
+            &[workspaces.clone()],
+        );
+        let runs = |script: String| {
+            std::process::Command::new(launcher)
+                .args(["-p", &profile, "/bin/sh", "-c", &script])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        };
+        let quote = |path: &Path| format!("'{}'", path.display());
+        assert!(
+            !runs(format!(
+                "ln {} {}",
+                quote(&notes.join("plan.md")),
+                quote(&workspaces.join("plan.md"))
+            )),
+            "a hard link out of a read-only root must be refused"
+        );
+        assert!(!workspaces.join("plan.md").exists());
+        assert!(
+            runs(format!(
+                "ln {} {}",
+                quote(&workspaces.join("a.md")),
+                quote(&workspaces.join("b.md"))
+            )),
+            "a hard link inside the re-opened root must work"
+        );
+        assert!(
+            runs(format!("echo new > {}", quote(&workspaces.join("new.md")))),
+            "a write in the re-opened root must work"
+        );
+        assert!(
+            !runs(format!("echo new > {}", quote(&notes.join("new.md")))),
+            "a write in the read-only root must be refused"
+        );
+        assert!(!notes.join("new.md").exists());
     }
 
     #[test]

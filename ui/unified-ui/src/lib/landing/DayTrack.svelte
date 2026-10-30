@@ -47,7 +47,7 @@
 	// collapses to auto height, the camera and thread never mount, and ALL
 	// stations render stacked as a readable document with identical copy.
 	import { onDestroy, onMount } from 'svelte';
-	import { createScrubber, resolveScene } from './scrub';
+	import { createScrubber, cssProgress, resolveScene } from './scrub';
 	import {
 		AURORA,
 		VOICE_ORB_LANDING_PHASE,
@@ -242,7 +242,7 @@
 		const era = station.era === 'crt' ? phos : station.era ? ERA_ACCENTS[station.era] : null;
 		if (era) {
 			return [
-				`--local:${l.toFixed(4)}`,
+				`--local:${cssProgress(l)}`,
 				`--a:${era.a}`,
 				`--a2:${era.a2}`,
 				`--ha:${era.ha}`,
@@ -252,7 +252,7 @@
 		}
 		const ph = THEME_PHASE_ACCENTS[station.phase];
 		return [
-			`--local:${l.toFixed(4)}`,
+			`--local:${cssProgress(l)}`,
 			`--a:${ph.a}`,
 			`--a2:${ph.a2}`,
 			`--ha:${ph.ha}`,

@@ -1,8 +1,9 @@
-//! Pi 0.87.1 as a Plane chat and agentic harness.
+//! Pi as a Plane chat and agentic harness.
 //!
 //! Pi's coding RPC driver owns the process and `agent_settled` boundary. A
 //! separate, explicit extension presents the grant-scoped Plane MCP catalog;
-//! Pi's built-in and operator extensions are disabled for this posture.
+//! Pi's built-in extensions (its MCP client, codemode, tool search) and the
+//! operator's extensions are disabled for this posture.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -65,8 +66,8 @@ impl HarnessEngine for PiPlaneEngine {
             .map(|grant| grant.turn_stop_signal());
         let owned = req.native_home.is_none();
         let home = req.native_home.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!(
-                "magician-plane-pi-{}",
+            crate::magician_v2::execution::plane::grant_channel::private_path(&format!(
+                "pi-{}",
                 uuid::Uuid::new_v4().simple()
             ))
         });
@@ -301,10 +302,12 @@ fn install_profile(
             "input": if crate::magician_v2::query_analysis::multi_llm_service::MultiLLMService::chat_profile_supports_user_image_inputs(profile) { vec!["text", "image"] } else { vec!["text"] },
             "maxTokens": profile.max_tokens.filter(|tokens| *tokens > 0).unwrap_or(16_384),
         });
-        // The pinned Pi catalog predates GPT-6.1 Sol. Describe this model
-        // explicitly so its private route cannot inherit zero cost, a 128K
-        // context, or unsupported off/minimal thinking levels.
-        if provider == "openai" && (model == "gpt-6.1-sol" || model.starts_with("gpt-6.1-sol-")) {
+        // Private GPT-6.1 entries need their physical limits and native
+        // thinking controls even when Pi's bundled catalog predates the model.
+        let terra = model == "gpt-6.1-terra" || model.starts_with("gpt-6.1-terra-");
+        if provider == "openai"
+            && (terra || model == "gpt-6.1-sol" || model.starts_with("gpt-6.1-sol-"))
+        {
             model_entry["contextWindow"] = serde_json::json!(1_050_000);
             model_entry["maxTokens"] = serde_json::json!(profile
                 .max_tokens
@@ -313,23 +316,29 @@ fn install_profile(
                 .min(128_000));
             model_entry["reasoning"] = serde_json::json!(true);
             model_entry["thinkingLevelMap"] = serde_json::json!({
-                "off": null, "minimal": null, "low": "low", "medium": "medium",
+                "off": if terra { Some("none") } else { None },
+                "minimal": null, "low": "low", "medium": "medium",
                 "high": "high", "xhigh": "xhigh", "max": "max"
             });
-            model_entry["cost"] = serde_json::json!({
-                "input": 2.0, "output": 10.0, "cacheRead": 0.10, "cacheWrite": 2.50,
-                "tiers": [{ "inputTokensAbove": 272_000, "input": 4.0,
-                    "output": 15.0, "cacheRead": 0.20, "cacheWrite": 5.0 }]
-            });
+        }
+        // Pi prices a turn from its model entry's `cost` table ($ per million
+        // tokens) and reports it in `get_session_stats`, the cost a Pi coding
+        // run records. A private entry without one priced every chat turn at
+        // Pi's default zero, which the turn then had to drop as unknown. Use
+        // Magician's own pricing table for the profile's provider and model.
+        if model_entry.get("cost").is_none() {
+            if let Some(cost) = pi_cost_table(provider, model) {
+                model_entry["cost"] = cost;
+            }
         }
         // Pi sends `thinking.type = enabled` with a token budget unless the
         // model is marked adaptive; Opus 5.x, Sonnet 5 and Opus 4.7 refuse
         // that with a 400 before the first token. The rule is Magician's own
         // Anthropic client's, so both call the model the same way.
         if api == "anthropic-messages"
-            && magicllm::providers::anthropic_messages::anthropic_model_uses_adaptive_thinking(
+            && (magicllm::providers::anthropic_messages::anthropic_model_uses_adaptive_thinking(
                 model,
-            )
+            ) || (provider == "minimax" && model == "MiniMax-M3"))
         {
             model_entry["compat"] = serde_json::json!({"forceAdaptiveThinking": true});
         }
@@ -351,10 +360,41 @@ fn install_profile(
             .and_then(|effort| match effort {
                 "default" | "" => None,
                 "none" => Some("off".to_string()),
+                "on" => Some("high".to_string()),
                 other => Some(other.to_string()),
             }),
         api_key_env: key_env.map(str::to_string),
     })
+}
+
+/// Magician's pricing for `provider`/`model` as a Pi model `cost` table
+/// (USD per million tokens). Cache rates fall back to the input rate, the
+/// way Magician prices a call whose provider lists none. `None` when
+/// Magician has no price for it (Pi's zero is then dropped as unknown).
+fn pi_cost_table(provider: &str, model: &str) -> Option<serde_json::Value> {
+    let table = magicllm::pricing::active_table();
+    let provider = magicllm::LLMProviderKind::from_str(provider);
+    let at_ms = chrono::Utc::now().timestamp_millis();
+    let rates = table.lookup_at(&provider, model, at_ms)?;
+    if !rates.input_per_m.is_finite() || !rates.output_per_m.is_finite() {
+        return None;
+    }
+    let mut cost = serde_json::json!({
+        "input": rates.input_per_m,
+        "output": rates.output_per_m,
+        "cacheRead": rates.cache_read_per_m.unwrap_or(rates.input_per_m),
+        "cacheWrite": rates.cache_write_per_m.unwrap_or(rates.input_per_m),
+    });
+    if let Some(rule) = table.long_context_at(&provider, model, at_ms) {
+        cost["tiers"] = serde_json::json!([{
+            "inputTokensAbove": rule.threshold_tokens,
+            "input": rates.input_per_m * rule.input_multiplier,
+            "output": rates.output_per_m * rule.output_multiplier,
+            "cacheRead": rates.cache_read_per_m.unwrap_or(rates.input_per_m) * rule.input_multiplier,
+            "cacheWrite": rates.cache_write_per_m.unwrap_or(rates.input_per_m) * rule.input_multiplier,
+        }]);
+    }
+    Some(cost)
 }
 
 fn operator_pi_home() -> PathBuf {
@@ -367,6 +407,11 @@ fn operator_pi_home() -> PathBuf {
                 .join(".pi")
                 .join("agent")
         })
+}
+
+/// The shared Pi session store (boxes other than a harness's deny it).
+pub fn agentic_sessions_root_path() -> PathBuf {
+    agentic_sessions_root()
 }
 
 fn agentic_sessions_root() -> PathBuf {
@@ -496,7 +541,7 @@ impl PiPlaneSession {
             prompt.push_str(steer);
         }
         // Agentic turns discard their credential-bearing temp home after
-        // each iteration. Pi 0.87.1 filters --session lookup by cwd even
+        // each iteration. Pi filters --session lookup by cwd even
         // with --session-dir; a fresh temp cwd makes the prior session look
         // foreign and prompts for an interactive fork. Use the private shared
         // session directory as the stable agentic cwd.
@@ -809,6 +854,31 @@ mod tests {
         assert_eq!(request.pi.images[0]["mimeType"], "image/png");
     }
 
+    /// A Pi chat turn on a Magician profile records its cost like a Pi
+    /// coding run: the private model entry carries Magician's prices, so
+    /// Pi's session stats price the turn instead of reporting zero.
+    #[test]
+    fn a_private_pi_profile_model_is_priced_from_magicians_table() {
+        let home = tempfile::tempdir().expect("temp home");
+        std::env::set_var("MAGICIAN_PI_TEST_PRICED_KEY", "test");
+        let profile = magicllm::config::LlmConfig {
+            provider: magicllm::capability::LLMProviderKind::Anthropic,
+            model: "claude-sonnet-4-5".into(),
+            api_key_env: Some("MAGICIAN_PI_TEST_PRICED_KEY".into()),
+            ..Default::default()
+        };
+        install_profile(home.path(), &profile).expect("priced profile");
+        let models: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(home.path().join("agent/models.json")).unwrap())
+                .unwrap();
+        let cost = &models["providers"]["magician-plane-profile"]["models"][0]["cost"];
+        let expected = pi_cost_table("anthropic", "claude-sonnet-4-5").expect("Magician prices it");
+        assert_eq!(cost, &expected);
+        assert!(cost["input"].as_f64().unwrap() > 0.0);
+        assert!(cost["output"].as_f64().unwrap() > 0.0);
+        assert!(cost["cacheRead"].as_f64().is_some());
+    }
+
     #[test]
     fn gpt_6_1_sol_pi_profile_has_explicit_catalog_contract() {
         let home = tempfile::tempdir().expect("temp home");
@@ -837,6 +907,41 @@ mod tests {
         assert_eq!(model["thinkingLevelMap"]["low"], "low");
         assert_eq!(model["cost"]["cacheRead"], 0.10);
         assert_eq!(model["cost"]["tiers"][0]["inputTokensAbove"], 272_000);
+    }
+
+    #[test]
+    fn gpt_6_1_terra_pi_profile_preserves_off_limits_and_tiered_prices() {
+        let home = tempfile::tempdir().expect("temp home");
+        std::env::set_var("MAGICIAN_PI_TEST_TERRA_KEY", "test");
+        let profile = magicllm::config::LlmConfig {
+            model: "gpt-6.1-terra".into(),
+            api_key_env: Some("MAGICIAN_PI_TEST_TERRA_KEY".into()),
+            reasoning_effort: Some("none".into()),
+            max_tokens: Some(256_000),
+            ..Default::default()
+        };
+        let route = install_profile(home.path(), &profile).expect("Terra profile");
+        assert_eq!(route.model, "gpt-6.1-terra");
+        assert_eq!(route.thinking_level.as_deref(), Some("off"));
+        let models: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(home.path().join("agent/models.json")).unwrap())
+                .unwrap();
+        let provider = &models["providers"]["magician-plane-profile"];
+        assert_eq!(provider["api"], "openai-responses");
+        let model = &provider["models"][0];
+        assert_eq!(model["contextWindow"], 1_050_000);
+        assert_eq!(model["maxTokens"], 128_000);
+        assert_eq!(model["thinkingLevelMap"]["off"], "none");
+        assert!(model["thinkingLevelMap"]["minimal"].is_null());
+        assert_eq!(model["thinkingLevelMap"]["max"], "max");
+        assert_eq!(
+            model["cost"],
+            serde_json::json!({
+                "input": 1.0, "output": 5.0, "cacheRead": 0.05, "cacheWrite": 1.25,
+                "tiers": [{"inputTokensAbove": 272_000, "input": 2.0,
+                    "output": 7.5, "cacheRead": 0.10, "cacheWrite": 2.5}]
+            })
+        );
     }
 
     #[test]
@@ -894,6 +999,36 @@ mod tests {
                 expected
             );
             // Opus 5.5 refuses a thinking budget; Pi must send adaptive.
+            assert_eq!(
+                models["providers"]["magician-plane-profile"]["models"][0]["compat"]
+                    ["forceAdaptiveThinking"],
+                true
+            );
+        }
+    }
+
+    #[test]
+    fn pi_binary_controls_translate_to_valid_on_and_off_levels() {
+        // Its own key variable, like the tests above: the profile must not
+        // depend on a provider key the test runner may not have.
+        std::env::set_var("MAGICIAN_PI_TEST_MINIMAX_KEY", "test");
+        for (effort, expected) in [("none", "off"), ("on", "high")] {
+            let home = tempfile::tempdir().expect("temp home");
+            let profile = magicllm::config::LlmConfig {
+                provider: magicllm::capability::LLMProviderKind::Minimax,
+                model: "MiniMax-M3".into(),
+                api_key_env: Some("MAGICIAN_PI_TEST_MINIMAX_KEY".into()),
+                api_base_url: Some("http://127.0.0.1:8899/anthropic".into()),
+                supports_reasoning: Some(true),
+                reasoning_effort: Some(effort.into()),
+                ..Default::default()
+            };
+            let route = install_profile(home.path(), &profile).expect("MiniMax profile");
+            assert_eq!(route.thinking_level.as_deref(), Some(expected));
+            let models: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(home.path().join("agent/models.json")).unwrap(),
+            )
+            .unwrap();
             assert_eq!(
                 models["providers"]["magician-plane-profile"]["models"][0]["compat"]
                     ["forceAdaptiveThinking"],

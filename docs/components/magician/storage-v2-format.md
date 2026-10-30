@@ -194,9 +194,14 @@ and re-exports the `io::Error` family:
   temp removal logs `warn!`.
 - Whole-file indexes serialize load → mutate → write with a per-scope
   `tokio::sync::Mutex` (boot reconciler included). `magician-config.yaml` writers
-  share `runtime_settings::config_file_lock` (taken inside
-  `write_top_level_yaml_block`). One process owns a data root, so in-process
-  locks suffice.
+  share `runtime_settings::config_file_lock` (taken inside `write_yaml_section`).
+  One process owns a data root, so in-process locks suffice.
+- Settings writers edit only the YAML lines of changed values
+  (`runtime_settings::write_yaml_section` / `apply_yaml_section`, over
+  `set_yaml_path`), never re-rendering a block: comments, unknown keys, key
+  order and a scalar's trailing comment/anchor stay byte for byte, a changed
+  list is replaced whole, an unchanged save is a no-op, and the result is
+  re-parsed and checked before writing.
 - `read_jsonl_path` fails closed on the first bad line; `read_jsonl_path_tolerant`
   keeps what parses. Tolerate for listings/existence checks; refuse for "latest X"
   or spend totals. The reader reports `torn_tail_bytes` (uncommitted tail)

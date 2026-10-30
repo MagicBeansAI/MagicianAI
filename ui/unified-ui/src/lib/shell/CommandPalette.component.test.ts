@@ -132,9 +132,21 @@ describe('CommandPalette keyboard navigation', () => {
 });
 
 describe('CommandPalette execution controls', () => {
-	it('puts the literal Settings destination ahead of unrelated fuzzy matches', async () => {
+	it.each(['Private itinerary', 'Itinerary settings'])('ranks Settings first after asynchronous Apps results (%s)', async (description) => {
 		const backend = createTaskAttentionBackend([]);
-		installFetchMock([
+		const { calls } = installFetchMock([
+			{ method: 'GET', match: '/api/magician/v2/apps/directory', handle: () => jsonResponse({
+				entries: [{
+					installation_id: 'install_trip', name: 'Trip planner', description,
+					icon: { kind: 'monogram', value: 'T' }, status: 'enabled',
+					package_version: '1.0.0', package_revision_ref: 'package:trip', installation_generation: 1,
+					default_route: '/apps/install_trip',
+					views: [{ view_id: 'trips', label: 'Trips', route: '/apps/install_trip', pinned: false }],
+					actions: [], navigation: [],
+					storage: { record_count: 0, revision_count: 0, payload_bytes: 0, attachment_bytes: 0 },
+					record_count: 0, payload_bytes: 0
+				}], has_more: false
+			}) },
 			{ method: 'GET', match: '/api/magician/v2/agents', handle: () => jsonResponse({ agents: [], system_agents: [] }) },
 			{ method: 'GET', match: '/api/magician/v2/approvals', handle: () => jsonResponse({ approvals: [] }) },
 			...backend.routes()
@@ -143,12 +155,22 @@ describe('CommandPalette execution controls', () => {
 
 		render(CommandPalette, { open: true });
 		await user.type(screen.getByRole('combobox'), 'Settings');
+		await waitFor(() => expect(calls.some((call) => call.url.includes('search=Settings'))).toBe(true));
+		if (description.includes('settings')) {
+			expect(await screen.findByText('Trip planner')).toBeVisible();
+		} else {
+			expect(screen.queryByText('Trip planner')).not.toBeInTheDocument();
+			expect(screen.queryByText('Apps')).not.toBeInTheDocument();
+		}
 
 		const visibleItems = screen
 			.getAllByRole('option')
 			.filter((item) => item.getAttribute('aria-hidden') !== 'true');
-		expect(visibleItems).toHaveLength(1);
+		expect(visibleItems).toHaveLength(description.includes('settings') ? 2 : 1);
 		expect(visibleItems[0]).toHaveTextContent('Settings');
+		expect(screen.getByRole('option', { selected: true })).toBe(visibleItems[0]);
+		await user.keyboard('{Enter}');
+		await waitFor(() => expect(goto).toHaveBeenCalledWith('/settings'));
 	});
 
 	it.each([

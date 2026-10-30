@@ -530,6 +530,7 @@ data class ResurfacingCard(
     @SerialName("decision_item") val decisionItem: AttentionDecisionBinding? = null,
     @SerialName("source_route") val sourceRoute: String? = null,
     @SerialName("open_url") val openUrl: String? = null,
+    @SerialName("surfaced_at") val surfacedAt: Long? = null,
     @kotlinx.serialization.Transient val deliveryBinding: AttentionDeliveryBinding? = null,
 ) { val id: String get() = candidateId }
 
@@ -775,6 +776,9 @@ data class TodayPulse(
     val taskBuckets: TodayTaskBuckets = TodayTaskBuckets(),
     /** Most recently updated tasks, one line each on State of Operations. */
     val recentTasks: List<TodayTaskLine> = emptyList(),
+    /** Availability is established only by a successful source read. */
+    val availableSlices: Set<String> = emptySet(),
+    val pendingSlices: Set<String> = emptySet(),
 ) {
     val isEmpty: Boolean get() = spendToday == 0.0 && callsToday == 0 && tasksCompletedToday == 0 &&
         codingRunsToday == 0 && memoriesToday == 0 && evalCasesToday == 0

@@ -115,8 +115,6 @@ pub(crate) const WORKSPACE_DESTINATION_CAS_CONFLICT_DETAIL: &str =
 /// over the legacy `MAGICIAN_STORAGE_PATH`.
 pub const MAGICIAN_ROOT_DIR_ENV: &str = "MAGICIAN_ROOT_DIR";
 pub const LOCAL_FILE_WORKSPACE_PROVIDER_ID: &str = "local_file";
-pub const SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID: &str = "silverbullet_space";
-pub const DEFAULT_SILVERBULLET_RUNTIME_ROOT: &str = ".magician/runtime";
 const MAX_WORKSPACE_JSON_VALIDATION_NODES: usize = 1_000_000;
 // Canonical payload admission allows one million nodes. Durable event records
 // wrap that payload with identity/sequence fields and bounded lineage arrays,
@@ -607,8 +605,9 @@ fn decode_jsonl_tail<T: DeserializeOwned>(
 ///
 /// This is not a remote-storage boundary. Typed capabilities in
 /// `magician-storage` (`ObjectStore`, `DatasetStore`, and the rest) are.
-/// Production implementations are `local_file` and `silverbullet_space` (a
-/// shipped local profile variant). Track A does not remove the Settings
+/// The production implementation is `local_file`; the retired
+/// `silverbullet_space` selector resolves to it (see
+/// `workspace_storage_settings`). Track A does not remove the Settings
 /// Runtime provider control. Copying a scope directory is not a supported
 /// migration or remote-acceptance path.
 #[async_trait]
@@ -1505,82 +1504,6 @@ impl WorkspaceFileProvider for LocalFileWorkspaceProvider {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct SilverBulletSpaceWorkspaceProvider {
-    space_root: PathBuf,
-}
-
-impl SilverBulletSpaceWorkspaceProvider {
-    pub fn new<P: AsRef<Path>>(space_root: P) -> Result<Self, ArtifactV2Error> {
-        Self::with_runtime_root(space_root, DEFAULT_SILVERBULLET_RUNTIME_ROOT)
-    }
-
-    pub fn with_runtime_root<P: AsRef<Path>, Q: AsRef<Path>>(
-        space_root: P,
-        runtime_root: Q,
-    ) -> Result<Self, ArtifactV2Error> {
-        // The configured `runtime_root` is still validated (settings back-compat
-        // + existing callers/tests), but it no longer re-roots the store. The SB
-        // provider now roots directly at `space_root`, behaving identically to
-        // `LocalFileWorkspaceProvider` — the `.magician/runtime` redirection is
-        // gone. SB search/notes parity comes from SilverBullet serving this same
-        // root, not from a hidden sub-tree.
-        normalize_silverbullet_runtime_root(runtime_root.as_ref())?;
-        Ok(Self {
-            space_root: space_root.as_ref().to_path_buf(),
-        })
-    }
-}
-
-impl WorkspaceFileProvider for SilverBulletSpaceWorkspaceProvider {
-    fn id(&self) -> &'static str {
-        SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID
-    }
-
-    fn root(&self) -> &Path {
-        &self.space_root
-    }
-
-    // `visible_root` intentionally uses the trait default (== `root()`); the SB
-    // provider no longer distinguishes a separate visible space from the store.
-
-    fn resolve_path(&self, relative_path: &Path) -> PathBuf {
-        self.space_root.join(relative_path)
-    }
-}
-
-fn normalize_silverbullet_runtime_root(runtime_root: &Path) -> Result<PathBuf, ArtifactV2Error> {
-    let runtime_root = if runtime_root.as_os_str().is_empty() {
-        Path::new(DEFAULT_SILVERBULLET_RUNTIME_ROOT)
-    } else {
-        runtime_root
-    };
-    if runtime_root.is_absolute() {
-        return Err(ArtifactV2Error::InvalidRequest(format!(
-            "SilverBullet runtime root '{}' must be relative to the Space",
-            runtime_root.display()
-        )));
-    }
-
-    let mut normalized = PathBuf::new();
-    for component in runtime_root.components() {
-        match component {
-            Component::Normal(segment) => normalized.push(segment),
-            Component::CurDir => {},
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(ArtifactV2Error::InvalidRequest(format!(
-                    "SilverBullet runtime root '{}' must stay inside the Space",
-                    runtime_root.display()
-                )));
-            },
-        }
-    }
-    if normalized.as_os_str().is_empty() {
-        normalized.push(DEFAULT_SILVERBULLET_RUNTIME_ROOT);
-    }
-    Ok(normalized)
-}
-
 fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
     let mut cursor = path;
     let mut missing = Vec::new();
@@ -1667,24 +1590,6 @@ impl ArtifactV2Workspace {
 
     pub fn with_local_file_provider<P: AsRef<Path>>(base_root: P) -> Self {
         Self::with_file_provider(Arc::new(LocalFileWorkspaceProvider::new(base_root)))
-    }
-
-    pub fn with_silverbullet_space_provider<P: AsRef<Path>>(
-        space_root: P,
-    ) -> Result<Self, ArtifactV2Error> {
-        Self::with_silverbullet_space_provider_and_runtime_root(
-            space_root,
-            DEFAULT_SILVERBULLET_RUNTIME_ROOT,
-        )
-    }
-
-    pub fn with_silverbullet_space_provider_and_runtime_root<P: AsRef<Path>, Q: AsRef<Path>>(
-        space_root: P,
-        runtime_root: Q,
-    ) -> Result<Self, ArtifactV2Error> {
-        Ok(Self::with_file_provider(Arc::new(
-            SilverBulletSpaceWorkspaceProvider::with_runtime_root(space_root, runtime_root)?,
-        )))
     }
 
     pub fn with_file_provider(file_provider: Arc<dyn WorkspaceFileProvider>) -> Self {
@@ -4038,9 +3943,8 @@ impl ArtifactV2Workspace {
         // `.md` files directly under the scope's `programs/` dir, alongside the
         // runtime *state* at `programs_root()/state`. (They can't be a sibling
         // `Programs/` folder: a case-insensitive macOS FS collides that with the
-        // lowercase `programs/`.) Still SilverBullet-visible — `scopes/` is not a
-        // hidden (`.`-prefixed) folder, so the space indexes these `.md` files
-        // just as it did the old flat `Programs/`.
+        // lowercase `programs/`.) `scopes/` is not a hidden (`.`-prefixed)
+        // folder, so these `.md` files stay visible as plain files.
         self.programs_root(principal, workspace)
     }
 
@@ -6326,12 +6230,11 @@ mod tests {
         buffered_hashing_json_reader, jsonl_record_is_admitted, multi_write_content_hash,
         multi_write_staging_dir, safe_segment, scope_hosts_user_subsystems, scope_profile,
         validate_workspace_json_reader, workspace_json_document_is_admitted, ArtifactV2Workspace,
-        LocalFileWorkspaceProvider, ScopeProfile, SilverBulletSpaceWorkspaceProvider, TaskLocation,
-        WorkspaceFileEntry, WorkspaceFileProvider, WorkspacePersistedWriteJournalV1,
-        WorkspacePersistedWriteJournalV2, WorkspacePersistedWriteOpV1, WorkspacePersistedWriteOpV2,
-        DEFAULT_SCOPE_PRINCIPAL, DEFAULT_SCOPE_WORKSPACE, JSONL_TAIL_WINDOW_ERROR_PREFIX,
-        MAX_JSONL_COMMIT_AUTHORITY_BYTES, MAX_JSONL_RECORD_NODES, MAX_RETAINED_JSON_DEPTH,
-        MAX_WORKSPACE_JSON_VALIDATION_NODES,
+        LocalFileWorkspaceProvider, ScopeProfile, TaskLocation, WorkspaceFileEntry,
+        WorkspaceFileProvider, WorkspacePersistedWriteJournalV1, WorkspacePersistedWriteJournalV2,
+        WorkspacePersistedWriteOpV1, WorkspacePersistedWriteOpV2, DEFAULT_SCOPE_PRINCIPAL,
+        DEFAULT_SCOPE_WORKSPACE, JSONL_TAIL_WINDOW_ERROR_PREFIX, MAX_JSONL_COMMIT_AUTHORITY_BYTES,
+        MAX_JSONL_RECORD_NODES, MAX_RETAINED_JSON_DEPTH, MAX_WORKSPACE_JSON_VALIDATION_NODES,
     };
 
     #[cfg(unix)]
@@ -6978,75 +6881,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn silverbullet_space_provider_roots_directly_at_space_root() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let space_root = tmp.path().join("MagicianNotes");
-        // The SB provider no longer re-roots into `.magician/runtime`; the store
-        // lives directly at `space_root` (identical to local_file). Alias
-        // `runtime_root` to `space_root` so the path assertions below read naturally.
-        let runtime_root = space_root.clone();
-        let workspace = ArtifactV2Workspace::with_silverbullet_space_provider(&space_root)
-            .expect("silverbullet provider");
-
-        assert_eq!(workspace.file_provider_id(), "silverbullet_space");
-        assert_eq!(workspace.base_root(), runtime_root.as_path());
-        assert_eq!(workspace.visible_root(), space_root.as_path());
-        assert_eq!(
-            workspace.tasks_root("anonymous", "default"),
-            runtime_root.join("scopes/anonymous/default/tasks")
-        );
-        // Program specs are now SCOPED (same root as their runtime state),
-        // not the old flat visible-root `Programs/`.
-        assert_eq!(
-            workspace.program_specs_root("anonymous", "default"),
-            runtime_root.join("scopes/anonymous/default/programs")
-        );
-        assert_eq!(
-            workspace.program_runtime_states_dir("anonymous", "default"),
-            runtime_root.join("scopes/anonymous/default/programs/state")
-        );
-        assert_eq!(
-            workspace.chat_session_outputs_dir("anonymous", "default", "session_x"),
-            runtime_root.join("scopes/anonymous/default/ui/chat_sessions/session_x/outputs")
-        );
-        assert_eq!(workspace.system_root(), runtime_root.join("system"));
-    }
-
-    #[test]
-    fn silverbullet_space_provider_validates_but_ignores_custom_runtime_root() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let space_root = tmp.path().join("MagicianNotes");
-        // A valid `runtime_root` is still accepted (validated) for settings
-        // back-compat, but it no longer relocates the store — the provider roots
-        // directly at `space_root`.
-        let workspace = ArtifactV2Workspace::with_silverbullet_space_provider_and_runtime_root(
-            &space_root,
-            "Runtime/state",
-        )
-        .expect("silverbullet provider");
-
-        assert_eq!(workspace.base_root(), space_root.as_path());
-        assert_eq!(
-            workspace.scoped_execution_dir("p", "w", "exec_1"),
-            space_root.join("scopes/p/w/executions/exec_1")
-        );
-    }
-
-    #[test]
-    fn silverbullet_space_provider_rejects_runtime_root_escapes() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let space_root = tmp.path().join("MagicianNotes");
-
-        assert!(
-            SilverBulletSpaceWorkspaceProvider::with_runtime_root(&space_root, "/tmp").is_err()
-        );
-        assert!(
-            SilverBulletSpaceWorkspaceProvider::with_runtime_root(&space_root, "../runtime")
-                .is_err()
-        );
-    }
-
     #[derive(Debug)]
     struct PrefixingTestProvider {
         root: PathBuf,
@@ -7589,38 +7423,6 @@ mod tests {
         assert!(workspace
             .scoped_execution_dir(principal, workspace_name, "exec_scoped")
             .exists());
-    }
-
-    #[tokio::test]
-    async fn silverbullet_space_provider_materializes_runtime_storage_at_space_root() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let space_root = tmp.path().join("MagicianNotes");
-        // The provider roots directly at `space_root` now (no `.magician/runtime`
-        // redirection), so the store materializes there. Alias `runtime_root`.
-        let runtime_root = space_root.clone();
-        let workspace = ArtifactV2Workspace::with_silverbullet_space_provider(&space_root)
-            .expect("silverbullet provider");
-
-        workspace.ensure_root().await.expect("runtime root");
-        assert!(runtime_root.join("scopes").is_dir());
-        assert!(runtime_root.join("system").is_dir());
-
-        let output_path = workspace
-            .task_outputs_dir("anonymous", "default", "task_visible")
-            .join("out.md");
-        workspace
-            .write_path(&output_path, b"visible")
-            .await
-            .expect("write through silverbullet provider");
-
-        assert_eq!(
-            tokio::fs::read_to_string(
-                runtime_root.join("scopes/anonymous/default/tasks/task_visible/outputs/out.md")
-            )
-            .await
-            .expect("stored output"),
-            "visible"
-        );
     }
 
     #[tokio::test]

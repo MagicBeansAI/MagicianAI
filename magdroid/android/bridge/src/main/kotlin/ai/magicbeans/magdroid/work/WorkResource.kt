@@ -131,6 +131,30 @@ class WorkResource(
             return null
         } finally { finishRequest(ticket) }
     }
+    /**
+     * A typed write under the same busy, identity and connection guards as
+     * [perform]. Null when the view moved on; otherwise the call's own result
+     * or failure, left unreported so the screen decides how a typed failure
+     * (a save conflict) reads.
+     */
+    suspend fun <T> write(expectedIdentity: Long, successNotice: String? = "Saved", block: suspend (WorkRepository) -> T): Result<T>? {
+        val client = repository
+        if (mutable.value.busy || expectedIdentity != mutable.value.identity || client == null || !currentConnection(client)) {
+            reportError("Connection changed. Refresh before continuing."); return null
+        }
+        val ticket = generation
+        mutable.value = mutable.value.copy(busy = true, error = null, notice = null)
+        try {
+            val result = block(client)
+            if (ticket != generation || expectedIdentity != mutable.value.identity || !currentConnection(client)) return null
+            mutable.value = mutable.value.copy(notice = successNotice)
+            return Result.success(result)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            if (ticket != generation || !currentConnection(client)) return null
+            return Result.failure(error)
+        } finally { finishRequest(ticket) }
+    }
     private fun finishRequest(ticket: Long) {
         if (ticket != generation) return
         mutable.value = mutable.value.copy(busy = false)

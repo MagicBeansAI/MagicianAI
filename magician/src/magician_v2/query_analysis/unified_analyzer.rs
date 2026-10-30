@@ -1042,6 +1042,7 @@ fn classify_llm_failure(error: &anyhow::Error) -> &'static str {
             LLMError::QueueFull { .. } => "queue_full",
             LLMError::RequestTooLarge { .. } => "request_too_large",
             LLMError::QueueBytesFull { .. } => "queue_bytes_full",
+            LLMError::SpendEnvelopeExhausted { .. } => "spend_envelope_exhausted",
             LLMError::Other(_) => "provider_error",
         };
     }

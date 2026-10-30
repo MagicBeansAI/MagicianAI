@@ -457,31 +457,6 @@
 		margin-left: -1px;
 		padding: 0 5px;
 	}
-	/* Float the running-time readout ABOVE the button instead of letting it sit
-	   inline. Inline, it is inserted into this row the instant capture starts,
-	   which widens the split button and slides it out from under a stationary
-	   finger mid-hold — jarring on its own, and it used to end the hold outright.
-	   (FloatingComposer carries the same overlay treatment under
-	   `.voice-slot--mic`, a wrapper it stopped rendering when the voice controls
-	   were consolidated, so that rule no longer reaches this button.) */
-	.voice-split :global(.mic-capture) {
-		position: relative;
-	}
-	.voice-split :global(.mic-capture__elapsed) {
-		position: absolute;
-		bottom: calc(100% + 6px);
-		left: 50%;
-		transform: translateX(-50%);
-		padding: 3px 8px;
-		font-size: 0.68rem;
-		font-variant-numeric: tabular-nums;
-		color: var(--text-on-bright, var(--text-on-accent, #fff));
-		background: var(--color-error, #dc2626);
-		border-radius: var(--radius-full, 999px);
-		box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.18));
-		white-space: nowrap;
-		pointer-events: none;
-	}
 	/* Raise whichever half is interacted with so its full border is visible over
 	   the collapsed seam. */
 	.voice-split :global(.mic-capture__btn:hover),

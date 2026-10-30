@@ -403,6 +403,21 @@ function validateMeta(value: unknown): string | null {
 			if (!isOptionalSafeText(item.ref)) return 'meta.provenance ref is invalid';
 		}
 	}
+	if (value.artifact_locators !== undefined) {
+		if (!Array.isArray(value.artifact_locators) || value.artifact_locators.length > MAX_ITEMS) {
+			return 'meta.artifact_locators is invalid';
+		}
+		for (const item of value.artifact_locators) {
+			if (
+				!isRecord(item) ||
+				!isSafeText(item.artifact_id, MAX_LABEL_BYTES) ||
+				!isOptionalSafeText(item.task_id, MAX_LABEL_BYTES) ||
+				!isSafeText(item.relative_path, MAX_VALUE_BYTES)
+			) {
+				return 'meta.artifact_locators item is invalid';
+			}
+		}
+	}
 	if (
 		value.confidence !== undefined &&
 		(typeof value.confidence !== 'number' ||

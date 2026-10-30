@@ -12,8 +12,11 @@ pub const BOOTSTRAP_ENV: &str = "MAGICIAN_STORAGE_BOOTSTRAP_CONFIG";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfileKind {
+    /// Local files under the runtime root. The retired
+    /// `local_silverbullet_space` profile was the same adapter set and reads
+    /// as this one.
+    #[serde(alias = "local_silverbullet_space")]
     LocalEmbedded,
-    LocalSilverbulletSpace,
     RemoteDurable,
 }
 
@@ -143,8 +146,9 @@ impl StorageProfileDocument {
 
     pub fn kind(&self) -> Result<ProfileKind, ProfileError> {
         match self.profile.as_str() {
-            "local_embedded" => Ok(ProfileKind::LocalEmbedded),
-            "local_silverbullet_space" => Ok(ProfileKind::LocalSilverbulletSpace),
+            // `local_silverbullet_space` is the retired notes-folder profile:
+            // the same local adapters, so it opens as `local_embedded`.
+            "local_embedded" | "local_silverbullet_space" => Ok(ProfileKind::LocalEmbedded),
             "remote_durable" => Ok(ProfileKind::RemoteDurable),
             other => Err(ProfileError::UnknownProfile(other.to_string())),
         }
@@ -163,7 +167,7 @@ impl StorageProfileDocument {
         forbid_inline_secrets(self)?;
         match kind {
             ProfileKind::RemoteDurable => validate_remote(self)?,
-            ProfileKind::LocalEmbedded | ProfileKind::LocalSilverbulletSpace => {
+            ProfileKind::LocalEmbedded => {
                 validate_local(self)?;
             },
         }
@@ -399,6 +403,17 @@ mod tests {
         .unwrap();
         assert_eq!(resolved.kind, ProfileKind::LocalEmbedded);
         assert_eq!(resolved.source, BootstrapSource::MissingDefault);
+    }
+
+    #[test]
+    fn retired_notes_folder_profile_opens_as_local_embedded() {
+        let document = StorageProfileDocument::from_yaml(
+            "schema_version: 1\nprofile: local_silverbullet_space\n",
+        )
+        .unwrap();
+        assert_eq!(document.kind().unwrap(), ProfileKind::LocalEmbedded);
+        let kind: ProfileKind = serde_yaml::from_str("local_silverbullet_space").unwrap();
+        assert_eq!(kind, ProfileKind::LocalEmbedded);
     }
 
     #[test]

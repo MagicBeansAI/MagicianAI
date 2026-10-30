@@ -118,9 +118,9 @@ The browser skill resolves its driver by config, not by the installer:
   stealth Chromium, the config default) if present, else **Chrome-for-Testing
   (CfT)**. In `FLOW=container` both are baked into the image.
 
-The pinned driver is `0.38.1-Magician.0` on upstream `v0.38.1`.
+The pinned driver is `0.41.0-Magician.0` on upstream `v0.41.0`.
 `make -C skillshub rebuild-agent-browser` builds it from
-`.cache/agent-browser-src-v0.38.1-magician`, which is excluded from the Cargo
+`.cache/agent-browser-src-v0.41.0-magician`, which is excluded from the Cargo
 workspace so that cache does not join the Magician crate graph.
 
 ### Data-dir non-clobber guarantee
@@ -198,8 +198,9 @@ Kapso's WhatsApp callbacks need a public URL. The tunnel is **off by default**;
 set `MAGICIAN_ENABLE_FUNNEL=1` to bring up a [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
 named tunnel pointed at the Kapso webhook port (native or container-mapped). It
 uses a **stable** URL on your own Cloudflare zone — `https://webhook.<zone>/webhook`
-(`MAGICIAN_TUNNEL_ZONE`; no zone is defaulted) — that you set in Kapso **once**, written to
-`$DATA_DIR/funnel-url` and printed at the end of the install.
+(`MAGICIAN_TUNNEL_ZONE`; no zone is defaulted) — recorded as `MAGICIAN_WEBHOOK_HOST`,
+written to `$DATA_DIR/funnel-url` and printed at the end of the install. Nothing
+is pasted into Kapso or AgentMail: both bots register the URL on start.
 
 There are **two auth modes** (`MAGICIAN_TUNNEL_MODE`, default `browser`); the
 script logs which one is in effect and falls back gracefully:
@@ -345,6 +346,9 @@ make build-all-release
 For local MLX Decision Engine development, use
 `make build-decision-engine-mlx-debug`. The debug profile optimizes the `mlx-sys`
 numerical dependency: its CPU kernels merge and quantize Kev weights at load time.
+It also optimizes the image crates (`image`, `png`, `fdeflate`, `zune-jpeg`):
+Magician scales multi-megapixel screenshots for the decision rail on the step
+path (see [Structured decisions](components/magician/structured-decision.md)).
 Magician and Decision Engine application code retain the normal debug profile.
 
 On macOS, `setup-all` also installs the JDK 21, Android SDK, and Gradle 8
@@ -389,7 +393,7 @@ The `magician` crate is large, so a few knobs cut dev-loop time:
   (Cranelift can't instrument) — use stable (no FAST) for authoritative coverage.
   Keep `FAST=1` consistent across a whole invocation (build + copy/restart use
   the same target dir), and run a plain `make check-all` before committing so
-  code is verified on the stable toolchain you ship.
+  code is verified on the pinned toolchain (`rust-toolchain.toml`) you ship.
 - **Single-crate loops.** `make check-magician-fast` (bin-only check),
   `make watch-magician` (save-triggered re-check; needs `cargo install
   cargo-watch`), `make build-magician-cranelift`.
@@ -459,6 +463,9 @@ Both files are gitignored. The legacy locations
 files are absent — emits a deprecation warning at setup time.
 
 ### Skill and bot software readiness
+
+Remote MCP skills, including Zepto and Swiggy, use the exact-pinned official
+Rust MCP SDK `3.7.0`; their hosted services have no local server version to update.
 
 The setup wizard installs shared skill software before account setup. The
 component graph has separate `skill-runtime`, `bot-runtime`, `media-tools` and

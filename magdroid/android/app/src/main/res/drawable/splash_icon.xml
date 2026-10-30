@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The launch mark: the Magican star alone, 132dp, centred on a 288dp canvas (the system
-     splash's icon canvas, masked to a 192dp circle, which the star sits inside). The system splash
-     and SplashActivity both draw this, so the two match. -->
+<!-- The launch mark: the Magican star alone, 132dp, centred on a 288dp canvas. Only
+     SplashActivity draws it; the system splash shows no icon (splash_icon_none). -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:width="288dp" android:height="288dp">
         <shape android:shape="rectangle">

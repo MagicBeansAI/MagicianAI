@@ -265,6 +265,12 @@ fn apply_capability_overrides(
     if let Some(max_state_tokens) = overrides.max_state_tokens {
         capabilities.max_state_tokens = Some(max_state_tokens);
     }
+    if let Some(max_question_tokens) = overrides.max_question_tokens {
+        capabilities.max_question_tokens = Some(max_question_tokens);
+    }
+    if let Some(images) = overrides.images {
+        capabilities.text_only = !images;
+    }
     if let Some(max_choice_options) = overrides.max_choice_options {
         capabilities.max_choice_options = Some(max_choice_options);
     }
@@ -448,6 +454,9 @@ pub fn model_profile(
     };
     profile.timeout = std::time::Duration::from_millis(model_config.timeout_ms);
     profile.max_retries = model_config.max_retries;
+    if model_config.long_context {
+        profile.enable_long_context();
+    }
     apply_capability_overrides(&mut profile.capabilities, &model_config.capabilities);
     Ok(profile)
 }

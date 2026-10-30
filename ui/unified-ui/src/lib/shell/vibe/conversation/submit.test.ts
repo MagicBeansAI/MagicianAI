@@ -35,6 +35,7 @@ vi.mock('$lib/stores/scopeIdentityStore', async (importOriginal) => {
 });
 
 import { vibeStudioStore } from '$lib/stores/vibeStudioStore';
+import { codingProfileStore } from '$lib/stores/codingProfileStore';
 import type { Task } from '$lib/stores/taskStore';
 import type { VibeDevProject } from '$lib/stores/vibeDevProjectStore';
 import {
@@ -85,7 +86,16 @@ function sentBody(): Record<string, unknown> {
 	return JSON.parse(String(init.body)) as Record<string, unknown>;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+	timedFetch.mockReset();
+	timedFetch.mockResolvedValueOnce(ok({
+		engines: [{ id: 'pi', selectable: true, readiness: 'ready' }],
+		models: [{ id: 'provider/model', engine: 'pi', provider: 'provider', connection: 'provider', model: 'physical-model', label: 'Model',
+			capabilities: { vision: true }, limits: null, thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+			choices: { auto: 'coding-balanced', high: 'model-high' } }],
+		default_selection: { kind: 'model', engine: 'pi', model_id: 'provider/model', thinking: 'auto' }
+	}));
+	await codingProfileStore.load();
 	timedFetch.mockReset();
 	vibeStudioStore.resetView();
 });
@@ -121,8 +131,8 @@ describe('submitCodingRun', () => {
 		expect(body.cost_budget_usd).toBe(2.5);
 		expect(body.visual_self_correct).toBe(false);
 		expect(body.project_is_visual).toBe(false);
-		expect(body.coding_profile_id).toBe('coding-balanced');
-		expect(body.coding_choice).toEqual({ kind: 'profile', profile_id: 'coding-balanced' });
+		expect(body.coding_profile_id).toBeUndefined();
+		expect(body.coding_choice).toEqual({ kind: 'model', engine: 'pi', model_id: 'provider/model', thinking: 'auto' });
 		// The whole point: nothing that looks like an assembled description.
 		expect(JSON.stringify(body)).not.toContain('run_coding_task repo_path:');
 		expect(JSON.stringify(body)).not.toContain('VIBEDEV_USER_PROMPT');

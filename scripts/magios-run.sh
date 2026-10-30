@@ -107,6 +107,11 @@ reset_stale_explicit_module_cache(){
 
 run_xcode_build(){
   local build_log status
+  local -a xcode_arguments=("$@")
+  local auth_argument
+  while IFS= read -r auth_argument; do
+    xcode_arguments+=("$auth_argument")
+  done < <(python3 scripts/apple_xcode_auth.py "$@")
   # The Xs must be the LAST characters of the template: BSD mktemp only
   # substitutes trailing Xs, so a `.log` suffix made it create the literal
   # file /tmp/magios-xcodebuild.XXXXXX.log once and fail with "File exists"
@@ -116,7 +121,7 @@ run_xcode_build(){
   # Preserve the complete first failure for an exact diagnosis while keeping
   # normal xcodebuild output visible. `pipefail` makes the condition reflect
   # xcodebuild rather than tee.
-  if xcodebuild "$@" 2>&1 | tee "$build_log"; then
+  if xcodebuild "${xcode_arguments[@]}" 2>&1 | tee "$build_log"; then
     rm -f -- "$build_log"
     return 0
   else
@@ -130,7 +135,7 @@ run_xcode_build(){
   # other compiler failures remain immediate failures.
   if grep -Eq "ExplicitPrecompiledModules/[^[:space:]]+\\.pcm.*not found" "$build_log"; then
     reset_stale_explicit_module_cache
-    if xcodebuild "$@"; then
+    if xcodebuild "${xcode_arguments[@]}"; then
       status=0
     else
       status=$?
@@ -191,6 +196,9 @@ do_live_acceptance(){
   if [ "$MODE" = live-session-routing ]; then
     [ -n "${MAGIOS_LIVE_ROUTING_FIXTURE_JSON:-}" ] || die "live-session-routing requires MAGIOS_LIVE_ROUTING_FIXTURE_JSON and a second enrolled client to send its probes."
   fi
+  if [ "$MODE" = live-programs ]; then
+    [ -n "${MAGIOS_LIVE_PROGRAMS_FIXTURE_JSON:-}" ] || die "live-programs requires MAGIOS_LIVE_PROGRAMS_FIXTURE_JSON (program/marker, approval_title, crew_agent)."
+  fi
   if [ "$MODE" = live-question ]; then
     [ -n "${MAGIOS_LIVE_QUESTION_FIXTURE_JSON:-}" ] || die "live-question requires MAGIOS_LIVE_QUESTION_FIXTURE_JSON and a pending test question."
   fi
@@ -210,6 +218,7 @@ do_live_acceptance(){
     TEST_RUNNER_MAGIOS_LIVE_ENROLLMENT="$([ "$MODE" = live-enrollment ] && echo 1 || echo 0)" \
     TEST_RUNNER_MAGIOS_LIVE_ROUTING_FIXTURE_JSON="${MAGIOS_LIVE_ROUTING_FIXTURE_JSON:-}" \
     TEST_RUNNER_MAGIOS_LIVE_QUESTION_FIXTURE_JSON="${MAGIOS_LIVE_QUESTION_FIXTURE_JSON:-}" \
+    TEST_RUNNER_MAGIOS_LIVE_PROGRAMS_FIXTURE_JSON="${MAGIOS_LIVE_PROGRAMS_FIXTURE_JSON:-}" \
     TEST_RUNNER_MAGIOS_LIVE_PLAYBACK_TEXT="${MAGIOS_LIVE_PLAYBACK_TEXT:-}" \
     TEST_RUNNER_MAGIOS_LIVE_PLAYBACK_MESSAGE_ID="${MAGIOS_LIVE_PLAYBACK_MESSAGE_ID:-}" \
     TEST_RUNNER_MAGIOS_LIVE_PLAYBACK_SESSION_TITLE="${MAGIOS_LIVE_PLAYBACK_SESSION_TITLE:-}" \
@@ -268,5 +277,6 @@ case "$MODE" in
   live-session-routing) do_live_acceptance MagiosLiveSessionRoutingUITests ;;
   live-enrollment) do_live_acceptance MagiosLiveEnrollmentUITests ;;
   live-question) do_live_acceptance MagiosLiveQuestionUITests ;;
-  *)      die "unknown mode '$MODE' (use: build | deploy | run | live-chat | live-recovery | live-today | live-notes | live-appearance | live-upload | live-playback | live-session-routing | live-enrollment | live-question)" ;;
+  live-programs) do_live_acceptance MagiosLiveProgramsUITests ;;
+  *)      die "unknown mode '$MODE' (use: build | deploy | run | live-chat | live-recovery | live-today | live-notes | live-appearance | live-upload | live-playback | live-session-routing | live-enrollment | live-question | live-programs)" ;;
 esac

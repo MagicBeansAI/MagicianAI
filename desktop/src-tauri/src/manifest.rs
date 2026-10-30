@@ -221,16 +221,16 @@ mod tests {
         assert_eq!(loaded.installed_at, "2026-03-11T10:00:00Z");
         assert_eq!(loaded.platform, "macos-aarch64");
         assert_eq!(loaded.runtime, "Docker");
-        assert_eq!(loaded.installed_by_us.homebrew, true);
+        assert!(loaded.installed_by_us.homebrew);
         assert_eq!(loaded.installed_by_us.container_runtime, "colima+docker");
         assert_eq!(
             loaded.installed_by_us.container_image,
             "ghcr.io/magicbeanbs100x/magician:latest"
         );
         assert_eq!(loaded.installed_by_us.container_name, "magician");
-        assert_eq!(loaded.installed_by_us.launch_agent, true);
-        assert_eq!(loaded.pre_existing.homebrew, false);
-        assert_eq!(loaded.pre_existing.container_runtime, false);
+        assert!(loaded.installed_by_us.launch_agent);
+        assert!(!loaded.pre_existing.homebrew);
+        assert!(!loaded.pre_existing.container_runtime);
         assert_eq!(loaded.data_dirs, vec!["~/magician_data_v3"]);
 
         // Cleanup

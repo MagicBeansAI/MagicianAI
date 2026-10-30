@@ -42,7 +42,9 @@ mod tests {
     use crate::magician_v2::query_analysis::operation_llm_router::OperationLlmRouter;
 
     fn env(name: &str) -> Option<String> {
-        std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
     }
 
     fn env_number(name: &str, default: u64) -> u64 {
@@ -130,7 +132,10 @@ mod tests {
             }
         }
         let mut named = Vec::new();
-        strings(&serde_json::to_value(&selector).unwrap_or(Value::Null), &mut named);
+        strings(
+            &serde_json::to_value(&selector).unwrap_or(Value::Null),
+            &mut named,
+        );
         named.push(router_config.default_profile.clone());
         let mut keep: std::collections::BTreeSet<String> = named
             .into_iter()
@@ -151,7 +156,6 @@ mod tests {
             keep.extend(fallbacks);
         }
         router_config.profiles.retain(|name, _| keep.contains(name));
-        router_config.adaptive_profiles.clear();
         router_config
             .operation_mapping
             .retain(|operation, _| operation == PREFERENCE_ALIGNMENT_JUDGE_OPERATION);
@@ -178,11 +182,9 @@ mod tests {
             "repository_seed"
         };
         let router = Arc::new(OperationLlmRouter::new(Some(router_config)));
-        let judge_ready = router
-            .shared_configured_router()
-            .is_some_and(|configured| {
-                configured.has_provider_for_operation(PREFERENCE_ALIGNMENT_JUDGE_OPERATION)
-            });
+        let judge_ready = router.shared_configured_router().is_some_and(|configured| {
+            configured.has_provider_for_operation(PREFERENCE_ALIGNMENT_JUDGE_OPERATION)
+        });
         assert!(
             judge_ready,
             "the judge's provider did not register; see the magicllm.bootstrap warning above"
@@ -205,7 +207,9 @@ mod tests {
         for path in &case_paths {
             let text = std::fs::read_to_string(path)
                 .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-            case_files.push(json!({"path": path.display().to_string(), "sha256": sha256_hex(text.as_bytes())}));
+            case_files.push(
+                json!({"path": path.display().to_string(), "sha256": sha256_hex(text.as_bytes())}),
+            );
             cases.extend(parse_cases(&text).expect("cases parse"));
         }
         if let Some(limit) = env("PA_LIVE_LIMIT").and_then(|value| value.parse::<usize>().ok()) {
@@ -288,10 +292,7 @@ mod tests {
             let mut sorted = records;
             sorted.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
             let path = out_dir.join(format!("predictions-r{repeat}.jsonl"));
-            let body: String = sorted
-                .iter()
-                .map(|record| format!("{record}\n"))
-                .collect();
+            let body: String = sorted.iter().map(|record| format!("{record}\n")).collect();
             std::fs::write(&path, body).expect("predictions");
             let unresolved = sorted
                 .iter()

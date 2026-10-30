@@ -19,7 +19,7 @@
  * (`$lib/shared/fetch`), so we `vi.mock` that module and drive the response
  * per call. Mirrors the mocking approach in `../notify/resolve.test.ts`.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Capture the timedFetch invocation and control the Response it resolves to.
 const timedFetch = vi.fn();
@@ -31,12 +31,15 @@ vi.mock('$lib/shared/fetch', () => ({
 }));
 
 const requestAttentionInput = vi.fn();
+const executeTask = vi.hoisted(() => vi.fn());
+vi.mock('$lib/stores/taskStore', () => ({ taskStore: { executeTask } }));
 vi.mock('$lib/stores/attentionPromptStore', () => ({
 	requestAttentionInput: (request: unknown) => requestAttentionInput(request)
 }));
 
 import { get } from 'svelte/store';
 import { notifications } from '$lib/shared/stores/notifications';
+import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 import { postHitlResponse, hitlRequestFromCanonicalEvent, hitlRequestFromFeedItem, resolveHitlCall } from './adapters';
 import { HITL_ALREADY_CLOSED_NOTICE, resetHitlAlreadyClosedNoticeForTests } from './alreadyClosedNotice';
 
@@ -60,8 +63,74 @@ describe('revision-bound agentic wire identity', () => {
 			.toBe(`/api/magician/v2/hitl/${encodeURIComponent(askId)}/respond`);
 	});
 });
-import { respondToHitl } from './respondToHitl';
+import { respondToHitl, startRunAfterPlanApproval } from './respondToHitl';
 import type { HitlInputType, HitlRequest, HitlResponseValue } from './types';
+
+it('does not start a run when the focused Approve & Run was already answered', async () => {
+	executeTask.mockClear();
+	requestAttentionInput.mockResolvedValueOnce({ kind: 'choice', choiceId: 'approve_run' });
+	timedFetch.mockResolvedValueOnce(jsonResponse(409, { reason: 'already_resolved' }));
+	const outcome = await respondToHitl({ ...agenticTextRequest(), source: 'plan_approval',
+		input_type: 'confirmation', scope: { task_id: 'task-plan' }, identifiers: { correlation_id: 'plan-123' } });
+	expect(outcome).toEqual({ ok: true, alreadyClosed: true });
+	expect(executeTask).not.toHaveBeenCalled();
+});
+
+describe('approval workspace changes', () => {
+	beforeEach(() => {
+		scopeIdentityStore.observe('owner', 'first');
+		executeTask.mockReset();
+		requestAttentionInput.mockReset();
+		timedFetch.mockReset();
+		notifications.clear();
+	});
+	afterEach(() => scopeIdentityStore.reset());
+
+	function planRequest(): HitlRequest {
+		return { ...agenticTextRequest(), source: 'plan_approval', input_type: 'confirmation',
+			scope: { task_id: 'task-plan' }, identifiers: { correlation_id: 'plan-123' } };
+	}
+
+	it('does not start a task in the newly selected workspace after approval returns', async () => {
+		requestAttentionInput.mockResolvedValueOnce({ kind: 'choice', choiceId: 'approve_run' });
+		let finish!: (response: Response) => void;
+		timedFetch.mockReturnValueOnce(new Promise<Response>((resolve) => { finish = resolve; }));
+		const pending = respondToHitl(planRequest());
+		await vi.waitFor(() => expect(timedFetch).toHaveBeenCalledOnce());
+		scopeIdentityStore.observe('owner', 'second');
+		finish(jsonResponse(200, { accepted: true }));
+		expect(await pending).toEqual({ ok: true });
+		expect(executeTask).not.toHaveBeenCalled();
+		expect(get(notifications).notifications.some((notice) =>
+			notice.title.includes('workspace changed'))).toBe(true);
+	});
+
+	it('does not post an answer if the workspace changes while the prompt is open', async () => {
+		let answer!: (result: { kind: 'choice'; choiceId: string }) => void;
+		requestAttentionInput.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+		const pending = respondToHitl(planRequest());
+		scopeIdentityStore.observe('owner', 'second');
+		answer({ kind: 'choice', choiceId: 'approve_run' });
+		expect(await pending).toMatchObject({ ok: false, message: expect.stringContaining('workspace changed') });
+		expect(timedFetch).not.toHaveBeenCalled();
+		expect(executeTask).not.toHaveBeenCalled();
+	});
+
+	it('still starts the approved task when the workspace remains selected', async () => {
+		requestAttentionInput.mockResolvedValueOnce({ kind: 'choice', choiceId: 'approve_run' });
+		timedFetch.mockResolvedValueOnce(jsonResponse(200, { accepted: true }));
+		expect(await respondToHitl(planRequest())).toEqual({ ok: true });
+		expect(executeTask).toHaveBeenCalledExactlyOnceWith('task-plan');
+	});
+
+	it('also checks the request scope for inline Approve & Run', async () => {
+		const request = planRequest();
+		request.scope = { ...request.scope, principal: 'owner', workspace: 'first' };
+		scopeIdentityStore.observe('other-owner', 'first');
+		await startRunAfterPlanApproval(request, { kind: 'choice', choiceId: 'approve_run' });
+		expect(executeTask).not.toHaveBeenCalled();
+	});
+});
 
 // A minimal, valid agentic HITL request. `resolveHitlCall` derives its
 // correlation id from the source-specific pause id, so this resolves to a real POST call
@@ -137,6 +206,13 @@ describe('postHitlResponse — stale/already-resolved cards dismiss, not error',
 		const outcome = await postHitlResponse(agenticTextRequest(), textValue);
 
 		expect(outcome).toEqual({ ok: true });
+		expect(alreadyClosedNotices()).toBe(0);
+	});
+
+	it.each(['{}', 'null', '<html>Sign in</html>', ''])('keeps the question open without an acknowledgement: %s', async (body) => {
+		timedFetch.mockResolvedValue(new Response(body, { status: 200 }));
+		const outcome = await postHitlResponse(agenticTextRequest(), textValue);
+		expect(outcome.ok).toBe(false);
 		expect(alreadyClosedNotices()).toBe(0);
 	});
 
@@ -474,6 +550,42 @@ describe('service health notices', () => {
     });
 });
 
+describe('pending user-request attention rows', () => {
+	// The live shape (2026-10-20): the row names the request only as a flat
+	// `pause_state_id` and inside its embedded `hitl_request` envelope.
+	// Acknowledging it answered "No resolver available for this request shape."
+	it('resolves an owner briefing to its user request', () => {
+		const request = hitlRequestFromFeedItem({
+			id: 'v3:attention:attention:user_request.pending:task_1:exec_1', principal: 'anonymous',
+			workspace: 'default', item_type: 'task', status: 'needs_action', title: '1 pending user request(s).',
+			summary: 'Owner briefing', created_at: 1, updated_at: 1, actions: [],
+			metadata: {
+				attention_kind: 'user_request.pending', source: 'user_request', input_type: 'choice',
+				pause_state_id: 'req-1', execution_id: 'exec_1',
+				input_schema: { request_type: 'harness.notify_owner.briefing', options: [{ id: 'acknowledge', label: 'Acknowledge' }] },
+				hitl_request: { id: 'req-1', source: 'user_request', identifiers: { correlation_id: 'req-1', request_id: 'req-1' } }
+			}
+		} as Parameters<typeof hitlRequestFromFeedItem>[0]);
+		expect(request?.identifiers.request_id).toBe('req-1');
+		const call = resolveHitlCall(request!, { type: 'choice', selected_id: 'acknowledge' });
+		expect(call?.url).toBe('/api/magician/v2/hitl/req-1/respond');
+	});
+
+	it('takes the request id from the pause id when nothing else names it', () => {
+		const request = hitlRequestFromFeedItem({
+			id: 'row', principal: 'p', workspace: 'w', item_type: 'task', status: 'needs_action',
+			title: 'ask', summary: null, created_at: 1, updated_at: 1, actions: [],
+			metadata: {
+				attention_kind: 'user_request.pending', source: 'user_request', input_type: 'choice',
+				pause_state_id: 'req-2', input_schema: { options: [{ id: 'acknowledge', label: 'Acknowledge' }] }
+			}
+		} as Parameters<typeof hitlRequestFromFeedItem>[0]);
+		expect(resolveHitlCall(request!, { type: 'choice', selected_id: 'acknowledge' })?.url).toBe(
+			'/api/magician/v2/hitl/req-2/respond'
+		);
+	});
+});
+
 describe('mcp_oauth sign-in asks (C4)', () => {
 	function mcpOauthEvent(schema: Record<string, unknown> = {}) {
 		return hitlRequestFromCanonicalEvent({
@@ -525,15 +637,47 @@ describe('mcp_oauth sign-in asks (C4)', () => {
 		timedFetch.mockResolvedValueOnce(new Response(JSON.stringify({ accepted: true }), { status: 200 }));
 		await expect(respondToHitl(request)).resolves.toEqual({ ok: true });
 		const prompt = requestAttentionInput.mock.calls.at(-1)?.[0] as {
-			externalAction?: { showNote?: boolean };
+			externalAction?: { showNote?: boolean; browserSigninCorrelationId?: string; browserSigninScope?: { principal: string; workspace: string } };
 		};
 		expect(prompt.externalAction?.showNote).toBe(false);
+		expect(prompt.externalAction?.browserSigninCorrelationId).toBe('mcp_oauth:binding:flow:attempt');
+		expect(prompt.externalAction?.browserSigninScope).toEqual({ principal: 'alice', workspace: 'work' });
 		const [url, init] = timedFetch.mock.calls.at(-1)!;
 		expect(url).toBe('/api/magician/v2/hitl/mcp_oauth%3Abinding%3Aflow%3Aattempt/respond');
 		expect(JSON.parse(String(init?.body))).toMatchObject({
 			source: 'mcp_oauth',
 			value: { type: 'external_action_completed' }
 		});
+	});
+
+	it('declines with "Not now" by posting an abort, which cancels the flow server-side', async () => {
+		const request = mcpOauthEvent({ dismiss_label: 'Not now', service_label: 'Swiggy (food)' })!;
+		expect(request.schema.service_label).toBe('Swiggy (food)');
+		requestAttentionInput.mockResolvedValueOnce({ kind: 'choice', choiceId: 'dismiss' });
+		timedFetch.mockResolvedValueOnce(
+			new Response(JSON.stringify({ accepted: true, reason: 'dismissed' }), { status: 200 })
+		);
+		await expect(respondToHitl(request)).resolves.toEqual({ ok: true });
+		const prompt = requestAttentionInput.mock.calls.at(-1)?.[0] as {
+			externalAction?: { dismissLabel?: string };
+		};
+		expect(prompt.externalAction?.dismissLabel).toBe('Not now');
+		const [url, init] = timedFetch.mock.calls.at(-1)!;
+		expect(url).toBe('/api/magician/v2/hitl/mcp_oauth%3Abinding%3Aflow%3Aattempt/respond');
+		expect(JSON.parse(String(init?.body))).toMatchObject({
+			source: 'mcp_oauth',
+			value: { type: 'aborted' }
+		});
+	});
+
+	it('offers "Not now" on sign-in asks published before the label existed', async () => {
+		const request = mcpOauthEvent()!;
+		requestAttentionInput.mockResolvedValueOnce(null);
+		await respondToHitl(request);
+		const prompt = requestAttentionInput.mock.calls.at(-1)?.[0] as {
+			externalAction?: { dismissLabel?: string };
+		};
+		expect(prompt.externalAction?.dismissLabel).toBe('Not now');
 	});
 
 	it('treats a flow that already finished as resolved', async () => {

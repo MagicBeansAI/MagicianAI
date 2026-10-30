@@ -64,8 +64,13 @@ class NativeServiceTests(unittest.TestCase):
             native.seed(REPO, root)
             self.assertEqual(config.read_text(), "owner-config\n")
             self.assertEqual(env.read_text(), "OWNER=keep\n")
-            self.assertEqual((root / ".env.development").stat().st_mode & 0o777, 0o600)
+            self.assertFalse((root / ".env.development").exists(),
+                             "an empty-keyed .env.development would shadow the owner's .env")
             self.assertTrue((root / "decision-engine.yaml").is_file())
+            fresh = Path(temporary) / "fresh"
+            native.seed(REPO, fresh)
+            self.assertEqual((fresh / ".env").stat().st_mode & 0o777, 0o600)
+            self.assertFalse((fresh / ".env.development").exists())
             before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
             native.seed(REPO, root)
             after = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
@@ -103,7 +108,7 @@ class NativeServiceTests(unittest.TestCase):
             native.start(prefix, other, runner=runner, service_path=service)
             self.assertIn("bootstrap", [call[1] for call in calls])
             self.assertEqual(plistlib.loads(service.read_bytes())["EnvironmentVariables"]["MAGICIAN_ROOT_DIR"], str(other))
-            for file in (prefix / "magician.bin", other / ".env.development"):
+            for file in (prefix / "magician.bin", other / ".env"):
                 file.write_text(file.read_text() + "\nupdated")
                 calls.clear()
                 native.start(prefix, other, runner=runner, service_path=service)
@@ -180,6 +185,133 @@ class NativeServiceTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 1, "", "")
             with self.assertRaisesRegex(ValueError, "not bound"):
                 native.verify_binding(prefix, root, runner=not_started, service_path=service)
+
+
+class SupervisorArgumentSyncTests(unittest.TestCase):
+    def test_desktop_launch_records_the_arguments_without_restarting_the_backend(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            prefix, root = base / "software", base / "notes"
+            service = base / "agent.plist"
+            service.write_bytes(plistlib.dumps(native.service_definition(prefix, root)))
+            wanted = ["--magician-config", str(root / "magician-config.yaml"),
+                      "--desktop-app", "/Applications/Magican.app", "--desktop-log", str(root / "logs/desktop.log")]
+            with mock.patch.object(native.subprocess, "run") as run:
+                self.assertTrue(native.sync_supervisor_args(prefix, root, wanted, service_path=service))
+                self.assertFalse(native.sync_supervisor_args(prefix, root, wanted, service_path=service))
+                run.assert_not_called()
+            definition = plistlib.loads(service.read_bytes())
+            self.assertEqual(definition["ProgramArguments"], native.launcher_arguments(prefix) + wanted)
+            self.assertIn("MAGICIAN_INSTALL_REVISION", definition["EnvironmentVariables"])
+            self.assertFalse(native.sync_supervisor_args(prefix, base / "other notes", wanted,
+                                                         service_path=service), "another data folder is left alone")
+            self.assertFalse(native.sync_supervisor_args(base / "other", root, wanted,
+                                                         service_path=service), "another installation is left alone")
+
+    def test_another_bundle_never_steals_an_existing_binding(self):
+        recorded = ["--magician-config", "/d/c.yaml", "--desktop-app", "/Applications/Magican.app",
+                    "--desktop-log", "/d/logs/desktop.log"]
+        debug = ["--magician-config", "/d/c.yaml", "--desktop-app", "/repo/.local/Magican-Debug.app",
+                 "--desktop-log", "/d/logs/desktop.log"]
+        self.assertEqual(native.merge_supervisor_args(recorded, debug, lambda _path: True), recorded)
+        self.assertEqual(native.merge_supervisor_args(recorded, debug, lambda _path: False), debug)
+        self.assertEqual(native.merge_supervisor_args([], debug, lambda _path: True), debug)
+
+    def test_an_installed_app_reclaims_the_binding_and_unknown_flags_survive(self):
+        recorded = ["--magician-config", "/d/c.yaml", "--desktop-app", "/Users/me/Downloads/Magican.app",
+                    "--desktop-log", "/d/logs/desktop.log", "--manage-desktop=0", "--desktop-launch-at-boot", "always"]
+        installed = ["--magician-config", "/d/c.yaml", "--desktop-app", "/Applications/Magican.app",
+                     "--desktop-log", "/d/logs/desktop.log"]
+        merged = native.merge_supervisor_args(recorded, installed, lambda _path: True)
+        self.assertEqual(merged[:6], installed, "an /Applications bundle wins over a stale copy")
+        self.assertEqual(merged[6:], ["--manage-desktop=0", "--desktop-launch-at-boot", "always"],
+                         "hand-added and future flags are kept")
+        self.assertEqual(native.merge_supervisor_args(recorded, [], lambda _path: True), recorded[:6] + recorded[6:],
+                         "no candidate keeps everything, including --magician-config")
+
+    def _installation(self, base: Path) -> tuple[Path, Path]:
+        prefix, root = base / "software", base / "notes"
+        for name in ("magician.bin", "magicutor.bin", "magic-supervisor.bin", "MANIFEST.yaml",
+                     "tool-runtime-config.yaml", "scripts/run-native-backend.sh", "scripts/run-ollama.sh"):
+            (prefix / name).parent.mkdir(parents=True, exist_ok=True)
+            (prefix / name).write_text("x")
+        for name in ("magician-config.yaml", "llm-router.yaml", "decision-engine.yaml"):
+            root.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text("x: 1\n")
+        return prefix.resolve(), root.resolve()
+
+    def _launchctl(self, loaded: list[str] | None):
+        calls = []
+        def runner(args, **kwargs):
+            calls.append(args)
+            if args[:2] == ["/bin/launchctl", "print"]:
+                if loaded is None:
+                    return subprocess.CompletedProcess(args, 113, "", "Could not find service")
+                body = "\n".join(f"\t\t{item}" for item in loaded)
+                return subprocess.CompletedProcess(args, 0, f"\tpid = 42\n\targuments = {{\n{body}\n\t}}\n", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return runner, calls
+
+    def test_rerunning_setup_without_arguments_keeps_them_and_only_kickstarts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix, root = self._installation(Path(temporary))
+            service = Path(temporary) / "agent.plist"
+            desktop = ["--magician-config", str(root / "magician-config.yaml"),
+                       "--desktop-app", "/Applications/Magican.app", "--desktop-log", str(root / "logs/desktop.log")]
+            service.write_bytes(plistlib.dumps(native.service_definition(prefix, root, desktop), sort_keys=False))
+            runner, calls = self._launchctl(native.launcher_arguments(prefix) + desktop)
+            native.start(prefix, root, runner=runner, service_path=service)
+            self.assertEqual(plistlib.loads(service.read_bytes())["ProgramArguments"][2:], desktop)
+            self.assertFalse(any(call[:2] == ["/bin/launchctl", "bootstrap"] for call in calls),
+                             "an unchanged re-run never re-bootstraps")
+            self.assertTrue(any(call[:2] == ["/bin/launchctl", "kickstart"] for call in calls))
+
+    def test_setup_reregisters_when_launchd_still_runs_older_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix, root = self._installation(Path(temporary))
+            service = Path(temporary) / "agent.plist"
+            desktop = ["--magician-config", str(root / "magician-config.yaml")]
+            service.write_bytes(plistlib.dumps(native.service_definition(prefix, root, desktop), sort_keys=False))
+            # A file-only sync left launchd on the arguments loaded at login.
+            runner, calls = self._launchctl(native.launcher_arguments(prefix))
+            native.start(prefix, root, runner=runner, service_path=service)
+            self.assertTrue(any(call[:2] == ["/bin/launchctl", "bootstrap"] for call in calls))
+
+    def test_loaded_arguments_are_read_from_launchctl_print(self):
+        runner, _ = self._launchctl(["/bin/bash", "/p/run.sh", "--desktop-app", "/Applications/Magican.app"])
+        self.assertEqual(native.loaded_program_arguments(runner, "gui/501/x"),
+                         ["/bin/bash", "/p/run.sh", "--desktop-app", "/Applications/Magican.app"])
+        missing, _ = self._launchctl(None)
+        self.assertIsNone(native.loaded_program_arguments(missing, "gui/501/x"))
+
+    def test_a_broken_registration_is_rewritten_by_start_and_skipped_by_sync(self):
+        broken = {
+            "empty": b"",
+            "garbage": b"\x00\x01 not a plist",
+            "truncated": b'<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>Label</key>',
+            "not a dict": plistlib.dumps(["a", "list"]),
+            "arguments not a list": plistlib.dumps({"ProgramArguments": "x", "EnvironmentVariables": {}}),
+        }
+        for label, content in broken.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as temporary:
+                prefix, root = self._installation(Path(temporary))
+                service = Path(temporary) / "agent.plist"
+                service.write_bytes(content)
+                self.assertIsNone(native.load_registration(service))
+                self.assertFalse(native.sync_supervisor_args(prefix, root, ["--magician-config", "/x"],
+                                                             service_path=service))
+                runner, calls = self._launchctl(None)
+                native.start(prefix, root, runner=runner, service_path=service)
+                repaired = plistlib.loads(service.read_bytes())
+                self.assertEqual(repaired["ProgramArguments"][:2], native.launcher_arguments(prefix))
+                self.assertTrue(any(call[:2] == ["/bin/launchctl", "bootstrap"] for call in calls))
+
+    def test_binding_checks_ignore_the_supervisor_arguments(self):
+        prefix, root = Path("/opt/software"), Path("/opt/notes")
+        plain = native.service_definition(prefix, root)
+        extended = native.service_definition(prefix, root, ["--desktop-app", "/Applications/Magican.app"])
+        self.assertEqual(plain["ProgramArguments"][:2], extended["ProgramArguments"][:2])
+        self.assertEqual(extended["ProgramArguments"][2:], ["--desktop-app", "/Applications/Magican.app"])
 
 
 class SourceInstallerTests(unittest.TestCase):

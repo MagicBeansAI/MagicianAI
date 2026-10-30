@@ -101,6 +101,10 @@ enum VerdictState: String, CaseIterable {
     case cancelled
     case queued
     case archived
+    /// The work is done but the final answer is still being written
+    /// (`synthesis_pending`). Ranks after every state that demands action or
+    /// ends the run, and before `finished`.
+    case finalizing
     case finished
 }
 
@@ -137,6 +141,7 @@ extension VerdictState {
         case .cancelled: return "stop.circle.fill"
         case .queued: return "clock.fill"
         case .archived: return "archivebox.fill"
+        case .finalizing: return "wand.and.stars"
         case .finished: return "checkmark.seal.fill"
         }
     }
@@ -152,7 +157,7 @@ extension VerdictState {
         switch self {
         case .waiting, .stalled: return .attention
         case .failed: return .failure
-        case .running: return .progress
+        case .running, .finalizing: return .progress
         case .paused, .cancelled, .queued, .archived: return .neutral
         case .finished: return .success
         }
@@ -238,6 +243,10 @@ struct VerdictInput: Equatable {
     /// moves on any write, so a wedged run would refresh its own liveness and
     /// never report stalled. See design §5.
     var lastProgressAt: Date?
+    /// The run's work is done but its final answer is still being written
+    /// (`synthesis_pending`). Only ever changes a would-be `finished` verdict:
+    /// failed, waiting, cancelled and the live states all outrank it.
+    var synthesisPending: Bool = false
     var now: Date
 }
 
@@ -245,6 +254,32 @@ struct Verdict: Equatable {
     let state: VerdictState
     let headline: String
     let detail: String
+}
+
+// MARK: - Waiting for the final answer
+
+/// The client side of `synthesis_pending`: how long the answer has been
+/// pending and when to stop spinning. Pure; the clock is the caller's
+/// `TimelineView` date.
+enum SynthesisWait {
+    /// The backend heals a stuck synthesis (startup reconciler, failure path),
+    /// but a client must not spin forever on a flag that never clears.
+    static let staleAfter: TimeInterval = 10 * 60
+
+    /// Seconds since `baseline`, or `nil` when it cannot be measured. Clamped
+    /// at zero: the baseline is the server's instant and the device clock may
+    /// trail it.
+    static func elapsed(since baseline: Date, now: Date) -> TimeInterval? {
+        let seconds = now.timeIntervalSince(baseline)
+        guard seconds.isFinite else { return nil }
+        return max(0, seconds)
+    }
+
+    /// True once the flag has been set for more than ten minutes.
+    static func isStale(since baseline: Date, now: Date) -> Bool {
+        guard let seconds = elapsed(since: baseline, now: now) else { return false }
+        return seconds > staleAfter
+    }
 }
 
 // MARK: - Derivation
@@ -440,6 +475,20 @@ enum TaskVerdict {
 
         if input.status == "archived" {
             return Verdict(state: .archived, headline: "Archived", detail: "No longer active")
+        }
+
+        // The work is done and the answer is still being written. After every
+        // state above so a failure, an ask or a cancel still wins, and before
+        // `finished` so the screen never says "Finished" while the output is
+        // not there yet.
+        if input.synthesisPending {
+            let took = durationIfKnown(input.elapsed)
+            return Verdict(
+                state: .finalizing,
+                headline: "Preparing final result",
+                detail: took.map { "The work finished in \($0); the answer is being written" }
+                    ?? "The work finished; the answer is being written"
+            )
         }
 
         // Unconditional: any status the chain above does not model finishes

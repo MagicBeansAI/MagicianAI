@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import signal
+import socket
 import sys
 import time
 import urllib.error
@@ -21,6 +24,24 @@ MAX_INPUT_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_OUTPUT_TEXT = 8 * 1024 * 1024
 MAX_SOURCES = 2_000
+MAX_ERROR_DETAIL = 300
+DEFAULT_MODEL = "gpt-6.1-sol"
+# The runtime stops the adapter at 2100 s at most; stop polling a little earlier
+# and hand back the response id. A shorter agent-chosen limit is caught as
+# SIGTERM instead (see on_terminate).
+MAX_RUNTIME_SECS = 35 * 60
+RUN_DEADLINE_SECS = MAX_RUNTIME_SECS - 30
+TERMINAL_STATUSES = {"completed", "failed", "cancelled", "expired", "incomplete"}
+# OpenAI shut these down on 2026-07-23; the API still lists them but answers
+# model_not_found.
+RETIRED_MODELS = {
+    "o3-deep-research",
+    "o3-deep-research-2025-06-26",
+    "o4-mini-deep-research",
+    "o4-mini-deep-research-2025-06-26",
+}
+# OpenAI masks keys in its messages; redact anything key-shaped anyway.
+KEY_SHAPED = re.compile(r"sk-[A-Za-z0-9_*\-]+")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -34,6 +55,63 @@ OPENER = urllib.request.build_opener(NoRedirect)
 def fail(message: str) -> int:
     print(json.dumps({"error": message}, separators=(",", ":")))
     return 1
+
+
+def error_detail(detail) -> str:
+    """OpenAI's own error code and message, bounded and with keys redacted."""
+    if not isinstance(detail, dict):
+        return ""
+    code = bounded_text(detail.get("code"), 64)
+    message = KEY_SHAPED.sub("[redacted]", bounded_text(detail.get("message"), MAX_ERROR_DETAIL))
+    return ": ".join(part for part in (code, message) if part)
+
+
+def http_error_detail(error: urllib.error.HTTPError) -> str:
+    try:
+        body = json.loads(error.read(64 * 1024) or b"{}")
+    except (ValueError, OSError):
+        return ""
+    return error_detail(body.get("error")) if isinstance(body, dict) else ""
+
+
+def retired_model_hint(model: str) -> str:
+    if model not in RETIRED_MODELS:
+        return ""
+    return f"; OpenAI retired `{model}` on 2026-07-23, pass model `{DEFAULT_MODEL}` instead"
+
+
+# The background response being polled, for the SIGTERM handler.
+RUN = {"response_id": "", "status": ""}
+
+
+def report_unfinished(reason: str) -> int:
+    """Hand back the background response id so a later call can collect it:
+    OpenAI keeps researching (and billing) after this adapter stops."""
+    response_id, status = RUN["response_id"], RUN["status"]
+    if not response_id or status in TERMINAL_STATUSES:
+        return fail(reason)
+    print(json.dumps({
+        "error": f"{reason}; OpenAI is still researching (status: {bounded_text(status, 32)}), "
+                 f"call run again with response_id `{response_id}` to collect the result",
+        "response_id": response_id,
+        "status": bounded_text(status, 32),
+    }, separators=(",", ":")))
+    return 1
+
+
+def on_terminate(signum, frame) -> None:
+    """The runtime ends a run that passes its time limit with SIGTERM and
+    SIGKILLs it 200 ms later; hand back the response id in that window."""
+    try:
+        report_unfinished("stopped by its time limit before OpenAI finished")
+        sys.stdout.flush()
+    finally:
+        os._exit(1)
+
+
+def valid_response_id(value) -> bool:
+    return (isinstance(value, str) and value.startswith("resp_") and len(value) <= 256
+            and value.replace("_", "").isalnum())
 
 
 def read_input() -> dict:
@@ -132,47 +210,80 @@ def main() -> int:
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
         return fail("OpenAI credential is unavailable")
+    model = ""
     try:
         params = read_input()
-        query = params["query"]
-        model = params.get("model", "o4-mini-deep-research")
+        model = params.get("model", DEFAULT_MODEL)
         poll_interval = params.get("poll_interval_secs", 10)
-        max_polls = params.get("max_poll_attempts", 60)
+        max_polls = params.get("max_poll_attempts", MAX_RUNTIME_SECS)
         max_tool_calls = params.get("max_tool_calls")
-        if not isinstance(query, str) or not query:
-            raise ValueError("query is required")
-        body = {
-            "model": model,
-            "input": query,
-            "background": True,
-            "tools": [{"type": "web_search"}],
-        }
-        if max_tool_calls is not None:
-            body["max_tool_calls"] = max_tool_calls
-        response = post_response(api_key, body)
-        if response.get("error"):
-            return fail("OpenAI rejected the research request")
+        resume_id = params.get("response_id")
+        signal.signal(signal.SIGTERM, on_terminate)
+        deadline = time.monotonic() + RUN_DEADLINE_SECS
+        if resume_id is not None:
+            if not valid_response_id(resume_id):
+                return fail("response_id must be the `resp_...` id an earlier run returned")
+            RUN.update(response_id=resume_id, status="unknown")
+            response = get_response(api_key, resume_id)
+        else:
+            query = params.get("query")
+            if not isinstance(query, str) or not query:
+                return fail("query is required unless response_id resumes an earlier run")
+            body = {
+                "model": model,
+                "input": query,
+                "background": True,
+                "tools": [{"type": "web_search"}],
+            }
+            if max_tool_calls is not None:
+                body["max_tool_calls"] = max_tool_calls
+            response = post_response(api_key, body)
+            if response.get("error"):
+                detail = error_detail(response["error"])
+                return fail("OpenAI rejected the research request" + (f" ({detail})" if detail else ""))
         response_id = response.get("id", "")
         status = response.get("status", "")
         if not response_id:
             return fail("OpenAI returned no research response id")
+        RUN.update(response_id=response_id, status=status)
         attempts = 0
-        while status not in {"completed", "failed", "cancelled", "expired"} and attempts < max_polls:
+        while status not in TERMINAL_STATUSES and attempts < max_polls:
+            if time.monotonic() + poll_interval > deadline:
+                break
             time.sleep(poll_interval)
             attempts += 1
             response = get_response(api_key, response_id)
             status = response.get("status", "unknown")
-        if status != "completed":
-            return fail(f"research did not complete (status: {bounded_text(status, 32)})")
-        print(json.dumps(normalize(response, response_id, attempts), ensure_ascii=False))
-        return 0
+            RUN["status"] = status
+        if status == "completed":
+            print(json.dumps(normalize(response, response_id, attempts), ensure_ascii=False))
+            return 0
+        if status not in TERMINAL_STATUSES:
+            return report_unfinished(f"OpenAI had not finished after {attempts} polls")
+        detail = error_detail(response.get("error"))
+        incomplete = response.get("incomplete_details")
+        if not detail and isinstance(incomplete, dict):
+            detail = bounded_text(incomplete.get("reason"), 64)
+        reason = f"research did not complete (status: {bounded_text(status, 32)})" + (f" ({detail})" if detail else "")
+        # An `incomplete` response (an output cap, say) can still carry findings.
+        output = normalize(response, response_id, attempts)
+        if output["answer"] or output["sources"]:
+            output["incomplete"] = reason
+            print(json.dumps(output, ensure_ascii=False))
+            return 0
+        return fail(reason)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return fail("invalid research input or provider response")
+        return report_unfinished("invalid research input or provider response")
     except urllib.error.HTTPError as error:
-        return fail(f"OpenAI request failed with HTTP {error.code}")
-    except (urllib.error.URLError, TimeoutError):
-        return fail("OpenAI request was unavailable")
-
+        detail = http_error_detail(error)
+        message = f"OpenAI request failed with HTTP {error.code}" + (f" ({detail})" if detail else "")
+        if error.code == 429 or error.code >= 500:
+            return report_unfinished(message)
+        hint = retired_model_hint(model) if error.code == 404 and not RUN["response_id"] else ""
+        return fail(message + hint)
+    # Python 3.9's socket.timeout is not TimeoutError.
+    except (urllib.error.URLError, socket.timeout, TimeoutError):
+        return report_unfinished("OpenAI request was unavailable")
 
 if __name__ == "__main__":
     raise SystemExit(main())

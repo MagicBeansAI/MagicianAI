@@ -17,8 +17,8 @@ use magicllm::prelude::{
     as_anthropic_raw_content_block, ConfiguredRouter, ContentBlock as RouterContentBlock,
     LLMMessage as RouterMessage, LLMModality, LLMProfile, LLMProviderKind,
     LLMRequest as RouterRequest, LLMResponse as RouterResponse, LLMRouterConfig,
-    LLMToolSpec as RouterToolSpec, PromptCacheConfig, ReasoningConfig as RouterReasoningConfig,
-    RequestMetadata as RouterMetadata, TokenUsage as RouterTokenUsage,
+    LLMToolSpec as RouterToolSpec, PromptCacheConfig, RequestMetadata as RouterMetadata,
+    TokenUsage as RouterTokenUsage,
 };
 use magicllm::types::{MessageRole, SummarisableBlock, SummarisationPurpose};
 use serde::{Deserialize, Serialize};
@@ -792,34 +792,50 @@ pub fn harness_affinity() -> Option<String> {
         .filter(|engine| !engine.is_empty() && engine != "magician")
 }
 
-/// The profile name a harness engine's stateless calls ride: that harness's
-/// declared default-model profile.
-fn harness_affinity_profile_base(engine: &str) -> String {
-    // Some engine names differ from their stateless MagicLLM provider/profile
-    // namespace. Keep those translations at this one seam instead of teaching
-    // every caller the naming exceptions.
-    let profile_engine = match engine {
-        "claude_code" => "claude",
-        // App Server is a stateful plane/coding engine, not a MagicLLM
-        // provider. Its secondary stateless calls ride the same Codex CLI
-        // subscription through the one-shot harness provider.
+fn harness_provider(engine: &str) -> String {
+    let provider_engine = match engine {
         "codex_app_server" => "codex",
+        "grok_acp" => "grok",
+        "agy_cli" => "agy",
         other => other,
     };
-    format!("op-harness-{profile_engine}")
+    format!("harness-{provider_engine}")
 }
 
-/// The profile a parent engine resolves to in `config`: the harness's
-/// default-model profile, its small variant if only that is declared, else
-/// `None` — the parent silently no-ops for an engine without profiles and
-/// the operation stays on its own configured profile.
+fn harness_default_route(engine: &str) -> String {
+    magicllm::catalog::choice_id(&format!("{}/default", harness_provider(engine)), "auto")
+}
+
+/// Resolve the declared default model by provider identity. Catalog model IDs
+/// may be operator-defined; an ambiguous/missing default stays unresolved.
 fn parent_profile(config: &LLMRouterConfig, engine: &str) -> Option<String> {
-    let base = harness_affinity_profile_base(engine);
-    if config.profiles.contains_key(&base) {
-        return Some(base);
+    // The background CLI path carries no provider keys, so an operation
+    // follows the run onto its CLI only when that CLI is on its own sign-in
+    // (`execution.harness_auth`); otherwise it keeps Magician's route.
+    if !crate::magician_v2::harness_auth::background_may_use_cli(engine) {
+        return None;
     }
-    let small = format!("{base}-small");
-    config.profiles.contains_key(&small).then_some(small)
+    if config.catalog.is_empty() {
+        // Programmatic routers may supply concrete routes directly. File-based
+        // runtime configuration requires a model catalog at its owner boundary.
+        let route = harness_default_route(engine);
+        return config.profiles.contains_key(&route).then_some(route);
+    }
+    let provider = harness_provider(engine);
+    let mut defaults = config
+        .catalog
+        .choices()
+        .into_iter()
+        .filter(|model| model.provider == provider && model.model == "default");
+    let model = defaults.next()?;
+    if defaults.next().is_some() {
+        return None;
+    }
+    model
+        .choices
+        .get("auto")
+        .filter(|route| config.profiles.contains_key(*route))
+        .cloned()
 }
 
 /// Record why an operation did or did not ride its flow's parent engine.
@@ -2280,6 +2296,145 @@ impl magicllm::dispatch::DispatchRouter for LiveDispatchRouter {
     }
 }
 
+/// One logical call's identity, minted by its caller before dispatch.
+///
+/// The native agentic decision announces a call (`LLMRequestSent`) before the
+/// router has built the request's trace context, and the response it reports
+/// later (`LLMResponseReceived`) is correlated from the receipt of the context
+/// the router built. Minting the ids first and handing them to the router is
+/// what makes the two events — and the `LLMRouted` in between — carry the
+/// same `trace_id` / `llm_call_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreassignedLlmCallIdentity {
+    pub trace_id: String,
+    pub llm_call_id: String,
+    /// The `capability` the announcing `LLMRequestSent` used, repeated on the
+    /// call's `LLMRouted`. `None` reports the operation name instead.
+    pub capability: Option<String>,
+}
+
+impl PreassignedLlmCallIdentity {
+    fn is_usable(&self) -> bool {
+        [self.trace_id.as_str(), self.llm_call_id.as_str()]
+            .into_iter()
+            .all(|value| !value.is_empty() && value.trim() == value)
+    }
+}
+
+/// A one-shot carrier for a [`PreassignedLlmCallIdentity`].
+///
+/// One shot because an identity names ONE logical call: the first
+/// `route_request` that builds a fresh trace context takes it, and every
+/// later call through the same router (a validator, a caller retry) mints its
+/// own id as before. Two logical calls sharing an `llm_call_id` would merge in
+/// analytics and in every surface that pairs on it.
+#[derive(Debug, Clone, Default)]
+pub struct PreassignedLlmCallSlot(Arc<std::sync::Mutex<Option<PreassignedLlmCallIdentity>>>);
+
+impl PreassignedLlmCallSlot {
+    pub fn new(identity: PreassignedLlmCallIdentity) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(identity))))
+    }
+
+    pub fn take(&self) -> Option<PreassignedLlmCallIdentity> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
+/// Announces `RuntimeTransportEvent::LLMRouted` when the physical router has
+/// chosen a provider/model for a logical call and is about to invoke it.
+///
+/// It rides the request's content-capture lane because that lane's
+/// `EffectiveRequest` is the one point, on both the queue-backed and the
+/// direct path and for every fallback attempt, where profile, provider and
+/// effective model are all known and the provider has not been called yet.
+/// Every event is forwarded unchanged to the observer it wraps, so governed
+/// content capture behind it sees exactly what it saw before. Only installed
+/// on announced calls — those carrying a [`PreassignedLlmCallIdentity`] —
+/// that an execution owns and no app disclosure guard fences.
+struct LlmRoutedAnnouncer {
+    inner: magicllm::LlmContentCaptureSink,
+    broadcaster: Arc<crate::magician_v2::realtime_events::RuntimeTransportBroadcaster>,
+    execution_id: String,
+    plan_id: String,
+    step_id: Option<String>,
+    capability: String,
+    /// The call's context when the announcer was installed; the request's own
+    /// copy wins when the physical router hands one over.
+    context: magicllm::LlmTraceContext,
+    /// Last announced `(provider, model)`: a retry on the same route is not a
+    /// new route, a fallback to another model is.
+    last_route: std::sync::Mutex<Option<(String, String)>>,
+}
+
+impl LlmRoutedAnnouncer {
+    fn announce(
+        &self,
+        request: &RouterRequest,
+        profile: &str,
+        provider: &str,
+        provider_attempt_index: u32,
+    ) {
+        let route = (provider.to_string(), request.model.clone());
+        {
+            let mut last = self
+                .last_route
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if last.as_ref() == Some(&route) {
+                return;
+            }
+            *last = Some(route.clone());
+        }
+        let context = request
+            .metadata
+            .trace_context
+            .clone()
+            .unwrap_or_else(|| self.context.clone());
+        let receipt =
+            magicllm::LlmTraceReceipt::direct_with_attempt_count(context, provider_attempt_index);
+        let (provider, model) = route;
+        self.broadcaster.emit(
+            crate::magician_v2::realtime_events::RuntimeTransportEvent::LLMRouted {
+                execution_id: self.execution_id.clone(),
+                principal: Some(receipt.context.scope.principal.clone()),
+                workspace: Some(receipt.context.scope.workspace.clone()),
+                plan_id: self.plan_id.clone(),
+                step_id: self.step_id.clone(),
+                step_index: None,
+                capability: self.capability.clone(),
+                correlation: Some(
+                    crate::magician_v2::realtime_events::LlmEventCorrelation::from(&receipt),
+                ),
+                provider,
+                model,
+                profile: Some(profile.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+            },
+        );
+    }
+}
+
+impl magicllm::LlmContentCaptureObserver for LlmRoutedAnnouncer {
+    fn observe(&self, event: magicllm::LlmContentCaptureEvent<'_>) {
+        if let magicllm::LlmContentCaptureEvent::EffectiveRequest {
+            request,
+            profile,
+            provider,
+            provider_attempt_index,
+        } = &event
+        {
+            self.announce(request, profile, provider, *provider_attempt_index);
+        }
+        self.inner.observe(event);
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationLlmRouter {
     state: Arc<RwLock<OperationLlmRouterState>>,
@@ -2289,6 +2444,9 @@ pub struct OperationLlmRouter {
     /// Optional lane override for explicitly background-owned callers. Normal
     /// operation routing remains authoritative unless a caller opts in.
     dispatch_priority_override: Option<magicllm::dispatch::Priority>,
+    /// Auxiliary callers may opt into cancelling only their own dispatch
+    /// jobs when a timeout or dropped wait abandons the logical call.
+    cancel_on_drop: bool,
     /// Shared, set-once handle to the global LLM dispatch queue. Set at
     /// boot via `set_dispatch_queue` AFTER the queue is built from the
     /// same shared `ConfiguredRouter`. Behind `Arc<OnceLock<…>>` so it is
@@ -2340,6 +2498,9 @@ pub struct OperationLlmRouter {
     /// Controller-budgeted calls admit one physical provider request. This
     /// local flag cannot be manufactured by prompts or serialized metadata.
     single_physical_attempt: bool,
+    /// Caller-minted identity for the next logical call this clone routes.
+    /// See [`PreassignedLlmCallSlot`].
+    preassigned_call: Option<PreassignedLlmCallSlot>,
 }
 
 /// A resolved profile and its transport snapshot. Hot reload cannot reinterpret
@@ -2377,6 +2538,15 @@ impl BoundedOperationRoute {
 
     pub fn supports_bounded_images(&self) -> bool {
         self.profile.supports_vision == Some(true)
+    }
+
+    pub fn supports_bounded_json(&self) -> Option<bool> {
+        self.router
+            .read_state()
+            .router
+            .as_ref()?
+            .router()
+            .profile_supports_json_output(&self.profile_name)
     }
 
     pub(crate) fn validate_physical_plan(
@@ -2826,6 +2996,14 @@ impl OperationLlmRouter {
         if profile.metadata.as_ref().is_some_and(|metadata| {
             metadata.iter().any(|(key, value)| {
                 key != "model_family"
+                    // Resolver data never reaches the provider. Its exact
+                    // contents remain covered by the frozen route digest.
+                    && key != magicllm::catalog::CATALOG_SETTINGS_KEY
+                    // Catalog choices advertise their streaming transport.
+                    // A boolean gate adds no calls or paid payload features;
+                    // bounded generation still uses synchronous invoke below.
+                    && !(key == "streaming" && value.is_boolean())
+                    && !(key == "openai_api_mode" && value.as_str() == Some("responses"))
                     // Explicit auto is the ordinary tool-capable profile's
                     // default, not an extra provider payload or paid feature.
                     && !(key == "tool_choice" && value.as_str() == Some("auto"))
@@ -2902,7 +3080,7 @@ impl OperationLlmRouter {
                 .as_ref()
                 .is_none_or(|scope| scope == &context.scope)
         }) {
-            context.task_id = Some(task.task_id.clone());
+            context.task_id = (!task.is_session_keyed()).then(|| task.task_id.clone());
             context.root_execution_id = task.root_execution_id.clone();
             context.execution_id = task.execution_id.clone();
             context.trace_id = task
@@ -3057,6 +3235,63 @@ impl OperationLlmRouter {
         Self::request_profile_for_routing(config, &base_profile, profile_override)
     }
 
+    /// Resolve with dispatch's own precedence and request-shape rules,
+    /// without creating a request, spending tokens, or mutating routing.
+    pub fn inspect_operation_route(
+        &self,
+        operation: &str,
+        has_tools: bool,
+        has_images: bool,
+        model_override: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let operation = LLMOperation::from_str(operation);
+        let shape = magicllm::config::RequestShape {
+            has_tools,
+            has_images,
+        };
+        let routing = self.resolve_routing(&operation, model_override);
+        let state = self.read_state();
+        let config = state
+            .router_config
+            .as_ref()
+            .ok_or_else(|| anyhow!("No router configuration loaded"))?;
+        let base = Self::profile_for_operation_from_config_with_shape(
+            config,
+            self.routing_overrides.as_ref(),
+            &operation,
+            &shape,
+        )?;
+        let profile = Self::request_profile_for_routing(config, &base, routing.profile_override)?;
+        let profile_name = routing
+            .profile_override
+            .map(str::to_string)
+            .or_else(|| {
+                Self::resolved_profile_name_for_shape(
+                    config,
+                    self.routing_overrides.as_ref(),
+                    &operation,
+                    &shape,
+                )
+            })
+            .or_else(|| {
+                config
+                    .operation_mapping
+                    .get(operation.as_str())
+                    .map(|selector| selector.default_profile().to_string())
+            })
+            .unwrap_or_else(|| config.default_profile.clone());
+        Ok(serde_json::json!({
+            "operation": operation.as_str(), "profile": profile_name,
+            "provider": routing.provider_override.unwrap_or(profile.provider.as_str()),
+            "model": routing.effective_model_override.unwrap_or(profile.model.as_str()),
+            "request_shape": {"has_tools": has_tools, "has_images": has_images},
+            "parent_engine": parent_engine_for(self.routing_overrides.as_ref()),
+            "request_model_override": model_override,
+            "owner_profile_override": llm_routing_override_for(operation.as_str()),
+            "resolution_only": true, "provider_call_made": false,
+        }))
+    }
+
     /// Test-only exposure of the private shape-aware resolver for the
     /// Phase-2 override test (same module, so it could be private; pub(
     /// crate) keeps the surface honest).
@@ -3102,6 +3337,7 @@ impl OperationLlmRouter {
             routing_overrides: None,
             temperature_override: None,
             dispatch_priority_override: None,
+            cancel_on_drop: false,
             dispatch_queue: Arc::new(std::sync::OnceLock::new()),
             event_broadcaster: Arc::new(std::sync::OnceLock::new()),
             content_capture_sink: Arc::new(std::sync::OnceLock::new()),
@@ -3112,6 +3348,7 @@ impl OperationLlmRouter {
             bounded_profile_pin: None,
             app_operation_dispatch_permit: None,
             single_physical_attempt: false,
+            preassigned_call: None,
         }
     }
 
@@ -3128,6 +3365,47 @@ impl OperationLlmRouter {
         broadcaster: Arc<crate::magician_v2::realtime_events::RuntimeTransportBroadcaster>,
     ) {
         let _ = self.event_broadcaster.set(broadcaster);
+    }
+
+    /// Meter a direct, scoped auxiliary call with the router's existing owner
+    /// lineage. Session-keyed scheduling refs remain chats, never invented tasks.
+    pub(crate) fn direct_operation_telemetry(
+        &self,
+        capability: &str,
+    ) -> Option<(
+        crate::magician_v2::analytics::operation_llm_telemetry::OperationLlmTelemetryContext,
+        crate::magician_v2::analytics::operation_llm_telemetry::OperationLlmCallAttribution,
+    )> {
+        use crate::magician_v2::analytics::operation_llm_telemetry::{
+            OperationLlmCallAttribution, OperationLlmTelemetryContext,
+        };
+        let scope = self.scope_context.as_ref()?;
+        let broadcaster = Arc::clone(self.event_broadcaster.get()?);
+        let owner = self.task_context.as_ref()?;
+        if owner
+            .scope
+            .as_ref()
+            .is_none_or(|owner_scope| owner_scope != scope)
+        {
+            return None;
+        }
+        let attribution = OperationLlmCallAttribution {
+            task_id: (!owner.is_session_keyed()).then(|| owner.task_id.clone()),
+            agent_id: owner.agent_id.clone(),
+            execution_id: owner.execution_id.clone(),
+            root_execution_id: owner.root_execution_id.clone(),
+            chat_session_id: owner.chat_session_id.clone(),
+            ..Default::default()
+        };
+        Some((
+            OperationLlmTelemetryContext::new(
+                broadcaster,
+                scope.principal.clone(),
+                scope.workspace.clone(),
+                capability,
+            ),
+            attribution,
+        ))
     }
 
     /// Install the governed, bounded content observer once at boot.
@@ -3525,9 +3803,23 @@ impl OperationLlmRouter {
                     .or_else(|| task_ref.execution_id.clone())
             });
         }
+        // A caller-minted identity applies only to a call whose context is
+        // built here; a request that arrived with its own context keeps it.
+        let preassigned_call = if request.metadata.trace_context.is_none() {
+            self.preassigned_call
+                .as_ref()
+                .and_then(PreassignedLlmCallSlot::take)
+                .filter(PreassignedLlmCallIdentity::is_usable)
+        } else {
+            None
+        };
         let mut trace_context = request
             .metadata
             .ensure_trace_context(task_scope.clone(), workload_for_operation(operation));
+        if let Some(identity) = preassigned_call.as_ref() {
+            trace_context.trace_id = identity.trace_id.clone();
+            trace_context.llm_call_id = identity.llm_call_id.clone();
+        }
         Self::reconcile_authoritative_trace_scope(
             &mut trace_context,
             task_scope.as_ref(),
@@ -3535,7 +3827,8 @@ impl OperationLlmRouter {
         )?;
         request.metadata.set_trace_context(trace_context.clone());
         if let Some(task_ref) = self.task_context.as_ref() {
-            trace_context.task_id = Some(task_ref.task_id.clone());
+            trace_context.task_id =
+                (!task_ref.is_session_keyed()).then(|| task_ref.task_id.clone());
             trace_context.root_execution_id = task_ref.root_execution_id.clone();
             trace_context.execution_id = task_ref.execution_id.clone();
             trace_context.plan_id = task_ref.plan_id.clone();
@@ -3559,6 +3852,15 @@ impl OperationLlmRouter {
                     });
                     request.metadata.logical_content_capture_emitted = true;
                 }
+            }
+            if let Some(announcer) = self.llm_routed_announcer(
+                operation,
+                &trace_context,
+                preassigned_call,
+                request.metadata.content_capture_sink.clone(),
+            ) {
+                request.metadata.content_capture_sink =
+                    magicllm::LlmContentCaptureSink::new(Arc::new(announcer));
             }
         }
         let response = if let Some(queue) = self.dispatch_queue.get() {
@@ -3589,11 +3891,15 @@ impl OperationLlmRouter {
             if let Some(task_ref) = &self.task_context {
                 job = job.with_task(task_ref.clone());
             }
-            queue.submit(job).await.map_err(|err| anyhow!(err))?;
-            let dispatched = rx
-                .await
-                .map_err(|_| anyhow!("LLM dispatch queue receiver dropped"))
-                .map_err(fail_closed_router_request_error)?
+            let dispatched = if self.cancel_on_drop {
+                queue.submit_and_wait_cancellable(job, rx).await
+            } else {
+                queue.submit(job).await.map_err(|err| anyhow!(err))?;
+                rx.await
+                    .map_err(|_| anyhow!("LLM dispatch queue receiver dropped"))
+                    .map_err(fail_closed_router_request_error)?
+            };
+            let dispatched = dispatched
                 .inspect_err(|error| {
                     // Queue trace events intentionally retain only an error class.
                     // Classify the original error here before fail-closed redaction;
@@ -3738,6 +4044,61 @@ impl OperationLlmRouter {
         let mut cloned = self.clone();
         cloned.task_context = task_ref;
         cloned
+    }
+
+    pub(crate) fn with_cancel_on_drop(&self) -> Self {
+        let mut cloned = self.clone();
+        cloned.cancel_on_drop = true;
+        cloned
+    }
+
+    /// Clone the router carrying a caller-minted identity for the next logical
+    /// call it routes. The first request that needs a fresh trace context
+    /// takes it; later calls through the clone mint their own.
+    pub fn with_preassigned_call(&self, slot: Option<PreassignedLlmCallSlot>) -> Self {
+        let mut cloned = self.clone();
+        cloned.preassigned_call = slot;
+        cloned
+    }
+
+    /// Spend the identity this clone carries, as `route_request` would.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn take_preassigned_call(&self) -> Option<PreassignedLlmCallIdentity> {
+        self.preassigned_call
+            .as_ref()
+            .and_then(PreassignedLlmCallSlot::take)
+    }
+
+    /// The `LLMRouted` announcer for one execution-owned call, wrapping the
+    /// observer the request already carries.
+    ///
+    /// Only a call that was announced — one carrying a preassigned identity,
+    /// whose `LLMRequestSent` named the same correlation — gets one. Side calls
+    /// (decision preflight, review, compiled handlers calling the router) would
+    /// otherwise each leave an `llm.routed` row no request or response pairs
+    /// with. `None` too when the call belongs to no execution or no
+    /// broadcaster is installed.
+    fn llm_routed_announcer(
+        &self,
+        operation: &LLMOperation,
+        trace_context: &magicllm::LlmTraceContext,
+        preassigned_call: Option<PreassignedLlmCallIdentity>,
+        inner: magicllm::LlmContentCaptureSink,
+    ) -> Option<LlmRoutedAnnouncer> {
+        let capability = preassigned_call?.capability;
+        let task_ref = self.task_context.as_ref()?;
+        let execution_id = task_ref.execution_id.clone()?;
+        let broadcaster = Arc::clone(self.event_broadcaster.get()?);
+        Some(LlmRoutedAnnouncer {
+            inner,
+            broadcaster,
+            execution_id,
+            plan_id: task_ref.plan_id.clone().unwrap_or_default(),
+            step_id: task_ref.step_id.clone(),
+            capability: capability.unwrap_or_else(|| operation.as_str().to_string()),
+            context: trace_context.clone(),
+            last_route: std::sync::Mutex::new(None),
+        })
     }
 
     /// Clone the router with authoritative scope for a non-task call surface.
@@ -4425,7 +4786,8 @@ impl OperationLlmRouter {
         }
         logical_trace.llm_call_id = execution.logical_call_id.clone();
         if let Some(task_ref) = execution.task_ref.as_ref() {
-            logical_trace.task_id = Some(task_ref.task_id.clone());
+            logical_trace.task_id =
+                (!task_ref.is_session_keyed()).then(|| task_ref.task_id.clone());
             logical_trace.root_execution_id = task_ref.root_execution_id.clone();
             logical_trace.execution_id = task_ref.execution_id.clone();
             logical_trace.plan_id = task_ref.plan_id.clone();
@@ -4445,6 +4807,10 @@ impl OperationLlmRouter {
             .set_trace_context(logical_trace.clone());
         execution.trace_id = Some(logical_trace.trace_id.clone());
         execution.logical_trace_context = Some(logical_trace.clone());
+        execution.cancel_on_drop = self.cancel_on_drop;
+        let _cancel_on_drop = self
+            .cancel_on_drop
+            .then(|| execution.cancellation.clone().drop_guard());
         let response = runner
             .execute(logical_request, budget, execution)
             .await
@@ -4991,14 +5357,7 @@ impl OperationLlmRouter {
             request.temperature = Some(temp);
         }
 
-        if let Some(reasoning_defaults) = request_profile.reasoning.as_ref() {
-            request.reasoning = Some(RouterReasoningConfig {
-                effort: Some(reasoning_defaults.effort.clone()),
-                max_reasoning_tokens: reasoning_defaults.max_reasoning_tokens,
-                strategy: reasoning_defaults.strategy.clone(),
-                summary: reasoning_defaults.summary.clone(),
-            });
-        }
+        request.reasoning = magicllm::catalog::request_reasoning_defaults(request_profile);
 
         let mut extra_map = serde_json::Map::new();
         if let Some(params) = request_profile.metadata.as_ref() {
@@ -5606,14 +5965,7 @@ impl OperationLlmRouter {
         }
 
         // Reasoning config
-        if let Some(reasoning) = request_profile.reasoning.as_ref() {
-            request.reasoning = Some(RouterReasoningConfig {
-                effort: Some(reasoning.effort.clone()),
-                max_reasoning_tokens: reasoning.max_reasoning_tokens,
-                strategy: reasoning.strategy.clone(),
-                summary: reasoning.summary.clone(),
-            });
-        }
+        request.reasoning = magicllm::catalog::request_reasoning_defaults(&request_profile);
 
         // Build one provider-neutral reuse plan.  Stateful transports consume
         // the opaque continuation id; prefix-cache transports still receive
@@ -6128,14 +6480,7 @@ impl OperationLlmRouter {
             router_request.temperature = Some(temp);
         }
 
-        if let Some(reasoning_defaults) = request_profile.reasoning.as_ref() {
-            router_request.reasoning = Some(RouterReasoningConfig {
-                effort: Some(reasoning_defaults.effort.clone()),
-                max_reasoning_tokens: reasoning_defaults.max_reasoning_tokens,
-                strategy: reasoning_defaults.strategy.clone(),
-                summary: reasoning_defaults.summary.clone(),
-            });
-        }
+        router_request.reasoning = magicllm::catalog::request_reasoning_defaults(request_profile);
 
         let mut extra_map = serde_json::Map::new();
         if let Some(params) = request_profile.metadata.as_ref() {
@@ -6347,6 +6692,7 @@ fn is_config_only_param(key: &str) -> bool {
         key,
         "cost_per_observation"
             | "model_family"
+            | magicllm::catalog::CATALOG_SETTINGS_KEY
             | "fallback_profile"
             | "reasoning_strategy"
             | "reasoning_max_tokens"
@@ -6539,6 +6885,37 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
 
     #[test]
+    fn session_keyed_auxiliary_calls_keep_chat_identity_without_inventing_task_or_execution() {
+        let scope = magicllm::LlmScope::new("alice", "work");
+        let mut owner = magicllm::TaskRef::task("session-1")
+            .with_chat_session("session-1")
+            .with_agent("personal")
+            .with_scope("alice", "work");
+        owner.chat_turn_id = Some("turn-1".into());
+        let router = OperationLlmRouter::new(None)
+            .with_scope_context(Some(scope.clone()))
+            .with_task_context(Some(owner));
+        router.set_event_broadcaster(Arc::new(
+            crate::magician_v2::realtime_events::RuntimeTransportBroadcaster::new(16),
+        ));
+        let trace = router.classification_trace_context(scope);
+        assert!(trace.task_id.is_none());
+        assert!(trace.execution_id.is_none());
+        assert_eq!(trace.chat_session_id.as_deref(), Some("session-1"));
+        assert_eq!(trace.chat_turn_id.as_deref(), Some("turn-1"));
+        let (_, attribution) = router
+            .direct_operation_telemetry("answer_delivery_repair")
+            .unwrap();
+        assert!(attribution.task_id.is_none());
+        assert!(attribution.execution_id.is_none());
+        assert_eq!(attribution.chat_session_id.as_deref(), Some("session-1"));
+        let foreign_scope = router.with_scope_context(Some(magicllm::LlmScope::new("bob", "work")));
+        assert!(foreign_scope
+            .direct_operation_telemetry("answer_delivery_repair")
+            .is_none());
+    }
+
+    #[test]
     fn the_chain_cache_key_ignores_history_and_follows_system_tools_and_model() {
         let tool = RouterToolSpec {
             name: "browser__click".to_string(),
@@ -6617,28 +6994,57 @@ mod tests {
     }
 
     #[test]
+    fn harness_default_uses_catalog_identity_and_refuses_ambiguous_or_missing_routes() {
+        let value = serde_json::json!({
+            "catalog": {
+                "connections": {"cli": {"provider":"harness-grok"}},
+                "models": {"operator/chosen-default": {
+                    "connection":"cli", "model":"default", "label":"Grok default"
+                }}
+            },
+            "default_profile":"model/operator/chosen-default/auto"
+        });
+        let mut router: LLMRouterConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            super::parent_profile(&router, "grok_acp").as_deref(),
+            Some("model/operator/chosen-default/auto")
+        );
+        assert_eq!(super::parent_profile(&router, "codex_app_server"), None);
+        router.profiles.remove("model/operator/chosen-default/auto");
+        assert_eq!(super::parent_profile(&router, "grok_acp"), None);
+        let mut ambiguous = value;
+        ambiguous["catalog"]["models"]["another-default"] =
+            ambiguous["catalog"]["models"]["operator/chosen-default"].clone();
+        let router: LLMRouterConfig = serde_json::from_value(ambiguous).unwrap();
+        assert_eq!(super::parent_profile(&router, "grok_acp"), None);
+    }
+
+    #[test]
     fn harness_affinity_profile_names_cover_the_engine_roster() {
         assert_eq!(
-            super::harness_affinity_profile_base("claude_code"),
-            "op-harness-claude"
+            super::harness_default_route("claude_code"),
+            "model/harness-claude_code/default/auto"
         );
         assert_eq!(
-            super::harness_affinity_profile_base("codex"),
-            "op-harness-codex"
+            super::harness_default_route("codex"),
+            "model/harness-codex/default/auto"
         );
         assert_eq!(
-            super::harness_affinity_profile_base("codex_app_server"),
-            "op-harness-codex"
+            super::harness_default_route("codex_app_server"),
+            "model/harness-codex/default/auto"
         );
         assert_eq!(
-            super::harness_affinity_profile_base("grok"),
-            "op-harness-grok"
+            super::harness_default_route("grok"),
+            "model/harness-grok/default/auto"
         );
         assert_eq!(
-            super::harness_affinity_profile_base("agy"),
-            "op-harness-agy"
+            super::harness_default_route("agy"),
+            "model/harness-agy/default/auto"
         );
-        assert_eq!(super::harness_affinity_profile_base("pi"), "op-harness-pi");
+        assert_eq!(
+            super::harness_default_route("pi"),
+            "model/harness-pi/default/auto"
+        );
     }
 
     #[derive(Debug)]
@@ -6679,7 +7085,7 @@ mod tests {
         impl magicllm::dispatch::DispatchRouter for MissingLogin {
             async fn route(&self, _: RouterRequest) -> magicllm::LLMResult<RouterResponse> {
                 Err(magicllm::LLMError::Routed {
-                    profile: "op-harness-pi".into(),
+                    profile: "model/harness-pi/default/auto".into(),
                     provider: LLMProviderKind::from_str("harness-pi"),
                     model: "default".into(),
                     source: Box::new(magicllm::LLMError::Configuration(
@@ -6752,6 +7158,285 @@ mod tests {
             events.try_recv().is_err(),
             "repeated errors must deduplicate"
         );
+        queue.shutdown(Duration::from_secs(1)).await;
+    }
+
+    /// The live in-flight contract, through the real queue path: a
+    /// caller-minted identity becomes the routed call's trace context (so the
+    /// response receipt — what `LLMResponseReceived` is correlated from —
+    /// carries it too), and `LLMRouted` names the chosen model with that same
+    /// identity while the provider call is still running. A retry on the same
+    /// route is not re-announced; a fallback to another model is.
+    #[tokio::test]
+    async fn preassigned_identity_is_the_routed_call_and_llm_routed_precedes_the_response() {
+        use crate::magician_v2::realtime_events::{
+            RuntimeTransportBroadcaster, RuntimeTransportEvent,
+        };
+        use tokio::sync::{mpsc, Notify};
+
+        struct HeldProvider {
+            seen: mpsc::UnboundedSender<magicllm::LlmTraceContext>,
+            release: Arc<Notify>,
+        }
+        #[async_trait::async_trait]
+        impl magicllm::dispatch::DispatchRouter for HeldProvider {
+            async fn route(
+                &self,
+                mut request: RouterRequest,
+            ) -> magicllm::LLMResult<RouterResponse> {
+                let _ = self.seen.send(
+                    request
+                        .metadata
+                        .trace_context
+                        .clone()
+                        .expect("the routed request carries its trace context"),
+                );
+                // What `MultiLLMRouter` does before each physical attempt: a
+                // first attempt, a retry on the same route, then a fallback.
+                for (provider, model) in [
+                    ("anthropic", "first-model"),
+                    ("anthropic", "first-model"),
+                    ("openai", "fallback-model"),
+                ] {
+                    let provider_attempt_index = request.metadata.record_provider_attempt();
+                    request.model = model.to_string();
+                    let sink = request.metadata.content_capture_sink.clone();
+                    sink.observe(magicllm::LlmContentCaptureEvent::EffectiveRequest {
+                        request: &request,
+                        profile: "fixture",
+                        provider,
+                        provider_attempt_index,
+                    });
+                }
+                self.release.notified().await;
+                Ok(RouterResponse::default())
+            }
+            async fn route_stream(
+                &self,
+                _: RouterRequest,
+                _: tokio::sync::mpsc::Sender<magicllm::types::StreamDelta>,
+            ) -> magicllm::LLMResult<()> {
+                unreachable!()
+            }
+            fn provider_for_operation(&self, _: &str) -> Option<LLMProviderKind> {
+                Some(LLMProviderKind::from_str("harness-pi"))
+            }
+            fn timeout_for_operation(&self, _: &str) -> Option<u64> {
+                Some(5)
+            }
+        }
+
+        let mut config = LLMRouterConfig::default();
+        config.default_profile = "fixture".into();
+        let mut profile = test_profile(LLMProviderKind::Ollama, None);
+        profile.api_key_env = None;
+        config.profiles.insert("fixture".into(), profile);
+        let configured = Arc::new(ConfiguredRouter::from_router_config(config).unwrap());
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let mut dispatch_config = magicllm::dispatch::DispatchConfig::default();
+        dispatch_config.retry.max_attempts_per_dispatch = 1;
+        dispatch_config.retry.max_dispatch_cycles = 1;
+        let queue = magicllm::LlmDispatchQueue::start(
+            Arc::new(HeldProvider {
+                seen: seen_tx,
+                release: Arc::clone(&release),
+            }),
+            Arc::new(magicllm::dispatch::NoopTaskStateView),
+            Arc::new(magicllm::dispatch::NoopTaskLedgerSink),
+            dispatch_config,
+        );
+        let bus = Arc::new(RuntimeTransportBroadcaster::new(64));
+        let mut events = bus.subscribe();
+        let identity = PreassignedLlmCallIdentity {
+            trace_id: "exec-root".to_string(),
+            llm_call_id: "01JLIVEDECISIONCALL000000000".to_string(),
+            capability: Some("decision".to_string()),
+        };
+        let router = OperationLlmRouter::new(None)
+            .with_task_context(Some(
+                magicllm::TaskRef::task("task-1")
+                    .with_scope("alice", "work")
+                    .with_execution("exec-root", "exec-1")
+                    .with_plan_step(Some("plan-1".to_string()), Some("step-1".to_string())),
+            ))
+            .with_preassigned_call(Some(PreassignedLlmCallSlot::new(identity.clone())));
+        router.set_dispatch_queue(queue.clone());
+        router.set_event_broadcaster(bus.clone());
+
+        let call = tokio::spawn({
+            let router = router.clone();
+            let configured = Arc::clone(&configured);
+            async move {
+                router
+                    .route_request(
+                        &configured,
+                        &LLMOperation::Other("agentic_decision".into()),
+                        RouterRequest::default(),
+                        false,
+                    )
+                    .await
+            }
+        });
+
+        let routed_context = tokio::time::timeout(Duration::from_secs(5), seen_rx.recv())
+            .await
+            .expect("the provider is reached")
+            .expect("trace context reported");
+        assert_eq!(routed_context.trace_id, identity.trace_id);
+        assert_eq!(routed_context.llm_call_id, identity.llm_call_id);
+
+        let mut routes = Vec::new();
+        while routes.len() < 2 {
+            let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .expect("LLMRouted arrives while the provider call is held")
+                .expect("bus open");
+            if let RuntimeTransportEvent::LLMRouted {
+                execution_id,
+                principal,
+                workspace,
+                plan_id,
+                step_id,
+                capability,
+                correlation,
+                provider,
+                model,
+                profile,
+                ..
+            } = event
+            {
+                assert_eq!(execution_id, "exec-1");
+                assert_eq!(principal.as_deref(), Some("alice"));
+                assert_eq!(workspace.as_deref(), Some("work"));
+                assert_eq!(plan_id, "plan-1");
+                assert_eq!(step_id.as_deref(), Some("step-1"));
+                assert_eq!(capability, "decision");
+                assert_eq!(profile.as_deref(), Some("fixture"));
+                let correlation = correlation.expect("routed carries the call identity");
+                assert_eq!(correlation.trace_id, identity.trace_id);
+                assert_eq!(correlation.llm_call_id, identity.llm_call_id);
+                routes.push((provider, model));
+            }
+        }
+        assert_eq!(
+            routes,
+            [
+                ("anthropic".to_string(), "first-model".to_string()),
+                ("openai".to_string(), "fallback-model".to_string()),
+            ]
+        );
+        assert!(
+            !call.is_finished(),
+            "both routes were announced before the provider call returned"
+        );
+
+        release.notify_one();
+        let response = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .expect("the held call completes once released")
+            .expect("join")
+            .expect("routed call succeeds");
+        let receipt = response
+            .trace_receipt
+            .expect("the queue stamps the response receipt");
+        assert_eq!(receipt.context.trace_id, identity.trace_id);
+        assert_eq!(receipt.context.llm_call_id, identity.llm_call_id);
+        assert!(
+            router.take_preassigned_call().is_none(),
+            "the identity names one call and is spent by it"
+        );
+        queue.shutdown(Duration::from_secs(1)).await;
+    }
+
+    /// A side call — execution-owned, but never announced with an
+    /// `LLMRequestSent` — must not leave an unpaired `llm.routed` row.
+    #[tokio::test]
+    async fn an_unannounced_execution_call_emits_no_llm_routed() {
+        use crate::magician_v2::realtime_events::{
+            RuntimeTransportBroadcaster, RuntimeTransportEvent,
+        };
+
+        struct ImmediateProvider;
+        #[async_trait::async_trait]
+        impl magicllm::dispatch::DispatchRouter for ImmediateProvider {
+            async fn route(
+                &self,
+                mut request: RouterRequest,
+            ) -> magicllm::LLMResult<RouterResponse> {
+                let provider_attempt_index = request.metadata.record_provider_attempt();
+                request.model = "side-model".to_string();
+                let sink = request.metadata.content_capture_sink.clone();
+                sink.observe(magicllm::LlmContentCaptureEvent::EffectiveRequest {
+                    request: &request,
+                    profile: "fixture",
+                    provider: "anthropic",
+                    provider_attempt_index,
+                });
+                Ok(RouterResponse::default())
+            }
+            async fn route_stream(
+                &self,
+                _: RouterRequest,
+                _: tokio::sync::mpsc::Sender<magicllm::types::StreamDelta>,
+            ) -> magicllm::LLMResult<()> {
+                unreachable!()
+            }
+            fn provider_for_operation(&self, _: &str) -> Option<LLMProviderKind> {
+                Some(LLMProviderKind::from_str("harness-pi"))
+            }
+            fn timeout_for_operation(&self, _: &str) -> Option<u64> {
+                Some(5)
+            }
+        }
+
+        let mut config = LLMRouterConfig::default();
+        config.default_profile = "fixture".into();
+        let mut profile = test_profile(LLMProviderKind::Ollama, None);
+        profile.api_key_env = None;
+        config.profiles.insert("fixture".into(), profile);
+        let configured = Arc::new(ConfiguredRouter::from_router_config(config).unwrap());
+        let mut dispatch_config = magicllm::dispatch::DispatchConfig::default();
+        dispatch_config.retry.max_attempts_per_dispatch = 1;
+        dispatch_config.retry.max_dispatch_cycles = 1;
+        let queue = magicllm::LlmDispatchQueue::start(
+            Arc::new(ImmediateProvider),
+            Arc::new(magicllm::dispatch::NoopTaskStateView),
+            Arc::new(magicllm::dispatch::NoopTaskLedgerSink),
+            dispatch_config,
+        );
+        let bus = Arc::new(RuntimeTransportBroadcaster::new(64));
+        let mut events = bus.subscribe();
+        // Execution-owned (task context with an execution id) and with a
+        // broadcaster: everything the announcer needs except an identity.
+        let router = OperationLlmRouter::new(None).with_task_context(Some(
+            magicllm::TaskRef::task("task-1")
+                .with_scope("alice", "work")
+                .with_execution("exec-root", "exec-1")
+                .with_plan_step(Some("plan-1".to_string()), Some("step-1".to_string())),
+        ));
+        router.set_dispatch_queue(queue.clone());
+        router.set_event_broadcaster(bus.clone());
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            router.route_request(
+                &configured,
+                &LLMOperation::Other("agentic_decision_support".into()),
+                RouterRequest::default(),
+                false,
+            ),
+        )
+        .await
+        .expect("the side call completes")
+        .expect("side call succeeds");
+
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, RuntimeTransportEvent::LLMRouted { .. }),
+                "an unannounced call must not emit LLMRouted"
+            );
+        }
         queue.shutdown(Duration::from_secs(1)).await;
     }
 
@@ -7281,8 +7966,19 @@ mod tests {
         profile.max_output_tokens = Some(1024);
         profile.timeout_secs = Some(5);
         for (key, value, allowed) in [
+            (
+                magicllm::catalog::CATALOG_SETTINGS_KEY,
+                serde_json::json!({"local_only":true}),
+                true,
+            ),
+            ("openai_api_mode", serde_json::json!("responses"), true),
+            ("openai_api_mode", serde_json::json!("chat"), false),
             ("tool_choice", serde_json::json!("auto"), true),
             ("tool_choice", serde_json::json!("any"), false),
+            ("streaming", serde_json::json!(true), true),
+            ("streaming", serde_json::json!(false), true),
+            ("streaming", serde_json::json!("true"), false),
+            ("streaming", serde_json::json!({"enabled":true}), false),
             (
                 "tool_choice",
                 serde_json::json!({"type":"tool", "name":"paid"}),
@@ -7467,11 +8163,11 @@ mod tests {
             test_profile_with_metadata(LLMProviderKind::OpenAI, None),
         );
         profiles.insert(
-            "op-harness-grok".to_string(),
+            "model/harness-grok/default/auto".to_string(),
             test_profile_with_metadata(LLMProviderKind::Custom("harness-grok".to_string()), None),
         );
         profiles.insert(
-            "op-harness-codex".to_string(),
+            "model/harness-codex/default/auto".to_string(),
             test_profile_with_metadata(LLMProviderKind::Custom("harness-codex".to_string()), None),
         );
         profiles.insert(
@@ -7501,7 +8197,6 @@ mod tests {
         );
         magicllm::config::LLMRouterConfig {
             profiles,
-            adaptive_profiles: std::collections::HashMap::new(),
             operation_mapping,
             default_profile: "cloud-tools".to_string(),
             realtime_voice: magicllm::config::RealtimeVoiceConfig::default(),
@@ -7545,7 +8240,7 @@ mod tests {
 
         let (pin, provider) =
             resolve_under_parent(&config, Some(&overrides), PARENT_TEST_SUMMARY, false);
-        assert_eq!(pin.as_deref(), Some("op-harness-grok"));
+        assert_eq!(pin.as_deref(), Some("model/harness-grok/default/auto"));
         assert_eq!(provider, harness_provider("grok"));
 
         let (pin, provider) =
@@ -7556,6 +8251,24 @@ mod tests {
             LLMProviderKind::OpenAI,
             "a tool-carrying request keeps its tool-capable profile"
         );
+    }
+
+    #[test]
+    fn read_only_route_inspection_uses_the_same_parent_and_tool_shape_floors() {
+        let router = OperationLlmRouter::new(Some(parent_engine_config("cloud-tools", None)))
+            .with_routing_overrides(Some(
+                OperationRoutingOverrides::default().with_parent_engine(Some("grok".into())),
+            ));
+        let text = router
+            .inspect_operation_route(PARENT_TEST_SUMMARY, false, false, None)
+            .unwrap();
+        assert_eq!(text["profile"], "model/harness-grok/default/auto");
+        let tools = router
+            .inspect_operation_route(PARENT_TEST_DECISION, true, false, None)
+            .unwrap();
+        assert_eq!(tools["profile"], "cloud-tools");
+        assert_eq!(tools["parent_engine"], "grok");
+        assert_eq!(tools["provider_call_made"], false);
     }
 
     #[tokio::test]
@@ -7571,7 +8284,10 @@ mod tests {
         })
         .await;
 
-        assert_eq!(summary.0.as_deref(), Some("op-harness-grok"));
+        assert_eq!(
+            summary.0.as_deref(),
+            Some("model/harness-grok/default/auto")
+        );
         assert_eq!(summary.1, harness_provider("grok"));
         assert_eq!(decision.0, None);
         assert_eq!(decision.1, LLMProviderKind::OpenAI);
@@ -7594,7 +8310,7 @@ mod tests {
         })
         .await;
 
-        assert_eq!(pin.as_deref(), Some("op-harness-codex"));
+        assert_eq!(pin.as_deref(), Some("model/harness-codex/default/auto"));
         assert_eq!(provider, harness_provider("codex"));
     }
 
@@ -7616,7 +8332,7 @@ mod tests {
         // parent for a text-only call.
         let (pin, provider) =
             resolve_under_parent(&config, Some(&overrides), PARENT_TEST_DECISION, false);
-        assert_eq!(pin.as_deref(), Some("op-harness-grok"));
+        assert_eq!(pin.as_deref(), Some("model/harness-grok/default/auto"));
         assert_eq!(provider, harness_provider("grok"));
     }
 
@@ -7631,7 +8347,7 @@ mod tests {
 
         assert_eq!(
             display.as_deref(),
-            Some("op-harness-grok"),
+            Some("model/harness-grok/default/auto"),
             "the cell still labels the engine in use for the panel"
         );
         assert_eq!(resolved.0, None, "no parent: the config mapping stands");
@@ -7667,7 +8383,7 @@ mod tests {
         // The same operation follows for a text-only call, so the floor is
         // the request shape and not the operation.
         let (pin, _) = resolve_under_parent(&cloud, Some(&overrides), PARENT_TEST_DECISION, false);
-        assert_eq!(pin.as_deref(), Some("op-harness-grok"));
+        assert_eq!(pin.as_deref(), Some("model/harness-grok/default/auto"));
     }
 
     // ── Install-level engine pins ────────────────────────────────────────
@@ -7799,7 +8515,10 @@ mod tests {
         assert!(super::clear_llm_routing_engine(OPERATION).expect("clear persists"));
 
         assert!(follows, "the store follow outranks the selector's pin");
-        assert_eq!(resolved.0.as_deref(), Some("op-harness-grok"));
+        assert_eq!(
+            resolved.0.as_deref(),
+            Some("model/harness-grok/default/auto")
+        );
         assert_eq!(resolved.1, harness_provider("grok"));
     }
 
@@ -7829,7 +8548,10 @@ mod tests {
             OPERATION,
             follows.operation_mapping.get(OPERATION)
         ));
-        assert_eq!(resolved.0.as_deref(), Some("op-harness-grok"));
+        assert_eq!(
+            resolved.0.as_deref(),
+            Some("model/harness-grok/default/auto")
+        );
         assert_eq!(resolved.1, harness_provider("grok"));
 
         // No mapping at all follows, and the shared rule says so directly.
@@ -7871,7 +8593,6 @@ mod tests {
         );
         let config = magicllm::config::LLMRouterConfig {
             profiles,
-            adaptive_profiles: std::collections::HashMap::new(),
             operation_mapping,
             default_profile: "text-chat".to_string(),
             realtime_voice: magicllm::config::RealtimeVoiceConfig::default(),
@@ -7936,7 +8657,6 @@ mod tests {
         );
         let config = magicllm::config::LLMRouterConfig {
             profiles,
-            adaptive_profiles: std::collections::HashMap::new(),
             operation_mapping,
             default_profile: "text-chat".to_string(),
             realtime_voice: magicllm::config::RealtimeVoiceConfig::default(),
@@ -8002,7 +8722,6 @@ mod tests {
         );
         let config = magicllm::config::LLMRouterConfig {
             profiles,
-            adaptive_profiles: std::collections::HashMap::new(),
             operation_mapping,
             default_profile: "openai-chat".to_string(),
             realtime_voice: magicllm::config::RealtimeVoiceConfig::default(),
@@ -8050,7 +8769,6 @@ mod tests {
         );
         let config = magicllm::config::LLMRouterConfig {
             profiles,
-            adaptive_profiles: std::collections::HashMap::new(),
             operation_mapping,
             default_profile: "text-chat".to_string(),
             realtime_voice: magicllm::config::RealtimeVoiceConfig::default(),
@@ -9537,27 +10255,71 @@ default_profile: test-monolithic-default
         );
     }
 
+    /// The shipped router exactly as parsing materializes it: authored
+    /// `profiles:` are gone, so routes are generated from the model catalog
+    /// (`ModelCatalog::materialize`) while the router deserializes.
+    fn shipped_materialized_router() -> LLMRouterConfig {
+        let config: crate::config::MagicianConfig =
+            serde_yaml::from_str(&crate::config::shipped_repo_config_yaml())
+                .expect("shipped repo config parses");
+        let router = config.llm.router.expect("shipped config has a router");
+        assert!(
+            !router.profiles.is_empty(),
+            "the shipped router materialized no routes"
+        );
+        router
+    }
+
     #[test]
     fn magician_config_tool_capable_profiles_declare_tool_choice() {
-        let config: serde_json::Value =
-            serde_yaml::from_str(&crate::config::shipped_repo_config_yaml()).unwrap();
-        let profiles = config
-            .pointer("/llm/router/profiles")
-            .and_then(|value| value.as_object())
-            .unwrap();
+        let router = shipped_materialized_router();
 
+        // Every route Magician can actually dispatch through: every authored
+        // assignment, every arm of the operation mapping, and every model
+        // choice offered to users and pins. Generated routes for models that
+        // are not selectable (or are embedding models) are never offered and
+        // never mapped; the assignments that use those models declare their
+        // own tool_choice and are covered here.
+        let mut routable = std::collections::BTreeSet::new();
+        routable.extend(router.catalog.assignments.keys().cloned());
+        for selector in router.operation_mapping.values() {
+            match selector {
+                OperationProfileSelector::Simple(name) => {
+                    routable.insert(name.clone());
+                },
+                OperationProfileSelector::Conditional {
+                    default,
+                    when_has_images,
+                    when_cloud,
+                    ..
+                } => {
+                    routable.insert(default.clone());
+                    routable.extend(when_has_images.iter().cloned());
+                    routable.extend(when_cloud.iter().cloned());
+                },
+            }
+        }
+        for choice in router.catalog.choices() {
+            routable.extend(choice.choices.into_values());
+        }
+
+        let mut unknown = Vec::new();
         let mut missing = Vec::new();
         let mut invalid = Vec::new();
-        for (name, profile) in profiles {
-            if profile
-                .get("supports_tool_calling")
-                .and_then(|value| value.as_bool())
-                != Some(true)
-            {
+        for name in &routable {
+            let Some(profile) = router.profiles.get(name) else {
+                unknown.push(name.clone());
+                continue;
+            };
+            if profile.supports_tool_calling != Some(true) {
                 continue;
             }
 
-            match profile.pointer("/metadata/tool_choice") {
+            match profile
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("tool_choice"))
+            {
                 Some(serde_json::Value::String(choice))
                     if matches!(choice.as_str(), "none" | "auto" | "any") => {},
                 Some(serde_json::Value::Object(choice))
@@ -9573,6 +10335,10 @@ default_profile: test-monolithic-default
         }
 
         assert!(
+            unknown.is_empty(),
+            "routes referenced by the shipped config were not materialized: {unknown:?}"
+        );
+        assert!(
             missing.is_empty(),
             "tool-capable profiles missing metadata.tool_choice: {missing:?}"
         );
@@ -9584,53 +10350,32 @@ default_profile: test-monolithic-default
 
     #[test]
     fn magician_config_keeps_deepseek_and_minimax_out_of_vision_routing() {
-        let config: serde_json::Value =
-            serde_yaml::from_str(&crate::config::shipped_repo_config_yaml()).unwrap();
-        let profiles = config
-            .pointer("/llm/router/profiles")
-            .and_then(|value| value.as_object())
-            .unwrap();
-        let operation_mapping = config
-            .pointer("/llm/router/operation_mapping")
-            .and_then(|value| value.as_object())
-            .unwrap();
+        let router = shipped_materialized_router();
 
         // MiniMax M2 is text-only. MiniMax M3 and DeepSeek V4.1 Flash
         // (`deepseek-flash`, plus retired Flash aliases) accept images.
-        let text_only_anthropic_family = ["deepseek", "minimax"];
-        let is_multimodal_exception = |profile: &serde_json::Value| {
-            let provider = profile.get("provider").and_then(|v| v.as_str());
-            let model = profile
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            (provider == Some("minimax") && model.contains("m3"))
-                || (provider == Some("deepseek")
+        let is_text_only_family = |profile: &LLMProfile| {
+            matches!(
+                profile.provider,
+                LLMProviderKind::DeepSeek | LLMProviderKind::Minimax
+            )
+        };
+        let is_multimodal_exception = |profile: &LLMProfile| {
+            let model = profile.model.to_ascii_lowercase();
+            (profile.provider == LLMProviderKind::Minimax && model.contains("m3"))
+                || (profile.provider == LLMProviderKind::DeepSeek
                     && (model == "deepseek-flash"
                         || model.contains("deepseek-v4-flash")
                         || model.contains("deepseek-v4.1-flash")
                         || model.contains("vision")))
         };
         let mut text_only_with_vision = Vec::new();
-        for (name, profile) in profiles {
-            let provider = profile
-                .get("provider")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            if text_only_anthropic_family.contains(&provider) && !is_multimodal_exception(profile) {
-                if profile
-                    .get("supports_vision")
-                    .and_then(|value| value.as_bool())
-                    != Some(false)
-                {
+        for (name, profile) in &router.profiles {
+            if is_text_only_family(profile) && !is_multimodal_exception(profile) {
+                if profile.supports_vision != Some(false) {
                     text_only_with_vision.push(format!("{name}: supports_vision is not false"));
                 }
-                if profile
-                    .get("default_modality")
-                    .and_then(|value| value.as_str())
-                    == Some("vision")
-                {
+                if profile.default_modality == Some(LLMModality::Vision) {
                     text_only_with_vision.push(format!("{name}: default_modality is vision"));
                 }
             }
@@ -9643,46 +10388,34 @@ default_profile: test-monolithic-default
             "screen_understanding",
             "screen_grounding",
         ];
+        let image_turn = magicllm::config::RequestShape {
+            has_images: true,
+            has_tools: false,
+        };
         let mut invalid_mappings = Vec::new();
         for operation in image_bearing_operations {
-            let selector = operation_mapping
+            let selector = router
+                .operation_mapping
                 .get(operation)
                 .unwrap_or_else(|| panic!("{operation} mapping should exist"));
-            // A mapping is either a flat profile name (serves every turn) or a
-            // conditional object { default, when_has_images }. The profile that
-            // must be vision-capable is the one handling IMAGE-bearing turns:
-            // `when_has_images` for a conditional map — its `default` may stay
-            // text-only (e.g. DeepSeek), since it serves only text turns — or the
-            // flat name otherwise. (A text-only default with no `when_has_images`
-            // falls back to the default here and is correctly flagged below.)
-            let profile_name = if let Some(name) = selector.as_str() {
-                name
-            } else if let Some(map) = selector.as_object() {
-                map.get("when_has_images")
-                    .or_else(|| map.get("default"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_else(|| {
-                        panic!("{operation} conditional mapping missing default/when_has_images")
-                    })
-            } else {
-                panic!("{operation} mapping is neither a profile name nor a conditional map");
-            };
-            let profile = profiles.get(profile_name).unwrap_or_else(|| {
+            // The profile that must be vision-capable is the one the router
+            // picks for an IMAGE-bearing turn: `when_has_images` for a
+            // conditional map — its `default` may stay text-only (e.g.
+            // DeepSeek), since it serves only text turns — or the default
+            // otherwise (a text-only default with no `when_has_images` is
+            // correctly flagged below).
+            let profile_name = selector.profile_for(&image_turn);
+            let profile = router.profiles.get(profile_name).unwrap_or_else(|| {
                 panic!("{operation} image handler maps to missing profile {profile_name}")
             });
-            let provider = profile
-                .get("provider")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
 
-            if text_only_anthropic_family.contains(&provider) && !is_multimodal_exception(profile) {
-                invalid_mappings.push(format!("{operation} -> {profile_name} ({provider})"));
+            if is_text_only_family(profile) && !is_multimodal_exception(profile) {
+                invalid_mappings.push(format!(
+                    "{operation} -> {profile_name} ({:?})",
+                    profile.provider
+                ));
             }
-            if profile
-                .get("supports_vision")
-                .and_then(|value| value.as_bool())
-                != Some(true)
-            {
+            if profile.supports_vision != Some(true) {
                 invalid_mappings.push(format!(
                     "{operation} -> {profile_name} does not declare supports_vision: true"
                 ));
@@ -10385,6 +11118,37 @@ mod locality_hot_switch_tests {
     };
     use magicllm::config::{LLMRouterConfig, OperationProfileSelector};
     use magicllm::LLMProviderKind;
+
+    #[test]
+    fn inspection_resolves_request_and_agent_overrides_without_dispatch() {
+        use super::{OperationRoutingEndpoint, OperationRoutingOverrides};
+        let mut config = decision_config("decide-old");
+        config.profiles.get_mut("decide-new").unwrap().model = "agent-model".into();
+        let router = OperationLlmRouter::new(Some(config)).with_routing_overrides(Some(
+            OperationRoutingOverrides {
+                planning: OperationRoutingEndpoint::for_profile("decide-new"),
+                evaluation: OperationRoutingEndpoint::for_profile("decide-old"),
+                ..Default::default()
+            },
+        ));
+        let inherited = router
+            .inspect_operation_route("agentic_decision", true, false, None)
+            .unwrap();
+        assert_eq!(inherited["profile"], "decide-new");
+        assert_eq!(inherited["model"], "agent-model");
+        let request = router
+            .inspect_operation_route("agentic_decision", true, false, Some("request-model"))
+            .unwrap();
+        assert_eq!(request["model"], "request-model");
+        assert_eq!(request["provider_call_made"], false);
+        assert_eq!(request["request_shape"]["has_tools"], true);
+        assert_eq!(
+            router
+                .inspect_operation_route("tool_evaluation", false, false, None)
+                .unwrap()["profile"],
+            "decide-old"
+        );
+    }
 
     fn switchable_config(locality: magicllm::ProcessingLocality) -> LLMRouterConfig {
         let mut config = LLMRouterConfig::default();

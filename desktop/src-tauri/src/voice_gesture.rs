@@ -170,21 +170,11 @@ enum HoldUp {
 
 /// Distinguishes a short Left Option tap (and a second tap that opens the HUD)
 /// from a long press that talks through the Orb.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct OverlayHoldTracker {
     last_tap: Option<Instant>,
     generation: u64,
     holding: bool,
-}
-
-impl Default for OverlayHoldTracker {
-    fn default() -> Self {
-        Self {
-            last_tap: None,
-            generation: 0,
-            holding: false,
-        }
-    }
 }
 
 impl OverlayHoldTracker {

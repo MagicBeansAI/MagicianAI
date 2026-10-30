@@ -21,6 +21,11 @@ always-mounted modal).
 - **MCP sign-in**: `source: "mcp_oauth"` is a known source rendered as an
   external action: an optional `input_schema.url` / `authorize_url` link (http(s)
   only) and one acknowledgement that posts `{type:"external_action_completed"}`.
+  A browser sign-in (`browserSigninCorrelationId`) also offers **Not now**
+  (`input_schema.dismiss_label`, default "Not now"; never the focused control)
+  in both the Attention modal and the composer ask dock; it answers
+  `{kind:"choice", choiceId:"dismiss"}`, posted as `{type:"aborted"}`, and the
+  server cancels the flow and resolves the ask everywhere.
 
 ## Why the offset pager fits here
 

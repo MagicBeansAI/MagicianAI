@@ -1,6 +1,15 @@
 name: system_status
-description: Report the operational status of agents in the active harness scope, including pending work.
+description: Report agent status with loaded configuration, scheduler registrations and routing metadata. Harness results stay within the active delegation scope.
 version: "1.0.0"
+result_projection:
+  contract_id: generic_json_v1
+  priority_fields:
+    - runtime_metadata
+    - agents
+    - configured_router_defaults
+    - routing_evidence
+    - status
+    - context
 guide: |
   Tool name: `system_status`
 
@@ -8,6 +17,14 @@ guide: |
   - working / idle / stuck state
   - task counts by status
   - pending task previews
+  - runtime_metadata: saved/loaded definitions, durable scheduler registrations and configured router defaults
+  Harness metadata follows the same delegation/focus scope as the status entries.
+  Personal agents without a harness receive metadata only: loaded configuration,
+  scheduler registrations and routing settings, without tasks, episodes or goal content.
+  Use this to discover agent ids before inspect_agent. No autonomous work is started.
+  Runtime metadata includes scoped source paths/hashes, loaded-at timestamps, program
+  prompt-assembly receipts, registration identities/admission flags and resolved routing.
+  Missing historical receipts mean unknown, never proof that an agent did not run.
 parameters:
   - name: agent_id
     param_type: string
@@ -20,6 +37,9 @@ parameters:
     param_type: integer
     description: Maximum pending tasks to include per agent. Defaults to 10.
     default: "10"
+  - name: routing_context
+    param_type: object
+    description: Optional read-only routing scenario; operations (1-32 names; defaults to core workflow operations), has_tools (default true), has_images (false), parent_engine, model_override, run_overrides. Resolves through the real dispatcher without making a model call or changing settings.
 implementation:
   type: compiled
   provider_name: system_status

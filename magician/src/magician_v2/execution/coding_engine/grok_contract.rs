@@ -460,9 +460,7 @@ pub fn hook_execution_ran(value: &Value) -> bool {
                 .get("sessionUpdate")
                 .or_else(|| map.get("session_update"))
                 .and_then(Value::as_str);
-            if kind == Some("hook_execution")
-                && map.get("runs").is_some_and(collection_nonempty)
-            {
+            if kind == Some("hook_execution") && map.get("runs").is_some_and(collection_nonempty) {
                 return true;
             }
             map.values().any(hook_execution_ran)
@@ -794,7 +792,7 @@ mod tests {
             match attest_grok_isolation_roots([&initialize, &session], None, true) {
                 GrokIsolationVerdict::Isolated(attestation) => {
                     assert!(attestation.mcp_gateway, "{tool}")
-                }
+                },
                 other => panic!("expected isolated, got {other:?}"),
             }
         }
@@ -886,7 +884,11 @@ mod tests {
         });
         assert_eq!(
             attest_grok_isolation_roots(
-                [&serde_json::json!({ "protocolVersion": 1 }), &session, &frame],
+                [
+                    &serde_json::json!({ "protocolVersion": 1 }),
+                    &session,
+                    &frame
+                ],
                 None,
                 true
             ),
@@ -899,7 +901,11 @@ mod tests {
         assert!(!hook_execution_ran(&idle));
         assert!(matches!(
             attest_grok_isolation_roots(
-                [&serde_json::json!({ "protocolVersion": 1 }), &session, &idle],
+                [
+                    &serde_json::json!({ "protocolVersion": 1 }),
+                    &session,
+                    &idle
+                ],
                 None,
                 false
             ),
@@ -1108,7 +1114,10 @@ const GROK_HOME_REMOVED: &[&str] = &[".claude", ".claude.json", ".cursor", ".cod
 
 /// SBPL regex for [`GROK_HOME_STATE_FILES`] under `home` (already resolved).
 pub fn grok_home_writable_regex(home: &std::path::Path) -> String {
-    let names: Vec<String> = GROK_HOME_STATE_FILES.iter().map(|name| sbpl_regex_escape(name)).collect();
+    let names: Vec<String> = GROK_HOME_STATE_FILES
+        .iter()
+        .map(|name| sbpl_regex_escape(name))
+        .collect();
     format!(
         // SBPL's regex rejects a `-` inside a bracket anywhere but last
         // ("unterminated bracket expression"), and a rejected profile means
@@ -1123,7 +1132,10 @@ pub fn grok_home_writable_regex(home: &std::path::Path) -> String {
 /// SBPL regex for the owner's `auth.json` and its lock under `owner`
 /// (already resolved): token refreshes through Magician's link.
 pub fn owner_auth_writable_regex(owner: &std::path::Path) -> String {
-    format!("^{}/auth\\.json(\\.lock)?$", sbpl_regex_escape(&owner.to_string_lossy()))
+    format!(
+        "^{}/auth\\.json(\\.lock)?$",
+        sbpl_regex_escape(&owner.to_string_lossy())
+    )
 }
 
 /// Escape the POSIX ERE metacharacters only: SBPL's regex does not promise
@@ -1189,7 +1201,9 @@ fn grok_contained_env_for(
 pub fn grok_updates_show_no_mcp_servers(updates: &[Value]) -> bool {
     let reports: Vec<&Value> = updates
         .iter()
-        .filter(|frame| frame.get("method").and_then(Value::as_str) == Some("_x.ai/mcp/servers_updated"))
+        .filter(|frame| {
+            frame.get("method").and_then(Value::as_str) == Some("_x.ai/mcp/servers_updated")
+        })
         .collect();
     !reports.is_empty()
         && reports.iter().all(|frame| {
@@ -1212,7 +1226,10 @@ pub fn grok_session_record(
     {
         return None;
     }
-    for entry in std::fs::read_dir(grok_home.join("sessions")).ok()?.flatten() {
+    for entry in std::fs::read_dir(grok_home.join("sessions"))
+        .ok()?
+        .flatten()
+    {
         let dir = entry.path().join(session_id);
         if dir.is_dir() {
             let events = std::fs::read_to_string(dir.join("events.jsonl")).ok()?;
@@ -1431,7 +1448,10 @@ impl TomlLineScan {
         let mut at = 0;
         while at < bytes.len() {
             if let Some(close) = self.multiline {
-                match bytes[at..].windows(close.len()).position(|window| window == close) {
+                match bytes[at..]
+                    .windows(close.len())
+                    .position(|window| window == close)
+                {
                     Some(found) => {
                         at += found + close.len();
                         self.multiline = None;
@@ -1477,13 +1497,27 @@ mod grok_home_tests {
         assert!(config.contains("auto_update = false"));
         assert!(config.contains("official_marketplace_auto_installed = true"));
         for vendor in ["claude", "cursor"] {
-            assert!(config.contains(&format!("[compat.{vendor}]\nmcps = false\nhooks = false\nskills = false\n")), "{config}");
+            assert!(
+                config.contains(&format!(
+                    "[compat.{vendor}]\nmcps = false\nhooks = false\nskills = false\n"
+                )),
+                "{config}"
+            );
         }
-        assert!(config.contains("[compat.codex]\nhooks = false\nskills = false\n"), "{config}");
-        assert!(config.contains("[managed_mcps]\ngateway_tools_enabled = false\n"), "{config}");
-        assert!(config.contains("[models]\ndefault = \"grok-4.6\"\ndefault_reasoning_effort = \"xhigh\"\n"));
         assert!(
-            !config.contains("chrome-devtools") && !config.contains("mcp_servers") && !config.contains("npx"),
+            config.contains("[compat.codex]\nhooks = false\nskills = false\n"),
+            "{config}"
+        );
+        assert!(
+            config.contains("[managed_mcps]\ngateway_tools_enabled = false\n"),
+            "{config}"
+        );
+        assert!(config
+            .contains("[models]\ndefault = \"grok-4.6\"\ndefault_reasoning_effort = \"xhigh\"\n"));
+        assert!(
+            !config.contains("chrome-devtools")
+                && !config.contains("mcp_servers")
+                && !config.contains("npx"),
             "{config}"
         );
         assert!(!grok_home_config("").contains("[models]"));
@@ -1513,12 +1547,26 @@ mod grok_home_tests {
         ] {
             assert!(config.contains(kept), "missing {kept:?} in {config}");
         }
-        for dropped in ["root-key-dropped", "chrome-devtools", "hooks.SessionStart", "curl evil", "mcp_servers", "npx", "mcps = true"] {
-            assert!(!config.contains(dropped), "{dropped:?} leaked into {config}");
+        for dropped in [
+            "root-key-dropped",
+            "chrome-devtools",
+            "hooks.SessionStart",
+            "curl evil",
+            "mcp_servers",
+            "npx",
+            "mcps = true",
+        ] {
+            assert!(
+                !config.contains(dropped),
+                "{dropped:?} leaked into {config}"
+            );
         }
         // Magician's own tables come last, once.
         assert_eq!(config.matches("[compat.claude]").count(), 1, "{config}");
-        assert!(config.find("[cli]").unwrap() > config.find("[grok_com_config]").unwrap(), "{config}");
+        assert!(
+            config.find("[cli]").unwrap() > config.find("[grok_com_config]").unwrap(),
+            "{config}"
+        );
     }
 
     #[test]
@@ -1548,21 +1596,43 @@ mod grok_home_tests {
         std::fs::create_dir_all(home.join("plugins")).unwrap();
         std::fs::write(home.join("plugins").join("evil.toml"), "x").unwrap();
         std::fs::write(home.join("hooks-paths"), "/tmp/evil").unwrap();
-        for file in ["managed_config.toml", "requirements.toml", "sandbox.toml", "trusted_folders.toml"] {
-            std::fs::write(home.join(file), "[[hooks.SessionStart]]\ncommand = \"evil\"\n").unwrap();
+        for file in [
+            "managed_config.toml",
+            "requirements.toml",
+            "sandbox.toml",
+            "trusted_folders.toml",
+        ] {
+            std::fs::write(
+                home.join(file),
+                "[[hooks.SessionStart]]\ncommand = \"evil\"\n",
+            )
+            .unwrap();
         }
         std::fs::create_dir_all(home.join(".claude").join("plugins")).unwrap();
         std::fs::write(home.join(".claude.json"), "{}").unwrap();
         std::fs::write(home.join("sessions").join("kept.txt"), "x").unwrap();
         prepare_grok_home(&home, owner.path()).unwrap();
         for dir in ["hooks", "installed-plugins", "plugins"] {
-            assert_eq!(std::fs::read_dir(home.join(dir)).unwrap().count(), 0, "{dir}");
+            assert_eq!(
+                std::fs::read_dir(home.join(dir)).unwrap().count(),
+                0,
+                "{dir}"
+            );
         }
-        for file in ["hooks-paths", "managed_config.toml", "requirements.toml", "sandbox.toml", "trusted_folders.toml"] {
+        for file in [
+            "hooks-paths",
+            "managed_config.toml",
+            "requirements.toml",
+            "sandbox.toml",
+            "trusted_folders.toml",
+        ] {
             assert_eq!(std::fs::read(home.join(file)).unwrap(), b"", "{file}");
         }
         assert!(!home.join(".claude").exists() && !home.join(".claude.json").exists());
-        assert!(home.join("sessions").join("kept.txt").is_file(), "sessions are runtime state");
+        assert!(
+            home.join("sessions").join("kept.txt").is_file(),
+            "sessions are runtime state"
+        );
         assert!(home.join("logs").is_dir());
     }
 
@@ -1580,7 +1650,9 @@ mod grok_home_tests {
         std::os::unix::fs::symlink(&outside, home.join("hooks")).unwrap();
         prepare_grok_home(&home, owner.path()).unwrap();
         assert!(outside.join("keep.txt").is_file());
-        assert!(std::fs::symlink_metadata(home.join("hooks")).unwrap().is_dir());
+        assert!(std::fs::symlink_metadata(home.join("hooks"))
+            .unwrap()
+            .is_dir());
     }
 
     #[test]
@@ -1608,18 +1680,40 @@ mod grok_home_tests {
         ] {
             assert!(!matcher.is_match(denied), "{denied} vs {pattern}");
         }
-        assert!(!GROK_HOME_WRITABLE_DIRS.iter().any(|dir| ["hooks", "plugins", "installed-plugins", ""].contains(dir)));
-        let owner = regex::Regex::new(&owner_auth_writable_regex(std::path::Path::new("/Users/o/.grok"))).unwrap();
-        assert!(owner.is_match("/Users/o/.grok/auth.json") && owner.is_match("/Users/o/.grok/auth.json.lock"));
-        assert!(!owner.is_match("/Users/o/.grok/config.toml") && !owner.is_match("/Users/o/.grok/hooks/x.json"));
+        assert!(!GROK_HOME_WRITABLE_DIRS.iter().any(|dir| [
+            "hooks",
+            "plugins",
+            "installed-plugins",
+            ""
+        ]
+        .contains(dir)));
+        let owner = regex::Regex::new(&owner_auth_writable_regex(std::path::Path::new(
+            "/Users/o/.grok",
+        )))
+        .unwrap();
+        assert!(
+            owner.is_match("/Users/o/.grok/auth.json")
+                && owner.is_match("/Users/o/.grok/auth.json.lock")
+        );
+        assert!(
+            !owner.is_match("/Users/o/.grok/config.toml")
+                && !owner.is_match("/Users/o/.grok/hooks/x.json")
+        );
     }
 
     #[test]
     fn a_contained_launch_moves_home_and_turns_compat_imports_off() {
         let owner_home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(owner_home.path().join(".rustup")).unwrap();
-        let env = grok_contained_env_for(std::path::Path::new("/r/grok_home"), Some(owner_home.path()));
-        let get = |key: &str| env.iter().find(|(name, _)| name == key).map(|(_, value)| value.clone());
+        let env = grok_contained_env_for(
+            std::path::Path::new("/r/grok_home"),
+            Some(owner_home.path()),
+        );
+        let get = |key: &str| {
+            env.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
         assert_eq!(get("GROK_HOME").as_deref(), Some("/r/grok_home"));
         assert_eq!(get("HOME").as_deref(), Some("/r/grok_home"));
         for flag in [
@@ -1630,7 +1724,10 @@ mod grok_home_tests {
         ] {
             assert_eq!(get(flag).as_deref(), Some("false"), "{flag}");
         }
-        assert_eq!(get("RUSTUP_HOME"), Some(owner_home.path().join(".rustup").display().to_string()));
+        assert_eq!(
+            get("RUSTUP_HOME"),
+            Some(owner_home.path().join(".rustup").display().to_string())
+        );
         assert_eq!(get("CARGO_HOME"), None, "only toolchain dirs that exist");
     }
 
@@ -1650,8 +1747,14 @@ mod grok_home_tests {
         assert!(!grok_session_record_contained(dirty_events, ""));
         assert!(grok_session_record_contained(clean_events, ""));
         assert!(!grok_session_record_contained(clean_events, hook_updates));
-        assert!(!grok_session_record_contained("", ""), "no record is not contained");
-        assert!(!grok_session_record_contained(r#"{"type":"phase_changed"}"#, ""), "no MCP evidence");
+        assert!(
+            !grok_session_record_contained("", ""),
+            "no record is not contained"
+        );
+        assert!(
+            !grok_session_record_contained(r#"{"type":"phase_changed"}"#, ""),
+            "no MCP evidence"
+        );
         assert!(!grok_session_record_contained(
             r#"{"type":"mcp_init_completed","total_servers":0}
 {"type":"mcp_server_connected","server_name":"x"}"#,
@@ -1662,7 +1765,11 @@ mod grok_home_tests {
     #[test]
     fn a_session_record_is_found_by_id_under_any_cwd() {
         let root = tempfile::tempdir().unwrap();
-        let session = root.path().join("sessions").join("%2Ftmp%2Fq").join("01abc-def");
+        let session = root
+            .path()
+            .join("sessions")
+            .join("%2Ftmp%2Fq")
+            .join("01abc-def");
         std::fs::create_dir_all(&session).unwrap();
         std::fs::write(session.join("events.jsonl"), "{\"type\":\"x\"}\n").unwrap();
         let (events, updates) = grok_session_record(root.path(), "01abc-def").unwrap();
@@ -1677,14 +1784,24 @@ mod grok_home_tests {
     fn magicians_grok_home_links_the_owner_sign_in() {
         let owner = tempfile::tempdir().unwrap();
         std::fs::write(owner.path().join("auth.json"), "{}").unwrap();
-        std::fs::write(owner.path().join("config.toml"), "[plugins]\nenabled = [\"x\"]\n").unwrap();
+        std::fs::write(
+            owner.path().join("config.toml"),
+            "[plugins]\nenabled = [\"x\"]\n",
+        )
+        .unwrap();
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("grok_home");
         prepare_grok_home(&home, owner.path()).unwrap();
         prepare_grok_home(&home, owner.path()).unwrap();
-        assert_eq!(std::fs::read_link(home.join("auth.json")).unwrap(), owner.path().join("auth.json"));
+        assert_eq!(
+            std::fs::read_link(home.join("auth.json")).unwrap(),
+            owner.path().join("auth.json")
+        );
         let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
-        assert!(!config.contains("[plugins]") && !config.contains("[\"x\"]"), "{config}");
+        assert!(
+            !config.contains("[plugins]") && !config.contains("[\"x\"]"),
+            "{config}"
+        );
     }
 
     #[test]
@@ -1692,9 +1809,18 @@ mod grok_home_tests {
         let empty = serde_json::json!({"jsonrpc":"2.0","method":"_x.ai/mcp/servers_updated","params":{"mcpServers":[]}});
         let loaded = serde_json::json!({"jsonrpc":"2.0","method":"_x.ai/mcp/servers_updated","params":{"mcpServers":[{"name":"context7","source":"local"}]}});
         let other = serde_json::json!({"jsonrpc":"2.0","method":"_x.ai/mcp_initialized","params":{"mcpToolCount":2}});
-        assert!(grok_updates_show_no_mcp_servers(&[empty.clone(), other.clone()]));
-        assert!(!grok_updates_show_no_mcp_servers(&[other.clone()]), "no report is not evidence");
-        assert!(!grok_updates_show_no_mcp_servers(&[empty, loaded]), "any loaded server fails");
+        assert!(grok_updates_show_no_mcp_servers(&[
+            empty.clone(),
+            other.clone()
+        ]));
+        assert!(
+            !grok_updates_show_no_mcp_servers(&[other.clone()]),
+            "no report is not evidence"
+        );
+        assert!(
+            !grok_updates_show_no_mcp_servers(&[empty, loaded]),
+            "any loaded server fails"
+        );
     }
 
     /// The real launcher must accept every writable regex a harness box
@@ -1738,8 +1864,10 @@ mod grok_home_tests {
             .args(&boxed.args)
             .status()
             .unwrap();
-        assert!(status.success(), "the profile compiles, state files are writable, config is not");
+        assert!(
+            status.success(),
+            "the profile compiles, state files are writable, config is not"
+        );
         assert!(state.exists() && !config.exists());
     }
 }
-

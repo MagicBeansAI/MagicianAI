@@ -3,3 +3,5 @@
 # GitHub honours this file automatically.
 # 2026-09-02 style: make the tree stable-rustfmt-clean
 092e802ad836d8edfcdc1deb2918666c8798d86d
+# 2026-10-30 style: make the tree stable-rustfmt-clean again
+28eccaef3326db65e72fce51009f211d160fd05c

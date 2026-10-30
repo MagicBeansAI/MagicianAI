@@ -71,7 +71,12 @@ class VibeDevComposerViewModel(
         parentTaskId: String?,
         codingProfileId: String?,
         budgetUsd: Double?,
+        location: String? = null,
+        attachments: List<ai.magicbeans.magdroid.chat.StagedAttachment> = emptyList(),
+        attachmentSessionId: String? = null,
+        nightly: Boolean = false,
     ) = submit {
+        if (parentTaskId == null && location != null) updateProject(projectId, null, null, location)
         val started = startRun(
             VibeDevRunRequest(
                 prompt = prompt.trim(),
@@ -79,8 +84,9 @@ class VibeDevComposerViewModel(
                 mode = mode,
                 clientRunId = clientRunId,
                 parentTaskId = parentTaskId,
-                codingProfileId = codingProfileId,
+                codingChoice = codingModelSelection(mutable.value.profiles, codingProfileId),
                 costBudgetUsd = budgetUsd,
+                attachments = attachments, attachmentSessionId = attachmentSessionId, nightly = nightly,
             ),
         )
         val title = prompt.trim().lineSequence().first().take(60)
@@ -101,10 +107,10 @@ class VibeDevComposerViewModel(
         VibeDevComposed.CrewProposed(crew, projectId)
     }
 
-    fun createProject(name: String, repoPath: String, trusted: Boolean, baseBranch: String?) = submit {
+    fun createProject(name: String, repoPath: String, trusted: Boolean, baseBranch: String?, location: String? = null) = submit {
         var project = createProject(name.trim(), repoPath.trim())
         val base = baseBranch?.trim()?.takeIf { it.isNotEmpty() }
-        if (trusted || base != null) project = updateProject(project.projectId, if (trusted) true else null, base)
+        if (trusted || base != null || location != null) project = updateProject(project.projectId, if (trusted) true else null, base, location)
         VibeDevComposed.ProjectCreated(project)
     }
 

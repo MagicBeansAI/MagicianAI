@@ -7,6 +7,287 @@ import XCTest
 /// countdown, presence, the ask dock's items / scoping / switcher, and the
 /// planner dock's selection.
 final class ComposerStackTests: XCTestCase {
+    @MainActor func testPrivateSignInPanelRendersWithoutAnEnvironmentTheme() {
+        // Composer sheets use the shared theme rather than an injected
+        // EnvironmentObject. Rendering this panel must not trap on presentation.
+        let launch = BrowserSignInLaunch(baseURL: URL(string: "https://example.invalid")!,
+            headers: [:], ticket: "", authorizationURL: nil, current: { false })
+        let host = UIHostingController(rootView: BrowserSignInPanel(launch: launch))
+        let size = host.sizeThatFits(in: CGSize(width: 320, height: 720))
+        XCTAssertGreaterThan(size.height, 0)
+        XCTAssertLessThanOrEqual(size.width, 320)
+    }
+
+    func testTranscriptApprovalRequiresTheReviewSurfaceBeforeFeedHydration() throws {
+        let content = try JSONDecoder().decode(ChatMessageContentData.self, from: Data(#"{"type":"escalation","input_type":"confirmation","question":"Apply?","execution_id":"run-preview","escalation_type":"approval","pause_state_id":"preview","input_schema":{"type":"confirmation","approval_preview":{"title":"Review the change"}},"options":[{"id":"approve","label":"Approve","action":{"type":"respond_confirmation","confirmed":true}}]}"#.utf8))
+        XCTAssertTrue(content.inputSchema?.requiresReview == true)
+        let ask = try XCTUnwrap(ComposerAskModel.item(chat: content))
+        guard case .handoff = ask.form else { return XCTFail("Do not consent without the review") }
+        let choice = ComposerAskChoice(id: "approve", label: "Approve", action: .confirm(true))
+        XCTAssertNil(ComposerAskModel.submission(for: content, reply: .choice(choice)))
+    }
+
+    @MainActor func testLongChoiceListsStayWithinTheComposerCard() {
+        let choices = (1...30).map { ComposerAskChoice(id: "\($0)", label: "Choice \($0): a longer option that must wrap on a phone", action: .confirm(true)) }
+        let base = Self.attention(#"{"id":"long","item_type":"request","status":"needs_action","title":"Choose an option","metadata":{"pause_state_id":"long","input_type":"choice"}}"#)
+        let item = ComposerAskItem(id: "long", prompt: "Choose an option", hint: nil, from: nil, taskId: nil,
+            form: .choices(choices), source: .attention(base))
+        let host = UIHostingController(rootView: ComposerAskDock(items: [item], answer: { _, _ in nil }, onHandoff: { _ in }, onReviewPlan: { _ in }))
+        let fitted = host.sizeThatFits(in: CGSize(width: 320, height: 2000))
+        XCTAssertLessThan(fitted.height, 400, "Options must scroll instead of pushing the composer beyond the phone")
+    }
+
+    @MainActor func testMcpArgumentsAndDecisionsHaveIndependentBoundedViewports() {
+        let prompt = "Approve this action?\n\nArguments:\n" + String(repeating: "  argument: value\n", count: 80)
+        let choices = ["allow_once", "session:mcp_tool", "always:mcp_tool", "session:capability", "always:capability", "deny"].map {
+            ComposerAskChoice(id: $0, label: $0, action: .confirm(true))
+        }
+        let base = Self.attention(#"{"id":"mcp","item_type":"request","status":"needs_action","title":"Review MCP call","metadata":{"pause_state_id":"mcp","input_type":"choice"}}"#)
+        let item = ComposerAskItem(id: "mcp", prompt: prompt, hint: nil, from: nil, taskId: nil,
+            form: .choices(choices), source: .attention(base))
+        let host = UIHostingController(rootView: ComposerAskDock(items: [item], answer: { _, _ in nil }, onHandoff: { _ in }, onReviewPlan: { _ in }))
+        let size = host.sizeThatFits(in: CGSize(width: 320, height: 2000))
+        XCTAssertLessThan(size.height, 500, "Arguments must not displace the decision controls")
+        XCTAssertLessThanOrEqual(size.width, 320)
+    }
+
+    @MainActor func testLongAskChoicesWrapWithinPhoneWidth() {
+        let label = String(repeating: "A long option that needs to remain readable ", count: 12)
+        let host = UIHostingController(rootView: ComposerAskFlow {
+            Button(label) {}.buttonStyle(ChipStyle())
+        })
+        let size = host.sizeThatFits(in: CGSize(width: 240, height: 1000))
+        XCTAssertLessThanOrEqual(size.width, 240)
+        XCTAssertGreaterThan(size.height, ChipStyle.minHitSize + 4,
+                             "The label must wrap, rather than overflow as a single offscreen chip")
+    }
+    func testEveryCanonicalAskKindRemainsVisibleInTheComposer() {
+        let kinds = ["text", "password", "otp", "choice", "multi_choice", "confirmation", "external_action",
+                     "file_path", "guidance", "tool_authorization", "sandbox_override", "diff_approval", "form"]
+        let rows = kinds.map { kind in Self.attention("""
+        {"id":"\(kind)","item_type":"request","status":"needs_action","title":"Question",
+         "metadata":{"input_type":"\(kind)","pause_state_id":"\(kind)",
+           "hitl_request":{"scope":{"chat_session_id":"project-chat"}}}}
+        """) }
+        let items = ComposerAskModel.items(chatEscalations: [], attention: rows, sessionId: "project-chat",
+            threadId: nil, chatTaskIds: [], plannerTaskIds: [], readOnly: false)
+        XCTAssertEqual(Set(items.map(\.id)), Set(kinds))
+        for item in items where ["password", "otp", "tool_authorization", "sandbox_override", "diff_approval", "form"].contains(item.id) {
+            guard case .handoff = item.form else { return XCTFail("Secrets and reviews must retain their focused answer screen") }
+        }
+    }
+
+    func testDismissOnlyNoticesStayInAttentionOutOfTheComposers() {
+        func row(_ id: String, _ options: String) -> AttentionItem { Self.attention("""
+        {"id":"\(id)","item_type":"request","status":"needs_action","title":"Decision Engine is unavailable",
+         "metadata":{"source":"service_health","input_type":"choice","pause_state_id":"\(id)",
+           "input_schema":{"type":"choice","options":\(options)},
+           "hitl_request":{"scope":{"chat_session_id":"project-chat"}}}}
+        """) }
+        let notice = row("notice", #"[{"id":"dismiss","label":"Dismiss"}]"#)
+        let question = row("question", #"[{"id":"dismiss","label":"Dismiss"},{"id":"retry","label":"Retry"}]"#)
+        XCTAssertTrue(notice.isDismissOnly)
+        XCTAssertFalse(question.isDismissOnly)
+        // Chat (its own session) and VibeDev (no session) composers alike.
+        for session in ["project-chat", nil] as [String?] {
+            let items = ComposerAskModel.items(chatEscalations: [], attention: [notice, question], sessionId: session,
+                threadId: nil, chatTaskIds: [], plannerTaskIds: [], readOnly: false)
+            XCTAssertEqual(items.map(\.id), ["question"])
+        }
+        // Attention's own surfaces still answer it.
+        XCTAssertNotNil(ComposerAskModel.item(attention: notice))
+    }
+
+    func testVibeDevListsEveryAskWithItsTurnsAndProjectQuestionsFirst() throws {
+        let god = try JSONDecoder().decode(PendingUserRequest.self, from: Data(#"{"id":"god-global","request_type":"sandbox_override","question":"Allow edit?","options":[{"id":"allow_once","label":"Allow once"},{"id":"deny","label":"Deny"}],"context":{"input_type":"choice","god_mode":true,"chat_session_id":"other-chat"}}"#.utf8))
+        let rows = [AttentionItem(pending: god)] + ["turn-1", "turn-2", "another-run"].map { task in Self.attention("""
+        {"id":"ask-\(task)","item_type":"request","status":"needs_action","title":"Continue?","task_id":"\(task)",
+         "metadata":{"input_type":"text","pause_state_id":"ask-\(task)"}}
+        """) } + [Self.attention("""
+        {"id":"project-ask","item_type":"request","status":"needs_action","title":"Which goal?",
+         "metadata":{"input_type":"text","pause_state_id":"project-ask","hitl_request":{"scope":{"chat_session_id":"project-chat"}}}}
+        """)]
+        let items = ComposerAskModel.items(chatEscalations: [], attention: rows, sessionId: "project-chat", threadId: nil,
+            chatTaskIds: ["turn-1", "turn-2"], plannerTaskIds: [], readOnly: false)
+        XCTAssertEqual(items.map(\.id), ["ask-turn-1", "ask-turn-2", "project-ask", "god-global", "ask-another-run"])
+        XCTAssertEqual(items.map(\.elsewhere), [false, false, false, true, true])
+        let fresh = ComposerAskModel.items(chatEscalations: [], attention: rows, sessionId: nil, threadId: nil,
+            chatTaskIds: [], plannerTaskIds: [], readOnly: false)
+        XCTAssertEqual(fresh.map(\.id), ["god-global", "ask-turn-1", "ask-turn-2", "ask-another-run", "project-ask"])
+        // A god-mode grant keeps its own "Requested in" line, never the origin line.
+        XCTAssertNil(ComposerAskModel.origin(of: try XCTUnwrap(fresh.first), chatTitles: [:]))
+        // The display destination does not rewrite the grant's originating scope.
+        guard case .attention(let origin) = try XCTUnwrap(fresh.first).source else { return XCTFail("Missing original request") }
+        XCTAssertEqual(origin.schema?.context?.chatSessionId, "other-chat")
+    }
+
+    func testThreadEditsPreserveUntouchedFieldsAndAllowExplicitMemoryClear() {
+        let renamed = ChatThreadSettingsPatch.make(threadID: "general", originalName: "Old", originalMemory: "Saved context", name: "New", memory: "Saved context")
+        XCTAssertEqual(renamed["name"], .string("New"))
+        XCTAssertNil(renamed.object?["memory_text"])
+        let cleared = ChatThreadSettingsPatch.make(threadID: "general", originalName: "Old", originalMemory: "Saved context", name: "Old", memory: "")
+        XCTAssertNil(cleared.object?["name"])
+        XCTAssertEqual(cleared["memory_text"], .string(""))
+        XCTAssertEqual(ChatThreadSettingsPatch.make(threadID: "general", originalName: "Name", originalMemory: "Context", name: " Name ", memory: "Context"), .object([:]))
+    }
+
+    func testChatDraftsAreScopedAndClearedAfterSending() {
+        let suite = "chat-drafts-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ChatDraftStore(defaults: defaults)
+        let first = ChatViewModel.localStorageKey(origin: "https://one", principal: "owner", workspace: "home", session: "one")
+        let second = ChatViewModel.localStorageKey(origin: "https://one", principal: "owner", workspace: "home", session: "two")
+        store.save("Unsent work", key: first)
+        XCTAssertEqual(ChatDraftStore(defaults: defaults).read(first), "Unsent work")
+        XCTAssertEqual(store.read(second), "")
+        XCTAssertNotEqual(first, ChatViewModel.localStorageKey(origin: "https://two", principal: "owner", workspace: "home", session: "one"))
+        XCTAssertNotEqual(first, ChatViewModel.localStorageKey(origin: "https://one", principal: "guest", workspace: "home", session: "one"))
+        XCTAssertNotEqual(first, ChatViewModel.localStorageKey(origin: "https://one", principal: "owner", workspace: "work", session: "one"))
+        store.save("", key: first)
+        XCTAssertEqual(store.read(first), "")
+    }
+
+    func testScopedOutputReferencesAndWholeChatAccounting() {
+        XCTAssertEqual(ChatSessionAccounting.outputPath("Pages/Chapter-Map.md"), "Pages/Chapter-Map.md")
+        XCTAssertEqual(ChatSessionAccounting.outputPath("Chapter%20Map.md"), "Chapter Map.md")
+        for raw in ["https://other.test/file.md", "//other.test/file.md", "javascript:evil", "../private.md", "%2e%2e/private.md", "/work?task=x", "/notes?path=x"] {
+            XCTAssertNil(ChatSessionAccounting.outputPath(raw), raw)
+        }
+        XCTAssertNotNil(ChatSessionAccounting.recordedDate("2026-10-23T02:00:00.123456Z"))
+        XCTAssertNotNil(ChatSessionAccounting.recordedDate("2026-10-23T02:00:00Z"))
+        XCTAssertEqual(ChatSessionAccounting.recordedDate("1000"), Date(timeIntervalSince1970: 1))
+        XCTAssertNil(ChatSessionAccounting.recordedDate("unavailable"))
+        let sql = ChatSessionAccounting.sql("chat'1")
+        XCTAssertTrue(sql.contains("chat_session_id = 'chat''1'"))
+        XCTAssertTrue(sql.contains("FROM llm_cost_daily"))
+        XCTAssertTrue(sql.contains("unpriced_calls"))
+        XCTAssertTrue(sql.contains("CASE WHEN SUM(priced_calls) > 0"))
+        let models = ChatSessionAccounting.sql("chat'1", byModel: true)
+        XCTAssertTrue(models.contains("chat_session_id = 'chat''1'"))
+        XCTAssertTrue(models.contains("GROUP BY provider, model"))
+        var draft = WorkQualityDraft()
+        draft.maxAttempts = 0; draft.minutes = 0; draft.dollars = 0
+        XCTAssertEqual(draft.proposal()["budget"]["max_attempts"], .integer(0))
+        XCTAssertEqual(draft.proposal()["budget"]["max_wall_clock_secs"], .integer(0))
+        XCTAssertEqual(draft.proposal()["budget"]["max_cost_microusd"], .integer(0))
+    }
+
+    func testExecutionModesUseServerStateAndExpireTimedSuperMode() throws {
+        let chat = try JSONDecoder().decode(ChatGodModeState.self, from: Data(#"{"enabled":true,"override":null,"default":true}"#.utf8))
+        XCTAssertTrue(chat.enabled); XCTAssertNil(chat.overrideChoice); XCTAssertTrue(chat.defaultEnabled)
+        let timed = try JSONDecoder().decode(SuperGodModeState.self, from: Data(#"{"active":true,"enabled":true,"until_ms":1000,"remaining_secs":1}"#.utf8))
+        XCTAssertTrue(timed.activeAt(Date(timeIntervalSince1970: 0.999)))
+        XCTAssertFalse(timed.activeAt(Date(timeIntervalSince1970: 1)))
+        XCTAssertEqual(SuperGodModeDuration.hour.rawValue, "1h")
+        XCTAssertEqual(SuperGodModeDuration.untilOff.rawValue, "forever")
+        XCTAssertThrowsError(try JSONDecoder().decode(SuperGodModeState.self, from: Data(#"{"enabled":true}"#.utf8)))
+    }
+
+    func testExecutionModeSaveAlwaysReleasesTheMenu() {
+        var gate = ExecutionModeSaveGate()
+        let first = gate.begin()
+        XCTAssertNotNil(first); XCTAssertTrue(gate.busy)
+        XCTAssertNil(gate.begin(), "one save at a time")
+        // The chat changed while the save ran: finishing still releases the menu.
+        gate.finish(first!)
+        XCTAssertFalse(gate.busy)
+        // A chat switch resets the gate; the older save finishing later
+        // cannot release a save started for the new chat.
+        let stale = gate.begin()!
+        gate.reset()
+        XCTAssertFalse(gate.busy)
+        let current = gate.begin()!
+        gate.finish(stale)
+        XCTAssertTrue(gate.busy)
+        gate.finish(current)
+        XCTAssertFalse(gate.busy)
+    }
+
+    func testChatFileSizesIncludeEmptyFilesAndKeepUnknownSizesExplicit() throws {
+        let inventory = try JSONDecoder().decode(WorkJSON.self, from: Data(#"{"files":[{"size":0},{"size":1024},{"size":null}]}"#.utf8))
+        XCTAssertEqual(ChatSessionAccounting.fileSize(.object([:])), "Size unavailable")
+        XCTAssertNotEqual(ChatSessionAccounting.fileSize(.object(["size": .integer(0)])), "Size unavailable")
+        XCTAssertTrue(ChatSessionAccounting.fileSizeSummary(inventory).contains("3 files · Known size:"))
+        XCTAssertTrue(ChatSessionAccounting.fileSizeSummary(inventory).contains("1 size unavailable"))
+    }
+
+    func testTasklessChatQuestionMatchesItsSessionFromLedgerAndFeed() throws {
+        let raw = """
+        {"id":"question-1","request_type":"need_user_input","question":"Approve the work plan?",
+         "context":{"chat_session_id":"chat-1","input_type":"confirmation",
+                    "input_schema":{"confirm_label":"Approve","deny_label":"Deny"}}}
+        """
+        let pending = try JSONDecoder().decode(PendingUserRequest.self, from: Data(raw.utf8))
+        let row = AttentionItem(pending: pending)
+        XCTAssertTrue(ComposerAskModel.belongs(row, sessionId: "chat-1", threadId: "general", chatTaskIds: []))
+        XCTAssertFalse(ComposerAskModel.belongs(row, sessionId: "chat-2", threadId: "general", chatTaskIds: []))
+        XCTAssertFalse(ComposerAskModel.belongs(row, sessionId: nil, threadId: "general", chatTaskIds: []))
+        let roundTrip = try JSONDecoder().decode(AttentionItem.self, from: JSONEncoder().encode(row))
+        XCTAssertTrue(ComposerAskModel.belongs(roundTrip, sessionId: "chat-1", threadId: nil, chatTaskIds: []))
+        let projected = Self.attention("""
+        {"id":"feed-question","item_type":"request","status":"needs_action","title":"Approve the work plan?",
+         "metadata":{"source":"user_request","input_type":"confirmation","pause_state_id":"question-1",
+                     "input_schema":{"context":{"chat_session_id":"chat-1"}}}}
+        """)
+        XCTAssertTrue(ComposerAskModel.belongs(projected, sessionId: "chat-1", threadId: nil, chatTaskIds: []))
+        XCTAssertFalse(ComposerAskModel.belongs(projected, sessionId: "chat-2", threadId: nil, chatTaskIds: []))
+    }
+
+    func testGodScopePickerPreservesExactIdsAndFullLongPaths() {
+        let path = "/notes/" + String(repeating: "long-folder/", count: 40) + "plan.md"
+        let options = [AttentionGrantOption(id: "allow_once", label: "Allow once"),
+                       AttentionGrantOption(id: "session:file", label: "This session: \(path)"),
+                       AttentionGrantOption(id: "always:file", label: "Always: \(path)"),
+                       AttentionGrantOption(id: "session:folder", label: "This session: anything under /notes"),
+                       AttentionGrantOption(id: "always:folder", label: "Always: anything under /notes"),
+                       AttentionGrantOption(id: "deny", label: "Deny")]
+        let scopes = GodGrantScope.grouped(options)
+        XCTAssertEqual(scopes.map(\.id), ["file", "folder"])
+        XCTAssertEqual(scopes.first?.detail, path)
+        XCTAssertEqual(scopes.first?.sessionId, "session:file")
+        XCTAssertEqual(scopes.last?.alwaysId, "always:folder")
+        XCTAssertTrue(GodGrantScope.grouped(options.filter { $0.id != "always:file" }).isEmpty)
+        XCTAssertTrue(GodGrantScope.grouped(options + [AttentionGrantOption(id: "new_option", label: "New choice")]).isEmpty)
+    }
+
+    func testExactShellScopeKeepsBothApprovalDurations() {
+        let scopes = GodGrantScope.grouped([
+            AttentionGrantOption(id: "allow_once", label: "Allow once"),
+            AttentionGrantOption(id: "session:exact", label: "This session: this exact shell invocation"),
+            AttentionGrantOption(id: "always:exact", label: "Always: this exact shell invocation"),
+            AttentionGrantOption(id: "deny", label: "Deny")
+        ])
+        XCTAssertEqual(scopes.count, 1)
+        XCTAssertEqual(scopes.first?.label, "Exact command")
+        XCTAssertEqual(scopes.first?.sessionId, "session:exact")
+        XCTAssertEqual(scopes.first?.alwaysId, "always:exact")
+    }
+
+    func testGodFileApprovalKeepsEveryChoiceAndOriginInEveryChat() throws {
+        let raw = """
+        {"id":"god-file","request_type":"sandbox_override","question":"Apply edits?",
+         "options":[{"id":"allow_once","label":"Allow once"},{"id":"session:file","label":"This session: plan.md"},
+                    {"id":"always:file","label":"Always: plan.md"},{"id":"deny","label":"Deny"}],
+         "context":{"input_type":"choice","god_mode":true,"chat_session_id":"chat-1","command":"/notes/programs/plan.md",
+                    "files":[{"path":"/notes/programs/plan.md","unified_diff":"+new plan"}]}}
+        """
+        let pending = try JSONDecoder().decode(PendingUserRequest.self, from: Data(raw.utf8))
+        var row = AttentionItem(pending: pending)
+        row.uiThreadId = "general"
+        row.taskId = "task-1"
+        XCTAssertTrue(row.isGodMode)
+        XCTAssertEqual(row.inputType, "choice")
+        XCTAssertEqual(row.renderKind, "sandbox_override")
+        XCTAssertEqual(row.grantSubject, "/notes/programs/plan.md")
+        let item = try XCTUnwrap(ComposerAskModel.item(attention: row))
+        guard case .choices(let choices) = item.form else { return XCTFail("God grants must be answered in the composer") }
+        XCTAssertEqual(choices.map(\.id), ["allow_once", "session:file", "always:file", "deny"])
+        XCTAssertEqual(item.files.first?.unifiedDiff, "+new plan")
+        XCTAssertTrue(ComposerAskModel.belongs(row, sessionId: "chat-1", threadId: "general", chatTaskIds: []))
+        XCTAssertTrue(ComposerAskModel.belongs(row, sessionId: "chat-2", threadId: "other", chatTaskIds: []))
+        XCTAssertEqual(row.schema?.context?.chatSessionId, "chat-1")
+    }
 
     // MARK: Fixtures
 
@@ -66,10 +347,11 @@ final class ComposerStackTests: XCTestCase {
         attention: [AttentionItem] = [],
         chatTaskIds: Set<String> = ["task-1", "task-9"],
         plannerTaskIds: Set<String> = [],
+        threadId: String = "general",
         readOnly: Bool = false
     ) -> [ComposerAskItem] {
         ComposerAskModel.items(
-            chatEscalations: chat, attention: attention, sessionId: "session-1", threadId: "general",
+            chatEscalations: chat, attention: attention, sessionId: "session-1", threadId: threadId,
             chatTaskIds: chatTaskIds, plannerTaskIds: plannerTaskIds, readOnly: readOnly)
     }
 
@@ -126,28 +408,139 @@ final class ComposerStackTests: XCTestCase {
         XCTAssertEqual(list[2].form, .handoff("Enter it securely →"))
     }
 
-    func testFeedAsksAreScopedToThisConversation() {
-        let list = items(chat: [], attention: [Self.planApproval, Self.sessionScopedAsk, Self.unrelatedAsk])
-        XCTAssertEqual(list.map(\.id), ["plan-1", "pause-scope"])
+    func testEveryFeedAskIsListedThisConversationsFirst() {
+        let list = items(chat: [], attention: [Self.unrelatedAsk, Self.planApproval, Self.sessionScopedAsk])
+        XCTAssertEqual(list.map(\.id), ["plan-1", "pause-scope", "pause-other"])
+        XCTAssertEqual(list.map(\.elsewhere), [false, false, true])
         guard case .choices(let plan) = list[0].form else { return XCTFail("plan approval → choices") }
         XCTAssertEqual(plan.map(\.label), ["Review plan", "Reject", "Approve", "Approve & Run"])
         XCTAssertEqual(list[0].taskId, "task-9")
         XCTAssertEqual(list[1].from, "from researcher")
     }
 
+    /// Two untitled chats share the `general` thread: a sibling chat's
+    /// question stays there, labelled, and never takes this chat's typed text.
+    func testSiblingChatQuestionInTheSharedThreadIsElsewhere() {
+        let sibling = Self.attention("""
+        {"id":"att-sibling-chat","title":"Q","item_type":"request","status":"needs_action",
+         "ui_thread_id":"general","chat_session_id":"session-2",
+         "metadata":{"input_type":"text","question":"Which city?","pause_state_id":"pause-sibling-chat",
+                     "hitl_request":{"scope":{"thread_id":"general","ui_thread_id":"general"}}}}
+        """)
+        let own = Self.attention("""
+        {"id":"att-own-chat","title":"Q","item_type":"request","status":"needs_action",
+         "ui_thread_id":"general","chat_session_id":"session-1",
+         "metadata":{"input_type":"text","question":"Which date?","pause_state_id":"pause-own-chat"}}
+        """)
+        let unstamped = Self.attention("""
+        {"id":"att-thread-only","title":"Q","item_type":"request","status":"needs_action",
+         "ui_thread_id":"general",
+         "metadata":{"input_type":"text","question":"Anyone?","pause_state_id":"pause-thread-only"}}
+        """)
+        let list = items(chat: [], attention: [sibling, own, unstamped], chatTaskIds: [])
+        XCTAssertEqual(list.map(\.id), ["pause-own-chat", "pause-sibling-chat", "pause-thread-only"])
+        XCTAssertEqual(list.map(\.elsewhere), [false, true, true])
+        XCTAssertEqual(ComposerAskModel.origin(of: list[1], chatTitles: ["session-2": "Trip planning"]),
+                       "From Trip planning")
+        XCTAssertNil(ComposerAskModel.origin(of: list[0], chatTitles: [:]))
+        // Another chat's question is never here, even in a shared named
+        // thread or under a task this chat knows.
+        var tasked = sibling
+        tasked.uiThreadId = "launch"
+        tasked.taskId = "task-1"
+        XCTAssertFalse(ComposerAskModel.belongsHere(tasked, sessionId: "session-1", threadId: "launch",
+                                                    chatTaskIds: ["task-1"]))
+    }
+
     func testPlanApprovalTheplannerDockOffersIsLeftToIt() {
         let list = items(chat: [], attention: [Self.planApproval], plannerTaskIds: ["task-9"])
         XCTAssertTrue(list.isEmpty)
+        // Another conversation's plan approval is still offered, from elsewhere.
+        let foreign = items(chat: [], attention: [Self.planApproval], chatTaskIds: [], plannerTaskIds: ["task-1"])
+        XCTAssertEqual(foreign.map(\.id), ["plan-1"])
+        XCTAssertTrue(foreign[0].elsewhere)
+    }
+
+    func testAskFromElsewhereSaysWhereItCameFrom() {
+        let titles = ["chat-other": "Trip planning"]
+        func origin(_ json: String) -> String? {
+            items(chat: [], attention: [Self.attention(json)]).first
+                .flatMap { ComposerAskModel.origin(of: $0, chatTitles: titles) }
+        }
+        XCTAssertEqual(origin("""
+        {"id":"a","title":"Q","item_type":"request","status":"needs_action","chat_session_id":"chat-other",
+         "metadata":{"input_type":"text","pause_state_id":"a","hitl_request":{"scope":{"agent_id":"researcher"}}}}
+        """), "From Trip planning · researcher")
+        XCTAssertEqual(origin("""
+        {"id":"b","title":"Q","item_type":"request","status":"needs_action",
+         "metadata":{"input_type":"text","pause_state_id":"b","hitl_request":{"scope":{"chat_session_id":"ab12cd34ef56"}}}}
+        """), "From Chat ab12cd34")
+        XCTAssertEqual(origin("""
+        {"id":"c","title":"Q","item_type":"request","status":"needs_action","task_id":"task-elsewhere-123",
+         "metadata":{"input_type":"text","pause_state_id":"c"}}
+        """), "From task task-elsewher")
+        XCTAssertEqual(origin("""
+        {"id":"d","title":"Q","item_type":"request","status":"needs_action",
+         "metadata":{"input_type":"text","pause_state_id":"d","input_schema":{"context":{"session":"run:0123456789"}}}}
+        """), "From Run 01234567 · background run")
+        // This conversation's own ask shows no origin line, nor does a chat
+        // card in this transcript whose feed row carries no stamp of it.
+        XCTAssertNil(origin("""
+        {"id":"f","title":"Q","item_type":"request","status":"needs_action","task_id":"task-1",
+         "metadata":{"input_type":"text","pause_state_id":"f"}}
+        """))
+        let card = items(chat: [Self.confirmCard], attention: [Self.attention("""
+        {"id":"e","title":"Deploy?","item_type":"request","status":"needs_action",
+         "metadata":{"input_type":"confirmation","pause_state_id":"pause-1"}}
+        """)], chatTaskIds: [])
+        XCTAssertEqual(card.map(\.id), ["pause-1"])
+        XCTAssertFalse(card[0].elsewhere)
     }
 
     func testChatCardAndFeedRowForOneAskShowOnce() {
         let list = items(chat: [Self.textCard], attention: [Self.duplicateOfChat])
         XCTAssertEqual(list.map(\.id), ["pause-2"])
-        guard case .chat = list[0].source else { return XCTFail("the chat card wins") }
+        guard case .attention = list[0].source else { return XCTFail("the canonical contract must win") }
+    }
+
+    func testCanonicalApprovalPreviewCannotBeHiddenByAChatConfirmation() {
+        let row = Self.attention("""
+        {"id":"richer","title":"Review change","item_type":"request","status":"needs_action",
+         "task_id":"task-1","metadata":{"source":"agentic","input_type":"confirmation",
+         "pause_state_id":"pause-1","input_schema":{"approval_preview":{"title":"Revise program","evidence":[],"warnings":[],"notes":[]}}}}
+        """)
+        let list = items(chat: [Self.confirmCard], attention: [row])
+        XCTAssertEqual(list.count, 1)
+        guard case .attention = list[0].source else { return XCTFail("canonical preview must win") }
+        guard case .handoff = list[0].form else { return XCTFail("approval must show the preview before consent") }
+    }
+
+    func testCanonicalTargetIdAndAliasesAreRetainedWithoutARespondHandle() {
+        let row = Self.attention("""
+        {"id":"feed","title":"Choose","item_type":"request","status":"needs_action","task_id":"task-1",
+         "metadata":{"source":"agentic","hitl_request":{"id":"canonical","source":"agentic","input_type":"text",
+         "identifiers":{"pause_state_id":"pause-2"},"prompt":"New wording"}}}
+        """)
+        XCTAssertEqual(row.correlationId, "canonical")
+        XCTAssertTrue(row.askIdentifiers.contains("pause-2"))
+        let list = items(chat: [Self.textCard], attention: [row])
+        XCTAssertEqual(list.count, 1)
+        XCTAssertEqual(list[0].prompt, "New wording")
     }
 
     func testArchivedConversationAsksNothing() {
         XCTAssertTrue(items(attention: [Self.planApproval], readOnly: true).isEmpty)
+    }
+
+    func testFailedFeedRowsCannotBecomeComposerQuestions() throws {
+        for kind in ["task", "escalation", "request"] {
+            let row = try JSONDecoder().decode(AttentionItem.self, from: Data("""
+            {"id":"failed-fixture","title":"Waiting on you","item_type":"\(kind)","status":"failed",
+             "metadata":{"source":"agentic","input_type":"confirmation","pause_state_id":"old-pause"}}
+            """.utf8))
+            XCTAssertFalse(row.isActionable)
+            XCTAssertNil(ComposerAskModel.item(attention: row))
+        }
     }
 
     func testSwitcherKeepsTheActiveQuestionAndWraps() {
@@ -177,7 +570,7 @@ final class ComposerStackTests: XCTestCase {
     /// row's own `ui_thread_id`, no session / thread scope on the request.
     static let relentlessReview = attention("""
     {"id":"att-review","title":"Review needed","item_type":"request","status":"needs_action",
-     "task_id":"task-relentless","ui_thread_id":"general",
+     "task_id":"task-relentless","ui_thread_id":"launch",
      "metadata":{"source":"user_request",
        "hitl_request":{"correlation_id":"exec-9:relentless-review:run-7:hash","input_type":"choice",
          "prompt":"An accepted draft needs your exact review.",
@@ -204,15 +597,20 @@ final class ComposerStackTests: XCTestCase {
     func testFeedAskBelongsByItsOwnUiThreadIdAndItsTasksSiblingsFollow() {
         let list = items(chat: [], attention: [Self.relentlessReview, Self.siblingOfRelentless,
                                                Self.otherThreadAsk, Self.unrelatedAsk],
-                         chatTaskIds: [])
-        XCTAssertEqual(list.map(\.id), ["exec-9:relentless-review:run-7:hash", "pause-sibling"],
+                         chatTaskIds: [], threadId: "launch")
+        XCTAssertEqual(list.filter { !$0.elsewhere }.map(\.id), ["exec-9:relentless-review:run-7:hash", "pause-sibling"],
                        "the row's ui_thread_id places it here; its task's other asks follow")
-        XCTAssertTrue(ComposerAskModel.belongs(Self.relentlessReview, sessionId: nil, threadId: "general",
+        XCTAssertEqual(list.filter(\.elsewhere).map(\.id), ["pause-thread", "pause-other"])
+        XCTAssertTrue(ComposerAskModel.belongs(Self.relentlessReview, sessionId: nil, threadId: "launch",
                                                chatTaskIds: []))
-        XCTAssertFalse(ComposerAskModel.belongs(Self.otherThreadAsk, sessionId: nil, threadId: "general",
+        XCTAssertFalse(ComposerAskModel.belongs(Self.otherThreadAsk, sessionId: nil, threadId: "launch",
                                                 chatTaskIds: []))
-        XCTAssertTrue(ComposerAskModel.belongs(Self.siblingOfRelentless, sessionId: nil, threadId: "general",
+        XCTAssertTrue(ComposerAskModel.belongs(Self.siblingOfRelentless, sessionId: nil, threadId: "launch",
                                                chatTaskIds: ["task-relentless"]))
+        // The shared default thread alone never places an ask here.
+        var shared = Self.relentlessReview
+        shared.uiThreadId = "general"
+        XCTAssertFalse(ComposerAskModel.belongs(shared, sessionId: nil, threadId: "general", chatTaskIds: []))
     }
 
     func testRelentlessReviewAskOffersApproveRejectAndReviewDraft() throws {

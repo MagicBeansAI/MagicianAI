@@ -1,6 +1,7 @@
 import type { Task } from '$lib/stores/taskStore';
 import type { VibeDevProject } from '$lib/stores/vibeDevProjectStore';
 import { parseNumericDuckDbValue } from '$lib/magician/components/generative/chartUtil';
+import { rollingWindowPredicate } from '$lib/llm/queryWindow';
 
 const VIBEDEV_THREAD_ID = 'vibedev';
 const VIBEDEV_PROJECT_PREFIX = 'VibeDev project:';
@@ -214,11 +215,12 @@ export function buildVibeDevProjectRollupSql(
 	attributions: VibeDevProjectAttribution[],
 	days: number,
 	dimensionSql: string[] = [],
-	source: CostSource = 'calls'
+	source: CostSource = 'calls',
+	anchorMs: number = Date.now()
 ): string | null {
 	const rows = attributionRowsSql(attributions);
 	if (!rows) return null;
-	const { base, calls } = costBase(source, days, dimensionSql);
+	const { base, calls } = costBase(source, days, dimensionSql, anchorMs);
 	return (
 		`WITH project_keys(project_id, key_type, key_value) AS (${rows}), ` +
 		`base AS (${base}), scoped AS (` +
@@ -255,11 +257,12 @@ export function buildVibeDevRunRollupSql(
 	attributions: VibeDevRunAttribution[],
 	days: number,
 	dimensionSql: string[] = [],
-	source: CostSource = 'calls'
+	source: CostSource = 'calls',
+	anchorMs: number = Date.now()
 ): string | null {
 	const rows = runAttributionRowsSql(attributions);
 	if (!rows) return null;
-	const { base, calls } = costBase(source, days, dimensionSql);
+	const { base, calls } = costBase(source, days, dimensionSql, anchorMs);
 	return (
 		`WITH run_keys(run_id, task_id) AS (${rows}), ` +
 		`base AS (${base}), scoped AS (` +
@@ -293,11 +296,12 @@ export function buildVibeDevRunRollupSql(
 export function buildVibeDevTotalRollupSql(
 	attributions: VibeDevProjectAttribution[],
 	days: number,
-	dimensionSql: string[] = []
+	dimensionSql: string[] = [],
+	anchorMs: number = Date.now()
 ): string | null {
 	const rows = attributionRowsSql(attributions);
 	if (!rows) return null;
-	const filters = scopedFilters(days, dimensionSql);
+	const filters = scopedFilters(days, dimensionSql, anchorMs);
 	return (
 		`WITH project_keys(project_id, key_type, key_value) AS (${rows}), ` +
 		`base AS (` +
@@ -322,11 +326,12 @@ export function buildVibeDevModelBreakdownSql(
 	attributions: VibeDevProjectAttribution[],
 	days: number,
 	dimensionSql: string[] = [],
-	limit = 10
+	limit = 10,
+	anchorMs: number = Date.now()
 ): string | null {
 	const rows = attributionRowsSql(attributions);
 	if (!rows) return null;
-	const filters = scopedFilters(days, dimensionSql);
+	const filters = scopedFilters(days, dimensionSql, anchorMs);
 	return (
 		`WITH project_keys(project_id, key_type, key_value) AS (${rows}), ` +
 		`base AS (` +
@@ -433,7 +438,8 @@ export type CostSource = 'calls' | 'daily';
 function costBase(
 	source: CostSource,
 	days: number,
-	dimensionSql: string[]
+	dimensionSql: string[],
+	anchorMs: number
 ): { base: string; calls: string } {
 	if (source === 'daily') {
 		const safeDays = Math.floor(days);
@@ -447,19 +453,22 @@ function costBase(
 		};
 	}
 	return {
-		base: `SELECT row_number() OVER () AS call_row_id, * FROM llm_calls WHERE ${scopedFilters(days, dimensionSql)}`,
+		base: `SELECT row_number() OVER () AS call_row_id, * FROM llm_calls WHERE ${scopedFilters(days, dimensionSql, anchorMs)}`,
 		calls: '1'
 	};
 }
 
-function scopedFilters(days: number, dimensionSql: string[]): string {
+/**
+ * Rolling windows are literal epoch-ms bounds ending at `anchorMs` (the server
+ * prunes only from a literal; see `$lib/llm/queryWindow`). Callers that rebuild
+ * the SQL on unrelated reactive ticks pass a stable anchor so the string — and
+ * the wired controller — stays the same.
+ */
+function scopedFilters(days: number, dimensionSql: string[], anchorMs: number): string {
 	const safeDays = Math.floor(days);
 	const parts =
 		safeDays > 0
-			? [
-					`timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL ${safeDays} DAYS)`,
-					...dimensionSql
-				]
+			? [rollingWindowPredicate(safeDays, anchorMs), ...dimensionSql]
 			: [`${LLM_LIFETIME_PARTITION_HINT} TRUE`, ...dimensionSql];
 	return parts.length > 0 ? parts.join(' AND ') : 'TRUE';
 }

@@ -1,8 +1,10 @@
 <script lang="ts">
 	import Button from '$lib/magician/components/generative/Button.svelte';
 	import { ESCALATION_OPEN_PROMPT_ID } from '$lib/magician/chat/escalationRouting';
+	import { escalationCardOptions } from '$lib/magician/chat/escalationReply';
 	import ChatContentBlocks from '$lib/magician/components/chat/ChatContentBlocks.svelte';
 	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import HitlDetails from '$lib/hitl/HitlDetails.svelte';
 	import {
 		getEscalationResolvedSummary,
 		type ChatMessage,
@@ -22,6 +24,8 @@
 	export let showActions = false;
 	export let inactiveReason: string | null = null;
 	export let disabled = false;
+	/** Why the last answer from this card did not land; the options stay. */
+	export let error: string | null = null;
 	export let onRespond: (
 		executionId: string,
 		pauseStateId: string,
@@ -34,6 +38,12 @@
 
 {#if message.content.type === 'escalation'}
 	{@const content = message.content}
+	{@const cardOptions = escalationCardOptions(content)}
+	<!--
+		A pending agentic `choice` offers the ask's own options (from
+		`input_schema.options`) rather than one generic Respond, so one click
+		answers it; see `escalationReply.ts`.
+	-->
 	<div class="chat-escalation-card" class:chat-escalation-resolved={dimmed}>
 		<div class="chat-escalation-header">
 			<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -44,7 +54,13 @@
 		<div class="chat-escalation-question">
 			<ChatMarkdown content={content.question} sessionId={message.session_id} />
 		</div>
-		{#if showActions && (content.options?.length ?? 0) === 0}
+		{#if content.hint}
+			<!-- What the ask is about (a proposal to approve), when the asker sent it. -->
+			<div class="chat-escalation-details">
+				<HitlDetails text={content.hint} />
+			</div>
+		{/if}
+		{#if showActions && cardOptions.length === 0}
 			<!--
 				An escalation with no options is still an ask. Its answer is typed,
 				so the one control opens the card's prompt rather than offering a
@@ -69,7 +85,7 @@
 			</div>
 		{:else if showActions}
 			<div class="chat-escalation-actions">
-				{#each content.options as option}
+				{#each cardOptions as option (option.id)}
 					<Button
 						label={option.label}
 						size="sm"
@@ -87,6 +103,10 @@
 					/>
 				{/each}
 			</div>
+		{/if}
+		{#if error && showActions}
+			<!-- Not a live region: the error toast already announces it once. -->
+			<p class="chat-escalation-error">{error}</p>
 		{/if}
 		{#if inactiveReason}
 			<span class="chat-escalation-resolved-label">{inactiveReason}</span>
@@ -178,10 +198,21 @@
 		word-break: break-word;
 	}
 
+	.chat-escalation-details {
+		margin: 0 0 0.5rem;
+	}
+
 	.chat-escalation-actions {
 		display: flex;
 		gap: 0.4rem;
 		flex-wrap: wrap;
+	}
+
+	.chat-escalation-error {
+		margin: 0.45rem 0 0;
+		font-size: var(--text-2xs);
+		color: var(--color-error, #d23a3a);
+		overflow-wrap: anywhere;
 	}
 
 	.chat-escalation-resolved-label {

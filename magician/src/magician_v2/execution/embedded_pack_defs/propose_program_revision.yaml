@@ -1,0 +1,65 @@
+name: propose_program_revision
+description: Propose the full revised version of an existing program document (approval-gated; applied only after the owner approves).
+version: "1.0.0"
+guide: |
+  Tool name: `propose_program_revision`
+
+  Propose the next version of ONE existing program document: your own program
+  or a shared document from the cycle's "Shared Context". The call is
+  APPROVAL-GATED: it pauses for the owner's decision, and only an approval
+  writes the document. On apply, the prior version is snapshotted to the
+  program history first (the owner can revert it), then the revised document
+  replaces it. If the document changed after you read it, nothing is written
+  and the call fails: re-read the current version (the next cycle context
+  shows it with its new sha256) and propose again only if the revision still
+  applies.
+
+  Guidelines:
+  - send the FULL revised document in `content`, not a diff or a fragment —
+    whatever you send becomes the whole document
+  - keep everything the owner wrote unless `rationale` says why a part must
+    change; prefer adding or tightening over rewriting
+  - `base_sha256` is the sha256 shown next to the document in the cycle
+    context (`Source: … (sha256 …)` for your program, `(name, sha256 …)` for a
+    shared document) — it proves which version you revised
+  - `rationale` (one short paragraph) is shown on the owner's approval card:
+    what changed and why, in plain words
+  - cite what you learned in `evidence` (task ids, links, notes; at most 10) —
+    a revision without evidence is an opinion
+  - one proposal per document per cycle
+  - a rejection is terminal for that content: never re-propose the same
+    revision; revise substantively from new evidence or drop it
+parameters:
+  - name: program
+    required: true
+    param_type: string
+    description: Existing program document file name in this scope (e.g. positioning.md). Never creates a new document.
+  - name: content
+    required: true
+    param_type: string
+    description: The FULL revised document (markdown). Replaces the whole document on approval.
+  - name: base_sha256
+    required: true
+    param_type: string
+    description: The sha256 shown for this document in the cycle context (full hex, or the 12-character prefix shown for shared documents).
+  - name: rationale
+    required: true
+    param_type: string
+    description: One short paragraph shown on the owner's approval card — what changed and why.
+  - name: evidence
+    required: false
+    param_type: array
+    description: Up to 10 links, task ids or short notes supporting the revision.
+    schema:
+      type: array
+      maxItems: 10
+      items:
+        type: string
+implementation:
+  type: compiled
+  provider_name: propose_program_revision
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 20
+  categories:
+    - harness

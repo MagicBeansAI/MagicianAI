@@ -4,6 +4,18 @@ All notable changes to `magician-mcp-client` are documented here.
 
 ## [Unreleased]
 
+- 0.1.26: Support public catalog schemas and JSON-null acknowledgments, classify initialization failures, and bind short-lived artifacts to opaque session fingerprints.
+
+- Upgrade the official MCP SDK to 3.7.0, including current OAuth discovery and legacy-server compatibility fixes.
+
+### 2026-10-24 — 0.1.25
+
+- The request-timeout ceiling rises to the manifest maximum (24 h); packs that declare no timeout keep 60 s.
+
+### 2026-10-23 — 0.1.24
+
+- `call_tool_reporting_dispatch` reports whether a request was sent; `ToolCallError::{NotSent, Unknown}` lets callers retry only calls that never reached the server.
+
 ### 2026-10-04 — 0.1.23
 
 - Retry legacy Streamable HTTP initialization on a separately bounded transport.
@@ -27,30 +39,6 @@ All notable changes to `magician-mcp-client` are documented here.
 ### Changed
 
 - **Removed:** Swiggy and Zepto routing now uses one provider-neutral executor on the official SDK; the handwritten Node transport is retired.
-
-## [0.1.20] - 2026-08-07
-
-### Fixed
-
-- OAuth callback completion and cancellation can no longer race other mutations on the same binding.
-- A client rejected for capacity closes its connected service first.
-- Remote-task accounting failures release their notification hint; duplicate-tool diagnostics no longer include provider-controlled names.
-
-### Changed
-
-- **Breaking:** OAuth vaults no longer need a namespace-listing (scan) primitive.
-
-## [0.1.19] - 2026-08-07
-
-### Fixed
-
-- OAuth state uses fixed per-binding slots, so a malformed record for another profile cannot poison the selected binding.
-- Successful token exchanges are no longer reported as failures when pending-record cleanup is briefly unavailable.
-- Stdio transports kill and reap the server's whole process group on close.
-
-### Security
-
-- Continuation clients share a process-wide 512 MiB / 512-entry budget; the per-client default is 64 MiB.
 
 ---
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Magican",
-  "version": "0.2.11",
-  "description": "Take control of browser with Magican",
+  "version": "0.2.17",
+  "description": "Your browser tasks, done by Magican",
   "permissions": [
     "tabs",
     "windows",
@@ -15,7 +15,8 @@
     "storage",
     "alarms",
     "sidePanel",
-    "contextMenus"
+    "contextMenus",
+    "tabGroups"
   ],
   "host_permissions": [
     "<all_urls>"

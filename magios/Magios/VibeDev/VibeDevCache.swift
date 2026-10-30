@@ -1,17 +1,18 @@
 import CryptoKit
 import Foundation
 
-/// The last Now / Projects data and each run's turns, as JSON in the Caches
+/// The last history page, project data and each run's turns, as JSON in the Caches
 /// directory, so a cold start without a network shows the last data under
 /// "Updated N min ago". One folder per paired machine and, inside it, per
 /// principal and workspace, so neither a machine switch nor a re-pair as
 /// someone else shows another account's runs. Forgetting a machine removes
 /// its folder. Best effort: a missing or unreadable file is just no cache.
 struct VibeDevCache {
-    /// What Now and Projects show.
+    /// The last good home read; history is optional for older cache files.
     struct NowSnapshot: Codable, Equatable {
         let live: VibeDevLiveRunsResponse
         let projects: [VibeDevProject]
+        var history: VibeDevRunHistory? = nil
     }
 
     private struct Envelope<Value: Codable>: Codable {

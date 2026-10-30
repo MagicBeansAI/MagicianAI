@@ -130,7 +130,10 @@ pub fn parse_cases(jsonl: &str) -> Result<Vec<EvalCase>, String> {
 impl EvalCase {
     /// The current owner turn: the last user turn.
     fn current_turn(&self) -> Option<&CaseTurn> {
-        self.conversation.iter().rev().find(|turn| turn.role == "user")
+        self.conversation
+            .iter()
+            .rev()
+            .find(|turn| turn.role == "user")
     }
 
     /// Span ids a `cancel` or `acknowledged_exception` may cite.
@@ -210,18 +213,17 @@ impl EvalCase {
         // Ground an intervention the way a careful judge would: in what the
         // case says must be cited, or, when it names nothing, in every
         // eligible intention it does not rule out.
-        let mut supporting_intentions = if !outcome.must_cite.is_empty()
-            || intervention == Intervention::None
-        {
-            outcome.must_cite.clone()
-        } else {
-            self.to_alignment_input()
-                .intentions
-                .into_iter()
-                .map(|intention| intention.id)
-                .filter(|id| !outcome.must_not_cite.contains(id))
-                .collect()
-        };
+        let mut supporting_intentions =
+            if !outcome.must_cite.is_empty() || intervention == Intervention::None {
+                outcome.must_cite.clone()
+            } else {
+                self.to_alignment_input()
+                    .intentions
+                    .into_iter()
+                    .map(|intention| intention.id)
+                    .filter(|id| !outcome.must_not_cite.contains(id))
+                    .collect()
+            };
         // A careful judge rests a wait on what the case says it may rest on,
         // otherwise on the cited intentions that may hold, otherwise on all
         // it cites. Decided before a remember offer joins the citations: an
@@ -410,7 +412,12 @@ mod tests {
             let mut ids: Vec<&str> = input.intentions.iter().map(|i| i.id.as_str()).collect();
             ids.sort();
             ids.dedup();
-            assert_eq!(ids.len(), input.intentions.len(), "{}: duplicate ids", case.id);
+            assert_eq!(
+                ids.len(),
+                input.intentions.len(),
+                "{}: duplicate ids",
+                case.id
+            );
             assert_eq!(input.action.is_some(), case.action.is_some(), "{}", case.id);
         }
     }

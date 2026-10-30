@@ -357,13 +357,21 @@ fn offered_index_entry(entry: &ToolIndexEntry) -> Option<(String, Value)> {
     }
 }
 
-fn published_tool_entry(entry: &ToolIndexEntry) -> Option<Value> {
-    let (description, schema) = offered_index_entry(entry)?;
-    Some(json!({
-        "name": entry.name,
+/// MCP clients are model-facing: a canonical schema's top-level whole-call
+/// rules reach them restated in the description, as they reach every provider
+/// (`magicllm::tool_schema`). The canonical schema stays what dispatch validates.
+fn model_facing_entry(name: &str, description: &str, schema: &Value) -> Value {
+    let (description, schema) = magicllm::tool_schema::project_schema(description, schema);
+    json!({
+        "name": name,
         "description": description,
         "inputSchema": schema,
-    }))
+    })
+}
+
+fn published_tool_entry(entry: &ToolIndexEntry) -> Option<Value> {
+    let (description, schema) = offered_index_entry(entry)?;
+    Some(model_facing_entry(&entry.name, &description, &schema))
 }
 
 fn mcp_tool_entry(name: &str, index: &ToolIndex) -> Option<Value> {
@@ -386,11 +394,7 @@ fn mcp_tool_entry(name: &str, index: &ToolIndex) -> Option<Value> {
 /// description, and parameter schema, so the swapped mouth sees exactly the
 /// definition the native mouth's dispatcher validates against.
 fn bridged_tool_entry(spec: &LLMToolSpec) -> Value {
-    json!({
-        "name": spec.name,
-        "description": spec.description,
-        "inputSchema": spec.parameters,
-    })
+    model_facing_entry(&spec.name, &spec.description, &spec.parameters)
 }
 
 fn control_tool_description(name: &str) -> &'static str {
@@ -579,13 +583,18 @@ pub async fn plane_tool_search(index: &ToolIndex, grant: &PlaneGrant, arguments:
                     .filter_map(entry_to_match),
             );
         }
-        let text = serde_json::to_string_pretty(&json!({
+        let mut body = json!({
             "status": "ok",
             "mode": "select",
             "query": query,
             "matches": matches,
-        }))
-        .unwrap_or_else(|_| "{\"status\":\"ok\"}".to_string());
+        });
+        add_delegated_owner_hints(
+            &mut body,
+            delegated_owner_hints(grant, selected.iter().map(String::as_str)),
+        );
+        let text = serde_json::to_string_pretty(&body)
+            .unwrap_or_else(|_| "{\"status\":\"ok\"}".to_string());
         return json!({
             "isError": false,
             "content": [{"type": "text", "text": text}],
@@ -607,18 +616,80 @@ pub async fn plane_tool_search(index: &ToolIndex, grant: &PlaneGrant, arguments:
         .take(12)
         .filter_map(entry_to_match)
         .collect();
-    let text = serde_json::to_string_pretty(&json!({
+    let mut body = json!({
         "status": "ok",
         "mode": "search",
         "query": query,
         "matches": matches,
-    }))
-    .unwrap_or_else(|_| "{\"status\":\"ok\"}".to_string());
+    });
+    let terms: Vec<String> = query
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| term.len() >= 3)
+        .collect();
+    let target_tools: Vec<String> = grant
+        .ctx
+        .delegation_targets
+        .iter()
+        .flat_map(|target| target.tools.iter().cloned())
+        .filter(|tool| {
+            let tool = tool.to_ascii_lowercase();
+            terms.iter().any(|term| tool.contains(term.as_str()))
+        })
+        .collect();
+    add_delegated_owner_hints(
+        &mut body,
+        delegated_owner_hints(grant, target_tools.iter().map(String::as_str))
+            .into_iter()
+            .take(5)
+            .collect(),
+    );
+    let text =
+        serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{\"status\":\"ok\"}".to_string());
     json!({
         "isError": false,
         "content": [{"type": "text", "text": text}],
         "_meta": {"toolsListChanged": false},
     })
+}
+
+/// Tools this grant may not call that one of its delegation targets owns.
+/// Named in a search result so a lead learns the route instead of reading
+/// "nothing found" (the native prompt shows the same through its target
+/// roster). Grants nothing: the tool stays off this grant's catalog.
+fn delegated_owner_hints<'a>(
+    grant: &PlaneGrant,
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<Value> {
+    let mut seen = BTreeSet::new();
+    let mut hints = Vec::new();
+    for name in names {
+        if grant.permits(name) || !seen.insert(name.to_string()) {
+            continue;
+        }
+        let owners: Vec<&str> = grant
+            .ctx
+            .delegation_targets
+            .iter()
+            .filter(|target| target.tools.iter().any(|tool| tool == name))
+            .map(|target| target.agent_id.as_str())
+            .collect();
+        if !owners.is_empty() {
+            hints.push(json!({"name": name, "owned_by": owners, "route": "delegate_to_agent"}));
+        }
+    }
+    hints
+}
+
+fn add_delegated_owner_hints(body: &mut Value, hints: Vec<Value>) {
+    if hints.is_empty() {
+        return;
+    }
+    body["owned_by_other_agents"] = Value::Array(hints);
+    body["note"] = json!(
+        "These tools belong to other agents. Hand them the work with delegate_to_agent; \
+         they cannot be called from here."
+    );
 }
 
 fn expand_selected_packs(
@@ -732,6 +803,45 @@ fn test_profile_grant_with_index(profile: PlaneCatalogProfile, names: &[&str]) -
 mod tests {
     use super::*;
 
+    /// Every embedded pack, as an MCP client or a provider receives it, has a
+    /// plain object root. Anthropic, OpenAI Chat Completions and xAI fail the
+    /// whole request on a root `anyOf`/`oneOf`/`allOf`/`not` (2026-10-30, the
+    /// `shell` / `content_*` whole-call constraints).
+    #[test]
+    fn every_embedded_pack_reaches_models_with_a_plain_object_root() {
+        const ROOT_KEYS: [&str; 4] = ["type", "properties", "required", "additionalProperties"];
+        let index = embedded_compiled_tool_index();
+        let mut checked = 0;
+        for def in
+            crate::magician_v2::execution::compiled_providers::embedded_compiled_pack_defs_ref()
+        {
+            let registry = def.to_tool_definition();
+            let mut roots = vec![(
+                format!("{} registry", def.name),
+                magicllm::tool_schema::project_schema(
+                    &registry.description,
+                    &registry.input_schema,
+                )
+                .1
+                .into_owned(),
+            )];
+            if let Some(entry) = index.get(&def.name).and_then(published_tool_entry) {
+                roots.push((format!("{} mcp", def.name), entry["inputSchema"].clone()));
+            }
+            for (label, schema) in roots {
+                assert_eq!(schema["type"], "object", "{label}");
+                for key in schema.as_object().unwrap().keys() {
+                    assert!(
+                        ROOT_KEYS.contains(&key.as_str()),
+                        "{label}: root key `{key}` reaches models"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "only {checked} pack schemas checked");
+    }
+
     #[test]
     fn withheld_hot_tool_publishes_the_embedded_pack_schema() {
         let empty = ToolIndex::from_entries(Vec::new());
@@ -739,8 +849,12 @@ mod tests {
         let canonical = embedded_compiled_tool_index()
             .get("inspect_agent")
             .expect("inspect_agent pack");
-        assert_eq!(tool["inputSchema"], canonical.parameters_schema);
-        assert_eq!(tool["description"], canonical.description);
+        let (description, schema) = magicllm::tool_schema::project_schema(
+            &canonical.description,
+            &canonical.parameters_schema,
+        );
+        assert_eq!(&tool["inputSchema"], schema.as_ref());
+        assert_eq!(tool["description"], description.as_ref());
         assert!(tool["inputSchema"]["required"]
             .as_array()
             .unwrap()
@@ -1110,13 +1224,19 @@ mod tests {
         ];
         assert!(engineer.permits("run_coding_task"));
         assert!(advertised_names(&engineer).contains(&"run_coding_task".to_string()));
-        assert!(!engineer.permits("apply_code_proposal"), "only run_coding_task is lifted");
+        assert!(
+            !engineer.permits("apply_code_proposal"),
+            "only run_coding_task is lifted"
+        );
         assert!(!engineer.permits("shell"));
 
         // A coordinator that only inherits the tool from its engineers keeps the floor.
         let mut coordinator = test_spawned_bare_grant_with_index(&names);
         coordinator.live_harness_turn = true;
-        coordinator.ctx.merged_agent_tools = vec![owned_tool("run_coding_task", Some("junior-software-engineer"))];
+        coordinator.ctx.merged_agent_tools = vec![owned_tool(
+            "run_coding_task",
+            Some("junior-software-engineer"),
+        )];
         assert!(!coordinator.permits("run_coding_task"));
 
         // A terminal, or a grant outside a live harness turn, keeps it too.
@@ -1176,6 +1296,55 @@ mod tests {
         assert_eq!(result["isError"], json!(false));
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("duckdb__query"), "{text}");
+    }
+
+    /// A lead searching for a tool its engineer owns is told who owns it and
+    /// how to reach them, and still cannot call it.
+    #[tokio::test]
+    async fn tool_search_names_the_target_that_owns_a_floored_tool() {
+        let names = ["read_file", "run_coding_task"];
+        let index = test_index_with(&names);
+        let mut lead = test_spawned_bare_grant_with_index(&names);
+        lead.live_harness_turn = true;
+        lead.ctx.merged_agent_tools = vec![owned_tool(
+            "run_coding_task",
+            Some("junior-software-engineer"),
+        )];
+        lead.ctx.delegation_targets = vec![
+            crate::magician_v2::execution::agentic::delegation_dispatch::DelegationTarget {
+                agent_id: "junior-software-engineer".to_string(),
+                name: "Junior".to_string(),
+                aliases: Vec::new(),
+                description: "codes".to_string(),
+                tools: vec!["run_coding_task".to_string()],
+                allowed_invocation_surfaces: Vec::new(),
+            },
+        ];
+
+        for query in ["select:run_coding_task", "coding_task"] {
+            let result = plane_tool_search(&index, &lead, &json!({"query": query})).await;
+            let body: Value =
+                serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                body["owned_by_other_agents"],
+                json!([{"name": "run_coding_task", "owned_by": ["junior-software-engineer"], "route": "delegate_to_agent"}]),
+                "{query}: {body}"
+            );
+            assert!(
+                !body["matches"].to_string().contains("run_coding_task"),
+                "{query}: {body}"
+            );
+        }
+        assert!(!lead.permits("run_coding_task"));
+
+        // No target owns it: nothing to point at.
+        lead.ctx.delegation_targets.clear();
+        let result =
+            plane_tool_search(&index, &lead, &json!({"query": "select:run_coding_task"})).await;
+        assert!(!result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("owned_by"));
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 agent_id: architect
-version: 3
+version: 4
 name: Mason
 aliases:
 - mason
@@ -387,7 +387,7 @@ notification_rules:
   message: Architect task failed — review design constraints
 retention: null
 llm_routing:
-  coding_profile: coding-premium
+  coding_profile: pi/model/openai/gpt-6.1-sol/high
 strategy: null
 state_machines: {}
 is_primary: false

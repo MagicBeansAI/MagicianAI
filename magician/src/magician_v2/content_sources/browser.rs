@@ -348,6 +348,14 @@ impl BrowserContentReader {
         }
         .await;
         let cleanup = owned.shutdown().await;
+        let session_outcome = if cleanup.is_ok() {
+            "closed"
+        } else {
+            "cleanup_failed"
+        };
+        if let Err(error) = &cleanup {
+            tracing::warn!(session_id, %error, "Browser extraction cleanup pending retry");
+        }
         let actual_engine = if self.mode.is_identity_bearing() {
             "magicutor_cdp".to_string()
         } else {
@@ -357,7 +365,8 @@ impl BrowserContentReader {
                 .unwrap_or_else(|| "bundled_chrome".to_string())
         };
         let (title, text, canonical_url, render_ms, extract_ms) = match (extraction, cleanup) {
-            (Ok(extraction), Ok(())) => extraction,
+            // Teardown debt must not discard a successfully gathered document.
+            (Ok(extraction), _) => extraction,
             (outcome, cleanup) => {
                 let message = match (outcome.as_ref().err(), cleanup.as_ref().err()) {
                     (Some(error), Some(cleanup)) => {
@@ -401,7 +410,7 @@ impl BrowserContentReader {
             META_BROWSER_SESSION_FINGERPRINT.into(),
             json!(session_fingerprint),
         );
-        metadata.insert(META_SESSION_OUTCOME.into(), json!("closed"));
+        metadata.insert(META_SESSION_OUTCOME.into(), json!(session_outcome));
         metadata.insert(META_RENDER_MS.into(), json!(render_ms));
         metadata.insert(META_EXTRACT_MS.into(), json!(extract_ms));
         metadata.insert("rendered".into(), Value::Bool(true));
@@ -1323,6 +1332,34 @@ exit 0"#;
     }
 
     #[tokio::test]
+    async fn cleanup_failure_keeps_the_gathered_document_and_records_the_debt() {
+        let temp = tempfile::tempdir().unwrap();
+        let commands = "case \"$*\" in\n  *\"get title\"*) echo 'Gathered title' ;;\n  *\"get url\"*) echo 'https://example.test/rendered' ;;\n  *\"get text body\"*) echo 'Gathered useful content' ;;\n  *\" close\"*) exit 9 ;;\nesac\nexit 0";
+        let (cli, _) = fake_cli_with_commands(&temp, commands);
+        let reader = BrowserContentReader::public_headless(
+            BrowserRetrievalSettings {
+                render_wait_ms: 1,
+                engine: None,
+                ..Default::default()
+            },
+            cli,
+            temp.path().to_path_buf(),
+            "owner",
+            "default",
+            Arc::new(RetrievalRuntimeState::default()),
+        )
+        .without_dns_resolution_for_test();
+        let document = super::super::ContentReader::read(&reader, &read_request())
+            .await
+            .unwrap();
+        assert!(document.text.contains("Gathered useful content"));
+        assert_eq!(
+            document.metadata[META_SESSION_OUTCOME],
+            json!("cleanup_failed")
+        );
+    }
+
+    #[tokio::test]
     async fn handoff_adapter_returns_typed_nonexecuting_transfer() {
         let state = Arc::new(RetrievalRuntimeState::default());
         let adapter = BrowserHandoffAdapter::public_discovery(60, Arc::clone(&state));
@@ -1466,6 +1503,18 @@ exit 0"#;
     #[tokio::test]
     async fn authenticated_reader_is_private_domain_bound_and_disconnects_without_closing_browser()
     {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(json!({"cleared": true})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cdp_url = format!(
+            "{}/devtools/browser/magicutor-proxy",
+            server.uri().replacen("http:", "ws:", 1)
+        );
         let temp = tempfile::tempdir().unwrap();
         let (cli, log) = fake_cli(&temp);
         let state = Arc::new(RetrievalRuntimeState::default());
@@ -1483,6 +1532,7 @@ exit 0"#;
         let reader = BrowserContentReader::authenticated_cdp(
             BrowserRetrievalSettings {
                 render_wait_ms: 1,
+                cdp_url,
                 ..BrowserRetrievalSettings::default()
             },
             cli,
@@ -1503,7 +1553,15 @@ exit 0"#;
             json!("magicutor_cdp")
         );
         let calls = fs::read_to_string(log).unwrap();
-        assert!(calls.contains(" connect ws://127.0.0.1:3003/devtools/browser/retrieval-"));
+        assert!(calls.contains(&format!(
+            " connect {}/devtools/browser/retrieval-",
+            server.uri().replacen("http:", "ws:", 1)
+        )));
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests[0]
+            .url
+            .path()
+            .starts_with("/cdp/threads/retrieval-"));
         assert!(calls
             .lines()
             .any(|line| line.ends_with(" close --keep-browser")));

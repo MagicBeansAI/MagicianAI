@@ -182,6 +182,9 @@ pub struct ProposalSummary {
     /// `decision_claim.is_some()` — a terminal transition already in flight.
     pub decision_claimed: bool,
     pub file_count: usize,
+    /// The execution that staged it (a delegated child's id for a child's
+    /// diff), so Attention can answer the review on the run that waits.
+    pub execution_id: Option<String>,
 }
 
 impl From<&CodeChangeProposal> for ProposalSummary {
@@ -192,6 +195,7 @@ impl From<&CodeChangeProposal> for ProposalSummary {
             status: proposal.status,
             decision_claimed: proposal.decision_claim.is_some(),
             file_count: proposal.files.len(),
+            execution_id: proposal.execution_id.clone(),
         }
     }
 }

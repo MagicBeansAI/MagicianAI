@@ -280,7 +280,7 @@ pub async fn start_component_install_handler(
     if let Some(reason) = component.unsupported_on(&magician_components::probe::detect_host()) {
         return HttpResponse::UnprocessableEntity().json(serde_json::json!({"message": reason}));
     }
-    let InstallAction::Make { target, script } = &component.install else {
+    let InstallAction::Make { target, script, .. } = &component.install else {
         return HttpResponse::UnprocessableEntity().json(serde_json::json!({
             "message": "this component does not have an automatic installer action"
         }));

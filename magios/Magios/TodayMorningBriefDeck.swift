@@ -1,9 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// What a deck card commit asks the page to do.
+/// What a deck card commit asks the page to do. `snooze` (follow-up) and
+/// `open` (worth: mark useful + open the source) come from the Act menu.
 enum TodayDeckAction: Equatable {
-    case useful, acknowledge, dismiss, primary
+    case useful, acknowledge, dismiss, snooze, open
 }
 
 /// The Reading Room's "Morning Brief" — a Bumble-style swipe deck over the
@@ -12,16 +13,29 @@ enum TodayDeckAction: Equatable {
 /// Drag the top card: right past 95pt = Useful, left = Dismiss; a flick
 /// whose predicted end crosses the threshold also commits. The card claims
 /// ONLY horizontal drags — a vertical drag that starts on it scrolls the page
-/// and never triages; Seen (acknowledge) is the button. A plain tap opens the existing rich detail sheet — reply/compose,
-/// dismiss reasons, writing style and resurfacing actions all live there.
+/// and never triages; Seen (acknowledge) is the button. A plain tap (or the
+/// footer's "Details ›") opens the existing rich detail sheet. ⚡ Act opens a
+/// menu of the card's real actions (`TodayDeckCard.actEntries`): snooze and
+/// Open commit like a swipe; the rest hand off to `onAct` / `onOpen` and
+/// leave the card on top.
 /// Triage is optimistic through the view model; a failed action reports back
 /// through `onAction`'s completion and the card returns to the stack.
 struct TodayMorningBriefDeck: View {
     let cards: [TodayDeckCard]
     let isLoadingMore: Bool
-    let onNeedMore: () -> Void
+    var forYouLoading = false
+    var worthLoading = false
+    var followUpTotal = 0
+    var worthTotal = 0
+    var hasMoreForYou = false
+    var hasMoreWorth = false
+    var pageRevision = 0
+    var loadErrors: [String: String] = [:]
+    let onNeedMore: (TodayDeckTab) -> Void
     let onAction: (TodayDeckCard, TodayDeckAction, @escaping (Bool) -> Void) -> Void
     let onOpen: (TodayDeckCard) -> Void
+    /// Act-menu entries that neither resolve the card nor open Details.
+    let onAct: (TodayDeckCard, TodayDeckActEntry) -> Void
     let onOpenBroadsheet: () -> Void
 
     @State private var tab = TodayDeckTab.all
@@ -40,6 +54,7 @@ struct TodayMorningBriefDeck: View {
     @State private var flying: TodayDeckAction?
     @State private var fading = false
     @ObservedObject private var theme = ThemeManager.shared
+    @ObservedObject private var primaryAgent = PrimaryAgentSiriAdvertiser.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let cardHeight: CGFloat = 300
@@ -61,17 +76,41 @@ struct TodayMorningBriefDeck: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             tabs
+            Text(initialLoading ? "Loading Reading Room…" : "\(stack.count) loaded · \(max(stack.count, total(in: tab))) total")
+                .font(.themed(11)).foregroundColor(theme.secondaryTextColor)
             stage
             if let top = stack.first {
                 controls(top)
             }
         }
-        .onChange(of: remaining.count) { _, count in requestMoreIfLow(count) }
-        .onAppear { requestMoreIfLow(remaining.count) }
+        .onChange(of: stack.count) { _, _ in requestMoreIfLow() }
+        .onChange(of: tab) { _, _ in requestMoreIfLow() }
+        .onChange(of: initialLoading) { _, loading in if !loading { requestMoreIfLow() } }
+        .onChange(of: pageRevision) { _, _ in requestMoreIfLow() }
+        .onChange(of: isLoadingMore) { _, loading in if !loading { requestMoreIfLow() } }
+        .onAppear { requestMoreIfLow() }
     }
 
-    private func requestMoreIfLow(_ count: Int) {
-        if count <= 2 { onNeedMore() }
+    private var initialLoading: Bool {
+        (tab != .worth && forYouLoading) || (tab != .forYou && worthLoading)
+    }
+    private var hasMore: Bool {
+        switch tab {
+        case .all: return hasMoreForYou || hasMoreWorth
+        case .forYou: return hasMoreForYou
+        case .worth: return hasMoreWorth
+        }
+    }
+    private var loadError: String? {
+        if tab != .worth, let error = loadErrors["message_followups"] { return error }
+        if tab != .forYou, let error = loadErrors["worth_a_look"] { return error }
+        return nil
+    }
+    private func total(in tab: TodayDeckTab) -> Int {
+        switch tab { case .all: return followUpTotal + worthTotal; case .forYou: return followUpTotal; case .worth: return worthTotal }
+    }
+    private func requestMoreIfLow() {
+        if !initialLoading && !isLoadingMore && loadError == nil && hasMore && stack.count <= 4 { onNeedMore(tab) }
     }
 
     // MARK: Tabs
@@ -79,7 +118,7 @@ struct TodayMorningBriefDeck: View {
     private var tabs: some View {
         HStack(spacing: 6) {
             ForEach(TodayDeckTab.allCases) { option in
-                let count = TodayMorningEdition.deckCards(remaining, in: option).count
+                let count = max(total(in: option), TodayMorningEdition.deckCards(remaining, in: option).count)
                 Button {
                     guard tab != option else { return }
                     tab = option
@@ -87,7 +126,7 @@ struct TodayMorningBriefDeck: View {
                 } label: {
                     HStack(spacing: 5) {
                         Text(option.title).font(.themed(12, weight: .semibold)).lineLimit(1)
-                        if count > 0 {
+                        if count > 0 && !initialLoading {
                             Text("\(count)")
                                 .font(.themedMono(10, weight: .bold))
                                 .foregroundColor(tab == option ? theme.onAccentColor : theme.accentColor)
@@ -115,9 +154,18 @@ struct TodayMorningBriefDeck: View {
 
     @ViewBuilder private var stage: some View {
         let current = stack
-        if current.isEmpty {
-            emptyState
-        } else {
+        if current.isEmpty && (initialLoading || isLoadingMore) {
+            VStack(spacing: 12) {
+                ProgressView().tint(theme.accentColor)
+                Text(initialLoading ? "Loading Reading Room…" : "Loading more cards…").font(.themed(13)).foregroundColor(theme.secondaryTextColor)
+            }.frame(maxWidth: .infinity).frame(height: Self.cardHeight + 24)
+        } else if current.isEmpty && (hasMore || loadError != nil) {
+            VStack(spacing: 12) {
+                Text(loadError ?? "More cards are available.").font(.themed(13)).foregroundColor(theme.secondaryTextColor)
+                Button("Load more cards") { onNeedMore(tab) }.buttonStyle(.bordered)
+            }.frame(maxWidth: .infinity).frame(height: Self.cardHeight + 24)
+        } else if current.isEmpty { emptyState }
+        else {
             ZStack(alignment: .top) {
                 if current.count > 2 { preview(current[2], depth: 2) }
                 if current.count > 1 { preview(current[1], depth: 1) }
@@ -169,24 +217,39 @@ struct TodayMorningBriefDeck: View {
                         .lineLimit(1)
                 }
             }
+            if let dateline = card.dateline {
+                Text(dateline).font(.themed(11)).foregroundColor(theme.secondaryTextColor)
+            }
             Text(card.title)
                 .font(TodayNewsprint.serif(23, weight: .semibold))
                 .foregroundColor(theme.textColor)
-                .lineLimit(4)
+                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
             Text(card.summary)
                 .font(.themed(14))
                 .foregroundColor(theme.secondaryTextColor)
-                .lineLimit(7)
+                .lineLimit(3)
             Spacer(minLength: 0)
-            if case .followUp(let item) = card.source, let raw = item.openURL, let url = URL(string: raw) {
-                Button { UIApplication.shared.open(url) } label: {
-                    Text("View thread in \(item.provider.isEmpty ? "app" : item.provider) \u{2197}\u{FE0E}")
+            HStack(spacing: 8) {
+                if case .followUp(let item) = card.source, let raw = item.openURL, let url = URL(string: raw) {
+                    Button { UIApplication.shared.open(url) } label: {
+                        Text("View thread in \(TodayMorningEdition.providerDisplayName(item.provider)) \u{2197}\u{FE0E}")
+                            .font(.themed(12, weight: .semibold))
+                            .foregroundColor(theme.accentColor)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("today-deck-open-thread")
+                }
+                Spacer(minLength: 4)
+                // Discoverable twin of the plain card tap.
+                Button { if flying == nil { onOpen(card) } } label: {
+                    Text("Details \u{203A}")
                         .font(.themed(12, weight: .semibold))
-                        .foregroundColor(theme.accentColor)
+                        .foregroundColor(theme.secondaryTextColor)
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("today-deck-open-thread")
+                .accessibilityIdentifier("today-deck-details")
             }
         }
         .padding(18)
@@ -316,9 +379,9 @@ struct TodayMorningBriefDeck: View {
                 fading = true
             } else {
                 switch action {
-                case .useful, .primary: drag = CGSize(width: width, height: drag.height * 0.5)
+                case .useful, .open: drag = CGSize(width: width, height: drag.height * 0.5)
                 case .dismiss: drag = CGSize(width: -width, height: drag.height * 0.5)
-                case .acknowledge: drag = CGSize(width: drag.width * 0.4, height: -450)
+                case .acknowledge, .snooze: drag = CGSize(width: drag.width * 0.4, height: -450)
                 }
             }
         }
@@ -345,8 +408,11 @@ struct TodayMorningBriefDeck: View {
             deckButton("Dismiss", systemImage: "xmark", tint: theme.dangerColor, id: "dismiss") { commit(card, .dismiss) }
             deckButton("Seen", systemImage: "eye", tint: theme.infoColor, id: "seen") { commit(card, .acknowledge) }
             deckButton("Useful", systemImage: "checkmark", tint: theme.successColor, id: "useful") { commit(card, .useful) }
-            Button { commit(card, .primary) } label: {
-                Label(card.primaryLabel, systemImage: "bolt.fill")
+            Menu {
+                TodayActMenuItems(entries: card.actEntries, agentName: agentName,
+                                  identifierPrefix: "today-deck-act") { act(card, $0) }
+            } label: {
+                Label("Act", systemImage: "bolt.fill")
                     .font(.themed(12, weight: .bold))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity).frame(height: 40)
@@ -354,10 +420,28 @@ struct TodayMorningBriefDeck: View {
                     .background(theme.accentFillColor)
                     .clipShape(RoundedRectangle(cornerRadius: 9))
             }
+            .menuOrder(.fixed)
             .buttonStyle(.plain)
-            .accessibilityIdentifier("today-deck-primary")
+            .accessibilityLabel("Act")
+            .accessibilityHint("Shows this card's actions.")
+            .accessibilityIdentifier("today-deck-act")
         }
         .disabled(flying != nil)
+    }
+
+    private var agentName: String { primaryAgent.preferredName ?? MagicianAccess.productName }
+
+    /// Resolving entries fly the card out through `commit` (rollback on
+    /// failure); Details and the rest keep the card on top of the stack.
+    private func act(_ card: TodayDeckCard, _ entry: TodayDeckActEntry) {
+        guard flying == nil else { return }
+        if let action = entry.resolvingAction {
+            commit(card, action)
+        } else if entry == .details {
+            onOpen(card)
+        } else {
+            onAct(card, entry)
+        }
     }
 
     private func deckButton(_ title: String, systemImage: String, tint: Color, id: String,
@@ -423,5 +507,25 @@ struct TodayMorningBriefDeck: View {
 
     private func categoryColor(_ card: TodayDeckCard) -> Color {
         card.isForYou ? theme.accentColor : theme.discoveryColor
+    }
+}
+
+/// The ⚡ Act menu's items, shared by the deck and the broadsheet rows so
+/// both list the same entries with the same labels and identifiers
+/// (`<prefix>-<entry id>`).
+struct TodayActMenuItems: View {
+    let entries: [TodayDeckActEntry]
+    let agentName: String
+    let identifierPrefix: String
+    let onSelect: (TodayDeckActEntry) -> Void
+
+    var body: some View {
+        ForEach(entries) { entry in
+            if entry == .details { Divider() }
+            Button { onSelect(entry) } label: {
+                Label(entry.label(agentName: agentName), systemImage: entry.systemImage)
+            }
+            .accessibilityIdentifier("\(identifierPrefix)-\(entry.id)")
+        }
     }
 }

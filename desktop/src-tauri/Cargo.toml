@@ -1,6 +1,6 @@
 [package]
 name = "magician-desktop"
-version = "0.3.24"
+version = "0.3.29"
 edition = "2021"
 description = "Magican Desktop - system tray app for managing containerized Magician"
 license = "MIT OR Apache-2.0"
@@ -53,7 +53,7 @@ hound = "3"
 # the desktop README / wake-word plan for the model + lib setup.
 vosk = { version = "0.3", optional = true }
 futures-util = "0.3"
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 keepawake = "0.6.0"
 flate2 = "1"
 tar = "0.4"

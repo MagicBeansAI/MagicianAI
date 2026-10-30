@@ -42,25 +42,24 @@ export function manifestoText(blocks: readonly ManifestoBlock[]): string {
 export const MANIFESTO_EXCERPT: readonly ManifestoBlock[] = [
 	{
 		kind: 'prose',
-		text: 'It is your responsibility to help yourself in building the life you desire.'
+		text: 'It is your responsibility to build the life you desire.'
 	},
 	{
 		kind: 'prose',
-		text: 'You need to discover your own way, keep your self-confidence and make opportunities for yourself. You must stay closely informed about your work, keep your promises and be there for the people who matter.'
+		text: 'You have to find your own way, hold onto your self-confidence, and create your own opportunities. Your company will adapt, automate, reorganise, and move on. It is under no obligation to keep you relevant. **It is you who must.**'
+	},
+	{
+		kind: 'prose',
+		text: 'And in the day-to-day work that keeps you ahead, everything hinges on timing:'
 	},
 	{
 		kind: 'verse',
 		lines: [
-			'Everything at work depends on timing.',
-			'The insight given at the right time.',
-			'The subsequent one which was not overlooked.',
-			'A preparation that no one else had thought to carry out.',
-			'The work was finished while everyone else was still discussing it.'
+			'The insight delivered at the right moment.',
+			"The detail that wasn't overlooked.",
+			'The preparation no one else thought to make.',
+			'The work finished while everyone else was still discussing it.'
 		]
-	},
-	{
-		kind: 'prose',
-		text: '**Personal intelligence should put you in control:** what stays private, where you need more capability, and which model handles each part of the work.'
 	}
 ];
 
@@ -68,34 +67,26 @@ export const MANIFESTO_BODY: readonly ManifestoBlock[] = [
 	...MANIFESTO_EXCERPT,
 	{
 		kind: 'prose',
-		text: 'Your company will adapt, automate, reorganise and move on; it does not have the responsibility of keeping you relevant. **It is you who do.**'
-	},
-	{
-		kind: 'prose',
-		text: 'The situation in life when not at work is no different. People build up their relationships through a multitude of small acts of attention; families depend on someone remembering all the details; and health, money, education, ideas, and ambitions all have to compete for the same limited amount of time.'
+		text: 'Life outside work is no different. Relationships are sustained through thousands of small acts of attention; families depend on someone holding the details together; and health, finances, learning, and ambition all compete for the same finite hours.'
 	},
 	{
 		kind: 'verse',
 		lines: [
-			'It is impossible for a single person to keep all of it in their head.',
-			"Probably they didn't need to."
+			'No single person can keep all of it in their head.',
+			'They were never meant to.'
 		]
 	},
 	{
 		kind: 'prose',
-		text: 'What the computer was meant to do is give us more freedom; instead it provided us with more applications to operate, more notifications to deal with and more systems to keep up to date. We became the machinery that linked our own lives.'
+		text: 'Computers promised us freedom. Instead, they gave us more apps to babysit, more notifications to triage, and more silos to keep in sync. We became the middleware wiring our own lives together.'
 	},
 	{
 		kind: 'prose',
-		text: 'The situation could be reversed. A machine that you can trust is able to recall things that you cannot. It can pick up on the things that are being overlooked, get you ready before it becomes important, carries on when your attention has shifted elsewhere and gently looks after the various tasks around your life.'
+		text: 'It does not have to be this way. A trusted machine can remember what you cannot. It can catch what is slipping through, prepare you before a moment arrives, and quietly carry momentum when your focus is elsewhere.'
 	},
 	{
 		kind: 'prose',
-		text: "Yet it isn't genuinely capable of doing so within a single document, a single inbox, or a single company account."
-	},
-	{
-		kind: 'prose',
-		text: 'You need one intelligence which is able to understand the continuity of your life—whether in regard to work and play, your responsibilities and relationships, your plans and possibilities.'
+		text: 'Yet none of this works trapped inside a single inbox, note app, or corporate account. You need one intelligence that understands the continuity of your life—across work and craft, commitments and relationships, plans and possibilities.'
 	},
 	{
 		kind: 'verse',
@@ -104,48 +95,36 @@ export const MANIFESTO_BODY: readonly ManifestoBlock[] = [
 			'A confidante that remembers.',
 			'A collaborator that prepares.',
 			'A machine capable of acting.',
-			'An intelligence that is more useful to you the more your life progresses.'
+			'An intelligence that becomes more valuable the longer you live.'
 		]
 	},
 	{
 		kind: 'prose',
-		text: 'AI models can already help us do valuable work, but their limits matter. Local models can be useful for focused tasks and private processing. Today, they cannot reliably handle every complex task on the hardware people have. Difficult reasoning, coding, or work across many steps may need a more capable hosted model. We should be honest about that, and about the fact that hosted models can fail too.'
+		text: 'AI models have limits, and we should be honest about them. Small local models give you total privacy and instant response for focused tasks. Difficult reasoning and complex multi-step work still demand frontier cloud models.'
 	},
 	{
 		kind: 'prose',
-		text: 'You should be able to decide where privacy is essential, where performance matters most, how long you can wait, and what you are willing to spend. Those choices belong to you, and they can be different for every operation within the same task.'
-	},
-	{
-		kind: 'prose',
-		text: 'Keep the understanding of your private journal on your machine. Choose a stronger hosted model for a difficult coding step using only the files you allow. Give routine sorting to a smaller model when it does the job well. One personal intelligence should be able to work with different models under your rules.'
-	},
-	{
-		kind: 'prose',
-		text: 'A choice about models is also a choice about who receives your information. You should be able to see which model handles an operation and what context it receives. Approving a hosted model for one step should never mean handing it your whole history. Local processing, shared context, speed, cost, and capability must be choices you can understand and change.'
-	},
-	{
-		kind: 'prose',
-		text: '**Your privacy boundaries must hold when a model falls short.** If the work cannot be completed within them, your AI should say so. It should help you narrow the task or choose another permitted model, and ask before sending information beyond the limits you set. Automatic routing should follow your rules.'
+		text: '**Personal intelligence must put you in control:** you decide what stays on your device, which model touches each step, what context is shared, and what you spend. Your privacy boundaries must hold even when a model falls short. If a task cannot be completed within your rules, your AI stops, explains why, and asks. It never leaks.'
 	},
 	{
 		kind: 'verse',
 		lines: [
-			'Your personal AI should answer to you.',
+			'Your personal AI answers to you.',
 			'**It is yours.**',
-			'You determine what it remembers, what stays private, which model handles each operation, what it is allowed to do and where it must halt.'
+			'You determine what it remembers, what stays private, which model runs, what it can do, and where it must halt.'
 		]
 	},
 	{
 		kind: 'prose',
-		text: 'That is the reason I developed Magican for myself. To build personal intelligence that grows with you, gives you access to the capabilities you need, and keeps the decisions in your hands.'
+		text: 'That is the reason I developed Magican for myself. To build personal intelligence that grows alongside you, unlocks the leverage you need, and keeps every decision firmly in your hands.'
 	},
 	{
 		kind: 'verse',
 		lines: [
-			'So you can make your own path.',
-			'Carry out work that you are proud of.',
-			'Turn up for the people who matter.',
-			'And use more of your life for the things that no one else can do.'
+			'So you can carve your own path.',
+			'Do work you are proud of.',
+			'Show up for the people who matter.',
+			'And spend more of your life on the things only you can do.'
 		]
 	}
 ];

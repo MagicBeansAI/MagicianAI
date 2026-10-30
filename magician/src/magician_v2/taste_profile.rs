@@ -4,7 +4,7 @@
 //! The profile is one markdown note the owner edits in their notes space.
 //! This module only loads and snapshots it; injection happens elsewhere.
 //! Loading goes through the Notes provider boundary — never raw filesystem
-//! paths — so SilverBullet vs local-markdown selection, scope boundaries and
+//! paths — so notes-folder vs fallback-folder selection, scope boundaries and
 //! the provider's own read bounds keep applying.
 //!
 //! Naming is deliberate: this is *taste* (how outputs should read), unrelated

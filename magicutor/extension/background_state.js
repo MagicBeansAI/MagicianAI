@@ -101,8 +101,10 @@ function clearSession(sessionId) {
     const tabs = sessionTabs.get(sessionId);
     if (tabs) {
         for (const tabId of tabs) {
-            tabToSession.delete(tabId);
-            tabOpeners.delete(tabId);
+            if (tabToSession.get(tabId) === sessionId) {
+                tabToSession.delete(tabId);
+                tabOpeners.delete(tabId);
+            }
         }
         console.log(`[SessionTabs] Cleared session ${sessionId} (had ${tabs.size} tabs)`);
     }

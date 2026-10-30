@@ -100,6 +100,16 @@ function deps(
 }
 
 describe('answerTaskAsk', () => {
+	it('does not start a run when an inline Approve & Run was already answered elsewhere', async () => {
+		const post = postSpy(async () => ({ ok: true, alreadyClosed: true }));
+		const prompt = promptSpy(async () => ({ ok: true }));
+		const startPlanRun = vi.fn();
+		const target = clarification({ source: 'plan_approval', input_type: 'confirmation' });
+		const outcome = await answerTaskAsk(target, { kind: 'choice', choiceId: 'approve_run' }, SCOPE,
+			{ ...deps(post, prompt), startPlanRun });
+		expect(outcome).toEqual({ ok: true, alreadyClosed: true });
+		expect(startPlanRun).not.toHaveBeenCalled();
+	});
 	it('posts what the reader typed in the act, without opening a prompt at all', async () => {
 		const post = postSpy(async () => ({ ok: true }) as HitlResolveOutcome);
 		const prompt = promptSpy(async () => ({ ok: true }) as HitlResolveOutcome);

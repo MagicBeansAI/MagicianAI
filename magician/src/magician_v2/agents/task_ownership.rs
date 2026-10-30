@@ -39,7 +39,9 @@ pub fn resolve_created_task_owner_agent_id(
     // Make the override auditable: log when the config lead replaces a DIFFERENT
     // caller-sent agent (today they agree, so this stays silent until an operator
     // changes the lead).
-    if let (true, Some(lead), Some(requested)) = (is_vibedev_build_run, lead.as_deref(), requested_agent_id) {
+    if let (true, Some(lead), Some(requested)) =
+        (is_vibedev_build_run, lead.as_deref(), requested_agent_id)
+    {
         let (lead, requested) = (lead.trim(), requested.trim());
         if !lead.is_empty() && !requested.is_empty() && requested != lead {
             tracing::info!(
@@ -50,7 +52,12 @@ pub fn resolve_created_task_owner_agent_id(
             );
         }
     }
-    choose_owner(lead.as_deref(), is_vibedev_build_run, is_vibedev_run, requested_agent_id)
+    choose_owner(
+        lead.as_deref(),
+        is_vibedev_build_run,
+        is_vibedev_run,
+        requested_agent_id,
+    )
 }
 
 /// The owner rule itself: a build run's lead wins; otherwise the caller's
@@ -63,7 +70,9 @@ fn choose_owner(
     requested_agent_id: Option<&str>,
 ) -> String {
     let lead = lead.map(str::trim).filter(|lead| !lead.is_empty());
-    let requested = requested_agent_id.map(str::trim).filter(|agent| !agent.is_empty());
+    let requested = requested_agent_id
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty());
     let owner = if is_vibedev_build_run {
         lead.or(requested)
     } else if is_vibedev_run {
@@ -81,15 +90,30 @@ mod tests {
     #[test]
     fn a_build_run_is_the_leads_and_a_discuss_run_keeps_the_callers_or_gets_the_lead() {
         // Build: the lead overrides the caller.
-        assert_eq!(choose_owner(Some("cto"), true, true, Some("engineering-manager")), "cto");
-        assert_eq!(choose_owner(None, true, true, Some("engineering-manager")), "engineering-manager");
+        assert_eq!(
+            choose_owner(Some("cto"), true, true, Some("engineering-manager")),
+            "cto"
+        );
+        assert_eq!(
+            choose_owner(None, true, true, Some("engineering-manager")),
+            "engineering-manager"
+        );
         // Discuss: the caller's choice stands; with none, the lead, never the assistant.
-        assert_eq!(choose_owner(Some("cto"), false, true, Some("engineering-manager")), "engineering-manager");
+        assert_eq!(
+            choose_owner(Some("cto"), false, true, Some("engineering-manager")),
+            "engineering-manager"
+        );
         assert_eq!(choose_owner(Some("cto"), false, true, None), "cto");
         assert_eq!(choose_owner(Some("cto"), false, true, Some("  ")), "cto");
         assert_eq!(choose_owner(None, false, true, None), "personal-assistant");
         // Not VibeDev: the caller's, else the assistant; the lead never applies.
-        assert_eq!(choose_owner(Some("cto"), false, false, None), "personal-assistant");
-        assert_eq!(choose_owner(Some("cto"), false, false, Some("researcher")), "researcher");
+        assert_eq!(
+            choose_owner(Some("cto"), false, false, None),
+            "personal-assistant"
+        );
+        assert_eq!(
+            choose_owner(Some("cto"), false, false, Some("researcher")),
+            "researcher"
+        );
     }
 }

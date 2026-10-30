@@ -8,6 +8,7 @@
 		type LocalGenerationModel
 	} from '$lib/stores/localGenerationStore';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
+	import ProcessingModeControl from './ProcessingModeControl.svelte';
 
 	let envelope = $state<LocalGenerationEnvelope | null>(null);
 	let error = $state<string | null>(null);
@@ -131,7 +132,7 @@
 			<p class="overline">Local models</p>
 			<h2 id="local-generation-title">On-device generation</h2>
 			<p>
-				Pick the kitty model every local Ollama profile uses. Switching rewrites
+				Pick the kitty model used by local Ollama assignments. Switching rewrites
 				<code>runtime.ollama.local_generation.selected</code> and reloads Ollama. RAM-tier
 				mismatches warn, then still allow the pin. JSON workers stay <code>think:false</code>.
 			</p>
@@ -162,6 +163,8 @@
 			</button>
 		</div>
 	</div>
+
+	<ProcessingModeControl />
 
 	{#if error}
 		<p class="alert error" role="alert">{error}</p>
@@ -284,6 +287,7 @@
 	code {
 		font-family: var(--font-mono);
 		font-size: 0.84em;
+		overflow-wrap: anywhere;
 	}
 	.actions {
 		display: flex;

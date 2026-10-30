@@ -259,6 +259,19 @@ describe('toInternalTaskPanelModel — absence', () => {
 });
 
 describe('toInternalTaskPanelModel — progress', () => {
+	it('uses current-run work when the internal task-row timestamp lags', () => {
+		const row = internalTask({ status: 'running', last_progress_at: new Date(100_000).toISOString() });
+		const panel = {
+			overview: { execution_id: 'exec-root' },
+			run: { activity_log: [{ created_at: NOW - 1_000, metadata: { event_type: 'tool.succeeded' } }] },
+			debug: {}
+		} as unknown as ExecutionPanelState;
+		const model = toInternalTaskPanelModel(row, details(), NOW, undefined, null, panel);
+		expect(deriveVerdict({ ...model, now: NOW }).state).toBe('running');
+		panel.overview.execution_id = 'historical-run';
+		expect(deriveVerdict({ ...toInternalTaskPanelModel(row, details(), NOW, undefined, null, panel), now: NOW }).state).toBe('stalled');
+	});
+
 	it('reads the progress instant the row carries', () => {
 		const model = toInternalTaskPanelModel(internalTask(), details(), NOW);
 		expect(model.lastProgressAt).toBe(Date.parse(PROGRESS_AT));
@@ -437,6 +450,20 @@ describe('toInternalTaskPanelModel — the Output act', () => {
 			NOW
 		);
 		expect(model.output).toBeNull();
+	});
+
+	it('forwards the synthesis flag so the verdict reads finalizing, not finished', () => {
+		const pending = toInternalTaskPanelModel(
+			internalTask({ synthesis_pending: true }),
+			details({ task: { refs: { outputs: [] } } }),
+			NOW
+		);
+		expect(pending.synthesisPending).toBe(true);
+		expect(deriveVerdict({ ...pending, now: NOW }).state).toBe('finalizing');
+
+		const settled = toInternalTaskPanelModel(internalTask(), details(), NOW);
+		expect(settled.synthesisPending).toBe(false);
+		expect(deriveVerdict({ ...settled, now: NOW }).state).toBe('finished');
 	});
 
 	it('still shows files that already exist while synthesis is running', () => {

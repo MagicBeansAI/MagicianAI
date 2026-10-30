@@ -1,4 +1,8 @@
-# Relentless
+# Quality checks (Relentless)
+
+Open **Work → More → Quality checks** on Web, iOS or Android. The UI uses this
+name; the engine, API routes and task contract fields retain `relentless`. See
+the [Work vocabulary](../unified-ui/unified-work.md#work-vocabulary).
 
 Relentless adds a fixed definition of done and independent artifact review
 around the existing agent harness. It does not choose goals or script the
@@ -26,6 +30,10 @@ defect or a second Veo dispatch). Known limits:
 
 ## Tasks, proposals and policy
 
+Proposal cards offer **Review and start**, opening the exact contract and budget
+for owner admission. A valid budget alone starts no run; dismissing declines the
+proposal, and a retry reports it closed rather than awaiting approval.
+
 A task owns the work; Relentless is an optional review and improvement policy
 on it. The harness enriches context and proposes success criteria before
 admission; independent feedback then guides revisions against them. Material
@@ -41,14 +49,16 @@ snapshots. The originating task and proposing agent stay visible.
 
 ### The proposal tool
 
-`propose_relentless` (compiled; pack version 1.6.0) proposes text, code, research and
+`propose_relentless` (compiled; pack version 1.6.2) proposes text, code, research and
 declared image/video/audio contracts: explicit representations, checks, source
 provenance, sample coverage, media bounds and exact template slots. No use-case
-name selects semantics.
+name selects semantics. Its guide tells agents when to propose (outward,
+high-stakes or goal-counting output; a recurring policy for repeated work) and
+when to skip (internal notes, lookups, state and metric tasks).
 
 - Trusted universal task-management substrate: deny rules remove it, untrusted
   agents never get it implicitly, surface-only agents keep their ceiling.
-- `profiles` reads the qualified non-secret model catalog.
+- `profiles` reads the qualified non-secret model catalog and optional budget suggestions. Omitted or zero Relentless limits mean Unlimited; positive integers cap cost (microdollars), attempts, elapsed seconds or plateau attempts independently. Unlimited is not free; owner admission, usage accounting, cancellation and enclosing policy limits still apply.
 - Checks the scoped agent/task/execution, validates without a model call and
   creates an idempotent owner request via `UserRequestService`. No execution,
   outward or start authority; dismissal or timeout never admits work.
@@ -65,6 +75,15 @@ The owner reviews sources, requirements, models and budget. Admission binds the
 exact proposal and preview contract hash (router or prompt changes invalidate a
 preview) and seals the scoped origin with task ownership. HTTP delegates to
 `magician_v2::relentless_service::RelentlessService`.
+
+The shared model catalog supplies thinking choices. Native provider connections
+declare conservative `model_family` groups for independent review; this local
+metadata never reaches provider payloads. Preview rejects critics known to lack structured JSON output; reviewer pickers on web and mobile exclude those routes. Quality lists only routes with declared
+families, physical context/output/timeout ceilings and current pricing. Generated
+choices may advertise boolean streaming capability, while bounded draft/review
+still uses synchronous invocation and one physical attempt. Opaque paid-feature
+parameters remain ineligible. Preview freezes the chosen model, thinking level,
+family, transport and quote before admission.
 
 ### Attaching a policy to an existing task
 
@@ -84,14 +103,15 @@ outputs, and the root factory creates an idempotent bounded root under it.
 
 The task-manifest `relentless` policy is activated only by the verified owner
 API. It binds reviewed context, proposal and resolved contract to an expiry and
-a finite number of starts; maximum spend is the checked product of run count
-and per-run ceiling.
+a finite number of starts. Finite spend ceilings use the checked product of run
+count and per-run ceiling; an unlimited per-run cost remains Unlimited.
 
 - Manual and scheduled starts share task/root admission. Per-policy counts
   commit atomically with the root and survive restart, retries and revocation.
 - The reducer rechecks at commit: changed intent, model/adapter pins, exhausted
   limits, expiry, unconfigured runtime ownership or unsupported overrides refuse
   dispatch, with no fallback to an ordinary worker.
+- Automatic guidance qualification still requires finite per-trial cost caps within its separately approved aggregate budget.
 - A protected `relentless_launch.json` snapshot and external output owner
   precede the root. The snapshot authorizes nothing; it only recovers its
   committed root/run identity after interrupted admission (changed context,
@@ -102,7 +122,7 @@ and per-run ceiling.
 
 ## Owner workspace and API
 
-The UI is **Work → More → Quality and review** at `/work?view=quality`
+The UI is **Work → More → Quality checks** at `/work?view=quality`
 (`proposal` for a text draft). Stored `/relentless` links are normalized to
 Work in-app; no redirect page remains. Backend notice/report payloads are
 unchanged because durable notice replay needs an exact body per request ID. UI
@@ -438,6 +458,7 @@ the native task harness with its own attempt journal under the task/root;
 direct drafting omits the field. Launch and answer continuation bind the task's
 canonical event scope and scoped audit/credential store; missing audit
 authority stops admission.
+An attempt ending at its call limit can continue into review or revision on the same root; explicit cancellation retains its terminal control fence.
 
 - Tools: local `files`, optional scoped `media_edit`, bounded
   `web_fetch`/`web_search`, in a durable per-operation workspace. The subset
@@ -743,7 +764,8 @@ lessons are immutable; later settled spend is reported separately.
 Before a terminal report or accepted draft is published, `RelentlessService`
 checks figures against the bound execution's tool results
 (`checked_owner_report`, via `check_owner_text` and
-`load_execution_grounding_corpus`), with no second judge call. A figure no tool
+`load_execution_grounding_corpus`, which includes the tool results of the
+executions it delegated to), with no second judge call. A figure no tool
 result contains publishes the markdown under a "Not fully verified" caveat.
 Owner-approved bytes (`owner_approved == Some(true)`) publish exactly, and runs
 without tool evidence are not checked.

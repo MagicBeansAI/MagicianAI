@@ -79,7 +79,7 @@ ends *before* running still records a `harness_cycle_dispatch_outcome`
 | `dropped_paused` | this agent is paused |
 | `dropped_definition_stale` | definition missing or changed since the fire was prepared |
 | `dropped_coalesced` | the agent/goal already has active or queued work |
-| `dropped_duplicate` | this `(agent, goal, trigger_seq)` was already admitted |
+| `dropped_duplicate` | this `(agent, goal, trigger_seq)` was already admitted, or an episode already records it (`stage: before_provision` when decided before a task/execution exists, `dispatch` when an already provisioned execution had to be cancelled) |
 | `dropped_queue_full` | the runtime trigger queue is at capacity |
 | `dropped_provision_failed` | task/execution provisioning failed, or the process-wide scheduled-root capacity was exhausted |
 | `dropped_disabled` | the agent is disabled in the delegation hierarchy |

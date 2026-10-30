@@ -173,10 +173,7 @@ fn clamp_tool_asserted_authority(item: &mut Value) {
         .and_then(Value::as_str)
         .is_some_and(|source| source.eq_ignore_ascii_case("owner_confirmed"))
     {
-        map.insert(
-            "source_type".to_string(),
-            json!("explicit_user_statement"),
-        );
+        map.insert("source_type".to_string(), json!("explicit_user_statement"));
     }
 }
 

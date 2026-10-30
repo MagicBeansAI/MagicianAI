@@ -1,6 +1,6 @@
 name: run_coding_task
 description: Run Pi in a scoped shadow workspace, import its workspace changes as a proposal, and pause for the existing diff-approval HITL flow before any real workspace write.
-version: "1.0.0"
+version: "1.1.0"
 guide: |
   Tool name: `run_coding_task`
 
@@ -13,6 +13,13 @@ guide: |
   code proposal, and returns `status: pending_approval` with a
   `diff_approval` HITL payload when there are changes. The real repo is
   not modified until the operator applies the proposal.
+
+  Plan mode (VibeDev Discuss): pass `plan_only: true`. Pi then only reads
+  the project and writes a plan; nothing is staged, no diff is proposed and
+  the real repo is never touched, so the call is safe in a read-only run.
+  The result carries the plan text. A task tagged `plan` (a Discuss run) is
+  forced into plan mode server-side even without the argument: the `plan`
+  tag is set on the task, never passed here.
 
   `repo_path` is optional and defaults to `.`. Use it when the coding
   request belongs to a VibeDev Project or any known subdirectory. The
@@ -53,6 +60,10 @@ parameters:
     required: false
     param_type: string
     description: Short proposal summary shown in the diff-approval UI.
+  - name: plan_only
+    required: false
+    param_type: boolean
+    description: Plan mode (VibeDev Discuss) - Pi reads the project and returns a plan; nothing is staged or written. Forced on for a task tagged plan.
   - name: coding_profile
     required: false
     param_type: string

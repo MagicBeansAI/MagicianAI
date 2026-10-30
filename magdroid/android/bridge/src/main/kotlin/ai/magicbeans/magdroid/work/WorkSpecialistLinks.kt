@@ -25,6 +25,7 @@ data class WorkWebContext(
             WorkSection.Programs -> { query += "view" to "programs"; if (program.isNotBlank()) query += "program" to program }
             WorkSection.Quality -> { query += "view" to "quality"; if (run.isNotBlank()) query += "run" to run; if (agent.isNotBlank()) query += "agent" to agent }
             WorkSection.Operations -> query += "view" to "operations"
+            WorkSection.Goals -> query += "view" to "goals"
             WorkSection.NeedsYou -> query += "view" to "needs-you"
             WorkSection.All -> {
                 if (task.isNotBlank()) query += "selected" to task

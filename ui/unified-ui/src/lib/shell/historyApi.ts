@@ -7,6 +7,16 @@ import { timedFetch } from '$lib/shared/fetch';
 
 export type HistoryLane = 'personal' | 'automated';
 
+/** Runtime activity only: stored `status: active` means unarchived, not busy. */
+export async function fetchWorkingSessionIds(ids: string[], signal?: AbortSignal): Promise<Set<string>> {
+	if (!ids.length) return new Set();
+	const response = await timedFetch(`/api/magician/v2/chat/activity?${new URLSearchParams({ session_ids: ids.join(',') })}`, { signal, timeoutMs: 5000 });
+	if (!response.ok) throw new Error(`Activity request failed (${response.status})`);
+	const data = await response.json();
+	if (!Array.isArray(data.working_session_ids)) throw new Error('Invalid activity response');
+	return new Set(data.working_session_ids.filter((id: unknown): id is string => typeof id === 'string' && ids.includes(id)));
+}
+
 /** Server `archived=` filter shared by every list endpoint. */
 export type ArchivedFilter = 'exclude' | 'include' | 'only';
 

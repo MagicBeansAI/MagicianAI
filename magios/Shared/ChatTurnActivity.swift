@@ -64,6 +64,7 @@ public struct ActivityCallUsage: Equatable {
         let correlation = payload["correlation"] as? [String: Any]
         let availability = (payload["usage_availability"] ?? correlation?["usage_availability"]) as? [String: Any]
         let tokensAvailable = (availability?["tokens"] as? Bool) != false
+            && (payload["usage_reported"] as? Bool) != false
         let rawInput = usageNumber(payload["input_tokens"])
         let rawOutput = usageNumber(payload["output_tokens"])
         let input = tokensAvailable ? rawInput : nil
@@ -76,8 +77,9 @@ public struct ActivityCallUsage: Equatable {
             inputTokens: input.map { Int($0) },
             outputTokens: output.map { Int($0) },
             reportedTokens: input != nil || output != nil || cacheRead != nil || cacheWrite != nil,
-            stepTokens: rawInput == nil && rawOutput == nil ? nil : Int((rawInput ?? 0) + (rawOutput ?? 0)),
-            costUsd: usageNumber(payload["cost_usd"]) ?? usageNumber(payload["cost"])
+            stepTokens: input == nil && output == nil ? nil : Int((input ?? 0) + (output ?? 0)),
+            costUsd: (availability?["cost"] as? Bool) == false ? nil
+                : (usageNumber(payload["cost_usd"]) ?? usageNumber(payload["cost"]))
         )
     }
 }
@@ -186,6 +188,15 @@ public final class ChatTurnActivityAccumulator {
     private var ingestFiles: [ActivityFileRef] = []
     /// Tool rows' display name and target (`activityToolDisplay`), by row key.
     private var toolDisplayByKey: [String: ActivityToolDisplay] = [:]
+    /// Typed LLM rows (`LLMRequestSent` / `LLMRouted`) still waiting for their
+    /// `LLMResponseReceived`, oldest first.
+    private var openTypedLLMKeys: [String] = []
+    /// The model `LLMRouted` named for a typed LLM row, by row key.
+    private var routedModelByKey: [String: String] = [:]
+    /// The row each `llm_call_id` already has (web `llmKeyByCallId`): the
+    /// chat-side `llm.*` events key by trace and the typed copies by call id,
+    /// so one model call would otherwise render as two rows.
+    private var llmKeyByCallId: [String: String] = [:]
     public private(set) var pauseActive = false
 
     public init() {}
@@ -194,6 +205,8 @@ public final class ChatTurnActivityAccumulator {
         rowsByKey.removeAll(); orderedKeys.removeAll()
         terminalTutorRunIds.removeAll(); pauseActive = false
         toolDisplayByKey.removeAll()
+        openTypedLLMKeys.removeAll(); routedModelByKey.removeAll()
+        llmKeyByCallId.removeAll()
     }
 
     public func snapshot() -> [ActivityRow] {
@@ -229,6 +242,46 @@ public final class ChatTurnActivityAccumulator {
             orderedKeys.remove(at: index)
             orderedKeys.append(key)
         }
+    }
+
+    private func dropRow(_ key: String) {
+        guard rowsByKey.removeValue(forKey: key) != nil else { return }
+        orderedKeys.removeAll { $0 == key }
+        openTypedLLMKeys.removeAll { $0 == key }
+        routedModelByKey.removeValue(forKey: key)
+    }
+
+    /// The row key for a typed LLM event's call: the row that call already
+    /// has (a chat-side `llm.*` event may have opened it), else its own.
+    private func typedLLMKey(callId: String, agentId: String) -> String {
+        let key = llmKeyByCallId[callId] ?? "\(agentId)::llm::call::\(callId)"
+        llmKeyByCallId[callId] = key
+        return key
+    }
+
+    /// The row key for a chat-side `llm.*` event (web `chatLlmKey`): the
+    /// trace/iteration key, or, when the event names an `llm_call_id`, the
+    /// row that call already has. A typed copy that opened its own row
+    /// before the id-less `llm.requested`'s settle named the id is folded
+    /// into the trace row.
+    private func chatLLMKey(_ eventType: String, payload: [String: Any], traceKey: String, agentId: String) -> String {
+        guard let callId = activityLLMCallId(payload) else { return traceKey }
+        let aliased = llmKeyByCallId[callId]
+        let key: String
+        if eventType == "llm.requested" {
+            key = aliased ?? "\(agentId)::llm::call::\(callId)"
+        } else if let aliased, aliased != traceKey, rowsByKey[traceKey]?.status == .running {
+            dropRow(aliased)
+            key = traceKey
+        } else {
+            key = aliased ?? traceKey
+        }
+        // Only a key that holds (or is about to hold) this call's row: a
+        // first token that patches nothing must not send the typed copy onto
+        // a shared key, while a settle opens the row it names (Android
+        // `chatLlmKey`).
+        if eventType != "llm.first_token" || rowsByKey[key] != nil { llmKeyByCallId[callId] = key }
+        return key
     }
 
     /// Settle the pause rows an answer resolves: the row keyed on its
@@ -327,6 +380,44 @@ public final class ChatTurnActivityAccumulator {
         }
 
         // ─── HITL answer: settle the waiting pause rows it resolves ───
+        if eventType == "context.retrieval.started" || eventType == "context.retrieval.completed" {
+            guard let phase = nonEmptyString(payload["phase_id"]) else { return }
+            let key = "context:\(phase)"
+            let running = eventType.hasSuffix(".started")
+            let status = payload["status"] as? String
+            // A phase may name itself ("Compacting conversation") and report
+            // exact progress as step of steps; a finished one keeps its result.
+            let named = nonEmptyString(payload["label"])
+            var progress = ""
+            if let step = (payload["step"] as? NSNumber)?.intValue,
+               let steps = (payload["steps"] as? NSNumber)?.intValue, steps > 0, (0...steps).contains(step) {
+                progress = " · \(step)/\(steps)"
+            }
+            if running, rowsByKey[key] != nil {
+                if rowsByKey[key]?.status == .running, let named {
+                    patch(key) { row in row.label = "\(agentPrefix)\(named)\(progress)" }
+                }
+                return
+            }
+            let label = running ? "\(named ?? "Preparing context")\(progress)"
+                : nonEmptyString(payload["done_label"]) ?? (status == "cancelled" ? "Context preparation cancelled"
+                    : status == "partial" ? "Context prepared (partial)" : "Context prepared")
+            let finished: ActivityStatus = status == "failed" ? .failed : .done
+            let duration = (payload["duration_ms"] as? NSNumber)?.doubleValue
+            let measured = duration.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+            if rowsByKey[key] != nil {
+                patch(key) { row in
+                    row.label = "\(agentPrefix)\(label)"; row.detail = payload["summary"] as? String
+                    row.status = finished; row.tone = .info; row.durationMs = measured
+                }
+            } else {
+                upsert(ActivityRow(key: key, kind: .step, label: "\(agentPrefix)\(label)",
+                    detail: payload["summary"] as? String, status: running ? .running : finished,
+                    tone: .info, durationMs: measured))
+            }
+            return
+        }
+
         if isPauseResolvedEvent(outer: outerType, event: eventType) {
             settlePauseRows(correlationId: (payload["correlation_id"] as? String)
                 ?? (payload["pause_state_id"] as? String)
@@ -346,37 +437,102 @@ public final class ChatTurnActivityAccumulator {
             return
         }
 
-        // Typed flat-loop LLM completions do not carry a stable call id that
-        // can pair request/response events, so each response is one terminal
-        // row, keyed by its timestamp exactly as on web.
+        // Typed flat-loop LLM calls. A current server stamps one call's
+        // `LLMRequestSent`, `LLMRouted` (once the model is chosen, again on a
+        // fallback) and `LLMResponseReceived` with the same
+        // `correlation.llm_call_id`: the request opens a running "Thinking…"
+        // row, the route names the model, and the response settles that row
+        // in place. An older server's request has no id and is skipped; its
+        // response is one terminal row keyed by its timestamp, as on web.
+        if eventType == "LLMRequestSent" {
+            guard let callId = activityLLMCallId(payload) else { return }
+            let key = typedLLMKey(callId: callId, agentId: normalizedAgentId)
+            if rowsByKey[key] != nil { return }
+            upsert(ActivityRow(key: key, kind: .llm, label: "\(agentPrefix)Thinking…",
+                               detail: nil, status: .running, tone: .info, durationMs: nil))
+            openTypedLLMKeys.append(key)
+            return
+        }
+        if eventType == "LLMRouted" {
+            guard let callId = activityLLMCallId(payload),
+                  let model = activityAnsweredModel(payload) else { return }
+            let key = typedLLMKey(callId: callId, agentId: normalizedAgentId)
+            routedModelByKey[key] = model
+            let label = "\(agentPrefix)Thinking with \(model)"
+            if let existing = rowsByKey[key] {
+                // A settled row already names the model that answered.
+                if existing.status == .running { patch(key) { $0.label = label } }
+            } else {
+                upsert(ActivityRow(key: key, kind: .llm, label: label, detail: nil,
+                                   status: .running, tone: .info, durationMs: nil))
+                openTypedLLMKeys.append(key)
+            }
+            return
+        }
         if eventType == "LLMResponseReceived" {
-            let capability = (payload["capability"] as? String) ?? "model"
             let succeeded = (payload["success"] as? Bool) != false
             let duration = doubleVal(payload["latency_ms"])
             let summary = (payload["decision_summary"] as? String)
                 ?? (payload["error"] as? String)
-            let timestampKey = scalarActivityValue(payload["timestamp"])
-                ?? scalarActivityValue(ingestStartedAtMs) ?? String(orderedKeys.count)
-            upsert(ActivityRow(
-                key: "\(normalizedAgentId)::llm::\(timestampKey)",
-                kind: .llm,
-                label: "\(agentPrefix)Thinking with \(capability)",
-                detail: duration.map(formatLatency) ?? summary.map { trimTo($0, 180) },
-                status: succeeded ? .done : .failed,
-                tone: succeeded ? .info : .error,
-                durationMs: duration
-            ))
             let usage = ActivityCallUsage.read(payload)
-            patch("\(normalizedAgentId)::llm::\(timestampKey)") { $0.callUsage = usage }
+            let key: String
+            if let callId = usage.callId {
+                key = typedLLMKey(callId: callId, agentId: normalizedAgentId)
+                // A row the chat-side settle already closed keeps what it
+                // wrote (TTFT, latency, usage).
+                if let existing = rowsByKey[key], existing.status != .running {
+                    openTypedLLMKeys.removeAll { $0 == key }
+                    return
+                }
+            } else if let open = openTypedLLMKeys.first(where: {
+                ingestExecutionId == nil || rowsByKey[$0]?.executionId == ingestExecutionId
+            }) {
+                // An id-less response settles the oldest id-keyed request still
+                // open, so a server that drops the id on one side never
+                // strands a running row.
+                key = open
+            } else {
+                let timestampKey = scalarActivityValue(payload["timestamp"])
+                    ?? scalarActivityValue(ingestStartedAtMs) ?? String(orderedKeys.count)
+                key = "\(normalizedAgentId)::llm::\(timestampKey)"
+            }
+            openTypedLLMKeys.removeAll { $0 == key }
+            // The model that answered, else the routed model, else the
+            // capability asked for.
+            let model = activityAnsweredModel(payload) ?? routedModelByKey[key]
+                ?? nonEmptyString(payload["capability"]) ?? "model"
+            let label = "\(agentPrefix)Thinking with \(model)"
+            let detail = duration.map(formatLatency) ?? summary.map { trimTo($0, 180) }
+            if rowsByKey[key] != nil {
+                patch(key) {
+                    $0.label = label
+                    $0.detail = detail
+                    $0.status = succeeded ? .done : .failed
+                    $0.tone = succeeded ? .info : .error
+                    $0.durationMs = duration
+                    $0.callUsage = usage
+                }
+            } else {
+                upsert(ActivityRow(
+                    key: key,
+                    kind: .llm,
+                    label: label,
+                    detail: detail,
+                    status: succeeded ? .done : .failed,
+                    tone: succeeded ? .info : .error,
+                    durationMs: duration
+                ))
+                patch(key) { $0.callUsage = usage }
+            }
             return
         }
-        if eventType == "LLMRequestSent" { return }
 
         // ─── LLM lifecycle (coalesced by trace_id or iteration) ───
         if eventType.hasPrefix("llm.") {
             let trace = (payload["trace_id"] as? String)
                 ?? (payload["iteration"] as? Int).map(String.init) ?? "llm"
-            let key = "\(normalizedAgentId)::llm::\(trace)"
+            let key = chatLLMKey(eventType, payload: payload, traceKey: "\(normalizedAgentId)::llm::\(trace)",
+                                 agentId: normalizedAgentId)
             switch eventType {
             case "llm.requested":
                 if rowsByKey[key] != nil { return }
@@ -898,13 +1054,21 @@ func activityToolDisplay(tool: String, payload: [String: Any]) -> ActivityToolDi
         }
         return ActivityToolDisplay(label: trimTo(detail, 100), target: nil)
     }
-    guard tool.hasSuffix(activityCallToolSuffix), tool.count > activityCallToolSuffix.count else { return nil }
-    let pack = String(tool.dropLast(activityCallToolSuffix.count))
     guard let args = activityJSONObject(payload["args"] ?? payload["arguments"] ?? payload["input"]) else {
         return nil
     }
-    let name = (args["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        ?? (args["tool_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    if let suffix = ["__run", "__exec", "__execute"].first(where: { tool.hasSuffix($0) }),
+       let argv = (args["args"] as? [String]) ?? (args["argv"] as? [String]),
+       let command = argv.first,
+       command.range(of: "^[A-Za-z][A-Za-z0-9_-]{0,63}$", options: .regularExpression) != nil {
+        let verbs: Set<String> = ["list", "get", "show", "search", "create", "generate", "update", "delete", "remove", "send", "upload", "download", "status", "info", "help", "login", "logout", "run", "start", "stop", "wait", "select", "export", "import", "query", "render", "convert", "inspect"]
+        let operation = argv.count > 1 && verbs.contains(argv[1]) ? "\(command) \(argv[1])" : command
+        return ActivityToolDisplay(label: trimTo("\(tool.dropLast(suffix.count)) · \(operation)", 100), target: nil)
+    }
+    guard tool.hasSuffix(activityCallToolSuffix), tool.count > activityCallToolSuffix.count else { return nil }
+    let pack = String(tool.dropLast(activityCallToolSuffix.count))
+    let name = (args["tool_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        ?? (args["name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     let rawArguments = args["arguments_json"] ?? args["arguments"]
     var target: String?
     if let arguments = activityJSONObject(rawArguments) {
@@ -960,6 +1124,20 @@ private func nonEmptyString(_ any: Any?) -> String? {
     guard let value = any as? String else { return nil }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
+}
+
+/// A typed LLM event's call id: `correlation.llm_call_id`, else a top-level
+/// `llm_call_id`. Nil on servers that predate it.
+private func activityLLMCallId(_ payload: [String: Any]) -> String? {
+    nonEmptyString((payload["correlation"] as? [String: Any])?["llm_call_id"])
+        ?? nonEmptyString(payload["llm_call_id"])
+}
+
+/// The model an LLM event names (web `answeredModelLabel`): `model`, else
+/// `harness_model`, else `provider`.
+private func activityAnsweredModel(_ payload: [String: Any]) -> String? {
+    nonEmptyString(payload["model"]) ?? nonEmptyString(payload["harness_model"])
+        ?? nonEmptyString(payload["provider"])
 }
 
 private func scalarActivityValue(_ any: Any?) -> String? {

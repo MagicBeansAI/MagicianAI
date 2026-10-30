@@ -6,8 +6,8 @@ Server seam: `GET`/`POST /api/magician/v2/workspaces`,
 ([auth: workspaces](../magician/auth.md)).
 
 Settings hosts `$lib/settings/WorkspacesPanel.svelte` (fed by
-`$lib/stores/workspacesStore.ts`) as **Workspaces**, directly under the
-bearer-bound workspace card. It renders only while signed in: every call rides
+`$lib/stores/workspacesStore.ts`) as **Workspaces** in the **Account & workspaces** category, directly under
+the bearer-bound workspace card. It renders only while signed in: every call rides
 the session bearer, and the server resolves the principal from it.
 
 **List.** Each workspace shows its name and id, a **Default** or **Current**

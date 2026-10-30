@@ -7,6 +7,7 @@
 //! which return `serde_json::Value` for the caller to deserialize.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -115,6 +116,15 @@ pub trait MemoryStorage: Send + Sync {
         path: &Path,
         value: &serde_json::Value,
     ) -> Result<(), MemoryStorageError>;
+
+    /// An owned handle to this storage, for work that outlives the borrowing
+    /// call: the memory-temperature counter write-behind flushes through it
+    /// up to [`crate::memory_temperature::MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY`]
+    /// later. `None` (the default) keeps every overlay write synchronous for
+    /// this storage.
+    fn shared_handle(&self) -> Option<Arc<dyn MemoryStorage>> {
+        None
+    }
 }
 
 /// Tier path filename sanitization helper used inside `memory_index` for

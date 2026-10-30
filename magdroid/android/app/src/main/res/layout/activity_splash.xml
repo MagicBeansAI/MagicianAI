@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Launch screen. The mark is @drawable/splash_icon at the system splash's
-     canvas size (288dp), centred, so it sits exactly where the Android 12+
-     system splash drew it; the name, build and tagline fade in under it. -->
+<!-- Launch screen. The mark is @drawable/splash_icon (a 132dp star on a 288dp
+     canvas), centred; the mark, name, build and tagline fade in together. The
+     Android 12+ system splash before it shows only this ground, no icon. -->
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"

@@ -16,19 +16,27 @@
 -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import MicModeControl from '$lib/media/voice/MicModeControl.svelte';
+    import VoiceActivityWaveform from './VoiceActivityWaveform.svelte';
 	import {
 		voiceCallStore,
 		voiceTranscriptStore,
 		stopVoiceCall,
 		pushToTalkMode,
-		setPushToTalkMode,
+		pushToTalkActive,
 		engagePushToTalk,
 		releasePushToTalk,
+		setVoiceMicMuted,
+		voiceMicMuted,
+		voiceMicAnalyser,
+		voicePlaybackAnalyser,
 	} from '$lib/media/voice/realtimeVoiceClient';
 
 	$: call = $voiceCallStore;
 	$: transcript = $voiceTranscriptStore;
 	$: ptt = $pushToTalkMode;
+	$: pttActive = $pushToTalkActive;
+	$: muted = !ptt && $voiceMicMuted;
 
 	let nowMs = Date.now();
 	let timerId: ReturnType<typeof setInterval> | null = null;
@@ -69,31 +77,36 @@
 				// live call; presenting it as a distinct state
 				// causes the label to flicker. Keep the same idle
 				// label as `connected` so the user doesn't notice.
-				return transcript.assistantSpeaking
-					? 'Speaking…'
-					: transcript.userSpeaking
-						? 'Listening…'
-						: ptt
-							? 'Push to talk'
-							: call.addressingRequired && call.activationPhrase
-								? `Listening — start with “${call.activationPhrase}”`
-								: 'Listening';
+				return liveLabel(transcript.assistantSpeaking, transcript.userSpeaking, ptt, pttActive, muted);
 			case 'connected':
-				return transcript.assistantSpeaking
-					? 'Speaking…'
-					: transcript.userSpeaking
-						? 'Listening…'
-						: ptt
-							? 'Push to talk'
-							: call.addressingRequired && call.activationPhrase
-								? `Listening — start with “${call.activationPhrase}”`
-								: 'Listening';
+				return liveLabel(transcript.assistantSpeaking, transcript.userSpeaking, ptt, pttActive, muted);
 			case 'error':
 				return 'Voice error';
 			default:
 				return 'Idle';
 		}
 	})();
+
+	// The mic-side states name the mode ("Open mic · Listening",
+	// "Hold to talk · Ready"), matching the overlay, iOS and Android.
+	// Arguments (not closure reads) so the reactive `stateLabel` block
+	// re-runs when any of them changes.
+	function liveLabel(
+		assistantSpeaking: boolean,
+		userSpeaking: boolean,
+		ptt: boolean,
+		pttActive: boolean,
+		muted: boolean
+	): string {
+		if (ptt && pttActive) return 'Hold to talk · Sending';
+		if (muted) return 'Open mic · Muted';
+		if (assistantSpeaking) return 'Speaking…';
+		if (userSpeaking) return 'Open mic · Hearing you…';
+		if (ptt) return 'Hold to talk · Ready';
+		return call.addressingRequired && call.activationPhrase
+			? `Open mic · Listening — start with “${call.activationPhrase}”`
+			: 'Open mic · Listening';
+	}
 
 	function formatElapsed(ms: number): string {
 		const total = Math.max(0, Math.floor(ms / 1000));
@@ -107,7 +120,8 @@
   Compact one-row voice-call panel — designed to sit just above the
   composer (see `ChatPanel.svelte`). Replaces the previous full
   center-stage layout. Contents (left → right):
-    orb · state label · timer · PTT toggle · (Hold-to-talk if PTT on) ·
+    state label · timer · mic mode (Open mic | Hold to talk) ·
+    main mic control (mute in Open mic, hold button in Hold to talk) ·
     End call
   Full transcript / captions still live in the main chat ledger;
   the panel intentionally doesn't duplicate them.
@@ -137,33 +151,51 @@
 	{/if}
 
 	<footer class="controls">
-		<button
-			type="button"
-			class="ctl"
-			class:active={ptt}
-			on:click={() => setPushToTalkMode(!ptt)}
-			aria-pressed={ptt}
-			title="Push-to-talk mode"
-		>
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-				<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-				<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-				<line x1="12" y1="19" x2="12" y2="23" />
-			</svg>
-			<span>{ptt ? 'PTT on' : 'PTT off'}</span>
-		</button>
+        <VoiceActivityWaveform inputAnalyser={$voiceMicAnalyser} outputAnalyser={$voicePlaybackAnalyser} active={call.state === 'connected' || call.state === 'rotating'} listening={!muted && (!ptt || pttActive)} />
+		<MicModeControl compact disabled={call.state !== 'connected'} />
 
 		{#if ptt}
 			<button
 				type="button"
 				class="ctl ptt-press"
+				class:held={pttActive}
 				on:pointerdown={engagePushToTalk}
 				on:pointerup={releasePushToTalk}
 				on:pointerleave={releasePushToTalk}
 				on:pointercancel={releasePushToTalk}
-				aria-label="Hold to talk"
+				aria-pressed={pttActive}
+				aria-label={pttActive ? 'Release to send' : 'Hold to talk'}
 			>
-				<span>Hold to talk</span>
+				<span>{pttActive ? 'Release to send' : 'Hold to talk'}</span>
+			</button>
+		{:else}
+			<button
+				type="button"
+				class="ctl mic-toggle"
+				class:muted
+				on:click={() => setVoiceMicMuted(!muted)}
+				disabled={call.state !== 'connected'}
+				aria-pressed={muted}
+				aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+				title={muted ? 'Muted · tap to unmute' : 'Listening · tap to mute'}
+			>
+				{#if muted}
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<line x1="2" y1="2" x2="22" y2="22" />
+						<path d="M18.89 13.23A7 7 0 0 0 19 12v-2" />
+						<path d="M5 10v2a7 7 0 0 0 12 5" />
+						<path d="M15 9.34V5a3 3 0 0 0-5.68-1.33" />
+						<path d="M9 9v3a3 3 0 0 0 5.12 2.12" />
+						<line x1="12" y1="19" x2="12" y2="22" />
+					</svg>
+				{:else}
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+						<path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+						<line x1="12" y1="19" x2="12" y2="23" />
+					</svg>
+				{/if}
+				<span>{muted ? 'Unmute' : 'Mute'}</span>
 			</button>
 		{/if}
 
@@ -205,7 +237,7 @@
 	.voice-pill {
 		display: flex;
 		flex-direction: row;
-		flex-wrap: nowrap;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 10px;
 		padding: 6px 4px 8px;
@@ -290,9 +322,10 @@
 
 	.controls {
 		display: inline-flex;
+		flex-wrap: wrap;
 		gap: 8px;
 		align-items: center;
-		flex: 1 0 auto;
+		flex: 1 1 auto;
 		justify-content: flex-end;
 		margin-left: auto;
 	}
@@ -313,11 +346,6 @@
 	.ctl:hover {
 		border-color: var(--accent-primary);
 	}
-	.ctl.active {
-		border-color: var(--accent-primary);
-		color: var(--accent-primary);
-		background: var(--accent-primary-soft);
-	}
 	.ctl.danger {
 		background: var(--color-error);
 		color: var(--text-on-bright, var(--text-on-accent));
@@ -332,7 +360,23 @@
 		border-color: var(--accent-primary);
 		user-select: none;
 	}
-	.ctl.ptt-press:active {
+	.ctl.ptt-press:active,
+	.ctl.ptt-press.held {
 		transform: scale(0.96);
+		background: var(--accent-fill-hover, var(--accent-fill));
+	}
+	.ctl.mic-toggle {
+		background: var(--accent-fill);
+		color: var(--text-on-accent);
+		border-color: var(--accent-fill);
+	}
+	.ctl.mic-toggle.muted {
+		background: transparent;
+		color: var(--text-secondary);
+		border-color: var(--border-default);
+	}
+	.ctl:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
 	}
 </style>

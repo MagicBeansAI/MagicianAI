@@ -102,8 +102,10 @@ pub async fn plane_tools_call_configured(
                     // pointer, not copies of the dispatch future
                     // (`off_frame!`): 248 KiB otherwise.
                     Box::pin(async move {
-                        plane_tools_call_under_dispatch_lock(grant, config, session_id, tool, arguments)
-                            .await
+                        plane_tools_call_under_dispatch_lock(
+                            grant, config, session_id, tool, arguments,
+                        )
+                        .await
                     }),
                 ),
             ),
@@ -436,6 +438,15 @@ async fn plane_tools_call_under_dispatch_lock(
         Ok(action) => action,
         Err(message) => return mcp_error(message),
     };
+    // A plan (Discuss) run is read-only. The same predicate as the native
+    // dispatch gate, asked of the same lowered action, before any approval
+    // capture so a refused write never asks the owner.
+    if let Some(refusal) = plan_run_refusal(grant, &action) {
+        record_ledger(TerminalLedgerOutcome::Refused {
+            reason: "plan_run_read_only".to_string(),
+        });
+        return mcp_error(refusal);
+    }
 
     // Turn tool-call bound (plane Task 8). A spent bound ends the turn via the
     // same signal an approval uses — the harness survives an `isError` refusal
@@ -451,6 +462,25 @@ async fn plane_tools_call_under_dispatch_lock(
             format!("{tool}: harness turn time/call slice is spent; the turn is ending"),
             json!({"planeTurnStop": "turn_budget_spent"}),
         );
+    }
+
+    // The owner's spend envelope. A coding-engine turn is paid for outside
+    // the router, so an autonomous run does not start one while the envelope
+    // is spent. The refusal ends this harness turn the way a spent call bound
+    // does, so the CLI cannot conclude without the work: the loop
+    // checkpoints, and its next harness preflight parks the run until the
+    // window resets or the owner grants more. Chat is never refused.
+    if let Some(class) = coding_call_spend_class(grant, tool, &action) {
+        if let Err(refusal) = crate::magician_v2::spend_envelope_producers::preflight(class) {
+            record_ledger(TerminalLedgerOutcome::Refused {
+                reason: "spend_envelope_exhausted".to_string(),
+            });
+            grant.set_turn_stop(PlaneTurnStopReason::TurnBudgetSpent);
+            return mcp_error_with_meta(
+                format!("{tool}: {refusal}; this turn is ending and the run waits"),
+                json!({"planeTurnStop": "spend_envelope_exhausted"}),
+            );
+        }
     }
 
     if let Some(pending) = plane_pause_gate(grant, &action).await {
@@ -573,6 +603,11 @@ async fn governed_execute_tail(
     tool: &str,
     arguments: Option<&Value>,
 ) -> Value {
+    // Backstop for every execution route (live call, approved capture,
+    // elicitation accept): a plan run executes nothing the policy refuses.
+    if let Some(refusal) = plan_run_refusal(grant, action) {
+        return mcp_error(refusal);
+    }
     let Some(executors) = grant.executors.as_ref() else {
         return mcp_error_with_meta(
             format!("plane dispatch has no live executors; `{tool}` cannot run execute_action"),
@@ -1407,6 +1442,51 @@ fn plane_delegate_to_agent(
     )
 }
 
+/// Why a plan run refuses this lowered action (`execution::plan_run_policy`),
+/// or `None` outside a plan run or for a read-only call.
+fn plan_run_refusal(grant: &PlaneGrant, action: &ExecutableAction) -> Option<String> {
+    if !grant.ctx.plan_run {
+        return None;
+    }
+    crate::magician_v2::execution::plan_run_policy::action_refusal(action)
+}
+
+/// The spend-envelope class of a harness call that starts a coding-engine
+/// turn (`run_coding_task`), `None` for any other call. A chat conversation's
+/// grant is the owner's interactive work; a run's grant follows its chat
+/// lineage (`spend_envelope_producers::agentic_run_class`).
+fn coding_call_spend_class(
+    grant: &PlaneGrant,
+    tool: &str,
+    action: &ExecutableAction,
+) -> Option<magicllm::LlmWorkloadClass> {
+    let coding_tool = crate::magician_v2::execution::compiled_handlers::run_coding_task::TOOL_NAME;
+    let coding = tool == coding_tool
+        || matches!(
+            action,
+            ExecutableAction::Pack { capability_name, .. } if capability_name == coding_tool
+        );
+    if !coding {
+        return None;
+    }
+    let chat = grant
+        .ctx
+        .invocation_context_override
+        .as_ref()
+        .is_some_and(|invocation| {
+            // The owner is present on a chat or a live voice call.
+            matches!(
+                invocation.surface,
+                InvocationSurface::Chat | InvocationSurface::RealtimeVoice
+            )
+        });
+    Some(if chat {
+        magicllm::LlmWorkloadClass::InteractiveTask
+    } else {
+        crate::magician_v2::spend_envelope_producers::agentic_run_class(&grant.ctx)
+    })
+}
+
 fn lower_to_action(tool: &str, arguments: &Value) -> Result<ExecutableAction, String> {
     let call = ExecutionToolCall {
         id: format!("plane_{tool}"),
@@ -1437,15 +1517,20 @@ async fn plane_pause_gate(
     grant: &PlaneGrant,
     action: &ExecutableAction,
 ) -> Option<crate::magician_v2::agents::approval::PendingApproval> {
-    if grant.constraints.requires_approval.is_empty() {
-        return None;
-    }
     let candidate = ActionCandidate::new(1, 1.0, action.clone());
     let step = approval_step_from_candidate(&candidate, 1, "plane tools/call");
     let plan = ExecutionPlan {
         plan_id: "plane".to_string(),
         steps: vec![step],
     };
+    // An agent with no rules of its own skips the standing-consent lookup, but
+    // not the code-owned floor: that is not one of its rules, and most agents
+    // author none.
+    if grant.constraints.requires_approval.is_empty()
+        && !crate::magician_v2::agents::approval::plan_hits_code_approval_floor(&plan)
+    {
+        return None;
+    }
     let check = if let Some(executors) = grant.executors.as_ref() {
         checked_approval(&grant.ctx, executors.as_ref(), &plan, &grant.constraints).await
     } else {
@@ -1525,6 +1610,40 @@ fn revoked_grant_error_with(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a coding-engine call meets the spend envelope, under the grant's
+    /// class: a run with no chat lineage is autonomous (refused while the
+    /// envelope is spent, which ends the turn), a chat conversation is
+    /// interactive and never refused.
+    #[test]
+    fn only_a_coding_call_meets_the_spend_envelope_and_chat_is_interactive() {
+        let pack = |name: &str| ExecutableAction::Pack {
+            capability_name: name.to_string(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: name.to_string(),
+                },
+            resolved_params: Default::default(),
+        };
+        let run = PlaneGrant::for_test("exec-envelope");
+        assert_eq!(
+            coding_call_spend_class(&run, "run_coding_task", &pack("run_coding_task")),
+            Some(magicllm::LlmWorkloadClass::AutonomousTask)
+        );
+        assert_eq!(
+            coding_call_spend_class(&run, "read_file", &pack("read_file")),
+            None
+        );
+        let chat = PlaneGrant::for_conversation(
+            crate::magician_v2::execution::agentic::AgenticContext::default(),
+            "sess-envelope".to_string(),
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            coding_call_spend_class(&chat, "run_coding_task", &pack("run_coding_task")),
+            Some(magicllm::LlmWorkloadClass::InteractiveTask)
+        );
+    }
 
     /// Every harness call is checked by the Decision Engine at the dispatcher:
     /// a call that fits its listed tool runs; a schema mismatch, an unlisted
@@ -1633,7 +1752,10 @@ mod tests {
         let _on = crate::magician_v2::god_mode::test_scope(true);
         let mut general = PlaneGrant::for_test("exec-god-general");
         general.live_harness_turn = true;
-        assert!(plane_god_session(&general).is_some(), "god mode on for a general run");
+        assert!(
+            plane_god_session(&general).is_some(),
+            "god mode on for a general run"
+        );
 
         let mut engineer = general.clone();
         engineer.ctx.merged_agent_tools = vec![runtime_core::ToolInfo {
@@ -1653,7 +1775,10 @@ mod tests {
         for grant in [&mut engineer, &mut coordinator] {
             assert!(plane_god_session(grant).is_none());
             grant.ctx.chat_session_id = Some("chat-vibedev".to_string());
-            assert!(plane_god_session(grant).is_none(), "not through the chat either");
+            assert!(
+                plane_god_session(grant).is_none(),
+                "not through the chat either"
+            );
         }
     }
 
@@ -1922,6 +2047,49 @@ mod tests {
         assert_eq!(result["isError"], json!(true));
         assert_eq!(grant.turn_stop_reason(), None);
         assert!(result["_meta"].get("planeTurnStop").is_none());
+    }
+
+    fn whatsapp_pack_action(capability_name: &str, params: Value) -> ExecutableAction {
+        ExecutableAction::Pack {
+            capability_name: capability_name.to_string(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "whatsapp".to_string(),
+                },
+            resolved_params: params
+                .as_object()
+                .cloned()
+                .map(|values| values.into_iter().collect())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// A grant whose agent authored no approval rules (the common case) still
+    /// pauses on the code-owned WhatsApp floor, and only on it.
+    #[tokio::test]
+    async fn the_code_floor_pauses_a_grant_with_no_approval_rules() {
+        let grant = PlaneGrant::for_test("exec-floor");
+        assert!(grant.constraints.requires_approval.is_empty());
+
+        for floored in [
+            whatsapp_pack_action("whatsapp__group_leave", json!({"jid": "123@g.us"})),
+            whatsapp_pack_action("whatsapp__run", json!({"command": "groups leave 123@g.us"})),
+            whatsapp_pack_action(
+                "whatsapp__run",
+                json!({"command": "groups leave 123@g.us", "operation": "status"}),
+            ),
+        ] {
+            let pending = plane_pause_gate(&grant, &floored)
+                .await
+                .expect("a floored act must pause without any rule of the agent's");
+            assert_eq!(pending.matched_rule.tool, "whatsapp");
+        }
+        for free in [
+            whatsapp_pack_action("whatsapp__run", json!({"command": "groups list --json"})),
+            whatsapp_pack_action("whatsapp__send", json!({"to": "x", "text": "hi"})),
+        ] {
+            assert!(plane_pause_gate(&grant, &free).await.is_none());
+        }
     }
 
     fn chat_turn_grant() -> PlaneGrant {

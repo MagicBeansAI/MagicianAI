@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+pub mod google_project_access;
 pub mod setup;
 pub mod source_install;
 
@@ -166,6 +167,10 @@ pub enum InstallAction {
         target: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         script: Option<String>,
+        /// Asked when the probe is already present. Absent keeps a configured
+        /// install quiet. The wizard and a dry run both default the answer to no.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        again: Option<String>,
     },
     /// Something only a person can do: grant a permission, load an extension,
     /// paste a key. The wizard shows the steps, optionally opens the right

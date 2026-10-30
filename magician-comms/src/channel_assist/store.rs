@@ -973,8 +973,7 @@ impl MailAssistStore {
 
     fn scope_inner(&self, principal: &str, workspace: &str) -> Result<Arc<MailAssistStoreInner>> {
         let key = (principal.to_string(), workspace.to_string());
-        if let Some(existing) = self.scoped.get(&key)
-        {
+        if let Some(existing) = self.scoped.get(&key) {
             return Ok(existing);
         }
 
@@ -1014,13 +1013,16 @@ impl MailAssistStore {
         lock_file
             .lock_exclusive()
             .context("acquiring mail assist scope bootstrap lock")?;
-        if let Some(existing) = self.scoped.get(&key)
-        {
+        if let Some(existing) = self.scoped.get(&key) {
             let _ = lock_file.unlock();
             return Ok(existing);
         }
         magician::magician_v2::storage_governance::duckdb_compaction::recover_interrupted_compaction(&db_path)?;
-        let conn = magician::magician_v2::storage_governance::database_maintenance::open_connection(&db_path, self.maintenance.channel_memory_mib)
+        let conn =
+            magician::magician_v2::storage_governance::database_maintenance::open_connection(
+                &db_path,
+                self.maintenance.channel_memory_mib,
+            )
             .with_context(|| format!("opening mail assist store at {}", db_path.display()))?;
         // Bootstrap template schemas live in the seed root, OUTSIDE the
         // runtime file provider root — read directly via `std::fs`, exactly
@@ -1060,10 +1062,14 @@ impl MailAssistStore {
         {
             // Keep the bootstrap fence through cache publication so parallel
             // first/reopening callers never create competing owner generations.
-            let bootstrap = inner.write_lock.lock()
+            let bootstrap = inner
+                .write_lock
+                .lock()
                 .map_err(|_| anyhow::anyhow!("mail assist bootstrap lock poisoned"))?;
             self.scoped.insert(key, Arc::clone(&inner));
-            bootstrap.unlock().context("releasing mail assist scope bootstrap lock")?;
+            bootstrap
+                .unlock()
+                .context("releasing mail assist scope bootstrap lock")?;
         }
         Ok(inner)
     }
@@ -7798,17 +7804,37 @@ pub(crate) mod tests {
         {
             let conn = inner.write_conn.lock().unwrap();
             conn.execute_batch("CREATE TABLE idle_marker(value INTEGER); INSERT INTO idle_marker VALUES (42); CHECKPOINT;").unwrap();
-            assert_eq!(conn.query_row("SELECT current_setting('threads')", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+            assert_eq!(
+                conn.query_row("SELECT current_setting('threads')", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
         }
         let reader = inner.read_connection().unwrap();
         drop(inner);
-        assert_eq!(store.scoped.release_if_unused(&key), 0, "a reader pins the owner generation");
-        assert_eq!(reader.query_row("SELECT value FROM idle_marker", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
+        assert_eq!(
+            store.scoped.release_if_unused(&key),
+            0,
+            "a reader pins the owner generation"
+        );
+        assert_eq!(
+            reader
+                .query_row("SELECT value FROM idle_marker", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
         drop(reader);
         assert_eq!(store.scoped.release_if_unused(&key), 1);
         let reopened = store.scope_inner(&key.0, &key.1).unwrap();
         let conn = reopened.read_connection().unwrap();
-        assert_eq!(conn.query_row("SELECT value FROM idle_marker", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
+        assert_eq!(
+            conn.query_row("SELECT value FROM idle_marker", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
     }
 
     #[test]
@@ -7816,17 +7842,27 @@ pub(crate) mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = MailAssistStore::open(tmp.path()).unwrap();
         drop(store.scope_inner("alpha", "prod").unwrap());
-        assert_eq!(store.scoped.release_if_unused(&("alpha".into(), "prod".into())), 1);
+        assert_eq!(
+            store
+                .scoped
+                .release_if_unused(&("alpha".into(), "prod".into())),
+            1
+        );
         let barrier = Arc::new(std::sync::Barrier::new(16));
-        let callers = (0..16).map(|_| {
-            let store = store.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.scope_inner("alpha", "prod").unwrap()
+        let callers = (0..16)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.scope_inner("alpha", "prod").unwrap()
+                })
             })
-        }).collect::<Vec<_>>();
-        let owners = callers.into_iter().map(|caller| caller.join().unwrap()).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
+        let owners = callers
+            .into_iter()
+            .map(|caller| caller.join().unwrap())
+            .collect::<Vec<_>>();
         assert!(owners.iter().all(|owner| Arc::ptr_eq(owner, &owners[0])));
     }
     use tempfile::TempDir;

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	boundsFromWeights,
 	clamp,
+	cssProgress,
 	resolveScene,
 	trackProgress,
 	viewportProgress
@@ -107,5 +108,17 @@ describe('clamp', () => {
 		expect(clamp(-1, 0, 1)).toBe(0);
 		expect(clamp(2, 0, 1)).toBe(1);
 		expect(clamp(0.5, 0, 1)).toBe(0.5);
+	});
+});
+
+describe('cssProgress', () => {
+	it('rounds a progress to hundredths, so a custom property takes at most 101 values', () => {
+		expect(cssProgress(0)).toBe('0.00');
+		expect(cssProgress(0.12345)).toBe('0.12');
+		expect(cssProgress(0.125)).toBe('0.13');
+		expect(cssProgress(0.9999)).toBe('1.00');
+		const seen = new Set<string>();
+		for (let i = 0; i <= 10_000; i++) seen.add(cssProgress(i / 10_000));
+		expect(seen.size).toBe(101);
 	});
 });

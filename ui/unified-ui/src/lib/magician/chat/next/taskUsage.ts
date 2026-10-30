@@ -2,24 +2,26 @@
 // and cost, for the run (with its delegated children) plus planning.
 //
 // Two sources, so the total survives a reload and covers planning:
-// - live: the task-scoped activity stream (`ChatTurnProgress` with a `taskId`)
-//   records each finished call (`recordTaskLlmCall`), counted once by its id;
+// - live: task-attributed typed/enveloped responses and execution-panel
+//   deltas from the shared chat event hub, counted once by model-call id;
 // - snapshot: `/execution-panel` (`loadTaskUsageSnapshot`), the run's priced
-//   calls (the same `deriveTimeline` → `runCost` the task panel shows) and the
+//   calls from the same `deriveTimeline` the task panel shows, and the
 //   planning activity's priced calls (`debug.planning_timeline`).
-// The run part is the live total when there is one, else the snapshot's;
-// planning always comes from the snapshot (planning calls are not on the
-// task's event stream).
+// Stored and live calls merge by call id: attaching mid-run must neither
+// replace the stored baseline nor count replayed calls twice. Live panel
+// deltas refresh the same history without another polling connection.
 
 import { derived, writable, type Readable } from 'svelte/store';
 
 import { readTaskRunState, type TaskRunStateResult } from '$lib/magician/tasks/taskAttention';
-import { deriveTimeline, executionIdOf, runCost } from '$lib/magician/tasks/taskTimeline';
+import { deriveTimeline, executionIdOf } from '$lib/magician/tasks/taskTimeline';
 import type { ExecutionPanelState } from '$lib/types/executionPanel';
+import { readTaskCallHistory, type CallUsage } from './taskCallHistory';
 
 export interface TaskUsage {
 	calls: number;
 	tokens: number;
+	tokensReported: boolean;
 	/** `null` until a call reports a price. */
 	costUsd: number | null;
 }
@@ -28,33 +30,104 @@ export interface TaskUsage {
 export interface TaskUsageTotal extends TaskUsage {
 	run: TaskUsage | null;
 	planning: TaskUsage | null;
+	executionId: string | null;
+	/** Full recorded run history, independent of the chat event tail. */
+	activityCount: number | null;
 }
 
 interface Snapshot {
 	run: TaskUsage | null;
 	planning: TaskUsage | null;
+	executionId: string | null;
+	calls: Map<string, CallUsage>;
+	activityIds: Set<string> | null;
+	updatedAt: number;
 }
 
-const seen = new Set<string>();
-const live = writable<Map<string, TaskUsage>>(new Map());
+const live = writable<Map<string, Map<string, CallUsage>>>(new Map());
 const snapshots = writable<Map<string, Snapshot>>(new Map());
 const loaded = new Set<string>();
 
-/** Record one finished model call of a task's run. Idempotent per `callKey`. */
+/** Record a measured, finished model call, enriching replayed placeholders. */
 export function recordTaskLlmCall(
 	taskId: string,
 	callKey: string,
 	tokens: number | null,
-	costUsd: number | null
+	costUsd: number | null,
+	executionId: string | null = null
 ): void {
-	const key = `${taskId}::${callKey}`;
-	if (seen.has(key)) return;
-	seen.add(key);
+	// Some control/judge events explicitly report no provider usage. Their
+	// zero-valued placeholders are not measured calls.
+	if (tokens === null && costUsd === null) return;
 	live.update((map) => {
-		const next = new Map(map);
-		next.set(taskId, add(next.get(taskId) ?? null, { calls: 1, tokens: tokens ?? 0, costUsd }));
-		return next;
+		const calls = new Map(map.get(taskId));
+		const previous = calls.get(callKey);
+		const next = {
+			tokens: tokens ?? previous?.tokens ?? null,
+			costUsd: costUsd ?? previous?.costUsd ?? null,
+			executionId: executionId ?? previous?.executionId ?? null
+		};
+		if (previous && previous.tokens === next.tokens && previous.costUsd === next.costUsd &&
+			previous.executionId === next.executionId) return map;
+		calls.set(callKey, next);
+		return new Map(map).set(taskId, calls);
 	});
+}
+
+/** Apply a full panel read or the identical state carried by a live delta. */
+export function recordTaskUsageSnapshot(
+	taskId: string, state: ExecutionPanelState, callHistory?: Map<string, CallUsage> | null
+): void {
+	const incoming = usageSnapshotFrom(state);
+	if (callHistory) {
+		incoming.calls = mergeCalls(incoming.calls, callHistory);
+		incoming.run = sumCalls(incoming.calls);
+	}
+	snapshots.update((map) => {
+		const previous = map.get(taskId);
+		if (previous && incoming.updatedAt < previous.updatedAt &&
+			incoming.executionId !== previous.executionId) return map;
+		if (previous?.executionId && previous.executionId === incoming.executionId) {
+			incoming.calls = mergeCalls(previous.calls, incoming.calls);
+			incoming.run = sumCalls(incoming.calls);
+			if (previous.activityIds) {
+				incoming.activityIds = new Set([...previous.activityIds, ...(incoming.activityIds ?? [])]);
+			}
+			incoming.updatedAt = Math.max(previous.updatedAt, incoming.updatedAt);
+		}
+		return new Map(map).set(taskId, incoming);
+	});
+}
+
+/** The REST replay and live hub both carry these transport envelopes. */
+export function recordTaskUsageEvent(event: Record<string, unknown>, fallbackTaskId?: string): void {
+	const data = objectOrNull(event.data);
+	if (!data) return;
+	if (event.event_type === 'ExecutionPanelDelta') {
+		const state = objectOrNull(data.state);
+		if (typeof data.task_id === 'string' && state?.overview && state?.run) {
+			recordTaskUsageSnapshot(data.task_id, data.state as ExecutionPanelState);
+		}
+		return;
+	}
+	const inner = event.event_type === 'AgentEvent' ? objectOrNull(data.event) : null;
+	const eventType = inner?.event_type ?? event.event_type;
+	if (eventType !== 'llm.succeeded' && eventType !== 'LLMResponseReceived') return;
+	const payload = objectOrNull(inner?.payload) ?? data;
+	const correlation = objectOrNull(payload.correlation) ?? {};
+	const taskId = payload.task_id ?? correlation.task_id ?? fallbackTaskId;
+	const callId = payload.llm_call_id ?? correlation.llm_call_id;
+	if (typeof taskId !== 'string' || typeof callId !== 'string') return;
+	const availability = objectOrNull(payload.usage_availability ?? correlation.usage_availability);
+	const reported = payload.usage_reported !== false;
+	const input = reported && availability?.tokens !== false ? numberOrNull(payload.input_tokens) : null;
+	const output = reported && availability?.tokens !== false ? numberOrNull(payload.output_tokens) : null;
+	const rootExecutionId = payload.root_execution_id ?? correlation.root_execution_id ?? payload.execution_id ?? correlation.execution_id;
+	recordTaskLlmCall(taskId, callId,
+		input === null && output === null ? null : (input ?? 0) + (output ?? 0),
+		reported && availability?.cost !== false
+			? numberOrNull(payload.cost_usd) ?? numberOrNull(payload.cost) : null,
+		typeof rootExecutionId === 'string' ? rootExecutionId : null);
 }
 
 /**
@@ -82,11 +155,16 @@ export async function loadTaskUsageSnapshot(
 	const pending = inFlight.get(taskId);
 	if (pending) return pending;
 	const read = throttled(async () => {
-		readTasks.add(taskId);
 		const result = await readTaskRunState(taskId, principal, workspace);
-		if (!result.ok || result.state === null) return;
-		const snapshot = usageSnapshotFrom(result.state);
-		snapshots.update((map) => new Map(map).set(taskId, snapshot));
+		if (!result.ok || result.state === null) {
+			loaded.delete(key);
+			return;
+		}
+		readTasks.add(taskId);
+		recordTaskUsageSnapshot(taskId, result.state);
+		const executionId = executionIdOf(result.state);
+		const history = executionId ? await readTaskCallHistory(executionId, principal, workspace) : null;
+		if (history) recordTaskUsageSnapshot(taskId, result.state, history);
 	}).finally(() => inFlight.delete(taskId));
 	inFlight.set(taskId, read);
 	return read;
@@ -105,11 +183,9 @@ export async function readTaskRunStateShared(
 ): Promise<TaskRunStateResult> {
 	let result: TaskRunStateResult = { ok: true, state: null };
 	await throttled(async () => {
-		readTasks.add(taskId);
 		result = await readTaskRunState(taskId, principal, workspace);
 		if (result.ok && result.state !== null) {
-			const snapshot = usageSnapshotFrom(result.state);
-			snapshots.update((map) => new Map(map).set(taskId, snapshot));
+			recordTaskUsageSnapshot(taskId, result.state);
 		}
 	});
 	return result;
@@ -137,15 +213,17 @@ async function throttled(work: () => Promise<void>): Promise<void> {
 /** The usage an `/execution-panel` payload states: its run and its planning. */
 export function usageSnapshotFrom(state: ExecutionPanelState): Snapshot {
 	const executionId = executionIdOf(state);
-	const cost = executionId ? runCost(deriveTimeline(state, executionId)) : null;
-	const run =
-		cost && (cost.usage !== null || cost.costUsd !== null)
-			? {
-					calls: cost.usage?.calls ?? 0,
-					tokens: (cost.usage?.input ?? 0) + (cost.usage?.output ?? 0),
-					costUsd: cost.costUsd
-				}
-			: null;
+	const timeline = executionId ? deriveTimeline(state, executionId) : null;
+	const calls = new Map<string, CallUsage>();
+	for (const entry of timeline ?? []) {
+		if (entry.kind !== 'llm') continue;
+		const input = entry.tokens?.input ?? null;
+		const output = entry.tokens?.output ?? null;
+		const tokens = input === null && output === null ? null : (input ?? 0) + (output ?? 0);
+		if (tokens === null && entry.costUsd === null) continue;
+		calls.set(entry.id.replace(/^llm-call:/, ''), { tokens, costUsd: entry.costUsd, executionId });
+	}
+	const run = sumCalls(calls);
 	let planning: TaskUsage | null = null;
 	for (const entry of state.debug?.planning_timeline ?? []) {
 		const tokens = typeof entry.tokens === 'number' ? entry.tokens : null;
@@ -153,9 +231,11 @@ export function usageSnapshotFrom(state: ExecutionPanelState): Snapshot {
 		if (tokens === null && priced === null) continue;
 		// A backfilled summary row stands for many calls (`llm_calls`).
 		const calls = typeof entry.llm_calls === 'number' && entry.llm_calls > 0 ? entry.llm_calls : 1;
-		planning = add(planning, { calls, tokens: tokens ?? 0, costUsd: priced });
+		planning = add(planning, { calls, tokens: tokens ?? 0, tokensReported: tokens !== null, costUsd: priced });
 	}
-	return { run, planning };
+	return { run, planning, executionId, calls,
+		activityIds: timeline ? new Set(timeline.map((entry) => entry.id)) : null,
+		updatedAt: numberOrNull(state.overview?.updated_at) ?? 0 };
 }
 
 export const taskUsage: Readable<Map<string, TaskUsageTotal>> = derived(
@@ -164,31 +244,61 @@ export const taskUsage: Readable<Map<string, TaskUsageTotal>> = derived(
 		const ids = new Set([...$live.keys(), ...$snapshots.keys()]);
 		const totals = new Map<string, TaskUsageTotal>();
 		for (const id of ids) {
-			const liveRun = $live.get(id) ?? null;
 			const snapshot = $snapshots.get(id);
-			const run = liveRun && liveRun.calls > 0 ? liveRun : (snapshot?.run ?? null);
+			const liveCalls = new Map([...($live.get(id) ?? [])].filter(([, call]) =>
+				!snapshot?.executionId || !call.executionId || call.executionId === snapshot.executionId));
+			const run = sumCalls(mergeCalls(liveCalls, snapshot?.calls ?? new Map()));
 			const planning = snapshot?.planning ?? null;
-			const total = add(run, planning ?? { calls: 0, tokens: 0, costUsd: null });
-			if (total.calls === 0 && total.costUsd === null) continue;
-			totals.set(id, { ...total, run, planning });
+			const total = add(run, planning ?? { calls: 0, tokens: 0, tokensReported: false, costUsd: null });
+			totals.set(id, { ...total, run, planning,
+				executionId: snapshot?.executionId ?? null,
+				activityCount: snapshot?.activityIds?.size ?? null });
 		}
 		return totals;
 	}
 );
 
 function add(a: TaskUsage | null, b: TaskUsage): TaskUsage {
-	const base = a ?? { calls: 0, tokens: 0, costUsd: null };
+	const base = a ?? { calls: 0, tokens: 0, tokensReported: false, costUsd: null };
 	return {
 		calls: base.calls + b.calls,
 		tokens: base.tokens + b.tokens,
+		tokensReported: base.tokensReported || b.tokensReported,
 		costUsd:
 			base.costUsd === null && b.costUsd === null ? null : (base.costUsd ?? 0) + (b.costUsd ?? 0)
 	};
 }
 
+function mergeCalls(base: Map<string, CallUsage>, next: Map<string, CallUsage>): Map<string, CallUsage> {
+	const calls = new Map(base);
+	for (const [id, call] of next) {
+		const previous = calls.get(id);
+		calls.set(id, { ...call, tokens: call.tokens ?? previous?.tokens ?? null,
+			costUsd: call.costUsd ?? previous?.costUsd ?? null });
+	}
+	return calls;
+}
+
+function sumCalls(calls: Map<string, CallUsage>): TaskUsage | null {
+	let total: TaskUsage | null = null;
+	for (const call of calls.values()) {
+		total = add(total, { calls: 1, tokens: call.tokens ?? 0,
+			tokensReported: call.tokens !== null, costUsd: call.costUsd });
+	}
+	return total;
+}
+
+function numberOrNull(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+	return value !== null && typeof value === 'object' && !Array.isArray(value)
+		? value as Record<string, unknown> : null;
+}
+
 /** Test seam. */
 export function resetTaskUsage(): void {
-	seen.clear();
 	loaded.clear();
 	inFlight.clear();
 	readTasks.clear();

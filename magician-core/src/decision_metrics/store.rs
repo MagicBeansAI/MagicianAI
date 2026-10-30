@@ -380,7 +380,12 @@ pub fn event(conn: &mut Connection, at: i64, data: &Value) -> Result<(), String>
             },
             "projection" => case.projection = Some(data["items"].clone()),
             "completion" => cost(&tx, at, &case.operation, "text", &data["text_call"])?,
-            "invocation" => {},
+            "invocation" => {
+                let status: String = string(data, "status").chars().take(64).collect();
+                if !status.is_empty() {
+                    case.invocation_status = Some(status);
+                }
+            },
             "" => {
                 if case.primary.is_none() {
                     case.operation = string(data, "operation").into();

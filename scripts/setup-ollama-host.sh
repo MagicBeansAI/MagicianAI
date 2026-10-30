@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup-ollama-host.sh - install Ollama on the HOST and pull the models Magician uses.
 #
-# Topology: SilverBullet + Ollama run on the HOST (not inside the magician
+# Topology: Ollama runs on the HOST (not inside the magician
 # container). Generation remains on localhost:11434. Embeddings use the
 # dedicated, pinned daemon on localhost:11435.
 #

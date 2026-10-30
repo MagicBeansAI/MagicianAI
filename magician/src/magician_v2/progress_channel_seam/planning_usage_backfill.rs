@@ -179,10 +179,11 @@ async fn ledger_usage(
     scope_workspace: &str,
     executions: &[PlanningExecution],
 ) -> Result<BTreeMap<String, PlanningUsage>> {
-    let calls_root = workspace.analytics_llm_calls_root(principal, scope_workspace);
+    let workspace = workspace.clone();
+    let scope = magicllm::LlmScope::new(principal, scope_workspace);
     let days = partition_days(executions);
     let wanted: HashSet<String> = executions.iter().map(|e| e.execution_id.clone()).collect();
-    tokio::task::spawn_blocking(move || planning_usage_by_execution(calls_root, days, wanted))
+    tokio::task::spawn_blocking(move || planning_usage_by_execution(workspace, scope, days, wanted))
         .await?
 }
 

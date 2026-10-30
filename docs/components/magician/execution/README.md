@@ -27,6 +27,10 @@ archived boards are indexed at the end.
   invents intent. Sealed scopes classify in index-only batches of ≤20,000 base
   executions; an unsealed oversized scope gets one bounded discovery and stays
   fail-closed.
+  A stable ambiguous continuation with no live holder settles as an interrupted
+  failure after fresh scope/generation, operator, lifecycle and pause checks;
+  saved work remains available for an explicit new attempt. Live, uniquely
+  recoverable, paused and terminal-settlement-owned runs retain their owners.
 - **Retirement.** A returned launch future does not consume the envelope; that
   waits for a typed waiting/terminal Runtime state or a positive
   live/exact/settlement-pending handoff. Startup GCs ≤20,000 Consumed envelopes
@@ -288,7 +292,8 @@ A runtime fourth tier (artifact-output guidance, plus dashboard guidance when
 `{artifact_guidance_section}`. Chat delegates get persona via
 `AgenticContextOverrides.prompt_identity`. `activate_skill` /
 `deactivate_skill` are outer-loop control tools, offered when ≥1 procedure skill
-resolves and not in chat mode
+resolves, the tool is not denied or withheld by the delegate-only grant gate,
+and not in chat mode
 (`skills::active::resolve_and_activate_procedure_skill`);
 `AgenticContext.active_procedure_skill` is per-execution and cleared on owner
 transition. Agent-facing slugs: `cua-driver` → `macos-ui-automation`,
@@ -315,6 +320,15 @@ deserializes and is cleared on the next terminal commit; overwrite mode prunes
 a stale `primary_task_agent` ref; `synthesis_failed.stage = "task_agent_output"`
 loads as `task_user_output`; `existing_finalized_outputs` needs only execution
 and user outputs; `task_agent_finalizer.*` names remain for old logs, unemitted.
+
+The 1.1 bundle (`ExecutionOutputSynthesisBundle`) carries `micro_goals`: the
+task's durable task-state requirements (status, description,
+`blocked_reason`), only when the state's frontmatter names this execution as
+its last writer (fails closed otherwise). Ceiling degradation never shrinks or
+drops them (`PROTECTED_SYNTHESIS_BUNDLE_KEYS`), and the
+`execution_output_synthesize` prompt (1.1.0) asks for the completed
+requirements and each blocked one with its reason, so the output can always say
+what was done and what blocked the rest.
 
 `persist_execution_outcome` never blocks on LLM synthesis:
 
@@ -372,10 +386,15 @@ on the skill's `commerce.final_tools`, gating only
 the live cart. Knobs sit in the skill's `runtime_contract` `commerce:` block
 (e.g. `skillshub/swiggy-mcp/SKILL.md`), not env: `cart_amount_unit`, optional
 `max_order_minor`, tolerances. Flow: per-order ceiling → live-cart check →
-tool-scoped `INR` reservation → final call → `commit` / `rollback`; an
-ambiguous post-dispatch transport error commits and reports
-`ambiguous_transport`, so nothing retries the checkout. Missing identity fails
-checkout. `allow_cartless_checkout` / `cartless_endpoint_aliases` and
+tool-scoped `INR` reservation → final call → `commit` / `rollback`. A client
+refusal before anything is sent (tool not discovered, argument or request
+size limits) rolls the hold back and stays a plain error. Once the call may
+have reached the remote (a transport failure after the send, a result too
+large to read back, a reservation commit failure), the hold commits and the
+call returns a `status: "dispatch_unknown"` envelope (`outcome`/`sent:
+"unknown"`, `retry: false`) instead of an error, so nothing retries the
+checkout or reports it as done; outward sends through an MCP get the same
+envelope. Missing identity fails checkout. `allow_cartless_checkout` / `cartless_endpoint_aliases` and
 `allow_unverified_cart` are separate, so a cartless flow never weakens a real
 cart.
 
@@ -416,7 +435,9 @@ providers; the scheduler is an internal wake queue. Browser work uses the
   only for journal recovery, validation, initial `Planning` persist and status
   write (not feed/progress, transport or planner spawn).
 - **Exact resume:** `resume_execution_tree()` only; manual continue fails closed
-  unless the target is durably paused and resumable.
+  unless the target is durably paused and resumable. Manual pauses advance the
+  interrupted turn's resume address and release status locks while waiting for
+  checkpoint publication; the source segment never proves successor adoption.
 - **Pause store:** `k2_<hash>.json` keyed by `storage_key()`; legacy hex names
   stay readable; hashed + legacy for one key fails loudly.
   `AgenticWaitingForUser` carries the full `UserInputType` schema; direct pauses
@@ -435,12 +456,12 @@ providers; the scheduler is an internal wake queue. Browser work uses the
 ## Skill-bundled binaries (`{skill_runtime_root}/bin/...`)
 
 Vendored binaries live in the skill `bin/` (e.g.
-`skillshub/metabase/bin/metabase-pp-cli`). `make skills-install-scope
+`skillshub/document-to-markdown/bin/document-to-markdown`). `make skills-install-scope
 SCOPE=<principal>/<workspace>` links them into
 `$MAGICIAN_ROOT_DIR/scopes/<principal>/<workspace>/skills/<skill>/bin/`; the
 dispatcher prepends `<MAGICIAN_SKILL_DIR>/bin` to `PATH`; absolute paths use
 `{skill_runtime_root}/bin/<binary>`. See
-[capabilities README](../../capabilities/README.md#metabase-pack).
+[capabilities README](../../capabilities/README.md#metabase-mcp).
 
 ## Canonical References
 

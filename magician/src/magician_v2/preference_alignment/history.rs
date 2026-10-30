@@ -179,6 +179,18 @@ pub fn diff_intentions(before: &Value, after: &Value) -> Vec<HistoryChange> {
     changes
 }
 
+/// Records moved to the user-memory archive left `knowledge.json` without
+/// being forgotten: journal them as retired, so their history wording is not
+/// erased (the archive can restore them). `archived` holds intention ids.
+pub fn mark_archived(changes: &mut [HistoryChange], archived: &BTreeSet<String>) {
+    for change in changes
+        .iter_mut()
+        .filter(|change| change.op == HistoryOp::Forgotten && archived.contains(&change.record_id))
+    {
+        change.op = HistoryOp::Retired;
+    }
+}
+
 pub fn history_path(storage: &AgentStorage) -> PathBuf {
     storage.user_root().join(HISTORY_FILE)
 }

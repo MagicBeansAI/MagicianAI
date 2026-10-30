@@ -11,11 +11,11 @@
    "file": "magician/src/magician_v2/query_analysis/multi_llm_service.rs",
    "type": "MultiLLMService",
    "fn": "generate_chat_completion_streaming",
-   "line": 1349,
+   "line": 1260,
    "carries": "LLMRequest",
    "title": "A model call is asked for",
    "say": "The caller names an operation, such as chat completion, and the multi LLM service checks that a provider is registered for it before building the request.",
-   "evidence": "magician/src/magician_v2/query_analysis/multi_llm_service.rs:1349, 1376, 1411; magician/src/magician_v2/query_analysis/multi_llm_service.rs:1047",
+   "evidence": "magician/src/magician_v2/query_analysis/multi_llm_service.rs:1349, 1376, 1411; magician/src/magician_v2/query_analysis/multi_llm_service.rs:1047; branch at magician/src/magician_v2/query_analysis/multi_llm_service.rs:1255",
    "next": "llm.queue"
   },
   {
@@ -27,15 +27,30 @@
    "file": "magicllm/src/dispatch/queue.rs",
    "type": "LlmDispatchQueue",
    "fn": "submit_stream",
-   "line": 582,
+   "line": 606,
    "carries": "LlmStreamJob",
    "title": "Queued or sent direct",
    "say": "When the shared dispatch queue is installed, the stream becomes a job with provider permits, quotas and a cloud cap; otherwise it goes straight to the router.",
    "evidence": "magician/src/magician_v2/query_analysis/multi_llm_service.rs:741, 748, 768; magicllm/src/dispatch/queue.rs:582; magicllm/src/dispatch/streaming.rs:137, 481, 551",
-   "next": "llm.profile"
+   "next": "llm.catalog"
   },
   {
-   "id": "llm.profile",
+   "id": "llm.catalog",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Routing",
+   "process": "magician",
+   "file": "magicllm/src/catalog.rs",
+   "type": "ModelCatalog",
+   "fn": "materialize",
+   "line": 577,
+   "title": "Capabilities declared once",
+   "say": "At configuration load, the catalog validates model capabilities and thinking controls, then generates routes from model facts and workload assignments.",
+   "next": "llm.selection",
+   "evidence": "branch at magicllm/src/catalog.rs:482"
+  },
+  {
+   "id": "llm.selection",
    "kind": "step",
    "level": "core",
    "chapter": "Routing",
@@ -43,11 +58,41 @@
    "file": "magicllm/src/router.rs",
    "type": "MultiLLMRouter",
    "fn": "route_stream",
-   "line": 1019,
+   "line": 1099,
    "carries": "LLMRequest",
-   "title": "Operation becomes a profile",
-   "say": "The magicllm router looks the operation up in llm-router.yaml's operation mapping, honours any pinned profile or provider, then applies that profile's defaults and capability checks.",
-   "evidence": "magicllm/src/bootstrap.rs:20, 92; magicllm/src/router.rs:1019, 1096, 1103, 1154, 1166, 1185; magicllm/src/config.rs:218, 395, 506, 531",
+   "title": "Resolve the workload route",
+   "say": "The router resolves the operation or explicit model choice to a generated route, respects pins and locality, then applies capability checks.",
+   "evidence": "magicllm/src/bootstrap.rs:20, 92; magicllm/src/router.rs:1019, 1096, 1103, 1154, 1166, 1185; magicllm/src/config.rs:218, 395, 506, 531; branch at magicllm/src/router.rs:1003; branch at magicllm/src/router.rs:1091",
+   "next": "llm.bounds"
+  },
+  {
+   "id": "llm.bounds",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Routing",
+   "process": "magician",
+   "file": "magicllm/src/catalog.rs",
+   "type": null,
+   "fn": "resolve_request_settings",
+   "line": 900,
+   "title": "Bound output and thinking",
+   "say": "The request resolver derives thinking settings within model, account and workload bounds. Explicit caller limits are never expanded; unsupported levels fail before provider traffic.",
+   "next": "llm.progress",
+   "evidence": "branch at magicllm/src/catalog.rs:800"
+  },
+  {
+   "id": "llm.progress",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Request bounds",
+   "process": "magician",
+   "file": "magicllm/src/providers/mod.rs",
+   "type": "StreamWatchdog",
+   "fn": null,
+   "line": 101,
+   "title": "Bound by progress",
+   "say": "Real output resets an idle deadline; pings and lifecycle events do not. First-output waits and an overall ceiling still stop stalled provider calls.",
+   "evidence": "magicllm/src/providers/mod.rs:101",
    "next": "llm.where"
   },
   {
@@ -56,19 +101,19 @@
    "level": "core",
    "chapter": "Provider",
    "title": "Local or remote model",
-   "say": "Each profile names its model: one running on this machine through Ollama, or a hosted one across the internet. Choose where this call goes.",
-   "decidedBy": "the resolved profile's provider in llm-router.yaml (provider: ollama is local; everything else is remote), with privacy.processing.mode: cloud switching when_cloud arms to their remote profiles",
+   "say": "The resolved model uses a local connection such as Ollama, or a hosted provider. Processing policy decides which route is eligible.",
+   "decidedBy": "The catalog model connection and operation locality selector; local processing remains authoritative.",
    "evidence": "magicllm/src/router.rs:1096, 1154; magicllm/src/config.rs:395; magicllm/src/bootstrap.rs:232, 239; magician/src/config.rs:6644",
    "options": [
     {
      "label": "Remote model",
-     "say": "The profile names a hosted vendor, so the call leaves the machine through that vendor's adapter.",
+     "say": "A hosted model uses its configured provider connection and adapter.",
      "default": true,
      "next": "llm.which"
     },
     {
      "label": "Local model (Ollama)",
-     "say": "The profile names Ollama, so the call stays on this machine and goes to the local Ollama server.",
+     "say": "An Ollama model uses its configured local server connection.",
      "next": "llm.ollama"
     }
    ]
@@ -82,11 +127,11 @@
    "file": "magicllm/src/providers/ollama.rs",
    "type": "OllamaProvider",
    "fn": "invoke",
-   "line": 438,
+   "line": 452,
    "carries": "LLMRequest",
    "title": "Ollama on port 11434",
-   "say": "The Ollama adapter posts to the local server on port 11434, keeping the model resident for a while, and returns one complete answer rather than streaming tokens.",
-   "evidence": "magicllm/src/providers/ollama.rs:23, 26, 39, 315, 438; magicllm/src/provider.rs:35; magicllm/src/bootstrap.rs:454",
+   "say": "The Ollama adapter streams from the local server, keeping the model resident when configured. Even plain calls collect streamed output under progress deadlines.",
+   "evidence": "magicllm/src/providers/ollama.rs:23, 26, 39, 315, 438; magicllm/src/provider.rs:35; magicllm/src/bootstrap.rs:454; branch at magicllm/src/providers/ollama.rs:438",
    "next": "llm.fallback"
   },
   {
@@ -96,7 +141,7 @@
    "chapter": "Provider",
    "title": "Hosted providers",
    "say": "Magician speaks to ten hosted vendors, each through its own adapter and A P I. Pick a provider to follow the request there.",
-   "decidedBy": "the profile's provider field in llm-router.yaml, matched to one registered adapter at boot (harness-<engine> custom providers map to the subscription CLI adapter)",
+   "decidedBy": "The resolved catalog connection provider, matched to a registered adapter; harness connections use qualified CLI providers.",
    "evidence": "magicllm/src/bootstrap.rs:26, 232, 253; magicllm/src/capability.rs:36",
    "options": [
     {
@@ -142,7 +187,7 @@
     },
     {
      "label": "OpenRouter",
-     "say": "One gateway to many vendors; supported in code, though no shipped profile selects it.",
+     "say": "One gateway to many vendors; its adapter is available when an operator configures a qualified connection and model.",
      "next": "llm.openrouter"
     },
     {
@@ -161,11 +206,11 @@
    "file": "magicllm/src/providers/openai_meta.rs",
    "type": "OpenAIMetaProvider",
    "fn": "invoke_stream",
-   "line": 233,
+   "line": 234,
    "carries": "LLMRequest",
    "title": "OpenAI: chat or responses",
-   "say": "The OpenAI adapter picks Chat Completions or the Responses API for each request from the profile's API mode, then streams through that sub adapter.",
-   "evidence": "magicllm/src/providers/openai_meta.rs:43, 183, 233; magicllm/src/providers/openai_chat.rs:34, 886; magicllm/src/providers/openai_responses.rs:72, 2504; magicllm/src/bootstrap.rs:341, 364",
+   "say": "The OpenAI adapter uses the resolved transport, Chat Completions or Responses, and sends only that API’s supported thinking fields.",
+   "evidence": "magicllm/src/providers/openai_meta.rs:43, 183, 233; magicllm/src/providers/openai_chat.rs:34, 886; magicllm/src/providers/openai_responses.rs:72, 2504; magicllm/src/bootstrap.rs:341, 364; branch at magicllm/src/providers/openai_meta.rs:233",
    "next": "llm.fallback"
   },
   {
@@ -177,11 +222,11 @@
    "file": "magicllm/src/providers/anthropic_messages.rs",
    "type": "AnthropicMessagesProvider",
    "fn": "invoke_stream",
-   "line": 2174,
+   "line": 2434,
    "carries": "LLMRequest",
    "title": "Anthropic Messages API",
    "say": "The Anthropic adapter posts to the Messages API and streams text, thinking blocks and tool call fragments back as the server events arrive.",
-   "evidence": "magicllm/src/providers/anthropic_messages.rs:29, 65, 1884, 2158, 2174; magicllm/src/bootstrap.rs:379",
+   "evidence": "magicllm/src/providers/anthropic_messages.rs:29, 65, 1884, 2158, 2174; magicllm/src/bootstrap.rs:379; branch at magicllm/src/providers/anthropic_messages.rs:2174; branch at magicllm/src/providers/anthropic_messages.rs:2197; branch at magicllm/src/providers/anthropic_messages.rs:2199; branch at magicllm/src/providers/anthropic_messages.rs:2368; branch at magicllm/src/providers/anthropic_messages.rs:2432",
    "next": "llm.fallback"
   },
   {
@@ -193,11 +238,11 @@
    "file": "magicllm/src/providers/gemini.rs",
    "type": "GeminiProvider",
    "fn": "invoke",
-   "line": 1619,
+   "line": 1655,
    "carries": "LLMRequest",
    "title": "Google Gemini",
-   "say": "The Gemini adapter calls Google's generative language API without token streaming, so the router receives the whole answer as one final piece.",
-   "evidence": "magicllm/src/providers/gemini.rs:23, 29, 1606, 1619; magicllm/src/provider.rs:35; magicllm/src/bootstrap.rs:470",
+   "say": "Gemini generation uses server events, streaming text, thinking and tools. Plain callers collect that stream; the separate Interactions transport keeps its own response path.",
+   "evidence": "magicllm/src/providers/gemini.rs:23, 29, 1606, 1619; magicllm/src/provider.rs:35; magicllm/src/bootstrap.rs:470; branch at magicllm/src/providers/gemini.rs:1619; branch at magicllm/src/providers/gemini.rs:1636; branch at magicllm/src/providers/gemini.rs:1650",
    "next": "llm.fallback"
   },
   {
@@ -209,11 +254,11 @@
    "file": "magicllm/src/providers/deepseek.rs",
    "type": "DeepSeekProvider",
    "fn": "invoke_stream",
-   "line": 103,
+   "line": 104,
    "carries": "LLMRequest",
    "title": "DeepSeek",
    "say": "The DeepSeek adapter wraps the Anthropic messages adapter, aimed at DeepSeek's Anthropic compatible endpoint, and streams its replies through that inner adapter.",
-   "evidence": "magicllm/src/providers/deepseek.rs:12, 15, 87, 103; magicllm/src/bootstrap.rs:418",
+   "evidence": "magicllm/src/providers/deepseek.rs:12, 15, 87, 103; magicllm/src/bootstrap.rs:418; branch at magicllm/src/providers/deepseek.rs:103",
    "next": "llm.fallback"
   },
   {
@@ -225,11 +270,11 @@
    "file": "magicllm/src/providers/minimax.rs",
    "type": "MinimaxProvider",
    "fn": "invoke_stream",
-   "line": 763,
+   "line": 810,
    "carries": "LLMRequest",
    "title": "MiniMax",
-   "say": "The MiniMax adapter speaks a chat completions style API at MiniMax and streams text and tool call deltas back to the router.",
-   "evidence": "magicllm/src/providers/minimax.rs:42, 55, 577, 763; magicllm/src/bootstrap.rs:406",
+   "say": "MiniMax streams text, reasoning and tool calls with usage requested for pricing. M3.1 supports five thinking levels, while Auto leaves its native default.",
+   "evidence": "magicllm/src/providers/minimax.rs:42, 55, 577, 763; magicllm/src/bootstrap.rs:406; branch at magicllm/src/providers/minimax.rs:763; branch at magicllm/src/providers/minimax.rs:808",
    "next": "llm.fallback"
   },
   {
@@ -257,11 +302,11 @@
    "file": "magicllm/src/providers/sarvam.rs",
    "type": "SarvamProvider",
    "fn": "invoke_stream",
-   "line": 597,
+   "line": 607,
    "carries": "LLMRequest",
    "title": "Sarvam",
    "say": "The Sarvam adapter is its own chat completions transport for Sarvam's Indic first models, handling their quirks, and streams the reply back.",
-   "evidence": "magicllm/src/providers/sarvam.rs:1, 56, 75, 570, 597; magicllm/src/bootstrap.rs:430",
+   "evidence": "magicllm/src/providers/sarvam.rs:1, 56, 75, 570, 597; magicllm/src/bootstrap.rs:430; branch at magicllm/src/providers/sarvam.rs:597; branch at magicllm/src/providers/sarvam.rs:600; branch at magicllm/src/providers/sarvam.rs:605",
    "next": "llm.fallback"
   },
   {
@@ -289,11 +334,11 @@
    "file": "magicllm/src/providers/openrouter.rs",
    "type": "OpenRouterProvider",
    "fn": "invoke",
-   "line": 807,
+   "line": 803,
    "carries": "LLMRequest",
    "title": "OpenRouter",
-   "say": "The OpenRouter adapter sends chat completions to OpenRouter, which fronts many vendors, and returns the complete answer in one final piece.",
-   "evidence": "magicllm/src/providers/openrouter.rs:28, 33, 794, 807; magicllm/src/provider.rs:35; magicllm/src/bootstrap.rs:394",
+   "say": "OpenRouter fronts many vendors through chat completions. Its adapter streams the reply and can rebuild a complete response for callers that await one.",
+   "evidence": "magicllm/src/providers/openrouter.rs:28, 33, 794, 807; magicllm/src/provider.rs:35; magicllm/src/bootstrap.rs:394; branch at magicllm/src/providers/openrouter.rs:807; branch at magicllm/src/providers/openrouter.rs:801",
    "next": "llm.fallback"
   },
   {
@@ -308,7 +353,7 @@
    "line": 637,
    "carries": "LLMRequest",
    "title": "Subscription CLI as a model",
-   "say": "A harness profile flattens the request into one prompt, runs the installed CLI with a curated environment, and parses its printed answer as plain text.",
+   "say": "A qualified harness connection flattens the request, passes model and supported effort flags to the installed CLI, and reads its plain text answer.",
    "evidence": "magicllm/src/bootstrap.rs:253, 269; magicllm/src/providers/harness_cli.rs:52, 183, 192, 625, 637, 672",
    "next": "llm.fallback"
   },
@@ -321,11 +366,11 @@
    "file": "magicllm/src/router.rs",
    "type": "MultiLLMRouter",
    "fn": "route",
-   "line": 276,
+   "line": 338,
    "carries": "LLMError",
-   "title": "Fallback profile",
-   "say": "On a non streaming call, a failed provider hands the request to its profile's fallback profile, with loop detection; a streaming call has no fallback hop.",
-   "evidence": "magicllm/src/router.rs:276, 405, 941, 995, 1062, 1536; branch at magicllm/src/router.rs:941",
+   "title": "Typed fallback assignment",
+   "say": "Eligible non-streaming failures can follow another assignment with its own model and thinking. Exact pins and resource-bound calls prevent switching; streaming has no fallback hop.",
+   "evidence": "magicllm/src/router.rs:276, 405, 941, 995, 1062, 1536; branch at magicllm/src/router.rs:941; branch at magicllm/src/router.rs:272",
    "next": "llm.retry"
   },
   {
@@ -412,11 +457,11 @@
    "file": "magician/src/magician_v2/chat/decision_rail.rs",
    "type": "ChatDecisionRail",
    "fn": "prepare_with_client",
-   "line": 162,
+   "line": 183,
    "carries": "ActionRequest",
    "title": "Build the action request",
    "say": "The decision rail packs the goal, instructions, recent evidence, offered tools, remaining plan and processing locality into one action request.",
-   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:47, 136, 159; magician/src/magician_v2/decision_host.rs:132, 276; branch at magician/src/magician_v2/chat/decision_rail.rs:159",
+   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:47, 136, 159; magician/src/magician_v2/decision_host.rs:132, 276; branch at magician/src/magician_v2/chat/decision_rail.rs:159; branch at magician/src/magician_v2/chat/decision_rail.rs:162; branch at magician/src/magician_v2/chat/decision_rail.rs:164",
    "next": "decision.client"
   },
   {
@@ -428,11 +473,11 @@
    "file": "decision-engine-contract/src/client.rs",
    "type": "EngineClient",
    "fn": "action",
-   "line": 163,
+   "line": 168,
    "carries": "ActionRequest",
    "title": "Over the Unix socket",
    "say": "The engine client posts the request as HTTP over a Unix socket to the separate engine process, and rejects any reply whose snapshot does not match.",
-   "evidence": "decision-engine-contract/src/client.rs:45, 163, 190, 232; decision-engine-contract/src/action.rs:12; magician/src/magician_v2/decision_host.rs:276",
+   "evidence": "decision-engine-contract/src/client.rs:45, 163, 190, 232; decision-engine-contract/src/action.rs:12; magician/src/magician_v2/decision_host.rs:276; branch at decision-engine-contract/src/client.rs:163",
    "next": "decision.server"
   },
   {
@@ -481,6 +526,20 @@
    "title": "Which models may serve",
    "say": "From decision-engine.yaml, each operation gets a pinned model or a tier, local models below the memory floor drop out, and private steps refuse remote models locally.",
    "evidence": "magician-decision/src/engine.rs:63, 112, 122, 155, 187, 242; magician-decision/src/host.rs:25; magician-decision/src/config.rs:32, 38",
+   "next": "decision.assets"
+  },
+  {
+   "id": "decision.assets",
+   "kind": "step",
+   "level": "nerd",
+   "chapter": "Engine",
+   "process": "decision-engine",
+   "file": "decision-engine-contract/src/asset.rs",
+   "type": null,
+   "fn": "validate_assets",
+   "line": 129,
+   "title": "Optional screenshot assets",
+   "say": "Image-capable routes can carry bounded, referenced screenshots. Assets are validated before dispatch, text-only models are skipped, and local processing rules still apply.",
    "next": "decision.walk"
   },
   {
@@ -492,11 +551,11 @@
    "file": "magician-decision/src/runtime.rs",
    "type": "DecisionRuntime",
    "fn": "evaluate_request_before_mapped",
-   "line": 302,
+   "line": 353,
    "carries": "DecisionRequest",
    "title": "Walk the model route",
-   "say": "The runtime tries the route's models in order, skipping misfits, moving on when a model is unavailable, and keeping the first answer that clears its thresholds.",
-   "evidence": "magician-decision/src/runtime.rs:65, 289, 302, 335, 385, 410, 514",
+   "say": "The engine validates assets, checks model capabilities and request or question bounds, then walks the eligible route within the remaining deadline.",
+   "evidence": "magician-decision/src/runtime.rs:65, 289, 302, 335, 385, 410, 514; branch at magician-decision/src/runtime.rs:302",
    "next": "decision.model"
   },
   {
@@ -536,11 +595,11 @@
    "file": "magician-decision/src/adapters/systemone.rs",
    "type": "SystemOneDecisionModel",
    "fn": "evaluate",
-   "line": 332,
+   "line": 382,
    "carries": "DecisionRequest",
    "title": "Jev answers remotely",
    "say": "The System One adapter posts the typed question to TypeSafe's endpoint, with timeouts and retries, and reads back the chosen option and its confidence.",
-   "evidence": "magician-decision/src/adapters/systemone.rs:36, 126, 319, 332, 396; magician-decision/src/engine.rs:252, 424",
+   "evidence": "magician-decision/src/adapters/systemone.rs:36, 126, 319, 332, 396; magician-decision/src/engine.rs:252, 424; branch at magician-decision/src/adapters/systemone.rs:332",
    "next": "decision.gate"
   },
   {
@@ -697,11 +756,11 @@
    "file": "magician/src/magician_v2/chat/decision_rail.rs",
    "type": "ChatDecisionRail",
    "fn": "accept",
-   "line": 266,
+   "line": 291,
    "carries": "ActionResponse",
    "title": "Verdict back in Magician",
    "say": "Back in Magician, the rail records model usage and health, then turns the verdict into run this call, ask the planner, bypass, or an error.",
-   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:41, 236, 245, 249, 252, 253; magician/src/magician_v2/chat/service.rs:13585, 13595; branch at magician/src/magician_v2/chat/decision_rail.rs:236",
+   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:41, 236, 245, 249, 252, 253; magician/src/magician_v2/chat/service.rs:13585, 13595; branch at magician/src/magician_v2/chat/decision_rail.rs:236; branch at magician/src/magician_v2/chat/decision_rail.rs:266; branch at magician/src/magician_v2/chat/decision_rail.rs:268",
    "next": "decision.done"
   },
   {

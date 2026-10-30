@@ -1674,6 +1674,50 @@ pub async fn acknowledge(
     expected_source_segment: &str,
     receipt: &SteerConsumeReceipt,
 ) -> Result<(), String> {
+    settle_claim(
+        workspace_layout,
+        principal,
+        workspace,
+        expected_execution_id,
+        expected_source_segment,
+        receipt,
+        true,
+    )
+    .await
+}
+
+/// A failed decision did not consume its guidance. Release only its exact
+/// sealed claim before committing the failure, so a retry (including a cold
+/// worker) can claim the text again without persisting it in mutable loop state.
+pub async fn retry_failed_decision(
+    workspace_layout: &ArtifactV2Workspace,
+    principal: &str,
+    workspace: &str,
+    expected_execution_id: &str,
+    expected_source_segment: &str,
+    receipt: &SteerConsumeReceipt,
+) -> Result<(), String> {
+    settle_claim(
+        workspace_layout,
+        principal,
+        workspace,
+        expected_execution_id,
+        expected_source_segment,
+        receipt,
+        false,
+    )
+    .await
+}
+
+async fn settle_claim(
+    workspace_layout: &ArtifactV2Workspace,
+    principal: &str,
+    workspace: &str,
+    expected_execution_id: &str,
+    expected_source_segment: &str,
+    receipt: &SteerConsumeReceipt,
+    consumed: bool,
+) -> Result<(), String> {
     if receipt.schema_version != STEER_INBOX_SCHEMA_VERSION
         || expected_execution_id.trim().is_empty()
         || expected_source_segment.trim().is_empty()
@@ -1715,27 +1759,130 @@ pub async fn acknowledge(
             if stored.generation != named.generation
                 || stored.control_generation != named.control_generation
                 || stored.content_digest != named.content_digest
-                || stored.claim.as_ref() != Some(&expected_claim)
+                || (stored.claim.as_ref() != Some(&expected_claim)
+                    && (consumed || stored.claim.is_some()))
             {
                 return Err("operator_steer_receipt_binding_mismatch".to_owned());
             }
         }
     }
-    inbox.entries.retain(|stored| {
-        !receipt.entries.iter().any(|named| {
-            stored.entry_id == named.entry_id
-                && stored.generation == named.generation
-                && stored.control_generation == named.control_generation
-                && stored.content_digest == named.content_digest
-                && stored.claim.as_ref() == Some(&expected_claim)
-        })
-    });
+    if !consumed {
+        for stored in &mut inbox.entries {
+            if receipt
+                .entries
+                .iter()
+                .any(|named| stored.entry_id == named.entry_id)
+            {
+                stored.claim = None;
+            }
+        }
+    } else {
+        inbox.entries.retain(|stored| {
+            !receipt.entries.iter().any(|named| {
+                stored.entry_id == named.entry_id
+                    && stored.generation == named.generation
+                    && stored.control_generation == named.control_generation
+                    && stored.content_digest == named.content_digest
+                    && stored.claim.as_ref() == Some(&expected_claim)
+            })
+        });
+    }
     save(workspace_layout, &path, inbox).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_decision_releases_only_its_exact_claim_for_a_later_retry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path().join("workspace"));
+        let generation = uuid::Uuid::new_v4().to_string();
+        activate(&workspace, &generation).await;
+        enqueue(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            &generation,
+            "Use the new requirement",
+        )
+        .await
+        .expect("enqueue");
+        let first = claim(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            &generation,
+            "segment",
+            1,
+        )
+        .await
+        .expect("claim")
+        .expect("guidance");
+        for _ in 0..2 {
+            retry_failed_decision(
+                &workspace,
+                "principal",
+                "workspace",
+                "execution-1",
+                "segment",
+                &first.receipt,
+            )
+            .await
+            .expect("idempotent release");
+        }
+        let retry = claim(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            &generation,
+            "segment",
+            2,
+        )
+        .await
+        .expect("reclaim")
+        .expect("guidance survived");
+        assert_eq!(retry.messages, first.messages);
+        assert!(
+            retry_failed_decision(
+                &workspace,
+                "principal",
+                "workspace",
+                "execution-1",
+                "segment",
+                &first.receipt
+            )
+            .await
+            .is_err(),
+            "a stale failure cannot release a newer claim"
+        );
+        acknowledge(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            "segment",
+            &retry.receipt,
+        )
+        .await
+        .expect("successful decision consumed guidance");
+        assert!(claim(
+            &workspace,
+            "principal",
+            "workspace",
+            "execution-1",
+            &generation,
+            "segment",
+            3
+        )
+        .await
+        .expect("read")
+        .is_none());
+    }
 
     async fn activate(workspace: &ArtifactV2Workspace, generation: &str) {
         activate_named(workspace, "execution-1", generation).await;

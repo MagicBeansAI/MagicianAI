@@ -664,7 +664,12 @@ enum class TodayDeckTab(val label: String) {
     }
 }
 
-enum class TodayDeckAction { Useful, Acknowledge, Dismiss, Primary }
+/**
+ * What a deck card commit does. [Primary] is the resolving Act-menu choice:
+ * approve (with the optional instruction) for a follow-up, Open-as-useful for
+ * a worth-a-look card. [Snooze] only exists for follow-ups.
+ */
+enum class TodayDeckAction { Useful, Acknowledge, Dismiss, Primary, Snooze }
 
 /** A Morning Brief card: a channel follow-up or a worth-a-look card. */
 data class TodayDeckCard(
@@ -687,7 +692,7 @@ fun deckCard(followUp: ChannelFollowUp): TodayDeckCard = TodayDeckCard(
     summary = followUp.summary?.trim()?.takeIf(String::isNotEmpty)
         ?: followUp.reason?.trim()?.takeIf(String::isNotEmpty) ?: "No preview available",
     sender = followUp.sender?.trim()?.takeIf(String::isNotEmpty),
-    primaryLabel = "Do it",
+    primaryLabel = TODAY_DECK_ACT_LABEL,
     followUp = followUp,
 )
 
@@ -697,18 +702,102 @@ fun deckCard(worth: ResurfacingCard): TodayDeckCard = TodayDeckCard(
     title = worth.sourceTitle.trim().ifEmpty { worth.line.trim() }.ifEmpty { "Resurfaced Note" },
     category = readingRoomCategory(worth),
     summary = worth.summary.trim().ifEmpty { worth.whyNow.trim() }.ifEmpty { "Resurfaced for your attention" },
-    primaryLabel = "Open",
+    primaryLabel = TODAY_DECK_ACT_LABEL,
     worth = worth,
 )
+
+/** The deck's ⚡ button opens a menu of the card's real actions; it never fires one itself. */
+const val TODAY_DECK_ACT_LABEL = "Act"
+/** Follow-up snooze has no duration on the wire: it hides the card from Today. */
+const val FOLLOW_UP_SNOOZE_LABEL = "Snooze — hide from Today"
+
+/** One row of the deck's Act menu. [id] feeds the row's `today-deck-act-<id>` test tag. */
+sealed interface TodayDeckMenuEntry {
+    val id: String
+    val label: String
+
+    /** A server-provided channel action, run through the broadsheet's compose flow. */
+    data class Channel(val descriptor: ChannelActionDescriptor) : TodayDeckMenuEntry {
+        override val id get() = "channel-${descriptor.id}"
+        override val label get() = descriptor.label
+    }
+    data class OpenInProvider(val url: String, val provider: String) : TodayDeckMenuEntry {
+        override val id get() = "open-provider"
+        override val label get() = "Open in $provider"
+    }
+    /** Asks for the optional instruction first; only its confirm approves. */
+    object StartFollowUpTask : TodayDeckMenuEntry {
+        override val id = "start-task"
+        override val label = "Start follow-up task…"
+    }
+    object Snooze : TodayDeckMenuEntry {
+        override val id = "snooze"
+        override val label = FOLLOW_UP_SNOOZE_LABEL
+    }
+    /** Worth a look: mark useful and open the source (the old primary). */
+    object Open : TodayDeckMenuEntry {
+        override val id = "open"
+        override val label = "Open"
+    }
+    data class Resurfacing(val kind: ResurfacingActionKind, override val label: String) : TodayDeckMenuEntry {
+        override val id get() = "resurfacing-${kind.wire}"
+    }
+    object Details : TodayDeckMenuEntry {
+        override val id = "details"
+        override val label = "Details"
+    }
+}
+
+/**
+ * The Act menu for one deck card, in display order. Worth-a-look
+ * `view_details`/`open_source` are left out: Details and Open already cover
+ * them. Unknown capability kinds are skipped, as on the broadsheet.
+ */
+fun deckActMenu(card: TodayDeckCard, assistantName: String): List<TodayDeckMenuEntry> {
+    card.followUp?.let { followUp ->
+        return buildList {
+            followUp.availableActions.forEach { add(TodayDeckMenuEntry.Channel(it)) }
+            followUp.openUrl?.takeIf(String::isNotBlank)?.let { add(TodayDeckMenuEntry.OpenInProvider(it, followUpProviderName(followUp))) }
+            // A stale draft is re-opened for review in Details, never approved from the menu.
+            if (!followUp.reviewRequired) add(TodayDeckMenuEntry.StartFollowUpTask)
+            add(TodayDeckMenuEntry.Snooze)
+            add(TodayDeckMenuEntry.Details)
+        }
+    }
+    card.worth?.let { worth ->
+        return buildList {
+            add(TodayDeckMenuEntry.Open)
+            worth.actions.forEach { capability ->
+                val kind = ResurfacingActionKind.fromWire(capability.kind) ?: return@forEach
+                if (kind == ResurfacingActionKind.ViewDetails || kind == ResurfacingActionKind.OpenSource) return@forEach
+                add(TodayDeckMenuEntry.Resurfacing(kind, resurfacingActionLabel(capability.kind, capability.label, assistantName)))
+            }
+            add(TodayDeckMenuEntry.Details)
+        }
+    }
+    return listOf(TodayDeckMenuEntry.Details)
+}
+
+/** `gmail` → `Gmail`; a follow-up with no provider reads as "app". */
+fun followUpProviderName(followUp: ChannelFollowUp): String =
+    followUp.provider.trim().takeUnless { it.isEmpty() || it == "unknown" }
+        ?.replaceFirstChar { it.titlecase(Locale.getDefault()) } ?: "app"
+
+/**
+ * Today never shows the legacy "Ask Presto" label: `ask_presto` reads as
+ * "Ask <primary agent>". The wire kind stays `ask_presto`.
+ */
+fun resurfacingActionLabel(kind: String, label: String, assistantName: String): String =
+    if (kind == ResurfacingActionKind.AskPresto.wire) "Ask ${assistantName.trim().ifEmpty { "assistant" }}" else label
 
 fun deckCardId(followUp: ChannelFollowUp): String = "followup:${followUp.id}"
 fun deckCardId(worth: ResurfacingCard): String = "worth:${worth.id}"
 
 fun dispatchCategory(followUp: ChannelFollowUp): String =
-    "DISPATCH · ${followUp.provider.trim().uppercase().ifEmpty { "CORRESPONDENCE" }}"
+    "FOR YOU · ${followUp.provider.trim().uppercase().ifEmpty { "CORRESPONDENCE" }}"
 
 fun readingRoomCategory(worth: ResurfacingCard): String =
-    "READING ROOM · ${worth.sourceKind.replace('_', ' ').trim().uppercase().ifEmpty { "NOTE" }}"
+    "WORTH A LOOK · ${worth.sourceKind.replace('_', ' ').trim().uppercase().ifEmpty { "NOTE" }}"
 
 /** Two dispatches, then one reading-room card, until both run out. */
 fun interleaveDeck(followUps: List<ChannelFollowUp>, worth: List<ResurfacingCard>): List<TodayDeckCard> {
@@ -721,7 +810,7 @@ fun interleaveDeck(followUps: List<ChannelFollowUp>, worth: List<ResurfacingCard
     return result
 }
 
-fun readingRoomCountLabel(total: Int): String = if (total > 50) "50+" else total.coerceAtLeast(0).toString()
+fun readingRoomCountLabel(total: Int): String = total.coerceAtLeast(0).toString()
 
 /** Deck stays flowing: fetch the next page once two or fewer cards remain. */
 fun deckNeedsMore(visibleRemaining: Int, hasMoreFollowUps: Boolean, hasMoreWorth: Boolean): Boolean =
@@ -741,3 +830,14 @@ fun briefingMeta(briefing: TodayBriefing, nowMs: Long = System.currentTimeMillis
     runCatching { Instant.parse(briefing.surface.publishedAt).toEpochMilli() }.getOrNull()
         ?.let { todayRelativeTime(it, nowMs) },
 ).joinToString(" · ")
+
+/** Absolute local date/time; never substitute the time a card was rendered. */
+fun readingRoomDateline(followUp: ChannelFollowUp? = null, worth: ResurfacingCard? = null): String? {
+    val received = followUp?.receivedAt?.takeIf { it > 0 }
+    val surfaced = worth?.surfacedAt?.takeIf { it > 0 }
+    val timestamp = surfaced ?: worth?.temporalAnchorAt ?: received ?: followUp?.createdAt ?: return null
+    if (timestamp <= 0) return null
+    val label = if (worth != null) (if (surfaced != null) "Surfaced" else "Reference") else if (received != null) "Received" else "Added"
+    val date = Instant.ofEpochMilli(timestamp).atZone(java.time.ZoneId.systemDefault())
+    return "$label ${date.format(DateTimeFormatter.ofPattern("d MMM yyyy · HH:mm", Locale.getDefault()))}"
+}

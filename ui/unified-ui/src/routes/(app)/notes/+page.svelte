@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 
 	import { showError } from '$lib/shared/stores/notifications';
@@ -17,6 +18,7 @@
 		setArchiveChatDictation
 	} from '$lib/notes/audioNotePreferences';
 	import NotesLibrary from '$lib/notes/NotesLibrary.svelte';
+	import { noteHref } from '$lib/notes/noteLinks';
 	import { isVoiceNotePath } from '$lib/notes/voiceNotePath';
 	import {
 		highlightSegments,
@@ -25,7 +27,11 @@
 		type NoteSearchResults
 	} from '$lib/notes/noteSearch';
 	import { refreshNotesSettings } from '$lib/stores/notesSettingsStore';
-	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+	import {
+		refreshScopeSession,
+		scopeIdentityStore,
+		switchScopeWorkspace
+	} from '$lib/stores/scopeIdentityStore';
 
 	const WRITTEN_SEARCH_STEP = 10;
 	const WRITTEN_SEARCH_MAX = 50;
@@ -45,7 +51,25 @@
 	let openPath = '';
 	let appliedNotePath = '';
 
+	/**
+	 * Whether this page may show notes for the link it was opened with.
+	 *
+	 * A note link names its workspace (`/notes?path=…&workspace=…`). Notes
+	 * are read through the session's scope, so a link into another workspace
+	 * first switches the session there — only when the session may enter it.
+	 * Until that is settled nothing is fetched: a link into a workspace the
+	 * session cannot enter must not show this workspace's notes under it.
+	 */
+	type WorkspaceGate = 'checking' | 'ready' | 'blocked';
+	let workspaceGate: WorkspaceGate = 'checking';
+	let gateFor: string | null = null;
+	let gateRun = 0;
+	let switchingWorkspace = false;
+	let blockedWorkspace = '';
+	let blockedDetail = '';
+
 	$: scopeKey = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
+	$: requestedWorkspace = $page.url?.searchParams.get('workspace')?.trim() ?? '';
 	$: {
 		const requested = $page.url?.searchParams.get('path') ?? '';
 		if (requested && requested !== appliedNotePath) {
@@ -53,10 +77,96 @@
 			openPath = requested;
 		}
 	}
-	$: if (mounted && scopeKey !== loadedScope) {
+	$: if (mounted && requestedWorkspace !== gateFor) void settleWorkspace(requestedWorkspace);
+	$: if (mounted && workspaceGate === 'ready' && scopeKey !== loadedScope) {
 		loadedScope = scopeKey;
 		libraryRevision += 1;
+		void refreshNotesSettings().catch(() => undefined);
 		void load();
+	}
+	$: if (mounted && workspaceGate === 'ready' && !switchingWorkspace) {
+		followScopeWorkspace($scopeIdentityStore.workspace);
+	}
+
+	async function settleWorkspace(requested: string): Promise<void> {
+		gateFor = requested;
+		const run = ++gateRun;
+		if (
+			!requested
+			|| (requested === $scopeIdentityStore.workspace && $scopeIdentityStore.isResolved)
+		) {
+			workspaceGate = 'ready';
+			return;
+		}
+		workspaceGate = 'checking';
+		blockedWorkspace = '';
+		blockedDetail = '';
+		try {
+			// The stored scope can lag the bearer; ask the server which
+			// workspace this session is in and which it may enter.
+			const session = await refreshScopeSession();
+			if (run !== gateRun) return;
+			// No session: the app shell sends the visitor to sign in and back
+			// to this same URL. Show nothing meanwhile.
+			if (!session) return;
+			if (session.workspace === requested) {
+				workspaceGate = 'ready';
+				return;
+			}
+			if (!session.workspaces.some((workspace) => workspace.id === requested)) {
+				blockedWorkspace = requested;
+				workspaceGate = 'blocked';
+				return;
+			}
+			switchingWorkspace = true;
+			try {
+				await switchScopeWorkspace(requested);
+			} finally {
+				switchingWorkspace = false;
+			}
+			if (run !== gateRun) return;
+			workspaceGate = 'ready';
+		} catch (error) {
+			if (run !== gateRun) return;
+			blockedWorkspace = requested;
+			blockedDetail = error instanceof Error ? error.message : '';
+			workspaceGate = 'blocked';
+		}
+	}
+
+	/**
+	 * The address bar always names the workspace the page shows. When the
+	 * session moves to another workspace from elsewhere in the app, the note
+	 * on screen belongs to the old one, so the link drops it rather than
+	 * pulling the session back on the next load.
+	 */
+	function followScopeWorkspace(current: string): void {
+		const named = $page.url?.searchParams.get('workspace')?.trim() ?? '';
+		if (!named || named === current) return;
+		gateFor = current;
+		appliedNotePath = '';
+		openPath = '';
+		void replaceAddress(`/notes?workspace=${encodeURIComponent(current)}`);
+	}
+
+	/** Keep the address bar on the canonical link of the open note. */
+	function syncAddress(path: string): void {
+		const workspace = $scopeIdentityStore.workspace;
+		const href = noteHref(path, workspace);
+		const current = $page.url ? `${$page.url.pathname}${$page.url.search}` : '';
+		appliedNotePath = path;
+		openPath = path;
+		gateFor = workspace;
+		if (current === href) return;
+		void replaceAddress(href);
+	}
+
+	async function replaceAddress(href: string): Promise<void> {
+		try {
+			await goto(href, { replaceState: true, noScroll: true, keepFocus: true });
+		} catch {
+			// The address is a convenience; the open note is already on screen.
+		}
 	}
 	let writtenDraft = '';
 	let writtenQuery = '';
@@ -199,7 +309,8 @@
 	}
 
 	function providerLabel(provider: string): string {
-		return provider === 'silverbullet' ? 'Notes folder' : 'Fallback folder';
+		// `silverbullet` is the persisted id of the notes folder.
+		return provider === 'silverbullet' ? 'Notes' : 'Fallback folder';
 	}
 
 	function searchSummary(results: NoteSearchResults, tookMs: number | null): string {
@@ -300,15 +411,12 @@
 
 	onMount(() => {
 		mounted = true;
-		loadedScope = scopeKey;
 		unsubscribeOutbox = audioNoteOutbox.subscribe((items) => {
 			const currentIds = new Set(items.map((item) => item.id));
 			if (Array.from(previousOutboxIds).some((id) => !currentIds.has(id))) void load();
 			previousOutboxIds = currentIds;
 		});
 		void audioNoteOutbox.start().catch(() => undefined);
-		void refreshNotesSettings().catch(() => undefined);
-		void load();
 	});
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
@@ -361,6 +469,19 @@
 		</div>
 	</header>
 
+	{#if workspaceGate === 'blocked'}
+	<section class="section workspace-gate" role="alert" aria-labelledby="workspace-gate-title">
+		<h2 id="workspace-gate-title">This note is in a workspace you're not signed into</h2>
+		<p>
+			The link points to the workspace “{blockedWorkspace}”, which this session cannot open.
+			Sign in with an account that belongs to it, or ask its owner for access.
+		</p>
+		{#if blockedDetail}<p class="gate-detail">{blockedDetail}</p>{/if}
+		<p><a href="/notes">Open your notes instead</a></p>
+	</section>
+	{:else if workspaceGate === 'checking'}
+	<p class="section workspace-gate" role="status">Opening the note's workspace…</p>
+	{:else}
 	{#if writtenSearching || writtenError || writtenResults}
 	<section class="section results" aria-label="Search results">
 		<div class="results-head">
@@ -469,7 +590,14 @@
 	</section>
 	{/if}
 
-	<NotesLibrary {openPath} revision={libraryRevision} onPlayVoice={playVoicePath} />
+	<NotesLibrary
+		{openPath}
+		revision={libraryRevision}
+		workspace={$scopeIdentityStore.workspace}
+		onPlayVoice={playVoicePath}
+		onOpen={syncAddress}
+	/>
+	{/if}
 
 	{#if playbackUrl}
 		<section class="player" aria-label="Recording player">
@@ -508,6 +636,16 @@
 </main>
 
 <style>
+	.workspace-gate {
+		display: grid;
+		gap: 8px;
+		margin-top: 16px;
+		padding: 16px;
+		border: 1px solid var(--border-soft);
+		border-radius: 12px;
+		background: var(--bg-elevated);
+	}
+	.workspace-gate .gate-detail { color: var(--text-secondary); font-size: .85rem; }
 	.notes-page {
 		box-sizing: border-box;
 		width: min(var(--app-content-max, 1120px), calc(100% - 48px));

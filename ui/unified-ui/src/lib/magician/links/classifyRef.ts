@@ -146,6 +146,18 @@ export function classifyRef(href: string): ResourceRef {
         return { kind: 'agent', id: agentMatch[1] };
     }
 
+    // Known retired app routes take precedence over filename heuristics:
+    // a task ID or a query value can itself contain a dot.
+    const workHref = canonicalWorkHref(raw);
+    if (workHref !== raw) return { kind: 'internalRoute', route: workHref };
+
+    // Workspace-relative file mentions use the same scoped resolver as
+    // absolute paths. Never let the browser turn them into app routes.
+    if (!raw.startsWith('/') && !raw.includes(':') &&
+        /^[^?#\\]+\/[^?#\\]+\.[A-Za-z0-9]{1,12}$/.test(raw)) {
+        return { kind: 'filePath', absolutePath: raw };
+    }
+
     // Absolute filesystem path — anything that looks like a real OS
     // path (has a file extension on the last segment, or sits under a
     // known data-tree prefix). Routes to the OS-action endpoints so

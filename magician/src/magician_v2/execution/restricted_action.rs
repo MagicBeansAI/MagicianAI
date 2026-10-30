@@ -33,11 +33,79 @@
 //! autonomous agent receives only the restricted form."* A person driving a tool
 //! directly is not the threat model; an autonomous loop composing arguments is.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::Value;
 
 use super::effective_action::{resolve_effective_action, EffectiveAction};
+
+/// What a capability's sender parameter holds, which decides how §4A.3 binds
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenderKind {
+    /// The parameter carries a sender address (`inbox_id` is the from-address):
+    /// whatever the caller supplied is overwritten with the runtime's
+    /// [`SenderIdentity`].
+    Identity,
+    /// The parameter selects a credential profile alias — which of the owner's
+    /// configured mailboxes sends (`gmail`/`calendar` `account`). It is never
+    /// the agent's id: an alias the owner approved is kept, an absent one stays
+    /// absent so the skill's contract default applies, and any other value is
+    /// refused ([`RestrictionError::SenderProfileNotApproved`]).
+    ProfileAlias,
+}
+
+/// The credential profile aliases an autonomous act may name for a
+/// [`SenderKind::ProfileAlias`] sender: the skill's declared profile enum
+/// intersected with the enabled operator profiles registered for its provider.
+/// The governed runtime still selects through its own registry at dispatch;
+/// this is the gate's narrower, owner-approved answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApprovedSenderProfiles {
+    aliases: BTreeSet<String>,
+    default_alias: Option<String>,
+}
+
+impl ApprovedSenderProfiles {
+    pub fn new<I, S>(aliases: I, default_alias: Option<String>) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            aliases: aliases
+                .into_iter()
+                .map(|alias| {
+                    let alias: String = alias.into();
+                    alias.trim().to_string()
+                })
+                .filter(|alias| !alias.is_empty())
+                .collect(),
+            default_alias: default_alias
+                .map(|alias| alias.trim().to_string())
+                .filter(|alias| !alias.is_empty()),
+        }
+    }
+
+    /// The approved spelling of `requested`, matched without regard to ASCII
+    /// case.
+    pub fn approved(&self, requested: &str) -> Option<&str> {
+        let requested = requested.trim();
+        self.aliases
+            .iter()
+            .find(|alias| alias.eq_ignore_ascii_case(requested))
+            .map(String::as_str)
+    }
+
+    pub fn aliases(&self) -> Vec<String> {
+        self.aliases.iter().cloned().collect()
+    }
+
+    /// The skill contract's default alias, used when the caller names none.
+    pub fn default_alias(&self) -> Option<&str> {
+        self.default_alias.as_deref()
+    }
+}
 
 /// A closed argument surface for one outward capability.
 ///
@@ -50,10 +118,13 @@ pub struct RestrictedAction {
     pub capability: &'static str,
     /// Parameters the caller may supply.
     pub allowed_parameters: &'static [&'static str],
-    /// Parameters carrying the sender identity. **Overwritten** by the bound
-    /// sender, whatever the caller supplied — §4A.3, and the reason a compromised
-    /// agent cannot send as somebody else.
+    /// Parameters carrying the sender. How they are bound is `sender_kind`'s
+    /// answer: an [`SenderKind::Identity`] parameter is **overwritten** by the
+    /// bound sender, whatever the caller supplied; a [`SenderKind::ProfileAlias`]
+    /// parameter is kept only when it names an owner-approved profile — §4A.3,
+    /// and the reason a compromised agent cannot send as somebody else.
     pub sender_parameters: &'static [&'static str],
+    pub sender_kind: SenderKind,
     /// Parameters whose values name recipients, canonicalised on the way through.
     pub recipient_parameters: &'static [&'static str],
 }
@@ -117,6 +188,14 @@ pub enum RestrictionError {
     /// The same parameter twice under different spellings. Refused rather than
     /// resolved, because which value won would depend on hash order.
     DuplicateParameter { parameter: String },
+    /// A profile-selector sender named a profile the owner has not approved for
+    /// this capability. Refused rather than rebound: silently swapping the
+    /// mailbox would send from an account the agent did not compose for.
+    SenderProfileNotApproved {
+        parameter: String,
+        approved: Vec<String>,
+        default_alias: Option<String>,
+    },
 }
 
 impl RestrictionError {
@@ -146,6 +225,31 @@ impl RestrictionError {
                 "this action still accepts {escape_hatches:?} after restriction, which is a \
                  runtime defect rather than something to work around."
             ),
+            Self::SenderProfileNotApproved {
+                parameter,
+                approved,
+                default_alias,
+            } => {
+                let omit = match default_alias {
+                    Some(default) => format!("omit it to send from the default (`{default}`)"),
+                    None => "omit it to send from the default account".to_string(),
+                };
+                if approved.is_empty() {
+                    format!(
+                        "`{parameter}` must name an account the owner approved, and none is \
+                         configured for this tool; {omit}."
+                    )
+                } else {
+                    let names = approved
+                        .iter()
+                        .map(|alias| format!("`{alias}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "`{parameter}` must name an account the owner approved: {names}; {omit}."
+                    )
+                }
+            },
         }
     }
 }
@@ -194,11 +298,33 @@ pub fn is_dispatch_routing_key(name: &str) -> bool {
 }
 
 /// Reduce a dispatch to its bindable form, or refuse.
+///
+/// No profile is approved here, so a [`SenderKind::ProfileAlias`] sender the
+/// caller named is refused and an absent one stays absent. The dispatch gate
+/// uses [`restrict_with_profiles`] with the owner-approved aliases.
 pub fn restrict(
     capability: &str,
     action: &str,
     params: &HashMap<String, Value>,
     sender: &SenderIdentity,
+) -> Result<BoundDispatch, RestrictionError> {
+    restrict_with_profiles(
+        capability,
+        action,
+        params,
+        sender,
+        &ApprovedSenderProfiles::default(),
+    )
+}
+
+/// Reduce a dispatch to its bindable form, or refuse, judging a
+/// [`SenderKind::ProfileAlias`] sender against `approved_profiles`.
+pub fn restrict_with_profiles(
+    capability: &str,
+    action: &str,
+    params: &HashMap<String, Value>,
+    sender: &SenderIdentity,
+    approved_profiles: &ApprovedSenderProfiles,
 ) -> Result<BoundDispatch, RestrictionError> {
     let Some(spec) = restricted_form_for(capability) else {
         return Err(RestrictionError::NoRestrictedForm {
@@ -231,10 +357,32 @@ pub fn restrict(
         if !spec.allowed_parameters.contains(&name.as_str()) {
             return Err(RestrictionError::UnknownParameter { parameter: name });
         }
-        // A sender parameter the caller supplied is dropped here and rebound
-        // below, so a caller cannot win by supplying one.
         if spec.sender_parameters.contains(&name.as_str()) {
-            continue;
+            match spec.sender_kind {
+                // A sender address the caller supplied is dropped here and
+                // rebound below, so a caller cannot win by supplying one.
+                SenderKind::Identity => continue,
+                // A profile selector is kept only when it names an approved
+                // profile, in its approved spelling. Anything else is refused,
+                // never rebound: the runtime's identity is an agent id, not a
+                // mailbox, and swapping in some other account would send from
+                // one the agent did not compose for.
+                SenderKind::ProfileAlias => {
+                    let approved = value
+                        .as_str()
+                        .and_then(|requested| approved_profiles.approved(requested))
+                        .map(str::to_string);
+                    let Some(approved) = approved else {
+                        return Err(RestrictionError::SenderProfileNotApproved {
+                            parameter: name,
+                            approved: approved_profiles.aliases(),
+                            default_alias: approved_profiles.default_alias().map(str::to_string),
+                        });
+                    };
+                    bound.insert(name, Value::String(approved));
+                    continue;
+                },
+            }
         }
         if spec.recipient_parameters.contains(&name.as_str()) {
             bound.insert(name, canonicalise_recipients(value));
@@ -243,12 +391,16 @@ pub fn restrict(
         bound.insert(name, value.clone());
     }
 
-    // §4A.3 — bind the sender AFTER the caller's arguments, unconditionally.
-    for parameter in spec.sender_parameters {
-        bound.insert(
-            (*parameter).to_string(),
-            Value::String(sender.identity().to_string()),
-        );
+    // §4A.3 — bind a sender address AFTER the caller's arguments,
+    // unconditionally. A profile selector the caller left out stays absent, so
+    // the skill contract's default profile applies at dispatch.
+    if spec.sender_kind == SenderKind::Identity {
+        for parameter in spec.sender_parameters {
+            bound.insert(
+                (*parameter).to_string(),
+                Value::String(sender.identity().to_string()),
+            );
+        }
     }
 
     let params: HashMap<String, Value> = bound.into_iter().collect();
@@ -344,24 +496,21 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
         // inbox email to send from)"*. Leaving it caller-chosen would let an
         // agent pick which identity the mail appears to come from.
         sender_parameters: &["inbox_id"],
+        sender_kind: SenderKind::Identity,
         recipient_parameters: &["to", "cc", "bcc"],
     },
     RestrictedAction {
         capability: "gmail",
-        allowed_parameters: &[
-            "to",
-            "cc",
-            "bcc",
-            "subject",
-            "body",
-            "reply_to_message_id",
-            "account",
-        ],
+        allowed_parameters: &["to", "cc", "bcc", "subject", "body", "account"],
         // The skill's `profile_parameter` — `account`, one of business /
         // personal / work — decides which mailbox sends. It is the sender, and
         // the earlier spec bound a `from` parameter that does not exist, so the
         // binding was inert and an agent could have chosen its own account.
+        // It is a profile alias, not an address: binding the runtime identity
+        // (the agent id) here made every autonomous send fail profile
+        // selection, so an approved alias is kept and anything else refused.
         sender_parameters: &["account"],
+        sender_kind: SenderKind::ProfileAlias,
         recipient_parameters: &["to", "cc", "bcc"],
     },
     RestrictedAction {
@@ -371,6 +520,7 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
         // caller-settable sender field, so there is nothing to bind. Inventing
         // one would add a parameter the skill would reject.
         sender_parameters: &[],
+        sender_kind: SenderKind::Identity,
         recipient_parameters: &["to"],
     },
     // The three chat channels, each bindable only because its skill grew an
@@ -387,12 +537,21 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
     // one.
     RestrictedAction {
         capability: "whatsapp",
-        allowed_parameters: &["jid", "text", "reply_to"],
+        allowed_parameters: &[
+            "jid",
+            "text",
+            "reply_to",
+            "file_path",
+            "caption",
+            "poll_question",
+            "poll_options",
+        ],
         // The session is the sender: `auth.profile_selection: mode: implicit`,
         // one logged-in WhatsApp Web account, no selector reaching the model.
         // Nothing to bind, and inventing a field would add one the skill
         // rejects — the same answer `kapso-whatsapp-send` gets.
         sender_parameters: &[],
+        sender_kind: SenderKind::Identity,
         // `jid` is WhatsApp's address for a person or a group. It had to be
         // taught to `effective_action` before it could be named here: a
         // recipient parameter this module canonicalises and that module does
@@ -407,6 +566,7 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
         // resolved after authorisation and never copied into arguments. There
         // is no sender to choose and the adapter reads none.
         sender_parameters: &[],
+        sender_kind: SenderKind::Identity,
         recipient_parameters: &["chat_id"],
     },
     RestrictedAction {
@@ -417,6 +577,7 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
         // mistake costs and changes nothing about bindability: there is still
         // no sender field to bind.
         sender_parameters: &[],
+        sender_kind: SenderKind::Identity,
         recipient_parameters: &["to"],
     },
     RestrictedAction {
@@ -434,6 +595,7 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
         // The earlier `gmail` entry needed `account` precisely because that
         // skill does let the caller choose a mailbox.
         sender_parameters: &[],
+        sender_kind: SenderKind::Identity,
         recipient_parameters: &["to", "cc", "bcc"],
     },
     RestrictedAction {
@@ -451,6 +613,7 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
             "account",
         ],
         sender_parameters: &["account"],
+        sender_kind: SenderKind::ProfileAlias,
         recipient_parameters: &["attendees"],
     },
     RestrictedAction {
@@ -467,6 +630,7 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
             "idempotency_key",
         ],
         sender_parameters: &[],
+        sender_kind: SenderKind::Identity,
         recipient_parameters: &["attendees"],
     },
 ];
@@ -662,10 +826,12 @@ mod tests {
             "`inbox_id` is the from-address, so the caller's choice must not survive"
         );
 
-        // And the same for gmail, whose sender is the account profile. This one
-        // matters: the earlier spec bound a `from` parameter the skill does not
-        // have, so the binding was inert and the agent kept its own choice.
-        let bound = restrict(
+        // Gmail's sender is the account PROFILE. The earlier spec bound a
+        // `from` parameter the skill does not have (inert); the next one bound
+        // the agent id into `account`, which no profile is named, so every
+        // autonomous send failed profile selection. Without an approved set an
+        // agent may still not choose a mailbox: a named one is refused.
+        let error = restrict(
             "gmail",
             "send",
             &params(&[
@@ -679,12 +845,144 @@ mod tests {
                 identity: "business".to_string(),
             },
         )
-        .expect("restriction");
-        assert_eq!(
-            bound.params.get("account"),
-            Some(&json!("business")),
-            "an agent must not choose which mailbox it sends from"
+        .expect_err("no approved profile, so a named mailbox is refused");
+        assert!(matches!(
+            error,
+            RestrictionError::SenderProfileNotApproved { ref parameter, .. } if parameter == "account"
+        ));
+    }
+
+    fn gmail_send(extra: &[(&str, Value)]) -> HashMap<String, Value> {
+        let mut pairs = vec![
+            ("to", json!("a@example.com")),
+            ("subject", json!("hi")),
+            ("body", json!("hello")),
+        ];
+        pairs.extend(extra.iter().cloned());
+        params(&pairs)
+    }
+
+    fn agent_sender() -> SenderIdentity {
+        SenderIdentity::FirstContact {
+            program_id: "unattributed".to_string(),
+            identity: "executive-assistant".to_string(),
+        }
+    }
+
+    fn approved_google_profiles() -> ApprovedSenderProfiles {
+        ApprovedSenderProfiles::new(["business", "personal", "work"], Some("work".to_string()))
+    }
+
+    /// §4A.3 for a profile selector: an approved alias the caller named is
+    /// kept, and the agent id never becomes the mailbox.
+    #[test]
+    fn an_approved_gmail_account_is_kept() {
+        let bound = restrict_with_profiles(
+            "gmail",
+            "send",
+            &gmail_send(&[("account", json!("work"))]),
+            &agent_sender(),
+            &approved_google_profiles(),
+        )
+        .expect("an approved account is bindable");
+        assert_eq!(bound.params.get("account"), Some(&json!("work")));
+        assert!(bound.effective.is_bindable());
+        assert!(
+            !bound
+                .params
+                .values()
+                .any(|value| value == &json!("executive-assistant")),
+            "the agent id is not a mailbox and must never be bound as one"
         );
+    }
+
+    /// No account named: the parameter stays absent so the skill contract's
+    /// default profile applies at dispatch.
+    #[test]
+    fn an_absent_gmail_account_stays_absent() {
+        for capability in ["gmail", "gmail__send"] {
+            let bound = restrict_with_profiles(
+                capability,
+                "send",
+                &gmail_send(&[]),
+                &agent_sender(),
+                &approved_google_profiles(),
+            )
+            .expect("no account is the contract default, not a refusal");
+            assert!(!bound.params.contains_key("account"));
+            assert!(!bound
+                .params
+                .values()
+                .any(|value| value == &json!("executive-assistant")));
+        }
+        // The same without any approved set: absent is never refused.
+        let bound =
+            restrict("gmail", "send", &gmail_send(&[]), &agent_sender()).expect("absent account");
+        assert!(!bound.params.contains_key("account"));
+    }
+
+    /// A mailbox the owner did not approve is refused, not rebound, and the
+    /// refusal names the approved aliases so the next attempt can succeed.
+    #[test]
+    fn an_unapproved_gmail_account_is_refused() {
+        for requested in [json!("evil@x"), json!("presto"), json!(7)] {
+            let error = restrict_with_profiles(
+                "gmail",
+                "send",
+                &gmail_send(&[("account", requested.clone())]),
+                &agent_sender(),
+                &approved_google_profiles(),
+            )
+            .expect_err("an unapproved mailbox must be refused");
+            assert_eq!(
+                error,
+                RestrictionError::SenderProfileNotApproved {
+                    parameter: "account".to_string(),
+                    approved: vec![
+                        "business".to_string(),
+                        "personal".to_string(),
+                        "work".to_string()
+                    ],
+                    default_alias: Some("work".to_string()),
+                },
+                "{requested}"
+            );
+            let guidance = error.guidance(restricted_form_for("gmail"));
+            assert!(guidance.contains("`work`"), "{guidance}");
+            assert!(!guidance.contains("evil@x"), "{guidance}");
+            assert!(!guidance.contains("executive-assistant"), "{guidance}");
+        }
+    }
+
+    /// Calendar's `account` is the same profile selector and takes the same
+    /// rule; the approved spelling is what is bound.
+    #[test]
+    fn a_calendar_account_follows_the_profile_rule() {
+        let bound = restrict_with_profiles(
+            "calendar",
+            "create_event",
+            &params(&[
+                ("attendees", json!(["other@example.com"])),
+                ("account", json!(" Personal ")),
+            ]),
+            &agent_sender(),
+            &approved_google_profiles(),
+        )
+        .expect("approved calendar account");
+        assert_eq!(bound.params.get("account"), Some(&json!("personal")));
+        assert!(matches!(
+            restrict_with_profiles(
+                "calendar",
+                "create_event",
+                &params(&[
+                    ("attendees", json!(["other@example.com"])),
+                    ("account", json!("executive-assistant")),
+                ]),
+                &agent_sender(),
+                &approved_google_profiles(),
+            ),
+            Err(RestrictionError::SenderProfileNotApproved { .. })
+        ));
     }
 
     /// A parameter outside the closed set is refused rather than passed through.
@@ -1064,6 +1362,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn whatsapp_attachments_bind_recipient_file_and_caption_without_an_argv_escape() {
+        let arguments = params(&[
+            ("jid", json!("919876543210@s.whatsapp.net")),
+            ("file_path", json!("attachments/review.pdf")),
+            ("caption", json!("Review pack")),
+        ]);
+        let bound = restrict("whatsapp__send", "send", &arguments, &sender()).unwrap();
+        assert!(bound.effective.is_bindable());
+        assert_eq!(
+            bound.effective.recipients,
+            vec!["919876543210@s.whatsapp.net"]
+        );
+        let mut changed = arguments.clone();
+        changed.insert("file_path".to_string(), json!("attachments/different.pdf"));
+        let other = restrict("whatsapp__send", "send", &changed, &sender()).unwrap();
+        assert_ne!(bound.effective.content_ref, other.effective.content_ref);
+        changed.insert("args".to_string(), json!(["--account", "another-account"]));
+        assert!(matches!(
+            restrict("whatsapp", "send", &changed, &sender()),
+            Err(RestrictionError::EscapeHatch { .. })
+        ));
     }
 
     /// The systemic fix for the drift that made every original spec wrong.

@@ -195,6 +195,9 @@ impl OperationLlmTelemetryContext {
                 // Direct operation callers do not own the agentic budget
                 // ledger. Zero means unknown here, not unlimited.
                 budget_remaining: 0.0,
+                // The router mints this call's identity after this event, so
+                // the request cannot name it yet.
+                correlation: None,
                 timestamp: Utc::now().timestamp_millis(),
             });
     }

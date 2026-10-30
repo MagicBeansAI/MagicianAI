@@ -67,10 +67,6 @@ const RECENT_COMPLETED_TRIGGER_KEYS_PER_SCOPE: usize = 256;
 /// prevent unbounded memory growth for long-running agents.
 const MAX_GOAL_CYCLE_RECORDS_PER_AGENT: usize = 512;
 const DEFAULT_AGENT_STRATEGY: &str = "atomic_composition";
-/// Default maximum wall-clock duration for a single agent task pipeline execution via
-/// the WakeUpQueue path. Prevents a hung LLM call or slow tool from holding the task
-/// handle open indefinitely. Consider making this configurable per-task.
-const GOAL_PIPELINE_TIMEOUT_SECS: u64 = 3 * 60 * 60; // 3 hours
 const DOWNLOADED_FILE_ARTIFACT_TYPE: &str = "downloaded_file";
 pub const DELEGATION_TITLE_PREFIX: &str = "[Delegation] ";
 const DURABLE_PAUSED_AGENTS_STATE_FILE: &str = "paused_agents.json";
@@ -173,6 +169,35 @@ enum GoalPipelineExecutionResult {
     Direct(Result<crate::magician_v2::execution::AgenticOutcome, String>),
     TimedOut,
     Cancelled,
+}
+
+/// Runs a goal pipeline under its hard wall-clock timer, if it has one.
+///
+/// A chat turn's `timeout_secs` is a soft active-work budget inside the agentic
+/// loop, so it is not wrapped in a hard timer: the in-flight operation and result
+/// synthesis must be allowed to finish. Neither is a goal whose agent declares no
+/// `constraints.max_duration_secs`; its liveness, budgets and owner bound it.
+async fn run_under_goal_timeout<F: std::future::Future>(
+    goal_source: &crate::magician_v2::agents::types::GoalSource,
+    timeout_secs: Option<u64>,
+    pipeline_work: F,
+) -> Result<F::Output, tokio::time::error::Elapsed> {
+    match timeout_secs {
+        Some(secs) if *goal_source != crate::magician_v2::agents::types::GoalSource::ChatInline => {
+            tokio::time::timeout(std::time::Duration::from_secs(secs), pipeline_work).await
+        },
+        _ => Ok(pipeline_work.await),
+    }
+}
+
+/// Whether a settled pipeline paused or slept rather than finishing. Such a
+/// cycle is neither a success nor a failure, so it must not move the circuit
+/// breaker's consecutive-failure count.
+fn goal_pipeline_awaits_continuation(pipeline_result: &GoalPipelineExecutionResult) -> bool {
+    matches!(
+        pipeline_result,
+        GoalPipelineExecutionResult::Direct(Ok(outcome)) if outcome.requires_continuation()
+    )
 }
 
 async fn ensure_goal_pipeline_terminal_execution_state(
@@ -525,6 +550,10 @@ pub struct GoalTaskOptions {
     /// so all chat-thread-rooted executions share one browser session.
     /// `None` preserves the legacy per-execution session derivation.
     pub browser_session_id_override: Option<String>,
+    /// Name of the run's browser tab group in the owner's Chrome. Chat
+    /// launches set the conversation's title; `None` falls back to the
+    /// cycle's task title.
+    pub browser_tab_label: Option<String>,
     /// Server-minted invocation authority for the child execution. This is
     /// never populated from task/API payloads; chat delegation and handover
     /// install it explicitly so the runtime cannot collapse them into Task.
@@ -828,6 +857,7 @@ pub fn compose_effective_goal_desc(goal_desc: &str, personality_directive: Optio
 #[derive(Clone, Default)]
 pub struct AgentRuntime {
     definitions: Arc<RwLock<HashMap<String, AgentDefinition>>>,
+    definition_loaded_at: Arc<RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>>,
     dispatch_mutexes: Arc<RwLock<HashMap<String, Arc<Mutex<()>>>>>,
     trigger_dispatch: Arc<RwLock<HashMap<String, TriggerDispatchState>>>,
     circuit_failures: Arc<RwLock<HashMap<String, HashMap<String, usize>>>>,
@@ -955,6 +985,24 @@ impl AgentRuntime {
         Some((principal.to_string(), workspace.to_string()))
     }
 
+    /// Whether `agent_id`'s definition declares its cycles public-facing
+    /// (`autonomous_config.outward_context: public_agent`) for outward-send
+    /// policy. Unknown agents are not public.
+    pub async fn agent_declares_public(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+    ) -> bool {
+        self.get_definition_in_scope(principal, workspace, agent_id)
+            .await
+            .and_then(|definition| definition.autonomous_config)
+            .is_some_and(|config| {
+                config.outward_context
+                    == Some(crate::magician_v2::agents::types::DeclaredOutwardContext::PublicAgent)
+            })
+    }
+
     pub async fn get_definition_in_scope(
         &self,
         principal: &str,
@@ -968,6 +1016,45 @@ impl AgentRuntime {
         self.ensure_scope_definitions_loaded(principal, workspace)
             .await;
         self.definitions.read().await.get(&key).cloned()
+    }
+
+    /// Observe the currently loaded definition without hydrating from disk:
+    /// inspection must not make a stale/unloaded runtime look up to date.
+    pub async fn cached_definition_in_scope(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<AgentDefinition> {
+        self.definitions
+            .read()
+            .await
+            .get(&scoped_definition_cache_key(
+                Some(principal),
+                Some(workspace),
+                agent_id,
+            ))
+            .cloned()
+    }
+
+    pub async fn cached_definition_with_load_time(
+        &self,
+        principal: &str,
+        workspace: &str,
+        agent_id: &str,
+    ) -> Option<(AgentDefinition, Option<chrono::DateTime<chrono::Utc>>)> {
+        let key = scoped_definition_cache_key(Some(principal), Some(workspace), agent_id);
+        let definitions = self.definitions.read().await;
+        let definition = definitions.get(&key)?.clone();
+        let loaded_at = self.definition_loaded_at.read().await.get(&key).copied();
+        Some((definition, loaded_at))
+    }
+
+    pub fn inspection_router(
+        &self,
+    ) -> Option<Arc<crate::magician_v2::query_analysis::operation_llm_router::OperationLlmRouter>>
+    {
+        self.v2_orchestrator.as_ref()?.operation_llm_router()
     }
 
     /// Load a live workspace's durable definitions the first time the scope
@@ -1014,6 +1101,10 @@ impl AgentRuntime {
         let mut loaded = 0usize;
         for record in records {
             if in_scope(&record.definition) {
+                self.definition_loaded_at.write().await.insert(
+                    Self::definition_cache_key_for(&record.definition),
+                    chrono::Utc::now(),
+                );
                 guard.insert(
                     Self::definition_cache_key_for(&record.definition),
                     record.definition,
@@ -1021,7 +1112,10 @@ impl AgentRuntime {
                 loaded += 1;
             }
         }
-        info!(principal, workspace, loaded, "loaded a workspace's agent definitions on first use");
+        info!(
+            principal,
+            workspace, loaded, "loaded a workspace's agent definitions on first use"
+        );
     }
 
     pub async fn list_definitions_in_scope(
@@ -1059,15 +1153,13 @@ impl AgentRuntime {
         workspace: &str,
         agent_id: &str,
     ) -> Option<AgentDefinition> {
-        let removed = self
-            .definitions
-            .write()
-            .await
-            .remove(&scoped_definition_cache_key(
-                Some(principal),
-                Some(workspace),
-                agent_id,
-            ));
+        let removed = {
+            let key = scoped_definition_cache_key(Some(principal), Some(workspace), agent_id);
+            let mut definitions = self.definitions.write().await;
+            let removed = definitions.remove(&key);
+            self.definition_loaded_at.write().await.remove(&key);
+            removed
+        };
         let dispatch_prefix = format!(
             "{}:",
             Self::scoped_dispatch_key(principal, workspace, agent_id, "")
@@ -1309,10 +1401,15 @@ impl AgentRuntime {
         let mut evicted = usize::from(self.scoped_schedulers.write().await.remove(&key).is_some());
         {
             let mut definitions = self.definitions.write().await;
+            let mut loaded_at = self.definition_loaded_at.write().await;
             let before = definitions.len();
-            definitions.retain(|_, definition| {
-                !(definition.principal.as_deref() == Some(principal)
-                    && definition.workspace.as_deref() == Some(workspace))
+            definitions.retain(|key, definition| {
+                let keep = !(definition.principal.as_deref() == Some(principal)
+                    && definition.workspace.as_deref() == Some(workspace));
+                if !keep {
+                    loaded_at.remove(key);
+                }
+                keep
             });
             evicted += before - definitions.len();
         }
@@ -1502,7 +1599,12 @@ impl AgentRuntime {
     /// Insert or replace an agent definition by `agent_id`.
     pub async fn upsert_definition(&self, definition: AgentDefinition) -> Option<AgentDefinition> {
         let mut guard = self.definitions.write().await;
-        guard.insert(Self::definition_cache_key_for(&definition), definition)
+        let key = Self::definition_cache_key_for(&definition);
+        self.definition_loaded_at
+            .write()
+            .await
+            .insert(key.clone(), chrono::Utc::now());
+        guard.insert(key, definition)
     }
 
     /// List all loaded definitions.
@@ -1706,6 +1808,34 @@ impl AgentRuntime {
         }
     }
 
+    /// Highest trigger sequence this runtime still tracks for the agent/goal:
+    /// the active reservation, the queued ones and the recently completed
+    /// tuples `admit_trigger_in_scope` deduplicates against. `None` when it
+    /// tracks none. Trigger allocation uses it as a floor next to persisted
+    /// episodes so a fresh tuple is never one admission would refuse.
+    pub async fn highest_known_trigger_seq_in_scope(
+        &self,
+        principal: Option<&str>,
+        workspace: Option<&str>,
+        agent_id: &str,
+        goal_id: &str,
+    ) -> Option<u64> {
+        let dispatch_key = Self::dispatch_key_for_scope(principal, workspace, agent_id, goal_id);
+        let guard = self.trigger_dispatch.read().await;
+        let state = guard.get(&dispatch_key)?;
+        let key_prefix = format!("{agent_id}\u{1f}{goal_id}\u{1f}");
+        state
+            .active
+            .iter()
+            .chain(state.pending.iter())
+            .map(|reservation| reservation.trigger_seq)
+            .chain(state.recent_completed_keys.iter().filter_map(|key| {
+                key.strip_prefix(key_prefix.as_str())
+                    .and_then(|seq| seq.parse::<u64>().ok())
+            }))
+            .max()
+    }
+
     pub async fn is_goal_running_in_scope(
         &self,
         principal: Option<&str>,
@@ -1907,6 +2037,21 @@ impl AgentRuntime {
         workspace: Option<&str>,
         agent_id: &str,
     ) -> Vec<AgentCycleReservation> {
+        self.clear_pending_triggers_matching_in_scope(principal, workspace, agent_id, |_| true)
+            .await
+    }
+
+    /// `clear_pending_triggers_in_scope` limited to the queued reservations
+    /// `should_clear` accepts; the rest stay queued in order. The harness
+    /// runtime stop clears only harness-goal cycles, so an agent's other
+    /// queued work survives a company-loop pause.
+    pub async fn clear_pending_triggers_matching_in_scope(
+        &self,
+        principal: Option<&str>,
+        workspace: Option<&str>,
+        agent_id: &str,
+        should_clear: impl Fn(&AgentCycleReservation) -> bool,
+    ) -> Vec<AgentCycleReservation> {
         let mut guard = self.trigger_dispatch.write().await;
         let mut cleared = Vec::new();
         for state in guard.values_mut() {
@@ -1916,6 +2061,7 @@ impl AgentRuntime {
                     && reservation.workspace.as_deref() == workspace;
                 if reservation.agent_id == agent_id
                     && ((principal.is_none() && workspace.is_none()) || scope_matches)
+                    && should_clear(&reservation)
                 {
                     cleared.push(reservation);
                 } else {
@@ -2650,23 +2796,48 @@ impl AgentRuntime {
         // or the run's) onto it, so the cycle it creates inherits it.
         let launching_pin =
             crate::magician_v2::execution::plane::current_launching_run_engine_pin();
+        let declared_public = match (principal_override.as_deref(), workspace_override.as_deref()) {
+            (Some(principal), Some(workspace)) => {
+                runtime
+                    .agent_declares_public(principal, workspace, &agent_id)
+                    .await
+            },
+            _ => false,
+        };
+        let outward_source = principal_override
+            .as_deref()
+            .zip(workspace_override.as_deref())
+            .and_then(|(principal, workspace)| {
+                crate::magician_v2::agents::outward_policy::source_for_goal(
+                    &source,
+                    task_options
+                        .as_ref()
+                        .and_then(|options| options.invocation_context_override.as_ref()),
+                    declared_public,
+                    principal,
+                    workspace,
+                )
+            });
         match crate::magician_v2::execution::runtime_boundary::run_execution_job(move || {
-            crate::magician_v2::execution::plane::with_launching_run_engine_pin(
-                launching_pin,
-                async move {
-                    runtime
-                        .trigger_goal_on_execution_runtime(
-                            &agent_id,
-                            &goal_id,
-                            source,
-                            principal_override,
-                            workspace_override,
-                            ui_thread_id_override,
-                            pre_spawn_hook,
-                            task_options,
-                        )
-                        .await
-                },
+            crate::magician_v2::agents::outward_policy::with_source(
+                outward_source,
+                crate::magician_v2::execution::plane::with_launching_run_engine_pin(
+                    launching_pin,
+                    async move {
+                        runtime
+                            .trigger_goal_on_execution_runtime(
+                                &agent_id,
+                                &goal_id,
+                                source,
+                                principal_override,
+                                workspace_override,
+                                ui_thread_id_override,
+                                pre_spawn_hook,
+                                task_options,
+                            )
+                            .await
+                    },
+                ),
             )
         })
         .await
@@ -2834,10 +3005,10 @@ impl AgentRuntime {
                         let base_persona = def_opt
                             .map(|d| d.persona.trim().to_string())
                             .filter(|value| !value.is_empty());
-                        // Per-agent goal timeout: use constraints.max_duration_secs or global default.
-                        let goal_timeout = def_opt
-                            .and_then(|d| d.constraints.max_duration_secs)
-                            .unwrap_or(GOAL_PIPELINE_TIMEOUT_SECS);
+                        // Per-agent goal timeout: only an explicit
+                        // constraints.max_duration_secs bounds the pipeline. Without one
+                        // the run is bounded by liveness and its budgets, not a wall clock.
+                        let goal_timeout = def_opt.and_then(|d| d.constraints.max_duration_secs);
                         // 3.2: capture max_delegation_depth from agent coordination config.
                         let max_deleg_depth =
                             def_opt.map(|d| d.constraints.coordination.max_delegation_depth);
@@ -2958,6 +3129,12 @@ impl AgentRuntime {
                         // to the parent's existing Chrome window.
                         let browser_session_id_override_for_cycle =
                             task_options.browser_session_id_override.clone();
+                        let browser_tab_label_for_cycle =
+                            task_options.browser_tab_label.clone().or_else(|| {
+                                crate::magician_v2::execution::primitive_dispatch::browser::session::tab_group_label(
+                                    &cycle_task_title,
+                                )
+                            });
                         let invocation_context_override_for_cycle =
                             task_options.invocation_context_override.clone();
                         let authorization_revision_for_cycle =
@@ -3236,8 +3413,19 @@ impl AgentRuntime {
                                 },
                             )
                             .collect();
-                        let (cycle_task, cycle_execution) = match artifact_v2_service
-                        .create_task_with_execution_shell(CreateTaskInput {
+                        use crate::magician_v2::agents::outward_policy;
+                        let declared_public = runtime
+                            .agent_declares_public(&principal, &task_workspace, &agent_id_owned)
+                            .await;
+                        let outward_source = outward_policy::source_for_goal(
+                            &goal_source,
+                            task_options.invocation_context_override.as_ref(),
+                            declared_public,
+                            &principal,
+                            &task_workspace,
+                        );
+                        let (cycle_task, cycle_execution) = match outward_policy::with_source(outward_source,
+                        artifact_v2_service.create_task_with_execution_shell(CreateTaskInput {
                             principal: principal.clone(),
                             workspace: task_workspace.clone(),
                             ui_thread_id: task_ui_thread_id.clone(),
@@ -3259,7 +3447,7 @@ impl AgentRuntime {
                             chat_session_id: task_options.chat_session_id,
                             lifecycle: task_options.lifecycle.unwrap_or_default(),
                             sync_mode: task_options.sync_mode.unwrap_or_default(),
-                        })
+                        }))
                         .await
                     {
                         Ok(result) => result,
@@ -3303,7 +3491,36 @@ impl AgentRuntime {
                                 &cycle_execution.state.execution_id,
                             )
                             .await;
-                        let (cycle_execution_id, execution_id_owned, task_id_owned) = match orch
+                        // A verified delegation or handover (its authorization
+                        // revision matched above) records who handed it on, as this run's
+                        // read lineage: goal workspace reads travel down it,
+                        // and whatever it delegates on inherits it. Not its
+                        // delegation chain, which depth and transitive-
+                        // delegation limits count.
+                        let read_lineage: Vec<String> = task_options
+                            .authorization_revision
+                            .as_ref()
+                            .filter(|_| {
+                                task_options.invocation_context_override.as_ref().is_some_and(
+                                    |context| {
+                                        matches!(
+                                            (context.surface, context.source_kind),
+                                            (
+                                                crate::magician_v2::agents::InvocationSurface::Delegation,
+                                                crate::magician_v2::agents::InvocationSourceKind::Delegated,
+                                            ) | (
+                                                crate::magician_v2::agents::InvocationSurface::Handover,
+                                                crate::magician_v2::agents::InvocationSourceKind::Handover,
+                                            )
+                                        )
+                                    },
+                                )
+                            })
+                            .map(|revision| revision.source_agent_id.trim().to_string())
+                            .filter(|source| !source.is_empty() && *source != agent_id_owned)
+                            .into_iter()
+                            .collect();
+                        let created = orch
                             .create_execution_with_id(
                                 &principal,
                                 &task_workspace,
@@ -3313,7 +3530,20 @@ impl AgentRuntime {
                                 Some(cycle_task.manifest.task_id.clone()),
                                 Some(cycle_execution.state.execution_id.clone()),
                             )
-                            .await
+                            .await;
+                        if let Ok(execution) = created.as_ref() {
+                            if let Err(error) = orch
+                                .record_execution_read_lineage(&execution.id, &read_lineage)
+                                .await
+                            {
+                                tracing::warn!(
+                                    execution_id = %execution.id,
+                                    %error,
+                                    "[GOAL-WORKSPACES] delegated run's read lineage not recorded; it reads as itself"
+                                );
+                            }
+                        }
+                        let (cycle_execution_id, execution_id_owned, task_id_owned) = match created
                         {
                             Ok(execution) => {
                                 if !runtime
@@ -3521,6 +3751,7 @@ impl AgentRuntime {
                             goal_timeout_secs,
                             work_budget_secs: work_budget_secs_for_cycle,
                             browser_session_id_override: browser_session_id_override_for_cycle,
+                            browser_tab_label: browser_tab_label_for_cycle,
                             chat_session_id: chat_session_id_for_cycle,
                             invocation_context_override: invocation_context_override_for_cycle,
                             authorization_revision: authorization_revision_for_cycle,
@@ -4198,9 +4429,10 @@ struct GoalCycleJob {
     llm_routing_cfg: Option<LlmRoutingConfig>,
     base_persona: Option<String>,
     agent_max_delegation_depth: Option<u8>,
-    goal_timeout_secs: u64,
+    goal_timeout_secs: Option<u64>,
     work_budget_secs: Option<u64>,
     browser_session_id_override: Option<String>,
+    browser_tab_label: Option<String>,
     chat_session_id: Option<String>,
     invocation_context_override: Option<crate::magician_v2::agents::AgentInvocationContext>,
     authorization_revision: Option<GoalAuthorizationRevision>,
@@ -4596,6 +4828,7 @@ impl GoalCycleJob {
                             // `cycle_execution_id`.
                             overrides.browser_session_id_override =
                                 self.browser_session_id_override.clone();
+                            overrides.browser_tab_label = self.browser_tab_label.clone();
                             overrides.invocation_context_override = Some(
                             self.invocation_context_override
                                 .clone()
@@ -4646,22 +4879,8 @@ impl GoalCycleJob {
                         .map(|result| GoalPipelineExecutionResult::Completed(Ok(result)))
                 }
             });
-            let pipeline_with_outer_bound = async {
-                if self.goal_source == crate::magician_v2::agents::types::GoalSource::ChatInline {
-                    // Chat's caller-supplied `timeout_secs` is a
-                    // soft active-work budget inside the agentic
-                    // loop. Do not wrap it in a hard pipeline timer:
-                    // the in-flight operation and result synthesis
-                    // must be allowed to finish.
-                    Ok(pipeline_work.await)
-                } else {
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(self.goal_timeout_secs),
-                        pipeline_work,
-                    )
-                    .await
-                }
-            };
+            let pipeline_with_outer_bound =
+                run_under_goal_timeout(&self.goal_source, self.goal_timeout_secs, pipeline_work);
 
             let pipeline_result = tokio::select! {
                 result = pipeline_with_outer_bound => {
@@ -4849,7 +5068,7 @@ impl GoalCycleJob {
                     crate::magician_v2::storage::task_models::TaskStatus::Failed,
                     Some(format!(
                         "Goal pipeline timed out after {} seconds",
-                        self.goal_timeout_secs
+                        self.goal_timeout_secs.unwrap_or_default()
                     )),
                 )),
                 GoalPipelineExecutionResult::Cancelled => Some((
@@ -4964,7 +5183,7 @@ impl GoalCycleJob {
                     tracing::error!(
                         agent_id = %self.agent_id,
                         cycle_id = %self.cycle_id,
-                        timeout_secs = self.goal_timeout_secs,
+                        timeout_secs = self.goal_timeout_secs.unwrap_or_default(),
                         "trigger_goal_awaitable: goal pipeline timed out"
                     );
                     false
@@ -4976,26 +5195,30 @@ impl GoalCycleJob {
             };
 
             // Wire circuit breaker — mirrors derive_manual_cycle_post_execution.
-            let circuit_decision = self
-                .runtime
-                .record_goal_outcome_and_decide_circuit_in_scope(
-                    Some(&self.principal),
-                    Some(&self.task_workspace),
-                    &self.agent_id,
-                    &self.goal_id,
-                    succeeded,
-                    self.circuit_policy.as_ref(),
-                    self.default_max_failures,
-                )
-                .await;
+            // A pause or sleep is neither outcome: counting it as a failure
+            // would open the circuit on an agent that is only waiting.
+            if !goal_pipeline_awaits_continuation(&pipeline_result) {
+                let circuit_decision = self
+                    .runtime
+                    .record_goal_outcome_and_decide_circuit_in_scope(
+                        Some(&self.principal),
+                        Some(&self.task_workspace),
+                        &self.agent_id,
+                        &self.goal_id,
+                        succeeded,
+                        self.circuit_policy.as_ref(),
+                        self.default_max_failures,
+                    )
+                    .await;
 
-            if matches!(circuit_decision, CircuitDecision::OpenCircuit { .. }) {
-                tracing::warn!(
-                    agent_id = %self.agent_id,
-                    goal_id = %self.goal_id,
-                    cycle_id = %self.cycle_id,
-                    "trigger_goal_awaitable: circuit breaker opened after goal pipeline"
-                );
+                if matches!(circuit_decision, CircuitDecision::OpenCircuit { .. }) {
+                    tracing::warn!(
+                        agent_id = %self.agent_id,
+                        goal_id = %self.goal_id,
+                        cycle_id = %self.cycle_id,
+                        "trigger_goal_awaitable: circuit breaker opened after goal pipeline"
+                    );
+                }
             }
 
             // Unconditionally complete the active cycle so subsequent scheduled
@@ -5116,6 +5339,48 @@ async fn seed_child_input_artifacts(
         })?;
 
     Ok(())
+}
+
+/// Map the model's `input_artifact_ids` — exact persisted ids or the
+/// delegation-result references its prompt lists (`partial:<name>`, …) — to
+/// persisted ids in the source execution's index. Unresolvable summary-form
+/// references are dropped with a warning instead of failing the whole round.
+async fn resolve_child_input_artifact_references(
+    workspace: &crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace,
+    source_scope: &crate::magician_v2::artifact_v2::ScopeRef,
+    source_task_id: &str,
+    source_execution_id: &str,
+    child_execution_ids: &[String],
+    input_artifacts: &[String],
+) -> Result<Vec<String>, DispatchError> {
+    let store = crate::magician_v2::artifact_v2::FilesystemExecutionArtifactIndexStore::new(
+        workspace.clone(),
+    );
+    let resolved = store
+        .resolve_input_artifact_references(
+            source_scope,
+            source_task_id,
+            source_execution_id,
+            child_execution_ids,
+            input_artifacts,
+        )
+        .await
+        .map_err(|error| match error {
+            crate::magician_v2::artifact_v2::ArtifactV2Error::InvalidRequest(message) => {
+                DispatchError::DispatchFailed(message)
+            },
+            other => DispatchError::Runtime(format!(
+                "failed to resolve delegated input artifacts: {other}"
+            )),
+        })?;
+    if !resolved.skipped.is_empty() {
+        warn!(
+            source_execution_id,
+            skipped = ?resolved.skipped,
+            "delegation input references named no persisted artifact; delegating without them"
+        );
+    }
+    Ok(resolved.artifact_ids)
 }
 
 async fn validate_child_input_artifacts(
@@ -5382,6 +5647,44 @@ fn build_vibedev_coding_delegate_goal(
     let Some(manifest) = parent_manifest else {
         return child_goal;
     };
+    // A Discuss (plan) run gets its own server-written start instead of the
+    // lead's paraphrase, which once read "pass the plan tag if supported" and
+    // sent the engineer hunting the schema for a parameter that is a task tag.
+    // Correctness does not rest on this text: the child runs on this task, so
+    // it is itself a plan run (`AgenticContext::plan_run`, same predicate) —
+    // read-only, with `run_coding_task` forced into plan mode.
+    if crate::magician_v2::artifact_v2::models::is_vibedev_plan_run(
+        &manifest.ui_thread_id,
+        &manifest.tags,
+    ) {
+        let original_prompt = extract_vibedev_user_prompt(&manifest.description)
+            .unwrap_or_else(|| manifest.description.trim().to_string());
+        let repo_path =
+            extract_vibedev_line_value(&manifest.description, VIBEDEV_REPO_PATH_LINE_PREFIX)
+                .unwrap_or_else(|| ".".to_string());
+        let project_id =
+            extract_vibedev_line_value(&manifest.description, VIBEDEV_PROJECT_LINE_PREFIX)
+                .unwrap_or_else(|| "(unknown)".to_string());
+        return format!(
+            "{marker}\n\
+             - This delegated child is executing a VibeDev Discuss (plan) run for project: {project_id}\n\
+             - This run is read-only and the server runs run_coding_task in plan mode. First action: call run_coding_task with repo_path: {repo_path}, passing the Original VibeDev user prompt.\n\
+             - When run_coding_task returns, yield its plan as your completed result.\n\n\
+             Original VibeDev user prompt:\n\
+             {begin}\n\
+             {original_prompt}\n\
+             {end}\n\n\
+             Delegated coordinator context:\n\
+             {child_goal}",
+            marker = VIBEDEV_FAST_START_MARKER,
+            project_id = project_id,
+            repo_path = repo_path,
+            begin = VIBEDEV_USER_PROMPT_BEGIN,
+            original_prompt = original_prompt.trim(),
+            end = VIBEDEV_USER_PROMPT_END,
+            child_goal = child_goal
+        );
+    }
     if !crate::magician_v2::artifact_v2::models::is_vibedev_coding_build_run(
         &manifest.ui_thread_id,
         &manifest.tags,
@@ -6622,6 +6925,25 @@ async fn spawn_delegated_children_from_runtime_inner(
                         .to_string(),
                 )
             })?;
+            // The idempotency id above already hashed the model's references;
+            // from here on the target carries the persisted ids they resolve to.
+            target.input_artifact_ids = resolve_child_input_artifact_references(
+                artifact_workspace,
+                &source_scope,
+                &parent_task_id,
+                source_execution_id,
+                &parent_execution.child_execution_ids,
+                &target.input_artifact_ids,
+            )
+            .await?;
+        }
+        if !target.input_artifact_ids.is_empty() {
+            let artifact_workspace = runtime.workspace_layout.as_ref().ok_or_else(|| {
+                DispatchError::Runtime(
+                    "delegation rejected: runtime workspace layout is unavailable for input artifact transfer"
+                        .to_string(),
+                )
+            })?;
             validate_child_input_artifacts(
                 artifact_workspace,
                 &source_scope,
@@ -7017,6 +7339,8 @@ async fn spawn_delegated_children_from_runtime_inner(
                     Some(source_execution_id),
                     target.timeout_secs,
                     delegation_chain.clone(),
+                    // An app's agent-tool children read as themselves.
+                    !app_agent_tool_mode,
                     // Work carrier: inherited verbatim from the parent's durable
                     // record, never from the model-supplied target — and generic,
                     // so a support-triage or recruiting parent confines its
@@ -9375,6 +9699,47 @@ constraints:
         assert!(goal.contains("Delegated coordinator context:"));
     }
 
+    /// A Discuss child's start comes from the server (the task's `plan` tag,
+    /// the same predicate that makes the child a plan run), never from the
+    /// lead's paraphrase, and asks for no schema parameter at all.
+    #[test]
+    fn vibedev_discuss_delegate_goal_is_server_written_plan_start() {
+        let mut manifest = vibedev_manifest(
+            "VibeDev coding request:\nOriginal VibeDev user prompt:\n<<<VIBEDEV_USER_PROMPT\nhow should we cache the feed?\nVIBEDEV_USER_PROMPT\n\nVibeDev project context:\nVibeDev project: project-1\nrun_coding_task repo_path: apps/site\n",
+        );
+        manifest
+            .tags
+            .push(crate::magician_v2::artifact_v2::models::TaskTagRecord {
+                id: "plan".to_string(),
+                name: "plan".to_string(),
+                color: None,
+            });
+        assert!(
+            crate::magician_v2::artifact_v2::models::is_vibedev_plan_run(
+                &manifest.ui_thread_id,
+                &manifest.tags
+            )
+        );
+        let mut target = parse_agent("frontend-engineer");
+        target.tools = vec!["run_coding_task".to_string()];
+
+        let goal = build_vibedev_coding_delegate_goal(
+            "Pass the plan tag if supported.".to_string(),
+            Some(&manifest),
+            &target,
+        );
+
+        assert!(goal.contains("Discuss (plan) run"));
+        assert!(goal.contains("the server runs run_coding_task in plan mode"));
+        assert!(goal.contains("repo_path: apps/site"));
+        assert!(goal.contains("how should we cache the feed?"));
+        assert!(!goal.contains("Build run"));
+        assert!(
+            !goal.contains("plan_only"),
+            "no schema parameter to hunt for"
+        );
+    }
+
     fn vibedev_prompt_injection_attempt() -> &'static str {
         VIBEDEV_PROMPT_INJECTION_ATTEMPT
     }
@@ -9731,6 +10096,7 @@ constraints:
             active_delegation_group: Vec::new(),
             timeout_secs: None,
             delegation_chain,
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: crate::magician_v2::storage::models::ExecutionEntryMode::Direct,
@@ -10372,6 +10738,75 @@ tools: []
                 .await,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn highest_known_trigger_seq_covers_active_pending_and_recent_history() {
+        let runtime = AgentRuntime::new();
+        let highest = |goal_id: &'static str| {
+            let runtime = &runtime;
+            async move {
+                runtime
+                    .highest_known_trigger_seq_in_scope(
+                        Some(TEST_PRINCIPAL),
+                        Some(TEST_WORKSPACE),
+                        "agent-a",
+                        goal_id,
+                    )
+                    .await
+            }
+        };
+        assert_eq!(highest("g1").await, None);
+
+        for seq in [3, 5] {
+            runtime
+                .admit_trigger_in_scope(
+                    Some(TEST_PRINCIPAL),
+                    Some(TEST_WORKSPACE),
+                    "agent-a",
+                    "g1",
+                    "manual",
+                    seq,
+                )
+                .await;
+        }
+        // Active 3, queued 5.
+        assert_eq!(highest("g1").await, Some(5));
+
+        // Completing both leaves them only in the recent-completed history,
+        // which admission still deduplicates against.
+        let promoted = runtime
+            .complete_active_cycle_in_scope(
+                Some(TEST_PRINCIPAL),
+                Some(TEST_WORKSPACE),
+                "agent-a",
+                "g1",
+                &scoped_cycle_id("agent-a", "g1", 3),
+            )
+            .await
+            .expect("queued tuple should be promoted");
+        runtime
+            .complete_active_cycle_in_scope(
+                Some(TEST_PRINCIPAL),
+                Some(TEST_WORKSPACE),
+                "agent-a",
+                "g1",
+                &promoted.cycle_id,
+            )
+            .await;
+        assert!(
+            !runtime
+                .is_goal_running_in_scope(
+                    Some(TEST_PRINCIPAL),
+                    Some(TEST_WORKSPACE),
+                    "agent-a",
+                    "g1",
+                )
+                .await
+        );
+        assert_eq!(highest("g1").await, Some(5));
+        // Other goals are tracked separately.
+        assert_eq!(highest("g2").await, None);
     }
 
     #[tokio::test]
@@ -11037,6 +11472,43 @@ tools: []
     fn failed_episode_outcome_is_failed_variant() {
         let episode = failed_episode();
         assert!(episode.outcome_is_failed());
+    }
+
+    #[tokio::test]
+    async fn clear_pending_triggers_matching_keeps_unmatched_queued_work() {
+        let rt = AgentRuntime::new();
+        for goal_id in ["harness:cto:review", "weekly-review"] {
+            for trigger_seq in [1, 2] {
+                let _ = rt
+                    .admit_trigger_in_scope(
+                        Some(TEST_PRINCIPAL),
+                        Some(TEST_WORKSPACE),
+                        "cto",
+                        goal_id,
+                        "cron",
+                        trigger_seq,
+                    )
+                    .await;
+            }
+        }
+
+        let cleared = rt
+            .clear_pending_triggers_matching_in_scope(
+                Some(TEST_PRINCIPAL),
+                Some(TEST_WORKSPACE),
+                "cto",
+                |reservation| reservation.goal_id.starts_with("harness:"),
+            )
+            .await;
+        assert_eq!(cleared.len(), 1);
+        assert_eq!(cleared[0].goal_id, "harness:cto:review");
+        assert_eq!(cleared[0].trigger_seq, 2);
+
+        let rest = rt
+            .clear_pending_triggers_in_scope(Some(TEST_PRINCIPAL), Some(TEST_WORKSPACE), "cto")
+            .await;
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].goal_id, "weekly-review");
     }
 
     #[tokio::test]
@@ -11910,6 +12382,73 @@ tools: []
         assert!(running_arm.contains("cross-process admission record"));
     }
 
+    #[tokio::test]
+    async fn a_goal_pipeline_without_max_duration_has_no_hard_timer() {
+        use crate::magician_v2::agents::types::GoalSource;
+        let slow = || async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            7
+        };
+        // No `constraints.max_duration_secs`: no timer, however long it runs.
+        assert_eq!(
+            run_under_goal_timeout(&GoalSource::Schedule, None, slow())
+                .await
+                .ok(),
+            Some(7)
+        );
+        // An explicit ceiling still applies.
+        assert!(
+            run_under_goal_timeout(&GoalSource::Schedule, Some(0), slow())
+                .await
+                .is_err()
+        );
+        // A chat turn's budget is soft, so it never gets a hard timer.
+        assert_eq!(
+            run_under_goal_timeout(&GoalSource::ChatInline, Some(0), slow())
+                .await
+                .ok(),
+            Some(7)
+        );
+    }
+
+    /// A pause or a sleep is neither a success nor a failure, so it must not
+    /// move the circuit breaker; a real failure still does.
+    #[test]
+    fn a_paused_or_sleeping_pipeline_is_neutral_for_the_circuit_breaker() {
+        use crate::magician_v2::execution::agentic::EnvironmentState;
+        use crate::magician_v2::execution::AgenticOutcome;
+
+        let sleeping = GoalPipelineExecutionResult::Direct(Ok(AgenticOutcome::Sleeping {
+            wake_at: chrono::Utc::now(),
+            paused_state: None,
+            stateless_source_segment: None,
+            placement_continuation: None,
+        }));
+        assert!(goal_pipeline_awaits_continuation(&sleeping));
+
+        let waiting_on_children =
+            GoalPipelineExecutionResult::Direct(Ok(AgenticOutcome::WaitingForChildren {
+                child_execution_ids: vec!["child-1".to_string()],
+                last_state: EnvironmentState::Uninitialized,
+                iterations_used: 1,
+                pause_state: None,
+            }));
+        assert!(goal_pipeline_awaits_continuation(&waiting_on_children));
+
+        let failed = GoalPipelineExecutionResult::Direct(Ok(AgenticOutcome::Failed {
+            reason: "provider outage persisted".to_string(),
+            last_state: EnvironmentState::Uninitialized,
+            iterations_used: 1,
+        }));
+        assert!(!goal_pipeline_awaits_continuation(&failed));
+        assert!(!goal_pipeline_awaits_continuation(
+            &GoalPipelineExecutionResult::Direct(Err("boom".to_string()))
+        ));
+        assert!(!goal_pipeline_awaits_continuation(
+            &GoalPipelineExecutionResult::TimedOut
+        ));
+    }
+
     #[test]
     fn delegated_child_waiting_on_nested_children_keeps_its_checkpoint_live() {
         use crate::magician_v2::execution::agentic::EnvironmentState;
@@ -12112,13 +12651,22 @@ tools: []
         // `create_delegation_execution` titles the row `[Delegation] <context>`;
         // the recovery binding seals `<context>`.
         let row = format!("{DELEGATION_TITLE_PREFIX}Fix the footer count");
-        assert!(delegated_child_title_matches(Some(&row), Some("Fix the footer count")));
+        assert!(delegated_child_title_matches(
+            Some(&row),
+            Some("Fix the footer count")
+        ));
         assert!(delegated_child_title_matches(
             Some("Fix the footer count"),
             Some("Fix the footer count")
         ));
-        assert!(!delegated_child_title_matches(Some(&row), Some("Another goal")));
-        assert!(!delegated_child_title_matches(None, Some("Fix the footer count")));
+        assert!(!delegated_child_title_matches(
+            Some(&row),
+            Some("Another goal")
+        ));
+        assert!(!delegated_child_title_matches(
+            None,
+            Some("Fix the footer count")
+        ));
         assert!(!delegated_child_title_matches(Some(&row), None));
         assert!(delegated_child_title_matches(None, None));
     }

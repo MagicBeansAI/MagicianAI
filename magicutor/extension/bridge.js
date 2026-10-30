@@ -88,6 +88,9 @@ let lastConnectConfig = null;
 let lastPongAt = 0;          // updated on (re)connect + every pong; drives staleness detection
 let droppedEventCount = 0;   // best-effort CDP events dropped under backpressure
 
+// Server-to-extension notices handed to `onNotice` (see bridge_prompts.js).
+const SERVER_NOTICE_TYPES = new Set(['browser_state', 'browser_choice_request', 'browser_choice_withdrawn']);
+
 function isBridgeConnected() {
     return bridgeConnected && bridgeSocket !== null && bridgeSocket.readyState === WebSocket.OPEN;
 }
@@ -159,9 +162,14 @@ function scheduleReconnect() {
 /**
  * Connect to WebSocket bridge
  * First checks if server is available via HTTP to avoid ERR_CONNECTION_REFUSED errors
+ *
+ * `identityQuery` (optional, async) returns the handshake query suffix that
+ * names this browser (`&browser_id=…&browser_label=…`). Magicutor admits up to
+ * its slot limit of browsers and uses the id to let this browser's reconnect
+ * replace its own stale socket.
  */
-async function connectBridge({ checkHttpHealth, onRequest }) {
-    lastConnectConfig = { checkHttpHealth, onRequest };
+async function connectBridge({ checkHttpHealth, onRequest, identityQuery, onNotice }) {
+    lastConnectConfig = { checkHttpHealth, onRequest, identityQuery, onNotice };
 
     if (isBridgeConnected()
         || (bridgeSocket && bridgeSocket.readyState === WebSocket.CONNECTING)) {
@@ -178,13 +186,22 @@ async function connectBridge({ checkHttpHealth, onRequest }) {
           scheduleReconnect();
           return;
       }
+
+      let identitySuffix = '';
+      if (typeof identityQuery === 'function') {
+          try {
+              identitySuffix = (await identityQuery()) || '';
+          } catch (error) {
+              console.warn('[Magicutor] Browser identity unavailable; connecting without it:', error?.message || error);
+          }
+      }
       if (isBridgeConnected()
           || (bridgeSocket && bridgeSocket.readyState === WebSocket.CONNECTING)) {
           return;
       }
 
       try {
-        const url = `${MAGICUTOR_BRIDGE_URL}?token=${BRIDGE_AUTH_TOKEN}`;
+        const url = `${MAGICUTOR_BRIDGE_URL}?token=${BRIDGE_AUTH_TOKEN}${identitySuffix}`;
         console.log(`[Magicutor] Connecting to bridge: ${MAGICUTOR_BRIDGE_URL}`);
 
         const generation = ++bridgeGeneration;
@@ -220,6 +237,9 @@ async function connectBridge({ checkHttpHealth, onRequest }) {
 
                 if (envelope.type === 'request' && envelope.data) {
                     await onRequest(envelope.data);
+                } else if (SERVER_NOTICE_TYPES.has(envelope.type) && typeof onNotice === 'function') {
+                    // Pairing state and per-run browser-choice cards.
+                    onNotice(envelope);
                 }
             } catch (error) {
                 console.error('[Magicutor] Failed to parse bridge message:', error);
@@ -232,6 +252,7 @@ async function connectBridge({ checkHttpHealth, onRequest }) {
             bridgeConnected = false;
             bridgeSocket = null;
             stopKeepAlive();
+            if (typeof onNotice === 'function') onNotice({ type: 'bridge_closed' });
             scheduleReconnect();
         };
 
@@ -324,7 +345,7 @@ async function sendToBridge(response) {
  * drops if bridge is disconnected — the server has no use for orphaned
  * events, and reconnect logic will resubscribe via attach next time.
  */
-function sendCdpEventToBridge(tabId, method, params) {
+function sendCdpEventToBridge(tabId, method, params, sessionId = null) {
     if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) return;
     // Backpressure: if the socket can't drain fast enough — a high-frequency event
     // flood such as DOM.* notifications after `DOM.enable` on a dynamic page — drop
@@ -341,7 +362,11 @@ function sendCdpEventToBridge(tabId, method, params) {
     try {
         const envelope = {
             type: 'cdp_event',
-            data: { tabId, method, params: params ?? {} }
+            // `sessionId` names the child target (OOPIF iframe) that emitted the
+            // event; omitted for the tab's own page.
+            data: sessionId
+                ? { tabId, sessionId, method, params: params ?? {} }
+                : { tabId, method, params: params ?? {} }
         };
         bridgeSocket.send(JSON.stringify(sanitizeForJson(envelope)));
     } catch (error) {
@@ -350,10 +375,61 @@ function sendCdpEventToBridge(tabId, method, params) {
     }
 }
 
+/**
+ * Disconnect and stay disconnected: no reconnect timer, and no reconnect from
+ * a later `scheduleReconnect`, until the next explicit `connectBridge`. Used
+ * when the owner declines pairing.
+ */
+function disconnectBridge() {
+    const socket = bridgeSocket;
+    const onNotice = lastConnectConfig?.onNotice;
+    lastConnectConfig = null;
+    bridgeConnected = false;
+    bridgeSocket = null;
+    bridgeGeneration++;
+    stopKeepAlive();
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    if (socket) {
+        try { socket.close(); } catch (_) { /* already closed */ }
+    }
+    if (typeof onNotice === 'function') onNotice({ type: 'bridge_closed' });
+}
+
+/** Send a small control frame (pairing consent, choice answer) to Magicutor. */
+function sendBridgeMessage(envelope) {
+    if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) return false;
+    try {
+        bridgeSocket.send(JSON.stringify(sanitizeForJson(envelope)));
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Tell Magicutor this browser was renamed. Applies to the live connection, so
+ * in-flight work keeps running; the next handshake carries the new label too.
+ */
+function sendBrowserLabelToBridge(label) {
+    if (!bridgeSocket || bridgeSocket.readyState !== WebSocket.OPEN) return false;
+    try {
+        bridgeSocket.send(JSON.stringify(sanitizeForJson({ type: 'browser_label', label: String(label ?? '') })));
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 export {
     connectBridge,
     reconnectBridge,
     isBridgeConnected,
     sendToBridge,
-    sendCdpEventToBridge
+    sendCdpEventToBridge,
+    sendBrowserLabelToBridge,
+    sendBridgeMessage,
+    disconnectBridge
 };

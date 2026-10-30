@@ -1,0 +1,1041 @@
+{
+  "rows": [
+    {
+      "kind": "agentic_pause",
+      "answer": {
+        "type": "text",
+        "value": "The staging account"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/pause_agentic_1/respond",
+        "body": {
+          "source": "agentic",
+          "input_type": "text",
+          "execution_id": "exec_agentic"
+        }
+      },
+      "row": {
+        "id": "v3:attention:att_agentic",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "task",
+        "task_id": "task_1",
+        "ui_thread_id": "thread_1",
+        "agent_id": "atlas",
+        "title": "Input requested",
+        "summary": "Which account should I use?",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "storage_backend": "v3",
+          "attention_id": "att_agentic",
+          "attention_kind": "input.requested",
+          "execution_id": "exec_agentic",
+          "questions": [
+            "Which account should I use?"
+          ],
+          "item_count": 1,
+          "pause_state_id": "pause_agentic_1",
+          "input_type": "text",
+          "hint": null,
+          "options": null,
+          "input_schema": {
+            "type": "text",
+            "placeholder": "Account name"
+          },
+          "source": "agentic",
+          "hitl_request": {
+            "id": "pause_agentic_1",
+            "source": "agentic",
+            "input_type": "text",
+            "prompt": "Which account should I use?",
+            "input_schema": {
+              "type": "text",
+              "placeholder": "Account name"
+            },
+            "identifiers": {
+              "pause_state_id": "pause_agentic_1",
+              "correlation_id": "pause_agentic_1"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "workflow_id": "task_1",
+              "task_id": "task_1",
+              "execution_id": "exec_agentic",
+              "agent_id": "atlas",
+              "thread_id": "thread_1"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/pause_agentic_1/respond",
+              "method": "POST",
+              "correlation_id": "pause_agentic_1",
+              "source": "agentic",
+              "input_type": "text",
+              "execution_id": "exec_agentic",
+              "soft_success_statuses": [
+                404,
+                409,
+                410
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/pause_agentic_1/respond",
+            "method": "POST",
+            "correlation_id": "pause_agentic_1",
+            "source": "agentic",
+            "input_type": "text",
+            "execution_id": "exec_agentic",
+            "soft_success_statuses": [
+              404,
+              409,
+              410
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "user_request_choice",
+      "answer": {
+        "type": "choice",
+        "selected_id": "send"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/ur_reply_1/respond",
+        "body": {
+          "source": "user_request",
+          "input_type": "choice",
+          "execution_id": "exec_reply"
+        }
+      },
+      "row": {
+        "id": "v3:attention:att_user_choice",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "task",
+        "task_id": "task_1",
+        "ui_thread_id": "thread_1",
+        "agent_id": "atlas",
+        "title": "1 pending user request(s).",
+        "summary": "Send the reply to Dana?",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "storage_backend": "v3",
+          "attention_id": "att_user_choice",
+          "attention_kind": "user_request.pending",
+          "execution_id": "exec_reply",
+          "questions": [
+            "Send the reply to Dana?"
+          ],
+          "item_count": 1,
+          "pause_state_id": "ur_reply_1",
+          "input_type": "choice",
+          "hint": null,
+          "options": [
+            {
+              "id": "send",
+              "label": "Send"
+            },
+            {
+              "id": "hold",
+              "label": "Hold"
+            }
+          ],
+          "input_schema": {
+            "options": [
+              {
+                "id": "send",
+                "label": "Send"
+              },
+              {
+                "id": "hold",
+                "label": "Hold"
+              }
+            ]
+          },
+          "source": "user_request",
+          "hitl_request": {
+            "id": "ur_reply_1",
+            "source": "user_request",
+            "input_type": "choice",
+            "prompt": "Send the reply to Dana?",
+            "input_schema": {
+              "options": [
+                {
+                  "id": "send",
+                  "label": "Send"
+                },
+                {
+                  "id": "hold",
+                  "label": "Hold"
+                }
+              ]
+            },
+            "identifiers": {
+              "correlation_id": "ur_reply_1",
+              "request_id": "ur_reply_1"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "workflow_id": "task_1",
+              "task_id": "task_1",
+              "execution_id": "exec_reply",
+              "agent_id": "atlas",
+              "thread_id": "thread_1"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/ur_reply_1/respond",
+              "method": "POST",
+              "correlation_id": "ur_reply_1",
+              "source": "user_request",
+              "input_type": "choice",
+              "execution_id": "exec_reply",
+              "options": [
+                {
+                  "id": "send",
+                  "label": "Send"
+                },
+                {
+                  "id": "hold",
+                  "label": "Hold"
+                }
+              ],
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/ur_reply_1/respond",
+            "method": "POST",
+            "correlation_id": "ur_reply_1",
+            "source": "user_request",
+            "input_type": "choice",
+            "execution_id": "exec_reply",
+            "options": [
+              {
+                "id": "send",
+                "label": "Send"
+              },
+              {
+                "id": "hold",
+                "label": "Hold"
+              }
+            ],
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "user_request_acknowledge",
+      "answer": {
+        "type": "choice",
+        "selected_id": "acknowledge"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/vibedev-run-ended%3Atask_1%3Aexec_d278/respond",
+        "body": {
+          "source": "user_request",
+          "input_type": "choice",
+          "execution_id": "exec_d278"
+        }
+      },
+      "row": {
+        "id": "v3:attention:att_briefing",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "task",
+        "task_id": "task_1",
+        "ui_thread_id": "thread_1",
+        "agent_id": "atlas",
+        "title": "1 pending user request(s).",
+        "summary": "Autopilot run finished: Pi 1.3.0 live test.",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "storage_backend": "v3",
+          "attention_id": "att_briefing",
+          "attention_kind": "user_request.pending",
+          "execution_id": "exec_d278",
+          "questions": [
+            "Autopilot run finished: Pi 1.3.0 live test."
+          ],
+          "item_count": 1,
+          "pause_state_id": "vibedev-run-ended:task_1:exec_d278",
+          "input_type": "choice",
+          "hint": null,
+          "options": [
+            {
+              "id": "acknowledge",
+              "label": "Acknowledge",
+              "requires_input": false
+            }
+          ],
+          "input_schema": {
+            "options": [
+              {
+                "id": "acknowledge",
+                "label": "Acknowledge",
+                "requires_input": false
+              }
+            ]
+          },
+          "source": "user_request",
+          "hitl_request": {
+            "id": "vibedev-run-ended:task_1:exec_d278",
+            "source": "user_request",
+            "input_type": "choice",
+            "prompt": "Autopilot run finished: Pi 1.3.0 live test.",
+            "input_schema": {
+              "options": [
+                {
+                  "id": "acknowledge",
+                  "label": "Acknowledge",
+                  "requires_input": false
+                }
+              ]
+            },
+            "identifiers": {
+              "correlation_id": "vibedev-run-ended:task_1:exec_d278",
+              "request_id": "vibedev-run-ended:task_1:exec_d278"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "workflow_id": "task_1",
+              "task_id": "task_1",
+              "execution_id": "exec_d278",
+              "agent_id": "atlas",
+              "thread_id": "thread_1"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/vibedev-run-ended%3Atask_1%3Aexec_d278/respond",
+              "method": "POST",
+              "correlation_id": "vibedev-run-ended:task_1:exec_d278",
+              "source": "user_request",
+              "input_type": "choice",
+              "execution_id": "exec_d278",
+              "options": [
+                {
+                  "id": "acknowledge",
+                  "label": "Acknowledge"
+                }
+              ],
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/vibedev-run-ended%3Atask_1%3Aexec_d278/respond",
+            "method": "POST",
+            "correlation_id": "vibedev-run-ended:task_1:exec_d278",
+            "source": "user_request",
+            "input_type": "choice",
+            "execution_id": "exec_d278",
+            "options": [
+              {
+                "id": "acknowledge",
+                "label": "Acknowledge"
+              }
+            ],
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "diff_approval",
+      "answer": {
+        "type": "choice",
+        "selected_id": "apply"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30/respond",
+        "body": {
+          "source": "diff_approval",
+          "input_type": "diff_approval",
+          "execution_id": "exec_code"
+        }
+      },
+      "row": {
+        "id": "v3:attention:att_diff",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "task",
+        "task_id": "task_1",
+        "ui_thread_id": "thread_1",
+        "agent_id": "atlas",
+        "title": "Input requested",
+        "summary": "Apply the staged change to src/search.ts?",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "storage_backend": "v3",
+          "attention_id": "att_diff",
+          "attention_kind": "input.requested",
+          "execution_id": "exec_code",
+          "questions": [
+            "Apply the staged change to src/search.ts?"
+          ],
+          "item_count": 1,
+          "pause_state_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+          "input_type": "diff_approval",
+          "hint": null,
+          "options": null,
+          "input_schema": {
+            "type": "diff_approval",
+            "proposal_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+            "approval_source": "proposal",
+            "files": [
+              {
+                "path": "src/search.ts",
+                "status": "M",
+                "additions": 3,
+                "deletions": 1,
+                "unified_diff": "@@ -1 +1 @@\n-old\n+new\n"
+              }
+            ]
+          },
+          "source": "diff_approval",
+          "hitl_request": {
+            "id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+            "source": "diff_approval",
+            "input_type": "diff_approval",
+            "prompt": "Apply the staged change to src/search.ts?",
+            "input_schema": {
+              "type": "diff_approval",
+              "proposal_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+              "approval_source": "proposal",
+              "files": [
+                {
+                  "path": "src/search.ts",
+                  "status": "M",
+                  "additions": 3,
+                  "deletions": 1,
+                  "unified_diff": "@@ -1 +1 @@\n-old\n+new\n"
+                }
+              ]
+            },
+            "identifiers": {
+              "correlation_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "workflow_id": "task_1",
+              "task_id": "task_1",
+              "execution_id": "exec_code",
+              "agent_id": "atlas",
+              "thread_id": "thread_1"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30/respond",
+              "method": "POST",
+              "correlation_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+              "source": "diff_approval",
+              "input_type": "diff_approval",
+              "execution_id": "exec_code",
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30/respond",
+            "method": "POST",
+            "correlation_id": "ccp-6f1d2a90-3b7c-4e55-9a10-2f4c8d7e1b30",
+            "source": "diff_approval",
+            "input_type": "diff_approval",
+            "execution_id": "exec_code",
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "plan_approval",
+      "answer": {
+        "type": "confirmation",
+        "confirmed": true
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/plan_7/respond",
+        "body": {
+          "source": "plan_approval",
+          "input_type": "confirmation",
+          "execution_id": "planexec_1",
+          "task_id": "task_1"
+        }
+      },
+      "row": {
+        "id": "v3:attention:att_plan",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "task",
+        "task_id": "task_1",
+        "ui_thread_id": "thread_1",
+        "agent_id": "atlas",
+        "title": "Plan ready for review",
+        "summary": "This task plan is ready for review.",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "storage_backend": "v3",
+          "attention_id": "att_plan",
+          "attention_kind": "hitl.requested",
+          "execution_id": "planexec_1",
+          "questions": [
+            "This task plan is ready for review."
+          ],
+          "item_count": 1,
+          "pause_state_id": "plan_7",
+          "input_type": "confirmation",
+          "hint": null,
+          "options": null,
+          "input_schema": {
+            "type": "confirmation",
+            "plan_id": "plan_7",
+            "task_id": "task_1"
+          },
+          "source": "plan_approval",
+          "hitl_request": {
+            "id": "plan_7",
+            "source": "plan_approval",
+            "input_type": "confirmation",
+            "prompt": "This task plan is ready for review.",
+            "input_schema": {
+              "type": "confirmation",
+              "plan_id": "plan_7",
+              "task_id": "task_1",
+              "confirm_label": "Confirm",
+              "deny_label": "Cancel"
+            },
+            "identifiers": {
+              "correlation_id": "plan_7"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "workflow_id": "task_1",
+              "task_id": "task_1",
+              "execution_id": "planexec_1",
+              "agent_id": "atlas",
+              "thread_id": "thread_1"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/plan_7/respond",
+              "method": "POST",
+              "correlation_id": "plan_7",
+              "source": "plan_approval",
+              "input_type": "confirmation",
+              "execution_id": "planexec_1",
+              "task_id": "task_1",
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/plan_7/respond",
+            "method": "POST",
+            "correlation_id": "plan_7",
+            "source": "plan_approval",
+            "input_type": "confirmation",
+            "execution_id": "planexec_1",
+            "task_id": "task_1",
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "clarification",
+      "answer": {
+        "type": "text",
+        "value": "The board"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/question_1/respond",
+        "body": {
+          "source": "clarification",
+          "input_type": "text",
+          "execution_id": "planexec_1",
+          "task_id": "task_1"
+        }
+      },
+      "row": {
+        "id": "v3:attention:att_clarify",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "task",
+        "task_id": "task_1",
+        "ui_thread_id": "thread_1",
+        "agent_id": "atlas",
+        "title": "Planning clarification",
+        "summary": "Who is the audience?",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "storage_backend": "v3",
+          "attention_id": "att_clarify",
+          "attention_kind": "hitl.requested",
+          "execution_id": "planexec_1",
+          "questions": [
+            "Who is the audience?"
+          ],
+          "item_count": 1,
+          "pause_state_id": "question_1",
+          "input_type": "text",
+          "hint": null,
+          "options": null,
+          "input_schema": {
+            "type": "text"
+          },
+          "source": "clarification",
+          "hitl_request": {
+            "id": "question_1",
+            "source": "clarification",
+            "input_type": "text",
+            "prompt": "Who is the audience?",
+            "input_schema": {
+              "type": "text"
+            },
+            "identifiers": {
+              "correlation_id": "question_1"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "workflow_id": "task_1",
+              "task_id": "task_1",
+              "execution_id": "planexec_1",
+              "agent_id": "atlas",
+              "thread_id": "thread_1"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/question_1/respond",
+              "method": "POST",
+              "correlation_id": "question_1",
+              "source": "clarification",
+              "input_type": "text",
+              "execution_id": "planexec_1",
+              "task_id": "task_1",
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/question_1/respond",
+            "method": "POST",
+            "correlation_id": "question_1",
+            "source": "clarification",
+            "input_type": "text",
+            "execution_id": "planexec_1",
+            "task_id": "task_1",
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "approval",
+      "answer": {
+        "type": "confirmation",
+        "confirmed": true
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/approval_9/respond",
+        "body": {
+          "source": "approval",
+          "input_type": "confirmation",
+          "execution_id": "exec_mail"
+        }
+      },
+      "row": {
+        "id": "runtime:hitl:approval_9",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "approval",
+        "agent_id": "atlas",
+        "title": "Allow Atlas to send email?",
+        "summary": "gmail.send to dana@example.com",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "attention_kind": "hitl.requested",
+          "source": "approval",
+          "input_type": "confirmation",
+          "correlation_id": "approval_9",
+          "request_id": "approval_9",
+          "input_schema": {
+            "confirm_label": "Approve",
+            "deny_label": "Reject"
+          },
+          "hint": "gmail.send to dana@example.com",
+          "execution_id": "exec_mail",
+          "taskless": true,
+          "hitl_request": {
+            "id": "approval_9",
+            "source": "approval",
+            "input_type": "confirmation",
+            "prompt": "Allow Atlas to send email?",
+            "hint": "gmail.send to dana@example.com",
+            "input_schema": {
+              "confirm_label": "Approve",
+              "deny_label": "Reject"
+            },
+            "identifiers": {
+              "correlation_id": "approval_9"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "execution_id": "exec_mail",
+              "agent_id": "atlas"
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/approval_9/respond",
+              "method": "POST",
+              "correlation_id": "approval_9",
+              "source": "approval",
+              "input_type": "confirmation",
+              "execution_id": "exec_mail",
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/approval_9/respond",
+            "method": "POST",
+            "correlation_id": "approval_9",
+            "source": "approval",
+            "input_type": "confirmation",
+            "execution_id": "exec_mail",
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "service_health",
+      "answer": {
+        "type": "choice",
+        "selected_id": "dismiss"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/service_health%3Aopenrouter%3Acredits/respond",
+        "body": {
+          "source": "service_health",
+          "input_type": "choice"
+        }
+      },
+      "row": {
+        "id": "runtime:hitl:service_health:openrouter:credits",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "escalation",
+        "title": "OpenRouter is out of credits",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "attention_kind": "hitl.requested",
+          "source": "service_health",
+          "input_type": "choice",
+          "correlation_id": "service_health:openrouter:credits",
+          "request_id": "service_health:openrouter:credits",
+          "input_schema": {
+            "type": "choice",
+            "options": [
+              {
+                "id": "dismiss",
+                "label": "Dismiss"
+              }
+            ],
+            "allow_other": false,
+            "service": "openrouter",
+            "health_issue": "credits"
+          },
+          "hint": null,
+          "execution_id": null,
+          "taskless": true,
+          "hitl_request": {
+            "id": "service_health:openrouter:credits",
+            "source": "service_health",
+            "input_type": "choice",
+            "prompt": "OpenRouter is out of credits",
+            "hint": null,
+            "input_schema": {
+              "type": "choice",
+              "options": [
+                {
+                  "id": "dismiss",
+                  "label": "Dismiss"
+                }
+              ],
+              "allow_other": false,
+              "service": "openrouter",
+              "health_issue": "credits"
+            },
+            "identifiers": {
+              "correlation_id": "service_health:openrouter:credits"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "execution_id": null,
+              "agent_id": null
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/service_health%3Aopenrouter%3Acredits/respond",
+              "method": "POST",
+              "correlation_id": "service_health:openrouter:credits",
+              "source": "service_health",
+              "input_type": "choice",
+              "options": [
+                {
+                  "id": "dismiss",
+                  "label": "Dismiss"
+                }
+              ],
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/service_health%3Aopenrouter%3Acredits/respond",
+            "method": "POST",
+            "correlation_id": "service_health:openrouter:credits",
+            "source": "service_health",
+            "input_type": "choice",
+            "options": [
+              {
+                "id": "dismiss",
+                "label": "Dismiss"
+              }
+            ],
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "mcp_oauth",
+      "answer": {
+        "type": "external_action_completed"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/mcp_oauth%3Alinear%3Aflow_1/respond",
+        "body": {
+          "source": "mcp_oauth",
+          "input_type": "external_action"
+        }
+      },
+      "row": {
+        "id": "runtime:hitl:mcp_oauth:linear:flow_1",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "escalation",
+        "title": "Sign in to Linear",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "attention_kind": "hitl.requested",
+          "source": "mcp_oauth",
+          "input_type": "external_action",
+          "correlation_id": "mcp_oauth:linear:flow_1",
+          "request_id": "mcp_oauth:linear:flow_1",
+          "input_schema": {
+            "type": "external_action",
+            "done_label": "I've finished"
+          },
+          "hint": null,
+          "execution_id": null,
+          "taskless": true,
+          "hitl_request": {
+            "id": "mcp_oauth:linear:flow_1",
+            "source": "mcp_oauth",
+            "input_type": "external_action",
+            "prompt": "Sign in to Linear",
+            "hint": null,
+            "input_schema": {
+              "type": "external_action",
+              "done_label": "I've finished"
+            },
+            "identifiers": {
+              "correlation_id": "mcp_oauth:linear:flow_1"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "execution_id": null,
+              "agent_id": null
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/mcp_oauth%3Alinear%3Aflow_1/respond",
+              "method": "POST",
+              "correlation_id": "mcp_oauth:linear:flow_1",
+              "source": "mcp_oauth",
+              "input_type": "external_action",
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/mcp_oauth%3Alinear%3Aflow_1/respond",
+            "method": "POST",
+            "correlation_id": "mcp_oauth:linear:flow_1",
+            "source": "mcp_oauth",
+            "input_type": "external_action",
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    },
+    {
+      "kind": "bot_auth",
+      "answer": {
+        "type": "choice",
+        "selected_id": "open_auth_flow"
+      },
+      "expect": {
+        "url": "/api/magician/v2/hitl/bot_auth%3Aowner%3Ahome%3Agmail/respond",
+        "body": {
+          "source": "bot_auth",
+          "input_type": "choice"
+        }
+      },
+      "row": {
+        "id": "runtime:hitl:bot_auth:owner:home:gmail",
+        "principal": "owner",
+        "workspace": "home",
+        "item_type": "escalation",
+        "title": "Connect Gmail",
+        "summary": "Sign in to continue",
+        "status": "needs_action",
+        "created_at": 1792486800000,
+        "updated_at": 1792486800000,
+        "metadata": {
+          "attention_kind": "hitl.requested",
+          "source": "bot_auth",
+          "input_type": "choice",
+          "correlation_id": "bot_auth:owner:home:gmail",
+          "request_id": "bot_auth:owner:home:gmail",
+          "input_schema": {
+            "type": "choice",
+            "options": [
+              {
+                "id": "open_auth_flow",
+                "label": "Connect"
+              }
+            ]
+          },
+          "hint": "Sign in to continue",
+          "execution_id": null,
+          "taskless": true,
+          "hitl_request": {
+            "id": "bot_auth:owner:home:gmail",
+            "source": "bot_auth",
+            "input_type": "choice",
+            "prompt": "Connect Gmail",
+            "hint": "Sign in to continue",
+            "input_schema": {
+              "type": "choice",
+              "options": [
+                {
+                  "id": "open_auth_flow",
+                  "label": "Connect"
+                }
+              ]
+            },
+            "identifiers": {
+              "correlation_id": "bot_auth:owner:home:gmail"
+            },
+            "scope": {
+              "principal": "owner",
+              "workspace": "home",
+              "execution_id": null,
+              "agent_id": null
+            },
+            "at": 1792486800000,
+            "respond": {
+              "url": "/api/magician/v2/hitl/bot_auth%3Aowner%3Ahome%3Agmail/respond",
+              "method": "POST",
+              "correlation_id": "bot_auth:owner:home:gmail",
+              "source": "bot_auth",
+              "input_type": "choice",
+              "options": [
+                {
+                  "id": "open_auth_flow",
+                  "label": "Connect"
+                }
+              ],
+              "soft_success_statuses": [
+                409
+              ]
+            }
+          },
+          "respond": {
+            "url": "/api/magician/v2/hitl/bot_auth%3Aowner%3Ahome%3Agmail/respond",
+            "method": "POST",
+            "correlation_id": "bot_auth:owner:home:gmail",
+            "source": "bot_auth",
+            "input_type": "choice",
+            "options": [
+              {
+                "id": "open_auth_flow",
+                "label": "Connect"
+              }
+            ],
+            "soft_success_statuses": [
+              409
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

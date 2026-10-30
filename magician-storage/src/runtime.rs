@@ -56,7 +56,7 @@ pub struct ScopeLeaseHealth {
 }
 
 impl StorageRuntime {
-    /// Open the local adapter set for an embedded/silverbullet profile.
+    /// Open the local adapter set for the local profile.
     /// Remote object/dataset adapters live in `magician-storage-s3` and are
     /// not selected by this constructor.
     pub fn open_local(
@@ -66,7 +66,7 @@ impl StorageRuntime {
     ) -> Result<Self, StorageError> {
         match profile.kind {
             ProfileKind::RemoteDurable => Err(StorageError::UnsupportedCapability),
-            ProfileKind::LocalEmbedded | ProfileKind::LocalSilverbulletSpace => {
+            ProfileKind::LocalEmbedded => {
                 let max_bytes = profile
                     .document
                     .scratch
@@ -100,7 +100,6 @@ impl StorageRuntime {
     pub fn operator_health(&self) -> StorageOperatorHealth {
         let profile = match self.profile.kind {
             ProfileKind::LocalEmbedded => "local_embedded",
-            ProfileKind::LocalSilverbulletSpace => "local_silverbullet_space",
             ProfileKind::RemoteDurable => "remote_durable",
         };
         let source = match &self.profile.source {
@@ -129,7 +128,6 @@ impl StorageRuntime {
     pub(crate) fn record_startup_health(&self) {
         let detail = match self.profile.kind {
             ProfileKind::LocalEmbedded => "local filesystem",
-            ProfileKind::LocalSilverbulletSpace => "local silverbullet space",
             ProfileKind::RemoteDurable => "remote durable",
         };
         for capability in [
@@ -153,7 +151,6 @@ impl StorageRuntime {
                 "{} via {}",
                 match self.profile.kind {
                     ProfileKind::LocalEmbedded => "local_embedded",
-                    ProfileKind::LocalSilverbulletSpace => "local_silverbullet_space",
                     ProfileKind::RemoteDurable => "remote_durable",
                 },
                 match self.profile.source {

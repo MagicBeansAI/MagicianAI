@@ -18,7 +18,7 @@
 	// stations stay in flow and the road is the document it has always been,
 	// which is also the accessibility contract the film keeps.
 	import { onDestroy, onMount } from 'svelte';
-	import { clamp, createScrubber, resolveScene } from './scrub';
+	import { clamp, createScrubber, cssProgress, resolveScene } from './scrub';
 	import { roadBounds, roadStations, roadTrackSvh, roadTravelStart } from './roadTrack';
 
 	export let still = false;
@@ -173,7 +173,7 @@
 				i < rs.scene ? 1 : i > rs.scene ? 0 : ts > 0 ? Math.min(1, rs.local / ts) : 1;
 			// The beat's own reveal formulas already speak `--local`; giving
 			// each station its own keeps PathBeat working verbatim.
-			el.style.setProperty('--local', rv.toFixed(3));
+			el.style.setProperty('--local', cssProgress(rv));
 		}
 		drawThread(cam);
 	}

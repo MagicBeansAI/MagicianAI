@@ -1,7 +1,24 @@
 import { get } from 'svelte/store';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ModelChoice } from '$lib/llm/modelCatalog';
 import { createChatStore } from './chatStore';
+import { chatProfileStore } from './chatProfileStore';
+
+const queueModel: ModelChoice = {
+	id: 'custom/model', label: 'Custom model', model: 'physical-model', provider: 'custom', connection: 'custom',
+	limits: null,
+	capabilities: { vision: true, tools: true, streaming: true, computer_use: false, structured_output: false, web_search: false },
+	thinking: { mode: 'effort', levels: ['low', 'high'], default: 'low' },
+	choices: { auto: 'opaque-auto', high: 'opaque-high' }
+};
+
+function modelsResponse(): Response {
+	return Response.json({
+		models: [queueModel],
+		default_selection: { model_id: queueModel.id, thinking: 'auto' }
+	});
+}
 
 function session(id: string, status: 'active' | 'archived') {
 	return {
@@ -213,10 +230,12 @@ describe('composer queue admission', () => {
         let stream!: ReadableStreamDefaultController<Uint8Array>;
         vi.stubGlobal('fetch', vi.fn(async (request: string | URL | Request) => {
             const url = String(request);
+            if (url.includes('/chat/models?engine=')) return modelsResponse();
             if (url.includes('/chat/enroll/status')) return Response.json({ enrolled: true, principal: 'anonymous' });
             if (url.includes('/messages/stream?')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
             return detailResponse('parent', 'active');
         }));
+        await chatProfileStore.load('magician');
         const store = createChatStore();
         await store.openSession('parent');
         const result = (version: number, text: string) => ({
@@ -256,6 +275,7 @@ describe('composer queue admission', () => {
         const emit = (event: string, data: unknown) => stream.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         vi.stubGlobal('fetch', vi.fn(async (request: string | URL | Request) => {
             const url = String(request);
+            if (url.includes('/chat/models?engine=')) return modelsResponse();
             if (url.includes('/chat/enroll/status')) return Response.json({ enrolled: true, principal: 'anonymous' });
             if (url.includes('/messages/stream?')) return new Response(new ReadableStream({ start(controller) { stream = controller; } }));
             if (url.includes('/messages?')) return Response.json({ messages: [
@@ -264,6 +284,7 @@ describe('composer queue admission', () => {
             ] });
             return detailResponse('parent', 'active');
         }));
+        await chatProfileStore.load('magician');
         const store = createChatStore();
         await store.openSession('parent');
         const sending = store.sendMessageStreaming('parent', 'Original question');
@@ -289,6 +310,7 @@ describe('composer queue admission', () => {
         localStorage.setItem('chat_channel_address', 'browser-test');
         const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
             const url = String(request);
+            if (url.includes('/chat/models?engine=')) return modelsResponse();
             if (url.includes('/chat/enroll/status')) return Response.json({ enrolled: true, principal: 'anonymous' });
             if (url.includes('/queue?') && init?.method === 'POST') {
                 expect(JSON.parse(String(init.body))).toMatchObject({ text: 'Follow-up', mode: 'accept_in_scope', harness_engine: 'pi' });
@@ -298,6 +320,7 @@ describe('composer queue admission', () => {
             return detailResponse('parent', 'active');
         });
         vi.stubGlobal('fetch', fetchMock);
+        await chatProfileStore.load('magician');
         const store = createChatStore();
         await store.openSession('parent');
         const before = get(store);

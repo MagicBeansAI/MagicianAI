@@ -33,7 +33,7 @@ ACTIVE_PROMPTS = (
     "execution_output_synthesize_system_v1.0.1.json",
     "task_user_output_synthesize_system_v1.4.1.json",
     "public_envoy_chat_only_instruction_v1.1.0.json",
-    "vibedev_execution_policy_v1.0.1.json",
+    "vibedev_execution_policy_v1.0.2.json",
     "code_distill_system_v1.0.1.json",
 )
 

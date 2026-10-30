@@ -1,16 +1,10 @@
 package ai.magicbeans.magdroid.ui.vibedev
 
-import ai.magicbeans.magdroid.ui.AppShortcutLinks
-import ai.magicbeans.magdroid.ui.AppShortcutTarget
 import ai.magicbeans.magdroid.ui.LocalMagicanFontFamilies
 import ai.magicbeans.magdroid.ui.activePalette
 import ai.magicbeans.magdroid.vibedev.VibeDevLiveRun
-import ai.magicbeans.magdroid.vibedev.VibeDevNeedsYou
-import ai.magicbeans.magdroid.vibedev.VibeDevNowData
 import ai.magicbeans.magdroid.vibedev.VibeDevNowViewModel
-import ai.magicbeans.magdroid.vibedev.VibeDevProject
 import ai.magicbeans.magdroid.vibedev.VibeDevRunState
-import ai.magicbeans.magdroid.vibedev.VibeDevStatus
 import ai.magicbeans.magdroid.vibedev.isoMillis
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
@@ -31,29 +25,24 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,177 +60,48 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** VibeDev home: Now (does anything need me?) and Projects. */
+
+/** Run history; the composer opens only when starting or continuing a run. */
 @Composable
-internal fun VibeDevHomeScreen(chrome: VibeDevChrome, model: VibeDevNowViewModel, snackbar: SnackbarHostState) {
+@OptIn(ExperimentalMaterial3Api::class)
+internal fun VibeDevHomeScreen(chrome: VibeDevChrome, model: VibeDevNowViewModel,
+    snackbar: SnackbarHostState) {
     AttachWhileVisible(model, chrome)
     VibeDevMessages(model, snackbar)
-    val loaded by model.data.collectAsStateWithLifecycle()
-    val hidden by model.hiddenCrewIds.collectAsStateWithLifecycle()
+    val data by model.data.collectAsStateWithLifecycle()
     val status by model.loadStatus.collectAsStateWithLifecycle()
-    val data = loaded.copy(hiddenCrews = hidden)
-    val fonts = LocalMagicanFontFamilies.current
-
+    val refreshState = rememberPullToRefreshState()
     Column(Modifier.fillMaxSize().background(activePalette.background)) {
-        val selected = chrome.homeTab.ordinal
-        TabRow(
-            selectedTabIndex = selected,
-            containerColor = activePalette.background,
-            contentColor = activePalette.accent,
-            indicator = { positions ->
-                TabRowDefaults.SecondaryIndicator(Modifier.tabIndicatorOffset(positions[selected]), height = 3.dp, color = activePalette.accent)
-            },
-            divider = { HorizontalDivider(color = activePalette.cardBorder) },
-        ) {
-            VibeDevHomeTab.entries.forEach { tab ->
-                Tab(
-                    selected = chrome.homeTab == tab,
-                    onClick = { chrome.homeTab = tab },
-                    selectedContentColor = activePalette.accent,
-                    unselectedContentColor = activePalette.secondaryText,
-                    text = {
-                        Text(
-                            when (tab) {
-                                VibeDevHomeTab.Now -> data.needsYou.size.let { if (it > 0) "Now · $it" else "Now" }
-                                VibeDevHomeTab.Projects -> "Projects"
-                            },
-                            fontWeight = FontWeight.SemiBold, fontFamily = fonts.body, fontSize = 14.sp,
-                        )
-                    },
-                )
-            }
-        }
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            val hasData = status.updatedAtMs != null
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
-            ) {
-                item(key = "stale") { StaleLine(status, hasData, onRetry = { model.refresh() }) }
-                if (!hasData && status.loading) item(key = "loading") { LoadingLine() }
-                if (hasData) when (chrome.homeTab) {
-                    VibeDevHomeTab.Now -> nowItems(chrome, model, data, status)
-                    VibeDevHomeTab.Projects -> projectItems(chrome, data)
+        PullToRefreshBox(isRefreshing = status.loading, onRefresh = { model.refresh() },
+            modifier = Modifier.weight(1f).fillMaxWidth().semantics {
+                customActions = listOf(CustomAccessibilityAction("Refresh runs") { model.refresh(); true })
+            }, state = refreshState,
+            indicator = {
+                PullToRefreshDefaults.Indicator(state = refreshState, isRefreshing = status.loading,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    containerColor = activePalette.card, color = activePalette.accent)
+            }) {
+            LazyColumn(Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
+                item(key = "stale") { StaleLine(status, status.updatedAtMs != null, onRetry = { model.refresh() }) }
+                if (status.loading && data.history.isEmpty()) item(key = "loading") { LoadingLine() }
+                if (!status.loading && data.history.isEmpty()) item(key = "empty") {
+                    EmptyLine("No runs yet. Start a new run, or tap + to add a project.")
+                }
+                items(data.history, key = { it.runId }) { run ->
+                    val stopping = run.runId in data.stopping
+                    LiveRunRow(run, stopping = stopping, onOpen = { chrome.push(VibeDevRoute.Run(run.runId, run.title)) },
+                        onSteer = if (run.state.isLive && !stopping) ({ chrome.sheet = VibeDevSheet.Steer(run.title, run.liveTaskId) { model.steer(run, it) } }) else null,
+                        onStop = if (run.state.isLive && !stopping) ({ model.stop(run) }) else null)
+                }
+                data.pageError?.let { error -> item(key = "page-error") { MetaText(error) } }
+                if (data.nextCursor != null) item(key = "more") {
+                    VibeButton("Load older runs", model::loadMore, Modifier.fillMaxWidth(), busy = data.loadingMore)
                 }
             }
-            ExtendedFloatingActionButton(
-                onClick = {
-                    val project = data.openProjects.firstOrNull()
-                    chrome.sheet = VibeDevSheet.NewRun(projectId = project?.projectId)
-                },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-                containerColor = activePalette.accentFill,
-                contentColor = activePalette.onAccent,
-                icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                text = { Text("New run", fontWeight = FontWeight.SemiBold, fontFamily = fonts.body) },
-            )
         }
-    }
-}
-
-private fun LazyListScope.nowItems(
-    chrome: VibeDevChrome,
-    model: VibeDevNowViewModel,
-    data: VibeDevNowData,
-    status: VibeDevStatus,
-) {
-    val asks = data.needsYou
-    item(key = "needs-label") { SectionLabel("Needs you", asks.size) }
-    if (asks.isEmpty()) item(key = "needs-empty") { EmptyLine("Nothing needs you right now.") }
-    items(asks, key = { it.key }) { ask ->
-        when (ask) {
-            is VibeDevNeedsYou.CrewAsk -> VibeDevCrewCard(
-                crew = ask.crew,
-                projectName = ask.projectName,
-                question = ask.question,
-                busy = "crew:${ask.crew.crewId}" in status.busy,
-                onDecide = { decision -> model.decide(ask.projectId, ask.crew, decision) },
-                onOpenRun = { id, title -> chrome.push(VibeDevRoute.Run(id, title)) },
-            )
-            is VibeDevNeedsYou.RunAsk -> RunAskCard(
-                run = ask.run,
-                busy = "run:${ask.run.runId}" in status.busy,
-                onReview = { chrome.push(VibeDevRoute.Run(ask.run.runId, ask.run.title, openChanges = true)) },
-                onApprove = { model.approve(ask.run) },
-            )
-        }
-    }
-    val crews = data.runningCrews
-    if (crews.isNotEmpty()) {
-        item(key = "crews-label") { SectionLabel("VibeDev crews", crews.size) }
-        items(crews, key = { "crew-running:${it.second.crewId}" }) { (project, crew) ->
-            VibeDevCrewCard(
-                crew = crew, projectName = project.name, question = null,
-                busy = "crew:${crew.crewId}" in status.busy,
-                onDecide = { model.decide(project.projectId, crew, it) },
-                onOpenRun = { id, title -> chrome.push(VibeDevRoute.Run(id, title)) },
-            )
-        }
-    }
-    val working = data.working
-    item(key = "working-label") { SectionLabel("Working", working.size) }
-    if (working.isEmpty()) {
-        item(key = "working-empty") { EmptyLine("No run is going.") }
-    } else {
-        items(working, key = { "working:${it.runId}" }) { run ->
-            LiveRunRow(
-                run = run,
-                onOpen = { chrome.push(VibeDevRoute.Run(run.runId, run.title)) },
-                onSteer = { chrome.sheet = VibeDevSheet.Steer(run.title) { text -> model.steer(run, text) } },
-                onStop = { model.stop(run) },
-            )
-        }
-        item(key = "swipe-hint") { MetaText("Swipe a run left to steer or stop", Modifier.padding(start = 4.dp, top = 2.dp)) }
-    }
-    val finished = data.justFinished
-    if (finished.isNotEmpty()) {
-        item(key = "finished-label") { SectionLabel("Just finished", finished.size) }
-        items(finished, key = { "finished:${it.runId}" }) { run ->
-            LiveRunRow(run = run, onOpen = { chrome.push(VibeDevRoute.Run(run.runId, run.title, openChanges = run.state == VibeDevRunState.Done)) })
-        }
-    }
-}
-
-private fun LazyListScope.projectItems(chrome: VibeDevChrome, data: VibeDevNowData) {
-    val projects = data.openProjects
-    if (projects.isEmpty()) item(key = "projects-empty") { EmptyLine("No projects yet. Tap + to add one.") }
-    items(projects, key = { "project:${it.projectId}" }) { project ->
-        ProjectCard(project, data.liveCount(project.projectId)) {
-            chrome.push(VibeDevRoute.Project(project.projectId, project.name))
-        }
-    }
-}
-
-@Composable
-private fun ProjectCard(project: VibeDevProject, live: Int, onOpen: () -> Unit) {
-    VibeCard(onClick = onOpen) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.weight(1f)) { CardTitle(project.name, maxLines = 1) }
-            TrustBadge(project.isTrusted)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MetaText(project.repoLabel.ifBlank { "No repository" }, Modifier.weight(1f), mono = true, maxLines = 1)
-            MetaText(if (live > 0) "$live running" else "idle", maxLines = 1)
-        }
-    }
-}
-
-@Composable
-private fun RunAskCard(run: VibeDevLiveRun, busy: Boolean, onReview: () -> Unit, onApprove: () -> Unit) {
-    VibeCard(onClick = onReview) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            RunDot(VibeDevRunState.NeedsYou)
-            Text("${run.projectName} · waiting on you", color = activePalette.warning, fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold, fontFamily = LocalMagicanFontFamilies.current.body, maxLines = 1)
-        }
-        CardTitle(run.title.removePrefix("VibeDev · "))
-        (run.step ?: run.summary)?.let { MetaText(it) }
-        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            VibeButton("Review", onReview, kind = VibeButtonKind.Primary)
-            // Only a diff approval is answered here; any other ask in Attention.
-            if (run.hasApproval) VibeButton("Approve", onApprove, busy = busy)
-            else VibeButton("Open in Attention", { AppShortcutLinks.request(AppShortcutTarget.OpenAttention) })
-        }
+        VibeButton("+ New run", { chrome.sheet = VibeDevSheet.NewRun(projectId = null) },
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), kind = VibeButtonKind.Primary)
     }
 }
 
@@ -253,6 +113,7 @@ private fun RunAskCard(run: VibeDevLiveRun, busy: Boolean, onReview: () -> Unit,
 @Composable
 internal fun LiveRunRow(
     run: VibeDevLiveRun,
+    stopping: Boolean = false,
     onOpen: () -> Unit,
     onSteer: (() -> Unit)? = null,
     onStop: (() -> Unit)? = null,
@@ -265,16 +126,21 @@ internal fun LiveRunRow(
     val offset = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
-    val sub = buildList {
+    val location = run.workLocation?.let { when (it) {
+        "original" -> "Original folder"
+        "trusted" -> "Isolated branch"
+        else -> "Isolated workspace"
+    } }
+    val repo = buildList {
+        run.repoPath?.substringAfterLast('/')?.takeIf { it.isNotBlank() }?.let(::add)
         run.lane?.let { add("$it lane") }
-        add(run.projectName)
-        (if (run.state.isEnded) run.summary else run.step)?.takeIf { it.isNotBlank() }?.let(::add)
     }.joinToString(" · ")
     val right = when {
+        stopping -> "Stopping…"
         run.state == VibeDevRunState.Working -> elapsed(isoMillis(run.startedAt), now)
             ?: agoIso(run.lastProgressAt ?: run.updatedAt, now)
         run.state.isEnded -> run.costUsd?.let(::money)
-            ?: agoIso(run.updatedAt, now).let { if (it.isEmpty() || it == "just now") it else "$it ago" }
+            ?: agoIso(run.updatedAt, now)
         else -> run.state.label
     }
     Box(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
@@ -318,20 +184,31 @@ internal fun LiveRunRow(
                         }
                     }
                 }
-                .padding(start = 14.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                .padding(start = 10.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            RunDot(run.state)
+            RunDot(if (stopping) VibeDevRunState.Stopped else run.state, run.isPartlyDone && !stopping)
             Column(Modifier.weight(1f)) {
-                Text(run.title.removePrefix("VibeDev · "), color = activePalette.text, fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold, fontFamily = fonts.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                MetaText(sub, maxLines = 1)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(run.title.removePrefix("VibeDev · "), modifier = Modifier.weight(1f), color = activePalette.text, fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold, fontFamily = fonts.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if ((run.needsYouCount ?: 0) > 0) Tag("${run.needsYouCount} needs you", strong = true)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MetaText(run.projectName, Modifier.weight(1f), maxLines = 1)
+                    location?.let { Tag(it) }
+                }
+                if (repo.isNotEmpty()) MetaText(repo, maxLines = 1)
+                if (run.isPartlyDone && !stopping) {
+                    Text(listOfNotNull(run.statusLabel, run.openItemsLine).joinToString(" · "), color = activePalette.warning,
+                        fontSize = 12.sp, fontFamily = fonts.body, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
             MetaText(right, maxLines = 1)
             if (swipe) {
                 Box {
-                    IconButton(onClick = { menu = true }) {
+                    VibeIconButton(onClick = { menu = true }) {
                         Icon(Icons.Outlined.MoreVert, contentDescription = "Steer or stop", tint = activePalette.secondaryText)
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -339,8 +216,6 @@ internal fun LiveRunRow(
                         DropdownMenuItem(text = { Text("Stop", color = activePalette.danger) }, onClick = { menu = false; onStop?.invoke() })
                     }
                 }
-            } else {
-                Box(Modifier.width(8.dp))
             }
         }
     }

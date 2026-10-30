@@ -432,9 +432,9 @@ impl McpOAuthPersistence {
 
     /// Preserve the previously observed grant when a refresh response omits `scope`.
     ///
-    /// `rmcp` 3.1.0 correctly sends the stored grant on refresh, but a manager restored
-    /// from its store does not repopulate its in-memory scope vector. Consequently an
-    /// RFC 6749 response that omits `scope` can otherwise persist an empty grant. This
+    /// Compatibility safeguard for older SDK stores: restore the prior grant
+    /// only if the refreshed record has no scope information. Current SDK refreshes
+    /// normally persist the effective requested scopes themselves. This
     /// adapter repairs only that metadata field; the SDK still owns the token exchange.
     pub(crate) async fn restore_granted_scopes_if_empty(
         &self,

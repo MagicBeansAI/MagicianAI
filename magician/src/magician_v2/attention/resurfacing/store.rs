@@ -195,6 +195,8 @@ CREATE TABLE IF NOT EXISTS resurfacing_candidates (
     cooldown_until INTEGER NOT NULL,
     surface_count INTEGER NOT NULL,
     dismiss_count INTEGER NOT NULL,
+    routing_hold_revision TEXT,
+    routing_hold_until INTEGER,
     PRIMARY KEY (principal, workspace, candidate_id)
 );
 CREATE TABLE IF NOT EXISTS resurfacing_watermarks (
@@ -528,10 +530,25 @@ pub struct ResurfacingQueueStats {
     pub pending: u64,
     pub eligible: u64,
     pub cooling: u64,
+    /// Candidate-state rows held out of the review window by a curator routing
+    /// hold (the router dropped them because they belong elsewhere). Counted
+    /// apart from, and never inside, `cooling`.
+    pub routing_held: u64,
     pub surfaced: u64,
     pub acted: u64,
     pub dismissed: u64,
     pub snoozed: u64,
+}
+
+/// One curator routing hold: keep `candidate_id` out of the review window
+/// until `hold_until` (unix seconds) or until its content revision moves past
+/// `content_revision`, whichever comes first. See
+/// [`ResurfacingStore::hold_routing_dropped_candidates`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingHold {
+    pub candidate_id: String,
+    pub content_revision: Option<String>,
+    pub hold_until: i64,
 }
 
 /// Cursor for stable server-side pagination over surfaced rows.
@@ -676,6 +693,21 @@ impl ResurfacingStore {
             "resurfacing_candidates",
             "semantic_features_json",
             "TEXT",
+        )?;
+        // Curator routing holds: the content revision a routing drop was
+        // judged against and the cooldown it set (see
+        // `hold_routing_dropped_candidates`).
+        ensure_column(
+            &conn,
+            "resurfacing_candidates",
+            "routing_hold_revision",
+            "TEXT",
+        )?;
+        ensure_column(
+            &conn,
+            "resurfacing_candidates",
+            "routing_hold_until",
+            "INTEGER",
         )?;
         ensure_column(&conn, "resurfacing_phrasing", "content_revision", "TEXT")?;
         ensure_column(&conn, "resurfacing_embeddings", "content_digest", "TEXT")?;
@@ -906,6 +938,12 @@ impl ResurfacingStore {
             // record_action(Dismiss) can't write back the stale pre-dismiss
             // state and resurrect it. This is what makes concurrent feedback
             // safe. A brand-new row still gets its lifecycle from the INSERT.
+            //
+            // One narrow exception: a curator routing hold (set by
+            // `hold_routing_dropped_candidates`) is keyed to the content
+            // revision it judged. A new revision releases it, but only while
+            // the row is still a `candidate` and its cooldown is still exactly
+            // the hold's — any later owner action or other cooldown wins.
             let changed = conn
                 .execute(
                     "INSERT INTO resurfacing_candidates (
@@ -930,6 +968,28 @@ impl ResurfacingStore {
                         WHEN resurfacing_candidates.content_revision IS excluded.content_revision
                         THEN resurfacing_candidates.semantic_features_json
                         ELSE excluded.semantic_features_json
+                    END,
+                    cooldown_until = CASE
+                        WHEN resurfacing_candidates.state = 'candidate'
+                         AND resurfacing_candidates.routing_hold_revision IS NOT NULL
+                         AND resurfacing_candidates.routing_hold_revision
+                             IS NOT COALESCE(excluded.content_revision, '')
+                         AND resurfacing_candidates.cooldown_until
+                             = resurfacing_candidates.routing_hold_until
+                        THEN 0
+                        ELSE resurfacing_candidates.cooldown_until
+                    END,
+                    routing_hold_revision = CASE
+                        WHEN resurfacing_candidates.routing_hold_revision
+                             IS NOT COALESCE(excluded.content_revision, '')
+                        THEN NULL
+                        ELSE resurfacing_candidates.routing_hold_revision
+                    END,
+                    routing_hold_until = CASE
+                        WHEN resurfacing_candidates.routing_hold_revision
+                             IS NOT COALESCE(excluded.content_revision, '')
+                        THEN NULL
+                        ELSE resurfacing_candidates.routing_hold_until
                     END,
                     content_revision = excluded.content_revision,
                     last_scored_at = excluded.last_scored_at
@@ -2175,6 +2235,73 @@ impl ResurfacingStore {
         })
         .await
         .context("resurfacing defer_candidates task panicked")?
+    }
+
+    /// Take candidates the attention router dropped as "not for the curator
+    /// now" (handled, dismissed, suppressed, stale, or owned by a Follow-up)
+    /// out of the review window, in one transaction for the whole pass.
+    ///
+    /// Each hold pushes `cooldown_until` to its `hold_until` and records the
+    /// content revision it judged. The hold ends at `hold_until` or as soon as
+    /// the scorer upserts a different content revision, whichever comes first
+    /// (see `upsert_candidate`). The row stays `candidate`, so state counts and
+    /// owner-facing lanes are unchanged. A row that is no longer a `candidate`,
+    /// already cooled past `hold_until`, or re-scored at another revision since
+    /// it was routed is left alone. Returns the ids actually held.
+    pub async fn hold_routing_dropped_candidates(
+        &self,
+        principal: &str,
+        workspace: &str,
+        holds: &[RoutingHold],
+    ) -> Result<Vec<String>> {
+        if holds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let store = self.clone();
+        let principal = principal.to_string();
+        let workspace = workspace.to_string();
+        let holds = holds.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = store
+                .conn
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let tx = conn
+                .transaction()
+                .context("opening resurfacing routing-hold transaction")?;
+            let mut held = Vec::new();
+            {
+                let mut stmt = tx.prepare(
+                    "UPDATE resurfacing_candidates \
+                     SET cooldown_until = ?1, routing_hold_revision = ?2, \
+                         routing_hold_until = ?1 \
+                     WHERE principal = ?3 AND workspace = ?4 AND candidate_id = ?5 \
+                       AND state = ?6 AND cooldown_until < ?1 \
+                       AND COALESCE(content_revision, '') = ?2",
+                )?;
+                for hold in &holds {
+                    let revision = hold.content_revision.clone().unwrap_or_default();
+                    let updated = stmt
+                        .execute(params![
+                            hold.hold_until,
+                            revision,
+                            principal,
+                            workspace,
+                            hold.candidate_id,
+                            CandidateState::Candidate.as_str(),
+                        ])
+                        .context("holding routing-dropped resurfacing candidate")?;
+                    if updated > 0 {
+                        held.push(hold.candidate_id.clone());
+                    }
+                }
+            }
+            tx.commit()
+                .context("committing resurfacing routing-hold transaction")?;
+            Ok(held)
+        })
+        .await
+        .context("resurfacing hold_routing_dropped_candidates task panicked")?
     }
 
     /// Record owner feedback on a surfaced candidate and apply its lifecycle
@@ -4792,7 +4919,9 @@ impl ResurfacingStore {
     /// candidate-state rows whose cooldown has elapsed and which the curator can
     /// review now. The raw candidate-state pool is reported separately as
     /// `candidate_pool`, so observability can tell "discoverable inventory" from
-    /// "work waiting for curation".
+    /// "work waiting for curation". Cooling candidate rows split into
+    /// `routing_held` (a live curator routing hold: the cooldown is still the
+    /// hold's own) and `cooling` (every other cooldown, e.g. model deferrals).
     pub async fn queue_stats(
         &self,
         principal: &str,
@@ -4811,11 +4940,18 @@ impl ResurfacingStore {
                 "SELECT \
                     COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0), \
                     COALESCE(SUM(CASE WHEN state = ? AND cooldown_until <= ? THEN 1 ELSE 0 END), 0), \
-                    COALESCE(SUM(CASE WHEN state = ? AND cooldown_until > ? THEN 1 ELSE 0 END), 0), \
+                    COALESCE(SUM(CASE WHEN state = ? AND cooldown_until > ? \
+                        AND NOT (routing_hold_until IS NOT NULL \
+                                 AND routing_hold_until = cooldown_until) \
+                        THEN 1 ELSE 0 END), 0), \
                     COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0), \
                     COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0), \
                     COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0), \
-                    COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0) \
+                    COALESCE(SUM(CASE WHEN state = ? THEN 1 ELSE 0 END), 0), \
+                    COALESCE(SUM(CASE WHEN state = ? AND cooldown_until > ? \
+                        AND routing_hold_until IS NOT NULL \
+                        AND routing_hold_until = cooldown_until \
+                        THEN 1 ELSE 0 END), 0) \
                  FROM resurfacing_candidates \
                  WHERE principal = ? AND workspace = ?",
                 params![
@@ -4828,6 +4964,8 @@ impl ResurfacingStore {
                     CandidateState::Acted.as_str(),
                     CandidateState::Dismissed.as_str(),
                     CandidateState::Snoozed.as_str(),
+                    CandidateState::Candidate.as_str(),
+                    now,
                     principal,
                     workspace,
                 ],
@@ -4839,6 +4977,7 @@ impl ResurfacingStore {
                         pending: eligible,
                         eligible,
                         cooling: row.get::<_, i64>(2)?.max(0) as u64,
+                        routing_held: row.get::<_, i64>(7)?.max(0) as u64,
                         surfaced: row.get::<_, i64>(3)?.max(0) as u64,
                         acted: row.get::<_, i64>(4)?.max(0) as u64,
                         dismissed: row.get::<_, i64>(5)?.max(0) as u64,
@@ -7136,6 +7275,10 @@ mod tests {
         assert_eq!(stats.pending, 1);
         assert_eq!(stats.eligible, 1);
         assert_eq!(stats.cooling, 1);
+        assert_eq!(
+            stats.routing_held, 0,
+            "a model deferral is not a routing hold"
+        );
 
         let top = store
             .list_top_candidates("p", "w", 1_000, 10)
@@ -10169,6 +10312,152 @@ mod tests {
             .unwrap();
         assert_eq!(stored.state, CandidateState::Candidate);
         assert_eq!(stored.cooldown_until, 86_400);
+    }
+
+    #[tokio::test]
+    async fn routing_hold_lasts_until_revision_change_or_expiry_and_never_beats_feedback() {
+        let store = ResurfacingStore::open_in_temp();
+        let mut held = sample_candidate("comm", "held", 0.9);
+        held.content_revision = Some("7".to_string());
+        let mut dismissed = sample_candidate("comm", "dismissed", 0.8);
+        dismissed.content_revision = Some("7".to_string());
+        let mut moved_on = sample_candidate("comm", "moved-on", 0.7);
+        moved_on.content_revision = Some("7".to_string());
+        for candidate in [&held, &dismissed, &moved_on] {
+            store.upsert_candidate("p", "w", candidate).await.unwrap();
+        }
+        // `moved_on` is re-scored at a newer revision before the hold lands,
+        // so a hold judged against revision 7 must not apply to it.
+        let mut moved_on_v8 = moved_on.clone();
+        moved_on_v8.content_revision = Some("8".to_string());
+        store
+            .upsert_candidate("p", "w", &moved_on_v8)
+            .await
+            .unwrap();
+
+        let hold_until = 2_000 + 7 * 86_400;
+        let holds = [&held, &dismissed, &moved_on]
+            .into_iter()
+            .map(|candidate| RoutingHold {
+                candidate_id: candidate.candidate_id.clone(),
+                content_revision: candidate.content_revision.clone(),
+                hold_until,
+            })
+            .collect::<Vec<_>>();
+        let applied = store
+            .hold_routing_dropped_candidates("p", "w", &holds)
+            .await
+            .unwrap();
+        assert_eq!(
+            applied,
+            vec![held.candidate_id.clone(), dismissed.candidate_id.clone()]
+        );
+        let window_ids = |rows: Vec<Candidate>| {
+            rows.into_iter()
+                .map(|candidate| candidate.candidate_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            window_ids(
+                store
+                    .list_top_candidates("p", "w", 2_000, 10)
+                    .await
+                    .unwrap()
+            ),
+            vec![moved_on.candidate_id.clone()],
+            "held rows leave the review window"
+        );
+        let stats = store.queue_stats("p", "w", 2_000).await.unwrap();
+        assert_eq!(stats.candidate_pool, 3);
+        assert_eq!(stats.pending, 1);
+        assert_eq!(stats.routing_held, 2);
+        assert_eq!(stats.cooling, 0, "routing holds are not counted as cooling");
+
+        // Re-scoring at the same revision keeps the hold.
+        store.upsert_candidate("p", "w", &held).await.unwrap();
+        let same = store
+            .get_candidate("p", "w", &held.candidate_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(same.cooldown_until, hold_until);
+
+        // An owner dismissal after the hold is never undone by a new revision.
+        store
+            .record_action(
+                "p",
+                "w",
+                &dismissed.candidate_id,
+                FeedbackAction::Dismiss,
+                2_100,
+                3_600,
+                86_400,
+            )
+            .await
+            .unwrap();
+        let mut dismissed_v8 = dismissed.clone();
+        dismissed_v8.content_revision = Some("8".to_string());
+        store
+            .upsert_candidate("p", "w", &dismissed_v8)
+            .await
+            .unwrap();
+        let after_dismiss = store
+            .get_candidate("p", "w", &dismissed.candidate_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_dismiss.state, CandidateState::Dismissed);
+        assert_eq!(after_dismiss.cooldown_until, 2_100 + 3_600);
+
+        // A new content revision releases the hold immediately.
+        let mut held_v8 = held.clone();
+        held_v8.content_revision = Some("8".to_string());
+        store.upsert_candidate("p", "w", &held_v8).await.unwrap();
+        let released = store
+            .get_candidate("p", "w", &held.candidate_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(released.state, CandidateState::Candidate);
+        assert_eq!(released.cooldown_until, 0);
+        assert!(window_ids(
+            store
+                .list_top_candidates("p", "w", 2_000, 10)
+                .await
+                .unwrap()
+        )
+        .contains(&held.candidate_id));
+
+        // Without a revision change the hold simply expires.
+        let mut expiring = sample_candidate("comm", "expiring", 0.6);
+        expiring.content_revision = Some("3".to_string());
+        store.upsert_candidate("p", "w", &expiring).await.unwrap();
+        store
+            .hold_routing_dropped_candidates(
+                "p",
+                "w",
+                &[RoutingHold {
+                    candidate_id: expiring.candidate_id.clone(),
+                    content_revision: expiring.content_revision.clone(),
+                    hold_until,
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(!window_ids(
+            store
+                .list_top_candidates("p", "w", hold_until - 1, 10)
+                .await
+                .unwrap()
+        )
+        .contains(&expiring.candidate_id));
+        assert!(window_ids(
+            store
+                .list_top_candidates("p", "w", hold_until, 10)
+                .await
+                .unwrap()
+        )
+        .contains(&expiring.candidate_id));
     }
 }
 

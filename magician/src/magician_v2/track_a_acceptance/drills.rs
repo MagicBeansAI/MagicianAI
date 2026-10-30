@@ -39,10 +39,10 @@ fn catalog_inventory_is_remote_ready_while_locally_active() {
         catalog.owners.len() as u64,
         catalog.measurements.owner_count
     );
-    assert_eq!(catalog.measurements.owner_count, 93);
+    assert_eq!(catalog.measurements.owner_count, 92);
     assert_eq!(catalog.measurements.tier1_count, 76);
     assert_eq!(catalog.measurements.tier2_count, 12);
-    assert_eq!(catalog.measurements.device_local_count, 5);
+    assert_eq!(catalog.measurements.device_local_count, 4);
 
     // These local owners remain at their real readiness. The two new tier-1
     // Relentless stores also block global activation until qualified.
@@ -90,7 +90,7 @@ fn catalog_inventory_is_remote_ready_while_locally_active() {
     }
     assert_eq!(tier1, 76);
     assert_eq!(tier2, 12);
-    assert_eq!(device, 5);
+    assert_eq!(device, 4);
 }
 
 #[test]

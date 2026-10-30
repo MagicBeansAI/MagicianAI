@@ -15,8 +15,16 @@ use crate::request::{DecisionRequest, DecisionResponse};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCapabilities {
     pub calibrated: bool,
+    /// False when the model accepts images (hosted Jev with the images
+    /// header). A request that carries images never routes to a text-only
+    /// model: it would answer from the bare reference string.
     pub text_only: bool,
+    /// Whole-request context: state plus every question.
     pub max_state_tokens: Option<u64>,
+    /// Per-question context: state plus any one question (Jev evaluates
+    /// each question against the state separately). `None` = undeclared.
+    #[serde(default)]
+    pub max_question_tokens: Option<u64>,
     /// Largest Choice option set the model answers well (Jev: 255; laya
     /// degrades past ~77). `None` = undeclared.
     pub max_choice_options: Option<usize>,
@@ -37,6 +45,7 @@ impl Default for ModelCapabilities {
             calibrated: false,
             text_only: true,
             max_state_tokens: None,
+            max_question_tokens: None,
             max_choice_options: None,
             max_questions: None,
             supports_score: true,

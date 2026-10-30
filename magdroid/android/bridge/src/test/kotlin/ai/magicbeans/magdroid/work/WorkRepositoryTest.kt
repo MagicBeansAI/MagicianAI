@@ -101,4 +101,101 @@ class WorkRepositoryTest {
         assertEquals("Only supplied facts", (value["sources"] as JsonObject).text("brief"))
         assertEquals(3, ((value["review"] as JsonObject)["score_quorum"] as JsonPrimitive).int)
     }
+
+    @Test fun quality_model_controls_preserve_defaults_and_bounded_independent_routes() {
+        val fixture = Json.parseToJsonElement("""{
+          "quality":{"profiles":[{"name":"actor-auto","family":"a"},{"name":"actor-high","family":"a"},{"name":"review-auto","family":"b"},{"name":"operation/actor","family":"a"}]},
+          "catalog":{"profiles":[{"name":"operation/actor","model_selection":{"model_id":"a","thinking":"high"}}],"models":[
+            {"id":"a","provider":"openai","label":"Draft","thinking":{"mode":"effort","levels":["low","high"],"default":"high"},"choices":{"auto":"chat-a"},"operation_choices":{"auto":"actor-auto","low":"unbounded","high":"actor-high"}},
+            {"id":"b","provider":"gemini","label":"Review","thinking":{"mode":"effort","levels":["low","high"],"default":"low"},"choices":{"auto":"chat-b"},"operation_choices":{"auto":"review-auto","high":"unbounded-review"}}
+          ]}}
+        """).jsonObject
+        val catalog = WorkQualityModels(fixture["quality"], fixture["catalog"])
+        val models = catalog.models()
+        assertEquals(mapOf("auto" to "actor-auto", "high" to "actor-high"), models.first().choices)
+        assertEquals(listOf("high"), models.first().thinking.levels)
+        assertEquals("high", catalog.selection("operation/actor", models)?.thinking)
+        assertTrue(catalog.valid("operation/actor", models))
+        val reviewers = catalog.models(catalog.family("operation/actor"))
+        assertEquals(listOf("b"), reviewers.map { it.id })
+        assertFalse(catalog.valid("actor-auto", reviewers))
+        assertFalse(catalog.valid("unbounded-review", reviewers))
+        assertTrue(catalog.valid("review-auto", reviewers))
+        assertFalse(catalog.valid("retired-model", models))
+        assertFalse(catalog.valid("review-auto", reviewers.map { it.copy(installed = false) }))
+        val workload = WorkQualityModels(Json.parseToJsonElement("""{"profiles":[{"name":"operation/actor","family":"a"}]}"""), fixture["catalog"])
+        assertEquals(mapOf("auto" to "operation/actor", "high" to "operation/actor"), workload.models().first().choices)
+        assertEquals("high", workload.models().first().thinking.defaultLevel)
+        assertEquals("auto", workload.selection("operation/actor", workload.models())?.thinking)
+        val noJson = WorkQualityModels(Json.parseToJsonElement("""{"profiles":[{"name":"review-auto","family":"b","supports_json":false}]}"""), fixture["catalog"])
+        assertEquals(listOf("b"), noJson.models().map { it.id })
+        assertTrue(noJson.models("a").isEmpty())
+        val proposal = WorkQualityDraft(actor = models.first().choices.getValue("high"), critic = reviewers.first().choices.getValue("auto")).proposal()
+        assertEquals("actor-high", proposal.text("actor_profile"))
+        assertEquals(List(3) { JsonPrimitive("review-auto") }, proposal["critic_profiles"])
+    }
+
+    private fun jsonReply(status: HttpStatusCode, body: String) = MockEngine { respond(body, status, headersOf(HttpHeaders.ContentType, "application/json")) }
+
+    @Test fun program_document_reads_its_hash_and_tolerates_an_older_server() = runTest {
+        val engine = MockEngine { request ->
+            val body = if (request.url.encodedPath.endsWith("/new.md")) """{"name":"new.md","title":"New","content":"# New","sha256":"abc123","history":[]}"""
+                else """{"name":"old.md","title":"Old","content":"# Old"}"""
+            respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        WorkRepository(MagicianConnectionSnapshot("https://work.test", emptyMap()), HttpClient(engine)).use { client ->
+            assertEquals("abc123", client.program("new.md").sha256)
+            val old = client.program("old.md")
+            assertNull(old.sha256); assertEquals(emptyList<WorkProgramVersion>(), old.history)
+        }
+    }
+
+    @Test fun save_program_puts_the_draft_against_the_opened_version() = runTest {
+        val engine = MockEngine { request ->
+            assertEquals(HttpMethod.Put, request.method)
+            assertEquals("https://work.test/api/magician/v2/programs/facts%20v2.md", request.url.toString())
+            val body = Json.parseToJsonElement((request.body as TextContent).text) as JsonObject
+            assertEquals("# Facts\n  indented", body.text("content"))
+            assertEquals("base-hash", body.text("base_sha256"))
+            respond("""{"saved":true,"program":"facts v2.md","created":false,"unchanged":false,"history_snapshot":"facts v2.20261018.md","sha256":"next-hash"}""",
+                HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        WorkRepository(MagicianConnectionSnapshot("https://work.test", emptyMap()), HttpClient(engine)).use { client ->
+            val saved = client.saveProgram("facts v2.md", "# Facts\n  indented", "base-hash")
+            assertEquals(WorkProgramSaved("facts v2.md", created = false, unchanged = false, historySnapshot = "facts v2.20261018.md", sha256 = "next-hash"), saved)
+        }
+    }
+
+    @Test fun save_program_conflict_is_typed_and_keeps_the_server_hash() = runTest {
+        val engine = jsonReply(HttpStatusCode.Conflict, """{"error":"program_changed","message":"facts.md changed after it was opened.","current_sha256":"theirs"}""")
+        WorkRepository(MagicianConnectionSnapshot("https://work.test", emptyMap()), HttpClient(engine)).use { client ->
+            try { client.saveProgram("facts.md", "mine", "base"); fail("A changed program must not be overwritten") }
+            catch (error: WorkProgramChangedError) {
+                assertEquals(409, error.status)
+                assertEquals("facts.md changed after it was opened.", error.message)
+                assertEquals("theirs", error.currentSha256)
+            }
+        }
+    }
+
+    @Test fun save_program_refusals_report_the_server_words_and_blank_drafts_never_post() = runTest {
+        var calls = 0
+        val engine = MockEngine {
+            calls++
+            respond("""{"error":"grant_cannot_manage","message":"Only a signed-in owner session can make this change."}""",
+                HttpStatusCode.Unauthorized, headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        WorkRepository(MagicianConnectionSnapshot("https://work.test", emptyMap()), HttpClient(engine)).use { client ->
+            try { client.saveProgram("facts.md", "   ", "base"); fail("A blank draft must not be saved") } catch (_: IllegalArgumentException) {}
+            try { client.saveProgram("facts.md", "text", ""); fail("A draft without its base must not be saved") } catch (_: IllegalArgumentException) {}
+            assertEquals(0, calls)
+            try { client.saveProgram("facts.md", "text", "base"); fail("An agent credential must be refused") }
+            catch (error: WorkRequestError) {
+                assertFalse(error is WorkProgramChangedError)
+                assertEquals(401, error.status)
+                assertEquals("Only a signed-in owner session can make this change.", error.message)
+            }
+            assertEquals(1, calls)
+        }
+    }
 }

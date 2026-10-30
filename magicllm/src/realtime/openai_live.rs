@@ -24,18 +24,16 @@ use dashmap::DashMap;
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{
-        client::IntoClientRequest,
-        http::{header::AUTHORIZATION, HeaderValue},
-        Message,
-    },
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::{header::AUTHORIZATION, HeaderValue},
+    Message,
 };
 use tracing::{info, warn};
 use ulid::Ulid;
 
 use crate::realtime::provider::RealtimeProvider;
+use crate::realtime::transport::connect as connect_async;
 use crate::realtime::types::{
     AudioStreamChannel, RealtimeAudioControl, RealtimeAudioTopology, RealtimeProviderError,
     RealtimeProviderEvent, RealtimeProviderKind, RealtimeSessionDescriptor,

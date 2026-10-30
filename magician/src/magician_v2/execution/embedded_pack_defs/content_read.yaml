@@ -61,6 +61,21 @@ guide: |
   continue a handoff, pass its `browser_session_id` as `retrieval_session_id`, its `action_id` as
   `retrieval_action_id`, and the exact returned connection mode to every browser
   call. Never invent or reuse a handoff ID; terminal/cancel cleanup owns the session.
+parameter_constraints:
+  oneOf:
+    - anyOf:
+        - required: [url]
+          properties:
+            url: {type: string, minLength: 1}
+        - required: [candidate]
+          properties:
+            candidate: {type: object, minProperties: 1}
+      not: {required: [requests]}
+    - required: [requests]
+      not:
+        anyOf:
+          - required: [url]
+          - required: [candidate]
 parameters:
   - name: requests
     required: false
@@ -91,6 +106,13 @@ parameters:
           cost_budget_microunits:
             type: object
             additionalProperties: {type: integer, minimum: 1}
+        anyOf:
+          - required: [url]
+            properties:
+              url: {type: string, minLength: 1}
+          - required: [candidate]
+            properties:
+              candidate: {type: object, minProperties: 1}
         additionalProperties: false
   - name: common
     required: false

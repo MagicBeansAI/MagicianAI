@@ -105,6 +105,22 @@ fn completed<'a>(
     owner: &'a AuthenticatedAppScope,
     run: &'a str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppActionResult<serde_json::Value>> + 'a>> {
+    Box::pin(async move {
+        finished(artifact, workflow, owner, run, AppRunStatus::Completed)
+            .await
+            .expect("completed App must expose its durable result")
+    })
+}
+
+fn finished<'a>(
+    artifact: &'a magician::magician_v2::artifact_v2::ArtifactV2Service,
+    workflow: &'a AppWorkflowService,
+    owner: &'a AuthenticatedAppScope,
+    run: &'a str,
+    expected: AppRunStatus,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Option<AppActionResult<serde_json::Value>>> + 'a>,
+> {
     // Each independent poll is heap-owned; this scenario must not store all
     // four complete polling state machines in its ordinary test-thread frame.
     Box::pin(async move {
@@ -141,13 +157,20 @@ fn completed<'a>(
                 if status.is_terminal() {
                     assert_eq!(
                         status,
-                        AppRunStatus::Completed,
-                        "native workflow failed: {} state={:?} error={:?}",
+                        expected,
+                        "native workflow settled unexpectedly: {} state={:?} error={:?}",
                         handle.run_ref,
                         task.state,
                         result.as_ref().and_then(|value| value.error.as_ref())
                     );
-                    return result.expect("completed App must expose its durable result");
+                    // Completion can occur between the result read above and
+                    // the task-status read. Observe the result after completion.
+                    let (_, _, result) = workflow
+                        .result_for_run(owner, run)
+                        .await
+                        .expect("read settled App run")
+                        .into_parts();
+                    return result;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
@@ -568,11 +591,14 @@ async fn round_without_model_runtime_settles_failures(
         )
         .await
         .unwrap();
-    completed(
+    // Every tried participant failed, so the run fails rather than
+    // committing an empty round; the round itself stays inspectable.
+    finished(
         artifact,
         &workflow,
         owner,
         launch.run_handle.run_ref.as_str(),
+        AppRunStatus::Failed,
     )
     .await;
     let path = artifact

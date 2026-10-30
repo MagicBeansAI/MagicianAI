@@ -117,6 +117,39 @@ export function infoEventToCard(event: {
 			};
 		}
 
+		// ── Provider outage — the run is waiting, not stalled ───────────
+		// `AgenticProviderOutage { execution_id, attempt, max_attempts,
+		// next_probe_ms, error_class, recovered }`: one card per wait, kept
+		// until just after the next probe; a recovery replaces it with a short
+		// success card so a long wait never reads as a silent stall.
+		case 'AgenticProviderOutage': {
+			const executionId = readString(data, 'execution_id');
+			if (!executionId) return null;
+			if (data.recovered === true) {
+				return {
+					id: `provider-back-${executionId}`,
+					kind: 'success',
+					title: 'Provider is back — the run continues',
+					deepLink: executionId,
+					dismissAfterMs: COMPLETION_DISMISS_MS
+				};
+			}
+			const attempt = typeof data.attempt === 'number' ? data.attempt : undefined;
+			const maxAttempts = typeof data.max_attempts === 'number' ? data.max_attempts : undefined;
+			const nextProbeMs = typeof data.next_probe_ms === 'number' ? data.next_probe_ms : 0;
+			const seconds = Math.max(1, Math.round(nextProbeMs / 1000));
+			const tries =
+				attempt !== undefined && maxAttempts !== undefined ? ` (try ${attempt} of ${maxAttempts})` : '';
+			return {
+				id: `provider-outage-${executionId}`,
+				kind: 'info',
+				title: 'Model provider is down — retrying',
+				message: `Waiting ${seconds}s before the next try${tries}.`,
+				deepLink: executionId,
+				dismissAfterMs: Math.min(Math.max(nextProbeMs + 5000, ERROR_DISMISS_MS), 6 * 60 * 1000)
+			};
+		}
+
 		// ── Completions — success only, auto-dismiss 5s ─────────────────
 		case 'ExecutionCompleted': {
 			// `ExecutionFailed` covers the failure path; a `success: false`

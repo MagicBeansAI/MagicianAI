@@ -1,6 +1,6 @@
 ---
 name: "sheets"
-version: 0.1.0
+version: 0.1.1
 description: "Collaborative cloud Google Sheets via Google Workspace CLI (gws) — read, write, append, clear, and manage spreadsheets"
 metadata:
   magician:
@@ -99,30 +99,27 @@ metadata:
             - {type: flag, flag: --format, parameter: format}
             - {type: passthrough, parameter: extra_args}
         append:
-          description: Append row values to a cloud Google Sheet.
-          fixed_args: [sheets, +append]
+          description: Append rows to an explicit spreadsheet range using the native Sheets API.
+          fixed_args: [sheets, spreadsheets, values, append]
           parameters:
-            spreadsheet:
+            params:
               type: string
-              description: Target spreadsheet id.
+              description: JSON object containing spreadsheetId, range (A1 notation), and valueInputOption (RAW or USER_ENTERED).
               required: true
-            range:
+              max_length: 4096
+            json:
               type: string
-              description: A1-notation range to append into.
+              description: JSON ValueRange body containing values as an array of rows, optionally majorDimension (ROWS or COLUMNS). At most 4 KB (the runtime's per-argument limit); append larger data in several calls.
               required: true
-            values:
-              type: string
-              description: Comma-separated or JSON row values.
-              required: true
+              max_length: 4096
             extra_args:
               type: string_array
-              description: Bounded additional argv tokens.
+              description: Bounded additional supported gws argv tokens.
               max_items: 32
               max_item_bytes: 1024
           mappings:
-            - {type: flag, flag: --spreadsheet, parameter: spreadsheet}
-            - {type: flag, flag: --range, parameter: range}
-            - {type: flag, flag: --values, parameter: values}
+            - {type: flag, flag: --params, parameter: params}
+            - {type: flag, flag: --json, parameter: json}
             - {type: passthrough, parameter: extra_args}
         spreadsheets_get:
           description: Inspect spreadsheet metadata and tab ids.
@@ -336,9 +333,10 @@ to use. Each account has its own OAuth credentials stored in
 To set up a new account:
   CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-<account>/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-<account> gws auth setup --login
 
-Each action forwards exact argv tokens after its fixed command prefix. Do not
-include shell quotes or the `gws` binary name. Use one array element per argv
-token.
+`read` takes named parameters. `append` takes native JSON strings `params`
+(spreadsheetId, range, valueInputOption) and `json` (values as rows), preserving
+the selected tab and A1 range. Other actions accept argv arrays after their
+fixed prefix; omit the `gws` binary name and shell quotes.
 
 Use Sheets when the user wants a cloud spreadsheet as the working surface or
 final deliverable: reading existing sheets, publishing rows, appending logs,
@@ -352,13 +350,10 @@ Helper commands (recommended — simpler interface):
     Read values from a spreadsheet range.
     Example: +read --spreadsheet 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms --range 'Sheet1!A1:D10'
 
-  +append --spreadsheet <ID> --values <CSV>
-    Append a single row of comma-separated values.
-    Example: +append --spreadsheet 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms --values 'Alice,100,true'
-
-  +append --spreadsheet <ID> --json-values <JSON>
-    Append one or more rows as a JSON array.
-    Example: +append --spreadsheet 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms --json-values '[["Alice","100"],["Bob","200"]]'
+The typed `append` action uses `spreadsheets values append`, not the
+range-less `+append` helper. Supply `valueInputOption: "RAW"` for literal data
+or `"USER_ENTERED"` when Sheets should interpret formulas and formatted values.
+Append large datasets in batches (the JSON body is bounded to 32,768 characters).
 
 Low-level API commands (full Sheets API v4 access):
 
@@ -436,9 +431,8 @@ Tips:
 - valueInputOption: "USER_ENTERED" (parses formulas/numbers) or "RAW" (literal strings)
 
 Examples:
-- read {"args":["--spreadsheet","1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms","--range","Sheet1!A1:D10","--format","json"]}
-- append {"args":["--spreadsheet","1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms","--values","Alice,100,true"]}
-- append {"args":["--spreadsheet","1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms","--json-values","[[\"Alice\",\"100\"],[\"Bob\",\"200\"]]"]}
+- read {"spreadsheet":"<ID>","range":"Sheet1!A1:D10","format":"json"}
+- append {"params":"{\"spreadsheetId\":\"<ID>\",\"range\":\"Sheet2!A:D\",\"valueInputOption\":\"RAW\"}","json":"{\"values\":[[\"Alice\",100],[\"Bob\",200]]}"}
 - spreadsheets_get {"args":["--params","{\"spreadsheetId\":\"1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\"}","--format","json"]}
 - values_clear {"args":["--params","{\"spreadsheetId\":\"1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\",\"range\":\"Sheet1!A1:D10\"}","--format","json"]}
 - values_batch_clear {"args":["--params","{\"spreadsheetId\":\"1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\"}","--json","{\"ranges\":[\"Sheet1!A1:D10\",\"Sheet2!A1:B5\"]}","--format","json"]}

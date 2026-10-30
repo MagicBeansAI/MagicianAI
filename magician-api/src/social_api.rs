@@ -43,7 +43,9 @@ use tracing::warn;
 use uuid::Uuid;
 
 use magician::magician_v2::apps::authority::AuthenticatedAppScope;
-use magician::magician_v2::apps::background_behaviors::AppBehaviorScheduler;
+use magician::magician_v2::apps::background_behaviors::{
+    AppBehaviorHealthItem, AppBehaviorScheduler, AppBehaviorSchedulerError,
+};
 use magician::magician_v2::apps::entity_adapter::AppEntityAdapterService;
 use magician::magician_v2::apps::models::{
     AppComparisonOperator, AppFieldPath, AppInstallationId, AppMutationAtomicity,
@@ -2289,12 +2291,168 @@ pub async fn put_operator_policy(
     }
 }
 
+/// Why the Town Square retry button must refuse before it touches the head.
+///
+/// `None` means the closed code is one `retry_blocked_launch` can requeue.
+/// The next launch can still be refused. This only decides whether a click
+/// is allowed to ask.
+fn ambient_turn_retry_refusal(
+    state: &str,
+    last_error: Option<&str>,
+    pending: bool,
+    leased: bool,
+) -> Option<&'static str> {
+    if pending || leased {
+        return Some("This turn is still running. Wait for it to finish, then retry.");
+    }
+    if state != "blocked" {
+        return Some("This turn is not waiting on a refused launch. Refresh Town Square.");
+    }
+    match last_error {
+        Some("workflow_launch_blocked" | "workflow_execution_failed") => None,
+        _ => Some(
+            "This turn is blocked for a reason the retry button cannot clear. The server log line \"app background behavior launch was refused\" has the sentence.",
+        ),
+    }
+}
+
+enum AmbientHeadLookup {
+    Disabled,
+    ReadFailed,
+}
+
+/// The `ambient_turn` head for this Town Square installation, if the
+/// scheduler can see it. The page walk matches `ambient_posture`: one recent
+/// page can hide the head behind other behaviors.
+async fn ambient_turn_head(
+    api: &SocialApi,
+    square: &TownSquare,
+) -> Result<Option<AppBehaviorHealthItem>, AmbientHeadLookup> {
+    let now = Utc::now();
+    let scheduler = api
+        .behaviors
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(scheduler) = scheduler else {
+        return Err(AmbientHeadLookup::Disabled);
+    };
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let snapshot = match scheduler
+            .health(&square.authenticated, 64, cursor.clone(), now)
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                warn!(%error, "Town Square ambient retry could not read the turn");
+                return Err(AmbientHeadLookup::ReadFailed);
+            },
+        };
+        if let Some(item) = snapshot.items.into_iter().find(|item| {
+            item.installation_id == square.installation_id
+                && item.behavior_id.as_str() == AMBIENT_BEHAVIOR_ID
+        }) {
+            return Ok(Some(item));
+        }
+        pages += 1;
+        match snapshot.next_cursor {
+            Some(next) if pages < AMBIENT_HEALTH_MAX_PAGES => cursor = Some(next),
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// `POST /social/ambient-turn/retry`.
+///
+/// Requeues the Town Square `ambient_turn` head through the same owner retry
+/// the background-behavior route uses. A 200 means the next pass will try
+/// the launch again. It does not mean that launch will be accepted.
+pub async fn retry_ambient_turn(req: HttpRequest, api: web::Data<SocialApi>) -> HttpResponse {
+    let square = match api.town_square(&req).await {
+        Ok(square) => square,
+        Err(response) => return response,
+    };
+    let head = match ambient_turn_head(&api, &square).await {
+        Ok(Some(head)) => head,
+        Ok(None) => {
+            return HttpResponse::Conflict().json(json!({
+                "error": "ambient_turn_not_retryable",
+                "message": "Town Square has no agent turn waiting to retry."
+            }));
+        },
+        Err(AmbientHeadLookup::Disabled) => {
+            return HttpResponse::ServiceUnavailable().json(json!({
+                "error": "app_background_behaviors_disabled",
+                "message": "App background behaviors are disabled for this process."
+            }));
+        },
+        Err(AmbientHeadLookup::ReadFailed) => {
+            return HttpResponse::ServiceUnavailable().json(json!({
+                "error": "ambient_turn_unavailable",
+                "message": "Town Square could not read the agent turn. Try again."
+            }));
+        },
+    };
+    if let Some(message) = ambient_turn_retry_refusal(
+        &head.state,
+        head.last_error.as_deref(),
+        head.pending_fire_ref.is_some(),
+        head.lease_expires_at.is_some(),
+    ) {
+        return HttpResponse::Conflict().json(json!({
+            "error": "ambient_turn_not_retryable",
+            "message": message
+        }));
+    }
+    let now = Utc::now();
+    let scheduler = api
+        .behaviors
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(scheduler) = scheduler else {
+        return HttpResponse::ServiceUnavailable().json(json!({
+            "error": "app_background_behaviors_disabled",
+            "message": "App background behaviors are disabled for this process."
+        }));
+    };
+    match scheduler
+        .retry_blocked_launch(
+            &square.authenticated,
+            square.installation_id.clone(),
+            head.behavior_id.clone(),
+            head.installation_generation,
+            head.revision,
+            now,
+        )
+        .await
+    {
+        Ok(revision) => HttpResponse::Ok()
+            .insert_header((actix_web::http::header::CACHE_CONTROL, "private, no-store"))
+            .json(json!({ "status": "retry_scheduled", "revision": revision })),
+        Err(AppBehaviorSchedulerError::LeaseLost) => HttpResponse::Conflict().json(json!({
+            "error": "ambient_turn_not_retryable",
+            "message": "The turn changed before the retry was saved, or the failed run is not finished. Refresh Town Square and try again."
+        })),
+        Err(error) => {
+            warn!(%error, "Town Square ambient retry failed");
+            HttpResponse::ServiceUnavailable().json(json!({
+                "error": "ambient_turn_unavailable",
+                "message": "Town Square could not queue the next turn. Try again."
+            }))
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 //
-// All thirteen, unchanged in path and method. `GET /social/health` survives
-// because the UI reads it inside a `Promise.all` and it is the only place the
-// page gets the operator policy from -- see the note on `get_health`.
+// `GET /social/health` survives because the UI reads it inside a
+// `Promise.all` and it is the only place the page gets the operator policy
+// from -- see the note on `get_health`. `POST /social/ambient-turn/retry`
+// is the banner's requeue. It does not change the health shape.
 // ---------------------------------------------------------------------------
 
 pub fn configure_social_routes(cfg: &mut web::ServiceConfig) {
@@ -2313,6 +2471,7 @@ pub fn configure_social_routes(cfg: &mut web::ServiceConfig) {
             .route("/members", web::get().to(get_members))
             .route("/members/{member_id}/self", web::get().to(get_member_self))
             .route("/health", web::get().to(get_health))
+            .route("/ambient-turn/retry", web::post().to(retry_ambient_turn))
             .route("/policy", web::get().to(get_operator_policy))
             .route("/policy", web::put().to(put_operator_policy))
             .route("/square", web::get().to(get_square_ambient)),
@@ -2335,6 +2494,33 @@ mod tests {
     /// carries a fresh `created_at`, so re-reacting after un-reacting replayed
     /// one key with different bytes and conflicted forever. Keys are per-write
     /// now, and repeats are made idempotent by an existence probe instead.
+    #[test]
+    fn ambient_turn_retry_admits_only_a_settled_refused_launch() {
+        assert_eq!(
+            ambient_turn_retry_refusal("blocked", Some("workflow_launch_blocked"), false, false),
+            None
+        );
+        assert_eq!(
+            ambient_turn_retry_refusal("blocked", Some("workflow_execution_failed"), false, false),
+            None
+        );
+        assert!(ambient_turn_retry_refusal(
+            "blocked",
+            Some("workflow_launch_blocked"),
+            false,
+            true
+        )
+        .is_some());
+        assert!(
+            ambient_turn_retry_refusal("idle", Some("workflow_launch_blocked"), false, false)
+                .is_some()
+        );
+        assert!(
+            ambient_turn_retry_refusal("blocked", Some("source_record_missing"), false, false)
+                .is_some()
+        );
+    }
+
     #[test]
     fn every_generated_idempotency_key_is_a_legal_reference() {
         let uuid = Uuid::new_v4();

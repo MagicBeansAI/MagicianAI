@@ -328,6 +328,71 @@ enum TodayDeckSwipe: String, Equatable {
     case useful, dismiss
 }
 
+/// One entry in a deck card's ⚡ Act menu. Each runs through the flow the
+/// detail views already use; only `resolvingAction` entries take the card
+/// off the deck (through the deck's optimistic commit + rollback).
+enum TodayDeckActEntry: Equatable, Identifiable {
+    /// A follow-up `available_actions` descriptor (reply/compose, reminder…).
+    case channelAction(ChannelActionDescriptor)
+    /// The follow-up's `open_url` in its provider.
+    case openThread(provider: String, url: URL)
+    /// Asks for the optional instruction first, then `approve` — never a
+    /// direct approve from the menu tap.
+    case startFollowUpTask
+    case snooze
+    /// Worth: mark useful + open the source.
+    case open
+    /// A worth card's resurfacing action capability.
+    case resurfacing(ResurfacingActionCapability)
+    case details
+
+    var id: String {
+        switch self {
+        case .channelAction(let descriptor): return "channel-\(descriptor.id)"
+        case .openThread: return "open-thread"
+        case .startFollowUpTask: return "start-task"
+        case .snooze: return "snooze"
+        case .open: return "open"
+        case .resurfacing(let capability): return "capability-\(capability.kind.rawValue)"
+        case .details: return "details"
+        }
+    }
+
+    func label(agentName: String) -> String {
+        switch self {
+        case .channelAction(let descriptor): return descriptor.label
+        case .openThread(let provider, _): return "Open in \(provider)"
+        case .startFollowUpTask: return "Start follow-up task…"
+        case .snooze: return TodayView.followUpSnoozeLabel
+        case .open: return "Open"
+        case .resurfacing(let capability): return TodayMorningEdition.resurfacingActionLabel(capability, agentName: agentName)
+        case .details: return "Details"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .channelAction(let descriptor): return descriptor.systemImage
+        case .openThread: return "arrow.up.right.square"
+        case .startFollowUpTask: return "bolt.fill"
+        case .snooze: return "clock"
+        case .open: return "arrow.up.right"
+        case .resurfacing(let capability): return capability.kind.systemImage
+        case .details: return "doc.text.magnifyingglass"
+        }
+    }
+
+    /// The deck commit for entries that themselves resolve the card; nil
+    /// for entries that leave it on top of the stack.
+    var resolvingAction: TodayDeckAction? {
+        switch self {
+        case .snooze: return .snooze
+        case .open: return .open
+        default: return nil
+        }
+    }
+}
+
 /// One card in the Morning Brief deck: a channel follow-up ("For You") or a
 /// resurfacing card ("Worth a Look"). The raw model rides along so a tap can
 /// open the existing rich detail sheet and actions map onto the existing
@@ -356,11 +421,18 @@ struct TodayDeckCard: Identifiable, Equatable {
         switch source {
         case .followUp(let item):
             let provider = item.provider.trimmingCharacters(in: .whitespacesAndNewlines)
-            return "DISPATCH · \(provider.isEmpty || provider == "unknown" ? "CORRESPONDENCE" : provider.uppercased())"
+            return "FOR YOU · \(provider.isEmpty || provider == "unknown" ? "CORRESPONDENCE" : provider.uppercased())"
         case .worth(let card):
             let kind = card.sourceKind.trimmingCharacters(in: .whitespacesAndNewlines)
             let label = kind.isEmpty || kind == "unknown" ? "NOTE" : kind.replacingOccurrences(of: "_", with: " ").uppercased()
-            return "READING ROOM · \(label)"
+            return "WORTH A LOOK · \(label)"
+        }
+    }
+
+    var dateline: String? {
+        switch source {
+        case .followUp(let item): return readingRoomDateline(followUp: item)
+        case .worth(let card): return readingRoomDateline(worth: card)
         }
     }
 
@@ -387,9 +459,37 @@ struct TodayDeckCard: Identifiable, Equatable {
         return nil
     }
 
-    /// ⚡ posts `approve` for a follow-up (start a follow-up task) and `open`
-    /// feedback + source navigation for a worth card.
-    var primaryLabel: String { isForYou ? "Do it" : "Open" }
+    /// The ⚡ Act menu: only this card's real actions. A follow-up lists its
+    /// server channel actions, its thread link, the instruction-first
+    /// follow-up task, snooze and Details; a worth card lists Open, its
+    /// action capabilities (bar the Open/Details duplicates) and Details.
+    var actEntries: [TodayDeckActEntry] {
+        switch source {
+        case .followUp(let item):
+            // Menu rows are keyed by descriptor id, so a repeated id keeps
+            // only its first descriptor (as on web).
+            var seenActionIDs = Set<String>()
+            var entries = item.availableActions
+                .filter { seenActionIDs.insert($0.id).inserted }
+                .map(TodayDeckActEntry.channelAction)
+            if let raw = item.openURL, let url = URL(string: raw) {
+                entries.append(.openThread(provider: TodayMorningEdition.providerDisplayName(item.provider), url: url))
+            }
+            // A stale recommendation must be reviewed before a task starts
+            // (the detail view swaps "Start follow-up task…" for "Review & re-open").
+            if !item.reviewRequired { entries.append(.startFollowUpTask) }
+            entries.append(.snooze)
+            entries.append(.details)
+            return entries
+        case .worth(let card):
+            var entries: [TodayDeckActEntry] = [.open]
+            entries += card.actions
+                .filter { $0.kind != .viewDetails && $0.kind != .openSource }
+                .map(TodayDeckActEntry.resurfacing)
+            entries.append(.details)
+            return entries
+        }
+    }
 
     var deliveryBinding: AttentionDeliveryBinding? {
         switch source {
@@ -682,9 +782,29 @@ enum TodayMorningEdition {
         }
     }
 
-    /// `🃏 Morning Brief (n)` — capped as `50+`.
+    /// The server total, distinct from the number of cards currently loaded.
     static func deckCountLabel(_ total: Int) -> String {
-        total > 50 ? "50+" : "\(max(0, total))"
+        "\(max(0, total))"
+    }
+
+    /// `gmail → Gmail`; an empty or unknown provider reads as "app".
+    static func providerDisplayName(_ provider: String) -> String {
+        let key = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch key {
+        case "", "unknown": return "app"
+        case "gmail": return "Gmail"
+        case "agentmail": return "AgentMail"
+        case "whatsapp", "whatsapp_kapso": return "WhatsApp"
+        default: return key.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    /// A resurfacing capability's display label. `ask_presto` is named for
+    /// the owner's primary agent; the wire value stays `ask_presto`.
+    static func resurfacingActionLabel(_ capability: ResurfacingActionCapability, agentName: String) -> String {
+        guard capability.kind == .askPresto else { return capability.label }
+        let name = agentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Ask \(name.isEmpty ? MagicianAccess.productName : name)"
     }
 
     static let deckHorizontalThreshold: Double = 95
@@ -967,4 +1087,13 @@ enum TodayMorningEdition {
         if let text = value as? String { return epochMilliseconds(fromISO: text) }
         return nil
     }
+}
+
+func readingRoomDateline(followUp: ChannelFollowUp? = nil, worth: ResurfacingCard? = nil) -> String? {
+    let received = followUp?.receivedAt.flatMap { $0 > 0 ? $0 : nil }
+    let surfaced = worth?.surfacedAt.flatMap { $0 > 0 ? $0 : nil }
+    guard let timestamp = surfaced ?? worth?.temporalAnchorAt ?? received ?? followUp?.createdAt, timestamp > 0 else { return nil }
+    let label = worth != nil ? (surfaced != nil ? "Surfaced" : "Reference") : received != nil ? "Received" : "Added"
+    let date = Date(timeIntervalSince1970: Double(timestamp) / 1_000)
+    return "\(label) \(date.formatted(.dateTime.year().month(.abbreviated).day().hour().minute()))"
 }

@@ -209,6 +209,8 @@ mod tests {
             current_substep_title: None,
             completion_summary: None,
             completion_outcome: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             completion_artifact_names: Vec::new(),
             has_plan: false,
             latest_plan_id: None,
@@ -291,6 +293,8 @@ mod tests {
             status: "failed".to_string(),
             completion_summary: None,
             completion_outcome: Some("Execution failed".to_string()),
+            completion_kind: None,
+            open_items: Vec::new(),
             updated_at: "2026-06-01T00:00:00Z".to_string(),
             ..base_task_item()
         }];
@@ -310,6 +314,8 @@ mod tests {
             status: "completed".to_string(),
             completion_summary: None,
             completion_outcome: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             updated_at: "2026-06-01T00:00:00Z".to_string(),
             ..base_task_item()
         }];

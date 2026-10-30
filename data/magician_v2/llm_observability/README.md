@@ -63,15 +63,12 @@ unowned production path, or an entry lacks an explicit capture/training posture.
 ledger describes logical caller boundaries; provider adapters are attempts
 inside a logical call and must not be counted as independent training examples.
 
-The audit also runs a production-code operation-key scan over the Rust crates
-(`LLMOperation::Other("…")` literals and `*OPERATION*` string constants,
-test regions excluded): an operation key that exists only in code never enters
-the config/ledger diff above and silently rides the router default profile, so
-its absence from `operation-families-v1.json` is an audit failure, not a
-silent gap. This surfaced — and now fences — the four formerly-unmapped
-operations `memory_attach_stage2`, `progress_review`, `agent_general`, and
-`page_understanding_vision`, all now explicitly mapped in the `llm-router.yaml`
-seed (to `gpt6luna-responses-toolsany` / `gpt61sol-responses-toolsany`).
+The audit scans production Rust operation constants and `LLMOperation::Other`
+calls. `unconfigured_operations` declares source-bound exceptions: optional
+model operations still need a validator family and an explicit-binding guard;
+synthetic events stay outside model families. Unknown keys, missing source
+markers, changed source sites and exceptions that acquire default mappings
+fail the audit. These declarations do not configure runtime routes.
 
 The `embedding` family (`embedding_output_v1`) covers the routed embedding
 operations `embed_documents` and `embed_query`, bound to the

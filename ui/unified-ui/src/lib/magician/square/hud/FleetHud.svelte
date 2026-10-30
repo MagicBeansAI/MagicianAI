@@ -154,12 +154,12 @@
 		return [
 			`STRATEGIC GOAL: ${goal}`,
 			'',
-			'As CEO: read company_strategy.md and the relevant officer programs,',
+			'As CEO: read company_strategy.md and the relevant officer playbooks,',
 			'then decompose this goal into missions using the',
-			'propose_program_missions tool — one proposal per affected program,',
+			'propose_program_missions tool — one proposal per affected playbook,',
 			'each mission with a crisp objective and success criteria. The tool',
 			'is approval-gated: propose and await the owner decision. Do not do',
-			'the work yourself; decompose and delegate through the programs.'
+			'the work yourself; decompose and delegate through the playbooks.'
 		].join('\n');
 	}
 
@@ -590,7 +590,7 @@
 						type="button"
 						class:active={questMode === 'strategic'}
 						disabled={!ceoCitizen}
-						title={ceoCitizen ? 'The CEO turns this into program goals (approval required)' : 'No CEO in the crew'}
+						title={ceoCitizen ? 'The CEO turns this into playbook goals (approval required)' : 'No CEO in the crew'}
 						on:click={() => (questMode = 'strategic')}
 					><Icon name="git-branch" size={15} /> Strategic goal - CEO delegates</button>
 				</div>

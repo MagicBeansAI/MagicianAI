@@ -136,6 +136,7 @@ tools:
 - gmail
 - calendar
 - whatsapp
+- whatsapp-mcp
 - telegram
 # iMessage: read history via `imessage` (SQLite over chat.db, Full Disk Access);
 # SEND via `imessage_send` (relays a fixed, escaped template through the Tauri
@@ -158,6 +159,8 @@ tools:
 - browser
 - zepto-mcp
 - swiggy-mcp
+- shopify-mcp
+- zomato-mcp
 # Files & light data
 - sheets
 - office-word
@@ -219,6 +222,7 @@ constraints:
     - place_food_order
     - checkout
     - book_table
+    - place_event_order
     ttl_secs: 86400
   - tool: imessage_send
     action:

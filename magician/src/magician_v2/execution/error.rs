@@ -24,14 +24,40 @@ pub enum ExecutionError {
     /// Recoverable path/sandbox denial: the requested path(s) fell outside the
     /// currently-allowed file sandbox roots but are otherwise valid targets.
     ///
-    /// Distinct from the hard [`ExecutionError::Step`] used for read-only /
-    /// delete-policy / repo-fence violations: this variant is meant to be
+    /// Distinct from the terminal [`ExecutionError::Refused`] used for
+    /// read-only / delete-policy / repo-fence violations: this variant is meant to be
     /// intercepted at the executor error chokepoint and routed into the
     /// sandbox-override HITL (approve a folder, merge into
     /// `session_file_sandbox_roots`, retry) rather than terminally failing the
     /// iteration. Only the pure out-of-roots case should produce it.
-    #[error("path outside allowed file sandbox roots: {}", .paths.join(", "))]
-    PathAccessDenied { paths: Vec<String> },
+    /// `roots_hint` is an already-rendered ` (writable: …; read-only: …)`
+    /// suffix naming the roots that would admit the path, or empty when the
+    /// caller has no file sandbox roots to name.
+    #[error("path outside allowed file sandbox roots: {}{roots_hint}", .paths.join(", "))]
+    PathAccessDenied {
+        paths: Vec<String>,
+        roots_hint: String,
+    },
+
+    /// The action was refused by policy (a sandbox root, a fence, a
+    /// read-only or delete policy, a governed-runtime admission or
+    /// authorization denial, a tool this agent does not have): an expected
+    /// answer to what the agent asked for, which it can act on — not a
+    /// failure of the system. Logged as a warning, not an error, and never
+    /// retried by the pack reliability wrapper (the same call is refused
+    /// again). Infrastructure faults stay [`ExecutionError::Step`].
+    #[error("refused: {0}")]
+    Refused(String),
+
+    /// The call was handled and its answer is the agent's to act on: a tool
+    /// that ran and reported its own failure (a non-zero exit with its
+    /// stderr — `git diff` outside a repository), or arguments that do not
+    /// fit the tool's grammar (a lowering failure). Not a fault of the
+    /// runtime, so the executor logs it as a warning; retries are unchanged.
+    /// It displays exactly like [`ExecutionError::Step`], so the text the
+    /// agent and substring matchers see does not change.
+    #[error("step execution failed: {0}")]
+    AgentActionable(String),
 
     #[error("invalid execution state: {0}")]
     InvalidState(String),

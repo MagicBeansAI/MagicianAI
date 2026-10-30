@@ -41,6 +41,32 @@ pub struct HarnessEngineSnapshot {
     pub turn_max_tool_calls: u32,
     pub turn_max_seconds: u64,
     pub plane_endpoint: String,
+    /// `execution.harness_engine: chat` — agentic flows think with whatever
+    /// the chat engine and model are. Resolved on every read from the live
+    /// chat snapshot, so a later chat-engine change needs no re-install.
+    pub follows_chat: bool,
+}
+
+/// The `execution.harness_engine` value meaning "same as the chat engine".
+pub const FOLLOW_CHAT_ENGINE: &str = "chat";
+
+/// True when a configured agentic-flow engine follows the chat engine.
+pub fn follows_chat_engine(configured: &str) -> bool {
+    configured.trim() == FOLLOW_CHAT_ENGINE
+}
+
+/// Overlay the chat engine and model on a snapshot that follows chat. The
+/// chat's `magician` mouth maps to the `magician` loop; unknown chat names
+/// coerce to `magician` as they do for the mouth.
+fn resolve_follow_chat(
+    mut snapshot: HarnessEngineSnapshot,
+    chat: &super::chat_turn::ChatHarnessSnapshot,
+) -> HarnessEngineSnapshot {
+    if snapshot.follows_chat {
+        snapshot.engine = super::chat_turn::coerce_chat_mouth_engine(&chat.engine).to_string();
+        snapshot.harness_model = chat.harness_model.clone();
+    }
+    snapshot
 }
 
 impl Default for HarnessEngineSnapshot {
@@ -52,6 +78,7 @@ impl Default for HarnessEngineSnapshot {
             turn_max_tool_calls: default_harness_turn_max_tool_calls(),
             turn_max_seconds: default_harness_turn_max_seconds(),
             plane_endpoint: "http://127.0.0.1:8080/api/magician/v2/plane/mcp".to_string(),
+            follows_chat: false,
         }
     }
 }
@@ -67,10 +94,23 @@ pub fn install_harness_engine_snapshot(snapshot: HarnessEngineSnapshot) {
 }
 
 pub fn harness_engine_snapshot() -> HarnessEngineSnapshot {
+    let snapshot = SNAPSHOT
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if !snapshot.follows_chat {
+        return snapshot;
+    }
+    resolve_follow_chat(snapshot, &super::chat_turn::chat_harness_snapshot())
+}
+
+/// Whether the installed agentic-flow setting follows the chat engine (the
+/// Settings choice, before [`harness_engine_snapshot`] resolves it).
+pub fn harness_engine_follows_chat() -> bool {
     SNAPSHOT
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+        .follows_chat
 }
 
 /// The Settings choice as a pin: the engine, harness model, and Pi profile
@@ -359,15 +399,78 @@ pub(crate) async fn restore_harness_checkpoint(
     restore_harness_continuation_from_pause(&harness_continuation_key(ctx), checkpoint, None).await;
 }
 
+/// A settled (or failed) harness turn's service health and, when it failed
+/// for its CLI's sign-in, account, limits or reachability, that failure in
+/// the CLI's own words (`harness_auth::failure`).
+fn classify_harness_turn(
+    engine: &str,
+    result: &std::result::Result<(HarnessTurnSettled, Box<dyn HarnessSession>), HarnessError>,
+) -> (
+    Option<std::result::Result<(), crate::magician_v2::realtime_events::ServiceFailure>>,
+    Option<crate::magician_v2::harness_auth::failure::HarnessFailure>,
+) {
+    use crate::magician_v2::harness_auth::failure::HarnessFailure;
+    match result {
+        Ok((settled, session)) => {
+            let failure = (settled.stop_reason == HarnessStopReason::Refused)
+                .then(|| {
+                    HarnessFailure::classify(
+                        engine,
+                        &[
+                            settled.assistant_text.as_str(),
+                            session.failure_text().as_str(),
+                        ],
+                    )
+                })
+                .flatten();
+            (session.service_health(settled), failure)
+        },
+        Err(error) => {
+            let text = error.to_string();
+            (
+                crate::magician_v2::realtime_events::ServiceFailure::from_error(&text).map(Err),
+                HarnessFailure::classify(engine, &[text.as_str()]),
+            )
+        },
+    }
+}
+
+/// Report a run turn's service health; a classified failure's notice
+/// carries the CLI's reason and remedy.
+fn report_harness_health(
+    ctx: &AgenticContext,
+    service: &str,
+    health: std::result::Result<(), crate::magician_v2::realtime_events::ServiceFailure>,
+    failure: Option<&crate::magician_v2::harness_auth::failure::HarnessFailure>,
+) {
+    let detail = failure.map(
+        |failure| crate::magician_v2::realtime_events::ServiceDetail {
+            title: crate::magician_v2::harness_auth::failure::engine_label(&failure.engine)
+                .to_string(),
+            reason: failure.reason.clone(),
+            remedy: failure.remedy.clone(),
+        },
+    );
+    crate::magician_v2::decision_host::report_health_with_detail(
+        ctx.principal.as_deref().unwrap_or("anonymous"),
+        ctx.workspace.as_deref().unwrap_or("default"),
+        service,
+        health,
+        detail.as_ref(),
+    );
+}
+
 fn checkpoint_decision(execution_id: &str, note: String) -> Decision {
     let continuation = peek_harness_pause_continuation(execution_id).unwrap_or_default();
     if continuation.native_session_id.is_none() {
         return Decision::NeedUserInput {
             question: "The harness reached an internal slice without a resumable native session. Continue after reviewing the completed work?".into(),
+            // Continuing restarts paid harness work: keep it out of
+            // one-click and typed answers, like a max-iterations prompt.
             input_type: UserInputType::Confirmation {
                 confirm_label: Some("Continue".into()),
                 deny_label: Some("Stop".into()),
-                destructive: false,
+                destructive: true,
             },
             hint: Some("Completed actions and usage remain recorded. Automatic replay is disabled when the harness cannot resume its session.".into()),
             options: None,
@@ -490,6 +593,14 @@ pub(crate) async fn maybe_harness_decide_with_engine(
 
     let snapshot = harness_engine_snapshot();
     preflight_execution_token_budget()?;
+    // A harness turn is paid for outside the router, so the owner's spend
+    // envelope cannot refuse its model calls one by one: it refuses the turn
+    // up front instead. The typed refusal parks the run (see
+    // `spend_envelope::park_wait_for_error`) rather than failing it. A run
+    // launched from a chat is interactive: counted, never refused.
+    crate::magician_v2::spend_envelope_producers::preflight(
+        crate::magician_v2::spend_envelope_producers::agentic_run_class(ctx),
+    )?;
     let execution_id = harness_continuation_key(ctx);
     let continuation = turn_continuation(&execution_id);
     // A grant retained by a paused turn is dead authority now: this decide is
@@ -676,42 +787,157 @@ pub(crate) async fn maybe_harness_decide_with_engine(
         native_home: native_home.clone(),
         unrestricted,
     };
+    // `login_first` with the CLI not signed in (or its session expired):
+    // the owner decides before the launch whether Magician's key may stand
+    // in. Never automatic (`harness_auth::fallback`).
+    let ask_scope = crate::magician_v2::harness_auth::fallback::AskScope {
+        principal: ctx
+            .principal
+            .clone()
+            .unwrap_or_else(|| "anonymous".to_string()),
+        workspace: ctx
+            .workspace
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+        execution_id: ctx.execution_id.clone(),
+        task_id: ctx.task_id.clone(),
+    };
+    let key_asked = crate::magician_v2::harness_auth::fallback::preflight(&ask_scope, &pin.engine)
+        .await
+        .is_some();
+    let turn_input = HarnessTurnInput {
+        text: crate::magician_v2::secrets::sanitize_text_for_provider(&text),
+        // Already included in text above, once for every engine.
+        operator_steer: Vec::new(),
+    };
+    // The grant is good only on this turn's own loopback channel, which its
+    // box alone may reach (`plane::grant_channel`).
+    let mut req = req;
+    let plane_channel = crate::magician_v2::execution::plane::grant_channel::open(
+        &token,
+        native_home.iter().cloned().collect(),
+    )
+    .await;
+    let plane_session = plane_channel.as_ref().map(|(session, _)| session.clone());
+    if let Some(session) = &plane_session {
+        req.endpoint.url = crate::magician_v2::execution::plane::grant_channel::endpoint_on(
+            &req.endpoint.url,
+            session.port,
+        );
+    }
+    // The harness process's box keeps out the goal workspaces this run's
+    // active owner may not reach (`goal_workspace_access`). A key-fallback
+    // rerun below runs in the same box, on the same channel.
+    let acting_agent = crate::magician_v2::execution::goal_workspace_access::acting_agent_for(ctx);
+    let read_delegators =
+        crate::magician_v2::execution::goal_workspace_access::read_delegators_for(ctx);
     let turn_started = std::time::Instant::now();
-    let turn_result: std::result::Result<
+    let mut turn_result: std::result::Result<
         (HarnessTurnSettled, Box<dyn HarnessSession>),
         HarnessError,
-    > = async {
-        let mut session = engine.start(&req).await?;
-        let settled = session
-            .turn(
-                &HarnessTurnInput {
-                    text: crate::magician_v2::secrets::sanitize_text_for_provider(&text),
-                    // Already included in text above, once for every engine.
-                    operator_steer: Vec::new(),
-                },
-                &HarnessStreamSink::drain(),
-            )
-            .await?;
-        Ok((settled, session))
-    }
+    > = crate::magician_v2::execution::native_executors::with_read_delegators(
+        read_delegators.clone(),
+        crate::magician_v2::execution::native_executors::with_acting_agent(
+            acting_agent.clone(),
+            crate::magician_v2::execution::plane::grant_channel::with_plane_session(
+                plane_session.clone(),
+                Box::pin(async {
+                    let mut session = engine.start(&req).await?;
+                    let settled = session
+                        .turn(&turn_input, &HarnessStreamSink::drain())
+                        .await?;
+                    Ok((settled, session))
+                }),
+            ),
+        ),
+    )
     .await;
+    let mut failure = None;
     if !cancellation_token.is_some_and(CancellationToken::is_cancelled) {
-        let health = match &turn_result {
-            Ok((settled, session)) => session.service_health(settled),
-            Err(error) => {
-                crate::magician_v2::realtime_events::ServiceFailure::from_error(&error.to_string())
-                    .map(Err)
-            },
-        };
+        use crate::magician_v2::harness_auth::fallback;
+        let (health, classified) = classify_harness_turn(&pin.engine, &turn_result);
+        crate::magician_v2::harness_auth::failure::observe(
+            &pin.engine,
+            health,
+            classified.as_ref(),
+        );
+        let offer = classified.as_ref().filter(|failure| {
+            !key_asked
+                && failure.is_account_failure()
+                && fallback::offers_key(&pin.engine, failure.class)
+        });
         if let Some(health) = health {
-            crate::magician_v2::decision_host::report_health(
-                ctx.principal.as_deref().unwrap_or("anonymous"),
-                ctx.workspace.as_deref().unwrap_or("default"),
-                &req.health_service(&pin.engine),
-                health,
-            );
+            // The decision card already says why; one card, not two.
+            if offer.is_none() {
+                report_harness_health(
+                    ctx,
+                    &req.health_service(&pin.engine),
+                    health,
+                    classified.as_ref(),
+                );
+            }
         }
+        let mut retried = false;
+        if let Some(offer) = offer {
+            let decision =
+                fallback::ask_key_fallback(&ask_scope, &pin.engine, offer.class, &offer.reason)
+                    .await;
+            // A failed launch has no session left to rerun on; the approval
+            // stands for the run's next turn.
+            if decision.approved()
+                && !cancellation_token.is_some_and(CancellationToken::is_cancelled)
+                && turn_result.is_ok()
+            {
+                turn_result = match turn_result {
+                    Ok((_, mut session)) => {
+                        let rerun = crate::magician_v2::execution::native_executors::with_read_delegators(
+                            read_delegators.clone(),
+                            crate::magician_v2::execution::native_executors::with_acting_agent(
+                                acting_agent.clone(),
+                                crate::magician_v2::execution::plane::grant_channel::with_plane_session(
+                                    plane_session.clone(),
+                                    Box::pin(session.turn(&turn_input, &HarnessStreamSink::drain())),
+                                ),
+                            ),
+                        )
+                        .await;
+                        match rerun {
+                            Ok(settled) => Ok((settled, session)),
+                            Err(error) => Err(error),
+                        }
+                    },
+                    Err(error) => Err(error),
+                };
+                fallback::finish_once(&pin.engine);
+                retried = true;
+            }
+        }
+        if key_asked && !retried {
+            // A "once" approval given before the launch covers this turn only.
+            fallback::finish_once(&pin.engine);
+        }
+        failure = if retried {
+            let (health, classified) = classify_harness_turn(&pin.engine, &turn_result);
+            crate::magician_v2::harness_auth::failure::observe(
+                &pin.engine,
+                health,
+                classified.as_ref(),
+            );
+            if let Some(health) = health {
+                report_harness_health(
+                    ctx,
+                    &req.health_service(&pin.engine),
+                    health,
+                    classified.as_ref(),
+                );
+            }
+            classified
+        } else {
+            classified
+        };
     }
+    // The loopback channel outlives the key-fallback rerun above.
+    drop(plane_channel);
     let (mut settled, mut session) = match turn_result {
         Ok(pair) => pair,
         Err(harness_error) => {
@@ -736,9 +962,18 @@ pub(crate) async fn maybe_harness_decide_with_engine(
                     ..HarnessTurnContinuation::default()
                 },
             );
-            return Err(anyhow::anyhow!("harness turn failed: {harness_error}"));
+            return Err(match &failure {
+                Some(failure) => anyhow::anyhow!("harness turn failed: {}", failure.user_message()),
+                None => anyhow::anyhow!("harness turn failed: {harness_error}"),
+            });
         },
     };
+    // A refused turn says why, in the CLI's words, with a remedy.
+    if let Some(failure) = &failure {
+        if settled.stop_reason == HarnessStopReason::Refused {
+            settled.assistant_text = failure.annotate(&settled.assistant_text);
+        }
+    }
     // A parent Stop wins even if the grant had just latched an approval or
     // delegation stop while the child was tearing down. A cancelled run must
     // not publish a new confirmation pause or retain that grant.
@@ -881,14 +1116,29 @@ pub(crate) async fn maybe_harness_decide_with_engine(
         grant_lease.disarm();
         // The logical turn is over: the next turn warm-resumes the same
         // native conversation but with a fresh budget.
+        //
+        // A turn that settled on a final answer without `yield` leaves the
+        // run with no completion record, which would end it partial however
+        // complete the work was. Once per run, a resumable session is asked
+        // to submit that record instead (every engine settles here).
+        let completion_nudge = completion_record_nudge_due(
+            settled.stop_reason,
+            !settled.assistant_text.trim().is_empty(),
+            captured_control.is_some(),
+            native_session_id.is_some(),
+        ) && claim_completion_record_nudge(&execution_id);
         store_turn_continuation(
             &execution_id,
             HarnessTurnContinuation {
                 native_session_id,
                 native_home: native_home.clone(),
                 session_fingerprint: native_session_fingerprint,
-                prior_result_note: (settled.stop_reason == HarnessStopReason::TurnBudgetSpent)
-                    .then(|| harness_checkpoint_note(&settled, &turn_grant)),
+                prior_result_note: if completion_nudge {
+                    Some(COMPLETION_RECORD_NUDGE.to_string())
+                } else {
+                    (settled.stop_reason == HarnessStopReason::TurnBudgetSpent)
+                        .then(|| harness_checkpoint_note(&settled, &turn_grant))
+                },
                 ..HarnessTurnContinuation::default()
             },
         );
@@ -897,6 +1147,14 @@ pub(crate) async fn maybe_harness_decide_with_engine(
                 &execution_id,
                 "Internal harness slice ended; continuing under the existing run budget.".into(),
             )
+        } else if completion_nudge {
+            tracing::info!(
+                execution_id = %execution_id,
+                engine = %run_engine_for(ctx),
+                "[HARNESS] turn settled on a final answer without yield; asking the harness \
+                 to submit its completion record"
+            );
+            checkpoint_decision(&execution_id, COMPLETION_RECORD_NUDGE.to_string())
         } else {
             captured_control
                 .map(run_control_decision)
@@ -904,7 +1162,13 @@ pub(crate) async fn maybe_harness_decide_with_engine(
         }
     };
     home_lease.disarm();
-    charge_harness_turn_cost(loop_protective, settled.usage.as_ref());
+    charge_harness_turn_usage(loop_protective, settled.usage.as_ref());
+    charge_harness_turn_envelope(
+        ctx,
+        &run_engine,
+        req.pi_profile.as_ref(),
+        settled.usage.as_ref(),
+    );
     settle_harness_usage(
         paused || settled.stop_reason == HarnessStopReason::Cancelled,
         settled.usage.as_ref(),
@@ -966,16 +1230,107 @@ fn harness_checkpoint_note(settled: &HarnessTurnSettled, grant: &PlaneGrant) -> 
         total.saturating_sub(receipts.len()), receipts.join("\n"))
 }
 
-/// Add a settled turn's CLI-reported USD cost to the run's cumulative spend.
-/// A harness run is budgeted by cost, not tokens (`run_budget`): this is the
-/// spend the harness cost ceiling compares against at the next iteration top.
-/// A CLI that reports no cost charges nothing — the cost is never inferred.
-fn charge_harness_turn_cost(protective: &mut LoopProtectiveState, usage: Option<&HarnessUsage>) {
+/// Add a settled turn's CLI-reported USD cost to the run's cumulative spend,
+/// and its reported tokens to the run's harness token tally.
+/// A harness run is budgeted by cost, not tokens (`run_budget`): the cost is
+/// the spend the harness cost ceiling compares against at the next iteration
+/// top. A CLI that reports no cost charges nothing — the cost is never
+/// inferred. The tokens are display only: a harness run installs no token
+/// meter, so the budget usage reads them from this tally.
+fn charge_harness_turn_usage(protective: &mut LoopProtectiveState, usage: Option<&HarnessUsage>) {
+    let Some(usage) = usage else {
+        return;
+    };
     if let Some(cost) = usage
-        .and_then(|usage| usage.cost_usd)
+        .cost_usd
         .filter(|cost| cost.is_finite() && *cost > 0.0)
     {
         protective.cumulative_run_cost_usd += cost;
+    }
+    protective.cumulative_harness_tokens = protective
+        .cumulative_harness_tokens
+        .saturating_add(usage.total_tokens());
+}
+
+/// Count a settled turn toward the owner's spend envelope: this spend never
+/// passes through the router. Unlike the run's own cost tally above, a turn
+/// whose CLI reported tokens but no dollar figure is priced here (the
+/// envelope must not read a subscription-less CLI as free); one that reported
+/// neither charges nothing.
+fn charge_harness_turn_envelope(
+    ctx: &AgenticContext,
+    engine: &str,
+    pi_profile: Option<&magicllm::config::LlmConfig>,
+    usage: Option<&HarnessUsage>,
+) {
+    let at_ms = chrono::Utc::now().timestamp_millis();
+    let Some((micro_usd, estimated)) = harness_turn_spend(engine, pi_profile, usage, at_ms) else {
+        note_unmetered_harness_engine(engine);
+        return;
+    };
+    crate::magician_v2::spend_envelope_producers::charge_micro(
+        crate::magician_v2::spend_envelope_producers::agentic_run_class(ctx),
+        ctx.principal.as_deref().unwrap_or("anonymous"),
+        ctx.workspace.as_deref().unwrap_or("default"),
+        micro_usd,
+        estimated,
+    );
+}
+
+/// What a settled turn cost in micro-USD, and whether Magician estimated it:
+/// the CLI's own cost when it reported one, else its tokens at the pricing
+/// table's rate for the turn's model (a Pi profile names its provider and
+/// model; other CLIs are attributed by model name, then engine). `None` when
+/// the turn reported neither cost nor tokens. Shared with the harness chat
+/// turn (`chat_turn`), which charges it as foreground chat.
+pub(crate) fn harness_turn_spend(
+    engine: &str,
+    pi_profile: Option<&magicllm::config::LlmConfig>,
+    usage: Option<&HarnessUsage>,
+    at_ms: i64,
+) -> Option<(u64, bool)> {
+    use crate::magician_v2::spend_envelope_producers::{
+        engine_provider, price_tokens, token_usage,
+    };
+    let usage = usage?;
+    if let Some(cost) = usage
+        .cost_usd
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+    {
+        return magicllm::pricing::usd_to_microusd_ceil(cost).map(|micro| (micro, false));
+    }
+    let (provider, model) = match pi_profile {
+        Some(profile) => (profile.provider.clone(), Some(profile.model.as_str())),
+        None => (
+            engine_provider(engine, usage.model.as_deref()),
+            usage.model.as_deref(),
+        ),
+    };
+    let tokens = token_usage(
+        usage.input_tokens,
+        usage.output_tokens,
+        usage
+            .cache_read_reported
+            .then_some(usage.cached_input_tokens),
+        usage.cache_creation_tokens,
+    );
+    price_tokens(&provider, model, &tokens, at_ms)
+}
+
+/// A CLI that reports neither cost nor tokens is invisible to the envelope.
+/// Said once per engine, at debug: it is a property of the CLI, not the turn.
+fn note_unmetered_harness_engine(engine: &str) {
+    static NOTED: Lazy<std::sync::Mutex<std::collections::HashSet<String>>> =
+        Lazy::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let first = NOTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(engine.to_string());
+    if first {
+        tracing::debug!(
+            engine = %engine,
+            "[SPEND-ENVELOPE] harness turn reported no cost and no tokens; not counted"
+        );
     }
 }
 
@@ -1040,8 +1395,59 @@ fn harness_identity_line(ctx: &AgenticContext) -> String {
              and the tools you already hold are the tools for this job. Do the work \
              yourself.",
         );
+    } else {
+        line.push_str(&harness_delegation_roster(&ctx.delegation_targets));
     }
     line
+}
+
+/// Most tools listed per target; the rest are a `get_agent_details` away.
+const ROSTER_TOOLS_PER_TARGET: usize = 16;
+
+/// The agents a coordinator can hand work to and the tools each owns — what
+/// the native decision prompt shows as its specialist targets. Without it a
+/// harness lead told to get a `run_coding_task` call made went searching for
+/// a tool only its engineers own (the plane keeps it off a lead's catalog)
+/// and yielded "not available" instead of delegating.
+fn harness_delegation_roster(
+    targets: &[crate::magician_v2::execution::agentic::delegation_dispatch::DelegationTarget],
+) -> String {
+    use crate::magician_v2::agents::InvocationSurface;
+    let mut roster = String::from(
+        "\n\nOther agents own tools you do not hold. To get one of their tools used, hand \
+         them the work with `delegate_to_agent` (or `handover_to_agent` where listed); \
+         never search for or call their tools yourself. Your targets:",
+    );
+    for target in targets {
+        let routes = target
+            .allowed_invocation_surfaces
+            .iter()
+            .filter_map(|surface| match surface {
+                InvocationSurface::Delegation => Some("delegate_to_agent"),
+                InvocationSurface::Handover => Some("handover_to_agent"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        roster.push_str(&format!(
+            "\n- `{}` ({})",
+            target.agent_id,
+            target.name.trim()
+        ));
+        if !routes.is_empty() {
+            roster.push_str(&format!(", via {}", routes.join(" or ")));
+        }
+        if !target.tools.is_empty() {
+            let shown = target.tools.iter().take(ROSTER_TOOLS_PER_TARGET);
+            roster.push_str(&format!(
+                ": {}",
+                shown.map(String::as_str).collect::<Vec<_>>().join(", ")
+            ));
+            if target.tools.len() > ROSTER_TOOLS_PER_TARGET {
+                roster.push_str(", …");
+            }
+        }
+    }
+    roster
 }
 
 /// Foreign turns need the same run identity and continuation evidence as the
@@ -1135,6 +1541,46 @@ fn run_control_decision(mut decision: Decision) -> Decision {
     decision
 }
 
+/// What a harness that settled without `yield` is told on its one follow-up
+/// turn. Delivered as the next turn's checkpoint context.
+const COMPLETION_RECORD_NUDGE: &str = "Your previous turn ended with a final answer but did \
+     not call `yield`, so Magician has no completion record for this task and would report \
+     it as only partly done. If the work is done, call `yield` now with that final answer \
+     in summary and explicit completed, open and blocker lists; do not redo finished work. \
+     If work remains, continue it and call `yield` when it is done.";
+
+/// Runs already asked once to submit their completion record. In memory: a
+/// restart may ask once more, never more than that per process.
+static COMPLETION_RECORD_NUDGED: Lazy<RwLock<std::collections::HashSet<String>>> =
+    Lazy::new(|| RwLock::new(std::collections::HashSet::new()));
+
+/// Bound on [`COMPLETION_RECORD_NUDGED`]; past it the set starts over.
+const MAX_COMPLETION_RECORD_NUDGED_RUNS: usize = 4_096;
+
+/// Whether a settled turn should be asked for its completion record instead
+/// of ending the run partial: it settled normally on a final answer, the
+/// harness submitted no run control (`yield`, `need_user_input`, …), and its
+/// native session can be resumed so the follow-up keeps the transcript.
+fn completion_record_nudge_due(
+    stop_reason: HarnessStopReason,
+    has_final_text: bool,
+    has_run_control: bool,
+    resumable: bool,
+) -> bool {
+    stop_reason == HarnessStopReason::Settled && has_final_text && !has_run_control && resumable
+}
+
+/// Claim this run's one completion-record nudge: `true` the first time.
+fn claim_completion_record_nudge(execution_id: &str) -> bool {
+    let mut nudged = COMPLETION_RECORD_NUDGED
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if nudged.len() >= MAX_COMPLETION_RECORD_NUDGED_RUNS && !nudged.contains(execution_id) {
+        nudged.clear();
+    }
+    nudged.insert(execution_id.to_string())
+}
+
 fn decision_from_harness(
     settled: &crate::magician_v2::execution::plane::engine::HarnessTurnSettled,
 ) -> Decision {
@@ -1145,10 +1591,14 @@ fn decision_from_harness(
             } else {
                 settled.assistant_text.clone()
             },
+            // Approving runs a harness action, so it is never a plain
+            // question: `destructive` keeps it out of one-click and typed
+            // answers. `apply` normally swaps this for a typed action
+            // confirmation; this is the fallback when no action was captured.
             input_type: UserInputType::Confirmation {
                 confirm_label: Some("Approve".to_string()),
                 deny_label: Some("Deny".to_string()),
-                destructive: false,
+                destructive: true,
             },
             hint: Some(
                 "Magician will execute the approved action on resume; the harness is paused, not cancelled."
@@ -1196,6 +1646,45 @@ fn decision_from_harness(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agentic_flows_that_follow_chat_take_the_chat_engine_and_model() {
+        let chat = |engine: &str, model: &str| {
+            crate::magician_v2::execution::plane::chat_turn::ChatHarnessSnapshot {
+                engine: engine.to_string(),
+                harness_model: model.to_string(),
+                ..Default::default()
+            }
+        };
+        let following = HarnessEngineSnapshot {
+            engine: FOLLOW_CHAT_ENGINE.to_string(),
+            follows_chat: true,
+            ..Default::default()
+        };
+        let resolved = resolve_follow_chat(following.clone(), &chat("claude_code", "opus"));
+        assert_eq!(resolved.engine, "claude_code");
+        assert_eq!(resolved.harness_model, "opus");
+        // The chat's own mouth is the loop; unknown names fail closed to it.
+        assert_eq!(
+            resolve_follow_chat(following.clone(), &chat("magician", "default")).engine,
+            "magician"
+        );
+        assert_eq!(
+            resolve_follow_chat(following, &chat("not-an-engine", "x")).engine,
+            "magician"
+        );
+        // A pinned engine is left alone.
+        let pinned = HarnessEngineSnapshot {
+            engine: "pi".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_follow_chat(pinned, &chat("codex", "gpt")).engine,
+            "pi"
+        );
+        assert!(follows_chat_engine(" chat "));
+        assert!(!follows_chat_engine("magician"));
+    }
 
     fn settled(stop_reason: HarnessStopReason, text: &str) -> HarnessTurnSettled {
         HarnessTurnSettled {
@@ -1252,12 +1741,60 @@ mod tests {
             cost_usd: cost,
             model: None,
         };
-        charge_harness_turn_cost(&mut protective, Some(&usage(Some(1.25))));
-        charge_harness_turn_cost(&mut protective, Some(&usage(Some(0.75))));
-        charge_harness_turn_cost(&mut protective, Some(&usage(None)));
-        charge_harness_turn_cost(&mut protective, Some(&usage(Some(f64::NAN))));
-        charge_harness_turn_cost(&mut protective, None);
+        charge_harness_turn_usage(&mut protective, Some(&usage(Some(1.25))));
+        charge_harness_turn_usage(&mut protective, Some(&usage(Some(0.75))));
+        charge_harness_turn_usage(&mut protective, Some(&usage(None)));
+        charge_harness_turn_usage(&mut protective, Some(&usage(Some(f64::NAN))));
+        charge_harness_turn_usage(&mut protective, None);
         assert_eq!(protective.cumulative_run_cost_usd, 2.0);
+        // Every reported turn counts its tokens, priced or not; a turn with no
+        // usage counts none.
+        assert_eq!(protective.cumulative_harness_tokens, 4 * 127_900);
+    }
+
+    /// The spend envelope takes the CLI's reported cost as is, prices a turn
+    /// that reported only tokens, and counts nothing for a turn that reported
+    /// neither.
+    #[test]
+    fn the_envelope_prices_a_turn_that_reported_tokens_but_no_cost() {
+        let at_ms = chrono::Utc::now().timestamp_millis();
+        let usage = |cost: Option<f64>, input: u64, model: Option<&str>| HarnessUsage {
+            input_tokens: input,
+            cached_input_tokens: 0,
+            output_tokens: input / 10,
+            cache_read_reported: false,
+            cache_creation_tokens: None,
+            cost_usd: cost,
+            model: model.map(str::to_string),
+        };
+        assert_eq!(
+            harness_turn_spend("codex", None, Some(&usage(Some(0.5), 1_000, None)), at_ms),
+            Some((500_000, false)),
+            "a reported cost is charged exactly"
+        );
+        let (micro, estimated) = harness_turn_spend(
+            "codex",
+            None,
+            Some(&usage(None, 1_000_000, Some("gpt-5"))),
+            at_ms,
+        )
+        .expect("a token-only turn is priced");
+        assert!(micro > 0);
+        assert!(!estimated, "a listed model is priced from its own row");
+        let (micro, estimated) =
+            harness_turn_spend("codex", None, Some(&usage(None, 1_000_000, None)), at_ms)
+                .expect("a turn with no model name is still priced");
+        assert!(micro > 0);
+        assert!(
+            estimated,
+            "no model to look up: the provider's highest rate"
+        );
+        assert_eq!(
+            harness_turn_spend("codex", None, Some(&usage(None, 0, None)), at_ms),
+            None,
+            "no cost and no tokens: nothing to count"
+        );
+        assert_eq!(harness_turn_spend("codex", None, None, at_ms), None);
     }
 
     /// A delegation stop hands the loop the targets the harness captured; a
@@ -1291,6 +1828,19 @@ mod tests {
             delegation_decision_from_harness(&settled(HarnessStopReason::Delegate, ""), None),
             Decision::Failed { .. }
         ));
+    }
+
+    /// A harness approval runs an action when approved, so its fallback
+    /// confirmation is never answerable by one click or a typed "yes".
+    #[test]
+    fn a_harness_approval_fallback_is_marked_destructive() {
+        match decision_from_harness(&settled(HarnessStopReason::NeedsApproval, "")) {
+            Decision::NeedUserInput {
+                input_type: UserInputType::Confirmation { destructive, .. },
+                ..
+            } => assert!(destructive),
+            other => panic!("expected a confirmation, got {other:?}"),
+        }
     }
 
     /// A provider's final text does not declare whether the goal is complete.
@@ -1377,6 +1927,36 @@ mod tests {
             decision_from_harness(&settled(HarnessStopReason::Settled, " \n")),
             Decision::Failed { .. }
         ));
+    }
+
+    /// Live 2026-10-20: a Pi run finished its work, answered in plain text and
+    /// never called `yield`, so the run ended "Goal partially achieved". A
+    /// settled final answer without run control on a resumable session is
+    /// asked once for its completion record; nothing else is, and never twice.
+    #[test]
+    fn a_settled_answer_without_yield_is_asked_once_for_its_completion_record() {
+        let settled = HarnessStopReason::Settled;
+        assert!(completion_record_nudge_due(settled, true, false, true));
+        // Already yielded / asked the owner, no answer, not resumable, or
+        // not a normal settle: no nudge.
+        assert!(!completion_record_nudge_due(settled, true, true, true));
+        assert!(!completion_record_nudge_due(settled, false, false, true));
+        assert!(!completion_record_nudge_due(settled, true, false, false));
+        for stop in [
+            HarnessStopReason::Refused,
+            HarnessStopReason::Cancelled,
+            HarnessStopReason::Stalled,
+            HarnessStopReason::TurnBudgetSpent,
+        ] {
+            assert!(
+                !completion_record_nudge_due(stop, true, false, true),
+                "{stop:?}"
+            );
+        }
+        let run = format!("exec-nudge-{}", uuid::Uuid::new_v4());
+        assert!(claim_completion_record_nudge(&run));
+        assert!(!claim_completion_record_nudge(&run), "one nudge per run");
+        assert!(COMPLETION_RECORD_NUDGE.contains("`yield`"));
     }
 
     #[tokio::test]
@@ -1471,6 +2051,43 @@ mod tests {
         assert!(
             !coordinator.contains("worker for this task"),
             "{coordinator}"
+        );
+        assert!(
+            coordinator.contains("- `android-operator` (Pilot)"),
+            "{coordinator}"
+        );
+    }
+
+    /// A harness lead learns which target owns the tool its goal names, and
+    /// that it reaches it by delegating.
+    #[test]
+    fn a_coordinator_identity_line_lists_what_its_targets_own() {
+        use crate::magician_v2::agents::InvocationSurface;
+        let mut ctx = AgenticContext::default();
+        ctx.agent_id = Some("cto".into());
+        ctx.delegation_targets = vec![
+            crate::magician_v2::execution::agentic::delegation_dispatch::DelegationTarget {
+                agent_id: "junior-software-engineer".to_string(),
+                name: "Junior".to_string(),
+                aliases: Vec::new(),
+                description: "codes".to_string(),
+                tools: vec![
+                    "run_coding_task".to_string(),
+                    "delegation_files".to_string(),
+                ],
+                allowed_invocation_surfaces: vec![InvocationSurface::Delegation],
+            },
+        ];
+        let line = harness_identity_line(&ctx);
+        assert!(
+            line.contains(
+                "- `junior-software-engineer` (Junior), via delegate_to_agent: run_coding_task, delegation_files"
+            ),
+            "{line}"
+        );
+        assert!(
+            line.contains("hand them the work with `delegate_to_agent`"),
+            "{line}"
         );
     }
 

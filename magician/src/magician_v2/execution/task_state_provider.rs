@@ -24,19 +24,9 @@ use crate::magician_v2::strategy::plan::PlanStep;
 
 pub const TASK_STATE_TOOL_NAME: &str = "task_state";
 
-/// Maximum size (in bytes) for serialized (pretty-printed) task state JSON.
-///
-/// 16 KB, not the original 4 KB: a typed checkpoint's fields are bounded
-/// by `compact_durable_task_state_for_storage` (goal and criteria 768 B,
-/// each micro-goal ~1 KB with its description, ids, status and timestamps,
-/// the partial-yield record ~1.5 KB), so an ordinary four-goal state with
-/// a terminal partial yield is 4–6 KB pretty-printed — over the old cap
-/// with nothing left to compact. Run 17 (2026-09-21) finished its work and
-/// then failed in the terminal Apply at 4,098 bytes: "refusing to discard
-/// task graph or evidence" is the right refusal for an 80-goal runaway,
-/// which 16 KB still refuses, and the wrong one for two bytes of
-/// indentation on a normal state.
-const MAX_STATE_BYTES: usize = 16_384;
+/// Bounded task graph plus short, evidence-linked finding checkpoints. Verbose
+/// prose is compacted first; references and graph structure are never discarded.
+const MAX_STATE_BYTES: usize = 32_768;
 
 /// Compact a JSON value to fit within `max_bytes` when pretty-printed.
 ///
@@ -396,7 +386,7 @@ mod tests {
 
         // Create a state with a large array that exceeds the cap when
         // pretty-printed (one element per line, ~10 bytes each).
-        let big_array: Vec<u64> = (0..2_500).collect();
+        let big_array: Vec<u64> = (0..5_000).collect();
         let action = make_action(
             Some("test-task-2"),
             json!({"ids": big_array, "cursor": 999}),
@@ -429,10 +419,10 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["cursor"], json!(999)); // non-array field preserved
         let trimmed_ids = parsed["ids"].as_array().unwrap();
-        assert!(trimmed_ids.len() < 2_500, "array should be shorter");
+        assert!(trimmed_ids.len() < 5_000, "array should be shorter");
         assert!(!trimmed_ids.is_empty(), "should keep at least 1 element");
         // Trimming keeps the tail (newest entries)
-        assert_eq!(*trimmed_ids.last().unwrap(), json!(2_499));
+        assert_eq!(*trimmed_ids.last().unwrap(), json!(4_999));
     }
 
     #[tokio::test]
@@ -445,11 +435,11 @@ mod tests {
         let provider = make_provider(&tmp);
         let goal = format!(
             "USER INTENT: inspect the repository. {} GOAL TAIL",
-            "g".repeat(9_000)
+            "g".repeat(MAX_STATE_BYTES)
         );
         let success = format!(
             "SUCCESS: return a supported explanation. {} SUCCESS TAIL",
-            "s".repeat(9_000)
+            "s".repeat(MAX_STATE_BYTES)
         );
         let mut state =
             synthesize_durable_task_state("test-task-terminal", &goal, &success, Some("cto"));
@@ -499,8 +489,8 @@ mod tests {
         let provider = make_provider(&tmp);
 
         // Create a state with a single huge string (no arrays to trim),
-        // well past the 16 KB cap.
-        let big_value: String = "x".repeat(20_000);
+        // well past the bounded state allowance.
+        let big_value: String = "x".repeat(MAX_STATE_BYTES + 1_000);
         let action = make_action(Some("test-task-2b"), json!({"data": big_value}));
         let result = provider.execute(&action, None, 5).await;
 
@@ -678,5 +668,28 @@ mod tests {
         let (_fm, body_b) = store.read("task_state", "task-b.json").await.unwrap();
         let parsed_b: serde_json::Value = serde_json::from_str(&body_b).unwrap();
         assert_eq!(parsed_b, json!({"owner": "b"}));
+    }
+    #[test]
+    fn multiple_findings_fit_without_discarding_their_graph_or_original_refs() {
+        use crate::magician_v2::execution::durable_task_state::normalize_model_proposed_task_state;
+        let goals: Vec<_> = (0..12).map(|index| serde_json::json!({
+            "id":format!("result_{index}"), "description":"d".repeat(500), "status":"in_progress",
+            "result_summary":"f".repeat(800), "evidence_refs":[format!("result_ref_v1_{}", "a".repeat(64))]
+        })).collect();
+        let (state, _) = normalize_model_proposed_task_state(
+            &serde_json::json!({"micro_goals":goals}),
+            "findings",
+            "Deliver results",
+            "Compare",
+            None,
+        );
+        let (text, _) = trim_to_fit(&state, MAX_STATE_BYTES).unwrap();
+        assert!(text.len() <= MAX_STATE_BYTES);
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["micro_goals"].as_array().unwrap().len(), 12);
+        for goal in saved["micro_goals"].as_array().unwrap() {
+            assert_eq!(goal["result_summary"].as_str().unwrap().len(), 800);
+            assert_eq!(goal["result_evidence_refs"], goal["evidence_refs"]);
+        }
     }
 }

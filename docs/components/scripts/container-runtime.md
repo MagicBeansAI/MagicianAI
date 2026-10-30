@@ -1,5 +1,7 @@
 # Container runtime and local desktop integration
 
+Metabase uses its instance's [official MCP server](../../../skillshub/metabase-mcp/SKILL.md); no generated CLI toolchain is bundled.
+
 ## Persistent device pairing on headless Linux
 
 The runtime keeps durable keys and pairing generation anchors in the Linux
@@ -187,7 +189,8 @@ For repeated local builds use the
 (`make prepare-container-image`, `make container-oci`). Constraints the main
 Dockerfile encodes:
 
-- **Toolchain:** `rust:1.92.0-bookworm`, matching the development compiler and
+- **Toolchain:** `rust:1.95.0-bookworm`, matching the pinned development compiler
+  (`rust-toolchain.toml`) and
   the runtime's glibc family. C/C++, OpenSSL, Clang, CMake, protoc and
   `libprotobuf-dev` (Lance imports standard Protobuf schemas) are explicit.
 - **Selection:** `make build-container-runtime` builds `magician-bin`,

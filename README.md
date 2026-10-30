@@ -16,10 +16,10 @@
     <sub>Foundations for Personal Superintelligence</sub>
   </h2>
   <p>
-    <b>Powering <a href="https://next.magican.ai">Magican</a> — Your personal superpowers.</b>
+    <b>Powering <a href="https://next.magican.ai">Magican</a> — Life assistant for work, play, and everything else.</b>
   </p>
   <p>
-    <a href="magician/Cargo.toml"><img src="https://img.shields.io/badge/Magician-v0.7.107-7C3AED.svg" alt="Magician crate version 0.7.107" /></a>
+    <a href="magician/Cargo.toml"><img src="https://img.shields.io/badge/Magician-v0.7.147-7C3AED.svg" alt="Magician crate version 0.7.147" /></a>
     <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
     <a href="#architecture"><img src="https://img.shields.io/badge/rust-2021%20edition-orange.svg" alt="Rust" /></a>
     <a href="#everything-it-does"><img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20iOS%20%7C%20Android%20%7C%20Linux%20soon-lightgrey.svg" alt="Platforms" /></a>
@@ -50,7 +50,7 @@ where memory is processed, how agents reason, and what they are allowed to do.
 | --- | --- |
 | **Which model reads your messages** | Choose models for chat responses and channel processing separately. |
 | **Where memory is processed** | Route memory extraction, summaries and review to local or hosted models. |
-| **How your assistant reasons** | Choose the chat and Work harnesses and their models. |
+| **How your assistant reasons** | Choose the chat and Work engines and their models. |
 | **What it can do for you** | Set agents' tool permissions, approval rules and budgets. |
 | **Where it runs and keeps your notes** | Use your own machine or server and choose your notes folder. |
 
@@ -60,6 +60,11 @@ different provider for chat, or pin an operation to its own model while changing
 the main engine. Settings also exposes trust rules, local models and notes;
 agent definitions and runtime configuration provide the deeper controls.
 
+**Work** brings together tasks, your Crew, Playbooks, Quality checks and Team
+routines. Info buttons explain each control on Web, iOS and Android; the
+[Work guide](docs/components/unified-ui/unified-work.md#work-vocabulary) connects
+these names to the underlying configuration.
+
 <p align="center">
   <img src="docs/assets/screenshots/model-routing-settings.png" alt="Actual Settings Model routing page filtered to memory work, showing each operation's purpose, current provider and model, local and cloud mappings, profile selector and Parent or Pinned controls" width="1000">
   <br/>
@@ -67,13 +72,13 @@ agent definitions and runtime configuration provide the deeper controls.
 </p>
 
 [Model-routing controls](docs/components/unified-ui/model-routing-panel.md) ·
-[Models and harnesses](#models-and-harnesses) ·
+[Models and work engines](#models-and-harnesses) ·
 [Agent definitions](magician_data_v3/system/agent_templates/README.md)
 
 <p align="center">
   <b>31</b> agents &nbsp;·&nbsp; <b>90+</b> skills &nbsp;·&nbsp; <b>10</b> model backends
   &nbsp;·&nbsp; <b>5</b> swappable reasoning engines &nbsp;·&nbsp; <b>6</b> chat channels
-  &nbsp;·&nbsp; <b>86</b> features you can open up in 3D
+  &nbsp;·&nbsp; <b>91</b> features you can open up in 3D
 </p>
 
 > [!WARNING]
@@ -158,7 +163,7 @@ steer the search as your priorities change.
   double-entry ledger. [Resource authority](docs/components/magician/resource-authority-api.md)
 - **Swap the model, keep the assistant.** Route one agent from a frontier API to
   a local Ollama model and it keeps its name, memory, history and obligations.
-  [Models and harnesses](#models-and-harnesses)
+  [Models and work engines](#models-and-harnesses)
 
 ## Break it open
 
@@ -364,7 +369,7 @@ operator-facing inventory.
 | **Learning loop** | Successful runs become evidence-backed procedures; repeated success can create review- and eval-gated skill proposals. Shipped skills are never silently rewritten. | [learning procedures](docs/components/magician/learning-procedures.md) <br> [outcome learning](docs/components/magician/outcome-learning.md) |
 | **Skills** | 90+ AgentSkills packages, one `SKILL.md` contract each. Discovery is scope-aware, supports registry roots and whole-folder overrides, and filters through each agent's allowlist. | [skillshub](skillshub/README.md) <br> [spec and discovery](docs/components/magician/skills-spec.md) |
 | **Generative UI** | Agents emit layout documents; 71 components render charts, metric cards, feeds and forms, not a transcript. | [unified UI](docs/components/unified-ui/README.md) |
-| **Notes, Tutor and mail** | Markdown notes the agent reads and writes with you on every device; blackboard-style teaching; Gmail triage. | [notes](docs/components/magician/notes-provider.md) <br> [tutor](docs/components/magician/personal-tutor.md) <br> [mail assist](docs/components/magician/mail-assist.md) |
+| **Notes, Tutor and mail** | Magician's own Markdown notes, browsed at `/notes` and shared as relative `/notes?path=…&workspace=…` links, that the agent reads and writes with you on every device; blackboard-style teaching; Gmail triage. | [notes](docs/components/magician/notes-provider.md) <br> [tutor](docs/components/magician/personal-tutor.md) <br> [mail assist](docs/components/magician/mail-assist.md) |
 | **App Platform** | Typed contracts and a runtime kernel, authoring CLI, TypeScript SDK, entity storage, memory contributions, custom surfaces and governed action dispatch. The installable catalogue remains in flight. | [truth baseline](docs/components/magician/app-platform-truth-baseline.md) <br> [apps](docs/components/magician-apps/README.md) <br> [SDK](docs/components/magician/typescript-apps-sdk.md) |
 | **Event lakehouse** | Every event partitioned by principal and workspace; runs replay from canonical Parquet/JSONL. | [storage model](docs/ARCHITECTURE_V2.md#current-v3-storage-model) <br> [storage abstraction](docs/components/magician/storage-abstraction.md) |
 | **MCP** | A governed client over the official Rust MCP SDK, plus an authenticated Plane server for external harnesses. | [mcp client](docs/components/magician-mcp-client/README.md) <br> [plane server](docs/components/magician/plane.md) |
@@ -379,7 +384,7 @@ operator-facing inventory.
 
 Magician keeps three things apart: the **agent** (identity, memory,
 permissions, history and budget), the **model** that supplies cognition, and the
-**harness** that runs the reasoning loop. Change the last two without replacing
+**work engine** (called a harness in technical configuration) that runs the reasoning loop. Change the last two without replacing
 the agent or giving up its authority boundary.
 
 - **Models.** Ten native backends: OpenAI, Anthropic, Google Gemini, MiniMax,
@@ -390,7 +395,7 @@ the agent or giving up its authority boundary.
 - **Your subscription.** A signed-in Claude Code, Codex, Grok or Antigravity
   (`agy`) CLI can serve selected operations as a text-only model: no tools, no
   MCP, no agent authority.
-- **Harnesses.** Swap Magician's own loop for `claude_code`, `codex`,
+- **Work engines.** Swap Magician's own loop for `claude_code`, `codex`,
   `codex_app_server`, `grok` or `agy` for chat, for agentic runs, or both.
   Magician still owns persistence, approvals, tool dispatch and budgets.
 - **The harness you already use.** Mint a terminal grant and point any

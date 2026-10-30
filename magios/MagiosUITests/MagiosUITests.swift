@@ -83,6 +83,41 @@ final class MagiosLiveEnrollmentUITests: XCTestCase {
 /// Keep separate from the offline smoke suite so its teardown cannot close a
 /// user's app when this test is skipped during ordinary test discovery.
 final class MagiosLiveConnectivityUITests: XCTestCase {
+    func testEmbeddedSettingsPresentsAVisiblePage() throws {
+        try XCTSkipIf((ProcessInfo.processInfo.environment["MAGIOS_LIVE_TEST_HOST"] ?? "").isEmpty,
+                      "Requires an explicitly selected enrolled physical iPhone")
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Live mobile acceptance requires a physical iPhone")
+        #else
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        defer { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chat"].waitForExistence(timeout: 20))
+        app.buttons["Menu"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        app.buttons["Settings"].tap()
+        let settings = app.descendants(matching: .any)["settings-web-settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        let web = app.webViews.firstMatch
+        let visiblePage = NSPredicate { _, _ in
+            !app.buttons["settings-web-retry"].exists
+                && (web.staticTexts.count > 0 || web.buttons.count > 0 || web.links.count > 0)
+        }
+        let loaded = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: visiblePage, object: nil)], timeout: 45)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "embedded-settings-page"
+        image.lifetime = .keepAlways
+        add(image)
+        let tree = XCTAttachment(string: app.debugDescription)
+        tree.name = "embedded-settings-accessibility"
+        tree.lifetime = .keepAlways
+        add(tree)
+        XCTAssertEqual(loaded, .completed, "Settings must display a page or sign-in form rather than remain blank")
+        #endif
+    }
+
     func testEnrolledPhoneStreamsChatAndKeepsReplyAfterRestart() throws {
         let expectedHost = ProcessInfo.processInfo.environment["MAGIOS_LIVE_TEST_HOST"] ?? ""
         try XCTSkipIf(expectedHost.isEmpty, "Run make test-ios-live-chat with an enrolled test iPhone and expected host")
@@ -125,7 +160,11 @@ final class MagiosLiveConnectivityUITests: XCTestCase {
         composer.tap()
         composer.typeText("Connection test. Reply exactly: \(marker). Do not use tools.")
         app.buttons["chat-send"].tap()
-        let reply = app.staticTexts[marker].firstMatch
+        // A model may add a terminal period. Match the reply token exactly
+        // either way, without matching the longer user prompt containing it.
+        let reply = app.staticTexts.matching(
+            NSPredicate(format: "label == %@ OR label == %@", marker, marker + ".")
+        ).firstMatch
         XCTAssertTrue(reply.waitForExistence(timeout: 90), "Expected a fresh reply from the selected live backend")
         let streamed = XCTAttachment(screenshot: app.screenshot())
         streamed.name = "live-iPhone-chat-\(marker)"
@@ -847,15 +886,45 @@ final class MagiosUITests: XCTestCase {
         let settingsRow = app.buttons["Settings"]
         XCTAssertTrue(settingsRow.waitForExistence(timeout: 3))
         settingsRow.tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        // Help & about is the last section of the device-only Settings list;
+        // its chip in the pinned section bar jumps there and stays selected.
+        XCTAssertTrue(app.descendants(matching: .any)["settings-section-bar"].waitForExistence(timeout: 3))
+        let helpChip = app.buttons["settings-section-chip-help"]
+        XCTAssertTrue(helpChip.waitForExistence(timeout: 3))
+        helpChip.tap()
+        XCTAssertTrue(helpChip.isSelected)
         let howToUse = app.staticTexts["How to Use"]
-        XCTAssertTrue(howToUse.waitForExistence(timeout: 5))
+        let howToUseHittable = expectation(
+            for: NSPredicate(format: "isHittable == true"),
+            evaluatedWith: howToUse
+        )
+        wait(for: [howToUseHittable], timeout: 3)
         howToUse.tap()
-        XCTAssertTrue(app.staticTexts["Siri & Shortcuts"].waitForExistence(timeout: 3))
+        let search = app.searchFields["Search screens and controls"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap()
+        search.typeText("thinking")
+        XCTAssertTrue(app.staticTexts["Set thinking effort"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Auto uses that model or engine’s default")).firstMatch.exists)
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() }
         app.navigationBars["How to Use"].buttons["Settings"].tap()
-        let roadmap = app.staticTexts["Features & Roadmap"]
-        XCTAssertTrue(roadmap.waitForExistence(timeout: 3))
-        roadmap.tap()
-        XCTAssertTrue(app.staticTexts["Magican Active"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["Features & Roadmap"].exists)
+
+        // Settings search: a setting that moved to the web Settings leads to
+        // the shared-settings row; nonsense offers to search there instead.
+        let settingsSearch = app.searchFields["Search settings"]
+        XCTAssertTrue(settingsSearch.waitForExistence(timeout: 3))
+        settingsSearch.tap()
+        settingsSearch.typeText("budget")
+        let webSettings = app.descendants(matching: .any)["settings-web-settings"]
+        XCTAssertTrue(webSettings.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["How to Use"].exists)
+        // Only the top row matches, so no section has a chip and the bar hides.
+        XCTAssertFalse(app.buttons["settings-section-chip-help"].exists)
+        settingsSearch.typeText("zzqx")
+        XCTAssertTrue(app.descendants(matching: .any)["settings-search-no-match"].waitForExistence(timeout: 3))
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() }
     }
 
     func testThinkingMapSupportsBranchSelectionViewsAndLocalContinuation() {
@@ -978,6 +1047,8 @@ final class MagiosUITests: XCTestCase {
         let card = element("today-deck-card", in: app)
         scrollUntilHittable(card, in: app)
         XCTAssertEqual(card.value as? String, "followup:message-1")
+        XCTAssertTrue(card.label.contains("Received"), "Deck includes the source receipt date")
+        XCTAssertTrue(card.label.contains("FOR YOU"))
         card.tap()
         XCTAssertTrue(app.navigationBars["Follow-up"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["channel-detail-snooze"].exists)
@@ -992,17 +1063,18 @@ final class MagiosUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["today-broadsheet-range"].label, "1–2 of 2")
         XCTAssertFalse(app.buttons["today-broadsheet-next"].isEnabled)
         app.buttons["today-broadsheet-tab-worth"].tap()
-        let actions = app.buttons["today-resurfacing-actions-resurface-1"]
-        scrollUntilHittable(actions, in: app)
-        actions.tap()
-        XCTAssertTrue(app.navigationBars["Worth a look actions"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["worth-actions-open-detail-resurface-1"].exists)
-        XCTAssertTrue(app.buttons["worth-actions-capability-create_task-resurface-1"].exists)
-        XCTAssertTrue(app.buttons["worth-actions-mark-useful-resurface-1"].exists)
-        XCTAssertTrue(app.buttons["worth-actions-acknowledge-resurface-1"].exists)
-        XCTAssertTrue(app.buttons["worth-actions-dismiss-resurface-1"].exists)
-        XCTAssertTrue(element("worth-actions-dismiss-reason-resurface-1", in: app).exists)
-        app.navigationBars["Worth a look actions"].buttons["Done"].tap()
+        // The broadsheet row's ⚡ Act menu matches the deck's.
+        let act = app.buttons["today-resurfacing-act-resurface-1"]
+        scrollUntilHittable(act, in: app)
+        XCTAssertTrue(app.buttons["today-resurfacing-resurface-1"].label.contains("Surfaced "))
+        XCTAssertTrue(element("today-resurfacing-dismiss-reason-resurface-1", in: app).exists)
+        act.tap()
+        XCTAssertTrue(app.buttons["today-resurfacing-act-resurface-1-open"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["today-resurfacing-act-resurface-1-capability-create_task"].exists)
+        app.buttons["today-resurfacing-act-resurface-1-details"].tap()
+        XCTAssertTrue(app.staticTexts["Structured brief"].waitForExistence(timeout: 3))
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["today-resurfacing-resurface-1"].waitForExistence(timeout: 3))
         app.buttons["today-resurfacing-resurface-1"].tap()
         XCTAssertTrue(app.staticTexts["Structured brief"].waitForExistence(timeout: 3))
         app.buttons["Done"].tap()
@@ -1033,7 +1105,7 @@ final class MagiosUITests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 5))
         scrollUntilHittable(card, in: app)
         XCTAssertTrue(app.buttons["today-deck-useful"].exists)
-        XCTAssertTrue(app.buttons["today-deck-primary"].exists)
+        XCTAssertTrue(app.buttons["today-deck-act"].exists)
 
         // Below the 95pt threshold the card springs back — no commit, no sheet.
         let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -1132,10 +1204,10 @@ final class MagiosUITests: XCTestCase {
 
         revealSwipeRail(card, byPoints: -140)
 
-        // Probe detail-SPECIFIC content ("Do it" lives only in the opened
+        // Probe detail-SPECIFIC content ("Start follow-up task…" lives only in the opened
         // follow-up sheet): a bare "Done" button match can exist offscreen in
         // unrelated chrome and false-positive this check.
-        XCTAssertFalse(app.buttons["Do it"].exists, "A swipe release must not open the card detail")
+        XCTAssertFalse(app.buttons["Start follow-up task…"].exists, "A swipe release must not open the card detail")
         XCTAssertTrue(dismiss.waitForExistence(timeout: 3))
         XCTAssertTrue(dismiss.isHittable)
         XCTAssertFalse(app.buttons["today-swipe-snooze-follow-1"].isHittable)
@@ -1228,42 +1300,72 @@ final class MagiosUITests: XCTestCase {
 
         // Light: switch inside the sheet, crop the section label there, then
         // dismiss and crop the (unselected) tab. The appearance control is the
-        // System / Day / Night segmented picker in the Appearance section.
+        // themed System / Day / Night segment in the Appearance section.
         var appearanceLabel = openAppearanceSettings()
-        let light = app.segmentedControls.buttons["Day"]
+        let light = app.buttons["Day"]
         XCTAssertTrue(light.waitForExistence(timeout: 3))
         light.tap()
         expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: light)
         waitForExpectations(timeout: 3)
+        // The sheet's own navigation bar must repaint in place — a sheet bar
+        // resolves its toolbar preferences once per presentation, which used to
+        // leave it on the pre-switch palette until a relaunch.
+        let lightSheetBar = app.navigationBars["Themes"]
+        XCTAssertTrue(lightSheetBar.waitForExistence(timeout: 3))
+        Thread.sleep(forTimeInterval: 0.5)
         let lightShot = app.screenshot()
         let lightLabelImage = try croppedImage(of: appearanceLabel, from: lightShot.image, appFrame: app.frame)
         let lightContrast = try textContrast(in: lightLabelImage, lightText: false)
+        let lightSheetBarMean = try meanLuminance(in: croppedImage(of: lightSheetBar, from: lightShot.image, appFrame: app.frame))
         keep(XCTAttachment(screenshot: lightShot), named: "light-full")
         dismissSettings()
         let lightTabShot = app.screenshot()
         let lightTabImage = try croppedImage(of: unselectedTab, from: lightTabShot.image, appFrame: app.frame)
         let lightTabContrast = try textContrast(in: lightTabImage, lightText: false)
+        // The Attention tab's bar was detached while the flip happened on Chat;
+        // visiting it now must show the new palette without a relaunch.
+        app.tabBars.buttons["Attention"].tap()
+        let lightAttentionBar = app.navigationBars["Attention"]
+        XCTAssertTrue(lightAttentionBar.waitForExistence(timeout: 5))
+        let lightAttentionMean = try meanLuminance(in: croppedImage(
+            of: lightAttentionBar, from: app.screenshot().image, appFrame: app.frame))
 
-        // Dark: same cycle.
+        // Dark: same cycle, opened from Attention so the flip covers both a
+        // selected-tab bar (Attention, in place) and the sheet's bar again.
         appearanceLabel = openAppearanceSettings()
-        let dark = app.segmentedControls.buttons["Night"]
+        let dark = app.buttons["Night"]
         XCTAssertTrue(dark.waitForExistence(timeout: 3))
         dark.tap()
         expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: dark)
         waitForExpectations(timeout: 3)
+        Thread.sleep(forTimeInterval: 0.5)
         let darkShot = app.screenshot()
         let darkLabelImage = try croppedImage(of: appearanceLabel, from: darkShot.image, appFrame: app.frame)
         let darkContrast = try textContrast(in: darkLabelImage, lightText: true)
+        let darkSheetBarMean = try meanLuminance(in: croppedImage(
+            of: app.navigationBars["Themes"], from: darkShot.image, appFrame: app.frame))
         keep(XCTAttachment(screenshot: darkShot), named: "dark-full")
         dismissSettings()
         let darkTabShot = app.screenshot()
         let darkTabImage = try croppedImage(of: unselectedTab, from: darkTabShot.image, appFrame: app.frame)
         let darkTabContrast = try textContrast(in: darkTabImage, lightText: true)
+        let darkAttentionMean = try meanLuminance(in: croppedImage(
+            of: app.navigationBars["Attention"], from: app.screenshot().image, appFrame: app.frame))
 
         XCTAssertGreaterThan(lightContrast, 0.18, "Light mode should render dark text against its light row")
         XCTAssertGreaterThan(darkContrast, 0.18, "Dark mode should render light text against its dark row immediately")
         XCTAssertGreaterThan(lightTabContrast, 0.12, "Light tab text and icons should contrast")
         XCTAssertGreaterThan(darkTabContrast, 0.12, "Dark tab text and icons should refresh immediately")
+        // Bar chrome follows the live flip: the sheet's bar in place, and a
+        // background tab's bar on first re-visit. Every family's day variant is
+        // a light background and its night variant a dark one, so the day→night
+        // drop is large regardless of which family is saved on the device.
+        XCTAssertGreaterThan(
+            lightSheetBarMean - darkSheetBarMean, 0.3,
+            "The Themes sheet's navigation bar should repaint from the day to the night palette without a relaunch")
+        XCTAssertGreaterThan(
+            lightAttentionMean - darkAttentionMean, 0.3,
+            "The Attention tab's navigation bar should show the flipped palette when visited, without a relaunch")
     }
 
     private func keep(_ attachment: XCTAttachment, named name: String) {
@@ -1333,6 +1435,42 @@ final class MagiosUITests: XCTestCase {
         return lightText ? high - middle : middle - low
     }
 
+    /// Mean Rec. 601 luma of a cropped region (every 4th pixel). Bar chrome is a
+    /// flat band with sparse text, where the text-contrast quantiles are too
+    /// noisy — the day/night backgrounds sit far apart, so the mean separates
+    /// them for every family.
+    private func meanLuminance(in image: UIImage) throws -> Double {
+        guard let cgImage = image.cgImage else {
+            throw XCTSkip("Screenshot did not provide a CGImage")
+        }
+        let width = cgImage.width
+        let height = cgImage.height
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &rgba,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw XCTSkip("Could not create screenshot sampling context")
+        }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        var total = 0.0
+        var sampled = 0.0
+        for offset in stride(from: 0, to: rgba.count - 3, by: 16) {
+            let red = Double(rgba[offset]) / 255.0
+            let green = Double(rgba[offset + 1]) / 255.0
+            let blue = Double(rgba[offset + 2]) / 255.0
+            total += (0.299 * red) + (0.587 * green) + (0.114 * blue)
+            sampled += 1
+        }
+        guard sampled > 0 else { throw XCTSkip("Screenshot contained no pixels") }
+        return total / sampled
+    }
+
     private func button(containing text: String, in app: XCUIApplication) -> XCUIElement {
         app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@", text)).firstMatch
     }
@@ -1381,8 +1519,11 @@ final class MagiosLiveConcurrentVoiceUITests: XCTestCase {
         XCTAssertTrue(newSession.waitForExistence(timeout: 5)); newSession.tap()
         let voice = app.buttons["chat-mic"]
         if voice.waitForExistence(timeout: 2) { voice.tap() }
-        let settings = app.buttons["voice-settings-session"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 10)); settings.tap()
+        let modeSelector = app.buttons["voice-mode-selector"]
+        XCTAssertTrue(modeSelector.waitForExistence(timeout: 10)); modeSelector.tap()
+        let settings = app.buttons["voice-mode-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 3)); settings.tap()
+        app.buttons["voice-settings-tab-session"].tap()
         let wasOpenMic = app.buttons["Open mic"].isSelected
         app.buttons["Hold to talk"].tap()
         app.buttons["voice-settings-start-call"].tap()
@@ -1572,5 +1713,210 @@ final class MagiosLiveConcurrentVoiceUITests: XCTestCase {
         let answered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == 'Answered'"), object: summary)
         XCTAssertEqual(XCTWaiter.wait(for: [answered], timeout: 90), .completed, "Completion must follow actual playback")
         #endif
+    }
+}
+
+/// Live Programs acceptance on a physical iPhone against an explicitly named
+/// test host: owner program editing over the paired-device credential, the
+/// structured approval card for a pending `propose_program_revision`, and the
+/// focus-area Shared documents picker. Each part runs only when its fixture
+/// fields are present; the harness checks the server side of every step.
+final class MagiosLiveProgramsUITests: XCTestCase {
+    private func shot(_ app: XCUIApplication, _ name: String) {
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = name
+        image.lifetime = .keepAlways
+        add(image)
+    }
+
+    func testProgramsEditApprovalCardAndSharedDocuments() throws {
+        let env = ProcessInfo.processInfo.environment
+        let expectedHost = env["MAGIOS_LIVE_TEST_HOST"] ?? ""
+        let raw = env["MAGIOS_LIVE_PROGRAMS_FIXTURE_JSON"] ?? ""
+        try XCTSkipIf(expectedHost.isEmpty || raw.isEmpty, "Requires an explicitly selected test host and a programs fixture")
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Live programs acceptance requires a physical phone")
+        #else
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: String])
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        defer { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Attention"].waitForExistence(timeout: 20))
+        app.buttons["Menu"].firstMatch.tap()
+        app.buttons["Settings"].tap()
+        let host = app.staticTexts[expectedHost].firstMatch
+        for _ in 0..<12 where !host.exists { app.swipeUp() }
+        XCTAssertTrue(host.exists, "Refusing to edit programs on an unexpected host")
+        app.terminate()
+        app.launch()
+
+        // 1. Owner edit: append a marker line and save over the paired credential.
+        if let program = fixture["program"], let marker = fixture["marker"] {
+            app.tabBars.buttons["Work"].tap()
+            XCTAssertTrue(app.buttons["work-more"].waitForExistence(timeout: 20))
+            app.buttons["work-more"].tap(); app.buttons["Programs"].tap()
+            let row = app.buttons["work-program-\(program)"]
+            for _ in 0..<10 where !row.exists { app.swipeUp() }
+            XCTAssertTrue(row.waitForExistence(timeout: 20)); row.tap()
+            let edit = app.buttons["work-program-edit"]
+            XCTAssertTrue(edit.waitForExistence(timeout: 20)); edit.tap()
+            let editor = app.textViews["work-program-editor"]
+            XCTAssertTrue(editor.waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["work-program-save"].isEnabled, "Save stays disabled until the draft changes")
+            // Put the caret after the last line (the fixture document is short).
+            for _ in 0..<3 { editor.swipeUp() }
+            editor.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.97)).tap()
+            editor.typeText("\n\(marker)\n")
+            shot(app, "live-iPhone-program-editing")
+            let save = app.buttons["work-program-save"]
+            for _ in 0..<6 where !save.isHittable { app.swipeUp() }
+            XCTAssertTrue(save.isEnabled); save.tap()
+            XCTAssertTrue(editor.waitForNonExistence(timeout: 30), "A successful save leaves edit mode")
+            XCTAssertFalse(app.staticTexts["work-program-save-error"].exists, "The owner's paired phone must be allowed to save")
+            print("MAGIOS_PROGRAM_SAVED \(program) \(marker)")
+            shot(app, "live-iPhone-program-saved")
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+
+        // 2a. Start the agent that will propose a revision ("Run once").
+        if let agent = fixture["trigger_agent"] {
+            app.tabBars.buttons["Work"].tap()
+            XCTAssertTrue(app.buttons["work-view-crew"].waitForExistence(timeout: 20))
+            app.buttons["work-view-crew"].tap()
+            let crew = app.buttons["work-crew-\(agent)"]
+            for _ in 0..<10 where !crew.exists { app.swipeUp() }
+            XCTAssertTrue(crew.waitForExistence(timeout: 20)); crew.tap()
+            // "Actions" sits near the top of the detail; scroll back up to it.
+            let actions = app.buttons["Actions"].firstMatch
+            XCTAssertTrue(actions.waitForExistence(timeout: 20))
+            for _ in 0..<6 where !actions.isHittable { app.swipeDown() }
+            XCTAssertTrue(actions.isHittable); actions.tap()
+            XCTAssertTrue(app.buttons["Run once"].waitForExistence(timeout: 5)); app.buttons["Run once"].tap()
+            let confirm = app.buttons.matching(NSPredicate(format: "label == %@", "Run once")).firstMatch
+            if confirm.waitForExistence(timeout: 5) { confirm.tap() }
+            print("MAGIOS_AGENT_TRIGGERED \(agent)")
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+
+        // 2. Approval card for a pending program revision.
+        if let title = fixture["approval_title"] {
+            let attention = app.tabBars.buttons["Attention"]
+            attention.tap()
+            let pending = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", title)).firstMatch
+            XCTAssertTrue(pending.waitForExistence(timeout: 360), "The pending revision must appear with its preview title")
+            pending.tap()
+            let card = app.otherElements["approval-preview"].firstMatch
+            XCTAssertTrue(card.waitForExistence(timeout: 10) || app.staticTexts[title].exists, "The structured approval card must render")
+            // The shared diff view renders hunk headers as text; match what the owner sees.
+            let hunk = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "@@ -")).firstMatch
+            XCTAssertTrue(hunk.waitForExistence(timeout: 5), "The line diff must render")
+            if let added = fixture["approval_added_text"] {
+                XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", added)).firstMatch.exists, "The added line must show in the diff")
+            }
+            if let why = fixture["approval_why"] {
+                XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", why)).firstMatch.exists, "The agent's reason must render")
+            }
+            shot(app, "live-iPhone-approval-card")
+            let raw = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Raw call")).firstMatch
+            for _ in 0..<8 where !raw.isHittable { app.swipeUp() }
+            XCTAssertTrue(raw.exists, "The raw call stays available, collapsed")
+            raw.tap()
+            shot(app, "live-iPhone-approval-raw-call")
+            if let decision = fixture["approval_decision_label"] {
+                let button = app.buttons[decision].firstMatch
+                for _ in 0..<8 where !button.isHittable { app.swipeUp() }
+                XCTAssertTrue(button.isHittable); button.tap()
+                XCTAssertTrue(pending.waitForNonExistence(timeout: 30), "The answered approval leaves Attention")
+                print("MAGIOS_APPROVAL_ANSWERED \(decision)")
+            } else {
+                app.swipeDown(velocity: .fast)
+            }
+        }
+
+        // 3. Shared documents picker renders on a crew member's focus area.
+        if let agent = fixture["crew_agent"] {
+            app.tabBars.buttons["Work"].tap()
+            XCTAssertTrue(app.buttons["work-view-crew"].waitForExistence(timeout: 20))
+            app.buttons["work-view-crew"].tap()
+            let crew = app.buttons["work-crew-\(agent)"]
+            for _ in 0..<10 where !crew.exists { app.swipeUp() }
+            XCTAssertTrue(crew.waitForExistence(timeout: 20)); crew.tap()
+            let definition = app.buttons["Definition, rules and model pins"]
+            for _ in 0..<8 where !definition.isHittable { app.swipeUp() }
+            definition.tap()
+            let edit = app.buttons["Edit definition"]
+            for _ in 0..<8 where !edit.isHittable { app.swipeUp() }
+            edit.tap()
+            // Each focus area is a collapsed row named after the area; open it.
+            if let focus = fixture["crew_focus"] {
+                let row = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", focus)).firstMatch
+                for _ in 0..<20 where !row.isHittable { app.swipeUp() }
+                XCTAssertTrue(row.isHittable, "The focus area row must show"); row.tap()
+            }
+            let picker = app.descendants(matching: .any)["work-focus-shared-mode"].firstMatch
+            let heading = app.staticTexts["Shared documents"].firstMatch
+            for _ in 0..<25 where !(picker.isHittable || heading.isHittable) { app.swipeUp() }
+            XCTAssertTrue(picker.exists || heading.exists, "Each focus area offers a Shared documents choice")
+            shot(app, "live-iPhone-shared-documents")
+            app.buttons["Cancel"].firstMatch.tap()
+        }
+        #endif
+    }
+}
+
+/// Explicitly gated acceptance on an enrolled phone and a caller-created QA run.
+final class MagiosLiveVibeDevUITests: XCTestCase {
+    func testHistoryComposerAndOriginalFolderApproval() throws {
+        let env = ProcessInfo.processInfo.environment
+        let runID = env["MAGIOS_LIVE_VIBEDEV_RUN"] ?? ""
+        try XCTSkipIf(env["MAGIOS_LIVE_VIBEDEV"] != "1" || runID.isEmpty,
+                      "Requires an explicit original-folder QA run on an enrolled iPhone")
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Live VibeDev acceptance requires a physical iPhone")
+        #else
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        defer { app.terminate() }
+        app.launch()
+        XCTAssertTrue(app.buttons["Menu"].firstMatch.waitForExistence(timeout: 20))
+        app.buttons["Menu"].firstMatch.tap()
+        app.buttons["VibeDev"].firstMatch.tap()
+        let row = app.buttons["vibedev-run-\(runID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 30), "The admitted run must appear in server-paged history")
+        XCTAssertFalse(app.buttons["Now"].exists)
+        XCTAssertTrue(app.buttons["New project"].exists)
+        let newRun = app.buttons["New run"].firstMatch
+        XCTAssertTrue(newRun.exists, "History opens a dedicated new-run composer")
+        newRun.tap()
+        XCTAssertTrue(app.buttons["Engine, model and thinking"].waitForExistence(timeout: 10))
+        attach(app, name: "vibedev-shared-chat-composer")
+        XCTAssertFalse(app.buttons["Run options"].exists, "Run settings are available directly in the composer")
+        XCTAssertTrue(app.buttons["BUILD"].exists)
+        XCTAssertTrue(app.buttons["DISCUSS"].exists)
+        XCTAssertTrue(app.buttons["AUTOPILOT"].exists)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)))
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        if env["MAGIOS_LIVE_VIBEDEV_EXPECT_APPROVAL"] == "0" {
+            attach(app, name: "vibedev-run-detail")
+            return
+        }
+        let allow = app.buttons["Allow once"].firstMatch
+        XCTAssertTrue(allow.waitForExistence(timeout: 20), "Original-folder approval must be available in the run")
+        attach(app, name: "vibedev-original-folder-exact-diff")
+        if env["MAGIOS_LIVE_VIBEDEV_ALLOW_ONCE"] == "1" {
+            if !allow.isHittable { app.swipeUp() }
+            allow.tap()
+        }
+        #endif
+    }
+
+    private func attach(_ app: XCUIApplication, name: String) {
+        let evidence = XCTAttachment(screenshot: app.screenshot())
+        evidence.name = name
+        evidence.lifetime = .keepAlways
+        add(evidence)
     }
 }

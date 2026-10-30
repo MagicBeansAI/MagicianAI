@@ -52,7 +52,7 @@ use magician::magician_v2::execution::coding_engine::{
 use magician::magician_v2::execution::interactive_process as ip;
 use magician::magician_v2::runtime_settings::{
     read_env_file_values, runtime_settings_paths, sync_process_env_from_file, update_env_file,
-    write_top_level_yaml_block, yaml_string, RuntimeSettingsPaths,
+    write_yaml_section_seeded, RuntimeSettingsPaths,
 };
 use magician::magician_v2::secrets::{
     SecretAuditEvent, SecretRef, SecretStoreError, SecretStoreResolver,
@@ -69,12 +69,12 @@ pub use magician::magician_v2::vibedev::projects::{
     vibedev_project_session_is_open, vibedev_project_store_path, vibedev_sessions_by_id,
     ProjectStoreEdit, VibeDevDeploymentRecord, VibeDevEpisodeProjectResolver,
     VibeDevProjectPointer, VibeDevProjectRecord, VibeDevProjectResolution, VibeDevProjectStore,
-    VIBEDEV_THREAD_ID,
+    VibeDevProjectTrust, VIBEDEV_THREAD_ID,
 };
 use magician::magician_v2::vibedev::run_service::{
-    coding_choice_from_client_fields, vibedev_run_task_tags, ClientVibeDevCodingChoice,
-    StartVibeDevBuild, VibeDevCockpitRun, VibeDevCodingCatalog, VibeDevRunAttachment,
-    VibeDevRunStartError, VIBEDEV_RUN_SCHEDULED_EXECUTION_ID,
+    coding_choice_from_client, vibedev_run_task_tags, ClientVibeDevCodingChoice, StartVibeDevBuild,
+    VibeDevCockpitRun, VibeDevCodingCatalog, VibeDevRunAttachment, VibeDevRunStartError,
+    VIBEDEV_RUN_SCHEDULED_EXECUTION_ID,
 };
 use magician_media::dev_server::{
     detect_check_commands, detect_deploy_target, detect_dev_command, detect_project_kind,
@@ -428,6 +428,9 @@ pub struct VibeDevProjectResponse {
     pub repo_absolute_path: String,
     pub chat_session_status: String,
     pub deploy_targets: Vec<VibeDevDeployTargetView>,
+    /// `{status: ok|warning|error, issues: [{code, severity, message}]}`: what
+    /// the project panel shows, and what refuses a run (`error` issues).
+    pub health: magician::magician_v2::vibedev::projects::ProjectHealth,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -624,10 +627,13 @@ pub async fn put_vibedev_deploy_settings_handler(
             }));
         },
     };
+    let before = config.vibedev_deploy.clone();
     config.vibedev_deploy = cloudflare_pages_deploy_config(update.enabled, config.vibedev_deploy);
-    if let Err(error) =
-        write_vibedev_deploy_config_block(&runtime_paths.config_path, &config.vibedev_deploy)
-    {
+    if let Err(error) = write_vibedev_deploy_config_change(
+        &runtime_paths.config_path,
+        &before,
+        &config.vibedev_deploy,
+    ) {
         return internal_error(
             "vibedev_deploy_settings_config_write_failed",
             error.to_string(),
@@ -977,7 +983,7 @@ pub async fn update_vibedev_project_handler(
             {
                 return HttpResponse::BadRequest().json(json!({
                     "error": "vibedev_project_not_trustable",
-                    "message": message,
+                    "message": message.to_string(),
                 }));
             }
         }
@@ -1184,16 +1190,11 @@ pub struct StartVibeDevRunRequest {
     /// `magician.vibedev.costBudgetUsd`.
     #[serde(default)]
     pub cost_budget_usd: Option<f64>,
-    /// The composer's selected coding profile. Becomes the request's
-    /// [`VibeDevCodingChoice::Profile`], which is both the escalation floor in
-    /// the prose and part of the idempotency digest — so the same key with a
-    /// different engine conflicts rather than silently swapping.
-    #[serde(default)]
-    pub coding_profile_id: Option<String>,
-    /// Preferred wire form: `{"kind":"auto"}` or
-    /// `{"kind":"profile","profile_id":"…"}`. When present this wins over
-    /// `coding_profile_id`.
-    #[serde(default)]
+    /// `{"kind":"auto"}` or an explicit engine, model_id and thinking choice.
+    #[serde(
+        default,
+        deserialize_with = "crate::coding_model_selection::deserialize_optional_choice"
+    )]
     pub coding_choice: Option<ClientVibeDevCodingChoice>,
     /// The crew this run is a lane of, when the caller runs several runs at
     /// one goal (`normalize_crew_lane`). Recorded on the project's `run_links`.
@@ -1237,6 +1238,22 @@ pub struct StartVibeDevRunResponse {
     pub replayed: bool,
 }
 
+/// Whether `req` carries a person's login session (a `mag_` session bearer
+/// the middleware resolved to an identity). Only such a request records a
+/// VibeDev run as owner-started, which makes it act as the goal workspace
+/// admin: the open-mode bootstrap scope, a `mag_pat_` API token (scripts and
+/// automation hold those), a runtime-minted bot token, a terminal grant and
+/// a paired device do not.
+fn owner_started_request(req: &HttpRequest) -> bool {
+    magician::magician_v2::auth::middleware::authenticated(req).is_some_and(|stamped| {
+        stamped.identity_name.is_some()
+            && matches!(
+                stamped.bearer,
+                magician::magician_v2::auth::BearerKind::Session(_)
+            )
+    })
+}
+
 /// `POST /api/magician/v2/vibedev/runs` — the cockpit's entry to
 /// `VibeDevRunService::start_build`.
 ///
@@ -1272,6 +1289,7 @@ pub async fn start_vibedev_run_handler(
         Ok(scope) => scope,
         Err(response) => return response,
     };
+    let outward_source = crate::task_api_v3::owner_task_outward_source(&req, &scope).await;
     let prompt = body.prompt.trim();
     if prompt.is_empty() {
         return HttpResponse::BadRequest().json(json!({
@@ -1300,6 +1318,15 @@ pub async fn start_vibedev_run_handler(
             "project_id": body.project_id
         }));
     };
+    let health = magician::magician_v2::vibedev::projects::project_health(&project);
+    if let Some(message) = health.blocking_reason(&project.name) {
+        return HttpResponse::Conflict().json(json!({
+            "error": "vibedev_project_unhealthy",
+            "project_id": body.project_id,
+            "message": message,
+            "health": health,
+        }));
+    }
 
     // The owner rule, through the same helper `POST /v3/tasks` calls — one copy,
     // so swapping `coding.lead_agent_id` moves the cockpit and the rail together.
@@ -1389,19 +1416,9 @@ pub async fn start_vibedev_run_handler(
         project: project.clone(),
         request: prompt.to_string(),
         mode,
-        // Line breaks are stripped at the boundary, not at the one place this
-        // is interpolated today. `coding_profile_id` is client-supplied and
-        // unvalidated — there is no allowlist — and it reaches the description
-        // through the escalation-policy line, *below* the fence. A newline
-        // there forges a control line exactly as an attachment label would.
-        // Normalising here means the value that is stored, digested and
-        // rendered is the same safe one.
-        coding_choice: coding_choice_from_client_fields(
-            body.coding_choice.clone(),
-            body.coding_profile_id.as_deref(),
-        ),
-        coding_catalog: VibeDevCodingCatalog::from_coding_settings(
-            &resources.get_ref().magician_config_snapshot().coding,
+        coding_choice: coding_choice_from_client(body.coding_choice.clone()),
+        coding_catalog: VibeDevCodingCatalog::from_config(
+            &resources.get_ref().magician_config_snapshot(),
         ),
         cockpit: Some(VibeDevCockpitRun {
             parent_task_id: body.parent_task_id.clone(),
@@ -1451,20 +1468,38 @@ pub async fn start_vibedev_run_handler(
             Some(magician::magician_v2::vibedev::dispatch_intent::VibeDevCodingChoice::Auto)
             | None => input.coding_catalog.default_profile_id.as_str(),
         };
-        if profile_id != "coding-balanced" && profile_id != "coding-premium" {
+        if !coding_profile_accepts_images(
+            &resources.get_ref().magician_config_snapshot(),
+            Some(profile_id),
+        ) {
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "vision_profile_required",
-                "message": format!("A coding-balanced or coding-premium profile is required to process image attachments or external URLs. Cannot use {}", profile_id)
+                "message": "Choose a model that supports images to process image attachments or external URLs."
             }));
         }
     }
 
     let service = Arc::clone(&api.artifact_v2_service);
     let dispatch_scope = scope.clone();
-    let admission = magician::magician_v2::vibedev::run_service::VibeDevRunService::new(
+    let owner_started = owner_started_request(&req);
+    let run_service = magician::magician_v2::vibedev::run_service::VibeDevRunService::new(
         Arc::clone(&api.artifact_v2_service),
-    )
-    .start_build(input, move |task_id| async move {
+    );
+    let admission = magician::magician_v2::agents::outward_policy::with_source(
+        outward_source,
+        run_service.start_build(input, move |task_id| async move {
+        // An owner-started VibeDev session acts as the admin for goal
+        // workspace access (owner decision 2026-10-20); recorded here, and
+        // only when a person's login session made the request
+        // (`owner_started_request`), never the open-mode bootstrap scope, an
+        // API token, a bot or a terminal grant.
+        if owner_started {
+            magician::magician_v2::execution::goal_workspace_access::record_owner_started_vibedev_task(
+                dispatch_scope.principal(),
+                dispatch_scope.workspace(),
+                &task_id,
+            );
+        }
         if scheduled {
             // A scheduled run fires on its cron. Returning without dispatching
             // is what `submit.ts` did by skipping `executeTask`, and it settles
@@ -1476,7 +1511,8 @@ pub async fn start_vibedev_run_handler(
             .await
             .map(|(_task, execution)| execution.state.execution_id)
             .map_err(|error| error.to_string())
-    })
+        }),
+    )
     .await;
 
     match admission {
@@ -1531,6 +1567,19 @@ pub async fn start_vibedev_run_handler(
             internal_error("start_vibedev_run_failed", reason)
         },
     }
+}
+
+/// Match image admission to the same resolved capability shown by the picker.
+/// Generated catalog handles and saved model choices use one capability rule.
+pub fn coding_profile_accepts_images(
+    config: &magician::config::MagicianConfig,
+    profile_id: Option<&str>,
+) -> bool {
+    config
+        .resolve_coding_profile(profile_id)
+        .ok()
+        .flatten()
+        .is_some_and(|profile| profile.supports_user_image_inputs)
 }
 
 /// The body of the `202` above.
@@ -1734,6 +1783,26 @@ pub struct CitizenPreviewUrlRequest {
     pub project_id: Option<String>,
 }
 
+/// The token's server-owned edit session selects the original folder and
+/// runtime identity. Neither may be supplied or widened by the caller.
+pub async fn citizen_edit_original_handler(
+    req: HttpRequest,
+    body: web::Json<coding_engine::original_edits::EditRequest>,
+) -> impl Responder {
+    if let Err(response) = authorize_citizen(&req, "edit_original").await {
+        return response;
+    }
+    let Some(token) = citizen_bearer_token(&req) else {
+        return HttpResponse::Unauthorized().finish();
+    };
+    match coding_engine::original_edits::edit(&token, body.into_inner()).await {
+        Ok(value) => HttpResponse::Ok().json(value),
+        Err(error) => {
+            HttpResponse::Conflict().json(json!({"ok":false, "reason":error.to_string()}))
+        },
+    }
+}
+
 /// `POST /api/magician/v2/vibedev/citizen/preview_url` — the M6 Citizen API.
 ///
 /// Called by the Magician Citizen Pi extension (NOT the cockpit): authenticated
@@ -1823,6 +1892,19 @@ async fn authorize_citizen(
             "reason": "missing or malformed Authorization: Bearer token",
         }))
     })?;
+    // A citizen token bound to its coding run's loopback channel is refused
+    // anywhere else (`plane::grant_channel`), so one read from another
+    // process's environment is useless to it.
+    if !magician::magician_v2::execution::plane::grant_channel::admits(
+        &token,
+        req.peer_addr(),
+        Some(req.app_config().local_addr().port()),
+    ) {
+        return Err(HttpResponse::Unauthorized().json(json!({
+            "ok": false,
+            "reason": "this citizen token is not valid on this connection",
+        })));
+    }
     let grant = citizen::citizen_token_registry()
         .resolve(&token)
         .await
@@ -2470,7 +2552,23 @@ pub async fn start_vibedev_preview_handler(
         .artifact_v2_service
         .workspace()
         .scope_root(&scope.principal(), &scope.workspace());
-    let shadow_root = coding_engine::coding_shadow_root(&scope_root, &binding.real_path);
+    let pinned_original = match project.active_root_task_id.as_deref() {
+        Some(id) => match magician::magician_v2::vibedev::original_workspace::for_task(
+            &scope_root,
+            &project,
+            id,
+        ) {
+            Ok(run) => run.map(|run| run.repo),
+            Err(message) => {
+                return HttpResponse::Conflict()
+                    .json(json!({"error":"vibedev_original_location_failed", "message":message}))
+            },
+        },
+        None if project.trust == VibeDevProjectTrust::Original => Some(binding.real_path.clone()),
+        None => None,
+    };
+    let shadow_root = pinned_original
+        .unwrap_or_else(|| coding_engine::coding_shadow_root(&scope_root, &binding.real_path));
     if !shadow_root.exists() {
         // Serialize first-time shadow prepare against a concurrent same-repo coding run
         // (§13.3 #3); only taken on the create path. Re-check existence under the lock.
@@ -2655,10 +2753,96 @@ pub async fn control_vibedev_run_handler(
     }
 }
 
+/// `GET /vibedev/runs?limit=&cursor=` — chronological history across projects.
+pub async fn get_vibedev_runs_handler(
+    api: web::Data<VibeDevApi>,
+    req: HttpRequest,
+    query: web::Query<VibeDevProjectRunsQuery>,
+) -> impl Responder {
+    use magician::magician_v2::vibedev::live_runs;
+    let scope = match resolve_required_scope_ref(req.headers(), query.workspace.clone()) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    let store = match load_project_store(api.get_ref(), &scope).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let ids: std::collections::HashSet<String> = store
+        .projects
+        .iter()
+        .filter(|p| !p.archived)
+        .flat_map(|p| {
+            p.run_task_ids
+                .iter()
+                .chain(p.run_links.keys())
+                .chain(p.active_root_task_id.iter())
+        })
+        .cloned()
+        .collect();
+    let items = match api
+        .artifact_v2_service
+        .list_task_items_by_ids_archive_filtered(
+            &scope,
+            &ids.into_iter().collect::<Vec<_>>(),
+            ArchivedFilter::Exclude,
+        )
+        .await
+    {
+        Ok(items) => items,
+        Err(error) => {
+            return HttpResponse::InternalServerError().json(json!({
+                "error": "vibedev_runs_failed", "message": error.to_string()
+            }))
+        },
+    };
+    let pending = api.artifact_v2_service.pending_user_requests(&scope).await;
+    let mut runs = live_runs::history_runs(&store.projects, &items, &pending);
+    if let Some(cursor) = query.cursor.as_deref() {
+        let Some((at, id)) = cursor.split_once('|') else {
+            return HttpResponse::BadRequest().json(json!({"error": "invalid_cursor"}));
+        };
+        runs.retain(|r| (r.run.updated_at.as_str(), r.run.run_id.as_str()) < (at, id));
+    }
+    let limit = query.limit.unwrap_or(20).clamp(1, 50);
+    let has_more = runs.len() > limit;
+    runs.truncate(limit);
+    // On-disk admission records are authoritative for older runs too.
+    let scope_root = api
+        .artifact_v2_service
+        .workspace()
+        .scope_root(&scope.principal(), &scope.workspace());
+    for row in &mut runs {
+        if let Ok(Some(original)) =
+            magician::magician_v2::vibedev::original_workspace::load(&scope_root, &row.run.run_id)
+        {
+            row.work_location = VibeDevProjectTrust::Original;
+            row.repo_path = Some(original.repo.to_string_lossy().into_owned());
+        } else if let Some(trusted) =
+            magician::magician_v2::vibedev::trusted_workspace::load_run_workspace(
+                &scope_root,
+                &row.run.run_id,
+            )
+        {
+            row.work_location = VibeDevProjectTrust::Trusted;
+            row.repo_path = Some(trusted.real_repo.to_string_lossy().into_owned());
+        }
+    }
+    let next_cursor = has_more
+        .then(|| {
+            runs.last()
+                .map(|r| format!("{}|{}", r.run.updated_at, r.run.run_id))
+        })
+        .flatten();
+    HttpResponse::Ok().json(json!({"runs": runs, "has_more": has_more, "next_cursor": next_cursor}))
+}
+
 /// `GET /vibedev/runs/live?recent_minutes=` — across every open project, the
 /// runs that are going, waiting on the owner, or ended within the window, one
-/// state each (`vibedev::live_runs`). The notch and other at-a-glance
-/// surfaces poll this; `live_task_id` is the id `/runs/{id}/control` takes.
+/// state each (`vibedev::live_runs`), with `waiting_kind` (`diff_review` /
+/// `decision` / `notice`) and an acknowledge-only `notice` when one pends.
+/// The notch and other at-a-glance surfaces poll this; `live_task_id` is the
+/// id `/runs/{id}/control` takes.
 pub async fn get_vibedev_live_runs_handler(
     api: web::Data<VibeDevApi>,
     req: HttpRequest,
@@ -2674,11 +2858,9 @@ pub async fn get_vibedev_live_runs_handler(
         Ok(store) => store,
         Err(response) => return response,
     };
-    let waiting = api
-        .artifact_v2_service
-        .pending_user_request_task_ids(&scope)
-        .await;
-    let task_ids = live_runs::project_task_ids(&store.projects, &waiting);
+    let pending = api.artifact_v2_service.pending_user_requests(&scope).await;
+    let requests = live_runs::OwnerRequests::from_requests(pending.iter());
+    let task_ids = live_runs::project_task_ids(&store.projects, &requests.task_ids());
     let items = match api
         .artifact_v2_service
         .list_task_items_by_ids_archive_filtered(&scope, &task_ids, ArchivedFilter::Exclude)
@@ -2699,7 +2881,7 @@ pub async fn get_vibedev_live_runs_handler(
     let mut runs = live_runs::live_runs(
         &store.projects,
         &items,
-        &waiting,
+        &requests,
         chrono::Utc::now().timestamp_millis(),
         window_ms,
     );
@@ -3691,33 +3873,63 @@ pub async fn run_vibedev_check_handler(
             )
         })
         .filter(|run| run.project_id == project.project_id && run.workspace_dir.is_dir());
-    let (binding, shadow, cargo_target_dir) = match trusted_run.as_ref() {
-        Some(run) => {
-            let build_dir = match coding_engine::coding_build_dir(
-                &scope_root,
-                api.coding_build_dir_setting().as_deref(),
-            ) {
-                Ok(dir) => dir,
-                Err(message) => {
-                    return HttpResponse::BadRequest().json(json!({
-                        "error": "vibedev_build_dir_failed",
-                        "message": message
-                    }));
-                },
-            };
-            (None, run.workspace_dir.clone(), Some(build_dir))
+    let original = request
+        .as_ref()
+        .and_then(|r| r.task_id.as_deref())
+        .or(project.active_root_task_id.as_deref())
+        .map(|id| {
+            magician::magician_v2::vibedev::original_workspace::for_task(&scope_root, &project, id)
+        })
+        .transpose();
+    let original = match original {
+        Ok(run) => run.flatten(),
+        Err(message) => {
+            return HttpResponse::Conflict()
+                .json(json!({"error":"vibedev_original_location_failed", "message":message}))
         },
-        None => {
-            let binding = match project_binding(api.get_ref(), &scope, &project) {
-                Ok(binding) => binding,
-                Err(response) => return response,
-            };
-            let shadow = match project_shadow_root(api.get_ref(), &scope, &binding).await {
-                Ok(shadow) => shadow,
-                Err(response) => return response,
-            };
-            (Some(binding), shadow, None)
-        },
+    };
+    let (binding, shadow, cargo_target_dir) = if let Some(run) = original {
+        let build_dir = match coding_engine::coding_build_dir(
+            &scope_root,
+            api.coding_build_dir_setting().as_deref(),
+        ) {
+            Ok(dir) => dir,
+            Err(message) => {
+                return HttpResponse::BadRequest()
+                    .json(json!({"error":"vibedev_build_dir_failed", "message":message}))
+            },
+        };
+        (None, run.repo, Some(build_dir))
+    } else {
+        match trusted_run.as_ref() {
+            Some(run) => {
+                let build_dir = match coding_engine::coding_build_dir(
+                    &scope_root,
+                    api.coding_build_dir_setting().as_deref(),
+                ) {
+                    Ok(dir) => dir,
+                    Err(message) => {
+                        return HttpResponse::BadRequest().json(json!({
+                            "error": "vibedev_build_dir_failed",
+                            "message": message
+                        }));
+                    },
+                };
+                (None, run.workspace_dir.clone(), Some(build_dir))
+            },
+            None => {
+                let binding = match project_binding(api.get_ref(), &scope, &project) {
+                    Ok(binding) => binding,
+                    Err(response) => return response,
+                };
+                let shadow =
+                    match project_shadow_root(api.get_ref(), &scope, &project, &binding).await {
+                        Ok(shadow) => shadow,
+                        Err(response) => return response,
+                    };
+                (Some(binding), shadow, None)
+            },
+        }
     };
     let requested = request.and_then(|request| request.kind);
     // The project's build caches, for trusted clones and shadows alike: a
@@ -3842,7 +4054,7 @@ pub async fn deploy_vibedev_project_handler(
         Ok(binding) => binding,
         Err(response) => return response,
     };
-    let shadow = match project_shadow_root(api.get_ref(), &scope, &binding).await {
+    let shadow = match project_shadow_root(api.get_ref(), &scope, &project, &binding).await {
         Ok(shadow) => shadow,
         Err(response) => return response,
     };
@@ -4037,6 +4249,73 @@ pub async fn deploy_vibedev_project_handler(
 /// workspace root). Deliberately not [`project_binding`]: the coding binding
 /// fences the live Magician checkout, while a trusted project only ever
 /// clones from its repo and never binds it.
+/// `POST /vibedev/projects/{id}/git-init` — the project health action for a
+/// folder that is not a git repository: `git init` on the project's base branch
+/// (else `main`) plus one commit of its current files. Owner only (the
+/// terminal rule, like trusting the repo). Returns the project's new `health`.
+pub async fn git_init_vibedev_project_handler(
+    api: web::Data<VibeDevApi>,
+    req: HttpRequest,
+    path: web::Path<String>,
+    query: web::Query<VibeDevProjectsQuery>,
+    auth: Option<web::Data<magician::magician_v2::auth::middleware::AuthRuntime>>,
+) -> HttpResponse {
+    let scope = match resolve_required_scope_ref(req.headers(), query.workspace.clone()) {
+        Ok(scope) => scope,
+        Err(response) => return response,
+    };
+    if let Err(response) =
+        crate::interactive_process_api::require_terminal_operator(&req, auth.as_ref())
+    {
+        return response;
+    }
+    let project_id = path.into_inner();
+    let store = match load_project_store(api.get_ref(), &scope).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let Some(project) = store
+        .projects
+        .into_iter()
+        .find(|project| project.project_id == project_id)
+    else {
+        return HttpResponse::NotFound().json(json!({
+            "error": "vibedev_project_not_found",
+            "project_id": project_id
+        }));
+    };
+    let folder = trusted_project_repo_path(api.get_ref(), &scope, &project);
+    if !folder.is_dir() {
+        return HttpResponse::Conflict().json(json!({
+            "error": "vibedev_project_folder_missing",
+            "message": format!("`{}` does not exist, so it cannot become a git repository.", folder.display()),
+        }));
+    }
+    let branch = project
+        .base_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or("main")
+        .to_string();
+    let init_folder = folder.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        magician::magician_v2::vibedev::trusted_workspace::init_repository(&init_folder, &branch)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => HttpResponse::Ok().json(json!({
+            "project_id": project_id,
+            "health": magician::magician_v2::vibedev::projects::project_health(&project),
+        })),
+        Ok(Err(message)) => HttpResponse::Conflict().json(json!({
+            "error": "vibedev_git_init_failed",
+            "message": message,
+        })),
+        Err(error) => internal_error("vibedev_git_init_failed", error.to_string()),
+    }
+}
+
 fn trusted_project_repo_path(
     api: &VibeDevApi,
     scope: &ScopeRef,
@@ -4085,12 +4364,26 @@ fn project_binding(
 async fn project_shadow_root(
     api: &VibeDevApi,
     scope: &ScopeRef,
+    project: &VibeDevProjectRecord,
     binding: &coding_engine::CodingRepoBinding,
 ) -> Result<PathBuf, HttpResponse> {
     let scope_root = api
         .artifact_v2_service
         .workspace()
         .scope_root(&scope.principal(), &scope.workspace());
+    if let Some(id) = project.active_root_task_id.as_deref() {
+        match magician::magician_v2::vibedev::original_workspace::for_task(&scope_root, project, id)
+        {
+            Ok(Some(run)) => return Ok(run.repo),
+            Ok(None) => {},
+            Err(message) => {
+                return Err(HttpResponse::Conflict()
+                    .json(json!({"error":"vibedev_original_location_failed", "message":message})))
+            },
+        }
+    } else if project.trust == VibeDevProjectTrust::Original {
+        return Ok(binding.real_path.clone());
+    }
     let shadow_root = coding_engine::coding_shadow_root(&scope_root, &binding.real_path);
     if !shadow_root.exists() {
         // Serialize first-time shadow prepare against a concurrent same-repo coding run
@@ -4446,69 +4739,24 @@ fn cloudflare_pages_target_config() -> VibeDevDeployTargetConfig {
     }
 }
 
-fn write_vibedev_deploy_config_block(
-    path: &Path,
-    config: &VibeDevDeployConfig,
-) -> std::io::Result<()> {
-    let block = render_vibedev_deploy_config_block(config);
-    write_top_level_yaml_block(path, "vibedev_deploy", &block)
-}
+/// Comments a fresh `vibedev_deploy:` block starts with; the changed values
+/// are added under them.
+const VIBEDEV_DEPLOY_SEED_BLOCK: &str = "vibedev_deploy:\n  # Static publishing targets. Cloudflare Pages credentials live in the\n  # Magician process environment / runtime .env.development.\n";
 
-fn render_vibedev_deploy_config_block(config: &VibeDevDeployConfig) -> String {
-    let mut lines = vec![
-        "vibedev_deploy:".to_string(),
-        "  # Static publishing targets. Cloudflare Pages credentials live in the".to_string(),
-        "  # Magician process environment / runtime .env.development.".to_string(),
-        format!("  enabled: {}", config.enabled),
-        format!("  build_timeout_secs: {}", config.build_timeout_secs),
-        format!("  publish_timeout_secs: {}", config.publish_timeout_secs),
-        format!("  max_artifact_bytes: {}", config.max_artifact_bytes),
-        format!("  max_artifact_files: {}", config.max_artifact_files),
-        "  output_dirs:".to_string(),
-    ];
-    for dir in &config.output_dirs {
-        lines.push(format!("    - {}", yaml_string(dir)));
-    }
-    lines.push("  targets:".to_string());
-    for target in &config.targets {
-        lines.push(format!("    - id: {}", yaml_string(&target.id)));
-        lines.push(format!("      label: {}", yaml_string(&target.label)));
-        lines.push(format!("      provider: {}", yaml_string(&target.provider)));
-        lines.push(format!("      kind: {}", yaml_string(&target.kind)));
-        lines.push(format!("      enabled: {}", target.enabled));
-        lines.push(format!("      default: {}", target.default));
-        if !target.output_dirs.is_empty() {
-            lines.push("      output_dirs:".to_string());
-            for dir in &target.output_dirs {
-                lines.push(format!("        - {}", yaml_string(dir)));
-            }
-        }
-        lines.push("      command:".to_string());
-        if let Some(command) = &target.command {
-            lines.push(format!(
-                "        program: {}",
-                yaml_string(&command.program)
-            ));
-            lines.push("        args:".to_string());
-            for arg in &command.args {
-                lines.push(format!("          - {}", yaml_string(arg)));
-            }
-            if let Some(regex) = &command.public_url_regex {
-                lines.push(format!("        public_url_regex: {}", yaml_string(regex)));
-            }
-            lines.push("        env_allowlist:".to_string());
-            for name in &command.env_allowlist {
-                lines.push(format!("          - {}", yaml_string(name)));
-            }
-        } else {
-            lines.push("        program: ''".to_string());
-            lines.push("        args: []".to_string());
-            lines.push("        env_allowlist: []".to_string());
-        }
-    }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
+/// Writes only the `vibedev_deploy:` values that changed: the owner's
+/// comments, extra targets and unknown keys stay as they were.
+fn write_vibedev_deploy_config_change(
+    path: &Path,
+    before: &VibeDevDeployConfig,
+    after: &VibeDevDeployConfig,
+) -> std::io::Result<()> {
+    write_yaml_section_seeded(
+        path,
+        &["vibedev_deploy"],
+        before,
+        after,
+        Some(VIBEDEV_DEPLOY_SEED_BLOCK),
+    )
 }
 
 async fn run_cloudflare_pages_preflight() -> VibeDevDeploySettingsCheckResult {
@@ -5501,12 +5749,20 @@ fn project_response(
         .map(|session| chat_session_status_label(&session.status).to_string())
         .unwrap_or_else(|| "missing".to_string());
     let (repo_display_path, repo_absolute_path) = project_repo_response_paths(api, scope, &project);
+    let mut issues = magician::magician_v2::vibedev::projects::project_health_issues(&project);
+    issues.extend(
+        magician::magician_v2::vibedev::projects::chat_session_health_issue(
+            session.map(|session| &session.status),
+        ),
+    );
+    let health = magician::magician_v2::vibedev::projects::ProjectHealth::from_issues(issues);
     VibeDevProjectResponse {
         project,
         repo_display_path,
         repo_absolute_path,
         chat_session_status,
         deploy_targets: deploy_target_views(&api.deploy_config_snapshot()),
+        health,
     }
 }
 
@@ -7336,6 +7592,99 @@ mod tests {
     use magician::magician_v2::vibedev::dispatch_intent::VibeDevCodingChoice;
     use serde_json::json;
 
+    #[test]
+    fn deploy_settings_write_only_the_changed_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        let original = "vibedev_deploy:\n  # my publishing notes\n  enabled: false  # until DNS is ready\n  build_timeout_secs: 900\nchat:\n  harness_engine: magician\n";
+        std::fs::write(&path, original).unwrap();
+        let before: VibeDevDeployConfig =
+            serde_yaml::from_str("enabled: false\nbuild_timeout_secs: 900\n").unwrap();
+        write_vibedev_deploy_config_change(&path, &before, &before).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let mut after = before.clone();
+        after.enabled = true;
+        write_vibedev_deploy_config_change(&path, &before, &after).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original.replace(
+                "enabled: false  # until DNS is ready",
+                "enabled: true  # until DNS is ready"
+            )
+        );
+    }
+
+    #[test]
+    fn a_config_without_deploy_settings_gets_the_commented_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("magician-config.yaml");
+        std::fs::write(&path, "chat:\n  harness_engine: magician\n").unwrap();
+        let before = VibeDevDeployConfig::default();
+        let after = cloudflare_pages_deploy_config(true, before.clone());
+        write_vibedev_deploy_config_change(&path, &before, &after).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with(
+                "chat:\n  harness_engine: magician\n\nvibedev_deploy:\n  # Static publishing targets."
+            ),
+            "{written}"
+        );
+        let document: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+        let parsed: VibeDevDeployConfig =
+            serde_yaml::from_value(document["vibedev_deploy"].clone()).unwrap();
+        assert!(parsed.enabled);
+        assert!(parsed
+            .targets
+            .iter()
+            .any(|target| target.id == "cloudflare-pages"));
+    }
+
+    /// Only a person's login session records a VibeDev run as owner-started
+    /// (the goal workspace admin): never an API token, a bot, a terminal
+    /// grant, a session without an identity, or the unstamped open-mode
+    /// bootstrap request.
+    #[test]
+    fn only_a_login_session_records_a_vibedev_run_as_owner_started() {
+        use actix_web::{test::TestRequest, HttpMessage};
+        use magician::magician_v2::auth::{
+            middleware::AuthenticatedRequest, AuthMethod, BearerKind, ScopeRef,
+        };
+        let stamped = |bearer: BearerKind, identity: Option<&str>| {
+            let req = TestRequest::post().to_http_request();
+            req.extensions_mut().insert(AuthenticatedRequest {
+                scope: ScopeRef::system_internal_unauthenticated("alice", "default"),
+                identity_name: identity.map(str::to_string),
+                bearer,
+            });
+            owner_started_request(&req)
+        };
+        assert!(stamped(
+            BearerKind::Session(AuthMethod::Password),
+            Some("alice")
+        ));
+        assert!(stamped(
+            BearerKind::Session(AuthMethod::Github),
+            Some("alice")
+        ));
+        assert!(!stamped(BearerKind::ApiToken, Some("alice")));
+        assert!(!stamped(
+            BearerKind::Bot {
+                bot_name: "telegram".into()
+            },
+            None
+        ));
+        assert!(!stamped(
+            BearerKind::Grant {
+                workspace: "default".into()
+            },
+            Some("alice")
+        ));
+        assert!(!stamped(BearerKind::Session(AuthMethod::Password), None));
+        assert!(!owner_started_request(
+            &TestRequest::post().to_http_request()
+        ));
+    }
+
     /// Compare with a shared mobile wire fixture
     /// (`magician/tests/fixtures/vibedev`), or write it when
     /// `UPDATE_VIBEDEV_FIXTURES` is set.
@@ -7399,6 +7748,7 @@ mod tests {
         links.insert(
             "task_api".to_string(),
             magician::magician_v2::vibedev::projects::VibeDevRunLink {
+                work_location: None,
                 parent_task_id: None,
                 crew_id: Some("crew_7f3a".to_string()),
                 lane: Some("API".to_string()),
@@ -7430,6 +7780,9 @@ mod tests {
                 repo_absolute_path: "/Users/owner/code/shop".to_string(),
                 chat_session_status: "open".to_string(),
                 deploy_targets: Vec::new(),
+                health: magician::magician_v2::vibedev::projects::ProjectHealth::from_issues(
+                    Vec::new(),
+                ),
             }],
             workspace_display_path: "~".to_string(),
             workspace_absolute_path: "/Users/owner".to_string(),
@@ -7555,7 +7908,7 @@ mod tests {
         }))
         .expect("auto is a valid client choice");
         assert_eq!(
-            coding_choice_from_client_fields(auto.coding_choice, auto.coding_profile_id.as_deref()),
+            coding_choice_from_client(auto.coding_choice),
             Some(VibeDevCodingChoice::Auto)
         );
 

@@ -190,18 +190,20 @@ object PlanApprovalActions {
 
     /**
      * How a `/hitl/{id}/respond` answer reads (iOS `LivePlanApprovalClient`):
-     * a 2xx is Ok unless the body says `accepted: false` / `resumed: false`;
-     * a 409 `already_resolved` is Ok; anything else fails with the server's
+     * a 2xx needs an affirmative `accepted` / `resumed` acknowledgement;
+     * a 409 `already_resolved` must not authorize a follow-up run; failures use the server's
      * `message` / `reason`.
      */
     fun respondOutcome(status: Int, body: JsonObject?): PlanApprovalPost {
         val message = body?.get("message").jStr() ?: body?.get("reason").jStr()
         return when {
             status in 200..299 ->
-                if (body?.get("accepted").jBool() == false || body?.get("resumed").jBool() == false)
+                if (body?.get("accepted").jBool() == false || body?.get("resumed").jBool() == false ||
+                    (body?.get("accepted").jBool() != true && body?.get("resumed").jBool() != true))
                     PlanApprovalPost.Failed(message ?: "The answer was not accepted.")
                 else PlanApprovalPost.Ok
-            status == 409 && body?.get("reason").jStr() == "already_resolved" -> PlanApprovalPost.Ok
+            status == 409 && body?.get("reason").jStr() == "already_resolved" ->
+                PlanApprovalPost.Failed("This request was already answered. Refresh the plan before starting a run.")
             else -> PlanApprovalPost.Failed(message ?: "The answer failed (HTTP $status).")
         }
     }

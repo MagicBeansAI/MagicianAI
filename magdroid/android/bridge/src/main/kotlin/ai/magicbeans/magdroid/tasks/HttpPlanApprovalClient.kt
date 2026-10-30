@@ -62,34 +62,48 @@ class HttpPlanApprovalClient(
     private val client: HttpClient,
     private val baseUrl: () -> String,
     private val headers: () -> Map<String, String>,
+    private val connectionIsCurrent: () -> Boolean = { true },
 ) : PlanApprovalClient {
+    private val origin = baseUrl()
+    private val originHeaders = headers()
+    private fun requireCurrent() {
+        check(connectionIsCurrent() && baseUrl() == origin && headers() == originHeaders) {
+            "Connection changed. Reopen this request before answering."
+        }
+    }
 
     override suspend fun respond(request: PlanApprovalRequest, confirmed: Boolean): PlanApprovalPost =
         try {
-            val response = client.post(PlanApprovalHttp.respondUrl(baseUrl(), request.correlationId)) {
-                headers().forEach { (name, value) -> header(name, value) }
+            requireCurrent()
+            val response = client.post(PlanApprovalHttp.respondUrl(origin, request.correlationId)) {
+                originHeaders.forEach { (name, value) -> header(name, value) }
                 contentType(ContentType.Application.Json)
                 setBody(PlanApprovalActions.respondPayload(request, confirmed).toString())
             }
-            PlanApprovalActions.respondOutcome(response.status.value, PlanApprovalHttp.parseBody(response.bodyAsText()))
+            val body = response.bodyAsText()
+            requireCurrent()
+            PlanApprovalActions.respondOutcome(response.status.value, PlanApprovalHttp.parseBody(body))
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             PlanApprovalPost.Failed(error.message ?: "The answer could not be sent.")
         }
 
     override suspend fun startRun(taskId: String) {
-        val response = client.post(PlanApprovalHttp.executeUrl(baseUrl(), taskId)) {
-            headers().forEach { (name, value) -> header(name, value) }
+        requireCurrent()
+        val response = client.post(PlanApprovalHttp.executeUrl(origin, taskId)) {
+            originHeaders.forEach { (name, value) -> header(name, value) }
             contentType(ContentType.Application.Json)
             setBody("{}")
         }
         val failure = PlanApprovalHttp.startFailure(response.status.value, PlanApprovalHttp.parseBody(response.bodyAsText()))
+        requireCurrent()
         if (failure != null) throw IllegalStateException(failure)
     }
 
     companion object {
         fun forContext(context: Context): HttpPlanApprovalClient {
             val app = context.applicationContext
+            val connection = MagicianAccess.connectionSnapshot(app)
             return HttpPlanApprovalClient(
                 client = HttpClient(CIO) {
                     install(HttpTimeout) {
@@ -99,8 +113,9 @@ class HttpPlanApprovalClient(
                     }
                     expectSuccess = false
                 },
-                baseUrl = { MagicianAccess.baseUrl(app) },
-                headers = { MagicianAccess.headers(app) },
+                baseUrl = { connection?.baseUrl.orEmpty() },
+                headers = { connection?.headers.orEmpty() },
+                connectionIsCurrent = { connection != null && MagicianAccess.connectionSnapshot(app) == connection },
             )
         }
     }

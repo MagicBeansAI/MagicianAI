@@ -261,13 +261,16 @@ fn check_system_ceilings(
         .filter(|sc| commodities_eq(&sc.commodity, commodity))
     {
         let window_start = period_window_start(&sc.period);
-        let spent_in_period = ledger.total_spent_since(commodity, window_start);
+        // Model spend is enforced by the spend envelope and posted to the
+        // ledger after the fact; it never counts against a system ceiling, or
+        // model calls would start refusing USD-priced actions.
+        let spent_in_period = ledger.ceiling_spent_since_until(commodity, window_start, None);
         // In-flight holds occupy the live ceiling even when their reserve
         // journal row accrued in the previous period (midnight checkout).
         let reserved_in_flight = ledger.in_flight_reserved_for_commodity(commodity);
         let effective_ceiling =
             compute_effective_ceiling(sc.ceiling, &sc.carryover, &sc.period, |since, until| {
-                ledger.total_spent_since_until(commodity, since, until)
+                ledger.ceiling_spent_since_until(commodity, since, Some(until))
             });
         let hard_ceiling = effective_ceiling * (Decimal::ONE + sc.relaxation);
         if spent_in_period + reserved_in_flight + proposed_amount > hard_ceiling {

@@ -29,6 +29,8 @@ use runtime_core::edge::{
 const EDGE_PROFILE_SCHEMA: u8 = 1;
 const EDGE_KEYRING_SERVICE: &str = "ai.magicbeans.magican.desktop.edge";
 const EDGE_DEVICE_HEADER: &str = "x-magician-device-id";
+/// Lets Settings → Devices on the server show which desktop build this is.
+const EDGE_APP_VERSION_HEADER: &str = "x-magician-app-version";
 const CF_ACCESS_CLIENT_ID_HEADER: &str = "cf-access-client-id";
 const CF_ACCESS_CLIENT_SECRET_HEADER: &str = "cf-access-client-secret";
 const EDGE_RECONNECT_MIN: Duration = Duration::from_secs(2);
@@ -81,6 +83,7 @@ impl EdgeCredentialProfile {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub(crate) struct EdgeClientStatus {
     available: bool,
     enrolled: bool,
@@ -91,22 +94,6 @@ pub(crate) struct EdgeClientStatus {
     principal: Option<String>,
     workspace: Option<String>,
     error: Option<String>,
-}
-
-impl Default for EdgeClientStatus {
-    fn default() -> Self {
-        Self {
-            available: false,
-            enrolled: false,
-            connected: false,
-            server_origin: None,
-            device_id: None,
-            label: None,
-            principal: None,
-            workspace: None,
-            error: None,
-        }
-    }
 }
 
 struct EdgeRuntime {
@@ -639,6 +626,10 @@ async fn connect_profile(
         HeaderName::from_static(EDGE_DEVICE_HEADER),
         HeaderValue::from_str(&profile.device_id)
             .map_err(|_| "The Desktop Edge device id is invalid")?,
+    );
+    request.headers_mut().insert(
+        HeaderName::from_static(EDGE_APP_VERSION_HEADER),
+        HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
     );
     apply_cloudflare_headers(&mut request, profile.cloudflare_access.as_ref())?;
     let (mut socket, _) = tokio_tungstenite::connect_async(request)

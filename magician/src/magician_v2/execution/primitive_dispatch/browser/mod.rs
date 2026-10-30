@@ -4,12 +4,15 @@
 //! per-primitive argv translator ([`dispatch`]). Wired into the flat
 //! dispatch path via [`super::dispatch::dispatch_browser_primitive`].
 
+pub mod browser_choice;
 pub mod dispatch;
 pub mod har;
 pub mod in_page_fetch;
 pub mod owned_tabs_header;
 pub(crate) mod secure_prompt_fill;
 pub mod session;
+pub mod session_lease;
+pub mod submission_grants;
 mod submit_guard;
 pub mod trace_drain;
 pub mod yutori_translator;

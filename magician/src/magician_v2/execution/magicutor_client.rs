@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::magician_v2::api_mining::types::{CapturedAuthEvent, NetworkTraceEvent};
 
-const DELETE_SESSION_TIMEOUT: Duration = Duration::from_secs(2);
+const DELETE_SESSION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Configuration needed to connect to Magicutor.
 #[derive(Clone, Debug)]
@@ -69,6 +69,9 @@ pub enum MagicutorClientError {
 
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
+
+    #[error("browser cleanup failed: {0}")]
+    Cleanup(String),
 }
 
 /// Thin HTTP client that talks directly to Magicutor's REST API.
@@ -119,45 +122,68 @@ impl MagicutorClient {
     /// Note: This is best-effort - returns Ok even if session doesn't exist.
     pub async fn delete_session(&self, session_alias: &str) -> Result<(), MagicutorClientError> {
         let thread_id = cdp_thread_id_from_session_alias(session_alias);
-        let session_endpoint = self
+        if let Err(error) = self.delete_session_checked(&thread_id).await {
+            tracing::warn!(session_alias, %error, "Browser cleanup incomplete (best effort)");
+        }
+        Ok(())
+    }
+
+    /// Cleanup callers must retain their retry state until Magicutor confirms
+    /// that the extension actually removed the task's tabs and session.
+    pub async fn delete_session_checked(
+        &self,
+        session_alias: &str,
+    ) -> Result<(), MagicutorClientError> {
+        self.release_session_checked(session_alias, false).await
+    }
+
+    pub async fn handoff_session_checked(
+        &self,
+        session_alias: &str,
+    ) -> Result<(), MagicutorClientError> {
+        self.release_session_checked(session_alias, true).await
+    }
+
+    async fn release_session_checked(
+        &self,
+        session_alias: &str,
+        keep_tabs: bool,
+    ) -> Result<(), MagicutorClientError> {
+        // This is an actual agent-browser ID, including retrieval-/scope-
+        // prefixes. Only the historical best-effort API expands old aliases.
+        let thread_id = session_alias;
+        if thread_id.is_empty()
+            || !thread_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(MagicutorClientError::Cleanup(
+                "invalid browser session ID".into(),
+            ));
+        }
+        let endpoint = self
             .base_url
             .join(&format!("cdp/threads/{}", thread_id))
-            .map_err(|err| MagicutorClientError::InvalidEndpoint(err.to_string()))?;
-
-        let mut builder = self.http_client.delete(session_endpoint);
-
+            .map_err(|error| MagicutorClientError::InvalidEndpoint(error.to_string()))?;
+        let mut request = self
+            .http_client
+            .delete(endpoint)
+            .query(&[("keep_tabs", keep_tabs)]);
         if let Some(secret) = &self.api_key {
-            builder = builder.bearer_auth(secret.expose_secret());
+            request = request.bearer_auth(secret.expose_secret());
         }
-
-        // Best-effort: ignore 404 (session doesn't exist) and other errors
-        // We just want to ensure the session is gone
-        match tokio::time::timeout(DELETE_SESSION_TIMEOUT, builder.send()).await {
-            Ok(Ok(_)) => {
-                tracing::info!(
-                    "[MAGICUTOR-CLIENT] Cleared browser CDP thread: {}",
-                    thread_id
-                );
-                Ok(())
-            },
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    "[MAGICUTOR-CLIENT] Failed to clear browser CDP thread {}: {} (continuing anyway)",
-                    thread_id,
-                    e
-                );
-                // Return Ok anyway - we don't want to fail cancel_execution if Magicutor is down
-                Ok(())
-            },
-            Err(_) => {
-                tracing::warn!(
-                    "[MAGICUTOR-CLIENT] Timed out clearing browser CDP thread {} after {:?} (continuing anyway)",
-                    thread_id,
-                    DELETE_SESSION_TIMEOUT
-                );
-                Ok(())
-            },
-        }
+        tokio::time::timeout(DELETE_SESSION_TIMEOUT, async {
+            let response = request.send().await?.error_for_status()?;
+            let body: serde_json::Value = response.json().await?;
+            if body.get("cleared").and_then(serde_json::Value::as_bool) != Some(true) {
+                return Err(MagicutorClientError::Cleanup(
+                    "Magicutor did not confirm cleanup".into(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| MagicutorClientError::Cleanup("Magicutor cleanup timed out".into()))?
     }
 
     /// Drain API-mining network traces captured for `thread_id` on the
@@ -253,4 +279,69 @@ struct DrainCapturedAuthResponse {
 struct DrainPageSignalsResponse {
     #[serde(default)]
     page_signals: Vec<AmbientPageSignal>,
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+mod cleanup_tests {
+    use super::*;
+    use wiremock::{
+        matchers::{method, path, query_param},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    #[tokio::test]
+    async fn cleanup_uses_exact_current_session_ids_and_explicit_handoff() {
+        let server = MockServer::start().await;
+        let client =
+            MagicutorClient::new(ExecutionConfig::new(Url::parse(&server.uri()).unwrap())).unwrap();
+        for session in [
+            "retrieval-cdp-example",
+            "scope-engagement-demo-magician-chat-main--cdp",
+        ] {
+            Mock::given(method("DELETE"))
+                .and(path(format!("/cdp/threads/{session}")))
+                .and(query_param("keep_tabs", "false"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"cleared": true})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            client.delete_session_checked(session).await.unwrap();
+        }
+        Mock::given(method("DELETE"))
+            .and(path("/cdp/threads/magician-owner-handoff"))
+            .and(query_param("keep_tabs", "true"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"cleared": true})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        client
+            .handoff_session_checked("magician-owner-handoff")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_cannot_report_success_for_http_failure_or_missing_confirmation() {
+        let server = MockServer::start().await;
+        let client =
+            MagicutorClient::new(ExecutionConfig::new(Url::parse(&server.uri()).unwrap())).unwrap();
+        for (session, response) in [
+            ("magician-failed", ResponseTemplate::new(503)),
+            (
+                "magician-unconfirmed",
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"cleared": false})),
+            ),
+        ] {
+            Mock::given(method("DELETE"))
+                .and(path(format!("/cdp/threads/{session}")))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+            assert!(client.delete_session_checked(session).await.is_err());
+        }
+    }
 }

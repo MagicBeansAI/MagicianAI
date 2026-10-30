@@ -902,86 +902,6 @@ pub fn resolve_effective_tool_policy_snapshot(
     Ok(snapshot)
 }
 
-/// Add a server-owned, non-side-effecting runtime control after a turn's model
-/// profile has been selected. This keeps adaptive controls inside the same
-/// provider/dispatch/introspection snapshot instead of appending an untracked
-/// schema. The derived snapshot id binds the exact control schema.
-pub fn extend_snapshot_with_runtime_tool(
-    snapshot: &Arc<EffectiveToolPolicySnapshot>,
-    tool: NativeExecutionTool,
-) -> Result<Arc<EffectiveToolPolicySnapshot>, String> {
-    let name = tool.name.clone();
-    if matches!(snapshot.invocation.surface, InvocationSurface::PublicEnvoy) {
-        return Err("runtime_tool_not_allowed_on_public_envoy".to_string());
-    }
-    if snapshot.delegate_owned_tool_names.contains(&name)
-        || snapshot
-            .denied_tool_names
-            .iter()
-            .any(|denied| tool_name_matches_block_entry(name.as_str(), denied.as_str()))
-    {
-        return Err(format!("runtime_tool_denied:{name}"));
-    }
-    if snapshot
-        .provider_specs
-        .iter()
-        .any(|existing| existing.name == name)
-    {
-        return Err(format!("runtime_tool_name_collision:{name}"));
-    }
-
-    let mut derived = (**snapshot).clone();
-    derived.runtime_tools.insert(
-        name.clone(),
-        EffectiveToolGrant {
-            name: name.clone(),
-            kind: EffectiveToolKind::Runtime,
-            provider_visible: true,
-        },
-    );
-    derived.dispatch_tool_names.insert(name);
-    let schema_digest = blake3::hash(
-        &canonical_json_bytes(&tool)
-            .map_err(|error| format!("runtime_tool_digest_failed:{error}"))?,
-    )
-    .to_hex()
-    .to_string();
-    derived.provider_specs.push(tool);
-    derived.snapshot_id = blake3::hash(
-        &canonical_json_bytes(&serde_json::json!({
-            "base_snapshot_id": snapshot.snapshot_id,
-            "runtime_tool_schema_digest": schema_digest,
-        }))
-        .map_err(|error| format!("derived_snapshot_digest_failed:{error}"))?,
-    )
-    .to_hex()
-    .to_string();
-    Ok(Arc::new(derived))
-}
-
-pub fn remove_snapshot_runtime_tool(
-    snapshot: &Arc<EffectiveToolPolicySnapshot>,
-    tool_name: &str,
-) -> Result<Arc<EffectiveToolPolicySnapshot>, String> {
-    if !snapshot.runtime_tools.contains_key(tool_name) {
-        return Err(format!("runtime_tool_not_in_snapshot:{tool_name}"));
-    }
-    let mut derived = (**snapshot).clone();
-    derived.runtime_tools.remove(tool_name);
-    derived.dispatch_tool_names.remove(tool_name);
-    derived.provider_specs.retain(|tool| tool.name != tool_name);
-    derived.snapshot_id = blake3::hash(
-        &canonical_json_bytes(&serde_json::json!({
-            "base_snapshot_id": snapshot.snapshot_id,
-            "removed_runtime_tool": tool_name,
-        }))
-        .map_err(|error| format!("derived_snapshot_digest_failed:{error}"))?,
-    )
-    .to_hex()
-    .to_string();
-    Ok(Arc::new(derived))
-}
-
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
@@ -1405,7 +1325,10 @@ mod tests {
         .unwrap();
         assert!(snapshot.permits_tool("yield"));
         assert!(snapshot.permits_tool("tool_search"));
-        for name in ["work-modules__offer_times", "work-modules__read_negotiation"] {
+        for name in [
+            "work-modules__offer_times",
+            "work-modules__read_negotiation",
+        ] {
             assert!(snapshot.deferred_tools.contains_key(name), "{name}");
             assert!(!snapshot.permits_tool(name), "unloaded leaf: {name}");
         }
@@ -2051,36 +1974,6 @@ mod tests {
         assert_ne!(first.snapshot_id, approval_changed.snapshot_id);
         assert!(first.structural_tools["delegate_to_agent"].requires_approval);
         assert!(!approval_changed.structural_tools["delegate_to_agent"].requires_approval);
-    }
-
-    #[test]
-    fn adaptive_runtime_control_stays_inside_derived_snapshot() {
-        let definition = definition("");
-        let base = resolve_effective_tool_policy_snapshot(
-            &definition,
-            invocation(InvocationSurface::Chat, FeatureMode::None),
-            SnapshotResolutionInput {
-                provider_tools: vec![tool("search_memory", false)],
-                direct_reachable_tool_names: BTreeSet::from(["search_memory".to_string()]),
-                ..Default::default()
-            },
-        )
-        .expect("base snapshot");
-        let extended =
-            extend_snapshot_with_runtime_tool(&base, tool("request_thinking_mode", false))
-                .expect("extended snapshot");
-        assert_ne!(base.snapshot_id, extended.snapshot_id);
-        assert!(extended.permits_tool("request_thinking_mode"));
-        assert!(extended
-            .visible_now()
-            .any(|name| name == "request_thinking_mode"));
-
-        let removed = remove_snapshot_runtime_tool(&extended, "request_thinking_mode")
-            .expect("removed runtime tool");
-        assert!(!removed.permits_tool("request_thinking_mode"));
-        assert!(!removed
-            .visible_now()
-            .any(|name| name == "request_thinking_mode"));
     }
 
     #[test]

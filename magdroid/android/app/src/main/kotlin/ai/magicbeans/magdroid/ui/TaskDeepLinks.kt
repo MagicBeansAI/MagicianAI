@@ -36,12 +36,13 @@ object TaskDeepLinks {
 
     internal fun parse(raw: String?): TaskDeepLinkTarget? {
         val uri = raw?.let { runCatching { java.net.URI(it) }.getOrNull() } ?: return null
+        if (uri.scheme != null && uri.scheme !in listOf("http", "https") && !MagicanAppLinks.isScheme(uri.scheme)) return null
         val query = runCatching { uri.rawQuery.orEmpty().split('&').filter(String::isNotBlank).associate { part ->
             val pieces = part.split('=', limit = 2)
             java.net.URLDecoder.decode(pieces[0], Charsets.UTF_8.name()) to
                 java.net.URLDecoder.decode(pieces.getOrElse(1) { "" }, Charsets.UTF_8.name())
         } }.getOrElse { return null }
-        if (MagicanAppLinks.isScheme(uri.scheme)) {
+        if (MagicanAppLinks.isScheme(uri.scheme) && uri.host != "work") {
             val id = runCatching {
                 java.net.URLDecoder.decode(uri.rawPath.orEmpty().trim('/').substringBefore('/').replace("+", "%2B"), Charsets.UTF_8.name())
             }.getOrNull()?.takeIf(String::isNotBlank) ?: return null
@@ -51,12 +52,19 @@ object TaskDeepLinks {
                 else -> null
             }
         }
-        if (uri.path?.trimEnd('/') in listOf("/tasks", "/work") || MagicanAppLinks.isScheme(uri.scheme) && uri.host == "work" && uri.path.orEmpty() in listOf("", "/")) {
-            if (query["view"] != null && query["view"] !in listOf("all", "inbox", "today", "overdue", "running", "completed")) return null
-            val id = query["selected"]?.takeIf(String::isNotBlank) ?: return null
-            return if (query["type"] == "monitors") {
+        val path = (if (MagicanAppLinks.isScheme(uri.scheme)) "/work${uri.rawPath.orEmpty()}" else uri.rawPath.orEmpty()).trimEnd('/')
+        val task = Regex("^/tasks/([^/]+)$").matchEntire(path)
+        val thread = Regex("^/t/([^/]+)/tasks(?:/([^/]+))?$").matchEntire(path)
+        val legacy = path == "/tasks" || task != null || thread != null
+        if (legacy || path == "/work") {
+            if (!legacy && query["view"] != null && query["view"] !in listOf("all", "inbox", "today", "overdue", "running", "completed")) return null
+            fun decode(value: String) = java.net.URLDecoder.decode(value.replace("+", "%2B"), Charsets.UTF_8.name())
+            val pathID = task?.groupValues?.get(1) ?: thread?.groupValues?.get(2)?.takeIf(String::isNotEmpty)
+            val id = pathID?.let(::decode) ?: query["selected"]?.takeIf(String::isNotBlank) ?: return null
+            val threadID = thread?.groupValues?.get(1)?.let(::decode)?.trim()?.lowercase() ?: query["thread"]
+            return if (thread == null && query["type"] == "monitors") {
                 TaskDeepLinkTarget.Monitor(id, query["update"])
-            } else TaskDeepLinkTarget.Task(id, if (query["plan"] == "open") TaskDetailAct.Plan else null, query["execution_id"] ?: query["execution"], query["type"] == "internal", query["thread"])
+            } else TaskDeepLinkTarget.Task(id, if (query["plan"] == "open") TaskDetailAct.Plan else null, query["execution_id"] ?: query["execution"], thread == null && query["type"] == "internal", threadID)
         }
         return null
     }

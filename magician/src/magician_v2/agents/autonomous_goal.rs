@@ -373,6 +373,8 @@ pub fn build_autonomous_overrides(
         // Autonomous cycles never run the VibeDev coding coordinator.
         coding_coordinator_run: false,
         vibedev_run: false,
+        plan_run: false,
+        vibedev_autopilot: false,
         principal,
         workspace,
         invocation_context_override: None,
@@ -404,6 +406,7 @@ pub fn build_autonomous_overrides(
         // Autonomous cycles run in their own execution context; the
         // chat-inline session-id propagation does not apply here.
         browser_session_id_override: None,
+        browser_tab_label: None,
         // Autonomous cycles already get prompt_identity via the
         // trust_context path on `execute_agentic_direct_with_outcome`,
         // but populating here too keeps overrides self-sufficient and
@@ -464,6 +467,8 @@ pub fn build_direct_agent_overrides(
         // Direct (non-VibeDev-coordinator) agent runs never arm the coding coordinator.
         coding_coordinator_run: false,
         vibedev_run: false,
+        plan_run: false,
+        vibedev_autopilot: false,
         principal,
         workspace,
         invocation_context_override: None,
@@ -500,6 +505,7 @@ pub fn build_direct_agent_overrides(
         // browser session. Chat-inline callers patch this in via the
         // ChatInline branch in `runtime.rs` after `build_direct_agent_overrides`.
         browser_session_id_override: None,
+        browser_tab_label: None,
         // Carry the agent's persona into the override so the chat-inline
         // path (which calls `execute_agentic_direct_with_outcome` with
         // `trust_context: None`) doesn't lose it.
@@ -553,6 +559,7 @@ mod tests {
 
     fn make_config_with_areas() -> AutonomousConfig {
         AutonomousConfig {
+            outward_context: None,
             schedule: "0 */4 * * *".to_string(),
             focus_areas: vec![
                 FocusArea {
@@ -562,6 +569,7 @@ mod tests {
                     schedule: Some("0 * * * *".to_string()),
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 },
                 FocusArea {
                     name: "weekly".to_string(),
@@ -570,6 +578,7 @@ mod tests {
                     schedule: Some("0 2 * * 1".to_string()),
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 },
                 FocusArea {
                     name: "default".to_string(),
@@ -578,6 +587,7 @@ mod tests {
                     schedule: None,
                     program: None,
                     scope: None,
+                    shared_programs: None,
                 },
             ],
             max_tasks_per_cycle: 3,
@@ -624,6 +634,7 @@ mod tests {
             schedule: None,
             program: None,
             scope: None,
+            shared_programs: None,
         };
         assert_eq!(
             focus_area_goal_id("ceo", &area),
@@ -665,6 +676,7 @@ mod tests {
             principal: Some("principal".to_string()),
             workspace: Some("workspace".to_string()),
             autonomous_config: Some(AutonomousConfig {
+                outward_context: None,
                 schedule: "0 */4 * * *".to_string(),
                 focus_areas: vec![FocusArea {
                     name: "Morning Briefing".to_string(),
@@ -673,6 +685,7 @@ mod tests {
                     schedule: None,
                     program: None,
                     scope: Some(vec!["*".to_string()]),
+                    shared_programs: None,
                 }],
                 max_tasks_per_cycle: 3,
                 max_steps_per_plan: 10,

@@ -218,14 +218,13 @@ export interface PublicChatNotice {
   reason?: string;
 }
 
-/** A pending-replay message held in the per-session queue. Mirror of the
- *  Rust `QueuedMessage` struct. */
+/** Public queue metadata. The server owns the original execution selection
+ *  and credentials; adapters never reconstruct or resubmit queued work. */
 export interface QueuedMessage {
   id: string;
   session_id: string;
   text?: string;
   attachment_ids?: string[];
-  profile_override?: string;
   source_surface?: string;
   presence_session_id?: string;
   sender_display_name?: string;
@@ -246,6 +245,8 @@ export interface QueuedMessageReceipt {
 
 export interface ListQueuedMessagesResponse {
   queued: QueuedMessage[];
+  /** Work can still be running after the last queued message is claimed. */
+  active?: boolean;
   session_id: string;
 }
 
@@ -557,7 +558,7 @@ export interface ChannelRuntimeOptions<TTarget = string, TContext = unknown> {
   channelThreading?: ChannelThreadingMode;
   /** Optional send policy for non-control messages. Used by agent-owned
    *  surfaces such as Kapso to keep ordinary conversation in a cheap,
-   *  chat-only profile while preserving the normal session/thread ledger. */
+   *  chat-only model while preserving the normal session/thread ledger. */
   nonControlMessageDispatch?: ChannelMessageDispatchOptions;
   pendingApprovalMessage?: string;
   connectedMessage?:
@@ -565,8 +566,32 @@ export interface ChannelRuntimeOptions<TTarget = string, TContext = unknown> {
     | ((identity: ChannelIdentity) => string);
 }
 
+export interface ChatModelSelection {
+  model_id: string;
+  thinking: string;
+}
+
+export interface ChatModelCatalog {
+  models: Array<{
+    id: string;
+    label: string;
+    provider: string;
+    model: string;
+    thinking: { mode: string; levels: string[]; default: string | null };
+    limits: {
+      context_window_tokens: number;
+      max_input_tokens?: number | null;
+      min_output_tokens: number;
+      max_output_tokens: number;
+    } | null;
+    choices: Record<string, string>;
+  }>;
+  default_selection: ChatModelSelection | null;
+}
+
 export interface ChannelMessageDispatchOptions {
-  profile?: string;
+  modelSelection?: { model_id: string; thinking?: string };
+  harnessEngine?: "magician" | "pi";
   sourceSurface?: string;
   presenceSessionId?: string;
   senderDisplayName?: string;
@@ -581,6 +606,7 @@ export interface MagicianClientLike {
   routeNegotiationReply?(reply: NegotiationInboundReply): Promise<boolean>;
   enroll(request: EnrollRequest): Promise<EnrollResult>;
   getActiveSession(identity: ChannelIdentity): Promise<ChatSessionDetail>;
+  getSession(sessionId: string, identity: ChannelIdentity): Promise<ChatSessionDetail>;
   newSession(identity: ChannelIdentity): Promise<ChatSession>;
   sendMessage(
     sessionId: string,

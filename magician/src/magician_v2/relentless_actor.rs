@@ -799,6 +799,10 @@ impl HarnessActor {
                     Some(FileSandboxConfig {
                         mode: FileSandboxMode::WorkspaceWrite,
                         allowed_roots: vec![native.work_root.to_string_lossy().into_owned()],
+                        // Exact admitted work area: no base config here, and the policy is
+                        // pinned in the configuration hash, so base read-only roots are not inherited.
+                        read_only_roots: Vec::new(),
+                        extra_writable_roots: Vec::new(),
                         allow_delete: false,
                     }),
                 );
@@ -931,6 +935,10 @@ impl HarnessActor {
                 Some(FileSandboxConfig {
                     mode: FileSandboxMode::WorkspaceWrite,
                     allowed_roots: vec![work_root.to_string_lossy().into_owned()],
+                    // Exact admitted work area: no base config here, and the policy is
+                    // pinned in the configuration hash, so base read-only roots are not inherited.
+                    read_only_roots: Vec::new(),
+                    extra_writable_roots: Vec::new(),
                     allow_delete: false,
                 }),
             );
@@ -1480,8 +1488,9 @@ impl ActorAdapter for HarnessActor {
             ).await.map_err(anyhow::Error::msg)?;
             ensure!(profile.allowed_action_types.as_ref().is_none_or(|types| types.iter().any(|name| name == "tool")), "native actor owner does not grant the admitted action lane");
             let router = Arc::new(resources.router()?);
+            // Exact admitted work area: base read-only roots are not inherited (see above).
             let mut executors = self.orchestrator.build_action_executors_with_policy_override(Some(router), Some(FileSandboxConfig {
-                mode: FileSandboxMode::WorkspaceWrite, allowed_roots: vec![work_root.to_string_lossy().into_owned()], allow_delete: false,
+                mode: FileSandboxMode::WorkspaceWrite, allowed_roots: vec![work_root.to_string_lossy().into_owned()], read_only_roots: Vec::new(), extra_writable_roots: Vec::new(), allow_delete: false,
             }));
             let research = self.attach_research_boundary(&executors, request.deadline_at, cancel.clone())?;
             if !self.recipe.metered_tools.is_empty() {
@@ -1511,7 +1520,8 @@ impl ActorAdapter for HarnessActor {
             context.workspace = Some(self.reviews.scope.workspace.clone());
             context.agent_id = Some(self.recipe.agent_id.clone());
             context.max_iterations = self.recipe.maximum_iterations;
-            context.work_budget_secs = Some(u64::try_from((request.deadline_at - chrono::Utc::now()).num_seconds()).unwrap_or(0));
+            context.work_budget_secs = (request.deadline_at != chrono::DateTime::<chrono::Utc>::MAX_UTC)
+                .then(|| u64::try_from((request.deadline_at - chrono::Utc::now()).num_seconds()).unwrap_or(0));
             context.max_cost_usd = Some(operation.maximum_cost_microusd as f64 / 1_000_000.0);
             context.controller_attempt_hash = Some(attempt_hash.clone());
             context.trust_level = profile.trust_level.clone();
@@ -1673,6 +1683,10 @@ impl ActorAdapter for HarnessActor {
                     Some(FileSandboxConfig {
                         mode: FileSandboxMode::WorkspaceWrite,
                         allowed_roots: vec![paused.work_root.to_string_lossy().into_owned()],
+                        // Exact admitted work area: no base config here, and the policy is
+                        // pinned in the configuration hash, so base read-only roots are not inherited.
+                        read_only_roots: Vec::new(),
+                        extra_writable_roots: Vec::new(),
                         allow_delete: false,
                     }),
                 );
@@ -1698,9 +1712,11 @@ impl ActorAdapter for HarnessActor {
             let _controls = self
                 .admit_execution_controls(&context, &mut executors, cancel.clone())
                 .await?;
-            let remaining_ms =
-                u64::try_from((request.deadline_at - chrono::Utc::now()).num_milliseconds())
-                    .unwrap_or(0);
+            let remaining_ms = (request.deadline_at != chrono::DateTime::<chrono::Utc>::MAX_UTC)
+                .then(|| {
+                    u64::try_from((request.deadline_at - chrono::Utc::now()).num_milliseconds())
+                        .unwrap_or(0)
+                });
             let resumed = execute_controller_pause_resume_with_validation(
                 paused.body,
                 executors.clone(),

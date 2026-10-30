@@ -228,6 +228,15 @@ class ThemeManager: ObservableObject {
     /// fully-applied invalidation point.
     @Published private(set) var themeRevision: UInt = 0
 
+    /// Account sync hook: invoked after an EXPLICIT theme application with the
+    /// resolved variant and mode, so the app can push the choice to
+    /// `/ui/preferences` (see `ThemeSync`). An optional injection point rather
+    /// than a direct call so probes, previews and unit tests apply palettes
+    /// without any networking. System-driven flips (`.system` following the
+    /// device) deliberately do not fire it — the account records choices, not
+    /// each device's day/night.
+    var themeSyncSink: ((String, AppearanceMode) -> Void)?
+
     var colorScheme: ColorScheme { isDark ? .dark : .light }
 
     /// The color scheme to FORCE at the SwiftUI presentation boundary.
@@ -574,7 +583,12 @@ class ThemeManager: ObservableObject {
         applyTheme(defaults.string(forKey: "magican-theme") ?? Self.defaultThemeID)
     }
     
-    func applyTheme(_ requested: String) {
+    /// Apply a theme variant. `persistToAccount` distinguishes an explicit
+    /// choice (family picked, Day/Night forced) — which pushes to the account
+    /// through `themeSyncSink` — from the implicit `.system` re-resolution that
+    /// follows the device's appearance and must not rewrite the account's
+    /// record on every sunset.
+    func applyTheme(_ requested: String, persistToAccount: Bool = true) {
         let name = Self.migratedThemeID(requested)
         applyPalette(name)
         fontNames = Self.fonts(for: name)
@@ -598,6 +612,50 @@ class ThemeManager: ObservableObject {
             // UIKit trait transition have settled.
             self.objectWillChange.send()
         }
+
+        if persistToAccount {
+            themeSyncSink?(name, appearanceMode)
+        }
+    }
+
+    /// Adopt the account's stored theme (the same `/ui/preferences` record the
+    /// web follows). An unknown id leaves the local choice alone. The stored
+    /// variant names the family; the stored mode (when a mobile surface wrote
+    /// one) says how that family follows the device — a web-only record has no
+    /// mode, so the variant's own day/night side stands in.
+    ///
+    /// The account is the truth once a device has met it (the web's rule). The
+    /// FIRST meeting makes one exception so an established local pick is not
+    /// silently replaced by a web-seeded default: unless the account holds a
+    /// deliberate non-default record, this device declares its own choice once.
+    func adoptAccountTheme(_ raw: String, appearance: String?, systemDark: Bool) {
+        let seededKey = "magican-theme-account-seeded"
+        if !defaults.bool(forKey: seededKey) {
+            defaults.set(true, forKey: seededKey)
+            let deliberate = raw != Self.defaultThemeID || appearance != nil
+            if !deliberate, currentThemeName != Self.defaultThemeID {
+                themeSyncSink?(currentThemeName, appearanceMode)
+                return
+            }
+        }
+        let name = Self.migratedThemeID(raw)
+        guard let family = availableThemeFamilies.first(where: { $0.lightTheme == name || $0.darkTheme == name })
+        else { return }
+        let mode: AppearanceMode
+        switch appearance {
+        case "system": mode = .system
+        case "day": mode = .day
+        case "night": mode = .night
+        default: mode = (family.darkTheme == name) ? .night : .day
+        }
+        guard family.id != currentThemeFamilyID || mode != appearanceMode else { return }
+        appearanceMode = mode
+        defaults.set(mode.rawValue, forKey: "magican-appearance-mode")
+        // Converging on the account's record must not echo it back.
+        applyTheme(
+            resolvedDark(systemDark: systemDark) ? family.darkTheme : family.lightTheme,
+            persistToAccount: false
+        )
     }
 
     /// Select a theme family, applying the variant that matches the current
@@ -635,12 +693,27 @@ class ThemeManager: ObservableObject {
         applyTheme(resolvedDark(systemDark: systemDark) ? family.darkTheme : family.lightTheme)
     }
 
+    /// Re-apply UIKit chrome (nav/tab bars, window traits) without changing the
+    /// palette. The live-bar walk in `applySystemAppearance` only reaches bars
+    /// attached to a window, so a bar that was detached when the theme flipped —
+    /// a background tab's `UINavigationBar` — keeps the stale palette until it is
+    /// re-styled. Re-running the walk when a tab becomes selected catches it.
+    func refreshSystemAppearance() {
+        applySystemAppearance()
+        // Tab attachment completes on the next layout pass; re-apply after it so
+        // a just-attached bar cannot be missed (same pattern as `applyTheme`).
+        DispatchQueue.main.async { [weak self] in
+            self?.applySystemAppearance()
+        }
+    }
+
     /// Called by the app root when the iOS appearance flips — re-applies the family's
-    /// variant only when the app is following the system.
+    /// variant only when the app is following the system. Implicit by nature:
+    /// the account's record keeps the family and mode, not this device's sunset.
     func systemAppearanceChanged(dark: Bool) {
         guard appearanceMode == .system, let family = themeFamily(containing: currentThemeName) else { return }
         let want = dark ? family.darkTheme : family.lightTheme
-        if want != currentThemeName { applyTheme(want) }
+        if want != currentThemeName { applyTheme(want, persistToAccount: false) }
     }
 
     /// Switch the active family between its paired light and dark palettes.

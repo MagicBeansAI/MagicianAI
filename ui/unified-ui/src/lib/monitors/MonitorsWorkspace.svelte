@@ -426,14 +426,14 @@
 	.mon-filter {
 		display: inline-flex;
 		align-items: center;
-		min-height: 1.9rem;
-		padding: 0 0.7rem;
+		min-height: 1.65rem;
+		padding: 0 0.65rem;
 		border: 1px solid var(--border-soft);
-		border-radius: var(--radius-full, 999px);
+		border-radius: var(--radius-chip, 6px);
 		background: color-mix(in srgb, var(--bg-card) 88%, transparent);
 		color: var(--text-secondary);
 		font-family: var(--font-primary);
-		font-size: 0.8rem;
+		font-size: 0.78rem;
 		font-weight: 600;
 		cursor: pointer;
 	}

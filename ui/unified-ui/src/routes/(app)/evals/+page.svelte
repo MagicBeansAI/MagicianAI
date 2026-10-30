@@ -130,16 +130,12 @@
 	 */
 	async function startRun(lane: EvalLane): Promise<void> {
 		if (startingLaneId) return;
-		const blocked = runDisabledReason(lane);
+		const blocked = runDisabledReason(lane, lifecycleOptionsValid);
 		if (blocked) {
 			showError(`Cannot run ${lane.id}`, blocked);
 			return;
 		}
 
-		if (lane.run_options === 'memory_lifecycle' && !lifecycleOptionsValid) {
-			showError('Cannot start lifecycle evaluation', 'Select at most three profiles.');
-			return;
-		}
 		startingLaneId = lane.id;
 		try {
 			const started = await runEvalLane(lane.id, lane.run_options === 'memory_lifecycle' ? lifecycleOptions : {});
@@ -592,7 +588,7 @@
 						</thead>
 						<tbody>
 							{#each overviewRows as lane (lane.id)}
-								{@const blocked = runDisabledReason(lane)}
+								{@const blocked = runDisabledReason(lane, lifecycleOptionsValid)}
 								<tr class:ev-row--unparseable={!!lane.parse_error || lane.kind === 'unknown'}>
 									<td class="ev-cell-lane">
 										<button type="button" class="ev-lane-link" on:click={() => openLane(lane.id)}>
@@ -728,7 +724,7 @@
 
 			<!-- Truthy-first so `selectedLane` narrows to a lane inside the branch. -->
 			{#if selectedLane}
-				{@const blocked = runDisabledReason(selectedLane)}
+				{@const blocked = runDisabledReason(selectedLane, lifecycleOptionsValid)}
 				<div class="ev-lane-head">
 					<div class="ev-lane-meta">
 						<h2>{selectedLane.id}</h2>

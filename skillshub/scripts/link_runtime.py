@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pinned_bin_store  # noqa: E402
 import skill_render  # noqa: E402
+import shared_skill_bins  # noqa: E402
 
 SKIP_DIRS = {"node_modules", ".venv", ".node", ".runtime", ".pp-build", ".cache", "_vendor", "__pycache__", ".git", "config"}
 # Reserved sinks never host a tenant's skills (mirrors Rust's
@@ -70,14 +71,16 @@ def scope_dirs(data_root: Path, scope: str, all_scopes: bool, existing_only: boo
 def link_scope(scope: Path, names: set[str] | None, store_root: Path) -> tuple[int, int]:
     """Returns (links changed, skills skipped as scope-owned)."""
     changed = skipped = 0
+    resolver = shared_skill_bins.Resolver(ROOT)
     for manifest in sorted(ROOT.glob("*/SKILL.md")):
         skill = manifest.parent
         if names is not None and skill.name not in names:
             continue
         scoped_skill = scope / "skills" / skill.name
-        if user_owned(scoped_skill):
+        if user_owned(scoped_skill) or shared_skill_bins.scope_removed(scoped_skill):
             skipped += 1
             continue
+        changed += resolver.wire(skill)
         stored, store_changes = pinned_bin_store.store_skill_bins(ROOT, skill, scoped_skill, store_root)
         changed += store_changes
         # A per-scope manifest is rendered, never linked to its template.
@@ -127,7 +130,7 @@ def main():
     store_root = args.data_root / "system" / pinned_bin_store.STORE_DIRNAME
     for scope in scope_dirs(args.data_root, args.scope, args.all_scopes, args.existing_only):
         changed, skipped = link_scope(scope, names, store_root)
-        note = f", {skipped} scope-owned skill(s) left alone" if skipped else ""
+        note = f", {skipped} scope-owned or removed skill(s) left alone" if skipped else ""
         print(f"✓ scoped runtime files linked: {scope} ({changed} link(s) changed{note})")
     if args.prune_bin_store:
         for removed in pinned_bin_store.prune_store(args.data_root / "scopes", store_root):

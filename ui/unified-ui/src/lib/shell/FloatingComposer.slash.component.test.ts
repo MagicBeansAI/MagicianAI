@@ -37,7 +37,7 @@ describe('FloatingComposer slash commands', () => {
 		const textbox = screen.getByRole('textbox');
 
 		await user.type(textbox, '/');
-		expect(options()).toEqual(['/budget', '/budget default', '/engine', '/run-engine']);
+		expect(options()).toEqual(['/budget', '/budget default', '/engine', '/run-engine', '/voice-mode']);
 
 		await user.type(textbox, 'eng');
 		expect(options()).toEqual(['/engine', '/run-engine']);
@@ -85,11 +85,19 @@ describe('FloatingComposer slash commands', () => {
 
 		await user.type(textbox, '/engine');
 		await user.keyboard('{Enter}');
-		expect(options()).toContain('Claude Code · opus');
+		expect(options()).toEqual(['Magician', 'Claude Code', 'Make default everywhere…']);
+		expect(screen.getByTestId('slash-summary')).toHaveTextContent('Now: Magician (this browser) · everywhere: Magician');
+
+		// An engine with models opens its model level; Backspace comes back.
+		await user.keyboard('{ArrowDown}{Enter}');
+		expect(screen.getByTestId('composer-value').textContent).toBe('/engine claude_code ');
+		expect(options()).toEqual(['CLI default', 'opus']);
+		await user.keyboard('{Backspace}');
+		expect(screen.getByTestId('composer-value').textContent).toBe('/engine ');
 
 		await user.keyboard('{Backspace}');
 		expect(screen.getByTestId('composer-value').textContent).toBe('/');
-		expect(options()).toEqual(['/budget', '/budget default', '/engine', '/run-engine']);
+		expect(options()).toEqual(['/budget', '/budget default', '/engine', '/run-engine', '/voice-mode']);
 
 		await user.keyboard('{ArrowDown}{ArrowDown}{Enter}');
 		expect(screen.getByTestId('composer-value').textContent).toBe('/engine ');
@@ -122,6 +130,25 @@ describe('FloatingComposer slash commands', () => {
 			value: 'unlimited'
 		});
 		expect(screen.getByTestId('composer-value').textContent).toBe('');
+	});
+
+	it('shows a voice mode this surface lacks without running it', async () => {
+		const user = userEvent.setup();
+		const slashContext: SlashCommandContext = { ...CONTEXT, voiceMode: 'recording', voiceModesAvailable: ['recording'] };
+		render(FloatingComposerHarness, { props: { slashCommandsEnabled: true, slashContext } });
+		await user.type(screen.getByRole('textbox'), '/voice-mode');
+		await user.keyboard('{Enter}');
+		expect(options()).toEqual(['Live', 'Dictate', 'Hands-free']);
+		const picker = screen.getByTestId('slash-picker');
+		const live = within(picker).getByRole('option', { name: /Live/ });
+		expect(live).toHaveAttribute('aria-disabled', 'true');
+		await user.click(live);
+		expect(screen.getByTestId('composer-slash-command').textContent).toBe('');
+		await user.click(within(picker).getByRole('option', { name: /Dictate/ }));
+		expect(JSON.parse(screen.getByTestId('composer-slash-command').textContent ?? '')).toEqual({
+			type: 'voice-mode',
+			mode: 'recording'
+		});
 	});
 
 	it('lets a "/" draft that matches no command send as an ordinary message', async () => {

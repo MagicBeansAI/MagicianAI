@@ -7,6 +7,7 @@ Artifacts can contain tool output: keep --output outside git. No token is logged
 from __future__ import annotations
 
 import argparse
+from llm_catalog_config import selection_for_routing_handle
 import http.client
 import http.server
 import html
@@ -217,7 +218,10 @@ class Client:
             if e.get('execution_id') == record['execution'] or e.get('payload', {}).get('execution_id') == record['execution']]
 
     def task(self, engine, case, prompt, agent='personal-assistant'):
-        self.api('PUT', '/plane/engine', {'harness_engine': engine, 'harness_model': MODELS.get(engine, 'default'), 'pi_profile': self.args.pi_profile})
+        setting = {'harness_engine': engine, 'harness_model': MODELS.get(engine, 'default')}
+        if engine == 'pi':
+            setting['model_selection'] = selection_for_routing_handle(self.api('GET', '/llm/routing'), self.args.pi_profile)
+        self.api('PUT', '/plane/engine', setting)
         task = self.api('POST', '/api/magician/v3/tasks', {'title': case, 'description': prompt,
             'agent_id': agent, 'approved': True, 'created_by': 'user'})
         tid = task['task']['manifest']['task_id']
@@ -329,8 +333,8 @@ def main():
     parser.add_argument('--engines', nargs='+', choices=ENGINES, default=ENGINES)
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--timeout', type=int, default=360)
-    parser.add_argument('--native-profile', default='chat-gpt61sol-responses-vision-toolsauto-fast')
-    parser.add_argument('--pi-profile', default='chat-openai-adaptive-instant')
+    parser.add_argument('--native-profile', default='model/openai/gpt-6.1-sol/low')
+    parser.add_argument('--pi-profile', default='model/openai/gpt-6-luna/auto')
     parser.add_argument('--models-dir', type=Path, help='Run bounded model-action qualification instead of paired host workflows')
     parser.add_argument('--fixtures-root', type=Path, default=Path('/tmp'), help='Directory allowed by the test host read_file policy')
     args = parser.parse_args()
@@ -344,7 +348,7 @@ def main():
         return
     settings = client.api('GET', '/plane/engines')
     original_mode = {'mode': settings['decision_mode']}
-    original_engine = {'harness_engine': settings['current'], 'harness_model': settings['run_model'], 'pi_profile': settings['run_pi_profile']}
+    original_engine = {'harness_engine': settings['current'], 'harness_model': settings['run_model'], 'model_selection': settings['run_model_selection']}
     summary = {'kind': 'typed_gate_on_off', 'workflow': args.workflow, 'repeats': args.repeats, 'profiles': {'magician': args.native_profile, 'pi': args.pi_profile}, 'rows': []}
     save(args.output / 'original-settings.json', {'decision_config': original, 'mode': original_mode, 'engine': original_engine})
     try:
@@ -375,7 +379,11 @@ def main():
     finally:
         args.config.write_text(original)
         client.api('PUT', '/plane/decision-mode', {'mode': original_mode['mode']})
-        client.api('PUT', '/plane/engine', {k: original_engine[k] for k in ['harness_engine', 'harness_model', 'pi_profile'] if k in original_engine})
+        if original_engine['harness_engine'] != 'pi' and original_engine['model_selection'] is not None:
+            client.api('PUT', '/plane/engine', {'harness_engine': 'pi', 'harness_model': 'default', 'model_selection': original_engine['model_selection']})
+            client.api('PUT', '/plane/engine', {key: original_engine[key] for key in ['harness_engine', 'harness_model']})
+        else:
+            client.api('PUT', '/plane/engine', original_engine)
 
 
 if __name__ == '__main__':

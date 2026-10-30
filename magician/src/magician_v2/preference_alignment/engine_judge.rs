@@ -37,6 +37,11 @@ use crate::magician_v2::decision_host::classification::{ready_policy, PolicyLook
 use crate::magician_v2::decisions::runner;
 use crate::magician_v2::query_analysis::operation_llm_router::OperationLlmRouter;
 
+/// The background Decision Engine operation for the advisory lane: the same
+/// `action_alignment` pack, queued behind the blocking lane and allowed to ask
+/// about several intentions per call.
+pub const ADVISORY_ENGINE_OPERATION: &str = "action_alignment_advisory";
+
 /// Least time left for the generative fallback to be worth starting; below
 /// it the check is unresolved at once rather than timing out later.
 pub const FALLBACK_MIN_REMAINING: Duration = Duration::from_millis(1_500);
@@ -67,7 +72,7 @@ pub async fn judge_typed(
     let started = Instant::now();
     let elapsed = |started: Instant| started.elapsed().as_millis() as u64;
     let coverage_complete = input.coverage.status == CoverageStatus::Complete;
-    let reason = match typed_decision(input, fallback, bars, budget).await {
+    let reason = match typed_decision(ENGINE_OPERATION, input, fallback, bars, budget).await {
         Ok(decision) => {
             return JudgeOutcome::Decided {
                 decision,
@@ -114,20 +119,48 @@ pub async fn judge_typed(
     }
 }
 
+/// One advisory batch: intentions that cannot make the act wait. Typed path
+/// only, on [`ADVISORY_ENGINE_OPERATION`]; no generative fallback, because an
+/// advisory batch that cannot be judged is dropped rather than held.
+pub async fn judge_typed_advisory(
+    input: &AlignmentInput,
+    bars: &ComposerBars,
+    budget: Duration,
+) -> JudgeOutcome {
+    let started = Instant::now();
+    match typed_decision(ADVISORY_ENGINE_OPERATION, input, None, bars, budget).await {
+        Ok(decision) => JudgeOutcome::Decided {
+            decision,
+            reference_version: Some(typed_reference_version()),
+            coverage_complete: input.coverage.status == CoverageStatus::Complete,
+            latency_ms: started.elapsed().as_millis() as u64,
+        },
+        Err(reason) => JudgeOutcome::Unresolved {
+            cause: UnresolvedCause::Provider(format!("advisory typed path: {reason}")),
+            latency_ms: started.elapsed().as_millis() as u64,
+        },
+    }
+}
+
 /// The typed decision, or why there is none.
 async fn typed_decision(
+    operation: &str,
     input: &AlignmentInput,
     fallback: Option<&OperationLlmRouter>,
     bars: &ComposerBars,
     budget: Duration,
 ) -> Result<ValidatedDecision, String> {
-    let lookup = ready_policy(ENGINE_OPERATION, &input.principal, &input.workspace).await;
+    let lookup = ready_policy(operation, &input.principal, &input.workspace).await;
     match &lookup {
         PolicyLookup::Participating(participation) if participation.policy.gate => {},
-        PolicyLookup::Participating(_) => return Err("the engine's action_alignment gate is off".into()),
+        PolicyLookup::Participating(_) => {
+            return Err(format!("the engine's {operation} gate is off"))
+        },
         PolicyLookup::Disabled => return Err("the decision engine is off".into()),
         PolicyLookup::Unavailable(failure) => {
-            return Err(format!("the decision engine policy is unavailable ({failure:?})"))
+            return Err(format!(
+                "the decision engine policy is unavailable ({failure:?})"
+            ))
         },
     }
     let (context, items) = project(input);
@@ -140,13 +173,14 @@ async fn typed_decision(
     let trace = match fallback {
         Some(router) => router.classification_trace_context(scope),
         None => {
-            let mut trace = magicllm::LlmTraceContext::new(scope, magicllm::LlmWorkloadClass::Ambient);
+            let mut trace =
+                magicllm::LlmTraceContext::new(scope, magicllm::LlmWorkloadClass::Ambient);
             trace.call_role = magicllm::LlmCallRole::Judge;
             trace
         },
     };
     let request = runner::Input {
-        operation: ENGINE_OPERATION.to_string(),
+        operation: operation.to_string(),
         projection_version: PROJECTION_VERSION.to_string(),
         reference_version: typed_reference_version(),
         case_id,
@@ -159,7 +193,10 @@ async fn typed_decision(
                 choice_candidates: BTreeMap::new(),
             })
             .collect(),
-        required_questions: QUESTIONS.iter().map(|question| question.to_string()).collect(),
+        required_questions: QUESTIONS
+            .iter()
+            .map(|question| question.to_string())
+            .collect(),
         scope: trace,
         agent: None,
         requires_completion: false,
@@ -292,7 +329,10 @@ mod tests {
             Duration::from_secs(4),
         )
         .await;
-        assert!(matches!(outcome, JudgeOutcome::NothingToCompare), "{outcome:?}");
+        assert!(
+            matches!(outcome, JudgeOutcome::NothingToCompare),
+            "{outcome:?}"
+        );
     }
 
     #[test]

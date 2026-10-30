@@ -1,4 +1,4 @@
-<!-- Part A line ranges are the Pi 0.79.2 extraction. Runtime completion is the reviewed Pi 0.87.1 contract below. Design archive: docs/archive/plans/2026-06-14-vibedev-100x-plan.md -->
+<!-- Part A line ranges are the Pi 0.79.2 extraction. Runtime completion is the reviewed Pi 1.3.0 contract below. Design archive: docs/archive/plans/2026-06-14-vibedev-100x-plan.md -->
 
 # Pi Coding-Engine Contract
 
@@ -14,12 +14,24 @@ Crate-relative under `magician/src/magician_v2/`: PI
 root). Part A paths were under
 `/tmp/pi-inspect/node_modules/@earendil-works/pi-coding-agent/` at extraction.
 
-## Current runtime contract — Pi 0.87.1
+## Current runtime contract — Pi 1.3.0
 
-`scripts/setup-pi-coding-agent.sh` pins `@earendil-works/pi-coding-agent@0.87.1`
-(Node floor 22.19.0; `pi-coding-agent@0.87.1` shrinkwraps `pi-ai` /
-`pi-agent-core` / `pi-tui`). The adapter checks `pi --version` (5s,
-`PI_RPC_REQUIRED_VERSION`) and refuses unreviewed versions before RPC.
+`scripts/setup-pi-coding-agent.sh` pins `@earendil-works/pi-coding-agent@1.3.0`
+(Node floor 22.19.0; no shrinkwrap since 1.0.1, only Pi's own packages are
+pinned exactly). The adapter checks `pi --version` (5s, `PI_RPC_REQUIRED_VERSION`) and refuses
+unreviewed versions before RPC.
+
+- **Built-in extensions (0.99+: MCP client, codemode, tool search).** Every
+  governed launch passes `--no-mcp` (else the operator's `mcp.json` servers
+  connect); Plane and `harness-pi` launches also pass `--no-extensions`, which
+  disables the built-ins too. Only unrestricted Plane runs keep them.
+- **Arguments.** `--provider` requires `--model` (1.0), so the adapter sends
+  the provider only with a model, and maps magicllm `gemini` to Pi's `google`.
+- **Additive fields.** `prompt`/`steer`/`follow_up` responses carry
+  `data.disposition` (0.99); `agent_settled` carries `aborted` (1.1); nested
+  tool events carry `parentToolCallId`. The parser ignores them.
+- **Print mode.** `pi -p` exits 1 when the answer is cut off at the output
+  limit (1.2); `harness-pi` treats that as a failed call.
 
 - **Settlement.** A successful `prompt` is only acceptance. `agent_end` is
   **non-terminal** whatever `willRetry` says (retries, extension continuation
@@ -43,8 +55,9 @@ root). Part A paths were under
   for Pi's Responses adapter (1,050,000 context, profile output cap ≤128,000,
   thinking low–max, tiered rates above 272,000 input tokens) instead of a
   generic entry with zero pricing and unsupported `off`/`minimal` levels.
+- **`gpt-6.1-terra`** uses the same physical limits with `off` mapped to `none`; private Pi routes take base and long-context rates from Magician's pricing table.
 
-Fixture `execution/coding_engine/fixtures/pi_rpc_session_0.87.1.jsonl` replays
+Fixture `execution/coding_engine/fixtures/pi_rpc_session_1.3.0.jsonl` replays
 through the production parser and collector, proving `agent_end` cannot
 release normal / auto-retry / compaction-retry / queued follow-up flows.
 
@@ -370,10 +383,14 @@ runner. Both are granted to senior/principal/frontend/junior-* (system template
 **and** `scopes/anonymous/default`); `notify_owner` to `engineering-manager`.
 Autopilot: branch-first (never main), coding → apply → checks → fix (the
 directive asks for at most 12 coding iterations;
-`vibedev_cockpit_autopilot_directive_block`), commit, `notify_owner`. Autopilot **or** an agent that already has
-`apply_code_proposal` does **not** park on its `diff_approval`. Accept-in-scope
-skips permission HITL for in-tree file tools, not `diff_approval`; attended
-Build still prompts.
+`vibedev_cockpit_autopilot_directive_block`), commit, `notify_owner`. Only an
+Autopilot run (`AgenticContext::vibedev_autopilot`, from the `autopilot` tag,
+inherited by delegates and kept across pauses) or a non-VibeDev agent holding
+`apply_code_proposal` skips the `diff_approval` park; an attended Build parks
+even when its engineer holds that tool. Accept-in-scope skips permission HITL
+for in-tree file tools, not `diff_approval`. Answering a finished engineer's
+review wakes its parked parent (`schedule_child_completed_wake`); a parent
+parked on an open review is not a reconciliation error.
 
 ## Preview screenshots
 
@@ -383,7 +400,7 @@ if none) into a `#vibedev` attachment on synthetic session
 `vibedev-shots-<project_id>` (newest-12). IMAGE records become RPC `images[]`
 via `PiTurnOptions.images`, **not** a shadow path. Cockpit visual self-correct
 is opt-in; its directive asks for at most 3 visual passes per change
-(`visualSelfCorrectDirectiveBlock`).
+(`run_service::vibedev_cockpit_visual_self_correct_block`).
 
 ## Citizen API
 
@@ -514,10 +531,10 @@ Profile order: tool `coding_profile`/`profile` → agent's
 (`coding-deepseek-v4.1-flash`; screenshots and thinking on one model), MiniMax
 M3 (`coding-minimax-m3`).
 
-Provider and model go to Pi verbatim (`--provider`, `--model`) with
-`api_key_env` forwarded (Pi reads `XAI_API_KEY` for `xai`). Billed cost is Pi's
-stats delta, only as right as Pi's catalogue: 0.87.1 lists every shipped coding
-model; an unknown id runs on a clone of the provider's default entry (warning
+Provider and model go to Pi as `--provider` (magicllm `gemini` becomes
+`google`) and `--model`, with `api_key_env` forwarded (Pi reads `XAI_API_KEY`
+for `xai`). Billed cost is Pi's stats delta, only as right as Pi's catalogue:
+1.3.0 lists every shipped coding model; an unknown id runs on a clone of the provider's default entry (warning
 "Using custom model id") at its rates.
 
 `/llm` records only `LLMResponseReceived`: `run_turn` samples stats before the

@@ -85,6 +85,7 @@ fileprivate extension VerdictState {
         case .cancelled: return .run
         case .queued: return .plan
         case .archived: return .output
+        case .finalizing: return .output
         case .finished: return .output
         }
     }

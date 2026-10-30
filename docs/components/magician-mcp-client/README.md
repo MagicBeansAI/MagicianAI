@@ -7,18 +7,17 @@ becoming product-wide APIs. Per-slice history lives in the
 
 ## Current contract
 
-- `rmcp` is exact-pinned at `3.1.0`; Git versions of the MCP SDK and handwritten
+- `rmcp` is exact-pinned at `3.7.0`; Git versions of the MCP SDK and handwritten
   MCP wire logic are prohibited. `tool-runtime-core` inherits the exact
   workspace Git revision from MagicRun.
-- `ClientLifecycleMode::Auto` prefers stateless MCP `2026-07-28` and falls back to
-  `2025-11-25` only after `server/discover` returns method-not-found. Stdio and Streamable
-  HTTP use that auto lifecycle. Many legacy HTTP servers reject the discover probe
-  another way: invalid-request `-32600` (Metabase's built-in MCP) or the TypeScript MCP
-  SDK's `-32000` "Server not initialized" (HTTP 400, `id: null`). Streamable HTTP then
-  opens a fresh transport on the same client and retries with the SDK's legacy
-  `initialize` lifecycle. Any other discover error still fails. The duplex-JSON channel (Android device bridge) requires
-  `2026-07-28` discovery and does not own WebSockets, pairing, device identity, product
-  scope, or reconnect.
+- `ClientLifecycleMode::Auto` prefers stateless MCP `2026-07-28` and lets the
+  SDK retry `2025-11-25` initialization after a correlated legacy discovery error.
+  Authentication failures and modern protocol rejections do not trigger that fallback.
+  For legacy HTTP rejections that prevent same-transport fallback (including
+  Metabase's `-32600` and the TypeScript SDK's HTTP 400 `-32000` with `id: null`),
+  Streamable HTTP opens a fresh transport and retries SDK-owned initialization.
+  The duplex-JSON channel (Android device bridge) requires `2026-07-28` discovery
+  and does not own WebSockets, pairing, device identity, product scope, or reconnect.
 - Supported transports are governed stdio children, Streamable HTTP, and a
   bounded duplex-JSON channel supplied by an embedding runtime that already owns
   authentication and framing. The retired 2024 HTTP+SSE client transport is not
@@ -29,18 +28,28 @@ becoming product-wide APIs. Per-slice history lives in the
 - HTTP requires HTTPS except for loopback development endpoints. Credentials and query
   strings are forbidden in endpoint URLs; a bearer credential is supplied separately
   and is redacted from diagnostics.
+  One-way credential-session fingerprints may bind short-lived product artifacts;
+  they are not account identities or durable approval keys.
+- HTTP 200 JSON `null` acknowledges notifications/client replies only; requests
+  still require a valid correlated JSON-RPC response. Legacy-init errors expose
+  the stable failure class without leaking remote error bodies or credentials.
+- Bounded schemas support composition constraints over enclosing property names;
+  content-encoding annotations are stripped with other untrusted schema prose.
 - Discovery issues SDK-owned `tools/list` through a bounded page loop, rejects
   repeated cursors / overflow, and atomically replaces the callable set only after
   every page validates. Failed rediscovery preserves the previous generation; old
   ids are revoked only after a successful swap. A call requires an opaque
-  `McpToolId` from the current snapshot. Timeouts and dropped futures send
-  `notifications/cancelled`.
+  `McpToolId` from the current snapshot. A request may run up to the pack's
+  declared `limits.timeout_secs` (capped at the 24 h manifest maximum; 60 s
+  when undeclared). Timeouts and dropped futures send
+  `notifications/cancelled`. `call_tool_reporting_dispatch` distinguishes local
+  refusals from failures after transport handoff, whose effects may be unknown.
 - SDK `CredentialStore` / `StateStore` adapt to a scoped encrypted vault. Opaque
   keys bind principal, workspace, provider, profile, MCP resource, and issuer;
   PKCE callback state is create-only, 10-minute TTL, atomically consumed. The
   coordinator owns discovery/PKCE/exchange/persistence; product handlers supply
   only the raw callback query. Local logout does not claim provider revocation
-  (`rmcp 3.1.0` exposes none).
+  (the SDK exposes none).
 - A policy-first projector mints dotted local names from a finite JSON-Schema
   subset and rejects the complete candidate on any failure. Tool ids bind client
   instance + discovery generation. Continuations reserve count/byte budget
@@ -92,7 +101,7 @@ registration/routing, telemetry, and artifacts.
 `make test-phase5g-local` runs the isolated client suite, core strategy suite, and
 focused delegated-material, encrypted-vault, and OAuth registry/callback product
 boundaries. `make test-mcp-official-conformance` runs the networked official lane
-against the pin at `rmcp-v3.1.0` for both `2025-11-25` and `2026-07-28`.
+against the pin at `rmcp-v3.7.0` for both `2025-11-25` and `2026-07-28`.
 `make test-phase5g` runs both. The offline pin/evidence guard is included in
 `make check-all`.
 
@@ -102,3 +111,5 @@ against the pin at `rmcp-v3.1.0` for both `2025-11-25` and `2026-07-28`.
 - [Crate changelog](../../../magician-mcp-client/CHANGELOG.md)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
 - [Official MCP conformance suite](https://github.com/modelcontextprotocol/conformance)
+
+Product callback selection and cross-device sign-in are owned by [Browser sign-in](../magician/browser-signin.md); SDK OAuth/token mechanics remain here.

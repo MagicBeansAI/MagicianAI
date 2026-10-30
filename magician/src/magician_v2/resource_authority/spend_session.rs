@@ -257,6 +257,7 @@ mod tests {
                 carryover: CarryoverPolicy::None,
                 system_ceiling_id: None,
             }],
+            model_spend: None,
         }
     }
 
@@ -315,6 +316,7 @@ mod tests {
                 enabled: true,
                 system_ceilings: vec![],
                 budgets: vec![],
+                model_spend: None,
             },
             ArtifactV2Workspace::new(tmp.path()),
         ));

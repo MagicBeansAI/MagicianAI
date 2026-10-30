@@ -69,6 +69,7 @@ fn request() -> DecideRequest {
             vec![("read".into(), "Read the record".into())],
         )]),
         locality: Locality::Cloud,
+        assets: Default::default(),
     }
 }
 #[actix_web::test]

@@ -271,6 +271,7 @@ impl CoreV2ConversationStore for MockV2Store {
             active_delegation_group: Vec::new(),
             timeout_secs,
             delegation_chain,
+            read_lineage: Vec::new(),
             work_authority: None,
             paused_from_state: None,
             entry_mode: ExecutionEntryMode::PlanningBacked,

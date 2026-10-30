@@ -1,7 +1,7 @@
 ---
 name: image-generation-via-openai
-version: 0.1.0
-description: Generate a new image or edit an existing image through OpenAI GPT Image 2. Use for OpenAI image creation, reference-based edits and masked edits; returns a saved image artifact and metered provider receipt.
+version: 0.2.0
+description: Generate a new image or edit an existing image through OpenAI GPT Image 2.5 (Flare for everyday generation, Sunburst for precise edits). Use for OpenAI image creation, reference-based edits and masked edits; returns a saved image artifact and metered provider receipt.
 compatibility: Requires OPENAI_API_KEY through scoped credential authority, Python 3 and Pillow. Calls only api.openai.com.
 metadata:
   magician:
@@ -56,9 +56,9 @@ metadata:
           parameters:
             prompt: {type: string, description: Image creation instructions., required: true, min_length: 1, max_length: 32000}
             output_path: {type: workspace_path, access: create_file, description: New image file in the governed workspace; extension must match output_format., required: true, max_length: 4096}
-            model: {type: string, description: Explicit GPT Image 2 model or pinned snapshot., default: gpt-image-2, enum_values: [gpt-image-2, gpt-image-2-2026-04-21]}
-            quality: {type: string, description: Image quality., default: auto, enum_values: [auto, low, medium, high]}
-            size: {type: string, description: auto or WIDTHxHEIGHT satisfying GPT Image 2 size limits., default: auto, max_length: 32}
+            model: {type: string, description: GPT Image 2.5 variant or pinned snapshot. Flare is the fast everyday default; choose Sunburst for final or detail-critical images., default: gpt-image-2.5-flare, enum_values: [gpt-image-2.5-flare, gpt-image-2.5-flare-2026-09-08, gpt-image-2.5-sunburst, gpt-image-2.5-sunburst-2026-09-08]}
+            quality: {type: string, description: Image quality. low or medium for drafts; high for finals; xhigh or max only for hero or 4K assets., default: auto, enum_values: [auto, low, medium, high, xhigh, max]}
+            size: {type: string, description: auto or WIDTHxHEIGHT satisfying GPT Image 2.5 size limits., default: auto, max_length: 32}
             output_format: {type: string, description: Saved image format., default: png, enum_values: [png, jpeg, webp]}
             background: {type: string, description: Transparent output requires PNG or WebP., default: auto, enum_values: [auto, opaque, transparent]}
         edit:
@@ -69,9 +69,9 @@ metadata:
             image_path: {type: workspace_path, access: read_file, description: "Existing PNG, JPEG or WebP source image in the governed workspace.", required: true, max_length: 4096}
             mask_path: {type: workspace_path, access: read_file, description: Optional same-size PNG mask; transparent pixels identify the editable region., max_length: 4096}
             output_path: {type: workspace_path, access: create_file, description: New image file in the governed workspace; the source is never overwritten., required: true, max_length: 4096}
-            model: {type: string, description: Explicit GPT Image 2 model or pinned snapshot., default: gpt-image-2, enum_values: [gpt-image-2, gpt-image-2-2026-04-21]}
-            quality: {type: string, description: Image quality., default: auto, enum_values: [auto, low, medium, high]}
-            size: {type: string, description: auto or WIDTHxHEIGHT satisfying GPT Image 2 size limits., default: auto, max_length: 32}
+            model: {type: string, description: GPT Image 2.5 variant or pinned snapshot. Sunburst is the default for edits because it preserves detail most precisely; Flare suits quick rough edits., default: gpt-image-2.5-sunburst, enum_values: [gpt-image-2.5-flare, gpt-image-2.5-flare-2026-09-08, gpt-image-2.5-sunburst, gpt-image-2.5-sunburst-2026-09-08]}
+            quality: {type: string, description: Image quality. low or medium for drafts; high for finals; xhigh or max only for hero or 4K assets., default: auto, enum_values: [auto, low, medium, high, xhigh, max]}
+            size: {type: string, description: auto or WIDTHxHEIGHT satisfying GPT Image 2.5 size limits., default: auto, max_length: 32}
             output_format: {type: string, description: Saved image format., default: png, enum_values: [png, jpeg, webp]}
             background: {type: string, description: Transparent output requires PNG or WebP., default: auto, enum_values: [auto, opaque, transparent]}
     runtime_catalog:
@@ -95,8 +95,7 @@ image-generation-via-openai.edit({"prompt":"Change the sky to sunset; preserve t
 
 Optional `mask_path` selects an editable region using transparent pixels in a
 PNG mask with the same dimensions as the source. PNG/JPEG/WebP sources must
-be under 50 MiB; masks must be under 4 MiB. GPT Image 2 processes image inputs
-at high fidelity automatically, so this skill omits `input_fidelity`.
+be under 50 MiB; masks must be under 4 MiB. This skill omits `input_fidelity`.
 Transparent output is an OpenAI preview feature.
 
 The existing runtime resolves `OPENAI_API_KEY` through scoped credential
@@ -109,6 +108,24 @@ file must satisfy the runtime's ownership and private-mode checks.
 Credentials and provider
 URLs are not model parameters. This skill uses one HTTPS request and never
 automatically retries a paid operation.
+
+## Choosing a model and quality
+
+GPT Image 2.5 has two variants with the same token rates; they differ in speed
+and precision, not price per token.
+
+- **Flare** (`gpt-image-2.5-flare`, default for `generate`): fast, high-quality
+  everyday generation. Use it for drafts, iterations, social images and most
+  marketing visuals.
+- **Sunburst** (`gpt-image-2.5-sunburst`, default for `edit`): the most capable
+  variant, slower. Use it for edits where detail must be preserved and for final
+  hero images (deck covers, launch assets) once the Flare draft is approved.
+- Pin a dated snapshot (`...-2026-09-08`) when a frozen Quality policy needs
+  reproducible behaviour.
+
+Quality drives cost far more than the variant: `low`/`medium` for drafts,
+`high` for finals, `xhigh`/`max` only for hero or 4K assets. Resolutions above
+2560x1440 are experimental.
 
 Results contain `images[].path`, image metadata and SHA-256, `request_id`,
 provider token `usage`, `cost_microusd` and `pricing_version`. The cost is an

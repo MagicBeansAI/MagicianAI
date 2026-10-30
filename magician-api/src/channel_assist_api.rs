@@ -1751,6 +1751,10 @@ pub struct NeedsYouQuery {
     /// page from rebuilding the same complete cross-lane universe.
     #[serde(default = "default_true")]
     pub include_projection: bool,
+    /// Full-universe operator diagnostics are optional on latency-sensitive card reads.
+    /// Canonical decisions and impression bindings are unaffected.
+    #[serde(default = "default_true")]
+    pub include_diagnostics: bool,
 }
 
 const fn default_true() -> bool {
@@ -3037,27 +3041,6 @@ pub async fn get_channel_assist_needs_you_handler(
         })
         .collect();
     let mapping_ms = mapping_started.elapsed().as_secs_f64() * 1000.0;
-    let projection_ms = projection_started.elapsed().as_secs_f64() * 1000.0;
-    let budget_ms = today_projection_latency_budget_ms();
-    let within_budget = projection_ms <= budget_ms as f64;
-    if !within_budget {
-        // Soft budget: the projection is still served (the OK response below) and the
-        // exact timings ride in the Server-Timing / X-Magician-Latency-Budget headers
-        // regardless — so a breach is never an alert. It sits at DEBUG rather than
-        // INFO because a chronically-over-budget projection fires this on EVERY
-        // Today request, drowning the log; the per-request headers remain the
-        // authoritative timing signal either way.
-        tracing::debug!(
-            target: "magician::channel_assist::latency",
-            projection_ms,
-            store_ms,
-            mapping_ms,
-            budget_ms,
-            principal = principal.as_str(),
-            workspace = workspace.as_str(),
-            "Today channel projection exceeded its latency budget"
-        );
-    }
     // Only the legacy learned projection consumes this scope-wide histogram.
     // Canonical delivery already carries its health diagnostics, while callers
     // that set include_projection=false explicitly own those diagnostics through
@@ -3108,30 +3091,34 @@ pub async fn get_channel_assist_needs_you_handler(
     };
     // Semantic extraction health also walks the complete active universe. It is
     // diagnostic projection work, not part of card pagination or lookup.
-    let semantic_extraction_health =
-        if should_compute_follow_up_semantic_health(query.include_projection) {
-            if let (Some(learning), Some(worker), Some(resurfacing_store)) = (
-                learning.as_ref(),
-                semantic_worker.as_ref(),
-                resurfacing_store.as_ref(),
-            ) {
-                crate::attention_learning_api::build_semantic_extraction_health(
-                    learning,
-                    worker,
-                    &api.store,
-                    resurfacing_store,
-                    &principal,
-                    &workspace,
-                )
-                .await
-                .ok()
-            } else {
-                None
-            }
+    let semantic_extraction_health = if should_compute_follow_up_semantic_health(
+        query.include_projection && query.include_diagnostics,
+    ) {
+        if let (Some(learning), Some(worker), Some(resurfacing_store)) = (
+            learning.as_ref(),
+            semantic_worker.as_ref(),
+            resurfacing_store.as_ref(),
+        ) {
+            crate::attention_learning_api::build_semantic_extraction_health(
+                learning,
+                worker,
+                &api.store,
+                resurfacing_store,
+                &principal,
+                &workspace,
+            )
+            .await
+            .ok()
         } else {
             None
-        };
-    let actionability_training = if let Some(learning) = learning.as_ref() {
+        }
+    } else {
+        None
+    };
+    let actionability_training = if let Some(learning) = learning
+        .as_ref()
+        .filter(|_| query.include_projection && query.include_diagnostics)
+    {
         learning
             .actionability_training_status(&principal, &workspace)
             .await
@@ -3139,6 +3126,27 @@ pub async fn get_channel_assist_needs_you_handler(
     } else {
         None
     };
+    let projection_ms = projection_started.elapsed().as_secs_f64() * 1000.0;
+    let budget_ms = today_projection_latency_budget_ms();
+    let within_budget = projection_ms <= budget_ms as f64;
+    if !within_budget {
+        // Soft budget: the projection is still served (the OK response below) and the
+        // exact timings ride in the Server-Timing / X-Magician-Latency-Budget headers
+        // regardless — so a breach is never an alert. It sits at DEBUG rather than
+        // INFO because a chronically-over-budget projection fires this on EVERY
+        // Today request, drowning the log; the per-request headers remain the
+        // authoritative timing signal either way.
+        tracing::debug!(
+            target: "magician::channel_assist::latency",
+            projection_ms,
+            store_ms,
+            mapping_ms,
+            budget_ms,
+            principal = principal.as_str(),
+            workspace = workspace.as_str(),
+            "Today channel projection exceeded its latency budget"
+        );
+    }
     HttpResponse::Ok()
         .insert_header((
             "Server-Timing",
@@ -5177,6 +5185,16 @@ mod tests {
     use super::*;
 
     use magician_comms::channel_assist::types::REDACTED_SUBJECT_PLACEHOLDER;
+
+    #[test]
+    fn card_diagnostics_can_be_omitted_without_disabling_canonical_projection() {
+        let query: NeedsYouQuery =
+            serde_json::from_value(serde_json::json!({"include_diagnostics": false})).unwrap();
+        assert!(query.include_projection);
+        assert!(!query.include_diagnostics);
+        let legacy: NeedsYouQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(legacy.include_diagnostics);
+    }
 
     #[test]
     fn pair_correction_contract_parses_exact_revision_bound_owner_label() {

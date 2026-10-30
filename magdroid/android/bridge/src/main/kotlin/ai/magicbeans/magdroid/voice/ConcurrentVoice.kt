@@ -81,6 +81,7 @@ class ConcurrentVoiceCoordinator(
     private val automaticPlayback: () -> Boolean = { true },
     /** A live call is up; see [safe]. */
     private val liveActive: () -> Boolean = { false },
+    private val playForChat: ((String, String?, () -> Unit, (SpeechOutcome) -> Unit) -> Unit)? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val _state = MutableStateFlow(ConcurrentVoiceState())
@@ -220,7 +221,10 @@ class ConcurrentVoiceCoordinator(
             replays.remove(row.id)
             playing = p
             var startedReceipt: Job? = null
-            play(row.speechText.orEmpty(), {
+            val playRow: (String, () -> Unit, (SpeechOutcome) -> Unit) -> Unit = playForChat?.let { scoped ->
+                { text, started, outcome -> scoped(text, row.parentSessionId, started, outcome) }
+            } ?: play
+            playRow(row.speechText.orEmpty(), {
                 if (!active || capturing || inputPending || epoch != p.focusEpoch || gen != generation) stopPlayback()
                 else if (!p.started) {
                     p.started = true; captureFocus = row

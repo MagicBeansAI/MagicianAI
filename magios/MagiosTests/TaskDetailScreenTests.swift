@@ -206,6 +206,28 @@ final class TaskDetailScreenTests: XCTestCase {
         ])
     }
 
+    func testObservedWorkSurvivesAStalePollForTheSameRootOnly() async {
+        let seed = TaskDetailRoute(taskId: "task-progress").seed
+        var root = "run"
+        let model = TaskDetailScreenModel(seed: seed) { path in
+            if path.contains("execution-panel") {
+                return ["overview": ["execution_id": root, "status": "running"], "run": ["activity_log": []]]
+            }
+            if path == "/tasks/task-progress" { return ["task": ["state": ["status": "running", "active_root_execution_id": root, "last_progress_at": 1000]]] }
+            throw NSError(domain: "TaskDetailFixture", code: 404)
+        }
+        await model.refresh()
+        model.applyRealtimePanel(["overview": ["execution_id": "run", "status": "running"], "run": ["activity_log": [
+            ["id": "tool", "created_at": 5000, "metadata": ["event_type": "tool.call.started"]]]]])
+        XCTAssertEqual(model.snapshot?.lastProgressAt, Date(timeIntervalSince1970: 5))
+        await model.refresh()
+        XCTAssertEqual(model.snapshot?.lastProgressAt, Date(timeIntervalSince1970: 5))
+        root = "new-run"
+        await model.refresh()
+        XCTAssertEqual(model.snapshot?.progressExecutionId, "new-run")
+        XCTAssertEqual(model.snapshot?.lastProgressAt, Date(timeIntervalSince1970: 1))
+    }
+
     // MARK: - Asks answered in place
 
     private func row(_ object: [String: Any]) -> AttentionItem {
@@ -315,7 +337,10 @@ final class TaskDetailScreenTests: XCTestCase {
         vm.lanes["requests"] = []
         var posts = 0
         MockURLProtocol.handler = { request in
-            if request.httpMethod == "POST" { posts += 1 }
+            if request.httpMethod == "POST" {
+                posts += 1
+                return (response(for: request), jsonData(["accepted": true]))
+            }
             return (response(for: request), jsonData([:]))
         }
         let panelRow = try XCTUnwrap(TaskDetailSnapshot.parseAskRows([
@@ -336,5 +361,37 @@ final class TaskDetailScreenTests: XCTestCase {
                              vouched: true)
         RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         XCTAssertEqual(posts, 1, "a stale answer never reaches /respond")
+    }
+
+    // MARK: - Completion kind
+
+    private func completedSnapshot(_ state: [String: Any]) -> TaskDetailSnapshot {
+        var record = state
+        record["status"] = "completed"
+        return TaskDetailSnapshot.parse(
+            seed: TaskDetailRoute(taskId: "partly").seed,
+            taskPayload: ["task": ["manifest": ["title": "Ship it"], "state": record]],
+            panelPayload: nil, outputsPayload: nil, detailsPayload: nil, planPayload: nil)
+    }
+
+    func testACompletedPartialTaskHeadsPartlyDoneWithItsFirstOpenItem() {
+        let partly = completedSnapshot(["completion_kind": "partial",
+                                        "open_items": ["Blocked on the API key", "Tests"]])
+        XCTAssertTrue(partly.isPartlyDone)
+        XCTAssertEqual(partly.openItems, ["Blocked on the API key", "Tests"])
+        let verdict = partly.displayVerdict(now: now)
+        XCTAssertEqual(verdict.state, .finished, "act order keeps reading a finished task")
+        XCTAssertEqual(verdict.headline, "Partly done")
+        XCTAssertEqual(verdict.detail, "Open: Blocked on the API key · +1 more")
+        XCTAssertEqual(TaskDetailVerdictLine.tone(for: verdict.state, partlyDone: partly.isPartlyDone), .partial)
+    }
+
+    func testACompletedFullOrUnmarkedTaskStaysFinished() {
+        for state in [["completion_kind": "full"], [:]] as [[String: Any]] {
+            let done = completedSnapshot(state)
+            XCTAssertFalse(done.isPartlyDone)
+            XCTAssertEqual(done.displayVerdict(now: now), done.verdict(now: now))
+            XCTAssertEqual(TaskDetailVerdictLine.tone(for: .finished, partlyDone: done.isPartlyDone), .done)
+        }
     }
 }

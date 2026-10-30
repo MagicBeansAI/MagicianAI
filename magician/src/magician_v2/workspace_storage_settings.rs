@@ -5,8 +5,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::magician_v2::artifact_v2::io::write_bytes_durably_sync;
 use crate::magician_v2::artifact_v2::workspace::{
-    ArtifactV2Workspace, LOCAL_FILE_WORKSPACE_PROVIDER_ID, SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID,
+    ArtifactV2Workspace, LOCAL_FILE_WORKSPACE_PROVIDER_ID,
 };
+
+/// The retired notes-folder storage backend. Its store behaved exactly like
+/// `local_file` rooted at its folder, so a config that still selects it reads
+/// as `local_file` over that same folder: nothing moves.
+const LEGACY_NOTES_FOLDER_PROVIDER_IDS: &[&str] = &["silverbullet_space", "silverbullet"];
 
 /// The storage-provider selector is folded into magician-config.yaml (the
 /// `workspace_storage:` section) so the runtime root carries a single config
@@ -25,27 +30,50 @@ struct ConfigWorkspaceStorageView {
 pub struct WorkspaceStorageSettings {
     #[serde(default = "default_workspace_storage_provider")]
     pub provider: String,
-    #[serde(default)]
-    pub silverbullet: WorkspaceStorageSilverBulletSettings,
+    /// Read-only back-compat for the retired notes-folder backend (the YAML
+    /// key is its old name). Kept only while `provider` still names that
+    /// backend, where it keeps rooting the store at the same folder; under
+    /// `local_file` it was inert and is dropped on normalize.
+    #[serde(
+        default,
+        rename = "silverbullet",
+        skip_serializing_if = "LegacyNotesFolderStorage::is_empty"
+    )]
+    pub legacy_notes_folder: LegacyNotesFolderStorage,
 }
 
 impl Default for WorkspaceStorageSettings {
     fn default() -> Self {
         Self {
             provider: default_workspace_storage_provider(),
-            silverbullet: WorkspaceStorageSilverBulletSettings::default(),
+            legacy_notes_folder: LegacyNotesFolderStorage::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct WorkspaceStorageSilverBulletSettings {
-    /// Where the SilverBullet Space lives. Optional: defaults to the runtime root
-    /// (`MAGICIAN_ROOT_DIR` / bootstrap root) so a deployment never hard-codes its
-    /// machine path in the seed. (A legacy `runtime_root` field in older settings
-    /// files is accepted-and-ignored — the provider no longer re-roots.)
+pub struct LegacyNotesFolderStorage {
+    /// Root the retired backend stored runtime state under. (A legacy
+    /// `runtime_root` field is accepted and ignored, as before.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_path: Option<String>,
+}
+
+impl LegacyNotesFolderStorage {
+    pub fn is_empty(&self) -> bool {
+        self.space_path
+            .as_deref()
+            .is_none_or(|path| path.trim().is_empty())
+    }
+}
+
+impl WorkspaceStorageSettings {
+    /// A config that selected the retired notes-folder backend with a folder
+    /// of its own: the store stays rooted in that folder.
+    fn roots_in_legacy_notes_folder(&self) -> bool {
+        LEGACY_NOTES_FOLDER_PROVIDER_IDS.contains(&self.provider.trim())
+            && !self.legacy_notes_folder.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,7 +88,6 @@ pub struct WorkspaceStorageSettingsEnvelope {
 pub struct ResolvedWorkspaceStorageSettings {
     pub provider: String,
     pub local_root: String,
-    pub silverbullet_space_path: String,
     pub active_runtime_root: String,
 }
 
@@ -110,21 +137,27 @@ impl WorkspaceStorageSettingsStore {
         &self,
         settings: WorkspaceStorageSettings,
     ) -> std::io::Result<WorkspaceStorageSettingsEnvelope> {
-        let settings = settings.normalize();
+        let mut settings = settings.normalize();
+        // Clients no longer send the legacy folder. A stored config that roots
+        // the store in one is already `local_file` over that folder, so saving
+        // plain `local_file` must not quietly re-root the deployment.
+        let stored = self.load_settings();
+        if stored.roots_in_legacy_notes_folder()
+            && settings.provider == LOCAL_FILE_WORKSPACE_PROVIDER_ID
+            && settings.legacy_notes_folder.is_empty()
+        {
+            settings = stored;
+        }
         let path = self.settings_path();
-        // Load-edit-save: deserialize the full config, replace its
-        // `workspace_storage` section, re-serialize. Prefer the runtime-root
-        // copy; fall back to the resolved config path (seed template) so a fresh
-        // runtime root still materializes a complete config on first write.
-        // The whole load-edit-write runs on the blocking pool under the config
-        // file's lock, shared with `write_top_level_yaml_block`.
-        //
-        // `magician-config.yaml` has four writers — this one plus three
-        // top-level block replacements — and every one rewrites the entire file
-        // from its own snapshot. Unlocked, a settings change and, say, a media
-        // or vibedev_deploy block edit each read the same file and each wrote
-        // their whole version back; the later write took the file and the other
-        // section reverted with no error.
+        // Load-edit-save: load the full config, change its
+        // `workspace_storage` section, and write back only the lines of the
+        // values that changed (`apply_yaml_section`) — the owner's comments
+        // and every other section stay byte for byte. Prefer the runtime-root
+        // copy; fall back to the resolved config path (seed template) so a
+        // fresh runtime root still materializes a complete config on first
+        // write. The whole load-edit-write runs on the blocking pool under the
+        // config file's lock (`config_file_lock`), shared with every other
+        // settings writer, so two sections changed at once both land.
         //
         // Blocking rather than async so both writers can share one
         // `std::sync::Mutex`: the alternative was a tokio mutex the synchronous
@@ -141,13 +174,21 @@ impl WorkspaceStorageSettingsStore {
             } else {
                 crate::config::magician_config_path()
             };
-            let mut config = crate::config::load_magician_config_from_path(&base_path)
+            let config = crate::config::load_magician_config_from_path(&base_path)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
-            config.workspace_storage = write_settings;
+            let original = std::fs::read_to_string(&base_path)?;
+            let yaml = crate::magician_v2::runtime_settings::apply_yaml_section(
+                &original,
+                &["workspace_storage"],
+                &config.workspace_storage,
+                &write_settings,
+            )?;
+            if yaml == original && base_path == write_path {
+                return Ok(());
+            }
             if let Some(parent) = write_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let yaml = serde_yaml::to_string(&config).map_err(std::io::Error::other)?;
             // Durable publish: this is the whole runtime root's config file, and
             // a torn write of it fails `load_magician_config_from_path` on the
             // next boot rather than costing one setting.
@@ -163,12 +204,8 @@ impl WorkspaceStorageSettingsStore {
             .load_envelope_sync()
             .context("loading workspace storage settings")?;
         let workspace = match envelope.resolved.provider.as_str() {
-            LOCAL_FILE_WORKSPACE_PROVIDER_ID => ArtifactV2Workspace::new(&self.bootstrap_root),
-            SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID => {
-                ArtifactV2Workspace::with_silverbullet_space_provider(
-                    &envelope.resolved.silverbullet_space_path,
-                )
-                .context("configuring notes-folder workspace storage from API settings")?
+            LOCAL_FILE_WORKSPACE_PROVIDER_ID => {
+                ArtifactV2Workspace::new(self.active_runtime_root(&envelope.settings))
             },
             other => {
                 anyhow::bail!("unsupported workspace storage provider `{other}` in API settings")
@@ -178,6 +215,17 @@ impl WorkspaceStorageSettingsStore {
             Some(seed) => workspace.with_seed_root(seed),
             None => workspace,
         })
+    }
+
+    /// The runtime root: the bootstrap root, or the folder a config that still
+    /// selects the retired notes-folder backend points at.
+    fn active_runtime_root(&self, settings: &WorkspaceStorageSettings) -> PathBuf {
+        if settings.roots_in_legacy_notes_folder() {
+            if let Some(path) = settings.legacy_notes_folder.space_path.as_deref() {
+                return expand_tilde(path.trim());
+            }
+        }
+        self.bootstrap_root.clone()
     }
 
     pub fn settings_path(&self) -> PathBuf {
@@ -193,20 +241,7 @@ impl WorkspaceStorageSettingsStore {
         let provider = normalize_workspace_provider_id(&settings.provider)
             .unwrap_or_else(default_workspace_storage_provider);
         let local_root = self.bootstrap_root.clone();
-        // space_path defaults to the runtime root (bootstrap_root) so the seed never
-        // hard-codes a machine path. The SB provider roots directly at it (no
-        // `.magician/runtime` redirect), so the active runtime root IS the space path.
-        let silverbullet_space_path = settings
-            .silverbullet
-            .space_path
-            .as_deref()
-            .map(expand_tilde)
-            .unwrap_or_else(|| local_root.clone());
-        let active_runtime_root = if provider == SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID {
-            silverbullet_space_path.clone()
-        } else {
-            local_root.clone()
-        };
+        let active_runtime_root = self.active_runtime_root(&settings);
         let mut warnings = Vec::new();
         if normalize_workspace_provider_id(&settings.provider).is_none() {
             warnings.push(format!(
@@ -214,26 +249,12 @@ impl WorkspaceStorageSettingsStore {
                 settings.provider
             ));
         }
-        if provider == SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID {
-            warnings.push(
-                "Storing runtime state in the notes folder is experimental. Keep runtime state local unless you are intentionally testing this backend; notes stay in the notes folder either way."
-                    .to_string(),
-            );
-            if runtime_root_has_data(&local_root) && !runtime_root_has_data(&active_runtime_root) {
-                warnings.push(format!(
-                    "The notes-folder runtime root `{}` appears empty while local runtime root `{}` contains data. Workspace storage settings do not migrate task, chat, execution, memory, or artifact state automatically.",
-                    active_runtime_root.display(),
-                    local_root.display()
-                ));
-            }
-        }
         Ok(WorkspaceStorageSettingsEnvelope {
             settings_path: self.settings_path().display().to_string(),
             settings,
             resolved: ResolvedWorkspaceStorageSettings {
                 provider,
                 local_root: local_root.display().to_string(),
-                silverbullet_space_path: silverbullet_space_path.display().to_string(),
                 active_runtime_root: active_runtime_root.display().to_string(),
             },
             warnings,
@@ -243,19 +264,29 @@ impl WorkspaceStorageSettingsStore {
 
 impl WorkspaceStorageSettings {
     pub fn normalize(mut self) -> Self {
+        // The legacy id is kept only while it carries a folder: that pair is
+        // what roots the store there, and rewriting the id to `local_file`
+        // would make the next load treat the folder as inert. Without a folder
+        // the retired backend was `local_file` at the runtime root.
+        if self.roots_in_legacy_notes_folder() {
+            self.provider = self.provider.trim().to_string();
+            return self;
+        }
         self.provider = normalize_workspace_provider_id(&self.provider)
             .unwrap_or_else(default_workspace_storage_provider);
+        self.legacy_notes_folder = LegacyNotesFolderStorage::default();
         self
     }
 }
 
 fn normalize_workspace_provider_id(provider: &str) -> Option<String> {
-    match provider.trim() {
-        LOCAL_FILE_WORKSPACE_PROVIDER_ID => Some(LOCAL_FILE_WORKSPACE_PROVIDER_ID.to_string()),
-        SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID | "silverbullet" => {
-            Some(SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID.to_string())
-        },
-        _ => None,
+    let provider = provider.trim();
+    if provider == LOCAL_FILE_WORKSPACE_PROVIDER_ID
+        || LEGACY_NOTES_FOLDER_PROVIDER_IDS.contains(&provider)
+    {
+        Some(LOCAL_FILE_WORKSPACE_PROVIDER_ID.to_string())
+    } else {
+        None
     }
 }
 
@@ -272,20 +303,32 @@ fn expand_tilde(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn runtime_root_has_data(root: &Path) -> bool {
-    directory_has_entries(&root.join("scopes")) || directory_has_entries(&root.join("system"))
-}
-
-fn directory_has_entries(path: &Path) -> bool {
-    match std::fs::read_dir(path) {
-        Ok(mut entries) => entries.next().is_some(),
-        Err(_) => false,
-    }
-}
-
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn saving_storage_settings_changes_only_its_own_line() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let contents = crate::magician_v2::runtime_settings::replace_top_level_yaml_block(
+            &crate::config::shipped_repo_config_yaml(),
+            "workspace_storage",
+            "workspace_storage:\n  # owner: notes folder until the laptop move\n  provider: silverbullet_space  # notes\n",
+        );
+        std::fs::write(temp.path().join(CONFIG_FILE), &contents).expect("seed config");
+        let store = WorkspaceStorageSettingsStore::new(temp.path());
+        let mut settings = store.load_settings();
+        settings.provider = LOCAL_FILE_WORKSPACE_PROVIDER_ID.to_string();
+        store.save(settings).await.expect("save");
+        let written = std::fs::read_to_string(temp.path().join(CONFIG_FILE)).expect("read");
+        assert_eq!(
+            written,
+            contents.replace(
+                "  provider: silverbullet_space  # notes\n",
+                "  provider: local_file  # notes\n"
+            )
+        );
+    }
 
     #[test]
     fn default_settings_resolve_local_workspace() {
@@ -300,55 +343,117 @@ mod tests {
     }
 
     #[test]
-    fn silverbullet_settings_resolve_to_space_path() {
+    fn legacy_notes_folder_backend_reads_as_local_file_without_moving_anything() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let space = temp.path().join("MagicianNotes");
-        let store = WorkspaceStorageSettingsStore::new(temp.path().join("data"));
+        let root = temp.path().join("data");
+        let store = WorkspaceStorageSettingsStore::new(&root);
+
+        // The shipped shape: the retired backend, no folder of its own. It
+        // always rooted at the runtime root, exactly like local_file.
+        let yaml = "workspace_storage:\n  provider: silverbullet_space\n";
+        let view: ConfigWorkspaceStorageView = serde_yaml::from_str(yaml).expect("parse");
         let envelope = store
-            .envelope_for(WorkspaceStorageSettings {
-                provider: "silverbullet".to_string(),
-                silverbullet: WorkspaceStorageSilverBulletSettings {
-                    space_path: Some(space.display().to_string()),
-                },
-            })
-            .expect("resolve envelope");
+            .envelope_for(view.workspace_storage.normalize())
+            .expect("resolve");
+        assert_eq!(envelope.resolved.provider, LOCAL_FILE_WORKSPACE_PROVIDER_ID);
         assert_eq!(
-            envelope.resolved.provider,
-            SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID
+            envelope.resolved.active_runtime_root,
+            root.display().to_string()
         );
+        assert!(envelope.warnings.is_empty(), "{:?}", envelope.warnings);
+        let workspace = store_with_config(&root, yaml)
+            .resolve_workspace_sync()
+            .expect("workspace");
+        assert_eq!(
+            workspace.file_provider_id(),
+            LOCAL_FILE_WORKSPACE_PROVIDER_ID
+        );
+        assert_eq!(workspace.base_root(), root.as_path());
+
+        // A legacy folder of its own keeps rooting the store there.
+        let space = temp.path().join("MagicianNotes");
+        let yaml = format!(
+            "workspace_storage:\n  provider: silverbullet\n  silverbullet:\n    space_path: {}\n    runtime_root: .magician/runtime\n",
+            space.display()
+        );
+        let view: ConfigWorkspaceStorageView = serde_yaml::from_str(&yaml).expect("parse");
+        let settings = view.workspace_storage.normalize();
+        let envelope = store.envelope_for(settings.clone()).expect("resolve");
+        assert_eq!(envelope.resolved.provider, LOCAL_FILE_WORKSPACE_PROVIDER_ID);
         assert_eq!(
             envelope.resolved.active_runtime_root,
             space.display().to_string()
         );
-        assert!(
-            envelope.warnings.iter().any(|warning| warning
-                .contains("Storing runtime state in the notes folder is experimental")),
-            "silverbullet workspace storage should surface an experimental warning"
+        let workspace = store_with_config(&root, &yaml)
+            .resolve_workspace_sync()
+            .expect("workspace");
+        assert_eq!(workspace.base_root(), space.as_path());
+        // Round-trips under the config's own serializer: a reload after a
+        // save still roots in the same folder.
+        let reparsed: WorkspaceStorageSettings =
+            serde_yaml::from_str(&serde_yaml::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(reparsed.clone().normalize(), settings);
+        assert_eq!(
+            store
+                .envelope_for(reparsed.normalize())
+                .expect("resolve")
+                .resolved
+                .active_runtime_root,
+            space.display().to_string()
+        );
+
+        // Under local_file a stray legacy folder was inert and stays inert.
+        let yaml = format!(
+            "workspace_storage:\n  provider: local_file\n  silverbullet:\n    space_path: {}\n",
+            space.display()
+        );
+        let view: ConfigWorkspaceStorageView = serde_yaml::from_str(&yaml).expect("parse");
+        let envelope = store
+            .envelope_for(view.workspace_storage.normalize())
+            .expect("resolve");
+        assert_eq!(
+            envelope.resolved.active_runtime_root,
+            root.display().to_string()
         );
     }
 
-    #[test]
-    fn warns_when_switching_to_empty_silverbullet_runtime_from_populated_local_root() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(temp.path().join("scopes/anonymous/default"))
-            .expect("local runtime data");
-        let space = temp.path().join("MagicianNotes");
-        let store = WorkspaceStorageSettingsStore::new(temp.path());
-        let envelope = store
-            .envelope_for(WorkspaceStorageSettings {
-                provider: SILVERBULLET_SPACE_WORKSPACE_PROVIDER_ID.to_string(),
-                silverbullet: WorkspaceStorageSilverBulletSettings {
-                    space_path: Some(space.display().to_string()),
-                },
-            })
-            .expect("resolve envelope");
+    fn store_with_config(root: &Path, yaml: &str) -> WorkspaceStorageSettingsStore {
+        std::fs::create_dir_all(root).expect("root");
+        std::fs::write(root.join(CONFIG_FILE), yaml).expect("config");
+        WorkspaceStorageSettingsStore::new(root)
+    }
 
-        assert!(
-            envelope
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("appears empty while local runtime root")),
-            "switching to a cold provider root should not be silent"
+    #[tokio::test]
+    async fn saving_plain_local_file_keeps_a_legacy_folder_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("data");
+        let space = temp.path().join("MagicianNotes");
+        let contents = crate::magician_v2::runtime_settings::replace_top_level_yaml_block(
+            &crate::config::shipped_repo_config_yaml(),
+            "workspace_storage",
+            &format!(
+                "workspace_storage:\n  provider: silverbullet_space\n  silverbullet:\n    space_path: {}\n",
+                space.display()
+            ),
+        );
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(root.join(CONFIG_FILE), &contents).expect("seed config");
+        let store = WorkspaceStorageSettingsStore::new(&root);
+        let envelope = store
+            .save(WorkspaceStorageSettings::default())
+            .await
+            .expect("save");
+        assert_eq!(
+            envelope.resolved.active_runtime_root,
+            space.display().to_string()
+        );
+        assert_eq!(
+            store
+                .load_envelope_sync()
+                .expect("reload")
+                .resolved
+                .active_runtime_root,
+            space.display().to_string()
         );
     }
 }

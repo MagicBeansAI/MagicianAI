@@ -64,11 +64,12 @@ class BackendVoiceClient(
     private val json = Json { ignoreUnknownKeys = true }
     private val prefs = VoicePrefs.get(app)
 
-    suspend fun synthesize(text: String): ByteArray {
+    suspend fun synthesize(text: String, chatSessionId: String? = null): ByteArray {
         val clean = text.trim()
         if (clean.isEmpty()) throw VoiceMediaError("There is no reply to speak.", retryable = false)
         val response = client.post("${base()}/media/tts/synthesize") {
             authorize()
+            chatSessionId?.let { header("X-Chat-Session-Id", it) }
             contentType(ContentType.Application.Json)
             val profile = prefs.audioProfiles.value[NativeAudioSurface.Dictation]
             val tts = prefs.audioStageOptions.value[NativeAudioSurface.Dictation to NativeAudioStage.Tts]
@@ -86,7 +87,7 @@ class BackendVoiceClient(
             ?: throw VoiceMediaError("Backend voice returned no audio.")
     }
 
-    suspend fun transcribe(wav: ByteArray, filename: String = "dictation.wav"): String {
+    suspend fun transcribe(wav: ByteArray, filename: String = "dictation.wav", chatSessionId: String? = null): String {
         if (wav.size <= WavPcm.HeaderBytes) {
             throw VoiceMediaError("No speech was recorded.", retryable = false)
         }
@@ -110,7 +111,7 @@ class BackendVoiceClient(
                     append(HttpHeaders.ContentDisposition, "filename=\"$filename\"")
                 })
             },
-        ) { authorize() }
+        ) { authorize(); chatSessionId?.let { header("X-Chat-Session-Id", it) } }
         if (!response.status.isSuccess()) throw response.failure("Backend transcription is unavailable.")
         val decoded = runCatching {
             json.decodeFromString(TranscriptionResponse.serializer(), response.bodyAsText())

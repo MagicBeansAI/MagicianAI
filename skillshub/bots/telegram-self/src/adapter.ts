@@ -214,6 +214,8 @@ export class TelegramSelfAdapter implements ChannelAdapter<string> {
     });
 
     this.syncProcess = proc;
+    // A run that stays up long enough resets the failure streak.
+    this.resilient.recordStart();
 
     const rl = createInterface({ input: proc.stdout! });
     rl.on("line", (line: string) => {

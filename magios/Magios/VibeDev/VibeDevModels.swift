@@ -99,6 +99,33 @@ enum VibeDevFormat {
     }
 }
 
+// MARK: - Completion kind on VibeDev wire shapes
+
+/// `completion_kind` that never fails its parent: unknown kinds and other
+/// shapes read as nil (see `TaskCompletion`).
+struct VibeDevCompletionKind: Codable, Equatable {
+    let value: String?
+    init(_ value: String?) { self.value = TaskCompletion.kind(value) }
+    init(from decoder: Decoder) throws {
+        value = TaskCompletion.kind(try? decoder.singleValueContainer().decode(String.self))
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(value)
+    }
+}
+
+/// `open_items` that never fails its parent: non-strings are dropped.
+struct VibeDevOpenItems: Codable, Equatable {
+    let items: [String]
+    init(_ items: [String]) { self.items = TaskCompletion.openItems(items) }
+    init(from decoder: Decoder) throws { items = TaskCompletion.decodeOpenItems(decoder) }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(items)
+    }
+}
+
 // MARK: - Live runs (`GET /vibedev/runs/live`)
 
 enum VibeDevRunState: String, VibeDevOpenEnum, CaseIterable {
@@ -132,6 +159,48 @@ enum VibeDevRunState: String, VibeDevOpenEnum, CaseIterable {
     }
 }
 
+/// What a run waits on the owner for (`waiting_kind`). Only a diff review or
+/// a decision makes a run `needs_you`; a notice (an owner briefing) rides a
+/// run in whatever state it is.
+enum VibeDevWaitingKind: String, VibeDevOpenEnum {
+    case diffReview = "diff_review", decision, notice, unknown
+    static var fallback: VibeDevWaitingKind { .unknown }
+}
+
+/// An acknowledge-only owner briefing on a run (`notice`). Read leniently: a
+/// malformed one decodes empty instead of failing the run.
+struct VibeDevRunNotice: Codable, Equatable {
+    var requestId: String = ""
+    var optionId: String = "acknowledge"
+    var title: String? = nil
+    var message: String = ""
+    var severity: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case optionId = "option_id"
+        case title, message, severity
+    }
+
+    init(requestId: String, optionId: String = "acknowledge", title: String? = nil,
+         message: String, severity: String? = nil) {
+        self.requestId = requestId
+        self.optionId = optionId
+        self.title = title
+        self.message = message
+        self.severity = severity
+    }
+
+    init(from decoder: Decoder) throws {
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        requestId = (try? c.decodeIfPresent(String.self, forKey: .requestId)) ?? ""
+        optionId = (try? c.decodeIfPresent(String.self, forKey: .optionId)) ?? "acknowledge"
+        title = try? c.decodeIfPresent(String.self, forKey: .title)
+        message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? ""
+        severity = try? c.decodeIfPresent(String.self, forKey: .severity)
+    }
+}
+
 struct VibeDevLiveRun: Codable, Identifiable, Equatable {
     let runId: String
     let liveTaskId: String
@@ -151,12 +220,28 @@ struct VibeDevLiveRun: Codable, Identifiable, Equatable {
     /// A needs-you run waiting on a diff approval: the proposal id the
     /// approval answers (`ccp-…`).
     var approvalId: String? = nil
+    /// `diff_review` / `decision` on a needs-you run, `notice` when only a
+    /// briefing waits; absent from older servers.
+    var waitingKind: VibeDevWaitingKind? = nil
+    var notice: VibeDevRunNotice? = nil
     let crewId: String?
     let lane: String?
     let updatedAt: String
     let lastProgressAt: String?
+    /// Ended runs only: `partial` when requirements were left open.
+    var completionKind: VibeDevCompletionKind? = nil
+    var openItemsWire: VibeDevOpenItems? = nil
+    var needsYouCount: Int? = nil
+    var workLocation: String? = nil
+    var repoPath: String? = nil
 
     var id: String { runId }
+    /// Ended done with requirements still open.
+    var isPartlyDone: Bool { state == .done && completionKind?.value == "partial" }
+    var openItems: [String] { openItemsWire?.items ?? [] }
+    /// "Partly done" instead of "Done" when requirements are open.
+    var stateLabel: String { isPartlyDone ? TaskCompletion.partlyDoneLabel : state.label }
+    var openItemLine: String? { isPartlyDone ? TaskCompletion.openLine(openItems) : nil }
     var startedDate: Date? { VibeDevTime.parse(startedAt) }
     /// Working rows show how long the run has gone; others when it last moved.
     var rowTime: String {
@@ -182,10 +267,28 @@ struct VibeDevLiveRun: Codable, Identifiable, Equatable {
         case startedAt = "started_at"
         case costUsd = "cost_usd"
         case approvalId = "approval_id"
+        case waitingKind = "waiting_kind"
+        case notice
         case crewId = "crew_id"
         case lane
         case updatedAt = "updated_at"
         case lastProgressAt = "last_progress_at"
+        case completionKind = "completion_kind"
+        case openItemsWire = "open_items"
+        case needsYouCount = "needs_you_count"
+        case workLocation = "work_location"
+        case repoPath = "repo_path"
+    }
+}
+
+struct VibeDevRunHistory: Codable, Equatable {
+    let runs: [VibeDevLiveRun]
+    let hasMore: Bool
+    let nextCursor: String?
+    enum CodingKeys: String, CodingKey {
+        case runs
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
     }
 }
 
@@ -399,7 +502,7 @@ struct VibeDevCrewEnvelope: Codable, Equatable {
 // MARK: - Projects (`GET /vibedev/projects`)
 
 enum VibeDevTrust: String, VibeDevOpenEnum {
-    case sandboxed, trusted
+    case sandboxed, trusted, original
     static var fallback: VibeDevTrust { .sandboxed }
 }
 
@@ -413,6 +516,144 @@ struct VibeDevRunLink: Codable, Equatable {
         case crewId = "crew_id"
         case lane
     }
+}
+
+// MARK: - Project health
+
+/// A fix the server offers for a health issue (`git_init` today). Kinds the
+/// app does not know get no button.
+struct VibeDevHealthAction: Codable, Equatable {
+    static let gitInitKind = "git_init"
+    let kind: String
+    let label: String
+
+    var isGitInit: Bool { kind == Self.gitInitKind }
+}
+
+/// One problem with a project (`folder_missing`, `not_a_git_repository`, …).
+/// The code is opaque; `title` (when present) and `message` are what the
+/// owner reads.
+struct VibeDevProjectHealthIssue: Codable, Equatable {
+    let code: String
+    /// `warning` | `error`; anything else reads as a warning.
+    let severity: String
+    /// Short headline ("Folder is missing"); absent on older servers.
+    var title: String? = nil
+    let message: String
+    var action: VibeDevHealthAction? = nil
+
+    init(code: String, severity: String, title: String? = nil, message: String, action: VibeDevHealthAction? = nil) {
+        self.code = code; self.severity = severity; self.title = title; self.message = message; self.action = action
+    }
+
+    var isError: Bool { severity.lowercased() == "error" }
+
+    /// The `git_init` action, when this issue offers it.
+    var gitInitAction: VibeDevHealthAction? { action?.isGitInit == true ? action : nil }
+}
+
+/// `POST /vibedev/projects/{id}/git-init` answers `{ project_id, health }`.
+struct VibeDevGitInitResponse: Decodable, Equatable {
+    let projectId: String
+    let health: VibeDevProjectHealth
+
+    enum CodingKeys: String, CodingKey { case projectId = "project_id", health }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        projectId = ((try? c.decodeIfPresent(String.self, forKey: .projectId)) ?? nil) ?? ""
+        health = ((try? c.decodeIfPresent(VibeDevProjectHealth.self, forKey: .health)) ?? nil) ?? .ok
+    }
+}
+
+/// The confirmation before `git init` (web wording).
+enum VibeDevGitInitCopy {
+    static let title = "Make this folder a git repository?"
+    static let message = "Magician runs git init in the project folder and commits its current files as a first commit on the base branch (main if none is set). Branch runs, merge, pull requests and rewind then work for this trusted project."
+    static let confirm = "Make it a git repository"
+}
+
+/// `project.health`: absent or unreadable is `ok`. A project with an error
+/// issue cannot start runs (the server answers 409
+/// `vibedev_project_unhealthy`).
+struct VibeDevProjectHealth: Codable, Equatable {
+    enum Level: String { case ok, warning, error }
+
+    let level: Level
+    let issues: [VibeDevProjectHealthIssue]
+
+    static let ok = VibeDevProjectHealth(level: .ok, issues: [])
+
+    init(level: Level, issues: [VibeDevProjectHealthIssue] = []) {
+        self.level = level; self.issues = issues
+    }
+
+    /// The wire `status`, or (unknown/missing) the worst issue severity.
+    init(status: String?, issues: [VibeDevProjectHealthIssue]) {
+        self.issues = issues
+        if let known = status.flatMap({ Level(rawValue: $0.trimmingCharacters(in: .whitespaces).lowercased()) }) {
+            level = known
+        } else if issues.contains(where: \.isError) {
+            level = .error
+        } else {
+            level = issues.isEmpty ? .ok : .warning
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case status, issues }
+    private struct LenientIssue: Decodable {
+        let issue: VibeDevProjectHealthIssue?
+        private enum CodingKeys: String, CodingKey { case code, severity, title, message, action }
+        private enum ActionKeys: String, CodingKey { case kind, label }
+        init(from decoder: Decoder) throws {
+            let c = try? decoder.container(keyedBy: CodingKeys.self)
+            func text(_ key: CodingKeys) -> String? {
+                let value = ((try? c?.decodeIfPresent(String.self, forKey: key)) ?? nil)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return value?.isEmpty == false ? value : nil
+            }
+            var action: VibeDevHealthAction?
+            if let a = try? c?.nestedContainer(keyedBy: ActionKeys.self, forKey: .action),
+               let kind = ((try? a.decodeIfPresent(String.self, forKey: .kind)) ?? nil)?
+                   .trimmingCharacters(in: .whitespacesAndNewlines), !kind.isEmpty,
+               let label = ((try? a.decodeIfPresent(String.self, forKey: .label)) ?? nil)?
+                   .trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+                action = VibeDevHealthAction(kind: kind, label: label)
+            }
+            let title = text(.title)
+            // An issue needs something to show: its message, else its title.
+            guard let message = text(.message) ?? title else { issue = nil; return }
+            issue = VibeDevProjectHealthIssue(
+                code: text(.code) ?? "", severity: text(.severity) ?? "warning",
+                title: title, message: message, action: action)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? nil
+        let issues = ((try? c.decodeIfPresent([LenientIssue].self, forKey: .issues)) ?? nil)?.compactMap(\.issue) ?? []
+        self.init(status: status, issues: issues)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(level.rawValue, forKey: .status)
+        if !issues.isEmpty { try c.encode(issues, forKey: .issues) }
+    }
+
+    var needsAttention: Bool { level != .ok }
+
+    /// Web wording (`StudioRail.svelte`); nil when the project is fine.
+    var title: String? {
+        switch level {
+        case .ok: return nil
+        case .warning: return "Project needs attention."
+        case .error: return "Project needs attention: runs cannot start."
+        }
+    }
+
+    var messages: [String] { issues.map(\.message) }
 }
 
 struct VibeDevProject: Codable, Identifiable, Equatable {
@@ -429,8 +670,11 @@ struct VibeDevProject: Codable, Identifiable, Equatable {
     let repoDisplayPath: String
     let repoAbsolutePath: String
     let chatSessionStatus: String
+    var chatSessionId: String? = nil
     let createdAtMs: Int64
     let updatedAtMs: Int64
+    /// Absent on the wire (older servers) means ok.
+    var health: VibeDevProjectHealth
 
     var id: String { projectId }
     var isTrusted: Bool { trust == .trusted }
@@ -450,16 +694,19 @@ struct VibeDevProject: Codable, Identifiable, Equatable {
         case crews, archived
         case repoDisplayPath = "repo_display_path"
         case repoAbsolutePath = "repo_absolute_path"
+        case chatSessionId = "chat_session_id"
         case chatSessionStatus = "chat_session_status"
         case createdAtMs = "created_at_ms"
         case updatedAtMs = "updated_at_ms"
+        case health
     }
 
     init(projectId: String, name: String, repoPath: String? = nil, trust: VibeDevTrust = .sandboxed,
          baseBranch: String? = nil, runTaskIds: [String] = [], runLinks: [String: VibeDevRunLink] = [:],
          crews: [VibeDevCrew] = [], archived: Bool = false, repoDisplayPath: String = "",
          repoAbsolutePath: String = "", chatSessionStatus: String = "open",
-         createdAtMs: Int64 = 0, updatedAtMs: Int64 = 0) {
+         createdAtMs: Int64 = 0, updatedAtMs: Int64 = 0, health: VibeDevProjectHealth = .ok) {
+        self.health = health
         self.projectId = projectId; self.name = name; self.repoPath = repoPath; self.trust = trust
         self.baseBranch = baseBranch; self.runTaskIds = runTaskIds; self.runLinks = runLinks
         self.crews = crews; self.archived = archived; self.repoDisplayPath = repoDisplayPath
@@ -480,9 +727,11 @@ struct VibeDevProject: Codable, Identifiable, Equatable {
         archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
         repoDisplayPath = try c.decodeIfPresent(String.self, forKey: .repoDisplayPath) ?? ""
         repoAbsolutePath = try c.decodeIfPresent(String.self, forKey: .repoAbsolutePath) ?? ""
+        chatSessionId = try c.decodeIfPresent(String.self, forKey: .chatSessionId)
         chatSessionStatus = try c.decodeIfPresent(String.self, forKey: .chatSessionStatus) ?? ""
         createdAtMs = try c.decodeIfPresent(Int64.self, forKey: .createdAtMs) ?? 0
         updatedAtMs = try c.decodeIfPresent(Int64.self, forKey: .updatedAtMs) ?? 0
+        health = ((try? c.decodeIfPresent(VibeDevProjectHealth.self, forKey: .health)) ?? nil) ?? .ok
     }
 }
 
@@ -517,8 +766,14 @@ struct VibeDevTaskItem: Codable, Identifiable, Equatable {
     let createdAt: String
     let updatedAt: String
     let completionSummary: String?
+    /// `full` / `partial` once completed; unknown values read as absent.
+    let completionKind: String?
+    /// What a partial completion left undone.
+    let openItems: [String]
 
     var isThreaded: Bool { tags.contains { $0.name == "vibedev-threaded" } }
+    /// Completed with requirements still open.
+    var isPartlyDone: Bool { TaskCompletion.isPartlyDone(status: status, kind: completionKind) }
 
     /// `Parent task: <id>` from the server-written description.
     var parentFromDescription: String? {
@@ -537,13 +792,18 @@ struct VibeDevTaskItem: Codable, Identifiable, Equatable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case completionSummary = "completion_summary"
+        case completionKind = "completion_kind"
+        case openItems = "open_items"
     }
 
     init(id: String, title: String, description: String = "", status: String, tags: [String] = [],
-         createdAt: String = "", updatedAt: String = "", completionSummary: String? = nil) {
+         createdAt: String = "", updatedAt: String = "", completionSummary: String? = nil,
+         completionKind: String? = nil, openItems: [String] = []) {
         self.id = id; self.title = title; self.description = description; self.status = status
         self.tags = tags.map(VibeDevTaskTag.init(name:)); self.createdAt = createdAt
         self.updatedAt = updatedAt; self.completionSummary = completionSummary
+        self.completionKind = TaskCompletion.kind(completionKind)
+        self.openItems = TaskCompletion.openItems(openItems)
     }
 
     init(from decoder: Decoder) throws {
@@ -556,6 +816,9 @@ struct VibeDevTaskItem: Codable, Identifiable, Equatable {
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
         completionSummary = try c.decodeIfPresent(String.self, forKey: .completionSummary)
+        let completion = TaskCompletion.decode(c, kind: .completionKind, items: .openItems)
+        completionKind = completion.kind
+        openItems = completion.openItems
     }
 }
 
@@ -585,6 +848,13 @@ struct VibeDevRunRow: Identifiable, Equatable {
     var turnCount: Int { turns.count + 1 }
     var latest: VibeDevTaskItem { turns.last ?? root }
     var state: VibeDevRunState { VibeDevRunState.fromTaskStatus(latest.status) }
+    /// The latest turn completed with requirements still open.
+    var isPartlyDone: Bool { state == .done && latest.isPartlyDone }
+    /// The state word for the row: "Partly done" instead of "Done" when open
+    /// requirements remain.
+    var stateLabel: String { isPartlyDone ? TaskCompletion.partlyDoneLabel : state.label }
+    /// "Open: <first open item>" for a partly-done run.
+    var openItemLine: String? { isPartlyDone ? TaskCompletion.openLine(latest.openItems) : nil }
     var title: String { VibeDevFormat.title(root.title) }
     var updatedDate: Date? { VibeDevTime.parse(latest.updatedAt) ?? VibeDevTime.parse(root.updatedAt) }
 }
@@ -645,7 +915,7 @@ struct VibeDevRunsPage: Codable, Equatable {
 // MARK: - Run turns (`GET /vibedev/runs/{id}/turns`)
 
 enum VibeDevTurnMode: String, VibeDevOpenEnum {
-    case build, discuss
+    case build, discuss, autopilot
     static var fallback: VibeDevTurnMode { .build }
 }
 
@@ -658,12 +928,19 @@ struct VibeDevRunTurn: Codable, Identifiable, Equatable {
     let updatedAt: String
     let summary: String?
     let engine: String?
+    var codingRouteId: String? = nil
     let costUsd: Double?
     let commit: String?
     let filesChanged: Int?
+    /// `partial` when the turn completed with requirements left open.
+    var completionKind: VibeDevCompletionKind? = nil
+    var openItemsWire: VibeDevOpenItems? = nil
 
     var id: String { taskId }
     var state: VibeDevRunState { VibeDevRunState.fromTaskStatus(status) }
+    var isPartlyDone: Bool { TaskCompletion.isPartlyDone(status: status, kind: completionKind?.value) }
+    var openItems: [String] { openItemsWire?.items ?? [] }
+    var stateLabel: String { isPartlyDone ? TaskCompletion.partlyDoneLabel : state.label }
     var duration: String {
         VibeDevTime.duration(from: VibeDevTime.parse(createdAt),
                              to: state.isEnded ? VibeDevTime.parse(updatedAt) : Date())
@@ -675,9 +952,12 @@ struct VibeDevRunTurn: Codable, Identifiable, Equatable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case summary, engine
+        case codingRouteId = "coding_route_id"
         case costUsd = "cost_usd"
         case commit
         case filesChanged = "files_changed"
+        case completionKind = "completion_kind"
+        case openItemsWire = "open_items"
     }
 }
 
@@ -687,6 +967,7 @@ struct VibeDevRunTurns: Codable, Equatable {
     let projectName: String
     let title: String
     let status: String
+    var workLocation: String? = nil
     let trusted: Bool
     let branch: String?
     let crewId: String?
@@ -706,6 +987,7 @@ struct VibeDevRunTurns: Codable, Equatable {
         case runId = "run_id"
         case projectId = "project_id"
         case projectName = "project_name"
+        case workLocation = "work_location"
         case title, status, trusted, branch
         case crewId = "crew_id"
         case lane, turns
@@ -805,10 +1087,16 @@ struct VibeDevCodingProfile: Codable, Identifiable, Equatable {
     let selectable: Bool
     let isDefault: Bool
     let readiness: String?
+    var modelSelection: ChatModelSelection? = nil
+    var modelChoice: ChatModelChoice? = nil
+    /// The engine's `credentials` (`login`, `magician_key`, `none`).
+    var credentials: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, label, engine, selectable, readiness
+        case id, label, engine, selectable, readiness, credentials
         case isDefault = "is_default"
+        case modelSelection = "model_selection"
+        case modelChoice = "model_choice"
     }
 
     init(id: String, label: String, engine: String? = nil, selectable: Bool = true,
@@ -825,11 +1113,88 @@ struct VibeDevCodingProfile: Codable, Identifiable, Equatable {
         selectable = try c.decodeIfPresent(Bool.self, forKey: .selectable) ?? true
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
         readiness = try c.decodeIfPresent(String.self, forKey: .readiness)
+        modelSelection = try c.decodeIfPresent(ChatModelSelection.self, forKey: .modelSelection)
+        modelChoice = try c.decodeIfPresent(ChatModelChoice.self, forKey: .modelChoice)
+        credentials = try? c.decodeIfPresent(String.self, forKey: .credentials)
     }
 }
 
-struct VibeDevCodingProfiles: Decodable {
-    let profiles: [VibeDevCodingProfile]
+struct VibeDevCodingSelection: Codable, Equatable {
+    let kind: String
+    let engine: String?
+    let modelId: String?
+    let thinking: String?
+    enum CodingKeys: String, CodingKey {
+        case kind, engine, thinking
+        case modelId = "model_id"
+    }
+    init(profile: VibeDevCodingProfile) {
+        kind = "model"
+        engine = profile.engine
+        modelId = profile.modelSelection?.modelId
+        thinking = profile.modelSelection?.thinking
+    }
+    var wireValue: [String: String] {
+        var value = ["kind": kind]
+        if let engine { value["engine"] = engine }
+        if let modelId { value["model_id"] = modelId }
+        if let thinking { value["thinking"] = thinking }
+        return value
+    }
+}
+
+struct VibeDevModelCatalog: Decodable {
+    struct Model: Decodable {
+        let engine: String
+        let choice: ChatModelChoice
+        enum CodingKeys: String, CodingKey { case engine }
+        init(from decoder: Decoder) throws {
+            engine = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .engine)
+            choice = try ChatModelChoice(from: decoder)
+        }
+    }
+    struct Engine: Decodable {
+        let id: String
+        let selectable: Bool
+        let readiness: String?
+        /// `login` / `magician_key` / `none`; read leniently.
+        let credentials: String?
+        enum CodingKeys: String, CodingKey { case id, selectable, readiness, credentials }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            selectable = try c.decode(Bool.self, forKey: .selectable)
+            readiness = try c.decodeIfPresent(String.self, forKey: .readiness)
+            credentials = try? c.decodeIfPresent(String.self, forKey: .credentials)
+        }
+    }
+    let models: [Model]
+    let engines: [Engine]
+    let defaultSelection: VibeDevCodingSelection?
+    enum CodingKeys: String, CodingKey {
+        case models, engines
+        case defaultSelection = "default_selection"
+    }
+    var rows: [VibeDevCodingProfile] {
+        models.flatMap { model -> [VibeDevCodingProfile] in
+            guard let engine = engines.first(where: { $0.id == model.engine }), engine.selectable else { return [] }
+            return model.choice.choices.sorted(by: { $0.key < $1.key }).map { thinking, route in
+                var row = VibeDevCodingProfile(id: route, label: model.choice.label, engine: model.engine,
+                    isDefault: defaultSelection?.kind == "model" && defaultSelection?.engine == model.engine
+                        && defaultSelection?.modelId == model.choice.id && defaultSelection?.thinking == thinking,
+                    readiness: engine.readiness)
+                row.modelSelection = ChatModelSelection(modelId: model.choice.id, thinking: thinking)
+                row.modelChoice = thinking == "auto" ? model.choice : nil
+                row.credentials = engine.credentials
+                return row
+            }
+        } + engines.filter { !$0.selectable }.map {
+            var row = VibeDevCodingProfile(id: "unavailable/\($0.id)", label: $0.id, engine: $0.id,
+                selectable: false, readiness: $0.readiness)
+            row.credentials = $0.credentials
+            return row
+        }
+    }
 }
 
 // MARK: - Writes
@@ -841,8 +1206,11 @@ struct VibeDevStartRunRequest: Equatable {
     var clientRunId: String = UUID().uuidString.lowercased()
     var parentTaskId: String?
     var threaded: Bool = false
-    var codingProfileId: String?
+    var codingChoice: VibeDevCodingSelection?
     var costBudgetUsd: Double?
+    var attachments: [StagedAttachment] = []
+    var attachmentSessionId: String?
+    var nightly = false
 
     var body: [String: Any] {
         var body: [String: Any] = [
@@ -853,8 +1221,21 @@ struct VibeDevStartRunRequest: Equatable {
             body["parent_task_id"] = parentTaskId
             body["threaded"] = threaded
         }
-        if let codingProfileId { body["coding_profile_id"] = codingProfileId }
+        if let codingChoice { body["coding_choice"] = codingChoice.wireValue }
         if let costBudgetUsd { body["cost_budget_usd"] = costBudgetUsd }
+        body["auto_apply"] = false
+        if mode == .discuss { body["agent_id"] = "cto" }
+        if !attachments.isEmpty {
+            body["attachments"] = attachments.compactMap { attachment -> [String: Any]? in
+                guard let id = attachment.remoteId else { return nil }
+                return ["attachment_id": id, "filename": attachment.filename, "mime_type": attachment.mime]
+            }
+            body["attachment_session_id"] = attachmentSessionId
+        }
+        if nightly && mode == .autopilot && parentTaskId == nil {
+            body["schedule"] = ["kind": ["Cron": ["expression": "0 2 * * *", "timezone": "UTC"]],
+                                "timezone": "UTC", "missed_fire_policy": "skip", "concurrent_execution_policy": "skip"]
+        }
         return body
     }
 }

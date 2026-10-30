@@ -1,7 +1,8 @@
 //! Magic Supervisor
 //!
 //! A lightweight supervisor process that manages Magician and Magicutor lifecycle
-//! operations including restart, stop, and health monitoring.
+//! operations including restart, stop, and health monitoring, plus (opt-in,
+//! macOS) the desktop tray app, relaunched only after a crash.
 
 use std::{
     collections::VecDeque,
@@ -25,6 +26,8 @@ use tracing::{debug, error, info, trace, warn};
 
 mod decision_engine;
 use decision_engine::DecisionEngineProcess;
+mod desktop_app;
+use desktop_app::DesktopAppProcess;
 
 const DEFAULT_HOST_GATEWAY_URL: &str = "http://127.0.0.1:3017";
 const DEFAULT_RESTART_ATTEMPT_WINDOW_SECS: u64 = 5 * 60;
@@ -115,6 +118,33 @@ pub struct SupervisorConfig {
     pub decision_engine_restart_attempt_window: u64,
     /// Restart cooldown period for the decision engine in seconds
     pub decision_engine_restart_cooldown: u64,
+    /// Explicit `--manage-desktop=0|1`; unset = `supervisor.manage_desktop`
+    /// in `magician_config`, else on. Active only on macOS with a bundle.
+    pub desktop_manage: Option<bool>,
+    /// The runtime `magician-config.yaml` (`--magician-config`), read once at
+    /// start for `supervisor.manage_desktop`. The launcher passes it: the
+    /// supervisor never resolves the runtime root itself.
+    pub magician_config: Option<PathBuf>,
+    /// The app bundle launched through LaunchServices (`--desktop-app`)
+    pub desktop_app: Option<PathBuf>,
+    /// `open --stdout/--stderr` target for the app (`--desktop-log`)
+    pub desktop_log: Option<PathBuf>,
+    /// `open --env KEY=VALUE` pairs for the app (`--desktop-env`)
+    pub desktop_env: Vec<(String, String)>,
+    /// Preflight run as `bash <script> <bundle>` before each launch
+    pub desktop_verify_script: Option<PathBuf>,
+    /// Clean-quit marker override; unset = the per-user
+    /// `~/Library/Application Support/dev.magician.desktop/desktop-app.quit`
+    pub desktop_quit_marker: Option<PathBuf>,
+    /// After the boot grace with the app not running: launch only if its
+    /// login item is on (`login-item`, default) or regardless (`always`)
+    pub desktop_launch_at_boot: desktop_app::BootLaunchPolicy,
+    /// Seconds between desktop process scans
+    pub desktop_poll_interval: u64,
+    /// Crash relaunches allowed inside the window before giving up
+    pub desktop_max_relaunches: u32,
+    /// Rolling relaunch window for the desktop app in seconds
+    pub desktop_relaunch_window: u64,
 }
 
 impl Default for SupervisorConfig {
@@ -165,6 +195,17 @@ impl Default for SupervisorConfig {
             decision_engine_max_restart_attempts: 5,
             decision_engine_restart_attempt_window: DEFAULT_RESTART_ATTEMPT_WINDOW_SECS,
             decision_engine_restart_cooldown: 10,
+            desktop_manage: None,
+            magician_config: None,
+            desktop_app: None,
+            desktop_log: None,
+            desktop_env: vec![],
+            desktop_verify_script: None,
+            desktop_quit_marker: None,
+            desktop_launch_at_boot: desktop_app::BootLaunchPolicy::LoginItem,
+            desktop_poll_interval: 3,
+            desktop_max_relaunches: 4,
+            desktop_relaunch_window: DEFAULT_RESTART_ATTEMPT_WINDOW_SECS,
         }
     }
 }
@@ -258,6 +299,14 @@ pub enum SupervisorCommand {
     StopDecisionEngine,
     /// Get the decision engine's process status
     StatusDecisionEngine,
+    /// Launch the desktop app through LaunchServices (clears a clean quit)
+    StartDesktop,
+    /// Stop the desktop app (writes the clean-quit marker first)
+    StopDesktop,
+    /// Stop, then start the desktop app
+    RestartDesktop,
+    /// Get the desktop app's supervision status
+    StatusDesktop,
     /// Get current process status
     Status,
     /// Get Magician process status
@@ -428,6 +477,26 @@ impl MagicianProcess {
         }
         if std::env::var("MAGICIAN_RUNTIME_MODE").is_err() {
             cmd.env("MAGICIAN_RUNTIME_MODE", "production");
+        }
+        // The control port takes unauthenticated commands (restart, stop):
+        // Magician keeps it out of every agent's OS box.
+        cmd.env(
+            "MAGIC_SUPERVISOR_CONTROL_PORT",
+            self.config.control_port.to_string(),
+        );
+        // libmalloc reads these before main; loading the backend's dotenv is
+        // too late. Keep this opt-in on every supervised backend restart.
+        #[cfg(target_os = "macos")]
+        if let Ok(mode) = std::env::var("MAGICIAN_MALLOC_STACK_LOGGING") {
+            anyhow::ensure!(
+                matches!(mode.as_str(), "1" | "lite" | "full" | "vm" | "malloc"),
+                "invalid MAGICIAN_MALLOC_STACK_LOGGING mode"
+            );
+            cmd.env("MallocStackLogging", mode);
+            if let Some(directory) = std::env::var_os("MAGICIAN_MALLOC_STACK_LOGGING_DIR") {
+                std::fs::create_dir_all(&directory)?;
+                cmd.env("MallocStackLoggingDirectory", directory);
+            }
         }
 
         cmd.stdin(std::process::Stdio::null())
@@ -1062,6 +1131,7 @@ pub struct SupervisorProcesses {
     pub magician: Arc<Mutex<MagicianProcess>>,
     pub magicutor: Arc<Mutex<MagicutorProcess>>,
     pub decision_engine: Arc<Mutex<DecisionEngineProcess>>,
+    pub desktop: Arc<Mutex<DesktopAppProcess>>,
 }
 
 impl SupervisorServer {
@@ -1069,11 +1139,13 @@ impl SupervisorServer {
         let magician = Arc::new(Mutex::new(MagicianProcess::new(config.clone())));
         let magicutor = Arc::new(Mutex::new(MagicutorProcess::new(config.clone())));
         let decision_engine = Arc::new(Mutex::new(DecisionEngineProcess::new(config.clone())));
+        let desktop = Arc::new(Mutex::new(DesktopAppProcess::new(config.clone())));
         let (shutdown_tx, _) = watch::channel(false);
         let processes = Arc::new(SupervisorProcesses {
             magician,
             magicutor,
             decision_engine,
+            desktop,
         });
 
         Self {
@@ -1096,7 +1168,10 @@ impl SupervisorServer {
             },
         };
         // Attempt every stop even if one fails. Magician owns an isolated group
-        // and cannot rely on receiving its supervisor's terminal signal.
+        // and cannot rely on receiving its supervisor's terminal signal. The
+        // desktop app is not a child and keeps running; its watch stops
+        // launching first, so a forced logout or shutdown never relaunches it.
+        self.processes.desktop.lock().await.begin_shutdown();
         let magician = self.processes.magician.lock().await.stop().await;
         let magicutor = self.processes.magicutor.lock().await.stop().await;
         let decision_engine = self.processes.decision_engine.lock().await.stop().await;
@@ -1123,6 +1198,15 @@ impl SupervisorServer {
             }
         }
 
+        // The desktop tray hosts the gateway Magician probes for host speech,
+        // so its launch is issued before Magician starts. It runs in the
+        // background: the preflight and `open` never delay Magicutor or
+        // Magician. Opt-in, macOS only.
+        {
+            let desktop = Arc::clone(&self.processes.desktop);
+            tokio::spawn(async move { desktop_app::boot(&desktop).await });
+        }
+
         {
             let mut process = self.processes.magicutor.lock().await;
             if let Err(e) = process.start(None).await {
@@ -1145,6 +1229,7 @@ impl SupervisorServer {
         self.start_magicutor_health_check_task().await;
         self.start_magician_health_check_task().await;
         self.start_decision_engine_health_check_task().await;
+        self.start_desktop_supervision_task().await;
 
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.config.control_port)).await?;
         info!(
@@ -1305,6 +1390,31 @@ impl SupervisorServer {
                         },
                     }
                 }
+            }
+        });
+    }
+
+    /// Desktop watch: scans for the app every `desktop_poll_interval` and
+    /// relaunches it only after a crash (see `desktop_app`).
+    async fn start_desktop_supervision_task(&self) {
+        let process = Arc::clone(&self.processes.desktop);
+        let interval_secs = {
+            let guard = process.lock().await;
+            if !guard.is_managed() {
+                return;
+            }
+            guard.poll_interval_secs()
+        };
+        info!(
+            "Starting desktop app supervision (poll every {}s)",
+            interval_secs
+        );
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                desktop_app::tick(&process).await;
             }
         });
     }
@@ -1565,6 +1675,27 @@ impl SupervisorServer {
                     timestamp,
                 }
             },
+            SupervisorCommand::StartDesktop => {
+                let result = desktop_app::start(&processes.desktop).await;
+                Self::desktop_response(result, "start", processes.as_ref(), timestamp).await
+            },
+            SupervisorCommand::StopDesktop => {
+                let result = desktop_app::stop(&processes.desktop).await;
+                Self::desktop_response(result, "stop", processes.as_ref(), timestamp).await
+            },
+            SupervisorCommand::RestartDesktop => {
+                let result = desktop_app::restart(&processes.desktop).await;
+                Self::desktop_response(result, "restart", processes.as_ref(), timestamp).await
+            },
+            SupervisorCommand::StatusDesktop => {
+                let status = processes.desktop.lock().await.detailed_status();
+                SupervisorResponse {
+                    success: true,
+                    message: "Desktop app status retrieved successfully".to_string(),
+                    data: serde_json::to_value(status).ok(),
+                    timestamp,
+                }
+            },
             SupervisorCommand::StatusMagician => {
                 let status = {
                     let mut process_guard = processes.magician.lock().await;
@@ -1622,8 +1753,14 @@ impl SupervisorServer {
                     }
                 };
 
-                let success =
-                    magician_healthy && magicutor_healthy && decision_engine_healthy != Some(false);
+                // The desktop counts only while it is managed and meant to
+                // run: a deliberate stop or quit is not unhealthy.
+                let desktop_healthy = processes.desktop.lock().await.health();
+
+                let success = magician_healthy
+                    && magicutor_healthy
+                    && decision_engine_healthy != Some(false)
+                    && desktop_healthy != Some(false);
                 let message = if success {
                     "All services healthy".to_string()
                 } else {
@@ -1634,6 +1771,7 @@ impl SupervisorServer {
                     "magician": magician_healthy,
                     "magicutor": magicutor_healthy,
                     "decision_engine": decision_engine_healthy,
+                    "desktop": desktop_healthy,
                 }));
 
                 SupervisorResponse {
@@ -1644,6 +1782,7 @@ impl SupervisorServer {
                 }
             },
             SupervisorCommand::Shutdown => {
+                processes.desktop.lock().await.begin_shutdown();
                 {
                     let mut process_guard = processes.magician.lock().await;
                     let _ = process_guard.stop().await;
@@ -1665,6 +1804,27 @@ impl SupervisorServer {
                     timestamp,
                 }
             },
+        }
+    }
+
+    async fn desktop_response(
+        result: Result<String>,
+        verb: &str,
+        processes: &SupervisorProcesses,
+        timestamp: String,
+    ) -> SupervisorResponse {
+        let (success, message) = match result {
+            Ok(message) => (true, message),
+            Err(error) => (
+                false,
+                format!("Failed to {verb} the desktop app: {error:#}"),
+            ),
+        };
+        SupervisorResponse {
+            success,
+            message,
+            data: Some(Self::collect_status_snapshot(processes).await),
+            timestamp,
         }
     }
 
@@ -1739,11 +1899,13 @@ impl SupervisorServer {
             let mut process_guard = processes.decision_engine.lock().await;
             process_guard.get_status()
         };
+        let desktop_status = processes.desktop.lock().await.get_status();
 
         json!({
             "magician": magician_status,
             "magicutor": magicutor_status,
             "decision_engine": decision_engine_status,
+            "desktop": desktop_status,
         })
     }
 
@@ -1787,9 +1949,15 @@ impl SupervisorClient {
 
         let mut reader = BufReader::new(&mut stream);
         let mut response_line = String::new();
-        let read_result = timeout(Duration::from_secs(5), reader.read_line(&mut response_line))
-            .await
-            .context("Timed out waiting for supervisor response")?;
+        // As long as supervisor-ctl waits: a stop may spend its ten-second
+        // graceful window, and a desktop restart a stop plus a preflighted
+        // launch, before the reply is written.
+        let read_result = timeout(
+            Duration::from_secs(30),
+            reader.read_line(&mut response_line),
+        )
+        .await
+        .context("Timed out waiting for supervisor response")?;
         read_result?;
 
         let response: SupervisorResponse = serde_json::from_str(&response_line)?;
@@ -1827,6 +1995,10 @@ async fn main() -> Result<()> {
                 },
                 "stop-decision-engine" => SupervisorCommand::StopDecisionEngine,
                 "status-decision-engine" => SupervisorCommand::StatusDecisionEngine,
+                "start-desktop" => SupervisorCommand::StartDesktop,
+                "stop-desktop" => SupervisorCommand::StopDesktop,
+                "restart-desktop" => SupervisorCommand::RestartDesktop,
+                "status-desktop" => SupervisorCommand::StatusDesktop,
                 "host-status" => SupervisorCommand::HostGatewayStatus,
                 "host-presence-start" => SupervisorCommand::StartHostPresence,
                 "host-presence-stop" => SupervisorCommand::StopHostPresence,
@@ -1835,7 +2007,7 @@ async fn main() -> Result<()> {
                 "shutdown" => SupervisorCommand::Shutdown,
                 _ => {
                     eprintln!(
-                        "Usage: {} client [restart-magician|restart-magicutor|restart-decision-engine|stop-magician|stop-magicutor|stop-decision-engine|status|status-magician|status-magicutor|status-decision-engine|host-status|host-presence-start|host-presence-stop|host-presence-restart|health|shutdown]\n  (Magicutor runs forced server mode with packaged config unless overridden)",
+                        "Usage: {} client [restart-magician|restart-magicutor|restart-decision-engine|stop-magician|stop-magicutor|stop-decision-engine|status|status-magician|status-magicutor|status-decision-engine|start-desktop|stop-desktop|restart-desktop|status-desktop|host-status|host-presence-start|host-presence-stop|host-presence-restart|health|shutdown]\n  (Magicutor runs forced server mode with packaged config unless overridden)",
                         args[0]
                     );
                     std::process::exit(1);
@@ -1857,7 +2029,17 @@ async fn main() -> Result<()> {
     }
 
     // Run as supervisor server
-    let config = SupervisorConfig::default();
+    let mut config = SupervisorConfig::default();
+    // Lenient: a bad desktop flag value keeps its default rather than exiting
+    // (an exit would crash-loop under launchd KeepAlive).
+    let (ignored, warnings) =
+        desktop_app::apply_cli_args_lenient(&mut config, args.get(1..).unwrap_or_default());
+    for warning in warnings {
+        warn!("Supervisor argument not applied: {}", warning);
+    }
+    for ignored in ignored {
+        warn!("Ignoring unknown supervisor argument: {}", ignored);
+    }
     let supervisor = SupervisorServer::new(config);
 
     // Register before starting children so an interrupt during startup also

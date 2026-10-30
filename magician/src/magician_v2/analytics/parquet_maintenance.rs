@@ -6,14 +6,25 @@
 //! Readers that enumerate `dt=*/*.parquet` continue to see the compacted object;
 //! governed readers can use the manifest to ignore any raw files left by an
 //! interrupted prune.
+//! The active day of the legacy LLM `batch_*` stream rolls forward the same
+//! way on the five-minute lane ([`compact_open_legacy_llm_partition`]).
 //!
-//! The runtime also schedules the canonical LLM compactor. Canonical facts
-//! retain immutable raw revisions and use rolling compacted-prefix + raw-tail
-//! reads, so their active UTC partition follows a separate five-minute path.
+//! The runtime also schedules the canonical LLM compactor. The active UTC
+//! partition and the previous day keep their raw revisions and use a rolling
+//! compacted-prefix + raw-tail read. Days older than yesterday drop the raw
+//! part files after the compact is verified. The active partition follows a
+//! separate five-minute path.
+
+#[cfg(unix)]
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{LazyLock, Mutex},
+    time::SystemTime,
+};
 
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -131,6 +142,38 @@ impl PartitionedDataset {
     fn is_compacted_file_name(self, name: &str) -> bool {
         name == self.compacted_file_name() || self.is_generation_file_name(name)
     }
+
+    /// How long a fold leaves its sources and the generation it superseded
+    /// on disk. Readers of these datasets choose files outside the writer
+    /// guard (or across several guarded reads), so deleting at publish turned
+    /// a fold into a "file not found" for whoever chose just before it. The
+    /// manifest's source list keeps the leftovers out of every governed read.
+    fn source_retirement_grace(self) -> Option<Duration> {
+        match self {
+            Self::LegacyLlmCalls => Some(LEGACY_LLM_SOURCE_RETIREMENT_GRACE),
+            _ => None,
+        }
+    }
+}
+
+/// See [`PartitionedDataset::source_retirement_grace`]: longer than any
+/// governed read takes to choose and open its files.
+pub const LEGACY_LLM_SOURCE_RETIREMENT_GRACE: Duration = Duration::from_secs(15 * 60);
+
+/// Whether the sources `manifest` folded, and the generations it superseded,
+/// may be deleted now. Derived from the durable manifest alone, so a restart
+/// neither forgets a pending deletion nor deletes early.
+fn manifest_sources_may_retire(
+    dataset: PartitionedDataset,
+    manifest: &PartitionCompactionManifest,
+    now: DateTime<Utc>,
+) -> bool {
+    dataset.source_retirement_grace().is_none_or(|grace| {
+        let grace_ms = i64::try_from(grace.as_millis()).unwrap_or(i64::MAX);
+        now.timestamp_millis()
+            .saturating_sub(manifest.generated_at_ms)
+            >= grace_ms
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +220,15 @@ pub struct ParquetCompactionStats {
     pub bytes_reclaimed: u64,
     #[serde(default)]
     pub query_files_avoided: usize,
+    /// Raw inputs that could not be read on their own and were moved into the
+    /// dataset's `_quarantine/` area so the rest of their partition could fold.
+    /// Non-zero is an operator signal: each one has a durable JSON record.
+    #[serde(default)]
+    pub inputs_quarantined: usize,
+    /// Partitions skipped this sweep because their last fold failed on the
+    /// same inputs and the retry backoff has not expired.
+    #[serde(default)]
+    pub partitions_backed_off: usize,
     #[serde(default)]
     pub areas: Vec<ParquetCompactionAreaStats>,
 }
@@ -215,6 +267,8 @@ impl ParquetCompactionStats {
         self.bytes_after = self.bytes_after.saturating_add(other.bytes_after);
         self.bytes_reclaimed = self.bytes_reclaimed.saturating_add(other.bytes_reclaimed);
         self.query_files_avoided += other.query_files_avoided;
+        self.inputs_quarantined += other.inputs_quarantined;
+        self.partitions_backed_off += other.partitions_backed_off;
         self.areas.extend(other.areas);
     }
 }
@@ -263,12 +317,134 @@ pub fn compact_dataset_since(
     min_raw_files: usize,
     oldest_partition: Option<NaiveDate>,
 ) -> Result<ParquetCompactionStats> {
+    compact_dataset_selected(
+        workspace,
+        principal,
+        scope,
+        dataset,
+        min_raw_files,
+        PartitionWindow::Closed {
+            oldest: oldest_partition,
+        },
+    )
+}
+
+/// Raw `batch_*` files the active UTC partition of the legacy LLM stream may
+/// hold before the hot lane folds it: the canonical stream's rolling bound.
+pub const LEGACY_LLM_OPEN_PARTITION_MAX_RAW_FILES: usize =
+    super::llm_fact_compactor::DEFAULT_LLM_FACT_ROLLING_TAIL_FILES;
+const LEGACY_LLM_OPEN_PARTITION_MAX_TAIL_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// When an open (today's) partition folds its raw tail into the next
+/// compacted generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenPartitionPolicy {
+    /// Fold as soon as this many raw batches are uncompacted.
+    pub max_raw_files: usize,
+    /// Fold any tail once the last fold (or, before one, the oldest batch) is
+    /// this old.
+    pub max_tail_age: Duration,
+}
+
+impl Default for OpenPartitionPolicy {
+    fn default() -> Self {
+        Self {
+            max_raw_files: LEGACY_LLM_OPEN_PARTITION_MAX_RAW_FILES,
+            max_tail_age: LEGACY_LLM_OPEN_PARTITION_MAX_TAIL_AGE,
+        }
+    }
+}
+
+impl OpenPartitionPolicy {
+    fn is_due(
+        &self,
+        prior: Option<&PartitionCompactionManifest>,
+        new_raw: &[PathBuf],
+        now: DateTime<Utc>,
+    ) -> bool {
+        if new_raw.is_empty() {
+            return false;
+        }
+        if new_raw.len() >= self.max_raw_files.max(1) {
+            return true;
+        }
+        let since_ms = match prior {
+            Some(manifest) => Some(manifest.generated_at_ms),
+            None => new_raw
+                .iter()
+                .filter_map(|path| std::fs::metadata(path).ok()?.modified().ok())
+                .min()
+                .map(|modified| DateTime::<Utc>::from(modified).timestamp_millis()),
+        };
+        let max_age_ms = i64::try_from(self.max_tail_age.as_millis()).unwrap_or(i64::MAX);
+        since_ms.is_some_and(|since| now.timestamp_millis().saturating_sub(since) >= max_age_ms)
+    }
+}
+
+/// Which partitions one [`compact_dataset_selected`] pass may fold.
+#[derive(Debug, Clone, Copy)]
+enum PartitionWindow {
+    /// Closed UTC days, optionally from `oldest` on: the full sweep.
+    Closed { oldest: Option<NaiveDate> },
+    /// The active UTC day and yesterday, once the policy says a tail is due.
+    Open(OpenPartitionPolicy),
+}
+
+/// Fold the active UTC partition (and yesterday's) of the legacy LLM
+/// `batch_*` stream.
+///
+/// The sink writes a batch every 30 s, so a busy day reached ~1,000 raw files
+/// that stayed raw until the next full sweep after midnight, and every
+/// `llm_calls` read bound each footer. This rolls them into the same
+/// manifest-selected generation closed days use (prior generation + new
+/// batches, verified) at most hourly or at
+/// [`LEGACY_LLM_OPEN_PARTITION_MAX_RAW_FILES`]. Readers select the manifest's
+/// generation plus raw files outside its source set, so a batch the sink
+/// publishes mid-fold stays visible as tail and nothing is counted twice. The
+/// folded batches and the old generation stay on disk for
+/// [`LEGACY_LLM_SOURCE_RETIREMENT_GRACE`] after the new manifest is durable, so
+/// a reader that chose them just before still opens them; a later pass of
+/// this lane deletes them.
+pub fn compact_open_legacy_llm_partition(
+    workspace: &ArtifactV2Workspace,
+    principal: &str,
+    scope: &str,
+    policy: OpenPartitionPolicy,
+) -> Result<ParquetCompactionStats> {
+    // Two batches before a first fold saves a file, as for closed days.
+    compact_dataset_selected(
+        workspace,
+        principal,
+        scope,
+        PartitionedDataset::LegacyLlmCalls,
+        2,
+        PartitionWindow::Open(policy),
+    )
+}
+
+fn compact_dataset_selected(
+    workspace: &ArtifactV2Workspace,
+    principal: &str,
+    scope: &str,
+    dataset: PartitionedDataset,
+    min_raw_files: usize,
+    window: PartitionWindow,
+) -> Result<ParquetCompactionStats> {
     let root = dataset.root(workspace, principal, scope);
     let bytes_before = directory_apparent_bytes(&root)?;
     let files_before = directory_regular_file_count(&root)?;
     let mut stats = ParquetCompactionStats::default();
     for (date, partition) in partition_dirs(&root)? {
-        if date >= Utc::now().date_naive() || oldest_partition.is_some_and(|oldest| date < oldest) {
+        let today = Utc::now().date_naive();
+        let selected = match window {
+            PartitionWindow::Closed { oldest } => {
+                date < today && !oldest.is_some_and(|oldest| date < oldest)
+            },
+            // Yesterday too: its last hour and late writes fold, and its
+            // folded sources retire, without waiting for the six-hour sweep.
+            PartitionWindow::Open(_) => date == today || date.succ_opt() == Some(today),
+        };
+        if !selected {
             continue;
         }
         stats.partitions_scanned += 1;
@@ -282,22 +458,41 @@ pub fn compact_dataset_since(
             );
             continue;
         };
+        // Swept on every scanned partition, not only those that compact: a
+        // partition below the threshold would otherwise keep a dead writer's
+        // staging file until retention removes the whole day.
+        if let Err(error) = remove_orphan_staging_files(&partition) {
+            warn!(
+                target: "analytics::parquet_maintenance",
+                partition = %partition.display(),
+                error = %error,
+                "could not sweep orphaned staging files; the partition is still compacted"
+            );
+        }
         let raw_files = raw_partition_files(&partition, dataset)?;
         let manifest = read_valid_manifest(&partition, dataset)?;
         let (known_remaining, new_raw) = split_raw_against_manifest(&raw_files, manifest.as_ref())?;
-        let recovered_pruned = manifest
+        // Folded sources and superseded generations go once the manifest
+        // that replaced them is past its dataset's grace; until then the
+        // manifest's source list keeps them out of governed reads.
+        let retire = manifest
             .as_ref()
-            .map(|manifest| prune_verified_sources(&known_remaining, &manifest.sources))
-            .transpose()?
-            .unwrap_or(0);
-        if let Some(manifest) = manifest.as_ref() {
+            .is_some_and(|manifest| manifest_sources_may_retire(dataset, manifest, Utc::now()));
+        let recovered_pruned = match manifest.as_ref() {
+            Some(manifest) if retire => {
+                prune_verified_sources(&known_remaining, &manifest.sources)?
+            },
+            _ => 0,
+        };
+        if let Some(manifest) = manifest.as_ref().filter(|_| retire) {
             cleanup_inactive_compacted_generations(&partition, dataset, manifest)?;
         }
         stats.raw_files_pruned += recovered_pruned;
 
         if manifest.is_some() && new_raw.is_empty() {
             if let Some(mut manifest) = manifest {
-                if !manifest.raw_sources_pruned || recovered_pruned > 0 {
+                let sources_gone = retire || known_remaining.is_empty();
+                if sources_gone && (!manifest.raw_sources_pruned || recovered_pruned > 0) {
                     manifest.raw_sources_pruned = true;
                     write_manifest_atomic(&partition, dataset, &manifest)?;
                 }
@@ -309,11 +504,27 @@ pub fn compact_dataset_since(
             stats.partitions_below_threshold += 1;
             continue;
         }
-        let query_files_before = (if manifest.is_some() { 1 } else { 0 }) + new_raw.len();
-        match compact_partition(&partition, dataset, manifest.as_ref(), &new_raw) {
-            Ok((manifest, pruned)) => {
+        if let PartitionWindow::Open(policy) = window {
+            if !policy.is_due(manifest.as_ref(), &new_raw, Utc::now()) {
+                stats.partitions_below_threshold += 1;
+                continue;
+            }
+        }
+        let signature = fold_input_signature(manifest.as_ref(), &new_raw);
+        if fold_backoff_pending(&partition, dataset, &signature, Utc::now()).is_some() {
+            stats.partitions_backed_off += 1;
+            continue;
+        }
+        let prior_files = usize::from(manifest.is_some());
+        match attempt_verified_fold(&partition, dataset, manifest.as_ref(), &new_raw, &mut stats) {
+            Ok(attempt) => {
+                clear_fold_backoff(&partition, dataset);
+                let Some((manifest, pruned)) = attempt.published else {
+                    continue;
+                };
+                let query_files_before = prior_files + attempt.folded_inputs.len();
                 stats.partitions_compacted += 1;
-                stats.raw_files_compacted += new_raw.len();
+                stats.raw_files_compacted += attempt.folded_inputs.len();
                 stats.raw_files_pruned += pruned;
                 stats.rows_compacted = stats
                     .rows_compacted
@@ -324,12 +535,12 @@ pub fn compact_dataset_since(
             },
             Err(error) => {
                 stats.partitions_failed += 1;
-                warn!(
-                    target: "analytics::parquet_maintenance",
-                    dataset = dataset.as_str(),
-                    partition = %partition.display(),
-                    error = %error,
-                    "verified Parquet compaction failed; source batches were retained"
+                report_fold_failure(
+                    &partition,
+                    dataset,
+                    &signature,
+                    &error,
+                    "verified Parquet compaction failed; source batches were retained",
                 );
             },
         }
@@ -381,7 +592,7 @@ fn compact_partition(
         .execute_batch(&format!(
             "CREATE TABLE compacted_partition AS SELECT * FROM read_parquet({input_sql}, hive_partitioning = false, union_by_name = true);"
         ))
-        .context("reading Parquet compaction inputs")?;
+        .context(CompactionInputsUnreadable)?;
     let source_rows: i64 = connection
         .query_row("SELECT count(*) FROM compacted_partition", [], |row| {
             row.get(0)
@@ -436,7 +647,18 @@ fn compact_partition(
         },
     )?;
 
-    let sources = source_fingerprints(new_raw)?;
+    let mut sources = source_fingerprints(new_raw)?;
+    let deferred = dataset.source_retirement_grace().is_some();
+    if deferred {
+        // Sources of the prior fold still waiting out their grace are inside
+        // the prior generation, hence inside this one: keep listing them, or
+        // readers would count them a second time as new raw.
+        if let Some(prior) = prior {
+            let raw = raw_partition_files(partition, dataset)?;
+            let (retained, _) = split_raw_against_manifest(&raw, Some(prior))?;
+            sources.extend(source_fingerprints(&retained)?);
+        }
+    }
     let metadata = std::fs::metadata(&final_path)?;
     let mut manifest = PartitionCompactionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
@@ -452,6 +674,12 @@ fn compact_partition(
         raw_sources_pruned: false,
     };
     write_manifest_atomic(partition, dataset, &manifest)?;
+    if deferred {
+        // A reader that chose the prior generation or these batches just
+        // before this publish still finds them; a later pass retires them.
+        sync_directory(partition)?;
+        return Ok((manifest, 0));
+    }
     let pruned = prune_verified_sources(new_raw, &manifest.sources)?;
     manifest.raw_sources_pruned = true;
     write_manifest_atomic(partition, dataset, &manifest)?;
@@ -460,12 +688,686 @@ fn compact_partition(
     Ok((manifest, pruned))
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// One bad input must not wedge a partition
+// ─────────────────────────────────────────────────────────────────────
+//
+// Every fold reads its inputs in one `read_parquet([...])`, so a single object
+// DuckDB cannot open fails the whole set. That is what wedged
+// `activity_rows/dt=2026-10-02/hour=02` for weeks: one zero-byte `batch_` left
+// by a writer that died mid-`COPY`, read and refused every five minutes, which
+// in turn held the day fold and the seven-day roll-up behind it. Two things
+// close it, and both leave the readable rows exactly where the verified fold
+// protocol expects them:
+//
+// - after a combined read fails, each raw input is probed on its own and the
+//   ones that cannot be read are *moved* — with a durable record — into the
+//   dataset's `_quarantine/` area, outside every `dt=` partition, where neither
+//   readers nor retention ever look; the fold then runs over the rest;
+// - a failure that setting inputs aside cannot fix is retried with exponential
+//   backoff keyed to the exact input set, rather than every sweep forever.
+
+/// Marks the one step of [`compact_partition`] that reads its inputs, so a
+/// failure there can be told apart from a failed write or a failed guard. It
+/// is the only failure a single bad input can cause, and the only one
+/// [`attempt_verified_fold`] answers by examining the inputs one by one.
+#[derive(Debug, Clone, Copy)]
+struct CompactionInputsUnreadable;
+
+impl std::fmt::Display for CompactionInputsUnreadable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("reading Parquet compaction inputs")
+    }
+}
+
+/// Where unreadable inputs are moved, relative to the dataset root.
+///
+/// Beside the `dt=` partitions rather than inside one, on purpose: retention
+/// removes partitions with `remove_dir_all`, so anything set aside *inside* a
+/// partition would be deleted with it. `partition_dirs` and the activity
+/// readers select `dt=` names only, and the moved file loses its `.parquet`
+/// extension, so no glob reads it either.
+const QUARANTINE_DIR_NAME: &str = "_quarantine";
+
+/// First retry delay after a failed fold; doubles per consecutive failure on
+/// the same inputs.
+const FOLD_RETRY_BASE_SECS: i64 = 5 * 60;
+
+/// Longest delay between retries of a partition whose fold keeps failing —
+/// the full-sweep cadence, so a stuck partition is still looked at every
+/// full sweep.
+const FOLD_RETRY_CAP_SECS: i64 = 6 * 60 * 60;
+
+/// Consecutive failures on the same inputs after which a fold failure is
+/// logged at `error` (roughly half a day of backed-off retries).
+const FOLD_FAILURES_BEFORE_ERROR: u32 = 8;
+
+/// The raw inputs a fold actually consumed, and what it published.
+struct FoldAttempt {
+    folded_inputs: Vec<PathBuf>,
+    /// `None` when every new input was unreadable and was set aside, leaving
+    /// nothing to fold.
+    published: Option<(PartitionCompactionManifest, usize)>,
+}
+
+/// [`compact_partition`], plus setting aside inputs that cannot be read.
+///
+/// The happy path is one `compact_partition` call and nothing else. Only when
+/// the combined read fails are the raw inputs probed one at a time; any that
+/// fail on their own are quarantined and the fold is retried once over the
+/// rest. Inputs that each read fine but fail together (a type conflict
+/// `union_by_name` cannot reconcile) are not "unreadable": nothing is moved
+/// and the error is returned for the caller's backoff.
+///
+/// The caller must hold the analytics writer guard.
+fn attempt_verified_fold(
+    partition: &Path,
+    dataset: PartitionedDataset,
+    prior: Option<&PartitionCompactionManifest>,
+    inputs: &[PathBuf],
+    stats: &mut ParquetCompactionStats,
+) -> Result<FoldAttempt> {
+    let error = match compact_partition(partition, dataset, prior, inputs) {
+        Ok(published) => {
+            return Ok(FoldAttempt {
+                folded_inputs: inputs.to_vec(),
+                published: Some(published),
+            })
+        },
+        Err(error) => error,
+    };
+    if error.downcast_ref::<CompactionInputsUnreadable>().is_none() {
+        return Err(error);
+    }
+    let unreadable = unreadable_raw_inputs(dataset, inputs);
+    if unreadable.is_empty() {
+        return Err(error);
+    }
+    let mut set_aside = Vec::with_capacity(unreadable.len());
+    for (path, reason) in &unreadable {
+        quarantine_unreadable_input(dataset, path, reason).with_context(|| {
+            format!("setting aside unreadable Parquet input {}", path.display())
+        })?;
+        stats.inputs_quarantined += 1;
+        set_aside.push(path.clone());
+    }
+    let readable: Vec<PathBuf> = inputs
+        .iter()
+        .filter(|path| !set_aside.contains(*path))
+        .cloned()
+        .collect();
+    if readable.is_empty() {
+        return Ok(FoldAttempt {
+            folded_inputs: readable,
+            published: None,
+        });
+    }
+    let published = compact_partition(partition, dataset, prior, &readable)?;
+    Ok(FoldAttempt {
+        folded_inputs: readable,
+        published: Some(published),
+    })
+}
+
+/// After a combined read outside [`attempt_verified_fold`] failed, set aside
+/// the raw inputs that cannot be read and say so on the returned error. The
+/// caller still fails this pass; the next one runs without them.
+fn with_unreadable_inputs_set_aside(
+    error: anyhow::Error,
+    dataset: PartitionedDataset,
+    inputs: &[PathBuf],
+) -> anyhow::Error {
+    let unreadable = unreadable_raw_inputs(dataset, inputs);
+    if unreadable.is_empty() {
+        return error;
+    }
+    for (path, reason) in &unreadable {
+        if let Err(quarantine_error) = quarantine_unreadable_input(dataset, path, reason) {
+            return error.context(format!(
+                "could not set aside unreadable Parquet input {}: {quarantine_error:#}",
+                path.display()
+            ));
+        }
+    }
+    error.context(format!(
+        "set aside {} unreadable Parquet input(s) into {QUARANTINE_DIR_NAME}/; the rest are \
+         retried on the next sweep",
+        unreadable.len()
+    ))
+}
+
+/// Raw inputs that fail to read on their own, with the reason.
+///
+/// Each probe decodes every row through a fresh connection, and a failure is
+/// confirmed by a second fresh probe, so a transient (memory pressure, a
+/// racing open) is not mistaken for damage. Only raw batch names are probed:
+/// a manifest-selected generation was checksum-verified when it was read, and
+/// moving it would orphan its manifest.
+///
+/// When **no** raw input reads, the inputs are probably not the problem — the
+/// environment is — so only inputs whose Parquet envelope is visibly broken
+/// (shorter than a footer, or missing the `PAR1` magic) are reported. That is
+/// the valve that stops a broken DuckDB from quarantining a whole partition.
+fn unreadable_raw_inputs(
+    dataset: PartitionedDataset,
+    inputs: &[PathBuf],
+) -> Vec<(PathBuf, String)> {
+    let mut failing = Vec::new();
+    let mut any_readable = false;
+    for path in inputs {
+        let is_raw = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| dataset.is_raw_file_name(name));
+        if !is_raw {
+            continue;
+        }
+        let Err(first) = probe_parquet_input(path) else {
+            any_readable = true;
+            continue;
+        };
+        if probe_parquet_input(path).is_ok() {
+            any_readable = true;
+            continue;
+        }
+        let envelope_broken = parquet_envelope_is_broken(path);
+        failing.push((path.clone(), format!("{first:#}"), envelope_broken));
+    }
+    failing
+        .into_iter()
+        .filter(|(_, _, envelope_broken)| any_readable || *envelope_broken)
+        .map(|(path, reason, _)| (path, reason))
+        .collect()
+}
+
+/// Read every row of one Parquet object, discarding them.
+fn probe_parquet_input(path: &Path) -> Result<()> {
+    let connection =
+        Connection::open_in_memory().context("opening DuckDB to probe a Parquet input")?;
+    configure_analytics_connection_checked(&connection, "parquet_input_probe")
+        .context("configuring the Parquet input probe")?;
+    connection
+        .execute_batch(&format!(
+            "CREATE TEMP TABLE parquet_input_probe AS SELECT * FROM read_parquet('{}', hive_partitioning = false);",
+            escape_sql_literal(&path.display().to_string())
+        ))
+        .with_context(|| format!("reading Parquet input {}", path.display()))?;
+    Ok(())
+}
+
+/// Whether a file cannot be Parquet at all: shorter than the 12-byte minimum
+/// (`PAR1`, footer length, `PAR1`) or missing either magic. A file that cannot
+/// be opened is not evidence either way and reports `false`.
+fn parquet_envelope_is_broken(path: &Path) -> bool {
+    const MAGIC: [u8; 4] = *b"PAR1";
+    let inspect = || -> std::io::Result<bool> {
+        let mut file = File::open(path)?;
+        if file.metadata()?.len() < 12 {
+            return Ok(true);
+        }
+        let mut head = [0_u8; 4];
+        file.read_exact(&mut head)?;
+        let mut tail = [0_u8; 4];
+        file.seek(SeekFrom::End(-4))?;
+        file.read_exact(&mut tail)?;
+        Ok(head != MAGIC || tail != MAGIC)
+    };
+    inspect().unwrap_or(false)
+}
+
+/// Why one input was set aside, written beside it and kept with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct QuarantinedInputRecord {
+    schema_version: u16,
+    dataset: PartitionedDataset,
+    /// Where the object was, relative to the dataset root.
+    original_path: String,
+    /// Where it is now, relative to the dataset root.
+    quarantined_path: String,
+    byte_len: u64,
+    checksum_blake3: String,
+    reason: String,
+    quarantined_at_ms: i64,
+}
+
+/// The dataset root a partition file belongs to: the parent of its nearest
+/// `dt=` ancestor.
+fn dataset_root_of(path: &Path) -> Option<&Path> {
+    path.ancestors()
+        .find(|ancestor| partition_date(ancestor).is_some())?
+        .parent()
+}
+
+/// Move one unreadable input out of the readable name space, never deleting
+/// it, and leave a durable record of what it was and why it moved.
+///
+/// `<root>/dt=D/hour=H/batch_X.parquet` becomes
+/// `<root>/_quarantine/dt=D/hour=H/batch_X.parquet.unreadable-<ulid>` with a
+/// `….json` record beside it. The ULID suffix means a second quarantine of
+/// the same name can never overwrite the first. The caller must hold the
+/// analytics writer guard.
+fn quarantine_unreadable_input(
+    dataset: PartitionedDataset,
+    path: &Path,
+    reason: &str,
+) -> Result<PathBuf> {
+    let root = dataset_root_of(path).ok_or_else(|| {
+        anyhow!(
+            "{} is not inside a dt= partition, so it has no quarantine area; it was left in place",
+            path.display()
+        )
+    })?;
+    let relative = path
+        .strip_prefix(root)
+        .context("locating a Parquet input inside its dataset")?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("non-UTF8 Parquet input name"))?;
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        return Err(anyhow!(
+            "refusing to quarantine non-regular Parquet input {}",
+            path.display()
+        ));
+    }
+    let quarantine_root = root.join(QUARANTINE_DIR_NAME);
+    let destination_dir = match relative.parent() {
+        Some(parent) => quarantine_root.join(parent),
+        None => quarantine_root.clone(),
+    };
+    std::fs::create_dir_all(&destination_dir)
+        .with_context(|| format!("creating {}", destination_dir.display()))?;
+    if !std::fs::symlink_metadata(&quarantine_root)?
+        .file_type()
+        .is_dir()
+    {
+        return Err(anyhow!(
+            "quarantine area {} is not a real directory",
+            quarantine_root.display()
+        ));
+    }
+    let fingerprint = source_fingerprint(path)?;
+    let quarantined_name = format!("{file_name}.unreadable-{}", ulid::Ulid::new());
+    let destination = destination_dir.join(&quarantined_name);
+    let record = QuarantinedInputRecord {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        dataset,
+        original_path: relative.display().to_string(),
+        quarantined_path: destination
+            .strip_prefix(root)
+            .unwrap_or(destination.as_path())
+            .display()
+            .to_string(),
+        byte_len: fingerprint.byte_len,
+        checksum_blake3: fingerprint.checksum_blake3,
+        reason: reason.to_string(),
+        quarantined_at_ms: Utc::now().timestamp_millis(),
+    };
+    // The record lands first. A crash between the two leaves a record naming a
+    // file that is still in place — which the next failing fold sets aside
+    // again under a fresh name — never a moved file nothing explains.
+    let record_path = destination_dir.join(format!("{quarantined_name}.json"));
+    crate::magician_v2::artifact_v2::io::write_bytes_durably_sync(
+        &record_path,
+        &serde_json::to_vec_pretty(&record)?,
+    )
+    .with_context(|| format!("writing quarantine record {}", record_path.display()))?;
+    // Move the existing input within one filesystem, preserving the exact bytes
+    // that failed to read. The shared byte writer cannot move a file; both
+    // affected directories are synced below, after the durable record above.
+    std::fs::rename(path, &destination).with_context(|| {
+        format!(
+            "moving unreadable Parquet input {} -> {}",
+            path.display(),
+            destination.display()
+        )
+    })?;
+    sync_directory(&destination_dir)?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    error!(
+        target: "analytics::parquet_maintenance",
+        dataset = dataset.as_str(),
+        original = %path.display(),
+        quarantined_as = %destination.display(),
+        byte_len = record.byte_len,
+        reason = %reason,
+        "an unreadable Parquet input was set aside so the rest of its partition can fold; \
+         its bytes and a record of why were kept for an operator"
+    );
+    Ok(destination)
+}
+
+/// Durable retry state for a partition whose fold failed.
+///
+/// Keyed to the input set: any change — a late batch, an input set aside, a
+/// file repaired by hand — produces a new signature and an immediate retry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FoldBackoffState {
+    schema_version: u16,
+    input_signature: String,
+    consecutive_failures: u32,
+    last_failure_at_ms: i64,
+    next_attempt_at_ms: i64,
+    last_error: String,
+}
+
+fn fold_backoff_path(partition: &Path, dataset: PartitionedDataset) -> PathBuf {
+    partition
+        .join("_compact")
+        .join(format!("{}.fold-backoff.json", dataset.as_str()))
+}
+
+/// `base × 2^(failures − 1)`, capped at the full-sweep cadence.
+fn fold_retry_delay(consecutive_failures: u32) -> ChronoDuration {
+    let doublings = consecutive_failures.saturating_sub(1).min(16);
+    ChronoDuration::seconds(
+        FOLD_RETRY_BASE_SECS
+            .saturating_mul(1_i64 << doublings)
+            .min(FOLD_RETRY_CAP_SECS),
+    )
+}
+
+/// A cheap identity for a fold's input set: names and lengths, not contents.
+fn fold_input_signature(prior: Option<&PartitionCompactionManifest>, inputs: &[PathBuf]) -> String {
+    let mut entries: Vec<(String, u64)> = inputs
+        .iter()
+        .map(|path| {
+            let len = std::fs::metadata(path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            (path.display().to_string(), len)
+        })
+        .collect();
+    entries.sort();
+    let mut hasher = blake3::Hasher::new();
+    if let Some(prior) = prior {
+        hasher.update(prior.compacted_file_name.as_bytes());
+    }
+    hasher.update(b"\0");
+    for (name, len) in entries {
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&len.to_le_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// Best effort: an unreadable state file is simply no backoff.
+fn read_fold_backoff(partition: &Path, dataset: PartitionedDataset) -> Option<FoldBackoffState> {
+    let raw = std::fs::read(fold_backoff_path(partition, dataset)).ok()?;
+    serde_json::from_slice::<FoldBackoffState>(&raw)
+        .ok()
+        .filter(|state| state.schema_version == MANIFEST_SCHEMA_VERSION)
+}
+
+/// The backoff in force for exactly these inputs, if any.
+fn fold_backoff_pending(
+    partition: &Path,
+    dataset: PartitionedDataset,
+    signature: &str,
+    now: DateTime<Utc>,
+) -> Option<FoldBackoffState> {
+    read_fold_backoff(partition, dataset).filter(|state| {
+        state.input_signature == signature && now.timestamp_millis() < state.next_attempt_at_ms
+    })
+}
+
+fn record_fold_failure(
+    partition: &Path,
+    dataset: PartitionedDataset,
+    signature: &str,
+    error: &anyhow::Error,
+    now: DateTime<Utc>,
+) -> FoldBackoffState {
+    let previous = read_fold_backoff(partition, dataset)
+        .filter(|state| state.input_signature == signature)
+        .map(|state| state.consecutive_failures)
+        .unwrap_or(0);
+    let consecutive_failures = previous.saturating_add(1);
+    let state = FoldBackoffState {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        input_signature: signature.to_string(),
+        consecutive_failures,
+        last_failure_at_ms: now.timestamp_millis(),
+        next_attempt_at_ms: (now + fold_retry_delay(consecutive_failures)).timestamp_millis(),
+        last_error: format!("{error:#}"),
+    };
+    if let Err(write_error) = write_fold_backoff(partition, dataset, &state) {
+        warn!(
+            target: "analytics::parquet_maintenance",
+            partition = %partition.display(),
+            error = %format!("{write_error:#}"),
+            "could not record fold backoff; the partition is retried next sweep"
+        );
+    }
+    state
+}
+
+fn write_fold_backoff(
+    partition: &Path,
+    dataset: PartitionedDataset,
+    state: &FoldBackoffState,
+) -> Result<()> {
+    let path = fold_backoff_path(partition, dataset);
+    let parent = path.parent().context("fold backoff path missing parent")?;
+    std::fs::create_dir_all(parent)?;
+    if !std::fs::symlink_metadata(parent)?.file_type().is_dir() {
+        return Err(anyhow!("fold backoff parent is not a real directory"));
+    }
+    crate::magician_v2::artifact_v2::io::write_bytes_durably_sync(
+        &path,
+        &serde_json::to_vec_pretty(state)?,
+    )
+    .with_context(|| format!("writing fold backoff {}", path.display()))
+}
+
+fn clear_fold_backoff(partition: &Path, dataset: PartitionedDataset) {
+    let path = fold_backoff_path(partition, dataset);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => warn!(
+            target: "analytics::parquet_maintenance",
+            path = %path.display(),
+            error = %error,
+            "could not clear fold backoff after a successful fold"
+        ),
+    }
+}
+
+/// Record a failed fold's backoff and log it with the full error chain —
+/// `warn` while it may still be transient, `error` once it has failed
+/// [`FOLD_FAILURES_BEFORE_ERROR`] times on the same inputs.
+fn report_fold_failure(
+    partition: &Path,
+    dataset: PartitionedDataset,
+    signature: &str,
+    error: &anyhow::Error,
+    message: &str,
+) {
+    let state = record_fold_failure(partition, dataset, signature, error, Utc::now());
+    let retry_in_secs = fold_retry_delay(state.consecutive_failures).num_seconds();
+    let chain = format!("{error:#}");
+    if state.consecutive_failures >= FOLD_FAILURES_BEFORE_ERROR {
+        error!(
+            target: "analytics::parquet_maintenance",
+            dataset = dataset.as_str(),
+            partition = %partition.display(),
+            error = %chain,
+            consecutive_failures = state.consecutive_failures,
+            retry_in_secs,
+            "{message}; it keeps failing on the same inputs and needs an operator"
+        );
+    } else {
+        warn!(
+            target: "analytics::parquet_maintenance",
+            dataset = dataset.as_str(),
+            partition = %partition.display(),
+            error = %chain,
+            consecutive_failures = state.consecutive_failures,
+            retry_in_secs,
+            "{message}"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Publishing a batch: never under its readable name until it is whole
+// ─────────────────────────────────────────────────────────────────────
+
+/// How old a writer's staging file must be before maintenance may remove it.
+///
+/// The sinks do hold the analytics writer guard while they write, but other
+/// writers stage beside the same objects (the canonical LLM materializer, the
+/// repricer) and the sweep must not depend on every one of them doing so. A
+/// staging file only lives for the length of one `COPY`; an hour-old one
+/// belongs to a writer that is gone.
+pub(crate) const WRITER_STAGING_MIN_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// The hidden name a writer `COPY`s into before publishing `final_path`:
+/// `.<name>.tmp` beside it. Every reader of these datasets selects on the
+/// `.parquet` extension (globs are `*.parquet`; listings check the
+/// extension), and the raw-batch prefixes (`batch_`, `embed_`) never start
+/// with a dot, so the staging object is invisible until it is renamed.
+pub(crate) fn parquet_staging_path(final_path: &Path) -> PathBuf {
+    let name = final_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    final_path.with_file_name(format!(".{name}.tmp"))
+}
+
+/// `COPY <relation> TO <final_path> (<options>)`, published atomically.
+///
+/// DuckDB's `COPY` creates its target before it has written a byte, so
+/// copying straight to the final name published a readable name for an object
+/// that might never be finished: a process that died mid-`COPY` left a
+/// zero-byte batch that failed every fold of its partition. This stages under
+/// [`parquet_staging_path`], then fsyncs it, renames it and fsyncs the
+/// directory, so the final name only ever refers to a complete object. The
+/// staging file is removed on failure; one orphaned by a crash is swept by
+/// maintenance once it is older than [`WRITER_STAGING_MIN_AGE`].
+///
+/// `relation` is anything `COPY` accepts as a source: a table name or a
+/// parenthesised `SELECT`.
+pub(crate) fn copy_to_parquet_durably(
+    connection: &Connection,
+    relation: &str,
+    options: &str,
+    final_path: &Path,
+) -> Result<()> {
+    let staging = parquet_staging_path(final_path);
+    let staged = connection
+        .execute_batch(&format!(
+            "COPY {relation} TO '{}' ({options});",
+            escape_sql_literal(&staging.display().to_string())
+        ))
+        .with_context(|| format!("writing Parquet staging object {}", staging.display()))
+        .and_then(|()| {
+            crate::magician_v2::artifact_v2::io::publish_staged_file_durably_sync(
+                &staging, final_path,
+            )
+            .with_context(|| {
+                format!(
+                    "publishing Parquet {} -> {}",
+                    staging.display(),
+                    final_path.display()
+                )
+            })
+        });
+    if let Err(error) = staged {
+        if let Err(cleanup) = std::fs::remove_file(&staging) {
+            if cleanup.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    target: "analytics::parquet_maintenance",
+                    path = %staging.display(),
+                    error = %cleanup,
+                    "could not remove a failed Parquet staging file; maintenance sweeps it once it is old"
+                );
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Whether a staging name belongs to this module's own publishers — a
+/// compacted generation or a rollup object — which are only ever written
+/// under the analytics writer guard that every sweep caller also holds, and
+/// so can be removed as soon as they are seen.
+///
+/// Matched exactly, not by substring: a repricer staging a compacted
+/// generation (`.<gen>.parquet.reprice.<ulid>.tmp`) is *not* one of these.
+fn is_maintenance_staging_name(name: &str) -> bool {
+    let Some(inner) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".tmp"))
+        .and_then(|name| name.strip_suffix(".parquet"))
+    else {
+        return false;
+    };
+    if let Some(hash) = inner.strip_prefix("rollup_") {
+        return !hash.is_empty() && hash.chars().all(|character| character.is_ascii_hexdigit());
+    }
+    inner
+        .split_once(".compacted.")
+        .is_some_and(|(dataset, generation)| {
+            !dataset.is_empty()
+                && !dataset.contains('.')
+                && generation.parse::<ulid::Ulid>().is_ok()
+        })
+}
+
+/// Whether a staging file was last written at least `minimum` ago. A file
+/// whose age cannot be read is treated as young: leaving garbage is cheap,
+/// removing a live writer's file is not.
+fn staging_file_is_older_than(metadata: &std::fs::Metadata, minimum: Duration) -> bool {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= minimum)
+}
+
 pub fn compacted_file(partition: &Path, dataset: PartitionedDataset) -> PathBuf {
     read_valid_manifest(partition, dataset)
         .ok()
         .flatten()
         .map(|manifest| manifest_output(partition, &manifest))
         .unwrap_or_else(|| partition.join(dataset.compacted_file_name()))
+}
+
+/// Parquet objects in `partition` that a governed read never selects: raw
+/// batches the valid manifest already folded and superseded generations, both
+/// waiting out [`PartitionedDataset::source_retirement_grace`]. Tools that walk
+/// a partition's files directly (repricing) must leave these alone: rewriting
+/// a folded batch changes its fingerprint and makes it look new.
+pub fn retired_partition_objects(
+    partition: &Path,
+    dataset: PartitionedDataset,
+) -> Result<Vec<PathBuf>> {
+    let Some(manifest) = read_valid_manifest(partition, dataset)? else {
+        return Ok(Vec::new());
+    };
+    let raw = raw_partition_files(partition, dataset)?;
+    let (mut retired, _) = split_raw_against_manifest(&raw, Some(&manifest))?;
+    let active = manifest_output(partition, &manifest);
+    for entry in std::fs::read_dir(partition)? {
+        let path = entry?.path();
+        let is_generation = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| dataset.is_compacted_file_name(name));
+        if is_generation && path != active {
+            retired.push(path);
+        }
+    }
+    retired.sort();
+    Ok(retired)
 }
 
 pub fn partition_sources(partition: &Path, dataset: PartitionedDataset) -> Result<Vec<PathBuf>> {
@@ -1103,6 +2005,11 @@ fn fold_activity_day(day_partition: &Path, stats: &mut ParquetCompactionStats) -
     // forever.
     let day_manifest = read_valid_manifest(day_partition, dataset)?;
     stats.partitions_scanned += 1;
+    let signature = fold_input_signature(day_manifest.as_ref(), &hour_sources);
+    if fold_backoff_pending(day_partition, dataset, &signature, Utc::now()).is_some() {
+        stats.partitions_backed_off += 1;
+        return Ok(());
+    }
     let Some(_guard) = try_analytics_duckdb_guard_for(COMPACTION_GUARD_TIMEOUT) else {
         stats.partitions_failed += 1;
         warn!(
@@ -1113,8 +2020,27 @@ fn fold_activity_day(day_partition: &Path, stats: &mut ParquetCompactionStats) -
         );
         return Ok(());
     };
-    match compact_partition(day_partition, dataset, day_manifest.as_ref(), &hour_sources) {
-        Ok((manifest, pruned)) => {
+    let attempt = attempt_verified_fold(
+        day_partition,
+        dataset,
+        day_manifest.as_ref(),
+        &hour_sources,
+        stats,
+    );
+    if attempt.is_ok() {
+        clear_fold_backoff(day_partition, dataset);
+    }
+    // From here on the day's inputs are the ones the fold actually consumed:
+    // an unreadable batch it set aside has already left its hour directory.
+    let attempt = attempt.map(|attempt| {
+        hour_sources = attempt.folded_inputs;
+        attempt.published
+    });
+    match attempt {
+        // Every input was unreadable and set aside; the hours hold nothing
+        // the next sweep's empty-day path cannot handle.
+        Ok(None) => {},
+        Ok(Some((manifest, pruned))) => {
             stats.partitions_compacted += 1;
             stats.raw_files_compacted += hour_sources.len();
             stats.raw_files_pruned += pruned;
@@ -1164,12 +2090,12 @@ fn fold_activity_day(day_partition: &Path, stats: &mut ParquetCompactionStats) -
         },
         Err(error) => {
             stats.partitions_failed += 1;
-            warn!(
-                target: "analytics::parquet_maintenance",
-                dataset = dataset.as_str(),
-                partition = %day_partition.display(),
-                error = %error,
-                "verified day fold failed; the hourly objects were retained"
+            report_fold_failure(
+                day_partition,
+                dataset,
+                &signature,
+                &error,
+                "verified day fold failed; the hourly objects were retained",
             );
         },
     }
@@ -1246,6 +2172,11 @@ fn fold_activity_hour(partition: &Path, stats: &mut ParquetCompactionStats) {
         stats.partitions_below_threshold += 1;
         return;
     }
+    let signature = fold_input_signature(manifest.as_ref(), &new_raw);
+    if fold_backoff_pending(partition, dataset, &signature, Utc::now()).is_some() {
+        stats.partitions_backed_off += 1;
+        return;
+    }
     let Some(_guard) = try_analytics_duckdb_guard_for(COMPACTION_GUARD_TIMEOUT) else {
         stats.partitions_failed += 1;
         warn!(
@@ -1256,26 +2187,30 @@ fn fold_activity_hour(partition: &Path, stats: &mut ParquetCompactionStats) {
         );
         return;
     };
-    match compact_partition(partition, dataset, manifest.as_ref(), &new_raw) {
-        Ok((manifest, pruned)) => {
+    match attempt_verified_fold(partition, dataset, manifest.as_ref(), &new_raw, stats) {
+        Ok(attempt) => {
+            clear_fold_backoff(partition, dataset);
+            let Some((manifest, pruned)) = attempt.published else {
+                return;
+            };
             stats.partitions_compacted += 1;
-            stats.raw_files_compacted += new_raw.len();
+            stats.raw_files_compacted += attempt.folded_inputs.len();
             stats.raw_files_pruned += pruned;
             stats.rows_compacted = stats
                 .rows_compacted
                 .saturating_add(manifest.compacted_row_count);
             stats.query_files_avoided = stats
                 .query_files_avoided
-                .saturating_add(new_raw.len().saturating_sub(1));
+                .saturating_add(attempt.folded_inputs.len().saturating_sub(1));
         },
         Err(error) => {
             stats.partitions_failed += 1;
-            warn!(
-                target: "analytics::parquet_maintenance",
-                dataset = dataset.as_str(),
-                partition = %partition.display(),
-                error = %error,
-                "verified hour fold failed; the source batches were retained"
+            report_fold_failure(
+                partition,
+                dataset,
+                &signature,
+                &error,
+                "verified hour fold failed; the source batches were retained",
             );
         },
     }
@@ -1609,7 +2544,14 @@ fn roll_up_activity_day(day_partition: &Path, rollup_root: &Path, date: NaiveDat
             [],
             |row| row.get(0),
         )
-        .context("counting activity rollup inputs")?;
+        .context("counting activity rollup inputs")
+        // One unreadable batch used to refuse the day forever: the detail was
+        // kept, the next sweep read the same file, and the day sat past its
+        // retention window logging that it needed an operator. Set the
+        // unreadable batches aside (moved, never deleted) and let the next
+        // sweep roll up what is left; the marker is still `incomplete`, so
+        // readers report the gap until then.
+        .map_err(|error| with_unreadable_inputs_set_aside(error, dataset, &pending_sources))?;
 
     let file_name = activity_rollup_file_name(&pending_fingerprints);
     let final_path = rollup_partition.join(&file_name);
@@ -1641,7 +2583,10 @@ fn roll_up_activity_day(day_partition: &Path, rollup_root: &Path, date: NaiveDat
              ) TO '{}' (FORMAT PARQUET, COMPRESSION 'zstd');",
             escape_sql_literal(&tmp.display().to_string())
         ))
-        .context("writing the activity rollup object")?;
+        .context("writing the activity rollup object")
+        // `count(*)` can be answered from footers alone, so a batch whose data
+        // pages are damaged first fails here, when the rows are decoded.
+        .map_err(|error| with_unreadable_inputs_set_aside(error, dataset, &pending_sources))?;
     sync_file(&tmp)?;
     let rollup_rows = count_parquet_rows(&connection, &tmp)?;
     if rollup_rows <= 0 && detail_rows > 0 {
@@ -1713,9 +2658,12 @@ fn activity_rollup_file_name(sources: &[SourceFingerprint]) -> String {
 
 /// Remove staging files left by an interrupted publish.
 ///
-/// Only `.<name>.tmp` entries are touched, and only regular files: those names
-/// are produced by this module alone, and the caller holds the analytics writer
-/// guard, so nothing live can own one.
+/// Only `.<name>.tmp` regular files are touched. This module's own staging
+/// names ([`is_maintenance_staging_name`]) go at once: the caller holds the
+/// analytics writer guard, so nothing live can own one. Any other writer's
+/// staging file — a sink batch, a materializer or repricer object — is removed
+/// only once it is older than [`WRITER_STAGING_MIN_AGE`], so an in-flight
+/// write is never touched whether or not its writer holds the guard.
 fn remove_orphan_staging_files(partition: &Path) -> Result<()> {
     let entries = match std::fs::read_dir(partition) {
         Ok(entries) => entries,
@@ -1725,11 +2673,15 @@ fn remove_orphan_staging_files(partition: &Path) -> Result<()> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        let is_staging = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"));
-        if !is_staging || !entry.file_type()?.is_file() {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !(name.starts_with('.') && name.ends_with(".tmp")) || !entry.file_type()?.is_file() {
+            continue;
+        }
+        if !is_maintenance_staging_name(name)
+            && !staging_file_is_older_than(&entry.metadata()?, WRITER_STAGING_MIN_AGE)
+        {
             continue;
         }
         if let Err(error) = std::fs::remove_file(&path) {
@@ -2235,6 +3187,22 @@ fn run_hot_llm_compaction_all_scopes(workspace: &ArtifactV2Workspace) -> Result<
                 "activity spine compaction failed; continuing with remaining scopes"
             );
         }
+        let legacy_llm = compact_open_legacy_llm_partition(
+            workspace,
+            &principal,
+            &scope,
+            OpenPartitionPolicy::default(),
+        )
+        .unwrap_or_else(|error| {
+            warn!(
+                target: "analytics::parquet_maintenance",
+                principal,
+                workspace = scope,
+                error = %error,
+                "open legacy LLM partition compaction failed; continuing with canonical facts"
+            );
+            ParquetCompactionStats::default()
+        });
         if let Err(error) = maintain_hot_llm_scope(
             workspace,
             &principal,
@@ -2251,7 +3219,7 @@ fn run_hot_llm_compaction_all_scopes(workspace: &ArtifactV2Workspace) -> Result<
                     started_at_ms,
                     completed_at_ms: Utc::now().timestamp_millis(),
                     duckdb: Vec::new(),
-                    parquet: None,
+                    parquet: Some(legacy_llm),
                     canonical_llm: Some(canonical_llm),
                     retention: None,
                 },
@@ -2461,7 +3429,61 @@ fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
     })
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChecksumStamp {
+    len: u64,
+    modified: SystemTime,
+    device: u64,
+    inode: u64,
+    changed: (i64, i64),
+}
+
+#[cfg(unix)]
+impl ChecksumStamp {
+    fn read(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok()?,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
+}
+
+#[cfg(unix)]
+#[derive(Default)]
+struct ChecksumCache {
+    entries: HashMap<PathBuf, (ChecksumStamp, String)>,
+    order: VecDeque<PathBuf>,
+}
+
+#[cfg(unix)]
+static VERIFIED_CHECKSUMS: LazyLock<Mutex<ChecksumCache>> =
+    LazyLock::new(|| Mutex::new(ChecksumCache::default()));
+
 fn file_checksum(path: &Path) -> Result<String> {
+    // Compacted objects and their retained sources are immutable. Preserve the
+    // checksum verdict only while identity, size, mtime AND ctime are unchanged;
+    // even an in-place rewrite that restores mtime must be rehashed.
+    #[cfg(unix)]
+    let before = ChecksumStamp::read(path);
+    #[cfg(unix)]
+    if let Some(stamp) = before {
+        if let Ok(cache) = VERIFIED_CHECKSUMS.lock() {
+            if let Some((cached_stamp, checksum)) = cache.entries.get(path) {
+                if *cached_stamp == stamp {
+                    return Ok(checksum.clone());
+                }
+            }
+        }
+    }
     let mut file = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -2472,7 +3494,27 @@ fn file_checksum(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(hasher.finalize().to_hex().to_string())
+    let checksum = hasher.finalize().to_hex().to_string();
+    #[cfg(unix)]
+    if let Some(stamp) = before.filter(|stamp| Some(*stamp) == ChecksumStamp::read(path)) {
+        if let Ok(mut cache) = VERIFIED_CHECKSUMS.lock() {
+            if !cache.entries.contains_key(path) {
+                const MAX_CHECKSUMS: usize = 8192;
+                while cache.entries.len() >= MAX_CHECKSUMS {
+                    if let Some(oldest) = cache.order.pop_front() {
+                        cache.entries.remove(&oldest);
+                    } else {
+                        break;
+                    }
+                }
+                cache.order.push_back(path.to_path_buf());
+            }
+            cache
+                .entries
+                .insert(path.to_path_buf(), (stamp, checksum.clone()));
+        }
+    }
+    Ok(checksum)
 }
 
 fn count_parquet_rows(connection: &Connection, path: &Path) -> Result<i64> {
@@ -2564,8 +3606,87 @@ fn sync_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writer test support: after a completed write the partition holds only
+/// published `.parquet` objects — no staging file — and a staging file left
+/// beside them by a writer that died is invisible to the manifest-aware
+/// source listing and to a `*.parquet` glob, and is not swept while young.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub(crate) fn assert_published_without_staging(
+    partition: &Path,
+    dataset: PartitionedDataset,
+    expected_rows: i64,
+) {
+    let names: Vec<String> = std::fs::read_dir(partition)
+        .expect("partition listing")
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .collect();
+    assert!(
+        names.iter().all(|name| !name.ends_with(".tmp")),
+        "a completed write left a staging file behind: {names:?}"
+    );
+    let published = partition_sources(partition, dataset).expect("partition sources");
+    assert!(
+        !published.is_empty(),
+        "the write published nothing: {names:?}"
+    );
+
+    let staging = parquet_staging_path(&partition.join(format!(
+        "{}_01ARZ3NDEKTSV4RRFFQ69G5FAV.parquet",
+        if dataset == PartitionedDataset::LlmEmbeddings {
+            "embed"
+        } else {
+            "batch"
+        }
+    )));
+    std::fs::write(&staging, b"a dead writer's half-written object").expect("staging file");
+    assert_eq!(
+        partition_sources(partition, dataset).expect("partition sources"),
+        published,
+        "a staging file is never a partition source"
+    );
+    let glob = escape_sql_literal(&partition.join("*.parquet").display().to_string());
+    let connection = Connection::open_in_memory().expect("duckdb");
+    let rows: i64 = connection
+        .query_row(
+            &format!("SELECT count(*) FROM read_parquet('{glob}', union_by_name = true)"),
+            [],
+            |row| row.get(0),
+        )
+        .expect("a *.parquet glob must not pick up the staging file");
+    assert_eq!(rows, expected_rows);
+    remove_orphan_staging_files(partition).expect("staging sweep");
+    assert!(
+        staging.exists(),
+        "a young writer staging file may belong to a live write and must survive the sweep"
+    );
+}
+
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn checksum_cache_revalidates_rewrites_even_when_mtime_is_restored() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("object.parquet");
+        std::fs::write(&path, b"first").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let original = super::file_checksum(&path).unwrap();
+        assert_eq!(original, super::file_checksum(&path).unwrap());
+        std::fs::write(&path, b"other").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_ne!(original, super::file_checksum(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"first").unwrap();
+        assert_eq!(original, super::file_checksum(&path).unwrap());
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -2809,6 +3930,189 @@ mod tests {
             1,
             "only the manifest-selected compacted generation remains"
         );
+    }
+
+    /// Governed rows of one legacy LLM partition, failing on any row read
+    /// twice, with the number of files a reader opens.
+    fn governed_legacy_llm_rows(partition: &Path) -> (i64, usize) {
+        let sources =
+            partition_sources(partition, PartitionedDataset::LegacyLlmCalls).expect("sources");
+        let connection = Connection::open_in_memory().expect("duckdb");
+        let (rows, distinct): (i64, i64) = connection
+            .query_row(
+                &format!(
+                    "SELECT count(*), count(DISTINCT id) FROM read_parquet({}, union_by_name = true)",
+                    parquet_source_sql(&sources)
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("governed rows");
+        assert_eq!(rows, distinct, "a governed reader saw a row twice");
+        (rows, sources.len())
+    }
+
+    fn legacy_llm_generation_count(partition: &Path) -> usize {
+        partition
+            .read_dir()
+            .expect("partition")
+            .flatten()
+            .filter(|entry| {
+                entry.file_name().to_str().is_some_and(|name| {
+                    PartitionedDataset::LegacyLlmCalls.is_compacted_file_name(name)
+                })
+            })
+            .count()
+    }
+
+    /// Move the manifest's publication back in time, as a later pass sees it.
+    fn age_legacy_llm_manifest(partition: &Path, age: Duration) {
+        let mut manifest = read_valid_manifest(partition, PartitionedDataset::LegacyLlmCalls)
+            .expect("manifest")
+            .expect("a fold published one");
+        manifest.generated_at_ms -= i64::try_from(age.as_millis()).expect("age");
+        write_manifest_atomic(partition, PartitionedDataset::LegacyLlmCalls, &manifest)
+            .expect("age the manifest");
+    }
+
+    fn rows_in_files(files: &[PathBuf]) -> i64 {
+        Connection::open_in_memory()
+            .expect("duckdb")
+            .query_row(
+                &format!(
+                    "SELECT count(*) FROM read_parquet({}, union_by_name = true)",
+                    parquet_source_sql(files)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("rows")
+    }
+
+    #[test]
+    fn open_legacy_llm_partition_rolls_its_tail_without_losing_or_double_counting_rows() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let partition = workspace
+            .analytics_llm_calls_root("owner", "default")
+            .join(format!("dt={}", Utc::now().format("%Y-%m-%d")));
+        let policy = OpenPartitionPolicy {
+            max_raw_files: 3,
+            max_tail_age: Duration::from_secs(60 * 60),
+        };
+        let fold = || {
+            compact_open_legacy_llm_partition(&workspace, "owner", "default", policy)
+                .expect("open partition fold")
+        };
+        let raw = |partition: &Path| {
+            raw_partition_files(partition, PartitionedDataset::LegacyLlmCalls).expect("raw")
+        };
+        let past_grace = LEGACY_LLM_SOURCE_RETIREMENT_GRACE + Duration::from_secs(60);
+
+        // Young and below the bound: left raw.
+        write_batch(&partition.join("batch_01.parquet"), 0, 2);
+        write_batch(&partition.join("batch_02.parquet"), 2, 2);
+        let stats = fold();
+        assert_eq!(stats.partitions_scanned, 1);
+        assert_eq!(stats.partitions_compacted, 0);
+        assert_eq!(governed_legacy_llm_rows(&partition), (4, 2));
+
+        // The bound is reached: one generation. A reader that chose the three
+        // batches just before the fold still opens them during the grace, and
+        // a reader choosing now gets the generation alone (no double count).
+        write_batch(&partition.join("batch_03.parquet"), 4, 2);
+        let chosen_before_fold =
+            partition_sources(&partition, PartitionedDataset::LegacyLlmCalls).expect("sources");
+        let stats = fold();
+        assert_eq!(stats.partitions_compacted, 1);
+        assert_eq!(stats.raw_files_compacted, 3);
+        assert_eq!(stats.raw_files_pruned, 0);
+        assert_eq!(
+            raw(&partition).len(),
+            3,
+            "folded batches wait out the grace"
+        );
+        assert_eq!(rows_in_files(&chosen_before_fold), 6);
+        assert_eq!(governed_legacy_llm_rows(&partition), (6, 1));
+
+        // A late writer lands after the fold: visible as tail, counted once,
+        // and not folded until the generation is an hour old.
+        write_batch(&partition.join("batch_04.parquet"), 6, 2);
+        assert_eq!(fold().partitions_compacted, 0);
+        assert_eq!(raw(&partition).len(), 4, "the grace has not passed");
+        assert_eq!(governed_legacy_llm_rows(&partition), (8, 2));
+
+        // An hour later: the first fold's batches retire, and the tail folds
+        // into a second generation; the first generation and batch_04 now wait
+        // out their own grace, still readable by whoever chose them.
+        age_legacy_llm_manifest(&partition, Duration::from_secs(2 * 60 * 60));
+        let chosen_before_fold =
+            partition_sources(&partition, PartitionedDataset::LegacyLlmCalls).expect("sources");
+        let stats = fold();
+        assert_eq!(stats.raw_files_pruned, 3);
+        assert_eq!(stats.partitions_compacted, 1);
+        assert_eq!(stats.raw_files_compacted, 1);
+        assert_eq!(raw(&partition), vec![partition.join("batch_04.parquet")]);
+        assert_eq!(legacy_llm_generation_count(&partition), 2);
+        assert_eq!(rows_in_files(&chosen_before_fold), 8);
+        assert_eq!(governed_legacy_llm_rows(&partition), (8, 1));
+
+        // A fold inside the grace carries the waiting source forward, so it is
+        // still never read twice.
+        write_batch(&partition.join("batch_05.parquet"), 8, 2);
+        write_batch(&partition.join("batch_06.parquet"), 10, 2);
+        write_batch(&partition.join("batch_07.parquet"), 12, 2);
+        assert_eq!(fold().partitions_compacted, 1);
+        assert_eq!(raw(&partition).len(), 4);
+        assert_eq!(governed_legacy_llm_rows(&partition), (14, 1));
+
+        // Past the grace, a pass with nothing to fold sweeps every leftover.
+        age_legacy_llm_manifest(&partition, past_grace);
+        let stats = fold();
+        assert_eq!(stats.partitions_compacted, 0);
+        assert_eq!(stats.raw_files_pruned, 4);
+        assert!(raw(&partition).is_empty());
+        assert_eq!(legacy_llm_generation_count(&partition), 1);
+        assert_eq!(governed_legacy_llm_rows(&partition), (14, 1));
+
+        // The closed-day sweep never folds the open partition.
+        write_batch(&partition.join("batch_08.parquet"), 14, 2);
+        let closed = compact_dataset(
+            &workspace,
+            "owner",
+            "default",
+            PartitionedDataset::LegacyLlmCalls,
+            1,
+        )
+        .expect("closed-day sweep");
+        assert_eq!(closed.partitions_scanned, 0);
+        assert_eq!(governed_legacy_llm_rows(&partition), (16, 2));
+    }
+
+    #[test]
+    fn open_legacy_llm_partition_first_fold_waits_for_its_oldest_batch_to_age() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let partition = workspace
+            .analytics_llm_calls_root("owner", "default")
+            .join(format!("dt={}", Utc::now().format("%Y-%m-%d")));
+        let first = partition.join("batch_01.parquet");
+        write_batch(&first, 0, 2);
+        write_batch(&partition.join("batch_02.parquet"), 2, 2);
+        let fold = || {
+            compact_open_legacy_llm_partition(
+                &workspace,
+                "owner",
+                "default",
+                OpenPartitionPolicy::default(),
+            )
+            .expect("open partition fold")
+        };
+        assert_eq!(fold().partitions_compacted, 0);
+
+        backdate(&first, Duration::from_secs(2 * 60 * 60));
+        assert_eq!(fold().partitions_compacted, 1);
+        assert_eq!(governed_legacy_llm_rows(&partition), (4, 1));
     }
 
     #[test]
@@ -4052,5 +5356,543 @@ mod tests {
             rollup_root.join(format!("dt={ancient}")).exists(),
             "13-month rollups must survive a 90-day sweep"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // One bad input must not wedge a partition
+    // ─────────────────────────────────────────────────────────────────
+
+    /// A zero-byte `batch_`, exactly what a writer that died mid-`COPY` left
+    /// in `activity_rows/dt=2026-10-02/hour=02`.
+    fn write_empty_batch(directory: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(directory).expect("mkdir");
+        let path = directory.join(name);
+        std::fs::write(&path, b"").expect("zero-byte batch");
+        path
+    }
+
+    /// The first half of a real Parquet object: right header magic, no footer.
+    fn write_truncated_batch(directory: &Path, name: &str) -> (PathBuf, Vec<u8>) {
+        let scratch = tempfile::tempdir().expect("scratch");
+        let whole = scratch.path().join("whole.parquet");
+        write_batch(&whole, 0, 50);
+        let bytes = std::fs::read(&whole).expect("read whole");
+        let truncated = bytes[..bytes.len() / 2].to_vec();
+        std::fs::create_dir_all(directory).expect("mkdir");
+        let path = directory.join(name);
+        std::fs::write(&path, &truncated).expect("truncated batch");
+        (path, truncated)
+    }
+
+    /// A Parquet object whose envelope is intact (`PAR1` at both ends) but
+    /// whose declared footer is two bytes of the real one, so DuckDB fails to
+    /// decode the metadata. Used where the envelope check alone must not
+    /// decide.
+    fn write_bad_footer_batch(path: &Path) {
+        write_batch(path, 0, 5);
+        let mut bytes = std::fs::read(path).expect("read batch");
+        let len = bytes.len();
+        bytes[len - 8..len - 4].copy_from_slice(&2_u32.to_le_bytes());
+        std::fs::write(path, &bytes).expect("corrupt footer length");
+    }
+
+    fn quarantined_under(root: &Path) -> (Vec<PathBuf>, Vec<QuarantinedInputRecord>) {
+        let mut objects = Vec::new();
+        let mut records = Vec::new();
+        let mut stack = vec![root.join(QUARANTINE_DIR_NAME)];
+        while let Some(directory) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    records.push(
+                        serde_json::from_slice(&std::fs::read(&path).expect("record"))
+                            .expect("quarantine record parses"),
+                    );
+                } else {
+                    objects.push(path);
+                }
+            }
+        }
+        objects.sort();
+        (objects, records)
+    }
+
+    fn rows_in(path: &Path) -> i64 {
+        let connection = Connection::open_in_memory().expect("duckdb");
+        count_parquet_rows(&connection, path).expect("rows")
+    }
+
+    /// The wedge itself: one unreadable batch among readable ones. The hour
+    /// must fold everything readable and move the bad objects aside — never
+    /// delete them — with a record of what they were.
+    #[test]
+    fn an_unreadable_batch_is_set_aside_and_the_rest_of_the_hour_folds() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_activity_rows_root("owner", "default");
+        let date = Utc::now().date_naive() - ChronoDuration::days(1);
+        for id in ["1", "2", "3"] {
+            write_rows(&root, &[activity_row(date, 0, id, "success", 10)]);
+        }
+        let hour_partition = root.join(format!("dt={date}")).join("hour=00");
+        write_empty_batch(&hour_partition, "batch_empty.parquet");
+        let (_, truncated_bytes) =
+            write_truncated_batch(&hour_partition, "batch_truncated.parquet");
+
+        let stats = compact_activity_rows(&workspace, "owner", "default").expect("compaction");
+
+        assert_eq!(stats.inputs_quarantined, 2);
+        assert_eq!(stats.partitions_failed, 0, "the hour must fold, not fail");
+        let folded = parquet_files_under(&hour_partition);
+        assert_eq!(
+            folded.len(),
+            1,
+            "every readable batch folds into one object"
+        );
+        assert_eq!(rows_in(&folded[0]), 3, "no readable row may be lost");
+        assert!(
+            !fold_backoff_path(&hour_partition, PartitionedDataset::ActivityRows).exists(),
+            "a fold that succeeded leaves no backoff behind"
+        );
+
+        let (objects, records) = quarantined_under(&root);
+        assert_eq!(objects.len(), 2, "both bad objects are kept, not deleted");
+        assert!(objects.iter().all(|path| {
+            path.parent()
+                == Some(
+                    root.join(QUARANTINE_DIR_NAME)
+                        .join(format!("dt={date}"))
+                        .join("hour=00")
+                        .as_path(),
+                )
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(".parquet.unreadable-"))
+        }));
+        let truncated = objects
+            .iter()
+            .find(|path| path.display().to_string().contains("batch_truncated"))
+            .expect("truncated object kept");
+        assert_eq!(
+            std::fs::read(truncated).expect("read kept bytes"),
+            truncated_bytes,
+            "the bytes set aside are exactly the bytes that failed"
+        );
+        assert_eq!(records.len(), 2, "each object carries a durable record");
+        let empty = records
+            .iter()
+            .find(|record| record.original_path.ends_with("batch_empty.parquet"))
+            .expect("record for the zero-byte batch");
+        assert_eq!(
+            empty.original_path,
+            format!("dt={date}/hour=00/batch_empty.parquet")
+        );
+        assert_eq!(empty.byte_len, 0);
+        assert_eq!(empty.dataset, PartitionedDataset::ActivityRows);
+        assert!(!empty.reason.is_empty());
+
+        // The readers see the folded rows and nothing from the quarantine area.
+        let query = super::super::activity_rows_sink::query_parquet_files(&root);
+        assert_eq!(query.files, folded);
+    }
+
+    /// The exact on-disk state that was stuck: a day several days old whose
+    /// other hours folded, with one hour holding a zero-byte batch. One sweep
+    /// must fold the hour and the day; retention then rolls it up and removes
+    /// the detail — and the bad object survives in the quarantine area.
+    #[test]
+    fn a_stuck_day_with_a_zero_byte_batch_folds_rolls_up_and_keeps_the_bad_object() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_activity_rows_root("owner", "default");
+        let rollup_root = workspace.analytics_activity_rollups_root("owner", "default");
+        let date =
+            Utc::now().date_naive() - ChronoDuration::days(ACTIVITY_DETAIL_RETENTION_DAYS + 3);
+        for (hour, id) in [(0, "1"), (0, "2"), (2, "3"), (2, "4")] {
+            write_rows(&root, &[activity_row(date, hour, id, "success", 10)]);
+        }
+        let day_partition = root.join(format!("dt={date}"));
+        write_empty_batch(&day_partition.join("hour=02"), "batch_empty.parquet");
+
+        let stats = compact_activity_rows(&workspace, "owner", "default").expect("compaction");
+        assert_eq!(stats.inputs_quarantined, 1);
+        assert_eq!(stats.partitions_failed, 0);
+        let objects = parquet_files_under(&day_partition);
+        assert_eq!(objects.len(), 1, "the day folds to one object");
+        assert_eq!(objects[0].parent(), Some(day_partition.as_path()));
+        assert_eq!(rows_in(&objects[0]), 4);
+
+        let retention =
+            apply_activity_retention(&workspace, "owner", "default").expect("retention");
+        assert_eq!(
+            retention.partitions_removed, 1,
+            "the day is no longer refused"
+        );
+        assert!(!day_partition.exists());
+        let rollups = rollup_parquet_files(&rollup_root);
+        assert_eq!(rollup_totals(&rollups.files), (4, 40));
+        let (kept, records) = quarantined_under(&root);
+        assert_eq!(
+            kept.len(),
+            1,
+            "removing the detail must not remove what was set aside"
+        );
+        assert_eq!(records.len(), 1);
+    }
+
+    /// The roll-up reads detail directly, so it needs the same treatment: the
+    /// pass that meets an unreadable batch sets it aside and keeps the detail;
+    /// the next pass rolls up the rest instead of refusing forever.
+    #[test]
+    fn a_rollup_sets_aside_an_unreadable_batch_instead_of_refusing_forever() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_activity_rows_root("owner", "default");
+        let rollup_root = workspace.analytics_activity_rollups_root("owner", "default");
+        let date =
+            Utc::now().date_naive() - ChronoDuration::days(ACTIVITY_DETAIL_RETENTION_DAYS + 1);
+        write_rows(&root, &[activity_row(date, 5, "1", "success", 25)]);
+        let day_partition = root.join(format!("dt={date}"));
+        write_empty_batch(&day_partition.join("hour=05"), "batch_empty.parquet");
+
+        let first = apply_activity_retention(&workspace, "owner", "default").expect("retention");
+        assert_eq!(
+            first.partitions_removed, 0,
+            "the failing pass keeps the detail"
+        );
+        assert!(day_partition.exists());
+        assert_eq!(quarantined_under(&root).0.len(), 1);
+
+        let second = apply_activity_retention(&workspace, "owner", "default").expect("retention");
+        assert_eq!(second.partitions_removed, 1);
+        assert_eq!(
+            rollup_totals(&rollup_parquet_files(&rollup_root).files),
+            (1, 25)
+        );
+        assert_eq!(
+            quarantined_under(&root).0.len(),
+            1,
+            "the bad object outlives the detail"
+        );
+    }
+
+    /// The generic one-level datasets share the fold, so they share the fix.
+    #[test]
+    fn a_flat_dataset_partition_sets_aside_its_unreadable_batch() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_memory_events_root("owner", "default");
+        let date = Utc::now().date_naive() - ChronoDuration::days(1);
+        let partition = root.join(format!("dt={date}"));
+        {
+            let _guard = analytics_duckdb_guard();
+            write_batch(&partition.join("batch_1.parquet"), 0, 2);
+            write_batch(&partition.join("batch_2.parquet"), 2, 3);
+        }
+        write_empty_batch(&partition, "batch_3.parquet");
+
+        let stats = compact_dataset(
+            &workspace,
+            "owner",
+            "default",
+            PartitionedDataset::MemoryEvents,
+            2,
+        )
+        .expect("compact");
+        assert_eq!(stats.partitions_compacted, 1);
+        assert_eq!(stats.inputs_quarantined, 1);
+        assert_eq!(stats.raw_files_compacted, 2);
+        let compacted = compacted_file(&partition, PartitionedDataset::MemoryEvents);
+        assert_eq!(rows_in(&compacted), 5);
+        assert_eq!(
+            partition_sources(&partition, PartitionedDataset::MemoryEvents).expect("sources"),
+            vec![compacted]
+        );
+        let (kept, records) = quarantined_under(&root);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            records[0].original_path,
+            format!("dt={date}/batch_3.parquet")
+        );
+        assert_eq!(records[0].dataset, PartitionedDataset::MemoryEvents);
+    }
+
+    /// When nothing in the set reads and every envelope looks intact, the
+    /// fault is more likely the environment than the files: nothing is moved,
+    /// the failure backs off, and a change to the inputs retries at once.
+    #[test]
+    fn a_fold_that_setting_inputs_aside_cannot_fix_backs_off_until_its_inputs_change() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_activity_rows_root("owner", "default");
+        let date = Utc::now().date_naive() - ChronoDuration::days(1);
+        let hour_partition = root.join(format!("dt={date}")).join("hour=00");
+        {
+            let _guard = analytics_duckdb_guard();
+            write_bad_footer_batch(&hour_partition.join("batch_bad_1.parquet"));
+            write_bad_footer_batch(&hour_partition.join("batch_bad_2.parquet"));
+        }
+        assert!(!parquet_envelope_is_broken(
+            &hour_partition.join("batch_bad_1.parquet")
+        ));
+
+        let first = compact_activity_rows(&workspace, "owner", "default").expect("compaction");
+        assert_eq!(first.partitions_failed, 1);
+        assert_eq!(
+            first.inputs_quarantined, 0,
+            "no readable sibling, no broken envelope: keep"
+        );
+        let state = read_fold_backoff(&hour_partition, PartitionedDataset::ActivityRows)
+            .expect("backoff recorded");
+        assert_eq!(state.consecutive_failures, 1);
+        assert!(
+            state
+                .last_error
+                .starts_with("reading Parquet compaction inputs: "),
+            "the recorded error keeps the whole chain, not only the outer context: {}",
+            state.last_error
+        );
+
+        let second = compact_activity_rows(&workspace, "owner", "default").expect("compaction");
+        assert_eq!(
+            second.partitions_backed_off, 1,
+            "the same inputs are not retried at once"
+        );
+        assert_eq!(second.partitions_failed, 0);
+        assert_eq!(
+            read_fold_backoff(&hour_partition, PartitionedDataset::ActivityRows),
+            Some(state),
+            "a skipped attempt does not count as a failure"
+        );
+
+        // A readable batch arrives: the input set changed, so the fold runs
+        // now — and with a readable sibling, the bad pair is set aside.
+        write_rows(&root, &[activity_row(date, 0, "1", "success", 10)]);
+        let third = compact_activity_rows(&workspace, "owner", "default").expect("compaction");
+        assert_eq!(third.partitions_backed_off, 0);
+        assert_eq!(third.inputs_quarantined, 2);
+        assert_eq!(third.partitions_compacted, 1);
+        let folded = parquet_files_under(&hour_partition);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(rows_in(&folded[0]), 1);
+        assert!(read_fold_backoff(&hour_partition, PartitionedDataset::ActivityRows).is_none());
+    }
+
+    #[test]
+    fn fold_retry_delay_doubles_and_is_capped_at_the_full_sweep() {
+        assert_eq!(fold_retry_delay(1).num_seconds(), 300);
+        assert_eq!(fold_retry_delay(2).num_seconds(), 600);
+        assert_eq!(fold_retry_delay(3).num_seconds(), 1_200);
+        assert_eq!(fold_retry_delay(7).num_seconds(), 19_200);
+        assert_eq!(fold_retry_delay(8).num_seconds(), FOLD_RETRY_CAP_SECS);
+        assert_eq!(
+            fold_retry_delay(u32::MAX).num_seconds(),
+            FOLD_RETRY_CAP_SECS
+        );
+        assert_eq!(fold_retry_delay(0).num_seconds(), 300);
+    }
+
+    #[test]
+    fn fold_backoff_counts_failures_per_input_set_and_expires() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let partition = temporary.path().join("dt=2026-01-01");
+        std::fs::create_dir_all(&partition).expect("partition");
+        let dataset = PartitionedDataset::Events;
+        let now = Utc::now();
+        let failure = anyhow!("inner cause").context("outer context");
+
+        let first = record_fold_failure(&partition, dataset, "inputs-a", &failure, now);
+        assert_eq!(first.consecutive_failures, 1);
+        assert_eq!(first.last_error, "outer context: inner cause");
+        let second = record_fold_failure(&partition, dataset, "inputs-a", &failure, now);
+        assert_eq!(second.consecutive_failures, 2);
+        assert_eq!(
+            second.next_attempt_at_ms,
+            (now + ChronoDuration::seconds(600)).timestamp_millis()
+        );
+
+        assert!(fold_backoff_pending(&partition, dataset, "inputs-a", now).is_some());
+        assert!(
+            fold_backoff_pending(&partition, dataset, "inputs-b", now).is_none(),
+            "different inputs are never held back by another set's failures"
+        );
+        assert!(
+            fold_backoff_pending(
+                &partition,
+                dataset,
+                "inputs-a",
+                now + ChronoDuration::seconds(601)
+            )
+            .is_none(),
+            "an expired backoff allows the retry"
+        );
+
+        let reset = record_fold_failure(&partition, dataset, "inputs-b", &failure, now);
+        assert_eq!(
+            reset.consecutive_failures, 1,
+            "a new input set starts counting again"
+        );
+
+        clear_fold_backoff(&partition, dataset);
+        assert!(read_fold_backoff(&partition, dataset).is_none());
+        clear_fold_backoff(&partition, dataset);
+    }
+
+    #[test]
+    fn fold_input_signature_changes_with_the_input_set() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let a = temporary.path().join("batch_a.parquet");
+        let b = temporary.path().join("batch_b.parquet");
+        std::fs::write(&a, b"aa").expect("a");
+        std::fs::write(&b, b"bbb").expect("b");
+        let both = fold_input_signature(None, &[a.clone(), b.clone()]);
+        assert_eq!(
+            both,
+            fold_input_signature(None, &[b.clone(), a.clone()]),
+            "order-free"
+        );
+        assert_ne!(both, fold_input_signature(None, &[a.clone()]));
+        std::fs::write(&b, b"bbbb").expect("b grows");
+        assert_ne!(
+            both,
+            fold_input_signature(None, &[a, b]),
+            "a resized input is a new set"
+        );
+    }
+
+    /// The writer now stages under `.batch_<ulid>.parquet.tmp`. A crash
+    /// leaves that staging name, never a readable `batch_`: readers ignore it
+    /// and the next fold of the hour sweeps it.
+    #[test]
+    fn an_orphaned_batch_staging_file_is_invisible_and_swept() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temporary.path());
+        let root = workspace.analytics_activity_rows_root("owner", "default");
+        let date = Utc::now().date_naive() - ChronoDuration::days(1);
+        for id in ["1", "2"] {
+            write_rows(&root, &[activity_row(date, 0, id, "success", 10)]);
+        }
+        let hour_partition = root.join(format!("dt={date}")).join("hour=00");
+        let staging = hour_partition.join(".batch_01ABCDEFGHJKMNPQRSTVWXYZ00.parquet.tmp");
+        std::fs::write(&staging, b"").expect("orphaned staging file");
+        backdate(&staging, WRITER_STAGING_MIN_AGE + Duration::from_secs(60));
+        assert!(super::super::activity_rows_sink::query_parquet_files(&root)
+            .files
+            .iter()
+            .all(|path| path != &staging));
+
+        let stats = compact_activity_rows(&workspace, "owner", "default").expect("compaction");
+        assert_eq!(stats.partitions_compacted, 1);
+        assert_eq!(
+            stats.inputs_quarantined, 0,
+            "a staging name is not an input"
+        );
+        assert!(
+            !staging.exists(),
+            "the fold sweeps the dead writer's staging file once it is old"
+        );
+    }
+
+    fn backdate(path: &Path, age: Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open for mtime")
+            .set_modified(std::time::SystemTime::now() - age)
+            .expect("backdate mtime");
+    }
+
+    /// A writer that does not hold the analytics guard can be mid-`COPY`
+    /// while maintenance sweeps; its staging file must survive until it is
+    /// old enough to be certainly dead. This module's own staging names are
+    /// only written under the guard every sweep caller holds, so they go at
+    /// once.
+    #[test]
+    fn the_staging_sweep_removes_only_dead_writer_files() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let partition = temporary.path().join("dt=2026-01-01");
+        std::fs::create_dir_all(&partition).expect("partition");
+        let live = partition.join(".batch_live.parquet.tmp");
+        let dead = partition.join(".batch_dead.parquet.tmp");
+        let reprice = partition.join(format!(
+            ".events.compacted.{}.parquet.reprice.{}.tmp",
+            ulid::Ulid::new(),
+            ulid::Ulid::new()
+        ));
+        let generation = partition.join(format!(
+            ".events.compacted.{}.parquet.tmp",
+            ulid::Ulid::new()
+        ));
+        let rollup = partition.join(".rollup_0123abcd.parquet.tmp");
+        let published = partition.join("batch_kept.parquet");
+        for path in [&live, &dead, &reprice, &generation, &rollup, &published] {
+            std::fs::write(path, b"x").expect("fixture");
+        }
+        backdate(&dead, WRITER_STAGING_MIN_AGE + Duration::from_secs(60));
+
+        remove_orphan_staging_files(&partition).expect("sweep");
+
+        assert!(
+            live.exists(),
+            "an in-flight writer staging file is never touched"
+        );
+        assert!(
+            reprice.exists(),
+            "a young repricer staging file is a writer's, not maintenance's"
+        );
+        assert!(!dead.exists(), "an hour-old writer staging file is swept");
+        assert!(
+            !generation.exists(),
+            "maintenance's own staging goes at once"
+        );
+        assert!(!rollup.exists(), "maintenance's own staging goes at once");
+        assert!(published.exists(), "published objects are never staging");
+    }
+
+    #[test]
+    fn maintenance_staging_names_are_matched_exactly() {
+        let generation = ulid::Ulid::new();
+        assert!(is_maintenance_staging_name(&format!(
+            ".activity_rows.compacted.{generation}.parquet.tmp"
+        )));
+        assert!(is_maintenance_staging_name(".rollup_deadbeef.parquet.tmp"));
+        assert!(!is_maintenance_staging_name(
+            ".batch_01ARZ3NDEKTSV4RRFFQ69G5FAV.parquet.tmp"
+        ));
+        assert!(!is_maintenance_staging_name(&format!(
+            ".llm_calls.compacted.{generation}.parquet.reprice.{generation}.tmp"
+        )));
+        assert!(!is_maintenance_staging_name(".rollup_not-hex.parquet.tmp"));
+        assert!(!is_maintenance_staging_name(".materialize-x.parquet.tmp"));
+        assert_eq!(
+            parquet_staging_path(Path::new("/d/dt=2026-01-01/batch_x.parquet")),
+            PathBuf::from("/d/dt=2026-01-01/.batch_x.parquet.tmp")
+        );
+    }
+
+    #[test]
+    fn the_writer_leaves_no_staging_file_behind() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let root = temporary.path().join("activity_rows");
+        let date = Utc::now().date_naive();
+        let outcome = write_rows(&root, &[activity_row(date, 1, "1", "success", 10)]);
+        assert_eq!(outcome.rows_written, 1);
+        let hour_partition = root.join(format!("dt={date}")).join("hour=01");
+        let names: Vec<String> = std::fs::read_dir(&hour_partition)
+            .expect("hour dir")
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .filter(|name| !name.starts_with(".activity_rows_partition_incomplete"))
+            .collect();
+        assert_eq!(names.len(), 1, "exactly the published batch: {names:?}");
+        assert!(names[0].starts_with("batch_") && names[0].ends_with(".parquet"));
+        assert!(rows_in(&hour_partition.join(&names[0])) == 1);
+        assert_published_without_staging(&hour_partition, PartitionedDataset::ActivityRows, 1);
     }
 }

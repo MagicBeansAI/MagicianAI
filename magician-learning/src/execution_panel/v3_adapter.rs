@@ -508,6 +508,11 @@ impl V3ExecutionPanelAdapter {
             None
         }
         .or_else(|| {
+            // A selected historical run must never borrow the latest run's
+            // task report. Its own execution output is the fallback below.
+            if selected_execution_id.is_some() {
+                return None;
+            }
             task_outputs
                 .primary_user_output_id
                 .as_ref()
@@ -523,6 +528,7 @@ impl V3ExecutionPanelAdapter {
         if let Some(output) = maybe_output {
             let summary = self.read_output_summary(scope, task_id, &output).await?;
             return Ok(Some(ExecutionPanelOutputResult {
+                report: self.read_output_report(scope, task_id, &output).await?,
                 summary,
                 outcome: selected_node.map(|node| node.status.clone()),
                 artifact_names: vec![output_file_name(&output.relative_path)],
@@ -540,6 +546,7 @@ impl V3ExecutionPanelAdapter {
                 {
                     let summary = self.read_output_summary(scope, task_id, &output).await?;
                     return Ok(Some(ExecutionPanelOutputResult {
+                        report: self.read_output_report(scope, task_id, &output).await?,
                         summary,
                         outcome: Some(node.status.clone()),
                         artifact_names: vec![output_file_name(&output.relative_path)],
@@ -709,6 +716,50 @@ impl V3ExecutionPanelAdapter {
         }))
     }
 
+    async fn read_output_report(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        output: &OutputRef,
+    ) -> anyhow::Result<Option<String>> {
+        if !matches!(
+            base_media_type(&output.media_type),
+            "text/html" | "text/markdown" | "text/plain"
+        ) {
+            return Ok(None);
+        }
+        let task_dir =
+            self.service
+                .workspace()
+                .task_dir(scope.principal(), scope.workspace(), task_id);
+        let relative = std::path::Path::new(&output.relative_path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Ok(None);
+        }
+        const MAX_REPORT_BYTES: usize = 256 * 1024;
+        let bytes = match self
+            .service
+            .workspace()
+            .read_prefix_path(task_dir.join(relative), (MAX_REPORT_BYTES + 1) as u64)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        // A cut HTML document can hide the truncation notice in an open tag.
+        // Keep the summary + download for oversized reports instead.
+        if bytes.len() > MAX_REPORT_BYTES {
+            return Ok(None);
+        }
+        Ok(String::from_utf8(bytes)
+            .ok()
+            .filter(|text| !text.trim().is_empty()))
+    }
+
     async fn read_output_summary(
         &self,
         scope: &ScopeRef,
@@ -725,12 +776,20 @@ impl V3ExecutionPanelAdapter {
             "text/markdown" | "text/plain" | "application/xml" | "text/xml" => self
                 .service
                 .workspace()
-                .read_to_string_path(&path)
+                .read_prefix_path(&path, 256 * 1024)
                 .await
-                .ok(),
-            "application/json" => match self.service.workspace().read_to_string_path(&path).await {
-                Ok(raw) => summarize_json_output(&raw),
-                Err(_) => None,
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+            "application/json" => match self
+                .service
+                .workspace()
+                .read_prefix_path(&path, 256 * 1024 + 1)
+                .await
+            {
+                Ok(bytes) if bytes.len() <= 256 * 1024 => String::from_utf8(bytes)
+                    .ok()
+                    .and_then(|raw| summarize_json_output(&raw)),
+                _ => None,
             },
             "text/html" => Some(format!(
                 "HTML output available at `{}`.",
@@ -991,6 +1050,7 @@ impl V3ExecutionPanelAdapter {
         recent_events: &[CanonicalEvent],
     ) -> Vec<FeedItem> {
         // Capped, newest-first summary subset for the legacy Run tab.
+        let in_flight = in_flight_event_ids(recent_events);
         recent_events
             .iter()
             .rev()
@@ -1007,6 +1067,7 @@ impl V3ExecutionPanelAdapter {
                     &task.manifest.agent_id,
                     event,
                     "activity",
+                    in_flight.contains(event.event_id.as_str()),
                 )
             })
             .collect()
@@ -1676,28 +1737,32 @@ fn build_clarification_question(
         slot_confidence: question.slot_confidence,
         options,
         submission: None,
-        hitl_request: Some(HitlOpenTarget {
-            id: question.id.clone(),
-            source: "clarification".to_string(),
-            input_type: input_type.to_string(),
-            prompt: question.question_text.clone(),
-            hint: (!question.context_snippets.is_empty())
-                .then(|| question.context_snippets.join("\n")),
-            input_schema: serde_json::Value::Object(input_schema),
-            identifiers: HitlOpenIdentifiers {
-                correlation_id: Some(question.id.clone()),
-                ..Default::default()
-            },
-            scope: HitlOpenScope {
-                principal: Some(scope.principal().to_string()),
-                workspace: Some(scope.workspace().to_string()),
-                workflow_id: Some(execution_id.to_string()),
-                task_id: Some(task_id.to_string()),
-                execution_id: Some(execution_id.to_string()),
-                ..Default::default()
-            },
-            at: Some(question.created_at.timestamp_millis()),
-        }),
+        hitl_request: Some(
+            HitlOpenTarget {
+                id: question.id.clone(),
+                source: "clarification".to_string(),
+                input_type: input_type.to_string(),
+                prompt: question.question_text.clone(),
+                hint: (!question.context_snippets.is_empty())
+                    .then(|| question.context_snippets.join("\n")),
+                input_schema: serde_json::Value::Object(input_schema),
+                identifiers: HitlOpenIdentifiers {
+                    correlation_id: Some(question.id.clone()),
+                    ..Default::default()
+                },
+                scope: HitlOpenScope {
+                    principal: Some(scope.principal().to_string()),
+                    workspace: Some(scope.workspace().to_string()),
+                    workflow_id: Some(execution_id.to_string()),
+                    task_id: Some(task_id.to_string()),
+                    execution_id: Some(execution_id.to_string()),
+                    ..Default::default()
+                },
+                at: Some(question.created_at.timestamp_millis()),
+                respond: None,
+            }
+            .with_respond_handle(),
+        ),
     }
 }
 
@@ -1750,28 +1815,32 @@ fn build_pause_clarification_question(
             goal_id: pause.goal_id.clone(),
             cycle_id: pause.cycle_id.clone(),
         }),
-        hitl_request: hitl_identity.map(|(id, source)| HitlOpenTarget {
-            id: id.clone(),
-            source: source.to_string(),
-            input_type: pause.input_type.type_name().to_string(),
-            prompt: question_text,
-            hint: (!context_snippets.is_empty()).then(|| context_snippets.join("\n")),
-            input_schema,
-            identifiers: HitlOpenIdentifiers {
-                pause_state_id: Some(pause.key.clone()),
-                correlation_id: Some(id),
-                ..Default::default()
-            },
-            scope: HitlOpenScope {
-                principal: pause.principal.clone(),
-                workspace: pause.workspace.clone(),
-                workflow_id: None,
-                task_id: pause.task_id.clone(),
-                execution_id: Some(pause.execution_id.clone()),
-                agent_id: pause.agent_id.clone(),
-                thread_id: None,
-            },
-            at: None,
+        hitl_request: hitl_identity.map(|(id, source)| {
+            HitlOpenTarget {
+                id: id.clone(),
+                source: source.to_string(),
+                input_type: pause.input_type.type_name().to_string(),
+                prompt: question_text,
+                hint: (!context_snippets.is_empty()).then(|| context_snippets.join("\n")),
+                input_schema,
+                identifiers: HitlOpenIdentifiers {
+                    pause_state_id: Some(pause.key.clone()),
+                    correlation_id: Some(id),
+                    ..Default::default()
+                },
+                scope: HitlOpenScope {
+                    principal: pause.principal.clone(),
+                    workspace: pause.workspace.clone(),
+                    workflow_id: None,
+                    task_id: pause.task_id.clone(),
+                    execution_id: Some(pause.execution_id.clone()),
+                    agent_id: pause.agent_id.clone(),
+                    thread_id: None,
+                },
+                at: None,
+                respond: None,
+            }
+            .with_respond_handle()
         }),
     }
 }
@@ -1780,7 +1849,8 @@ fn embedded_hitl_target(item: &FeedItem) -> Option<HitlOpenTarget> {
     item.metadata
         .get("hitl_request")
         .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|value| serde_json::from_value::<HitlOpenTarget>(value).ok())
+        .map(HitlOpenTarget::with_respond_handle)
 }
 
 fn build_pause_context_snippets(pause: &PendingPauseInfo) -> Vec<String> {
@@ -2086,6 +2156,7 @@ fn event_to_feed_item(
     agent_id: &str,
     event: &CanonicalEvent,
     id_prefix: &str,
+    in_flight: bool,
 ) -> FeedItem {
     FeedItem {
         id: format!("v3:{}:{}:{}", id_prefix, event.execution_id, event.seq),
@@ -2097,7 +2168,7 @@ fn event_to_feed_item(
         agent_id: Some(agent_id.to_string()),
         title: humanize_event_type(&event.event_type),
         summary: activity_summary(event),
-        status: activity_status(event),
+        status: activity_status(event, in_flight),
         created_at: parse_rfc3339_millis(&event.timestamp),
         updated_at: parse_rfc3339_millis(&event.timestamp),
         actions: Vec::new(),
@@ -2126,7 +2197,9 @@ fn activity_metadata(event: &CanonicalEvent) -> serde_json::Value {
     );
 
     let event_type = event.event_type.as_str();
-    let keys: &[&str] = if event_type.starts_with("llm.") {
+    let keys: &[&str] = if event_type.starts_with("context.retrieval.") {
+        &["phase_id", "duration_ms", "timing", "status", "label"]
+    } else if event_type.starts_with("llm.") {
         &[
             "latency_ms",
             "input_tokens",
@@ -2136,12 +2209,26 @@ fn activity_metadata(event: &CanonicalEvent) -> serde_json::Value {
             "cache_creation_tokens",
             "model",
             "provider",
+            "profile",
             // `capability` lets the UI title LLM rows "Thinking with <cap>",
             // matching the chat activity card's vocabulary.
             "capability",
+            // The call identity: `llm.requested`, `llm.routed` and the
+            // call's `llm.succeeded` / `llm.failed` share it, so the UI can
+            // fold them into one row.
+            "llm_call_id",
+            "trace_id",
         ]
     } else if event_type.starts_with("tool.") {
-        &["latency_ms", "action_type", "tool_name", "target"]
+        // `call_id` pairs a `tool.started` with its settlement.
+        &[
+            "latency_ms",
+            "action_type",
+            "tool_name",
+            "target",
+            "call_id",
+            "started_at_ms",
+        ]
     } else if event_type == "recipe.replay" {
         &[
             "kind",
@@ -2167,6 +2254,11 @@ fn activity_metadata(event: &CanonicalEvent) -> serde_json::Value {
                     meta.insert(key.to_string(), value.clone());
                 },
                 _ => {},
+            }
+        }
+        if event_type.starts_with("context.retrieval.") {
+            if let Some(duration) = payload.get("duration_ms") {
+                meta.insert("latency_ms".to_string(), duration.clone());
             }
         }
         if event_type.starts_with("llm.") {
@@ -2202,6 +2294,7 @@ fn build_activity_log(
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
+    let in_flight = in_flight_event_ids(recent_events);
     recent_events
         .iter()
         // A delegated child's work IS this run's work. Filtering to the
@@ -2224,6 +2317,7 @@ fn build_activity_log(
                     .unwrap_or(agent_id),
                 event,
                 "log",
+                in_flight.contains(event.event_id.as_str()),
             )
         })
         .collect()
@@ -2278,13 +2372,109 @@ fn build_delegation_groups(
     groups
 }
 
-fn activity_status(event: &CanonicalEvent) -> FeedItemStatus {
+/// Event types that annotate an in-flight LLM call without moving the run
+/// past it.
+const LLM_CALL_ANNOTATIONS: &[&str] = &["llm.routed", "llm.first_token", "llm.retry_scheduled"];
+
+/// Event ids of the `llm.requested` / `tool.started` rows whose work is still
+/// running.
+///
+/// A row is running while nothing has settled it — `llm.succeeded` /
+/// `llm.failed` with the same `llm_call_id`, `tool.succeeded` /
+/// `tool.failed` with the same `call_id` — AND nothing later in the same
+/// execution shows the run has moved past it. The second rule closes rows
+/// that will never be paired: a historical request recorded without an id, a
+/// decision settled without a model call, a tool whose settlement was lost.
+/// Without it such a row would read as running for as long as the run is
+/// kept. What does not move a run past its work: for an LLM call, the call's
+/// own annotations (`llm.routed`, …); for a tool, the other tools of the same
+/// batch and LLM annotations from calls the tool itself makes.
+fn in_flight_event_ids(events: &[CanonicalEvent]) -> HashSet<&str> {
+    #[derive(Default)]
+    struct Later<'a> {
+        settled_llm_calls: HashSet<&'a str>,
+        settled_tool_calls: HashSet<&'a str>,
+        settled_context_phases: HashSet<&'a str>,
+        context_overtaken: bool,
+        llm_overtaken: bool,
+        tool_overtaken: bool,
+    }
+    let mut later: HashMap<&str, Later<'_>> = HashMap::new();
+    let mut in_flight = HashSet::new();
+    for event in events.iter().rev() {
+        let state = later.entry(event.execution_id.as_str()).or_default();
+        let id = |key: &str| payload_str(event, key);
+        let event_type = event.event_type.as_str();
+        match event_type {
+            "context.retrieval.started" => {
+                let settled = id("phase_id")
+                    .is_some_and(|phase| state.settled_context_phases.contains(phase));
+                if !settled && !state.context_overtaken {
+                    in_flight.insert(event.event_id.as_str());
+                }
+            },
+            "context.retrieval.completed" => {
+                if let Some(phase) = id("phase_id") {
+                    state.settled_context_phases.insert(phase);
+                }
+            },
+            "llm.requested" => {
+                let settled =
+                    id("llm_call_id").is_some_and(|call| state.settled_llm_calls.contains(call));
+                if !settled && !state.llm_overtaken {
+                    in_flight.insert(event.event_id.as_str());
+                }
+            },
+            "tool.started" => {
+                let settled =
+                    id("call_id").is_some_and(|call| state.settled_tool_calls.contains(call));
+                if !settled && !state.tool_overtaken {
+                    in_flight.insert(event.event_id.as_str());
+                }
+            },
+            "llm.succeeded" | "llm.failed" => {
+                if let Some(call) = id("llm_call_id") {
+                    state.settled_llm_calls.insert(call);
+                }
+            },
+            "tool.succeeded" | "tool.failed" => {
+                if let Some(call) = id("call_id") {
+                    state.settled_tool_calls.insert(call);
+                }
+            },
+            _ => {},
+        }
+        let llm_annotation = LLM_CALL_ANNOTATIONS.contains(&event_type);
+        if !event_type.starts_with("context.retrieval.") {
+            state.context_overtaken = true;
+        }
+        if !llm_annotation {
+            state.llm_overtaken = true;
+        }
+        if !llm_annotation && !event_type.starts_with("tool.") {
+            state.tool_overtaken = true;
+        }
+    }
+    in_flight
+}
+
+fn payload_str<'a>(event: &'a CanonicalEvent, key: &str) -> Option<&'a str> {
+    event.payload.get(key).and_then(serde_json::Value::as_str)
+}
+
+/// `in_flight` comes from [`in_flight_event_ids`]; it is only ever true for a
+/// `llm.requested` or `tool.started` row.
+fn activity_status(event: &CanonicalEvent, in_flight: bool) -> FeedItemStatus {
+    if in_flight {
+        return FeedItemStatus::Running;
+    }
     match event.event_type.as_str() {
         "input.requested" | "waiting_for_confirmation" | "max_iterations_reached" => {
             FeedItemStatus::NeedsAction
         },
         "tool.failed" | "llm.failed" => FeedItemStatus::Failed,
         "agentic.execution_completed" => FeedItemStatus::Done,
+        "context.retrieval.completed" => FeedItemStatus::Done,
         _ => FeedItemStatus::Info,
     }
 }
@@ -2370,6 +2560,9 @@ fn humanize_event_type(event_type: &str) -> String {
         "agentic.execution_completed" => "Execution completed".to_string(),
         "agentic.decision_made" => "Decision".to_string(),
         "llm.requested" => "LLM call".to_string(),
+        "context.retrieval.started" => "Preparing context".to_string(),
+        "context.retrieval.completed" => "Context prepared".to_string(),
+        "llm.routed" => "LLM routed".to_string(),
         "llm.succeeded" => "LLM response".to_string(),
         "llm.failed" => "LLM error".to_string(),
         other => other.replace(['.', '_'], " "),
@@ -2763,6 +2956,7 @@ mod tests {
         activity_metadata, build_activity_log, build_clarification_question,
         build_delegation_groups, build_pause_clarification_question, collect_related_execution_ids,
         parse_pause_options_json, project_execution_artifact, safe_task_relative_path,
+        FeedItemStatus,
     };
     use std::collections::HashMap;
 
@@ -2958,6 +3152,149 @@ mod tests {
         assert!(
             log.windows(2).all(|w| w[0].created_at <= w[1].created_at),
             "activity_log must be ascending by timestamp"
+        );
+    }
+
+    fn event_with(seq: u64, event_type: &str, payload: serde_json::Value) -> CanonicalEvent {
+        let mut event = sample_event(seq, event_type);
+        event.payload = payload;
+        event
+    }
+
+    fn statuses(events: &[CanonicalEvent]) -> Vec<(String, FeedItemStatus)> {
+        build_activity_log(
+            "alpha",
+            "default",
+            "task_x",
+            "general",
+            "agent_a",
+            Some("exec_1"),
+            &[],
+            &HashMap::new(),
+            events,
+        )
+        .into_iter()
+        .map(|item| {
+            (
+                item.metadata["event_type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                item.status,
+            )
+        })
+        .collect()
+    }
+
+    #[test]
+    fn an_unpaired_llm_request_reads_running_until_its_response_lands() {
+        let request = event_with(
+            1,
+            "llm.requested",
+            serde_json::json!({"llm_call_id": "call-1", "trace_id": "exec_1", "capability": "decision"}),
+        );
+        let routed = event_with(
+            2,
+            "llm.routed",
+            serde_json::json!({"llm_call_id": "call-1", "model": "claude-test", "provider": "anthropic"}),
+        );
+
+        let in_flight = statuses(&[request.clone(), routed.clone()]);
+        assert_eq!(
+            in_flight[0],
+            ("llm.requested".to_string(), FeedItemStatus::Running)
+        );
+        assert_eq!(
+            in_flight[1],
+            ("llm.routed".to_string(), FeedItemStatus::Info),
+            "the route annotates the running call; it does not end it"
+        );
+        assert_eq!(FeedItemStatus::Running.as_db_str(), "running");
+
+        let response = event_with(
+            3,
+            "llm.succeeded",
+            serde_json::json!({"llm_call_id": "call-1", "model": "claude-test"}),
+        );
+        let settled = statuses(&[request.clone(), routed.clone(), response]);
+        assert_eq!(settled[0].1, FeedItemStatus::Info, "paired by llm_call_id");
+
+        // A request nothing will ever pair (no id, no response) still stops
+        // reading as running once the run has moved on.
+        let mut historical = request.clone();
+        historical.payload = serde_json::json!({"capability": "decision"});
+        let moved_on = statuses(&[historical, sample_event(2, "agentic.decision_made")]);
+        assert_eq!(moved_on[0].1, FeedItemStatus::Info);
+
+        // The row carries the pairing key for the UI.
+        let log = build_activity_log(
+            "alpha",
+            "default",
+            "task_x",
+            "general",
+            "agent_a",
+            Some("exec_1"),
+            &[],
+            &HashMap::new(),
+            &[request, routed],
+        );
+        assert_eq!(log[0].metadata["llm_call_id"], "call-1");
+        assert_eq!(log[0].metadata["trace_id"], "exec_1");
+        assert_eq!(log[1].metadata["llm_call_id"], "call-1");
+        assert_eq!(log[1].metadata["model"], "claude-test");
+    }
+
+    #[test]
+    fn a_started_tool_reads_running_until_its_own_call_id_settles() {
+        let started = |seq, call_id: &str| {
+            event_with(
+                seq,
+                "tool.started",
+                serde_json::json!({"call_id": call_id, "action_type": "pack", "tool_name": "web_search", "started_at_ms": 1}),
+            )
+        };
+        // A batch: both tools started, only the first settled.
+        let events = vec![
+            started(1, "call-a"),
+            started(2, "call-b"),
+            event_with(
+                3,
+                "tool.succeeded",
+                serde_json::json!({"call_id": "call-a", "action_type": "pack"}),
+            ),
+        ];
+        let rows = statuses(&events);
+        assert_eq!(rows[0], ("tool.started".to_string(), FeedItemStatus::Info));
+        assert_eq!(
+            rows[1],
+            ("tool.started".to_string(), FeedItemStatus::Running)
+        );
+        assert_eq!(rows[2].1, FeedItemStatus::Info);
+
+        let log = build_activity_log(
+            "alpha",
+            "default",
+            "task_x",
+            "general",
+            "agent_a",
+            Some("exec_1"),
+            &[],
+            &HashMap::new(),
+            &events,
+        );
+        assert_eq!(log[1].metadata["call_id"], "call-b");
+        assert_eq!(log[1].metadata["tool_name"], "web_search");
+        assert_eq!(log[1].metadata["started_at_ms"], 1);
+
+        // The next decision means every earlier tool is done, paired or not.
+        let mut moved_on = events;
+        moved_on.push(sample_event(4, "llm.requested"));
+        let rows = statuses(&moved_on);
+        assert_eq!(rows[1].1, FeedItemStatus::Info);
+        assert_eq!(
+            rows[3].1,
+            FeedItemStatus::Running,
+            "the new request is the work in flight now"
         );
     }
 

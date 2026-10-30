@@ -15,11 +15,13 @@ import { browser } from '$app/environment';
 import { getCurrentScopeIdentity, scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 import { showInfo } from '$lib/shared/stores/notifications';
 import { timedFetch as chatFetch, LONG_FETCH_TIMEOUT_MS } from '$lib/shared/fetch';
+import { refreshChatHistory } from '$lib/shell/chatHistoryRefresh';
 import type { SpeechBlock } from '$lib/media/tts/speechTags';
 import type { StructuredResponseV1 } from '$lib/magician/structuredResponse/types';
 import { maybeSpeakTaskCompletion } from '$lib/media/tts/taskCompletionSpeech';
 import { codingChoiceFromSelection, codingProfileStore } from '$lib/stores/codingProfileStore';
-import { chatHarnessPreferenceStore } from '$lib/stores/chatHarnessPreferenceStore';
+import { chatComposerFor } from '$lib/stores/chatHarnessPreferenceStore';
+import { chatTurnStateStore, recordChatTurnStateFromResponse } from '$lib/magician/chat/turnState';
 
 // =============================================================================
 // Types
@@ -123,6 +125,9 @@ export interface ChatMessageContent {
     /// hold, whose typed choices and stage ride in `input_schema.alignment`.
     input_schema?: Record<string, unknown>;
     question?: string;
+    /// The ask's supporting text. A long or multi-line hint is what the ask
+    /// is about (a proposal to approve) and shows under "Details".
+    hint?: string;
     options?: EscalationOption[];
     resolved?: boolean;
     stale?: boolean;
@@ -132,14 +137,31 @@ export interface ChatMessageContent {
 /** Every turn this client starts thinks with the composer's engine unless the
  *  caller names one: the command palette, the chat bubble, and the war room
  *  send without a picker of their own. */
-function withComposerHarness(options: ChatSendOptions): ChatSendOptions {
+function withComposerHarness(sessionId: string, options: ChatSendOptions): ChatSendOptions {
+    // The chat panel showing this chat owns its pick; otherwise the browser's.
+    const { harness } = chatComposerFor(sessionId);
     // A browser with no choice of its own sends none: the server default applies.
-    if (options.harnessEngine || !chatHarnessPreferenceStore.isChosen()) return options;
-    const { engine, model } = get(chatHarnessPreferenceStore);
+    if (options.harnessEngine || !harness.isChosen()) return options;
+    const { engine, model } = get(harness);
     return { ...options, harnessEngine: engine, harnessModel: model };
 }
 
+/** The model request for a turn. A sender without a composer of its own reads
+ *  the panel showing the chat, else the browser-wide catalog — loading it first
+ *  when nothing has yet, instead of failing with "still loading". */
+async function chatModelRequest(sessionId: string, route: string | null | undefined,
+    options: ChatSendOptions): Promise<Record<string, unknown>> {
+    if (options.modelRequest) return { ...options.modelRequest };
+    const { harness, profiles } = chatComposerFor(sessionId);
+    const preference = get(harness);
+    const engine = options.harnessEngine ?? preference.engine;
+    await profiles.ensureLoaded(engine);
+    return profiles.requestSelection(route, engine, options.harnessModel ?? preference.model);
+}
+
 export interface ChatSendOptions {
+    /** Complete model request captured by a session-local composer before any await. */
+    modelRequest?: Record<string, unknown>;
     /** Exact chat harness route for this turn. */
     harnessEngine?: string;
     harnessModel?: string;
@@ -159,15 +181,17 @@ export interface ChatSendOptions {
     voiceOrigin?: boolean;
     /** Explicit VibeDev coding choice for a `@vibedev` turn. The rail
      *  never infers an engine from the transcript. */
-    codingChoice?: { kind: 'auto' } | { kind: 'profile'; profile_id: string } | null;
+    codingChoice?: ReturnType<typeof codingChoiceFromSelection>;
 }
 
 function resolvedCodingChoice(
     options: ChatSendOptions
-): { kind: 'auto' } | { kind: 'profile'; profile_id: string } | undefined {
+): NonNullable<ReturnType<typeof codingChoiceFromSelection>> | undefined {
     if (options.codingChoice === null) return undefined;
     if (options.codingChoice) return options.codingChoice;
-    return codingChoiceFromSelection(get(codingProfileStore).selected) ?? undefined;
+    const state = get(codingProfileStore);
+    if (state.isLoading || state.error) return undefined;
+    return codingChoiceFromSelection(state.selected) ?? undefined;
 }
 
 /**
@@ -334,6 +358,7 @@ export interface ChatStoreState {
     messages: ChatMessage[];
     isLoading: boolean;
     isLoadingOlder: boolean;
+    deletingSessionIds: string[];
     focusedMessageId?: string | null;
     hasMoreMessages: boolean;
     isSendingMessage: boolean;  // true only while waiting for LLM response after sendMessage
@@ -1167,6 +1192,7 @@ async function fetchSessionDetail(
     }
 
     const data = await response.json();
+    recordChatTurnStateFromResponse(data, sessionId);
     let messages: ChatMessage[] = Array.isArray(data.messages) ? data.messages.map(convertMessage) : [];
     let hasMore = messages.length >= 200;
     let match = target ? messages.find(m => matchesMessageTarget(m, target)) : undefined;
@@ -1419,6 +1445,7 @@ const defaultState: ChatStoreState = {
     messages: [],
     isLoading: false,
     isLoadingOlder: false,
+    deletingSessionIds: [],
     hasMoreMessages: false,
     isSendingMessage: false,
     bubbleOpen: loadBubbleState(),
@@ -1862,6 +1889,7 @@ export function createChatStore() {
     const { subscribe, set, update } = writable<ChatStoreState>(defaultState);
     let lastScopeKey = currentChatScopeKey();
     let sessionOpenGeneration = 0;
+    const sessionDeletions = new Map<string, Promise<void>>();
 
     if (browser) {
         scopeIdentityStore.subscribe((scope) => {
@@ -1893,7 +1921,7 @@ export function createChatStore() {
         loadActiveSession: async (uiThreadId = 'general') => {
             sessionOpenGeneration += 1;
             const scopeToken = nextChatScopeToken();
-            update(s => ({ ...s, isLoading: true, error: null }));
+            update(s => ({ ...s, isLoading: true, isLoadingOlder: false, error: null }));
             try {
                 const identity = await getChatIdentityQuery();
                 if (!identity.ok) {
@@ -1911,6 +1939,7 @@ export function createChatStore() {
                 }
                 const data = await response.json();
                 const session = convertSession(data.session ?? data);
+                recordChatTurnStateFromResponse(data, session.id);
                 // Track the *raw* (pre-coalesce) count separately —
                 // `normalizeMessages` collapses pack_progress runs and
                 // reconciles interactive sequences, so its output may
@@ -1979,7 +2008,7 @@ export function createChatStore() {
         newExecution: async (uiThreadId = 'general') => {
             sessionOpenGeneration += 1;
             const scopeToken = nextChatScopeToken();
-            update(s => ({ ...s, isLoading: true, error: null }));
+            update(s => ({ ...s, isLoading: true, isLoadingOlder: false, error: null }));
             try {
                 const identity = await getChatIdentityQuery();
                 if (!identity.ok) {
@@ -2006,6 +2035,7 @@ export function createChatStore() {
                     return null;
                 }
                 scopeIdentityStore.observe(session.principal, session.workspace);
+                refreshChatHistory();
 
                 update(s => {
                     // Mirror the one-active-session-per-thread invariant locally.
@@ -2200,7 +2230,7 @@ export function createChatStore() {
         loadMessages: async (sessionId: string, options: { preserveLive?: boolean } = {}) => {
             const scopeToken = nextChatScopeToken();
             const selectionGeneration = sessionOpenGeneration;
-            if (!options.preserveLive) update(s => ({ ...s, isLoading: true, error: null }));
+            if (!options.preserveLive) update(s => ({ ...s, isLoading: true, isLoadingOlder: false, error: null }));
             try {
                 const identity = await getChatIdentityQuery();
                 if (!identity.ok) {
@@ -2261,11 +2291,15 @@ export function createChatStore() {
          */
         loadOlderMessages: async (sessionId: string) => {
             const scopeToken = nextChatScopeToken();
+            const selectionGeneration = sessionOpenGeneration;
+            const isCurrent = (s: ChatStoreState) => !isStaleChatScopeToken(scopeToken)
+                && selectionGeneration === sessionOpenGeneration
+                && currentVisibleSessionId(s) === sessionId;
             // Atomic guard: read + set flag in one update to prevent concurrent calls
             let shouldLoad = false;
             let oldestId: string | undefined;
             update(s => {
-                if (s.isLoadingOlder || !s.hasMoreMessages || s.messages.length === 0) {
+                if (!isCurrent(s) || s.isLoadingOlder || !s.hasMoreMessages || s.messages.length === 0) {
                     return s;
                 }
                 shouldLoad = true;
@@ -2279,7 +2313,7 @@ export function createChatStore() {
                     if (isStaleChatScopeToken(scopeToken)) {
                         return;
                     }
-                    update(s => ({ ...s, isLoadingOlder: false }));
+                    update(s => isCurrent(s) ? { ...s, isLoadingOlder: false } : s);
                     return;
                 }
 
@@ -2303,18 +2337,18 @@ export function createChatStore() {
                     return;
                 }
 
-                update(s => ({
+                update(s => isCurrent(s) ? ({
                     ...s,
                     messages: normalizeMessages([...olderMessages, ...s.messages]),
                     hasMoreMessages: hasMore,
                     isLoadingOlder: false,
-                }));
+                }) : s);
             } catch (error) {
                 console.error('[chatStore] loadOlderMessages failed:', error);
                 if (isStaleChatScopeToken(scopeToken)) {
                     return;
                 }
-                update(s => ({ ...s, isLoadingOlder: false }));
+                update(s => isCurrent(s) ? { ...s, isLoadingOlder: false } : s);
             }
         },
 
@@ -2332,7 +2366,7 @@ export function createChatStore() {
             attachmentIds: string[] = [],
             options: ChatSendOptions = {}
         ) => {
-            options = withComposerHarness(options);
+            options = withComposerHarness(sessionId, options);
             const scopeToken = nextChatScopeToken();
             const trimmed = text.trim();
             if (!trimmed && attachmentIds.length === 0) return null;
@@ -2392,6 +2426,7 @@ export function createChatStore() {
             recordChatTurnIdForMessage(streamingMsgId, chatTurnId);
 
             beginSendingSession(sessionId);
+            refreshChatHistory();
             update(s => applySendingState({
                 ...s,
                 messages: [...s.messages, userMessage, streamingMessage],
@@ -2400,6 +2435,7 @@ export function createChatStore() {
             beginAuthoritativeBatch(sessionId);
 
             try {
+                const modelRequest = await chatModelRequest(sessionId, profile, options);
                 const response = await chatFetch(
                     `/api/magician/v2/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream?${identity.query}`,
                     {
@@ -2408,9 +2444,7 @@ export function createChatStore() {
                         body: JSON.stringify({
                             text: trimmed,
                             chat_turn_id: chatTurnId,
-                            ...(profile && (!options.harnessEngine || ['magician', 'pi'].includes(options.harnessEngine)) ? { profile } : {}),
-                            ...(options.harnessEngine ? { harness_engine: options.harnessEngine } : {}),
-                            ...(options.harnessModel ? { harness_model: options.harnessModel } : {}),
+                            ...modelRequest,
                             ...(options.mode ? { mode: options.mode } : {}),
                             ...(options.planTaskId ? { plan_task_id: options.planTaskId } : {}),
                             ...(options.planQuestionId
@@ -2419,7 +2453,10 @@ export function createChatStore() {
                             ...(sourceSurface ? { source_surface: sourceSurface } : {}),
                             ...(presenceSessionId ? { presence_session_id: presenceSessionId } : {}),
                             ...(options.voiceOrigin ? { voice_origin: true } : {}),
-                            ...(codingChoice ? { coding_choice: codingChoice } : {})
+                            ...(codingChoice ? { coding_choice: codingChoice } : {}),
+                            // Navigation, reload, tab sleep or a network blip
+                            // must not stop the turn; only Stop does.
+                            continue_on_disconnect: true
                         }),
                         timeoutMs: LONG_FETCH_TIMEOUT_MS
                     }
@@ -2533,6 +2570,7 @@ export function createChatStore() {
                 }
 
                 // Finalize: replace streaming placeholder with real messages
+                refreshChatHistory();
                 update(s => {
                     endSendingSession(sessionId);
                     // View changed while we were streaming -- discard stale results
@@ -2586,6 +2624,31 @@ export function createChatStore() {
                 console.warn('[chatStore] streaming failed; reconciling from server:', err);
                 const recovery = await fetchSessionDetail(sessionId);
                 if (isStaleChatScopeToken(scopeToken)) {
+                    return null;
+                }
+                // The connection dropped but the server kept the turn
+                // (`continue_on_disconnect`). While it runs, or once it has
+                // answered, this is not a failure: show the server transcript.
+                // The live card follows `turn_state`, and the reply lands
+                // through `ChatMessageReceived`.
+                const serverTurn = get(chatTurnStateStore).get(chatTurnId);
+                if (recovery && (serverTurn?.status === 'running' || serverTurn?.status === 'completed')) {
+                    update(s => {
+                        endSendingSession(sessionId);
+                        dropAuthoritativeBatch(sessionId);
+                        if ((s.viewingArchivedId ?? s.activeSessionId) !== sessionId) {
+                            return applySendingState({
+                                ...s,
+                                messages: s.messages.filter(m => m.id !== tempId && m.id !== streamingMsgId)
+                            });
+                        }
+                        return applySendingState({
+                            ...s,
+                            messages: recovery.messages,
+                            sessions: mergeSession(s.sessions, recovery.session),
+                            error: null
+                        });
+                    });
                     return null;
                 }
                 // Always preserve the underlying error message so the
@@ -2680,7 +2743,7 @@ export function createChatStore() {
             attachmentIds: string[] = [],
             options: ChatSendOptions = {}
         ) => {
-            options = withComposerHarness(options);
+            options = withComposerHarness(sessionId, options);
             const scopeToken = nextChatScopeToken();
             const trimmed = text.trim();
             if (!trimmed && attachmentIds.length === 0) return null;
@@ -2729,6 +2792,7 @@ export function createChatStore() {
             };
 
             beginSendingSession(sessionId);
+            refreshChatHistory();
             update(s => applySendingState({
                 ...s,
                 messages: [
@@ -2743,6 +2807,8 @@ export function createChatStore() {
             try {
                 const bodyPayload: Record<string, unknown> = {
                     chat_turn_id: chatTurnId,
+                    // Leaving the page must not stop the turn; only Stop does.
+                    continue_on_disconnect: true,
                 };
                 if (trimmed) {
                     bodyPayload.text = trimmed;
@@ -2750,15 +2816,7 @@ export function createChatStore() {
                 if (attachmentIds.length > 0) {
                     bodyPayload.attachment_ids = attachmentIds;
                 }
-                if (profile && (!options.harnessEngine || ['magician', 'pi'].includes(options.harnessEngine))) {
-                    bodyPayload.profile = profile;
-                }
-                if (options.harnessEngine) {
-                    bodyPayload.harness_engine = options.harnessEngine;
-                }
-                if (options.harnessModel) {
-                    bodyPayload.harness_model = options.harnessModel;
-                }
+                Object.assign(bodyPayload, await chatModelRequest(sessionId, profile, options));
                 if (options.mode) {
                     bodyPayload.mode = options.mode;
                 }
@@ -2811,6 +2869,7 @@ export function createChatStore() {
                     return null;
                 }
 
+                refreshChatHistory();
                 // Backend held this message in the pending-replay queue
                 // because a turn was already in flight. The user's
                 // optimistic message should STAY on screen — drop only
@@ -3002,7 +3061,7 @@ export function createChatStore() {
             const scopeToken = nextChatScopeToken();
             const generation = ++sessionOpenGeneration;
             const stale = () => generation !== sessionOpenGeneration || isStaleChatScopeToken(scopeToken);
-            update(s => ({ ...s, isLoading: true, error: null, focusedMessageId: null }));
+            update(s => ({ ...s, isLoading: true, isLoadingOlder: false, error: null, focusedMessageId: null }));
             try {
                 const detail = await fetchSessionDetail(sessionId, target, () => !stale());
                 if (stale()) {
@@ -3074,6 +3133,7 @@ export function createChatStore() {
                     throw new Error(`Failed to load active session messages (HTTP ${response.status})`);
                 }
                 const data = await response.json();
+                recordChatTurnStateFromResponse(data, state.activeSessionId);
                 const messages = normalizeMessages(
                     Array.isArray(data.messages)
                         ? data.messages.map((m: Record<string, unknown>) => convertMessage(m))
@@ -3135,6 +3195,7 @@ export function createChatStore() {
                             : sess
                     )
                 }));
+                refreshChatHistory();
             } catch (error) {
                 if (isStaleChatScopeToken(scopeToken)) {
                     return;
@@ -3162,6 +3223,7 @@ export function createChatStore() {
                 if (isStaleChatScopeToken(scopeToken)) {
                     return;
                 }
+                refreshChatHistory();
                 update(s => ({
                     ...s,
                     sessions: s.sessions.map(sess =>
@@ -3229,6 +3291,7 @@ export function createChatStore() {
                     targetThreadId
                 );
                 mergedSessions = mergeSession(mergedSessions, activeDetail.session);
+                refreshChatHistory();
                 update(s => ({
                     ...s,
                     sessions: mergedSessions,
@@ -3247,31 +3310,54 @@ export function createChatStore() {
         /**
          * Permanently delete a session.
          */
-        deleteSession: async (sessionId: string) => {
+        deleteSession: (sessionId: string): Promise<void> => {
             const scopeToken = nextChatScopeToken();
-            try {
-                const identity = await getChatIdentityQuery();
-                if (!identity.ok) return;
-                const response = await chatFetch(`/api/magician/v2/chat/sessions/${encodeURIComponent(sessionId)}?${identity.query}`, {
-                    method: 'DELETE',
-                    signal: AbortSignal.timeout(30_000)
-                });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                if (isStaleChatScopeToken(scopeToken)) {
-                    return;
+            const key = `${scopeToken.generation}:${scopeToken.scopeKey}:${sessionId}`;
+            const pending = sessionDeletions.get(key);
+            if (pending) return pending;
+            update(s => ({ ...s, deletingSessionIds: [...s.deletingSessionIds, sessionId] }));
+            const deletion = (async () => {
+                try {
+                    const identity = await getChatIdentityQuery();
+                    if (!identity.ok) throw new Error(identity.error);
+                    if (isStaleChatScopeToken(scopeToken)) return;
+                    const response = await chatFetch(`/api/magician/v2/chat/sessions/${encodeURIComponent(sessionId)}?${identity.query}`, {
+                        method: 'DELETE',
+                        signal: AbortSignal.timeout(30_000)
+                    });
+                    if (!response.ok) {
+                        const data = await response.json().catch(() => null);
+                        throw new Error(data?.error || `Failed to delete session (HTTP ${response.status})`);
+                    }
+                    if (isStaleChatScopeToken(scopeToken)) {
+                        return;
+                    }
+                    refreshChatHistory();
+                    update(s => {
+                        const visible = currentVisibleSessionId(s) === sessionId;
+                        if (visible) sessionOpenGeneration += 1;
+                        return {
+                            ...s,
+                            sessions: s.sessions.filter(sess => sess.id !== sessionId),
+                            activeSessionId: s.activeSessionId === sessionId ? null : s.activeSessionId,
+                            viewingArchivedId: s.viewingArchivedId === sessionId ? null : s.viewingArchivedId,
+                            ...(visible ? { messages: [], focusedMessageId: null, hasMoreMessages: false, isLoadingOlder: false } : {})
+                        };
+                    });
+                } catch (error) {
+                    if (isStaleChatScopeToken(scopeToken)) {
+                        return;
+                    }
+                    throw error;
+                } finally {
+                    sessionDeletions.delete(key);
+                    if (!isStaleChatScopeToken(scopeToken)) {
+                        update(s => ({ ...s, deletingSessionIds: s.deletingSessionIds.filter(id => id !== sessionId) }));
+                    }
                 }
-                update(s => ({
-                    ...s,
-                    sessions: s.sessions.filter(sess => sess.id !== sessionId),
-                    activeSessionId: s.activeSessionId === sessionId ? null : s.activeSessionId,
-                    messages: s.activeSessionId === sessionId ? [] : s.messages
-                }));
-            } catch (error) {
-                if (isStaleChatScopeToken(scopeToken)) {
-                    return;
-                }
-                console.error('[chatStore] deleteSession failed:', error);
-            }
+            })();
+            sessionDeletions.set(key, deletion);
+            return deletion;
         },
 
         /**
@@ -3399,11 +3485,12 @@ export function createChatStore() {
             attachmentIds: string[] = [], options: ChatSendOptions = {}): Promise<string> => {
             const identity = await getChatIdentityQuery();
             if (!identity.ok) throw new Error(identity.error);
-            options = withComposerHarness(options);
+            options = withComposerHarness(sessionId, options);
+            const modelRequest = await chatModelRequest(sessionId, profile, options);
             const response = await chatFetch(`/api/magician/v2/chat/sessions/${encodeURIComponent(sessionId)}/queue?${identity.query}`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, attachment_ids: attachmentIds, profile,
-                    mode: options.mode, harness_engine: options.harnessEngine, harness_model: options.harnessModel,
+                body: JSON.stringify({ text, attachment_ids: attachmentIds, ...modelRequest,
+                    mode: options.mode,
                     source_surface: normalizeSourceSurface(options.sourceSurface),
                     chat_turn_id: 'chat-turn-' + crypto.randomUUID(), coding_choice: resolvedCodingChoice(options) })
             });
@@ -3495,6 +3582,7 @@ export function createChatStore() {
                 );
                 if (!response.ok) return [];
                 const body = await response.json().catch(() => ({}));
+                recordChatTurnStateFromResponse(body, sessionId);
                 update(s => currentVisibleSessionId(s) === sessionId
                     ? { ...s, activeRunSessionId: body.active ? sessionId : null } : s);
                 return Array.isArray(body.queued) ? (body.queued as QueuedMessage[]) : [];
@@ -3584,11 +3672,21 @@ export function createChatStore() {
 
         handleChatMessageReceived: (sessionId: string, rawMessage: Record<string, unknown>) => {
             const message = convertMessage(rawMessage);
+            // Background conversations also move in history. Their transcripts
+            // stay unloaded until selected, but the paged history must refresh.
+            refreshChatHistory();
             // Set when this WS message is a genuinely-new append (not a
             // duplicate, not buffered) so we can run live-only side effects
             // (off-call task-completion TTS) after the store update commits.
             let appendedLive = false;
             update(s => {
+                const updatedAt = Math.max(message.created_at, message.context_origin?.result_created_at ?? 0);
+                s = {
+                    ...s,
+                    sessions: s.sessions.map(session => session.id === sessionId
+                        ? { ...session, updated_at: Math.max(session.updated_at, updatedAt) } : session)
+                        .sort((a, b) => b.updated_at - a.updated_at)
+                };
                 // Only update if we are viewing this session
                 const currentViewId = s.viewingArchivedId ?? s.activeSessionId;
                 if (currentViewId !== sessionId) return s;

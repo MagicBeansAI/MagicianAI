@@ -18,7 +18,8 @@ export interface LiveDataSource {
 	/**
 	 * Batches of the same kind run one at a time; a source in its own lane
 	 * batches and waits separately, so a slow lifetime rollup does not hold
-	 * back quick queries behind it.
+	 * back quick queries behind it. /llm puts its <=1-day windows in
+	 * `LLM_SHORT_WINDOW_LANE` (`$lib/llm/queryWindow`).
 	 */
 	lane?: string;
 }
@@ -72,6 +73,16 @@ function kindOfBatchKey(key: BatchKey): LiveDataSource['kind'] {
 	return key.split('#', 1)[0] as LiveDataSource['kind'];
 }
 
+/**
+ * Client cap for one `llm_calls/query_batch` request. MUST NOT exceed the
+ * server's `LLM_CALLS_BATCH_MAX_QUERIES` in `magician-api/src/analytics_api.rs`:
+ * the server silently drops queries past its cap (`.take(..)`), and each
+ * dropped one would reject here as "batch response missing result". Large
+ * enough that a whole /llm tab goes in one batch per lane, since every extra
+ * batch waits for the one in flight and pays the server's setup again.
+ */
+export const LLM_CALLS_BATCH_MAX_QUERIES = 16;
+
 const BATCH_CONFIG: Record<
 	LiveDataSource['kind'],
 	{
@@ -84,7 +95,7 @@ const BATCH_CONFIG: Record<
 	llm_calls_sql: {
 		endpoint: '/api/magician/v2/analytics/llm_calls/query_batch',
 		debounceMs: 40,
-		maxQueries: 8,
+		maxQueries: LLM_CALLS_BATCH_MAX_QUERIES,
 		timeoutMs: 60_000
 	},
 	memory_events_sql: {
@@ -239,13 +250,15 @@ async function runBatch(key: BatchKey): Promise<void> {
 
 	batchInFlight.set(key, true);
 	try {
-		const response = await fetchBatch(batch.map((entry) => entry.dataSource));
+		// Identical SQL queued by several widgets is sent once and fanned out.
+		const { sources, slotOf } = dedupeBatchSources(batch.map((entry) => entry.dataSource));
+		const response = await fetchBatch(sources);
 		batch.forEach((entry, index) => {
 			if (entry.signal?.aborted) {
 				entry.reject(abortError());
 				return;
 			}
-			const item = response.results[index];
+			const item = response.results[slotOf[index]];
 			if (!item) {
 				entry.reject(new Error('Live data batch response missing result'));
 				return;
@@ -265,6 +278,27 @@ async function runBatch(key: BatchKey): Promise<void> {
 		batchInFlight.set(key, false);
 		if (queue.length > 0) scheduleBatch(key);
 	}
+}
+
+/**
+ * Collapse identical SQL in one batch: `sources` holds each distinct query
+ * once, and `slotOf[i]` is the index in `sources` (and so in the response's
+ * `results`) that answers the i-th input. Exported for unit tests.
+ */
+export function dedupeBatchSources(dataSources: LiveDataSource[]): {
+	sources: LiveDataSource[];
+	slotOf: number[];
+} {
+	const sources: LiveDataSource[] = [];
+	const slotBySql = new Map<string, number>();
+	const slotOf = dataSources.map((source) => {
+		const existing = slotBySql.get(source.sql);
+		if (existing !== undefined) return existing;
+		slotBySql.set(source.sql, sources.length);
+		sources.push(source);
+		return sources.length - 1;
+	});
+	return { sources, slotOf };
 }
 
 function batchedFetchOnce(
@@ -373,12 +407,12 @@ export interface LiveDataSourceController {
  * channel, so every bound chart re-fetches in lock-step.
  */
 /**
- * Value key identifying a live data source binding: same kind + sql → same
- * key. Returns null for an absent source so "unbound" never collides with a
- * real query.
+ * Value key identifying a live data source binding: same kind + lane + sql →
+ * same key. Returns null for an absent source so "unbound" never collides with
+ * a real query.
  */
 export function liveDataKey(source: LiveDataSource | null | undefined): string | null {
-	return source ? `${source.kind}\n${source.sql}` : null;
+	return source ? `${source.kind}\n${source.lane ?? ''}\n${source.sql}` : null;
 }
 
 export interface LiveRewirer {

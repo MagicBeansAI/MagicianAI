@@ -82,7 +82,7 @@ scope is invalidated.
 
 ## Skill-bundled binaries
 
-Vendored binaries live in the skill's `bin/` (e.g. `metabase-pp-cli`,
+Vendored binaries live in the skill's `bin/` (e.g. `document-to-markdown`,
 `pdftotext`, `marimo`). `install-scope` symlinks them into
 `<scope>/skills/<skill>/bin/`. Browser builds the host-native driver via
 `make setup-agent-browser` (`AGENT_BROWSER_CARGO_TARGET_DIR` overrides the
@@ -148,22 +148,15 @@ Magican Desktop, which serves the query when macOS refuses the direct open
 (`message`, `chat`, `handle`); `time_math` for `message.date` Apple-epoch
 bounds.
 
-## Metabase Pack
+## Metabase MCP
 
-Single [metabase](../../../skillshub/metabase/) skill. Inner actions
-(`database_list`, `card_run`, `dataset_query`, `find_search`, plus
-`doctor` / `raw` / `help`) invoke `{skill_runtime_root}/bin/metabase-pp-cli`
-with `--json --no-input --no-color --yes`. Printing Press **v4.0.3**
-generates the CLI from `skillshub/metabase/scripts/spec.json`. Setup:
-`make setup-printing-press`, `make regen-metabase-cli`,
-`make -C skillshub setup-metabase-cli`. Spec refresh:
-`make refresh-metabase-spec` then regen. Auth: `METABASE_BASE_URL` and
-`METABASE_API_KEY` via `make -C skillshub setup-env` into
-`<scope>/skills/metabase/config/.env`. Envelope:
-`{"meta":{"source":"live"},"results":…}`. Design:
-metabase CLI design.
-
-`simple-data-analyst` uses `metabase` with `chat_inline: auto`.
+[metabase-mcp](../../../skillshub/metabase-mcp/) connects directly to the
+instance's official MCP endpoint using scoped browser OAuth. Configure
+`METABASE_BASE_URL` in the workspace skill environment; setup renders the
+endpoint. Reads and structured queries run directly; raw SQL, content edits
+and deliveries require approval. `simple-data-analyst` uses this tool.
+`make -C skillshub migrate-metabase-mcp` retires the generated CLI in every
+existing workspace, reusing only its own origin and preserving private state.
 
 Compiled inner-loop packs (`duckdb`, `imessage`, `read_trace`,
 `internal_data`) dispatch primitives through

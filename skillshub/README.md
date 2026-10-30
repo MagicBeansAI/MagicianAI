@@ -19,7 +19,24 @@ locked npm packages and native payloads. `media-tools` verifies yt-dlp, Node
 and the pack-local ffmpeg/ffprobe links. Bundled-browser readiness checks its
 executable and core skill. `make verify-skill-runtime` performs these checks
 without provider calls. Setup writes inventories under `skillshub/.runtime/`;
-graph probes recheck every recorded file and executable permission.
+graph probes recheck file size, modification time and executable permission;
+changed software/manifests or failed verification require a fresh check.
+Optional runtime PATH companions do not become installer or activation
+prerequisites; OCR declares operator-installed `agy` and `codex` only in its
+runtime contract.
+Operator PATH launchers for `agent-browser` should `exec` the absolute
+`skillshub/browser/bin/agent-browser` path so it locates the bundled core skill;
+a symlink in an unrelated directory can lose that resource context.
+Offline search regressions: `make -C skillshub test-polymarket-search`;
+Google Workspace helper contracts: `make test-gws-profile-config`.
+Skill setup and scope materialization link declared shared CLIs (including npm's
+pinned Node) into each pack's `bin/`; verification requires these activation
+links rather than accepting a terminal PATH fallback. Repair existing scopes
+with `make -C skillshub link-scopes`. Setup uses the project Python when
+bootstrap PyYAML is installed there. Browser verification runs offline version
+and core-skill discovery checks without touching browser sessions.
+Scope repair and readiness honor explicit uninstall markers; only an explicit
+skill installation clears them.
 
 `additional-browser-engines` is a separate optional wizard component. It checks
 the actual Cloak Chromium and Lightpanda executables as well as their resolvers;
@@ -28,21 +45,26 @@ provisions them. Lightpanda follows its official nightly formula; this optional
 host engine is separate from the generated CLI artifacts pinned into releases.
 
 Shared npm dependencies install with `npm ci`. GWS 0.16.0, tgcli 2.4.0,
-wu-cli 0.1.20 and bot SDK dependencies have explicit package pins. Scoped
+wu-cli 0.3.1 and bot SDK dependencies have explicit package pins. Scoped
 bundles resolve modules from their shared symlink targets; auth and workdirs
 remain scoped. The bot installer rejects missing bundles/dependencies and
 preserves legacy scoped npm installs unless `--prune-legacy` is explicit.
 
-Metabase generation uses `metabase/generator-pin.json`: printing-press v4.0.3,
-Go 1.26.1 and a reviewed spec SHA-256. Regeneration records the spec,
-post-generation patch, build recipe and resulting checksum in
-`metabase/bin/generated.json`. A spec refresh needs a reviewed pin update.
-Release packaging rejects stale generated artifacts, includes the Metabase and
-document conversion binaries, browser fork and bot bundles, and records their
-checksums in `release-tools.json`. It freezes both Python environments.
-Packaged setup consumes these artifacts and locked dependencies without
-Rust/Go generation. Native artifacts must match the release target; build the
-document converter in the release output directory before packaging.
+Bot SDK `0.3.8` uses catalog model/thinking selections and rejects retired
+profile options. Queued turns remain backend-owned; adapters observe replies
+without deleting or replaying work. Rebuild bundles and restart their consumers
+with the model-catalog backend. See the [SDK contract](bots/sdk/README.md#model-selection-and-queued-turns).
+
+Metabase uses its official remote MCP server with workspace-scoped OAuth;
+no generated CLI is built or packaged. Release packaging pins document
+conversion, browser and bot artifacts in `release-tools.json` and freezes
+Python dependencies. Native artifacts must match the release target.
+
+Commerce MCP packages include Shopify's public Global Catalog (automatic per-installation UCP
+profile on the configured public HTTPS hostname), Zomato (loopback browser OAuth), and Swiggy
+Food/Instamart/Dineout/Scenes. Scenes supports approved paid/free checkout using
+short-lived native cart quotes; Shopify hands off checkout links. Zomato checkout
+awaits a reviewed live contract. Remote packages need no generated CLI or npm shim.
 
 ## Higgsfield setup
 
@@ -131,6 +153,11 @@ make install-scope SCOPE=<p>/<w>       # → ~/MagicianNotes/scopes/<p>/<w>/skil
 Validation runs at install and registration: the governed runtime contract,
 typed mappings, auth/profile/storage combination, executable identity, limits,
 and catalog metadata are checked before the package can publish tools.
+Document routing follows intent: ordinary text → `document-to-markdown`,
+PDF-specific text controls → `pdftotext`, scan transcription → `ocr`, and visual
+review → an available image-analysis tool. Reuse complete text and images already
+attached to a vision-capable model; access or setup failures are not format fallbacks.
+
 `document-to-markdown` is the reference compiled-library boundary: its small
 standalone Rust executable links AnyDoc, isolates untrusted document parsing
 from the backend process, and remains an ordinary typed CLI to the shared runtime.
@@ -148,6 +175,13 @@ wins entirely over the system's; no merging within a name. The runtime
 auto-discovers via `scope_loader::procedure_tool_infos_for_agent` — the next chat
 session sees it, no process restart. Content-source registry construction scans
 the same ordered roots and applies the same shadowing rule to embedded product extensions.
+
+**OAuth MCP skills declare their callback mode.** Set
+`metadata.magician.browser_signin.callback_mode` to `loopback`,
+`loopback_localhost`, or `public_when_available`. Magician owns the actual
+callback address and verifies state/PKCE; the declaration is the sole source
+of callback policy and cannot supply a URL. See
+[browser sign-in](../docs/components/magician/browser-signin.md).
 
 **Keyed skills declare their hosts.** A skill that takes an API key
 (`runtime_contract.auth.kind: secrets`) should list the exact HTTPS hosts its
@@ -217,8 +251,8 @@ environment with `uv` when available, and otherwise falls back to
 `python3 -m pip install --user PyYAML`. The materializer uses that same
 interpreter for its child classifier and preserves the classifier's stderr on
 failure. `verify-agent-browser` remains the read-only validation surface.
-The pinned fork is `0.38.1-Magician.0` on upstream `v0.38.1`; the patch and
-rebuild notes live at `skillshub/browser/_vendor/v0.38.1-Magician.0/`.
+The pinned fork is `0.41.0-Magician.0` on upstream `v0.41.0`; the patch and
+rebuild notes live at `skillshub/browser/_vendor/v0.41.0-Magician.0/`.
 
 The setup and installation targets are idempotent. Source-owned files are
 refreshed as symlinks. Each
@@ -232,7 +266,7 @@ destination and concurrent provider writes cannot be lost.
 
 A scope's layer is absolute links into this skillshub, and several `bin/`
 entries are ignored, generated files (`browser/bin/agent-browser`, OfficeCLI,
-the Metabase CLI, document-to-markdown). On 2026-09-30 those files were emptied
+document-to-markdown). On 2026-09-30 those files were emptied
 from the checkout and every scope's agent-browser link dangled; the runtime
 takes pinned CLIs only from the scope, never from `PATH`, so browsing failed in
 every workspace. Three rules now keep scopes runnable:
@@ -309,6 +343,12 @@ first such skill.
 3. The governed coordinator validates typed input, authorizes the route, resolves the
    exact reviewed executable/cwd, materializes only explicitly declared credentials,
    runs with a clean bounded environment, settles durable results, and audits the call.
+   Reviewed CLI `requires.environment` values may use `{scope_workdirs_home}` to
+   share workspace-owned state with another transport; model arguments cannot set it.
+   CLI and MCP file arguments use the task workdir for relative paths (scope
+   `workdirs` outside a task); explicit absolute paths remain confined to those
+   roots. A Quality work root is exclusive. Missing files never trigger a search
+   in another root.
 4. Installed CLIs are invoked directly. A `bin/` executable is permitted only for
    irreducible provider protocol, continuation, normalization, artifacts, policy,
    browser/native control, or verification/support work.

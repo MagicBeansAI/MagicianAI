@@ -12,8 +12,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use magician::magician_v2::api_scope::resolve_required_scope;
+use magician::magician_v2::auth::middleware::AuthRuntime;
 use magician::magician_v2::mobile_push::{MobilePushConfig, MobilePushError, MobilePushStore};
-use magician::magician_v2::web_push::{validate_subscription, WebPushKeys};
+use magician::magician_v2::runtime_settings::{runtime_settings_paths, update_env_file};
+use magician::magician_v2::web_push::{
+    generate_vapid_key_pair, validate_subscription, WebPushKeys, WebPushVapid,
+    VAPID_PRIVATE_KEY_ENV, VAPID_PUBLIC_KEY_ENV, VAPID_SUBJECT_ENV,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct WebPushSubscriptionBody {
@@ -52,8 +57,89 @@ pub async fn get_web_push_config_handler(
         .json(config_response(provider_config.get_ref())))
 }
 
+/// `POST /api/magician/v2/web-push/vapid` — owner only. Generates this
+/// deployment's VAPID pair, stores it in the runtime env file (the private key
+/// is never returned) and turns browser Web Push on for the running process.
+/// Refuses when web push is already on: replacing the keys would orphan every
+/// browser subscription made with the current public key.
+pub async fn create_web_push_vapid_handler(
+    req: HttpRequest,
+    provider_config: web::Data<MobilePushConfig>,
+    auth: Option<web::Data<AuthRuntime>>,
+) -> Result<HttpResponse> {
+    if let Err(response) = crate::programs_api::require_owner_session_or_phone(
+        &req,
+        auth.as_ref().map(|data| data.get_ref()),
+    )
+    .await
+    {
+        return Ok(response);
+    }
+    if provider_config.web_push_public_key().is_some() {
+        return Ok(HttpResponse::Conflict().json(json!({
+            "error": "web_push_already_configured",
+            "message": "Browser notifications are already set up on this server."
+        })));
+    }
+    let (public_key, private_key) = match generate_vapid_key_pair() {
+        Ok(pair) => pair,
+        Err(error) => {
+            return Ok(HttpResponse::InternalServerError().json(json!({
+                "error": "vapid_generation_failed",
+                "message": error.to_string()
+            })))
+        },
+    };
+    let subject = std::env::var(VAPID_SUBJECT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://magican.ai".to_string());
+    let vapid = match WebPushVapid::new(&public_key, &private_key, &subject) {
+        Ok(vapid) => vapid,
+        Err(error) => {
+            return Ok(HttpResponse::BadRequest().json(json!({
+                "error": "vapid_subject_invalid",
+                "message": error.to_string()
+            })))
+        },
+    };
+    // Boot reads `.env.development` before `.env`, so the pair goes into the
+    // target file and every other runtime env file that exists: a stale pair
+    // left in one file would otherwise shadow the new one at the next start.
+    let paths = runtime_settings_paths();
+    let mut targets = vec![paths.env_target_path.clone()];
+    for path in [&paths.env_development_path, &paths.env_path] {
+        if path.exists() && !targets.contains(path) {
+            targets.push(path.clone());
+        }
+    }
+    let updates = [
+        (VAPID_PUBLIC_KEY_ENV, Some(public_key.clone())),
+        (VAPID_PRIVATE_KEY_ENV, Some(private_key.clone())),
+    ];
+    for target in &targets {
+        if let Err(error) = update_env_file(target, &updates) {
+            return Ok(HttpResponse::InternalServerError().json(json!({
+                "error": "env_write_failed",
+                "message": format!("could not store the keys in {}: {error}", target.display())
+            })));
+        }
+    }
+    std::env::set_var(VAPID_PUBLIC_KEY_ENV, &public_key);
+    std::env::set_var(VAPID_PRIVATE_KEY_ENV, &private_key);
+    provider_config.install_web_push(vapid);
+    tracing::info!(
+        env_files = targets.len(),
+        "[WEB-PUSH] generated and installed VAPID keys"
+    );
+    Ok(HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store, max-age=0"))
+        .json(config_response(provider_config.get_ref())))
+}
+
 fn config_response(config: &MobilePushConfig) -> WebPushConfigResponse {
-    let key = config.web_push_public_key().map(str::to_string);
+    let key = config.web_push_public_key();
     WebPushConfigResponse {
         enabled: key.is_some(),
         vapid_public_key: key,

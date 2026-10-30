@@ -1,9 +1,8 @@
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
-    sync::{mpsc, Arc},
-    thread,
-    time::Duration,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use actix_web::{web, HttpRequest, HttpResponse};
@@ -29,8 +28,8 @@ use magician::magician_v2::agents::{
 };
 use magician::magician_v2::analytics::duckdb_safety::{
     configure_analytics_read_connection_checked, duckdb_value_ref_output_bytes,
-    try_analytics_duckdb_guard_for, ANALYTICS_DUCKDB_MAX_RESULT_BYTES,
-    ANALYTICS_DUCKDB_MAX_RESULT_ROWS,
+    explain_analytics_resource_error, try_analytics_duckdb_guard_for,
+    ANALYTICS_DUCKDB_MAX_RESULT_BYTES, ANALYTICS_DUCKDB_MAX_RESULT_ROWS,
 };
 use magician::magician_v2::analytics::memory_eval_runner::{
     read_scope_regression_status, run_scope_once, MemoryRegressionStatusSnapshot,
@@ -43,7 +42,9 @@ use magician::magician_v2::analytics::memory_index_maintainer::emit_memory_index
 use magician::magician_v2::analytics::pool::DuckDbPool;
 use magician::magician_v2::analytics::{
     legacy_llm_compat::{
-        install_legacy_llm_views, install_llm_embeddings_view, validate_legacy_llm_query,
+        bound_legacy_llm_query_rows, install_legacy_llm_views,
+        install_legacy_llm_views_for_recent_window, install_llm_embeddings_view,
+        llm_calls_timestamp_lower_bound_ms, validate_legacy_llm_query,
     },
     llm_analytics_read_service::{
         LlmAnalyticsReadService, LlmFactFilter, LlmFactQuery, LLM_READ_GUARD_TIMEOUT_MESSAGE,
@@ -65,12 +66,27 @@ const ACTIVITY_ROWS_BATCH_MAX_QUERIES: usize = 8;
 const MEMORY_EVENTS_BATCH_MAX_QUERIES: usize = 4;
 const ANALYTICS_QUERY_GUARD_TIMEOUT_SECS: u64 = 5;
 const ANALYTICS_QUERY_TIMEOUT_SECS: u64 = 20;
-const LLM_CALLS_BATCH_MAX_QUERIES: usize = 8;
+// The `/llm` page sends its cards as one batch of up to 12 (see
+// `install_llm_calls_views_for_batch`); room to grow without a second setup.
+const LLM_CALLS_BATCH_MAX_QUERIES: usize = 16;
 const LLM_CALLS_QUERY_GUARD_TIMEOUT_SECS: u64 = 5;
 
 mod llm_cost_daily;
 const LLM_CALLS_QUERY_TIMEOUT_SECS: u64 = 20;
+// Trusted lifetime-summary setup is cold once per process; caller SQL keeps
+// the ordinary execution limit even when that preparation takes longer.
+const LLM_DAILY_PREPARATION_TIMEOUT_SECS: u64 = 60;
+const LLM_DAILY_REQUEST_TIMEOUT_SECS: u64 = 130;
+// Per caller query. Against a materialized batch window a card takes
+// milliseconds; the limit matters for streamed (wide or lifetime) batches.
 const LLM_CALLS_BATCH_QUERY_TIMEOUT_SECS: u64 = 8;
+// Setup of a batch (file choice happens before, under the guard): views,
+// `llm_cost_daily` and the one materialized window copy.
+const LLM_CALLS_BATCH_SETUP_TIMEOUT_SECS: u64 = 30;
+const LLM_CALLS_BATCH_DEADLINE_SECS: u64 = 60;
+// Widest window a batch copies into memory: the page's 30-day cards plus the
+// relative-bound slack. Wider and lifetime batches stream as before.
+const LLM_CALLS_MATERIALIZE_MAX_DAYS: i64 = 35;
 const ACTIVITY_ROWS_BATCH_QUERY_TIMEOUT_SECS: u64 = 8;
 const MEMORY_EVENTS_QUERY_GUARD_TIMEOUT_SECS: u64 = 5;
 const MEMORY_EVENTS_BATCH_QUERY_TIMEOUT_SECS: u64 = 6;
@@ -901,7 +917,7 @@ pub(crate) fn query_agent_llm_health_rollups(
         attempts_source_sql.as_deref(),
         principal,
         workspace,
-        // INTERVAL-based bound; no numeric timestamp_ms literal to push down.
+        // The 7-day relative window (less its slack) bounds the scan.
         min_llm_timestamp_ms_bound(sql),
     )?;
     let response = run_analytics_query_with_interrupt_timeout(
@@ -1252,7 +1268,8 @@ pub async fn query_handler(
 /// POST /analytics/llm_calls/query — execute read-only SQL against the
 /// per-scope LLM-call Parquet partitions. Opens a fresh in-memory DuckDB,
 /// installs an `llm_calls` view over `read_parquet(...)`, then runs the
-/// caller's SQL. 30s timeout, 10k row cap, SELECT-only.
+/// caller's SQL. Daily summary setup has a separate cold-start allowance;
+/// caller SQL remains bounded to 20s, 10k rows and SELECT-only.
 pub async fn query_llm_calls_handler(
     req: HttpRequest,
     api: Option<web::Data<AnalyticsApi>>,
@@ -1275,9 +1292,15 @@ pub async fn query_llm_calls_handler(
         });
     }
 
+    let relations = LlmQueryRelations::of(std::slice::from_ref(&sql));
+    let request_timeout_secs = if relations.cost_daily {
+        LLM_DAILY_REQUEST_TIMEOUT_SECS
+    } else {
+        30
+    };
     let workspace_layout = api.workspace_layout.clone();
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        Duration::from_secs(request_timeout_secs),
         tokio::task::spawn_blocking(move || -> anyhow::Result<QueryResponse> {
             let llm_calls_root = workspace_layout.analytics_llm_calls_root(&principal, &workspace);
             ensure_real_scoped_directory_chain(workspace_layout.base_root(), &llm_calls_root)?;
@@ -1291,12 +1314,17 @@ pub async fn query_llm_calls_handler(
                 });
             }
 
-            let Some(_duckdb_guard) = try_analytics_duckdb_guard_for(Duration::from_secs(
-                LLM_CALLS_QUERY_GUARD_TIMEOUT_SECS,
-            )) else {
+            let guard_timeout_secs = if relations.cost_daily {
+                LLM_DAILY_PREPARATION_TIMEOUT_SECS
+            } else {
+                LLM_CALLS_QUERY_GUARD_TIMEOUT_SECS
+            };
+            let Some(_duckdb_guard) =
+                try_analytics_duckdb_guard_for(Duration::from_secs(guard_timeout_secs))
+            else {
                 return Err(anyhow::anyhow!(
                     "analytics DuckDB is busy; timed out waiting for query guard after {}s",
-                    LLM_CALLS_QUERY_GUARD_TIMEOUT_SECS
+                    guard_timeout_secs
                 ));
             };
             // Fresh in-memory DuckDB. No table state — view-only. The pool's
@@ -1306,54 +1334,63 @@ pub async fn query_llm_calls_handler(
                 .map_err(|e| anyhow::anyhow!("open in-memory DuckDB: {e}"))?;
             configure_analytics_read_connection_checked(&conn, "llm_calls_query")
                 .map_err(|e| anyhow::anyhow!("configure conservative DuckDB limits: {e}"))?;
-            let scope = LlmScope::new(principal.clone(), workspace.clone());
-            let relations = LlmQueryRelations::of(std::slice::from_ref(&sql));
-            if relations.cost_daily {
-                llm_cost_daily::install_llm_cost_daily(
-                    &conn,
-                    &workspace_layout,
-                    &scope,
-                    &llm_calls_root,
-                )?;
-            }
-            if relations.calls {
-                let Some(read_source_sql) = governed_llm_calls_read_source_sql(
-                    &workspace_layout,
-                    &scope,
-                    &llm_calls_root,
-                    &[sql.clone()],
-                    None,
-                )?
-                else {
-                    return Ok(QueryResponse {
-                        columns: vec![],
-                        rows: vec![],
-                        row_count: 0,
-                    });
-                };
-                let attempts_source_sql = governed_attempts_read_source_sql(
-                    &workspace_layout,
-                    &scope,
-                    &[sql.clone()],
-                    None,
-                )?;
-                install_llm_calls_views(
-                    &conn,
-                    &read_source_sql,
-                    attempts_source_sql.as_deref(),
-                    &principal,
-                    &workspace,
-                    min_llm_timestamp_ms_bound(&sql),
-                )?;
-            }
-            disable_llm_query_external_access(&conn, "llm_calls_query")?;
+            let timeout = Duration::from_secs(if relations.cost_daily {
+                LLM_DAILY_PREPARATION_TIMEOUT_SECS
+            } else {
+                LLM_CALLS_QUERY_TIMEOUT_SECS
+            });
+            let deadline = Instant::now() + timeout;
+            run_analytics_operation_with_interrupt_timeout(&conn, timeout, || {
+                let scope = LlmScope::new(principal.clone(), workspace.clone());
+                if relations.cost_daily {
+                    llm_cost_daily::install_llm_cost_daily(
+                        &conn,
+                        &workspace_layout,
+                        &scope,
+                        &llm_calls_root,
+                        deadline,
+                    )?;
+                }
+                if relations.calls {
+                    let Some(read_source_sql) = governed_llm_calls_read_source_sql(
+                        &workspace_layout,
+                        &scope,
+                        &llm_calls_root,
+                        &[sql.clone()],
+                        None,
+                    )?
+                    else {
+                        return Ok(QueryResponse {
+                            columns: vec![],
+                            rows: vec![],
+                            row_count: 0,
+                        });
+                    };
+                    let attempts_source_sql = governed_attempts_read_source_sql(
+                        &workspace_layout,
+                        &scope,
+                        &[sql.clone()],
+                        None,
+                    )?;
+                    install_llm_calls_views(
+                        &conn,
+                        &read_source_sql,
+                        attempts_source_sql.as_deref(),
+                        &principal,
+                        &workspace,
+                        min_llm_timestamp_ms_bound(&sql),
+                    )?;
+                }
+                disable_llm_query_external_access(&conn, "llm_calls_query")?;
 
-            run_analytics_query_with_interrupt_timeout(
-                &conn,
-                &sql,
-                10_000,
-                Duration::from_secs(LLM_CALLS_QUERY_TIMEOUT_SECS),
-            )
+                run_analytics_query_with_interrupt_timeout(
+                    &conn,
+                    &bound_legacy_llm_query_rows(&sql, ANALYTICS_DUCKDB_MAX_RESULT_ROWS),
+                    ANALYTICS_DUCKDB_MAX_RESULT_ROWS,
+                    Duration::from_secs(LLM_CALLS_QUERY_TIMEOUT_SECS)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                )
+            })
         }),
     )
     .await;
@@ -1367,7 +1404,7 @@ pub async fn query_llm_calls_handler(
             error: format!("task error: {e}"),
         }),
         Err(_) => HttpResponse::GatewayTimeout().json(QueryErrorResponse {
-            error: "query timed out after 30s".to_string(),
+            error: format!("query timed out after {request_timeout_secs}s"),
         }),
     }
 }
@@ -1442,8 +1479,8 @@ pub async fn query_llm_embeddings_handler(
 
             run_analytics_query_with_interrupt_timeout(
                 &conn,
-                &sql,
-                10_000,
+                &bound_legacy_llm_query_rows(&sql, ANALYTICS_DUCKDB_MAX_RESULT_ROWS),
+                ANALYTICS_DUCKDB_MAX_RESULT_ROWS,
                 Duration::from_secs(LLM_CALLS_QUERY_TIMEOUT_SECS),
             )
         }),
@@ -1482,6 +1519,12 @@ pub async fn query_llm_calls_batch_handler(
         Err(response) => return response,
     };
 
+    // Statements past the cap get an explicit per-slot error (appended to
+    // the response below) so the widget shows it instead of waiting.
+    let excess_queries = body
+        .queries
+        .len()
+        .saturating_sub(LLM_CALLS_BATCH_MAX_QUERIES);
     let queries: Vec<String> = body
         .queries
         .iter()
@@ -1505,24 +1548,10 @@ pub async fn query_llm_calls_batch_handler(
             ensure_real_scoped_directory_chain(workspace_layout.base_root(), &llm_calls_root)?;
             let scope = LlmScope::new(principal.clone(), workspace.clone());
             let relations = LlmQueryRelations::of(&queries);
-            let read_source_sql = if relations.calls {
-                let Some(read_source_sql) = governed_llm_calls_read_source_sql(
-                    &workspace_layout,
-                    &scope,
-                    &llm_calls_root,
-                    &queries,
-                    Some(30),
-                )? else {
-                    return Ok(QueryBatchResponse {
-                        results: queries.iter().map(|_| empty_batch_item()).collect(),
-                    });
-                };
-                Some(read_source_sql)
-            } else {
-                None
-            };
 
-            let Some(_duckdb_guard) =
+            // Taken before choosing files: a compaction between choosing and
+            // reading them would retire the chosen generation or batches.
+            let Some(duckdb_guard) =
                 try_analytics_duckdb_guard_for(Duration::from_secs(
                     LLM_CALLS_QUERY_GUARD_TIMEOUT_SECS,
                 ))
@@ -1542,48 +1571,94 @@ pub async fn query_llm_calls_batch_handler(
                         .collect(),
                 });
             };
+            let read_source_sql = if relations.calls {
+                let Some(read_source_sql) = governed_llm_calls_read_source_sql(
+                    &workspace_layout,
+                    &scope,
+                    &llm_calls_root,
+                    &queries,
+                    Some(30),
+                )? else {
+                    return Ok(QueryBatchResponse {
+                        results: queries.iter().map(|_| empty_batch_item()).collect(),
+                    });
+                };
+                Some(read_source_sql)
+            } else {
+                None
+            };
 
             let conn = duckdb::Connection::open_in_memory()
                 .map_err(|e| anyhow::anyhow!("open in-memory DuckDB: {e}"))?;
             configure_analytics_read_connection_checked(&conn, "llm_calls_query_batch")
                 .map_err(|e| anyhow::anyhow!("configure conservative DuckDB limits: {e}"))?;
-            if relations.cost_daily {
-                llm_cost_daily::install_llm_cost_daily(
-                    &conn,
-                    &workspace_layout,
-                    &scope,
-                    &llm_calls_root,
-                )?;
-            }
-            if let Some(read_source_sql) = read_source_sql.as_deref() {
-                let attempts_source_sql = governed_attempts_read_source_sql(
-                    &workspace_layout,
-                    &scope,
-                    &queries,
-                    Some(30),
-                )?;
-                install_llm_calls_views(
-                    &conn,
-                    read_source_sql,
-                    attempts_source_sql.as_deref(),
-                    &principal,
-                    &workspace,
-                    shared_llm_timestamp_ms_bound(&queries),
-                )?;
-            }
-            disable_llm_query_external_access(&conn, "llm_calls_query_batch")?;
+            let deadline = Instant::now() + Duration::from_secs(LLM_CALLS_BATCH_DEADLINE_SECS);
+            let setup_timeout = Duration::from_secs(if relations.cost_daily {
+                LLM_DAILY_PREPARATION_TIMEOUT_SECS
+            } else {
+                LLM_CALLS_BATCH_SETUP_TIMEOUT_SECS
+            })
+            .min(deadline.saturating_duration_since(Instant::now()));
+            let setup_deadline = Instant::now() + setup_timeout;
+            let in_memory = run_analytics_operation_with_interrupt_timeout(&conn, setup_timeout, || {
+                if relations.cost_daily {
+                    llm_cost_daily::install_llm_cost_daily(
+                        &conn,
+                        &workspace_layout,
+                        &scope,
+                        &llm_calls_root,
+                        setup_deadline,
+                    )?;
+                }
+                // `llm_cost_daily` is a table; only streamed `llm_calls`
+                // views still read Parquet after setup.
+                let mut in_memory = true;
+                if let Some(read_source_sql) = read_source_sql.as_deref() {
+                    let attempts_source_sql = governed_attempts_read_source_sql(
+                        &workspace_layout,
+                        &scope,
+                        &queries,
+                        Some(30),
+                    )?;
+                    in_memory = install_llm_calls_views_for_batch(
+                        &conn,
+                        read_source_sql,
+                        attempts_source_sql.as_deref(),
+                        &principal,
+                        &workspace,
+                        &queries,
+                        Some(30),
+                    )?;
+                }
+                disable_llm_query_external_access(&conn, "llm_calls_query_batch")?;
+                Ok(in_memory)
+            })?;
+            // A materialized batch reads only this connection's memory from
+            // here on, so sinks and compactors need not wait for its queries.
+            let _duckdb_guard = if in_memory {
+                drop(duckdb_guard);
+                None
+            } else {
+                Some(duckdb_guard)
+            };
 
             let mut results = Vec::with_capacity(queries.len());
             let mut batch_bytes = serde_json::to_vec(&serde_json::json!({ "results": [] }))
                 .map_err(|error| anyhow::anyhow!("serialize empty LLM query batch: {error}"))?
                 .len();
             for sql in queries {
-                let item = match run_analytics_query_with_interrupt_timeout(
-                    &conn,
-                    &sql,
-                    10_000,
-                    Duration::from_secs(LLM_CALLS_BATCH_QUERY_TIMEOUT_SECS),
-                ) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let outcome = if remaining.is_zero() {
+                    Err(anyhow::anyhow!("LLM query batch deadline exceeded"))
+                } else {
+                    run_analytics_query_with_interrupt_timeout(
+                        &conn,
+                        &bound_legacy_llm_query_rows(&sql, ANALYTICS_DUCKDB_MAX_RESULT_ROWS),
+                        ANALYTICS_DUCKDB_MAX_RESULT_ROWS,
+                        Duration::from_secs(LLM_CALLS_BATCH_QUERY_TIMEOUT_SECS).min(remaining),
+                    )
+                };
+                let item = match outcome {
                     Ok(response) => QueryBatchItemResponse {
                         columns: response.columns,
                         rows: response.rows,
@@ -1605,7 +1680,19 @@ pub async fn query_llm_calls_batch_handler(
     .await;
 
     match result {
-        Ok(Ok(Ok(response))) => HttpResponse::Ok().json(response),
+        Ok(Ok(Ok(mut response))) => {
+            response
+                .results
+                .extend((0..excess_queries).map(|_| QueryBatchItemResponse {
+                    columns: vec![],
+                    rows: vec![],
+                    row_count: 0,
+                    error: Some(format!(
+                        "LLM query batch exceeds {LLM_CALLS_BATCH_MAX_QUERIES} queries; this one was not run"
+                    )),
+                }));
+            HttpResponse::Ok().json(response)
+        },
         Ok(Ok(Err(e))) => HttpResponse::BadRequest().json(QueryErrorResponse {
             error: e.to_string(),
         }),
@@ -1669,14 +1756,114 @@ fn install_llm_calls_views(
     workspace: &str,
     timestamp_lower_bound_ms: Option<i64>,
 ) -> anyhow::Result<()> {
+    // One short-window snapshot keeps UNION/aggregate consumers from repeatedly
+    // expanding the same reconciled Parquet tree. It preserves the exact
+    // compatibility projection; unbounded reads retain streaming and its caps.
+    if let Some(bound) = timestamp_lower_bound_ms.filter(|bound| {
+        *bound >= Utc::now().timestamp_millis() - ChronoDuration::days(2).num_milliseconds()
+    }) {
+        install_legacy_llm_views_for_recent_window(
+            conn,
+            read_source_sql,
+            attempts_source_sql,
+            principal,
+            workspace,
+            bound,
+        )?;
+        conn.execute_batch(
+            "CREATE OR REPLACE TEMP TABLE _llm_calls_window AS SELECT * FROM llm_calls;
+             CREATE OR REPLACE VIEW llm_calls AS SELECT * FROM _llm_calls_window;",
+        )
+        .map_err(|error| anyhow::anyhow!("prepare recent LLM analytics window: {error}"))?;
+    } else {
+        install_legacy_llm_views(
+            conn,
+            read_source_sql,
+            attempts_source_sql,
+            principal,
+            workspace,
+            timestamp_lower_bound_ms,
+        )?;
+    }
+    Ok(())
+}
+
+/// Install `llm_calls` for a `query_batch`: one reconciled in-memory copy of
+/// the batch's whole window when that window is bounded, else streaming views.
+///
+/// Streaming, each card re-bound every selected Parquet footer (about a
+/// thousand files on a busy day) and re-inlined the reconciliation CTEs:
+/// seconds per card almost regardless of its window, so a 12-card page held
+/// the analytics guard for tens of seconds. The copy is built once, with the
+/// batch's loosest provable lower bound pushed into the scan
+/// ([`shared_llm_timestamp_ms_bound`]); it holds exactly the rows the streaming
+/// views would yield, so every card answers the same. It is made only when
+/// the bound or the file selection limits it to
+/// [`LLM_CALLS_MATERIALIZE_MAX_DAYS`]; a copy that exceeds the DuckDB budget
+/// falls back to the streaming views already installed beneath it.
+///
+/// Returns whether `llm_calls` now lives in memory (no Parquet left to read).
+fn install_llm_calls_views_for_batch(
+    conn: &duckdb::Connection,
+    read_source_sql: &str,
+    attempts_source_sql: Option<&str>,
+    principal: &str,
+    workspace: &str,
+    queries: &[String],
+    default_recent_days: Option<i64>,
+) -> anyhow::Result<bool> {
+    let lower_bound = shared_llm_timestamp_ms_bound(queries);
     install_legacy_llm_views(
         conn,
         read_source_sql,
         attempts_source_sql,
         principal,
         workspace,
-        timestamp_lower_bound_ms,
-    )
+        lower_bound,
+    )?;
+    let lookback_days = effective_llm_calls_lookback_days(queries, default_recent_days);
+    if !llm_calls_window_is_materializable(
+        lower_bound,
+        lookback_days,
+        Utc::now().timestamp_millis(),
+    ) {
+        return Ok(false);
+    }
+    if let Err(error) = conn
+        .execute_batch("CREATE OR REPLACE TEMP TABLE _llm_calls_window AS SELECT * FROM llm_calls;")
+    {
+        let message = error.to_string();
+        if explain_analytics_resource_error(&message).is_none() {
+            return Err(anyhow::anyhow!(
+                "materialize LLM analytics window: {message}"
+            ));
+        }
+        tracing::warn!(
+            target: "analytics::llm_calls",
+            error = %message,
+            "LLM analytics window exceeds the DuckDB budget; this batch streams instead"
+        );
+        return Ok(false);
+    }
+    conn.execute_batch("CREATE OR REPLACE VIEW llm_calls AS SELECT * FROM _llm_calls_window;")
+        .map_err(|error| anyhow::anyhow!("expose materialized LLM analytics window: {error}"))?;
+    Ok(true)
+}
+
+/// A batch window is copied only when it is provably recent: by the pushed
+/// row bound, or because partition selection (padded by a day) already
+/// limits the files. Lifetime reads (`magician:all_llm_partitions`) are neither.
+fn llm_calls_window_is_materializable(
+    lower_bound_ms: Option<i64>,
+    lookback_days: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    let rows_bounded = lower_bound_ms.is_some_and(|bound| {
+        bound >= now_ms - ChronoDuration::days(LLM_CALLS_MATERIALIZE_MAX_DAYS).num_milliseconds()
+    });
+    let files_bounded =
+        lookback_days.is_some_and(|days| days.max(0) + 1 <= LLM_CALLS_MATERIALIZE_MAX_DAYS);
+    rows_bounded || files_bounded
 }
 
 fn duckdb_view_columns(
@@ -1727,34 +1914,25 @@ fn install_memory_events_view(
     read_source_sql: &str,
     principal: &str,
     workspace: &str,
-    // Pulse fix: when the caller's query has a numeric `timestamp_ms >= N`
-    // window, push it INTO the `memory_events_raw` materialization so only the
-    // window's rows are ever materialized. `None` preserves the prior
-    // full-materialization behaviour exactly.
+    // Apply a numeric `timestamp_ms >= N` window before materialization.
+    // `None` preserves the prior full-history population.
     timestamp_lower_bound_ms: Option<i64>,
 ) -> anyhow::Result<()> {
+    // Bind the schema without copying history. The requested window is applied
+    // before the sole materialization, while external access is still trusted.
     let raw_view_sql = format!(
-        "CREATE OR REPLACE TEMP TABLE memory_events_raw AS
+        "CREATE OR REPLACE TEMP VIEW memory_events_raw AS
            SELECT * FROM read_parquet({read_source_sql}, hive_partitioning = true, union_by_name = true);"
     );
     conn.execute_batch(&raw_view_sql)
         .map_err(|e| anyhow::anyhow!("create raw memory_events view: {e}"))?;
-
     let columns = duckdb_view_columns(conn, "memory_events_raw")?;
-    // Re-materialize narrowed to the requested window when the source carries a
-    // `timestamp_ms` column and a numeric lower bound was supplied. Done after
-    // DESCRIBE so we only reference the column when it is actually present.
-    if let Some(bound) = timestamp_lower_bound_ms {
-        if columns.contains("timestamp_ms") {
-            let narrowed_sql = format!(
-                "CREATE OR REPLACE TEMP TABLE memory_events_raw AS
-                   SELECT * FROM read_parquet({read_source_sql}, hive_partitioning = true, union_by_name = true)
-                   WHERE timestamp_ms >= {bound};"
-            );
-            conn.execute_batch(&narrowed_sql)
-                .map_err(|e| anyhow::anyhow!("create windowed raw memory_events view: {e}"))?;
-        }
-    }
+    let window_filter = match timestamp_lower_bound_ms {
+        Some(bound) if columns.contains("timestamp_ms") => {
+            format!(" WHERE timestamp_ms >= {bound}")
+        },
+        _ => String::new(),
+    };
     let principal_default = format!("'{}'::VARCHAR", escape_sql_literal(principal));
     let workspace_default = format!("'{}'::VARCHAR", escape_sql_literal(workspace));
     let column_defs = vec![
@@ -1958,8 +2136,8 @@ fn install_memory_events_view(
     let view_sql = format!(
         "CREATE OR REPLACE TEMP TABLE memory_events AS
            SELECT {projection}
-           FROM memory_events_raw;
-         DROP TABLE memory_events_raw;"
+           FROM memory_events_raw{window_filter};
+         DROP VIEW memory_events_raw;"
     );
     conn.execute_batch(&view_sql)
         .map_err(|e| anyhow::anyhow!("create memory_events view: {e}"))?;
@@ -1969,10 +2147,10 @@ fn install_memory_events_view(
 /// Extract the smallest literal `timestamp_ms >= N` / `timestamp_ms > N`
 /// lower-bound present anywhere in `sql`, in raw epoch-milliseconds. `None` when
 /// the query has no such numeric bound (e.g. it uses an `INTERVAL … DAYS`
-/// expression, or is unbounded). Used both to derive a partition-file lookback
-/// and — for Pulse — to push the day predicate INTO the `llm_calls`
-/// materialization so only the requested window's rows are ever materialized.
-fn min_llm_timestamp_ms_bound(sql: &str) -> Option<i64> {
+/// expression, or is unbounded). A text scan: it derives partition-file
+/// lookbacks and the `memory_events` window. `llm_calls` row bounds use the
+/// AST-checked [`min_llm_timestamp_ms_bound`] instead.
+fn min_literal_timestamp_ms_bound(sql: &str) -> Option<i64> {
     let mut min_ms: Option<i64> = None;
     let lowered = sql.to_ascii_lowercase();
     let mut rest = lowered.as_str();
@@ -1997,12 +2175,11 @@ fn min_llm_timestamp_ms_bound(sql: &str) -> Option<i64> {
 /// The lowest numeric `timestamp_ms` lower-bound shared by ALL supplied queries,
 /// or `None` if any query is unbounded (in which case the window predicate must
 /// not be pushed into the materialization, or bounded rows would be dropped from
-/// the unbounded query). This is the safe bound to inject into the `llm_calls`
-/// CREATE for a Pulse batch.
-fn shared_llm_timestamp_ms_bound(queries: &[String]) -> Option<i64> {
+/// the unbounded query). Used for the `memory_events` batch window.
+fn shared_literal_timestamp_ms_bound(queries: &[String]) -> Option<i64> {
     let mut shared: Option<i64> = None;
     for query in queries {
-        match min_llm_timestamp_ms_bound(query) {
+        match min_literal_timestamp_ms_bound(query) {
             // Any unbounded query means we cannot narrow the materialization.
             None => return None,
             Some(ms) => {
@@ -2013,12 +2190,32 @@ fn shared_llm_timestamp_ms_bound(queries: &[String]) -> Option<i64> {
     shared
 }
 
+/// The lowest `timestamp_ms` an `llm_calls` query can read, safe to push
+/// into the reconciled relation. Understands literal bounds and the relative
+/// `epoch_ms(now() - INTERVAL …)` forms the `/llm` page sends; anything it
+/// cannot prove (an `OR`, a `CASE`, a join, an unknown expression) is `None`.
+fn min_llm_timestamp_ms_bound(sql: &str) -> Option<i64> {
+    llm_calls_timestamp_lower_bound_ms(sql, Utc::now().timestamp_millis())
+}
+
+/// [`min_llm_timestamp_ms_bound`] across a batch: the loosest query's bound,
+/// or `None` if any query has none (its rows below another query's bound
+/// would otherwise be dropped).
+fn shared_llm_timestamp_ms_bound(queries: &[String]) -> Option<i64> {
+    let mut shared: Option<i64> = None;
+    for query in queries {
+        let bound = min_llm_timestamp_ms_bound(query)?;
+        shared = Some(shared.map_or(bound, |current| current.min(bound)));
+    }
+    shared
+}
+
 fn llm_calls_lookback_days(sql: &str) -> Option<i64> {
     if let Some(days) = memory_events_lookback_days(sql) {
         return Some(days);
     }
 
-    if let Some(ms) = min_llm_timestamp_ms_bound(sql) {
+    if let Some(ms) = min_literal_timestamp_ms_bound(sql) {
         let now = Utc::now().timestamp_millis();
         let diff_ms = now - ms;
         let diff_days = (diff_ms as f64 / (1000.0 * 60.0 * 60.0 * 24.0)).ceil() as i64;
@@ -2077,12 +2274,8 @@ fn governed_llm_calls_read_source_sql(
     Ok(Some(duckdb_parquet_source_sql(&files)))
 }
 
-/// Provider attempts (joined into `llm_calls` for provider/model) are read
-/// the same governed way as the calls: each partition's compacted object plus
-/// its uncompacted tail. Reading their raw revisions instead handed DuckDB
-/// every `part-provider_attempt-*` file — 42,110 files for three busy days,
-/// 8.4 s against 0.01 s for the three compacted objects — on every
-/// `llm_calls` query, so the VibeDev rail's cost queries took 6–14 s.
+/// Provider attempts joined into `llm_calls` use the same governed selector:
+/// each partition's compacted object plus its uncompacted tail.
 fn governed_attempts_read_source_sql(
     workspace_layout: &ArtifactV2Workspace,
     scope: &LlmScope,
@@ -2113,25 +2306,12 @@ fn governed_attempts_read_source_sql(
 
 /// Files DuckDB should scan for `llm_calls`, per partition, newest-window first.
 ///
-/// BOTH halves must be compaction-aware. The legacy half always was
-/// (`parquet_maintenance::partition_sources` returns the manifest output plus
-/// only the newer raw files). The canonical half was not: it called
-/// `canonical_raw_partition_files`, which returns EVERY immutable
-/// `part-call_fact-<hash>-rN.parquet` revision. Those revisions are retained
-/// deliberately as a corruption fallback and they accumulate per call, so a
-/// single busy day handed DuckDB thousands of files — one observed partition
-/// had 4,370 raw revisions next to the one compacted object that exists to
-/// replace them. `SELECT COUNT(*) FROM llm_calls` took over 30s and the `/llm`
-/// page timed out, while `compact-parquet` reported everything already
-/// compacted, because it was: the compacted object was being read *in addition
-/// to* the revisions rather than instead of them.
-///
-/// `governed_dataset_sources_in_date_range` is the governed selector for this.
-/// It returns `[compacted] + uncompacted_tail` only after validating the
-/// manifest scope, schema, source-set checksum, that every compacted source
-/// still exists, the compacted file's byte length and blake3 checksum, and
-/// `source_row_count == compacted_row_count` — and falls back to the full raw
-/// set on any mismatch. So this is lossless by construction and fails closed.
+/// `governed_dataset_sources_in_date_range` returns `[compacted] +
+/// uncompacted_tail` after the manifest scope, schema, source-set checksum,
+/// compacted length, BLAKE3, and row-count checks. Until `raw_sources_pruned`,
+/// every covered source must still exist and a miss falls back to the raw
+/// files that remain. After it, a settled day is the compact plus any later
+/// raw file.
 fn governed_llm_call_partition_files(
     workspace_layout: &ArtifactV2Workspace,
     scope: &LlmScope,
@@ -2282,7 +2462,7 @@ fn effective_memory_events_lookback_days(
     let mut max_days: Option<i64> = None;
     let mut has_unbounded_query = false;
     for query in queries {
-        match memory_events_lookback_days(query) {
+        match llm_calls_lookback_days(query) {
             Some(days) => {
                 max_days = Some(max_days.map_or(days, |current| current.max(days)));
             },
@@ -2295,7 +2475,7 @@ fn effective_memory_events_lookback_days(
         match (max_days, default_recent_days) {
             (Some(days), Some(default_days)) => Some(days.max(default_days)),
             (None, Some(default_days)) => Some(default_days),
-            (days, None) => days,
+            (_, None) => None,
         }
     } else {
         max_days
@@ -2552,7 +2732,7 @@ pub async fn query_memory_events_handler(
                 &read_source_sql,
                 &principal,
                 &workspace,
-                min_llm_timestamp_ms_bound(&sql),
+                min_literal_timestamp_ms_bound(&sql),
             )?;
             disable_llm_query_external_access(&conn, "memory_events_query")?;
 
@@ -2651,7 +2831,7 @@ pub async fn query_memory_events_batch_handler(
                 &read_source_sql,
                 &principal,
                 &workspace,
-                shared_llm_timestamp_ms_bound(&queries),
+                shared_literal_timestamp_ms_bound(&queries),
             )?;
             disable_llm_query_external_access(&conn, "memory_events_query_batch")?;
 
@@ -3574,7 +3754,7 @@ pub async fn maintain_memory_temperature_handler(
             let scoped_store = definition_store.for_scope(&principal, &workspace);
             let definitions = scoped_store.list_definitions().await?;
             let mut sweep = MemoryContradictionSweepSummary::default();
-            for record in definitions {
+            let consolidator = {
                 let mut consolidator = MemoryConsolidator::new(
                     memory_service.clone(),
                     api.operation_router.clone(),
@@ -3584,9 +3764,20 @@ pub async fn maintain_memory_temperature_handler(
                     consolidator =
                         consolidator.with_llm_telemetry_broadcaster(Arc::clone(broadcaster));
                 }
+                consolidator
+            };
+            // The scope's user knowledge is reviewed once, not once per agent
+            // (each pass takes the same `knowledge.json` lock); then each
+            // agent's own tiers.
+            sweep.merge(
+                consolidator
+                    .run_user_knowledge_pass(chrono::Utc::now())
+                    .await?,
+            );
+            for record in definitions {
                 sweep.merge(
                     consolidator
-                        .run_contradiction_sweep_for_agent(
+                        .run_agent_tier_contradiction_sweep(
                             &record.definition,
                             &record.definition.agent_id,
                             chrono::Utc::now(),
@@ -3980,6 +4171,11 @@ pub async fn rebuild_memory_index_handler(
                 Some(duration_ms),
                 Some("manual_api_rebuild"),
             );
+            // Lift a "rebuild required" pause and resolve its notice now.
+            magician::magician_v2::analytics::memory_index_maintainer::note_explicit_memory_index_rebuild(
+                memory_service.storage(),
+            )
+            .await;
             let manifest = &outcome.manifest;
             HttpResponse::Ok().json(MemoryIndexRebuildResponse {
                 principal,
@@ -4135,34 +4331,39 @@ fn bounded_query_response(response: QueryResponse) -> anyhow::Result<QueryRespon
     Ok(response)
 }
 
+fn run_analytics_operation_with_interrupt_timeout<T>(
+    conn: &duckdb::Connection,
+    timeout: Duration,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    use magician::magician_v2::analytics::duckdb_safety::{
+        run_analytics_query_with_interrupt_timeout as bounded_operation, AnalyticsDuckDbQueryError,
+    };
+    match bounded_operation(conn, timeout, operation) {
+        Ok(value) => Ok(value),
+        Err(AnalyticsDuckDbQueryError::TimedOut(error)) => Err(anyhow::anyhow!(
+            "analytics operation timed out after {}s: {}",
+            timeout.as_secs_f64(),
+            error.map(|error| error.to_string()).unwrap_or_default()
+        )),
+        Err(AnalyticsDuckDbQueryError::Query(error)) => {
+            match explain_analytics_resource_error(&format!("{error:#}")) {
+                Some(explained) => Err(anyhow::anyhow!(explained)),
+                None => Err(error),
+            }
+        },
+    }
+}
+
 fn run_analytics_query_with_interrupt_timeout(
     conn: &duckdb::Connection,
     sql: &str,
     row_limit: usize,
     timeout: Duration,
 ) -> anyhow::Result<QueryResponse> {
-    let interrupt = conn.interrupt_handle();
-    let (done_tx, done_rx) = mpsc::channel();
-    let watchdog = thread::spawn(move || {
-        let timed_out = done_rx.recv_timeout(timeout).is_err();
-        if timed_out {
-            interrupt.interrupt();
-        }
-        timed_out
-    });
-
-    let result = run_analytics_query(conn, sql, row_limit);
-    let _ = done_tx.send(());
-    let timed_out = watchdog.join().unwrap_or(false);
-
-    match result {
-        Ok(response) => Ok(response),
-        Err(error) if timed_out => Err(anyhow::anyhow!(
-            "query item timed out after {}s: {error}",
-            timeout.as_secs()
-        )),
-        Err(error) => Err(error),
-    }
+    run_analytics_operation_with_interrupt_timeout(conn, timeout, || {
+        run_analytics_query(conn, sql, row_limit)
+    })
 }
 
 fn duckvalue_to_json(val: &duckdb::types::Value) -> serde_json::Value {
@@ -4197,6 +4398,292 @@ mod tests {
     use magician::magician_v2::analytics::duckdb_safety::configure_analytics_connection_checked;
 
     use serde_json::json;
+
+    #[test]
+    fn memory_events_window_is_applied_before_materializing_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let parquet = temp.path().join("history.parquet");
+        let recent = temp.path().join("recent.parquet");
+        let writer = duckdb::Connection::open_in_memory().unwrap();
+        writer
+            .execute_batch(&format!(
+                "COPY (SELECT 1::BIGINT AS timestamp_ms, 'old' AS event_kind,
+                          repeat(md5(i::VARCHAR), 2048) AS payload_json FROM range(1000) t(i))
+                 TO '{}' (FORMAT PARQUET);
+                 COPY (SELECT 2000::BIGINT AS timestamp_ms, 'current' AS event_kind, 'small' AS payload_json)
+                 TO '{}' (FORMAT PARQUET);",
+                escape_sql_literal(&parquet.display().to_string()),
+                escape_sql_literal(&recent.display().to_string()),
+            ))
+            .unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        configure_analytics_connection_checked(&conn, "window_before_materialization").unwrap();
+        conn.execute_batch("SET memory_limit='32MB'; SET max_temp_directory_size='1MB';")
+            .unwrap();
+        install_memory_events_view(
+            &conn,
+            &duckdb_parquet_source_sql(&[parquet, recent]),
+            "owner",
+            "default",
+            Some(2000),
+        )
+        .unwrap();
+        disable_llm_query_external_access(&conn, "memory_window").unwrap();
+        let row: (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(event_kind) FROM memory_events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (1, "current".into()));
+        assert!(conn.prepare("SELECT * FROM glob('/tmp/*')").is_err());
+    }
+
+    #[test]
+    fn memory_events_numeric_window_prunes_historical_partitions() {
+        let since = Utc::now().timestamp_millis() - ChronoDuration::hours(12).num_milliseconds();
+        let queries = vec![format!(
+            "SELECT COUNT(*) FROM memory_events WHERE timestamp_ms >= {since}"
+        )];
+        assert_eq!(
+            effective_memory_events_lookback_days(&queries, None),
+            Some(1)
+        );
+        assert_eq!(
+            effective_memory_events_lookback_days(
+                &["SELECT COUNT(*) FROM memory_events".into()],
+                None
+            ),
+            None
+        );
+        let mixed = vec![
+            queries[0].clone(),
+            "SELECT COUNT(*) FROM memory_events".into(),
+        ];
+        assert_eq!(effective_memory_events_lookback_days(&mixed, None), None);
+    }
+
+    #[test]
+    fn recent_llm_snapshot_preserves_the_compatibility_population() {
+        let temp = tempfile::tempdir().unwrap();
+        let parquet = temp.path().join("calls.parquet");
+        let now = Utc::now().timestamp_millis();
+        let writer = duckdb::Connection::open_in_memory().unwrap();
+        writer
+            .execute_batch(&format!(
+                "COPY (SELECT *, 'model' AS model, 'provider' AS provider FROM (VALUES
+                     ({now}, 0.25, 'legacy', NULL, NULL),
+                     ({now}, 0.50, 'legacy', 'call_fact', 2),
+                     ({now}, 0.75, 'canonical', 'call_fact', 2),
+                     ({now} - 10, 0.25, 'cross-boundary', NULL, NULL),
+                     ({now}, 0.50, 'cross-boundary', 'call_fact', 2)
+                   ) t(timestamp_ms, cost_usd, llm_call_id, record_kind, record_revision))
+             TO '{}' (FORMAT PARQUET);",
+                escape_sql_literal(&parquet.display().to_string())
+            ))
+            .unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        configure_analytics_connection_checked(&conn, "recent_snapshot").unwrap();
+        install_llm_calls_views(
+            &conn,
+            &format!("'{}'", escape_sql_literal(&parquet.display().to_string())),
+            None,
+            "owner",
+            "default",
+            Some(now - 1),
+        )
+        .unwrap();
+        disable_llm_query_external_access(&conn, "recent_snapshot").unwrap();
+        let row: (i64, f64) = conn
+            .query_row("SELECT COUNT(*), SUM(cost_usd) FROM llm_calls", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        // Preserve legacy/canonical deduplication and filter before reconciling
+        // a call whose legacy batch lies outside the requested window.
+        assert_eq!(row, (3, 1.5));
+        assert!(conn.prepare("SELECT * FROM glob('/tmp/*')").is_err());
+    }
+
+    /// The batch's one in-memory copy must answer every card exactly as the
+    /// streaming views do, and must not reopen Parquet once it is built (the
+    /// handler releases the analytics guard on that basis).
+    #[test]
+    fn batch_window_copy_answers_like_the_streaming_views() {
+        let temp = tempfile::tempdir().unwrap();
+        let calls = temp.path().join("calls.parquet");
+        let attempts = temp.path().join("attempts.parquet");
+        let now = Utc::now().timestamp_millis();
+        let day = 86_400_000_i64;
+        let writer = duckdb::Connection::open_in_memory().unwrap();
+        writer
+            .execute_batch(&format!(
+                "COPY (SELECT * FROM (VALUES
+                     ('a', NULL::VARCHAR, NULL::BIGINT, 'm1', 'p', 'op1', 'agent-1', 0.25::DOUBLE, ({now} - 3600000)::BIGINT),
+                     ('a', 'call_fact', 2, '', '', 'op1', 'agent-1', 0.50, {now} - 3600000),
+                     ('b', 'call_fact', 1, '', '', 'op2', 'agent-2', 0.00, {now} - 2 * {day}::BIGINT),
+                     ('b', 'call_fact', 2, '', '', 'op2', 'agent-2', 0.75, {now} - 2 * {day}::BIGINT),
+                     ('c', NULL, NULL, 'm2', 'p', 'op1', NULL, 1.00, {now} - 10 * {day}::BIGINT),
+                     ('d', NULL, NULL, 'm1', 'p', 'op3', 'agent-1', 2.00, {now} - 40 * {day}::BIGINT)
+                   ) t(llm_call_id, record_kind, record_revision, model, provider, operation,
+                       agent_id, cost_usd, timestamp_ms))
+                 TO '{}' (FORMAT PARQUET);
+                 COPY (SELECT * FROM (VALUES
+                     ('b', 'p', 'm3', 'succeeded', 1),
+                     ('b', 'p', 'failed-model', 'failed', 2)
+                   ) t(llm_call_id, provider, model, attempt_terminal_state, provider_attempt_index))
+                 TO '{}' (FORMAT PARQUET);",
+                escape_sql_literal(&calls.display().to_string()),
+                escape_sql_literal(&attempts.display().to_string()),
+            ))
+            .unwrap();
+
+        // The page's card shapes, as `normalize_analytics_sql` leaves them.
+        let seven = "timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 7 DAYS)";
+        let thirty = "timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS)";
+        let today = format!("timestamp_ms >= {}", now - day);
+        let queries: Vec<String> = vec![
+            format!(
+                "SELECT COALESCE(NULLIF(model, ''), 'unknown') AS label, SUM(cost_usd) AS spend, \
+                 COUNT(*) AS calls FROM llm_calls WHERE {seven} GROUP BY 1 ORDER BY 1"
+            ),
+            format!(
+                "SELECT COALESCE(NULLIF(operation, ''), 'unattributed') AS label, \
+                 SUM(cost_usd) AS spend, COUNT(*) AS calls FROM llm_calls WHERE {thirty} \
+                 GROUP BY 1 ORDER BY 1"
+            ),
+            format!(
+                "SELECT SUM(cost_usd) AS spend_usd, COUNT(*) AS calls FROM llm_calls WHERE {today}"
+            ),
+            format!(
+                "SELECT DISTINCT agent_id FROM llm_calls WHERE agent_id IS NOT NULL AND {thirty} \
+                 ORDER BY agent_id LIMIT 200"
+            ),
+            format!(
+                "WITH scoped AS (SELECT * FROM llm_calls WHERE {today}) \
+                 SELECT 'today' AS day, COUNT(*) AS calls FROM scoped \
+                 UNION ALL SELECT 'all', COUNT(*) FROM scoped ORDER BY 1"
+            ),
+        ];
+        let bound = shared_llm_timestamp_ms_bound(&queries).expect("every card is bounded");
+        assert!(bound <= now - 30 * day && bound > now - 40 * day);
+        assert_eq!(
+            shared_llm_timestamp_ms_bound(&[
+                queries[0].clone(),
+                "SELECT COUNT(*) FROM llm_calls".to_string()
+            ]),
+            None
+        );
+
+        let calls_sql = format!("'{}'", escape_sql_literal(&calls.display().to_string()));
+        let attempts_sql = format!("'{}'", escape_sql_literal(&attempts.display().to_string()));
+        let answers = |conn: &duckdb::Connection| -> Vec<serde_json::Value> {
+            queries
+                .iter()
+                .map(|sql| {
+                    serde_json::to_value(run_analytics_query(conn, sql, 100).expect("card query"))
+                        .expect("serialize card")
+                })
+                .collect()
+        };
+
+        let streamed = duckdb::Connection::open_in_memory().unwrap();
+        configure_analytics_connection_checked(&streamed, "batch_stream").unwrap();
+        install_legacy_llm_views(
+            &streamed,
+            &calls_sql,
+            Some(&attempts_sql),
+            "owner",
+            "default",
+            Some(bound),
+        )
+        .unwrap();
+        disable_llm_query_external_access(&streamed, "batch_stream").unwrap();
+        let expected = answers(&streamed);
+
+        let windowed = duckdb::Connection::open_in_memory().unwrap();
+        configure_analytics_connection_checked(&windowed, "batch_window").unwrap();
+        assert!(install_llm_calls_views_for_batch(
+            &windowed,
+            &calls_sql,
+            Some(&attempts_sql),
+            "owner",
+            "default",
+            &queries,
+            Some(30),
+        )
+        .unwrap());
+        disable_llm_query_external_access(&windowed, "batch_window").unwrap();
+        std::fs::remove_file(&calls).unwrap();
+        std::fs::remove_file(&attempts).unwrap();
+        assert_eq!(answers(&windowed), expected);
+
+        // The reconciliation survived the copy: legacy `a` once, `b` priced
+        // from its completed fact with the winning attempt's model, `d` (40
+        // days old) outside every card.
+        assert_eq!(
+            expected[0],
+            json!({
+                "columns": ["label", "spend", "calls"],
+                "rows": [["m1", 0.25, 1], ["m3", 0.75, 1]],
+                "row_count": 2
+            })
+        );
+        assert_eq!(expected[3]["rows"], json!([["agent-1"], ["agent-2"]]));
+    }
+
+    #[test]
+    fn batch_window_is_copied_only_when_provably_recent() {
+        let now = Utc::now().timestamp_millis();
+        let day = 86_400_000_i64;
+        assert!(llm_calls_window_is_materializable(
+            Some(now - 32 * day),
+            Some(31),
+            now
+        ));
+        assert!(llm_calls_window_is_materializable(
+            Some(now - 32 * day),
+            None,
+            now
+        ));
+        // An unbounded card still reads only the batch's default 30-day files.
+        assert!(llm_calls_window_is_materializable(None, Some(30), now));
+        assert!(!llm_calls_window_is_materializable(
+            Some(now - 90 * day),
+            Some(90),
+            now
+        ));
+        // Lifetime reads (`magician:all_llm_partitions`) stream.
+        assert!(!llm_calls_window_is_materializable(None, None, now));
+    }
+
+    #[test]
+    fn analytics_setup_timeout_interrupts_work_and_rejects_late_success() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let error = run_analytics_operation_with_interrupt_timeout(
+            &conn,
+            Duration::from_millis(20),
+            || {
+                conn.execute_batch("SELECT SUM(hash(i)) FROM range(1000000000000) t(i)")?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        let error =
+            run_analytics_operation_with_interrupt_timeout(&conn, Duration::from_millis(5), || {
+                std::thread::sleep(Duration::from_millis(30));
+                Ok(1)
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert_eq!(
+            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
 
     fn superseded_memory_candidate(
         item_key: &str,

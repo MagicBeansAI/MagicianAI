@@ -1,6 +1,6 @@
 [package]
 name = "magician"
-version = "0.7.109"
+version = "0.7.148"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "Magician service"
@@ -36,20 +36,22 @@ decision-engine-contract = { path = "../decision-engine-contract", features = ["
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
 tokio-util = "0.7"
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 async-trait = { workspace = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json = { workspace = true, features = ["raw_value", "float_roundtrip"] }
 serde_yaml = { workspace = true }
 schemars = { version = "1.2.1", features = ["chrono04"] }
 unicode-normalization = { workspace = true }
 base64 = { workspace = true }
+# Scales oversized screenshots to the decision model's image limits.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Web framework
 actix = "0.13"
-actix-web = { version = "4.4", features = ["rustls"] }
+actix-web = { workspace = true }
 actix-web-actors = "4.3"
 actix-files = "0.6"
 actix-multipart = "0.6"
@@ -211,7 +213,7 @@ rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl",
 rust_decimal = { version = "1.36", features = ["serde-with-str"] }
 tempfile = "3.8"
 static_assertions = { version = "1", optional = true }
-wiremock = { version = "0.5", optional = true }
+wiremock = { version = "0.6", optional = true }
 
 [features]
 # Test-only fixtures shared with satellite crates' test builds.
@@ -240,11 +242,10 @@ magician-vector-index = { path = "../magician-vector-index", features = ["test-h
 magician-core = { path = "../magician-core", features = ["test-support"] }
 tokio-test = "0.4"
 tempfile = "3.8"
-wiremock = "0.5"
+wiremock = "0.6"
 actix-rt = "2.9"
-actix-test = "0.1"
-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3"
 bytes = "1.0"
 ring = "0.17.14"

@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use actix_web::{http::header::HeaderMap, web, HttpRequest, HttpResponse, Result};
+use actix_web::{http::header::HeaderMap, web, HttpMessage, HttpRequest, HttpResponse, Result};
 pub use magician::magician_v2::agents::task_ownership::resolve_created_task_owner_agent_id;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,106 @@ use magician::magician_v2::query_analysis::operation_llm_router::OperationRoutin
 use magician::magician_v2::storage::{
     epoch_millis_from_rfc3339, row_follows_cursor, ListCursor, ListKind, ListPageQuery,
 };
+
+/// Owner provenance is from authentication extensions, never request headers,
+/// created_by, or task JSON. Terminal grants and bot bearers are not owners.
+pub(crate) async fn owner_task_outward_source(
+    request: &HttpRequest,
+    scope: &ScopeRef,
+) -> Option<magician::magician_v2::agents::outward_policy::OutwardSource> {
+    use magician::magician_v2::{
+        agents::outward_policy::{OutwardOrigin, OutwardSource},
+        auth::{middleware::AuthenticatedRequest, sessions::BearerKind},
+    };
+    let authentication = request.extensions().get::<AuthenticatedRequest>().cloned();
+    if let Some(auth) = authentication {
+        return (auth.scope == *scope
+            && matches!(auth.bearer, BearerKind::Session(_) | BearerKind::ApiToken))
+        .then(|| {
+            OutwardSource::root(
+                &scope.principal(),
+                &scope.workspace(),
+                OutwardOrigin::OwnerTask,
+            )
+        });
+    }
+    // Paired owner phones use the existing verified device boundary, not an
+    // agent/bot bearer. The shared guard checks freshness and roster ownership.
+    use magician::magician_v2::cloudflare_access::{
+        VerifiedRequestAuthentication, VerifiedRequestIdentity,
+    };
+    let phone_matches = request
+        .extensions()
+        .get::<VerifiedRequestIdentity>()
+        .is_some_and(|identity| {
+            identity.authentication() == VerifiedRequestAuthentication::PairedDevice
+                && identity.principal() == scope.principal()
+                && identity.workspace() == Some(scope.workspace())
+        });
+    if phone_matches
+        && crate::programs_api::require_owner_session_or_phone(
+            request,
+            request
+                .app_data::<web::Data<magician::magician_v2::auth::middleware::AuthRuntime>>()
+                .map(|auth| auth.get_ref()),
+        )
+        .await
+        .is_ok()
+    {
+        Some(OutwardSource::root(
+            &scope.principal(),
+            &scope.workspace(),
+            OutwardOrigin::OwnerTask,
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod outward_source_tests {
+    use super::*;
+    use magician::magician_v2::auth::{
+        middleware::AuthenticatedRequest, sessions::BearerKind, AuthMethod,
+    };
+
+    #[actix_web::test]
+    async fn task_origin_requires_real_owner_authentication_in_the_same_scope() {
+        let scope = ScopeRef::system_internal_unauthenticated("p", "w");
+        let request = actix_web::test::TestRequest::default()
+            .insert_header(("x-principal", "p"))
+            .to_http_request();
+        assert!(owner_task_outward_source(&request, &scope).await.is_none());
+        for (bearer, owner) in [
+            (BearerKind::Session(AuthMethod::Password), true),
+            (BearerKind::ApiToken, true),
+            (
+                BearerKind::Grant {
+                    workspace: "w".into(),
+                },
+                false,
+            ),
+            (
+                BearerKind::Bot {
+                    bot_name: "test".into(),
+                },
+                false,
+            ),
+        ] {
+            request.extensions_mut().insert(AuthenticatedRequest {
+                scope: scope.clone(),
+                identity_name: None,
+                bearer,
+            });
+            assert_eq!(
+                owner_task_outward_source(&request, &scope).await.is_some(),
+                owner
+            );
+            let other = ScopeRef::system_internal_unauthenticated("p", "other");
+            assert!(owner_task_outward_source(&request, &other).await.is_none());
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTaskV3Request {
@@ -612,6 +712,56 @@ pub struct TaskResponseV3 {
     /// requires working code must check `task.state.status == "completed"`
     /// **and** `verification_state == "verified"`.
     pub verification_state: magician::magician_v2::execution::verification::VerificationState,
+    /// What starts the task, on the create response only. Creating a task
+    /// never starts it: `approved` (default `true`) only authorizes it to run,
+    /// and a run begins with `POST /tasks/{id}/execute` (or its schedule).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<TaskNextStepV3>,
+}
+
+/// The call that starts a just-created task (see [`TaskResponseV3::next_step`]).
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct TaskNextStepV3 {
+    /// `execute`, or `approve` for a task created with `approved: false`.
+    pub action: &'static str,
+    pub method: &'static str,
+    pub path: String,
+    pub message: String,
+}
+
+/// The next step for a task just created through `POST /v3/tasks`, or `None`
+/// when its own schedule starts it.
+pub(crate) fn created_task_next_step(
+    task_id: &str,
+    approved: bool,
+    schedule: Option<&serde_json::Value>,
+) -> Option<TaskNextStepV3> {
+    if schedule.is_some_and(|schedule| !schedule.is_null()) {
+        return None;
+    }
+    let execute_path = format!("/api/magician/v3/tasks/{task_id}/execute");
+    Some(if approved {
+        TaskNextStepV3 {
+            action: "execute",
+            method: "POST",
+            message: format!(
+                "Task created but not started: `approved` only authorizes it to run. \
+                 Start it with POST {execute_path}."
+            ),
+            path: execute_path,
+        }
+    } else {
+        let approve_path = format!("/api/magician/v3/tasks/{task_id}/approve");
+        TaskNextStepV3 {
+            action: "approve",
+            method: "POST",
+            message: format!(
+                "Task created unapproved and not started. Approve it with POST {approve_path}, \
+                 then start it with POST {execute_path}."
+            ),
+            path: approve_path,
+        }
+    })
 }
 
 impl TaskResponseV3 {
@@ -634,6 +784,7 @@ impl TaskResponseV3 {
         Self {
             task,
             verification_state,
+            next_step: None,
         }
     }
 }
@@ -759,7 +910,9 @@ impl TaskPlanResponseV3 {
                 thread_id: None,
             },
             at: None,
+            respond: None,
         });
+        let hitl_request = hitl_request.map(HitlOpenTarget::with_respond_handle);
         Self { plan, hitl_request }
     }
 }
@@ -1034,6 +1187,44 @@ pub(crate) async fn validate_task_agent_assignment(
 }
 
 #[cfg(test)]
+mod created_task_next_step_tests {
+    use super::*;
+
+    /// Live 2026-10-20: a task created with `approved: true` sat unstarted —
+    /// `approved` authorizes, it does not start. The create response says
+    /// which call starts it, and stays silent when a schedule does.
+    #[test]
+    fn create_response_names_the_call_that_starts_the_task() {
+        let approved = created_task_next_step("task_1", true, None).expect("hint");
+        assert_eq!(approved.action, "execute");
+        assert_eq!(approved.method, "POST");
+        assert_eq!(approved.path, "/api/magician/v3/tasks/task_1/execute");
+        assert!(
+            approved.message.contains("not started"),
+            "{}",
+            approved.message
+        );
+
+        let unapproved = created_task_next_step("task_1", false, None).expect("hint");
+        assert_eq!(unapproved.action, "approve");
+        assert_eq!(unapproved.path, "/api/magician/v3/tasks/task_1/approve");
+        assert!(
+            unapproved.message.contains("/execute"),
+            "{}",
+            unapproved.message
+        );
+
+        let null_schedule = serde_json::Value::Null;
+        assert!(created_task_next_step("task_1", true, Some(&null_schedule)).is_some());
+        let schedule = serde_json::json!({"cron": "0 9 * * *"});
+        assert_eq!(
+            created_task_next_step("task_1", true, Some(&schedule)),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod task_agent_assignment_tests {
     use super::*;
 
@@ -1112,6 +1303,8 @@ mod task_list_pagination_tests {
             current_substep_title: None,
             completion_summary: None,
             completion_outcome: None,
+            completion_kind: None,
+            open_items: Vec::new(),
             completion_artifact_names: Vec::new(),
             has_plan: false,
             latest_plan_id: None,
@@ -1326,6 +1519,7 @@ impl TaskApiV3 {
             Ok(scope) => scope,
             Err(response) => return Ok(response),
         };
+        let outward_source = owner_task_outward_source(http_req, &scope).await;
         let description = req.description.trim();
         if description.is_empty() {
             return Ok(HttpResponse::BadRequest().json(serde_json::json!({
@@ -1429,9 +1623,10 @@ impl TaskApiV3 {
             lifecycle,
             magician::magician_v2::artifact_v2::models::TaskLifecycle::Internal
         );
-        let task = self
-            .service
-            .create_task(CreateTaskInput {
+        use magician::magician_v2::agents::outward_policy;
+        let task = outward_policy::with_source(
+            outward_source,
+            self.service.create_task(CreateTaskInput {
                 principal: scope.principal().to_string(),
                 workspace: scope.workspace().to_string(),
                 title,
@@ -1450,21 +1645,29 @@ impl TaskApiV3 {
                 chat_session_id: None,
                 lifecycle,
                 sync_mode: magician::magician_v2::artifact_v2::models::TaskSyncMode::default(),
-            })
-            .await;
+            }),
+        )
+        .await;
         // Who started it and from where, for the "Magician at work" ranking
         // (an internal task lives elsewhere and is never listed there).
         if let Ok(task) = &task {
             if !internal {
                 use magician::magician_v2::work_live;
-                let by = if req.schedule.as_ref().is_some_and(|schedule| !schedule.is_null()) {
+                let by = if req
+                    .schedule
+                    .as_ref()
+                    .is_some_and(|schedule| !schedule.is_null())
+                {
                     work_live::OriginBy::Schedule
                 } else {
                     work_live::origin_by_created_by(req.created_by.as_deref().unwrap_or("user"))
                 };
                 let origin = work_live::WorkOrigin {
                     by,
-                    surface: req.source.as_deref().and_then(work_live::surface_from_source),
+                    surface: req
+                        .source
+                        .as_deref()
+                        .and_then(work_live::surface_from_source),
                     device_id: None,
                     at_ms: chrono::Utc::now().timestamp_millis(),
                 };
@@ -1478,9 +1681,16 @@ impl TaskApiV3 {
                 }
             }
         }
-        map_result(
-            task.map(|task| HttpResponse::Created().json(TaskResponseV3::new(&self.service, task))),
-        )
+        map_result(task.map(|task| {
+            let next_step = created_task_next_step(
+                &task.manifest.task_id,
+                task.manifest.approved,
+                task.manifest.schedule.as_ref(),
+            );
+            let mut response = TaskResponseV3::new(&self.service, task);
+            response.next_step = next_step;
+            HttpResponse::Created().json(response)
+        }))
     }
 
     pub async fn get_task(
@@ -1805,9 +2015,11 @@ impl TaskApiV3 {
         };
         let task_id = path.into_inner();
         let remove_files = query.remove_files;
+        // The owner's delete waits out a just-ended run's output synthesis
+        // (bounded) instead of answering `task_active` for ~15 s.
         let response = self
             .service
-            .archive_task_with_options(&scope, &task_id, remove_files)
+            .archive_task_with_options_when_settled(&scope, &task_id, remove_files)
             .await;
         if response.is_ok() && remove_files {
             let cleanup =
@@ -3495,6 +3707,22 @@ pub(crate) fn map_result(response: Result<HttpResponse, ArtifactV2Error>) -> Res
                     "task_id": task_id,
                     "message": "Governed app runs must be changed through app run-control and settlement APIs."
                 })));
+            }
+            // The task is still running, or its ended run is still settling
+            // (output synthesis) past the archive's bounded wait: a retryable
+            // conflict, not a malformed request.
+            if message.starts_with("task_active:") {
+                const TASK_ACTIVE_RETRY_AFTER_SECS: u64 = 5;
+                let mut response = HttpResponse::Conflict().json(serde_json::json!({
+                    "error": message,
+                    "code": "task_active",
+                    "retry_after_secs": TASK_ACTIVE_RETRY_AFTER_SECS
+                }));
+                response.headers_mut().insert(
+                    actix_web::http::header::RETRY_AFTER,
+                    actix_web::http::header::HeaderValue::from(TASK_ACTIVE_RETRY_AFTER_SECS),
+                );
+                return Ok(response);
             }
             Ok(HttpResponse::BadRequest().json(serde_json::json!({ "error": message })))
         },

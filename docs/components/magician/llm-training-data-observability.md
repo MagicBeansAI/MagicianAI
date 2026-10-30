@@ -117,7 +117,10 @@ and claim no cache-creation.
 - **Recovery index.** `recovery-index.sqlite3` holds identities, checksums,
   offsets, lifecycle state and parent edges, never payloads; it commits after
   journal fsync, so a lost transaction leaves a replayable suffix. Later starts
-  decode only the unindexed suffix. Changed sealed segments, missing files, bad
+  decode only the unindexed suffix. A segment whose stamp (device, inode, size,
+  mtime) changed, as after a reboot or remount, has its whole indexed prefix
+  re-verified; `records_by_segment` keeps each segment's record lookup off a
+  full table scan. Changed sealed segments, missing files, bad
   checkpoints and SQLite corruption fail closed. Repair: stop the owner, rename
   the index and sidecars, rebuild. **Never delete the canonical journal or
   report Parquet files to repair an index.** A journal moved to another
@@ -136,18 +139,25 @@ and claim no cache-creation.
 - **Materialization.** `analytics/llm_calls/dt=YYYY-MM-DD`,
   `analytics/llm_provider_attempts/dt=YYYY-MM-DD`,
   `analytics/llm_capture_gaps/dt=YYYY-MM-DD` (UTC). Names derive from the
-  revision key, so replay never duplicates. Rows are written through a
-  content-free schema with fsync, rename and read-back before the watermark
-  moves; a crash between publish and watermark is repaired on replay; same key
-  with a different checksum fails closed. Raw revisions stay one-row objects
-  that compaction never deletes or mutates.
+  revision key, so replay never duplicates. A batch stages its rows in one
+  typed DuckDB table (no JSON round-trip, so strings and money are exact) and
+  copies each through the declared content-free schema to a temporary object,
+  which is fsynced and read back once before rename; the batch then fsyncs
+  each touched partition once and advances each dataset watermark once, with
+  the same result as per-row advancement. Objects that already exist are
+  verified instead (DESCRIBE only there, for older schema versions). The
+  journal checkpoint moves only after the whole batch succeeds, so a crash
+  replays it: published objects verify, missing ones are written, nothing is
+  counted twice. Same key with a different checksum fails closed. Raw revisions stay one-row objects
+  beside the compact until the day is older than yesterday
+  ([governed reads](storage-governance.md#governed-reads-must-consume-compaction-output)).
 
 ## Governed reads
 
-Completed UTC partitions (never the current one) over 64 raw files (configurable
-default) are compacted under a manifest of raw names, lengths, BLAKE3 checksums
-and journal range. A read uses compacted or raw, never both; a bad manifest or
-changed raw set falls back to raw.
+Completed UTC partitions are compacted under a manifest of raw names, lengths,
+BLAKE3 checksums and journal range. A read uses the compacted object plus any
+raw tail not yet folded. A bad manifest or changed raw set falls back to raw
+while those files remain.
 
 `LlmAnalyticsReadService` owns the exact scope path boundary, stable schema,
 latest-revision coalescing, filters, pagination, totals and overview. Allowlist

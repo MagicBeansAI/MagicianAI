@@ -29,10 +29,10 @@ use super::factory::{AgyCodingOptions, AgyTurnMode};
 use super::jsonl::{append_bounded_utf8, read_bounded_jsonl_value, BoundedJsonlError};
 use super::selection::CodingContinuationRef;
 use super::{
-    harness_command, harness_unrestricted, without_flags, require_outer_fence, CodingEngineAdapter, CodingEngineEvent,
-    CodingEngineEventKind, CodingEngineEventSink, CodingEngineKind, CodingEngineRequest,
-    CodingEngineRunResult, CodingFenceError, CodingLiveSessionReporter, CodingTurnUsage,
-    CodingUsage,
+    harness_command, harness_unrestricted, require_outer_fence, without_flags, CodingEngineAdapter,
+    CodingEngineEvent, CodingEngineEventKind, CodingEngineEventSink, CodingEngineKind,
+    CodingEngineRequest, CodingEngineRunResult, CodingFenceError, CodingLiveSessionReporter,
+    CodingTurnUsage, CodingUsage,
 };
 
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -240,6 +240,15 @@ fn spawn_agy(
         request.agy.resume_session_id.as_deref(),
         &request.repo_config,
     );
+    launch.extend(
+        super::factory::native_model_args(
+            request.agy.model.as_deref(),
+            request.agy.effort.as_deref(),
+            "--effort",
+        )?
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned()),
+    );
     // Its `--sandbox` cannot start inside Magician's write allow-list (macOS
     // refuses a nested `sandbox_apply`; it would fail every first command and
     // retry unsandboxed), so the allow-list is the fence instead.
@@ -289,6 +298,7 @@ fn spawn_agy(
     }
     command.env("GIT_CEILING_DIRECTORIES", &request.scope_root);
     harness.apply_env();
+    super::original_edits::apply_env(request, &mut harness.command);
     let command = &mut harness.command;
     apply_agy_child_process_group(command);
     command.spawn().with_context(|| {

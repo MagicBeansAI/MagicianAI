@@ -55,6 +55,7 @@ fn sample_request() -> DecisionRequest {
                 criteria: None,
             }),
         ],
+        assets: Default::default(),
     }
 }
 
@@ -353,4 +354,98 @@ fn only_loopback_endpoints_count_as_local() {
         "http://localhost.example.com/v1/systemone"
     ));
     assert!(!is_loopback_endpoint("not a url"));
+}
+
+#[tokio::test]
+async fn sends_screenshots_as_assets_with_the_images_header() {
+    use magician_decision::asset::{DecisionAsset, ImageAsset};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(header("typesafe-danger-zone-images", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response_body()))
+        .mount(&server)
+        .await;
+    let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    png.extend_from_slice(&1280u32.to_be_bytes());
+    png.extend_from_slice(&800u32.to_be_bytes());
+    png.extend_from_slice(&[
+        8, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'I', b'D', b'A', b'T', 0, 0, 0, 0,
+    ]);
+    let mut request = sample_request();
+    request.state = DecisionState::from_json(serde_json::json!({
+        "goal": "Open the flights page",
+        "screen": "screen-0123abcd"
+    }));
+    request.assets.insert(
+        "screen-0123abcd".into(),
+        DecisionAsset::Image(ImageAsset::from_bytes(&png).expect("valid")),
+    );
+
+    model_against(&server)
+        .evaluate(request)
+        .await
+        .expect("evaluates");
+
+    let sent: serde_json::Value = server.received_requests().await.expect("recorded")[0]
+        .body_json()
+        .expect("json body");
+    let asset = &sent["assets"]["screen-0123abcd"];
+    assert_eq!(asset["type"], "image");
+    assert_eq!(asset["format"], "png");
+    assert!(asset["data_base64"]
+        .as_str()
+        .is_some_and(|data| !data.is_empty()));
+    // Only the dialect's fields: the IR's size stays on this side.
+    assert!(asset.get("width").is_none());
+}
+
+#[tokio::test]
+async fn text_requests_carry_no_assets_and_long_context_is_opt_in() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_response_body()))
+        .mount(&server)
+        .await;
+    model_against(&server)
+        .evaluate(sample_request())
+        .await
+        .expect("evaluates");
+    let mut config = TypesafeConfig::new(
+        format!("{}/v1/systemone", server.uri()),
+        "test-key",
+        "jev-latest",
+    );
+    assert_eq!(config.capabilities.max_state_tokens, Some(65_536));
+    assert_eq!(config.capabilities.max_question_tokens, Some(32_768));
+    config.enable_long_context();
+    assert_eq!(config.capabilities.max_question_tokens, Some(262_144));
+    TypesafeDecisionModel::with_client(config, reqwest::Client::new())
+        .evaluate(sample_request())
+        .await
+        .expect("evaluates");
+
+    let requests = server.received_requests().await.expect("recorded");
+    let plain = &requests[0];
+    let images_header: wiremock::http::HeaderName = "typesafe-danger-zone-images"
+        .parse()
+        .expect("valid header name");
+    let long_context_header: wiremock::http::HeaderName = "typesafe-danger-zone-long-context"
+        .parse()
+        .expect("valid header name");
+    assert!(plain.headers.get(&images_header).is_none());
+    assert!(plain.headers.get(&long_context_header).is_none());
+    assert!(plain
+        .body_json::<serde_json::Value>()
+        .unwrap()
+        .get("assets")
+        .is_none());
+    assert_eq!(
+        requests[1]
+            .headers
+            .get(&long_context_header)
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
 }

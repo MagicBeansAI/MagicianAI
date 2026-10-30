@@ -1,17 +1,9 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+	import { liveClock, runningElapsed } from './liveClock';
 	import { rise } from './motion';
-	import { latestRows } from './stageRows';
+	import { latestRows, type StageRow, type StageStatus } from './stageRows';
 	import { tintVars } from './tint';
-
-	type StageStatus = 'running' | 'done' | 'failed' | 'waiting';
-
-	interface StageRow {
-		key: string;
-		label: string;
-		status: StageStatus;
-		tool?: string;
-		target?: string;
-	}
 
 	type Glyph = 'web' | 'search' | 'file' | 'code' | 'generic';
 
@@ -51,6 +43,14 @@
 	$: waiting = current === null && rows.some((row) => row.status === 'waiting');
 	$: idleLabel = waiting ? 'Waiting on your input' : 'Finishing…';
 	$: announcement = current ? current.label : rows.length > 0 ? idleLabel : '';
+
+	// A running row's elapsed ticks off the shared 1 s clock, held only while
+	// a row is running (and so only while there is a counter to advance).
+	let now = Date.now();
+	const clock = liveClock((tick) => (now = tick));
+	$: clock.sync(rows.some((row) => row.status === 'running' && row.startedAt !== undefined));
+	onDestroy(() => clock.stop());
+	$: currentElapsed = current ? runningElapsed(current.startedAt, now) : null;
 </script>
 
 <div class="cn-stage" data-testid="turn-stage">
@@ -82,6 +82,9 @@
 				<span class="cn-stage__label">{current.label}</span>
 				{#if current.target}
 					<span class="cn-stage__target">{current.target}</span>
+				{/if}
+				{#if currentElapsed}
+					<span class="cn-stage__elapsed" data-testid="turn-stage-elapsed">{currentElapsed}</span>
 				{/if}
 			</div>
 		{/key}
@@ -141,7 +144,14 @@
 						{#if row.target}
 							<span class="cn-stage__target">{row.target}</span>
 						{/if}
-						<span class="cn-stage__status">{STATUS_TEXT[row.status]}</span>
+						<span class="cn-stage__status"
+							>{STATUS_TEXT[row.status]}{#if row.status === 'running' && runningElapsed(row.startedAt, now)}
+								<span class="cn-stage__elapsed">{runningElapsed(row.startedAt, now)}</span>
+							{/if}</span
+						>
+						{#if row.detail}
+							<span class="cn-stage__detail" data-testid="turn-stage-detail">{row.detail}</span>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -234,12 +244,25 @@
 		color: var(--cn-tint-ink);
 	}
 
-	.cn-stage__label,
-	.cn-stage__item-label {
+	.cn-stage__label {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
+	}
+
+	/* A zero basis keeps a long label on the dot's line (with a content basis
+	   the wrapping row moved it under the dot); it takes the free width and
+	   clamps at two lines. */
+	.cn-stage__item-label {
+		display: -webkit-box;
+		flex: 1 1 0;
+		min-width: 0;
+		overflow: hidden;
+		overflow-wrap: anywhere;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
 	}
 
 	.cn-stage__target {
@@ -250,6 +273,14 @@
 		white-space: nowrap;
 		color: var(--text-muted);
 		font-size: var(--text-xs);
+	}
+
+	/* A running step's elapsed: tabular so the ticking digits hold still. */
+	.cn-stage__elapsed {
+		flex: none;
+		color: var(--text-muted);
+		font-size: var(--text-xs);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.cn-stage__trail {
@@ -329,10 +360,28 @@
 
 	.cn-stage__item {
 		display: flex;
-		align-items: center;
+		flex-wrap: wrap;
+		align-items: flex-start;
 		gap: 0.4rem;
 		min-width: 0;
+		line-height: 1.4;
 		color: var(--text-primary);
+	}
+
+	/* Centred on the label's first line when the label runs to two. */
+	.cn-stage__item > .cn-stage__dot {
+		margin-block-start: calc((1.4em - 0.5rem) / 2);
+	}
+
+	/* A model call's usage or a context phase's timings, under its label. */
+	.cn-stage__detail {
+		flex-basis: 100%;
+		padding-inline-start: 0.9rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-muted);
+		font-size: var(--text-xs);
 	}
 
 	.cn-stage__status {

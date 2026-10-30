@@ -139,6 +139,10 @@ data class AttentionItem(
      * so a subsystem stamping something new does not break the decode.
      */
     val metadata: AttentionMetadata? = null,
+    /** Origin retained when a taskless chat ask is read from the request ledger. */
+    @SerialName("chat_session_id") val chatSessionId: String? = null,
+    @kotlinx.serialization.Transient
+    val originConnection: ai.magicbeans.magdroid.access.MagicianConnectionSnapshot? = null,
 ) {
     val needsAction: Boolean get() = status == "needs_action"
     val failed: Boolean get() = status == "failed"

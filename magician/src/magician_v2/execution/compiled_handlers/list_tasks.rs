@@ -44,6 +44,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 .map(|task| {
                     json!({
                         "task_id": task.id,
+                        "task_url": crate::magician_v2::ui_links::task_href(&task.id, None),
                         "title": task.title,
                         "status": task.status,
                         "agent_id": task.agent_id,

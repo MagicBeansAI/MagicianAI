@@ -1,6 +1,6 @@
 ---
 name: "gmail"
-version: 0.1.0
+version: 0.1.1
 description: "Gmail via Google Workspace CLI (gws) — send, read, triage, reply, forward, search, and manage email across multiple accounts"
 metadata:
   magician:
@@ -83,13 +83,13 @@ metadata:
             max:
               type: integer
               description: Maximum messages to triage, mapped to --max.
-            label:
-              type: string
-              description: Restrict to this Gmail label.
+            labels:
+              type: boolean
+              description: Include label names in the output. To filter a label, use label:<name> in query.
             format:
               type: string
               description: Output format.
-              enum_values: [json, table, text]
+              enum_values: [json, table, yaml, csv]
             extra_args:
               type: string_array
               description: Bounded additional argv tokens.
@@ -98,11 +98,11 @@ metadata:
           mappings:
             - {type: flag, flag: --query, parameter: query}
             - {type: flag, flag: --max, parameter: max}
-            - {type: flag, flag: --label, parameter: label}
+            - {type: bool_flag, flag: --labels, parameter: labels}
             - {type: flag, flag: --format, parameter: format}
             - {type: passthrough, parameter: extra_args}
         send:
-          description: Send an email after confirming recipients, subject, and body.
+          description: Send a new email after confirming recipients, subject, and body. Use reply or reply_all for an existing thread.
           fixed_args: [gmail, +send]
           timeout_secs: 30
           parameters:
@@ -124,12 +124,9 @@ metadata:
               type: string
               description: Email body text.
               required: true
-            reply_to_message_id:
-              type: string
-              description: Message id used for reply headers.
             extra_args:
               type: string_array
-              description: Bounded additional argv, including repeated attachment flags.
+              description: Bounded additional supported gws argv tokens, such as --html. Use the raw API for attachments.
               max_items: 32
               max_item_bytes: 1024
           mappings:
@@ -138,10 +135,9 @@ metadata:
             - {type: flag, flag: --bcc, parameter: bcc}
             - {type: flag, flag: --subject, parameter: subject}
             - {type: flag, flag: --body, parameter: body}
-            - {type: flag, flag: --reply-to-message-id, parameter: reply_to_message_id}
             - {type: passthrough, parameter: extra_args}
         reply:
-          description: Reply to one Gmail message.
+          description: Reply to one Gmail message, preserving threading and quoting the original automatically.
           fixed_args: [gmail, +reply]
           timeout_secs: 30
           parameters:
@@ -153,9 +149,6 @@ metadata:
               type: string
               description: Reply body text.
               required: true
-            include_original:
-              type: boolean
-              description: Include the original message in the reply.
             extra_args:
               type: string_array
               description: Bounded additional argv tokens.
@@ -164,10 +157,9 @@ metadata:
           mappings:
             - {type: flag, flag: --message-id, parameter: message_id}
             - {type: flag, flag: --body, parameter: body}
-            - {type: bool_flag, flag: --include-original, parameter: include_original}
             - {type: passthrough, parameter: extra_args}
         reply_all:
-          description: Reply to all recipients of one Gmail message.
+          description: Reply to all recipients of one Gmail message, quoting the original automatically.
           fixed_args: [gmail, +reply-all]
           timeout_secs: 30
           parameters:
@@ -179,9 +171,6 @@ metadata:
               type: string
               description: Reply body text.
               required: true
-            include_original:
-              type: boolean
-              description: Include the original message in the reply.
             extra_args:
               type: string_array
               description: Bounded additional argv tokens.
@@ -190,7 +179,6 @@ metadata:
           mappings:
             - {type: flag, flag: --message-id, parameter: message_id}
             - {type: flag, flag: --body, parameter: body}
-            - {type: bool_flag, flag: --include-original, parameter: include_original}
             - {type: passthrough, parameter: extra_args}
         forward:
           description: Forward one Gmail message to explicit recipients.
@@ -404,9 +392,11 @@ account is "work". Do not use "default" as an account alias.
 To set up a new account:
   CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-<account>/cloudsdk GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-<account> gws auth setup --login
 
-Each action forwards exact argv tokens after its fixed command prefix. Do not
-include shell quotes or the `gws` binary name. Use one array element per argv
-token.
+Typed helpers take named parameters (see examples below). Other actions take
+exact argv tokens after their fixed command prefix. Do not include shell
+quotes or the `gws` binary name; use one array element per argv token.
+Replies quote the original automatically; use `reply` or `reply_all` with
+`message_id` for threading. For attachments or custom MIME, use the raw API.
 
 Helper commands (recommended — simpler interface):
 
@@ -418,14 +408,14 @@ Helper commands (recommended — simpler interface):
     Show unread inbox summary (sender, subject, date).
     Example: +triage --max 10 --query 'from:boss'
 
-  +reply --id <message-id> --body <text>
+  +reply --message-id <message-id> --body <text>
     Reply to a message (handles threading automatically).
-    Example: +reply --id 18f3a2b1c4d5e6f7 --body 'Got it, thanks!'
+    Example: +reply --message-id 18f3a2b1c4d5e6f7 --body 'Got it, thanks!'
 
-  +reply-all --id <message-id> --body <text>
+  +reply-all --message-id <message-id> --body <text>
     Reply-all to a message.
 
-  +forward --id <message-id> --to <emails>
+  +forward --message-id <message-id> --to <emails>
     Forward a message to new recipients.
 
   +watch
@@ -484,11 +474,11 @@ Tips:
 - Message IDs come from list/triage results
 
 Examples:
-- triage {"args":["--format","json"]}
-- triage {"args":["--max","5","--query","is:unread from:team","--format","json"],"account":"work"}
-- send {"args":["--to","alice@example.com","--subject","Quick update","--body","The deploy is done."],"account":"personal"}
-- reply {"args":["--id","18f3a2b1c4d5e6f7","--body","Thanks, acknowledged."]}
-- forward {"args":["--id","18f3a2b1c4d5e6f7","--to","bob@example.com"],"account":"business"}
+- triage {"format":"json"}
+- triage {"max":5,"query":"is:unread from:team","format":"json","account":"work"}
+- send {"to":"alice@example.com","subject":"Quick update","body":"The deploy is done.","account":"personal"}
+- reply {"message_id":"18f3a2b1c4d5e6f7","body":"Thanks, acknowledged."}
+- forward {"message_id":"18f3a2b1c4d5e6f7","to":"bob@example.com","account":"business"}
 - messages_list {"args":["--params","{\"userId\":\"me\",\"q\":\"is:unread\"}","--format","json"]}
 - labels_list {"args":["--params","{\"userId\":\"me\"}","--format","json"]}
 - help {"args":["+send","--help"]}

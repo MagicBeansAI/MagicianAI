@@ -562,8 +562,8 @@ mod town_square_ambient_turn_wiring {
         for required in [
             "app_platform.llm_operations.compose_post",
             "app:compose_post",
-            "op-app-workflow-remote",
-            "op-app-workflow-local",
+            "workload/app_processing/cloud",
+            "workload/app_processing/local",
             "more restrictive source",
         ] {
             assert!(source.contains(required), "operator contract: {required}");
@@ -1277,6 +1277,19 @@ pub struct AppPeriodCeilingBreach {
     /// The breached ceiling's canonical name (`monthly_tokens`, `monthly_cost`).
     pub ceiling: String,
     pub observed_at: DateTime<Utc>,
+}
+
+/// Whether a physical LLM observation settles its reservation as committed
+/// (with its observed counters, zero for a definitive provider rejection)
+/// instead of holding it as outcome-uncertain for the rest of the period.
+fn llm_observation_settles_committed(
+    outcome: LlmPhysicalAttemptOutcome,
+    definitive_rejection: bool,
+) -> bool {
+    match outcome {
+        LlmPhysicalAttemptOutcome::Committed => true,
+        LlmPhysicalAttemptOutcome::OutcomeUncertain => definitive_rejection,
+    }
 }
 
 /// The period ceiling behind a workflow error, if that is what it is. A
@@ -6348,11 +6361,9 @@ impl AppWorkflowService {
             let locator = self
                 .reserve_recipe_run(&scope, &binding, Utc::now())
                 .await?;
-            binding
-                .recurring
-                .as_mut()
-                .expect("recurring occurrence")
-                .execution_id = locator.execution_id();
+            if let Some(recurring) = binding.recurring.as_mut() {
+                recurring.execution_id = locator.execution_id();
+            }
         }
         if let Some((fence, profile_name, expected_audience)) = personal_agent_publication {
             let current_audience = reattest_personal_agent_workflow_publication(
@@ -7716,7 +7727,14 @@ impl AppWorkflowService {
         if !counters_fit {
             post_io_error = Some(AppWorkflowError::ResourceActualExceedsReservation);
         }
-        if post_io_error.is_none() && observation.outcome() == LlmPhysicalAttemptOutcome::Committed
+        // A definitive provider rejection carries zero counters, so it settles
+        // committed at zero and releases the reservation; every other
+        // uncertain attempt keeps the full reservation outstanding.
+        if post_io_error.is_none()
+            && llm_observation_settles_committed(
+                observation.outcome(),
+                observation.is_definitive_rejection(),
+            )
         {
             if let Some(started_at) = started_at {
                 let started_elapsed = lease
@@ -26966,6 +26984,8 @@ pub enum AppWorkflowError {
     RecipeCancelled,
     #[error("the recipe crossed an uncertain node boundary")]
     RecipeOutcomeUncertain,
+    #[error("every contextual round participant that was tried failed")]
+    ContextualRoundAllParticipantsFailed,
     #[error("the recipe node is owned by another live canonical worker")]
     RecipeClaimOwnedByLiveWorker,
     #[error("app workflow runner lacks a declared workflow tool")]
@@ -27378,6 +27398,25 @@ mod tests {
     use base64::Engine as _;
 
     use super::*;
+
+    #[test]
+    fn only_committed_or_definitively_rejected_llm_attempts_release_their_reservation() {
+        // A definitive provider client rejection generated nothing billable,
+        // so it settles committed at zero and frees the reservation. Any other
+        // uncertain attempt keeps the full reservation outstanding.
+        assert!(llm_observation_settles_committed(
+            LlmPhysicalAttemptOutcome::Committed,
+            false
+        ));
+        assert!(llm_observation_settles_committed(
+            LlmPhysicalAttemptOutcome::OutcomeUncertain,
+            true
+        ));
+        assert!(!llm_observation_settles_committed(
+            LlmPhysicalAttemptOutcome::OutcomeUncertain,
+            false
+        ));
+    }
 
     #[test]
     fn only_period_ceilings_park_a_background_behavior() {

@@ -14,7 +14,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ring::{
     aead, agreement, hmac,
     rand::{SecureRandom, SystemRandom},
-    signature::{self, EcdsaKeyPair},
+    signature::{self, EcdsaKeyPair, KeyPair},
 };
 use serde_json::{json, Value};
 
@@ -67,6 +67,37 @@ impl std::fmt::Debug for WebPushVapid {
             .field("subject", &self.subject)
             .finish_non_exhaustive()
     }
+}
+
+/// A fresh VAPID pair for one deployment, as the env values
+/// [`WebPushVapid::from_env`] reads: base64url (no padding) of the 65-byte
+/// uncompressed public point and of the raw 32-byte private scalar. The pair
+/// is proved by building a [`WebPushVapid`] from it before it is returned.
+pub fn generate_vapid_key_pair() -> Result<(String, String)> {
+    let rng = SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&signature::ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+        .map_err(|_| anyhow!("could not generate a P-256 key"))?;
+    let pair = EcdsaKeyPair::from_pkcs8(
+        &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        pkcs8.as_ref(),
+        &rng,
+    )
+    .map_err(|_| anyhow!("could not read the generated P-256 key"))?;
+    let public_key = pair.public_key().as_ref().to_vec();
+    // PKCS#8 wraps an RFC 5915 ECPrivateKey whose privateKey is the first
+    // 32-byte OCTET STRING (`04 20`); the algorithm OIDs before it contain no
+    // such run. Building the VAPID signer below rejects any wrong slice.
+    let der = pkcs8.as_ref();
+    let scalar = der
+        .windows(2)
+        .position(|window| window == [0x04, 0x20])
+        .and_then(|at| der.get(at + 2..at + 34))
+        .ok_or_else(|| anyhow!("the generated key has no private scalar"))?;
+    let public_b64 = URL_SAFE_NO_PAD.encode(&public_key);
+    let private_b64 = URL_SAFE_NO_PAD.encode(scalar);
+    WebPushVapid::new(&public_b64, &private_b64, "https://magican.ai")
+        .context("the generated VAPID pair does not load")?;
+    Ok((public_b64, private_b64))
 }
 
 impl WebPushVapid {
@@ -445,6 +476,28 @@ fn decode_b64url(value: &str) -> std::result::Result<Vec<u8>, base64::DecodeErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_vapid_pairs_load_and_differ() {
+        let (public_b64, private_b64) = generate_vapid_key_pair().expect("generate");
+        let public = decode_b64url(&public_b64).expect("public base64url");
+        assert_eq!(public.len(), 65);
+        assert_eq!(public[0], 0x04);
+        assert_eq!(
+            decode_b64url(&private_b64)
+                .expect("private base64url")
+                .len(),
+            32
+        );
+        let vapid = WebPushVapid::new(&public_b64, &private_b64, "mailto:owner@example.com")
+            .expect("the pair loads");
+        assert_eq!(vapid.public_key_b64(), public_b64);
+        assert!(vapid
+            .authorization("https://push.example.com/send/1", 1_700_000_000)
+            .is_ok());
+        let (other_public, _) = generate_vapid_key_pair().expect("generate again");
+        assert_ne!(other_public, public_b64);
+    }
 
     fn d(value: &str) -> Vec<u8> {
         decode_b64url(value).unwrap()

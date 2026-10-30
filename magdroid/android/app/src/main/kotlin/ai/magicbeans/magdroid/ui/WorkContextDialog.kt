@@ -21,9 +21,9 @@ internal fun WorkContextDialog(route: WorkRoute, onClose: () -> Unit, onOpenTask
     val actions = rememberTasksScreenActions()
     val tasks: TasksViewModel = viewModel(key = "work-context-${ai.magicbeans.magdroid.access.MagicianAccess.connectionRevision}")
     val state by tasks.state.collectAsStateWithLifecycle()
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Column(Modifier.fillMaxSize().background(Ground).systemBarsPadding()) {
-            TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 48.dp)) { Text("‹ Task", color = Coral) }
+            WorkDetailBar("", onBack = onClose, backLabel = "‹ Task")
             WorkLibraryScreen(if (route.kind == "member") WorkSection.Crew else WorkSection.Quality, actions, onOpenTask, initialRoute = route)
             if (actions.isCreateVisible) TaskCreateSheet(
                 agents = state.agents, busy = state.mutatingTaskId != null,

@@ -4,13 +4,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { notifications } from '../../../lib/shared/stores/notifications';
 import TodayPage from './+page.svelte';
 import { installFetchMock, jsonResponse } from '../../../test/browser';
-import { scopeIdentityStore } from '../../../lib/stores/scopeIdentityStore';
+import { getCurrentScopeIdentity, scopeIdentityStore } from '../../../lib/stores/scopeIdentityStore';
 
 beforeEach(() => {
 	scopeIdentityStore.reset();
 });
 
 function mockResurfacingResponse(cards: any[] = []) {
+	// The page drops a reconciliation that names another scope.
+	const { principal, workspace } = getCurrentScopeIdentity();
 	return {
 		cards,
 		total: cards.length,
@@ -23,8 +25,8 @@ function mockResurfacingResponse(cards: any[] = []) {
 			status: 'succeeded',
 			reason: null,
 			authoritative_lane: 'follow_up',
-			principal: 'test-user',
-			workspace: 'test-ws',
+			principal,
+			workspace,
 			follow_up_source_total: 0,
 			worth_a_look_source_total: cards.length,
 			raw_source_total: cards.length,
@@ -77,7 +79,7 @@ describe("Today's Morning Edition page (todayPage.component.test.ts)", () => {
 		expect(await screen.findByRole('heading', { level: 1, name: "Today's" })).toBeInTheDocument();
 		expect(screen.getByText(/VOL\.\s+[IVXLCDM]+\s+·\s+NO\.\s+\d+/i)).toBeInTheDocument();
 		expect(screen.getByText(/Here is your brief\./i)).toBeInTheDocument();
-		expect(screen.getByText('The Slate is Clear')).toBeInTheDocument();
+		expect(await screen.findByText('The Slate is Clear')).toBeInTheDocument();
 		expect(screen.getByText('Reading Room')).toBeInTheDocument();
 		expect(screen.getByText('For You')).toBeInTheDocument();
 		expect(screen.getByText(/Worth a look/i)).toBeInTheDocument();
@@ -237,6 +239,15 @@ describe("Today's Morning Edition page (todayPage.component.test.ts)", () => {
 	it('renders The Daily Index (Economics of Operations) on the front page', async () => {
 		installFetchMock([
 			{
+				// The spend panel shows only once its LLM pulse slice has loaded.
+				method: 'POST',
+				match: '/analytics/llm_calls/query',
+				handle: () => jsonResponse({
+					columns: ['section', 'k', 'model', 'v1', 'v2'],
+					rows: [['today_total', 'all', null, 0, 0], ['yesterday_total', 'all', null, 0, 0]]
+				})
+			},
+			{
 				method: 'GET',
 				match: '/api/magician/v2/agents',
 				handle: () => jsonResponse([])
@@ -271,7 +282,7 @@ describe("Today's Morning Edition page (todayPage.component.test.ts)", () => {
 
 		expect(await screen.findByRole('heading', { level: 2, name: 'Economics of Operations' })).toBeInTheDocument();
 		expect(screen.getByText('Continuous real-time accounting')).toBeInTheDocument();
-		expect(screen.getByText('COMMERCIAL MODEL EXPENDITURES')).toBeInTheDocument();
+		expect(await screen.findByText('COMMERCIAL MODEL EXPENDITURES')).toBeInTheDocument();
 
 		// Fleet / task state lives on the carousel's second slide.
 		await fireEvent.click(screen.getByRole('button', { name: 'Slide 2 of 3, State of Operations' }));

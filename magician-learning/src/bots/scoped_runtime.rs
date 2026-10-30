@@ -4,8 +4,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::{
-    BotAuthSnapshot, BotAuthStartResponse, BotAuthStateSnapshot, BotConfigStore,
-    BotConfigStoreError, BotLogLine, BotManager, BotManagerError, BotStatusSnapshot,
+    BotAuthAvailability, BotAuthConnectMaterial, BotAuthSnapshot, BotAuthStartOptions,
+    BotAuthStartResponse, BotAuthStateSnapshot, BotConfigStore, BotConfigStoreError, BotLogLine,
+    BotManager, BotManagerError, BotStatusSnapshot,
 };
 use magician::config::BotProcessConfig;
 use magician::magician_v2::artifact_v2::service::ArtifactV2Error;
@@ -134,11 +135,16 @@ impl ScopedBotRuntime {
         }
     }
 
+    /// Stop every bot of every scope. All stops are requested before any is
+    /// awaited, so the whole fleet shares one grace period (`STOP_TIMEOUT`
+    /// plus slack) instead of paying it once per bot.
     pub async fn shutdown_all(&self) {
         let managers: Vec<Arc<BotManager>> = self.managers.read().await.values().cloned().collect();
+        let mut pending = Vec::new();
         for manager in managers {
-            manager.shutdown().await;
+            pending.extend(manager.begin_shutdown().await);
         }
+        super::finish_bot_stops(pending).await;
     }
 
     pub async fn list(
@@ -211,6 +217,19 @@ impl ScopedBotRuntime {
         manager.config(name).await.map_err(Into::into)
     }
 
+    pub async fn google_workspace_account(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+    ) -> Result<Option<super::GoogleWorkspaceAccount>, ScopedBotRuntimeError> {
+        let (manager, _) = self.resolve_scope(principal, workspace).await?;
+        manager
+            .google_workspace_account(name)
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn auth_info(
         &self,
         principal: &str,
@@ -261,5 +280,52 @@ impl ScopedBotRuntime {
             .submit_auth_input(name, input)
             .await
             .map_err(Into::into)
+    }
+
+    pub async fn start_auth_with(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+        options: BotAuthStartOptions,
+    ) -> Result<BotAuthStartResponse, ScopedBotRuntimeError> {
+        let (manager, _) = self.resolve_scope(principal, workspace).await?;
+        manager
+            .start_auth_with(name, options)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn auth_connect_material(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+    ) -> Result<BotAuthConnectMaterial, ScopedBotRuntimeError> {
+        let (manager, _) = self.resolve_scope(principal, workspace).await?;
+        manager
+            .auth_connect_material(name)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn cancel_auth(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+    ) -> Result<(), ScopedBotRuntimeError> {
+        let (manager, _) = self.resolve_scope(principal, workspace).await?;
+        manager.cancel_auth(name).await.map_err(Into::into)
+    }
+
+    pub async fn auth_availability(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+    ) -> Result<BotAuthAvailability, ScopedBotRuntimeError> {
+        let (manager, _) = self.resolve_scope(principal, workspace).await?;
+        manager.auth_availability(name).await.map_err(Into::into)
     }
 }

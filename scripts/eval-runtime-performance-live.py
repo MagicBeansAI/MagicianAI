@@ -35,12 +35,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from llm_catalog_config import selection_for_routing_handle
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_API_BASE_URL = "http://127.0.0.1:3002"
 DEFAULT_DATA_ROOT = Path.home() / "MagicianNotes"
-DEFAULT_LLM_PROFILE = "gpt6luna-responses-toolsany"
+DEFAULT_LLM_PROFILE = "operation/query_analysis"
 DEFAULT_OUTPUT_DIR = Path("coverage/evals/runtime-performance/live/latest")
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 0.25
 MAX_REPORT_BYTES = 64 * 1024 * 1024
@@ -738,6 +739,8 @@ def run_tutor_scenario(
     client: HttpClient,
     profile: str,
 ) -> dict[str, Any]:
+    routing, _ = client.json("GET", "/api/magician/v2/llm/routing")
+    selection = selection_for_routing_handle(routing, profile)
     suffix = uuid.uuid4().hex
     thread_id = f"runtime-eval-{source_surface}-{suffix}"
     turn_prefix = "ios-tutor" if source_surface == "ios_tutor_overlay" else "web-tutor"
@@ -762,7 +765,8 @@ def run_tutor_scenario(
                 "text": "@tutor Explain why the sky appears blue in three concise milestones.",
                 "chat_turn_id": turn_id,
                 "source_surface": source_surface,
-                "profile": profile,
+                "harness_engine": "magician",
+                "model_selection": selection,
             },
         )
     finally:

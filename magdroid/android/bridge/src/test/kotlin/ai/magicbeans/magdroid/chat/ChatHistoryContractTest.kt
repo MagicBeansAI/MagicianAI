@@ -1,6 +1,7 @@
 package ai.magicbeans.magdroid.chat
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -117,5 +118,49 @@ class ChatHistoryContractTest {
         assertEquals(30, page.pageEnd)
         assertTrue(page.canLoadPrevious)
         assertTrue(page.canLoadNext)
+    }
+
+    @Test
+    fun `a delete holds its row as Deleting until the server answers`() {
+        val idle = ChatHistoryState()
+        val deleting = idle.beginMutation(sessionMutationKey("s1"), HistoryMutation.Delete)!!
+        assertEquals(HistoryMutation.Delete, deleting.sessionMutation("s1"))
+        assertEquals("Deleting…", deleting.sessionMutation("s1")?.progressLabel())
+        assertNull(deleting.sessionMutation("s2"))
+        assertNull(deleting.threadMutation("s1"))
+        // One change at a time: a second delete, of this row or another, is refused.
+        assertNull(deleting.beginMutation(sessionMutationKey("s1"), HistoryMutation.Delete))
+        assertNull(deleting.beginMutation(sessionMutationKey("s2"), HistoryMutation.Delete))
+
+        val succeeded = deleting.settleMutation()
+        assertNull(succeeded.mutationInFlight)
+        assertNull(succeeded.sessionMutation("s1"))
+        assertNull(succeeded.error)
+
+        val failed = deleting.settleMutation("Magician is offline.")
+        assertNull(failed.sessionMutation("s1"))
+        assertEquals("Magician is offline.", failed.error)
+    }
+
+    @Test
+    fun `history re-reads quietly only when a visible row's working state flips`() {
+        val rows = setOf("s1", "s2")
+        val idle = HistoryActivityPoll(rows, emptySet())
+        val working = HistoryActivityPoll(rows, setOf("s1"))
+        // The first poll is only a baseline.
+        assertFalse(historyActivityChanged(null, working))
+        assertFalse(historyActivityChanged(working, working))
+        assertTrue(historyActivityChanged(idle, working))
+        assertTrue(historyActivityChanged(working, idle))
+        // Different rows mean the page itself was just re-read.
+        assertFalse(historyActivityChanged(idle, HistoryActivityPoll(setOf("s3"), setOf("s3"))))
+    }
+
+    @Test
+    fun `quiet re-reads run at most once per poll interval`() {
+        assertEquals(0L, quietRefreshDelay(null, 10_000))
+        assertEquals(2_000L, quietRefreshDelay(9_000, 10_000))
+        assertEquals(0L, quietRefreshDelay(5_000, 10_000))
+        assertEquals(HISTORY_QUIET_REFRESH_INTERVAL_MS, quietRefreshDelay(10_000, 10_000))
     }
 }

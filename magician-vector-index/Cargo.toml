@@ -1,6 +1,6 @@
 [package]
 name = "magician-vector-index"
-version = "0.1.14"
+version = "0.1.18"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "LanceDB / Arrow-backed memory index and candidate extraction"
@@ -59,4 +59,4 @@ magicllm = { path = "../magicllm" }
 tempfile = "3.8"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "io-util"] }
 serde_yaml = { workspace = true }
-wiremock = "0.5"
+wiremock = "0.6"

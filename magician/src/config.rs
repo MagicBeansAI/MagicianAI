@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use magicllm::capability::{LLMModality, LLMProviderKind};
-use magicllm::config::{LLMProfile, LLMRouterConfig, OperationProfileSelector, ResolvedProfile};
+use magicllm::config::{LLMProfile, LLMRouterConfig, OperationProfileSelector};
 use runtime_core::{FileSandboxConfig, ShellSandboxConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+mod catalog_coding;
 
 pub use crate::runtime_plan::{
     reject_mixed_legacy_dispatch, resolve_boot_runtime_plan, resolve_runtime_plan,
@@ -49,6 +51,8 @@ pub struct MagicianFrontendSettings {
 /// Optional router-based LLM configuration (new schema).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MagicianLlmSettings {
+    #[serde(default)]
+    pub chat_history: crate::magician_v2::chat::context_compaction::ChatHistoryConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub router: Option<LLMRouterConfig>,
     /// Dispatch queue configuration. The `DispatchConfig` itself nests
@@ -644,6 +648,8 @@ impl Default for MagicianRuntimeSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MagicianRetrievalRuntimeSettings {
+    #[serde(default = "default_lance_query_timeout_ms")]
+    pub lance_query_timeout_ms: u64,
     #[serde(default)]
     pub result_cache: MagicianResultCacheSettings,
     #[serde(default)]
@@ -659,6 +665,7 @@ pub struct MagicianRetrievalRuntimeSettings {
 impl Default for MagicianRetrievalRuntimeSettings {
     fn default() -> Self {
         Self {
+            lance_query_timeout_ms: default_lance_query_timeout_ms(),
             result_cache: MagicianResultCacheSettings::default(),
             lance_table_pool: MagicianLanceTablePoolSettings::default(),
             query_vector_cache: MagicianQueryVectorCacheSettings::default(),
@@ -666,6 +673,10 @@ impl Default for MagicianRetrievalRuntimeSettings {
             ann: MagicianAnnSettings::default(),
         }
     }
+}
+
+fn default_lance_query_timeout_ms() -> u64 {
+    magician_vector_index::memory_index::DEFAULT_LANCEDB_RETRIEVAL_TIMEOUT_MS
 }
 
 /// Hybrid vector-leg mode. Magician default is `ann` (IVF_PQ shortlist plus
@@ -1135,8 +1146,8 @@ pub struct MagicianCodingSettings {
     /// Whether Pi sessions should be persisted by default. Callers can still
     /// override with the tool's `persist_session` argument.
     pub persist_session: bool,
-    /// Operator-facing profile catalog for coding UIs. Each item points at an
-    /// existing `llm.router.profiles` or adaptive profile id.
+    /// Runtime projection of qualified catalog choices; never an authoring field.
+    #[serde(skip_serializing)]
     pub profiles: Vec<CodingProfileConfig>,
     /// Agent id that drives VibeDev coding runs (the "lead engineer"). When a coding task
     /// carries the `vibedev` tag, `create_task` stamps THIS agent as the task owner instead
@@ -1360,7 +1371,7 @@ pub struct CodingProfileConfig {
     /// Operator-facing label shown in model/profile pickers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Existing `llm.router.profiles` or `llm.router.adaptive_profiles` id.
+    /// A generated model choice or workload assignment route.
     pub llm_profile: String,
     /// Optional helper text for UI model pickers.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1402,6 +1413,10 @@ pub struct CodingProfileInfo {
     pub is_default: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<magicllm::catalog::ModelSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_choice: Option<magicllm::catalog::ModelChoice>,
 }
 
 #[derive(Debug, Clone)]
@@ -1413,7 +1428,7 @@ pub struct ResolvedCodingProfile {
     pub model: String,
     pub supports_user_image_inputs: bool,
     /// Pi thinking/reasoning level derived from the LLM profile's reasoning
-    /// effort (`off|minimal|low|medium|high|xhigh`), applied to Pi at session
+    /// effort (`off|minimal|low|medium|high|xhigh|max`), applied to Pi at session
     /// start. `None` = the profile is not reasoning-configured → Pi's default.
     pub thinking_level: Option<String>,
     pub api_key_env: Option<String>,
@@ -1793,6 +1808,15 @@ pub struct MagicianMemorySettings {
     /// the settings struct; the config files document the key as a comment.
     #[serde(default)]
     pub taste_profile: TasteProfileSettings,
+    /// Size bounds for the owner's user-memory file (`knowledge.json`):
+    /// activity logs in their own files, agent-made restatements stored once,
+    /// per-section caps, all archive-backed. Defaults (`mode: observe`) live
+    /// on the settings struct in `magician_v2::agents::user_memory_bounds`;
+    /// like `taste_profile`, an active key here cannot be read by an older
+    /// binary, so ship the binary first.
+    #[serde(default)]
+    pub user_knowledge_bounds:
+        crate::magician_v2::agents::user_memory_bounds::MagicianMemoryBoundsSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2222,6 +2246,12 @@ pub struct MagicianExecutionSettings {
     /// [`DEFAULT_AGENTIC_MAX_DURATION_SECS`] (24 hours).
     #[serde(default = "default_harness_turn_max_seconds")]
     pub harness_turn_max_seconds: u64,
+    /// How long a harness CLI may stay silent (no output, no Magician tool
+    /// call) before its turn is ended as stalled, seconds. 0 = the default
+    /// ([`DEFAULT_HARNESS_TURN_IDLE_SECONDS`], 1 hour). Read at boot and on
+    /// settings reload.
+    #[serde(default = "default_harness_turn_idle_seconds_setting")]
+    pub harness_turn_idle_seconds: u64,
     /// Per-run USD ceilings, split by who thinks the run. A harness re-sends
     /// its whole context every decision, so harness runs are budgeted by cost
     /// and carry no token meter; native runs keep their agent's token meter.
@@ -2253,10 +2283,48 @@ pub struct MagicianExecutionSettings {
     /// `magician_v2::god_mode::super_active`.
     #[serde(default)]
     pub super_god_mode: SuperGodModeSettings,
+    /// Whose credentials the harness CLIs (Claude Code, Codex, Grok,
+    /// Antigravity, Pi) use: their own sign-in or Magician's provider keys.
+    /// Live-reloadable; see `magician_v2::harness_auth`.
+    #[serde(default)]
+    pub harness_auth: HarnessAuthSettings,
     /// Where the shell and `http` tools may connect. Live-reloadable; see
     /// `magician_v2::execution::network_policy`.
     #[serde(default)]
     pub network_policy: NetworkPolicySettings,
+    /// Goal workspace isolation (`docs/features/goal-workspaces.md`): a
+    /// workspace under `<notes space>/Workspaces/` is open only to the admin
+    /// agent and the agents in its README's `members:`; private goals only
+    /// to their owner. On by default; a config without the key keeps it on.
+    /// Live-reloadable; see `magician_v2::execution::goal_workspace_access`.
+    #[serde(default)]
+    pub goal_workspace_access: GoalWorkspaceAccessSettings,
+}
+
+/// `execution.goal_workspace_access`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalWorkspaceAccessSettings {
+    /// `false` turns every goal workspace fence off (every agent then reaches
+    /// every workspace its sandbox allows). Default `true`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The agent that is a member of every workspace and the only one that
+    /// may change a README (`members:`) or the folder layout.
+    #[serde(default = "default_goal_workspace_admin_agent")]
+    pub admin_agent: String,
+}
+
+impl Default for GoalWorkspaceAccessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            admin_agent: default_goal_workspace_admin_agent(),
+        }
+    }
+}
+
+fn default_goal_workspace_admin_agent() -> String {
+    "personal-assistant".to_string()
 }
 
 /// `execution.network_policy`.
@@ -2286,6 +2354,38 @@ pub struct GodModeSettings {
     /// Off by default.
     #[serde(default)]
     pub enabled: bool,
+    /// Approve god mode's asks without asking, except what still needs the
+    /// owner: the blocked-command list, deletes, root (`sudo`, `doas`, `su`)
+    /// and code the line does not show (`god_mode::auto_approve_holds_back`).
+    /// Off by default; a chat may override it. Grants do not rest on it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_approve: bool,
+}
+
+/// `execution.harness_auth.mode` and its per-engine overrides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessAuthMode {
+    /// The CLI's own sign-in. When it is missing, expired or out of
+    /// credits, Magician's provider key only after the owner approves
+    /// (`harness_auth::fallback`); never automatically.
+    #[default]
+    LoginFirst,
+    /// Only the CLI's own sign-in; never Magician's keys.
+    LoginOnly,
+    /// Always Magician's provider keys (API billing).
+    Magician,
+}
+
+/// `execution.harness_auth`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessAuthSettings {
+    #[serde(default)]
+    pub mode: HarnessAuthMode,
+    /// Per-engine overrides: `claude_code`, `codex`, `grok`, `agy`, `pi`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub engines: std::collections::BTreeMap<String, HarnessAuthMode>,
 }
 
 /// `execution.super_god_mode`.
@@ -2382,7 +2482,8 @@ impl<'de> Deserialize<'de> for BudgetCapUsd {
     }
 }
 
-/// `execution.budgets` — per-run USD ceilings for native and harness runs.
+/// `execution.budgets` — per-run USD valves for native and harness runs, and
+/// the owner-set spend envelope across all autonomous LLM work.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionBudgetSettings {
@@ -2390,9 +2491,166 @@ pub struct ExecutionBudgetSettings {
     pub native_max_cost_usd: BudgetCapUsd,
     #[serde(default = "default_harness_max_cost_usd")]
     pub harness_max_cost_usd: BudgetCapUsd,
+    /// The owner-set spend envelope: money is the only budget that matters.
+    /// Enabled by default, so a live config that predates it is enforced.
+    #[serde(default)]
+    pub spend_envelope: SpendEnvelopeSettings,
 }
 
-/// Default harness-run ceiling (owner decision 2026-10-03).
+/// Period of the spend envelope. The window starts at UTC midnight (or the top
+/// of the hour, the Monday, the 1st) shifted by `reset_offset_minutes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpendEnvelopeWindow {
+    Hourly,
+    #[default]
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl SpendEnvelopeWindow {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hourly => "hourly",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Monthly => "monthly",
+        }
+    }
+
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hourly" => Ok(Self::Hourly),
+            "daily" => Ok(Self::Daily),
+            "weekly" => Ok(Self::Weekly),
+            "monthly" => Ok(Self::Monthly),
+            other => Err(format!(
+                "window must be one of hourly, daily, weekly, monthly, got {other:?}"
+            )),
+        }
+    }
+}
+
+/// What the spend envelope does with a model call it cannot price.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnpricedPolicy {
+    /// Charge the highest rate the pricing table knows for the provider on the
+    /// reported tokens (an output-ceiling estimate when no usage came back).
+    #[default]
+    Estimate,
+    /// Refuse the call. Unlike an exhausted envelope the run is not parked:
+    /// a model without a pricing row stays unpriced, so the call fails with a
+    /// message naming the model.
+    Block,
+}
+
+impl UnpricedPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Estimate => "estimate",
+            Self::Block => "block",
+        }
+    }
+
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "estimate" => Ok(Self::Estimate),
+            "block" => Ok(Self::Block),
+            other => Err(format!(
+                "unpriced must be `estimate` or `block`, got {other:?}"
+            )),
+        }
+    }
+}
+
+/// `execution.budgets.spend_envelope` — one owner-set USD envelope across all
+/// autonomous LLM work (autonomous tasks, scheduled work, ambient, memory and
+/// comms assistance). Interactive owner chat, interactive tasks, evaluation and
+/// system calls are never refused, but are counted.
+///
+/// Live-reloadable: `PUT /budgets/envelope` writes it and republishes it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpendEnvelopeSettings {
+    #[serde(default = "default_spend_envelope_enabled")]
+    pub enabled: bool,
+    /// Ceiling per window (default $250 a day); `unlimited` removes it.
+    #[serde(default = "default_spend_envelope_daily_usd")]
+    pub daily_usd: BudgetCapUsd,
+    /// Lifetime ceiling across every window (default unlimited).
+    #[serde(default = "default_spend_envelope_total_usd")]
+    pub total_usd: BudgetCapUsd,
+    #[serde(default)]
+    pub window: SpendEnvelopeWindow,
+    /// Minutes added to the UTC window boundary (`420` makes a daily window
+    /// roll at 07:00 UTC, midnight in UTC-7). Within a day either way.
+    #[serde(default)]
+    pub reset_offset_minutes: i32,
+    /// Percent of the window ceiling at which the owner is warned (1-100).
+    #[serde(default = "default_spend_envelope_warn_at_pct")]
+    pub warn_at_pct: u8,
+    #[serde(default)]
+    pub unpriced: UnpricedPolicy,
+}
+
+/// Owner decision 2026-10-23: autonomous work may spend this much per day.
+pub const DEFAULT_SPEND_ENVELOPE_DAILY_USD: f64 = 250.0;
+/// Percent of the window ceiling at which the owner is warned by default.
+pub const DEFAULT_SPEND_ENVELOPE_WARN_AT_PCT: u8 = 80;
+
+fn default_spend_envelope_enabled() -> bool {
+    true
+}
+
+fn default_spend_envelope_daily_usd() -> BudgetCapUsd {
+    BudgetCapUsd::Usd(DEFAULT_SPEND_ENVELOPE_DAILY_USD)
+}
+
+fn default_spend_envelope_total_usd() -> BudgetCapUsd {
+    BudgetCapUsd::Unlimited
+}
+
+fn default_spend_envelope_warn_at_pct() -> u8 {
+    DEFAULT_SPEND_ENVELOPE_WARN_AT_PCT
+}
+
+impl Default for SpendEnvelopeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_spend_envelope_enabled(),
+            daily_usd: default_spend_envelope_daily_usd(),
+            total_usd: default_spend_envelope_total_usd(),
+            window: SpendEnvelopeWindow::default(),
+            reset_offset_minutes: 0,
+            warn_at_pct: default_spend_envelope_warn_at_pct(),
+            unpriced: UnpricedPolicy::default(),
+        }
+    }
+}
+
+impl SpendEnvelopeSettings {
+    /// Refuse values the envelope cannot honour.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if !(1..=100).contains(&self.warn_at_pct) {
+            return Err(format!(
+                "warn_at_pct must be between 1 and 100, got {}",
+                self.warn_at_pct
+            ));
+        }
+        if self.reset_offset_minutes.abs() >= 24 * 60 {
+            return Err(format!(
+                "reset_offset_minutes must be within a day (-1439..=1439), got {}",
+                self.reset_offset_minutes
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Default harness-run ceiling: the per-run valve under the spend envelope
+/// (owner decision 2026-10-23: $100).
 pub const DEFAULT_HARNESS_MAX_COST_USD: f64 = 100.0;
 
 fn default_native_max_cost_usd() -> BudgetCapUsd {
@@ -2408,6 +2666,7 @@ impl Default for ExecutionBudgetSettings {
         Self {
             native_max_cost_usd: default_native_max_cost_usd(),
             harness_max_cost_usd: default_harness_max_cost_usd(),
+            spend_envelope: SpendEnvelopeSettings::default(),
         }
     }
 }
@@ -2426,6 +2685,21 @@ pub fn configure_execution_budgets(settings: &ExecutionBudgetSettings) {
         Ok(mut guard) => *guard = *settings,
         Err(poisoned) => *poisoned.into_inner() = *settings,
     }
+    // The spend envelope mirrors its settings into atomics, so the model-call
+    // hot path never takes this lock.
+    crate::magician_v2::spend_envelope::publish_settings(&settings.spend_envelope);
+}
+
+/// The `execution.budgets` to publish for `config`: its behaviour settings
+/// with the model spend limits resource authority holds
+/// (`resource_authority.model_spend`, or the legacy values when a config
+/// predates the move). Every load and reload publishes this, never the raw
+/// `execution.budgets`.
+pub fn effective_execution_budgets(config: &MagicianConfig) -> ExecutionBudgetSettings {
+    config
+        .resource_authority
+        .model_spend_or_legacy(&config.execution.budgets)
+        .apply_to(&config.execution.budgets)
 }
 
 /// The published `execution.budgets`, or defaults before the first load.
@@ -2451,17 +2725,13 @@ fn deserialize_quality_round_budget<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<magician_relentless::contract::Budget, D::Error> {
     let budget = magician_relentless::contract::Budget::deserialize(deserializer)?;
-    if budget.max_attempts == 0
-        || budget.max_cost_microusd == 0
-        || budget.plateau_attempts == 0
-        || budget.max_wall_clock_secs == 0
-        || i64::try_from(budget.max_wall_clock_secs)
-            .ok()
-            .and_then(chrono::Duration::try_seconds)
-            .is_none()
+    if i64::try_from(budget.max_wall_clock_secs)
+        .ok()
+        .and_then(chrono::Duration::try_seconds)
+        .is_none()
     {
         return Err(serde::de::Error::custom(
-            "quality_round requires positive finite allowances",
+            "quality_round wall-clock allowance overflows; use 0 for unlimited",
         ));
     }
     Ok(budget)
@@ -2561,11 +2831,14 @@ impl Default for MagicianExecutionSettings {
             pi_profile: None,
             harness_turn_max_tool_calls: default_harness_turn_max_tool_calls(),
             harness_turn_max_seconds: default_harness_turn_max_seconds(),
+            harness_turn_idle_seconds: default_harness_turn_idle_seconds_setting(),
             budgets: ExecutionBudgetSettings::default(),
             quality_round: default_quality_round_budget(),
             god_mode: GodModeSettings::default(),
             super_god_mode: SuperGodModeSettings::default(),
+            harness_auth: HarnessAuthSettings::default(),
             network_policy: NetworkPolicySettings::default(),
+            goal_workspace_access: GoalWorkspaceAccessSettings::default(),
         }
     }
 }
@@ -4158,10 +4431,10 @@ fn default_session_ttl_days() -> u64 {
 /// are lives in `agents::outward_actions` and is central rather than per-agent,
 /// because a per-agent list is true only for the agents someone remembered to
 /// edit.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutwardActionsConfig {
-    /// When true (the default), an outward dispatch is RECORDED and not
-    /// performed.
+    /// Baseline: when true (the default), an outward dispatch is RECORDED and
+    /// not performed, unless an explicit context override permits live dispatch.
     ///
     /// The default is deliberate and is the point of §9 step 4: the rest of the
     /// system can be rehearsed end to end while nothing actually reaches a third
@@ -4170,14 +4443,68 @@ pub struct OutwardActionsConfig {
     /// `false` would have.
     #[serde(default = "default_outward_capture_only")]
     pub capture_only: bool,
+    /// Explicit emergency/dry-run override, including contexts configured live.
+    #[serde(default)]
+    pub force_capture_only: bool,
+    /// Optional per-origin overrides. Inherit preserves the legacy posture.
+    #[serde(default)]
+    pub contexts: OutwardContextsConfig,
+    /// When true, a browser act that would submit a form (a "Post" or
+    /// "Submit" control, a posting form) is held and put to the owner as a
+    /// decision card: Approve Once, Approve Always for that site, or Deny.
+    /// Off by default: the browser then clicks whatever the agent asks. Applies
+    /// immediately when the accepted settings change.
+    #[serde(default)]
+    pub browser_submission_guard: bool,
+    /// When true (the default), a send its context would capture pauses its
+    /// run instead and is put to the owner — Send, Discard, or always allow
+    /// this agent to send to this recipient (`agents::outward_review`). False
+    /// records it without asking, as before. `force_capture_only` always
+    /// records without asking.
+    #[serde(default = "default_review_captured_sends")]
+    pub review_captured_sends: bool,
+}
+
+fn default_review_captured_sends() -> bool {
+    true
 }
 
 impl Default for OutwardActionsConfig {
     fn default() -> Self {
         Self {
             capture_only: default_outward_capture_only(),
+            force_capture_only: false,
+            contexts: OutwardContextsConfig::default(),
+            browser_submission_guard: false,
+            review_captured_sends: default_review_captured_sends(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutwardContextMode {
+    #[default]
+    Inherit,
+    Capture,
+    Live,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OutwardContextsConfig {
+    #[serde(default)]
+    pub owner_chat: OutwardContextMode,
+    #[serde(default)]
+    pub owner_tasks: OutwardContextMode,
+    #[serde(default)]
+    pub opc: OutwardContextMode,
+    /// Public-facing agents: Envoy and bots answering in public or shared
+    /// channels, and agents whose definition declares
+    /// `autonomous_config.outward_context: public_agent` (the ambassador).
+    /// Split out of `opc` so autonomous work can send while they stay captured.
+    #[serde(default)]
+    pub public_agents: OutwardContextMode,
 }
 
 fn default_outward_capture_only() -> bool {
@@ -4366,6 +4693,12 @@ pub struct PreferenceAlignmentBudgets {
     /// a required act stays held; it never proceeds by timeout.
     #[serde(default = "default_alignment_foreground_check_ms")]
     pub foreground_check_ms: u64,
+    /// How long a dispatched act waits for the advisory lane once the
+    /// blocking lane has answered. Advisory verdicts still running then are
+    /// finished in the background and any nudge reaches the owner as a
+    /// notice. `0` never waits; above `foreground_check_ms` it is clamped to it.
+    #[serde(default = "default_alignment_advisory_grace_ms")]
+    pub advisory_grace_ms: u64,
     /// Most judge calls one task may make.
     #[serde(default = "default_alignment_max_judge_calls_per_task")]
     pub max_judge_calls_per_task: u32,
@@ -4378,6 +4711,7 @@ impl Default for PreferenceAlignmentBudgets {
     fn default() -> Self {
         Self {
             foreground_check_ms: default_alignment_foreground_check_ms(),
+            advisory_grace_ms: default_alignment_advisory_grace_ms(),
             max_judge_calls_per_task: default_alignment_max_judge_calls_per_task(),
             max_standing_batch: default_alignment_max_standing_batch(),
         }
@@ -4385,7 +4719,11 @@ impl Default for PreferenceAlignmentBudgets {
 }
 
 fn default_alignment_foreground_check_ms() -> u64 {
-    4_000
+    8_000
+}
+
+fn default_alignment_advisory_grace_ms() -> u64 {
+    1_500
 }
 
 fn default_alignment_max_judge_calls_per_task() -> u32 {
@@ -4601,6 +4939,14 @@ impl PreferenceAlignmentConfig {
                 ));
             }
         }
+        // 0 is valid (never wait); past the foreground deadline it is clamped
+        // at use, so lowering only that deadline never stops the config loading.
+        if self.budgets.advisory_grace_ms > 60_000 {
+            return Err(invalid(
+                "preference_alignment.budgets.advisory_grace_ms".to_string(),
+                "must be in 0..=60000".to_string(),
+            ));
+        }
         for (property, value) in [
             (
                 "preference_alignment.holds.foreground_deadline_secs",
@@ -4724,11 +5070,69 @@ impl EnvoyConfig {
         identities
     }
 
+    /// Whether `address` is one of the channel's owner identities, by
+    /// [`owner_identity_matches`].
     pub fn has_owner_identity(&self, channel_type: &str, address: &str) -> bool {
+        let address = address.trim();
+        if address.is_empty() {
+            return false;
+        }
         self.owner_identities_for(channel_type)
             .iter()
-            .any(|identity| identity == address)
+            .any(|identity| owner_identity_matches(channel_type, identity, address))
     }
+}
+
+/// Whether a configured owner `identity` names the sender `address`.
+///
+/// - Phone-number channels (`kapso`, `whatsapp`, `sms`, `imessage`): when both
+///   sides are phone-like they compare digits only, so `+91 98765 43210` in
+///   config matches the `919876543210` Kapso delivers.
+/// - An email-like address (has `@`) compares case-insensitively.
+/// - Everything else (a Telegram chat id, an iMessage Apple ID that is not an
+///   email) is exact.
+pub fn owner_identity_matches(channel_type: &str, identity: &str, address: &str) -> bool {
+    let identity = identity.trim();
+    let address = address.trim();
+    if identity.is_empty() || address.is_empty() {
+        return false;
+    }
+    if channel_addresses_are_phones(channel_type) {
+        if let (Some(left), Some(right)) = (phone_digits(identity), phone_digits(address)) {
+            return left == right;
+        }
+    }
+    if identity.contains('@') || address.contains('@') {
+        return identity.eq_ignore_ascii_case(address);
+    }
+    identity == address
+}
+
+/// Channels whose sender address is (or can be) a phone number.
+pub fn channel_addresses_are_phones(channel_type: &str) -> bool {
+    matches!(
+        channel_type.trim().to_ascii_lowercase().as_str(),
+        "kapso" | "whatsapp" | "sms" | "imessage"
+    )
+}
+
+/// The digits of a phone-like address: only digits, `+`, spaces, `-`, `.`
+/// and parentheses, with at least six digits, optionally as a WhatsApp JID
+/// (`…@s.whatsapp.net`, `…@c.us`). Anything else is not a phone.
+fn phone_digits(address: &str) -> Option<String> {
+    let lower = address.trim().to_ascii_lowercase();
+    let address = ["@s.whatsapp.net", "@c.us"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(suffix))
+        .unwrap_or(lower.as_str());
+    if !address
+        .chars()
+        .all(|ch| ch.is_ascii_digit() || matches!(ch, '+' | ' ' | '-' | '.' | '(' | ')'))
+    {
+        return None;
+    }
+    let digits: String = address.chars().filter(char::is_ascii_digit).collect();
+    (digits.len() >= 6).then_some(digits)
 }
 
 fn split_owner_identity_env_value(raw: &str) -> Vec<String> {
@@ -4784,6 +5188,14 @@ pub struct HarnessConfig {
     /// per admission/tick, so a config-file edit toggles it live without restart.
     #[serde(default)]
     pub paused: bool,
+    /// Program documents shared by every program-context cycle: bare `*.md`
+    /// names resolved in each scope's `programs/` folder and appended, in
+    /// list order, after the cycle's own program (the cycle's own program is
+    /// never repeated). A focus area's `shared_programs` replaces this list
+    /// for that area. Default empty. Loaded per cycle, so an edit applies to
+    /// the next cycle without restart.
+    #[serde(default)]
+    pub shared_program_docs: Vec<String>,
 }
 
 /// Magician plane MCP catalog — two hot lists, because a spawned-bare harness
@@ -4822,6 +5234,7 @@ impl Default for HarnessConfig {
             autofix_enabled: default_autofix_enabled(),
             autofix_agent: default_autofix_agent(),
             paused: false,
+            shared_program_docs: Vec::new(),
         }
     }
 }
@@ -5532,7 +5945,7 @@ pub struct AgentSurfaceContextRetrievalBudgetConfig {
 
 impl AgentSurfaceContextRetrievalBudgetConfig {
     fn chat_default() -> Self {
-        Self { deadline_ms: 3_000 }
+        Self { deadline_ms: 8_000 }
     }
 
     fn realtime_voice_default() -> Self {
@@ -5542,11 +5955,9 @@ impl AgentSurfaceContextRetrievalBudgetConfig {
     }
 
     fn autonomous_task_default() -> Self {
-        // Task bootstrap is answer-critical. The staged coordinator retains
-        // whichever fast-memory/hybrid/procedure branches complete inside the
-        // budget; an unhealthy local index must never add multi-second latency
-        // before the first agent decision or after HITL resume.
-        Self { deadline_ms: 500 }
+        // Keep useful completed branches, while allowing local hybrid search
+        // enough time to inform the first decision and post-HITL continuation.
+        Self { deadline_ms: 8_000 }
     }
 }
 
@@ -5715,7 +6126,8 @@ pub struct HitlCriticalDeliverySettings {
     /// The origin the alert's "Open secure request" link is built on, when
     /// the owner-facing UI does not live where the mobile clients connect.
     ///
-    /// Unset means `mobile_access.public_origin`, which is right whenever one
+    /// Unset means this machine's UI host (`MAGICIAN_UI_HOST`), else
+    /// `mobile_access.public_origin`, which is right whenever one
     /// origin serves both. It stops being right the moment they are split: a
     /// deployment that routes its device origin to the API and serves the UI
     /// from another hostname built a link to a path the API does not serve,
@@ -5729,19 +6141,52 @@ pub struct HitlCriticalDeliverySettings {
 impl HitlCriticalDeliverySettings {
     /// The origin the owner's "open secure request" link is built on.
     ///
-    /// `owner_ui_origin` first, the mobile access origin as the single-origin
-    /// default. Every surface that decides whether a link can be built — the
-    /// delivery policy and the settings envelope's warning — must ask this,
-    /// or one of them says "no origin configured" while the other is happily
-    /// sending links.
+    /// `owner_ui_origin` first, then this machine's UI host
+    /// (`MAGICIAN_UI_HOST`, which `scripts/ensure-machine-tunnel.sh` writes
+    /// with its tunnel hostnames), then the mobile access origin as the
+    /// single-origin default. Every surface that decides whether a link can be
+    /// built — the delivery policy and the settings envelope's warning — must
+    /// ask this, or one of them says "no origin configured" while the other is
+    /// happily sending links.
     pub fn owner_link_origin(&self, mobile_access: &MobileAccessConfig) -> Option<String> {
+        self.owner_link_origin_with(mobile_access, machine_ui_origin())
+    }
+
+    pub(crate) fn owner_link_origin_with(
+        &self,
+        mobile_access: &MobileAccessConfig,
+        machine_ui_origin: Option<String>,
+    ) -> Option<String> {
+        self.explicit_owner_ui_origin()
+            .or(machine_ui_origin)
+            .or_else(|| mobile_access.resolved_public_origin())
+    }
+
+    /// `owner_ui_origin`, trimmed; blank is not a configured origin.
+    pub fn explicit_owner_ui_origin(&self) -> Option<String> {
         self.owner_ui_origin
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .or_else(|| mobile_access.resolved_public_origin())
     }
+}
+
+/// This machine's owner-facing UI origin, from `MAGICIAN_UI_HOST` (a bare
+/// hostname, served over https). Moving a machine to new tunnel hostnames
+/// rewrites that variable, so a link built on it follows the move instead of
+/// pointing at a retired hostname.
+pub fn machine_ui_origin() -> Option<String> {
+    let host = std::env::var("MAGICIAN_UI_HOST").ok()?;
+    let host = host.trim().trim_end_matches('/');
+    if host.is_empty() {
+        return None;
+    }
+    Some(if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("https://{host}")
+    })
 }
 
 impl Default for HitlCriticalDeliverySettings {
@@ -5829,6 +6274,14 @@ pub struct MobileAccessConfig {
     /// example `MEETS_DEVICE_INTEGRITY`). Empty fails closed.
     #[serde(default)]
     pub android_play_integrity_required_device_verdicts: Vec<String>,
+}
+
+/// Host configuration for private browser sign-in sessions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrowserSignInConfig {
+    /// Optional absolute Chromium executable on the engine host.
+    pub browser_executable: Option<std::path::PathBuf>,
 }
 
 impl MobileAccessConfig {
@@ -5987,6 +6440,27 @@ impl TryFrom<DecisionHostConfigWire> for DecisionHostConfig {
     }
 }
 
+/// `supervisor:` — settings for magic-supervisor, which reads this section
+/// itself (leniently, at its start). The backend only declares it so the
+/// strict root accepts the file; nothing in Magician acts on it. Unknown keys
+/// inside the section are accepted on purpose, so a key added for a newer
+/// supervisor never stops an older backend from loading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SupervisorRuntimeConfig {
+    /// Watch the macOS desktop app and relaunch it after a crash (never after
+    /// its Quit). Default on; the supervisor's `--manage-desktop=0|1` wins.
+    pub manage_desktop: bool,
+}
+
+impl Default for SupervisorRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            manage_desktop: true,
+        }
+    }
+}
+
 /// Magician V2 configuration
 ///
 /// `deny_unknown_fields`: an unknown top-level key is a hard load error rather
@@ -6004,7 +6478,8 @@ pub struct MagicianConfig {
     /// Storage path for conversation data
     #[serde(default = "default_magician_storage_path")]
     pub storage_path: String,
-    /// Workspace storage backend selector (local_file | silverbullet_space).
+    /// Workspace storage backend selector (`local_file`; the retired
+    /// `silverbullet_space` value still reads as `local_file`).
     /// Folded in from the former `workspace_storage/settings.json` so the runtime
     /// root carries a single config file; the settings API reads + mutates this.
     #[serde(default)]
@@ -6113,14 +6588,16 @@ pub struct MagicianConfig {
     /// resolved value in a short-lived QR connection profile.
     #[serde(default)]
     pub mobile_access: MobileAccessConfig,
+    #[serde(default)]
+    pub browser_signin: BrowserSignInConfig,
     /// Frontend delivery configuration
     #[serde(default)]
     pub frontend: MagicianFrontendSettings,
     /// Execution/Magicutor configuration
     #[serde(default)]
     pub execution: MagicianExecutionSettings,
-    /// Generic agentic outer-loop settings. History keep-tail lives in
-    /// `decision.rs`; this section is reserved for future knobs.
+    /// Generic agentic outer-loop settings: the decide() keep-tail window
+    /// (`verbatim_history_token_budget`, `verbatim_history_max_iterations`).
     #[serde(default)]
     pub agentic: AgenticSettings,
     /// Uniform cache, tool-result projection, and staged-context lifecycle for
@@ -6201,6 +6678,9 @@ pub struct MagicianConfig {
     /// Magician plane MCP catalog profiles (spawned-bare vs terminal).
     #[serde(default)]
     pub plane: PlaneConfig,
+    /// magic-supervisor settings (read by the supervisor, not the backend).
+    #[serde(default)]
+    pub supervisor: SupervisorRuntimeConfig,
 }
 
 impl MagicianConfig {
@@ -6234,7 +6714,11 @@ impl MagicianConfig {
             .filter(|profile| profile.enabled)
             .filter_map(|profile| {
                 let resolved = router.resolve_profile(profile.llm_profile.trim())?;
-                let llm_profile = resolved.standard_or_fast_profile();
+                let llm_profile = resolved;
+                let model_selection = magicllm::catalog::selection_for_profile(llm_profile);
+                let model_choice = model_selection.as_ref().and_then(|selection| {
+                    catalog_coding::model_descriptor(router, profile.id.trim(), selection)
+                });
                 Some(CodingProfileInfo {
                     id: profile.id.trim().to_string(),
                     label: profile.display_label(),
@@ -6247,6 +6731,8 @@ impl MagicianConfig {
                         .map(|default_id| default_id == profile.id.trim())
                         .unwrap_or(false),
                     description: profile.description_trimmed(),
+                    model_selection,
+                    model_choice,
                 })
             })
             .collect();
@@ -6282,7 +6768,7 @@ impl MagicianConfig {
                 profile.llm_profile.trim()
             ));
         };
-        let llm_profile = resolved.standard_or_fast_profile();
+        let llm_profile = resolved;
         let context_window_tokens = llm_profile
             .context_window_tokens
             .or_else(|| {
@@ -6323,7 +6809,11 @@ impl MagicianConfig {
 /// to `None` (don't send an invalid level Pi would reject).
 fn llm_profile_thinking_level(config: &LLMProfile) -> Option<String> {
     if config.supports_reasoning != Some(true) {
-        return None;
+        return config
+            .reasoning
+            .as_ref()
+            .filter(|reasoning| matches!(reasoning.effort.as_str(), "none" | "off"))
+            .map(|_| "off".to_string());
     }
     let effort = config
         .reasoning
@@ -6336,8 +6826,9 @@ fn llm_profile_thinking_level(config: &LLMProfile) -> Option<String> {
         "minimal" => "minimal",
         "low" => "low",
         "medium" => "medium",
-        "high" => "high",
-        "xhigh" | "max" => "xhigh",
+        "high" | "on" => "high",
+        "xhigh" => "xhigh",
+        "max" => "max",
         _ => return None,
     };
     Some(level.to_string())
@@ -6383,19 +6874,13 @@ fn llm_profile_supports_user_image_inputs(config: &LLMProfile) -> bool {
 
 fn default_coding_profile_id<'a>(
     coding: &'a MagicianCodingSettings,
-    profiles: &'a [CodingProfileConfig],
+    _profiles: &'a [CodingProfileConfig],
 ) -> Option<&'a str> {
     coding
         .default_profile
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            profiles
-                .iter()
-                .find(|profile| profile.enabled && !profile.id.trim().is_empty())
-                .map(|profile| profile.id.trim())
-        })
 }
 
 fn select_coding_profile<'a>(
@@ -6448,19 +6933,6 @@ impl CodingProfileConfig {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-    }
-}
-
-trait ResolvedProfileExt<'a> {
-    fn standard_or_fast_profile(self) -> &'a magicllm::config::LLMProfile;
-}
-
-impl<'a> ResolvedProfileExt<'a> for ResolvedProfile<'a> {
-    fn standard_or_fast_profile(self) -> &'a magicllm::config::LLMProfile {
-        match self {
-            ResolvedProfile::Standard(profile) => profile,
-            ResolvedProfile::Adaptive { fast, .. } => fast,
-        }
     }
 }
 
@@ -6652,7 +7124,9 @@ fn config_has_inline_router_tables(config_str: &str) -> bool {
             }
         }
         if in_router
-            && (line.starts_with("    profiles:") || line.starts_with("    operation_mapping:"))
+            && (line.starts_with("    profiles:")
+                || line.starts_with("    operation_mapping:")
+                || line.starts_with("    catalog:"))
         {
             return true;
         }
@@ -6661,6 +7135,7 @@ fn config_has_inline_router_tables(config_str: &str) -> bool {
 }
 
 pub fn load_magician_config_from_path(path: &Path) -> Result<MagicianConfig> {
+    let outward_generation = crate::magician_v2::agents::outward_policy::generation();
     let config_str = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
     // Before validation, so the validator and the parser see the same document.
@@ -6670,6 +7145,7 @@ pub fn load_magician_config_from_path(path: &Path) -> Result<MagicianConfig> {
         .with_context(|| format!("Failed to validate {}", path.display()))?;
     let mut config: MagicianConfig = serde_yaml::from_str(&config_str)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
+    require_runtime_model_catalog(&config)?;
     apply_runtime_service_endpoint_overrides(&mut config)?;
     let config = validate_and_apply_magician_config(config, apply_runtime_ollama_policy)?;
     // Envelope posture, published as a process-global the moment a config is
@@ -6703,6 +7179,10 @@ pub fn load_magician_config_from_path(path: &Path) -> Result<MagicianConfig> {
     // reload leaves the last accepted mode in force.
     crate::magician_v2::preference_alignment::service::install_config(
         config.preference_alignment.clone(),
+    );
+    crate::magician_v2::agents::outward_policy::configure_if_unchanged(
+        config.outward_actions.clone(),
+        outward_generation,
     );
     Ok(config)
 }
@@ -6743,6 +7223,7 @@ pub fn dry_run_magician_config_from_path(path: &Path) -> Result<MagicianConfig> 
         .with_context(|| format!("Failed to validate {}", path.display()))?;
     let mut config: MagicianConfig = serde_yaml::from_str(&config_str)
         .with_context(|| format!("Failed to parse {}", path.display()))?;
+    require_runtime_model_catalog(&config)?;
     apply_runtime_service_endpoint_overrides(&mut config)?;
     validate_magician_config_dry_run(config)
 }
@@ -6757,6 +7238,16 @@ pub fn validate_magician_config_dry_run(config: MagicianConfig) -> Result<Magici
     validate_and_apply_magician_config(config, |_| Ok(()))
 }
 
+fn require_runtime_model_catalog(config: &MagicianConfig) -> Result<()> {
+    if let Some(router) = config.llm.router.as_ref() {
+        anyhow::ensure!(
+            !router.catalog.models.is_empty(),
+            "llm.router requires a model catalog; authored profiles are no longer supported"
+        );
+    }
+    Ok(())
+}
+
 fn validate_and_apply_magician_config<F>(
     mut config: MagicianConfig,
     apply_runtime_policy: F,
@@ -6765,6 +7256,7 @@ where
     F: FnOnce(&mut MagicianConfig) -> Result<()>,
 {
     config.database_maintenance.validate()?;
+    config.llm.chat_history.validate()?;
     apply_privacy_processing_locality(&mut config);
     warn_on_embedding_profile_drift(&config);
     enforce_runtime_ollama_config_invariant(&config)?;
@@ -6776,12 +7268,14 @@ where
     normalize_runtime_ollama_policy(&mut config, keep_alive)?;
     enforce_runtime_context_config_invariant(&config)?;
     enforce_agent_surface_runtime_config_invariant(&config.agent_surface_runtime)?;
+    enforce_agentic_settings_invariant(&config.agentic)?;
     enforce_tool_calling_invariant(&config)?;
     enforce_app_processing_trust_invariant(&config)?;
     enforce_app_resource_runtime_invariant(&config)?;
     enforce_app_background_behavior_invariant(&config)?;
 
     enforce_llm_trace_config_invariant(&config)?;
+    catalog_coding::install_choices(&mut config)?;
     enforce_coding_config_invariant(&config)?;
     enforce_memory_config_invariant(&config)?;
     enforce_media_config_invariant(&config)?;
@@ -7975,6 +8469,11 @@ fn enforce_memory_config_invariant(config: &MagicianConfig) -> Result<()> {
         .taste_profile
         .validate()
         .map_err(|message| anyhow::anyhow!(message))?;
+    config
+        .memory
+        .user_knowledge_bounds
+        .validate()
+        .map_err(|message| anyhow::anyhow!(message))?;
 
     Ok(())
 }
@@ -8330,6 +8829,9 @@ fn apply_runtime_ollama_policy(config: &mut MagicianConfig) -> Result<()> {
     crate::magician_v2::media_seam::meeting::summarizer::set_default_ollama_keep_alive(
         keep_alive.clone(),
     );
+    magician_vector_index::memory_index::set_lancedb_retrieval_timeout_ms(
+        config.runtime.retrieval.lance_query_timeout_ms,
+    );
     magician_vector_index::install_hybrid_result_cache(
         magician_vector_index::HybridResultCacheSettings {
             enabled: config.runtime.retrieval.result_cache.enabled,
@@ -8525,18 +9027,6 @@ pub fn resolved_ollama_generation_models(
     for name in mapped_profile_names {
         if router.profiles.contains_key(name) {
             concrete_profile_names.insert(name);
-        } else if let Some(adaptive) = router.adaptive_profiles.get(name) {
-            for concrete_name in [
-                adaptive.fast_profile.as_str(),
-                adaptive.thinking_profile.as_str(),
-            ] {
-                if !router.profiles.contains_key(concrete_name) {
-                    return Err(anyhow::anyhow!(
-                        "mapped adaptive profile `{name}` references missing concrete profile `{concrete_name}`"
-                    ));
-                }
-                concrete_profile_names.insert(concrete_name);
-            }
         } else {
             return Err(anyhow::anyhow!(
                 "operation mapping references missing profile `{name}`"
@@ -8582,6 +9072,11 @@ pub fn resolved_ollama_generation_models(
 }
 
 fn enforce_runtime_retrieval_config_invariant(config: &MagicianConfig) -> Result<()> {
+    if !(25..=60_000).contains(&config.runtime.retrieval.lance_query_timeout_ms) {
+        return Err(anyhow::anyhow!(
+            "runtime.retrieval.lance_query_timeout_ms must be in 25..=60000"
+        ));
+    }
     let cache = &config.runtime.retrieval.result_cache;
     if cache.max_entries == 0 {
         return Err(anyhow::anyhow!(
@@ -8812,6 +9307,27 @@ pub fn validate_magician_config_yaml(yaml: &str) -> Result<(), String> {
 
     reject_retired_taskplan_yaml_keys(root)?;
 
+    if let Some(router) =
+        yaml_mapping_child(root, "llm").and_then(|llm| yaml_mapping_child(llm, "router"))
+    {
+        for key in ["profiles", "adaptive_profiles"] {
+            reject_yaml_key(
+                router,
+                "llm.router",
+                key,
+                "use catalog.connections, catalog.models and model/thinking assignments",
+            )?;
+        }
+    }
+    if let Some(coding) = yaml_mapping_child(root, "coding") {
+        reject_yaml_key(
+            coding,
+            "coding",
+            "profiles",
+            "coding choices are generated from catalog models qualified for the engine",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -8884,6 +9400,7 @@ impl Default for MagicianConfig {
                 crate::magician_v2::content_sources::ContentAcquisitionSettings::default(),
             service_url: None,
             mobile_access: MobileAccessConfig::default(),
+            browser_signin: BrowserSignInConfig::default(),
             frontend: MagicianFrontendSettings::default(),
             execution: MagicianExecutionSettings::default(),
             agentic: AgenticSettings::default(),
@@ -8907,6 +9424,7 @@ impl Default for MagicianConfig {
             resource_authority: Default::default(),
             harness: HarnessConfig::default(),
             plane: PlaneConfig::default(),
+            supervisor: SupervisorRuntimeConfig::default(),
         }
     }
 }
@@ -9683,10 +10201,11 @@ pub(crate) fn default_harness_turn_max_seconds() -> u64 {
     DEFAULT_AGENTIC_MAX_DURATION_SECS
 }
 
-/// A chat turn's no-progress bound: the same 300s a harness child may stay
-/// silent ([`DEFAULT_HARNESS_TURN_IDLE_SECONDS`]).
+/// A native chat turn's no-progress bound.
+pub const DEFAULT_CHAT_TURN_STALL_SECONDS: u64 = 300;
+
 pub(crate) fn default_harness_turn_stall_seconds() -> u64 {
-    DEFAULT_HARNESS_TURN_IDLE_SECONDS
+    DEFAULT_CHAT_TURN_STALL_SECONDS
 }
 
 /// The native chat loop's iteration backstop (`chat.harness_turn_max_iterations`).
@@ -9753,6 +10272,21 @@ fn parse_max_duration_secs(raw: Option<&str>) -> Option<std::time::Duration> {
 /// (`DELEGATION_WORK_BUDGET_THOROUGH_SECS`), or that tier is unreachable.
 pub const DEFAULT_AGENTIC_MAX_DURATION_SECS: u64 = 86400;
 
+/// Default deadline for a background shell job that names no `timeout_secs`
+/// (owner decision 2026-10-23: 72 h, was the 24 h agentic ceiling).
+pub const DEFAULT_SHELL_JOB_MAX_DURATION_SECS: u64 = 72 * 3600;
+
+/// A background shell job's default deadline: `MAGICIAN_AGENTIC_MAX_DURATION_SECS`
+/// when set (0 = none), else [`DEFAULT_SHELL_JOB_MAX_DURATION_SECS`].
+pub fn shell_job_max_duration() -> Option<std::time::Duration> {
+    match std::env::var("MAGICIAN_AGENTIC_MAX_DURATION_SECS") {
+        Ok(raw) => parse_max_duration_secs(Some(raw.as_str())),
+        Err(_) => Some(std::time::Duration::from_secs(
+            DEFAULT_SHELL_JOB_MAX_DURATION_SECS,
+        )),
+    }
+}
+
 /// Wall-clock ceiling for one agentic execution, from
 /// `MAGICIAN_AGENTIC_MAX_DURATION_SECS`. When the env var is **unset**, a sane
 /// default of `DEFAULT_AGENTIC_MAX_DURATION_SECS` applies so every run is bounded.
@@ -9796,15 +10330,25 @@ pub fn coding_execution_max_duration() -> Option<std::time::Duration> {
     coding_budgets::ResolvedCodingBudgets::resolve(&settings, None).execution_ceiling()
 }
 
+/// Wall-clock ceiling for an ordinary task-backed root run (see
+/// `run_budget::is_owner_renewable_task_run`).
+///
+/// Unlike [`agentic_max_duration`], an unset env var means no wall clock: the
+/// run is bounded by liveness, its token/cost/iteration budgets and the owner.
+/// An explicitly-set `MAGICIAN_AGENTIC_MAX_DURATION_SECS` is a decision and is
+/// honoured (`0` still means unbounded). [`DEFAULT_AGENTIC_MAX_DURATION_SECS`]
+/// is unchanged: chat turns, plane engines and delegated children keep it.
+pub fn task_run_max_duration() -> Option<std::time::Duration> {
+    if std::env::var_os("MAGICIAN_AGENTIC_MAX_DURATION_SECS").is_some() {
+        return agentic_max_duration();
+    }
+    None
+}
+
 /// Default per-run USD cost ceiling ($100) applied when
-/// `MAGICIAN_AGENTIC_MAX_COST_USD` is unset. Paired with the cumulative token
-/// meter as a second runaway-cost circuit-breaker on the agentic loop.
-/// 15 since 0.7.62 (5 before): a GPT-5.6 Terra browser run costs ~$1–2 and
-/// never met the old ceiling; a Fable 5.1 decider — 157–181K prompt tokens a
-/// turn on the browser tool set, no delta continuation — exhausted $5 in ten
-/// decides on 2026-09-21, before the run reached extraction. 100 since
-/// 2026-10-03 (owner decision) beside the ×3 time and iteration limits: a
-/// reached ceiling pauses the run for a resume, it does not fail it.
+/// `MAGICIAN_AGENTIC_MAX_COST_USD` is unset: a runaway valve under the $250
+/// daily spend envelope (`execution.budgets.spend_envelope`). A reached
+/// ceiling pauses the run for a resume; it does not fail it.
 pub const DEFAULT_AGENTIC_MAX_COST_USD: f64 = 100.0;
 
 /// Per-run USD cost ceiling for one agentic execution, from
@@ -9814,14 +10358,33 @@ pub const DEFAULT_AGENTIC_MAX_COST_USD: f64 = 100.0;
 /// a positive value overrides the default. Read alongside the cumulative token
 /// meter so a run that spends beyond the cap settles like a budget stop.
 /// How long a harness turn may make no progress — no stdout line, and so no
-/// tool call — before the turn is ended as stalled. The wall-clock ceiling
-/// (`harness_turn_max_seconds`, 7200s) is the outer bound; this is the one that
-/// catches a stuck child, which otherwise holds a run for the whole ceiling
-/// with nothing logged.
-pub const DEFAULT_HARNESS_TURN_IDLE_SECONDS: u64 = 300;
+/// tool call — before the turn is ended as stalled
+/// (`execution.harness_turn_idle_seconds`). The wall-clock ceiling
+/// (`harness_turn_max_seconds`) is the outer bound; this is the one that
+/// catches a stuck child. An hour (owner decision 2026-10-23, was 300 s) so a
+/// long think or a silent native command is not taken for a hang.
+pub const DEFAULT_HARNESS_TURN_IDLE_SECONDS: u64 = 3600;
+
+static HARNESS_TURN_IDLE_SECONDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_HARNESS_TURN_IDLE_SECONDS);
+
+/// Install `execution.harness_turn_idle_seconds` (at boot and on settings
+/// reload). 0 = the default.
+pub fn configure_harness_turn_idle_seconds(secs: u64) {
+    let secs = if secs == 0 {
+        DEFAULT_HARNESS_TURN_IDLE_SECONDS
+    } else {
+        secs
+    };
+    HARNESS_TURN_IDLE_SECONDS.store(secs, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn default_harness_turn_idle_seconds_setting() -> u64 {
+    DEFAULT_HARNESS_TURN_IDLE_SECONDS
+}
 
 pub fn default_harness_turn_idle_seconds() -> u64 {
-    DEFAULT_HARNESS_TURN_IDLE_SECONDS
+    HARNESS_TURN_IDLE_SECONDS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The **native** per-run ceiling: `MAGICIAN_AGENTIC_MAX_COST_USD` when set
@@ -9839,7 +10402,7 @@ pub fn agentic_max_cost_usd() -> Option<f64> {
 }
 
 /// The **harness** per-run ceiling: `execution.budgets.harness_max_cost_usd`
-/// (default $100, `unlimited` = none). The env override is native-only.
+/// (default $125, `unlimited` = none). The env override is native-only.
 pub fn harness_max_cost_usd() -> Option<f64> {
     execution_budget_settings().harness_max_cost_usd.as_cap()
 }
@@ -9995,12 +10558,120 @@ pub fn task_synthesis_root_gate_enabled() -> bool {
     }
 }
 
-/// Generic agentic outer-loop settings. Keep-tail windowing lives in
-/// `execution/agentic/decision.rs`. This section is reserved for future knobs
-/// and currently accepts only an empty mapping.
+/// Floor of the agentic keep-tail window, in conservative tokens (ceil of
+/// UTF-8 bytes / 2). It is the window every run had before 0.7.121.
+pub const AGENTIC_VERBATIM_HISTORY_MIN_TOKENS: usize = 40_000;
+/// Floor of the keep-tail window, in turn pairs (pre-0.7.121 value).
+pub const AGENTIC_VERBATIM_HISTORY_MIN_ITERATIONS: usize = 25;
+/// Default keep-tail token budget. Sized so a run reading several 8 KB
+/// documents keeps them verbatim: ~240 KB of conversation, roughly 60–80k real
+/// tokens, well inside a frontier context next to the system prompt and tools.
+pub const AGENTIC_VERBATIM_HISTORY_DEFAULT_TOKENS: usize = 120_000;
+/// Default keep-tail turn-pair cap; with ~3.3k-token document reads the token
+/// budget binds first at ~36 pairs.
+pub const AGENTIC_VERBATIM_HISTORY_DEFAULT_ITERATIONS: usize = 40;
+const AGENTIC_VERBATIM_HISTORY_MAX_TOKENS: usize = 1_000_000;
+const AGENTIC_VERBATIM_HISTORY_MAX_ITERATIONS: usize = 200;
+
+/// Generic agentic outer-loop settings.
+///
+/// The keep-tail window (`execution/agentic/decision.rs::verbatim_window`)
+/// bounds how many recent turns decide() sees verbatim. Both keys are
+/// optional; unset keys take the defaults and are never serialized, so a
+/// config the runtime writes back stays `agentic: {}` and remains readable by
+/// an older binary (the struct is `deny_unknown_fields`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgenticSettings {}
+pub struct AgenticSettings {
+    /// Keep-tail token budget (conservative tokens). Default
+    /// [`AGENTIC_VERBATIM_HISTORY_DEFAULT_TOKENS`]; allowed
+    /// 40_000..=1_000_000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim_history_token_budget: Option<usize>,
+    /// Keep-tail turn-pair cap. Default
+    /// [`AGENTIC_VERBATIM_HISTORY_DEFAULT_ITERATIONS`]; allowed 25..=200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim_history_max_iterations: Option<usize>,
+}
+
+impl AgenticSettings {
+    pub fn verbatim_history_token_budget(&self) -> usize {
+        self.verbatim_history_token_budget
+            .unwrap_or(AGENTIC_VERBATIM_HISTORY_DEFAULT_TOKENS)
+    }
+
+    pub fn verbatim_history_max_iterations(&self) -> usize {
+        self.verbatim_history_max_iterations
+            .unwrap_or(AGENTIC_VERBATIM_HISTORY_DEFAULT_ITERATIONS)
+    }
+}
+
+fn enforce_agentic_settings_invariant(settings: &AgenticSettings) -> Result<()> {
+    anyhow::ensure!(
+        (AGENTIC_VERBATIM_HISTORY_MIN_TOKENS..=AGENTIC_VERBATIM_HISTORY_MAX_TOKENS)
+            .contains(&settings.verbatim_history_token_budget()),
+        "agentic.verbatim_history_token_budget must be in {AGENTIC_VERBATIM_HISTORY_MIN_TOKENS}..={AGENTIC_VERBATIM_HISTORY_MAX_TOKENS}"
+    );
+    anyhow::ensure!(
+        (AGENTIC_VERBATIM_HISTORY_MIN_ITERATIONS..=AGENTIC_VERBATIM_HISTORY_MAX_ITERATIONS)
+            .contains(&settings.verbatim_history_max_iterations()),
+        "agentic.verbatim_history_max_iterations must be in {AGENTIC_VERBATIM_HISTORY_MIN_ITERATIONS}..={AGENTIC_VERBATIM_HISTORY_MAX_ITERATIONS}"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod agentic_settings_tests {
+    use super::*;
+
+    /// An absent or empty section runs with the raised defaults and writes
+    /// back as an empty mapping, so an older binary can still read it.
+    #[test]
+    fn empty_section_takes_the_defaults_and_serializes_empty() {
+        let settings: AgenticSettings = serde_yaml::from_str("{}").expect("empty section parses");
+        assert_eq!(settings.verbatim_history_token_budget(), 120_000);
+        assert_eq!(settings.verbatim_history_max_iterations(), 40);
+        assert!(enforce_agentic_settings_invariant(&settings).is_ok());
+        assert_eq!(
+            serde_json::to_value(&settings).expect("serialize"),
+            serde_json::json!({})
+        );
+        assert_eq!(MagicianConfig::default().agentic, settings);
+    }
+
+    #[test]
+    fn overrides_parse_and_unknown_keys_are_rejected() {
+        let settings: AgenticSettings = serde_yaml::from_str(
+            "verbatim_history_token_budget: 200000\nverbatim_history_max_iterations: 60\n",
+        )
+        .expect("documented keys parse");
+        assert_eq!(settings.verbatim_history_token_budget(), 200_000);
+        assert_eq!(settings.verbatim_history_max_iterations(), 60);
+        assert!(enforce_agentic_settings_invariant(&settings).is_ok());
+        assert!(serde_yaml::from_str::<AgenticSettings>("verbatim_budget: 1\n").is_err());
+    }
+
+    /// The pre-0.7.121 window is the floor: a config may widen it, never
+    /// shrink it below what every run already had.
+    #[test]
+    fn values_below_the_floor_fail_the_load() {
+        let tokens = AgenticSettings {
+            verbatim_history_token_budget: Some(AGENTIC_VERBATIM_HISTORY_MIN_TOKENS - 1),
+            ..AgenticSettings::default()
+        };
+        assert!(enforce_agentic_settings_invariant(&tokens).is_err());
+        let iterations = AgenticSettings {
+            verbatim_history_max_iterations: Some(AGENTIC_VERBATIM_HISTORY_MIN_ITERATIONS - 1),
+            ..AgenticSettings::default()
+        };
+        assert!(enforce_agentic_settings_invariant(&iterations).is_err());
+        let floor = AgenticSettings {
+            verbatim_history_token_budget: Some(AGENTIC_VERBATIM_HISTORY_MIN_TOKENS),
+            verbatim_history_max_iterations: Some(AGENTIC_VERBATIM_HISTORY_MIN_ITERATIONS),
+        };
+        assert!(enforce_agentic_settings_invariant(&floor).is_ok());
+    }
+}
 
 #[cfg(any(test, feature = "test-fixtures"))]
 mod approval_envelope_posture_tests {
@@ -10122,6 +10793,43 @@ mod approval_envelope_posture_tests {
 }
 
 #[cfg(test)]
+mod supervisor_runtime_config_tests {
+    use super::*;
+
+    #[test]
+    fn the_supervisor_section_defaults_on_and_tolerates_future_keys() {
+        assert!(MagicianConfig::default().supervisor.manage_desktop);
+        let absent: MagicianConfig = serde_yaml::from_str("enabled: true\n").expect("parses");
+        assert!(absent.supervisor.manage_desktop, "absent section = on");
+        let empty: MagicianConfig = serde_yaml::from_str("supervisor: {}\n").expect("parses");
+        assert!(empty.supervisor.manage_desktop, "absent key = on");
+        let off: MagicianConfig =
+            serde_yaml::from_str("supervisor:\n  manage_desktop: false\n").expect("parses");
+        assert!(!off.supervisor.manage_desktop);
+        let future: MagicianConfig =
+            serde_yaml::from_str("supervisor:\n  manage_desktop: false\n  later_key: 3\n")
+                .expect("a key from a newer supervisor never breaks this backend");
+        assert!(!future.supervisor.manage_desktop);
+    }
+
+    /// The seed ships the section commented out: Desktop seeds it into data
+    /// folders an older backend may read, and an older backend's strict root
+    /// rejects an unknown section. Absent means on.
+    #[test]
+    fn the_shipped_seed_leaves_the_supervisor_section_commented_out() {
+        let seed = include_str!("../../magician-config.yaml");
+        assert!(
+            !seed.lines().any(|line| line.starts_with("supervisor:")),
+            "an active `supervisor:` root key would crash older backends"
+        );
+        assert!(seed.contains("# supervisor:"));
+        let shipped: MagicianConfig =
+            serde_yaml::from_str(&shipped_repo_config_yaml()).expect("shipped config parses");
+        assert!(shipped.supervisor.manage_desktop, "absent = on");
+    }
+}
+
+#[cfg(test)]
 mod preference_alignment_config_tests {
     use super::*;
 
@@ -10193,7 +10901,8 @@ mod preference_alignment_config_tests {
         assert_eq!(config.mode, "off");
         assert_eq!(config.mode(), PreferenceAlignmentMode::Off);
         assert!(!config.enforces_any_scope());
-        assert_eq!(config.budgets.foreground_check_ms, 4_000);
+        assert_eq!(config.budgets.foreground_check_ms, 8_000);
+        assert_eq!(config.budgets.advisory_grace_ms, 1_500);
         assert_eq!(config.budgets.max_judge_calls_per_task, 40);
         assert_eq!(config.budgets.max_standing_batch, 24);
         assert_eq!(config.holds.foreground_deadline_secs, 86_400);
@@ -10444,9 +11153,12 @@ mod preference_alignment_config_tests {
 
     #[test]
     fn out_of_bounds_values_are_rejected_whatever_the_mode() {
-        let cases: [(&str, fn(&mut PreferenceAlignmentConfig)); 8] = [
+        let cases: [(&str, fn(&mut PreferenceAlignmentConfig)); 9] = [
             ("preference_alignment.budgets.foreground_check_ms", |c| {
                 c.budgets.foreground_check_ms = 0
+            }),
+            ("preference_alignment.budgets.advisory_grace_ms", |c| {
+                c.budgets.advisory_grace_ms = 60_001
             }),
             (
                 "preference_alignment.budgets.max_judge_calls_per_task",
@@ -10586,21 +11298,44 @@ mod recipient_compliance_posture_tests {
 mod tests {
     use super::*;
 
-    /// The profiles block moved out of `magician-config.yaml` into a sibling
-    /// `llm-profiles.yaml` — about 3,800 of the file's 6,200 lines. This is the
-    /// round trip. It matters because `profiles` carries `#[serde(default)]`, so
-    /// a botched splice would parse happily with an empty table rather than
-    /// failing loudly.
+    fn assert_shipped_catalog_loaded(router: &LLMRouterConfig) {
+        let shipped: serde_yaml::Value =
+            serde_yaml::from_str(&shipped_repo_config_yaml()).expect("shipped YAML");
+        let models = shipped["llm"]["router"]["catalog"]["models"]
+            .as_mapping()
+            .expect("shipped models");
+        assert!(!models.is_empty());
+        assert_eq!(
+            router
+                .catalog
+                .models
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            models
+                .keys()
+                .map(|key| key.as_str().expect("model ID"))
+                .collect::<BTreeSet<_>>(),
+            "the complete model catalog must load"
+        );
+        for model in router.catalog.choices() {
+            for route in model.choices.values() {
+                assert!(
+                    router.profiles.contains_key(route),
+                    "missing generated choice {route}"
+                );
+            }
+        }
+    }
+
+    /// The sibling owns model facts and operation mappings. A successful
+    /// load must retain every model and generate its qualified choices.
     #[test]
     fn the_repository_config_still_loads_its_router_profiles() {
         let config = load_magician_config_from_path(Path::new("../magician-config.yaml"))
             .expect("repository config loads with its sibling profiles");
         let router = config.llm.router.as_ref().expect("router configured");
-        assert!(
-            router.profiles.len() > 200,
-            "expected the full profile table, got {}",
-            router.profiles.len()
-        );
+        assert_shipped_catalog_loaded(router);
         assert!(
             router.operation_mapping.len() > 50,
             "operation_mapping moved to the same sibling file, got {}",
@@ -10645,7 +11380,7 @@ mod tests {
         let router = config.llm.router.as_ref().expect("router configured");
         let profile = router
             .profiles
-            .get("op-memory-episode-quality-local-chunked")
+            .get("operation/memory_episode_quality_classification")
             .expect("a profile that aliases the cross-file anchor");
         let yaml = std::fs::read_to_string("../magician-config.yaml").expect("read seed config");
         let selected = yaml
@@ -10680,11 +11415,7 @@ mod tests {
         let loaded = load_magician_config_from_path(&config)
             .expect("a self-contained config loads with no sibling");
         let router = loaded.llm.router.as_ref().expect("router configured");
-        assert!(
-            router.profiles.len() > 200,
-            "the inline tables were used, not silently defaulted away: got {}",
-            router.profiles.len()
-        );
+        assert_shipped_catalog_loaded(router);
     }
 
     /// Absence must be fatal. `llm_pricing.json` is fail-open because it
@@ -11068,8 +11799,12 @@ max_post_chars: 1500
     #[test]
     fn agent_surface_runtime_has_tuning_only_and_rejects_retired_rollout_switches() {
         let defaults = AgentSurfaceRuntimeConfig::default();
+        assert_eq!(defaults.context_retrieval.chat.deadline_ms, 8_000);
         assert_eq!(defaults.context_retrieval.realtime_voice.deadline_ms, 300);
-        assert_eq!(defaults.context_retrieval.autonomous_task.deadline_ms, 500);
+        assert_eq!(
+            defaults.context_retrieval.autonomous_task.deadline_ms,
+            8_000
+        );
         assert_eq!(
             defaults
                 .result_projection
@@ -11310,6 +12045,24 @@ streaming_stt:
     }
 
     #[test]
+    fn owned_runtime_yaml_refuses_profile_authoring_and_requires_a_catalog() {
+        for yaml in [
+            "llm:\n  router:\n    profiles: {}\n",
+            "llm:\n  router:\n    adaptive_profiles: {}\n",
+            "coding:\n  profiles: []\n",
+        ] {
+            assert!(validate_magician_config_yaml(yaml).is_err(), "{yaml}");
+        }
+        let mut config = MagicianConfig::default();
+        config.llm.router = Some(magicllm::LLMRouterConfig::default());
+        assert!(require_runtime_model_catalog(&config).is_err());
+        let source = crate::config::shipped_repo_config_yaml();
+        validate_magician_config_yaml(&source).expect("catalog-only authoring");
+        let config: MagicianConfig = serde_yaml::from_str(&source).unwrap();
+        require_runtime_model_catalog(&config).expect("catalog is present");
+    }
+
+    #[test]
     fn shipped_configs_retire_gpt54_from_active_routing() {
         for (source, yaml) in [(
             "repository config",
@@ -11345,152 +12098,56 @@ streaming_stt:
                     ),
                     "{name}"
                 );
-                // Bounded text routes (Relentless) admit only `model_family`
-                // metadata; with no `openai_api_mode` the OpenAI provider
-                // already selects the Responses API.
-                let bounded = profile
-                    .metadata
-                    .as_ref()
-                    .is_some_and(|m| m.contains_key("model_family"));
+                // Transport is owned by the shared provider connection,
+                // including bounded routes. Chat transport remains refused.
                 assert_eq!(
                     profile
                         .metadata
                         .as_ref()
                         .and_then(|m| m.get("openai_api_mode"))
                         .and_then(serde_json::Value::as_str),
-                    if bounded { None } else { Some("responses") },
+                    Some("responses"),
                     "{name}"
                 );
             }
-            assert_eq!(
-                router.profiles["gpt6sol-responses-toolsany"].model,
-                "gpt-6.1-sol"
-            );
-            assert_eq!(
-                router.profiles["gpt6sol-responses-vision-toolsany-rnone-out16k"]
-                    .reasoning
-                    .as_ref()
-                    .unwrap()
-                    .effort,
-                "low"
-            );
-            let normal = &router.adaptive_profiles["chat-openai-adaptive-normal"];
-            assert_eq!(router.profiles[&normal.fast_profile].model, "gpt-6.1-sol");
-            assert_eq!(
-                router.operation_mapping["chat_completion"].default_profile(),
-                "chat-openai-adaptive-instant"
-            );
-            let advanced = &router.adaptive_profiles["chat-openai-adaptive-advanced"];
-            assert_eq!(router.profiles[&advanced.fast_profile].model, "gpt-6.1-sol");
-            assert!(router.profiles[&advanced.fast_profile]
-                .supports_reasoning
-                .unwrap_or(true));
-            assert_eq!(
-                router.profiles[&advanced.thinking_profile].model,
-                "gpt-6.1-sol"
-            );
-            assert_eq!(
-                router.profiles[&advanced.thinking_profile]
-                    .reasoning
-                    .as_ref()
-                    .map(|reasoning| reasoning.effort.as_str()),
-                Some("high")
-            );
-            let frontier = &router.adaptive_profiles["chat-openai-adaptive-frontier"];
-            assert_eq!(router.profiles[&frontier.fast_profile].model, "gpt-6-astra");
-            assert_eq!(
-                router.profiles[&frontier.fast_profile]
-                    .reasoning
-                    .as_ref()
-                    .map(|reasoning| reasoning.effort.as_str()),
-                Some("low")
-            );
-            assert_eq!(
-                router.profiles[&frontier.thinking_profile].model,
-                "gpt-6-astra"
-            );
-            assert_eq!(
-                router.profiles[&frontier.thinking_profile]
-                    .reasoning
-                    .as_ref()
-                    .map(|reasoning| reasoning.effort.as_str()),
-                Some("high")
-            );
-            let anthropic_advanced = &router.adaptive_profiles["chat-anthropic-adaptive-advanced"];
-            assert_eq!(
-                router.profiles[&anthropic_advanced.fast_profile].model,
-                "claude-opus-5-5"
-            );
-            let anthropic_normal = &router.adaptive_profiles["chat-anthropic-adaptive-normal"];
-            for (profile, effort) in [
-                (&anthropic_normal.fast_profile, "low"),
-                (&anthropic_normal.thinking_profile, "high"),
-            ] {
-                assert_eq!(router.profiles[profile].model, "claude-sonnet-5-5");
+            for choice in router.catalog.choices() {
+                let profile = &router.profiles[&choice.choices["auto"]];
+                let selected = magicllm::catalog::selection_for_profile(profile)
+                    .expect("typed model selection");
+                assert_eq!(selected.model_id, choice.id);
+                assert_eq!(selected.thinking, "auto");
                 assert_eq!(
-                    router.profiles[profile]
+                    profile
                         .reasoning
                         .as_ref()
-                        .map(|reasoning| reasoning.effort.as_str()),
-                    Some(effort)
+                        .map(|value| value.effort.as_str()),
+                    router.catalog.models[&choice.id]
+                        .thinking
+                        .default
+                        .as_deref(),
+                    "{}",
+                    choice.id
                 );
             }
-            assert!(
-                router
-                    .profiles
-                    .values()
-                    .all(|profile| profile.model != "claude-sonnet-4-6"),
-                "Sonnet 4.6 profiles were removed on 2026-10-02"
-            );
-            let retained_opus5 = &router.adaptive_profiles["chat-anthropic-adaptive-opus5"];
             assert_eq!(
-                router.profiles[&retained_opus5.fast_profile].model,
-                "claude-opus-5"
+                router.operation_mapping["chat_completion"].default_profile(),
+                "model/openai/gpt-6-luna/auto"
             );
-            let anthropic_frontier = &router.adaptive_profiles["chat-anthropic-adaptive-frontier"];
+            assert!(router
+                .profiles
+                .values()
+                .all(|profile| profile.model != "claude-sonnet-4-6"));
             assert_eq!(
-                router.profiles[&anthropic_frontier.fast_profile].model,
-                "claude-fable-5-1"
-            );
-            assert_eq!(
-                router.profiles[&anthropic_frontier.fast_profile]
-                    .reasoning
-                    .as_ref()
-                    .map(|reasoning| reasoning.effort.as_str()),
-                Some("low")
-            );
-            let instant = &router.adaptive_profiles["chat-openai-adaptive-instant"];
-            assert_eq!(router.profiles[&instant.fast_profile].model, "gpt-6-luna");
-            assert_eq!(
-                router.profiles["gptluna-responses-toolsany"].model,
-                "gpt-5.6-luna"
-            );
-            assert_eq!(
-                router.profiles["gptsol-responses-toolsnone-rhigh"].model,
-                "gpt-5.6-sol"
-            );
-            let deepseek_instant = &router.adaptive_profiles["chat-deepseek-adaptive-instant"];
-            assert_eq!(
-                router.profiles[&deepseek_instant.fast_profile].model,
-                "deepseek-flash"
-            );
-            assert_eq!(
-                router.profiles[&deepseek_instant.fast_profile].supports_vision,
+                router.profiles["model/deepseek/deepseek-flash/auto"].supports_vision,
                 Some(true)
             );
-            assert_eq!(
-                router.profiles[&deepseek_instant.thinking_profile].model,
-                "deepseek-flash"
-            );
-            assert_eq!(
-                router.operation_mapping["brainstorm_facilitation"].default_profile(),
-                "chat-gpt6luna-responses-vision-toolsauto-fast"
-            );
-            assert_eq!(
-                router.operation_mapping["agentic_input_interpretation"].default_profile(),
-                "gpt6luna-chat-toolsany-rnone"
-            );
-            assert_eq!(router.default_profile, "gpt61sol-responses-toolsany");
+            for operation in ["brainstorm_facilitation", "agentic_input_interpretation"] {
+                assert_eq!(
+                    router.profiles[router.operation_mapping[operation].default_profile()].model,
+                    "gpt-6-luna"
+                );
+            }
+            assert_eq!(router.default_profile, "operation/task_decomposition");
         }
     }
 
@@ -11536,6 +12193,9 @@ streaming_stt:
     fn execution_budgets_default_to_100_native_and_100_harness() {
         // Owner decision 2026-10-07: the native cap matches the harness cap
         // (`DEFAULT_AGENTIC_MAX_COST_USD`, raised from $15 in `ec1dfbb7f`).
+        // Owner decision 2026-10-23: both are now a $125 runaway valve under
+        // the $250 daily spend envelope. (The test keeps its old name so the
+        // integrator's test lists still find it.)
         let settings: MagicianExecutionSettings = serde_yaml::from_str("{}").expect("loads");
         assert_eq!(
             settings.budgets.native_max_cost_usd,
@@ -11545,26 +12205,99 @@ streaming_stt:
             settings.budgets.harness_max_cost_usd,
             BudgetCapUsd::Usd(100.0)
         );
+        assert_eq!(DEFAULT_AGENTIC_MAX_COST_USD, 100.0);
+        assert_eq!(DEFAULT_HARNESS_MAX_COST_USD, 100.0);
     }
 
     #[test]
-    fn quality_round_defaults_and_explicit_settings_are_positive_and_finite() {
+    fn the_spend_envelope_is_on_at_250_a_day_when_the_live_config_says_nothing() {
+        // A live config that predates the envelope (no `spend_envelope` key,
+        // even an explicit pair of per-run caps) must still be enforced.
+        let settings: MagicianExecutionSettings = serde_yaml::from_str(
+            "budgets:\n  native_max_cost_usd: 100\n  harness_max_cost_usd: 100\n",
+        )
+        .expect("loads");
+        let envelope = settings.budgets.spend_envelope;
+        assert!(envelope.enabled);
+        assert_eq!(envelope.daily_usd, BudgetCapUsd::Usd(250.0));
+        assert_eq!(envelope.total_usd, BudgetCapUsd::Unlimited);
+        assert_eq!(envelope.window, SpendEnvelopeWindow::Daily);
+        assert_eq!(envelope.reset_offset_minutes, 0);
+        assert_eq!(envelope.warn_at_pct, 80);
+        assert_eq!(envelope.unpriced, UnpricedPolicy::Estimate);
+        assert_eq!(envelope, SpendEnvelopeSettings::default());
+        assert_eq!(envelope.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_spend_envelope_round_trips_and_refuses_unknown_or_out_of_range_values() {
+        let settings: MagicianExecutionSettings = serde_yaml::from_str(
+            "budgets:\n  spend_envelope:\n    enabled: false\n    daily_usd: 40.5\n    \
+             total_usd: 1000\n    window: weekly\n    reset_offset_minutes: -420\n    \
+             warn_at_pct: 90\n    unpriced: block\n",
+        )
+        .expect("loads");
+        let envelope = settings.budgets.spend_envelope;
+        assert!(!envelope.enabled);
+        assert_eq!(envelope.daily_usd, BudgetCapUsd::Usd(40.5));
+        assert_eq!(envelope.total_usd, BudgetCapUsd::Usd(1000.0));
+        assert_eq!(envelope.window, SpendEnvelopeWindow::Weekly);
+        assert_eq!(envelope.reset_offset_minutes, -420);
+        assert_eq!(envelope.warn_at_pct, 90);
+        assert_eq!(envelope.unpriced, UnpricedPolicy::Block);
+        let encoded = serde_yaml::to_string(&settings).expect("serializes");
+        let reparsed: MagicianExecutionSettings = serde_yaml::from_str(&encoded).expect("re-loads");
+        assert_eq!(reparsed.budgets, settings.budgets);
+
+        assert!(serde_yaml::from_str::<SpendEnvelopeSettings>("surprise: 1\n").is_err());
+        assert!(serde_yaml::from_str::<SpendEnvelopeSettings>("daily_usd: -5\n").is_err());
+        assert!(serde_yaml::from_str::<SpendEnvelopeSettings>("window: yearly\n").is_err());
+        assert!(serde_yaml::from_str::<SpendEnvelopeSettings>("unpriced: guess\n").is_err());
+        let unlimited: SpendEnvelopeSettings =
+            serde_yaml::from_str("daily_usd: unlimited\n").expect("unlimited is spelled out");
+        assert_eq!(unlimited.daily_usd, BudgetCapUsd::Unlimited);
+        for bad in [
+            SpendEnvelopeSettings {
+                warn_at_pct: 0,
+                ..Default::default()
+            },
+            SpendEnvelopeSettings {
+                warn_at_pct: 101,
+                ..Default::default()
+            },
+            SpendEnvelopeSettings {
+                reset_offset_minutes: 24 * 60,
+                ..Default::default()
+            },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn quality_round_defaults_are_finite_and_zero_settings_are_unlimited() {
         let settings: MagicianExecutionSettings = serde_yaml::from_str("{}").unwrap();
         assert_eq!(settings.quality_round, default_quality_round_budget());
         assert_eq!(settings.quality_round.max_cost_microusd, 100_000_000);
         assert_eq!(settings.quality_round.max_wall_clock_secs, 86_400);
         assert_eq!(settings.quality_round.max_attempts, 25);
+        let unlimited: MagicianExecutionSettings =
+            serde_yaml::from_str("quality_round: {}").unwrap();
+        assert_eq!(
+            unlimited.quality_round,
+            magician_relentless::contract::Budget::default()
+        );
+        let partial: MagicianExecutionSettings =
+            serde_yaml::from_str("quality_round: {max_attempts: 3, max_cost_microusd: 0}").unwrap();
+        assert_eq!(partial.quality_round.max_attempts, 3);
+        assert_eq!(partial.quality_round.max_cost_microusd, 0);
         for invalid in [
-            "max_attempts: 0",
-            "max_wall_clock_secs: 0",
-            "max_cost_microusd: 0",
-            "plateau_attempts: 0",
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("unlimited"),
         ] {
-            let mut budget = serde_json::to_value(default_quality_round_budget()).unwrap();
-            let key = invalid.split(':').next().unwrap();
-            budget[key] = serde_json::json!(0);
             assert!(serde_json::from_value::<MagicianExecutionSettings>(
-                serde_json::json!({"quality_round":budget})
+                serde_json::json!({"quality_round":{"max_cost_microusd":invalid}})
             )
             .is_err());
         }
@@ -11635,6 +12368,7 @@ streaming_stt:
         configure_execution_budgets(&ExecutionBudgetSettings {
             native_max_cost_usd: BudgetCapUsd::Usd(9.0),
             harness_max_cost_usd: BudgetCapUsd::Unlimited,
+            ..ExecutionBudgetSettings::default()
         });
         assert_eq!(agentic_max_cost_usd(), Some(9.0));
         assert_eq!(harness_max_cost_usd(), None);
@@ -11646,6 +12380,7 @@ streaming_stt:
         configure_execution_budgets(&ExecutionBudgetSettings {
             native_max_cost_usd: BudgetCapUsd::Unlimited,
             harness_max_cost_usd: BudgetCapUsd::Usd(100.0),
+            ..ExecutionBudgetSettings::default()
         });
         std::env::remove_var(env_name);
         assert_eq!(agentic_max_cost_usd(), None);
@@ -11891,6 +12626,34 @@ streaming_stt:
     }
 
     #[test]
+    fn task_run_max_duration_has_no_default_wall_clock_but_honors_an_explicit_env() {
+        use std::time::Duration;
+        let _guard = agentic_duration_env_guard();
+        let env_name = "MAGICIAN_AGENTIC_MAX_DURATION_SECS";
+        let saved = std::env::var(env_name).ok();
+
+        // Unset: bounded by liveness and budgets, not the generic default. The
+        // default itself is unchanged for every other consumer.
+        std::env::remove_var(env_name);
+        assert_eq!(task_run_max_duration(), None);
+        assert_eq!(
+            agentic_max_duration(),
+            Some(Duration::from_secs(DEFAULT_AGENTIC_MAX_DURATION_SECS))
+        );
+
+        // Explicitly set: that IS a decision, in both directions.
+        std::env::set_var(env_name, "300");
+        assert_eq!(task_run_max_duration(), Some(Duration::from_secs(300)));
+        std::env::set_var(env_name, "0");
+        assert_eq!(task_run_max_duration(), None);
+
+        match saved {
+            Some(value) => std::env::set_var(env_name, value),
+            None => std::env::remove_var(env_name),
+        }
+    }
+
+    #[test]
     fn public_chat_config_invariant_accepts_absent_policy() {
         let config = MagicianConfig::default();
 
@@ -12030,6 +12793,7 @@ streaming_stt:
         config.llm = MagicianLlmSettings {
             router: Some(router),
             dispatch: Default::default(),
+            chat_history: Default::default(),
         };
 
         let resolved = config.router_config().expect("router config should exist");
@@ -12235,6 +12999,15 @@ streaming_stt:
             serde_yaml::from_str(&crate::config::shipped_repo_config_yaml())
                 .expect("production config should parse");
         assert!(config.runtime.retrieval.result_cache.enabled);
+        assert_eq!(config.runtime.retrieval.lance_query_timeout_ms, 3_000);
+        for invalid_timeout in [0, 24, 60_001] {
+            let mut invalid = config.clone();
+            invalid.runtime.retrieval.lance_query_timeout_ms = invalid_timeout;
+            assert!(enforce_runtime_retrieval_config_invariant(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("lance_query_timeout_ms"));
+        }
         assert_eq!(
             config.runtime.retrieval.result_cache.max_entries,
             DEFAULT_RUNTIME_RESULT_CACHE_MAX_ENTRIES
@@ -12570,7 +13343,7 @@ streaming_stt:
 
     #[test]
     fn validation_rejects_legacy_storage_config_block() {
-        let error = validate_magician_config_yaml("storage:\n  provider: silverbullet_space\n")
+        let error = validate_magician_config_yaml("storage:\n  provider: local_file\n")
             .expect_err("storage provider config should be API managed");
         assert!(error.contains("top-level.storage"));
     }
@@ -12625,6 +13398,33 @@ streaming_stt:
         config.memory.taste_profile.enabled = false;
         enforce_memory_config_invariant(&config)
             .expect("a disabled taste profile should accept inert settings");
+    }
+
+    /// Growth-bounds plan 1.1: an older-style memory block with no
+    /// `user_knowledge_bounds` key parses to the observe defaults, and a bad
+    /// value is rejected at config load with its key named.
+    #[test]
+    fn memory_config_user_knowledge_bounds_default_and_validate() {
+        let memory: MagicianMemorySettings =
+            serde_yaml::from_str("prompt_snapshot:\n  enabled: true\n").unwrap();
+        assert_eq!(
+            memory.user_knowledge_bounds,
+            crate::magician_v2::agents::user_memory_bounds::MagicianMemoryBoundsSettings::default()
+        );
+        let parsed: MagicianMemorySettings = serde_yaml::from_str(
+            "user_knowledge_bounds:\n  mode: enforce\n  max_live:\n    workflows: 500\n",
+        )
+        .unwrap();
+        assert!(parsed.user_knowledge_bounds.enforcing());
+        assert_eq!(parsed.user_knowledge_bounds.max_live["workflows"], 500);
+
+        let mut config = MagicianConfig::default();
+        enforce_memory_config_invariant(&config).expect("bounds defaults must load");
+        config.memory.user_knowledge_bounds.lanes.hot_days = 0;
+        let error = enforce_memory_config_invariant(&config).expect_err("hot_days 0 is invalid");
+        assert!(error
+            .to_string()
+            .contains("memory.user_knowledge_bounds.lanes.hot_days"));
     }
 
     #[test]
@@ -12777,6 +13577,49 @@ streaming_stt:
     }
 
     #[test]
+    fn owner_phone_identities_match_on_digits_and_other_channels_stay_exact() {
+        let mut owner_identities = HashMap::new();
+        owner_identities.insert("kapso".to_string(), vec!["+91 98765-43210".to_string()]);
+        owner_identities.insert("telegram".to_string(), vec!["12345678".to_string()]);
+        owner_identities.insert(
+            "agentmail".to_string(),
+            vec!["Owner@Example.com".to_string()],
+        );
+        let config = EnvoyConfig {
+            owner_identities,
+            ..EnvoyConfig::default()
+        };
+
+        assert!(config.has_owner_identity("kapso", "919876543210"));
+        assert!(config.has_owner_identity("kapso", "+919876543210"));
+        assert!(!config.has_owner_identity("kapso", "919876543211"));
+        assert!(!config.has_owner_identity("kapso", ""));
+        // Telegram chat ids are exact: no digit folding on a non-phone channel.
+        assert!(config.has_owner_identity("telegram", "12345678"));
+        assert!(!config.has_owner_identity("telegram", "+12345678"));
+        assert!(config.has_owner_identity("agentmail", "owner@example.com"));
+        assert!(!config.has_owner_identity("agentmail", "other@example.com"));
+        // An iMessage Apple ID that is an email is not a phone.
+        assert!(owner_identity_matches(
+            "imessage",
+            "Me@icloud.com",
+            "me@icloud.com"
+        ));
+        assert!(owner_identity_matches(
+            "imessage",
+            "+1 (555) 123-4567",
+            "15551234567"
+        ));
+        assert!(owner_identity_matches(
+            "whatsapp",
+            "+91 98765 43210",
+            "919876543210@s.whatsapp.net"
+        ));
+        // Too few digits is not a phone; it falls back to exact.
+        assert!(!owner_identity_matches("kapso", "+123", "123"));
+    }
+
+    #[test]
     fn envoy_config_merges_configured_and_env_owner_identities() {
         let env_name = "MAGICIAN_TEST_ENVOY_OWNER_IDENTITY_MERGE";
         std::env::set_var(env_name, "env@example.com, config@example.com");
@@ -12848,7 +13691,7 @@ streaming_stt:
 
         let genuine = router
             .profiles
-            .remove("op-harness-claude")
+            .remove("model/harness-claude_code/default/auto")
             .expect("production harness profile exists");
         router
             .profiles
@@ -12877,8 +13720,8 @@ streaming_stt:
             serde_yaml::from_str(&crate::config::shipped_repo_config_yaml())
                 .expect("production magician-config.yaml should parse");
         assert_eq!(
-            config.workspace_storage.provider, "silverbullet_space",
-            "template should select the silverbullet_space provider"
+            config.workspace_storage.provider, "local_file",
+            "template should select the local_file provider"
         );
 
         // The settings API mutates by load-edit-save: prove a deserialize ->
@@ -12887,7 +13730,7 @@ streaming_stt:
         let serialized = serde_yaml::to_string(&config).expect("config should serialize");
         let reparsed: MagicianConfig =
             serde_yaml::from_str(&serialized).expect("round-tripped config must re-parse");
-        assert_eq!(reparsed.workspace_storage.provider, "silverbullet_space");
+        assert_eq!(reparsed.workspace_storage.provider, "local_file");
         enforce_runtime_context_config_invariant(&reparsed)
             .expect("round-tripped config must still satisfy the runtime-context invariant");
     }
@@ -12970,7 +13813,7 @@ streaming_stt:
             .as_ref()
             .expect("router")
             .profiles
-            .get("op-embedding-local")
+            .get("operation/embed_documents")
             .expect("template defines the routed embedding profile");
         assert_eq!(
             embedding_profile.api_base_url.as_deref(),
@@ -13002,7 +13845,7 @@ streaming_stt:
             .as_ref()
             .expect("router")
             .profiles
-            .get("op-embedding-local")
+            .get("operation/embed_documents")
             .expect("template defines the routed embedding profile");
         assert_eq!(
             embedding_profile.api_base_url.as_deref(),
@@ -13115,7 +13958,7 @@ streaming_stt:
             .as_mut()
             .unwrap()
             .profiles
-            .get_mut("op-app-workflow-local")
+            .get_mut("workload/app_processing/local")
             .unwrap()
             .api_base_url = Some("https://unreviewed.example.test/api/chat".into());
         apply_runtime_service_endpoint_values(
@@ -13135,13 +13978,14 @@ streaming_stt:
     fn runtime_service_endpoint_overrides_preserve_reviewed_embedding_routes() {
         let mut config: MagicianConfig =
             serde_yaml::from_str(&crate::config::shipped_repo_config_yaml()).unwrap();
-        let declaration = config.app_platform.processing.profiles["op-app-workflow-local"].clone();
+        let declaration =
+            config.app_platform.processing.profiles["workload/app_processing/local"].clone();
         config
             .app_platform
             .processing
             .profiles
-            .insert("op-embedding-local".into(), declaration);
-        let before = config.llm.router.as_ref().unwrap().profiles["op-embedding-local"]
+            .insert("operation/embed_documents".into(), declaration);
+        let before = config.llm.router.as_ref().unwrap().profiles["operation/embed_documents"]
             .api_base_url
             .clone();
         apply_runtime_service_endpoint_values(
@@ -13152,7 +13996,7 @@ streaming_stt:
         )
         .unwrap();
         assert_eq!(
-            config.llm.router.as_ref().unwrap().profiles["op-embedding-local"].api_base_url,
+            config.llm.router.as_ref().unwrap().profiles["operation/embed_documents"].api_base_url,
             before
         );
         assert_eq!(
@@ -13824,6 +14668,12 @@ mod locality_policy_tests {
         // forwarded verbatim by remote providers (OpenAI Responses 400s on
         // them), so a remote arm carrying `format`/`options`/`keep_alive`/
         // `draft_num_predict` is a runtime failure, not a cosmetic one.
+        //
+        // Router profiles are no longer authored (there is no `*-remote`
+        // family): parsing the router materializes them from the catalog,
+        // merging connection, model and assignment metadata. So check every
+        // generated non-Ollama route — which covers each `when_cloud`
+        // counterpart — and make sure every cloud arm really is one of them.
         let config: MagicianConfig =
             serde_yaml::from_str(repo_config_text()).expect("repo config parses");
         let router = config.llm.router.as_ref().expect("router");
@@ -13832,22 +14682,40 @@ mod locality_policy_tests {
             if profile.provider == LLMProviderKind::Ollama {
                 continue;
             }
-            if !name.ends_with("-remote") {
-                continue;
-            }
             checked += 1;
             if let Some(metadata) = &profile.metadata {
                 for forbidden in ["format", "options", "keep_alive", "draft_num_predict"] {
                     assert!(
                         !metadata.contains_key(forbidden),
-                        "remote profile `{name}` carries Ollama-only metadata `{forbidden}`"
+                        "remote route `{name}` carries Ollama-only metadata `{forbidden}`"
                     );
                 }
             }
         }
+        assert!(checked > 0, "expected generated remote routes, got none");
+
+        let mut cloud_arms = std::collections::BTreeSet::new();
+        for (operation, selector) in &router.operation_mapping {
+            if !selector.selects_cloud_arm(magicllm::ProcessingLocality::Cloud) {
+                continue;
+            }
+            let cloud_name = selector.profile_for_locality(
+                &magicllm::config::RequestShape::NONE,
+                magicllm::ProcessingLocality::Cloud,
+            );
+            let cloud = router.profiles.get(cloud_name).unwrap_or_else(|| {
+                panic!("operation `{operation}` has no cloud route `{cloud_name}`")
+            });
+            assert_ne!(
+                cloud.provider,
+                LLMProviderKind::Ollama,
+                "operation `{operation}` cloud arm `{cloud_name}` is still Ollama"
+            );
+            cloud_arms.insert(cloud_name.to_string());
+        }
         assert!(
-            checked >= 13,
-            "expected the remote counterpart family, got {checked}"
+            !cloud_arms.is_empty(),
+            "expected the when_cloud counterpart routes, got none"
         );
     }
 
@@ -13855,7 +14723,17 @@ mod locality_policy_tests {
     fn locality_switch_preserves_reviewed_execution_posture() {
         // Local Ollama arms keep reasoning disabled. Cloud mirrors do too,
         // except the two migrated Sol operations: GPT-6.1 Sol requires at
-        // least low effort, with an explicit 4K shared output budget.
+        // least low effort, with a bounded output budget.
+        //
+        // Routes are materialized from the catalog: a model with a thinking
+        // control resolves thinking `none` to a typed `reasoning` whose effort
+        // is `none` (Off), not to an absent one. "Disabled" therefore means
+        // what dispatch sends — no reasoning, or a disabled effort — which the
+        // Ollama adapter turns into `think: false`.
+        let reasoning_disabled = |profile: &LLMProfile| {
+            magicllm::catalog::request_reasoning_defaults(profile)
+                .is_none_or(|reasoning| reasoning.is_disabled())
+        };
         for (surface, text) in [("repository", repo_config_text())] {
             let config: MagicianConfig = serde_yaml::from_str(text).expect("config parses");
             let router = config.llm.router.as_ref().expect("router");
@@ -13878,7 +14756,7 @@ mod locality_policy_tests {
                     "{surface} operation `{operation}` local arm must remain Ollama"
                 );
                 assert!(
-                    local.reasoning.is_none(),
+                    reasoning_disabled(local),
                     "{surface} operation `{operation}` local arm `{local_name}` enables reasoning"
                 );
                 assert_ne!(
@@ -13912,20 +14790,35 @@ mod locality_policy_tests {
                     panic!("{surface} operation `{operation}` has no cloud profile `{cloud_name}`")
                 });
                 assert_eq!(cloud.provider, LLMProviderKind::OpenAI);
-                if cloud.model == "gpt-6.1-sol" {
-                    assert!(matches!(
-                        operation.as_str(),
-                        "memory_archive_summary" | "channel_reply_draft"
-                    ));
-                    assert_eq!(cloud.supports_reasoning, Some(true));
+                // Only these reviewed arms reason, at low effort; the archive
+                // arm runs on Luna for cost, the reply draft on Sol.
+                if matches!(
+                    operation.as_str(),
+                    "memory_archive_summary" | "channel_reply_draft"
+                ) {
+                    assert!(
+                        ["gpt-6.1-sol", "gpt-6-luna"].contains(&cloud.model.as_str()),
+                        "{cloud_name} uses an unreviewed cloud reasoning model: {}",
+                        cloud.model
+                    );
+                    assert_eq!(cloud.supports_reasoning, Some(true), "{cloud_name}");
                     assert_eq!(
                         cloud.reasoning.as_ref().map(|r| r.effort.as_str()),
                         Some("low")
                     );
-                    assert_eq!(cloud.max_output_tokens, Some(4096));
+                    // The workload policy's output allowance: calls are bounded
+                    // by progress, not length, so the allowance is generous but
+                    // still well below Sol's 128K maximum.
+                    assert!(
+                        cloud
+                            .max_output_tokens
+                            .is_some_and(|tokens| tokens <= 32768),
+                        "{cloud_name} output budget is unbounded: {:?}",
+                        cloud.max_output_tokens
+                    );
                 } else {
                     assert_eq!(cloud.supports_reasoning, Some(false), "{cloud_name}");
-                    assert!(cloud.reasoning.is_none(), "{cloud_name}");
+                    assert!(reasoning_disabled(cloud), "{cloud_name}");
                     const REVIEWED_NO_REASONING_MODELS: [&str; 3] =
                         ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-luna"];
                     assert!(
@@ -13964,10 +14857,13 @@ mod locality_policy_tests {
                 operation_count, 20,
                 "{surface} locality-aware operation inventory changed; review every new pair"
             );
+            // Generated cloud routes are shared by operations with the same
+            // reviewed posture, so the inventory is smaller than the retired
+            // one-`*-remote`-profile-per-operation family.
             assert_eq!(
                 cloud_profiles.len(),
-                14,
-                "{surface} cloud replacement inventory changed; review every new profile"
+                6,
+                "{surface} cloud replacement inventory changed; review every new route"
             );
         }
     }
@@ -14023,7 +14919,7 @@ mod locality_policy_tests {
             let router = config.llm.router.as_ref().expect("router");
             let profile = router
                 .profiles
-                .get("op-embedding-local")
+                .get("operation/embed_documents")
                 .expect("routed embedding profile");
             assert_eq!(profile.provider, LLMProviderKind::Ollama);
             assert!(router.operation_mapping.contains_key("embed_documents"));
@@ -14074,7 +14970,7 @@ mod locality_policy_tests {
             violations: &mut Vec<String>,
         ) {
             if let Some(name) = selector.as_str() {
-                if name.starts_with("op-harness") {
+                if name.starts_with("model/harness-") {
                     violations.push(format!("{path} = {name}"));
                 }
                 return;
@@ -14095,26 +14991,14 @@ mod locality_policy_tests {
             "shipped defaults must map zero operations to harness profiles (the \
              no-override guarantee); found: {violations:?}"
         );
-        // Round-4 lesson, made structural: the harness profiles must live
-        // in `llm.router.profiles` — an anchored insertion once landed them
-        // in `adaptive_profiles` (syntax-valid YAML, boot-breaking serde).
-        // Parsed placement, not string presence.
-        let router = value
-            .get("llm")
-            .and_then(|llm| llm.get("router"))
-            .cloned()
-            .unwrap_or_else(|| serde_yaml::Value::Mapping(Default::default()));
-        let in_profiles = router
-            .get("profiles")
-            .and_then(|profiles| profiles.get("op-harness-claude"))
-            .is_some();
-        let contaminating_adaptive = router
-            .get("adaptive_profiles")
-            .and_then(|profiles| profiles.get("op-harness-claude"))
-            .is_some();
-        assert!(
-            in_profiles && !contaminating_adaptive,
-            "the op-harness profiles must be declared in llm.router.profiles, never adaptive_profiles (boot-breaking misplacement)"
-        );
+        let config: MagicianConfig = serde_yaml::from_str(&raw).expect("typed catalog seed");
+        let router = config.router_config().unwrap();
+        assert!(router
+            .profiles
+            .contains_key("model/harness-claude_code/default/auto"));
+        let raw_router = &value["llm"]["router"];
+        assert!(raw_router.get("profiles").is_none());
+        assert!(raw_router.get("adaptive_profiles").is_none());
+        assert!(raw_router["catalog"].get("aliases").is_none());
     }
 }

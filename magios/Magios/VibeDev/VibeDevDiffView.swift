@@ -49,16 +49,22 @@ struct VibeDevDiffView: View {
         .background(theme.backgroundColor.ignoresSafeArea())
         .navigationTitle(model.file?.fileName ?? "Diff")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbarBackground(theme.backgroundColor, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { VibeDevBackButton() }
+                .roundedSquareToolbarBackground()
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button(wrap ? "Wrap" : "No wrap") { wrap.toggle() }
                     .font(.themed(12, weight: .bold))
+                    .buttonStyle(VibeDevButtonStyle())
                     .accessibilityLabel(wrap ? "Lines wrap; turn wrapping off" : "Lines scroll; turn wrapping on")
                 Button { showFiles = true } label: { Image(systemName: "list.bullet") }
+                    .buttonStyle(VibeDevButtonStyle())
                     .accessibilityLabel("Files")
                     .disabled(model.files.count < 2)
             }
+            .roundedSquareToolbarBackground()
         }
         .safeAreaInset(edge: .bottom) {
             if model.files.count > 1 {

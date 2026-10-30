@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Android 12+ system splash shows no icon: launchers and OEM skins size and
+     place that icon their own way (HiOS drew the star ~1.6x larger than asked and
+     clipped it), so the launch screen (SplashActivity) draws the only mark, at
+     one size on every device. Transparent, at the system canvas size. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@android:color/transparent" />
+    <size android:width="288dp" android:height="288dp" />
+</shape>

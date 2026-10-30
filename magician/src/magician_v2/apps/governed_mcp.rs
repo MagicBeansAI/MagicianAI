@@ -87,6 +87,7 @@ impl AppGovernedMcpPreparedAction {
             action_id.clone(),
             self.arguments,
             exec_ctx,
+            None,
         )
         .await
         .map_err(ExecutionError::Step)?;
@@ -226,6 +227,9 @@ pub(crate) fn prepare_locked_governed_mcp_action(
         return Err(AppGovernedMcpError::IdentityMismatch);
     }
     let arguments = parse_mcp_arguments(canonical_input)?;
+    let oauth_callback_mode =
+        crate::magician_v2::mcp_oauth_binding::mcp_oauth_callback_mode(source, &package)
+            .map_err(|_| AppGovernedMcpError::InvalidSource)?;
     Ok(AppGovernedMcpPreparedAction {
         skill_name: header.name,
         source_digest,
@@ -236,6 +240,8 @@ pub(crate) fn prepare_locked_governed_mcp_action(
         execution_plan_digest,
         transport_result_byte_ceiling: MAX_APP_GOVERNED_MCP_RESULT_BYTES,
         runtime: Arc::new(GovernedRuntimeImplementation {
+            mcp_bindings: None,
+            oauth_callback_mode,
             package,
             actions: None,
             executable_directory: None,

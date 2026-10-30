@@ -2,6 +2,7 @@
 
 **Current development version:** `0.6.1` (Android version code `28`). The
 shipped app is **Magican** (`ai.magicbeans.magican`).
+Chat and VibeDev use a bare shield icon for God modes, sized like attachment controls, with the current mode retained in its accessibility label.
 
 > **Canonical links and domain (0.4.4, 2026-09-01):** Android registers and
 > accepts only `magican://` app links and uses `magican.ai` for current HTTPS
@@ -45,6 +46,19 @@ On-device Android automation for Magician: an `AccessibilityService` that reads
 the screen as structure, acts on it, and captures pixels when structure is not
 enough — so an agent can work a phone the way `agent-browser` works a browser.
 
+Assistant replies and task Run/Result summaries show generated “Not fully verified”
+notes through a themed info popup. Its icon sits beside chat playback or in the
+task summary header. The saved reason is visible on the first tap;
+the answer retains its numbers and structured blocks. Stored text, copying and
+speech keep the original caveat.
+Structured Markdown blocks use the ordinary chat Markdown renderer, retaining
+emphasis, lists and links instead of displaying formatting markers as text.
+Paragraphs, headings and list items have native block spacing, heading hierarchy
+and hanging list markers; code and quotes keep their own layouts. Link colours
+follow the selected theme.
+Run/Result summaries consisting entirely of HTML use inert native Markdown
+structure; ordinary Markdown with HTML code examples keeps its code formatting.
+
 Magdroid now contains both halves that belong on the handset: the **companion**
 (the automation engine) and the native **Magician client**. The client and
 bridge share the same enrolled Magician scope and device credential; they are
@@ -64,35 +78,74 @@ display name (or first nonempty alias), falling back to the product name,
 is a side panel, and the note is the Markdown file read and written through
 `/api/magician/v2/notes`. Published task notes open in that same library.
 
+Task usage merges stored, live and auxiliary model calls by ID per run and connection scope; missing tokens stay unavailable. Active-root model/tool/child work advances freshness across stale polls; heartbeats do not. Models allows cold usage-history preparation before rendering cumulative figures.
+
 ## Status
 
 **Builds, tests green, and the outbound bridge and native client are wired.**
 `make build-magdroid` produces a debug APK and `make test-magdroid` runs the
 Android unit suite. The client currently includes Chat, functional Settings,
 the Magican system keyboard, Audio Notes, the unified Work workspace, and the full
-Today workspace. Work hosts the complete Tasks/Monitors/Internal work screens
-and shared task details alongside Crew, Programs, Quality and Company loop.
+Today workspace. Work hosts the complete Tasks/Monitors/System work screens
+and shared task details alongside Crew, Playbooks, Quality checks and Team routines.
 Manual section navigation, New work and connection changes clear consumed
-deep-link detail targets; choosing Programs cannot reopen an earlier Crew detail.
-Settings is not a directory of placeholders: Guide and Roadmap
-open native pages; Roadmap is pending-only and never repeats shipped features as
-checked rows. Its entries are platform-specific rather than numerically copied
-from iOS: Android omits QR endpoint pairing from the pending list because it
-ships through App Pilot, and omits screen-guided App Copilot because App Pilot
-already owns that surface, while retaining the unshipped screen-plus-speech,
-assistant-result, messaging-negotiation, and VibeDev handoff work. One
-resizable **Magican at a glance** Home Screen widget now prioritizes Needs You,
+deep-link detail targets; choosing Playbooks cannot reopen an earlier Crew detail.
+
+Device instrumentation keeps the installed APK after the run so a paired
+phone retains its encrypted connection and local settings. Use a disposable
+emulator for tests that explicitly clear app data or replace its signing key.
+
+Work names programs **Playbooks**, member harness controls **Autopilot**, the
+company loop **Team routines**, and bounded output reviews **Quality checks**.
+Separate info buttons explain Work views and related settings in themed popovers.
+See the [shared Work vocabulary](../docs/components/unified-ui/unified-work.md#work-vocabulary).
+
+Settings keeps only this phone's settings (Voice & audio, Notifications &
+permissions, Keyboard & privacy, Connection, Help & about) under a search field,
+plus a top **Magican settings** row that opens the shared web Settings embedded
+in a WebView: budgets, harness credentials, preferences, storage maintenance and
+speaking voices are edited there. See
+[Settings](../docs/components/magdroid/README.md#settings).
+
+Settings → How to Use has searchable, section-filtered instructions for shipped
+screens and controls. Topics expand in place; search opens matching instructions.
+The guide covers the main tabs, Chat/run inspection, Work, VibeDev, Notes,
+Thinking Map, voice, keyboard, widgets, settings, App Pilot and Android assistant
+entry points.
+
+VibeDev opens one cross-project, activity-ordered run history from cursor-paginated
+`GET /vibedev/runs`, with project, repository, admitted location and per-run
+attention counts. The compact header offers Projects, New project and More;
+pull down to refresh. More controls the Magician at work notification-shade
+summary. New run uses the active theme’s page background and offers a welcome
+with starters that prefill a draft (Explore selects Discuss) and opens the shared Chat composer; ended runs retain it
+for follow-ups, with their recorded model, project and work location. Chat and
+VibeDev share the actual composer, voice/mute and Live controls, attachment
+previews, and model/thinking selection. Project and work location selectors
+sit above the input. Build, Discuss and Autopilot use the shared mode segments;
+Discuss shows read-only guidance, and Autopilot exposes budget and a new-run-only
+nightly schedule at 02:00 UTC. File, photo-library and camera uploads attach to
+the project’s chat session. Below the project/workspace row, mode guidance uses
+Chat Plan’s shared theme-accent band and animated expansion. New run reserves
+most of the screen above the keyboard. Enter adds a line; Hide keyboard dismisses
+the text keyboard without sending. Project details retain crew creation and paged runs.
+New project and run controls offer Original folder, Isolated workspace and
+Isolated branch, independently of Super god mode. Original-folder edits use the
+shared exact-diff approval dock with once, session and persistent grants;
+follow-ups keep their admitted location.
+
+One resizable **Magican at a glance** Home Screen widget prioritizes Needs You,
 active work, and Talk from the canonical Today response. Optional FCM data
 delivery refreshes that widget and the existing task-progress notification when
 the app/socket is asleep; builds without a deployment `google-services.json`
 retain periodic and in-app refresh without a baked customer Firebase project.
-Settings opens on **Permissions**, which shows whether notifications are
+Settings → **Notifications & permissions** shows whether notifications are
 allowed. Chat asks for that permission the first time it launches on Android 13
 or newer, and skips the dialog when it is already allowed. Allow notifications
 asks again while Android will still show the dialog, and opens the app’s
 notification settings after a permanent denial or when alerts are already
-allowed. Allowing alerts also refreshes the FCM registration. **At a glance**
-stays the widget and host-dependent delivery surface. App Pilot → Permissions
+allowed. Allowing alerts also refreshes the FCM registration. The same section's
+widget and remote-delivery rows are the widget and host-dependent delivery surface. App Pilot → Permissions
 is where accessibility, notification access, and screen capture are requested.
 Accepting screen capture promotes the accessibility service to a
 media-projection foreground service only when its notification can be posted;
@@ -584,7 +637,9 @@ Send options is a compact caret beside Send, with no extra row above the draft.
 Queue action controls use the selected theme; iOS also themes the sheet list and
 navigation bar, with global queue actions in an overflow menu.
 
-Work is the bottom-bar destination; Tasks, Monitors and Internal work remain
+Work is the bottom-bar destination; Tasks, Monitors and System work remain
 record filters within it. Native parsers accept historical task/Crew/Quality
 links, while new web handoffs use `/work` and its member editor/inspector paths.
 The retired web route aliases no longer exist.
+The crew definition editor resizes for the keyboard so Cancel and Save stay reachable at larger text sizes.
+Android checks cap Gradle at two workers and give the Kotlin compiler a 3 GiB heap to avoid compiler GC exhaustion.

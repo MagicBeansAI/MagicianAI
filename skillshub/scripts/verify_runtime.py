@@ -17,13 +17,19 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
+import shared_skill_bins
+import skill_render
+
 ROOT = Path(__file__).resolve().parents[1]
 MEDIA = {"media-fetch", "youtube-search"}
+ENGINES = {"cloak-browser", "lightpanda"}
+VERIFICATION_REVISION = 3
 BOTS = ("agentmail", "gmail", "kapso", "telegram", "telegram-self", "whatsapp")
 BOT_CLIS = {"gmail": "gws", "telegram-self": "tgcli", "whatsapp": "wu"}
 # The make target that (re)creates each skill's generated `bin/` entries.
@@ -39,11 +45,18 @@ BIN_PRODUCERS = {
     "ocr": "make -C skillshub setup-ocr",
     "media-fetch": "make -C skillshub setup-media-fetch",
     "marimo": "make -C skillshub setup-marimo",
-    "metabase": "make setup-metabase-cli",
     "higgsfield": "make setup-higgsfield-cli",
-    "whatsapp": "make -C skillshub install-bot-bundles",
+    "whatsapp": "make -C skillshub setup-whatsapp-bins",
+    "whatsapp-mcp": "make -C skillshub setup-whatsapp-bins",
 }
 LINK_SCOPES = "make -C skillshub link-scopes"
+# These companions must be pack-local: finding them on the host PATH would
+# widen a governed child's PATH to an unrelated system tool directory.
+PACK_LOCAL_BINS = {
+    "media-fetch": {"ffmpeg", "ffprobe"},
+    "whatsapp": {"wu", "node"},
+    "whatsapp-mcp": {"wu", "node"},
+}
 
 
 def bin_producer(skill: str) -> str:
@@ -62,6 +75,13 @@ class Audit:
         self.root = root
         self.files: dict[str, dict] = {}
         self.errors: list[str] = []
+        self._resolver = None
+
+    @property
+    def resolver(self):
+        if self._resolver is None:
+            self._resolver = shared_skill_bins.Resolver(self.root)
+        return self._resolver
 
     def file(self, path: Path, *, executable: bool = False, absolute: bool = False):
         if not path.is_file() or path.stat().st_size == 0:
@@ -74,7 +94,9 @@ class Audit:
             recorded = os.path.abspath(path)
         else:
             recorded = os.path.relpath(path.absolute(), self.root / ".runtime")
-        self.files[recorded] = {"path": recorded, "executable": executable}
+        stat = path.stat()
+        self.files[recorded] = {"path": recorded, "executable": executable,
+                                "size_bytes": stat.st_size, "modified_ns": stat.st_mtime_ns}
 
     def scope(self, scope_root: Path, only: set[str] | None = None, exclude: frozenset[str] = frozenset()):
         """Every `bin/` entry a scope's skills rely on must run from the scope."""
@@ -84,10 +106,19 @@ class Audit:
             if (only is not None and skill.name not in only) or skill.name in exclude:
                 continue
             scoped = scope_root / "skills" / skill.name
+            if shared_skill_bins.scope_removed(scoped):
+                continue
             scoped_manifest = scoped / "SKILL.md"
-            if scoped_manifest.exists() and not scoped_manifest.is_symlink():
+            if (scoped_manifest.exists() and not scoped_manifest.is_symlink()
+                    and not skill_render.is_render_managed(scoped)):
                 continue  # the scope's own copy of this skill
-            names = bin_names(skill / "bin") | bin_names(scoped / "bin")
+            if (only is None and skill.name in (ENGINES | {"browser"})
+                    and not (bin_names(skill / "bin") | bin_names(scoped / "bin"))):
+                continue  # The separate browser/engine step has not provisioned it.
+            self.file(scoped_manifest, absolute=True)
+            required = PACK_LOCAL_BINS.get(skill.name, set()) | self.resolver.required_local(skill)
+            names = (bin_names(skill / "bin") | bin_names(scoped / "bin")
+                     | required) - shared_skill_bins.optional_bins(skill)
             if not names:
                 continue
             if not scoped.is_dir():
@@ -110,28 +141,15 @@ class Audit:
                     else:
                         self.errors.append(f"{where}: {skill.name}/bin/{name} is missing here and in skillshub; {build}")
                     continue
-                # A non-executable source is pack data (metabase's generated.json).
-                data = source.is_file() and not os.access(source, os.X_OK)
+                # A non-executable source is pack data.
+                data = name not in required and source.is_file() and not os.access(source, os.X_OK)
                 self.file(path, executable=not data, absolute=True)
 
     def binary(self, skill: Path, name: str):
-        if skill.name == "media-fetch" and name in ("ffmpeg", "ffprobe"):
-            # Host PATH availability does not prove the governed pack's wiring.
-            self.file(skill / "bin" / name, executable=True)
-            return
-        # Match the dispatcher's scoped runtime, without falling through to an
-        # unrelated host npm/Python installation for those managed dependencies.
-        dirs = [skill / "bin", self.root / ".venv/bin", self.root / ".node/bin",
-                self.root / "node_modules/.bin"]
-        if skill.name == "marimo":
-            dirs.insert(1, skill / ".venv/bin")
-        path = shutil.which(name, path=os.pathsep.join(map(str, dirs)))
-        if not path:
-            path = shutil.which(name)
-        if not path:
-            self.errors.append(f"{skill.name}: missing declared binary {name}")
-            return
-        self.file(Path(path), executable=True)
+        local = skill / "bin" / name
+        # Match the pack's activation boundary, never a developer's terminal
+        # PATH or a shared install that the scope cannot actually execute.
+        self.file(local, executable=True)
         # npm launchers may exist while their downloaded native payload is gone.
         if name == "gws":
             self.file(self.root / "node_modules/@googleworkspace/cli/node_modules/.bin_real/gws",
@@ -139,12 +157,16 @@ class Audit:
 
     def skills(self, media: bool):
         import yaml
-        self.file(self.root / ".node/bin/node", executable=True)
+        self.node()
         self.file(self.root / ".venv/bin/python", executable=True)
+        self.file(self.root / "package-lock.json")
         count = 0
         for manifest in sorted(self.root.glob("*/SKILL.md")):
             if (manifest.parent.name in MEDIA) != media:
                 continue
+            if manifest.parent.name in ENGINES | {"browser"}:
+                continue
+            self.file(manifest)
             data = yaml.safe_load(manifest.read_text().split("---", 2)[1]) or {}
             metadata = (data.get("metadata") or {}).get("magician") or {}
             contract = metadata.get("runtime_contract") or {}
@@ -161,10 +183,26 @@ class Audit:
                 bins.update((action.get("requires") or {}).get("bins") or [])
                 if action.get("executable"):
                     bins.add(action["executable"])
+            bins.update(self.resolver.required_local(manifest.parent))
+            bins.difference_update(shared_skill_bins.optional_bins(manifest.parent))
             for binary in sorted(bins):
                 self.binary(manifest.parent, binary)
         if not count:
             self.errors.append("no governed skill manifests found")
+
+    def node(self):
+        command = self.root / ".node/bin/node"
+        pin = self.root / ".node-version"
+        self.file(command, executable=True)
+        self.file(pin)
+        if pin.is_file():
+            try:
+                result = subprocess.run([str(command), "--version"], capture_output=True, text=True, timeout=10)
+                expected = "v" + pin.read_text().strip().removeprefix("v")
+                if result.returncode or result.stdout.strip() != expected:
+                    self.errors.append("Node version differs from .node-version; run make -C skillshub setup-node")
+            except (OSError, subprocess.SubprocessError) as error:
+                self.errors.append(f"pinned Node cannot execute: {error}")
 
     def npm(self):
         lock_path = self.root / "package-lock.json"
@@ -193,7 +231,7 @@ class Audit:
             self.file(addon)
 
     def bots(self, versions: bool):
-        self.file(self.root / ".node/bin/node", executable=True)
+        self.node()
         self.npm()
         for bot in BOTS:
             self.file(self.root / "bots" / bot / "dist/index.js")
@@ -221,8 +259,34 @@ class Audit:
     def browser(self):
         self.file(self.root / "browser/bin/agent-browser", executable=True)
         self.file(self.root / "browser/node_modules/agent-browser/skill-data/core/SKILL.md")
+        self.file(self.root / "browser/SKILL.md")
+        self.file(self.root / "Makefile")
+        self.browser_cli(self.root / "browser/bin/agent-browser")
+
+    def browser_cli(self, command: Path):
+        """Offline native discovery checks: never open or close a browser."""
+        makefile = self.root / "Makefile"
+        match = re.search(r"^AGENT_BROWSER_VERSION\s*\?=\s*(\S+)", makefile.read_text(), re.M) if makefile.is_file() else None
+        if not match:
+            self.errors.append("browser: pinned version missing from Makefile")
+            return
+        env = dict(os.environ)
+        env.pop("AGENT_BROWSER_SKILLS_DIR", None)
+        for args, expected in ((["--version"], f"agent-browser {match[1]}"),
+                               (["skills", "get", "core", "--full"], None)):
+            try:
+                result = subprocess.run([str(command), *args], env=env, capture_output=True,
+                                        text=True, timeout=15)
+                if result.returncode or not result.stdout.strip() or (expected and result.stdout.strip() != expected):
+                    self.errors.append(f"{command}: {' '.join(args)} failed local verification")
+            except (OSError, subprocess.SubprocessError) as error:
+                self.errors.append(f"{command}: {error}")
 
     def engines(self):
+        for skill in ENGINES:
+            self.file(self.root / skill / "SKILL.md")
+            for binary in shared_skill_bins.declared_bins(self.root / skill):
+                self.binary(self.root / skill, binary)
         self.file(self.root / "cloak-browser/scripts/resolve.py", executable=True)
         self.file(self.root / "cloak-browser/scripts/stealth-init.js")
         self.file(self.root / "lightpanda/scripts/resolve.py", executable=True)
@@ -245,6 +309,9 @@ class Audit:
 
 
 def selected_scopes(data_root: Path, scope: str, all_scopes: bool) -> list[Path]:
+    parts = Path(scope).parts
+    if len(parts) != 2 or Path(scope).is_absolute() or any(p in (".", "..") for p in parts):
+        raise ValueError("scope must be principal/workspace")
     scopes_root = data_root / "scopes"
     chosen = [scopes_root / scope]
     if all_scopes:
@@ -252,6 +319,23 @@ def selected_scopes(data_root: Path, scope: str, all_scopes: bool) -> list[Path]
             if path.is_dir() and path.relative_to(scopes_root).as_posix() != "system/system" and path not in chosen:
                 chosen.append(path)
     return chosen
+
+
+def write_inventory(root: Path, group: str, audit: Audit):
+    """A failed recheck must replace any previous success record, atomically."""
+    dest = root / ".runtime" / f"{group}.yaml"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": 1, "verification_revision": VERIFICATION_REVISION,
+               "files": [] if audit.errors else list(audit.files.values()),
+               "errors": audit.errors}
+    with tempfile.NamedTemporaryFile(mode="w", dir=dest.parent, prefix=f".{group}-", delete=False) as out:
+        temporary = Path(out.name)
+        json.dump(payload, out, indent=2)
+        out.write("\n")
+    try:
+        os.replace(temporary, dest)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -274,38 +358,47 @@ def main() -> int:
     failed = False
     for group in groups:
         audit = Audit(args.root.resolve())
-        if group in ("skills", "media"):
-            audit.skills(group == "media")
-        elif group == "bots":
-            audit.bots(args.versions)
-        elif group == "scopes":
-            for scope in scopes:
-                audit.scope(scope)
-        else:
-            getattr(audit, group)()
-        # Each component's inventory also covers its own skills' scoped bins,
-        # so the component graph reports what the runtime will execute.
-        for scope in scopes:
-            if group == "browser":
-                audit.scope(scope, only={"browser"})
-            elif group == "media":
-                audit.scope(scope, only=MEDIA)
+        if args.write_inventory:
+            # Even interruption or a malformed manifest must fail closed.
+            audit.errors.append("verification in progress; rerun if interrupted")
+            write_inventory(args.root, group, audit)
+            audit.errors.clear()
+        try:
+            for script in ("verify_runtime.py", "shared_skill_bins.py"):
+                audit.file(args.root / "scripts" / script)
+            if group in ("skills", "media"):
+                audit.skills(group == "media")
             elif group == "bots":
-                audit.scope(scope, only=set(BOTS))
-            elif group == "skills":
-                audit.scope(scope, exclude=frozenset(MEDIA | {"browser"} | set(BOTS)))
+                audit.bots(args.versions)
+            elif group == "scopes":
+                for scope in scopes:
+                    audit.scope(scope)
+            else:
+                getattr(audit, group)()
+            # Include what the runtime executes, not just shared dependencies.
+            for scope in scopes:
+                if group == "browser":
+                    audit.scope(scope, only={"browser"})
+                    if not shared_skill_bins.scope_removed(scope / "skills/browser"):
+                        audit.browser_cli(scope / "skills/browser/bin/agent-browser")
+                elif group == "media":
+                    audit.scope(scope, only=MEDIA)
+                elif group == "bots":
+                    audit.scope(scope, only=set(BOTS) | {"whatsapp-mcp"})
+                elif group == "skills":
+                    audit.scope(scope, exclude=frozenset(MEDIA | ENGINES | {"browser"} | set(BOTS)))
+                elif group == "engines":
+                    audit.scope(scope, only=ENGINES)
+        except Exception as error:
+            audit.errors.append(f"local verification failed ({type(error).__name__}): {error}")
         if audit.errors:
             failed = True
             for error in audit.errors:
                 print(f"✗ {group}: {error}", file=sys.stderr)
         else:
             print(f"✓ {group}: {len(audit.files)} runtime files verified")
-            if args.write_inventory:
-                dest = args.root / ".runtime" / f"{group}.yaml"
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                temporary = dest.with_suffix(".tmp")
-                temporary.write_text(json.dumps({"schema_version": 1, "files": list(audit.files.values())}, indent=2) + "\n")
-                os.replace(temporary, dest)
+        if args.write_inventory:
+            write_inventory(args.root, group, audit)
     return int(failed)
 
 

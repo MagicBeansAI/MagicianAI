@@ -1,10 +1,10 @@
 //! `search_notes` — find the owner's notes by what is written in them.
 //!
 //! Reads the notes rather than an index of them. The notes space is a folder,
-//! and a second one once a provider fallback has been used; SilverBullet
-//! publishes no search API to defer to. An index would be a second copy of the
-//! truth that can go stale and disagree with the files while still answering
-//! confidently, which is the worst failure a search can have.
+//! and a second one once a provider fallback has been used. An index would be
+//! a second copy of the truth that can go stale and disagree with the files
+//! while still answering confidently, which is the worst failure a search can
+//! have.
 //!
 //! Scoped to the same boundary-safe roots the Observe traversal uses, so the
 //! runtime directories that share the notes root — model caches, credentials,
@@ -40,11 +40,42 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         provider: super::notes_shared::text_arg(&args, "provider"),
     };
 
-    match store.search_notes(&principal, &workspace, request).await {
-        Ok(results) => Ok(json!({
+    // Goal workspaces: matches the acting agent may not read are dropped
+    // after ranking and only counted (`goal_workspace_access`).
+    if let Ok(roots) = store.note_provider_roots(&principal, &workspace).await {
+        crate::magician_v2::execution::goal_workspace_access::register_notes_spaces(roots);
+    }
+    let agent = crate::magician_v2::execution::native_executors::current_acting_agent();
+    // Captured here: the filter may run off this task, where the delegation
+    // scope is not set.
+    let delegators = crate::magician_v2::execution::native_executors::current_read_delegators();
+    let task_root = crate::magician_v2::execution::native_executors::current_evidence_root();
+    let admit = move |_relative: &str, absolute: &std::path::Path| {
+        use crate::magician_v2::execution::goal_workspace_access as access;
+        let admitted = access::refusal_with_delegators(
+            absolute,
+            access::Op::Read,
+            agent.as_deref(),
+            &delegators,
+        )
+        .is_none();
+        if admitted {
+            // A hit from a goal workspace stays with it (the task's evidence).
+            access::record_read_in(task_root.as_deref(), absolute);
+        }
+        admitted
+    };
+    match store
+        .search_notes_for(&principal, &workspace, request, &admit)
+        .await
+    {
+        Ok((results, withheld)) => Ok(json!({
             "success": true,
             "hits": results.hits,
             "hit_count": results.hits.len(),
+            // How many matches sit where this agent may not read (goal
+            // workspaces it is not a member of, private goals). Never named.
+            "withheld_count": withheld,
             "query_terms": results.query_terms,
             "scanned_notes": results.scanned_notes,
             // Both reported rather than hidden: "nothing found" means something

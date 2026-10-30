@@ -101,9 +101,8 @@
 	<HeroBackground {dark} />
 	<div class="hs-main">
 		<div class="hs-copy">
-			<h1 id="hs-title">magican</h1>
-			<p class="hs-tagline">More You</p>
-			<p class="hs-description">Your personal superpowers</p>
+			<h1 id="hs-title">magican<sup class="hs-pow">More You</sup></h1>
+			<p class="hs-tagline">Life assistant for work, play, and everything else</p>
 			<div class="hs-actions">
 				<nav class="hs-start" aria-label="Get started with Magican">
 					<a class="hs-primary" href={actionHref}>{actionLabel} <span aria-hidden="true">→</span></a>
@@ -204,23 +203,38 @@
 		color: var(--text-primary);
 	}
 
-	.hs-tagline {
-		margin: 0 0 clamp(.65rem, 2svh, 1.6rem);
+	.hs-pow {
+		display: inline-block;
 		font-family: var(--lp-font);
-		font-size: clamp(2.8rem, min(6vw, 8.4svh), 5rem);
+		font-size: clamp(0.95rem, min(2vw, 2.7svh), 1.6rem);
 		font-weight: 500;
-		font-style: normal;
-		letter-spacing: -.045em;
-		line-height: 1.12;
+		letter-spacing: -.02em;
+		line-height: 1;
+		vertical-align: top;
+		position: relative;
+		top: 0.1em;
+		margin-left: 0.18em;
+		background: linear-gradient(
+			115deg,
+			var(--accent-primary, #9e59ff) 0%,
+			var(--accent-secondary, #ff8c42) 100%
+		);
+		-webkit-background-clip: text;
+		background-clip: text;
+		color: transparent;
+		white-space: nowrap;
 	}
 
-	.hs-description {
-		max-width: 23rem;
-		margin: 0 0 clamp(.75rem, 2svh, 1.6rem);
-		font-size: clamp(1.1rem, 1.65vw, 1.3rem);
-		line-height: 1.5;
-		color: var(--text-secondary);
-		text-wrap: pretty;
+	.hs-tagline {
+		max-width: 28rem;
+		margin: 0 0 clamp(.85rem, 2.5svh, 1.8rem);
+		font-family: var(--lp-font);
+		font-size: clamp(1.8rem, min(3.8vw, 5.2svh), 2.9rem);
+		font-weight: 500;
+		font-style: normal;
+		letter-spacing: -.03em;
+		line-height: 1.18;
+		color: var(--text-primary);
 	}
 
 	.hs-actions {
@@ -487,14 +501,10 @@
 			line-height: 1.05;
 		}
 		.hs-tagline {
-			font-size: clamp(2.5rem, 7.2svh, 3.8rem);
-			line-height: 1.08;
+			max-width: 26rem;
+			font-size: clamp(1.5rem, 4.2svh, 2.2rem);
+			line-height: 1.15;
 			margin-bottom: .6rem;
-		}
-		.hs-description {
-			font-size: 1rem;
-			line-height: 1.4;
-			margin-bottom: .75rem;
 		}
 		.hs-actions {
 			gap: .5rem;
@@ -538,15 +548,15 @@
 			font-size: clamp(2.9rem, 13vw, 4rem);
 			line-height: 1.08;
 		}
-		.hs-tagline {
-			font-size: clamp(2.2rem, 9.5vw, 3rem);
-			margin-bottom: .8rem;
+		.hs-pow {
+			font-size: clamp(0.85rem, 3.8vw, 1.2rem);
+			top: 0.08em;
 		}
-		.hs-description {
+		.hs-tagline {
 			max-width: 22rem;
-			font-size: 1rem;
-			line-height: 1.45;
-			margin-bottom: .9rem;
+			font-size: clamp(1.4rem, 6.2vw, 2rem);
+			line-height: 1.2;
+			margin-bottom: .8rem;
 		}
 		.hs-actions {
 			gap: .5rem;

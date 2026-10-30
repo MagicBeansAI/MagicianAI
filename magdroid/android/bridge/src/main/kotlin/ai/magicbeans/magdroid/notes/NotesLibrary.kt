@@ -92,6 +92,9 @@ class NotesLibraryRepository(context: Context) {
             authorize()
             parameter("path", path)
         }
+        if (response.status.value == 404) {
+            throw NotesLibraryException("This note was not found. It may have been moved or deleted.")
+        }
         if (!response.status.isSuccess()) throw NotesLibraryException("Could not open that note.")
         return json.decodeFromString(NoteDocument.serializer(), response.bodyAsText())
     }

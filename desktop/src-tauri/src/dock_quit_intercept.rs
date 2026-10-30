@@ -19,8 +19,6 @@
 //!     `applicationShouldTerminate:` and goes through Tauri's exit
 //!     pipeline.
 
-#![cfg(target_os = "macos")]
-
 use std::sync::OnceLock;
 
 use objc2::ffi::{class_getName, class_replaceMethod};
@@ -60,7 +58,7 @@ pub fn install(app: &AppHandle) {
         let sel: Sel = sel!(applicationShouldTerminate:);
         // Method signature: returns NSUInteger (Q), takes self (@),
         // SEL (:), and sender NSApplication * (@).
-        let types = b"Q@:@\0".as_ptr() as *const std::os::raw::c_char;
+        let types = c"Q@:@".as_ptr();
         let imp: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize =
             should_terminate_override;
         // class_replaceMethod returns the previous IMP, or null if
@@ -69,7 +67,10 @@ pub fn install(app: &AppHandle) {
         let result = class_replaceMethod(
             delegate_class as *const _ as *mut _,
             sel,
-            std::mem::transmute::<_, objc2::runtime::Imp>(imp),
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
+                objc2::runtime::Imp,
+            >(imp),
             types,
         );
         if result.is_none() {

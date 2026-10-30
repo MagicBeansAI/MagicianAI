@@ -1,10 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use super::{bounded_usage_counter, default_http_client, read_bounded_response_text};
@@ -16,7 +17,7 @@ use crate::{
     types::{
         clone_admitted_tool_argument, clone_json_value_iteratively, parse_provider_json_value,
         ContentBlock, LLMMessage, LLMRequest, LLMResponse, LLMResponseFormat, LLMToolCall,
-        LLMToolSpec, MessageRole, PromptCacheConfig, ReasoningConfig, TokenUsage,
+        LLMToolSpec, MessageRole, PromptCacheConfig, ReasoningConfig, StreamDelta, TokenUsage,
     },
 };
 
@@ -90,7 +91,9 @@ impl GeminiProvider {
             reasoning,
             tool_calling: true,
             json_mode: true,
-            streaming: false, // Phase 1: non-streaming only
+            // generateContent streams; Interactions profiles are refused
+            // streaming at config validation.
+            streaming: true,
             computer_use: false,
             // Overridden to true by `capabilities`; false at the detect layer
             // keeps the base declaration honest.
@@ -98,7 +101,18 @@ impl GeminiProvider {
         }
     }
 
-    fn accepts_sampling_parameters(model: &str) -> bool {
+    /// Whether the request may carry `temperature` / `top_p`: the
+    /// catalogued model's `wire.sampling`, else the name fallback.
+    fn accepts_sampling(request: &LLMRequest) -> bool {
+        match request.model_wire.as_ref() {
+            Some(wire) => wire.sampling,
+            None => Self::accepts_sampling_parameters(&request.model),
+        }
+    }
+
+    /// FALLBACK for models absent from the model catalog; catalogued models
+    /// declare `wire.sampling` instead.
+    pub(crate) fn accepts_sampling_parameters(model: &str) -> bool {
         let model = model.trim().to_ascii_lowercase();
         !model.starts_with("gemini-3.5-flash-lite")
             && !model.starts_with("gemini-3.6-flash")
@@ -369,11 +383,13 @@ impl GeminiProvider {
         let declarations: Vec<Value> = tools
             .iter()
             .map(|tool| {
-                let mut parameters = clone_json_value_iteratively(&tool.parameters);
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
+                let mut parameters = clone_json_value_iteratively(&parameters);
                 sanitize_gemini_schema(&mut parameters);
                 json!({
                     "name": tool.name,
-                    "description": tool.description,
+                    "description": description,
                     "parameters": parameters,
                 })
             })
@@ -972,12 +988,14 @@ impl GeminiProvider {
         tools
             .iter()
             .map(|tool| {
-                let mut parameters = clone_json_value_iteratively(&tool.parameters);
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
+                let mut parameters = clone_json_value_iteratively(&parameters);
                 sanitize_gemini_schema(&mut parameters);
                 json!({
                     "type": "function",
                     "name": tool.name,
-                    "description": tool.description,
+                    "description": description,
                     "parameters": parameters,
                 })
             })
@@ -986,7 +1004,7 @@ impl GeminiProvider {
 
     fn interaction_generation_config(request: &LLMRequest) -> Option<Value> {
         let mut config = Map::new();
-        if Self::accepts_sampling_parameters(&request.model) {
+        if Self::accepts_sampling(request) {
             if let Some(temperature) = request.temperature {
                 config.insert("temperature".to_string(), Value::from(temperature));
             }
@@ -1397,6 +1415,7 @@ fn gemini_tool_call_id(name: &str, index: usize, provider_id: Option<&str>) -> S
 ///   took every Gemini 3.8 voice call down at setup.
 pub(crate) fn sanitize_gemini_schema(value: &mut Value) {
     const UNSUPPORTED_KEYS: &[&str] = &[
+        "x-magician-grounding-aliases",
         "additionalProperties",
         "$schema",
         "$id",
@@ -1634,6 +1653,32 @@ impl LLMProvider for GeminiProvider {
     }
 
     async fn invoke(&self, request: LLMRequest) -> LLMResult<LLMResponse> {
+        self.generate_content(request, None).await
+    }
+
+    /// Text parts arrive as `Token` deltas; the Interactions transport does
+    /// not stream and sends only the final `Done`.
+    async fn invoke_stream(
+        &self,
+        request: LLMRequest,
+        tx: mpsc::Sender<StreamDelta>,
+    ) -> LLMResult<()> {
+        let response = self.generate_content(request, Some(&tx)).await?;
+        let _ = tx.send(StreamDelta::Done(response)).await;
+        Ok(())
+    }
+}
+
+impl GeminiProvider {
+    /// A `generateContent` call made over `streamGenerateContent`, so a long
+    /// answer that is still producing is bounded by progress, not cut at the
+    /// request timeout. The chunks fold back into the `generateContent` body
+    /// parsed below. `token_tx` receives answer text as it streams.
+    async fn generate_content(
+        &self,
+        request: LLMRequest,
+        token_tx: Option<&mpsc::Sender<StreamDelta>>,
+    ) -> LLMResult<LLMResponse> {
         let protected_request = request.metadata.single_physical_attempt;
         let retry_attempt = Self::max_tokens_retry_attempt(&request);
         let model = if request.model.is_empty() {
@@ -1688,7 +1733,7 @@ impl LLMProvider for GeminiProvider {
 
         // Generation config
         let mut gen_config = Map::new();
-        if Self::accepts_sampling_parameters(&model) {
+        if Self::accepts_sampling(&request) {
             if let Some(temp) = request.temperature {
                 gen_config.insert("temperature".to_string(), Value::from(temp));
             }
@@ -1731,7 +1776,10 @@ impl LLMProvider for GeminiProvider {
             }
         }
 
-        let url = format!("{}/models/{}:generateContent", self.base_url, model);
+        let url = format!(
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, model
+        );
 
         let timeout = request
             .metadata
@@ -1739,28 +1787,23 @@ impl LLMProvider for GeminiProvider {
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-goog-api-key", &self.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+        let response = super::send_streaming_request(
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .header("Content-Type", "application/json")
+                .json(&body),
+            timeout,
+        )
+        .await?;
 
         let status = response.status();
-        let raw_body = read_bounded_response_text(response).await?;
-
-        let payload = parse_provider_json_value(&raw_body)?;
-        drop(raw_body);
+        let payload = if !status.is_success() || super::is_json_response(&response) {
+            super::read_json_body(response, timeout).await?
+        } else {
+            Self::collect_generate_content_stream(response, timeout, token_tx, protected_request)
+                .await?
+        };
 
         if status.is_client_error() || status.is_server_error() {
             let message = payload
@@ -1909,12 +1952,254 @@ impl LLMProvider for GeminiProvider {
 
         Ok(response)
     }
+
+    async fn collect_generate_content_stream(
+        response: reqwest::Response,
+        timeout: Duration,
+        token_tx: Option<&mpsc::Sender<StreamDelta>>,
+        protected_request: bool,
+    ) -> LLMResult<Value> {
+        let mut assembler = GeminiStreamAssembler::new(protected_request);
+        let mut reader = super::SseReader::new(response.bytes_stream(), timeout);
+        while let Some(data) = reader.next_data().await? {
+            let Some(text) = assembler.fold(parse_provider_json_value(&data)?)? else {
+                continue;
+            };
+            reader.mark_progress();
+            if let Some(tx) = token_tx.filter(|_| !text.is_empty()) {
+                let _ = tx.send(StreamDelta::Token(text)).await;
+            }
+        }
+        assembler.finish()
+    }
+}
+
+/// Folds `streamGenerateContent` chunks back into one `generateContent`
+/// body, so `parse_output`, usage and finish-reason parsing read a streamed
+/// call exactly like a plain one. Adjacent text parts of the same kind
+/// (answer or thought) join into one part, as a plain call returns them
+/// (`parse_output` joins separate text parts with newlines); a part that
+/// carries a `thoughtSignature` closes its run. Other parts (function calls,
+/// inline data) keep their order. Candidate and top-level fields
+/// (`finishReason`, `groundingMetadata`, `usageMetadata`, `modelVersion`)
+/// keep their latest value: the last chunk carries the totals.
+struct GeminiStreamAssembler {
+    protected: bool,
+    body: Map<String, Value>,
+    candidates: BTreeMap<u64, GeminiCandidateAssembly>,
+    finished: bool,
+}
+
+#[derive(Default)]
+struct GeminiCandidateAssembly {
+    fields: Map<String, Value>,
+    content: Map<String, Value>,
+    parts: Vec<Value>,
+}
+
+impl GeminiStreamAssembler {
+    fn new(protected: bool) -> Self {
+        Self {
+            protected,
+            body: Map::new(),
+            candidates: BTreeMap::new(),
+            finished: false,
+        }
+    }
+
+    /// Fold one chunk. `Some(text)` when it carried output (any part), with
+    /// the answer text it added to the first candidate.
+    fn fold(&mut self, chunk: Value) -> LLMResult<Option<String>> {
+        let Value::Object(mut chunk) = chunk else {
+            return Ok(None);
+        };
+        if let Some(error) = chunk.get("error").filter(|error| !error.is_null()) {
+            let message = if self.protected {
+                super::PROTECTED_PROVIDER_ERROR.to_owned()
+            } else {
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Gemini stream reported an error")
+                    .to_owned()
+            };
+            return Err(LLMError::Provider {
+                provider: LLMProviderKind::Gemini.to_string(),
+                message,
+            });
+        }
+        // A blocked prompt ends with feedback and no candidates.
+        if chunk
+            .get("promptFeedback")
+            .and_then(|feedback| feedback.get("blockReason"))
+            .is_some_and(|reason| !reason.is_null())
+        {
+            self.finished = true;
+        }
+        let mut output = None::<String>;
+        if let Some(Value::Array(candidates)) = chunk.remove("candidates") {
+            for candidate in candidates {
+                let Value::Object(mut candidate) = candidate else {
+                    continue;
+                };
+                let index = candidate.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let entry = self.candidates.entry(index).or_default();
+                if let Some(Value::Object(mut content)) = candidate.remove("content") {
+                    if let Some(Value::Array(parts)) = content.remove("parts") {
+                        for part in parts {
+                            let text = output.get_or_insert_with(String::new);
+                            if index == 0
+                                && part.get("thought").and_then(Value::as_bool) != Some(true)
+                            {
+                                if let Some(fragment) = part.get("text").and_then(Value::as_str) {
+                                    text.push_str(fragment);
+                                }
+                            }
+                            entry.push_part(part);
+                        }
+                    }
+                    for (key, value) in content {
+                        if !value.is_null() {
+                            entry.content.insert(key, value);
+                        }
+                    }
+                }
+                for (key, value) in candidate {
+                    if value.is_null() {
+                        continue;
+                    }
+                    if key == "finishReason" {
+                        self.finished = true;
+                    }
+                    entry.fields.insert(key, value);
+                }
+            }
+        }
+        for (key, value) in chunk {
+            if !value.is_null() {
+                self.body.insert(key, value);
+            }
+        }
+        Ok(output)
+    }
+
+    /// The assembled body. A stream that ended before any finish reason was
+    /// cut off: a plain call got no complete answer, so it fails as
+    /// transport (as a truncated JSON body did).
+    fn finish(self) -> LLMResult<Value> {
+        if !self.finished {
+            return Err(LLMError::Transport(
+                "Gemini stream ended before a finish reason".to_string(),
+            ));
+        }
+        let mut body = self.body;
+        let candidates: Vec<Value> = self
+            .candidates
+            .into_values()
+            .map(|candidate| {
+                let mut content = candidate.content;
+                content.insert("parts".to_string(), Value::Array(candidate.parts));
+                let mut fields = candidate.fields;
+                fields.insert("content".to_string(), Value::Object(content));
+                Value::Object(fields)
+            })
+            .collect();
+        if !candidates.is_empty() {
+            body.insert("candidates".to_string(), Value::Array(candidates));
+        }
+        Ok(Value::Object(body))
+    }
+}
+
+impl GeminiCandidateAssembly {
+    fn push_part(&mut self, part: Value) {
+        if let Some(Value::Object(last)) = self.parts.last_mut() {
+            // Text fragments join into one part (a plain body has one; separate
+            // parts are newline-joined by `parse_output`). Only two signed
+            // fragments stay apart: each signature belongs to its own part.
+            let both_signed = last.contains_key("thoughtSignature")
+                && part
+                    .as_object()
+                    .is_some_and(|part| part.contains_key("thoughtSignature"));
+            if Self::joinable_text(last)
+                && !both_signed
+                && part.as_object().is_some_and(Self::joinable_text)
+                && Self::is_thought(last) == part.as_object().is_some_and(Self::is_thought)
+            {
+                if let Value::Object(part) = part {
+                    for (key, value) in part {
+                        if key != "text" {
+                            last.insert(key, value);
+                        } else if let (Some(Value::String(text)), Value::String(fragment)) =
+                            (last.get_mut("text"), value)
+                        {
+                            text.push_str(&fragment);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        self.parts.push(part);
+    }
+
+    /// A text part with nothing but its text, thought flag and signature.
+    fn joinable_text(part: &Map<String, Value>) -> bool {
+        part.get("text").is_some_and(Value::is_string)
+            && part
+                .keys()
+                .all(|key| matches!(key.as_str(), "text" | "thought" | "thoughtSignature"))
+    }
+
+    fn is_thought(part: &Map<String, Value>) -> bool {
+        part.get("thought").and_then(Value::as_bool) == Some(true)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn streamed_chunks_fold_into_the_generate_content_body() {
+        let mut assembler = GeminiStreamAssembler::new(false);
+        let chunks = [
+            json!({"candidates":[{"content":{"role":"model","parts":[{"text":"plan","thought":true}]}}]}),
+            json!({"candidates":[{"content":{"role":"model","parts":[{"text":"Hel"}]}}]}),
+            json!({"candidates":[{"content":{"role":"model","parts":[{"text":"lo"},{"functionCall":{"name":"f","args":{"a":1}},"thoughtSignature":"sig"}]}}],"usageMetadata":{"promptTokenCount":3}}),
+            json!({"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5,"totalTokenCount":8},"modelVersion":"g"}),
+        ];
+        let mut streamed = String::new();
+        for chunk in chunks {
+            streamed.push_str(&assembler.fold(chunk).unwrap().unwrap());
+        }
+        assert_eq!(streamed, "Hello");
+        let body = assembler.finish().unwrap();
+        assert_eq!(
+            body["candidates"][0]["content"]["parts"],
+            json!([
+                {"text":"plan","thought":true},
+                {"text":"Hello"},
+                {"functionCall":{"name":"f","args":{"a":1}},"thoughtSignature":"sig"},
+                {"text":""}
+            ])
+        );
+        assert_eq!(body["candidates"][0]["finishReason"], "MAX_TOKENS");
+        assert_eq!(body["usageMetadata"]["totalTokenCount"], 8);
+        let (_, tool_calls, text) = GeminiProvider::parse_output(&body).unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(text.as_deref(), Some("plan\nHello\n"));
+    }
+
+    #[test]
+    fn a_stream_cut_before_its_finish_reason_is_a_transport_error() {
+        let mut assembler = GeminiStreamAssembler::new(false);
+        assembler
+            .fold(json!({"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}))
+            .unwrap();
+        assert!(matches!(assembler.finish(), Err(LLMError::Transport(_))));
+    }
 
     #[test]
     fn google_search_tool_replaces_function_tools_and_fails_mixed_closed() {
@@ -1981,6 +2266,7 @@ mod tests {
             prompt_cache: Some(PromptCacheConfig::Enabled {
                 cached_content: Some("cachedContents/private-history".to_owned()),
                 ttl: None,
+                conversation: false,
             }),
             extra: Some(
                 json!({
@@ -2086,6 +2372,15 @@ mod tests {
             json!({ "type": "object", "properties": { "type": { "type": "string" } } });
         sanitize_gemini_schema(&mut data_like);
         assert!(data_like["properties"]["type"].get("items").is_none());
+    }
+
+    #[test]
+    fn tool_grounding_annotations_stay_out_of_gemini_wire_schemas() {
+        let mut schema = json!({"type":"object","properties":{"file_path":{
+            "type":"string", "x-magician-grounding-aliases":["path"]
+        }}});
+        sanitize_gemini_schema(&mut schema);
+        assert_eq!(schema["properties"]["file_path"], json!({"type":"string"}));
     }
 
     #[test]
@@ -2821,6 +3116,26 @@ mod tests {
         assert!(cap.supports_modality(LLMModality::Vision));
         assert!(cap.supports_reasoning());
         assert!(cap.tool_calling);
+    }
+
+    #[test]
+    fn catalogued_sampling_fact_overrides_the_name_fallback() {
+        let wire = |sampling| crate::catalog::ModelWire {
+            thinking: None,
+            thinking_off: false,
+            thinking_off_effort: None,
+            sampling,
+        };
+        let mut request = LLMRequest {
+            model: "gemini-4-argon".into(),
+            ..Default::default()
+        };
+        assert!(!GeminiProvider::accepts_sampling(&request), "name fallback");
+        request.model_wire = Some(wire(true));
+        assert!(GeminiProvider::accepts_sampling(&request));
+        request.model = "acme-flash-9".into();
+        request.model_wire = Some(wire(false));
+        assert!(!GeminiProvider::accepts_sampling(&request));
     }
 
     #[test]

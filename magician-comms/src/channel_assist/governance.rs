@@ -843,7 +843,7 @@ fn build_snapshot_with_restricted_retention(
         ("memory_events", "Memory diagnostics", "memory_events", StorageSafetyClass::Observability, Some(90), "Recall/utility diagnostics; compacted and retained for 90 days."),
         ("activity_rows", "Activity spine", "activity_rows", StorageSafetyClass::Observability, Some(magician::magician_v2::analytics::parquet_maintenance::ACTIVITY_DETAIL_RETENTION_DAYS as u32), "One row per completed span. Hours fold after 2h and days after 48h; full rows are summarised into Activity rollups after 7 days rather than deleted."),
         ("activity_rollups", "Activity rollups", "activity_rollups", StorageSafetyClass::Observability, Some(magician::magician_v2::analytics::parquet_maintenance::ACTIVITY_ROLLUP_RETENTION_DAYS as u32), "Per-hour counts and latency percentiles that outlive the spans behind them. Written when spine detail expires; kept 13 months so last year's shape is still comparable."),
-        ("llm_calls", "LLM calls", "llm_calls", StorageSafetyClass::Observability, Some(90), "Canonical facts retain verified fallback revisions; legacy batches compact; 90-day retention."),
+        ("llm_calls", "LLM calls", "llm_calls", StorageSafetyClass::Observability, Some(90), "Days older than yesterday drop raw part files after the compact is verified; today and yesterday keep them. Legacy batches compact. 90-day retention."),
         ("llm_embeddings", "Embedding batches", "llm_embeddings", StorageSafetyClass::Observability, Some(90), "Content-free local embedding telemetry; completed partitions compact and expire after 90 days."),
         ("llm_provider_attempts", "Provider attempts", "llm_provider_attempts", StorageSafetyClass::Observability, Some(90), "Canonical provider-attempt lineage with 90-day retention."),
         ("llm_tool_calls", "Tool-call lineage", "llm_tool_calls", StorageSafetyClass::Observability, Some(90), "Tool causality facts are now covered by governed 90-day retention."),
@@ -1068,7 +1068,7 @@ fn compact_parquet_action() -> StorageActionDescriptor {
     StorageActionDescriptor {
         id: "compact_parquet".to_string(),
         label: "Compact analytics".to_string(),
-        description: "Merge completed batch-owned partitions and roll the active canonical LLM generation forward without deleting immutable facts."
+        description: "Merge completed batch partitions, roll canonical LLM generations, and drop raw part files on days older than yesterday once the compact is verified."
             .to_string(),
         confirmation: Some("COMPACT PARQUET".to_string()),
         destructive: false,

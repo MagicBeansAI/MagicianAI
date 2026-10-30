@@ -4,6 +4,8 @@ import Foundation
 // helper names the web function it mirrors so a change on one side has an
 // obvious twin to update:
 //
+// - `TaskCompletion`      ← `completion_kind` / `open_items` (Android
+//                           `TaskCompletion.kt`)
 // - `TaskResultRule`      ← `hasFinalResult` (NativeTasksSurface.svelte) /
 //                           `internalTaskHasResult` (InternalTasksWorkspace.svelte)
 // - `TaskRecurrence`      ← `isRecurring` / `isRecurringTask`
@@ -12,6 +14,72 @@ import Foundation
 //                           `outputScopeDescription` (UnifiedTaskPanel.svelte)
 // - `TaskDelegationTimeline` ← `groupTimelineByDelegation` / `delegationSpan`
 //                           (taskTimeline.ts)
+
+// MARK: - Completion kind
+
+/// How a `completed` task delivered: the server's `completion_kind`
+/// (`full` | `partial`) and `open_items` on V3 task rows and the task
+/// detail's `state`. A completed + partial task finished with requirements
+/// still open (often because something blocked it), so it reads "Partly done"
+/// in the warning tone, never as a plain success. Android twin:
+/// `magdroid/.../tasks/TaskCompletion.kt`.
+enum TaskCompletion {
+    static let partlyDoneLabel = "Partly done"
+    static let openItemMaxChars = 120
+
+    /// `full` or `partial`; any other value reads as absent.
+    static func kind(_ raw: String?) -> String? {
+        guard let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              value == "full" || value == "partial" else { return nil }
+        return value
+    }
+
+    /// The non-empty string entries of `open_items`, trimmed.
+    static func openItems(_ raw: [String?]?) -> [String] {
+        (raw ?? []).compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+
+    /// Lenient decode of both fields: a wrong shape or unknown kind is absent.
+    static func decode<K: CodingKey>(_ c: KeyedDecodingContainer<K>, kind kindKey: K, items itemsKey: K) -> (kind: String?, openItems: [String]) {
+        let kind = kind((try? c.decodeIfPresent(String.self, forKey: kindKey)) ?? nil)
+        let items = openItems(((try? c.decodeIfPresent([LenientString].self, forKey: itemsKey)) ?? nil)?.map(\.value))
+        return (kind, items)
+    }
+
+    /// `open_items` read from its own decoder (a single value): any shape.
+    static func decodeOpenItems(_ decoder: Decoder) -> [String] {
+        openItems((try? decoder.singleValueContainer().decode([LenientString].self))?.map(\.value))
+    }
+
+    /// One `open_items` entry: a string, or nil for any other shape.
+    private struct LenientString: Decodable {
+        let value: String?
+        init(from decoder: Decoder) throws {
+            value = try? decoder.singleValueContainer().decode(String.self)
+        }
+    }
+
+    /// Lenient read from an untyped JSON object (the task detail's `state`).
+    static func read(_ object: [String: Any]) -> (kind: String?, openItems: [String]) {
+        (kind(object["completion_kind"] as? String), openItems((object["open_items"] as? [Any])?.map { $0 as? String }))
+    }
+
+    static func isPartlyDone(status: String?, kind: String?) -> Bool {
+        status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "completed" && self.kind(kind) == "partial"
+    }
+
+    /// "Open: <first item>" on one line, truncated, with "· +N more" when
+    /// there are others; nil when there is nothing open.
+    static func openLine(_ items: [String]) -> String? {
+        guard let first = items.first else { return nil }
+        let flat = first.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let clipped = flat.count <= openItemMaxChars
+            ? flat
+            : String(flat.prefix(openItemMaxChars - 1)).trimmingCharacters(in: .whitespaces) + "…"
+        let more = items.count - 1
+        return "Open: \(clipped)" + (more > 0 ? " · +\(more) more" : "")
+    }
+}
 
 // MARK: - Result
 

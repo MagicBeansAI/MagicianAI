@@ -59,7 +59,8 @@ pub struct DispatchConfig {
     pub provider_quota: HashMap<String, ProviderQuota>,
     /// Log warn when any lane crosses this depth.
     pub queue_depth_warn: usize,
-    /// Multiplier on `profile.timeout_secs` before watchdog fires.
+    /// Multiplier on `profile.timeout_secs` before watchdog fires; never
+    /// below a provider call's own stream ceiling plus a minute.
     pub watchdog_factor: f64,
     /// How long to keep recently-completed results for idempotency dedup.
     pub idempotency_window_secs: u64,

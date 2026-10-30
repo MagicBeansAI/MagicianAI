@@ -34,6 +34,71 @@ private final class WorkMockURLProtocol: URLProtocol {
 
 final class WorkAPITests: XCTestCase {
     @MainActor
+    func testChatOutputActionCannotSwitchConnectionsAfterOpeningItsContext() async throws {
+        var current = true, requests = 0
+        WorkMockURLProtocol.handle = { _ in requests += 1; return (200, "{}", [:]) }
+        let context = ChatContextSheet(sessionID: "chat-a", threadID: "thread-a", page: .files, client: client(currentCheck: { current }))
+        current = false
+        do {
+            try await ChatSessionAccounting.openOnHost("Pages/report.md", session: context.sessionID, client: context.client!)
+            XCTFail("A stale chat context must not open a file on another connection")
+        } catch { XCTAssertEqual((error as? URLError)?.code, .cancelled) }
+        XCTAssertEqual(requests, 0)
+    }
+
+    @MainActor
+    func testPendingModeSaveRetainsItsConfirmedConnection() async throws {
+        let confirmed = try MobileConnectionProfile(publicOrigin: URL(string: "https://confirmed.test")!,
+            principal: "owner", workspace: "private", deviceID: "device-a", deviceToken: "owner-a")
+        var active = confirmed
+        let api = ExecutionModeAPI(session: mockSession(), connection: { active })
+        let pending = api.frozen()
+        active = try MobileConnectionProfile(publicOrigin: URL(string: "https://other.test")!,
+            principal: "other", workspace: "other", deviceID: "device-b", deviceToken: "owner-b")
+        WorkMockURLProtocol.handle = { request in
+            XCTAssertEqual(request.url?.host, "confirmed.test")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer owner-a")
+            return (200, #"{"active":true,"enabled":true,"until_ms":null,"remaining_secs":null}"#, [:])
+        }
+        _ = try await pending.saveSuper(.hour)
+    }
+
+    @MainActor
+    func testComposerModesKeepChatOverridesSeparateFromBackendSuperMode() async throws {
+        let profile = try MobileConnectionProfile(publicOrigin: URL(string: "https://modes.test")!,
+            principal: "owner", workspace: "private", deviceID: "device", deviceToken: "test-owner")
+        var writes: [[String: Any]] = []
+        WorkMockURLProtocol.handle = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-owner")
+            XCTAssertNil(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.query)
+            let body = try JSONSerialization.jsonObject(with: WorkMockURLProtocol.body(request)) as! [String: Any]
+            writes.append(body)
+            switch request.url!.path {
+            case "/api/magician/v2/chat/sessions/chat-1/god-mode":
+                return (200, #"{"enabled":true,"override":null,"default":true}"#, [:])
+            case "/api/magician/v2/settings/super-god-mode":
+                return (200, #"{"active":false,"enabled":false,"until_ms":null,"remaining_secs":null}"#, [:])
+            default: XCTFail("Mode settings must not launch work"); return (404, "{}", [:])
+            }
+        }
+        let api = ExecutionModeAPI(session: mockSession(), connection: { profile })
+        _ = try await api.saveChat("chat-1", enabled: true)
+        _ = try await api.saveChat("chat-1", enabled: nil)
+        _ = try await api.saveSuper(.hour)
+        _ = try await api.saveSuper(.untilOff)
+        _ = try await api.saveSuper(nil)
+        XCTAssertEqual(writes[0]["enabled"] as? Bool, true)
+        XCTAssertTrue(writes[1]["enabled"] is NSNull)
+        XCTAssertEqual(writes[2]["duration"] as? String, "1h")
+        XCTAssertEqual(writes[3]["duration"] as? String, "forever")
+        XCTAssertEqual(writes[4]["enabled"] as? Bool, false)
+        WorkMockURLProtocol.handle = { _ in (403, #"{"message":"Owner authentication required"}"#, [:]) }
+        do { _ = try await api.saveSuper(.hour); XCTFail("A refused mode must not appear enabled") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Owner authentication required")) }
+    }
+
+    @MainActor
     func testSchedulePauseAndEditPreserveCurrentLimitsAndExactUnknownFields() async throws {
         var schedule = try JSONDecoder().decode(WorkJSON.self, from: Data(#"{"kind":{"Cron":{"expression":"0 9 * * *","timezone":"UTC"}},"timezone":"UTC","max_runs":3,"future_limit":18446744073709551615}"#.utf8))
         var writes: [WorkJSON] = []; let lock = NSLock()
@@ -189,8 +254,39 @@ final class WorkAPITests: XCTestCase {
         let ready = WorkJSON.newCrewDefinition.setting(["name"], to: .string("Writer"))
         XCTAssertNil(ready.crewValidation())
         XCTAssertNotNil(ready.setting(["agent_id"], to: .string("Bad ID")).crewValidation())
-        XCTAssertNotNil(ready.setting(["coordination", "max_delegation_depth"], to: .integer(50)).crewValidation())
+        XCTAssertNotNil(ready.setting(["constraints", "coordination", "max_delegation_depth"], to: .integer(50)).crewValidation())
         XCTAssertNotNil(ready.setting(["autonomous_config"], to: .object([:])).crewValidation())
+        // The server's definition has no top-level `coordination` and stores
+        // `kind` lowercase; drafts must match it to save.
+        XCTAssertNil(WorkJSON.newCrewDefinition["coordination"].object)
+        XCTAssertEqual(WorkJSON.newCrewDefinition["kind"].text, "worker")
+    }
+    func testCrewKindIsReadCaseInsensitively() throws {
+        let stored = try WorkJSON.parseObject(#"{"agent_id":"writer","name":"Writer","persona":"Help","trust_level":"local","kind":"personal"}"#)
+        XCTAssertTrue(stored.isPersonalCrew)
+        XCTAssertNil(stored.crewValidation())
+        XCTAssertTrue(try WorkJSON.parseObject(#"{"kind":"Personal"}"#).isPersonalCrew)
+        XCTAssertFalse(try WorkJSON.parseObject(#"{"kind":"worker"}"#).isPersonalCrew)
+    }
+
+    func testRetiredTaskPathsKeepExactRecordExecutionAndThread() {
+        let task = WorkNavigationTarget.parse("/tasks/task%2Fone+two?selected=wrong&type=internal&execution_id=exec%2Fone&plan=open")
+        XCTAssertEqual(task?.kind, .task)
+        XCTAssertEqual(task?.recordID, "task/one+two")
+        XCTAssertEqual(task?.executionID, "exec/one")
+        XCTAssertEqual(task?.internalWork, true)
+        XCTAssertEqual(task?.plan, true)
+        XCTAssertEqual(WorkNavigationTarget.parse("https://magican.example/tasks/task%252Fone")?.recordID, "task%2Fone")
+        for source in ["/t/Launch/tasks/task-one?selected=wrong&execution=run-one", "/t/Launch/tasks?selected=task-one&execution=run-one"] {
+            let target = WorkNavigationTarget.parse(source)
+            XCTAssertEqual(target?.kind, .task)
+            XCTAssertEqual(target?.recordID, "task-one")
+            XCTAssertEqual(target?.executionID, "run-one")
+            XCTAssertEqual(target?.threadID, "launch")
+        }
+        XCTAssertNil(WorkNavigationTarget.parse("/api/magician/v3/tasks/task-one"))
+        XCTAssertNil(WorkNavigationTarget.parse("/tasks/task-one/outputs/report.pdf"))
+        XCTAssertNil(WorkNavigationTarget.parse("javascript:/tasks/task-one"))
     }
 
     func testWorkLinksKeepEncodedMemberAndExactExecutionContext() {
@@ -490,6 +586,39 @@ final class WorkAPITests: XCTestCase {
         XCTAssertEqual(proposal["review"]["score_quorum"], .integer(3))
         XCTAssertEqual(proposal["sources"]["brief"], .string("Only supplied facts"))
     }
+    func testQualityModelControlsPreserveDefaultsAndBoundedIndependentRoutes() throws {
+        let fixture = try WorkJSON.parseObject(#"""
+        {"quality":{"profiles":[{"name":"actor-auto","family":"a"},{"name":"actor-high","family":"a"},{"name":"review-auto","family":"b"},{"name":"operation/actor","family":"a"}]},
+         "catalog":{"profiles":[{"name":"operation/actor","model_selection":{"model_id":"a","thinking":"high"}}],"models":[
+          {"id":"a","provider":"openai","connection":"a","model":"a","label":"Draft","thinking":{"mode":"effort","levels":["low","high"],"default":"high"},"choices":{"auto":"chat-a"},"operation_choices":{"auto":"actor-auto","low":"unbounded","high":"actor-high"}},
+          {"id":"b","provider":"gemini","connection":"b","model":"b","label":"Review","thinking":{"mode":"effort","levels":["low","high"],"default":"low"},"choices":{"auto":"chat-b"},"operation_choices":{"auto":"review-auto","high":"unbounded-review"}}
+        ]}}
+        """#)
+        let catalog = WorkQualityModels(quality: fixture["quality"], catalog: fixture["catalog"])
+        let models = catalog.models()
+        XCTAssertEqual(models.first?.choices, ["auto": "actor-auto", "high": "actor-high"])
+        XCTAssertEqual(models.first?.thinking.levels, ["high"])
+        XCTAssertEqual(catalog.selection("operation/actor", models: models)?.thinking, "high")
+        XCTAssertTrue(catalog.valid("operation/actor", models: models))
+        let reviewers = catalog.models(excluding: catalog.family("operation/actor"))
+        XCTAssertEqual(reviewers.map(\.id), ["b"])
+        XCTAssertFalse(catalog.valid("actor-auto", models: reviewers))
+        XCTAssertFalse(catalog.valid("unbounded-review", models: reviewers))
+        XCTAssertTrue(catalog.valid("review-auto", models: reviewers))
+        XCTAssertFalse(catalog.valid("retired-model", models: models))
+        let unavailable = ChatModelChoice(id: "b", provider: "gemini", connection: "b", model: "b", label: "Review", thinking: models[1].thinking, choices: models[1].choices, installed: false, limits: nil)
+        XCTAssertFalse(catalog.valid("review-auto", models: [unavailable]))
+        let workload = WorkQualityModels(quality: try WorkJSON.parseObject(#"{"profiles":[{"name":"operation/actor","family":"a"}]}"#), catalog: fixture["catalog"])
+        XCTAssertEqual(workload.models().first?.choices, ["auto": "operation/actor", "high": "operation/actor"])
+        XCTAssertEqual(workload.models().first?.thinking.defaultLevel, "high")
+        XCTAssertEqual(workload.selection("operation/actor", models: workload.models())?.thinking, "auto")
+        let noJSON = WorkQualityModels(quality: try WorkJSON.parseObject(#"{"profiles":[{"name":"review-auto","family":"b","supports_json":false}]}"#), catalog: fixture["catalog"])
+        XCTAssertEqual(noJSON.models().map(\.id), ["b"])
+        XCTAssertTrue(noJSON.models(excluding: "a").isEmpty)
+        var draft = WorkQualityDraft(); draft.actor = models[0].choices["high"]!; draft.critic = reviewers[0].choices["auto"]!
+        XCTAssertEqual(draft.proposal()["actor_profile"].text, "actor-high")
+        XCTAssertEqual(draft.proposal()["critic_profiles"].array, Array(repeating: .string("review-auto"), count: 3))
+    }
     @MainActor
     func testConnectionSwitchClearsRecordAndRejectsPendingConfirmation() async throws {
         var current = true, writes = 0
@@ -584,4 +713,65 @@ final class WorkAPITests: XCTestCase {
         XCTAssertEqual(model.actionNoticeMessage, "Task created.")
     }
 
+
+    func testProgramDocumentReadsContentHashAndToleratesOlderRuntimes() throws {
+        let current = try JSONDecoder().decode(WorkProgramDocument.self, from: Data(##"{"name":"positioning.md","title":"Positioning","content":"# Pitch","missions_section":null,"sha256":"abc123","history":[{"snapshot":"s1","modified":"2026-10-17"}]}"##.utf8))
+        XCTAssertEqual(current.sha256, "abc123"); XCTAssertEqual(current.history.map(\.id), ["s1"])
+        let older = try JSONDecoder().decode(WorkProgramDocument.self, from: Data(#"{"name":"facts.md","content":"Facts","history":"odd"}"#.utf8))
+        XCTAssertEqual(older.sha256, ""); XCTAssertEqual(older.title, "facts.md"); XCTAssertTrue(older.history.isEmpty)
+    }
+
+    func testProgramSaveSendsDraftWithOpenedHashAndReadsTheNewHash() async throws {
+        WorkMockURLProtocol.handle = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/magician/v2/programs/plans/+launch.md")
+            XCTAssertEqual(request.url?.absoluteString, "https://work.test/api/magician/v2/programs/plans%2F+launch.md")
+            let body = try JSONDecoder().decode(WorkJSON.self, from: WorkMockURLProtocol.body(request))
+            XCTAssertEqual(body, .object(["content": .string("# New\n"), "base_sha256": .string("base-hash")]))
+            return (200, #"{"saved":true,"program":"plans/+launch.md","created":false,"unchanged":false,"history_snapshot":"snap-1","sha256":"next-hash"}"#, [:])
+        }
+        let saved = try await client().saveProgram(name: "plans/+launch.md", content: "# New\n", baseSHA256: "base-hash")
+        XCTAssertEqual(saved.sha256, "next-hash"); XCTAssertEqual(saved.historySnapshot, "snap-1"); XCTAssertFalse(saved.unchanged)
+    }
+
+    func testProgramSaveConflictKeepsServerMessageAndCurrentHash() async {
+        WorkMockURLProtocol.handle = { _ in (409, #"{"error":"program_changed","message":"positioning.md changed after it was opened.","current_sha256":"theirs"}"#, [:]) }
+        do { _ = try await client().saveProgram(name: "positioning.md", content: "Mine", baseSHA256: "mine"); XCTFail("A changed document must not save") }
+        catch { XCTAssertEqual(error as? WorkProgramSaveError, .changed(message: "positioning.md changed after it was opened.", currentSHA256: "theirs")) }
+    }
+
+    func testProgramSaveRefusalSurfacesTheServerTextAndAMissingBaseSendsNothing() async {
+        WorkMockURLProtocol.handle = { _ in (401, #"{"error":"grant_cannot_manage","message":"Only a signed-in owner session can make this change."}"#, [:]) }
+        do { _ = try await client().saveProgram(name: "positioning.md", content: "Mine", baseSHA256: "mine"); XCTFail("A refused save must fail") }
+        catch { XCTAssertEqual(error.localizedDescription, "Only a signed-in owner session can make this change.") }
+        WorkMockURLProtocol.handle = { _ in (400, #"{"error":"save failed: invalid program"}"#, [:]) }
+        do { _ = try await client().saveProgram(name: "positioning.md", content: "Mine", baseSHA256: "mine"); XCTFail("A rejected save must fail") }
+        catch { XCTAssertEqual(error.localizedDescription, "save failed: invalid program") }
+        WorkMockURLProtocol.handle = { _ in XCTFail("No save without the opened version"); return (200, "{}", [:]) }
+        do { _ = try await client().saveProgram(name: "positioning.md", content: "Mine", baseSHA256: ""); XCTFail("A missing base must fail") }
+        catch { XCTAssertEqual(error as? WorkProgramSaveError, .missingBase) }
+    }
+
+    func testFocusAreaSharedProgramsKeepThreeDistinctStatesAndOtherFields() throws {
+        let area = try WorkJSON.parseObject(#"{"name":"Inbound","description":"Sweep","program":"outward_charter.md","priority":"high","evidence":{"revision":18446744073709551615}}"#)
+        XCTAssertNil(area.sharedPrograms); XCTAssertEqual(area.sharedProgramsMode(), .global)
+        let none = area.settingSharedPrograms(.none)
+        XCTAssertEqual(none["shared_programs"], .array([])); XCTAssertEqual(none.sharedProgramsMode(), .none)
+        XCTAssertEqual(none.sharedProgramsMode(choosing: true), .choose, "Choose with nothing checked also stores []")
+        let chosen = none.togglingSharedProgram("facts.md", on: true).togglingSharedProgram("positioning.md", on: true)
+        XCTAssertEqual(chosen["shared_programs"], .array([.string("facts.md"), .string("positioning.md")]))
+        XCTAssertEqual(chosen.sharedProgramsMode(), .choose)
+        XCTAssertEqual(chosen.togglingSharedProgram("facts.md", on: false)["shared_programs"], .array([.string("positioning.md")]))
+        XCTAssertEqual(chosen.togglingSharedProgram("facts.md", on: false).togglingSharedProgram("positioning.md", on: false)["shared_programs"], .array([]))
+        let global = chosen.settingSharedPrograms(.global)
+        XCTAssertNil(global.object?["shared_programs"], "Use global list removes the key")
+        XCTAssertEqual(global, area, "every other field survives the round trip")
+        XCTAssertEqual(try WorkJSON.parseObject(chosen.formatted), chosen)
+        XCTAssertEqual(try WorkJSON.parseObject(#"{"shared_programs":null}"#).sharedProgramsMode(), .global)
+        XCTAssertEqual(try WorkJSON.parseObject(#"{"shared_programs":[" facts.md ","facts.md",""]}"#).sharedPrograms, ["facts.md"])
+        // The patch carries the whole focus-area list, so [] and an absent key stay distinct on the wire.
+        let definition = WorkJSON.object(["autonomous_config": .object(["focus_areas": .array([area])])])
+        let patch = definition.setting(["autonomous_config", "focus_areas"], to: .array([none])).mergePatch(from: definition)
+        XCTAssertEqual(patch.at(["autonomous_config", "focus_areas"]).array?.first?["shared_programs"], .array([]))
+    }
 }

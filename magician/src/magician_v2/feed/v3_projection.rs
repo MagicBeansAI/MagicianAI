@@ -180,8 +180,13 @@ pub fn task_summary_to_feed_item(scope: &ScopeRef, task: TaskListItemV3) -> Feed
     // signal is a spinner that never resolves. `awaiting_diff_approval` is
     // already false for every terminal task and for every task with no
     // pending proposal, so nothing that does not hold a diff moves.
+    // A finished run whose final answer is still being written is not done
+    // from the user's side either: the card keeps running until the answer
+    // is published, as the task's own progress status does.
     let status = if task.awaiting_diff_approval {
         FeedItemStatus::NeedsAction
+    } else if task.synthesis_pending && matches!(task.status.as_str(), "completed" | "failed") {
+        FeedItemStatus::Running
     } else {
         feed_status_from_v3_task_status(&task.status)
     };
@@ -221,6 +226,15 @@ pub fn task_summary_to_feed_item(scope: &ScopeRef, task: TaskListItemV3) -> Feed
         if let Some(object) = metadata.as_object_mut() {
             object.insert(
                 "awaiting_diff_approval".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+    }
+    // Same rule: present only while the final answer is being written.
+    if task.synthesis_pending {
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert(
+                "synthesis_pending".to_string(),
                 serde_json::Value::Bool(true),
             );
         }
@@ -270,4 +284,36 @@ fn metadata_string(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod synthesis_pending_tests {
+    use super::*;
+
+    fn task(status: &str, synthesis_pending: bool) -> TaskListItemV3 {
+        serde_json::from_value(serde_json::json!({
+            "id": "task-1",
+            "title": "Compare quotes",
+            "description": "",
+            "status": status,
+            "agent_id": "assistant",
+            "created_at": "2026-10-27T09:00:00Z",
+            "updated_at": "2026-10-27T09:01:00Z",
+            "synthesis_pending": synthesis_pending,
+        }))
+        .expect("task list item")
+    }
+
+    #[test]
+    fn a_finished_task_still_writing_its_answer_stays_running() {
+        let scope = ScopeRef::system_internal_unauthenticated("alpha", "prod");
+        let item = task_summary_to_feed_item(&scope, task("completed", true));
+        assert_eq!(item.status, FeedItemStatus::Running);
+        assert_eq!(item.metadata["synthesis_pending"], true);
+        assert_eq!(item.metadata["task_status"], "completed");
+
+        let item = task_summary_to_feed_item(&scope, task("completed", false));
+        assert_eq!(item.status, FeedItemStatus::Done);
+        assert!(item.metadata.get("synthesis_pending").is_none());
+    }
 }

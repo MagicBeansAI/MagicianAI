@@ -199,7 +199,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "preseed_explicit_tutor_run_for_turn",
-     "line": 11588,
+     "line": 11893,
      "why": "Starts or reuses run before first model call"
     },
     {
@@ -227,21 +227,21 @@
      "file": "magician/src/magician_v2/chat/tools_runtime.rs",
      "type": "StartTutorRunTool",
      "fn": null,
-     "line": 348,
+     "line": 349,
      "why": "Chat tool to start a tutor run"
     },
     {
      "file": "magician/src/magician_v2/chat/tools_runtime.rs",
      "type": "ProposeTutorStepTool",
      "fn": null,
-     "line": 747,
+     "line": 748,
      "why": "Chat tool proposing observe/draw/act/verify steps"
     },
     {
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "dispatch_screen_draw_pack",
-     "line": 35776,
+     "line": 36514,
      "why": "Dispatches screen-draw shapes to the overlay"
     },
     {
@@ -262,7 +262,7 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "cancel_tutor_run_for_scope",
-     "line": 2523,
+     "line": 2562,
      "why": "Backs the scoped tutor cancel endpoint"
     },
     {
@@ -296,7 +296,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "preseed_explicit_tutor_run_for_turn",
-     "line": 11588,
+     "line": 11893,
      "title": "Run is preseeded",
      "say": "Before the model's first call, the chat service starts or reuses a scoped tutor run, so the model continues a lesson instead of deciding whether to begin.",
      "evidence": "service.rs:11588,11698; personal-tutor.md 'Preseeded start'"
@@ -314,7 +314,7 @@
      "file": "magician/src/magician_v2/chat/tools_runtime.rs",
      "type": "ProposeTutorStepTool",
      "fn": null,
-     "line": 747,
+     "line": 748,
      "title": "Model proposes steps",
      "say": "The model proposes observe, resolve, draw, act and verify steps through chat tools, and the run validates their order before accepting each one.",
      "evidence": "tools_runtime.rs:747-752; personal-tutor.md runtime contract; tutor.rs:1486 propose_step"
@@ -323,7 +323,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "dispatch_screen_draw_pack",
-     "line": 35776,
+     "line": 36514,
      "title": "Drawing on screen",
      "say": "Drawing steps become screen-draw shapes delivered to the transparent overlay, so the explanation appears directly on top of what the user is looking at.",
      "evidence": "service.rs:35570-35586; personal-tutor-overlay.md (/draw-overlay, tutor.draw.shape)"
@@ -366,35 +366,35 @@
      "file": "magician/src/magician_v2/agents/memory.rs",
      "type": "AgentMemoryService",
      "fn": "persist_user_knowledge",
-     "line": 1240,
+     "line": 1289,
      "why": "Writes user knowledge; bumps intention generation"
     },
     {
      "file": "magician/src/magician_v2/agents/memory.rs",
      "type": "AgentMemoryService",
      "fn": "append_native_episode",
-     "line": 1668,
+     "line": 1793,
      "why": "Stores conversation episodes; journals index change"
     },
     {
      "file": "magician-vector-index/src/memory_index.rs",
      "type": "MemoryIndexChange",
      "fn": null,
-     "line": 225,
+     "line": 227,
      "why": "Durable change journal entry for derived index"
     },
     {
      "file": "magician-vector-index/src/memory_index.rs",
      "type": null,
      "fn": "rebuild_scope_memory_index",
-     "line": 919,
+     "line": 921,
      "why": "Builds LanceDB BM25 plus vector index"
     },
     {
      "file": "magician/src/magician_v2/analytics/memory_index_maintainer.rs",
      "type": "MemoryIndexMaintainer",
      "fn": null,
-     "line": 66,
+     "line": 82,
      "why": "Worker reconciling derived index incrementally"
     },
     {
@@ -408,7 +408,7 @@
      "file": "magician/src/magician_v2/agents/memory_prompt_blocks.rs",
      "type": null,
      "fn": "score_hybrid_index_for_prompt",
-     "line": 687,
+     "line": 686,
      "why": "Hybrid-scores candidates for automatic prompt injection"
     },
     {
@@ -429,7 +429,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "search_owner_memory_handler",
-     "line": 25842,
+     "line": 27133,
      "why": "POST /memory/search handler"
     },
     {
@@ -443,28 +443,28 @@
      "file": "magician/src/magician_v2/context_retrieval.rs",
      "type": null,
      "fn": "retrieve_turn_context",
-     "line": 1770,
+     "line": 689,
      "why": "Deadline-bound staged context retrieval"
     },
     {
      "file": "magician/src/magician_v2/context_retrieval.rs",
      "type": null,
      "fn": "retrieve_staged_pair",
-     "line": 1297,
+     "line": 1299,
      "why": "Memory and procedures share deadline"
     },
     {
      "file": "magician/src/magician_v2/context_retrieval.rs",
      "type": "StagedContextCoordinator",
      "fn": null,
-     "line": 677,
+     "line": 679,
      "why": "Slow stage cannot erase siblings"
     },
     {
      "file": "magician-vector-index/src/vector_toolkit.rs",
      "type": "VectorTable",
      "fn": "search",
-     "line": 1284,
+     "line": 1298,
      "why": "Generic LanceDB vector search"
     },
     {
@@ -473,6 +473,55 @@
      "fn": "embed_query",
      "line": 343,
      "why": "Ollama query embeddings"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/authored_framing.rs",
+     "type": null,
+     "fn": "owner_words",
+     "line": 33,
+     "why": "Learns only the owner's words, not Magician's framing"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_episode_recall.rs",
+     "type": null,
+     "fn": "episode_source_is_current",
+     "line": 40,
+     "why": "Recall enough to understand"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/memory.rs",
+     "type": "V3EpisodeRecord",
+     "fn": null,
+     "line": 46,
+     "why": "Remember outcomes, not runtime noise"
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval/progress.rs",
+     "type": "ContextPreparationProgress",
+     "fn": null,
+     "why": "Prepare context with progress",
+     "line": 67
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval.rs",
+     "type": null,
+     "fn": null,
+     "why": "Reuse recalled context",
+     "line": 1
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_snapshot.rs",
+     "fn": "build_snapshot_under_lock",
+     "type": null,
+     "line": 349,
+     "why": "Keep prompt memory warm"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_snapshot.rs",
+     "fn": "build_consistent_snapshot",
+     "type": null,
+     "line": 377,
+     "why": "Refresh only changed content"
     }
    ],
    "configKeys": [
@@ -504,7 +553,7 @@
      "file": "magician/src/magician_v2/agents/memory.rs",
      "type": "AgentMemoryService",
      "fn": "persist_user_knowledge",
-     "line": 1240,
+     "line": 1289,
      "title": "Saving with history",
      "say": "Saving a preference or fact goes through shared ingress that keeps revisions and evidence, then schedules a reviewer to reconcile duplicates and conflicts.",
      "evidence": "memory.rs:1240; docs/components/magician/memory-lifecycle.md"
@@ -513,7 +562,7 @@
      "file": "magician/src/magician_v2/agents/memory.rs",
      "type": "AgentMemoryService",
      "fn": "append_native_episode",
-     "line": 1668,
+     "line": 1793,
      "title": "Conversations become episodes",
      "say": "Each admitted chat turn is kept as an episode with its full source text, and the write is journaled so the search index catches up.",
      "evidence": "memory.rs:1668; memory-index.md 'Episode writes are incremental'; memory-recall.md"
@@ -522,7 +571,7 @@
      "file": "magician/src/magician_v2/analytics/memory_index_maintainer.rs",
      "type": "MemoryIndexMaintainer",
      "fn": null,
-     "line": 66,
+     "line": 82,
      "title": "Hybrid index maintained",
      "say": "A background maintainer folds journaled changes into a derived LanceDB index that combines keyword search with vector embeddings and an approximate-neighbour shortlist.",
      "evidence": "memory_index_maintainer.rs:1-12,66; memory_index.rs:919; memory-index.md Storage"
@@ -531,7 +580,7 @@
      "file": "magician/src/magician_v2/agents/memory_prompt_blocks.rs",
      "type": null,
      "fn": "score_hybrid_index_for_prompt",
-     "line": 687,
+     "line": 686,
      "title": "Automatic recall",
      "say": "Before a turn, hybrid scores rank candidate memories, and lane budgets decide how many preferences, procedures and episodes fit into the prompt.",
      "evidence": "memory_prompt_blocks.rs:288,687,875; magician-config.yaml:474 prompt_lane_budgets"
@@ -544,6 +593,56 @@
      "title": "Explicit search",
      "say": "Explicit recall, from the search memory tool or the Memory page, uses the same shared search and returns passages with their sources.",
      "evidence": "search_memory.rs:120; web_api.rs:25774; memory-index.md '/memory/search and the search_memory tool share one recall'"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_episode_recall.rs",
+     "type": null,
+     "fn": "episode_source_is_current",
+     "line": 40,
+     "title": "Recall enough to understand",
+     "say": "Search hydrates readable passages with nearby source context. Repeated hits share bounded space, so one conversation cannot crowd out every other memory.",
+     "evidence": "docs/components/magician/memory-recall.md"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/memory.rs",
+     "type": "V3EpisodeRecord",
+     "fn": null,
+     "line": 46,
+     "title": "Remember outcomes, not runtime noise",
+     "say": "An episode recalls what the task achieved and the original intent, with bounded readable text, rather than replaying another run’s instructions.",
+     "evidence": "magician/src/magician_v2/artifact_v2/memory.rs:46"
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval/progress.rs",
+     "type": "ContextPreparationProgress",
+     "fn": null,
+     "title": "Prepare context with progress",
+     "say": "Before answering, Magician shows context preparation progress. Memory and playbook lookups share a deadline, retaining useful results that finish in time.",
+     "line": 67
+    },
+    {
+     "file": "magician/src/magician_v2/context_retrieval.rs",
+     "type": null,
+     "fn": null,
+     "title": "Reuse recalled context",
+     "say": "Shared retrieval work and bounded caches avoid repeating the same search. New memory changes invalidate cached results so later turns see updated facts.",
+     "line": 1
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_snapshot.rs",
+     "fn": "build_snapshot_under_lock",
+     "type": null,
+     "line": 349,
+     "title": "Keep prompt memory warm",
+     "say": "Repeated turns reuse a bounded memory snapshot. A retrieval deadline does not cancel its build, so later turns can use completed work."
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_snapshot.rs",
+     "fn": "build_consistent_snapshot",
+     "type": null,
+     "line": 377,
+     "title": "Refresh only changed content",
+     "say": "When memory changes, refresh reuses unaffected documents and search metadata. Touching or rewriting identical content does not rebuild the snapshot."
     }
    ]
   },
@@ -552,7 +651,7 @@
    "name": "Nudges and attention (funnel, resurfacing)",
    "oneLine": "Decides what deserves your attention, sorting items into Needs you, Follow-ups, and a small Worth a look band.",
    "maturity": "shipped",
-   "maturityEvidence": "resurfacing block fully enabled (magician-config.yaml:1220-1236); attention_learning.enabled: true (magician-config.yaml:1125); /today and /feed/attention routes (magician-bin/src/main.rs:13506,13520); Today UI ResurfacingBand.svelte.",
+   "maturityEvidence": "resurfacing block fully enabled (magician-config.yaml:1220-1236); attention_learning.enabled: true (magician-config.yaml:1125); /today and /feed/attention routes (magician-bin/src/main.rs:13506,13520); Today UI MorningEdition.svelte.",
    "locations": [
     {
      "file": "magician-core/src/attention_funnel.rs",
@@ -600,43 +699,43 @@
      "file": "magician/src/magician_v2/attention/resurfacing/store.rs",
      "type": "ResurfacingStore",
      "fn": "list_top_candidates",
-     "line": 1903,
+     "line": 1963,
      "why": "Top non-cooldown shortlist for curator"
     },
     {
      "file": "magician-comms/src/channel_assist/resurfacing/curator.rs",
      "type": null,
      "fn": "run_curation_pass_with_attention",
-     "line": 129,
+     "line": 156,
      "why": "Daily curator surfaces a few via router"
     },
     {
      "file": "magician-comms/src/channel_assist/resurfacing/worker.rs",
      "type": "ResurfacingWorker",
      "fn": null,
-     "line": 785,
+     "line": 847,
      "why": "Runs scorer and curator cadences"
     },
     {
      "file": "magician-api/src/resurfacing_api.rs",
      "type": null,
      "fn": "post_resurfacing_action_handler",
-     "line": 2259,
+     "line": 2282,
      "why": "Open, acknowledge, dismiss feedback with cooldown"
     },
     {
      "file": "magician-api/src/feed_api.rs",
      "type": null,
      "fn": "today_handler",
-     "line": 9198,
+     "line": 9220,
      "why": "Today lanes, routed and recorded"
     },
     {
-     "file": "ui/unified-ui/src/lib/today/ResurfacingBand.svelte",
+     "file": "ui/unified-ui/src/lib/today/MorningEdition.svelte",
      "type": null,
      "fn": null,
      "line": 1,
-     "why": "Worth a look band on Today"
+     "why": "Reading Room cards include local timestamps, source labels and a cursor-paged Morning Brief"
     },
     {
      "file": "magician-comms/src/channel_assist/canonical_attention.rs",
@@ -670,7 +769,7 @@
      "file": "magician-comms/src/channel_assist/resurfacing/memory_connections.rs",
      "type": "ConnectionRuntime",
      "fn": "pass",
-     "line": 798,
+     "line": 899,
      "why": "Links memories to attention items"
     },
     {
@@ -718,7 +817,7 @@
     "GET /api/magician/v2/channel-assist/follow-ups",
     "GET /api/magician/v2/attention-funnel/observability"
    ],
-   "uiSurface": "/today (Worth a look band, triage deck) and /attention, /resurfacing, /observe/stats (ui/unified-ui/src/routes/(app)/today/+page.svelte, ui/unified-ui/src/lib/today/ResurfacingBand.svelte, ui/unified-ui/src/routes/(app)/attention/+page.svelte)",
+   "uiSurface": "/today (Worth a look band, triage deck) and /attention, /resurfacing, /observe/stats (ui/unified-ui/src/routes/(app)/today/+page.svelte, ui/unified-ui/src/lib/today/MorningEdition.svelte, ui/unified-ui/src/routes/(app)/attention/+page.svelte)",
    "tour": [
     {
      "file": "magician-core/src/attention_funnel.rs",
@@ -742,7 +841,7 @@
      "file": "magician-comms/src/channel_assist/resurfacing/curator.rs",
      "type": null,
      "fn": "run_curation_pass_with_attention",
-     "line": 129,
+     "line": 156,
      "title": "Daily curator picks few",
      "say": "Once a day the curator reviews the top shortlist outside cooldown and surfaces only a few, letting a model phrase why each matters now.",
      "evidence": "store.rs:1903; curator.rs:129; resurfacing.md; magician-config.yaml:1230 surface_cap"
@@ -760,16 +859,16 @@
      "file": "magician-api/src/feed_api.rs",
      "type": null,
      "fn": "today_handler",
-     "line": 9198,
+     "line": 9220,
      "title": "Today assembles lanes",
-     "say": "The Today endpoint assembles the lanes into cursor-paged sections, which the web app renders as the triage deck and the Worth a look band.",
+     "say": "Today returns paged lanes. The Reading Room presents follow-ups and Worth a Look suggestions, with a Morning Brief deck or broadsheet layout.",
      "evidence": "feed_api.rs:9198; main.rs:13520; attention-routing-funnel.md 'Producers and lane facade'"
     },
     {
      "file": "magician-api/src/resurfacing_api.rs",
      "type": null,
      "fn": "post_resurfacing_action_handler",
-     "line": 2259,
+     "line": 2282,
      "title": "Feedback shapes future",
      "say": "Opening or acknowledging a card counts as positive feedback, while dismissing applies a penalty and cooldown, shaping what gets resurfaced next time.",
      "evidence": "resurfacing_api.rs:2259,2382; resurfacing.md diagram 'Open/Ack = +, Dismiss = − + cooldown'"
@@ -815,7 +914,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "run_mining_pipeline",
-     "line": 3608,
+     "line": 3715,
      "why": "Reads traces, clusters, registers capabilities"
     },
     {
@@ -857,7 +956,7 @@
      "file": "magician-api/src/api_mining_api.rs",
      "type": null,
      "fn": "get_overview",
-     "line": 2357,
+     "line": 2360,
      "why": "Bounded dashboard overview payload"
     },
     {
@@ -969,7 +1068,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "run_mining_pipeline",
-     "line": 3608,
+     "line": 3715,
      "title": "Register learned APIs",
      "say": "The orchestrator runs this pipeline over traces from recent tasks and registers the learned capabilities per website, along with replay statistics.",
      "evidence": "v2_orchestrator.rs:3604-3608 'read stored traces → cluster → create capabilities → register'"
@@ -996,7 +1095,7 @@
      "file": "magician-api/src/api_mining_api.rs",
      "type": null,
      "fn": "get_overview",
-     "line": 2357,
+     "line": 2360,
      "title": "Inspect what was learned",
      "say": "The API Mining page shows recipes, learned APIs grouped by site, activity counters and auth metadata from one bounded overview request.",
      "evidence": "api_mining_api.rs:2355-2357; api-mining-native-route.md"
@@ -1014,7 +1113,7 @@
      "file": "magician/src/config.rs",
      "type": "CapabilityEvolutionConfig",
      "fn": null,
-     "line": 9417,
+     "line": 9970,
      "why": "Flags and promotion thresholds; documented default-off"
     },
     {
@@ -1070,7 +1169,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "configure_capability_evolution",
-     "line": 3319,
+     "line": 3426,
      "why": "Registers or removes generated runtime providers"
     },
     {
@@ -1098,14 +1197,14 @@
      "file": "magician/src/magician_v2/learning/store.rs",
      "type": "LearningStore",
      "fn": "create_procedure",
-     "line": 676,
+     "line": 1041,
      "why": "Persists learned procedures"
     },
     {
      "file": "magician/src/magician_v2/learning/store.rs",
      "type": "LearningStore",
      "fn": "transition_procedure_status",
-     "line": 890,
+     "line": 1260,
      "why": "Procedure status with decision history"
     },
     {
@@ -1215,7 +1314,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "configure_capability_evolution",
-     "line": 3319,
+     "line": 3426,
      "title": "Runtime registration",
      "say": "At configuration time the orchestrator registers generated providers, removing them when the feature is off and excluding trial packs unless explicitly allowed.",
      "evidence": "v2_orchestrator.rs:3319,3485-3495"
@@ -1233,7 +1332,7 @@
      "file": "magician/src/config.rs",
      "type": "AttentionBanditMode",
      "fn": null,
-     "line": 3031,
+     "line": 3339,
      "why": "Disabled, shadow, canary serving modes"
     },
     {
@@ -1289,14 +1388,14 @@
      "file": "magician-api/src/resurfacing_api.rs",
      "type": null,
      "fn": "project_worth_learning",
-     "line": 785,
+     "line": 792,
      "why": "Applies bandit to Worth a look page"
     },
     {
      "file": "magician-api/src/channel_assist_api.rs",
      "type": null,
      "fn": "project_follow_up_learning",
-     "line": 2413,
+     "line": 2417,
      "why": "Applies bandit to For you follow-ups"
     },
     {
@@ -1436,7 +1535,7 @@
      "file": "magician-comms/src/channel_assist/evidence_bridge.rs",
      "type": "ChannelEvidenceBridgeWorker",
      "fn": null,
-     "line": 281,
+     "line": 303,
      "why": "Bridges distilled mail/chat into evidence tiers"
     },
     {
@@ -1471,7 +1570,7 @@
      "file": "magician/src/magician_v2/agents/memory.rs",
      "type": "AgentMemoryService",
      "fn": "load_scoped_evidence",
-     "line": 1095,
+     "line": 1108,
      "why": "Unified agent plus user evidence read"
     },
     {
@@ -1536,7 +1635,7 @@
      "file": "magician-comms/src/channel_assist/evidence_bridge.rs",
      "type": "ChannelEvidenceBridgeWorker",
      "fn": null,
-     "line": 281,
+     "line": 303,
      "title": "Bridge distilled messages",
      "say": "Locally distilled message summaries, never raw bodies, are written by a bridge worker into the email and chat evidence memory tiers.",
      "evidence": "evidence_bridge.rs:1-20,190,281"
@@ -1992,7 +2091,7 @@
      "file": "magician/src/magician_v2/analytics/event_sink.rs",
      "type": "AnalyticsEventSink",
      "fn": "flush_batch",
-     "line": 393,
+     "line": 395,
      "why": "Batched DuckDB write plus Parquet mirror"
     },
     {
@@ -2027,21 +2126,21 @@
      "file": "magician/src/magician_v2/analytics/llm_parquet_sink.rs",
      "type": "LlmParquetSink",
      "fn": null,
-     "line": 104,
+     "line": 109,
      "why": "Writes LLM call facts to Parquet"
     },
     {
      "file": "magician-api/src/analytics_api.rs",
      "type": null,
      "fn": "query_handler",
-     "line": 1190,
+     "line": 1206,
      "why": "Read-only analytics SQL endpoint"
     },
     {
      "file": "magician-api/src/analytics_api.rs",
      "type": null,
      "fn": "llm_observability_overview_handler",
-     "line": 549,
+     "line": 565,
      "why": "LLM observability overview"
     },
     {
@@ -2069,21 +2168,21 @@
      "file": "magician/src/magician_v2/analytics/parquet_maintenance.rs",
      "type": null,
      "fn": "compact_dataset_since",
-     "line": 258,
+     "line": 309,
      "why": "Compacts completed Parquet partitions"
     },
     {
      "file": "magician/src/magician_v2/analytics/parquet_maintenance.rs",
      "type": null,
      "fn": "apply_retention",
-     "line": 726,
+     "line": 1628,
      "why": "Drops partitions past retention"
     },
     {
      "file": "magician/src/magician_v2/analytics/parquet_maintenance.rs",
      "type": null,
      "fn": "compact_activity_rows",
-     "line": 940,
+     "line": 1842,
      "why": "Folds activity spans into rollups"
     }
    ],
@@ -2124,7 +2223,7 @@
      "file": "magician/src/magician_v2/analytics/event_sink.rs",
      "type": "AnalyticsEventSink",
      "fn": "flush_batch",
-     "line": 393,
+     "line": 395,
      "title": "Batched local storage",
      "say": "A batched sink flushes every hundred events or half second into a per-workspace DuckDB file and also writes a Parquet mirror for recovery.",
      "evidence": "event_sink.rs:211,393; duckdb-analytics.md 'batched event sink', 'dual-written to a version-stable Parquet mirror'"
@@ -2151,7 +2250,7 @@
      "file": "magician-api/src/analytics_api.rs",
      "type": null,
      "fn": "query_handler",
-     "line": 1190,
+     "line": 1206,
      "title": "Safe SQL queries",
      "say": "Read-only query endpoints accept SQL only after a depth-bounded parser checks it, protecting the server from deeply nested queries that could crash it.",
      "evidence": "analytics_api.rs:1190; llm_sql_guard.rs:21,27; duckdb-analytics.md"
@@ -2160,7 +2259,7 @@
      "file": "magician-api/src/analytics_api.rs",
      "type": null,
      "fn": "llm_observability_overview_handler",
-     "line": 549,
+     "line": 565,
      "title": "LLM observability",
      "say": "Separate LLM trace facts, captured as content-free metadata by default, power the LLM page that lists model calls and their traces.",
      "evidence": "analytics_api.rs:549,623,633; magician-config.yaml:208-212 content_mode: metadata; llm_parquet_sink.rs:104"
@@ -2178,14 +2277,14 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
      "type": null,
      "fn": "gate_preference_alignment",
-     "line": 2668,
+     "line": 2731,
      "why": "Native loop gate before executing an act"
     },
     {
      "file": "magician/src/magician_v2/preference_alignment/service.rs",
      "type": null,
      "fn": "check_action",
-     "line": 264,
+     "line": 273,
      "why": "Single entry point for an action check"
     },
     {
@@ -2206,7 +2305,7 @@
      "file": "magician/src/magician_v2/preference_alignment/collect.rs",
      "type": null,
      "fn": "build_inputs",
-     "line": 181,
+     "line": 179,
      "why": "Splits intentions into bounded judge batches"
     },
     {
@@ -2220,7 +2319,7 @@
      "file": "magician-alignment/src/composer.rs",
      "type": null,
      "fn": "compose",
-     "line": 504,
+     "line": 506,
      "why": "Typed-model composer using calibrated bars"
     },
     {
@@ -2234,14 +2333,14 @@
      "file": "magician-alignment/src/contract.rs",
      "type": null,
      "fn": "validate_decision",
-     "line": 236,
+     "line": 252,
      "why": "Caps force to what evidence can carry"
     },
     {
      "file": "magician/src/magician_v2/preference_alignment/judge.rs",
      "type": null,
      "fn": "combine",
-     "line": 308,
+     "line": 297,
      "why": "Folds outcomes by precedence, cancel first"
     },
     {
@@ -2255,7 +2354,7 @@
      "file": "magician/src/magician_v2/preference_alignment/ledger.rs",
      "type": null,
      "fn": "consume",
-     "line": 268,
+     "line": 272,
      "why": "Consume-once ledger of owner answers"
     },
     {
@@ -2285,6 +2384,13 @@
      "fn": "collect_taste_profile",
      "line": 223,
      "why": "Taste note lines as intentions"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/engine_judge.rs",
+     "type": null,
+     "fn": null,
+     "why": "Separate firm rules from advice",
+     "line": 1
     }
    ],
    "configKeys": [
@@ -2315,7 +2421,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
      "type": null,
      "fn": "gate_preference_alignment",
-     "line": 2668,
+     "line": 2731,
      "title": "Gate before acting",
      "say": "Before the agent loop carries out an outward act like sending, booking or purchasing, it pauses at a preference alignment gate.",
      "evidence": "apply.rs:2668,2853; preference-alignment.md intro"
@@ -2333,7 +2439,7 @@
      "file": "magician/src/magician_v2/preference_alignment/collect.rs",
      "type": null,
      "fn": "build_inputs",
-     "line": 181,
+     "line": 179,
      "title": "Gather intentions",
      "say": "The host reads the owner's preferences, goals and standing instructions from memory and splits them into bounded batches, explicit instructions first.",
      "evidence": "inventory.rs:54; collect.rs:181; preference-alignment.md 'Batches'"
@@ -2351,7 +2457,7 @@
      "file": "magician-alignment/src/contract.rs",
      "type": null,
      "fn": "validate_decision",
-     "line": 236,
+     "line": 252,
      "title": "Evidence caps force",
      "say": "The host then caps the answer to what the evidence can support, so a merely inferred preference can never force a confirmation hold.",
      "evidence": "contract.rs:215,236; intention.rs:34; preference-alignment.md evidence table"
@@ -2360,7 +2466,7 @@
      "file": "magician/src/magician_v2/preference_alignment/judge.rs",
      "type": null,
      "fn": "combine",
-     "line": 308,
+     "line": 297,
      "title": "Pick one response",
      "say": "Batch outcomes fold by precedence: cancel, then confirmation, unresolved, clarification and choice holds, then a gentle nudge, and finally proceed.",
      "evidence": "judge.rs:308; preference-alignment.md 'order of precedence'"
@@ -2369,10 +2475,18 @@
      "file": "magician/src/magician_v2/preference_alignment/ledger.rs",
      "type": null,
      "fn": "consume",
-     "line": 268,
+     "line": 272,
      "title": "Owner answers once",
      "say": "A held act becomes a deadline-bound ask, and the owner's answer is stored in a consume-once ledger tied to that exact action.",
      "evidence": "ledger.rs:231,268; hold.rs:178; magician-config.yaml holds.foreground_deadline_secs; preference-alignment.md Status"
+    },
+    {
+     "file": "magician/src/magician_v2/preference_alignment/engine_judge.rs",
+     "type": null,
+     "fn": null,
+     "title": "Separate firm rules from advice",
+     "say": "Stated preferences can hold an action for an answer. Inferred preferences stay advisory, so a slow suggestion cannot block the work.",
+     "line": 1
     }
    ]
   }

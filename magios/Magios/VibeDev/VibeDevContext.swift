@@ -14,6 +14,23 @@ final class VibeDevContext: ObservableObject {
     /// The project list in the server's order, for pickers.
     private(set) var projectList: [VibeDevProject] = []
     var profiles: [VibeDevCodingProfile]?
+    /// Health action `git_init`: run it, then re-read the projects so every
+    /// banner updates. Returns the server's message on failure, nil on success.
+    @MainActor
+    func gitInit(projectID: String) async -> String? {
+        do {
+            let response = try await api.gitInit(projectID: projectID)
+            if let list = try? await api.projects() {
+                remember(list.projects)
+            } else if var project = knownProjects[projectID] {
+                project.health = response.health
+                remember(project: project)
+            }
+            return nil
+        } catch {
+            return VibeDevActions.describe(error)
+        }
+    }
 
     @MainActor
     init(api: VibeDevServing = VibeDevAPI(),
@@ -191,7 +208,7 @@ final class VibeDevUndoCenter: ObservableObject {
 /// streaming deltas), debounced; and on resync and returning to the
 /// foreground. Mirrors the web live-runs store's filter.
 final class VibeDevLiveUpdates {
-    static let eventPrefixes = ["task.", "hitl.", "execution.", "delegation.results_ready"]
+    static let eventPrefixes = ["Task", "task.", "hitl.", "execution.", "delegation.results_ready"]
     static let codingLifecycle: Set<String> = [
         "coding.queued", "coding.started", "coding.agent_started", "coding.agent_ended",
         "coding.agent_settled", "coding.turn.started", "coding.turn.finished", "coding.completed",

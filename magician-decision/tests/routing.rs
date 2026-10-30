@@ -70,6 +70,7 @@ fn request(questions: Vec<Question>, state_chars: usize) -> DecisionRequest {
         pack_version: "1.0.0".to_string(),
         state: DecisionState::from_text("x".repeat(state_chars)),
         questions,
+        assets: Default::default(),
     }
 }
 
@@ -482,4 +483,157 @@ async fn pinned_model_outage_is_cooled_down_without_duplicate_receipts() {
         assert_eq!(receipts.len(), usize::from(index == 0));
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// A minimal PNG header: the asset checks read only the signature and IHDR.
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(b"IDAT");
+    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes
+}
+
+fn with_screenshot(mut request: DecisionRequest, key: &str) -> DecisionRequest {
+    use magician_decision::asset::{DecisionAsset, ImageAsset};
+    request.state = DecisionState::from_json(serde_json::json!({"screen": key, "goal": "log in"}));
+    request.assets.insert(
+        key.to_string(),
+        DecisionAsset::Image(ImageAsset::from_bytes(&png(1280, 800)).expect("valid image")),
+    );
+    request
+}
+
+fn sees_images() -> ModelCapabilities {
+    ModelCapabilities {
+        text_only: false,
+        ..ModelCapabilities::default()
+    }
+}
+
+#[tokio::test]
+async fn a_screenshot_routes_past_text_only_models() {
+    let questions = vec![noul("applicable")];
+    let rt = runtime(
+        questions.clone(),
+        vec![
+            entry("laya", answering("laya", small_caps())),
+            entry("jev", answering("jev-1.13.0", sees_images())),
+        ],
+    );
+    let response = rt
+        .evaluate_request(with_screenshot(
+            request(questions.clone(), 10),
+            "screen-0123abcd",
+        ))
+        .await
+        .expect("the image-capable model answers");
+    assert_eq!(response.model.model, "jev-1.13.0");
+
+    let text_only = runtime(
+        questions.clone(),
+        vec![entry("laya", answering("laya", small_caps()))],
+    );
+    match text_only
+        .evaluate_request(with_screenshot(request(questions, 10), "screen-0123abcd"))
+        .await
+    {
+        Err(DecisionError::NoFittingModel { skipped, .. }) => {
+            assert!(skipped[0].contains("text-only"), "{skipped:?}");
+        },
+        other => panic!("expected NoFittingModel, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_unreferenced_screenshot_is_the_callers_fault() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let questions = vec![noul("applicable")];
+    let rt = runtime(
+        questions.clone(),
+        vec![entry(
+            "down",
+            Down {
+                calls: calls.clone(),
+                caps: sees_images(),
+            },
+        )],
+    );
+    let mut bad = with_screenshot(request(questions, 10), "screen-0123abcd");
+    bad.state = DecisionState::from_text("no reference here");
+    let error = rt.evaluate_request(bad).await.expect_err("rejected");
+    assert!(
+        matches!(error, DecisionError::InvalidRequest(_)),
+        "{error:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn images_count_by_pixels_and_questions_fit_their_own_limit() {
+    let plain = request(vec![noul("applicable")], 30);
+    let shot = with_screenshot(plain.clone(), "screen-0123abcd");
+    // 1280x800 at one token per 375 px (measured on Jev), never the base64 length.
+    let image_tokens = estimate_request_tokens(&shot) - estimate_request_tokens(&plain);
+    assert!((2650..2850).contains(&image_tokens), "{image_tokens}");
+
+    let caps = ModelCapabilities {
+        max_state_tokens: Some(10_000),
+        max_question_tokens: Some(100),
+        ..ModelCapabilities::default()
+    };
+    let reason = misfit_reason(&request(vec![noul("applicable")], 600), &caps).expect("misfit");
+    assert!(reason.contains("per question"), "{reason}");
+    assert!(misfit_reason(&request(vec![noul("applicable")], 30), &caps).is_none());
+}
+
+/// Refuses every request the way a provider refuses a malformed one.
+struct Rejects {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl StructuredDecisionModel for Rejects {
+    fn identity(&self) -> ModelIdentity {
+        ModelIdentity::new("typesafe", "rejects")
+    }
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+    async fn evaluate(&self, _: DecisionRequest) -> Result<DecisionResponse, DecisionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(DecisionError::ProviderStatus {
+            status: 400,
+            body: "{\"error\":\"max_tokens_exceeded\"}".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_rejected_request_does_not_cool_the_model_down() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let questions = vec![noul("applicable")];
+    let rt = runtime(
+        questions.clone(),
+        vec![entry(
+            "jev",
+            Rejects {
+                calls: calls.clone(),
+            },
+        )],
+    );
+    for _ in 0..2 {
+        let error = rt
+            .evaluate_request(request(questions.clone(), 10))
+            .await
+            .expect_err("rejected");
+        assert!(error.is_request_rejection(), "{error:?}");
+    }
+    // An outage would have skipped the second call during the cooldown.
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

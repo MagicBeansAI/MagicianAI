@@ -9,7 +9,10 @@ use std::{collections::HashSet, ops::ControlFlow};
 
 use anyhow::{anyhow, Result};
 use duckdb::Connection;
-use sqlparser::ast::{Expr, Statement, TableFactor, Visit, Visitor};
+use sqlparser::ast::{
+    BinaryOperator, DataType, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments,
+    Interval, ObjectName, Query, Select, SetExpr, Statement, TableFactor, Value, Visit, Visitor,
+};
 
 use super::llm_sql_guard::{
     is_read_only_select_query, is_read_only_select_query_node, parse_analytics_sql,
@@ -223,18 +226,96 @@ impl Visitor for LegacyLlmSqlVisitor {
 /// The raw Parquet scan is never installed as a named relation. Historical
 /// `reasoning_summary` is omitted, while the legacy free-form `error` field is
 /// reduced to a fixed presence marker.
+///
+/// `llm_calls` is a lazily evaluated VIEW, not a materialized table. It used
+/// to be `CREATE TEMP TABLE … AS SELECT` so it would stay readable after the
+/// caller disables external access, but that copied every call in the
+/// selected files (and, through a materialized `SELECT *` CTE, every raw
+/// column) on each request: an unbounded `llm_calls` query over a month of
+/// history ran out of the 512 MB + 1 GB spill budget before user SQL started.
+/// The view streams instead, so the caller's filters, projection and LIMIT
+/// push down into the scan. It stays readable after external access is
+/// disabled because exactly these files are registered in DuckDB's
+/// `allowed_paths` (see [`allow_server_selected_parquet`]); every other file
+/// and every directory remains unreachable.
+///
+/// `read_source_sql` / `attempts_source_sql` must name explicit files (one
+/// quoted path or a `[...]` list of them), not glob patterns: `allowed_paths`
+/// matches files, so a glob would fail closed once external access is off.
 pub fn install_legacy_llm_views(
     conn: &Connection,
     read_source_sql: &str,
     attempts_source_sql: Option<&str>,
     principal: &str,
     workspace: &str,
-    // Pulse fix: when the caller's query has a numeric `timestamp_ms >= N`
-    // window, push it INTO the raw Parquet scan so the `llm_calls` temp table
-    // only ever materializes the window's rows (previously the full
-    // partition-pruned dataset was materialized before the day filter applied).
-    // `None` preserves the prior full-materialization behaviour exactly.
+    // When every query on this connection has a numeric `timestamp_ms >= N`
+    // window, the bound is written into the raw Parquet scan itself so the
+    // reconciliation joins only see the window's rows. `None` reads every
+    // selected file (still streamed, never materialized).
     timestamp_lower_bound_ms: Option<i64>,
+) -> Result<()> {
+    install_legacy_llm_views_inner(
+        conn,
+        read_source_sql,
+        attempts_source_sql,
+        principal,
+        workspace,
+        timestamp_lower_bound_ms,
+        false,
+    )
+}
+
+/// Daily rollups scan only a three-partition window. Materialize its narrow
+/// compatibility columns once so reconciliation does not repeatedly bind every
+/// Parquet file. General queries retain streaming views and their memory cap.
+pub fn install_legacy_llm_views_for_daily_summary(
+    conn: &Connection,
+    read_source_sql: &str,
+    attempts_source_sql: Option<&str>,
+    principal: &str,
+    workspace: &str,
+) -> Result<()> {
+    install_legacy_llm_views_inner(
+        conn,
+        read_source_sql,
+        attempts_source_sql,
+        principal,
+        workspace,
+        None,
+        true,
+    )
+}
+
+/// Materialize a caller-bounded recent window's narrow source once before
+/// reconciliation. The bound is applied before deduplication, exactly as in
+/// the streaming compatibility view; provider attempts keep their full join scope.
+pub fn install_legacy_llm_views_for_recent_window(
+    conn: &Connection,
+    read_source_sql: &str,
+    attempts_source_sql: Option<&str>,
+    principal: &str,
+    workspace: &str,
+    timestamp_lower_bound_ms: i64,
+) -> Result<()> {
+    install_legacy_llm_views_inner(
+        conn,
+        read_source_sql,
+        attempts_source_sql,
+        principal,
+        workspace,
+        Some(timestamp_lower_bound_ms),
+        true,
+    )
+}
+
+fn install_legacy_llm_views_inner(
+    conn: &Connection,
+    read_source_sql: &str,
+    attempts_source_sql: Option<&str>,
+    principal: &str,
+    workspace: &str,
+    timestamp_lower_bound_ms: Option<i64>,
+    materialize_daily: bool,
 ) -> Result<()> {
     let columns = parquet_source_columns(conn, read_source_sql)?;
     let timestamp_default = if columns.contains("started_at_ms") {
@@ -496,14 +577,47 @@ pub fn install_legacy_llm_views(
         .map(|column| compatibility_projection_expr(&columns, column))
         .collect::<Vec<_>>()
         .join(",\n                  ");
+    let source_columns = compatibility_source_columns_sql(&columns, &column_defs);
+    let materialized = if materialize_daily {
+        let window_filter = match timestamp_lower_bound_ms {
+            Some(bound) if columns.contains("timestamp_ms") => {
+                format!(" WHERE timestamp_ms >= {bound}")
+            },
+            _ => String::new(),
+        };
+        conn.execute_batch(&format!(
+            "CREATE OR REPLACE TEMP TABLE _legacy_llm_daily_raw AS SELECT {source_columns} FROM read_parquet({read_source_sql}, hive_partitioning = true, union_by_name = true){window_filter}"
+        )).map_err(|error| anyhow!("prepare narrow daily LLM source: {error}"))?;
+        Some("_legacy_llm_daily_raw")
+    } else {
+        None
+    };
+    if materialize_daily && columns.contains("record_kind") {
+        if let Some(attempts) = attempts_source_sql {
+            // View binding also expands the winning-attempt CTE repeatedly.
+            // Keep its five required fields in memory beside the narrow calls
+            // window; provider payloads and unrelated fields never enter it.
+            conn.execute_batch(&format!(
+                "CREATE OR REPLACE TEMP TABLE _legacy_llm_daily_attempts AS \
+                 SELECT llm_call_id, provider, model, attempt_terminal_state, provider_attempt_index \
+                 FROM read_parquet({attempts}, hive_partitioning = true, union_by_name = true)"
+            )).map_err(|error| anyhow!("prepare narrow daily LLM attempts: {error}"))?;
+        }
+    }
     let calls_relation = build_llm_calls_relation(
         read_source_sql,
         attempts_source_sql,
         &columns,
+        &source_columns,
         timestamp_lower_bound_ms,
+        materialized,
     );
+    allow_server_selected_parquet(conn, read_source_sql)?;
+    if let Some(attempts) = attempts_source_sql {
+        allow_server_selected_parquet(conn, attempts)?;
+    }
     let view_sql = format!(
-        "CREATE OR REPLACE TEMP TABLE llm_calls AS
+        "CREATE OR REPLACE VIEW llm_calls AS
            SELECT {projection}
            FROM {calls_relation};
          CREATE OR REPLACE VIEW chat_session_cache_summary AS
@@ -528,6 +642,397 @@ pub fn install_legacy_llm_views(
     conn.execute_batch(&view_sql)
         .map_err(|error| anyhow!("create content-free legacy llm_calls views: {error}"))?;
     Ok(())
+}
+
+/// Register server-selected Parquet files in DuckDB's `allowed_paths`, merged
+/// with any files an earlier install on this connection registered.
+///
+/// `allowed_paths` only matters once `enable_external_access = false`: those
+/// exact files stay readable (so lazily bound compatibility views keep
+/// working), while every other file, directory and table function stays
+/// blocked. DuckDB refuses to change the list after external access is off, so
+/// user SQL cannot widen it. Caller SQL is still AST-allowlisted
+/// ([`validate_legacy_llm_query`]) and may not call `read_*` itself.
+fn allow_server_selected_parquet(conn: &Connection, source_sql: &str) -> Result<()> {
+    let paths = parquet_source_sql_list(source_sql);
+    conn.execute_batch(&format!(
+        "SET allowed_paths = list_distinct(list_concat(current_setting('allowed_paths'), {paths}));"
+    ))
+    .map_err(|error| anyhow!("register server-selected analytics Parquet files: {error}"))
+}
+
+/// The `read_parquet` argument forms callers pass (`'one/path'` or
+/// `['a', 'b']`) as a SQL list literal.
+fn parquet_source_sql_list(source_sql: &str) -> String {
+    let source_sql = source_sql.trim();
+    if source_sql.starts_with('[') {
+        source_sql.to_string()
+    } else {
+        format!("[{source_sql}]")
+    }
+}
+
+/// The physical source columns the compatibility projection and the
+/// one-row-per-call reconciliation read, as a quoted select list.
+///
+/// Scanning only these (instead of `SELECT *`) keeps restricted and bulky raw
+/// columns (`reasoning_summary`, checksums, idempotency keys, ~100 canonical
+/// fact columns) out of every intermediate relation.
+fn compatibility_source_columns_sql(
+    columns: &HashSet<String>,
+    column_defs: &[CompatibilityColumn],
+) -> String {
+    let mut needed = column_defs
+        .iter()
+        .map(|column| column.name)
+        .chain(["record_kind", "record_revision"])
+        .filter(|name| columns.contains(*name))
+        .collect::<Vec<_>>();
+    needed.sort_unstable();
+    needed.dedup();
+    if needed.is_empty() {
+        // Every compatibility column is defaulted; the scan only supplies rows.
+        return "TRUE AS __compat_row".to_string();
+    }
+    needed
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Cap an allowlisted compatibility query at `max_rows` result rows when it
+/// has no row limit of its own.
+///
+/// The handlers return at most `max_rows` rows anyway, but DuckDB's Rust
+/// `query` materializes the whole result first, so an unbounded
+/// `SELECT * FROM llm_calls` would build the full result set inside the
+/// memory budget only to discard all but the first page. Appending the LIMIT
+/// to the top-level query keeps its ORDER BY semantics and lets DuckDB stop
+/// early. Queries that already carry LIMIT/FETCH, or that do not parse as one
+/// query (they are rejected elsewhere), are returned unchanged.
+pub fn bound_legacy_llm_query_rows(sql: &str, max_rows: usize) -> String {
+    let trimmed = sql
+        .trim()
+        .trim_end_matches(|ch: char| ch == ';' || ch.is_whitespace());
+    let Ok(statements) = parse_analytics_sql(trimmed) else {
+        return sql.to_string();
+    };
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return sql.to_string();
+    };
+    if query.limit_clause.is_some() || query.fetch.is_some() {
+        return sql.to_string();
+    }
+    // A newline (not a space) so a trailing `-- comment` cannot swallow it.
+    format!("{trimmed}\nLIMIT {max_rows}")
+}
+
+/// Slack taken off a bound computed from `now()`/`current_date`. DuckDB
+/// evaluates those in the session time zone (`epoch_ms(CAST(now() AS
+/// TIMESTAMP))` is local wall time read back as UTC, up to 14 h either way)
+/// and `current_date` truncates to midnight, so two days keeps the pushed
+/// bound at or below every value the query itself compares against.
+pub const LLM_CALLS_RELATIVE_BOUND_SLACK_MS: i64 = 2 * 24 * 60 * 60 * 1000;
+
+/// The lowest `timestamp_ms` any scan of `llm_calls` in `sql` can need, in
+/// epoch milliseconds, or `None` when that cannot be proven.
+///
+/// The bound is pushed into the shared reconciled relation, which is only
+/// correct when every SELECT reading `llm_calls` filters by one, so this
+/// walks the AST rather than the text: a `CASE WHEN timestamp_ms >= …` or an
+/// `OR` arm is not a bound. A SELECT is bounded when `llm_calls` is its only
+/// FROM item and a top-level `AND` conjunct of its WHERE is
+/// `timestamp_ms >|>= <b>` (or `BETWEEN <b> AND …`), where `<b>` is an integer
+/// literal or `epoch_ms(now()|current_timestamp|current_date|today()
+/// [- INTERVAL n second|minute|hour|day|week])`. Relative bounds use `now_ms`
+/// minus [`LLM_CALLS_RELATIVE_BOUND_SLACK_MS`]; DuckDB reads its clock later,
+/// which only raises the query's own threshold. Joins, a
+/// `chat_session_cache_summary` read, column-renaming aliases, unknown
+/// expressions and parse failures all yield `None` (read unbounded).
+pub fn llm_calls_timestamp_lower_bound_ms(sql: &str, now_ms: i64) -> Option<i64> {
+    let statements = parse_analytics_sql(sql).ok()?;
+    let [statement @ Statement::Query(_)] = statements.as_slice() else {
+        return None;
+    };
+    let mut visitor = LlmCallsBoundVisitor {
+        now_ms,
+        ..LlmCallsBoundVisitor::default()
+    };
+    let _ = statement.visit(&mut visitor);
+    // Every `llm_calls` reference must be a FROM item this walk judged; one
+    // seen anywhere else (a nested join, `TABLE llm_calls`) is unbounded.
+    if visitor.unbounded || visitor.scans == 0 || visitor.scans != visitor.relation_refs {
+        return None;
+    }
+    visitor.bound
+}
+
+#[derive(Default)]
+struct LlmCallsBoundVisitor {
+    now_ms: i64,
+    relation_refs: usize,
+    scans: usize,
+    bound: Option<i64>,
+    unbounded: bool,
+}
+
+impl LlmCallsBoundVisitor {
+    fn visit_set_expr(&mut self, body: &SetExpr) {
+        match body {
+            SetExpr::Select(select) => self.visit_select(select),
+            SetExpr::SetOperation { left, right, .. } => {
+                self.visit_set_expr(left);
+                self.visit_set_expr(right);
+            },
+            // A parenthesised query is entered through `pre_visit_query`.
+            _ => {},
+        }
+    }
+
+    fn visit_select(&mut self, select: &Select) {
+        let factors: Vec<&TableFactor> = select
+            .from
+            .iter()
+            .flat_map(|from| {
+                std::iter::once(&from.relation).chain(from.joins.iter().map(|join| &join.relation))
+            })
+            .collect();
+        let mut qualifier = None;
+        for factor in &factors {
+            if let TableFactor::Table {
+                name,
+                alias,
+                args: None,
+                ..
+            } = factor
+            {
+                if relation_name(name) != "llm_calls" {
+                    continue;
+                }
+                self.scans += 1;
+                match alias {
+                    // `AS t(a, b)` renames columns, so `timestamp_ms` may no
+                    // longer be the view's column.
+                    Some(alias) if !alias.columns.is_empty() => self.unbounded = true,
+                    Some(alias) => qualifier = Some(alias.name.value.clone()),
+                    None => qualifier = Some("llm_calls".to_string()),
+                }
+            }
+        }
+        let Some(qualifier) = qualifier else {
+            return;
+        };
+        let bound = (factors.len() == 1)
+            .then_some(select.selection.as_ref())
+            .flatten()
+            .and_then(|selection| conjunct_lower_bound(selection, &qualifier, self.now_ms));
+        match bound {
+            Some(bound) => {
+                self.bound = Some(self.bound.map_or(bound, |current| current.min(bound)));
+            },
+            None => self.unbounded = true,
+        }
+    }
+}
+
+impl Visitor for LlmCallsBoundVisitor {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
+        self.visit_set_expr(&query.body);
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<Self::Break> {
+        match relation_name(relation).as_str() {
+            "llm_calls" => self.relation_refs += 1,
+            // A per-session rollup over all of `llm_calls`.
+            "chat_session_cache_summary" => self.unbounded = true,
+            _ => {},
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// Normalised exactly as [`LegacyLlmSqlVisitor::pre_visit_relation`] does.
+fn relation_name(relation: &ObjectName) -> String {
+    relation.to_string().trim_matches('"').to_ascii_lowercase()
+}
+
+/// The tightest lower bound among the top-level `AND` conjuncts of `expr`.
+fn conjunct_lower_bound(expr: &Expr, qualifier: &str, now_ms: i64) -> Option<i64> {
+    match expr {
+        Expr::Nested(inner) => conjunct_lower_bound(inner, qualifier, now_ms),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::And,
+            right,
+        } => match (
+            conjunct_lower_bound(left, qualifier, now_ms),
+            conjunct_lower_bound(right, qualifier, now_ms),
+        ) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        },
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Gt | BinaryOperator::GtEq,
+            right,
+        } if is_timestamp_ms_column(left, qualifier) => bound_value_ms(right, now_ms),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Lt | BinaryOperator::LtEq,
+            right,
+        } if is_timestamp_ms_column(right, qualifier) => bound_value_ms(left, now_ms),
+        Expr::Between {
+            expr,
+            negated: false,
+            low,
+            ..
+        } if is_timestamp_ms_column(expr, qualifier) => bound_value_ms(low, now_ms),
+        _ => None,
+    }
+}
+
+fn is_timestamp_ms_column(expr: &Expr, qualifier: &str) -> bool {
+    match expr {
+        Expr::Nested(inner) => is_timestamp_ms_column(inner, qualifier),
+        Expr::Identifier(column) => column.value.eq_ignore_ascii_case("timestamp_ms"),
+        Expr::CompoundIdentifier(parts) => matches!(
+            parts.as_slice(),
+            [table, column]
+                if table.value.eq_ignore_ascii_case(qualifier)
+                    && column.value.eq_ignore_ascii_case("timestamp_ms")
+        ),
+        _ => false,
+    }
+}
+
+/// An integer literal, or `epoch_ms(<relative instant>)` less the slack.
+fn bound_value_ms(expr: &Expr, now_ms: i64) -> Option<i64> {
+    match expr {
+        Expr::Nested(inner) => bound_value_ms(inner, now_ms),
+        Expr::Value(value) => match &value.value {
+            Value::Number(number, _) => number.parse::<i64>().ok(),
+            _ => None,
+        },
+        Expr::Function(function) if function_name(&function.name) == "epoch_ms" => {
+            let arguments = plain_function_arguments(function)?;
+            let [instant] = arguments.as_slice() else {
+                return None;
+            };
+            relative_instant_ms(instant, now_ms)?.checked_sub(LLM_CALLS_RELATIVE_BOUND_SLACK_MS)
+        },
+        _ => None,
+    }
+}
+
+/// `now()`-like clock reads, optionally cast to a timestamp/date type, minus
+/// fixed-length intervals.
+fn relative_instant_ms(expr: &Expr, now_ms: i64) -> Option<i64> {
+    match expr {
+        Expr::Nested(inner) => relative_instant_ms(inner, now_ms),
+        Expr::BinaryOp {
+            left,
+            op: BinaryOperator::Minus,
+            right,
+        } => {
+            let Expr::Interval(interval) = right.as_ref() else {
+                return None;
+            };
+            relative_instant_ms(left, now_ms)?.checked_sub(interval_ms(interval)?)
+        },
+        Expr::Cast {
+            expr, data_type, ..
+        } if is_clock_type(data_type) => relative_instant_ms(expr, now_ms),
+        Expr::Function(function) => {
+            if !plain_function_arguments(function)?.is_empty() {
+                return None;
+            }
+            matches!(
+                function_name(&function.name).as_str(),
+                "now"
+                    | "current_timestamp"
+                    | "get_current_timestamp"
+                    | "transaction_timestamp"
+                    | "current_date"
+                    | "today"
+            )
+            .then_some(now_ms)
+        },
+        _ => None,
+    }
+}
+
+fn is_clock_type(data_type: &DataType) -> bool {
+    let name = data_type.to_string().to_ascii_uppercase();
+    name.starts_with("TIMESTAMP") || name == "DATE" || name == "DATETIME"
+}
+
+/// Fixed-length intervals only: months and years vary, so they are not bounds.
+fn interval_ms(interval: &Interval) -> Option<i64> {
+    if interval.last_field.is_some()
+        || interval.leading_precision.is_some()
+        || interval.fractional_seconds_precision.is_some()
+    {
+        return None;
+    }
+    let Expr::Value(value) = interval.value.as_ref() else {
+        return None;
+    };
+    let (amount, unit) = match (&value.value, &interval.leading_field) {
+        (Value::Number(amount, _), Some(field)) => (amount.clone(), field.to_string()),
+        (Value::SingleQuotedString(amount), Some(field)) => {
+            (amount.trim().to_string(), field.to_string())
+        },
+        (Value::SingleQuotedString(text), None) => {
+            let mut parts = text.split_whitespace();
+            let (Some(amount), Some(unit), None) = (parts.next(), parts.next(), parts.next())
+            else {
+                return None;
+            };
+            (amount.to_string(), unit.to_string())
+        },
+        _ => return None,
+    };
+    let amount = amount.parse::<i64>().ok().filter(|amount| *amount >= 0)?;
+    let unit_ms: i64 = match unit.to_ascii_lowercase().as_str() {
+        "second" | "seconds" => 1_000,
+        "minute" | "minutes" => 60_000,
+        "hour" | "hours" => 3_600_000,
+        "day" | "days" => 86_400_000,
+        "week" | "weeks" => 604_800_000,
+        _ => return None,
+    };
+    amount.checked_mul(unit_ms)
+}
+
+fn function_name(name: &ObjectName) -> String {
+    name.to_string().trim_matches('"').to_ascii_lowercase()
+}
+
+/// Positional expression arguments of a plain call (no `FILTER`, `OVER`,
+/// `DISTINCT` or clauses); `CURRENT_TIMESTAMP` without parentheses has none.
+fn plain_function_arguments(function: &Function) -> Option<Vec<&Expr>> {
+    if function.filter.is_some() || function.over.is_some() {
+        return None;
+    }
+    match &function.args {
+        FunctionArguments::None => Some(Vec::new()),
+        FunctionArguments::List(list)
+            if list.duplicate_treatment.is_none() && list.clauses.is_empty() =>
+        {
+            list.args
+                .iter()
+                .map(|argument| match argument {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => Some(expr),
+                    _ => None,
+                })
+                .collect()
+        },
+        _ => None,
+    }
 }
 
 /// Install a flat, content-free `llm_embeddings` relation over server-selected
@@ -608,8 +1113,11 @@ pub fn install_llm_embeddings_view(conn: &Connection, read_source_sql: &str) -> 
         .map(|column| embeddings_projection_expr(&columns, column))
         .collect::<Vec<_>>()
         .join(",\n                  ");
+    // A streaming view over registered files, like `llm_calls`: the dataset
+    // grows without bound, so it is never copied into a per-request table.
+    allow_server_selected_parquet(conn, read_source_sql)?;
     let view_sql = format!(
-        "CREATE OR REPLACE TEMP TABLE llm_embeddings AS
+        "CREATE OR REPLACE VIEW llm_embeddings AS
            SELECT {projection}
            FROM read_parquet({read_source_sql}, hive_partitioning = true, union_by_name = true);"
     );
@@ -635,7 +1143,7 @@ fn embeddings_projection_expr(columns: &HashSet<String>, column: &CompatibilityC
     }
 }
 
-/// Build the FROM relation for the compatibility `llm_calls` table: exactly one
+/// Build the FROM relation for the compatibility `llm_calls` view: exactly one
 /// row per call.
 ///
 /// The governed-observability pipeline writes call-level `call_fact` lifecycle
@@ -652,11 +1160,20 @@ fn embeddings_projection_expr(columns: &HashSet<String>, column: &CompatibilityC
 ///
 /// A pure legacy lake (no `call_fact` records → no `record_kind` column) needs
 /// no reconciliation and is read directly.
+///
+/// Every step is `NOT MATERIALIZED` and the raw scan selects only
+/// `source_columns`. DuckDB otherwise materializes a CTE referenced more than
+/// once, and `raw` (read by `batch` and `completed`) was a `SELECT *` over
+/// ~150 raw columns: on one month of history that buffer alone exhausted the
+/// analytics memory and spill budget. Inlined, each consumer streams its own
+/// narrow, filter-pushed scan of the same server-selected files.
 fn build_llm_calls_relation(
     read_source_sql: &str,
     attempts_source_sql: Option<&str>,
     columns: &HashSet<String>,
+    source_columns: &str,
     timestamp_lower_bound_ms: Option<i64>,
+    materialized: Option<&str>,
 ) -> String {
     // Push the window's lower bound into the scan only when the source actually
     // carries a `timestamp_ms` column (governed lakes do); otherwise leaving it
@@ -667,19 +1184,22 @@ fn build_llm_calls_relation(
         },
         _ => String::new(),
     };
-    let raw =
-        format!("read_parquet({read_source_sql}, hive_partitioning = true, union_by_name = true)");
+    let raw = materialized.map(str::to_owned).unwrap_or_else(|| {
+        format!("read_parquet({read_source_sql}, hive_partitioning = true, union_by_name = true)")
+    });
     if !columns.contains("record_kind") {
-        // Pure legacy lake: no reconciliation CTE, so wrap the scan in a
-        // subquery to attach the window filter when present.
-        if window_filter.is_empty() {
-            return raw;
-        }
-        return format!("(SELECT * FROM {raw}{window_filter})");
+        // Pure legacy lake: no reconciliation, just the narrow scan.
+        return format!("(SELECT {source_columns} FROM {raw}{window_filter})");
     }
     let win_att = match attempts_source_sql {
-        Some(attempts) => format!(
-            "win_att AS (
+        Some(attempts) => {
+            let attempts = if materialized.is_some() {
+                "_legacy_llm_daily_attempts".to_owned()
+            } else {
+                format!("read_parquet({attempts}, hive_partitioning = true, union_by_name = true)")
+            };
+            format!(
+                "win_att AS NOT MATERIALIZED (
                  SELECT llm_call_id, provider, model FROM (
                      SELECT llm_call_id, provider, model,
                             ROW_NUMBER() OVER (
@@ -687,20 +1207,21 @@ fn build_llm_calls_relation(
                                 ORDER BY (attempt_terminal_state = 'succeeded') DESC,
                                          provider_attempt_index DESC NULLS LAST
                             ) AS rn
-                     FROM read_parquet({attempts}, hive_partitioning = true, union_by_name = true)
+                     FROM {attempts}
                      WHERE COALESCE(NULLIF(model, ''), '') <> ''
                  ) WHERE rn = 1
              )"
-        ),
-        None => "win_att AS (SELECT NULL::VARCHAR AS llm_call_id, \
+            )
+        },
+        None => "win_att AS NOT MATERIALIZED (SELECT NULL::VARCHAR AS llm_call_id, \
                  NULL::VARCHAR AS provider, NULL::VARCHAR AS model WHERE false)"
             .to_string(),
     };
     format!(
         "(
-           WITH raw AS (SELECT * FROM {raw}{window_filter}),
-                batch AS (SELECT * FROM raw WHERE record_kind IS NULL),
-                completed AS (
+           WITH raw AS NOT MATERIALIZED (SELECT {source_columns} FROM {raw}{window_filter}),
+                batch AS NOT MATERIALIZED (SELECT * FROM raw WHERE record_kind IS NULL),
+                completed AS NOT MATERIALIZED (
                     SELECT * FROM raw
                     WHERE record_kind = 'call_fact' AND record_revision = 2
                       AND llm_call_id NOT IN (
@@ -708,7 +1229,7 @@ fn build_llm_calls_relation(
                       )
                 ),
                 {win_att},
-                projected AS (
+                projected AS NOT MATERIALIZED (
                     SELECT c.* REPLACE(
                         COALESCE(NULLIF(c.provider, ''), w.provider) AS provider,
                         COALESCE(NULLIF(c.model, ''), w.model) AS model
@@ -804,6 +1325,97 @@ fn escape_sql_literal(value: &str) -> String {
 #[cfg(any(test, feature = "test-fixtures"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daily_usage_materialization_preserves_reconciliation_and_redaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("calls.parquet");
+        let attempts = tmp.path().join("attempts.parquet");
+        let writer = Connection::open_in_memory().unwrap();
+        writer.execute_batch(&format!(
+            "COPY (SELECT * FROM (VALUES
+             ('a', NULL::VARCHAR, NULL::BIGINT, 'batch', 'provider', 1.0::DOUBLE, 1700000000000::BIGINT, 'private reasoning', 'private error'),
+             ('a', 'call_fact', 2, 'duplicate', 'provider', 2.0, 1700000000000, 'private reasoning', 'private error'),
+             ('b', 'call_fact', 2, '', '', 3.0, 1700000000001, 'private reasoning', 'private error')
+             ) t(llm_call_id, record_kind, record_revision, model, provider, cost_usd, timestamp_ms, reasoning_summary, error)) TO '{}' (FORMAT PARQUET)", escape_sql_literal(&file.to_string_lossy())
+        )).unwrap();
+        writer.execute_batch(&format!(
+            "COPY (SELECT * FROM (VALUES \
+             ('b', 'provider', 'canonical', 'succeeded', 1, 'private provider payload'), \
+             ('b', 'provider', 'failed-model', 'failed', 2, 'private provider payload') \
+             ) t(llm_call_id, provider, model, attempt_terminal_state, provider_attempt_index, response_payload)) \
+             TO '{}' (FORMAT PARQUET)", escape_sql_literal(&attempts.to_string_lossy())
+        )).unwrap();
+        let source = format!("'{}'", escape_sql_literal(&file.to_string_lossy()));
+        let attempts_source = format!("'{}'", escape_sql_literal(&attempts.to_string_lossy()));
+        for materialize in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            if materialize {
+                install_legacy_llm_views_for_daily_summary(
+                    &conn,
+                    &source,
+                    Some(&attempts_source),
+                    "owner",
+                    "workspace",
+                )
+                .unwrap();
+                let cols: Vec<String> = conn
+                    .prepare("DESCRIBE _legacy_llm_daily_raw")
+                    .unwrap()
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert!(!cols.iter().any(|c| c == "reasoning_summary"));
+                let attempt_columns: Vec<String> = conn
+                    .prepare("DESCRIBE _legacy_llm_daily_attempts")
+                    .unwrap()
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert_eq!(attempt_columns.len(), 5);
+                assert!(!attempt_columns.iter().any(|c| c == "response_payload"));
+                // Withdraw only these tempdir fixtures: materialized daily
+                // views must no longer reopen either Parquet source.
+                std::fs::remove_file(&file).unwrap();
+                std::fs::remove_file(&attempts).unwrap();
+            } else {
+                install_legacy_llm_views(
+                    &conn,
+                    &source,
+                    Some(&attempts_source),
+                    "owner",
+                    "workspace",
+                    None,
+                )
+                .unwrap();
+            }
+            conn.execute_batch("SET enable_external_access = false")
+                .unwrap();
+            let (count, cost, errors): (i64, f64, String) = conn
+                .query_row(
+                    "SELECT COUNT(*), SUM(cost_usd), MIN(error) FROM llm_calls",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (count, cost, errors.as_str()),
+                (2, 4.0, LEGACY_ERROR_REDACTION)
+            );
+            let model: String = conn
+                .query_row(
+                    "SELECT model FROM llm_calls WHERE llm_call_id = 'b'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(model, "canonical");
+        }
+        assert!(validate_legacy_llm_query("SELECT * FROM _legacy_llm_daily_raw").is_err());
+        assert!(validate_legacy_llm_query("SELECT * FROM _legacy_llm_daily_attempts").is_err());
+    }
 
     /// A non-finite `cost_usd` must reach consumers as SQL NULL.
     ///
@@ -1105,5 +1717,384 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM llm_calls", [], |row| row.get(0))
             .expect("count");
         assert_eq!(total, 1, "the 'started' lifecycle row must not surface");
+    }
+
+    fn sql_path(path: &std::path::Path) -> String {
+        format!("'{}'", escape_sql_literal(&path.to_string_lossy()))
+    }
+
+    fn disable_external_access(conn: &Connection) {
+        conn.execute_batch(
+            "SET enable_external_access = false; \
+             SET autoinstall_known_extensions = false; \
+             SET autoload_known_extensions = false;",
+        )
+        .expect("disable external access");
+    }
+
+    /// Regression: an unbounded `llm_calls` query returned DuckDB "Out of
+    /// Memory" (953.5/953.6 MiB spill used) because install copied the whole
+    /// selected history, through a materialized `SELECT *` CTE that carried
+    /// every raw column, into a temp table before user SQL ran.
+    ///
+    /// The fixture holds ~77 MiB of unique restricted text (200k lifecycle
+    /// rows, two per call) against a 64 MB memory + 64 MB spill budget; the
+    /// old materializing shape fails on it under DuckDB 1.5.2. The view must
+    /// answer an unbounded aggregate and a full-width ordered page, stay
+    /// readable after external access is disabled, and leave every
+    /// unregistered file unreachable.
+    #[test]
+    fn llm_calls_view_streams_history_larger_than_the_memory_budget() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let calls = temp.path().join("calls.parquet");
+        let unregistered = temp.path().join("unregistered.parquet");
+        let writer = Connection::open_in_memory().expect("writer");
+        writer
+            .execute_batch(&format!(
+                "COPY (SELECT 1700000000000::BIGINT + i AS timestamp_ms,
+                              'call-' || (i // 2)::VARCHAR AS llm_call_id,
+                              'call_fact'::VARCHAR AS record_kind,
+                              (1 + i % 2)::INTEGER AS record_revision,
+                              'openai'::VARCHAR AS provider,
+                              'gpt-5.6'::VARCHAR AS model,
+                              0.001::DOUBLE AS cost_usd,
+                              repeat(md5(i::VARCHAR), 12) AS reasoning_summary
+                       FROM range(200000) t(i))
+                 TO {} (FORMAT PARQUET);
+                 COPY (SELECT 'other scope' AS secret) TO {} (FORMAT PARQUET);",
+                sql_path(&calls),
+                sql_path(&unregistered),
+            ))
+            .expect("write oversized history fixture");
+
+        let reader = Connection::open_in_memory().expect("reader");
+        reader
+            .execute_batch(&format!(
+                "SET threads = 1;
+                 SET memory_limit = '64MB';
+                 SET max_temp_directory_size = '64MB';
+                 SET temp_directory = {};",
+                sql_path(&temp.path().join("spill")),
+            ))
+            .expect("small test budget");
+        install_legacy_llm_views(&reader, &sql_path(&calls), None, "owner", "default", None)
+            .expect("install is lazy and cannot exhaust the budget");
+        disable_external_access(&reader);
+
+        let table_type: String = reader
+            .query_row(
+                "SELECT table_type FROM information_schema.tables WHERE table_name = 'llm_calls'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("llm_calls relation");
+        assert_eq!(table_type, "VIEW", "llm_calls must never be materialized");
+
+        let (calls_seen, distinct_calls, provider): (i64, i64, String) = reader
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT llm_call_id), ANY_VALUE(provider) FROM llm_calls",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("unbounded aggregate streams within the budget");
+        assert_eq!(
+            calls_seen, 100_000,
+            "one row per call, no lifecycle doubling"
+        );
+        assert_eq!(distinct_calls, 100_000);
+        assert_eq!(provider, "openai");
+
+        let page_sql = bound_legacy_llm_query_rows(
+            "SELECT * FROM llm_calls ORDER BY timestamp_ms DESC",
+            super::super::duckdb_safety::ANALYTICS_DUCKDB_MAX_RESULT_ROWS,
+        );
+        let mut statement = reader.prepare(&page_sql).expect("prepare page");
+        let newest: Vec<i64> = statement
+            .query_map([], |row| row.get::<_, i64>("timestamp_ms"))
+            .expect("full-width ordered page within the budget")
+            .collect::<Result<_, _>>()
+            .expect("page rows");
+        assert_eq!(
+            newest.len(),
+            super::super::duckdb_safety::ANALYTICS_DUCKDB_MAX_RESULT_ROWS
+        );
+        assert_eq!(newest[0], 1_700_000_199_999);
+
+        assert!(reader
+            .prepare("SELECT reasoning_summary FROM llm_calls")
+            .is_err());
+        assert!(
+            reader
+                .prepare(&format!(
+                    "SELECT * FROM read_parquet({})",
+                    sql_path(&unregistered)
+                ))
+                .is_err(),
+            "files the server did not select must stay unreachable"
+        );
+        assert!(reader.prepare("SELECT * FROM glob('/tmp/*')").is_err());
+        assert!(
+            reader
+                .execute_batch(&format!(
+                    "SET allowed_paths = [{}]",
+                    sql_path(&unregistered)
+                ))
+                .is_err(),
+            "the registered file set cannot be widened once external access is off"
+        );
+    }
+
+    /// Calls, provider attempts and embeddings installed on one connection
+    /// each register their files without dropping the others', so every
+    /// relation (and its reconciliation join) still reads after external
+    /// access is disabled.
+    #[test]
+    fn compatibility_views_share_one_connection_after_external_access_is_disabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let calls = temp.path().join("calls.parquet");
+        let attempts = temp.path().join("attempts.parquet");
+        let embeddings = temp.path().join("embeddings.parquet");
+        let writer = Connection::open_in_memory().expect("writer");
+        writer
+            .execute_batch(&format!(
+                "COPY (SELECT * FROM (VALUES
+                     (1700000000000::BIGINT, 'call-1'::VARCHAR, 'call_fact'::VARCHAR, 2::INTEGER, ''::VARCHAR, ''::VARCHAR)
+                   ) AS t(timestamp_ms, llm_call_id, record_kind, record_revision, provider, model))
+                 TO {} (FORMAT PARQUET);
+                 COPY (SELECT 'call-1'::VARCHAR AS llm_call_id, 'openai'::VARCHAR AS provider,
+                              'gpt-5.6'::VARCHAR AS model, 'succeeded'::VARCHAR AS attempt_terminal_state,
+                              1::INTEGER AS provider_attempt_index)
+                 TO {} (FORMAT PARQUET);
+                 COPY (SELECT 1700000000000::BIGINT AS timestamp_ms, 'ollama'::VARCHAR AS provider,
+                              'embed-model'::VARCHAR AS model, 7::BIGINT AS input_tokens)
+                 TO {} (FORMAT PARQUET);",
+                sql_path(&calls),
+                sql_path(&attempts),
+                sql_path(&embeddings),
+            ))
+            .expect("write fixtures");
+
+        let reader = Connection::open_in_memory().expect("reader");
+        let attempts_sql = format!("[{}]", sql_path(&attempts));
+        install_legacy_llm_views(
+            &reader,
+            &format!("[{}]", sql_path(&calls)),
+            Some(attempts_sql.as_str()),
+            "owner",
+            "default",
+            Some(1_699_999_999_999),
+        )
+        .expect("install calls view");
+        install_llm_embeddings_view(&reader, &sql_path(&embeddings))
+            .expect("install embeddings view");
+        disable_external_access(&reader);
+
+        let model: Option<String> = reader
+            .query_row("SELECT model FROM llm_calls", [], |row| row.get(0))
+            .expect("calls view and its attempts join read after disable");
+        assert_eq!(model.as_deref(), Some("gpt-5.6"));
+        let tokens: i64 = reader
+            .query_row("SELECT SUM(input_tokens) FROM llm_embeddings", [], |row| {
+                row.get(0)
+            })
+            .expect("embeddings view reads after disable");
+        assert_eq!(tokens, 7);
+    }
+
+    #[test]
+    fn compatibility_scan_reads_only_projected_columns() {
+        let columns = [
+            "timestamp_ms",
+            "llm_call_id",
+            "record_kind",
+            "record_revision",
+            "reasoning_summary",
+            "payload_checksum",
+            "dt",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+        let defs = [
+            CompatibilityColumn {
+                name: "timestamp_ms",
+                ty: "BIGINT",
+                default_sql: "0::BIGINT".into(),
+            },
+            CompatibilityColumn {
+                name: "llm_call_id",
+                ty: "VARCHAR",
+                default_sql: "NULL::VARCHAR".into(),
+            },
+            CompatibilityColumn {
+                name: "model",
+                ty: "VARCHAR",
+                default_sql: "'unknown'::VARCHAR".into(),
+            },
+            CompatibilityColumn {
+                name: "dt",
+                ty: "VARCHAR",
+                default_sql: "NULL::VARCHAR".into(),
+            },
+        ];
+        assert_eq!(
+            compatibility_source_columns_sql(&columns, &defs),
+            "\"dt\", \"llm_call_id\", \"record_kind\", \"record_revision\", \"timestamp_ms\""
+        );
+        assert_eq!(
+            compatibility_source_columns_sql(&HashSet::new(), &defs),
+            "TRUE AS __compat_row"
+        );
+    }
+
+    #[test]
+    fn unbounded_compatibility_queries_get_a_row_limit() {
+        assert_eq!(
+            bound_legacy_llm_query_rows("SELECT * FROM llm_calls ORDER BY timestamp_ms DESC;", 10),
+            "SELECT * FROM llm_calls ORDER BY timestamp_ms DESC\nLIMIT 10"
+        );
+        assert_eq!(
+            bound_legacy_llm_query_rows("SELECT * FROM llm_calls -- newest first", 10),
+            "SELECT * FROM llm_calls -- newest first\nLIMIT 10"
+        );
+        assert_eq!(
+            bound_legacy_llm_query_rows(
+                "SELECT model FROM llm_calls UNION ALL SELECT model FROM llm_embeddings",
+                10
+            ),
+            "SELECT model FROM llm_calls UNION ALL SELECT model FROM llm_embeddings\nLIMIT 10"
+        );
+        for already_bounded in [
+            "SELECT * FROM llm_calls LIMIT 5",
+            "SELECT * FROM llm_calls ORDER BY timestamp_ms LIMIT 5 OFFSET 2",
+            "SELECT * FROM llm_calls FETCH FIRST 5 ROWS ONLY",
+            "not sql at all",
+        ] {
+            assert_eq!(
+                bound_legacy_llm_query_rows(already_bounded, 10),
+                already_bounded
+            );
+        }
+        // A LIMIT inside a subquery does not bound the outer result.
+        assert!(bound_legacy_llm_query_rows(
+            "SELECT * FROM (SELECT * FROM llm_calls LIMIT 5) AS recent",
+            10
+        )
+        .ends_with("\nLIMIT 10"));
+    }
+
+    #[test]
+    fn llm_calls_lower_bound_reads_literal_and_relative_windows() {
+        let now = 1_800_000_000_000_i64;
+        let day = 86_400_000_i64;
+        let slack = LLM_CALLS_RELATIVE_BOUND_SLACK_MS;
+        let bound = |sql: &str| llm_calls_timestamp_lower_bound_ms(sql, now);
+
+        assert_eq!(
+            bound("SELECT COUNT(*) FROM llm_calls WHERE timestamp_ms >= 1700000000000"),
+            Some(1_700_000_000_000)
+        );
+        // The `/llm` page's relative windows, as normalised by the API.
+        assert_eq!(
+            bound(
+                "SELECT operation, SUM(cost_usd) FROM llm_calls \
+                 WHERE timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS) \
+                 AND operation IS NOT NULL GROUP BY operation"
+            ),
+            Some(now - 30 * day - slack)
+        );
+        assert_eq!(
+            bound(
+                "SELECT 1 FROM llm_calls WHERE timestamp_ms > epoch_ms(now() - INTERVAL 6 HOURS)"
+            ),
+            Some(now - 6 * 3_600_000 - slack)
+        );
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls WHERE timestamp_ms >= epoch_ms(current_date - INTERVAL 7 DAY)"),
+            Some(now - 7 * day - slack)
+        );
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls WHERE timestamp_ms >= epoch_ms(now()::TIMESTAMP - INTERVAL '2 days')"),
+            Some(now - 2 * day - slack)
+        );
+        // Conjuncts, reversed comparisons, BETWEEN and aliases.
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls WHERE agent_id IS NOT NULL AND (timestamp_ms >= 5 AND timestamp_ms < 10)"),
+            Some(5)
+        );
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls WHERE timestamp_ms >= 5 AND timestamp_ms > 7"),
+            Some(7)
+        );
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls WHERE 5 <= timestamp_ms"),
+            Some(5)
+        );
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls WHERE timestamp_ms BETWEEN 5 AND 10"),
+            Some(5)
+        );
+        assert_eq!(
+            bound("SELECT 1 FROM llm_calls AS c WHERE c.timestamp_ms >= 5"),
+            Some(5)
+        );
+        // Every arm bounded: the loosest arm wins.
+        assert_eq!(
+            bound(
+                "SELECT 1 FROM llm_calls WHERE timestamp_ms >= 5 \
+                 UNION ALL SELECT 1 FROM llm_calls WHERE timestamp_ms >= 3"
+            ),
+            Some(3)
+        );
+        // Today-vs-yesterday: one bounded CTE, every other SELECT reads it.
+        assert_eq!(
+            bound(
+                "WITH scoped AS (SELECT *, COALESCE(NULLIF(model, ''), 'unknown') AS model_key \
+                 FROM llm_calls WHERE timestamp_ms >= 100 AND timestamp_ms < 300 \
+                 AND (COALESCE(provider_attempt_count, 1) <> 0 OR response_kind = 'harness_aggregate')), \
+                 top_models AS (SELECT model_key FROM scoped WHERE timestamp_ms >= 200 GROUP BY model_key LIMIT 3) \
+                 SELECT 'today' AS day, COUNT(*) FROM scoped WHERE timestamp_ms >= 200 \
+                 UNION ALL SELECT 'today_model', COUNT(*) FROM scoped \
+                 WHERE model_key IN (SELECT model_key FROM top_models) GROUP BY model_key"
+            ),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn llm_calls_lower_bound_refuses_anything_it_cannot_prove() {
+        let now = 1_800_000_000_000_i64;
+        for sql in [
+            "SELECT COUNT(*) FROM llm_calls",
+            "SELECT SUM(CASE WHEN timestamp_ms >= 5 THEN cost_usd END) FROM llm_calls",
+            "SELECT COUNT(*) FILTER (WHERE timestamp_ms >= 5) FROM llm_calls",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= 5 OR agent_id = 'a'",
+            "SELECT 1 FROM llm_calls WHERE NOT (timestamp_ms >= 5)",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms <= 5",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms BETWEEN 5 AND 10 AND timestamp_ms NOT BETWEEN 1 AND 2 AND FALSE OR TRUE",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= 5 \
+             UNION ALL SELECT 1 FROM llm_calls",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= 5 \
+             AND llm_call_id IN (SELECT llm_call_id FROM llm_calls)",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= (SELECT MIN(timestamp_ms) FROM llm_calls)",
+            "SELECT 1 FROM llm_calls a JOIN llm_calls b USING (llm_call_id) WHERE a.timestamp_ms >= 5",
+            "SELECT 1 FROM llm_calls, chat_session_cache_summary WHERE timestamp_ms >= 5",
+            "SELECT * FROM chat_session_cache_summary",
+            "SELECT 1 FROM llm_calls AS t(started_at_ms, timestamp_ms) WHERE timestamp_ms >= 5",
+            "SELECT 1 FROM llm_calls c WHERE other.timestamp_ms >= 5",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= epoch_ms(to_timestamp(5))",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= epoch_ms(now() - INTERVAL 1 MONTH)",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= epoch_ms(now() + INTERVAL 1 DAY)",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= epoch(now() - INTERVAL 1 DAY)",
+            "SELECT 1 FROM llm_calls WHERE timestamp_ms >= 1.5e12",
+            "SELECT 1 FROM llm_embeddings WHERE timestamp_ms >= 5",
+            "not sql at all",
+        ] {
+            assert_eq!(
+                llm_calls_timestamp_lower_bound_ms(sql, now),
+                None,
+                "must not bound: {sql}"
+            );
+        }
     }
 }

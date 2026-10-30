@@ -311,6 +311,8 @@ pub enum CoveredGate {
     ModelFlag,
     /// A harness call matched the grant's approval rules.
     PlaneApproval,
+    /// A send its context would capture, held for the owner's review.
+    OutwardReview,
 }
 
 impl CoveredGate {
@@ -320,6 +322,7 @@ impl CoveredGate {
             Self::Criticality => "criticality",
             Self::ModelFlag => "model_flag",
             Self::PlaneApproval => "plane_approval",
+            Self::OutwardReview => "outward_review",
         }
     }
 }
@@ -819,7 +822,9 @@ pub fn resolve_reply(ask: &AlignmentAsk, reply: OwnerReply<'_>, now_ms: i64) -> 
     };
     let confirm_wording = |token: Option<&str>| -> Resolution {
         match (&ask.lasting_write, token) {
-            (Some(write), Some(token)) if ask.stage == AskStage::ConfirmWording && token.trim() == write.token => {
+            (Some(write), Some(token))
+                if ask.stage == AskStage::ConfirmWording && token.trim() == write.token =>
+            {
                 Resolution::ApplyWrite(write.clone())
             },
             _ => Resolution::Rejected {
@@ -990,7 +995,10 @@ mod tests {
                 kind: ResolutionKind::ProceedWithoutCheck
             }
         );
-        assert_eq!(resolve_reply(&hold(), OwnerReply::Confirm(false), 1_001), Resolution::Cancel);
+        assert_eq!(
+            resolve_reply(&hold(), OwnerReply::Confirm(false), 1_001),
+            Resolution::Cancel
+        );
     }
 
     #[test]
@@ -1008,7 +1016,10 @@ mod tests {
             resolve_reply(&hold(), OwnerReply::Choice("allow_always"), 1_001),
             Resolution::Rejected { .. }
         ));
-        assert_eq!(resolve_reply(&waiver(), OwnerReply::Choice("retry"), 1_001), Resolution::Retry);
+        assert_eq!(
+            resolve_reply(&waiver(), OwnerReply::Choice("retry"), 1_001),
+            Resolution::Retry
+        );
     }
 
     #[test]
@@ -1020,11 +1031,18 @@ mod tests {
                 kind: ResolutionKind::AllowOnce
             }
         );
-        assert_eq!(resolve_reply(&hold(), OwnerReply::Text(" cancel "), 1_001), Resolution::Cancel);
+        assert_eq!(
+            resolve_reply(&hold(), OwnerReply::Text(" cancel "), 1_001),
+            Resolution::Cancel
+        );
         // "yes go ahead" is not a choice: it goes to the agent as the owner's
         // words, and the next check judges the act with it as evidence.
         assert_eq!(
-            resolve_reply(&hold(), OwnerReply::Text("yes go ahead, it's for a guest"), 1_001),
+            resolve_reply(
+                &hold(),
+                OwnerReply::Text("yes go ahead, it's for a guest"),
+                1_001
+            ),
             Resolution::Instruction {
                 text: "yes go ahead, it's for a guest".into()
             }
@@ -1038,7 +1056,11 @@ mod tests {
     #[test]
     fn hold_choices_follow_the_judges_offer() {
         let ask = hold();
-        let ids: Vec<&str> = ask.choices.iter().map(|choice| choice.id.as_str()).collect();
+        let ids: Vec<&str> = ask
+            .choices
+            .iter()
+            .map(|choice| choice.id.as_str())
+            .collect();
         assert_eq!(ids, ["allow_once", "use_alternative", "cancel"]);
         // Not offered by the judge, so not answerable by id.
         assert!(matches!(
@@ -1055,7 +1077,11 @@ mod tests {
             Resolution::Expired
         );
         assert_eq!(
-            resolve_reply(&ask, OwnerReply::Choice("allow_once"), ask.deadline_at_ms + 1),
+            resolve_reply(
+                &ask,
+                OwnerReply::Choice("allow_once"),
+                ask.deadline_at_ms + 1
+            ),
             Resolution::Expired
         );
     }
@@ -1065,7 +1091,12 @@ mod tests {
         let ids: Vec<String> = rich_hold().choices.iter().map(|c| c.id.clone()).collect();
         assert_eq!(
             ids,
-            ["allow_once", "change_preference", "remember_preference", "cancel"]
+            [
+                "allow_once",
+                "change_preference",
+                "remember_preference",
+                "cancel"
+            ]
         );
         // A profile-sourced citation cannot be changed here, and an explicit
         // preference is not "remembered" again.
@@ -1109,7 +1140,10 @@ mod tests {
             OwnerReply::Text("save this wording"),
         ] {
             assert!(
-                matches!(resolve_reply(&staged, reply, 1_001), Resolution::Rejected { .. }),
+                matches!(
+                    resolve_reply(&staged, reply, 1_001),
+                    Resolution::Rejected { .. }
+                ),
                 "{reply:?} must not save"
             );
         }
@@ -1150,7 +1184,10 @@ mod tests {
         };
         assert_eq!(write.kind, LastingWriteKind::Replace);
         assert_eq!(write.wording, "vegetarian on weekdays only");
-        assert_eq!(write.superseded.as_deref(), Some("diet: vegetarian dinners"));
+        assert_eq!(
+            write.superseded.as_deref(),
+            Some("diet: vegetarian dinners")
+        );
         assert_eq!(write.intention_id, "pref-1");
         // The same proposal gets the same token; different wording does not.
         let Resolution::ProposeWrite(again) = resolve_reply(
@@ -1181,13 +1218,23 @@ mod tests {
         };
         let staged = ask.with_wording_stage(write.clone());
         let public = staged.hitl_input_schema("confirmation").to_string();
-        for secret in ["vegetarian", "mild", "butter", write.token.as_str(), "pref-1", "inf-1"] {
+        for secret in [
+            "vegetarian",
+            "mild",
+            "butter",
+            write.token.as_str(),
+            "pref-1",
+            "inf-1",
+        ] {
             assert!(!public.contains(secret), "public schema leaks {secret}");
         }
         let private = staged.private_projection();
         assert_eq!(private["readback"]["token"], json!(write.token));
         assert_eq!(private["readback"]["wording"], json!("spice: mild"));
-        assert_eq!(private["explanation"], json!("You asked to keep dinners vegetarian."));
+        assert_eq!(
+            private["explanation"],
+            json!("You asked to keep dinners vegetarian.")
+        );
         assert_eq!(private["stage"], json!("confirm_wording"));
     }
 
@@ -1223,7 +1270,10 @@ mod tests {
 
         let public = ask.public_projection();
         assert_eq!(public["also_covers"], json!(["approval_rule"]));
-        assert!(!public.to_string().contains("swiggy-mcp"), "the gate's reason stays private");
+        assert!(
+            !public.to_string().contains("swiggy-mcp"),
+            "the gate's reason stays private"
+        );
         assert_eq!(
             ask.private_projection()["also_covers"][0]["gate"],
             json!("approval_rule")
@@ -1239,7 +1289,11 @@ mod tests {
             Resolution::Cancel
         );
         assert!(matches!(
-            resolve_reply(&ask, OwnerReply::Text("order the paneer one"), ask.created_at_ms),
+            resolve_reply(
+                &ask,
+                OwnerReply::Text("order the paneer one"),
+                ask.created_at_ms
+            ),
             Resolution::Instruction { .. }
         ));
 

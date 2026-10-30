@@ -31,6 +31,7 @@ import { handleMediaConfigUpdatedEnvelope } from '$lib/media/audioSettings';
 import { mediaProvidersStore } from '$lib/media/providers';
 import { handleUiPreferencesUpdatedEnvelope } from '$lib/shared/stores/themeStore';
 import { handleChatEngineUpdatedEnvelope } from '$lib/stores/chatHarnessPreferenceStore';
+import { handleChatTurnStateEnvelope } from '$lib/magician/chat/turnState';
 
 export { MAGICIAN_REALTIME_WEBSOCKET_PROTOCOL } from '$lib/realtime/eventHub';
 
@@ -260,6 +261,13 @@ export interface ObservabilityAlertEvent extends V2BaseEvent {
 // NOTE: ObservationCaptured, ObservationFailed events have been removed.
 // Agentic execution uses AgenticPageUnderstanding for observation visibility.
 
+/** Pairs one LLM call's request, route and response events. Optional: a
+ *  server predating it sends none on the request. */
+export interface LlmEventCorrelation {
+    trace_id: string;
+    llm_call_id: string;
+}
+
 export interface LLMRequestSentEvent extends V2BaseEvent {
     execution_id: string;
     plan_id: string;
@@ -269,6 +277,20 @@ export interface LLMRequestSentEvent extends V2BaseEvent {
     request_summary: string;
     input_tokens_estimate?: number;
     budget_remaining: number;
+    correlation?: LlmEventCorrelation;
+}
+
+/** The router chose a model for an in-flight call (again on a fallback). */
+export interface LLMRoutedEvent extends V2BaseEvent {
+    execution_id: string;
+    plan_id: string;
+    step_id?: string;
+    step_index?: number;
+    capability: string;
+    correlation?: LlmEventCorrelation;
+    provider?: string;
+    model?: string;
+    profile?: string;
 }
 
 export interface LLMResponseReceivedEvent extends V2BaseEvent {
@@ -277,6 +299,7 @@ export interface LLMResponseReceivedEvent extends V2BaseEvent {
     step_id?: string;
     step_index?: number;
     capability: string;
+    correlation?: LlmEventCorrelation;
     success: boolean;
     decision_summary: string;
     cost: number;
@@ -642,7 +665,7 @@ export interface AgenticExecutionCompletedEvent extends V2BaseEvent {
     loop_cycle_pattern?: string[]; // For action cycles: the pattern of actions
     loop_similarity?: number; // Similarity score (for state_loop and no_progress)
     // Budget exhaustion details (only present when outcome = "budget_exhausted")
-    budget_dimension?: string; // "time", "cost", "iterations", "llm_calls", "actions"
+    budget_dimension?: string; // "time", "cost", "iterations", "llm_calls", "actions", "provider_failure"
     budget_details?: string; // JSON object with used/limit
     // Cannot proceed details (only present when outcome = "cannot_proceed")
     cannot_proceed_reason?: string; // Reason why the agent cannot proceed
@@ -1131,6 +1154,7 @@ export type V2WebSocketEvent =
     // NOTE: ActionDispatched, ActionResultEvent removed - use AgenticActionExecuted
     // NOTE: ValidationResult, ExecutabilityCheck, PageStageDetected removed - use AgenticDecisionMade
     | { event_type: 'LLMRequestSent'; data: LLMRequestSentEvent }
+    | { event_type: 'LLMRouted'; data: LLMRoutedEvent }
     | { event_type: 'LLMResponseReceived'; data: LLMResponseReceivedEvent }
     | { event_type: 'InferenceAttempted'; data: InferenceAttemptedEvent }
     // Parameter Inference Events
@@ -1643,6 +1667,7 @@ class V2WebSocketManager implements V2EventStore {
             }
             handleUiPreferencesUpdatedEnvelope(envelope);
             handleChatEngineUpdatedEnvelope(envelope);
+            handleChatTurnStateEnvelope(envelope);
 
             // Generic cycle-start events should re-enable MUIJ delta acceptance.
             // R631: Skip when typed AgentCycleStarted already handled this —

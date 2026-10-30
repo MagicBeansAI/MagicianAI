@@ -224,12 +224,12 @@ Delegation is a runtime decision inside the flat loop, not a PlanGraph step kind
 
 | Tool | Behavior |
 |------|----------|
-| `delegate_to_agent` | `DelegateToAgent`. Fan-out array `delegation_targets`; each child is a task-backed execution unless the chat in-context single-target path applies. Returns when **enqueued**, not complete. |
+| `delegate_to_agent` | `DelegateToAgent`. Fan-out array `delegation_targets`; each child is a task-backed execution unless the chat in-context single-target path applies. Returns when **enqueued**, not complete. Per-target `personality_mode`, `reference_task_ids`, `track_as_task` and `tutor_action` are chat-only (`build_chat_delegate_to_agent_tool`); a task run's schema omits them because its lowering (`DelegationTargetRequest`) rejects unknown fields. |
 | `handover_to_agent` | `HandoverToAgent`. Permanent owner transfer on the same execution. |
 | `spawn_sub_goal` | `SpawnSubGoal`. Same-agent nested loop run inline in the parent execution (no new task); requires `unblocks`. |
 | `create_task` | Compiled pack; mints a V3 task. |
 
-`DelegationTargetRequest`: `target_agent_id`, `context`, optional `input_artifact_ids`, `input_data`, `depth`, `timeout_secs`, `spend_token_ids`, `required_capability`, `expected_artifacts`, plus catalog-only `track_as_task` / `personality_mode` / `reference_task_ids`. No `share_session` — for session continuity the catalog tells the model to call owned tools instead of delegating.
+`DelegationTargetRequest`: `target_agent_id`, `context`, optional `input_artifact_ids` (a persisted id, or a delegation-result entry such as `partial:<name>` resolved by name against the parent's children then the parent and copied into the parent's index; an unresolvable entry is dropped with a warning, an unknown bare id is refused), `input_data`, `depth`, `timeout_secs`, `spend_token_ids`, `required_capability`, `expected_artifacts`, plus catalog-only `track_as_task` / `personality_mode` / `reference_task_ids`. No `share_session` — for session continuity the catalog tells the model to call owned tools instead of delegating.
 
 Safety gates:
 

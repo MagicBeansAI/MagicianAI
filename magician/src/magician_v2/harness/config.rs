@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock};
 
@@ -14,6 +15,53 @@ use crate::magician_v2::{
 };
 
 use super::{scope::HarnessScope, ProgramLoader};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessRuntimeStatus {
+    pub enabled: bool,
+    pub paused: bool,
+    pub configured_paused: Option<bool>,
+    pub env_override: Option<bool>,
+    pub effective_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_error: Option<String>,
+}
+
+pub fn parse_harness_pause_override(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Shared by admission/control and read-only inspection. Reading cannot
+/// unpause the harness or recover/refresh its scheduler.
+pub fn load_harness_runtime_status() -> HarnessRuntimeStatus {
+    let env_override = std::env::var("MAGICIAN_HARNESS_PAUSED")
+        .ok()
+        .as_deref()
+        .and_then(parse_harness_pause_override);
+    let (configured_paused, config_error) =
+        match crate::config::load_magician_config_from_path(&crate::config::magician_config_path())
+        {
+            Ok(config) => (Some(config.harness.paused), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+    let (paused, effective_source) = match (env_override, configured_paused) {
+        (Some(value), _) => (value, "environment"),
+        (_, Some(value)) => (value, "config"),
+        _ => (true, "config_error"),
+    };
+    HarnessRuntimeStatus {
+        enabled: !paused,
+        paused,
+        configured_paused,
+        env_override,
+        effective_source: effective_source.into(),
+        config_error,
+    }
+}
 
 pub type ScopedPausedAgentsIndex =
     Arc<RwLock<HashMap<(String, String), Arc<RwLock<HashSet<String>>>>>>;
@@ -46,6 +94,40 @@ impl HarnessExecutionContext {
         services: &HarnessServices,
         params: &HashMap<String, Value>,
     ) -> Result<Self, String> {
+        Self::resolve(services, params, false).await
+    }
+
+    /// Only the metadata-only branches of inspect_agent/system_status may use
+    /// this context without an autonomous harness. It grants no control scope.
+    pub async fn for_runtime_inspection(
+        services: &HarnessServices,
+        params: &HashMap<String, Value>,
+        tool: &str,
+    ) -> Result<Self, String> {
+        let context = Self::resolve(services, params, true).await?;
+        // These tools are also advertised as universal backend utilities.
+        // Broader metadata access requires a definition grant, not merely
+        // discovery in that catalog; denial rules continue to win.
+        if context.owner_record.definition.harness.is_none()
+            && !context
+                .owner_record
+                .definition
+                .resolved_tools(&[tool.to_string()])
+                .iter()
+                .any(|granted| granted == tool)
+        {
+            return Err(format!(
+                "runtime metadata inspection requires a `{tool}` tool grant"
+            ));
+        }
+        Ok(context)
+    }
+
+    async fn resolve(
+        services: &HarnessServices,
+        params: &HashMap<String, Value>,
+        allow_runtime_inspection: bool,
+    ) -> Result<Self, String> {
         let principal = required_string(
             params,
             "__principal",
@@ -75,7 +157,7 @@ impl HarnessExecutionContext {
                 owner_record.definition.kind
             ));
         }
-        if owner_record.definition.harness.is_none() {
+        if owner_record.definition.harness.is_none() && !allow_runtime_inspection {
             return Err(format!(
                 "agent `{owner_agent_id}` is not harness-enabled in this scope"
             ));

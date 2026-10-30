@@ -470,6 +470,8 @@ impl FrozenGuidancePolicy {
                     inputs.insert(hash.clone()),
                     "evaluation and canary inputs must be distinct held-out cases"
                 );
+                ensure!(baseline.budget.max_cost_microusd > 0,
+                    "automatic guidance qualification requires a finite per-trial cost cap within its owner-approved aggregate budget");
                 total = total
                     .checked_add(baseline.budget.max_cost_microusd)
                     .and_then(|v| v.checked_add(proposed.budget.max_cost_microusd))

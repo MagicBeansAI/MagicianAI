@@ -202,6 +202,13 @@ describe('run gating', () => {
 		expect(runDisabledReason(lane())).toBeNull();
 	});
 
+	it('blocks lifecycle submission for invalid model choices without blocking other lanes', () => {
+		const lifecycle = lane({ run_options: 'memory_lifecycle' });
+		expect(runDisabledReason(lifecycle, false)).toContain('available model and thinking');
+		expect(runDisabledReason(lifecycle, true)).toBeNull();
+		expect(runDisabledReason(lane(), false)).toBeNull();
+	});
+
 	it('names the missing services on an unready lane', () => {
 		const reason = runDisabledReason(
 			lane({

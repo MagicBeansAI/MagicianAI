@@ -20,6 +20,7 @@ describe('preferences API', () => {
 					source: { native_tier: { tier: 'preferences' } },
 					editable: true,
 					last_checked_at_ms: 5,
+					learned_at_ms: 3,
 					grounds: [{ role: 'owner', source_id: 'turn-1' }]
 				}
 			],
@@ -34,7 +35,8 @@ describe('preferences API', () => {
 			status: 'direct_owner_statement',
 			source: 'preferences',
 			editable: true,
-			lastCheckedAtMs: 5
+			lastCheckedAtMs: 5,
+			learnedAtMs: 3
 		});
 		expect(view.retired[0].supersededBy).toBe('a');
 		expect(view.omitted[0].reason).toBe('unreadable_validity');

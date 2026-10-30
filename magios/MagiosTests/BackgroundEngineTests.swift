@@ -221,9 +221,12 @@ final class BackgroundEngineTests: XCTestCase {
             contentsOf: magiosRoot.appendingPathComponent("Magios/SettingsView.swift"),
             encoding: .utf8
         )
-        let permissions = try XCTUnwrap(settings.range(of: "Text(\"Permissions\")"))
-        let guide = try XCTUnwrap(settings.range(of: "Text(\"Guide\")"))
-        XCTAssertLessThan(permissions.lowerBound, guide.lowerBound)
+        // Notification permission sits in its own section, ahead of help.
+        XCTAssertEqual(SettingsSearchRow.notificationPermissions.section, .notifications)
+        let sections = SettingsSearchSection.navigable
+        let notifications = try XCTUnwrap(sections.firstIndex(of: .notifications))
+        let help = try XCTUnwrap(sections.firstIndex(of: .help))
+        XCTAssertLessThan(notifications, help)
         XCTAssertTrue(settings.contains("Text(atAGlance.statusLabel)"))
         XCTAssertTrue(settings.contains("Allow notifications"))
         XCTAssertTrue(settings.contains("Open iOS Settings"))

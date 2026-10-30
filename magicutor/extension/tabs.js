@@ -7,6 +7,8 @@ import {
     getActiveExecutions
 } from './background_state.js';
 import { executionIdFromSessionId } from './automation_session.js';
+import { rememberPopupTab, forgetAutomationTab } from './automation_tabs.js';
+import { adoptIntoSessionGroup, sessionSurface } from './automation_surface.js';
 
 /**
  * Register a new tab with a session and send overlay_panel_show so the
@@ -14,6 +16,8 @@ import { executionIdFromSessionId } from './automation_session.js';
  */
 function registerAndNotifyTab(sessionId, tabId, openerTabId, source) {
     addTabToSession(sessionId, tabId, openerTabId);
+    rememberPopupTab(sessionId, tabId).catch(error => console.warn('[SessionTabs] Could not record created tab:', error));
+    adoptIntoSessionGroup(sessionId, tabId).catch(error => console.warn('[SessionTabs] Could not group created tab:', error));
     console.log(`[SessionTabs] Auto-registered tab ${tabId} (opener=${openerTabId}, session=${sessionId}, source=${source})`);
 
     const executionId = executionIdFromSessionId(sessionId);
@@ -65,6 +69,7 @@ function setupTabListeners({ attachDebugger } = {}) {
     });
 
     chrome.tabs.onRemoved.addListener(async (tabId, _removeInfo) => {
+        forgetAutomationTab(tabId).catch(error => console.warn('[SessionTabs] Could not forget closed tab:', error));
         // Cleanup debugger session
         if (debuggerSessions.has(tabId)) {
             debuggerSessions.delete(tabId);
@@ -80,8 +85,12 @@ function setupTabListeners({ attachDebugger } = {}) {
                 console.log(`[SessionTabs] Switching back to tab ${openerTabId} after tab ${tabId} closed`);
 
                 try {
-                    // Focus the opener tab
-                    await chrome.tabs.update(openerTabId, { active: true });
+                    // Focus the opener tab, unless the task lives in the
+                    // owner's own window: its tabs never take their view.
+                    const surface = await sessionSurface(sessionId).catch(() => null);
+                    if (surface?.surface !== 'in_window') {
+                        await chrome.tabs.update(openerTabId, { active: true });
+                    }
 
                     // Re-attach debugger if we have the attachDebugger function
                     if (typeof attachDebugger === 'function' && !debuggerSessions.has(openerTabId)) {

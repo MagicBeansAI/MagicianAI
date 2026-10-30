@@ -8,6 +8,7 @@ import ai.magicbeans.magdroid.chat.TaskUsageStore
 import ai.magicbeans.magdroid.chat.activityAwaitsUser
 import ai.magicbeans.magdroid.chat.activityInspectTarget
 import ai.magicbeans.magdroid.chat.activityLatencyText
+import ai.magicbeans.magdroid.chat.activityLiveSinceMs
 import ai.magicbeans.magdroid.chat.activityPreviewRows
 import ai.magicbeans.magdroid.chat.activityRowDetail
 import ai.magicbeans.magdroid.chat.activityStageDots
@@ -127,13 +128,22 @@ fun StructuredResponseView(response: StructuredResponse) {
 @Composable
 private fun Block(block: StructuredBlock) {
     when (block.kind.lowercase()) {
+        "markdown" -> block.text?.takeIf(String::isNotBlank)?.let { text ->
+            Column {
+                block.title?.takeIf(String::isNotBlank)?.let { title ->
+                    Text(title, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(3.dp))
+                }
+                MarkdownText(markdown = text, color = Ink, fontSize = 14.sp, lineHeight = 20.sp)
+            }
+        }
         "callout" -> Callout(block)
         "key_values" -> KeyValues(block)
         "list" -> BulletList(block)
         "artifacts" -> Artifacts(block)
         "metrics" -> KeyValues(block)
         "copy_text" -> CopyText(block)
-        // markdown, text, and anything new: show the words rather than nothing.
+        // Plain text and unknown kinds retain their literal text fallback.
         else -> block.text?.takeIf { it.isNotBlank() }?.let {
             Column {
                 block.title?.takeIf { t -> t.isNotBlank() }?.let { t ->
@@ -453,7 +463,7 @@ fun ActivitySection(
                         // Compact rows split by hairlines inset to the text
                         // column; none after the last row.
                         if (index > 0) LivelyStepDivider(startInset = ACTIVITY_STEP_MARK_WIDTH_DP.dp)
-                        ActivityStepRow(row, onOpenAttention, onOpenCompleteResult, onPathAction)
+                        ActivityStepRow(row, onOpenAttention, onOpenCompleteResult, onPathAction, isLive)
                     }
                     // The inline list keeps the newest few; the rest are one tap away.
                     if (hiddenCount > 0) {
@@ -492,7 +502,7 @@ fun ActivitySection(
                 LazyColumn(Modifier.fillMaxWidth().navigationBarsPadding()) {
                     itemsIndexed(rows) { index, row ->
                         if (index > 0) LivelyStepDivider(startInset = ACTIVITY_STEP_MARK_WIDTH_DP.dp)
-                        ActivityStepRow(row, onOpenAttention, onOpenCompleteResult, onPathAction)
+                        ActivityStepRow(row, onOpenAttention, onOpenCompleteResult, onPathAction, isLive)
                     }
                 }
             }
@@ -652,8 +662,11 @@ private fun ActivityStepRow(
     onOpenAttention: () -> Unit,
     onOpenCompleteResult: (ActivityRow) -> Unit,
     onPathAction: (String, Boolean) -> Unit,
+    /** The turn is live: a running model or tool row shows its elapsed time, ticking. */
+    live: Boolean = false,
 ) {
     val detail = activityRowDetail(row)?.takeIf { it.isNotBlank() }
+    val liveSince = activityLiveSinceMs(row)?.takeIf { live }
     var open by remember(row.label, row.detail) { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.Top,
@@ -676,7 +689,13 @@ private fun ActivityStepRow(
                         .weight(1f, fill = false)
                         .then(if (detail != null) Modifier.clickable(onClickLabel = if (open) "Hide detail" else "Show detail") { open = !open } else Modifier),
                 )
-                row.durationMs?.let { ms ->
+                if (liveSince != null) {
+                    LiveElapsedText(
+                        liveSince.toLong(),
+                        style = livelyStepMetaStyle(),
+                        fontFamily = LocalMagicanFontFamilies.current.mono,
+                    )
+                } else row.durationMs?.let { ms ->
                     Text(
                         activityLatencyText(ms),
                         style = livelyStepMetaStyle(),

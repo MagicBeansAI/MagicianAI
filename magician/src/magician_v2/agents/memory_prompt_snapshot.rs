@@ -18,7 +18,8 @@ use std::{
 
 use magician_vector_index::{
     memory_candidates::{
-        load_memory_candidate_documents, MemoryCandidateDocument, MemoryCandidateRequest,
+        load_memory_candidate_documents, load_memory_candidate_documents_with_prepared,
+        MemoryCandidateDocument, MemoryCandidateRequest, PreparedCandidateSources,
     },
     memory_index::{subscribe_memory_index_changes, MemoryIndexChange},
     memory_tiers::{MemoryTierDefinition, TierScope},
@@ -79,6 +80,7 @@ struct SnapshotCacheKey {
     include_environment_knowledge: bool,
     isolated_user_memory: bool,
     tier_definition_hash: [u8; 32],
+    include_prompt_profiles: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +103,7 @@ struct SnapshotBuildSpec {
     goal_id: Option<String>,
     include_environment_knowledge: bool,
     isolated_user_root: Option<PathBuf>,
+    include_prompt_profiles: bool,
 }
 
 impl SnapshotBuildSpec {
@@ -125,6 +128,8 @@ impl SnapshotBuildSpec {
 #[derive(Debug)]
 struct SnapshotCacheEntry {
     fingerprint: SourceFingerprint,
+    /// Content of the stamped source files the snapshot was built from.
+    content_hashes: Arc<HashMap<PathBuf, [u8; 32]>>,
     snapshot: Arc<MemoryPromptCandidateSnapshot>,
     spec: SnapshotBuildSpec,
     last_used: Instant,
@@ -145,6 +150,46 @@ impl Drop for SnapshotBuildLockCleanup<'_> {
 struct SnapshotCache {
     entries: HashMap<SnapshotCacheKey, SnapshotCacheEntry>,
     estimated_bytes: usize,
+}
+
+/// One episode file's candidate, kept between builds so a rebuild reads only
+/// episode files whose content changed. A document is a function of the file
+/// bytes, its path and the storage's scope, all fixed by the cache key.
+#[derive(Debug)]
+struct EpisodeFileState {
+    stamp: SourceFileStamp,
+    content_hash: [u8; 32],
+    document: Option<MemoryCandidateDocument>,
+}
+
+type EpisodeFileCache = HashMap<(PathBuf, String), HashMap<PathBuf, Arc<EpisodeFileState>>>;
+
+fn episode_file_cache() -> &'static StdMutex<EpisodeFileCache> {
+    static CACHE: OnceLock<StdMutex<EpisodeFileCache>> = OnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// What one tier file's candidates depend on besides its bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TierFileKey {
+    root: PathBuf,
+    agent_id: String,
+    tier_definition_hash: [u8; 32],
+    scope: &'static str,
+    goal_id: Option<String>,
+}
+
+/// One tier file's candidates, kept between builds like [`EpisodeFileState`].
+#[derive(Debug)]
+struct TierFileState {
+    stamp: SourceFileStamp,
+    content_hash: [u8; 32],
+    documents: Arc<[MemoryCandidateDocument]>,
+}
+
+fn tier_file_cache() -> &'static StdMutex<HashMap<TierFileKey, Arc<TierFileState>>> {
+    static CACHE: OnceLock<StdMutex<HashMap<TierFileKey, Arc<TierFileState>>>> = OnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
 fn snapshot_settings() -> &'static RwLock<MagicianMemoryPromptSnapshotSettings> {
@@ -204,6 +249,33 @@ pub async fn load_memory_prompt_candidate_snapshot(
     tier_definitions: &[MemoryTierDefinition],
     request: &MemoryCandidateRequest<'_>,
 ) -> Result<Arc<MemoryPromptCandidateSnapshot>, MemoryStorageError> {
+    load_memory_candidate_snapshot(memory_service, agent_id, tier_definitions, request, true).await
+}
+
+/// Recall needs canonical documents, not the prompt renderer's lexical and
+/// duplicate-comparison graph. Keep the same bounded, source-validated cache
+/// while separating these entries from fully profiled prompt snapshots.
+/// Engagement containment is applied by the recall caller before ranking.
+pub async fn load_memory_recall_candidate_documents(
+    memory_service: &AgentMemoryService,
+    agent_id: &str,
+    tier_definitions: &[MemoryTierDefinition],
+    request: &MemoryCandidateRequest<'_>,
+) -> Result<Arc<[MemoryCandidateDocument]>, MemoryStorageError> {
+    let snapshot =
+        load_memory_candidate_snapshot(memory_service, agent_id, tier_definitions, request, false)
+            .await?;
+    Ok(Arc::clone(&snapshot.documents))
+}
+
+async fn load_memory_candidate_snapshot(
+    memory_service: &AgentMemoryService,
+    agent_id: &str,
+    tier_definitions: &[MemoryTierDefinition],
+    request: &MemoryCandidateRequest<'_>,
+    include_prompt_profiles: bool,
+) -> Result<Arc<MemoryPromptCandidateSnapshot>, MemoryStorageError> {
+    let started = Instant::now();
     ensure_snapshot_refresh_worker();
     let settings = current_settings();
     if !settings.enabled
@@ -217,6 +289,7 @@ pub async fn load_memory_prompt_candidate_snapshot(
             tier_definitions,
             request,
             "uncached",
+            include_prompt_profiles,
         )
         .await;
     }
@@ -226,6 +299,7 @@ pub async fn load_memory_prompt_candidate_snapshot(
         agent_id,
         tier_definitions,
         request,
+        include_prompt_profiles,
     )?;
     let spec = SnapshotBuildSpec {
         storage: memory_service.storage().clone(),
@@ -235,15 +309,32 @@ pub async fn load_memory_prompt_candidate_snapshot(
         goal_id: request.goal_id.map(ToString::to_string),
         include_environment_knowledge: request.include_environment_knowledge,
         isolated_user_root: request.isolated_user_root.clone(),
+        include_prompt_profiles,
     };
     let fingerprint = source_fingerprint(&spec).await?;
     if let Some(snapshot) = cached_snapshot(&key, &fingerprint, &settings) {
         CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(target: "memory_index", include_prompt_profiles,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+            candidates = snapshot.documents.len(), estimated_bytes = snapshot.estimated_bytes(),
+            "Memory candidate snapshot cache hit");
         return Ok(snapshot);
     }
     CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
 
-    let build_lock = snapshot_build_locks()
+    // The build runs as its own task. A retrieval that reaches its deadline
+    // drops this future; a build polled in place was aborted with it, so a
+    // multi-second rebuild never reached the cache and every later lookup
+    // started it again. Detached, it finishes and serves the next caller.
+    tokio::spawn(build_snapshot_under_lock(key, spec, settings, started))
+        .await
+        .map_err(|error| {
+            MemoryStorageError::Other(format!("memory prompt snapshot build: {error}"))
+        })?
+}
+
+fn snapshot_build_lock(key: &SnapshotCacheKey) -> Arc<tokio::sync::Mutex<()>> {
+    snapshot_build_locks()
         .lock()
         .map(|mut locks| {
             Arc::clone(
@@ -252,7 +343,16 @@ pub async fn load_memory_prompt_candidate_snapshot(
                     .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
             )
         })
-        .unwrap_or_else(|_| Arc::new(tokio::sync::Mutex::new(())));
+        .unwrap_or_else(|_| Arc::new(tokio::sync::Mutex::new(())))
+}
+
+async fn build_snapshot_under_lock(
+    key: SnapshotCacheKey,
+    spec: SnapshotBuildSpec,
+    settings: MagicianMemoryPromptSnapshotSettings,
+    started: Instant,
+) -> Result<Arc<MemoryPromptCandidateSnapshot>, MemoryStorageError> {
+    let build_lock = snapshot_build_lock(&key);
     let _cleanup = SnapshotBuildLockCleanup {
         key: &key,
         build_lock: &build_lock,
@@ -264,9 +364,33 @@ pub async fn load_memory_prompt_candidate_snapshot(
             CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(snapshot);
         }
-        let (fingerprint, snapshot) = build_consistent_snapshot(&spec, fingerprint).await?;
+        // New stamps on unchanged bytes (a touch, an identical rewrite) keep
+        // the snapshot rather than rebuilding it.
+        if restamp_if_content_unchanged(&key, &fingerprint).await? {
+            if let Some(snapshot) = cached_snapshot(&key, &fingerprint, &settings) {
+                CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                return Ok(snapshot);
+            }
+        }
+        let previous = cached_entry_snapshot(&key);
+        let (fingerprint, snapshot, content_hashes) =
+            build_consistent_snapshot(&spec, fingerprint, previous).await?;
         CACHE_BUILDS.fetch_add(1, Ordering::Relaxed);
-        insert_snapshot(key.clone(), fingerprint, snapshot.clone(), spec, &settings);
+        tracing::info!(target: "memory_index",
+            include_prompt_profiles = spec.include_prompt_profiles,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0,
+            candidates = snapshot.documents.len(), estimated_bytes = snapshot.estimated_bytes(),
+            cacheable = snapshot.estimated_bytes() <= settings.max_bytes,
+            "Memory candidate snapshot cache build");
+        insert_snapshot(
+            key.clone(),
+            fingerprint,
+            content_hashes,
+            snapshot.clone(),
+            spec,
+            &settings,
+            None,
+        );
         Ok(snapshot)
     }
     .await;
@@ -286,6 +410,7 @@ fn snapshot_cache_key(
     agent_id: &str,
     tier_definitions: &[MemoryTierDefinition],
     request: &MemoryCandidateRequest<'_>,
+    include_prompt_profiles: bool,
 ) -> Result<SnapshotCacheKey, MemoryStorageError> {
     let tier_json = serde_json::to_vec(tier_definitions).map_err(MemoryStorageError::Json)?;
     Ok(SnapshotCacheKey {
@@ -296,7 +421,18 @@ fn snapshot_cache_key(
         include_environment_knowledge: request.include_environment_knowledge,
         isolated_user_memory: request.isolated_user_root.is_some(),
         tier_definition_hash: *blake3::hash(&tier_json).as_bytes(),
+        include_prompt_profiles,
     })
+}
+
+/// The entry's snapshot whatever its freshness: the base a rebuild of the
+/// same key reuses unchanged profiles from.
+fn cached_entry_snapshot(key: &SnapshotCacheKey) -> Option<Arc<MemoryPromptCandidateSnapshot>> {
+    let cache = snapshot_cache().lock().ok()?;
+    cache
+        .entries
+        .get(key)
+        .map(|entry| Arc::clone(&entry.snapshot))
 }
 
 fn cached_snapshot(
@@ -321,28 +457,78 @@ async fn build_uncached_snapshot(
     tier_definitions: &[MemoryTierDefinition],
     request: &MemoryCandidateRequest<'_>,
     source_generation: &str,
+    include_prompt_profiles: bool,
 ) -> Result<Arc<MemoryPromptCandidateSnapshot>, MemoryStorageError> {
-    let documents =
-        load_memory_candidate_documents(storage, agent_id, tier_definitions, request).await?;
-    Ok(Arc::new(build_snapshot(documents, source_generation)))
+    let documents = load_snapshot_documents(
+        storage,
+        agent_id,
+        tier_definitions,
+        request,
+        include_prompt_profiles,
+        false,
+    )
+    .await?;
+    Ok(Arc::new(build_snapshot(
+        documents,
+        source_generation,
+        include_prompt_profiles,
+        None,
+    )))
 }
+
+type BuiltSnapshot = (
+    SourceFingerprint,
+    Arc<MemoryPromptCandidateSnapshot>,
+    Arc<HashMap<PathBuf, [u8; 32]>>,
+);
 
 async fn build_consistent_snapshot(
     spec: &SnapshotBuildSpec,
     mut before: SourceFingerprint,
-) -> Result<(SourceFingerprint, Arc<MemoryPromptCandidateSnapshot>), MemoryStorageError> {
+    previous: Option<Arc<MemoryPromptCandidateSnapshot>>,
+) -> Result<BuiltSnapshot, MemoryStorageError> {
     for _ in 0..3 {
-        let documents = load_memory_candidate_documents(
+        let load_started = Instant::now();
+        let documents = load_snapshot_documents(
             &spec.storage,
             &spec.agent_id,
             &spec.tier_definitions,
             &spec.request(),
+            spec.include_prompt_profiles,
+            true,
         )
         .await?;
+        tracing::info!(target: "memory_index",
+            candidates = documents.len(),
+            load_ms = load_started.elapsed().as_secs_f64() * 1_000.0,
+            "Memory candidate snapshot source load");
         let after = source_fingerprint(spec).await?;
         if before == after {
+            // Hashed at the stamps the documents were loaded under, so a later
+            // touch can be told apart from a real change.
+            let content = source_content(stamped_files(&after)).await?;
+            if content.unstable {
+                before = source_fingerprint(spec).await?;
+                continue;
+            }
             let generation = fingerprint_generation(&after);
-            return Ok((after, Arc::new(build_snapshot(documents, &generation))));
+            let include_prompt_profiles = spec.include_prompt_profiles;
+            let previous = previous.clone();
+            // Profiling ~2k documents is seconds of CPU; on an async worker it
+            // also delayed the retrieval coordinator's deadline check.
+            let snapshot = magician_core::blocking_admission::spawn_blocking_admitted(move || {
+                build_snapshot(
+                    documents,
+                    &generation,
+                    include_prompt_profiles,
+                    previous.as_deref(),
+                )
+            })
+            .await
+            .map_err(|error| {
+                MemoryStorageError::Other(format!("memory prompt snapshot profile: {error}"))
+            })?;
+            return Ok((after, Arc::new(snapshot), Arc::new(content.hashes)));
         }
         before = after;
         tokio::task::yield_now().await;
@@ -352,11 +538,261 @@ async fn build_consistent_snapshot(
     ))
 }
 
+async fn load_snapshot_documents(
+    storage: &AgentStorage,
+    agent_id: &str,
+    tiers: &[MemoryTierDefinition],
+    request: &MemoryCandidateRequest<'_>,
+    include_prompt_profiles: bool,
+    reuse_unchanged_files: bool,
+) -> Result<Vec<MemoryCandidateDocument>, MemoryStorageError> {
+    if include_prompt_profiles
+        || !matches!(request.scope, TierScope::AgentGoal)
+        || request.goal_id.is_some()
+    {
+        let mut prepared = PreparedCandidateSources::default();
+        if reuse_unchanged_files {
+            if matches!(request.scope, TierScope::Agent) {
+                prepared.episodes =
+                    Some(load_episode_documents_reusing_unchanged_files(storage, agent_id).await?);
+            }
+            prepared.tiers =
+                load_tier_documents_reusing_unchanged_files(storage, agent_id, tiers, request)
+                    .await?;
+        }
+        return load_memory_candidate_documents_with_prepared(
+            storage, agent_id, tiers, request, prepared,
+        )
+        .await;
+    }
+    let mut documents = Vec::new();
+    for tier in tiers
+        .iter()
+        .filter(|tier| matches!(tier.scope, TierScope::AgentGoal))
+    {
+        let goal_ids = magician_vector_index::memory_index::discover_goal_ids_for_tier(
+            storage, agent_id, tier,
+        )
+        .await
+        .map_err(|error| MemoryStorageError::Other(error.to_string()))?;
+        for goal_id in goal_ids {
+            let goal_request = MemoryCandidateRequest {
+                goal_id: Some(&goal_id),
+                ..request.clone()
+            };
+            documents.extend(
+                load_memory_candidate_documents(
+                    storage,
+                    agent_id,
+                    std::slice::from_ref(tier),
+                    &goal_request,
+                )
+                .await?,
+            );
+        }
+    }
+    Ok(documents)
+}
+
+/// The agent's episode candidates, as `load_episode_candidate_documents`
+/// returns them, reading only files whose stamp moved and whose bytes then
+/// differ from the cached version.
+async fn load_episode_documents_reusing_unchanged_files(
+    storage: &AgentStorage,
+    agent_id: &str,
+) -> Result<Vec<MemoryCandidateDocument>, MemoryStorageError> {
+    use magician_vector_index::episode_candidates::{
+        episode_candidate_document_from_path, episode_candidate_paths,
+    };
+    let paths = episode_candidate_paths(storage, agent_id).await?;
+    let cache_key = (storage.root().to_path_buf(), agent_id.to_string());
+    let previous = episode_file_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&cache_key).cloned())
+        .unwrap_or_default();
+    let stamps = stat_paths(paths.clone()).await?;
+    let to_hash = paths
+        .iter()
+        .zip(&stamps)
+        .filter_map(|(path, stamp)| {
+            let stamp = (*stamp)?;
+            previous
+                .get(path)
+                .is_none_or(|state| state.stamp != stamp)
+                .then(|| (path.clone(), stamp))
+        })
+        .collect::<Vec<_>>();
+    let content = source_content(to_hash).await?;
+
+    let mut documents = Vec::with_capacity(paths.len());
+    let mut current = HashMap::with_capacity(paths.len());
+    for (path, stamp) in paths.into_iter().zip(stamps) {
+        let known = previous.get(&path);
+        let hash = content.hashes.get(&path).copied();
+        let reused = match (stamp, known) {
+            (Some(stamp), Some(state)) if state.stamp == stamp => Some(Arc::clone(state)),
+            (Some(stamp), Some(state)) if hash == Some(state.content_hash) => {
+                Some(Arc::new(EpisodeFileState {
+                    stamp,
+                    content_hash: state.content_hash,
+                    document: state.document.clone(),
+                }))
+            },
+            _ => None,
+        };
+        let state = match reused {
+            Some(state) => state,
+            None => {
+                let document =
+                    episode_candidate_document_from_path(storage, agent_id, path.clone()).await?;
+                let (Some(stamp), Some(content_hash)) = (stamp, hash) else {
+                    // Changed while read: use it now, cache nothing.
+                    documents.extend(document);
+                    continue;
+                };
+                Arc::new(EpisodeFileState {
+                    stamp,
+                    content_hash,
+                    document,
+                })
+            },
+        };
+        documents.extend(state.document.clone());
+        current.insert(path, state);
+    }
+    if let Ok(mut cache) = episode_file_cache().lock() {
+        cache.insert(cache_key, current);
+    }
+    Ok(documents)
+}
+
+/// Each in-scope tier's candidates, as `tier_candidate_documents` returns
+/// them, reading a tier file only when its stamp moved and its bytes then
+/// differ from the cached version. A tier left out (missing, or changed while
+/// read) is loaded by the caller as usual.
+async fn load_tier_documents_reusing_unchanged_files(
+    storage: &AgentStorage,
+    agent_id: &str,
+    tiers: &[MemoryTierDefinition],
+    request: &MemoryCandidateRequest<'_>,
+) -> Result<HashMap<String, Vec<MemoryCandidateDocument>>, MemoryStorageError> {
+    use magician_vector_index::memory_candidates::tier_candidate_documents;
+    let mut prepared = HashMap::new();
+    if request.recency_cutoff.is_some() {
+        return Ok(prepared);
+    }
+    let mut sources = Vec::new();
+    for tier in tiers
+        .iter()
+        .filter(|tier| same_scope(&tier.scope, &request.scope))
+    {
+        let goal_id = matches!(tier.scope, TierScope::AgentGoal)
+            .then_some(request.goal_id)
+            .flatten();
+        let path = storage
+            .agent_tier_path(agent_id, &tier.name, &tier.scope, goal_id)
+            .map_err(MemoryStorageError::from)?;
+        let tier_json = serde_json::to_vec(tier).map_err(MemoryStorageError::Json)?;
+        let key = TierFileKey {
+            root: storage.root().to_path_buf(),
+            agent_id: agent_id.to_string(),
+            tier_definition_hash: *blake3::hash(&tier_json).as_bytes(),
+            scope: scope_label(&request.scope),
+            goal_id: goal_id.map(ToString::to_string),
+        };
+        sources.push((tier, key, path));
+    }
+    let stamps = stat_paths(sources.iter().map(|(_, _, path)| path.clone()).collect()).await?;
+    let previous = tier_file_cache()
+        .lock()
+        .map(|cache| {
+            sources
+                .iter()
+                .map(|(_, key, _)| cache.get(key).cloned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|_| vec![None; sources.len()]);
+    let to_hash = sources
+        .iter()
+        .zip(&stamps)
+        .zip(&previous)
+        .filter_map(|(((_, _, path), stamp), previous)| {
+            let stamp = (*stamp)?;
+            previous
+                .as_ref()
+                .is_none_or(|state| state.stamp != stamp)
+                .then(|| (path.clone(), stamp))
+        })
+        .collect::<Vec<_>>();
+    let content = source_content(to_hash).await?;
+
+    let mut current = Vec::new();
+    for (((tier, key, path), stamp), previous) in sources.into_iter().zip(stamps).zip(previous) {
+        let Some(stamp) = stamp else {
+            continue;
+        };
+        let hash = content.hashes.get(&path).copied();
+        let state = match previous {
+            Some(state) if state.stamp == stamp => state,
+            Some(state) if hash == Some(state.content_hash) => Arc::new(TierFileState {
+                stamp,
+                content_hash: state.content_hash,
+                documents: Arc::clone(&state.documents),
+            }),
+            _ => {
+                let Some(content_hash) = hash else {
+                    continue;
+                };
+                let documents = tier_candidate_documents(storage, agent_id, tier, request).await?;
+                Arc::new(TierFileState {
+                    stamp,
+                    content_hash,
+                    documents: Arc::from(documents),
+                })
+            },
+        };
+        prepared.insert(tier.name.clone(), state.documents.to_vec());
+        current.push((key, state));
+    }
+    if let Ok(mut cache) = tier_file_cache().lock() {
+        cache.extend(current);
+    }
+    Ok(prepared)
+}
+
 fn build_snapshot(
     documents: Vec<MemoryCandidateDocument>,
     source_generation: &str,
+    include_prompt_profiles: bool,
+    previous: Option<&MemoryPromptCandidateSnapshot>,
 ) -> MemoryPromptCandidateSnapshot {
-    let profiles = build_memory_prompt_candidate_profiles(&documents);
+    let profile_started = Instant::now();
+    let (mut profiles, reused_profiles) = if include_prompt_profiles {
+        candidate_profiles_reusing_previous(&documents, previous)
+    } else {
+        (Vec::new(), 0)
+    };
+    let graph_started = Instant::now();
+    let new_texts = profiles.len().saturating_sub(reused_profiles);
+    let incremental_graph = previous
+        .filter(|previous| {
+            previous.profiles.len() == previous.documents.len() && !previous.profiles.is_empty()
+        })
+        .filter(|_| new_texts <= INCREMENTAL_OVERLAP_GRAPH_MAX_NEW.max(profiles.len() / 4));
+    match incremental_graph {
+        Some(previous) => {
+            populate_exact_overlap_graph_from_previous(&mut profiles, &previous.profiles)
+        },
+        None => populate_exact_overlap_graph(&mut profiles),
+    }
+    tracing::info!(target: "memory_index",
+        candidates = documents.len(),
+        reused_profiles,
+        incremental_overlap_graph = incremental_graph.is_some(),
+        profile_ms = graph_started.duration_since(profile_started).as_secs_f64() * 1_000.0,
+        overlap_graph_ms = graph_started.elapsed().as_secs_f64() * 1_000.0,
+        "Memory candidate snapshot build phases");
     let estimated_bytes = estimate_snapshot_bytes(&documents, &profiles);
     MemoryPromptCandidateSnapshot {
         documents: Arc::from(documents),
@@ -373,23 +809,68 @@ fn build_snapshot(
 pub(crate) fn build_memory_prompt_candidate_profiles(
     documents: &[MemoryCandidateDocument],
 ) -> Vec<MemoryPromptCandidateProfile> {
-    let mut profiles = documents
-        .iter()
-        .map(|document| {
-            let dedupe_text = document.text.trim();
-            MemoryPromptCandidateProfile {
-                source_text: Arc::<str>::from(document.text.clone()),
-                text_lower: document.text.to_lowercase(),
-                text_tokens: normalized_token_set(&document.text),
-                fuzzy_ngrams: packed_char_ngrams(&document.text),
-                exact_overlap_ngrams: Arc::from(exact_overlap_ngrams(dedupe_text)),
-                text_char_count: dedupe_text.chars().count(),
-                exact_overlap_indices: Arc::from(Vec::<usize>::new()),
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut profiles = candidate_profiles_without_overlap_graph(documents);
     populate_exact_overlap_graph(&mut profiles);
     profiles
+}
+
+fn candidate_profiles_without_overlap_graph(
+    documents: &[MemoryCandidateDocument],
+) -> Vec<MemoryPromptCandidateProfile> {
+    documents
+        .iter()
+        .map(|document| candidate_profile(&document.text))
+        .collect()
+}
+
+/// A candidate's profile, without overlap links. Every field derives from
+/// the document's text alone, which is what lets a rebuild reuse it.
+fn candidate_profile(text: &str) -> MemoryPromptCandidateProfile {
+    let dedupe_text = text.trim();
+    MemoryPromptCandidateProfile {
+        source_text: Arc::<str>::from(text),
+        text_lower: text.to_lowercase(),
+        text_tokens: normalized_token_set(text),
+        fuzzy_ngrams: packed_char_ngrams(text),
+        exact_overlap_ngrams: Arc::from(exact_overlap_ngrams(dedupe_text)),
+        text_char_count: dedupe_text.chars().count(),
+        exact_overlap_indices: Arc::from(Vec::<usize>::new()),
+    }
+}
+
+/// Profiles for `documents`, taking each unchanged text's profile from the
+/// previous snapshot of the same key and computing only new texts. Overlap
+/// links are cleared: they depend on the whole set and are rebuilt after.
+fn candidate_profiles_reusing_previous(
+    documents: &[MemoryCandidateDocument],
+    previous: Option<&MemoryPromptCandidateSnapshot>,
+) -> (Vec<MemoryPromptCandidateProfile>, usize) {
+    let known = previous
+        .filter(|previous| previous.profiles.len() == previous.documents.len())
+        .map(|previous| {
+            previous
+                .documents
+                .iter()
+                .zip(previous.profiles.iter())
+                .map(|(document, profile)| (document.text.as_str(), profile))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut reused = 0;
+    let profiles = documents
+        .iter()
+        .map(|document| match known.get(document.text.as_str()) {
+            Some(profile) => {
+                reused += 1;
+                MemoryPromptCandidateProfile {
+                    exact_overlap_indices: Arc::from(Vec::<usize>::new()),
+                    ..(*profile).clone()
+                }
+            },
+            None => candidate_profile(&document.text),
+        })
+        .collect();
+    (profiles, reused)
 }
 
 fn estimate_snapshot_bytes(
@@ -452,6 +933,31 @@ async fn source_fingerprint(
     spec: &SnapshotBuildSpec,
 ) -> Result<SourceFingerprint, MemoryStorageError> {
     let mut paths = source_paths(spec)?;
+    if !spec.include_prompt_profiles
+        && matches!(spec.scope, TierScope::AgentGoal)
+        && spec.goal_id.is_none()
+    {
+        for tier in spec
+            .tier_definitions
+            .iter()
+            .filter(|tier| matches!(tier.scope, TierScope::AgentGoal))
+        {
+            let goal_ids = magician_vector_index::memory_index::discover_goal_ids_for_tier(
+                &spec.storage,
+                &spec.agent_id,
+                tier,
+            )
+            .await
+            .map_err(|error| MemoryStorageError::Other(error.to_string()))?;
+            for goal_id in goal_ids {
+                paths.push(
+                    spec.storage
+                        .agent_tier_path(&spec.agent_id, &tier.name, &tier.scope, Some(&goal_id))
+                        .map_err(MemoryStorageError::from)?,
+                );
+            }
+        }
+    }
     if matches!(spec.scope, TierScope::Agent) {
         let episodes = spec
             .storage
@@ -469,26 +975,188 @@ async fn source_fingerprint(
     }
     paths.sort();
     paths.dedup();
-    let mut files = Vec::with_capacity(paths.len());
-    for path in paths {
-        let stamp = match tokio::fs::metadata(&path).await {
-            Ok(metadata) => {
-                let modified_nanos = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_nanos());
-                Some(SourceFileStamp {
-                    len: metadata.len(),
-                    modified_nanos,
-                })
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(MemoryStorageError::Io(error)),
-        };
-        files.push((path, stamp));
+    let stamps = stat_paths(paths.clone()).await?;
+    Ok(SourceFingerprint {
+        files: paths.into_iter().zip(stamps).collect(),
+    })
+}
+
+fn file_stamp(path: &Path) -> Result<Option<SourceFileStamp>, std::io::Error> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let modified_nanos = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos());
+            Ok(Some(SourceFileStamp {
+                len: metadata.len(),
+                modified_nanos,
+            }))
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
-    Ok(SourceFingerprint { files })
+}
+
+/// Stat a source set in one admitted job. One Tokio filesystem job per
+/// episode otherwise dominates cache hits for large histories.
+async fn stat_paths(
+    paths: Vec<PathBuf>,
+) -> Result<Vec<Option<SourceFileStamp>>, MemoryStorageError> {
+    magician_core::blocking_admission::spawn_blocking_admitted(move || {
+        paths
+            .iter()
+            .map(|path| file_stamp(path).map_err(MemoryStorageError::Io))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|error| MemoryStorageError::Other(format!("memory source fingerprint: {error}")))?
+}
+
+/// Content of a set of source files, for telling a real change from a new
+/// stamp on the same bytes (a `touch`, or a writer rewriting identical JSON).
+#[derive(Debug, Default)]
+struct SourceContent {
+    hashes: HashMap<PathBuf, [u8; 32]>,
+    directories: BTreeSet<PathBuf>,
+    /// A file changed while it was read; its hash is not known.
+    unstable: bool,
+}
+
+fn content_hash_memo() -> &'static StdMutex<HashMap<PathBuf, (SourceFileStamp, [u8; 32])>> {
+    static MEMO: OnceLock<StdMutex<HashMap<PathBuf, (SourceFileStamp, [u8; 32])>>> =
+        OnceLock::new();
+    MEMO.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// Hash each file at its given stamp. A file is read only when the memo has
+/// no hash for that exact stamp — the same stamp-means-same-bytes assumption
+/// the fingerprint already makes.
+async fn source_content(
+    files: Vec<(PathBuf, SourceFileStamp)>,
+) -> Result<SourceContent, MemoryStorageError> {
+    let mut content = SourceContent::default();
+    let mut to_read = Vec::new();
+    if let Ok(memo) = content_hash_memo().lock() {
+        for (path, stamp) in files {
+            match memo.get(&path) {
+                Some((known, hash)) if *known == stamp => {
+                    content.hashes.insert(path, *hash);
+                },
+                _ => to_read.push((path, stamp)),
+            }
+        }
+    } else {
+        to_read = files;
+    }
+    if to_read.is_empty() {
+        return Ok(content);
+    }
+    let read = magician_core::blocking_admission::spawn_blocking_admitted(move || {
+        let mut read = Vec::with_capacity(to_read.len());
+        for (path, stamp) in to_read {
+            if std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+                read.push((path, stamp, None, true));
+                continue;
+            }
+            let hash = match std::fs::read(&path) {
+                Ok(bytes) => Some(*blake3::hash(&bytes).as_bytes()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(MemoryStorageError::Io(error)),
+            };
+            // Bytes read under a different stamp belong to neither version.
+            let still = file_stamp(&path).map_err(MemoryStorageError::Io)?;
+            read.push((path, stamp, hash.filter(|_| still == Some(stamp)), false));
+        }
+        Ok(read)
+    })
+    .await
+    .map_err(|error| MemoryStorageError::Other(format!("memory source content: {error}")))??;
+    let mut memo = content_hash_memo().lock().ok();
+    for (path, stamp, hash, is_directory) in read {
+        if is_directory {
+            content.directories.insert(path);
+            continue;
+        }
+        let Some(hash) = hash else {
+            content.unstable = true;
+            continue;
+        };
+        if let Some(memo) = memo.as_mut() {
+            memo.insert(path.clone(), (stamp, hash));
+        }
+        content.hashes.insert(path, hash);
+    }
+    Ok(content)
+}
+
+fn stamped_files(fingerprint: &SourceFingerprint) -> Vec<(PathBuf, SourceFileStamp)> {
+    fingerprint
+        .files
+        .iter()
+        .filter_map(|(path, stamp)| stamp.map(|stamp| (path.clone(), stamp)))
+        .collect()
+}
+
+/// Accept `fingerprint` for a cached entry whose sources changed stamp but not
+/// content: the entry is re-stamped and keeps its snapshot. False when any
+/// source was added, removed, or really changed.
+async fn restamp_if_content_unchanged(
+    key: &SnapshotCacheKey,
+    fingerprint: &SourceFingerprint,
+) -> Result<bool, MemoryStorageError> {
+    let Some((previous, hashes)) = snapshot_cache().lock().ok().and_then(|cache| {
+        cache
+            .entries
+            .get(key)
+            .map(|entry| (entry.fingerprint.clone(), Arc::clone(&entry.content_hashes)))
+    }) else {
+        return Ok(false);
+    };
+    if previous.files.len() != fingerprint.files.len() {
+        return Ok(false);
+    }
+    let mut changed = Vec::new();
+    for ((path, before), (now_path, now)) in previous.files.iter().zip(&fingerprint.files) {
+        if path != now_path {
+            return Ok(false);
+        }
+        if before == now {
+            continue;
+        }
+        let Some(now) = now else {
+            return Ok(false);
+        };
+        if before.is_none() {
+            return Ok(false);
+        }
+        changed.push((path.clone(), *now));
+    }
+    let content = source_content(changed.clone()).await?;
+    if content.unstable {
+        return Ok(false);
+    }
+    for (path, _) in &changed {
+        // A directory's stamp moves when a writer renames a temp file into
+        // it; additions and removals already show in the path list above.
+        if content.directories.contains(path) {
+            continue;
+        }
+        if hashes.get(path).is_none() || hashes.get(path) != content.hashes.get(path) {
+            return Ok(false);
+        }
+    }
+    let Ok(mut cache) = snapshot_cache().lock() else {
+        return Ok(false);
+    };
+    match cache.entries.get_mut(key) {
+        Some(entry) if entry.fingerprint == previous => {
+            entry.fingerprint = fingerprint.clone();
+            Ok(true)
+        },
+        _ => Ok(false),
+    }
 }
 
 fn source_paths(spec: &SnapshotBuildSpec) -> Result<Vec<PathBuf>, MemoryStorageError> {
@@ -508,6 +1176,12 @@ fn source_paths(spec: &SnapshotBuildSpec) -> Result<Vec<PathBuf>, MemoryStorageE
         .iter()
         .filter(|tier| same_scope(&tier.scope, &spec.scope))
     {
+        if !spec.include_prompt_profiles
+            && matches!(tier.scope, TierScope::AgentGoal)
+            && spec.goal_id.is_none()
+        {
+            continue;
+        }
         if matches!(spec.scope, TierScope::Agent)
             && tier.name == ENVIRONMENT_KNOWLEDGE_TIER
             && !spec.include_environment_knowledge
@@ -548,9 +1222,13 @@ fn fingerprint_generation(fingerprint: &SourceFingerprint) -> String {
 fn insert_snapshot(
     key: SnapshotCacheKey,
     fingerprint: SourceFingerprint,
+    content_hashes: Arc<HashMap<PathBuf, [u8; 32]>>,
     snapshot: Arc<MemoryPromptCandidateSnapshot>,
     spec: SnapshotBuildSpec,
     settings: &MagicianMemoryPromptSnapshotSettings,
+    // A background refresh keeps the entry's own last use: a write is not a
+    // read, and resetting it kept entries alive while memory changed.
+    last_used: Option<Instant>,
 ) {
     if snapshot.estimated_bytes() > settings.max_bytes {
         return;
@@ -581,9 +1259,10 @@ fn insert_snapshot(
         key,
         SnapshotCacheEntry {
             fingerprint,
+            content_hashes,
             snapshot,
             spec,
-            last_used: now,
+            last_used: last_used.unwrap_or(now),
         },
     );
 }
@@ -748,6 +1427,14 @@ async fn refresh_snapshots_for_root(root: &Path) {
         })
         .unwrap_or_default();
     for (key, spec) in specs {
+        // Same lock as a foreground build, so the two never build one key
+        // at once; a foreground build that just finished is then seen below.
+        let build_lock = snapshot_build_lock(&key);
+        let _cleanup = SnapshotBuildLockCleanup {
+            key: &key,
+            build_lock: &build_lock,
+        };
+        let guard = build_lock.lock().await;
         let before = match source_fingerprint(&spec).await {
             Ok(fingerprint) => fingerprint,
             Err(error) => {
@@ -759,10 +1446,34 @@ async fn refresh_snapshots_for_root(root: &Path) {
                 continue;
             },
         };
-        match build_consistent_snapshot(&spec, before).await {
-            Ok((fingerprint, snapshot)) => {
+        // A change notification names a root, not this entry's sources: an
+        // entry whose files are unchanged is still current, and one evicted
+        // since the listing is not rebuilt.
+        let Some(last_used) = stale_entry_last_used(&key, &before) else {
+            continue;
+        };
+        match restamp_if_content_unchanged(&key, &before).await {
+            Ok(true) => continue,
+            Ok(false) => {},
+            Err(error) => warn!(
+                root = %root.display(),
+                error = %error,
+                "failed to compare memory prompt snapshot sources during background refresh"
+            ),
+        }
+        let previous = cached_entry_snapshot(&key);
+        match build_consistent_snapshot(&spec, before, previous).await {
+            Ok((fingerprint, snapshot, content_hashes)) => {
                 BACKGROUND_REFRESHES.fetch_add(1, Ordering::Relaxed);
-                insert_snapshot(key, fingerprint, snapshot, spec, &settings);
+                insert_snapshot(
+                    key.clone(),
+                    fingerprint,
+                    content_hashes,
+                    snapshot,
+                    spec,
+                    &settings,
+                    Some(last_used),
+                );
             },
             Err(error) => warn!(
                 root = %root.display(),
@@ -770,7 +1481,19 @@ async fn refresh_snapshots_for_root(root: &Path) {
                 "failed to rebuild memory prompt snapshot in background"
             ),
         }
+        drop(guard);
     }
+}
+
+/// The last use of a cached entry whose sources no longer match
+/// `fingerprint`; `None` when the entry is current or no longer cached.
+fn stale_entry_last_used(
+    key: &SnapshotCacheKey,
+    fingerprint: &SourceFingerprint,
+) -> Option<Instant> {
+    let cache = snapshot_cache().lock().ok()?;
+    let entry = cache.entries.get(key)?;
+    (&entry.fingerprint != fingerprint).then_some(entry.last_used)
 }
 
 pub fn normalized_token_set(text: &str) -> BTreeSet<String> {
@@ -835,6 +1558,105 @@ pub fn exact_overlap_ngrams(text: &str) -> Vec<u64> {
     ngrams.sort_unstable();
     ngrams.dedup();
     ngrams
+}
+
+/// New texts up to which a rebuild updates the overlap graph from the
+/// previous snapshot instead of recomputing it (or a quarter of the set).
+const INCREMENTAL_OVERLAP_GRAPH_MAX_NEW: usize = 64;
+
+/// The overlap graph [`populate_exact_overlap_graph`] builds, computed from
+/// the previous snapshot's graph. Whether two candidates overlap depends only
+/// on their two texts, and the full build finds every overlapping pair (see
+/// `precomputed_overlap_graph_matches_pairwise_reference`). So links between
+/// texts that were both present before are carried over, identical texts link
+/// to each other, and only texts new to this build are compared, against all
+/// candidates.
+fn populate_exact_overlap_graph_from_previous(
+    profiles: &mut [MemoryPromptCandidateProfile],
+    previous: &[MemoryPromptCandidateProfile],
+) {
+    let overlaps = {
+        let mut previous_pairs = std::collections::HashSet::<(&str, &str)>::new();
+        for profile in previous {
+            let left = &*profile.source_text;
+            for &index in profile.exact_overlap_indices.iter() {
+                let right = &*previous[index].source_text;
+                if left < right {
+                    previous_pairs.insert((left, right));
+                } else if right < left {
+                    previous_pairs.insert((right, left));
+                }
+            }
+        }
+        let previous_texts = previous
+            .iter()
+            .map(|profile| &*profile.source_text)
+            .collect::<std::collections::HashSet<_>>();
+        let mut by_text = HashMap::<&str, Vec<usize>>::new();
+        for (index, profile) in profiles.iter().enumerate() {
+            by_text
+                .entry(&*profile.source_text)
+                .or_default()
+                .push(index);
+        }
+
+        let mut overlaps = vec![Vec::<usize>::new(); profiles.len()];
+        let link = |left: usize, right: usize, overlaps: &mut [Vec<usize>]| {
+            overlaps[left].push(right);
+            overlaps[right].push(left);
+        };
+        for indices in by_text.values() {
+            let Some(&first) = indices.first() else {
+                continue;
+            };
+            let profile = &profiles[first];
+            let text = profile.source_text.trim();
+            let count = profile.text_char_count;
+            if indices.len() < 2 || !exact_high_overlap(text, text, count, count) {
+                continue;
+            }
+            for (position, &left) in indices.iter().enumerate() {
+                for &right in &indices[position + 1..] {
+                    link(left, right, &mut overlaps);
+                }
+            }
+        }
+        for (left_text, right_text) in previous_pairs {
+            let (Some(lefts), Some(rights)) = (by_text.get(left_text), by_text.get(right_text))
+            else {
+                continue;
+            };
+            for &left in lefts {
+                for &right in rights {
+                    link(left, right, &mut overlaps);
+                }
+            }
+        }
+        for (current_index, current) in profiles.iter().enumerate() {
+            if previous_texts.contains(&*current.source_text) {
+                continue;
+            }
+            for (other_index, other) in profiles.iter().enumerate() {
+                if other.source_text == current.source_text {
+                    continue;
+                }
+                if exact_high_overlap(
+                    current.source_text.trim(),
+                    other.source_text.trim(),
+                    current.text_char_count,
+                    other.text_char_count,
+                ) {
+                    link(current_index, other_index, &mut overlaps);
+                }
+            }
+        }
+        overlaps
+    };
+    for (profile, mut indices) in profiles.iter_mut().zip(overlaps) {
+        indices.sort_unstable();
+        indices.dedup();
+        profile.exact_overlap_indices = Arc::from(indices);
+    }
 }
 
 pub fn populate_exact_overlap_graph(profiles: &mut [MemoryPromptCandidateProfile]) {
@@ -1054,12 +1876,14 @@ mod tests {
                 include_environment_knowledge: false,
                 isolated_user_memory: false,
                 tier_definition_hash: [0; 32],
+                include_prompt_profiles: true,
             };
             cache.estimated_bytes += snapshot.estimated_bytes();
             cache.entries.insert(
                 key,
                 SnapshotCacheEntry {
                     fingerprint: SourceFingerprint { files: Vec::new() },
+                    content_hashes: Arc::default(),
                     snapshot: Arc::clone(&snapshot),
                     spec: SnapshotBuildSpec {
                         storage: AgentStorage::new(PathBuf::from("/tmp/test")),
@@ -1069,6 +1893,7 @@ mod tests {
                         goal_id: None,
                         include_environment_knowledge: false,
                         isolated_user_root: None,
+                        include_prompt_profiles: true,
                     },
                     last_used: Instant::now() + Duration::from_millis(offset as u64),
                 },
@@ -1091,6 +1916,7 @@ mod tests {
             goal_id: None,
             include_environment_knowledge: false,
             isolated_user_root: None,
+            include_prompt_profiles: true,
         };
         let before = source_fingerprint(&spec).await.unwrap();
         let dir = storage.agent_episodes_dir("presto").unwrap();
@@ -1144,6 +1970,7 @@ mod tests {
             goal_id: None,
             include_environment_knowledge: false,
             isolated_user_root: None,
+            include_prompt_profiles: true,
         };
         let before = source_fingerprint(&spec).await.expect("first fingerprint");
         tokio::fs::write(
@@ -1226,7 +2053,8 @@ mod tests {
             retrieval_scope: RetrievalScope::Unbound,
             isolated_user_root: None,
         };
-        let key = snapshot_cache_key(&storage, "presto", &[], &request).expect("snapshot key");
+        let key =
+            snapshot_cache_key(&storage, "presto", &[], &request, true).expect("snapshot key");
         let first = load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request)
             .await
             .expect("first snapshot");
@@ -1281,5 +2109,396 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         evict_snapshots_for_root(temp.path());
+    }
+
+    async fn user_snapshot_fixture(
+        root: &Path,
+    ) -> (
+        AgentMemoryService,
+        MemoryCandidateRequest<'static>,
+        SnapshotCacheKey,
+    ) {
+        let storage = AgentStorage::new(root);
+        tokio::fs::create_dir_all(storage.user_root())
+            .await
+            .expect("create user root");
+        tokio::fs::write(
+            storage.user_knowledge_path(),
+            b"{\"fields\":{\"facts\":[\"first fact\"]}}",
+        )
+        .await
+        .expect("write source");
+        let request = MemoryCandidateRequest {
+            scope: TierScope::User,
+            goal_id: None,
+            recency_cutoff: None,
+            include_environment_knowledge: false,
+            retrieval_scope: RetrievalScope::Unbound,
+            isolated_user_root: None,
+        };
+        let key =
+            snapshot_cache_key(&storage, "presto", &[], &request, true).expect("snapshot key");
+        (AgentMemoryService::new(storage), request, key)
+    }
+
+    /// A retrieval that gives up at its deadline drops the snapshot load. The
+    /// build must still reach the cache, or the next lookup pays it again.
+    /// Holding the build lock keeps the build waiting until its caller is gone.
+    #[tokio::test]
+    async fn a_snapshot_build_outlives_the_lookup_that_started_it() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let (service, request, key) = user_snapshot_fixture(temp.path()).await;
+        let build_lock = snapshot_build_lock(&key);
+        let held = build_lock.lock().await;
+
+        let caller = tokio::spawn(async move {
+            load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request).await
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // The map and this test hold two references; the build holds the third.
+        while Arc::strong_count(&build_lock) < 3 {
+            assert!(
+                Instant::now() < deadline,
+                "the build never reached its lock"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        caller.abort();
+        assert!(caller.await.is_err_and(|error| error.is_cancelled()));
+        drop(held);
+
+        while !snapshot_cache()
+            .lock()
+            .is_ok_and(|cache| cache.entries.contains_key(&key))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "an abandoned lookup took its snapshot build with it"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        evict_snapshots_for_root(temp.path());
+    }
+
+    /// A change notification names a root, not an entry. An entry whose files
+    /// did not change keeps its snapshot; a changed one is rebuilt without
+    /// counting the rebuild as a use, so idle entries still expire.
+    #[tokio::test]
+    async fn background_refresh_rebuilds_only_changed_entries_and_keeps_their_last_use() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let (service, request, key) = user_snapshot_fixture(temp.path()).await;
+        let first = load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request)
+            .await
+            .expect("first snapshot");
+        let cached = || {
+            snapshot_cache().lock().ok().and_then(|cache| {
+                cache
+                    .entries
+                    .get(&key)
+                    .map(|entry| (Arc::clone(&entry.snapshot), entry.last_used))
+            })
+        };
+        let (_, last_used) = cached().expect("first snapshot is cached");
+
+        refresh_snapshots_for_root(temp.path()).await;
+        let (unchanged, _) = cached().expect("still cached");
+        assert!(
+            Arc::ptr_eq(&first, &unchanged),
+            "an entry with unchanged sources was rebuilt"
+        );
+
+        tokio::fs::write(
+            service.storage().user_knowledge_path(),
+            b"{\"fields\":{\"facts\":[\"a changed fact\"]}}",
+        )
+        .await
+        .expect("change source");
+        refresh_snapshots_for_root(temp.path()).await;
+        let (rebuilt, rebuilt_last_used) = cached().expect("rebuilt entry is cached");
+        assert!(rebuilt
+            .documents
+            .iter()
+            .any(|candidate| candidate.text.contains("a changed fact")));
+        assert_eq!(rebuilt_last_used, last_used);
+        evict_snapshots_for_root(temp.path());
+    }
+
+    fn agent_request() -> MemoryCandidateRequest<'static> {
+        MemoryCandidateRequest {
+            scope: TierScope::Agent,
+            goal_id: None,
+            recency_cutoff: None,
+            include_environment_knowledge: false,
+            retrieval_scope: RetrievalScope::Unbound,
+            isolated_user_root: None,
+        }
+    }
+
+    fn episode_json(id: &str, observations: &[&str]) -> serde_json::Value {
+        serde_json::json!({"agent_id": "presto", "episode_id": id,
+            "goal_key": "chat:session", "completed_at": "2026-10-06T00:00:00Z",
+            "observations": observations})
+    }
+
+    /// New stamps on unchanged bytes are not a change: the snapshot object is
+    /// kept, for a tier file and for an episode written through a temp file
+    /// (which also moves the episodes directory's stamp).
+    #[tokio::test]
+    async fn rewriting_identical_bytes_keeps_the_snapshot() {
+        let temp = tempfile::tempdir().expect("temp root");
+        let (service, request, key) = user_snapshot_fixture(temp.path()).await;
+        let first = load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request)
+            .await
+            .expect("first snapshot");
+        let stamped = snapshot_cache()
+            .lock()
+            .ok()
+            .and_then(|cache| {
+                cache
+                    .entries
+                    .get(&key)
+                    .map(|entry| entry.fingerprint.clone())
+            })
+            .expect("cached");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::fs::write(
+            service.storage().user_knowledge_path(),
+            b"{\"fields\":{\"facts\":[\"first fact\"]}}",
+        )
+        .await
+        .expect("rewrite identical bytes");
+        let again = load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request)
+            .await
+            .expect("second snapshot");
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "a touch rebuilt the user snapshot"
+        );
+        let restamped = snapshot_cache()
+            .lock()
+            .ok()
+            .and_then(|cache| {
+                cache
+                    .entries
+                    .get(&key)
+                    .map(|entry| entry.fingerprint.clone())
+            })
+            .expect("cached");
+        assert_ne!(stamped, restamped, "the entry kept a stale stamp");
+
+        let storage = service.storage().clone();
+        let dir = storage.agent_episodes_dir("presto").expect("episodes dir");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create episodes dir");
+        let episode = episode_json("one", &["user_message_excerpt: a walk by the river"]);
+        storage
+            .write_json_atomic(&dir.join("one.json"), &episode)
+            .await
+            .expect("write episode");
+        let request = agent_request();
+        let first = load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request)
+            .await
+            .expect("agent snapshot");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        storage
+            .write_json_atomic(&dir.join("one.json"), &episode)
+            .await
+            .expect("rewrite episode");
+        let again = load_memory_prompt_candidate_snapshot(&service, "presto", &[], &request)
+            .await
+            .expect("agent snapshot again");
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "a rewritten episode rebuilt the snapshot"
+        );
+        evict_snapshots_for_root(temp.path());
+    }
+
+    /// Reused episode and tier files, reused profiles and the incrementally
+    /// updated overlap graph must give exactly what a full build gives: same
+    /// documents, order, profiles and overlap links, after every add, change,
+    /// delete and identical rewrite in a seeded random sequence. Shared
+    /// sentences across episodes and the tier make the graph non-trivial.
+    #[tokio::test]
+    async fn incremental_rebuilds_match_a_full_build() {
+        const SENTENCES: [&str; 6] = [
+            "user_message_excerpt: we planned the quarterly offsite agenda together",
+            "user_message_excerpt: the invoice for the design work is overdue",
+            "user_message_excerpt: remember that Asha prefers morning meetings",
+            "user_message_excerpt: we planned the quarterly offsite agenda together and booked rooms",
+            "user_message_excerpt: a short note",
+            "user_message_excerpt: the invoice for the design work is overdue since last week",
+        ];
+        let temp = tempfile::tempdir().expect("temp root");
+        let storage = AgentStorage::new(temp.path());
+        let service = AgentMemoryService::new(storage.clone());
+        let dir = storage.agent_episodes_dir("presto").expect("episodes dir");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("create episodes dir");
+        let request = agent_request();
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % bound
+        };
+        let tiers = crate::magician_v2::agents::default_memory_config_for_personal_agent()
+            .0
+            .into_iter()
+            .filter(|tier| tier.name == "insights")
+            .collect::<Vec<_>>();
+        let tier_path = storage
+            .agent_tier_path("presto", "insights", &TierScope::Agent, None)
+            .expect("tier path");
+        let mut tier_record = None::<serde_json::Value>;
+        let mut present: Vec<(String, serde_json::Value)> = Vec::new();
+        for step in 0..80 {
+            match next(6) {
+                4 => {
+                    let patterns = (0..=next(3))
+                        .map(|_| {
+                            serde_json::json!({"pattern": SENTENCES[next(6) as usize],
+                            "type": "habit", "confidence": "0.8"})
+                        })
+                        .collect::<Vec<_>>();
+                    let record = serde_json::json!({"tier_name": "insights",
+                        "tier_scope": "agent", "last_updated": "2026-10-06T00:00:00Z",
+                        "fields": {"insights": patterns}});
+                    storage
+                        .write_json_atomic(&tier_path, &record)
+                        .await
+                        .expect("write tier");
+                    tier_record = Some(record);
+                },
+                5 if tier_record.is_some() => {
+                    storage
+                        .write_json_atomic(&tier_path, tier_record.as_ref().expect("record"))
+                        .await
+                        .expect("rewrite identical tier");
+                },
+                0 | 1 if present.len() < 8 || present.is_empty() => {
+                    let id = format!("episode-{step}");
+                    let first = SENTENCES[next(6) as usize];
+                    let second = SENTENCES[next(6) as usize];
+                    let episode = episode_json(&id, &[first, second]);
+                    storage
+                        .write_json_atomic(&dir.join(format!("{id}.json")), &episode)
+                        .await
+                        .expect("add episode");
+                    present.push((id, episode));
+                },
+                0 | 1 => {
+                    let index = next(present.len() as u64) as usize;
+                    let (id, episode) = &mut present[index];
+                    *episode = episode_json(id, &[SENTENCES[next(6) as usize]]);
+                    storage
+                        .write_json_atomic(&dir.join(format!("{id}.json")), &*episode)
+                        .await
+                        .expect("change episode");
+                },
+                2 if !present.is_empty() => {
+                    let index = next(present.len() as u64) as usize;
+                    let (id, _) = present.remove(index);
+                    tokio::fs::remove_file(dir.join(format!("{id}.json")))
+                        .await
+                        .expect("delete episode");
+                },
+                _ if !present.is_empty() => {
+                    let index = next(present.len() as u64) as usize;
+                    let (id, episode) = &present[index];
+                    storage
+                        .write_json_atomic(&dir.join(format!("{id}.json")), episode)
+                        .await
+                        .expect("rewrite identical episode");
+                },
+                _ => continue,
+            }
+            let cached =
+                load_memory_prompt_candidate_snapshot(&service, "presto", &tiers, &request)
+                    .await
+                    .expect("cached snapshot");
+            let full = build_uncached_snapshot(&storage, "presto", &tiers, &request, "full", true)
+                .await
+                .expect("full build");
+            assert_eq!(
+                cached.documents, full.documents,
+                "documents differ at step {step}"
+            );
+            assert_eq!(
+                format!("{:?}", cached.profiles),
+                format!("{:?}", full.profiles),
+                "profiles or overlap links differ at step {step}"
+            );
+        }
+        evict_snapshots_for_root(temp.path());
+    }
+
+    /// The incremental overlap graph equals a full rebuild for random old and
+    /// new text sets: kept, reordered, duplicated and new texts; containment
+    /// near the 80% length bound; padding; short and empty texts.
+    #[test]
+    fn incremental_overlap_graph_matches_a_full_rebuild() {
+        const BASES: [&str; 5] = [
+            "alpha beta gamma delta epsilon",
+            "the invoice for the design work is overdue",
+            "remember Asha prefers morning meetings",
+            "beta gamma delta",
+            "quarterly offsite agenda",
+        ];
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % bound.max(1)
+        };
+        let text = |next: &mut dyn FnMut(u64) -> u64| -> String {
+            let base = BASES[next(BASES.len() as u64) as usize];
+            match next(8) {
+                0 => base.to_string(),
+                1 => format!("{base}!"),
+                2 => format!("  {base} "),
+                3 => base[..base.len() - 4].to_string(),
+                4 => format!("{base} {}", BASES[next(BASES.len() as u64) as usize]),
+                5 => ["", "ab", "abcdefg", "abcdefgh", " "][next(5) as usize].to_string(),
+                6 => format!("{base} and more"),
+                _ => format!("x{base}"),
+            }
+        };
+        let profiles_for = |texts: &[String]| -> Vec<MemoryPromptCandidateProfile> {
+            texts.iter().map(|text| candidate_profile(text)).collect()
+        };
+        let links = |profiles: &[MemoryPromptCandidateProfile]| -> Vec<Vec<usize>> {
+            profiles
+                .iter()
+                .map(|profile| profile.exact_overlap_indices.to_vec())
+                .collect()
+        };
+        for round in 0..400 {
+            let previous_texts = (0..next(14)).map(|_| text(&mut next)).collect::<Vec<_>>();
+            let mut previous = profiles_for(&previous_texts);
+            populate_exact_overlap_graph(&mut previous);
+            let mut current_texts = Vec::new();
+            for _ in 0..next(16) {
+                if !previous_texts.is_empty() && next(3) > 0 {
+                    current_texts
+                        .push(previous_texts[next(previous_texts.len() as u64) as usize].clone());
+                } else {
+                    current_texts.push(text(&mut next));
+                }
+            }
+            let mut incremental = profiles_for(&current_texts);
+            populate_exact_overlap_graph_from_previous(&mut incremental, &previous);
+            let mut full = profiles_for(&current_texts);
+            populate_exact_overlap_graph(&mut full);
+            assert_eq!(
+                links(&incremental),
+                links(&full),
+                "round {round}: {previous_texts:?} -> {current_texts:?}"
+            );
+        }
     }
 }

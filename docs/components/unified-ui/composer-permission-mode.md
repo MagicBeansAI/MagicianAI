@@ -73,3 +73,17 @@ confirmed.
 - `selectPermission(p)` — choose the posture without disturbing Plan.
 - `hydrate()` — ask the backend for this scope's posture. Called from
   `ChatPanel`'s `onMount`; single-flight, safe to call repeatedly.
+
+God-mode approvals appear above every chat composer in the authenticated
+workspace. Each shows its originating chat/run, named grant buttons and, for
+file edits, the staged diff and scope. “This session” means the originating
+session, wherever answered. One response clears Attention and every composer.
+Enter never grants permission; matching session/always file grants skip later asks.
+Pending asks stay answerable during a live chat turn; only an in-flight response
+disables their controls.
+God-mode grants use a scope picker with full scope text and short duration
+buttons. Diff/details scroll independently so decision controls remain visible;
+ordinary decision rows wrap at narrow widths.
+
+Attention mini cards open from their whole surface; explicit answer/action
+buttons keep their separate actions.

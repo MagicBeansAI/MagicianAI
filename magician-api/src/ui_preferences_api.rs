@@ -42,12 +42,20 @@ pub struct PutUiPreferencesRequest {
     /// theme write can never move a permission by omission.
     #[serde(default)]
     pub composer_permission_mode: Option<String>,
+    /// `system` / `day` / `night` — the mobile apps' appearance mode, carried
+    /// beside the resolved variant so the family AND how it follows the
+    /// device's day/night both follow the account. The web never sends it;
+    /// absent leaves the stored mode alone.
+    #[serde(default)]
+    pub appearance: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct UiPreferencesResponse {
     pub theme: String,
     pub composer_permission_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<String>,
     pub saved: bool,
 }
 
@@ -56,6 +64,7 @@ impl UiPreferencesResponse {
         Self {
             theme: value.theme,
             composer_permission_mode: value.composer_permission_mode,
+            appearance: value.appearance,
             saved,
         }
     }
@@ -101,6 +110,11 @@ pub async fn put_ui_preferences_handler(
     }
     if let Some(mode) = body.composer_permission_mode {
         preferences.composer_permission_mode = mode;
+    }
+    // `None` in the request body is "no opinion" (the web), not "clear the
+    // stored mode"; the store's normalisation drops anything unrecognised.
+    if let Some(appearance) = body.appearance {
+        preferences.appearance = Some(appearance);
     }
     match api
         .preferences

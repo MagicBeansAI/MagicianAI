@@ -69,19 +69,19 @@ describe('audio settings API', () => {
 						revision: 'r1',
 						source: 'explicit_request',
 						turn_boundary: 'stt_eou',
-						stages: {},
-						degradations: []
+						stages: {}
 					})
 			}
 		]);
 
-		await fetchResolvedAudioSurface('meeting', {
+		const resolved = await fetchResolvedAudioSurface('meeting', {
 			profile: 'meeting-local',
 			stageOptions: {
 				streaming_stt: 'provider/from-server',
 				diarization: 'off'
 			}
 		});
+		expect(resolved.degradations).toEqual([]);
 
 		const url = new URL(calls[0]?.url ?? '', 'http://localhost');
 		expect(url.searchParams.has('principal')).toBe(false);

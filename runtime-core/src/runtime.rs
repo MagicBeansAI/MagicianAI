@@ -147,6 +147,21 @@ pub struct FileSandboxConfig {
     /// Relative paths are resolved from current process directory.
     #[serde(default = "default_allowed_file_roots")]
     pub allowed_roots: Vec<String>,
+    /// Filesystem roots where agents may only look: non-mutating actions
+    /// (read, exists, list, and the source of a copy) are allowed, and every
+    /// mutation (write, append, delete, create_dir, a copy's destination,
+    /// either end of a move) is refused. Relative paths resolve like
+    /// `allowed_roots`. When a path sits under both kinds of root, the
+    /// deepest root decides; a tie goes to read-only. Ignored in
+    /// `unrestricted` mode.
+    #[serde(default)]
+    pub read_only_roots: Vec<String>,
+    /// Writable roots added at run time rather than configured: the task
+    /// workdir, folders the owner approved this session, delegation folders.
+    /// They admit reads and writes only where no read-only root applies, so
+    /// they never outrank `read_only_roots`. Not read from config.
+    #[serde(skip)]
+    pub extra_writable_roots: Vec<String>,
     /// Whether delete operations are permitted in workspace_write mode.
     #[serde(default = "default_true")]
     pub allow_delete: bool,
@@ -157,6 +172,8 @@ impl Default for FileSandboxConfig {
         Self {
             mode: FileSandboxMode::default(),
             allowed_roots: default_allowed_file_roots(),
+            read_only_roots: Vec::new(),
+            extra_writable_roots: Vec::new(),
             allow_delete: true,
         }
     }
@@ -236,6 +253,8 @@ mod tests {
         let mut cfg = FileSandboxConfig {
             mode: FileSandboxMode::default(),
             allowed_roots: vec![".".to_string(), "/tmp".to_string()],
+            read_only_roots: Vec::new(),
+            extra_writable_roots: Vec::new(),
             allow_delete: true,
         };
         let base = Path::new("/home/user/MagicianNotes");
@@ -254,5 +273,35 @@ mod tests {
         let count_after_second = cfg.allowed_roots.iter().filter(|r| **r == expected).count();
         assert_eq!(count_after_second, 1);
         assert_eq!(cfg.allowed_roots.len(), 3);
+    }
+
+    #[test]
+    fn file_sandbox_read_only_roots_default_to_empty_when_the_key_is_missing() {
+        let cfg: FileSandboxConfig = serde_json::from_value(serde_json::json!({
+            "mode": "workspace_write",
+            "allowed_roots": ["."],
+        }))
+        .unwrap();
+        assert!(cfg.read_only_roots.is_empty());
+        assert!(FileSandboxConfig::default().read_only_roots.is_empty());
+        assert!(cfg.extra_writable_roots.is_empty());
+
+        let cfg: FileSandboxConfig = serde_json::from_value(serde_json::json!({
+            "read_only_roots": ["/notes"],
+        }))
+        .unwrap();
+        assert_eq!(cfg.read_only_roots, vec!["/notes".to_string()]);
+        assert_eq!(cfg.allowed_roots, vec![".".to_string()]);
+
+        // Run-time roots never come from, or go back to, config.
+        let cfg: FileSandboxConfig = serde_json::from_value(serde_json::json!({
+            "extra_writable_roots": ["/anywhere"],
+        }))
+        .unwrap();
+        assert!(cfg.extra_writable_roots.is_empty());
+        let mut cfg = FileSandboxConfig::default();
+        cfg.extra_writable_roots.push("/granted".to_string());
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert!(value.get("extra_writable_roots").is_none());
     }
 }

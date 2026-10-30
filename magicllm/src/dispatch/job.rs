@@ -18,6 +18,7 @@ use crate::error::LLMResult;
 use crate::trace::{LlmScopeResolution, LlmTraceContext, LlmTraceReceipt, LlmWorkloadClass};
 use crate::types::{LLMRequest, LLMResponse, StreamDelta};
 
+use super::cancellation::{CancellationToken, TaskStateView};
 use super::router_handle::DispatchRouter;
 use super::types::{
     JobId, JobOrigin, JobState, LocalPrepStat, Priority, TaskRef, TokenSummary, TombstoneReason,
@@ -116,6 +117,9 @@ pub struct LlmJob {
     pub attempts: AttemptHistory,
     pub idempotency_key: Option<String>,
     pub submission_deadline: Option<Instant>,
+    /// Opt-in cancellation for one caller-owned wait, derived from the
+    /// task's token. Cancelling this child must never cancel sibling calls.
+    pub(crate) caller_cancellation: Option<CancellationToken>,
     /// Optional immutable routing authority captured by the producer. This is
     /// used by snapshot-sensitive calls whose profile/config decision must not
     /// be reinterpreted by a queue router from another hot-reload generation.
@@ -190,6 +194,7 @@ impl LlmJob {
             attempts: AttemptHistory::default(),
             idempotency_key: None,
             submission_deadline: None,
+            caller_cancellation: None,
             router_snapshot: None,
             queued_byte_permit: None,
             resume_in_place_retry: false,
@@ -217,6 +222,12 @@ impl LlmJob {
 
     pub(crate) fn validate_trace_lineage(&self) -> Result<(), String> {
         validate_task_ref_against_trace(&self.trace_context, self.task_ref.as_ref())
+    }
+
+    pub(crate) fn cancellation_token(&self, state: &dyn TaskStateView) -> CancellationToken {
+        self.caller_cancellation
+            .clone()
+            .unwrap_or_else(|| state.subscribe_cancel(self.task_ref.as_ref()))
     }
 
     /// Builder: attach a trace id.
@@ -529,6 +540,10 @@ pub enum ErrorClass {
     ParseError,
     /// Cancellation; never reaches the retry layer.
     Cancelled,
+    /// The owner-set spend envelope refused the call before any provider was
+    /// contacted — not retriable, and not a provider fault (never trips a
+    /// breaker or counts against provider health).
+    SpendEnvelope,
     /// Conservative bucket — not retriable.
     Unknown,
 }
@@ -553,6 +568,7 @@ impl ErrorClass {
             Self::ContentPolicy => "content_policy",
             Self::ParseError => "parse_error",
             Self::Cancelled => "cancelled",
+            Self::SpendEnvelope => "spend_envelope",
             Self::Unknown => "unknown",
         }
     }

@@ -1,21 +1,27 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import DecisionRoutingPanel from './DecisionRoutingPanel.svelte';
-	import PreferenceChecksPanel from './PreferenceChecksPanel.svelte';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import { hasHydratedScopeBearer } from '$lib/stores/scopeIdentityStore';
 	import { chatProfileStore } from '$lib/stores/chatProfileStore';
+	import ModelSelectionControl from '$lib/llm/ModelSelectionControl.svelte';
+	import {
+		fetchRoutingOverview,
+		setOperationModel,
+		type RoutingOverview
+	} from '$lib/stores/modelRoutingStore';
+	import { selectionForRoute, routeForSelection, type ModelChoice, type ModelSelection } from '$lib/llm/modelCatalog';
 	import { chatHarnessPreferenceStore } from '$lib/stores/chatHarnessPreferenceStore';
 	import {
 		fetchEngineAvailability,
 		setDecisionMode,
 		type DecisionMode,
-		fetchChatProfileChoices,
+		fetchPiModelChoices,
 		setChatHarnessEngine,
 		setRunHarnessEngine,
-		type EngineAvailability,
-		type ChatProfileChoice
+		type EngineAvailability
 	} from '$lib/plane/terminalGrants';
+	import { withCredentials } from '$lib/settings/harnessAuth';
 
 	let decisionMode: DecisionMode | '' = '';
 	let selectedDecisionMode: DecisionMode | '' = '';
@@ -43,10 +49,16 @@
 	let selectedChatProfile = '';
 	let chatProfileCurrent = '';
 	let selectedRunEngine = 'magician';
+	// `chat`: agentic flows think with whatever the chat engine is (server
+	// value `execution.harness_engine: chat`).
+	const SAME_AS_CHAT = 'chat';
+	let runFollowsChat = false;
 	let selectedRunModel = 'default';
-	let chatProfiles: ChatProfileChoice[] = [];
-	let selectedPiProfile = '';
-	let piProfileCurrent = '';
+	let piModels: ModelChoice[] = [];
+	let piSelection: ModelSelection | null = null;
+	let piSelectionCurrent = '';
+	let piSelectionError: string | null = null;
+	let piModelsLoading = true;
 	let runModelCurrent: string | undefined = undefined;
 	let savingRunEngine = false;
 	// The server's chat engine: what clients with no pick of their own use
@@ -55,6 +67,49 @@
 	let serverChatEngine = 'magician';
 	let serverChatModel = 'default';
 	let savingChatDefault = false;
+
+	// Magician's own loop has no per-run model: every decision it makes uses
+	// the model mapped to this Model routing operation, so the background run
+	// row edits that mapping in place.
+	const LOOP_OPERATION = 'agentic_decision';
+	let loopRouting: RoutingOverview | null = null;
+	let loopRoutingError: string | null = null;
+	let savingLoopModel = false;
+	$: loopOperation = loopRouting?.operations.find((operation) => operation.operation === LOOP_OPERATION) ?? null;
+	$: loopSelection =
+		loopRouting && loopOperation
+			? selectionForRoute(loopRouting.models ?? [], loopRouting.profiles, loopOperation.effective_profile)
+			: null;
+
+	async function loadLoopRouting() {
+		try {
+			loopRouting = await fetchRoutingOverview();
+			loopRoutingError = loopRouting.operations.some((operation) => operation.operation === LOOP_OPERATION)
+				? null
+				: 'The agentic decision mapping is not in the model catalog.';
+		} catch (error) {
+			loopRoutingError = error instanceof Error ? error.message : 'Model routing is unavailable.';
+		}
+	}
+
+	async function switchLoopModel(selection: ModelSelection) {
+		if (savingLoopModel) return;
+		savingLoopModel = true;
+		try {
+			await setOperationModel(LOOP_OPERATION, selection);
+			await loadLoopRouting();
+			showSuccess('Saved: agentic flows decide with this model.');
+		} catch (error) {
+			showError(error instanceof Error ? error.message : 'The loop model could not be saved.');
+		} finally {
+			savingLoopModel = false;
+		}
+	}
+
+	// The engine agentic flows resolve to: the chat's default engine when they
+	// follow chat, otherwise the engine picked.
+	$: resolvedRunEngine = selectedRunEngine === SAME_AS_CHAT ? serverChatEngine : selectedRunEngine;
+
 	$: modelsFor = (engine: string): string[] =>
 		engineAvailability.find((e) => e.name === engine)?.models ?? ['default'];
 	$: {
@@ -90,21 +145,27 @@
 
 	async function saveRunEngine() {
 		const selected = engineAvailability.find((engine) => engine.name === selectedRunEngine);
-		if (selectedRunEngine !== 'magician' && (!selected || !selected.installed)) {
+		if (selectedRunEngine !== 'magician' && selectedRunEngine !== SAME_AS_CHAT && (!selected || !selected.installed)) {
 			showError('That engine is not installed on this machine.');
 			return;
 		}
 		savingRunEngine = true;
 		try {
-			const result = await setRunHarnessEngine(selectedRunEngine, selectedRunModel, selectedPiProfile || null);
-			currentEngine = result.engine;
+			if (selectedRunEngine === 'pi' && piSelectionError) throw new Error(piSelectionError);
+			const followsChat = selectedRunEngine === SAME_AS_CHAT;
+			const result = await setRunHarnessEngine(selectedRunEngine, followsChat ? 'default' : selectedRunModel,
+				selectedRunEngine === 'pi' ? piSelection : undefined);
+			runFollowsChat = result.engine === SAME_AS_CHAT;
+			currentEngine = runFollowsChat ? serverChatEngine : result.engine;
 			selectedRunEngine = result.engine;
 			selectedRunModel = result.harness_model;
 			runModelCurrent = result.harness_model;
-			selectedPiProfile = result.pi_profile ?? '';
-			piProfileCurrent = selectedPiProfile;
+			piSelection = result.model_selection;
+			piSelectionCurrent = JSON.stringify(piSelection);
 			showSuccess(
-				`Background runs that start from now on think with ${engineLabel(currentEngine, 'Magician (own loop)')}. Runs already going keep their engine.`
+				runFollowsChat
+					? 'Agentic flows that start from now on think with the chat engine. Runs already going keep their engine.'
+					: `Agentic flows that start from now on think with ${engineLabel(currentEngine, 'Magician (own loop)')}. Runs already going keep their engine.`
 			);
 		} catch (error) {
 			showError(error instanceof Error ? error.message : 'The background run engine could not be updated.');
@@ -161,7 +222,7 @@
 				engineAvailability = [{ name: 'magician', installed: true }];
 				return;
 			}
-			void chatProfileStore.load();
+			void chatProfileStore.load(chatEngine);
 			try {
 				const roster = await fetchEngineAvailability();
 				engineAvailability = roster.engines;
@@ -171,15 +232,20 @@
 				serverChatEngine = roster.chat_current;
 				serverChatModel = roster.chat_model ?? 'default';
 				currentEngine = roster.current;
-				selectedRunEngine = roster.current;
+				runFollowsChat = roster.follows_chat === true;
+				selectedRunEngine = runFollowsChat ? SAME_AS_CHAT : roster.current;
+				void loadLoopRouting();
 				selectedRunModel = roster.run_model ?? 'default';
 				runModelCurrent = roster.run_model;
-				selectedPiProfile = roster.run_pi_profile ?? '';
-				piProfileCurrent = selectedPiProfile;
 				try {
-					chatProfiles = await fetchChatProfileChoices();
+					const catalog = await fetchPiModelChoices();
+					piModels = catalog.models;
+					piSelection = roster.run_model_selection ?? null;
+					piSelectionCurrent = JSON.stringify(piSelection);
 				} catch (error) {
-					showError(error instanceof Error ? error.message : 'Pi profiles are unavailable.');
+					piSelectionError = error instanceof Error ? error.message : 'Pi models are unavailable.';
+				} finally {
+					piModelsLoading = false;
 				}
 			} catch {
 				engineAvailability = [{ name: 'magician', installed: true }];
@@ -199,7 +265,7 @@
 				Chat thinks with: <strong>{engineLabel(chatEngine, 'Magician (own mouth)')}</strong>
 			</span>
 			<span class="engine-chip" data-testid="current-engine">
-				Background runs think with: <strong>{engineLabel(currentEngine, 'Magician (own loop)')}</strong>
+				Agentic flows think with: <strong>{engineLabel(currentEngine, 'Magician (own loop)')}</strong>{runFollowsChat ? ' (same as Chat)' : ''}
 			</span>
 		</div>
 	</div>
@@ -208,38 +274,9 @@
 		Work inherits the engine of whatever started it. A run launched from a chat thinks with the
 		chat's engine; delegations, tasks, and coding tasks a run starts think with the run's engine.
 		A run keeps the engine it started with, so saving here only affects work that starts
-		afterwards. An engine named explicitly (a terminal grant, an agent's coding profile, the
+		afterwards. An engine named explicitly (a terminal grant, an agent's coding selection, the
 		composer's pick) always wins.
 	</p>
-
-	<form class="engine-form" onsubmit={(event) => { event.preventDefault(); void saveDecisionMode(); }}>
-		<h3>Decision Engine</h3>
-		<p class="muted">
-			Choose which chat and agentic engines use Jev, Kev and Laya through the Decision Engine.
-			This setting is shared by every device connected to this Magician server.
-			Changes apply to subsequent decisions; a chat harness turn already running finishes with its current setting.
-		</p>
-		<label>
-			Use Decision Engine
-			<select bind:value={selectedDecisionMode} disabled={!decisionMode || savingDecisionMode}>
-				{#if !decisionMode}<option value="">Unavailable</option>{/if}
-				<option value="all_engines">All Engines</option>
-				<option value="magician_only">Magician Only</option>
-				<option value="off">Off</option>
-			</select>
-		</label>
-		<p class="muted">
-			All Engines includes Magician, Pi, Claude Code, Codex, Codex App Server, Grok and Agy.
-			Magician Only bypasses the Decision Engine for other harnesses. Off bypasses it for all engines.
-		</p>
-		<button class="btn btn-primary" type="submit" disabled={!decisionMode || savingDecisionMode || selectedDecisionMode === decisionMode}>
-			{savingDecisionMode ? 'Saving…' : 'Save Decision Engine setting'}
-		</button>
-	</form>
-
-	<DecisionRoutingPanel />
-
-	<PreferenceChecksPanel />
 
 	<form
 		class="chat-engine-form"
@@ -267,11 +304,11 @@
 				<select
 					bind:value={selectedChatEngine}
 					data-testid="chat-engine-select"
-					onchange={() => (selectedChatModel = 'default')}
+					onchange={() => { selectedChatModel = 'default'; void chatProfileStore.load(selectedChatEngine); }}
 				>
 					{#each engineAvailability as engine (engine.name)}
 						<option value={engine.name} disabled={!engine.installed}>
-							{engine.name}{engine.installed ? '' : ' (not installed)'}{nativeToolPostureLabel(
+							{withCredentials(engine.name, engine.credentials)}{engine.installed ? '' : ' (not installed)'}{nativeToolPostureLabel(
 								engine
 							)}
 						</option>
@@ -279,18 +316,13 @@
 				</select>
 			</label>
 			{#if selectedChatEngine === 'magician' || selectedChatEngine === 'pi'}
-				<label>
-					Chat profile
-					<select bind:value={selectedChatProfile} data-testid="chat-settings-profile-select">
-						{#if !selectedChatProfile}<option value="">Choose a profile</option>{/if}
-						{#if selectedChatProfile && !chatProfiles.some((profile) => profile.name === selectedChatProfile)}
-							<option value={selectedChatProfile}>{selectedChatProfile} (unavailable)</option>
-						{/if}
-						{#each chatProfiles as profile (profile.name)}
-							<option value={profile.name}>{profile.name} — {profile.provider} / {profile.model}{selectedChatEngine === 'pi' && profile.is_adaptive ? ' (fast model)' : ''}</option>
-						{/each}
-					</select>
-				</label>
+				{#if $chatProfileStore.models.length > 0}
+					<ModelSelectionControl models={$chatProfileStore.models}
+						selection={selectionForRoute($chatProfileStore.models, $chatProfileStore.profiles, selectedChatProfile)}
+						on:change={(event) => { selectedChatProfile = routeForSelection($chatProfileStore.models, event.detail) ?? selectedChatProfile; }} />
+				{:else}
+				<p class="muted" role="status">{$chatProfileStore.selectionError ?? 'Model choices are loading…'}</p>
+				{/if}
 			{:else}
 				<label>
 					Chat model
@@ -302,6 +334,7 @@
 				</label>
 			{/if}
 		</div>
+		<div class="form-actions">
 		<button
 			class="btn btn-primary"
 			type="submit"
@@ -318,6 +351,7 @@
 		>
 			{savingChatDefault ? 'Saving…' : 'Make this the default for all clients'}
 		</button>
+		</div>
 	</form>
 
 	<form
@@ -327,42 +361,58 @@
 			event.preventDefault();
 			saveRunEngine();
 		}}
-		aria-label="Background run engine selection"
+		aria-label="Agentic flows engine selection"
 	>
-		<h3>Background runs</h3>
+		<h3 id="agentic-flows-title">Agentic flows</h3>
 		<p class="muted">
-			The default for runs nothing launched: schedules, monitors, autonomous agents, and API
-			starts. It drives each of their loop iterations, and the delegations, tasks, and coding
-			tasks they start inherit it. A Pi profile controls Pi turns.
+			Who thinks in every agentic flow that nothing else picked an engine for, and with which
+			model. <strong>Background runs</strong> — schedules, monitors, autonomous agents and API
+			starts — use whatever Agentic flows uses, and so do the delegations and tasks they start. A
+			run started from a chat thinks with the chat's engine. With Magician, the model is the
+			<strong>agentic decision</strong> mapping in <a href="/settings/model-routing">Model routing</a>.
 		</p>
 		<div class="form-grid">
 			<label>
-				Background run engine
+				Agentic flows engine
 				<select bind:value={selectedRunEngine} data-testid="run-engine-select" onchange={() => (selectedRunModel = 'default')}>
+					<option value={SAME_AS_CHAT}>Same as Chat ({engineLabel(serverChatEngine, 'Magician')})</option>
 					{#each engineAvailability as engine (engine.name)}
 						<option value={engine.name} disabled={!engine.installed}>
-							{engine.name}{engine.installed ? '' : ' (not installed)'}
+							{withCredentials(engine.name, engine.credentials)}{engine.installed ? '' : ' (not installed)'}
 						</option>
 					{/each}
 				</select>
 			</label>
 			{#if selectedRunEngine === 'pi'}
-				<label>
-					Pi profile
-					<select bind:value={selectedPiProfile} data-testid="run-pi-profile-select">
-						<option value="">Pi own credentials and model</option>
-						{#if selectedPiProfile && !chatProfiles.some((profile) => profile.name === selectedPiProfile)}
-							<option value={selectedPiProfile}>{selectedPiProfile} (unavailable)</option>
-						{/if}
-						{#each chatProfiles as profile (profile.name)}
-							<option value={profile.name}>{profile.name} — {profile.provider} / {profile.model}{profile.is_adaptive ? ' (fast model)' : ''}</option>
-						{/each}
-					</select>
-				</label>
+				<div class="pi-model-choice">
+					{#if piModels.length > 0}
+						<ModelSelectionControl models={piModels} selection={piSelection}
+							on:change={(event) => { piSelection = event.detail; piSelectionError = null; }} />
+					{/if}
+					{#if piSelectionError}<p class="muted" role="status">{piSelectionError}</p>{/if}
+					<button type="button" class="btn btn-secondary" onclick={() => { piSelection = null; piSelectionError = null; }} disabled={!piSelection && !piSelectionError}>Use Pi default</button>
+				</div>
+			{:else if resolvedRunEngine === 'magician'}
+				<div class="loop-model-choice" data-testid="loop-model-choice">
+					{#if loopRouting && loopOperation && (loopRouting.models?.length ?? 0) > 0}
+						<ModelSelectionControl models={loopRouting.models ?? []} selection={loopSelection}
+							disabled={savingLoopModel}
+							on:change={(event) => void switchLoopModel(event.detail)} />
+					{:else}
+						<p class="muted" role="status">{loopRoutingError ?? 'Model choices are loading…'}</p>
+					{/if}
+					<p class="muted">Saves the agentic decision mapping at once.</p>
+				</div>
+			{:else if selectedRunEngine === SAME_AS_CHAT}
+				<div class="run-model-inherited" data-testid="run-model-inherited">
+					<span class="muted">Agentic flows model</span>
+					<strong>{serverChatModel === 'default' ? 'CLI default' : serverChatModel}</strong>
+					<span class="muted">From Chat's default for all clients.</span>
+				</div>
 			{:else}
 				<label>
-					Background run model
-					<select bind:value={selectedRunModel} disabled={selectedRunEngine === 'magician'}>
+					Agentic flows model
+					<select bind:value={selectedRunModel}>
 						{#each modelsFor(selectedRunEngine) as model (model)}
 							<option value={model}>{model === 'default' ? 'CLI default' : model}</option>
 						{/each}
@@ -373,11 +423,40 @@
 		<button
 			class="btn btn-primary"
 			type="submit"
-			disabled={savingRunEngine || (selectedRunEngine === currentEngine && selectedRunModel === (runModelCurrent ?? 'default') && selectedPiProfile === piProfileCurrent)}
+			disabled={savingRunEngine || (selectedRunEngine === 'pi' && (piModelsLoading || !!piSelectionError)) || (selectedRunEngine === currentEngine && selectedRunModel === (runModelCurrent ?? 'default') && JSON.stringify(piSelection) === piSelectionCurrent)}
 		>
-			{savingRunEngine ? 'Saving…' : 'Save background run engine'}
+			{savingRunEngine ? 'Saving…' : 'Save agentic flows engine'}
 		</button>
 	</form>
+
+	<div class="engine-form decision-engine-box" role="group" aria-labelledby="decision-engine-title">
+		<form class="decision-engine-form" onsubmit={(event) => { event.preventDefault(); void saveDecisionMode(); }}>
+			<h3 id="decision-engine-title">Decision Engine</h3>
+			<p class="muted">
+				Choose which chat and agentic engines use Jev, Kev and Laya through the Decision Engine.
+				This setting is shared by every device connected to this Magician server.
+				Changes apply to subsequent decisions; a chat harness turn already running finishes with its current setting.
+			</p>
+			<label>
+				Use Decision Engine
+				<select bind:value={selectedDecisionMode} disabled={!decisionMode || savingDecisionMode}>
+					{#if !decisionMode}<option value="">Unavailable</option>{/if}
+					<option value="all_engines">All Engines</option>
+					<option value="magician_only">Magician Only</option>
+					<option value="off">Off</option>
+				</select>
+			</label>
+			<p class="muted">
+				All Engines includes Magician, Pi, Claude Code, Codex, Codex App Server, Grok and Agy.
+				Magician Only bypasses the Decision Engine for other harnesses. Off bypasses it for all engines.
+			</p>
+			<button class="btn btn-primary" type="submit" disabled={!decisionMode || savingDecisionMode || selectedDecisionMode === decisionMode}>
+				{savingDecisionMode ? 'Saving…' : 'Save Decision Engine setting'}
+			</button>
+		</form>
+
+		<DecisionRoutingPanel />
+	</div>
 </section>
 
 <style>
@@ -420,11 +499,19 @@
 		font-size: 0.95rem;
 		font-weight: 600;
 	}
+	/* Controls sit at the top of their cell: a tall model picker beside the
+	   engine select used to push the select to the bottom of the row. */
 	.form-grid {
+		align-items: start;
 		display: grid;
 		gap: 0.6rem 0.75rem;
-		grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-		margin: 0.75rem 0;
+		grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr);
+		margin: 0.6rem 0;
+	}
+	@media (max-width: 640px) {
+		.form-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 	.chat-engine-form label,
 	.engine-form label {
@@ -437,23 +524,41 @@
 	}
 	.chat-engine-form select,
 	.engine-form select {
-		background: var(--input-bg, var(--bg-soft));
+		/* Colour only: the shorthand wiped the global select arrow. */
+		background-color: var(--input-bg, var(--bg-soft));
 		border: 1px solid var(--input-border, var(--border-soft));
 		border-radius: 6px;
 		color: var(--text-primary);
 		font: inherit;
 		font-weight: 500;
-		margin-top: auto;
 		min-height: 2.25rem;
 		padding: 0.45rem 0.65rem;
 		width: 100%;
 	}
 	.chat-engine-form select:focus,
 	.engine-form select:focus {
-		background: var(--input-focus-bg, var(--bg-elevated));
+		background-color: var(--input-focus-bg, var(--bg-elevated));
 		border-color: var(--input-focus-border, var(--accent-primary));
 		box-shadow: var(--input-focus-shadow, 0 0 0 3px color-mix(in srgb, var(--accent-primary) 18%, transparent));
 		outline: none;
+	}
+	.run-model-inherited {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.88rem;
+		min-width: 0;
+	}
+	.run-model-inherited strong {
+		color: var(--text-primary);
+	}
+	.loop-model-choice {
+		max-width: 34rem;
+	}
+	.form-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
 	}
 	.chat-engine-form,
 	.engine-form {
@@ -461,6 +566,10 @@
 		border: 1px solid var(--border-soft);
 		border-radius: 8px;
 		padding: 0.85rem;
+	}
+	/* The Decision Engine box holds its mode form and the model routing. */
+	.decision-engine-form {
+		margin: 0;
 	}
 	.chat-engine-form h3,
 	.engine-form h3 {

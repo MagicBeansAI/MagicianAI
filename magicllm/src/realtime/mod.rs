@@ -31,6 +31,7 @@ pub mod gemini;
 pub mod openai;
 pub mod openai_live;
 pub mod provider;
+pub mod transport;
 pub mod types;
 pub mod voices;
 

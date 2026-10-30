@@ -36,6 +36,13 @@ const ASSISTANT_TURN_ARGUMENT_LIMIT: usize = 900;
 const OUTER_HISTORY_CONTEXT_LIMIT: usize = 60_000;
 /// Hard cap for the recent-action-only block used in task/runtime sections.
 const OUTER_RECENT_HISTORY_CONTEXT_LIMIT: usize = 45_000;
+/// Most lines in the index of iterations older than the summarized history
+/// (the newest are kept).
+const DROPPED_ITERATION_INDEX_MAX_LINES: usize = 60;
+/// Byte cap for that index; oldest lines go first past it.
+const DROPPED_ITERATION_INDEX_MAX_BYTES: usize = 12_000;
+/// Longest key argument (file path, url, query, …) per index line, in chars.
+const DROPPED_ITERATION_KEY_ARGUMENT_CHARS: usize = 120;
 
 /// A hard execution token budget failure reported by the shared task-local meter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +158,7 @@ impl CapturedExecutionTokenMeter {
 /// turn, once the repo binding is resolved, and no hop above that has one.
 #[derive(Clone, Debug)]
 pub struct CapturedRunTaskLocals {
+    outward_source: Option<crate::magician_v2::agents::outward_policy::OutwardSource>,
     coding_context_active: bool,
     parent_engine: Option<String>,
     /// The pin a run launched from this task inherits.
@@ -220,6 +228,7 @@ impl CapturedRunTaskLocals {
         use crate::magician_v2::query_analysis::parent_engine::current_parent_engine;
         Self {
             coding_context_active: coding_context_active(),
+            outward_source: crate::magician_v2::agents::outward_policy::current_source(),
             parent_engine: current_parent_engine(),
             run_engine_pin: crate::magician_v2::execution::plane::current_launching_run_engine_pin(
             ),
@@ -237,6 +246,14 @@ impl CapturedRunTaskLocals {
     /// carries the chat's pin, so a run the chat launches inherits the chat.
     pub fn for_context(ctx: &AgenticContext) -> Self {
         let mut captured = Self {
+            outward_source: ctx
+                .principal
+                .as_deref()
+                .zip(ctx.workspace.as_deref())
+                .zip(ctx.task_id.as_deref())
+                .map(|((p, w), task)| {
+                    crate::magician_v2::agents::outward_policy::OutwardSource::task(p, w, task)
+                }),
             parent_engine: crate::magician_v2::execution::plane::run_parent_engine(ctx),
             run_engine_pin: ctx.run_engine_pin.clone(),
             god_session: god_session_for(ctx),
@@ -260,39 +277,51 @@ impl CapturedRunTaskLocals {
 
     /// Run `future` under every captured task-local, on whichever task polls
     /// it. Owns its captures, so the future can be boxed and spawned.
-    pub async fn scope<F>(self, future: F) -> F::Output
+    pub fn scope<'a, F>(
+        self,
+        future: F,
+    ) -> Pin<Box<dyn std::future::Future<Output = F::Output> + Send + 'a>>
     where
-        F: std::future::Future,
+        F: std::future::Future + Send + 'a,
     {
-        // Box the run's future once, so each layer below wraps a pointer. In
-        // a debug build every layer otherwise holds its own by-value copy of
-        // `future` in this poll frame: six layers of a run future reached
-        // 1,419 KiB of a 2 MiB worker and overflowed (2026-10-14).
-        let future = Box::pin(future);
-        let scoped = crate::magician_v2::execution::coding_engine::with_coding_context(
-            self.coding_context_active,
-            future,
-        );
-        let scoped = crate::magician_v2::query_analysis::parent_engine::with_parent_engine(
-            self.parent_engine.as_deref(),
-            scoped,
-        );
-        let scoped = crate::magician_v2::execution::plane::with_launching_run_engine_pin(
-            self.run_engine_pin,
-            scoped,
-        );
-        let scoped = magicllm::with_physical_resource_guard(self.physical_resource_guard, scoped);
-        let scoped = crate::magician_v2::god_mode::with_session_and_trust(
-            self.god_session,
-            self.run_trust,
-            scoped,
-        );
-        match self.secret_scope.as_ref() {
-            Some((principal, workspace)) => {
-                crate::magician_v2::secrets::with_secret_scope(principal, workspace, scoped).await
-            },
-            None => scoped.await,
-        }
+        // Box the run before any context or returned future captures it. Six
+        // by-value context layers previously reached 1,419 KiB on a 2 MiB
+        // worker stack. Erase its type once too, so Send analysis does not
+        // repeatedly expand the complete execution graph.
+        let future: Pin<Box<dyn std::future::Future<Output = F::Output> + Send + 'a>> =
+            Box::pin(future);
+        Box::pin(async move {
+            let future = crate::magician_v2::agents::outward_policy::with_source(
+                self.outward_source,
+                future,
+            );
+            let scoped = crate::magician_v2::execution::coding_engine::with_coding_context(
+                self.coding_context_active,
+                future,
+            );
+            let scoped = crate::magician_v2::query_analysis::parent_engine::with_parent_engine(
+                self.parent_engine.as_deref(),
+                scoped,
+            );
+            let scoped = crate::magician_v2::execution::plane::with_launching_run_engine_pin(
+                self.run_engine_pin,
+                scoped,
+            );
+            let scoped =
+                magicllm::with_physical_resource_guard(self.physical_resource_guard, scoped);
+            let scoped = crate::magician_v2::god_mode::with_session_and_trust(
+                self.god_session,
+                self.run_trust,
+                scoped,
+            );
+            match self.secret_scope.as_ref() {
+                Some((principal, workspace)) => {
+                    crate::magician_v2::secrets::with_secret_scope(principal, workspace, scoped)
+                        .await
+                },
+                None => scoped.await,
+            }
+        })
     }
 }
 
@@ -1070,6 +1099,15 @@ pub struct OwnerSnapshot {
 pub struct ApprovedConfirmationAction {
     pub action_json: String,
     pub owner_snapshot: OwnerSnapshot,
+    /// The model's tool call that produced the approved action, as a JSON
+    /// [`AgenticAssistantToolCallRecord`]. When present, the first `Decide`
+    /// after the resume replays this exact call instead of asking the model
+    /// again (`run_loop::phases::approved_replay`), so the owner's approval
+    /// executes what they approved. Absent for approvals that are not a
+    /// resume of the loop's own confirmation, and in records written before
+    /// it existed; those keep the re-decide-and-match behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_call_json: Option<String>,
 }
 
 /// Why a suspended parent execution frame exists.
@@ -1613,6 +1651,11 @@ pub struct AgenticContextOverrides {
     /// per-execution session derivation.
     pub browser_session_id_override: Option<String>,
 
+    /// Name of the run's browser tab group in the owner's Chrome, plumbed
+    /// beside `browser_session_id_override` into
+    /// `PrimitiveExecCtx.browser_tab_label`.
+    pub browser_tab_label: Option<String>,
+
     /// Per-execution prompt identity (agent kind + base persona +
     /// source-agent provenance). When set, this overrides any
     /// `prompt_identity` already on the built `AgenticContext` from
@@ -1657,6 +1700,14 @@ pub struct AgenticContextOverrides {
     /// Any VibeDev run, Build or Discuss (`is_vibedev_cockpit_run`), and the
     /// engineers it delegates to. God mode never applies to one.
     pub vibedev_run: bool,
+    /// A read-only plan run (`is_vibedev_plan_run`, the Discuss mode) and the
+    /// engineers it delegates to: only what `execution::plan_run_policy`
+    /// admits may run, and `run_coding_task` runs in plan mode.
+    pub plan_run: bool,
+    /// A VibeDev Autopilot run (`is_vibedev_autopilot_run`) and its delegated
+    /// engineers: only these may apply their own code proposals without the
+    /// owner's diff review.
+    pub vibedev_autopilot: bool,
 }
 
 /// Shared-runtime identity and authority ceiling for the current autonomous
@@ -1676,6 +1727,22 @@ pub struct PipelineLoopStateSegment {
     pub stage_index: usize,
     /// One-based attempt number for this stage.
     pub attempt: usize,
+}
+
+/// What a refinement pass's first pass delivered, carried on the refinement
+/// context ([`AgenticContext::refinement_first_pass`]) so the refinement
+/// segment's terminal receipt can settle the merged outcome.
+#[derive(Debug, Clone)]
+pub struct RefinementFirstPass {
+    /// The refinement segment this record belongs to; any other segment
+    /// (a nested sub-goal inside the pass, a resumed segment) ignores it.
+    pub segment: String,
+    pub completion: CompletionKind,
+    pub open: Vec<String>,
+    pub iterations_used: usize,
+    pub artifacts: Vec<Artifact>,
+    /// The declared artifacts the refinement pass was commissioned to close.
+    pub missing: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1933,6 +2000,10 @@ pub struct AgenticContext {
     /// Any VibeDev run, Build or Discuss, and its delegated engineers
     /// (`AgenticContextOverrides::vibedev_run`).
     pub vibedev_run: bool,
+    /// See [`AgenticContextOverrides::plan_run`].
+    pub plan_run: bool,
+    /// See [`AgenticContextOverrides::vibedev_autopilot`].
+    pub vibedev_autopilot: bool,
 
     /// Resume-only carry: the live conversation restored from the pause blob
     /// (`AgenticPauseState::live_messages`). Cold resumes namespace synthetic
@@ -2109,6 +2180,9 @@ pub struct AgenticContext {
     /// Rollout controls and shared L2/L3 state installed by the executor
     /// factory. Detached tests default to the fully-off compatibility path.
     pub agent_surface_runtime_config: crate::config::AgentSurfaceRuntimeConfig,
+    /// The `agentic:` config section (keep-tail window), installed by the
+    /// executor factory. Detached tests and unthreaded paths get the defaults.
+    pub agentic_settings: crate::config::AgenticSettings,
     pub surface_plan_cache: Option<crate::magician_v2::execution::flat_loop::SurfacePlanCache>,
     pub surface_working_sets:
         Option<crate::magician_v2::execution::flat_loop::SurfaceWorkingSetStore>,
@@ -2138,6 +2212,13 @@ pub struct AgenticContext {
     /// Spend token IDs propagated from the delegating agent.
     /// When non-empty, the executor uses these tokens for budget-gated execution.
     pub spend_token_ids: Vec<String>,
+
+    /// The agents that delegated (or handed over) down to this execution,
+    /// root first, ending with its direct delegator: its record's
+    /// `read_lineage`. Hydrated from the record at run setup, never from task,
+    /// API, model or checkpoint input. Goal workspace READS travel down it
+    /// (`goal_workspace_access`); depth and delegation limits never read it.
+    pub read_lineage: Vec<String>,
 
     /// Memory tier definitions for this agent, enabling mid-execution tier access.
     pub tier_definitions: Vec<MemoryTierDefinition>,
@@ -2313,6 +2394,31 @@ pub struct AgenticContext {
     /// is without out-of-band state.
     pub refinement_pass_index: u32,
 
+    /// The exact loop-state segment whose `Success` terminal the refinement
+    /// wrapper (`execute_agentically_with_refinement`) judges for declared-
+    /// artifact gaps. Set only by that wrapper, for the pass it is about to run;
+    /// `None` everywhere else, including the refinement pass itself.
+    ///
+    /// Under the stateless driver a committed terminal carries a settlement
+    /// receipt that closes the runtime execution (and hands a delegated
+    /// child's result to its parent) moments after the commit. A refinement
+    /// pass is the same run continuing, so the gap verdict must be taken
+    /// before that commit: when this segment ends `Success` with gaps the
+    /// wrapper will refine, its receipt names the refinement segment as its
+    /// successor and settles nothing while that pass runs; the refinement
+    /// pass's own receipt settles the run, and this one does only if the pass
+    /// never commits one (it errored, or the process died).
+    pub refinement_gate_segment: Option<String>,
+
+    /// On a refinement pass's context only: what the first pass delivered,
+    /// bound to the exact segment the refinement runs under. The refinement
+    /// segment's terminal receipt settles the run with the outcome the
+    /// refinement wrapper returns — the first pass merged with this pass —
+    /// rather than this pass's outcome alone, so a refinement that ends
+    /// `CannotProceed`/`Failed` settles the run as the first pass's `Success`
+    /// with the unclosed gaps declared open. `None` everywhere else.
+    pub refinement_first_pass: Option<Arc<RefinementFirstPass>>,
+
     /// Keep the agent's CDP connection and agent-browser daemon alive
     /// after this execution terminates, so a follow-up execution can
     /// attach to the same Chromium with its full session state
@@ -2371,6 +2477,10 @@ pub struct AgenticContext {
     /// (via `PrimitiveExecCtx.browser_session_id_override`). `None`
     /// preserves the legacy per-execution session derivation.
     pub browser_session_id_override: Option<String>,
+
+    /// Name of the run's browser tab group, from
+    /// `AgenticContextOverrides.browser_tab_label`.
+    pub browser_tab_label: Option<String>,
 
     /// Flat-mode tool index (Phase 3b). Built lazily in `execute_agentically`
     /// from the effective capability registry when `loop_mode == Flat`, then
@@ -2457,12 +2567,14 @@ impl Default for AgenticContext {
             policy_implicit_tool_names: std::sync::Arc::new(std::sync::Mutex::new(None)),
             scope_capability_revision: None,
             agent_surface_runtime_config: crate::config::AgentSurfaceRuntimeConfig::default(),
+            agentic_settings: crate::config::AgenticSettings::default(),
             surface_plan_cache: None,
             surface_working_sets: None,
             scratch: Default::default(),
             provisioned_secret_access_enabled: true,
             delegation_timeout_secs: 300,
             spend_token_ids: Vec::new(),
+            read_lineage: Vec::new(),
             tier_definitions: Vec::new(),
             alignment_owner_turn: None,
             delegating_agent_context: None,
@@ -2497,13 +2609,18 @@ impl Default for AgenticContext {
             plan_mode_enabled: false,
             accept_in_scope_enabled: false,
             refinement_pass_index: 0,
+            refinement_gate_segment: None,
+            refinement_first_pass: None,
             keep_browser_cdp_connection_alive: false,
             keep_browser_window_open: false,
             browser_session_id_override: None,
+            browser_tab_label: None,
             tool_index: None,
             delegate_single_in_context: false,
             coding_coordinator_run: false,
             vibedev_run: false,
+            plan_run: false,
+            vibedev_autopilot: false,
             resume_live_messages: Vec::new(),
             resume_response_id: None,
             resume_last_has_images: None,
@@ -3527,6 +3644,30 @@ pub struct AgenticPauseState {
     /// pause and in records written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alignment_ask: Option<crate::magician_v2::preference_alignment::ask::AlignmentAsk>,
+    /// The structured approval card for a confirmation pause whose tool
+    /// registered a preview builder (`execution::approval_preview`): title,
+    /// the agent's stated reason, a capped diff, evidence, warnings. Computed
+    /// once when the pause is created. Display only — resume executes
+    /// `action_json`, never this. Absent for every other pause and in records
+    /// written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Boxed: the pause rides deep execution-worker stacks.
+    pub approval_preview:
+        Option<Box<crate::magician_v2::execution::approval_preview::ApprovalPreview>>,
+    /// For a confirmation pause that holds a captured outward send for the
+    /// owner's review (`agents::outward_review`): what is held, to whom, by
+    /// which agent, and until when. Bound by the authorization hash. Absent
+    /// for every other pause and in records written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outward_review: Option<Box<crate::magician_v2::agents::outward_review::OutwardReview>>,
+    /// For a confirmation pause: the model's tool call that produced the
+    /// gated action, captured from the turn that decided it. An approving
+    /// resume hands it to the approval so the run replays exactly this call
+    /// (see [`ApprovedConfirmationAction::replay_call_json`]). Absent when the
+    /// call could not be identified, for every other pause, and in records
+    /// written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_replay_call: Option<AgenticAssistantToolCallRecord>,
     /// `AgenticContext::alignment_owner_turn`, carried across the pause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alignment_owner_turn:
@@ -3762,6 +3903,12 @@ pub struct AgenticPauseState {
     /// Spend token IDs available to this paused execution.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spend_token_ids: Vec<String>,
+    /// `AgenticContext::read_lineage`, carried across the pause and bound by
+    /// the authorization hash when present (it widens goal workspace reads).
+    /// The run's own record stays the source: a restore only fills it in
+    /// when setup found none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_lineage: Vec<String>,
 
     /// A caller-deliberately narrowed direct-tool scope (for example a
     /// one-pack chat sub-run) must survive approval/user-input pause and
@@ -3964,6 +4111,14 @@ pub struct AgenticPauseState {
     /// off on resume. `#[serde(default)]` for older states.
     #[serde(default)]
     pub vibedev_run: bool,
+    /// A read-only plan run, kept across a pause so a resumed Discuss run
+    /// stays read-only. `#[serde(default)]` for older states.
+    #[serde(default)]
+    pub plan_run: bool,
+    /// Autopilot, kept across a pause so a resumed attended run still waits for
+    /// diff review. `#[serde(default)]` for older states.
+    #[serde(default)]
+    pub vibedev_autopilot: bool,
 
     /// Live, append-only conversation captured at pause time — the model's
     /// real input (see `ExecutionHistory::live_messages`), including any
@@ -3990,6 +4145,15 @@ pub struct AgenticPauseState {
     /// of restarting every counter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_protective_state: Option<LoopProtectiveState>,
+}
+
+/// A screenshot held for the planner model's next turn
+/// ([`LoopProtectiveState::planner_screenshot_carry`]).
+#[derive(Debug, Clone)]
+pub struct CarriedScreenshot {
+    pub image: crate::magician_v2::slot_graph::extraction::ImageData,
+    /// The iteration whose state carried it.
+    pub iteration: usize,
 }
 
 /// Cross-iteration loop state that protects a run from itself — cycle
@@ -4051,16 +4215,20 @@ pub struct LoopProtectiveState {
     ///
     /// `None` means no ceiling was configured — not a ceiling of zero.
     ///
-    /// One consequence worth stating: a run WITH a ceiling is never pristine, so
-    /// every one of its pauses carries this bundle. The "an untouched run adds
-    /// zero bytes" guarantee therefore holds only where no wall-clock ceiling is
-    /// configured. That is the correct trade — a ceiling nobody carried is a
-    /// ceiling nobody enforces — and the cost is one integer.
+    /// A configured ceiling or recorded iteration allowance makes this bundle
+    /// non-pristine, so each pause retains its budget accounting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining_max_duration_ms: Option<u64>,
     /// Duration grants already folded into this pause's remainder.
     #[serde(default, skip_serializing_if = "duration_grants_unapplied")]
     pub duration_grants_applied_secs: u64,
+    /// Original iteration allowance used for an owner-approved extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iteration_budget_base: Option<usize>,
+    /// Grant total already represented in the current iteration allowance.
+    /// Absent on legacy checkpoints; those retain timestamp-based accounting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iteration_grants_applied: Option<u64>,
 
     /// The same ceiling as an absolute WALL-CLOCK instant, for a holder that is
     /// not this process.
@@ -4104,6 +4272,13 @@ pub struct LoopProtectiveState {
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub cumulative_run_cost_usd: f64,
 
+    /// Cumulative tokens the run's harness turns reported. A harness run
+    /// installs no token meter (it is budgeted by cost), so without this the
+    /// run's budget usage showed zero tokens for a turn that read thousands.
+    /// Display only: never a limit. Carried across a pause like the cost.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cumulative_harness_tokens: u64,
+
     /// How many times each tool has been dispatched with the same arguments.
     ///
     /// Observability continuity, NOT a limiter — nothing in the loop reads this
@@ -4140,6 +4315,32 @@ pub struct LoopProtectiveState {
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub transient_retry_count: usize,
 
+    /// Failures of a provider that is DOWN (`DecisionErrorKind::Outage`) since
+    /// the last clean decision. Its own budget and backoff step, so a streak
+    /// of throttling (429) neither shortens an outage's waits nor an outage
+    /// the throttling that follows it.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub outage_retry_count: usize,
+
+    /// Iterations this segment handed back because a spend-envelope park
+    /// ended them without work. Both loop bounds read `max_iterations` plus
+    /// this (`run_budget::iteration_ceiling`), so a parked wake does not spend
+    /// the allowance, and `ctx.max_iterations` stays the limit the run was
+    /// given. Persisted so a restart mid-park keeps the refund. Consumed when a
+    /// pause resumes as a new segment (`remaining_pause_iteration_budget`
+    /// folds it into the resumed limit and the resumed bundle starts at zero),
+    /// so it is never applied twice. Never set for a sealed controller attempt
+    /// or an app contract, whose limits are fixed.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub parked_iteration_refunds: usize,
+
+    /// Set on the pause raised when the provider retries ran out
+    /// (`BudgetDimension::ProviderFailure`), so the owner's Cancel on it ends
+    /// the run as cancelled rather than failed. Cleared when that pause
+    /// resumes (`restore_context_from_pause`), so it never rides a later one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provider_failure_pause: bool,
+
     /// Structured-decision gate: consecutive steps decided by the decision
     /// plane instead of the LLM. Capped by the operation's
     /// `gate.max_consecutive_steps` (default 3) so a periodic LLM step
@@ -4157,6 +4358,29 @@ pub struct LoopProtectiveState {
     /// failed: the harness made the plan knowing that failure.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub decision_rail_plan_fresh: bool,
+
+    /// The screenshot the decision rail last sent and the iteration it was
+    /// sent in. A later iteration that finds the same image decides from
+    /// text: an action has run since it was taken, so it may show a screen
+    /// that is gone (the button before the click).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_rail_screenshot: Option<(String, usize)>,
+
+    /// A screenshot from a step the decision rail decided itself. The agent's
+    /// planner model only sees the screenshot of the state it decides on, so
+    /// it would never see this one; its next turn gets it instead, captioned
+    /// with the steps run since. Process-local: a resume observes afresh.
+    #[serde(skip)]
+    pub planner_screenshot_carry: Option<CarriedScreenshot>,
+
+    /// `action_json` tokens of approvals whose tool call this run already
+    /// replayed (`run_loop::phases::approved_replay`). A replay is one-shot:
+    /// if `Apply` does not consume the approval (a policy refusal, a changed
+    /// action), the next `Decide` asks the model as before rather than
+    /// replaying the same call again. Survives pauses; bounded by
+    /// `MAX_APPROVED_REPLAYS_REMEMBERED`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approved_replays_attempted: Vec<String>,
 
     /// P0.1: separate counter for all-transient YIELD blocker retries. Kept
     /// apart from `transient_retry_count` because a yield IS a successful
@@ -4177,6 +4401,18 @@ pub struct LoopProtectiveState {
     /// the give-up after 3 bounces.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub consecutive_giveup_rejections: usize,
+
+    /// Definition-of-done final turns this run has taken. Unlike the
+    /// rejection counters, no tool turn resets it, and it survives a pause:
+    /// `decision::take_definition_of_done_turn` caps it, so a rejected final
+    /// answer cannot buy a paid no-tools turn every other iteration.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub definition_of_done_turns: usize,
+
+    /// Fingerprint of the resolved micro-goal set the last definition-of-done
+    /// turn answered. The turn is retaken only for a different set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_of_done_fingerprint: Option<String>,
 
     /// Bounces spent telling the model not to repeat a tool call that already
     /// failed with identical arguments.
@@ -4292,15 +4528,23 @@ impl LoopProtectiveState {
     pub fn is_pristine(&self) -> bool {
         self.loop_detector.is_pristine()
             && self.cumulative_run_cost_usd == 0.0
+            && self.cumulative_harness_tokens == 0
             && self.remaining_max_duration_ms.is_none()
+            && self.iteration_budget_base.is_none()
+            && self.iteration_grants_applied.is_none()
             && self.deadline_at.is_none()
             && self.agentic_tool_repeat_counts.is_empty()
             && self.agentic_failed_tool_fingerprints.is_empty()
             && self.consecutive_parse_failures == 0
             && self.transient_retry_count == 0
+            && self.outage_retry_count == 0
+            && self.parked_iteration_refunds == 0
+            && !self.provider_failure_pause
             && self.yield_transient_retry_count == 0
             && self.consecutive_goal_reached_rejections == 0
             && self.consecutive_giveup_rejections == 0
+            && self.definition_of_done_turns == 0
+            && self.definition_of_done_fingerprint.is_none()
             && self.consecutive_repeat_failed_action_rejections == 0
             && self.consecutive_no_action_iterations == 0
             && self.skip_iterations == 0
@@ -4395,6 +4639,9 @@ impl AgenticPauseState {
             denied_tool_params: HashMap::new(),
             browser_transports: Vec::new(),
             alignment_ask: None,
+            approval_preview: None,
+            outward_review: None,
+            confirmation_replay_call: None,
             alignment_owner_turn: None,
             ask_id: Some(fresh_ask_id()),
             iteration,
@@ -4435,6 +4682,7 @@ impl AgenticPauseState {
             active_owner_agent_id: None,
             owner_stack: Vec::new(),
             spend_token_ids: Vec::new(),
+            read_lineage: Vec::new(),
             preserve_initial_tool_scope: false,
             preserved_initial_tools: Vec::new(),
             predecided_call: None,
@@ -4467,6 +4715,8 @@ impl AgenticPauseState {
             chat_inline: false,
             coding_coordinator_run: false,
             vibedev_run: false,
+            plan_run: false,
+            vibedev_autopilot: false,
             live_messages: Vec::new(),
             approved_confirmation_actions: Vec::new(),
             loop_protective_state: None,
@@ -4933,6 +5183,22 @@ impl AgenticPauseState {
         // one keeps the exact hash it was sealed with.
         let canonical = if self.predecided_call.is_some() {
             serde_json::to_value((&canonical, &self.predecided_call))
+                .unwrap_or(serde_json::Value::Null)
+        } else {
+            canonical
+        };
+        // Delegated read access travels with the lineage; it joins the hash
+        // only when present, so every undelegated pause keeps its seal.
+        let canonical = if !self.read_lineage.is_empty() {
+            serde_json::to_value((&canonical, "read-lineage-v1", &self.read_lineage))
+                .unwrap_or(serde_json::Value::Null)
+        } else {
+            canonical
+        };
+        // A review hold names what the owner is shown and answers; it joins
+        // the hash only when present, so every other pause keeps its seal.
+        let canonical = if self.outward_review.is_some() {
+            serde_json::to_value((&canonical, "outward-review-v1", &self.outward_review))
                 .unwrap_or(serde_json::Value::Null)
         } else {
             canonical
@@ -5826,6 +6092,56 @@ impl ExecutionHistory {
         )
     }
 
+    /// Index of the records older than both the verbatim window
+    /// (`skip_recent`) and the `summarized` records
+    /// [`Self::format_for_llm_skip_recent`] renders. Without it those records
+    /// are absent from the prompt, refs included, and the model cannot even
+    /// re-read what it already fetched.
+    ///
+    /// One line per record, oldest first: outer iteration, tool, its key
+    /// argument, outcome and — when the result was stored — the ref
+    /// `read_result` accepts. At most [`DROPPED_ITERATION_INDEX_MAX_LINES`]
+    /// lines (the newest) and [`DROPPED_ITERATION_INDEX_MAX_BYTES`] bytes;
+    /// a leading note counts what is not listed.
+    pub fn format_dropped_iteration_index(
+        &self,
+        skip_recent: usize,
+        summarized: usize,
+    ) -> Option<String> {
+        let dropped = self
+            .iterations
+            .len()
+            .saturating_sub(skip_recent.saturating_add(summarized));
+        if dropped == 0 {
+            return None;
+        }
+        let records = &self.iterations[..dropped];
+        let start = records
+            .len()
+            .saturating_sub(DROPPED_ITERATION_INDEX_MAX_LINES);
+        let mut lines: std::collections::VecDeque<String> = records[start..]
+            .iter()
+            .map(format_dropped_iteration_line)
+            .collect();
+        let header = "Earlier iterations (outputs no longer shown; pass a ref to read_result to re-read a result):";
+        let mut bytes = header.len() + lines.iter().map(|line| line.len() + 1).sum::<usize>();
+        while bytes > DROPPED_ITERATION_INDEX_MAX_BYTES && lines.len() > 1 {
+            if let Some(line) = lines.pop_front() {
+                bytes -= line.len() + 1;
+            }
+        }
+        let unlisted = records.len() - lines.len();
+        let mut out = String::from(header);
+        if unlisted > 0 {
+            out.push_str(&format!("\n({unlisted} earlier iterations not listed)"));
+        }
+        for line in lines {
+            out.push('\n');
+            out.push_str(&line);
+        }
+        Some(out)
+    }
+
     /// Get a summary of recent iterations for LLM prompt
     pub fn format_for_llm(&self, max_iterations: usize) -> String {
         if self.iterations.is_empty() {
@@ -6096,9 +6412,10 @@ impl ExecutionHistory {
                     &record.action,
                     ExecutableAction::SpawnSubGoal { .. } | ExecutableAction::Pack { .. }
                 );
+                let truncated = !is_data_heavy && safe_output.len() > 200;
                 let formatted_output = if is_data_heavy {
                     safe_output // Full output for JS - LLM needs the data
-                } else if safe_output.len() > 200 {
+                } else if truncated {
                     format!(
                         "{}... ({} chars)",
                         truncate_utf8(&safe_output, 200),
@@ -6108,6 +6425,15 @@ impl ExecutionHistory {
                     safe_output
                 };
                 entry.push_str(&format!("\n  Output: {}", formatted_output));
+                // The cut can drop the projection's `full_result_ref`; name the
+                // stored result so the model can still re-read it.
+                if truncated {
+                    if let Some(result_ref) = record_result_ref(record) {
+                        entry.push_str(&format!(
+                            "\n  Result ref: {result_ref} (read_result for the full result)"
+                        ));
+                    }
+                }
             }
             if let Some(error) = &record.result.error {
                 entry.push_str(&format!("\n  Error: {}", error));
@@ -6516,6 +6842,92 @@ pub fn is_parallelizable_read_only_action(action: &ExecutableAction) -> bool {
     }
 }
 
+/// The stored result's ref, when the record's result was materialized and
+/// projected. App-labeled results (`app-result:`) live only in their app
+/// sidecar and are not readable through `read_result`, so they have none.
+fn record_result_ref(record: &IterationRecord) -> Option<&str> {
+    let projection = record.result.tool_result_projection.as_ref()?;
+    projection.validate_schema_version().ok()?;
+    let result_ref = projection.raw.content_ref.result_ref.as_str();
+    (!result_ref.is_empty() && !result_ref.starts_with("app-result:")).then_some(result_ref)
+}
+
+/// What a record acted on, for the dropped-iteration index: a pack's first
+/// naming argument, else the action's own short description.
+fn dropped_iteration_key_argument(action: &ExecutableAction) -> Option<String> {
+    const KEYS: [&str; 5] = ["file_path", "path", "url", "query", "action"];
+    let raw = match action {
+        ExecutableAction::Pack {
+            resolved_params, ..
+        } => KEYS
+            .iter()
+            .find_map(|key| match resolved_params.get(*key)? {
+                Value::String(text) if !text.trim().is_empty() => {
+                    Some(format!("{key}={}", Value::String(text.clone())))
+                },
+                Value::Number(number) => Some(format!("{key}={number}")),
+                _ => None,
+            })?,
+        ExecutableAction::File(file) => file.description(),
+        ExecutableAction::Http(http) => http.description(),
+        ExecutableAction::Bash(bash) => bash.description(),
+        ExecutableAction::DuckDb(duckdb) => duckdb.description(),
+        ExecutableAction::SpawnSubGoal { goal, .. } => goal.clone(),
+        ExecutableAction::DelegateToAgent { targets } => targets
+            .iter()
+            .map(|target| target.target_agent_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        ExecutableAction::HandoverToAgent {
+            target_agent_id, ..
+        } => target_agent_id.clone(),
+        ExecutableAction::SleepUntil { wake_at, .. } => wake_at.to_rfc3339(),
+    };
+    let single_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.is_empty() {
+        return None;
+    }
+    Some(
+        match single_line
+            .char_indices()
+            .nth(DROPPED_ITERATION_KEY_ARGUMENT_CHARS)
+        {
+            None => single_line,
+            Some((cut, _)) => format!("{}…", &single_line[..cut]),
+        },
+    )
+}
+
+fn format_dropped_iteration_line(record: &IterationRecord) -> String {
+    let tool = match &record.action {
+        ExecutableAction::Pack {
+            capability_name, ..
+        } => capability_name.clone(),
+        other => other.action_type_name().to_string(),
+    };
+    let outcome = match &record.result.outcome_category {
+        Some(ActionOutcomeCategory::GoalReached) => "SUCCESS",
+        Some(ActionOutcomeCategory::PartialProgress) => "PARTIAL",
+        Some(ActionOutcomeCategory::NoEffect) => "NO_EFFECT",
+        Some(ActionOutcomeCategory::Failed) => "FAILED",
+        Some(ActionOutcomeCategory::AdmissionExpiredBeforeIo) => "NOT_DISPATCHED",
+        None if record.result.success => "SUCCESS",
+        None => "FAILED",
+    };
+    let mut line = format!("- iter {} · {tool}", record.iteration);
+    if let Some(argument) = dropped_iteration_key_argument(&record.action) {
+        line.push(' ');
+        line.push_str(&argument);
+    }
+    line.push_str(" · ");
+    line.push_str(outcome);
+    if let Some(result_ref) = record_result_ref(record) {
+        line.push_str(" · ref ");
+        line.push_str(result_ref);
+    }
+    line
+}
+
 /// Create a string signature for an action (for comparison/display).
 pub fn action_signature(action: &ExecutableAction) -> String {
     match action {
@@ -6856,11 +7268,48 @@ pub enum BudgetDimension {
         used: usize,
         limit: usize,
     },
+    /// The model provider kept failing until the decision call's outage or
+    /// transient retry budget ran out. Not a spend limit and nothing to
+    /// extend: the owner is asked to retry the run from its saved progress or
+    /// cancel it (`LoopProtectiveState::provider_failure_pause`).
+    ProviderFailure {
+        /// `provider/model` of the failing call, or the run's engine when the
+        /// error did not name one.
+        route: String,
+        /// Short form of the last error.
+        error: String,
+        /// Failed decision calls in a row, the last one included.
+        attempts: usize,
+        /// Backoff the retries were scheduled to wait, in seconds.
+        waited_secs: u64,
+    },
 }
 
 impl BudgetDimension {
+    /// The confirm button of this pause's owner card. A provider failure is
+    /// retried, not extended; the deny button is "Cancel" for every dimension.
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            Self::ProviderFailure { .. } => "Retry",
+            _ => "Extend and continue",
+        }
+    }
+
     pub fn continue_prompt(&self) -> String {
         let (label, used, limit) = match self {
+            Self::ProviderFailure {
+                route,
+                error,
+                attempts,
+                waited_secs,
+            } => {
+                let how_long = if *waited_secs >= 90 {
+                    format!("for about {} minutes", waited_secs.div_ceil(60))
+                } else {
+                    format!("on {attempts} tries in a row")
+                };
+                return format!("The model provider kept failing ({route}: {error}) {how_long}. Retry this run from where it stopped, or cancel it?");
+            },
             Self::Time {
                 used_seconds,
                 limit_seconds,
@@ -6882,7 +7331,7 @@ impl BudgetDimension {
             Self::LlmCalls { used, limit } => ("Model call", used.to_string(), limit.to_string()),
             Self::Actions { used, limit, .. } => ("Action", used.to_string(), limit.to_string()),
         };
-        format!("{label} budget ({used}/{limit}) reached without completing the goal. Continue or cancel?")
+        format!("{label} budget ({used}/{limit}) reached without completing the goal. Extend this run's {} allowance and continue from saved progress?", label.to_lowercase())
     }
 }
 
@@ -7916,16 +8365,26 @@ mod tests {
         let mut coordinator = run();
         coordinator.coding_coordinator_run = true;
         assert!(is_vibedev_coding_context(&coordinator));
-        assert!(god_session_for(&coordinator).is_none(), "the Build coordinator");
+        assert!(
+            god_session_for(&coordinator).is_none(),
+            "the Build coordinator"
+        );
 
         // A Discuss coordinator is not a coding coordinator and holds no
         // coding tool; it is still a VibeDev run.
         let mut discuss = run();
         discuss.vibedev_run = true;
         assert!(is_vibedev_coding_context(&discuss));
-        assert!(god_session_for(&discuss).is_none(), "the Discuss coordinator");
+        assert!(
+            god_session_for(&discuss).is_none(),
+            "the Discuss coordinator"
+        );
 
-        for tool in ["run_coding_task", "apply_code_proposal", "run_project_checks"] {
+        for tool in [
+            "run_coding_task",
+            "apply_code_proposal",
+            "run_project_checks",
+        ] {
             let mut engineer = run();
             engineer.merged_agent_tools = vec![coding_tool(tool, None)];
             assert!(god_session_for(&engineer).is_none(), "{tool}");
@@ -7934,7 +8393,10 @@ mod tests {
         let mut delegator = run();
         delegator.merged_agent_tools = vec![coding_tool("run_coding_task", Some("engineer"))];
         assert!(!is_vibedev_coding_context(&delegator));
-        assert!(god_session_for(&delegator).is_some(), "an inherited coding tool");
+        assert!(
+            god_session_for(&delegator).is_some(),
+            "an inherited coding tool"
+        );
     }
 
     #[tokio::test]
@@ -8664,6 +9126,7 @@ mod tests {
             ApprovedConfirmationAction {
                 action_json: json.clone(),
                 owner_snapshot: owner_snapshot.clone(),
+                replay_call_json: None,
             },
         ]);
         assert_eq!(
@@ -8671,6 +9134,7 @@ mod tests {
             vec![ApprovedConfirmationAction {
                 action_json: json,
                 owner_snapshot,
+                replay_call_json: None,
             }]
         );
     }
@@ -8722,6 +9186,30 @@ mod tests {
         assert!(ps.trust_level.is_none());
         assert!(ps.trust_policies_path.is_none());
         assert!(ps.approval_rules.is_empty());
+    }
+
+    /// A paused Discuss run resumes read-only; an older state without the
+    /// field resumes as an ordinary run.
+    #[test]
+    fn pause_state_keeps_the_plan_run_flag() {
+        let mut ps = AgenticPauseState::new(
+            1,
+            "goal",
+            "criteria",
+            EnvironmentState::Shell(ShellState::default()),
+            "history",
+            10,
+            3,
+        );
+        ps.plan_run = true;
+        let json = serde_json::to_string(&ps).unwrap();
+        let restored: AgenticPauseState = serde_json::from_str(&json).unwrap();
+        assert!(restored.plan_run);
+
+        let mut legacy = serde_json::to_value(&ps).unwrap();
+        legacy.as_object_mut().unwrap().remove("plan_run");
+        let restored: AgenticPauseState = serde_json::from_value(legacy).unwrap();
+        assert!(!restored.plan_run);
     }
 
     #[test]
@@ -8789,6 +9277,39 @@ mod tests {
             10,
             3,
         )
+    }
+
+    #[test]
+    fn approval_preview_is_optional_on_the_pause_record() {
+        use crate::magician_v2::execution::approval_preview::{
+            line_diff_preview, ApprovalPreview, ApprovalPreviewWarning,
+        };
+        // Without a preview: the field is absent on the wire, and a record
+        // written before it existed reads back as `None`.
+        let pause = base_pause_state();
+        let json = serde_json::to_value(&pause).unwrap();
+        assert!(json.get("approval_preview").is_none());
+        let back: AgenticPauseState = serde_json::from_value(json).unwrap();
+        assert!(back.approval_preview.is_none());
+
+        // With one: it survives the store round trip intact, and it is not
+        // part of the authorization hash (display only).
+        let mut with_preview = base_pause_state();
+        let hash_before = with_preview.authorization_hash();
+        let preview = ApprovalPreview {
+            title: "Mira wants to change `facts.md`".to_string(),
+            why_label: Some("Why (agent's words)".to_string()),
+            why: Some("tighter".to_string()),
+            diff: Some(line_diff_preview("facts.md", "a\nb\n", "a\nc\n")),
+            evidence: vec!["task t-1".to_string()],
+            warnings: vec![ApprovalPreviewWarning::new("stale_base", "changed")],
+            notes: Vec::new(),
+        };
+        with_preview.approval_preview = Some(Box::new(preview.clone()));
+        assert_eq!(with_preview.authorization_hash(), hash_before);
+        let json = serde_json::to_string(&with_preview).unwrap();
+        let back: AgenticPauseState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.approval_preview.as_deref(), Some(&preview));
     }
 
     #[test]
@@ -8875,6 +9396,7 @@ mod tests {
                             active_owner_agent_id: "agent_root".into(),
                             owner_stack: Vec::new(),
                         },
+                        replay_call_json: None,
                     })
             },
         ];
@@ -9687,11 +10209,16 @@ mod tests {
     fn populated_loop_protective() -> LoopProtectiveState {
         let mut protective = LoopProtectiveState {
             cumulative_run_cost_usd: 4.25,
+            cumulative_harness_tokens: 16_143,
             consecutive_parse_failures: 2,
             transient_retry_count: 3,
+            parked_iteration_refunds: 2,
+            provider_failure_pause: true,
             yield_transient_retry_count: 1,
             consecutive_goal_reached_rejections: 2,
             consecutive_giveup_rejections: 1,
+            definition_of_done_turns: 1,
+            definition_of_done_fingerprint: Some("dod-fingerprint".to_string()),
             consecutive_no_action_iterations: 3,
             skip_iterations: 7,
             pending_step_completed: Some("step-7".to_string()),
@@ -9723,6 +10250,7 @@ mod tests {
                 active_owner_agent_id: "agent-1".to_string(),
                 owner_stack: Vec::new(),
             },
+            replay_call_json: None,
         }
     }
 
@@ -9735,11 +10263,19 @@ mod tests {
         // Every field, individually — a blanket equality assert would pass even
         // if a field were silently dropped by a missing `serde(default)`.
         assert_eq!(decoded.cumulative_run_cost_usd, 4.25);
+        assert_eq!(decoded.cumulative_harness_tokens, 16_143);
         assert_eq!(decoded.consecutive_parse_failures, 2);
         assert_eq!(decoded.transient_retry_count, 3);
+        assert_eq!(decoded.parked_iteration_refunds, 2);
+        assert!(decoded.provider_failure_pause);
         assert_eq!(decoded.yield_transient_retry_count, 1);
         assert_eq!(decoded.consecutive_goal_reached_rejections, 2);
         assert_eq!(decoded.consecutive_giveup_rejections, 1);
+        assert_eq!(decoded.definition_of_done_turns, 1);
+        assert_eq!(
+            decoded.definition_of_done_fingerprint.as_deref(),
+            Some("dod-fingerprint")
+        );
         assert_eq!(decoded.consecutive_no_action_iterations, 3);
         assert_eq!(decoded.skip_iterations, 7);
         assert_eq!(decoded.pending_step_completed.as_deref(), Some("step-7"));

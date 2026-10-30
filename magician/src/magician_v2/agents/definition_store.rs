@@ -654,6 +654,15 @@ impl AgentDefinitionStore {
         Ok(Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone()))
     }
 
+    /// Read durable authority without the scheduler cache or template
+    /// materialization. Inspection must neither hide out-of-band edits nor
+    /// create definitions merely by observing them.
+    pub async fn list_persisted_definitions(
+        &self,
+    ) -> Result<Vec<DefinitionRecord>, DefinitionStoreError> {
+        self.list_definitions_from_storage(&self.storage).await
+    }
+
     /// [`Self::list_definitions`] without the deep copy: hands back the cached
     /// `Arc` so read-only callers that only project a few fields off each record
     /// don't allocate a whole second copy of the scope's definitions.
@@ -1617,6 +1626,47 @@ tools: []
             fs::create_dir_all(parent).await.unwrap();
         }
         fs::write(path, content).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn persisted_inspection_sees_disk_edits_without_refreshing_the_runtime_list_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            AgentDefinitionStore::with_workspace_root(dir.path()).for_scope("owner", "workspace-a");
+        let original = store
+            .create_definition(sample_definition("analyst", "Analyst"))
+            .await
+            .unwrap();
+        store.list_definitions().await.unwrap();
+        let before = store.cached_definitions_for_tests().unwrap();
+        let mut changed = original.definition;
+        changed.persona = "New saved persona".into();
+        let path = store.storage().agent_definition_path("analyst").unwrap();
+        write_raw_yaml(&path, &changed.to_yaml_string().unwrap()).await;
+        let persisted = store.list_persisted_definitions().await.unwrap();
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|record| record.definition.agent_id == "analyst")
+                .unwrap()
+                .definition
+                .persona,
+            "New saved persona"
+        );
+        let after = store.cached_definitions_for_tests().unwrap();
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "inspection must not refresh the scheduler's projection"
+        );
+        assert_eq!(
+            after
+                .iter()
+                .find(|record| record.definition.agent_id == "analyst")
+                .unwrap()
+                .definition
+                .persona,
+            "Test persona"
+        );
     }
 
     /// The seed definition whose memory-tier schemas overflowed a worker

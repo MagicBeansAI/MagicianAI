@@ -272,7 +272,8 @@ async fn dispatch_browser_primitive(
     // other had already keyed a session on it.
     let transport_ceiling = BrowserTransportCeiling::parse(&exec_ctx.browser_transports)
         .map_err(|error| ExecutionError::Step(format!("{error:#}")))?;
-    let connection_mode = if let Some((_, expected_mode)) = retrieval_session_id.as_ref() {
+    let requested_connection_mode = if let Some((_, expected_mode)) = retrieval_session_id.as_ref()
+    {
         let mode = ConnectionMode::from_exact_request(arguments, &exec_ctx.browser_cdp_url)
             .map_err(|error| ExecutionError::Step(error.to_string()))?;
         validate_retrieval_handoff_mode(&mode, expected_mode, &exec_ctx.browser_cdp_url)?;
@@ -302,81 +303,71 @@ async fn dispatch_browser_primitive(
             .resolve(requested)
             .map_err(|error| ExecutionError::Step(format!("{error:#}")))?
     };
-    // §5A.2 — a confined execution never gets the owner's browser.
-    //
-    // `ConnectionMode::Cdp` attaches to the owner's real Chrome through the
-    // magicutor proxy, which is the point of that mode: it "preserves the
-    // user's signed-in profile". Under an engagement or a meeting that is the
-    // leak in its most direct form — a research visit made for one
-    // counterparty carries the owner's identity, cookies and logged-in
-    // accounts, and any site it touches sees the owner rather than the
-    // company. The session-id partition
-    // (`PrimitiveExecCtx::effective_browser_session_id`) separates one
-    // confined execution's browser from another's, but it cannot separate a
-    // confined execution from a browser it did not launch.
-    //
-    // Refused rather than silently downgraded to headless: an act that quietly
-    // ran somewhere other than where it was asked to run produces a result
-    // nobody can account for, and the existing retrieval-mode note in
-    // `browser/session.rs` already establishes that a transport must be chosen
-    // deliberately, never inherited from an override.
-    if matches!(connection_mode, ConnectionMode::Cdp { .. }) {
-        // An unreadable carrier reads as confined, not as unconfined: `None`
-        // here means the runtime could not tell which engagement this is, and
-        // "we do not know" is never a reason to hand over the owner's Chrome.
-        //
-        // A `Program` carrier is confined too, and it needs saying because the
-        // obvious repair gets it backwards. `engagement_ceiling_authority()`
-        // truthfully answers `None` for a program — no roster ceiling exists —
-        // and `contained_retrieval_scope(None)` is `Unbound`, whose
-        // `is_bound()` is false. So routing a program through that accessor
-        // would read as "not confined" and hand a program-scoped execution the
-        // owner's signed-in Chrome, which is the exact inheritance the outward
-        // boundary exists to prevent. The arms are therefore spelled out.
-        let confined = match exec_ctx
-            .work_authority
-            .as_ref()
-            .map(|carried| &carried.work)
-        {
-            Some(crate::magician_v2::work_context::WorkContextKind::Program(_)) => true,
-            Some(crate::magician_v2::work_context::WorkContextKind::Engagement(_)) => {
-                // Built here rather than through an accessor: this struct is
-                // not `AgenticContext` and carries none. `try_from` cannot fail
-                // on this arm — the match already proved the shape — but the
-                // narrowing is chained INTO the scope read rather than answered
-                // as a `None` carrier, because `contained_retrieval_scope(None)`
-                // is `Unbound`. Answering `None` here would therefore read as
-                // "not confined", so the impossible error would fail OPEN. Every
-                // step that cannot answer collapses to `None` and
-                // `unwrap_or(true)` reads that as confined.
-                exec_ctx
-                    .work_authority
-                    .as_ref()
-                    .and_then(|carried| {
-                        crate::magician_v2::engagements::EngagementAuthorityRef::try_from(carried)
-                            .ok()
-                    })
-                    .and_then(|ceiling| {
-                        crate::magician_v2::engagement_retrieval::contained_retrieval_scope(Some(
-                            &ceiling,
-                        ))
-                    })
-                    .map(|scope| scope.is_bound())
-                    .unwrap_or(true)
-            },
-            // No carrier at all: an ordinary execution, unconfined as before.
-            None => false,
+    let workspace_fenced =
+        crate::magician_v2::execution::goal_workspace_access::denies_for_current()
+            .guards_workspaces;
+    // Keep the existing session identity stable across calls that omit a mode.
+    let session_id = retrieval_session_id
+        .as_ref()
+        .map(|(session_id, _)| session_id.clone())
+        .unwrap_or_else(|| {
+            let base = exec_ctx.effective_browser_session_id();
+            match transport_ceiling.session_namespace() {
+                Some(namespace) => format!("{base}--{namespace}"),
+                None => base,
+            }
+        });
+    // Keep workspace-fenced sessions separate; owner-CDP authority is rechecked per call.
+    let session_id = if workspace_fenced {
+        format!("{session_id}--fenced")
+    } else {
+        session_id
+    };
+    let connection_mode = super::browser::session::flat_browser_session_mode(&session_id)
+        .unwrap_or_else(|| requested_connection_mode.for_session(&session_id));
+    enforce_ceiling_on_attached_session(&exec_ctx.browser_transports, &connection_mode)?;
+    if let Some((_, expected)) = retrieval_session_id.as_ref() {
+        let ConnectionMode::Cdp { url } = configured_cdp_mode(exec_ctx, &session_id) else {
+            unreachable!()
         };
-        if confined {
-            return Err(ExecutionError::Step(
-                "NOT BROWSED — this execution is confined to one engagement and CDP mode \
-                 attaches to the owner's own signed-in Chrome, so the visit would carry the \
-                 owner's identity and cookies. Re-issue the browse in headed or headless \
-                 mode, which launches a browser this engagement owns."
-                    .into(),
-            ));
-        }
+        validate_retrieval_handoff_mode(&connection_mode, expected, &url)?;
     }
+    // Confined work requires an explicit agent CDP grant; the legacy empty
+    // transport ceiling must not silently grant the owner's identity to it.
+    let confined = match exec_ctx
+        .work_authority
+        .as_ref()
+        .map(|carried| &carried.work)
+    {
+        Some(crate::magician_v2::work_context::WorkContextKind::Program(_)) => true,
+        Some(crate::magician_v2::work_context::WorkContextKind::Engagement(_)) => {
+            // Built here rather than through an accessor: this struct is
+            // not `AgenticContext` and carries none. `try_from` cannot fail
+            // on this arm — the match already proved the shape — but the
+            // narrowing is chained INTO the scope read rather than answered
+            // as a `None` carrier, because `contained_retrieval_scope(None)`
+            // is `Unbound`. Answering `None` here would therefore read as
+            // "not confined", so the impossible error would fail OPEN. Every
+            // step that cannot answer collapses to `None` and
+            // `unwrap_or(true)` reads that as confined.
+            exec_ctx
+                .work_authority
+                .as_ref()
+                .and_then(|carried| {
+                    crate::magician_v2::engagements::EngagementAuthorityRef::try_from(carried).ok()
+                })
+                .and_then(|ceiling| {
+                    crate::magician_v2::engagement_retrieval::contained_retrieval_scope(Some(
+                        &ceiling,
+                    ))
+                })
+                .map(|scope| scope.is_bound())
+                .unwrap_or(true)
+        },
+        // No carrier at all: an ordinary execution, unconfined as before.
+        None => false,
+    };
+    refuse_confined_cdp(confined, &connection_mode, &exec_ctx.browser_transports)?;
     let principal = exec_ctx.principal.as_deref().unwrap_or("anonymous");
     let workspace = exec_ctx.workspace.as_deref().unwrap_or("default");
     if let Some((session_id, expected_mode)) = retrieval_session_id.as_ref() {
@@ -399,6 +390,8 @@ async fn dispatch_browser_primitive(
             ));
         }
     }
+    validate_workspace_browser_connection(workspace_fenced, &connection_mode, exec_ctx)?;
+    crate::magician_v2::execution::goal_workspace_access::record_possible_reads();
     let requested_engine = requested_browser_engine(arguments, exec_ctx);
     // Mining learns from what the capture records, and Lightpanda's records no
     // request bodies at all — measured 2026-09-14 against a live search API:
@@ -423,43 +416,71 @@ async fn dispatch_browser_primitive(
         requested_engine,
     )
     .map_err(|error| ExecutionError::Step(error.to_string()))?;
-    // The CEILING is part of the session's identity — not the transport, and
-    // that distinction is the whole correctness of this.
-    //
-    // `get_or_create_flat_browser_session` is keyed by this id alone and returns
-    // a cached session WITHOUT re-running the builder, while a chat thread hands
-    // every agent rooted on it the same id on purpose — "so every child
-    // execution rooted on this thread (PA's direct calls, EA delegations,
-    // web-researcher handovers) shares one Chrome window". So without a
-    // namespace, a ceiling-restricted agent reuses the `cdp` window an
-    // unrestricted one opened, having been refused it a line earlier.
-    //
-    // Keying on the resolved TRANSPORT closed that and opened something worse.
-    // The transport is re-derived from the call arguments every call and
-    // defaults to `cdp` when a call names none — the normal shape, since `open`
-    // names a mode and the `snapshot`/`click`/`eval` after it do not. An
-    // execution that chose `headless` would then have keyed `<base>--cdp` on its
-    // next call, missed its own session, and built a new one inside the owner's
-    // signed-in Chrome.
-    //
-    // The ceiling is a fact about the AGENT, identical on every call, so an
-    // execution's calls all land on one session and two different ceilings can
-    // never land on the same one. An unrestricted execution gets NO suffix and
-    // therefore the byte-identical id it had before any of this — which is what
-    // teardown, the socket-path budget and the artifact directories expect.
-    //
-    // A retrieval session keeps its own id untouched: that path selects the
-    // authority first and carries the transport through its handoff validation.
-    let session_id = retrieval_session_id
-        .as_ref()
-        .map(|(session_id, _)| session_id.clone())
-        .unwrap_or_else(|| {
-            let base = exec_ctx.effective_browser_session_id();
-            match transport_ceiling.session_namespace() {
-                Some(namespace) => format!("{base}--{namespace}"),
-                None => base,
+    let mut engine_plan = engine_plan;
+    if workspace_fenced && !matches!(connection_mode, ConnectionMode::Cdp { .. }) {
+        let Some(proxy_args) = super::browser::dispatch::fenced_browser_args() else {
+            return Err(ExecutionError::Step(
+                "NOT BROWSED — the egress proxy is not running, and an agent fenced from a goal \
+                 workspace browses only through it"
+                    .into(),
+            ));
+        };
+        for engine in
+            std::iter::once(&mut engine_plan.primary).chain(engine_plan.capacity_fallback.as_mut())
+        {
+            if engine
+                .name
+                .as_deref()
+                .is_some_and(|name| name == super::browser::LIGHTPANDA_BROWSER_ENGINE_NAME)
+            {
+                return Err(ExecutionError::Step(
+                    "NOT BROWSED — this engine cannot be held to the egress proxy; an agent \
+                     fenced from a goal workspace browses with Chrome"
+                        .into(),
+                ));
             }
-        });
+            let args = engine
+                .env
+                .entry("AGENT_BROWSER_ARGS".to_string())
+                .or_default();
+            if args.is_empty() {
+                *args = proxy_args.clone();
+            } else {
+                args.push(',');
+                args.push_str(&proxy_args);
+            }
+            // No user or project `agent-browser.json` (an agent can write
+            // one into the service's working directory): an empty config
+            // Magician owns, in a folder no box reaches.
+            let Some(config) = super::browser::dispatch::fenced_browser_config() else {
+                return Err(ExecutionError::Step(
+                    "NOT BROWSED — the fenced browser's private config could not be written".into(),
+                ));
+            };
+            engine.env.insert(
+                "AGENT_BROWSER_CONFIG".to_string(),
+                config.display().to_string(),
+            );
+            // Drop every inherited agent-browser setting and proxy for this
+            // session's CLI and daemon (`browser::session::FENCED_SESSION_ENV`).
+            engine.env.insert(
+                super::browser::session::FENCED_SESSION_ENV.to_string(),
+                "1".to_string(),
+            );
+            // agent-browser's own proxy settings (which also read
+            // HTTP(S)_PROXY) name the same strict listener.
+            if let Some(strict) = crate::magician_v2::execution::egress_proxy::strict_port() {
+                engine.env.insert(
+                    "AGENT_BROWSER_PROXY".to_string(),
+                    format!("http://127.0.0.1:{strict}"),
+                );
+                engine.env.insert(
+                    "AGENT_BROWSER_PROXY_BYPASS".to_string(),
+                    "<-loopback>".to_string(),
+                );
+            }
+        }
+    }
     let cleanup_cli_path = cli_path.clone();
     // A session this run did not derive from its own execution id — a chat
     // thread's shared `magician-chat-<thread>`, a retrieval handoff — is
@@ -504,6 +525,7 @@ async fn dispatch_browser_primitive(
         exec_ctx.execution_id.clone(),
         exec_ctx.task_id.clone(),
     );
+    let tab_label = exec_ctx.browser_tab_label.clone();
     let session = get_or_create_flat_browser_session(&session_id, move || {
         let mut session = AgentBrowserSession::new_with_session_id(
             session_id_for_build,
@@ -514,7 +536,8 @@ async fn dispatch_browser_primitive(
         .with_engine_plan(engine_plan)
         .with_analytics_context(analytics_context)
         .with_api_mining_capture_enabled(api_mining_capture_enabled)
-        .with_initial_url(initial_url);
+        .with_initial_url(initial_url)
+        .with_tab_group_label(tab_label.as_deref());
         if let Some(limit) = handoff_capture_limit {
             session = session.with_capture_limit_bytes(limit);
         }
@@ -528,8 +551,35 @@ async fn dispatch_browser_primitive(
     if retrieval_session_id.is_none() {
         enforce_ceiling_on_attached_session(&exec_ctx.browser_transports, session.mode())?;
     }
-    // Flag the execution as browser-using so the outer-loop terminal handler
-    // fires `agent-browser close` — same contract as the nested browser loop.
+    refuse_confined_cdp(confined, session.mode(), &exec_ctx.browser_transports)?;
+    // A concurrent call may have populated the cache after the first lookup.
+    validate_workspace_browser_connection(workspace_fenced, session.mode(), exec_ctx)?;
+    // With several paired browsers, settle which one this run uses before the
+    // first connect (pairing and per-run choice cards; a no-op otherwise).
+    super::browser::browser_choice::prepare_browser_choice(
+        exec_ctx,
+        &session,
+        exec_ctx.browser_tab_label.as_deref(),
+    )
+    .await;
+    // A resolution can race terminal teardown before this call reaches hold.
+    // Refuse that stale attempt; its next call resolves a fresh window.
+    let shared_lease = exec_ctx
+        .browser_session_id_override
+        .as_deref()
+        .and_then(super::browser::session_lease::split_launch_override)
+        .is_some();
+    if retrieval_session_id.is_none()
+        && shared_lease
+        && !super::browser::session_lease::hold_session(&exec_ctx.thread_id(), &session_id)
+    {
+        return Err(ExecutionError::Step("Browser session ended before this command started; retry the browser command to use a fresh session".into()));
+    }
+    if !super::browser::session_lease::record_session(&exec_ctx.thread_id(), &session_id) {
+        return Err(ExecutionError::Step(
+            "Browser session is closing; retry the browser command".into(),
+        ));
+    }
     if let Some(flag) = exec_ctx.browser_session_used.as_ref() {
         flag.store(true, Ordering::SeqCst);
     }
@@ -591,7 +641,34 @@ async fn dispatch_browser_primitive(
             exec_ctx.delivered_secret_values.clone(),
             exec_ctx.browser_capture_withheld.clone(),
         )
-        .with_yutori_translation(exec_ctx.yutori_browser_actions);
+        .with_yutori_translation(exec_ctx.yutori_browser_actions)
+        .with_submission_approver(exec_ctx.user_request_service.as_ref().map(|service| {
+            super::browser::dispatch::SubmissionApprover::new(
+                service.clone(),
+                exec_ctx
+                    .principal
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_SCOPE_PRINCIPAL.to_owned()),
+                exec_ctx
+                    .workspace
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_SCOPE_WORKSPACE.to_owned()),
+                exec_ctx.execution_id.clone(),
+                exec_ctx.task_id.clone(),
+                exec_ctx.agent_id.clone(),
+                super::browser::submission_grants::grants_path(
+                    &ArtifactV2Workspace::new(&exec_ctx.storage_base_path),
+                    exec_ctx
+                        .principal
+                        .as_deref()
+                        .unwrap_or(DEFAULT_SCOPE_PRINCIPAL),
+                    exec_ctx
+                        .workspace
+                        .as_deref()
+                        .unwrap_or(DEFAULT_SCOPE_WORKSPACE),
+                ),
+            )
+        }));
 
     let result = if let Some(result) = workflow_fallback {
         dispatch_workflow_browser_fallback(&result, exec_ctx, &session, &dispatcher).await
@@ -1026,6 +1103,76 @@ fn validate_retrieval_handoff_mode(
 /// transport is fixed at construction, and continuing in one this agent may not
 /// use is exactly the unaccountable act [`BrowserTransportCeiling::resolve`]
 /// refuses for the same reason.
+fn configured_cdp_mode(exec_ctx: &PrimitiveExecCtx, session_id: &str) -> ConnectionMode {
+    ConnectionMode::Cdp {
+        url: exec_ctx.browser_cdp_url.clone(),
+    }
+    .for_session(session_id)
+}
+
+fn refuse_confined_cdp(
+    confined: bool,
+    mode: &ConnectionMode,
+    browser_transports: &[String],
+) -> Result<(), ExecutionError> {
+    let explicitly_granted = browser_transports
+        .iter()
+        .any(|mode| mode.trim().eq_ignore_ascii_case("cdp"));
+    if confined && matches!(mode, ConnectionMode::Cdp { .. }) && !explicitly_granted {
+        return Err(ExecutionError::Step(
+            "NOT BROWSED — this engagement or program needs an explicit `cdp` grant in the \
+             owning agent's browser_transports to use the owner's signed-in browser. \
+             Use headed or headless until the owner grants it."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_workspace_browser_connection(
+    fenced: bool,
+    mode: &ConnectionMode,
+    exec_ctx: &PrimitiveExecCtx,
+) -> Result<(), ExecutionError> {
+    if !matches!(mode, ConnectionMode::Cdp { .. }) {
+        return Ok(());
+    }
+    let refuse = |reason: &str| ExecutionError::Step(format!("NOT BROWSED — {reason}"));
+    if crate::magician_v2::god_mode::current_run_trust()
+        .is_some_and(|trust| !crate::magician_v2::god_mode::trust_allows(trust.level.as_deref()))
+    {
+        return Err(refuse(
+            "an untrusted agent cannot use the owner's signed-in browser",
+        ));
+    }
+    if fenced
+        && (crate::magician_v2::execution::native_executors::current_acting_agent()
+            .is_none_or(|agent| agent.trim().is_empty())
+            || exec_ctx
+                .principal
+                .as_deref()
+                .is_none_or(|scope| scope.trim().is_empty())
+            || exec_ctx
+                .workspace
+                .as_deref()
+                .is_none_or(|scope| scope.trim().is_empty()))
+    {
+        return Err(refuse(
+            "owner-browser access needs a scoped runtime agent identity",
+        ));
+    }
+    if exec_ctx
+        .cancellation_token
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return Err(refuse(
+            "the execution was cancelled before the browser call",
+        ));
+    }
+    Ok(())
+}
+
 fn enforce_ceiling_on_attached_session(
     browser_transports: &[String],
     attached: &ConnectionMode,
@@ -4256,6 +4403,53 @@ mod tests {
         // than being dropped on the floor.
         let typo = ctx().with_browser_transports(vec!["headles".to_string()]);
         assert!(BrowserTransportCeiling::parse(&typo.browser_transports).is_err());
+    }
+
+    #[tokio::test]
+    async fn workspace_cdp_is_normal_functionality_for_trusted_agents_without_god_mode() {
+        use crate::magician_v2::execution::native_executors::with_acting_agent;
+        use crate::magician_v2::god_mode;
+        let _god = god_mode::test_scope(false);
+        let mut context = ctx();
+        context.principal = Some("owner".into());
+        context.workspace = Some("default".into());
+        let id = format!("normal-cdp-{}", uuid::Uuid::new_v4());
+        let mode = configured_cdp_mode(&context, &id);
+        let cached = get_or_create_flat_browser_session(&id, || {
+            AgentBrowserSession::new_with_session_id(
+                id.clone(),
+                mode.clone(),
+                std::env::current_exe().unwrap(),
+            )
+        })
+        .unwrap();
+        let attached = super::super::browser::session::flat_browser_session_mode(&id).unwrap();
+        assert_eq!(&attached, cached.mode());
+        assert!(validate_workspace_browser_connection(true, &attached, &context).is_err());
+        with_acting_agent(Some("executive-assistant".into()), async {
+            assert!(!god_mode::active());
+            assert!(validate_workspace_browser_connection(true, &attached, &context).is_ok());
+            god_mode::with_run_trust(Some(god_mode::RunTrust::level(Some("untrusted"))), async {
+                assert!(validate_workspace_browser_connection(true, &attached, &context).is_err());
+            })
+            .await;
+            let token = CancellationToken::new();
+            token.cancel();
+            let mut cancelled = context.clone();
+            cancelled.cancellation_token = Some(token);
+            assert!(validate_workspace_browser_connection(true, &attached, &cancelled).is_err());
+        })
+        .await;
+        assert!(
+            validate_workspace_browser_connection(true, &ConnectionMode::Headless, &context)
+                .is_ok()
+        );
+        assert!(refuse_confined_cdp(true, &attached, &[]).is_err());
+        assert!(refuse_confined_cdp(true, &attached, &["headless".into()]).is_err());
+        assert!(refuse_confined_cdp(true, &attached, &["cdp".into(), "headed".into()]).is_ok());
+        assert!(refuse_confined_cdp(true, &ConnectionMode::Headless, &[]).is_ok());
+        assert!(enforce_ceiling_on_attached_session(&["headless".into()], &attached).is_err());
+        super::super::browser::session::forget_flat_browser_session(&id);
     }
 
     /// Pins the session-reuse hole the request-time ceiling cannot see.

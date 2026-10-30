@@ -4,9 +4,9 @@ version: "1.0.0"
 guide: |
   Tool name: `create_note`
 
-  Creates a NEW note in the owner's configured Notes space (SilverBullet or
-  local Markdown, depending on their settings). The note is a plain Markdown
-  file the owner can open, edit, and link like any other.
+  Creates a NEW note in the owner's Notes: Magican's own notes, plain
+  Markdown files the owner browses at `/notes` in the web app and can open,
+  edit, and link like any other.
 
   Use it when the owner asks you to save, write down, or keep something — a
   decision, a summary worth returning to, a reference they will want later.
@@ -33,6 +33,11 @@ guide: |
   unavailable and `fallback_reason` says why, so tell the owner where it really
   went instead of naming the provider you asked for. `path` and `open_url` are
   what to show them.
+
+  `open_url` is the note's canonical Magican link, a RELATIVE link of the
+  form `/notes?path=…&workspace=…`. Copy it exactly (for example as
+  `[Title](/notes?path=…&workspace=…)`); never add a host, turn it into a
+  `file://` path, or point at any other notes server.
 
   On error, `retryable` distinguishes a provider outage — worth one retry —
   from a bad argument, which retrying unchanged cannot fix.

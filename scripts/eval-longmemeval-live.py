@@ -64,6 +64,8 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from chat_model_args import add_chat_model_arguments, chat_model_request_fields, resolve_chat_model_selections
+
 print = functools.partial(print, flush=True)  # noqa: A001 - background runs must not buffer progress
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE_URL = "http://127.0.0.1:3002"
@@ -411,7 +413,7 @@ def send_message(
     client: Client,
     session_id: str,
     text: str,
-    profile: str | None = None,
+    model_selection: dict[str, str] | None = None,
     retries: int = 2,
 ) -> dict[str, Any]:
     """One synchronous chat turn. Returns the full ChatResponse dict.
@@ -423,8 +425,7 @@ def send_message(
     hidden)."""
     chat_turn_id = f"bench-{secrets.token_hex(8)}"
     body: dict[str, Any] = {"text": text, "source_surface": "web", "chat_turn_id": chat_turn_id}
-    if profile:
-        body["profile"] = profile
+    body.update(chat_model_request_fields(model_selection))
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -832,7 +833,7 @@ def run_instance(
         for ui_thread_id, messages in plan:
             session_id = new_chat_session(client, ui_thread_id)
             for text in messages:
-                response = send_message(client, session_id, text, profile=args.ingest_profile)
+                response = send_message(client, session_id, text, model_selection=args.ingest_model_selection)
                 cost, tokens_in, tokens_out = usage_cost(response)
                 result.ingest_turns += 1
                 result.cost_usd["ingest"] += cost
@@ -860,7 +861,7 @@ def run_instance(
 
         # ---- question in a brand-new session (durable memory only) ---------
         question_session = new_chat_session(client, f"lme-{question_id}-question")
-        response = send_message(client, question_session, instance["question"], profile=args.answer_profile)
+        response = send_message(client, question_session, instance["question"], model_selection=args.answer_model_selection)
         result.prediction = assistant_text(response).strip()
         result.question_turns = 1
         cost, tokens_in, tokens_out = usage_cost(response)
@@ -909,7 +910,7 @@ def run_instance(
             kind = "abstention" if "_abs" in question_id else _JUDGE_TYPE_MAP.get(result.question_type, result.question_type)
             result.judge_prompt_kind = kind
             judge_session = new_chat_session(judge_client, f"lme-judge-{question_id}")
-            response = send_message(judge_client, judge_session, prompt, profile=args.judge_profile)
+            response = send_message(judge_client, judge_session, prompt, model_selection=args.judge_model_selection)
             result.judge_raw = assistant_text(response).strip()
             result.judged = True
             result.judge_correct = judge_label(result.judge_raw)
@@ -1012,6 +1013,7 @@ def write_report(
             "settle_extra_seconds": args.settle_extra,
             "judge": args.judge,
             "keep_workspaces": args.keep_workspaces,
+            "model_selections": {stage: getattr(args, f"{stage}_model_selection") for stage in ("ingest", "answer", "judge")},
         },
         "summary": summary,
         "baselines_reference": BASELINES_S,
@@ -1072,6 +1074,7 @@ class FakeClient(Client):
     def __init__(self, base_url: str = "http://fake", bearer: str | None = "fake"):  # noqa: D107 - no network at all
         super().__init__(base_url, bearer)
         self.sent: list[str] = []
+        self.sent_bodies: list[dict[str, Any]] = []
 
     def json(self, method, path, body=None, query=None, expected=(200,), timeout=120.0):  # noqa: A002
         if path.endswith("/auth/session") or path == "/health":
@@ -1082,6 +1085,7 @@ class FakeClient(Client):
             return {"session": {"id": "sess-" + secrets.token_hex(3)}}
         if "/messages" in path:
             self.sent.append((body or {}).get("text", ""))
+            self.sent_bodies.append(dict(body or {}))
             reply = "yes" if "Answer yes or no only." in (body or {}).get("text", "") else "OK"
             return {"assistant_message": {"content": {"type": "text", "text": reply}},
                     "usage": {"costUsd": 0.001, "inputTokens": 100, "outputTokens": 5}}
@@ -1103,12 +1107,17 @@ def self_test(args: argparse.Namespace) -> int:
         ] * 200],
     }
     client = FakeClient()
+    args.ingest_model_selection = {"model_id": "fixture/luna", "thinking": "none"}
+    args.answer_model_selection = {"model_id": "fixture/sol", "thinking": "high"}
+    args.judge_model_selection = {"model_id": "fixture/judge", "thinking": "auto"}
     args.judge = True
     args.hitl = False
     args.settle_timeout = 1
     args.settle_extra = 0
     args.keep_workspaces = True
     result = run_instance(client, fixture_instance, args, judge_slug="lmeval-judge-test")
+    assert all("profile" not in body and body.get("harness_engine") == "magician" for body in client.sent_bodies)
+    assert {body["model_selection"]["thinking"] for body in client.sent_bodies} == {"none", "high", "auto"}
     assert result.judged and result.judge_correct, "fake judge should answer yes"
     assert result.judge_prompt_kind == "abstention", "abstention prompt must be selected for _abs ids"
     assert result.ingest_turns >= 1, "digest ingestion must send at least one message"
@@ -1152,9 +1161,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_DIGEST_CHUNK_CHARS,
         help="digest chunk size; legacy runtimes retain 4,000-character excerpts; source-complete runtimes support the ingress limit",
     )
-    parser.add_argument("--ingest-profile", default="", help="chat profile for ingestion turns (default: server default)")
-    parser.add_argument("--answer-profile", default="", help="chat profile for the question turn (default: server default)")
-    parser.add_argument("--judge-profile", default="", help="chat profile for judge turns (default: server default)")
+    add_chat_model_arguments(parser, ("ingest", "answer", "judge"))
     parser.add_argument("--no-judge", dest="judge", action="store_false", help="skip LLM judging (EM/F1 only)")
     parser.add_argument("--no-hitl", dest="hitl", action="store_false", help="disable the automatic user-request answerer")
     parser.add_argument("--settle-timeout", type=float, default=DEFAULT_SETTLE_TIMEOUT_SECONDS)
@@ -1218,12 +1225,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"LongMemEval: {len(instances)} instances, ingest={args.ingest}, judge={args.judge}")
     print(f"environment: {json.dumps(environment)}")
 
-    if args.ingest_profile or args.answer_profile or args.judge_profile:
-        profiles = {p["name"] for p in client.json("GET", "/api/magician/v2/chat/profiles").get("profiles", [])}
-        for name in filter(None, (args.ingest_profile, args.answer_profile, args.judge_profile)):
-            if name not in profiles:
-                print(f"error: unknown chat profile {name!r} (see GET /chat/profiles)")
-                return 2
+    try:
+        resolve_chat_model_selections(args, ("ingest", "answer", "judge"),
+            lambda: client.json("GET", "/api/magician/v2/chat/models", query={"engine": "magician"}))
+    except ValueError as error:
+        print(f"error: {error}")
+        return 2
 
     judge_slug = f"{WORKSPACE_SLUG_PREFIX}-judge-{secrets.token_hex(3)}"
     create_workspace(client, judge_slug, "LongMemEval judge")

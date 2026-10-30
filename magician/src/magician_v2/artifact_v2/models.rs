@@ -80,6 +80,15 @@ pub fn is_vibedev_coding_build_run(ui_thread_id: &str, tags: &[TaskTagRecord]) -
         && !tags.iter().any(|tag| tag.name.eq_ignore_ascii_case("plan"))
 }
 
+/// A VibeDev Discuss (plan) run: a cockpit run carrying the `plan` tag. It is
+/// read-only end to end — carried as `AgenticContext::plan_run`, enforced by
+/// `execution::plan_run_policy` — and every engineer it delegates to runs on
+/// the same task, so it is a plan run too.
+pub fn is_vibedev_plan_run(ui_thread_id: &str, tags: &[TaskTagRecord]) -> bool {
+    is_vibedev_cockpit_run(ui_thread_id, tags)
+        && tags.iter().any(|tag| tag.name.eq_ignore_ascii_case("plan"))
+}
+
 /// True for ANY VibeDev cockpit run — Build OR Discuss/plan. Broader than
 /// [`is_vibedev_coding_build_run`] (it does NOT exclude plan runs) because task
 /// VISIBILITY (Internal-by-default, promoted to user-visible only on an explicit
@@ -91,6 +100,15 @@ pub fn is_vibedev_cockpit_run(ui_thread_id: &str, tags: &[TaskTagRecord]) -> boo
         || tags
             .iter()
             .any(|tag| tag.name.eq_ignore_ascii_case("vibedev"))
+}
+
+/// A VibeDev Autopilot run (`autopilot` tag): unattended, its agents apply
+/// their own code proposals. Every other VibeDev run waits for the owner's
+/// diff review.
+pub fn is_vibedev_autopilot_run(tags: &[TaskTagRecord]) -> bool {
+    tags.iter().any(|tag| {
+        tag.name.eq_ignore_ascii_case("autopilot") || tag.id.eq_ignore_ascii_case("autopilot")
+    })
 }
 
 /// Phase 3 — Task lifetime discriminator. Two buckets: user-facing
@@ -853,13 +871,18 @@ pub struct TaskOutputsRecord {
 }
 
 /// True when a task output is a user deliverable: user-audience and either
-/// the primary task-user document or promoted user media. Everything else —
+/// the primary task-user document, promoted user media, or a file the run
+/// wrote and named as delivered. Everything else —
 /// the execution output, the continuation context ("internal state for
 /// resuming the task"), legacy agent-audience outputs — is internal
 /// technical detail. Shared by the task outputs endpoint and Portable Export
 /// so both classify identically.
 pub fn is_deliverable_output(output: &OutputRef) -> bool {
-    output.audience == "user" && matches!(output.role.as_str(), "primary_task_user" | "user_media")
+    output.audience == "user"
+        && matches!(
+            output.role.as_str(),
+            "primary_task_user" | "user_media" | DELIVERED_FILE_OUTPUT_ROLE
+        )
 }
 
 /// One task output as `GET /api/magician/v3/tasks/{id}/outputs` presents it:
@@ -1416,6 +1439,13 @@ pub struct FinalizedOutputs {
     /// text write-up. Empty for tasks with no produced media.
     #[serde(default)]
     pub media_outputs: Vec<OutputRef>,
+    /// User-audience OutputRefs for files the run wrote and named as
+    /// delivered in its terminal outcome, copied under the task `outputs/`
+    /// dir with their original file names. They travel beside the answer,
+    /// never in place of it, and commit with it so the terminal chat card
+    /// lists them. Empty when the run delivered no named file.
+    #[serde(default)]
+    pub delivered_file_outputs: Vec<OutputRef>,
     pub task_output_mode: TaskOutputMode,
 }
 
@@ -1423,6 +1453,8 @@ pub const CONTINUATION_CONTEXT_OUTPUT_ROLE: &str = "continuation_context";
 /// A server-owned finalizer supplied exact output bytes. Generic completion
 /// replay must preserve them rather than starting synthesis or reflection.
 pub const PRECOMPUTED_EXECUTION_OUTPUT_ROLE: &str = "primary_execution_precomputed";
+/// A file the run wrote and named as delivered, attached beside the answer.
+pub const DELIVERED_FILE_OUTPUT_ROLE: &str = "user_attachment";
 
 /// Trusted controller ownership of a root's output, installed before runtime
 /// creation. Ordinary callbacks and startup recovery may not synthesize it.
@@ -1505,6 +1537,13 @@ pub struct TaskListItemV3 {
     pub current_substep_title: Option<String>,
     pub completion_summary: Option<String>,
     pub completion_outcome: Option<String>,
+    /// `partial` when a completed run left requirements open (often behind a
+    /// blocker), so lists do not show it as a plain success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_kind: Option<CompletionKind>,
+    /// The open requirements of a `partial` completion, newest wording first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_items: Vec<String>,
     #[serde(default)]
     pub completion_artifact_names: Vec<String>,
     #[serde(default)]

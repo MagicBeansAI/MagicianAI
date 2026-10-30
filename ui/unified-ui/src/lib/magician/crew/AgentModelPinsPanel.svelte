@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { onMount, createEventDispatcher } from 'svelte';
 	import Icon from '$lib/shared/icons/Icon.svelte';
-	import { timedFetch } from '$lib/shared/fetch';
+	import { fetchCodingModelRows } from '$lib/llm/codingModelSelection';
+	import ModelSelectionControl from '$lib/llm/ModelSelectionControl.svelte';
+	import CodingEnginePicker from '$lib/shell/CodingEnginePicker.svelte';
+	import { selectionForRoute, routeForOperationSelection, thinkingLabel, type ModelChoice } from '$lib/llm/modelCatalog';
 	import { fetchRoutingOverview } from '$lib/stores/modelRoutingStore';
 	import {
 		isAutoCodingChoiceId,
@@ -20,8 +23,6 @@
 		isDirectPin,
 		modelPinStateFromDefinition,
 		modelPinStatesEqual,
-		pinnableProfiles,
-		profileOptionLabel,
 		type ModelPinProfileOption,
 		type ModelPinState
 	} from './agentModelPins';
@@ -40,12 +41,13 @@
 	let loadedFor = '';
 	let profiles: ModelPinProfileOption[] = [];
 	let codingProfiles: CodingProfile[] = [];
+	const globalCoding: CodingProfile = { id: '', label: 'Follow global coding', supports_user_image_inputs: false, is_default: false };
+	let models: ModelChoice[] = [];
 	let saved: ModelPinState = modelPinStateFromDefinition(null);
 	let draft: ModelPinState = modelPinStateFromDefinition(null);
 
 	$: dirty = !modelPinStatesEqual(saved, draft);
 	$: pinCount = countModelPins(saved);
-	$: options = pinnableProfiles(profiles);
 	$: if (mounted && agentId.trim() && agentId.trim() !== loadedFor) {
 		void load();
 	}
@@ -60,10 +62,8 @@
 
 	async function fetchCodingProfiles(): Promise<CodingProfile[]> {
 		try {
-			const response = await timedFetch('/api/magician/v2/coding/profiles');
-			if (!response.ok) return [];
-			const body = (await response.json()) as { profiles?: CodingProfile[] };
-			return (body.profiles ?? []).filter(
+			const { rows } = await fetchCodingModelRows();
+			return rows.filter(
 				(profile) => !isAutoCodingChoiceId(profile.id) && profile.selectable !== false
 			);
 		} catch {
@@ -86,8 +86,9 @@
 			if (normalized !== agentId.trim()) return;
 			if (!record) throw new Error('Agent definition not found');
 			etag = record.etag;
-			profiles = overview.profiles as ModelPinProfileOption[];
+			profiles = (overview.profiles ?? []) as ModelPinProfileOption[];
 			codingProfiles = coding;
+			models = overview.models ?? [];
 			saved = modelPinStateFromDefinition(record.definition);
 			draft = clone(saved);
 		} catch (cause) {
@@ -124,8 +125,10 @@
 		};
 	}
 
-	function isKnown(name: string): boolean {
-		return !name || isDirectPin(name) || options.some((profile) => profile.name === name);
+	function savedModelLabel(route: string): string {
+		if (!route || selectionForRoute(models, profiles, route)) return '';
+		const profile = profiles.find(profile => profile.name === route);
+		return profile ? `${profile.model} · ${profile.provider}` : isDirectPin(route) ? directPinLabel(route) : 'Unavailable model';
 	}
 
 	function isKnownCoding(id: string): boolean {
@@ -163,7 +166,7 @@
 	</header>
 
 	{#if loading && !etag}
-		<div class="pins-loading" role="status">Loading profiles…</div>
+		<div class="pins-loading" role="status">Loading models…</div>
 	{:else if error}
 		<div class="pins-error" role="status">
 			<Icon name="alert" size={15} />
@@ -172,30 +175,32 @@
 	{:else}
 		<div class="pin-rows">
 			{#each MODEL_PIN_LANES as spec (spec.lane)}
-				<label class="pin-row">
+				<div class="pin-row">
 					<span class="pin-label">
 						<strong>{spec.label}</strong>
 						<small>{spec.hint}</small>
 					</span>
-					<select bind:value={draft.lanes[spec.lane]} disabled={saving} aria-label={spec.label}>
-						<option value="">Default — global routing</option>
-						{#if isDirectPin(saved.lanes[spec.lane])}
-							<option value={saved.lanes[spec.lane]}>{directPinLabel(saved.lanes[spec.lane])}</option>
-						{/if}
-						{#if !isKnown(draft.lanes[spec.lane])}
-							<option value={draft.lanes[spec.lane]}>{draft.lanes[spec.lane]} (not in config)</option>
-						{/if}
-						{#each options as profile (profile.name)}
-							<option value={profile.name}>{profileOptionLabel(profile)}</option>
-						{/each}
-					</select>
-				</label>
+						<div>
+							<ModelSelectionControl {models} label={spec.label} savedLabel={savedModelLabel(draft.lanes[spec.lane])} allowUnassigned disabled={saving}
+								selection={selectionForRoute(models, profiles, draft.lanes[spec.lane])}
+								on:change={(event) => { const route = routeForOperationSelection(models, event.detail); if (route) draft.lanes[spec.lane] = route; }}
+								on:clear={() => draft.lanes[spec.lane] = ''} />
+							{#if draft.lanes[spec.lane] && !selectionForRoute(models, profiles, draft.lanes[spec.lane])}
+								<small>{isDirectPin(draft.lanes[spec.lane]) ? directPinLabel(draft.lanes[spec.lane]) : 'Saved model is unavailable'}</small>
+							{/if}
+						</div>
+				</div>
 			{/each}
-			<label class="pin-row">
+			<div class="pin-row">
 				<span class="pin-label">
 					<strong>Coding engine model</strong>
 					<small>The model <code>run_coding_task</code> writes code with when the call names none.</small>
 				</span>
+				{#if codingProfiles.some(profile => profile.model_choice)}
+					<CodingEnginePicker profiles={[globalCoding, ...codingProfiles]} selectedProfileId={draft.coding_profile}
+						selectedProfile={codingProfiles.find(profile => profile.id === draft.coding_profile) ?? (draft.coding_profile ? { ...globalCoding, id: draft.coding_profile, label: 'Unavailable coding model · saved' } : globalCoding)}
+						disabled={saving} ariaLabel="Coding engine model" on:select={event => draft.coding_profile = event.detail.id} />
+				{:else}
 				<select bind:value={draft.coding_profile} disabled={saving} aria-label="Coding engine model">
 					<option value="">Default — global coding profile</option>
 					{#if !isKnownCoding(draft.coding_profile)}
@@ -205,7 +210,8 @@
 						<option value={profile.id}>{profile.label || profile.id}</option>
 					{/each}
 				</select>
-			</label>
+				{/if}
+			</div>
 		</div>
 
 		{#if Object.keys(draft.operations).length > 0}
@@ -213,7 +219,8 @@
 				<small>Per-operation pins (edit in Settings (YAML))</small>
 				<ul>
 					{#each Object.entries(draft.operations) as [operation, profile] (operation)}
-						<li><code>{operation}</code> → <code>{profile}</code></li>
+						{@const selection = selectionForRoute(models, profiles, profile)}
+						<li><code>{operation}</code> → {selection ? `${models.find(model => model.id === selection.model_id)?.label} · ${thinkingLabel(selection.thinking)}` : profile}</li>
 					{/each}
 				</ul>
 			</div>

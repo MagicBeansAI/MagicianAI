@@ -127,6 +127,7 @@ const RESTRICTED_HMAC_DIRS: &[&str] = &[
     "accepted_runtime_launch",
     "task_recipe_replays",
     "execution_routing",
+    "outward_origins",
     "plane_attenuation",
     "operator_steers",
     "manual_resume_transactions",

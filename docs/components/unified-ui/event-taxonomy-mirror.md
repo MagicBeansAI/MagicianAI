@@ -3,6 +3,7 @@
 `ui/unified-ui/src/lib/realtime/event-taxonomy.ts` is **generated**, not written.
 It mirrors the Rust event taxonomy so the web client and the backend cannot
 disagree about what an event is called or what it carries.
+Diagnostic events retain each row's chat-suppression hint in the mirror.
 
 ## How it stays honest
 

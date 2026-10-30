@@ -1,6 +1,6 @@
 ---
 name: metabase-mcp
-version: 0.1.0
+version: 0.2.1
 description: |
   Toolskill for a Metabase instance's own remote MCP server. Use it to search
   Metabase, read databases, tables, collections, questions, dashboards and
@@ -12,6 +12,8 @@ description: |
 metadata:
   magician:
     setup: { definition: governed-mcp-oauth }
+    browser_signin:
+      callback_mode: public_when_available
     skill_type: tool
     user_invocable: true
     runtime_canary:
@@ -34,71 +36,82 @@ metadata:
           oauth:
             authorization_issuer: https://metabase.invalid
             scopes:
-              - agent:search
-              - agent:resource:read
-              - agent:query
-              - agent:query:construct
-              - agent:query:execute
-              - agent:sql:construct
-              - agent:sql:execute
-              - agent:question:execute
-              - agent:question:create
-              - agent:question:update
-              - agent:dashboard:create
-              - agent:dashboard:update
-              - agent:metric:create
-              - agent:metric:update
-              - agent:collection:create
-          # Reads and queries run without a prompt; anything that changes the
-          # team's shared Metabase asks every time. Each description replaces
-          # the remote one the runtime does not trust, so the agent can pick a
-          # tool without reading the whole catalog.
+              - agent:content:read
+              - agent:content:write
+              - agent:query:run
+              - agent:sql:run
+              - agent:delivery:write
+          # Remote annotations do not grant authority. SQL can write data.
           tool_policies:
             search:
               risk: read_only
-              trusted_description: Find tables, models, metrics, questions, dashboards and collections. Pass term_queries (exact words, e.g. ["gmv"]) and semantic_queries (natural phrases); either may be an empty list.
-            read_resource:
+              trusted_description: Find Metabase content by keywords or meaning.
+            browse_collection:
               risk: read_only
-              trusted_description: Read full details of Metabase items by URI (for example a table's fields, a question's query, a metric's definition) from uris returned by search.
-            execute_question:
+              trusted_description: List collection contents or its tree.
+            browse_data:
               risk: read_only
-              trusted_description: Run an existing saved question or model by its numeric id and return its rows. Prefer this when a saved question already answers the request.
-            construct_query:
+              trusted_description: Inspect databases, schemas, tables, models and fields.
+            get_content:
               risk: read_only
-              trusted_description: Build a Metabase query from a natural-language prompt plus a query description; returns a query and query_handle to run with execute_query or query. Does not run anything.
-            construct_native_query:
+              trusted_description: Read content details and requested definition or fields.
+            get_parameter_values:
               risk: read_only
-              trusted_description: Prepare a SQL query for database_id; returns a query_handle to run with execute_query or query. Does not run anything.
+              trusted_description: Read permitted values for a saved filter.
+            glossary:
+              risk: read_only
+              trusted_description: Look up business definitions.
+            learn:
+              risk: read_only
+              trusted_description: Read server guidance for a topic.
+            run_saved_question:
+              risk: read_only
+              trusted_description: Run a saved question with bounded rows.
             execute_query:
               risk: read_only
-              trusted_description: Run a query prepared by construct_query or construct_native_query (pass its query and query_handle) and return rows.
-            query:
+              trusted_description: Run or validate a structured query; follow its cursor for more rows.
+            render_drill_through:
               risk: read_only
-              trusted_description: Run a prepared query and page through large results; pass continuation_token from the previous page, or an empty string for the first page.
+              trusted_description: Read a permitted drill-through result.
+            visualize_query:
+              risk: read_only
+              trusted_description: Render a query result without saving content.
             execute_sql:
-              risk: read_only
-              trusted_description: Run read-only SQL directly against database_id and return rows. Add filters and a LIMIT; aggregate in SQL rather than pulling raw rows.
-            create_question:
               risk: external_side_effect
-              trusted_description: Save a new question in the team's shared Metabase. Only when the user asked for a saved question.
-            update_question:
+              trusted_description: Run raw SQL. It can change data; obtain approval even for a proposed read.
+            question_write:
               risk: external_side_effect
-              trusted_description: Change or archive an existing saved question in the team's shared Metabase. Only when the user asked for that change.
-            create_metric:
+              trusted_description: Create, update or archive a question or model when requested.
+            dashboard_write:
               risk: external_side_effect
-              trusted_description: Save a new metric in the team's shared Metabase. Only when the user asked for it.
-            update_metric:
+              trusted_description: Create, update or archive a dashboard when requested.
+            collection_write:
               risk: external_side_effect
-              trusted_description: Change or archive an existing metric in the team's shared Metabase. Only when the user asked for that change.
-            create_dashboard:
+              trusted_description: Create, update or archive a collection when requested.
+            document_write:
               risk: external_side_effect
-              trusted_description: Create a dashboard from saved question ids in the team's shared Metabase. Only when the user asked for it.
-            update_dashboard:
+              trusted_description: Create, edit or archive a document when requested.
+            metric_write:
               risk: external_side_effect
-              trusted_description: Change or archive an existing dashboard in the team's shared Metabase. Only when the user asked for that change.
-            create_collection:
+              trusted_description: Create, update or archive a metric when requested.
+            measure_write:
               risk: external_side_effect
-              trusted_description: Create a collection in the team's shared Metabase. Only when the user asked for it.
+              trusted_description: Create, update or archive a measure when requested.
+            segment_write:
+              risk: external_side_effect
+              trusted_description: Create, update or archive a segment when requested.
+            bookmark_content:
+              risk: external_side_effect
+              trusted_description: Change a content bookmark when requested.
+            duplicate_content:
+              risk: external_side_effect
+              trusted_description: Copy content into a collection when requested.
+            alert_write:
+              risk: external_side_effect
+              trusted_description: Create or change an alert, its recipients and schedule only when requested.
+            subscription_write:
+              risk: external_side_effect
+              trusted_description: Create or change scheduled delivery only when requested.
         limits:
           timeout_secs: 180
           stdout_bytes: 67108864
@@ -155,11 +168,12 @@ Prefer searching and reading before running anything: find the existing
 question, model or metric that already answers the request, and run that,
 rather than writing new SQL against raw tables.
 
-Running a query or SQL reads data but can be expensive on large tables: add a
-sensible row limit and filters, and say what you ran when you report a result.
+Structured queries and saved questions read data but can be expensive: add a
+row limit and filters. Raw SQL is approval-gated because it can modify data.
+Use parameter bindings for caller values, and report what ran.
 
-Creating or updating a question, dashboard, metric or collection changes the
-team's shared Metabase. Only do it when the user asked for that change, name
+Content writes, bookmarks, copies, alerts and subscriptions change the
+team's shared Metabase or deliver its data. Only do it when the user asked for that change, name
 the asset and its collection in `intent_summary`, and report the link or id of
 what was created. Never delete or overwrite someone else's asset without an
 explicit request naming it.
@@ -177,3 +191,10 @@ one-time approval: the runtime does not trust remote tool annotations.
 - Skill missing from a workspace: that workspace has no METABASE_BASE_URL in
   its `skills/metabase-mcp/config/.env`; setup renders the manifest once it is
   set.
+
+Use the live schemas from `list_tools` for arguments. Current tools include
+`search`, `browse_data`, `get_content`, `run_saved_question`, `execute_query`,
+`execute_sql` and the `*_write` tools. Read details with
+`get_content {items: [{type: "question", id: 123}], include: ["definition"]}`;
+save an approved result with `question_write {method: "create", name: "…",
+query_handle: "…"}`. `execute_query` pages with `cursor` from `next_cursor`.

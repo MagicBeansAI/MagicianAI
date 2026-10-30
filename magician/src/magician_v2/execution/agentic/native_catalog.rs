@@ -310,7 +310,7 @@ pub fn build_need_user_input_tool() -> NativeExecutionTool {
 
     NativeExecutionTool {
         name: "need_user_input".to_string(),
-        description: "Request input from the user before continuing.".to_string(),
+        description: "Ask for an essential missing input before costly work, with or without planning, then resume from the answer. Check supplied context and prior answers first; bundle only necessary questions. Use reasonable assumptions for minor choices and continue independent work.".to_string(),
         parameters: build_parameters(props, vec!["question", "input_type"]),
         is_control_tool: true,
     }
@@ -435,8 +435,76 @@ pub fn build_yield_tool() -> NativeExecutionTool {
     }
 }
 
-/// Build the `delegate_to_agent` control tool.
+/// `delegate_to_agent` fields only chat's delegate path reads (from the raw
+/// call); a task run's lowering (`DelegationTargetRequest`) rejects them, so
+/// a run is never offered them.
+pub(crate) const CHAT_ONLY_DELEGATION_TARGET_FIELDS: [&str; 4] = [
+    "tutor_action",
+    "reference_task_ids",
+    "track_as_task",
+    "personality_mode",
+];
+
+const DELEGATE_DESCRIPTION_HEAD: &str = "USE ONLY when the work requires a tool or capability YOU do not have. \
+First check your own tools list — if you can do the work directly with `browser`, `files`, `shell`, \
+`http`, `gmail`, `treasurer`, `internal_data`, or any other tool you already own, call THAT tool. \
+Delegating to another agent that has the same tool just spawns a fresh tool session (e.g. a new \
+headed Chrome window) and breaks session continuity. When the user explicitly names a tool in the \
+request (\"use browser to…\", \"send via gmail…\"), that is a STRONG signal to call it directly, \
+NOT to delegate. Each delegation hop adds 5-15s of latency (full LLM round + scope setup + child \
+runtime initialization) and creates a new browser/shell/etc. session, abandoning the current one. ";
+
+/// The description of the chat-only fields.
+const DELEGATE_DESCRIPTION_CHAT: &str = "Default chat mode is transient/internal: a backing task is created for execution, progress still \
+streams to the chat card, successful outputs are preserved, and the task is deleted; failed/cancelled \
+runs archive for debugging. Set per-target `track_as_task: true` ONLY when the user explicitly asked \
+for this work to live in /tasks; otherwise prefer `create_task` for explicit tracked work. Set \
+per-target `personality_mode` to `current` to carry your own voice into the delegation, or to a \
+named preset (e.g. `witty`, `brutal`) for a one-cycle persona switch — the override is ephemeral \
+and never touches the target's saved personality_profile. For continuation work, first inspect the \
+source task with `get_task_details`, then pass its completed task id in per-target \
+`reference_task_ids` so the delegate starts with the prior continuation pack/artifact index instead \
+of rediscovering raw task files. ";
+
+const DELEGATE_DESCRIPTION_TAIL: &str = "RETURN SEMANTICS — IMPORTANT: this tool returns immediately when the work is **enqueued**, NOT when \
+it is complete. The delegated agent may take seconds to minutes to actually finish; output \
+synthesis takes another 5–60s after that. The receipt you get back is just confirmation that the \
+work was handed off — it carries NO information about success, failure, or any produced output. \
+**Do not claim the task succeeded in your reply, do not summarise the outcome, do not quote any \
+expected result.** The user sees real-time status, completion, and the synthesized output in the \
+chat's activity card; that surface carries the truth, not your reply. A brief acknowledgment \
+(\"On it.\" / \"Handed to <agent>.\") is fine; silence is also fine. Reply with the final answer \
+ONLY when the user explicitly asks you to wait for the result on this same chat turn.\n\n\
+PARALLEL FAN-OUT — `delegation_targets` is an array, not a single target. When a task \
+decomposes into N independent sub-questions (e.g. \"answer Q1, Q2, Q3, Q4, Q5\" against the same \
+data source; \"summarise these 3 unrelated documents\"; \"check pricing on 4 vendor sites\"), pass \
+ALL N as separate entries in a single `delegate_to_agent` call. The runtime spawns the children in \
+parallel and resumes the parent when every child terminates; their outputs merge into the parent's \
+artifact set. This is dramatically more reliable than running the sub-questions sequentially in one \
+agent because each child gets fresh context (no question-N is poisoned by question-1's verbose \
+output) and each child gets a full iteration budget. STRONG signal to fan out: the user's request \
+lists distinct items joined by AND / commas / numbered list AND each item can be answered without \
+the answers to the others. For DEPENDENT stages (\"do A, then B using A's result\") do NOT fan out \
+in one call — run ORDERED ROUNDS instead: delegate stage A now; when its child finishes the runtime \
+resumes you and surfaces A's results + produced artifact ids under `## RECENT DELEGATION RESULTS`; \
+then issue a follow-up `delegate_to_agent` for stage B with A's artifact ids in B's \
+`input_artifact_ids` so B builds on A's output rather than redoing it. This is how a deliverable \
+that spans capabilities living on different agents (e.g. research → explain → illustrate) gets \
+composed end to end. Per-target context strings should be specific \
+(\"Answer Q3: <full Q3 text>\") rather than generic (\"one of the questions\").";
+
+/// Build the `delegate_to_agent` control tool for a task run.
 pub fn build_delegate_to_agent_tool() -> NativeExecutionTool {
+    delegate_to_agent_tool(false)
+}
+
+/// Build the `delegate_to_agent` control tool for chat, with the chat-only
+/// per-target fields.
+pub fn build_chat_delegate_to_agent_tool() -> NativeExecutionTool {
+    delegate_to_agent_tool(true)
+}
+
+fn delegate_to_agent_tool(chat: bool) -> NativeExecutionTool {
     let mut props = Map::new();
     props.insert(
         "delegation_targets".to_string(),
@@ -573,53 +641,26 @@ pub fn build_delegate_to_agent_tool() -> NativeExecutionTool {
         }),
     );
 
+    if !chat {
+        if let Some(fields) = props
+            .get_mut("delegation_targets")
+            .and_then(|targets| targets.pointer_mut("/items/properties"))
+            .and_then(Value::as_object_mut)
+        {
+            for field in CHAT_ONLY_DELEGATION_TARGET_FIELDS {
+                fields.remove(field);
+            }
+        }
+    }
+    let description = [
+        DELEGATE_DESCRIPTION_HEAD,
+        if chat { DELEGATE_DESCRIPTION_CHAT } else { "" },
+        DELEGATE_DESCRIPTION_TAIL,
+    ]
+    .concat();
     NativeExecutionTool {
         name: "delegate_to_agent".to_string(),
-        description: "USE ONLY when the work requires a tool or capability YOU do not have. \
-First check your own tools list — if you can do the work directly with `browser`, `files`, `shell`, \
-`http`, `gmail`, `treasurer`, `internal_data`, or any other tool you already own, call THAT tool. \
-Delegating to another agent that has the same tool just spawns a fresh tool session (e.g. a new \
-headed Chrome window) and breaks session continuity. When the user explicitly names a tool in the \
-request (\"use browser to…\", \"send via gmail…\"), that is a STRONG signal to call it directly, \
-NOT to delegate. Each delegation hop adds 5-15s of latency (full LLM round + scope setup + child \
-runtime initialization) and creates a new browser/shell/etc. session, abandoning the current one. \
-Default chat mode is transient/internal: a backing task is created for execution, progress still \
-streams to the chat card, successful outputs are preserved, and the task is deleted; failed/cancelled \
-runs archive for debugging. Set per-target `track_as_task: true` ONLY when the user explicitly asked \
-for this work to live in /tasks; otherwise prefer `create_task` for explicit tracked work. Set \
-per-target `personality_mode` to `current` to carry your own voice into the delegation, or to a \
-named preset (e.g. `witty`, `brutal`) for a one-cycle persona switch — the override is ephemeral \
-and never touches the target's saved personality_profile. For continuation work, first inspect the \
-source task with `get_task_details`, then pass its completed task id in per-target \
-`reference_task_ids` so the delegate starts with the prior continuation pack/artifact index instead \
-of rediscovering raw task files. \
-\
-RETURN SEMANTICS — IMPORTANT: this tool returns immediately when the work is **enqueued**, NOT when \
-it is complete. The delegated agent may take seconds to minutes to actually finish; output \
-synthesis takes another 5–60s after that. The receipt you get back is just confirmation that the \
-work was handed off — it carries NO information about success, failure, or any produced output. \
-**Do not claim the task succeeded in your reply, do not summarise the outcome, do not quote any \
-expected result.** The user sees real-time status, completion, and the synthesized output in the \
-chat's activity card; that surface carries the truth, not your reply. A brief acknowledgment \
-(\"On it.\" / \"Handed to <agent>.\") is fine; silence is also fine. Reply with the final answer \
-ONLY when the user explicitly asks you to wait for the result on this same chat turn.\n\n\
-PARALLEL FAN-OUT — `delegation_targets` is an array, not a single target. When a task \
-decomposes into N independent sub-questions (e.g. \"answer Q1, Q2, Q3, Q4, Q5\" against the same \
-data source; \"summarise these 3 unrelated documents\"; \"check pricing on 4 vendor sites\"), pass \
-ALL N as separate entries in a single `delegate_to_agent` call. The runtime spawns the children in \
-parallel and resumes the parent when every child terminates; their outputs merge into the parent's \
-artifact set. This is dramatically more reliable than running the sub-questions sequentially in one \
-agent because each child gets fresh context (no question-N is poisoned by question-1's verbose \
-output) and each child gets a full iteration budget. STRONG signal to fan out: the user's request \
-lists distinct items joined by AND / commas / numbered list AND each item can be answered without \
-the answers to the others. For DEPENDENT stages (\"do A, then B using A's result\") do NOT fan out \
-in one call — run ORDERED ROUNDS instead: delegate stage A now; when its child finishes the runtime \
-resumes you and surfaces A's results + produced artifact ids under `## RECENT DELEGATION RESULTS`; \
-then issue a follow-up `delegate_to_agent` for stage B with A's artifact ids in B's \
-`input_artifact_ids` so B builds on A's output rather than redoing it. This is how a deliverable \
-that spans capabilities living on different agents (e.g. research → explain → illustrate) gets \
-composed end to end. Per-target context strings should be specific \
-(\"Answer Q3: <full Q3 text>\") rather than generic (\"one of the questions\").".to_string(),
+        description,
         parameters: build_parameters(props, vec!["delegation_targets"]),
         is_control_tool: true,
     }
@@ -791,7 +832,7 @@ pub fn build_spawn_sub_goal_tool() -> NativeExecutionTool {
     );
     props.insert(
         "budget_iterations".to_string(),
-        json!({"type": "integer", "description": "Max iterations budget for the sub-goal"}),
+        json!({"type": "integer", "description": "Planning estimate only; internal sub-goals use the parent run's remaining iteration allowance and charge their work back to it. This does not create an approval cap."}),
     );
     props.insert(
         "reference_task_ids".to_string(),
@@ -841,13 +882,14 @@ pub fn build_submit_plan_tool() -> NativeExecutionTool {
     );
     NativeExecutionTool {
         name: SUBMIT_PLAN_TOOL.to_string(),
-        description: "Optional. Run several tool calls in order without being asked again between them. \
+        description:
+            "Optional. Run several tool calls in order without being asked again between them. \
 Use it only when you already know the next steps and every step's arguments now (no step needs an \
 earlier step's result); for a single action, call that tool directly instead. The first step runs \
 now and each later step runs once the previous one succeeds. If a step fails, no longer fits your \
 tools, or the run is steered, the rest of the plan is dropped and you decide again. When the plan \
 finishes the task, end it with `yield`."
-            .to_string(),
+                .to_string(),
         parameters: build_parameters(props, vec!["steps"]),
         is_control_tool: true,
     }
@@ -1143,11 +1185,9 @@ pub fn build_execution_native_catalog(ctx: &CatalogBuildContext) -> Vec<NativeEx
         tools.extend(build_pack_capability_tool(name, description, schema));
     }
 
-    // 2. Control tools. Autonomous loops receive terminal / pause controls;
-    //    chat terminates with a normal text reply and can ask the user inline,
-    //    so advertising `yield` / `need_user_input` there would expose tools
-    //    its dispatcher cannot meaningfully execute. `spawn_sub_goal` is shared
-    //    because chat has a concrete handler for it.
+    // 2. Both chat and autonomous execution have a durable HITL handler.
+    // Surface-specific withholding (for example spoken realtime replies) is
+    // applied by the chat lane policy. Only autonomous loops receive terminals.
     //    `yield` is the
     //    unified terminal — the legacy `goal_reached` / `cannot_proceed`
     //    LLM-facing tools were aliases for it (lower_goal_reached /
@@ -1156,8 +1196,8 @@ pub fn build_execution_native_catalog(ctx: &CatalogBuildContext) -> Vec<NativeEx
     //    `need_user_input` is intentionally separate (different
     //    lifecycle — pauses the agent for user input rather than
     //    terminating).
+    tools.push(build_need_user_input_tool());
     if !ctx.is_chat_mode {
-        tools.push(build_need_user_input_tool());
         tools.push(build_yield_tool());
         tools.push(build_read_result_tool());
         tools.push(build_export_result_tool());
@@ -1169,7 +1209,11 @@ pub fn build_execution_native_catalog(ctx: &CatalogBuildContext) -> Vec<NativeEx
 
     // 3. Delegation tools (conditional)
     if ctx.has_delegation_targets {
-        tools.push(build_delegate_to_agent_tool());
+        tools.push(if ctx.is_chat_mode {
+            build_chat_delegate_to_agent_tool()
+        } else {
+            build_delegate_to_agent_tool()
+        });
         tools.push(build_handover_to_agent_tool());
         // `orchestrate_pipeline` is a CHAT-ONLY escape hatch: it puts a
         // multi-stage ask onto a task-backed orchestration loop (where ordered
@@ -1594,8 +1638,53 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_offered_only_the_delegation_fields_its_lowering_accepts() {
+        let run = build_delegate_to_agent_tool();
+        let fields = props(&run)["delegation_targets"]["items"]["properties"]
+            .as_object()
+            .unwrap()
+            .clone();
+        for chat_only in CHAT_ONLY_DELEGATION_TARGET_FIELDS {
+            assert!(!fields.contains_key(chat_only), "{chat_only}");
+            assert!(!run.description.contains(chat_only), "{chat_only}");
+        }
+        // Every advertised field, filled with a value of its type, parses:
+        // the schema and `DelegationTargetRequest` cannot drift apart again.
+        let target: Map<String, Value> = fields
+            .iter()
+            .map(|(name, schema)| {
+                let value = match schema["type"].as_str() {
+                    _ if schema.get("enum").is_some() => schema["enum"][0].clone(),
+                    Some("array") => json!([]),
+                    Some("object") => json!({}),
+                    Some("integer") | Some("number") => json!(1),
+                    Some("boolean") => json!(false),
+                    _ => json!("x"),
+                };
+                (name.clone(), value)
+            })
+            .collect();
+        serde_json::from_value::<crate::magician_v2::execution::actions::DelegationTargetRequest>(
+            Value::Object(target),
+        )
+        .expect("every field a run is offered is one its lowering accepts");
+
+        let chat = build_chat_delegate_to_agent_tool();
+        let chat_fields = &props(&chat)["delegation_targets"]["items"]["properties"];
+        for chat_only in CHAT_ONLY_DELEGATION_TARGET_FIELDS {
+            assert!(chat_fields.get(chat_only).is_some(), "{chat_only}");
+        }
+        assert!(chat
+            .description
+            .contains("abandoning the current one. Default chat mode"));
+        assert!(run
+            .description
+            .contains("abandoning the current one. RETURN SEMANTICS"));
+    }
+
+    #[test]
     fn delegate_to_agent_has_full_target_shape() {
-        let tool = build_delegate_to_agent_tool();
+        let tool = build_chat_delegate_to_agent_tool();
         let p = props(&tool);
         assert!(p.contains_key("delegation_targets"));
 
@@ -1621,7 +1710,10 @@ mod tests {
             crate::magician_v2::execution::actions::DELEGATION_WORK_BUDGET_DEEP_SECS,
             crate::magician_v2::execution::actions::DELEGATION_WORK_BUDGET_THOROUGH_SECS,
         ] {
-            assert!(depth_description.contains(&format!("{secs} s")), "{depth_description}");
+            assert!(
+                depth_description.contains(&format!("{secs} s")),
+                "{depth_description}"
+            );
         }
 
         // item required
@@ -1809,10 +1901,9 @@ mod tests {
         let catalog = build_execution_native_catalog(&ctx);
         let names: Vec<&str> = catalog.iter().map(|t| t.name.as_str()).collect();
 
-        // Chat terminates/asks through normal text, so autonomous-only pause
-        // and terminal controls must not be advertised here.
+        // Chat has an input/resume handler, but no autonomous terminal.
         assert!(!names.contains(&"yield"));
-        assert!(!names.contains(&"need_user_input"));
+        assert!(names.contains(&"need_user_input"));
         assert!(names.contains(&"spawn_sub_goal"));
         // Phase 0.8c-12: legacy LLM-facing terminals retired.
         assert!(!names.contains(&"goal_reached"));

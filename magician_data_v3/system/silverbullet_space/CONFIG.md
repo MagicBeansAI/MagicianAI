@@ -1,3 +1,0 @@
----
-indexPage: index
----

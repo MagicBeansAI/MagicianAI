@@ -29,7 +29,7 @@
 <GameInspector
 	open
 	title={guild.name}
-	eyebrow="Program"
+	eyebrow="Playbook"
 	subtitle={`${members.length} assigned crew member${members.length === 1 ? '' : 's'}`}
 	tone={needs > 0 ? 'attention' : working > 0 ? 'active' : 'neutral'}
 	width="wide"
@@ -37,7 +37,7 @@
 >
 	<svelte:fragment slot="icon"><span class="gi__sigil">{guild.name.charAt(0).toUpperCase()}</span></svelte:fragment>
 
-	<GameSection title="Program status" compact>
+	<GameSection title="Playbook status" compact>
 		<div class="gi__stats">
 			<GameStat label="Assigned" value={members.length} detail={`${working} mobilized`} />
 			<GameStat label="Active tasks" value={guild.activeQuestCount} tone={guild.activeQuestCount > 0 ? 'active' : 'neutral'} />
@@ -46,7 +46,7 @@
 		</div>
 	</GameSection>
 
-	<GameSection title="Program goals" description="Standing outcomes assigned to this program" compact>
+	<GameSection title="Playbook goals" description="Standing outcomes assigned to this playbook" compact>
 		{#if missions?.missions.length}
 			<div class="gi__missions">
 				{#each missions.missions as mission, index (`${mission.title}:${index}`)}
@@ -60,14 +60,14 @@
 				{/each}
 			</div>
 		{:else}
-			<p class="gi__empty">No structured goals are active for this program.</p>
+			<p class="gi__empty">No structured goals are active for this playbook.</p>
 		{/if}
 	</GameSection>
 
 	<WorkDrilldown
 		model={workDrilldown}
 		title="Assigned crew work"
-		description="Current and latest task outcomes for this program's crew"
+		description="Current and latest task outcomes for this playbook's crew"
 		emptyLabel="No assigned crew work is active"
 		on:task={(event) => dispatch('task', event.detail)}
 	/>
@@ -81,13 +81,13 @@
 					<Icon name="chevron-right" size={14} />
 				</button>
 			{/each}
-			{#if members.length === 0}<p class="gi__empty">This program has no assigned crew yet.</p>{/if}
+			{#if members.length === 0}<p class="gi__empty">This playbook has no assigned crew yet.</p>{/if}
 		</div>
 	</GameSection>
 
 	<svelte:fragment slot="footer">
 		<div class="gi__footer">
-			<span>Program history is reversible.</span>
+			<span>Playbook history is reversible.</span>
 			<button
 				type="button"
 				class:gi__revert--armed={revertArmed}

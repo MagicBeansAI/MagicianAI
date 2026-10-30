@@ -1410,6 +1410,9 @@ async fn automation_status() -> serde_json::Value {
         "cua_driver": cua_driver,
         "cua_available": cua_available,
         "platform": std::env::consts::OS,
+        // Magician's `GET /health` passes this on as `versions.desktop`, so the
+        // phones and web Settings can say which desktop build is serving them.
+        "version": env!("CARGO_PKG_VERSION"),
     })
 }
 
@@ -1449,7 +1452,7 @@ fn resolve_cua_driver_binary() -> Option<PathBuf> {
 
 /// Is the cua-driver daemon running? Mirrors `cua_call.py::daemon_status` —
 /// `cua-driver status` exits 0 when a daemon is up on the socket.
-pub(crate) async fn cua_driver_daemon_running(binary: &PathBuf) -> bool {
+pub(crate) async fn cua_driver_daemon_running(binary: &std::path::Path) -> bool {
     let mut command = Command::new(binary);
     command
         .arg("status")
@@ -1467,7 +1470,7 @@ pub(crate) async fn cua_driver_daemon_running(binary: &PathBuf) -> bool {
 /// Screen Recording), which a shell-spawned `cua-driver serve` would NOT carry.
 /// Falls back to a backgrounded `cua-driver serve` only when the .app is
 /// unavailable (matches `cua_call.py::ensure_daemon`).
-pub(crate) async fn ensure_cua_driver_daemon(binary: &PathBuf) -> bool {
+pub(crate) async fn ensure_cua_driver_daemon(binary: &std::path::Path) -> bool {
     if cua_driver_daemon_running(binary).await {
         return true;
     }
@@ -1522,7 +1525,7 @@ pub(crate) async fn ensure_cua_driver_daemon(binary: &PathBuf) -> bool {
     cua_driver_daemon_running(binary).await
 }
 
-async fn cua_driver_wait_until_running(binary: &PathBuf) -> bool {
+async fn cua_driver_wait_until_running(binary: &std::path::Path) -> bool {
     let deadline = Instant::now() + CUA_DRIVER_DAEMON_START_TIMEOUT;
     while Instant::now() < deadline {
         if cua_driver_daemon_running(binary).await {
@@ -1537,7 +1540,7 @@ async fn cua_driver_wait_until_running(binary: &PathBuf) -> bool {
 /// object string for the tool's inputSchema (the cua-driver `call` CLI takes it
 /// as a single positional argument — exactly `cua_call.py::call_cua`).
 async fn run_cua_driver_call(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     action: &str,
     args_json: &str,
 ) -> Result<std::process::Output, String> {
@@ -1709,7 +1712,7 @@ async fn typed_app_macos_private_daemon_answers(
 /// confirm the running one still answers. A daemon started from another
 /// digest (re-pairing, driver upgrade) is replaced, never reused.
 async fn ensure_typed_app_macos_private_daemon(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     stop_signal: &crate::app_macos_host::AppMacosHostStopSignal,
     expires_at_ms: i64,
@@ -1821,7 +1824,7 @@ async fn ensure_typed_app_macos_private_daemon(
 /// child; `kill_on_drop` covers task teardown before explicit cleanup.
 #[allow(clippy::too_many_arguments)]
 async fn run_typed_cua_driver_call(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     socket: &std::path::Path,
     action: &'static str,
@@ -1979,7 +1982,10 @@ async fn terminate_typed_app_macos_child(child: &mut tokio::process::Child) {
 /// an MCP tool) and runs as `cua-driver doctor --json` without a daemon.
 /// Returns `Some(..)` when `action` is handled here, `None` otherwise so the
 /// caller falls through to `call`.
-async fn handle_ax_lifecycle(binary: &PathBuf, action: &str) -> Option<Result<AxResult, String>> {
+async fn handle_ax_lifecycle(
+    binary: &std::path::Path,
+    action: &str,
+) -> Option<Result<AxResult, String>> {
     match action {
         "serve" => {
             let running = ensure_cua_driver_daemon(binary).await;
@@ -2647,7 +2653,7 @@ async fn execute_typed_app_macos_action(
 ) -> Result<Value, String> {
     let binary = lowered.cua_driver_binary().to_path_buf();
     let owner_stop = lowered.stop_signal();
-    let digest_path = binary.clone();
+    let digest_path = binary.to_path_buf();
     let identity_hash_slot = Arc::new(identity_hash_slot);
     let initial_identity_slot = Arc::clone(&identity_hash_slot);
     let bundle_id = lowered.bundle_id().to_owned();
@@ -2905,7 +2911,7 @@ async fn execute_typed_app_macos_action(
 
 #[allow(clippy::too_many_arguments)]
 async fn typed_app_macos_observe_owner_fence(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     bundle_id: &str,
     process_id: u32,
@@ -2973,7 +2979,7 @@ fn typed_app_macos_owner_fence_matches(
 }
 
 async fn typed_app_macos_resolve_sole_observation_target(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     bundle_id: &str,
     stop_signal: &crate::app_macos_host::AppMacosHostStopSignal,
@@ -3033,7 +3039,7 @@ fn typed_app_macos_bounded_response(
 /// effectful operation. Every call goes to the owner's private embedded
 /// daemon, started lazily from the same approved binary digest.
 async fn handle_typed_app_macos_ax(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     action: &'static str,
     body: &[u8],
@@ -3092,7 +3098,7 @@ async fn handle_typed_app_macos_ax(
 }
 
 async fn typed_app_macos_revalidate_process(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     bundle_id: &str,
     process_id: u32,
@@ -3116,7 +3122,7 @@ async fn typed_app_macos_revalidate_process(
 }
 
 async fn typed_app_macos_revalidate_window(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     process_id: u32,
     window_id: u32,
@@ -3153,7 +3159,7 @@ async fn typed_app_macos_revalidate_window(
 /// and `elements[]` are the only addresses CuaDriver 0.28 still accepts.
 #[allow(clippy::too_many_arguments)]
 async fn typed_app_macos_revalidate_observation(
-    binary: &PathBuf,
+    binary: &std::path::Path,
     binary_digest: &str,
     process_id: u32,
     window_id: u32,
@@ -3486,11 +3492,10 @@ async fn handle_contextual_assist_open(
 }
 
 fn contextual_assist_state_from_request(request: &ContextualAssistOpenRequest) -> Option<&str> {
-    match request.state.as_deref() {
-        Some("selection" | "selection-field" | "draft" | "empty-context" | "page-context") => {
-            return request.state.as_deref();
-        },
-        _ => {},
+    if let Some("selection" | "selection-field" | "draft" | "empty-context" | "page-context") =
+        request.state.as_deref()
+    {
+        return request.state.as_deref();
     }
 
     match (
@@ -4843,7 +4848,7 @@ mod tests {
                     EVIDENCE_CEILING,
                     RESPONSE_CEILING,
                     current_unix_ms()? + PERMIT_LIFETIME_MS,
-                    self.binary.clone(),
+                    self.binary.to_path_buf(),
                     self.binary_digest.clone(),
                 );
                 let lowered = authorized.lower().map_err(|error| error.to_string())?;

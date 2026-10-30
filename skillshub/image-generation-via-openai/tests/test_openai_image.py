@@ -81,7 +81,7 @@ class OpenAIImageTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://api.openai.com/v1/images/generations")
         self.assertEqual(request.get_header("Authorization"), "Bearer fixture-secret")
         body = json.loads(request.data)
-        self.assertEqual(body["model"], "gpt-image-2")
+        self.assertEqual(body["model"], "gpt-image-2.5-flare")
         self.assertEqual(body["n"], 1)
         self.assertNotIn("fixture-secret", request.data.decode())
         self.assertEqual(opener.call_args.kwargs["timeout"], 300)
@@ -108,6 +108,7 @@ class OpenAIImageTests(unittest.TestCase):
         self.assertEqual(parts["image[]"].get_payload(decode=True), original)
         self.assertEqual(parts["mask"].get_payload(decode=True), png())
         self.assertEqual(parts["n"].get_content().strip(), "1")
+        self.assertEqual(parts["model"].get_content().strip(), "gpt-image-2.5-sunburst")
         self.assertNotIn("input_fidelity", parts)
         self.assertEqual(Path("source.png").read_bytes(), original)
         self.assertTrue(result["images"])
@@ -118,11 +119,21 @@ class OpenAIImageTests(unittest.TestCase):
                         {"size": "2048x256"}, {"size": 1024}, {"model": "unpriced-model"},
                         {"output_format": "jpeg", "output_path": "result.jpg", "background": "transparent"},
                         {"output_format": "jpeg"}, {"api_key": "caller-key"}, {"base_url": "https://other.invalid"},
-                        {"n": 10}, {"image_path": "source.png"}]:
+                        {"n": 10}, {"image_path": "source.png"},
+                        {"model": "gpt-image-2"}, {"model": "gpt-image-2-2026-04-21"}, {"quality": "ultra"}]:
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.args(**options)
         for size in ["1024x1024", "1536x864", "3840x2160", "2160x3840", "auto"]:
             self.assertEqual(self.args(size=size)["size"], size)
+        for quality in ["auto", "low", "medium", "high", "xhigh", "max"]:
+            self.assertEqual(self.args(quality=quality)["quality"], quality)
+        for model in sorted(adapter.MODELS):
+            self.assertEqual(self.args(model=model)["model"], model)
+
+    def test_each_action_defaults_to_the_variant_openai_recommends(self):
+        self.assertEqual(self.args()["model"], "gpt-image-2.5-flare")
+        self.assertEqual(self.args("edit")["model"], "gpt-image-2.5-sunburst")
+        self.assertEqual(self.args("edit", model="gpt-image-2.5-flare")["model"], "gpt-image-2.5-flare")
 
     def test_workspace_confinement_and_new_file_check_precede_paid_request(self):
         opener = mock.Mock(return_value=Response())
@@ -267,6 +278,11 @@ class OpenAIImageTests(unittest.TestCase):
                 self.assertLessEqual(set(parameter), {"type", "access", "description", "required", "default",
                                                       "min_length", "max_length", "enum_values"})
         self.assertEqual(actions["edit"]["parameters"]["image_path"]["access"], "read_file")
+        self.assertEqual(actions["generate"]["parameters"]["model"]["default"], "gpt-image-2.5-flare")
+        self.assertEqual(actions["edit"]["parameters"]["model"]["default"], "gpt-image-2.5-sunburst")
+        for name, action in actions.items():
+            self.assertEqual(set(action["parameters"]["model"]["enum_values"]), adapter.MODELS)
+            self.assertEqual(set(action["parameters"]["quality"]["enum_values"]), adapter.QUALITIES)
 
 
 if __name__ == "__main__":

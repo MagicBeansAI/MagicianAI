@@ -1,8 +1,17 @@
 # Magician Docs
 
-**Current development version:** `0.7.107` (delivery/scheduling
-follow-through and durable review evidence; local qualification passed;
-external/provider and positive guidance gates are in the active plans).
+Generation routing uses the [model catalog](../magicllm/model-catalog.md):
+provider connections, one capability/limits record per model, shared workload
+budgets, and model/thinking assignments. Historical saved choices convert once
+on clients; runtime aliases are rejected. Parent-engine, locality, sealed-route
+and structured chunking rules govern the resolved physical calls.
+Native coding engine choices derive from the shared catalog. Their model and
+effort are pinned in the dispatch journal and passed to the corresponding CLI;
+readiness and isolation eligibility still come from the qualified engine.
+
+**Current development version:** `0.7.142`.
+
+Atlas owns scoped runtime inspection; God-mode HTTP and file-search approvals retain authentication and privacy fences.
 
 Landing page for the `magician` runtime. Dated updates:
 [CHANGELOG](../../../magician/CHANGELOG.md). Canonical docs live under
@@ -47,6 +56,12 @@ Landing page for the `magician` runtime. Dated updates:
   hands stay on the [plane](plane.md). Native-tool strip is per engine
   (`stripped` / `sandboxed`); each engine resumes its own native session per
   conversation; mouth tools are bridged. See [chat-mode.md](chat-mode.md).
+- **Harness credentials.** `execution.harness_auth` decides whether each CLI
+  runs on its own sign-in or Magician's provider keys; see
+  [harness-auth.md](harness-auth.md).
+- **Document tools.** Selection guidance prefers local document parsing for text,
+  OCR for scan transcription, and image analysis for visual review; complete text
+  and images already attached to a vision-capable model are reused.
 - **Run engine.** `execution.harness_engine` (default `magician`); `pi`,
   `claude_code`, `codex`, `codex_app_server`, `grok` and `agy` replace
   decide+execute with one harness turn using the run's tool catalog (a pack's
@@ -221,6 +236,14 @@ Magician is a **runtime for autonomous personal-agent operations**:
 - **Live config reload.** `POST /api/magician/v2/settings/magician-config/reload`
   refreshes the operation router, multi-LLM service, native-tool policy, tool
   authorization, complexity routing and Workbench CLI catalog; restart-only sections are reported.
+- **`supervisor:` config section.** `supervisor.manage_desktop` (default
+  `true`) is read by magic-supervisor at its start; Magician only declares the
+  section (`SupervisorRuntimeConfig`) so the strict root accepts it, and
+  ignores unknown keys inside it. The repo seed ships it commented out (absent
+  = on) because Desktop seeds that file into data folders an older backend
+  (which rejects unknown root sections) may read; deploy a backend that knows
+  the key before adding it to a live config. See the
+  [supervisor guide](../magic-supervisor/supervisor.md#desktop-app-macos).
 - **Inner-loop packs** (`duckdb`, `imessage`) register twice (pack-defined, then
   `CapabilityRegistry::register_override` for compiled dispatch); a
   `[CAPABILITY] Overwriting existing provider` log flags an accident.
@@ -234,10 +257,11 @@ Magician is a **runtime for autonomous personal-agent operations**:
   bounded CUA actions, Magicutor/CDP health, target discovery, one-shot commands
   and read-only Messages queries; the desktop never publishes its loopback
   gateway, CDP URL, Messages path or device credential.
+- **Governed stdio MCP.** Reuses SDK discovery/calls inside a scoped OS sandbox; reviewed `mcp_bindings` govern file paths, recipients, redaction and receipts. God-mode approval supports once/session/always while those fences remain enforced.
 - **Remote MCP account setup.** The OAuth broker begins a governed binding with
   no browser on the engine; a setup-token-gated native client opens the URL;
-  callbacks hit the engine's HTTPS public origin; tokens stay in its vault.
-  Local engines keep the loopback callback.
+  the tool declares whether callbacks use loopback or the engine's reviewed
+  public origin; tokens stay in the engine's vault. See [browser sign-in](browser-signin.md).
 - **Spatial surfaces.** The canvas lane is retired; spatial observation,
   coordinate-native browser actions, iframe reprojection and post-action
   evidence stay in the normal loop.
@@ -265,6 +289,17 @@ Related skills: `sheets`, `rg`. Gmail/Sheets auth:
 
 ## Browser engines
 
+CRO and Presentation Maker allow CDP for owner-authorized signed-in workflows,
+alongside headed and headless browsing; agent templates carry the same grants.
+
+Finished and cancelled runs close every browser session they used (only the
+tabs a task created; paused runs and sibling leases keep theirs). Session ids
+stay reserved until teardown succeeds, failed closes are retried, and an owner
+handoff keeps the pages. Authenticated retrieval reads release their tabs too;
+a failed cleanup keeps the gathered content (`session_outcome: cleanup_failed`).
+Cancelling a run this process never saw browse closes its default session id
+best effort, without retries or a lasting reservation.
+
 **Cloak Browser** (`skillshub/cloak-browser`, stealth wrapper `0.5.3`, licensed
 Chromium 150) sets `AGENT_BROWSER_EXECUTABLE_PATH` for `headless`/`headed`;
 `cdp` mode (user Chrome via Magicutor) is unaffected.
@@ -275,7 +310,7 @@ Chromium 150) sets `AGENT_BROWSER_EXECUTABLE_PATH` for `headless`/`headed`;
 - An unresolvable explicitly configured engine fails the operation. Exit `76`
   (concurrent session) closes the daemon and retries once with bundled Chrome
   for Testing; `77`/`78`/`79`, crashes and page failures never do. No engine configured means bundled Chrome.
-- CLI fork `agent-browser 0.38.1-Magician.0` (adds `webmcp`, `pushstate`,
+- CLI fork `agent-browser 0.41.0-Magician.0` (adds `webmcp`, `pushstate`,
   `vitals`); `AGENT_BROWSER_IDLE_TIMEOUT_MS=0`. Verify
   `make -C skillshub verify-agent-browser`; install
   `make -C skillshub setup-cloak-browser` → `~/.cloakbrowser/`
@@ -344,6 +379,7 @@ agents grant discovery and task controls explicitly; Ambassador's company-only c
 
 ## Canonical references
 
+- Accounts: [Browser sign-in across devices](browser-signin.md)
 - Runtime / API: [V2 API Guide](v2-api-guide.md),
   [V3 Complete Flow](v3-complete-flow.md),
   [V2 WebSocket Events](v2-websocket-events.md),

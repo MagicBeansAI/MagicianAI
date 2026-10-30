@@ -209,6 +209,7 @@ final class VoiceCallViewModel: ObservableObject {
 
     /// Mic RMS (0…1), mirrored from the engine — drives the orb.
     @Published private(set) var level: Float = 0
+    @Published private(set) var playbackLevel: Float = 0
     /// mm:ss elapsed since the call connected, refreshed by a 1 s timer.
     @Published private(set) var elapsedText: String = "0:00"
     /// Which provider family the call runs on. Persisted via `AudioSettings`
@@ -224,6 +225,8 @@ final class VoiceCallViewModel: ObservableObject {
     /// Thread the live call is bound to. Retained so a mid-call provider-family
     /// switch can reconnect on the same thread.
     private var activeUiThreadId: String?
+    /// The chat on screen when the call started; the server posts into it.
+    private var activeChatSessionId: String?
     /// Audio-focus owner held for the call's lifetime so chat auto-speak stays
     /// suppressed (see `VoiceCallAudioFocus`). Released in `teardownLocal`.
     private var voiceCallFocusOwner: UUID?
@@ -395,6 +398,10 @@ final class VoiceCallViewModel: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] value in self?.level = value }
             .store(in: &cancellables)
+        engine.$playbackLevel
+            .receive(on: RunLoop.main)
+            .sink { [weak self] value in self?.playbackLevel = value }
+            .store(in: &cancellables)
 
         // The provider catalog may normalize a stale persisted profile after
         // this view model is created. Keep the call selection aligned with the
@@ -530,7 +537,11 @@ final class VoiceCallViewModel: ObservableObject {
     /// Nothing captured before `session.ready` is sent — or kept. The pre-ready
     /// gate drops those frames and counts them: hearing starts when the session
     /// does. See `PreReadyGate` for what this replaced and why.
-    func startCall(uiThreadId: String, engineOverride: VoiceEngine? = nil) {
+    func startCall(
+        uiThreadId: String,
+        chatSessionId: String? = nil,
+        engineOverride: VoiceEngine? = nil
+    ) {
         // Instrumentation only — see `VoiceConnectTrace`. First point on the path
         // both surfaces share that knows WHICH surface is connecting, so it is also
         // where an in-app trace begins; an ambient one begun at the wake continues.
@@ -579,8 +590,10 @@ final class VoiceCallViewModel: ObservableObject {
         applyLocalMicMode()
 
         activeUiThreadId = uiThreadId
+        activeChatSessionId = chatSessionId
         client.startCall(
             uiThreadId: uiThreadId,
+            chatSessionId: chatSessionId,
             engine: voiceEngine,
             pttOn: pttOn,
             realtimeProfile: realtimeProfile,
@@ -594,6 +607,7 @@ final class VoiceCallViewModel: ObservableObject {
     /// orb never reports speaking and the pre-ready gate never opens — a call that
     /// connects and stays deaf.
     func wireAudioPaths() {
+        engine.onCaptureFailure = { [weak self] message in self?.client.failLocally(message) }
         client.concurrentRequests = mode == .inApp
         if client.concurrentRequests {
             let coordinator = ConcurrentVoiceCoordinator.shared
@@ -812,6 +826,7 @@ final class VoiceCallViewModel: ObservableObject {
         level = 0
         elapsedText = "0:00"
         activeUiThreadId = nil
+        activeChatSessionId = nil
         // Release audio focus on the explicit hangUp path too (belt-and-suspenders
         // vs the terminal-phase teardownLocal); idempotent, so no double-release.
         if let owner = voiceCallFocusOwner {
@@ -866,7 +881,7 @@ final class VoiceCallViewModel: ObservableObject {
         AudioSettings.shared.liveVoicePttOn = enabled
         if client.phase == .failed, let uiThreadId = activeUiThreadId {
             // Preserve the existing failed-call retry affordance.
-            startCall(uiThreadId: uiThreadId)
+            startCall(uiThreadId: uiThreadId, chatSessionId: activeChatSessionId)
             return
         }
         applyLocalMicMode()
@@ -886,7 +901,7 @@ final class VoiceCallViewModel: ObservableObject {
             // The failed panel intentionally stays visible so a user can select
             // another provider. Treat that selection as a retry; updating only
             // the label leaves the call failed and makes the menu appear inert.
-            startCall(uiThreadId: uiThreadId)
+            startCall(uiThreadId: uiThreadId, chatSessionId: activeChatSessionId)
             return
         }
         guard isCallLive else {
@@ -938,6 +953,7 @@ final class VoiceCallViewModel: ObservableObject {
         applyLocalMicMode()
         client.startCall(
             uiThreadId: uiThreadId,
+            chatSessionId: activeChatSessionId,
             engine: voiceEngine,
             pttOn: pttOn,
             realtimeProfile: realtimeProfile,

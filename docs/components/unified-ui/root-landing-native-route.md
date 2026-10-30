@@ -26,9 +26,9 @@ blanket "everything leaving the machine is minimised and redacted" promise.
 LandingChrome            sticky star + magican, How it works (→ explain.magican.ai), Manifesto,
                          GitHub public mirror, Day/Night toggle; capability-aware access action
                          appears only once the hero has scrolled past the sticky header
-HeroSplit                Bright Sidekick: magican / More You,
-                         Your personal superpowers,
-                         one access CTA, mascot, 36 cycling examples, explore bridge;
+HeroSplit                Bright Sidekick: magican^(More You),
+                         Life assistant for work, play, and everything else,
+                         one access CTA, mascot, 36 cycling examples, explore bridge (→ #landing-proof);
                          beside the CTA (outside its nav) "Watch the film · 8 min"
                          with a silent 84 KB loop of the film → #film; mobile reads
                          "Film 8 min" and keeps both CTAs on one row at 320px and up
@@ -36,6 +36,9 @@ FilmDialog               the intro film (unlisted YouTube aCqym-rcVu0) full scre
                          whenever the address is #film: youtube-nocookie player
                          created on open and removed on close, true full screen
                          where the browser allows it (not iOS Safari)
+TrustReveal              who it answers to, three mechanisms (the vault, models you choose,
+                         your hand on the wheel), placed right after the first viewport
+DayTrack                 a day, eleven stations, gold/lilac rope led by a star
 LandingField             dusk-town video behind how only (still until the
                          loop is playing; portrait covers the sticky stage)
   HowTrack               seven stations, told in the intro film's own lines
@@ -48,12 +51,11 @@ LandingField             dusk-town video behind how only (still until the
                          (magican_launch_video, src/landing/). Only the pinned,
                          on-screen card plays; reduced motion and Save-Data get
                          the poster.
-DayTrack                 a day, eleven stations, gold/lilac rope led by a star
-LifeTrack                the montage, bracketed by the payoff lines; LifeDevice
-                         draws the laptop's screen as today's app (star, Chat ·
+LifeTrack                the montage with people living their lives while devices work untouched,
+                         bracketed by the payoff lines ("Love what you do?" and "Go. Do what you love.");
+                         LifeDevice draws the laptop's screen as today's app (star, Chat ·
                          Work · Observe · Today, the rail, Today's newspaper,
                          Work pills, the chat's live task card, VibeDev)
-TrustReveal              who it answers to, three mechanisms
 HowItWorks               a still of the opened anatomy model (Sorbet by day,
                          Night by night) → explain.magican.ai, Take the tour
                          opens ?tour in a new tab
@@ -102,15 +104,12 @@ marketing class paints "install the app" over routes the script allowed.
 The approved **Bright Sidekick** direction uses the
 [October brand board](../../assets/brand/board.png) and its
 [author philosophy](../../assets/brand/README.md): Magican is the nerdy star
-sidekick; the person is the hero. The stable copy hierarchy is **magican**,
-**More You** (title case, no punctuation, smaller than the wordmark),
-**Your personal superpowers** as the only supporting line, below the
-tagline. Access links follow immediately. The mascot has no promotional caption;
+sidekick; the person is the hero. The hero copy opens with **magican** raised to the mathematical power of **More You** (`<sup class="hs-pow">More You</sup>`), supported by the proposition
+**Life assistant for work, play, and everything else**. Access links follow immediately. The mascot has no promotional caption;
 the cycling examples communicate work, play and side quests without another
-slogan. The landing footer and manifesto sign-off repeat **More You**. The repo
-README opens with **Powering Magican — More You** and describes Magican as
-**your personal superpowers**, matching the hero's supporting line.
-**More You** explicitly uses Outfit Medium (500), upright, in the hero, footer
+slogan. The landing footer and manifesto sign-off preserve **More You**. The repo
+README opens with **Powering Magican — Life assistant for work, play, and everything else**.
+**More You** explicitly uses Outfit Medium (500), upright, in the footer
 and manifesto sign-off. The footer tagline does not inherit the monospace face
 used for its navigation and other footer text.
 Outfit is the display and body face (linked from `app.html`); Geist Mono is the
@@ -255,7 +254,11 @@ underline the back link. Policy prose lives in route markup (no second consumer)
 manifesto copy is a data module because `ManifestoExcerpt` reuses its blocks.
 
 Manifesto copy is `prose` and `verse` blocks (short lines tight, paragraphs
-spaced), grouped identically on `/manifesto` and the excerpt. The activity cycle
+spaced), structured in `manifesto.ts`. The opening and timing sequence are
+shared on `ManifestoExcerpt` (grounding personal responsibility and work timing
+before the link to the full document), while `/manifesto` continues through life
+continuity, computing friction, hybrid local/cloud model pragmatism under user
+control, and the founder's purpose. The activity cycle
 in unmounted legacy components
 opens on `singing` (36 verbs + "all your side quests"). Its closer remains
 coupled to `lifePortrait.ts` and `MANIFESTO_TAGLINE`. The manifesto sign-off,
@@ -321,7 +324,7 @@ selection races, hidden-page playback, reduced motion and cleanup);
 `LandingChrome.component.test.ts` (navigation and local appearance);
 `warmPalette.test.ts` (Day/Night AA contrast and CSS parity);
 `LandingNarrative.contract.test.ts` (mount order
-HeroSplit → HowTrack → DayTrack → LifeTrack → TrustReveal → HowItWorks → ManifestoExcerpt →
+HeroSplit → TrustReveal → DayTrack → HowTrack → LifeTrack → HowItWorks → ManifestoExcerpt →
 WhatItTakes → `#landing-cta`; no `BrandReveal`, `Greeting`, `LandingHero`,
 `Declaration`, ProofSwitcher); `howTrack.test.ts` (seven stations, swipe math, mobile
 contract); `HowCard.component.test.ts` (nothing loads until a station is pinned and on screen, then its loop; poster only with reduced motion); `coldLoad.contract.test.ts` (no non-mono Geist preload;

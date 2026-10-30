@@ -203,6 +203,55 @@ export const vibeOtherRows: Readable<VibeRow[]> = derived(vibeHitlRows, ($rows) 
 	$rows.filter((row) => row.request.input_type !== 'diff_approval')
 );
 
+// ── what kind of wait a row is ───────────────────────────────────────────────
+
+/**
+ * A diff row the owner can still apply or reject. Durable rows hydrated for a
+ * finished run (`historical: true`) are already resolved: shown, never acted on.
+ */
+export function isPendingDiffRow(row: VibeRow): boolean {
+	return row.request.raw?.historical !== true;
+}
+
+const NOTICE_OPTION_IDS = new Set(['acknowledge', 'dismiss']);
+const OWNER_NOTICE_REQUEST_PREFIX = 'harness.notify_owner.';
+
+/**
+ * An informational notice (an owner briefing): its one answer is an
+ * acknowledgement, so it is shown as a message with Acknowledge, never as a
+ * review or a decision. Mirrors the server's acknowledge-only rule.
+ */
+export function isNoticeRequest(request: HitlRequest): boolean {
+	if (request.input_type === 'diff_approval') return false;
+	const options = request.schema.options ?? [];
+	if (options.length !== 1 || options[0].requires_input) return false;
+	return (
+		NOTICE_OPTION_IDS.has(options[0].id) ||
+		Boolean(request.schema.request_type?.startsWith(OWNER_NOTICE_REQUEST_PREFIX))
+	);
+}
+
+/** Split non-diff rows into acknowledge-only notices and real decisions. */
+export function splitNoticeRows(rows: VibeRow[]): { notices: VibeRow[]; decisions: VibeRow[] } {
+	const notices: VibeRow[] = [];
+	const decisions: VibeRow[] = [];
+	for (const row of rows) (isNoticeRequest(row.request) ? notices : decisions).push(row);
+	return { notices, decisions };
+}
+
+/**
+ * A notice's title and message, split from the `Owner briefing: <title>` lead
+ * the server writes into the prompt (`notify_owner`, the run-ended notice).
+ */
+export function noticeParts(request: HitlRequest): { title: string | null; message: string } {
+	const prompt = request.prompt.trim();
+	const match = /^Owner (?:briefing|escalation|notification)(?::[ \t]*([^\n]*))?\n+([\s\S]*)$/i.exec(prompt);
+	if (!match) return { title: null, message: prompt };
+	const title = match[1]?.trim() || null;
+	const message = match[2].trim();
+	return { title, message: message || title || prompt };
+}
+
 // ── action state + methods ───────────────────────────────────────────────────
 
 export interface HitlActionState {
@@ -272,6 +321,22 @@ export async function resolveDiff(
 			...s,
 			statusText: selectedId === 'apply' ? 'Applied.' : 'Rejected.'
 		}));
+		// A hydrated pending proposal has no live row to retire: mark its durable
+		// row resolved so it stops offering Apply/Reject.
+		const resolvedStatus = selectedId === 'apply' ? 'applied' : 'rejected';
+		historicalProposalRows.update((rows) =>
+			rows.map((row) =>
+				rowKey(row.request) === key
+					? {
+							...row,
+							request: {
+								...row.request,
+								raw: { ...row.request.raw, historical: true, status: resolvedStatus }
+							}
+						}
+					: row
+			)
+		);
 		return true;
 	} finally {
 		setActing(key, false);
@@ -321,6 +386,31 @@ export async function approveAll(rows: VibeRow[]): Promise<void> {
 				? `Applied ${applied} change set${applied === 1 ? '' : 's'}.`
 				: `Applied ${applied}; ${failures.length} failed.`
 	}));
+}
+
+/** Acknowledge a notice row with its one option, through the respond endpoint. */
+export async function acknowledgeVibeNotice(row: VibeRow): Promise<boolean> {
+	const key = rowKey(row.request);
+	const optionId =
+		row.request.respond?.options?.[0]?.id ?? row.request.schema.options?.[0]?.id ?? 'acknowledge';
+	hitlActionState.update((s) => ({ ...s, errorText: '', statusText: '' }));
+	setActing(key, true);
+	try {
+		const outcome = await postHitlResponse(
+			row.request,
+			{ type: 'choice', selected_id: optionId },
+			scopeHeaders()
+		);
+		const err = outcomeError(outcome);
+		if (err) {
+			hitlActionState.update((s) => ({ ...s, errorText: err }));
+			return false;
+		}
+		hitlActionState.update((s) => ({ ...s, statusText: 'Acknowledged.' }));
+		return true;
+	} finally {
+		setActing(key, false);
+	}
 }
 
 export async function respondToVibeRow(row: VibeRow): Promise<void> {
@@ -414,8 +504,13 @@ function proposalToVibeRow(p: DurableProposal, taskId: string): VibeRow {
 		identifiers: { correlation_id: p.id },
 		at: Number.isFinite(atMs) ? atMs : undefined,
 		// `historical: true` marks the row read-only for render surfaces; `status`
-		// lets them show Applied/Rejected instead of Apply/Reject affordances.
-		raw: { historical: true, status: p.status ?? 'resolved', test_evidence: p.test_evidence ?? [] }
+		// lets them show Applied/Rejected instead of Apply/Reject affordances. A
+		// still-pending proposal stays actionable: its review may have no live row.
+		raw: {
+			historical: (p.status ?? 'resolved') !== 'pending',
+			status: p.status ?? 'resolved',
+			test_evidence: p.test_evidence ?? []
+		}
 	};
 	const entry: HitlPendingEntry = {
 		correlation_id: p.id,

@@ -6,7 +6,8 @@ use crate::magician_v2::{
     realtime_events::RuntimeTransportEvent,
 };
 use decision_engine_contract::{
-    batch::DecisionItemResult, telemetry::DecisionModelCall, DecideResponse,
+    batch::DecisionItemResult, client::ClientError, telemetry::DecisionModelCall, DecideResponse,
+    DecideStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, time::Duration};
@@ -131,17 +132,67 @@ pub(crate) struct ShadowRecord {
     pub application_cache_hit: bool,
     pub reference_attempted: bool,
     pub requires_completion: bool,
+    /// Closed failure code (`timeout`, `engine_unreachable`, ...) when the
+    /// engine call failed or answered nothing. Never provider error text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    /// Engine route health: model -> closed issue code (None = healthy).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_health: BTreeMap<String, Option<String>>,
+    /// Caller budget granted to this decision, for health reporting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<u64>,
+}
+/// Closed, content-free failure code for the health view. Error bodies can
+/// carry provider or source text, so only the variant is exported.
+pub(crate) fn failure_code(reply: &Result<&DecideResponse, &ClientError>) -> Option<String> {
+    let code = match reply {
+        Err(ClientError::Timeout) => "timeout".to_string(),
+        Err(ClientError::Connect(_)) => "engine_unreachable".to_string(),
+        Err(ClientError::Http(_)) => "engine_transport".to_string(),
+        Err(ClientError::Status { status, .. }) => format!("engine_status_{status}"),
+        Err(ClientError::Decode(_)) => "engine_invalid_reply".to_string(),
+        Err(ClientError::ContractMismatch { .. }) => "contract_mismatch".to_string(),
+        Err(ClientError::NotDispatched(reason)) => format!("not_dispatched:{reason}"),
+        Ok(reply) => match reply.status {
+            DecideStatus::Answered => return None,
+            DecideStatus::Unbound => "unbound".to_string(),
+            DecideStatus::NoFittingModel => "no_fitting_model".to_string(),
+            DecideStatus::Failed => "failed".to_string(),
+        },
+    };
+    Some(code)
 }
 pub(crate) fn record(
     input: &Input,
     policy: &Participation,
-    reply: Option<&DecideResponse>,
+    reply: Result<&DecideResponse, &ClientError>,
     reference: Option<Reference>,
     elapsed: Duration,
     mode: &str,
     reference_attempted: bool,
     foreground_latency_ms: Option<u64>,
+    budget: Duration,
 ) -> Observation {
+    let failure = failure_code(&reply);
+    let reply = reply.ok();
+    let model_health = reply
+        .map(|r| {
+            r.batch
+                .model_health
+                .iter()
+                .take(16)
+                .map(|(model, issue)| {
+                    (
+                        model.chars().take(96).collect::<String>(),
+                        issue
+                            .as_ref()
+                            .map(|i| i.chars().take(96).collect::<String>()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let calls = reply.map(|r| r.model_calls.clone()).unwrap_or_default();
     let pricing = calls
         .iter()
@@ -218,6 +269,9 @@ pub(crate) fn record(
         application_cache_hit: false,
         reference_attempted,
         requires_completion: mode == "gate" && input.requires_completion,
+        failure,
+        model_health,
+        budget_ms: Some(budget.as_millis() as u64),
     };
     if let Ok(mut record) = serde_json::to_value(record) {
         record["pack"] = serde_json::json!(policy.policy.classification.pack);

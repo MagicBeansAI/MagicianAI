@@ -23,8 +23,8 @@ RUNNER_INTEGRITY = (
     "sha512-0V/HZDdWHcg6j0zVBzBsXcPZ571IVi6umKgTpnBhtTx/"
     "jm/LONmGF6cIWL2k4Xjyps0OiHV6B37nj2s0pUg0nQ=="
 )
-SDK_VERSION = "3.1.0"
-SDK_COMMIT = "1f9358eddca42d3a510c70ae6446dd6548c7c856"
+SDK_VERSION = "3.7.0"
+SDK_COMMIT = "5d6a11f2ae022f513aec0f6e0f10f89a57891a7f"
 EXPECTED_GATES = {
     "official_protocol_auth_backcompat",
     "supported_transport_boundaries",
@@ -210,7 +210,7 @@ def main() -> int:
         errors,
     )
     require(
-        'rmcp = { version = "=3.1.0", default-features = false }'
+        'rmcp = { version = "=3.7.0", default-features = false }'
         in (ROOT / "Cargo.toml").read_text(encoding="utf-8"),
         "workspace rmcp exact pin drift",
         errors,

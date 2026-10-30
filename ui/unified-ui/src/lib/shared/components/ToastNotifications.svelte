@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { notifications, type Notification } from '$lib/shared/stores/notifications';
 	import { fly } from 'svelte/transition';
+	import { canonicalWorkHref } from '$lib/work/routes';
 
 	function getSymbolForType(type: Notification['type']): string {
 		switch (type) {
@@ -29,7 +30,7 @@
 				{notification.title}{#if notification.message}{': '}{notification.message}{/if}
 			</span>
 			{#if notification.action}
-				<a class="toast-action" href={notification.action.href}>{notification.action.label}</a>
+				<a class="toast-action" href={canonicalWorkHref(notification.action.href)}>{notification.action.label}</a>
 			{/if}
 			<button class="toast-close" on:click={() => notifications.removeNotification(notification.id)}>
 				x

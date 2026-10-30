@@ -109,6 +109,7 @@ interface InternalState {
 }
 
 export class OpenAiRealtimeFrontendProvider implements RealtimeFrontendProvider {
+    private playbackMeterSource: MediaStreamAudioSourceNode | null = null;
 	private state: InternalState | null = null;
 	private callbacks: RealtimeProviderCallbacks | null = null;
 	/** Profile-supplied VAD mode (e.g. `server_vad`), captured at connect so a
@@ -130,6 +131,7 @@ export class OpenAiRealtimeFrontendProvider implements RealtimeFrontendProvider 
 		descriptor: ProviderDescriptor;
 		mic: MediaStream;
 		playbackEl: HTMLAudioElement;
+        analysisContext?: AudioContext | null;
 		pushToTalkMode: boolean;
 		sessionConfig: ProviderSessionConfig;
 		resume: ProviderResumeContext | null;
@@ -187,7 +189,20 @@ export class OpenAiRealtimeFrontendProvider implements RealtimeFrontendProvider 
 		playbackEl.srcObject = null;
 		peer.addEventListener('track', (event) => {
 			const [stream] = event.streams;
-			if (stream) playbackEl.srcObject = stream;
+			if (stream) {
+                playbackEl.srcObject = stream;
+                if (args.analysisContext) {
+                    try {
+                        this.playbackMeterSource?.disconnect();
+                        const source = args.analysisContext.createMediaStreamSource(stream);
+                        const analyser = args.analysisContext.createAnalyser();
+                        analyser.fftSize = 256;
+                        source.connect(analyser);
+                        this.playbackMeterSource = source;
+                        this.callbacks?.onPlaybackAnalyserChanged?.(analyser);
+                    } catch { /* The audio element remains the playback owner. */ }
+                }
+            }
 		});
 
 		peer.addEventListener('connectionstatechange', () => {
@@ -216,6 +231,9 @@ export class OpenAiRealtimeFrontendProvider implements RealtimeFrontendProvider 
 	}
 
 	disconnect(): void {
+        try { this.playbackMeterSource?.disconnect(); } catch { /* Metering must not block teardown. */ }
+        this.playbackMeterSource = null;
+        this.callbacks?.onPlaybackAnalyserChanged?.(null);
 		const s = this.state;
 		this.state = null;
 		this.callbacks = null;

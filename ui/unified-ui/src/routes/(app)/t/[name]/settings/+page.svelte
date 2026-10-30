@@ -144,13 +144,14 @@
 		flex: 1;
 		min-height: 0;
 		width: 100%;
-		max-width: 1320px;
+		max-width: var(--chat-col);
+		box-sizing: border-box;
 		margin: 0 auto;
 		overflow-y: auto;
 		padding: 0.75rem 0.75rem 0.25rem;
-		border-radius: var(--radius-md, 18px);
-		background: var(--bg-surface, #fff8f2);
-		border: 1px solid var(--border-soft, #eee4dc);
+		border-radius: var(--radius-md);
+		background: var(--bg-surface);
+		border: 1px solid var(--border-soft);
 		box-shadow: var(--shadow-sm, 0 6px 18px rgba(45, 52, 54, 0.06));
 	}
 
@@ -163,12 +164,13 @@
 
 	.thread-section__header h2 {
 		margin: 0;
-		color: var(--text-primary, #2d3436);
+		font-family: var(--font-display, inherit);
+		color: var(--text-primary);
 	}
 
 	.thread-section__header p {
 		margin: 0.3rem 0 0;
-		color: var(--text-secondary, #5f6668);
+		color: var(--text-secondary);
 	}
 
 	.thread-settings__actions {
@@ -190,28 +192,18 @@
 		display: grid;
 		gap: 0.45rem;
 		font-size: 0.84rem;
-		color: var(--text-secondary, #5f6668);
+		color: var(--text-secondary);
 	}
 
 	.thread-meta-field--full {
 		grid-column: 1 / -1;
 	}
 
+	/* Size only: the shared Input/TextArea carry each theme's field styling. */
 	.thread-meta-field :global(.muij-input-field),
 	.thread-meta-field :global(.muij-textarea-input) {
 		width: 100%;
-		border-radius: var(--radius-sm, 12px);
-		border: 1px solid var(--border-soft, #eee4dc);
-		background: var(--bg-surface, #fff8f2);
-		padding: 0.8rem 0.95rem;
-		font: inherit;
-		color: var(--text-primary, #2d3436);
-	}
-
-	.thread-meta-field :global(.muij-input-label),
-	.thread-meta-field :global(.muij-textarea-label) {
-		font-size: 0.84rem;
-		color: var(--text-secondary, #5f6668);
+		box-sizing: border-box;
 	}
 
 	@media (max-width: 900px) {

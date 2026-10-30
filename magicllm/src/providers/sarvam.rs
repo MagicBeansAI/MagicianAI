@@ -11,10 +11,10 @@
 //! - Auth is the `api-subscription-key` header.
 //! - Message `content` must be a string. Content-part arrays — and so images
 //!   — are refused with a 400; the models are text-only.
-//! - Every request reasons (`reasoning_content`). `reasoning_effort` takes
-//!   only `low|medium|high`; there is no off switch. With no effort set, a
-//!   one-word prompt spent a 3000-token budget thinking and answered nothing,
-//!   so a request always carries an effort (default `low`) and a budget.
+//! - `reasoning_effort` takes `low|medium|high` or JSON `null` for Off.
+//!   The nullable Off setting was verified against `sarvam-105b` on
+//!   2026-10-16: HTTP 200 with zero reasoning tokens. An omitted override
+//!   retains our explicit `low` default and a bounded output allowance.
 //! - `max_tokens` counts reasoning, and Sarvam's own default is 2048 — too
 //!   small even at `low` — so an unset budget becomes
 //!   [`SARVAM_DEFAULT_MAX_TOKENS`].
@@ -31,7 +31,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc;
@@ -141,19 +140,22 @@ impl SarvamProvider {
         Ok(())
     }
 
-    /// `low|medium|high` is the whole vocabulary and reasoning cannot be
-    /// switched off, so "disabled" and the levels other providers add fold
-    /// onto the nearest one served.
-    fn reasoning_effort(reasoning: Option<&ReasoningConfig>) -> &'static str {
+    /// Explicit Off is JSON null, distinct from the app's Low default.
+    fn reasoning_effort(reasoning: Option<&ReasoningConfig>) -> Value {
+        if reasoning.is_some_and(ReasoningConfig::is_disabled) {
+            return Value::Null;
+        }
         let effort = reasoning
-            .filter(|reasoning| !reasoning.is_disabled())
             .and_then(|reasoning| reasoning.effort.as_deref())
             .map(|effort| effort.trim().to_ascii_lowercase());
-        match effort.as_deref() {
-            Some("medium") => "medium",
-            Some("high" | "xhigh" | "max") => "high",
-            _ => "low",
-        }
+        Value::String(
+            match effort.as_deref() {
+                Some("medium") => "medium",
+                Some("high" | "xhigh" | "max") => "high",
+                _ => "low",
+            }
+            .into(),
+        )
     }
 
     fn text_without_cache_sentinel(text: &str) -> String {
@@ -249,12 +251,14 @@ impl SarvamProvider {
         tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 json!({
                     "type": "function",
                     "function": {
                         "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
+                        "description": description,
+                        "parameters": parameters,
                     }
                 })
             })
@@ -337,7 +341,7 @@ impl SarvamProvider {
         );
         body.insert(
             "reasoning_effort".to_string(),
-            Value::String(Self::reasoning_effort(request.reasoning.as_ref()).to_string()),
+            Self::reasoning_effort(request.reasoning.as_ref()),
         );
 
         if let Some(Value::Object(extra)) = request.extra_value() {
@@ -505,32 +509,28 @@ impl SarvamProvider {
         }
     }
 
+    fn timeout(&self, request: &LLMRequest) -> Duration {
+        request
+            .metadata
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(self.default_timeout)
+    }
+
+    /// Every send streams: it bounds only the wait for the response head,
+    /// and the body is bounded by a [`super::StreamWatchdog`].
     async fn send(
         &self,
         request: &LLMRequest,
         body: &Map<String, Value>,
     ) -> LLMResult<reqwest::Response> {
-        let timeout = request
-            .metadata
-            .timeout_secs
-            .map(Duration::from_secs)
-            .unwrap_or(self.default_timeout);
-        let response = self
+        let builder = self
             .client
             .post(&self.base_url)
             .header("api-subscription-key", &self.api_key)
             .header("Content-Type", "application/json")
-            .json(body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
+            .json(body);
+        let response = super::send_streaming_request(builder, self.timeout(request)).await?;
 
         let status = response.status();
         if !(status.is_client_error() || status.is_server_error()) {
@@ -578,7 +578,11 @@ impl LLMProvider for SarvamProvider {
 
     async fn invoke(&self, request: LLMRequest) -> LLMResult<LLMResponse> {
         Self::admit(&request)?;
-        let body = Self::build_request_body(&request)?;
+        let mut body = Self::build_request_body(&request)?;
+        // Plain calls stream too, so a long answer that is still producing is
+        // bounded by progress, not cut at the request timeout; the chunks fold
+        // back into the body `map_response` parses.
+        body.insert("stream".to_string(), Value::Bool(true));
         info!(
             provider = PROVIDER,
             model = %request.model,
@@ -588,8 +592,14 @@ impl LLMProvider for SarvamProvider {
             "issuing Sarvam chat completion"
         );
         let response = self.send(&request, &body).await?;
-        let raw = read_bounded_response_text(response).await?;
-        let response = Self::map_response(parse_provider_json_value(&raw)?)?;
+        let payload = super::collect_chat_completion(
+            response,
+            self.timeout(&request),
+            PROVIDER,
+            request.metadata.single_physical_attempt,
+        )
+        .await?;
+        let response = Self::map_response(payload)?;
         Self::warn_if_budget_spent_thinking(&request, &response);
         Ok(response)
     }
@@ -611,6 +621,7 @@ impl LLMProvider for SarvamProvider {
             "issuing Sarvam streaming chat completion"
         );
         let response = self.send(&request, &body).await?;
+        let mut watchdog = super::StreamWatchdog::new(self.timeout(&request));
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
@@ -625,7 +636,7 @@ impl LLMProvider for SarvamProvider {
         let mut done = false;
 
         while !done {
-            let Some(chunk) = stream.next().await else {
+            let Some(chunk) = watchdog.next(&mut stream).await? else {
                 break;
             };
             let chunk = chunk.map_err(|error| {
@@ -649,6 +660,9 @@ impl LLMProvider for SarvamProvider {
 
                 if let Some(event_usage) = event.get("usage").filter(|usage| !usage.is_null()) {
                     usage = Some(Self::map_usage(event_usage)?);
+                }
+                if super::plain_stream::chat_chunk_has_output(&event) {
+                    watchdog.mark_progress();
                 }
                 let Some(choice) = event
                     .get("choices")
@@ -821,15 +835,28 @@ mod tests {
     }
 
     #[test]
-    fn effort_folds_onto_low_medium_high() {
+    fn off_sends_json_null_instead_of_omitting_or_substituting_low() {
+        let mut request = request("sarvam-105b");
+        request.reasoning = Some(ReasoningConfig {
+            effort: Some("none".into()),
+            ..Default::default()
+        });
+        let body = SarvamProvider::build_request_body(&request).unwrap();
+        assert!(body.contains_key("reasoning_effort"));
+        assert_eq!(body["reasoning_effort"], Value::Null);
+        assert_eq!(body["max_tokens"], SARVAM_DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn explicit_off_is_null_and_other_efforts_fold_onto_low_medium_high() {
         let effort = |value: &str| {
             SarvamProvider::reasoning_effort(Some(&ReasoningConfig {
                 effort: Some(value.to_string()),
                 ..Default::default()
             }))
         };
-        assert_eq!(effort("none"), "low");
-        assert_eq!(effort("disabled"), "low");
+        assert_eq!(effort("none"), Value::Null);
+        assert_eq!(effort("disabled"), Value::Null);
         assert_eq!(effort("minimal"), "low");
         assert_eq!(effort("Medium"), "medium");
         assert_eq!(effort("high"), "high");

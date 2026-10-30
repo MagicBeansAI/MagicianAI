@@ -1,7 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -34,6 +36,14 @@ use super::types::{
 
 const SKILL_INVOCATION_FAILURE_CLUSTER_ROUTE_THRESHOLD: u64 = 3;
 const MAX_FAILURE_CLUSTER_EVIDENCE_REFS: usize = 24;
+/// Parsed procedure files kept process-wide; past this the cache restarts.
+const MAX_CACHED_PROCEDURE_FILES: usize = 4096;
+/// A stamp whose mtime is this close to "now" cannot rule out a same-size
+/// rewrite within one mtime tick, so its entry is reused only after a hash.
+const PROCEDURE_STAMP_SETTLE_NANOS: u128 = 3_000_000_000;
+/// Indexed learning event logs kept process-wide; past this the cache restarts.
+const MAX_CACHED_EVENT_LOGS: usize = 4096;
+const LEARNING_REFLECTION_COMPLETED_EVENT: &str = "learning_reflection_completed";
 
 #[derive(Debug, Clone, Default)]
 pub struct LearningCandidateFilters {
@@ -191,6 +201,146 @@ impl LearningFileType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcedureFileStamp {
+    len: u64,
+    modified_nanos: Option<u128>,
+}
+
+/// One procedure file's parse, kept between reads so an unchanged file is
+/// deserialized once per revision. Valid only for `stamp` and `content_hash`.
+#[derive(Debug)]
+struct ProcedureFileState {
+    stamp: ProcedureFileStamp,
+    content_hash: [u8; 32],
+    /// Stamped within [`PROCEDURE_STAMP_SETTLE_NANOS`] of its mtime.
+    racy: bool,
+    procedure: Arc<LearningProcedure>,
+}
+
+fn procedure_file_cache() -> &'static StdMutex<HashMap<PathBuf, Arc<ProcedureFileState>>> {
+    static CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<ProcedureFileState>>>> = OnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn forget_procedure_file(path: &Path) {
+    if let Ok(mut cache) = procedure_file_cache().lock() {
+        cache.remove(path);
+    }
+}
+
+/// Drop cached files directly under `root` that its listing no longer saw.
+fn retain_listed_procedure_files(root: &Path, listed: &HashSet<PathBuf>) {
+    if let Ok(mut cache) = procedure_file_cache().lock() {
+        cache.retain(|path, _| path.parent() != Some(root) || listed.contains(path));
+    }
+}
+
+fn procedure_stamp_is_racy(stamp: ProcedureFileStamp) -> bool {
+    mtime_is_racy(stamp.modified_nanos)
+}
+
+fn mtime_is_racy(modified_nanos: Option<u128>) -> bool {
+    let Some(modified_nanos) = modified_nanos else {
+        return true;
+    };
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    now_nanos.saturating_sub(modified_nanos) < PROCEDURE_STAMP_SETTLE_NANOS
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+thread_local! {
+    static PROCEDURE_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static EVENT_LOG_LINE_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn parse_procedure_yaml(content: &str) -> serde_yaml::Result<LearningProcedure> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    PROCEDURE_PARSES.with(|parses| parses.set(parses.get() + 1));
+    serde_yaml::from_str(content)
+}
+
+/// Size, mtime and (where the platform has one) `(dev, inode)` of one
+/// learning event log. A replaced file differs even at the same size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EventLogStamp {
+    len: u64,
+    modified_nanos: Option<u128>,
+    identity: Option<(u64, u64)>,
+}
+
+/// The `learning_reflection_completed` (episode_id, boundary) pairs of one
+/// event log, scanned through its last newline. `scanned_hash` covers exactly
+/// `[0, scanned_len)`, so a later read resumes only when that prefix is
+/// byte-identical; bytes past the last newline are an append in flight and
+/// are never folded into `completed`.
+#[derive(Debug)]
+struct EventLogReflectionIndex {
+    /// `None` when the log could not be stamped; such an index is not cached.
+    stamp: Option<EventLogStamp>,
+    /// Stamped within [`PROCEDURE_STAMP_SETTLE_NANOS`] of its mtime, or the
+    /// log changed while it was read; reused only after a re-read.
+    racy: bool,
+    scanned_len: usize,
+    scanned_lines: usize,
+    scanned_hash: [u8; 32],
+    completed: HashSet<(String, String)>,
+    /// A final line with no newline yet that already parses as a completion
+    /// event; valid only for `stamp`, never carried into a resumed scan.
+    unterminated_completion: Option<(String, String)>,
+}
+
+impl EventLogReflectionIndex {
+    fn contains(&self, episode_id: &str, boundary: &str) -> bool {
+        self.unterminated_completion
+            .as_ref()
+            .is_some_and(|(episode, at)| episode == episode_id && at == boundary)
+            || self
+                .completed
+                .contains(&(episode_id.to_string(), boundary.to_string()))
+    }
+}
+
+fn event_log_reflection_cache() -> &'static StdMutex<HashMap<PathBuf, Arc<EventLogReflectionIndex>>>
+{
+    static CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<EventLogReflectionIndex>>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn forget_event_log(path: &Path) {
+    if let Ok(mut cache) = event_log_reflection_cache().lock() {
+        cache.remove(path);
+    }
+}
+
+/// Drop indexed logs directly under `root` that its listing no longer saw.
+fn retain_listed_event_logs(root: &Path, listed: &HashSet<PathBuf>) {
+    if let Ok(mut cache) = event_log_reflection_cache().lock() {
+        cache.retain(|path, _| path.parent() != Some(root) || listed.contains(path));
+    }
+}
+
+fn parse_event_log_line(line: &str) -> serde_json::Result<LearningEvent> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    EVENT_LOG_LINE_PARSES.with(|parses| parses.set(parses.get() + 1));
+    serde_json::from_str(line)
+}
+
+/// The (episode_id, boundary) a completion event records; only string
+/// fields can ever match a lookup.
+fn completed_reflection_key(event: &LearningEvent) -> Option<(String, String)> {
+    if event.event_type != LEARNING_REFLECTION_COMPLETED_EVENT {
+        return None;
+    }
+    let episode_id = event.payload.get("episode_id").and_then(Value::as_str)?;
+    let boundary = event.payload.get("boundary").and_then(Value::as_str)?;
+    Some((episode_id.to_string(), boundary.to_string()))
+}
+
 impl LearningStore {
     pub fn new(workspace_layout: ArtifactV2Workspace) -> Self {
         Self { workspace_layout }
@@ -300,6 +450,223 @@ impl LearningStore {
         serde_yaml::from_str(&content).with_context(|| format!("parsing {}", path.display()))
     }
 
+    /// `read_yaml` for a procedure file, parsed once per file revision. An
+    /// unchanged stamp (size + mtime) reuses the cached parse without reading;
+    /// a new stamp re-reads and reuses it when the bytes hash the same. Errors
+    /// are `read_yaml`'s, and a file that changed while read is not cached.
+    fn read_procedure_file(&self, path: &Path) -> Result<LearningProcedure> {
+        let Some(stamp) = self.procedure_file_stamp(path) else {
+            forget_procedure_file(path);
+            return self.read_yaml(path);
+        };
+        let cached = procedure_file_cache()
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(path).cloned());
+        if let Some(state) = cached
+            .as_ref()
+            .filter(|state| state.stamp == stamp && !state.racy)
+        {
+            return Ok(LearningProcedure::clone(&state.procedure));
+        }
+        let content = match self.workspace_layout.read_to_string_path_sync(path) {
+            Ok(content) => content,
+            Err(error) => {
+                forget_procedure_file(path);
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            },
+        };
+        let content_hash = *blake3::hash(content.as_bytes()).as_bytes();
+        let procedure = match cached.filter(|state| state.content_hash == content_hash) {
+            Some(state) => Arc::clone(&state.procedure),
+            None => match parse_procedure_yaml(&content) {
+                Ok(procedure) => Arc::new(procedure),
+                Err(error) => {
+                    forget_procedure_file(path);
+                    return Err(error).with_context(|| format!("parsing {}", path.display()));
+                },
+            },
+        };
+        // Bytes read under a different stamp belong to neither version.
+        let stable = self.procedure_file_stamp(path) == Some(stamp);
+        if let Ok(mut cache) = procedure_file_cache().lock() {
+            if !stable {
+                cache.remove(path);
+            } else {
+                if cache.len() >= MAX_CACHED_PROCEDURE_FILES && !cache.contains_key(path) {
+                    cache.clear();
+                }
+                cache.insert(
+                    path.to_path_buf(),
+                    Arc::new(ProcedureFileState {
+                        stamp,
+                        content_hash,
+                        racy: procedure_stamp_is_racy(stamp),
+                        procedure: Arc::clone(&procedure),
+                    }),
+                );
+            }
+        }
+        Ok(LearningProcedure::clone(&procedure))
+    }
+
+    fn procedure_file_stamp(&self, path: &Path) -> Option<ProcedureFileStamp> {
+        let metadata = self
+            .workspace_layout
+            .metadata_path_sync(path)
+            .ok()
+            .flatten()
+            .filter(|metadata| metadata.is_file())?;
+        Some(ProcedureFileStamp {
+            len: metadata.len(),
+            modified_nanos: metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos()),
+        })
+    }
+
+    fn event_log_stamp(&self, path: &Path) -> Option<EventLogStamp> {
+        let metadata = self
+            .workspace_layout
+            .metadata_path_sync(path)
+            .ok()
+            .flatten()
+            .filter(|metadata| metadata.is_file())?;
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            Some((metadata.dev(), metadata.ino()))
+        };
+        #[cfg(not(unix))]
+        let identity = None;
+        Some(EventLogStamp {
+            len: metadata.len(),
+            modified_nanos: metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos()),
+            identity,
+        })
+    }
+
+    /// The completed-reflection index of one event log, kept between calls
+    /// so each line is deserialized once. An unchanged settled stamp reuses
+    /// the index without reading. Otherwise the log is re-read and, when the
+    /// already-scanned prefix still hashes the same, only lines appended
+    /// after it are parsed; a shrunk, replaced or rewritten log is rescanned
+    /// from byte 0. A complete line fails exactly as `read_jsonl` does and
+    /// leaves nothing cached; an unterminated final line counts only once it
+    /// parses, and is never consumed until its newline lands.
+    fn event_log_reflection_index(&self, path: &Path) -> Result<Arc<EventLogReflectionIndex>> {
+        let stamp = self.event_log_stamp(path);
+        let cached = event_log_reflection_cache()
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(path).cloned());
+        if let Some(index) = cached
+            .as_ref()
+            .filter(|index| stamp.is_some() && index.stamp == stamp && !index.racy)
+        {
+            return Ok(Arc::clone(index));
+        }
+        let content = match self.workspace_layout.read_to_string_path_sync(path) {
+            Ok(content) => content,
+            Err(ArtifactV2Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                forget_event_log(path);
+                String::new()
+            },
+            Err(error) => {
+                forget_event_log(path);
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            },
+        };
+        let bytes = content.as_bytes();
+
+        let mut hasher = blake3::Hasher::new();
+        let resumed = match cached {
+            Some(index) if index.scanned_len <= bytes.len() => {
+                hasher.update(&bytes[..index.scanned_len]);
+                if *hasher.finalize().as_bytes() == index.scanned_hash {
+                    Some(index)
+                } else {
+                    hasher.reset();
+                    None
+                }
+            },
+            _ => None,
+        };
+        let (mut completed, mut scanned_len, mut scanned_lines) = match resumed {
+            Some(index) => (
+                index.completed.clone(),
+                index.scanned_len,
+                index.scanned_lines,
+            ),
+            None => (HashSet::new(), 0, 0),
+        };
+
+        // A verified prefix ends at a newline, so the last newline is at or
+        // past it; `max` only guards the empty-prefix case.
+        let complete_len = content
+            .rfind('\n')
+            .map_or(0, |newline| newline + 1)
+            .max(scanned_len);
+        for line in content[scanned_len..complete_len].lines() {
+            scanned_lines += 1;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let event = match parse_event_log_line(line)
+                .with_context(|| format!("parsing {} line {}", path.display(), scanned_lines))
+            {
+                Ok(event) => event,
+                Err(error) => {
+                    forget_event_log(path);
+                    return Err(error);
+                },
+            };
+            if let Some(key) = completed_reflection_key(&event) {
+                completed.insert(key);
+            }
+        }
+        hasher.update(&bytes[scanned_len..complete_len]);
+        scanned_len = complete_len;
+
+        let tail = content[complete_len..].trim();
+        let unterminated_completion = if tail.is_empty() {
+            None
+        } else {
+            parse_event_log_line(tail)
+                .ok()
+                .as_ref()
+                .and_then(completed_reflection_key)
+        };
+
+        // Bytes read under a different stamp must be re-read next time.
+        let stable = stamp.is_some() && self.event_log_stamp(path) == stamp;
+        let index = Arc::new(EventLogReflectionIndex {
+            stamp,
+            racy: !stable || mtime_is_racy(stamp.and_then(|stamp| stamp.modified_nanos)),
+            scanned_len,
+            scanned_lines,
+            scanned_hash: *hasher.finalize().as_bytes(),
+            completed,
+            unterminated_completion,
+        });
+        if stamp.is_some() {
+            if let Ok(mut cache) = event_log_reflection_cache().lock() {
+                if cache.len() >= MAX_CACHED_EVENT_LOGS && !cache.contains_key(path) {
+                    cache.clear();
+                }
+                cache.insert(path.to_path_buf(), Arc::clone(&index));
+            }
+        }
+        Ok(index)
+    }
+
     fn read_jsonl<T: for<'de> serde::Deserialize<'de>>(&self, path: &Path) -> Result<Vec<T>> {
         let content = match self.workspace_layout.read_to_string_path_sync(path) {
             Ok(content) => content,
@@ -337,6 +704,7 @@ impl LearningStore {
     }
 
     fn remove_file(&self, path: &Path) -> Result<()> {
+        forget_procedure_file(path);
         match self.workspace_layout.remove_file_path_sync(path) {
             Ok(()) => Ok(()),
             Err(ArtifactV2Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -832,7 +1200,9 @@ impl LearningStore {
                 &scope.workspace,
                 status.as_str(),
             );
+            let mut listed = HashSet::new();
             if !self.path_exists(&root) {
+                retain_listed_procedure_files(&root, &listed);
                 continue;
             }
             for entry in self
@@ -846,7 +1216,9 @@ impl LearningStore {
                 if entry.path().extension().and_then(|ext| ext.to_str()) != Some("yaml") {
                     continue;
                 }
-                let procedure: LearningProcedure = self.read_yaml(&entry.path())?;
+                let path = entry.path();
+                let procedure = self.read_procedure_file(&path)?;
+                listed.insert(path);
                 if let Some(expected) = filters.owner_agent.as_deref() {
                     if procedure.owner_agent.as_deref() != Some(expected) {
                         continue;
@@ -855,6 +1227,7 @@ impl LearningStore {
                 self.ensure_single_procedure_status(scope, &procedure.id)?;
                 procedures.push(procedure);
             }
+            retain_listed_procedure_files(&root, &listed);
         }
         procedures.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         if let Some(limit) = filters.limit {
@@ -871,7 +1244,7 @@ impl LearningStore {
         let Some(path) = self.find_procedure_path(scope, procedure_id)? else {
             return Err(anyhow!("learning procedure `{procedure_id}` was not found"));
         };
-        self.read_yaml(&path)
+        self.read_procedure_file(&path)
     }
 
     pub fn read_procedure_with_decisions(
@@ -2579,6 +2952,9 @@ impl LearningStore {
         Ok(events)
     }
 
+    /// Whether any event log records a `learning_reflection_completed` event
+    /// for this episode and boundary. Runs after every turn, so each log is
+    /// read through its incremental index rather than deserialized whole.
     pub fn has_completed_reflection_for_episode(
         &self,
         scope: &LearningScope,
@@ -2588,7 +2964,9 @@ impl LearningStore {
         let root = self
             .workspace_layout
             .learning_events_dir(&scope.principal, &scope.workspace);
+        let mut listed = HashSet::new();
         if !self.path_exists(&root) {
+            retain_listed_event_logs(&root, &listed);
             return Ok(false);
         }
         for entry in self
@@ -2599,20 +2977,17 @@ impl LearningStore {
             if entry.file_type()?.is_file()
                 && entry.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl")
             {
-                for event in self.read_jsonl::<LearningEvent>(&entry.path())? {
-                    if event.event_type != "learning_reflection_completed" {
-                        continue;
-                    }
-                    let same_episode =
-                        event.payload.get("episode_id").and_then(Value::as_str) == Some(episode_id);
-                    let same_boundary =
-                        event.payload.get("boundary").and_then(Value::as_str) == Some(boundary);
-                    if same_episode && same_boundary {
-                        return Ok(true);
-                    }
+                let path = entry.path();
+                if self
+                    .event_log_reflection_index(&path)?
+                    .contains(episode_id, boundary)
+                {
+                    return Ok(true);
                 }
+                listed.insert(path);
             }
         }
+        retain_listed_event_logs(&root, &listed);
         Ok(false)
     }
 
@@ -3138,7 +3513,11 @@ impl LearningStore {
             procedure.status.as_str(),
             &procedure.id,
         );
-        self.write_yaml_pretty(&path, procedure)
+        // The new stamp (and the settle window, for a same-tick rewrite)
+        // already invalidates the entry; dropping it just frees the old parse.
+        let written = self.write_yaml_pretty(&path, procedure);
+        forget_procedure_file(&path);
+        written
     }
 
     fn rollback_procedure_transition(
@@ -3775,5 +4154,565 @@ mod tests {
             )
             .unwrap();
         assert_eq!(items.len(), 1);
+    }
+
+    fn procedure_parses() -> u64 {
+        PROCEDURE_PARSES.with(std::cell::Cell::get)
+    }
+
+    fn cached_procedure_file(path: &Path) -> bool {
+        procedure_file_cache().lock().unwrap().contains_key(path)
+    }
+
+    /// Back-date a file so its stamp is past the settle window.
+    fn set_mtime_ago(path: &Path, seconds: u64) {
+        let modified = SystemTime::now() - std::time::Duration::from_secs(seconds);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    fn create_draft_procedure(store: &LearningStore, scope: &LearningScope, id: &str) -> PathBuf {
+        store
+            .create_procedure(
+                scope.clone(),
+                CreateLearningProcedureRequest {
+                    principal: None,
+                    workspace: None,
+                    id: Some(id.to_string()),
+                    actor: "test".to_string(),
+                    reason: Some("test fixture".to_string()),
+                    status: LearningProcedureStatus::Draft,
+                    title: format!("Procedure {id}"),
+                    summary: format!("Reusable procedure {id}"),
+                    owner_agent: None,
+                    activation: Default::default(),
+                    workflow: vec!["Inspect the source evidence.".to_string()],
+                    decision_points: Vec::new(),
+                    verification: Vec::new(),
+                    failure_modes: Vec::new(),
+                    evidence_refs: Vec::new(),
+                    source_candidate_id: None,
+                    source_task_ids: Vec::new(),
+                    source_chat_session_ids: Vec::new(),
+                    success_count: 0,
+                    failure_count: 0,
+                    payload: Value::Null,
+                },
+            )
+            .unwrap();
+        store.workspace_layout.learning_procedure_path(
+            &scope.principal,
+            &scope.workspace,
+            LearningProcedureStatus::Draft.as_str(),
+            id,
+        )
+    }
+
+    #[test]
+    fn repeated_procedure_reads_parse_each_file_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        let path = create_draft_procedure(&store, &scope, "proc-repeat");
+        let expected: LearningProcedure = store.read_yaml(&path).unwrap();
+
+        let parses = procedure_parses();
+        let first = store.read_procedure(&scope, "proc-repeat").unwrap();
+        assert_eq!(procedure_parses(), parses + 1);
+        // Fresh stamps are re-hashed, not re-parsed.
+        let second = store.read_procedure(&scope, "proc-repeat").unwrap();
+        set_mtime_ago(&path, 60);
+        let third = store.read_procedure(&scope, "proc-repeat").unwrap();
+        let listed = store
+            .list_procedures(&scope, LearningProcedureFilters::default())
+            .unwrap();
+        assert_eq!(procedure_parses(), parses + 1);
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+        assert_eq!(third, expected);
+        assert_eq!(listed, vec![expected]);
+    }
+
+    #[test]
+    fn identical_procedure_rewrite_is_not_reparsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        let path = create_draft_procedure(&store, &scope, "proc-touch");
+        set_mtime_ago(&path, 120);
+        let before = store.read_procedure(&scope, "proc-touch").unwrap();
+
+        let parses = procedure_parses();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        set_mtime_ago(&path, 60);
+        let after = store.read_procedure(&scope, "proc-touch").unwrap();
+        assert_eq!(procedure_parses(), parses);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn changed_procedure_file_is_reparsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        let path = create_draft_procedure(&store, &scope, "proc-change");
+        set_mtime_ago(&path, 120);
+        let mut procedure = store.read_procedure(&scope, "proc-change").unwrap();
+
+        procedure.title = "Procedure revised outside the store".to_string();
+        std::fs::write(&path, serde_yaml::to_string(&procedure).unwrap()).unwrap();
+        set_mtime_ago(&path, 60);
+        let parses = procedure_parses();
+        let read = store.read_procedure(&scope, "proc-change").unwrap();
+        assert_eq!(procedure_parses(), parses + 1);
+        assert_eq!(read.title, "Procedure revised outside the store");
+
+        let updated = store
+            .update_procedure(
+                &scope,
+                "proc-change",
+                "test",
+                "revised",
+                "test",
+                Vec::new(),
+                |p| {
+                    p.summary = "Revised through the store".to_string();
+                },
+            )
+            .unwrap();
+        let listed = store
+            .list_procedures(&scope, LearningProcedureFilters::default())
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].summary, "Revised through the store");
+        assert_eq!(listed[0].version, updated.version);
+    }
+
+    #[test]
+    fn deleted_procedure_file_leaves_listing_and_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        let kept = create_draft_procedure(&store, &scope, "proc-kept");
+        let deleted = create_draft_procedure(&store, &scope, "proc-deleted");
+        let listed = store
+            .list_procedures(&scope, LearningProcedureFilters::default())
+            .unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(cached_procedure_file(&deleted));
+
+        std::fs::remove_file(&deleted).unwrap();
+        let listed = store
+            .list_procedures(&scope, LearningProcedureFilters::default())
+            .unwrap();
+        assert_eq!(
+            listed.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["proc-kept"]
+        );
+        assert!(cached_procedure_file(&kept));
+        assert!(!cached_procedure_file(&deleted));
+        assert!(store.read_procedure(&scope, "proc-deleted").is_err());
+    }
+
+    #[test]
+    fn procedure_parse_error_matches_uncached_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        let path = create_draft_procedure(&store, &scope, "proc-broken");
+        let valid = store.read_procedure(&scope, "proc-broken").unwrap();
+
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "id: proc-broken\ntitle: [unterminated\n").unwrap();
+        let expected = format!(
+            "{:#}",
+            store.read_yaml::<LearningProcedure>(&path).unwrap_err()
+        );
+        for _ in 0..2 {
+            let read = store.read_procedure(&scope, "proc-broken").unwrap_err();
+            assert_eq!(format!("{read:#}"), expected);
+            let listed = store
+                .list_procedures(&scope, LearningProcedureFilters::default())
+                .unwrap_err();
+            assert_eq!(format!("{listed:#}"), expected);
+        }
+        assert!(!cached_procedure_file(&path));
+
+        std::fs::write(&path, original).unwrap();
+        assert_eq!(store.read_procedure(&scope, "proc-broken").unwrap(), valid);
+    }
+
+    fn event_log_line_parses() -> u64 {
+        EVENT_LOG_LINE_PARSES.with(std::cell::Cell::get)
+    }
+
+    fn append_learning_event(
+        store: &LearningStore,
+        scope: &LearningScope,
+        event_type: &str,
+        episode_id: &str,
+        boundary: &str,
+    ) -> PathBuf {
+        let event = store
+            .append_event(
+                scope.clone(),
+                CreateLearningEventRequest {
+                    principal: None,
+                    workspace: None,
+                    event_type: event_type.to_string(),
+                    agent_id: None,
+                    task_id: None,
+                    execution_id: None,
+                    chat_session_id: None,
+                    summary: format!("{event_type} for {episode_id}"),
+                    evidence_refs: Vec::new(),
+                    payload: serde_json::json!({
+                        "episode_id": episode_id,
+                        "boundary": boundary,
+                    }),
+                },
+            )
+            .unwrap();
+        store.event_log_path(scope, event.created_at.date_naive().to_string())
+    }
+
+    fn event_line(scope: &LearningScope, event_type: &str, episode_id: &str) -> String {
+        let event = CreateLearningEventRequest {
+            principal: None,
+            workspace: None,
+            event_type: event_type.to_string(),
+            agent_id: None,
+            task_id: None,
+            execution_id: None,
+            chat_session_id: None,
+            summary: "fixture".to_string(),
+            evidence_refs: Vec::new(),
+            payload: serde_json::json!({"episode_id": episode_id, "boundary": "turn"}),
+        }
+        .into_event(scope.clone());
+        serde_json::to_string(&event).unwrap()
+    }
+
+    /// The pre-index answer: deserialize every line of every log.
+    fn full_scan_has_completed(
+        store: &LearningStore,
+        scope: &LearningScope,
+        episode_id: &str,
+        boundary: &str,
+    ) -> bool {
+        let root = store
+            .workspace_layout
+            .learning_events_dir(&scope.principal, &scope.workspace);
+        let wanted = Some((episode_id.to_string(), boundary.to_string()));
+        std::fs::read_dir(&root).unwrap().flatten().any(|entry| {
+            store
+                .read_jsonl::<LearningEvent>(&entry.path())
+                .unwrap()
+                .iter()
+                .any(|event| completed_reflection_key(event) == wanted)
+        })
+    }
+
+    #[test]
+    fn reflection_index_matches_full_scan_and_parses_only_appended_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        assert!(!store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+
+        append_learning_event(
+            &store,
+            &scope,
+            "learning_reflection_started",
+            "ep-1",
+            "turn",
+        );
+        append_learning_event(
+            &store,
+            &scope,
+            LEARNING_REFLECTION_COMPLETED_EVENT,
+            "ep-1",
+            "turn",
+        );
+        append_learning_event(&store, &scope, "skill_invocation_failed", "ep-2", "turn");
+        let parses = event_log_line_parses();
+        let probes = [
+            ("ep-1", "turn"),
+            ("ep-1", "task"),
+            ("ep-2", "turn"),
+            ("ep-3", "turn"),
+        ];
+        for (episode, boundary) in probes {
+            assert_eq!(
+                store
+                    .has_completed_reflection_for_episode(&scope, episode, boundary)
+                    .unwrap(),
+                full_scan_has_completed(&store, &scope, episode, boundary),
+                "{episode}/{boundary}"
+            );
+        }
+        // Every line parsed once across all four probes.
+        assert_eq!(event_log_line_parses(), parses + 3);
+
+        let path = append_learning_event(
+            &store,
+            &scope,
+            LEARNING_REFLECTION_COMPLETED_EVENT,
+            "ep-2",
+            "turn",
+        );
+        let parses = event_log_line_parses();
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-2", "turn")
+            .unwrap());
+        assert_eq!(event_log_line_parses(), parses + 1);
+        for (episode, boundary) in probes {
+            assert_eq!(
+                store
+                    .has_completed_reflection_for_episode(&scope, episode, boundary)
+                    .unwrap(),
+                full_scan_has_completed(&store, &scope, episode, boundary),
+                "{episode}/{boundary}"
+            );
+        }
+        assert_eq!(event_log_line_parses(), parses + 1);
+
+        // A settled stamp is trusted without reading the log at all.
+        set_mtime_ago(&path, 60);
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+        let index = event_log_reflection_cache()
+            .lock()
+            .unwrap()
+            .get(&path)
+            .cloned()
+            .unwrap();
+        assert!(!index.racy);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(index.scanned_len, content.len());
+        assert_eq!(index.scanned_lines, content.lines().count());
+    }
+
+    #[test]
+    fn reflection_index_rescans_a_shrunk_or_rewritten_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        append_learning_event(
+            &store,
+            &scope,
+            "learning_reflection_started",
+            "ep-1",
+            "turn",
+        );
+        let path = append_learning_event(
+            &store,
+            &scope,
+            LEARNING_REFLECTION_COMPLETED_EVENT,
+            "ep-1",
+            "turn",
+        );
+        set_mtime_ago(&path, 120);
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+
+        // Shrunk: the completion line is gone.
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                event_line(&scope, "learning_reflection_started", "ep-1")
+            ),
+        )
+        .unwrap();
+        set_mtime_ago(&path, 60);
+        assert!(!store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+
+        // Rewritten in place and grown: the old prefix no longer matches, so
+        // the scan restarts instead of resuming past it.
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n",
+                event_line(&scope, LEARNING_REFLECTION_COMPLETED_EVENT, "ep-9"),
+                event_line(&scope, "learning_reflection_started", "ep-1"),
+            ),
+        )
+        .unwrap();
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-9", "turn")
+            .unwrap());
+        assert!(!store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+
+        // Replaced by rename: a new inode holding the same prefix plus more.
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(&event_line(
+            &scope,
+            LEARNING_REFLECTION_COMPLETED_EVENT,
+            "ep-1",
+        ));
+        content.push('\n');
+        store
+            .workspace_layout
+            .write_atomic_path_sync(&path, content.as_bytes())
+            .unwrap();
+        for (episode, expected) in [("ep-1", true), ("ep-9", true), ("ep-2", false)] {
+            assert_eq!(
+                store
+                    .has_completed_reflection_for_episode(&scope, episode, "turn")
+                    .unwrap(),
+                expected,
+                "{episode}"
+            );
+        }
+
+        // A malformed complete line fails like the uncached read and is not
+        // indexed; repairing it recovers.
+        let valid = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{valid}{{not json\n")).unwrap();
+        let expected = format!(
+            "{:#}",
+            store.read_jsonl::<LearningEvent>(&path).unwrap_err()
+        );
+        let error = store
+            .has_completed_reflection_for_episode(&scope, "ep-2", "turn")
+            .unwrap_err();
+        assert_eq!(format!("{error:#}"), expected);
+        assert!(!event_log_reflection_cache()
+            .lock()
+            .unwrap()
+            .contains_key(&path));
+        std::fs::write(&path, valid).unwrap();
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+    }
+
+    #[test]
+    fn reflection_index_waits_for_a_torn_tail_to_complete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        let path = append_learning_event(
+            &store,
+            &scope,
+            "learning_reflection_started",
+            "ep-1",
+            "turn",
+        );
+        let complete_len = std::fs::metadata(&path).unwrap().len() as usize;
+
+        let line = event_line(&scope, LEARNING_REFLECTION_COMPLETED_EVENT, "ep-1");
+        let (head, rest) = line.split_at(line.len() / 2);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, head.as_bytes()).unwrap();
+        assert!(!store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+        let index = event_log_reflection_cache()
+            .lock()
+            .unwrap()
+            .get(&path)
+            .cloned()
+            .unwrap();
+        assert_eq!(index.scanned_len, complete_len);
+        assert_eq!(index.scanned_lines, 1);
+
+        // Whole but unterminated: it counts, as it did for the full read,
+        // yet stays unconsumed until its newline lands.
+        std::io::Write::write_all(&mut file, rest.as_bytes()).unwrap();
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+        let index = event_log_reflection_cache()
+            .lock()
+            .unwrap()
+            .get(&path)
+            .cloned()
+            .unwrap();
+        assert_eq!(index.scanned_len, complete_len);
+        assert!(index.completed.is_empty());
+
+        std::io::Write::write_all(&mut file, b"\n").unwrap();
+        let parses = event_log_line_parses();
+        assert!(store
+            .has_completed_reflection_for_episode(&scope, "ep-1", "turn")
+            .unwrap());
+        assert_eq!(event_log_line_parses(), parses + 1);
+        let index = event_log_reflection_cache()
+            .lock()
+            .unwrap()
+            .get(&path)
+            .cloned()
+            .unwrap();
+        assert_eq!(index.scanned_lines, 2);
+        assert!(index.unterminated_completion.is_none());
+        assert!(index
+            .completed
+            .contains(&("ep-1".to_string(), "turn".to_string())));
+    }
+
+    #[test]
+    fn reflection_index_is_safe_under_concurrent_appends_and_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LearningStore::new(ArtifactV2Workspace::new(tmp.path()));
+        let scope = LearningScope::new("anonymous", "default");
+        std::thread::scope(|threads| {
+            for writer in 0..4 {
+                let store = store.clone();
+                let scope = scope.clone();
+                threads.spawn(move || {
+                    for turn in 0..8 {
+                        let episode = format!("ep-{writer}-{turn}");
+                        append_learning_event(
+                            &store,
+                            &scope,
+                            LEARNING_REFLECTION_COMPLETED_EVENT,
+                            &episode,
+                            "turn",
+                        );
+                        assert!(store
+                            .has_completed_reflection_for_episode(&scope, &episode, "turn")
+                            .unwrap());
+                    }
+                });
+            }
+            for _ in 0..2 {
+                let store = store.clone();
+                let scope = scope.clone();
+                threads.spawn(move || {
+                    for _ in 0..32 {
+                        assert!(!store
+                            .has_completed_reflection_for_episode(&scope, "ep-never", "turn")
+                            .unwrap());
+                    }
+                });
+            }
+        });
+        for writer in 0..4 {
+            for turn in 0..8 {
+                let episode = format!("ep-{writer}-{turn}");
+                assert!(store
+                    .has_completed_reflection_for_episode(&scope, &episode, "turn")
+                    .unwrap());
+                assert!(full_scan_has_completed(&store, &scope, &episode, "turn"));
+            }
+        }
     }
 }

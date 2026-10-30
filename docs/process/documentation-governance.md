@@ -4,6 +4,11 @@
 
 Any behavior-bearing code change must include a docs change in an owned documentation path.
 
+Product copy uses the current display names in the [Work vocabulary](../components/unified-ui/unified-work.md#work-vocabulary).
+A rename updates active guides, navigation/help, feature catalogs, tour captions
+and changed narration together. Keep API/configuration identifiers accurate and
+retain historical wording in archived plans and changelogs.
+
 Ownership mapping is defined in [`docs/docs_guard_rules.json`](../docs_guard_rules.json).
 Swift sources and Magios automation scripts are part of the `magios` ownership
 rule; their behavior changes must update `docs/components/magios/**`, the
@@ -47,6 +52,13 @@ so the Evals registry can discover their reports. See [testing](../testing.md).
 
 - Local pre-commit: `.githooks/pre-commit` runs `python3 scripts/docs_guard.py --staged`
 - CI: `Docs Guard` workflow runs `python3 scripts/docs_guard.py`
+- A range check (CI, `--base-ref`) ignores files that only format-only commits
+  touched. List such a commit in `.git-blame-ignore-revs` and a reformat no longer
+  owes documentation in every component it changed; a real change to the same
+  file in the range still counts.
+- Rust CI installs `protoc`, serializes backend compiles, checks formatting, and
+  audits the committed workspace and Desktop lockfiles without regenerating them.
+  Desktop setup preserves pnpm startup diagnostics; Docker lint keeps its warning threshold.
 - The same docs-guard gate runs `scripts/skillshub_runtime_root_linter.py`,
   which rejects new skillshub resolution of `MAGICIAN_ROOT_DIR` /
   `MAGICIAN_STORAGE_PATH` outside `skillshub/scripts/runtime_root_shim.py`,
@@ -302,7 +314,16 @@ python3 scripts/docs_guard.py --working-tree --remind-only
 
 ## Writing Standard
 
-- Prefer concise, task-focused docs.
+- Describe durable architecture, contracts, usage and operational constraints.
+- Every five commits, and before handoff, review the batch and uncommitted docs
+  and changelogs. Merge duplicate explanations into their canonical owner; remove
+  progress diaries, per-build iterations, machine-specific receipts and repeated
+  test totals. Keep necessary qualification limits and recovery procedures.
+- Changelogs summarize user-visible changes per release; commit history and CI
+  reports hold implementation chronology and run evidence.
+- Evaluate each batch for showcase impact. Update `showcase/anatomy/` feature
+  descriptions, source pointers and tours when product behavior changes; preserve
+  maturity caveats and do not market formatting or fixture repairs as features.
 - Keep one canonical page per concept; avoid duplicate variants.
 - Keep implementation-heavy details near code when they are tightly coupled.
 - Link from `docs/components/<component>/README.md` so navigation remains centralized.

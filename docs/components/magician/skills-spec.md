@@ -10,6 +10,26 @@ Packs publish as app content via `metadata.magician.app_publication`
 HOME; `brainstorm-facilitation` is the procedure skill used by Loom and Live
 Thinking Map ([`skillshub/CHANGELOG.md`](../../../skillshub/CHANGELOG.md)).
 
+Remote MCP supports explicit `auth.kind: none` / `requirement: none` contracts
+without a bearer token or Auth Broker. They retain scoped audit, local catalog
+policy, approval and resource checks; failed OAuth connections never fall back
+to anonymous access. Endpoint choices remain reviewed manifest aliases.
+
+`mcp_bindings.public_profile` declares a bounded literal public JSON document and
+its native URL argument pointer. The runtime publishes an immutable copy under
+its own public HTTPS origin and binds that URL before approvals; local-only
+installs require remote-access setup. Only those content-addressed profiles are
+public, with no environment interpolation or private file serving.
+
+`mcp_bindings.tools` can declare native `commerce_quote` producers and
+`commerce_checkout` consumers. Quotes are short-lived, single-use and bound to
+scope, endpoint, credential session, policy, cart, selection and exact total;
+host-owned atomic state and account file leases preserve this across worker
+handoff and restart. Missing/expired state fails closed. Zero-price checkout
+requires an explicit `server_enforces_zero_price` binding for a reviewed provider
+contract that atomically enforces zero at placement. Payment continuation tools
+do not initiate another purchase or reserve the amount again.
+
 ## Required frontmatter (per spec)
 
 - `name`: 1-64 chars, lowercase + hyphens, must match the parent dir name.
@@ -50,7 +70,7 @@ Thinking Map ([`skillshub/CHANGELOG.md`](../../../skillshub/CHANGELOG.md)).
   container build check that (`skills get core --full`, `AGENT_BROWSER_SKILLS_DIR`
   blank); first boot materializes the default scope's browser skill before use.
 - `bin/` adapters are the provider client (canonical JSON on bounded stdin); a
-  native-CLI skill (Metabase) calls its CLI via typed actions. Absent optional /
+  native-CLI skill calls its CLI via typed actions. Absent optional /
   `at_least_one` secret bindings are omitted, never set empty. Governed dispatch
   runs only the exact declared, regular, non-symlink executable from the
   loader-owned skill directory.
@@ -100,7 +120,7 @@ Template vars in `implementation.command` / `cwd` / `arg_mappings`:
 | `{scope_capabilities_root}` | `<scope>/` | scope-local files (bot env-files, gws auth, …) |
 | `{scope_capability_auth_root}` | `<scope>/auth/` | OAuth tokens / credential dumps |
 | `{scope_capability_workdir_root}` | `<scope>/workdirs/` | scratch dirs (e.g. WhatsApp `WU_HOME`) |
-| `{skill_runtime_root}` | per call: `<scope>/skills/<skill>/` if scope-installed, else `<system>/skills/<skill>/` | sibling scripts, bundled binaries: `command: ['{skill_runtime_root}/bin/metabase-pp-cli']` |
+| `{skill_runtime_root}` | per call: `<scope>/skills/<skill>/` if scope-installed, else `<system>/skills/<skill>/` | sibling scripts, bundled binaries: `command: ['{skill_runtime_root}/bin/document-to-markdown']` |
 
 Argument names (`{working_dir}`, `{prompt}`) substitute at spawn; context vars
 resolve once at dispatcher construction.
@@ -175,7 +195,10 @@ irrelevant) with two roles:
 
 - **Entry point**: the process the runtime execs; bound as execution authority,
   copied into the private single-file snapshot and revalidated before launch.
-  It must resolve or the call fails.
+  It must resolve or the call fails. When it resolves to a JavaScript launcher
+  in an installed npm package (including through the skill's own `bin/` link),
+  the package's native `node_modules/.bin_real/<name>` or platform binary is
+  snapshotted instead, since a launcher copied alone loses the modules beside it.
 - **PATH companions**: every other name. The cleared child `PATH` holds only
   the directories resolving this list; companions run in place, are never
   snapshotted or bound, and an optional one is no precondition for the skill.
@@ -221,7 +244,7 @@ metadata:
   its CLI/SDK defaults (`skillshub/node_modules`, `skillshub/.venv`; the jail's
   clean env means library defaults apply, not operator overrides), or from the
   broker receipt's `contacted` list after one app run.
-- **Dynamic hosts** (`metabase`'s `METABASE_BASE_URL`, URLs from input) are
+- **Dynamic hosts** (a configured instance origin, URLs from input) are
   left out; the owner picks at install.
 - **`destinations: ["*"]`** (sole entry), for web fetchers: network only under
   the app's "any public host" grant (requested in the manifest, allowed by every
@@ -235,6 +258,10 @@ metadata:
 `expect.max_cost_microunits` requires `expect.max_cost_commodity` matching the
 package's `content_source.output.cost.commodity` (exa `usd`, tavily
 `tavily_credit`), since budgets are keyed by commodity.
+
+Deep research workloads allow up to 2,100 seconds, while their canary probes
+retain a separate 600-second limit. Adapters return partial findings or an
+OpenAI `response_id` for later collection when a run stops early.
 
 ### Skill-pack publication metadata
 
@@ -302,7 +329,7 @@ invalidates the scope's pack-catalog cache and the CLI pack-dir index. Against
   added source files;
 - copies pinned native executables to `<data root>/system/skill-bin/<sha256>/`,
   linking `bin/<name>` relatively (`skillshub/scripts/pinned_bin_store.py`), so
-  a cleaned checkout keeps agent-browser, OfficeCLI, Metabase and
+  a cleaned checkout keeps agent-browser, OfficeCLI and
   document-to-markdown.
 
 Offline, never builds; a link with no source left logs a warning naming

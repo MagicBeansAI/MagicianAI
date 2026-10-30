@@ -96,6 +96,7 @@ fn flat_batch_round_trips_without_text_in_identities() {
         batch: request(),
         choice_candidates: Default::default(),
         locality: Default::default(),
+        assets: Default::default(),
     };
     let json = serde_json::to_value(&request).unwrap();
     assert!(json.get("batch").is_none());
@@ -119,6 +120,7 @@ fn score_outside_rubric_cannot_reach_qualification() {
             instructions: Instruction::Text("quality".into()),
             levels: vec![Criteria::Str("low".into()), Criteria::Str("high".into())],
         })],
+        assets: Default::default(),
     };
     for score in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
         let response = DecisionResponse {

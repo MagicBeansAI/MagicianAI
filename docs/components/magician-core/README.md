@@ -86,8 +86,8 @@ service IDs are not renamed.
   `magician_v2::prompts`. A new prompt JSON is inert until its version
   constant moves; earlier prompt files stay available. Current pins:
   - tutor: `visual_storyboard_runtime` 1.2.0, `personal_tutor_policy` 1.1.0;
-  - agentic decision: `agentic_decision` 1.3.11 and `agentic_decision_system`
-    1.0.9 (pass large values by reference with `{"$ref"}` / `{"$file"}`
+  - agentic decision: `agentic_decision` 1.3.12 and `agentic_decision_system`
+    1.0.10 (pass large values by reference with `{"$ref"}` / `{"$file"}`
     arguments and `export_result` instead of paging and retyping them; run
     saved artifacts through their own system before copying their source;
     count errors inside a successful result as failures; investigate context
@@ -97,6 +97,11 @@ service IDs are not renamed.
     needs model/runtime qualification;
   - `chat_outer_loop_system` 0.0.7 (need-based tool use, a "Finishing a
     request" section);
+  - output synthesis: `execution_output_synthesize` 1.3.0 and
+    `task_user_output_synthesize` 1.2.0 (preserve supported findings during
+    grounding repairs and report the bundle's `run_effects`
+    as done; 1.3.0 keeps the run's own answer as the draft unless a tool
+    result contradicts it);
   - slot extraction: `SLOT_EXTRACTION` (1.0.0, the `legacy` planning path) and
     `SLOT_EXTRACTION_ASSESSED` (1.1.0: adds request-level
     `extraction_confidence` / `extraction_reasoning`, used by
@@ -127,7 +132,9 @@ service IDs are not renamed.
   `channel_assist`, `feed` and `resurfacing`, so it is not a leaf yet.
 - `history` — legacy lane inference for threads.
 - `config_extras`, `hitl`, `gws_cli` — std + serde helpers (gws_cli shells out
-  to the Google Workspace CLI), re-exported from `magician_v2`.
+  to the Google Workspace CLI), re-exported from `magician_v2`. `hitl` owns
+  `HitlRespondHandle` / `hitl_respond_handle`
+  ([respond handle](../magician/hitl-attention.md#respond-handle-respond)).
 - `slot_graph` kernel (types + enrichment) and `confidence` — the persisted
   slot vocabulary (`SlotRecord`, `SlotType`, provenance, `ProvisionalSlot`),
   the enrichment pipeline and the confidence scorer.
@@ -156,7 +163,12 @@ service IDs are not renamed.
   histograms and bounded scoped SQLite summaries.
   `make test-decision-metrics-store` verifies receipt deduplication, cohort
   separation, explicit review, retention and indexed large-data reads without
-  compiling the host.
+  compiling the host. `decision_metrics::health` classifies retained cases
+  (decided / unresolved / timeout / error / skipped) from closed status codes
+  and returns per-operation counts, exact p50/p95 wall latency, the latest
+  cause and route health for `GET /plane/decision-metrics/health`; it reads at
+  most 2,048 cases in an `hours` window (1–168). Invocation-only cases keep
+  their closed runner status (`invocation_status`).
 
 ## Layer-2 analysis (slot_graph proper)
 

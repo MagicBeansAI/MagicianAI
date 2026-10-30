@@ -291,7 +291,11 @@ async fn issue_config_token(
 /// agent account that `JournalEntry::bootstrap` + `token_issuance`
 /// would create. End state is identical (token budget +ceiling,
 /// system allocation -ceiling) but it's a single zero-sum entry.
-fn config_token_funding_entry(token_id: &str, commodity: &str, ceiling: Decimal) -> JournalEntry {
+pub(crate) fn config_token_funding_entry(
+    token_id: &str,
+    commodity: &str,
+    ceiling: Decimal,
+) -> JournalEntry {
     use super::ledger::{LedgerEntry, ResourceAmount};
     use uuid::Uuid;
 
@@ -344,6 +348,7 @@ mod tests {
             enabled: true,
             system_ceilings: vec![],
             budgets: rows,
+            model_spend: None,
         };
         ConfigSpendTokenResolver::new(
             config,
@@ -494,6 +499,7 @@ mod tests {
                 enabled: true,
                 system_ceilings: vec![],
                 budgets: vec![budget_row(BudgetScope::Agent, "*", 10)],
+                model_spend: None,
             },
             Arc::clone(&ledger),
             Arc::clone(&store),
@@ -520,6 +526,7 @@ mod tests {
                     carryover: CarryoverPolicy::None,
                     system_ceiling_id: None,
                 }],
+                model_spend: None,
             },
             Arc::clone(&ledger),
             Arc::clone(&store),

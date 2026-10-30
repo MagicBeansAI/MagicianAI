@@ -21,7 +21,8 @@ use crate::magician_v2::{
     },
     execution::durable_task_state::TaskStateActionEnvelope,
     query_analysis::operation_llm_router::{
-        LLMOperation, OperationLlmRouter, OperationRoutingOverrides,
+        LLMOperation, OperationLlmRouter, OperationRoutingOverrides, PreassignedLlmCallIdentity,
+        PreassignedLlmCallSlot,
     },
     slot_graph::extraction::{LlmFunctionCallRequest, LlmFunctionCallResponse, LlmService},
 };
@@ -51,6 +52,9 @@ pub struct TestNativeResponseQueue {
     /// persisted nowhere else, so a test that wants to prove the run was *told*
     /// has to read what it was told.
     prompts: Mutex<Vec<String>>,
+    /// The `tool_choice` override each of those calls sent, in the same
+    /// order (`None` = the provider default).
+    tool_choices: Mutex<Vec<Option<Value>>>,
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -85,7 +89,23 @@ impl TestNativeResponseQueue {
             responses: Mutex::new(responses.into()),
             last_response: Mutex::new(None),
             prompts: Mutex::new(Vec::new()),
+            tool_choices: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The `tool_choice` override of every call, in call order.
+    pub fn tool_choices(&self) -> Vec<Option<Value>> {
+        self.tool_choices
+            .lock()
+            .expect("test native response queue poisoned")
+            .clone()
+    }
+
+    fn record_tool_choice(&self, tool_choice: Option<&Value>) {
+        self.tool_choices
+            .lock()
+            .expect("test native response queue poisoned")
+            .push(tool_choice.cloned());
     }
 
     /// Every prompt the run has asked this queue for a decision on.
@@ -143,6 +163,11 @@ impl TestNativeResponseQueue {
 pub struct MultiLlmAgentAdapter {
     service: Arc<OperationLlmRouter>,
     protected_app: bool,
+    /// Identity the next execution-native decision call carries, minted by
+    /// the caller that already announced the call. Applied only to the
+    /// `call_execution_native*` request — the decision's preflight and side
+    /// calls go through the same router and must keep minting their own.
+    preassigned_decision_call: Option<PreassignedLlmCallSlot>,
     #[cfg(any(test, debug_assertions))]
     test_native_responses: Option<Arc<TestNativeResponseQueue>>,
 }
@@ -157,6 +182,43 @@ struct NativeDecisionResponseError {
     message: String,
     validation_error_class: String,
     telemetry: Option<crate::magician_v2::slot_graph::extraction::LlmCallTelemetry>,
+    /// Prose the rejected response still carried: its free text, else the
+    /// answer a rejected call's arguments spelled out. A turn that must end
+    /// the run uses it rather than discard the model's words.
+    recovered_answer: Option<String>,
+}
+
+/// The prose inside a rejected call's arguments: its `summary` (else
+/// `answer`, `evidence`, `text`) as written, or every string inside it when
+/// the model nested that field in an object or a list.
+fn answer_text_in_arguments(arguments: &serde_json::Value) -> Option<String> {
+    let object = arguments.as_object()?;
+    ["summary", "answer", "evidence", "text"]
+        .iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| {
+            let mut parts = Vec::new();
+            let mut pending = vec![value];
+            while let Some(value) = pending.pop() {
+                match value {
+                    serde_json::Value::String(text) if !text.trim().is_empty() => {
+                        parts.push(text.trim())
+                    },
+                    serde_json::Value::Array(items) => pending.extend(items.iter().rev()),
+                    serde_json::Value::Object(fields) => {
+                        pending.extend(fields.values().collect::<Vec<_>>().into_iter().rev())
+                    },
+                    _ => {},
+                }
+            }
+            (!parts.is_empty()).then(|| parts.join("\n\n"))
+        })
+}
+
+fn non_empty_text(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 fn text_terminal_envelope(text: String) -> ExecutionDecisionEnvelope {
@@ -193,6 +255,62 @@ impl MultiLlmAgentAdapter {
             message,
             validation_error_class: validation_error_class.to_string(),
             telemetry: response.telemetry.clone(),
+            recovered_answer: non_empty_text(response.text.as_deref()),
+        })
+    }
+
+    /// A call whose arguments were rejected: also keeps the answer those
+    /// arguments spelled out.
+    fn invalid_arguments_response(
+        response: &ExecutionNativeResponse,
+        raw_arguments: &serde_json::Value,
+        message: String,
+    ) -> anyhow::Error {
+        anyhow::Error::new(NativeDecisionResponseError {
+            message,
+            validation_error_class: "invalid_tool_arguments".to_string(),
+            telemetry: response.telemetry.clone(),
+            recovered_answer: non_empty_text(response.text.as_deref())
+                .or_else(|| answer_text_in_arguments(raw_arguments)),
+        })
+    }
+
+    /// A response-contract failure as lowering raises it, for tests outside
+    /// this module.
+    #[cfg(test)]
+    pub(crate) fn contract_failure_for_test(
+        validation_error_class: &str,
+        message: &str,
+    ) -> anyhow::Error {
+        anyhow::Error::new(NativeDecisionResponseError {
+            message: message.to_string(),
+            validation_error_class: validation_error_class.to_string(),
+            telemetry: None,
+            recovered_answer: None,
+        })
+    }
+
+    /// A rejected call with these arguments, as lowering raises it, for tests
+    /// outside this module.
+    #[cfg(test)]
+    pub(crate) fn invalid_arguments_failure_for_test(
+        raw_arguments: serde_json::Value,
+    ) -> anyhow::Error {
+        anyhow::Error::new(NativeDecisionResponseError {
+            message: "invalid arguments".to_string(),
+            validation_error_class: "invalid_tool_arguments".to_string(),
+            telemetry: None,
+            recovered_answer: answer_text_in_arguments(&raw_arguments),
+        })
+    }
+
+    /// The model's prose a response-contract failure kept, after arbitrary
+    /// `anyhow::Context` layers.
+    pub fn recovered_answer_from_error(error: &anyhow::Error) -> Option<String> {
+        error.chain().find_map(|source| {
+            source
+                .downcast_ref::<NativeDecisionResponseError>()
+                .and_then(|failure| failure.recovered_answer.clone())
         })
     }
 
@@ -221,6 +339,7 @@ impl MultiLlmAgentAdapter {
         Self {
             service,
             protected_app: false,
+            preassigned_decision_call: None,
             #[cfg(any(test, debug_assertions))]
             test_native_responses: None,
         }
@@ -232,6 +351,7 @@ impl MultiLlmAgentAdapter {
         Self {
             service: Arc::new(self.service.with_task_context(Some(task_ref))),
             protected_app: self.protected_app,
+            preassigned_decision_call: self.preassigned_decision_call.clone(),
             #[cfg(any(test, debug_assertions))]
             test_native_responses: self.test_native_responses.clone(),
         }
@@ -244,6 +364,7 @@ impl MultiLlmAgentAdapter {
         Self {
             service: Arc::new(self.service.with_routing_overrides(overrides)),
             protected_app: self.protected_app,
+            preassigned_decision_call: self.preassigned_decision_call.clone(),
             #[cfg(any(test, debug_assertions))]
             test_native_responses: self.test_native_responses.clone(),
         }
@@ -257,8 +378,40 @@ impl MultiLlmAgentAdapter {
         Self {
             service: Arc::new(self.service.with_disclosure_guard(guard)),
             protected_app,
+            preassigned_decision_call: self.preassigned_decision_call.clone(),
             #[cfg(any(test, debug_assertions))]
             test_native_responses: self.test_native_responses.clone(),
+        }
+    }
+
+    /// Clone the adapter so its next execution-native decision call carries
+    /// `identity` — the ids the caller already put on that call's
+    /// `LLMRequestSent`. One shot: the first `call_execution_native*` takes
+    /// it, and every other call (preflight, side calls, a second decision
+    /// call) mints its own as before.
+    pub fn with_preassigned_decision_call(&self, identity: PreassignedLlmCallIdentity) -> Self {
+        Self {
+            service: Arc::clone(&self.service),
+            protected_app: self.protected_app,
+            preassigned_decision_call: Some(PreassignedLlmCallSlot::new(identity)),
+            #[cfg(any(test, debug_assertions))]
+            test_native_responses: self.test_native_responses.clone(),
+        }
+    }
+
+    /// The router for one execution-native decision request: the shared one,
+    /// or a clone carrying the preassigned identity while it is unspent.
+    fn decision_call_service(&self) -> Arc<OperationLlmRouter> {
+        match self
+            .preassigned_decision_call
+            .as_ref()
+            .and_then(PreassignedLlmCallSlot::take)
+        {
+            Some(identity) => Arc::new(
+                self.service
+                    .with_preassigned_call(Some(PreassignedLlmCallSlot::new(identity))),
+            ),
+            None => Arc::clone(&self.service),
         }
     }
 
@@ -270,6 +423,7 @@ impl MultiLlmAgentAdapter {
         Self {
             service: Arc::new(self.service.with_physical_resource_guard(guard)),
             protected_app: self.protected_app,
+            preassigned_decision_call: self.preassigned_decision_call.clone(),
             #[cfg(any(test, debug_assertions))]
             test_native_responses: self.test_native_responses.clone(),
         }
@@ -287,6 +441,7 @@ impl MultiLlmAgentAdapter {
         Self {
             service: Arc::new(OperationLlmRouter::new(None)),
             protected_app: false,
+            preassigned_decision_call: None,
             test_native_responses: Some(queue),
         }
     }
@@ -417,12 +572,14 @@ impl MultiLlmAgentAdapter {
                 "{}\n{}",
                 request.system_prompt, request.user_prompt
             ));
+            queue.record_tool_choice(request.tool_choice_override.as_ref());
             queue.next_response()
         } else {
-            execute_native_request(&self.service, &request, viewport).await?
+            execute_native_request(&self.decision_call_service(), &request, viewport).await?
         };
         #[cfg(not(any(test, debug_assertions)))]
-        let mut response = execute_native_request(&self.service, &request, viewport).await?;
+        let mut response =
+            execute_native_request(&self.decision_call_service(), &request, viewport).await?;
 
         // Lower the response
         response.admit_tool_arguments();
@@ -506,10 +663,12 @@ impl MultiLlmAgentAdapter {
                 ))
             },
             NativeDecisionOutcome::InvalidArguments {
-                tool_name, error, ..
-            } => Err(Self::invalid_native_response(
+                tool_name,
+                raw_arguments,
+                error,
+            } => Err(Self::invalid_arguments_response(
                 &response,
-                "invalid_tool_arguments",
+                &raw_arguments,
                 if self.protected_app {
                     "Protected app workflow returned an invalid execution-native response"
                         .to_owned()
@@ -560,10 +719,11 @@ impl MultiLlmAgentAdapter {
                     .collect::<Vec<_>>()
                     .join("\n"),
             );
+            queue.record_tool_choice(tool_choice_override.as_ref());
             queue.next_response()
         } else {
             execute_native_messages_request_with_chain(
-                &self.service,
+                &self.decision_call_service(),
                 operation_name,
                 messages,
                 &tools,
@@ -576,7 +736,7 @@ impl MultiLlmAgentAdapter {
         };
         #[cfg(not(any(test, debug_assertions)))]
         let mut response = execute_native_messages_request_with_chain(
-            &self.service,
+            &self.decision_call_service(),
             operation_name,
             messages,
             &tools,
@@ -668,10 +828,12 @@ impl MultiLlmAgentAdapter {
                 ))
             },
             NativeDecisionOutcome::InvalidArguments {
-                tool_name, error, ..
-            } => Err(Self::invalid_native_response(
+                tool_name,
+                raw_arguments,
+                error,
+            } => Err(Self::invalid_arguments_response(
                 &response,
-                "invalid_tool_arguments",
+                &raw_arguments,
                 if self.protected_app {
                     "Protected app workflow returned an invalid execution-native response"
                         .to_owned()
@@ -973,6 +1135,37 @@ mod tests {
         let recovered = recovered.expect("exact response telemetry");
         assert_eq!(recovered.started_at_ms, 123);
         assert_eq!(recovered.trace_receipt, Some(receipt));
+    }
+
+    #[test]
+    fn preassigned_decision_identity_is_spent_by_exactly_one_decision_call() {
+        let identity = PreassignedLlmCallIdentity {
+            trace_id: "exec-root".to_string(),
+            llm_call_id: "01JLIVEDECISIONCALL000000000".to_string(),
+            capability: Some("decision".to_string()),
+        };
+        let adapter = adapter_for_tests().with_preassigned_decision_call(identity.clone());
+        // The shared router — what preflight and side calls use — never
+        // carries the identity.
+        assert_eq!(adapter.router().take_preassigned_call(), None);
+        // The first decision request's router does, and spends it.
+        assert_eq!(
+            adapter.decision_call_service().take_preassigned_call(),
+            Some(identity)
+        );
+        // A second decision call through the same adapter mints its own.
+        assert_eq!(
+            adapter.decision_call_service().take_preassigned_call(),
+            None
+        );
+        // Clones made after the fact share the spent slot.
+        assert_eq!(
+            adapter
+                .with_routing_overrides(None)
+                .decision_call_service()
+                .take_preassigned_call(),
+            None
+        );
     }
 
     fn adapter_for_tests() -> MultiLlmAgentAdapter {

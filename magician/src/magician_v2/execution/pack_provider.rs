@@ -692,11 +692,40 @@ async fn execute_command(
     let final_path = pack_path
         .or_else(|| skill_env.get("PATH").cloned())
         .or_else(|| child_path.clone());
-    let mut cmd = tokio::process::Command::new(runtime_core::process::resolve_program_str(
-        &program,
-        final_path.as_deref(),
-    ));
-    cmd.args(&args);
+    let resolved_program =
+        runtime_core::process::resolve_program_str(&program, final_path.as_deref());
+    // Goal workspaces: a CLI skill runs as a child process outside the
+    // shell box, so an argument naming a goal workspace path the acting
+    // agent may not read is refused, and for an agent a workspace is fenced
+    // from the child runs under the workspace rules (`goal_workspace_access`).
+    cli_workspace_refusal(&args)?;
+    crate::magician_v2::execution::goal_workspace_access::record_possible_reads();
+    let denies = crate::magician_v2::execution::goal_workspace_access::denies_for_current();
+    let mut box_env: Vec<(String, String)> = Vec::new();
+    let mut box_env_remove: Vec<String> = Vec::new();
+    let mut cmd = if denies.guards_workspaces {
+        let os_args: Vec<std::ffi::OsString> = args.iter().map(std::ffi::OsString::from).collect();
+        let boxed = crate::magician_v2::execution::shell_box::wrap_workspace_only(
+            std::ffi::OsStr::new(&resolved_program),
+            &os_args,
+            &denies,
+            false,
+        )
+        .ok_or_else(|| {
+            ExecutionError::Step(format!(
+                "'{program}' may not run here for this agent: goal workspaces need an OS sandbox (sandbox-exec or bwrap)"
+            ))
+        })?;
+        let mut cmd = tokio::process::Command::new(&boxed.program);
+        cmd.args(&boxed.args);
+        box_env = boxed.env;
+        box_env_remove = boxed.env_remove;
+        cmd
+    } else {
+        let mut cmd = tokio::process::Command::new(&resolved_program);
+        cmd.args(&args);
+        cmd
+    };
     cmd.kill_on_drop(true);
     if let Some(lease) = crate::magician_v2::subprocess_owners::active_skill_working_lease() {
         cmd.current_dir(lease);
@@ -727,6 +756,13 @@ async fn execute_command(
     for name in crate::magician_v2::subprocess_owners::forbidden_child_env_names() {
         cmd.env_remove(name);
     }
+    // The box's proxy env, after the skill's own so it cannot be replaced.
+    for name in &box_env_remove {
+        cmd.env_remove(name);
+    }
+    for (key, value) in &box_env {
+        cmd.env(key, value);
+    }
 
     let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
         .await
@@ -754,6 +790,45 @@ async fn execute_command(
         };
         Ok(ActionResult::text(error_output))
     }
+}
+
+/// The goal workspace refusal for a CLI argument that names a path (an
+/// absolute, `~/` or relative path with a separator, a `file:` URL, or the
+/// value of `--flag=path`), read by the acting agent.
+fn cli_workspace_refusal(args: &[String]) -> Result<(), ExecutionError> {
+    use crate::magician_v2::execution::goal_workspace_access as access;
+    let base = crate::magician_v2::subprocess_owners::active_skill_working_lease()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    for arg in args {
+        let value = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with('-') => value,
+            _ => arg.as_str(),
+        };
+        let value = value.trim();
+        let path = if let Some(rest) = value.strip_prefix("~/") {
+            dirs::home_dir().map(|home| home.join(rest))
+        } else if value.to_ascii_lowercase().starts_with("file:") {
+            url::Url::parse(value)
+                .ok()
+                .and_then(|url| url.to_file_path().ok())
+        } else if value.starts_with('/') {
+            Some(std::path::PathBuf::from(value))
+        } else if value.contains('/') && !value.contains("://") {
+            base.as_ref().map(|base| base.join(value))
+        } else {
+            None
+        };
+        let Some(path) = path else {
+            continue;
+        };
+        if let Some(refusal) = access::hybrid_index_refusal(&path)
+            .or_else(|| access::refusal_for_current(&path, access::Op::Read))
+        {
+            return Err(ExecutionError::Step(refusal));
+        }
+    }
+    Ok(())
 }
 
 fn find_parameter_def<'a>(
@@ -1204,6 +1279,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let registry = Arc::new(CapabilityRegistry::new());
@@ -1346,6 +1422,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let registry = Arc::new(CapabilityRegistry::new());
@@ -1375,6 +1452,7 @@ implementation:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let registry2 = Arc::new(CapabilityRegistry::new());
@@ -2008,6 +2086,7 @@ execution:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let provider = PackCapabilityProvider::new(def, Arc::new(CapabilityRegistry::new()), None);
@@ -2089,6 +2168,7 @@ execution:
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         };
 
         let provider = PackCapabilityProvider::new(def, Arc::new(CapabilityRegistry::new()), None);
@@ -2113,5 +2193,46 @@ execution:
 
         assert!(output.contains("Iran latest developments"));
         assert!(output.contains("advanced"));
+    }
+}
+
+/// Goal workspaces through CLI-template skills, which spawn outside the
+/// shell box.
+#[cfg(test)]
+mod goal_workspace_cli_tests {
+    use super::*;
+    use crate::magician_v2::execution::goal_workspace_access as access;
+    use crate::magician_v2::execution::native_executors::ACTING_AGENT;
+
+    #[test]
+    fn cli_template_path_arg_into_workspace_is_refused() {
+        let fx = access::test_fixture();
+        let goal = fx.root.join("Magican/Goals/X/x.md").display().to_string();
+        let outside = fx
+            .root
+            .parent()
+            .unwrap()
+            .join("open.txt")
+            .display()
+            .to_string();
+        access::with_test_roots(vec![fx.root.clone()], || {
+            for args in [
+                vec!["-F".to_string(), ",".to_string(), goal.clone()],
+                vec![format!("--input={goal}")],
+                vec![format!("file://{goal}")],
+            ] {
+                let refused = ACTING_AGENT
+                    .sync_scope(Some("ambassador".into()), || cli_workspace_refusal(&args));
+                assert!(refused.is_err(), "{args:?}");
+            }
+            let ok = ACTING_AGENT.sync_scope(Some("ambassador".into()), || {
+                cli_workspace_refusal(&["{print}".to_string(), outside.clone()])
+            });
+            assert!(ok.is_ok());
+            let member = ACTING_AGENT.sync_scope(Some("cmo".into()), || {
+                cli_workspace_refusal(&[goal.clone()])
+            });
+            assert!(member.is_ok());
+        });
     }
 }

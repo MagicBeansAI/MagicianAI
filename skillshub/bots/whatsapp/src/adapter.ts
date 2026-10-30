@@ -6,6 +6,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { toFile as writeQrFile } from "qrcode";
 import { sendWithServerAck } from "./server-ack.js";
+import { ipcSocketWithReactionKeys } from "./reaction-key.js";
+import { createPairingCodeRequest } from "./pairing-code.js";
 
 import type {
   ChannelAdapter,
@@ -19,10 +21,14 @@ import type {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const wuLib: any = await import("@ibrahimwithi/wu-cli");
 const createConnection: (...args: any[]) => Promise<any> = wuLib.createConnection;
-const startListener: (...args: any[]) => void = wuLib.startListener;
+const startListener: (...args: any[]) => { setConfig: (config: any) => void } = wuLib.startListener;
 const wuSendText: (...args: any[]) => Promise<any> = wuLib.sendText;
 const wuSendMedia: (...args: any[]) => Promise<any> = wuLib.sendMedia;
 const loadConfig: (...args: any[]) => any = wuLib.loadConfig;
+const acquireLock: () => void = wuLib.acquireLock;
+const releaseLock: () => void = wuLib.releaseLock;
+const { startDaemonIpc } = await import("@ibrahimwithi/wu-cli/core/ipc");
+const { watchConfig } = await import("@ibrahimwithi/wu-cli/core/config-watch");
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 const WHATSAPP_TEXT_LIMIT = 4_000;
@@ -46,6 +52,10 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sock: any;
   private stopping = false;
+  private ownsWuLock = false;
+  private stopIpc: (() => void) | undefined;
+  private stopConfigWatch: (() => void) | undefined;
+  private listener: { setConfig: (config: unknown) => void } | undefined;
   private connecting = false;
   private selfJid: string | undefined;
   private readonly selfJids = new Set<string>();
@@ -62,11 +72,29 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
   async start(handlers: ChannelAdapterHandlers<string>): Promise<void> {
     this.handlers = handlers;
     this.stopping = false;
-    await this.connect();
+    const wuHome = process.env.WU_HOME?.trim() || resolve(homedir(), ".wu");
+    mkdirSync(wuHome, { recursive: true, mode: 0o700 });
+    // Acquire before IPC startup: upstream removes a stale socket before bind.
+    // Failure must not remove another daemon's live socket or start a rival login.
+    acquireLock();
+    this.ownsWuLock = true;
+    try {
+      this.stopConfigWatch = watchConfig(next => this.listener?.setConfig(next));
+      this.stopIpc = startDaemonIpc(() => ipcSocketWithReactionKeys(this.sock, wuLib.getMessage, wuLib.deserializeWAMessage), () => loadConfig());
+      await this.connect();
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.stopConfigWatch?.();
+    this.stopConfigWatch = undefined;
+    this.listener = undefined;
+    this.stopIpc?.();
+    this.stopIpc = undefined;
     this.clearConnectionMarker();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -75,6 +103,10 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
     if (this.sock) {
       this.sock.end(undefined);
       this.sock = undefined;
+    }
+    if (this.ownsWuLock) {
+      releaseLock();
+      this.ownsWuLock = false;
     }
   }
 
@@ -199,6 +231,12 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
         );
       }
 
+      // Magician passes WHATSAPP_PHONE for one start only ("Link with phone
+      // number" on Service accounts); the code goes to a file beside the QR.
+      const pairing = createPairingCodeRequest({
+        phone: process.env.WHATSAPP_PHONE,
+        codeFile: process.env.WHATSAPP_PAIRING_CODE_FILE,
+      });
       const { sock } = await createConnection({
         onQr: (qr: string) => {
           this.clearConnectionMarker();
@@ -226,7 +264,12 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
             console.info("[whatsapp-bot] pairing QR is available through Bot Control");
           });
         },
-        pairingPhone: process.env.WHATSAPP_PHONE?.trim() || undefined,
+        // A getter: wu-cli reads it on every QR refresh, and it only hands
+        // out the phone until one pairing code was issued.
+        get pairingPhone() {
+          return pairing.phone();
+        },
+        onPairingCode: (code: string) => pairing.onCode(code),
       });
 
       // Guard against stop() racing with createConnection()
@@ -240,7 +283,7 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
       this.refreshSelfJids(sock, wuHome, "connection");
 
       // Start listener on the SAME socket — no separate process
-      startListener(sock, {
+      this.listener = startListener(sock, {
         config,
         onMessage: (parsed: ParsedMessage) => {
           void this.handleMessage(parsed);
@@ -271,12 +314,16 @@ export class WhatsAppAdapter implements ChannelAdapter<string> {
             /* idempotent close — safe to swallow */
           }
           this.sock = undefined;
+          this.listener = undefined;
           this.reconnectTimer = setTimeout(() => void this.connect(), 5_000);
         } else if (update.connection === "open") {
-          const qrFile = process.env.WHATSAPP_QR_FILE?.trim();
-          if (qrFile) {
+          for (const pairingFile of [
+            process.env.WHATSAPP_QR_FILE?.trim(),
+            process.env.WHATSAPP_PAIRING_CODE_FILE?.trim(),
+          ]) {
+            if (!pairingFile) continue;
             try {
-              rmSync(qrFile, { force: true });
+              rmSync(pairingFile, { force: true });
             } catch {
               /* auth status remains authoritative if stale-file cleanup fails */
             }

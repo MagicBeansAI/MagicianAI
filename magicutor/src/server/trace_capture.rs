@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::bridge_protocol::ExtensionRequest;
 use crate::server::bridge::{
-    send_over_bridge, subscribe_cdp_events, CdpEventPayload, CdpSubscriberHandle,
+    send_over_bridge_via, subscribe_cdp_events, BridgeRoute, CdpEventPayload, CdpSubscriberHandle,
 };
 
 /// Resource types we capture for API mining.
@@ -188,6 +188,9 @@ struct PendingTrace {
 
 /// Per-tab capture state held inside [`ThreadCapture`].
 struct TabState {
+    /// Browser the tab belongs to; the same tab id in another browser is a
+    /// different tab.
+    browser_id: String,
     pending: HashMap<String, PendingTrace>,
     /// Keeps the bridge subscription alive for as long as the thread is
     /// being captured. Dropped when the thread is removed from the registry.
@@ -321,28 +324,33 @@ impl CaptureRegistry {
 
 static REGISTRY: Lazy<CaptureRegistry> = Lazy::new(CaptureRegistry::new);
 
-/// Begin capturing network traces for `tab_id` under `thread_id`. Idempotent:
-/// repeat calls with the same `(thread_id, tab_id)` are no-ops.
+/// Begin capturing network traces for `tab_id` of browser `browser_id` under
+/// `thread_id`. Idempotent: repeat calls with the same `(thread_id, tab_id)`
+/// are no-ops. A thread runs in one browser, so its tab ids cannot collide.
 ///
 /// Once the backend bootstrap or CDP client enables the `Network` domain,
 /// events flow through the bridge automatically. This function only registers a
 /// parallel subscriber that builds `NetworkTraceEvent`s from those events and
 /// stages them into the per-thread completed buffer.
-pub fn enable_for_thread_tab(thread_id: &str, tab_id: i32) {
+pub fn enable_for_thread_tab(thread_id: &str, browser_id: &str, tab_id: i32) {
     let thread = REGISTRY.get_or_create(thread_id);
     {
         let tabs = match thread.tabs.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if tabs.contains_key(&tab_id) {
+        if tabs
+            .get(&tab_id)
+            .is_some_and(|state| state.browser_id == browser_id)
+        {
             return;
         }
     }
 
     let thread_for_cb = Arc::clone(&thread);
-    let subscriber = subscribe_cdp_events(tab_id, move |payload| {
-        handle_event(&thread_for_cb, tab_id, payload);
+    let browser_for_cb = browser_id.to_string();
+    let subscriber = subscribe_cdp_events(browser_id, tab_id, move |payload| {
+        handle_event(&thread_for_cb, &browser_for_cb, tab_id, payload);
         true
     });
 
@@ -350,15 +358,34 @@ pub fn enable_for_thread_tab(thread_id: &str, tab_id: i32) {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    tabs.entry(tab_id).or_insert(TabState {
-        pending: HashMap::new(),
-        _subscriber: subscriber,
-    });
+    // A tab id last captured in another browser is replaced, so its old
+    // subscription (and half-built traces) go with it.
+    tabs.insert(
+        tab_id,
+        TabState {
+            browser_id: browser_id.to_string(),
+            pending: HashMap::new(),
+            _subscriber: subscriber,
+        },
+    );
     debug!(
         thread = thread_id,
         tab = tab_id,
         "trace_capture: tab enabled"
     );
+}
+
+/// Stop capturing every tab of `thread_id`, keeping traces and auth material
+/// already captured for draining. Used when the thread moves to another
+/// browser, whose tab ids name different tabs.
+pub fn forget_thread_tabs(thread_id: &str) {
+    if let Some(thread) = REGISTRY.get(thread_id) {
+        let mut tabs = match thread.tabs.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        tabs.clear();
+    }
 }
 
 /// Drain all completed traces for `thread_id`. Returns an empty vec if no
@@ -388,14 +415,21 @@ pub fn disable_thread(thread_id: &str) -> Vec<NetworkTraceEvent> {
         .unwrap_or_default()
 }
 
-fn handle_event(thread: &Arc<ThreadCapture>, tab_id: i32, payload: CdpEventPayload) {
+fn handle_event(
+    thread: &Arc<ThreadCapture>,
+    browser_id: &str,
+    tab_id: i32,
+    payload: CdpEventPayload,
+) {
     if payload.tab_id != tab_id {
         return;
     }
     match payload.method.as_str() {
         "Network.requestWillBeSent" => handle_request_will_be_sent(thread, tab_id, payload.params),
         "Network.responseReceived" => handle_response_received(thread, tab_id, &payload.params),
-        "Network.loadingFinished" => handle_loading_finished(thread, tab_id, payload.params),
+        "Network.loadingFinished" => {
+            handle_loading_finished(thread, browser_id, tab_id, payload.params)
+        },
         "Network.loadingFailed" => handle_loading_failed(thread, tab_id, &payload.params),
         _ => {},
     }
@@ -568,7 +602,12 @@ fn handle_response_received(thread: &Arc<ThreadCapture>, tab_id: i32, params: &V
     }
 }
 
-fn handle_loading_finished(thread: &Arc<ThreadCapture>, tab_id: i32, params: Value) {
+fn handle_loading_finished(
+    thread: &Arc<ThreadCapture>,
+    browser_id: &str,
+    tab_id: i32,
+    params: Value,
+) {
     let request_id = match params.get("requestId").and_then(Value::as_str) {
         Some(s) => s.to_string(),
         None => return,
@@ -609,8 +648,9 @@ fn handle_loading_finished(thread: &Arc<ThreadCapture>, tab_id: i32, params: Val
 
     let thread_for_body = Arc::clone(thread);
     let request_id_for_body = request_id.clone();
+    let browser_for_body = browser_id.to_string();
     actix_web::rt::spawn(async move {
-        match fetch_response_body(tab_id, &request_id_for_body).await {
+        match fetch_response_body(&browser_for_body, tab_id, &request_id_for_body).await {
             Ok(b) => {
                 pending.event.response_size = b.len() as u64;
                 pending.event.response_body = Some(b);
@@ -675,7 +715,11 @@ fn handle_loading_failed(thread: &Arc<ThreadCapture>, tab_id: i32, params: &Valu
 /// race, binary content is expected and harmless, and a bridge error is an
 /// extension/transport problem — and collapsing them made the empty-body rate
 /// undiagnosable.
-async fn fetch_response_body(tab_id: i32, request_id: &str) -> Result<String, String> {
+async fn fetch_response_body(
+    browser_id: &str,
+    tab_id: i32,
+    request_id: &str,
+) -> Result<String, String> {
     let req = ExtensionRequest {
         request_id: Uuid::new_v4().to_string(),
         action: "debugger_command".to_string(),
@@ -685,7 +729,10 @@ async fn fetch_response_body(tab_id: i32, request_id: &str) -> Result<String, St
             "params": { "requestId": request_id },
         }),
     };
-    let resp = match send_over_bridge(req).await {
+    // The tab lives in the browser whose event announced the response; never
+    // a thread route, which could re-pin an idle thread to another browser.
+    let route = BridgeRoute::Browser(browser_id.to_string());
+    let resp = match send_over_bridge_via(&route, req).await {
         Ok(r) if r.success => match r.result {
             Some(result) => result,
             None => return Err("bridge_ok_but_no_result".to_string()),
@@ -1381,5 +1428,24 @@ mod tests {
     fn drain_returns_empty_for_unknown_thread() {
         assert!(drain("never-registered").is_empty());
         assert!(disable_thread("never-registered").is_empty());
+    }
+
+    #[test]
+    fn a_tab_id_from_another_browser_replaces_the_capture_instead_of_reusing_it() {
+        let thread = format!("trace-browser-{}", Uuid::new_v4());
+        let browser_of = |tab_id: i32| -> Option<String> {
+            let capture = REGISTRY.get(&thread)?;
+            let tabs = capture.tabs.lock().ok()?;
+            let browser = tabs.get(&tab_id).map(|state| state.browser_id.clone());
+            browser
+        };
+        enable_for_thread_tab(&thread, "chrome", 7);
+        enable_for_thread_tab(&thread, "chrome", 7);
+        assert_eq!(browser_of(7).as_deref(), Some("chrome"));
+        enable_for_thread_tab(&thread, "comet", 7);
+        assert_eq!(browser_of(7).as_deref(), Some("comet"));
+        forget_thread_tabs(&thread);
+        assert_eq!(browser_of(7), None);
+        disable_thread(&thread);
     }
 }

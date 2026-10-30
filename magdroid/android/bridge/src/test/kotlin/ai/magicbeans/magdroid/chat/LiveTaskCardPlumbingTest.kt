@@ -2,6 +2,8 @@ package ai.magicbeans.magdroid.chat
 
 import ai.magicbeans.magdroid.tasks.TaskUsage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -193,7 +195,7 @@ class LiveTaskCardPlumbingTest {
             calls += path
             return when {
                 path.endsWith("/execution-panel") -> Json.parseToJsonElement(
-                    """{"run":{"activity_log":[{"title":"Reading reviews","metadata":{"input_tokens":10,"output_tokens":5}}]},
+                    """{"run":{"activity_log":[{"id":"call-1","title":"Reading reviews","metadata":{"event_type":"llm.succeeded","llm_call_id":"call-1","input_tokens":10,"output_tokens":5}}]},
                         "debug":{"selected_execution":{"step_statuses":[{"name":"Search","status":"completed"},{"name":"Write","status":"in_progress"}]}}}""",
                 ).jsonObject
                 path.endsWith("/plan") -> Json.parseToJsonElement(
@@ -281,6 +283,37 @@ class LiveTaskCardPlumbingTest {
         val state = LiveTaskCardState.of(LiveTaskCardRules.input(reconciled, "m1"))
         assertEquals(LiveTaskStatus.Queued, state.status)
         assertTrue(state.startable)
+    }
+
+    @Test
+    fun `usage ignores an old connection read and accepts the new scope`() = runTest {
+        var identity = TaskUsageScope("one", "owner", "one")
+        val gate = CompletableDeferred<JsonObject?>()
+        val store = TaskUsageStore().apply { scopeProvider = { identity }; fetch = { gate.await() } }
+        val oldRead = async { store.loadSnapshot("task", "running") }
+        runCurrent()
+        identity = TaskUsageScope("two", "owner", "two")
+        assertNull(store.total("task"))
+        gate.complete(obj("""{"overview":{"execution_id":"old"},"debug":{"planning_timeline":[{"tokens":999}]}}"""))
+        assertFalse(oldRead.await())
+        assertNull(store.total("task"))
+        store.fetch = { obj("""{"overview":{"execution_id":"new"},"debug":{"planning_timeline":[{"tokens":100}]}}""") }
+        assertTrue(store.loadSnapshot("task", "running"))
+        assertEquals(100, store.total("task")?.usage?.tokens)
+    }
+
+    @Test
+    fun `live usage is scoped and enriches a repeated call`() {
+        val store = TaskUsageStore().apply { scopeProvider = { TaskUsageScope("one", "owner", "default") } }
+        fun event(workspace: String, tokens: String) = obj("""{"event_type":"LLMResponseReceived","data":{
+            "principal":"owner","workspace":"$workspace","task_id":"task","llm_call_id":"call",
+            "root_execution_id":"run","cost_usd":0.01,$tokens}}""")
+        store.ingest(event("other", "\"input_tokens\":999"))
+        assertNull(store.total("task"))
+        store.ingest(event("default", "\"usage_availability\":{\"tokens\":false}"))
+        assertFalse(store.total("task")!!.usage.tokensReported)
+        store.ingest(event("default", "\"input_tokens\":150"))
+        assertEquals(TaskUsage(1, 150, 0.01), store.total("task")?.usage)
     }
 
     @Test

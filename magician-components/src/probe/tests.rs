@@ -143,6 +143,25 @@ async fn a_runtime_inventory_rechecks_missing_and_non_executable_companions() {
     .unwrap();
     assert!(!observe(&spec).await.is_present());
     std::fs::write(&companion, "#!/bin/sh\nexit 0\n").unwrap();
+    assert!(
+        !observe(&spec).await.is_present(),
+        "legacy inventories need fresh setup verification"
+    );
+    let metadata = std::fs::metadata(&companion).unwrap();
+    let modified_ns = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::fs::write(
+        &inventory,
+        format!(
+            "schema_version: 1\nverification_revision: 2\nfiles:\n- path: ffmpeg\n  executable: true\n  size_bytes: {}\n  modified_ns: {modified_ns}\n",
+            metadata.len()
+        ),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -151,12 +170,35 @@ async fn a_runtime_inventory_rechecks_missing_and_non_executable_companions() {
         std::fs::set_permissions(&companion, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     assert!(observe(&spec).await.is_present());
+    std::fs::write(&companion, "#!/bin/sh\nexit 99\n").unwrap();
+    assert!(
+        !observe(&spec).await.is_present(),
+        "replaced companions invalidate old setup verification"
+    );
     std::fs::remove_file(&companion).unwrap();
     assert!(
         !observe(&spec).await.is_present(),
         "old setup success cannot hide a missing companion"
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn runtime_inventory_rejects_an_old_verification_revision() {
+    let dir = std::env::temp_dir().join(format!("magician-old-inventory-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let inventory = dir.join("files.yaml");
+    std::fs::write(
+        &inventory,
+        "schema_version: 1\nfiles:\n- path: SKILL.md\n  size_bytes: 1\n  modified_ns: 1\n",
+    )
+    .unwrap();
+    let result = observe(&ProbeSpec::FileInventory {
+        path: inventory.display().to_string(),
+    })
+    .await;
+    assert!(result.detail().contains("fresh setup verification"));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]

@@ -1572,7 +1572,8 @@ def main() -> int:
     try:
         export = run_catalog_export(root, args.catalog_json)
         catalogs = validated_catalogs(export)
-        config = helpers.yaml.safe_load(args.config.expanduser().read_text(encoding="utf-8")) or {}
+        from magician_config_text import read_config_text
+        config = helpers.yaml.safe_load(read_config_text(args.config.expanduser())) or {}
         profiles = {}
         for operation in sorted({scenario.operation for scenario in SCENARIOS}):
             if operation == "voice_controller":

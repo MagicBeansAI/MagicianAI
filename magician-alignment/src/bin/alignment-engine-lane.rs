@@ -46,7 +46,9 @@ use magician_alignment::eval_case::parse_cases;
 use magician_alignment::replay::write_predictions;
 
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -55,7 +57,10 @@ async fn main() {
     let out_dir = PathBuf::from(env("PA_LIVE_OUT_DIR").expect("set PA_LIVE_OUT_DIR"));
     std::fs::create_dir_all(&out_dir).expect("output directory");
     let client = EngineClient::new(&socket, Duration::from_secs(5));
-    let operations = client.operations().await.expect("the engine answers discovery");
+    let operations = client
+        .operations()
+        .await
+        .expect("the engine answers discovery");
     let policy = operations
         .operations
         .iter()
@@ -159,6 +164,7 @@ async fn main() {
                         state: DecisionState::from_text(""),
                         choice_candidates: BTreeMap::new(),
                         locality,
+                        assets: Default::default(),
                     };
                     let call_started = Instant::now();
                     let reply = client.decide(&request).await;
@@ -216,15 +222,16 @@ async fn main() {
             .await;
 
     let count = records.len();
-    for (path, unresolved) in
-        write_predictions(&out_dir, &cases, records, &ComposerBars::default(), &thresholds)
-            .expect("predictions")
+    for (path, unresolved) in write_predictions(
+        &out_dir,
+        &cases,
+        records,
+        &ComposerBars::default(),
+        &thresholds,
+    )
+    .expect("predictions")
     {
         eprintln!("{unresolved} unresolved -> {}", path.display());
     }
-    eprintln!(
-        "{} cases in {:.0}s",
-        count,
-        started.elapsed().as_secs_f64()
-    );
+    eprintln!("{} cases in {:.0}s", count, started.elapsed().as_secs_f64());
 }

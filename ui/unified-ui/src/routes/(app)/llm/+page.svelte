@@ -38,7 +38,13 @@
 
   `L<n>` is that tab's progressive-reveal level — staged in after the tab
   opens so a panel paints before its heaviest widgets mount. Levels are
-  page-scoped state, so a tab Refresh does not replay the stagger.
+  page-scoped state, so a tab Refresh does not replay the stagger. Cost and
+  Health open their query levels at 0 ms so each batch lane leaves as one
+  request (see `TAB_REVEAL_DELAYS`).
+
+  Rolling windows are literal epoch-ms bounds (`$lib/llm/queryWindow`), and
+  windows of a day or less ride their own batch lane, so Today renders
+  without waiting for the 7d/30d batch.
 -->
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
@@ -80,6 +86,12 @@
 		type SpendWindow,
 		type SpendRow
 	} from '$lib/llm/spendBreakdown';
+	import {
+		LLM_SHORT_WINDOW_LANE,
+		laneForWindowDays,
+		queryAnchorMs as currentQueryAnchorMs,
+		rollingWindowPredicate
+	} from '$lib/llm/queryWindow';
 	import {
 		deltaAria,
 		formatSpend,
@@ -252,35 +264,30 @@
 	// One entry per level, in ms after the tab first opens. Cost is the
 	// default tab and its headline (spend cards + today) renders
 	// unconditionally, so it only stages the two filtered widget groups.
+	//
+	// Cost and Health's query-bearing levels open at 0 ms: a widget mounting
+	// after its lane's batch has gone out waits for that whole batch (one
+	// batch per lane in flight), so a 150/900 ms stagger turned one request
+	// into a ~38 s + ~15 s waterfall. The 0 ms timers still fire before the
+	// 40 ms batch debounce, so each lane leaves as one request. Health's live
+	// event stream (level 4) is an SSE connection, not a batch, and stays late.
 	const TAB_REVEAL_DELAYS: Record<TabId, number[]> = {
-		cost: [150, 900],
+		cost: [0, 0],
 		usage: [150, 1_200, 2_400],
-		health: [150, 1_400, 3_000, 4_200]
+		health: [0, 0, 0, 4_200]
 	};
 
 	// `30 DAYS` covers our retention window. We don't refresh on filter
 	// changes — the dropdown options should be the universe of values,
-	// not the currently-filtered subset.
-	const distinctAgentsSql =
-		"SELECT DISTINCT agent_id FROM llm_calls WHERE agent_id IS NOT NULL AND agent_id != '' " +
-		"AND timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS) " +
-		'ORDER BY agent_id LIMIT 200';
-	const distinctTasksSql =
-		"SELECT DISTINCT task_id FROM llm_calls WHERE task_id IS NOT NULL AND task_id != '' " +
-		"AND timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS) " +
-		'ORDER BY task_id LIMIT 200';
-	const distinctOperationsSql =
-		"SELECT DISTINCT operation FROM llm_calls WHERE operation IS NOT NULL AND operation != '' " +
-		"AND timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS) " +
-		'ORDER BY operation LIMIT 200';
-	const distinctModelsSql =
-		"SELECT DISTINCT model FROM llm_calls WHERE model IS NOT NULL AND model != '' " +
-		"AND timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS) " +
-		'ORDER BY model LIMIT 200';
-	const distinctSessionsSql =
-		"SELECT DISTINCT chat_session_id FROM llm_calls WHERE chat_session_id IS NOT NULL AND chat_session_id != '' " +
-		"AND timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL 30 DAYS) " +
-		'ORDER BY chat_session_id DESC LIMIT 200';
+	// not the currently-filtered subset. Built when the dropdowns first load,
+	// with a literal lower bound (see `$lib/llm/queryWindow`).
+	function distinctValuesSql(column: string, anchorMs: number, order = column): string {
+		return (
+			`SELECT DISTINCT ${column} FROM llm_calls WHERE ${column} IS NOT NULL AND ${column} != '' ` +
+			`AND ${rollingWindowPredicate(30, anchorMs)} ` +
+			`ORDER BY ${order} LIMIT 200`
+		);
+	}
 
 	function clearRevealTimers(): void {
 		revealTimers.forEach((timer) => clearTimeout(timer));
@@ -324,7 +331,7 @@
 		if (tab === 'cost') {
 			for (const controller of spendControllers) controller.destroy();
 			spendControllers = [];
-			spendWiredDay = 0;
+			spendWiredKey = '';
 			todaySectionController?.destroy();
 			todaySectionController = null;
 			todaySectionWiredSql = '';
@@ -379,11 +386,16 @@
 			settled += 1;
 			if (settled >= 5) filterOptionsLoading = false;
 		};
-		wireDistinct(distinctAgentsSql, (v) => (agentOptions = v), markSettled);
-		wireDistinct(distinctTasksSql, (v) => (taskOptions = v), markSettled);
-		wireDistinct(distinctOperationsSql, (v) => (operationOptions = v), markSettled);
-		wireDistinct(distinctModelsSql, (v) => (modelOptions = v), markSettled);
-		wireDistinct(distinctSessionsSql, (v) => (sessionOptions = v), markSettled);
+		const anchorMs = currentQueryAnchorMs();
+		wireDistinct(distinctValuesSql('agent_id', anchorMs), (v) => (agentOptions = v), markSettled);
+		wireDistinct(distinctValuesSql('task_id', anchorMs), (v) => (taskOptions = v), markSettled);
+		wireDistinct(distinctValuesSql('operation', anchorMs), (v) => (operationOptions = v), markSettled);
+		wireDistinct(distinctValuesSql('model', anchorMs), (v) => (modelOptions = v), markSettled);
+		wireDistinct(
+			distinctValuesSql('chat_session_id', anchorMs, 'chat_session_id DESC'),
+			(v) => (sessionOptions = v),
+			markSettled
+		);
 	}
 
 	// ─── Calls tab (per-call, metadata-only log) ────────────────────────
@@ -434,8 +446,8 @@
 	function wireCalls(replace: boolean): void {
 		callsLoading = true;
 		destroyCallsControllers();
-		const llmWhere = buildWhere(timeRangeDays, dimensionParts) + (callsType === 'decision' ? " AND provider LIKE 'decision:%'" : callsType === 'llm' ? " AND provider NOT LIKE 'decision:%'" : "");
-		const embedWhere = buildEmbeddingWhere(timeRangeDays);
+		const llmWhere = buildWhere(timeRangeDays, dimensionParts, queryAnchorMs) + (callsType === 'decision' ? " AND provider LIKE 'decision:%'" : callsType === 'llm' ? " AND provider NOT LIKE 'decision:%'" : "");
+		const embedWhere = buildEmbeddingWhere(timeRangeDays, queryAnchorMs);
 
 		// `All` fans out to both sources and merges by recency once both
 		// settle. Track outstanding fetches so the loading flag clears only
@@ -459,7 +471,9 @@
 			pending += 1;
 			const sql = buildCallsSql(llmWhere, CALLS_PAGE_SIZE, callsOffset);
 			callsController = setupLiveDataSource({
-				dataSource: { kind: 'llm_calls_sql', sql },
+				// Lane from the range directly: this runs from a reactive block
+				// that can be ordered before `cumulativeLane` re-derives.
+				dataSource: { kind: 'llm_calls_sql', sql, lane: laneForWindowDays(timeRangeDays) },
 				onRows: (result) => {
 					llmPage = result.records.map((r) => ({ ...r, kind: 'llm' }));
 				},
@@ -498,8 +512,8 @@
 		// Embeddings-only view still re-pulls when its (operation/model) filters
 		// change even though those don't alter the llm_calls WHERE below.
 		const nextKey =
-			`${callsType}::${buildWhere(timeRangeDays, dimensionParts)}` +
-			`::${buildEmbeddingWhere(timeRangeDays, operationFilter, modelFilter)}::${lastRefreshed}`;
+			`${callsType}::${buildWhere(timeRangeDays, dimensionParts, queryAnchorMs)}` +
+			`::${buildEmbeddingWhere(timeRangeDays, queryAnchorMs, operationFilter, modelFilter)}::${lastRefreshed}`;
 		if (nextKey !== callsFilterKey) {
 			callsFilterKey = nextKey;
 			callsOffset = 0;
@@ -596,13 +610,13 @@
 		return parts;
 	}
 
-	function buildWhere(days: number, dimensionSql: string[]): string {
+	// Rolling windows are literal epoch-ms bounds ending at `anchorMs` — the
+	// server prunes partitions and narrows the `llm_calls` materialization only
+	// from a literal (`$lib/llm/queryWindow`), never from `now() - INTERVAL`.
+	function buildWhere(days: number, dimensionSql: string[], anchorMs: number): string {
 		const parts =
 			days > 0
-				? [
-						`timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL ${days} DAYS)`,
-						...dimensionSql
-					]
+				? [rollingWindowPredicate(days, anchorMs), ...dimensionSql]
 				: [`${LLM_LIFETIME_PARTITION_HINT} TRUE`, ...dimensionSql];
 		return parts.length > 0 ? parts.join(' AND ') : 'TRUE';
 	}
@@ -617,13 +631,16 @@
 	// `_op`/`_model` are unused positional args: reactive callers pass
 	// `operationFilter`/`modelFilter` so Svelte's legacy dependency tracker
 	// re-derives when they change (the body reads them off the closure, which
-	// the tracker can't see). The `wireCalls` call site passes only `days` —
-	// it re-wires off `callsFilterKey`, which already includes this string.
-	function buildEmbeddingWhere(days: number, _op?: string, _model?: string): string {
-		const parts =
-			days > 0
-				? [`timestamp_ms > epoch_ms(CAST(now() AS TIMESTAMP) - INTERVAL ${days} DAYS)`]
-				: ['TRUE'];
+	// the tracker can't see). The `wireCalls` call site passes only `days` and
+	// the anchor — it re-wires off `callsFilterKey`, which already includes
+	// this string.
+	function buildEmbeddingWhere(
+		days: number,
+		anchorMs: number,
+		_op?: string,
+		_model?: string
+	): string {
+		const parts = days > 0 ? [rollingWindowPredicate(days, anchorMs)] : ['TRUE'];
 		if (operationFilter.trim()) {
 			parts.push(`operation = '${escapeSqlValue(operationFilter.trim())}'`);
 		}
@@ -641,16 +658,45 @@
 		chatSessionFilter
 	);
 
+	// One anchor ends every rolling window on the page. It moves only when
+	// the queries are rebuilt anyway — a range/filter change, a refresh, a tab
+	// switch — never on an unrelated reactive tick (task-store updates rebuild
+	// the VibeDev SQL constantly), and it is minute-rounded, so unchanged
+	// inputs keep byte-identical SQL and the wired controllers. The account-
+	// wide spend breakdown keeps its own anchor (`syncSpendBreakdown`) so
+	// filter edits never refetch it.
+	$: queryAnchorMs = reanchorQueries(
+		timeRangeDays,
+		dimensionParts,
+		lastRefreshed,
+		tabRefreshToken,
+		activeTab
+	);
+	// The arguments are tracked dependencies only (see `buildEmbeddingWhere`).
+	function reanchorQueries(..._deps: unknown[]): number {
+		return currentQueryAnchorMs();
+	}
+
 	// 24h-scoped widgets clamp to min(timeRangeDays, 1). When the operator
 	// picks 1d they get 1d; when they pick 7/14/30d/lifetime, the 24h
 	// widgets stay at 24h so the hourly resolution is meaningful.
-	$: shortWhere = buildWhere(timeRangeDays <= 0 ? 1 : Math.min(timeRangeDays, 1), dimensionParts);
-	$: cumulativeWhere = buildWhere(timeRangeDays, dimensionParts);
+	$: shortWhere = buildWhere(
+		timeRangeDays <= 0 ? 1 : Math.min(timeRangeDays, 1),
+		dimensionParts,
+		queryAnchorMs
+	);
+	$: cumulativeWhere = buildWhere(timeRangeDays, dimensionParts, queryAnchorMs);
+	// Batch lanes: the 24h widgets always run in the short-window lane; the
+	// range-driven widgets join it when the range is 24h, so a 1-day view
+	// never waits behind a wider batch.
+	const shortLane = LLM_SHORT_WINDOW_LANE;
+	$: cumulativeLane = laneForWindowDays(timeRangeDays);
 	// Embeddings share the cumulative time range but only the operation/model
 	// dimensions (see `buildEmbeddingWhere`). The short window clamps to 24h
 	// for the hourly over-time chart, matching the spend timeline.
 	$: embeddingCumulativeWhere = buildEmbeddingWhere(
 		timeRangeDays,
+		queryAnchorMs,
 		// tracked deps so Svelte re-derives on filter change (buildEmbeddingWhere
 		// reads operationFilter/modelFilter internally, but the reactive block
 		// only re-runs when identifiers it references change).
@@ -659,6 +705,7 @@
 	);
 	$: embeddingShortWhere = buildEmbeddingWhere(
 		timeRangeDays <= 0 ? 1 : Math.min(timeRangeDays, 1),
+		queryAnchorMs,
 		operationFilter,
 		modelFilter
 	);
@@ -1023,7 +1070,7 @@
 		todaySectionController?.destroy();
 		todaySectionWiredSql = sql;
 		todaySectionController = setupLiveDataSource({
-			dataSource: { kind: 'llm_calls_sql', sql },
+			dataSource: { kind: 'llm_calls_sql', sql, lane: shortLane },
 			onRows: ({ records }) => {
 				todaySection = parseTodayVsYesterday(records, boundaries);
 				todaySectionError = null;
@@ -1053,9 +1100,11 @@
 	// filter bar (it is the "where did the money go" overview) — the filters
 	// keep driving the exploratory widgets below. The six queries
 	// ({today,7d,30d} x {operation,model}) auto-batch into one /query_batch
-	// request. "Today" re-anchors its local-day boundaries across midnight;
-	// 7d/30d slide with now() on every refresh. Pure SQL + parsing live in
-	// `$lib/llm/spendBreakdown` (unit-tested).
+	// request per lane: today rides the short-window batch, 7d/30d the default
+	// one. "Today" re-anchors its local-day boundaries across midnight; 7d/30d
+	// are literal bounds re-anchored on every refresh (minute-rounded, so a
+	// same-minute refresh reuses the wired controllers). Pure SQL + parsing
+	// live in `$lib/llm/spendBreakdown` (unit-tested).
 
 	const SPEND_WINDOWS: Array<{ window: SpendWindow; label: string }> = [
 		{ window: 'today', label: 'Today' },
@@ -1067,17 +1116,18 @@
 	let spendRowsByKey: Record<string, SpendRow[]> = {};
 	let spendErrorByKey: Record<string, string | null> = {};
 	let spendControllers: LiveDataSourceController[] = [];
-	let spendWiredDay = 0;
+	/** `${todayStartMs}:${anchorMs}` the controllers are wired for; '' = none. */
+	let spendWiredKey = '';
 	let spendLoadedOnce = false;
 
-	function rewireSpendBreakdown(boundaries: LocalDayBoundaries): void {
+	function rewireSpendBreakdown(boundaries: LocalDayBoundaries, anchorMs: number): void {
 		for (const controller of spendControllers) controller.destroy();
 		spendControllers = [];
-		for (const spec of buildSpendBreakdownQueries(boundaries)) {
+		for (const spec of buildSpendBreakdownQueries(boundaries, anchorMs)) {
 			const key = `${spec.window}:${spec.dimension}`;
 			spendControllers.push(
 				setupLiveDataSource({
-					dataSource: { kind: 'llm_calls_sql', sql: spec.sql },
+					dataSource: { kind: 'llm_calls_sql', sql: spec.sql, lane: spec.lane },
 					// Keep last-good rows on a failed refresh; a window only shows
 					// its error line when it has nothing at all to render.
 					onRows: ({ records }) => {
@@ -1094,15 +1144,24 @@
 		}
 	}
 
-	// Re-anchor only when the local day changes; a same-day Refresh reuses the
-	// wired controllers via the bubbled dashboard-refresh event, and 7d/30d use
-	// now() so they always slide forward.
-	$: if (pageMounted && activeTab === 'cost' && lastRefreshed) {
+	// Rewire when the local day or the minute anchor has moved; returns false
+	// when the wired SQL is still current, so the caller refreshes instead.
+	function syncSpendBreakdown(): boolean {
 		const boundaries = localDayBoundaries(new Date());
-		if (boundaries.todayStartMs !== spendWiredDay) {
-			spendWiredDay = boundaries.todayStartMs;
-			rewireSpendBreakdown(boundaries);
-		}
+		const anchorMs = currentQueryAnchorMs();
+		const key = `${boundaries.todayStartMs}:${anchorMs}`;
+		if (key === spendWiredKey) return false;
+		spendWiredKey = key;
+		rewireSpendBreakdown(boundaries, anchorMs);
+		return true;
+	}
+
+	// Runs on tab open and on DashboardChrome's Refresh (`lastRefreshed`), NOT
+	// on filter edits: the section is account-wide. A same-minute Refresh keeps
+	// the wired controllers, which the bubbled dashboard-refresh event re-runs;
+	// otherwise the rewire aborts those queued re-runs before they are sent.
+	$: if (pageMounted && activeTab === 'cost' && lastRefreshed) {
+		syncSpendBreakdown();
 	}
 
 	// ─── Per-tab refresh ───────────────────────────────────────────────
@@ -1161,15 +1220,12 @@
 
 	function runTabRefresh(tab: TabId): void {
 		if (tab === 'cost') {
-			// Re-anchor the local day first: across midnight the wired SQL is
-			// stale, and rewiring refetches on its own.
-			const boundaries = localDayBoundaries(new Date());
-			if (boundaries.todayStartMs !== spendWiredDay) {
-				spendWiredDay = boundaries.todayStartMs;
-				rewireSpendBreakdown(boundaries);
-			} else {
+			// Re-anchor first: across midnight or a minute boundary the wired
+			// SQL is stale, and rewiring refetches on its own.
+			if (!syncSpendBreakdown()) {
 				for (const controller of spendControllers) void controller.refresh();
 			}
+			const boundaries = localDayBoundaries(new Date());
 			const sql = buildTodayVsYesterdaySql(boundaries, dimensionParts);
 			if (sql !== todaySectionWiredSql) rewireTodaySection(boundaries, sql);
 			else void todaySectionController?.refresh();
@@ -1410,19 +1466,28 @@
 		...$taskStore.vibedevInternalTasks.filter(isVibeDevTask)
 	];
 	$: vibeDevAttributions = buildVibeDevProjectAttributions(vibeDevProjects, vibeDevTasks);
+	// `queryAnchorMs`, not a fresh clock: the attributions are rebuilt on
+	// every task-store update, and a per-call anchor would change the SQL each
+	// minute and refetch the rollup on an unrelated tick.
 	$: vibeDevProjectRollupSql = buildVibeDevProjectRollupSql(
 		vibeDevAttributions,
 		timeRangeDays,
-		dimensionParts
+		dimensionParts,
+		'calls',
+		queryAnchorMs
 	);
 	$: vibeDevModelBreakdownSql = buildVibeDevModelBreakdownSql(
 		vibeDevAttributions,
 		timeRangeDays,
-		dimensionParts
+		dimensionParts,
+		10,
+		queryAnchorMs
 	);
 	$: if (pageMounted && activeTab === 'usage') {
 		vibeDevCostRewirer.sync(
-			vibeDevProjectRollupSql ? { kind: 'llm_calls_sql', sql: vibeDevProjectRollupSql } : null
+			vibeDevProjectRollupSql
+				? { kind: 'llm_calls_sql', sql: vibeDevProjectRollupSql, lane: cumulativeLane }
+				: null
 		);
 	}
 
@@ -1771,7 +1836,7 @@
 						</div>
 					</section>
 
-					<DecisionModelUsage where={buildWhere(timeRangeDays, dimensionParts)} rangeLabel={selectedRangeLabel} />
+					<DecisionModelUsage where={cumulativeWhere} lane={cumulativeLane} rangeLabel={selectedRangeLabel} />
 
 					<!-- Today vs yesterday — fixed two-local-day comparison, deep-link
 					     target of the Today page's pulse band (/llm#today). Renders
@@ -1852,6 +1917,7 @@
 						<!-- KPI row -->
 						<LlmUsageOverview
 							where={cumulativeWhere}
+							lane={cumulativeLane}
 							rangeLabel={selectedRangeLabel}
 							ariaLabel={`LLM usage overview for ${selectedRangeLabel}`}
 						/>
@@ -1860,7 +1926,7 @@
 						<section class="llm-widget">
 							<h3 class="llm-widget-title">Spend over time (last 24h, hourly)</h3>
 							<LineChart
-								dataSource={{ kind: 'llm_calls_sql', sql: spendTimelineSql }}
+								dataSource={{ kind: 'llm_calls_sql', sql: spendTimelineSql, lane: shortLane }}
 								xField="bucket_ms"
 								yField="spend"
 							/>
@@ -1876,7 +1942,7 @@
 								<h3 class="llm-widget-title">Top agents by spend ({selectedRangeLabel})</h3>
 								<BarChart
 									horizontal={true}
-									dataSource={{ kind: 'llm_calls_sql', sql: topAgentsSql }}
+									dataSource={{ kind: 'llm_calls_sql', sql: topAgentsSql, lane: cumulativeLane }}
 									xField="agent_id"
 									yField="spend"
 								/>
@@ -1885,7 +1951,7 @@
 								<h3 class="llm-widget-title">Top operations by spend ({selectedRangeLabel})</h3>
 								<BarChart
 									horizontal={true}
-									dataSource={{ kind: 'llm_calls_sql', sql: topOperationsSql }}
+									dataSource={{ kind: 'llm_calls_sql', sql: topOperationsSql, lane: cumulativeLane }}
 									xField="operation"
 									yField="spend"
 								/>
@@ -2111,7 +2177,7 @@
 								<div class="llm-widget">
 									<h3 class="llm-widget-title">VibeDev provider/model spend ({selectedRangeLabel})</h3>
 									{#if vibeDevModelBreakdownSql}
-										<Table dataSource={{ kind: 'llm_calls_sql', sql: vibeDevModelBreakdownSql }} />
+										<Table dataSource={{ kind: 'llm_calls_sql', sql: vibeDevModelBreakdownSql, lane: cumulativeLane }} />
 									{:else}
 										<p class="llm-loading-status">No VibeDev attribution keys are loaded yet.</p>
 									{/if}
@@ -2221,14 +2287,14 @@
 								<h3 class="llm-widget-title">Cache hit ratio by model ({selectedRangeLabel})</h3>
 								<BarChart
 									horizontal={true}
-									dataSource={{ kind: 'llm_calls_sql', sql: cacheHitsByModelSql }}
+									dataSource={{ kind: 'llm_calls_sql', sql: cacheHitsByModelSql, lane: cumulativeLane }}
 									xField="model"
 									yField="hit_ratio"
 								/>
 							</div>
 							<div class="llm-widget">
 								<h3 class="llm-widget-title">Latency by operation (24h)</h3>
-								<Table dataSource={{ kind: 'llm_calls_sql', sql: latencyTableSql }} />
+								<Table dataSource={{ kind: 'llm_calls_sql', sql: latencyTableSql, lane: shortLane }} />
 							</div>
 						</section>
 					{/if}
@@ -2256,29 +2322,29 @@
 							<MetricCard
 								label={`Cache hit % (${selectedRangeLabel})`}
 								formatAs="percent"
-								dataSource={{ kind: 'llm_calls_sql', sql: cacheHitOverallSql }}
+								dataSource={{ kind: 'llm_calls_sql', sql: cacheHitOverallSql, lane: cumulativeLane }}
 							/>
 							<MetricCard
 								label={`Cached tokens (${selectedRangeLabel})`}
 								formatAs="number"
-								dataSource={{ kind: 'llm_calls_sql', sql: cacheReadTokensSql }}
+								dataSource={{ kind: 'llm_calls_sql', sql: cacheReadTokensSql, lane: cumulativeLane }}
 							/>
 							<MetricCard
 								label={`Cache writes (${selectedRangeLabel})`}
 								formatAs="number"
-								dataSource={{ kind: 'llm_calls_sql', sql: cacheWriteTokensSql }}
+								dataSource={{ kind: 'llm_calls_sql', sql: cacheWriteTokensSql, lane: cumulativeLane }}
 							/>
 							<MetricCard
 								label="Avg TTFT (24h)"
 								formatAs="number"
-								dataSource={{ kind: 'llm_calls_sql', sql: avgTtftSql }}
+								dataSource={{ kind: 'llm_calls_sql', sql: avgTtftSql, lane: shortLane }}
 							/>
 						</section>
 
 						<section class="llm-widget">
 							<h3 class="llm-widget-title">Cache hit % over time (24h, hourly)</h3>
 							<LineChart
-								dataSource={{ kind: 'llm_calls_sql', sql: cacheHitTimelineSql }}
+								dataSource={{ kind: 'llm_calls_sql', sql: cacheHitTimelineSql, lane: shortLane }}
 								xField="bucket_ms"
 								yField="hit_pct"
 							/>
@@ -2291,7 +2357,7 @@
 								<h3 class="llm-widget-title">Cache hit % by operation ({selectedRangeLabel})</h3>
 								<BarChart
 									horizontal={true}
-									dataSource={{ kind: 'llm_calls_sql', sql: cacheHitByOperationSql }}
+									dataSource={{ kind: 'llm_calls_sql', sql: cacheHitByOperationSql, lane: cumulativeLane }}
 									xField="operation"
 									yField="hit_pct"
 								/>
@@ -2300,7 +2366,7 @@
 								<h3 class="llm-widget-title">Cache hit % by agent ({selectedRangeLabel})</h3>
 								<BarChart
 									horizontal={true}
-									dataSource={{ kind: 'llm_calls_sql', sql: cacheHitByAgentSql }}
+									dataSource={{ kind: 'llm_calls_sql', sql: cacheHitByAgentSql, lane: cumulativeLane }}
 									xField="agent_id"
 									yField="hit_pct"
 								/>
@@ -2310,11 +2376,11 @@
 						<section class="llm-pair">
 							<div class="llm-widget">
 								<h3 class="llm-widget-title">Token mix by model ({selectedRangeLabel})</h3>
-								<Table dataSource={{ kind: 'llm_calls_sql', sql: tokenBreakdownSql }} />
+								<Table dataSource={{ kind: 'llm_calls_sql', sql: tokenBreakdownSql, lane: cumulativeLane }} />
 							</div>
 							<div class="llm-widget">
 								<h3 class="llm-widget-title">TTFT by operation (24h)</h3>
-								<Table dataSource={{ kind: 'llm_calls_sql', sql: ttftTableSql }} />
+								<Table dataSource={{ kind: 'llm_calls_sql', sql: ttftTableSql, lane: shortLane }} />
 							</div>
 						</section>
 
@@ -2338,7 +2404,7 @@
 									</select>
 								</div>
 							</div>
-							<Table dataSource={{ kind: 'llm_calls_sql', sql: cacheHitByGroupSql }} />
+							<Table dataSource={{ kind: 'llm_calls_sql', sql: cacheHitByGroupSql, lane: cumulativeLane }} />
 						</section>
 					{/if}
 

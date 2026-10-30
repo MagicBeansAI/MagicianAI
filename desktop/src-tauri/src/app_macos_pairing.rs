@@ -80,6 +80,7 @@ struct PersistedDesktopPairingStore {
     reset_anchor: Option<PersistedPairingResetAnchor>,
 }
 
+#[derive(Default)]
 pub(crate) struct AppMacosDesktopPairingOwner {
     path: Option<PathBuf>,
     record: Option<PersistedDesktopPairingStore>,
@@ -104,16 +105,6 @@ impl AppMacosVerifierBinaryRequirement {
 
     pub(crate) fn binary_digest(&self) -> &str {
         &self.binary_digest
-    }
-}
-
-impl Default for AppMacosDesktopPairingOwner {
-    fn default() -> Self {
-        Self {
-            path: None,
-            record: None,
-            unavailable: false,
-        }
     }
 }
 
@@ -167,6 +158,10 @@ impl AppMacosDesktopPairingOwner {
         )))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Pairing reset checks separate owner, host, runtime and desktop identities."
+    )]
     pub(crate) fn reset_after_owner_confirmation(
         &mut self,
         challenge: AppMacosHostPairingResetChallenge,

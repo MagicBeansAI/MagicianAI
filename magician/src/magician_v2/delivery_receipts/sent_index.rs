@@ -205,7 +205,7 @@ impl SentMessageIndex {
             recorded_at: now,
         };
 
-        for held in self.rows(scope, &provider, &identifier)? {
+        if let Some(held) = self.rows(scope, &provider, &identifier)?.into_iter().next() {
             if held.act_ref == row.act_ref
                 && held.audience == row.audience
                 && held.sent_at == row.sent_at

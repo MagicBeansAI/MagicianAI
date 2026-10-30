@@ -9,15 +9,39 @@ Inventory, route retirement, specialist integration and native parity:
 complete migration plan.
 
 `/work` composes the existing task, Crew, program, Attention, quality and
-company loop surfaces over their APIs. It adds no task identity, persistence
+Team routines surfaces over their APIs. It adds no task identity, persistence
 store, execution runner or authority model. `program.md` remains durable
 direction; Relentless remains bounded improvement of one artifact revision.
 
 ## Navigation and detail
 
-Primary views: All work, Needs you, Crew. Under More: Programs, Quality and
-review, Company loop and diagnostics. Tasks, Monitors and Internal work are
-record-type filters in All work.
+Primary views: All work, Needs you, Crew. Under More: Goals, Playbooks, Quality
+checks and Team routines. Tasks, Monitors and System work filter All work.
+
+Task links use `/work?selected=<task_id>` (with `execution_id` for an exact run).
+Saved `/tasks/<task_id>` and thread-scoped task links resolve to Work, preserving
+run/plan focus, repeated query values and fragments; API and artifact paths stay separate.
+
+### Work vocabulary
+
+Web, iOS and Android use the same purpose-oriented vocabulary:
+
+| Display name | Purpose | Internal contract |
+| --- | --- | --- |
+| Goals | An owner's goals, the sub-goals under them and who owns each | Goal workspace notes under `Workspaces/*/Goals/`, `/work?view=goals` |
+| Playbooks | Reusable goals, instructions and success checks for ongoing work | Programs, `program.md`, `programs` routes |
+| Autopilot | A crew member uses its playbook to choose useful work | Member `harness` definition |
+| Scheduled check-ins | Periodic reviews of a member's responsibilities, bounded by task and step limits | `autonomous_config` and work cycles |
+| Team routines | Shared schedule and manual sequence for company roles | Company loop and `/harness/runtime` |
+| Quality checks | Review and improve an output against criteria before accepting it | Relentless runs and reviews |
+| System work | Background jobs and crew cycles | Internal task feed |
+
+Info buttons explain these concepts, Goals, Crew, focus areas, delegation,
+tasks and monitors. Playbooks provide ongoing direction; procedure skills
+provide reusable steps. Web help opens on hover, focus or click and dismisses with Escape or
+an outside click; phone clients expose separate tap targets and themed popovers.
+Reading help never changes a setting or starts work. Copy changes do not rename
+stored keys, URLs, IDs, document filenames or permissions.
 
 **Needs you** merges canonical questions with cached feed projections. A
 delivered pending question hides a stale question-less warning for the same
@@ -28,6 +52,23 @@ Opening a review or dismissing its notice approves nothing. The task drawer also
 answers every pending ask for its task (`src/lib/attention/pendingAsks.ts`), and
 Quality run detail shows them in place (`ComposerAskDock`), with a `Review →`
 link when the ask has a review route.
+
+A pending `source: "agentic"` `choice` row in Needs you shows its answers as
+buttons, one per option id (`attentionQuickChoices` in
+`src/lib/attention/model.ts`). A row whose ask carries details (a hint on
+several lines or over 200 characters, `isDetailedHint`) offers no buttons: the
+row is a button and cannot show them, so it reads "Open to read the details
+before answering." and the prompt it opens shows them under "Details". A confirmation gets Approve / Deny only on an
+allow-list: explicit `destructive: false`, no `action_type` (an agentic tool
+action), not `protected`, no preview. One click posts the same
+`/api/magician/v2/hitl/{cid}/respond` body the prompt would
+(`chooseAttentionRowOption` in `controller.ts`); the clicked button keeps its
+name with `aria-busy` while it posts, the row drops on success and stays, with
+the error above the list, on failure. The group is named `Answers: <prompt>`.
+`escalation`-source rows (max iterations, cannot proceed, loop detected),
+change/other answers, secret and protected asks, preference holds and
+confirmations outside the allow-list keep the row click, which opens the
+prompt. The compact Attention center does not show these buttons.
 
 **Legacy links.** Rendered internal Markdown links and direct entries for retired
 Work hosts are normalized to Work (before the SPA error page), keeping quality
@@ -43,13 +84,13 @@ Opening it clears task, execution and plan focus but keeps creation context
 
 **Task inspector:** a right-side modal drawer at the page root that overlays
 Work without narrowing the feed; full-viewport on phones, with a Work return
-control. The Programs overview stays mounted behind task and plan drawers (no
+control. The Playbooks overview stays mounted behind task and plan drawers (no
 shift, no document reload); keyboard traversal stays inside the drawer. The
 [Unified task panel](unified-task-panel.md) owns Run, Plan, Output, previous
 executions, questions, files and technical details. The Plan Inspector mounts
 above it (Escape closes it first) and Back/Forward reconciles it with `selected`
 and `plan=open`. Closing or switching tasks clears plan and execution focus.
-Internal work and Crew cycles omit task-plan actions. The status ledger counts
+System work and Crew cycles omit task-plan actions. The status ledger counts
 Failed and Cancelled separately (an owner-stopped job is not a failure) and
 describes retained tasks, not success rate or Quality coverage.
 
@@ -94,7 +135,7 @@ Retained web implementations; provider qualification stays with each feature.
 | Plan graph, waterfall, analysis, slots, attempts, clarifications, history, edits | Deep `PlanInspectorSheet` |
 | Immutable output per execution; previous runs; preview/open/reveal/export | Shared task panel, output adapters, artifact viewer, export menu |
 | Monitor configuration, runs, updates, feedback | All work → Monitors → monitor workspace |
-| Internal cycles, synthesis retry, recurring App history | All work → Internal work → internal workspace |
+| Internal cycles, synthesis retry, recurring App history | All work → System work → internal workspace |
 | Crew roster, filters, leaderboard, hierarchy, pipeline | Crew → `CrewWorkspace` |
 | Member overview, health, effective tools, models, execution details | Crew member → `CrewMemberWorkspace` and panels |
 | Definition, kind, trust, tools, delegation, rules, primary owner | Definition editor, read-only rules browser, validated mutation handlers |
@@ -102,18 +143,26 @@ Retained web implementations; provider qualification stays with each feature.
 | Persisted agent episode history | Separate `/history` inspector; member History shows retention configuration |
 | Program metrics/state, cycle evidence, owner/structural requests | Responsible member's harness/operator projection and canonical decision controls |
 | Backlog promotion and delivery review | Harness-owned tools and stores; full human UI/API coverage is follow-up |
-| Program document, managed missions section, version restore | Programs → scoped program read/revert APIs |
-| Agent briefs, contracts, task context, references, budgets, profile choices | Quality → `RelentlessWorkspace` |
+| Playbook document, managed missions section, edit, version restore | Playbooks → scoped program read/save/revert APIs |
+| Goals | More → Goals → `GoalsWorkspace`: New folder and New goal (main/sub, private and proposed, owned by you) and a target-date edit through the notes front-matter API; goal tree from `Workspaces/*/Goals/<Main goal>/*.md` (one folder per main goal) and legacy `Workspaces/*/Goals/*.md` via the notes tree/file APIs, up to 3 folder levels, 1000 folders and 2000 notes per workspace with a not-shown count; Not linked for missing-parent, self-parent and parent-loop; only open goals are drawn and counted (here, on the All work card and in the apps), Mark done sets `status: done` + `closed:` and Open/Closed (`&goals=closed`) lists done and dropped goals with Reopen; fully closed workspaces appear only under Closed, empty ones under Open, and partially read ones remain visible in both lists; iOS `WorkGoalsView` and Android `WorkGoalsScreen` port the same tree, limits and copy ([feature guide](../../features/goal-workspaces.md)) |
+| Agent briefs, contracts, task context, references, budgets, model and thinking choices | Quality checks → `RelentlessWorkspace` |
 | Attempts, exact-artifact acceptance, resume/cancel, review reports, evidence | Relentless review and handoff controls |
 | Guidance, campaigns, capture policy, advanced configuration | Relentless tabs and editors |
-| Global loop enable/disable, drain semantics, trigger, anomalies | More → Company loop and diagnostics → operations workspace |
+| Global loop enable/disable, drain semantics, trigger, anomalies | More → Team routines → operations workspace |
 | HITL answers, approvals, escalations, failed-task dismissal | Needs you → canonical `AttentionWorkspace`; `/attention` retained |
 | Broader OPC engagements, rooms, commitments, envelopes, receipts | Needs a separate integration audit |
 
 Program listing covers the scoped `programs/*.md` API; default, focus and
-provider program documents are exposed by Crew harness controls. There is no
+provider Playbooks are exposed by Crew Autopilot controls. There is no
 general program-authoring endpoint, and Work does not assume every provider is a
 writable local file.
+
+Goals can select an existing Playbook during creation through the current notes
+content API. The link supplies direction without starting work or changing crew
+assignments. Goal rows distinguish a missing document from a catalog lookup
+failure; the latter leaves the goal visible and offers Retry. One main goal can
+coordinate several Playbooks through its sub-goals and their existing focus-area
+identities ([goal-note contract](../../features/goal-workspaces.md#work--goals)).
 
 ## Native apps
 
@@ -130,14 +179,14 @@ notification intents use the existing host.
 | Native Work surface | Controls and details |
 | --- | --- |
 | All work and Needs you | Task and Plan Inspector, task fields, validated thread moves, scheduling, references/dependencies; Attention answers and approvals |
-| Monitors and Internal work | Separate server filters, paging and page size, exact updates/executions, output ownership; confirmed cleanup with progress and partial failures; recurring App history, schedule and originating installation |
+| Monitors and System work | Separate server filters, paging and page size, exact updates/executions, output ownership; confirmed cleanup with progress and partial failures; recurring App history, schedule and originating installation |
 | Crew | Guided Add/Edit plus advanced definitions with pinned ETags and unknown-field preservation; search/status/type, leaderboard/hierarchy/pipeline, model pins/default clearing, run once, pause/resume, primary owner |
 | Member details | Effective tools, runtime cache, health/bootstrap, current cycle; all rules sections, goal/user/shared memory tiers, isolated-user merge; harness projections, owner requests, structural proposals |
-| Programs | Scoped read, history/confirmed restore, responsible members, program sections, phase/step/open loops, task/execution evidence |
+| Playbooks | Scoped read, history/confirmed restore, responsible members, program sections, phase/step/open loops, task/execution evidence |
 | Quality | Server-paged inbox/runs, owning tasks, guided and advanced contract, provider-backed reference picking, create/eligible-attach, frozen preview, exact review, previous-attempt comparison, bounded recurring policies |
 | Run detail | Attempts, artifacts, reports, lessons, cost reconciliation, cancellation, owner questions, resume |
 | Capture and learning | Server-paged policies/proposals/captures; preview/version checks; binding/review, qualification, revocation/resume, trial and adopted-run monitoring evidence |
-| Company loop | Enable/disable, warnings/anomalies, ordered manual company-sequence dispatch through agent goals |
+| Team routines | Enable/disable, warnings/anomalies, ordered manual company-sequence dispatch through agent goals |
 
 Guarantees:
 
@@ -192,7 +241,7 @@ imported directly by every editor.
 route aliases are removed with their redirects; Work and its child routes are
 the supported URLs. Shell navigation and both native bottom bars use Work; the
 command palette has one Work destination searchable by tasks, Crew, monitors,
-internal work, programs and quality. In-app links are normalized into Work,
+System work, Playbooks and Quality checks. In-app links are normalized into Work,
 keeping query values, repeated filters, task/run/plan/monitor-update identities
 and hash focus; native link parsers still read older payloads. Thread-scoped
 lanes use the shared Work workspace; unresolved threads stay read-only until
@@ -265,7 +314,7 @@ provider acceptance are separate.
   Installed-App links come only from trusted task manifest provenance. Guided
   Crew saves keep nested extensions and integers beyond JavaScript's safe range.
 - Specialists carry exact Work return links across subpages; Analytics hydrates
-  filters before fetching; Events accepts member/task/run filters; Programs link
+  filters before fetching; Events accepts member/task/run filters; Playbooks link
   exact document paths to configured members, progress, metrics and evidence.
 - Quality links with a run, proposal or campaign open that target (a task ID
   only adds context, never the draft composer); a task-only link prepares

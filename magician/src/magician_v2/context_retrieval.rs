@@ -26,6 +26,8 @@ use crate::magician_v2::agents::{FeatureMode, InvocationSurface};
 /// Version of the coordinator contract included in reuse keys.
 pub const CONTEXT_RETRIEVAL_CONTRACT_VERSION: &str = "staged_context.v1";
 
+pub mod progress;
+
 const DEFAULT_MAX_CONTRIBUTIONS: usize = 64;
 const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024;
 const MAX_STAGE_NAME_BYTES: usize = 128;
@@ -2127,10 +2129,14 @@ fn merge_candidates(
             .iter()
             .take_while(|candidate| candidate.contribution.completeness == winning_completeness)
             .collect::<Vec<_>>();
-        let has_conflict = same_completeness
-            .iter()
-            .skip(1)
-            .any(|candidate| candidate.contribution.text != same_completeness[0].contribution.text);
+        // Two complete renderings of one revision must agree. Excerpts of a
+        // revision may cut it differently (another length or window), so
+        // they are alternative views of the same evidence, not a conflict:
+        // the deterministic order above picks one.
+        let has_conflict = winning_completeness == ContextEvidenceCompleteness::Complete
+            && same_completeness.iter().skip(1).any(|candidate| {
+                candidate.contribution.text != same_completeness[0].contribution.text
+            });
         if has_conflict {
             evidence_conflicts += 1;
             for candidate in group {
@@ -2646,6 +2652,65 @@ mod tests {
             &outcome,
         );
         assert_eq!(observation.evidence_conflict_count, 1);
+    }
+
+    /// Fast and hybrid memory cut one revision to different lengths. Those
+    /// excerpts are one piece of evidence, so both stages stay usable and an
+    /// unrelated memory survives (2026-10-25: every such turn lost all memory).
+    #[tokio::test]
+    async fn differing_excerpts_of_one_revision_merge_without_failing_stages() {
+        let first = TestStage::new(
+            ContextStageKind::FastMemory,
+            "fast_memory",
+            Duration::ZERO,
+            TestResult::Contributions(vec![
+                draft(
+                    "memory:shared",
+                    "prefers tea in the morning",
+                    ContextEvidenceCompleteness::Excerpt,
+                    0,
+                ),
+                draft(
+                    "memory:other",
+                    "lives in Bengaluru",
+                    ContextEvidenceCompleteness::Complete,
+                    1,
+                ),
+            ]),
+        );
+        let second = TestStage::new(
+            ContextStageKind::HybridMemory,
+            "hybrid_memory",
+            Duration::ZERO,
+            TestResult::Contributions(vec![draft(
+                "memory:shared",
+                "prefers tea in the morning and coffee after lunch",
+                ContextEvidenceCompleteness::Excerpt,
+                0,
+            )]),
+        );
+
+        let outcome = retrieve_turn_context(
+            request("shared excerpts"),
+            ContextRetrievalPolicy::with_budget(Duration::from_secs(1)),
+            CancellationToken::new(),
+            vec![stage_arc(first), stage_arc(second)],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.evidence_conflict_count, 0);
+        assert_eq!(outcome.contributions.len(), 2);
+        assert!(outcome
+            .contributions
+            .iter()
+            .any(|contribution| contribution.text == "lives in Bengaluru"));
+        for stage_name in ["fast_memory", "hybrid_memory"] {
+            assert_eq!(
+                status(&outcome, stage_name).state,
+                ContextStageState::Completed
+            );
+        }
     }
 
     #[tokio::test]

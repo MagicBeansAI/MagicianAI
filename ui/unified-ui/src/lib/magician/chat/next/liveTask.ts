@@ -97,7 +97,7 @@ function isNotStartedStatus(status: string | undefined): boolean {
 
 /**
  * The status to show: the card's latest message, unless the task store knows
- * the task is not started while the message still says planning or draft. The
+ * the task has no active run while the message still reports an earlier state. The
  * chat posts no update for every transition (a plan approved before this
  * build, for one), and a card left at `draft` read as working forever.
  */
@@ -105,9 +105,7 @@ function effectiveStatus(
 	messageStatus: string | undefined,
 	storeStatus: string | undefined
 ): string | undefined {
-	const behind =
-		messageStatus === undefined || messageStatus === 'planning' || messageStatus === 'draft';
-	if (behind && isNotStartedStatus(storeStatus)) return storeStatus;
+	if (!isTerminalTaskStatus(messageStatus) && isNotStartedStatus(storeStatus)) return storeStatus;
 	// The run ended but its terminal status update never reached the chat:
 	// the card would read running forever (the native cards read the task's
 	// status and show it settled). `storeStatusForCard` already dropped a
@@ -116,29 +114,70 @@ function effectiveStatus(
 	return messageStatus;
 }
 
+/**
+ * A `synthesis_pending` flag whose task has been silent this long never
+ * cleared (e.g. the backend died mid-synthesis). Past it the card stops
+ * reading as live. Synthesis runs 10 s to 2 min, so this is well clear of it.
+ */
+export const SYNTHESIS_STALE_MS = 10 * 60 * 1000;
+
+/** Whether the flag is still believable: false once the task's last update is
+ *  older than `SYNTHESIS_STALE_MS`. An unknown update time keeps it live. */
+function isCancelledStatus(status: string | undefined): boolean {
+	return status === 'cancelled' || status === 'canceled';
+}
+
+function synthesisIsLive(lastUpdateMs: number | undefined, now: number): boolean {
+	return lastUpdateMs === undefined || now - lastUpdateMs < SYNTHESIS_STALE_MS;
+}
+
 /** The task-store fields `storeStatusForCard` reads. */
 export interface LiveTaskStoreTask {
 	status?: string;
 	executionId?: string;
 	activeExecutionId?: string;
+	/** The task's terminal status is on disk but its final answer is still
+	 *  being written. */
+	synthesisPending?: boolean;
+	/** ISO timestamp of the task's last update, for the stale cutoff. */
+	updatedAt?: string;
 }
 
 /**
  * The task store's status for a card, or undefined when it cannot speak for
  * the card's run: a terminal store status from an EARLIER execution (the card
- * shows a rerun the store has not caught up with) must not end the new run.
+ * shows a rerun the store has not caught up with) must not end the new run,
+ * and a not-started status counts only when the store names the card's run.
  * A card message without an execution id cannot be told apart, so the store
  * (the fresher source) is taken as is.
  */
 export function storeStatusForCard(
 	task: LiveTaskStoreTask | undefined,
-	messageExecutionId: string | undefined
+	messageExecutionId: string | undefined,
+	now: number = Date.now()
 ): string | undefined {
 	if (!task?.status) return undefined;
+	// A terminal status with its final answer still being written is not the
+	// end of the card: the store cannot speak for a settled state yet.
+	if (
+		task.synthesisPending === true &&
+		isTerminalTaskStatus(task.status) &&
+		!isCancelledStatus(task.status)
+	) {
+		const updated = task.updatedAt ? Date.parse(task.updatedAt) : Number.NaN;
+		if (synthesisIsLive(Number.isFinite(updated) ? updated : undefined, now)) return undefined;
+	}
 	const runId = messageExecutionId?.trim();
-	if (!runId || !isTerminalTaskStatus(task.status)) return task.status;
+	if (!runId || (!isTerminalTaskStatus(task.status) && !isNotStartedStatus(task.status))) return task.status;
 	const storeRuns = [task.executionId, task.activeExecutionId].map((id) => id?.trim()).filter(Boolean);
-	return storeRuns.length === 0 || storeRuns.includes(runId) ? task.status : undefined;
+	if (storeRuns.includes(runId)) return task.status;
+	// A not-started store row speaks for the card's run only when it names
+	// that run (a cancelled run whose task went back to `ready`). A freshly
+	// created task reads `ready`/`pending` with no execution id until the
+	// store catches up with the run the card already shows: it must not turn
+	// a running card into "queued" (no Cancel) or settle the turn's presence.
+	if (isNotStartedStatus(task.status)) return undefined;
+	return storeRuns.length === 0 ? task.status : undefined;
 }
 
 function toLiveStatus(status: string | undefined): LiveTaskStatus {
@@ -167,17 +206,34 @@ export function toLiveTaskView(
 	message: ChatMessage,
 	taskExecutionGroups: ChatRenderTaskExecutionGroup[] = [],
 	/** The task's status in the task store, when the host has it. */
-	storeStatus?: string
+	storeStatus?: string,
+	/** The clock for the stale-synthesis cutoff; without it a flagged card
+	 *  stays live however old its last update is. */
+	now?: number
 ): LiveTaskView {
 	const content = message.content;
-	const contentStatus = effectiveStatus(content.status, storeStatus);
-	const visual = taskStatusVisual(contentStatus, content.synthesis_pending);
-	const partial =
-		!content.synthesis_pending && isPartialCompletion(contentStatus, content.completion_kind);
-	// A synthesizing task stays live even if its status already reads terminal.
-	const terminal =
-		!content.synthesis_pending && (partial || isTerminalTaskStatus(contentStatus));
-	const status: LiveTaskStatus = content.synthesis_pending
+	const resolvedStatus = effectiveStatus(content.status, storeStatus);
+	const updateTimes = [message, ...taskExecutionGroups.flatMap((group) => group.updates)]
+		.map((m) => toEpochMs(m.created_at))
+		.filter((t): t is number => t !== undefined);
+	// A synthesizing task stays live even if its status already reads terminal,
+	// unless its last update is so old the flag can never have cleared.
+	// A cancelled run abandons its synthesis: its flag is stale on arrival.
+	const synthesisPending =
+		content.synthesis_pending === true &&
+		!isCancelledStatus(resolvedStatus) &&
+		(now === undefined ||
+			synthesisIsLive(updateTimes.length ? Math.max(...updateTimes) : undefined, now));
+	// The flag is only ever set after the work finished, so one that went stale
+	// settles the card as completed rather than leaving it running forever.
+	const contentStatus =
+		content.synthesis_pending === true && !synthesisPending && !isTerminalTaskStatus(resolvedStatus)
+			? 'completed'
+			: resolvedStatus;
+	const visual = taskStatusVisual(contentStatus, synthesisPending);
+	const partial = !synthesisPending && isPartialCompletion(contentStatus, content.completion_kind);
+	const terminal = !synthesisPending && (partial || isTerminalTaskStatus(contentStatus));
+	const status: LiveTaskStatus = synthesisPending
 		? 'running'
 		: partial
 			? 'partial'
@@ -185,7 +241,7 @@ export function toLiveTaskView(
 	const verb = partial ? 'Partially completed' : visual.verb;
 	// The message's summary describes the status it carried; when the store's
 	// status replaced that one, the summary is about a state the task left.
-	const reason = contentStatus === content.status ? taskStatusReason(content) : undefined;
+	const reason = resolvedStatus === content.status ? taskStatusReason(content) : undefined;
 
 	const total = taskExecutionGroups.length;
 	// A finished task has no live run. A run whose own terminal status update
@@ -210,16 +266,14 @@ export function toLiveTaskView(
 	let currentStep: string | undefined;
 	if (!terminal) {
 		const running = [...steps].reverse().find((step) => step.status === 'running');
-		if (content.synthesis_pending) currentStep = visual.verb;
+		if (synthesisPending) currentStep = visual.verb;
 		// The reason already says what is happening; with several runs, still
 		// name the live one.
 		else if (reason) currentStep = total > 1 ? running?.label : undefined;
 		else currentStep = running?.label ?? visual.verb;
 	}
 
-	const times = [message, ...taskExecutionGroups.flatMap((group) => group.updates)]
-		.map((m) => toEpochMs(m.created_at))
-		.filter((t): t is number => t !== undefined);
+	const times = updateTimes;
 
 	// The drawer's title rule: a real label as given, a routed prompt reduced
 	// to its goal; never the raw id (`Task · 2679ce` instead). `summary` is the
@@ -248,8 +302,8 @@ export function toLiveTaskView(
 		status,
 		verb,
 		terminal,
-		startable: !content.synthesis_pending && contentStatus === 'ready',
-		awaitingApproval: !content.synthesis_pending && contentStatus === 'draft',
+		startable: !synthesisPending && contentStatus === 'ready',
+		awaitingApproval: !synthesisPending && contentStatus === 'draft',
 		steps,
 		currentStep,
 		startedAt: times.length ? Math.min(...times) : undefined,
@@ -259,11 +313,6 @@ export function toLiveTaskView(
 	};
 }
 
-/** `m:ss`, or `h:mm:ss` past an hour. */
-export function formatElapsed(ms: number): string {
-	const total = Math.max(0, Math.floor(ms / 1000));
-	const h = Math.floor(total / 3600);
-	const m = Math.floor((total % 3600) / 60);
-	const s = String(total % 60).padStart(2, '0');
-	return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
-}
+/** `m:ss`, or `h:mm:ss` past an hour. Lives in `liveClock` beside the tick
+ *  every running step's elapsed counter reads; re-exported for this card. */
+export { formatElapsed } from './liveClock';

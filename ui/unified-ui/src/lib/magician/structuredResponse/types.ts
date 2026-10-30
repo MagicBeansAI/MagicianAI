@@ -164,6 +164,8 @@ export interface StructuredResponseMetaV1 {
 	execution_id?: string;
 	chat_turn_id?: string;
 	provenance?: StructuredProvenanceRefV1[];
+	/** Open targets for artifacts whose `artifact_id` was shortened past parsing. */
+	artifact_locators?: StructuredArtifactLocatorV1[];
 	cost?: {
 		input_tokens?: number;
 		output_tokens?: number;
@@ -179,6 +181,16 @@ export interface StructuredProvenanceRefV1 {
 	id: string;
 	label?: string;
 	ref?: string;
+}
+
+/**
+ * Resolvable target for an artifact item: a task output (`task_id` set) or a
+ * session output. `relative_path` is output-relative, never a filesystem path.
+ */
+export interface StructuredArtifactLocatorV1 {
+	artifact_id: string;
+	task_id?: string;
+	relative_path: string;
 }
 
 export interface StructuredModelContextV1 {

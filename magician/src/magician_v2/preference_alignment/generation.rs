@@ -195,6 +195,23 @@ pub async fn bump_intention_generation_locked(
     storage: &AgentStorage,
 ) -> Result<u64, IntentionGenerationError> {
     let knowledge_bytes = read_knowledge_bytes(storage).await?;
+    bump_with_knowledge_bytes(storage, knowledge_bytes.as_deref()).await
+}
+
+/// [`bump_intention_generation_locked`] for the writer that just wrote
+/// `knowledge.json` under the flock: it fingerprints the bytes it wrote
+/// instead of reading the multi-megabyte file back while the lock is held.
+pub async fn bump_intention_generation_for_written_knowledge_locked(
+    storage: &AgentStorage,
+    written: &[u8],
+) -> Result<u64, IntentionGenerationError> {
+    bump_with_knowledge_bytes(storage, Some(written)).await
+}
+
+async fn bump_with_knowledge_bytes(
+    storage: &AgentStorage,
+    knowledge_bytes: Option<&[u8]>,
+) -> Result<u64, IntentionGenerationError> {
     let previous = match read_record(storage).await {
         Ok(record) => record.map(|record| record.generation),
         Err(error) => {
@@ -210,7 +227,7 @@ pub async fn bump_intention_generation_locked(
     let record = IntentionGenerationRecord {
         schema_version: INTENTION_GENERATION_SCHEMA_VERSION.to_string(),
         generation,
-        knowledge_fingerprint: knowledge_fingerprint(knowledge_bytes.as_deref()),
+        knowledge_fingerprint: knowledge_fingerprint(knowledge_bytes),
         bumped_at: now,
     };
     storage

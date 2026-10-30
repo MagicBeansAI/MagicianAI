@@ -1504,6 +1504,69 @@ fn budget_reset_rejects_unreached_wrong_owner_stale_and_insufficient_approval() 
 }
 
 #[test]
+fn unlimited_review_preserves_reservations_restart_and_owner_cancellation() {
+    let mut p = proposal();
+    p.budget = Budget::default();
+    let f = Fixture::new(p);
+    f.start();
+    let state = f.store.load(f.id).unwrap();
+    assert_eq!(state.budget.spend().unwrap().reserved_microusd, 90);
+    assert_eq!(state.exhausted_limits(f.now).unwrap(), Default::default());
+    assert!(state.budget_usage(f.now).unwrap()["attempts"]["remaining"].is_null());
+    assert!(state.budget_usage(f.now).unwrap()["time"]["remaining_secs"].is_null());
+    let restored = RunStore::new(f.temp.path(), state.scope);
+    assert_eq!(
+        restored.load(f.id).unwrap().deadline_at,
+        chrono::DateTime::<Utc>::MAX_UTC
+    );
+    f.commit(RunEvent::LeaseReleased).unwrap();
+    let cancelled = restored
+        .commit(f.id, 2, RunEvent::Cancelled, f.now)
+        .unwrap();
+    assert_eq!(cancelled.status, RunStatus::Cancelled);
+    assert_eq!(cancelled.budget.spend().unwrap().reserved_microusd, 90);
+}
+
+#[test]
+fn owner_can_remove_an_exhausted_cost_cap_without_resetting_usage() {
+    use crate::budget_round::BudgetReset;
+    let f = Fixture::new(proposal());
+    f.commit(RunEvent::BudgetUnavailable {
+        required_microusd: 5_000_001,
+    })
+    .unwrap();
+    let stopped = f.commit(RunEvent::LeaseReleased).unwrap();
+    let resumed = f
+        .store
+        .commit(
+            f.id,
+            2,
+            RunEvent::BudgetResetApproved {
+                id: Uuid::new_v4(),
+                approved_by: "owner".into(),
+                contract_hash: stopped.contract.hash().unwrap(),
+                reset: BudgetReset {
+                    cost_microusd: Some(0),
+                    ..Default::default()
+                },
+            },
+            f.now,
+        )
+        .unwrap();
+    assert_eq!(resumed.status, RunStatus::Admitted);
+    assert_eq!(resumed.effective_budget().unwrap().max_cost_microusd, 0);
+    assert_eq!(
+        resumed.effective_budget().unwrap().max_attempts,
+        stopped.effective_budget().unwrap().max_attempts
+    );
+    assert_eq!(
+        resumed.budget.spend().unwrap(),
+        stopped.budget.spend().unwrap()
+    );
+    assert!(!resumed.exhausted_limits(f.now).unwrap().cost);
+}
+
+#[test]
 fn owner_answer_resumes_same_unfinished_attempt() {
     let f = Fixture::new(proposal());
     f.start();

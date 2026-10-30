@@ -3,6 +3,7 @@ import { get, writable, type Readable } from 'svelte/store';
 
 import { postHitlResponse } from '$lib/hitl/adapters';
 import {
+	mapPromptResultToHitlValue,
 	respondToHitl,
 	type RespondToHitlOptions
 } from '$lib/hitl/respondToHitl';
@@ -72,6 +73,8 @@ export interface AttentionItemControllerState {
 	rollbackActionKey: string | null;
 	/** Row key of the stalled wait whose run is being cancelled. */
 	stalledActionKey: string | null;
+	/** `<row key>:<choice id>` of the one-click answer being posted. */
+	choosingKey: string | null;
 	approvingAllDiffs: boolean;
 	error: string | null;
 	notice: string | null;
@@ -80,6 +83,8 @@ export interface AttentionItemControllerState {
 export interface AttentionItemController {
 	state: Readable<AttentionItemControllerState>;
 	activate(row: AttentionDisplayRow): Promise<AttentionActivationResult>;
+	/** Answer a row with one of its quick choices (`attentionQuickChoices`). */
+	choose(row: AttentionDisplayRow, choiceId: string): Promise<AttentionActivationResult>;
 	approveAllDiffApprovals(rows: AttentionDisplayRow[]): Promise<void>;
 	runSkillEvolutionGate(
 		row: AttentionDisplayRow,
@@ -226,6 +231,40 @@ export async function activateAttentionRow(
 	return { status: 'stale', request };
 }
 
+/**
+ * Answer a row with one of its quick choices, without opening the prompt.
+ *
+ * The answer is the one the prompt would have produced for that click, mapped
+ * by the same `mapPromptResultToHitlValue` and posted by the same
+ * `postHitlResponse`. Everything after the post is `activateAttentionRow`'s:
+ * success drops the row's aliases, a re-ask opens the prompt with the revised
+ * question, and a failure leaves the row (and its buttons) where it was. Only
+ * the first post is substituted; every later one has a human answer behind it.
+ */
+export async function chooseAttentionRowOption(
+	row: AttentionDisplayRow,
+	choiceId: string,
+	dependencies: AttentionControllerDependencies = {}
+): Promise<AttentionActivationResult> {
+	const request = row.request;
+	if (!request) return { status: 'error', error: 'This item has no question to answer.' };
+	const value = mapPromptResultToHitlValue(request, { kind: 'choice', choiceId });
+	if (!value) return { status: 'error', error: 'That answer does not fit this question.', request };
+	const post = dependencies.postResponse ?? postHitlResponse;
+	const prompt = dependencies.respond ?? respondToHitl;
+	let posted = false;
+	return await activateAttentionRow(row, {
+		...dependencies,
+		respond: async (current, headers, options) => {
+			if (!posted) {
+				posted = true;
+				return await post(current, value, headers);
+			}
+			return await prompt(current, headers, options);
+		}
+	});
+}
+
 /** Hydrate a thin feed row from the persisted execution pause state. */
 export async function hydrateAttentionRequest(
 	row: AttentionDisplayRow,
@@ -325,6 +364,7 @@ export function createAttentionItemController(
 		skillEvolutionActionKey: null,
 		rollbackActionKey: null,
 		stalledActionKey: null,
+		choosingKey: null,
 		approvingAllDiffs: false,
 		error: null,
 		notice: null
@@ -352,6 +392,24 @@ export function createAttentionItemController(
 			store.update((state) => ({ ...state, error: result.error ?? 'Attention action failed.' }));
 		}
 		return result;
+	}
+
+	async function choose(
+		row: AttentionDisplayRow,
+		choiceId: string
+	): Promise<AttentionActivationResult> {
+		if (get(store).choosingKey !== null) return { status: 'noop' };
+		clearFeedback();
+		store.update((state) => ({ ...state, choosingKey: `${row.key}:${choiceId}` }));
+		try {
+			const result = await chooseAttentionRowOption(row, choiceId, controllerDependencies);
+			if (result.status === 'error') {
+				store.update((state) => ({ ...state, error: result.error ?? 'Attention action failed.' }));
+			}
+			return result;
+		} finally {
+			store.update((state) => ({ ...state, choosingKey: null }));
+		}
 	}
 
 	async function postSkillEvolutionJson(
@@ -616,6 +674,7 @@ export function createAttentionItemController(
 	return {
 		state: { subscribe: store.subscribe },
 		activate,
+		choose,
 		approveAllDiffApprovals,
 		runSkillEvolutionGate,
 		runRollbackRecommendationDecision,

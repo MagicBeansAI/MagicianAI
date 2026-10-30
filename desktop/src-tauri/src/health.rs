@@ -101,8 +101,8 @@ pub async fn health_monitor(app: AppHandle) {
         let magicutor_url = magicutor_url.as_str();
 
         let (magician_health, magicutor_health) = tokio::join!(
-            check_service_health(&client, &magician_url),
-            check_service_health(&client, &magicutor_url),
+            check_service_health(&client, magician_url),
+            check_service_health(&client, magicutor_url),
         );
 
         // If both unreachable, check if container is actually running.
@@ -135,9 +135,7 @@ pub async fn health_monitor(app: AppHandle) {
         // Map to tray state
         let tray_state = if health.all_healthy() {
             TrayState::Running
-        } else if health.partially_healthy() {
-            TrayState::Starting // partial = yellow
-        } else if health.container_running {
+        } else if health.partially_healthy() || health.container_running {
             TrayState::Starting // container up but services not ready
         } else {
             TrayState::Stopped

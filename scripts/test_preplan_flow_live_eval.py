@@ -21,17 +21,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class PreplanFlowLiveEvalTests(unittest.TestCase):
     @staticmethod
     def parse_routing_fixture(mapping: str, *, split: bool = False):
-        tables = """    profiles:
-      primary:
-        provider: openai
-        model: test-primary
-        fallback_profile: backup
-      backup:
-        provider: anthropic
-        model: test-backup
-      alternate:
-        provider: openai
-        model: test-alternate
+        tables = """    catalog:
+      connections:
+        openai: {provider: openai}
+        anthropic: {provider: anthropic}
+      models:
+        openai/primary: {connection: openai, model: test-primary}
+        anthropic/backup: {connection: anthropic, model: test-backup}
+        openai/alternate: {connection: openai, model: test-alternate}
+      assignments:
+        primary: {model: openai/primary, fallback: backup}
+        backup: {model: anthropic/backup}
+        alternate: {model: openai/alternate}
 # A YAML comment does not end the enclosing router mapping.
     operation_mapping:
 """ + textwrap.indent(textwrap.dedent(mapping).strip(), "      ") + "\n"
@@ -216,6 +217,31 @@ class PreplanFlowLiveEvalTests(unittest.TestCase):
         self.assertEqual(execution, "exec-1")
         self.assertEqual(prompt, "Which launch date?")
 
+    def test_attention_batch_tracks_each_question_without_clearing_its_sibling(self) -> None:
+        questions = [
+            {"id": "q-1", "prompt": "Which owner?"},
+            {"id": "q-2", "prompt": "Which exit criterion?"},
+        ]
+        row = {
+            "id": "v3:attention:chain-1", "task_id": "task-1",
+            "summary": "Planning clarification",
+            "metadata": {
+                "source": "clarification", "execution_id": "exec-1",
+                "pause_state_id": "chain-1", "input_schema": {"questions": questions},
+            },
+        }
+        payload = {"requests": [row]}
+        item = EVAL.find_attention(payload, "q-1", "task-1")
+        self.assertIs(item, row)
+        self.assertEqual(EVAL.attention_identity(item, "q-1"), ("q-1", "exec-1", "Which owner?"))
+        self.assertIsNone(EVAL.find_attention(payload, "q-1", "other-task"))
+        self.assertIsNone(EVAL.find_attention(payload, "unrelated", "task-1"))
+        questions.pop(0)
+        self.assertIsNone(EVAL.find_attention(payload, "q-1", "task-1"))
+        self.assertIs(EVAL.find_attention(payload, "q-2", "task-1"), row)
+        row["metadata"]["source"] = "user_request"
+        self.assertIsNone(EVAL.find_attention(payload, "q-2", "task-1"))
+
     def test_plan_panel_probe_reads_the_exact_plan_inspector_envelope(self) -> None:
         class FakeClient:
             def get_json(self, path, query=None):
@@ -252,6 +278,21 @@ class PreplanFlowLiveEvalTests(unittest.TestCase):
         }
         self.assertTrue(EVAL.event_matches(event, "q-1", "hitl.resolved"))
         self.assertFalse(EVAL.event_matches(event, "q-2", "hitl.resolved"))
+
+    def test_grouped_clarification_tracks_its_canonical_request_resolution(self) -> None:
+        observation = EVAL.HitlObservation(
+            correlation_id="field-1", source="clarification", prompt="Who owns it?",
+            task_id="task-1", execution_id="planexec-1", plan_panel_visible=True,
+            attention_visible=True, plan_panel_latency_ms=1, attention_latency_ms=1,
+            event_correlation_id="form-1",
+        )
+        def event(correlation):
+            return {"event_type": "HitlResolved", "data": {"correlation_id": correlation}}
+        self.assertTrue(EVAL.resolved_event_matches(event("form-1"), observation))
+        self.assertTrue(EVAL.resolved_event_matches(event("field-1"), observation))
+        self.assertFalse(EVAL.resolved_event_matches(event("other-form"), observation))
+        observation.source = "plan_approval"
+        self.assertFalse(EVAL.resolved_event_matches(event("form-1"), observation))
 
     def test_plan_approval_prompt_gate_allows_title_but_requires_same_intent(self) -> None:
         self.assertTrue(

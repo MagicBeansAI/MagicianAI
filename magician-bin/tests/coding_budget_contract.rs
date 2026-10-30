@@ -9,14 +9,23 @@ mod config {
     pub use magician::config::*;
 }
 
+// Only part of this production file is exercised here; the rest is used by
+// the runtime, not dead.
+#[allow(dead_code)]
 #[path = "../../magician/src/magician_v2/execution/coding_engine/budgets.rs"]
 mod budgets;
 
+// Only part of this production file is exercised here; the rest is used by
+// the runtime, not dead.
+#[allow(dead_code)]
 #[path = "../../magician/src/magician_v2/execution/coding_engine/cost_budget.rs"]
 mod cost_budget;
 #[path = "../../magician/src/magician_v2/execution/coding_engine/task_budget.rs"]
 mod task_budget;
 
+// Only part of this production file is exercised here; the rest is used by
+// the runtime, not dead.
+#[allow(dead_code)]
 #[path = "../../magician/src/magician_v2/execution/agentic/run_budget.rs"]
 mod run_budget;
 

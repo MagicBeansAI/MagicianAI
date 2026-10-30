@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Regression tests for the composed test runner's live-eval decision stage."""
+"""Regression tests for composed test execution and Rust fixture isolation."""
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,60 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER = REPO_ROOT / "scripts" / "run-all-tests-with-report.sh"
+
+
+class RustTestRootIsolationTests(unittest.TestCase):
+    def test_rust_runner_overrides_inherited_runtime_roots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rust-runner-fixture-") as temp:
+            root = Path(temp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            runner = scripts / "run-rust-tests-with-report.sh"
+            runner.write_bytes((REPO_ROOT / "scripts" / runner.name).read_bytes())
+            (scripts / "rust_test_report.py").write_text("pass\n")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            cargo = fake_bin / "cargo"
+            cargo.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os\n"
+                "keys = ('MAGICIAN_ROOT_DIR', 'MAGICIAN_STORAGE_PATH', "
+                "'MAGICUTOR_DATA_ROOT', 'RUST_MIN_STACK')\n"
+                "with open(os.environ['TEST_ENV_LOG'], 'a') as log:\n"
+                "    log.write(json.dumps({k: os.environ[k] for k in keys "
+                "if k in os.environ}) + '\\n')\n"
+            )
+            cargo.chmod(0o755)
+            inherited_root = root / "existing-runtime"
+            inherited_root.mkdir()
+            sentinel = inherited_root / "keep.txt"
+            sentinel.write_text("existing data\n")
+            env_log = root / "env.jsonl"
+            env = os.environ.copy()
+            env.update(
+                PATH=f"{fake_bin}{os.pathsep}{env['PATH']}",
+                TEST_ENV_LOG=str(env_log),
+                RUST_TEST_REPORT_DIR=str(root / "report"),
+                MAGICIAN_ROOT_DIR=str(inherited_root),
+                MAGICIAN_STORAGE_PATH=str(inherited_root),
+                MAGICUTOR_DATA_ROOT=str(inherited_root),
+                RUST_MIN_STACK="16777216",
+            )
+            completed = subprocess.run(
+                ["bash", str(runner)], env=env, capture_output=True, text=True
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            calls = [json.loads(line) for line in env_log.read_text().splitlines()]
+            self.assertEqual(len(calls), 2)  # nextest and doctests
+            for call in calls:
+                fixture = Path(call["MAGICIAN_ROOT_DIR"])
+                self.assertEqual(fixture.name, "magician_data_v3")
+                self.assertTrue(fixture.parent.name.startswith("magician-cargo-test-"))
+                self.assertEqual(str(fixture), call["MAGICIAN_STORAGE_PATH"])
+                self.assertEqual(str(fixture), call["MAGICUTOR_DATA_ROOT"])
+                self.assertNotIn("RUST_MIN_STACK", call)
+                self.assertFalse(fixture.parent.exists(), "temporary root must be cleaned up")
+            self.assertEqual(sentinel.read_text(), "existing data\n")
 
 
 class RunAllTestsLiveEvalDecisionTests(unittest.TestCase):

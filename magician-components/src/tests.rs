@@ -94,7 +94,7 @@ fn gated_component(id: &str, host: HostRequirement) -> Component {
 fn required_is_not_core_and_neither_can_be_declined() {
     // `core` conflated "not a choice" with "arrives with the runtime". The
     // local embedding model is the first that is the former and not the latter.
-    let plain = component("silverbullet", &[], &[], false);
+    let plain = component("notes-viewer", &[], &[], false);
     let required = required_component("ollama-embedding", &["embeddings"]);
     let core = component("magicutor", &[], &[], true);
 
@@ -174,7 +174,7 @@ fn a_host_requirement_says_what_is_wrong_and_why() {
 
 #[test]
 fn a_component_with_no_host_block_runs_anywhere() {
-    let anywhere = component("silverbullet", &[], &[], false);
+    let anywhere = component("notes-viewer", &[], &[], false);
     let potato = Host {
         os: "linux".into(),
         arch: "riscv64".into(),
@@ -191,7 +191,7 @@ fn graph() -> Graph {
             component("magicutor", &[], &[], true),
             component("chrome-extension", &["browser"], &["magicutor"], false),
             component("headless-browser", &["browser"], &[], false),
-            component("silverbullet", &[], &[], false),
+            component("notes-viewer", &[], &[], false),
         ],
         requirements: vec![
             Requirement {
@@ -220,7 +220,7 @@ fn graph() -> Graph {
                 id: "notes".into(),
                 name: "Notes".into(),
                 description: String::new(),
-                needs: vec![Need::Component("silverbullet".into())],
+                needs: vec![Need::Component("notes-viewer".into())],
                 surfaces: vec![Surface::Web, Surface::Ios],
             },
         ],
@@ -301,25 +301,25 @@ fn declining_a_component_is_not_the_same_as_losing_one() {
     let g = graph();
     let observed = present(&["magicutor"]);
 
-    let declined: BTreeMap<String, Declared> = [("silverbullet".to_string(), Declared::Declined)]
+    let declined: BTreeMap<String, Declared> = [("notes-viewer".to_string(), Declared::Declined)]
         .into_iter()
         .collect();
     assert_eq!(
         resolve(&g, &declined, &observed)
-            .component("silverbullet")
+            .component("notes-viewer")
             .unwrap()
             .state,
         ComponentState::Declined,
         "a component the operator turned down must not read as a fault"
     );
 
-    let wanted: BTreeMap<String, Declared> = [("silverbullet".to_string(), Declared::Wanted)]
+    let wanted: BTreeMap<String, Declared> = [("notes-viewer".to_string(), Declared::Wanted)]
         .into_iter()
         .collect();
     assert!(
         matches!(
             resolve(&g, &wanted, &observed)
-                .component("silverbullet")
+                .component("notes-viewer")
                 .unwrap()
                 .state,
             ComponentState::Missing { .. }
@@ -346,9 +346,9 @@ fn observation_beats_an_empty_declaration() {
     let report = resolve(
         &g,
         &BTreeMap::new(),
-        &present(&["silverbullet", "magicutor"]),
+        &present(&["notes-viewer", "magicutor"]),
     );
-    assert!(report.component("silverbullet").unwrap().state.usable());
+    assert!(report.component("notes-viewer").unwrap().state.usable());
     assert!(report.feature("notes").unwrap().availability.is_available());
 }
 
@@ -396,17 +396,17 @@ fn a_core_component_is_never_reported_as_declined() {
 fn an_unprobeable_component_is_unknown_rather_than_absent() {
     let g = graph();
     let observed: BTreeMap<String, Observed> = [(
-        "silverbullet".to_string(),
+        "notes-viewer".to_string(),
         Observed::Unknown("cannot probe from here".into()),
     )]
     .into_iter()
     .collect();
     let report = resolve(&g, &BTreeMap::new(), &observed);
     assert!(matches!(
-        report.component("silverbullet").unwrap().state,
+        report.component("notes-viewer").unwrap().state,
         ComponentState::Unknown { .. }
     ));
-    assert!(!report.component("silverbullet").unwrap().state.usable());
+    assert!(!report.component("notes-viewer").unwrap().state.usable());
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn each_surface_gets_only_what_it_can_deliver() {
     let report = resolve(
         &g,
         &BTreeMap::new(),
-        &present(&["silverbullet", "magicutor"]),
+        &present(&["notes-viewer", "magicutor"]),
     );
 
     // Notes is available and shows on web and iOS; read-tabs is blocked.
@@ -443,7 +443,7 @@ fn each_surface_gets_only_what_it_can_deliver() {
 fn what_costs_money_says_so_and_nothing_else_does() {
     // Most of the graph is the operator's own machine, so labelling every free
     // component would be noise that buries the few that are not free.
-    let free = component("silverbullet", &[], &[], false);
+    let free = component("notes-viewer", &[], &[], false);
     assert!(!free.pricing.costs_money(), "free is the default");
 
     let metered = Component {

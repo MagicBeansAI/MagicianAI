@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """polymarket_search — active markets on a topic via Gamma API.
 
-Keyless. Self-contained, stdlib only. Note: Polymarket's API doesn't
-do server-side relevance filtering — we pull top-N active markets by
-volume, then client-side filter to those whose question/description
-contain query terms.
+Keyless, stdlib only. Query the provider's public search and paginate its
+events, returning open markets rather than filtering a global volume list.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import math
+import socket
 import sys
 import time
 import urllib.error
@@ -17,9 +18,65 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-USER_AGENT = "magician/polymarket_search/0.1"
-MARKETS_URL = "https://gamma-api.polymarket.com/markets"
+USER_AGENT = "magician/polymarket_search/0.2.1"
+SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_PAGES = 10
+SEARCH_BUDGET_SECS = 25
+
+
+def _ipv4_connection(address, timeout, source_address=None):
+    """Use IPv4 for this connection only; retain the hostname for TLS/SNI."""
+    last_error = None
+    deadline = time.monotonic() + timeout
+    for family, kind, proto, _, peer in socket.getaddrinfo(
+            address[0], address[1], socket.AF_INET, socket.SOCK_STREAM):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("IPv4 connection exceeded its time budget")
+        connection = socket.socket(family, kind, proto)
+        try:
+            connection.settimeout(remaining)
+            if source_address:
+                connection.bind(source_address)
+            connection.connect(peer)
+            return connection
+        except OSError as exc:
+            last_error = exc
+            connection.close()
+    raise last_error or OSError("no IPv4 address available for provider connection")
+
+
+class _IPv4HTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        self._create_connection = _ipv4_connection
+        super().connect()  # Standard certificate/hostname verification and proxy tunnelling.
+
+
+class _IPv4HTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_IPv4HTTPSConnection, request, context=self._context)
+
+
+def _search_page(request, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Polymarket search exceeded its time budget")
+    try:
+        with urllib.request.urlopen(request, timeout=min(10, remaining)) as response:
+            return _read_json_response(response)
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        if not isinstance(reason, (ConnectionError, TimeoutError)):
+            raise  # No retry for provider HTTP errors, bad certificates or payloads.
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Polymarket search exceeded its time budget")
+    # A broken IPv6 route can reset TLS before an HTTP response. Retry this
+    # read-only request once over IPv4, without changing global DNS or TLS.
+    opener = urllib.request.build_opener(_IPv4HTTPSHandler())
+    with opener.open(request, timeout=min(10, remaining)) as response:
+        return _read_json_response(response)
 
 
 def _read_json_response(response):
@@ -30,50 +87,79 @@ def _read_json_response(response):
 
 
 def fetch(query: str, limit: int) -> list[dict]:
+    query = query.strip()
+    if not query:
+        raise ValueError("query must not be empty")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
     params = {
-        "active": "true",
-        "closed": "false",
-        "limit": 100,
-        "order": "volume",
-        "ascending": "false",
+        "q": query,
+        "events_status": "active",
+        "keep_closed_markets": 0,
+        "limit_per_type": min(50, max(10, limit)),
+        "search_profiles": "false",
+        "search_tags": "false",
     }
-    url = f"{MARKETS_URL}?{urllib.parse.urlencode(params, doseq=True)}"
-    req = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        payload = _read_json_response(resp)
-    markets = payload if isinstance(payload, list) else (payload or {}).get("markets") or []
-
-    q_lower = query.lower()
-    q_terms = [t for t in q_lower.split() if len(t) > 2]
-
     out: list[dict] = []
-    for market in markets:
-        question = (market.get("question") or market.get("title") or "").strip()
-        description = (market.get("description") or "").strip()
-        haystack = f"{question} {description}".lower()
-        if q_lower not in haystack and not any(t in haystack for t in q_terms):
-            continue
-        slug = market.get("slug") or ""
-        url = f"https://polymarket.com/event/{slug}" if slug else ""
-        out.append({
-            "title": question,
-            "url": url,
-            "snippet": description[:1200],
-            "published_at": market.get("startDate"),
-            "source": "polymarket",
-            "source_native_id": str(market.get("id") or market.get("conditionId") or ""),
-            "engagement": {
-                "volume": float(market.get("volume") or 0),
-                "liquidity": float(market.get("liquidity") or 0),
-            },
-            "author": None,
-            "container": market.get("category") or None,
-        })
-        if len(out) >= limit:
+    seen: set[str] = set()
+    deadline = time.monotonic() + SEARCH_BUDGET_SECS
+    for page in range(1, MAX_PAGES + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Polymarket search exceeded its time budget")
+        url = f"{SEARCH_URL}?{urllib.parse.urlencode(dict(params, page=page))}"
+        req = urllib.request.Request(
+            url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        payload = _search_page(req, deadline)
+        if not isinstance(payload, dict):
+            raise ValueError("expected a Polymarket search response object")
+        events = payload.get("events") or []
+        if not isinstance(events, list):
+            raise ValueError("expected a Polymarket events array")
+        for event in events:
+            if event.get("closed") or event.get("archived"):
+                continue
+            for market in event.get("markets") or []:
+                if (market.get("active", event.get("active")) is not True
+                        or market.get("closed") or market.get("archived")):
+                    continue
+                question = (market.get("question") or market.get("title") or "").strip()
+                if not question:
+                    continue
+                native_id = str(market.get("id") or market.get("conditionId") or "")
+                key = native_id or str(market.get("slug") or f"{event.get('id')}:{question}")
+                if key in seen:
+                    continue
+                seen.add(key)
+                slug = event.get("slug") or ""
+                out.append({
+                    "title": question,
+                    "url": f"https://polymarket.com/event/{urllib.parse.quote(slug, safe='')}" if slug else "",
+                    "snippet": (market.get("description") or event.get("description") or "")[:1200],
+                    "published_at": market.get("startDate") or event.get("startDate"),
+                    "source": "polymarket",
+                    "source_native_id": native_id,
+                    "engagement": {
+                        "volume": _number(market.get("volume")),
+                        "liquidity": _number(market.get("liquidity")),
+                    },
+                    "author": None,
+                    "container": market.get("category") or event.get("category") or None,
+                })
+                if len(out) >= limit:
+                    return out
+        if not events or not (payload.get("pagination") or {}).get("hasMore"):
             break
     return out
+
+
+def _number(value) -> float:
+    try:
+        value = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
 
 
 def main() -> int:

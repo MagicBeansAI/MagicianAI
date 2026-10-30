@@ -297,11 +297,13 @@ App face of agent tools `list_tasks` / `get_task_details`.
 
 `search_notes` / `open_note` stay agent-only (`open_note` exposes host paths).
 `read_note` takes a hit's `source_ref`
-(`notes:<local_markdown|silverbullet>:<relative markdown path>`); the proof
+(`notes:<local_markdown|silverbullet>:<relative markdown path>`; `silverbullet` is
+the persisted id of the notes folder); the proof
 checks provider and `is_readable_note_path` (relative, no parent escape,
 markdown), and `NotesSettingsStore::read_observation_note` re-confines to the
 canonical provider root and refuses symlinks. Search uses Observe's
-boundary-safe roots; `open_url` (can carry host paths) is dropped. Queries
+boundary-safe roots; hits and reads carry `open_url`, the canonical relative
+`/notes?path=…&workspace=…` link (never a host path). Queries
 ≥ 2 chars and ≤ 256 bytes, ≤ 8 matches per hit, body ≤ 256 KiB; `scan_truncated` /
 `more_available` pass through.
 

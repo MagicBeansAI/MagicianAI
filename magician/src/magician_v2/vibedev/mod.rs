@@ -11,6 +11,9 @@
 //! orchestration while the decisions a turn's VibeDev arm makes moved
 //! behind this seam (see `rail`).
 //!
+//! * [`change_delivery`] — how a run's changes land (mode, project folder,
+//!   its git state, branch), recorded on the execution that decided it as a
+//!   runtime fact the claim check grounds reports against.
 //! * [`projects`] — the scoped `projects.json` substrate the HTTP surface
 //!   and the run service share.
 //! * [`project_checks`] — project-owned checks and build caches: the
@@ -36,9 +39,11 @@
 //! soak window; Phase 5 (removal inventory batch 2, 2026-08-28) removed them
 //! and repointed every consumer to the tree paths above.
 
+pub mod change_delivery;
 pub mod crews;
 pub mod dispatch_intent;
 pub mod live_runs;
+pub mod original_workspace;
 pub mod project_checks;
 pub mod projects;
 pub mod rail;

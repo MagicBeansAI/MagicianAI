@@ -54,7 +54,7 @@ The explorer's tour is one branching graph. The viewer starts at an entry choice
 | `quality.start` | task | a Relentless quality review of a draft | `return` |
 | `voice.start` | voice | a live voice call starts | `end` |
 | `apps.start` | apps | an app action is launched | `end` |
-| `llm.start` | brain | one model call: router → profile → provider (local or remote) → response | `return` |
+| `llm.start` | brain | one model call: catalog-generated route → request bounds → provider (local or remote) → response | `return` |
 | `decision.start` | brain | consult the decision engine (on or off, local or hosted model) | `return` |
 | `browser.start` | task | a browser action through magicutor (CDP) | `return` |
 

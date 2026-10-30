@@ -363,7 +363,7 @@
 </script>
 
 <svelte:head>
-	<title>Budget · Magican</title>
+	<title>Spend ledger · Magican</title>
 </svelte:head>
 
 <div class="presto-gaui-page ra-page">
@@ -392,8 +392,8 @@
 	<!-- Header -->
 	<Card className="ra-hero" elevation={1}>
 		<div class="ra-hero-copy">
-			<p class="ra-kicker">Budget</p>
-			<h1>Resource Authority</h1>
+			<p class="ra-kicker">Resource authority</p>
+			<h1>Spend ledger</h1>
 			<p>Ceilings, tokens, and fund management.</p>
 		</div>
 		<div class="ra-hero-actions">
@@ -412,10 +412,10 @@
 			<div>
 				<h2 class="ra-section-title">API Key</h2>
 				<p class="ra-sub">
-					Required when the server sets <code>RESOURCE_AUTHORITY_API_KEY</code>. Stored
-					locally in this browser and sent only to
-					<code>/api/magician/v2/resource-authority</code> requests — keep this dashboard
-					operator-only.
+					Your sign-in is enough to view the ledger. Freezing, funding, revoking and
+					closing periods need the server's <code>RESOURCE_AUTHORITY_API_KEY</code> when
+					it is set. The key is stored locally in this browser and sent only to
+					<code>/api/magician/v2/resource-authority</code> requests.
 				</p>
 			</div>
 			<div class="ra-api-key-controls">

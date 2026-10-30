@@ -29,9 +29,9 @@ use magician::magician_v2::learning::{
     LearningCandidateState, LearningMemoryBridge, LearningScope, LearningStore,
 };
 use magician::magician_v2::notes::{
-    AppendNoteRequest, CaptureSelectionRequest, CreateNoteRequest, NoteSearchRequest,
-    NotesSettings, NotesSettingsStore, PublishTaskNoteRequest, SaveAudioNoteRequest,
-    TaskNotePublishMode,
+    AppendNoteRequest, CaptureSelectionRequest, CreateNoteRequest, NoteFrontMatterOutcome,
+    NoteFrontMatterUpdate, NoteSearchRequest, NotesSettings, NotesSettingsStore,
+    PublishTaskNoteRequest, SaveAudioNoteRequest, TaskNotePublishMode,
 };
 // The notes projection seam (plan 2.3) owns the memory-promotion projection
 // behind promote-to-memory; this handler keeps only transport and review
@@ -256,7 +256,7 @@ pub async fn open_notes_provider_root_handler(
         })));
     };
     let root_path = match provider {
-        "silverbullet" => envelope.resolved.silverbullet_space_path,
+        "silverbullet" => envelope.resolved.notes_folder_path,
         _ => envelope.resolved.local_markdown_root,
     };
     if root_path.trim().is_empty() {
@@ -408,6 +408,8 @@ pub struct CreateMarkdownNoteRequest {
     #[serde(default)]
     pub folder: String,
     pub name: String,
+    #[serde(default)]
+    pub markdown: Option<String>,
 }
 
 pub async fn create_markdown_note_handler(
@@ -422,12 +424,32 @@ pub async fn create_markdown_note_handler(
     };
     match api
         .settings
-        .create_markdown_note(&principal, &workspace, &body.folder, &body.name)
+        .create_markdown_note_with_content(
+            &principal,
+            &workspace,
+            &body.folder,
+            &body.name,
+            body.markdown.as_deref(),
+        )
         .await
     {
         Ok(file) => Ok(HttpResponse::Ok().json(file)),
         Err(error) => Ok(notes_io_error_response(error)),
     }
+}
+
+/// Complete-content creation has a distinct route so newer clients cannot
+/// silently create blank notes against a server that ignores `markdown`.
+pub async fn create_markdown_note_with_content_handler(
+    api: web::Data<Arc<NotesApi>>,
+    req: HttpRequest,
+    body: web::Json<CreateMarkdownNoteRequest>,
+) -> Result<HttpResponse> {
+    if body.markdown.is_none() {
+        return Ok(HttpResponse::BadRequest()
+            .json(serde_json::json!({"message": "Initial markdown is required."})));
+    }
+    create_markdown_note_handler(api, req, body).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,6 +476,44 @@ pub async fn save_note_markdown_handler(
         .await
     {
         Ok(file) => Ok(HttpResponse::Ok().json(file)),
+        Err(error) => Ok(notes_io_error_response(error)),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateNoteFrontMatterRequest {
+    #[serde(default)]
+    pub workspace: Option<String>,
+    pub path: String,
+    #[serde(flatten)]
+    pub update: NoteFrontMatterUpdate,
+}
+
+/// `PATCH /notes/front-matter`: set or remove top-level front-matter keys of
+/// one note without rewriting the rest of it. `409 note_revision_conflict`
+/// (with `current_revision`) when the note changed since `expected_revision`.
+pub async fn update_note_front_matter_handler(
+    api: web::Data<Arc<NotesApi>>,
+    req: HttpRequest,
+    body: web::Json<UpdateNoteFrontMatterRequest>,
+) -> Result<HttpResponse> {
+    let body = body.into_inner();
+    let (principal, workspace) = match resolve_required_scope(req.headers(), body.workspace) {
+        Ok(scope) => scope,
+        Err(response) => return Ok(response),
+    };
+    match api
+        .settings
+        .update_note_front_matter(&principal, &workspace, &body.path, &body.update)
+        .await
+    {
+        Ok(NoteFrontMatterOutcome::Updated(file)) => Ok(HttpResponse::Ok().json(file)),
+        Ok(NoteFrontMatterOutcome::Conflict { current_revision }) => Ok(HttpResponse::Conflict()
+            .json(json!({
+                "error": "note_revision_conflict",
+                "message": "the note changed since it was read; reload it and try again",
+                "current_revision": current_revision,
+            }))),
         Err(error) => Ok(notes_io_error_response(error)),
     }
 }
@@ -1106,7 +1166,11 @@ fn notes_io_error_response(error: std::io::Error) -> HttpResponse {
 fn normalize_open_root_provider(value: &str) -> Option<&'static str> {
     match value.trim() {
         "local" | "local_markdown" => Some("local_markdown"),
-        "sb" | "silverbullet" | "silverbullet_space" => Some("silverbullet"),
+        // `silverbullet` is the persisted id of the notes folder; the other
+        // spellings are what older clients and settings send.
+        "notes" | "notes_folder" | "sb" | "silverbullet" | "silverbullet_space" => {
+            Some("silverbullet")
+        },
         _ => None,
     }
 }
@@ -1159,8 +1223,16 @@ pub fn configure_notes_routes(cfg: &mut web::ServiceConfig) {
             .route("/tree", web::delete().to(delete_note_folder_handler))
             .route("/file", web::get().to(read_note_file_handler))
             .route("/file", web::post().to(create_markdown_note_handler))
+            .route(
+                "/file/content",
+                web::post().to(create_markdown_note_with_content_handler),
+            )
             .route("/file", web::put().to(save_note_markdown_handler))
             .route("/file", web::delete().to(delete_markdown_note_handler))
+            .route(
+                "/front-matter",
+                web::patch().to(update_note_front_matter_handler),
+            )
             .route("/backlinks", web::get().to(list_note_backlinks_handler))
             .route("/search", web::post().to(search_notes_handler))
             .route(
@@ -1196,7 +1268,10 @@ mod tests {
             date: "2026-08-01".to_string(),
             tags: vec!["magician/task".to_string(), "date/2026-08-01".to_string()],
             note_path: "Tasks/2026-08-01/task-1-launch-brief.md".to_string(),
-            open_url: Some("https://notes.example.test/Tasks/2026-08-01/task-1".to_string()),
+            open_url: Some(
+                "/notes?path=Tasks%2F2026-08-01%2Ftask-1-launch-brief.md&workspace=default"
+                    .to_string(),
+            ),
             assets: Vec::new(),
         }
     }

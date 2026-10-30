@@ -380,6 +380,13 @@
   --radius-composer: 10px;
 }
 
+/* The full desktop app paints an opaque surface; layout tokens stay shared
+   with the browser so chat and coding composers have the same width. */
+html.desktop-app-window {
+  background: var(--bg-base);
+}
+html.desktop-app-window body { background: var(--bg-base); }
+
 /* Reduced motion collapses the liveliness motion tokens. Themes must not
    override --dur-* / --spring-*: a theme block later in the file would win
    over this one at equal specificity and switch motion back on. */

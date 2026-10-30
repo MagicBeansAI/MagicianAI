@@ -117,9 +117,9 @@ class Phase2GovernedReadContractTests(unittest.TestCase):
         self.assertIn(
             "dataset.is_raw_file_name(name)", self.parquet_maintenance
         )
-        self.assertIn("files.push(compacted_file(&partition))", self.compactor)
+        self.assertRegex(self.compactor, r"files\.push\(compacted_file\(&?partition\)\)")
         self.assertIn(
-            "files.extend(usable.uncompacted_tail.iter().cloned())",
+            "files.extend(uncompacted_tail.iter().cloned())",
             self.compactor,
         )
         self.assertIn("files: raw_files.clone()", self.compactor)

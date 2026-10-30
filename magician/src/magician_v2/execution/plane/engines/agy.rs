@@ -98,7 +98,6 @@ fn install_config(install: &HomeInstall) -> std::io::Result<()> {
         "headers":{"Authorization":format!("Bearer {}",install.grant)}
     }}});
     write_private(&dir.join("mcp_config.json"), config.to_string().as_bytes())
-
 }
 
 fn remove_config(install: &HomeInstall) {
@@ -149,7 +148,13 @@ impl HarnessEngine for AgyEngine {
             argv_for_turn: Box::new(argv_for_turn),
             native_session_id_of,
             text_delta_of,
+            // Antigravity keeps its Google sign-in under the real HOME; the
+            // keys and project settings reach it only when Magician's
+            // credentials apply (`execution.harness_auth`).
             env_for: |_| {
+                if !crate::magician_v2::harness_auth::uses_magician_credentials("agy") {
+                    return Vec::new();
+                }
                 inherit_env(&[
                     "GOOGLE_API_KEY",
                     "GEMINI_API_KEY",
@@ -182,7 +187,6 @@ mod tests {
                 home: home.into(),
                 endpoint_url: "http://localhost/plane".into(),
                 grant: token.into(),
-                cwd: home.into(),
                 unrestricted: false,
             };
             install_config(&install).unwrap();

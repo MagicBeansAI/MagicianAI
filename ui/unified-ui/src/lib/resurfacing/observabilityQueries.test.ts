@@ -220,6 +220,13 @@ describe('mapObservabilityPayload', () => {
 		});
 	});
 
+	it('keeps curator routing holds apart from ordinary cooling', () => {
+		const obs = mapObservabilityPayload({ queue: { cooling: 3, routing_held: 470 } });
+		expect(obs.queue.cooling).toBe(3);
+		expect(obs.queue.routing_held).toBe(470);
+		expect(mapObservabilityPayload({}).queue.routing_held).toBe(0);
+	});
+
 	it('never throws on malformed / non-object input', () => {
 		for (const bad of [null, undefined, 42, 'nope', [], { pipeline: 5, recent_runs: 'x', funnel: 9, sizes: [], engagement: {} }]) {
 			expect(() => mapObservabilityPayload(bad)).not.toThrow();

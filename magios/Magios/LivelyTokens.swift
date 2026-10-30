@@ -1,5 +1,17 @@
 import SwiftUI
 
+extension ToolbarContent {
+    /// Custom rounded-square controls supply their own themed background.
+    @ToolbarContentBuilder
+    func roundedSquareToolbarBackground() -> some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
+    }
+}
+
 /// Shared style tokens for the lively chat surfaces (task card, transcript,
 /// composer). Every theme reads the same radii; colours come from
 /// `ThemeManager`, so the cards look right in every palette.

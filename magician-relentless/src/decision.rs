@@ -124,8 +124,8 @@ pub fn decide_with_budget(
             "elapsed wall-clock deadline reached",
         );
     }
-    let exhausted = context.attempts_started >= budget.max_attempts
-        || context.spent_and_reserved_microusd >= budget.max_cost_microusd;
+    let exhausted = context.attempts_started >= budget.attempt_ceiling()
+        || context.spent_and_reserved_microusd >= budget.cost_ceiling();
     if !candidate.complete {
         if dod.review.unknown_review == UnknownReviewPolicy::ReviseSupportedDefects
             && candidate.disagreement_repair_eligible
@@ -216,7 +216,7 @@ pub fn decide_with_budget(
             "attempt or settled-plus-reserved cost ceiling reached; artifact is not accepted",
         );
     }
-    if retained.plateau_count >= dod.budget.plateau_attempts {
+    if dod.budget.plateau_attempts > 0 && retained.plateau_count >= dod.budget.plateau_attempts {
         return result(
             DecisionKind::Plateau,
             retained,

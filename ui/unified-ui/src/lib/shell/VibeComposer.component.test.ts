@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 import VibeComposerHarness from '../../test/fixtures/VibeComposerHarness.svelte';
 
 describe('VibeComposer interactions', () => {
+	it('shows a named Super God control without hiding it in the presence dot', () => {
+		render(VibeComposerHarness);
+		expect(screen.getByRole('button', { name: 'Super god mode' })).toHaveTextContent('Super God');
+	});
 	it('keeps the coding prompt bound and submits with the command chord', async () => {
 		const user = userEvent.setup();
 		render(VibeComposerHarness);
@@ -34,11 +38,11 @@ describe('VibeComposer interactions', () => {
 		expect(screen.getByTestId('vibe-mode')).toHaveTextContent('autopilot');
 	});
 
-	it('selects a coding profile through the visible profile control', async () => {
+	it('selects a coding model through the visible control', async () => {
 		const user = userEvent.setup();
 		render(VibeComposerHarness);
 
-		await user.click(screen.getByRole('button', { name: 'Coding profile' }));
+		await user.click(screen.getByRole('button', { name: 'Coding model and engine' }));
 		await user.click(screen.getByRole('option', { name: /Deep/ }));
 		expect(screen.getByTestId('vibe-profile')).toHaveTextContent('deep');
 		expect(screen.getByTestId('vibe-action')).toHaveTextContent('profile:deep');
@@ -63,7 +67,7 @@ describe('VibeComposer interactions', () => {
 				]
 			}
 		});
-		await user.click(screen.getByRole('button', { name: 'Coding profile' }));
+		await user.click(screen.getByRole('button', { name: 'Coding model and engine' }));
 		const group = screen.getByRole('group', { name: 'Claude Code' });
 		const blocked = within(group).getByRole('option', { name: /Claude/ });
 		expect(blocked).toHaveAttribute('aria-disabled', 'true');
@@ -92,7 +96,7 @@ describe('VibeComposer interactions', () => {
 				]
 			}
 		});
-		await user.click(screen.getByRole('button', { name: 'Coding profile' }));
+		await user.click(screen.getByRole('button', { name: 'Coding model and engine' }));
 		const grok = screen.getByRole('option', { name: /Grok/ });
 		expect(grok).toHaveTextContent('MCP servers: github · plugins: none');
 		expect(grok).toHaveTextContent('connectors on your xAI account');
@@ -139,6 +143,43 @@ describe('VibeComposer interactions', () => {
 
 		await user.click(chooserBtn);
 		expect(screen.getByTestId('vibe-action')).toHaveTextContent('open-rail');
+	});
+
+	it('provides icon actions and routes delete through the existing owner action', async () => {
+		const user = userEvent.setup();
+		render(VibeComposerHarness);
+		const actions = screen.getByRole('group', { name: 'Run actions' });
+		expect(within(actions).getByRole('button', { name: /Dev is idle.*Open super god mode controls/ })).toBeInTheDocument();
+		expect(within(actions).getByRole('button', { name: 'New run' })).toHaveTextContent('');
+		await user.click(within(actions).getByRole('button', { name: 'Open left panel' }));
+		expect(screen.getByTestId('vibe-action')).toHaveTextContent('open-rail');
+		await user.click(within(actions).getByRole('button', { name: 'Run options' }));
+		expect(screen.getByRole('menuitem', { name: 'Delete run' })).toHaveFocus();
+		await user.keyboard('{Escape}');
+		expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+		expect(within(actions).getByRole('button', { name: 'Run options' })).toHaveFocus();
+		await user.click(within(actions).getByRole('button', { name: 'Run options' }));
+		await user.click(screen.getByRole('menuitem', { name: 'Delete run' }));
+		expect(screen.getByTestId('vibe-action')).toHaveTextContent('delete-run');
+		expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+	});
+
+	it('omits delete actions when there is no selected run', () => {
+		render(VibeComposerHarness, { showActiveRun: false });
+		expect(screen.queryByRole('button', { name: 'Run options' })).not.toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'New run' })).toBeEnabled();
+		expect(screen.getByRole('button', { name: 'Open left panel' })).toBeEnabled();
+	});
+
+	it('animates Dev activity and gives pending review priority over preparation', async () => {
+		const { rerender } = render(VibeComposerHarness, { busy: true });
+		expect(screen.getByTestId('presence-orb')).toHaveAttribute('data-state', 'thinking');
+		await rerender({ busy: false, presenceState: 'working' });
+		expect(screen.getByTestId('presence-orb')).toHaveAttribute('data-state', 'working');
+		await rerender({ busy: true, presenceState: 'needs-you' });
+		expect(screen.getByTestId('presence-orb')).toHaveAttribute('data-state', 'needs-you');
+		await rerender({ busy: false, presenceState: 'idle' });
+		expect(screen.getByTestId('presence-orb')).toHaveAttribute('data-state', 'idle');
 	});
 
 	it('hides the send control and displays voice control when composer is empty', async () => {

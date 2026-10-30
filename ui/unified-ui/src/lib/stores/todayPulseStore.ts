@@ -2,8 +2,8 @@
  * Today's Pulse store — one shared 60s poll behind the Today page's
  * analytics band.
  *
- * Data flow per tick (all three POSTs run in PARALLEL; the LLM slice can
- * publish first, then the full snapshot replaces it when every slice settles):
+ * Data flow per tick (all three POSTs run in PARALLEL and publish independently;
+ * the final snapshot records failures when every slice settles):
  * - `/api/magician/v2/analytics/llm_calls/query`      ← buildLlmPulseSql
  * - `/api/magician/v2/analytics/query` (events table) ← buildCodingPulseSql
  * - `/api/magician/v2/analytics/memory_events/query`  ← buildMemoryPulseSql
@@ -65,6 +65,8 @@ import {
 export type PulseSliceName = 'llm' | 'coding' | 'memory';
 
 export interface TodayPulseState {
+	/** Slices successfully loaded in this scope, retained across failed refreshes. */
+	readySlices: ReadonlyArray<PulseSliceName>;
 	/** Last assembled snapshot; kept across failed refreshes. `null` until
 	 *  the first successful fetch in the current scope. */
 	snapshot: PulseSnapshot | null;
@@ -112,6 +114,7 @@ function emptyResponse(): PulseQueryResponse {
 function createTodayPulseStore() {
 	const state = writable<TodayPulseState>({
 		snapshot: null,
+		readySlices: [],
 		loading: true,
 		unavailable: false,
 		staleSlices: []
@@ -132,33 +135,26 @@ function createTodayPulseStore() {
 	async function fetchPulse(): Promise<PulseSnapshot | null> {
 		const fetchScopeKey = currentScopeKey();
 		const now = new Date();
-		const llmPromise = runPulseQuery(LLM_CALLS_ENDPOINT, buildLlmPulseSql(now));
-		const codingPromise = runPulseQuery(EVENTS_ENDPOINT, buildCodingPulseSql(now));
-		const memoryPromise = runPulseQuery(MEMORY_EVENTS_ENDPOINT, buildMemoryPulseSql(now));
-		const settledPromise = Promise.allSettled([llmPromise, codingPromise, memoryPromise]);
-
-		try {
-			const llmRes = await llmPromise;
-			if (fetchScopeKey !== currentScopeKey()) return null;
-			const prev = get(state).snapshot;
-			const snapshot = assemblePulseSnapshot(
-				parseLlmPulse(llmRes),
-				prev ? { codingRunsToday: prev.codingRunsToday } : parseCodingPulse(emptyResponse()),
-				prev
-					? { memoriesToday: prev.memoriesToday, evals: prev.evals }
-					: parseMemoryPulse(emptyResponse()),
-				computeTaskCounts(get(taskStore).tasks, now)
-			);
-			state.set({
-				snapshot,
-				loading: false,
-				unavailable: false,
-				staleSlices: ['coding', 'memory']
-			});
-		} catch {
-			// The full-settlement path below owns warnings, carry-forward, and
-			// shared-poll backoff. A failed LLM slice just means no early paint.
-		}
+        const pending = new Set<PulseSliceName>(ALL_SLICES);
+        function publish(slice: PulseSliceName, response: PulseQueryResponse): PulseQueryResponse {
+            if (fetchScopeKey !== currentScopeKey()) return response;
+            pending.delete(slice);
+            const previous = get(state);
+            const prev = previous.snapshot;
+            const snapshot = assemblePulseSnapshot(
+                slice === 'llm' ? parseLlmPulse(response) : prev?.llm ?? parseLlmPulse(emptyResponse()),
+                slice === 'coding' ? parseCodingPulse(response) : prev ? { codingRunsToday: prev.codingRunsToday } : parseCodingPulse(emptyResponse()),
+                slice === 'memory' ? parseMemoryPulse(response) : prev ? { memoriesToday: prev.memoriesToday, evals: prev.evals } : parseMemoryPulse(emptyResponse()),
+                computeTaskCounts(get(taskStore).tasks, now)
+            );
+            state.set({ snapshot, readySlices: [...new Set([...previous.readySlices, slice])],
+                loading: slice === 'llm' ? false : previous.loading, unavailable: false, staleSlices: [...pending] });
+            return response;
+        }
+        const llmPromise = runPulseQuery(LLM_CALLS_ENDPOINT, buildLlmPulseSql(now)).then(response => publish('llm', response));
+        const codingPromise = runPulseQuery(EVENTS_ENDPOINT, buildCodingPulseSql(now)).then(response => publish('coding', response));
+        const memoryPromise = runPulseQuery(MEMORY_EVENTS_ENDPOINT, buildMemoryPulseSql(now)).then(response => publish('memory', response));
+        const settledPromise = Promise.allSettled([llmPromise, codingPromise, memoryPromise]);
 
 		const settled = await settledPromise;
 
@@ -186,6 +182,7 @@ function createTodayPulseStore() {
 			// the band only reads `unavailable` when it has nothing to show.
 			state.update((s) => ({
 				snapshot: s.snapshot,
+				readySlices: s.readySlices,
 				loading: false,
 				unavailable: s.snapshot === null,
 				staleSlices: s.snapshot === null ? [] : ALL_SLICES
@@ -238,7 +235,7 @@ function createTodayPulseStore() {
 			// module header for the not-started ⇒ zero-counts contract.
 			computeTaskCounts(get(taskStore).tasks, now)
 		);
-		state.set({ snapshot, loading: false, unavailable: false, staleSlices });
+		state.set({ snapshot, readySlices: [...new Set([...get(state).readySlices, ...ALL_SLICES.filter((_, index) => settled[index].status === 'fulfilled')])], loading: false, unavailable: false, staleSlices });
 		return snapshot;
 	}
 
@@ -261,7 +258,7 @@ function createTodayPulseStore() {
 			// The previous scope's numbers must never flash under the new
 			// scope — reset to the initial loading state (null snapshot also
 			// bars cross-scope carry-forward), then re-poll.
-			state.set({ snapshot: null, loading: true, unavailable: false, staleSlices: [] });
+			state.set({ snapshot: null, readySlices: [], loading: true, unavailable: false, staleSlices: [] });
 			poll.pollNow();
 		});
 	}

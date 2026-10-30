@@ -86,8 +86,32 @@ eight-second window. Direct browser providers run the same matcher locally, but
 Magician is the admission authority; backend-proxied native clients (including
 iOS) receive only admitted captions.
 
-Push-to-talk in a connected call: hold the talk button or Spacebar (desktop, PTT
-mode, not typing). The PTT ⇄ Live toggle lives in the call UI.
+### In-call mic mode: Open mic | Hold to talk
+
+A connected call has two mic modes, named exactly **Open mic** and **Hold to
+talk** on Web, iOS and Android ("Hands-free" names an engine, never a mic mode).
+`MicModeControl.svelte` is the shared segmented control (`role="radiogroup"`,
+arrow keys switch): mic icon "Open mic" | hand icon "Hold to talk", the active
+segment filled with `--accent-fill` / `--text-on-accent`. Tapping the inactive
+segment calls `setPushToTalkMode` live (no reconnect); the active one is inert.
+
+`VoiceCallOverlay` puts it above the main mic control, whose shape follows the
+mode:
+
+- **Open mic**: a round mute button with a level ring (a `VoiceOrb` on
+  `voiceMicAnalyser` behind it), captioned "Listening · tap to mute" /
+  "Muted · tap to unmute".
+- **Hold to talk**: the large hold button ("Hold to talk" → "Release to send"
+  while held), or Spacebar (desktop, not typing).
+
+The status line names the mode: "Open mic · Listening" / "Open mic · Muted" /
+"Hold to talk · Ready" / "Hold to talk · Sending". `DesktopVoiceCenterStage`
+(the call pill above the composer) uses the same control, labels and mute.
+
+Mute is `setVoiceMicMuted` / `voiceMicMuted` in `realtimeVoiceClient.ts`. While
+it holds, the provider's `setMicEnabled` is wrapped so the half-duplex echo
+guard and a rotation's reconnect cannot re-arm the mic; unmuting re-arms only
+what the echo guard allows. A mode switch and call teardown clear it.
 
 ### Hold Left Control + Left Option - one mode-aware voice chord
 

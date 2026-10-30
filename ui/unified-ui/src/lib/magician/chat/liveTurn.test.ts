@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '$lib/stores/chatStore';
-import { latestActiveTaskTurnId, latestOpenUserTurnId } from './liveTurn';
+import {
+	isTaskWaitingOnUser,
+	latestActiveTaskTurn,
+	latestActiveTaskTurnId,
+	latestOpenUserTurnId
+} from './liveTurn';
 import { derivePresence } from './next/presence';
 
 function taskStatus(
@@ -88,6 +93,55 @@ describe('latestActiveTaskTurnId', () => {
 				candidate.id === 'active' ? 'turn-from-side-map' : null
 			)
 		).toBe('turn-from-side-map');
+	});
+});
+
+describe('latestActiveTaskTurn', () => {
+    it('settles the spawning turn after cancellation returns the reusable task to ready', () => {
+        const messages = [
+            taskStatus('run', 'task-1', 'running', 10, 'turn-1'),
+            taskStatus('pause', 'task-1', 'paused', 20, 'turn-1'),
+            taskStatus('cancel', 'task-1', 'cancelled', 30, 'turn-1'),
+            taskStatus('reset', 'task-1', 'ready', 40, 'turn-1')
+        ];
+        expect(latestActiveTaskTurn(messages)).toBeNull();
+    });
+
+    it.each(['ready', 'pending', 'rejected', 'archived'])('does not keep an inactive %s task live', (status) => {
+        expect(latestActiveTaskTurn([taskStatus('inactive', 'task-1', status, 10, 'turn-1')])).toBeNull();
+    });
+
+	it('reports the latest status of the active task', () => {
+		const messages = [
+			taskStatus('run', 'task-1', 'running', 10, 'turn-1'),
+			taskStatus('pause', 'task-1', 'paused', 20, 'turn-1')
+		];
+
+		expect(latestActiveTaskTurn(messages)).toEqual({ turnId: 'turn-1', status: 'paused' });
+	});
+
+	it('is null once the task settles', () => {
+		const messages = [
+			taskStatus('pause', 'task-1', 'paused', 10, 'turn-1'),
+			taskStatus('done', 'task-1', 'cancelled', 20, 'turn-1')
+		];
+
+		expect(latestActiveTaskTurn(messages)).toBeNull();
+	});
+});
+
+describe('isTaskWaitingOnUser', () => {
+	it('reads paused runs and plans awaiting review as waiting on the user', () => {
+		expect(isTaskWaitingOnUser('paused')).toBe(true);
+		expect(isTaskWaitingOnUser('waiting_for_user')).toBe(true);
+		expect(isTaskWaitingOnUser('draft')).toBe(true);
+		expect(isTaskWaitingOnUser(' Ready ')).toBe(false);
+	});
+
+	it('reads running work and unknown statuses as not waiting', () => {
+		expect(isTaskWaitingOnUser('running')).toBe(false);
+		expect(isTaskWaitingOnUser('planning')).toBe(false);
+		expect(isTaskWaitingOnUser(undefined)).toBe(false);
 	});
 });
 

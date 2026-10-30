@@ -51,6 +51,7 @@ async fn v5_client_rejects_v4_decide_and_action_before_decoding_body() {
         state: request::DecisionState::from_text(""),
         choice_candidates: Default::default(),
         locality: Default::default(),
+        assets: Default::default(),
     };
     assert!(matches!(
         client.decide(&request).await,

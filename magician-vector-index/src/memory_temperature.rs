@@ -3,15 +3,22 @@
 //! Canonical memory stays in tier/user/episode files. This module maintains a
 //! small JSON overlay under `memory/index/temperature_overlay.json` keyed by the
 //! same candidate identity used by the derived memory index.
+//!
+//! Usage-counter bookkeeping (`record_*_prompt_usage`, `record_*_retrieval_usage`,
+//! `record_*_outcome_usage`) is write-behind: each update is applied to the
+//! in-process snapshot at once and persisted by one overlay write per
+//! [`MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY`]. A crash loses at most that
+//! window of counters. Every other mutation writes through before returning
+//! and carries the pending counters with it.
 
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashMap},
-    path::PathBuf,
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering as AtomicOrdering},
-        Arc, Mutex, OnceLock, RwLock,
+        Arc, Mutex, MutexGuard, OnceLock, RwLock, Weak,
     },
     time::{Duration, Instant},
 };
@@ -36,6 +43,20 @@ const OVERLAY_LOCK_SLOW_WARN_AFTER: Duration = Duration::from_millis(100);
 const PROMPT_TIER_SNAPSHOT_CACHE_MAX_ENTRIES: usize = 16;
 const PROMPT_TIER_SNAPSHOT_REUSE: Duration = Duration::from_secs(30);
 const PROMPT_TIER_SNAPSHOT_CACHE_TTL: Duration = Duration::from_secs(60);
+/// How long usage-counter bookkeeping waits in memory before one overlay write
+/// persists it. This is the crash-loss window for those counters: a process
+/// that dies without its shutdown flush loses at most this much of them.
+pub const MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY: Duration = Duration::from_secs(2);
+/// Bound on the per-overlay replay log of pending counter updates. The log is
+/// only replayed when the file is rewritten outside this process while updates
+/// are pending; trimming it is logged, and the trimmed updates still persist
+/// with the in-process snapshot they were applied to.
+const MAX_PENDING_COUNTER_MUTATIONS: usize = 4_096;
+/// Timer-driven flush attempts after a failure before the timer stops retrying.
+/// The pending updates stay; the next counter update, durable overlay write or
+/// shutdown flush tries again.
+const MAX_COUNTER_FLUSH_TIMER_ATTEMPTS: u32 = 6;
+const COUNTER_FLUSH_MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -305,15 +326,41 @@ pub async fn load_memory_temperature_overlay(
 /// their existing owned read-modify-write cycle. Keeping the parsed snapshot
 /// behind an `Arc` avoids repeatedly deserializing a multi-megabyte overlay on
 /// every prompt without weakening atomic-file freshness checks.
+///
+/// The snapshot includes pending write-behind counter updates: they are
+/// applied to the cached revision before they are written. The one exception
+/// is an overlay file rewritten by another process while updates are pending;
+/// readers then see that file's revision until the next locked cycle in this
+/// process (at the latest the flush, within
+/// [`MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY`]) re-applies them.
 pub async fn load_memory_temperature_overlay_snapshot(
     storage: &dyn MemoryStorage,
 ) -> Result<Arc<MemoryTemperatureOverlay>, MemoryStorageError> {
+    Ok(load_overlay_snapshot_stamped(storage).await?.overlay)
+}
+
+/// A snapshot and the overlay file stamp it is current for.
+struct StampedOverlaySnapshot {
+    overlay: Arc<MemoryTemperatureOverlay>,
+    stamp: Option<OverlayFileStamp>,
+    /// `false` when the file changed while it was being read: no stamp is
+    /// known to describe `overlay`, so nothing derived from it may be cached.
+    stamp_verified: bool,
+}
+
+async fn load_overlay_snapshot_stamped(
+    storage: &dyn MemoryStorage,
+) -> Result<StampedOverlaySnapshot, MemoryStorageError> {
     let path = memory_temperature_overlay_path(storage);
     let stamp = overlay_file_stamp(&path).await?;
     if let Ok(cache) = overlay_snapshot_cache().read() {
         if let Some(entry) = cache.get(&path) {
             if entry.stamp == stamp {
-                return Ok(Arc::clone(&entry.overlay));
+                return Ok(StampedOverlaySnapshot {
+                    overlay: Arc::clone(&entry.overlay),
+                    stamp,
+                    stamp_verified: true,
+                });
             }
         }
     }
@@ -321,9 +368,16 @@ pub async fn load_memory_temperature_overlay_snapshot(
     let value = match storage.read_json_value(&path).await {
         Ok(value) => value,
         Err(MemoryStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            let overlay = Arc::new(MemoryTemperatureOverlay::default());
-            update_overlay_snapshot_cache(path, stamp, Arc::clone(&overlay));
-            return Ok(overlay);
+            let overlay = install_read_overlay_snapshot(
+                path,
+                stamp,
+                Arc::new(MemoryTemperatureOverlay::default()),
+            );
+            return Ok(StampedOverlaySnapshot {
+                overlay,
+                stamp,
+                stamp_verified: true,
+            });
         },
         Err(error) => return Err(error),
     };
@@ -341,21 +395,208 @@ pub async fn load_memory_temperature_overlay_snapshot(
     // one. That is precisely the lost update the write lock exists to prevent.
     let stamp_after = overlay_file_stamp(&path).await?;
     if stamp_after == stamp {
-        update_overlay_snapshot_cache(path, stamp_after, Arc::clone(&overlay));
+        let overlay = install_read_overlay_snapshot(path, stamp_after, overlay);
+        return Ok(StampedOverlaySnapshot {
+            overlay,
+            stamp: stamp_after,
+            stamp_verified: true,
+        });
     }
-    Ok(overlay)
+    Ok(StampedOverlaySnapshot {
+        overlay,
+        stamp: stamp_after,
+        stamp_verified: false,
+    })
 }
 
+/// Cache an overlay a reader just parsed from disk, unless the cache already
+/// holds a revision for the same file stamp. That revision is the same file
+/// content, possibly with pending write-behind counters applied, so it is
+/// never older than what was just read, and replacing it would hide those
+/// counters from readers. Returns the snapshot now cached.
+fn install_read_overlay_snapshot(
+    path: PathBuf,
+    stamp: Option<OverlayFileStamp>,
+    overlay: Arc<MemoryTemperatureOverlay>,
+) -> Arc<MemoryTemperatureOverlay> {
+    let Ok(mut cache) = overlay_snapshot_cache().write() else {
+        return overlay;
+    };
+    if let Some(existing) = cache.get(&path) {
+        if existing.stamp == stamp {
+            return Arc::clone(&existing.overlay);
+        }
+    }
+    let previous = cache.insert(
+        path,
+        OverlaySnapshotCacheEntry {
+            stamp,
+            overlay: Arc::clone(&overlay),
+        },
+    );
+    drop(cache);
+    drop(previous);
+    overlay
+}
+
+/// Persist an overlay the caller already holds. Serialization runs on the
+/// blocking pool; the leaf mutators below go through
+/// `mutate_memory_temperature_overlay` instead, which also keeps the clone
+/// and the mutation off async workers.
+///
+/// The caller's overlay replaces the file whole, so it also settles pending
+/// write-behind counters: the ones applied before the caller loaded its copy
+/// are in it, and the ones applied after are discarded, as they always were
+/// by a save that replaced a newer file.
 pub async fn save_memory_temperature_overlay(
     storage: &dyn MemoryStorage,
     overlay: &MemoryTemperatureOverlay,
 ) -> Result<(), MemoryStorageError> {
+    let _overlay_guard = lock_overlay_for_write("save").await;
+    let overlay = Arc::new(overlay.clone());
+    let (overlay, bytes) = run_overlay_cpu_work(move || {
+        let bytes = serialize_memory_temperature_overlay(&overlay);
+        (overlay, bytes)
+    })
+    .await?;
+    write_memory_temperature_overlay_bytes(storage, overlay, bytes?).await
+}
+
+/// The on-disk encoding: the overlay serialized straight to pretty JSON.
+///
+/// Earlier revisions went through an intermediate `serde_json::Value`, which
+/// sorted object fields alphabetically and roughly doubled the CPU and
+/// allocation cost of every save. Readers parse JSON by field name, so only
+/// the field order inside each object differs.
+fn serialize_memory_temperature_overlay(
+    overlay: &MemoryTemperatureOverlay,
+) -> Result<Vec<u8>, MemoryStorageError> {
+    serde_json::to_vec_pretty(overlay).map_err(MemoryStorageError::Json)
+}
+
+/// Run CPU-bound overlay work (deep clone, mutation, maintenance,
+/// serialization, dropping a whole overlay) on Tokio's blocking pool.
+///
+/// A multi-megabyte overlay costs hundreds of milliseconds per cycle in a
+/// debug build; on an async worker that starves every other task of the same
+/// chat turn. This crate cannot use magician's blocking admission, but every
+/// leaf mutator runs this while holding the process-global
+/// [`overlay_write_lock`], so the module submits at most one such job at a
+/// time.
+async fn run_overlay_cpu_work<R, F>(work: F) -> Result<R, MemoryStorageError>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => Ok(value),
+        // Keep the old failure mode: a panic in overlay code still unwinds
+        // through the caller instead of turning into a logged error.
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => Err(MemoryStorageError::Other(format!(
+            "memory temperature overlay work was cancelled: {error}"
+        ))),
+    }
+}
+
+/// One locked `load -> modify -> save` cycle.
+///
+/// `mutate` returns its result and whether the overlay changed. It runs on
+/// the blocking pool against a private copy of the current snapshot; an
+/// unchanged overlay is neither serialized nor rewritten. The write lock is
+/// held from the load until the new snapshot is installed in the cache, so
+/// cycles stay linearizable exactly as before: every cycle starts from the
+/// previous cycle's committed overlay.
+///
+/// Returns the committed overlay (the cached snapshot when nothing changed).
+async fn mutate_memory_temperature_overlay<R, F>(
+    storage: &dyn MemoryStorage,
+    operation: &'static str,
+    mutate: F,
+) -> Result<(R, Arc<MemoryTemperatureOverlay>), MemoryStorageError>
+where
+    F: FnOnce(&mut MemoryTemperatureOverlay) -> (R, bool) + Send + 'static,
+    R: Send + 'static,
+{
+    let _overlay_guard = lock_overlay_for_write(operation).await;
+    mutate_memory_temperature_overlay_locked(storage, mutate).await
+}
+
+/// [`mutate_memory_temperature_overlay`] for a caller that already holds the
+/// overlay write lock and has more to do under it.
+///
+/// The cycle starts from the revision with every pending write-behind counter
+/// applied, so a write here persists those counters exactly once and settles
+/// them.
+async fn mutate_memory_temperature_overlay_locked<R, F>(
+    storage: &dyn MemoryStorage,
+    mutate: F,
+) -> Result<(R, Arc<MemoryTemperatureOverlay>), MemoryStorageError>
+where
+    F: FnOnce(&mut MemoryTemperatureOverlay) -> (R, bool) + Send + 'static,
+    R: Send + 'static,
+{
+    let snapshot = load_overlay_base_locked(storage).await?.overlay;
+    let (result, overlay, bytes) = run_overlay_cpu_work(move || {
+        let mut overlay = (*snapshot).clone();
+        let (result, changed) = mutate(&mut overlay);
+        if !changed {
+            // Drop the copy here, on the blocking thread, and hand back the
+            // snapshot: nothing durable differs from it.
+            drop(overlay);
+            return Ok((result, snapshot, None));
+        }
+        drop(snapshot);
+        let bytes = serialize_memory_temperature_overlay(&overlay)?;
+        Ok::<_, MemoryStorageError>((result, Arc::new(overlay), Some(bytes)))
+    })
+    .await??;
+    if let Some(bytes) = bytes {
+        write_memory_temperature_overlay_bytes(storage, Arc::clone(&overlay), bytes).await?;
+    }
+    Ok((result, overlay))
+}
+
+/// Unwrap a committed overlay for the APIs that return it by value. The
+/// cache usually shares the `Arc`, so this is a deep clone; it runs on the
+/// blocking pool.
+async fn owned_memory_temperature_overlay(
+    overlay: Arc<MemoryTemperatureOverlay>,
+) -> Result<MemoryTemperatureOverlay, MemoryStorageError> {
+    run_overlay_cpu_work(move || {
+        Arc::try_unwrap(overlay).unwrap_or_else(|shared| (*shared).clone())
+    })
+    .await
+}
+
+async fn write_memory_temperature_overlay_bytes(
+    storage: &dyn MemoryStorage,
+    overlay: Arc<MemoryTemperatureOverlay>,
+    bytes: Vec<u8>,
+) -> Result<(), MemoryStorageError> {
     let path = memory_temperature_overlay_path(storage);
-    let value = serde_json::to_value(overlay).map_err(MemoryStorageError::Json)?;
-    storage.write_json_value_atomic(&path, &value).await?;
+    storage.write_bytes_atomic(&path, &bytes).await?;
+    drop(bytes);
+    // Every overlay write starts from the revision with the pending counters
+    // applied (or, for a save, replaces it whole), so the file now carries
+    // them. Settle them before anything else can fail: a stale replay log
+    // would apply them a second time onto this file.
+    settle_pending_counter_writes(&path);
     let stamp = overlay_file_stamp(&path).await?;
-    update_overlay_snapshot_cache(path, stamp, Arc::new(overlay.clone()));
+    let previous = update_overlay_snapshot_cache(path, stamp, overlay);
+    retire_overlay_snapshot(previous);
     Ok(())
+}
+
+/// Release a replaced snapshot. When this was its last reference, freeing a
+/// multi-megabyte overlay is real work, so it happens on the blocking pool.
+fn retire_overlay_snapshot(previous: Option<Arc<MemoryTemperatureOverlay>>) {
+    let Some(previous) = previous else {
+        return;
+    };
+    if Arc::strong_count(&previous) == 1 {
+        drop(tokio::task::spawn_blocking(move || drop(previous)));
+    }
 }
 
 async fn overlay_file_stamp(
@@ -381,10 +622,494 @@ fn update_overlay_snapshot_cache(
     path: PathBuf,
     stamp: Option<OverlayFileStamp>,
     overlay: Arc<MemoryTemperatureOverlay>,
-) {
-    if let Ok(mut cache) = overlay_snapshot_cache().write() {
-        cache.insert(path, OverlaySnapshotCacheEntry { stamp, overlay });
+) -> Option<Arc<MemoryTemperatureOverlay>> {
+    // Hand the replaced snapshot back so the caller frees it outside the
+    // cache lock (and, on the write path, off the async worker).
+    let mut cache = overlay_snapshot_cache().write().ok()?;
+    cache
+        .insert(path, OverlaySnapshotCacheEntry { stamp, overlay })
+        .map(|previous| previous.overlay)
+}
+
+// Usage-counter write-behind.
+//
+// Prompt, retrieval and outcome bookkeeping fires several times per chat turn
+// and each write re-serializes the whole overlay. Those updates are applied to
+// the cached snapshot at once (readers see them) and persisted by one write
+// per `MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY`. Lock order: the overlay write
+// lock, then (briefly, never across an await) the pending-writes mutex.
+
+/// One usage-counter update held for write-behind. It carries its own
+/// timestamp, so re-applying it onto another base revision produces the same
+/// counters and `last_*_at` values as the original application.
+#[derive(Debug, Clone)]
+enum PendingCounterMutation {
+    PromptUsage {
+        retrieved_candidate_keys: Arc<[String]>,
+        selected_candidate_keys: Arc<BTreeSet<String>>,
+        at: DateTime<Utc>,
+    },
+    OutcomeUsage {
+        memory_candidate_keys: Arc<[String]>,
+        signal: MemoryTemperatureOutcomeSignal,
+        at: DateTime<Utc>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CounterMutationSummary {
+    PromptUsage(MemoryTemperatureUsageSummary),
+    OutcomeUsage(MemoryTemperatureOutcomeUsageSummary),
+}
+
+impl PendingCounterMutation {
+    fn at(&self) -> DateTime<Utc> {
+        match self {
+            Self::PromptUsage { at, .. } | Self::OutcomeUsage { at, .. } => *at,
+        }
     }
+
+    /// Apply only the counter update, without maintenance.
+    fn apply_counters(&self, overlay: &mut MemoryTemperatureOverlay) -> CounterMutationSummary {
+        match self {
+            Self::PromptUsage {
+                retrieved_candidate_keys,
+                selected_candidate_keys,
+                at,
+            } => CounterMutationSummary::PromptUsage(apply_memory_temperature_prompt_usage(
+                overlay,
+                retrieved_candidate_keys,
+                selected_candidate_keys,
+                *at,
+            )),
+            Self::OutcomeUsage {
+                memory_candidate_keys,
+                signal,
+                at,
+            } => CounterMutationSummary::OutcomeUsage(apply_memory_temperature_outcome_usage(
+                overlay,
+                memory_candidate_keys,
+                *signal,
+                *at,
+            )),
+        }
+    }
+
+    /// The whole recording cycle: the counter update, then maintenance at the
+    /// same instant. Returns the caller's summary and whether anything changed.
+    fn apply_cycle(
+        &self,
+        overlay: &mut MemoryTemperatureOverlay,
+    ) -> (CounterMutationSummary, bool) {
+        let at = self.at();
+        match self.apply_counters(overlay) {
+            CounterMutationSummary::PromptUsage(summary) => {
+                let maintenance = apply_memory_temperature_maintenance(overlay, at);
+                let changed = summary.retrieved > 0
+                    || summary.selected > 0
+                    || summary.injected > 0
+                    || maintenance.changed > 0;
+                (CounterMutationSummary::PromptUsage(summary), changed)
+            },
+            CounterMutationSummary::OutcomeUsage(mut summary) => {
+                summary.maintenance = apply_memory_temperature_maintenance(overlay, at);
+                let changed = summary.used > 0 || summary.maintenance.changed > 0;
+                (CounterMutationSummary::OutcomeUsage(summary), changed)
+            },
+        }
+    }
+}
+
+/// Counter updates applied in memory but not yet written, for one overlay file.
+struct PendingCounterWrites {
+    /// Replay log, oldest first. Every update in it is already applied to
+    /// `applied_to`; it is replayed only if that revision is displaced by a
+    /// file rewritten outside this process.
+    mutations: VecDeque<PendingCounterMutation>,
+    /// Updates trimmed from the replay log at [`MAX_PENDING_COUNTER_MUTATIONS`].
+    /// They are still applied to `applied_to` and persist with it.
+    trimmed: usize,
+    /// The in-process revision holding every pending update. Weak, so it
+    /// neither keeps a replaced overlay alive nor counts toward the strong
+    /// references `retire_overlay_snapshot` inspects; the allocation it pins
+    /// keeps the pointer comparison free of address reuse.
+    applied_to: Weak<MemoryTemperatureOverlay>,
+    /// The handle the deferred flush writes through.
+    storage: Arc<dyn MemoryStorage>,
+    /// When the scheduled flush is due; `None` while none is scheduled.
+    flush_due_at: Option<Instant>,
+    /// Consecutive failed timer flushes.
+    failed_attempts: u32,
+}
+
+impl PendingCounterWrites {
+    fn pending(&self) -> usize {
+        self.mutations.len() + self.trimmed
+    }
+}
+
+fn pending_counter_writes() -> &'static Mutex<HashMap<PathBuf, PendingCounterWrites>> {
+    static PENDING: OnceLock<Mutex<HashMap<PathBuf, PendingCounterWrites>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Short critical sections only: never held across an await, and never taken
+/// before the overlay write lock.
+fn lock_pending_counter_writes() -> MutexGuard<'static, HashMap<PathBuf, PendingCounterWrites>> {
+    pending_counter_writes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How many usage-counter updates to this storage's overlay are applied in
+/// memory but not yet written.
+pub fn memory_temperature_pending_counter_mutations(storage: &dyn MemoryStorage) -> usize {
+    let path = memory_temperature_overlay_path(storage);
+    lock_pending_counter_writes()
+        .get(&path)
+        .map_or(0, PendingCounterWrites::pending)
+}
+
+/// The pending updates to replay onto `overlay`, when it is not the revision
+/// they were applied to.
+fn pending_counter_replay(
+    path: &Path,
+    overlay: &Arc<MemoryTemperatureOverlay>,
+) -> Option<(Vec<PendingCounterMutation>, usize)> {
+    let pending = lock_pending_counter_writes();
+    let entry = pending.get(path)?;
+    if std::ptr::eq(entry.applied_to.as_ptr(), Arc::as_ptr(overlay)) {
+        return None;
+    }
+    Some((entry.mutations.iter().cloned().collect(), entry.trimmed))
+}
+
+fn mark_pending_counter_writes_applied(path: &Path, overlay: &Arc<MemoryTemperatureOverlay>) {
+    if let Some(entry) = lock_pending_counter_writes().get_mut(path) {
+        entry.applied_to = Arc::downgrade(overlay);
+    }
+}
+
+/// Forget the pending updates of an overlay whose file now carries them.
+fn settle_pending_counter_writes(path: &Path) {
+    let settled = lock_pending_counter_writes().remove(path);
+    drop(settled);
+}
+
+/// The revision a locked overlay cycle starts from: the current snapshot with
+/// every pending counter update applied exactly once.
+///
+/// Pending updates are normally already part of the cached snapshot. They are
+/// replayed only when that revision was displaced, which happens when the file
+/// was rewritten outside this process and a reader reloaded it. Every write in
+/// this process settles the pending updates it carries before anything else
+/// can observe the new file, so a displaced revision never already holds them.
+async fn load_overlay_base_locked(
+    storage: &dyn MemoryStorage,
+) -> Result<StampedOverlaySnapshot, MemoryStorageError> {
+    let path = memory_temperature_overlay_path(storage);
+    let loaded = load_overlay_snapshot_stamped(storage).await?;
+    let Some((mutations, trimmed)) = pending_counter_replay(&path, &loaded.overlay) else {
+        return Ok(loaded);
+    };
+    tracing::warn!(
+        target: "magician::metrics::memory_temperature",
+        path = %path.display(),
+        replayed = mutations.len(),
+        trimmed,
+        "memory temperature overlay was rewritten under pending counter updates; re-applying them"
+    );
+    let StampedOverlaySnapshot {
+        overlay: base,
+        stamp,
+        stamp_verified,
+    } = loaded;
+    let overlay = run_overlay_cpu_work(move || {
+        let mut overlay = (*base).clone();
+        drop(base);
+        for mutation in &mutations {
+            mutation.apply_counters(&mut overlay);
+        }
+        apply_memory_temperature_maintenance(&mut overlay, Utc::now());
+        Arc::new(overlay)
+    })
+    .await?;
+    if stamp_verified {
+        let previous = update_overlay_snapshot_cache(path.clone(), stamp, Arc::clone(&overlay));
+        retire_overlay_snapshot(previous);
+    }
+    mark_pending_counter_writes_applied(&path, &overlay);
+    Ok(StampedOverlaySnapshot {
+        overlay,
+        stamp,
+        stamp_verified,
+    })
+}
+
+/// Record one usage-counter update.
+///
+/// With an owned storage handle the update is applied to the cached snapshot
+/// under the write lock, and its overlay write is deferred and shared with
+/// every other counter update of the next
+/// [`MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY`]. Without one it writes through,
+/// like every other cycle.
+async fn record_memory_temperature_counter_mutation(
+    storage: &dyn MemoryStorage,
+    operation: &'static str,
+    mutation: PendingCounterMutation,
+) -> Result<CounterMutationSummary, MemoryStorageError> {
+    let Some(handle) = storage.shared_handle() else {
+        let (summary, _) = mutate_memory_temperature_overlay(storage, operation, move |overlay| {
+            mutation.apply_cycle(overlay)
+        })
+        .await?;
+        return Ok(summary);
+    };
+    let _overlay_guard = lock_overlay_for_write(operation).await;
+    let base = load_overlay_base_locked(storage).await?;
+    if !base.stamp_verified {
+        // The file changed while this cycle read it, so no stamp describes an
+        // unwritten revision built on it. Write this update through.
+        let (summary, _) = mutate_memory_temperature_overlay_locked(storage, move |overlay| {
+            mutation.apply_cycle(overlay)
+        })
+        .await?;
+        return Ok(summary);
+    }
+    let path = memory_temperature_overlay_path(storage);
+    let base_stamp = base.stamp;
+    let snapshot = base.overlay;
+    let pending = mutation.clone();
+    let (summary, committed) = run_overlay_cpu_work(move || {
+        let mut overlay = (*snapshot).clone();
+        let (summary, changed) = mutation.apply_cycle(&mut overlay);
+        if !changed {
+            drop(overlay);
+            return (summary, None);
+        }
+        drop(snapshot);
+        (summary, Some(Arc::new(overlay)))
+    })
+    .await?;
+    let Some(committed) = committed else {
+        return Ok(summary);
+    };
+    // Cached under the stamp of the file it was built on: readers keep being
+    // served this revision until the file changes.
+    let previous = update_overlay_snapshot_cache(path.clone(), base_stamp, Arc::clone(&committed));
+    retire_overlay_snapshot(previous);
+    queue_pending_counter_write(path, pending, &committed, handle);
+    Ok(summary)
+}
+
+fn queue_pending_counter_write(
+    path: PathBuf,
+    mutation: PendingCounterMutation,
+    applied_to: &Arc<MemoryTemperatureOverlay>,
+    storage: Arc<dyn MemoryStorage>,
+) {
+    let now = Instant::now();
+    let (schedule, trimmed) = {
+        let mut pending = lock_pending_counter_writes();
+        let entry = pending
+            .entry(path.clone())
+            .or_insert_with(|| PendingCounterWrites {
+                mutations: VecDeque::new(),
+                trimmed: 0,
+                applied_to: Weak::new(),
+                storage: Arc::clone(&storage),
+                flush_due_at: None,
+                failed_attempts: 0,
+            });
+        entry.mutations.push_back(mutation);
+        let mut trimmed = None;
+        if entry.mutations.len() > MAX_PENDING_COUNTER_MUTATIONS {
+            entry.mutations.pop_front();
+            entry.trimmed += 1;
+            trimmed = Some(entry.trimmed);
+        }
+        entry.applied_to = Arc::downgrade(applied_to);
+        entry.storage = storage;
+        // A flush overdue by a whole window lost its timer (its runtime shut
+        // down, say). Schedule another; a duplicate finds nothing pending.
+        let timer_lost = entry
+            .flush_due_at
+            .is_some_and(|due| now >= due + counter_flush_delay());
+        let schedule = entry.flush_due_at.is_none() || timer_lost;
+        if schedule {
+            entry.flush_due_at = Some(now + counter_flush_delay());
+        }
+        (schedule, trimmed)
+    };
+    if let Some(trimmed) = trimmed.filter(|trimmed| *trimmed == 1 || *trimmed % 1_024 == 0) {
+        tracing::warn!(
+            target: "magician::metrics::memory_temperature",
+            path = %path.display(),
+            trimmed,
+            "memory temperature counter replay log is full; the oldest updates persist only with the in-process snapshot"
+        );
+    }
+    if schedule {
+        schedule_counter_flush(path, counter_flush_delay());
+    }
+}
+
+/// Tests flush explicitly and assert exact write counts; a real 2 s timer
+/// firing during a stall on a loaded machine would make them flaky.
+fn counter_flush_delay() -> Duration {
+    if cfg!(test) {
+        Duration::from_secs(3_600)
+    } else {
+        MEMORY_TEMPERATURE_COUNTER_FLUSH_DELAY
+    }
+}
+
+fn counter_flush_retry_delay(failed_attempts: u32) -> Duration {
+    counter_flush_delay()
+        .saturating_mul(1u32 << failed_attempts.min(5))
+        .min(COUNTER_FLUSH_MAX_RETRY_DELAY)
+}
+
+fn schedule_counter_flush(path: PathBuf, delay: Duration) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        // No runtime to run a timer on: the next counter update reschedules
+        // once this one is overdue, and any durable write or the shutdown
+        // flush persists the updates meanwhile.
+        return;
+    };
+    runtime.spawn(async move {
+        tokio::time::sleep(delay).await;
+        run_scheduled_counter_flush(path).await;
+    });
+}
+
+async fn run_scheduled_counter_flush(path: PathBuf) {
+    let _overlay_guard = lock_overlay_for_write("counter_flush").await;
+    let storage = {
+        let mut pending = lock_pending_counter_writes();
+        let Some(entry) = pending.get_mut(&path) else {
+            // A durable write or an explicit flush already persisted them.
+            return;
+        };
+        if entry.flush_due_at.is_some_and(|due| Instant::now() < due) {
+            // A later timer (a retry, or the replacement for a timer presumed
+            // lost) owns this flush.
+            return;
+        }
+        entry.flush_due_at = None;
+        Arc::clone(&entry.storage)
+    };
+    let Err(error) = flush_pending_counter_writes_locked(storage.as_ref()).await else {
+        return;
+    };
+    let retry = {
+        let mut pending = lock_pending_counter_writes();
+        pending.get_mut(&path).map(|entry| {
+            entry.failed_attempts = entry.failed_attempts.saturating_add(1);
+            let delay = (entry.failed_attempts < MAX_COUNTER_FLUSH_TIMER_ATTEMPTS)
+                .then(|| counter_flush_retry_delay(entry.failed_attempts));
+            if let Some(delay) = delay {
+                entry.flush_due_at = Some(Instant::now() + delay);
+            }
+            (entry.failed_attempts, entry.pending(), delay)
+        })
+    };
+    let Some((failed_attempts, retained, retry_in)) = retry else {
+        return;
+    };
+    tracing::warn!(
+        target: "magician::metrics::memory_temperature",
+        path = %path.display(),
+        error = %error,
+        failed_attempts,
+        retained,
+        retry_in = ?retry_in,
+        "memory temperature counter flush failed; pending counter updates retained"
+    );
+    if let Some(delay) = retry_in {
+        schedule_counter_flush(path, delay);
+    }
+}
+
+/// Write the pending counter updates of `storage`'s overlay in one write. The
+/// caller holds the overlay write lock. Returns how many updates the write
+/// persisted (0 when none were pending); on error they stay pending.
+async fn flush_pending_counter_writes_locked(
+    storage: &dyn MemoryStorage,
+) -> Result<usize, MemoryStorageError> {
+    let path = memory_temperature_overlay_path(storage);
+    let pending = lock_pending_counter_writes()
+        .get(&path)
+        .map(PendingCounterWrites::pending);
+    let Some(pending) = pending else {
+        return Ok(0);
+    };
+    let overlay = load_overlay_base_locked(storage).await?.overlay;
+    let (overlay, bytes) = run_overlay_cpu_work(move || {
+        let bytes = serialize_memory_temperature_overlay(&overlay);
+        (overlay, bytes)
+    })
+    .await?;
+    write_memory_temperature_overlay_bytes(storage, overlay, bytes?).await?;
+    Ok(pending)
+}
+
+/// Persist the pending counter updates of one overlay now, in one write.
+/// Returns how many updates were written (0 when none were pending). On error
+/// the updates stay pending for the next attempt.
+pub async fn flush_pending_memory_temperature_writes_for(
+    storage: &dyn MemoryStorage,
+) -> Result<usize, MemoryStorageError> {
+    let _overlay_guard = lock_overlay_for_write("counter_flush").await;
+    flush_pending_counter_writes_locked(storage).await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemoryTemperatureCounterFlushSummary {
+    /// Overlays written.
+    pub flushed_overlays: usize,
+    /// Counter updates those writes persisted.
+    pub flushed_mutations: usize,
+    /// Overlays whose write failed; their updates stay pending.
+    pub failed_overlays: usize,
+    /// Counter updates still pending after the failed writes.
+    pub retained_mutations: usize,
+}
+
+/// Persist every pending counter update in this process, one write per
+/// overlay. Graceful shutdown calls this once counter producers have stopped.
+/// Failures are logged and their updates stay pending.
+pub async fn flush_pending_memory_temperature_writes() -> MemoryTemperatureCounterFlushSummary {
+    let targets = lock_pending_counter_writes()
+        .iter()
+        .map(|(path, entry)| (path.clone(), Arc::clone(&entry.storage)))
+        .collect::<Vec<_>>();
+    let mut summary = MemoryTemperatureCounterFlushSummary::default();
+    for (path, storage) in targets {
+        let _overlay_guard = lock_overlay_for_write("counter_flush").await;
+        match flush_pending_counter_writes_locked(storage.as_ref()).await {
+            Ok(0) => {},
+            Ok(flushed) => {
+                summary.flushed_overlays += 1;
+                summary.flushed_mutations += flushed;
+            },
+            Err(error) => {
+                let retained = lock_pending_counter_writes()
+                    .get(&path)
+                    .map_or(0, PendingCounterWrites::pending);
+                summary.failed_overlays += 1;
+                summary.retained_mutations += retained;
+                tracing::warn!(
+                    target: "magician::metrics::memory_temperature",
+                    path = %path.display(),
+                    error = %error,
+                    retained,
+                    "memory temperature counter flush failed; pending counter updates retained"
+                );
+            },
+        }
+    }
+    summary
 }
 
 /// Ensure every current candidate has a durable overlay entry. Existing
@@ -400,27 +1125,40 @@ pub async fn sync_memory_temperature_overlay(
     storage: &dyn MemoryStorage,
     candidates: &[MemoryCandidateDocument],
 ) -> Result<MemoryTemperatureOverlay, MemoryStorageError> {
-    let _overlay_guard = lock_overlay_for_write("sync").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    // Rename any pre-v6 key this candidate set can match before syncing, so an
-    // un-migrated overlay does not accumulate a second entry per candidate
-    // under the new encoding and lose its history. Renaming only; nothing is
-    // dropped here, because this caller may hold a partial candidate set.
-    let mut changed = migrate_memory_temperature_overlay_keys(&mut overlay, candidates) > 0;
-    if overlay.schema_version != MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION {
-        overlay.schema_version = MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION;
-        changed = true;
-    }
+    let overlay = sync_memory_temperature_overlay_shared(storage, Arc::from(candidates)).await?;
+    owned_memory_temperature_overlay(overlay).await
+}
 
-    let now = Utc::now();
-    changed |= apply_memory_temperature_overlay_sync(&mut overlay, candidates, now);
+/// [`sync_memory_temperature_overlay`] for callers that already share their
+/// candidates and only need the committed snapshot: no candidate copy and no
+/// owned overlay clone. The whole cycle's CPU work runs on the blocking pool.
+pub async fn sync_memory_temperature_overlay_shared(
+    storage: &dyn MemoryStorage,
+    candidates: Arc<[MemoryCandidateDocument]>,
+) -> Result<Arc<MemoryTemperatureOverlay>, MemoryStorageError> {
+    let ((), overlay) = mutate_memory_temperature_overlay(storage, "sync", move |overlay| {
+        // Rename any pre-v6 key this candidate set can match before syncing,
+        // so an un-migrated overlay does not accumulate a second entry per
+        // candidate under the new encoding and lose its history. Renaming
+        // only; nothing is dropped here, because this caller may hold a
+        // partial candidate set.
+        let mut changed = migrate_memory_temperature_overlay_keys(overlay, &candidates) > 0;
+        if overlay.schema_version != MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION {
+            overlay.schema_version = MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION;
+            changed = true;
+        }
 
-    let maintenance_summary = apply_memory_temperature_maintenance(&mut overlay, now);
-    if changed || maintenance_summary.changed > 0 {
-        overlay.updated_at = now;
-        save_memory_temperature_overlay(storage, &overlay).await?;
-    }
+        let now = Utc::now();
+        changed |= apply_memory_temperature_overlay_sync(overlay, &candidates, now);
 
+        let maintenance_summary = apply_memory_temperature_maintenance(overlay, now);
+        let changed = changed || maintenance_summary.changed > 0;
+        if changed {
+            overlay.updated_at = now;
+        }
+        ((), changed)
+    })
+    .await?;
     Ok(overlay)
 }
 
@@ -688,24 +1426,18 @@ pub async fn record_memory_temperature_prompt_usage(
     retrieved_candidate_keys: &[String],
     selected_candidate_keys: &BTreeSet<String>,
 ) -> Result<MemoryTemperatureUsageSummary, MemoryStorageError> {
-    let _overlay_guard = lock_overlay_for_write("prompt_usage").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    let now = Utc::now();
-    let summary = apply_memory_temperature_prompt_usage(
-        &mut overlay,
-        retrieved_candidate_keys,
-        selected_candidate_keys,
-        now,
-    );
-    let maintenance_summary = apply_memory_temperature_maintenance(&mut overlay, now);
-    if summary.retrieved > 0
-        || summary.selected > 0
-        || summary.injected > 0
-        || maintenance_summary.changed > 0
-    {
-        save_memory_temperature_overlay(storage, &overlay).await?;
+    // Counter bookkeeping: write-behind, see `record_memory_temperature_counter_mutation`.
+    let mutation = PendingCounterMutation::PromptUsage {
+        retrieved_candidate_keys: Arc::from(retrieved_candidate_keys),
+        selected_candidate_keys: Arc::new(selected_candidate_keys.clone()),
+        at: Utc::now(),
+    };
+    match record_memory_temperature_counter_mutation(storage, "prompt_usage", mutation).await? {
+        CounterMutationSummary::PromptUsage(summary) => Ok(summary),
+        CounterMutationSummary::OutcomeUsage(_) => {
+            unreachable!("a prompt-usage update yields a prompt-usage summary")
+        },
     }
-    Ok(summary)
 }
 
 pub async fn record_memory_temperature_retrieval_usage(
@@ -721,16 +1453,18 @@ pub async fn record_memory_temperature_outcome_usage(
     memory_candidate_keys: &[String],
     signal: MemoryTemperatureOutcomeSignal,
 ) -> Result<MemoryTemperatureOutcomeUsageSummary, MemoryStorageError> {
-    let _overlay_guard = lock_overlay_for_write("outcome_usage").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    let now = Utc::now();
-    let mut summary =
-        apply_memory_temperature_outcome_usage(&mut overlay, memory_candidate_keys, signal, now);
-    summary.maintenance = apply_memory_temperature_maintenance(&mut overlay, now);
-    if summary.used > 0 || summary.maintenance.changed > 0 {
-        save_memory_temperature_overlay(storage, &overlay).await?;
+    // Counter bookkeeping: write-behind, see `record_memory_temperature_counter_mutation`.
+    let mutation = PendingCounterMutation::OutcomeUsage {
+        memory_candidate_keys: Arc::from(memory_candidate_keys),
+        signal,
+        at: Utc::now(),
+    };
+    match record_memory_temperature_counter_mutation(storage, "outcome_usage", mutation).await? {
+        CounterMutationSummary::OutcomeUsage(summary) => Ok(summary),
+        CounterMutationSummary::PromptUsage(_) => {
+            unreachable!("an outcome-usage update yields an outcome-usage summary")
+        },
     }
-    Ok(summary)
 }
 
 pub async fn record_memory_temperature_utility_review(
@@ -738,24 +1472,29 @@ pub async fn record_memory_temperature_utility_review(
     review_run_id: &str,
     judgements: &[MemoryTemperatureUtilityReviewJudgement],
 ) -> Result<MemoryTemperatureUtilityReviewSummary, MemoryStorageError> {
-    let _overlay_guard = lock_overlay_for_write("utility_review").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    overlay.schema_version = MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION;
-    let now = Utc::now();
-    let normalized_run_id = review_run_id.trim();
-    let already_applied = !normalized_run_id.is_empty()
-        && overlay
-            .applied_utility_review_runs
-            .contains_key(normalized_run_id);
-    let mut summary =
-        apply_memory_temperature_utility_review(&mut overlay, review_run_id, judgements, now);
-    summary.maintenance = apply_memory_temperature_maintenance(&mut overlay, now);
-    if (!normalized_run_id.is_empty() && !already_applied)
-        || summary.reviewed > 0
-        || summary.maintenance.changed > 0
-    {
-        save_memory_temperature_overlay(storage, &overlay).await?;
-    }
+    let review_run_id = review_run_id.to_string();
+    let judgements = judgements.to_vec();
+    // Written synchronously before returning: the queue completes the review
+    // lease only after this call, and the applied-run ledger is what makes a
+    // replay after a crash idempotent.
+    let (summary, _) =
+        mutate_memory_temperature_overlay(storage, "utility_review", move |overlay| {
+            overlay.schema_version = MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION;
+            let now = Utc::now();
+            let normalized_run_id = review_run_id.trim();
+            let already_applied = !normalized_run_id.is_empty()
+                && overlay
+                    .applied_utility_review_runs
+                    .contains_key(normalized_run_id);
+            let mut summary =
+                apply_memory_temperature_utility_review(overlay, &review_run_id, &judgements, now);
+            summary.maintenance = apply_memory_temperature_maintenance(overlay, now);
+            let changed = (!normalized_run_id.is_empty() && !already_applied)
+                || summary.reviewed > 0
+                || summary.maintenance.changed > 0;
+            (summary, changed)
+        })
+        .await?;
     Ok(summary)
 }
 
@@ -770,7 +1509,7 @@ pub async fn memory_temperature_utility_review_was_applied(
     if review_run_id.is_empty() {
         return Ok(false);
     }
-    let overlay = load_memory_temperature_overlay(storage).await?;
+    let overlay = load_memory_temperature_overlay_snapshot(storage).await?;
     Ok(overlay
         .applied_utility_review_runs
         .contains_key(review_run_id))
@@ -780,14 +1519,16 @@ pub async fn record_memory_temperature_supersessions(
     storage: &dyn MemoryStorage,
     supersessions: &[MemoryTemperatureSupersession],
 ) -> Result<MemoryTemperatureSupersessionSummary, MemoryStorageError> {
-    let _overlay_guard = lock_overlay_for_write("supersessions").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    let now = Utc::now();
-    let mut summary = apply_memory_temperature_supersessions(&mut overlay, supersessions, now);
-    summary.maintenance = apply_memory_temperature_maintenance(&mut overlay, now);
-    if summary.superseded > 0 || summary.maintenance.changed > 0 {
-        save_memory_temperature_overlay(storage, &overlay).await?;
-    }
+    let supersessions = supersessions.to_vec();
+    let (summary, _) =
+        mutate_memory_temperature_overlay(storage, "supersessions", move |overlay| {
+            let now = Utc::now();
+            let mut summary = apply_memory_temperature_supersessions(overlay, &supersessions, now);
+            summary.maintenance = apply_memory_temperature_maintenance(overlay, now);
+            let changed = summary.superseded > 0 || summary.maintenance.changed > 0;
+            (summary, changed)
+        })
+        .await?;
     Ok(summary)
 }
 
@@ -1064,12 +1805,12 @@ pub fn apply_memory_temperature_supersessions(
 pub async fn maintain_memory_temperature_overlay(
     storage: &dyn MemoryStorage,
 ) -> Result<MemoryTemperatureMaintenanceSummary, MemoryStorageError> {
-    let _overlay_guard = lock_overlay_for_write("maintenance").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    let summary = apply_memory_temperature_maintenance(&mut overlay, Utc::now());
-    if summary.changed > 0 {
-        save_memory_temperature_overlay(storage, &overlay).await?;
-    }
+    let (summary, _) = mutate_memory_temperature_overlay(storage, "maintenance", |overlay| {
+        let summary = apply_memory_temperature_maintenance(overlay, Utc::now());
+        let changed = summary.changed > 0;
+        (summary, changed)
+    })
+    .await?;
     Ok(summary)
 }
 
@@ -2429,32 +3170,39 @@ pub async fn resync_memory_temperature_overlay_full_scope(
     candidates: &[MemoryCandidateDocument],
     policy: MemoryTemperatureRetentionPolicy,
 ) -> Result<(MemoryTemperatureOverlay, MemoryTemperatureCompactionSummary), MemoryStorageError> {
+    // Held through the audit append below, which is its own read-modify-write.
     let _overlay_guard = lock_overlay_for_write("full_scope_resync").await;
-    let mut overlay = load_memory_temperature_overlay(storage).await?;
-    let now = Utc::now();
+    let candidates: Arc<[MemoryCandidateDocument]> = Arc::from(candidates);
+    let ((summary, evicted_samples, now), overlay) =
+        mutate_memory_temperature_overlay_locked(storage, move |overlay| {
+            let now = Utc::now();
 
-    let migrated = migrate_memory_temperature_overlay_keys(&mut overlay, candidates);
-    let mut changed = migrated > 0;
-    if overlay.schema_version != MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION {
-        overlay.schema_version = MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION;
-        changed = true;
-    }
+            let migrated = migrate_memory_temperature_overlay_keys(overlay, &candidates);
+            let mut changed = migrated > 0;
+            if overlay.schema_version != MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION {
+                overlay.schema_version = MEMORY_TEMPERATURE_OVERLAY_SCHEMA_VERSION;
+                changed = true;
+            }
 
-    let live_keys = candidates
-        .iter()
-        .map(memory_temperature_candidate_key)
-        .collect::<BTreeSet<_>>();
-    changed |= apply_memory_temperature_overlay_sync(&mut overlay, candidates, now);
+            let live_keys = candidates
+                .iter()
+                .map(memory_temperature_candidate_key)
+                .collect::<BTreeSet<_>>();
+            changed |= apply_memory_temperature_overlay_sync(overlay, &candidates, now);
 
-    let (mut summary, evicted_samples) =
-        compact_memory_temperature_overlay(&mut overlay, &live_keys, policy, now);
-    summary.migrated_keys = migrated;
+            let (mut summary, evicted_samples) =
+                compact_memory_temperature_overlay(overlay, &live_keys, policy, now);
+            summary.migrated_keys = migrated;
 
-    let maintenance = apply_memory_temperature_maintenance(&mut overlay, now);
-    if changed || summary.changed() || maintenance.changed > 0 {
-        overlay.updated_at = now;
-        save_memory_temperature_overlay(storage, &overlay).await?;
-    }
+            let maintenance = apply_memory_temperature_maintenance(overlay, now);
+            let changed = changed || summary.changed() || maintenance.changed > 0;
+            if changed {
+                overlay.updated_at = now;
+            }
+            ((summary, evicted_samples, now), changed)
+        })
+        .await?;
+    let overlay = owned_memory_temperature_overlay(overlay).await?;
     if summary.changed() {
         // Best-effort on purpose. The overlay write above has already committed
         // the eviction; failing the call here would report "nothing happened"
@@ -3918,6 +4666,555 @@ mod tests {
             overlay.entries.contains_key(&key),
             "a failed candidate collection must never read as a scope-wide delete"
         );
+    }
+
+    /// File-backed storage that counts overlay writes, so a test can tell a
+    /// skipped save from a rewrite of identical bytes. Clones share the
+    /// counters and the failure switch, so the write-behind flush (which
+    /// writes through a shared handle) is counted too.
+    #[derive(Clone)]
+    struct CountingOverlayStorage {
+        root: PathBuf,
+        overlay_writes: Arc<AtomicUsize>,
+        tmp_counter: Arc<AtomicUsize>,
+        fail_overlay_writes: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl CountingOverlayStorage {
+        fn new(root: PathBuf) -> Self {
+            Self {
+                root,
+                overlay_writes: Arc::new(AtomicUsize::new(0)),
+                tmp_counter: Arc::new(AtomicUsize::new(0)),
+                fail_overlay_writes: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }
+        }
+
+        fn overlay_writes(&self) -> usize {
+            self.overlay_writes.load(AtomicOrdering::SeqCst)
+        }
+
+        fn fail_overlay_writes(&self, fail: bool) {
+            self.fail_overlay_writes.store(fail, AtomicOrdering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryStorage for CountingOverlayStorage {
+        fn root(&self) -> &std::path::Path {
+            &self.root
+        }
+
+        fn scope_segments(&self) -> Option<(String, String)> {
+            None
+        }
+
+        fn agent_tiers_dir(&self, agent_id: &str) -> Result<PathBuf, MemoryStorageError> {
+            Ok(self.root.join("agents").join(agent_id))
+        }
+
+        fn agent_episodes_dir(&self, agent_id: &str) -> Result<PathBuf, MemoryStorageError> {
+            Ok(self.root.join("agents").join(agent_id).join("episodes"))
+        }
+
+        fn agent_tier_path(
+            &self,
+            agent_id: &str,
+            tier_name: &str,
+            _scope: &TierScope,
+            _goal_id: Option<&str>,
+        ) -> Result<PathBuf, MemoryStorageError> {
+            Ok(self
+                .agent_tiers_dir(agent_id)?
+                .join(format!("{tier_name}.json")))
+        }
+
+        fn memory_lancedb_index_dir(&self) -> PathBuf {
+            self.root.join("index").join("lancedb")
+        }
+
+        fn memory_index_documents_path(&self) -> PathBuf {
+            self.root.join("index").join("documents.jsonl")
+        }
+
+        fn memory_index_manifest_path(&self) -> PathBuf {
+            self.root.join("index").join("manifest.json")
+        }
+
+        fn user_knowledge_path(&self) -> PathBuf {
+            self.root.join("users").join("knowledge.json")
+        }
+
+        fn user_root(&self) -> PathBuf {
+            self.root.join("users")
+        }
+
+        async fn load_user_knowledge(&self) -> Result<Value, MemoryStorageError> {
+            Ok(serde_json::json!({}))
+        }
+
+        async fn load_native_tier_value(
+            &self,
+            _agent_id: &str,
+            _tier_name: &str,
+            _scope: &TierScope,
+            _goal_id: Option<&str>,
+        ) -> Result<Option<Value>, MemoryStorageError> {
+            Ok(None)
+        }
+
+        async fn read_json_value(
+            &self,
+            path: &std::path::Path,
+        ) -> Result<Value, MemoryStorageError> {
+            let bytes = tokio::fs::read(path).await?;
+            Ok(serde_json::from_slice(&bytes)?)
+        }
+
+        async fn write_bytes_atomic(
+            &self,
+            path: &std::path::Path,
+            bytes: &[u8],
+        ) -> Result<(), MemoryStorageError> {
+            if path.file_name().and_then(|name| name.to_str())
+                == Some(MEMORY_TEMPERATURE_OVERLAY_FILE)
+            {
+                if self.fail_overlay_writes.load(AtomicOrdering::SeqCst) {
+                    return Err(MemoryStorageError::Io(std::io::Error::other(
+                        "injected overlay write failure",
+                    )));
+                }
+                self.overlay_writes.fetch_add(1, AtomicOrdering::SeqCst);
+            }
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let counter = self.tmp_counter.fetch_add(1, AtomicOrdering::SeqCst);
+            let tmp = path.with_extension(format!("tmp{counter}"));
+            tokio::fs::write(&tmp, bytes).await?;
+            tokio::fs::rename(&tmp, path).await?;
+            Ok(())
+        }
+
+        async fn write_json_value_atomic(
+            &self,
+            path: &std::path::Path,
+            value: &Value,
+        ) -> Result<(), MemoryStorageError> {
+            let bytes = serde_json::to_vec_pretty(value)?;
+            self.write_bytes_atomic(path, &bytes).await
+        }
+
+        fn shared_handle(&self) -> Option<Arc<dyn MemoryStorage>> {
+            Some(Arc::new(self.clone()))
+        }
+    }
+
+    async fn read_overlay_from_disk(storage: &dyn MemoryStorage) -> MemoryTemperatureOverlay {
+        let bytes = tokio::fs::read(memory_temperature_overlay_path(storage))
+            .await
+            .expect("overlay file");
+        serde_json::from_slice(&bytes).expect("overlay json")
+    }
+
+    /// A cycle whose mutation changes nothing must not serialize or rewrite
+    /// the overlay, and must hand back the committed snapshot itself.
+    #[tokio::test]
+    async fn an_unchanged_overlay_is_not_rewritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CountingOverlayStorage::new(dir.path().to_path_buf());
+        let candidate = test_candidate(TierScope::Agent, Some("cto"), None, "tier", "unchanged");
+
+        sync_memory_temperature_overlay(&storage, std::slice::from_ref(&candidate))
+            .await
+            .expect("first sync");
+        assert_eq!(
+            storage.overlay_writes(),
+            1,
+            "the first sync creates the entry"
+        );
+        let committed = load_memory_temperature_overlay_snapshot(&storage)
+            .await
+            .expect("snapshot");
+        let bytes_before = tokio::fs::read(memory_temperature_overlay_path(&storage))
+            .await
+            .expect("overlay file");
+
+        let resynced = sync_memory_temperature_overlay_shared(&storage, Arc::from(vec![candidate]))
+            .await
+            .expect("second sync");
+        maintain_memory_temperature_overlay(&storage)
+            .await
+            .expect("maintenance");
+        let usage = record_memory_temperature_prompt_usage(
+            &storage,
+            &["mt1:not-in-the-overlay".to_string()],
+            &BTreeSet::new(),
+        )
+        .await
+        .expect("prompt usage");
+        assert_eq!(usage.missing, 1);
+        record_memory_temperature_outcome_usage(
+            &storage,
+            &[],
+            MemoryTemperatureOutcomeSignal::Successful,
+        )
+        .await
+        .expect("outcome usage");
+
+        assert_eq!(
+            storage.overlay_writes(),
+            1,
+            "no-op cycles must not rewrite the overlay"
+        );
+        assert!(Arc::ptr_eq(&resynced, &committed));
+        assert_eq!(
+            tokio::fs::read(memory_temperature_overlay_path(&storage))
+                .await
+                .expect("overlay file"),
+            bytes_before
+        );
+    }
+
+    /// The prompt-repair sync, the prompt-usage worker and chat outcome
+    /// feedback race each other within one chat turn. Every update must land,
+    /// on disk and in the snapshot readers are served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_updates_from_the_three_turn_paths_are_all_reflected() {
+        const ROUNDS: u32 = 8;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = Arc::new(CountingOverlayStorage::new(dir.path().to_path_buf()));
+        let first = test_candidate(TierScope::Agent, Some("cto"), None, "tier", "first");
+        let second = test_candidate(TierScope::Agent, Some("cto"), None, "tier", "second");
+        let added = test_candidate(TierScope::Agent, Some("cto"), None, "tier", "added");
+        let first_key = memory_temperature_candidate_key(&first);
+        let second_key = memory_temperature_candidate_key(&second);
+        let added_key = memory_temperature_candidate_key(&added);
+        sync_memory_temperature_overlay(storage.as_ref(), &[first.clone(), second.clone()])
+            .await
+            .expect("seed sync");
+
+        let mut tasks = Vec::new();
+        for round in 0..ROUNDS {
+            let usage_storage = Arc::clone(&storage);
+            let retrieved = vec![first_key.clone(), second_key.clone()];
+            let selected = BTreeSet::from([first_key.clone()]);
+            tasks.push(tokio::spawn(async move {
+                record_memory_temperature_prompt_usage(
+                    usage_storage.as_ref(),
+                    &retrieved,
+                    &selected,
+                )
+                .await
+                .map(|_| ())
+            }));
+            let outcome_storage = Arc::clone(&storage);
+            let used = vec![second_key.clone()];
+            tasks.push(tokio::spawn(async move {
+                record_memory_temperature_outcome_usage(
+                    outcome_storage.as_ref(),
+                    &used,
+                    MemoryTemperatureOutcomeSignal::Successful,
+                )
+                .await
+                .map(|_| ())
+            }));
+            if round == ROUNDS / 2 {
+                let sync_storage = Arc::clone(&storage);
+                let candidates: Arc<[MemoryCandidateDocument]> =
+                    Arc::from(vec![first.clone(), second.clone(), added.clone()]);
+                tasks.push(tokio::spawn(async move {
+                    sync_memory_temperature_overlay_shared(sync_storage.as_ref(), candidates)
+                        .await
+                        .map(|_| ())
+                }));
+            }
+        }
+        for task in tasks {
+            task.await.expect("task").expect("overlay update");
+        }
+        // Counter updates after the mid-run sync are still write-behind.
+        flush_pending_memory_temperature_writes_for(storage.as_ref())
+            .await
+            .expect("flush pending counters");
+
+        let on_disk = read_overlay_from_disk(storage.as_ref()).await;
+        let first_entry = &on_disk.entries[&first_key];
+        assert_eq!(first_entry.retrieved_count, ROUNDS);
+        assert_eq!(first_entry.selected_count, ROUNDS);
+        assert_eq!(first_entry.injected_count, ROUNDS);
+        let second_entry = &on_disk.entries[&second_key];
+        assert_eq!(second_entry.retrieved_count, ROUNDS);
+        assert_eq!(second_entry.selected_count, 0);
+        assert_eq!(second_entry.successful_use_count, ROUNDS);
+        assert!(on_disk.entries.contains_key(&added_key));
+
+        let served = load_memory_temperature_overlay_snapshot(storage.as_ref())
+            .await
+            .expect("snapshot");
+        assert_eq!(
+            serde_json::to_value(&*served).expect("served"),
+            serde_json::to_value(&on_disk).expect("on disk"),
+            "readers must be served exactly the committed overlay"
+        );
+    }
+
+    /// Seed one entry through the durable sync and return its key and the
+    /// overlay write count afterwards.
+    async fn seed_counter_test_overlay(
+        storage: &CountingOverlayStorage,
+        name: &str,
+    ) -> (String, usize) {
+        let candidate = test_candidate(TierScope::Agent, Some("cto"), None, "tier", name);
+        let key = memory_temperature_candidate_key(&candidate);
+        sync_memory_temperature_overlay(storage, std::slice::from_ref(&candidate))
+            .await
+            .expect("seed sync");
+        (key, storage.overlay_writes())
+    }
+
+    /// Counter updates inside one window are applied in memory at once and
+    /// persisted by a single overlay write that carries all of them.
+    #[tokio::test]
+    async fn counter_updates_within_the_window_coalesce_into_one_write() {
+        const UPDATES: u32 = 5;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CountingOverlayStorage::new(dir.path().to_path_buf());
+        let (key, seeded) = seed_counter_test_overlay(&storage, "coalesced").await;
+
+        for _ in 0..UPDATES {
+            record_memory_temperature_prompt_usage(
+                &storage,
+                std::slice::from_ref(&key),
+                &BTreeSet::from([key.clone()]),
+            )
+            .await
+            .expect("prompt usage");
+            record_memory_temperature_outcome_usage(
+                &storage,
+                std::slice::from_ref(&key),
+                MemoryTemperatureOutcomeSignal::Successful,
+            )
+            .await
+            .expect("outcome usage");
+        }
+        assert_eq!(
+            storage.overlay_writes(),
+            seeded,
+            "counter updates must not write through"
+        );
+        assert_eq!(
+            memory_temperature_pending_counter_mutations(&storage),
+            (UPDATES * 2) as usize
+        );
+        let served = load_memory_temperature_overlay_snapshot(&storage)
+            .await
+            .expect("snapshot");
+        assert_eq!(served.entries[&key].retrieved_count, UPDATES);
+        assert_eq!(
+            served.entries[&key].successful_use_count, UPDATES,
+            "readers in this process see pending counters"
+        );
+
+        let flushed = flush_pending_memory_temperature_writes_for(&storage)
+            .await
+            .expect("flush");
+        assert_eq!(flushed, (UPDATES * 2) as usize);
+        assert_eq!(storage.overlay_writes(), seeded + 1, "one write per window");
+        let on_disk = read_overlay_from_disk(&storage).await;
+        let entry = &on_disk.entries[&key];
+        assert_eq!(entry.retrieved_count, UPDATES);
+        assert_eq!(entry.selected_count, UPDATES);
+        assert_eq!(entry.injected_count, UPDATES);
+        assert_eq!(entry.successful_use_count, UPDATES);
+        assert_eq!(memory_temperature_pending_counter_mutations(&storage), 0);
+
+        assert_eq!(
+            flush_pending_memory_temperature_writes_for(&storage)
+                .await
+                .expect("second flush"),
+            0
+        );
+        assert_eq!(
+            storage.overlay_writes(),
+            seeded + 1,
+            "nothing left to write"
+        );
+    }
+
+    /// A durable write in the middle of a window persists the pending counters
+    /// with it, exactly once; the later flush must not apply them again.
+    #[tokio::test]
+    async fn a_durable_write_carries_pending_counters_exactly_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CountingOverlayStorage::new(dir.path().to_path_buf());
+        let (key, seeded) = seed_counter_test_overlay(&storage, "folded").await;
+
+        for _ in 0..3 {
+            record_memory_temperature_retrieval_usage(&storage, std::slice::from_ref(&key))
+                .await
+                .expect("retrieval usage");
+        }
+        record_memory_temperature_utility_review(
+            &storage,
+            "review-folds-counters",
+            &[MemoryTemperatureUtilityReviewJudgement {
+                memory_candidate_key: key.clone(),
+                label: MemoryTemperatureUtilityLabel::Useful,
+                confidence: None,
+                reason: None,
+                compact_text: None,
+            }],
+        )
+        .await
+        .expect("utility review");
+        assert_eq!(storage.overlay_writes(), seeded + 1);
+        assert_eq!(memory_temperature_pending_counter_mutations(&storage), 0);
+        let on_disk = read_overlay_from_disk(&storage).await;
+        assert_eq!(on_disk.entries[&key].retrieved_count, 3);
+        assert_eq!(on_disk.entries[&key].reviewed_useful_count, 1);
+        assert!(on_disk
+            .applied_utility_review_runs
+            .contains_key("review-folds-counters"));
+
+        assert_eq!(
+            flush_pending_memory_temperature_writes_for(&storage)
+                .await
+                .expect("flush"),
+            0,
+            "the durable write settled the pending counters"
+        );
+        record_memory_temperature_retrieval_usage(&storage, std::slice::from_ref(&key))
+            .await
+            .expect("retrieval usage");
+        flush_pending_memory_temperature_writes_for(&storage)
+            .await
+            .expect("flush");
+        let on_disk = read_overlay_from_disk(&storage).await;
+        assert_eq!(
+            on_disk.entries[&key].retrieved_count, 4,
+            "applied once each"
+        );
+        assert_eq!(storage.overlay_writes(), seeded + 2);
+    }
+
+    /// A failed flush keeps every pending update, still visible to readers,
+    /// and the next attempt writes them once.
+    #[tokio::test]
+    async fn a_failed_flush_retains_pending_counters_for_the_next_attempt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CountingOverlayStorage::new(dir.path().to_path_buf());
+        let (key, seeded) = seed_counter_test_overlay(&storage, "retained").await;
+
+        for _ in 0..2 {
+            record_memory_temperature_outcome_usage(
+                &storage,
+                std::slice::from_ref(&key),
+                MemoryTemperatureOutcomeSignal::Failed,
+            )
+            .await
+            .expect("outcome usage");
+        }
+        storage.fail_overlay_writes(true);
+        flush_pending_memory_temperature_writes_for(&storage)
+            .await
+            .expect_err("injected write failure");
+        assert_eq!(memory_temperature_pending_counter_mutations(&storage), 2);
+        assert_eq!(storage.overlay_writes(), seeded);
+        assert_eq!(
+            read_overlay_from_disk(&storage).await.entries[&key].failed_use_count,
+            0
+        );
+        let served = load_memory_temperature_overlay_snapshot(&storage)
+            .await
+            .expect("snapshot");
+        assert_eq!(served.entries[&key].failed_use_count, 2);
+
+        storage.fail_overlay_writes(false);
+        assert_eq!(
+            flush_pending_memory_temperature_writes_for(&storage)
+                .await
+                .expect("flush"),
+            2
+        );
+        assert_eq!(storage.overlay_writes(), seeded + 1);
+        assert_eq!(
+            read_overlay_from_disk(&storage).await.entries[&key].failed_use_count,
+            2
+        );
+        assert_eq!(memory_temperature_pending_counter_mutations(&storage), 0);
+    }
+
+    /// Another process rewriting the file under pending updates displaces the
+    /// revision they were applied to; the flush replays them onto the new
+    /// file, once, keeping that process's change.
+    #[tokio::test]
+    async fn pending_counters_are_replayed_once_onto_an_externally_rewritten_overlay() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let storage = CountingOverlayStorage::new(dir.path().to_path_buf());
+        let (key, _) = seed_counter_test_overlay(&storage, "replayed").await;
+
+        for _ in 0..2 {
+            record_memory_temperature_retrieval_usage(&storage, std::slice::from_ref(&key))
+                .await
+                .expect("retrieval usage");
+        }
+        let mut external = read_overlay_from_disk(&storage).await;
+        external
+            .applied_utility_review_runs
+            .insert("external-run".to_string(), Utc::now());
+        tokio::fs::write(
+            memory_temperature_overlay_path(&storage),
+            serde_json::to_vec_pretty(&external).expect("external json"),
+        )
+        .await
+        .expect("external rewrite");
+
+        assert_eq!(
+            flush_pending_memory_temperature_writes_for(&storage)
+                .await
+                .expect("flush"),
+            2
+        );
+        let on_disk = read_overlay_from_disk(&storage).await;
+        assert_eq!(on_disk.entries[&key].retrieved_count, 2);
+        assert!(on_disk
+            .applied_utility_review_runs
+            .contains_key("external-run"));
+        let served = load_memory_temperature_overlay_snapshot(&storage)
+            .await
+            .expect("snapshot");
+        assert_eq!(served.entries[&key].retrieved_count, 2);
+    }
+
+    /// Saves now serialize the overlay directly instead of through a
+    /// `serde_json::Value`. Only object field order may differ; the parsed
+    /// document must be identical.
+    #[test]
+    fn direct_overlay_encoding_matches_the_former_value_encoding() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 12, 0, 0).unwrap();
+        let key = "mt1:5:agent:3:cto:0::4:tier:1:0".to_string();
+        let mut entry = test_entry(&key, SemanticMemoryType::ProjectContext, now);
+        entry.retrieved_count = 3;
+        entry.last_used_at = Some(now);
+        entry.last_utility_review_label = Some(MemoryTemperatureUtilityLabel::LoadBearing);
+        entry.temperature_score = 0.6125;
+        let mut overlay = MemoryTemperatureOverlay::default();
+        overlay.entries.insert(key, entry);
+        overlay
+            .applied_utility_review_runs
+            .insert("review-1".to_string(), now);
+
+        let direct: Value = serde_json::from_slice(
+            &serialize_memory_temperature_overlay(&overlay).expect("direct"),
+        )
+        .expect("direct json");
+        let former: Value = serde_json::from_slice(
+            &serde_json::to_vec_pretty(&serde_json::to_value(&overlay).expect("value"))
+                .expect("former"),
+        )
+        .expect("former json");
+        assert_eq!(direct, former);
     }
 
     fn test_entry(

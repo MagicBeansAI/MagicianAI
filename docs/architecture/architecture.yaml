@@ -29,7 +29,7 @@ nodes:
       process groups, /health polling every 20s (observational), and restart
       guards (10s cooldown, 5 attempts per 5 minutes). TCP control plane on
       127.0.0.1:8081 via supervisor-ctl. Proxies host-* commands to the
-      desktop host gateway (:3017). Does not manage SilverBullet Notes.
+      desktop host gateway (:3017). Notes need no process of their own.
     doc: docs/components/magic-supervisor/supervisor.md
     runs: { port: 8081 }
     code_refs: [crate::magic-supervisor]
@@ -147,9 +147,9 @@ nodes:
     doc: docs/components/magicutor/README.md
     code_refs: [crate::magicutor-extension]
 
-  - id: runtime:silverbullet
-    label: Notes files (no sidecar)
-    summary: Markdown notes live in the workspace space and are served by Magician. The SilverBullet process on :3021 is not installed or proxied.
+  - id: runtime:notes
+    label: Notes (Magician's own files)
+    summary: Notes are plain Markdown files Magician reads and writes, browsed in the web app at /notes and linked as relative /notes?path=…&workspace=… URLs. No notes server, port or hostname.
     doc: docs/components/magician/notes-provider.md
     ungrounded: true
 
@@ -221,10 +221,10 @@ nodes:
   - id: area:background-ops
     parent: runtime:magician
     label: Background Ops
-    summary: Scheduler, monitors, wakes, and harness-enabled personal agents that run without a chat turn.
+    summary: Scheduler, monitors, wakes, and Autopilot crew that run without a chat turn.
     detail: >-
       Recurring monitors and scheduled tasks use the task-cron spine.
-      Harness-enabled personal agents (CEO/CTO/CMO/CRO company loop)
+      Autopilot-enabled personal agents (CEO/CTO/CMO/CRO Team routines)
       compile focus areas into scoped scheduler goals. Wake consumers
       lease generations before starting handlers. App background ticks
       are designed on this same spine; the timer is not yet wired.
@@ -443,7 +443,7 @@ edges:
   - { from: runtime:supervisor, to: runtime:magicutor, kind: supervises, transport: "child process + GET /health q20s", summary: "Same supervision contract as magician." }
   - { from: runtime:supervisor, to: runtime:desktop, kind: proxies, transport: "HTTP -> host gateway :3017", summary: "host-* commands proxy to the desktop host gateway." }
   - { from: runtime:magician, to: runtime:fluidaudio, kind: owns, transport: "process lifecycle, audio on :3029", trigger: "lazily started for VAD", summary: "Server owns the audio engine sidecar's lifecycle." }
-  - { from: runtime:magician, to: runtime:silverbullet, kind: owns, transport: "filesystem", summary: "Magician reads and writes the notes space directly and keeps the search index next to it." }
+  - { from: runtime:magician, to: runtime:notes, kind: owns, transport: "filesystem", summary: "Magician reads and writes the notes space directly and keeps the search index next to it." }
 
   # clients -> magician
   - { from: runtime:web, to: runtime:magician, kind: consumes, transport: "HTTP + SSE + WS /realtime/ws", summary: "Chat streaming, threads, and realtime updates." }

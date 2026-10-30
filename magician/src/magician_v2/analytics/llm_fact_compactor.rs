@@ -1,12 +1,15 @@
-//! Governed compaction for immutable canonical LLM fact revisions.
+//! Governed compaction for canonical LLM fact revisions.
 //!
-//! Compaction never deletes or mutates source objects. A compacted object is
-//! eligible for reads while its manifest describes a verified subset of the
-//! current immutable raw source set and its own checksum still verifies. New
-//! raw objects remain visible as a bounded tail beside that compacted prefix;
-//! a later generation folds the tail in. Any interrupted or corrupt
-//! compaction therefore falls back to immutable raw files without making new
-//! observations wait for a whole-day partition rollover.
+//! A compacted object is eligible for reads while its checksum still verifies
+//! and, until `raw_sources_pruned` is set, every covered raw source is still
+//! present. New raw objects remain visible as a tail beside that compacted
+//! prefix. The open UTC day and the day before it keep every raw file: a row
+//! is filed under its `occurred_at_ms` day, so yesterday can still receive a
+//! late write. A later sweep deletes the covered raw part files of any older
+//! day whose tail is empty, after the manifest records the prune. A file that
+//! arrives after that prune is read as a tail and folded into the next
+//! generation. A corrupt compact fails closed. Once the raw files are gone,
+//! that compact is left in place rather than rebuilt from a partial tail.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -38,7 +41,9 @@ pub const DEFAULT_LLM_FACT_ROLLING_TAIL_FILES: usize = 64;
 const COMPACT_DIR_NAME: &str = "_compact";
 const COMPACT_FILE_NAME: &str = "canonical.compacted.parquet";
 const COMPACT_MANIFEST_FILE_NAME: &str = "canonical.compaction-manifest.json";
-const COMPACT_GUARD_TIMEOUT: Duration = Duration::from_secs(5);
+// Background-only, like the legacy sweep's 30 s: five seconds lost every
+// fold that queued behind a dashboard read and left today's tail growing.
+const COMPACT_GUARD_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LlmFactCompactionPolicy {
@@ -81,6 +86,9 @@ pub struct LlmFactCompactionStats {
     pub compacted_bytes_written: u64,
     #[serde(default)]
     pub areas: Vec<LlmFactCompactionAreaStats>,
+    /// Covered raw part files unlinked after a settled day's compact verified.
+    #[serde(default)]
+    pub raw_files_pruned: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +137,11 @@ pub struct LlmFactCompactionManifest {
     pub compacted_row_count: u64,
     pub minimum_journal_sequence: u64,
     pub maximum_journal_sequence: u64,
+    /// Covered raw part files have been deleted. Readers trust the compacted
+    /// object without requiring those files to still exist. Absent on manifests
+    /// written before this flag, which deserialize as `false`.
+    #[serde(default)]
+    pub raw_sources_pruned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +219,7 @@ fn compact_scope_selected(
         let mut area_physical_files_after = 0_usize;
         let mut area_bytes_before = 0_u64;
         let mut area_bytes_after = 0_u64;
+        let mut area_sources_pruned = 0_usize;
         for (date, partition) in canonical_partition_dirs(&root)? {
             if selection == PartitionSelection::CurrentOnly && date != current_date {
                 continue;
@@ -231,6 +245,43 @@ fn compact_scope_selected(
             ) = if let Some(usable) = usable {
                 if usable.uncompacted_tail.is_empty() {
                     stats.partitions_already_fresh += 1;
+                    if canonical_sources_may_be_pruned(date, current_date) {
+                        let bytes_before = directory_apparent_bytes(&partition)?;
+                        let files_before = directory_regular_file_count(&partition)?;
+                        match maybe_prune_settled_sources(
+                            workspace,
+                            dataset,
+                            date,
+                            current_date,
+                            &partition,
+                            &usable.manifest,
+                        ) {
+                            Ok(0) => {},
+                            Ok(pruned) => {
+                                stats.raw_files_pruned += pruned;
+                                area_sources_pruned += pruned;
+                                area_bytes_before = area_bytes_before.saturating_add(bytes_before);
+                                area_bytes_after = area_bytes_after
+                                    .saturating_add(directory_apparent_bytes(&partition)?);
+                                area_physical_files_before =
+                                    area_physical_files_before.saturating_add(files_before);
+                                area_physical_files_after = area_physical_files_after
+                                    .saturating_add(directory_regular_file_count(&partition)?);
+                            },
+                            Err(error) => {
+                                stats.partitions_failed += 1;
+                                warn!(
+                                    target: "analytics::llm_fact_compactor",
+                                    principal = %scope.principal,
+                                    workspace = %scope.workspace,
+                                    dataset = dataset.as_str(),
+                                    partition = %partition.display(),
+                                    error = %error,
+                                    "LLM fact source prune failed; the verified compact remains"
+                                );
+                            },
+                        }
+                    }
                     continue;
                 }
                 if usable.uncompacted_tail.len() < threshold {
@@ -257,6 +308,17 @@ fn compact_scope_selected(
                     partition_bytes_before,
                     partition_physical_files_before,
                 )
+            } else if manifest_pruned_sources(workspace, dataset, &partition)? {
+                stats.partitions_failed += 1;
+                warn!(
+                    target: "analytics::llm_fact_compactor",
+                    principal = %scope.principal,
+                    workspace = %scope.workspace,
+                    dataset = dataset.as_str(),
+                    partition = %partition.display(),
+                    "pruned LLM fact compact is unusable; refusing to rebuild it from the remaining raw files"
+                );
+                continue;
             } else {
                 if raw_files.len() < threshold {
                     stats.partitions_below_threshold += 1;
@@ -278,6 +340,31 @@ fn compact_scope_selected(
             };
             match compaction {
                 Ok(manifest) => {
+                    match maybe_prune_settled_sources(
+                        workspace,
+                        dataset,
+                        date,
+                        current_date,
+                        &partition,
+                        &manifest,
+                    ) {
+                        Ok(pruned) => {
+                            stats.raw_files_pruned += pruned;
+                            area_sources_pruned += pruned;
+                        },
+                        Err(error) => {
+                            stats.partitions_failed += 1;
+                            warn!(
+                                target: "analytics::llm_fact_compactor",
+                                principal = %scope.principal,
+                                workspace = %scope.workspace,
+                                dataset = dataset.as_str(),
+                                partition = %partition.display(),
+                                error = %error,
+                                "LLM fact source prune failed; the verified compact remains"
+                            );
+                        },
+                    }
                     stats.partitions_compacted += 1;
                     stats.raw_files_compacted += manifest.sources.len();
                     stats.rows_compacted = stats
@@ -319,7 +406,7 @@ fn compact_scope_selected(
                 },
             }
         }
-        if area_partitions_compacted > 0 {
+        if area_partitions_compacted > 0 || area_sources_pruned > 0 {
             let bytes_reclaimed = area_bytes_before.saturating_sub(area_bytes_after);
             let query_files_avoided =
                 area_query_files_before.saturating_sub(area_query_files_after);
@@ -486,6 +573,7 @@ struct VerifiedReadCompaction {
     covered_names: HashSet<String>,
     source_row_count: u64,
     maximum_journal_sequence: u64,
+    raw_sources_pruned: bool,
 }
 
 type PartitionKey = (LlmCanonicalDataset, PathBuf);
@@ -524,8 +612,10 @@ fn remember_partition_source(
 
 /// `usable_manifest` for reads, with the manifest's verdict cached by the
 /// manifest's and compacted object's stamps (taken before validating, so a
-/// file replaced mid-validation is re-validated on the next read). The raw
-/// listing is still checked every time: every covered source must exist.
+/// file replaced mid-validation is re-validated on the next read). Until the
+/// manifest records a prune, every covered source must still exist. After
+/// that, missing covered sources are expected and a file that is not in the
+/// manifest is still the tail.
 fn verified_read_compaction(
     workspace: &ArtifactV2Workspace,
     scope: &LlmScope,
@@ -534,9 +624,6 @@ fn verified_read_compaction(
     raw_files: &[PathBuf],
     keep_verdict: bool,
 ) -> Result<Option<(Arc<VerifiedReadCompaction>, Vec<PathBuf>)>> {
-    if raw_files.is_empty() {
-        return Ok(None);
-    }
     let key = (dataset, partition.to_path_buf());
     let stamps = FileStamp::read(&compaction_manifest_path(partition))
         .zip(FileStamp::read(&compacted_file(partition)));
@@ -553,13 +640,15 @@ fn verified_read_compaction(
             .collect::<HashSet<_>>()
     };
     if let Some(verified) = cached {
-        let names = raw_names();
-        if !verified
-            .covered_names
-            .iter()
-            .all(|name| names.contains(name.as_str()))
-        {
-            return Ok(None);
+        if !verified.raw_sources_pruned {
+            let names = raw_names();
+            if !verified
+                .covered_names
+                .iter()
+                .all(|name| names.contains(name.as_str()))
+            {
+                return Ok(None);
+            }
         }
         let tail = uncompacted_tail(raw_files, &verified.covered_names);
         return Ok(Some((verified, tail)));
@@ -576,6 +665,7 @@ fn verified_read_compaction(
             .collect(),
         source_row_count: usable.manifest.source_row_count,
         maximum_journal_sequence: usable.manifest.maximum_journal_sequence,
+        raw_sources_pruned: usable.manifest.raw_sources_pruned,
     });
     if let (true, Some((manifest, compacted))) = (keep_verdict, stamps) {
         if let Ok(mut cache) = VERIFIED_COMPACTIONS.lock() {
@@ -810,6 +900,10 @@ fn compact_partition(
     )?;
     let compacted_byte_len = std::fs::metadata(&final_path)?.len();
     let compacted_checksum_blake3 = file_checksum(&final_path)?;
+    let raw_sources_pruned = sources.iter().any(|source| {
+        !std::fs::symlink_metadata(partition.join(&source.file_name))
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+    });
     let manifest = LlmFactCompactionManifest {
         schema_version: LLM_FACT_COMPACTION_MANIFEST_SCHEMA_VERSION,
         materialized_schema_version: MATERIALIZED_FACT_SCHEMA_VERSION,
@@ -827,6 +921,7 @@ fn compact_partition(
         compacted_row_count: compacted_rows as u64,
         minimum_journal_sequence: minimum_sequence as u64,
         maximum_journal_sequence: maximum_sequence as u64,
+        raw_sources_pruned,
     };
     workspace
         .write_json_atomic_path_sync(compaction_manifest_path(partition), &manifest)
@@ -841,9 +936,6 @@ fn usable_manifest(
     partition: &Path,
     raw_files: &[PathBuf],
 ) -> Result<Option<LlmUsableCompaction>> {
-    if raw_files.is_empty() {
-        return Ok(None);
-    }
     let manifest_path = compaction_manifest_path(partition);
     match ensure_regular_file_or_missing(&manifest_path) {
         Ok(false) => return Ok(None),
@@ -913,7 +1005,9 @@ fn usable_manifest(
         .iter()
         .map(|source| source.file_name.clone())
         .collect::<std::collections::HashSet<_>>();
-    if !covered_names.is_subset(&raw_names) {
+    if !manifest.raw_sources_pruned
+        && (raw_files.is_empty() || !covered_names.is_subset(&raw_names))
+    {
         return Ok(None);
     }
     let output = compacted_file(partition);
@@ -965,42 +1059,295 @@ fn generation_sources(
     raw_files: &[PathBuf],
     previous: Option<&LlmFactCompactionManifest>,
 ) -> Result<Vec<LlmCompactionSource>> {
-    let previous = previous
+    let previous_by_name = previous
         .into_iter()
         .flat_map(|manifest| manifest.sources.iter())
         .map(|source| (source.file_name.as_str(), source))
         .collect::<std::collections::HashMap<_, _>>();
-    raw_files
+    let mut sources = Vec::new();
+    if previous.is_some_and(|manifest| manifest.raw_sources_pruned) {
+        let present = raw_files
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+            .collect::<HashSet<_>>();
+        if let Some(manifest) = previous {
+            for source in &manifest.sources {
+                if !present.contains(source.file_name.as_str()) {
+                    sources.push(source.clone());
+                }
+            }
+        }
+    }
+    for path in raw_files {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow!("LLM source has no UTF-8 file name: {}", path.display()))?;
+        let actual = source_fingerprint(path)?;
+        if let Some(expected) = previous_by_name.get(file_name) {
+            if *expected != &actual {
+                return Err(anyhow!(
+                    "immutable LLM source changed after compaction: {}",
+                    path.display()
+                ));
+            }
+        }
+        sources.push(actual);
+    }
+    Ok(sources)
+}
+
+/// Today and yesterday stay intact. A row is stored under its
+/// `occurred_at_ms` day, so a late materialization can still land in yesterday.
+fn canonical_sources_may_be_pruned(date: NaiveDate, today: NaiveDate) -> bool {
+    date < today - chrono::Duration::days(1)
+}
+
+/// Delete covered raw part files once a settled day's compact is the copy
+/// readers use. The manifest flag is published before any unlink, so a crash
+/// mid-delete still serves the compact instead of the files that remain.
+fn maybe_prune_settled_sources(
+    workspace: &ArtifactV2Workspace,
+    dataset: LlmCanonicalDataset,
+    date: NaiveDate,
+    today: NaiveDate,
+    partition: &Path,
+    manifest: &LlmFactCompactionManifest,
+) -> Result<usize> {
+    if !canonical_sources_may_be_pruned(date, today) {
+        return Ok(0);
+    }
+    let raw_files = canonical_raw_partition_files(dataset, partition)?;
+    if raw_files.is_empty() && manifest.raw_sources_pruned {
+        return Ok(0);
+    }
+    let covered = manifest
+        .sources
         .iter()
-        .map(|path| {
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| anyhow!("LLM source has no UTF-8 file name: {}", path.display()))?;
-            let actual = source_fingerprint(path)?;
-            if let Some(expected) = previous.get(file_name) {
-                if *expected != &actual {
+        .map(|source| source.file_name.as_str())
+        .collect::<HashSet<_>>();
+    if raw_files.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| !covered.contains(name))
+    }) {
+        return Ok(0);
+    }
+
+    let mut verified = Vec::new();
+    for source in &manifest.sources {
+        let path = partition.join(&source.file_name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let actual = source_fingerprint(&path)?;
+                if actual != *source {
                     return Err(anyhow!(
-                        "immutable LLM source changed after compaction: {}",
+                        "refusing to prune changed LLM source {}",
                         path.display()
                     ));
                 }
-            }
-            Ok(actual)
-        })
-        .collect()
+                verified.push(path);
+            },
+            Ok(_) => {
+                return Err(anyhow!(
+                    "refusing to prune non-regular LLM source {}",
+                    path.display()
+                ));
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !manifest.raw_sources_pruned {
+                    return Err(anyhow!(
+                        "refusing to prune covered LLM source missing before the manifest records it: {}",
+                        path.display()
+                    ));
+                }
+            },
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if verified.is_empty() {
+        return Ok(0);
+    }
+    if !manifest.raw_sources_pruned {
+        let mut updated = manifest.clone();
+        updated.raw_sources_pruned = true;
+        workspace
+            .write_json_atomic_path_sync(compaction_manifest_path(partition), &updated)
+            .context("recording LLM fact source prune before deleting raw files")?;
+        sync_directory(&partition.join(COMPACT_DIR_NAME))?;
+    }
+    for path in &verified {
+        std::fs::remove_file(path)
+            .with_context(|| format!("pruning verified LLM source {}", path.display()))?;
+    }
+    sync_directory(partition)?;
+    Ok(verified.len())
+}
+
+fn manifest_pruned_sources(
+    workspace: &ArtifactV2Workspace,
+    dataset: LlmCanonicalDataset,
+    partition: &Path,
+) -> Result<bool> {
+    let manifest_path = compaction_manifest_path(partition);
+    let manifest =
+        match workspace.read_json_path_sync::<LlmFactCompactionManifest, _>(&manifest_path) {
+            Ok(manifest) => manifest,
+            Err(crate::magician_v2::artifact_v2::service::ArtifactV2Error::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(false);
+            },
+            Err(_) => return Ok(false),
+        };
+    Ok(manifest.dataset == dataset && manifest.raw_sources_pruned)
 }
 
 fn source_fingerprint(path: &Path) -> Result<LlmCompactionSource> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("LLM source has no UTF-8 file name: {}", path.display()))?
+        .to_string();
+    let (byte_len, checksum) = memoized_source_checksum(path, SOURCE_CHECKSUM_MIN_STAMP_AGE)?;
     Ok(LlmCompactionSource {
-        file_name: path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| anyhow!("LLM source has no UTF-8 file name: {}", path.display()))?
-            .to_string(),
-        byte_len: std::fs::metadata(path)?.len(),
-        checksum_blake3: file_checksum(path)?,
+        file_name,
+        byte_len,
+        checksum_blake3: checksum.to_hex().to_string(),
     })
+}
+
+// --- Source checksum memo ---------------------------------------------------
+//
+// Every generation roll re-fingerprints each raw source in the partition,
+// covered ones included, so a changed immutable source blocks publication.
+// The active partition holds one object per revision (16k objects, 330 MB by
+// evening on a busy day) and the five-minute hot lane rolls it on most passes,
+// so each roll re-read and re-hashed all of them: ~3 s of CPU per pass in a
+// debug build. A source's digest is now reused while its stamp is unchanged.
+// The stamp is taken from the open handle before hashing, and it is only
+// trusted once its modification and status-change times are already
+// `SOURCE_CHECKSUM_MIN_STAMP_AGE` old: a rewrite after that point lands at
+// least that far past the recorded times, so it changes the stamp even on a
+// filesystem with whole-second timestamps. On Unix the status-change time
+// also moves when `utimes` restores an old modification time, and the inode
+// changes when a file is replaced by rename.
+
+/// Below this age a source's timestamps may not yet distinguish a same-size
+/// rewrite, so its digest is computed and not remembered.
+const SOURCE_CHECKSUM_MIN_STAMP_AGE: Duration = Duration::from_secs(5);
+
+/// Entries per memo generation. Lookups promote from the previous generation,
+/// so a working set up to this size is never evicted wholesale.
+const SOURCE_CHECKSUM_MEMO_GENERATION: usize = 65_536;
+
+/// What a source's remembered digest was computed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceStamp {
+    len: u64,
+    modified: SystemTime,
+    /// Status-change time (seconds, nanoseconds); Unix only.
+    changed: Option<(i64, i64)>,
+    /// Device and inode; Unix only.
+    identity: Option<(u64, u64)>,
+}
+
+impl SourceStamp {
+    /// The stamp of a file whose timestamps are settled at `now`, or `None`
+    /// when they are too recent (or in the future) to be trusted.
+    fn settled(metadata: &std::fs::Metadata, now: SystemTime, min_age: Duration) -> Option<Self> {
+        if !metadata.is_file() {
+            return None;
+        }
+        let modified = metadata.modified().ok()?;
+        if now.duration_since(modified).ok()? < min_age {
+            return None;
+        }
+        #[cfg(unix)]
+        let (changed, identity) = {
+            use std::os::unix::fs::MetadataExt;
+            let changed = std::time::UNIX_EPOCH.checked_add(Duration::new(
+                u64::try_from(metadata.ctime()).ok()?,
+                u32::try_from(metadata.ctime_nsec()).ok()?,
+            ))?;
+            if now.duration_since(changed).ok()? < min_age {
+                return None;
+            }
+            (
+                Some((metadata.ctime(), metadata.ctime_nsec())),
+                Some((metadata.dev(), metadata.ino())),
+            )
+        };
+        #[cfg(not(unix))]
+        let (changed, identity) = (None, None);
+        Some(Self {
+            len: metadata.len(),
+            modified,
+            changed,
+            identity,
+        })
+    }
+}
+
+type SourceChecksumEntries = HashMap<PathBuf, (SourceStamp, blake3::Hash)>;
+
+#[derive(Default)]
+struct SourceChecksumMemo {
+    current: SourceChecksumEntries,
+    previous: SourceChecksumEntries,
+}
+
+impl SourceChecksumMemo {
+    fn get(&mut self, path: &Path, stamp: &SourceStamp) -> Option<blake3::Hash> {
+        if let Some((cached, digest)) = self.current.get(path) {
+            return (cached == stamp).then_some(*digest);
+        }
+        let (cached, digest) = self.previous.remove(path)?;
+        if cached != *stamp {
+            return None;
+        }
+        self.insert(path.to_path_buf(), cached, digest);
+        Some(digest)
+    }
+
+    fn insert(&mut self, path: PathBuf, stamp: SourceStamp, digest: blake3::Hash) {
+        if self.current.len() >= SOURCE_CHECKSUM_MEMO_GENERATION
+            && !self.current.contains_key(&path)
+        {
+            self.previous = std::mem::take(&mut self.current);
+        }
+        self.current.insert(path, (stamp, digest));
+    }
+}
+
+static SOURCE_CHECKSUMS: LazyLock<Mutex<SourceChecksumMemo>> =
+    LazyLock::new(|| Mutex::new(SourceChecksumMemo::default()));
+
+/// Length and BLAKE3 digest of a raw source, identical to `file_checksum`,
+/// reusing the digest while the file's settled stamp is unchanged.
+fn memoized_source_checksum(path: &Path, min_stamp_age: Duration) -> Result<(u64, blake3::Hash)> {
+    let mut file =
+        File::open(path).with_context(|| format!("opening {} for checksum", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting {} for checksum", path.display()))?;
+    let stamp = SourceStamp::settled(&metadata, SystemTime::now(), min_stamp_age);
+    if let Some(stamp) = stamp.as_ref() {
+        let remembered = SOURCE_CHECKSUMS
+            .lock()
+            .ok()
+            .and_then(|mut memo| memo.get(path, stamp));
+        if let Some(digest) = remembered {
+            return Ok((metadata.len(), digest));
+        }
+    }
+    let digest = hash_reader(&mut file)?;
+    if let Some(stamp) = stamp {
+        if let Ok(mut memo) = SOURCE_CHECKSUMS.lock() {
+            memo.insert(path.to_path_buf(), stamp, digest);
+        }
+    }
+    Ok((metadata.len(), digest))
 }
 
 fn source_set_checksum(sources: &[LlmCompactionSource]) -> Result<String> {
@@ -1011,6 +1358,18 @@ fn source_set_checksum(sources: &[LlmCompactionSource]) -> Result<String> {
 fn file_checksum(path: &Path) -> Result<String> {
     let mut file =
         File::open(path).with_context(|| format!("opening {} for checksum", path.display()))?;
+    Ok(hash_reader(&mut file)?.to_hex().to_string())
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+thread_local! {
+    /// Files fully read and hashed on this thread, for memo tests.
+    static FILES_HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn hash_reader(file: &mut File) -> Result<blake3::Hash> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    FILES_HASHED.with(|count| count.set(count.get() + 1));
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -1020,7 +1379,7 @@ fn file_checksum(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(hasher.finalize().to_hex().to_string())
+    Ok(hasher.finalize())
 }
 
 fn directory_apparent_bytes(path: &Path) -> Result<u64> {
@@ -1389,9 +1748,10 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace = ArtifactV2Workspace::new(temp.path());
         let scope = LlmScope::new("owner", "default");
+        // The open day keeps raw files, so removing one still voids the compact.
         let partition = workspace
             .analytics_llm_calls_root("owner", "default")
-            .join("dt=2026-07-20");
+            .join(format!("dt={}", Utc::now().date_naive().format("%Y-%m-%d")));
         let first = partition.join("part-call_fact-a-r1.parquet");
         write_canonical_fixture(&first, "call_fact", "owner", "default", "call:a:r1", 1);
         compact_scope(
@@ -1451,6 +1811,87 @@ mod tests {
             source_set_checksum(&[first.clone(), second.clone()]).expect("checksum"),
             source_set_checksum(&[second, first]).expect("checksum")
         );
+    }
+
+    fn files_hashed() -> usize {
+        FILES_HASHED.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn unchanged_settled_source_is_hashed_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("part-call_fact-a-r1.parquet");
+        let content = b"immutable canonical source";
+        std::fs::write(&path, content).expect("source");
+        let expected = blake3::hash(content);
+        assert_eq!(
+            file_checksum(&path).expect("checksum"),
+            expected.to_hex().to_string()
+        );
+
+        let before = files_hashed();
+        let (len, first) = memoized_source_checksum(&path, Duration::ZERO).expect("first");
+        let (_, second) = memoized_source_checksum(&path, Duration::ZERO).expect("second");
+        let (_, third) = memoized_source_checksum(&path, Duration::ZERO).expect("third");
+        assert_eq!(
+            files_hashed() - before,
+            1,
+            "an unchanged source is read once"
+        );
+        assert_eq!(len, content.len() as u64);
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+        assert_eq!(third, expected);
+    }
+
+    #[test]
+    fn rewritten_source_is_hashed_again() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("part-call_fact-a-r1.parquet");
+        std::fs::write(&path, b"immutable canonical source").expect("source");
+        let (_, first) = memoized_source_checksum(&path, Duration::ZERO).expect("first");
+
+        // Same length; pin a distinct modification time so the stamp differs
+        // even when the filesystem clock has not ticked since the first write.
+        let rewritten = b"rewritten canonical source";
+        std::fs::write(&path, rewritten).expect("rewrite");
+        File::options()
+            .write(true)
+            .open(&path)
+            .expect("open rewritten source")
+            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .expect("set modified");
+
+        let before = files_hashed();
+        let (len, second) = memoized_source_checksum(&path, Duration::ZERO).expect("second");
+        assert_eq!(files_hashed() - before, 1, "a changed source is read again");
+        assert_eq!(len, rewritten.len() as u64);
+        assert_eq!(second, blake3::hash(rewritten));
+        assert_ne!(second, first);
+    }
+
+    #[test]
+    fn freshly_written_source_is_not_remembered() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("part-call_fact-a-r1.parquet");
+        let content = b"immutable canonical source";
+        std::fs::write(&path, content).expect("source");
+
+        let before = files_hashed();
+        let first = source_fingerprint(&path).expect("first");
+        let second = source_fingerprint(&path).expect("second");
+        assert_eq!(
+            files_hashed() - before,
+            2,
+            "a stamp younger than the settle age is never trusted"
+        );
+        let expected = LlmCompactionSource {
+            file_name: "part-call_fact-a-r1.parquet".to_string(),
+            byte_len: content.len() as u64,
+            checksum_blake3: blake3::hash(content).to_hex().to_string(),
+        };
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
     }
 
     #[test]
@@ -1845,5 +2286,225 @@ mod tests {
         assert_eq!(stats.partitions_compacted, 1);
         assert!(!compaction_manifest_path(&closed).exists());
         assert!(compaction_manifest_path(&current).exists());
+    }
+
+    fn parquet_row_count(files: &[PathBuf]) -> i64 {
+        let connection = Connection::open_in_memory().expect("duckdb");
+        connection
+            .query_row(
+                &format!(
+                    "SELECT count(*) FROM read_parquet({}, hive_partitioning = false, union_by_name = true)",
+                    parquet_source_sql(files)
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("row count")
+    }
+
+    #[test]
+    fn settled_days_drop_raw_part_files_for_every_canonical_dataset() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path());
+        let scope = LlmScope::new("owner", "default");
+        let date = (Utc::now().date_naive() - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+        let fixtures = [
+            (
+                LlmCanonicalDataset::Calls,
+                "part-call_fact-a-r1.parquet",
+                "call_fact",
+                "call:a:r1",
+            ),
+            (
+                LlmCanonicalDataset::ProviderAttempts,
+                "part-provider_attempt-a-r1.parquet",
+                "provider_attempt",
+                "attempt:a:r1",
+            ),
+            (
+                LlmCanonicalDataset::ToolCalls,
+                "part-tool_lineage-a-r1.parquet",
+                "tool_lineage",
+                "tool:a:r1",
+            ),
+            (
+                LlmCanonicalDataset::CaptureGaps,
+                "part-capture_gap-a-r1.parquet",
+                "capture_gap",
+                "gap:a:r1",
+            ),
+        ];
+        let mut raw_paths = Vec::new();
+        for (dataset, file_name, record_kind, key) in fixtures {
+            let raw = dataset
+                .root(&workspace, &scope)
+                .join(format!("dt={date}"))
+                .join(file_name);
+            write_canonical_fixture(&raw, record_kind, "owner", "default", key, 1);
+            raw_paths.push((dataset, raw));
+        }
+        let stats = compact_scope(
+            &workspace,
+            &scope,
+            LlmFactCompactionPolicy {
+                min_raw_files: 1,
+                include_current_partition: true,
+            },
+        )
+        .expect("compact settled days");
+        assert_eq!(stats.partitions_compacted, 4);
+        assert_eq!(stats.raw_files_pruned, 4);
+        for (dataset, raw) in &raw_paths {
+            assert!(!raw.exists(), "{}", raw.display());
+            let governed = governed_dataset_sources(&workspace, &scope, *dataset).expect("read");
+            assert!(governed[0].using_compaction);
+            assert_eq!(governed[0].files.len(), 1);
+            assert_eq!(parquet_row_count(&governed[0].files), 1);
+            let manifest: LlmFactCompactionManifest = workspace
+                .read_json_path_sync(compaction_manifest_path(raw.parent().expect("day")))
+                .expect("manifest");
+            assert!(manifest.raw_sources_pruned);
+        }
+    }
+
+    #[test]
+    fn yesterday_keeps_raw_part_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path());
+        let scope = LlmScope::new("owner", "default");
+        let raw = workspace
+            .analytics_llm_calls_root("owner", "default")
+            .join(format!(
+                "dt={}",
+                Utc::now().date_naive() - chrono::Duration::days(1)
+            ))
+            .join("part-call_fact-a-r1.parquet");
+        write_canonical_fixture(&raw, "call_fact", "owner", "default", "call:a:r1", 1);
+        compact_scope(
+            &workspace,
+            &scope,
+            LlmFactCompactionPolicy {
+                min_raw_files: 1,
+                include_current_partition: true,
+            },
+        )
+        .expect("compact yesterday");
+        assert!(raw.is_file());
+        let manifest: LlmFactCompactionManifest = workspace
+            .read_json_path_sync(compaction_manifest_path(raw.parent().expect("day")))
+            .expect("manifest");
+        assert!(!manifest.raw_sources_pruned);
+    }
+
+    #[test]
+    fn late_append_after_prune_stays_visible_and_is_folded() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path());
+        let scope = LlmScope::new("owner", "default");
+        let partition = workspace
+            .analytics_llm_calls_root("owner", "default")
+            .join(format!(
+                "dt={}",
+                Utc::now().date_naive() - chrono::Duration::days(2)
+            ));
+        let first = partition.join("part-call_fact-a-r1.parquet");
+        write_canonical_fixture(&first, "call_fact", "owner", "default", "call:a:r1", 1);
+        compact_scope(
+            &workspace,
+            &scope,
+            LlmFactCompactionPolicy {
+                min_raw_files: 1,
+                include_current_partition: true,
+            },
+        )
+        .expect("prune settled day");
+        assert!(!first.exists());
+
+        let late = partition.join("part-call_fact-b-r1.parquet");
+        write_canonical_fixture(&late, "call_fact", "owner", "default", "call:b:r1", 2);
+        let with_tail =
+            governed_dataset_sources(&workspace, &scope, LlmCanonicalDataset::Calls).expect("tail");
+        assert!(with_tail[0].using_compaction);
+        assert_eq!(
+            with_tail[0].files,
+            vec![compacted_file(&partition), late.clone()]
+        );
+        assert_eq!(parquet_row_count(&with_tail[0].files), 2);
+
+        let folded = compact_scope(
+            &workspace,
+            &scope,
+            LlmFactCompactionPolicy {
+                min_raw_files: 1,
+                include_current_partition: true,
+            },
+        )
+        .expect("fold late tail");
+        assert_eq!(folded.partitions_compacted, 1);
+        assert!(!late.exists());
+        let governed =
+            governed_dataset_sources(&workspace, &scope, LlmCanonicalDataset::Calls).expect("read");
+        assert_eq!(governed[0].files, vec![compacted_file(&partition)]);
+        assert_eq!(parquet_row_count(&governed[0].files), 2);
+    }
+
+    #[test]
+    fn pruned_compact_is_not_rebuilt_from_leftover_raw_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path());
+        let scope = LlmScope::new("owner", "default");
+        let partition = workspace
+            .analytics_llm_calls_root("owner", "default")
+            .join(format!(
+                "dt={}",
+                Utc::now().date_naive() - chrono::Duration::days(2)
+            ));
+        let raw = partition.join("part-call_fact-a-r1.parquet");
+        write_canonical_fixture(&raw, "call_fact", "owner", "default", "call:a:r1", 1);
+        compact_scope(
+            &workspace,
+            &scope,
+            LlmFactCompactionPolicy {
+                min_raw_files: 1,
+                include_current_partition: true,
+            },
+        )
+        .expect("prune");
+        let manifest_path = compaction_manifest_path(&partition);
+        let before: LlmFactCompactionManifest = workspace
+            .read_json_path_sync(&manifest_path)
+            .expect("manifest");
+        std::fs::write(compacted_file(&partition), b"corrupt").expect("corrupt compact");
+        write_canonical_fixture(
+            &partition.join("part-call_fact-b-r1.parquet"),
+            "call_fact",
+            "owner",
+            "default",
+            "call:b:r1",
+            2,
+        );
+        let stats = compact_scope(
+            &workspace,
+            &scope,
+            LlmFactCompactionPolicy {
+                min_raw_files: 1,
+                include_current_partition: true,
+            },
+        )
+        .expect("refuse rebuild");
+        assert_eq!(stats.partitions_failed, 1);
+        assert_eq!(stats.partitions_compacted, 0);
+        let after: LlmFactCompactionManifest = workspace
+            .read_json_path_sync(&manifest_path)
+            .expect("manifest");
+        assert_eq!(
+            after.compacted_checksum_blake3,
+            before.compacted_checksum_blake3
+        );
+        let governed =
+            governed_dataset_sources(&workspace, &scope, LlmCanonicalDataset::Calls).expect("read");
+        assert!(!governed[0].using_compaction);
     }
 }

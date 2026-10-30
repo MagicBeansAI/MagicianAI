@@ -5,7 +5,8 @@
 # Ordinary requests need the shared outer Access service credential *and* a
 # revocable per-device Magician token. Only the exact one-time enrollment
 # exchange paths are bypassed at the edge, where a 256-bit, five-minute,
-# single-use capability remains mandatory.
+# single-use capability remains mandatory. Static, content-addressed MCP
+# profile JSON is also public; it contains no private runtime configuration.
 #
 # It is idempotent: existing Access app / service token / policy are reused, not
 # duplicated. The service-token SECRET is only returned by Cloudflare at creation
@@ -427,52 +428,56 @@ else
   fi
 fi
 
-# --- 3b. narrowly bypass the two one-time bootstrap exchanges --------------
+# --- 3b. narrowly bypass bootstrap exchanges and static public profiles -----
 # A generic app has no service credential before this request. The route is
 # still protected by a 256-bit, five-minute, single-use capability and returns a
 # per-device Magician token; every other path remains under the hostname app.
-ensure_enrollment_bypass() {
+ensure_public_path_bypass() {
   local ENROLLMENT_DOMAIN="$1" ENROLLMENT_APP_NAME="$2"
+  local BYPASS_POLICY_NAME="${3:-$ENROLLMENT_POLICY_NAME}"
   local APP_LIST ENROLLMENT_APP_ID ENROLLMENT_CREATE ENROLLMENT_POLICIES
   local ENROLLMENT_POLICY_ID ENROLLMENT_POLICY_BODY ENROLLMENT_POLICY_MATCH
-  log "Ensuring the exact mobile enrollment bypass on ${ENROLLMENT_DOMAIN}"
+  log "Ensuring the public path bypass on ${ENROLLMENT_DOMAIN}"
   APP_LIST="$(cf GET "/accounts/$ACCT/access/apps")"
-  ok_or_explain "$APP_LIST" "list access apps for mobile enrollment" || exit 1
+  ok_or_explain "$APP_LIST" "list public-path Access apps" || exit 1
   ENROLLMENT_APP_ID="$(printf '%s' "$APP_LIST" | jq -r --arg d "$ENROLLMENT_DOMAIN" \
     '.result[] | select(.domain==$d and .type=="self_hosted") | .id' | head -1)"
   if [ -z "$ENROLLMENT_APP_ID" ]; then
     ENROLLMENT_CREATE="$(cf POST "/accounts/$ACCT/access/apps" \
       "$(jq -cn --arg n "$ENROLLMENT_APP_NAME" --arg d "$ENROLLMENT_DOMAIN" \
         '{name:$n,domain:$d,type:"self_hosted",session_duration:"5m"}')")"
-    ok_or_explain "$ENROLLMENT_CREATE" "create mobile enrollment Access app" || exit 1
+    ok_or_explain "$ENROLLMENT_CREATE" "create public-path Access app" || exit 1
     ENROLLMENT_APP_ID="$(printf '%s' "$ENROLLMENT_CREATE" | jq -r '.result.id')"
   else
-    log "  ✓ reusing enrollment app ${ENROLLMENT_APP_ID}"
+    log "  ✓ reusing public-path app ${ENROLLMENT_APP_ID}"
   fi
   ENROLLMENT_POLICIES="$(cf GET "/accounts/$ACCT/access/apps/$ENROLLMENT_APP_ID/policies")"
-  ok_or_explain "$ENROLLMENT_POLICIES" "list mobile enrollment policies" || exit 1
+  ok_or_explain "$ENROLLMENT_POLICIES" "list public-path policies" || exit 1
   ENROLLMENT_POLICY_ID="$(printf '%s' "$ENROLLMENT_POLICIES" | jq -r \
     '.result[]? | select(.decision=="bypass" and any(.include[]?; has("everyone"))) | .id' | head -1)"
-  ENROLLMENT_POLICY_BODY="$(jq -cn --arg n "$ENROLLMENT_POLICY_NAME" \
+  ENROLLMENT_POLICY_BODY="$(jq -cn --arg n "$BYPASS_POLICY_NAME" \
     '{name:$n,decision:"bypass",precedence:1,include:[{everyone:{}}]}')"
   if [ -z "$ENROLLMENT_POLICY_ID" ]; then
     ok_or_explain "$(cf POST "/accounts/$ACCT/access/apps/$ENROLLMENT_APP_ID/policies" \
-      "$ENROLLMENT_POLICY_BODY")" "create mobile enrollment bypass policy" || exit 1
-    log "  ✓ enrollment bypass created"
+      "$ENROLLMENT_POLICY_BODY")" "create public-path bypass policy" || exit 1
+    log "  ✓ public-path bypass created"
   else
     ENROLLMENT_POLICY_MATCH="$(printf '%s' "$ENROLLMENT_POLICIES" | jq -r \
-      --arg id "$ENROLLMENT_POLICY_ID" --arg n "$ENROLLMENT_POLICY_NAME" \
+      --arg id "$ENROLLMENT_POLICY_ID" --arg n "$BYPASS_POLICY_NAME" \
       '[.result[]? | select(.id==$id and .name==$n and .decision=="bypass" and .precedence==1 and any(.include[]?; has("everyone")))] | length')"
     if [ "$ENROLLMENT_POLICY_MATCH" != 1 ]; then
       ok_or_explain "$(cf PUT "/accounts/$ACCT/access/apps/$ENROLLMENT_APP_ID/policies/$ENROLLMENT_POLICY_ID" \
-        "$ENROLLMENT_POLICY_BODY")" "repair mobile enrollment bypass policy" || exit 1
+        "$ENROLLMENT_POLICY_BODY")" "repair public-path bypass policy" || exit 1
     fi
-    log "  ✓ enrollment bypass verified"
+    log "  ✓ public-path bypass verified"
   fi
 }
 if [ "$MOBILE_ENROLLMENT_ENABLED" = 1 ]; then
-  ensure_enrollment_bypass "$ENROLLMENT_DOMAIN" "$ENROLLMENT_APP_NAME"
-  ensure_enrollment_bypass "${CONNECT_HOST}${ANDROID_ENROLLMENT_PATH}" "${ENROLLMENT_APP_NAME} (Android Apps)"
+  ensure_public_path_bypass "$ENROLLMENT_DOMAIN" "$ENROLLMENT_APP_NAME"
+  ensure_public_path_bypass "${CONNECT_HOST}${ANDROID_ENROLLMENT_PATH}" "${ENROLLMENT_APP_NAME} (Android Apps)"
+  # Static, content-addressed JSON only. Never bypass the API or other well-known paths.
+  ensure_public_path_bypass "${CONNECT_HOST}/.well-known/magican/mcp-profiles/*" \
+    "Magican public MCP profiles (${CONNECT_HOST})" "Magican static profile bypass"
 else
   log "Mobile enrollment bypass disabled for this Access-only application."
 fi

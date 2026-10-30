@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HowCard from './HowCard.svelte';
@@ -7,6 +7,8 @@ import { motionEnabled } from '$lib/motion';
 
 // the card plays only on screen: report every observed card as visible
 beforeEach(() => {
+	vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+	vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
 	vi.stubGlobal(
 		'IntersectionObserver',
 		class {
@@ -22,6 +24,7 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	motionEnabled.set(true);
+	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
 
@@ -34,6 +37,7 @@ describe('HowCard', () => {
 		expect(video).not.toHaveAttribute('src');
 		await rerender({ id: 'relentless', label: 'Relentless', active: true });
 		expect(container.querySelector('video')).toHaveAttribute('src', '/landing/how/relentless.mp4');
+		await waitFor(() => expect(video?.play).toHaveBeenCalled());
 	});
 
 	it('shows the poster alone with reduced motion', () => {

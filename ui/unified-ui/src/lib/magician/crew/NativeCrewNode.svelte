@@ -4,6 +4,8 @@
 
 <script lang="ts">
 	import { createEventDispatcher } from 'svelte';
+	import WorkHelp from '$lib/work/WorkHelp.svelte';
+	import { workHelpForLabel } from '$lib/work/help';
 	import type {
 		CrewNativeComponent,
 		CrewNativeInteractionEventDetail,
@@ -340,7 +342,7 @@
 	<article class="crew-native-card" data-component-id={component.id}>
 		{#if cardTitle || cardSubtitle || cardBody}
 			<header class="crew-native-card__header">
-				{#if cardTitle}<h2>{cardTitle}</h2>{/if}
+				{#if cardTitle}<h2>{cardTitle} {#if workHelpForLabel(cardTitle)}<WorkHelp topic={workHelpForLabel(cardTitle)!} />{/if}</h2>{/if}
 				{#if cardSubtitle}<p class="crew-native-subtitle">{cardSubtitle}</p>{/if}
 				{#if cardBody}<p class="crew-native-body">{cardBody}</p>{/if}
 			</header>
@@ -500,20 +502,21 @@
 	</section>
 {:else if component.component_type === 'Form'}
 	<form class="crew-native-form" data-component-id={component.id} on:submit|preventDefault={handleFormSubmit}>
-		{#if formTitle}<h2>{formTitle}</h2>{/if}
+		{#if formTitle}<h2>{formTitle} {#if workHelpForLabel(formTitle)}<WorkHelp topic={workHelpForLabel(formTitle)!} />{/if}</h2>{/if}
 		<div class="crew-native-form-grid">
 			{#each fields as field (fieldId(field))}
 				{@const id = fieldId(field)}
 				{@const span = fieldSpan(field)}
-				<label
+				<div
 					class="crew-native-field"
 					class:crew-native-field--section={fieldLabel(field).startsWith('---')}
 					class:crew-native-field--span-2={span === 2}
 					class:crew-native-field--span-3={span >= 3}
 				>
-					<span>{fieldLabel(field)}</span>
+					<div class="crew-field-label"><label for={`${component.id}-${id}`}>{fieldLabel(field)}</label>{#if workHelpForLabel(fieldLabel(field))}<WorkHelp topic={workHelpForLabel(fieldLabel(field))!} />{/if}</div>
 					{#if fieldType(field) === 'textarea'}
 						<textarea
+							id={`${component.id}-${id}`}
 							rows={fieldRows(field)}
 							required={asBoolean(field.required)}
 							disabled={formDisabled || asBoolean(field.disabled)}
@@ -523,6 +526,7 @@
 						></textarea>
 					{:else if fieldType(field) === 'select'}
 						<select
+							id={`${component.id}-${id}`}
 							required={asBoolean(field.required)}
 							disabled={formDisabled || asBoolean(field.disabled)}
 							value={fieldValue(id)}
@@ -537,6 +541,7 @@
 						</select>
 					{:else}
 						<input
+							id={`${component.id}-${id}`}
 							type="text"
 							required={asBoolean(field.required)}
 							disabled={formDisabled || asBoolean(field.disabled)}
@@ -546,7 +551,7 @@
 						/>
 					{/if}
 					{#if fieldHint(field)}<small class="crew-native-field-hint">{fieldHint(field)}</small>{/if}
-				</label>
+				</div>
 			{/each}
 		</div>
 		{#if showSubmit}
@@ -612,6 +617,8 @@
 {/if}
 
 <style>
+	.crew-field-label { display:flex; align-items:center; gap:4px; }
+	.crew-field-label label { font-weight:600; }
 	.crew-native-card,
 	.crew-native-form,
 	.crew-native-multiselect,
@@ -761,7 +768,7 @@
 		align-items: center;
 		width: fit-content;
 		border: 1px solid var(--border-soft, #d8d0c5);
-		border-radius: 999px;
+		border-radius: var(--radius-chip, 6px);
 		background: var(--bg-soft, #f6f1e8);
 		color: var(--text-primary, #2d2a26);
 		font-size: var(--text-2xs, 0.72rem);

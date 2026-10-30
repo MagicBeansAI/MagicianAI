@@ -1,19 +1,22 @@
 name: create_task
 description: Create tracked work in the active scope; user/chat requests are visible, while autonomous harness work is internal unless explicitly marked user-visible.
-version: "1.3.1"
+version: "1.3.2"
 guide: |
   Tool name: `create_task`
 
+  Link users to the returned `task_url` in Work. Do not invent task-detail
+  paths; the canonical UI route is `/work?selected=<task_id>`.
+
   Use this to create explicit tracked work in the active scope.
   ONLY call this when the user EXPLICITLY asked to create, track, schedule, or
-  be reminded of durable work whose progress should appear in `/tasks` —
+  be reminded of durable work whose progress should appear in `/work` —
   signals like "create a task", "track this", "remind me", "every day",
   "set up a job". A plain question, a lookup, or a one-off "do X now" is NOT
   such a request: answer it directly or hand it to a single
   `delegate_to_agent` (transient internal run) — do NOT create a task the user
   didn't ask for. NEVER pair `create_task` with `delegate_to_agent` for the
   same request: the delegate does the work while this leaves an orphaned,
-  never-run card in the user's `/tasks`.
+  never-run card in the user's `/work`.
 
   Guidelines:
   - keep the title short and operational
@@ -30,10 +33,10 @@ guide: |
     discover candidate ids and `get_task_details` to inspect the prior output
     before linking it
   - in normal chat/user context, tasks created via this tool are always
-    user-visible tracked work in `/tasks`; `user_visible` is ignored there
+    user-visible tracked work in `/work`; `user_visible` is ignored there
   - in autonomous harness context, tasks are internal by default because they
     are agent execution machinery. Set `user_visible=true` ONLY when the user
-    is expected to manage the resulting durable commitment in `/tasks`
+    is expected to manage the resulting durable commitment in `/work`
   - for transient chat work, use delegation or the capability runtime path
     instead of creating either kind of tracked task
   - In autonomous harness context, created tasks start immediately by
@@ -116,7 +119,7 @@ parameters:
     default: true
   - name: user_visible
     param_type: boolean
-    description: Harness-context only. Defaults false, keeping autonomous/system work in Internal tasks. Set true only for an explicit durable commitment that the user should manage in /tasks. Ignored by normal chat create_task, which remains user-visible.
+    description: Harness-context only. Defaults false, keeping autonomous/system work in Internal tasks. Set true only for an explicit durable commitment that the user should manage in /work. Ignored by normal chat create_task, which remains user-visible.
     default: false
   - name: allow_duplicate
     param_type: boolean

@@ -121,6 +121,24 @@ struct VoiceCaptureGateState: Equatable {
     }
 }
 
+/// Check frames, not loudness: a quiet room is a healthy microphone.
+struct VoiceCaptureHealth {
+    var startedAt: TimeInterval
+    var attemptedRecovery = false
+
+    mutating func check(lastFrameAt: TimeInterval?, now: TimeInterval) -> Bool {
+        guard now - (lastFrameAt ?? startedAt) >= 2, !attemptedRecovery else { return false }
+        attemptedRecovery = true
+        startedAt = now
+        return true
+    }
+}
+
+func voiceDisplayLevel(_ rms: Float) -> Float {
+    guard rms.isFinite, rms > 0.00001 else { return 0 }
+    return min(1, max(0, (20 * log10(rms) + 50) / 50))
+}
+
 /// Full-duplex audio core for the Live voice call (Task 4).
 ///
 /// Captures the microphone and resamples it to 24 kHz mono int16-LE frames for
@@ -160,10 +178,18 @@ final class VoiceAudioEngine: ObservableObject {
     /// ~20 Hz timer that reads `levelValue` (which the render thread updates) —
     /// so the render thread never touches this `@Published` property directly.
     @Published private(set) var level: Float = 0
+    @Published private(set) var playbackLevel: Float = 0
+    var onCaptureFailure: ((String) -> Void)?
 
     /// The render thread's latest RMS, behind a lock (read by the level timer).
     private let levelValue = OSAllocatedUnfairLock<Float>(initialState: 0)
+    private let playbackLevelValue = OSAllocatedUnfairLock<Float>(initialState: 0)
+    private let lastCaptureAt = OSAllocatedUnfairLock<TimeInterval?>(initialState: nil)
     private var levelTimer: Timer?
+    private var captureHealth = VoiceCaptureHealth(startedAt: 0)
+    private var onFrameOut: ((Data) -> Void)?
+    private var captureTapInstalled = false
+    private var playbackTapInstalled = false
 
     /// Push-to-talk gate: written from the main actor (mute/PTT), read on the
     /// audio render thread. Lock-guarded so the cross-thread access is race-free.
@@ -228,7 +254,7 @@ final class VoiceAudioEngine: ObservableObject {
 
     // MARK: - Audio graph
 
-    private let engine = AVAudioEngine()
+    private let engine: AVAudioEngine
     private let player = AVAudioPlayerNode()
 
     /// The transport format: 24 kHz mono float32, non-interleaved. `AVAudioFormat`
@@ -304,12 +330,17 @@ final class VoiceAudioEngine: ObservableObject {
 
     // MARK: - Lifecycle
 
-    init() {
+    init(audioEngine: AVAudioEngine = AVAudioEngine()) {
+        engine = audioEngine
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleInterruption(_:)),
             name: AVAudioSession.interruptionNotification,
             object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleConfigurationChange(_:)),
+            name: .AVAudioEngineConfigurationChange, object: engine
         )
     }
 
@@ -409,22 +440,32 @@ final class VoiceAudioEngine: ObservableObject {
             // Capture path: tap the input node at its own (hardware) format and
             // resample to 24 kHz mono inside the tap. Read the format AFTER
             // voice processing is armed — it differs once AEC is inserted.
-            let inputFormat = input.outputFormat(forBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-                self?.processCapture(buffer, onFrameOut: onFrameOut)
+            self.onFrameOut = onFrameOut
+            try installCaptureTap()
+            let playbackLevel = playbackLevelValue
+            engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
+                guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
+                var sum: Float = 0
+                for i in 0..<Int(buffer.frameLength) { sum += samples[i] * samples[i] }
+                let rms = (sum / Float(buffer.frameLength)).squareRoot()
+                playbackLevel.withLock { $0 = voiceDisplayLevel(rms) }
             }
+            playbackTapInstalled = true
 
             engine.prepare()
             try engine.start()
             player.play()
             isRunning = true
             interrupted = false
+            captureHealth = VoiceCaptureHealth(startedAt: CACurrentMediaTime())
+            lastCaptureAt.withLock { $0 = nil }
             startLevelTimer()
         } catch {
             // Exception-safe: undo any partial setup so a stuck tap / active
             // session doesn't leak (and `stop()`'s `isRunning` guard can't reach it).
-            engine.inputNode.removeTap(onBus: 0)
+            removeTaps()
             engine.stop()
+            self.onFrameOut = nil
             // The caller's disposition applies here too. A `.keepActive` caller has
             // an armed ambient window behind it: deactivating on the way out of a
             // failed connect would turn a RECOVERABLE failure (fall back to armed,
@@ -507,6 +548,8 @@ final class VoiceAudioEngine: ObservableObject {
             player.stop()
         }
         playbackClock.withLock { $0.reset() }
+        playbackLevelValue.withLock { $0 = 0 }
+        playbackLevel = 0
     }
 
     /// Tear down the capture tap, stop playback and the engine — and hand the
@@ -528,13 +571,16 @@ final class VoiceAudioEngine: ObservableObject {
         log.info("engine stop: disposition=\(String(describing: session), privacy: .public) wasRunning=\(self.isRunning, privacy: .public) aec=\(self.echoCancellationActive, privacy: .public) appState=\(UIApplication.shared.applicationState.rawValue, privacy: .public)")
         guard isRunning else { return }
         stopLevelTimer()
-        engine.inputNode.removeTap(onBus: 0)
+        removeTaps()
         player.stop()
         engine.stop()
         isRunning = false
         interrupted = false
         level = 0
         levelValue.withLock { $0 = 0 }
+        playbackLevelValue.withLock { $0 = 0 }
+        playbackLevel = 0
+        onFrameOut = nil
         // `player.stop()` above flushed the queued audio, so the drain deadline
         // computed for it is now a claim about silence. Reset it, or the next
         // call within that window opens with a live microphone gated against
@@ -642,7 +688,18 @@ final class VoiceAudioEngine: ObservableObject {
         let timer = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             let value = self.levelValue.withLock { $0 }
-            Task { @MainActor in self.level = value }
+            Task { @MainActor in
+                self.level = value
+                self.playbackLevel = self.playbackLevelValue.withLock { $0 }
+                guard self.isRunning, !self.interrupted else { return }
+                let lastFrame = self.lastCaptureAt.withLock { $0 }
+                if self.captureHealth.check(lastFrameAt: lastFrame, now: CACurrentMediaTime()) {
+                    self.recoverCaptureGraph()
+                } else if self.captureHealth.attemptedRecovery,
+                          CACurrentMediaTime() - (lastFrame ?? self.captureHealth.startedAt) >= 2 {
+                    self.onCaptureFailure?("Microphone stopped producing audio. End the call and try again.")
+                }
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         levelTimer = timer
@@ -695,6 +752,7 @@ final class VoiceAudioEngine: ObservableObject {
 
         guard status != .error, conversionError == nil,
               let channel = out.floatChannelData, out.frameLength > 0 else { return }
+        lastCaptureAt.withLock { $0 = CACurrentMediaTime() }
 
         let count = Int(out.frameLength)
         let ptr = channel[0]
@@ -703,7 +761,7 @@ final class VoiceAudioEngine: ObservableObject {
         var sumSquares: Float = 0
         for i in 0..<count { let s = ptr[i]; sumSquares += s * s }
         let rms = count > 0 ? (sumSquares / Float(count)).squareRoot() : 0
-        levelValue.withLock { $0 = min(1, rms) }   // the level timer publishes this
+        levelValue.withLock { $0 = voiceDisplayLevel(rms) }
 
         guard !muted else { return }
         // "Speaking" is judged against when the queued audio DRAINS, not when
@@ -733,6 +791,60 @@ final class VoiceAudioEngine: ObservableObject {
     }
 
     // MARK: - Interruptions
+
+    private func installCaptureTap() throws {
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0, let onFrameOut else {
+            throw NSError(domain: "VoiceAudioEngine", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "No microphone input route is available."])
+        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            self?.processCapture(buffer, onFrameOut: onFrameOut)
+        }
+        captureTapInstalled = true
+    }
+
+    private func removeTaps() {
+        if captureTapInstalled { engine.inputNode.removeTap(onBus: 0); captureTapInstalled = false }
+        if playbackTapInstalled { engine.mainMixerNode.removeTap(onBus: 0); playbackTapInstalled = false }
+    }
+
+    @objc private func handleConfigurationChange(_ notification: Notification) {
+        // AVFAudio posts on its own queue. Never rebuild the graph from there.
+        Task { @MainActor [weak self] in
+            guard let self, self.isRunning, !self.interrupted, !self.engine.isRunning else { return }
+            self.recoverCaptureGraph()
+        }
+    }
+
+    private func recoverCaptureGraph() {
+        guard isRunning, !interrupted else { return }
+        do {
+            // Keep the call, mute gate and shared-session ownership intact.
+            // A format change stops I/O without ending the WebSocket session.
+            // Discard the disrupted speaker queue too: a stale drain deadline
+            // must not suppress capture against audio that will never play.
+            player.stop()
+            playbackClock.withLock { $0.reset() }
+            playbackLevelValue.withLock { $0 = 0 }
+            playbackLevel = 0
+            engine.stop()
+            if captureTapInstalled { engine.inputNode.removeTap(onBus: 0); captureTapInstalled = false }
+            converter = nil
+            converterInputFormat = nil
+            conversionBuffer = nil
+            try installCaptureTap()
+            engine.prepare()
+            try engine.start()
+            player.play()
+            lastCaptureAt.withLock { $0 = nil }
+            captureHealth.startedAt = CACurrentMediaTime()
+            log.notice("Restored voice capture after audio graph stopped or its tap stalled")
+        } catch {
+            onCaptureFailure?("Microphone could not resume: \(error.localizedDescription)")
+        }
+    }
 
     @objc private func handleInterruption(_ notification: Notification) {
         guard
@@ -789,7 +901,10 @@ final class VoiceAudioEngine: ObservableObject {
                     // maps `.ended` to `.ignore` for exactly this reason), so
                     // nothing here should grow into a retry or a fallback.
                     try? AVAudioSession.sharedInstance().setActive(true)
-                    self.player.play()
+                    self.captureHealth = VoiceCaptureHealth(startedAt: CACurrentMediaTime())
+                    self.lastCaptureAt.withLock { $0 = nil }
+                    if self.engine.isRunning { self.player.play() }
+                    else { self.recoverCaptureGraph() }
                 }
             @unknown default:
                 break

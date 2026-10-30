@@ -42,6 +42,7 @@ export interface VibeDevProject {
 	repo_absolute_path?: string | null;
 	active_root_task_id?: string | null;
 	run_task_ids?: string[];
+	run_links?: Record<string, { parent_task_id?: string | null; work_location?: { mode: 'sandboxed' | 'trusted' | 'original'; repo_path?: string | null } | null }>;
 	preview_url?: string | null;
 	published_url?: string | null;
 	deployments: VibeDevDeployment[];
@@ -55,7 +56,7 @@ export interface VibeDevProject {
 	source_chat_session_id?: string | null;
 	/** Trusted repo mode: each chain runs in its own git clone on a branch.
 	 *  Omitted by the server while `sandboxed`. */
-	trust?: 'sandboxed' | 'trusted';
+	trust?: 'sandboxed' | 'trusted' | 'original';
 	/** Trusted mode's base branch; unset = the repo's current branch. */
 	base_branch?: string | null;
 	/** The owner's checks; absent = detected from the repo. */
@@ -64,6 +65,23 @@ export interface VibeDevProject {
 	build_caches?: BuildCache[];
 	/** Folders coding runs may write beyond the sandbox allow-list. */
 	sandbox_write_paths?: string[];
+	/** Project health: `error` issues refuse runs; `warning` ones only inform. */
+	health?: ProjectHealth;
+}
+
+export interface ProjectHealthIssue {
+	code: string;
+	severity: 'warning' | 'error';
+	/** Short bold headline, e.g. "Folder isn't a git repository". */
+	title?: string;
+	message: string;
+	/** One-click fix; `git_init` → `POST /vibedev/projects/{id}/git-init`. */
+	action?: { kind: string; label: string } | null;
+}
+
+export interface ProjectHealth {
+	status: 'ok' | 'warning' | 'error';
+	issues?: ProjectHealthIssue[];
 }
 
 export interface ProjectCheck {
@@ -559,9 +577,24 @@ function createVibeDevProjectStore() {
 		}
 	}
 
+	/** Project health's `git_init` action: make the folder a git repository,
+	 *  then reload so the panel shows the new health. Throws the server's message. */
+	async function initGitRepository(projectId: string): Promise<void> {
+		const response = await timedFetch(
+			buildUrl(`/api/magician/v2/vibedev/projects/${encodeURIComponent(projectId)}/git-init`),
+			{ method: 'POST', headers: scopedRequestHeaders({ 'Content-Type': 'application/json' }) }
+		);
+		if (!response.ok) {
+			const body = (await response.json().catch(() => null)) as { message?: string; error?: string } | null;
+			throw new Error(body?.message || body?.error || `Could not make it a git repository (${response.status})`);
+		}
+		await load();
+	}
+
 	return {
 		subscribe,
 		load,
+		initGitRepository,
 		createProject,
 		activateProject,
 		updateProject,

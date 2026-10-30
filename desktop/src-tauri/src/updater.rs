@@ -205,9 +205,7 @@ async fn rollback(
     crate::tray::update_tray_state(app, TrayState::Running);
     let _ = app.emit("update-rollback", &msg);
 
-    Err(format!(
-        "Container update failed health check; rolled back to previous image"
-    ))
+    Err("Container update failed health check; rolled back to previous image".to_string())
 }
 
 /// Perform the Tauri app self-update: download, install, and restart.

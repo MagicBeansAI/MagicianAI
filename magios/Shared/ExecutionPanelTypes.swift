@@ -336,24 +336,58 @@ public func hitlFieldIsMasked(sensitiveKind: String?) -> Bool {
 /// Decoded leniently: `context` is free-form producer JSON, and one odd field
 /// (or a context that is not an object at all) must never drop the schema — or
 /// the chat message / feed row — that carries it.
+public struct HitlFileDiffData: Codable, Equatable, Identifiable {
+    public let path: String
+    public let status: String?
+    public let additions: Int?
+    public let deletions: Int?
+    public let unifiedDiff: String?
+    public var id: String { path }
+    enum CodingKeys: String, CodingKey {
+        case path, status, additions, deletions
+        case unifiedDiff = "unified_diff"
+    }
+}
+
 public struct HitlReviewContextData: Codable, Equatable {
     public let reviewHref: String?
     public let reviewLabel: String?
+    public let godMode: Bool?
+    public let vibeDevEdit: Bool?
+    public let session: String?
+    public let agentId: String?
+    public let chatSessionId: String?
+    public let command: String?
+    public let violation: String?
+    public let files: [HitlFileDiffData]?
 
     enum CodingKeys: String, CodingKey {
         case reviewHref = "review_href"
         case reviewLabel = "review_label"
+        case godMode = "god_mode", chatSessionId = "chat_session_id"
+        case vibeDevEdit = "vibedev_edit"
+        case command, violation, files, session
+        case agentId = "agent_id"
     }
 
     public init(reviewHref: String? = nil, reviewLabel: String? = nil) {
         self.reviewHref = reviewHref
         self.reviewLabel = reviewLabel
+        godMode = nil; vibeDevEdit = nil; session = nil; agentId = nil; chatSessionId = nil; command = nil; violation = nil; files = nil
     }
 
     public init(from decoder: Decoder) throws {
         let container = try? decoder.container(keyedBy: CodingKeys.self)
         reviewHref = (try? container?.decodeIfPresent(String.self, forKey: .reviewHref)) ?? nil
         reviewLabel = (try? container?.decodeIfPresent(String.self, forKey: .reviewLabel)) ?? nil
+        session = (try? container?.decodeIfPresent(String.self, forKey: .session)) ?? nil
+        agentId = (try? container?.decodeIfPresent(String.self, forKey: .agentId)) ?? nil
+        godMode = (try? container?.decodeIfPresent(Bool.self, forKey: .godMode)) ?? nil
+        vibeDevEdit = (try? container?.decodeIfPresent(Bool.self, forKey: .vibeDevEdit)) ?? nil
+        chatSessionId = (try? container?.decodeIfPresent(String.self, forKey: .chatSessionId)) ?? nil
+        command = (try? container?.decodeIfPresent(String.self, forKey: .command)) ?? nil
+        violation = (try? container?.decodeIfPresent(String.self, forKey: .violation)) ?? nil
+        files = (try? container?.decodeIfPresent([HitlFileDiffData].self, forKey: .files)) ?? nil
     }
 }
 
@@ -400,6 +434,41 @@ public struct ChatEscalationInputSchemaData: Codable, Equatable {
         case paramsSummary = "params_summary"
         case allowedRoots = "allowed_roots"
     }
+    /// Keep review-bearing asks on the canonical surface even before its feed row arrives.
+    public var requiresReview = false
+    private enum ReviewKeys: String, CodingKey { case approval_preview, alignment, action_type, protected }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = (try? c.decodeIfPresent(String.self, forKey: .type)) ?? nil
+        placeholder = (try? c.decodeIfPresent(String.self, forKey: .placeholder)) ?? nil
+        allowOther = (try? c.decodeIfPresent(Bool.self, forKey: .allowOther)) ?? nil
+        confirmLabel = (try? c.decodeIfPresent(String.self, forKey: .confirmLabel)) ?? nil
+        denyLabel = (try? c.decodeIfPresent(String.self, forKey: .denyLabel)) ?? nil
+        suggestions = (try? c.decodeIfPresent([String].self, forKey: .suggestions)) ?? nil
+        multiline = (try? c.decodeIfPresent(Bool.self, forKey: .multiline)) ?? nil
+        minSelections = (try? c.decodeIfPresent(Int.self, forKey: .minSelections)) ?? nil
+        maxSelections = (try? c.decodeIfPresent(Int.self, forKey: .maxSelections)) ?? nil
+        destructive = (try? c.decodeIfPresent(Bool.self, forKey: .destructive)) ?? nil
+        instructions = (try? c.decodeIfPresent(String.self, forKey: .instructions)) ?? nil
+        doneLabel = (try? c.decodeIfPresent(String.self, forKey: .doneLabel)) ?? nil
+        multiple = (try? c.decodeIfPresent(Bool.self, forKey: .multiple)) ?? nil
+        filter = (try? c.decodeIfPresent(String.self, forKey: .filter)) ?? nil
+        toolName = (try? c.decodeIfPresent(String.self, forKey: .toolName)) ?? nil
+        paramsSummary = (try? c.decodeIfPresent(String.self, forKey: .paramsSummary)) ?? nil
+        command = (try? c.decodeIfPresent(String.self, forKey: .command)) ?? nil
+        violation = (try? c.decodeIfPresent(String.self, forKey: .violation)) ?? nil
+        allowedRoots = (try? c.decodeIfPresent([String].self, forKey: .allowedRoots)) ?? nil
+        sensitive = (try? c.decodeIfPresent(ChatSensitiveSpecData.self, forKey: .sensitive)) ?? nil
+        context = (try? c.decodeIfPresent(HitlReviewContextData.self, forKey: .context)) ?? nil
+        let review = try decoder.container(keyedBy: ReviewKeys.self)
+        requiresReview = destructive == true
+            || (try? review.decodeIfPresent(Bool.self, forKey: .protected)) == true
+            || [ReviewKeys.approval_preview, .alignment, .action_type].contains {
+                review.contains($0) && (try? review.decodeNil(forKey: $0)) == false
+            }
+    }
+
 }
 
 public struct ContentBlockSource: Codable, Equatable {
@@ -703,6 +772,9 @@ public struct ChatStructuredMeta: Codable, Equatable {
     public let executionId: String?
     public let chatTurnId: String?
     public let provenance: [ChatStructuredProvenanceRef]?
+    /// Open targets (`artifact_id`, optional `task_id`, `relative_path`) for
+    /// artifacts whose `artifact_id` was shortened and no longer embeds its path.
+    public let artifactLocators: [ChatStructuredStringMap]?
     public let cost: ChatStructuredResponseCost?
     public let confidence: Double?
     public let createdAt: String?
@@ -714,6 +786,7 @@ public struct ChatStructuredMeta: Codable, Equatable {
         case executionId = "execution_id"
         case chatTurnId = "chat_turn_id"
         case provenance
+        case artifactLocators = "artifact_locators"
         case cost
         case confidence
         case createdAt = "created_at"

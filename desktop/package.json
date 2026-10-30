@@ -2,14 +2,14 @@
   "name": "magician-desktop",
   "private": true,
   "packageManager": "pnpm@10.33.0",
-  "version": "0.3.24",
+  "version": "0.3.29",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "node --test src/orb/*.test.js src/lib/macosPairingUiModel.test.js src/lib/magicianAuthPolicy.test.js src/lib/setupFlow.test.js src/themeTypography.test.js",
+    "test": "node --test src/orb/*.test.js src/lib/macosPairingUiModel.test.js src/lib/magicianAuthPolicy.test.js src/lib/setupFlow.test.js src/lib/desktopSettingsIndex.test.js src/themeTypography.test.js",
     "tauri": "tauri"
   },
   "dependencies": {

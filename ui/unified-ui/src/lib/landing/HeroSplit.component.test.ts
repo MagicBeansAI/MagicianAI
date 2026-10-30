@@ -35,7 +35,7 @@ describe('Bright Sidekick hero', () => {
 		const { container } = render(HeroSplit);
 		expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('magican');
 		expect(screen.getByText('More You')).toBeInTheDocument();
-		expect(screen.getByText('Your personal superpowers')).toBeInTheDocument();
+		expect(screen.getByText('Life assistant for work, play, and everything else')).toBeInTheDocument();
 		expect(container.querySelector('img')).toHaveAttribute('src', '/brand/mascot-hi-light.svg');
 	});
 

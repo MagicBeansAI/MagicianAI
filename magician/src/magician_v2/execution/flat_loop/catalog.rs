@@ -11,10 +11,10 @@
 use std::collections::HashSet;
 
 use crate::magician_v2::execution::agentic::native_catalog::{
-    build_delegate_to_agent_tool, build_export_result_tool, build_handover_to_agent_tool,
-    build_index_entry_tool, build_need_user_input_tool, build_pack_capability_tool,
-    build_read_result_tool, build_spawn_sub_goal_tool, build_submit_plan_tool, build_yield_tool,
-    CatalogBuildContext, SUBMIT_PLAN_TOOL,
+    build_chat_delegate_to_agent_tool, build_delegate_to_agent_tool, build_export_result_tool,
+    build_handover_to_agent_tool, build_index_entry_tool, build_need_user_input_tool,
+    build_pack_capability_tool, build_read_result_tool, build_spawn_sub_goal_tool,
+    build_submit_plan_tool, build_yield_tool, CatalogBuildContext, SUBMIT_PLAN_TOOL,
 };
 use crate::magician_v2::execution::agentic::native_types::NativeExecutionTool;
 use crate::magician_v2::execution::flat_loop::tool_index::ToolIndex;
@@ -122,23 +122,59 @@ pub fn conditional_hot_tools(ctx: &CatalogBuildContext) -> Vec<&'static str> {
             out.push("find_agents_for_capability");
         }
     }
-    if !ctx.available_procedure_skills.is_empty()
-        && ctx
-            .direct_capabilities
-            .iter()
-            .any(|(name, _, _)| name == "activate_skill")
-    {
-        out.push("activate_skill");
-    }
-    if !ctx.available_procedure_skills.is_empty()
-        && ctx
-            .direct_capabilities
-            .iter()
-            .any(|(name, _, _)| name == "deactivate_skill")
-    {
-        out.push("deactivate_skill");
+    for name in PROCEDURE_SKILL_TOOL_NAMES {
+        if !ctx.available_procedure_skills.is_empty()
+            && procedure_skill_tool_admitted(ctx, name)
+            && ctx
+                .direct_capabilities
+                .iter()
+                .any(|(capability, _, _)| capability == name)
+        {
+            out.push(*name);
+        }
     }
     out
+}
+
+/// The tools that activate and clear a procedure-skill playbook.
+const PROCEDURE_SKILL_TOOL_NAMES: &[&str] = &["activate_skill", "deactivate_skill"];
+
+/// Not denied, and not withheld by the delegate-only grant gate — the gates
+/// every other hot pack tool passes.
+fn procedure_skill_tool_admitted(ctx: &CatalogBuildContext, name: &str) -> bool {
+    !catalog_tool_denied(ctx, name)
+        && ctx
+            .delegate_only_grant_gate
+            .as_ref()
+            .is_none_or(|granted| granted.contains(name))
+}
+
+/// The procedure-skill tools this agent is offered: none without procedure
+/// skills to activate; otherwise each one that is directly reachable, not
+/// denied and not withheld by the delegate-only grant gate.
+///
+/// The gate matters because the dispatch ceiling narrows a delegate-only
+/// coordinator to its own grants plus `tool_search`. Before the gate applied
+/// here, such a coordinator listing a skill (any non-personality skill counts,
+/// a runtime tool skill like `dugite` included) was handed `activate_skill`
+/// hot — a callable function its scoped registry had no provider for (live
+/// 2026-10-19: `activate_skill(name="dugite")` → "No provider registered").
+/// The prompt's procedure-skill catalog renders only when this is non-empty,
+/// so it never names a tool the agent cannot call.
+pub fn offered_procedure_skill_tools(
+    ctx: &CatalogBuildContext,
+    index: &ToolIndex,
+) -> Vec<&'static str> {
+    if ctx.available_procedure_skills.is_empty() {
+        return Vec::new();
+    }
+    PROCEDURE_SKILL_TOOL_NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            procedure_skill_tool_admitted(ctx, name) && tool_is_directly_reachable(ctx, index, name)
+        })
+        .collect()
 }
 
 /// Dedup-and-filter helper for the deferred tier. Skips names already hot or
@@ -222,7 +258,11 @@ pub fn build_flat_loop_tools(
     // has procedure skills.
     if ctx.has_delegation_targets {
         if !catalog_tool_denied(ctx, "delegate_to_agent") {
-            hot.push(build_delegate_to_agent_tool());
+            hot.push(if ctx.is_chat_mode {
+                build_chat_delegate_to_agent_tool()
+            } else {
+                build_delegate_to_agent_tool()
+            });
         }
         if !catalog_tool_denied(ctx, "handover_to_agent") {
             hot.push(build_handover_to_agent_tool());
@@ -238,13 +278,9 @@ pub fn build_flat_loop_tools(
             }
         }
     }
-    if !ctx.available_procedure_skills.is_empty() {
-        for name in ["activate_skill", "deactivate_skill"] {
-            if tool_is_directly_reachable(ctx, index, name) {
-                if let Some(entry) = index.get(name) {
-                    hot.extend(build_index_entry_tool(entry));
-                }
-            }
+    for name in offered_procedure_skill_tools(ctx, index) {
+        if let Some(entry) = index.get(name) {
+            hot.extend(build_index_entry_tool(entry));
         }
     }
 
@@ -708,6 +744,61 @@ mod tests {
         assert!(hot.contains(&"get_agent_details"));
         assert!(hot.contains(&"activate_skill"));
         assert!(hot.contains(&"deactivate_skill"));
+    }
+
+    /// Live 2026-10-19: a delegate-only VibeDev coordinator listing a skill
+    /// (`dugite`) was handed `activate_skill` hot, its scoped registry had no
+    /// provider for it, and the call it made was answered "No provider
+    /// registered". The grant gate now withholds the skill tools like every
+    /// other hot pack tool, and the prompt's skill catalog follows it.
+    #[test]
+    fn the_delegate_only_grant_gate_withholds_procedure_skill_tools() {
+        use crate::magician_v2::execution::agentic::native_catalog::CatalogAgentPolicy;
+        let gate = |granted: &str| {
+            CatalogAgentPolicy::from_execution(
+                Some("cto"),
+                Some(HashSet::from([granted.to_string()])),
+            )
+        };
+        let idx = full_index();
+        let mut gated = ctx(
+            vec![
+                "tool_search",
+                "activate_skill",
+                "deactivate_skill",
+                "save_preference",
+            ],
+            true,
+            true,
+        );
+        gated.delegate_only_grant_gate = gate("dugite");
+        assert!(offered_procedure_skill_tools(&gated, &idx).is_empty());
+        assert!(conditional_hot_tools(&gated)
+            .iter()
+            .all(|name| !name.ends_with("_skill")));
+        let cat = build_flat_loop_tools(&gated, &idx, &[]);
+        assert!(!cat.hot.iter().any(|tool| tool.name.ends_with("_skill")));
+        assert!(!cat
+            .deferred
+            .iter()
+            .any(|entry| entry.name.ends_with("_skill")));
+
+        // A granted skill tool is still offered under the gate…
+        let mut granted = gated.clone();
+        granted.delegate_only_grant_gate = gate("activate_skill");
+        assert_eq!(
+            offered_procedure_skill_tools(&granted, &idx),
+            vec!["activate_skill"]
+        );
+        // …a denied one is not, and without skills to activate neither is.
+        let mut denied = ctx(vec!["activate_skill", "deactivate_skill"], false, true);
+        denied.denied_tool_names = vec!["deactivate_skill".to_string()];
+        assert_eq!(
+            offered_procedure_skill_tools(&denied, &idx),
+            vec!["activate_skill"]
+        );
+        let no_skills = ctx(vec!["activate_skill", "deactivate_skill"], false, false);
+        assert!(offered_procedure_skill_tools(&no_skills, &idx).is_empty());
     }
 
     #[test]

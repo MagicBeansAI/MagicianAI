@@ -6,8 +6,9 @@
 //! Routes:
 //! ```text
 //! GET    /api/magician/v2/chat/active                              -> get or create active thread session
-//! POST   /api/magician/v2/chat/new                                 -> archive current thread session, create fresh
+//! POST   /api/magician/v2/chat/new                                 -> start a chat (reuses an untitled empty one on the thread)
 //! GET    /api/magician/v2/chat/sessions                            -> list all sessions (history)
+//! GET    /api/magician/v2/chat/models                              -> model/thinking catalog without profile aliases
 //! GET    /api/magician/v2/chat/sessions/{id}                       -> get session with messages
 //! POST   /api/magician/v2/chat/sessions/{id}/results/read          -> authenticated complete-result page
 //! GET    /api/magician/v2/chat/sessions/{id}/reference-catalog     -> composer @ references for session agent/delegates
@@ -26,9 +27,19 @@
 //! ```
 
 mod concurrent_voice;
+mod model_selection;
 mod queue_actions;
+mod session_activity;
+mod session_assets;
+mod turn_usage;
 pub use concurrent_voice::*;
+pub use model_selection::{chat_model_catalog, list_chat_models_handler, ChatModelsQuery};
 pub use queue_actions::*;
+pub use session_activity::get_session_activity_handler;
+pub use session_assets::{delete_session_asset_handler, get_session_assets_handler};
+#[cfg(test)]
+use turn_usage::{chat_turn_call_record, summarize_chat_turn_calls};
+use turn_usage::{chat_turn_usage_from_file, ChatTurnUsage};
 
 use std::{path::Path, process::Stdio, sync::Arc};
 
@@ -398,6 +409,7 @@ pub struct ListSessionsQuery {
 
 /// Request body for sending a chat message.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendMessageRequest {
     #[serde(default)]
     pub text: Option<String>,
@@ -409,14 +421,14 @@ pub struct SendMessageRequest {
     pub plan_task_id: Option<String>,
     #[serde(default)]
     pub plan_question_id: Option<String>,
-    /// Optional LLM profile override. Must be a valid chat-eligible profile
-    /// name (as returned by `GET /chat/profiles`).
+    /// Authoritative model/thinking choice. Requires an explicit API-model
+    /// engine and is resolved before any streaming, queue or voice admission.
     #[serde(default)]
-    pub profile: Option<String>,
+    pub model_selection: Option<magicllm::catalog::ModelSelection>,
     /// Per-turn composer harness. Absent uses the Settings chat engine.
     #[serde(default)]
     pub harness_engine: Option<String>,
-    /// Harness model, or `default` for its own selection. Pi uses `profile`.
+    /// Native harness model, or `default`. Pi uses `model_selection`.
     #[serde(default)]
     pub harness_model: Option<String>,
     /// Optional client-supplied turn ID. When set, every backend event
@@ -448,17 +460,20 @@ pub struct SendMessageRequest {
     /// instead of the full text body.
     #[serde(default)]
     pub voice_origin: bool,
-    /// Keep an accepted streaming turn running when this HTTP response is
-    /// disconnected. Mobile processes and radios disappear routinely; their
-    /// durable transcript and realtime subscription recover the completed turn
-    /// after reconnect. Ordinary callers retain cancel-on-disconnect unless
-    /// they opt in explicitly.
+    /// Keep an accepted turn running when this HTTP request or stream is
+    /// disconnected (streaming and non-streaming sends). Mobile apps and the
+    /// web UI opt in: the client recovers the turn from `turn_state`, the
+    /// transcript and the realtime feed after reconnect. Callers that omit it
+    /// keep cancel-on-disconnect.
     #[serde(default)]
     pub continue_on_disconnect: bool,
     /// Explicit VibeDev coding choice for a `@vibedev` turn. Omitted
     /// keeps the configured Pi default. The rail never reads an engine
     /// name out of the transcript.
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::coding_model_selection::deserialize_optional_choice"
+    )]
     pub coding_choice:
         Option<magician::magician_v2::vibedev::run_service::ClientVibeDevCodingChoice>,
 }
@@ -499,6 +514,13 @@ pub struct ChatSessionListResponse {
 pub struct ChatSessionDetailResponse {
     pub session: ChatSession,
     pub messages: Vec<magician::magician_v2::chat::models::ChatMessage>,
+    /// True when older messages exist before the first returned message
+    /// (fetch them with `GET .../messages?before=`).
+    pub has_more: bool,
+    /// The session's latest turn state (`running` / `completed` / `stopped` /
+    /// `failed`) while this process knows it; `null` otherwise. A
+    /// reconnecting client shows a running turn from this.
+    pub turn_state: Option<magician::magician_v2::chat::turn_state::ChatTurnState>,
 }
 
 /// Response returned after uploading a staged attachment.
@@ -572,6 +594,7 @@ pub struct OpenOutputFolderRequest {
     #[serde(default)]
     pub relative_path: Option<String>,
     #[serde(default)]
+    /// A full path or a workspace-relative path mentioned in this session.
     pub absolute_path: Option<String>,
 }
 
@@ -610,18 +633,22 @@ fn requested_ui_thread_id_for_inbound(
     query: &ActiveSessionQuery,
     channel_type: &str,
     channel_address: &str,
+    control_intent: Option<bool>,
 ) -> String {
     let requested = query.ui_thread_id.trim();
     let default_thread = magician::magician_v2::storage::task_models::default_ui_thread_id();
-    if query.control_intent == Some(true)
+    let channel_thread = envoy::guest_thread_id(channel_type, channel_address);
+    // The bare channel thread is where a per-address bot puts non-control
+    // messages, and its session is bound to the envoy agent. An owner
+    // message the bot sent there moves to the owner's `:magic` thread.
+    if control_intent == Some(true)
         && !channel_type.eq_ignore_ascii_case("web")
         && !channel_address.is_empty()
-        && (requested.is_empty() || requested == default_thread.as_str())
+        && (requested.is_empty()
+            || requested == default_thread.as_str()
+            || requested == channel_thread)
     {
-        format!(
-            "{}:magic",
-            envoy::guest_thread_id(channel_type, channel_address)
-        )
+        format!("{channel_thread}:magic")
     } else {
         query.ui_thread_id.clone()
     }
@@ -906,8 +933,19 @@ fn route_inbound_query(
                 request_authenticated,
                 query.channel_verified,
             );
-            let requested_ui_thread_id =
-                requested_ui_thread_id_for_inbound(query, channel_type, channel_address);
+            let control_intent = envoy::effective_control_intent(
+                envoy_cfg,
+                channel_type,
+                channel_address,
+                channel_verified,
+                query.control_intent,
+            );
+            let requested_ui_thread_id = requested_ui_thread_id_for_inbound(
+                query,
+                channel_type,
+                channel_address,
+                control_intent,
+            );
             // `resolve_inbound_lane`, not `route_for_inbound`: the latter is
             // the same call with `engagement: None` hardcoded, so going through
             // it made `InboundLane::Engagement` unreachable no matter what the
@@ -923,7 +961,7 @@ fn route_inbound_query(
                 channel_type,
                 channel_address,
                 channel_verified,
-                query.control_intent,
+                control_intent,
                 &requested_ui_thread_id,
                 engagement,
             )
@@ -1065,7 +1103,11 @@ impl ChatApi {
     }
 }
 
-fn session_matches_scope(session: &ChatSession, principal: &str, workspace: &str) -> bool {
+pub(crate) fn session_matches_scope(
+    session: &ChatSession,
+    principal: &str,
+    workspace: &str,
+) -> bool {
     session.principal == principal && session.workspace == workspace
 }
 
@@ -1221,39 +1263,26 @@ fn validate_send_message_request(body: &SendMessageRequest) -> Result<Option<&st
     Ok(trimmed_text)
 }
 
-fn validate_profile_override(
+fn routed_profile_override(
     chat_api: &ChatApi,
     body: &SendMessageRequest,
-) -> Option<HttpResponse> {
-    let Some(profile_name) = body.profile.as_deref() else {
-        return None;
+) -> Result<Option<String>, HttpResponse> {
+    let profile = if body.model_selection.is_some() {
+        let pi_models = if body.harness_engine.as_deref() == Some("pi") {
+            Some(model_selection::qualified_pi_models()?)
+        } else {
+            None
+        };
+        Some(model_selection::selected_route(
+            &chat_api.chat_service.list_chat_profiles(),
+            body,
+            pi_models.as_ref(),
+        )?)
+    } else {
+        None
     };
-
-    let profiles = chat_api.chat_service.list_chat_profiles();
-    if profiles.iter().any(|p| p.name == profile_name) {
-        return None;
-    }
-
-    if chat_api
-        .chat_service
-        .is_public_chat_source_surface(body.source_surface.as_deref())
-    {
-        warn!(
-            profile = %profile_name,
-            source_surface = %body.source_surface.as_deref().unwrap_or("<none>"),
-            "[CHAT-API] public chat profile is not configured; deferring to service fallback"
-        );
-        return None;
-    }
-
-    Some(HttpResponse::BadRequest().json(serde_json::json!({
-        "error": format!("Profile '{}' is not a valid chat profile", profile_name)
-    })))
-}
-
-fn routed_profile_override(body: &SendMessageRequest) -> Result<Option<String>, HttpResponse> {
     let Some(engine) = body.harness_engine.as_deref() else {
-        return Ok(body.profile.clone());
+        return Ok(profile);
     };
     let installed = engine == "magician"
         || magician::magician_v2::execution::plane::roster_with_install_status()
@@ -1283,7 +1312,7 @@ fn routed_profile_override(body: &SendMessageRequest) -> Result<Option<String>, 
                     .filter(|m| !m.is_empty())
                     .unwrap_or("default")
                     .to_string(),
-                profile: body.profile.clone(),
+                profile,
             },
         ),
     ))
@@ -1399,32 +1428,40 @@ pub async fn get_active_session_handler(
     };
 
     // Also load messages so the frontend can display prior conversation
-    let messages = match chat_api
+    let (messages, has_more) = match chat_api
         .chat_service
         .chat_store_ref()
-        .get_messages(&session.id, 200)
+        .get_messages_paginated(&session.id, 200, None)
         .await
     {
-        Ok(msgs) => msgs,
+        Ok(page) => page,
         Err(e) => {
             error!(
                 "[CHAT-API] Failed to get messages for active session {}: {}",
                 session.id, e
             );
-            Vec::new()
+            (Vec::new(), false)
         },
     };
     let messages = chat_api
         .chat_service
         .reconcile_terminal_task_status_messages(&session, messages)
         .await;
+    let turn_state = chat_api.chat_service.chat_turn_state(&session.id);
 
-    HttpResponse::Ok().json(ChatSessionDetailResponse { session, messages })
+    HttpResponse::Ok().json(ChatSessionDetailResponse {
+        session,
+        messages,
+        has_more,
+        turn_state,
+    })
 }
 
 /// POST /api/magician/v2/chat/new
 ///
-/// Archive the current active thread session and create a fresh one.
+/// Start a chat on the thread. On a user thread an untitled chat with no
+/// messages is returned rather than another empty one created; feature
+/// threads rotate their session as before.
 pub async fn new_session_handler(
     chat_api: web::Data<ChatApi>,
     req: HttpRequest,
@@ -1710,28 +1747,34 @@ pub async fn get_session_handler(
         }));
     }
 
-    // Also load messages
-    let messages = match chat_api
+    // Also load the newest page; `has_more` says whether older pages exist.
+    let (messages, has_more) = match chat_api
         .chat_service
         .chat_store_ref()
-        .get_messages(&session_id, 200)
+        .get_messages_paginated(&session_id, 200, None)
         .await
     {
-        Ok(msgs) => msgs,
+        Ok(page) => page,
         Err(e) => {
             error!(
                 "[CHAT-API] Failed to get messages for session {}: {}",
                 session_id, e
             );
-            Vec::new()
+            (Vec::new(), false)
         },
     };
     let messages = chat_api
         .chat_service
         .reconcile_terminal_task_status_messages(&session, messages)
         .await;
+    let turn_state = chat_api.chat_service.chat_turn_state(&session.id);
 
-    HttpResponse::Ok().json(ChatSessionDetailResponse { session, messages })
+    HttpResponse::Ok().json(ChatSessionDetailResponse {
+        session,
+        messages,
+        has_more,
+        turn_state,
+    })
 }
 
 /// POST /api/magician/v2/chat/sessions/{id}/results/read
@@ -2939,7 +2982,7 @@ pub async fn list_chat_turn_events_handler(
         },
     };
 
-    // Whole-turn usage over exactly the bytes the tail read ended at, so a row
+    // Incremental whole-turn usage over exactly the bytes the tail read ended at, so a row
     // appended after this read is neither in `events` nor in `usage` and a
     // client adds it exactly once when it arrives live. Off the reactor: a
     // turn file reaches several MB.
@@ -2964,7 +3007,8 @@ pub async fn list_chat_turn_events_handler(
         }
     };
 
-    let (events, scanned) = newest_chat_turn_events(&raw.text, query.limit);
+    let (events, scanned) =
+        newest_chat_turn_events(&raw.text, query.limit.max(CHAT_TURN_EVENTS_MIN_ROWS));
     HttpResponse::Ok().json(serde_json::json!({
         "count": events.len(),
         "events": events,
@@ -2976,229 +3020,6 @@ pub async fn list_chat_turn_events_handler(
         // Absent only when the scan itself failed; clients then sum `events`.
         "usage": usage,
     }))
-}
-
-/// The turn's OWN model usage, over its whole event file (the `events` page is
-/// only the newest ~1 MiB, which undercounts a long turn).
-///
-/// Same contract as the web activity card (`turnUsageSummary.ts`):
-/// - LLM-call rows are `LLMResponseReceived` (flat loop / harness aggregate)
-///   and the AgentEvent-wrapped `llm.succeeded` (chat-side).
-/// - Own = the row names no execution id, or the turn's own id. Rows of a
-///   spawned / delegated task's execution are left out: the card adds those
-///   from the task usage store.
-/// - One call per distinct `llm_call_id` (payload, else
-///   `correlation.llm_call_id`): the chat call lands as both an
-///   `llm.succeeded` and an `LLMResponseReceived` row, counted once for tokens
-///   AND cost. Rows without a call id count individually.
-/// - `usage_availability` false fields are unreported (`null`), not zero.
-#[derive(Debug, Default, Clone, PartialEq, serde::Serialize)]
-struct ChatTurnUsage {
-    calls: u64,
-    input_tokens: u64,
-    output_tokens: u64,
-    /// `null` until a call reports a price.
-    cost_usd: Option<f64>,
-    /// `null` when no call reported cache figures.
-    cache_read_tokens: Option<u64>,
-    cache_creation_tokens: Option<u64>,
-}
-
-/// One LLM-call row, reduced to what the usage needs.
-struct ChatTurnCallRecord {
-    call_id: Option<String>,
-    own: bool,
-    input: Option<u64>,
-    output: Option<u64>,
-    cache_read: Option<u64>,
-    cache_creation: Option<u64>,
-    cost_usd: Option<f64>,
-}
-
-/// The call record of one JSONL row, or `None` when the row is not an LLM-call
-/// row. Callers prefilter on the raw bytes so only candidate rows are parsed.
-fn chat_turn_call_record(
-    row: &serde_json::Value,
-    chat_turn_id: &str,
-) -> Option<ChatTurnCallRecord> {
-    use serde_json::Value;
-    let payload = match row.get("event_type").and_then(Value::as_str) {
-        Some("LLMResponseReceived") => row.get("data")?,
-        Some("AgentEvent") => {
-            let data = row.get("data")?;
-            let envelope = data.get("event").unwrap_or(data);
-            if envelope.get("event_type").and_then(Value::as_str) != Some("llm.succeeded") {
-                return None;
-            }
-            envelope.get("payload")?
-        },
-        _ => return None,
-    };
-    let correlation = payload.get("correlation");
-    let field = |key: &str| {
-        payload
-            .get(key)
-            .filter(|value| !value.is_null())
-            .or_else(|| correlation.and_then(|c| c.get(key)))
-    };
-    let text = |value: Option<&Value>| {
-        value
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    };
-    let call_id = text(field("llm_call_id"));
-    let execution_id = text(field("execution_id"));
-    let availability = field("usage_availability");
-    let available = |flag: &str| {
-        availability
-            .and_then(|a| a.get(flag))
-            .and_then(Value::as_bool)
-            != Some(false)
-    };
-    let count = |key: &str, flag: &str| {
-        if !available(flag) {
-            return None;
-        }
-        payload
-            .get(key)
-            .and_then(Value::as_f64)
-            .filter(|n| n.is_finite())
-            .map(|n| n.max(0.0) as u64)
-    };
-    let price = |key: &str| {
-        payload
-            .get(key)
-            .and_then(Value::as_f64)
-            .filter(|n| n.is_finite())
-    };
-    Some(ChatTurnCallRecord {
-        own: execution_id.as_deref().is_none_or(|id| id == chat_turn_id),
-        call_id,
-        input: count("input_tokens", "tokens"),
-        output: count("output_tokens", "tokens"),
-        cache_read: count("cache_read_tokens", "cache_read"),
-        cache_creation: count("cache_creation_tokens", "cache_write"),
-        cost_usd: price("cost_usd").or_else(|| price("cost")),
-    })
-}
-
-/// Sum the turn's own calls, mirroring `summarizeOwnCalls` + `totalUsage` on
-/// the web: tokens from the first row of each call id that reported any;
-/// cost from the first priced row of each call id; id-less rows each count.
-fn summarize_chat_turn_calls(
-    records: impl IntoIterator<Item = ChatTurnCallRecord>,
-) -> ChatTurnUsage {
-    fn add(total: Option<u64>, value: Option<u64>) -> Option<u64> {
-        match (total, value) {
-            (total, None) => total,
-            (None, Some(value)) => Some(value),
-            (Some(total), Some(value)) => Some(total.saturating_add(value)),
-        }
-    }
-    let mut seen_tokens = std::collections::HashSet::new();
-    let mut seen_cost = std::collections::HashSet::new();
-    let (mut input, mut output, mut cache_read, mut cache_creation) = (None, None, None, None);
-    let mut token_calls = 0u64;
-    let mut own_rows = 0u64;
-    let mut cost: Option<f64> = None;
-    for record in records.into_iter().filter(|record| record.own) {
-        own_rows += 1;
-        if let Some(price) = record.cost_usd {
-            let first = record
-                .call_id
-                .as_ref()
-                .is_none_or(|id| seen_cost.insert(id.clone()));
-            if first {
-                cost = Some(cost.unwrap_or(0.0) + price);
-            }
-        }
-        if record
-            .call_id
-            .as_ref()
-            .is_some_and(|id| seen_tokens.contains(id))
-        {
-            continue;
-        }
-        let reported = record.input.is_some()
-            || record.output.is_some()
-            || record.cache_read.is_some()
-            || record.cache_creation.is_some();
-        if !reported {
-            continue;
-        }
-        if let Some(id) = record.call_id.as_ref() {
-            seen_tokens.insert(id.clone());
-        }
-        input = add(input, record.input);
-        output = add(output, record.output);
-        cache_read = add(cache_read, record.cache_read);
-        cache_creation = add(cache_creation, record.cache_creation);
-        token_calls += 1;
-    }
-    if token_calls == 0 && cost.is_none() {
-        return ChatTurnUsage::default();
-    }
-    ChatTurnUsage {
-        // The card's count: calls that reported tokens, else (priced but
-        // token-less turns) the own rows.
-        calls: if token_calls > 0 {
-            token_calls
-        } else {
-            own_rows
-        },
-        input_tokens: input.unwrap_or(0),
-        output_tokens: output.unwrap_or(0),
-        cost_usd: cost,
-        cache_read_tokens: cache_read,
-        cache_creation_tokens: cache_creation,
-    }
-}
-
-/// Stream `path` up to `end_offset`, parsing only rows whose bytes name an
-/// LLM-call event, and sum the turn's own usage. Blocking; run it off the
-/// reactor. A missing file is an empty turn.
-fn chat_turn_usage_from_file(
-    path: &std::path::Path,
-    end_offset: u64,
-    chat_turn_id: &str,
-) -> std::io::Result<ChatTurnUsage> {
-    use std::io::{BufRead, Read};
-
-    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-        haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
-    }
-
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ChatTurnUsage::default())
-        },
-        Err(err) => return Err(err),
-    };
-    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file.take(end_offset));
-    let mut line = Vec::new();
-    let mut records = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            break;
-        }
-        if !contains(&line, b"LLMResponseReceived") && !contains(&line, b"llm.succeeded") {
-            continue;
-        }
-        // A trailing partial row (the file grew mid-read) fails to parse and
-        // is skipped, as the tail read drops it.
-        let Ok(row) = serde_json::from_slice::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if let Some(record) = chat_turn_call_record(&row, chat_turn_id) {
-            records.push(record);
-        }
-    }
-    Ok(summarize_chat_turn_calls(records))
 }
 
 /// Parse a JSONL window and keep the newest `limit` rows, returning them with
@@ -3229,6 +3050,11 @@ fn newest_chat_turn_events(text: &str, limit: usize) -> (Vec<serde_json::Value>,
     }
     (events, scanned)
 }
+
+/// Fewest rows one `GET .../turns/{id}/events` returns. Clients rebuild a
+/// turn's card from this page, so the message-sized default (50) cut a long
+/// turn to its last steps on reload; the byte ceiling below bounds the read.
+const CHAT_TURN_EVENTS_MIN_ROWS: usize = 2_000;
 
 /// Byte ceiling on one `GET .../turns/{id}/events` read.
 ///
@@ -3645,6 +3471,7 @@ pub async fn list_queued_messages_handler(
     HttpResponse::Ok().json(serde_json::json!({
         "queued": queued,
         "active": chat_api.chat_service.has_active_chat_run(&session_id) || chat_api.chat_service.has_active_tail(&session_id),
+        "turn_state": chat_api.chat_service.chat_turn_state(&session_id),
         "session_id": session_id,
     }))
 }
@@ -3833,18 +3660,6 @@ async fn find_server_action_message(
     }
 
     Ok(None)
-}
-
-/// GET /api/magician/v2/chat/profiles
-///
-/// List all chat-eligible LLM profiles.
-pub async fn list_chat_profiles_handler(chat_api: web::Data<ChatApi>) -> impl Responder {
-    let profiles = chat_api.chat_service.list_chat_profiles();
-    let warnings = chat_api.chat_service.list_chat_profile_warnings();
-    HttpResponse::Ok().json(serde_json::json!({
-        "profiles": profiles,
-        "warnings": warnings,
-    }))
 }
 
 /// GET /api/magician/v2/chat/public-contacts
@@ -4433,6 +4248,25 @@ async fn open_path_with_os_default(target: &Path) -> std::io::Result<()> {
     }
 }
 
+async fn validate_output_session_scope(
+    service: &ChatService,
+    session_id: &str,
+    principal: &str,
+    workspace: &str,
+) -> Result<(), HttpResponse> {
+    match service.get_session(session_id).await {
+        Ok(Some(session)) if session_matches_scope(&session, principal, workspace) => Ok(()),
+        Ok(Some(_)) => {
+            Err(HttpResponse::Forbidden().json(serde_json::json!({"error": "Access denied"})))
+        },
+        Ok(None) => {
+            Err(HttpResponse::NotFound().json(serde_json::json!({"error": "Session not found"})))
+        },
+        Err(_) => Err(HttpResponse::InternalServerError()
+            .json(serde_json::json!({"error": "Could not load session"}))),
+    }
+}
+
 /// POST /api/magician/v2/chat/sessions/{id}/outputs/open-folder
 ///
 /// Reveal the containing folder for a session or task output rendered in chat.
@@ -4466,6 +4300,14 @@ pub async fn open_output_folder_handler(
         Err(response) => return response,
     };
 
+    // Authorize before consulting notes settings or testing filesystem paths.
+    if let Err(response) =
+        validate_output_session_scope(&chat_api.chat_service, &session_id, &principal, &workspace)
+            .await
+    {
+        return response;
+    }
+
     let (session, resolved_path) = match chat_api
         .chat_service
         .resolve_openable_output_path(
@@ -4482,6 +4324,9 @@ pub async fn open_output_folder_handler(
                 "error": "Session not found",
                 "session_id": session_id
             }));
+        },
+        Err(e) if e.to_string().contains("Ambiguous relative path") => {
+            return HttpResponse::Conflict().json(serde_json::json!({"error": e.to_string()}));
         },
         Err(e) if e.to_string().contains("outside allowed output roots") => {
             return HttpResponse::Forbidden().json(serde_json::json!({
@@ -4571,6 +4416,14 @@ pub async fn open_output_file_handler(
         Err(response) => return response,
     };
 
+    // Authorize before consulting notes settings or testing filesystem paths.
+    if let Err(response) =
+        validate_output_session_scope(&chat_api.chat_service, &session_id, &principal, &workspace)
+            .await
+    {
+        return response;
+    }
+
     let (session, resolved_path) = match chat_api
         .chat_service
         .resolve_openable_output_path(
@@ -4587,6 +4440,9 @@ pub async fn open_output_file_handler(
                 "error": "Session not found",
                 "session_id": session_id
             }));
+        },
+        Err(e) if e.to_string().contains("Ambiguous relative path") => {
+            return HttpResponse::Conflict().json(serde_json::json!({"error": e.to_string()}));
         },
         Err(e) if e.to_string().contains("outside allowed output roots") => {
             return HttpResponse::Forbidden().json(serde_json::json!({
@@ -4897,6 +4753,283 @@ pub async fn post_invoke_server_action_handler(
 ///
 /// Send a message in a chat session and get the assistant's response.
 /// Only works on active sessions.
+/// `/god` / `/godoff` from the owner: set this chat's god-mode override (the
+/// orb's `god_mode::set_chat_override`) and answer without running the agent.
+///
+/// `None` means "process the message normally": it is not a command, or the
+/// sender is not proved to be the owner of this chat. A guest's `/god` is
+/// therefore just text to the envoy, never a refusal that reveals the command.
+///
+/// Owner proof is server-side only (`god_command`): on `web`, the orb's own
+/// rule (owner login session or verified paired owner phone); on a channel, the
+/// envoy owner allowlist with server-derived verification, and the session must
+/// have been opened for that same channel address. A bot token is never the
+/// owner by itself. Guest (envoy-bound) and engagement sessions are refused.
+async fn god_mode_command_response(
+    chat_api: &ChatApi,
+    req: &HttpRequest,
+    query: &ActiveSessionQuery,
+    session: &ChatSession,
+    text: Option<&str>,
+    body: &SendMessageRequest,
+) -> Option<ChatResponse> {
+    use magician::magician_v2::auth::middleware::AuthRuntime;
+    use magician::magician_v2::chat::god_command::{
+        channel_sender_may_toggle, session_is_owner_lane, GodCommandSession, GodModeCommand,
+    };
+    use magician::magician_v2::chat::models::{
+        ChatMessage, ChatMessageContent, ChatMessageDirection,
+    };
+    use magician::magician_v2::god_mode;
+
+    if !body.attachment_ids.is_empty() || body.plan_question_id.is_some() {
+        return None;
+    }
+    let text = text?.trim();
+    let command = GodModeCommand::parse(text)?;
+    let target = GodCommandSession {
+        agent_id: session.agent_id.as_str(),
+        ui_thread_id: session.ui_thread_id.as_str(),
+        origin_channel_type: session.origin_channel.channel_type.as_str(),
+        origin_address: session.origin_channel.address.as_deref(),
+    };
+    let channel = normalized_query_value(query.channel.as_deref()).unwrap_or("web");
+    let allowed = if channel.eq_ignore_ascii_case("web") {
+        let envoy_agent_id = chat_api
+            .envoy_config
+            .as_ref()
+            .map(|cfg| cfg.envoy_agent_id.as_str());
+        session_is_owner_lane(envoy_agent_id, &target)
+            && crate::god_mode_api::require_chat_owner(
+                req,
+                req.app_data::<web::Data<AuthRuntime>>(),
+                &session.id,
+            )
+            .await
+            .is_ok()
+    } else {
+        let address = normalized_query_value(query.channel_address.as_deref()).unwrap_or("");
+        let verified = envoy::channel_is_verified(
+            channel,
+            request_is_authenticated(req),
+            query.channel_verified,
+        );
+        chat_api
+            .envoy_config
+            .as_ref()
+            .is_some_and(|cfg| channel_sender_may_toggle(cfg, channel, address, verified, &target))
+    };
+    if !allowed {
+        debug!(
+            session_id = %session.id,
+            channel,
+            "[CHAT-API] god-mode chat command from a sender not proved to be the owner; \
+             processed as ordinary text"
+        );
+        return None;
+    }
+
+    let enabled = command.enabled();
+    god_mode::set_chat_override(&session.id, Some(enabled));
+    warn!(
+        session_id = %session.id,
+        enabled,
+        channel,
+        "[GOD-MODE] chat override changed by the owner's chat command"
+    );
+    let reply = command.reply(god_mode::chat_auto_effective(&session.id));
+    let now = Utc::now().timestamp_millis();
+    let user_message = ChatMessage::new(
+        uuid::Uuid::new_v4().to_string(),
+        session.id.clone(),
+        ChatMessageDirection::User,
+        ChatMessageContent::Text {
+            text: text.to_string(),
+            plan_reply: None,
+        },
+        now,
+    )
+    .with_chat_turn_id(body.chat_turn_id.clone())
+    .with_source_surface(body.source_surface.clone())
+    .with_presence_session_id(body.presence_session_id.clone());
+    let assistant_message = ChatMessage::new(
+        uuid::Uuid::new_v4().to_string(),
+        session.id.clone(),
+        ChatMessageDirection::Assistant,
+        ChatMessageContent::Text {
+            text: reply.to_string(),
+            plan_reply: None,
+        },
+        now + 1,
+    )
+    .with_chat_turn_id(body.chat_turn_id.clone())
+    .with_source_surface(body.source_surface.clone())
+    .with_presence_session_id(body.presence_session_id.clone());
+    // The override is already set; a transcript write that fails still
+    // returns the confirmation so the channel relays it.
+    for message in [&user_message, &assistant_message] {
+        if let Err(error) = chat_api
+            .chat_service
+            .chat_store_ref()
+            .append_message(&session.id, message.clone())
+            .await
+        {
+            warn!(
+                session_id = %session.id,
+                %error,
+                "[CHAT-API] could not record the god-mode chat command in the transcript"
+            );
+        }
+    }
+    Some(ChatResponse {
+        user_message: Some(user_message),
+        assistant_message: Some(assistant_message.clone()),
+        tool_executed: Vec::new(),
+        messages: vec![assistant_message],
+        session_title: None,
+        queued: None,
+        cancelled: false,
+        pending_queue_depth: Some(0),
+        usage: None,
+        public_chat_notice: None,
+    })
+}
+
+/// `/claim <code>`: record the verified channel sender as an owner identity
+/// (`owner_claim`) and answer without running the agent.
+///
+/// Works from a guest session — the sender is not the owner yet. `None` only
+/// when the message is not the command (or carries attachments / a plan
+/// answer). Every other outcome is answered here so the code never reaches an
+/// agent: a wrong or expired code gets one neutral line and counts against the
+/// sender's tries; a mail channel or the web composer is told it cannot claim.
+/// The transcript records the command with the code redacted.
+///
+/// The sender address and its verification are server-derived exactly as
+/// routing derives them (`envoy::channel_is_verified` over the request's
+/// authentication), and the session must have been opened for that same
+/// channel address. After a claim the identity is in the process env, so the
+/// sender's next message routes as the owner (`route_inbound_query` re-reads
+/// owner identities per message).
+async fn owner_claim_command_response(
+    chat_api: &ChatApi,
+    req: &HttpRequest,
+    query: &ActiveSessionQuery,
+    session: &ChatSession,
+    text: Option<&str>,
+    body: &SendMessageRequest,
+) -> Option<ChatResponse> {
+    use magician::magician_v2::chat::models::{
+        ChatMessage, ChatMessageContent, ChatMessageDirection,
+    };
+    use magician::magician_v2::owner_claim::{
+        handle_claim_live, ClaimCommand, ClaimReply, ClaimRequest,
+    };
+
+    if !body.attachment_ids.is_empty() || body.plan_question_id.is_some() {
+        return None;
+    }
+    let command = ClaimCommand::parse(text?)?;
+    let channel = normalized_query_value(query.channel.as_deref()).unwrap_or("web");
+    let address = normalized_query_value(query.channel_address.as_deref()).unwrap_or("");
+    let verified = envoy::channel_is_verified(
+        channel,
+        request_is_authenticated(req),
+        query.channel_verified,
+    );
+    let request = ClaimRequest {
+        channel_type: channel,
+        address,
+        verified,
+        origin_channel_type: session.origin_channel.channel_type.as_str(),
+        origin_address: session.origin_channel.address.as_deref(),
+        code: command.code.as_deref(),
+    };
+    let reply = match chat_api.envoy_config.as_ref() {
+        Some(cfg) => handle_claim_live(cfg, &request),
+        // Envoy routing off: owner identities route nothing, so there is
+        // nothing a claim could change.
+        None => ClaimReply::UnverifiedChannel,
+    };
+    match reply {
+        ClaimReply::Claimed => warn!(
+            session_id = %session.id,
+            channel,
+            "[OWNER-CLAIM] a verified channel sender was recorded as an owner identity"
+        ),
+        other => debug!(
+            session_id = %session.id,
+            channel,
+            outcome = ?other,
+            "[OWNER-CLAIM] claim command answered"
+        ),
+    }
+    let now = Utc::now().timestamp_millis();
+    let user_message = ChatMessage::new(
+        uuid::Uuid::new_v4().to_string(),
+        session.id.clone(),
+        ChatMessageDirection::User,
+        ChatMessageContent::Text {
+            text: "/claim ••••••••".to_string(),
+            plan_reply: None,
+        },
+        now,
+    )
+    .with_chat_turn_id(body.chat_turn_id.clone())
+    .with_source_surface(body.source_surface.clone())
+    .with_presence_session_id(body.presence_session_id.clone());
+    let assistant_message = ChatMessage::new(
+        uuid::Uuid::new_v4().to_string(),
+        session.id.clone(),
+        ChatMessageDirection::Assistant,
+        ChatMessageContent::Text {
+            text: reply.text(channel),
+            plan_reply: None,
+        },
+        now + 1,
+    )
+    .with_chat_turn_id(body.chat_turn_id.clone())
+    .with_source_surface(body.source_surface.clone())
+    .with_presence_session_id(body.presence_session_id.clone());
+    for message in [&user_message, &assistant_message] {
+        if let Err(error) = chat_api
+            .chat_service
+            .chat_store_ref()
+            .append_message(&session.id, message.clone())
+            .await
+        {
+            warn!(
+                session_id = %session.id,
+                %error,
+                "[CHAT-API] could not record the claim command in the transcript"
+            );
+        }
+    }
+    Some(ChatResponse {
+        user_message: Some(user_message),
+        assistant_message: Some(assistant_message.clone()),
+        tool_executed: Vec::new(),
+        messages: vec![assistant_message],
+        session_title: None,
+        queued: None,
+        cancelled: false,
+        pending_queue_depth: Some(0),
+        usage: None,
+        public_chat_notice: None,
+    })
+}
+
+/// The refusal for a message sent to an archived session that nothing
+/// reactivates: says what to do instead of only that it failed.
+fn archived_session_send_refusal() -> serde_json::Value {
+    serde_json::json!({
+        "error": "Cannot send messages to an archived session",
+        "code": "chat_session_archived",
+        "hint": "Reactivate the conversation (set its `status` to `active`) or start a new one, \
+                 then send again."
+    })
+}
+
 pub async fn send_message_handler(
     chat_api: web::Data<ChatApi>,
     req: HttpRequest,
@@ -4933,10 +5066,7 @@ pub async fn send_message_handler(
         Err(response) => return response,
     };
 
-    if let Some(response) = validate_profile_override(chat_api.get_ref(), &body) {
-        return response;
-    }
-    let routed_profile = match routed_profile_override(&body) {
+    let routed_profile = match routed_profile_override(chat_api.get_ref(), &body) {
         Ok(profile) => profile,
         Err(response) => return response,
     };
@@ -4962,9 +5092,27 @@ pub async fn send_message_handler(
             if session.status
                 == magician::magician_v2::chat::models::ChatSessionStatus::Archived =>
         {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": "Cannot send messages to an archived session"
-            }));
+            // A VibeDev project's conversation is parked when the owner picks
+            // another project; writing into it means working there again, so
+            // it is reactivated rather than refused (`@vibedev` included).
+            match chat_api
+                .chat_service
+                .reactivate_parked_vibedev_project_session(&session)
+                .await
+            {
+                Ok(Some(reactivated)) => reactivated,
+                Ok(None) => {
+                    return HttpResponse::BadRequest().json(archived_session_send_refusal());
+                },
+                Err(error) => {
+                    warn!(
+                        session_id = %session_id,
+                        %error,
+                        "[CHAT-API] could not reactivate a VibeDev project's parked conversation"
+                    );
+                    return HttpResponse::BadRequest().json(archived_session_send_refusal());
+                },
+            }
         },
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({
@@ -4984,11 +5132,109 @@ pub async fn send_message_handler(
         },
         Ok(Some(session)) => session,
     };
+    // `/god` / `/godoff` from the owner change this chat's god mode and are
+    // answered here; the agent never runs on them.
+    if let Some(response) = god_mode_command_response(
+        chat_api.get_ref(),
+        &req,
+        &query,
+        &session,
+        trimmed_text,
+        &body,
+    )
+    .await
+    {
+        return HttpResponse::Ok().json(response);
+    }
+    // `/claim <code>` records a verified channel sender as an owner identity;
+    // answered here (from a guest session too), never by an agent.
+    if let Some(response) = owner_claim_command_response(
+        chat_api.get_ref(),
+        &req,
+        &query,
+        &session,
+        trimmed_text,
+        &body,
+    )
+    .await
+    {
+        return HttpResponse::Ok().json(response);
+    }
     let app_owner_execution_credential =
         match app_owner_execution_credential_for_request(&req, &session) {
             Ok(credential) => credential,
             Err(response) => return response,
         };
+
+    if body.continue_on_disconnect {
+        // Actix drops this handler's future when the client goes away, and
+        // the turn's execution job aborts with it. An opted-in turn runs as
+        // its own task instead (the streaming handler's rule): it finishes,
+        // persists its reply and starts the queue drain without a listener.
+        let service = Arc::clone(&chat_api.chat_service);
+        let durable_session_id = session_id.clone();
+        let durable_text = trimmed_text.map(str::to_string);
+        let durable_attachment_ids = body.attachment_ids.clone();
+        let durable_profile = routed_profile.clone();
+        let mode = body.mode;
+        let plan_task_id = body.plan_task_id.clone();
+        let plan_question_id = body.plan_question_id.clone();
+        let chat_turn_id = body.chat_turn_id.clone();
+        let voice_origin = body.voice_origin;
+        let source_surface = body.source_surface.clone();
+        let presence_session_id = body.presence_session_id.clone();
+        let sender_display_name = body.sender_display_name.clone();
+        let coding_choice = magician::magician_v2::vibedev::run_service::coding_choice_from_client(
+            body.coding_choice.clone(),
+        );
+        let turn = tokio::spawn(async move {
+            let result = Box::pin(
+                service.process_message_with_mode_on_execution_runtime_with_app_owner_credential(
+                    &durable_session_id,
+                    durable_text.as_deref(),
+                    &durable_attachment_ids,
+                    durable_profile.as_deref(),
+                    mode,
+                    plan_task_id.as_deref(),
+                    plan_question_id.as_deref(),
+                    chat_turn_id.as_deref(),
+                    voice_origin,
+                    source_surface.as_deref(),
+                    presence_session_id.as_deref(),
+                    sender_display_name.as_deref(),
+                    coding_choice,
+                    app_owner_execution_credential,
+                ),
+            )
+            .await;
+            if result
+                .as_ref()
+                .is_ok_and(|response| response.pending_queue_depth.unwrap_or(0) > 0)
+            {
+                service.spawn_pending_queue_drain(durable_session_id);
+            }
+            result
+        });
+        return match turn.await {
+            Ok(Ok(response)) => HttpResponse::Ok().json(response),
+            Ok(Err(e)) => {
+                error!(
+                    "[CHAT-API] Failed to process message for session {}: {}",
+                    session_id, e
+                );
+                process_message_error_response(&e)
+            },
+            Err(join_error) => {
+                error!(
+                    "[CHAT-API] Detached chat turn for session {} ended without a result: {}",
+                    session_id, join_error
+                );
+                HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "Processing task ended before producing a result"
+                }))
+            },
+        };
+    }
 
     match chat_api
         .chat_service
@@ -5005,9 +5251,8 @@ pub async fn send_message_handler(
             body.source_surface.as_deref(),
             body.presence_session_id.as_deref(),
             body.sender_display_name.as_deref(),
-            magician::magician_v2::vibedev::run_service::coding_choice_from_client_fields(
+            magician::magician_v2::vibedev::run_service::coding_choice_from_client(
                 body.coding_choice.clone(),
-                None,
             ),
             app_owner_execution_credential,
         )
@@ -5112,10 +5357,7 @@ pub async fn send_message_stream_handler(
         Err(response) => return response,
     };
 
-    if let Some(response) = validate_profile_override(chat_api.get_ref(), &body) {
-        return response;
-    }
-    let routed_profile = match routed_profile_override(&body) {
+    let routed_profile = match routed_profile_override(chat_api.get_ref(), &body) {
         Ok(profile) => profile,
         Err(response) => return response,
     };
@@ -5141,9 +5383,27 @@ pub async fn send_message_stream_handler(
             if session.status
                 == magician::magician_v2::chat::models::ChatSessionStatus::Archived =>
         {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": "Cannot send messages to an archived session"
-            }));
+            // A VibeDev project's conversation is parked when the owner picks
+            // another project; writing into it means working there again, so
+            // it is reactivated rather than refused (`@vibedev` included).
+            match chat_api
+                .chat_service
+                .reactivate_parked_vibedev_project_session(&session)
+                .await
+            {
+                Ok(Some(reactivated)) => reactivated,
+                Ok(None) => {
+                    return HttpResponse::BadRequest().json(archived_session_send_refusal());
+                },
+                Err(error) => {
+                    warn!(
+                        session_id = %session_id,
+                        %error,
+                        "[CHAT-API] could not reactivate a VibeDev project's parked conversation"
+                    );
+                    return HttpResponse::BadRequest().json(archived_session_send_refusal());
+                },
+            }
         },
         Ok(None) => {
             return HttpResponse::NotFound().json(serde_json::json!({
@@ -5163,6 +5423,45 @@ pub async fn send_message_stream_handler(
         },
         Ok(Some(session)) => session,
     };
+    // `/god` / `/godoff` from the owner, or `/claim <code>`: one `done`
+    // frame, no agent turn.
+    let command_response = match god_mode_command_response(
+        chat_api.get_ref(),
+        &req,
+        &query,
+        &session,
+        trimmed_text.as_deref(),
+        &body,
+    )
+    .await
+    {
+        Some(response) => Some(response),
+        None => {
+            owner_claim_command_response(
+                chat_api.get_ref(),
+                &req,
+                &query,
+                &session,
+                trimmed_text.as_deref(),
+                &body,
+            )
+            .await
+        },
+    };
+    if let Some(response) = command_response {
+        let data = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+        let done_stream = futures_util::stream::once(async move {
+            Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!(
+                "event: done\ndata: {}\n\n",
+                data
+            )))
+        });
+        return HttpResponse::Ok()
+            .content_type("text/event-stream")
+            .insert_header(("Cache-Control", "no-cache"))
+            .insert_header(("X-Accel-Buffering", "no"))
+            .streaming(done_stream);
+    }
     let app_owner_execution_credential =
         match app_owner_execution_credential_for_request(&req, &session) {
             Ok(credential) => credential,
@@ -5189,9 +5488,8 @@ pub async fn send_message_stream_handler(
             let durable_sender_display_name = body.sender_display_name.clone();
             let durable_voice_origin = body.voice_origin;
             let durable_coding_choice =
-                magician::magician_v2::vibedev::run_service::coding_choice_from_client_fields(
+                magician::magician_v2::vibedev::run_service::coding_choice_from_client(
                     body.coding_choice.clone(),
-                    None,
                 );
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
@@ -5265,9 +5563,8 @@ pub async fn send_message_stream_handler(
                 body.source_surface.as_deref(),
                 body.presence_session_id.as_deref(),
                 body.sender_display_name.as_deref(),
-                magician::magician_v2::vibedev::run_service::coding_choice_from_client_fields(
+                magician::magician_v2::vibedev::run_service::coding_choice_from_client(
                     body.coding_choice.clone(),
-                    None,
                 ),
                 app_owner_execution_credential,
             )
@@ -5324,11 +5621,9 @@ pub async fn send_message_stream_handler(
     let source_surface = body.source_surface.clone();
     let presence_session_id = body.presence_session_id.clone();
     let sender_display_name = body.sender_display_name.clone();
-    let coding_choice =
-        magician::magician_v2::vibedev::run_service::coding_choice_from_client_fields(
-            body.coding_choice.clone(),
-            None,
-        );
+    let coding_choice = magician::magician_v2::vibedev::run_service::coding_choice_from_client(
+        body.coding_choice.clone(),
+    );
     let drain_service = Arc::clone(&service);
     let drain_sid = sid.clone();
     tokio::spawn(async move {
@@ -5721,6 +6016,57 @@ mod tests {
     }
 
     #[actix_web::test]
+    async fn history_activity_is_scoped_and_clears_after_a_turn_ends() {
+        use actix_web::{test, App};
+        let api = chat_api_with_store_resolver(create_store_resolver());
+        let service = api.chat_service.clone();
+        let mut ids = Vec::new();
+        for (principal, workspace) in [
+            ("owner", "default"),
+            ("someone-else", "default"),
+            ("owner", "other"),
+        ] {
+            let session = service
+                .chat_store_ref()
+                .get_or_create_active_session(
+                    principal,
+                    workspace,
+                    "general",
+                    &ChatChannel::web(),
+                    "personal-assistant",
+                )
+                .await
+                .unwrap();
+            service.register_active_chat_run(&session.id);
+            ids.push(session.id);
+        }
+        let app = test::init_service(App::new().app_data(web::Data::new(api)).route(
+            "/chat/activity",
+            web::get().to(get_session_activity_handler),
+        ))
+        .await;
+        let url = format!("/chat/activity?session_ids={}", ids.join(","));
+        let request = || {
+            test::TestRequest::get()
+                .uri(&url)
+                .insert_header(("X-Principal", "owner"))
+                .insert_header(("X-Workspace", "default"))
+                .to_request()
+        };
+        let response = test::call_service(&app, request()).await;
+        assert!(response.status().is_success());
+        assert_eq!(response.headers().get("Cache-Control").unwrap(), "no-store");
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["working_session_ids"], serde_json::json!([ids[0]]));
+        service.clear_active_chat_run(&ids[0]);
+        let body: serde_json::Value = test::call_and_read_body_json(&app, request()).await;
+        assert_eq!(body["working_session_ids"], serde_json::json!([]));
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri(&url).to_request()).await;
+        assert_eq!(response.status(), actix_web::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
     async fn envoy_claims_delivery_requires_the_session_channel_bot_and_scope() {
         use actix_web::{http::StatusCode, test::TestRequest, HttpMessage};
         use magician::magician_v2::auth::{middleware::AuthenticatedRequest, BearerKind, ScopeRef};
@@ -6017,14 +6363,17 @@ mod tests {
     }
 
     #[test]
-    fn route_inbound_query_owner_telegram_non_control_uses_envoy_thread() {
+    fn route_inbound_query_owner_telegram_non_control_is_still_the_owner() {
+        // The per-address bot requests the bare channel thread for a message
+        // without the prefix; from the owner's verified chat it goes to the
+        // owner's thread, not the envoy.
         let cfg = test_envoy_config();
-        let query = active_session_query("general", "telegram", "12345", Some(false));
+        let query = active_session_query("ext:telegram:12345", "telegram", "12345", Some(false));
 
         let (ui_thread_id, force_agent_id) = route_inbound_query(Some(&cfg), &query, true, None);
 
-        assert_eq!(ui_thread_id, "ext:telegram:12345");
-        assert_eq!(force_agent_id, Some("envoy".to_string()));
+        assert_eq!(ui_thread_id, "ext:telegram:12345:magic");
+        assert_eq!(force_agent_id, None);
     }
 
     #[test]
@@ -6205,7 +6554,7 @@ mod tests {
             mode: ChatMessageMode::Plan,
             plan_task_id: None,
             plan_question_id: None,
-            profile: None,
+            model_selection: None,
             harness_engine: None,
             harness_model: None,
             chat_turn_id: None,
@@ -6295,7 +6644,7 @@ mod tests {
             mode: ChatMessageMode::Plan,
             plan_task_id: None,
             plan_question_id: None,
-            profile: None,
+            model_selection: None,
             harness_engine: None,
             harness_model: None,
             chat_turn_id: None,
@@ -6321,7 +6670,7 @@ mod tests {
             mode: ChatMessageMode::Plan,
             plan_task_id: None,
             plan_question_id: Some("question-1".to_string()),
-            profile: None,
+            model_selection: None,
             harness_engine: None,
             harness_model: None,
             chat_turn_id: None,
@@ -6347,7 +6696,7 @@ mod tests {
             mode: ChatMessageMode::Ask,
             plan_task_id: Some("task-1".to_string()),
             plan_question_id: Some("question-1".to_string()),
-            profile: None,
+            model_selection: None,
             harness_engine: None,
             harness_model: None,
             chat_turn_id: None,

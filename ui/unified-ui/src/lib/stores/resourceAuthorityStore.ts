@@ -268,7 +268,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 	const response = await timedFetch(url, {
 		headers: {
 			'Content-Type': 'application/json',
-			...(key ? { Authorization: `Bearer ${key}` } : {}),
+			// The key rides its own header so the session bearer stays in
+			// `Authorization` for the API's sign-in gate. Without a key the
+			// owner's session may still read (the ledger views).
+			...(key ? { 'X-Resource-Authority-Key': key } : {}),
 			...options?.headers
 		},
 		...options

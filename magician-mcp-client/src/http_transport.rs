@@ -410,15 +410,13 @@ impl StreamableHttpClient for BoundedHttpClient {
             .map(bounded_response_session_id)
             .transpose()?;
 
-        if status.is_success()
-            && content_length == Some(0)
-            && matches!(
-                message,
-                ClientJsonRpcMessage::Notification(_)
-                    | ClientJsonRpcMessage::Response(_)
-                    | ClientJsonRpcMessage::Error(_)
-            )
-        {
+        let acknowledgement_only = matches!(
+            &message,
+            ClientJsonRpcMessage::Notification(_)
+                | ClientJsonRpcMessage::Response(_)
+                | ClientJsonRpcMessage::Error(_)
+        );
+        if status.is_success() && content_length == Some(0) && acknowledgement_only {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
 
@@ -447,6 +445,12 @@ impl StreamableHttpClient for BoundedHttpClient {
         }
         if is_content_type(&content_type, JSON_MIME_TYPE) {
             let body = self.bounded_body(response).await?;
+            // Some stateless servers acknowledge notifications/client replies
+            // with HTTP 200 JSON null. No JSON-RPC response is owed for these
+            // messages. Requests still require a real correlated envelope.
+            if acknowledgement_only && body.trim_ascii() == b"null" {
+                return Ok(StreamableHttpPostResponse::Accepted);
+            }
             return match serde_json::from_slice::<ServerJsonRpcMessage>(&body) {
                 Ok(message) => Ok(StreamableHttpPostResponse::Json(
                     message,
@@ -754,6 +758,54 @@ mod tests {
             StreamableHttpError::Client(BoundedHttpError::BodyTooLarge { maximum: 64 })
         ));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn json_null_is_only_an_acknowledgement_for_non_request_messages() {
+        for (message, accepted) in [
+            (
+                serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                true,
+            ),
+            (
+                serde_json::json!({"jsonrpc":"2.0","id":7,"result":{}}),
+                true,
+            ),
+            (
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+                false,
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                let _ = socket.read(&mut request).await.unwrap();
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 6\r\nConnection: close\r\n\r\n null ").await.unwrap();
+            });
+            let client = BoundedHttpClient::new(None, 4096, 4096).unwrap();
+            let response = client
+                .post_message(
+                    Arc::<str>::from(format!("http://{address}/mcp")),
+                    serde_json::from_value(message).unwrap(),
+                    None,
+                    None,
+                    HashMap::new(),
+                )
+                .await;
+            assert_eq!(
+                matches!(response, Ok(StreamableHttpPostResponse::Accepted)),
+                accepted
+            );
+            if !accepted {
+                assert!(matches!(
+                    response,
+                    Err(StreamableHttpError::UnexpectedServerResponse(_))
+                ));
+            }
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]

@@ -94,7 +94,7 @@
 		if (status === 'planning') return 'Planning';
 		if (status === 'running') return 'Running';
 		if (status === 'paused') return task?.pendingQuestion ? 'Needs Input' : 'Paused';
-		if (status === 'completed') return 'Completed';
+		if (status === 'completed') return task?.completionKind === 'partial' ? 'Partly done' : 'Completed';
 		if (status === 'failed') return 'Failed';
 		if (status === 'cancelled') return 'Cancelled';
 		if (status === 'archived') return 'Archived';

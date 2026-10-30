@@ -70,3 +70,27 @@ function normalizeNotePath(path: string): string | null {
 	}
 	return parts.length > 0 ? parts.join('/') : null;
 }
+
+/**
+ * The canonical link to one note: `/notes?path=<path>&workspace=<workspace>`.
+ *
+ * Relative on purpose: the same link works on every host the owner reaches
+ * Magician through, and opening it goes through the normal sign-in and
+ * workspace check. The server builds note links with the same encoding
+ * (`encodeURIComponent` for both values, `workspace` omitted when empty), so a
+ * link a chat reply carries and one this app builds are the same string.
+ */
+export function noteHref(path: string, workspace?: string | null): string {
+	const scope = workspace?.trim() ?? '';
+	const query = `path=${encodeURIComponent(path)}`;
+	return scope ? `/notes?${query}&workspace=${encodeURIComponent(scope)}` : `/notes?${query}`;
+}
+
+/** The absolute form of {@link noteHref}, for copying a note's link to share. */
+export function absoluteNoteLink(
+	path: string,
+	workspace?: string | null,
+	origin: string = typeof window === 'undefined' ? '' : window.location.origin
+): string {
+	return `${origin.replace(/\/+$/, '')}${noteHref(path, workspace)}`;
+}

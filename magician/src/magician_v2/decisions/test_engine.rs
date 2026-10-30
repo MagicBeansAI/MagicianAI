@@ -58,6 +58,8 @@ impl FakeEngine {
                 route_local: vec![],
                 route_cloud: vec!["jev".into()],
                 classification: Default::default(),
+                images_local: false,
+                images_cloud: false,
             }],
         };
         let answers: Vec<(String, String, f64)> = answers

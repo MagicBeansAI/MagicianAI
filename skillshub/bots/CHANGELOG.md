@@ -9,6 +9,8 @@ for its internal package versions.
 ---
 ## [Unreleased]
 
+- AgentMail 0.1.2 and Kapso 0.2.4 register machine-owned signed webhooks; Telegram 0.2.4 forwards owner claim and God-mode commands.
+
 - Bot SDK `0.3.7`: carry real transport receipts and scoped delivery/reply acknowledgements; refuse dispatching arbitrary text for unknown cards.
 - AgentMail `0.1.1`: admit signed delivery events durably, route parent replies to Work, bind recipient-only sends and keep existing webhook subscriptions.
 - Fixed: the Telegram bot crashed at startup due to bundler renaming; bundles now keep names.

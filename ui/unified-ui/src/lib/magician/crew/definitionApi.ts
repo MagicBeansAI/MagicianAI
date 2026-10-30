@@ -243,7 +243,7 @@ export const DEFAULT_NEW_AGENT_YAML = `name: Demo Agent
 description: Example agent definition
 persona: You are a practical autonomous assistant.
 trust_level: local
-kind: Personal
+kind: personal
 tools:
   - browser
   - files

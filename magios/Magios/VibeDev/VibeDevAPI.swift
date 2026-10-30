@@ -4,6 +4,7 @@ import Foundation
 /// tests can stub the server.
 protocol VibeDevServing {
     func liveRuns() async throws -> VibeDevLiveRunsResponse
+    func runHistory(limit: Int, cursor: String?) async throws -> VibeDevRunHistory
     func projects() async throws -> VibeDevProjectsResponse
     func runsPage(projectID: String, limit: Int, offset: Int, query: String) async throws -> VibeDevRunsPage
     func crews(projectID: String) async throws -> [VibeDevCrew]
@@ -16,6 +17,9 @@ protocol VibeDevServing {
     func startRun(_ request: VibeDevStartRunRequest) async throws -> VibeDevStartRunResponse
     func createProject(name: String, repoPath: String) async throws -> VibeDevProject
     func updateProject(id: String, trust: VibeDevTrust?, baseBranch: String?) async throws -> VibeDevProject
+    /// `git init` + a first commit in the project folder (health action
+    /// `git_init`). Errors carry the server's `message`.
+    func gitInit(projectID: String) async throws -> VibeDevGitInitResponse
     /// Steer or stop a live turn. Throws `.http(409, …)` between turns.
     func control(liveTaskID: String, action: VibeDevControlAction, message: String?) async throws
     func createCrew(projectID: String, request: VibeDevCreateCrewRequest) async throws -> VibeDevCrew
@@ -75,6 +79,12 @@ struct VibeDevAPI: VibeDevServing {
         try await get("/vibedev/runs/live")
     }
 
+    func runHistory(limit: Int, cursor: String?) async throws -> VibeDevRunHistory {
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await get("/vibedev/runs", query: items)
+    }
+
     func projects() async throws -> VibeDevProjectsResponse {
         try await get("/vibedev/projects")
     }
@@ -114,8 +124,8 @@ struct VibeDevAPI: VibeDevServing {
     }
 
     func codingProfiles() async throws -> [VibeDevCodingProfile] {
-        let response: VibeDevCodingProfiles = try await get("/coding/profiles")
-        return response.profiles
+        let response: VibeDevModelCatalog = try await get("/coding/models")
+        return response.rows
     }
 
     // MARK: Writes
@@ -128,6 +138,10 @@ struct VibeDevAPI: VibeDevServing {
         let response: VibeDevProjectMutation = try await send(
             "POST", "/vibedev/projects", body: ["name": name, "repo_path": repoPath])
         return response.project
+    }
+
+    func gitInit(projectID: String) async throws -> VibeDevGitInitResponse {
+        try await send("POST", "/vibedev/projects/\(Self.segment(projectID))/git-init", body: [:])
     }
 
     func updateProject(id: String, trust: VibeDevTrust?, baseBranch: String?) async throws -> VibeDevProject {
@@ -245,6 +259,11 @@ struct VibeDevAPI: VibeDevServing {
             if let text = object[key] as? String, !text.isEmpty { return text }
         }
         if let error = object["error"] as? [String: Any], let text = error["message"] as? String { return text }
+        // `vibedev_project_unhealthy` without a message: the issues say why.
+        if let health = object["health"] as? [String: Any], let issues = health["issues"] as? [[String: Any]] {
+            let messages = issues.compactMap { $0["message"] as? String }.filter { !$0.isEmpty }
+            if !messages.isEmpty { return "Project needs attention: runs cannot start. " + messages.joined(separator: " ") }
+        }
         return ""
     }
 

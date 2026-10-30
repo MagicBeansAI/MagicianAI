@@ -5,6 +5,30 @@ import XCTest
 /// `promptFor.test.ts` "posts Approve & Run as an approval (the run starts
 /// after it lands)" and `respondToHitl.ts` `startRunAfterPlanApproval`).
 final class PlanApprovalActionsTests: XCTestCase {
+    @MainActor func testMissingApprovalAcknowledgementDoesNotStartARun() async {
+        var posts = 0
+        MockURLProtocol.handler = { req in
+            posts += 1
+            return (response(for: req), jsonData([:]))
+        }
+        let client = LivePlanApprovalClient(session: makeMockSession())
+        let outcome = await PlanApprovalActions.approveAndRun(request, client: client)
+        guard case .failed = outcome else { return XCTFail("Missing acknowledgement cannot authorize a run") }
+        XCTAssertEqual(posts, 1)
+    }
+    @MainActor func testAnAlreadyAnsweredApprovalDoesNotStartAnotherRun() async {
+        var posts: [String] = []
+        MockURLProtocol.handler = { req in
+            XCTAssertEqual(req.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            posts.append(req.url!.path)
+            return (response(for: req, status: 409), jsonData(["reason": "already_resolved"]))
+        }
+        let client = LivePlanApprovalClient(session: makeMockSession())
+        let outcome = await PlanApprovalActions.approveAndRun(request, client: client)
+        guard case .failed = outcome else { return XCTFail("an old approval is not permission for another run") }
+        XCTAssertEqual(posts.count, 1)
+        MockURLProtocol.handler = { req in (response(for: req), jsonData([:])) }
+    }
     /// Records every call in order; each answer is scripted.
     private final class StubClient: PlanApprovalClient {
         var respondResult: PlanApprovalPost = .ok

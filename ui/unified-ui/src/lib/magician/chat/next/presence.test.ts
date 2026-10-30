@@ -23,6 +23,11 @@ describe('derivePresence', () => {
 		expect(derivePresence({ ...none, toolsRunning: true })).toBe('working');
 	});
 
+	it('reads a paused or review-waiting task as needs-you, not working', () => {
+		expect(derivePresence({ ...none, liveTurn: true, taskWaitingOnUser: true })).toBe('needs-you');
+		expect(derivePresence({ ...none, taskWaitingOnUser: false, toolsRunning: true })).toBe('working');
+	});
+
 	it('puts a pending HITL above everything else', () => {
 		expect(derivePresence({ hasPendingHitl: true, liveTurn: true, streaming: true, toolsRunning: true })).toBe(
 			'needs-you'

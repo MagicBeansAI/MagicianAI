@@ -30,6 +30,9 @@
 		<span class="slash-title">{view.title}</span>
 		<span class="slash-hint" aria-hidden="true">↵ choose{canGoBack ? ' · ⌫ back' : ''} · esc</span>
 	</div>
+	{#if view.summary}
+		<div class="slash-summary" data-testid="slash-summary">{view.summary}</div>
+	{/if}
 	{#if view.note}
 		<div class="slash-note" role="status">{view.note}</div>
 	{/if}
@@ -39,9 +42,11 @@
 				type="button"
 				class="slash-option"
 				class:active={index === activeIndex}
+				class:disabled={item.disabled}
 				role="option"
 				aria-selected={index === activeIndex}
 				aria-current={item.current ? 'true' : undefined}
+				aria-disabled={item.disabled ? 'true' : undefined}
 				on:mousedown|preventDefault
 				on:click={() => dispatch('select', item)}
 			>
@@ -117,6 +122,14 @@
 		white-space: nowrap;
 	}
 
+	.slash-summary {
+		margin: 0 6px 6px;
+		font-family: var(--font-primary);
+		font-size: 11.5px;
+		line-height: 1.3;
+		color: var(--text-secondary, var(--text-muted, #888));
+	}
+
 	.slash-note {
 		margin: 0 6px 6px;
 		padding: 6px 8px;
@@ -145,6 +158,11 @@
 	.slash-option:hover,
 	.slash-option.active {
 		background: var(--bg-soft, rgba(0, 0, 0, 0.06));
+	}
+
+	.slash-option.disabled {
+		cursor: default;
+		opacity: 0.55;
 	}
 
 	.slash-badge {

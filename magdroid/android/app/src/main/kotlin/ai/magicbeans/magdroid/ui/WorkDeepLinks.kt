@@ -41,21 +41,22 @@ internal object WorkDeepLinks {
             if (crew.size == 3 && crew[1] == "memory") return library(WorkSection.Crew, WorkRoute("memory-tier", crew[0], "Memory tier", goalId = q("goal_id").orEmpty(), tier = crew[2]))
             return null
         }
-        if (parts.size == 3 && parts[0] == "t" && parts[2] == "tasks") return WorkLinkTarget.Thread(parts[1])
+        if (parts.size == 3 && parts[0] == "t" && parts[2] == "tasks") return if (q("selected") == null) WorkLinkTarget.Thread(parts[1]) else null
         if (path == "/harness") return library(WorkSection.Operations)
         if (path !in listOf("/work", "/relentless")) return null
         val view = if (path == "/relentless") "quality" else q("view")
         return when (view) {
             "crew" -> library(WorkSection.Crew, q("agent")?.let { WorkRoute("member", it, "Crew member") })
-            "programs" -> library(WorkSection.Programs, q("program")?.let { WorkRoute("program", it, "Program") })
+            "programs" -> library(WorkSection.Programs, q("program")?.let { WorkRoute("program", it, "Playbook") })
             "quality" -> library(WorkSection.Quality, when {
                 q("run") != null -> WorkRoute("quality-run", q("run")!!, "Quality run")
                 q("proposal") != null -> WorkRoute("quality-proposal", q("proposal")!!, "Quality proposal")
                 q("campaign") != null -> WorkRoute("quality-campaign", q("campaign")!!, "Capture policy")
-                q("task") != null -> WorkRoute("quality-context", q("task")!!, "Quality and review", agentId = q("agent").orEmpty())
-                else -> WorkRoute("Quality", title = "Quality and review", agentId = q("agent").orEmpty())
+                q("task") != null -> WorkRoute("quality-context", q("task")!!, "Quality checks", agentId = q("agent").orEmpty())
+                else -> WorkRoute("Quality", title = "Quality checks", agentId = q("agent").orEmpty())
             })
             "operations" -> library(WorkSection.Operations)
+            "goals" -> library(WorkSection.Goals, if (q("goals") == "closed") WorkGoalCopy.CLOSED_ROUTE else null)
             "needs-you" -> library(WorkSection.NeedsYou)
             null, "all", "inbox", "today", "overdue", "running", "completed" -> if (q("selected") == null) q("thread")?.let { WorkLinkTarget.Thread(it) } ?: library(WorkSection.All) else null
             else -> null

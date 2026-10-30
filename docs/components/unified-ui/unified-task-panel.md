@@ -38,6 +38,15 @@ reads are rejected, and a rejected move never shows success. Polling the same
 target and scope keeps an open Steer composer draft; a new execution or scope
 clears it.
 
+Expanded chat task cards expose the shared Pause/Resume, Steer and Stop controls
+for the authoritative active root. Internal tasks resolve that root by task id;
+historical run ids remain inspection-only, and collapsed cards make no control
+requests.
+
+Approve & Run and task lookups keep their original workspace: switching
+workspaces while an answer or lookup is pending cancels the Run request and
+asks the reader to reopen the task in its workspace.
+
 ### The retirement
 
 `routes/(app)/ExecutionPanel.svelte`, `src/lib/magician/deepwork/` and the
@@ -127,8 +136,10 @@ human copy, never the enum; a non-blank `attention.summary` wins.
 
 `running` with no progress for `STALL_AFTER_MS` (5 minutes, inclusive).
 `lastProgressAt` is real progress, **never `updated_at`** (rewritten on every
-mirrored event); the backend moves `last_progress_at` only on step start
-(incl. re-activation) and complete/fail. `Task.lastProgressAt` uses
+mirrored event). Use the latest task-row progress or current-run model/tool/step
+activity, including child work; live observations survive older row polls.
+Heartbeats, status updates, metrics and warnings do not advance this clock.
+`Task.lastProgressAt` uses
 `parseLastProgressAt`, not `parseTimestampToIso`; missing, malformed, `0`, `-1`
 are absent. Detail: `Still on step 4: …`, else `Still on this step: …` or
 `The run has not advanced`.
@@ -182,6 +193,9 @@ required.
 
 Absent preferred act → nearest earlier, else earliest later (finished, no output
 → Run); `null` only with no acts. Tests: `taskCapabilities.test.ts`.
+
+Header usage and Models share one in-flight scoped query, retaining unknown measurements as unavailable.
+Visible completed chat cards load the matching run's bounded report; scope, login and execution checks prevent borrowing another run's document.
 
 ## Act summary lines
 
@@ -303,9 +317,10 @@ the name copies the host path** (`copyText`) when `absolutePath` is set; `output
 takes `absolute_path` only if absolute, and the endpoint sends it only inside the
 task's `outputs/`.
 
-**The report's own file sits above the report.** `output.summary`
-(`completion_summary`) comes from `summarize_task_primary_output`
-(`primary_user_output_id`, else the first `audience: "user"` ref);
+**The report's own file sits above the report.** The body prefers the matching
+run's bounded source `report`, falling back to that run's summary; summary
+verification stays behind the info icon. The source is `primary_user_output_id`,
+else the first `audience: "user"` ref;
 `fetchTaskOutputFiles` marks that file `reportSource` (`reportSourcePath`), and
 it renders above `.output-summary` without `Preview`, not repeated below.
 
@@ -313,7 +328,7 @@ it renders above `.output-summary` without `Preview`, not repeated below.
 
 The Output act lists **deliverables only**. `GET /tasks/{id}/outputs` marks
 `deliverable` (`models::is_deliverable_output`: `audience == "user"` and
-`role ∈ {primary_task_user, user_media}`, the Portable Export rule) and lists
+`role ∈ {primary_task_user, user_media, user_attachment}`, the Portable Export rule) and lists
 sidecars (`task_summary.json`, `voice_speech.json`). `isDeliverableRef`
 applies the rule when the field is absent, dropping continuation context and
 legacy `out_task_agent_*` copies; no `role` → deliverable unless
@@ -440,7 +455,7 @@ Staleness = a refresh failed while something is shown; no threshold. Tests:
 place store and panel vocabularies meet**; `verdictStatusOf`, `provenanceRows`,
 `outputFilesFrom` are exported for the internal adapter. It settles absence
 (`undefined` → `null`; a test fails on any `undefined`), statuses (ten
-`TaskStatus` → nine verdict states) and what an output file is.
+`TaskStatus` → ten verdict states; `finalizing` reads "Preparing final result" while `synthesis_pending` is set on a finished task, after failed/waiting/cancelled/running/queued/archived and before finished, and falls back to finished after 10 minutes) and what an output file is.
 
 ### The status map
 
@@ -694,8 +709,9 @@ run, not a task**: no plan → `plan: null`; no fabricated `Task`.
 
 `executionPanelUrl` owns the branch and requires both ids. Model `id`:
 `execution:<id>`, else `task:<id>`. `lastProgressAt` =
-max over `run.activity_log`, `run.recent_activity`, `debug.timeline` (never
-`overview.updated_at`). `elapsedMs` = `ended_at − started_at`, only once ended.
+latest work event in `run.activity_log`, `run.recent_activity`, `debug.timeline`
+(never `overview.updated_at` or a heartbeat). `elapsedMs` = `ended_at − started_at`,
+only once ended.
 `error`: `debug.latest_error_message`, then
 `selected_execution.error_message`, never `run.summary`; `summary` is the report
 only. **Ask ranking inverts:** `run.needs_attention` leads,
@@ -722,8 +738,8 @@ payload, no execution id, or a payload for **another** execution
 
 `TIMELINE_RENDER_LIMIT = 200`; `timelineWindow(entries, limit)` returns the
 newest rows and the omitted count for a `<p role="note">`
-(`Showing the latest 200 of 1,043 events`). `latencyScale`, `timelineOrigin` and
-totals read the full list.
+(`Showing the latest 200 of 1,043 events`). `timelineOrigin` and totals read
+the full list.
 
 ### Delegation envelopes and view modes
 
@@ -758,8 +774,17 @@ Only `shell` entries produce `detail` (machine output: `<pre><code>` with
 `observation.url ?? page_stage ?? 'Observation'`. `TimelineEntry.screenshot` is a
 bare boolean (not viewable). `timelineIsolated(entry)` hairlines rows with
 `body`/`detail`; only `.output-preview__text` scrolls sideways. `cachedPercent`
-divides by `input` alone (`input_tokens` includes cached). **Latency bars** scale
-to the longest call and appear once two rows are timed.
+divides by `input` alone (`input_tokens` includes cached). A row's duration
+stands alone at the trailing edge (no latency bars).
+
+An LLM call is **one row**, titled like the chat card (`llmModelLabel.ts`,
+`Thinking with <model>`). `deriveTimeline` pairs `llm.*` rows on
+`metadata.llm_call_id` (`llm-call:<id>`) and `tool.*` rows on
+`metadata.call_id` per execution (`tool-call:<exec>:<id>`): the entry runs from
+the first row, takes the routed model, and the settled row replaces it in
+place; without ids a requested row folds into the next settled LLM row. While
+the run is live a running row counts up off the shared 1 s clock
+(`chat/next/liveClock.ts`).
 
 ### What the whole run cost, which the feed stated 70 times and summed nowhere
 
@@ -859,6 +884,9 @@ fallback** (declared at `:root` in `src/app.css` and every theme) except
 
 ## Answering an ask — the one renderer
 
+Governed tool approvals keep the server-offered action/whole-tool and
+session/always choices; MCP and CLI rows name the operation and the integration.
+
 ### Two vocabularies
 
 `HitlInputType` (`src/lib/hitl/types.ts`) mirrors Rust `UserInputType`;
@@ -879,6 +907,20 @@ grant in `options_json` (`allow_once`, `allow_always`, `deny`; default
 `allow_once`/`deny`); subject printed verbatim in mono; **the refusal is primary
 and takes initial focus**, matched by id, never label. Tests:
 `src/lib/hitl/promptFor.test.ts`, `src/lib/hitl/HitlPromptFields.component.test.ts`.
+
+**Approval preview** (`schema.approval_preview`, a confirmation whose gated
+tool registered a preview builder —
+[hitl-attention.md](../magician/hitl-attention.md#approval-previews)):
+`adapters.ts` reads it (line text verbatim, unknown line kinds dropped, the
+schema's `action_summary` + `reason` kept as `raw`); `promptFor` sets
+`prompt.approvalPreview` and drops `body` (no preview on an alignment hold);
+`HitlPromptFields` renders `ApprovalPreviewCard.svelte` above the decision:
+title, a `role="alert"` warnings banner, the reason under its label (the
+agent's words, text only), `+N lines, −M lines` and the diff through
+`DiffStrip`, "… N more changed lines" when capped, evidence, and a collapsed
+"Raw call". Without the field the confirmation renders as before. Tests:
+`src/lib/hitl/approvalPreview.test.ts`,
+`src/lib/hitl/ApprovalPreviewCard.component.test.ts`.
 
 **Preference alignment hold** (`escalation_trigger: "preference_alignment"`):
 `promptFor` sets `prompt.alignment`; `HitlPromptFields` renders
@@ -908,7 +950,9 @@ The panel renders and collects; the surface posts. `runAttentionFrom` returns a
 | `toInternalTaskPanelModel` | synthesis failure → none; *Retry synthesis* unblocks it |
 
 `askTargetFrom` narrows `source` and `input_type` (on failure: verdict, no
-control). The ask renders once, atop `askAct` (from `autoAct`, not `openAct`).
+control). Pending asks and plan questions render once in a non-collapsible
+**Needs your input** area above the acts, so collapsing Run or opening Output
+keeps the questions and any draft answer visible.
 `TasksWorkspace`, `/t/{name}/tasks` and both chat drawers pass `answerAsk`.
 
 **Every ask is answerable.** Other plan questions and the run's other
@@ -923,12 +967,13 @@ an `xl` dialog); `null` (e.g. `confirmation`) answers in place.
 **Pending asks the payload does not list.** `TaskPanelDrawer` folds in every ask
 `src/lib/attention/pendingAsks.ts` holds for its task id (`metadata.hitl_request`
 feed rows included); `mergeTaskPanelAsks` dedupes by every alias and, with no
-model `ask`, promotes the newest. Without `answerAsk` (internal work, Crew
+model `ask`, promotes the newest. Without `answerAsk` (System work, Crew
 cycles) the drawer answers via `answerTaskAsk` itself, so a Relentless review or
 budget notice is answerable wherever the drawer opens (a `review_href` adds a
 `Review →` link that answers nothing). `answerTaskAsk`
 substitutes the inline answer for the **first** `openHitlPrompt` modal only
 (else an unbounded POST loop); `REASK_LIMIT` (5) bounds re-asks.
+The composer dock (chat and VibeDev) lists every open question, wherever the reader is (`composerAsks`), except a notice whose only answer is Dismiss (`isDismissOnlyAsk`: a service-health or expired notice), which stays on the Attention page and the desktop notch: this conversation's first (its chat session, from the ask's `context.chat_session_id` or else the feed row's `input_schema` or `hitl_request.scope`, as Android reads it; a named thread; or its tasks, which in the shared `general` thread means only tasks this chat session started), the rest labelled `From <chat or task>`. Another chat's question is never this conversation's, and the shared `general` thread alone never makes an ask local, as on Android. Only this conversation's question takes typed composer text; one from elsewhere is answered with the dock's own controls.
 
 **No fabricated success:** `TaskAskState` has `sending` and `failed`, no
 `answered`. Success clears it and re-reads (the ask leaves when the server stops
@@ -974,3 +1019,5 @@ question was delivered") with **Cancel run** (`cancelStalled`); `/tasks` posts
   delivery reads “Partially completed”, pending synthesis “Preparing final
   result”; the kind travels in live events and terminal reconciliation;
   structured cards use a warning tone for partial delivery.
+
+The shared drawer header restores cumulative task usage from the scoped LLM ledger (all executions and descendants), including tokens, cache reads/writes and known cost; missing telemetry remains unreported.

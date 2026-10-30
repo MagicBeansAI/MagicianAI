@@ -44,6 +44,22 @@ pub struct ConnectionReviewObservation {
     pub elapsed_ms: u64,
 }
 
+/// Log why a review was deferred (not charged to the hourly budget). The
+/// scope's first deferral in an hour logs at debug; a repeat, meaning the
+/// route or engine keeps failing, at warn. The deferral cap bounds both to
+/// MAX_DEFERRALS_PER_HOUR per scope per hour.
+fn log_deferral(deferred_this_hour: usize, cause: &str) {
+    if deferred_this_hour > 0 {
+        tracing::warn!(
+            cause = %cause,
+            deferred_this_hour,
+            "memory connection review deferred again"
+        );
+    } else {
+        tracing::debug!(cause = %cause, "memory connection review deferred");
+    }
+}
+
 fn source_content_digest(sources: &[ConnectionSource]) -> String {
     let mut digest = blake3::Hasher::new();
     digest.update(&(sources.len() as u64).to_le_bytes());
@@ -550,6 +566,91 @@ mod tests {
         }
     }
 
+    /// A route that never produces a decision is deferred, not charged to the
+    /// hourly decision budget, and bounded: one review per pass and
+    /// MAX_DEFERRALS_PER_HOUR per hour, after which no request is sent.
+    #[tokio::test]
+    async fn memory_connections_unavailable_route_defers_without_spending_the_budget() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let (_temp, mut runtime, scope, seed) = fixture(ConnectionSurface::ForYou).await;
+        let now = seed.attempted_at;
+        let mut candidate = runtime
+            .store
+            .get_candidate("p", "w", &seed.candidate_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let ids: Vec<String> = (0..MAX_DEFERRALS_PER_HOUR)
+            .map(|index| format!("generated-{index}"))
+            .collect();
+        for id in &ids {
+            candidate.candidate_id = id.clone();
+            runtime
+                .store
+                .upsert_candidate("p", "w", &candidate)
+                .await
+                .unwrap();
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("route refused"))
+            .mount(&server)
+            .await;
+        let config = serde_json::from_value(json!({
+            "profiles":{"test":{"provider":"ollama","model":"connection-test","api_base_url":format!("{}/api/generate",server.uri())}},
+            "default_profile":"test", "operation_mapping":{(OPERATION):"test"}
+        }))
+        .unwrap();
+        runtime.router = Some(Arc::new(OperationLlmRouter::new(Some(config))));
+        // The fixture's ready decision is the only charged review.
+        let charged = runtime
+            .store
+            .connection_calls_since("p", "w", now - 3600)
+            .await
+            .unwrap();
+        let mut cursor = Some(seed.candidate_id.clone());
+        for (pass, id) in ids.iter().enumerate() {
+            assert_eq!(runtime.pass(&scope, &mut cursor, now).await.unwrap(), 1);
+            let record = runtime
+                .store
+                .get_connection("p", "w", id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.state, ConnectionState::Deferred);
+            // Backoff: the pass stopped after its first decisionless review.
+            if let Some(next) = ids.get(pass + 1) {
+                assert!(runtime
+                    .store
+                    .get_connection("p", "w", next)
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+            assert_eq!(
+                runtime
+                    .store
+                    .connection_calls_since("p", "w", now - 3600)
+                    .await
+                    .unwrap(),
+                charged
+            );
+        }
+        assert_eq!(
+            runtime
+                .store
+                .connection_deferrals_since("p", "w", now - 3600)
+                .await
+                .unwrap(),
+            MAX_DEFERRALS_PER_HOUR
+        );
+        let sent = server.received_requests().await.unwrap().len();
+        assert!(sent >= MAX_DEFERRALS_PER_HOUR);
+        // The deferral cap holds the scope for the rest of the hour.
+        assert_eq!(runtime.pass(&scope, &mut cursor, now).await.unwrap(), 0);
+        assert_eq!(server.received_requests().await.unwrap().len(), sent);
+    }
+
     #[tokio::test]
     async fn memory_connections_citations_require_current_scoped_canonical_memory() {
         let (_temp, runtime, _scope, record) = fixture(ConnectionSurface::WorthALook).await;
@@ -847,6 +948,16 @@ impl ConnectionRuntime {
         if spent >= MAX_CALLS_PER_HOUR {
             return Ok(0);
         }
+        // Reviews that ended before any decision are not charged above, so a
+        // failing engine is bounded here instead: at most one per pass (see
+        // the `break` below) and MAX_DEFERRALS_PER_HOUR per hour.
+        let deferred_this_hour = self
+            .store
+            .connection_deferrals_since(&scope.principal, &scope.workspace, now - 3600)
+            .await?;
+        if deferred_this_hour >= MAX_DEFERRALS_PER_HOUR {
+            return Ok(0);
+        }
         let candidates = self
             .store
             .list_active_semantic_candidates(
@@ -909,12 +1020,25 @@ impl ConnectionRuntime {
             calls += 1;
             let (sources, route) = match self.current_sources(scope, &candidate).await {
                 Ok(Some(input)) => input,
-                _ => {
+                Ok(None) => {
                     reservation.state = ConnectionState::Failed;
                     self.store
                         .put_connection(&scope.principal, &scope.workspace, &reservation)
                         .await?;
                     continue;
+                },
+                // Detail, recall or profile reads failed or timed out: no
+                // decision was attempted, so release the charge and back off.
+                Err(error) => {
+                    log_deferral(
+                        deferred_this_hour,
+                        &format!("sources unavailable: {error:#}"),
+                    );
+                    reservation.state = ConnectionState::Deferred;
+                    self.store
+                        .put_connection(&scope.principal, &scope.workspace, &reservation)
+                        .await?;
+                    break;
                 },
             };
             let scoped = router.with_scope_context(Some(magicllm::LlmScope::new(
@@ -994,8 +1118,10 @@ impl ConnectionRuntime {
                 source_check
             };
             let started = std::time::Instant::now();
+            // The review's own budget bounds every wait inside it; this outer
+            // bound is derived from it so a granted gate decision is never cut.
             let reply = tokio::time::timeout(
-                Duration::from_secs(20),
+                REVIEW_TIMEOUT,
                 review_connection_with_source_check(
                     &scoped,
                     &record.sources,
@@ -1018,30 +1144,49 @@ impl ConnectionRuntime {
                     elapsed_ms: started.elapsed().as_millis() as u64,
                 });
             }
+            // `None`: the review ended before any decision (outer timeout, or
+            // no route/engine answered). It is released from the hourly
+            // decision budget; a produced-but-rejected reply stays charged.
             let parsed = match reply {
                 Ok(Ok(reply)) if reply.current() => {
                     record.decision_policy =
                         reply.origin.as_ref().map(|_| decision_policy.key.clone());
                     record.decision_origin = reply.origin;
-                    Ok(reply.connection)
+                    Some(Ok(reply.connection))
                 },
-                Ok(Ok(_)) => Err(anyhow::anyhow!("connection decision policy changed")),
-                _ => Err(anyhow::anyhow!("connection model unavailable")),
+                Ok(Ok(_)) => Some(Err(anyhow::anyhow!("connection decision policy changed"))),
+                Ok(Err(error)) if decision_unavailable(&error) => {
+                    log_deferral(deferred_this_hour, &format!("{error:#}"));
+                    None
+                },
+                Ok(Err(error)) => Some(Err(error)),
+                Err(_) => {
+                    log_deferral(
+                        deferred_this_hour,
+                        &format!("review exceeded {}s", REVIEW_TIMEOUT.as_secs()),
+                    );
+                    None
+                },
             };
+            let deferred = parsed.is_none();
             match parsed {
-                Ok(Some(connection)) => {
+                Some(Ok(Some(connection))) => {
                     record
                         .sources
                         .retain(|s| connection.evidence.iter().any(|c| c.id == s.id));
                     record.connection = Some(connection);
                     record.state = ConnectionState::Ready;
                 },
-                Ok(None) => {
+                Some(Ok(None)) => {
                     record.state = ConnectionState::Empty;
                     record.sources.clear();
                 },
-                Err(_) => {
+                Some(Err(_)) => {
                     record.state = ConnectionState::Failed;
+                    record.sources.clear();
+                },
+                None => {
+                    record.state = ConnectionState::Deferred;
                     record.sources.clear();
                 },
             }
@@ -1051,6 +1196,11 @@ impl ConnectionRuntime {
             if record.state == ConnectionState::Ready {
                 // Reopen sources after the model call before publishing anything.
                 self.reconcile(scope, &mut record, now).await?;
+            }
+            if deferred {
+                // Back off: one decisionless review per pass, so a stuck
+                // engine blocks a tick for at most one REVIEW_TIMEOUT.
+                break;
             }
         }
         Ok(calls)

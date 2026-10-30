@@ -1,5 +1,29 @@
 # Testing Guide (Current Stack)
 
+## LLM model catalog
+
+`make test-llm-model-catalog` covers resolver units, provider HTTP serialization,
+routing, Rust/Python parity, migration and Web selection controls without live
+provider calls. See the [catalog contract](components/magicllm/model-catalog.md).
+
+| Target | Focus |
+| --- | --- |
+| `test-llm-chat-model-api` | Typed Chat/coding/Plane admission, engine qualification, readiness and retired-input refusal; includes migration-owner guards. |
+| `test-llm-runtime-model-catalog` | Config, harness defaults, VibeDev and cached coding readiness. |
+| `test-llm-channel-models` | Bot typed sends and backend-owned queue observation, deduplication, stop and failure; fake transports only. |
+| `test-llm-script-readers` | Catalog-preserving eval snapshots, isolated candidates, canonical routing fixtures and source immutability. |
+| `test-llm-chat-model-eval-args` | LongMemEval/tau2 typed request bodies, default/fixed/Off validation and retired-flag refusal. Full tau2 self-test additionally requires `TAU2_REPO`. |
+| `test-llm-profile-retirement` / `test-llm-alias-free-config` | Read-only inventory, private snapshots, fallback closure, preserved source bytes and stale-source refusal. |
+| `test-llm-agent-pin-migration` | Versioned store updates, archives, idempotence, stale-source and verifiable shutdown guards. |
+| `llm-preference-migration-check` | Frozen returning-client conversion assets and native codegen parity. |
+| `test-magdroid` / `test-ios-model-catalog` | Native metadata, defaults, all-engine choices and run-body compatibility. |
+
+Run these through `make`. `make check-all` compiles the workspace and all clients.
+The catalog frontend lane uses `test-ui-installed`, preserving Vite's installed
+dependency graph. Inventories and config previews exclude some live state owners;
+passing them alone cannot qualify cutover. See
+migration boundaries.
+
 ## macOS source installer
 
 `make test-source-install` runs the TUI suite and hermetic shared-script/service
@@ -93,9 +117,16 @@ and `make test-llm-resource-guard` for native discovery/deny rules, budget meter
 and cancellation. `make test-anthropic-structured-output` and
 `make test-gemini-structured-output` validate provider wire behavior against
 local fixtures. These lanes do not contact live model providers.
-`test-relentless-api` includes the API's catalog helper tests. Keep dependency installation
-(`npm ci`, including `check-ui`) sequential with UI tests and dev previews; it
-replaces the shared module cache. The integrations target includes native
+`test-relentless-api` includes the API's catalog helper tests. Install UI/SDK
+dependencies explicitly with `make setup-ui-deps` before the first check.
+`make check-ui` verifies the installed dependencies and type checks without
+reinstalling them, so the live Vite module graph stays intact. Run tests on that graph with
+`make test-ui-installed UI_TEST_ARGS="path/to/test"`. This target uses the same
+Vitest/report runner as `test-ui` and requires `make setup-ui-deps` beforehand.
+Keep dependency installation (`npm ci`) and production builds sequential with UI tests and dev
+previews; they replace shared dependencies/generated files. Restart with
+`make stop-ui-dev` followed by `make run-ui-dev` after those operations before
+using the live dev UI. The integrations target includes native
 task/recovery adapters, the shared verification runner/snapshot modules, media
 editing (including real pinned-FFmpeg still rendering and silent composition),
 governed CLI dispatch and workspace authority, local-capture lineage and the
@@ -142,8 +173,8 @@ make test-magicvault-compatibility
 make test-magicvault-foundation
 ```
 
-`make check-all` includes the Rust workspace and default-library checks,
-desktop and Unified UI checks, Android build/tests, and an iOS simulator
+`make check-all` includes the Rust workspace check (`CHECK_DEAD_CODE=1` adds the
+default-library dead-code pass, which CI always runs), desktop and Unified UI checks, Android build/tests, and an iOS simulator
 compile when the platform toolchains are installed. `make ios-debug-check`
 retains normal Xcode output and propagates its exit status. Xcode 27's
 `-quiet` mode can emit misleading errors reporting `exit code 0` for successful
@@ -210,16 +241,13 @@ the patched agent-browser, and cap nextest parallelism with
 `RUST_TEST_THREADS=4` by default. Override with `make test-rust
 RUST_TEST_THREADS=8` only when you are not running other Cargo jobs in the same
 workspace.
+Pairing tests use fixture seal keys and generation anchors in both unit and `test-fixtures` builds; they never open the OS keychain.
 
-The report runner creates a short, private `magician-cargo-test-*` root so
-fixture safety guards can recognize it without touching live runtime data.
-It unsets `RUST_MIN_STACK`: the secure HITL qualification still runs on ordinary
-2 MiB Tokio workers. Nextest 0.9.98 or newer is required. Per-test wrappers select
-`stateless` for preference-alignment effects, native Relentless task journeys,
-and pre-decided chat dispatch; those fixtures qualify durable receipts and
-journals. Other legacy fixtures retain the report lane's `inprocess` default.
-The wrapper executes the original test binary and returns its exit status;
-it does not filter tests or enlarge their stacks. Override report locations when needed:
+The report runner overrides inherited runtime paths with one private
+`/tmp/magician-cargo-test-*/magician_data_v3` fixture. It unsets `RUST_MIN_STACK`
+and defaults to production's `stateless` driver; `MAGICIAN_EXECUTION_DRIVER`
+allows an explicit rollback-driver check. Nextest 0.9.98 or newer is required.
+Override report locations when needed:
 
 ```bash
 make test-rust RUST_TEST_REPORT_DIR="$HOME/Desktop/rust-test-report"
@@ -258,10 +286,9 @@ disk when the SSD is unavailable).
 `make setup-rust-test-report-deps` idempotently installs the pinned
 `cargo-nextest` and `cargo-llvm-cov` versions plus Rust's
 `llvm-tools-preview` component. `make setup-all` invokes the same setup target;
-test targets only perform a read-only version preflight and never install or
-update developer tools.
+Rust test targets provision missing pinned tools and verify their versions.
 
-Direct `cargo test -p magician` is still useful for focused local checks, but
+`make cargo ARGS="test -p magician …"` supports focused local checks, but
 the full Magician lib suite has thousands of tests that open temp stores, mock
 sockets, DuckDB files, event logs, and Tokio runtimes. Running all of it at the
 Rust harness default parallelism can hit macOS `EMFILE` / `ENFILE` pressure.
@@ -289,6 +316,29 @@ The dedicated SSD directory isolates its build artifacts from other Cargo jobs.
 
 See the [plane input contract and verification record](components/magician/plane.md#typed-input)
 for supported forms, protocol requirements and the archived implementation record.
+
+## Final-answer live eval
+
+`make test-final-answer-live-eval` (`magician-bin/examples/final_answer_live_eval.rs`)
+replays finished runs' finalization — execution output, the task-user
+projection, its claim check and repair — on copies of their task directories
+with the live model router, and checks the published answer keeps the
+figures the run established. It spends model calls and needs provider keys.
+
+- Cases: `data/magician_v2/evals/final_answer/cases.json` (execution ids in the
+  active runtime, `must_contain` / `must_not_contain` strings). Positive cases
+  are correct answers of different kinds (data, OCR, creative, research, a
+  failed outward action) that must publish without the caveat.
+- Negative cases plant an error with `alter_answer` (`from`/`to` replacements
+  in the agent's own terminal files and outcome summary, never in tool
+  results) and list it in `must_flag`: each must be left out of the published
+  answer or the answer must carry the "Not fully verified" caveat. They catch a
+  claim check made too lenient.
+- Each case directory keeps the rendered synthesis bundles, both outputs and
+  the claim check; `report.json` under `evals/final-answer/live/latest`.
+- `FINAL_ANSWER_LIVE_EVAL_ARGS="--case <id>"` runs one case;
+  `FINAL_ANSWER_LIVE_EVAL_REPEAT=n` repeats each.
+- The runtime is only read: replays write under the output directory.
 
 ## Secure HITL qualification
 

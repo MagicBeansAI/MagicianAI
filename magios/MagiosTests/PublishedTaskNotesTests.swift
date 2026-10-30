@@ -216,22 +216,25 @@ final class PublishedTaskNotesTests: XCTestCase {
         XCTAssertTrue(model.errorMessage?.contains("Notes index is unavailable") == true)
     }
 
-    func testPublishedNoteOpeningRequiresCredentialFreeHTTPS() throws {
-        var insecure = Self.note(index: 1)
-        insecure["open_url"] = "http://127.0.0.1:3021/Tasks/task-1"
-        let insecureNote = try JSONDecoder().decode(PublishedTaskNote.self, from: jsonData(insecure))
-        XCTAssertNil(insecureNote.destinationURL)
-
-        var credentialed = Self.note(index: 2)
-        credentialed["open_url"] = "https://user:secret@notes.example.test/Tasks/task-2"
-        let credentialedNote = try JSONDecoder().decode(PublishedTaskNote.self, from: jsonData(credentialed))
-        XCTAssertNil(credentialedNote.destinationURL)
-
-        let protectedNote = try JSONDecoder().decode(
-            PublishedTaskNote.self,
-            from: jsonData(Self.note(index: 3))
+    func testPublishedNoteOpensInTheNativeNotesScreenNeverAWebOrigin() throws {
+        // A canonical relative link keeps its workspace.
+        let canonical = try JSONDecoder().decode(PublishedTaskNote.self, from: jsonData(Self.note(index: 1)))
+        XCTAssertEqual(
+            canonical.noteLink,
+            NoteLink(path: "Tasks/2026-08-03/task-1.md", workspace: "personal", origin: nil)
         )
-        XCTAssertEqual(protectedNote.destinationURL?.host, "notes.example.test")
+
+        // A web origin (the retired external notes host) is never opened in
+        // the browser: the note path opens natively instead.
+        var external = Self.note(index: 2)
+        external["open_url"] = "https://notes.example.test/Tasks/2026-08-03/task-2"
+        let externalNote = try JSONDecoder().decode(PublishedTaskNote.self, from: jsonData(external))
+        XCTAssertEqual(externalNote.noteLink, NoteLink(path: "Tasks/2026-08-03/task-2.md", workspace: nil, origin: nil))
+
+        var missing = Self.note(index: 3)
+        missing.removeValue(forKey: "open_url")
+        let missingNote = try JSONDecoder().decode(PublishedTaskNote.self, from: jsonData(missing))
+        XCTAssertEqual(missingNote.noteLink?.path, "Tasks/2026-08-03/task-3.md")
     }
 
     func testPromotionRejectsPathBreakingTaskIDBeforeNetwork() async {
@@ -316,7 +319,7 @@ final class PublishedTaskNotesTests: XCTestCase {
             "published_at": "2026-08-03T10:01:00Z",
             "tags": ["magician/task", "date/2026-08-03"],
             "note_path": "Tasks/2026-08-03/task-\(index).md",
-            "open_url": "https://notes.example.test/Tasks/2026-08-03/task-\(index)",
+            "open_url": "/notes?path=Tasks%2F2026-08-03%2Ftask-\(index).md&workspace=personal",
             "assets": []
         ]
     }

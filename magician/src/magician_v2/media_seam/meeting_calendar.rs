@@ -204,7 +204,18 @@ async fn fetch_account_events(
         ));
     }
     let cloudsdk_config_dir = config_dir.join("cloudsdk");
-    fs::create_dir_all(&cloudsdk_config_dir).map_err(|e| {
+    // Owner-only: the governed runtime injects this same directory as
+    // `CLOUDSDK_CONFIG` and refuses to bind a profile whose injected
+    // sub-directory is not exactly 0700, so a umask-default (0755) create here
+    // broke every governed gmail/calendar call for the profile.
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&cloudsdk_config_dir).map_err(|e| {
         format!(
             "create Cloud SDK config dir for '{account}' at {}: {e}",
             cloudsdk_config_dir.display()

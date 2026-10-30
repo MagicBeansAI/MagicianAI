@@ -808,8 +808,9 @@ describe('rich resurfacing API client', () => {
 			})
 		);
 		vi.stubGlobal('fetch', fetchMock);
-		await fetchResurfacingTodayPage({ limit: 5, offset: 95 });
+		await fetchResurfacingTodayPage({ limit: 5, offset: 95, includeDiagnostics: false });
 		expect(String(fetchMock.mock.calls[0][0])).toContain('limit=5&offset=95');
+        expect(new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost').searchParams.get('include_diagnostics')).toBe('false');
 	});
 
 	it('posts idempotent contextual actions and maps the durable result', async () => {

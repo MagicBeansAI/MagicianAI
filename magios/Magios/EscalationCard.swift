@@ -78,7 +78,7 @@ struct EscalationCard: View {
     }
 
     private var needsCanonicalAttentionFallback: Bool {
-        ChatHitlResponseComposer.needsCanonicalAttentionFallback(
+        inputSchema?.requiresReview == true || ChatHitlResponseComposer.needsCanonicalAttentionFallback(
             inputType: inputType,
             options: options,
             allowsOther: inputSchema?.allowOther == true,

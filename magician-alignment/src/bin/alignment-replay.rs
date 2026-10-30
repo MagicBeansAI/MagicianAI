@@ -44,7 +44,11 @@ fn run() -> Result<(), String> {
                 thresholds = Some(
                     value()?
                         .split(',')
-                        .map(|t| t.trim().parse::<f64>().map_err(|e| format!("threshold {t}: {e}")))
+                        .map(|t| {
+                            t.trim()
+                                .parse::<f64>()
+                                .map_err(|e| format!("threshold {t}: {e}"))
+                        })
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             },
@@ -68,7 +72,8 @@ fn run() -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         parsed.extend(parse_cases(&text).map_err(|e| format!("{}: {e}", path.display()))?);
     }
-    let text = std::fs::read_to_string(&answers).map_err(|e| format!("{}: {e}", answers.display()))?;
+    let text =
+        std::fs::read_to_string(&answers).map_err(|e| format!("{}: {e}", answers.display()))?;
     let records = read_answers(&text)?;
     for (path, unresolved) in write_predictions(&out, &parsed, records, &bars, &thresholds)
         .map_err(|e| format!("{}: {e}", out.display()))?

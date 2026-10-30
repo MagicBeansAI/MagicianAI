@@ -56,7 +56,7 @@ Magician feature areas that must stay current: the **plane / replaceable
 runtime** (`execution.harness_engine` + `/plane/mcp`), the **chat mouth**
 (`chat.harness_engine`, ChatScoped grants), **apps** (`magician-apps` +
 public contract), and **background ops** (scheduler, monitors, harness
-company loop).
+company loop, shown as Team routines in Work).
 
 ## Drift contract
 

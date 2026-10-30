@@ -51,6 +51,11 @@ describe('NotesLibrary', () => {
 						relative_path: 'Inbox/hello.md',
 						title: 'Hello',
 						markdown: [
+							'---',
+							'magician_kind: note',
+							'created_at: 2026-10-21T09:00:00Z',
+							'---',
+							'',
 							'# Hello',
 							'',
 							'The invoice is due.',
@@ -89,6 +94,8 @@ describe('NotesLibrary', () => {
 		await user.click(await screen.findByRole('button', { name: /hello.md/ }));
 		expect(await screen.findByRole('heading', { name: 'Hello' })).toBeTruthy();
 		expect(screen.queryByText('# Hello')).toBeNull();
+		expect(screen.queryByText(/magician_kind/)).toBeNull();
+		expect(document.querySelector('.prose hr')).toBeNull();
 		expect(screen.getByText(/The invoice is due/)).toBeTruthy();
 		expect(screen.getByText('water daily').closest('li')).toBeTruthy();
 		expect(screen.getByText('Pick ripe fruit').closest('ol')).toBeTruthy();
@@ -103,5 +110,10 @@ describe('NotesLibrary', () => {
 		await user.type(screen.getByLabelText('Find in this note'), 'invoice');
 		await waitFor(() => expect(screen.getByText('1 match')).toBeTruthy());
 		expect(screen.getByText('invoice').tagName).toBe('MARK');
+
+		// The reader hides the front matter; the editor keeps the whole file.
+		await user.click(screen.getByRole('button', { name: 'Edit' }));
+		const editor = screen.getByLabelText('Edit note') as HTMLTextAreaElement;
+		expect(editor.value.startsWith('---\nmagician_kind: note\n')).toBe(true);
 	});
 });

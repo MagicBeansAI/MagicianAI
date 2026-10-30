@@ -58,6 +58,7 @@
   let autonomousEnabled = false;
   let chatterReady = false;
   let savingPolicy = false;
+  let retryingTurn = false;
   let lastPolicyUpdatedAt: string | null = null;
   let loadError = '';
   let deliveryNotice = '';
@@ -431,6 +432,26 @@
     }
   }
 
+  function workerAttentionCopy(code: string | null): string {
+    if (code === 'workflow_launch_blocked') {
+      return 'The next agent turn was refused and will not try again by itself. This page only saved the code workflow_launch_blocked. The reason is the server log line “app background behavior launch was refused”. Retry queues one more attempt. It holds only if that refusal is gone. If this banner returns, the launch was refused again.';
+    }
+    return code || 'This workspace remains readable while the background worker recovers.';
+  }
+
+  async function retryAmbientTurn() {
+    retryingTurn = true;
+    try {
+      await fetchJson('/ambient-turn/retry', { method: 'POST' });
+      deliveryNotice = 'Queued. The next pass will try the launch again. If the same refusal is still true, this message returns.';
+      await refreshTownSquare(true);
+    } catch (cause) {
+      deliveryNotice = cause instanceof Error ? cause.message : 'The turn could not be queued.';
+    } finally {
+      retryingTurn = false;
+    }
+  }
+
   function shouldApplyOperatorPolicy(incoming: OperatorPolicy | undefined): boolean {
     if (!lastPolicyUpdatedAt) return true;
     if (!incoming?.updated_at) return false;
@@ -544,7 +565,12 @@
       {:else if health?.worker_global.state === 'degraded'}
         <div class="social-status" role="status">
           <strong>The shared social worker needs attention in one or more workspaces.</strong>
-          <span>{health.worker_global.last_error || 'This workspace remains readable while the background worker recovers.'}</span>
+          <span>{workerAttentionCopy(health.worker_global.last_error)}</span>
+          {#if health.worker_global.last_error === 'workflow_launch_blocked'}
+            <button type="button" on:click={() => void retryAmbientTurn()} disabled={retryingTurn}>
+              {retryingTurn ? 'Retrying…' : 'Retry the next turn'}
+            </button>
+          {/if}
         </div>
       {/if}
 

@@ -1,6 +1,45 @@
 # Notes Provider
 
-User-visible Markdown notes, kept apart from canonical runtime storage.
+Notes are Magician's own notes: plain Markdown files Magician reads and writes,
+browsed in the web app at `/notes`, kept apart from canonical runtime storage.
+There is no notes server, port, hostname or sidecar (SilverBullet is retired).
+
+A new note's file name is its slugged title plus `.md`; a title that already
+ends in `.md` / `.markdown` keeps that name (`plan.md`, not `plan-md.md`).
+
+## Note links
+
+Every note link the server produces is the one canonical **relative** link
+built by `notes::note_link(path, workspace)`:
+
+```text
+/notes?path=<encodeURIComponent(path)>&workspace=<encodeURIComponent(workspace)>
+```
+
+`path` is the note's path inside the notes library (what `/notes?path=` opens);
+`workspace` is the scope's workspace id (omitted only when empty). The encoder
+matches JavaScript's `encodeURIComponent` byte for byte, so the web helper
+`noteHref(path, workspace)` (`ui/unified-ui/src/lib/notes/noteLinks.ts`) emits
+the identical string. No host, no `file://` path, no notes-server origin: the
+link works on whatever origin the owner reached Magician through, and opening
+it still goes through sign-in and scope, so a forwarded link grants nothing.
+
+- `open_url` on write results (`NoteRef`, `NoteLocation`), search hits,
+  observed notes, task-note index entries and `notes_data` results is this
+  link. Attachments (non-Markdown) get `open_url: null`. Task-note index
+  records rebuild the link on read, so records written with an older URL never
+  hand it out.
+- Tool guides (`create_note`, `open_note`, `search_notes`, `notes_data`) tell
+  models to copy `open_url` verbatim as a relative link.
+- `GET /notes/file` resolves `path` in the library root first and then in the
+  fallback folder, so a link to a note a provider fallback wrote still opens.
+- Web `/notes` honors `workspace`: a different workspace the session can enter
+  is switched to (existing scope switch) before any note is read; one it
+  cannot enter shows "This note is in a workspace you're not signed into" and
+  fetches nothing. Signed-out visitors go through sign-in and return to the
+  same URL. Opening a note inside Notes rewrites the address bar to its
+  canonical link (`replaceState`), and **Copy link** copies
+  `window.location.origin` + the canonical link.
 
 ## Boundary
 
@@ -15,18 +54,20 @@ its capture-time provider root, so playback and deletion still find it.
 
 Scoped by `(principal, workspace)` at
 `scopes/{principal}/{workspace}/notes/settings.json`, resolved through the
-workspace file provider (`magician_data_v3` with `local_file`,
-`<Space>/.magician/runtime` with `silverbullet_space`). The browser Settings page
-is the only editor (capture on/off included), uses the signed-in scope and shows
-one location, the "notes folder" (never "SilverBullet"); saving selects it
-(`default_provider: silverbullet`) and keeps any stored `local_markdown.root`.
+workspace file provider (`local_file`). The browser Settings page is the only
+editor (capture on/off included), uses the signed-in scope and shows one
+location, the "notes folder"; saving selects it (`default_provider:
+silverbullet`) and keeps any stored `local_markdown.root`.
 
 | Setting / input | Behaviour |
 | --- | --- |
-| `space_path` | Root Magician reads and writes. Default `$MAGICIAN_ROOT_DIR/MagicanNotes/spaces/<principal>/<workspace>` (normally `~/MagicianNotes/MagicanNotes/spaces/<principal>/<workspace>`). |
+| `notes_folder.space_path` | Root Magician reads and writes. Default `$MAGICIAN_ROOT_DIR/MagicanNotes/spaces/<principal>/<workspace>` (normally `~/MagicianNotes/MagicanNotes/spaces/<principal>/<workspace>`). |
 | `MAGICIAN_NOTES_SPACE` | Relocates the forest (parent of `spaces/`). |
-| Provider ids | `local_markdown` (always the fallback) and `silverbullet` (historical id of the notes folder). |
-| `local_url`, `server_url`, `public_origin` | Legacy: clients open notes inside Magician. Still validated; `public_origin` (else `server_url`) feeds `open_url` and the health probe. |
+| Provider ids | `local_markdown` (always the fallback) and `silverbullet` — the persisted id of the notes folder, kept because settings, index records, Observe `source_ref`s and search-index keys store it. `sb`, `silverbullet_space`, `notes` and `notes_folder` normalize to it. |
+| Legacy keys | Older files name the section `silverbullet` and carry `local_url` / `server_url` / `public_origin`: the section is read as `notes_folder`, the URL keys are ignored (never validated), and the next save writes `notes_folder` only. Nothing moves. |
+
+`resolved` reports `local_markdown_root`, `notes_folder_path` and
+`notes_folder_write_safe`.
 
 A `space_path` naming the forest, `spaces/` or `spaces/<principal>` resolves to
 (and is saved as) the per-workspace child, even before it exists, so search
@@ -39,27 +80,24 @@ parent components. Changing `space_path` moves no files.
 
 - **Reading status never writes.** `GET /notes/providers/status` and
   `status_for_provider` use `directory_is_writable` (`access(2)` `W_OK` on Unix,
-  the read-only flag elsewhere), so they pass whether or not any server runs;
-  only `unavailable_write_reason` uses `writable_probe` (creates and removes
-  files), so a full or read-only filesystem reads as writable until a write
-  probes it.
-- `NotesProviderStatus.health` (absent for Local Markdown) reports server
-  reachability (two-second bound; any HTTP response, 401/404 included, counts)
-  and whether the `sb` CLI is on PATH (reported, never used; cached per
-  process).
+  the read-only flag elsewhere); only `unavailable_write_reason` uses
+  `writable_probe` (creates and removes files), so a full or read-only
+  filesystem reads as writable until a write probes it.
+- Status is filesystem facts only (folder present, writable); there is no
+  server to probe.
 
 ## Provider Registry
 
 | Provider | Id | Role |
 | --- | --- | --- |
-| Notes folder | `silverbullet` | The configured folder, used when configured and writable; the one location users see. |
-| Local Markdown | `local_markdown` | Scoped root under `magician_data_v3`, created on first write; fallback only, shown as "fallback folder" only while in use. |
+| Notes (label "Notes") | `silverbullet` | The configured folder, used when configured and writable; the one location users see. |
+| Fallback folder | `local_markdown` | Scoped root under the runtime root, created on first write; fallback only, shown as "fallback folder" only while in use. |
 
 An unavailable provider falls back to `local_markdown`. Write responses carry
 `requested_provider`, `provider`, `used_fallback`, `fallback_reason`, `path`,
-`absolute_path`, `open_url` (`file://` for Local Markdown; for SilverBullet
-`public_origin`, then legacy `server_url`, minus `.md`). Disabled notes reject
-writes before any root is created.
+`absolute_path` and `open_url` (the canonical relative link, see
+[Note links](#note-links)). Disabled notes reject writes before any root is
+created.
 
 ## Agent tools
 
@@ -72,13 +110,18 @@ lock with HTTP.
   `retryable` from the HTTP layer's `io::ErrorKind` classification
   (`TaskNotFound` permanent, `Io` not). Read-only tools report
   `notes_read_failed`, never `notes_write_failed`.
-- `open_note` maps a path to its URL (`open-root` opens the folder), searching
-  providers default-first; it takes no write lock and creates nothing. A path
+- `open_note` maps a path to its canonical link (`open-root` opens the
+  folder), searching providers default-first; it takes no write lock and creates nothing. A path
   under no configured provider is `NotFound`.
 - `publish_task_to_note` delegates to `publish_task_note` (scope checks; settled
   tasks only), so tool and task card agree.
 - Grants live in `definition.agent.yaml`; the seed template gives all six to the
   personal assistant, and existing scopes see new tools only after re-seeding.
+- Goal workspaces ([access rules](../../features/goal-workspaces.md#who-can-see-a-workspace)):
+  every tool checks the acting agent first. `search_notes` drops hidden
+  matches after ranking, before the limit, and reports `withheld_count`;
+  `open_note` and the writers answer `notes_permission_denied` before any
+  provider call. Apps (`notes_data`) get no workspace content.
 
 ### Selection capture
 
@@ -125,6 +168,7 @@ directory or Markdown file; every create, save and delete refreshes the index.
 | `GET /notes/tree` | `list_note_tree`: one directory; folders carry `has_children`. |
 | `POST /notes/tree` / `DELETE /notes/tree` | Create (`folder`, `name`) / delete a folder; delete refuses the root and folders holding a symlink. |
 | `GET /notes/file` | `read_note_file`; `POST` creates (empty `folder` = root), `PUT` (`path`, `markdown`) replaces, `DELETE` removes. |
+| `PATCH /notes/front-matter` | `update_note_front_matter`: `{path, set: {key: "value"}, unset: [key], expected_revision}` changes only those top-level front-matter keys (other lines, order, comments, line endings and the body kept; a note without front matter gets a block). 409 `note_revision_conflict` with `current_revision` when the note no longer matches `expected_revision` (`revision` = `blake3:<hex>` of the content, returned by every note read). |
 | `GET /notes/backlinks` | `list_note_backlinks`: `[[Page]]` or Markdown links to a `.md`. |
 
 `search_notes` / `POST /notes/search` match keyword, typo and (with embeddings)
@@ -132,20 +176,27 @@ meaning, returning matching lines. Index: one LanceDB table at
 `scopes/{principal}/{workspace}/notes/hybrid-index` (path, text, hash,
 embedding, stored full-text index), opened once per process; each search checks
 out the latest version (no `memory://` copy, no per-query rebuild). Markdown
-files are the only copy of note text; SilverBullet's HTTP surface and CLI are
-not used.
+files are the only copy of note text.
 
 - Changed rows are embedded and merged in the background (one full-text
   refresh); a per-folder watcher merges once an outside edit has been still
   ~1 s (`notes watch refreshed` logs timings); startup skips unchanged notes.
+  Note writes (create, save, front-matter, delete) queue the same refresh and
+  reply without waiting for the embedder.
 - BM25 with LanceDB's automatic typo distance, fused with vector search when the
   model answers in time; if it is down, search stays on the keyword index.
+- Only a different embedding model or contract rebuilds the index. When Ollama
+  looks down (a search's 200 ms readiness check; a refresh waits out the
+  configured health timeout) or an embed fails, the embedded index is kept and
+  the next refresh with Ollama embeds just the changed notes.
 - Body, title and path match (`Clients/Acme/` answers "Acme"); terms are ANDed
   case-insensitive substrings; title/path hits on every term outrank body-only,
   and the line with most terms leads. An unconfigured provider is refused, not
   searched as empty.
-- Walks the same boundary-safe roots as Observe, so co-located runtime state
-  (model caches, credentials, worktrees) never surfaces. Scan size, note size,
+- Walks the same boundary-safe roots as Observe (plus `Workspaces/`, which
+  Observe skips), so co-located runtime state (model caches, credentials,
+  worktrees) never surfaces. The index folder embeds every note, so no agent's
+  file tools, shell or coding box can read it. Scan size, note size,
   concurrent reads, terms, results and snippets are bounded; `scan_truncated`
   and `more_available` flag trimmed results.
 
@@ -245,13 +296,12 @@ the server offset, and deleting a loaded row repairs the next offset.
 
 Publishes a readable page without making notes the task database; canonical
 task, internal-task, chat and execution outputs are read through the active
-`ArtifactV2Workspace` root, so `local_file` and `silverbullet_space` behave
-alike. Pages and copied assets go through provider selection/fallback.
+`ArtifactV2Workspace` root. Pages and copied assets go through provider
+selection/fallback.
 
 ```text
 POST /api/magician/v2/notes/publish/task/{task_id}
-{"provider": "silverbullet", "mode": "standard", "include_assets": true,
- "workspace": "default"}
+{"mode": "standard", "include_assets": true, "workspace": "default"}
 ```
 
 | Mode | Contents |
@@ -298,14 +348,16 @@ synthesis.
   Markdown root and any explicitly configured, boundary-safe Space feeds the
   normal Observe pipeline (selection, intent scoring, handoff, resurfacing,
   Worth a look). Traversal is
-  iterative, ≤ 20,000 directory entries, skips symlinks and provider-internal
-  dirs, reads bounded UTF-8 `.md`/`.markdown`, and checkpoints a durable scoped
+  iterative, ≤ 20,000 directory entries, skips symlinks, provider-internal
+  dirs and `Workspaces/` (goal text stays out of content search, resurfacing
+  and the taste profile; `read_observation_note` answers nothing for an older
+  `Workspaces/` ref), reads bounded UTF-8 `.md`/`.markdown`, and checkpoints a
+  durable scoped
   offset; identity plus content revision skips unchanged notes.
 - **Published notes** (output, the **Notes** pane): task projections, never
   inputs. Web and iOS share search, server offset/limit paging (5, 10, 20, 50),
-  provider-aware open, publish-next-25 (with remaining-work feedback) and
-  promotion; iOS reuses the protected embedded WebView, accepting only the
-  exact configured Notes origin.
+  open through the canonical note link, publish-next-25 (with remaining-work
+  feedback) and promotion.
 
 **Promote to memory** never writes a memory tier: it creates a low-risk,
 review-required `memory_fact` candidate for `user.knowledge` (bounded text;
@@ -318,16 +370,13 @@ Learning review is the only bridge into model-facing memory.
 Local Markdown root `magician_data_v3/scopes/{principal}/{workspace}/notes/space/`
 gets only `Inbox/` on first write (`ensure_standard_note_dirs`); `Tasks/` and
 `Audio Notes/` appear when a task page or recording is written. The palette's **Notes** command opens `/notes`. Task output
-preview, download, open and export resolve through `ArtifactV2Workspace`; the
-`silverbullet_space` storage root is unrelated to the notes Space.
+preview, download, open and export resolve through `ArtifactV2Workspace`.
 
-## SilverBullet Setup
+## Where notes live
 
-Nothing to install or run (Magician serves the library and writes the folder
-directly): the `setup-silverbullet-notes`,
-`run-silverbullet-notes` and `stop-silverbullet-notes` targets are gone,
-`make setup-all` and `make run-all` do nothing for notes, and nothing listens on
-port 3021. Default Space:
+Nothing to install or run: Magician serves the library and writes the folder
+directly, and `make setup-all` / `make run-all` do nothing for notes. Default
+folder:
 
 ```text
 ${MAGICIAN_NOTES_SPACE:-${MAGICIAN_ROOT_DIR:-${MAGICIAN_STORAGE_PATH:-$HOME/MagicianNotes}}/MagicanNotes}/spaces/<principal>/<workspace>
@@ -343,8 +392,8 @@ or execution storage.
 Web (`/notes`), Magios (**Menu → Notes**, `NotesBrowser.swift`) and Magdroid
 (`NotesScreen.kt`) use the authenticated `/notes/tree`, `/notes/file`,
 `/notes/backlinks` and `/notes/search` routes. There is no Notes hostname,
-Access app, tunnel, embedded SilverBullet, or notes recovery/token-rotation
-drill.
+Access app, tunnel, embedded viewer, or notes recovery/token-rotation drill;
+links into a note are the canonical relative `/notes?…` link.
 
 ## Path Safety
 

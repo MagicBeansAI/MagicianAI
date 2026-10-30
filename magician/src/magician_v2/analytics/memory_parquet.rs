@@ -356,11 +356,15 @@ fn write_rows(root: &PathBuf, rows: &[MemoryAnalyticsRow]) -> Result<()> {
             .context("flushing memory_events_batch appender")?;
     }
 
-    let path_sql = parquet_path.display().to_string().replace('\'', "''");
-    let copy_sql =
-        format!("COPY memory_events_batch TO '{path_sql}' (FORMAT PARQUET, COMPRESSION 'zstd');");
-    conn.execute_batch(&copy_sql)
-        .with_context(|| format!("copying memory_events_batch to {}", parquet_path.display()))?;
+    // Staged, fsynced and renamed: `batch_<ulid>.parquet` only ever names a
+    // complete object, so a crash mid-`COPY` cannot leave a zero-byte batch.
+    super::parquet_maintenance::copy_to_parquet_durably(
+        &conn,
+        "memory_events_batch",
+        "FORMAT PARQUET, COMPRESSION 'zstd'",
+        &parquet_path,
+    )
+    .with_context(|| format!("copying memory_events_batch to {}", parquet_path.display()))?;
     crate::magician_v2::dataset_owners::publish_written_parquet(&parquet_path).with_context(
         || {
             format!(
@@ -388,4 +392,23 @@ fn partition_date_for(timestamp_ms: i64) -> String {
 
 pub fn json_payload(value: &Value) -> Option<String> {
     serde_json::to_string(value).ok()
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_events_parquet_write_leaves_no_staging_and_staging_is_invisible() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let root = temporary.path().join("memory_events");
+        let row = MemoryAnalyticsRow::now("retrieval", "memory_parquet_test");
+        let partition = root.join(format!("dt={}", partition_date_for(row.timestamp_ms)));
+        write_rows(&root, &[row]).expect("write memory events parquet");
+        crate::magician_v2::analytics::parquet_maintenance::assert_published_without_staging(
+            &partition,
+            crate::magician_v2::analytics::parquet_maintenance::PartitionedDataset::MemoryEvents,
+            1,
+        );
+    }
 }

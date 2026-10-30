@@ -5124,6 +5124,7 @@ fn replay_or_conflict(
 }
 
 fn hitl_requested_event(request: &UserRequest) -> RuntimeTransportEvent {
+    let request = request.clone().for_presentation();
     let canonical_options: Vec<serde_json::Value> = request
         .options
         .iter()
@@ -5180,7 +5181,7 @@ fn hitl_requested_event(request: &UserRequest) -> RuntimeTransportEvent {
         input_schema: Some(input_schema),
         task_id: request.task_id.clone(),
         execution_id: request.execution_id.clone(),
-        agent_id: request_owner_agent_id(request),
+        agent_id: request_owner_agent_id(&request),
         principal: Some(request.principal.clone()),
         workspace: Some(request.workspace.clone()),
         timestamp: request.created_at,

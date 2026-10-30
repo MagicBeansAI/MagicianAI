@@ -4,6 +4,7 @@
 		HitlOpenTarget,
 		HitlSource
 	} from '$lib/hitl/types';
+	import { escalationSchemaChoices } from '$lib/magician/chat/escalationReply';
 
 	export const CLARIFICATION_RESPONDER_REQUEST_PREFIX = 'clarification_responder:';
 
@@ -93,13 +94,21 @@
 			return null;
 		}
 
+		const inputType = compatibilityInputType(input);
+		// A choice card's own `options` hold one generic Respond; the ask's
+		// options ride in its `input_schema`, and the prompt offers those.
+		const schemaChoices =
+			inputType === 'choice' || inputType === 'multi_choice'
+				? escalationSchemaChoices(input.inputSchema)
+				: [];
+		const promptOptions = schemaChoices.length > 0 ? schemaChoices : input.options;
 		return {
 			id: correlationId,
 			source,
-			input_type: compatibilityInputType(input),
+			input_type: inputType,
 			prompt: input.question?.trim() || 'Response required',
 			input_schema: {
-				options: input.options?.map((option) => ({
+				options: promptOptions?.map((option) => ({
 					id: option.id,
 					label: option.label,
 					requires_input: option.requires_input
@@ -172,7 +181,10 @@
 	import { attentionStore } from '$lib/stores/attentionStore';
 	import { originalAnswerHref, messageTargetFromQuery } from '$lib/stores/chatMessageLinks';
 	import { browser } from '$app/environment';
-	import { goto, replaceState } from '$app/navigation';
+	import { beforeNavigate, goto, replaceState } from '$app/navigation';
+	import { isHudWindow } from '$lib/shell/hudWindow';
+	import { desktopComposerDrafts } from './desktopComposerDrafts';
+	import { composerDraftKey, createComposerDraft } from './composerDraft';
 	import { page } from '$app/stores';
 	import { createEventDispatcher, onDestroy, onMount, setContext, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
@@ -200,9 +212,10 @@
 	import { morph, rise } from '$lib/magician/chat/next/motion';
 	import LiveTaskCard from '$lib/magician/chat/next/LiveTaskCard.svelte';
 	import PresenceOrb from '$lib/magician/chat/next/PresenceOrb.svelte';
-	import { fetchChatGodMode, saveChatGodMode } from '$lib/settings/godMode';
+	import { fetchChatGodMode, saveChatAutoApprove, saveChatGodMode } from '$lib/settings/godMode';
 	import ChatEmptyStateNext from '$lib/magician/chat/next/ChatEmptyStateNext.svelte';
 	import ChatHistoryRail from '$lib/shell/ChatHistoryRail.svelte';
+	import { chatHistoryExpanded, openHistoryDrawer } from '$lib/shell/shellState';
 	import {
 		normalizeThreadId,
 		isVibeDevThread,
@@ -212,6 +225,14 @@
 	import ChatTurnProgress from '$lib/magician/components/ChatTurnProgress.svelte';
 	import PlannerDock from '$lib/magician/chat/components/PlannerDock.svelte';
 	import PlanReplyBanner from '$lib/magician/chat/components/PlanReplyBanner.svelte';
+	import EscalationReplyBanner from '$lib/magician/chat/components/EscalationReplyBanner.svelte';
+	import {
+		escalationOneClickResult,
+		dockAskReplyContent,
+		escalationReplyChoiceLabels,
+		pendingEscalationReplyTarget,
+		typedEscalationAnswer
+	} from '$lib/magician/chat/escalationReply';
 	import { isRunExpanded, isTerminalTaskStatus } from '$lib/magician/chat/components/taskStatus';
 	import {
 		plannerDockTasks,
@@ -224,7 +245,18 @@
 		type PlanReplyComposerState,
 		type PlanReplyIntent
 	} from '$lib/magician/chat/planReplyState';
-	import { latestActiveTaskTurnId, latestOpenUserTurnId } from '$lib/magician/chat/liveTurn';
+	import {
+		isInactiveTaskTurnStatus,
+		isTaskWaitingOnUser,
+		latestActiveTaskTurn,
+		latestOpenUserTurnId
+	} from '$lib/magician/chat/liveTurn';
+	import {
+		chatTurnStateStore,
+		runningTurnIdForSession,
+		settledTurnIds,
+		turnStatusNotice
+	} from '$lib/magician/chat/turnState';
 	import { storeStatusForCard } from '$lib/magician/chat/next/liveTask';
 	import { taskHasPlan } from '$lib/magician/tasks/taskHasPlan';
 	/*
@@ -286,22 +318,41 @@
 		type EscalationOption,
 		type UploadedAttachment
 	} from '$lib/stores/chatStore';
-	import { chatProfileStore } from '$lib/stores/chatProfileStore';
-	import { chatHarnessPreferenceStore } from '$lib/stores/chatHarnessPreferenceStore';
-	import { fetchEngineAvailability, type EngineRoster } from '$lib/plane/terminalGrants';
+	import { chatProfileStore as sharedChatProfileStore, createChatProfileStore } from '$lib/stores/chatProfileStore';
+	import ModelSelectionControl from '$lib/llm/ModelSelectionControl.svelte';
+	import { anchorPopup } from '$lib/shared/anchorPopup';
+	import ChoiceDropdown from '$lib/shared/components/ChoiceDropdown.svelte';
+	import { selectionForRoute, thinkingLabel, type ModelChoice, type ModelSelection } from '$lib/llm/modelCatalog';
+	import {
+		chatHarnessPreferenceStore as sharedChatHarnessPreferenceStore,
+		createChatHarnessPreferenceStore,
+		registerChatComposer,
+		registerChatComposerChoice
+	} from '$lib/stores/chatHarnessPreferenceStore';
+	import {
+		fetchChatModelChoices,
+		fetchEngineAvailability,
+		fetchPiModelChoices,
+		type EngineRoster
+	} from '$lib/plane/terminalGrants';
+	import { withCredentials } from '$lib/settings/harnessAuth';
 	import {
 		budgetTaskCandidates,
+		CATALOG_ENGINES,
 		type BudgetDefaults,
 		type SlashAction,
 		type SlashCommandContext,
 		type SlashStep
 	} from '$lib/magician/chat/composerCommands';
-	import { fetchBudgetDefaults, runSlashAction } from '$lib/magician/chat/slashCommandActions';
+	import { fetchBudgetDefaults, LOOP_OPERATION, runSlashAction } from '$lib/magician/chat/slashCommandActions';
+	import { fetchRoutingOverview } from '$lib/stores/modelRoutingStore';
+	import { voiceModeStore } from '$lib/media/voice/wakeWord';
+	import { mediaPreferencesStore, refreshMediaPreferences } from '$lib/media/preferences';
 	import {
 		codingChoiceFromSelection,
+		draftInvokesVibedev,
 		codingProfileStore
 	} from '$lib/stores/codingProfileStore';
-	import { thinkingModeForTurn } from '$lib/stores/thinkingModeStore';
 	import { planModeStore, type PlanComposerMode } from '$lib/stores/planModeStore';
 	import { taskStore, type Task } from '$lib/stores/taskStore';
 	import {
@@ -318,6 +369,9 @@
 	import { claimPendingActivityForMessage } from '$lib/stores/chatTurnActivityStore';
 	import ChatContentBlocks from '$lib/magician/components/chat/ChatContentBlocks.svelte';
 	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import AnswerVerificationInfo from './components/AnswerVerificationInfo.svelte';
+	import ThreadSessionBar from '$lib/threads/ThreadSessionBar.svelte';
+	import { splitAnswerVerification } from './answerVerification';
 	import StructuredResponseRenderer from '$lib/magician/structuredResponse/StructuredResponseRenderer.svelte';
 	import {
 		classifyRef,
@@ -325,7 +379,13 @@
 		resolveHref
 	} from '$lib/magician/links/classifyRef';
 	import { isStructuredResponseV1, validateStructuredResponse } from '$lib/magician/structuredResponse/schema';
-	import type { StructuredResponseActionV1, StructuredResponseV1 } from '$lib/magician/structuredResponse/types';
+	import type {
+		StructuredArtifactLocatorV1,
+		StructuredResponseActionV1,
+		StructuredResponseV1
+	} from '$lib/magician/structuredResponse/types';
+	import { artifactLocatorFor } from '$lib/magician/structuredResponse/actions';
+	import { MEDIA_CHAT_SESSION, type MediaChatSession } from '$lib/media/chatScope';
 	import SpeakButton from '$lib/magician/components/chat/SpeakButton.svelte';
 	import { putSeed, buildChatSeedContent } from '$lib/stores/vibeSeedStore';
 	import VoiceAutoSendBanner from '$lib/magician/components/chat/VoiceAutoSendBanner.svelte';
@@ -357,7 +417,7 @@
 		type HitlPendingEntry
 	} from '$lib/stores/pendingHitlStore';
 	import ComposerAskDock from '$lib/magician/chat/ComposerAskDock.svelte';
-	import { pendingAsks, pendingAsksForThread } from '$lib/attention/pendingAsks';
+	import { composerAsks, pendingAsks } from '$lib/attention/pendingAsks';
 	import {
 		hitlOpenTargetFromPendingEntry,
 		openHitlPrompt
@@ -447,14 +507,29 @@
 	// The v5 ("modern") shell is the only shell — the legacy chat layout
 	// (left ChatSessionSidebar + bottom chat-input-area) was removed.
 
-	let historyExpanded = true;
 	let historyMobileOpen = false;
 
 	let messagesContainerEl: HTMLDivElement;
 	let messagesEndEl: HTMLDivElement;
 	let attachmentInputEl: HTMLInputElement;
 	let composerEl: FloatingComposer | null = null;
+	// Each panel owns its composer's engine/model picks, keyed per chat, so two
+	// panels (or two chats) never rewrite each other's choice. The registration
+	// lets the paths that do not hold these stores — sends from the chat bubble,
+	// command palette and war room, `/engine`, `chat.engine.updated` — reach the
+	// panel showing the chat.
+	const chatProfileStore = createChatProfileStore();
+	const chatHarnessPreferenceStore = createChatHarnessPreferenceStore();
+	const composerRegistration = registerChatComposer({ harness: chatHarnessPreferenceStore, profiles: chatProfileStore });
+    let unregisterComposerChoice = () => {};
+    onDestroy(() => {
+        unregisterComposerChoice(); composerRegistration.unregister();
+        chatProfileStore.destroy(); chatHarnessPreferenceStore.destroy();
+    });
+	// The browser-wide catalog still backs voice and senders outside any panel.
+	$: if (browser) void sharedChatProfileStore.ensureLoaded($sharedChatHarnessPreferenceStore.engine);
 	let inputText = '';
+	const composerDraft = createComposerDraft();
 	let stagedAttachments: UploadedAttachment[] = [];
 	// Retain provenance after the voice countdown is cancelled (for example,
 	// when capture fails or the user presses Send early).
@@ -473,23 +548,83 @@
 	let engineRoster: EngineRoster = { engines: [{ name: 'magician', installed: true }], current: 'magician', chat_current: 'magician' };
 	let selectedHarnessEngine = 'magician';
 	let selectedHarnessModel = 'default';
-	$: selectedHarnessEngine = $chatHarnessPreferenceStore.engine;
-	$: selectedHarnessModel = $chatHarnessPreferenceStore.model;
-	function harnessSendOptions(_sessionId: string): { harnessEngine?: string; harnessModel?: string } {
-		// A browser with no choice of its own sends none, so the server default
-		// applies — the same rule every other surface follows.
-		if (!chatHarnessPreferenceStore.isChosen()) return {};
-		return { harnessEngine: selectedHarnessEngine, harnessModel: selectedHarnessModel };
+	let modelCatalogEngine: string | null = null;
+	// Point the per-chat stores at the open chat BEFORE anything reads them.
+	// Their writes happen inside method calls, which the compiler cannot see,
+	// so every reader below also names `composerSessionKey`: assigning it here
+	// is what orders those statements after this one and re-runs them on a
+	// chat switch (first mount included).
+	let composerSessionKey: string | null = null;
+	$: {
+		const identity = $scopeIdentityStore;
+		const key = activeSessionId
+			? JSON.stringify([identity.principal, identity.workspace, activeSessionId]) : null;
+		chatHarnessPreferenceStore.activateSession(key);
+		chatProfileStore.activateSession(key);
+		composerRegistration.setSession(activeSessionId ?? null);
+		modelCatalogEngine = null;
+		composerSessionKey = key;
+	}
+	/** The store value for the chat `composerSessionKey` activated. */
+	function forActivatedChat<T>(_key: string | null, value: T): T { return value; }
+	$: composerHarnessChoice = forActivatedChat(composerSessionKey, $chatHarnessPreferenceStore);
+	$: composerProfileState = forActivatedChat(composerSessionKey, $chatProfileStore);
+	$: selectedHarnessEngine = composerHarnessChoice.engine;
+	$: selectedHarnessModel = composerHarnessChoice.model;
+	$: if (browser && ['magician', 'pi'].includes(selectedHarnessEngine) && modelCatalogEngine !== selectedHarnessEngine) {
+		modelCatalogEngine = selectedHarnessEngine;
+		void chatProfileStore.load(selectedHarnessEngine);
+	}
+	$: chatModelSelectionError = currentThreadDisplayMode !== 'dev' && ['magician', 'pi'].includes(selectedHarnessEngine)
+		? composerProfileState.selectionError : null;
+	$: chatModelSelectionPending = currentThreadDisplayMode !== 'dev' && ['magician', 'pi'].includes(selectedHarnessEngine)
+		&& composerProfileState.isLoading;
+	$: codingSelectionIssue = draftInvokesVibedev(inputText)
+		? $codingProfileStore.error ?? ($codingProfileStore.isLoading ? 'Coding model choices are still loading.' : null) : null;
+	function chatProfileForSend(): string | null {
+		return ['magician', 'pi'].includes(get(chatHarnessPreferenceStore).engine) ? get(chatProfileStore).selected : null;
+	}
+	function harnessSendOptions(_sessionId: string): { harnessEngine: string; harnessModel: string; modelRequest: Record<string, unknown> } {
+		// Read the activated chat's stores now, not the reactive copies, so a
+		// send right after a chat switch carries that chat's pick.
+		const { engine, model } = get(chatHarnessPreferenceStore);
+		const profiles = get(chatProfileStore);
+		const native = ['magician', 'pi'].includes(engine);
+		if (native && currentThreadDisplayMode !== 'dev') {
+			if (profiles.selectionError) throw new Error(profiles.selectionError);
+			if (profiles.isLoading) throw new Error('Model choices are still loading. Try again in a moment.');
+		}
+		return { harnessEngine: engine, harnessModel: model,
+            modelRequest: chatProfileStore.requestSelection(native ? profiles.selected : null, engine, model) };
 	}
 	function selectHarnessEngine(engine: string): void {
 		chatHarnessPreferenceStore.select(engine);
 	}
-	// ── `/` commands (docs/plans/2026-10-03-slash-commands-and-run-budgets.md) ──
+	// ── `/` commands (docs/archive/plans/2026-10-03-slash-commands-and-run-budgets.md) ──
 	// The composer owns the picker; this panel feeds it data and runs the pick.
 	// Nothing here is sent to the model.
 	let engineRosterLoaded = false;
 	let slashBudgetDefaults: BudgetDefaults | null = null;
 	let slashBudgetDefaultsError: string | null = null;
+	// `/engine <magician|pi>` lists that engine's catalog. The composer's own
+	// engine reads this panel's store (the dropdown's list); another engine's
+	// is fetched on its own, so browsing never swaps the catalog the composer
+	// sends with.
+	let slashModelEngine: string | null = null;
+	let slashFetchedModels: { engine: string; models: ModelChoice[] | null; error: string | null } | null = null;
+	// `/run-engine`: what Settings → Agentic flows reads.
+	let slashPiModels: ModelChoice[] | null = null;
+	let slashPiModelsError: string | null = null;
+	let slashLoopModels: ModelChoice[] | null = null;
+	let slashLoopSelection: ModelSelection | null = null;
+	let slashLoopModelsError: string | null = null;
+	$: slashChatModelsEngine = slashModelEngine ?? selectedHarnessEngine;
+	$: slashChatModelsFromStore = composerProfileState.engine === slashChatModelsEngine && composerProfileState.models.length > 0;
+	$: slashChatModels = slashChatModelsFromStore
+		? composerProfileState.models
+		: slashFetchedModels?.engine === slashChatModelsEngine ? slashFetchedModels.models : null;
+	$: slashChatModelsError = !slashChatModelsFromStore && slashFetchedModels?.engine === slashChatModelsEngine
+		? slashFetchedModels.error : null;
 	let slashContext: SlashCommandContext;
 	$: slashContext = {
 		engines: engineRosterLoaded ? engineRoster.engines : null,
@@ -501,6 +636,21 @@
 		runEngine: engineRoster.unavailable
 			? null
 			: { engine: engineRoster.current, model: engineRoster.run_model ?? 'default' },
+		runFollowsChat: !engineRoster.unavailable && engineRoster.follows_chat === true,
+		runModelSelection: engineRoster.run_model_selection ?? null,
+		chatModels: slashChatModels,
+		chatModelsEngine: slashChatModelsEngine,
+		chatModelsError: slashChatModelsError,
+		chatModelSelection: CATALOG_ENGINES.includes(selectedHarnessEngine) ? selectedModelSelection : null,
+		piModels: slashPiModels,
+		piModelsError: slashPiModelsError,
+		loopModels: slashLoopModels,
+		loopSelection: slashLoopSelection,
+		loopModelsError: slashLoopModelsError,
+		// VoiceControl offers every mode on this composer; the mode is known
+		// once the backend preference has loaded.
+		voiceMode: $mediaPreferencesStore.resolved ? $voiceModeStore : null,
+		voiceModesAvailable: null,
 		tasks: budgetTaskCandidates(
 			visibleMessages.map((vm) => vm.message),
 			currentThreadTasks
@@ -529,19 +679,65 @@
 		});
 	}
 
+	function slashErrorText(error: unknown): string {
+		return error instanceof Error ? error.message : String(error);
+	}
+
+	function refreshSlashChatModels(engine: string): void {
+		if (composerProfileState.engine === engine && composerProfileState.models.length > 0) return;
+		slashFetchedModels = { engine, models: null, error: null };
+		void fetchChatModelChoices(engine).then(({ models }) => {
+			if (slashFetchedModels?.engine === engine) slashFetchedModels = { engine, models, error: null };
+		}).catch((error: unknown) => {
+			if (slashFetchedModels?.engine === engine) slashFetchedModels = { engine, models: null, error: slashErrorText(error) };
+		});
+	}
+
+	/** Pi's catalog and the loop mapping, as Settings → Agentic flows loads them
+	 *  (`EnginesPanel` `loadLoopRouting`). Earlier rows stay up while refreshing. */
+	function refreshSlashRunModels(): void {
+		slashPiModelsError = null;
+		void fetchPiModelChoices().then(({ models }) => {
+			slashPiModels = models;
+		}).catch((error: unknown) => {
+			slashPiModelsError = slashErrorText(error);
+		});
+		slashLoopModelsError = null;
+		void fetchRoutingOverview().then((overview) => {
+			const operation = overview.operations.find((entry) => entry.operation === LOOP_OPERATION);
+			if (!operation) throw new Error('The agentic decision mapping is not in the model catalog.');
+			slashLoopModels = overview.models ?? [];
+			slashLoopSelection = selectionForRoute(overview.models ?? [], overview.profiles, operation.effective_profile);
+		}).catch((error: unknown) => {
+			slashLoopModelsError = slashErrorText(error);
+		});
+	}
+
 	function handleSlashNavigate(path: SlashStep[]): void {
 		const command = path[0]?.command;
+		const engine = path[1]?.engine ?? null;
+		slashModelEngine = command === 'engine' ? engine : null;
 		if (command === 'engine' || command === 'run-engine') refreshEngineRoster();
+		// A model's thinking level (path length 3) reads the list already loaded.
+		if (command === 'engine' && engine && CATALOG_ENGINES.includes(engine)) {
+			if (path.length === 2) refreshSlashChatModels(engine);
+		} else if (command === 'run-engine' && path.length === 1) refreshSlashRunModels();
+		else if (command === 'voice-mode') void refreshMediaPreferences();
 		else if (command === 'budget-default') refreshSlashBudgetDefaults();
 		else if (command === 'budget' && path.length === 1) void taskStore.loadTasks().catch(() => {});
 	}
 
 	async function handleSlashCommand(action: SlashAction): Promise<void> {
 		try {
-			const confirmation = await runSlashAction(action, { budgetDefaults: slashBudgetDefaults });
+			const confirmation = await runSlashAction(action, {
+				budgetDefaults: slashBudgetDefaults,
+				chatHarness: chatHarnessPreferenceStore,
+				chatProfiles: chatProfileStore
+			});
 			showSuccess(confirmation.title, confirmation.message);
-			if (action.type === 'run-engine' || (action.type === 'chat-engine' && action.scope === 'everywhere')) {
+			if (action.type === 'run-engine' || action.type === 'run-loop-model' || (action.type === 'chat-engine' && action.scope === 'everywhere')) {
 				refreshEngineRoster();
+				if (action.type !== 'chat-engine') refreshSlashRunModels();
 			} else if (action.type === 'budget-default') {
 				refreshSlashBudgetDefaults();
 			}
@@ -566,7 +762,7 @@
 		const options = Array.from(
 			profileDropdownEl?.querySelectorAll<HTMLElement>('.chat-profile-option') ?? []
 		);
-		(options.find((el) => el.getAttribute('aria-pressed') === 'true') ?? options[0])?.focus();
+		(profileDropdownEl?.querySelector<HTMLElement>('button[aria-expanded]') ?? options.find((el) => el.getAttribute('aria-pressed') === 'true') ?? options[0])?.focus();
 	}
 
 	function closeProfileDropdown(refocusTrigger: boolean): void {
@@ -655,6 +851,18 @@
 	let devWorkbenchActiveSessionId: string | null = null;
 	let planReplyIntent: PlanReplyIntent<UploadedAttachment> | null = null;
 	let respondingEscalationKeys = new Set<string>();
+	/** Why the last answer from a card did not land, by the card's response key. */
+	let escalationErrors = new Map<string, string>();
+	/** The pause the owner chose to talk past: composer text goes out as a normal message. */
+	let escalationReplyDismissedPauseId: string | null = null;
+	/** The composer dock's shown ask (`ComposerAskDock`'s `activeId`). */
+	let composerAskActiveId: string | null = null;
+	/** Id prefix of the stand-in message for a dock ask; see `dockReplyMessage`. */
+	const DOCK_REPLY_MESSAGE_PREFIX = 'composer-ask:';
+	/** The last typed reply named none of the ask's answers; the hint says what it takes. */
+	let escalationReplyUnmatched = false;
+	// Editing the draft clears the "that is not an answer" hint.
+	$: inputText, (escalationReplyUnmatched = false);
 	let hitlContinuationGeneration = 0;
 	// Task-card progressive disclosure — per-run expansion OVERRIDES,
 	// keyed by the stable execution-group id (ChatRenderTaskExecutionGroup.id).
@@ -926,6 +1134,9 @@
 	// God mode for this chat (`execution.god_mode`): the composer's Magician
 	// orb shows it and toggles it. Null until the server answers.
 	let chatGodMode: boolean | null = null;
+	// Auto-approve for this chat: god mode asks only before deletes, root and
+	// code a command does not show.
+	let chatAutoApprove = false;
 	let chatGodModeBusy = false;
 	let chatGodModeFor: string | null = null;
 	$: void loadChatGodMode(activeSessionId ?? null);
@@ -933,10 +1144,14 @@
 	async function loadChatGodMode(sessionId: string | null): Promise<void> {
 		chatGodModeFor = sessionId;
 		chatGodMode = null;
+		chatAutoApprove = false;
 		if (!sessionId) return;
 		try {
 			const state = await fetchChatGodMode(sessionId);
-			if (chatGodModeFor === sessionId) chatGodMode = state.enabled;
+			if (chatGodModeFor === sessionId) {
+				chatGodMode = state.enabled;
+				chatAutoApprove = state.auto_approve;
+			}
 		} catch {
 			// Older server or no owner session: the orb stays a plain orb.
 		}
@@ -959,10 +1174,39 @@
 		chatGodModeBusy = true;
 		try {
 			const state = await saveChatGodMode(sessionId, turningOn);
-			if (activeSessionId === sessionId) chatGodMode = state.enabled;
+			if (activeSessionId === sessionId) {
+				chatGodMode = state.enabled;
+				chatAutoApprove = state.auto_approve;
+			}
 			showInfo(state.enabled ? 'God mode is on for this chat' : 'God mode is off for this chat');
 		} catch (error) {
 			showError('God mode could not be changed', error instanceof Error ? error.message : String(error));
+		} finally {
+			chatGodModeBusy = false;
+		}
+	}
+
+	async function toggleChatAutoApprove(): Promise<void> {
+		const sessionId = activeSessionId;
+		if (!sessionId || !chatGodMode || chatGodModeBusy) return;
+		const turningOn = !chatAutoApprove;
+		if (turningOn) {
+			const confirmed = await requestConfirmation({
+				title: 'Auto-approve god mode in this chat?',
+				message:
+					'What god mode would ask you in this chat and the runs it starts is approved without asking. It still asks before anything that deletes (rm -r or -f, find -delete, git reset --hard, git clean, a forced push, a deleting edit), anything run as root (sudo, doas, su), code a command does not show (piped into a shell, from a variable), and the blocked list.',
+				confirmLabel: 'Auto-approve',
+				destructive: true
+			});
+			if (!confirmed) return;
+		}
+		chatGodModeBusy = true;
+		try {
+			const state = await saveChatAutoApprove(sessionId, turningOn);
+			if (activeSessionId === sessionId) chatAutoApprove = state.auto_approve;
+			showInfo(state.auto_approve ? 'Auto-approve is on for this chat' : 'Auto-approve is off for this chat');
+		} catch (error) {
+			showError('Auto-approve could not be changed', error instanceof Error ? error.message : String(error));
 		} finally {
 			chatGodModeBusy = false;
 		}
@@ -1017,7 +1261,10 @@
 	}
 	let textAdmissionInFlight = false;
 	$: isSendingMessage = $chatStore.isSendingMessage;
-	$: composerBusy = isSendingMessage || (!!activeSessionId && $chatStore.activeRunSessionId === activeSessionId);
+	// The server's running turn for this session (`turn_state`): after a
+	// reload or reconnect it keeps the turn's card live and Stop available.
+	$: serverRunningTurnId = runningTurnIdForSession($chatTurnStateStore, activeSessionId);
+	$: composerBusy = isSendingMessage || !!serverRunningTurnId || (!!activeSessionId && $chatStore.activeRunSessionId === activeSessionId);
 	$: setConcurrentVoiceForegroundBusy(composerBusy || !!inputText.trim() || stagedAttachments.length > 0 || isUploading || concurrentAdmissionInFlight);
 	let lastConcurrentSessionId: string | null | undefined;
 	function concurrentSessionChanged(sessionId: string | null): void {
@@ -1067,26 +1314,30 @@
 	// A run whose terminal status row never reached the chat is still over
 	// when the task store says so; without this the turn stayed "live" and
 	// its Steps card spun after the task finished.
-	$: activeTaskTurnId = latestActiveTaskTurnId(
+	$: activeTaskTurn = latestActiveTaskTurn(
 		visibleMessages.map((vm) => vm.message),
 		(message) => getChatTurnIdForMessage(message, $chatTurnIdByMessageIdStore),
 		(message) =>
 			!message.content.synthesis_pending &&
-			isTerminalTaskStatus(liveTaskStoreStatus($taskStore.tasks, message.content))
+			isInactiveTaskTurnStatus(liveTaskStoreStatus($taskStore.tasks, message.content))
 	);
+	$: activeTaskTurnId = activeTaskTurn?.turnId ?? null;
+	// A paused run (an iteration limit) or a plan awaiting review waits on the
+	// user: the orb reads "needs you", never "working".
+	$: activeTaskWaitingOnUser = !!activeTaskTurn && isTaskWaitingOnUser(activeTaskTurn.status);
 	// task_id → latest transcript card status. A reply's step strip settles
 	// a `task::` row the event tail left running from a terminal card here.
 	$: transcriptTaskStatuses = latestTaskStatuses(visibleMessages.map((vm) => vm.message));
-	$: chatTurnsWithTerminalTask = (() => {
+	$: chatTurnsWithSettledTask = (() => {
 		const turnMap = $chatTurnIdByMessageIdStore;
 		const set = new Set<string>();
 		for (const vm of visibleMessages) {
 			const m = vm.message;
 			if (m.content.type !== 'task_status_update') continue;
 			if (
-				!isTerminalTaskStatus(m.content.status) &&
+				!isInactiveTaskTurnStatus(m.content.status) &&
 				(m.content.synthesis_pending ||
-					!isTerminalTaskStatus(liveTaskStoreStatus($taskStore.tasks, m.content)))
+					!isInactiveTaskTurnStatus(liveTaskStoreStatus($taskStore.tasks, m.content)))
 			)
 				continue;
 			const tid = getChatTurnIdForMessage(m, turnMap);
@@ -1111,12 +1362,13 @@
 		visibleMessages.map((vm) => vm.message),
 		{
 			resolveTurnId: (message) => getChatTurnIdForMessage(message, $chatTurnIdByMessageIdStore),
-			turnsWithTerminalTask: chatTurnsWithTerminalTask,
+			// A turn the server settled (stopped / failed) is not open.
+			turnsWithTerminalTask: new Set([...chatTurnsWithSettledTask, ...settledTurnIds($chatTurnStateStore)]),
 			now: openTurnClock
 		}
 	);
 	$: liveTurnId =
-		inFlightChatTurnId ?? activeTaskTurnId ?? openUserTurnId;
+		inFlightChatTurnId ?? serverRunningTurnId ?? activeTaskTurnId ?? openUserTurnId;
 
 	// Chat-next presence orb: needs-you (a pending HITL on any turn in this
 	// session) > working (reply text streaming, or a spawned task running) >
@@ -1134,23 +1386,11 @@
 						message.id.startsWith('streaming-') &&
 						getMessageText(message.content).trim().length > 0
 				),
-				toolsRunning: !!activeTaskTurnId
+				toolsRunning: !!activeTaskTurnId && !activeTaskWaitingOnUser,
+				taskWaitingOnUser: activeTaskWaitingOnUser
 			})
 		: 'idle';
 
-	/**
-	 * Per-turn thinking-mode state for the chat-input chip. The chip
-	 * appears the moment the backend emits `ThinkingModeActivated` for
-	 * the in-flight turn (LLM self-escalated from the fast variant of
-	 * an adaptive profile to the thinking variant) and clears on
-	 * `ThinkingModeCompleted` at turn end. The chip is bound to the
-	 * specific in-flight turn id, so when the next user message starts
-	 * a fresh turn the chip resets automatically — the new turn begins
-	 * on the fast variant with no escalation event yet.
-	 */
-	$: thinkingModeStore = thinkingModeForTurn(inFlightChatTurnId);
-	$: thinkingModeForActiveTurn = $thinkingModeStore.active;
-	$: thinkingModeReasonForActiveTurn = $thinkingModeStore.reason;
 
 	/**
 	 * Set of chat_turn_ids that already have an assistant response in
@@ -1332,6 +1572,16 @@
 		structuredResponseRollout = resolveStructuredResponseRollout($page.url.searchParams);
 	}
 	$: currentThreadId = normalizeThreadId(currentSession?.ui_thread_id ?? targetThreadId);
+    $: {
+        // Rebind only identity/target changes; the reader obtains current picks
+        // when a new call starts. Existing voice calls retain their snapshot.
+        const target = [activeSessionId, currentThreadId, $scopeIdentityStore.principal, $scopeIdentityStore.workspace];
+        unregisterComposerChoice();
+        unregisterComposerChoice = target[0] ? registerChatComposerChoice(currentThreadId, () => {
+            const { engine, model } = get(chatHarnessPreferenceStore);
+            return chatProfileStore.requestSelection(get(chatProfileStore).selected, engine, model);
+        }) : () => {};
+    }
 	let lastVoiceTitleRefresh = '';
 	$: if (currentSessionId && !currentSession?.title?.trim()) {
 		const firstRequest = $concurrentVoiceStore.requests.find(request => request.parent_session_id === currentSessionId);
@@ -1352,20 +1602,28 @@
 		: [];
 	$: currentPlannerDockTasks = plannerDockTasks(currentThreadTasks);
 	/**
-	 * The questions this conversation is waiting on, for the dock above the
-	 * composer: every pending ask (live store and Attention feed, through the
-	 * shared `pendingAsks` selector) whose thread — its own scope, else the feed
-	 * row's `ui_thread_id`, else its task's — is this one, or whose task sits in
-	 * this thread. A task-only ask (Relentless work carries no thread) reaches
-	 * the dock through the feed row's thread. A plan approval the planner dock
-	 * already offers (Approve / Approve & Run) is left to it rather than shown
-	 * twice.
+	 * Every open question, for the dock above the composer (live store and
+	 * Attention feed, through the shared `pendingAsks` selector): the reader
+	 * answers wherever they are. This conversation's come first — its chat
+	 * session, its thread (the ask's own scope, else the feed row's
+	 * `ui_thread_id`, else its task's) or one of its tasks — and the dock labels
+	 * the rest with their origin. A plan approval the planner dock already
+	 * offers (Approve / Approve & Run) is left to it rather than shown twice.
 	 */
-	$: composerAskTargets = pendingAsksForThread($pendingAsks, currentThreadId, {
+	$: composerAskSelection = composerAsks($pendingAsks, currentThreadId, {
+		chatSessionId: currentSessionId,
 		normalize: normalizeThreadId,
-		threadTaskIds: new Set(currentThreadTasks.map((task) => task.id)),
+		// Every untitled chat shares the `general` thread, so there a task is
+		// this conversation's only when this chat session started it.
+		threadTaskIds: new Set(
+			currentThreadTasks
+				.filter((task) => currentThreadId !== 'general' || task.chatSessionId === currentSessionId)
+				.map((task) => task.id)
+		),
 		planApprovalTaskIds: new Set(currentPlannerDockTasks.map((task) => task.id))
 	});
+	$: composerAskTargets = composerAskSelection.targets;
+	$: composerAskHere = composerAskSelection.here;
 	$: planSheetTask =
 		planSheetTaskId ? $taskStore.tasks.find((task) => task.id === planSheetTaskId) ?? null : null;
 	$: currentPlanReplyTarget = (() => {
@@ -1390,6 +1648,46 @@
 	$: planReplyIsStale = Boolean(
 		planReplyIntent && (!currentPlanReplyTarget || !currentPlanReplyQuestion)
 	);
+	/**
+	 * The agentic pause typed composer text answers: the session's newest open
+	 * escalation card, when it is an ask chat can answer by typing. The card's
+	 * own actionability test decides "open", so a card shown as answered,
+	 * superseded or no longer active is never a target. Its inputs (tasks,
+	 * read-only mode) are listed so the statement re-runs when they change.
+	 */
+	$: escalationReplyMessage =
+		planReplyIntent || isReadOnly || planComposerMode === 'plan' || currentThreadDisplayMode === 'dev'
+			? null
+			: (escalationReplyTargetFor(
+					messages,
+					activeSessionId,
+					escalationReplyDismissedPauseId,
+					currentThreadTasks,
+					$taskStore
+				) ?? dockReplyMessage);
+	/**
+	 * An agent's pause usually reaches chat only as the composer dock's ask:
+	 * chat leaves `hitl.requested` to the dock rather than the transcript. With
+	 * no open card, typed text answers the dock's shown ask by the same rules,
+	 * through a stand-in message the send path recognises by its id.
+	 */
+	// Only this conversation's question takes typed text: one from elsewhere
+	// is answered with the dock's own controls, never with a chat message.
+	$: dockReplyTarget = composerAskTargets.find(
+		(target) => target.id === composerAskActiveId && composerAskHere.has(target.id)
+	) ?? null;
+	$: dockReplyMessage = (() => {
+		const content = dockAskReplyContent(dockReplyTarget);
+		if (!content || !dockReplyTarget || !activeSessionId) return null;
+		if (escalationReplyDismissedPauseId && content.pause_state_id === escalationReplyDismissedPauseId) return null;
+		return {
+			id: `${DOCK_REPLY_MESSAGE_PREFIX}${dockReplyTarget.id}`,
+			session_id: activeSessionId,
+			direction: 'system',
+			created_at: dockReplyTarget.at ?? 0,
+			content
+		} as ChatMessage;
+	})();
 
 	function handleDevWorkbenchStarted(event: CustomEvent<{ sessionId: string; program: string | null }>): void {
 		devWorkbenchSession = {
@@ -1410,9 +1708,11 @@
 	}
 
 	// Profile chooser
-	$: chatProfiles = $chatProfileStore.profiles;
-	$: chatProfileWarnings = $chatProfileStore.warnings;
-	$: selectedProfile = $chatProfileStore.selected;
+	$: chatProfiles = composerProfileState.profiles;
+	$: chatProfileWarnings = composerProfileState.warnings;
+	$: selectedProfile = composerProfileState.selected;
+	$: selectedModelSelection = selectionForRoute(composerProfileState.models, chatProfiles, selectedProfile);
+	$: selectedModelChoice = composerProfileState.models.find(model => model.id === selectedModelSelection?.model_id);
 	$: selectedProfileObj = chatProfiles.find(p => p.name === selectedProfile) ?? chatProfiles[0];
 	$: selectedProfileSupportsAttachments = selectedProfileObj?.supports_user_image_inputs ?? true;
 	// `@copilot` needs an image on screen to ground on; in the HUD the screen-capture
@@ -1478,6 +1778,9 @@
 			planModeStore.select(returnMode);
 		}
 		respondingEscalationKeys = new Set();
+		escalationErrors = new Map();
+		escalationReplyDismissedPauseId = null;
+		escalationReplyUnmatched = false;
 		runExpansionOverrides = new Map();
 	}
 
@@ -1649,6 +1952,7 @@
 	// behaving like before. `handleChatScroll` flips this every time
 	// the user moves the viewport.
 	let isAtBottom = true;
+	let lastKnownScrollTop = 0;
 	// 120px slack — covers the composer height + a sentence or so of
 	// breathing room. Tighter values feel jittery on touch devices
 	// where momentum scroll overshoots the bottom by a few pixels.
@@ -1679,32 +1983,62 @@
 	let lastTailMessageId: string | null = null;
 	let lastTailMessageTextLen = 0;
 	let lastAutoSpokenMessageId: string | null = null;
-	$: if (visibleMessages.length && browser) {
+	// The conversation `lastAutoSpokenMessageId` was taken from. Opening another
+	// chat (thread switch, `?session=` link, chat tab) swaps the whole list under
+	// this mounted panel, and its tail is history, not a reply that just landed.
+	let autoSpeakBaselineSessionId: string | null = null;
+	let scrollSessionKey = '';
+	let viewportToken = {};
+	$: viewportSessionKey = `${currentScopeKey}:${currentSessionId ?? ''}`;
+	$: if (viewportSessionKey !== scrollSessionKey) {
+		scrollSessionKey = viewportSessionKey;
+		viewportToken = {};
+		chatInitialScrollDone = false;
+		lastTailMessageId = null;
+		lastTailMessageTextLen = 0;
+		isAtBottom = true;
+		lastKnownScrollTop = 0;
+		floatingDayVisible = false;
+	}
+	$: if (visibleMessages.length && browser && !isLoading) {
+		const requestViewport = viewportToken;
 		const tail = visibleMessages[visibleMessages.length - 1];
 		const tailId = tail?.id ?? null;
+		const tailSessionId = currentSessionId;
 		const tailTextLen =
 			tail?.message?.content && typeof tail.message.content === 'object'
 				? (getMessageText(tail.message.content as ChatMessageContent) ?? '').length
 				: 0;
 		if (!chatInitialScrollDone) {
 			tick().then(() => {
-				if (messagesContainerEl) {
-					messagesContainerEl.scrollTop = messagesContainerEl.scrollHeight;
+				if (requestViewport !== viewportToken || isLoading) return;
+				const hasLinkedAnswer = !!$chatStore.focusedMessageId;
+				if (messagesContainerEl && !hasLinkedAnswer) {
+					snapToBottom();
 				}
 				chatInitialScrollDone = true;
 				lastTailMessageId = tailId;
 				lastTailMessageTextLen = tailTextLen;
-				isAtBottom = true;
+				isAtBottom = !hasLinkedAnswer;
 				// Establish baseline so initial backfill never auto-speaks.
 				lastAutoSpokenMessageId = tailId;
+				autoSpeakBaselineSessionId = tailSessionId;
 			});
 		} else if (tailId !== lastTailMessageId) {
 			lastTailMessageId = tailId;
 			lastTailMessageTextLen = tailTextLen;
 			if (isAtBottom) {
-				tick().then(scrollToBottom);
+				tick().then(() => {
+					if (requestViewport === viewportToken && !isLoading && isAtBottom) scrollToBottom();
+				});
 			}
-			void maybeAutoSpeakLatest(tailId);
+			if (tailSessionId !== autoSpeakBaselineSessionId) {
+				// Another chat's history: re-baseline instead of speaking it.
+				lastAutoSpokenMessageId = tailId;
+				autoSpeakBaselineSessionId = tailSessionId;
+			} else {
+				void maybeAutoSpeakLatest(tailId);
+			}
 		} else if (tailTextLen !== lastTailMessageTextLen) {
 			// Streaming append on the same message. Use the `instant`
 			// scroll variant — smooth scrolling combined with rapid
@@ -1717,8 +2051,8 @@
 			lastTailMessageTextLen = tailTextLen;
 			if (isAtBottom) {
 				tick().then(() => {
-					if (messagesContainerEl) {
-						messagesContainerEl.scrollTop = messagesContainerEl.scrollHeight;
+					if (requestViewport === viewportToken && !isLoading && isAtBottom && messagesContainerEl) {
+						snapToBottom();
 					}
 				});
 			}
@@ -1727,6 +2061,7 @@
 
 	function maybeAutoSpeakLatest(tailId: string | null): void {
 		const decision = maybeAutoSpeakTail({
+			chatSessionId: currentSessionId,
 			tailId,
 			lastAutoSpokenMessageId,
 			resolveMessage: (id) => {
@@ -1751,14 +2086,36 @@
 		lastAutoSpokenMessageId = decision.nextLastAutoSpokenMessageId;
 	}
 
-	function scrollToBottom() {
+	function snapToBottom(): void {
+		if (!messagesContainerEl) return;
+		messagesContainerEl.scrollTop = messagesContainerEl.scrollHeight;
+		lastKnownScrollTop = messagesContainerEl.scrollTop;
+	}
+
+	// Saved task details, images and markdown can finish layout after the
+	// message list arrives. Follow their height only while the reader is at
+	// the tail; fetching earlier history or scrolling up never opts back in.
+	function followTranscriptSize(node: HTMLElement) {
+		if (typeof ResizeObserver === 'undefined') return;
+		const observer = new ResizeObserver(() => {
+			if (chatInitialScrollDone && !isLoading && isAtBottom) snapToBottom();
+		});
+		observer.observe(node);
+		return { destroy: () => observer.disconnect() };
+	}
+
+	function scrollToBottom(behavior: ScrollBehavior = 'smooth') {
+		if (behavior === 'auto' && messagesContainerEl) {
+			snapToBottom();
+			return;
+		}
 		if (messagesContainerEl) {
 			messagesContainerEl.scrollTo({
 				top: messagesContainerEl.scrollHeight,
-				behavior: 'smooth'
+				behavior
 			});
 		} else if (messagesEndEl) {
-			messagesEndEl.scrollIntoView({ behavior: 'smooth' });
+			messagesEndEl.scrollIntoView({ behavior });
 		}
 	}
 
@@ -2250,6 +2607,7 @@
 	}
 
 	async function handleSend(opts: { voiceOrigin?: boolean; background?: boolean; stopAndSend?: boolean } = {}) {
+		if ((!isBrainstormInvokeText(inputText) && (chatModelSelectionError || chatModelSelectionPending)) || codingSelectionIssue) return;
         const voiceOrigin = opts.voiceOrigin === true || voiceAutoSendRemainingMs !== null || voiceComposerTurnOrigin;
         // A spoken turn only branches when it would otherwise wait behind a
         // running turn, or when the owner picked a voice topic to continue.
@@ -2285,6 +2643,29 @@
 			voiceComposerTurnOrigin = false;
 			inputText = '';
 			void startBrainstormFromComposer(brainstormText);
+			return;
+		}
+		// The newest open card is an agent's pause the owner can answer by
+		// typing: the text answers it (and resolves the card) instead of
+		// starting a turn. Attachments, a background send, or text the ask
+		// cannot take go out as a normal message.
+		// Only a typed send from the composer: a spoken or auto-sent turn,
+		// attachments and a background send always go out as messages.
+		const escalationReplyAtSend =
+			!voiceOrigin && !opts.background && stagedAttachments.length === 0
+				? escalationReplyMessage
+				: null;
+		if (escalationReplyAtSend) {
+			// An answer to this card is already posting; keep the words.
+			if (respondingEscalationKeys.has(escalationResponseKey(escalationReplyAtSend.content))) return;
+			// Words the ask cannot take stay in the composer, and the hint says
+			// what it takes — they never start a turn silently.
+			if (!typedEscalationAnswer(escalationReplyAtSend.content, inputText)) {
+				escalationReplyUnmatched = true;
+				focusActiveComposer();
+				return;
+			}
+			await sendComposerTextToEscalation(escalationReplyAtSend, inputText);
 			return;
 		}
 		const requestScopeKey = captureChatPageScopeKey();
@@ -2460,7 +2841,7 @@
 				return;
 			}
 		}
-		const profile = $chatProfileStore.selected;
+		const profile = chatProfileForSend();
 		// Feature activation travels as a typed product surface. The visible
 		// @-command remains composer syntax, but arbitrary message substrings no
 		// longer authorize Tutor/App Copilot tools on the backend.
@@ -2469,10 +2850,10 @@
 			: isTutorInvokeText(text)
 				? 'tutor'
 				: undefined;
-		const codingChoice = codingChoiceFromSelection($codingProfileStore.selected);
+		const codingChoice = $codingProfileStore.error || $codingProfileStore.isLoading
+			? null : codingChoiceFromSelection($codingProfileStore.selected);
 		const sendOptions = {
-			harnessEngine: selectedHarnessEngine,
-			harnessModel: selectedHarnessModel,
+            ...harnessSendOptions(sendSessionId),
 			// `as const` on both arms: without them TypeScript widens the ternary to
 			// `string`, and `ChatSendOptions.mode` is the `ChatMessageMode` union. Both
 			// values are already in that union — this is a widening fix, not a change
@@ -2499,7 +2880,7 @@
 				if (concurrent && attachmentIds.length === 0 && !featureSourceSurface && !planReplyIntent) {
 					concurrentAdmissionInFlight = true;
 					await submitConcurrentVoiceRequest(sendSessionId, text, {
-						profile, harness_engine: selectedHarnessEngine, harness_model: selectedHarnessModel,
+						...sendOptions.modelRequest,
 						mode: sendOptions.mode, coding_choice: codingChoice
 					}, voiceOrigin);
 					if (!isStaleChatPageScope(requestScopeKey) && activeSessionId === sendSessionId) {
@@ -2588,6 +2969,16 @@
 		planReplyIntent = state.intent;
 		planModeStore.select(state.mode);
 	}
+
+	function desktopDraftKey(): string {
+		return `${currentScopeKey}:${currentSessionId ?? ''}`;
+	}
+	beforeNavigate(({ from, to }) => {
+		if (!isHudWindow() || !from || !to || from.url.pathname === to.url.pathname || !currentSessionId) return;
+		desktopComposerDrafts.set(desktopDraftKey(), {
+			composer: currentPlanReplyComposerState(), voiceOrigin: voiceComposerTurnOrigin
+		});
+	});
 
 	function focusActiveComposer(): void {
 		void tick().then(() => {
@@ -2735,7 +3126,7 @@
 				applyPlanReplyComposerState(finishPlanReply(currentPlanReplyComposerState()));
 			}
 			await taskStore.loadTasks();
-			tick().then(scrollToBottom);
+			tick().then(() => scrollToBottom());
 		} catch (error) {
 			if (isStaleChatPageScope(requestScopeKey)) {
 				return;
@@ -2803,6 +3194,7 @@
 	// panel, so a task id the LLM mentions in prose opens the chat-owned task
 	// panel in place (works for Internal tasks too) instead of navigating to
 	// /tasks. Must run during init, before children mount.
+	setContext<MediaChatSession>(MEDIA_CHAT_SESSION, () => currentSessionId);
 	setContext<ChatTaskPanelOpener>(CHAT_TASK_PANEL_OPENER, (taskId) => {
 		void openTaskPanel(taskId);
 	});
@@ -2891,11 +3283,24 @@
 
 	async function openStructuredArtifact(
 		artifactId: string,
-		messageSessionId: string | null
+		messageSessionId: string | null,
+		locator?: StructuredArtifactLocatorV1
 	): Promise<void> {
 		const trimmed = artifactId.trim();
 		if (!trimmed) {
 			showError('Action artifact id is empty.');
+			return;
+		}
+		// A shortened id no longer embeds its path; the server's locator does.
+		if (locator) {
+			if (locator.task_id) {
+				const scope = get(scopeIdentityStore);
+				await openAuthenticatedTaskOutput(
+					taskOutputUrl(locator.task_id, locator.relative_path, scope.principal, scope.workspace)
+				);
+			} else {
+				await openSessionPath(locator.relative_path, 'file', messageSessionId);
+			}
 			return;
 		}
 		if (trimmed.startsWith('magician-artifact:session:')) {
@@ -2942,7 +3347,8 @@
 
 	async function handleStructuredResponseAction(
 		action: StructuredResponseActionV1,
-		messageSessionId: string | null
+		messageSessionId: string | null,
+		response: StructuredResponseV1 | null = null
 	): Promise<void> {
 		try {
 			switch (action.kind) {
@@ -2961,7 +3367,11 @@
 					await openTaskPanel(action.task_id);
 					break;
 				case 'open_artifact':
-					await openStructuredArtifact(action.artifact_id, messageSessionId);
+					await openStructuredArtifact(
+						action.artifact_id,
+						messageSessionId,
+						artifactLocatorFor(response, action.artifact_id)
+					);
 					break;
 				case 'send_follow_up': {
 					if (isReadOnly) {
@@ -2978,7 +3388,7 @@
 						return;
 					}
 								dispatch('inline-send', { sessionId: messageSessionId, text: prompt });
-								await chatStore.sendMessageStreaming(messageSessionId, prompt, get(chatProfileStore).selected, [], harnessSendOptions(messageSessionId));
+								await chatStore.sendMessageStreaming(messageSessionId, prompt, chatProfileForSend(), [], harnessSendOptions(messageSessionId));
 								break;
 							}
 							case 'invoke_server_action':
@@ -3348,13 +3758,23 @@
 		}
 	}
 
-	// Shared drain — load older history pages back-to-back until
-	// `has_more=false`. Used by both the scroll-to-top trigger and the
-	// explicit "Load earlier messages" button.
-	async function drainOlderMessages(): Promise<void> {
-		if (!activeSessionId) return;
-		while ($chatStore.hasMoreMessages && !$chatStore.isLoadingOlder) {
-			await chatStore.loadOlderMessages(activeSessionId);
+	// One page per request; preserve the visible messages when prepending it.
+	let loadingHistoryPageToken: object | null = null;
+	async function loadOlderPage(): Promise<void> {
+		const sessionId = currentSessionId;
+		const requestViewport = viewportToken;
+		const el = messagesContainerEl;
+		if (!sessionId || !el || loadingHistoryPageToken === requestViewport || isLoading || !chatInitialScrollDone || !$chatStore.hasMoreMessages || $chatStore.isLoadingOlder) return;
+		loadingHistoryPageToken = requestViewport;
+		const height = el.scrollHeight;
+		const top = el.scrollTop;
+		try {
+			await chatStore.loadOlderMessages(sessionId);
+			await tick();
+			if (requestViewport !== viewportToken || messagesContainerEl !== el) return;
+			el.scrollTop = top + el.scrollHeight - height;
+		} finally {
+			if (loadingHistoryPageToken === requestViewport) loadingHistoryPageToken = null;
 		}
 	}
 
@@ -3399,26 +3819,22 @@
 
 	async function handleChatScroll(e: Event): Promise<void> {
 		const el = e.target as HTMLElement;
-		if (!el) return;
+		if (!el || !chatInitialScrollDone || isLoading) return;
 		// Stickiness flag — every native scroll event re-evaluates
 		// whether the viewport is pinned to the bottom. Drives both
 		// the auto-scroll reactives above and the jump-to-latest pill
 		// visibility below. Programmatic `scrollTo`/`scrollTop` writes
 		// also fire scroll events, so the flag stays correct after
 		// `scrollToBottom()` snaps us back to the tail.
-		isAtBottom = computeIsAtBottom(el);
+		// Native anchoring may move down as cards expand. That is not the
+		// reader scrolling away; an upward movement releases the tail.
+		if (!isAtBottom || el.scrollTop < lastKnownScrollTop) {
+			isAtBottom = computeIsAtBottom(el);
+		}
+		lastKnownScrollTop = el.scrollTop;
 		updateFloatingDay(el);
-		if (!activeSessionId) return;
-		// Once the user lands in the top trigger zone, drain the entire
-		// history back-to-back. We can't keep re-checking `scrollTop`
-		// per-iteration because browser scroll-anchoring repositions
-		// us *out* of the trigger zone after the first prepend (the
-		// previously-visible message stays in place; scrollTop jumps
-		// to the prepended height). The `isLoadingOlder` spinner shows
-		// for each page; the loop exits when the backend reports
-		// `has_more=false`.
-		if (el.scrollTop < 80 && $chatStore.hasMoreMessages && !$chatStore.isLoadingOlder) {
-			await drainOlderMessages();
+		if (el.scrollTop < 80 && !isAtBottom) {
+			await loadOlderPage();
 		}
 	}
 
@@ -3465,7 +3881,7 @@
         }
         if (!target) {
             await tick();
-            if (route === answerRoute) { isAtBottom = true; scrollToBottom(); }
+            if (route === answerRoute) { isAtBottom = true; scrollToBottom('auto'); }
             return;
         }
         focusedAnswerId = get(chatStore).focusedMessageId ?? null;
@@ -3489,7 +3905,6 @@
     }
 
 	async function handleViewExecution(sessionId: string) {
-		chatInitialScrollDone = false;
 		const sessions = $chatStore.sessions;
 		if (sessionId === activeSessionId && !viewingArchivedId) return;
 		const session = sessions.find((s) => s.id === sessionId);
@@ -3575,10 +3990,14 @@
 	// now lives inside the composer's dock slot, several hundred lines from
 	// the rest of the session controls.
 	function handlePillOpenHistory(): void {
+		if (hud) {
+			openHistoryDrawer({ threadFilter: null, initialTab: 'sessions' });
+			return;
+		}
 		if (browser && window.innerWidth <= 1280) {
 			historyMobileOpen = !historyMobileOpen;
 		} else {
-			historyExpanded = !historyExpanded;
+			$chatHistoryExpanded = !$chatHistoryExpanded;
 		}
 	}
 
@@ -3612,7 +4031,7 @@
 
 	async function handleDeleteSession(): Promise<void> {
 		const sessionId = activeSessionId;
-		if (!sessionId || isReadOnly) return;
+		if (!sessionId || isReadOnly || $chatStore.deletingSessionIds?.includes(sessionId)) return;
 		const ok = await requestConfirmation({
 			title: 'Delete this session?',
 			message:
@@ -3706,6 +4125,141 @@
 
 	function isEscalationNonActionable(content: ChatMessageContent): boolean {
 		return escalationInactiveReason(content) !== null;
+	}
+
+	/** See `escalationReplyMessage`; the trailing inputs only drive reactivity. */
+	function escalationReplyTargetFor(
+		transcript: ChatMessage[],
+		sessionId: string | null,
+		dismissedPauseId: string | null,
+		..._dependencies: unknown[]
+	): ChatMessage | null {
+		return pendingEscalationReplyTarget(
+			transcript,
+			sessionId,
+			(content) => !isEscalationNonActionable(content),
+			dismissedPauseId
+		);
+	}
+
+	function escalationResponseKey(content: ChatMessageContent): string {
+		return (
+			content.pause_state_id?.trim()
+			|| content.request_id?.trim()
+			|| content.execution_id?.trim()
+			|| ''
+		);
+	}
+
+	function setEscalationError(key: string, error: string | null): void {
+		if (!key || (error === null && !escalationErrors.has(key))) return;
+		const next = new Map(escalationErrors);
+		if (error === null) next.delete(key);
+		else next.set(key, error);
+		escalationErrors = next;
+	}
+
+	/** Talk past the pending pause: the next send is a normal chat message. */
+	function dismissEscalationReply(): void {
+		const pauseStateId = escalationReplyMessage?.content.pause_state_id?.trim();
+		if (pauseStateId) escalationReplyDismissedPauseId = pauseStateId;
+		focusActiveComposer();
+	}
+
+	/** The answer as the resolved card shows it. */
+	function answeredReason(text: string): string {
+		const words = text.trim().replace(/\s+/g, ' ');
+		return `Answered: ${words.length > 120 ? `${words.slice(0, 119)}…` : words}`;
+	}
+
+	/**
+	 * Send the composer text to the pending pause instead of starting a turn.
+	 * The caller has checked the text fits the ask (`typedEscalationAnswer`).
+	 * The post is the modal's: `answerTaskAsk` posts the same value the prompt
+	 * would have, and a re-ask reopens the prompt. Whenever the words did not
+	 * land — a failure, a pause that was already gone, a scope change mid-post
+	 * — they go back into the composer.
+	 */
+	async function sendComposerTextToEscalation(message: ChatMessage, text: string): Promise<void> {
+		const content = message.content;
+		const result = typedEscalationAnswer(content, text);
+		if (!result) return;
+		const executionId = content.execution_id?.trim() ?? '';
+		const pauseStateId = content.pause_state_id?.trim() ?? '';
+		const scope = get(scopeIdentityStore);
+		// A dock ask answers through the dock's own target, as its Answer would.
+		const dockTarget = message.id.startsWith(DOCK_REPLY_MESSAGE_PREFIX)
+			? (composerAskTargets.find(
+					(candidate) => `${DOCK_REPLY_MESSAGE_PREFIX}${candidate.id}` === message.id
+				) ?? null)
+			: null;
+		const target = dockTarget ?? buildPersistedChatHitlTarget({
+			executionId,
+			pauseStateId,
+			escalationType: content.escalation_type,
+			requestId: content.request_id,
+			inputType: content.input_type,
+			question: content.question,
+			options: content.options,
+			inputSchema: content.input_schema,
+			principal: scope.principal,
+			workspace: scope.workspace
+		});
+		if (!target) {
+			showError('Unable to respond: the persisted HITL target is incomplete.');
+			return;
+		}
+
+		const responseKey = escalationResponseKey(content);
+		const requestScopeKey = captureChatPageScopeKey();
+		const continuationGeneration = hitlContinuationGeneration;
+		const continuationIsCurrent = () => chatHitlContinuationIsCurrent(
+			requestScopeKey,
+			currentScopeKey,
+			continuationGeneration,
+			hitlContinuationGeneration
+		);
+		const restoreDraft = () => {
+			if (!inputText.trim()) inputText = text;
+		};
+		voiceComposerTurnOrigin = false;
+		inputText = '';
+		setEscalationError(responseKey, null);
+		setEscalationResponding(responseKey, true);
+		try {
+			const outcome = await answerTaskAsk(target, result, scope);
+			if (!continuationIsCurrent()) {
+				// Neither "sent" nor "not sent" can be claimed; keep the words.
+				restoreDraft();
+				return;
+			}
+			if (outcome.ok && outcome.alreadyClosed) {
+				// The pause was gone before the answer arrived (the adapter has
+				// said so): the card closes and the words come back, to send as a
+				// message or not.
+				chatStore.markEscalationResolved(
+					executionId,
+					undefined,
+					pauseStateId,
+					'Already answered or closed'
+				);
+				restoreDraft();
+				return;
+			}
+			if (outcome.ok) {
+				chatStore.markEscalationResolved(executionId, undefined, pauseStateId, answeredReason(text));
+				tick().then(() => scrollToBottom());
+				return;
+			}
+			// Not answered: the card keeps its options.
+			restoreDraft();
+			if (!outcome.cancelled) {
+				setEscalationError(responseKey, outcome.message);
+				showError(outcome.message);
+			}
+		} finally {
+			if (continuationIsCurrent()) setEscalationResponding(responseKey, false);
+		}
 	}
 
 	/**
@@ -4043,7 +4597,8 @@
 		pauseInputType?: string,
 		question?: string,
 		options?: EscalationOption[],
-		inputSchema?: Record<string, unknown>
+		inputSchema?: Record<string, unknown>,
+		inlineResult: AttentionPromptResult | null = null
 	) {
 		const taskResponderId = escalationType === 'clarification' && !requestId?.trim()
 			? currentThreadTasks.find((task) =>
@@ -4141,6 +4696,21 @@
 				showError('Unable to respond: the persisted HITL target is incomplete.');
 				return;
 			}
+			// One click: the option is the answer, posted as the prompt would
+			// have posted it. A re-ask still opens the prompt; a failure keeps
+			// the card and its options, with the reason on the card.
+			if (inlineResult) {
+				setEscalationError(responseKey, null);
+				const outcome = await answerTaskAsk(target, inlineResult, scope);
+				if (!continuationIsCurrent()) return;
+				if (outcome.ok) {
+					chatStore.markEscalationResolved(executionId, serviceRequestId, pauseStateId);
+				} else if (!outcome.cancelled) {
+					setEscalationError(responseKey, outcome.message);
+					showError(outcome.message);
+				}
+				return;
+			}
 			const result = await openHitlPrompt(target);
 			if (!continuationIsCurrent()) return;
 			if (result.status === 'resolved') {
@@ -4206,7 +4776,7 @@
 			await reconcilePendingUserRequestEscalations();
 			await applySessionDeepLink(requestedThreadId);
 			await tick();
-			scrollToBottom();
+			if (!messageTargetFromQuery($page.url.searchParams)) scrollToBottom('auto');
 		} finally {
 			if (reloadingTargetThreadId === requestedThreadId) {
 				reloadingTargetThreadId = null;
@@ -4249,6 +4819,19 @@
 		void reloadChatScope();
 	}
 
+	$: if (browser && mounted && !hud && !isHudWindow() && lastScopeKey === currentScopeKey) {
+		const identity = [
+			$scopeIdentityStore.principal, $scopeIdentityStore.workspace
+		];
+		const pendingKey = composerDraftKey([...identity, targetThreadId, 'loading']);
+		const key = currentSessionId ? composerDraftKey([
+			...identity, currentSessionId, currentThreadDisplayMode,
+			currentThreadDisplayMode === 'dev' ? devWorkbenchActiveSessionId : null
+		]) : pendingKey;
+		const restored = composerDraft.sync(key, inputText, pendingKey);
+		if (restored !== inputText) inputText = restored;
+	}
+
 	onMount(async () => {
 		if (!browser) return;
 		mounted = true;
@@ -4265,16 +4848,33 @@
 		panelNow = Date.now();
 		panelClockHandle = setInterval(() => (panelNow = Date.now()), PANEL_CLOCK_INTERVAL_MS);
 		lastScopeKey = `${get(scopeIdentityStore).principal}:${get(scopeIdentityStore).workspace}`;
-		void chatProfileStore.load();
 		refreshEngineRoster();
 		void codingProfileStore.load();
 		await reloadChatScope();
 		await tick();
 		await stageResurfacingContextFromRoute();
+		if (isHudWindow()) {
+			const key = desktopDraftKey();
+			const handoff = desktopComposerDrafts.get(key);
+			if (handoff) {
+				applyPlanReplyComposerState(handoff.composer);
+				voiceComposerTurnOrigin = handoff.voiceOrigin;
+				desktopComposerDrafts.delete(key);
+			}
+			focusActiveComposer();
+		}
 
-		// If landed with ?q= param (from landing page), auto-send the message
+		// Page switches carry an editable draft. Only landing-page ?q= links
+		// retain their explicit auto-send behavior.
+		const draftParam = $page.url.searchParams.get('draft');
 		const queryParam = $page.url.searchParams.get('q');
-		if (queryParam) {
+		if (draftParam !== null) {
+			inputText = draftParam;
+			const url = new URL(window.location.href);
+			url.searchParams.delete('draft');
+			url.searchParams.delete('q');
+			window.history.replaceState({}, '', url.toString());
+		} else if (queryParam) {
 			// Clear the query param from the URL so it doesn't re-send on refresh
 			const url = new URL(window.location.href);
 			url.searchParams.delete('q');
@@ -4282,7 +4882,16 @@
 
 			const sessionId = activeSessionId;
 			if (sessionId) {
-				await chatStore.sendMessageStreaming(sessionId, queryParam, selectedProfile, [], harnessSendOptions(sessionId));
+				try {
+					// The chat's catalog may still be (re)loading after its
+					// activation: wait for it instead of failing as "still loading".
+					await chatProfileStore.ensureLoaded(get(chatHarnessPreferenceStore).engine);
+					await chatStore.sendMessageStreaming(sessionId, queryParam, chatProfileForSend(), [], harnessSendOptions(sessionId));
+				} catch (error) {
+					// Keep the words: the person can fix the model choice and send.
+					if (!inputText.trim()) inputText = queryParam;
+					showError('Message not sent', error instanceof Error ? error.message : String(error));
+				}
 			}
 		}
 	});
@@ -4457,9 +5066,9 @@
 	class:chat-page--workbench={currentThreadDisplayMode === 'dev' && !!currentThreadId}
 	class:chat-page--embedded={embedded}
 >
-	{#if !embedded}
+	{#if !embedded && !hud}
 		<ChatHistoryRail
-			bind:expanded={historyExpanded}
+			bind:expanded={$chatHistoryExpanded}
 			bind:mobileOpen={historyMobileOpen}
 			threadFilter={targetThreadId === 'general' ? null : targetThreadId}
 		/>
@@ -4467,6 +5076,20 @@
 
 	<!-- Main Chat Area -->
 	<main class="chat-main">
+		{#if (!embedded && !hud) || (currentSessionId && currentThreadDisplayMode !== 'dev')}
+			<ThreadSessionBar
+				threadId={currentThreadId}
+				threadName={currentThreadRecord?.name ?? null}
+				tasks={$taskStore.tasks}
+				chatHref={`${$page.url.pathname}${$page.url.search}`}
+                sessionId={currentSessionId}
+                filesHref={$page.url.pathname === '/chat' ? `/chat/files?session=${encodeURIComponent(currentSessionId ?? '')}&thread=${encodeURIComponent(currentThreadId)}` : null}
+                modelsHref={$page.url.pathname === '/chat' ? `/chat/models?session=${encodeURIComponent(currentSessionId ?? '')}&thread=${encodeURIComponent(currentThreadId)}` : null}
+                showNavigation={!embedded && !hud}
+				live={composerBusy && !isReadOnly}
+			>
+			</ThreadSessionBar>
+		{/if}
 
 		<!-- Read-only banner for archived executions -->
 		{#if isReadOnly}
@@ -4492,10 +5115,12 @@
 		     addition), instead of narrating every token burst. -->
 		<div
 			class="chat-messages-area"
+			class:chat-messages-area--positioning={isLoading || (visibleMessages.length > 0 && !chatInitialScrollDone)}
 			class:chat-messages-area--empty={visibleMessages.length === 0 && !isLoading && currentPlannerDockTasks.length === 0}
 			role="log"
 			aria-live="polite"
 			aria-relevant="additions"
+			aria-busy={isLoading || (visibleMessages.length > 0 && !chatInitialScrollDone)}
 			bind:this={messagesContainerEl}
 			use:keepToggledInView
 			on:scroll={handleChatScroll}
@@ -4505,12 +5130,15 @@
 			<div class="chat-day-float" aria-hidden="true">
 				<span class="chat-day-float__pill" class:chat-day-float__pill--on={floatingDayVisible && !!floatingDayLabel}>{floatingDayLabel}</span>
 			</div>
+			{#if isLoading}
+				<div class="chat-loading-status" role="status">Loading conversation…</div>
+			{/if}
 			{#if $chatStore.isLoadingOlder}
 				<div style="text-align: center; padding: 0.5rem;">
 					<span style="font-size: 0.75rem; color: var(--text-muted);">Loading older messages...</span>
 				</div>
 			{:else if $chatStore.hasMoreMessages && visibleMessages.length > 0}
-				<button class="load-older-btn" on:click={() => void drainOlderMessages()} type="button">
+				<button class="load-older-btn" on:click={() => void loadOlderPage()} type="button">
 					Load earlier messages
 				</button>
 			{/if}
@@ -4527,6 +5155,7 @@
 					onOpenSession={(sessionId) => void handleViewExecution(sessionId)}
 				/>
 			{:else}
+				<div class="chat-message-list" use:followTranscriptSize>
 				{#each renderedMessages as visibleMessage (visibleMessage.id)}
 					{@const message = visibleMessage.message}
 					{@const spokenText = messageSpeechText(message)}
@@ -4583,7 +5212,7 @@
 									variant={$chatNext ? 'next' : 'classic'}
 									response={structuredResponse}
 									sessionId={message.session_id}
-									onAction={(action) => void handleStructuredResponseAction(action, message.session_id)}
+									onAction={(action) => void handleStructuredResponseAction(action, message.session_id, structuredResponse)}
 								/>
 									</div>
 								</div>
@@ -4612,7 +5241,7 @@
 									variant={$chatNext ? 'next' : 'classic'}
 									response={structuredResponse}
 									sessionId={message.session_id}
-									onAction={(action) => void handleStructuredResponseAction(action, message.session_id)}
+									onAction={(action) => void handleStructuredResponseAction(action, message.session_id, structuredResponse)}
 								/>
 									</div>
 								</div>
@@ -4644,6 +5273,7 @@
 									<LiveTaskCard
 										{message}
 										storeStatus={liveTaskStoreStatus($taskStore.tasks, message.content)}
+										activeExecutionId={$taskStore.tasks.find((task) => task.id === message.content.task_id)?.activeExecutionId}
 										plan={liveTaskPlan($taskStore.tasks, message.content.task_id)}
 										onRun={runTaskFromLiveCard}
 										onOpenPlan={(taskId) => void openPlanSheet(taskId)}
@@ -4681,7 +5311,7 @@
 											variant={$chatNext ? 'next' : 'classic'}
 											response={structuredResponse}
 											sessionId={message.session_id}
-											onAction={(action) => void handleStructuredResponseAction(action, message.session_id)}
+											onAction={(action) => void handleStructuredResponseAction(action, message.session_id, structuredResponse)}
 										/>
 									</div>
 								</div>
@@ -4703,7 +5333,7 @@
 							{/if}
 						{:else if message.content.type === 'escalation'}
 						<!-- Escalation: action-required card with buttons -->
-						{@const escalationActionKey = message.content.pause_state_id ?? message.content.request_id ?? message.content.execution_id ?? message.id}
+						{@const escalationActionKey = escalationResponseKey(message.content) || message.id}
 						<div class="chat-action-card-wrap">
 							<EscalationCard
 								{message}
@@ -4712,6 +5342,7 @@
 								showActions={shouldShowEscalationActions(message.content)}
 								inactiveReason={escalationInactiveReason(message.content)}
 								disabled={isReadOnly || respondingEscalationKeys.has(escalationActionKey)}
+								error={escalationErrors.get(escalationResponseKey(message.content)) ?? null}
 								onRespond={(executionId, pauseStateId, option, escalationType, requestId, inputType) =>
 									handleEscalationResponse(
 										executionId,
@@ -4722,7 +5353,8 @@
 										inputType,
 										message.content.question,
 										message.content.options,
-										message.content.input_schema
+										message.content.input_schema,
+										escalationOneClickResult(message.content, option)
 									)}
 							/>
 						</div>
@@ -4735,7 +5367,7 @@
 									variant={$chatNext ? 'next' : 'classic'}
 									response={structuredResponse}
 									sessionId={message.session_id}
-									onAction={(action) => void handleStructuredResponseAction(action, message.session_id)}
+									onAction={(action) => void handleStructuredResponseAction(action, message.session_id, structuredResponse)}
 								/>
 									</div>
 								</div>
@@ -4753,7 +5385,7 @@
 										variant={$chatNext ? 'next' : 'classic'}
 										response={structuredResponse}
 										sessionId={message.session_id}
-										onAction={(action) => void handleStructuredResponseAction(action, message.session_id)}
+										onAction={(action) => void handleStructuredResponseAction(action, message.session_id, structuredResponse)}
 									/>
 									</div>
 								</div>
@@ -4779,6 +5411,7 @@
 						     streaming turn's first token arrives it no longer matches
 						     and renders normally. -->
 					{:else}
+						{@const answerDisplay = message.direction === 'assistant' ? splitAnswerVerification(getMessageText(message.content)) : null}
 						{@const assistantTurnId =
 							message.direction === 'assistant' && !message.id.startsWith('streaming-')
 								? getChatTurnIdForMessage(message, $chatTurnIdByMessageIdStore)
@@ -4807,6 +5440,7 @@
 									</span>
 								{/if}
 								<time class="chat-msg-time">{formatTimestamp(message.created_at)}</time>
+								{#if answerDisplay?.verification}<AnswerVerificationInfo verification={answerDisplay.verification} />{/if}
 								{#if spokenText.trim()}
 									<span class="chat-header-speak">
 										<SpeakButton
@@ -4857,12 +5491,13 @@
 												<StructuredResponseRenderer
 													variant={$chatNext ? 'next' : 'classic'}
 													response={structuredTextResponse}
+													compactVerification={!!answerDisplay?.verification}
 													sessionId={message.session_id}
-													onAction={(action) => void handleStructuredResponseAction(action, message.session_id)}
+													onAction={(action) => void handleStructuredResponseAction(action, message.session_id, structuredTextResponse)}
 												/>
 											{:else if getMessageText(message.content).trim()}
 												<ChatMarkdown
-													content={getMessageText(message.content)}
+													content={answerDisplay?.body ?? getMessageText(message.content)}
 													sessionId={message.session_id}
 												/>
 											{/if}
@@ -4898,8 +5533,9 @@
 						</div>
 						{#if message.direction === 'user'}
 							{@const messageTurnId = getChatTurnIdForMessage(message, $chatTurnIdByMessageIdStore)}
-							{#if messageTurnId && !chatTurnsWithResponse.has(messageTurnId) && lastUserMessageIdByTurnId.get(messageTurnId) === message.id && (messageTurnId === liveTurnId || !!$pendingHitlByChatTurnId.get(messageTurnId))}
+							{#if messageTurnId && !chatTurnsWithResponse.has(messageTurnId) && lastUserMessageIdByTurnId.get(messageTurnId) === message.id && (messageTurnId === liveTurnId || !!$pendingHitlByChatTurnId.get(messageTurnId) || !!turnStatusNotice($chatTurnStateStore.get(messageTurnId)))}
 								{@const turnIsLive = messageTurnId === liveTurnId}
+								{@const settledNotice = turnIsLive ? null : turnStatusNotice($chatTurnStateStore.get(messageTurnId))}
 								<!-- No assistant response yet for this turn →
 								     render a "typing" assistant bubble with
 								     the activity stream embedded inside.
@@ -4935,6 +5571,10 @@
 											<span class="chat-typing-dots" aria-label="Working">
 												<span></span><span></span><span></span>
 											</span>
+										{:else if settledNotice}
+											<!-- Stopped by the owner, or failed: the server's
+											     settled turn state, which survives a reload. -->
+											<span class="chat-turn-typing__notice">{settledNotice}</span>
 										{/if}
 										<RequestActivityCard
 											sessionId={message.session_id}
@@ -4952,7 +5592,7 @@
 					{/if}
 					</div>
 				{/each}
-
+				</div>
 			{/if}
 			<div bind:this={messagesEndEl}></div>
 		</div>
@@ -5043,9 +5683,14 @@
 			{#if currentThreadDisplayMode !== 'dev'}
 			{@const composerDisplayMode = currentThreadDisplayMode as string}
 			{#if composerAskTargets.length > 0 && !isReadOnly}
+				<!-- A live turn may be waiting on this answer. The dock tracks its
+				     own response in flight; chat streaming must not disable it. -->
 				<ComposerAskDock
+					bind:activeId={composerAskActiveId}
 					targets={composerAskTargets}
-					disabled={isSendingMessage}
+					here={composerAskHere}
+					originTaskTitles={Object.fromEntries($taskStore.tasks.map((task) => [task.id, task.title]))}
+                    originChatTitles={Object.fromEntries(sessions.map((session) => [session.id, session.title || `Chat ${session.id.slice(0, 8)}`]))}
 					onReviewPlan={(taskId) => void openPlanSheet(taskId)}
 				/>
 			{/if}
@@ -5054,7 +5699,7 @@
 					tasks={currentPlannerDockTasks}
 					activeReplyTaskId={planReplyIntent?.taskId ?? null}
 					activeReplyQuestionId={planReplyIntent?.questionId ?? null}
-					disabled={isReadOnly || isSendingMessage}
+					disabled={isReadOnly}
 					isActionBusy={inlinePlanActionBusy}
 					onAction={handleInlinePlanAction}
 					onReplyToQuestion={focusComposerForPlanTask}
@@ -5075,7 +5720,9 @@
 							? planReplyIntent
 								? 'Type your planning answer…'
 								: 'Describe what to plan…'
-							: 'Message or describe a task'
+							: escalationReplyMessage
+								? 'Type your answer…'
+								: 'Message or describe a task'
 				}
 				mode={composerDisplayMode === 'dev' ? 'ask' : planComposerMode}
 				permission={composerPermission}
@@ -5085,20 +5732,19 @@
 				isSending={composerDisplayMode === 'dev' ? false : composerBusy}
 				isUploading={isUploading}
 				canSend={
-					composerDisplayMode === 'dev'
+					(isBrainstormInvokeText(inputText) || (!chatModelSelectionError && !chatModelSelectionPending)) && !codingSelectionIssue && (composerDisplayMode === 'dev'
 						? !isReadOnly && !!devWorkbenchActiveSessionId && inputText.trim().length > 0
-						: !isLoading && !isUploading && !isReadOnly && !planReplyIsStale && !(planComposerMode !== 'plan' && !activeSessionId) && (inputText.trim().length > 0 || stagedAttachments.length > 0)
+						: !isLoading && !isUploading && !isReadOnly && !planReplyIsStale && !(planComposerMode !== 'plan' && !activeSessionId) && (inputText.trim().length > 0 || stagedAttachments.length > 0))
 				}
 				hasContent={inputText.trim().length > 0 || stagedAttachments.length > 0}
 				supportsAttachments={selectedProfileSupportsAttachments}
 				engineName={titleCase(selectedHarnessEngine.replaceAll('_', ' '))}
-				profileName={selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi' ? selectedProfileObj?.name ?? 'Profile' : selectedHarnessModel === 'default' ? 'Default' : selectedHarnessModel}
+				profileName={selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi' ? selectedModelChoice?.label ?? selectedProfileObj?.model ?? 'Model' : selectedHarnessModel === 'default' ? 'Default' : selectedHarnessModel}
 				profileModel={selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi' ? selectedProfileObj?.model ?? null : null}
-				profileIsAdaptive={(selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi') && (selectedProfileObj?.is_adaptive ?? false)}
-				profileAdaptiveTier={selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi' ? selectedProfileObj?.adaptive_tier ?? null : null}
+				profileModelLabel={selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi' ? selectedModelChoice?.label ?? null : null}
+				profileThinkingLabel={(selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi') && selectedModelChoice && selectedModelChoice.thinking.mode !== 'none' ? thinkingLabel(selectedModelSelection?.thinking ?? 'auto') : null}
+				profileFeedback={selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi' ? selectedModelChoice?.feedback ?? null : engineRoster.engines.find(engine => engine.name === selectedHarnessEngine)?.model_feedback?.[selectedHarnessModel] ?? null}
 				profileMenuOpen={profileDropdownOpen}
-				thinkingModeActive={thinkingModeForActiveTurn}
-				thinkingModeReason={thinkingModeReasonForActiveTurn}
 				mentionItems={composerMentionItems}
 				slashCommandsEnabled={composerDisplayMode !== 'dev' && !isReadOnly}
 				{slashContext}
@@ -5108,6 +5754,7 @@
 				blockedCodingProfiles={$codingProfileStore.blocked}
 				selectedCodingProfileId={$codingProfileStore.selected}
 				variant={composerDisplayMode === 'dev' ? 'dev' : 'chat'}
+				showModeSwitch={!hud}
 				dock={composerDisplayMode !== 'dev'}
 				maxWidth="var(--chat-col)"
                 allowParallel={!!activeSessionId && stagedAttachments.length === 0 && planComposerMode !== 'plan' && !planReplyIntent}
@@ -5126,6 +5773,9 @@
 				on:input={handleVoiceAutoSendInputCancel}
 				on:toggleProfile={() => void toggleProfileDropdown()}
 			>
+				<svelte:fragment slot="attachment-actions">
+					{#if activeSessionId && !isReadOnly}<slot name="composer-attachment-actions" />{/if}
+				</svelte:fragment>
 				<svelte:fragment slot="top">
                     {#if activeSessionId}<QueueInspector sessionId={activeSessionId} />{/if}
 					<ConcurrentVoiceRequests />
@@ -5142,6 +5792,7 @@
 						sessionTitle={currentSession?.title ?? null}
 						updatedAt={currentSession?.updated_at ?? null}
 						isReadOnly={isReadOnly}
+						isDeleting={!!currentSessionId && !!$chatStore.deletingSessionIds?.includes(currentSessionId)}
 						canClear={!isReadOnly && visibleMessages.length > 0}
 						canBuild={canBuildInVibe}
 						on:open-history={handlePillOpenHistory}
@@ -5162,7 +5813,18 @@
 						godMode={chatGodMode}
 						godToggleable={!!activeSessionId && chatGodMode !== null && !chatGodModeBusy && !isReadOnly}
 						on:toggleGodMode={toggleChatGodMode}
-					/>{/if}
+					/>{#if chatGodMode}<button
+							type="button"
+							class="auto-approve-switch"
+							class:auto-approve-on={chatAutoApprove}
+							aria-pressed={chatAutoApprove}
+							disabled={!activeSessionId || chatGodModeBusy || isReadOnly}
+							title={chatAutoApprove
+								? 'Auto-approve on: god mode asks only before deletes, root and unseen code. Click to turn off'
+								: 'Auto-approve god mode in this chat'}
+							data-testid="auto-approve-switch"
+							on:click={toggleChatAutoApprove}>Auto</button
+						>{/if}{/if}
 					<slot name="composer-dock" />
 				</svelte:fragment>
 				<svelte:fragment slot="banner">
@@ -5172,6 +5834,13 @@
 							questionText={currentPlanReplyQuestion?.question ?? planReplyIntent.questionText}
 							stale={planReplyIsStale}
 							on:cancel={() => cancelPlanReply()}
+						/>
+					{:else if escalationReplyMessage}
+						<EscalationReplyBanner
+							questionText={escalationReplyMessage.content.question ?? ''}
+							choices={escalationReplyChoiceLabels(escalationReplyMessage.content)}
+							unmatched={escalationReplyUnmatched}
+							on:cancel={() => dismissEscalationReply()}
 						/>
 					{/if}
 					{#if voiceCallLive}
@@ -5216,6 +5885,12 @@
 					{/if}
 				</svelte:fragment>
 				<svelte:fragment slot="warnings">
+					{#if chatModelSelectionError}
+						<div class="chat-profile-warning chat-profile-warning--v5" role="alert">{chatModelSelectionError}</div>
+					{/if}
+					{#if codingSelectionIssue}
+						<div class="chat-profile-warning chat-profile-warning--v5" role="alert">{codingSelectionIssue}</div>
+					{/if}
 					{#if chatProfileWarnings.length > 0}
 						<div class="chat-profile-warning chat-profile-warning--v5" role="status">
 							{#each chatProfileWarnings as warning}
@@ -5240,72 +5915,35 @@
 					type="button"
 					class="chat-profile-backdrop chat-profile-backdrop--v5"
 					tabindex="-1"
-					aria-label="Close profile picker"
+						aria-label="Close model picker"
 					on:click={() => closeProfileDropdown(false)}
 				></button>
 				<div
 					class="chat-profile-dropdown chat-profile-dropdown--v5"
+					class:chat-profile-dropdown--catalog={$chatProfileStore.models.length > 0}
 					role="dialog"
-					aria-label="Chat engine and profile or model"
+					aria-label="Chat engine and model"
 					tabindex="-1"
 					bind:this={profileDropdownEl}
+					use:anchorPopup={() => composerEl?.profileTrigger()}
 					on:keydown={handleProfileListboxKeydown}
 				>
-					<div class="chat-profile-group-label">Engine</div>
-					{#each engineRoster.engines.filter(engine => engine.installed) as engine (engine.name)}
-						<button type="button" class="chat-profile-option" class:selected={engine.name === selectedHarnessEngine}
-							aria-pressed={engine.name === selectedHarnessEngine}
-							on:click={() => selectHarnessEngine(engine.name)}>
-							<span class="chat-profile-option-name">{titleCase(engine.name.replaceAll('_', ' '))}</span>
-						</button>
-					{/each}
-					<div class="chat-profile-group-divider"></div>
+					<ChoiceDropdown label="Engine" value={selectedHarnessEngine}
+						options={engineRoster.engines.filter(engine => engine.installed).map(engine => ({ id: engine.name, label: withCredentials(titleCase(engine.name.replaceAll('_', ' ')), engine.credentials) }))}
+						on:change={event => selectHarnessEngine(event.detail)} />
 					{#if selectedHarnessEngine === 'magician' || selectedHarnessEngine === 'pi'}
-						<div class="chat-profile-group-label">API profile</div>
-					{#if chatProfiles.some(p => p.is_adaptive)}
-						<div class="chat-profile-group-label">Adaptive</div>
-						{#each chatProfiles.filter(p => p.is_adaptive) as profile (profile.name)}
-							<button
-								class="chat-profile-option adaptive"
-								class:selected={profile.name === selectedProfile}
-								aria-pressed={profile.name === selectedProfile}
-								on:click={() => { chatProfileStore.select(profile.name); closeProfileDropdown(true); }}
-								type="button"
-							>
-								<span class="chat-profile-option-name">
-									{profile.name}{profile.is_default ? ' \u2605' : ''}
-									<span class="chat-profile-adaptive-badge inline">Adaptive</span>
-								</span>
-								<span class="chat-profile-option-model">{profile.model}</span>
-								{#if profile.adaptive_description}
-									<span class="chat-profile-option-desc">{profile.adaptive_description}</span>
-								{/if}
-							</button>
-						{/each}
-						<div class="chat-profile-group-divider"></div>
-						<div class="chat-profile-group-label">Standard</div>
-					{/if}
-					{#each chatProfiles.filter(p => !p.is_adaptive) as profile (profile.name)}
-						<button
-							class="chat-profile-option"
-							class:selected={profile.name === selectedProfile}
-							aria-pressed={profile.name === selectedProfile}
-								on:click={() => { chatProfileStore.select(profile.name); closeProfileDropdown(true); }}
-							type="button"
-						>
-							<span class="chat-profile-option-name">{profile.name}{profile.is_default ? ' \u2605' : ''}</span>
-							<span class="chat-profile-option-model">{profile.model}</span>
-						</button>
-					{/each}
+						{#if $chatProfileStore.models.length > 0}
+							<div class="chat-model-controls">
+								<ModelSelectionControl models={$chatProfileStore.models} selection={selectedModelSelection}
+									on:change={(event) => chatProfileStore.selectModel(event.detail)} />
+							</div>
+						{:else}
+							<p class="chat-model-status">{$chatProfileStore.isLoading ? 'Loading models…' : 'Model choices are unavailable.'}</p>
+						{/if}
 					{:else}
-						<div class="chat-profile-group-label">Harness model</div>
-						{#each engineRoster.engines.find(engine => engine.name === selectedHarnessEngine)?.models ?? ['default'] as model (model)}
-							<button type="button" class="chat-profile-option" class:selected={model === selectedHarnessModel}
-								aria-pressed={model === selectedHarnessModel}
-								on:click={() => selectHarnessModel(model)}>
-								<span class="chat-profile-option-name">{model}</span>
-							</button>
-						{/each}
+						<ChoiceDropdown label="Model" value={selectedHarnessModel}
+							options={(engineRoster.engines.find(engine => engine.name === selectedHarnessEngine)?.models ?? ['default']).map(model => ({ id: model, label: model === 'default' ? 'Default' : model }))}
+							on:change={event => selectHarnessModel(event.detail)} />
 					{/if}
 				</div>
 			{/if}
@@ -5430,6 +6068,29 @@
 
 
 <style>
+    .auto-approve-switch {
+        align-self: center;
+        background: transparent;
+        border: 1px dashed var(--warning);
+        border-radius: 999px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        flex: none;
+        font-size: 0.72rem;
+        font-weight: 600;
+        line-height: 1;
+        padding: 0.3rem 0.55rem;
+    }
+    .auto-approve-switch.auto-approve-on {
+        background: var(--button-primary-bg);
+        border-color: var(--accent-primary);
+        border-style: solid;
+        color: var(--button-primary-color);
+    }
+    .auto-approve-switch:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
     .concurrent-parent-link {
         display: flex;
         align-items: center;
@@ -5663,12 +6324,8 @@
 		color: var(--text-muted, #888);
 	}
 
-	/* Keep the profile picker above floating shell chrome.
-	   Also: the base `.chat-profile-dropdown` rule lives further down the
-	   file with `position: absolute` + `bottom: calc(100% + 6px)`, which at
-	   equal specificity wins by source order and shoves the dropdown off
-	   the top of the viewport. Combined-class selectors (.chat-profile-dropdown.chat-profile-dropdown--v5)
-	   bump specificity to (0,2,0) so v5 always wins. */
+	/* The popup stays outside the composer's glass stacking context.
+	   anchorPopup positions it against the profile button's actual bounds. */
 	.chat-profile-backdrop.chat-profile-backdrop--v5 {
 		position: fixed;
 		inset: 0;
@@ -5678,9 +6335,8 @@
 
 	.chat-profile-dropdown.chat-profile-dropdown--v5 {
 		position: fixed;
-		bottom: calc(140px + var(--attention-bar-offset, 0px));
-		left: 50%;
-		transform: translateX(-50%);
+		left: auto;
+		transform: none;
 		width: auto;
 		min-width: 280px;
 		max-width: 480px;
@@ -5693,6 +6349,18 @@
 		box-shadow: var(--shadow-lg, 0 12px 28px rgba(0, 0, 0, 0.18));
 		padding: 6px;
 	}
+	.chat-profile-dropdown.chat-profile-dropdown--catalog {
+		font-family: var(--font-primary);
+		font-size: .76rem;
+		box-sizing: border-box;
+		width: min(352px, calc(100vw - 32px));
+		min-width: 0;
+		max-height: min(540px, calc(100dvh - 180px));
+		overflow-y: auto;
+		padding: .7rem;
+		gap: .6rem;
+	}
+	.chat-model-controls { min-width: 0; }
 
 	/* ===== Main Chat Area ===== */
 	.chat-main {
@@ -5770,6 +6438,10 @@
 	}
 
 	/* ===== Messages Area ===== */
+	.chat-message-list { display: flex; flex-direction: column; gap: 0.15rem; flex-shrink: 0; }
+	.chat-messages-area--positioning .chat-message-row,
+	.chat-messages-area--positioning .load-older-btn { visibility: hidden; }
+	.chat-loading-status { color: var(--text-muted); text-align: center; padding: 1rem; font-size: 0.8rem; }
 	.chat-messages-area {
 		flex: 1;
 		overflow-y: auto;
@@ -5951,6 +6623,12 @@
 	 * tint (same token as the user-bubble background — visually
 	 * reads as "your turn"). Pulsing dot draws the eye without the
 	 * full bouncing-dots animation cost. */
+	.chat-turn-typing__notice {
+		font-size: var(--text-xs);
+		color: var(--text-secondary, currentColor);
+		align-self: flex-start;
+	}
+
 	.chat-turn-typing__waiting {
 		display: inline-flex;
 		align-items: center;
@@ -6403,88 +7081,11 @@
 		gap: 0.15rem;
 	}
 
-	.chat-profile-option {
-		display: flex;
-		flex-direction: column;
-		gap: 0.05rem;
+	.chat-model-status {
+		margin: 0;
 		padding: 0.4rem 0.6rem;
-		border: none;
-		background: none;
-		border-radius: 7px;
-		cursor: pointer;
-		text-align: left;
-		font-family: var(--font-primary);
-		transition: background 0.1s;
-	}
-
-	.chat-profile-option:hover {
-		background: var(--bg-soft, #f6f1e8);
-	}
-
-	.chat-profile-option.selected {
-		background: var(--accent-primary-soft);
-	}
-
-	.chat-profile-adaptive-badge {
-		display: inline-block;
-		margin-left: 0.4rem;
-		padding: 0.05rem 0.4rem;
-		font-size: var(--text-2xs);
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		border-radius: var(--radius-chip);
-		background: var(--accent-soft, rgba(194, 80, 42, 0.12));
-		color: var(--accent-primary, #c2502a);
-		border: 1px solid var(--accent-border, rgba(194, 80, 42, 0.28));
-		vertical-align: middle;
-	}
-
-	.chat-profile-adaptive-badge.inline {
-		font-size: var(--text-2xs);
-		padding: 0.02rem 0.3rem;
-		margin-left: 0.35rem;
-	}
-
-	.chat-profile-group-label {
-		font-size: var(--text-2xs);
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--text-muted, #8f9799);
-		padding: 0.4rem 0.6rem 0.2rem;
-	}
-
-	.chat-profile-group-divider {
-		height: 1px;
-		margin: 0.25rem 0.5rem;
-		background: var(--border-soft, rgba(0, 0, 0, 0.08));
-	}
-
-	.chat-profile-option-desc {
-		font-size: var(--text-2xs);
-		color: var(--text-muted, #8f9799);
-		margin-top: 0.15rem;
-		line-height: 1.25;
-	}
-
-	.chat-profile-option.adaptive {
-		border-left: 2px solid var(--accent-primary, #c2502a);
-		padding-left: calc(0.6rem - 2px);
-	}
-
-	.chat-profile-option-name {
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: var(--text-primary, #2d3436);
-		overflow-wrap: anywhere;
-	}
-
-	.chat-profile-option-model {
-		font-size: var(--text-2xs);
-		color: var(--text-muted, #8f9799);
-		font-family: var(--font-mono);
-		overflow-wrap: anywhere;
+		font-size: var(--text-xs);
+		color: var(--text-muted);
 	}
 
 	.thread-plan-sheet-backdrop {

@@ -1,7 +1,7 @@
-# Harness Company Loop — Backlog + CPO + Real Inputs
+# Team routines — backlog, roles and cycle inputs
 
-The autonomous company loop's shared backlog, CPO, and real cycle inputs,
-building on the [Phase 1 detect-and-fix loop](./harness-detect-fix-loop.md).
+**Work → More → Team routines** controls the shared company loop. This contract
+covers its backlog, product-owner role (CPO) and live cycle inputs, building on the [Phase 1 detect-and-fix loop](./harness-detect-fix-loop.md).
 Design: Autonomous Company Loop.
 
 ## Flow

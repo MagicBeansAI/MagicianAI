@@ -8,6 +8,7 @@ import {
 	hitlRequestFromFeedItem,
 	isHitlSourceInputCompatible,
 	normalizeHitlSource,
+	readHitlRespondHandle,
 	withHitlDelegation
 } from '$lib/hitl/adapters';
 import {
@@ -37,7 +38,12 @@ export interface HitlOpenScopeSnapshot {
 }
 
 export type HitlPromptOpenResult =
-	| { status: 'resolved'; request: HitlRequest }
+	| {
+			status: 'resolved';
+			request: HitlRequest;
+			/** The ask was already answered, expired or drained; this answer did not land. */
+			alreadyClosed?: true;
+	  }
 	| { status: 'cancelled'; request: HitlRequest }
 	| { status: 'stale'; request: HitlRequest }
 	| { status: 'error'; request?: HitlRequest; error: string };
@@ -275,6 +281,8 @@ function hitlRequestFromOpenTargetValue(value: unknown): HitlRequest | null {
 		}
 	});
 	if (!canonical) return null;
+	// The server's respond handle rides on the target (`HitlOpenTarget.respond`).
+	const respond = readHitlRespondHandle(target.respond);
 	const request: HitlRequest = {
 		id,
 		source: canonical.source,
@@ -297,7 +305,8 @@ function hitlRequestFromOpenTargetValue(value: unknown): HitlRequest | null {
 		at: typeof target.at === 'number' && Number.isFinite(target.at) ? target.at : undefined,
 		...(typeof target.delegated_agent_id === 'string' && target.delegated_agent_id.trim()
 			? { delegated_agent_id: target.delegated_agent_id.trim() }
-			: {})
+			: {}),
+		...(respond ? { respond } : {})
 	};
 	return requestHasCompleteTargetContract(request) ? request : null;
 }
@@ -323,7 +332,8 @@ export function hitlOpenTargetFromRequest(request: HitlRequest): HitlOpenTarget 
 		identifiers: request.identifiers,
 		scope: request.scope,
 		at: request.at,
-		...(request.delegated_agent_id ? { delegated_agent_id: request.delegated_agent_id } : {})
+		...(request.delegated_agent_id ? { delegated_agent_id: request.delegated_agent_id } : {}),
+		...(request.respond ? { respond: request.respond } : {})
 	};
 }
 
@@ -515,7 +525,9 @@ export async function openHitlPrompt(
 				dropPending(alias);
 				dropAttention(alias);
 			}
-			return { status: 'resolved', request };
+			return outcome.alreadyClosed
+				? { status: 'resolved', request, alreadyClosed: true }
+				: { status: 'resolved', request };
 		}
 		if ('cancelled' in outcome) return { status: 'cancelled', request };
 		if ('reask' in outcome && outcome.reask && reasks < REASK_LIMIT) {

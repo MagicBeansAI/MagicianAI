@@ -31,7 +31,6 @@
 //! sender would classify every page read as an outward act.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -130,6 +129,7 @@ const OUTWARD_CAPABILITIES: &[(&str, OutwardClass)] = &[
 /// bare invocation IS the send.
 const SENDING_ACTIONS: &[&str] = &[
     "send",
+    "poll",
     "send_message",
     "sendmessage",
     "send_email",
@@ -246,10 +246,11 @@ const BROWSER_SUBMITTING_ACTIONS: &[&str] = &[
     //
     // UPDATE: something now stands in front of it. The browser dispatch runs
     // `primitive_dispatch::browser::submit_guard` before every interaction and
-    // refuses one that would submit a form (a posting form's submit control, a
-    // final-action label, Enter in a posting form, `form.submit()`), logging
-    // `[OUTWARD-REFUSED]`. The owner submits. This table still classifies no
-    // browser act; the guard is the control, and its limits are on that module.
+    // holds one that would submit a form (a posting form's submit control, a
+    // final-action label, Enter in a posting form, `form.submit()`) and asks
+    // the owner to approve it once; with no one to ask it logs
+    // `[OUTWARD-REFUSED]`. This table still classifies no browser act; the
+    // guard is the control, and its limits are on that module.
     "submit",
     "submit_form",
 ];
@@ -603,18 +604,13 @@ pub fn capability_outward_class(capability: &str) -> Option<OutwardClass> {
         .map(|(_, class, _)| *class)
 }
 
-/// Process-wide outward posture, installed once at boot from config.
-///
-/// A `OnceLock` rather than a config handle threaded through the executor,
-/// matching how `GLOBAL_ENGAGEMENTS` reaches the same dispatch path: the gate
-/// has to be readable from deep inside action execution, and a value that can
-/// only be set once cannot be flipped mid-run by anything the model does.
-static CAPTURE_ONLY: OnceLock<bool> = OnceLock::new();
-
-/// Install the posture at boot. Returns `false` if one was already installed —
-/// the first call wins, so a later caller cannot quietly enable sending.
+/// Compatibility boot installer; never overwrites an already accepted policy.
+/// Owner Settings and accepted config reloads update the shared live registry.
 pub fn install_outward_capture_posture(capture_only: bool) -> bool {
-    CAPTURE_ONLY.set(capture_only).is_ok()
+    super::outward_policy::install(crate::config::OutwardActionsConfig {
+        capture_only,
+        ..Default::default()
+    })
 }
 
 /// The posture in force.
@@ -625,7 +621,19 @@ pub fn install_outward_capture_posture(capture_only: bool) -> bool {
 /// direction of that default is the entire safety property; inverting it would
 /// make every unconfigured path a live sender.
 pub fn outward_capture_only() -> bool {
-    *CAPTURE_ONLY.get().unwrap_or(&true)
+    super::outward_policy::unclassified_capture()
+}
+
+/// Apply the guard setting; owner settings and accepted reloads take effect immediately.
+pub fn install_browser_submission_guard(enabled: bool) -> bool {
+    super::outward_policy::set_browser_submission_guard(enabled)
+}
+
+/// **Off unless installed on.** The guard holds a browser submission for the
+/// owner's approval, which is a posture someone opts into; a process that never
+/// wired its config does not ask.
+pub fn browser_submission_guard_enabled() -> bool {
+    super::outward_policy::settings().is_some_and(|config| config.browser_submission_guard)
 }
 
 /// The text a captured outward action returns to the model.
@@ -797,6 +805,28 @@ mod tests {
         ]);
         assert_eq!(
             outward_dispatch_class("whatsapp", "send", &send),
+            Some(OutwardClass::Message)
+        );
+    }
+
+    #[test]
+    fn attachment_sends_are_outward_in_both_pack_and_leaf_dispatch() {
+        let media = params(&[
+            ("jid", serde_json::json!("919876543210@s.whatsapp.net")),
+            ("file_path", serde_json::json!("attachments/review.pdf")),
+        ]);
+        for capability in ["whatsapp", "whatsapp__send"] {
+            assert_eq!(
+                outward_dispatch_class(capability, "send", &media),
+                Some(OutwardClass::Message)
+            );
+        }
+        let opaque = params(&[(
+            "command",
+            serde_json::json!("media send 919876543210@s.whatsapp.net review.pdf --json"),
+        )]);
+        assert_eq!(
+            outward_dispatch_class("whatsapp", "run", &opaque),
             Some(OutwardClass::Message)
         );
     }
@@ -1156,18 +1186,6 @@ mod tests {
         assert_eq!(
             outward_disposition("websearch", "search", &no_params, false),
             OutwardDisposition::NotOutward
-        );
-    }
-
-    /// The default posture is capture, and that direction is the safety
-    /// property. A process that never wired its config must not be able to send.
-    #[test]
-    fn an_uninstalled_posture_captures_rather_than_sends() {
-        // `outward_capture_only` reads a process-global that this test does not
-        // install, so it exercises the uninstalled path directly.
-        assert!(
-            outward_capture_only(),
-            "an unconfigured process could SEND; the default must be capture"
         );
     }
 

@@ -572,8 +572,8 @@ fn test_router_with_profile_metadata(
         OperationProfileSelector::Simple("test_default".to_string()),
     );
     let config = LLMRouterConfig {
+        catalog: Default::default(),
         profiles,
-        adaptive_profiles: HashMap::new(),
         operation_mapping,
         locality: Default::default(),
         default_profile: "test_default".to_string(),
@@ -631,6 +631,7 @@ fn test_router_with_fallback_capabilities(
         chunking: None,
     };
     let config = LLMRouterConfig {
+        catalog: Default::default(),
         profiles: HashMap::from([
             (
                 "primary".to_string(),
@@ -644,7 +645,6 @@ fn test_router_with_fallback_capabilities(
             ),
             ("fallback".to_string(), profile("fallback-model", None)),
         ]),
-        adaptive_profiles: HashMap::new(),
         operation_mapping: HashMap::from([(
             "default".to_string(),
             OperationProfileSelector::Simple("primary".to_string()),
@@ -743,8 +743,8 @@ fn test_router_with_providers(
         operation_mapping.insert(name.clone(), OperationProfileSelector::Simple(name));
     }
     let config = LLMRouterConfig {
+        catalog: Default::default(),
         profiles,
-        adaptive_profiles: HashMap::new(),
         operation_mapping,
         locality: Default::default(),
         default_profile,
@@ -2249,7 +2249,7 @@ async fn provider_permit_wait_is_observed_separately_from_execution() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn saturated_provider_wait_does_not_hold_a_global_worker() {
     let provider = Arc::new(TestProvider::default());
-    provider.set_delay(Duration::from_millis(180));
+    provider.block_first_call();
     provider.script(TestProvider::ok("first"));
     provider.script(TestProvider::ok("second"));
     let mut config = small_config();
@@ -2260,7 +2260,7 @@ async fn saturated_provider_wait_does_not_hold_a_global_worker() {
         .overrides
         .insert("test".to_string(), 1);
     let queue = LlmDispatchQueue::start(
-        test_router_with(provider),
+        test_router_with(Arc::clone(&provider)),
         Arc::new(NoopTaskStateView),
         Arc::new(NoopTaskLedgerSink),
         config,
@@ -2268,14 +2268,19 @@ async fn saturated_provider_wait_does_not_hold_a_global_worker() {
     let (first, first_rx) = LlmJob::new(small_request(), JobOrigin::op("capacity-first"));
     let (second, second_rx) = LlmJob::new(small_request(), JobOrigin::op("capacity-second"));
     queue.submit(first).await.expect("first submitted");
+    tokio::time::timeout(Duration::from_secs(1), provider.wait_for_first_call())
+        .await
+        .expect("the first provider call started");
     queue.submit(second).await.expect("second submitted");
 
-    let observed = tokio::time::timeout(Duration::from_millis(120), async {
+    let observed = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             let snapshot = queue.snapshot();
             if snapshot.registry.in_flight.len() == 1
                 && snapshot.registry.pending.len() == 1
                 && snapshot.workers_busy == 1
+                && snapshot.waiting_for_provider == 1
+                && snapshot.waiting_for_provider_normal == 1
             {
                 assert_eq!(snapshot.waiting_for_provider, 1);
                 assert_eq!(snapshot.waiting_for_provider_normal, 1);
@@ -2291,6 +2296,7 @@ async fn saturated_provider_wait_does_not_hold_a_global_worker() {
         "the capacity waiter must not hold the second worker"
     );
 
+    provider.release_first_call();
     first_rx.await.unwrap().unwrap();
     second_rx.await.unwrap().unwrap();
     queue.shutdown(Duration::from_millis(500)).await;
@@ -2612,7 +2618,7 @@ async fn admitted_retry_waits_for_transient_byte_contention_then_proceeds() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_waiters_remain_inside_the_lane_admission_bound() {
     let provider = Arc::new(TestProvider::default());
-    provider.set_delay(Duration::from_millis(300));
+    provider.block_first_call();
     for index in 0..3 {
         provider.script(TestProvider::ok(&format!("response-{index}")));
     }
@@ -2624,7 +2630,7 @@ async fn provider_waiters_remain_inside_the_lane_admission_bound() {
         .overrides
         .insert("test".to_string(), 1);
     let queue = LlmDispatchQueue::start(
-        test_router_with(provider),
+        test_router_with(Arc::clone(&provider)),
         Arc::new(NoopTaskStateView),
         Arc::new(NoopTaskLedgerSink),
         config,
@@ -2648,11 +2654,30 @@ async fn provider_waiters_remain_inside_the_lane_admission_bound() {
         "in-flight and parked work share one hard bound"
     );
     assert_eq!(rejected, 9);
-    let snapshot = queue.snapshot();
+    tokio::time::timeout(Duration::from_secs(1), provider.wait_for_first_call())
+        .await
+        .expect("the first provider call started");
+    // Admission returns before workers necessarily start or park. Observe the
+    // settled state while the first provider call is held by the test fixture.
+    let snapshot = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let snapshot = queue.snapshot();
+            if snapshot.registry.in_flight.len() == 1
+                && snapshot.waiting_for_provider == 2
+                && snapshot.registry.pending.len() == 2
+            {
+                break snapshot;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the remaining admitted calls wait behind the provider owner");
     assert_eq!(snapshot.depth_normal, 3);
     assert!(snapshot.waiting_for_provider <= 2);
     assert!(snapshot.registry.pending.len() <= 2);
-    queue.shutdown(Duration::from_millis(50)).await;
+    provider.release_first_call();
+    queue.shutdown(Duration::from_millis(500)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3212,7 +3237,7 @@ async fn force_shutdown_bounds_a_blocked_stream_tombstone_ledger() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn capacity_waiter_honors_job_cancellation_without_waiting_for_provider() {
     let provider = Arc::new(TestProvider::default());
-    provider.set_delay(Duration::from_millis(250));
+    provider.block_first_call();
     provider.script(TestProvider::ok("first"));
     let mut config = small_config();
     config.workers = 2;
@@ -3226,6 +3251,7 @@ async fn capacity_waiter_honors_job_cancellation_without_waiting_for_provider() 
         Arc::new(NoopTaskLedgerSink),
         config,
     );
+    let mut events = queue.subscribe_events();
     let (first, first_rx) = LlmJob::new(small_request(), JobOrigin::op("capacity-owner"));
     let (waiting, waiting_rx) = LlmJob::new(small_request(), JobOrigin::op("capacity-cancelled"));
     let waiting_id = waiting.job_id.clone();
@@ -3241,16 +3267,15 @@ async fn capacity_waiter_honors_job_cancellation_without_waiting_for_provider() 
 
     tokio::time::timeout(Duration::from_millis(100), async {
         loop {
-            let snapshot = queue.snapshot();
-            if snapshot
-                .registry
-                .pending
-                .iter()
-                .any(|meta| meta.job_id == waiting_id)
+            // A submitted job is pending before worker pickup as well. Wait
+            // for the actual provider-capacity state before cancelling it.
+            if let LlmQueueEvent::WaitingForProvider { meta, .. } =
+                events.recv().await.expect("queue event")
             {
-                break;
+                if meta.job_id == waiting_id {
+                    break;
+                }
             }
-            tokio::task::yield_now().await;
         }
     })
     .await
@@ -3263,6 +3288,12 @@ async fn capacity_waiter_honors_job_cancellation_without_waiting_for_provider() 
         .expect("waiter response channel");
     assert!(matches!(cancelled, Err(LLMError::Cancelled { .. })));
 
+    assert_eq!(
+        provider.calls(),
+        1,
+        "cancelled waiter must not call the provider"
+    );
+    provider.release_first_call();
     first_rx.await.unwrap().unwrap();
     queue.shutdown(Duration::from_millis(500)).await;
 }
@@ -3865,6 +3896,152 @@ async fn in_flight_cancellation_preserves_the_started_provider_attempt_identity(
             break;
         }
     }
+    queue.shutdown(Duration::from_millis(500)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellable_wait_aborts_only_its_own_active_call() {
+    let provider = Arc::new(TestProvider::default());
+    provider.block_first_call();
+    provider.script(TestProvider::ok("sibling survived"));
+    let state = Arc::new(MockTaskStateView::new());
+    state.set_active("shared-owner");
+    let queue = LlmDispatchQueue::start(
+        test_router_with(provider.clone()),
+        state,
+        Arc::new(NoopTaskLedgerSink),
+        small_config(),
+    );
+    let owner = TaskRef::task("shared-owner");
+    let (job, rx) = LlmJob::new(small_request(), JobOrigin::op("abandoned-auxiliary"));
+    let waiting = tokio::spawn({
+        let queue = queue.clone();
+        let owner = owner.clone();
+        async move {
+            queue
+                .submit_and_wait_cancellable(job.with_task(owner), rx)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), provider.wait_for_first_call())
+        .await
+        .unwrap();
+    waiting.abort();
+    let _ = waiting.await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while provider.in_flight() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the abandoned provider future is dropped");
+    let (sibling, response_rx) = LlmJob::new(small_request(), JobOrigin::op("sibling"));
+    queue.submit(sibling.with_task(owner)).await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(2), response_rx)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.response.text.as_deref(), Some("sibling survived"));
+    assert_eq!(provider.calls(), 2);
+    queue.shutdown(Duration::from_millis(500)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellable_wait_never_starts_a_queued_abandoned_call() {
+    let provider = Arc::new(TestProvider::default());
+    provider.block_first_call();
+    let mut config = small_config();
+    config.workers = 1;
+    let queue = LlmDispatchQueue::start(
+        test_router_with(provider.clone()),
+        Arc::new(NoopTaskStateView),
+        Arc::new(NoopTaskLedgerSink),
+        config,
+    );
+    let (blocker, blocker_rx) = LlmJob::new(small_request(), JobOrigin::op("occupy-worker"));
+    queue.submit(blocker).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), provider.wait_for_first_call())
+        .await
+        .unwrap();
+    let mut events = queue.subscribe_events();
+    let (abandoned, response_rx) = LlmJob::new(small_request(), JobOrigin::op("abandoned-queued"));
+    let abandoned_id = abandoned.job_id.clone();
+    let waiting = tokio::spawn({
+        let queue = queue.clone();
+        async move {
+            queue
+                .submit_and_wait_cancellable(abandoned, response_rx)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !queue
+            .snapshot()
+            .registry
+            .pending
+            .iter()
+            .any(|meta| meta.job_id == abandoned_id)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    waiting.abort();
+    let _ = waiting.await;
+    provider.release_first_call();
+    tokio::time::timeout(Duration::from_secs(2), blocker_rx)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let LlmQueueEvent::Tombstoned { meta, .. } = events.recv().await.unwrap() {
+                if meta.job_id == abandoned_id {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .expect("abandoned queued job is tombstoned");
+    assert_eq!(provider.calls(), 1);
+    queue.shutdown(Duration::from_millis(500)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellable_wait_still_inherits_owner_cancellation() {
+    let provider = Arc::new(TestProvider::default());
+    provider.block_first_call();
+    let state = Arc::new(MockTaskStateView::new());
+    state.set_active("owner-cancelled");
+    let queue = LlmDispatchQueue::start(
+        test_router_with(provider.clone()),
+        state.clone(),
+        Arc::new(NoopTaskLedgerSink),
+        small_config(),
+    );
+    let (job, rx) = LlmJob::new(small_request(), JobOrigin::op("owner-cancelled-auxiliary"));
+    let waiting = tokio::spawn({
+        let queue = queue.clone();
+        async move {
+            queue
+                .submit_and_wait_cancellable(job.with_task(TaskRef::task("owner-cancelled")), rx)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), provider.wait_for_first_call())
+        .await
+        .unwrap();
+    state.fire_cancel("owner-cancelled");
+    let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(LLMError::Cancelled { .. })));
+    assert_eq!(provider.in_flight(), 0);
     queue.shutdown(Duration::from_millis(500)).await;
 }
 

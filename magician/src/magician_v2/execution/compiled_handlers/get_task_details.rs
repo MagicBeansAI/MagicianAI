@@ -83,6 +83,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     Ok(json!({
         "status": "ok",
         "task_id": task.manifest.task_id,
+        "task_url": crate::magician_v2::ui_links::task_record_href(&task, None),
         "title": task.manifest.title,
         "description": task.manifest.description,
         "status_value": task.state.status,

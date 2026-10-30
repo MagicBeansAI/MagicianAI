@@ -465,19 +465,7 @@ pub fn promote_pack_to_leaves(pack: &CapabilityPackDefinition) -> Vec<ToolIndexE
 /// JSON Schema for a pack called at the pack boundary: its pack-level
 /// `parameters`, the shape `pack_def_to_direct_capability` emits.
 fn pack_level_parameters_schema(pack: &CapabilityPackDefinition) -> Value {
-    let mut properties = serde_json::Map::new();
-    let mut required: Vec<Value> = Vec::new();
-    for param in &pack.parameters {
-        properties.insert(param.name.clone(), derive_param_schema_for_emission(param));
-        if param.required {
-            required.push(Value::String(param.name.clone()));
-        }
-    }
-    serde_json::json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
-    })
+    pack.parameters_schema()
 }
 
 /// The one tool a whole-pack surface sees for a multi-primitive pack: the pack

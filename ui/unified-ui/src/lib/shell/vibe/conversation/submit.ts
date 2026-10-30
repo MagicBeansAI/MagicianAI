@@ -52,9 +52,7 @@ export interface CodingProfileLike {
 export interface SubmitContext {
 	project: VibeDevProject;
 	parentTask: Task | null;
-	/** The composer's selected coding profile or Auto. Sent as
-	 *  `coding_choice` (`{"kind":"auto"}` / `{"kind":"profile","profile_id"}`).
-	 *  Named rows also keep `coding_profile_id` for older servers. */
+	/** The selected picker row; the request carries its engine/model/thinking. */
 	profile: CodingProfileLike | null;
 	/** Whether the PROJECT is plausibly web/visual (backend `previewable`, or a
 	 *  pinned preview_url). Gates the visual self-correction directive so it
@@ -242,7 +240,6 @@ export async function startVibeDevRun(
 			project_is_visual: ctx.projectIsVisual !== false,
 			cost_budget_usd: prefs.costBudgetUsd,
 			...(codingChoice ? { coding_choice: codingChoice } : {}),
-			...(codingChoice?.kind === 'profile' ? { coding_profile_id: codingChoice.profile_id } : {}),
 			// The owner a Discuss run keeps: the server's `coding.lead_agent_id`
 			// override applies to BUILD runs only, so a plan run would otherwise
 			// fall back to the generic assistant.

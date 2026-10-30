@@ -29,6 +29,23 @@ afterEach(() => {
 });
 
 describe('HistoryDrawer session navigation', () => {
+	it.each(['general', 'vibedev'])('lets the HUD own %s history without replacing its page', async (thread) => {
+		const session = {
+			id: 'hud-selected', principal: 'anonymous', workspace: 'default', agent_id: 'personal-assistant',
+			ui_thread_id: thread, title: 'Selected from HUD', origin_channel: { channel_type: 'web' },
+			status: 'active', is_default_session: false, created_at: 1, updated_at: 2
+		};
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ sessions: [session], total: 1, limit: 15, offset: 0 }), {
+			status: 200, headers: { 'Content-Type': 'application/json' }
+		})));
+		const onSelectSession = vi.fn();
+		const onSelectCodingSession = vi.fn();
+		render(HistoryDrawer, { open: true, onSelectSession, onSelectCodingSession });
+		await fireEvent.click(await screen.findByText('Selected from HUD'));
+		expect(thread === 'vibedev' ? onSelectCodingSession : onSelectSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'hud-selected', ui_thread_id: thread }));
+		expect(gotoMock).not.toHaveBeenCalled();
+	});
+
 	it('clears a stale thread scope when a global history opener is used', () => {
 		historyDrawerThreadFilter.set('screens');
 		historyDrawerInitialTab.set('threads');
@@ -56,12 +73,49 @@ describe('HistoryDrawer session navigation', () => {
 		}));
 		const user = userEvent.setup();
 		render(HistoryDrawer, { open: true, threadFilter: 'screens' });
-		expect(await screen.findByText('#screens')).toBeInTheDocument();
+		expect(await screen.findByText('#screens', { selector: '.scope-label-name' })).toBeInTheDocument();
 
 		await user.type(screen.getByRole('searchbox', { name: 'Search all history' }), 'capture');
 
 		expect(await screen.findByLabelText('Searching all history')).toHaveTextContent('All sessions and threads');
-		expect(screen.queryByText('#screens')).not.toBeInTheDocument();
+		expect(screen.queryByText('#screens', { selector: '.scope-label-name' })).not.toBeInTheDocument();
+	});
+
+	it('clears the selected thread so sessions from other threads appear', async () => {
+		historyDrawerThreadFilter.set('screens');
+		const requested: URL[] = [];
+		vi.stubGlobal('fetch', vi.fn(async (request: string | URL | Request) => {
+			const url = new URL(String(request), 'http://localhost');
+			requested.push(url);
+			const thread = url.searchParams.get('ui_thread_id');
+			const sessions = thread
+				? [{
+					id: 'in-thread', principal: 'anonymous', workspace: 'default', agent_id: 'personal-assistant',
+					ui_thread_id: 'screens', title: 'Only this thread', origin_channel: { channel_type: 'web' },
+					status: 'active', is_default_session: false, created_at: 1, updated_at: 2
+				}]
+				: [{
+					id: 'other-thread', principal: 'anonymous', workspace: 'default', agent_id: 'personal-assistant',
+					ui_thread_id: 'plans', title: 'From another thread', origin_channel: { channel_type: 'web' },
+					status: 'active', is_default_session: false, created_at: 1, updated_at: 3
+				}];
+			return new Response(JSON.stringify({ sessions, total: 1, limit: 15, offset: 0 }), {
+				status: 200, headers: { 'Content-Type': 'application/json' }
+			});
+		}));
+		const user = userEvent.setup();
+		render(HistoryDrawer, { open: true, threadFilter: 'screens' });
+		expect(await screen.findByText('Only this thread')).toBeInTheDocument();
+		expect(requested.at(-1)!.searchParams.get('ui_thread_id')).toBe('screens');
+
+		await user.click(screen.getByRole('button', { name: 'Show sessions from all threads' }));
+
+		expect(await screen.findByText('From another thread')).toBeInTheDocument();
+		expect(screen.queryByRole('button', { name: 'Show sessions from all threads' })).not.toBeInTheDocument();
+		expect(screen.getByRole('group', { name: 'History source' })).toBeInTheDocument();
+		expect(requested.at(-1)!.searchParams.has('ui_thread_id')).toBe(false);
+		expect(requested.at(-1)!.searchParams.get('history_lane')).toBe('personal');
+		expect(get(historyDrawerThreadFilter)).toBeNull();
 	});
 
 	it('pages archived sessions and threads from the server behind the Archived switch', async () => {
@@ -298,6 +352,9 @@ describe('HistoryDrawer session navigation', () => {
 		expect(screen.queryByRole('button', { name: 'Delete thread' })).not.toBeInTheDocument();
 		await user.click(screen.getByRole('button', { name: 'Automated' }));
 		expect(await screen.findByText('Observed tabs')).toBeInTheDocument();
+		expect(screen.getByText('Observed tabs')).toHaveAttribute('title', 'Observed tabs');
+		expect(screen.getByRole('button', { name: 'Archive thread' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Delete thread' })).toBeInTheDocument();
 		expect(requests.some((url) =>
 			url.pathname.endsWith('/ui-threads')
 			&& url.searchParams.get('history_lane') === 'automated'

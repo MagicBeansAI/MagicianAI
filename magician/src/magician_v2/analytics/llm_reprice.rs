@@ -314,6 +314,21 @@ pub fn reprice_llm_calls_tree(
             })
             .collect();
         parquet_files.sort();
+        // Folded batches and superseded generations awaiting deletion are
+        // never read; rewriting a folded batch would change its fingerprint
+        // and make governed readers count it a second time.
+        match super::parquet_maintenance::retired_partition_objects(
+            &partition_dir,
+            super::parquet_maintenance::PartitionedDataset::LegacyLlmCalls,
+        ) {
+            Ok(retired) => parquet_files.retain(|file| !retired.contains(file)),
+            Err(error) => warn!(
+                target: "analytics::llm_reprice",
+                partition = %partition_dir.display(),
+                error = %error,
+                "reprice: could not read the compaction manifest; repricing every file"
+            ),
+        }
         for file in parquet_files {
             match reprice_partition_file(&file, table, opts.apply) {
                 Ok(file_stats) => stats.absorb(&file_stats),

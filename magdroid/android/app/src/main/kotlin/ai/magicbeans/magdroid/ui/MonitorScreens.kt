@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -82,12 +83,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.ZoneId
 
-@Composable
-internal fun MonitorLane(state: TasksUiState, viewModel: TasksViewModel, onCreate: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Ground)) {
+/** The Monitors lane as rows of the one Work scroll (the page's LazyColumn), not a list of its own. */
+internal fun LazyListScope.monitorLaneItems(state: TasksUiState, viewModel: TasksViewModel, onCreate: () -> Unit) {
+    val gutter = Modifier.padding(horizontal = WORK_SCREEN_PADDING_DP.dp, vertical = 5.dp)
+    item(key = "monitor-filters") {
         LazyRow(
-            modifier = Modifier.fillMaxWidth().background(Panel),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+            // The same strip and gutters as the task filters beside it.
+            modifier = Modifier.fillMaxWidth().background(Ground),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = WORK_SCREEN_PADDING_DP.dp, vertical = 7.dp),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             item { MonitorPageSizeMenu(state.monitorPageSize, viewModel::setMonitorPageSize) }
@@ -99,39 +102,37 @@ internal fun MonitorLane(state: TasksUiState, viewModel: TasksViewModel, onCreat
                 )
             }
         }
-        when {
-            state.monitors.isEmpty() && state.monitorLoadState in setOf(TaskLoadState.Idle, TaskLoadState.Loading) ->
-                MonitorPlaceholder("Loading monitors…", loading = true)
-            state.monitors.isEmpty() && state.monitorLoadState == TaskLoadState.Failed ->
-                MonitorPlaceholder(
-                    state.activeLoadError?.title ?: "Monitors unavailable",
-                    detail = state.activeLoadError?.message ?: "Check the connection and try again.",
-                    action = "Try again",
-                    onAction = viewModel::refresh,
-                )
-            state.monitors.isEmpty() ->
-                MonitorPlaceholder("No monitors in this view", action = "New monitor", onAction = onCreate)
-            else -> LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                state.activeLoadError?.let { error ->
-                    item(key = "monitor-load-error") {
-                        TaskLoadErrorBanner(error, viewModel::refresh)
-                    }
+    }
+    when {
+        state.monitors.isEmpty() && state.monitorLoadState in setOf(TaskLoadState.Idle, TaskLoadState.Loading) ->
+            item(key = "monitor-empty") { Box(Modifier.fillMaxWidth().height(320.dp)) { MonitorPlaceholder("Loading monitors…", loading = true) } }
+        state.monitors.isEmpty() && state.monitorLoadState == TaskLoadState.Failed ->
+            item(key = "monitor-empty") {
+                Box(Modifier.fillMaxWidth().height(320.dp)) {
+                    MonitorPlaceholder(
+                        state.activeLoadError?.title ?: "Monitors unavailable",
+                        detail = state.activeLoadError?.message ?: "Check the connection and try again.",
+                        action = "Try again",
+                        onAction = viewModel::refresh,
+                    )
                 }
-                items(state.monitors, key = MonitorListItem::taskId) { item ->
-                    MonitorCard(item) { viewModel.openMonitor(item.taskId) }
-                }
-                if (state.monitorNextCursor != null) item {
-                    OutlinedButton(shape = MagicanButtonShape, onClick = viewModel::loadMore, modifier = Modifier.fillMaxWidth(), enabled = !state.monitorLoadingMore) {
-                        if (state.monitorLoadingMore) {
-                            CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(7.dp))
-                        }
-                        Text(state.monitorTotal?.let { "Load more · ${state.monitors.size} of $it" } ?: "Load more")
+            }
+        state.monitors.isEmpty() ->
+            item(key = "monitor-empty") { Box(Modifier.fillMaxWidth().height(320.dp)) { MonitorPlaceholder("No monitors in this view", action = "New monitor", onAction = onCreate) } }
+        else -> {
+            state.activeLoadError?.let { error ->
+                item(key = "monitor-load-error") { Box(gutter) { TaskLoadErrorBanner(error, viewModel::refresh) } }
+            }
+            items(state.monitors, key = MonitorListItem::taskId) { item ->
+                Box(gutter) { MonitorCard(item) { viewModel.openMonitor(item.taskId) } }
+            }
+            if (state.monitorNextCursor != null) item(key = "monitor-more") {
+                OutlinedButton(shape = MagicanButtonShape, onClick = viewModel::loadMore, modifier = Modifier.fillMaxWidth().then(gutter), enabled = !state.monitorLoadingMore) {
+                    if (state.monitorLoadingMore) {
+                        CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(7.dp))
                     }
+                    Text(state.monitorTotal?.let { "Load more · ${state.monitors.size} of $it" } ?: "Load more")
                 }
             }
         }
@@ -671,10 +672,14 @@ private fun MonitorReview(label: String, value: String) {
     }
 }
 
-private val MSuccess = Color(0xFF2E9B72)
-private val MWarning = Color(0xFFE6952F)
-private val MDanger = Color(0xFFD9544D)
-private val MInfo = Color(0xFF3978C5)
+// The theme's semantic hues, as iOS's Monitor views read successColor /
+// warningColor / dangerColor / infoColor. Fixed literals here left every
+// monitor pill on one green/amber/red regardless of the selected family,
+// while iOS followed the theme's light/dark variants.
+private val MSuccess: Color get() = activePalette.success
+private val MWarning: Color get() = activePalette.warning
+private val MDanger: Color get() = activePalette.danger
+private val MInfo: Color get() = activePalette.info
 
 @Composable
 private fun MonitorPill(label: String, tint: Color) {

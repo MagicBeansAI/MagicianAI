@@ -122,12 +122,33 @@ fn binary_on_path(binary: &str) -> bool {
 mod tests {
     #[test]
     fn unrestricted_launches_drop_the_named_flags_and_values_only() {
-        let argv: Vec<String> = ["claude", "-p", "--tools", "", "--mcp-config", "/m.json", "--strict-mcp-config", "--setting-sources", "", "--verbose"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let kept = super::strip_flags(argv, &["--strict-mcp-config"], &["--tools", "--setting-sources"]);
-        assert_eq!(kept, ["claude", "-p", "--mcp-config", "/m.json", "--verbose"].map(str::to_string).to_vec(), "the Magician bridge stays");
+        let argv: Vec<String> = [
+            "claude",
+            "-p",
+            "--tools",
+            "",
+            "--mcp-config",
+            "/m.json",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--verbose",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let kept = super::strip_flags(
+            argv,
+            &["--strict-mcp-config"],
+            &["--tools", "--setting-sources"],
+        );
+        assert_eq!(
+            kept,
+            ["claude", "-p", "--mcp-config", "/m.json", "--verbose"]
+                .map(str::to_string)
+                .to_vec(),
+            "the Magician bridge stays"
+        );
     }
 
     use super::*;

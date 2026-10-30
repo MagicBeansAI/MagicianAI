@@ -5,7 +5,8 @@
 <script lang="ts">
 	import { get as getStore } from 'svelte/store';
 	import { loadTaskUsageSnapshot, taskUsage } from './taskUsage';
-	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+	import { scopeIdentityStore, getCurrentScopeCredentialRevision } from '$lib/stores/scopeIdentityStore';
+	import { taskStore } from '$lib/stores/taskStore';
 	import { pendingHitlTaskIds } from '$lib/stores/pendingHitlStore';
 	import { formatUsd } from '$lib/magician/tasks/taskTimeline';
 	// Chat-next live task card. Same props as TaskStatusCard so ChatPanel can
@@ -20,9 +21,13 @@
 	// the card is not expandable: no chevron, no toggle. The title row holds
 	// the Inspect chip and, while the task runs, a Cancel chip that confirms in
 	// a small popover. Props it does not use are accepted for a drop-in swap.
+	// Expanded active runs expose the shared capability-driven execution controls.
 	import { afterUpdate, onDestroy, onMount, tick } from 'svelte';
 	import ChatContentBlocks from '$lib/magician/components/chat/ChatContentBlocks.svelte';
-	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import TaskReport from '$lib/magician/tasks/TaskReport.svelte';
+	import ExecutionControls from '$lib/magician/components/execution/ExecutionControls.svelte';
+	import AnswerVerificationInfo from '$lib/magician/chat/components/AnswerVerificationInfo.svelte';
+	import { splitAnswerVerification } from '$lib/magician/chat/answerVerification';
 	import type {
 		ChatMessage,
 		ChatMessageContent,
@@ -50,6 +55,8 @@
 	export let message: ChatMessage;
 	/** The task's status in the task store, which wins over a message that lags it. */
 	export let storeStatus: string | undefined = undefined;
+	/** Authoritative active root from the task store; historical run ids are inspection-only. */
+	export let activeExecutionId: string | undefined = undefined;
 	/** The task's plan as the task store has it: its steps, for the preview. */
 	export let plan: { status: string | null; steps: string[] } | null = null;
 	/** Start an approved, not-started task's run. No Run chip without it. */
@@ -116,10 +123,21 @@
 	let flourish = false;
 	let lastStatus: LiveTaskStatus | null = null;
 	let reasonEl: HTMLDivElement | undefined;
+	$: report = splitAnswerVerification(view.reason ?? '');
 	let reasonOverflows = false;
 	let reasonObserver: ResizeObserver | null = null;
+	let loadedControlRoot: string | undefined;
+	let controlsLoading = false;
+	let controlsError = false;
+	let controlsLoadedKey = '';
+	let controlsRequest = 0;
+	let controlsDisposed = false;
 
-	$: view = toLiveTaskView(message, taskExecutionGroups, storeStatus);
+	// The clock only moves by the minute here: it feeds the stale-synthesis
+	// cutoff, and a per-second dependency would rebuild the view (and its
+	// output blocks) every tick.
+	$: staleClock = Math.floor(now / 60_000) * 60_000;
+	$: view = toLiveTaskView(message, taskExecutionGroups, storeStatus, staleClock);
 	// The task's model usage so far (calls, tokens, cost), from its scoped
 	// activity stream: the run and its delegated children.
 	$: usage = view.taskId ? $taskUsage.get(view.taskId) : undefined;
@@ -131,7 +149,7 @@
 		void loadTaskUsageSnapshot(view.taskId, scope.principal, scope.workspace, usagePhase);
 	}
 	$: usageCost = usage ? formatUsd(usage.costUsd) : null;
-	$: usageTokens = usage
+	$: usageTokens = usage?.tokensReported
 		? usage.tokens >= 1000
 			? `${(usage.tokens / 1000).toFixed(1)}k`
 			: String(usage.tokens)
@@ -211,6 +229,32 @@
 			? { taskId: view.taskId, executionId: view.executionId }
 			: null;
 	$: canCancel = !view.terminal && !notStarted && Boolean(onCancel);
+	$: controlsEligible = !view.terminal && !notStarted && !view.awaitingApproval && Boolean(view.taskId && view.executionId);
+	$: controlsKey = `${view.taskId}:${view.executionId}:${view.status}:${storeStatus ?? ''}:${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}:${getCurrentScopeCredentialRevision()}`;
+	$: if (expanded && controlsEligible && activeExecutionId === undefined && controlsLoadedKey !== controlsKey) {
+		controlsLoadedKey = controlsKey;
+		void loadControlRoot(view.taskId!, controlsKey);
+	}
+	$: authoritativeControlRoot = activeExecutionId?.trim() || (controlsLoadedKey === controlsKey ? loadedControlRoot : undefined);
+	$: controlExecutionId = controlsEligible && authoritativeControlRoot === view.executionId ? authoritativeControlRoot : undefined;
+
+	async function loadControlRoot(taskId: string, key: string): Promise<void> {
+		const request = ++controlsRequest;
+		loadedControlRoot = undefined;
+		controlsLoading = true;
+		controlsError = false;
+		// Internal/chat-spawned tasks are intentionally absent from the main
+		// task list. Read the exact task; never use a historical message id as
+		// execution-control authority or add internal tasks to that list.
+		const task = await taskStore.fetchTaskRecordById(taskId).catch(() => null);
+		if (controlsDisposed || request !== controlsRequest || key !== controlsKey) return;
+		controlsLoading = false;
+		controlsError = !task;
+		if (task && ['queued', 'running', 'planning', 'paused', 'executing'].includes(task.status)) {
+			loadedControlRoot = task.activeExecutionId?.trim();
+		}
+	}
+	onDestroy(() => { controlsDisposed = true; controlsRequest += 1; });
 	$: canRun = view.startable && Boolean(onRun) && Boolean(view.taskId);
 	let running = false;
 	async function run(): Promise<void> {
@@ -262,6 +306,7 @@
 	// What the expanded region would hold. Cancel is not part of it: it lives
 	// in the title row.
 	$: hasDetails =
+		controlsEligible ||
 		(showActivity && activityHasContent) ||
 		showPlan ||
 		showRuns ||
@@ -454,6 +499,9 @@
 				{:else}
 					<span class="cn-live-task__title">{view.title}</span>
 				{/if}
+				{#if report.verification}
+					<span class="cn-live-task__verification"><AnswerVerificationInfo verification={report.verification} /></span>
+				{/if}
 				<!-- One chip. "Open task" and "Inspect" opened the same drawer (whole
 				     task vs. one run — the same thing for a single-run task), so the
 				     card inspects its latest run, and falls back to the task view
@@ -541,7 +589,7 @@
 						class="cn-live-task__usage"
 						data-testid="live-task-usage"
 						title={[
-							`${usage.calls} model call${usage.calls === 1 ? '' : 's'}, ${usage.tokens.toLocaleString()} tokens${usageCost ? `, ${usageCost}` : ''}`,
+							`${usage.calls} model call${usage.calls === 1 ? '' : 's'}, ${usage.tokensReported ? `${usage.tokens.toLocaleString()} tokens` : 'tokens unavailable'}${usageCost ? `, ${usageCost}` : ''}`,
 							usage.planning
 								? `Planning: ${usage.planning.calls} call${usage.planning.calls === 1 ? '' : 's'}${formatUsd(usage.planning.costUsd) ? `, ${formatUsd(usage.planning.costUsd)}` : ''}`
 								: null,
@@ -551,7 +599,7 @@
 						]
 							.filter(Boolean)
 							.join('\n')}
-						>{usage.calls} call{usage.calls === 1 ? '' : 's'} · {usageTokens} tok{usageCost
+						>{usage.calls} call{usage.calls === 1 ? '' : 's'} · {usageTokens !== null ? `${usageTokens} tok` : 'tokens unavailable'}{usageCost
 							? ` · ${usageCost}`
 							: ''}</span
 					>
@@ -583,14 +631,16 @@
 			{:else if stepLine}
 				<span class="cn-live-task__step">{stepLine}</span>
 			{/if}
-			{#if view.reason}
+			{#if report.body}
 				<div
 					bind:this={reasonEl}
 					class="cn-live-task__reason"
 					class:cn-live-task__reason--clamped={!expanded}
 					data-testid="live-task-reason"
 				>
-					<ChatMarkdown content={view.reason} sessionId={message.session_id ?? null} />
+					<TaskReport content={report.body} sessionId={message.session_id ?? null}
+						taskId={view.taskId ?? null} executionId={view.terminal ? view.executionId ?? null : null}
+						showVerification={!report.verification} />
 				</div>
 				{#if reasonOverflows && !expanded}
 					<button
@@ -636,6 +686,20 @@
 		     the card can tell whether it has anything to show. -->
 		{#if showActivity || (expanded && hasDetails)}
 			<div class="cn-live-task__details-inner" hidden={!(expanded && hasDetails)}>
+				{#if expanded && controlExecutionId}
+					<ExecutionControls
+						executionId={controlExecutionId}
+						label={view.title}
+						variant="row"
+						refreshKey={`${view.status}:${storeStatus ?? ''}`}
+					/>
+				{:else if expanded && controlsEligible && controlsLoading}
+					<span class="cn-live-task__run-status">Loading run controls…</span>
+				{:else if expanded && controlsEligible && controlsError}
+					<button type="button" class="mg-chip-action" on:click={() => loadControlRoot(view.taskId!, controlsKey)}>Retry run controls</button>
+				{:else if expanded && controlsEligible}
+					<span class="cn-live-task__run-status">This run is no longer active.</span>
+				{/if}
 				{#if showPlan}
 					<section class="cn-live-task__plan" aria-label="Plan">
 						<div class="cn-live-task__plan-head">
@@ -754,6 +818,7 @@
 	}
 
 	.cn-live-task__chip,
+	.cn-live-task__verification,
 	.cn-live-task__more,
 	.cn-live-task__id,
 	.cn-live-task__reason :global(a) {

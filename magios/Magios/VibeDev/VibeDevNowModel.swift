@@ -19,6 +19,9 @@ enum VibeDevRowAction: String, Equatable, CaseIterable {
 @MainActor
 final class VibeDevNowModel: ObservableObject {
     @Published private(set) var liveRuns: [VibeDevLiveRun] = []
+    @Published private(set) var history: [VibeDevLiveRun] = []
+    @Published private(set) var nextCursor: String?
+    @Published private(set) var loadingMore = false
     @Published private(set) var projects: [VibeDevProject] = []
     @Published private(set) var loaded = false
     @Published private(set) var lastUpdated: Date?
@@ -95,14 +98,23 @@ final class VibeDevNowModel: ObservableObject {
         // A cold start shows the last data at once; the read below replaces it.
         if !loaded, liveRuns.isEmpty, projects.isEmpty, let cached = context.cache?.loadNow() {
             liveRuns = cached.0.live.runs
+            history = cached.0.history?.runs ?? cached.0.live.runs
+            nextCursor = cached.0.history?.nextCursor
             projects = cached.0.projects
             context.remember(projects)
             lastUpdated = cached.1
         }
         async let runs = context.api.liveRuns()
         async let list = context.api.projects()
+        async let page = context.api.runHistory(limit: 20, cursor: nil)
         do {
-            let (runsResponse, projectsResponse) = try await (runs, list)
+            let (runsResponse, projectsResponse, firstPage) = try await (runs, list, page)
+            let firstRead = history.isEmpty
+            let freshIDs = Set(firstPage.runs.map(\.runId))
+            let outranLoadedRows = !history.contains { freshIDs.contains($0.runId) }
+            history = (firstPage.runs + history.filter { !freshIDs.contains($0.runId) })
+                .sorted { ($0.updatedAt, $0.runId) > ($1.updatedAt, $1.runId) }
+            if firstRead || !firstPage.hasMore || outranLoadedRows { nextCursor = firstPage.nextCursor }
             liveRuns = runsResponse.runs
             projects = projectsResponse.projects
             context.remember(projects)
@@ -113,7 +125,7 @@ final class VibeDevNowModel: ObservableObject {
             lastUpdated = Date()
             refreshFailed = false
             errorMessage = nil
-            context.cache?.saveNow(VibeDevCache.NowSnapshot(live: runsResponse, projects: projectsResponse.projects))
+            context.cache?.saveNow(VibeDevCache.NowSnapshot(live: runsResponse, projects: projectsResponse.projects, history: firstPage))
             VibeDevBadge.shared.update(
                 runsNeedingYou: liveRuns.filter { $0.state == .needsYou }.count,
                 crewQuestions: needsYou.filter { $0.kind != .run }.count)
@@ -122,6 +134,20 @@ final class VibeDevNowModel: ObservableObject {
             if liveRuns.isEmpty && projects.isEmpty { errorMessage = VibeDevActions.describe(error) }
         }
         loaded = true
+    }
+
+    func loadMore() async {
+        guard !loadingMore, !refreshing, let cursor = nextCursor else { return }
+        loadingMore = true
+        defer { loadingMore = false }
+        do {
+            let page = try await context.api.runHistory(limit: 20, cursor: cursor)
+            let held = Set(history.map(\.runId))
+            history.append(contentsOf: page.runs.filter { !held.contains($0.runId) })
+            history.sort { ($0.updatedAt, $0.runId) > ($1.updatedAt, $1.runId) }
+            nextCursor = page.nextCursor
+            errorMessage = nil
+        } catch { errorMessage = VibeDevActions.describe(error) }
     }
 
     func startLive() {

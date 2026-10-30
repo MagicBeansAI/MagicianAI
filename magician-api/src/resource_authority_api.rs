@@ -275,62 +275,82 @@ impl ResourceAuthorityApi {
 // API Authentication
 // ---------------------------------------------------------------------------
 
-/// Authenticated identity extracted from the `Authorization: Bearer <key>` header.
-/// If `RESOURCE_AUTHORITY_API_KEY` is not set, all requests are treated as anonymous
-/// (backward compatible for development).
+/// Who a resource-authority request acts as.
+///
+/// With `RESOURCE_AUTHORITY_API_KEY` set, the key opens every route. It rides
+/// `X-Resource-Authority-Key`, so a browser keeps its session bearer in
+/// `Authorization` for the API's own sign-in gate; a bare
+/// `Authorization: Bearer <key>` is still read for older clients. A signed-in
+/// owner session may also READ (GET/HEAD) without the key: the spend ledger
+/// page. Every change (freeze, fund, revoke, close) still needs the key.
+/// Without a configured key every request is anonymous (development).
 struct ApiAuth {
     identity: String,
 }
 
+/// Header carrying the resource-authority key beside the session bearer.
+pub const RESOURCE_AUTHORITY_KEY_HEADER: &str = "x-resource-authority-key";
+
 impl ApiAuth {
-    /// Extract identity from request. Returns "anonymous" when no auth is configured
-    /// or no header is present. Returns an error response when auth is configured
-    /// but the provided key does not match.
     fn extract(req: &HttpRequest) -> Result<Self, HttpResponse> {
-        let configured_key = std::env::var("RESOURCE_AUTHORITY_API_KEY").ok();
-
-        match configured_key {
-            None => {
-                // No auth configured — backward compat for development
-                Ok(ApiAuth {
-                    identity: "anonymous".to_string(),
-                })
-            },
-            Some(expected_key) => {
-                let auth_header = req
-                    .headers()
-                    .get("authorization")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-
-                let expected = format!("Bearer {}", expected_key);
-
-                // Constant-time comparison to prevent timing side-channel
-                let auth_bytes = auth_header.as_bytes();
-                let expected_bytes = expected.as_bytes();
-                let matches = auth_bytes.len() == expected_bytes.len()
-                    && auth_bytes
-                        .iter()
-                        .zip(expected_bytes.iter())
-                        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                        == 0;
-
-                if !matches {
-                    return Err(api_error_response(
-                        StatusCode::UNAUTHORIZED,
-                        "unauthorized",
-                        "Invalid or missing API key. Set Authorization: Bearer <key> header.",
-                        None,
-                    ));
-                }
-
-                // Use a hash of the key as identity (don't leak the key itself)
-                Ok(ApiAuth {
-                    identity: format!("api_key_{}", &expected_key[..expected_key.len().min(8)]),
-                })
-            },
-        }
+        Self::extract_with(req, std::env::var("RESOURCE_AUTHORITY_API_KEY").ok())
     }
+
+    fn extract_with(
+        req: &HttpRequest,
+        configured_key: Option<String>,
+    ) -> Result<Self, HttpResponse> {
+        let Some(expected_key) = configured_key else {
+            return Ok(ApiAuth {
+                identity: "anonymous".to_string(),
+            });
+        };
+        let header_key = req
+            .headers()
+            .get(RESOURCE_AUTHORITY_KEY_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim);
+        let bearer_key = req
+            .headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map(|(_, token)| token.trim());
+        if header_key
+            .into_iter()
+            .chain(bearer_key)
+            .any(|key| constant_time_eq(key.as_bytes(), expected_key.as_bytes()))
+        {
+            // A prefix of the key names it without leaking it.
+            return Ok(ApiAuth {
+                identity: format!("api_key_{}", &expected_key[..expected_key.len().min(8)]),
+            });
+        }
+        if req.method() == actix_web::http::Method::GET
+            || req.method() == actix_web::http::Method::HEAD
+        {
+            let auth = req
+                .app_data::<web::Data<magician::magician_v2::auth::middleware::AuthRuntime>>()
+                .map(|data| data.get_ref());
+            if let Ok(owner) = crate::plane_api::owner_identity(req, auth) {
+                return Ok(ApiAuth {
+                    identity: format!("owner:{owner}"),
+                });
+            }
+        }
+        Err(api_error_response(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Invalid or missing resource-authority key. Send it in the X-Resource-Authority-Key header; a signed-in owner session may only read.",
+            None,
+        ))
+    }
+}
+
+/// Byte comparison whose time does not depend on where the bytes differ.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +594,8 @@ pub async fn list_ceilings_handler(
         .iter()
         .map(|sc| {
             let period_start = period_window_start(&sc.period);
-            let spent = ledger.total_spent_since(&sc.commodity, period_start);
+            // What the gate counts: model spend is not held to system ceilings.
+            let spent = ledger.ceiling_spent_since_until(&sc.commodity, period_start, None);
             let reserved = ledger.in_flight_reserved_for_commodity(&sc.commodity);
             let remaining = sc.ceiling - spent - reserved;
 
@@ -659,7 +680,7 @@ pub async fn upsert_ceiling_handler(
 
     let ledger = api.ledger.read().await;
     let period_start = period_window_start(&sc.period);
-    let spent = ledger.total_spent_since(&sc.commodity, period_start);
+    let spent = ledger.ceiling_spent_since_until(&sc.commodity, period_start, None);
     let reserved = ledger.in_flight_reserved_for_commodity(&sc.commodity);
 
     let response = HttpResponse::Ok().json(CeilingResponse {
@@ -1699,6 +1720,36 @@ pub async fn credit_handler(
 
 #[cfg(test)]
 mod tests {
+
+    /// The key opens every route from its own header or a bare bearer; a
+    /// request without it, and no owner session, is refused for reads and
+    /// changes alike.
+    // `test` here is actix_web's async test macro (imported below).
+    #[test]
+    async fn the_key_rides_its_own_header_and_nothing_else_opens_a_change() {
+        use actix_web::test::TestRequest;
+        let key = Some("ra-test-key-0123456789".to_string());
+        let header = TestRequest::post()
+            .insert_header((RESOURCE_AUTHORITY_KEY_HEADER, "ra-test-key-0123456789"))
+            .insert_header(("Authorization", "Bearer mag_session_not_the_key"))
+            .to_http_request();
+        assert!(ApiAuth::extract_with(&header, key.clone()).is_ok());
+        let bearer = TestRequest::post()
+            .insert_header(("Authorization", "Bearer ra-test-key-0123456789"))
+            .to_http_request();
+        assert!(ApiAuth::extract_with(&bearer, key.clone()).is_ok());
+        let wrong = TestRequest::post()
+            .insert_header((RESOURCE_AUTHORITY_KEY_HEADER, "ra-test-key-0123456788"))
+            .to_http_request();
+        assert!(ApiAuth::extract_with(&wrong, key.clone()).is_err());
+        let read_without_session = TestRequest::get().to_http_request();
+        assert!(ApiAuth::extract_with(&read_without_session, key.clone()).is_err());
+        let unconfigured = TestRequest::post().to_http_request();
+        assert_eq!(
+            ApiAuth::extract_with(&unconfigured, None).unwrap().identity,
+            "anonymous"
+        );
+    }
     use super::*;
 
     use actix_web::{test, web, App};

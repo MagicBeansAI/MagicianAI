@@ -87,6 +87,14 @@ pub struct V3EpisodeRecord {
     pub task_title: Option<String>,
     #[serde(default)]
     pub task_description: Option<String>,
+    /// What the run was asked to do: bounded, and free of the operating policy
+    /// a server-assembled description carries around the user's words. Recall
+    /// shows this instead of `task_description`, so an episode replays the
+    /// intent and outcome of a run, never its run-specific instructions.
+    /// `None` on records written before the field existed (recall derives it)
+    /// and on producers with no task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_intent: Option<String>,
     #[serde(default)]
     pub execution_status: Option<String>,
     #[serde(default)]
@@ -291,6 +299,7 @@ impl V3EpisodeRecord {
             ui_thread_id: None,
             task_title: None,
             task_description: None,
+            task_intent: None,
             execution_status: Some(execution_status_from_outcome(outcome).to_string()),
             outcome_type: None,
             execution_output_id: None,
@@ -367,6 +376,64 @@ impl V3EpisodeRecord {
         &self.outcome_summary
     }
 
+    /// The outcome as recall shows it to a model: the summary when it is
+    /// user-facing prose that does not replay the task brief, else assembled
+    /// from structured fields (verdict, intent, the run's user-facing output),
+    /// bounded — so a prompt never replays another run's operating
+    /// instructions or machine text. Applied at read time to every record,
+    /// whichever writer stored it; see
+    /// [`magician_vector_index::episode_candidates::recalled_episode_outcome`].
+    pub fn recalled_outcome_text(&self) -> String {
+        magician_vector_index::episode_candidates::recalled_episode_outcome(
+            &self.outcome_summary,
+            &self.outcome_kind,
+            self.task_title.as_deref(),
+            self.task_description.as_deref(),
+            self.task_intent.as_deref(),
+            primary_output_excerpt(&self.memory_candidates),
+        )
+    }
+
+    /// The strategy as recall shows it: `None` when the record has none, it
+    /// repeats the outcome, or it is not recallable prose; else bounded like
+    /// [`Self::recalled_outcome_text`].
+    pub fn recalled_strategy_text(&self) -> Option<String> {
+        magician_vector_index::episode_candidates::recalled_episode_strategy(
+            self.strategy_summary.as_deref(),
+            &self.outcome_summary,
+            self.task_description.as_deref(),
+            self.task_intent.as_deref(),
+        )
+    }
+
+    /// What the run was asked to do, as recall shows it: the recorded
+    /// `task_intent`, else one derived from the description — never the raw
+    /// description, which can carry the run's operating policy.
+    pub fn recalled_intent_text(&self) -> Option<String> {
+        magician_vector_index::episode_candidates::recalled_episode_intent(
+            self.task_intent.as_deref(),
+            self.task_description.as_deref(),
+        )
+        .or_else(|| {
+            magician_vector_index::episode_candidates::episode_task_intent(
+                self.task_title.as_deref(),
+                None,
+            )
+        })
+    }
+
+    /// Any text the record carries (a candidate summary, an evidence line) as
+    /// recall shows it: the record's own outcome statement gets the full
+    /// record-aware treatment of [`Self::recalled_outcome_text`]; any other
+    /// text keeps only the user-facing prose it leads with
+    /// ([`magician_vector_index::episode_candidates::user_facing_prose`]).
+    pub fn recalled_text<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if !text.trim().is_empty() && text.trim() == self.outcome_summary.trim() {
+            return std::borrow::Cow::Owned(self.recalled_outcome_text());
+        }
+        magician_vector_index::episode_candidates::user_facing_prose(text)
+    }
+
     pub fn outcome_error_summary(&self) -> String {
         match self.outcome_kind.as_str() {
             "failed" | "circuit_open" => self
@@ -403,6 +470,9 @@ impl V3EpisodeRecord {
             .goal_id
             .clone()
             .unwrap_or_else(|| ctx.task.manifest.task_id.clone());
+        let task_intent = terminal_episode_task_intent(ctx);
+        let outcome_statement =
+            terminal_episode_outcome_statement(ctx, task_intent.as_deref(), None);
 
         Self {
             schema_version: V3_MEMORY_EPISODE_SCHEMA_ORIGIN_STAMPED.to_string(),
@@ -431,7 +501,7 @@ impl V3EpisodeRecord {
             started_at: ctx.execution.state.started_at.clone(),
             completed_at: completed_at.clone(),
             outcome_kind: outcome_kind_from_legacy(&legacy_episode_outcome(&ctx.outcome)),
-            outcome_summary: ctx.outcome.outcome_summary.clone(),
+            outcome_summary: outcome_statement.clone(),
             outcome_remaining: None,
             pending_actions: pending_actions_from_outcome(&legacy_episode_outcome(&ctx.outcome)),
             failure_count: failure_count_from_outcome(&legacy_episode_outcome(&ctx.outcome)),
@@ -444,6 +514,7 @@ impl V3EpisodeRecord {
             ui_thread_id: Some(ctx.task.manifest.ui_thread_id.clone()),
             task_title: Some(ctx.task.manifest.title.clone()),
             task_description: Some(ctx.task.manifest.description.clone()),
+            task_intent,
             execution_status: Some(ctx.outcome.execution_status.clone()),
             outcome_type: Some(ctx.outcome.outcome_type.clone()),
             execution_output_id: Some(ctx.execution_output.output_id.clone()),
@@ -454,7 +525,7 @@ impl V3EpisodeRecord {
             observations: build_episode_observations(ctx),
             memory_updates: Vec::new(),
             memory_candidates: Vec::new(),
-            strategy_summary: Some(ctx.outcome.outcome_summary.clone()),
+            strategy_summary: Some(outcome_statement),
             context_at_start: Some(format!(
                 "principal={}; workspace={}; ui_thread_id={}",
                 ctx.scope.principal(),
@@ -596,7 +667,19 @@ impl V3EpisodeRecorder for FilesystemV3EpisodeRecorder {
                 .as_ref()
                 .map(|o| o.relative_path.clone()),
         });
-        record.memory_candidates = build_terminal_memory_candidates(&self.workspace, ctx).await;
+        record.memory_candidates =
+            build_terminal_memory_candidates(&self.workspace, ctx, &record.outcome_summary).await;
+        // An outcome that is not user-facing prose is assembled from structured
+        // fields; the run's own final output is its result.
+        if let Some(result) = primary_output_excerpt(&record.memory_candidates) {
+            let statement = terminal_episode_outcome_statement(
+                ctx,
+                record.task_intent.as_deref(),
+                Some(result),
+            );
+            record.strategy_summary = Some(statement.clone());
+            record.outcome_summary = statement;
+        }
 
         let memory_service = AgentMemoryService::with_scoped_memory_scope(
             self.workspace
@@ -847,6 +930,48 @@ fn legacy_episode_outcome(outcome: &ExecutionOutcomeSnapshot) -> EpisodeOutcome 
     }
 }
 
+/// The bounded, policy-free intent of the task a terminal episode records.
+fn terminal_episode_task_intent(ctx: &V3EpisodeRecordingContext) -> Option<String> {
+    magician_vector_index::episode_candidates::episode_task_intent(
+        Some(ctx.task.manifest.title.as_str()),
+        Some(ctx.task.manifest.description.as_str()),
+    )
+}
+
+/// The terminal outcome as an episode keeps it, decided at record time by the
+/// same structural rule recall applies: the runtime's summary when it is
+/// user-facing prose that does not replay the task brief, else verdict +
+/// `task_intent` + the run's own output — so the record never stores a goal
+/// echo, a handoff payload or the run's operating policy.
+fn terminal_episode_outcome_statement(
+    ctx: &V3EpisodeRecordingContext,
+    task_intent: Option<&str>,
+    result: Option<&str>,
+) -> String {
+    magician_vector_index::episode_candidates::episode_outcome_statement(
+        &ctx.outcome.outcome_summary,
+        &outcome_kind_from_legacy(&legacy_episode_outcome(&ctx.outcome)),
+        Some(ctx.task.manifest.description.as_str()),
+        task_intent,
+        result,
+    )
+}
+
+/// The run's final output text, preferring the user-audience output.
+fn primary_output_excerpt(candidates: &[MemoryCandidate]) -> Option<&str> {
+    ["task_user_output", "execution_output"]
+        .into_iter()
+        .find_map(|source| {
+            candidates
+                .iter()
+                .find(|candidate| {
+                    candidate.candidate_type == "final_output_excerpt" && candidate.source == source
+                })
+                .and_then(|candidate| candidate.value.get("content_excerpt"))
+                .and_then(Value::as_str)
+        })
+}
+
 fn build_episode_observations(ctx: &V3EpisodeRecordingContext) -> Vec<String> {
     let mut observations = vec![
         format!("task_id: {}", ctx.task.manifest.task_id),
@@ -859,12 +984,8 @@ fn build_episode_observations(ctx: &V3EpisodeRecordingContext) -> Vec<String> {
         format!("task_title: {}", ctx.task.manifest.title),
         format!("outcome_type: {}", ctx.outcome.outcome_type),
     ];
-    if !ctx.task.manifest.description.is_empty() {
-        observations.push(format!(
-            "task_description: {}",
-            ctx.task.manifest.description
-        ));
-    }
+    // The description is not repeated here: it can carry server-injected
+    // operating policy, and the record's bounded `task_intent` stands for it.
     if let Some(root_execution_id) = &ctx.execution.state.root_execution_id {
         observations.push(format!("root_execution_id: {}", root_execution_id));
     }
@@ -887,16 +1008,17 @@ fn build_episode_observations(ctx: &V3EpisodeRecordingContext) -> Vec<String> {
 async fn build_terminal_memory_candidates(
     workspace: &ArtifactV2Workspace,
     ctx: &V3EpisodeRecordingContext,
+    outcome_statement: &str,
 ) -> Vec<MemoryCandidate> {
     let mut candidates = Vec::new();
     let terminal_value = json!({
         "outcome_type": ctx.outcome.outcome_type.clone(),
         "execution_status": ctx.outcome.execution_status.clone(),
         "task_status": ctx.outcome.task_status.clone(),
-        "summary": ctx.outcome.outcome_summary.clone(),
+        "summary": outcome_statement,
         "iterations_used": ctx.outcome.iterations_used,
         "task_title": ctx.task.manifest.title.clone(),
-        "task_description": ctx.task.manifest.description.clone(),
+        "task_intent": terminal_episode_task_intent(ctx),
     });
     candidates.push(MemoryCandidate {
         candidate_type: "terminal_outcome".to_string(),
@@ -905,7 +1027,7 @@ async fn build_terminal_memory_candidates(
         value: terminal_value,
         confidence: if ctx.outcome.is_terminal { 0.85 } else { 0.45 },
         source: "terminal_execution".to_string(),
-        evidence: vec![ctx.outcome.outcome_summary.clone()],
+        evidence: vec![outcome_statement.to_string()],
         rationale:
             "Terminal outcome is source material for durable memory extraction; it is not durable by itself."
                 .to_string(),
@@ -973,11 +1095,11 @@ async fn build_terminal_memory_candidates(
             value: json!({
                 "execution_status": ctx.outcome.execution_status.clone(),
                 "outcome_type": ctx.outcome.outcome_type.clone(),
-                "summary": ctx.outcome.outcome_summary.clone(),
+                "summary": outcome_statement,
             }),
             confidence: 0.7,
             source: "terminal_execution".to_string(),
-            evidence: vec![ctx.outcome.outcome_summary.clone()],
+            evidence: vec![outcome_statement.to_string()],
             rationale: "Failures and pauses may contain reusable retry-avoidance knowledge."
                 .to_string(),
         });
@@ -1164,5 +1286,288 @@ mod origin_meeting_label_tests {
             episode(Some("  meeting-a  ")).origin_meeting_label(),
             ContextLabel::Meeting("meeting-a".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_episode_text_tests {
+    use super::*;
+    use crate::magician_v2::artifact_v2::models::{
+        ExecutionRefs, ExecutionState, TaskLifecycle, TaskManifest, TaskOutputMode, TaskRefs,
+        TaskState, TaskSyncMode,
+    };
+
+    /// A server-assembled description: the user's words in a fence, then
+    /// operating policy that belongs to this run alone.
+    const DESCRIPTION: &str = "VibeDev coding request:\n\
+        Original VibeDev user prompt:\n\
+        <<<VIBEDEV_USER_PROMPT\n\
+        Append a line \"concurrency test\" to README.md. Nothing else.\n\
+        VIBEDEV_USER_PROMPT\n\
+        \n\
+        Execution policy:\n\
+        - Stage code changes as CodeChangeProposal diff_approval items.\n\
+        - VibeDev manual review is enabled; wait for approval before applying proposals.\n";
+    const INTENT: &str = "Append a line \"concurrency test\" to README.md. Nothing else.";
+
+    fn output(output_id: &str) -> OutputRef {
+        OutputRef {
+            output_id: output_id.to_string(),
+            scope: "task".to_string(),
+            audience: "user".to_string(),
+            role: "primary_task_user".to_string(),
+            relative_path: format!("outputs/{output_id}.md"),
+            media_type: "text/markdown".to_string(),
+            created_at: "2026-10-19T21:01:36Z".to_string(),
+            source_execution_id: Some("exec-1".to_string()),
+            source_plan_id: None,
+            source_output_ids: Vec::new(),
+        }
+    }
+
+    fn context(outcome_summary: &str) -> V3EpisodeRecordingContext {
+        let at = "2026-10-19T21:01:36Z".to_string();
+        V3EpisodeRecordingContext {
+            scope: ScopeRef::system_internal_unauthenticated("anonymous", "default"),
+            task: TaskRecord {
+                manifest: TaskManifest {
+                    task_id: "task-1".to_string(),
+                    principal: "anonymous".to_string(),
+                    workspace: "default".to_string(),
+                    title:
+                        "VibeDev · Append a line \"concurrency test\" to README.md. Nothing els…"
+                            .to_string(),
+                    description: DESCRIPTION.to_string(),
+                    agent_id: "cto".to_string(),
+                    goal_id: None,
+                    ui_thread_id: "vibedev".to_string(),
+                    priority: None,
+                    due_date: None,
+                    tags: Vec::new(),
+                    created_by: "user".to_string(),
+                    depends_on: Vec::new(),
+                    approved: true,
+                    schedule: None,
+                    output_mode: TaskOutputMode::Accumulate,
+                    chat_session_id: None,
+                    lifecycle: TaskLifecycle::default(),
+                    sync_mode: TaskSyncMode::default(),
+                    monitor_spec: None,
+                    monitor_revision: 0,
+                    relentless: None,
+                    created_at: at.clone(),
+                    updated_at: at.clone(),
+                },
+                state: TaskState {
+                    task_id: "task-1".to_string(),
+                    status: "completed".to_string(),
+                    completion_kind: None,
+                    open_items: Vec::new(),
+                    active_root_execution_id: None,
+                    latest_root_execution_id: None,
+                    last_completed_root_execution_id: None,
+                    default_task_agent_output_id: None,
+                    primary_user_output_id: None,
+                    schedule_fire_count: 0,
+                    synthesis_pending_executions: Vec::new(),
+                    synthesis_failed_execution_id: None,
+                    monitor_cursor: None,
+                    last_progress_at: None,
+                    relentless_policy_runs: Default::default(),
+                    updated_at: at.clone(),
+                },
+                refs: TaskRefs {
+                    task_id: "task-1".to_string(),
+                    outputs: Vec::new(),
+                    default_task_agent_output_id: None,
+                    primary_user_output_id: None,
+                    updated_at: Some(at.clone()),
+                },
+            },
+            execution: ExecutionRecord {
+                state: ExecutionState {
+                    execution_id: "exec-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    root_execution_id: Some("exec-1".to_string()),
+                    parent_execution_id: None,
+                    agent_id: "cto".to_string(),
+                    relationship_type: "root".to_string(),
+                    status: "completed".to_string(),
+                    completion_kind: None,
+                    open_items: Vec::new(),
+                    plan_id: None,
+                    primary_execution_output_id: None,
+                    active_child_execution_ids: Vec::new(),
+                    started_at: at.clone(),
+                    completed_at: Some(at.clone()),
+                    updated_at: at,
+                    completed_step_ids: Vec::new(),
+                    failed_step_ids: Vec::new(),
+                    current_step_id: None,
+                    task_output_mode: TaskOutputMode::Accumulate,
+                    refinement: None,
+                    synthesis_pending: false,
+                    synthesis_failed: None,
+                    pack_dispatch_mode: None,
+                },
+                refs: ExecutionRefs {
+                    execution_id: "exec-1".to_string(),
+                    ..Default::default()
+                },
+            },
+            outcome: ExecutionOutcomeSnapshot {
+                execution_status: "completed".to_string(),
+                task_status: "completed".to_string(),
+                outcome_type: "goal_achieved".to_string(),
+                outcome_summary: outcome_summary.to_string(),
+                iterations_used: Some(1),
+                is_terminal: true,
+                completion_kind: None,
+                open_items: Vec::new(),
+            },
+            execution_output: output("out_exec_exec-1"),
+            task_user_output: Some(output("out_task_user_task-1")),
+        }
+    }
+
+    fn assert_no_operating_policy(text: &str) {
+        for policy in [
+            "Stage code changes as CodeChangeProposal",
+            "VibeDev manual review is enabled",
+            "Execution policy",
+            "Trusted project (git branch mode)",
+        ] {
+            assert!(!text.contains(policy), "{policy:?} recorded: {text}");
+        }
+    }
+
+    /// The live 2026-10-19 shape: the runtime's `Goal achieved: <goal>`
+    /// statement echoed a goal that was the description plus a block the run
+    /// appended. The episode records the intent and the outcome, never that
+    /// run's operating policy — in its outcome, strategy or observations.
+    #[test]
+    fn a_terminal_episode_records_intent_and_outcome_without_operating_policy() {
+        let ctx = context(&format!(
+            "Goal achieved: {DESCRIPTION}\nTrusted project (git branch mode):\n\
+             - There is NO CodeChangeProposal for this project.\n\n\
+             [Execution resumed]. All tracked task-state micro-goals are resolved."
+        ));
+        let record = V3EpisodeRecord::from_terminal_context(&ctx);
+
+        assert_eq!(record.task_intent.as_deref(), Some(INTENT));
+        assert_eq!(record.outcome_summary, format!("Goal achieved: {INTENT}"));
+        assert_eq!(
+            record.strategy_summary.as_deref(),
+            Some(record.outcome_summary.as_str())
+        );
+        assert_eq!(record.outcome_kind, "goal_achieved");
+        for observation in &record.observations {
+            assert_no_operating_policy(observation);
+        }
+        // The description stays on the record as the task's provenance;
+        // recall never shows it.
+        assert_eq!(record.task_description.as_deref(), Some(DESCRIPTION));
+        assert_no_operating_policy(&record.recalled_outcome_text());
+
+        // The run's own final output stands in for the answer the echoed
+        // goal swallowed.
+        let candidates = vec![MemoryCandidate {
+            candidate_type: "final_output_excerpt".to_string(),
+            target_hint: "agent_or_user_memory_candidate_source".to_string(),
+            key: None,
+            value: json!({"content_excerpt": "Appended `concurrency test` to README.md."}),
+            confidence: 0.9,
+            source: "task_user_output".to_string(),
+            evidence: Vec::new(),
+            rationale: String::new(),
+        }];
+        let result = primary_output_excerpt(&candidates);
+        assert_eq!(result, Some("Appended `concurrency test` to README.md."));
+        assert_eq!(
+            terminal_episode_outcome_statement(&ctx, record.task_intent.as_deref(), result),
+            format!("Goal achieved: {INTENT}\nAppended `concurrency test` to README.md.")
+        );
+    }
+
+    /// A summary that does not echo the description — a deliverable answer, an
+    /// error — is recorded as the runtime wrote it.
+    #[test]
+    fn a_summary_that_does_not_echo_the_goal_is_recorded_unchanged() {
+        let record = V3EpisodeRecord::from_terminal_context(&context("Line count: 4."));
+        assert_eq!(record.outcome_summary, "Line count: 4.");
+        assert_eq!(record.task_intent.as_deref(), Some(INTENT));
+    }
+
+    /// A record written before `task_intent` existed is cleaned when it is
+    /// recalled, without rewriting the file.
+    #[test]
+    fn a_legacy_record_recalls_a_bounded_outcome() {
+        let mut record = V3EpisodeRecord::from_terminal_context(&context("ignored"));
+        record.task_intent = None;
+        record.outcome_summary = format!("Goal achieved: {DESCRIPTION}");
+        let recalled = record.recalled_outcome_text();
+        assert_eq!(recalled, format!("Goal achieved: {INTENT}"));
+        assert_no_operating_policy(&recalled);
+    }
+
+    /// A partial-success statement (`Goal partially achieved: <goal>\n\n##
+    /// PARTIAL SUCCESS …`) and an internal continuation handoff are not
+    /// user-facing prose. The writer stores verdict + intent + the run's own
+    /// output, and recall applies the same structural rule to a record stored
+    /// before the writer knew it — even one that already carries `task_intent`.
+    #[test]
+    fn non_prose_outcomes_record_and_recall_intent_and_final_output() {
+        let partial = format!(
+            "Goal partially achieved: {DESCRIPTION}\nTrusted project (git branch mode):\n\
+             - There is NO CodeChangeProposal for this project.\n\n\
+             [Execution resumed at iteration 1/12000].\n\n\
+             ## PARTIAL SUCCESS — completed work and remaining gaps\n\n\
+             Proposal rejected; README.md unchanged."
+        );
+        let handoff = "Delegated children finished. Use this compact continuation handoff \
+            instead of re-running the same stage.\n{\"children\":[{\"context\":\
+            \"[Delegation] Implement ONLY the lane.\"}]}";
+        let output = MemoryCandidate {
+            candidate_type: "final_output_excerpt".to_string(),
+            target_hint: "agent_or_user_memory_candidate_source".to_string(),
+            key: None,
+            value: json!({"content_excerpt": "Proposal rejected; README.md unchanged."}),
+            confidence: 0.9,
+            source: "task_user_output".to_string(),
+            evidence: Vec::new(),
+            rationale: String::new(),
+        };
+        for summary in [partial.as_str(), handoff] {
+            let mut ctx = context(summary);
+            ctx.outcome.outcome_type = "goal_achieved_partial".to_string();
+            let record = V3EpisodeRecord::from_terminal_context(&ctx);
+            let expected = format!("Goal partially achieved: {INTENT}");
+            assert_eq!(record.outcome_kind, "partial_progress");
+            assert_eq!(record.outcome_summary, expected);
+            assert_eq!(record.recalled_outcome_text(), expected, "recall is stable");
+            assert_eq!(record.recalled_strategy_text(), None);
+            let candidates = vec![output.clone()];
+            assert_eq!(
+                terminal_episode_outcome_statement(
+                    &ctx,
+                    record.task_intent.as_deref(),
+                    primary_output_excerpt(&candidates),
+                ),
+                format!("{expected}\nProposal rejected; README.md unchanged.")
+            );
+
+            let mut interim = record.clone();
+            interim.outcome_summary = summary.to_string();
+            interim.strategy_summary = Some(summary.to_string());
+            interim.memory_candidates = candidates;
+            let recalled = interim.recalled_outcome_text();
+            assert_eq!(
+                recalled,
+                format!("{expected}\nProposal rejected; README.md unchanged.")
+            );
+            assert_eq!(interim.recalled_strategy_text(), None);
+            assert_no_operating_policy(&recalled);
+            assert!(!recalled.contains("children"), "{recalled}");
+        }
     }
 }

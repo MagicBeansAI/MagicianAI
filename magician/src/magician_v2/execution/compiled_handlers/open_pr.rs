@@ -69,7 +69,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // Fallbacks
     let mut resolved_dest = destination_repo.clone();
     if resolved_dest.is_none() || resolved_dest.as_ref().unwrap().trim().is_empty() {
-        if let Ok(output) = Command::new("git")
+        if let Ok(output) = Command::new(runtime_core::process::git_program())
             .arg("-C")
             .arg(real_repo)
             .args(&["remote", "get-url", "origin"])
@@ -85,7 +85,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
 
     let mut resolved_base = base_branch.clone();
     if resolved_base.is_none() || resolved_base.as_ref().unwrap().trim().is_empty() {
-        if let Ok(output) = Command::new("git")
+        if let Ok(output) = Command::new(runtime_core::process::git_program())
             .arg("-C")
             .arg(real_repo)
             .args(&["remote", "show", "origin"])
@@ -125,9 +125,11 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
 
     // Actual execution
     let github_token = resolve_github_token(&resources, &principal, &workspace)?;
+    let git = runtime_core::process::git_program();
     macro_rules! run_cmd {
         ($program:expr, $args:expr, $cwd:expr, $stdin_val:expr) => {{
             use tokio::io::AsyncWriteExt;
+            let program_label = std::path::Path::new($program).display().to_string();
             let mut cmd = Command::new($program);
             cmd.args($args).current_dir($cwd);
 
@@ -141,7 +143,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 cmd.stderr(Stdio::piped());
                 let mut child = match cmd.spawn() {
                     Ok(c) => c,
-                    Err(e) => return Ok(json!({ "status": "error", "reason": format!("failed to spawn {}: {}", $program, e) })),
+                    Err(e) => return Ok(json!({ "status": "error", "reason": format!("failed to spawn {}: {}", program_label, e) })),
                 };
                 if let Some(mut stdin) = child.stdin.take() {
                     let val_bytes = val.as_bytes().to_vec();
@@ -149,32 +151,32 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                         let _ = child.kill();
                         return Ok(json!({
                             "status": "error",
-                            "reason": format!("failed to feed stdin for {}: {}", $program, error)
+                            "reason": format!("failed to feed stdin for {}: {}", program_label, error)
                         }));
                     }
                     let _ = stdin.shutdown().await;
                 }
                 match child.wait_with_output().await {
                     Ok(out) => out,
-                    Err(e) => return Ok(json!({ "status": "error", "reason": format!("failed to wait on {}: {}", $program, e) })),
+                    Err(e) => return Ok(json!({ "status": "error", "reason": format!("failed to wait on {}: {}", program_label, e) })),
                 }
             } else {
                 match cmd.output().await {
                     Ok(out) => out,
-                    Err(e) => return Ok(json!({ "status": "error", "reason": format!("failed to spawn {}: {}", $program, e) })),
+                    Err(e) => return Ok(json!({ "status": "error", "reason": format!("failed to spawn {}: {}", program_label, e) })),
                 }
             }
         }}
     }
 
-    let checkout = run_cmd!("git", &["checkout", "-b", &branch], real_repo, None::<&str>);
+    let checkout = run_cmd!(&git, &["checkout", "-b", &branch], real_repo, None::<&str>);
     if !checkout.status.success() {
         return Ok(
             json!({ "status": "error", "reason": format!("git checkout failed: {}", String::from_utf8_lossy(&checkout.stderr)) }),
         );
     }
 
-    let add = run_cmd!("git", &["add", "-A"], real_repo, None::<&str>);
+    let add = run_cmd!(&git, &["add", "-A"], real_repo, None::<&str>);
     if !add.status.success() {
         return Ok(
             json!({ "status": "error", "reason": format!("git add failed: {}", String::from_utf8_lossy(&add.stderr)) }),
@@ -182,14 +184,14 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     }
 
     // G19 Secret Scan on staged changes
-    let diff = run_cmd!("git", &["diff", "--cached"], real_repo, None::<&str>);
+    let diff = run_cmd!(&git, &["diff", "--cached"], real_repo, None::<&str>);
     if diff.status.success() {
         let diff_text = String::from_utf8_lossy(&diff.stdout);
         if let Some(_) =
             crate::magician_v2::agents::memory_consolidator::redact_obvious_secrets(&diff_text)
         {
             // Restore index to avoid leaving secrets staged if we abort
-            let _ = run_cmd!("git", &["reset"], real_repo, None::<&str>);
+            let _ = run_cmd!(&git, &["reset"], real_repo, None::<&str>);
             return Ok(json!({
                 "status": "error",
                 "reason": "G19 Secret Scan failed: High-confidence secrets were detected in the staged changes. Remove the secrets from the codebase before opening a PR."
@@ -197,7 +199,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         }
     }
 
-    let commit = run_cmd!("git", &["commit", "-m", &title], real_repo, None::<&str>);
+    let commit = run_cmd!(&git, &["commit", "-m", &title], real_repo, None::<&str>);
     if !commit.status.success() {
         let stderr = String::from_utf8_lossy(&commit.stderr);
         let stdout = String::from_utf8_lossy(&commit.stdout);
@@ -215,7 +217,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     }
 
     let push = run_cmd!(
-        "git",
+        &git,
         &["push", "-u", &resolved_dest, &branch],
         real_repo,
         None::<&str>

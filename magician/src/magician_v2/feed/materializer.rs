@@ -32,7 +32,7 @@ use crate::magician_v2::{
 pub struct FeedMaterializer {
     feed_store: FeedStore,
     v3_service: Arc<ArtifactV2Service>,
-    _chat_store: Arc<dyn ChatStore>,
+    chat_store: Arc<dyn ChatStore>,
     progress_rx: broadcast::Receiver<ProgressMessage>,
     event_rx: broadcast::Receiver<RuntimeTransportEvent>,
     event_broadcaster: Arc<RuntimeTransportBroadcaster>,
@@ -61,7 +61,7 @@ impl FeedMaterializer {
         Self {
             feed_store,
             v3_service,
-            _chat_store: chat_store,
+            chat_store,
             progress_rx,
             event_rx,
             event_broadcaster,
@@ -205,29 +205,24 @@ impl FeedMaterializer {
                 // writes them.
                 let (stalled_items, request_items): (Vec<_>, Vec<_>) =
                     task_items.into_iter().partition(feed_item_is_stalled_wait);
-                for (lane, source, group_items) in [
-                    (
-                        FeedAttentionLane::Requests,
-                        "v3_task_attention",
-                        request_items,
-                    ),
-                    (
-                        FeedAttentionLane::Escalations,
-                        STALLED_WAIT_PROJECTION_SOURCE,
-                        stalled_items,
-                    ),
+                // Each row takes its lane by the same rule a live publish uses.
+                for (source, group_items) in [
+                    ("v3_task_attention", request_items),
+                    (STALLED_WAIT_PROJECTION_SOURCE, stalled_items),
                 ] {
                     if let Err(error) = self
                         .feed_store
-                        .reconcile_attention_projection(
+                        .reconcile_attention_projection_routed(
                             &principal,
                             &workspace,
-                            lane,
                             source,
                             task_id,
                             generation,
                             Some(recovery_started_at),
-                            group_items,
+                            group_items
+                                .into_iter()
+                                .map(|item| (super::attention_lane_for_ask(&item), item))
+                                .collect(),
                         )
                         .await
                     {
@@ -335,6 +330,52 @@ impl FeedMaterializer {
         Ok(())
     }
 
+    /// A taskless ask raised by a chat turn names its chat only by session id
+    /// (`input_schema.context.chat_session_id`). The row takes that chat's
+    /// thread, here and in its `hitl_request` scope, so the composer dock in
+    /// the asking chat lists it on every client; without one it showed in
+    /// Attention and in no dock. A session of another scope is ignored.
+    async fn stamp_asking_chat_thread(
+        &self,
+        item: &mut FeedItem,
+        principal: &str,
+        workspace: &str,
+    ) {
+        if item.ui_thread_id.is_some() {
+            return;
+        }
+        let Some(session_id) = item
+            .metadata
+            .pointer("/input_schema/context/chat_session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let session = match self.chat_store.get_session(&session_id).await {
+            Ok(Some(session)) => session,
+            Ok(None) => return,
+            Err(error) => {
+                debug!(%session_id, %error, "asking chat lookup failed; ask keeps no thread");
+                return;
+            },
+        };
+        if session.principal != principal || session.workspace != workspace {
+            return;
+        }
+        let Some(thread_id) = user_visible_feed_thread_id(Some(session.ui_thread_id)) else {
+            return;
+        };
+        if let Some(scope) = item
+            .metadata
+            .pointer_mut("/hitl_request/scope")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            scope.insert("thread_id".to_string(), json!(thread_id));
+        }
+        item.ui_thread_id = Some(thread_id);
+    }
+
     async fn apply_realtime_event(&self, event: &RuntimeTransportEvent) -> anyhow::Result<()> {
         match event {
             RuntimeTransportEvent::ChatMessageReceived { .. } => {
@@ -357,14 +398,12 @@ impl FeedMaterializer {
             },
             RuntimeTransportEvent::HitlRequested { .. } => {
                 // C4: taskless asks have no V3 task projection to carry them.
-                if let Some((principal, workspace, correlation_id, generation, item)) =
+                if let Some((principal, workspace, correlation_id, generation, mut item)) =
                     taskless_hitl_attention_row(event)
                 {
-                    let lane = if item.item_type == FeedItemType::Approval {
-                        FeedAttentionLane::Approvals
-                    } else {
-                        FeedAttentionLane::Requests
-                    };
+                    self.stamp_asking_chat_thread(&mut item, &principal, &workspace)
+                        .await;
+                    let lane = super::attention_lane_for_ask(&item);
                     self.feed_store
                         .reconcile_attention_projection(
                             &principal,
@@ -1004,14 +1043,10 @@ fn taskless_hitl_source_is_projected(source: &str) -> bool {
     )
 }
 
-/// The Attention lane a taskless ask is listed in: an approval in the
-/// approvals lane, everything else in the requests lane.
+/// The Attention lane a taskless ask is listed in, by its source (a service
+/// outage under Failed, an approval under Approvals, an answer under Requests).
 fn taskless_hitl_lane(source: &str) -> FeedAttentionLane {
-    if source == "approval" {
-        FeedAttentionLane::Approvals
-    } else {
-        FeedAttentionLane::Requests
-    }
+    super::attention_lane_for_hitl_source(source)
 }
 
 /// Whether a recovered attention row is a C3 stalled-wait escalation.
@@ -1031,7 +1066,7 @@ fn feed_item_is_stalled_wait(item: &FeedItem) -> bool {
 /// enters an event payload — so the client answers
 /// `{ "type": "external_action_completed" }` and the host reopens sign-in in
 /// its own browser, or answers the `dismiss` choice.
-fn taskless_hitl_attention_row(
+pub(crate) fn taskless_hitl_attention_row(
     event: &RuntimeTransportEvent,
 ) -> Option<(String, String, String, i64, FeedItem)> {
     let RuntimeTransportEvent::HitlRequested {
@@ -1774,6 +1809,84 @@ mod tests {
         );
     }
 
+    /// A chat turn's ask names its chat only by session id; its Attention row
+    /// takes that chat's thread so the asking chat's composer dock lists it.
+    #[tokio::test]
+    async fn a_chat_turn_ask_takes_its_chats_thread() {
+        let tmp = TempDir::new().unwrap();
+        let v3_service = make_v3_service(&tmp).await;
+        let chat_store = make_chat_store(&tmp).await;
+        let session = chat_store
+            .get_or_create_active_session("alpha", "prod", "travel", &ChatChannel::web(), "atlas")
+            .await
+            .unwrap();
+        let feed_store = FeedStore::open(tmp.path()).unwrap();
+        let broadcaster = Arc::new(RuntimeTransportBroadcaster::new(16));
+        let (_progress_tx, progress_rx) = broadcast::channel(16);
+        let materializer = FeedMaterializer::new(
+            feed_store.clone(),
+            v3_service,
+            chat_store,
+            progress_rx,
+            broadcaster.subscribe(),
+            broadcaster.clone(),
+        );
+        let ask = |correlation_id: &str, session_id: &str| RuntimeTransportEvent::HitlRequested {
+            correlation_id: correlation_id.to_string(),
+            source: "user_request".to_string(),
+            input_type: "text".to_string(),
+            prompt: "What time zone should I use?".to_string(),
+            hint: None,
+            input_schema: Some(json!({
+                "request_type": "need_user_input",
+                "context": {"chat_session_id": session_id},
+            })),
+            task_id: None,
+            execution_id: Some(session_id.to_string()),
+            agent_id: None,
+            principal: Some("alpha".to_string()),
+            workspace: Some("prod".to_string()),
+            timestamp: 1_700_000_000_000,
+        };
+        materializer
+            .apply_realtime_event(&ask("ur-chat", &session.id))
+            .await
+            .unwrap();
+        materializer
+            .apply_realtime_event(&ask("ur-unknown", "no-such-session"))
+            .await
+            .unwrap();
+
+        let rows = feed_store
+            .list_attention_lane_page(crate::magician_v2::feed::FeedAttentionPageQuery {
+                principal: "alpha".to_string(),
+                workspace: "prod".to_string(),
+                lane: FeedAttentionLane::Requests,
+                ui_thread_id: None,
+                cursor: None,
+                offset: 0,
+                limit: 20,
+                exclude_task_ids: Vec::new(),
+            })
+            .await
+            .unwrap()
+            .items;
+        let chat = rows
+            .iter()
+            .find(|row| row.id == "runtime:hitl:ur-chat")
+            .unwrap();
+        assert_eq!(chat.ui_thread_id.as_deref(), Some("travel"));
+        assert_eq!(
+            chat.metadata["hitl_request"]["scope"]["thread_id"],
+            "travel"
+        );
+        let unknown = rows
+            .iter()
+            .find(|row| row.id == "runtime:hitl:ur-unknown")
+            .unwrap();
+        assert_eq!(unknown.ui_thread_id, None);
+    }
+
     #[tokio::test]
     async fn assistant_chat_message_does_not_materialize_activity_feed_card() {
         let tmp = TempDir::new().unwrap();
@@ -2170,10 +2283,13 @@ mod tests {
             ids,
             vec![
                 "runtime:hitl:bot_auth:alpha:prod:gmail".to_string(),
-                "runtime:hitl:service_health:abc".to_string(),
                 "runtime:hitl:ur-need-input".to_string(),
             ]
         );
+        // A service outage is listed under Failed, not as a request.
+        let failed = page(feed_store.clone(), FeedAttentionLane::Failed).await;
+        assert_eq!(failed.items.len(), 1);
+        assert_eq!(failed.items[0].id, "runtime:hitl:service_health:abc");
         let approvals = page(feed_store.clone(), FeedAttentionLane::Approvals).await;
         assert_eq!(approvals.items.len(), 1);
         assert_eq!(approvals.items[0].id, "runtime:hitl:approval-1");
@@ -2192,7 +2308,7 @@ mod tests {
                 .await
                 .items
                 .len(),
-            2
+            1
         );
         assert!(page(feed_store.clone(), FeedAttentionLane::Approvals)
             .await

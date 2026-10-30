@@ -500,6 +500,12 @@ describe('toExecutionPanelModel', () => {
 		expect(toExecutionPanelModel(state(), null).run?.timeline).toEqual([]);
 	});
 
+	it('uses the source report while retaining the summary for verification', () => {
+		const model = toExecutionPanelModel(state({ output: { result: { summary:'Short summary', report:'<h1>Full report</h1><table><tr><td>Result</td></tr></table>', artifact_names:[] } } }), []);
+		expect(model.output?.summary).toContain('<h1>Full report</h1>');
+		expect(model.output?.verificationSummary).toBe('Short summary');
+	});
+
 	it('reports the run error from the payload, not from the run summary', () => {
 		const model = toExecutionPanelModel(
 			state({

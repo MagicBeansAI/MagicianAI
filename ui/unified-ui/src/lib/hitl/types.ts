@@ -97,6 +97,69 @@ export interface HitlDiffApprovalFile {
 	unified_diff: string;
 }
 
+/** One line of an approval preview diff. `text` is the line without its ending. */
+export interface HitlApprovalPreviewLine {
+	kind: 'context' | 'add' | 'remove';
+	text: string;
+}
+
+export interface HitlApprovalPreviewHunk {
+	old_start: number;
+	old_lines: number;
+	new_start: number;
+	new_lines: number;
+	lines: HitlApprovalPreviewLine[];
+}
+
+/** A capped line diff of the text an approval would change. */
+export interface HitlApprovalPreviewDiff {
+	path: string;
+	/** Totals for the whole change, not only the shown hunks. */
+	added: number;
+	removed: number;
+	hunks: HitlApprovalPreviewHunk[];
+	truncated: boolean;
+	/** Changed lines past the cap ("… N more changed lines"). */
+	omitted_changed_lines: number;
+	/** The shown hunks as a unified diff, for `DiffStrip`. */
+	unified_diff: string;
+}
+
+/**
+ * A confirmation's structured approval card — mirrors Rust
+ * `execution::approval_preview::ApprovalPreview`. Built deterministically by
+ * the gated tool's preview builder when the pause is created; published as
+ * `input_schema.approval_preview`. `why` and `evidence` are the agent's own
+ * words: plain text, never markup. `raw` is the original call (the schema's
+ * `action_summary` + `reason`), kept for the collapsed audit view.
+ */
+export interface HitlApprovalPreview {
+	title: string;
+	why_label?: string;
+	why?: string;
+	diff?: HitlApprovalPreviewDiff;
+	evidence: string[];
+	warnings: Array<{ code: string; message: string }>;
+	notes: string[];
+	raw?: string;
+}
+
+/**
+ * A captured outward send waiting for the owner (`input_schema.outward_review`,
+ * beside `escalation_trigger: "outward_review"`). The send is paused rather
+ * than captured; the card answers Send, Discard or Always allow. Recipients
+ * are what the agent addressed, verbatim. `deadline_at_ms` is 0 when the
+ * review does not expire; past it the backend settles the send as not sent.
+ */
+export interface HitlOutwardReview {
+	capability: string;
+	action: string;
+	class: string;
+	recipients: string[];
+	agent_id: string;
+	deadline_at_ms: number;
+}
+
 /**
  * Per-input-type schema details. Optional fields populate from
  * `input_schema` metadata; absent fields fall back to defaults at render
@@ -113,7 +176,8 @@ export interface HitlInputSchema {
 	sensitive?: HitlSensitiveSpec;
 	/**
 	 * What raised a confirmation, when it was not an ordinary approval:
-	 * `preference_alignment` for a hold against the owner's preferences.
+	 * `preference_alignment` for a hold against the owner's preferences,
+	 * `outward_review` for a captured send waiting for the owner.
 	 */
 	escalation_trigger?: string;
 	/**
@@ -122,6 +186,12 @@ export interface HitlInputSchema {
 	 * surfaces read it separately (`alignmentAsk.ts`).
 	 */
 	alignment?: AlignmentProjection;
+	/**
+	 * A captured outward send held for review (`escalation_trigger:
+	 * "outward_review"`). Its answer is one of `options` (`send`, `discard`,
+	 * `always_allow_recipient`) posted as a choice.
+	 */
+	outward_review?: HitlOutwardReview;
 	/** `text`/`guidance` — free-form input */
 	multiline?: boolean;
 	placeholder?: string;
@@ -140,6 +210,13 @@ export interface HitlInputSchema {
 	instructions?: string;
 	/** `external_action` — label for the acknowledgement control (Rust `done_label`). */
 	done_label?: string;
+	/**
+	 * `external_action` — label for the cancel control (Rust `dismiss_label`).
+	 * Present when the ask can be declined; an MCP sign-in offers "Not now".
+	 */
+	dismiss_label?: string;
+	/** `external_action` — the service being connected ("Swiggy (food)"), for an MCP sign-in. */
+	service_label?: string;
 	/**
 	 * `external_action` — where the reader goes to do the thing (an `mcp_oauth`
 	 * authorize page, for one). Only `http(s)` URLs are kept by the adapter; the
@@ -167,11 +244,28 @@ export interface HitlInputSchema {
 	confirm_label?: string;
 	deny_label?: string;
 	/**
+	 * `confirmation` — the gated tool's structured approval card, when it
+	 * registered a preview builder. Absent for every other ask; surfaces then
+	 * show the prompt (the raw call) as before.
+	 */
+	approval_preview?: HitlApprovalPreview;
+	/**
 	 * `confirmation` — the backend's own `destructive` flag. Read by the prompt
 	 * surface to band the decision, never to change what is posted: a confirmed
 	 * destructive action and a confirmed benign one are the same response value.
 	 */
 	destructive?: boolean;
+	/**
+	 * `confirmation` — the tool action an agentic action confirmation asks
+	 * about (`emit_hitl_requested_for_agentic_confirmation`). Its presence
+	 * means "approve this action", which one-click surfaces never answer.
+	 */
+	action_type?: string;
+	/**
+	 * A protected app's ask: the question's details are withheld from generic
+	 * surfaces. One-click and typed shortcuts never answer it.
+	 */
+	protected?: boolean;
 
 	/**
 	 * `tool_authorization` — what the agent wants to call, and with what.
@@ -198,7 +292,7 @@ export interface HitlInputSchema {
 	allowed_roots?: string[];
 
 	/** Hint text shown alongside the prompt */
-	context?: string;
+	context?: string | Record<string, unknown>;
 	suggestions?: string[];
 
 	/** `form` — several questions in one pause. */
@@ -270,6 +364,33 @@ export interface HitlIdentifiers {
 }
 
 /**
+ * How to answer one ask, decided by the server (Rust
+ * `magician_core::hitl::HitlRespondHandle`). Rides as `respond` on Attention
+ * rows (`metadata.respond`, `metadata.hitl_request.respond`), `HitlRequested`
+ * frames (`data.respond`), open targets and VibeDev live-run notices.
+ *
+ * When present, `resolveHitlCall` posts exactly this — `url`, and a body of
+ * `{source, input_type, value, channel, execution_id?, task_id?,
+ * selected_paths?}` — instead of deriving the call from `source`. The
+ * per-source derivation remains only for servers that predate the handle.
+ */
+export interface HitlRespondHandle {
+	/** `/api/magician/v2/hitl/{correlation_id}/respond`, id percent-encoded. */
+	url: string;
+	method: 'POST';
+	/** The id in the URL, unencoded. */
+	correlation_id: string;
+	source: HitlSource;
+	input_type: HitlInputType;
+	execution_id?: string;
+	/** Planning responder (`clarification` / `plan_approval` only). */
+	task_id?: string;
+	options?: HitlChoiceOption[];
+	/** Statuses meaning "already answered or gone" (soft success). */
+	soft_success_statuses: number[];
+}
+
+/**
  * Self-contained payload for opening a HITL prompt from any projection.
  * Unlike a feed-row id, this contract carries everything needed to render and
  * resolve the prompt without hydrating the paginated Attention store.
@@ -286,6 +407,8 @@ export interface HitlOpenTarget {
 	at?: number;
 	/** See `HitlRequest.delegated_agent_id`. Client-side annotation, not on the Rust struct. */
 	delegated_agent_id?: string;
+	/** The server's respond handle (`HitlOpenTarget.respond`), when it sent one. */
+	respond?: HitlRespondHandle;
 }
 
 /**
@@ -319,6 +442,12 @@ export interface HitlRequest {
 	 * the one the response is posted against.
 	 */
 	delegated_agent_id?: string;
+	/**
+	 * The server's canonical respond call for this ask. When present it is the
+	 * whole answer route; `resolveHitlCall` derives one per source only when a
+	 * server predating the handle sent none.
+	 */
+	respond?: HitlRespondHandle;
 	/** Free-form metadata pass-through for adapters that need to round-trip
 	 *  fields the canonical shape doesn't model (e.g., legacy
 	 *  `attention_kind`). The component should not read these directly;
@@ -334,7 +463,7 @@ export interface HitlRequest {
 export type HitlResponseValue =
 	| { type: 'text'; value: string }
 	| { type: 'password'; value: string }
-	| { type: 'choice'; selected_id: string; other_value?: string }
+	| { type: 'choice'; selected_id: string; other_value?: string | null }
 	| { type: 'multi_choice'; selected_ids: string[] }
 	| { type: 'confirmation'; confirmed: boolean }
 	| { type: 'external_action_completed'; guidance?: string }

@@ -98,8 +98,11 @@ fn research_goes_through_the_tight_seat_only() {
     );
 }
 
+/// The owner chose to let the maker use their signed-in Chrome when a deck
+/// workflow needs an existing account (2026-10-23). Fresh contexts stay
+/// available for QA, and research still goes through the tight seat only.
 #[test]
-fn the_maker_never_reaches_the_owner_chrome() {
+fn the_maker_may_use_the_owner_chrome_and_keeps_fresh_contexts() {
     let def = load(SEED);
     let transports = def.browser_transports.clone();
     assert!(
@@ -107,8 +110,8 @@ fn the_maker_never_reaches_the_owner_chrome() {
         "fresh contexts must be allowed for QA"
     );
     assert!(
-        !transports.iter().any(|t| t == "cdp"),
-        "cdp attaches to the owner's signed-in Chrome; the ceiling must omit it"
+        transports.iter().any(|t| t == "cdp"),
+        "the owner granted the maker their signed-in Chrome for account workflows"
     );
 }
 

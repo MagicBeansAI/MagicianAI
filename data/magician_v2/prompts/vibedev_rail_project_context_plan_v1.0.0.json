@@ -1,0 +1,24 @@
+{
+  "name": "vibedev_rail_project_context_plan",
+  "version": "1.0.0",
+  "content": [
+    "- Discuss runs call run_coding_task once with plan_only: true before any other inspection; the coding engine only reads the project and writes the plan.",
+    "- Success = run_coding_task returned a plan. A Discuss run stages no proposal and changes no file."
+  ],
+  "variables": [],
+  "metadata": {
+    "category": "AgenticExecution",
+    "description": "Discuss-only half of the `@vibedev` chat rail's project-context guidance, rendered above the mode-neutral vibedev_rail_project_context prose for a `#discuss` (plan) run and never for a build run. Its build counterpart is vibedev_rail_project_context_build; the plan run's full directive follows in vibedev_rail_plan_directive.",
+    "author": "magician",
+    "created_at": "2026-10-19T00:00:00Z",
+    "changelog": "v1.0.0: Replaces the Rust-side text swap that rewrote the build-only line for Discuss runs after render.",
+    "tags": [
+      "vibedev",
+      "coding",
+      "vibedev-rail",
+      "project-context",
+      "plan"
+    ],
+    "estimated_tokens": 60
+  }
+}

@@ -12,14 +12,16 @@ struct VibeDevStateDot: View {
     /// What VoiceOver says for the dot.
     let label: String
 
-    init(run state: VibeDevRunState, size: CGFloat = 9) {
+    /// `partlyDone`: a done run that completed with open requirements reads
+    /// "Partly done" in the partial (warning) tone, not done green.
+    init(run state: VibeDevRunState, partlyDone: Bool = false, size: CGFloat = 9) {
         self.size = size
-        label = state.label
+        label = state == .done && partlyDone ? TaskCompletion.partlyDoneLabel : state.label
         switch state {
         case .working: tone = .running
         case .needsYou: tone = .waiting
         case .paused: tone = .partial
-        case .done: tone = .done
+        case .done: tone = partlyDone ? .partial : .done
         case .failed: tone = .failed
         case .stopped: tone = .cancelled
         }
@@ -96,6 +98,20 @@ struct VibeDevCard: ViewModifier {
 
 extension View {
     func vibeDevCard(highlight: Color? = nil) -> some View { modifier(VibeDevCard(highlight: highlight)) }
+
+    /// Also boxes controls whose shared implementation supplies a plain label.
+    func vibeDevControlOutline() -> some View { modifier(VibeDevControlOutline()) }
+}
+
+private struct VibeDevControlOutline: ViewModifier {
+    @ObservedObject private var theme = ThemeManager.shared
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8)
+            .background(theme.controlColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(theme.controlBorderColor, lineWidth: 1))
+    }
 }
 
 /// "NEEDS YOU ··· 2"
@@ -118,7 +134,7 @@ struct VibeDevSectionLabel: View {
     }
 }
 
-/// Pill buttons: primary is the accent fill, danger an outline in danger.
+/// Rounded-square actions: primary is the accent fill, danger an outline in danger.
 struct VibeDevButtonStyle: ButtonStyle {
     var style: VibeDevOptionStyle = .plain
     var expand = false
@@ -147,24 +163,37 @@ struct VibeDevButtonStyle: ButtonStyle {
             .minimumScaleFactor(0.85)
             .foregroundStyle(foreground)
             .padding(.horizontal, 13)
-            .padding(.vertical, large ? 12 : 8)
-            .frame(maxWidth: expand ? .infinity : nil, minHeight: large ? 44 : 34)
+            .padding(.vertical, 8)
+            .frame(maxWidth: expand ? .infinity : nil, minHeight: large ? 38 : 34)
             .background(
-                Capsule().fill(style == .primary
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(style == .primary
                                ? (configuration.isPressed ? theme.accentFillPressedColor : theme.accentFillColor)
-                               : theme.cardColor.opacity(configuration.isPressed ? 0.6 : 0))
+                               : (configuration.isPressed ? theme.surfaceColor : theme.controlColor))
             )
-            .overlay(Capsule().strokeBorder(border, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(border, lineWidth: 1))
             .opacity(isEnabled ? 1 : 0.5)
             .frame(minHeight: Lively.tapMin)
             .contentShape(Rectangle())
     }
 }
 
-/// A row of selectable pills (`aria-pressed` in the mock).
+/// Match toolbar navigation to the same outline as VibeDev's other actions.
+struct VibeDevBackButton: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Button { dismiss() } label: { Image(systemName: "chevron.left") }
+            .buttonStyle(VibeDevButtonStyle())
+            .accessibilityLabel("Back")
+    }
+}
+
+/// A row of compact rounded-square choices.
 struct VibeDevPillOption<Value: Hashable>: Identifiable {
     let value: Value
     let label: String
+    /// A project pill marks a project that needs attention.
+    var health: VibeDevProjectHealth = .ok
     var id: Value { value }
 }
 
@@ -178,14 +207,17 @@ struct VibeDevPills<Value: Hashable>: View {
             ForEach(options) { option in
                 let selected = option.value == selection
                 Button { selection = option.value } label: {
-                    Text(option.label)
+                    HStack(spacing: 4) {
+                        Text(option.label)
+                        VibeDevProjectHealthGlyph(health: option.health, size: 10)
+                    }
                         .font(.themed(12.5, weight: .semibold))
                         .foregroundStyle(selected ? theme.accentColor : theme.secondaryTextColor)
                         .padding(.horizontal, 11)
                         .padding(.vertical, 6)
-                        .background(Capsule().fill(selected ? theme.accentColor.opacity(0.1) : theme.cardColor.opacity(0)))
-                        .overlay(Capsule().strokeBorder(selected ? theme.accentColor : theme.controlBorderColor, lineWidth: 1))
-                        .contentShape(Capsule())
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(selected ? theme.accentColor.opacity(0.1) : theme.cardColor.opacity(0)))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(selected ? theme.accentColor : theme.controlBorderColor, lineWidth: 1))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .vibeDevHitTarget()
@@ -226,11 +258,12 @@ struct VibeDevFlow: Layout {
 
 /// SANDBOXED / TRUSTED
 struct VibeDevTrustBadge: View {
-    let trusted: Bool
+    let location: VibeDevTrust
+    private var trusted: Bool { location == .trusted }
     @ObservedObject private var theme = ThemeManager.shared
 
     var body: some View {
-        Text(trusted ? "TRUSTED" : "SANDBOXED")
+        Text(location == .original ? "ORIGINAL FOLDER" : trusted ? "ISOLATED BRANCH" : "ISOLATED WORKSPACE")
             .font(.themed(10, weight: .bold))
             .tracking(0.4)
             .foregroundStyle(trusted ? theme.successColor : theme.secondaryTextColor)
@@ -240,6 +273,137 @@ struct VibeDevTrustBadge: View {
                 RoundedRectangle(cornerRadius: Lively.chipRadius)
                     .strokeBorder(trusted ? theme.successColor.opacity(0.5) : theme.cardBorderColor, lineWidth: 1)
             )
+    }
+}
+
+/// Project health tones: error is danger, warning is warning.
+enum VibeDevHealthTone {
+    static func color(for level: VibeDevProjectHealth.Level, in theme: ThemeManager) -> Color {
+        switch level {
+        case .ok: return theme.secondaryTextColor
+        case .warning: return theme.warningColor
+        case .error: return theme.dangerColor
+        }
+    }
+
+    static let accessibilityLabel = "Project needs attention"
+}
+
+/// "Project needs attention…" then each issue (bold title, message), for
+/// the active project. An issue offering `git_init` gets its button, which
+/// confirms, runs it, and re-reads the projects (`onChanged` lets the owning
+/// screen re-read too). Renders nothing when the project is fine.
+struct VibeDevProjectHealthBanner: View {
+    let health: VibeDevProjectHealth
+    var projectID: String? = nil
+    var context: VibeDevContext? = nil
+    var onChanged: (() -> Void)? = nil
+    @ObservedObject private var theme = ThemeManager.shared
+    @State private var confirming = false
+    @State private var busy = false
+    @State private var failure: String?
+
+    var body: some View {
+        if let title = health.title {
+            let tint = VibeDevHealthTone.color(for: health.level, in: theme)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(title)
+                        .font(.themed(13, weight: .semibold))
+                        .foregroundStyle(tint)
+                    ForEach(Array(health.issues.enumerated()), id: \.offset) { _, issue in
+                        issueView(issue)
+                    }
+                    if let failure {
+                        Text(failure)
+                            .font(.themed(12.5))
+                            .foregroundStyle(theme.dangerColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.1)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.4), lineWidth: 1))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("vibedev-project-health")
+            .alert(VibeDevGitInitCopy.title, isPresented: $confirming) {
+                Button(VibeDevGitInitCopy.confirm) { runGitInit() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(VibeDevGitInitCopy.message)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func issueView(_ issue: VibeDevProjectHealthIssue) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let title = issue.title {
+                Text(title)
+                    .font(.themed(12.5, weight: .bold))
+                    .foregroundStyle(theme.textColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if issue.message != issue.title {
+                Text(issue.message)
+                    .font(.themed(12.5))
+                    .foregroundStyle(theme.textColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let action = issue.gitInitAction, context != nil, projectID != nil {
+                Button {
+                    failure = nil
+                    confirming = true
+                } label: {
+                    if busy {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small).tint(theme.accentColor)
+                            Text("Working…")
+                        }
+                    } else {
+                        Text(action.label)
+                    }
+                }
+                .buttonStyle(VibeDevButtonStyle(style: .plain))
+                .disabled(busy)
+                .padding(.top, 4)
+                .accessibilityIdentifier("vibedev-project-health-git-init")
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func runGitInit() {
+        guard let context, let projectID, !busy else { return }
+        busy = true
+        Task { @MainActor in
+            let message = await context.gitInit(projectID: projectID)
+            busy = false
+            failure = message
+            if message == nil { onChanged?() }
+        }
+    }
+}
+
+/// The ⚠ beside a project name in lists and pickers.
+struct VibeDevProjectHealthGlyph: View {
+    let health: VibeDevProjectHealth
+    var size: CGFloat = 12
+    @ObservedObject private var theme = ThemeManager.shared
+
+    var body: some View {
+        if health.needsAttention {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(VibeDevHealthTone.color(for: health.level, in: theme))
+                .accessibilityLabel(VibeDevHealthTone.accessibilityLabel)
+        }
     }
 }
 
@@ -344,6 +508,7 @@ struct VibeDevBottomBar<Content: View>: View {
 struct VibeDevMicButton: View {
     @ObservedObject var dictation: DictationController
     @Binding var text: String
+    var compact = false
     @ObservedObject private var theme = ThemeManager.shared
 
     var body: some View {
@@ -351,13 +516,14 @@ struct VibeDevMicButton: View {
             Image(systemName: dictation.isRecording ? "stop.fill" : (dictation.isTranscribing ? "ellipsis" : "mic.fill"))
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(theme.onAccentColor)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(dictation.isRecording ? theme.dangerColor : theme.accentFillColor))
+                .frame(width: compact ? 36 : 34, height: compact ? 36 : 34)
+                .background(RoundedRectangle(cornerRadius: compact ? Lively.chipRadius : 8, style: .continuous).fill(dictation.isRecording ? theme.dangerColor : theme.accentFillColor))
         }
         .buttonStyle(.plain)
-        .frame(width: Lively.tapMin, height: Lively.tapMin)
+        .frame(width: compact ? 36 : Lively.tapMin, height: compact ? 36 : Lively.tapMin)
         .contentShape(Rectangle())
         .accessibilityLabel(dictation.isRecording ? "Stop dictation" : "Dictate")
+        .disabled(dictation.isTranscribing)
     }
 
     private func toggle() {
@@ -410,15 +576,14 @@ struct VibeDevPromptField: View {
         }
         .overlay(alignment: .bottomLeading) {
             if dictation.isRecording {
-                Text(dictation.partialTranscript.isEmpty ? "Listening…" : dictation.partialTranscript)
-                    .font(.themed(12))
-                    .foregroundStyle(theme.secondaryTextColor)
-                    .vibeDevLineLimit(2)
-                    .padding(.horizontal, 12)
-                    .offset(y: 22)
+                HStack(spacing: 8) {
+                    Text(dictation.partialTranscript.isEmpty ? "Listening…" : dictation.partialTranscript)
+                        .font(.themed(12)).foregroundStyle(theme.secondaryTextColor).vibeDevLineLimit(2)
+                    VoiceActivityWaveform { dictation.level }
+                }.padding(.horizontal, 12).offset(y: 28)
             }
         }
-        .padding(.bottom, dictation.isRecording ? 22 : 0)
+        .padding(.bottom, dictation.isRecording ? 28 : 0)
         .onAppear { focused = true }
         .alert(item: $dictation.permissionAlert) { alert in
             Alert(title: Text(alert.title), message: Text(alert.message),

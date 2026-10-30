@@ -70,7 +70,8 @@ cursor.
 **Side effects** (Task, Apple Reminder, Share, Memory dialogs) never remove a
 row while in flight. Failures keep row and dialog and reuse the idempotency
 key; a stale content revision refreshes the row and asks for fresh
-confirmation; only a durable success refetches the lane. Ask Presto opens chat
+confirmation; only a durable success refetches the lane. Ask <agent> (wire
+kind `ask_presto`, labelled with the primary agent's name) opens chat
 with the safe brief staged as an editable attachment (never the live original,
 never auto-sent), in an existing scoped thread passed by the caller (never invented). "Shown"
 telemetry starts only when the validated primary action is mounted.
@@ -285,7 +286,7 @@ provider. Backend: "One row per call" in
 (`lib/today/MorningEdition.svelte`): masthead, Realtime Wire, lead story,
 Operations carousel, Reading Room (Morning Brief swipe deck or Broadsheet
 columns), § 3 briefings, § 4 completed deliverables, § 5 digest. iOS and
-Android follow the same rules:
+Android follow the same rules. Reading Room cards show absolute local receipt/surfacing dates and `For You · source` / `Worth a Look · source` labels. The Morning Brief keeps its own cursor-paged stack, shows loaded versus server totals, prefetches at four remaining cards in the selected tab, and distinguishes loading/retry from an exhausted deck:
 
 - For You / Worth cards are removed optimistically. The channel-assist and
   resurfacing helpers return `{ ok: false }` instead of throwing; a failed
@@ -296,10 +297,28 @@ Android follow the same rules:
 - "Shouldn't be flagged" (`wrong_classification`) is follow-ups only;
   resurfacing dismiss reasons are `spam`, `already_handled`, `duplicate`,
   `delegated`, `not_relevant`.
-- ⚡ reads `Do it` (`approve`) on a follow-up and `Open` on a Worth card
-  (records `open`, then opens `source_route` or `open_url`).
+- ⚡ **Act** (deck and every Broadsheet card, `TodayActMenu.svelte`) opens a
+  menu of that card's own actions; tapping it runs nothing. A follow-up lists its `available_actions` (server label and icon),
+  "Open in <provider>" when it has `open_url`, "Start follow-up task…" (asks
+  for the optional instruction, then `approve`s with it; hidden for a stale
+  draft), "Snooze — hide from Today" and Details. A Worth card lists Open
+  (records `open`, then opens `source_route` or `open_url`), its capabilities
+  except `view_details`/`open_source` (Ask <agent> only with a chat thread),
+  and Details. Pure rules: `lib/today/deckActMenu.ts`.
+- Only snooze and Open remove a card from the menu, through the same
+  optimistic handlers as a swipe or the Broadsheet buttons. Every other entry
+  opens the card's detail view (`TodayDeckDetail.svelte`: `ChannelFollowUpActions`,
+  or `ResurfacingDetailPanel` + `ResurfacingCardActions`; under the deck, or
+  inside the Broadsheet card) and starts that flow there; the card leaves only
+  when that flow resolves the follow-up. Nothing on `/today` approves a
+  follow-up without the instruction step.
+- Tapping the card or its "Details ›" link opens the detail view. Keys: ←
+  Dismiss, ↑ Seen, → Useful, ↵ opens the Act menu (↑/↓ move, Esc closes);
+  keys typed in a field or dialog stay there.
 - The Realtime Wire shows only real feed items, agent updates and stream
   events; a failed 24h count leaves the count unchanged, never a made-up number.
+
+Economics and State of Operations show loading until their own data arrives; unavailable spend is distinct from a successfully returned zero. Routine Reading Room card requests omit full-universe diagnostics.
 
 ### Operations carousel
 

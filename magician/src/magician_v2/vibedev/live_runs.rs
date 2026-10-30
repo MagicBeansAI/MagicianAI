@@ -7,6 +7,12 @@
 //! ([`run_pages::fold_into_runs`]); its state is derived from the stored task
 //! rows and the scope's pending user requests on every read, never from
 //! events, so a restart reports exactly what the previous process did.
+//!
+//! What waits is typed ([`WaitingKind`]): a staged diff to review, a decision
+//! the run needs, or a notice that only asks to be acknowledged (the owner
+//! briefing an Autopilot run files when it ends). Only the first two make a
+//! run `needs_you`; a notice rides the row as [`LiveRunNotice`] while the run
+//! keeps the state of what it is doing (usually `done`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,6 +20,11 @@ use chrono::DateTime;
 use serde::Serialize;
 
 use crate::magician_v2::artifact_v2::models::TaskListItemV3;
+use crate::magician_v2::hitl::{
+    hitl_respond_handle, HitlOpenIdentifiers, HitlOpenScope, HitlRespondHandle,
+};
+use crate::magician_v2::user_requests::service::is_acknowledge_only;
+use crate::magician_v2::user_requests::UserRequest;
 use crate::magician_v2::vibedev::projects::{parse_vibedev_project_id, VibeDevProjectRecord};
 use crate::magician_v2::vibedev::run_pages::fold_into_runs;
 
@@ -22,11 +33,187 @@ pub const DEFAULT_RECENT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 /// Most rows one read returns.
 pub const MAX_LIVE_RUNS: usize = 50;
 
+/// What a run is waiting on the owner for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingKind {
+    /// A staged diff to apply or reject; `approval_id` names it once offered.
+    DiffReview,
+    /// A question, a plan or an approval the run cannot go on without.
+    Decision,
+    /// An informational notice (an owner briefing) whose only answer is
+    /// Acknowledge. Never makes the run `needs_you`.
+    Notice,
+}
+
+/// The newest acknowledge-only request on a run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LiveRunNotice {
+    /// The user request's id: acknowledged with `POST /hitl/{request_id}/respond`
+    /// (`source: user_request`, choice `option_id`).
+    pub request_id: String,
+    /// The one option that answers it (`acknowledge`).
+    pub option_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub message: String,
+    /// `info`, `warning` or `critical`, when the notice said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    /// The canonical respond call that acknowledges it
+    /// ([`notice_respond_handle`]); clients post this rather than building
+    /// the call from `request_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respond: Option<HitlRespondHandle>,
+    /// When it was filed (epoch ms); picks the newest. Server-side only.
+    #[serde(skip)]
+    pub created_at_ms: i64,
+}
+
+/// The scope's pending user requests by task, split by what they ask.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OwnerRequests {
+    /// Tasks a pending request that needs a decision names.
+    pub decisions: HashSet<String>,
+    /// Tasks an acknowledge-only notice names: the newest one each.
+    pub notices: HashMap<String, LiveRunNotice>,
+}
+
+fn context_text(request: &UserRequest, key: &str) -> Option<String> {
+    request
+        .context
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// The respond handle that acknowledges a notice: a `user_request` answered
+/// with its one choice.
+pub fn notice_respond_handle(
+    request_id: &str,
+    option_id: &str,
+    option_label: &str,
+    execution_id: Option<&str>,
+) -> Option<HitlRespondHandle> {
+    hitl_respond_handle(
+        "user_request",
+        "choice",
+        &HitlOpenIdentifiers {
+            request_id: Some(request_id.to_string()),
+            ..Default::default()
+        },
+        None,
+        &HitlOpenScope {
+            execution_id: execution_id.map(str::to_string),
+            ..Default::default()
+        },
+        &serde_json::json!({
+            "options": [{"id": option_id, "label": option_label}]
+        }),
+    )
+}
+
+/// The respond handle that applies or rejects a run's staged diff
+/// (`approval_id`, a proposal id): a `diff_approval` answered with the
+/// choice `apply` or `reject` and, optionally, `selected_paths`.
+pub fn diff_review_respond_handle(approval_id: &str) -> Option<HitlRespondHandle> {
+    hitl_respond_handle(
+        "diff_approval",
+        "diff_approval",
+        &HitlOpenIdentifiers {
+            correlation_id: Some(approval_id.to_string()),
+            ..Default::default()
+        },
+        None,
+        &HitlOpenScope::default(),
+        &serde_json::json!({
+            "proposal_id": approval_id,
+            "options": [
+                {"id": "apply", "label": "Apply"},
+                {"id": "reject", "label": "Reject"}
+            ]
+        }),
+    )
+}
+
+/// A request whose only answer is an acknowledgement, as a notice; `None`
+/// for a request that needs a decision.
+pub fn owner_notice(request: &UserRequest) -> Option<LiveRunNotice> {
+    if !is_acknowledge_only(request) {
+        return None;
+    }
+    let option = request.options.first()?;
+    Some(LiveRunNotice {
+        request_id: request.id.clone(),
+        option_id: option.id.clone(),
+        title: context_text(request, "title"),
+        message: context_text(request, "message")
+            .unwrap_or_else(|| request.question.trim().to_string()),
+        severity: context_text(request, "severity"),
+        respond: notice_respond_handle(
+            &request.id,
+            &option.id,
+            &option.label,
+            request.execution_id.as_deref(),
+        ),
+        created_at_ms: request.created_at,
+    })
+}
+
+impl OwnerRequests {
+    /// Split `requests` (the scope's pending ones); a request naming no task
+    /// is left out.
+    pub fn from_requests<'a>(requests: impl IntoIterator<Item = &'a UserRequest>) -> Self {
+        let mut split = Self::default();
+        for request in requests {
+            let Some(task_id) = request.task_id.as_ref() else {
+                continue;
+            };
+            match owner_notice(request) {
+                Some(notice) => {
+                    let newer = split
+                        .notices
+                        .get(task_id)
+                        .is_none_or(|held| notice.created_at_ms >= held.created_at_ms);
+                    if newer {
+                        split.notices.insert(task_id.clone(), notice);
+                    }
+                },
+                None => {
+                    split.decisions.insert(task_id.clone());
+                },
+            }
+        }
+        split
+    }
+
+    /// Only decisions, for callers that hold task ids alone.
+    pub fn decisions(task_ids: HashSet<String>) -> Self {
+        Self {
+            decisions: task_ids,
+            notices: HashMap::new(),
+        }
+    }
+
+    /// Every task a pending request names: [`project_task_ids`] reads them
+    /// however old they are.
+    pub fn task_ids(&self) -> HashSet<String> {
+        self.decisions
+            .iter()
+            .chain(self.notices.keys())
+            .cloned()
+            .collect()
+    }
+}
+
 /// What the owner needs to know about a run at a glance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveRunState {
-    /// A question, an approval or a diff review is waiting on the owner.
+    /// A question, an approval or a diff review is waiting on the owner
+    /// (`waiting_kind` says which). A notice alone never is.
     NeedsYou,
     /// The run is going.
     Working,
@@ -70,6 +257,12 @@ pub struct LiveRun {
     /// How the run ended, when it has.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// `partial` when the run ended with requirements open (shown as "Partly
+    /// done"), and those requirements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_kind: Option<crate::magician_v2::artifact_v2::models::CompletionKind>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_items: Vec<String>,
     /// Turns in the run, root included.
     pub turns: usize,
     /// When the run's root was created, for "running for 12 min".
@@ -83,10 +276,23 @@ pub struct LiveRun {
     /// Filled by [`fill_approvals`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_id: Option<String>,
+    /// The canonical respond call for `approval_id`
+    /// ([`diff_review_respond_handle`]). Filled with it by [`fill_approvals`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_respond: Option<HitlRespondHandle>,
     /// The newest turn that waits on a diff approval (not settled, with a
     /// pending proposal): where [`fill_approvals`] looks. Server-side only.
     #[serde(skip)]
     pub approval_task_id: Option<String>,
+    /// What the run waits on the owner for: `diff_review` or `decision` on a
+    /// `needs_you` run, `notice` on a run whose only pending request is an
+    /// acknowledge-only notice. Absent when nothing waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_kind: Option<WaitingKind>,
+    /// The run's newest pending acknowledge-only notice (an owner briefing),
+    /// whatever else waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LiveRunNotice>,
     /// The crew this run is a lane of, and the lane's label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crew_id: Option<String>,
@@ -109,11 +315,29 @@ fn updated_ms(item: &TaskListItemV3) -> i64 {
         .unwrap_or(0)
 }
 
-fn waits_on_owner(item: &TaskListItemV3, waiting_task_ids: &HashSet<String>) -> bool {
-    if item.awaiting_diff_approval || waiting_task_ids.contains(&item.id) {
+/// Whether `item` waits on an owner decision (not a diff review, not a notice).
+fn waits_on_decision(item: &TaskListItemV3, requests: &OwnerRequests) -> bool {
+    if requests.decisions.contains(&item.id) {
         return true;
     }
     !is_settled(item) && (item.pending_question.is_some() || !item.pending_questions.is_empty())
+}
+
+/// What `run` waits on the owner for: a diff review before a decision, a
+/// notice only when nothing else waits.
+fn waiting_kind(run: &[&TaskListItemV3], requests: &OwnerRequests) -> Option<WaitingKind> {
+    if run.iter().any(|item| item.awaiting_diff_approval) {
+        Some(WaitingKind::DiffReview)
+    } else if run.iter().any(|item| waits_on_decision(item, requests)) {
+        Some(WaitingKind::Decision)
+    } else if run
+        .iter()
+        .any(|item| requests.notices.contains_key(&item.id))
+    {
+        Some(WaitingKind::Notice)
+    } else {
+        None
+    }
 }
 
 fn ended_state(item: &TaskListItemV3) -> LiveRunState {
@@ -135,14 +359,14 @@ fn non_empty(value: Option<&String>) -> Option<String> {
 ///
 /// `items` are the projects' task rows in any order (a row whose
 /// `VibeDev project:` line names a project not in `projects` is dropped).
-/// `waiting_task_ids` are the tasks a pending user request names. A run that
-/// ended more than `recent_window_ms` before `now_ms` is left out. Rows come
-/// back needs-you first, then working and paused, then ended, newest first
-/// within each.
+/// `requests` are the scope's pending user requests by task. A run that
+/// ended more than `recent_window_ms` before `now_ms` is left out, unless a
+/// notice on it still waits to be acknowledged. Rows come back needs-you
+/// first, then working and paused, then ended, newest first within each.
 pub fn live_runs(
     projects: &[VibeDevProjectRecord],
     items: &[TaskListItemV3],
-    waiting_task_ids: &HashSet<String>,
+    requests: &OwnerRequests,
     now_ms: i64,
     recent_window_ms: i64,
 ) -> Vec<LiveRun> {
@@ -167,14 +391,7 @@ pub fn live_runs(
             if let Some(folded) = turns.get(&root.id) {
                 run.extend(folded.iter().copied());
             }
-            if let Some(row) = live_run(
-                project,
-                root,
-                &run,
-                waiting_task_ids,
-                now_ms,
-                recent_window_ms,
-            ) {
+            if let Some(row) = live_run(project, root, &run, requests, now_ms, recent_window_ms) {
                 rows.push(row);
             }
         }
@@ -193,6 +410,89 @@ pub fn live_runs(
     rows
 }
 
+/// Full run history for mobile companions. Unlike `live_runs`, this has no
+/// recent-window or 50-row truncation; the API pages these folded rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryRun {
+    #[serde(flatten)]
+    pub run: LiveRun,
+    pub needs_you_count: usize,
+    pub work_location: super::projects::VibeDevProjectTrust,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
+}
+
+pub fn history_runs(
+    projects: &[VibeDevProjectRecord],
+    items: &[TaskListItemV3],
+    pending: &[UserRequest],
+) -> Vec<HistoryRun> {
+    let requests = OwnerRequests::from_requests(pending.iter());
+    let mut rows = Vec::new();
+    for project in projects.iter().filter(|p| !p.archived) {
+        let ids: HashSet<_> = project
+            .run_task_ids
+            .iter()
+            .chain(project.run_links.keys())
+            .chain(project.active_root_task_id.iter())
+            .collect();
+        let owned: Vec<_> = items
+            .iter()
+            .filter(|item| {
+                ids.contains(&item.id)
+                    && parse_vibedev_project_id(&item.description)
+                        .is_none_or(|id| id == project.project_id)
+            })
+            .cloned()
+            .collect();
+        let (roots, turns) = fold_into_runs(&owned, &project.run_links);
+        for root in roots {
+            let mut chain = vec![root];
+            chain.extend(turns.get(&root.id).into_iter().flatten().copied());
+            let Some(run) = live_run(project, root, &chain, &requests, 0, i64::MAX) else {
+                continue;
+            };
+            let count = pending
+                .iter()
+                .filter(|r| {
+                    !is_acknowledge_only(r)
+                        && r.task_id
+                            .as_ref()
+                            .is_some_and(|id| chain.iter().any(|t| &t.id == id))
+                })
+                .count();
+            let diff_count = chain.iter().filter(|t| t.awaiting_diff_approval).count();
+            let location = project
+                .run_links
+                .get(&root.id)
+                .and_then(|link| link.work_location.as_ref());
+            rows.push(HistoryRun {
+                needs_you_count: (count + diff_count)
+                    .max(usize::from(run.state == LiveRunState::NeedsYou)),
+                work_location: location.map(|l| l.mode).unwrap_or_else(|| {
+                    // A project switched to Original must not relabel its older copies.
+                    if project.trust == super::projects::VibeDevProjectTrust::Trusted {
+                        project.trust
+                    } else {
+                        super::projects::VibeDevProjectTrust::Sandboxed
+                    }
+                }),
+                repo_path: location
+                    .and_then(|l| l.repo_path.clone())
+                    .or_else(|| project.repo_path.clone()),
+                run,
+            });
+        }
+    }
+    rows.sort_by(|a, b| {
+        b.run
+            .updated_at
+            .cmp(&a.run.updated_at)
+            .then_with(|| b.run.run_id.cmp(&a.run.run_id))
+    });
+    rows
+}
+
 fn newest<'a>(items: impl Iterator<Item = &'a TaskListItemV3>) -> Option<&'a TaskListItemV3> {
     items.max_by(|a, b| {
         a.updated_at
@@ -205,7 +505,7 @@ fn live_run(
     project: &VibeDevProjectRecord,
     root: &TaskListItemV3,
     run: &[&TaskListItemV3],
-    waiting_task_ids: &HashSet<String>,
+    requests: &OwnerRequests,
     now_ms: i64,
     recent_window_ms: i64,
 ) -> Option<LiveRun> {
@@ -213,10 +513,20 @@ fn live_run(
     let live = newest(run.iter().copied().filter(|item| !is_settled(item)));
     let focus = live.unwrap_or(latest);
 
-    let state = if run
+    let waiting_kind = waiting_kind(run, requests);
+    let notice = run
         .iter()
-        .any(|item| waits_on_owner(item, waiting_task_ids))
-    {
+        .filter_map(|item| requests.notices.get(&item.id))
+        .max_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then_with(|| a.request_id.cmp(&b.request_id))
+        })
+        .cloned();
+    let state = if matches!(
+        waiting_kind,
+        Some(WaitingKind::DiffReview | WaitingKind::Decision)
+    ) {
         LiveRunState::NeedsYou
     } else if let Some(live) = live {
         if live.status == "paused" {
@@ -227,7 +537,10 @@ fn live_run(
     } else {
         ended_state(latest)
     };
-    if state.is_ended() && now_ms.saturating_sub(updated_ms(latest)) > recent_window_ms {
+    if state.is_ended()
+        && notice.is_none()
+        && now_ms.saturating_sub(updated_ms(latest)) > recent_window_ms
+    {
         return None;
     }
 
@@ -251,16 +564,29 @@ fn live_run(
         } else {
             None
         },
+        completion_kind: if state.is_ended() {
+            latest.completion_kind.clone()
+        } else {
+            None
+        },
+        open_items: if state.is_ended() {
+            latest.open_items.clone()
+        } else {
+            Vec::new()
+        },
         turns: run.len(),
         started_at: root.created_at.clone(),
         cost_usd: None,
         approval_id: None,
+        approval_respond: None,
         approval_task_id: newest(
             run.iter()
                 .copied()
                 .filter(|item| item.awaiting_diff_approval),
         )
         .map(|item| item.id.clone()),
+        waiting_kind,
+        notice,
         crew_id: project
             .run_links
             .get(&root.id)
@@ -325,6 +651,10 @@ pub fn fill_approvals(
                 .find(|id| unclaimed.contains(*id))
                 .cloned()
         });
+        row.approval_respond = row
+            .approval_id
+            .as_deref()
+            .and_then(diff_review_respond_handle);
     }
 }
 
@@ -446,6 +776,45 @@ mod tests {
     }
 
     #[test]
+    fn mobile_history_keeps_old_runs_folds_turns_and_counts_only_decisions() {
+        let ids: Vec<String> = (0..65).map(|n| format!("r{n:02}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut p = project("p", &refs);
+        p.run_task_ids.push("follow-up".into());
+        p.run_links.insert(
+            "r00".into(),
+            super::super::projects::VibeDevRunLink {
+                work_location: Some(super::super::projects::VibeDevWorkLocation {
+                    mode: super::super::projects::VibeDevProjectTrust::Original,
+                    repo_path: Some("/owner/repo".into()),
+                }),
+                ..Default::default()
+            },
+        );
+        let mut items: Vec<_> = ids
+            .iter()
+            .map(|id| task(id, "p", "completed", "2020-01-01T00:00:00Z", None))
+            .collect();
+        items.push(task("follow-up", "p", "running", NOW, Some("r00")));
+        let requests = vec![
+            request("one", "r00", &["allow", "deny"], 1),
+            request("two", "follow-up", &["allow", "deny"], 2),
+            request("notice", "r00", &["acknowledge"], 3),
+        ];
+        let rows = history_runs(&[p], &items, &requests);
+        assert_eq!(rows.len(), 65); // no live-window or 50-row cut-off
+        assert_eq!(rows[0].run.run_id, "r00"); // latest follow-up moves its run
+        assert_eq!(rows[0].run.turns, 2);
+        assert_eq!(rows[0].needs_you_count, 2);
+        assert_eq!(rows[0].repo_path.as_deref(), Some("/owner/repo"));
+        assert_eq!(
+            rows[0].work_location,
+            super::super::projects::VibeDevProjectTrust::Original
+        );
+        assert!(rows[1..].iter().all(|r| r.needs_you_count == 0));
+    }
+
+    #[test]
     fn an_old_run_waiting_on_the_owner_is_still_read() {
         let ids: Vec<String> = (0..RECENT_RUN_SCAN + 10)
             .map(|index| format!("t{index}"))
@@ -480,7 +849,7 @@ mod tests {
         let rows = live_runs(
             &projects,
             &items,
-            &HashSet::new(),
+            &OwnerRequests::default(),
             now_ms(),
             DEFAULT_RECENT_WINDOW_MS,
         );
@@ -507,7 +876,7 @@ mod tests {
             task("f", "p", "failed", "2026-10-12T11:40:00Z", None),
             task("x", "r", "running", "2026-10-12T11:30:00Z", None),
         ];
-        let waiting: HashSet<String> = ["x".to_string()].into();
+        let waiting = OwnerRequests::decisions(["x".to_string()].into());
         let rows = live_runs(
             &projects,
             &items,
@@ -553,7 +922,7 @@ mod tests {
         let rows = live_runs(
             &projects,
             &items,
-            &HashSet::new(),
+            &OwnerRequests::default(),
             now_ms(),
             DEFAULT_RECENT_WINDOW_MS,
         );
@@ -570,6 +939,7 @@ mod tests {
         lane_project.run_links.insert(
             "a".to_string(),
             crate::magician_v2::vibedev::projects::VibeDevRunLink {
+                work_location: None,
                 parent_task_id: None,
                 crew_id: Some("crew-1".to_string()),
                 lane: Some("API".to_string()),
@@ -579,7 +949,7 @@ mod tests {
         let rows = live_runs(
             &[lane_project],
             &items,
-            &HashSet::new(),
+            &OwnerRequests::default(),
             now_ms(),
             DEFAULT_RECENT_WINDOW_MS,
         );
@@ -596,12 +966,189 @@ mod tests {
         let rows = live_runs(
             &projects,
             &[stopped],
-            &HashSet::new(),
+            &OwnerRequests::default(),
             now_ms(),
             DEFAULT_RECENT_WINDOW_MS,
         );
         assert_eq!(rows[0].state, LiveRunState::Stopped);
         assert_eq!(rows[0].summary.as_deref(), Some("Stopped by the owner"));
         assert_eq!(rows[0].step, None);
+    }
+
+    fn request(id: &str, task_id: &str, options: &[&str], created_at: i64) -> UserRequest {
+        UserRequest {
+            id: id.to_string(),
+            request_type: if options == ["acknowledge"] {
+                "harness.notify_owner.briefing".to_string()
+            } else {
+                "user_input".to_string()
+            },
+            question: format!("Owner briefing: Autopilot run finished: {id}\n\nOpen it."),
+            options: options
+                .iter()
+                .map(|option| crate::magician_v2::user_requests::RequestOption {
+                    id: option.to_string(),
+                    label: option.to_string(),
+                    requires_input: false,
+                })
+                .collect(),
+            principal: "owner".to_string(),
+            workspace: "default".to_string(),
+            context: json!({
+                "title": "Autopilot run finished: Pi 1.3.0 live test",
+                "message": "Autopilot run finished: Pi 1.3.0 live test. Open it to review the result.",
+                "kind": "briefing",
+                "severity": "info",
+            }),
+            source: "harness".to_string(),
+            execution_id: Some("exec_1".to_string()),
+            task_id: Some(task_id.to_string()),
+            timeout_secs: 86_400,
+            default_on_timeout: options.first().copied().unwrap_or("deny").to_string(),
+            created_at,
+            sensitive: None,
+        }
+    }
+
+    #[test]
+    fn requests_split_into_decisions_and_notices() {
+        let requests = [
+            request("brief-old", "a", &["acknowledge"], 1),
+            request("brief-new", "a", &["acknowledge"], 2),
+            request("ask", "b", &["approve", "deny"], 3),
+        ];
+        let split = OwnerRequests::from_requests(requests.iter());
+        assert_eq!(split.decisions, HashSet::from(["b".to_string()]));
+        let notice = split.notices.get("a").expect("a notice on a");
+        assert_eq!(notice.request_id, "brief-new", "the newest notice wins");
+        assert_eq!(notice.option_id, "acknowledge");
+        assert_eq!(
+            notice.title.as_deref(),
+            Some("Autopilot run finished: Pi 1.3.0 live test")
+        );
+        assert!(notice.message.starts_with("Autopilot run finished"));
+        assert_eq!(notice.severity.as_deref(), Some("info"));
+        assert_eq!(
+            split.task_ids(),
+            HashSet::from(["a".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_finished_run_with_only_a_briefing_is_done_with_a_notice_not_needs_you() {
+        let projects = vec![project("p", &["auto"])];
+        let mut finished = task("auto", "p", "completed", "2026-10-12T11:58:00Z", None);
+        finished.completion_summary = Some("Bumped Pi to 1.3.0.".to_string());
+        let requests = OwnerRequests::from_requests(
+            [request(
+                "vibedev-run-ended:auto:exec_1",
+                "auto",
+                &["acknowledge"],
+                5,
+            )]
+            .iter(),
+        );
+        let rows = live_runs(
+            &projects,
+            &[finished],
+            &requests,
+            now_ms(),
+            DEFAULT_RECENT_WINDOW_MS,
+        );
+        assert_eq!(states(&rows), vec![("auto", LiveRunState::Done)]);
+        assert_eq!(rows[0].waiting_kind, Some(WaitingKind::Notice));
+        assert_eq!(rows[0].approval_task_id, None);
+        let notice = rows[0].notice.as_ref().expect("the briefing rides the row");
+        assert_eq!(notice.request_id, "vibedev-run-ended:auto:exec_1");
+        assert_eq!(state_counts(&rows).get(&LiveRunState::NeedsYou), None);
+
+        let wire = serde_json::to_value(&rows[0]).unwrap();
+        assert_eq!(wire["state"], "done");
+        assert_eq!(wire["waiting_kind"], "notice");
+        assert_eq!(
+            wire["notice"]["request_id"],
+            "vibedev-run-ended:auto:exec_1"
+        );
+        assert_eq!(wire["notice"]["option_id"], "acknowledge");
+        assert!(wire["notice"].get("created_at_ms").is_none());
+        assert!(wire.get("approval_id").is_none());
+    }
+
+    #[test]
+    fn an_ended_run_with_an_unacknowledged_notice_outlives_the_window() {
+        let projects = vec![project("p", &["old"])];
+        let finished = task("old", "p", "completed", "2026-10-12T10:00:00Z", None);
+        let requests =
+            OwnerRequests::from_requests([request("brief", "old", &["acknowledge"], 5)].iter());
+        let rows = live_runs(
+            &projects,
+            std::slice::from_ref(&finished),
+            &requests,
+            now_ms(),
+            DEFAULT_RECENT_WINDOW_MS,
+        );
+        assert_eq!(states(&rows), vec![("old", LiveRunState::Done)]);
+        let rows = live_runs(
+            &projects,
+            &[finished],
+            &OwnerRequests::default(),
+            now_ms(),
+            DEFAULT_RECENT_WINDOW_MS,
+        );
+        assert!(rows.is_empty(), "acknowledged, it drops off as before");
+    }
+
+    #[test]
+    fn diff_reviews_and_decisions_are_needs_you_with_their_kind() {
+        let projects = vec![project("p", &["diff", "ask", "both"])];
+        let mut diff = task("diff", "p", "running", "2026-10-12T11:50:00Z", None);
+        diff.awaiting_diff_approval = true;
+        let ask = task("ask", "p", "running", "2026-10-12T11:51:00Z", None);
+        let mut both = task("both", "p", "completed", "2026-10-12T11:52:00Z", None);
+        both.awaiting_diff_approval = true;
+        let requests = OwnerRequests::from_requests(
+            [
+                request("q", "ask", &["approve", "deny"], 1),
+                request("brief", "both", &["acknowledge"], 2),
+            ]
+            .iter(),
+        );
+        let rows = live_runs(
+            &projects,
+            &[diff, ask, both],
+            &requests,
+            now_ms(),
+            DEFAULT_RECENT_WINDOW_MS,
+        );
+        let kinds: Vec<(&str, LiveRunState, Option<WaitingKind>)> = rows
+            .iter()
+            .map(|row| (row.run_id.as_str(), row.state, row.waiting_kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (
+                    "both",
+                    LiveRunState::NeedsYou,
+                    Some(WaitingKind::DiffReview)
+                ),
+                ("ask", LiveRunState::NeedsYou, Some(WaitingKind::Decision)),
+                (
+                    "diff",
+                    LiveRunState::NeedsYou,
+                    Some(WaitingKind::DiffReview)
+                ),
+            ]
+        );
+        // A diff waiting next to a briefing still carries the briefing.
+        assert_eq!(
+            rows[0]
+                .notice
+                .as_ref()
+                .map(|notice| notice.request_id.as_str()),
+            Some("brief")
+        );
+        assert_eq!(rows[1].approval_task_id, None, "a question has no diff");
+        assert_eq!(rows[2].approval_task_id.as_deref(), Some("diff"));
     }
 }

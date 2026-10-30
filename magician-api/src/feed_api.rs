@@ -117,6 +117,20 @@ fn metadata_has_key(value: &serde_json::Value, key: &str) -> bool {
         .is_some_and(|record| record.contains_key(key))
 }
 
+/// Stamp each row's canonical respond handle (`metadata.respond`, and
+/// `metadata.hitl_request.respond`) at the serving boundary, so persisted rows
+/// written before the handle existed are answerable the same way as new ones.
+/// See `magician_core::hitl::stamp_feed_row_respond_handle`.
+fn stamp_feed_respond_handles(items: &mut [FeedItem]) {
+    for item in items {
+        magician::magician_v2::hitl::stamp_feed_row_respond_handle(
+            item.item_type == FeedItemType::Approval,
+            item.task_id.as_deref(),
+            &mut item.metadata,
+        );
+    }
+}
+
 fn feed_item_matches_attention_alias(item: &FeedItem, item_id: &str) -> bool {
     item.id == item_id
         || [
@@ -946,7 +960,8 @@ impl FeedApi {
         // `task_id` are kept. If task listing failed, no filtering is
         // applied — better to show a stale entry than to silently hide
         // everything.
-        let items = retain_existing_tasks(raw_items, &valid_task_ids, query.limit);
+        let mut items = retain_existing_tasks(raw_items, &valid_task_ids, query.limit);
+        stamp_feed_respond_handles(&mut items);
         let next_before = items.last().map(|item| item.updated_at);
         Ok(HttpResponse::Ok().json(FeedListResponse { items, next_before }))
     }
@@ -1134,7 +1149,7 @@ impl FeedApi {
             mut requests_page,
             mut approvals_page,
             mut escalations_page,
-            failed_page,
+            mut failed_page,
             running_page,
         ) = match (
             requests_page,
@@ -1170,16 +1185,25 @@ impl FeedApi {
             retain_attention_page_items(&mut requests_page, |item| {
                 !taskless_attention_row_is_resolved(broadcaster, &principal, &workspace, item)
             });
-            // Taskless approvals are projected into the approvals lane too.
-            retain_attention_page_items(&mut approvals_page, |item| {
-                !taskless_attention_row_is_resolved(broadcaster, &principal, &workspace, item)
-            });
+            // Taskless asks are projected into every ask lane: approvals,
+            // escalations, and service outages under Failed.
+            for page in [&mut approvals_page, &mut escalations_page, &mut failed_page] {
+                retain_attention_page_items(page, |item| {
+                    !taskless_attention_row_is_resolved(broadcaster, &principal, &workspace, item)
+                });
+            }
         }
         // Every taskless ask is now projected from its `hitl.requested`; one
         // that a task projection also carries (published without its task
         // id) is listed once, as the task's row.
-        drop_taskless_rows_carried_by_a_task_row(&mut requests_page);
-        drop_taskless_rows_carried_by_a_task_row(&mut approvals_page);
+        for page in [
+            &mut requests_page,
+            &mut approvals_page,
+            &mut escalations_page,
+            &mut failed_page,
+        ] {
+            drop_taskless_rows_carried_by_a_task_row(page);
+        }
         self.record_feed_attention_route_events(
             &principal,
             &workspace,
@@ -1211,11 +1235,14 @@ impl FeedApi {
             failed: feed_attention_page_meta(&failed_page),
             running: feed_attention_page_meta(&running_page),
         };
-        let requests = requests_page.items;
-        let approvals = approvals_page.items;
-        let escalations = escalations_page.items;
+        let mut requests = requests_page.items;
+        let mut approvals = approvals_page.items;
+        let mut escalations = escalations_page.items;
         let failed = failed_page.items;
         let running = running_page.items;
+        stamp_feed_respond_handles(&mut requests);
+        stamp_feed_respond_handles(&mut approvals);
+        stamp_feed_respond_handles(&mut escalations);
 
         Ok(HttpResponse::Ok().json(FeedAttentionResponse {
             counts,
@@ -6919,10 +6946,7 @@ fn today_followup_item_from_task(
     let summary = today_task_followup_summary(&task);
     let space_ids = today_task_space_ids(&task);
     let task_id = task.id;
-    let source_url = Some(format!(
-        "/tasks?filter=all&selected={}",
-        urlencoding::encode(&task_id)
-    ));
+    let source_url = Some(magician::magician_v2::ui_links::task_href(&task_id, None));
     Some(TodayItem {
         id: format!("today:followups:task:{task_id}"),
         principal: principal.to_string(),
@@ -7021,10 +7045,7 @@ fn today_stale_scheduled_routine_followup_item(
         Some("Scheduled routine has not produced a recent visible result.".to_string())
     });
     let space_ids = today_task_space_ids(&task);
-    let source_url = Some(format!(
-        "/tasks?filter=all&selected={}",
-        urlencoding::encode(&task_id)
-    ));
+    let source_url = Some(magician::magician_v2::ui_links::task_href(&task_id, None));
     Some(TodayItem {
         id: format!("today:followups:scheduled_routine:{task_id}"),
         principal: principal.to_string(),
@@ -9025,12 +9046,10 @@ fn today_source_url(item: &FeedItem) -> Option<String> {
                 None
             }
         },
-        FeedItemType::Task | FeedItemType::Escalation => item.task_id.as_ref().map(|task_id| {
-            format!(
-                "/tasks?filter=all&selected={}",
-                urlencoding::encode(task_id)
-            )
-        }),
+        FeedItemType::Task | FeedItemType::Escalation => item
+            .task_id
+            .as_ref()
+            .map(|task_id| magician::magician_v2::ui_links::task_href(task_id, None)),
         FeedItemType::Approval => Some(format!(
             "/attention?attention=1&attention_item={}",
             urlencoding::encode(&item.id)
@@ -9187,7 +9206,10 @@ pub async fn feed_attention_item_handler(
 
 fn feed_attention_item_response(item_id: &str, item: Option<FeedItem>) -> HttpResponse {
     match item {
-        Some(item) => HttpResponse::Ok().json(item),
+        Some(mut item) => {
+            stamp_feed_respond_handles(std::slice::from_mut(&mut item));
+            HttpResponse::Ok().json(item)
+        },
         None => HttpResponse::NotFound().json(json!({
             "error": "attention_item_not_found",
             "item_id": item_id,
@@ -9414,6 +9436,18 @@ mod tests {
             today_source_url(&item).as_deref(),
             Some("/attention?attention=1&attention_item=approval%2Fid%20with%20spaces")
         );
+    }
+
+    #[test]
+    fn task_and_escalation_sources_open_the_same_work_record() {
+        for kind in [FeedItemType::Task, FeedItemType::Escalation] {
+            let mut item = feed_item("feed-task", kind, None);
+            item.task_id = Some("task/one +&?#".to_string());
+            assert_eq!(
+                today_source_url(&item).as_deref(),
+                Some("/work?selected=task%2Fone%20%2B%26%3F%23")
+            );
+        }
     }
 
     #[test]
@@ -9861,6 +9895,13 @@ mod tests {
         );
         assert_eq!(body["metadata"]["execution_id"], "exec-1");
         assert_eq!(body["metadata"]["correlation_id"], "pause-ask-1");
+        // The served row names its own respond call.
+        assert_eq!(
+            body["metadata"]["respond"]["url"],
+            "/api/magician/v2/hitl/pause-ask-1/respond"
+        );
+        assert_eq!(body["metadata"]["respond"]["source"], "agentic");
+        assert_eq!(body["metadata"]["respond"]["execution_id"], "exec-1");
 
         broadcaster.emit(RuntimeTransportEvent::HitlRequested {
             correlation_id: "ur-1".to_string(),
@@ -9895,6 +9936,12 @@ mod tests {
             "Send"
         );
         assert_eq!(body["metadata"]["request_id"], "ur-1");
+        assert_eq!(
+            body["metadata"]["respond"]["url"],
+            "/api/magician/v2/hitl/ur-1/respond"
+        );
+        assert_eq!(body["metadata"]["respond"]["source"], "user_request");
+        assert_eq!(body["metadata"]["respond"]["options"][0]["id"], "yes");
 
         for (correlation_id, source, task) in [
             ("pause-ask-1", "agentic", Some(task_id.clone())),

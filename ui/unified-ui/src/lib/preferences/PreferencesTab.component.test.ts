@@ -100,6 +100,63 @@ describe('Preferences tab', () => {
 		expect(calls.find((call) => call.method === 'DELETE')?.url).toContain('expected_revision=r1');
 	});
 
+	it('reviews what Magician learned: confirm and dismiss name the revision on screen', async () => {
+		setCurrentScopeBearerToken('mst_test_preferences');
+		const { calls } = installFetchMock([
+			{ method: 'GET', match: '/preference-alignment/intentions', handle: () => jsonResponse(VIEW) },
+			{ method: 'PATCH', match: '/preference-alignment/intentions/coffee', handle: () => jsonResponse({ record_id: 'coffee' }) }
+		]);
+		render(PreferencesTab);
+		await fireEvent.click(await screen.findByTestId('preferences-review-mode'));
+		expect(screen.getByTestId('preferences-review-mode')).toHaveTextContent("Review what I've learned (1)");
+		expect(screen.getByTestId('preference-review-count')).toHaveTextContent('1 learned preference to review');
+		const rows = screen.getAllByTestId('preference-review-row');
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toHaveTextContent('decaf after 3pm');
+		expect(rows[0]).not.toHaveTextContent('door codes');
+
+		await fireEvent.click(within(rows[0]).getByRole('button', { name: 'Confirm' }));
+		await waitFor(() => expect(calls.filter((call) => call.method === 'PATCH')).toHaveLength(1));
+		expect(JSON.parse(String(calls.find((call) => call.method === 'PATCH')?.init?.body))).toEqual({
+			action: 'confirm',
+			expected_revision: 'r1'
+		});
+
+		const dismiss = await waitFor(() => {
+			const button = within(screen.getByTestId('preference-review-row')).getByRole('button', { name: 'Dismiss' });
+			expect(button).not.toBeDisabled();
+			return button;
+		});
+		await fireEvent.click(dismiss);
+		await waitFor(() => expect(calls.filter((call) => call.method === 'PATCH')).toHaveLength(2));
+		expect(JSON.parse(String(calls.filter((call) => call.method === 'PATCH')[1]?.init?.body))).toEqual({
+			action: 'retire',
+			expected_revision: 'r1'
+		});
+		expect(await screen.findByTestId('preferences-notice')).toHaveTextContent('Dismissed.');
+	});
+
+	it('renders hundreds of learned preferences a page at a time', async () => {
+		setCurrentScopeBearerToken('mst_test_preferences');
+		const many = Array.from({ length: 30 }, (_, index) => ({
+			...row(`p${index}`, 'taste', 'inferred', `pattern ${index}`),
+			learned_at_ms: 1_000 + index
+		}));
+		installFetchMock([
+			{ method: 'GET', match: '/preference-alignment/intentions', handle: () => jsonResponse({ ...VIEW, intentions: many }) }
+		]);
+		render(PreferencesTab);
+		await fireEvent.click(await screen.findByTestId('preferences-review-mode'));
+		expect(screen.getByTestId('preference-review-count')).toHaveTextContent('30 learned preferences');
+		const firstPage = screen.getAllByTestId('preference-review-row');
+		expect(firstPage).toHaveLength(25);
+		// Newest learned first.
+		expect(firstPage[0]).toHaveTextContent('pattern 29');
+		await fireEvent.click(screen.getByTestId('preference-review-more'));
+		expect(screen.getAllByTestId('preference-review-row')).toHaveLength(30);
+		expect(screen.queryByTestId('preference-review-more')).toBeNull();
+	});
+
 	it('shows a forgotten entry in the history without its wording', async () => {
 		setCurrentScopeBearerToken('mst_test_preferences');
 		installFetchMock([

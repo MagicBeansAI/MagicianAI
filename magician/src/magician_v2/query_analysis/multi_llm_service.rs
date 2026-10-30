@@ -28,16 +28,11 @@ use crate::magician_v2::slot_graph::extraction::LlmCallTelemetry;
 
 use magicllm::prelude::LlmConfig;
 
-/// Resolve a chat-eligible Magician profile. Adaptive choices use their fast
-/// profile for callers that do not implement chat's thinking-mode escalation.
+/// Resolve a concrete chat-eligible model or workload route.
 pub fn resolve_chat_profile_config(config: &LLMRouterConfig, name: &str) -> Result<LlmConfig> {
-    let resolved = config
+    let profile = config
         .resolve_profile(name)
-        .ok_or_else(|| anyhow!("LLM profile '{}' not found", name))?;
-    let profile = match resolved {
-        magicllm::config::ResolvedProfile::Standard(profile) => profile,
-        magicllm::config::ResolvedProfile::Adaptive { fast, .. } => fast,
-    };
+        .ok_or_else(|| anyhow!("LLM route '{}' not found", name))?;
     let result = llm_config_from_profile(profile);
     if !MultiLLMService::is_chat_profile_eligible(&result) {
         return Err(anyhow!("LLM profile '{}' is not chat-eligible", name));
@@ -95,12 +90,7 @@ fn llm_config_from_profile(profile: &LLMProfile) -> LlmConfig {
     }
 }
 
-/// Info about a chat-eligible LLM profile.
-///
-/// `is_adaptive` distinguishes composite adaptive profiles
-/// (`fast_profile` + `thinking_profile` pair) from standard ones. The UI
-/// surfaces adaptive entries in their own section so users can pick
-/// "Adaptive (auto-escalates to thinking)" vs a fixed standard profile.
+/// Internal projection of a chat-eligible concrete model route.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatProfileInfo {
     pub name: String,
@@ -108,23 +98,11 @@ pub struct ChatProfileInfo {
     pub model: String,
     pub is_default: bool,
     pub supports_user_image_inputs: bool,
-    /// True iff this profile is in `LLMRouterConfig::adaptive_profiles`.
-    /// Adaptive profiles auto-escalate from a fast base profile to a
-    /// thinking variant when the LLM calls `request_thinking_mode`.
-    #[serde(default)]
-    pub is_adaptive: bool,
-    /// Free-form description from the adaptive composite spec. None for
-    /// standard profiles.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adaptive_description: Option<String>,
-    /// Optional tier label from the adaptive composite spec (e.g.
-    /// `instant` / `normal` / `advanced`). UI renders this as a small
-    /// chip alongside the `Adaptive` badge so users can see the
-    /// size / capability tier without exposing raw model names.
-    /// None for standard profiles and adaptive composites that
-    /// haven't opted into tiering.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub adaptive_tier: Option<String>,
+    /// The typed selection associated with this generated route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_selection: Option<magicllm::catalog::ModelSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_choice: Option<magicllm::catalog::ModelChoice>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -610,13 +588,7 @@ impl MultiLLMService {
         let default_config = router_config
             .as_ref()
             .map(|config| config.default_profile.clone())
-            .or_else(|| {
-                if llm_configs.contains_key("llm-openai-small") {
-                    Some("llm-openai-small".to_string())
-                } else {
-                    llm_configs.keys().next().map(|k| k.to_string())
-                }
-            })
+            .or_else(|| llm_configs.keys().min().cloned())
             .unwrap_or_else(|| "default".to_string());
 
         debug!(
@@ -849,54 +821,7 @@ impl MultiLLMService {
             llm_configs.insert(name.clone(), llm_config_from_profile(profile));
         }
 
-        let state = Self::build_state(llm_configs, Some(config.clone()));
-        Self::warn_on_misconfigured_adaptive_profiles(&state);
-        state
-    }
-
-    /// Chat-eligibility check for `thinking_profile`. The picker filters
-    /// adaptive composites by their `fast_profile`'s chat-eligibility
-    /// (`tool_choice: auto`, not `openai_api_mode: chat` for OpenAI), so
-    /// the user only sees composites whose fast variant the chat surface
-    /// can actually dispatch. The `thinking_profile` is dispatched only
-    /// at escalation time, so a misconfigured thinking variant would
-    /// surface as a router error mid-turn — confusing for the operator.
-    /// This warns at startup so the misconfiguration is visible before
-    /// the first chat turn ever runs. Schema-level validation (missing
-    /// references, nested composites, identical pairs) is already done
-    /// inside `magicllm::LLMRouterConfig::validate_adaptive_profiles`.
-    fn warn_on_misconfigured_adaptive_profiles(state: &MultiLLMServiceState) {
-        let Some(router_config) = state.router_config.as_ref() else {
-            return;
-        };
-        let mut names: Vec<&String> = router_config.adaptive_profiles.keys().collect();
-        names.sort();
-        for name in names {
-            let Some(adaptive) = router_config.adaptive_profiles.get(name) else {
-                continue;
-            };
-            if let Some(thinking_config) = state.llm_configs.get(&adaptive.thinking_profile) {
-                if !Self::is_chat_profile_eligible(thinking_config) {
-                    warn!(
-                        adaptive_profile = %name,
-                        thinking_profile = %adaptive.thinking_profile,
-                        "[MAGICIAN-V2-LLM] adaptive thinking_profile is not chat-eligible \
-                         (requires `tool_choice: auto`, and for OpenAI not \
-                         `openai_api_mode: chat`). Escalation will fail at runtime."
-                    );
-                }
-            }
-            if let Some(fast_config) = state.llm_configs.get(&adaptive.fast_profile) {
-                if !Self::is_chat_profile_eligible(fast_config) {
-                    warn!(
-                        adaptive_profile = %name,
-                        fast_profile = %adaptive.fast_profile,
-                        "[MAGICIAN-V2-LLM] adaptive fast_profile is not chat-eligible — \
-                         composite will be hidden from the chat profile picker."
-                    );
-                }
-            }
-        }
+        Self::build_state(llm_configs, Some(config.clone()))
     }
 
     fn merge_extra(
@@ -988,12 +913,7 @@ impl MultiLLMService {
             .map(|selector| selector.default_profile().to_string());
         let cached_default = state.operation_mapping.get(operation_str).cloned();
         if let Some(config_name) = router_default.or(cached_default) {
-            // Transparently resolve adaptive composite → fast_profile.
-            // Adaptive composites live in their own map and don't have a
-            // direct `LlmConfig` row; non-adaptive-aware callers see the
-            // fast variant, which is the right default for shape probes
-            // and capability sniffing.
-            let resolved_name = Self::resolve_adaptive_to_fast(&state, &config_name);
+            let resolved_name = config_name.clone();
             debug!(
                 "[MAGICIAN-V2-QUERY] Operation '{}' mapped to config '{}' (resolved: '{}')",
                 operation_str, config_name, resolved_name
@@ -1011,13 +931,12 @@ impl MultiLLMService {
                 });
         }
 
-        // Fall back to default config (also resolved through adaptive map).
-        let default_config_raw = state
+        // Fall back to the configured default route.
+        let default_config = state
             .router_config
             .as_ref()
             .map(|config| config.default_profile.clone())
             .unwrap_or_else(|| state.default_config.clone());
-        let default_config = Self::resolve_adaptive_to_fast(&state, &default_config_raw);
         debug!(
             "[MAGICIAN-V2-QUERY] Operation '{}' not mapped, using default config '{}'",
             operation_str, default_config
@@ -1030,19 +949,6 @@ impl MultiLLMService {
             .ok_or_else(|| anyhow!("Default config '{}' not found", default_config))
     }
 
-    /// If `name` is an adaptive composite, resolve to its `fast_profile`.
-    /// Otherwise return `name` unchanged. Used by adaptive-unaware
-    /// callers (shape probes, capability sniffing) that only need a
-    /// concrete `LlmConfig` and don't care about the thinking variant.
-    fn resolve_adaptive_to_fast(state: &MultiLLMServiceState, name: &str) -> String {
-        state
-            .router_config
-            .as_ref()
-            .and_then(|config| config.adaptive_profiles.get(name))
-            .map(|adaptive| adaptive.fast_profile.clone())
-            .unwrap_or_else(|| name.to_string())
-    }
-
     /// Generate analysis for a specific operation type
     pub async fn generate_for_operation(
         &self,
@@ -1050,14 +956,15 @@ impl MultiLLMService {
         prompt: &str,
     ) -> Result<LLMResponse> {
         let llm_config = self.get_config_for_operation(operation)?;
-        let timeout_secs = operation.timeout_seconds();
+        // The resolved profile's own `timeout_secs` bounds the call (the router
+        // fills it in), as `operation_llm_router::timeout_for_profile` does;
+        // a fixed per-operation default overrode a profile's longer limit.
+        let timeout_secs: Option<u64> = None;
 
         debug!(
-            "[MAGICIAN-V2-QUERY] Generating analysis for operation '{}' using model '{}' with \
-             timeout {}s",
+            "[MAGICIAN-V2-QUERY] Generating analysis for operation '{}' using model '{}'",
             operation.as_str(),
             llm_config.model,
-            timeout_secs
         );
 
         let configured_router = self
@@ -1089,14 +996,14 @@ impl MultiLLMService {
         operation: &LLMOperation,
         prompt: &str,
         llm_config: &LlmConfig,
-        timeout_secs: u64,
+        timeout_secs: Option<u64>,
     ) -> Result<LLMResponse> {
         let mut request = RouterRequest {
             model: llm_config.model.clone(),
             messages: vec![RouterMessage::user(prompt.to_string())].into(),
             metadata: RouterMetadata {
                 operation: operation.as_str().to_string(),
-                timeout_secs: Some(timeout_secs),
+                timeout_secs,
                 ..Default::default()
             },
             temperature: llm_config.temperature,
@@ -1153,15 +1060,17 @@ impl MultiLLMService {
         messages: Vec<RouterMessage>,
     ) -> Result<LLMResponse> {
         let llm_config = self.get_config_for_operation(operation)?;
-        let timeout_secs = operation.timeout_seconds();
+        // The resolved profile's own `timeout_secs` bounds the call (the router
+        // fills it in), as `operation_llm_router::timeout_for_profile` does;
+        // a fixed per-operation default overrode a profile's longer limit.
+        let timeout_secs: Option<u64> = None;
 
         debug!(
             "[MAGICIAN-V2-LLM] Generating chat completion for operation '{}' using model '{}' \
-             with {} messages, timeout {}s",
+             with {} messages",
             operation.as_str(),
             llm_config.model,
             messages.len(),
-            timeout_secs
         );
 
         let configured_router = self
@@ -1182,7 +1091,7 @@ impl MultiLLMService {
             messages: messages.into(),
             metadata: RouterMetadata {
                 operation: operation.as_str().to_string(),
-                timeout_secs: Some(timeout_secs),
+                timeout_secs,
                 ..Default::default()
             },
             temperature: llm_config.temperature,
@@ -1249,16 +1158,18 @@ impl MultiLLMService {
         overrides: Option<ChatCompletionRequestOverrides>,
     ) -> Result<ChatCompletionResponse> {
         let llm_config = self.get_config_for_operation(operation)?;
-        let timeout_secs = operation.timeout_seconds();
+        // The resolved profile's own `timeout_secs` bounds the call (the router
+        // fills it in), as `operation_llm_router::timeout_for_profile` does;
+        // a fixed per-operation default overrode a profile's longer limit.
+        let timeout_secs: Option<u64> = None;
 
         debug!(
             "[MAGICIAN-V2-LLM] Generating chat completion with tools for operation '{}' using \
-             model '{}' with {} messages, {} tools, timeout {}s",
+             model '{}' with {} messages, {} tools",
             operation.as_str(),
             llm_config.model,
             messages.len(),
             tools.len(),
-            timeout_secs
         );
 
         let configured_router = self
@@ -1280,7 +1191,7 @@ impl MultiLLMService {
             tools: tools.into(),
             metadata: RouterMetadata {
                 operation: operation.as_str().to_string(),
-                timeout_secs: Some(timeout_secs),
+                timeout_secs,
                 ..Default::default()
             },
             temperature: llm_config.temperature,
@@ -1355,16 +1266,18 @@ impl MultiLLMService {
         overrides: Option<ChatCompletionRequestOverrides>,
     ) -> Result<()> {
         let llm_config = self.get_config_for_operation(operation)?;
-        let timeout_secs = operation.timeout_seconds();
+        // The resolved profile's own `timeout_secs` bounds the call (the router
+        // fills it in), as `operation_llm_router::timeout_for_profile` does;
+        // a fixed per-operation default overrode a profile's longer limit.
+        let timeout_secs: Option<u64> = None;
 
         debug!(
             "[MAGICIAN-V2-LLM] Generating streaming chat completion for operation '{}' using \
-             model '{}' with {} messages, {} tools, timeout {}s",
+             model '{}' with {} messages, {} tools",
             operation.as_str(),
             llm_config.model,
             messages.len(),
             tools.len(),
-            timeout_secs
         );
 
         let configured_router = self
@@ -1387,7 +1300,7 @@ impl MultiLLMService {
             stream: true,
             metadata: RouterMetadata {
                 operation: operation.as_str().to_string(),
-                timeout_secs: Some(timeout_secs),
+                timeout_secs,
                 ..Default::default()
             },
             temperature: llm_config.temperature,
@@ -1460,63 +1373,12 @@ impl MultiLLMService {
                 model: config.model.clone(),
                 is_default: name == &default_profile,
                 supports_user_image_inputs: Self::chat_profile_supports_user_image_inputs(config),
-                is_adaptive: false,
-                adaptive_description: None,
-                adaptive_tier: None,
+                model_selection: None,
+                model_choice: None,
             })
             .collect();
 
-        // Surface adaptive composites in the same catalog. The composite's
-        // provider/model/image-support are inherited from its `fast_profile`
-        // because the fast profile is what runs by default — the LLM
-        // self-escalates to `thinking_profile` only when it calls
-        // `request_thinking_mode`. Adaptive entries whose `fast_profile`
-        // isn't chat-eligible (no `tool_choice: auto`) are skipped — the
-        // chat surface can't dispatch them anyway.
-        if let Some(router_config) = state.router_config.as_ref() {
-            for (name, adaptive) in &router_config.adaptive_profiles {
-                let Some(fast_config) = state.llm_configs.get(&adaptive.fast_profile) else {
-                    continue;
-                };
-                if !Self::is_chat_profile_eligible(fast_config) {
-                    continue;
-                }
-                profiles.push(ChatProfileInfo {
-                    name: name.clone(),
-                    provider: fast_config.provider.to_string(),
-                    model: fast_config.model.clone(),
-                    is_default: name == &default_profile,
-                    supports_user_image_inputs: Self::chat_profile_supports_user_image_inputs(
-                        fast_config,
-                    ),
-                    is_adaptive: true,
-                    adaptive_description: adaptive
-                        .description
-                        .as_ref()
-                        .map(|d| d.trim().to_string())
-                        .filter(|d| !d.is_empty()),
-                    adaptive_tier: adaptive
-                        .tier
-                        .as_ref()
-                        .map(|t| t.trim().to_string())
-                        .filter(|t| !t.is_empty()),
-                });
-            }
-        }
-
-        // Picker order:
-        //   1. Default profile always first (so the active selection is
-        //      visible at the top regardless of provider / tier).
-        //   2. Adaptive composites cluster before standard profiles.
-        //   3. Within adaptives, group by provider in a stable
-        //      operator-facing order: OpenAI → Anthropic → Gemini →
-        //      DeepSeek → MiniMax → xAI → Sarvam → other.
-        //   4. Within each provider, sort by tier (instant → normal →
-        //      advanced → frontier → untagged) so the cheapest option leads.
-        //   5. Final tiebreak: alphabetical name.
-        // The tier ordering is keyed off the optional `adaptive_tier`
-        // string, with a tier-rank helper that pins known tiers to
-        // small indices and pushes unknown / unset to the end.
+        // Stable picker projection order: default, provider, then route.
         fn provider_rank(p: &str) -> u8 {
             match p {
                 "openai" => 0,
@@ -1529,26 +1391,27 @@ impl MultiLLMService {
                 _ => 7,
             }
         }
-        fn tier_rank(t: Option<&str>) -> u8 {
-            match t.map(|s| s.trim()) {
-                Some("instant") => 0,
-                Some("normal") => 1,
-                Some("advanced") => 2,
-                Some("frontier") => 3,
-                _ => 4,
-            }
-        }
         profiles.sort_by(|a, b| {
             b.is_default
                 .cmp(&a.is_default)
-                .then(b.is_adaptive.cmp(&a.is_adaptive))
                 .then(provider_rank(&a.provider).cmp(&provider_rank(&b.provider)))
-                .then(
-                    tier_rank(a.adaptive_tier.as_deref())
-                        .cmp(&tier_rank(b.adaptive_tier.as_deref())),
-                )
                 .then(a.name.cmp(&b.name))
         });
+
+        if let Some(router) = state.router_config.as_ref() {
+            let choices: HashMap<_, _> = router
+                .catalog
+                .choices()
+                .into_iter()
+                .map(|choice| (magicllm::catalog::choice_id(&choice.id, "auto"), choice))
+                .collect();
+            for profile in &mut profiles {
+                profile.model_selection = router
+                    .resolve_profile(&profile.name)
+                    .and_then(magicllm::catalog::selection_for_profile);
+                profile.model_choice = choices.get(&profile.name).cloned();
+            }
+        }
 
         let mut warnings: Vec<ChatProfileWarning> = state
             .llm_configs
@@ -1560,27 +1423,8 @@ impl MultiLLMService {
         (profiles, warnings)
     }
 
-    /// Look up the (fast, thinking) profile pair for an adaptive
-    /// composite by name. Returns `None` for standard profiles or
-    /// unknown names. Used by the chat-inline runtime to detect that
-    /// `process_chat_inline_turn`'s effective profile is adaptive and
-    /// to swap profile names mid-turn on `request_thinking_mode`.
-    pub fn adaptive_pair(&self, profile_name: &str) -> Option<(String, String)> {
-        let state = self.read_state();
-        state
-            .router_config
-            .as_ref()
-            .and_then(|config| config.adaptive_profiles.get(profile_name))
-            .map(|adaptive| {
-                (
-                    adaptive.fast_profile.clone(),
-                    adaptive.thinking_profile.clone(),
-                )
-            })
-    }
-
     /// Operation-mapped default profile name for the given operation key.
-    /// Used by the chat runtime to resolve adaptive composites when the
+    /// Used by the chat runtime to resolve model defaults when the
     /// caller passed no explicit `profile_override`.
     /// The profile name that WOULD serve this operation under the current
     /// `privacy.processing.mode` — the locality-effective arm (`when_cloud`
@@ -1701,20 +1545,115 @@ impl MultiLLMService {
 
     /// Look up a config by its profile name (the key in `llm_configs`).
     ///
-    /// Adaptive composite names transparently resolve to their
-    /// `fast_profile` so adaptive-unaware callers (provider capability
-    /// probes, shape-only lookups) get a working `LlmConfig` instead of
-    /// `LLM profile not found`. Adaptive-aware callers
-    /// (`process_chat_inline_turn`) already pre-resolve via
-    /// `adaptive_pair` and pass standard profile names directly.
+    /// Model choices and workload assignments already name concrete routes.
     pub fn get_config_by_profile_name(&self, profile_name: &str) -> Result<LlmConfig> {
         let state = self.read_state();
-        let resolved = Self::resolve_adaptive_to_fast(&state, profile_name);
         state
             .llm_configs
-            .get(resolved.as_str())
+            .get(profile_name)
             .cloned()
             .ok_or_else(|| anyhow!("LLM profile '{}' not found", profile_name))
+    }
+
+    /// Usable input capacity for this concrete route, never a hardcoded model
+    /// registry. Catalog input-only limits and shared output reserves both apply.
+    pub fn chat_input_budget(&self, profile: Option<&str>, margin: u32) -> Result<u64> {
+        let name = profile
+            .map(str::to_owned)
+            .or_else(|| self.default_profile_for_operation("chat_completion"))
+            .ok_or_else(|| anyhow!("chat has no configured model route"))?;
+        self.profile_input_budget(&name, margin)
+    }
+
+    pub fn operation_input_budget(&self, operation: &str, margin: u32) -> Result<u64> {
+        let name = self
+            .default_profile_for_operation(operation)
+            .ok_or_else(|| anyhow!("missing LLM operation route: {operation}"))?;
+        self.profile_input_budget(&name, margin)
+    }
+
+    /// Like [`Self::operation_input_budget`], but the smallest budget across
+    /// the route and its error-fallback chain: a request sized for the primary
+    /// model must still fit when the router falls back to a smaller one, and
+    /// the owner may route an operation to any model.
+    pub fn operation_chain_input_budget(&self, operation: &str, margin: u32) -> Result<u64> {
+        let name = self
+            .default_profile_for_operation(operation)
+            .ok_or_else(|| anyhow!("missing LLM operation route: {operation}"))?;
+        self.profile_chain_input_budget(&name, margin)
+    }
+
+    /// The smallest input budget across `name` and its `fallback_profile`
+    /// chain. A fallback that declares no context window is skipped rather
+    /// than failing the primary; cycles and long chains stop the walk.
+    pub fn profile_chain_input_budget(&self, name: &str, margin: u32) -> Result<u64> {
+        let mut budget = self.profile_input_budget(name, margin)?;
+        let mut seen = std::collections::HashSet::from([name.to_owned()]);
+        let mut next = self.profile_fallback(name);
+        while let Some(fallback) = next {
+            if seen.len() >= 16 || !seen.insert(fallback.clone()) {
+                break;
+            }
+            if let Ok(fallback_budget) = self.profile_input_budget(&fallback, margin) {
+                budget = budget.min(fallback_budget);
+            }
+            next = self.profile_fallback(&fallback);
+        }
+        Ok(budget)
+    }
+
+    fn profile_fallback(&self, name: &str) -> Option<String> {
+        let state = self.read_state();
+        state
+            .router_config
+            .as_ref()?
+            .resolve_profile(name)?
+            .metadata
+            .as_ref()?
+            .get("fallback_profile")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    fn profile_input_budget(&self, name: &str, margin: u32) -> Result<u64> {
+        let state = self.read_state();
+        let profile = state
+            .router_config
+            .as_ref()
+            .and_then(|c| c.resolve_profile(name))
+            .ok_or_else(|| anyhow!("context budgeting requires a concrete model route: {name}"))?;
+        let window = u64::from(
+            profile
+                .context_window_tokens
+                .ok_or_else(|| anyhow!("model route {name} must declare context_window_tokens"))?,
+        );
+        let limits = profile
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get(magicllm::catalog::CATALOG_SETTINGS_KEY))
+            .and_then(|v| v.get("limits"));
+        let shared = limits
+            .and_then(|v| v.get("shared_context_window"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let reserve = if shared {
+            u64::from(profile.max_output_tokens.unwrap_or(4096))
+        } else {
+            0
+        };
+        let input = limits
+            .and_then(|v| v.get("max_input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(window);
+        let budget = window
+            .saturating_sub(reserve)
+            .min(input)
+            .saturating_sub(u64::from(margin));
+        anyhow::ensure!(
+            budget >= 1024,
+            "model route {name} has insufficient input headroom"
+        );
+        Ok(budget)
     }
 
     pub fn chat_completion_telemetry_hint(
@@ -1743,7 +1682,7 @@ impl MultiLLMService {
             })
             .or_else(|| state.operation_mapping.get(operation).cloned())
             .unwrap_or_else(|| state.default_config.clone());
-        let resolved_profile = Self::resolve_adaptive_to_fast(state, &raw_profile);
+        let resolved_profile = raw_profile;
         let config = state.llm_configs.get(resolved_profile.as_str())?;
         Some(ChatCompletionTelemetryHint {
             provider: config.provider.to_string(),
@@ -1833,16 +1772,18 @@ impl MultiLLMService {
         overrides: Option<ChatCompletionRequestOverrides>,
     ) -> Result<ChatCompletionResponse> {
         let llm_config = self.get_config_by_profile_name(profile_name)?;
-        let timeout_secs = LLMOperation::ChatCompletion.timeout_seconds();
+        // The named profile's own `timeout_secs` bounds the call (the router
+        // fills it in); a fixed 120 s cut long high-effort answers mid-stream
+        // (live 2026-10-21) while the profile allowed 600 s.
+        let timeout_secs: Option<u64> = None;
 
         debug!(
             "[MAGICIAN-V2-LLM] Generating chat completion with profile override '{}' using \
-             model '{}' with {} messages, {} tools, timeout {}s",
+             model '{}' with {} messages, {} tools, profile timeout",
             profile_name,
             llm_config.model,
             messages.len(),
             tools.len(),
-            timeout_secs
         );
 
         let configured_router = self
@@ -1857,7 +1798,7 @@ impl MultiLLMService {
             tools: tools.into(),
             metadata: RouterMetadata {
                 operation: LLMOperation::ChatCompletion.as_str().to_string(),
-                timeout_secs: Some(timeout_secs),
+                timeout_secs,
                 ..Default::default()
             },
             temperature: llm_config.temperature,
@@ -1937,16 +1878,18 @@ impl MultiLLMService {
         overrides: Option<ChatCompletionRequestOverrides>,
     ) -> Result<()> {
         let llm_config = self.get_config_by_profile_name(profile_name)?;
-        let timeout_secs = LLMOperation::ChatCompletion.timeout_seconds();
+        // The named profile's own `timeout_secs` bounds the call (the router
+        // fills it in); a fixed 120 s cut long high-effort answers mid-stream
+        // (live 2026-10-21) while the profile allowed 600 s.
+        let timeout_secs: Option<u64> = None;
 
         debug!(
             "[MAGICIAN-V2-LLM] Generating streaming chat completion with profile override '{}' \
-             using model '{}' with {} messages, {} tools, timeout {}s",
+             using model '{}' with {} messages, {} tools, profile timeout",
             profile_name,
             llm_config.model,
             messages.len(),
             tools.len(),
-            timeout_secs
         );
 
         let configured_router = self
@@ -1962,7 +1905,7 @@ impl MultiLLMService {
             stream: true,
             metadata: RouterMetadata {
                 operation: LLMOperation::ChatCompletion.as_str().to_string(),
-                timeout_secs: Some(timeout_secs),
+                timeout_secs,
                 ..Default::default()
             },
             temperature: llm_config.temperature,
@@ -2113,9 +2056,15 @@ fn extract_text_from_messages(messages: &[RouterMessage]) -> Option<String> {
 /// in practice most do. Returns `None` for non-chat operations
 /// (one-shot extraction / classification calls) where caching ROI is
 /// already covered by the default 5-min ephemeral or by zero benefit.
+///
+/// A chat re-sends its history with each new turn appended, so it is a
+/// conversation cache: Anthropic anchors the last completed turn too, not just
+/// tools + system (OpenAI's automatic prefix cache needs no anchor). It is not
+/// a context-reuse plan, which would replace the OpenAI Responses chain id
+/// chat passes in `openai_previous_response_id`.
 fn chat_prompt_cache_config_for_operation(operation: &str) -> Option<PromptCacheConfig> {
     if operation == LLMOperation::ChatCompletion.as_str() {
-        Some(PromptCacheConfig::enabled_with_ttl("1h"))
+        Some(PromptCacheConfig::conversation_with_ttl("1h"))
     } else {
         None
     }
@@ -2178,8 +2127,8 @@ fn build_router_config(
         .collect();
 
     LLMRouterConfig {
+        catalog: Default::default(),
         profiles,
-        adaptive_profiles: std::collections::HashMap::new(),
         operation_mapping,
         default_profile,
         // `realtime_voice` was added to `LLMRouterConfig` as part of

@@ -76,18 +76,22 @@ impl Notice {
         remember: Option<AskIntention>,
         now_ms: i64,
     ) -> Self {
-        let id = digest(&json!(["alignment_notice.v1", execution_id, binding_id, explanation]))
-            [..24]
+        let id = digest(&json!([
+            "alignment_notice.v1",
+            execution_id,
+            binding_id,
+            explanation
+        ]))[..24]
             .to_string();
         // Only an inferred intention is "remembered"; an explicit one already is.
         let remember = remember
             .filter(|intention| {
-                intention.assertion_status
-                    == super::intention::AssertionStatus::Inferred
+                intention.assertion_status == super::intention::AssertionStatus::Inferred
             })
             .and_then(|intention| {
-            LastingWrite::remember(&id, &intention).map(|write| RememberOffer { intention, write })
-        });
+                LastingWrite::remember(&id, &intention)
+                    .map(|write| RememberOffer { intention, write })
+            });
         Self {
             id,
             created_at_ms: now_ms,
@@ -103,6 +107,42 @@ impl Notice {
 }
 
 impl Notice {
+    /// The notice for a decided nudge over the intentions `cited` from the
+    /// check. A hold lowered to this nudge is about what it rested on, not
+    /// every intention it cited.
+    pub fn for_decision(
+        execution_id: Option<String>,
+        binding_id: &str,
+        act_summary: String,
+        decision: &super::contract::ValidatedDecision,
+        cited: &[AskIntention],
+        now_ms: i64,
+    ) -> Self {
+        let about = decision
+            .downgrade
+            .as_ref()
+            .map(|downgrade| &downgrade.rested_on)
+            .filter(|rested_on| !rested_on.is_empty())
+            .unwrap_or(&decision.decision.supporting_intentions);
+        let decision = &decision.decision;
+        Self::for_nudge(
+            execution_id,
+            binding_id,
+            act_summary,
+            decision.explanation.clone(),
+            cited
+                .iter()
+                .filter(|cited| about.contains(&cited.id))
+                .cloned()
+                .collect(),
+            decision
+                .remember_offer
+                .as_ref()
+                .and_then(|offer| cited.iter().find(|cited| &cited.id == offer).cloned()),
+            now_ms,
+        )
+    }
+
     /// A hold nobody answered before its deadline: the act was not run
     /// (P5.4). Owner-private like every notice; the reason is the hold's own.
     pub fn for_expired_hold(
@@ -121,7 +161,11 @@ impl Notice {
             )
         };
         Self {
-            id: digest(&json!(["alignment_notice.expired.v1", ask.ask_id, ask.binding_id]))[..24]
+            id: digest(&json!([
+                "alignment_notice.expired.v1",
+                ask.ask_id,
+                ask.binding_id
+            ]))[..24]
                 .to_string(),
             created_at_ms: now_ms,
             execution_id,
@@ -384,10 +428,17 @@ mod tests {
             1,
         );
         let token = notice.remember.as_ref().expect("offer").write.token.clone();
-        assert!(record_notice(&resolver, "owner", "ws", notice.clone()).await.unwrap());
+        assert!(record_notice(&resolver, "owner", "ws", notice.clone())
+            .await
+            .unwrap());
         // The same nudge again is not a second notice.
-        assert!(!record_notice(&resolver, "owner", "ws", notice.clone()).await.unwrap());
-        assert_eq!(list_notices(&resolver, "owner", "ws").await.unwrap().len(), 1);
+        assert!(!record_notice(&resolver, "owner", "ws", notice.clone())
+            .await
+            .unwrap());
+        assert_eq!(
+            list_notices(&resolver, "owner", "ws").await.unwrap().len(),
+            1
+        );
 
         assert_eq!(
             answer_notice(
@@ -416,12 +467,22 @@ mod tests {
         };
         assert_eq!(resolved.state, NoticeState::Remembered);
         let saved = memory.load_user_knowledge().await.unwrap();
-        assert_eq!(assertion_status(&saved["preferences"][0]), AssertionStatus::Confirmed);
+        assert_eq!(
+            assertion_status(&saved["preferences"][0]),
+            AssertionStatus::Confirmed
+        );
         // Answered once.
         assert!(matches!(
-            answer_notice(&resolver, "owner", "ws", &notice.id, NoticeAnswer::Dismiss, Utc::now())
-                .await
-                .unwrap(),
+            answer_notice(
+                &resolver,
+                "owner",
+                "ws",
+                &notice.id,
+                NoticeAnswer::Dismiss,
+                Utc::now()
+            )
+            .await
+            .unwrap(),
             NoticeOutcome::AlreadyResolved(_)
         ));
     }
@@ -441,7 +502,9 @@ mod tests {
             1,
         );
         let token = notice.remember.as_ref().unwrap().write.token.clone();
-        record_notice(&resolver, "owner", "ws", notice.clone()).await.unwrap();
+        record_notice(&resolver, "owner", "ws", notice.clone())
+            .await
+            .unwrap();
         let mut changed = knowledge();
         changed["preferences"][0]["value"] = json!("medium");
         memory.save_user_knowledge(&changed).await.unwrap();

@@ -15,8 +15,8 @@ settings:
   base:
     # App version — kept here (not in Info.plist) because xcodegen regenerates the
     # Info.plist from this file. Bump on release; also add a CHANGELOG entry.
-    MARKETING_VERSION: "0.4.3"
-    CURRENT_PROJECT_VERSION: "207"
+    MARKETING_VERSION: "0.4.14"
+    CURRENT_PROJECT_VERSION: "225"
 packages:
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui

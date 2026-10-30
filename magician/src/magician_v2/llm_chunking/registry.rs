@@ -131,38 +131,38 @@ pub struct ChunkReleaseCandidateSpec {
 pub const CHUNK_RELEASE_CANDIDATES: &[ChunkReleaseCandidateSpec] = &[
     ChunkReleaseCandidateSpec {
         operation: "memory_temperature_utility_review",
-        baseline_profile: "op-memory-episode-quality-standard",
-        candidate_profile: "op-memory-utility-review-local-chunked",
+        baseline_profile: "workload/memory_episode_quality/baseline",
+        candidate_profile: "operation/memory_temperature_utility_review",
         adapter_id: "memory_utility_review_v1",
     },
     ChunkReleaseCandidateSpec {
         operation: "memory_episode_quality_classification",
-        baseline_profile: "op-memory-episode-quality-standard",
-        candidate_profile: "op-memory-episode-quality-local-chunked",
+        baseline_profile: "workload/memory_episode_quality/baseline",
+        candidate_profile: "operation/memory_episode_quality_classification",
         adapter_id: "memory_episode_quality_v1",
     },
     ChunkReleaseCandidateSpec {
         operation: "memory_entity_extraction",
-        baseline_profile: "op-memory-entity-extraction-fast",
-        candidate_profile: "op-memory-entity-extraction-local-chunked",
+        baseline_profile: "operation/voice_context_compaction",
+        candidate_profile: "operation/memory_entity_extraction",
         adapter_id: "memory_entities_v1",
     },
     ChunkReleaseCandidateSpec {
         operation: "distill_evidence",
-        baseline_profile: "op-memory-evidence-distillation-fast",
-        candidate_profile: "op-memory-evidence-distillation-local-chunked",
+        baseline_profile: "operation/screen_evidence_distill",
+        candidate_profile: "operation/distill_evidence",
         adapter_id: "evidence_distill_v1",
     },
     ChunkReleaseCandidateSpec {
         operation: "memory_environment_knowledge_extraction",
-        baseline_profile: "op-memory-environment-extraction-fast",
-        candidate_profile: "op-memory-environment-extraction-local-chunked",
+        baseline_profile: "operation/voice_context_compaction",
+        candidate_profile: "operation/memory_environment_knowledge_extraction",
         adapter_id: "memory_environment_v1",
     },
     ChunkReleaseCandidateSpec {
         operation: "memory_archive_summary",
-        baseline_profile: "op-memory-archive-summary-fast",
-        candidate_profile: "op-memory-archive-summary-local-chunked",
+        baseline_profile: "operation/voice_context_compaction",
+        candidate_profile: "operation/memory_archive_summary",
         adapter_id: "memory_archive_v1",
     },
 ];
@@ -332,20 +332,11 @@ fn resolve_standard_profiles<'a>(
     config: &'a LLMRouterConfig,
     selected_name: &'a str,
 ) -> Vec<(&'a str, &'a LLMProfile)> {
-    if let Some(profile) = config.profiles.get(selected_name) {
-        return vec![(selected_name, profile)];
-    }
-    let Some(adaptive) = config.adaptive_profiles.get(selected_name) else {
-        return Vec::new();
-    };
-    let mut profiles = Vec::with_capacity(2);
-    if let Some(profile) = config.profiles.get(&adaptive.fast_profile) {
-        profiles.push((adaptive.fast_profile.as_str(), profile));
-    }
-    if let Some(profile) = config.profiles.get(&adaptive.thinking_profile) {
-        profiles.push((adaptive.thinking_profile.as_str(), profile));
-    }
-    profiles
+    config
+        .profiles
+        .get(selected_name)
+        .map(|profile| vec![(selected_name, profile)])
+        .unwrap_or_default()
 }
 
 fn validate_mapped_profile(

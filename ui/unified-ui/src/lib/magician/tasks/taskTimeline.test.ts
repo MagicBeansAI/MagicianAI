@@ -25,8 +25,6 @@ import {
 	groupTimelineByDelegation,
 	formatUsd,
 	spokenUsd,
-	latencyScale,
-	latencyShare,
 	runCost,
 	runCostRows,
 	timelineClock,
@@ -191,6 +189,36 @@ const timelineFixture = (overrides: Partial<TimelineEntry> = {}): TimelineEntry 
 });
 
 describe('deriveTimeline', () => {
+	it('names a tool operation from its detail rather than its outer MCP wrapper', () => {
+		const entries = timelineOf(state({ run: { activity_log: [activity({
+			id: 'mcp', createdAt: TOOL_AT, title: 'Using tool', metadata: {
+				event_type: 'tool.started', target: 'groceries__call_tool', detail: 'groceries · search_products'
+			}
+		})] } }));
+		expect(entries[0].title).toContain('groceries · search_products');
+	});
+	it('keeps measured Decision Engine tokens and a zero API bill in task steps', () => {
+		const entries=timelineOf(state({run:{activity_log:[activity({id:'de',createdAt:LLM_AT,metadata:{event_type:'llm.succeeded',model:'jev-test',response_kind:'decision_model',input_tokens:1200,output_tokens:0,cost_usd:0,latency_ms:71}})]}}));
+		expect(entries[0]).toMatchObject({kind:'llm',title:'Thinking with jev-test',latencyMs:71,costUsd:0,tokens:{input:1200,output:0,cacheRead:null,cacheCreation:null}});
+	});
+	it('pairs context preparation without counting it as a model call', () => {
+		const entries=timelineOf(state({run:{activity_log:[
+			activity({id:'context-start',createdAt:LLM_AT,status:'running',metadata:{event_type:'context.retrieval.started',phase_id:'p'}}),
+			activity({id:'context-end',createdAt:LLM_AT+123,summary:'Memory search: 100 ms',metadata:{event_type:'context.retrieval.completed',phase_id:'p',status:'partial',duration_ms:123}}),
+			activity({id:'context-late-start',createdAt:LLM_AT+124,status:'running',metadata:{event_type:'context.retrieval.started',phase_id:'p'}})
+		]}}));
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({kind:'event',status:'done',title:'Context prepared (partial)',latencyMs:123,tokens:null,costUsd:null});
+	});
+	it('respects a context start that the backend has retired after the run moved on', () => {
+		const entries = timelineOf(state({ run: { activity_log: [
+			activity({ id: 'retired-context', createdAt: LLM_AT, status: 'info',
+				metadata: { event_type: 'context.retrieval.started', phase_id: 'lost-phase' } })
+		] } }));
+		expect(entries).toHaveLength(1);
+		expect(entries[0].status).not.toBe('running');
+		expect(entries[0].latencyMs).toBeNull();
+	});
 	it('retains the bounded recipe lifecycle payload for task-level cues', () => {
 		const entries = timelineOf(
 			state({
@@ -296,9 +324,194 @@ describe('deriveTimeline', () => {
 		// The same step must read identically in the card and in the panel it
 		// opens, so these are the card's phrasings rather than the backend's
 		// humanized titles — which the fixtures deliberately set to something else.
-		expect(byId(entries, 'log-llm').title).toBe('Thinking with research');
+		// An LLM row names the model, as the card does; the capability is an
+		// operation name and only the fallback.
+		expect(byId(entries, 'log-llm').title).toBe('Thinking with claude-opus-4');
 		expect(byId(entries, 'log-tool-start').title).toBe('Calling memory_search');
 		expect(byId(entries, 'log-tool-fail').title).toBe('shell_run failed');
+	});
+
+	it('shows one row per model call: the settled one, titled with its model', () => {
+		const entries = timelineOf(
+			state({
+				run: {
+					activity_log: [
+						activity({
+							id: 'req-1',
+							createdAt: LLM_AT,
+							title: 'LLM call requested',
+							metadata: { event_type: 'llm.requested', capability: 'decision' }
+						}),
+						activity({ id: 'done-1', createdAt: LLM_AT + 5, title: 'LLM call succeeded', metadata: LLM_METADATA }),
+						activity({
+							id: 'req-2',
+							createdAt: LLM_AT + 10,
+							title: 'LLM call requested',
+							metadata: { event_type: 'llm.requested', capability: 'decision' }
+						})
+					]
+				}
+			})
+		);
+
+		// The answered request folds into its settled row; the open one stays.
+		expect(entries.map((entry) => entry.id)).toEqual(['done-1', 'req-2']);
+		expect(byId(entries, 'done-1').title).toBe('Thinking with claude-opus-4');
+		expect(byId(entries, 'req-2').title).toBe('Thinking with decision');
+	});
+
+	it('titles an LLM row by its capability only when the event names no model', () => {
+		const { model: _model, ...noModel } = LLM_METADATA;
+		const entries = timelineOf(
+			state({
+				run: {
+					activity_log: [
+						activity({ id: 'llm-no-model', createdAt: LLM_AT, title: 'LLM call succeeded', metadata: noModel }),
+						activity({
+							id: 'llm-requested',
+							createdAt: LLM_AT + 1,
+							title: 'LLM call requested',
+							metadata: { event_type: 'llm.requested', capability: 'decision', model: 'gpt-6.1-sol' }
+						})
+					]
+				}
+			})
+		);
+
+		expect(byId(entries, 'llm-no-model').title).toBe('Thinking with research');
+		expect(byId(entries, 'llm-requested').title).toBe('Thinking with gpt-6.1-sol');
+	});
+
+	describe('one row per call, paired by its id', () => {
+		const llm = (id: string, createdAt: number, status: 'running' | 'done' | 'failed', metadata: Record<string, unknown>) =>
+			activity({ id, createdAt, status, title: 'LLM call', metadata: { llm_call_id: 'call-1', ...metadata } });
+
+		it('runs from the request, takes the routed model, and settles in place', () => {
+			const requested = llm('req-1', LLM_AT, 'running', {
+				event_type: 'llm.requested',
+				capability: 'decision',
+				trace_id: 'trace-run'
+			});
+			const routed = llm('route-1', LLM_AT + 2, 'running', {
+				event_type: 'llm.routed',
+				provider: 'openai',
+				model: 'gpt-6.1-sol',
+				profile: 'fast'
+			});
+
+			// Requested alone: one running row under the call's stable id.
+			let entries = timelineOf(state({ run: { activity_log: [requested] } }));
+			expect(entries.map((entry) => entry.id)).toEqual(['llm-call:call-1']);
+			expect(entries[0].status).toBe('running');
+			expect(entries[0].title).toBe('Thinking with decision');
+
+			// Routed: still the one running row, now naming the model.
+			entries = timelineOf(state({ run: { activity_log: [requested, routed] } }));
+			expect(entries).toHaveLength(1);
+			expect(entries[0]).toMatchObject({
+				id: 'llm-call:call-1',
+				status: 'running',
+				title: 'Thinking with gpt-6.1-sol',
+				model: 'gpt-6.1-sol',
+				at: LLM_AT
+			});
+
+			// Settled: the same row, with the outcome, time and bill, at the start.
+			const succeeded = llm('done-1', LLM_AT + 9, 'done', { ...LLM_METADATA, model: undefined });
+			entries = timelineOf(state({ run: { activity_log: [requested, routed, succeeded] } }));
+			expect(entries).toHaveLength(1);
+			expect(entries[0]).toMatchObject({
+				id: 'llm-call:call-1',
+				status: 'done',
+				title: 'Thinking with gpt-6.1-sol',
+				model: 'gpt-6.1-sol',
+				latencyMs: LATENCY_MS,
+				costUsd: COST_USD,
+				at: LLM_AT
+			});
+		});
+
+		it('keeps two calls apart and never reopens a settled one', () => {
+			const entries = timelineOf(
+				state({
+					run: {
+						activity_log: [
+							llm('req-a', LLM_AT, 'running', { event_type: 'llm.requested', capability: 'decision' }),
+							activity({
+								id: 'req-b',
+								createdAt: LLM_AT + 1,
+								status: 'running',
+								metadata: { event_type: 'llm.requested', capability: 'decision', llm_call_id: 'call-2' }
+							}),
+							llm('done-a', LLM_AT + 5, 'done', LLM_METADATA),
+							// A late duplicate start after the settle.
+							llm('req-a-late', LLM_AT + 6, 'running', { event_type: 'llm.requested', capability: 'decision' })
+						]
+					}
+				})
+			);
+			expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+				['llm-call:call-1', 'done'],
+				['llm-call:call-2', 'running']
+			]);
+		});
+
+		it('pairs a tool start with its result by call_id', () => {
+			const start = activity({
+				id: 'tool-start',
+				createdAt: TOOL_AT,
+				status: 'running',
+				metadata: {
+					event_type: 'tool.started',
+					call_id: 'act-1',
+					target: 'shell',
+					action_type: 'pack',
+					started_at_ms: TOOL_AT - 50,
+					execution_id: EXECUTION_ID
+				}
+			});
+			const running = timelineOf(state({ run: { activity_log: [start] } }));
+			expect(running).toHaveLength(1);
+			expect(running[0]).toMatchObject({ status: 'running', title: 'Calling shell', at: TOOL_AT - 50 });
+
+			const done = activity({
+				id: 'tool-done',
+				createdAt: TOOL_AT + 400,
+				status: 'done',
+				// The result names no tool; the row keeps the start's name.
+				metadata: { event_type: 'tool.succeeded', call_id: 'act-1', latency_ms: 400, execution_id: EXECUTION_ID }
+			});
+			const settled = timelineOf(state({ run: { activity_log: [start, done] } }));
+			expect(settled).toHaveLength(1);
+			expect(settled[0]).toMatchObject({
+				id: running[0].id,
+				status: 'done',
+				title: 'shell returned',
+				latencyMs: 400,
+				at: TOOL_AT - 50
+			});
+		});
+
+		it('falls back to the sequential fold when the request carries no id', () => {
+			// An older server: no `llm_call_id` on the request, one on the settle.
+			const entries = timelineOf(
+				state({
+					run: {
+						activity_log: [
+							activity({
+								id: 'req-old',
+								createdAt: LLM_AT,
+								status: 'running',
+								metadata: { event_type: 'llm.requested', capability: 'decision' }
+							}),
+							llm('done-old', LLM_AT + 5, 'done', LLM_METADATA)
+						]
+					}
+				})
+			);
+			expect(entries.map((entry) => entry.id)).toEqual(['llm-call:call-1']);
+			expect(entries[0].status).toBe('done');
+		});
 	});
 
 	it('falls back to the humanized title when nothing names the tool', () => {
@@ -904,93 +1117,6 @@ describe('formatTokens', () => {
 		// Zero is a real count and renders; a negative one is not a measurement.
 		expect(formatTokens(0)).toBe('0');
 		expect(formatTokens(-1)).toBeNull();
-	});
-});
-
-/**
- * Where the time went.
- *
- * A duration per row is a number the reader compares by hand; a bar drawn to
- * scale answers "what took so long?" without their doing the arithmetic. What
- * these pin is the two ways such a bar can lie: drawing one where nothing was
- * measured, and drawing one where there is nothing to compare against.
- *
- * **The latencies below are deliberately not multiples of each other except
- * where a case is about the ratio**, so a share computed off the wrong
- * denominator — the total instead of the maximum, say — cannot coincide with the
- * right answer.
- */
-describe('latencyScale and latencyShare', () => {
-	const timed = (...latencies: (number | null)[]): TimelineEntry[] =>
-		latencies.map((latencyMs, index) => ({
-			id: `entry-${index}`,
-			at: LLM_AT + index,
-			kind: 'llm',
-			status: 'done',
-			title: `Call ${index}`,
-			body: null,
-			detail: null,
-			latencyMs,
-			model: null,
-			costUsd: null,
-			tokens: null,
-			screenshot: false,
-			executionId: null,
-			agentId: null,
-		}));
-
-	it('has no scale until two rows were timed, because one bar compares to nothing', () => {
-		// A comparison needs two things. A single timed row would draw a full-width
-		// bar meaning "the longest of the one thing measured", which the eye reads
-		// as "this took a long time" — a claim the list does not contain.
-		expect(latencyScale([])).toBeNull();
-		expect(latencyScale(timed(null, null, null))).toBeNull();
-		expect(latencyScale(timed(4_300, null, null))).toBeNull();
-		expect(latencyScale(timed(4_300, 900))).toBe(4_300);
-	});
-
-	it('does not count a zero or a negative toward the two rows it needs', () => {
-		// `0` is not a measurement a reader can act on, and letting one count would
-		// switch the whole strip on for a feed holding a single real number.
-		expect(latencyScale(timed(4_300, 0))).toBeNull();
-		expect(latencyScale(timed(4_300, -1))).toBeNull();
-		expect(latencyScale(timed(4_300, 0, 900))).toBe(4_300);
-	});
-
-	it('scales against the longest and not the total, so one slow call stands out', () => {
-		// 12s among four calls totalling 13.2s. Against the max the slow one fills
-		// the track and the rest are slivers — the answer, seen rather than read.
-		// Against the total it would be 91%, 5%, 3%, 2% — different numbers, so a
-		// denominator swap cannot pass this.
-		const scale = latencyScale(timed(12_000, 700, 400, 100));
-		expect(scale).toBe(12_000);
-		expect(latencyShare(12_000, scale)).toBe(100);
-		expect(latencyShare(700, scale)).toBe(6);
-		expect(latencyShare(400, scale)).toBe(3);
-	});
-
-	it('draws a sliver rather than nothing for a real but tiny measurement', () => {
-		// 1ms against 12s rounds to 0%, and a zero-width bar is indistinguishable
-		// from the no-bar an *unmeasured* row gets. Those are different facts, so
-		// the floor exists — and it is a floor, not a default: an unmeasured row
-		// still gets `null`.
-		expect(latencyShare(1, 12_000)).toBe(2);
-		expect(latencyShare(null, 12_000)).toBeNull();
-	});
-
-	it('draws equal bars for equal calls, which is the truthful picture of a flat run', () => {
-		// Nothing stood out, so nothing is drawn as standing out. Full-width rather
-		// than uniformly tiny: the bars are a *relative* claim, and every call here
-		// really was as long as the longest.
-		const scale = latencyScale(timed(900, 900, 900));
-		expect(scale).toBe(900);
-		expect([900, 900, 900].map((ms) => latencyShare(ms, scale))).toEqual([100, 100, 100]);
-	});
-
-	it('draws no bar without a scale, however long the row itself was', () => {
-		// The row's own number is still shown; only the comparison is withheld.
-		expect(latencyShare(12_000, null)).toBeNull();
-		expect(latencyShare(12_000, 0)).toBeNull();
 	});
 });
 

@@ -829,11 +829,14 @@ enum LiveTaskCardClient {
     }
 
     static func json(_ v3Path: String) async -> [String: Any]? {
-        guard let url = URL(string: "\(MagicianAccess.baseURL.absoluteString)/api/magician/v3" + v3Path) else { return nil }
+        let expected = TaskUsageStore.connectionKey()
+        let origin = MagicianAccess.baseURL, headers = MagicianAccess.headers()
+        guard let url = URL(string: "\(origin.absoluteString)/api/magician/v3" + v3Path) else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
-        MagicianAccess.authorize(&request)
+        headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         guard let (data, response) = try? await URLSession.shared.data(for: request),
+              expected == TaskUsageStore.connectionKey(), origin == MagicianAccess.baseURL, headers == MagicianAccess.headers(),
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }

@@ -100,7 +100,13 @@ mod tests {
 
     #[test]
     fn the_same_wording_gets_the_same_placeholder() {
-        assert_eq!(redact_wording(Some("taste"), "No meat"), redact_wording(Some("taste"), "No meat"));
-        assert_ne!(redact_wording(None, "No meat"), redact_wording(None, "No fish"));
+        assert_eq!(
+            redact_wording(Some("taste"), "No meat"),
+            redact_wording(Some("taste"), "No meat")
+        );
+        assert_ne!(
+            redact_wording(None, "No meat"),
+            redact_wording(None, "No fish")
+        );
     }
 }

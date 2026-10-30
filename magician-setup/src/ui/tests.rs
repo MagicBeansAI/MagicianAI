@@ -140,7 +140,7 @@ fn the_first_screen_says_what_this_is() {
     let screen = render(1, None);
     assert!(screen.contains("Magican"), "no name:\n{screen}");
     assert!(
-        screen.contains("Superpowers for Work"),
+        screen.contains(crate::theme::TAGLINE),
         "no tagline:\n{screen}"
     );
 }

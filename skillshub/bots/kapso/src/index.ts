@@ -2,6 +2,7 @@ import { ChannelRuntime, MagicianClient } from "@magician/bot-sdk";
 import type { ChannelIdentity } from "@magician/bot-sdk";
 
 import { KapsoAdapter } from "./adapter.js";
+import { resolveKapsoWebhookUrl } from "./webhook-registration.js";
 
 const DEFAULT_CONTROL_PREFIX = "/magic";
 const LEGACY_CONTROL_PREFIX = "@magic";
@@ -47,7 +48,10 @@ const fallbackTemplateLang = process.env.KAPSO_FALLBACK_TEMPLATE_LANG?.trim();
 const adapter = new KapsoAdapter({
   apiKey: requiredEnv("KAPSO_API_KEY"),
   phoneNumberId: requiredEnv("KAPSO_PHONE_NUMBER_ID"),
-  webhookSecret: requiredEnv("KAPSO_WEBHOOK_SECRET"),
+  // The webhook URL follows this machine's tunnel host; the bot registers it
+  // on the number at startup and verifies with that registration's secret.
+  webhookUrl: resolveKapsoWebhookUrl(process.env),
+  webhookSecret: process.env.KAPSO_WEBHOOK_SECRET?.trim() || undefined,
   webhookPort: Number(process.env.WEBHOOK_PORT?.trim() || "3010"),
   ...(fallbackTemplateName ? { fallbackTemplateName } : {}),
   ...(fallbackTemplateLang ? { fallbackTemplateLang } : {}),

@@ -844,12 +844,10 @@ fn sanitize_inline(value: &str) -> String {
         .join(" ")
 }
 
+/// Bounded at a sentence or word boundary by the one shared recall-text
+/// bound ([`magician_vector_index::text_bounds::bound_text`]), never mid-word.
 fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        value.to_string()
-    } else {
-        value.chars().take(max_chars).collect()
-    }
+    magician_vector_index::text_bounds::bound_text(value, max_chars)
 }
 
 fn one_line_excerpt(value: &str, max_chars: usize) -> String {

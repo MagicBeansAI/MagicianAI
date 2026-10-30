@@ -223,14 +223,16 @@ async fn provide_fields(service: &UserRequestService) {
     }
 }
 #[tokio::test]
-async fn jit_browser_prompts_all_fields_then_confirms_and_returns_only_receipt() {
+async fn jit_browser_prompts_all_fields_then_fills_without_a_second_ask_and_returns_only_receipt() {
     let service = svc();
     let adapter = adapter(false);
     let task = start(service.clone(), adapter.clone());
     provide_fields(&service).await;
-    assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
-    answer_next(&service, "allow_once", None, "secure_browser_confirm").await;
     let result = task.await.unwrap();
+    assert!(
+        service.list_pending().await.is_empty(),
+        "typed values are their own use-once answer"
+    );
     assert_eq!(result["status"], "filled");
     assert_eq!(result["saved"], false);
     assert_eq!(result["submitted"], false);
@@ -251,8 +253,14 @@ async fn jit_browser_decline_discards_values_without_delivery() {
     let service = svc();
     let adapter = adapter(false);
     let task = start(service.clone(), adapter.clone());
-    provide_fields(&service).await;
-    answer_next(&service, "cancel", Some(CANARY), "secure_browser_confirm").await;
+    answer_next(
+        &service,
+        "provide_input",
+        Some(CANARY),
+        "secure_browser_input",
+    )
+    .await;
+    answer_next(&service, "cancel", Some(CANARY), "secure_browser_input").await;
     assert_eq!(task.await.unwrap()["status"], "cancelled");
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
     assert!(
@@ -267,7 +275,6 @@ async fn jit_browser_stale_target_is_not_rediscovered_or_retried() {
     let adapter = adapter(true);
     let task = start(service.clone(), adapter.clone());
     provide_fields(&service).await;
-    answer_next(&service, "allow_once", None, "secure_browser_confirm").await;
     let result = task.await.unwrap();
     assert_eq!(result["error"], "stale_target");
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);

@@ -24,6 +24,17 @@ final class TodayMorningEditionTests: XCTestCase {
         super.tearDown()
     }
 
+    func testReadingRoomDatesDistinguishReceiptSurfacingAndReferenceTimes() throws {
+        let message = try followUp("f", extra: ["received_at": 1_700_000_000_000, "created_at": 1_800_000_000_000])
+        XCTAssertTrue(readingRoomDateline(followUp: message)!.hasPrefix("Received "))
+        let surfaced = try worthCard("w", extra: ["surfaced_at": 1_800_000_000_000, "temporal_anchor_at": 1_700_000_000_000])
+        XCTAssertEqual(surfaced.surfacedAt, 1_800_000_000_000)
+        XCTAssertTrue(readingRoomDateline(worth: surfaced)!.hasPrefix("Surfaced "))
+        let reference = try worthCard("w", extra: ["surfaced_at": 0, "temporal_anchor_at": 1_700_000_000_000])
+        XCTAssertTrue(readingRoomDateline(worth: reference)!.hasPrefix("Reference "))
+        XCTAssertNil(readingRoomDateline())
+    }
+
     // MARK: Masthead
 
     func testRomanNumeralsAreSubtractiveAndNeverBelowOne() {
@@ -217,34 +228,92 @@ final class TodayMorningEditionTests: XCTestCase {
         XCTAssertEqual(TodayMorningEdition.deckCards(tail, in: .forYou).map(\.id), ["followup:f1"])
         XCTAssertEqual(TodayMorningEdition.deckCards(tail, in: .worth).count, 3)
         XCTAssertEqual(TodayMorningEdition.deckCountLabel(50), "50")
-        XCTAssertEqual(TodayMorningEdition.deckCountLabel(51), "50+")
+        XCTAssertEqual(TodayMorningEdition.deckCountLabel(51), "51")
     }
 
     func testDeckCardCopyAndFallbacks() throws {
         let rich = TodayDeckCard(source: .followUp(try followUp("f1", extra: [
             "provider": "gmail", "subject": "Client reply", "sender": "Alex", "summary": "", "reason": "Direct question"
         ])))
-        XCTAssertEqual(rich.category, "DISPATCH · GMAIL")
+        XCTAssertEqual(rich.category, "FOR YOU · GMAIL")
         XCTAssertEqual(rich.title, "Client reply")
         XCTAssertEqual(rich.summary, "Direct question")
         XCTAssertEqual(rich.sender, "Alex")
-        XCTAssertEqual(rich.primaryLabel, "Do it")
+        XCTAssertEqual(rich.actEntries.map(\.id), ["start-task", "snooze", "details"])
         let bare = TodayDeckCard(source: .followUp(try followUp("f2", extra: ["provider": ""])))
-        XCTAssertEqual(bare.category, "DISPATCH · CORRESPONDENCE")
+        XCTAssertEqual(bare.category, "FOR YOU · CORRESPONDENCE")
         XCTAssertEqual(bare.title, "Untitled Message")
         XCTAssertEqual(bare.summary, "No preview available")
 
         let worth = TodayDeckCard(source: .worth(try worthCard("w1", extra: [
             "source_kind": "project_note", "source_title": "", "line": "Contract terms", "why_now": "Renews soon"
         ])))
-        XCTAssertEqual(worth.category, "READING ROOM · PROJECT NOTE")
+        XCTAssertEqual(worth.category, "WORTH A LOOK · PROJECT NOTE")
         XCTAssertEqual(worth.title, "Contract terms")
         XCTAssertEqual(worth.summary, "Renews soon")
-        XCTAssertEqual(worth.primaryLabel, "Open")
+        XCTAssertEqual(worth.actEntries.first, .open)
         let empty = TodayDeckCard(source: .worth(try worthCard("w2", extra: ["source_kind": "", "line": ""])))
-        XCTAssertEqual(empty.category, "READING ROOM · NOTE")
+        XCTAssertEqual(empty.category, "WORTH A LOOK · NOTE")
         XCTAssertEqual(empty.title, "Resurfaced Note")
         XCTAssertEqual(empty.summary, "Resurfaced for your attention")
+    }
+
+    func testDeckActMenuListsOnlyTheFollowUpsRealActions() throws {
+        let rich = TodayDeckCard(source: .followUp(try followUp("f1", extra: [
+            "provider": "gmail", "open_url": "https://mail.google.com/mail/u/0/#inbox/abc",
+            "available_actions": [
+                ["id": "reply", "label": "Reply", "needs_compose": true, "confirm": false, "icon": "reply"],
+                ["id": "remind", "label": "Create reminder", "needs_compose": false, "confirm": true]
+            ]
+        ])))
+        let entries = rich.actEntries
+        XCTAssertEqual(entries.map(\.id), [
+            "channel-reply", "channel-remind", "open-thread", "start-task", "snooze", "details"
+        ])
+        XCTAssertEqual(entries.map { $0.label(agentName: "Nova") }, [
+            "Reply", "Create reminder", "Open in Gmail", "Start follow-up task…", TodayView.followUpSnoozeLabel, "Details"
+        ])
+        XCTAssertEqual(entries.first?.systemImage, "arrowshape.turn.up.left.fill")
+        // Only snooze resolves the card; the task always asks for its
+        // optional instruction in the detail view first.
+        XCTAssertEqual(entries.compactMap(\.resolvingAction), [.snooze])
+        XCTAssertNil(TodayDeckActEntry.startFollowUpTask.resolvingAction)
+        XCTAssertNil(TodayDeckActEntry.details.resolvingAction)
+
+        let bare = TodayDeckCard(source: .followUp(try followUp("f2", extra: ["provider": ""])))
+        XCTAssertEqual(bare.actEntries.map(\.id), ["start-task", "snooze", "details"])
+        let stale = TodayDeckCard(source: .followUp(try followUp("f3", extra: ["review_required": true])))
+        XCTAssertEqual(stale.actEntries.map(\.id), ["snooze", "details"], "a stale recommendation offers no task")
+    }
+
+    func testDeckActMenuForWorthCardsSkipsOpenAndDetailsDuplicates() throws {
+        func capability(_ kind: String, _ label: String) -> [String: Any] {
+            ["kind": kind, "label": label, "requires_input": false, "side_effect": "none"]
+        }
+        let worth = TodayDeckCard(source: .worth(try worthCard("w1", extra: ["actions": [
+            capability("view_details", "View details"), capability("open_source", "Open source"),
+            capability("ask_presto", "Ask Presto"), capability("create_task", "Create task")
+        ]])))
+        let entries = worth.actEntries
+        XCTAssertEqual(entries.map(\.id), ["open", "capability-ask_presto", "capability-create_task", "details"])
+        XCTAssertEqual(entries.map { $0.label(agentName: "Nova") }, ["Open", "Ask Nova", "Create task", "Details"])
+        XCTAssertEqual(entries.compactMap(\.resolvingAction), [.open])
+        let plain = TodayDeckCard(source: .worth(try worthCard("w2")))
+        XCTAssertEqual(plain.actEntries.map(\.id), ["open", "details"])
+    }
+
+    func testAskPrestoLabelUsesThePrimaryAgentName() {
+        let ask = ResurfacingActionCapability(kind: .askPresto, label: "Ask Presto", requiresInput: false, sideEffect: "none")
+        XCTAssertEqual(TodayMorningEdition.resurfacingActionLabel(ask, agentName: "Nova"), "Ask Nova")
+        XCTAssertEqual(TodayMorningEdition.resurfacingActionLabel(ask, agentName: "  "), "Ask \(MagicianAccess.productName)")
+        let task = ResurfacingActionCapability(kind: .createTask, label: "Create task", requiresInput: true, sideEffect: "task")
+        XCTAssertEqual(TodayMorningEdition.resurfacingActionLabel(task, agentName: "Nova"), "Create task")
+
+        XCTAssertEqual(TodayMorningEdition.providerDisplayName("gmail"), "Gmail")
+        XCTAssertEqual(TodayMorningEdition.providerDisplayName("whatsapp_kapso"), "WhatsApp")
+        XCTAssertEqual(TodayMorningEdition.providerDisplayName("slack"), "Slack")
+        XCTAssertEqual(TodayMorningEdition.providerDisplayName(""), "app")
+        XCTAssertEqual(TodayMorningEdition.providerDisplayName("unknown"), "app")
     }
 
     func testDeckReleaseThresholdsAndStampInk() {
@@ -737,6 +806,33 @@ final class TodayMorningEditionTests: XCTestCase {
         }
         sut.loadMoreDeckCards()
         XCTAssertFalse(sut.isDeckLoadingMore)
+    }
+
+    @MainActor
+    func testRefreshReopensAnExhaustedCursorWhenNewCardsExceedTheHeadPage() {
+        let sut = loadedSUT(followUps: ["items": [["annotation_id": "f1"]], "total": 2, "next_cursor": "page-2"])
+        let initialHandler = MockURLProtocol.handler!
+        var phase = 0
+        MockURLProtocol.handler = { request in
+            if request.url!.path == "/api/magician/v2/channel-assist/follow-ups" {
+                return (response(for: request), jsonData(phase == 0
+                    ? ["items": [["annotation_id": "f2"]], "total": 2]
+                    : ["items": [["annotation_id": "f3"]], "total": 4, "next_cursor": "new-page"]))
+            }
+            return try initialHandler(request)
+        }
+        let paged = expectation(description: "Old cursor exhausted")
+        sut.$isDeckLoadingMore.dropFirst().filter { !$0 }.prefix(1).sink { _ in paged.fulfill() }.store(in: &cancellables)
+        sut.loadMoreDeckCards(followUps: true, worth: false)
+        wait(for: [paged], timeout: 3)
+        XCTAssertFalse(sut.hasMoreMessageFollowUps)
+        phase = 1
+        let refreshed = expectation(description: "Fresh head loaded")
+        sut.$isLoading.dropFirst().filter { !$0 }.prefix(1).sink { _ in refreshed.fulfill() }.store(in: &cancellables)
+        sut.fetch()
+        wait(for: [refreshed], timeout: 3)
+        XCTAssertEqual(sut.messageFollowUps.map(\.id), ["f3", "f1", "f2"])
+        XCTAssertTrue(sut.hasMoreMessageFollowUps, "New cards beyond the head need a fresh cursor")
     }
 
     @MainActor

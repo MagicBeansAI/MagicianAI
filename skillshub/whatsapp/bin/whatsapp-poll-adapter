@@ -1,0 +1,54 @@
+#!/usr/bin/env node
+// CLI companion for the one native send mode absent from wu's MCP schema.
+// Use the upstream action/IPC implementation; do not join options with commas.
+import { accessSync, constants, realpathSync } from 'node:fs';
+import { delimiter, dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+function packageRoot() {
+  for (const directory of (process.env.PATH || '').split(delimiter)) {
+    if (!directory) continue;
+    try {
+      const program = resolve(directory, 'wu');
+      accessSync(program, constants.X_OK);
+      return resolve(dirname(realpathSync(program)), '../..');
+    } catch { /* Try the next reviewed runtime-owned PATH entry. */ }
+  }
+  throw new Error('wu is unavailable on the governed PATH');
+}
+async function importWu(file) {
+  return import(pathToFileURL(join(packageRoot(), file)).href);
+}
+
+export function pollArguments(argv) {
+  const [to, ...rest] = argv;
+  let poll;
+  const options = [];
+  if (!to || to.startsWith('-')) throw new Error('A typed recipient is required');
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i], value = rest[i + 1];
+    // The governed catalog passes one bounded argv array after this marker.
+    // Everything remaining is choice text, even leading flags or commas.
+    if (flag === '--options' && options.length === 0) {
+      options.push(...rest.slice(i + 1));
+      break;
+    }
+    if (typeof value !== 'string') throw new Error('Every poll flag needs a value');
+    if (flag === '--question' && poll === undefined) poll = value;
+    else if (flag === '--option') options.push(value);
+    else throw new Error(`Unsupported or duplicated poll flag: ${flag}`);
+  }
+  if (!poll?.trim() || options.length < 2 || options.length > 12 || options.some(option => !option.trim()) || new Set(options).size !== options.length) {
+    throw new Error('A question and 2–12 distinct nonempty options are required');
+  }
+  return { to, poll, options };
+}
+
+try {
+  const [{ runAction }, { loadConfig }] = await Promise.all([importWu('dist/core/ipc.js'), importWu('dist/config/schema.js')]);
+  const result = await runAction('messages.send', pollArguments(process.argv.slice(2)), loadConfig());
+  process.stdout.write(JSON.stringify(result) + '\n');
+} catch (error) {
+  process.stderr.write(String(error?.message ?? error) + '\n');
+  process.exitCode = 1;
+}

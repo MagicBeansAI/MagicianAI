@@ -249,7 +249,10 @@ use and Android automation together. The Android Apps exchange returns only
 `owner_approval_pending` or `active`, never a bearer token.
 
 Provisioning writes the Access audience and issuer to `MAGICIAN_CF_ACCESS_AUD`
-and `MAGICIAN_CF_ACCESS_TEAM_DOMAIN`. A service-token `common_name` never maps
+and `MAGICIAN_CF_ACCESS_TEAM_DOMAIN`. Assertions for the dev UI host's Access
+app (`ui-<machine>.<zone>`, which proxies `/api` here) are accepted too when its
+audience is in `MAGICIAN_CF_ACCESS_UI_AUD` (written by `ensure-ui-access.sh`);
+without it every sign-in through that host gets 401. A service-token `common_name` never maps
 to a user scope; only an interactive human or the paired-device branch can.
 
 Presence refreshes at most once a minute; a failed presence write is only

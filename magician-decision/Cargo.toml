@@ -1,6 +1,6 @@
 [package]
 name = "magician-decision"
-version = "0.4.9"
+version = "0.4.10"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Vendor-neutral structured-decision plane: Choice/Score/Noul IR, versioned question packs, and model adapters."
@@ -46,5 +46,5 @@ mlx = ["dep:kev-core", "dep:mlx-rs", "dep:tokenizers"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-wiremock = "0.5"
+wiremock = "0.6"
 serde_yaml = { workspace = true }

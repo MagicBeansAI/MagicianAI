@@ -7,9 +7,44 @@ It hosts the unified-ui `/hud` route. The window shape and the composer layout
 assumes this window shape, and the window width assumes the composer's desktop
 breakpoint.
 
+The compact HUD omits the Talk | Code page switch. Expanding, sending a regular
+reply, or choosing history opens the actual app page in the same WebView:
+`/chat?thread=…&session=…` for chat and `/vibe?session=…` for coding history.
+Expanded mode allows normal application navigation, including Talk | Code.
+The root mode controller only recovers stray app routes while compact. Legacy
+`q` text becomes an editable `draft`; recovery never sends it.
+
+## Expanded desktop window
+
+The app window occupies 92% of the available desktop width and 90% of its
+height. It uses an opaque native title bar, native close, minimize and
+maximize/fullscreen controls, normal stacking and Dock/Cmd-Tab presence.
+The native title bar and empty areas of the app header support dragging.
+The app fills the window, while chat and coding composer widths match the
+browser's shared layout tokens. The app header uses the selected theme's
+opaque background.
+
+The **Compact** icon at the far right of the app header restores the borderless `/hud` launcher with the
+selected chat. Unsent chat drafts, staged attachments and planning replies
+cross this same-WebView transition in memory, scoped to the workspace and
+session. Closing hides the window and resets it to compact for the next summon.
+Switching apps or minimizing leaves expanded mode open. Summoning it preserves
+its mode and size; a minimized window is restored.
+
+The root UI controller listens for native `hud-window-mode` events and reads
+`get_hud_expanded`; `set_hud_expanded` changes native geometry/chrome before
+route navigation. This also restores the correct page after a frontend reload.
+The native Window menu offers **Open Chat Window** and **Quick Chat**.
+
+Compact remains visible through queued native style changes. Blur dismissal
+resumes after those changes restore focus, and ignores stale blur events when
+the window is already focused again. On macOS, the app keeps its activation
+policy while compact is visible; it returns to accessory status after
+dismissal when no other app window remains open.
+
 ## Shape
 
-A small **centred panel**, not a full-monitor overlay.
+The compact mode is a small **centred panel**.
 
 | property | value | why |
 | --- | --- | --- |
@@ -58,8 +93,8 @@ for the **draw overlay**, which covers a monitor.
 
 ## Dismiss
 
-- Clicking **outside the window** blurs it; `WindowEvent::Focused(false)`
-  hides it.
+- In compact mode, clicking **outside the window** blurs it;
+  `WindowEvent::Focused(false)` hides it. Expanded windows stay open on blur.
 - Clicking the **transparent stage** hits `handleStageClick`, which dismisses
   unless the click landed inside `.hud` (or an open drawer or modal), a plain
   `closest()` check, since popups are descendants of `.hud`.
@@ -84,7 +119,12 @@ The HUD is **pre-warmed ~5s after boot** (`OVERLAY_PREWARM_DELAY` in
 the window, so a summon during the delay, or after macOS purges the parked
 WebView, takes the cold path correctly. Cost: one parked WebKit process
 (~100–150 MB). `general.hud_prewarm = false` restores fully lazy first use.
-Only the HUD is pre-warmed; contextual-assist and draw overlays stay lazy. The
+The contextual-assist window is pre-warmed with it; the draw overlay stays
+lazy. In debug builds the overlays load from the Vite dev server, so the
+pre-warm first waits (up to `OVERLAY_PREWARM_DEV_SERVER_WAIT`, 120 s) for Vite
+to accept connections: a WebView built before Vite listens keeps its failed
+load and every later summon shows an empty window. If Vite never answers, the
+pre-warm is skipped and the first summon builds the windows. The
 notify overlay is created hidden at boot because its own route shows it (see
 `notification-overlay.md`).
 

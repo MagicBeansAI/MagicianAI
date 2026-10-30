@@ -34,6 +34,7 @@ import { scopedWebSocketProtocols, scopedMagicianWebSocketUrl } from '$lib/store
 import { codingChoiceFromSelection, codingProfileStore } from '$lib/stores/codingProfileStore';
 import { composerChatChoice } from '$lib/stores/chatHarnessPreferenceStore';
 import { chatProfileStore } from '$lib/stores/chatProfileStore';
+import { chatStore } from '$lib/stores/chatStore';
 import { mediaSessionStore } from '$lib/media/store';
 import { cancelCurrent as cancelBrowserSpeak } from '$lib/media/tts/browserTts';
 import { cancelProviderSpeak } from '$lib/media/tts/providerTts';
@@ -174,8 +175,15 @@ const DEFAULT_STATUS: VoiceCallStatus = {
 
 export const voiceCallStore = writable<VoiceCallStatus>(DEFAULT_STATUS);
 export const voiceMicAnalyser = writable<AnalyserNode | null>(null);
+export const voicePlaybackAnalyser = writable<AnalyserNode | null>(null);
 export const pushToTalkMode = writable<boolean>(false);
 export const pushToTalkActive = writable<boolean>(false);
+/**
+ * Owner mute in Open mic. It sits on top of every internal mic gate (the
+ * half-duplex echo guard, PTT): while set, the provider mic stays off whatever
+ * re-arms it. Cleared on a mic-mode switch and when the call ends.
+ */
+export const voiceMicMuted = writable<boolean>(false);
 
 // ─── Wire envelopes (backend → frontend) ────────────────────────────
 
@@ -286,10 +294,14 @@ interface TurnContextReadyPayload {
 // ─── Per-call state ─────────────────────────────────────────────────
 
 interface ActiveCall {
+    chatChoice: Record<string, unknown> | null;
+    codingChoice: ReturnType<typeof codingChoiceFromSelection>;
 	ws: WebSocket;
 	voiceSessionId: string;
 	uiThreadId: string;
 	threadId: string | null;
+	/** The chat on screen when the call started; the server posts there. */
+	chatSessionId: string | null;
 	mic: MediaStream;
 	audioCtx: AudioContext | null;
 	analyser: AnalyserNode | null;
@@ -405,6 +417,22 @@ function cancelNonCallPlayback(): void {
 	ttsStore.setActive(null);
 }
 
+/**
+ * The open chat the owner is looking at. A thread can hold several active
+ * chats (tabs), so the thread alone does not say which one the call belongs
+ * to. A caller that names a different thread (war room, thinking map) owns
+ * its own conversation and gets none.
+ */
+function shownChatForCall(threadId: string | null): { id: string; uiThreadId: string } | null {
+	const state = get(chatStore);
+	const id = state.activeSessionId;
+	if (!id || state.viewingArchivedId) return null;
+	const session = state.sessions.find((candidate) => candidate.id === id);
+	if (!session || session.status !== 'active' || session.internal_voice) return null;
+	if (threadId && session.ui_thread_id !== threadId) return null;
+	return { id: session.id, uiThreadId: session.ui_thread_id };
+}
+
 // ─── Public API ─────────────────────────────────────────────────────
 
 export async function startVoiceCall(
@@ -437,6 +465,11 @@ export async function startVoiceCall(
 	let pendingWs: WebSocket | null = null;
 
 	try {
+        const shownChat = shownChatForCall(options.threadId ?? null);
+        const uiThreadId =
+            options.threadId ?? shownChat?.uiThreadId ?? mediaSession.thread_id ?? 'general';
+        const chatChoice = composerChatChoice(get(chatProfileStore).selected, uiThreadId);
+        const codingChoice = codingChoiceFromSelection(get(codingProfileStore).selected);
 		const { stream: mic, audioCtx, analyser, echoCancellation } = await openMicWithAnalyser();
 		pendingMic = mic;
 		pendingAudioCtx = audioCtx;
@@ -446,8 +479,6 @@ export async function startVoiceCall(
 		}
 		const playbackEl = createHiddenAudioElement();
 		pendingPlaybackEl = playbackEl;
-		const uiThreadId = options.threadId ?? mediaSession.thread_id ?? 'general';
-
 		const ws = await openControlSocketWithRetry(mediaSession.session_id, startupAbort.signal);
 		pendingWs = ws;
 		if (generation !== startGeneration || ws.readyState !== WebSocket.OPEN) {
@@ -455,10 +486,13 @@ export async function startVoiceCall(
 			return;
 		}
 		const call: ActiveCall = {
+            chatChoice: chatChoice ? { ...chatChoice } : null,
+            codingChoice,
 			ws,
 			voiceSessionId: mediaSession.session_id,
 			uiThreadId,
 			threadId: options.threadId ?? mediaSession.thread_id ?? null,
+			chatSessionId: shownChat?.id ?? null,
 			mic,
 			audioCtx,
 			analyser,
@@ -624,6 +658,7 @@ export function releasePushToTalk(): void {
 }
 
 export function setPushToTalkMode(enabled: boolean): void {
+	if (get(voiceMicMuted)) setVoiceMicMuted(false);
 	pushToTalkMode.set(enabled);
 	if (!active || active.voiceMode !== 'realtime') return;
 	if (enabled && get(voiceTranscriptStore).userSpeaking) {
@@ -647,6 +682,58 @@ export function setPushToTalkMode(enabled: boolean): void {
 	}
 	// Direct WebRTC providers can update turn detection in-place.
 	active.provider?.setTurnDetection?.(enabled);
+}
+
+/**
+ * Mute or unmute the mic in Open mic. Hold to talk has no mute (the hold
+ * decides when the mic is live), so a realtime call in PTT keeps it clear.
+ */
+export function setVoiceMicMuted(muted: boolean): void {
+	if (muted && get(pushToTalkMode) && active?.voiceMode !== 'hands_free') {
+		voiceMicMuted.set(false);
+		return;
+	}
+	voiceMicMuted.set(muted);
+	const provider = active?.provider;
+	if (!muted) releaseOwnerMuteGate();
+	if (!active || !provider) return;
+	if (muted) {
+		gateMicByOwnerMute(provider);
+		provider.setMicEnabled(false);
+		return;
+	}
+	if (get(pushToTalkMode) && active.voiceMode === 'realtime') return;
+	// Unmute re-arms only what the half-duplex echo guard would allow.
+	const heldForPlayback =
+		active.halfDuplex
+		&& (Boolean(get(concurrentVoiceStore).speaking)
+			|| get(voiceTranscriptStore).assistantSpeaking
+			|| providerOutputPlaying);
+	provider.setMicEnabled(!heldForPlayback);
+}
+
+/** The provider whose `setMicEnabled` is wrapped while the owner mute holds,
+ *  with the method it replaced. Only a muted provider is ever wrapped. */
+let ownerMuteGate: {
+	provider: RealtimeFrontendProvider;
+	setMicEnabled: RealtimeFrontendProvider['setMicEnabled'];
+} | null = null;
+
+/** While muted, every `setMicEnabled(true)` (half-duplex re-arm, PTT, a
+ *  rotation's reconnect) is held off. */
+function gateMicByOwnerMute(provider: RealtimeFrontendProvider): void {
+	if (ownerMuteGate?.provider === provider) return;
+	releaseOwnerMuteGate();
+	const setMicEnabled = provider.setMicEnabled;
+	ownerMuteGate = { provider, setMicEnabled };
+	provider.setMicEnabled = (enabled: boolean) =>
+		setMicEnabled.call(provider, enabled && !get(voiceMicMuted));
+}
+
+function releaseOwnerMuteGate(): void {
+	if (!ownerMuteGate) return;
+	ownerMuteGate.provider.setMicEnabled = ownerMuteGate.setMicEnabled;
+	ownerMuteGate = null;
 }
 
 export function clearVoiceTranscript(): void {
@@ -760,6 +847,7 @@ function sessionStartPayload(call: ActiveCall): Record<string, unknown> {
 	const payload: Record<string, unknown> = {
 		ui_thread_id: call.uiThreadId,
 		thread_id: call.threadId,
+		chat_session_id: call.chatSessionId,
 		voice_mode: call.voiceMode,
 		concurrent_requests: true,
 		turn_boundary: get(pushToTalkMode) ? 'push_to_talk' : 'server_vad',
@@ -776,14 +864,14 @@ function sessionStartPayload(call: ActiveCall): Record<string, unknown> {
 	if (call.voiceMode === 'realtime' && call.realtimeProfile) {
 		payload.realtime_profile = call.realtimeProfile;
 	}
-	const codingChoice = codingChoiceFromSelection(get(codingProfileStore).selected);
+	const codingChoice = call.codingChoice;
 	if (codingChoice) {
 		payload.coding_choice = codingChoice;
 	}
 	// The composer's engine: the call's chat turns (delegate_to_chat, hands-free
 	// turns) think with it, as a typed turn from this client would. A browser
 	// with no choice of its own sends none, and the server's default applies.
-	const chatChoice = composerChatChoice(get(chatProfileStore).selected);
+	const chatChoice = call.chatChoice;
 	if (chatChoice) {
 		payload.chat_choice = chatChoice;
 	}
@@ -1231,6 +1319,9 @@ async function connectProvider(
 	const provider = pickRealtimeProvider(descriptor);
 	const providerPushToTalkMode = call.voiceMode === 'realtime' && get(pushToTalkMode);
 	const callbacks: RealtimeProviderCallbacks = {
+        onPlaybackAnalyserChanged(analyser) {
+            if (active === call && call.provider === provider) voicePlaybackAnalyser.set(analyser);
+        },
         onPlaybackStateChanged(playing) {
             if (active !== call || call.provider !== provider) return;
             providerOutputPlaying = playing;
@@ -1474,6 +1565,7 @@ async function connectProvider(
 			descriptor,
 			mic: call.mic,
 			playbackEl: call.playbackEl,
+            analysisContext: call.audioCtx,
 			// The shared store configures only vendor Realtime. Named Hands-free is
 			// always continuous and owns turn boundaries through its surface profile.
 			pushToTalkMode: providerPushToTalkMode,
@@ -1497,6 +1589,11 @@ async function connectProvider(
 	}
 	if (pendingPttEngageOnProviderReady && active === call && providerPushToTalkMode) {
 		engagePushToTalk();
+	}
+	// A reconnect re-adds the mic tracks live; keep an owner mute in force.
+	if (get(voiceMicMuted) && active === call) {
+		gateMicByOwnerMute(provider);
+		provider.setMicEnabled(false);
 	}
 }
 
@@ -1829,8 +1926,11 @@ async function teardownActive(reason: 'clean' | 'error'): Promise<void> {
 	active = null;
 	pendingPttEngageOnProviderReady = false;
 	pushToTalkActive.set(false);
+	voiceMicMuted.set(false);
+	releaseOwnerMuteGate();
 	pttEngagedAt = 0;
 	voiceMicAnalyser.set(null);
+    voicePlaybackAnalyser.set(null);
 	sessionCapMsStore.set(null);
 	if (!call) {
 		if (reason === 'clean') {

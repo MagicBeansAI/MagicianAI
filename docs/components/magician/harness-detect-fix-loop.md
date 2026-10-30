@@ -2,14 +2,14 @@
 
 Phase 1 of the Autonomous Company Loop
 (implementation plan):
-turn each autonomous harness cycle into a deliberate bug-catcher — detect
+turn each Autopilot cycle into a deliberate bug-catcher — detect
 anomalies, surface them, and (by default) auto-draft a fix as an owner-review-gated
 diff proposal.
 
 > **Phase 2** builds on this: a shared company backlog, `propose_backlog_item` /
 > `promote_backlog_item` action tools, real backlog + repo state injected into
 > every cycle, and the CPO agent. See
-> [Harness Company Loop — Phase 2](./harness-company-loop-phase2.md).
+> [Team routines — backlog and roles](./harness-company-loop-phase2.md).
 
 ## Flow
 
@@ -94,6 +94,7 @@ see the repo-root `magician-config.yaml`):
 | `harness.autofix_enabled` | `true` (opt-out) | `MAGICIAN_HARNESS_AUTOFIX` (`0/1/on/off/…`) | Whether the autofix sweep dispatches fixes. `0/off` disables. |
 | `harness.autofix_agent` | `"senior-software-developer"` | `MAGICIAN_HARNESS_AUTOFIX_AGENT` | The engineer the fix task is assigned to. **Must directly grant `run_coding_task`** (a coding engineer, not a router like `cto` whose persona forbids coding — that only works via a delegation hop). |
 | `harness.paused` | `false` when absent; repo seed `true` | `MAGICIAN_HARNESS_PAUSED` (`1/on` = pause, `0/off` = resume) | **Global company-loop switch:** when `true`, scheduled and manual harness starts plus steward/autofix dispatches are blocked. The control API also clears queued harness triggers and requests cancellation of active harness cycles. Config read failures fail closed. |
+| `harness.shared_program_docs` | `[]` | — | Playbooks (bare `*.md` names in each scope's `programs/`) appended to every program-context cycle as "Shared Context". A focus area's `shared_programs` replaces the list for that area (`[]` = none). Read per cycle; a read failure means no shared block. See [autonomous agents](autonomous-agents.md#shared-context). |
 
 An env var set to a recognized value **overrides** the config; treat it as an
 emergency override. The Crew control clears it from both runtime env files

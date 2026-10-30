@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SHIMS = ROOT / "scripts/build-tools"
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_cache_defaults import VERSION, storage_root
-COMPILE_COMMANDS = {"build", "b", "check", "c", "clippy", "test", "t", "run", "r",
+COMPILE_COMMANDS = {"build", "b", "check", "c", "clippy", "test", "t", "run", "r", "install",
                     "rustc", "rustdoc", "doc", "nextest", "llvm-cov", "llvm-lines", "tauri"}
 
 
@@ -103,7 +103,8 @@ def mbx_environment(env, args=None):
     if cache and env.get("RUSTC_WRAPPER") == cache:
         env["RUSTC_WRAPPER"] = ""
     gate = env.get("RUSTC_JOB_GATE")
-    if args is not None and gate and Path(gate).is_file() and env.get("RUSTC_WRAPPER") == gate:
+    if (args is not None and command_name(args) != "clippy" and gate
+            and Path(gate).is_file() and env.get("RUSTC_WRAPPER") == gate):
         # mbx deliberately bypasses Rust caching with an inherited wrapper.
         # Put our gate underneath mbx as its compiler, not around its cache.
         rustup = shutil.which("rustup", path=clean_path(env))
@@ -117,6 +118,9 @@ def mbx_environment(env, args=None):
         if not env.get("RUSTDOC"):
             env["RUSTDOC"] = subprocess.check_output([*query, "rustdoc"], env=env, text=True, timeout=30).strip()
         env["RUSTC_WRAPPER"] = ""
+    # Clippy is already Cargo's workspace compiler wrapper. Keep the gate
+    # outside it: a custom RUSTC filename becomes an extra source argument to
+    # clippy-driver, and placing the gate under that driver cannot gate its work.
     env.setdefault("MBX_DISPLAY", "plain")
     env.setdefault("MBX_SAVINGS", "plain")
     return env

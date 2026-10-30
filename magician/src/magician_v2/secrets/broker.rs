@@ -444,6 +444,7 @@ mod tests {
             auth: None,
             reliability: None,
             result_projection: None,
+            parameter_constraints: serde_json::Value::Null,
         }
     }
 

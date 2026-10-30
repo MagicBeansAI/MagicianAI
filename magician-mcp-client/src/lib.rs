@@ -75,7 +75,7 @@ pub use task::{
 };
 
 /// Exact official SDK release selected at this protocol boundary.
-pub const RMCP_SDK_VERSION: &str = "3.1.0";
+pub const RMCP_SDK_VERSION: &str = "3.7.0";
 
 /// Preferred stateless MCP revision.
 pub const PREFERRED_PROTOCOL_VERSION: &str = "2026-07-28";

@@ -27,6 +27,9 @@ data class TodayUiState(
     val resurfacingTotal: Int = 0,
     val messageFollowUps: List<ChannelFollowUp> = emptyList(),
     val messageFollowUpTotal: Int = 0,
+    val followUpsHaveNextPage: Boolean? = null,
+    val worthHasNextPage: Boolean? = null,
+    val deckPageRevision: Int = 0,
     val activityItems: List<TodayActivityItem> = emptyList(),
     val briefings: List<TodayBriefing> = emptyList(),
     val briefingRenders: Map<String, TodayBriefingRender> = emptyMap(),
@@ -46,6 +49,8 @@ data class TodayUiState(
     /** Deck cards swiped this session, by card id, until "Review Again". */
     val deckTriaged: Map<String, TodayDeckLane> = emptyMap(),
     val loading: Boolean = false,
+    val loadingSections: Set<String> = emptySet(),
+    val settledSections: Set<String> = emptySet(),
     val refreshing: Boolean = false,
     val loadingMore: Set<String> = emptySet(),
     /** A failed action on the day — hiding a card, sending a reply. */
@@ -75,6 +80,8 @@ data class TodayUiState(
     val navigationTaskId: String? = null,
     val notice: String? = null,
 ) {
+    fun initiallyLoading(vararg sections: String): Boolean = sections.any { it !in settledSections }
+
     val counts: TodayCounts get() = payload?.counts ?: TodayCounts()
     val digest: TodayDigest get() = payload?.digest ?: TodayDigest()
     val headline: String get() = payload?.headline.orEmpty()
@@ -85,8 +92,8 @@ data class TodayUiState(
         TodaySection.WorthALook -> resurfacingTotal
         else -> counts.count(section, resurfacingTotal)
     }
-    val hasMoreFollowUps: Boolean get() = messageFollowUps.size < messageFollowUpTotal
-    val hasMoreResurfacing: Boolean get() = resurfacingCards.size < resurfacingTotal
+    val hasMoreFollowUps: Boolean get() = followUpsHaveNextPage ?: (messageFollowUps.size < messageFollowUpTotal)
+    val hasMoreResurfacing: Boolean get() = worthHasNextPage ?: (resurfacingCards.size < resurfacingTotal)
 
     /** Every deck card, interleaved two dispatches to one reading-room card. */
     fun deckCards(): List<TodayDeckCard> = interleaveDeck(messageFollowUps, resurfacingCards)
@@ -143,6 +150,8 @@ class TodayViewModel private constructor(
     private var realtimeRefresh: Job? = null
     private val sectionCursors = mutableMapOf<TodaySection, String?>()
     private var resurfacingCursor: ResurfacingCursor? = null
+    private var followUpsPaged = false
+    private var worthPaged = false
     /** Broadsheet For You: the cursor that opens each known page (page 1 has none). */
     private val followUpPageCursors = mutableMapOf<Int, String?>(1 to null)
     /** Newest broadsheet request per tab; an older answer that lands late is dropped. */
@@ -205,35 +214,65 @@ class TodayViewModel private constructor(
             refreshing = hadPayload,
             primaryError = null,
             primaryFailure = null,
+            loadingSections = INITIAL_SECTIONS,
         )
         refreshJob = viewModelScope.launch {
-            val results = coroutineScope {
-                val today = async { captured { source.today() } }
-                val hidden = async { captured { source.hidden() } }
-                val resurfacing = async { captured { source.resurfacing() } }
-                val followUps = async { captured { source.followUps() } }
-                val feed = async { captured { source.feed() } }
-                val briefings = async { captured { source.briefings() } }
-                val pulse = async { captured { source.pulse(_state.value.pulse) } }
-                val updates = async { captured { source.agentUpdates() } }
-                val agents = async { captured { source.agents() } }
-                val count = async { captured { source.eventCount24h() } }
-                InitialResults(
-                    today.await(), hidden.await(), resurfacing.await(), followUps.await(), feed.await(),
-                    briefings.await(), pulse.await(), updates.await(), agents.await(), count.await(),
-                )
+            coroutineScope {
+                launch {
+                    val result = captured { source.today() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(today = result), "today")
+                }
+                launch {
+                    val result = captured { source.hidden() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(hidden = result), "hidden")
+                }
+                launch {
+                    val result = captured { source.resurfacing() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(resurfacing = result), "worth_a_look")
+                }
+                launch {
+                    val result = captured { source.followUps() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(followUps = result), "message_followups")
+                }
+                launch {
+                    val result = captured { source.feed() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(feed = result), "activity")
+                }
+                launch {
+                    val result = captured { source.briefings() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(briefings = result), "briefings")
+                }
+                launch {
+                    val result = captured { source.pulse(_state.value.pulse) { partial ->
+                        if (requestGeneration == generation) _state.value = _state.value.copy(pulse = partial)
+                    } }
+                    if (requestGeneration == generation) applyInitial(InitialResults(pulse = result), "pulse")
+                }
+                launch {
+                    val result = captured { source.agentUpdates() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(updates = result), "agent_updates")
+                }
+                launch {
+                    val result = captured { source.agents() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(agents = result), "agents")
+                }
+                launch {
+                    val result = captured { source.eventCount24h() }
+                    if (requestGeneration == generation) applyInitial(InitialResults(count = result), "event_count")
+                }
             }
-            if (requestGeneration != generation) return@launch
-            applyInitial(results)
+            if (requestGeneration == generation) {
+                _state.value = _state.value.copy(loading = false, refreshing = false)
+            }
         }
     }
 
-    private fun applyInitial(results: InitialResults) {
+    private fun applyInitial(results: InitialResults, section: String) {
         var next = _state.value
         val errors = next.sectionErrors.toMutableMap()
         var resurfacingToBind: ResurfacingPage? = null
         var followUpsToBind: ChannelFollowUpPage? = null
-        results.today.onSuccess { value ->
+        results.today?.onSuccess { value ->
             next = next.copy(
                 payload = suppressPendingToday(value, next.pending),
                 primaryError = null,
@@ -247,40 +286,50 @@ class TodayViewModel private constructor(
                         .setPackage(getApplication<Application>().packageName),
                 )
             }
-        }.onFailure { error ->
+        }?.onFailure { error ->
             next = next.copy(primaryFailure = error.toFailure(getApplication(), "your day"))
         }
-        results.hidden.fold({ next = next.copy(hiddenItems = it); errors.remove("hidden") }, { errors["hidden"] = message(it) })
-        results.resurfacing.fold({ page ->
+        results.hidden?.fold({ next = next.copy(hiddenItems = it); errors.remove("hidden") }, { errors["hidden"] = message(it) })
+        results.resurfacing?.fold({ page ->
             val suppressed = next.pending.filter { it.startsWith("resurfacing:") }.map { it.removePrefix("resurfacing:") }.toSet()
-            val cards = page.cards.filterNot { it.id in suppressed }
-            next = next.copy(resurfacingCards = cards, resurfacingTotal = (page.total - (page.cards.size - cards.size)).coerceAtLeast(cards.size))
-            resurfacingCursor = page.nextCursor; worthProjectionReference = page.canonicalProjectionReference
+            val keepCursor = worthPaged && (resurfacingCursor != null || page.total <= next.resurfacingCards.size)
+            val cards = (page.cards + if (worthPaged) next.resurfacingCards else emptyList()).distinctBy(ResurfacingCard::id).filterNot { it.id in suppressed }
+            next = next.copy(resurfacingCards = cards, resurfacingTotal = (page.total - page.cards.count { it.id in suppressed }).coerceAtLeast(cards.size),
+                worthHasNextPage = if (keepCursor) next.worthHasNextPage else page.hasMore != false && page.nextCursor != null)
+            if (!keepCursor) resurfacingCursor = page.nextCursor
+            worthProjectionReference = page.canonicalProjectionReference
             errors.remove(TodaySection.WorthALook.wire)
             resurfacingToBind = page
         }, { errors[TodaySection.WorthALook.wire] = message(it) })
-        results.followUps.fold({ page ->
+        results.followUps?.fold({ page ->
             val suppressed = next.pending.filter { it.startsWith("followup:") }.map { it.removePrefix("followup:") }.toSet()
-            val rows = page.items.filterNot { it.id in suppressed }
-            next = next.copy(messageFollowUps = rows, messageFollowUpTotal = (page.total - (page.items.size - rows.size)).coerceAtLeast(rows.size))
-            followUpCursor = page.nextCursor; followUpProjectionReference = page.canonicalProjectionReference
+            val keepCursor = followUpsPaged && (followUpCursor != null || page.total <= next.messageFollowUps.size)
+            val rows = (page.items + if (followUpsPaged) next.messageFollowUps else emptyList()).distinctBy(ChannelFollowUp::id).filterNot { it.id in suppressed }
+            next = next.copy(messageFollowUps = rows, messageFollowUpTotal = (page.total - page.items.count { it.id in suppressed }).coerceAtLeast(rows.size),
+                followUpsHaveNextPage = if (keepCursor) next.followUpsHaveNextPage else page.hasMore != false && page.nextCursor != null)
+            if (!keepCursor) followUpCursor = page.nextCursor
+            followUpProjectionReference = page.canonicalProjectionReference
             errors.remove("message_followups")
             followUpsToBind = page
         }, { errors["message_followups"] = message(it) })
-        results.feed.fold({ rows ->
+        results.feed?.fold({ rows ->
             next = next.copy(activityItems = rows.filter(::isDurableTodayActivity))
             errors.remove("activity")
         }, { errors["activity"] = message(it) })
         // The wire is fail-soft and never shows placeholders: a failed read
         // simply contributes nothing.
-        val wireIncoming = results.feed.getOrNull().orEmpty().take(TODAY_WIRE_FEED_LIMIT).map { normalizeFeedWireItem(it) } +
-            results.updates.getOrNull().orEmpty().map { normalizeAgentUpdate(it) }
+        val wireIncoming = results.feed?.getOrNull().orEmpty().take(TODAY_WIRE_FEED_LIMIT).map { normalizeFeedWireItem(it) } +
+            results.updates?.getOrNull().orEmpty().map { normalizeAgentUpdate(it) }
         next = next.copy(wireItems = mergeWireItems(next.wireItems, wireIncoming))
-        results.agents.onSuccess { next = next.copy(agentCounts = it) }
-        results.count.onSuccess { next = next.copy(eventCount24h = it) }
-        results.briefings.fold({ next = next.copy(briefings = it); errors.remove("briefings") }, { errors["briefings"] = message(it) })
-        results.pulse.fold({ next = next.copy(pulse = it); errors.remove("pulse") }, { errors["pulse"] = message(it) })
-        next = next.copy(loading = false, refreshing = false, sectionErrors = errors)
+        results.agents?.onSuccess { next = next.copy(agentCounts = it) }
+        results.count?.onSuccess { next = next.copy(eventCount24h = it) }
+        results.briefings?.fold({ next = next.copy(briefings = it); errors.remove("briefings") }, { errors["briefings"] = message(it) })
+        results.pulse?.fold({ next = next.copy(pulse = it); errors.remove("pulse") }, { errors["pulse"] = message(it) })
+        val pending = next.loadingSections - section
+        val settled = next.settledSections + section
+        val waitingForDay = next.payload == null && "today" !in settled
+        next = next.copy(loading = waitingForDay, refreshing = !waitingForDay && pending.isNotEmpty(),
+            loadingSections = pending, settledSections = settled, sectionErrors = errors)
         _state.value = next
         resurfacingToBind?.let(::bindWorthALook)
         followUpsToBind?.let(::bindFollowUps)
@@ -379,8 +428,9 @@ class TodayViewModel private constructor(
      * Swipe or button on the top deck card. Returns false when the card is
      * locked by an in-flight mutation, so the deck springs it back instead of
      * hiding a card nothing was done to. Rollback on failure un-triages it.
+     * [hint] is the Act menu's optional follow-up-task instruction.
      */
-    fun triageDeckCard(card: TodayDeckCard, action: TodayDeckAction): Boolean {
+    fun triageDeckCard(card: TodayDeckCard, action: TodayDeckAction, hint: String? = null): Boolean {
         val state = _state.value
         card.followUp?.let { item ->
             if (state.isFollowUpMutationPending(item.id)) return false
@@ -390,16 +440,18 @@ class TodayViewModel private constructor(
                 TodayDeckAction.Acknowledge -> "acknowledge"
                 TodayDeckAction.Dismiss -> "dismiss"
                 TodayDeckAction.Primary -> "approve"
-            })
+                TodayDeckAction.Snooze -> "snooze"
+            }, hint = hint?.trim()?.takeIf { action == TodayDeckAction.Primary && it.isNotEmpty() })
             return true
         }
         card.worth?.let { worth ->
-            if (state.isResurfacingMutationPending(worth.id)) return false
+            // Resurfacing has no snooze: nothing happens, so the card stays.
+            if (action == TodayDeckAction.Snooze || state.isResurfacingMutationPending(worth.id)) return false
             _state.value = state.copy(deckTriaged = state.deckTriaged + (card.id to card.lane))
             resolveResurfacing(worth, when (action) {
                 TodayDeckAction.Acknowledge -> ResurfacingFeedbackAction.Acknowledge
                 TodayDeckAction.Dismiss -> ResurfacingFeedbackAction.Dismiss
-                TodayDeckAction.Useful, TodayDeckAction.Primary -> ResurfacingFeedbackAction.Open
+                TodayDeckAction.Useful, TodayDeckAction.Primary, TodayDeckAction.Snooze -> ResurfacingFeedbackAction.Open
             })
             return true
         }
@@ -410,10 +462,10 @@ class TodayViewModel private constructor(
     fun reviewDeckAgain() { _state.value = _state.value.copy(deckTriaged = emptyMap()) }
 
     /** Next follow-up and worth pages, so the deck keeps flowing. */
-    fun loadMoreDeck() {
+    fun loadMoreDeck(tab: TodayDeckTab = TodayDeckTab.All) {
         val state = _state.value
-        if (state.hasMoreFollowUps) loadMoreFollowUps()
-        if (state.hasMoreResurfacing) loadMoreResurfacing()
+        if (tab != TodayDeckTab.Worth && (state.hasMoreFollowUps || state.sectionErrors["message_followups"] != null)) loadMoreFollowUps()
+        if (tab != TodayDeckTab.ForYou && (state.hasMoreResurfacing || state.sectionErrors["worth_a_look"] != null)) loadMoreResurfacing()
     }
 
     fun clearError() { _state.value = _state.value.copy(primaryError = null, notice = null) }
@@ -465,9 +517,13 @@ class TodayViewModel private constructor(
                 val merged = (current.resurfacingCards + incoming).distinctBy(ResurfacingCard::id)
                 _state.value = current.copy(
                     resurfacingCards = merged,
+                    worthHasNextPage = page.hasMore != false && page.nextCursor != null,
+                    deckPageRevision = current.deckPageRevision + 1,
                     resurfacingTotal = (page.total - (page.cards.size - incoming.size)).coerceAtLeast(merged.size),
                     sectionErrors = current.sectionErrors - TodaySection.WorthALook.wire,
                 )
+                worthPaged = true
+                if (page.nextCursor != null && page.nextCursor == resurfacingCursor) setSectionError(TodaySection.WorthALook.wire, IllegalStateException("More cards did not advance. Retry loading."))
                 resurfacingCursor = page.nextCursor
             }, { setSectionError(TodaySection.WorthALook.wire, it) })
             _state.value = _state.value.copy(loadingMore = _state.value.loadingMore - key)
@@ -485,9 +541,13 @@ class TodayViewModel private constructor(
                 val merged = (current.messageFollowUps + incoming).distinctBy(ChannelFollowUp::id)
                 _state.value = current.copy(
                     messageFollowUps = merged,
+                    followUpsHaveNextPage = page.hasMore != false && page.nextCursor != null,
+                    deckPageRevision = current.deckPageRevision + 1,
                     messageFollowUpTotal = (page.total - (page.items.size - incoming.size)).coerceAtLeast(merged.size),
                     sectionErrors = current.sectionErrors - "message_followups",
                 )
+                followUpsPaged = true
+                if (page.nextCursor != null && page.nextCursor == followUpCursor) setSectionError("message_followups", IllegalStateException("More cards did not advance. Retry loading."))
                 followUpCursor = page.nextCursor
             }, { setSectionError("message_followups", it) })
             _state.value = _state.value.copy(loadingMore = _state.value.loadingMore - key)
@@ -695,7 +755,8 @@ class TodayViewModel private constructor(
         }
     }
 
-    fun performResurfacingAction(card: ResurfacingCard, kind: ResurfacingActionKind, input: JsonObject = JsonObject(emptyMap())) {
+    /** [label] is the action's displayed label (e.g. "Ask <agent>"); it names the completion notice. */
+    fun performResurfacingAction(card: ResurfacingCard, kind: ResurfacingActionKind, input: JsonObject = JsonObject(emptyMap()), label: String? = null) {
         val key = "resurfacing-action:${card.id}:${kind.wire}"
         if (_state.value.isResurfacingMutationPending(card.id)) return
         _state.value = _state.value.copy(pending = _state.value.pending + key)
@@ -705,7 +766,7 @@ class TodayViewModel private constructor(
             captured { source.performResurfacingAction(card, kind, input) }.fold({ result ->
                 if (recommended) captured { source.recordRecommendation(card, kind, "completed") }
                 val state = _state.value
-                _state.value = state.copy(pending = state.pending - key, actionResults = state.actionResults + (card.id to result), notice = "${titleCase(kind.wire)} completed.")
+                _state.value = state.copy(pending = state.pending - key, actionResults = state.actionResults + (card.id to result), notice = "${label ?: titleCase(kind.wire)} completed.")
                 result.resultRef?.takeIf { kind == ResurfacingActionKind.CreateTask }?.let { taskId ->
                     _state.value = _state.value.copy(navigationTaskId = taskId)
                 }
@@ -767,14 +828,10 @@ class TodayViewModel private constructor(
     }
 
     private fun refreshFollowUps() {
-        viewModelScope.launch { captured { source.followUps() }.fold({ page ->
-            val state = _state.value
-            val rows = page.items.filterNot { "followup:${it.id}" in state.pending }
-            _state.value = state.copy(messageFollowUps = rows,
-                messageFollowUpTotal = (page.total - (page.items.size - rows.size)).coerceAtLeast(rows.size),
-                sectionErrors = state.sectionErrors - "message_followups"); followUpCursor = page.nextCursor
-            followUpProjectionReference = page.canonicalProjectionReference; bindFollowUps(page)
-        }, { setSectionError("message_followups", it) }) }
+        viewModelScope.launch {
+            val result = captured { source.followUps() }
+            applyInitial(InitialResults(followUps = result), "message_followups")
+        }
     }
 
     private fun refreshPulse() {
@@ -854,14 +911,15 @@ class TodayViewModel private constructor(
     }
 
     private data class InitialResults(
-        val today: Result<TodayResponse>, val hidden: Result<List<HiddenTodayItem>>,
-        val resurfacing: Result<ResurfacingPage>, val followUps: Result<ChannelFollowUpPage>,
-        val feed: Result<List<TodayActivityItem>>, val briefings: Result<List<TodayBriefing>>,
-        val pulse: Result<TodayPulse>, val updates: Result<List<TodayAgentUpdate>>,
-        val agents: Result<TodayAgentCounts>, val count: Result<Long>,
+        val today: Result<TodayResponse>? = null, val hidden: Result<List<HiddenTodayItem>>? = null,
+        val resurfacing: Result<ResurfacingPage>? = null, val followUps: Result<ChannelFollowUpPage>? = null,
+        val feed: Result<List<TodayActivityItem>>? = null, val briefings: Result<List<TodayBriefing>>? = null,
+        val pulse: Result<TodayPulse>? = null, val updates: Result<List<TodayAgentUpdate>>? = null,
+        val agents: Result<TodayAgentCounts>? = null, val count: Result<Long>? = null,
     )
 
     private companion object {
+        val INITIAL_SECTIONS = setOf("today", "hidden", "worth_a_look", "message_followups", "activity", "briefings", "pulse", "agent_updates", "agents", "event_count")
         const val READING_ROOM_KEY = "reading_room_mode"
         const val BROADSHEET_TAB_KEY = "broadsheet_tab"
     }

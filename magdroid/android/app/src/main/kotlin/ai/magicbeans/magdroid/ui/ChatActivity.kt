@@ -16,6 +16,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.activity.compose.setContent
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.view.WindowCompat
@@ -63,6 +66,7 @@ class ChatActivity : ComponentActivity() {
         // recognises.
         TaskDeepLinks.accept(intent?.data)
         AppShortcutLinks.accept(intent?.data)
+        NoteLinks.accept(this, intent?.data)
         if (intent?.data?.host == "attention") {
             AttentionDeepLinks.request(
                 intent.data?.getQueryParameter("item")
@@ -88,10 +92,28 @@ class ChatActivity : ComponentActivity() {
                 applyTheme(familyId, mode, systemIsDark)
             }
             MagicanTheme(themeId, palette) {
+                // Note links (`/notes?path=…&workspace=…`) in any Markdown —
+                // chat replies, task summaries, Attention details — open the
+                // native Notes screen; other links keep the platform behavior.
+                val platformUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                val noteUriHandler = remember(platformUriHandler) { NoteLinkUriHandler(this@ChatActivity, platformUriHandler) }
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalUriHandler provides noteUriHandler,
+                ) {
                 // The app palette owns the Android chrome too. XML can only
                 // provide the launch colour; it cannot follow a family or an
                 // in-app Day/Night override after the activity is visible.
                 BindWindowTheme(this@ChatActivity, palette)
+
+                // The theme follows the account: adopt the stored choice (or
+                // seed it when none exists) whenever the app comes back. Runs
+                // off the composition path; a failure changes nothing locally.
+                val lifecycleOwner = LocalLifecycleOwner.current
+                LaunchedEffect(lifecycleOwner) {
+                    lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                        ThemeSync.reconcileAsync(this@ChatActivity, systemIsDark)
+                    }
+                }
 
                 val viewModel: ai.magicbeans.magdroid.chat.ChatViewModel =
                     androidx.lifecycle.viewmodel.compose.viewModel()
@@ -202,6 +224,7 @@ class ChatActivity : ComponentActivity() {
                     ),
                 )
                 }
+                }
             }
         }
     }
@@ -211,6 +234,7 @@ class ChatActivity : ComponentActivity() {
         setIntent(intent)
         TaskDeepLinks.accept(intent.data)
         AppShortcutLinks.accept(intent.data)
+        NoteLinks.accept(this, intent.data)
         acceptMobileEnrollmentIntent(intent)
         if (intent.data?.host == "attention") {
             AttentionDeepLinks.request(

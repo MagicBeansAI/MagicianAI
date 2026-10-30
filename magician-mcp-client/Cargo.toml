@@ -1,6 +1,6 @@
 [package]
 name = "magician-mcp-client"
-version = "0.1.23"
+version = "0.1.26"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "Governed official-rmcp client boundary for Magician"
@@ -38,6 +38,9 @@ zeroize = { version = "1", features = ["derive"] }
 libc = "0.2"
 
 [dev-dependencies]
+rust_decimal = { version = "1.36", features = ["serde"] }
+fs2 = "0.4"
+tempfile = "3"
 rmcp = { workspace = true, features = ["server", "transport-async-rw"] }
 static_assertions = "1"
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

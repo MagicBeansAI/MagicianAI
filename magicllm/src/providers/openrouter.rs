@@ -1,25 +1,19 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use tracing::{debug, error, info, warn};
 
-use super::{
-    append_sse_utf8_chunk, default_http_client, finish_sse_utf8, next_sse_data,
-    read_bounded_response_text, SseBodyAdmission,
-};
+use super::default_http_client;
 use crate::{
     capability::{LLMCapability, LLMModality, LLMProviderKind, LLMReasoning},
     error::{LLMError, LLMResult},
     provider::LLMProvider,
     types::{
-        append_tool_argument_fragment, clone_json_value_iteratively, parse_provider_json_or_string,
-        parse_provider_json_value, parse_tool_argument_json_or_string, ContentBlock, LLMMessage,
+        clone_json_value_iteratively, parse_tool_argument_json_or_string, ContentBlock, LLMMessage,
         LLMRequest, LLMResponse, LLMResponseFormat, LLMToolCall, LLMToolSpec, MessageRole,
         PromptCacheConfig, ReasoningConfig, TokenUsage,
     },
@@ -411,12 +405,14 @@ impl OpenRouterProvider {
         tools
             .iter()
             .map(|tool| {
+                let (description, parameters) =
+                    crate::tool_schema::project_whole_call_constraints(tool);
                 json!({
                     "type": "function",
                     "function": {
                         "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
+                        "description": description,
+                        "parameters": parameters,
                     }
                 })
             })
@@ -885,11 +881,19 @@ impl LLMProvider for OpenRouterProvider {
 
         let cache_control = Self::prompt_cache_control(&request);
         let is_anthropic_family = Self::is_anthropic_model(&request.model);
+        // A chat carries no reuse plan; its conversation prompt cache asks for
+        // the same rolling top-level breakpoint, which lands on the newest
+        // block and is read back by the next call. Anchored on the system
+        // message alone, a chat cached tools + system and paid full price for
+        // its history. Only Anthropic-family models get any `cache_control`.
         let rolling_prefix = request
             .context_reuse
             .as_ref()
-            .map(|reuse| reuse.rolling_prefix)
-            .unwrap_or(false);
+            .is_some_and(|reuse| reuse.rolling_prefix)
+            || request
+                .prompt_cache
+                .as_ref()
+                .is_some_and(PromptCacheConfig::is_conversation);
         let explicit_cache_control = if rolling_prefix {
             None
         } else {
@@ -1026,77 +1030,34 @@ impl LLMProvider for OpenRouterProvider {
             "prepared OpenRouter headers"
         );
 
+        // Every call streams, so a long answer that is still producing is
+        // bounded by progress, not cut at the request timeout. The chunks fold
+        // back into the `chat.completion` body parsed below (annotations and
+        // reasoning included); `usage.include` asks for the usage chunk.
+        body.insert("stream".to_string(), Value::Bool(true));
+        body.entry("usage".to_string())
+            .or_insert_with(|| json!({ "include": true }));
+
         let mut request_builder = self
             .client
             .post(&self.base_url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .timeout(timeout)
             .json(&body);
 
         for (key, value) in headers {
             request_builder = request_builder.header(key, value);
         }
 
-        if request.stream {
-            let response = request_builder.send().await.map_err(|error| {
-                if error.is_timeout() {
-                    LLMError::Timeout
-                } else {
-                    LLMError::Transport(error.to_string())
-                }
-            })?;
-
-            let status = response.status();
-            if status.is_client_error() || status.is_server_error() {
-                let raw_body = read_bounded_response_text(response).await?;
-                let payload = parse_provider_json_or_string(&raw_body)?;
-                let message = payload
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error")
-                    .to_string();
-                error!(
-                    provider = "openrouter",
-                    model = %model,
-                    operation = %operation,
-                    trace_id = trace_id.as_deref().unwrap_or(""),
-                    status = %status,
-                    error_message = %message,
-                    "OpenRouter streaming API responded with error"
-                );
-                return Err(LLMError::Provider {
-                    provider: self.provider_kind().to_string(),
-                    message,
-                });
-            }
-
-            info!(
-                provider = "openrouter",
-                model = %model,
-                operation = %operation,
-                trace_id = trace_id.as_deref().unwrap_or(""),
-                "processing streaming response from OpenRouter"
-            );
-
-            return handle_streaming(response, operation.clone(), trace_id.clone(), model.clone())
-                .await;
-        }
-
-        let response = request_builder.send().await.map_err(|error| {
-            if error.is_timeout() {
-                LLMError::Timeout
-            } else {
-                LLMError::Transport(error.to_string())
-            }
-        })?;
-
+        let response = super::send_streaming_request(request_builder, timeout).await?;
         let status = response.status();
-        let raw_body = read_bounded_response_text(response).await?;
-
-        let payload = parse_provider_json_value(&raw_body)?;
-        drop(raw_body);
+        let payload = super::collect_chat_completion(
+            response,
+            timeout,
+            &self.provider_kind().to_string(),
+            protected_request,
+        )
+        .await?;
 
         if status.is_client_error() || status.is_server_error() {
             if let Some(error) = payload.get("error") {
@@ -1253,231 +1214,6 @@ impl LLMProvider for OpenRouterProvider {
 
         Ok(response)
     }
-}
-
-#[derive(Default)]
-struct ToolCallDelta {
-    name: Option<String>,
-    arguments: String,
-}
-
-async fn handle_streaming(
-    response: reqwest::Response,
-    operation: String,
-    trace_id: Option<String>,
-    model: String,
-) -> LLMResult<LLMResponse> {
-    info!(
-        provider = "openrouter",
-        model = %model,
-        operation = %operation,
-        trace_id = trace_id.as_deref().unwrap_or(""),
-        "opened streaming response with OpenRouter"
-    );
-
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
-    let mut utf8_carry = Vec::with_capacity(4);
-    let mut body_admission = SseBodyAdmission::new();
-    let mut aggregated_text = String::new();
-    let mut tool_calls: HashMap<String, ToolCallDelta> = HashMap::new();
-    let mut aggregated_annotations: Vec<Value> = Vec::new();
-    let mut finish_reason: Option<String> = None;
-    let mut usage_value: Option<Value> = None;
-    let mut done = false;
-
-    while !done {
-        let Some(chunk) = stream.next().await else {
-            break;
-        };
-        let chunk = chunk.map_err(|error| {
-            if error.is_timeout() {
-                LLMError::Timeout
-            } else {
-                LLMError::Transport(error.to_string())
-            }
-        })?;
-        body_admission.admit_chunk(&chunk)?;
-        append_sse_utf8_chunk(&mut buffer, &mut utf8_carry, &chunk)?;
-
-        let mut consumed = 0;
-        while let Some(data) = next_sse_data(&buffer, &mut consumed) {
-            if data == "[DONE]" {
-                done = true;
-                break;
-            }
-
-            let value = parse_provider_json_value(data.as_ref())?;
-            drop(data);
-
-            if let Some(choices) = value.get("choices").and_then(Value::as_array) {
-                if let Some(choice) = choices.first() {
-                    if let Some(delta) = choice.get("delta") {
-                        if let Some(content) = delta.get("content") {
-                            if let Some(text) = content.as_str() {
-                                aggregated_text.push_str(text);
-                            } else if let Some(array) = content.as_array() {
-                                for item in array {
-                                    if let Some(text) = item.get("text").and_then(Value::as_str) {
-                                        aggregated_text.push_str(text);
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(tool_calls_delta) =
-                            delta.get("tool_calls").and_then(Value::as_array)
-                        {
-                            for tool_call in tool_calls_delta {
-                                if let Some(id) = tool_call.get("id").and_then(Value::as_str) {
-                                    let entry = tool_calls.entry(id.to_string()).or_default();
-
-                                    if let Some(name) = tool_call
-                                        .get("function")
-                                        .and_then(|f| f.get("name"))
-                                        .and_then(Value::as_str)
-                                    {
-                                        entry.name = Some(name.to_string());
-                                    }
-
-                                    if let Some(arguments) = tool_call
-                                        .get("function")
-                                        .and_then(|f| f.get("arguments"))
-                                        .and_then(Value::as_str)
-                                    {
-                                        append_tool_argument_fragment(
-                                            &mut entry.arguments,
-                                            arguments,
-                                        )?;
-                                    }
-                                }
-                            }
-                        }
-
-                        // The web search plugin streams url_citation
-                        // annotations on deltas; without capturing them the
-                        // synthesized raw_response loses every citation on
-                        // the streaming path.
-                        if let Some(annotations) =
-                            delta.get("annotations").and_then(Value::as_array)
-                        {
-                            for annotation in annotations {
-                                if annotation.get("type").and_then(Value::as_str)
-                                    == Some("url_citation")
-                                {
-                                    aggregated_annotations
-                                        .push(clone_json_value_iteratively(annotation));
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-                        finish_reason = Some(reason.to_string());
-                    }
-                }
-            }
-
-            if let Some(usage) = value.get("usage") {
-                usage_value = Some(usage.clone());
-            }
-            if done {
-                break;
-            }
-        }
-        if consumed > 0 {
-            buffer.drain(..consumed);
-        }
-    }
-    finish_sse_utf8(&utf8_carry)?;
-
-    let mut tool_calls_array = Vec::new();
-    for (id, call) in tool_calls.iter() {
-        if let Some(name) = &call.name {
-            tool_calls_array.push(json!({
-                "id": id,
-                "function": {
-                    "name": name,
-                    "arguments": call.arguments.clone(),
-                }
-            }));
-        }
-    }
-
-    let mut message_obj = serde_json::Map::new();
-    message_obj.insert("role".to_string(), Value::String("assistant".to_string()));
-    message_obj.insert(
-        "content".to_string(),
-        Value::String(aggregated_text.clone()),
-    );
-    if !tool_calls_array.is_empty() {
-        message_obj.insert("tool_calls".to_string(), Value::Array(tool_calls_array));
-    }
-    if !aggregated_annotations.is_empty() {
-        message_obj.insert(
-            "annotations".to_string(),
-            Value::Array(aggregated_annotations),
-        );
-    }
-
-    let mut choice_obj = serde_json::Map::new();
-    choice_obj.insert("message".to_string(), Value::Object(message_obj));
-    if let Some(reason) = finish_reason.clone() {
-        choice_obj.insert("finish_reason".to_string(), Value::String(reason));
-    }
-
-    let mut payload = Value::Object(serde_json::Map::from_iter(vec![(
-        "choices".to_string(),
-        Value::Array(vec![Value::Object(choice_obj)]),
-    )]));
-
-    if let Some(usage) = usage_value {
-        payload["usage"] = usage;
-    }
-
-    let (messages, tool_calls, text) = OpenRouterProvider::parse_output(&payload)?;
-    let usage = payload
-        .get("usage")
-        .map(OpenRouterProvider::map_usage)
-        .transpose()?;
-
-    let response = LLMResponse {
-        text: text.map(Arc::<str>::from),
-        reasoning_text: None,
-        response_id: None,
-        messages: Arc::new(messages),
-        tool_calls: Arc::new(tool_calls),
-        tool_results: Arc::new(Vec::new()),
-        usage,
-        finish_reason,
-        raw_response: Some(Arc::new(payload)),
-        provider_latency_ms: None,
-        trace_receipt: None,
-        route_identity: None,
-    };
-
-    if let Some(usage) = response.usage.as_ref() {
-        debug!(
-            provider = "openrouter",
-            model = %model,
-            operation = %operation,
-            trace_id = trace_id.as_deref().unwrap_or(""),
-            usage = ?usage,
-            "token usage reported by OpenRouter streaming"
-        );
-    }
-
-    info!(
-        provider = "openrouter",
-        model = %model,
-        operation = %operation,
-        trace_id = trace_id.as_deref().unwrap_or(""),
-        finish_reason = response.finish_reason.as_deref().unwrap_or(""),
-        tool_call_count = response.tool_calls.len(),
-        "OpenRouter streaming call succeeded"
-    );
-
-    Ok(response)
 }
 
 #[cfg(test)]

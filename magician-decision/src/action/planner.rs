@@ -27,8 +27,21 @@ When no further tool work is needed, answer in ordinary text.";
 pub fn needed(request: &ActionRequest, reason: &str) -> ActionVerdict {
     let (catalog, definitions) = super::planner_catalog::compact(&request.tools);
     let mut task = serde_json::to_value(&request.context).expect("action context is serializable");
+    let fields = task.as_object_mut().unwrap();
     // Instructions are already present in the system message.
-    task.as_object_mut().unwrap().remove("instructions");
+    fields.remove("instructions");
+    // Screenshots are for the decision model. The planner gets the host's
+    // own image if it sees images at all, and base64 in a text prompt is
+    // pure cost, so it reads the observation text a text-only route sees.
+    if fields.remove("assets").is_some() {
+        if let Some(text) = fields
+            .get_mut("observation")
+            .and_then(|observation| observation.get_mut("state"))
+            .map(serde_json::Value::take)
+        {
+            fields.insert("observation".into(), text);
+        }
+    }
     let mut prompt = json!({
         "reason": reason,
         "task": task,
@@ -205,6 +218,35 @@ mod tests {
         assert!(!native.contains("OBSERVATION-MARKER"), "{native}");
         let plan = prompt("action_plan");
         assert!(plan.contains("EVIDENCE-MARKER") && plan.contains("OBSERVATION-MARKER"));
+    }
+
+    /// A screenshot sent to the decision model never reaches the planner's
+    /// text prompt, and the planner reads the observation text unwrapped,
+    /// as it does when no screenshot was attached.
+    #[test]
+    fn planner_prompt_drops_screenshots_and_unwraps_the_observation() {
+        use decision_engine_contract::action::{ActionRequest, ActionVerdict};
+        let request: ActionRequest = serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "snapshot": "s",
+            "context": {
+                "goal": "Log in",
+                "observation": {"state": "OBSERVATION-MARKER", "screenshot": "screen-0123456789abcdef"},
+                "assets": {"screen-0123456789abcdef": {
+                    "type": "image", "format": "png", "width": 1280, "height": 800,
+                    "data_base64": "BASE64-MARKER"
+                }}
+            },
+            "tools": []
+        }))
+        .expect("action request");
+        let ActionVerdict::NeedPlanner { prompt, .. } = super::needed(&request, "reason") else {
+            panic!("expected a planner verdict");
+        };
+        assert!(!prompt.contains("BASE64-MARKER"), "{prompt}");
+        assert!(!prompt.contains("screen-0123456789abcdef"), "{prompt}");
+        let parsed: serde_json::Value = serde_json::from_str(&prompt).expect("valid JSON");
+        assert_eq!(parsed["task"]["observation"], "OBSERVATION-MARKER");
     }
 
     /// Stable fields lead the planner prompt so the provider's prefix cache

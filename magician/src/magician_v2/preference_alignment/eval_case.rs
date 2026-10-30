@@ -103,7 +103,11 @@ mod tests {
             let input = case.to_alignment_input();
             match judge_with(Some(JudgeBackend::Scripted(&oracle)), &input, budget).await {
                 JudgeOutcome::Decided { decision, .. } => {
-                    assert!(case.accepts(&decision.decision), "{}: oracle rejected", case.id)
+                    assert!(
+                        case.accepts(&decision.decision),
+                        "{}: oracle rejected",
+                        case.id
+                    )
                 },
                 JudgeOutcome::NothingToCompare => assert!(
                     case.acceptable
@@ -121,12 +125,12 @@ mod tests {
             if needs_intervention {
                 intervention_required += 1;
                 // Nothing to compare proceeds too, so it misses as well.
-                let missed = match judge_with(Some(JudgeBackend::Scripted(&baseline)), &input, budget)
-                    .await
-                {
-                    JudgeOutcome::Decided { decision, .. } => !case.accepts(&decision.decision),
-                    _ => true,
-                };
+                let missed =
+                    match judge_with(Some(JudgeBackend::Scripted(&baseline)), &input, budget).await
+                    {
+                        JudgeOutcome::Decided { decision, .. } => !case.accepts(&decision.decision),
+                        _ => true,
+                    };
                 if missed {
                     baseline_misses_where_intervention_required += 1;
                 }

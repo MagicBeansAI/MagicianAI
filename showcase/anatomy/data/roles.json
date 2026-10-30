@@ -1,7 +1,7 @@
 {
   "_source": "Crate roles from Cargo.toml descriptions, docs/ARCHITECTURE_V2.md and component READMEs, checked 2026-10-13 at 65fa811b6.",
   "runtime-core": "shared traits and types: tooling, discovery, process, edge wire types",
-  "magicllm": "multi-provider LLM layer: router, 13 providers, realtime voice, pricing",
+  "magicllm": "model capability catalog, provider routing, thinking controls, dispatch, realtime voice and pricing",
   "magician-core": "pure-logic foundation: JSON traversal, durable IO, prompts, attention funnel",
   "magician-app-contract": "public App Platform wire contract",
   "magician-event-taxonomy": "event taxonomy tables",
@@ -12,7 +12,7 @@
   "magician-storage": "typed storage ids, capability traits, StorageRuntime",
   "magician-storage-migration": "storage migration coordinator",
   "magician-vector-index": "LanceDB / Arrow memory index",
-  "decision-engine-contract": "decision-engine wire contract and unix-socket client",
+  "decision-engine-contract": "typed decision/action wire contract, bounded image assets and Unix-socket client",
   "magician-decision": "Choice / Score / Noul question format, question packs, model adapters",
   "magician-alignment": "preference-alignment contracts, validator, composer",
   "magicutor": "browser sidecar types and client contract",

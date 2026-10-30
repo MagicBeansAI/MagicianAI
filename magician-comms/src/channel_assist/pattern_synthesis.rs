@@ -184,6 +184,30 @@ fn slug(topic: &str) -> String {
     }
 }
 
+/// One `fields` map for a pass: up to [`MAX_PATTERNS`] topics keyed by slug
+/// (the first pattern for a slug wins).
+fn pattern_fields(patterns: Vec<SynthPattern>, synthesized_at: i64) -> Map<String, Value> {
+    let mut fields = Map::new();
+    for pattern in patterns.into_iter().take(MAX_PATTERNS) {
+        if pattern.topic.trim().is_empty() {
+            continue;
+        }
+        let key = slug(&pattern.topic);
+        if fields.contains_key(&key) {
+            continue;
+        }
+        let mut obj = Map::new();
+        obj.insert("topic".into(), json!(pattern.topic));
+        obj.insert("timing".into(), json!(pattern.timing.unwrap_or_default()));
+        obj.insert("note".into(), json!(pattern.note.unwrap_or_default()));
+        obj.insert("examples".into(), json!(pattern.examples));
+        obj.insert("source".into(), json!("passive_channel_synthesis"));
+        obj.insert("synthesized_at".into(), json!(synthesized_at));
+        fields.insert(key, Value::Object(obj));
+    }
+    fields
+}
+
 /// One synthesis pass for a scope: corpus → digest → LLM → `user.channel_patterns`.
 /// Idle (Ok(0)) when the op is unbound or the corpus is too thin.
 pub async fn run_synthesis_pass(
@@ -270,28 +294,19 @@ pub async fn run_synthesis_pass(
     };
 
     let resolver = AgentMemoryResolver::with_workspace_layout(process_storage::workspace());
-    let synthesized_at = now_ms();
+    let fields = pattern_fields(reply.patterns, now_ms());
     let mut written = 0usize;
-    for pattern in reply.patterns.into_iter().take(MAX_PATTERNS) {
-        if pattern.topic.trim().is_empty() {
-            continue;
-        }
-        let mut obj = Map::new();
-        obj.insert("topic".into(), json!(pattern.topic));
-        obj.insert("timing".into(), json!(pattern.timing.unwrap_or_default()));
-        obj.insert("note".into(), json!(pattern.note.unwrap_or_default()));
-        obj.insert("examples".into(), json!(pattern.examples));
-        obj.insert("source".into(), json!("passive_channel_synthesis"));
-        obj.insert("synthesized_at".into(), json!(synthesized_at));
-        let mut fields = Map::new();
-        fields.insert(slug(&pattern.topic), Value::Object(obj));
+    // One write per pass. Under `memory.user_knowledge_bounds` enforce it
+    // lands in the channel-patterns lane file: one row per topic, with
+    // `first_seen_at` and `seen_count`; a changed wording archives the old.
+    if !fields.is_empty() {
         let outcome =
             merge_user_memory_tier_fields(&resolver, principal, workspace, TIER, &fields).await;
         if outcome.get("status").and_then(Value::as_str) == Some("error") {
             let reason = outcome.get("reason").and_then(Value::as_str).unwrap_or("");
             warn!(target: LOG_TARGET, tier = TIER, reason, "pattern tier write failed");
         } else {
-            written += 1;
+            written = fields.len();
         }
     }
     info!(target: LOG_TARGET, patterns = written, corpus = corpus.len(), "pattern synthesis pass complete");
@@ -422,6 +437,16 @@ mod tests {
     fn slug_is_key_safe() {
         assert_eq!(slug("Car Insurance!"), "car_insurance");
         assert_eq!(slug("   "), "topic");
+    }
+
+    #[test]
+    fn a_pass_is_one_fields_map_keyed_by_topic_slug() {
+        let raw = r#"{"patterns":[{"topic":"Bills","timing":"monthly"},
+            {"topic":"bills!","note":"same slug"},{"topic":"  "},{"topic":"Travel"}]}"#;
+        let fields = pattern_fields(parse_reply(raw).unwrap().patterns, 7);
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields["bills"]["timing"], json!("monthly"));
+        assert_eq!(fields["travel"]["synthesized_at"], json!(7));
     }
 
     #[test]

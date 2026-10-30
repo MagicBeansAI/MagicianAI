@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-_Current development version: `0.4.9`._
+_Current development version: `0.4.10`._
+
+- Ground complete tool calls from coherent result rows and shared schemas; record precise selection and review diagnostics.
+
+_Version `0.4.9`._
 
 - **Removed:** the harness-chat planner mode and its reply schema; no host sends it.
 
